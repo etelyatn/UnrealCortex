@@ -9,13 +9,13 @@
 class FSocket;
 class FTcpListener;
 
-class CORTEXCORE_API FUDBTcpServer
+class CORTEXCORE_API FCortexTcpServer
 {
 public:
-	using FCommandDispatcher = TFunction<FUDBCommandResult(const FString& Command, const TSharedPtr<FJsonObject>& Params)>;
+	using FCommandDispatcher = TFunction<FCortexCommandResult(const FString& Command, const TSharedPtr<FJsonObject>& Params)>;
 
-	FUDBTcpServer();
-	~FUDBTcpServer();
+	FCortexTcpServer();
+	~FCortexTcpServer();
 
 	bool Start(int32 Port, FCommandDispatcher InDispatcher);
 	void Stop();

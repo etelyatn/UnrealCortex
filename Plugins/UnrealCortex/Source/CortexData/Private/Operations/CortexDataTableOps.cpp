@@ -20,22 +20,22 @@
 #include "ScopedTransaction.h"
 #include "CortexEditorUtils.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogUDBDataTableOps, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
 
-UDataTable* FUDBDataTableOps::LoadDataTable(const FString& TablePath, FUDBCommandResult& OutError)
+UDataTable* FCortexDataTableOps::LoadDataTable(const FString& TablePath, FCortexCommandResult& OutError)
 {
 	UDataTable* DataTable = LoadObject<UDataTable>(nullptr, *TablePath);
 	if (DataTable == nullptr)
 	{
-		OutError = FUDBCommandHandler::Error(
-			UDBErrorCodes::TableNotFound,
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::TableNotFound,
 			FString::Printf(TEXT("DataTable not found: %s"), *TablePath)
 		);
 	}
 	return DataTable;
 }
 
-TArray<UDataTable*> FUDBDataTableOps::GetParentTables(const UCompositeDataTable* CompositeTable)
+TArray<UDataTable*> FCortexDataTableOps::GetParentTables(const UCompositeDataTable* CompositeTable)
 {
 	TArray<UDataTable*> Result;
 	if (CompositeTable == nullptr)
@@ -48,7 +48,7 @@ TArray<UDataTable*> FUDBDataTableOps::GetParentTables(const UCompositeDataTable*
 	);
 	if (ParentTablesProp == nullptr)
 	{
-		UE_LOG(LogUDBDataTableOps, Warning, TEXT("Could not find ParentTables property on UCompositeDataTable"));
+		UE_LOG(LogCortexData, Warning, TEXT("Could not find ParentTables property on UCompositeDataTable"));
 		return Result;
 	}
 
@@ -72,7 +72,7 @@ TArray<UDataTable*> FUDBDataTableOps::GetParentTables(const UCompositeDataTable*
 	return Result;
 }
 
-TArray<TSharedPtr<FJsonValue>> FUDBDataTableOps::GetParentTablesJsonArray(const UCompositeDataTable* CompositeTable)
+TArray<TSharedPtr<FJsonValue>> FCortexDataTableOps::GetParentTablesJsonArray(const UCompositeDataTable* CompositeTable)
 {
 	TArray<TSharedPtr<FJsonValue>> JsonArray;
 	TArray<UDataTable*> Parents = GetParentTables(CompositeTable);
@@ -88,7 +88,7 @@ TArray<TSharedPtr<FJsonValue>> FUDBDataTableOps::GetParentTablesJsonArray(const 
 	return JsonArray;
 }
 
-UDataTable* FUDBDataTableOps::FindSourceTableForRow(const UCompositeDataTable* CompositeTable, FName RowName)
+UDataTable* FCortexDataTableOps::FindSourceTableForRow(const UCompositeDataTable* CompositeTable, FName RowName)
 {
 	TArray<UDataTable*> Parents = GetParentTables(CompositeTable);
 
@@ -122,7 +122,7 @@ UDataTable* FUDBDataTableOps::FindSourceTableForRow(const UCompositeDataTable* C
 	return nullptr;
 }
 
-FUDBCommandResult FUDBDataTableOps::ListDatatables(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataTableOps::ListDatatables(const TSharedPtr<FJsonObject>& Params)
 {
 	FString PathFilter;
 	if (Params.IsValid())
@@ -176,21 +176,21 @@ FUDBCommandResult FUDBDataTableOps::ListDatatables(const TSharedPtr<FJsonObject>
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("datatables"), DatatablesArray);
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBDataTableOps::GetDatatableSchema(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataTableOps::GetDatatableSchema(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("table_path"), TablePath))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: table_path")
 		);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UDataTable* DataTable = LoadDataTable(TablePath, LoadError);
 	if (DataTable == nullptr)
 	{
@@ -200,8 +200,8 @@ FUDBCommandResult FUDBDataTableOps::GetDatatableSchema(const TSharedPtr<FJsonObj
 	const UScriptStruct* RowStruct = DataTable->GetRowStruct();
 	if (RowStruct == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidStructType,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidStructType,
 			FString::Printf(TEXT("DataTable has no row struct: %s"), *TablePath)
 		);
 	}
@@ -215,23 +215,23 @@ FUDBCommandResult FUDBDataTableOps::GetDatatableSchema(const TSharedPtr<FJsonObj
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("table_path"), TablePath);
 	Data->SetStringField(TEXT("row_struct_name"), RowStruct->GetName());
-	Data->SetObjectField(TEXT("schema"), FUDBSerializer::GetStructSchema(RowStruct, bIncludeInherited));
+	Data->SetObjectField(TEXT("schema"), FCortexSerializer::GetStructSchema(RowStruct, bIncludeInherited));
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBDataTableOps::QueryDatatable(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataTableOps::QueryDatatable(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("table_path"), TablePath))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: table_path")
 		);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UDataTable* DataTable = LoadDataTable(TablePath, LoadError);
 	if (DataTable == nullptr)
 	{
@@ -241,8 +241,8 @@ FUDBCommandResult FUDBDataTableOps::QueryDatatable(const TSharedPtr<FJsonObject>
 	const UScriptStruct* RowStruct = DataTable->GetRowStruct();
 	if (RowStruct == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidStructType,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidStructType,
 			FString::Printf(TEXT("DataTable has no row struct: %s"), *TablePath)
 		);
 	}
@@ -360,7 +360,7 @@ FUDBCommandResult FUDBDataTableOps::QueryDatatable(const TSharedPtr<FJsonObject>
 			continue;
 		}
 
-		TSharedPtr<FJsonObject> RowJson = FUDBSerializer::StructToJson(RowStruct, RowData, FieldsProjection);
+		TSharedPtr<FJsonObject> RowJson = FCortexSerializer::StructToJson(RowStruct, RowData, FieldsProjection);
 
 		TSharedRef<FJsonObject> EntryJson = MakeShared<FJsonObject>();
 		EntryJson->SetStringField(TEXT("row_name"), RowName.ToString());
@@ -386,10 +386,10 @@ FUDBCommandResult FUDBDataTableOps::QueryDatatable(const TSharedPtr<FJsonObject>
 		Data->SetArrayField(TEXT("missing_rows"), MissingArray);
 	}
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBDataTableOps::GetDatatableRow(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataTableOps::GetDatatableRow(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	FString RowName;
@@ -400,13 +400,13 @@ FUDBCommandResult FUDBDataTableOps::GetDatatableRow(const TSharedPtr<FJsonObject
 
 	if (!bHasParams)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required params: table_path and row_name")
 		);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UDataTable* DataTable = LoadDataTable(TablePath, LoadError);
 	if (DataTable == nullptr)
 	{
@@ -416,8 +416,8 @@ FUDBCommandResult FUDBDataTableOps::GetDatatableRow(const TSharedPtr<FJsonObject
 	const void* RowData = DataTable->FindRowUnchecked(FName(*RowName));
 	if (RowData == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::RowNotFound,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::RowNotFound,
 			FString::Printf(TEXT("Row not found: %s"), *RowName)
 		);
 	}
@@ -426,12 +426,12 @@ FUDBCommandResult FUDBDataTableOps::GetDatatableRow(const TSharedPtr<FJsonObject
 	Data->SetStringField(TEXT("table_path"), TablePath);
 	Data->SetStringField(TEXT("row_name"), RowName);
 	Data->SetStringField(TEXT("row_struct"), DataTable->GetRowStruct()->GetName());
-	Data->SetObjectField(TEXT("row_data"), FUDBSerializer::StructToJson(DataTable->GetRowStruct(), RowData));
+	Data->SetObjectField(TEXT("row_data"), FCortexSerializer::StructToJson(DataTable->GetRowStruct(), RowData));
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBDataTableOps::AddDatatableRow(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataTableOps::AddDatatableRow(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	FString RowName;
@@ -442,8 +442,8 @@ FUDBCommandResult FUDBDataTableOps::AddDatatableRow(const TSharedPtr<FJsonObject
 
 	if (!bHasParams)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required params: table_path and row_name")
 		);
 	}
@@ -451,13 +451,13 @@ FUDBCommandResult FUDBDataTableOps::AddDatatableRow(const TSharedPtr<FJsonObject
 	const TSharedPtr<FJsonObject>* RowData = nullptr;
 	if (!Params->TryGetObjectField(TEXT("row_data"), RowData) || RowData == nullptr || !(*RowData).IsValid())
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: row_data")
 		);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UDataTable* DataTable = LoadDataTable(TablePath, LoadError);
 	if (DataTable == nullptr)
 	{
@@ -470,8 +470,8 @@ FUDBCommandResult FUDBDataTableOps::AddDatatableRow(const TSharedPtr<FJsonObject
 	{
 		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
 		Details->SetArrayField(TEXT("parent_tables"), GetParentTablesJsonArray(CompositeTable));
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::CompositeWriteBlocked,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::CompositeWriteBlocked,
 			FString::Printf(TEXT("Cannot add rows to CompositeDataTable '%s'. Add to one of its source tables instead."), *DataTable->GetName()),
 			Details
 		);
@@ -480,8 +480,8 @@ FUDBCommandResult FUDBDataTableOps::AddDatatableRow(const TSharedPtr<FJsonObject
 	const FName RowFName(*RowName);
 	if (DataTable->FindRowUnchecked(RowFName) != nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::RowAlreadyExists,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::RowAlreadyExists,
 			FString::Printf(TEXT("Row already exists: %s"), *RowName)
 		);
 	}
@@ -489,8 +489,8 @@ FUDBCommandResult FUDBDataTableOps::AddDatatableRow(const TSharedPtr<FJsonObject
 	const UScriptStruct* RowStruct = DataTable->GetRowStruct();
 	if (RowStruct == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidStructType,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidStructType,
 			FString::Printf(TEXT("DataTable has no row struct: %s"), *TablePath)
 		);
 	}
@@ -499,20 +499,20 @@ FUDBCommandResult FUDBDataTableOps::AddDatatableRow(const TSharedPtr<FJsonObject
 	RowStruct->InitializeStruct(RowMemory);
 
 	TArray<FString> Warnings;
-	bool bDeserializeSuccess = FUDBSerializer::JsonToStruct(*RowData, RowStruct, RowMemory, Warnings);
+	bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, RowMemory, Warnings);
 
 	if (!bDeserializeSuccess)
 	{
 		RowStruct->DestroyStruct(RowMemory);
 		FMemory::Free(RowMemory);
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::SerializationError,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
 			TEXT("Failed to deserialize row_data into row struct")
 		);
 	}
 
 	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("UDB: Add Row '%s' to '%s'"), *RowName, *DataTable->GetName())
+		FString::Printf(TEXT("Cortex:Add Row '%s' to '%s'"), *RowName, *DataTable->GetName())
 	));
 	DataTable->Modify();
 
@@ -522,7 +522,7 @@ FUDBCommandResult FUDBDataTableOps::AddDatatableRow(const TSharedPtr<FJsonObject
 	FMemory::Free(RowMemory);
 
 	DataTable->MarkPackageDirty();
-	FUDBEditorUtils::NotifyAssetModified(DataTable);
+	FCortexEditorUtils::NotifyAssetModified(DataTable);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("row_name"), RowName);
@@ -537,12 +537,12 @@ FUDBCommandResult FUDBDataTableOps::AddDatatableRow(const TSharedPtr<FJsonObject
 		Data->SetArrayField(TEXT("warnings"), WarningsArray);
 	}
 
-	FUDBCommandResult Result = FUDBCommandHandler::Success(Data);
+	FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
 	Result.Warnings = MoveTemp(Warnings);
 	return Result;
 }
 
-FUDBCommandResult FUDBDataTableOps::UpdateDatatableRow(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataTableOps::UpdateDatatableRow(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	FString RowName;
@@ -553,8 +553,8 @@ FUDBCommandResult FUDBDataTableOps::UpdateDatatableRow(const TSharedPtr<FJsonObj
 
 	if (!bHasParams)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required params: table_path and row_name")
 		);
 	}
@@ -562,8 +562,8 @@ FUDBCommandResult FUDBDataTableOps::UpdateDatatableRow(const TSharedPtr<FJsonObj
 	const TSharedPtr<FJsonObject>* RowData = nullptr;
 	if (!Params->TryGetObjectField(TEXT("row_data"), RowData) || RowData == nullptr || !(*RowData).IsValid())
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: row_data")
 		);
 	}
@@ -574,7 +574,7 @@ FUDBCommandResult FUDBDataTableOps::UpdateDatatableRow(const TSharedPtr<FJsonObj
 		Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UDataTable* DataTable = LoadDataTable(TablePath, LoadError);
 	if (DataTable == nullptr)
 	{
@@ -591,22 +591,22 @@ FUDBCommandResult FUDBDataTableOps::UpdateDatatableRow(const TSharedPtr<FJsonObj
 		UDataTable* SourceTable = FindSourceTableForRow(CompositeTable, RowFName);
 		if (SourceTable == nullptr)
 		{
-			return FUDBCommandHandler::Error(
-				UDBErrorCodes::RowNotFound,
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::RowNotFound,
 				FString::Printf(TEXT("Row '%s' not found in any source table of composite '%s'"), *RowName, *DataTable->GetName())
 			);
 		}
 		CompositeTablePath = TablePath;
 		DataTable = SourceTable;
-		UE_LOG(LogUDBDataTableOps, Log, TEXT("Auto-resolved composite '%s' -> source table '%s' for row '%s'"),
+		UE_LOG(LogCortexData, Log, TEXT("Auto-resolved composite '%s' -> source table '%s' for row '%s'"),
 			*CompositeTablePath, *DataTable->GetPathName(), *RowName);
 	}
 
 	uint8* RowPtr = DataTable->FindRowUnchecked(RowFName);
 	if (RowPtr == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::RowNotFound,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::RowNotFound,
 			FString::Printf(TEXT("Row not found: %s"), *RowName)
 		);
 	}
@@ -614,8 +614,8 @@ FUDBCommandResult FUDBDataTableOps::UpdateDatatableRow(const TSharedPtr<FJsonObj
 	const UScriptStruct* RowStruct = DataTable->GetRowStruct();
 	if (RowStruct == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidStructType,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidStructType,
 			FString::Printf(TEXT("DataTable has no row struct: %s"), *TablePath)
 		);
 	}
@@ -624,7 +624,7 @@ FUDBCommandResult FUDBDataTableOps::UpdateDatatableRow(const TSharedPtr<FJsonObj
 	TSharedPtr<FJsonObject> OldValues;
 	if (bDryRun)
 	{
-		OldValues = FUDBSerializer::StructToJson(RowStruct, RowPtr);
+		OldValues = FCortexSerializer::StructToJson(RowStruct, RowPtr);
 	}
 
 	// Track which fields were modified
@@ -644,21 +644,21 @@ FUDBCommandResult FUDBDataTableOps::UpdateDatatableRow(const TSharedPtr<FJsonObj
 		// Copy current values to temp
 		RowStruct->CopyScriptStruct(TempRowPtr, RowPtr);
 
-		bool bDeserializeSuccess = FUDBSerializer::JsonToStruct(*RowData, RowStruct, TempRowPtr, Warnings);
+		bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, TempRowPtr, Warnings);
 
 		if (!bDeserializeSuccess)
 		{
 			RowStruct->DestroyStruct(TempRowPtr);
 			FMemory::Free(TempRowPtr);
-			return FUDBCommandHandler::Error(
-				UDBErrorCodes::SerializationError,
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::SerializationError,
 				TEXT("Failed to deserialize row_data into existing row")
 			);
 		}
 
 		// Compute diff
 		TArray<TSharedPtr<FJsonValue>> ChangesArray;
-		TSharedPtr<FJsonObject> NewValues = FUDBSerializer::StructToJson(RowStruct, TempRowPtr);
+		TSharedPtr<FJsonObject> NewValues = FCortexSerializer::StructToJson(RowStruct, TempRowPtr);
 
 		for (const FString& Field : ModifiedFields)
 		{
@@ -698,30 +698,30 @@ FUDBCommandResult FUDBDataTableOps::UpdateDatatableRow(const TSharedPtr<FJsonObj
 			Data->SetArrayField(TEXT("warnings"), WarningsArray);
 		}
 
-		FUDBCommandResult Result = FUDBCommandHandler::Success(Data);
+		FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
 		Result.Warnings = MoveTemp(Warnings);
 		return Result;
 	}
 
 	// Normal (non-dry_run) path: apply changes
 	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("UDB: Update Row '%s' in '%s'"), *RowName, *DataTable->GetName())
+		FString::Printf(TEXT("Cortex:Update Row '%s' in '%s'"), *RowName, *DataTable->GetName())
 	));
 	DataTable->Modify();
 
-	bool bDeserializeSuccess = FUDBSerializer::JsonToStruct(*RowData, RowStruct, RowPtr, Warnings);
+	bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, RowPtr, Warnings);
 
 	if (!bDeserializeSuccess)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::SerializationError,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
 			TEXT("Failed to deserialize row_data into existing row")
 		);
 	}
 
 	DataTable->HandleDataTableChanged(RowFName);
 	DataTable->MarkPackageDirty();
-	FUDBEditorUtils::NotifyAssetModified(DataTable);
+	FCortexEditorUtils::NotifyAssetModified(DataTable);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("row_name"), RowName);
@@ -749,12 +749,12 @@ FUDBCommandResult FUDBDataTableOps::UpdateDatatableRow(const TSharedPtr<FJsonObj
 		Data->SetArrayField(TEXT("warnings"), WarningsArray);
 	}
 
-	FUDBCommandResult Result = FUDBCommandHandler::Success(Data);
+	FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
 	Result.Warnings = MoveTemp(Warnings);
 	return Result;
 }
 
-FUDBCommandResult FUDBDataTableOps::DeleteDatatableRow(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataTableOps::DeleteDatatableRow(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	FString RowName;
@@ -765,13 +765,13 @@ FUDBCommandResult FUDBDataTableOps::DeleteDatatableRow(const TSharedPtr<FJsonObj
 
 	if (!bHasParams)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required params: table_path and row_name")
 		);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UDataTable* DataTable = LoadDataTable(TablePath, LoadError);
 	if (DataTable == nullptr)
 	{
@@ -788,33 +788,33 @@ FUDBCommandResult FUDBDataTableOps::DeleteDatatableRow(const TSharedPtr<FJsonObj
 		UDataTable* SourceTable = FindSourceTableForRow(CompositeTable, RowFName);
 		if (SourceTable == nullptr)
 		{
-			return FUDBCommandHandler::Error(
-				UDBErrorCodes::RowNotFound,
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::RowNotFound,
 				FString::Printf(TEXT("Row '%s' not found in any source table of composite '%s'"), *RowName, *DataTable->GetName())
 			);
 		}
 		CompositeTablePath = TablePath;
 		DataTable = SourceTable;
-		UE_LOG(LogUDBDataTableOps, Log, TEXT("Auto-resolved composite '%s' -> source table '%s' for row '%s'"),
+		UE_LOG(LogCortexData, Log, TEXT("Auto-resolved composite '%s' -> source table '%s' for row '%s'"),
 			*CompositeTablePath, *DataTable->GetPathName(), *RowName);
 	}
 
 	if (DataTable->FindRowUnchecked(RowFName) == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::RowNotFound,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::RowNotFound,
 			FString::Printf(TEXT("Row not found: %s"), *RowName)
 		);
 	}
 
 	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("UDB: Delete Row '%s' from '%s'"), *RowName, *DataTable->GetName())
+		FString::Printf(TEXT("Cortex:Delete Row '%s' from '%s'"), *RowName, *DataTable->GetName())
 	));
 	DataTable->Modify();
 
 	DataTable->RemoveRow(RowFName);
 	DataTable->MarkPackageDirty();
-	FUDBEditorUtils::NotifyAssetModified(DataTable);
+	FCortexEditorUtils::NotifyAssetModified(DataTable);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("row_name"), RowName);
@@ -825,16 +825,16 @@ FUDBCommandResult FUDBDataTableOps::DeleteDatatableRow(const TSharedPtr<FJsonObj
 		Data->SetStringField(TEXT("composite_table_path"), CompositeTablePath);
 	}
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBDataTableOps::ImportDatatableJson(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("table_path"), TablePath))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: table_path")
 		);
 	}
@@ -842,8 +842,8 @@ FUDBCommandResult FUDBDataTableOps::ImportDatatableJson(const TSharedPtr<FJsonOb
 	const TArray<TSharedPtr<FJsonValue>>* RowsArray = nullptr;
 	if (!Params->TryGetArrayField(TEXT("rows"), RowsArray) || RowsArray == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: rows")
 		);
 	}
@@ -856,13 +856,13 @@ FUDBCommandResult FUDBDataTableOps::ImportDatatableJson(const TSharedPtr<FJsonOb
 
 	if (Mode != TEXT("create") && Mode != TEXT("upsert") && Mode != TEXT("replace"))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidValue,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidValue,
 			FString::Printf(TEXT("Invalid mode: %s. Must be create, upsert, or replace"), *Mode)
 		);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UDataTable* DataTable = LoadDataTable(TablePath, LoadError);
 	if (DataTable == nullptr)
 	{
@@ -875,8 +875,8 @@ FUDBCommandResult FUDBDataTableOps::ImportDatatableJson(const TSharedPtr<FJsonOb
 	{
 		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
 		Details->SetArrayField(TEXT("parent_tables"), GetParentTablesJsonArray(CompositeTable));
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::CompositeWriteBlocked,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::CompositeWriteBlocked,
 			FString::Printf(TEXT("Cannot import rows into CompositeDataTable '%s'. Import into one of its source tables instead."), *DataTable->GetName()),
 			Details
 		);
@@ -885,8 +885,8 @@ FUDBCommandResult FUDBDataTableOps::ImportDatatableJson(const TSharedPtr<FJsonOb
 	const UScriptStruct* RowStruct = DataTable->GetRowStruct();
 	if (RowStruct == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidStructType,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidStructType,
 			FString::Printf(TEXT("DataTable has no row struct: %s"), *TablePath)
 		);
 	}
@@ -896,7 +896,7 @@ FUDBCommandResult FUDBDataTableOps::ImportDatatableJson(const TSharedPtr<FJsonOb
 	if (!bDryRun)
 	{
 		Transaction.Emplace(FText::FromString(
-			FString::Printf(TEXT("UDB: Import %d rows into '%s' (mode: %s)"), RowsArray->Num(), *DataTable->GetName(), *Mode)
+			FString::Printf(TEXT("Cortex:Import %d rows into '%s' (mode: %s)"), RowsArray->Num(), *DataTable->GetName(), *Mode)
 		));
 		DataTable->Modify();
 	}
@@ -947,7 +947,7 @@ FUDBCommandResult FUDBDataTableOps::ImportDatatableJson(const TSharedPtr<FJsonOb
 			RowStruct->InitializeStruct(TempMemory);
 
 			TArray<FString> RowWarnings;
-			bool bSuccess = FUDBSerializer::JsonToStruct(*EntryRowData, RowStruct, TempMemory, RowWarnings);
+			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, TempMemory, RowWarnings);
 
 			RowStruct->DestroyStruct(TempMemory);
 			FMemory::Free(TempMemory);
@@ -990,7 +990,7 @@ FUDBCommandResult FUDBDataTableOps::ImportDatatableJson(const TSharedPtr<FJsonOb
 		{
 			// Update existing row in place
 			TArray<FString> RowWarnings;
-			bool bSuccess = FUDBSerializer::JsonToStruct(*EntryRowData, RowStruct, ExistingRow, RowWarnings);
+			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, ExistingRow, RowWarnings);
 			if (!bSuccess)
 			{
 				Errors.Add(FString::Printf(TEXT("Row %d (%s): deserialization failed"), Index, *EntryRowName));
@@ -1010,7 +1010,7 @@ FUDBCommandResult FUDBDataTableOps::ImportDatatableJson(const TSharedPtr<FJsonOb
 			RowStruct->InitializeStruct(RowMemory);
 
 			TArray<FString> RowWarnings;
-			bool bSuccess = FUDBSerializer::JsonToStruct(*EntryRowData, RowStruct, RowMemory, RowWarnings);
+			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, RowMemory, RowWarnings);
 
 			if (!bSuccess)
 			{
@@ -1036,7 +1036,7 @@ FUDBCommandResult FUDBDataTableOps::ImportDatatableJson(const TSharedPtr<FJsonOb
 	if (!bDryRun)
 	{
 		DataTable->MarkPackageDirty();
-	FUDBEditorUtils::NotifyAssetModified(DataTable);
+	FCortexEditorUtils::NotifyAssetModified(DataTable);
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -1064,18 +1064,18 @@ FUDBCommandResult FUDBDataTableOps::ImportDatatableJson(const TSharedPtr<FJsonOb
 		Data->SetArrayField(TEXT("warnings"), WarningsArray);
 	}
 
-	FUDBCommandResult Result = FUDBCommandHandler::Success(Data);
+	FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
 	Result.Warnings = MoveTemp(Warnings);
 	return Result;
 }
 
-FUDBCommandResult FUDBDataTableOps::GetStructSchema(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataTableOps::GetStructSchema(const TSharedPtr<FJsonObject>& Params)
 {
 	FString StructName;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("struct_name"), StructName))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: struct_name")
 		);
 	}
@@ -1113,8 +1113,8 @@ FUDBCommandResult FUDBDataTableOps::GetStructSchema(const TSharedPtr<FJsonObject
 
 	if (FoundStruct == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidStructType,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidStructType,
 			FString::Printf(TEXT("Struct not found: %s"), *StructName)
 		);
 	}
@@ -1126,20 +1126,20 @@ FUDBCommandResult FUDBDataTableOps::GetStructSchema(const TSharedPtr<FJsonObject
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-	Data->SetObjectField(TEXT("schema"), FUDBSerializer::GetStructSchema(FoundStruct));
+	Data->SetObjectField(TEXT("schema"), FCortexSerializer::GetStructSchema(FoundStruct));
 
 	if (bIncludeSubtypes)
 	{
-		TArray<UScriptStruct*> Subtypes = FUDBSerializer::FindInstancedStructSubtypes(FoundStruct);
+		TArray<UScriptStruct*> Subtypes = FCortexSerializer::FindInstancedStructSubtypes(FoundStruct);
 		TArray<TSharedPtr<FJsonValue>> SubtypeSchemas;
 		for (const UScriptStruct* Subtype : Subtypes)
 		{
-			SubtypeSchemas.Add(MakeShared<FJsonValueObject>(FUDBSerializer::GetStructSchema(Subtype)));
+			SubtypeSchemas.Add(MakeShared<FJsonValueObject>(FCortexSerializer::GetStructSchema(Subtype)));
 		}
 		Data->SetArrayField(TEXT("subtypes"), SubtypeSchemas);
 	}
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
 /** Recursively search struct fields for a substring match. Appends matching {field, value} pairs. */
@@ -1250,13 +1250,13 @@ static void SearchRowFields(
 	}
 }
 
-FUDBCommandResult FUDBDataTableOps::SearchDatatableContent(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataTableOps::SearchDatatableContent(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("table_path"), TablePath))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: table_path")
 		);
 	}
@@ -1264,13 +1264,13 @@ FUDBCommandResult FUDBDataTableOps::SearchDatatableContent(const TSharedPtr<FJso
 	FString SearchText;
 	if (!Params->TryGetStringField(TEXT("search_text"), SearchText) || SearchText.IsEmpty())
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidValue,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidValue,
 			TEXT("Missing or empty required param: search_text")
 		);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UDataTable* DataTable = LoadDataTable(TablePath, LoadError);
 	if (DataTable == nullptr)
 	{
@@ -1280,8 +1280,8 @@ FUDBCommandResult FUDBDataTableOps::SearchDatatableContent(const TSharedPtr<FJso
 	const UScriptStruct* RowStruct = DataTable->GetRowStruct();
 	if (RowStruct == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidStructType,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidStructType,
 			FString::Printf(TEXT("DataTable has no row struct: %s"), *TablePath)
 		);
 	}
@@ -1360,7 +1360,7 @@ FUDBCommandResult FUDBDataTableOps::SearchDatatableContent(const TSharedPtr<FJso
 		if (PreviewFields.Num() > 0)
 		{
 			TSet<FString> PreviewFieldsSet(PreviewFields);
-			TSharedPtr<FJsonObject> Preview = FUDBSerializer::StructToJson(RowStruct, RowData, PreviewFieldsSet);
+			TSharedPtr<FJsonObject> Preview = FCortexSerializer::StructToJson(RowStruct, RowData, PreviewFieldsSet);
 			ResultEntry->SetObjectField(TEXT("preview"), Preview);
 		}
 
@@ -1374,10 +1374,10 @@ FUDBCommandResult FUDBDataTableOps::SearchDatatableContent(const TSharedPtr<FJso
 	Data->SetNumberField(TEXT("limit"), Limit);
 	Data->SetArrayField(TEXT("results"), ResultsArray);
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBDataTableOps::GetDataCatalog(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonObject>& Params)
 {
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 
@@ -1551,16 +1551,16 @@ FUDBCommandResult FUDBDataTableOps::GetDataCatalog(const TSharedPtr<FJsonObject>
 		}
 	}
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBDataTableOps::ResolveTags(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataTableOps::ResolveTags(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("table_path"), TablePath))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: table_path")
 		);
 	}
@@ -1568,8 +1568,8 @@ FUDBCommandResult FUDBDataTableOps::ResolveTags(const TSharedPtr<FJsonObject>& P
 	FString TagFieldName;
 	if (!Params->TryGetStringField(TEXT("tag_field"), TagFieldName))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: tag_field")
 		);
 	}
@@ -1577,13 +1577,13 @@ FUDBCommandResult FUDBDataTableOps::ResolveTags(const TSharedPtr<FJsonObject>& P
 	const TArray<TSharedPtr<FJsonValue>>* TagsArray = nullptr;
 	if (!Params->TryGetArrayField(TEXT("tags"), TagsArray) || TagsArray == nullptr || TagsArray->Num() == 0)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing or empty required param: tags (array)")
 		);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UDataTable* DataTable = LoadDataTable(TablePath, LoadError);
 	if (DataTable == nullptr)
 	{
@@ -1593,8 +1593,8 @@ FUDBCommandResult FUDBDataTableOps::ResolveTags(const TSharedPtr<FJsonObject>& P
 	const UScriptStruct* RowStruct = DataTable->GetRowStruct();
 	if (RowStruct == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidStructType,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidStructType,
 			FString::Printf(TEXT("DataTable has no row struct: %s"), *TablePath)
 		);
 	}
@@ -1603,8 +1603,8 @@ FUDBCommandResult FUDBDataTableOps::ResolveTags(const TSharedPtr<FJsonObject>& P
 	const FProperty* TagProperty = RowStruct->FindPropertyByName(FName(*TagFieldName));
 	if (TagProperty == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			FString::Printf(TEXT("Field '%s' not found in row struct"), *TagFieldName)
 		);
 	}
@@ -1621,8 +1621,8 @@ FUDBCommandResult FUDBDataTableOps::ResolveTags(const TSharedPtr<FJsonObject>& P
 
 	if (!bIsGameplayTag && !bIsGameplayTagContainer)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			FString::Printf(TEXT("Field '%s' is not FGameplayTag or FGameplayTagContainer"), *TagFieldName)
 		);
 	}
@@ -1701,7 +1701,7 @@ FUDBCommandResult FUDBDataTableOps::ResolveTags(const TSharedPtr<FJsonObject>& P
 
 		TSharedRef<FJsonObject> EntryJson = MakeShared<FJsonObject>();
 		EntryJson->SetStringField(TEXT("row_name"), RowName.ToString());
-		EntryJson->SetObjectField(TEXT("row_data"), FUDBSerializer::StructToJson(RowStruct, RowData, FieldsProjection));
+		EntryJson->SetObjectField(TEXT("row_data"), FCortexSerializer::StructToJson(RowStruct, RowData, FieldsProjection));
 
 		TArray<TSharedPtr<FJsonValue>> MatchedTagsArray;
 		for (const FString& Tag : MatchedTags)
@@ -1730,5 +1730,5 @@ FUDBCommandResult FUDBDataTableOps::ResolveTags(const TSharedPtr<FJsonObject>& P
 	Data->SetNumberField(TEXT("resolved_count"), ResolvedArray.Num());
 	Data->SetArrayField(TEXT("unresolved_tags"), UnresolvedArray);
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }

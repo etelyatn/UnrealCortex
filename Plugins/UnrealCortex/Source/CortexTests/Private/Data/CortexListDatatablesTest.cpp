@@ -11,17 +11,17 @@
 #include "Serialization/JsonSerializer.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBListDatatablesTest,
-	"UDB.Commands.ListDatatables",
+	FCortexListDatatablesTest,
+	"Cortex.Data.ListDatatables",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBListDatatablesTest::RunTest(const FString& Parameters)
+bool FCortexListDatatablesTest::RunTest(const FString& Parameters)
 {
 	// Arrange: Start the TCP server on a test port (different from ping test)
 	const int32 TestPort = 18743;
-	FUDBCommandHandler CommandHandler;
-	FUDBTcpServer Server;
+	FCortexCommandRouter CommandHandler;
+	FCortexTcpServer Server;
 	const bool bStarted = Server.Start(TestPort,
 		[&CommandHandler](const FString& Command, const TSharedPtr<FJsonObject>& Params)
 		{
@@ -40,7 +40,7 @@ bool FUDBListDatatablesTest::RunTest(const FString& Parameters)
 	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
 	TestNotNull(TEXT("Socket subsystem should exist"), SocketSubsystem);
 
-	FSocket* ClientSocket = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("UDBTestClient"), false);
+	FSocket* ClientSocket = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("CortexTestClient"), false);
 	TestNotNull(TEXT("Client socket should be created"), ClientSocket);
 
 	if (ClientSocket == nullptr)

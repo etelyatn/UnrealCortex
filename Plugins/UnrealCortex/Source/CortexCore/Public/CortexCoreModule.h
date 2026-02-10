@@ -4,8 +4,8 @@
 #include "Modules/ModuleManager.h"
 #include "ICortexCommandRegistry.h"
 
-class FUDBCommandHandler;
-class FUDBTcpServer;
+class FCortexCommandRouter;
+class FCortexTcpServer;
 
 class CORTEXCORE_API FCortexCoreModule : public IModuleInterface
 {
@@ -17,9 +17,9 @@ public:
     ICortexCommandRegistry& GetCommandRegistry();
 
     /** Get the command router for backward compat during migration. */
-    FUDBCommandHandler& GetCommandRouter();
+    FCortexCommandRouter& GetCommandRouter();
 
 private:
-    TUniquePtr<FUDBCommandHandler> CommandRouter;
-    TUniquePtr<FUDBTcpServer> TcpServer;
+    TUniquePtr<FCortexCommandRouter> CommandRouter;
+    TUniquePtr<FCortexTcpServer> TcpServer;
 };

@@ -12,12 +12,12 @@
 // This proves the pattern: FScopedTransaction + Modify() + mutation = undoable.
 // ============================================================================
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBUndoDirectTest,
-	"UDB.Undo.DirectTransaction",
+	FCortexUndoDirectTest,
+	"Cortex.Data.Undo.DirectTransaction",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBUndoDirectTest::RunTest(const FString& Parameters)
+bool FCortexUndoDirectTest::RunTest(const FString& Parameters)
 {
 	if (GEditor == nullptr || !GEditor->CanTransact())
 	{
@@ -25,9 +25,9 @@ bool FUDBUndoDirectTest::RunTest(const FString& Parameters)
 		return true;
 	}
 
-	GEditor->ResetTransaction(FText::FromString(TEXT("UDB Direct Test Setup")));
+	GEditor->ResetTransaction(FText::FromString(TEXT("Cortex Direct Test Setup")));
 
-	UPackage* TestPackage = CreatePackage(TEXT("/Temp/UDBUndoDirectTest"));
+	UPackage* TestPackage = CreatePackage(TEXT("/Temp/CortexUndoDirectTest"));
 	UDataTable* TestTable = NewObject<UDataTable>(TestPackage, TEXT("DT_UndoDirectTest"), RF_Public | RF_Standalone | RF_Transactional);
 	TestTable->RowStruct = FTableRowBase::StaticStruct();
 
@@ -56,7 +56,7 @@ bool FUDBUndoDirectTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Should have 1 row after redo"), TestTable->GetRowMap().Num(), 1);
 
 	// Cleanup
-	GEditor->ResetTransaction(FText::FromString(TEXT("UDB Direct Test Cleanup")));
+	GEditor->ResetTransaction(FText::FromString(TEXT("Cortex Direct Test Cleanup")));
 
 	return true;
 }
@@ -66,12 +66,12 @@ bool FUDBUndoDirectTest::RunTest(const FString& Parameters)
 // Proves end-to-end: MCP command -> FScopedTransaction -> undo works.
 // ============================================================================
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBUndoAddRowTest,
-	"UDB.Undo.AddRowViaCommand",
+	FCortexUndoAddRowTest,
+	"Cortex.Data.Undo.AddRowViaCommand",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBUndoAddRowTest::RunTest(const FString& Parameters)
+bool FCortexUndoAddRowTest::RunTest(const FString& Parameters)
 {
 	if (GEditor == nullptr || !GEditor->CanTransact())
 	{
@@ -79,9 +79,9 @@ bool FUDBUndoAddRowTest::RunTest(const FString& Parameters)
 		return true;
 	}
 
-	GEditor->ResetTransaction(FText::FromString(TEXT("UDB AddRow Test Setup")));
+	GEditor->ResetTransaction(FText::FromString(TEXT("Cortex AddRow Test Setup")));
 
-	UPackage* TestPackage = CreatePackage(TEXT("/Temp/UDBUndoAddRowTest"));
+	UPackage* TestPackage = CreatePackage(TEXT("/Temp/CortexUndoAddRowTest"));
 	UDataTable* TestTable = NewObject<UDataTable>(TestPackage, TEXT("DT_UndoAddRowTest"), RF_Public | RF_Standalone | RF_Transactional);
 	TestTable->RowStruct = FTableRowBase::StaticStruct();
 
@@ -90,13 +90,13 @@ bool FUDBUndoAddRowTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Table should start empty"), TestTable->GetRowMap().Num(), 0);
 
 	// Add a row via command handler (which wraps in FScopedTransaction internally)
-	FUDBCommandHandler Handler;
+	FCortexCommandRouter Handler;
 	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
 	AddParams->SetStringField(TEXT("table_path"), TablePath);
 	AddParams->SetStringField(TEXT("row_name"), TEXT("TestRow_1"));
 	AddParams->SetObjectField(TEXT("row_data"), MakeShared<FJsonObject>());
 
-	FUDBCommandResult AddResult = Handler.Execute(TEXT("add_datatable_row"), AddParams);
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_datatable_row"), AddParams);
 	TestTrue(TEXT("Add row should succeed"), AddResult.bSuccess);
 	TestEqual(TEXT("Table should have 1 row after add"), TestTable->GetRowMap().Num(), 1);
 
@@ -111,7 +111,7 @@ bool FUDBUndoAddRowTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Table should have 1 row after redo"), TestTable->GetRowMap().Num(), 1);
 
 	// Cleanup
-	GEditor->ResetTransaction(FText::FromString(TEXT("UDB AddRow Test Cleanup")));
+	GEditor->ResetTransaction(FText::FromString(TEXT("Cortex AddRow Test Cleanup")));
 
 	return true;
 }

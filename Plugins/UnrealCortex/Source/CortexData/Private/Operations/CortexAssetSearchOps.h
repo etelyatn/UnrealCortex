@@ -4,8 +4,8 @@
 #include "CoreMinimal.h"
 #include "CortexCommandRouter.h"
 
-class FUDBAssetSearchOps
+class FCortexAssetSearchOps
 {
 public:
-	static FUDBCommandResult SearchAssets(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult SearchAssets(const TSharedPtr<FJsonObject>& Params);
 };

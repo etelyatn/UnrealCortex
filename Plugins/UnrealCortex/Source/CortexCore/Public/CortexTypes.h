@@ -5,7 +5,7 @@
 #include "Dom/JsonObject.h"
 
 /** Error codes matching the PRD specification */
-namespace UDBErrorCodes
+namespace CortexErrorCodes
 {
 	static const FString TableNotFound = TEXT("TABLE_NOT_FOUND");
 	static const FString RowNotFound = TEXT("ROW_NOT_FOUND");
@@ -24,7 +24,7 @@ namespace UDBErrorCodes
 }
 
 /** Result of a command execution */
-struct CORTEXCORE_API FUDBCommandResult
+struct CORTEXCORE_API FCortexCommandResult
 {
 	bool bSuccess = false;
 	TSharedPtr<FJsonObject> Data;

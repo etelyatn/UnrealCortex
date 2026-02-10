@@ -5,8 +5,8 @@
 #include "Engine/DeveloperSettings.h"
 #include "CortexSettings.generated.h"
 
-UCLASS(Config = EditorPerProjectUserSettings, DefaultConfig, meta = (DisplayName = "Unreal Data Bridge"))
-class CORTEXCORE_API UUDBSettings : public UDeveloperSettings
+UCLASS(Config = EditorPerProjectUserSettings, DefaultConfig, meta = (DisplayName = "Unreal Cortex"))
+class CORTEXCORE_API UCortexSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
 
@@ -27,8 +27,8 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "GameplayTags")
 	TMap<FString, FString> TagPrefixToIniFile;
 
-	static const UUDBSettings* Get()
+	static const UCortexSettings* Get()
 	{
-		return GetDefault<UUDBSettings>();
+		return GetDefault<UCortexSettings>();
 	}
 };

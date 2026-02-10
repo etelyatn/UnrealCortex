@@ -9,22 +9,22 @@
 #include "ScopedTransaction.h"
 #include "CortexEditorUtils.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogUDBLocalizationOps, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
 
-UStringTable* FUDBLocalizationOps::LoadStringTable(const FString& TablePath, FUDBCommandResult& OutError)
+UStringTable* FCortexLocalizationOps::LoadStringTable(const FString& TablePath, FCortexCommandResult& OutError)
 {
 	UStringTable* StringTable = LoadObject<UStringTable>(nullptr, *TablePath);
 	if (StringTable == nullptr)
 	{
-		OutError = FUDBCommandHandler::Error(
-			UDBErrorCodes::AssetNotFound,
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
 			FString::Printf(TEXT("StringTable not found: %s"), *TablePath)
 		);
 	}
 	return StringTable;
 }
 
-FUDBCommandResult FUDBLocalizationOps::ListStringTables(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexLocalizationOps::ListStringTables(const TSharedPtr<FJsonObject>& Params)
 {
 	FString PathFilter;
 	if (Params.IsValid())
@@ -35,8 +35,8 @@ FUDBCommandResult FUDBLocalizationOps::ListStringTables(const TSharedPtr<FJsonOb
 	IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
 	if (AssetRegistry == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::EditorNotReady,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::EditorNotReady,
 			TEXT("AssetRegistry is not available")
 		);
 	}
@@ -78,16 +78,16 @@ FUDBCommandResult FUDBLocalizationOps::ListStringTables(const TSharedPtr<FJsonOb
 	Data->SetArrayField(TEXT("string_tables"), ResultArray);
 	Data->SetNumberField(TEXT("count"), ResultArray.Num());
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBLocalizationOps::GetTranslations(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexLocalizationOps::GetTranslations(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("string_table_path"), TablePath))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: string_table_path")
 		);
 	}
@@ -98,7 +98,7 @@ FUDBCommandResult FUDBLocalizationOps::GetTranslations(const TSharedPtr<FJsonObj
 		Params->TryGetStringField(TEXT("key_pattern"), KeyPattern);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UStringTable* StringTable = LoadStringTable(TablePath, LoadError);
 	if (StringTable == nullptr)
 	{
@@ -131,10 +131,10 @@ FUDBCommandResult FUDBLocalizationOps::GetTranslations(const TSharedPtr<FJsonObj
 	Data->SetArrayField(TEXT("entries"), EntriesArray);
 	Data->SetNumberField(TEXT("count"), EntriesArray.Num());
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBLocalizationOps::SetTranslation(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexLocalizationOps::SetTranslation(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	FString Key;
@@ -147,21 +147,21 @@ FUDBCommandResult FUDBLocalizationOps::SetTranslation(const TSharedPtr<FJsonObje
 
 	if (!bHasParams)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required params: string_table_path, key, and text")
 		);
 	}
 
 	if (Key.IsEmpty())
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Parameter 'key' cannot be empty")
 		);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UStringTable* StringTable = LoadStringTable(TablePath, LoadError);
 	if (StringTable == nullptr)
 	{
@@ -169,15 +169,15 @@ FUDBCommandResult FUDBLocalizationOps::SetTranslation(const TSharedPtr<FJsonObje
 	}
 
 	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("UDB: Set Translation '%s' in '%s'"), *Key, *StringTable->GetName())
+		FString::Printf(TEXT("Cortex:Set Translation '%s' in '%s'"), *Key, *StringTable->GetName())
 	));
 	StringTable->Modify();
 
 	StringTable->GetMutableStringTable()->SetSourceString(Key, Text);
 	StringTable->MarkPackageDirty();
-	FUDBEditorUtils::NotifyAssetModified(StringTable);
+	FCortexEditorUtils::NotifyAssetModified(StringTable);
 
-	UE_LOG(LogUDBLocalizationOps, Log, TEXT("Set translation key '%s' in '%s'"), *Key, *TablePath);
+	UE_LOG(LogCortexData, Log, TEXT("Set translation key '%s' in '%s'"), *Key, *TablePath);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetBoolField(TEXT("success"), true);
@@ -185,5 +185,5 @@ FUDBCommandResult FUDBLocalizationOps::SetTranslation(const TSharedPtr<FJsonObje
 	Data->SetStringField(TEXT("key"), Key);
 	Data->SetStringField(TEXT("text"), Text);
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }

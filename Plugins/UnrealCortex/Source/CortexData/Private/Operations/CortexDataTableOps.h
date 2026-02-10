@@ -7,25 +7,25 @@
 class UDataTable;
 class UCompositeDataTable;
 
-class FUDBDataTableOps
+class FCortexDataTableOps
 {
 public:
-	static FUDBCommandResult ListDatatables(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult GetDatatableSchema(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult QueryDatatable(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult GetDatatableRow(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult GetStructSchema(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult AddDatatableRow(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult UpdateDatatableRow(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult DeleteDatatableRow(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult ImportDatatableJson(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult SearchDatatableContent(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult GetDataCatalog(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult ResolveTags(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult ListDatatables(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult GetDatatableSchema(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult QueryDatatable(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult GetDatatableRow(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult GetStructSchema(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult AddDatatableRow(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult UpdateDatatableRow(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult DeleteDatatableRow(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult ImportDatatableJson(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult SearchDatatableContent(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult GetDataCatalog(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult ResolveTags(const TSharedPtr<FJsonObject>& Params);
 
 private:
 	/** Load a DataTable by asset path, returns nullptr and sets OutError if not found */
-	static UDataTable* LoadDataTable(const FString& TablePath, FUDBCommandResult& OutError);
+	static UDataTable* LoadDataTable(const FString& TablePath, FCortexCommandResult& OutError);
 
 	/** Get the parent/source tables from a UCompositeDataTable via reflection */
 	static TArray<UDataTable*> GetParentTables(const UCompositeDataTable* CompositeTable);

@@ -5,14 +5,14 @@
 #include "Dom/JsonValue.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBQueryByNamesTest,
-	"UDB.Commands.QueryByNames",
+	FCortexQueryByNamesTest,
+	"Cortex.Data.QueryByNames",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBQueryByNamesTest::RunTest(const FString& Parameters)
+bool FCortexQueryByNamesTest::RunTest(const FString& Parameters)
 {
-	FUDBCommandHandler Handler;
+	FCortexCommandRouter Handler;
 
 	// --- Test 1: query_datatable with row_names returns only requested rows ---
 	{
@@ -21,7 +21,7 @@ bool FUDBQueryByNamesTest::RunTest(const FString& Parameters)
 		DiscoverParams->SetStringField(TEXT("table_path"), TEXT("/Script/Ripper"));
 
 		// Use list_datatables to find a real table
-		FUDBCommandResult ListResult = Handler.Execute(TEXT("list_datatables"), MakeShared<FJsonObject>());
+		FCortexCommandResult ListResult = Handler.Execute(TEXT("list_datatables"), MakeShared<FJsonObject>());
 		TestTrue(TEXT("list_datatables should succeed"), ListResult.bSuccess);
 
 		if (!ListResult.bSuccess || !ListResult.Data.IsValid())
@@ -64,7 +64,7 @@ bool FUDBQueryByNamesTest::RunTest(const FString& Parameters)
 		TSharedPtr<FJsonObject> QueryParams = MakeShared<FJsonObject>();
 		QueryParams->SetStringField(TEXT("table_path"), TestTablePath);
 		QueryParams->SetNumberField(TEXT("limit"), 3);
-		FUDBCommandResult QueryResult = Handler.Execute(TEXT("query_datatable"), QueryParams);
+		FCortexCommandResult QueryResult = Handler.Execute(TEXT("query_datatable"), QueryParams);
 		TestTrue(TEXT("Initial query should succeed"), QueryResult.bSuccess);
 
 		if (!QueryResult.bSuccess || !QueryResult.Data.IsValid())
@@ -109,7 +109,7 @@ bool FUDBQueryByNamesTest::RunTest(const FString& Parameters)
 			}
 			NamedParams->SetArrayField(TEXT("row_names"), RowNamesArray);
 
-			FUDBCommandResult NamedResult = Handler.Execute(TEXT("query_datatable"), NamedParams);
+			FCortexCommandResult NamedResult = Handler.Execute(TEXT("query_datatable"), NamedParams);
 			TestTrue(TEXT("query_datatable with row_names should succeed"), NamedResult.bSuccess);
 
 			if (NamedResult.bSuccess && NamedResult.Data.IsValid())
@@ -149,7 +149,7 @@ bool FUDBQueryByNamesTest::RunTest(const FString& Parameters)
 			MixedNames.Add(MakeShared<FJsonValueString>(TEXT("NonExistentRow_XYZ_12345")));
 			MissingParams->SetArrayField(TEXT("row_names"), MixedNames);
 
-			FUDBCommandResult MissingResult = Handler.Execute(TEXT("query_datatable"), MissingParams);
+			FCortexCommandResult MissingResult = Handler.Execute(TEXT("query_datatable"), MissingParams);
 			TestTrue(TEXT("query_datatable with missing names should still succeed"), MissingResult.bSuccess);
 
 			if (MissingResult.bSuccess && MissingResult.Data.IsValid())
@@ -192,7 +192,7 @@ bool FUDBQueryByNamesTest::RunTest(const FString& Parameters)
 			// Get schema to find a field name
 			TSharedPtr<FJsonObject> SchemaParams = MakeShared<FJsonObject>();
 			SchemaParams->SetStringField(TEXT("table_path"), TestTablePath);
-			FUDBCommandResult SchemaResult = Handler.Execute(TEXT("get_datatable_schema"), SchemaParams);
+			FCortexCommandResult SchemaResult = Handler.Execute(TEXT("get_datatable_schema"), SchemaParams);
 
 			if (SchemaResult.bSuccess && SchemaResult.Data.IsValid())
 			{
@@ -215,7 +215,7 @@ bool FUDBQueryByNamesTest::RunTest(const FString& Parameters)
 								FieldsProjection.Add(MakeShared<FJsonValueString>(FirstFieldName));
 								ProjParams->SetArrayField(TEXT("fields"), FieldsProjection);
 
-								FUDBCommandResult ProjResult = Handler.Execute(TEXT("query_datatable"), ProjParams);
+								FCortexCommandResult ProjResult = Handler.Execute(TEXT("query_datatable"), ProjParams);
 								TestTrue(TEXT("query with row_names + fields should succeed"), ProjResult.bSuccess);
 							}
 						}

@@ -23,7 +23,7 @@ public:
 	virtual ~ICortexDomainHandler() = default;
 
 	/** Execute a command. Called on Game Thread. */
-	virtual FUDBCommandResult Execute(
+	virtual FCortexCommandResult Execute(
 		const FString& Command,
 		const TSharedPtr<FJsonObject>& Params
 	) = 0;

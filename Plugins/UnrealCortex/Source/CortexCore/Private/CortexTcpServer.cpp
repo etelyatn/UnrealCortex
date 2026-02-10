@@ -14,22 +14,22 @@
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogUDBTcpServer, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogCortex, Log, All);
 
-FUDBTcpServer::FUDBTcpServer()
+FCortexTcpServer::FCortexTcpServer()
 {
 }
 
-FUDBTcpServer::~FUDBTcpServer()
+FCortexTcpServer::~FCortexTcpServer()
 {
 	Stop();
 }
 
-bool FUDBTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
+bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 {
 	if (bRunning)
 	{
-		UE_LOG(LogUDBTcpServer, Warning, TEXT("TCP server is already running"));
+		UE_LOG(LogCortex, Warning, TEXT("TCP server is already running"));
 		return false;
 	}
 
@@ -40,7 +40,7 @@ bool FUDBTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 		FIPv4Endpoint ListenEndpoint(FIPv4Address::InternalLoopback, Port);
 
 		Listener = MakeUnique<FTcpListener>(ListenEndpoint);
-		Listener->OnConnectionAccepted().BindRaw(this, &FUDBTcpServer::HandleConnectionAccepted);
+		Listener->OnConnectionAccepted().BindRaw(this, &FCortexTcpServer::HandleConnectionAccepted);
 
 		if (Listener->IsActive())
 		{
@@ -49,7 +49,7 @@ bool FUDBTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 			// Write port file for MCP server auto-discovery
 			FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
 			FFileHelper::SaveStringToFile(FString::FromInt(Port), *PortFilePath);
-			UE_LOG(LogUDBTcpServer, Log, TEXT("Wrote port file: %s (port %d)"), *PortFilePath, Port);
+			UE_LOG(LogCortex, Log, TEXT("Wrote port file: %s (port %d)"), *PortFilePath, Port);
 
 			TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(
 				FTickerDelegate::CreateLambda([this](float DeltaTime) -> bool
@@ -63,19 +63,19 @@ bool FUDBTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 				0.0f
 			);
 
-			UE_LOG(LogUDBTcpServer, Log, TEXT("TCP server listening on 127.0.0.1:%d"), Port);
+			UE_LOG(LogCortex, Log, TEXT("TCP server listening on 127.0.0.1:%d"), Port);
 			return true;
 		}
 
 		Listener.Reset();
 	}
 
-	UE_LOG(LogUDBTcpServer, Error, TEXT("Failed to bind TCP server on ports %d-%d"),
+	UE_LOG(LogCortex, Error, TEXT("Failed to bind TCP server on ports %d-%d"),
 		StartPort, StartPort + 99);
 	return false;
 }
 
-void FUDBTcpServer::Stop()
+void FCortexTcpServer::Stop()
 {
 	if (!bRunning)
 	{
@@ -107,23 +107,23 @@ void FUDBTcpServer::Stop()
 
 	Listener.Reset();
 
-	UE_LOG(LogUDBTcpServer, Log, TEXT("TCP server stopped"));
+	UE_LOG(LogCortex, Log, TEXT("TCP server stopped"));
 }
 
-bool FUDBTcpServer::IsRunning() const
+bool FCortexTcpServer::IsRunning() const
 {
 	return bRunning;
 }
 
-bool FUDBTcpServer::HandleConnectionAccepted(FSocket* InClientSocket, const FIPv4Endpoint& ClientEndpoint)
+bool FCortexTcpServer::HandleConnectionAccepted(FSocket* InClientSocket, const FIPv4Endpoint& ClientEndpoint)
 {
-	UE_LOG(LogUDBTcpServer, Log, TEXT("Client connected from %s (total clients: %d)"), *ClientEndpoint.ToString(), ClientSockets.Num() + 1);
+	UE_LOG(LogCortex, Log, TEXT("Client connected from %s (total clients: %d)"), *ClientEndpoint.ToString(), ClientSockets.Num() + 1);
 	ClientSockets.Add(InClientSocket);
 	ReceiveBuffers.Add(InClientSocket, FString());
 	return true;
 }
 
-void FUDBTcpServer::ProcessClientData()
+void FCortexTcpServer::ProcessClientData()
 {
 	if (ClientSockets.Num() == 0)
 	{
@@ -142,7 +142,7 @@ void FUDBTcpServer::ProcessClientData()
 	}
 }
 
-bool FUDBTcpServer::ProcessSingleClient(FSocket* InClientSocket)
+bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 {
 	if (InClientSocket == nullptr)
 	{
@@ -153,7 +153,7 @@ bool FUDBTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 	ESocketConnectionState ConnectionState = InClientSocket->GetConnectionState();
 	if (ConnectionState == SCS_ConnectionError)
 	{
-		UE_LOG(LogUDBTcpServer, Log, TEXT("Client disconnected"));
+		UE_LOG(LogCortex, Log, TEXT("Client disconnected"));
 		return false;
 	}
 
@@ -196,12 +196,12 @@ bool FUDBTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 
 		if (!FJsonSerializer::Deserialize(Reader, RequestJson) || !RequestJson.IsValid())
 		{
-			UE_LOG(LogUDBTcpServer, Warning, TEXT("Failed to parse JSON: %s"), *Line);
-			FUDBCommandResult ParseError = FUDBCommandHandler::Error(
+			UE_LOG(LogCortex, Warning, TEXT("Failed to parse JSON: %s"), *Line);
+			FCortexCommandResult ParseError = FCortexCommandRouter::Error(
 				TEXT("PARSE_ERROR"),
 				TEXT("Failed to parse JSON request")
 			);
-			SendResponse(InClientSocket, FUDBCommandHandler::ResultToJson(ParseError, 0.0));
+			SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(ParseError, 0.0));
 			continue;
 		}
 
@@ -209,12 +209,12 @@ bool FUDBTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 		FString Command;
 		if (!RequestJson->TryGetStringField(TEXT("command"), Command))
 		{
-			UE_LOG(LogUDBTcpServer, Warning, TEXT("JSON missing 'command' field: %s"), *Line);
-			FUDBCommandResult MissingCmd = FUDBCommandHandler::Error(
+			UE_LOG(LogCortex, Warning, TEXT("JSON missing 'command' field: %s"), *Line);
+			FCortexCommandResult MissingCmd = FCortexCommandRouter::Error(
 				TEXT("MISSING_COMMAND"),
 				TEXT("JSON request missing 'command' field")
 			);
-			SendResponse(InClientSocket, FUDBCommandHandler::ResultToJson(MissingCmd, 0.0));
+			SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(MissingCmd, 0.0));
 			continue;
 		}
 
@@ -227,7 +227,7 @@ bool FUDBTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 		}
 
 		// Verbose logging: log incoming command
-		const bool bLogCommands = UUDBSettings::Get()->bLogCommands;
+		const bool bLogCommands = UCortexSettings::Get()->bLogCommands;
 		if (bLogCommands)
 		{
 			FString ParamsString;
@@ -242,19 +242,19 @@ bool FUDBTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 			{
 				ParamsString = ParamsString.Left(MaxParamsLength) + TEXT("...");
 			}
-			UE_LOG(LogUDBTcpServer, Log, TEXT("[UDB] <- %s %s"), *Command, *ParamsString);
+			UE_LOG(LogCortex, Log, TEXT("[Cortex] <- %s %s"), *Command, *ParamsString);
 		}
 
 		// Execute command with timing
 		const double StartTime = FPlatformTime::Seconds();
-		FUDBCommandResult Result = CommandDispatcher(Command, Params);
+		FCortexCommandResult Result = CommandDispatcher(Command, Params);
 		const double EndTime = FPlatformTime::Seconds();
 		const double TimingMs = (EndTime - StartTime) * 1000.0;
 		const double TimingSeconds = EndTime - StartTime;
 
 		if (TimingSeconds > CommandTimeoutWarningSeconds)
 		{
-			UE_LOG(LogUDBTcpServer, Warning, TEXT("Command '%s' took %.1fs (threshold: %.0fs)"), *Command, TimingSeconds, CommandTimeoutWarningSeconds);
+			UE_LOG(LogCortex, Warning, TEXT("Command '%s' took %.1fs (threshold: %.0fs)"), *Command, TimingSeconds, CommandTimeoutWarningSeconds);
 		}
 
 		// Verbose logging: log command result
@@ -278,26 +278,26 @@ bool FUDBTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 
 				if (ResultCount >= 0)
 				{
-					UE_LOG(LogUDBTcpServer, Log, TEXT("[UDB] -> SUCCESS (%.1fms, %d results)"), TimingMs, ResultCount);
+					UE_LOG(LogCortex, Log, TEXT("[Cortex] -> SUCCESS (%.1fms, %d results)"), TimingMs, ResultCount);
 				}
 				else
 				{
-					UE_LOG(LogUDBTcpServer, Log, TEXT("[UDB] -> SUCCESS (%.1fms)"), TimingMs);
+					UE_LOG(LogCortex, Log, TEXT("[Cortex] -> SUCCESS (%.1fms)"), TimingMs);
 				}
 			}
 			else
 			{
-				UE_LOG(LogUDBTcpServer, Log, TEXT("[UDB] -> ERROR %s (%.1fms)"), *Result.ErrorCode, TimingMs);
+				UE_LOG(LogCortex, Log, TEXT("[Cortex] -> ERROR %s (%.1fms)"), *Result.ErrorCode, TimingMs);
 			}
 		}
 
-		SendResponse(InClientSocket, FUDBCommandHandler::ResultToJson(Result, TimingMs));
+		SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(Result, TimingMs));
 	}
 
 	return true;
 }
 
-void FUDBTcpServer::SendResponse(FSocket* InClientSocket, const FString& ResponseString)
+void FCortexTcpServer::SendResponse(FSocket* InClientSocket, const FString& ResponseString)
 {
 	if (InClientSocket == nullptr)
 	{
@@ -313,11 +313,11 @@ void FUDBTcpServer::SendResponse(FSocket* InClientSocket, const FString& Respons
 		Utf8Response.Length(),
 		BytesSent))
 	{
-		UE_LOG(LogUDBTcpServer, Warning, TEXT("Failed to send response"));
+		UE_LOG(LogCortex, Warning, TEXT("Failed to send response"));
 	}
 }
 
-void FUDBTcpServer::DestroyClientSocket(FSocket* InClientSocket)
+void FCortexTcpServer::DestroyClientSocket(FSocket* InClientSocket)
 {
 	if (InClientSocket == nullptr)
 	{

@@ -10,15 +10,15 @@
 // Test: FVector serialization (numeric properties - doubles)
 // ============================================================================
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBSerializerVectorTest,
-	"UDB.Serializer.VectorProperties",
+	FCortexSerializerVectorTest,
+	"Cortex.Core.Serializer.VectorProperties",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBSerializerVectorTest::RunTest(const FString& Parameters)
+bool FCortexSerializerVectorTest::RunTest(const FString& Parameters)
 {
 	FVector TestVector(1.0, 2.0, 3.0);
-	TSharedPtr<FJsonObject> Result = FUDBSerializer::StructToJson(
+	TSharedPtr<FJsonObject> Result = FCortexSerializer::StructToJson(
 		TBaseStructure<FVector>::Get(), &TestVector);
 
 	TestNotNull(TEXT("Result should not be null"), Result.Get());
@@ -43,12 +43,12 @@ bool FUDBSerializerVectorTest::RunTest(const FString& Parameters)
 // Test: Bool property serialization
 // ============================================================================
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBSerializerBoolTest,
-	"UDB.Serializer.BoolProperty",
+	FCortexSerializerBoolTest,
+	"Cortex.Core.Serializer.BoolProperty",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBSerializerBoolTest::RunTest(const FString& Parameters)
+bool FCortexSerializerBoolTest::RunTest(const FString& Parameters)
 {
 	// FRotator has Pitch, Yaw, Roll (doubles) - but we need a struct with a bool
 	// Use FVector as base and test PropertyToJson directly for bool
@@ -61,7 +61,7 @@ bool FUDBSerializerBoolTest::RunTest(const FString& Parameters)
 	// For simplicity, test using a custom approach:
 	// Use FIntPoint and verify integer serialization, then separately test bool via PropertyToJson
 	FIntPoint TestPoint(42, 99);
-	TSharedPtr<FJsonObject> Result = FUDBSerializer::StructToJson(
+	TSharedPtr<FJsonObject> Result = FCortexSerializer::StructToJson(
 		TBaseStructure<FIntPoint>::Get(), &TestPoint);
 
 	TestNotNull(TEXT("Result should not be null"), Result.Get());
@@ -84,18 +84,18 @@ bool FUDBSerializerBoolTest::RunTest(const FString& Parameters)
 // Test: GameplayTag serialization
 // ============================================================================
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBSerializerGameplayTagTest,
-	"UDB.Serializer.GameplayTag",
+	FCortexSerializerGameplayTagTest,
+	"Cortex.Core.Serializer.GameplayTag",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBSerializerGameplayTagTest::RunTest(const FString& Parameters)
+bool FCortexSerializerGameplayTagTest::RunTest(const FString& Parameters)
 {
 	FGameplayTag TestTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Test.Serializer.Tag")), false);
 
 	// Even if the tag doesn't exist in the tag table, we can still test the serialization path
 	// by checking that the serializer handles the struct type correctly
-	TSharedPtr<FJsonObject> Result = FUDBSerializer::StructToJson(
+	TSharedPtr<FJsonObject> Result = FCortexSerializer::StructToJson(
 		FGameplayTag::StaticStruct(), &TestTag);
 
 	TestNotNull(TEXT("Result should not be null"), Result.Get());
@@ -117,18 +117,18 @@ bool FUDBSerializerGameplayTagTest::RunTest(const FString& Parameters)
 // Test: GameplayTagContainer serialization
 // ============================================================================
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBSerializerTagContainerTest,
-	"UDB.Serializer.GameplayTagContainer",
+	FCortexSerializerTagContainerTest,
+	"Cortex.Core.Serializer.GameplayTagContainer",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBSerializerTagContainerTest::RunTest(const FString& Parameters)
+bool FCortexSerializerTagContainerTest::RunTest(const FString& Parameters)
 {
 	FGameplayTagContainer TestContainer;
 	TestContainer.AddTag(FGameplayTag::RequestGameplayTag(FName(TEXT("Test.Serializer.A")), false));
 	TestContainer.AddTag(FGameplayTag::RequestGameplayTag(FName(TEXT("Test.Serializer.B")), false));
 
-	TSharedPtr<FJsonObject> Result = FUDBSerializer::StructToJson(
+	TSharedPtr<FJsonObject> Result = FCortexSerializer::StructToJson(
 		FGameplayTagContainer::StaticStruct(), &TestContainer);
 
 	TestNotNull(TEXT("Result should not be null"), Result.Get());
@@ -148,12 +148,12 @@ bool FUDBSerializerTagContainerTest::RunTest(const FString& Parameters)
 // Test: Nested struct serialization (FTransform = FVector + FQuat + FVector)
 // ============================================================================
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBSerializerNestedStructTest,
-	"UDB.Serializer.NestedStruct",
+	FCortexSerializerNestedStructTest,
+	"Cortex.Core.Serializer.NestedStruct",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBSerializerNestedStructTest::RunTest(const FString& Parameters)
+bool FCortexSerializerNestedStructTest::RunTest(const FString& Parameters)
 {
 	FTransform TestTransform(
 		FQuat::Identity,
@@ -161,7 +161,7 @@ bool FUDBSerializerNestedStructTest::RunTest(const FString& Parameters)
 		FVector(1.0, 1.0, 1.0)
 	);
 
-	TSharedPtr<FJsonObject> Result = FUDBSerializer::StructToJson(
+	TSharedPtr<FJsonObject> Result = FCortexSerializer::StructToJson(
 		TBaseStructure<FTransform>::Get(), &TestTransform);
 
 	TestNotNull(TEXT("Result should not be null"), Result.Get());
@@ -199,18 +199,18 @@ bool FUDBSerializerNestedStructTest::RunTest(const FString& Parameters)
 // Test: InstancedStruct serialization with _struct_type discriminator
 // ============================================================================
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBSerializerInstancedStructTest,
-	"UDB.Serializer.InstancedStruct",
+	FCortexSerializerInstancedStructTest,
+	"Cortex.Core.Serializer.InstancedStruct",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBSerializerInstancedStructTest::RunTest(const FString& Parameters)
+bool FCortexSerializerInstancedStructTest::RunTest(const FString& Parameters)
 {
 	FInstancedStruct TestInstance;
 	FVector InnerVector(5.0, 10.0, 15.0);
 	TestInstance.InitializeAs<FVector>(InnerVector);
 
-	TSharedPtr<FJsonObject> Result = FUDBSerializer::StructToJson(
+	TSharedPtr<FJsonObject> Result = FCortexSerializer::StructToJson(
 		FInstancedStruct::StaticStruct(), &TestInstance);
 
 	TestNotNull(TEXT("Result should not be null"), Result.Get());
@@ -248,15 +248,15 @@ bool FUDBSerializerInstancedStructTest::RunTest(const FString& Parameters)
 // Test: Null/invalid input handling
 // ============================================================================
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBSerializerNullInputTest,
-	"UDB.Serializer.NullInput",
+	FCortexSerializerNullInputTest,
+	"Cortex.Core.Serializer.NullInput",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBSerializerNullInputTest::RunTest(const FString& Parameters)
+bool FCortexSerializerNullInputTest::RunTest(const FString& Parameters)
 {
 	// Should handle null struct type gracefully
-	TSharedPtr<FJsonObject> Result = FUDBSerializer::StructToJson(nullptr, nullptr);
+	TSharedPtr<FJsonObject> Result = FCortexSerializer::StructToJson(nullptr, nullptr);
 
 	// Should return a valid but empty JSON object, or nullptr - either is acceptable
 	// The key point is it should not crash

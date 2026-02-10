@@ -7,7 +7,7 @@
 #include "Operations/CortexAssetSearchOps.h"
 #include "Operations/CortexCurveTableOps.h"
 
-FUDBCommandResult FCortexDataCommandHandler::Execute(
+FCortexCommandResult FCortexDataCommandHandler::Execute(
     const FString& Command,
     const TSharedPtr<FJsonObject>& Params)
 {
@@ -15,121 +15,121 @@ FUDBCommandResult FCortexDataCommandHandler::Execute(
     // DataTable operations
     if (Command == TEXT("list_datatables"))
     {
-        return FUDBDataTableOps::ListDatatables(Params);
+        return FCortexDataTableOps::ListDatatables(Params);
     }
     if (Command == TEXT("get_datatable_schema"))
     {
-        return FUDBDataTableOps::GetDatatableSchema(Params);
+        return FCortexDataTableOps::GetDatatableSchema(Params);
     }
     if (Command == TEXT("query_datatable"))
     {
-        return FUDBDataTableOps::QueryDatatable(Params);
+        return FCortexDataTableOps::QueryDatatable(Params);
     }
     if (Command == TEXT("get_datatable_row"))
     {
-        return FUDBDataTableOps::GetDatatableRow(Params);
+        return FCortexDataTableOps::GetDatatableRow(Params);
     }
     if (Command == TEXT("get_struct_schema"))
     {
-        return FUDBDataTableOps::GetStructSchema(Params);
+        return FCortexDataTableOps::GetStructSchema(Params);
     }
     if (Command == TEXT("add_datatable_row"))
     {
-        return FUDBDataTableOps::AddDatatableRow(Params);
+        return FCortexDataTableOps::AddDatatableRow(Params);
     }
     if (Command == TEXT("update_datatable_row"))
     {
-        return FUDBDataTableOps::UpdateDatatableRow(Params);
+        return FCortexDataTableOps::UpdateDatatableRow(Params);
     }
     if (Command == TEXT("delete_datatable_row"))
     {
-        return FUDBDataTableOps::DeleteDatatableRow(Params);
+        return FCortexDataTableOps::DeleteDatatableRow(Params);
     }
     if (Command == TEXT("import_datatable_json"))
     {
-        return FUDBDataTableOps::ImportDatatableJson(Params);
+        return FCortexDataTableOps::ImportDatatableJson(Params);
     }
     if (Command == TEXT("search_datatable_content"))
     {
-        return FUDBDataTableOps::SearchDatatableContent(Params);
+        return FCortexDataTableOps::SearchDatatableContent(Params);
     }
     if (Command == TEXT("get_data_catalog"))
     {
-        return FUDBDataTableOps::GetDataCatalog(Params);
+        return FCortexDataTableOps::GetDataCatalog(Params);
     }
     if (Command == TEXT("resolve_tags"))
     {
-        return FUDBDataTableOps::ResolveTags(Params);
+        return FCortexDataTableOps::ResolveTags(Params);
     }
 
     // GameplayTag operations
     if (Command == TEXT("list_gameplay_tags"))
     {
-        return FUDBGameplayTagOps::ListGameplayTags(Params);
+        return FCortexGameplayTagOps::ListGameplayTags(Params);
     }
     if (Command == TEXT("validate_gameplay_tag"))
     {
-        return FUDBGameplayTagOps::ValidateGameplayTag(Params);
+        return FCortexGameplayTagOps::ValidateGameplayTag(Params);
     }
     if (Command == TEXT("register_gameplay_tag"))
     {
-        return FUDBGameplayTagOps::RegisterGameplayTag(Params);
+        return FCortexGameplayTagOps::RegisterGameplayTag(Params);
     }
     if (Command == TEXT("register_gameplay_tags"))
     {
-        return FUDBGameplayTagOps::RegisterGameplayTags(Params);
+        return FCortexGameplayTagOps::RegisterGameplayTags(Params);
     }
 
     // DataAsset operations
     if (Command == TEXT("list_data_assets"))
     {
-        return FUDBDataAssetOps::ListDataAssets(Params);
+        return FCortexDataAssetOps::ListDataAssets(Params);
     }
     if (Command == TEXT("get_data_asset"))
     {
-        return FUDBDataAssetOps::GetDataAsset(Params);
+        return FCortexDataAssetOps::GetDataAsset(Params);
     }
     if (Command == TEXT("update_data_asset"))
     {
-        return FUDBDataAssetOps::UpdateDataAsset(Params);
+        return FCortexDataAssetOps::UpdateDataAsset(Params);
     }
 
     // Localization operations
     if (Command == TEXT("list_string_tables"))
     {
-        return FUDBLocalizationOps::ListStringTables(Params);
+        return FCortexLocalizationOps::ListStringTables(Params);
     }
     if (Command == TEXT("get_translations"))
     {
-        return FUDBLocalizationOps::GetTranslations(Params);
+        return FCortexLocalizationOps::GetTranslations(Params);
     }
     if (Command == TEXT("set_translation"))
     {
-        return FUDBLocalizationOps::SetTranslation(Params);
+        return FCortexLocalizationOps::SetTranslation(Params);
     }
 
     // Asset search
     if (Command == TEXT("search_assets"))
     {
-        return FUDBAssetSearchOps::SearchAssets(Params);
+        return FCortexAssetSearchOps::SearchAssets(Params);
     }
 
     // CurveTable operations
     if (Command == TEXT("list_curve_tables"))
     {
-        return FUDBCurveTableOps::ListCurveTables(Params);
+        return FCortexCurveTableOps::ListCurveTables(Params);
     }
     if (Command == TEXT("get_curve_table"))
     {
-        return FUDBCurveTableOps::GetCurveTable(Params);
+        return FCortexCurveTableOps::GetCurveTable(Params);
     }
     if (Command == TEXT("update_curve_table_row"))
     {
-        return FUDBCurveTableOps::UpdateCurveTableRow(Params);
+        return FCortexCurveTableOps::UpdateCurveTableRow(Params);
     }
 
-    return FUDBCommandHandler::Error(
-        UDBErrorCodes::UnknownCommand,
+    return FCortexCommandRouter::Error(
+        CortexErrorCodes::UnknownCommand,
         FString::Printf(TEXT("Unknown data command: %s"), *Command)
     );
 }

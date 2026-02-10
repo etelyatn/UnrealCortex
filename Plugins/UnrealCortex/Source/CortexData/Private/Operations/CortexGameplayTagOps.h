@@ -4,13 +4,13 @@
 #include "CoreMinimal.h"
 #include "CortexCommandRouter.h"
 
-class FUDBGameplayTagOps
+class FCortexGameplayTagOps
 {
 public:
-	static FUDBCommandResult ListGameplayTags(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult ValidateGameplayTag(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult RegisterGameplayTag(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult RegisterGameplayTags(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult ListGameplayTags(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult ValidateGameplayTag(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult RegisterGameplayTag(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult RegisterGameplayTags(const TSharedPtr<FJsonObject>& Params);
 
 private:
 	/** Resolve the target .ini file for a tag. Checks settings prefix map, falls back to default. */

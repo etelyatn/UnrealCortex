@@ -5,7 +5,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexPortFileTest,
-	"UDB.Core.PortFile",
+	"Cortex.Core.PortFile",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

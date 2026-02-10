@@ -9,15 +9,15 @@ void FCortexCoreModule::StartupModule()
 {
     UE_LOG(LogCortex, Log, TEXT("CortexCore module starting up"));
 
-    const UUDBSettings* Settings = UUDBSettings::Get();
+    const UCortexSettings* Settings = UCortexSettings::Get();
     if (Settings == nullptr || !Settings->bAutoStart)
     {
         return;
     }
 
-    CommandRouter = MakeUnique<FUDBCommandHandler>();
+    CommandRouter = MakeUnique<FCortexCommandRouter>();
 
-    TcpServer = MakeUnique<FUDBTcpServer>();
+    TcpServer = MakeUnique<FCortexTcpServer>();
     TcpServer->Start(Settings->Port,
         [this](const FString& Command, const TSharedPtr<FJsonObject>& Params)
         {
@@ -44,10 +44,10 @@ void FCortexCoreModule::ShutdownModule()
 ICortexCommandRegistry& FCortexCoreModule::GetCommandRegistry()
 {
     check(CommandRouter.IsValid());
-    return *CommandRouter; // FUDBCommandHandler implements ICortexCommandRegistry
+    return *CommandRouter; // FCortexCommandRouter implements ICortexCommandRegistry
 }
 
-FUDBCommandHandler& FCortexCoreModule::GetCommandRouter()
+FCortexCommandRouter& FCortexCoreModule::GetCommandRouter()
 {
     check(CommandRouter.IsValid());
     return *CommandRouter;

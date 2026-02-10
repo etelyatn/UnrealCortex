@@ -9,7 +9,7 @@
 #include "Misc/Paths.h"
 #include "HAL/PlatformFileManager.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogUDBGameplayTagOps, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
 
 static bool IsValidTagFormat(const FString& TagString, FString& OutError)
 {
@@ -37,7 +37,7 @@ static bool IsValidTagFormat(const FString& TagString, FString& OutError)
 	return true;
 }
 
-FUDBCommandResult FUDBGameplayTagOps::ListGameplayTags(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexGameplayTagOps::ListGameplayTags(const TSharedPtr<FJsonObject>& Params)
 {
 	FString Prefix;
 	bool bIncludeSourceFile = false;
@@ -136,16 +136,16 @@ FUDBCommandResult FUDBGameplayTagOps::ListGameplayTags(const TSharedPtr<FJsonObj
 	Data->SetArrayField(TEXT("tags"), TagsArray);
 	Data->SetNumberField(TEXT("count"), TagsArray.Num());
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBGameplayTagOps::ValidateGameplayTag(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexGameplayTagOps::ValidateGameplayTag(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TagString;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("tag"), TagString))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: tag")
 		);
 	}
@@ -157,16 +157,16 @@ FUDBCommandResult FUDBGameplayTagOps::ValidateGameplayTag(const TSharedPtr<FJson
 	Data->SetStringField(TEXT("tag"), TagString);
 	Data->SetBoolField(TEXT("valid"), bValid);
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBGameplayTagOps::RegisterGameplayTag(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexGameplayTagOps::RegisterGameplayTag(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TagString;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("tag"), TagString))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: tag")
 		);
 	}
@@ -189,22 +189,22 @@ FUDBCommandResult FUDBGameplayTagOps::RegisterGameplayTag(const TSharedPtr<FJson
 
 	if (!bSuccess)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidTag,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidTag,
 			ErrorMsg
 		);
 	}
 
-	return FUDBCommandHandler::Success(ResultData);
+	return FCortexCommandRouter::Success(ResultData);
 }
 
-FUDBCommandResult FUDBGameplayTagOps::RegisterGameplayTags(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexGameplayTagOps::RegisterGameplayTags(const TSharedPtr<FJsonObject>& Params)
 {
 	const TArray<TSharedPtr<FJsonValue>>* TagsArrayPtr = nullptr;
 	if (!Params.IsValid() || !Params->TryGetArrayField(TEXT("tags"), TagsArrayPtr) || TagsArrayPtr == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: tags (array)")
 		);
 	}
@@ -290,10 +290,10 @@ FUDBCommandResult FUDBGameplayTagOps::RegisterGameplayTags(const TSharedPtr<FJso
 	Data->SetNumberField(TEXT("already_existed"), AlreadyExistedCount);
 	Data->SetNumberField(TEXT("failed"), FailedCount);
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FString FUDBGameplayTagOps::ResolveIniFile(const FString& TagString, const FString& ExplicitIniFile)
+FString FCortexGameplayTagOps::ResolveIniFile(const FString& TagString, const FString& ExplicitIniFile)
 {
 	if (!ExplicitIniFile.IsEmpty())
 	{
@@ -306,7 +306,7 @@ FString FUDBGameplayTagOps::ResolveIniFile(const FString& TagString, const FStri
 	}
 
 	// Check settings prefix map
-	const UUDBSettings* Settings = UUDBSettings::Get();
+	const UCortexSettings* Settings = UCortexSettings::Get();
 	if (Settings != nullptr)
 	{
 		// Find the longest matching prefix
@@ -335,7 +335,7 @@ FString FUDBGameplayTagOps::ResolveIniFile(const FString& TagString, const FStri
 	return FPaths::Combine(FPaths::ProjectConfigDir(), TEXT("Tags"), TEXT("GameplayTags.ini"));
 }
 
-bool FUDBGameplayTagOps::AppendTagToIniFile(const FString& IniFilePath, const FString& TagString, const FString& DevComment, FString& OutError)
+bool FCortexGameplayTagOps::AppendTagToIniFile(const FString& IniFilePath, const FString& TagString, const FString& DevComment, FString& OutError)
 {
 	// Ensure directory exists
 	FString Directory = FPaths::GetPath(IniFilePath);
@@ -392,11 +392,11 @@ bool FUDBGameplayTagOps::AppendTagToIniFile(const FString& IniFilePath, const FS
 		return false;
 	}
 
-	UE_LOG(LogUDBGameplayTagOps, Log, TEXT("Registered tag '%s' in %s"), *TagString, *IniFilePath);
+	UE_LOG(LogCortexData, Log, TEXT("Registered tag '%s' in %s"), *TagString, *IniFilePath);
 	return true;
 }
 
-TSharedPtr<FJsonObject> FUDBGameplayTagOps::RegisterSingleTag(const FString& TagString, const FString& IniFile, const FString& DevComment, bool& bOutSuccess, FString& OutError)
+TSharedPtr<FJsonObject> FCortexGameplayTagOps::RegisterSingleTag(const FString& TagString, const FString& IniFile, const FString& DevComment, bool& bOutSuccess, FString& OutError)
 {
 	bOutSuccess = false;
 
@@ -444,7 +444,7 @@ TSharedPtr<FJsonObject> FUDBGameplayTagOps::RegisterSingleTag(const FString& Tag
 	FGameplayTag NewTag = FGameplayTag::RequestGameplayTag(FName(*TagString), false);
 	if (!NewTag.IsValid())
 	{
-		UE_LOG(LogUDBGameplayTagOps, Warning, TEXT("Tag '%s' was written to .ini but did not register after refresh. It will be available after editor restart."), *TagString);
+		UE_LOG(LogCortexData, Warning, TEXT("Tag '%s' was written to .ini but did not register after refresh. It will be available after editor restart."), *TagString);
 		ResultData->SetBoolField(TEXT("success"), true);
 		ResultData->SetStringField(TEXT("note"), TEXT("Tag written to .ini. May require editor restart to fully register."));
 		bOutSuccess = true;

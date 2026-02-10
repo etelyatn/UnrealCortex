@@ -7,7 +7,7 @@
 #include "ICortexDomainHandler.h"
 
 /** Info about a registered domain */
-struct FRegisteredDomain
+struct FCortexRegisteredDomain
 {
 	FString Namespace;
 	FString DisplayName;
@@ -16,20 +16,20 @@ struct FRegisteredDomain
 };
 
 /** Handles routing and execution of TCP commands */
-class CORTEXCORE_API FUDBCommandHandler : public ICortexCommandRegistry
+class CORTEXCORE_API FCortexCommandRouter : public ICortexCommandRegistry
 {
 public:
 	/** Execute a command and return the result */
-	FUDBCommandResult Execute(const FString& Command, const TSharedPtr<FJsonObject>& Params);
+	FCortexCommandResult Execute(const FString& Command, const TSharedPtr<FJsonObject>& Params);
 
 	/** Serialize a result to the response envelope JSON string */
-	static FString ResultToJson(const FUDBCommandResult& Result, double TimingMs);
+	static FString ResultToJson(const FCortexCommandResult& Result, double TimingMs);
 
 	/** Helper to build a success result */
-	static FUDBCommandResult Success(TSharedPtr<FJsonObject> Data);
+	static FCortexCommandResult Success(TSharedPtr<FJsonObject> Data);
 
 	/** Helper to build an error result */
-	static FUDBCommandResult Error(const FString& Code, const FString& Message, TSharedPtr<FJsonObject> Details = nullptr);
+	static FCortexCommandResult Error(const FString& Code, const FString& Message, TSharedPtr<FJsonObject> Details = nullptr);
 
 	// ICortexCommandRegistry
 	virtual void RegisterDomain(
@@ -40,16 +40,16 @@ public:
 	) override;
 
 	/** Get all registered domains (for get_capabilities). */
-	const TArray<FRegisteredDomain>& GetRegisteredDomains() const;
+	const TArray<FCortexRegisteredDomain>& GetRegisteredDomains() const;
 
 	static constexpr int32 MaxBatchSize = 20;
 
 private:
 	// Command implementations
-	FUDBCommandResult HandlePing(const TSharedPtr<FJsonObject>& Params);
-	FUDBCommandResult HandleGetStatus(const TSharedPtr<FJsonObject>& Params);
-	FUDBCommandResult HandleGetCapabilities(const TSharedPtr<FJsonObject>& Params);
-	FUDBCommandResult HandleBatch(const TSharedPtr<FJsonObject>& Params);
+	FCortexCommandResult HandlePing(const TSharedPtr<FJsonObject>& Params);
+	FCortexCommandResult HandleGetStatus(const TSharedPtr<FJsonObject>& Params);
+	FCortexCommandResult HandleGetCapabilities(const TSharedPtr<FJsonObject>& Params);
+	FCortexCommandResult HandleBatch(const TSharedPtr<FJsonObject>& Params);
 
-	TArray<FRegisteredDomain> RegisteredDomains;
+	TArray<FCortexRegisteredDomain> RegisteredDomains;
 };

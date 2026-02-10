@@ -2,9 +2,9 @@
 
 #include "CortexEditorUtils.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogUDBEditorUtils, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogCortex, Log, All);
 
-void FUDBEditorUtils::NotifyAssetModified(UObject* Asset)
+void FCortexEditorUtils::NotifyAssetModified(UObject* Asset)
 {
 	if (Asset == nullptr)
 	{
@@ -14,5 +14,5 @@ void FUDBEditorUtils::NotifyAssetModified(UObject* Asset)
 	// Broadcast PostEditChange so open editors (DataTable viewer, etc.) refresh
 	Asset->PostEditChange();
 
-	UE_LOG(LogUDBEditorUtils, Verbose, TEXT("Notified editor of modified asset: %s"), *Asset->GetName());
+	UE_LOG(LogCortex, Verbose, TEXT("Notified editor of modified asset: %s"), *Asset->GetName());
 }

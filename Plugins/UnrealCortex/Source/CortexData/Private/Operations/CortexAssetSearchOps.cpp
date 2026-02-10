@@ -5,9 +5,9 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogUDBAssetSearchOps, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
 
-FUDBCommandResult FUDBAssetSearchOps::SearchAssets(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexAssetSearchOps::SearchAssets(const TSharedPtr<FJsonObject>& Params)
 {
 	FString Query;
 	FString ClassFilter;
@@ -30,8 +30,8 @@ FUDBCommandResult FUDBAssetSearchOps::SearchAssets(const TSharedPtr<FJsonObject>
 	IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
 	if (AssetRegistry == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::EditorNotReady,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::EditorNotReady,
 			TEXT("AssetRegistry is not available")
 		);
 	}
@@ -89,5 +89,5 @@ FUDBCommandResult FUDBAssetSearchOps::SearchAssets(const TSharedPtr<FJsonObject>
 	Data->SetNumberField(TEXT("count"), ResultArray.Num());
 	Data->SetNumberField(TEXT("total_before_limit"), AssetDataList.Num());
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }

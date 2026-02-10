@@ -11,17 +11,17 @@
 #include "Serialization/JsonSerializer.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBTcpServerPingPongTest,
-	"UDB.TcpServer.PingPong",
+	FCortexTcpServerPingPongTest,
+	"Cortex.Core.TcpServer.PingPong",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBTcpServerPingPongTest::RunTest(const FString& Parameters)
+bool FCortexTcpServerPingPongTest::RunTest(const FString& Parameters)
 {
 	// Arrange: Start the TCP server on a test port
 	const int32 TestPort = 18742;
-	FUDBCommandHandler CommandHandler;
-	FUDBTcpServer Server;
+	FCortexCommandRouter CommandHandler;
+	FCortexTcpServer Server;
 	const bool bStarted = Server.Start(TestPort,
 		[&CommandHandler](const FString& Command, const TSharedPtr<FJsonObject>& Params)
 		{
@@ -40,7 +40,7 @@ bool FUDBTcpServerPingPongTest::RunTest(const FString& Parameters)
 	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
 	TestNotNull(TEXT("Socket subsystem should exist"), SocketSubsystem);
 
-	FSocket* ClientSocket = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("UDBTestClient"), false);
+	FSocket* ClientSocket = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("CortexTestClient"), false);
 	TestNotNull(TEXT("Client socket should be created"), ClientSocket);
 
 	if (ClientSocket == nullptr)

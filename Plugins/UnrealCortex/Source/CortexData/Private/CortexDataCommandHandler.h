@@ -6,7 +6,7 @@
 class FCortexDataCommandHandler : public ICortexDomainHandler
 {
 public:
-    virtual FUDBCommandResult Execute(
+    virtual FCortexCommandResult Execute(
         const FString& Command,
         const TSharedPtr<FJsonObject>& Params
     ) override;

@@ -6,14 +6,14 @@
 
 class UStringTable;
 
-class FUDBLocalizationOps
+class FCortexLocalizationOps
 {
 public:
-	static FUDBCommandResult ListStringTables(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult GetTranslations(const TSharedPtr<FJsonObject>& Params);
-	static FUDBCommandResult SetTranslation(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult ListStringTables(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult GetTranslations(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult SetTranslation(const TSharedPtr<FJsonObject>& Params);
 
 private:
 	/** Load a StringTable by asset path, returns nullptr and sets OutError if not found */
-	static UStringTable* LoadStringTable(const FString& TablePath, FUDBCommandResult& OutError);
+	static UStringTable* LoadStringTable(const FString& TablePath, FCortexCommandResult& OutError);
 };

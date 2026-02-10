@@ -5,14 +5,14 @@
 #include "Dom/JsonValue.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBBatchCommandTest,
-	"UDB.Commands.Batch",
+	FCortexBatchCommandTest,
+	"Cortex.Data.Batch",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBBatchCommandTest::RunTest(const FString& Parameters)
+bool FCortexBatchCommandTest::RunTest(const FString& Parameters)
 {
-	FUDBCommandHandler Handler;
+	FCortexCommandRouter Handler;
 
 	// --- Test 1: Batch with multiple valid commands ---
 	{
@@ -32,7 +32,7 @@ bool FUDBBatchCommandTest::RunTest(const FString& Parameters)
 
 		Params->SetArrayField(TEXT("commands"), Commands);
 
-		FUDBCommandResult Result = Handler.Execute(TEXT("batch"), Params);
+		FCortexCommandResult Result = Handler.Execute(TEXT("batch"), Params);
 		TestTrue(TEXT("Batch should succeed"), Result.bSuccess);
 
 		if (Result.bSuccess && Result.Data.IsValid())
@@ -115,7 +115,7 @@ bool FUDBBatchCommandTest::RunTest(const FString& Parameters)
 
 		Params->SetArrayField(TEXT("commands"), Commands);
 
-		FUDBCommandResult Result = Handler.Execute(TEXT("batch"), Params);
+		FCortexCommandResult Result = Handler.Execute(TEXT("batch"), Params);
 		TestTrue(TEXT("Batch itself should succeed even with invalid sub-command"), Result.bSuccess);
 
 		if (Result.bSuccess && Result.Data.IsValid())
@@ -171,7 +171,7 @@ bool FUDBBatchCommandTest::RunTest(const FString& Parameters)
 
 		Params->SetArrayField(TEXT("commands"), Commands);
 
-		FUDBCommandResult Result = Handler.Execute(TEXT("batch"), Params);
+		FCortexCommandResult Result = Handler.Execute(TEXT("batch"), Params);
 		TestTrue(TEXT("Batch with nested batch should still succeed as a batch"), Result.bSuccess);
 
 		if (Result.bSuccess && Result.Data.IsValid())
@@ -199,7 +199,7 @@ bool FUDBBatchCommandTest::RunTest(const FString& Parameters)
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetArrayField(TEXT("commands"), TArray<TSharedPtr<FJsonValue>>());
 
-		FUDBCommandResult Result = Handler.Execute(TEXT("batch"), Params);
+		FCortexCommandResult Result = Handler.Execute(TEXT("batch"), Params);
 		TestTrue(TEXT("Empty batch should succeed"), Result.bSuccess);
 
 		if (Result.bSuccess && Result.Data.IsValid())
@@ -223,7 +223,7 @@ bool FUDBBatchCommandTest::RunTest(const FString& Parameters)
 		}
 		Params->SetArrayField(TEXT("commands"), Commands);
 
-		FUDBCommandResult Result = Handler.Execute(TEXT("batch"), Params);
+		FCortexCommandResult Result = Handler.Execute(TEXT("batch"), Params);
 		TestFalse(TEXT("Batch over limit should fail"), Result.bSuccess);
 		TestEqual(TEXT("Error code should be BATCH_LIMIT_EXCEEDED"), Result.ErrorCode, FString(TEXT("BATCH_LIMIT_EXCEEDED")));
 	}
@@ -232,7 +232,7 @@ bool FUDBBatchCommandTest::RunTest(const FString& Parameters)
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 
-		FUDBCommandResult Result = Handler.Execute(TEXT("batch"), Params);
+		FCortexCommandResult Result = Handler.Execute(TEXT("batch"), Params);
 		TestFalse(TEXT("Batch without commands should fail"), Result.bSuccess);
 		TestEqual(TEXT("Error code should be INVALID_FIELD"), Result.ErrorCode, FString(TEXT("INVALID_FIELD")));
 	}

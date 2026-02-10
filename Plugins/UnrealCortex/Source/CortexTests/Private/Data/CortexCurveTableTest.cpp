@@ -9,17 +9,17 @@
 // --- list_curve_tables command -----------------------------------------------
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBListCurveTablesTest,
-	"UDB.CurveTable.ListCurveTables",
+	FCortexListCurveTablesTest,
+	"Cortex.Data.CurveTable.ListCurveTables",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBListCurveTablesTest::RunTest(const FString& Parameters)
+bool FCortexListCurveTablesTest::RunTest(const FString& Parameters)
 {
-	FUDBCommandHandler Handler;
+	FCortexCommandRouter Handler;
 
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	FUDBCommandResult Result = Handler.Execute(TEXT("list_curve_tables"), Params);
+	FCortexCommandResult Result = Handler.Execute(TEXT("list_curve_tables"), Params);
 
 	TestTrue(TEXT("list_curve_tables should succeed"), Result.bSuccess);
 	TestTrue(TEXT("Result should have data"), Result.Data.IsValid());
@@ -39,17 +39,17 @@ bool FUDBListCurveTablesTest::RunTest(const FString& Parameters)
 // --- get_curve_table on a temp table -----------------------------------------
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBGetCurveTableTest,
-	"UDB.CurveTable.GetCurveTable",
+	FCortexGetCurveTableTest,
+	"Cortex.Data.CurveTable.GetCurveTable",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBGetCurveTableTest::RunTest(const FString& Parameters)
+bool FCortexGetCurveTableTest::RunTest(const FString& Parameters)
 {
 	// Create a temporary CurveTable with a RichCurve row
 	UCurveTable* TempTable = NewObject<UCurveTable>(
 		GetTransientPackage(),
-		FName(TEXT("CT_UDBTest_GetCurve")),
+		FName(TEXT("CT_CortexTest_GetCurve")),
 		RF_Public | RF_Standalone | RF_Transactional
 	);
 	TestNotNull(TEXT("Temp CurveTable should be created"), TempTable);
@@ -67,13 +67,13 @@ bool FUDBGetCurveTableTest::RunTest(const FString& Parameters)
 
 	FString TablePath = TempTable->GetPathName();
 
-	FUDBCommandHandler Handler;
+	FCortexCommandRouter Handler;
 
 	// Test: get all curves
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("table_path"), TablePath);
 
-	FUDBCommandResult Result = Handler.Execute(TEXT("get_curve_table"), Params);
+	FCortexCommandResult Result = Handler.Execute(TEXT("get_curve_table"), Params);
 
 	TestTrue(TEXT("get_curve_table should succeed"), Result.bSuccess);
 	TestTrue(TEXT("Result should have data"), Result.Data.IsValid());
@@ -124,7 +124,7 @@ bool FUDBGetCurveTableTest::RunTest(const FString& Parameters)
 	RowParams->SetStringField(TEXT("table_path"), TablePath);
 	RowParams->SetStringField(TEXT("row_name"), TEXT("TestCurve"));
 
-	FUDBCommandResult RowResult = Handler.Execute(TEXT("get_curve_table"), RowParams);
+	FCortexCommandResult RowResult = Handler.Execute(TEXT("get_curve_table"), RowParams);
 	TestTrue(TEXT("get_curve_table with row_name should succeed"), RowResult.bSuccess);
 
 	// Test: row not found
@@ -132,9 +132,9 @@ bool FUDBGetCurveTableTest::RunTest(const FString& Parameters)
 	MissingParams->SetStringField(TEXT("table_path"), TablePath);
 	MissingParams->SetStringField(TEXT("row_name"), TEXT("NonExistent"));
 
-	FUDBCommandResult MissingResult = Handler.Execute(TEXT("get_curve_table"), MissingParams);
+	FCortexCommandResult MissingResult = Handler.Execute(TEXT("get_curve_table"), MissingParams);
 	TestFalse(TEXT("get_curve_table with missing row should fail"), MissingResult.bSuccess);
-	TestEqual(TEXT("Error code should be ROW_NOT_FOUND"), MissingResult.ErrorCode, UDBErrorCodes::RowNotFound);
+	TestEqual(TEXT("Error code should be ROW_NOT_FOUND"), MissingResult.ErrorCode, CortexErrorCodes::RowNotFound);
 
 	// Cleanup
 	TempTable->MarkAsGarbage();
@@ -145,17 +145,17 @@ bool FUDBGetCurveTableTest::RunTest(const FString& Parameters)
 // --- update_curve_table_row command ------------------------------------------
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FUDBUpdateCurveTableRowTest,
-	"UDB.CurveTable.UpdateCurveTableRow",
+	FCortexUpdateCurveTableRowTest,
+	"Cortex.Data.CurveTable.UpdateCurveTableRow",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FUDBUpdateCurveTableRowTest::RunTest(const FString& Parameters)
+bool FCortexUpdateCurveTableRowTest::RunTest(const FString& Parameters)
 {
 	// Create a temporary CurveTable
 	UCurveTable* TempTable = NewObject<UCurveTable>(
 		GetTransientPackage(),
-		FName(TEXT("CT_UDBTest_UpdateCurve")),
+		FName(TEXT("CT_CortexTest_UpdateCurve")),
 		RF_Public | RF_Standalone | RF_Transactional
 	);
 	TestNotNull(TEXT("Temp CurveTable should be created"), TempTable);
@@ -172,7 +172,7 @@ bool FUDBUpdateCurveTableRowTest::RunTest(const FString& Parameters)
 
 	FString TablePath = TempTable->GetPathName();
 
-	FUDBCommandHandler Handler;
+	FCortexCommandRouter Handler;
 
 	// Update the curve row with new keys
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -198,7 +198,7 @@ bool FUDBUpdateCurveTableRowTest::RunTest(const FString& Parameters)
 	}
 	Params->SetArrayField(TEXT("keys"), KeysArray);
 
-	FUDBCommandResult Result = Handler.Execute(TEXT("update_curve_table_row"), Params);
+	FCortexCommandResult Result = Handler.Execute(TEXT("update_curve_table_row"), Params);
 
 	TestTrue(TEXT("update_curve_table_row should succeed"), Result.bSuccess);
 	TestTrue(TEXT("Result should have data"), Result.Data.IsValid());
@@ -233,9 +233,9 @@ bool FUDBUpdateCurveTableRowTest::RunTest(const FString& Parameters)
 	MissingParams->SetStringField(TEXT("row_name"), TEXT("NonExistent"));
 	MissingParams->SetArrayField(TEXT("keys"), KeysArray);
 
-	FUDBCommandResult MissingResult = Handler.Execute(TEXT("update_curve_table_row"), MissingParams);
+	FCortexCommandResult MissingResult = Handler.Execute(TEXT("update_curve_table_row"), MissingParams);
 	TestFalse(TEXT("update with missing row should fail"), MissingResult.bSuccess);
-	TestEqual(TEXT("Error code should be ROW_NOT_FOUND"), MissingResult.ErrorCode, UDBErrorCodes::RowNotFound);
+	TestEqual(TEXT("Error code should be ROW_NOT_FOUND"), MissingResult.ErrorCode, CortexErrorCodes::RowNotFound);
 
 	// Cleanup
 	TempTable->MarkAsGarbage();

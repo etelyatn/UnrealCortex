@@ -8,11 +8,11 @@
 #include "UObject/SoftObjectPath.h"
 #include "Dom/JsonValue.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogUDBSerializer, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogCortex, Log, All);
 
-TMap<const UScriptStruct*, TArray<UScriptStruct*>> FUDBSerializer::SubtypeCache;
+TMap<const UScriptStruct*, TArray<UScriptStruct*>> FCortexSerializer::SubtypeCache;
 
-TSharedPtr<FJsonObject> FUDBSerializer::StructToJson(const UStruct* StructType, const void* StructData)
+TSharedPtr<FJsonObject> FCortexSerializer::StructToJson(const UStruct* StructType, const void* StructData)
 {
 	TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
 
@@ -48,7 +48,7 @@ TSharedPtr<FJsonObject> FUDBSerializer::StructToJson(const UStruct* StructType, 
 	return JsonObject;
 }
 
-TSharedPtr<FJsonObject> FUDBSerializer::StructToJson(const UStruct* StructType, const void* StructData, const TSet<FString>& FieldFilter)
+TSharedPtr<FJsonObject> FCortexSerializer::StructToJson(const UStruct* StructType, const void* StructData, const TSet<FString>& FieldFilter)
 {
 	if (FieldFilter.Num() == 0)
 	{
@@ -82,7 +82,7 @@ TSharedPtr<FJsonObject> FUDBSerializer::StructToJson(const UStruct* StructType, 
 	return JsonObject;
 }
 
-TSharedPtr<FJsonValue> FUDBSerializer::PropertyToJson(const FProperty* Property, const void* ValuePtr)
+TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Property, const void* ValuePtr)
 {
 	if (Property == nullptr || ValuePtr == nullptr)
 	{
@@ -299,12 +299,12 @@ TSharedPtr<FJsonValue> FUDBSerializer::PropertyToJson(const FProperty* Property,
 		return MakeShared<FJsonValueString>(SoftPtr.ToSoftObjectPath().ToString());
 	}
 
-	UE_LOG(LogUDBSerializer, Warning, TEXT("Unhandled property type: %s (%s)"),
+	UE_LOG(LogCortex, Warning, TEXT("Unhandled property type: %s (%s)"),
 		*Property->GetName(), *Property->GetClass()->GetName());
 	return nullptr;
 }
 
-bool FUDBSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, const UStruct* StructType, void* StructData, TArray<FString>& OutWarnings)
+bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, const UStruct* StructType, void* StructData, TArray<FString>& OutWarnings)
 {
 	if (!JsonObject.IsValid() || StructType == nullptr || StructData == nullptr)
 	{
@@ -340,7 +340,7 @@ bool FUDBSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, con
 	return true;
 }
 
-bool FUDBSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, const FProperty* Property, void* ValuePtr, TArray<FString>& OutWarnings)
+bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, const FProperty* Property, void* ValuePtr, TArray<FString>& OutWarnings)
 {
 	if (!JsonValue.IsValid() || Property == nullptr || ValuePtr == nullptr)
 	{
@@ -618,12 +618,12 @@ bool FUDBSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, con
 		return true;
 	}
 
-	UE_LOG(LogUDBSerializer, Warning, TEXT("Unhandled property type for deserialization: %s (%s)"),
+	UE_LOG(LogCortex, Warning, TEXT("Unhandled property type for deserialization: %s (%s)"),
 		*Property->GetName(), *Property->GetClass()->GetName());
 	return false;
 }
 
-TSharedPtr<FJsonObject> FUDBSerializer::GetStructSchema(const UStruct* StructType, bool bIncludeInherited)
+TSharedPtr<FJsonObject> FCortexSerializer::GetStructSchema(const UStruct* StructType, bool bIncludeInherited)
 {
 	TSharedPtr<FJsonObject> SchemaObj = MakeShared<FJsonObject>();
 
@@ -658,7 +658,7 @@ TSharedPtr<FJsonObject> FUDBSerializer::GetStructSchema(const UStruct* StructTyp
 	return SchemaObj;
 }
 
-TSharedPtr<FJsonObject> FUDBSerializer::GetPropertySchema(const FProperty* Property)
+TSharedPtr<FJsonObject> FCortexSerializer::GetPropertySchema(const FProperty* Property)
 {
 	if (Property == nullptr)
 	{
@@ -887,7 +887,7 @@ TSharedPtr<FJsonObject> FUDBSerializer::GetPropertySchema(const FProperty* Prope
 	return Schema;
 }
 
-TArray<UScriptStruct*> FUDBSerializer::FindInstancedStructSubtypes(const UScriptStruct* BaseStruct)
+TArray<UScriptStruct*> FCortexSerializer::FindInstancedStructSubtypes(const UScriptStruct* BaseStruct)
 {
 	if (BaseStruct == nullptr)
 	{

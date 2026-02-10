@@ -7,7 +7,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexDomainRegistrationTest,
-	"UDB.Core.DomainRegistration",
+	"Cortex.Core.DomainRegistration",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -24,11 +24,11 @@ bool FCortexDomainRegistrationTest::RunTest(const FString& Parameters)
 	class FTestHandler : public ICortexDomainHandler
 	{
 	public:
-		virtual FUDBCommandResult Execute(
+		virtual FCortexCommandResult Execute(
 			const FString& Command,
 			const TSharedPtr<FJsonObject>& Params) override
 		{
-			return FUDBCommandHandler::Success(MakeShared<FJsonObject>());
+			return FCortexCommandRouter::Success(MakeShared<FJsonObject>());
 		}
 
 		virtual TArray<FCortexCommandInfo> GetSupportedCommands() const override

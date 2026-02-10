@@ -9,22 +9,22 @@
 #include "ScopedTransaction.h"
 #include "CortexEditorUtils.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogUDBDataAssetOps, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
 
-UDataAsset* FUDBDataAssetOps::LoadDataAsset(const FString& AssetPath, FUDBCommandResult& OutError)
+UDataAsset* FCortexDataAssetOps::LoadDataAsset(const FString& AssetPath, FCortexCommandResult& OutError)
 {
 	UDataAsset* DataAsset = LoadObject<UDataAsset>(nullptr, *AssetPath);
 	if (DataAsset == nullptr)
 	{
-		OutError = FUDBCommandHandler::Error(
-			UDBErrorCodes::AssetNotFound,
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
 			FString::Printf(TEXT("DataAsset not found: %s"), *AssetPath)
 		);
 	}
 	return DataAsset;
 }
 
-FUDBCommandResult FUDBDataAssetOps::ListDataAssets(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataAssetOps::ListDataAssets(const TSharedPtr<FJsonObject>& Params)
 {
 	FString ClassFilter;
 	FString PathFilter;
@@ -37,8 +37,8 @@ FUDBCommandResult FUDBDataAssetOps::ListDataAssets(const TSharedPtr<FJsonObject>
 	IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
 	if (AssetRegistry == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::EditorNotReady,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::EditorNotReady,
 			TEXT("AssetRegistry is not available")
 		);
 	}
@@ -78,29 +78,29 @@ FUDBCommandResult FUDBDataAssetOps::ListDataAssets(const TSharedPtr<FJsonObject>
 	Data->SetArrayField(TEXT("data_assets"), ResultArray);
 	Data->SetNumberField(TEXT("count"), ResultArray.Num());
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBDataAssetOps::GetDataAsset(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataAssetOps::GetDataAsset(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: asset_path")
 		);
 	}
 
 	if (AssetPath.IsEmpty())
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Parameter 'asset_path' cannot be empty")
 		);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UDataAsset* DataAsset = LoadDataAsset(AssetPath, LoadError);
 	if (DataAsset == nullptr)
 	{
@@ -109,31 +109,31 @@ FUDBCommandResult FUDBDataAssetOps::GetDataAsset(const TSharedPtr<FJsonObject>& 
 
 	UClass* AssetClass = DataAsset->GetClass();
 
-	TSharedPtr<FJsonObject> Properties = FUDBSerializer::StructToJson(AssetClass, DataAsset);
+	TSharedPtr<FJsonObject> Properties = FCortexSerializer::StructToJson(AssetClass, DataAsset);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetStringField(TEXT("asset_class"), AssetClass->GetName());
 	Data->SetObjectField(TEXT("properties"), Properties);
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBDataAssetOps::UpdateDataAsset(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataAssetOps::UpdateDataAsset(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: asset_path")
 		);
 	}
 
 	if (AssetPath.IsEmpty())
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Parameter 'asset_path' cannot be empty")
 		);
 	}
@@ -141,8 +141,8 @@ FUDBCommandResult FUDBDataAssetOps::UpdateDataAsset(const TSharedPtr<FJsonObject
 	const TSharedPtr<FJsonObject>* PropertiesObj = nullptr;
 	if (!Params->TryGetObjectField(TEXT("properties"), PropertiesObj) || PropertiesObj == nullptr || !(*PropertiesObj).IsValid())
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: properties")
 		);
 	}
@@ -153,7 +153,7 @@ FUDBCommandResult FUDBDataAssetOps::UpdateDataAsset(const TSharedPtr<FJsonObject
 		Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UDataAsset* DataAsset = LoadDataAsset(AssetPath, LoadError);
 	if (DataAsset == nullptr)
 	{
@@ -172,14 +172,14 @@ FUDBCommandResult FUDBDataAssetOps::UpdateDataAsset(const TSharedPtr<FJsonObject
 	if (bDryRun)
 	{
 		// Dry-run mode: preview changes without applying them
-		TSharedPtr<FJsonObject> OldValues = FUDBSerializer::StructToJson(AssetClass, DataAsset);
+		TSharedPtr<FJsonObject> OldValues = FCortexSerializer::StructToJson(AssetClass, DataAsset);
 
 		// Create temp object of same class
 		UDataAsset* TempAsset = NewObject<UDataAsset>(GetTransientPackage(), AssetClass, NAME_None, RF_Transient);
 		if (TempAsset == nullptr)
 		{
-			return FUDBCommandHandler::Error(
-				UDBErrorCodes::SerializationError,
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::SerializationError,
 				TEXT("Failed to create temporary DataAsset for dry-run preview")
 			);
 		}
@@ -191,18 +191,18 @@ FUDBCommandResult FUDBDataAssetOps::UpdateDataAsset(const TSharedPtr<FJsonObject
 		}
 
 		TArray<FString> Warnings;
-		bool bDeserializeSuccess = FUDBSerializer::JsonToStruct(*PropertiesObj, AssetClass, TempAsset, Warnings);
+		bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*PropertiesObj, AssetClass, TempAsset, Warnings);
 
 		if (!bDeserializeSuccess)
 		{
-			return FUDBCommandHandler::Error(
-				UDBErrorCodes::SerializationError,
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::SerializationError,
 				TEXT("Failed to deserialize properties for dry-run preview")
 			);
 		}
 
 		// Capture new values from temp asset
-		TSharedPtr<FJsonObject> NewValues = FUDBSerializer::StructToJson(AssetClass, TempAsset);
+		TSharedPtr<FJsonObject> NewValues = FCortexSerializer::StructToJson(AssetClass, TempAsset);
 
 		// Compute diffs
 		TArray<TSharedPtr<FJsonValue>> ChangesArray;
@@ -253,29 +253,29 @@ FUDBCommandResult FUDBDataAssetOps::UpdateDataAsset(const TSharedPtr<FJsonObject
 			Data->SetArrayField(TEXT("warnings"), WarningsArray);
 		}
 
-		return FUDBCommandHandler::Success(Data);
+		return FCortexCommandRouter::Success(Data);
 	}
 	else
 	{
 		// Normal mode: apply changes to actual asset
 		FScopedTransaction Transaction(FText::FromString(
-			FString::Printf(TEXT("UDB: Update DataAsset '%s'"), *DataAsset->GetName())
+			FString::Printf(TEXT("Cortex:Update DataAsset '%s'"), *DataAsset->GetName())
 		));
 		DataAsset->Modify();
 
 		TArray<FString> Warnings;
-		bool bDeserializeSuccess = FUDBSerializer::JsonToStruct(*PropertiesObj, AssetClass, DataAsset, Warnings);
+		bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*PropertiesObj, AssetClass, DataAsset, Warnings);
 
 		if (!bDeserializeSuccess)
 		{
-			return FUDBCommandHandler::Error(
-				UDBErrorCodes::SerializationError,
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::SerializationError,
 				TEXT("Failed to deserialize properties into DataAsset")
 			);
 		}
 
 		DataAsset->MarkPackageDirty();
-		FUDBEditorUtils::NotifyAssetModified(DataAsset);
+		FCortexEditorUtils::NotifyAssetModified(DataAsset);
 
 		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 		Data->SetBoolField(TEXT("success"), true);
@@ -298,7 +298,7 @@ FUDBCommandResult FUDBDataAssetOps::UpdateDataAsset(const TSharedPtr<FJsonObject
 			Data->SetArrayField(TEXT("warnings"), WarningsArray);
 		}
 
-		FUDBCommandResult Result = FUDBCommandHandler::Success(Data);
+		FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
 		Result.Warnings = MoveTemp(Warnings);
 		return Result;
 	}

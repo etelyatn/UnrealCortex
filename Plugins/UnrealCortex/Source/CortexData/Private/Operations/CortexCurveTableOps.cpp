@@ -10,7 +10,7 @@
 #include "Dom/JsonValue.h"
 #include "ScopedTransaction.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogUDBCurveTableOps, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
 
 static FString CurveTableModeToString(ECurveTableMode Mode)
 {
@@ -25,20 +25,20 @@ static FString CurveTableModeToString(ECurveTableMode Mode)
 	}
 }
 
-UCurveTable* FUDBCurveTableOps::LoadCurveTable(const FString& TablePath, FUDBCommandResult& OutError)
+UCurveTable* FCortexCurveTableOps::LoadCurveTable(const FString& TablePath, FCortexCommandResult& OutError)
 {
 	UCurveTable* CurveTable = LoadObject<UCurveTable>(nullptr, *TablePath);
 	if (CurveTable == nullptr)
 	{
-		OutError = FUDBCommandHandler::Error(
-			UDBErrorCodes::TableNotFound,
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::TableNotFound,
 			FString::Printf(TEXT("CurveTable not found: %s"), *TablePath)
 		);
 	}
 	return CurveTable;
 }
 
-FUDBCommandResult FUDBCurveTableOps::ListCurveTables(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexCurveTableOps::ListCurveTables(const TSharedPtr<FJsonObject>& Params)
 {
 	FString PathFilter;
 	if (Params.IsValid())
@@ -49,8 +49,8 @@ FUDBCommandResult FUDBCurveTableOps::ListCurveTables(const TSharedPtr<FJsonObjec
 	IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
 	if (AssetRegistry == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::EditorNotReady,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::EditorNotReady,
 			TEXT("AssetRegistry is not available")
 		);
 	}
@@ -98,16 +98,16 @@ FUDBCommandResult FUDBCurveTableOps::ListCurveTables(const TSharedPtr<FJsonObjec
 	Data->SetArrayField(TEXT("curve_tables"), ResultArray);
 	Data->SetNumberField(TEXT("count"), ResultArray.Num());
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBCurveTableOps::GetCurveTable(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexCurveTableOps::GetCurveTable(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("table_path"), TablePath))
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: table_path")
 		);
 	}
@@ -118,7 +118,7 @@ FUDBCommandResult FUDBCurveTableOps::GetCurveTable(const TSharedPtr<FJsonObject>
 		Params->TryGetStringField(TEXT("row_name"), RowNameFilter);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UCurveTable* CurveTable = LoadCurveTable(TablePath, LoadError);
 	if (CurveTable == nullptr)
 	{
@@ -184,8 +184,8 @@ FUDBCommandResult FUDBCurveTableOps::GetCurveTable(const TSharedPtr<FJsonObject>
 	// If filtering by row name and nothing found, error
 	if (!RowNameFilter.IsEmpty() && CurvesArray.Num() == 0)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::RowNotFound,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::RowNotFound,
 			FString::Printf(TEXT("Row '%s' not found in CurveTable"), *RowNameFilter)
 		);
 	}
@@ -195,10 +195,10 @@ FUDBCommandResult FUDBCurveTableOps::GetCurveTable(const TSharedPtr<FJsonObject>
 	Data->SetArrayField(TEXT("curves"), CurvesArray);
 	Data->SetNumberField(TEXT("count"), CurvesArray.Num());
 
-	return FUDBCommandHandler::Success(Data);
+	return FCortexCommandRouter::Success(Data);
 }
 
-FUDBCommandResult FUDBCurveTableOps::UpdateCurveTableRow(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexCurveTableOps::UpdateCurveTableRow(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	FString RowName;
@@ -209,8 +209,8 @@ FUDBCommandResult FUDBCurveTableOps::UpdateCurveTableRow(const TSharedPtr<FJsonO
 
 	if (!bHasParams)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required params: table_path and row_name")
 		);
 	}
@@ -218,30 +218,30 @@ FUDBCommandResult FUDBCurveTableOps::UpdateCurveTableRow(const TSharedPtr<FJsonO
 	const TArray<TSharedPtr<FJsonValue>>* KeysArray = nullptr;
 	if (!Params->TryGetArrayField(TEXT("keys"), KeysArray) || KeysArray == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::InvalidField,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: keys (array of {time, value} objects)")
 		);
 	}
 
-	FUDBCommandResult LoadError;
+	FCortexCommandResult LoadError;
 	UCurveTable* CurveTable = LoadCurveTable(TablePath, LoadError);
 	if (CurveTable == nullptr)
 	{
 		return LoadError;
 	}
 
-	FRealCurve* Curve = CurveTable->FindCurve(FName(*RowName), TEXT("UDBCurveTableOps"));
+	FRealCurve* Curve = CurveTable->FindCurve(FName(*RowName), TEXT("CortexCurveTableOps"));
 	if (Curve == nullptr)
 	{
-		return FUDBCommandHandler::Error(
-			UDBErrorCodes::RowNotFound,
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::RowNotFound,
 			FString::Printf(TEXT("Row '%s' not found in CurveTable"), *RowName)
 		);
 	}
 
 	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("UDB: Update CurveTable Row '%s' in '%s'"), *RowName, *CurveTable->GetName())
+		FString::Printf(TEXT("Cortex:Update CurveTable Row '%s' in '%s'"), *RowName, *CurveTable->GetName())
 	));
 	CurveTable->Modify();
 
@@ -280,9 +280,9 @@ FUDBCommandResult FUDBCurveTableOps::UpdateCurveTableRow(const TSharedPtr<FJsonO
 	}
 
 	CurveTable->MarkPackageDirty();
-	FUDBEditorUtils::NotifyAssetModified(CurveTable);
+	FCortexEditorUtils::NotifyAssetModified(CurveTable);
 
-	UE_LOG(LogUDBCurveTableOps, Log, TEXT("Updated row '%s' in CurveTable '%s' with %d keys"), *RowName, *TablePath, KeysUpdated);
+	UE_LOG(LogCortexData, Log, TEXT("Updated row '%s' in CurveTable '%s' with %d keys"), *RowName, *TablePath, KeysUpdated);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetBoolField(TEXT("success"), true);
@@ -300,7 +300,7 @@ FUDBCommandResult FUDBCurveTableOps::UpdateCurveTableRow(const TSharedPtr<FJsonO
 		Data->SetArrayField(TEXT("warnings"), WarningsArray);
 	}
 
-	FUDBCommandResult Result = FUDBCommandHandler::Success(Data);
+	FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
 	Result.Warnings = MoveTemp(Warnings);
 	return Result;
 }

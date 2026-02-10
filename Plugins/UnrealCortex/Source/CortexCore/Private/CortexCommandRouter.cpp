@@ -9,9 +9,9 @@
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogUDBCommandHandler, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogCortex, Log, All);
 
-FUDBCommandResult FUDBCommandHandler::Execute(const FString& Command, const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexCommandRouter::Execute(const FString& Command, const TSharedPtr<FJsonObject>& Params)
 {
 	// Built-in commands (no namespace)
 	if (Command == TEXT("ping"))
@@ -37,7 +37,7 @@ FUDBCommandResult FUDBCommandHandler::Execute(const FString& Command, const TSha
 
 	if (Command.Split(TEXT("."), &Namespace, &SubCommand))
 	{
-		for (const FRegisteredDomain& Domain : RegisteredDomains)
+		for (const FCortexRegisteredDomain& Domain : RegisteredDomains)
 		{
 			if (Domain.Namespace == Namespace)
 			{
@@ -45,12 +45,12 @@ FUDBCommandResult FUDBCommandHandler::Execute(const FString& Command, const TSha
 			}
 		}
 
-		return Error(UDBErrorCodes::UnknownCommand,
+		return Error(CortexErrorCodes::UnknownCommand,
 			FString::Printf(TEXT("Unknown domain: %s"), *Namespace));
 	}
 
 	// Fallback: try all domains without namespace (backward compat for Phase 1 tests)
-	for (const FRegisteredDomain& Domain : RegisteredDomains)
+	for (const FCortexRegisteredDomain& Domain : RegisteredDomains)
 	{
 		for (const FCortexCommandInfo& CmdInfo : Domain.Handler->GetSupportedCommands())
 		{
@@ -61,11 +61,11 @@ FUDBCommandResult FUDBCommandHandler::Execute(const FString& Command, const TSha
 		}
 	}
 
-	UE_LOG(LogUDBCommandHandler, Warning, TEXT("Unknown command: %s"), *Command);
-	return Error(UDBErrorCodes::UnknownCommand, FString::Printf(TEXT("Unknown command: %s"), *Command));
+	UE_LOG(LogCortex, Warning, TEXT("Unknown command: %s"), *Command);
+	return Error(CortexErrorCodes::UnknownCommand, FString::Printf(TEXT("Unknown command: %s"), *Command));
 }
 
-FString FUDBCommandHandler::ResultToJson(const FUDBCommandResult& Result, double TimingMs)
+FString FCortexCommandRouter::ResultToJson(const FCortexCommandResult& Result, double TimingMs)
 {
 	TSharedRef<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
 	ResponseJson->SetBoolField(TEXT("success"), Result.bSuccess);
@@ -111,17 +111,17 @@ FString FUDBCommandHandler::ResultToJson(const FUDBCommandResult& Result, double
 	return OutputString;
 }
 
-FUDBCommandResult FUDBCommandHandler::Success(TSharedPtr<FJsonObject> Data)
+FCortexCommandResult FCortexCommandRouter::Success(TSharedPtr<FJsonObject> Data)
 {
-	FUDBCommandResult Result;
+	FCortexCommandResult Result;
 	Result.bSuccess = true;
 	Result.Data = MoveTemp(Data);
 	return Result;
 }
 
-FUDBCommandResult FUDBCommandHandler::Error(const FString& Code, const FString& Message, TSharedPtr<FJsonObject> Details)
+FCortexCommandResult FCortexCommandRouter::Error(const FString& Code, const FString& Message, TSharedPtr<FJsonObject> Details)
 {
-	FUDBCommandResult Result;
+	FCortexCommandResult Result;
 	Result.bSuccess = false;
 	Result.ErrorCode = Code;
 	Result.ErrorMessage = Message;
@@ -129,41 +129,41 @@ FUDBCommandResult FUDBCommandHandler::Error(const FString& Code, const FString& 
 	return Result;
 }
 
-void FUDBCommandHandler::RegisterDomain(
+void FCortexCommandRouter::RegisterDomain(
 	const FString& Namespace,
 	const FString& DisplayName,
 	const FString& Version,
 	TSharedPtr<ICortexDomainHandler> Handler)
 {
 	RegisteredDomains.Add({ Namespace, DisplayName, Version, Handler });
-	UE_LOG(LogUDBCommandHandler, Log, TEXT("Registered domain: %s (%s v%s)"),
+	UE_LOG(LogCortex, Log, TEXT("Registered domain: %s (%s v%s)"),
 		*Namespace, *DisplayName, *Version);
 }
 
-const TArray<FRegisteredDomain>& FUDBCommandHandler::GetRegisteredDomains() const
+const TArray<FCortexRegisteredDomain>& FCortexCommandRouter::GetRegisteredDomains() const
 {
 	return RegisteredDomains;
 }
 
-FUDBCommandResult FUDBCommandHandler::HandlePing(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexCommandRouter::HandlePing(const TSharedPtr<FJsonObject>& Params)
 {
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("message"), TEXT("pong"));
 	return Success(Data);
 }
 
-FUDBCommandResult FUDBCommandHandler::HandleBatch(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObject>& Params)
 {
 	const TArray<TSharedPtr<FJsonValue>>* CommandsArray = nullptr;
 	if (!Params.IsValid() || !Params->TryGetArrayField(TEXT("commands"), CommandsArray) || CommandsArray == nullptr)
 	{
-		return Error(UDBErrorCodes::InvalidField, TEXT("Missing required param: commands (array)"));
+		return Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: commands (array)"));
 	}
 
 	if (CommandsArray->Num() > MaxBatchSize)
 	{
 		return Error(
-			UDBErrorCodes::BatchLimitExceeded,
+			CortexErrorCodes::BatchLimitExceeded,
 			FString::Printf(TEXT("Batch size %d exceeds maximum of %d"), CommandsArray->Num(), MaxBatchSize)
 		);
 	}
@@ -184,7 +184,7 @@ FUDBCommandResult FUDBCommandHandler::HandleBatch(const TSharedPtr<FJsonObject>&
 		{
 			EntryResult->SetStringField(TEXT("command"), TEXT(""));
 			EntryResult->SetBoolField(TEXT("success"), false);
-			EntryResult->SetStringField(TEXT("error_code"), UDBErrorCodes::InvalidField);
+			EntryResult->SetStringField(TEXT("error_code"), CortexErrorCodes::InvalidField);
 			EntryResult->SetStringField(TEXT("error_message"), TEXT("Invalid command entry (not an object)"));
 			EntryResult->SetNumberField(TEXT("timing_ms"), 0.0);
 			ResultsArray.Add(MakeShared<FJsonValueObject>(EntryResult));
@@ -199,7 +199,7 @@ FUDBCommandResult FUDBCommandHandler::HandleBatch(const TSharedPtr<FJsonObject>&
 		if (SubCommand == TEXT("batch"))
 		{
 			EntryResult->SetBoolField(TEXT("success"), false);
-			EntryResult->SetStringField(TEXT("error_code"), UDBErrorCodes::BatchRecursionBlocked);
+			EntryResult->SetStringField(TEXT("error_code"), CortexErrorCodes::BatchRecursionBlocked);
 			EntryResult->SetStringField(TEXT("error_message"), TEXT("Nested batch commands are not allowed"));
 			EntryResult->SetNumberField(TEXT("timing_ms"), 0.0);
 			ResultsArray.Add(MakeShared<FJsonValueObject>(EntryResult));
@@ -218,7 +218,7 @@ FUDBCommandResult FUDBCommandHandler::HandleBatch(const TSharedPtr<FJsonObject>&
 		}
 
 		const double CmdStartTime = FPlatformTime::Seconds();
-		FUDBCommandResult SubResult = Execute(SubCommand, SubParams);
+		FCortexCommandResult SubResult = Execute(SubCommand, SubParams);
 		const double CmdElapsed = (FPlatformTime::Seconds() - CmdStartTime) * 1000.0;
 
 		EntryResult->SetBoolField(TEXT("success"), SubResult.bSuccess);
@@ -250,7 +250,7 @@ FUDBCommandResult FUDBCommandHandler::HandleBatch(const TSharedPtr<FJsonObject>&
 	return Success(Data);
 }
 
-FUDBCommandResult FUDBCommandHandler::HandleGetStatus(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexCommandRouter::HandleGetStatus(const TSharedPtr<FJsonObject>& Params)
 {
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetBoolField(TEXT("connected"), true);
@@ -272,14 +272,14 @@ FUDBCommandResult FUDBCommandHandler::HandleGetStatus(const TSharedPtr<FJsonObje
 	return Success(Data);
 }
 
-FUDBCommandResult FUDBCommandHandler::HandleGetCapabilities(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexCommandRouter::HandleGetCapabilities(const TSharedPtr<FJsonObject>& Params)
 {
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("plugin_version"), TEXT("0.1.0"));
 
 	TSharedPtr<FJsonObject> Domains = MakeShared<FJsonObject>();
 
-	for (const FRegisteredDomain& Domain : RegisteredDomains)
+	for (const FCortexRegisteredDomain& Domain : RegisteredDomains)
 	{
 		TSharedPtr<FJsonObject> DomainObj = MakeShared<FJsonObject>();
 		DomainObj->SetStringField(TEXT("name"), Domain.DisplayName);
