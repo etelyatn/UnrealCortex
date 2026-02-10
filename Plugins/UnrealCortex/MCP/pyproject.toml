@@ -1,0 +1,15 @@
+[project]
+name = "cortex-mcp"
+version = "0.1.0"
+description = "MCP server for UnrealCortex - AI-powered Unreal Engine development"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.2.0",
+]
+
+[project.scripts]
+cortex-mcp = "cortex_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
