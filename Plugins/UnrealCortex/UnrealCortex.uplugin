@@ -26,6 +26,11 @@
             "Name": "CortexData",
             "Type": "Editor",
             "LoadingPhase": "Default"
+        },
+        {
+            "Name": "CortexTests",
+            "Type": "DeveloperTool",
+            "LoadingPhase": "Default"
         }
     ]
 }
