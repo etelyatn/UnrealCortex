@@ -1,0 +1,16 @@
+// Copyright Mavka Games. All Rights Reserved. https://www.mavka.games/
+
+#pragma once
+
+#include "CoreMinimal.h"
+
+class UObject;
+
+/** Shared editor utility functions for the UnrealCortex plugin */
+class FUDBEditorUtils
+{
+public:
+	/** Notify the editor that an asset was modified via MCP.
+	 *  Broadcasts asset update events so the Content Browser and open editors refresh. */
+	static void NotifyAssetModified(UObject* Asset);
+};
