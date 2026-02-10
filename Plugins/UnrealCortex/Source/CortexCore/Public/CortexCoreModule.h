@@ -6,7 +6,7 @@
 class FUDBCommandHandler;
 class FUDBTcpServer;
 
-class FCortexCoreModule : public IModuleInterface
+class CORTEXCORE_API FCortexCoreModule : public IModuleInterface
 {
 public:
     virtual void StartupModule() override;

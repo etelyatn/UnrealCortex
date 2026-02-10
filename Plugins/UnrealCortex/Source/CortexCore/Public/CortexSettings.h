@@ -6,7 +6,7 @@
 #include "CortexSettings.generated.h"
 
 UCLASS(Config = EditorPerProjectUserSettings, DefaultConfig, meta = (DisplayName = "Unreal Data Bridge"))
-class UUDBSettings : public UDeveloperSettings
+class CORTEXCORE_API UUDBSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
 

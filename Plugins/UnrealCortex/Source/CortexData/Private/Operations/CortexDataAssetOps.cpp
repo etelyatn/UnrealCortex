@@ -185,7 +185,10 @@ FUDBCommandResult FUDBDataAssetOps::UpdateDataAsset(const TSharedPtr<FJsonObject
 		}
 
 		// Copy current values to temp
-		AssetClass->CopyScriptStruct(TempAsset, DataAsset);
+		for (TFieldIterator<FProperty> It(AssetClass); It; ++It)
+		{
+			It->CopyCompleteValue_InContainer(TempAsset, DataAsset);
+		}
 
 		TArray<FString> Warnings;
 		bool bDeserializeSuccess = FUDBSerializer::JsonToStruct(*PropertiesObj, AssetClass, TempAsset, Warnings);
@@ -218,7 +221,7 @@ FUDBCommandResult FUDBDataAssetOps::UpdateDataAsset(const TSharedPtr<FJsonObject
 				}
 				else
 				{
-					Change->SetNullField(TEXT("old_value"));
+					Change->SetField(TEXT("old_value"), MakeShared<FJsonValueNull>());
 				}
 				if (NewValue.IsValid())
 				{
@@ -226,7 +229,7 @@ FUDBCommandResult FUDBDataAssetOps::UpdateDataAsset(const TSharedPtr<FJsonObject
 				}
 				else
 				{
-					Change->SetNullField(TEXT("new_value"));
+					Change->SetField(TEXT("new_value"), MakeShared<FJsonValueNull>());
 				}
 				ChangesArray.Add(MakeShared<FJsonValueObject>(Change));
 			}

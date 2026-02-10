@@ -7,7 +7,7 @@
 class UObject;
 
 /** Shared editor utility functions for the UnrealCortex plugin */
-class FUDBEditorUtils
+class CORTEXCORE_API FUDBEditorUtils
 {
 public:
 	/** Notify the editor that an asset was modified via MCP.

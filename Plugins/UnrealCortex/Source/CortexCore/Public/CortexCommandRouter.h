@@ -24,7 +24,7 @@ namespace UDBErrorCodes
 }
 
 /** Result of a command execution */
-struct FUDBCommandResult
+struct CORTEXCORE_API FUDBCommandResult
 {
 	bool bSuccess = false;
 	TSharedPtr<FJsonObject> Data;
@@ -35,7 +35,7 @@ struct FUDBCommandResult
 };
 
 /** Handles routing and execution of TCP commands */
-class FUDBCommandHandler
+class CORTEXCORE_API FUDBCommandHandler
 {
 public:
 	using FDefaultHandler = TFunction<FUDBCommandResult(const FString& Command, const TSharedPtr<FJsonObject>& Params)>;

@@ -4,7 +4,7 @@
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
 
-class FUDBSerializer
+class CORTEXCORE_API FUDBSerializer
 {
 public:
 	/** Serialize a UStruct instance to a JSON object using UProperty reflection */
