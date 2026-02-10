@@ -15,6 +15,13 @@ public class CortexCore : ModuleRules
         {
             "CoreUObject",
             "Engine",
+            "DeveloperSettings",
+            "Sockets",
+            "Networking",
+            "Json",
+            "JsonUtilities",
+            "StructUtils",
+            "UnrealEd",
         });
     }
 }
