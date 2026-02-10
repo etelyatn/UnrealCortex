@@ -1,0 +1,23 @@
+# Build artifacts
+Binaries/
+Intermediate/
+DerivedDataCache/
+Saved/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.sln
+*.suo
+*.code-workspace
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
