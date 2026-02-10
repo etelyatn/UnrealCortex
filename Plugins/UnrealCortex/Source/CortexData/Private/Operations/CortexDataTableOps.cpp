@@ -811,7 +811,24 @@ FCortexCommandResult FCortexDataTableOps::DeleteDatatableRow(const TSharedPtr<FJ
 	));
 	DataTable->Modify();
 
-	DataTable->RemoveRow(RowFName);
+	// Workaround: UE 5.6 UDataTable::RemoveRow() triggers
+	// HandleDataTableChanged via FScopedDataTableChange destructor,
+	// which asserts on the deleted row (Pair != nullptr in TMap).
+	// Manually remove from the row map and free the memory instead.
+	const UScriptStruct* RowStruct = DataTable->GetRowStruct();
+	TMap<FName, uint8*>& RowMap = const_cast<TMap<FName, uint8*>&>(DataTable->GetRowMap());
+	uint8* RemovedRowData = nullptr;
+	if (RowMap.RemoveAndCopyValue(RowFName, RemovedRowData))
+	{
+		if (RemovedRowData)
+		{
+			if (RowStruct)
+			{
+				RowStruct->DestroyStruct(RemovedRowData);
+			}
+			FMemory::Free(RemovedRowData);
+		}
+	}
 	DataTable->MarkPackageDirty();
 	FCortexEditorUtils::NotifyAssetModified(DataTable);
 
