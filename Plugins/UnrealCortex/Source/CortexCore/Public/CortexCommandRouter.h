@@ -49,8 +49,6 @@ struct FRegisteredDomain
 class CORTEXCORE_API FUDBCommandHandler : public ICortexCommandRegistry
 {
 public:
-	using FDefaultHandler = TFunction<FUDBCommandResult(const FString& Command, const TSharedPtr<FJsonObject>& Params)>;
-
 	/** Execute a command and return the result */
 	FUDBCommandResult Execute(const FString& Command, const TSharedPtr<FJsonObject>& Params);
 
@@ -62,9 +60,6 @@ public:
 
 	/** Helper to build an error result */
 	static FUDBCommandResult Error(const FString& Code, const FString& Message, TSharedPtr<FJsonObject> Details = nullptr);
-
-	/** Set the handler for commands not handled by built-in routing. */
-	void SetDefaultHandler(FDefaultHandler InHandler);
 
 	// ICortexCommandRegistry
 	virtual void RegisterDomain(
@@ -86,6 +81,5 @@ private:
 	FUDBCommandResult HandleGetCapabilities(const TSharedPtr<FJsonObject>& Params);
 	FUDBCommandResult HandleBatch(const TSharedPtr<FJsonObject>& Params);
 
-	FDefaultHandler DefaultHandler;
 	TArray<FRegisteredDomain> RegisteredDomains;
 };

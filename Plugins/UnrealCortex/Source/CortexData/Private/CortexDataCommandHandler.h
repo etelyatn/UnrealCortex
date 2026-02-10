@@ -1,14 +1,15 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ICortexDomainHandler.h"
 
-struct FUDBCommandResult;
-
-class FCortexDataCommandHandler
+class FCortexDataCommandHandler : public ICortexDomainHandler
 {
 public:
-    static FUDBCommandResult Execute(
+    virtual FUDBCommandResult Execute(
         const FString& Command,
         const TSharedPtr<FJsonObject>& Params
-    );
+    ) override;
+
+    virtual TArray<FCortexCommandInfo> GetSupportedCommands() const override;
 };

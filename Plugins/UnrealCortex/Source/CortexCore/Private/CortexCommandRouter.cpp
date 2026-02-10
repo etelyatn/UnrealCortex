@@ -61,12 +61,6 @@ FUDBCommandResult FUDBCommandHandler::Execute(const FString& Command, const TSha
 		}
 	}
 
-	// Legacy default handler (Phase 1 compat, removed in Task 23)
-	if (DefaultHandler)
-	{
-		return DefaultHandler(Command, Params);
-	}
-
 	UE_LOG(LogUDBCommandHandler, Warning, TEXT("Unknown command: %s"), *Command);
 	return Error(UDBErrorCodes::UnknownCommand, FString::Printf(TEXT("Unknown command: %s"), *Command));
 }
@@ -133,11 +127,6 @@ FUDBCommandResult FUDBCommandHandler::Error(const FString& Code, const FString& 
 	Result.ErrorMessage = Message;
 	Result.ErrorDetails = MoveTemp(Details);
 	return Result;
-}
-
-void FUDBCommandHandler::SetDefaultHandler(FDefaultHandler InHandler)
-{
-	DefaultHandler = MoveTemp(InHandler);
 }
 
 void FUDBCommandHandler::RegisterDomain(

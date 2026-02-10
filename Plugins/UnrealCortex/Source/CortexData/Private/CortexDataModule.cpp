@@ -1,6 +1,6 @@
 #include "CortexDataModule.h"
 #include "CortexCoreModule.h"
-#include "CortexCommandRouter.h"
+#include "ICortexCommandRegistry.h"
 #include "CortexDataCommandHandler.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
@@ -9,17 +9,18 @@ void FCortexDataModule::StartupModule()
 {
     UE_LOG(LogCortexData, Log, TEXT("CortexData module starting up"));
 
-    FCortexCoreModule& CoreModule =
-        FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+    ICortexCommandRegistry& Registry =
+        FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"))
+        .GetCommandRegistry();
 
-    CoreModule.GetCommandRouter().SetDefaultHandler(
-        [](const FString& Command, const TSharedPtr<FJsonObject>& Params)
-        {
-            return FCortexDataCommandHandler::Execute(Command, Params);
-        }
+    Registry.RegisterDomain(
+        TEXT("data"),
+        TEXT("Cortex Data"),
+        TEXT("1.0.0"),
+        MakeShared<FCortexDataCommandHandler>()
     );
 
-    UE_LOG(LogCortexData, Log, TEXT("CortexData registered %d commands with CortexCore"), 29);
+    UE_LOG(LogCortexData, Log, TEXT("CortexData registered with CortexCore"));
 }
 
 void FCortexDataModule::ShutdownModule()
