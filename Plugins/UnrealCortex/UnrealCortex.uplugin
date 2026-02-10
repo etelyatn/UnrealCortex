@@ -25,12 +25,12 @@
         {
             "Name": "CortexData",
             "Type": "Editor",
-            "LoadingPhase": "Default"
+            "LoadingPhase": "PostEngineInit"
         },
         {
             "Name": "CortexTests",
             "Type": "DeveloperTool",
-            "LoadingPhase": "Default"
+            "LoadingPhase": "PostEngineInit"
         }
     ]
 }
