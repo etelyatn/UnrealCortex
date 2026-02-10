@@ -10,6 +10,9 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "HAL/FileManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUDBTcpServer, Log, All);
 
@@ -22,7 +25,7 @@ FUDBTcpServer::~FUDBTcpServer()
 	Stop();
 }
 
-bool FUDBTcpServer::Start(int32 Port, FCommandDispatcher InDispatcher)
+bool FUDBTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 {
 	if (bRunning)
 	{
@@ -32,34 +35,44 @@ bool FUDBTcpServer::Start(int32 Port, FCommandDispatcher InDispatcher)
 
 	CommandDispatcher = MoveTemp(InDispatcher);
 
-	FIPv4Endpoint ListenEndpoint(FIPv4Address::InternalLoopback, Port);
-
-	Listener = MakeUnique<FTcpListener>(ListenEndpoint);
-	Listener->OnConnectionAccepted().BindRaw(this, &FUDBTcpServer::HandleConnectionAccepted);
-
-	if (!Listener->IsActive())
+	for (int32 Port = StartPort; Port < StartPort + 100; ++Port)
 	{
-		UE_LOG(LogUDBTcpServer, Error, TEXT("Failed to start TCP listener on 127.0.0.1:%d"), Port);
+		FIPv4Endpoint ListenEndpoint(FIPv4Address::InternalLoopback, Port);
+
+		Listener = MakeUnique<FTcpListener>(ListenEndpoint);
+		Listener->OnConnectionAccepted().BindRaw(this, &FUDBTcpServer::HandleConnectionAccepted);
+
+		if (Listener->IsActive())
+		{
+			bRunning = true;
+
+			// Write port file for MCP server auto-discovery
+			FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
+			FFileHelper::SaveStringToFile(FString::FromInt(Port), *PortFilePath);
+			UE_LOG(LogUDBTcpServer, Log, TEXT("Wrote port file: %s (port %d)"), *PortFilePath, Port);
+
+			TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(
+				FTickerDelegate::CreateLambda([this](float DeltaTime) -> bool
+				{
+					if (bRunning)
+					{
+						ProcessClientData();
+					}
+					return bRunning;
+				}),
+				0.0f
+			);
+
+			UE_LOG(LogUDBTcpServer, Log, TEXT("TCP server listening on 127.0.0.1:%d"), Port);
+			return true;
+		}
+
 		Listener.Reset();
-		return false;
 	}
 
-	bRunning = true;
-
-	TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(
-		FTickerDelegate::CreateLambda([this](float DeltaTime) -> bool
-		{
-			if (bRunning)
-			{
-				ProcessClientData();
-			}
-			return bRunning;
-		}),
-		0.0f
-	);
-
-	UE_LOG(LogUDBTcpServer, Log, TEXT("TCP server listening on 127.0.0.1:%d"), Port);
-	return true;
+	UE_LOG(LogUDBTcpServer, Error, TEXT("Failed to bind TCP server on ports %d-%d"),
+		StartPort, StartPort + 99);
+	return false;
 }
 
 void FUDBTcpServer::Stop()
@@ -70,6 +83,10 @@ void FUDBTcpServer::Stop()
 	}
 
 	bRunning = false;
+
+	// Delete port file
+	FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
+	IFileManager::Get().Delete(*PortFilePath);
 
 	if (TickDelegateHandle.IsValid())
 	{
