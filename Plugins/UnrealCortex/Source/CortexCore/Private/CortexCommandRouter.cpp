@@ -1,5 +1,6 @@
 
 #include "CortexCommandRouter.h"
+#include "ICortexDomainHandler.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/App.h"
 #include "AssetRegistry/IAssetRegistry.h"
@@ -12,19 +13,55 @@ DEFINE_LOG_CATEGORY_STATIC(LogUDBCommandHandler, Log, All);
 
 FUDBCommandResult FUDBCommandHandler::Execute(const FString& Command, const TSharedPtr<FJsonObject>& Params)
 {
+	// Built-in commands (no namespace)
 	if (Command == TEXT("ping"))
 	{
 		return HandlePing(Params);
 	}
-	else if (Command == TEXT("get_status"))
+	if (Command == TEXT("get_status"))
 	{
 		return HandleGetStatus(Params);
 	}
-	else if (Command == TEXT("batch"))
+	if (Command == TEXT("get_capabilities"))
+	{
+		return HandleGetCapabilities(Params);
+	}
+	if (Command == TEXT("batch"))
 	{
 		return HandleBatch(Params);
 	}
 
+	// Namespace routing: "data.list_datatables" -> domain "data", command "list_datatables"
+	FString Namespace;
+	FString SubCommand;
+
+	if (Command.Split(TEXT("."), &Namespace, &SubCommand))
+	{
+		for (const FRegisteredDomain& Domain : RegisteredDomains)
+		{
+			if (Domain.Namespace == Namespace)
+			{
+				return Domain.Handler->Execute(SubCommand, Params);
+			}
+		}
+
+		return Error(UDBErrorCodes::UnknownCommand,
+			FString::Printf(TEXT("Unknown domain: %s"), *Namespace));
+	}
+
+	// Fallback: try all domains without namespace (backward compat for Phase 1 tests)
+	for (const FRegisteredDomain& Domain : RegisteredDomains)
+	{
+		for (const FCortexCommandInfo& CmdInfo : Domain.Handler->GetSupportedCommands())
+		{
+			if (CmdInfo.Name == Command)
+			{
+				return Domain.Handler->Execute(Command, Params);
+			}
+		}
+	}
+
+	// Legacy default handler (Phase 1 compat, removed in Task 23)
 	if (DefaultHandler)
 	{
 		return DefaultHandler(Command, Params);
@@ -101,6 +138,22 @@ FUDBCommandResult FUDBCommandHandler::Error(const FString& Code, const FString& 
 void FUDBCommandHandler::SetDefaultHandler(FDefaultHandler InHandler)
 {
 	DefaultHandler = MoveTemp(InHandler);
+}
+
+void FUDBCommandHandler::RegisterDomain(
+	const FString& Namespace,
+	const FString& DisplayName,
+	const FString& Version,
+	TSharedPtr<ICortexDomainHandler> Handler)
+{
+	RegisteredDomains.Add({ Namespace, DisplayName, Version, Handler });
+	UE_LOG(LogUDBCommandHandler, Log, TEXT("Registered domain: %s (%s v%s)"),
+		*Namespace, *DisplayName, *Version);
+}
+
+const TArray<FRegisteredDomain>& FUDBCommandHandler::GetRegisteredDomains() const
+{
+	return RegisteredDomains;
 }
 
 FUDBCommandResult FUDBCommandHandler::HandlePing(const TSharedPtr<FJsonObject>& Params)
@@ -227,5 +280,35 @@ FUDBCommandResult FUDBCommandHandler::HandleGetStatus(const TSharedPtr<FJsonObje
 	Subsystems->SetBoolField(TEXT("localization"), true);
 	Data->SetObjectField(TEXT("subsystems"), Subsystems);
 
+	return Success(Data);
+}
+
+FUDBCommandResult FUDBCommandHandler::HandleGetCapabilities(const TSharedPtr<FJsonObject>& Params)
+{
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("plugin_version"), TEXT("0.1.0"));
+
+	TSharedPtr<FJsonObject> Domains = MakeShared<FJsonObject>();
+
+	for (const FRegisteredDomain& Domain : RegisteredDomains)
+	{
+		TSharedPtr<FJsonObject> DomainObj = MakeShared<FJsonObject>();
+		DomainObj->SetStringField(TEXT("name"), Domain.DisplayName);
+		DomainObj->SetStringField(TEXT("version"), Domain.Version);
+
+		TArray<TSharedPtr<FJsonValue>> CommandArray;
+		for (const FCortexCommandInfo& CmdInfo : Domain.Handler->GetSupportedCommands())
+		{
+			TSharedPtr<FJsonObject> CmdObj = MakeShared<FJsonObject>();
+			CmdObj->SetStringField(TEXT("name"), CmdInfo.Name);
+			CmdObj->SetStringField(TEXT("description"), CmdInfo.Description);
+			CommandArray.Add(MakeShared<FJsonValueObject>(CmdObj));
+		}
+		DomainObj->SetArrayField(TEXT("commands"), CommandArray);
+
+		Domains->SetObjectField(Domain.Namespace, DomainObj);
+	}
+
+	Data->SetObjectField(TEXT("domains"), Domains);
 	return Success(Data);
 }

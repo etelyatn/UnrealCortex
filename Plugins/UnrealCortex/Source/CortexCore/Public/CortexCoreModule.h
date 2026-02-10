@@ -2,6 +2,7 @@
 
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
+#include "ICortexCommandRegistry.h"
 
 class FUDBCommandHandler;
 class FUDBTcpServer;
@@ -12,7 +13,10 @@ public:
     virtual void StartupModule() override;
     virtual void ShutdownModule() override;
 
-    /** Get the command router for domain modules to register handlers. */
+    /** Get the command registry for domain modules to register handlers. */
+    ICortexCommandRegistry& GetCommandRegistry();
+
+    /** Get the command router for backward compat during migration. */
     FUDBCommandHandler& GetCommandRouter();
 
 private:

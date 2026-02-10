@@ -41,6 +41,12 @@ void FCortexCoreModule::ShutdownModule()
     CommandRouter.Reset();
 }
 
+ICortexCommandRegistry& FCortexCoreModule::GetCommandRegistry()
+{
+    check(CommandRouter.IsValid());
+    return *CommandRouter; // FUDBCommandHandler implements ICortexCommandRegistry
+}
+
 FUDBCommandHandler& FCortexCoreModule::GetCommandRouter()
 {
     check(CommandRouter.IsValid());

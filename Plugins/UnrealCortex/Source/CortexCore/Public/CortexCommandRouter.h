@@ -3,6 +3,8 @@
 
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
+#include "ICortexCommandRegistry.h"
+#include "ICortexDomainHandler.h"
 
 /** Error codes matching the PRD specification */
 namespace UDBErrorCodes
@@ -34,8 +36,17 @@ struct CORTEXCORE_API FUDBCommandResult
 	TArray<FString> Warnings;
 };
 
+/** Info about a registered domain */
+struct FRegisteredDomain
+{
+	FString Namespace;
+	FString DisplayName;
+	FString Version;
+	TSharedPtr<ICortexDomainHandler> Handler;
+};
+
 /** Handles routing and execution of TCP commands */
-class CORTEXCORE_API FUDBCommandHandler
+class CORTEXCORE_API FUDBCommandHandler : public ICortexCommandRegistry
 {
 public:
 	using FDefaultHandler = TFunction<FUDBCommandResult(const FString& Command, const TSharedPtr<FJsonObject>& Params)>;
@@ -55,13 +66,26 @@ public:
 	/** Set the handler for commands not handled by built-in routing. */
 	void SetDefaultHandler(FDefaultHandler InHandler);
 
+	// ICortexCommandRegistry
+	virtual void RegisterDomain(
+		const FString& Namespace,
+		const FString& DisplayName,
+		const FString& Version,
+		TSharedPtr<ICortexDomainHandler> Handler
+	) override;
+
+	/** Get all registered domains (for get_capabilities). */
+	const TArray<FRegisteredDomain>& GetRegisteredDomains() const;
+
 	static constexpr int32 MaxBatchSize = 20;
 
 private:
 	// Command implementations
 	FUDBCommandResult HandlePing(const TSharedPtr<FJsonObject>& Params);
 	FUDBCommandResult HandleGetStatus(const TSharedPtr<FJsonObject>& Params);
+	FUDBCommandResult HandleGetCapabilities(const TSharedPtr<FJsonObject>& Params);
 	FUDBCommandResult HandleBatch(const TSharedPtr<FJsonObject>& Params);
 
 	FDefaultHandler DefaultHandler;
+	TArray<FRegisteredDomain> RegisteredDomains;
 };
