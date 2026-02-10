@@ -1,5 +1,6 @@
 
 #include "CortexCommandRouter.h"
+#include "CortexCoreModule.h"
 #include "ICortexDomainHandler.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/App.h"
@@ -8,8 +9,6 @@
 #include "Dom/JsonValue.h"
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
-
-DEFINE_LOG_CATEGORY_STATIC(LogCortex, Log, All);
 
 FCortexCommandResult FCortexCommandRouter::Execute(const FString& Command, const TSharedPtr<FJsonObject>& Params)
 {
@@ -47,18 +46,6 @@ FCortexCommandResult FCortexCommandRouter::Execute(const FString& Command, const
 
 		return Error(CortexErrorCodes::UnknownCommand,
 			FString::Printf(TEXT("Unknown domain: %s"), *Namespace));
-	}
-
-	// Fallback: try all domains without namespace (backward compat for Phase 1 tests)
-	for (const FCortexRegisteredDomain& Domain : RegisteredDomains)
-	{
-		for (const FCortexCommandInfo& CmdInfo : Domain.Handler->GetSupportedCommands())
-		{
-			if (CmdInfo.Name == Command)
-			{
-				return Domain.Handler->Execute(Command, Params);
-			}
-		}
 	}
 
 	UE_LOG(LogCortex, Warning, TEXT("Unknown command: %s"), *Command);

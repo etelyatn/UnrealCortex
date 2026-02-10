@@ -1,5 +1,6 @@
 
 #include "Operations/CortexDataAssetOps.h"
+#include "CortexDataModule.h"
 #include "CortexSerializer.h"
 #include "Engine/DataAsset.h"
 #include "AssetRegistry/IAssetRegistry.h"
@@ -8,8 +9,6 @@
 #include "Dom/JsonValue.h"
 #include "ScopedTransaction.h"
 #include "CortexEditorUtils.h"
-
-DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
 
 UDataAsset* FCortexDataAssetOps::LoadDataAsset(const FString& AssetPath, FCortexCommandResult& OutError)
 {

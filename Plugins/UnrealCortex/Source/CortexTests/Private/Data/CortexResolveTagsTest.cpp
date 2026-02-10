@@ -1,6 +1,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "CortexCommandRouter.h"
+#include "CortexDataCommandHandler.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 
@@ -13,11 +14,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexResolveTagsTest::RunTest(const FString& Parameters)
 {
 	FCortexCommandRouter Handler;
+	Handler.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.0"),
+		MakeShared<FCortexDataCommandHandler>());
 
 	// --- Test 1: Missing required params ---
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-		FCortexCommandResult Result = Handler.Execute(TEXT("resolve_tags"), Params);
+		FCortexCommandResult Result = Handler.Execute(TEXT("data.resolve_tags"), Params);
 		TestFalse(TEXT("resolve_tags with no params should fail"), Result.bSuccess);
 		TestEqual(TEXT("Error code should be INVALID_FIELD"), Result.ErrorCode, FString(TEXT("INVALID_FIELD")));
 	}
@@ -30,7 +33,7 @@ bool FCortexResolveTagsTest::RunTest(const FString& Parameters)
 		Tags.Add(MakeShared<FJsonValueString>(TEXT("SomeTag")));
 		Params->SetArrayField(TEXT("tags"), Tags);
 
-		FCortexCommandResult Result = Handler.Execute(TEXT("resolve_tags"), Params);
+		FCortexCommandResult Result = Handler.Execute(TEXT("data.resolve_tags"), Params);
 		TestFalse(TEXT("resolve_tags without tag_field should fail"), Result.bSuccess);
 		TestEqual(TEXT("Error code should be INVALID_FIELD"), Result.ErrorCode, FString(TEXT("INVALID_FIELD")));
 	}
@@ -41,7 +44,7 @@ bool FCortexResolveTagsTest::RunTest(const FString& Parameters)
 		Params->SetStringField(TEXT("table_path"), TEXT("/Game/SomeTable.SomeTable"));
 		Params->SetStringField(TEXT("tag_field"), TEXT("SomeField"));
 
-		FCortexCommandResult Result = Handler.Execute(TEXT("resolve_tags"), Params);
+		FCortexCommandResult Result = Handler.Execute(TEXT("data.resolve_tags"), Params);
 		TestFalse(TEXT("resolve_tags without tags should fail"), Result.bSuccess);
 		TestEqual(TEXT("Error code should be INVALID_FIELD"), Result.ErrorCode, FString(TEXT("INVALID_FIELD")));
 	}
@@ -55,7 +58,7 @@ bool FCortexResolveTagsTest::RunTest(const FString& Parameters)
 		Tags.Add(MakeShared<FJsonValueString>(TEXT("SomeTag")));
 		Params->SetArrayField(TEXT("tags"), Tags);
 
-		FCortexCommandResult Result = Handler.Execute(TEXT("resolve_tags"), Params);
+		FCortexCommandResult Result = Handler.Execute(TEXT("data.resolve_tags"), Params);
 		TestFalse(TEXT("resolve_tags with invalid table should fail"), Result.bSuccess);
 		TestEqual(TEXT("Error code should be TABLE_NOT_FOUND"), Result.ErrorCode, FString(TEXT("TABLE_NOT_FOUND")));
 	}
@@ -63,7 +66,7 @@ bool FCortexResolveTagsTest::RunTest(const FString& Parameters)
 	// --- Test 5: Integration test with real data (if available) ---
 	// Find a DataTable that has a GameplayTag or GameplayTagContainer field
 	{
-		FCortexCommandResult ListResult = Handler.Execute(TEXT("list_datatables"), MakeShared<FJsonObject>());
+		FCortexCommandResult ListResult = Handler.Execute(TEXT("data.list_datatables"), MakeShared<FJsonObject>());
 		if (!ListResult.bSuccess || !ListResult.Data.IsValid())
 		{
 			return true;
@@ -96,7 +99,7 @@ bool FCortexResolveTagsTest::RunTest(const FString& Parameters)
 			// Get schema to find a tag field
 			TSharedPtr<FJsonObject> SchemaParams = MakeShared<FJsonObject>();
 			SchemaParams->SetStringField(TEXT("table_path"), TablePath);
-			FCortexCommandResult SchemaResult = Handler.Execute(TEXT("get_datatable_schema"), SchemaParams);
+			FCortexCommandResult SchemaResult = Handler.Execute(TEXT("data.get_datatable_schema"), SchemaParams);
 
 			if (!SchemaResult.bSuccess || !SchemaResult.Data.IsValid())
 			{
@@ -150,7 +153,7 @@ bool FCortexResolveTagsTest::RunTest(const FString& Parameters)
 			// First, get schema to find a non-tag field
 			TSharedPtr<FJsonObject> SchemaParams = MakeShared<FJsonObject>();
 			SchemaParams->SetStringField(TEXT("table_path"), TagTablePath);
-			FCortexCommandResult SchemaResult = Handler.Execute(TEXT("get_datatable_schema"), SchemaParams);
+			FCortexCommandResult SchemaResult = Handler.Execute(TEXT("data.get_datatable_schema"), SchemaParams);
 
 			if (SchemaResult.bSuccess && SchemaResult.Data.IsValid())
 			{
@@ -184,7 +187,7 @@ bool FCortexResolveTagsTest::RunTest(const FString& Parameters)
 								TagArr.Add(MakeShared<FJsonValueString>(TEXT("SomeTag")));
 								BadParams->SetArrayField(TEXT("tags"), TagArr);
 
-								FCortexCommandResult BadResult = Handler.Execute(TEXT("resolve_tags"), BadParams);
+								FCortexCommandResult BadResult = Handler.Execute(TEXT("data.resolve_tags"), BadParams);
 								TestFalse(TEXT("resolve_tags with non-tag field should fail"), BadResult.bSuccess);
 								TestEqual(TEXT("Error code should be INVALID_FIELD"), BadResult.ErrorCode, FString(TEXT("INVALID_FIELD")));
 								break;
@@ -204,7 +207,7 @@ bool FCortexResolveTagsTest::RunTest(const FString& Parameters)
 			Tags.Add(MakeShared<FJsonValueString>(TEXT("NonExistent.Tag.Value.XYZ")));
 			Params->SetArrayField(TEXT("tags"), Tags);
 
-			FCortexCommandResult Result = Handler.Execute(TEXT("resolve_tags"), Params);
+			FCortexCommandResult Result = Handler.Execute(TEXT("data.resolve_tags"), Params);
 			TestTrue(TEXT("resolve_tags with unresolvable tags should succeed"), Result.bSuccess);
 
 			if (Result.bSuccess && Result.Data.IsValid())

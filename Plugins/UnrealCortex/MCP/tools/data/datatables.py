@@ -218,7 +218,7 @@ def register_datatable_tools(mcp, connection: UEConnection):
             })
             # Invalidate list caches (row count changed)
             connection.invalidate_cache("data.list_datatables:")
-            connection.invalidate_cache("get_data_catalog:")
+            connection.invalidate_cache("data.get_data_catalog:")
             return format_response(response.get("data", {}), "add_datatable_row")
         except json.JSONDecodeError as e:
             return f"Error: Invalid JSON in row_data: {e}"
@@ -293,7 +293,7 @@ def register_datatable_tools(mcp, connection: UEConnection):
             })
             # Invalidate list caches (row count changed)
             connection.invalidate_cache("data.list_datatables:")
-            connection.invalidate_cache("get_data_catalog:")
+            connection.invalidate_cache("data.get_data_catalog:")
             return format_response(response.get("data", {}), "delete_datatable_row")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -382,7 +382,7 @@ def register_datatable_tools(mcp, connection: UEConnection):
             if not dry_run:
                 # Invalidate list caches (row counts changed)
                 connection.invalidate_cache("data.list_datatables:")
-                connection.invalidate_cache("get_data_catalog:")
+                connection.invalidate_cache("data.get_data_catalog:")
             return format_response(response.get("data", {}), "import_datatable_json")
         except json.JSONDecodeError as e:
             return f"Error: Invalid JSON in rows: {e}"

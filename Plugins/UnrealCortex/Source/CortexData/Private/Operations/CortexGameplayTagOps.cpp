@@ -1,5 +1,6 @@
 
 #include "Operations/CortexGameplayTagOps.h"
+#include "CortexDataModule.h"
 #include "CortexSettings.h"
 #include "GameplayTagsManager.h"
 #include "GameplayTagsModule.h"
@@ -8,8 +9,6 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "HAL/PlatformFileManager.h"
-
-DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
 
 static bool IsValidTagFormat(const FString& TagString, FString& OutError)
 {
@@ -37,7 +36,7 @@ static bool IsValidTagFormat(const FString& TagString, FString& OutError)
 	return true;
 }
 
-FCortexCommandResult FCortexGameplayTagOps::ListGameplayTags(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataGameplayTagOps::ListGameplayTags(const TSharedPtr<FJsonObject>& Params)
 {
 	FString Prefix;
 	bool bIncludeSourceFile = false;
@@ -139,7 +138,7 @@ FCortexCommandResult FCortexGameplayTagOps::ListGameplayTags(const TSharedPtr<FJ
 	return FCortexCommandRouter::Success(Data);
 }
 
-FCortexCommandResult FCortexGameplayTagOps::ValidateGameplayTag(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataGameplayTagOps::ValidateGameplayTag(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TagString;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("tag"), TagString))
@@ -160,7 +159,7 @@ FCortexCommandResult FCortexGameplayTagOps::ValidateGameplayTag(const TSharedPtr
 	return FCortexCommandRouter::Success(Data);
 }
 
-FCortexCommandResult FCortexGameplayTagOps::RegisterGameplayTag(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataGameplayTagOps::RegisterGameplayTag(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TagString;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("tag"), TagString))
@@ -198,7 +197,7 @@ FCortexCommandResult FCortexGameplayTagOps::RegisterGameplayTag(const TSharedPtr
 	return FCortexCommandRouter::Success(ResultData);
 }
 
-FCortexCommandResult FCortexGameplayTagOps::RegisterGameplayTags(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataGameplayTagOps::RegisterGameplayTags(const TSharedPtr<FJsonObject>& Params)
 {
 	const TArray<TSharedPtr<FJsonValue>>* TagsArrayPtr = nullptr;
 	if (!Params.IsValid() || !Params->TryGetArrayField(TEXT("tags"), TagsArrayPtr) || TagsArrayPtr == nullptr)
@@ -293,7 +292,7 @@ FCortexCommandResult FCortexGameplayTagOps::RegisterGameplayTags(const TSharedPt
 	return FCortexCommandRouter::Success(Data);
 }
 
-FString FCortexGameplayTagOps::ResolveIniFile(const FString& TagString, const FString& ExplicitIniFile)
+FString FCortexDataGameplayTagOps::ResolveIniFile(const FString& TagString, const FString& ExplicitIniFile)
 {
 	if (!ExplicitIniFile.IsEmpty())
 	{
@@ -335,7 +334,7 @@ FString FCortexGameplayTagOps::ResolveIniFile(const FString& TagString, const FS
 	return FPaths::Combine(FPaths::ProjectConfigDir(), TEXT("Tags"), TEXT("GameplayTags.ini"));
 }
 
-bool FCortexGameplayTagOps::AppendTagToIniFile(const FString& IniFilePath, const FString& TagString, const FString& DevComment, FString& OutError)
+bool FCortexDataGameplayTagOps::AppendTagToIniFile(const FString& IniFilePath, const FString& TagString, const FString& DevComment, FString& OutError)
 {
 	// Ensure directory exists
 	FString Directory = FPaths::GetPath(IniFilePath);
@@ -396,7 +395,7 @@ bool FCortexGameplayTagOps::AppendTagToIniFile(const FString& IniFilePath, const
 	return true;
 }
 
-TSharedPtr<FJsonObject> FCortexGameplayTagOps::RegisterSingleTag(const FString& TagString, const FString& IniFile, const FString& DevComment, bool& bOutSuccess, FString& OutError)
+TSharedPtr<FJsonObject> FCortexDataGameplayTagOps::RegisterSingleTag(const FString& TagString, const FString& IniFile, const FString& DevComment, bool& bOutSuccess, FString& OutError)
 {
 	bOutSuccess = false;
 

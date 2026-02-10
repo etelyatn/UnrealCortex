@@ -4,6 +4,8 @@
 #include "Modules/ModuleManager.h"
 #include "ICortexCommandRegistry.h"
 
+CORTEXCORE_API DECLARE_LOG_CATEGORY_EXTERN(LogCortex, Log, All);
+
 class FCortexCommandRouter;
 class FCortexTcpServer;
 

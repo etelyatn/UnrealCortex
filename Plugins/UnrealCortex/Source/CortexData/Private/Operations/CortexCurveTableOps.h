@@ -6,7 +6,7 @@
 
 class UCurveTable;
 
-class FCortexCurveTableOps
+class FCortexDataCurveTableOps
 {
 public:
 	static FCortexCommandResult ListCurveTables(const TSharedPtr<FJsonObject>& Params);

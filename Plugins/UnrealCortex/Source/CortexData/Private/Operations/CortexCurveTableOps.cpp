@@ -1,5 +1,6 @@
 
 #include "Operations/CortexCurveTableOps.h"
+#include "CortexDataModule.h"
 #include "CortexEditorUtils.h"
 #include "Engine/CurveTable.h"
 #include "Curves/RichCurve.h"
@@ -9,8 +10,6 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "ScopedTransaction.h"
-
-DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
 
 static FString CurveTableModeToString(ECurveTableMode Mode)
 {
@@ -25,7 +24,7 @@ static FString CurveTableModeToString(ECurveTableMode Mode)
 	}
 }
 
-UCurveTable* FCortexCurveTableOps::LoadCurveTable(const FString& TablePath, FCortexCommandResult& OutError)
+UCurveTable* FCortexDataCurveTableOps::LoadCurveTable(const FString& TablePath, FCortexCommandResult& OutError)
 {
 	UCurveTable* CurveTable = LoadObject<UCurveTable>(nullptr, *TablePath);
 	if (CurveTable == nullptr)
@@ -38,7 +37,7 @@ UCurveTable* FCortexCurveTableOps::LoadCurveTable(const FString& TablePath, FCor
 	return CurveTable;
 }
 
-FCortexCommandResult FCortexCurveTableOps::ListCurveTables(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataCurveTableOps::ListCurveTables(const TSharedPtr<FJsonObject>& Params)
 {
 	FString PathFilter;
 	if (Params.IsValid())
@@ -101,7 +100,7 @@ FCortexCommandResult FCortexCurveTableOps::ListCurveTables(const TSharedPtr<FJso
 	return FCortexCommandRouter::Success(Data);
 }
 
-FCortexCommandResult FCortexCurveTableOps::GetCurveTable(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataCurveTableOps::GetCurveTable(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("table_path"), TablePath))
@@ -198,7 +197,7 @@ FCortexCommandResult FCortexCurveTableOps::GetCurveTable(const TSharedPtr<FJsonO
 	return FCortexCommandRouter::Success(Data);
 }
 
-FCortexCommandResult FCortexCurveTableOps::UpdateCurveTableRow(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataCurveTableOps::UpdateCurveTableRow(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	FString RowName;

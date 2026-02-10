@@ -1,6 +1,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "CortexCommandRouter.h"
+#include "CortexDataCommandHandler.h"
 #include "Engine/CurveTable.h"
 #include "Curves/RichCurve.h"
 #include "Dom/JsonObject.h"
@@ -17,9 +18,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexListCurveTablesTest::RunTest(const FString& Parameters)
 {
 	FCortexCommandRouter Handler;
+	Handler.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.0"),
+		MakeShared<FCortexDataCommandHandler>());
 
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	FCortexCommandResult Result = Handler.Execute(TEXT("list_curve_tables"), Params);
+	FCortexCommandResult Result = Handler.Execute(TEXT("data.list_curve_tables"), Params);
 
 	TestTrue(TEXT("list_curve_tables should succeed"), Result.bSuccess);
 	TestTrue(TEXT("Result should have data"), Result.Data.IsValid());
@@ -68,12 +71,14 @@ bool FCortexGetCurveTableTest::RunTest(const FString& Parameters)
 	FString TablePath = TempTable->GetPathName();
 
 	FCortexCommandRouter Handler;
+	Handler.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.0"),
+		MakeShared<FCortexDataCommandHandler>());
 
 	// Test: get all curves
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("table_path"), TablePath);
 
-	FCortexCommandResult Result = Handler.Execute(TEXT("get_curve_table"), Params);
+	FCortexCommandResult Result = Handler.Execute(TEXT("data.get_curve_table"), Params);
 
 	TestTrue(TEXT("get_curve_table should succeed"), Result.bSuccess);
 	TestTrue(TEXT("Result should have data"), Result.Data.IsValid());
@@ -124,7 +129,7 @@ bool FCortexGetCurveTableTest::RunTest(const FString& Parameters)
 	RowParams->SetStringField(TEXT("table_path"), TablePath);
 	RowParams->SetStringField(TEXT("row_name"), TEXT("TestCurve"));
 
-	FCortexCommandResult RowResult = Handler.Execute(TEXT("get_curve_table"), RowParams);
+	FCortexCommandResult RowResult = Handler.Execute(TEXT("data.get_curve_table"), RowParams);
 	TestTrue(TEXT("get_curve_table with row_name should succeed"), RowResult.bSuccess);
 
 	// Test: row not found
@@ -132,7 +137,7 @@ bool FCortexGetCurveTableTest::RunTest(const FString& Parameters)
 	MissingParams->SetStringField(TEXT("table_path"), TablePath);
 	MissingParams->SetStringField(TEXT("row_name"), TEXT("NonExistent"));
 
-	FCortexCommandResult MissingResult = Handler.Execute(TEXT("get_curve_table"), MissingParams);
+	FCortexCommandResult MissingResult = Handler.Execute(TEXT("data.get_curve_table"), MissingParams);
 	TestFalse(TEXT("get_curve_table with missing row should fail"), MissingResult.bSuccess);
 	TestEqual(TEXT("Error code should be ROW_NOT_FOUND"), MissingResult.ErrorCode, CortexErrorCodes::RowNotFound);
 
@@ -173,6 +178,8 @@ bool FCortexUpdateCurveTableRowTest::RunTest(const FString& Parameters)
 	FString TablePath = TempTable->GetPathName();
 
 	FCortexCommandRouter Handler;
+	Handler.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.0"),
+		MakeShared<FCortexDataCommandHandler>());
 
 	// Update the curve row with new keys
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -198,7 +205,7 @@ bool FCortexUpdateCurveTableRowTest::RunTest(const FString& Parameters)
 	}
 	Params->SetArrayField(TEXT("keys"), KeysArray);
 
-	FCortexCommandResult Result = Handler.Execute(TEXT("update_curve_table_row"), Params);
+	FCortexCommandResult Result = Handler.Execute(TEXT("data.update_curve_table_row"), Params);
 
 	TestTrue(TEXT("update_curve_table_row should succeed"), Result.bSuccess);
 	TestTrue(TEXT("Result should have data"), Result.Data.IsValid());
@@ -233,7 +240,7 @@ bool FCortexUpdateCurveTableRowTest::RunTest(const FString& Parameters)
 	MissingParams->SetStringField(TEXT("row_name"), TEXT("NonExistent"));
 	MissingParams->SetArrayField(TEXT("keys"), KeysArray);
 
-	FCortexCommandResult MissingResult = Handler.Execute(TEXT("update_curve_table_row"), MissingParams);
+	FCortexCommandResult MissingResult = Handler.Execute(TEXT("data.update_curve_table_row"), MissingParams);
 	TestFalse(TEXT("update with missing row should fail"), MissingResult.bSuccess);
 	TestEqual(TEXT("Error code should be ROW_NOT_FOUND"), MissingResult.ErrorCode, CortexErrorCodes::RowNotFound);
 

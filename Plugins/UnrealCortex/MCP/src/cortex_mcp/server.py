@@ -89,7 +89,7 @@ def get_data_catalog() -> str:
     """
     try:
         response = _connection.send_command_cached(
-            "get_data_catalog", {}, ttl=_TTL_CATALOG
+            "data.get_data_catalog", {}, ttl=_TTL_CATALOG
         )
         return format_response(response.get("data", {}), "get_data_catalog")
     except ConnectionError as e:

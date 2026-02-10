@@ -1,5 +1,6 @@
 
 #include "Operations/CortexDataTableOps.h"
+#include "CortexDataModule.h"
 #include "CortexSerializer.h"
 #include "Engine/DataTable.h"
 #include "Engine/CompositeDataTable.h"
@@ -19,8 +20,6 @@
 #include "Engine/DataAsset.h"
 #include "ScopedTransaction.h"
 #include "CortexEditorUtils.h"
-
-DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
 
 UDataTable* FCortexDataTableOps::LoadDataTable(const FString& TablePath, FCortexCommandResult& OutError)
 {

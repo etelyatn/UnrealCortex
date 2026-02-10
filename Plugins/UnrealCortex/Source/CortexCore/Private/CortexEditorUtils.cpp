@@ -1,8 +1,5 @@
-// Copyright Mavka Games. All Rights Reserved. https://www.mavka.games/
-
 #include "CortexEditorUtils.h"
-
-DEFINE_LOG_CATEGORY_STATIC(LogCortex, Log, All);
+#include "CortexCoreModule.h"
 
 void FCortexEditorUtils::NotifyAssetModified(UObject* Asset)
 {

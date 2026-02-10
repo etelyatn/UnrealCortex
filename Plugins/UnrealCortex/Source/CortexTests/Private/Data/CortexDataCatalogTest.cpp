@@ -7,6 +7,7 @@
 #include "Interfaces/IPv4/IPv4Endpoint.h"
 #include "CortexTcpServer.h"
 #include "CortexCommandRouter.h"
+#include "CortexDataCommandHandler.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
@@ -21,6 +22,8 @@ bool FCortexDataCatalogTest::RunTest(const FString& Parameters)
 	// Arrange: Start TCP server on a unique test port
 	const int32 TestPort = 18744;
 	FCortexCommandRouter CommandHandler;
+	CommandHandler.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.0"),
+		MakeShared<FCortexDataCommandHandler>());
 	FCortexTcpServer Server;
 	const bool bStarted = Server.Start(TestPort,
 		[&CommandHandler](const FString& Command, const TSharedPtr<FJsonObject>& Params)
@@ -61,7 +64,7 @@ bool FCortexDataCatalogTest::RunTest(const FString& Parameters)
 	FPlatformProcess::Sleep(0.1f);
 
 	// Act: Send get_data_catalog command
-	FString Command = TEXT("{\"command\":\"get_data_catalog\",\"params\":{}}\n");
+	FString Command = TEXT("{\"command\":\"data.get_data_catalog\",\"params\":{}}\n");
 	FTCHARToUTF8 Utf8Converter(*Command);
 	int32 BytesSent = 0;
 	const bool bSent = ClientSocket->Send(

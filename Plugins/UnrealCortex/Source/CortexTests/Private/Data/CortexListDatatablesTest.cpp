@@ -7,6 +7,7 @@
 #include "Interfaces/IPv4/IPv4Endpoint.h"
 #include "CortexTcpServer.h"
 #include "CortexCommandRouter.h"
+#include "CortexDataCommandHandler.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
@@ -21,6 +22,8 @@ bool FCortexListDatatablesTest::RunTest(const FString& Parameters)
 	// Arrange: Start the TCP server on a test port (different from ping test)
 	const int32 TestPort = 18743;
 	FCortexCommandRouter CommandHandler;
+	CommandHandler.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.0"),
+		MakeShared<FCortexDataCommandHandler>());
 	FCortexTcpServer Server;
 	const bool bStarted = Server.Start(TestPort,
 		[&CommandHandler](const FString& Command, const TSharedPtr<FJsonObject>& Params)
@@ -64,7 +67,7 @@ bool FCortexListDatatablesTest::RunTest(const FString& Parameters)
 	FPlatformProcess::Sleep(0.1f);
 
 	// Act: Send a list_datatables command
-	FString ListCommand = TEXT("{\"command\":\"list_datatables\",\"params\":{}}\n");
+	FString ListCommand = TEXT("{\"command\":\"data.list_datatables\",\"params\":{}}\n");
 	FTCHARToUTF8 Utf8Converter(*ListCommand);
 	int32 BytesSent = 0;
 	const bool bSent = ClientSocket->Send(

@@ -6,7 +6,7 @@
 
 class UStringTable;
 
-class FCortexLocalizationOps
+class FCortexDataLocalizationOps
 {
 public:
 	static FCortexCommandResult ListStringTables(const TSharedPtr<FJsonObject>& Params);

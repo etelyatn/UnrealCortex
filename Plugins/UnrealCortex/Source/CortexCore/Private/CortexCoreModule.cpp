@@ -3,7 +3,7 @@
 #include "CortexTcpServer.h"
 #include "CortexSettings.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogCortex, Log, All);
+DEFINE_LOG_CATEGORY(LogCortex);
 
 void FCortexCoreModule::StartupModule()
 {

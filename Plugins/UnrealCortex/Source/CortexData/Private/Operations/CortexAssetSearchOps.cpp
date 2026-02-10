@@ -1,13 +1,12 @@
 
 #include "Operations/CortexAssetSearchOps.h"
+#include "CortexDataModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/AssetData.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
-
-FCortexCommandResult FCortexAssetSearchOps::SearchAssets(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataAssetSearchOps::SearchAssets(const TSharedPtr<FJsonObject>& Params)
 {
 	FString Query;
 	FString ClassFilter;

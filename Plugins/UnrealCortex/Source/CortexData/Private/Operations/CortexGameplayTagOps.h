@@ -4,7 +4,7 @@
 #include "CoreMinimal.h"
 #include "CortexCommandRouter.h"
 
-class FCortexGameplayTagOps
+class FCortexDataGameplayTagOps
 {
 public:
 	static FCortexCommandResult ListGameplayTags(const TSharedPtr<FJsonObject>& Params);

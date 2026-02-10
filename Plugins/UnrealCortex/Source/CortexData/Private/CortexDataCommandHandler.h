@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "ICortexDomainHandler.h"
 
-class FCortexDataCommandHandler : public ICortexDomainHandler
+class CORTEXDATA_API FCortexDataCommandHandler : public ICortexDomainHandler
 {
 public:
     virtual FCortexCommandResult Execute(

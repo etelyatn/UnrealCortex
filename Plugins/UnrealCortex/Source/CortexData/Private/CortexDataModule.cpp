@@ -3,7 +3,7 @@
 #include "ICortexCommandRegistry.h"
 #include "CortexDataCommandHandler.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
+DEFINE_LOG_CATEGORY(LogCortexData);
 
 void FCortexDataModule::StartupModule()
 {

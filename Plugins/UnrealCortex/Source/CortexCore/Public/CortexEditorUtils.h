@@ -1,5 +1,3 @@
-// Copyright Mavka Games. All Rights Reserved. https://www.mavka.games/
-
 #pragma once
 
 #include "CoreMinimal.h"

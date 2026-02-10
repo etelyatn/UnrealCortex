@@ -1,5 +1,6 @@
 
 #include "CortexTcpServer.h"
+#include "CortexCoreModule.h"
 #include "CortexCommandRouter.h"
 #include "CortexSettings.h"
 #include "Common/TcpListener.h"
@@ -13,8 +14,6 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
-
-DEFINE_LOG_CATEGORY_STATIC(LogCortex, Log, All);
 
 FCortexTcpServer::FCortexTcpServer()
 {

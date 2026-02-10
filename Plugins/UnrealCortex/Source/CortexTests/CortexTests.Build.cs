@@ -21,5 +21,8 @@ public class CortexTests : ModuleRules
             "StructUtils",
             "UnrealEd",
         });
+
+        // Access CortexData Private headers for test setup (domain handler registration)
+        PrivateIncludePaths.Add(System.IO.Path.Combine(ModuleDirectory, "..", "CortexData", "Private"));
     }
 }

@@ -4,7 +4,7 @@
 #include "CoreMinimal.h"
 #include "CortexCommandRouter.h"
 
-class FCortexAssetSearchOps
+class FCortexDataAssetSearchOps
 {
 public:
 	static FCortexCommandResult SearchAssets(const TSharedPtr<FJsonObject>& Params);

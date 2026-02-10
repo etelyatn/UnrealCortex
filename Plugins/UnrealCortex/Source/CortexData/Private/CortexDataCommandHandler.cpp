@@ -65,19 +65,19 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
     // GameplayTag operations
     if (Command == TEXT("list_gameplay_tags"))
     {
-        return FCortexGameplayTagOps::ListGameplayTags(Params);
+        return FCortexDataGameplayTagOps::ListGameplayTags(Params);
     }
     if (Command == TEXT("validate_gameplay_tag"))
     {
-        return FCortexGameplayTagOps::ValidateGameplayTag(Params);
+        return FCortexDataGameplayTagOps::ValidateGameplayTag(Params);
     }
     if (Command == TEXT("register_gameplay_tag"))
     {
-        return FCortexGameplayTagOps::RegisterGameplayTag(Params);
+        return FCortexDataGameplayTagOps::RegisterGameplayTag(Params);
     }
     if (Command == TEXT("register_gameplay_tags"))
     {
-        return FCortexGameplayTagOps::RegisterGameplayTags(Params);
+        return FCortexDataGameplayTagOps::RegisterGameplayTags(Params);
     }
 
     // DataAsset operations
@@ -97,35 +97,35 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
     // Localization operations
     if (Command == TEXT("list_string_tables"))
     {
-        return FCortexLocalizationOps::ListStringTables(Params);
+        return FCortexDataLocalizationOps::ListStringTables(Params);
     }
     if (Command == TEXT("get_translations"))
     {
-        return FCortexLocalizationOps::GetTranslations(Params);
+        return FCortexDataLocalizationOps::GetTranslations(Params);
     }
     if (Command == TEXT("set_translation"))
     {
-        return FCortexLocalizationOps::SetTranslation(Params);
+        return FCortexDataLocalizationOps::SetTranslation(Params);
     }
 
     // Asset search
     if (Command == TEXT("search_assets"))
     {
-        return FCortexAssetSearchOps::SearchAssets(Params);
+        return FCortexDataAssetSearchOps::SearchAssets(Params);
     }
 
     // CurveTable operations
     if (Command == TEXT("list_curve_tables"))
     {
-        return FCortexCurveTableOps::ListCurveTables(Params);
+        return FCortexDataCurveTableOps::ListCurveTables(Params);
     }
     if (Command == TEXT("get_curve_table"))
     {
-        return FCortexCurveTableOps::GetCurveTable(Params);
+        return FCortexDataCurveTableOps::GetCurveTable(Params);
     }
     if (Command == TEXT("update_curve_table_row"))
     {
-        return FCortexCurveTableOps::UpdateCurveTableRow(Params);
+        return FCortexDataCurveTableOps::UpdateCurveTableRow(Params);
     }
 
     return FCortexCommandRouter::Error(

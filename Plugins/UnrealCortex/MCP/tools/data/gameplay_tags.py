@@ -97,7 +97,7 @@ def register_gameplay_tag_tools(mcp, connection: UEConnection):
             response = connection.send_command("data.register_gameplay_tag", params)
             # Invalidate tag list and catalog caches
             connection.invalidate_cache("data.list_gameplay_tags:")
-            connection.invalidate_cache("get_data_catalog:")
+            connection.invalidate_cache("data.get_data_catalog:")
             return format_response(response.get("data", {}), "register_gameplay_tag")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -125,7 +125,7 @@ def register_gameplay_tag_tools(mcp, connection: UEConnection):
             response = connection.send_command("data.register_gameplay_tags", {"tags": tags_data})
             # Invalidate tag list and catalog caches
             connection.invalidate_cache("data.list_gameplay_tags:")
-            connection.invalidate_cache("get_data_catalog:")
+            connection.invalidate_cache("data.get_data_catalog:")
             return format_response(response.get("data", {}), "register_gameplay_tags")
         except json.JSONDecodeError as e:
             return f"Error: Invalid JSON in tags: {e}"

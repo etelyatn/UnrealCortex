@@ -1,5 +1,6 @@
 
 #include "Operations/CortexLocalizationOps.h"
+#include "CortexDataModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/AssetData.h"
 #include "Internationalization/StringTable.h"
@@ -9,9 +10,7 @@
 #include "ScopedTransaction.h"
 #include "CortexEditorUtils.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogCortexData, Log, All);
-
-UStringTable* FCortexLocalizationOps::LoadStringTable(const FString& TablePath, FCortexCommandResult& OutError)
+UStringTable* FCortexDataLocalizationOps::LoadStringTable(const FString& TablePath, FCortexCommandResult& OutError)
 {
 	UStringTable* StringTable = LoadObject<UStringTable>(nullptr, *TablePath);
 	if (StringTable == nullptr)
@@ -24,7 +23,7 @@ UStringTable* FCortexLocalizationOps::LoadStringTable(const FString& TablePath, 
 	return StringTable;
 }
 
-FCortexCommandResult FCortexLocalizationOps::ListStringTables(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataLocalizationOps::ListStringTables(const TSharedPtr<FJsonObject>& Params)
 {
 	FString PathFilter;
 	if (Params.IsValid())
@@ -81,7 +80,7 @@ FCortexCommandResult FCortexLocalizationOps::ListStringTables(const TSharedPtr<F
 	return FCortexCommandRouter::Success(Data);
 }
 
-FCortexCommandResult FCortexLocalizationOps::GetTranslations(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataLocalizationOps::GetTranslations(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("string_table_path"), TablePath))
@@ -134,7 +133,7 @@ FCortexCommandResult FCortexLocalizationOps::GetTranslations(const TSharedPtr<FJ
 	return FCortexCommandRouter::Success(Data);
 }
 
-FCortexCommandResult FCortexLocalizationOps::SetTranslation(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexDataLocalizationOps::SetTranslation(const TSharedPtr<FJsonObject>& Params)
 {
 	FString TablePath;
 	FString Key;

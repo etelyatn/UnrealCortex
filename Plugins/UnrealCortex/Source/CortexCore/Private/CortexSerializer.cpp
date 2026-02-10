@@ -1,5 +1,6 @@
 
 #include "CortexSerializer.h"
+#include "CortexCoreModule.h"
 #include "UObject/UnrealType.h"
 #include "UObject/TextProperty.h"
 #include "UObject/EnumProperty.h"
@@ -7,8 +8,6 @@
 #include "StructUtils/InstancedStruct.h"
 #include "UObject/SoftObjectPath.h"
 #include "Dom/JsonValue.h"
-
-DEFINE_LOG_CATEGORY_STATIC(LogCortex, Log, All);
 
 TMap<const UScriptStruct*, TArray<UScriptStruct*>> FCortexSerializer::SubtypeCache;
 

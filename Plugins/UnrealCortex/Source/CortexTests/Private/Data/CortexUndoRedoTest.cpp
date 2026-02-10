@@ -1,6 +1,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "CortexCommandRouter.h"
+#include "CortexDataCommandHandler.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Engine/DataTable.h"
@@ -91,12 +92,14 @@ bool FCortexUndoAddRowTest::RunTest(const FString& Parameters)
 
 	// Add a row via command handler (which wraps in FScopedTransaction internally)
 	FCortexCommandRouter Handler;
+	Handler.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.0"),
+		MakeShared<FCortexDataCommandHandler>());
 	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
 	AddParams->SetStringField(TEXT("table_path"), TablePath);
 	AddParams->SetStringField(TEXT("row_name"), TEXT("TestRow_1"));
 	AddParams->SetObjectField(TEXT("row_data"), MakeShared<FJsonObject>());
 
-	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_datatable_row"), AddParams);
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("data.add_datatable_row"), AddParams);
 	TestTrue(TEXT("Add row should succeed"), AddResult.bSuccess);
 	TestEqual(TEXT("Table should have 1 row after add"), TestTable->GetRowMap().Num(), 1);
 
