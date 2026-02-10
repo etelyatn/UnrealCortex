@@ -21,6 +21,11 @@
             "Name": "CortexCore",
             "Type": "Editor",
             "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexData",
+            "Type": "Editor",
+            "LoadingPhase": "Default"
         }
     ]
 }
