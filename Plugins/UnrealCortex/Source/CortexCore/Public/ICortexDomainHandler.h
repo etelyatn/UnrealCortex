@@ -2,7 +2,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "CortexCommandRouter.h"
+#include "CortexTypes.h"
 
 /**
  * Info about a command supported by a domain handler.
