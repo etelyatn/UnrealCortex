@@ -6,6 +6,7 @@
 #include "Interfaces/IPv4/IPv4Address.h"
 #include "Interfaces/IPv4/IPv4Endpoint.h"
 #include "CortexTcpServer.h"
+#include "CortexCommandRouter.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
@@ -19,8 +20,13 @@ bool FUDBTcpServerPingPongTest::RunTest(const FString& Parameters)
 {
 	// Arrange: Start the TCP server on a test port
 	const int32 TestPort = 18742;
+	FUDBCommandHandler CommandHandler;
 	FUDBTcpServer Server;
-	const bool bStarted = Server.Start(TestPort);
+	const bool bStarted = Server.Start(TestPort,
+		[&CommandHandler](const FString& Command, const TSharedPtr<FJsonObject>& Params)
+		{
+			return CommandHandler.Execute(Command, Params);
+		});
 	TestTrue(TEXT("Server should start successfully"), bStarted);
 
 	if (!bStarted)
