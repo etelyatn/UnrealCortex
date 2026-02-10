@@ -9,7 +9,7 @@
 class FSocket;
 class FTcpListener;
 
-class FUDBTcpServer
+class CORTEXCORE_API FUDBTcpServer
 {
 public:
 	using FCommandDispatcher = TFunction<FUDBCommandResult(const FString& Command, const TSharedPtr<FJsonObject>& Params)>;
