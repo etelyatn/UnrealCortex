@@ -20,7 +20,6 @@ public class CortexData : ModuleRules
             "JsonUtilities",
             "GameplayTags",
             "AssetRegistry",
-            "StructUtils",
             "UnrealEd",
         });
     }

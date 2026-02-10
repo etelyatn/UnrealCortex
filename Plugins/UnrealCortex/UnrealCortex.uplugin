@@ -10,12 +10,7 @@
     "CanContainContent": false,
     "IsBetaVersion": true,
     "Installed": false,
-    "Plugins": [
-        {
-            "Name": "StructUtils",
-            "Enabled": true
-        }
-    ],
+    "Plugins": [],
     "Modules": [
         {
             "Name": "CortexCore",

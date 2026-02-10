@@ -18,7 +18,6 @@ public class CortexTests : ModuleRules
             "Json",
             "JsonUtilities",
             "GameplayTags",
-            "StructUtils",
             "UnrealEd",
         });
 

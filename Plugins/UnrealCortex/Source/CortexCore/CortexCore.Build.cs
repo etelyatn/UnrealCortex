@@ -21,7 +21,6 @@ public class CortexCore : ModuleRules
             "Json",
             "JsonUtilities",
             "GameplayTags",
-            "StructUtils",
             "UnrealEd",
         });
     }
