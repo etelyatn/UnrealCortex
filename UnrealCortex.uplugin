@@ -33,33 +33,8 @@
             "LoadingPhase": "PostEngineInit"
         },
         {
-            "Name": "CortexCoreTests",
-            "Type": "DeveloperTool",
-            "LoadingPhase": "PostEngineInit"
-        },
-        {
-            "Name": "CortexDataTests",
-            "Type": "DeveloperTool",
-            "LoadingPhase": "PostEngineInit"
-        },
-        {
-            "Name": "CortexGraphTests",
-            "Type": "DeveloperTool",
-            "LoadingPhase": "PostEngineInit"
-        },
-        {
-            "Name": "CortexBlueprintTests",
-            "Type": "DeveloperTool",
-            "LoadingPhase": "PostEngineInit"
-        },
-        {
             "Name": "CortexUMG",
             "Type": "Editor",
-            "LoadingPhase": "PostEngineInit"
-        },
-        {
-            "Name": "CortexUMGTests",
-            "Type": "DeveloperTool",
             "LoadingPhase": "PostEngineInit"
         }
     ]
