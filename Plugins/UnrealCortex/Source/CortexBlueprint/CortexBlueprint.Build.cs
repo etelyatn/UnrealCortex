@@ -16,6 +16,9 @@ public class CortexBlueprint : ModuleRules
 		{
 			"CoreUObject",
 			"Engine",
+			"UnrealEd",
+			"AssetRegistry",
+			"Json",
 		});
 	}
 }

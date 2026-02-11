@@ -5,6 +5,7 @@ public class CortexBlueprintTests : ModuleRules
 	public CortexBlueprintTests(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		bUseUnity = false;
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
@@ -14,6 +15,8 @@ public class CortexBlueprintTests : ModuleRules
 			"Json",
 			"CortexCore",
 			"CortexBlueprint",
+			"UnrealEd",
+			"AssetRegistry",
 		});
 
 		// Access CortexBlueprint Private headers for test setup (command handler)
