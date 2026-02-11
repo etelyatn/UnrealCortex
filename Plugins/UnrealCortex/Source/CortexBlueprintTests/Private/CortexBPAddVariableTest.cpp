@@ -19,12 +19,12 @@ bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("name"), TEXT("BP_AddVarTest"));
-		Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_AddVar"));
+		Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_AddVar"));
 		Params->SetStringField(TEXT("type"), TEXT("Actor"));
 		Handler.Execute(TEXT("create"), Params);
 	}
 
-	FString TestBPPath = TEXT("/Temp/CortexBPTest_AddVar/BP_AddVarTest");
+	FString TestBPPath = TEXT("/Game/Temp/CortexBPTest_AddVar/BP_AddVarTest");
 
 	// Test: add a float variable
 	{

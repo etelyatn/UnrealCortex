@@ -139,19 +139,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexBPGetInfoTest::RunTest(const FString& Parameters)
 {
-	// Setup - Create test Blueprint
+	// Use pre-built BP_ComplexActor (has variables, functions, graphs)
 	FCortexBPCommandHandler Handler;
-	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
-	CreateParams->SetStringField(TEXT("name"), TEXT("BP_TestInfo"));
-	CreateParams->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Info"));
-	CreateParams->SetStringField(TEXT("type"), TEXT("Actor"));
 
-	FCortexCommandResult CreateResult = Handler.Execute(TEXT("create"), CreateParams);
-	TestTrue(TEXT("Blueprint creation should succeed"), CreateResult.bSuccess);
-
-	// Execute get_info command
 	TSharedPtr<FJsonObject> InfoParams = MakeShared<FJsonObject>();
-	InfoParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Temp/CortexBPTest_Info/BP_TestInfo"));
+	InfoParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Blueprints/BP_ComplexActor"));
 	FCortexCommandResult InfoResult = Handler.Execute(TEXT("get_info"), InfoParams);
 
 	// Verify
@@ -163,11 +155,11 @@ bool FCortexBPGetInfoTest::RunTest(const FString& Parameters)
 		// Verify basic fields
 		FString Name;
 		InfoResult.Data->TryGetStringField(TEXT("name"), Name);
-		TestEqual(TEXT("Name should match"), Name, TEXT("BP_TestInfo"));
+		TestEqual(TEXT("Name should match"), Name, TEXT("BP_ComplexActor"));
 
 		FString AssetPath;
 		InfoResult.Data->TryGetStringField(TEXT("asset_path"), AssetPath);
-		TestEqual(TEXT("Asset path should match"), AssetPath, TEXT("/Game/Temp/CortexBPTest_Info/BP_TestInfo"));
+		TestEqual(TEXT("Asset path should match"), AssetPath, TEXT("/Game/Blueprints/BP_ComplexActor"));
 
 		FString Type;
 		InfoResult.Data->TryGetStringField(TEXT("type"), Type);
@@ -177,28 +169,26 @@ bool FCortexBPGetInfoTest::RunTest(const FString& Parameters)
 		InfoResult.Data->TryGetStringField(TEXT("parent_class"), ParentClass);
 		TestEqual(TEXT("Parent class should be Actor"), ParentClass, TEXT("Actor"));
 
-		// Verify arrays exist (even if empty for new Blueprint)
+		// Verify variables array (BP_ComplexActor has Health, DisplayName, bIsActive)
 		const TArray<TSharedPtr<FJsonValue>>* VariablesArray;
-		TestTrue(TEXT("Variables array should exist"), InfoResult.Data->TryGetArrayField(TEXT("variables"), VariablesArray));
+		if (TestTrue(TEXT("Variables array should exist"), InfoResult.Data->TryGetArrayField(TEXT("variables"), VariablesArray)))
+		{
+			TestTrue(TEXT("Should have at least 3 variables"), VariablesArray->Num() >= 3);
+		}
 
+		// Verify functions array (BP_ComplexActor has CalculateDamage)
 		const TArray<TSharedPtr<FJsonValue>>* FunctionsArray;
-		TestTrue(TEXT("Functions array should exist"), InfoResult.Data->TryGetArrayField(TEXT("functions"), FunctionsArray));
+		if (TestTrue(TEXT("Functions array should exist"), InfoResult.Data->TryGetArrayField(TEXT("functions"), FunctionsArray)))
+		{
+			TestTrue(TEXT("Should have at least 1 function"), FunctionsArray->Num() >= 1);
+		}
 
+		// Verify graphs array
 		const TArray<TSharedPtr<FJsonValue>>* GraphsArray;
-		TestTrue(TEXT("Graphs array should exist"), InfoResult.Data->TryGetArrayField(TEXT("graphs"), GraphsArray));
-
-		// New Blueprint should have at least EventGraph
-		if (GraphsArray)
+		if (TestTrue(TEXT("Graphs array should exist"), InfoResult.Data->TryGetArrayField(TEXT("graphs"), GraphsArray)))
 		{
 			TestTrue(TEXT("Should have at least one graph"), GraphsArray->Num() > 0);
 		}
-	}
-
-	// Cleanup
-	UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_Info/BP_TestInfo"));
-	if (LoadedAsset)
-	{
-		LoadedAsset->MarkAsGarbage();
 	}
 
 	return true;

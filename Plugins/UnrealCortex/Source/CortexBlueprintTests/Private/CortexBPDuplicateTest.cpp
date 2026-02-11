@@ -22,7 +22,7 @@ bool FCortexBPDuplicateTest::RunTest(const FString& Parameters)
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("name"), TEXT("BP_DupSource"));
-		Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_Dup"));
+		Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Dup"));
 		Params->SetStringField(TEXT("type"), TEXT("Actor"));
 		Handler.Execute(TEXT("create"), Params);
 	}
@@ -30,7 +30,7 @@ bool FCortexBPDuplicateTest::RunTest(const FString& Parameters)
 	// Add a variable to the source Blueprint directly
 	UObject* LoadedObj = StaticLoadObject(
 		UBlueprint::StaticClass(), nullptr,
-		TEXT("/Temp/CortexBPTest_Dup/BP_DupSource"));
+		TEXT("/Game/Temp/CortexBPTest_Dup/BP_DupSource"));
 	UBlueprint* SourceBP = Cast<UBlueprint>(LoadedObj);
 	TestNotNull(TEXT("Source BP should exist"), SourceBP);
 
@@ -45,7 +45,7 @@ bool FCortexBPDuplicateTest::RunTest(const FString& Parameters)
 	// Test: duplicate
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-		Params->SetStringField(TEXT("asset_path"), TEXT("/Temp/CortexBPTest_Dup/BP_DupSource"));
+		Params->SetStringField(TEXT("asset_path"), TEXT("/Game/Temp/CortexBPTest_Dup/BP_DupSource"));
 		Params->SetStringField(TEXT("new_name"), TEXT("BP_DupCopy"));
 
 		FCortexCommandResult Result = Handler.Execute(TEXT("duplicate"), Params);
@@ -60,14 +60,14 @@ bool FCortexBPDuplicateTest::RunTest(const FString& Parameters)
 			FString NewPath;
 			Result.Data->TryGetStringField(TEXT("new_asset_path"), NewPath);
 			TestEqual(TEXT("New path should match"),
-				NewPath, TEXT("/Temp/CortexBPTest_Dup/BP_DupCopy"));
+				NewPath, TEXT("/Game/Temp/CortexBPTest_Dup/BP_DupCopy"));
 		}
 	}
 
 	// Verify the copy exists and has the Health variable
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-		Params->SetStringField(TEXT("asset_path"), TEXT("/Temp/CortexBPTest_Dup/BP_DupCopy"));
+		Params->SetStringField(TEXT("asset_path"), TEXT("/Game/Temp/CortexBPTest_Dup/BP_DupCopy"));
 
 		FCortexCommandResult Result = Handler.Execute(TEXT("get_info"), Params);
 		TestTrue(TEXT("get_info on copy should succeed"), Result.bSuccess);
@@ -98,16 +98,16 @@ bool FCortexBPDuplicateTest::RunTest(const FString& Parameters)
 	}
 
 	// Cleanup
-	UObject* SourceBP = LoadObject<UBlueprint>(nullptr, TEXT("/Temp/CortexBPTest_Dup/BP_DupSource"));
-	if (SourceBP)
+	UObject* CreatedSource = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_Dup/BP_DupSource"));
+	if (CreatedSource)
 	{
-		SourceBP->MarkAsGarbage();
+		CreatedSource->MarkAsGarbage();
 	}
 
-	UObject* CopyBP = LoadObject<UBlueprint>(nullptr, TEXT("/Temp/CortexBPTest_Dup/BP_DupCopy"));
-	if (CopyBP)
+	UObject* CreatedCopy = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_Dup/BP_DupCopy"));
+	if (CreatedCopy)
 	{
-		CopyBP->MarkAsGarbage();
+		CreatedCopy->MarkAsGarbage();
 	}
 
 	return true;

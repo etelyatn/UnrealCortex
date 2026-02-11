@@ -16,12 +16,12 @@ bool FCortexBPStructureOpsTest::RunTest(const FString& Parameters)
 	FCortexBPCommandHandler Handler;
 
 	// Setup: create a Blueprint with a variable
-	FString TestBPPath = TEXT("/Temp/CortexBPTest_StructOps/BP_StructOpsTest");
+	FString TestBPPath = TEXT("/Game/Temp/CortexBPTest_StructOps/BP_StructOpsTest");
 
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("name"), TEXT("BP_StructOpsTest"));
-		Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_StructOps"));
+		Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_StructOps"));
 		Params->SetStringField(TEXT("type"), TEXT("Actor"));
 		Handler.Execute(TEXT("create"), Params);
 	}

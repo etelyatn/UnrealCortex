@@ -26,7 +26,7 @@ bool FCortexBPCompileFailTest::RunTest(const FString& Parameters)
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("name"), TEXT("BP_CompileFailTest"));
-		Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_CompileFail"));
+		Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_CompileFail"));
 		Params->SetStringField(TEXT("type"), TEXT("Actor"));
 		FCortexCommandResult Result = Handler.Execute(TEXT("create"), Params);
 		TestTrue(TEXT("Setup: create should succeed"), Result.bSuccess);
@@ -35,7 +35,7 @@ bool FCortexBPCompileFailTest::RunTest(const FString& Parameters)
 	// Load the Blueprint and inject a broken node
 	UObject* LoadedObj = StaticLoadObject(
 		UBlueprint::StaticClass(), nullptr,
-		TEXT("/Temp/CortexBPTest_CompileFail/BP_CompileFailTest"));
+		TEXT("/Game/Temp/CortexBPTest_CompileFail/BP_CompileFailTest"));
 	UBlueprint* TestBP = Cast<UBlueprint>(LoadedObj);
 	TestNotNull(TEXT("Blueprint should exist"), TestBP);
 
@@ -63,7 +63,7 @@ bool FCortexBPCompileFailTest::RunTest(const FString& Parameters)
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"),
-			TEXT("/Temp/CortexBPTest_CompileFail/BP_CompileFailTest"));
+			TEXT("/Game/Temp/CortexBPTest_CompileFail/BP_CompileFailTest"));
 
 		FCortexCommandResult Result = Handler.Execute(TEXT("compile"), Params);
 
@@ -84,7 +84,7 @@ bool FCortexBPCompileFailTest::RunTest(const FString& Parameters)
 	}
 
 	// Cleanup
-	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, TEXT("/Temp/CortexBPTest_CompileFail/BP_CompileFailTest"));
+	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_CompileFail/BP_CompileFailTest"));
 	if (CreatedBP)
 	{
 		CreatedBP->MarkAsGarbage();

@@ -15,25 +15,30 @@
 #include "Kismet2/CompilerResultsLog.h"
 #include "Misc/ScopedTransaction.h"
 
-UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FCortexCommandResult& OutError)
+UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FString& OutError)
 {
-	UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, *AssetPath);
+	// Normalize path (ensure it starts with /Game/)
+	FString NormalizedPath = AssetPath;
+	if (!NormalizedPath.StartsWith(TEXT("/")))
+	{
+		NormalizedPath = TEXT("/Game/") + NormalizedPath;
+	}
+	else if (!NormalizedPath.StartsWith(TEXT("/Game/")))
+	{
+		NormalizedPath = TEXT("/Game") + NormalizedPath;
+	}
+
+	UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, *NormalizedPath);
 	if (!LoadedAsset)
 	{
-		OutError = FCortexCommandRouter::Error(
-			CortexErrorCodes::BlueprintNotFound,
-			FString::Printf(TEXT("Blueprint not found at path: %s"), *AssetPath)
-		);
+		OutError = FString::Printf(TEXT("Blueprint not found at path: %s"), *NormalizedPath);
 		return nullptr;
 	}
 
 	UBlueprint* BP = Cast<UBlueprint>(LoadedAsset);
 	if (!BP)
 	{
-		OutError = FCortexCommandRouter::Error(
-			CortexErrorCodes::BlueprintNotFound,
-			FString::Printf(TEXT("Asset at path %s is not a Blueprint"), *AssetPath)
-		);
+		OutError = FString::Printf(TEXT("Asset at path %s is not a Blueprint"), *NormalizedPath);
 		return nullptr;
 	}
 
@@ -95,6 +100,44 @@ namespace
 
 		OutError = FString::Printf(TEXT("Invalid Blueprint type: %s (supported: Actor, Component, Widget, Interface, FunctionLibrary)"), *TypeStr);
 		return false;
+	}
+
+	/** Helper: Determine Blueprint type string from a loaded UBlueprint using class hierarchy */
+	FString DetermineBlueprintType(const UBlueprint* BP)
+	{
+		if (!BP || !BP->ParentClass)
+		{
+			return TEXT("Unknown");
+		}
+
+		if (BP->BlueprintType == BPTYPE_Interface)
+		{
+			return TEXT("Interface");
+		}
+
+		if (BP->BlueprintType == BPTYPE_FunctionLibrary)
+		{
+			return TEXT("FunctionLibrary");
+		}
+
+		// Check for Widget using dynamic resolution to avoid compile-time dependency on UMG
+		static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
+		if (UserWidgetClass && BP->ParentClass->IsChildOf(UserWidgetClass))
+		{
+			return TEXT("Widget");
+		}
+
+		if (BP->ParentClass->IsChildOf(UActorComponent::StaticClass()))
+		{
+			return TEXT("Component");
+		}
+
+		if (BP->ParentClass->IsChildOf(AActor::StaticClass()))
+		{
+			return TEXT("Actor");
+		}
+
+		return TEXT("Unknown");
 	}
 }
 
@@ -331,11 +374,11 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 	}
 
 	// Load Blueprint
-	FCortexCommandResult LoadError;
+	FString LoadError;
 	UBlueprint* BP = LoadBlueprint(AssetPath, LoadError);
 	if (!BP)
 	{
-		return LoadError;
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
 	// Build info object
@@ -492,7 +535,7 @@ FCortexCommandResult FCortexBPAssetOps::Delete(const TSharedPtr<FJsonObject>& Pa
 	Data->SetBoolField(TEXT("deleted"), true);
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 
-	UE_LOG(LogCortexBP, Log, TEXT("Deleted Blueprint: %s"), *AssetPath);
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Deleted Blueprint: %s"), *AssetPath);
 
 	return FCortexCommandRouter::Success(Data);
 }
@@ -576,7 +619,7 @@ FCortexCommandResult FCortexBPAssetOps::Duplicate(const TSharedPtr<FJsonObject>&
 	Data->SetStringField(TEXT("new_asset_path"), NewPackagePath);
 	Data->SetBoolField(TEXT("duplicated"), true);
 
-	UE_LOG(LogCortexBP, Log, TEXT("Duplicated %s -> %s"), *AssetPath, *NewPackagePath);
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Duplicated %s -> %s"), *AssetPath, *NewPackagePath);
 
 	return FCortexCommandRouter::Success(Data);
 }
@@ -685,7 +728,7 @@ FCortexCommandResult FCortexBPAssetOps::Compile(const TSharedPtr<FJsonObject>& P
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetArrayField(TEXT("warnings"), WarningsArray);
 
-	UE_LOG(LogCortexBP, Log, TEXT("Compiled Blueprint: %s"), *AssetPath);
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Compiled Blueprint: %s"), *AssetPath);
 
 	return FCortexCommandRouter::Success(Data);
 }
@@ -732,7 +775,7 @@ FCortexCommandResult FCortexBPAssetOps::Save(const TSharedPtr<FJsonObject>& Para
 	Data->SetBoolField(TEXT("saved"), true);
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 
-	UE_LOG(LogCortexBP, Log, TEXT("Saved Blueprint: %s"), *AssetPath);
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Saved Blueprint: %s"), *AssetPath);
 
 	return FCortexCommandRouter::Success(Data);
 }

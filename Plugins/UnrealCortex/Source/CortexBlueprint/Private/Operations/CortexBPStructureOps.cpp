@@ -109,11 +109,11 @@ FCortexCommandResult FCortexBPStructureOps::AddVariable(const TSharedPtr<FJsonOb
 		);
 	}
 
-	FCortexCommandResult LoadError;
+	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
 	{
-		return LoadError;
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
 	// Check if variable already exists
@@ -186,7 +186,7 @@ FCortexCommandResult FCortexBPStructureOps::AddVariable(const TSharedPtr<FJsonOb
 		Data->SetStringField(TEXT("default_value"), DefaultValue);
 	}
 
-	UE_LOG(LogCortexBlueprintStructure, Log, TEXT("Added variable '%s' (%s) to %s"),
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Added variable '%s' (%s) to %s"),
 		*VarName, *VarType, *AssetPath);
 
 	return FCortexCommandRouter::Success(Data);
@@ -207,11 +207,11 @@ FCortexCommandResult FCortexBPStructureOps::RemoveVariable(const TSharedPtr<FJso
 		);
 	}
 
-	FCortexCommandResult LoadError;
+	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
 	{
-		return LoadError;
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
 	// Check if variable exists
@@ -244,7 +244,7 @@ FCortexCommandResult FCortexBPStructureOps::RemoveVariable(const TSharedPtr<FJso
 	Data->SetBoolField(TEXT("removed"), true);
 	Data->SetStringField(TEXT("name"), VarName);
 
-	UE_LOG(LogCortexBlueprintStructure, Log, TEXT("Removed variable '%s' from %s"), *VarName, *AssetPath);
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Removed variable '%s' from %s"), *VarName, *AssetPath);
 
 	return FCortexCommandRouter::Success(Data);
 }
@@ -264,11 +264,11 @@ FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonOb
 		);
 	}
 
-	FCortexCommandResult LoadError;
+	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
 	{
-		return LoadError;
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
 	// Check if function already exists

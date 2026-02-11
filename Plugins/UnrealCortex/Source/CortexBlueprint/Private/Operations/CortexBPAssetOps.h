@@ -56,7 +56,6 @@ public:
 	 */
 	static FCortexCommandResult Save(const TSharedPtr<FJsonObject>& Params);
 
-private:
-	/** Load a Blueprint by asset path, returns nullptr and sets OutError if not found */
-	static UBlueprint* LoadBlueprint(const FString& AssetPath, FCortexCommandResult& OutError);
+	/** Load a Blueprint by asset path (with path normalization), returns nullptr and sets OutError if not found */
+	static UBlueprint* LoadBlueprint(const FString& AssetPath, FString& OutError);
 };

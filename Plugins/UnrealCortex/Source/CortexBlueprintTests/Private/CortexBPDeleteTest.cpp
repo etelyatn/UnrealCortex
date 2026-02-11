@@ -18,7 +18,7 @@ bool FCortexBPDeleteTest::RunTest(const FString& Parameters)
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("name"), TEXT("BP_DeleteTest"));
-		Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_Delete"));
+		Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Delete"));
 		Params->SetStringField(TEXT("type"), TEXT("Actor"));
 		Handler.Execute(TEXT("create"), Params);
 	}
@@ -27,7 +27,7 @@ bool FCortexBPDeleteTest::RunTest(const FString& Parameters)
 	{
 		UObject* LoadedObj = StaticLoadObject(
 			UBlueprint::StaticClass(), nullptr,
-			TEXT("/Temp/CortexBPTest_Delete/BP_DeleteTest"));
+			TEXT("/Game/Temp/CortexBPTest_Delete/BP_DeleteTest"));
 		TestNotNull(TEXT("Blueprint should exist before delete"), LoadedObj);
 	}
 
@@ -35,7 +35,7 @@ bool FCortexBPDeleteTest::RunTest(const FString& Parameters)
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"),
-			TEXT("/Temp/CortexBPTest_Delete/BP_DeleteTest"));
+			TEXT("/Game/Temp/CortexBPTest_Delete/BP_DeleteTest"));
 
 		FCortexCommandResult Result = Handler.Execute(TEXT("delete"), Params);
 		TestTrue(TEXT("delete should succeed"), Result.bSuccess);

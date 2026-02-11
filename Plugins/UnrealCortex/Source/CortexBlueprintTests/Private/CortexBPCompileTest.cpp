@@ -4,8 +4,6 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"
-#include "Kismet2/KismetEditorUtilities.h"
-#include "GameFramework/Actor.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPCompileTest,
@@ -17,21 +15,11 @@ bool FCortexBPCompileTest::RunTest(const FString& Parameters)
 {
 	FCortexBPCommandHandler Handler;
 
-	// Setup: create a valid Blueprint
-	{
-		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-		Params->SetStringField(TEXT("name"), TEXT("BP_CompileTest"));
-		Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_Compile"));
-		Params->SetStringField(TEXT("type"), TEXT("Actor"));
-		FCortexCommandResult Result = Handler.Execute(TEXT("create"), Params);
-		TestTrue(TEXT("Setup: create should succeed"), Result.bSuccess);
-	}
-
-	// Test: compile a valid Blueprint
+	// Test: compile pre-built BP_SimpleActor (already clean, should succeed)
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"),
-			TEXT("/Temp/CortexBPTest_Compile/BP_CompileTest"));
+			TEXT("/Game/Blueprints/BP_SimpleActor"));
 
 		FCortexCommandResult Result = Handler.Execute(TEXT("compile"), Params);
 		TestTrue(TEXT("compile should succeed"), Result.bSuccess);
@@ -45,7 +33,7 @@ bool FCortexBPCompileTest::RunTest(const FString& Parameters)
 			FString AssetPath;
 			Result.Data->TryGetStringField(TEXT("asset_path"), AssetPath);
 			TestEqual(TEXT("asset_path should match"),
-				AssetPath, TEXT("/Temp/CortexBPTest_Compile/BP_CompileTest"));
+				AssetPath, TEXT("/Game/Blueprints/BP_SimpleActor"));
 		}
 	}
 
@@ -66,13 +54,6 @@ bool FCortexBPCompileTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("compile non-existent should fail"), Result.bSuccess);
 		TestEqual(TEXT("Error should be BLUEPRINT_NOT_FOUND"),
 			Result.ErrorCode, CortexErrorCodes::BlueprintNotFound);
-	}
-
-	// Cleanup
-	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, TEXT("/Temp/CortexBPTest_Compile/BP_CompileTest"));
-	if (CreatedBP)
-	{
-		CreatedBP->MarkAsGarbage();
 	}
 
 	return true;
