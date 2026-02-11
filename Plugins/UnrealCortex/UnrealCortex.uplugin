@@ -23,7 +23,27 @@
             "LoadingPhase": "PostEngineInit"
         },
         {
+            "Name": "CortexGraph",
+            "Type": "Editor",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexBlueprint",
+            "Type": "Editor",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
             "Name": "CortexTests",
+            "Type": "DeveloperTool",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexGraphTests",
+            "Type": "DeveloperTool",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexBlueprintTests",
             "Type": "DeveloperTool",
             "LoadingPhase": "PostEngineInit"
         }
