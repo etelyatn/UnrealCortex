@@ -35,6 +35,17 @@ namespace CortexErrorCodes
 	static const FString VariableNotFound = TEXT("VARIABLE_NOT_FOUND");
 	static const FString FunctionExists = TEXT("FUNCTION_EXISTS");
 	static const FString HasReferences = TEXT("HAS_REFERENCES");
+	static const FString WidgetNotFound = TEXT("WIDGET_NOT_FOUND");
+	static const FString WidgetNameExists = TEXT("WIDGET_NAME_EXISTS");
+	static const FString InvalidWidgetClass = TEXT("INVALID_WIDGET_CLASS");
+	static const FString InvalidParent = TEXT("INVALID_PARENT");
+	static const FString InvalidSlotIndex = TEXT("INVALID_SLOT_INDEX");
+	static const FString AnimationNotFound = TEXT("ANIMATION_NOT_FOUND");
+	static const FString AnimationExists = TEXT("ANIMATION_EXISTS");
+	static const FString TrackNotFound = TEXT("TRACK_NOT_FOUND");
+	static const FString InvalidPropertyPath = TEXT("INVALID_PROPERTY_PATH");
+	static const FString InvalidPropertyValue = TEXT("INVALID_PROPERTY_VALUE");
+	static const FString NotTextWidget = TEXT("NOT_TEXT_WIDGET");
 }
 
 /** Result of a command execution */

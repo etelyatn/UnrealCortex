@@ -93,14 +93,6 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
     {
         return FCortexUMGWidgetAnimationOps::ListAnimations(Params);
     }
-    if (Command == TEXT("add_track"))
-    {
-        return FCortexUMGWidgetAnimationOps::AddTrack(Params);
-    }
-    if (Command == TEXT("add_keyframe"))
-    {
-        return FCortexUMGWidgetAnimationOps::AddKeyframe(Params);
-    }
     if (Command == TEXT("remove_animation"))
     {
         return FCortexUMGWidgetAnimationOps::RemoveAnimation(Params);
@@ -136,8 +128,6 @@ TArray<FCortexCommandInfo> FCortexUMGCommandHandler::GetSupportedCommands() cons
         { TEXT("get_schema"), TEXT("Get all editable properties and types") },
         { TEXT("create_animation"), TEXT("Create a new UWidgetAnimation") },
         { TEXT("list_animations"), TEXT("List all animations") },
-        { TEXT("add_track"), TEXT("Add a property track to animation") },
-        { TEXT("add_keyframe"), TEXT("Add a keyframe to a track") },
         { TEXT("remove_animation"), TEXT("Remove an animation") },
     };
 }

@@ -70,5 +70,6 @@ bool FCortexUMGReparentTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("PanelB should have 1 child after reparent"), PanelB->GetChildrenCount(), 1);
     TestTrue(TEXT("PanelB child should be TextBlock"), PanelB->GetChildAt(0)->IsA<UTextBlock>());
 
+    WBP->MarkAsGarbage();
     return true;
 }

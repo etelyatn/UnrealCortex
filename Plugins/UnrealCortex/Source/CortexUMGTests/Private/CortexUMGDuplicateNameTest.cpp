@@ -43,5 +43,6 @@ bool FCortexUMGDuplicateNameTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Error code should be WIDGET_NAME_EXISTS"),
         R2.ErrorCode, FString(TEXT("WIDGET_NAME_EXISTS")));
 
+    WBP->MarkAsGarbage();
     return true;
 }

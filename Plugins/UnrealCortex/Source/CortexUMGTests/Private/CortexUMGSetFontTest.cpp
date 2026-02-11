@@ -56,5 +56,6 @@ bool FCortexUMGSetFontTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Typeface should be Bold"),
         Title->GetFont().TypefaceFontName.ToString(), FString(TEXT("Bold")));
 
+    WBP->MarkAsGarbage();
     return true;
 }

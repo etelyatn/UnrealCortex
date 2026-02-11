@@ -66,5 +66,6 @@ bool FCortexUMGSetColorTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Color G should match"), FMath::IsNearlyEqual(ActualColor.G, ExpectedColor.G, 0.01f));
     TestTrue(TEXT("Color B should match"), FMath::IsNearlyEqual(ActualColor.B, ExpectedColor.B, 0.01f));
 
+    WBP->MarkAsGarbage();
     return true;
 }

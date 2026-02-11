@@ -74,5 +74,6 @@ bool FCortexUMGGetSchemaTest::RunTest(const FString& Parameters)
         }
     }
 
+    WBP->MarkAsGarbage();
     return true;
 }

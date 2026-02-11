@@ -28,6 +28,7 @@ def register_widget_tree_tools(mcp, connection: UEConnection):
             params["slot_index"] = slot_index
         try:
             response = connection.send_command("umg.add_widget", params)
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "add_widget")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -40,6 +41,7 @@ def register_widget_tree_tools(mcp, connection: UEConnection):
                 "umg.remove_widget",
                 {"asset_path": asset_path, "widget_name": widget_name},
             )
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "remove_widget")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -58,6 +60,7 @@ def register_widget_tree_tools(mcp, connection: UEConnection):
             params["slot_index"] = slot_index
         try:
             response = connection.send_command("umg.reparent", params)
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "reparent")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -115,6 +118,7 @@ def register_widget_tree_tools(mcp, connection: UEConnection):
             params["name_prefix"] = name_prefix
         try:
             response = connection.send_command("umg.duplicate_widget", params)
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "duplicate_widget")
         except ConnectionError as e:
             return f"Error: {e}"

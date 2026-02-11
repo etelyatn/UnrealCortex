@@ -107,5 +107,6 @@ bool FCortexUMGFullWidgetBuildTest::RunTest(const FString& Parameters)
     FCortexCommandResult AnimListResult = Cmd(TEXT("list_animations"), ListAnimP);
     TestTrue(TEXT("list_animations should succeed"), AnimListResult.bSuccess);
 
+    WBP->MarkAsGarbage();
     return true;
 }

@@ -75,5 +75,6 @@ bool FCortexUMGUndoRedoTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("Last transaction should exist"), LastTransaction);
 
     GEditor->ResetTransaction(FText::FromString(TEXT("Cortex UMG Undo Test Cleanup")));
+    WBP->MarkAsGarbage();
     return true;
 }

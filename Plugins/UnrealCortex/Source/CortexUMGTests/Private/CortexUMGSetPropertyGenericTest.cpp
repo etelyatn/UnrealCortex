@@ -64,5 +64,6 @@ bool FCortexUMGSetPropertyGenericTest::RunTest(const FString& Parameters)
         TestFalse(TEXT("bIsEnabled should be false"), Value);
     }
 
+    WBP->MarkAsGarbage();
     return true;
 }

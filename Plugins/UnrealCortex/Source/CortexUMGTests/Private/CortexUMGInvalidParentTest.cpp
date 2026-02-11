@@ -59,5 +59,6 @@ bool FCortexUMGInvalidParentTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Error code should be INVALID_WIDGET_CLASS"),
         R4.ErrorCode, FString(TEXT("INVALID_WIDGET_CLASS")));
 
+    WBP->MarkAsGarbage();
     return true;
 }

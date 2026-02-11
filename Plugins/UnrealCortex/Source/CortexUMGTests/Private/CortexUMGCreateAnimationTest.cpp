@@ -56,5 +56,6 @@ bool FCortexUMGCreateAnimationTest::RunTest(const FString& Parameters)
         }
     }
 
+    WBP->MarkAsGarbage();
     return true;
 }

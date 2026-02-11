@@ -89,5 +89,6 @@ bool FCortexUMGAddWidgetTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("Total widgets should be 2"), TotalWidgets, 2);
     }
 
+    WBP->MarkAsGarbage();
     return true;
 }

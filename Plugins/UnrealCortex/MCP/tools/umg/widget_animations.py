@@ -22,6 +22,7 @@ def register_widget_animation_tools(mcp, connection: UEConnection):
                 "animation_name": animation_name,
                 "length": length,
             })
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "create_animation")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -38,45 +39,6 @@ def register_widget_animation_tools(mcp, connection: UEConnection):
             return f"Error: {e}"
 
     @mcp.tool()
-    def add_track(
-        asset_path: str, animation_name: str, widget_name: str, property_path: str
-    ) -> str:
-        """Add a property animation track to an animation."""
-        try:
-            response = connection.send_command("umg.add_track", {
-                "asset_path": asset_path,
-                "animation_name": animation_name,
-                "widget_name": widget_name,
-                "property_path": property_path,
-            })
-            return format_response(response.get("data", {}), "add_track")
-        except ConnectionError as e:
-            return f"Error: {e}"
-
-    @mcp.tool()
-    def add_keyframe(
-        asset_path: str, animation_name: str, track_index: int,
-        time: float, value: str, interp: str = "Linear",
-    ) -> str:
-        """Add a keyframe to an animation track."""
-        params = {
-            "asset_path": asset_path,
-            "animation_name": animation_name,
-            "track_index": track_index,
-            "time": time,
-            "interp": interp,
-        }
-        try:
-            params["value"] = json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            params["value"] = value
-        try:
-            response = connection.send_command("umg.add_keyframe", params)
-            return format_response(response.get("data", {}), "add_keyframe")
-        except ConnectionError as e:
-            return f"Error: {e}"
-
-    @mcp.tool()
     def remove_animation(asset_path: str, animation_name: str) -> str:
         """Remove an animation from the Widget Blueprint."""
         try:
@@ -84,6 +46,7 @@ def register_widget_animation_tools(mcp, connection: UEConnection):
                 "asset_path": asset_path,
                 "animation_name": animation_name,
             })
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "remove_animation")
         except ConnectionError as e:
             return f"Error: {e}"

@@ -857,19 +857,18 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetProperty(const TSharedPtr<F
             FString::Printf(TEXT("Widget not found: %s"), *WidgetName));
     }
 
-    FProperty* Property = Widget->GetClass()->FindPropertyByName(FName(*PropertyPath));
-    if (!Property)
+    FProperty* Property = nullptr;
+    void* ValuePtr = nullptr;
+    if (!CortexUMGUtils::ResolvePropertyPath(Widget, PropertyPath, Property, ValuePtr))
     {
         return FCortexCommandRouter::Error(
             CortexErrorCodes::InvalidPropertyPath,
-            FString::Printf(TEXT("Property not found: %s on %s"), *PropertyPath, *Widget->GetClass()->GetName()));
+            FString::Printf(TEXT("Property path not found: %s on %s"), *PropertyPath, *Widget->GetClass()->GetName()));
     }
 
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Set Property %s on %s"), *PropertyPath, *WidgetName)));
     WBP->Modify();
-
-    void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Widget);
     TSharedPtr<FJsonValue> JsonValue = Params->TryGetField(TEXT("value"));
     if (JsonValue.IsValid())
     {
@@ -913,15 +912,14 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::GetProperty(const TSharedPtr<F
             FString::Printf(TEXT("Widget not found: %s"), *WidgetName));
     }
 
-    FProperty* Property = Widget->GetClass()->FindPropertyByName(FName(*PropertyPath));
-    if (!Property)
+    FProperty* Property = nullptr;
+    void* ValuePtr = nullptr;
+    if (!CortexUMGUtils::ResolvePropertyPath(Widget, PropertyPath, Property, ValuePtr))
     {
         return FCortexCommandRouter::Error(
             CortexErrorCodes::InvalidPropertyPath,
-            FString::Printf(TEXT("Property not found: %s on %s"), *PropertyPath, *Widget->GetClass()->GetName()));
+            FString::Printf(TEXT("Property path not found: %s on %s"), *PropertyPath, *Widget->GetClass()->GetName()));
     }
-
-    const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Widget);
     TSharedPtr<FJsonValue> JsonValue = FCortexSerializer::PropertyToJson(Property, ValuePtr);
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();

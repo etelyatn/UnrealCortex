@@ -23,6 +23,7 @@ def register_widget_property_tools(mcp, connection: UEConnection):
         """Set a color on a widget."""
         try:
             response = connection.send_command("umg.set_color", {
+            connection.invalidate_cache("umg.")
                 "asset_path": asset_path,
                 "widget_name": widget_name,
                 "color": color,
@@ -37,6 +38,7 @@ def register_widget_property_tools(mcp, connection: UEConnection):
         """Set text content on text-capable widgets."""
         try:
             response = connection.send_command("umg.set_text", {
+            connection.invalidate_cache("umg.")
                 "asset_path": asset_path,
                 "widget_name": widget_name,
                 "text": text,
@@ -62,6 +64,7 @@ def register_widget_property_tools(mcp, connection: UEConnection):
             params["letter_spacing"] = letter_spacing
         try:
             response = connection.send_command("umg.set_font", params)
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "set_font")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -81,6 +84,7 @@ def register_widget_property_tools(mcp, connection: UEConnection):
             params["corner_radius"] = corner_radius
         try:
             response = connection.send_command("umg.set_brush", params)
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "set_brush")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -95,6 +99,7 @@ def register_widget_property_tools(mcp, connection: UEConnection):
             params["padding"] = float(padding)
         try:
             response = connection.send_command("umg.set_padding", params)
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "set_padding")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -107,6 +112,7 @@ def register_widget_property_tools(mcp, connection: UEConnection):
             params["preset"] = preset
         try:
             response = connection.send_command("umg.set_anchor", params)
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "set_anchor")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -123,6 +129,7 @@ def register_widget_property_tools(mcp, connection: UEConnection):
             params["vertical"] = vertical
         try:
             response = connection.send_command("umg.set_alignment", params)
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "set_alignment")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -144,6 +151,7 @@ def register_widget_property_tools(mcp, connection: UEConnection):
             params["fill_ratio"] = fill_ratio
         try:
             response = connection.send_command("umg.set_size", params)
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "set_size")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -153,6 +161,7 @@ def register_widget_property_tools(mcp, connection: UEConnection):
         """Set widget visibility state."""
         try:
             response = connection.send_command("umg.set_visibility", {
+            connection.invalidate_cache("umg.")
                 "asset_path": asset_path,
                 "widget_name": widget_name,
                 "visibility": visibility,
@@ -175,6 +184,7 @@ def register_widget_property_tools(mcp, connection: UEConnection):
             params["value"] = value
         try:
             response = connection.send_command("umg.set_property", params)
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "set_property")
         except ConnectionError as e:
             return f"Error: {e}"
