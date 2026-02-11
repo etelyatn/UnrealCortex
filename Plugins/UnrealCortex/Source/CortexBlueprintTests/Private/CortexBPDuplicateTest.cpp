@@ -97,5 +97,18 @@ bool FCortexBPDuplicateTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	// Cleanup
+	UObject* SourceBP = LoadObject<UBlueprint>(nullptr, TEXT("/Temp/CortexBPTest_Dup/BP_DupSource"));
+	if (SourceBP)
+	{
+		SourceBP->MarkAsGarbage();
+	}
+
+	UObject* CopyBP = LoadObject<UBlueprint>(nullptr, TEXT("/Temp/CortexBPTest_Dup/BP_DupCopy"));
+	if (CopyBP)
+	{
+		CopyBP->MarkAsGarbage();
+	}
+
 	return true;
 }

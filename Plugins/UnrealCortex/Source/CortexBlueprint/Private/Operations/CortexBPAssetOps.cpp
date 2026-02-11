@@ -1,6 +1,7 @@
 // Copyright Andrei Sudarikov. All Rights Reserved.
 
 #include "CortexBPAssetOps.h"
+#include "CortexBlueprintModule.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -14,29 +15,33 @@
 #include "Kismet2/CompilerResultsLog.h"
 #include "Misc/ScopedTransaction.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogCortexBP, Log, All);
+UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FCortexCommandResult& OutError)
+{
+	UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, *AssetPath);
+	if (!LoadedAsset)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::BlueprintNotFound,
+			FString::Printf(TEXT("Blueprint not found at path: %s"), *AssetPath)
+		);
+		return nullptr;
+	}
+
+	UBlueprint* BP = Cast<UBlueprint>(LoadedAsset);
+	if (!BP)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::BlueprintNotFound,
+			FString::Printf(TEXT("Asset at path %s is not a Blueprint"), *AssetPath)
+		);
+		return nullptr;
+	}
+
+	return BP;
+}
 
 namespace
 {
-	/** Helper: Load Blueprint from asset path */
-	UBlueprint* LoadBlueprint(const FString& AssetPath, FString& OutError)
-	{
-		UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, *AssetPath);
-		if (!LoadedAsset)
-		{
-			OutError = FString::Printf(TEXT("Blueprint not found at path: %s"), *AssetPath);
-			return nullptr;
-		}
-
-		UBlueprint* BP = Cast<UBlueprint>(LoadedAsset);
-		if (!BP)
-		{
-			OutError = FString::Printf(TEXT("Asset at path %s is not a Blueprint"), *AssetPath);
-			return nullptr;
-		}
-
-		return BP;
-	}
 
 	/** Helper: Determine parent class and blueprint class from type string */
 	bool DetermineBlueprintType(
@@ -168,7 +173,11 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 		return Result;
 	}
 
-	// Create the Blueprint
+	// Create the Blueprint with undo/redo support
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Create Blueprint %s"), *Name)
+	));
+
 	UPackage* Package = CreatePackage(*PackagePath);
 	if (!Package)
 	{
@@ -206,15 +215,25 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 		return Result;
 	}
 
-	// Mark package dirty (save via bp.save command)
+	// Save the Blueprint to disk
 	Package->MarkPackageDirty();
 	FAssetRegistryModule::AssetCreated(NewBP);
+
+	// Save the package
+	if (!UPackage::SavePackage(Package, NewBP, RF_Standalone, *FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension())))
+	{
+		Result.bSuccess = false;
+		Result.ErrorCode = CortexErrorCodes::SerializationError;
+		Result.ErrorMessage = FString::Printf(TEXT("Failed to save Blueprint package: %s"), *PackagePath);
+		return Result;
+	}
 
 	// Return success with asset path
 	Result.bSuccess = true;
 	Result.Data = MakeShared<FJsonObject>();
 	Result.Data->SetStringField(TEXT("asset_path"), PackagePath);
 	Result.Data->SetStringField(TEXT("type"), TypeStr);
+	Result.Data->SetStringField(TEXT("parent_class"), ParentClass ? ParentClass->GetName() : TEXT(""));
 	Result.Data->SetBoolField(TEXT("created"), true);
 
 	return Result;
@@ -271,30 +290,9 @@ FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Para
 		// Asset name
 		BPObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
 
-		// Get Blueprint type from parent class
-		FString ParentClassPath = AssetData.GetTagValueRef<FString>(TEXT("ParentClass"));
-		FString Type = TEXT("Unknown");
-
-		if (ParentClassPath.Contains(TEXT("Actor")))
-		{
-			Type = TEXT("Actor");
-		}
-		else if (ParentClassPath.Contains(TEXT("ActorComponent")))
-		{
-			Type = TEXT("Component");
-		}
-		else if (ParentClassPath.Contains(TEXT("UserWidget")))
-		{
-			Type = TEXT("Widget");
-		}
-		else if (ParentClassPath.Contains(TEXT("Interface")))
-		{
-			Type = TEXT("Interface");
-		}
-		else if (ParentClassPath.Contains(TEXT("BlueprintFunctionLibrary")))
-		{
-			Type = TEXT("FunctionLibrary");
-		}
+		// Load Blueprint and determine type using proper class hierarchy
+		UBlueprint* BP = Cast<UBlueprint>(AssetData.GetAsset());
+		FString Type = BP ? DetermineBlueprintType(BP) : TEXT("Unknown");
 
 		BPObj->SetStringField(TEXT("type"), Type);
 
@@ -305,6 +303,7 @@ FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Para
 	Result.bSuccess = true;
 	Result.Data = MakeShared<FJsonObject>();
 	Result.Data->SetArrayField(TEXT("blueprints"), BlueprintsArray);
+	Result.Data->SetNumberField(TEXT("count"), BlueprintsArray.Num());
 
 	return Result;
 }
@@ -332,14 +331,11 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 	}
 
 	// Load Blueprint
-	FString Error;
-	UBlueprint* BP = LoadBlueprint(AssetPath, Error);
+	FCortexCommandResult LoadError;
+	UBlueprint* BP = LoadBlueprint(AssetPath, LoadError);
 	if (!BP)
 	{
-		Result.bSuccess = false;
-		Result.ErrorCode = CortexErrorCodes::BlueprintNotFound;
-		Result.ErrorMessage = Error;
-		return Result;
+		return LoadError;
 	}
 
 	// Build info object
@@ -349,34 +345,19 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 	InfoObj->SetStringField(TEXT("name"), BP->GetName());
 	InfoObj->SetStringField(TEXT("asset_path"), AssetPath);
 
-	// Determine type
-	FString Type = TEXT("Unknown");
+	// Determine type using shared helper
+	FString Type = DetermineBlueprintType(BP);
+	InfoObj->SetStringField(TEXT("type"), Type);
+
+	// Parent class
 	if (BP->ParentClass)
 	{
-		if (BP->ParentClass->IsChildOf(AActor::StaticClass()))
-		{
-			Type = TEXT("Actor");
-		}
-		else if (BP->ParentClass->IsChildOf(UActorComponent::StaticClass()))
-		{
-			Type = TEXT("Component");
-		}
-		else if (BP->ParentClass->GetName() == TEXT("UserWidget"))
-		{
-			Type = TEXT("Widget");
-		}
-		else if (BP->ParentClass->IsChildOf(UBlueprintFunctionLibrary::StaticClass()))
-		{
-			Type = TEXT("FunctionLibrary");
-		}
-		else if (BP->BlueprintType == BPTYPE_Interface)
-		{
-			Type = TEXT("Interface");
-		}
-
 		InfoObj->SetStringField(TEXT("parent_class"), BP->ParentClass->GetName());
 	}
-	InfoObj->SetStringField(TEXT("type"), Type);
+
+	// Compilation status
+	bool bIsCompiled = (BP->Status == BS_UpToDate || BP->Status == BS_UpToDateWithWarnings);
+	InfoObj->SetBoolField(TEXT("is_compiled"), bIsCompiled);
 
 	// Variables
 	TArray<TSharedPtr<FJsonValue>> VariablesArray;
@@ -385,36 +366,46 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 		TSharedPtr<FJsonObject> VarObj = MakeShared<FJsonObject>();
 		VarObj->SetStringField(TEXT("name"), Variable.VarName.ToString());
 		VarObj->SetStringField(TEXT("type"), Variable.VarType.PinCategory.ToString());
+
+		// Add default value if available
+		if (!Variable.DefaultValue.IsEmpty())
+		{
+			VarObj->SetStringField(TEXT("default_value"), Variable.DefaultValue);
+		}
+
+		// Add exposure status
+		bool bIsExposed = (Variable.PropertyFlags & CPF_BlueprintVisible) != 0;
+		VarObj->SetBoolField(TEXT("is_exposed"), bIsExposed);
+
 		VariablesArray.Add(MakeShared<FJsonValueObject>(VarObj));
 	}
 	InfoObj->SetArrayField(TEXT("variables"), VariablesArray);
 
-	// Functions
+	// Functions (use Blueprint->FunctionGraphs instead of GetAllGraphs)
 	TArray<TSharedPtr<FJsonValue>> FunctionsArray;
-	TArray<UEdGraph*> Graphs;
-	BP->GetAllGraphs(Graphs);
-
-	for (UEdGraph* Graph : Graphs)
+	for (UEdGraph* Graph : BP->FunctionGraphs)
 	{
-		if (Graph && Graph->GetFName().ToString().StartsWith(TEXT("Function_")))
+		if (Graph)
 		{
 			TSharedPtr<FJsonObject> FuncObj = MakeShared<FJsonObject>();
-			FString GraphName = Graph->GetName();
-			GraphName.RemoveFromStart(TEXT("Function_"));
-			FuncObj->SetStringField(TEXT("name"), GraphName);
+			FuncObj->SetStringField(TEXT("name"), Graph->GetName());
 			FunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
 		}
 	}
 	InfoObj->SetArrayField(TEXT("functions"), FunctionsArray);
 
-	// Graphs
+	// Graphs (all graphs with node counts)
 	TArray<TSharedPtr<FJsonValue>> GraphsArray;
-	for (UEdGraph* Graph : Graphs)
+	TArray<UEdGraph*> AllGraphs;
+	BP->GetAllGraphs(AllGraphs);
+
+	for (UEdGraph* Graph : AllGraphs)
 	{
 		if (Graph)
 		{
 			TSharedPtr<FJsonObject> GraphObj = MakeShared<FJsonObject>();
 			GraphObj->SetStringField(TEXT("name"), Graph->GetName());
+			GraphObj->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
 			GraphsArray.Add(MakeShared<FJsonValueObject>(GraphObj));
 		}
 	}
@@ -732,7 +723,7 @@ FCortexCommandResult FCortexBPAssetOps::Save(const TSharedPtr<FJsonObject>& Para
 	if (!bSaved)
 	{
 		return FCortexCommandRouter::Error(
-			CortexErrorCodes::AssetNotFound,
+			CortexErrorCodes::SerializationError,
 			FString::Printf(TEXT("Failed to save Blueprint: %s"), *AssetPath)
 		);
 	}

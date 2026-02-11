@@ -6,8 +6,6 @@
 #include "CortexBPCommandHandler.h"
 #include "CortexTypes.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogCortexBPTests, Log, All);
-
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPListTest,
 	"Cortex.Blueprint.List.Basic",
@@ -20,7 +18,7 @@ bool FCortexBPListTest::RunTest(const FString& Parameters)
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
 	CreateParams->SetStringField(TEXT("name"), TEXT("BP_TestList"));
-	CreateParams->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_List"));
+	CreateParams->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_List"));
 	CreateParams->SetStringField(TEXT("type"), TEXT("Actor"));
 
 	FCortexCommandResult CreateResult = Handler.Execute(TEXT("create"), CreateParams);
@@ -93,7 +91,7 @@ bool FCortexBPListFilterPathTest::RunTest(const FString& Parameters)
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
 	CreateParams->SetStringField(TEXT("name"), TEXT("BP_TestListFilter"));
-	CreateParams->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_ListFilter"));
+	CreateParams->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_ListFilter"));
 	CreateParams->SetStringField(TEXT("type"), TEXT("Actor"));
 
 	FCortexCommandResult CreateResult = Handler.Execute(TEXT("create"), CreateParams);
@@ -145,7 +143,7 @@ bool FCortexBPGetInfoTest::RunTest(const FString& Parameters)
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
 	CreateParams->SetStringField(TEXT("name"), TEXT("BP_TestInfo"));
-	CreateParams->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_Info"));
+	CreateParams->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Info"));
 	CreateParams->SetStringField(TEXT("type"), TEXT("Actor"));
 
 	FCortexCommandResult CreateResult = Handler.Execute(TEXT("create"), CreateParams);

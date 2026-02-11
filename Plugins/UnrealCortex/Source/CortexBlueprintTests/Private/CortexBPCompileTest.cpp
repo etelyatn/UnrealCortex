@@ -68,5 +68,12 @@ bool FCortexBPCompileTest::RunTest(const FString& Parameters)
 			Result.ErrorCode, CortexErrorCodes::BlueprintNotFound);
 	}
 
+	// Cleanup
+	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, TEXT("/Temp/CortexBPTest_Compile/BP_CompileTest"));
+	if (CreatedBP)
+	{
+		CreatedBP->MarkAsGarbage();
+	}
+
 	return true;
 }

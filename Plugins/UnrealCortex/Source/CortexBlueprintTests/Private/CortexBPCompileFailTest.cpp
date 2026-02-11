@@ -83,5 +83,12 @@ bool FCortexBPCompileFailTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	// Cleanup
+	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, TEXT("/Temp/CortexBPTest_CompileFail/BP_CompileFailTest"));
+	if (CreatedBP)
+	{
+		CreatedBP->MarkAsGarbage();
+	}
+
 	return true;
 }

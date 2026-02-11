@@ -1,4 +1,6 @@
 #include "Operations/CortexBPStructureOps.h"
+#include "Operations/CortexBPAssetOps.h"
+#include "CortexBlueprintModule.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
@@ -7,24 +9,8 @@
 #include "Dom/JsonValue.h"
 #include "Misc/ScopedTransaction.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogCortexBlueprintStructure, Log, All);
-
 namespace
 {
-	/** Helper: load a Blueprint by path (reuses pattern from BPAssetOps) */
-	UBlueprint* LoadBlueprintForStructure(const FString& AssetPath, FCortexCommandResult& OutError)
-	{
-		UObject* LoadedObj = StaticLoadObject(UBlueprint::StaticClass(), nullptr, *AssetPath);
-		UBlueprint* Blueprint = Cast<UBlueprint>(LoadedObj);
-		if (Blueprint == nullptr)
-		{
-			OutError = FCortexCommandRouter::Error(
-				CortexErrorCodes::BlueprintNotFound,
-				FString::Printf(TEXT("Blueprint not found: %s"), *AssetPath)
-			);
-		}
-		return Blueprint;
-	}
 
 	/** Helper: resolve a type string to FEdGraphPinType */
 	FEdGraphPinType ResolveVariableType(const FString& TypeStr)
@@ -124,7 +110,7 @@ FCortexCommandResult FCortexBPStructureOps::AddVariable(const TSharedPtr<FJsonOb
 	}
 
 	FCortexCommandResult LoadError;
-	UBlueprint* Blueprint = LoadBlueprintForStructure(AssetPath, LoadError);
+	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
 	{
 		return LoadError;
@@ -222,7 +208,7 @@ FCortexCommandResult FCortexBPStructureOps::RemoveVariable(const TSharedPtr<FJso
 	}
 
 	FCortexCommandResult LoadError;
-	UBlueprint* Blueprint = LoadBlueprintForStructure(AssetPath, LoadError);
+	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
 	{
 		return LoadError;
@@ -279,7 +265,7 @@ FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonOb
 	}
 
 	FCortexCommandResult LoadError;
-	UBlueprint* Blueprint = LoadBlueprintForStructure(AssetPath, LoadError);
+	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
 	{
 		return LoadError;
@@ -297,12 +283,6 @@ FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonOb
 		}
 	}
 
-	bool bIsPure = false;
-	Params->TryGetBoolField(TEXT("is_pure"), bIsPure);
-
-	FString Access = TEXT("Public");
-	Params->TryGetStringField(TEXT("access"), Access);
-
 	FScopedTransaction Transaction(FText::FromString(
 		FString::Printf(TEXT("Cortex:Add Function %s"), *FuncName)
 	));
@@ -316,13 +296,6 @@ FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonOb
 	);
 
 	FBlueprintEditorUtils::AddFunctionGraph(Blueprint, NewGraph, false);
-
-	// Set access level
-	if (Access == TEXT("Private"))
-	{
-		NewGraph->GetSchema()->GetGraphDisplayInformation(*NewGraph);
-	}
-
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
 	// Build response
@@ -331,20 +304,7 @@ FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonOb
 	Data->SetStringField(TEXT("name"), FuncName);
 	Data->SetStringField(TEXT("graph_name"), NewGraph->GetName());
 
-	// Include inputs/outputs if specified
-	const TArray<TSharedPtr<FJsonValue>>* InputsArray = nullptr;
-	if (Params->TryGetArrayField(TEXT("inputs"), InputsArray) && InputsArray != nullptr)
-	{
-		Data->SetArrayField(TEXT("inputs"), *InputsArray);
-	}
-
-	const TArray<TSharedPtr<FJsonValue>>* OutputsArray = nullptr;
-	if (Params->TryGetArrayField(TEXT("outputs"), OutputsArray) && OutputsArray != nullptr)
-	{
-		Data->SetArrayField(TEXT("outputs"), *OutputsArray);
-	}
-
-	UE_LOG(LogCortexBlueprintStructure, Log, TEXT("Added function '%s' to %s"), *FuncName, *AssetPath);
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Added function '%s' to %s"), *FuncName, *AssetPath);
 
 	return FCortexCommandRouter::Success(Data);
 }

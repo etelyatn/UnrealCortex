@@ -129,5 +129,12 @@ bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 			Result.ErrorCode, CortexErrorCodes::InvalidField);
 	}
 
+	// Cleanup
+	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
+	if (CreatedBP)
+	{
+		CreatedBP->MarkAsGarbage();
+	}
+
 	return true;
 }

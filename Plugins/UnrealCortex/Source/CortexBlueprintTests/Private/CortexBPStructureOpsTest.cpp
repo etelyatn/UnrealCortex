@@ -142,5 +142,12 @@ bool FCortexBPStructureOpsTest::RunTest(const FString& Parameters)
 			Result.ErrorCode, CortexErrorCodes::FunctionExists);
 	}
 
+	// Cleanup
+	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
+	if (CreatedBP)
+	{
+		CreatedBP->MarkAsGarbage();
+	}
+
 	return true;
 }

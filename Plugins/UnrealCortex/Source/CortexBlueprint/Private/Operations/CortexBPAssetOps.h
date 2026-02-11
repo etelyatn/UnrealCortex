@@ -4,6 +4,9 @@
 
 #include "CoreMinimal.h"
 #include "CortexTypes.h"
+#include "CortexCommandRouter.h"
+
+class UBlueprint;
 
 /**
  * Blueprint asset operations
@@ -52,4 +55,8 @@ public:
 	 * Params: asset_path (string)
 	 */
 	static FCortexCommandResult Save(const TSharedPtr<FJsonObject>& Params);
+
+private:
+	/** Load a Blueprint by asset path, returns nullptr and sets OutError if not found */
+	static UBlueprint* LoadBlueprint(const FString& AssetPath, FCortexCommandResult& OutError);
 };

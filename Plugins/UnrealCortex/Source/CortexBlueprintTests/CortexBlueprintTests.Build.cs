@@ -14,6 +14,7 @@ public class CortexBlueprintTests : ModuleRules
 			"Engine",
 			"Json",
 			"CortexCore",
+			"CortexGraph",
 			"CortexBlueprint",
 			"UnrealEd",
 			"AssetRegistry",

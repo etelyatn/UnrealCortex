@@ -10,6 +10,7 @@ public class CortexBlueprint : ModuleRules
 		{
 			"Core",
 			"CortexCore",
+			"CortexGraph",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]

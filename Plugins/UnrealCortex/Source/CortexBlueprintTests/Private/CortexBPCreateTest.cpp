@@ -6,8 +6,6 @@
 #include "CortexBPCommandHandler.h"
 #include "CortexTypes.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogCortexBPTests, Log, All);
-
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPCreateWidgetTest,
 	"Cortex.Blueprint.Create.Widget",
@@ -20,7 +18,7 @@ bool FCortexBPCreateWidgetTest::RunTest(const FString& Parameters)
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("name"), TEXT("WBP_TestCreate"));
-	Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_Create"));
+	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Create"));
 	Params->SetStringField(TEXT("type"), TEXT("Widget"));
 
 	// Execute
@@ -93,7 +91,7 @@ bool FCortexBPCreateInvalidTypeTest::RunTest(const FString& Parameters)
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("name"), TEXT("BP_TestInvalidType"));
-	Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_InvalidType"));
+	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_InvalidType"));
 	Params->SetStringField(TEXT("type"), TEXT("InvalidType"));
 
 	// Execute
@@ -118,7 +116,7 @@ bool FCortexBPCreateDuplicateTest::RunTest(const FString& Parameters)
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("name"), TEXT("BP_TestDuplicate"));
-	Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_Duplicate"));
+	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Duplicate"));
 	Params->SetStringField(TEXT("type"), TEXT("Actor"));
 
 	// Execute first creation

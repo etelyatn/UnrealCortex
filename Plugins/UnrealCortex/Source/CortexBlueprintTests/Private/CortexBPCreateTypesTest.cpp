@@ -23,7 +23,7 @@ bool FCortexBPCreateActorTypeTest::RunTest(const FString& Parameters)
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("name"), TEXT("BP_TestActor"));
-	Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_Types"));
+	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Types"));
 	Params->SetStringField(TEXT("type"), TEXT("Actor"));
 
 	// Execute
@@ -66,7 +66,7 @@ bool FCortexBPCreateComponentTypeTest::RunTest(const FString& Parameters)
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("name"), TEXT("BP_TestComponent"));
-	Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_Types"));
+	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Types"));
 	Params->SetStringField(TEXT("type"), TEXT("Component"));
 
 	// Execute
@@ -109,7 +109,7 @@ bool FCortexBPCreateFunctionLibraryTypeTest::RunTest(const FString& Parameters)
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("name"), TEXT("BP_TestFunctionLibrary"));
-	Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_Types"));
+	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Types"));
 	Params->SetStringField(TEXT("type"), TEXT("FunctionLibrary"));
 
 	// Execute
@@ -152,7 +152,7 @@ bool FCortexBPCreateInterfaceTypeTest::RunTest(const FString& Parameters)
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("name"), TEXT("BP_TestInterface"));
-	Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_Types"));
+	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Types"));
 	Params->SetStringField(TEXT("type"), TEXT("Interface"));
 
 	// Execute
@@ -195,7 +195,7 @@ bool FCortexBPCreateWidgetTypeTest::RunTest(const FString& Parameters)
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("name"), TEXT("WBP_TestWidget"));
-	Params->SetStringField(TEXT("path"), TEXT("/Temp/CortexBPTest_Types"));
+	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Types"));
 	Params->SetStringField(TEXT("type"), TEXT("Widget"));
 
 	// Execute
