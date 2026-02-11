@@ -393,7 +393,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetBrush(const TSharedPtr<FJso
     {
         if (Target == TEXT("background"))
         {
-            FSlateBrush Brush = BorderWidget->GetBackground();
+            FSlateBrush Brush = BorderWidget->Background;
 
             FString ColorStr;
             if (Params->TryGetStringField(TEXT("color"), ColorStr))

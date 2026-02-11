@@ -13,7 +13,7 @@
 #include "Components/ActorComponent.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Kismet2/CompilerResultsLog.h"
-#include "Misc/ScopedTransaction.h"
+#include "ScopedTransaction.h"
 
 UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FString& OutError)
 {
@@ -273,7 +273,11 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 	FAssetRegistryModule::AssetCreated(NewBP);
 
 	// Save the package
-	if (!UPackage::SavePackage(Package, NewBP, RF_Standalone, *FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension())))
+	const FString PackageFilename =
+		FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Standalone;
+	if (!UPackage::SavePackage(Package, NewBP, *PackageFilename, SaveArgs))
 	{
 		Result.bSuccess = false;
 		Result.ErrorCode = CortexErrorCodes::SerializationError;

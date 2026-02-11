@@ -64,7 +64,9 @@ namespace
 		FString Filename = FPackageName::LongPackageNameToFilename(
 			PackagePath / AssetName, FPackageName::GetAssetPackageExtension());
 
-		if (!UPackage::SavePackage(Package, OutBP, RF_Standalone, *Filename))
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Standalone;
+		if (!UPackage::SavePackage(Package, OutBP, *Filename, SaveArgs))
 		{
 			Test->AddError(FString::Printf(TEXT("Failed to save package: %s"), *Filename));
 			return false;
@@ -151,7 +153,7 @@ bool FCortexBPContentSetupTest::RunTest(const FString& Parameters)
 					BP, FName("CalculateDamage"),
 					UEdGraph::StaticClass(),
 					UEdGraphSchema_K2::StaticClass());
-				FBlueprintEditorUtils::AddFunctionGraph(BP, FuncGraph, false);
+				FBlueprintEditorUtils::AddFunctionGraph<UClass>(BP, FuncGraph, false, nullptr);
 			}
 
 			FKismetEditorUtilities::CompileBlueprint(BP);
@@ -160,7 +162,9 @@ bool FCortexBPContentSetupTest::RunTest(const FString& Parameters)
 			UPackage* Package = BP->GetOutermost();
 			FString Filename = FPackageName::LongPackageNameToFilename(
 				Package->GetName(), FPackageName::GetAssetPackageExtension());
-			UPackage::SavePackage(Package, BP, RF_Standalone, *Filename);
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Standalone;
+			UPackage::SavePackage(Package, BP, *Filename, SaveArgs);
 		}
 	}
 

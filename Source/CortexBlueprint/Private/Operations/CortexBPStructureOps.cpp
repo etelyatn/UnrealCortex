@@ -7,7 +7,7 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
-#include "Misc/ScopedTransaction.h"
+#include "ScopedTransaction.h"
 
 namespace
 {
@@ -295,7 +295,7 @@ FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonOb
 		UEdGraphSchema_K2::StaticClass()
 	);
 
-	FBlueprintEditorUtils::AddFunctionGraph(Blueprint, NewGraph, false);
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(Blueprint, NewGraph, false, nullptr);
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
 	// Build response
