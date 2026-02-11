@@ -11,6 +11,8 @@
 #include "GameFramework/Actor.h"
 #include "Components/ActorComponent.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "Misc/ScopedTransaction.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogCortexBP, Log, All);
 
@@ -427,36 +429,319 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 
 FCortexCommandResult FCortexBPAssetOps::Delete(const TSharedPtr<FJsonObject>& Params)
 {
-	FCortexCommandResult Result;
-	Result.bSuccess = false;
-	Result.ErrorCode = CortexErrorCodes::UnknownCommand;
-	Result.ErrorMessage = TEXT("bp.delete not implemented");
-	return Result;
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: asset_path")
+		);
+	}
+
+	bool bForce = false;
+	Params->TryGetBoolField(TEXT("force"), bForce);
+
+	// Load blueprint
+	FString LoadError;
+	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
+	if (Blueprint == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::BlueprintNotFound,
+			LoadError
+		);
+	}
+
+	// Check for references unless force is true
+	if (!bForce)
+	{
+		IAssetRegistry& AssetRegistry =
+			FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+		TArray<FAssetIdentifier> Referencers;
+		AssetRegistry.GetReferencers(
+			FAssetIdentifier(Blueprint->GetOutermost()->GetFName()),
+			Referencers
+		);
+
+		if (Referencers.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> RefArray;
+			for (const FAssetIdentifier& Ref : Referencers)
+			{
+				RefArray.Add(MakeShared<FJsonValueString>(Ref.ToString()));
+			}
+			TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+			Details->SetArrayField(TEXT("references"), RefArray);
+
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::HasReferences,
+				FString::Printf(TEXT("Blueprint has %d references. Use force=true to delete anyway."),
+					Referencers.Num()),
+				Details
+			);
+		}
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex:Delete Blueprint %s"), *Blueprint->GetName())
+	));
+
+	UPackage* Package = Blueprint->GetOutermost();
+
+	// Remove from asset registry
+	FAssetRegistryModule::AssetDeleted(Blueprint);
+
+	// Mark for garbage collection
+	Blueprint->ClearFlags(RF_Standalone | RF_Public);
+	Blueprint->MarkAsGarbage();
+	Package->MarkAsGarbage();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetBoolField(TEXT("deleted"), true);
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+
+	UE_LOG(LogCortexBP, Log, TEXT("Deleted Blueprint: %s"), *AssetPath);
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexBPAssetOps::Duplicate(const TSharedPtr<FJsonObject>& Params)
 {
-	FCortexCommandResult Result;
-	Result.bSuccess = false;
-	Result.ErrorCode = CortexErrorCodes::UnknownCommand;
-	Result.ErrorMessage = TEXT("bp.duplicate not implemented");
-	return Result;
+	FString AssetPath;
+	FString NewName;
+
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("new_name"), NewName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, new_name")
+		);
+	}
+
+	// Load source blueprint
+	FString LoadError;
+	UBlueprint* SourceBP = LoadBlueprint(AssetPath, LoadError);
+	if (SourceBP == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::BlueprintNotFound,
+			LoadError
+		);
+	}
+
+	// Determine destination path
+	FString NewPath;
+	Params->TryGetStringField(TEXT("new_path"), NewPath);
+	if (NewPath.IsEmpty())
+	{
+		// Default to same directory as source
+		NewPath = FPackageName::GetLongPackagePath(SourceBP->GetOutermost()->GetName());
+	}
+
+	FString NewPackagePath = FString::Printf(TEXT("%s/%s"), *NewPath, *NewName);
+
+	// Check if destination already exists
+	UPackage* ExistingPackage = FindPackage(nullptr, *NewPackagePath);
+	if (ExistingPackage != nullptr)
+	{
+		UObject* ExistingAsset = StaticFindObject(UBlueprint::StaticClass(), ExistingPackage, *NewName);
+		if (ExistingAsset != nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::BlueprintAlreadyExists,
+				FString::Printf(TEXT("Asset already exists: %s"), *NewPackagePath)
+			);
+		}
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex:Duplicate Blueprint %s"), *NewName)
+	));
+
+	// Create destination package
+	UPackage* NewPackage = CreatePackage(*NewPackagePath);
+
+	// Duplicate the object
+	UBlueprint* NewBP = Cast<UBlueprint>(
+		StaticDuplicateObject(SourceBP, NewPackage, FName(*NewName))
+	);
+
+	if (NewBP == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			TEXT("Failed to duplicate Blueprint")
+		);
+	}
+
+	FAssetRegistryModule::AssetCreated(NewBP);
+	NewPackage->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("source"), AssetPath);
+	Data->SetStringField(TEXT("new_asset_path"), NewPackagePath);
+	Data->SetBoolField(TEXT("duplicated"), true);
+
+	UE_LOG(LogCortexBP, Log, TEXT("Duplicated %s -> %s"), *AssetPath, *NewPackagePath);
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexBPAssetOps::Compile(const TSharedPtr<FJsonObject>& Params)
 {
-	FCortexCommandResult Result;
-	Result.bSuccess = false;
-	Result.ErrorCode = CortexErrorCodes::UnknownCommand;
-	Result.ErrorMessage = TEXT("bp.compile not implemented");
-	return Result;
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: asset_path")
+		);
+	}
+
+	// Load blueprint
+	FString LoadError;
+	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
+	if (Blueprint == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::BlueprintNotFound,
+			LoadError
+		);
+	}
+
+	// Compile
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	bool bCompiled = (Blueprint->Status == BS_UpToDate
+		|| Blueprint->Status == BS_UpToDateWithWarnings);
+
+	if (!bCompiled)
+	{
+		// Collect errors from nodes
+		TArray<TSharedPtr<FJsonValue>> ErrorsArray;
+		TArray<TSharedPtr<FJsonValue>> WarningsArray;
+
+		TArray<UEdGraph*> AllGraphs;
+		Blueprint->GetAllGraphs(AllGraphs);
+
+		for (UEdGraph* Graph : AllGraphs)
+		{
+			if (Graph == nullptr)
+			{
+				continue;
+			}
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (Node == nullptr || !Node->bHasCompilerMessage)
+				{
+					continue;
+				}
+
+				TSharedRef<FJsonObject> MsgObj = MakeShared<FJsonObject>();
+				MsgObj->SetStringField(TEXT("node"), Node->GetName());
+				MsgObj->SetStringField(TEXT("message"), Node->ErrorMsg);
+
+				if (Node->ErrorType <= EMessageSeverity::Error)
+				{
+					ErrorsArray.Add(MakeShared<FJsonValueObject>(MsgObj));
+				}
+				else
+				{
+					WarningsArray.Add(MakeShared<FJsonValueObject>(MsgObj));
+				}
+			}
+		}
+
+		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+		Details->SetArrayField(TEXT("errors"), ErrorsArray);
+		Details->SetArrayField(TEXT("warnings"), WarningsArray);
+
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::CompileFailed,
+			FString::Printf(TEXT("Blueprint compilation failed with %d errors"), ErrorsArray.Num()),
+			Details
+		);
+	}
+
+	// Collect warnings even on success
+	TArray<TSharedPtr<FJsonValue>> WarningsArray;
+	TArray<UEdGraph*> AllGraphs;
+	Blueprint->GetAllGraphs(AllGraphs);
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		if (Graph == nullptr)
+		{
+			continue;
+		}
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node != nullptr && Node->bHasCompilerMessage
+				&& Node->ErrorType > EMessageSeverity::Error)
+			{
+				TSharedRef<FJsonObject> WarnObj = MakeShared<FJsonObject>();
+				WarnObj->SetStringField(TEXT("node"), Node->GetName());
+				WarnObj->SetStringField(TEXT("message"), Node->ErrorMsg);
+				WarningsArray.Add(MakeShared<FJsonValueObject>(WarnObj));
+			}
+		}
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetBoolField(TEXT("compiled"), true);
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetArrayField(TEXT("warnings"), WarningsArray);
+
+	UE_LOG(LogCortexBP, Log, TEXT("Compiled Blueprint: %s"), *AssetPath);
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexBPAssetOps::Save(const TSharedPtr<FJsonObject>& Params)
 {
-	FCortexCommandResult Result;
-	Result.bSuccess = false;
-	Result.ErrorCode = CortexErrorCodes::UnknownCommand;
-	Result.ErrorMessage = TEXT("bp.save not implemented");
-	return Result;
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: asset_path")
+		);
+	}
+
+	// Load blueprint
+	FString LoadError;
+	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
+	if (Blueprint == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::BlueprintNotFound,
+			LoadError
+		);
+	}
+
+	UPackage* Package = Blueprint->GetOutermost();
+	FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		Package->GetName(), FPackageName::GetAssetPackageExtension());
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Standalone;
+	bool bSaved = UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs);
+
+	if (!bSaved)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Failed to save Blueprint: %s"), *AssetPath)
+		);
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetBoolField(TEXT("saved"), true);
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+
+	UE_LOG(LogCortexBP, Log, TEXT("Saved Blueprint: %s"), *AssetPath);
+
+	return FCortexCommandRouter::Success(Data);
 }

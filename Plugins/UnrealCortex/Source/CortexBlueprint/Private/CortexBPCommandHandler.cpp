@@ -1,6 +1,7 @@
 #include "CortexBPCommandHandler.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPStructureOps.h"
 
 FCortexCommandResult FCortexBPCommandHandler::Execute(
 	const FString& Command,
@@ -41,6 +42,22 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPAssetOps::Save(Params);
 	}
 
+	// Structure operations
+	if (Command == TEXT("add_variable"))
+	{
+		return FCortexBPStructureOps::AddVariable(Params);
+	}
+
+	if (Command == TEXT("remove_variable"))
+	{
+		return FCortexBPStructureOps::RemoveVariable(Params);
+	}
+
+	if (Command == TEXT("add_function"))
+	{
+		return FCortexBPStructureOps::AddFunction(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown bp command: %s"), *Command)
@@ -58,6 +75,9 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add({TEXT("duplicate"), TEXT("Duplicate a Blueprint asset")});
 	Commands.Add({TEXT("compile"), TEXT("Compile a Blueprint")});
 	Commands.Add({TEXT("save"), TEXT("Save a Blueprint")});
+	Commands.Add({TEXT("add_variable"), TEXT("Add a variable to a Blueprint")});
+	Commands.Add({TEXT("remove_variable"), TEXT("Remove a variable from a Blueprint")});
+	Commands.Add({TEXT("add_function"), TEXT("Add a function to a Blueprint")});
 
 	return Commands;
 }
