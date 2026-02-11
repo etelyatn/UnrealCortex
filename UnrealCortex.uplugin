@@ -1,0 +1,66 @@
+{
+    "FileVersion": 3,
+    "Version": 1,
+    "VersionName": "0.1.0",
+    "FriendlyName": "Unreal Cortex",
+    "Description": "Modular MCP plugin for AI-powered Unreal Engine development",
+    "Category": "Developer Tools",
+    "CreatedBy": "Eugene Telyatnik",
+    "CreatedByURL": "https://github.com/etelyatn/UnrealCortex",
+    "CanContainContent": false,
+    "IsBetaVersion": true,
+    "Installed": false,
+    "Plugins": [],
+    "Modules": [
+        {
+            "Name": "CortexCore",
+            "Type": "Editor",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexData",
+            "Type": "Editor",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexGraph",
+            "Type": "Editor",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexBlueprint",
+            "Type": "Editor",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexCoreTests",
+            "Type": "DeveloperTool",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexDataTests",
+            "Type": "DeveloperTool",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexGraphTests",
+            "Type": "DeveloperTool",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexBlueprintTests",
+            "Type": "DeveloperTool",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexUMG",
+            "Type": "Editor",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexUMGTests",
+            "Type": "DeveloperTool",
+            "LoadingPhase": "PostEngineInit"
+        }
+    ]
+}
