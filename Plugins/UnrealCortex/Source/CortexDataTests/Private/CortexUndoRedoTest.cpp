@@ -22,7 +22,7 @@ bool FCortexUndoDirectTest::RunTest(const FString& Parameters)
 {
 	if (GEditor == nullptr || !GEditor->CanTransact())
 	{
-		AddWarning(TEXT("Editor undo system not available"));
+		AddInfo(TEXT("Editor undo system not available - skipping"));
 		return true;
 	}
 
@@ -76,7 +76,7 @@ bool FCortexUndoAddRowTest::RunTest(const FString& Parameters)
 {
 	if (GEditor == nullptr || !GEditor->CanTransact())
 	{
-		AddWarning(TEXT("Editor undo system not available"));
+		AddInfo(TEXT("Editor undo system not available - skipping"));
 		return true;
 	}
 

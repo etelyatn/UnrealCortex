@@ -235,7 +235,6 @@ bool FCortexUpdateCurveTableRowTest::RunTest(const FString& Parameters)
 	}
 
 	// Test: missing row should error
-	AddExpectedError(TEXT("Row 'NonExistent' not found"), EAutomationExpectedErrorFlags::Contains, 0);
 	TSharedPtr<FJsonObject> MissingParams = MakeShared<FJsonObject>();
 	MissingParams->SetStringField(TEXT("table_path"), TablePath);
 	MissingParams->SetStringField(TEXT("row_name"), TEXT("NonExistent"));

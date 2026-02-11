@@ -20,9 +20,21 @@
 #include "Engine/DataAsset.h"
 #include "ScopedTransaction.h"
 #include "CortexEditorUtils.h"
+#include "Misc/PackageName.h"
 
 UDataTable* FCortexDataTableOps::LoadDataTable(const FString& TablePath, FCortexCommandResult& OutError)
 {
+	// Check if package exists before LoadObject to avoid SkipPackage warnings
+	FString PkgName = FPackageName::ObjectPathToPackageName(TablePath);
+	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::TableNotFound,
+			FString::Printf(TEXT("DataTable not found: %s"), *TablePath)
+		);
+		return nullptr;
+	}
+
 	UDataTable* DataTable = LoadObject<UDataTable>(nullptr, *TablePath);
 	if (DataTable == nullptr)
 	{

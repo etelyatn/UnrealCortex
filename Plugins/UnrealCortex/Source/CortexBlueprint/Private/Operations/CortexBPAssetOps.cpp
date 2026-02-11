@@ -28,6 +28,14 @@ UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FString& 
 		NormalizedPath = TEXT("/Game") + NormalizedPath;
 	}
 
+	// Check if package exists before LoadObject to avoid SkipPackage warnings
+	FString PkgName = FPackageName::ObjectPathToPackageName(NormalizedPath);
+	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+	{
+		OutError = FString::Printf(TEXT("Blueprint not found at path: %s"), *NormalizedPath);
+		return nullptr;
+	}
+
 	UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, *NormalizedPath);
 	if (!LoadedAsset)
 	{
@@ -206,8 +214,10 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 		PackagePath = TEXT("/Game") + PackagePath;
 	}
 
-	// Check if asset already exists
-	UObject* ExistingAsset = LoadObject<UBlueprint>(nullptr, *PackagePath);
+	// Check if asset already exists (guard with FindPackage/DoesPackageExist to avoid warnings)
+	FString ExistingPkgName = FPackageName::ObjectPathToPackageName(PackagePath);
+	bool bPackageExists = FindPackage(nullptr, *ExistingPkgName) || FPackageName::DoesPackageExist(ExistingPkgName);
+	UObject* ExistingAsset = bPackageExists ? LoadObject<UBlueprint>(nullptr, *PackagePath) : nullptr;
 	if (ExistingAsset)
 	{
 		Result.bSuccess = false;

@@ -230,7 +230,7 @@ FCortexCommandResult FCortexDataCurveTableOps::UpdateCurveTableRow(const TShared
 		return LoadError;
 	}
 
-	FRealCurve* Curve = CurveTable->FindCurve(FName(*RowName), TEXT("CortexCurveTableOps"));
+	FRealCurve* Curve = CurveTable->FindCurve(FName(*RowName), TEXT("CortexCurveTableOps"), false);
 	if (Curve == nullptr)
 	{
 		return FCortexCommandRouter::Error(

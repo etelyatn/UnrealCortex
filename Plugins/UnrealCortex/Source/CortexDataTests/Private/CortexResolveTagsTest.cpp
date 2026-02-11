@@ -51,8 +51,6 @@ bool FCortexResolveTagsTest::RunTest(const FString& Parameters)
 
 	// --- Test 4: Invalid table path ---
 	{
-		AddExpectedError(TEXT("SkipPackage"), EAutomationExpectedErrorFlags::Contains, 0);
-		AddExpectedError(TEXT("Failed to find object"), EAutomationExpectedErrorFlags::Contains, 0);
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("table_path"), TEXT("/Game/NonExistent/DT_FakeTable.DT_FakeTable"));
 		Params->SetStringField(TEXT("tag_field"), TEXT("SomeField"));

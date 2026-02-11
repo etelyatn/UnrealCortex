@@ -48,7 +48,6 @@ FCortexCommandResult FCortexCommandRouter::Execute(const FString& Command, const
 			FString::Printf(TEXT("Unknown domain: %s"), *Namespace));
 	}
 
-	UE_LOG(LogCortex, Warning, TEXT("Unknown command: %s"), *Command);
 	return Error(CortexErrorCodes::UnknownCommand, FString::Printf(TEXT("Unknown command: %s"), *Command));
 }
 

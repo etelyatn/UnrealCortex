@@ -35,7 +35,7 @@ bool FCortexQueryByNamesTest::RunTest(const FString& Parameters)
 		const TArray<TSharedPtr<FJsonValue>>* Tables = nullptr;
 		if (!ListResult.Data->TryGetArrayField(TEXT("datatables"), Tables) || Tables == nullptr || Tables->Num() == 0)
 		{
-			AddWarning(TEXT("No DataTables loaded in editor - skipping query_by_names test"));
+			AddInfo(TEXT("No DataTables loaded in editor - skipping query_by_names test"));
 			return true;
 		}
 
@@ -78,7 +78,7 @@ bool FCortexQueryByNamesTest::RunTest(const FString& Parameters)
 		const TArray<TSharedPtr<FJsonValue>>* Rows = nullptr;
 		if (!QueryResult.Data->TryGetArrayField(TEXT("rows"), Rows) || Rows == nullptr || Rows->Num() < 2)
 		{
-			AddWarning(TEXT("Need at least 2 rows for test"));
+			AddInfo(TEXT("Need at least 2 rows for test - skipping"));
 			return true;
 		}
 

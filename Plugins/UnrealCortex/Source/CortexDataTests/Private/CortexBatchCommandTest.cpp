@@ -99,7 +99,6 @@ bool FCortexBatchCommandTest::RunTest(const FString& Parameters)
 
 	// --- Test 2: Batch with one invalid command (partial success) ---
 	{
-		AddExpectedError(TEXT("Unknown command: nonexistent_command"), EAutomationExpectedErrorFlags::Contains, 0);
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 
 		TArray<TSharedPtr<FJsonValue>> Commands;

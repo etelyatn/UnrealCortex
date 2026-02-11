@@ -90,8 +90,6 @@ bool FCortexGraphListGraphsTest::RunTest(const FString& Parameters)
 		ErrorResult.ErrorCode, CortexErrorCodes::InvalidField);
 
 	// Test error case: non-existent asset
-	AddExpectedError(TEXT("SkipPackage"), EAutomationExpectedErrorFlags::Contains, 0);
-	AddExpectedError(TEXT("Failed to find object"), EAutomationExpectedErrorFlags::Contains, 0);
 	TSharedPtr<FJsonObject> BadParams = MakeShared<FJsonObject>();
 	BadParams->SetStringField(TEXT("asset_path"), TEXT("/Game/NonExistent/Blueprint"));
 	FCortexCommandResult NotFoundResult = Router.Execute(TEXT("graph.list_graphs"), BadParams);

@@ -33,7 +33,12 @@
             "LoadingPhase": "PostEngineInit"
         },
         {
-            "Name": "CortexTests",
+            "Name": "CortexCoreTests",
+            "Type": "DeveloperTool",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexDataTests",
             "Type": "DeveloperTool",
             "LoadingPhase": "PostEngineInit"
         },

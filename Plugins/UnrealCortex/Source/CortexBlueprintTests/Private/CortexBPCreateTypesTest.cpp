@@ -224,7 +224,7 @@ bool FCortexBPCreateWidgetTypeTest::RunTest(const FString& Parameters)
 			}
 			else
 			{
-				AddWarning(TEXT("UserWidget class not available (UMG module may not be loaded)"));
+				AddInfo(TEXT("UserWidget class not available (UMG module may not be loaded) - skipping"));
 			}
 		}
 

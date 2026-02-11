@@ -10,9 +10,21 @@
 #include "K2Node_IfThenElse.h"
 #include "ScopedTransaction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Misc/PackageName.h"
 
 UBlueprint* FCortexGraphNodeOps::LoadBlueprint(const FString& AssetPath, FCortexCommandResult& OutError)
 {
+	// Check if package exists before LoadObject to avoid SkipPackage warnings
+	FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
+	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Blueprint not found: %s"), *AssetPath)
+		);
+		return nullptr;
+	}
+
 	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
 	if (Blueprint == nullptr)
 	{
