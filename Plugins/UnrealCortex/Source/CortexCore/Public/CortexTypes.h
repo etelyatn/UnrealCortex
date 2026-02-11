@@ -21,6 +21,11 @@ namespace CortexErrorCodes
 	static const FString CompositeWriteBlocked = TEXT("COMPOSITE_WRITE_BLOCKED");
 	static const FString BatchLimitExceeded = TEXT("BATCH_LIMIT_EXCEEDED");
 	static const FString BatchRecursionBlocked = TEXT("BATCH_RECURSION_BLOCKED");
+	static const FString GraphNotFound = TEXT("GRAPH_NOT_FOUND");
+	static const FString NodeNotFound = TEXT("NODE_NOT_FOUND");
+	static const FString PinNotFound = TEXT("PIN_NOT_FOUND");
+	static const FString PinTypeMismatch = TEXT("PIN_TYPE_MISMATCH");
+	static const FString ConnectionExists = TEXT("CONNECTION_EXISTS");
 }
 
 /** Result of a command execution */
