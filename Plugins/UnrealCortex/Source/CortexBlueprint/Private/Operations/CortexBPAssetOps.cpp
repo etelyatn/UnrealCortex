@@ -221,18 +221,207 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Params)
 {
 	FCortexCommandResult Result;
-	Result.bSuccess = false;
-	Result.ErrorCode = CortexErrorCodes::UnknownCommand;
-	Result.ErrorMessage = TEXT("bp.list not implemented");
+
+	// Get optional path filter
+	FString PathFilter;
+	if (Params.IsValid())
+	{
+		Params->TryGetStringField(TEXT("path"), PathFilter);
+	}
+
+	// Query AssetRegistry for all Blueprint assets
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	TArray<FAssetData> BlueprintAssets;
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+
+	// Apply path filter if provided
+	if (!PathFilter.IsEmpty())
+	{
+		// Normalize path (ensure it starts with /Game/)
+		if (!PathFilter.StartsWith(TEXT("/")))
+		{
+			PathFilter = TEXT("/Game/") + PathFilter;
+		}
+		else if (!PathFilter.StartsWith(TEXT("/Game/")))
+		{
+			PathFilter = TEXT("/Game") + PathFilter;
+		}
+
+		Filter.PackagePaths.Add(FName(*PathFilter));
+		Filter.bRecursivePaths = true;
+	}
+
+	AssetRegistry.GetAssets(Filter, BlueprintAssets);
+
+	// Build result array
+	TArray<TSharedPtr<FJsonValue>> BlueprintsArray;
+	for (const FAssetData& AssetData : BlueprintAssets)
+	{
+		TSharedPtr<FJsonObject> BPObj = MakeShared<FJsonObject>();
+
+		// Asset path
+		BPObj->SetStringField(TEXT("asset_path"), AssetData.GetObjectPathString());
+
+		// Asset name
+		BPObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
+
+		// Get Blueprint type from parent class
+		FString ParentClassPath = AssetData.GetTagValueRef<FString>(TEXT("ParentClass"));
+		FString Type = TEXT("Unknown");
+
+		if (ParentClassPath.Contains(TEXT("Actor")))
+		{
+			Type = TEXT("Actor");
+		}
+		else if (ParentClassPath.Contains(TEXT("ActorComponent")))
+		{
+			Type = TEXT("Component");
+		}
+		else if (ParentClassPath.Contains(TEXT("UserWidget")))
+		{
+			Type = TEXT("Widget");
+		}
+		else if (ParentClassPath.Contains(TEXT("Interface")))
+		{
+			Type = TEXT("Interface");
+		}
+		else if (ParentClassPath.Contains(TEXT("BlueprintFunctionLibrary")))
+		{
+			Type = TEXT("FunctionLibrary");
+		}
+
+		BPObj->SetStringField(TEXT("type"), Type);
+
+		BlueprintsArray.Add(MakeShared<FJsonValueObject>(BPObj));
+	}
+
+	// Return success with blueprints array
+	Result.bSuccess = true;
+	Result.Data = MakeShared<FJsonObject>();
+	Result.Data->SetArrayField(TEXT("blueprints"), BlueprintsArray);
+
 	return Result;
 }
 
 FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& Params)
 {
 	FCortexCommandResult Result;
-	Result.bSuccess = false;
-	Result.ErrorCode = CortexErrorCodes::UnknownCommand;
-	Result.ErrorMessage = TEXT("bp.get_info not implemented");
+
+	// Validate params
+	if (!Params.IsValid())
+	{
+		Result.bSuccess = false;
+		Result.ErrorCode = CortexErrorCodes::InvalidField;
+		Result.ErrorMessage = TEXT("Missing params object");
+		return Result;
+	}
+
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty())
+	{
+		Result.bSuccess = false;
+		Result.ErrorCode = CortexErrorCodes::InvalidField;
+		Result.ErrorMessage = TEXT("Missing or empty 'asset_path' field");
+		return Result;
+	}
+
+	// Load Blueprint
+	FString Error;
+	UBlueprint* BP = LoadBlueprint(AssetPath, Error);
+	if (!BP)
+	{
+		Result.bSuccess = false;
+		Result.ErrorCode = CortexErrorCodes::BlueprintNotFound;
+		Result.ErrorMessage = Error;
+		return Result;
+	}
+
+	// Build info object
+	TSharedPtr<FJsonObject> InfoObj = MakeShared<FJsonObject>();
+
+	// Basic info
+	InfoObj->SetStringField(TEXT("name"), BP->GetName());
+	InfoObj->SetStringField(TEXT("asset_path"), AssetPath);
+
+	// Determine type
+	FString Type = TEXT("Unknown");
+	if (BP->ParentClass)
+	{
+		if (BP->ParentClass->IsChildOf(AActor::StaticClass()))
+		{
+			Type = TEXT("Actor");
+		}
+		else if (BP->ParentClass->IsChildOf(UActorComponent::StaticClass()))
+		{
+			Type = TEXT("Component");
+		}
+		else if (BP->ParentClass->GetName() == TEXT("UserWidget"))
+		{
+			Type = TEXT("Widget");
+		}
+		else if (BP->ParentClass->IsChildOf(UBlueprintFunctionLibrary::StaticClass()))
+		{
+			Type = TEXT("FunctionLibrary");
+		}
+		else if (BP->BlueprintType == BPTYPE_Interface)
+		{
+			Type = TEXT("Interface");
+		}
+
+		InfoObj->SetStringField(TEXT("parent_class"), BP->ParentClass->GetName());
+	}
+	InfoObj->SetStringField(TEXT("type"), Type);
+
+	// Variables
+	TArray<TSharedPtr<FJsonValue>> VariablesArray;
+	for (FBPVariableDescription& Variable : BP->NewVariables)
+	{
+		TSharedPtr<FJsonObject> VarObj = MakeShared<FJsonObject>();
+		VarObj->SetStringField(TEXT("name"), Variable.VarName.ToString());
+		VarObj->SetStringField(TEXT("type"), Variable.VarType.PinCategory.ToString());
+		VariablesArray.Add(MakeShared<FJsonValueObject>(VarObj));
+	}
+	InfoObj->SetArrayField(TEXT("variables"), VariablesArray);
+
+	// Functions
+	TArray<TSharedPtr<FJsonValue>> FunctionsArray;
+	TArray<UEdGraph*> Graphs;
+	BP->GetAllGraphs(Graphs);
+
+	for (UEdGraph* Graph : Graphs)
+	{
+		if (Graph && Graph->GetFName().ToString().StartsWith(TEXT("Function_")))
+		{
+			TSharedPtr<FJsonObject> FuncObj = MakeShared<FJsonObject>();
+			FString GraphName = Graph->GetName();
+			GraphName.RemoveFromStart(TEXT("Function_"));
+			FuncObj->SetStringField(TEXT("name"), GraphName);
+			FunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
+		}
+	}
+	InfoObj->SetArrayField(TEXT("functions"), FunctionsArray);
+
+	// Graphs
+	TArray<TSharedPtr<FJsonValue>> GraphsArray;
+	for (UEdGraph* Graph : Graphs)
+	{
+		if (Graph)
+		{
+			TSharedPtr<FJsonObject> GraphObj = MakeShared<FJsonObject>();
+			GraphObj->SetStringField(TEXT("name"), Graph->GetName());
+			GraphsArray.Add(MakeShared<FJsonValueObject>(GraphObj));
+		}
+	}
+	InfoObj->SetArrayField(TEXT("graphs"), GraphsArray);
+
+	// Return success
+	Result.bSuccess = true;
+	Result.Data = InfoObj;
+
 	return Result;
 }
 
