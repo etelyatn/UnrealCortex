@@ -9,6 +9,7 @@
 #include "Components/Image.h"
 #include "Components/Button.h"
 #include "Components/Border.h"
+#include "Components/ProgressBar.h"
 #include "Components/SizeBox.h"
 #include "Components/CanvasPanelSlot.h"
 #include "ScopedTransaction.h"
@@ -221,13 +222,6 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetFont(const TSharedPtr<FJson
 
     FSlateFontInfo FontInfo = TextBlock->GetFont();
 
-    FString Family;
-    if (Params->TryGetStringField(TEXT("family"), Family))
-    {
-        FontInfo.FontObject = nullptr;
-        // UE 5.6 FSlateFontInfo no longer exposes FontName directly.
-    }
-
     int32 Size = 0;
     if (Params->TryGetNumberField(TEXT("size"), Size))
     {
@@ -266,10 +260,6 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetFont(const TSharedPtr<FJson
     FBlueprintEditorUtils::MarkBlueprintAsModified(WBP);
 
     TSharedPtr<FJsonObject> FontJson = MakeShared<FJsonObject>();
-    if (!Family.IsEmpty())
-    {
-        FontJson->SetStringField(TEXT("family"), Family);
-    }
     if (Size > 0)
     {
         FontJson->SetNumberField(TEXT("size"), Size);
@@ -398,6 +388,96 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetBrush(const TSharedPtr<FJso
 
         ImageWidget->SetBrush(Brush);
         bApplied = true;
+    }
+    else if (UBorder* BorderWidget = Cast<UBorder>(Widget))
+    {
+        if (Target == TEXT("background"))
+        {
+            FSlateBrush Brush = BorderWidget->GetBackground();
+
+            FString ColorStr;
+            if (Params->TryGetStringField(TEXT("color"), ColorStr))
+            {
+                FLinearColor Color;
+                if (ParseColor(ColorStr, Color))
+                {
+                    Brush.TintColor = FSlateColor(Color);
+                }
+            }
+
+            FString DrawAs;
+            if (Params->TryGetStringField(TEXT("draw_as"), DrawAs))
+            {
+                if (DrawAs == TEXT("RoundedBox"))
+                {
+                    Brush.DrawAs = ESlateBrushDrawType::RoundedBox;
+                }
+                else if (DrawAs == TEXT("Box"))
+                {
+                    Brush.DrawAs = ESlateBrushDrawType::Box;
+                }
+                else if (DrawAs == TEXT("Border"))
+                {
+                    Brush.DrawAs = ESlateBrushDrawType::Border;
+                }
+                else if (DrawAs == TEXT("Image"))
+                {
+                    Brush.DrawAs = ESlateBrushDrawType::Image;
+                }
+                else if (DrawAs == TEXT("None"))
+                {
+                    Brush.DrawAs = ESlateBrushDrawType::NoDrawType;
+                }
+            }
+
+            double CornerRadius = 0;
+            if (Params->TryGetNumberField(TEXT("corner_radius"), CornerRadius))
+            {
+                Brush.OutlineSettings.CornerRadii = FVector4(
+                    CornerRadius, CornerRadius, CornerRadius, CornerRadius);
+                Brush.OutlineSettings.RoundingType = ESlateBrushRoundingType::FixedRadius;
+            }
+
+            BorderWidget->SetBrush(Brush);
+            bApplied = true;
+        }
+    }
+    else if (UProgressBar* ProgressWidget = Cast<UProgressBar>(Widget))
+    {
+        if (Target == TEXT("background") || Target == TEXT("fill"))
+        {
+            FSlateBrush Brush;
+            if (Target == TEXT("background"))
+            {
+                Brush = ProgressWidget->GetWidgetStyle().BackgroundImage;
+            }
+            else
+            {
+                Brush = ProgressWidget->GetWidgetStyle().FillImage;
+            }
+
+            FString ColorStr;
+            if (Params->TryGetStringField(TEXT("color"), ColorStr))
+            {
+                FLinearColor Color;
+                if (ParseColor(ColorStr, Color))
+                {
+                    Brush.TintColor = FSlateColor(Color);
+                }
+            }
+
+            FProgressBarStyle Style = ProgressWidget->GetWidgetStyle();
+            if (Target == TEXT("background"))
+            {
+                Style.BackgroundImage = Brush;
+            }
+            else
+            {
+                Style.FillImage = Brush;
+            }
+            ProgressWidget->SetWidgetStyle(Style);
+            bApplied = true;
+        }
     }
 
     if (!bApplied)
@@ -579,6 +659,17 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetAnchor(const TSharedPtr<FJs
         (*AlignObj)->TryGetNumberField(TEXT("x"), Alignment.X);
         (*AlignObj)->TryGetNumberField(TEXT("y"), Alignment.Y);
         CanvasSlot->SetAlignment(Alignment);
+    }
+
+    const TSharedPtr<FJsonObject>* OffsetObj = nullptr;
+    if (Params->TryGetObjectField(TEXT("offset"), OffsetObj))
+    {
+        FMargin Offset = CanvasSlot->GetOffsets();
+        (*OffsetObj)->TryGetNumberField(TEXT("left"), Offset.Left);
+        (*OffsetObj)->TryGetNumberField(TEXT("top"), Offset.Top);
+        (*OffsetObj)->TryGetNumberField(TEXT("right"), Offset.Right);
+        (*OffsetObj)->TryGetNumberField(TEXT("bottom"), Offset.Bottom);
+        CanvasSlot->SetOffsets(Offset);
     }
 
     FBlueprintEditorUtils::MarkBlueprintAsModified(WBP);

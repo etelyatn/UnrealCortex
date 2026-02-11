@@ -49,13 +49,11 @@ def register_widget_property_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def set_font(
-        asset_path: str, widget_name: str, family: str = "", size: int = 0,
+        asset_path: str, widget_name: str, size: int = 0,
         typeface: str = "", letter_spacing: float = 0,
     ) -> str:
         """Set font properties on a text widget."""
         params = {"asset_path": asset_path, "widget_name": widget_name}
-        if family:
-            params["family"] = family
         if size > 0:
             params["size"] = size
         if typeface:
