@@ -281,7 +281,8 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	}
 
 	// Resolve node class
-	// For well-known classes, use StaticClass directly
+	// For well-known classes, use StaticClass (faster, no dynamic loading)
+	// Other classes use dynamic loading from /Script/BlueprintGraph or /Script/Engine
 	UClass* NodeClass = nullptr;
 	if (NodeClassName == TEXT("UK2Node_CallFunction"))
 	{
@@ -293,7 +294,7 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	}
 	else
 	{
-		// Try finding other classes dynamically
+		// Try finding other classes dynamically (e.g., UK2Node_VariableGet, UK2Node_Event)
 		NodeClass = StaticLoadClass(UEdGraphNode::StaticClass(), nullptr,
 			*FString::Printf(TEXT("/Script/BlueprintGraph.%s"), *NodeClassName));
 		if (NodeClass == nullptr)
@@ -324,6 +325,7 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	Graph->AddNode(NewNode, true, false);
 
 	// Handle CallFunction-specific setup
+	// NodeParams = node-specific parameters (nested object), distinct from outer Params
 	const TSharedPtr<FJsonObject>* NodeParams = nullptr;
 	if (Params->TryGetObjectField(TEXT("params"), NodeParams) && NodeParams)
 	{

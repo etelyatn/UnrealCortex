@@ -21,5 +21,6 @@ public:
 	static UBlueprint* LoadBlueprint(const FString& AssetPath, FCortexCommandResult& OutError);
 	static UEdGraph* FindGraph(UBlueprint* Blueprint, const FString& GraphName, FCortexCommandResult& OutError);
 	static UEdGraphNode* FindNode(UEdGraph* Graph, const FString& NodeId, FCortexCommandResult& OutError);
+	// Serialize pin to JSON. bDetailed: if true, includes is_connected and default_value fields
 	static TSharedRef<FJsonObject> SerializePin(const UEdGraphPin* Pin, bool bDetailed = true);
 };

@@ -97,8 +97,8 @@ def register_graph_tools(mcp, connection: UEConnection):
         asset_path: str,
         node_class: str,
         graph_name: str = "EventGraph",
-        position: str = "",
-        params: str = ""
+        position: str = "",  # JSON string: {"x": <int>, "y": <int>}
+        params: str = ""  # JSON string: node-specific parameters
     ) -> str:
         """Add a new node to a Blueprint graph.
 
