@@ -26,6 +26,15 @@ namespace CortexErrorCodes
 	static const FString PinNotFound = TEXT("PIN_NOT_FOUND");
 	static const FString PinTypeMismatch = TEXT("PIN_TYPE_MISMATCH");
 	static const FString ConnectionExists = TEXT("CONNECTION_EXISTS");
+	static const FString BlueprintNotFound = TEXT("BLUEPRINT_NOT_FOUND");
+	static const FString BlueprintAlreadyExists = TEXT("BLUEPRINT_ALREADY_EXISTS");
+	static const FString InvalidBlueprintType = TEXT("INVALID_BLUEPRINT_TYPE");
+	static const FString InvalidParentClass = TEXT("INVALID_PARENT_CLASS");
+	static const FString CompileFailed = TEXT("COMPILE_FAILED");
+	static const FString VariableExists = TEXT("VARIABLE_EXISTS");
+	static const FString VariableNotFound = TEXT("VARIABLE_NOT_FOUND");
+	static const FString FunctionExists = TEXT("FUNCTION_EXISTS");
+	static const FString HasReferences = TEXT("HAS_REFERENCES");
 }
 
 /** Result of a command execution */
