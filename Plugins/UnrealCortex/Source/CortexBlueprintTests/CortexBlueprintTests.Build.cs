@@ -17,6 +17,9 @@ public class CortexBlueprintTests : ModuleRules
 			"CortexBlueprint",
 			"UnrealEd",
 			"AssetRegistry",
+			"Kismet",
+			"KismetCompiler",
+			"BlueprintGraph",
 		});
 
 		// Access CortexBlueprint Private headers for test setup (command handler)

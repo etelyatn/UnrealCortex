@@ -19,6 +19,9 @@ public class CortexBlueprint : ModuleRules
 			"UnrealEd",
 			"AssetRegistry",
 			"Json",
+			"Kismet",
+			"KismetCompiler",
+			"BlueprintGraph",
 		});
 	}
 }
