@@ -11,6 +11,7 @@ public class CortexBlueprintTests : ModuleRules
 			"Core",
 			"CoreUObject",
 			"Engine",
+			"Json",
 			"CortexCore",
 			"CortexBlueprint",
 		});
