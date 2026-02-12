@@ -2,6 +2,7 @@
 #include "CortexCommandRouter.h"
 #include "Operations/CortexMaterialAssetOps.h"
 #include "Operations/CortexMaterialParamOps.h"
+#include "Operations/CortexMaterialGraphOps.h"
 
 FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 	const FString& Command,
@@ -37,6 +38,22 @@ FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 	if (Command == TEXT("reset_parameter"))
 		return FCortexMaterialParamOps::ResetParameter(Params);
 
+	// Graph operations
+	if (Command == TEXT("list_nodes"))
+		return FCortexMaterialGraphOps::ListNodes(Params);
+	if (Command == TEXT("get_node"))
+		return FCortexMaterialGraphOps::GetNode(Params);
+	if (Command == TEXT("add_node"))
+		return FCortexMaterialGraphOps::AddNode(Params);
+	if (Command == TEXT("remove_node"))
+		return FCortexMaterialGraphOps::RemoveNode(Params);
+	if (Command == TEXT("list_connections"))
+		return FCortexMaterialGraphOps::ListConnections(Params);
+	if (Command == TEXT("connect"))
+		return FCortexMaterialGraphOps::Connect(Params);
+	if (Command == TEXT("disconnect"))
+		return FCortexMaterialGraphOps::Disconnect(Params);
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown material command: %s"), *Command)
@@ -59,5 +76,12 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 		{ TEXT("set_parameter"), TEXT("Set parameter value on an instance") },
 		{ TEXT("set_parameters"), TEXT("Batch set multiple parameters") },
 		{ TEXT("reset_parameter"), TEXT("Reset instance override to parent value") },
+		{ TEXT("list_nodes"), TEXT("List material expression nodes") },
+		{ TEXT("get_node"), TEXT("Get node details by ID") },
+		{ TEXT("add_node"), TEXT("Add expression node to material graph") },
+		{ TEXT("remove_node"), TEXT("Remove expression node from material") },
+		{ TEXT("list_connections"), TEXT("List all node connections in material") },
+		{ TEXT("connect"), TEXT("Connect nodes in material graph") },
+		{ TEXT("disconnect"), TEXT("Disconnect nodes in material graph") },
 	};
 }
