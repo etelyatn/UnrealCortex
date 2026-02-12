@@ -276,7 +276,74 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJso
 
 FCortexCommandResult FCortexMaterialParamOps::SetParameters(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString AssetPath;
+	const TArray<TSharedPtr<FJsonValue>>* ParametersArray = nullptr;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetArrayField(TEXT("parameters"), ParametersArray))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path and parameters array"));
+	}
+
+	// Only instances can have parameters set
+	FCortexCommandResult LoadError;
+	UMaterialInstanceConstant* Instance = FCortexMaterialAssetOps::LoadInstance(AssetPath, LoadError);
+	if (Instance == nullptr)
+	{
+		return LoadError;
+	}
+
+	int32 SuccessCount = 0;
+	TArray<FString> Errors;
+
+	for (const TSharedPtr<FJsonValue>& ParamValue : *ParametersArray)
+	{
+		const TSharedPtr<FJsonObject>* ParamObj = nullptr;
+		if (!ParamValue->TryGetObject(ParamObj))
+		{
+			Errors.Add(TEXT("Invalid parameter object in array"));
+			continue;
+		}
+
+		// Build a params object for single set_parameter call
+		TSharedPtr<FJsonObject> SingleParams = MakeShared<FJsonObject>();
+		SingleParams->SetStringField(TEXT("asset_path"), AssetPath);
+
+		// Copy all fields from the parameter object
+		for (auto& Pair : (*ParamObj)->Values)
+		{
+			SingleParams->Values.Add(Pair.Key, Pair.Value);
+		}
+
+		FCortexCommandResult Result = SetParameter(SingleParams);
+		if (Result.bSuccess)
+		{
+			SuccessCount++;
+		}
+		else
+		{
+			Errors.Add(FString::Printf(TEXT("%s: %s"),
+				*Result.ErrorCode, *Result.ErrorMessage));
+		}
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetNumberField(TEXT("success_count"), SuccessCount);
+	Data->SetNumberField(TEXT("total_count"), ParametersArray->Num());
+
+	if (Errors.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> ErrorsArray;
+		for (const FString& Error : Errors)
+		{
+			ErrorsArray.Add(MakeShared<FJsonValueString>(Error));
+		}
+		Data->SetArrayField(TEXT("errors"), ErrorsArray);
+	}
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialParamOps::ResetParameter(const TSharedPtr<FJsonObject>& Params)
