@@ -105,3 +105,106 @@ bool FCortexMaterialCreateDuplicateTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialListTest,
+	"Cortex.Material.Asset.ListMaterials",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialListTest::RunTest(const FString& Parameters)
+{
+	FCortexMaterialCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+
+	FCortexCommandResult Result = Handler.Execute(TEXT("list_materials"), Params);
+
+	TestTrue(TEXT("list_materials should succeed"), Result.bSuccess);
+	TestTrue(TEXT("Result should have data"), Result.Data.IsValid());
+
+	if (Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* MaterialsArray = nullptr;
+		TestTrue(TEXT("Data should have materials array"),
+			Result.Data->TryGetArrayField(TEXT("materials"), MaterialsArray));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialGetTest,
+	"Cortex.Material.Asset.GetMaterial",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialGetTest::RunTest(const FString& Parameters)
+{
+	// Create a material first
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestGet_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Get_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	// Get material
+	TSharedPtr<FJsonObject> GetParams = MakeShared<FJsonObject>();
+	GetParams->SetStringField(TEXT("asset_path"), MatPath);
+	FCortexCommandResult Result = Handler.Execute(TEXT("get_material"), GetParams);
+
+	TestTrue(TEXT("get_material should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		FString Name;
+		Result.Data->TryGetStringField(TEXT("name"), Name);
+		TestEqual(TEXT("name should match"), Name, MatName);
+
+		FString Domain;
+		Result.Data->TryGetStringField(TEXT("material_domain"), Domain);
+		TestFalse(TEXT("material_domain should be populated"), Domain.IsEmpty());
+
+		FString BlendMode;
+		Result.Data->TryGetStringField(TEXT("blend_mode"), BlendMode);
+		TestFalse(TEXT("blend_mode should be populated"), BlendMode.IsEmpty());
+
+		FString ShadingModel;
+		Result.Data->TryGetStringField(TEXT("shading_model"), ShadingModel);
+		TestFalse(TEXT("shading_model should be populated"), ShadingModel.IsEmpty());
+	}
+
+	// Cleanup
+	UObject* LoadedAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedAsset)
+	{
+		LoadedAsset->MarkAsGarbage();
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialGetNotFoundTest,
+	"Cortex.Material.Asset.GetMaterial.NotFound",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialGetNotFoundTest::RunTest(const FString& Parameters)
+{
+	FCortexMaterialCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TEXT("/Game/NonExistent/M_Fake"));
+
+	FCortexCommandResult Result = Handler.Execute(TEXT("get_material"), Params);
+
+	TestFalse(TEXT("Should fail for non-existent material"), Result.bSuccess);
+	TestEqual(TEXT("Error code should be MATERIAL_NOT_FOUND"),
+		Result.ErrorCode, CortexErrorCodes::MaterialNotFound);
+
+	return true;
+}
