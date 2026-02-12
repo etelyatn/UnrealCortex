@@ -54,3 +54,41 @@ bool FCortexMaterialListParamsTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialGetParamNotFoundTest,
+	"Cortex.Material.Param.GetParameter.NotFound",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialGetParamNotFoundTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestGetParam_%s"), *Suffix);
+	const FString Dir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_GetParam_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *Dir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create material
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), Dir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	// Get non-existent parameter
+	TSharedPtr<FJsonObject> GetParams = MakeShared<FJsonObject>();
+	GetParams->SetStringField(TEXT("asset_path"), MatPath);
+	GetParams->SetStringField(TEXT("parameter_name"), TEXT("NonExistentParam"));
+	FCortexCommandResult Result = Handler.Execute(TEXT("get_parameter"), GetParams);
+
+	TestFalse(TEXT("Should fail for non-existent parameter"), Result.bSuccess);
+	TestEqual(TEXT("Error should be PARAMETER_NOT_FOUND"),
+		Result.ErrorCode, CortexErrorCodes::ParameterNotFound);
+
+	// Cleanup
+	UObject* MatAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (MatAsset) MatAsset->MarkAsGarbage();
+
+	return true;
+}
