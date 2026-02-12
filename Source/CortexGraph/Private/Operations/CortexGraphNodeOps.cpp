@@ -79,6 +79,23 @@ UEdGraphNode* FCortexGraphNodeOps::FindNode(UEdGraph* Graph, const FString& Node
 	return nullptr;
 }
 
+UEdGraphPin* FCortexGraphNodeOps::FindPin(UEdGraphNode* Node, const FString& PinName, FCortexCommandResult& OutError)
+{
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin && Pin->PinName.ToString() == PinName)
+		{
+			return Pin;
+		}
+	}
+
+	OutError = FCortexCommandRouter::Error(
+		CortexErrorCodes::PinNotFound,
+		FString::Printf(TEXT("Pin not found: %s on node %s"), *PinName, *Node->GetName())
+	);
+	return nullptr;
+}
+
 FCortexCommandResult FCortexGraphNodeOps::ListGraphs(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
@@ -473,6 +490,97 @@ FCortexCommandResult FCortexGraphNodeOps::RemoveNode(const TSharedPtr<FJsonObjec
 
 	UE_LOG(LogCortexGraph, Log, TEXT("Removed node %s from graph %s (%d pins disconnected)"),
 		*NodeId, *Graph->GetName(), DisconnectedPins);
+
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	FString NodeId;
+	FString PinName;
+	FString Value;
+
+	bool bHasParams = Params.IsValid()
+		&& Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		&& Params->TryGetStringField(TEXT("node_id"), NodeId)
+		&& Params->TryGetStringField(TEXT("pin_name"), PinName)
+		&& Params->TryGetStringField(TEXT("value"), Value);
+
+	if (!bHasParams)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, node_id, pin_name, and value")
+		);
+	}
+
+	FCortexCommandResult LoadError;
+	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
+	if (Blueprint == nullptr)
+	{
+		return LoadError;
+	}
+
+	FString GraphName;
+	Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+	UEdGraph* Graph = FindGraph(Blueprint, GraphName, LoadError);
+	if (Graph == nullptr)
+	{
+		return LoadError;
+	}
+
+	UEdGraphNode* Node = FindNode(Graph, NodeId, LoadError);
+	if (Node == nullptr)
+	{
+		return LoadError;
+	}
+
+	UEdGraphPin* Pin = FindPin(Node, PinName, LoadError);
+	if (Pin == nullptr)
+	{
+		return LoadError;
+	}
+
+	// Verify this is an input pin (output pins don't have default values)
+	if (Pin->Direction != EGPD_Input)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Cannot set value on output pin: %s"), *PinName)
+		);
+	}
+
+	// Verify pin is not connected (connected pins ignore default values)
+	if (Pin->LinkedTo.Num() > 0)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Cannot set value on connected pin: %s"), *PinName)
+		);
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Set pin value %s.%s"), *NodeId, *PinName)
+	));
+
+	Graph->Modify();
+	Node->Modify();
+
+	// Set the default value
+	Pin->DefaultValue = Value;
+
+	Graph->NotifyGraphChanged();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("node_id"), NodeId);
+	Data->SetStringField(TEXT("pin_name"), PinName);
+	Data->SetStringField(TEXT("value"), Value);
+	Data->SetBoolField(TEXT("success"), true);
+
+	UE_LOG(LogCortexGraph, Log, TEXT("Set pin value %s.%s = %s"), *NodeId, *PinName, *Value);
 
 	return FCortexCommandRouter::Success(Data);
 }

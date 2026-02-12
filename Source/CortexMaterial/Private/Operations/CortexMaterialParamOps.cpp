@@ -246,6 +246,15 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJso
 		UTexture* Texture = nullptr;
 		if (!TexturePath.IsEmpty())
 		{
+			// Guard LoadObject to prevent SkipPackage warnings
+			FString PkgName = FPackageName::ObjectPathToPackageName(TexturePath);
+			if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::AssetNotFound,
+					FString::Printf(TEXT("Texture not found: %s"), *TexturePath));
+			}
+
 			Texture = LoadObject<UTexture>(nullptr, *TexturePath);
 			if (!Texture)
 			{

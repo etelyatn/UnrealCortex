@@ -35,6 +35,10 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	{
 		return FCortexGraphConnectionOps::Disconnect(Params);
 	}
+	if (Command == TEXT("set_pin_value"))
+	{
+		return FCortexGraphNodeOps::SetPinValue(Params);
+	}
 
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
@@ -52,5 +56,6 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 		{ TEXT("remove_node"), TEXT("Remove a node and clean up connections") },
 		{ TEXT("connect"), TEXT("Connect two pins") },
 		{ TEXT("disconnect"), TEXT("Disconnect a pin") },
+		{ TEXT("set_pin_value"), TEXT("Set the default value of an input pin") },
 	};
 }

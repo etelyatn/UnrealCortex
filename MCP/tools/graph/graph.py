@@ -229,3 +229,38 @@ def register_graph_tools(mcp, connection: UEConnection):
             return format_response(response.get("data", {}), "disconnect")
         except ConnectionError as e:
             return f"Error: {e}"
+
+    @mcp.tool()
+    def graph_set_pin_value(
+        asset_path: str,
+        node_id: str,
+        pin_name: str,
+        value: str,
+        graph_name: str = "EventGraph"
+    ) -> str:
+        """Set the default value of an input pin in a Blueprint graph.
+
+        Sets the default value for an input pin. The pin must not be connected.
+
+        Args:
+            asset_path: Full asset path to the Blueprint.
+            node_id: Node ID containing the pin.
+            pin_name: Name of the input pin to set.
+            value: The value to set (as a string - will be converted to the appropriate type).
+            graph_name: Name of the graph containing the node (default: 'EventGraph').
+
+        Returns:
+            JSON with success status and the set value.
+        """
+        try:
+            response = connection.send_command("graph.set_pin_value", {
+                "asset_path": asset_path,
+                "node_id": node_id,
+                "pin_name": pin_name,
+                "value": value,
+                "graph_name": graph_name
+            })
+            connection.invalidate_cache("graph.")
+            return format_response(response.get("data", {}), "set_pin_value")
+        except ConnectionError as e:
+            return f"Error: {e}"

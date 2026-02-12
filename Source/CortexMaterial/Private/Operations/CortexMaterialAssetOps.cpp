@@ -181,6 +181,28 @@ FCortexCommandResult FCortexMaterialAssetOps::GetMaterial(const TSharedPtr<FJson
 	ParamCount->SetNumberField(TEXT("vector"), VectorParams.Num());
 	ParamCount->SetNumberField(TEXT("texture"), TextureParams.Num());
 
+	// Count material instances
+	IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+	int32 InstanceCount = 0;
+	if (AssetRegistry)
+	{
+		FARFilter InstanceFilter;
+		InstanceFilter.ClassPaths.Add(UMaterialInstanceConstant::StaticClass()->GetClassPathName());
+		InstanceFilter.bRecursiveClasses = true;
+
+		TArray<FAssetData> AllInstances;
+		AssetRegistry->GetAssets(InstanceFilter, AllInstances);
+
+		for (const FAssetData& InstanceData : AllInstances)
+		{
+			UMaterialInstanceConstant* Instance = Cast<UMaterialInstanceConstant>(InstanceData.GetAsset());
+			if (Instance && Instance->Parent == Material)
+			{
+				InstanceCount++;
+			}
+		}
+	}
+
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("name"), Material->GetName());
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
@@ -191,6 +213,7 @@ FCortexCommandResult FCortexMaterialAssetOps::GetMaterial(const TSharedPtr<FJson
 	Data->SetBoolField(TEXT("is_masked"), Material->IsMasked());
 	Data->SetNumberField(TEXT("node_count"), NodeCount);
 	Data->SetObjectField(TEXT("parameter_count"), ParamCount);
+	Data->SetNumberField(TEXT("instance_count"), InstanceCount);
 
 	return FCortexCommandRouter::Success(Data);
 }
