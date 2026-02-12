@@ -178,7 +178,100 @@ FCortexCommandResult FCortexMaterialParamOps::GetParameter(const TSharedPtr<FJso
 
 FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString AssetPath;
+	FString ParameterName;
+	FString ParameterType;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("parameter_name"), ParameterName)
+		|| !Params->TryGetStringField(TEXT("parameter_type"), ParameterType))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, parameter_name, and parameter_type"));
+	}
+
+	// Only instances can have parameters set
+	FCortexCommandResult LoadError;
+	UMaterialInstanceConstant* Instance = FCortexMaterialAssetOps::LoadInstance(AssetPath, LoadError);
+	if (Instance == nullptr)
+	{
+		return LoadError;
+	}
+
+	FName ParamName(*ParameterName);
+
+	if (ParameterType == TEXT("scalar"))
+	{
+		double Value = 0.0;
+		if (!Params->TryGetNumberField(TEXT("value"), Value))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidParameter, TEXT("Missing or invalid scalar value"));
+		}
+
+		Instance->SetScalarParameterValueEditorOnly(ParamName, static_cast<float>(Value));
+		Instance->PostEditChange();
+		Instance->MarkPackageDirty();
+	}
+	else if (ParameterType == TEXT("vector"))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ColorArray = nullptr;
+		if (!Params->TryGetArrayField(TEXT("value"), ColorArray) || ColorArray->Num() != 4)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidParameter, TEXT("Missing or invalid vector value (expects [R, G, B, A])"));
+		}
+
+		FLinearColor Color(
+			(*ColorArray)[0]->AsNumber(),
+			(*ColorArray)[1]->AsNumber(),
+			(*ColorArray)[2]->AsNumber(),
+			(*ColorArray)[3]->AsNumber()
+		);
+
+		Instance->SetVectorParameterValueEditorOnly(ParamName, Color);
+		Instance->PostEditChange();
+		Instance->MarkPackageDirty();
+	}
+	else if (ParameterType == TEXT("texture"))
+	{
+		FString TexturePath;
+		if (!Params->TryGetStringField(TEXT("value"), TexturePath))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidParameter, TEXT("Missing texture path"));
+		}
+
+		UTexture* Texture = nullptr;
+		if (!TexturePath.IsEmpty())
+		{
+			Texture = LoadObject<UTexture>(nullptr, *TexturePath);
+			if (!Texture)
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::AssetNotFound,
+					FString::Printf(TEXT("Texture not found: %s"), *TexturePath));
+			}
+		}
+
+		Instance->SetTextureParameterValueEditorOnly(ParamName, Texture);
+		Instance->PostEditChange();
+		Instance->MarkPackageDirty();
+	}
+	else
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidParameter,
+			FString::Printf(TEXT("Unknown parameter type: %s"), *ParameterType));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("parameter_name"), ParameterName);
+	Data->SetStringField(TEXT("parameter_type"), ParameterType);
+	Data->SetBoolField(TEXT("success"), true);
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialParamOps::SetParameters(const TSharedPtr<FJsonObject>& Params)

@@ -92,3 +92,51 @@ bool FCortexMaterialGetParamNotFoundTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialSetParamTest,
+	"Cortex.Material.Param.SetParameter",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialSetParamTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestSetParent_%s"), *Suffix);
+	const FString InstName = FString::Printf(TEXT("MI_TestSet_%s"), *Suffix);
+	const FString Dir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Set_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *Dir, *MatName);
+	const FString InstPath = FString::Printf(TEXT("%s/%s"), *Dir, *InstName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create material + instance
+	TSharedPtr<FJsonObject> MatParams = MakeShared<FJsonObject>();
+	MatParams->SetStringField(TEXT("asset_path"), Dir);
+	MatParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), MatParams);
+
+	TSharedPtr<FJsonObject> InstParams = MakeShared<FJsonObject>();
+	InstParams->SetStringField(TEXT("asset_path"), Dir);
+	InstParams->SetStringField(TEXT("name"), InstName);
+	InstParams->SetStringField(TEXT("parent_material"), MatPath);
+	Handler.Execute(TEXT("create_instance"), InstParams);
+
+	// Set a scalar parameter (even if it doesn't exist, instance should accept it)
+	TSharedPtr<FJsonObject> SetParams = MakeShared<FJsonObject>();
+	SetParams->SetStringField(TEXT("asset_path"), InstPath);
+	SetParams->SetStringField(TEXT("parameter_name"), TEXT("TestScalar"));
+	SetParams->SetStringField(TEXT("parameter_type"), TEXT("scalar"));
+	SetParams->SetNumberField(TEXT("value"), 0.5);
+	FCortexCommandResult Result = Handler.Execute(TEXT("set_parameter"), SetParams);
+
+	TestTrue(TEXT("set_parameter should succeed"), Result.bSuccess);
+
+	// Cleanup
+	UObject* InstAsset = LoadObject<UMaterialInstanceConstant>(nullptr, *InstPath);
+	if (InstAsset) InstAsset->MarkAsGarbage();
+	UObject* MatAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (MatAsset) MatAsset->MarkAsGarbage();
+
+	return true;
+}
