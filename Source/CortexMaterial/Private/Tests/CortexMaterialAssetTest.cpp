@@ -208,3 +208,62 @@ bool FCortexMaterialGetNotFoundTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialDeleteTest,
+	"Cortex.Material.Asset.DeleteMaterial",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialDeleteTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestDel_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Del_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	// Delete
+	TSharedPtr<FJsonObject> DeleteParams = MakeShared<FJsonObject>();
+	DeleteParams->SetStringField(TEXT("asset_path"), MatPath);
+	FCortexCommandResult Result = Handler.Execute(TEXT("delete_material"), DeleteParams);
+
+	TestTrue(TEXT("delete_material should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		bool bDeleted = false;
+		Result.Data->TryGetBoolField(TEXT("deleted"), bDeleted);
+		TestTrue(TEXT("deleted should be true"), bDeleted);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialDeleteNotFoundTest,
+	"Cortex.Material.Asset.DeleteMaterial.NotFound",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialDeleteNotFoundTest::RunTest(const FString& Parameters)
+{
+	FCortexMaterialCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TEXT("/Game/NonExistent/M_Fake"));
+
+	FCortexCommandResult Result = Handler.Execute(TEXT("delete_material"), Params);
+
+	TestFalse(TEXT("Should fail for non-existent"), Result.bSuccess);
+	TestEqual(TEXT("Error should be MATERIAL_NOT_FOUND"),
+		Result.ErrorCode, CortexErrorCodes::MaterialNotFound);
+
+	return true;
+}
