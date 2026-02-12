@@ -35,17 +35,24 @@ bool FCortexMaterialListParamsTest::RunTest(const FString& Parameters)
 
 	if (Result.Data.IsValid())
 	{
-		const TArray<TSharedPtr<FJsonValue>>* ScalarParams = nullptr;
-		TestTrue(TEXT("Should have scalar array"),
-			Result.Data->TryGetArrayField(TEXT("scalar"), ScalarParams));
+		const TSharedPtr<FJsonObject>* ParametersObj = nullptr;
+		TestTrue(TEXT("Should have parameters object"),
+			Result.Data->TryGetObjectField(TEXT("parameters"), ParametersObj));
 
-		const TArray<TSharedPtr<FJsonValue>>* VectorParams = nullptr;
-		TestTrue(TEXT("Should have vector array"),
-			Result.Data->TryGetArrayField(TEXT("vector"), VectorParams));
+		if (ParametersObj && (*ParametersObj).IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* ScalarParams = nullptr;
+			TestTrue(TEXT("Should have scalar array"),
+				(*ParametersObj)->TryGetArrayField(TEXT("scalar"), ScalarParams));
 
-		const TArray<TSharedPtr<FJsonValue>>* TextureParams = nullptr;
-		TestTrue(TEXT("Should have texture array"),
-			Result.Data->TryGetArrayField(TEXT("texture"), TextureParams));
+			const TArray<TSharedPtr<FJsonValue>>* VectorParams = nullptr;
+			TestTrue(TEXT("Should have vector array"),
+				(*ParametersObj)->TryGetArrayField(TEXT("vector"), VectorParams));
+
+			const TArray<TSharedPtr<FJsonValue>>* TextureParams = nullptr;
+			TestTrue(TEXT("Should have texture array"),
+				(*ParametersObj)->TryGetArrayField(TEXT("texture"), TextureParams));
+		}
 	}
 
 	// Cleanup

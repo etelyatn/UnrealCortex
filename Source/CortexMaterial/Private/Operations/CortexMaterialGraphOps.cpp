@@ -1,4 +1,5 @@
 #include "Operations/CortexMaterialGraphOps.h"
+#include "Operations/CortexMaterialAssetOps.h"
 #include "CortexMaterialModule.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
@@ -25,29 +26,6 @@ UMaterialExpression* FCortexMaterialGraphOps::FindExpression(UMaterial* Material
 	return nullptr;
 }
 
-static UMaterial* LoadMaterial(const FString& AssetPath, FCortexCommandResult& OutError)
-{
-	FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
-	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
-	{
-		OutError = FCortexCommandRouter::Error(
-			CortexErrorCodes::MaterialNotFound,
-			FString::Printf(TEXT("Material not found: %s"), *AssetPath)
-		);
-		return nullptr;
-	}
-
-	UMaterial* Material = LoadObject<UMaterial>(nullptr, *AssetPath);
-	if (Material == nullptr)
-	{
-		OutError = FCortexCommandRouter::Error(
-			CortexErrorCodes::MaterialNotFound,
-			FString::Printf(TEXT("Material not found: %s"), *AssetPath)
-		);
-	}
-	return Material;
-}
-
 FCortexCommandResult FCortexMaterialGraphOps::ListNodes(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
@@ -58,7 +36,7 @@ FCortexCommandResult FCortexMaterialGraphOps::ListNodes(const TSharedPtr<FJsonOb
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = LoadMaterial(AssetPath, LoadError);
+	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
 	if (Material == nullptr)
 	{
 		return LoadError;
@@ -111,7 +89,7 @@ FCortexCommandResult FCortexMaterialGraphOps::GetNode(const TSharedPtr<FJsonObje
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = LoadMaterial(AssetPath, LoadError);
+	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
 	if (Material == nullptr)
 	{
 		return LoadError;
@@ -151,7 +129,7 @@ FCortexCommandResult FCortexMaterialGraphOps::AddNode(const TSharedPtr<FJsonObje
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = LoadMaterial(AssetPath, LoadError);
+	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
 	if (Material == nullptr)
 	{
 		return LoadError;
@@ -218,7 +196,7 @@ FCortexCommandResult FCortexMaterialGraphOps::RemoveNode(const TSharedPtr<FJsonO
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = LoadMaterial(AssetPath, LoadError);
+	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
 	if (Material == nullptr)
 	{
 		return LoadError;
@@ -268,7 +246,7 @@ FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<F
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = LoadMaterial(AssetPath, LoadError);
+	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
 	if (Material == nullptr)
 	{
 		return LoadError;
@@ -334,7 +312,7 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 	int32 SourceOutput = static_cast<int32>(SourceOutputDouble);
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = LoadMaterial(AssetPath, LoadError);
+	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
 	if (Material == nullptr)
 	{
 		return LoadError;
@@ -432,7 +410,7 @@ FCortexCommandResult FCortexMaterialGraphOps::Disconnect(const TSharedPtr<FJsonO
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = LoadMaterial(AssetPath, LoadError);
+	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
 	if (Material == nullptr)
 	{
 		return LoadError;

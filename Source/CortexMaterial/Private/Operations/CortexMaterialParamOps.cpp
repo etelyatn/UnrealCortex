@@ -50,40 +50,158 @@ FCortexCommandResult FCortexMaterialParamOps::ListParameters(const TSharedPtr<FJ
 	TArray<FGuid> TextureGuids;
 	MaterialInterface->GetAllTextureParameterInfo(TextureInfos, TextureGuids);
 
-	// Build scalar array
+	UMaterialInstanceConstant* Instance = Cast<UMaterialInstanceConstant>(MaterialInterface);
+	bool bIsInstance = (Instance != nullptr);
+
+	// Build scalar array with full metadata
 	TArray<TSharedPtr<FJsonValue>> ScalarArray;
-	for (const FMaterialParameterInfo& Info : ScalarInfos)
+	for (int32 i = 0; i < ScalarInfos.Num(); ++i)
 	{
+		const FMaterialParameterInfo& Info = ScalarInfos[i];
 		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 		Entry->SetStringField(TEXT("name"), Info.Name.ToString());
-		Entry->SetStringField(TEXT("type"), TEXT("scalar"));
+
+		float DefaultValue = 0.0f;
+		MaterialInterface->GetScalarParameterDefaultValue(Info, DefaultValue);
+		Entry->SetNumberField(TEXT("default_value"), DefaultValue);
+
+		Entry->SetStringField(TEXT("group"), StaticEnum<EMaterialParameterAssociation>()->GetNameStringByValue((int64)Info.Association.GetValue()));
+		Entry->SetNumberField(TEXT("sort_priority"), Info.Index);
+
+		if (bIsInstance)
+		{
+			float CurrentValue = 0.0f;
+			bool bOverridden = Instance->GetScalarParameterValue(Info, CurrentValue);
+			Entry->SetBoolField(TEXT("is_overridden"), bOverridden);
+			if (bOverridden)
+			{
+				Entry->SetNumberField(TEXT("current_value"), CurrentValue);
+			}
+		}
+
 		ScalarArray.Add(MakeShared<FJsonValueObject>(Entry));
 	}
 
-	// Build vector array
+	// Build vector array with full metadata
 	TArray<TSharedPtr<FJsonValue>> VectorArray;
-	for (const FMaterialParameterInfo& Info : VectorInfos)
+	for (int32 i = 0; i < VectorInfos.Num(); ++i)
 	{
+		const FMaterialParameterInfo& Info = VectorInfos[i];
 		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 		Entry->SetStringField(TEXT("name"), Info.Name.ToString());
-		Entry->SetStringField(TEXT("type"), TEXT("vector"));
+
+		FLinearColor DefaultValue;
+		MaterialInterface->GetVectorParameterDefaultValue(Info, DefaultValue);
+		TArray<TSharedPtr<FJsonValue>> DefaultArray;
+		DefaultArray.Add(MakeShared<FJsonValueNumber>(DefaultValue.R));
+		DefaultArray.Add(MakeShared<FJsonValueNumber>(DefaultValue.G));
+		DefaultArray.Add(MakeShared<FJsonValueNumber>(DefaultValue.B));
+		DefaultArray.Add(MakeShared<FJsonValueNumber>(DefaultValue.A));
+		Entry->SetArrayField(TEXT("default_value"), DefaultArray);
+
+		Entry->SetStringField(TEXT("group"), StaticEnum<EMaterialParameterAssociation>()->GetNameStringByValue((int64)Info.Association.GetValue()));
+		Entry->SetNumberField(TEXT("sort_priority"), Info.Index);
+
+		if (bIsInstance)
+		{
+			FLinearColor CurrentValue;
+			bool bOverridden = Instance->GetVectorParameterValue(Info, CurrentValue);
+			Entry->SetBoolField(TEXT("is_overridden"), bOverridden);
+			if (bOverridden)
+			{
+				TArray<TSharedPtr<FJsonValue>> CurrentArray;
+				CurrentArray.Add(MakeShared<FJsonValueNumber>(CurrentValue.R));
+				CurrentArray.Add(MakeShared<FJsonValueNumber>(CurrentValue.G));
+				CurrentArray.Add(MakeShared<FJsonValueNumber>(CurrentValue.B));
+				CurrentArray.Add(MakeShared<FJsonValueNumber>(CurrentValue.A));
+				Entry->SetArrayField(TEXT("current_value"), CurrentArray);
+			}
+		}
+
 		VectorArray.Add(MakeShared<FJsonValueObject>(Entry));
 	}
 
-	// Build texture array
+	// Build texture array with full metadata
 	TArray<TSharedPtr<FJsonValue>> TextureArray;
-	for (const FMaterialParameterInfo& Info : TextureInfos)
+	for (int32 i = 0; i < TextureInfos.Num(); ++i)
 	{
+		const FMaterialParameterInfo& Info = TextureInfos[i];
 		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 		Entry->SetStringField(TEXT("name"), Info.Name.ToString());
-		Entry->SetStringField(TEXT("type"), TEXT("texture"));
+
+		UTexture* DefaultTexture = nullptr;
+		MaterialInterface->GetTextureParameterDefaultValue(Info, DefaultTexture);
+		if (DefaultTexture)
+		{
+			Entry->SetStringField(TEXT("default_value"), DefaultTexture->GetPathName());
+		}
+		else
+		{
+			Entry->SetStringField(TEXT("default_value"), TEXT(""));
+		}
+
+		Entry->SetStringField(TEXT("group"), StaticEnum<EMaterialParameterAssociation>()->GetNameStringByValue((int64)Info.Association.GetValue()));
+		Entry->SetNumberField(TEXT("sort_priority"), Info.Index);
+
+		if (bIsInstance)
+		{
+			UTexture* CurrentTexture = nullptr;
+			bool bOverridden = Instance->GetTextureParameterValue(Info, CurrentTexture);
+			Entry->SetBoolField(TEXT("is_overridden"), bOverridden);
+			if (bOverridden && CurrentTexture)
+			{
+				Entry->SetStringField(TEXT("current_value"), CurrentTexture->GetPathName());
+			}
+		}
+
 		TextureArray.Add(MakeShared<FJsonValueObject>(Entry));
 	}
 
+	// Build static switch array
+	TArray<FMaterialParameterInfo> StaticSwitchInfos;
+	TArray<FGuid> StaticSwitchGuids;
+	MaterialInterface->GetAllStaticSwitchParameterInfo(StaticSwitchInfos, StaticSwitchGuids);
+
+	TArray<TSharedPtr<FJsonValue>> StaticSwitchArray;
+	for (int32 i = 0; i < StaticSwitchInfos.Num(); ++i)
+	{
+		const FMaterialParameterInfo& Info = StaticSwitchInfos[i];
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("name"), Info.Name.ToString());
+
+		bool DefaultValue = false;
+		FGuid OutGuid;
+		MaterialInterface->GetStaticSwitchParameterDefaultValue(Info, DefaultValue, OutGuid);
+		Entry->SetBoolField(TEXT("default_value"), DefaultValue);
+
+		Entry->SetStringField(TEXT("group"), StaticEnum<EMaterialParameterAssociation>()->GetNameStringByValue((int64)Info.Association.GetValue()));
+		Entry->SetNumberField(TEXT("sort_priority"), Info.Index);
+
+		if (bIsInstance)
+		{
+			bool CurrentValue = false;
+			bool bOverridden = Instance->GetStaticSwitchParameterValue(Info, CurrentValue, OutGuid);
+			Entry->SetBoolField(TEXT("is_overridden"), bOverridden);
+			if (bOverridden)
+			{
+				Entry->SetBoolField(TEXT("current_value"), CurrentValue);
+			}
+		}
+
+		StaticSwitchArray.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	// Build response structure matching design doc
+	TSharedPtr<FJsonObject> ParametersObj = MakeShared<FJsonObject>();
+	ParametersObj->SetArrayField(TEXT("scalar"), ScalarArray);
+	ParametersObj->SetArrayField(TEXT("vector"), VectorArray);
+	ParametersObj->SetArrayField(TEXT("texture"), TextureArray);
+	ParametersObj->SetArrayField(TEXT("static_switch"), StaticSwitchArray);
+
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-	Data->SetArrayField(TEXT("scalar"), ScalarArray);
-	Data->SetArrayField(TEXT("vector"), VectorArray);
-	Data->SetArrayField(TEXT("texture"), TextureArray);
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetObjectField(TEXT("parameters"), ParametersObj);
+	Data->SetNumberField(TEXT("count"), ScalarArray.Num() + VectorArray.Num() + TextureArray.Num() + StaticSwitchArray.Num());
 
 	return FCortexCommandRouter::Success(Data);
 }
