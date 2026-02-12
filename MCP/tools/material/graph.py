@@ -30,7 +30,7 @@ def register_material_graph_tools(mcp, connection: UEConnection):
         try:
             params = {"asset_path": asset_path}
             result = connection.send_command("material.list_nodes", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "list_material_nodes")
         except Exception as e:
             logger.error(f"list_material_nodes failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -59,7 +59,7 @@ def register_material_graph_tools(mcp, connection: UEConnection):
                 "node_id": node_id,
             }
             result = connection.send_command("material.get_node", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "get_material_node")
         except Exception as e:
             logger.error(f"get_material_node failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -95,7 +95,7 @@ def register_material_graph_tools(mcp, connection: UEConnection):
             if position_x != 0 or position_y != 0:
                 params["position"] = {"x": position_x, "y": position_y}
             result = connection.send_command("material.add_node", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "add_material_node")
         except Exception as e:
             logger.error(f"add_material_node failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -124,7 +124,7 @@ def register_material_graph_tools(mcp, connection: UEConnection):
                 "node_id": node_id,
             }
             result = connection.send_command("material.remove_node", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "remove_material_node")
         except Exception as e:
             logger.error(f"remove_material_node failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -147,7 +147,7 @@ def register_material_graph_tools(mcp, connection: UEConnection):
         try:
             params = {"asset_path": asset_path}
             result = connection.send_command("material.list_connections", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "list_material_connections")
         except Exception as e:
             logger.error(f"list_material_connections failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -186,7 +186,7 @@ def register_material_graph_tools(mcp, connection: UEConnection):
                 "target_input": target_input,
             }
             result = connection.send_command("material.connect", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "connect_material_nodes")
         except Exception as e:
             logger.error(f"connect_material_nodes failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -218,7 +218,7 @@ def register_material_graph_tools(mcp, connection: UEConnection):
                 "target_input": target_input,
             }
             result = connection.send_command("material.disconnect", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "disconnect_material_nodes")
         except Exception as e:
             logger.error(f"disconnect_material_nodes failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})

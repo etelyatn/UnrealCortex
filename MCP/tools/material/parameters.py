@@ -32,7 +32,7 @@ def register_material_parameter_tools(mcp, connection: UEConnection):
         try:
             params = {"asset_path": asset_path}
             result = connection.send_command("material.list_parameters", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "list_material_parameters")
         except Exception as e:
             logger.error(f"list_parameters failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -63,7 +63,7 @@ def register_material_parameter_tools(mcp, connection: UEConnection):
                 "parameter_name": parameter_name,
             }
             result = connection.send_command("material.get_parameter", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "get_material_parameter")
         except Exception as e:
             logger.error(f"get_parameter failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -103,7 +103,7 @@ def register_material_parameter_tools(mcp, connection: UEConnection):
                 "value": value,
             }
             result = connection.send_command("material.set_parameter", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "set_material_parameter")
         except Exception as e:
             logger.error(f"set_parameter failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -137,7 +137,7 @@ def register_material_parameter_tools(mcp, connection: UEConnection):
                 "parameters": parameters,
             }
             result = connection.send_command("material.set_parameters", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "set_material_parameters")
         except Exception as e:
             logger.error(f"set_parameters failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -167,7 +167,7 @@ def register_material_parameter_tools(mcp, connection: UEConnection):
                 "parameter_name": parameter_name,
             }
             result = connection.send_command("material.reset_parameter", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "reset_material_parameter")
         except Exception as e:
             logger.error(f"reset_parameter failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})

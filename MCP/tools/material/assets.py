@@ -30,7 +30,7 @@ def register_material_asset_tools(mcp, connection: UEConnection):
         try:
             params = {"path": path, "recursive": recursive}
             result = connection.send_command("material.list_materials", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "list_materials")
         except Exception as e:
             logger.error(f"list_materials failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -57,7 +57,7 @@ def register_material_asset_tools(mcp, connection: UEConnection):
         try:
             params = {"asset_path": asset_path}
             result = connection.send_command("material.get_material", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "get_material")
         except Exception as e:
             logger.error(f"get_material failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -82,7 +82,7 @@ def register_material_asset_tools(mcp, connection: UEConnection):
         try:
             params = {"asset_path": asset_path, "name": name}
             result = connection.send_command("material.create_material", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "create_material")
         except Exception as e:
             logger.error(f"create_material failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -102,7 +102,7 @@ def register_material_asset_tools(mcp, connection: UEConnection):
         try:
             params = {"asset_path": asset_path}
             result = connection.send_command("material.delete_material", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "delete_material")
         except Exception as e:
             logger.error(f"delete_material failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -128,7 +128,7 @@ def register_material_asset_tools(mcp, connection: UEConnection):
             if parent_material:
                 params["parent_material"] = parent_material
             result = connection.send_command("material.list_instances", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "list_material_instances")
         except Exception as e:
             logger.error(f"list_instances failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -150,7 +150,7 @@ def register_material_asset_tools(mcp, connection: UEConnection):
         try:
             params = {"asset_path": asset_path}
             result = connection.send_command("material.get_instance", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "get_material_instance")
         except Exception as e:
             logger.error(f"get_instance failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -182,7 +182,7 @@ def register_material_asset_tools(mcp, connection: UEConnection):
                 "parent_material": parent_material,
             }
             result = connection.send_command("material.create_instance", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "create_material_instance")
         except Exception as e:
             logger.error(f"create_instance failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -202,7 +202,7 @@ def register_material_asset_tools(mcp, connection: UEConnection):
         try:
             params = {"asset_path": asset_path}
             result = connection.send_command("material.delete_instance", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "delete_material_instance")
         except Exception as e:
             logger.error(f"delete_instance failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})

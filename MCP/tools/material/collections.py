@@ -34,7 +34,7 @@ def register_material_collection_tools(mcp, connection: UEConnection):
         try:
             params = {"path": path, "recursive": recursive}
             result = connection.send_command("material.list_collections", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "list_material_collections")
         except Exception as e:
             logger.error(f"list_material_collections failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -57,7 +57,7 @@ def register_material_collection_tools(mcp, connection: UEConnection):
         try:
             params = {"asset_path": asset_path}
             result = connection.send_command("material.get_collection", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "get_material_collection")
         except Exception as e:
             logger.error(f"get_material_collection failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -82,7 +82,7 @@ def register_material_collection_tools(mcp, connection: UEConnection):
         try:
             params = {"asset_path": asset_path, "name": name}
             result = connection.send_command("material.create_collection", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "create_material_collection")
         except Exception as e:
             logger.error(f"create_material_collection failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -102,7 +102,7 @@ def register_material_collection_tools(mcp, connection: UEConnection):
         try:
             params = {"asset_path": asset_path}
             result = connection.send_command("material.delete_collection", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "delete_material_collection")
         except Exception as e:
             logger.error(f"delete_material_collection failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -139,7 +139,7 @@ def register_material_collection_tools(mcp, connection: UEConnection):
                 "default_value": default_value,
             }
             result = connection.send_command("material.add_collection_parameter", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "add_collection_parameter")
         except Exception as e:
             logger.error(f"add_collection_parameter failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -166,7 +166,7 @@ def register_material_collection_tools(mcp, connection: UEConnection):
                 "parameter_name": parameter_name,
             }
             result = connection.send_command("material.remove_collection_parameter", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "remove_collection_parameter")
         except Exception as e:
             logger.error(f"remove_collection_parameter failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
@@ -200,7 +200,7 @@ def register_material_collection_tools(mcp, connection: UEConnection):
                 "value": value,
             }
             result = connection.send_command("material.set_collection_parameter", params)
-            return format_response(result)
+            return format_response(result.get("data", {}), "set_collection_parameter")
         except Exception as e:
             logger.error(f"set_collection_parameter failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
