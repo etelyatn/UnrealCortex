@@ -46,6 +46,15 @@ namespace CortexErrorCodes
 	static const FString InvalidPropertyPath = TEXT("INVALID_PROPERTY_PATH");
 	static const FString InvalidPropertyValue = TEXT("INVALID_PROPERTY_VALUE");
 	static const FString NotTextWidget = TEXT("NOT_TEXT_WIDGET");
+	// Material errors
+	static const FString MaterialNotFound = TEXT("MATERIAL_NOT_FOUND");
+	static const FString InstanceNotFound = TEXT("INSTANCE_NOT_FOUND");
+	static const FString CollectionNotFound = TEXT("COLLECTION_NOT_FOUND");
+	static const FString ParameterNotFound = TEXT("PARAMETER_NOT_FOUND");
+	static const FString InvalidConnection = TEXT("INVALID_CONNECTION");
+	static const FString InvalidParameter = TEXT("INVALID_PARAMETER");
+	static const FString LimitExceeded = TEXT("LIMIT_EXCEEDED");
+	static const FString AssetAlreadyExists = TEXT("ASSET_ALREADY_EXISTS");
 }
 
 /** Result of a command execution */
