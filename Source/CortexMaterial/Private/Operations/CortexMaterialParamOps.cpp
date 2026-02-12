@@ -348,5 +348,80 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameters(const TSharedPtr<FJs
 
 FCortexCommandResult FCortexMaterialParamOps::ResetParameter(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString AssetPath;
+	FString ParameterName;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("parameter_name"), ParameterName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path and parameter_name"));
+	}
+
+	// Only instances can have parameters reset
+	FCortexCommandResult LoadError;
+	UMaterialInstanceConstant* Instance = FCortexMaterialAssetOps::LoadInstance(AssetPath, LoadError);
+	if (Instance == nullptr)
+	{
+		return LoadError;
+	}
+
+	FName ParamName(*ParameterName);
+	bool bFound = false;
+
+	// Try removing from scalar parameters
+	for (int32 i = Instance->ScalarParameterValues.Num() - 1; i >= 0; --i)
+	{
+		if (Instance->ScalarParameterValues[i].ParameterInfo.Name == ParamName)
+		{
+			Instance->ScalarParameterValues.RemoveAt(i);
+			bFound = true;
+			break;
+		}
+	}
+
+	// Try removing from vector parameters
+	if (!bFound)
+	{
+		for (int32 i = Instance->VectorParameterValues.Num() - 1; i >= 0; --i)
+		{
+			if (Instance->VectorParameterValues[i].ParameterInfo.Name == ParamName)
+			{
+				Instance->VectorParameterValues.RemoveAt(i);
+				bFound = true;
+				break;
+			}
+		}
+	}
+
+	// Try removing from texture parameters
+	if (!bFound)
+	{
+		for (int32 i = Instance->TextureParameterValues.Num() - 1; i >= 0; --i)
+		{
+			if (Instance->TextureParameterValues[i].ParameterInfo.Name == ParamName)
+			{
+				Instance->TextureParameterValues.RemoveAt(i);
+				bFound = true;
+				break;
+			}
+		}
+	}
+
+	if (!bFound)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::ParameterNotFound,
+			FString::Printf(TEXT("Parameter not found: %s"), *ParameterName));
+	}
+
+	Instance->PostEditChange();
+	Instance->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("parameter_name"), ParameterName);
+	Data->SetBoolField(TEXT("reset"), true);
+
+	return FCortexCommandRouter::Success(Data);
 }
