@@ -3,6 +3,7 @@
 #include "Operations/CortexMaterialAssetOps.h"
 #include "Operations/CortexMaterialParamOps.h"
 #include "Operations/CortexMaterialGraphOps.h"
+#include "Operations/CortexMaterialCollectionOps.h"
 
 FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 	const FString& Command,
@@ -54,6 +55,22 @@ FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 	if (Command == TEXT("disconnect"))
 		return FCortexMaterialGraphOps::Disconnect(Params);
 
+	// Collection operations
+	if (Command == TEXT("list_collections"))
+		return FCortexMaterialCollectionOps::ListCollections(Params);
+	if (Command == TEXT("get_collection"))
+		return FCortexMaterialCollectionOps::GetCollection(Params);
+	if (Command == TEXT("create_collection"))
+		return FCortexMaterialCollectionOps::CreateCollection(Params);
+	if (Command == TEXT("delete_collection"))
+		return FCortexMaterialCollectionOps::DeleteCollection(Params);
+	if (Command == TEXT("add_collection_parameter"))
+		return FCortexMaterialCollectionOps::AddCollectionParameter(Params);
+	if (Command == TEXT("remove_collection_parameter"))
+		return FCortexMaterialCollectionOps::RemoveCollectionParameter(Params);
+	if (Command == TEXT("set_collection_parameter"))
+		return FCortexMaterialCollectionOps::SetCollectionParameter(Params);
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown material command: %s"), *Command)
@@ -83,5 +100,12 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 		{ TEXT("list_connections"), TEXT("List all node connections in material") },
 		{ TEXT("connect"), TEXT("Connect nodes in material graph") },
 		{ TEXT("disconnect"), TEXT("Disconnect nodes in material graph") },
+		{ TEXT("list_collections"), TEXT("List material parameter collections") },
+		{ TEXT("get_collection"), TEXT("Get collection with parameters") },
+		{ TEXT("create_collection"), TEXT("Create a material parameter collection") },
+		{ TEXT("delete_collection"), TEXT("Delete a material parameter collection") },
+		{ TEXT("add_collection_parameter"), TEXT("Add parameter to collection") },
+		{ TEXT("remove_collection_parameter"), TEXT("Remove parameter from collection") },
+		{ TEXT("set_collection_parameter"), TEXT("Set collection parameter value") },
 	};
 }
