@@ -5,6 +5,7 @@ description = "MCP server for UnrealCortex - AI-powered Unreal Engine developmen
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.2.0",
+    "psutil>=6.0.0",
 ]
 
 [project.scripts]
