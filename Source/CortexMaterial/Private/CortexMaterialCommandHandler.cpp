@@ -1,6 +1,7 @@
 #include "CortexMaterialCommandHandler.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexMaterialAssetOps.h"
+#include "Operations/CortexMaterialParamOps.h"
 
 FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 	const FString& Command,
@@ -24,6 +25,18 @@ FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 	if (Command == TEXT("delete_instance"))
 		return FCortexMaterialAssetOps::DeleteInstance(Params);
 
+	// Parameter operations
+	if (Command == TEXT("list_parameters"))
+		return FCortexMaterialParamOps::ListParameters(Params);
+	if (Command == TEXT("get_parameter"))
+		return FCortexMaterialParamOps::GetParameter(Params);
+	if (Command == TEXT("set_parameter"))
+		return FCortexMaterialParamOps::SetParameter(Params);
+	if (Command == TEXT("set_parameters"))
+		return FCortexMaterialParamOps::SetParameters(Params);
+	if (Command == TEXT("reset_parameter"))
+		return FCortexMaterialParamOps::ResetParameter(Params);
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown material command: %s"), *Command)
@@ -41,5 +54,10 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 		{ TEXT("get_instance"), TEXT("Get instance details with overrides") },
 		{ TEXT("create_instance"), TEXT("Create a UMaterialInstanceConstant") },
 		{ TEXT("delete_instance"), TEXT("Delete a material instance") },
+		{ TEXT("list_parameters"), TEXT("List all parameters on a material or instance") },
+		{ TEXT("get_parameter"), TEXT("Get parameter value and metadata") },
+		{ TEXT("set_parameter"), TEXT("Set parameter value on an instance") },
+		{ TEXT("set_parameters"), TEXT("Batch set multiple parameters") },
+		{ TEXT("reset_parameter"), TEXT("Reset instance override to parent value") },
 	};
 }
