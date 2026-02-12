@@ -18,33 +18,40 @@ def cleanup_stale_processes():
 
     try:
         import psutil
-        current_pid = os.getpid()
-        killed = []
+        current_proc = psutil.Process(os.getpid())
+        current_pid = current_proc.pid
+        parent_pid = current_proc.ppid()
 
+        # Build set of PIDs in our own process tree (self + ancestors)
+        own_pids = {current_pid, parent_pid}
+        try:
+            parent = current_proc.parent()
+            if parent:
+                own_pids.add(parent.ppid())  # grandparent (uv.exe)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+        killed = []
         for proc in psutil.process_iter(['pid', 'name', 'exe']):
             try:
-                # Match cortex-mcp.exe or python.exe running cortex_mcp
                 name = proc.info['name']
                 exe = proc.info['exe']
                 pid = proc.info['pid']
 
-                if pid == current_pid:
+                if pid in own_pids:
                     continue
 
                 if name == 'cortex-mcp.exe' or (exe and 'cortex-mcp' in exe):
                     proc.kill()
                     killed.append(f"{name} (PID {pid})")
-                    logger.info(f"Killed stale process: {name} (PID {pid})")
+                    logger.info("Killed stale process: %s (PID %d)", name, pid)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
         if killed:
-            logger.info(f"Cleaned up {len(killed)} stale process(es): {', '.join(killed)}")
+            logger.info("Cleaned up %d stale process(es)", len(killed))
 
     except ImportError:
-        # psutil not available - log warning but continue
-        logger.warning("psutil not installed - cannot cleanup stale processes. "
-                      "Install with: uv add psutil")
+        logger.warning("psutil not installed - cannot cleanup stale processes")
     except Exception as e:
-        # Don't fail startup if cleanup fails
-        logger.warning(f"Failed to cleanup stale processes: {e}")
+        logger.warning("Failed to cleanup stale processes: %s", e)
