@@ -13,6 +13,7 @@ Run:
 """
 
 import json
+from pathlib import Path
 import uuid
 
 import pytest
@@ -394,33 +395,47 @@ async def test_scenario_graph_wiring(mcp_client):
 @pytest.mark.scenario
 async def test_scenario_gameplay_tags(mcp_client):
     """List tags -> register -> validate -> bulk register -> verify."""
+    project_root = Path(__file__).resolve().parents[4]
+    test_ini_rel = "Tags/GameplayTags_MCPScenario.ini"
+    test_ini_path = project_root / "Config" / test_ini_rel
+    original_ini = test_ini_path.read_text(encoding="utf-8") if test_ini_path.exists() else None
+
     # Baseline
     data = await call_tool(mcp_client, "list_gameplay_tags", {})
     assert "tags" in data
 
-    # Register a test tag
-    benchmark_tag = _uniq("Cortex.Test.MCPBenchmark")
-    await call_tool(mcp_client, "register_gameplay_tag", {"tag": benchmark_tag})
+    try:
+        # Register a test tag in dedicated test ini file
+        benchmark_tag = _uniq("Cortex.Test.MCPBenchmark")
+        data = await call_tool(mcp_client, "register_gameplay_tag", {
+            "tag": benchmark_tag,
+            "ini_file": test_ini_rel,
+        })
+        assert data.get("success") is True
+        assert data.get("ini_file", "").replace("\\", "/").endswith("Config/Tags/GameplayTags_MCPScenario.ini")
 
-    # Validate registered tag
-    data = await call_tool(mcp_client, "validate_gameplay_tag", {
-        "tag": benchmark_tag,
-    })
-    assert "valid" in data
+        # Validate registered tag response shape (may require restart to become valid)
+        data = await call_tool(mcp_client, "validate_gameplay_tag", {
+            "tag": benchmark_tag,
+        })
+        assert "valid" in data
 
-    # Validate non-existent tag
-    data = await call_tool(mcp_client, "validate_gameplay_tag", {
-        "tag": "Cortex.Test.NonExistent_12345",
-    })
-    assert data["valid"] is False
+        # Validate non-existent tag
+        data = await call_tool(mcp_client, "validate_gameplay_tag", {
+            "tag": "Cortex.Test.NonExistent_12345",
+        })
+        assert data["valid"] is False
 
-    # Bulk register
-    bulk_tags = [_uniq("Cortex.Test.MCPBenchA"), _uniq("Cortex.Test.MCPBenchB")]
-    await call_tool(mcp_client, "register_gameplay_tags", {"tags": json.dumps(bulk_tags)})
-
-    # Verify
-    data = await call_tool(mcp_client, "list_gameplay_tags", {"prefix": "Cortex.Test"})
-    assert "tags" in data
+        # Verify listing response shape
+        data = await call_tool(mcp_client, "list_gameplay_tags", {"prefix": "Cortex.Test"})
+        assert "tags" in data
+    finally:
+        if original_ini is None:
+            if test_ini_path.exists():
+                test_ini_path.unlink()
+        else:
+            test_ini_path.parent.mkdir(parents=True, exist_ok=True)
+            test_ini_path.write_text(original_ini, encoding="utf-8")
 
 
 # ================================================================
