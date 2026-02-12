@@ -1,8 +1,18 @@
 #include "Operations/CortexMaterialAssetOps.h"
 #include "CortexMaterialModule.h"
+#include "CortexEditorUtils.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetData.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "Misc/PackageName.h"
+#include "ScopedTransaction.h"
+#include "Factories/MaterialFactoryNew.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
+#include "UObject/SavePackage.h"
 
 UMaterial* FCortexMaterialAssetOps::LoadMaterial(const FString& AssetPath, FCortexCommandResult& OutError)
 {
@@ -62,7 +72,62 @@ FCortexCommandResult FCortexMaterialAssetOps::GetMaterial(const TSharedPtr<FJson
 
 FCortexCommandResult FCortexMaterialAssetOps::CreateMaterial(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString AssetPath;
+	FString Name;
+	bool bHasParams = Params.IsValid()
+		&& Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		&& Params->TryGetStringField(TEXT("name"), Name);
+
+	if (!bHasParams)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path and name")
+		);
+	}
+
+	const FString FullPath = FString::Printf(TEXT("%s/%s"), *AssetPath, *Name);
+	const FString PkgName = FPackageName::ObjectPathToPackageName(FullPath);
+	if (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetAlreadyExists,
+			FString::Printf(TEXT("Asset already exists: %s"), *FullPath)
+		);
+	}
+
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+	UMaterialFactoryNew* Factory = NewObject<UMaterialFactoryNew>();
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Create Material %s"), *Name)
+	));
+
+	UObject* NewAsset = AssetTools.CreateAsset(Name, AssetPath, UMaterial::StaticClass(), Factory);
+	if (NewAsset == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("Failed to create material: %s"), *FullPath)
+		);
+	}
+
+	// Save to disk
+	UPackage* Package = NewAsset->GetOutermost();
+	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		Package->GetName(), FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	UPackage::SavePackage(Package, NewAsset, *PackageFilename, SaveArgs);
+
+	FCortexEditorUtils::NotifyAssetModified(NewAsset);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), FullPath);
+	Data->SetStringField(TEXT("name"), Name);
+	Data->SetBoolField(TEXT("created"), true);
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialAssetOps::DeleteMaterial(const TSharedPtr<FJsonObject>& Params)
