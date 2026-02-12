@@ -3,6 +3,7 @@
 #include "CortexTypes.h"
 #include "Misc/Guid.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialInstanceConstant.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexMaterialCreateTest,
@@ -264,6 +265,142 @@ bool FCortexMaterialDeleteNotFoundTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Should fail for non-existent"), Result.bSuccess);
 	TestEqual(TEXT("Error should be MATERIAL_NOT_FOUND"),
 		Result.ErrorCode, CortexErrorCodes::MaterialNotFound);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialCreateInstanceTest,
+	"Cortex.Material.Asset.CreateInstance",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialCreateInstanceTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestInstParent_%s"), *Suffix);
+	const FString InstName = FString::Printf(TEXT("MI_TestInst_%s"), *Suffix);
+	const FString Dir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Inst_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *Dir, *MatName);
+	const FString InstPath = FString::Printf(TEXT("%s/%s"), *Dir, *InstName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create parent material
+	TSharedPtr<FJsonObject> MatParams = MakeShared<FJsonObject>();
+	MatParams->SetStringField(TEXT("asset_path"), Dir);
+	MatParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), MatParams);
+
+	// Create instance
+	TSharedPtr<FJsonObject> InstParams = MakeShared<FJsonObject>();
+	InstParams->SetStringField(TEXT("asset_path"), Dir);
+	InstParams->SetStringField(TEXT("name"), InstName);
+	InstParams->SetStringField(TEXT("parent_material"), MatPath);
+	FCortexCommandResult Result = Handler.Execute(TEXT("create_instance"), InstParams);
+
+	TestTrue(TEXT("create_instance should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		FString ResultPath;
+		Result.Data->TryGetStringField(TEXT("asset_path"), ResultPath);
+		TestEqual(TEXT("asset_path should match"), ResultPath, InstPath);
+
+		FString ParentPath;
+		Result.Data->TryGetStringField(TEXT("parent_material"), ParentPath);
+		TestEqual(TEXT("parent should match"), ParentPath, MatPath);
+	}
+
+	// Cleanup
+	UObject* InstAsset = LoadObject<UMaterialInstanceConstant>(nullptr, *InstPath);
+	if (InstAsset) InstAsset->MarkAsGarbage();
+	UObject* MatAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (MatAsset) MatAsset->MarkAsGarbage();
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialGetInstanceTest,
+	"Cortex.Material.Asset.GetInstance",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialGetInstanceTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestGetInst_%s"), *Suffix);
+	const FString InstName = FString::Printf(TEXT("MI_TestGetInst_%s"), *Suffix);
+	const FString Dir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_GetInst_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *Dir, *MatName);
+	const FString InstPath = FString::Printf(TEXT("%s/%s"), *Dir, *InstName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create parent + instance
+	TSharedPtr<FJsonObject> MatParams = MakeShared<FJsonObject>();
+	MatParams->SetStringField(TEXT("asset_path"), Dir);
+	MatParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), MatParams);
+
+	TSharedPtr<FJsonObject> InstParams = MakeShared<FJsonObject>();
+	InstParams->SetStringField(TEXT("asset_path"), Dir);
+	InstParams->SetStringField(TEXT("name"), InstName);
+	InstParams->SetStringField(TEXT("parent_material"), MatPath);
+	Handler.Execute(TEXT("create_instance"), InstParams);
+
+	// Get instance
+	TSharedPtr<FJsonObject> GetParams = MakeShared<FJsonObject>();
+	GetParams->SetStringField(TEXT("asset_path"), InstPath);
+	FCortexCommandResult Result = Handler.Execute(TEXT("get_instance"), GetParams);
+
+	TestTrue(TEXT("get_instance should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		FString Name;
+		Result.Data->TryGetStringField(TEXT("name"), Name);
+		TestEqual(TEXT("name should match"), Name, InstName);
+
+		FString ParentMat;
+		Result.Data->TryGetStringField(TEXT("parent_material"), ParentMat);
+		TestFalse(TEXT("parent_material should be populated"), ParentMat.IsEmpty());
+
+		const TSharedPtr<FJsonObject>* Overrides = nullptr;
+		TestTrue(TEXT("Should have overrides object"),
+			Result.Data->TryGetObjectField(TEXT("overrides"), Overrides));
+	}
+
+	// Cleanup
+	UObject* InstAsset = LoadObject<UMaterialInstanceConstant>(nullptr, *InstPath);
+	if (InstAsset) InstAsset->MarkAsGarbage();
+	UObject* MatAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (MatAsset) MatAsset->MarkAsGarbage();
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialListInstancesTest,
+	"Cortex.Material.Asset.ListInstances",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialListInstancesTest::RunTest(const FString& Parameters)
+{
+	FCortexMaterialCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+
+	FCortexCommandResult Result = Handler.Execute(TEXT("list_instances"), Params);
+
+	TestTrue(TEXT("list_instances should succeed"), Result.bSuccess);
+	if (Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* InstancesArray = nullptr;
+		TestTrue(TEXT("Data should have instances array"),
+			Result.Data->TryGetArrayField(TEXT("instances"), InstancesArray));
+	}
 
 	return true;
 }

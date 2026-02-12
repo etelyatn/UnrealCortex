@@ -287,20 +287,230 @@ FCortexCommandResult FCortexMaterialAssetOps::DeleteMaterial(const TSharedPtr<FJ
 
 FCortexCommandResult FCortexMaterialAssetOps::ListInstances(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString Path = TEXT("/Game/");
+	FString ParentMaterialPath;
+	if (Params.IsValid())
+	{
+		Params->TryGetStringField(TEXT("path"), Path);
+		Params->TryGetStringField(TEXT("parent_material"), ParentMaterialPath);
+	}
+
+	IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+	if (AssetRegistry == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::EditorNotReady, TEXT("Asset Registry not available"));
+	}
+
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UMaterialInstanceConstant::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+	if (!Path.IsEmpty())
+	{
+		Filter.PackagePaths.Add(FName(*Path));
+		Filter.bRecursivePaths = true;
+	}
+
+	TArray<FAssetData> AssetDataList;
+	AssetRegistry->GetAssets(Filter, AssetDataList);
+
+	TArray<TSharedPtr<FJsonValue>> InstancesArray;
+	for (const FAssetData& AssetData : AssetDataList)
+	{
+		// Optional parent filter
+		if (!ParentMaterialPath.IsEmpty())
+		{
+			UMaterialInstanceConstant* Instance = Cast<UMaterialInstanceConstant>(AssetData.GetAsset());
+			if (Instance && Instance->Parent)
+			{
+				if (Instance->Parent->GetPathName() != ParentMaterialPath)
+				{
+					continue;
+				}
+			}
+			else
+			{
+				continue;
+			}
+		}
+
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
+		Entry->SetStringField(TEXT("asset_path"), AssetData.GetObjectPathString());
+		InstancesArray.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetArrayField(TEXT("instances"), InstancesArray);
+	Data->SetNumberField(TEXT("count"), InstancesArray.Num());
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialAssetOps::GetInstance(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
+	}
+
+	FCortexCommandResult LoadError;
+	UMaterialInstanceConstant* Instance = LoadInstance(AssetPath, LoadError);
+	if (Instance == nullptr)
+	{
+		return LoadError;
+	}
+
+	FString ParentMaterialPath;
+	if (Instance->Parent)
+	{
+		ParentMaterialPath = Instance->Parent->GetPathName();
+	}
+
+	// Build overrides object
+	TArray<TSharedPtr<FJsonValue>> ScalarOverrides;
+	for (const FScalarParameterValue& Param : Instance->ScalarParameterValues)
+	{
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("name"), Param.ParameterInfo.Name.ToString());
+		Entry->SetNumberField(TEXT("value"), Param.ParameterValue);
+		ScalarOverrides.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TArray<TSharedPtr<FJsonValue>> VectorOverrides;
+	for (const FVectorParameterValue& Param : Instance->VectorParameterValues)
+	{
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("name"), Param.ParameterInfo.Name.ToString());
+		TArray<TSharedPtr<FJsonValue>> Color;
+		Color.Add(MakeShared<FJsonValueNumber>(Param.ParameterValue.R));
+		Color.Add(MakeShared<FJsonValueNumber>(Param.ParameterValue.G));
+		Color.Add(MakeShared<FJsonValueNumber>(Param.ParameterValue.B));
+		Color.Add(MakeShared<FJsonValueNumber>(Param.ParameterValue.A));
+		Entry->SetArrayField(TEXT("value"), Color);
+		VectorOverrides.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TArray<TSharedPtr<FJsonValue>> TextureOverrides;
+	for (const FTextureParameterValue& Param : Instance->TextureParameterValues)
+	{
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("name"), Param.ParameterInfo.Name.ToString());
+		if (Param.ParameterValue)
+		{
+			Entry->SetStringField(TEXT("value"), Param.ParameterValue->GetPathName());
+		}
+		TextureOverrides.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TSharedPtr<FJsonObject> Overrides = MakeShared<FJsonObject>();
+	Overrides->SetArrayField(TEXT("scalar"), ScalarOverrides);
+	Overrides->SetArrayField(TEXT("vector"), VectorOverrides);
+	Overrides->SetArrayField(TEXT("texture"), TextureOverrides);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("name"), Instance->GetName());
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetStringField(TEXT("parent_material"), ParentMaterialPath);
+	Data->SetObjectField(TEXT("overrides"), Overrides);
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialAssetOps::CreateInstance(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString AssetPath;
+	FString Name;
+	FString ParentMaterialPath;
+	bool bHasParams = Params.IsValid()
+		&& Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		&& Params->TryGetStringField(TEXT("name"), Name)
+		&& Params->TryGetStringField(TEXT("parent_material"), ParentMaterialPath);
+
+	if (!bHasParams)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, name, and parent_material")
+		);
+	}
+
+	// Validate parent exists
+	FCortexCommandResult LoadError;
+	UMaterial* ParentMaterial = LoadMaterial(ParentMaterialPath, LoadError);
+	if (ParentMaterial == nullptr)
+	{
+		return LoadError;
+	}
+
+	const FString FullPath = FString::Printf(TEXT("%s/%s"), *AssetPath, *Name);
+	const FString PkgName = FPackageName::ObjectPathToPackageName(FullPath);
+	if (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetAlreadyExists,
+			FString::Printf(TEXT("Asset already exists: %s"), *FullPath)
+		);
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Create Material Instance %s"), *Name)
+	));
+
+	// Create package and instance
+	UPackage* Package = CreatePackage(*PkgName);
+	UMaterialInstanceConstant* Instance = NewObject<UMaterialInstanceConstant>(
+		Package, FName(*Name), RF_Public | RF_Standalone);
+
+	Instance->Parent = ParentMaterial;
+	Instance->MarkPackageDirty();
+
+	// Save to disk
+	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		Package->GetName(), FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	UPackage::SavePackage(Package, Instance, *PackageFilename, SaveArgs);
+
+	FCortexEditorUtils::NotifyAssetModified(Instance);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), FullPath);
+	Data->SetStringField(TEXT("name"), Name);
+	Data->SetStringField(TEXT("parent_material"), ParentMaterialPath);
+	Data->SetBoolField(TEXT("created"), true);
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialAssetOps::DeleteInstance(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
+	}
+
+	FCortexCommandResult LoadError;
+	UMaterialInstanceConstant* Instance = LoadInstance(AssetPath, LoadError);
+	if (Instance == nullptr)
+	{
+		return LoadError;
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Delete Material Instance %s"), *Instance->GetName())
+	));
+
+	Instance->MarkAsGarbage();
+	Instance->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetBoolField(TEXT("deleted"), true);
+
+	return FCortexCommandRouter::Success(Data);
 }
