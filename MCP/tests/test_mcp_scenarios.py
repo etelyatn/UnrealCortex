@@ -482,16 +482,27 @@ async def test_scenario_localization(mcp_client):
         "text": "Updated Hello from MCP",
     })
 
-    # Verify update
-    data = await call_tool(mcp_client, "get_translations", {
-        "string_table_path": table_path,
-    })
-    for entry in data["entries"]:
-        if entry["key"] == key:
-            assert entry["source_string"] == "Updated Hello from MCP"
-            break
-    else:
-        pytest.fail(f"{key} not found after update")
+    try:
+        # Verify update
+        data = await call_tool(mcp_client, "get_translations", {
+            "string_table_path": table_path,
+        })
+        for entry in data["entries"]:
+            if entry["key"] == key:
+                value = entry.get("source_string") or entry.get("text", "")
+                assert value == "Updated Hello from MCP"
+                break
+        else:
+            pytest.fail(f"{key} not found after update")
+    finally:
+        # Cleanup: remove test translation entry
+        try:
+            await call_tool(mcp_client, "remove_translation", {
+                "string_table_path": table_path,
+                "key": key,
+            })
+        except Exception:
+            pass  # remove_translation may not exist; unique key prevents pollution
 
 # ================================================================
 # Stress Tests
@@ -613,6 +624,7 @@ async def test_stress_rapid_data_operations(mcp_client):
     """100 add/update/delete cycles on a DataTable."""
     table_path = "/Game/Data/DT_TestSimple"
 
+    failures = 0
     for i in range(100):
         row_name = f"MCPStress_Row_{i:04d}"
         try:
@@ -631,6 +643,7 @@ async def test_stress_rapid_data_operations(mcp_client):
                 "row_name": row_name,
             })
         except Exception:
+            failures += 1
             try:
                 await call_tool(mcp_client, "delete_datatable_row", {
                     "table_path": table_path,
@@ -638,13 +651,14 @@ async def test_stress_rapid_data_operations(mcp_client):
                 })
             except Exception:
                 pass
+    assert failures < 5, f"Too many failures: {failures}/100"
 
 
 @pytest.mark.anyio
 @pytest.mark.stress
 async def test_stress_concurrent_batch(mcp_client):
     """Batch query with 20 commands."""
-    commands = [{"command": "data.list_datatables", "params": {}} for _ in range(20)]
+    commands = [{"command": "get_status", "params": {}} for _ in range(20)]
 
     data = await call_tool(mcp_client, "batch_query", {
         "commands": json.dumps(commands),

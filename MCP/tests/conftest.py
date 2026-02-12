@@ -130,8 +130,3 @@ async def mcp_client():
             yield session
 
 
-async def call_tool_json(client, tool_name: str, arguments: dict) -> dict:
-    """Helper: call an MCP tool and parse the JSON response."""
-    result = await client.call_tool(tool_name, arguments)
-    text = result.content[0].text
-    return json.loads(text)

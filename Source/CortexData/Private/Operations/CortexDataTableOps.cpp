@@ -143,42 +143,61 @@ FCortexCommandResult FCortexDataTableOps::ListDatatables(const TSharedPtr<FJsonO
 
 	TArray<TSharedPtr<FJsonValue>> DatatablesArray;
 
-	for (TObjectIterator<UDataTable> It; It; ++It)
+	IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+	if (AssetRegistry == nullptr)
 	{
-		UDataTable* DataTable = *It;
-		if (DataTable == nullptr)
-		{
-			continue;
-		}
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::EditorNotReady,
+			TEXT("Asset Registry not available"));
+	}
 
-		FString AssetPath = DataTable->GetPathName();
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UDataTable::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+	if (!PathFilter.IsEmpty())
+	{
+		Filter.PackagePaths.Add(FName(*PathFilter));
+		Filter.bRecursivePaths = true;
+	}
 
-		// Apply path filter (prefix match)
-		if (!PathFilter.IsEmpty() && !AssetPath.StartsWith(PathFilter))
-		{
-			continue;
-		}
+	TArray<FAssetData> AssetDataList;
+	AssetRegistry->GetAssets(Filter, AssetDataList);
+
+	for (const FAssetData& AssetData : AssetDataList)
+	{
+		FString AssetPath = AssetData.GetObjectPathString();
 
 		TSharedRef<FJsonObject> EntryJson = MakeShared<FJsonObject>();
-		EntryJson->SetStringField(TEXT("name"), DataTable->GetName());
+		EntryJson->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
 		EntryJson->SetStringField(TEXT("path"), AssetPath);
 
-		if (const UScriptStruct* RowStruct = DataTable->GetRowStruct())
+		// Load the table to get row struct and count
+		UDataTable* DataTable = Cast<UDataTable>(AssetData.GetAsset());
+		if (DataTable != nullptr)
 		{
-			EntryJson->SetStringField(TEXT("row_struct"), RowStruct->GetName());
+			if (const UScriptStruct* RowStruct = DataTable->GetRowStruct())
+			{
+				EntryJson->SetStringField(TEXT("row_struct"), RowStruct->GetName());
+			}
+			else
+			{
+				EntryJson->SetStringField(TEXT("row_struct"), TEXT("None"));
+			}
+
+			EntryJson->SetNumberField(TEXT("row_count"), DataTable->GetRowMap().Num());
+
+			const UCompositeDataTable* CompositeTable = Cast<UCompositeDataTable>(DataTable);
+			EntryJson->SetBoolField(TEXT("is_composite"), CompositeTable != nullptr);
+			if (CompositeTable != nullptr)
+			{
+				EntryJson->SetArrayField(TEXT("parent_tables"), GetParentTablesJsonArray(CompositeTable));
+			}
 		}
 		else
 		{
 			EntryJson->SetStringField(TEXT("row_struct"), TEXT("None"));
-		}
-
-		EntryJson->SetNumberField(TEXT("row_count"), DataTable->GetRowMap().Num());
-
-		const UCompositeDataTable* CompositeTable = Cast<UCompositeDataTable>(DataTable);
-		EntryJson->SetBoolField(TEXT("is_composite"), CompositeTable != nullptr);
-		if (CompositeTable != nullptr)
-		{
-			EntryJson->SetArrayField(TEXT("parent_tables"), GetParentTablesJsonArray(CompositeTable));
+			EntryJson->SetNumberField(TEXT("row_count"), 0);
+			EntryJson->SetBoolField(TEXT("is_composite"), false);
 		}
 
 		DatatablesArray.Add(MakeShared<FJsonValueObject>(EntryJson));

@@ -111,7 +111,9 @@ class TestDataTableOperations:
         data = resp["data"]
         assert "datatables" in data
         tables = data["datatables"]
-        assert isinstance(tables, list)
+        assert len(tables) > 0
+        names = [t["name"] for t in tables]
+        assert "DT_TestSimple" in names
 
     def test_get_datatable_schema(self, tcp_connection):
         resp = tcp_connection.send_command(
@@ -553,20 +555,22 @@ class TestGraphCRUD:
         event_node = None
         print_node = None
         for n in nodes:
-            if "BeginPlay" in n.get("title", "") or "BeginPlay" in n.get("class", ""):
+            label = n.get("display_name", "") or n.get("title", "")
+            if "BeginPlay" in label:
                 event_node = n
-            if "PrintString" in n.get("title", "") or "PrintString" in n.get("class", ""):
+            if "Print String" in label or "PrintString" in label:
                 print_node = n
-        if event_node and print_node:
-            resp = tcp_connection.send_command("graph.connect", {
-                "asset_path": blueprint_for_test,
-                "source_node": event_node["node_id"],
-                "source_pin": "then",
-                "target_node": print_node["node_id"],
-                "target_pin": "execute",
-                "graph_name": "EventGraph",
-            })
-            assert resp["data"].get("success") is True or "source_node" in resp["data"]
+        assert event_node, "BeginPlay node not found in EventGraph"
+        assert print_node, "PrintString node not found in EventGraph"
+        resp = tcp_connection.send_command("graph.connect", {
+            "asset_path": blueprint_for_test,
+            "source_node": event_node["node_id"],
+            "source_pin": "then",
+            "target_node": print_node["node_id"],
+            "target_pin": "execute",
+            "graph_name": "EventGraph",
+        })
+        assert resp["data"].get("connected") is True
 
     def test_disconnect_pins(self, tcp_connection, blueprint_for_test):
         node_id = _add_print_string_node(tcp_connection, blueprint_for_test)
