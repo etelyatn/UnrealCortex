@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -107,14 +108,26 @@ async def mcp_client():
     The server's TCP connection auto-discovers the running Unreal Editor.
     All registered MCP tools are available through client.call_tool().
     """
-    try:
-        from mcp import Client
-    except ImportError:
-        pytest.skip("mcp.Client is unavailable in this environment/version")
-    from cortex_mcp.server import mcp as mcp_app
+    from mcp import ClientSession, StdioServerParameters, stdio_client
 
-    async with Client(mcp_app, raise_exceptions=True) as c:
-        yield c
+    mcp_root = Path(__file__).resolve().parents[1]
+    src_path = str(mcp_root / "src")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = src_path + (
+        os.pathsep + env["PYTHONPATH"] if "PYTHONPATH" in env else ""
+    )
+
+    server = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "cortex_mcp.server"],
+        cwd=str(mcp_root),
+        env=env,
+    )
+
+    async with stdio_client(server) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            yield session
 
 
 async def call_tool_json(client, tool_name: str, arguments: dict) -> dict:
