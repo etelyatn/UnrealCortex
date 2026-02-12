@@ -23,12 +23,12 @@ def register_widget_property_tools(mcp, connection: UEConnection):
         """Set a color on a widget."""
         try:
             response = connection.send_command("umg.set_color", {
-            connection.invalidate_cache("umg.")
                 "asset_path": asset_path,
                 "widget_name": widget_name,
                 "color": color,
                 "target": target,
             })
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "set_color")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -38,11 +38,11 @@ def register_widget_property_tools(mcp, connection: UEConnection):
         """Set text content on text-capable widgets."""
         try:
             response = connection.send_command("umg.set_text", {
-            connection.invalidate_cache("umg.")
                 "asset_path": asset_path,
                 "widget_name": widget_name,
                 "text": text,
             })
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "set_text")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -159,11 +159,11 @@ def register_widget_property_tools(mcp, connection: UEConnection):
         """Set widget visibility state."""
         try:
             response = connection.send_command("umg.set_visibility", {
-            connection.invalidate_cache("umg.")
                 "asset_path": asset_path,
                 "widget_name": widget_name,
                 "visibility": visibility,
             })
+            connection.invalidate_cache("umg.")
             return format_response(response.get("data", {}), "set_visibility")
         except ConnectionError as e:
             return f"Error: {e}"
