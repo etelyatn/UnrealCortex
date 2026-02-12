@@ -280,3 +280,191 @@ bool FCortexMaterialGetNodeNotFoundTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialConnectTest,
+	"Cortex.Material.Graph.Connect",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialConnectTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestConnect_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Connect_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create material
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	// Add a scalar parameter node
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionScalarParameter"));
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+
+	FString NodeId;
+	if (AddResult.Data.IsValid())
+	{
+		AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+	}
+
+	// Connect to MaterialResult Roughness input
+	TSharedPtr<FJsonObject> ConnectParams = MakeShared<FJsonObject>();
+	ConnectParams->SetStringField(TEXT("asset_path"), MatPath);
+	ConnectParams->SetStringField(TEXT("source_node"), NodeId);
+	ConnectParams->SetNumberField(TEXT("source_output"), 0);
+	ConnectParams->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+	ConnectParams->SetStringField(TEXT("target_input"), TEXT("Roughness"));
+	FCortexCommandResult Result = Handler.Execute(TEXT("connect"), ConnectParams);
+
+	TestTrue(TEXT("connect should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		bool bConnected = false;
+		Result.Data->TryGetBoolField(TEXT("connected"), bConnected);
+		TestTrue(TEXT("connected should be true"), bConnected);
+	}
+
+	// Cleanup
+	UObject* LoadedAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedAsset) LoadedAsset->MarkAsGarbage();
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialListConnectionsTest,
+	"Cortex.Material.Graph.ListConnections",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialListConnectionsTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestListConn_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_ListConn_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create material and add node
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionScalarParameter"));
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+
+	FString NodeId;
+	if (AddResult.Data.IsValid())
+	{
+		AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+	}
+
+	// Connect to MaterialResult
+	TSharedPtr<FJsonObject> ConnectParams = MakeShared<FJsonObject>();
+	ConnectParams->SetStringField(TEXT("asset_path"), MatPath);
+	ConnectParams->SetStringField(TEXT("source_node"), NodeId);
+	ConnectParams->SetNumberField(TEXT("source_output"), 0);
+	ConnectParams->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+	ConnectParams->SetStringField(TEXT("target_input"), TEXT("Roughness"));
+	Handler.Execute(TEXT("connect"), ConnectParams);
+
+	// List connections
+	TSharedPtr<FJsonObject> ListParams = MakeShared<FJsonObject>();
+	ListParams->SetStringField(TEXT("asset_path"), MatPath);
+	FCortexCommandResult Result = Handler.Execute(TEXT("list_connections"), ListParams);
+
+	TestTrue(TEXT("list_connections should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ConnectionsArray = nullptr;
+		TestTrue(TEXT("Should have connections array"),
+			Result.Data->TryGetArrayField(TEXT("connections"), ConnectionsArray));
+
+		if (ConnectionsArray)
+		{
+			TestTrue(TEXT("Should have at least 1 connection"), ConnectionsArray->Num() >= 1);
+		}
+	}
+
+	// Cleanup
+	UObject* LoadedAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedAsset) LoadedAsset->MarkAsGarbage();
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialDisconnectTest,
+	"Cortex.Material.Graph.Disconnect",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialDisconnectTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestDisconnect_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Disconnect_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create material, add node, and connect
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionScalarParameter"));
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+
+	FString NodeId;
+	if (AddResult.Data.IsValid())
+	{
+		AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+	}
+
+	TSharedPtr<FJsonObject> ConnectParams = MakeShared<FJsonObject>();
+	ConnectParams->SetStringField(TEXT("asset_path"), MatPath);
+	ConnectParams->SetStringField(TEXT("source_node"), NodeId);
+	ConnectParams->SetNumberField(TEXT("source_output"), 0);
+	ConnectParams->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+	ConnectParams->SetStringField(TEXT("target_input"), TEXT("Roughness"));
+	Handler.Execute(TEXT("connect"), ConnectParams);
+
+	// Disconnect
+	TSharedPtr<FJsonObject> DisconnectParams = MakeShared<FJsonObject>();
+	DisconnectParams->SetStringField(TEXT("asset_path"), MatPath);
+	DisconnectParams->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+	DisconnectParams->SetStringField(TEXT("target_input"), TEXT("Roughness"));
+	FCortexCommandResult Result = Handler.Execute(TEXT("disconnect"), DisconnectParams);
+
+	TestTrue(TEXT("disconnect should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		bool bDisconnected = false;
+		Result.Data->TryGetBoolField(TEXT("disconnected"), bDisconnected);
+		TestTrue(TEXT("disconnected should be true"), bDisconnected);
+	}
+
+	// Cleanup
+	UObject* LoadedAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedAsset) LoadedAsset->MarkAsGarbage();
+
+	return true;
+}

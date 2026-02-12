@@ -260,15 +260,246 @@ FCortexCommandResult FCortexMaterialGraphOps::RemoveNode(const TSharedPtr<FJsonO
 
 FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
+	}
+
+	FCortexCommandResult LoadError;
+	UMaterial* Material = LoadMaterial(AssetPath, LoadError);
+	if (Material == nullptr)
+	{
+		return LoadError;
+	}
+
+	if (!Material->GetEditorOnlyData())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			TEXT("Material has no editor data"));
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ConnectionsArray;
+
+	// Check material result inputs
+	auto CheckMaterialInput = [&](const FExpressionInput& Input, const FString& InputName)
+	{
+		if (Input.Expression != nullptr)
+		{
+			TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("source_node"), Input.Expression->GetName());
+			Entry->SetNumberField(TEXT("source_output"), Input.OutputIndex);
+			Entry->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+			Entry->SetStringField(TEXT("target_input"), InputName);
+			ConnectionsArray.Add(MakeShared<FJsonValueObject>(Entry));
+		}
+	};
+
+	UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
+	CheckMaterialInput(EditorData->BaseColor, TEXT("BaseColor"));
+	CheckMaterialInput(EditorData->Metallic, TEXT("Metallic"));
+	CheckMaterialInput(EditorData->Specular, TEXT("Specular"));
+	CheckMaterialInput(EditorData->Roughness, TEXT("Roughness"));
+	CheckMaterialInput(EditorData->Normal, TEXT("Normal"));
+	CheckMaterialInput(EditorData->EmissiveColor, TEXT("EmissiveColor"));
+	CheckMaterialInput(EditorData->Opacity, TEXT("Opacity"));
+	CheckMaterialInput(EditorData->OpacityMask, TEXT("OpacityMask"));
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetArrayField(TEXT("connections"), ConnectionsArray);
+	Data->SetNumberField(TEXT("count"), ConnectionsArray.Num());
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString AssetPath, SourceNode, TargetNode, TargetInput;
+	double SourceOutputDouble = 0;
+
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("source_node"), SourceNode)
+		|| !Params->TryGetNumberField(TEXT("source_output"), SourceOutputDouble)
+		|| !Params->TryGetStringField(TEXT("target_node"), TargetNode)
+		|| !Params->TryGetStringField(TEXT("target_input"), TargetInput))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, source_node, source_output, target_node, target_input"));
+	}
+
+	int32 SourceOutput = static_cast<int32>(SourceOutputDouble);
+
+	FCortexCommandResult LoadError;
+	UMaterial* Material = LoadMaterial(AssetPath, LoadError);
+	if (Material == nullptr)
+	{
+		return LoadError;
+	}
+
+	if (!Material->GetEditorOnlyData())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			TEXT("Material has no editor data"));
+	}
+
+	UMaterialExpression* SourceExpr = FindExpression(Material, SourceNode);
+	if (SourceExpr == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::NodeNotFound,
+			FString::Printf(TEXT("Source node not found: %s"), *SourceNode)
+		);
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Connect Material Nodes"))
+	));
+
+	Material->PreEditChange(nullptr);
+
+	// Connect to MaterialResult
+	if (TargetNode == TEXT("MaterialResult"))
+	{
+		UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
+		FExpressionInput* Input = nullptr;
+
+		if (TargetInput == TEXT("BaseColor"))
+			Input = &EditorData->BaseColor;
+		else if (TargetInput == TEXT("Metallic"))
+			Input = &EditorData->Metallic;
+		else if (TargetInput == TEXT("Specular"))
+			Input = &EditorData->Specular;
+		else if (TargetInput == TEXT("Roughness"))
+			Input = &EditorData->Roughness;
+		else if (TargetInput == TEXT("Normal"))
+			Input = &EditorData->Normal;
+		else if (TargetInput == TEXT("EmissiveColor"))
+			Input = &EditorData->EmissiveColor;
+		else if (TargetInput == TEXT("Opacity"))
+			Input = &EditorData->Opacity;
+		else if (TargetInput == TEXT("OpacityMask"))
+			Input = &EditorData->OpacityMask;
+
+		if (Input == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidConnection,
+				FString::Printf(TEXT("Unknown MaterialResult input: %s"), *TargetInput)
+			);
+		}
+
+		Input->Expression = SourceExpr;
+		Input->OutputIndex = SourceOutput;
+	}
+	else
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidConnection,
+			TEXT("Expression-to-expression connections not yet implemented")
+		);
+	}
+
+	Material->PostEditChange();
+	Material->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("source_node"), SourceNode);
+	Data->SetNumberField(TEXT("source_output"), SourceOutput);
+	Data->SetStringField(TEXT("target_node"), TargetNode);
+	Data->SetStringField(TEXT("target_input"), TargetInput);
+	Data->SetBoolField(TEXT("connected"), true);
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialGraphOps::Disconnect(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString AssetPath, TargetNode, TargetInput;
+
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("target_node"), TargetNode)
+		|| !Params->TryGetStringField(TEXT("target_input"), TargetInput))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, target_node, target_input"));
+	}
+
+	FCortexCommandResult LoadError;
+	UMaterial* Material = LoadMaterial(AssetPath, LoadError);
+	if (Material == nullptr)
+	{
+		return LoadError;
+	}
+
+	if (!Material->GetEditorOnlyData())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			TEXT("Material has no editor data"));
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Disconnect Material Nodes"))
+	));
+
+	Material->PreEditChange(nullptr);
+
+	// Disconnect from MaterialResult
+	if (TargetNode == TEXT("MaterialResult"))
+	{
+		UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
+		FExpressionInput* Input = nullptr;
+
+		if (TargetInput == TEXT("BaseColor"))
+			Input = &EditorData->BaseColor;
+		else if (TargetInput == TEXT("Metallic"))
+			Input = &EditorData->Metallic;
+		else if (TargetInput == TEXT("Specular"))
+			Input = &EditorData->Specular;
+		else if (TargetInput == TEXT("Roughness"))
+			Input = &EditorData->Roughness;
+		else if (TargetInput == TEXT("Normal"))
+			Input = &EditorData->Normal;
+		else if (TargetInput == TEXT("EmissiveColor"))
+			Input = &EditorData->EmissiveColor;
+		else if (TargetInput == TEXT("Opacity"))
+			Input = &EditorData->Opacity;
+		else if (TargetInput == TEXT("OpacityMask"))
+			Input = &EditorData->OpacityMask;
+
+		if (Input == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidConnection,
+				FString::Printf(TEXT("Unknown MaterialResult input: %s"), *TargetInput)
+			);
+		}
+
+		Input->Expression = nullptr;
+		Input->OutputIndex = 0;
+	}
+	else
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidConnection,
+			TEXT("Expression-to-expression disconnections not yet implemented")
+		);
+	}
+
+	Material->PostEditChange();
+	Material->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("target_node"), TargetNode);
+	Data->SetStringField(TEXT("target_input"), TargetInput);
+	Data->SetBoolField(TEXT("disconnected"), true);
+
+	return FCortexCommandRouter::Success(Data);
 }
