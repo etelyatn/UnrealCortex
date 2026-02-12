@@ -236,15 +236,233 @@ FCortexCommandResult FCortexMaterialCollectionOps::DeleteCollection(const TShare
 
 FCortexCommandResult FCortexMaterialCollectionOps::AddCollectionParameter(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString AssetPath, ParameterName, ParameterType;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("parameter_name"), ParameterName)
+		|| !Params->TryGetStringField(TEXT("parameter_type"), ParameterType))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, parameter_name, parameter_type"));
+	}
+
+	FCortexCommandResult LoadError;
+	UMaterialParameterCollection* Collection = LoadCollection(AssetPath, LoadError);
+	if (Collection == nullptr)
+	{
+		return LoadError;
+	}
+
+	// Check 1024 limit
+	int32 TotalParams = Collection->ScalarParameters.Num() + Collection->VectorParameters.Num();
+	if (TotalParams >= 1024)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::LimitExceeded,
+			TEXT("Collection parameter limit (1024) exceeded"));
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Add Collection Parameter %s"), *ParameterName)
+	));
+
+	Collection->PreEditChange(nullptr);
+
+	if (ParameterType == TEXT("scalar"))
+	{
+		double DefaultValue = 0.0;
+		Params->TryGetNumberField(TEXT("default_value"), DefaultValue);
+
+		FCollectionScalarParameter NewParam;
+		NewParam.ParameterName = FName(*ParameterName);
+		NewParam.DefaultValue = static_cast<float>(DefaultValue);
+		NewParam.Id = FGuid::NewGuid();
+
+		Collection->ScalarParameters.Add(NewParam);
+	}
+	else if (ParameterType == TEXT("vector"))
+	{
+		FLinearColor DefaultValue(0, 0, 0, 1);
+
+		const TArray<TSharedPtr<FJsonValue>>* DefaultValueArray = nullptr;
+		if (Params->TryGetArrayField(TEXT("default_value"), DefaultValueArray) && DefaultValueArray->Num() >= 4)
+		{
+			DefaultValue.R = static_cast<float>((*DefaultValueArray)[0]->AsNumber());
+			DefaultValue.G = static_cast<float>((*DefaultValueArray)[1]->AsNumber());
+			DefaultValue.B = static_cast<float>((*DefaultValueArray)[2]->AsNumber());
+			DefaultValue.A = static_cast<float>((*DefaultValueArray)[3]->AsNumber());
+		}
+
+		FCollectionVectorParameter NewParam;
+		NewParam.ParameterName = FName(*ParameterName);
+		NewParam.DefaultValue = DefaultValue;
+		NewParam.Id = FGuid::NewGuid();
+
+		Collection->VectorParameters.Add(NewParam);
+	}
+	else
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidParameter,
+			FString::Printf(TEXT("Unknown parameter type: %s"), *ParameterType));
+	}
+
+	Collection->PostEditChange();
+	Collection->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("parameter_name"), ParameterName);
+	Data->SetStringField(TEXT("parameter_type"), ParameterType);
+	Data->SetBoolField(TEXT("added"), true);
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialCollectionOps::RemoveCollectionParameter(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString AssetPath, ParameterName;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("parameter_name"), ParameterName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, parameter_name"));
+	}
+
+	FCortexCommandResult LoadError;
+	UMaterialParameterCollection* Collection = LoadCollection(AssetPath, LoadError);
+	if (Collection == nullptr)
+	{
+		return LoadError;
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Remove Collection Parameter %s"), *ParameterName)
+	));
+
+	Collection->PreEditChange(nullptr);
+
+	bool bFound = false;
+	FName ParamFName(*ParameterName);
+
+	// Try removing from scalar parameters
+	for (int32 i = Collection->ScalarParameters.Num() - 1; i >= 0; --i)
+	{
+		if (Collection->ScalarParameters[i].ParameterName == ParamFName)
+		{
+			Collection->ScalarParameters.RemoveAt(i);
+			bFound = true;
+			break;
+		}
+	}
+
+	// Try removing from vector parameters if not found in scalar
+	if (!bFound)
+	{
+		for (int32 i = Collection->VectorParameters.Num() - 1; i >= 0; --i)
+		{
+			if (Collection->VectorParameters[i].ParameterName == ParamFName)
+			{
+				Collection->VectorParameters.RemoveAt(i);
+				bFound = true;
+				break;
+			}
+		}
+	}
+
+	if (!bFound)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::ParameterNotFound,
+			FString::Printf(TEXT("Parameter not found: %s"), *ParameterName));
+	}
+
+	Collection->PostEditChange();
+	Collection->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("parameter_name"), ParameterName);
+	Data->SetBoolField(TEXT("removed"), true);
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialCollectionOps::SetCollectionParameter(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString AssetPath, ParameterName;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("parameter_name"), ParameterName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, parameter_name"));
+	}
+
+	FCortexCommandResult LoadError;
+	UMaterialParameterCollection* Collection = LoadCollection(AssetPath, LoadError);
+	if (Collection == nullptr)
+	{
+		return LoadError;
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Set Collection Parameter %s"), *ParameterName)
+	));
+
+	Collection->PreEditChange(nullptr);
+
+	bool bFound = false;
+	FName ParamFName(*ParameterName);
+
+	// Try scalar first
+	double ValueNumber = 0.0;
+	if (Params->TryGetNumberField(TEXT("value"), ValueNumber))
+	{
+		for (FCollectionScalarParameter& ScalarParam : Collection->ScalarParameters)
+		{
+			if (ScalarParam.ParameterName == ParamFName)
+			{
+				ScalarParam.DefaultValue = static_cast<float>(ValueNumber);
+				bFound = true;
+				break;
+			}
+		}
+	}
+
+	// Try vector
+	const TArray<TSharedPtr<FJsonValue>>* ValueArray = nullptr;
+	if (!bFound && Params->TryGetArrayField(TEXT("value"), ValueArray) && ValueArray->Num() >= 4)
+	{
+		for (FCollectionVectorParameter& VectorParam : Collection->VectorParameters)
+		{
+			if (VectorParam.ParameterName == ParamFName)
+			{
+				VectorParam.DefaultValue.R = static_cast<float>((*ValueArray)[0]->AsNumber());
+				VectorParam.DefaultValue.G = static_cast<float>((*ValueArray)[1]->AsNumber());
+				VectorParam.DefaultValue.B = static_cast<float>((*ValueArray)[2]->AsNumber());
+				VectorParam.DefaultValue.A = static_cast<float>((*ValueArray)[3]->AsNumber());
+				bFound = true;
+				break;
+			}
+		}
+	}
+
+	if (!bFound)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::ParameterNotFound,
+			FString::Printf(TEXT("Parameter not found: %s"), *ParameterName));
+	}
+
+	Collection->PostEditChange();
+	Collection->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("parameter_name"), ParameterName);
+	Data->SetBoolField(TEXT("updated"), true);
+
+	return FCortexCommandRouter::Success(Data);
 }
