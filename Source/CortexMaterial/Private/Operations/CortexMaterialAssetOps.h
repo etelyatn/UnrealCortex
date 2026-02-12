@@ -18,7 +18,7 @@ public:
 	static FCortexCommandResult CreateInstance(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult DeleteInstance(const TSharedPtr<FJsonObject>& Params);
 
-private:
+	// Helper methods (public for use by other operations)
 	static UMaterial* LoadMaterial(const FString& AssetPath, FCortexCommandResult& OutError);
 	static UMaterialInstanceConstant* LoadInstance(const FString& AssetPath, FCortexCommandResult& OutError);
 };
