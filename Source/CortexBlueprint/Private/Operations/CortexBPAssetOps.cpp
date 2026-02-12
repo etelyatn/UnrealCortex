@@ -7,6 +7,7 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Blueprint/BlueprintSupport.h"
 #include "UObject/SavePackage.h"
 #include "Misc/PackageName.h"
 #include "GameFramework/Actor.h"
@@ -143,6 +144,54 @@ namespace
 		if (BP->ParentClass->IsChildOf(AActor::StaticClass()))
 		{
 			return TEXT("Actor");
+		}
+
+		return TEXT("Unknown");
+	}
+
+	/** Helper: Determine Blueprint type string from AssetRegistry tags (without loading the asset). */
+	FString DetermineBlueprintType(const FAssetData& AssetData)
+	{
+		const FString BlueprintTypeTag = AssetData.GetTagValueRef<FString>(FBlueprintTags::BlueprintType);
+		if (BlueprintTypeTag == TEXT("BPType_Interface"))
+		{
+			return TEXT("Interface");
+		}
+		if (BlueprintTypeTag == TEXT("BPType_FunctionLibrary"))
+		{
+			return TEXT("FunctionLibrary");
+		}
+
+		FString ParentClassName;
+		if (!AssetData.GetTagValue(FBlueprintTags::NativeParentClassPath, ParentClassName))
+		{
+			AssetData.GetTagValue(FBlueprintTags::ParentClassPath, ParentClassName);
+		}
+
+		if (!ParentClassName.IsEmpty())
+		{
+			const FString ParentClassPath = FPackageName::ExportTextPathToObjectPath(ParentClassName);
+
+			if (ParentClassPath.Contains(TEXT("UserWidget")))
+			{
+				return TEXT("Widget");
+			}
+			if (ParentClassPath.Contains(TEXT("BlueprintFunctionLibrary")))
+			{
+				return TEXT("FunctionLibrary");
+			}
+			if (ParentClassPath.Contains(TEXT("ActorComponent")))
+			{
+				return TEXT("Component");
+			}
+			if (ParentClassPath.Contains(TEXT("Interface")))
+			{
+				return TEXT("Interface");
+			}
+			if (ParentClassPath.Contains(TEXT("Actor")))
+			{
+				return TEXT("Actor");
+			}
 		}
 
 		return TEXT("Unknown");
@@ -347,11 +396,8 @@ FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Para
 		// Asset name
 		BPObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
 
-		// Load Blueprint and determine type using proper class hierarchy
-		UBlueprint* BP = Cast<UBlueprint>(AssetData.GetAsset());
-		FString Type = BP ? DetermineBlueprintType(BP) : TEXT("Unknown");
-
-		BPObj->SetStringField(TEXT("type"), Type);
+		// Resolve type from AssetRegistry tags to avoid loading every Blueprint asset.
+		BPObj->SetStringField(TEXT("type"), DetermineBlueprintType(AssetData));
 
 		BlueprintsArray.Add(MakeShared<FJsonValueObject>(BPObj));
 	}

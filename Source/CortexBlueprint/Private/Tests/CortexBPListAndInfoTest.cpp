@@ -2,6 +2,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Misc/Guid.h"
 #include "Engine/Blueprint.h"
 #include "CortexBPCommandHandler.h"
 #include "CortexTypes.h"
@@ -15,10 +16,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPListTest::RunTest(const FString& Parameters)
 {
 	// Setup - Create test Blueprint first
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString BlueprintName = FString::Printf(TEXT("BP_TestList_%s"), *Suffix);
+	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_List_%s"), *Suffix);
+	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
-	CreateParams->SetStringField(TEXT("name"), TEXT("BP_TestList"));
-	CreateParams->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_List"));
+	CreateParams->SetStringField(TEXT("name"), BlueprintName);
+	CreateParams->SetStringField(TEXT("path"), BlueprintDir);
 	CreateParams->SetStringField(TEXT("type"), TEXT("Actor"));
 
 	FCortexCommandResult CreateResult = Handler.Execute(TEXT("create"), CreateParams);
@@ -47,14 +52,14 @@ bool FCortexBPListTest::RunTest(const FString& Parameters)
 				FString AssetPath;
 				if (BPObj->TryGetStringField(TEXT("asset_path"), AssetPath))
 				{
-					if (AssetPath.Contains(TEXT("BP_TestList")))
+					if (AssetPath.StartsWith(BlueprintDir) && AssetPath.Contains(BlueprintName))
 					{
 						bFoundTestBP = true;
 
 						// Verify required fields
 						FString Name;
 						BPObj->TryGetStringField(TEXT("name"), Name);
-						TestEqual(TEXT("Name should match"), Name, TEXT("BP_TestList"));
+						TestEqual(TEXT("Name should match"), Name, BlueprintName);
 
 						FString Type;
 						BPObj->TryGetStringField(TEXT("type"), Type);
@@ -70,7 +75,7 @@ bool FCortexBPListTest::RunTest(const FString& Parameters)
 	}
 
 	// Cleanup
-	UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_List/BP_TestList"));
+	UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
 	if (LoadedAsset)
 	{
 		LoadedAsset->MarkAsGarbage();
@@ -88,10 +93,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPListFilterPathTest::RunTest(const FString& Parameters)
 {
 	// Setup - Create test Blueprint in specific path
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString BlueprintName = FString::Printf(TEXT("BP_TestListFilter_%s"), *Suffix);
+	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_ListFilter_%s"), *Suffix);
+	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
-	CreateParams->SetStringField(TEXT("name"), TEXT("BP_TestListFilter"));
-	CreateParams->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_ListFilter"));
+	CreateParams->SetStringField(TEXT("name"), BlueprintName);
+	CreateParams->SetStringField(TEXT("path"), BlueprintDir);
 	CreateParams->SetStringField(TEXT("type"), TEXT("Actor"));
 
 	FCortexCommandResult CreateResult = Handler.Execute(TEXT("create"), CreateParams);
@@ -99,7 +108,7 @@ bool FCortexBPListFilterPathTest::RunTest(const FString& Parameters)
 
 	// Execute list with path filter
 	TSharedPtr<FJsonObject> ListParams = MakeShared<FJsonObject>();
-	ListParams->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_ListFilter"));
+	ListParams->SetStringField(TEXT("path"), BlueprintDir);
 	FCortexCommandResult ListResult = Handler.Execute(TEXT("list"), ListParams);
 
 	// Verify
@@ -116,13 +125,13 @@ bool FCortexBPListFilterPathTest::RunTest(const FString& Parameters)
 				const TSharedPtr<FJsonObject>& BPObj = BPValue->AsObject();
 				FString AssetPath;
 				BPObj->TryGetStringField(TEXT("asset_path"), AssetPath);
-				TestTrue(TEXT("Asset path should match filter"), AssetPath.StartsWith(TEXT("/Game/Temp/CortexBPTest_ListFilter")));
+				TestTrue(TEXT("Asset path should match filter"), AssetPath.StartsWith(BlueprintDir));
 			}
 		}
 	}
 
 	// Cleanup
-	UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_ListFilter/BP_TestListFilter"));
+	UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
 	if (LoadedAsset)
 	{
 		LoadedAsset->MarkAsGarbage();

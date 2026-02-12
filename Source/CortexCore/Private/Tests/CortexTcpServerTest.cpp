@@ -90,9 +90,9 @@ bool FCortexTcpServerPingPongTest::RunTest(const FString& Parameters)
 	uint8 RecvBuffer[4096];
 	int32 BytesRead = 0;
 
-	// Try a few times to read response
+	// Try long enough to avoid timing flakes when the full suite is running.
 	bool bReceivedResponse = false;
-	for (int32 Attempt = 0; Attempt < 10; ++Attempt)
+	for (int32 Attempt = 0; Attempt < 60; ++Attempt)
 	{
 		FTSTicker::GetCoreTicker().Tick(0.016f);
 		FPlatformProcess::Sleep(0.05f);

@@ -8,6 +8,7 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "CortexBPCommandHandler.h"
 #include "CortexTypes.h"
+#include "Misc/Guid.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogCortexBPTypesTests, Log, All);
 
@@ -20,10 +21,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCreateActorTypeTest::RunTest(const FString& Parameters)
 {
 	// Setup
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString BlueprintName = FString::Printf(TEXT("BP_TestActor_%s"), *Suffix);
+	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_Types_%s"), *Suffix);
+	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("name"), TEXT("BP_TestActor"));
-	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Types"));
+	Params->SetStringField(TEXT("name"), BlueprintName);
+	Params->SetStringField(TEXT("path"), BlueprintDir);
 	Params->SetStringField(TEXT("type"), TEXT("Actor"));
 
 	// Execute
@@ -33,7 +38,7 @@ bool FCortexBPCreateActorTypeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Command should succeed"), Result.bSuccess);
 
 	// Verify asset is loadable
-	UBlueprint* LoadedBP = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_Types/BP_TestActor"));
+	UBlueprint* LoadedBP = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
 	TestNotNull(TEXT("Asset should be loadable"), LoadedBP);
 
 	if (LoadedBP)
@@ -63,10 +68,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCreateComponentTypeTest::RunTest(const FString& Parameters)
 {
 	// Setup
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString BlueprintName = FString::Printf(TEXT("BP_TestComponent_%s"), *Suffix);
+	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_Types_%s"), *Suffix);
+	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("name"), TEXT("BP_TestComponent"));
-	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Types"));
+	Params->SetStringField(TEXT("name"), BlueprintName);
+	Params->SetStringField(TEXT("path"), BlueprintDir);
 	Params->SetStringField(TEXT("type"), TEXT("Component"));
 
 	// Execute
@@ -76,7 +85,7 @@ bool FCortexBPCreateComponentTypeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Command should succeed"), Result.bSuccess);
 
 	// Verify asset is loadable
-	UBlueprint* LoadedBP = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_Types/BP_TestComponent"));
+	UBlueprint* LoadedBP = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
 	TestNotNull(TEXT("Asset should be loadable"), LoadedBP);
 
 	if (LoadedBP)
@@ -106,10 +115,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCreateFunctionLibraryTypeTest::RunTest(const FString& Parameters)
 {
 	// Setup
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString BlueprintName = FString::Printf(TEXT("BP_TestFunctionLibrary_%s"), *Suffix);
+	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_Types_%s"), *Suffix);
+	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("name"), TEXT("BP_TestFunctionLibrary"));
-	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Types"));
+	Params->SetStringField(TEXT("name"), BlueprintName);
+	Params->SetStringField(TEXT("path"), BlueprintDir);
 	Params->SetStringField(TEXT("type"), TEXT("FunctionLibrary"));
 
 	// Execute
@@ -119,7 +132,7 @@ bool FCortexBPCreateFunctionLibraryTypeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Command should succeed"), Result.bSuccess);
 
 	// Verify asset is loadable
-	UBlueprint* LoadedBP = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_Types/BP_TestFunctionLibrary"));
+	UBlueprint* LoadedBP = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
 	TestNotNull(TEXT("Asset should be loadable"), LoadedBP);
 
 	if (LoadedBP)
@@ -149,10 +162,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCreateInterfaceTypeTest::RunTest(const FString& Parameters)
 {
 	// Setup
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString BlueprintName = FString::Printf(TEXT("BP_TestInterface_%s"), *Suffix);
+	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_Types_%s"), *Suffix);
+	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("name"), TEXT("BP_TestInterface"));
-	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Types"));
+	Params->SetStringField(TEXT("name"), BlueprintName);
+	Params->SetStringField(TEXT("path"), BlueprintDir);
 	Params->SetStringField(TEXT("type"), TEXT("Interface"));
 
 	// Execute
@@ -162,7 +179,7 @@ bool FCortexBPCreateInterfaceTypeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Command should succeed"), Result.bSuccess);
 
 	// Verify asset is loadable
-	UBlueprint* LoadedBP = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_Types/BP_TestInterface"));
+	UBlueprint* LoadedBP = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
 	TestNotNull(TEXT("Asset should be loadable"), LoadedBP);
 
 	if (LoadedBP)
@@ -192,10 +209,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCreateWidgetTypeTest::RunTest(const FString& Parameters)
 {
 	// Setup
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString BlueprintName = FString::Printf(TEXT("WBP_TestWidget_%s"), *Suffix);
+	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_Types_%s"), *Suffix);
+	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("name"), TEXT("WBP_TestWidget"));
-	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Types"));
+	Params->SetStringField(TEXT("name"), BlueprintName);
+	Params->SetStringField(TEXT("path"), BlueprintDir);
 	Params->SetStringField(TEXT("type"), TEXT("Widget"));
 
 	// Execute
@@ -205,7 +226,7 @@ bool FCortexBPCreateWidgetTypeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Command should succeed"), Result.bSuccess);
 
 	// Verify asset is loadable
-	UBlueprint* LoadedBP = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_Types/WBP_TestWidget"));
+	UBlueprint* LoadedBP = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
 	TestNotNull(TEXT("Asset should be loadable"), LoadedBP);
 
 	if (LoadedBP)

@@ -11,6 +11,7 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "GameFramework/Actor.h"
+#include "Misc/Guid.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPCompileFailTest,
@@ -21,12 +22,16 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCompileFailTest::RunTest(const FString& Parameters)
 {
 	FCortexBPCommandHandler Handler;
+	const FString UniqueSuffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString BlueprintName = FString::Printf(TEXT("BP_CompileFailTest_%s"), *UniqueSuffix);
+	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_CompileFail_%s"), *UniqueSuffix);
+	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
 
 	// Setup: create a Blueprint
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-		Params->SetStringField(TEXT("name"), TEXT("BP_CompileFailTest"));
-		Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_CompileFail"));
+		Params->SetStringField(TEXT("name"), BlueprintName);
+		Params->SetStringField(TEXT("path"), BlueprintDir);
 		Params->SetStringField(TEXT("type"), TEXT("Actor"));
 		FCortexCommandResult Result = Handler.Execute(TEXT("create"), Params);
 		TestTrue(TEXT("Setup: create should succeed"), Result.bSuccess);
@@ -35,7 +40,7 @@ bool FCortexBPCompileFailTest::RunTest(const FString& Parameters)
 	// Load the Blueprint and inject a broken node
 	UObject* LoadedObj = StaticLoadObject(
 		UBlueprint::StaticClass(), nullptr,
-		TEXT("/Game/Temp/CortexBPTest_CompileFail/BP_CompileFailTest"));
+		*BlueprintPath);
 	UBlueprint* TestBP = Cast<UBlueprint>(LoadedObj);
 	TestNotNull(TEXT("Blueprint should exist"), TestBP);
 
@@ -62,8 +67,11 @@ bool FCortexBPCompileFailTest::RunTest(const FString& Parameters)
 	// Test: compile the broken Blueprint
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-		Params->SetStringField(TEXT("asset_path"),
-			TEXT("/Game/Temp/CortexBPTest_CompileFail/BP_CompileFailTest"));
+		Params->SetStringField(TEXT("asset_path"), BlueprintPath);
+		AddExpectedError(
+			TEXT("Found more than one function with the same name DuplicateEventName"),
+			EAutomationExpectedErrorFlags::Contains,
+			1);
 
 		FCortexCommandResult Result = Handler.Execute(TEXT("compile"), Params);
 
@@ -84,7 +92,7 @@ bool FCortexBPCompileFailTest::RunTest(const FString& Parameters)
 	}
 
 	// Cleanup
-	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_CompileFail/BP_CompileFailTest"));
+	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
 	if (CreatedBP)
 	{
 		CreatedBP->MarkAsGarbage();

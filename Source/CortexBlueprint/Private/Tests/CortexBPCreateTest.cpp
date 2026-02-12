@@ -2,6 +2,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Misc/Guid.h"
 #include "Engine/Blueprint.h"
 #include "CortexBPCommandHandler.h"
 #include "CortexTypes.h"
@@ -15,10 +16,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCreateWidgetTest::RunTest(const FString& Parameters)
 {
 	// Setup
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString BlueprintName = FString::Printf(TEXT("WBP_TestCreate_%s"), *Suffix);
+	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_Create_%s"), *Suffix);
+	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("name"), TEXT("WBP_TestCreate"));
-	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Create"));
+	Params->SetStringField(TEXT("name"), BlueprintName);
+	Params->SetStringField(TEXT("path"), BlueprintDir);
 	Params->SetStringField(TEXT("type"), TEXT("Widget"));
 
 	// Execute
@@ -32,7 +37,7 @@ bool FCortexBPCreateWidgetTest::RunTest(const FString& Parameters)
 		FString AssetPath;
 		Result.Data->TryGetStringField(TEXT("asset_path"), AssetPath);
 		TestEqual(TEXT("asset_path should match"),
-			AssetPath, TEXT("/Game/Temp/CortexBPTest_Create/WBP_TestCreate"));
+			AssetPath, BlueprintPath);
 
 		FString Type;
 		Result.Data->TryGetStringField(TEXT("type"), Type);
@@ -44,7 +49,7 @@ bool FCortexBPCreateWidgetTest::RunTest(const FString& Parameters)
 	}
 
 	// Verify asset is loadable
-	UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_Create/WBP_TestCreate"));
+	UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
 	TestNotNull(TEXT("Asset should be loadable"), LoadedAsset);
 
 	// Cleanup
@@ -113,10 +118,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCreateDuplicateTest::RunTest(const FString& Parameters)
 {
 	// Setup - Create first asset
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString BlueprintName = FString::Printf(TEXT("BP_TestDuplicate_%s"), *Suffix);
+	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_Duplicate_%s"), *Suffix);
+	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
 	FCortexBPCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("name"), TEXT("BP_TestDuplicate"));
-	Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_Duplicate"));
+	Params->SetStringField(TEXT("name"), BlueprintName);
+	Params->SetStringField(TEXT("path"), BlueprintDir);
 	Params->SetStringField(TEXT("type"), TEXT("Actor"));
 
 	// Execute first creation
@@ -131,7 +140,7 @@ bool FCortexBPCreateDuplicateTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Should return BLUEPRINT_ALREADY_EXISTS"), Result2.ErrorCode, CortexErrorCodes::BlueprintAlreadyExists);
 
 	// Cleanup
-	UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, TEXT("/Game/Temp/CortexBPTest_Duplicate/BP_TestDuplicate"));
+	UObject* LoadedAsset = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
 	if (LoadedAsset)
 	{
 		LoadedAsset->MarkAsGarbage();
