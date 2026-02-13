@@ -52,6 +52,64 @@ _CLASS_MAP = {
 }
 
 
+# Known pin names for common expression types.
+# outputs: list of output pin names (use index 0 if empty/single)
+# inputs: list of input pin names
+_PIN_MAP = {
+    # Parameters — single unnamed output (use index 0)
+    "ScalarParameter": {"outputs": ["0"], "inputs": []},
+    "VectorParameter": {"outputs": ["0"], "inputs": []},
+    "TextureParameter": {"outputs": ["RGBA", "RGB", "R", "G", "B", "A"], "inputs": ["UVs"]},
+    "StaticSwitchParameter": {"outputs": ["0"], "inputs": ["True", "False", "Value"]},
+    # Constants
+    "Constant": {"outputs": ["0"], "inputs": []},
+    "Constant2Vector": {"outputs": ["0"], "inputs": []},
+    "Constant3Vector": {"outputs": ["0"], "inputs": []},
+    "Constant4Vector": {"outputs": ["0"], "inputs": []},
+    # Math — two inputs (A, B), single output
+    "Multiply": {"outputs": ["0"], "inputs": ["A", "B"]},
+    "Add": {"outputs": ["0"], "inputs": ["A", "B"]},
+    "Subtract": {"outputs": ["0"], "inputs": ["A", "B"]},
+    "Divide": {"outputs": ["0"], "inputs": ["A", "B"]},
+    "Power": {"outputs": ["0"], "inputs": ["Base", "Exp"]},
+    "DotProduct": {"outputs": ["0"], "inputs": ["A", "B"]},
+    "CrossProduct": {"outputs": ["0"], "inputs": ["A", "B"]},
+    # Math — single input
+    "OneMinus": {"outputs": ["0"], "inputs": ["Input"]},
+    "Abs": {"outputs": ["0"], "inputs": ["Input"]},
+    "Sine": {"outputs": ["0"], "inputs": ["Input"]},
+    "Cosine": {"outputs": ["0"], "inputs": ["Input"]},
+    "Floor": {"outputs": ["0"], "inputs": ["Input"]},
+    "Ceil": {"outputs": ["0"], "inputs": ["Input"]},
+    "Frac": {"outputs": ["0"], "inputs": ["Input"]},
+    "Normalize": {"outputs": ["0"], "inputs": ["VectorInput"]},
+    # Interpolation
+    "Lerp": {"outputs": ["0"], "inputs": ["A", "B", "Alpha"]},
+    "Clamp": {"outputs": ["0"], "inputs": ["Input", "Min", "Max"]},
+    "If": {"outputs": ["0"], "inputs": ["A", "B", "AGreaterThanB", "AEqualsB", "ALessThanB"]},
+    # Texture
+    "TextureCoordinate": {"outputs": ["0"], "inputs": []},
+    "TextureSample": {"outputs": ["RGBA", "RGB", "R", "G", "B", "A"], "inputs": ["UVs", "Tex"]},
+    "TextureObject": {"outputs": ["0"], "inputs": []},
+    # Animation / Time
+    "Time": {"outputs": ["0"], "inputs": []},
+    "Panner": {"outputs": ["0"], "inputs": ["Coordinate", "Time", "Speed", "SpeedX", "SpeedY"]},
+    # World
+    "WorldPosition": {"outputs": ["0"], "inputs": []},
+    "VertexColor": {"outputs": ["RGBA", "RGB", "R", "G", "B", "A"], "inputs": []},
+    # Vector ops
+    "ComponentMask": {"outputs": ["0"], "inputs": ["Input"]},
+    "AppendVector": {"outputs": ["0"], "inputs": ["A", "B"]},
+    "Desaturation": {"outputs": ["0"], "inputs": ["Input", "Fraction"]},
+    # Fresnel
+    "Fresnel": {"outputs": ["0"], "inputs": ["ExponentIn", "BaseReflectFractionIn", "Normal"]},
+    # Noise
+    "Noise": {"outputs": ["0"], "inputs": ["Position"]},
+    # LinearInterpolate (alias for Lerp — full UE class name variant)
+    "LinearInterpolate": {"outputs": ["0"], "inputs": ["A", "B", "Alpha"]},
+}
+
+
 def _resolve_class_name(short_name: str) -> str:
     """Resolve short class name to full UE class name."""
     if short_name in _CLASS_MAP:
@@ -98,6 +156,17 @@ def _validate_spec(name, path, nodes, connections):
     if len(node_names) != len(set(node_names)):
         raise ValueError("Duplicate node names in spec")
 
+    # Build node name → class map for pin validation
+    node_class_map = {}
+    for node in nodes:
+        n = node.get("name", "").strip()
+        cls = node.get("class", "")
+        # Normalize class name to short form for _PIN_MAP lookup
+        short_cls = cls
+        if short_cls.startswith("MaterialExpression"):
+            short_cls = short_cls[len("MaterialExpression"):]
+        node_class_map[n] = short_cls
+
     # Connection validation
     for conn in connections:
         if "from" not in conn or "to" not in conn:
@@ -111,12 +180,44 @@ def _validate_spec(name, path, nodes, connections):
             raise ValueError(f"Invalid 'to' format: {conn['to']} (expected 'NodeName.PinName')")
 
         src_node = src_parts[0]
+        src_pin = src_parts[1]
         tgt_node = tgt_parts[0]
+        tgt_pin = tgt_parts[1]
 
         if src_node not in node_names:
             raise ValueError(f"Unknown source node: {src_node}")
         if tgt_node not in node_names and tgt_node != "Material":
             raise ValueError(f"Unknown target node: {tgt_node}")
+
+        # Validate pin names against _PIN_MAP (if class is known)
+        src_cls = node_class_map.get(src_node, "")
+        if src_cls in _PIN_MAP:
+            known_outputs = _PIN_MAP[src_cls]["outputs"]
+            if known_outputs and src_pin not in known_outputs:
+                raise ValueError(
+                    f"Unknown output pin '{src_pin}' on {src_node} ({src_cls}). "
+                    f"Available outputs: {known_outputs}"
+                )
+
+        if tgt_node == "Material":
+            valid_material_inputs = [
+                "BaseColor", "Normal", "Metallic", "Roughness", "Specular",
+                "EmissiveColor", "Opacity", "OpacityMask", "WorldPositionOffset",
+            ]
+            if tgt_pin not in valid_material_inputs:
+                raise ValueError(
+                    f"Unknown Material input '{tgt_pin}'. "
+                    f"Available inputs: {valid_material_inputs}"
+                )
+        else:
+            tgt_cls = node_class_map.get(tgt_node, "")
+            if tgt_cls in _PIN_MAP:
+                known_inputs = _PIN_MAP[tgt_cls]["inputs"]
+                if known_inputs and tgt_pin not in known_inputs:
+                    raise ValueError(
+                        f"Unknown input pin '{tgt_pin}' on {tgt_node} ({tgt_cls}). "
+                        f"Available inputs: {known_inputs}"
+                    )
 
     # Validate no user param contains $steps[ (including nested values)
     for node in nodes:
@@ -130,6 +231,9 @@ def _validate_spec(name, path, nodes, connections):
 
 def _build_batch_commands(name, path, nodes, connections):
     """Translate material spec into batch commands with $ref wiring."""
+    # Normalize trailing slash to prevent double-slash paths
+    path = path.rstrip("/")
+
     commands = []
 
     # Step 0: create material
@@ -239,10 +343,25 @@ def register_material_composite_tools(mcp, connection: UEConnection):
                 - params: Optional dict of node properties (e.g., {"UTiling": 2.0},
                           {"Texture": "/Game/T_Wood_D"}, {"ParameterName": "Roughness"})
             connections: Array of connection specs using "NodeName.PinName" format:
-                - from: Source "NodeName.PinName" (e.g., "UV.UV", "Diffuse.RGBA")
-                - to: Target "NodeName.PinName" or "Material.InputName"
-                      Material inputs: BaseColor, Normal, Metallic, Roughness,
-                      Specular, EmissiveColor, Opacity, OpacityMask, WorldPositionOffset
+                - from: Source "NodeName.OutputPin" (e.g., "MyParam.0", "Diffuse.RGBA")
+                - to: Target "NodeName.InputPin" or "Material.InputName"
+
+                Output pin conventions (source_output):
+                    Most nodes have a single output — use "0" (e.g., "Time.0", "Multiply.0")
+                    Texture nodes have named outputs: "RGBA", "RGB", "R", "G", "B", "A"
+
+                Input pin conventions (target_input):
+                    Math ops (Multiply, Add, Subtract, Divide): "A", "B"
+                    Single-input ops (Sine, Cosine, Abs, OneMinus, Floor, Ceil, Frac): "Input"
+                    Lerp/LinearInterpolate: "A", "B", "Alpha"
+                    Clamp: "Input", "Min", "Max"
+                    Power: "Base", "Exp"
+                    TextureSample: "UVs", "Tex"
+                    Panner: "Coordinate", "Time", "Speed"
+                    Fresnel: "ExponentIn", "BaseReflectFractionIn", "Normal"
+
+                Material result inputs: BaseColor, Normal, Metallic, Roughness,
+                    Specular, EmissiveColor, Opacity, OpacityMask, WorldPositionOffset
 
         Returns:
             JSON with asset_path, node_count, connection_count, timing.

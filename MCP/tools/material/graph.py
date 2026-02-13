@@ -192,6 +192,41 @@ def register_material_graph_tools(mcp, connection: UEConnection):
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
+    def get_material_node_pins(
+        asset_path: str,
+        node_id: str,
+    ) -> str:
+        """Get all input and output pin names for a material expression node.
+
+        Use this to discover what pins are available on a node before connecting.
+        Output pins are used as source_output in connect_material_nodes.
+        Input pins are used as target_input in connect_material_nodes.
+
+        Args:
+            asset_path: Full asset path to the material
+            node_id: ID of the node (from list_material_nodes or add_material_node)
+
+        Returns:
+            JSON with:
+            - node_id: Node identifier
+            - expression_class: Type of expression
+            - inputs: Array of input pins with index, name, and connected_to (if wired)
+            - outputs: Array of output pins with index and name
+            - input_count: Number of input pins
+            - output_count: Number of output pins
+        """
+        try:
+            params = {
+                "asset_path": asset_path,
+                "node_id": node_id,
+            }
+            result = connection.send_command("material.get_node_pins", params)
+            return format_response(result.get("data", {}), "get_material_node_pins")
+        except Exception as e:
+            logger.error(f"get_material_node_pins failed: {e}", exc_info=True)
+            return json.dumps({"error": str(e)})
+
+    @mcp.tool()
     def disconnect_material_nodes(
         asset_path: str,
         target_node: str,

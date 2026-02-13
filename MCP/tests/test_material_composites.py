@@ -76,14 +76,14 @@ class TestValidation:
     def test_unknown_target_node(self):
         """Validation fails when connection references unknown target node."""
         nodes = [{"name": "A", "class": "Constant"}]
-        connections = [{"from": "A.Output", "to": "UnknownNode.Input"}]
+        connections = [{"from": "A.0", "to": "UnknownNode.Input"}]
         with pytest.raises(ValueError, match="Unknown target node"):
             _validate_spec("M_Test", "/Game/", nodes, connections)
 
     def test_material_target_allowed(self):
         """Validation allows 'Material' as special target node."""
         nodes = [{"name": "A", "class": "Constant"}]
-        connections = [{"from": "A.Output", "to": "Material.BaseColor"}]
+        connections = [{"from": "A.0", "to": "Material.BaseColor"}]
         # Should not raise
         _validate_spec("M_Test", "/Game/", nodes, connections)
 
@@ -120,7 +120,7 @@ class TestBatchCommandGeneration:
         # Step 0: create_material
         assert commands[0]["command"] == "material.create_material"
         assert commands[0]["params"]["name"] == "M_Test"
-        assert commands[0]["params"]["asset_path"] == "/Game/"
+        assert commands[0]["params"]["asset_path"] == "/Game"
 
         # Step 1: add_node
         assert commands[1]["command"] == "material.add_node"

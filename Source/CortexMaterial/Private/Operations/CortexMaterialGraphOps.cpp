@@ -9,6 +9,7 @@
 #include "ScopedTransaction.h"
 #include "CortexBatchScope.h"
 #include "CortexCommandRouter.h"
+#include "UObject/UnrealType.h"
 
 UMaterialExpression* FCortexMaterialGraphOps::FindExpression(UMaterial* Material, const FString& NodeId)
 {
@@ -281,6 +282,8 @@ FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<F
 
 	TArray<TSharedPtr<FJsonValue>> ConnectionsArray;
 
+	UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
+
 	// Check material result inputs
 	auto CheckMaterialInput = [&](const FExpressionInput& Input, const FString& InputName)
 	{
@@ -295,7 +298,6 @@ FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<F
 		}
 	};
 
-	UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
 	CheckMaterialInput(EditorData->BaseColor, TEXT("BaseColor"));
 	CheckMaterialInput(EditorData->Metallic, TEXT("Metallic"));
 	CheckMaterialInput(EditorData->Specular, TEXT("Specular"));
@@ -304,6 +306,28 @@ FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<F
 	CheckMaterialInput(EditorData->EmissiveColor, TEXT("EmissiveColor"));
 	CheckMaterialInput(EditorData->Opacity, TEXT("Opacity"));
 	CheckMaterialInput(EditorData->OpacityMask, TEXT("OpacityMask"));
+
+	// Check expression-to-expression connections
+	for (UMaterialExpression* Expression : EditorData->ExpressionCollection.Expressions)
+	{
+		if (Expression == nullptr)
+		{
+			continue;
+		}
+
+		for (FExpressionInputIterator It(Expression); It; ++It)
+		{
+			if (It.Input && It.Input->Expression)
+			{
+				TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+				Entry->SetStringField(TEXT("source_node"), It.Input->Expression->GetName());
+				Entry->SetNumberField(TEXT("source_output"), It.Input->OutputIndex);
+				Entry->SetStringField(TEXT("target_node"), Expression->GetName());
+				Entry->SetStringField(TEXT("target_input"), Expression->GetInputName(It.Index).ToString());
+				ConnectionsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			}
+		}
+	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("connections"), ConnectionsArray);
@@ -928,6 +952,53 @@ FCortexCommandResult FCortexMaterialGraphOps::SetNodeProperty(const TSharedPtr<F
 				TEXT("value must be a boolean for FBoolProperty"));
 		}
 	}
+	else if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
+	{
+		// FLinearColor - from [R, G, B, A] array
+		if (StructProp->Struct == TBaseStructure<FLinearColor>::Get())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* ColorArray = nullptr;
+			if (Value->TryGetArray(ColorArray) && ColorArray->Num() == 4)
+			{
+				FLinearColor* Color = static_cast<FLinearColor*>(PropertyAddress);
+				Color->R = static_cast<float>((*ColorArray)[0]->AsNumber());
+				Color->G = static_cast<float>((*ColorArray)[1]->AsNumber());
+				Color->B = static_cast<float>((*ColorArray)[2]->AsNumber());
+				Color->A = static_cast<float>((*ColorArray)[3]->AsNumber());
+			}
+			else
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					TEXT("value must be [R, G, B, A] array for FLinearColor"));
+			}
+		}
+		// FVector - from [X, Y, Z] array
+		else if (StructProp->Struct == TBaseStructure<FVector>::Get())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* VecArray = nullptr;
+			if (Value->TryGetArray(VecArray) && VecArray->Num() == 3)
+			{
+				FVector* Vec = static_cast<FVector*>(PropertyAddress);
+				Vec->X = (*VecArray)[0]->AsNumber();
+				Vec->Y = (*VecArray)[1]->AsNumber();
+				Vec->Z = (*VecArray)[2]->AsNumber();
+			}
+			else
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					TEXT("value must be [X, Y, Z] array for FVector"));
+			}
+		}
+		else
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("Unsupported struct type: %s"), *StructProp->Struct->GetName())
+			);
+		}
+	}
 	else if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Property))
 	{
 		FString ObjectPath;
@@ -996,6 +1067,72 @@ FCortexCommandResult FCortexMaterialGraphOps::SetNodeProperty(const TSharedPtr<F
 	Data->SetStringField(TEXT("node_id"), NodeId);
 	Data->SetStringField(TEXT("property_name"), PropertyName);
 	Data->SetBoolField(TEXT("updated"), true);
+
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexMaterialGraphOps::GetNodePins(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath, NodeId;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("node_id"), NodeId))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path and node_id"));
+	}
+
+	FCortexCommandResult LoadError;
+	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
+	if (Material == nullptr)
+	{
+		return LoadError;
+	}
+
+	UMaterialExpression* Expression = FindExpression(Material, NodeId);
+	if (Expression == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::NodeNotFound,
+			FString::Printf(TEXT("Node not found: %s"), *NodeId)
+		);
+	}
+
+	// Enumerate output pins
+	TArray<TSharedPtr<FJsonValue>> OutputsArray;
+	const TArray<FExpressionOutput>& Outputs = Expression->GetOutputs();
+	for (int32 i = 0; i < Outputs.Num(); ++i)
+	{
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetNumberField(TEXT("index"), i);
+		FString OutputName = Outputs[i].OutputName.ToString();
+		Entry->SetStringField(TEXT("name"), OutputName.IsEmpty() ? FString::Printf(TEXT("%d"), i) : OutputName);
+		OutputsArray.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	// Enumerate input pins
+	TArray<TSharedPtr<FJsonValue>> InputsArray;
+	for (FExpressionInputIterator It(Expression); It; ++It)
+	{
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetNumberField(TEXT("index"), It.Index);
+		Entry->SetStringField(TEXT("name"), Expression->GetInputName(It.Index).ToString());
+		// Report if this input is currently connected
+		if (It.Input && It.Input->Expression)
+		{
+			Entry->SetStringField(TEXT("connected_to"), It.Input->Expression->GetName());
+		}
+		InputsArray.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("node_id"), NodeId);
+	Data->SetStringField(TEXT("expression_class"), Expression->GetClass()->GetName());
+	Data->SetArrayField(TEXT("inputs"), InputsArray);
+	Data->SetArrayField(TEXT("outputs"), OutputsArray);
+	Data->SetNumberField(TEXT("input_count"), InputsArray.Num());
+	Data->SetNumberField(TEXT("output_count"), OutputsArray.Num());
 
 	return FCortexCommandRouter::Success(Data);
 }

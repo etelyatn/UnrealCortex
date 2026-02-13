@@ -18,6 +18,7 @@ public:
 	static FCortexCommandResult Disconnect(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult AutoLayout(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult SetNodeProperty(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult GetNodePins(const TSharedPtr<FJsonObject>& Params);
 
 private:
 	static UMaterialExpression* FindExpression(UMaterial* Material, const FString& NodeId);
