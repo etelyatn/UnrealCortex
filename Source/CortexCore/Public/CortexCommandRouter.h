@@ -42,7 +42,7 @@ public:
 	/** Get all registered domains (for get_capabilities). */
 	const TArray<FCortexRegisteredDomain>& GetRegisteredDomains() const;
 
-	static constexpr int32 MaxBatchSize = 20;
+	static constexpr int32 MaxBatchSize = 200;
 
 private:
 	// Command implementations
