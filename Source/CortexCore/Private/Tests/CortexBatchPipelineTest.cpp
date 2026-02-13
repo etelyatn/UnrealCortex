@@ -469,3 +469,223 @@ bool FCortexBatchRefEmptyPathTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+// ── stop_on_error: Halts Execution ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBatchStopOnErrorHaltsTest,
+	"Cortex.Core.Batch.StopOnErrorHalts",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBatchStopOnErrorHaltsTest::RunTest(const FString& Parameters)
+{
+	// 3 commands: ping (succeeds), nonexistent.command (fails), ping (should NOT execute)
+	// Expected: 2 results (step 0 ok, step 1 fail, step 2 not executed)
+	FCortexCommandRouter Router;
+
+	TSharedPtr<FJsonObject> Step0 = MakeShared<FJsonObject>();
+	Step0->SetStringField(TEXT("command"), TEXT("ping"));
+
+	TSharedPtr<FJsonObject> Step1 = MakeShared<FJsonObject>();
+	Step1->SetStringField(TEXT("command"), TEXT("nonexistent.command"));
+
+	TSharedPtr<FJsonObject> Step2 = MakeShared<FJsonObject>();
+	Step2->SetStringField(TEXT("command"), TEXT("ping"));
+
+	TArray<TSharedPtr<FJsonValue>> Commands;
+	Commands.Add(MakeShared<FJsonValueObject>(Step0));
+	Commands.Add(MakeShared<FJsonValueObject>(Step1));
+	Commands.Add(MakeShared<FJsonValueObject>(Step2));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("commands"), Commands);
+	Params->SetBoolField(TEXT("stop_on_error"), true);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("batch"), Params);
+	TestTrue(TEXT("Batch should succeed overall"), Result.bSuccess);
+
+	// Verify only 2 results (step 2 was not executed)
+	const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+	if (Result.Data.IsValid() && Result.Data->TryGetArrayField(TEXT("results"), ResultsArray))
+	{
+		TestEqual(TEXT("Should have exactly 2 results"), ResultsArray->Num(), 2);
+
+		// Step 0 succeeded
+		const TSharedPtr<FJsonObject>* Step0Result = nullptr;
+		if ((*ResultsArray)[0]->TryGetObject(Step0Result) && Step0Result != nullptr)
+		{
+			bool bSuccess = false;
+			(*Step0Result)->TryGetBoolField(TEXT("success"), bSuccess);
+			TestTrue(TEXT("Step 0 should succeed"), bSuccess);
+		}
+
+		// Step 1 failed
+		const TSharedPtr<FJsonObject>* Step1Result = nullptr;
+		if ((*ResultsArray)[1]->TryGetObject(Step1Result) && Step1Result != nullptr)
+		{
+			bool bSuccess = false;
+			(*Step1Result)->TryGetBoolField(TEXT("success"), bSuccess);
+			TestFalse(TEXT("Step 1 should fail"), bSuccess);
+		}
+	}
+
+	return true;
+}
+
+// ── stop_on_error: Continues Past Failures ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBatchStopOnErrorContinuesTest,
+	"Cortex.Core.Batch.StopOnErrorContinues",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBatchStopOnErrorContinuesTest::RunTest(const FString& Parameters)
+{
+	// 3 commands: ping (succeeds), nonexistent.command (fails), ping (succeeds)
+	// Expected: 3 results (all executed, step 1 failed, steps 0 and 2 succeeded)
+	FCortexCommandRouter Router;
+
+	TSharedPtr<FJsonObject> Step0 = MakeShared<FJsonObject>();
+	Step0->SetStringField(TEXT("command"), TEXT("ping"));
+
+	TSharedPtr<FJsonObject> Step1 = MakeShared<FJsonObject>();
+	Step1->SetStringField(TEXT("command"), TEXT("nonexistent.command"));
+
+	TSharedPtr<FJsonObject> Step2 = MakeShared<FJsonObject>();
+	Step2->SetStringField(TEXT("command"), TEXT("ping"));
+
+	TArray<TSharedPtr<FJsonValue>> Commands;
+	Commands.Add(MakeShared<FJsonValueObject>(Step0));
+	Commands.Add(MakeShared<FJsonValueObject>(Step1));
+	Commands.Add(MakeShared<FJsonValueObject>(Step2));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("commands"), Commands);
+	Params->SetBoolField(TEXT("stop_on_error"), false);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("batch"), Params);
+	TestTrue(TEXT("Batch should succeed overall"), Result.bSuccess);
+
+	// Verify all 3 results (execution continued past failure)
+	const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+	if (Result.Data.IsValid() && Result.Data->TryGetArrayField(TEXT("results"), ResultsArray))
+	{
+		TestEqual(TEXT("Should have exactly 3 results"), ResultsArray->Num(), 3);
+
+		// Step 0 succeeded
+		const TSharedPtr<FJsonObject>* Step0Result = nullptr;
+		if ((*ResultsArray)[0]->TryGetObject(Step0Result) && Step0Result != nullptr)
+		{
+			bool bSuccess = false;
+			(*Step0Result)->TryGetBoolField(TEXT("success"), bSuccess);
+			TestTrue(TEXT("Step 0 should succeed"), bSuccess);
+		}
+
+		// Step 1 failed
+		const TSharedPtr<FJsonObject>* Step1Result = nullptr;
+		if ((*ResultsArray)[1]->TryGetObject(Step1Result) && Step1Result != nullptr)
+		{
+			bool bSuccess = false;
+			(*Step1Result)->TryGetBoolField(TEXT("success"), bSuccess);
+			TestFalse(TEXT("Step 1 should fail"), bSuccess);
+		}
+
+		// Step 2 succeeded
+		const TSharedPtr<FJsonObject>* Step2Result = nullptr;
+		if ((*ResultsArray)[2]->TryGetObject(Step2Result) && Step2Result != nullptr)
+		{
+			bool bSuccess = false;
+			(*Step2Result)->TryGetBoolField(TEXT("success"), bSuccess);
+			TestTrue(TEXT("Step 2 should succeed"), bSuccess);
+		}
+	}
+
+	return true;
+}
+
+// ── Empty Batch ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBatchEmptyTest,
+	"Cortex.Core.Batch.EmptyBatch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBatchEmptyTest::RunTest(const FString& Parameters)
+{
+	// 0 commands
+	// Expected: success, count=0
+	FCortexCommandRouter Router;
+
+	TArray<TSharedPtr<FJsonValue>> Commands;
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("commands"), Commands);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("batch"), Params);
+	TestTrue(TEXT("Empty batch should succeed"), Result.bSuccess);
+
+	// Verify 0 results
+	const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+	if (Result.Data.IsValid() && Result.Data->TryGetArrayField(TEXT("results"), ResultsArray))
+	{
+		TestEqual(TEXT("Should have 0 results"), ResultsArray->Num(), 0);
+	}
+
+	// Verify count field
+	int32 Count = -1;
+	if (Result.Data.IsValid() && Result.Data->TryGetNumberField(TEXT("count"), Count))
+	{
+		TestEqual(TEXT("Count should be 0"), Count, 0);
+	}
+
+	return true;
+}
+
+// ── Backward Compatibility ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBatchBackwardCompatTest,
+	"Cortex.Core.Batch.BackwardCompat",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBatchBackwardCompatTest::RunTest(const FString& Parameters)
+{
+	// 1 ping command, no stop_on_error param
+	// Expected: success (default behavior: stop_on_error=false)
+	FCortexCommandRouter Router;
+
+	TSharedPtr<FJsonObject> Step0 = MakeShared<FJsonObject>();
+	Step0->SetStringField(TEXT("command"), TEXT("ping"));
+
+	TArray<TSharedPtr<FJsonValue>> Commands;
+	Commands.Add(MakeShared<FJsonValueObject>(Step0));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("commands"), Commands);
+	// Note: NOT setting stop_on_error field
+
+	FCortexCommandResult Result = Router.Execute(TEXT("batch"), Params);
+	TestTrue(TEXT("Batch without stop_on_error should succeed"), Result.bSuccess);
+
+	// Verify 1 result
+	const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+	if (Result.Data.IsValid() && Result.Data->TryGetArrayField(TEXT("results"), ResultsArray))
+	{
+		TestEqual(TEXT("Should have 1 result"), ResultsArray->Num(), 1);
+
+		// Step 0 succeeded
+		const TSharedPtr<FJsonObject>* Step0Result = nullptr;
+		if ((*ResultsArray)[0]->TryGetObject(Step0Result) && Step0Result != nullptr)
+		{
+			bool bSuccess = false;
+			(*Step0Result)->TryGetBoolField(TEXT("success"), bSuccess);
+			TestTrue(TEXT("Step 0 should succeed"), bSuccess);
+		}
+	}
+
+	return true;
+}
