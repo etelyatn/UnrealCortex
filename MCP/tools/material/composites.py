@@ -64,6 +64,17 @@ def _resolve_class_name(short_name: str) -> str:
     return prefixed
 
 
+def _contains_ref_syntax(value):
+    """Check if value or any nested element contains $steps[ syntax."""
+    if isinstance(value, str):
+        return value.startswith("$steps[")
+    elif isinstance(value, list):
+        return any(_contains_ref_syntax(v) for v in value)
+    elif isinstance(value, dict):
+        return any(_contains_ref_syntax(v) for v in value.values())
+    return False
+
+
 def _validate_spec(name, path, nodes, connections):
     """Validate the material graph spec. Raises ValueError on invalid spec."""
     if not name:
@@ -75,10 +86,13 @@ def _validate_spec(name, path, nodes, connections):
     if not isinstance(connections, list):
         raise ValueError("connections must be an array")
 
-    # Node name uniqueness
+    # Node name uniqueness with normalization
     node_names = []
     for i, node in enumerate(nodes):
-        n = node.get("name", f"Node_{i}")
+        n = node.get("name", "").strip()
+        if not n:
+            n = f"Node_{i}"
+            node["name"] = n  # Normalize in-place
         node_names.append(n)
 
     if len(node_names) != len(set(node_names)):
@@ -104,12 +118,12 @@ def _validate_spec(name, path, nodes, connections):
         if tgt_node not in node_names and tgt_node != "Material":
             raise ValueError(f"Unknown target node: {tgt_node}")
 
-    # Validate no user param starts with $steps[
+    # Validate no user param contains $steps[ (including nested values)
     for node in nodes:
         for key, value in (node.get("params") or {}).items():
-            if isinstance(value, str) and value.startswith("$steps["):
+            if _contains_ref_syntax(value):
                 raise ValueError(
-                    f"Node '{node.get('name')}' param '{key}' starts with '$steps[' "
+                    f"Node '{node.get('name')}' param '{key}' contains '$steps[' "
                     f"which conflicts with batch $ref syntax"
                 )
 
@@ -265,6 +279,8 @@ def register_material_composite_tools(mcp, connection: UEConnection):
         total_steps = len(commands)
 
         # 3. Send batch with stop_on_error
+        # Timeout scaling: ~0.5s per add_node, ~1s per set_property, ~0.3s per connect
+        # Conservative 2s average per command with 60s minimum for small graphs
         timeout = max(60, len(commands) * 2)
         try:
             batch_result = connection.send_command("batch", {
@@ -274,8 +290,9 @@ def register_material_composite_tools(mcp, connection: UEConnection):
         except RuntimeError as e:
             # Batch itself failed (e.g., limit exceeded)
             return json.dumps({"success": False, "error": str(e)})
-        except ConnectionError as e:
-            return json.dumps({"success": False, "error": f"Connection lost: {e}"})
+        except (ConnectionError, TimeoutError, OSError) as e:
+            # Connection lost or timeout exceeded
+            return json.dumps({"success": False, "error": f"Connection error: {e}"})
 
         batch_data = batch_result.get("data", {})
         results = batch_data.get("results", [])
@@ -304,8 +321,13 @@ def register_material_composite_tools(mcp, connection: UEConnection):
                         "asset_path": asset_path,
                     })
                     recovery_action = {"action": "deleted_partial", "path": asset_path}
-                except Exception:
-                    recovery_action = {"action": "cleanup_failed", "path": asset_path}
+                except Exception as e:
+                    recovery_action = {
+                        "action": "cleanup_failed",
+                        "path": asset_path,
+                        "error": str(e),
+                        "user_action_required": f"Manually delete partial asset at {asset_path}"
+                    }
 
             response = {
                 "success": False,
@@ -333,9 +355,12 @@ def register_material_composite_tools(mcp, connection: UEConnection):
                     "asset_path": asset_path,
                 })
             except Exception as e:
-                warnings.append(
-                    f"auto_layout failed: {e}. Node positions may need manual adjustment."
-                )
+                logger.warning(f"auto_layout failed for {asset_path}: {e}", exc_info=True)
+                warnings.append({
+                    "step": "auto_layout",
+                    "error": str(e),
+                    "impact": "Node positions may need manual adjustment in editor"
+                })
 
         # Count operations by type
         node_count = sum(1 for c in commands if c["command"] == "material.add_node")
