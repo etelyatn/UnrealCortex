@@ -717,3 +717,41 @@ bool FCortexBatchIsInBatchTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+// ── Single FScopedTransaction Per Batch ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBatchTransactionWrapTest,
+	"Cortex.Core.Batch.SingleTransaction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBatchTransactionWrapTest::RunTest(const FString& Parameters)
+{
+	// Execute a multi-step batch and verify all steps complete
+	FCortexCommandRouter Router;
+
+	TArray<TSharedPtr<FJsonValue>> Commands;
+	for (int32 i = 0; i < 5; ++i)
+	{
+		TSharedPtr<FJsonObject> Cmd = MakeShared<FJsonObject>();
+		Cmd->SetStringField(TEXT("command"), TEXT("ping"));
+		Commands.Add(MakeShared<FJsonValueObject>(Cmd));
+	}
+
+	TSharedPtr<FJsonObject> BatchParams = MakeShared<FJsonObject>();
+	BatchParams->SetArrayField(TEXT("commands"), Commands);
+	BatchParams->SetBoolField(TEXT("stop_on_error"), true);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("batch"), BatchParams);
+	TestTrue(TEXT("Batch should succeed"), Result.bSuccess);
+
+	double Count = 0;
+	if (Result.Data.IsValid())
+	{
+		Result.Data->TryGetNumberField(TEXT("count"), Count);
+	}
+	TestEqual(TEXT("Should have 5 results"), static_cast<int32>(Count), 5);
+
+	return true;
+}

@@ -12,6 +12,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Materials/Material.h"
 #include "MaterialGraph/MaterialGraph.h"
+#include "ScopedTransaction.h"
 
 int32 FCortexCommandRouter::BatchDepth = 0;
 
@@ -523,6 +524,11 @@ FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObj
 	Params->TryGetBoolField(TEXT("stop_on_error"), bStopOnError);
 
 	const double BatchStartTime = FPlatformTime::Seconds();
+
+	// Single transaction for entire batch
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Batch (%d commands)"), CommandsArray->Num())
+	));
 
 	// RAII: sets IsInBatch()=true, defers PostEditChange
 	FCortexBatchScope BatchScope;
