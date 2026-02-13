@@ -783,16 +783,16 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexBatchRefNestedPathTest::RunTest(const FString& Parameters)
 {
-	// Step 0: get_status (returns nested data with version)
-	// Step 1: ping with $ref to nested field $steps[0].data.version
-	// Expected: Both steps succeed, ref resolves to actual version value
+	// Step 0: ping (returns {message: "pong"})
+	// Step 1: ping with $ref to nested field $steps[0].data.message
+	// Expected: Both steps succeed, ref resolves to "pong"
 	FCortexCommandRouter Router;
 
 	TSharedPtr<FJsonObject> Step0 = MakeShared<FJsonObject>();
-	Step0->SetStringField(TEXT("command"), TEXT("get_status"));
+	Step0->SetStringField(TEXT("command"), TEXT("ping"));
 
 	TSharedPtr<FJsonObject> Step1Params = MakeShared<FJsonObject>();
-	Step1Params->SetStringField(TEXT("nested_ref"), TEXT("$steps[0].data.version"));
+	Step1Params->SetStringField(TEXT("nested_ref"), TEXT("$steps[0].data.message"));
 
 	TSharedPtr<FJsonObject> Step1 = MakeShared<FJsonObject>();
 	Step1->SetStringField(TEXT("command"), TEXT("ping"));
