@@ -2,6 +2,7 @@
 #include "CortexCommandRouter.h"
 #include "CortexBatchScope.h"
 #include "CortexTypes.h"
+#include "CortexTcpServer.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 
@@ -753,5 +754,21 @@ bool FCortexBatchTransactionWrapTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("Should have 5 results"), static_cast<int32>(Count), 5);
 
+	return true;
+}
+
+// ── TCP MaxMessageSize Constant ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexTcpMaxMessageSizeTest,
+	"Cortex.Core.Tcp.MaxMessageSizeExists",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexTcpMaxMessageSizeTest::RunTest(const FString& Parameters)
+{
+	// Verify MaxMessageSize constant is 2MB
+	TestEqual(TEXT("MaxMessageSize should be 2MB"),
+		FCortexTcpServer::MaxMessageSize, 2 * 1024 * 1024);
 	return true;
 }
