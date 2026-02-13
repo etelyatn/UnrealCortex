@@ -15,6 +15,7 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Kismet2/CompilerResultsLog.h"
 #include "ScopedTransaction.h"
+#include "UObject/UObjectIterator.h"
 
 UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FString& OutError)
 {
@@ -230,24 +231,65 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 	}
 
 	FString TypeStr;
-	if (!Params->TryGetStringField(TEXT("type"), TypeStr) || TypeStr.IsEmpty())
-	{
-		Result.bSuccess = false;
-		Result.ErrorCode = CortexErrorCodes::InvalidField;
-		Result.ErrorMessage = TEXT("Missing or empty 'type' field");
-		return Result;
-	}
+	Params->TryGetStringField(TEXT("type"), TypeStr);
 
-	// Determine Blueprint type
+	FString ParentClassStr;
+	Params->TryGetStringField(TEXT("parent_class"), ParentClassStr);
+
 	UClass* ParentClass = nullptr;
 	TSubclassOf<UBlueprint> BlueprintClass;
-	FString TypeError;
-	if (!DetermineBlueprintType(TypeStr, ParentClass, BlueprintClass, TypeError))
+
+	if (!ParentClassStr.IsEmpty())
 	{
-		Result.bSuccess = false;
-		Result.ErrorCode = CortexErrorCodes::InvalidBlueprintType;
-		Result.ErrorMessage = TypeError;
-		return Result;
+		// Resolve custom parent class
+		// Try full path first (e.g., "/Script/CortexSandbox.CortexBenchmarkActor")
+		ParentClass = FindObject<UClass>(nullptr, *ParentClassStr);
+
+		// Try short name lookup if full path didn't work
+		if (!ParentClass)
+		{
+			ParentClass = FindFirstObject<UClass>(*ParentClassStr, EFindFirstObjectOptions::NativeFirst);
+		}
+
+		if (!ParentClass)
+		{
+			Result.bSuccess = false;
+			Result.ErrorCode = CortexErrorCodes::InvalidParentClass;
+			Result.ErrorMessage = FString::Printf(TEXT("Could not find class: %s"), *ParentClassStr);
+			return Result;
+		}
+
+		// Determine correct BlueprintClass based on parent hierarchy
+		static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
+		static UClass* WidgetBlueprintClass = FindObject<UClass>(nullptr, TEXT("/Script/UMGEditor.WidgetBlueprint"));
+		if (UserWidgetClass && WidgetBlueprintClass && ParentClass->IsChildOf(UserWidgetClass))
+		{
+			BlueprintClass = WidgetBlueprintClass;
+		}
+		else
+		{
+			BlueprintClass = UBlueprint::StaticClass();
+		}
+	}
+	else
+	{
+		// Existing behavior: require type param
+		if (TypeStr.IsEmpty())
+		{
+			Result.bSuccess = false;
+			Result.ErrorCode = CortexErrorCodes::InvalidField;
+			Result.ErrorMessage = TEXT("Missing 'type' or 'parent_class' field");
+			return Result;
+		}
+
+		FString TypeError;
+		if (!DetermineBlueprintType(TypeStr, ParentClass, BlueprintClass, TypeError))
+		{
+			Result.bSuccess = false;
+			Result.ErrorCode = CortexErrorCodes::InvalidBlueprintType;
+			Result.ErrorMessage = TypeError;
+			return Result;
+		}
 	}
 
 	// Combine name and path to form package path
@@ -290,13 +332,28 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 	}
 
 	EBlueprintType BPType = BPTYPE_Normal;
-	if (TypeStr == TEXT("Interface"))
+	if (!ParentClassStr.IsEmpty())
 	{
-		BPType = BPTYPE_Interface;
+		// When using custom parent_class, infer BPType from hierarchy
+		if (ParentClass->IsChildOf(UInterface::StaticClass()))
+		{
+			BPType = BPTYPE_Interface;
+		}
+		else if (ParentClass->IsChildOf(UBlueprintFunctionLibrary::StaticClass()))
+		{
+			BPType = BPTYPE_FunctionLibrary;
+		}
 	}
-	else if (TypeStr == TEXT("FunctionLibrary"))
+	else
 	{
-		BPType = BPTYPE_FunctionLibrary;
+		if (TypeStr == TEXT("Interface"))
+		{
+			BPType = BPTYPE_Interface;
+		}
+		else if (TypeStr == TEXT("FunctionLibrary"))
+		{
+			BPType = BPTYPE_FunctionLibrary;
+		}
 	}
 
 	UBlueprint* NewBP = FKismetEditorUtilities::CreateBlueprint(
@@ -338,7 +395,13 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 	Result.bSuccess = true;
 	Result.Data = MakeShared<FJsonObject>();
 	Result.Data->SetStringField(TEXT("asset_path"), PackagePath);
-	Result.Data->SetStringField(TEXT("type"), TypeStr);
+	// Infer type from the created Blueprint when type wasn't explicitly provided
+	FString ResponseType = TypeStr;
+	if (ResponseType.IsEmpty())
+	{
+		ResponseType = DetermineBlueprintType(NewBP);
+	}
+	Result.Data->SetStringField(TEXT("type"), ResponseType);
 	Result.Data->SetStringField(TEXT("parent_class"), ParentClass ? ParentClass->GetName() : TEXT(""));
 	Result.Data->SetBoolField(TEXT("created"), true);
 

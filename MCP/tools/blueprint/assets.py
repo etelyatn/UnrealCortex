@@ -16,6 +16,7 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
         name: str,
         path: str,
         type: str = "Actor",
+        parent_class: str = "",
     ) -> str:
         """Create a new Blueprint asset.
 
@@ -23,12 +24,17 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
             name: Blueprint name (e.g., 'BP_Character')
             path: Asset path directory (e.g., '/Game/Blueprints')
             type: Blueprint base type: Actor, Component, Widget, Interface, or FunctionLibrary
-                 (default: Actor)
+                 (default: Actor). Ignored when parent_class is provided.
+            parent_class: Optional C++ class to use as Blueprint parent. Accepts short name
+                 (e.g., 'CortexBenchmarkActor') or full path
+                 (e.g., '/Script/CortexSandbox.CortexBenchmarkActor').
+                 When provided, overrides the type parameter.
 
         Returns:
             JSON with:
             - asset_path: Full path to the created Blueprint
             - type: Confirmed type
+            - parent_class: Parent class name
             - created: true if successful
         """
         try:
@@ -37,6 +43,8 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
                 "path": path,
                 "type": type,
             }
+            if parent_class:
+                params["parent_class"] = parent_class
             response = connection.send_command("bp.create", params)
             return format_response(response.get("data", {}), "create_blueprint")
         except ConnectionError as e:
