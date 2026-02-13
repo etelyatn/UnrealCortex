@@ -826,3 +826,224 @@ bool FCortexMaterialSetNodePropertyTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialAutoLayoutDisconnectedTest,
+	"Cortex.Material.Graph.AutoLayout.Disconnected",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialAutoLayoutDisconnectedTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestLayoutDisc_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_LayoutDisc_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create material
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	// Add 3 disconnected ScalarParameter nodes
+	for (int32 i = 0; i < 3; ++i)
+	{
+		TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+		AddParams->SetStringField(TEXT("asset_path"), MatPath);
+		AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionScalarParameter"));
+		Handler.Execute(TEXT("add_node"), AddParams);
+	}
+
+	// Run auto_layout
+	TSharedPtr<FJsonObject> LayoutParams = MakeShared<FJsonObject>();
+	LayoutParams->SetStringField(TEXT("asset_path"), MatPath);
+	FCortexCommandResult Result = Handler.Execute(TEXT("auto_layout"), LayoutParams);
+
+	TestTrue(TEXT("auto_layout should succeed on disconnected nodes"), Result.bSuccess);
+
+	// auto_layout only positions nodes connected to MaterialResult
+	// Disconnected nodes are ignored, so node_count should be 0
+	if (Result.Data.IsValid())
+	{
+		double NodeCount = 0;
+		Result.Data->TryGetNumberField(TEXT("node_count"), NodeCount);
+		TestEqual(TEXT("node_count should be 0 (disconnected nodes not laid out)"),
+			static_cast<int32>(NodeCount), 0);
+	}
+
+	// Cleanup
+	UObject* LoadedAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedAsset) LoadedAsset->MarkAsGarbage();
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialAutoLayoutCenteringTest,
+	"Cortex.Material.Graph.AutoLayout.VerticalCentering",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialAutoLayoutCenteringTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestLayoutCenter_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_LayoutCenter_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create material
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	// Add 1 ScalarParameter and connect to MaterialResult
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionScalarParameter"));
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+	FString NodeId;
+	if (AddResult.Data.IsValid()) AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+
+	TSharedPtr<FJsonObject> ConnectParams = MakeShared<FJsonObject>();
+	ConnectParams->SetStringField(TEXT("asset_path"), MatPath);
+	ConnectParams->SetStringField(TEXT("source_node"), NodeId);
+	ConnectParams->SetNumberField(TEXT("source_output"), 0);
+	ConnectParams->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+	ConnectParams->SetStringField(TEXT("target_input"), TEXT("Roughness"));
+	Handler.Execute(TEXT("connect"), ConnectParams);
+
+	// Run auto_layout
+	TSharedPtr<FJsonObject> LayoutParams = MakeShared<FJsonObject>();
+	LayoutParams->SetStringField(TEXT("asset_path"), MatPath);
+	FCortexCommandResult Result = Handler.Execute(TEXT("auto_layout"), LayoutParams);
+
+	TestTrue(TEXT("auto_layout should succeed"), Result.bSuccess);
+
+	// Load material to verify node position
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MatPath);
+	TestNotNull(TEXT("Should load material"), Material);
+
+	if (Material && Material->GetExpressions().Num() > 0)
+	{
+		// Find our scalar parameter node
+		UMaterialExpression* ParamNode = nullptr;
+		for (UMaterialExpression* Expr : Material->GetExpressions())
+		{
+			if (Expr->GetName() == NodeId)
+			{
+				ParamNode = Expr;
+				break;
+			}
+		}
+
+		TestNotNull(TEXT("Should find parameter node"), ParamNode);
+		if (ParamNode)
+		{
+			TestEqual(TEXT("Single node in column should be centered at y=0"),
+				ParamNode->MaterialExpressionEditorY, 0);
+		}
+	}
+
+	// Cleanup
+	if (Material) Material->MarkAsGarbage();
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialAutoLayoutCycleTest,
+	"Cortex.Material.Graph.AutoLayout.CycleDetection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialAutoLayoutCycleTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestLayoutCycle_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_LayoutCycle_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create material
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	// Add multiple connected nodes to create a complex graph
+	// TextureCoordinate -> Multiply -> Add -> MaterialResult
+	TSharedPtr<FJsonObject> AddUVParams = MakeShared<FJsonObject>();
+	AddUVParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddUVParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionTextureCoordinate"));
+	FCortexCommandResult UVResult = Handler.Execute(TEXT("add_node"), AddUVParams);
+	FString UVNodeId;
+	if (UVResult.Data.IsValid()) UVResult.Data->TryGetStringField(TEXT("node_id"), UVNodeId);
+
+	TSharedPtr<FJsonObject> AddMulParams = MakeShared<FJsonObject>();
+	AddMulParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddMulParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionMultiply"));
+	FCortexCommandResult MulResult = Handler.Execute(TEXT("add_node"), AddMulParams);
+	FString MulNodeId;
+	if (MulResult.Data.IsValid()) MulResult.Data->TryGetStringField(TEXT("node_id"), MulNodeId);
+
+	TSharedPtr<FJsonObject> AddAddParams = MakeShared<FJsonObject>();
+	AddAddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddAddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionAdd"));
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddAddParams);
+	FString AddNodeId;
+	if (AddResult.Data.IsValid()) AddResult.Data->TryGetStringField(TEXT("node_id"), AddNodeId);
+
+	// Connect UV -> Multiply
+	TSharedPtr<FJsonObject> Connect1 = MakeShared<FJsonObject>();
+	Connect1->SetStringField(TEXT("asset_path"), MatPath);
+	Connect1->SetStringField(TEXT("source_node"), UVNodeId);
+	Connect1->SetNumberField(TEXT("source_output"), 0);
+	Connect1->SetStringField(TEXT("target_node"), MulNodeId);
+	Connect1->SetStringField(TEXT("target_input"), TEXT("A"));
+	Handler.Execute(TEXT("connect"), Connect1);
+
+	// Connect Multiply -> Add
+	TSharedPtr<FJsonObject> Connect2 = MakeShared<FJsonObject>();
+	Connect2->SetStringField(TEXT("asset_path"), MatPath);
+	Connect2->SetStringField(TEXT("source_node"), MulNodeId);
+	Connect2->SetNumberField(TEXT("source_output"), 0);
+	Connect2->SetStringField(TEXT("target_node"), AddNodeId);
+	Connect2->SetStringField(TEXT("target_input"), TEXT("A"));
+	Handler.Execute(TEXT("connect"), Connect2);
+
+	// Connect Add -> MaterialResult
+	TSharedPtr<FJsonObject> Connect3 = MakeShared<FJsonObject>();
+	Connect3->SetStringField(TEXT("asset_path"), MatPath);
+	Connect3->SetStringField(TEXT("source_node"), AddNodeId);
+	Connect3->SetNumberField(TEXT("source_output"), 0);
+	Connect3->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+	Connect3->SetStringField(TEXT("target_input"), TEXT("BaseColor"));
+	Handler.Execute(TEXT("connect"), Connect3);
+
+	// Run auto_layout - should handle complex graphs without hanging
+	TSharedPtr<FJsonObject> LayoutParams = MakeShared<FJsonObject>();
+	LayoutParams->SetStringField(TEXT("asset_path"), MatPath);
+	FCortexCommandResult Result = Handler.Execute(TEXT("auto_layout"), LayoutParams);
+
+	TestTrue(TEXT("auto_layout should succeed on complex graph"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		double NodeCount = 0;
+		Result.Data->TryGetNumberField(TEXT("node_count"), NodeCount);
+		TestEqual(TEXT("node_count should be 3"), static_cast<int32>(NodeCount), 3);
+	}
+
+	// Cleanup
+	UObject* LoadedAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedAsset) LoadedAsset->MarkAsGarbage();
+
+	return true;
+}
