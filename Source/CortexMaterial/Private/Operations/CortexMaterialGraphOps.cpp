@@ -791,3 +791,211 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 
 	return FCortexCommandRouter::Success(Data);
 }
+
+FCortexCommandResult FCortexMaterialGraphOps::SetNodeProperty(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath, NodeId, PropertyName;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("node_id"), NodeId)
+		|| !Params->TryGetStringField(TEXT("property_name"), PropertyName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, node_id, property_name"));
+	}
+
+	FCortexCommandResult LoadError;
+	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
+	if (Material == nullptr)
+	{
+		return LoadError;
+	}
+
+	if (!Material->GetEditorOnlyData())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			TEXT("Material has no editor data"));
+	}
+
+	UMaterialExpression* Expression = FindExpression(Material, NodeId);
+	if (Expression == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::NodeNotFound,
+			FString::Printf(TEXT("Node not found: %s"), *NodeId)
+		);
+	}
+
+	// Find property by name
+	FProperty* Property = Expression->GetClass()->FindPropertyByName(FName(*PropertyName));
+	if (Property == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Property not found: %s"), *PropertyName)
+		);
+	}
+
+	// Get value from JSON params
+	TSharedPtr<FJsonValue> Value = Params->TryGetField(TEXT("value"));
+	if (!Value.IsValid())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: value"));
+	}
+
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		FScopedTransaction Transaction(FText::FromString(
+			FString::Printf(TEXT("Cortex: Set Node Property %s"), *PropertyName)
+		));
+		Material->PreEditChange(nullptr);
+	}
+
+	// Set property value based on type
+	void* PropertyAddress = Property->ContainerPtrToValuePtr<void>(Expression);
+
+	if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
+	{
+		FString StringValue;
+		if (Value->TryGetString(StringValue))
+		{
+			StrProp->SetPropertyValue(PropertyAddress, StringValue);
+		}
+		else
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("value must be a string for FStrProperty"));
+		}
+	}
+	else if (FNameProperty* NameProp = CastField<FNameProperty>(Property))
+	{
+		FString StringValue;
+		if (Value->TryGetString(StringValue))
+		{
+			NameProp->SetPropertyValue(PropertyAddress, FName(*StringValue));
+		}
+		else
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("value must be a string for FNameProperty"));
+		}
+	}
+	else if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Property))
+	{
+		double DoubleValue;
+		if (Value->TryGetNumber(DoubleValue))
+		{
+			FloatProp->SetPropertyValue(PropertyAddress, static_cast<float>(DoubleValue));
+		}
+		else
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("value must be a number for FFloatProperty"));
+		}
+	}
+	else if (FIntProperty* IntProp = CastField<FIntProperty>(Property))
+	{
+		double DoubleValue;
+		if (Value->TryGetNumber(DoubleValue))
+		{
+			IntProp->SetPropertyValue(PropertyAddress, static_cast<int32>(DoubleValue));
+		}
+		else
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("value must be a number for FIntProperty"));
+		}
+	}
+	else if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
+	{
+		bool BoolValue;
+		if (Value->TryGetBool(BoolValue))
+		{
+			BoolProp->SetPropertyValue(PropertyAddress, BoolValue);
+		}
+		else
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("value must be a boolean for FBoolProperty"));
+		}
+	}
+	else if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Property))
+	{
+		FString ObjectPath;
+		if (Value->TryGetString(ObjectPath))
+		{
+			FSoftObjectPath SoftPath(ObjectPath);
+			FSoftObjectPtr* SoftPtrAddress = static_cast<FSoftObjectPtr*>(PropertyAddress);
+			*SoftPtrAddress = FSoftObjectPtr(SoftPath);
+		}
+		else
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("value must be a string (object path) for FSoftObjectProperty"));
+		}
+	}
+	else if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Property))
+	{
+		FString ObjectPath;
+		if (Value->TryGetString(ObjectPath))
+		{
+			// Guard LoadObject to prevent SkipPackage warnings
+			FString PkgName = FPackageName::ObjectPathToPackageName(ObjectPath);
+			if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::AssetNotFound,
+					FString::Printf(TEXT("Object not found: %s"), *ObjectPath));
+			}
+
+			UObject* Obj = LoadObject<UObject>(nullptr, *ObjectPath);
+			if (Obj == nullptr)
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::AssetNotFound,
+					FString::Printf(TEXT("Failed to load object: %s"), *ObjectPath));
+			}
+			ObjProp->SetPropertyValue(PropertyAddress, Obj);
+		}
+		else
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("value must be a string (object path) for FObjectProperty"));
+		}
+	}
+	else
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Unsupported property type: %s"), *Property->GetClass()->GetName())
+		);
+	}
+
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		Material->PostEditChange();
+	}
+	else
+	{
+		FCortexBatchScope::MarkMaterialDirty(Material);
+	}
+	Material->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("node_id"), NodeId);
+	Data->SetStringField(TEXT("property_name"), PropertyName);
+	Data->SetBoolField(TEXT("updated"), true);
+
+	return FCortexCommandRouter::Success(Data);
+}

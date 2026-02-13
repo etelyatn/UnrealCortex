@@ -56,6 +56,8 @@ FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 		return FCortexMaterialGraphOps::Disconnect(Params);
 	if (Command == TEXT("auto_layout"))
 		return FCortexMaterialGraphOps::AutoLayout(Params);
+	if (Command == TEXT("set_node_property"))
+		return FCortexMaterialGraphOps::SetNodeProperty(Params);
 
 	// Collection operations
 	if (Command == TEXT("list_collections"))
@@ -103,6 +105,7 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 		{ TEXT("connect"), TEXT("Connect nodes in material graph") },
 		{ TEXT("disconnect"), TEXT("Disconnect nodes in material graph") },
 		{ TEXT("auto_layout"), TEXT("Auto-layout material graph nodes by connection topology") },
+		{ TEXT("set_node_property"), TEXT("Set property value on material expression node") },
 		{ TEXT("list_collections"), TEXT("List material parameter collections") },
 		{ TEXT("get_collection"), TEXT("Get collection with parameters") },
 		{ TEXT("create_collection"), TEXT("Create a material parameter collection") },

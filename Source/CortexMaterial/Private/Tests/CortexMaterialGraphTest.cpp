@@ -763,3 +763,66 @@ bool FCortexMaterialAutoLayoutEmptyTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialSetNodePropertyTest,
+	"Cortex.Material.Graph.SetNodeProperty",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialSetNodePropertyTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestSetProp_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_SetProp_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create material
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	// Add scalar parameter node
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionScalarParameter"));
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+	FString NodeId;
+	if (AddResult.Data.IsValid()) AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+
+	// Test 1: FNameProperty (ParameterName)
+	TSharedPtr<FJsonObject> SetNameParams = MakeShared<FJsonObject>();
+	SetNameParams->SetStringField(TEXT("asset_path"), MatPath);
+	SetNameParams->SetStringField(TEXT("node_id"), NodeId);
+	SetNameParams->SetStringField(TEXT("property_name"), TEXT("ParameterName"));
+	SetNameParams->SetStringField(TEXT("value"), TEXT("MyRoughness"));
+	FCortexCommandResult NameResult = Handler.Execute(TEXT("set_node_property"), SetNameParams);
+	TestTrue(TEXT("Should set FNameProperty (ParameterName)"), NameResult.bSuccess);
+
+	// Test 2: FFloatProperty (DefaultValue)
+	TSharedPtr<FJsonObject> SetFloatParams = MakeShared<FJsonObject>();
+	SetFloatParams->SetStringField(TEXT("asset_path"), MatPath);
+	SetFloatParams->SetStringField(TEXT("node_id"), NodeId);
+	SetFloatParams->SetStringField(TEXT("property_name"), TEXT("DefaultValue"));
+	SetFloatParams->SetNumberField(TEXT("value"), 0.5);
+	FCortexCommandResult FloatResult = Handler.Execute(TEXT("set_node_property"), SetFloatParams);
+	TestTrue(TEXT("Should set FFloatProperty (DefaultValue)"), FloatResult.bSuccess);
+
+	// Test 3: FIntProperty (SortPriority) - MaterialExpressions have this property
+	TSharedPtr<FJsonObject> SetIntParams = MakeShared<FJsonObject>();
+	SetIntParams->SetStringField(TEXT("asset_path"), MatPath);
+	SetIntParams->SetStringField(TEXT("node_id"), NodeId);
+	SetIntParams->SetStringField(TEXT("property_name"), TEXT("SortPriority"));
+	SetIntParams->SetNumberField(TEXT("value"), 10);
+	FCortexCommandResult IntResult = Handler.Execute(TEXT("set_node_property"), SetIntParams);
+	TestTrue(TEXT("Should set FIntProperty (SortPriority)"), IntResult.bSuccess);
+
+	// Cleanup
+	UObject* LoadedAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedAsset) LoadedAsset->MarkAsGarbage();
+
+	return true;
+}
