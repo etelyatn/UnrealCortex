@@ -4,6 +4,8 @@
 #include "Misc/Guid.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
+#include "CortexBatchScope.h"
+#include "CortexCommandRouter.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexMaterialAddNodeTest,
@@ -460,6 +462,95 @@ bool FCortexMaterialDisconnectTest::RunTest(const FString& Parameters)
 		bool bDisconnected = false;
 		Result.Data->TryGetBoolField(TEXT("disconnected"), bDisconnected);
 		TestTrue(TEXT("disconnected should be true"), bDisconnected);
+	}
+
+	// Cleanup
+	UObject* LoadedAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedAsset) LoadedAsset->MarkAsGarbage();
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialBatchDeferredTest,
+	"Cortex.Material.Graph.BatchDeferred",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialBatchDeferredTest::RunTest(const FString& Parameters)
+{
+	// Execute add_node + connect via batch command, verify both succeed
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestBatch_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Batch_%s"), *Suffix);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create material first (outside batch)
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	FCortexCommandResult CreateResult = Handler.Execute(TEXT("create_material"), CreateParams);
+	TestTrue(TEXT("Material creation should succeed"), CreateResult.bSuccess);
+
+	FString MatPath;
+	if (CreateResult.Data.IsValid())
+	{
+		CreateResult.Data->TryGetStringField(TEXT("asset_path"), MatPath);
+	}
+
+	// Now execute add_node + connect as a batch
+	FCortexCommandRouter Router;
+
+	// Register material domain so batch can route commands
+	Router.RegisterDomain(TEXT("material"), TEXT("Cortex Material"), TEXT("1.0.0"),
+		MakeShared<FCortexMaterialCommandHandler>());
+
+	TSharedPtr<FJsonObject> AddNodeParams = MakeShared<FJsonObject>();
+	AddNodeParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddNodeParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionScalarParameter"));
+
+	TSharedPtr<FJsonObject> Cmd0 = MakeShared<FJsonObject>();
+	Cmd0->SetStringField(TEXT("command"), TEXT("material.add_node"));
+	Cmd0->SetObjectField(TEXT("params"), AddNodeParams);
+
+	TSharedPtr<FJsonObject> ConnectParams = MakeShared<FJsonObject>();
+	ConnectParams->SetStringField(TEXT("asset_path"), MatPath);
+	ConnectParams->SetStringField(TEXT("source_node"), TEXT("$steps[0].data.node_id"));
+	ConnectParams->SetNumberField(TEXT("source_output"), 0);
+	ConnectParams->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+	ConnectParams->SetStringField(TEXT("target_input"), TEXT("Roughness"));
+
+	TSharedPtr<FJsonObject> Cmd1 = MakeShared<FJsonObject>();
+	Cmd1->SetStringField(TEXT("command"), TEXT("material.connect"));
+	Cmd1->SetObjectField(TEXT("params"), ConnectParams);
+
+	TArray<TSharedPtr<FJsonValue>> Commands;
+	Commands.Add(MakeShared<FJsonValueObject>(Cmd0));
+	Commands.Add(MakeShared<FJsonValueObject>(Cmd1));
+
+	TSharedPtr<FJsonObject> BatchParams = MakeShared<FJsonObject>();
+	BatchParams->SetArrayField(TEXT("commands"), Commands);
+	BatchParams->SetBoolField(TEXT("stop_on_error"), true);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("batch"), BatchParams);
+	TestTrue(TEXT("Batch should succeed"), Result.bSuccess);
+
+	const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+	if (Result.Data.IsValid() && Result.Data->TryGetArrayField(TEXT("results"), ResultsArray))
+	{
+		TestEqual(TEXT("Should have 2 results"), ResultsArray->Num(), 2);
+
+		for (int32 i = 0; i < ResultsArray->Num(); ++i)
+		{
+			const TSharedPtr<FJsonObject>* EntryObj = nullptr;
+			if ((*ResultsArray)[i]->TryGetObject(EntryObj))
+			{
+				bool bStepSuccess = false;
+				(*EntryObj)->TryGetBoolField(TEXT("success"), bStepSuccess);
+				TestTrue(FString::Printf(TEXT("Step %d should succeed"), i), bStepSuccess);
+			}
+		}
 	}
 
 	// Cleanup

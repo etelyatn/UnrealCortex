@@ -7,6 +7,8 @@
 #include "Dom/JsonValue.h"
 #include "Misc/PackageName.h"
 #include "ScopedTransaction.h"
+#include "CortexBatchScope.h"
+#include "CortexCommandRouter.h"
 
 UMaterialExpression* FCortexMaterialGraphOps::FindExpression(UMaterial* Material, const FString& NodeId)
 {
@@ -151,11 +153,13 @@ FCortexCommandResult FCortexMaterialGraphOps::AddNode(const TSharedPtr<FJsonObje
 			FString::Printf(TEXT("Invalid expression class: %s"), *ExpressionClass));
 	}
 
-	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex: Add Material Expression Node"))
-	));
-
-	Material->PreEditChange(nullptr);
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		FScopedTransaction Transaction(FText::FromString(
+			FString::Printf(TEXT("Cortex: Add Material Expression Node"))
+		));
+		Material->PreEditChange(nullptr);
+	}
 
 	UMaterialExpression* NewExpression = NewObject<UMaterialExpression>(Material, ExpClass);
 
@@ -172,7 +176,14 @@ FCortexCommandResult FCortexMaterialGraphOps::AddNode(const TSharedPtr<FJsonObje
 
 	Material->GetEditorOnlyData()->ExpressionCollection.Expressions.Add(NewExpression);
 
-	Material->PostEditChange();
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		Material->PostEditChange();
+	}
+	else
+	{
+		FCortexBatchScope::MarkMaterialDirty(Material);
+	}
 	Material->MarkPackageDirty();
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -218,15 +229,24 @@ FCortexCommandResult FCortexMaterialGraphOps::RemoveNode(const TSharedPtr<FJsonO
 		);
 	}
 
-	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex: Remove Material Expression Node %s"), *NodeId)
-	));
-
-	Material->PreEditChange(nullptr);
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		FScopedTransaction Transaction(FText::FromString(
+			FString::Printf(TEXT("Cortex: Remove Material Expression Node %s"), *NodeId)
+		));
+		Material->PreEditChange(nullptr);
+	}
 
 	Material->GetEditorOnlyData()->ExpressionCollection.Expressions.Remove(Expression);
 
-	Material->PostEditChange();
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		Material->PostEditChange();
+	}
+	else
+	{
+		FCortexBatchScope::MarkMaterialDirty(Material);
+	}
 	Material->MarkPackageDirty();
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -334,11 +354,13 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 		);
 	}
 
-	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex: Connect Material Nodes"))
-	));
-
-	Material->PreEditChange(nullptr);
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		FScopedTransaction Transaction(FText::FromString(
+			FString::Printf(TEXT("Cortex: Connect Material Nodes"))
+		));
+		Material->PreEditChange(nullptr);
+	}
 
 	// Connect to MaterialResult
 	if (TargetNode == TEXT("MaterialResult"))
@@ -382,7 +404,14 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 		);
 	}
 
-	Material->PostEditChange();
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		Material->PostEditChange();
+	}
+	else
+	{
+		FCortexBatchScope::MarkMaterialDirty(Material);
+	}
 	Material->MarkPackageDirty();
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -423,11 +452,13 @@ FCortexCommandResult FCortexMaterialGraphOps::Disconnect(const TSharedPtr<FJsonO
 			TEXT("Material has no editor data"));
 	}
 
-	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex: Disconnect Material Nodes"))
-	));
-
-	Material->PreEditChange(nullptr);
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		FScopedTransaction Transaction(FText::FromString(
+			FString::Printf(TEXT("Cortex: Disconnect Material Nodes"))
+		));
+		Material->PreEditChange(nullptr);
+	}
 
 	// Disconnect from MaterialResult
 	if (TargetNode == TEXT("MaterialResult"))
@@ -471,7 +502,14 @@ FCortexCommandResult FCortexMaterialGraphOps::Disconnect(const TSharedPtr<FJsonO
 		);
 	}
 
-	Material->PostEditChange();
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		Material->PostEditChange();
+	}
+	else
+	{
+		FCortexBatchScope::MarkMaterialDirty(Material);
+	}
 	Material->MarkPackageDirty();
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
