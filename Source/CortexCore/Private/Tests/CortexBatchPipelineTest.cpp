@@ -772,3 +772,335 @@ bool FCortexTcpMaxMessageSizeTest::RunTest(const FString& Parameters)
 		FCortexTcpServer::MaxMessageSize, 2 * 1024 * 1024);
 	return true;
 }
+
+// ── $ref: Nested Field Path Resolution ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBatchRefNestedPathTest,
+	"Cortex.Core.Batch.Ref.NestedFieldPath",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBatchRefNestedPathTest::RunTest(const FString& Parameters)
+{
+	// Step 0: get_status (returns nested data with version)
+	// Step 1: ping with $ref to nested field $steps[0].data.version
+	// Expected: Both steps succeed, ref resolves to actual version value
+	FCortexCommandRouter Router;
+
+	TSharedPtr<FJsonObject> Step0 = MakeShared<FJsonObject>();
+	Step0->SetStringField(TEXT("command"), TEXT("get_status"));
+
+	TSharedPtr<FJsonObject> Step1Params = MakeShared<FJsonObject>();
+	Step1Params->SetStringField(TEXT("nested_ref"), TEXT("$steps[0].data.version"));
+
+	TSharedPtr<FJsonObject> Step1 = MakeShared<FJsonObject>();
+	Step1->SetStringField(TEXT("command"), TEXT("ping"));
+	Step1->SetObjectField(TEXT("params"), Step1Params);
+
+	TArray<TSharedPtr<FJsonValue>> Commands;
+	Commands.Add(MakeShared<FJsonValueObject>(Step0));
+	Commands.Add(MakeShared<FJsonValueObject>(Step1));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("commands"), Commands);
+	Params->SetBoolField(TEXT("stop_on_error"), true);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("batch"), Params);
+	TestTrue(TEXT("Batch with nested path $ref should succeed"), Result.bSuccess);
+
+	// Verify both steps succeeded
+	const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+	if (Result.Data.IsValid() && Result.Data->TryGetArrayField(TEXT("results"), ResultsArray) && ResultsArray != nullptr)
+	{
+		TestEqual(TEXT("Should have 2 results"), ResultsArray->Num(), 2);
+
+		// Step 0 succeeded
+		const TSharedPtr<FJsonObject>* Step0Result = nullptr;
+		if (ResultsArray->Num() > 0 && (*ResultsArray)[0]->TryGetObject(Step0Result) && Step0Result != nullptr)
+		{
+			bool bStep0Success = false;
+			(*Step0Result)->TryGetBoolField(TEXT("success"), bStep0Success);
+			TestTrue(TEXT("Step 0 should succeed"), bStep0Success);
+		}
+
+		// Step 1 succeeded
+		const TSharedPtr<FJsonObject>* Step1Result = nullptr;
+		if (ResultsArray->Num() > 1 && (*ResultsArray)[1]->TryGetObject(Step1Result) && Step1Result != nullptr)
+		{
+			bool bStep1Success = false;
+			(*Step1Result)->TryGetBoolField(TEXT("success"), bStep1Success);
+			TestTrue(TEXT("Step 1 should succeed"), bStep1Success);
+		}
+	}
+
+	return true;
+}
+
+// ── $ref: Ref to Failed Step ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBatchRefFailedStepTest,
+	"Cortex.Core.Batch.Ref.FailedStepFails",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBatchRefFailedStepTest::RunTest(const FString& Parameters)
+{
+	// Step 0: nonexistent command (fails)
+	// Step 1: ping with $ref to step 0's data (should fail with BatchRefResolutionFailed)
+	// Use stop_on_error=false so step 1 attempts execution
+	FCortexCommandRouter Router;
+
+	TSharedPtr<FJsonObject> Step0 = MakeShared<FJsonObject>();
+	Step0->SetStringField(TEXT("command"), TEXT("nonexistent.command"));
+
+	TSharedPtr<FJsonObject> Step1Params = MakeShared<FJsonObject>();
+	Step1Params->SetStringField(TEXT("invalid_ref"), TEXT("$steps[0].data.message"));
+
+	TSharedPtr<FJsonObject> Step1 = MakeShared<FJsonObject>();
+	Step1->SetStringField(TEXT("command"), TEXT("ping"));
+	Step1->SetObjectField(TEXT("params"), Step1Params);
+
+	TArray<TSharedPtr<FJsonValue>> Commands;
+	Commands.Add(MakeShared<FJsonValueObject>(Step0));
+	Commands.Add(MakeShared<FJsonValueObject>(Step1));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("commands"), Commands);
+	Params->SetBoolField(TEXT("stop_on_error"), false);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("batch"), Params);
+	TestTrue(TEXT("Batch should succeed overall"), Result.bSuccess);
+
+	// Verify step 1 failed with BatchRefResolutionFailed
+	const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+	if (Result.Data.IsValid() && Result.Data->TryGetArrayField(TEXT("results"), ResultsArray) && ResultsArray != nullptr)
+	{
+		TestEqual(TEXT("Should have 2 results"), ResultsArray->Num(), 2);
+
+		// Step 0 failed
+		const TSharedPtr<FJsonObject>* Step0Result = nullptr;
+		if (ResultsArray->Num() > 0 && (*ResultsArray)[0]->TryGetObject(Step0Result) && Step0Result != nullptr)
+		{
+			bool bStep0Success = false;
+			(*Step0Result)->TryGetBoolField(TEXT("success"), bStep0Success);
+			TestFalse(TEXT("Step 0 should fail"), bStep0Success);
+		}
+
+		// Step 1 failed with correct error code
+		const TSharedPtr<FJsonObject>* Step1Result = nullptr;
+		if (ResultsArray->Num() > 1 && (*ResultsArray)[1]->TryGetObject(Step1Result) && Step1Result != nullptr)
+		{
+			bool bStep1Success = false;
+			(*Step1Result)->TryGetBoolField(TEXT("success"), bStep1Success);
+			TestFalse(TEXT("Step 1 should fail"), bStep1Success);
+
+			FString ErrorCode;
+			(*Step1Result)->TryGetStringField(TEXT("error_code"), ErrorCode);
+			TestEqual(TEXT("Error code should be BATCH_REF_RESOLUTION_FAILED"),
+				ErrorCode, CortexErrorCodes::BatchRefResolutionFailed);
+		}
+	}
+
+	return true;
+}
+
+// ── $ref: Ref in Nested Objects ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBatchRefInNestedObjectTest,
+	"Cortex.Core.Batch.Ref.InNestedObject",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBatchRefInNestedObjectTest::RunTest(const FString& Parameters)
+{
+	// Step 0: ping (returns {message: "pong"})
+	// Step 1: ping with nested object containing $ref
+	// Expected: Both steps succeed, nested ref resolves
+	FCortexCommandRouter Router;
+
+	TSharedPtr<FJsonObject> Step0 = MakeShared<FJsonObject>();
+	Step0->SetStringField(TEXT("command"), TEXT("ping"));
+
+	TSharedPtr<FJsonObject> NestedObj = MakeShared<FJsonObject>();
+	NestedObj->SetStringField(TEXT("nested_ref"), TEXT("$steps[0].data.message"));
+
+	TSharedPtr<FJsonObject> Step1Params = MakeShared<FJsonObject>();
+	Step1Params->SetObjectField(TEXT("nested_obj"), NestedObj);
+
+	TSharedPtr<FJsonObject> Step1 = MakeShared<FJsonObject>();
+	Step1->SetStringField(TEXT("command"), TEXT("ping"));
+	Step1->SetObjectField(TEXT("params"), Step1Params);
+
+	TArray<TSharedPtr<FJsonValue>> Commands;
+	Commands.Add(MakeShared<FJsonValueObject>(Step0));
+	Commands.Add(MakeShared<FJsonValueObject>(Step1));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("commands"), Commands);
+	Params->SetBoolField(TEXT("stop_on_error"), true);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("batch"), Params);
+	TestTrue(TEXT("Batch with nested object $ref should succeed"), Result.bSuccess);
+
+	// Verify both steps succeeded
+	const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+	if (Result.Data.IsValid() && Result.Data->TryGetArrayField(TEXT("results"), ResultsArray) && ResultsArray != nullptr)
+	{
+		TestEqual(TEXT("Should have 2 results"), ResultsArray->Num(), 2);
+
+		// Step 0 succeeded
+		const TSharedPtr<FJsonObject>* Step0Result = nullptr;
+		if (ResultsArray->Num() > 0 && (*ResultsArray)[0]->TryGetObject(Step0Result) && Step0Result != nullptr)
+		{
+			bool bStep0Success = false;
+			(*Step0Result)->TryGetBoolField(TEXT("success"), bStep0Success);
+			TestTrue(TEXT("Step 0 should succeed"), bStep0Success);
+		}
+
+		// Step 1 succeeded
+		const TSharedPtr<FJsonObject>* Step1Result = nullptr;
+		if (ResultsArray->Num() > 1 && (*ResultsArray)[1]->TryGetObject(Step1Result) && Step1Result != nullptr)
+		{
+			bool bStep1Success = false;
+			(*Step1Result)->TryGetBoolField(TEXT("success"), bStep1Success);
+			TestTrue(TEXT("Step 1 should succeed"), bStep1Success);
+		}
+	}
+
+	return true;
+}
+
+// ── $ref: Ref in Arrays ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBatchRefInArrayTest,
+	"Cortex.Core.Batch.Ref.InArray",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBatchRefInArrayTest::RunTest(const FString& Parameters)
+{
+	// Step 0: ping (returns {message: "pong"})
+	// Step 1: ping with array containing $ref and literal value
+	// Expected: Both steps succeed, array ref resolves
+	FCortexCommandRouter Router;
+
+	TSharedPtr<FJsonObject> Step0 = MakeShared<FJsonObject>();
+	Step0->SetStringField(TEXT("command"), TEXT("ping"));
+
+	TArray<TSharedPtr<FJsonValue>> TestArray;
+	TestArray.Add(MakeShared<FJsonValueString>(TEXT("$steps[0].data.message")));
+	TestArray.Add(MakeShared<FJsonValueString>(TEXT("literal_value")));
+
+	TSharedPtr<FJsonObject> Step1Params = MakeShared<FJsonObject>();
+	Step1Params->SetArrayField(TEXT("test_array"), TestArray);
+
+	TSharedPtr<FJsonObject> Step1 = MakeShared<FJsonObject>();
+	Step1->SetStringField(TEXT("command"), TEXT("ping"));
+	Step1->SetObjectField(TEXT("params"), Step1Params);
+
+	TArray<TSharedPtr<FJsonValue>> Commands;
+	Commands.Add(MakeShared<FJsonValueObject>(Step0));
+	Commands.Add(MakeShared<FJsonValueObject>(Step1));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("commands"), Commands);
+	Params->SetBoolField(TEXT("stop_on_error"), true);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("batch"), Params);
+	TestTrue(TEXT("Batch with array $ref should succeed"), Result.bSuccess);
+
+	// Verify both steps succeeded
+	const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+	if (Result.Data.IsValid() && Result.Data->TryGetArrayField(TEXT("results"), ResultsArray) && ResultsArray != nullptr)
+	{
+		TestEqual(TEXT("Should have 2 results"), ResultsArray->Num(), 2);
+
+		// Step 0 succeeded
+		const TSharedPtr<FJsonObject>* Step0Result = nullptr;
+		if (ResultsArray->Num() > 0 && (*ResultsArray)[0]->TryGetObject(Step0Result) && Step0Result != nullptr)
+		{
+			bool bStep0Success = false;
+			(*Step0Result)->TryGetBoolField(TEXT("success"), bStep0Success);
+			TestTrue(TEXT("Step 0 should succeed"), bStep0Success);
+		}
+
+		// Step 1 succeeded
+		const TSharedPtr<FJsonObject>* Step1Result = nullptr;
+		if (ResultsArray->Num() > 1 && (*ResultsArray)[1]->TryGetObject(Step1Result) && Step1Result != nullptr)
+		{
+			bool bStep1Success = false;
+			(*Step1Result)->TryGetBoolField(TEXT("success"), bStep1Success);
+			TestTrue(TEXT("Step 1 should succeed"), bStep1Success);
+		}
+	}
+
+	return true;
+}
+
+// ── $ref: Partial String Not Resolved ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBatchRefPartialStringTest,
+	"Cortex.Core.Batch.Ref.PartialStringNotResolved",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBatchRefPartialStringTest::RunTest(const FString& Parameters)
+{
+	// Step 0: ping (returns {message: "pong"})
+	// Step 1: ping with partial ref string "prefix_$steps[0].data.message_suffix"
+	// Expected: Warning logged, string passes through unchanged, step succeeds
+	FCortexCommandRouter Router;
+
+	TSharedPtr<FJsonObject> Step0 = MakeShared<FJsonObject>();
+	Step0->SetStringField(TEXT("command"), TEXT("ping"));
+
+	TSharedPtr<FJsonObject> Step1Params = MakeShared<FJsonObject>();
+	Step1Params->SetStringField(TEXT("partial"), TEXT("prefix_$steps[0].data.message_suffix"));
+
+	TSharedPtr<FJsonObject> Step1 = MakeShared<FJsonObject>();
+	Step1->SetStringField(TEXT("command"), TEXT("ping"));
+	Step1->SetObjectField(TEXT("params"), Step1Params);
+
+	TArray<TSharedPtr<FJsonValue>> Commands;
+	Commands.Add(MakeShared<FJsonValueObject>(Step0));
+	Commands.Add(MakeShared<FJsonValueObject>(Step1));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("commands"), Commands);
+	Params->SetBoolField(TEXT("stop_on_error"), true);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("batch"), Params);
+	TestTrue(TEXT("Batch with partial $ref should succeed"), Result.bSuccess);
+
+	// Verify both steps succeeded (partial ref is NOT an error, just passes through)
+	const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+	if (Result.Data.IsValid() && Result.Data->TryGetArrayField(TEXT("results"), ResultsArray) && ResultsArray != nullptr)
+	{
+		TestEqual(TEXT("Should have 2 results"), ResultsArray->Num(), 2);
+
+		// Step 0 succeeded
+		const TSharedPtr<FJsonObject>* Step0Result = nullptr;
+		if (ResultsArray->Num() > 0 && (*ResultsArray)[0]->TryGetObject(Step0Result) && Step0Result != nullptr)
+		{
+			bool bStep0Success = false;
+			(*Step0Result)->TryGetBoolField(TEXT("success"), bStep0Success);
+			TestTrue(TEXT("Step 0 should succeed"), bStep0Success);
+		}
+
+		// Step 1 succeeded (partial ref does not cause failure)
+		const TSharedPtr<FJsonObject>* Step1Result = nullptr;
+		if (ResultsArray->Num() > 1 && (*ResultsArray)[1]->TryGetObject(Step1Result) && Step1Result != nullptr)
+		{
+			bool bStep1Success = false;
+			(*Step1Result)->TryGetBoolField(TEXT("success"), bStep1Success);
+			TestTrue(TEXT("Step 1 should succeed"), bStep1Success);
+		}
+	}
+
+	return true;
+}
