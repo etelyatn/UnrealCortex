@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "CortexCommandRouter.h"
+#include "CortexBatchScope.h"
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -686,6 +687,33 @@ bool FCortexBatchBackwardCompatTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("Step 0 should succeed"), bSuccess);
 		}
 	}
+
+	return true;
+}
+
+// ── IsInBatch: RAII Guard ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBatchIsInBatchTest,
+	"Cortex.Core.Batch.IsInBatch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBatchIsInBatchTest::RunTest(const FString& Parameters)
+{
+	// Outside batch, IsInBatch should be false
+	TestFalse(TEXT("IsInBatch should be false outside batch"),
+		FCortexCommandRouter::IsInBatch());
+
+	// We can't easily test during batch without a custom command,
+	// but we can test the RAII guard directly
+	{
+		FCortexBatchScope Scope;
+		TestTrue(TEXT("IsInBatch should be true inside scope"),
+			FCortexCommandRouter::IsInBatch());
+	}
+	TestFalse(TEXT("IsInBatch should be false after scope exits"),
+		FCortexCommandRouter::IsInBatch());
 
 	return true;
 }

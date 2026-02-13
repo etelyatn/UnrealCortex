@@ -15,9 +15,14 @@ struct FCortexRegisteredDomain
 	TSharedPtr<ICortexDomainHandler> Handler;
 };
 
+// Forward declaration
+class FCortexBatchScope;
+
 /** Handles routing and execution of TCP commands */
 class CORTEXCORE_API FCortexCommandRouter : public ICortexCommandRegistry
 {
+	friend class FCortexBatchScope;
+
 public:
 	/** Execute a command and return the result */
 	FCortexCommandResult Execute(const FString& Command, const TSharedPtr<FJsonObject>& Params);

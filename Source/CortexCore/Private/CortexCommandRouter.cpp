@@ -1,5 +1,6 @@
 
 #include "CortexCommandRouter.h"
+#include "CortexBatchScope.h"
 #include "CortexCoreModule.h"
 #include "ICortexDomainHandler.h"
 #include "Misc/EngineVersion.h"
@@ -9,8 +10,48 @@
 #include "Dom/JsonValue.h"
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
+#include "Materials/Material.h"
+#include "MaterialGraph/MaterialGraph.h"
 
 int32 FCortexCommandRouter::BatchDepth = 0;
+
+// FCortexBatchScope implementation
+TSet<TWeakObjectPtr<UMaterial>> FCortexBatchScope::DirtyMaterials;
+
+FCortexBatchScope::FCortexBatchScope()
+{
+	FCortexCommandRouter::BatchDepth++;
+}
+
+FCortexBatchScope::~FCortexBatchScope()
+{
+	FCortexCommandRouter::BatchDepth--;
+
+	if (FCortexCommandRouter::BatchDepth == 0)
+	{
+		// Flush deferred PostEditChange for all dirty materials
+		for (const TWeakObjectPtr<UMaterial>& WeakMat : DirtyMaterials)
+		{
+			if (UMaterial* Material = WeakMat.Get())
+			{
+				Material->PostEditChange();
+				if (UMaterialGraph* MaterialGraph = Material->MaterialGraph)
+				{
+					MaterialGraph->RebuildGraph();
+				}
+			}
+		}
+		DirtyMaterials.Empty();
+	}
+}
+
+void FCortexBatchScope::MarkMaterialDirty(UMaterial* Material)
+{
+	if (Material != nullptr)
+	{
+		DirtyMaterials.Add(Material);
+	}
+}
 
 FCortexCommandResult FCortexCommandRouter::Execute(const FString& Command, const TSharedPtr<FJsonObject>& Params)
 {
@@ -483,8 +524,8 @@ FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObj
 
 	const double BatchStartTime = FPlatformTime::Seconds();
 
-	// Increment batch depth
-	BatchDepth++;
+	// RAII: sets IsInBatch()=true, defers PostEditChange
+	FCortexBatchScope BatchScope;
 
 	TArray<TSharedPtr<FJsonValue>> ResultsArray;
 
@@ -589,9 +630,6 @@ FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObj
 			break;
 		}
 	}
-
-	// Decrement batch depth
-	BatchDepth--;
 
 	const double BatchElapsed = (FPlatformTime::Seconds() - BatchStartTime) * 1000.0;
 
