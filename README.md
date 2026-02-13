@@ -73,6 +73,15 @@ AI can build and modify UMG interfaces by working with the widget tree directly.
 **Properties:** Read and write any widget property — text, colors, visibility, padding, alignment. Schema introspection tells the AI what properties are available on any widget class.
 **Animations:** Create, list, and manage widget animations.
 
+### Material Authoring — CortexMaterial
+
+AI can inspect and modify materials, material instances, and parameter collections.
+
+**Asset management:** List, create, and delete materials and material instances. Duplicate existing materials as starting points.
+**Parameters:** Read and write scalar, vector, and texture parameters on instances. Bulk-set multiple parameters in one call. Reset to parent defaults.
+**Material graphs:** List expression nodes, inspect connections, add/remove nodes, and wire them together.
+**Parameter collections:** Create and manage material parameter collections — add, remove, and set collection parameters for global material control.
+
 ## Getting Started
 
 ### Requirements
@@ -150,11 +159,66 @@ The modular architecture exists so that AI capabilities can expand domain by dom
 
 | Domain | What AI will be able to do |
 |--------|---------------------------|
-| **CortexMaterial** | Tune material parameters, inspect material graphs, manage parameter collections |
 | **CortexAnimation** | Work with animation montages, state machines, blend spaces |
 | **CortexLevel** | Inspect and manipulate level actors, transforms, components |
 
 The long-term vision: an AI that can work across the full breadth of Unreal Engine — data, logic, UI, materials, animation, levels — the same way a senior developer navigates between subsystems. Not replacing the developer, but eliminating the tedious translation layer between "what the AI knows how to do" and "what the editor needs."
+
+## Cortex Toolkit
+
+UnrealCortex provides the tools. **[Cortex Toolkit](https://github.com/etelyatn/cortex-toolkit)** teaches the AI how to use them well.
+
+Cortex Toolkit is a companion set of plugins for AI coding assistants that adds domain-specific skills, specialized agents, and workflow knowledge on top of UnrealCortex's MCP tools. Without it, your AI can call tools — with it, the AI knows *when* to call them, in *what order*, and follows your project's conventions automatically.
+
+### What It Adds
+
+| Layer | Without Toolkit | With Toolkit |
+|-------|----------------|--------------|
+| **Skills** | You describe each step manually | Slash commands like `/cortex-material-create` orchestrate multi-step workflows |
+| **Agents** | Generic AI reasoning | Domain specialists (Material Designer, UI Developer, Game Balancer) with deep Unreal knowledge |
+| **Project Memory** | AI starts fresh every session | `.cortex/` directory stores your schemas, conventions, and style guides — agents read them automatically |
+
+### Available Plugins
+
+Install only what you need — each domain is a separate plugin:
+
+| Plugin | Domain | Key Skills | Agents |
+|--------|--------|------------|--------|
+| **cortex-core** | Foundation | cortex-init, cortex-build, cortex-test, cortex-status | Game Architect, Game Designer, Blueprint Debugger |
+| **cortex-data** | DataTables, DataAssets, Tags | cortex-data-review, cortex-data-create | Game Balancer, Data Architect |
+| **cortex-blueprint** | Blueprints, Graphs | cortex-bp-review, cortex-bp-create | Blueprint Developer, C++ Migration Specialist |
+| **cortex-ui** | UMG Widgets | cortex-ui-review, cortex-ui-create | UI Developer |
+| **cortex-material** | Materials, Instances, Collections | cortex-material-review, cortex-material-create | Material Designer |
+
+### Install
+
+```bash
+# Claude Code — install from marketplace
+claude plugin add etelyatn/cortex-toolkit/cortex-core      # Required
+claude plugin add etelyatn/cortex-toolkit/cortex-data       # Pick your domains
+claude plugin add etelyatn/cortex-toolkit/cortex-blueprint
+claude plugin add etelyatn/cortex-toolkit/cortex-ui
+claude plugin add etelyatn/cortex-toolkit/cortex-material
+```
+
+After installation, run `/cortex-init` to set up project memory and configure MCP.
+
+### Project Memory
+
+The toolkit creates a `.cortex/` directory in your project root:
+
+```
+.cortex/
+├── config.yaml          ← engine path, active domains
+├── context.md           ← shared project knowledge (read every session)
+└── domains/
+    ├── data.md          ← table schemas, balance rules
+    ├── blueprints.md    ← class hierarchy, conventions
+    ├── umg.md           ← screen inventory, style guide
+    └── material.md      ← material conventions, instance hierarchies
+```
+
+Fill these files with your project's specifics. Agents read them at the start of every session, so they work within your conventions without repeated explanations.
 
 ## License
 
