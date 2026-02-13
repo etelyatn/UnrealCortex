@@ -329,3 +329,90 @@ class TestErrorPropagation:
         assert failed["index"] == 1
         assert completed == 1
         assert "error_message" in failed
+
+
+FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
+
+
+class TestFixtures:
+    """Tests using pulsating gradient reference data."""
+
+    def _load_fixture(self, name):
+        """Load a JSON fixture file."""
+        path = os.path.join(FIXTURE_DIR, name)
+        with open(path) as f:
+            return json.load(f)
+
+    def test_composite_to_batch_translation(self):
+        """Composite request should translate to expected batch commands."""
+        # Load composite request fixture
+        request = self._load_fixture("pulsating_gradient_composite_request.json")
+
+        # Generate batch commands
+        commands = _build_batch_commands(
+            request["name"],
+            request["path"],
+            request["nodes"],
+            request["connections"]
+        )
+
+        # Load expected batch request
+        expected = self._load_fixture("pulsating_gradient_batch_request.json")
+
+        # Verify command count matches
+        assert len(commands) == len(expected["commands"])
+        assert len(commands) == 24
+
+        # Verify command types in order
+        assert commands[0]["command"] == "material.create_material"
+        add_node_count = sum(1 for c in commands if c["command"] == "material.add_node")
+        set_prop_count = sum(1 for c in commands if c["command"] == "material.set_node_property")
+        connect_count = sum(1 for c in commands if c["command"] == "material.connect")
+
+        assert add_node_count == 9  # 9 nodes
+        assert set_prop_count == 4  # Red.Constant, Blue.Constant, GlowStrength.ParameterName, GlowStrength.DefaultValue
+        assert connect_count == 10  # 10 connections
+
+    def test_success_response_has_required_fields(self):
+        """Success response fixture should have all required fields."""
+        response = self._load_fixture("pulsating_gradient_success_response.json")
+
+        # Verify top-level fields
+        assert response["success"] is True
+        assert response["asset_path"] == "/Game/Materials/M_PulsatingGradient"
+        assert response["total_steps"] == 24
+        assert response["node_count"] == 9
+        assert response["connection_count"] == 10
+        assert response["properties_set"] == 4
+        assert "total_timing_ms" in response
+
+        # Verify steps_summary
+        summary = response["steps_summary"]
+        assert summary["create"] == 1
+        assert summary["add_node"] == 9
+        assert summary["set_node_property"] == 4
+        assert summary["connect"] == 10
+        assert summary["auto_layout"] == 1
+
+    def test_error_response_has_required_fields(self):
+        """Error response fixture should have summary, failed_step, completed_steps."""
+        response = self._load_fixture("pulsating_gradient_error_response.json")
+
+        # Verify top-level fields
+        assert response["success"] is False
+        assert "summary" in response
+        assert "Step 15 of 24 failed" in response["summary"]
+        assert response["asset_path"] == "/Game/Materials/M_PulsatingGradient"
+        assert response["completed_steps"] == 15
+        assert response["total_steps"] == 24
+
+        # Verify failed_step
+        failed = response["failed_step"]
+        assert failed["index"] == 15
+        assert failed["command"] == "material.connect"
+        assert "error" in failed
+
+        # Verify recovery_action
+        recovery = response["recovery_action"]
+        assert recovery["action"] == "deleted_partial"
+        assert recovery["path"] == "/Game/Materials/M_PulsatingGradient"

@@ -1,0 +1,16 @@
+{
+  "success": false,
+  "summary": "Step 15 of 24 failed: material.connect - Invalid pin name 'InvalidPin'",
+  "asset_path": "/Game/Materials/M_PulsatingGradient",
+  "completed_steps": 15,
+  "failed_step": {
+    "index": 15,
+    "command": "material.connect",
+    "error": "Invalid pin name 'InvalidPin'"
+  },
+  "total_steps": 24,
+  "recovery_action": {
+    "action": "deleted_partial",
+    "path": "/Game/Materials/M_PulsatingGradient"
+  }
+}

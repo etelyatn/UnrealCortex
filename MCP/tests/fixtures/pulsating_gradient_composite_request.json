@@ -1,0 +1,102 @@
+{
+  "name": "M_PulsatingGradient",
+  "path": "/Game/Materials/",
+  "nodes": [
+    {
+      "class": "Constant3Vector",
+      "name": "Red",
+      "params": {
+        "Constant": {
+          "R": 1.0,
+          "G": 0.0,
+          "B": 0.0
+        }
+      }
+    },
+    {
+      "class": "Constant3Vector",
+      "name": "Blue",
+      "params": {
+        "Constant": {
+          "R": 0.0,
+          "G": 0.0,
+          "B": 1.0
+        }
+      }
+    },
+    {
+      "class": "TextureCoordinate",
+      "name": "UV"
+    },
+    {
+      "class": "Time",
+      "name": "Timer"
+    },
+    {
+      "class": "Lerp",
+      "name": "Gradient"
+    },
+    {
+      "class": "Sine",
+      "name": "Pulse"
+    },
+    {
+      "class": "ScalarParameter",
+      "name": "GlowStrength",
+      "params": {
+        "ParameterName": "GlowStrength",
+        "DefaultValue": 2.0
+      }
+    },
+    {
+      "class": "Multiply",
+      "name": "Emissive"
+    },
+    {
+      "class": "Multiply",
+      "name": "PulseScale"
+    }
+  ],
+  "connections": [
+    {
+      "from": "Red.RGB",
+      "to": "Gradient.A"
+    },
+    {
+      "from": "Blue.RGB",
+      "to": "Gradient.B"
+    },
+    {
+      "from": "UV.UV",
+      "to": "Gradient.Alpha"
+    },
+    {
+      "from": "Timer.Result",
+      "to": "Pulse.Input"
+    },
+    {
+      "from": "Gradient.Result",
+      "to": "Emissive.A"
+    },
+    {
+      "from": "Pulse.Result",
+      "to": "Emissive.B"
+    },
+    {
+      "from": "Pulse.Result",
+      "to": "PulseScale.A"
+    },
+    {
+      "from": "GlowStrength.Result",
+      "to": "PulseScale.B"
+    },
+    {
+      "from": "Emissive.Result",
+      "to": "Material.EmissiveColor"
+    },
+    {
+      "from": "PulseScale.Result",
+      "to": "Material.BaseColor"
+    }
+  ]
+}
