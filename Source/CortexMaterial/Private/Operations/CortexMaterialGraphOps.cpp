@@ -315,12 +315,10 @@ FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<F
 FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath, SourceNode, TargetNode, TargetInput;
-	double SourceOutputDouble = 0;
 
 	if (!Params.IsValid()
 		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
 		|| !Params->TryGetStringField(TEXT("source_node"), SourceNode)
-		|| !Params->TryGetNumberField(TEXT("source_output"), SourceOutputDouble)
 		|| !Params->TryGetStringField(TEXT("target_node"), TargetNode)
 		|| !Params->TryGetStringField(TEXT("target_input"), TargetInput))
 	{
@@ -329,7 +327,18 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 			TEXT("Missing required params: asset_path, source_node, source_output, target_node, target_input"));
 	}
 
-	int32 SourceOutput = static_cast<int32>(SourceOutputDouble);
+	// Parse source_output: try string first (name-based), then number (index-based)
+	FString SourceOutputStr;
+	double SourceOutputDouble = 0;
+	bool bSourceOutputIsString = Params->TryGetStringField(TEXT("source_output"), SourceOutputStr);
+	bool bSourceOutputIsNumber = Params->TryGetNumberField(TEXT("source_output"), SourceOutputDouble);
+
+	if (!bSourceOutputIsString && !bSourceOutputIsNumber)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: source_output (string or number)"));
+	}
 
 	FCortexCommandResult LoadError;
 	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
@@ -354,6 +363,36 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 		);
 	}
 
+	// Resolve source output index
+	int32 SourceOutputIndex = 0;
+	if (bSourceOutputIsString)
+	{
+		// Match by output name or index string
+		const TArray<FExpressionOutput>& Outputs = SourceExpr->GetOutputs();
+		bool bFound = false;
+		for (int32 i = 0; i < Outputs.Num(); ++i)
+		{
+			FString OutputName = Outputs[i].OutputName.ToString();
+			if (OutputName == SourceOutputStr || FString::Printf(TEXT("%d"), i) == SourceOutputStr)
+			{
+				SourceOutputIndex = i;
+				bFound = true;
+				break;
+			}
+		}
+		if (!bFound)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("Source output not found: %s"), *SourceOutputStr)
+			);
+		}
+	}
+	else
+	{
+		SourceOutputIndex = static_cast<int32>(SourceOutputDouble);
+	}
+
 	if (!FCortexCommandRouter::IsInBatch())
 	{
 		FScopedTransaction Transaction(FText::FromString(
@@ -362,7 +401,7 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 		Material->PreEditChange(nullptr);
 	}
 
-	// Connect to MaterialResult
+	// Connect to MaterialResult or expression
 	if (TargetNode == TEXT("MaterialResult"))
 	{
 		UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
@@ -394,14 +433,42 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 		}
 
 		Input->Expression = SourceExpr;
-		Input->OutputIndex = SourceOutput;
+		Input->OutputIndex = SourceOutputIndex;
 	}
 	else
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidConnection,
-			TEXT("Expression-to-expression connections not yet implemented")
-		);
+		// Expression-to-expression connection
+		UMaterialExpression* TargetExpr = FindExpression(Material, TargetNode);
+		if (TargetExpr == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::NodeNotFound,
+				FString::Printf(TEXT("Target node not found: %s"), *TargetNode)
+			);
+		}
+
+		// Find target input by name
+		FExpressionInput* TargetInputPtr = nullptr;
+		for (FExpressionInputIterator It(TargetExpr); It; ++It)
+		{
+			FString InputName = TargetExpr->GetInputName(It.Index).ToString();
+			if (InputName == TargetInput)
+			{
+				TargetInputPtr = It.Input;
+				break;
+			}
+		}
+
+		if (TargetInputPtr == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidConnection,
+				FString::Printf(TEXT("Target input not found: %s on node %s"), *TargetInput, *TargetNode)
+			);
+		}
+
+		TargetInputPtr->Expression = SourceExpr;
+		TargetInputPtr->OutputIndex = SourceOutputIndex;
 	}
 
 	if (!FCortexCommandRouter::IsInBatch())
@@ -416,7 +483,7 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("source_node"), SourceNode);
-	Data->SetNumberField(TEXT("source_output"), SourceOutput);
+	Data->SetNumberField(TEXT("source_output"), SourceOutputIndex);
 	Data->SetStringField(TEXT("target_node"), TargetNode);
 	Data->SetStringField(TEXT("target_input"), TargetInput);
 	Data->SetBoolField(TEXT("connected"), true);

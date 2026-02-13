@@ -559,3 +559,107 @@ bool FCortexMaterialBatchDeferredTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialConnectExprToExprTest,
+	"Cortex.Material.Graph.Connect.ExprToExpr",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialConnectExprToExprTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestE2E_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_E2E_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create material
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	// Add TextureCoordinate node
+	TSharedPtr<FJsonObject> AddUV = MakeShared<FJsonObject>();
+	AddUV->SetStringField(TEXT("asset_path"), MatPath);
+	AddUV->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionTextureCoordinate"));
+	FCortexCommandResult UVResult = Handler.Execute(TEXT("add_node"), AddUV);
+	FString UVNodeId;
+	if (UVResult.Data.IsValid()) UVResult.Data->TryGetStringField(TEXT("node_id"), UVNodeId);
+
+	// Add TextureSample node
+	TSharedPtr<FJsonObject> AddTex = MakeShared<FJsonObject>();
+	AddTex->SetStringField(TEXT("asset_path"), MatPath);
+	AddTex->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionTextureSample"));
+	FCortexCommandResult TexResult = Handler.Execute(TEXT("add_node"), AddTex);
+	FString TexNodeId;
+	if (TexResult.Data.IsValid()) TexResult.Data->TryGetStringField(TEXT("node_id"), TexNodeId);
+
+	// Connect UV output 0 → TextureSample input "Coordinates" (expression-to-expression)
+	TSharedPtr<FJsonObject> ConnectParams = MakeShared<FJsonObject>();
+	ConnectParams->SetStringField(TEXT("asset_path"), MatPath);
+	ConnectParams->SetStringField(TEXT("source_node"), UVNodeId);
+	ConnectParams->SetNumberField(TEXT("source_output"), 0);
+	ConnectParams->SetStringField(TEXT("target_node"), TexNodeId);
+	ConnectParams->SetStringField(TEXT("target_input"), TEXT("Coordinates"));
+	FCortexCommandResult Result = Handler.Execute(TEXT("connect"), ConnectParams);
+
+	if (!Result.bSuccess)
+	{
+		AddError(FString::Printf(TEXT("Connect failed: %s"), *Result.ErrorMessage));
+	}
+
+	TestTrue(TEXT("Expression-to-expression connect should succeed"), Result.bSuccess);
+
+	// Cleanup
+	UObject* LoadedAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedAsset) LoadedAsset->MarkAsGarbage();
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialConnectStringOutputTest,
+	"Cortex.Material.Graph.Connect.StringSourceOutput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialConnectStringOutputTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestStrOut_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_StrOut_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionScalarParameter"));
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+	FString NodeId;
+	if (AddResult.Data.IsValid()) AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+
+	// Connect using STRING source_output instead of number
+	TSharedPtr<FJsonObject> ConnectParams = MakeShared<FJsonObject>();
+	ConnectParams->SetStringField(TEXT("asset_path"), MatPath);
+	ConnectParams->SetStringField(TEXT("source_node"), NodeId);
+	ConnectParams->SetStringField(TEXT("source_output"), TEXT("0"));  // String "0"
+	ConnectParams->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+	ConnectParams->SetStringField(TEXT("target_input"), TEXT("Roughness"));
+	FCortexCommandResult Result = Handler.Execute(TEXT("connect"), ConnectParams);
+
+	TestTrue(TEXT("Connect with string source_output should succeed"), Result.bSuccess);
+
+	UObject* LoadedAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedAsset) LoadedAsset->MarkAsGarbage();
+
+	return true;
+}
