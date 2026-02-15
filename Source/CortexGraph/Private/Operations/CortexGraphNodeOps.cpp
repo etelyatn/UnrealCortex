@@ -369,16 +369,27 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 				FString FuncName;
 				if (FunctionName.Split(TEXT("."), &ClassName, &FuncName))
 				{
-					UClass* FuncClass = FindObject<UClass>(nullptr,
-						*FString::Printf(TEXT("/Script/Engine.%s"), *ClassName));
-					if (FuncClass)
+					UClass* FuncClass = FindFirstObject<UClass>(*ClassName);
+					if (FuncClass == nullptr)
 					{
-						UFunction* Func = FuncClass->FindFunctionByName(FName(*FuncName));
-						if (Func)
-						{
-							CallNode->SetFromFunction(Func);
-						}
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Function owner class not found: %s"), *ClassName)
+						);
 					}
+
+					UFunction* Func = FuncClass->FindFunctionByName(FName(*FuncName));
+					if (Func == nullptr)
+					{
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Function not found: %s on class %s"), *FuncName, *ClassName)
+						);
+					}
+
+					CallNode->SetFromFunction(Func);
 				}
 			}
 		}
