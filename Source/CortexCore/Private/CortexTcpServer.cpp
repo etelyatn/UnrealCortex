@@ -163,18 +163,33 @@ bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 		return true;
 	}
 
-	TArray<uint8> TempBuffer;
-	TempBuffer.SetNumUninitialized(ReceiveBufferSize);
-	int32 BytesRead = 0;
-
-	if (!InClientSocket->Recv(TempBuffer.GetData(), ReceiveBufferSize - 1, BytesRead) || BytesRead <= 0)
-	{
-		return true;
-	}
-
 	FString& ClientBuffer = ReceiveBuffers.FindOrAdd(InClientSocket);
-	FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(TempBuffer.GetData()), BytesRead);
-	ClientBuffer.Append(Converter.Get(), Converter.Length());
+	int32 TotalBytesRead = 0;
+
+	// Loop until all pending data is read or 2MB limit is reached
+	do
+	{
+		TArray<uint8> TempBuffer;
+		TempBuffer.SetNumUninitialized(ReceiveBufferSize);
+		int32 BytesRead = 0;
+
+		if (!InClientSocket->Recv(TempBuffer.GetData(), ReceiveBufferSize - 1, BytesRead) || BytesRead <= 0)
+		{
+			break;
+		}
+
+		FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(TempBuffer.GetData()), BytesRead);
+		ClientBuffer.Append(Converter.Get(), Converter.Length());
+		TotalBytesRead += BytesRead;
+
+		if (TotalBytesRead >= MaxMessageSize)
+		{
+			UE_LOG(LogCortex, Warning, TEXT("Client message exceeds MaxMessageSize (%d bytes), truncating"), MaxMessageSize);
+			break;
+		}
+
+		PendingDataSize = 0;
+	} while (InClientSocket->HasPendingData(PendingDataSize) && PendingDataSize > 0);
 
 	// Process complete lines (delimited by \n)
 	int32 NewlineIndex = INDEX_NONE;

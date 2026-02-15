@@ -116,19 +116,24 @@ class UEConnection:
                 pass
             self._socket = None
 
-    def send_command(self, command: str, params: dict | None = None) -> dict:
+    def send_command(self, command: str, params: dict | None = None, timeout: float | None = None) -> dict:
         """Send a command to the UE plugin and return the response.
 
         On connection failure, automatically retries once after a brief delay.
         Raises ConnectionError if not connected after retry.
         Raises RuntimeError if the command fails.
+
+        Args:
+            command: Command name
+            params: Optional command parameters
+            timeout: Optional timeout in seconds for this command (overrides default)
         """
         last_error: Exception | None = None
 
         for attempt in range(2):
             try:
                 self.connect()
-                return self._send_and_receive(command, params)
+                return self._send_and_receive(command, params, timeout=timeout)
             except ConnectionError as e:
                 last_error = e
                 self.disconnect()
@@ -169,10 +174,21 @@ class UEConnection:
         """Invalidate cache entries. None clears all."""
         return self._cache.invalidate(pattern)
 
-    def _send_and_receive(self, command: str, params: dict | None = None) -> dict:
-        """Send a command and read the response. Internal method, no retry logic."""
+    def _send_and_receive(self, command: str, params: dict | None = None, timeout: float | None = None) -> dict:
+        """Send a command and read the response. Internal method, no retry logic.
+
+        Args:
+            command: Command name
+            params: Optional parameters
+            timeout: Optional timeout in seconds (overrides default recv timeout)
+        """
         request = json.dumps({"command": command, "params": params or {}}) + "\n"
         start = time.monotonic()
+
+        original_timeout = self._socket.gettimeout()
+        if timeout is not None:
+            self._socket.settimeout(timeout)
+
         try:
             self._socket.sendall(request.encode("utf-8"))
 
@@ -203,3 +219,6 @@ class UEConnection:
         except (BrokenPipeError, ConnectionResetError, OSError) as e:
             self.disconnect()
             raise ConnectionError(f"Lost connection to Unreal Editor: {e}") from e
+        finally:
+            if timeout is not None:
+                self._socket.settimeout(original_timeout)

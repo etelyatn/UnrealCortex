@@ -1,5 +1,6 @@
 
 #include "CortexCommandRouter.h"
+#include "CortexBatchScope.h"
 #include "CortexCoreModule.h"
 #include "ICortexDomainHandler.h"
 #include "Misc/EngineVersion.h"
@@ -9,6 +10,49 @@
 #include "Dom/JsonValue.h"
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
+#include "Materials/Material.h"
+#include "MaterialGraph/MaterialGraph.h"
+#include "ScopedTransaction.h"
+
+int32 FCortexCommandRouter::BatchDepth = 0;
+
+// FCortexBatchScope implementation
+TSet<TWeakObjectPtr<UMaterial>> FCortexBatchScope::DirtyMaterials;
+
+FCortexBatchScope::FCortexBatchScope()
+{
+	FCortexCommandRouter::BatchDepth++;
+}
+
+FCortexBatchScope::~FCortexBatchScope()
+{
+	FCortexCommandRouter::BatchDepth--;
+
+	if (FCortexCommandRouter::BatchDepth == 0)
+	{
+		// Flush deferred PostEditChange for all dirty materials
+		for (const TWeakObjectPtr<UMaterial>& WeakMat : DirtyMaterials)
+		{
+			if (UMaterial* Material = WeakMat.Get())
+			{
+				Material->PostEditChange();
+				if (UMaterialGraph* MaterialGraph = Material->MaterialGraph)
+				{
+					MaterialGraph->RebuildGraph();
+				}
+			}
+		}
+		DirtyMaterials.Empty();
+	}
+}
+
+void FCortexBatchScope::MarkMaterialDirty(UMaterial* Material)
+{
+	if (Material != nullptr)
+	{
+		DirtyMaterials.Add(Material);
+	}
+}
 
 FCortexCommandResult FCortexCommandRouter::Execute(const FString& Command, const TSharedPtr<FJsonObject>& Params)
 {
@@ -138,6 +182,327 @@ FCortexCommandResult FCortexCommandRouter::HandlePing(const TSharedPtr<FJsonObje
 	return Success(Data);
 }
 
+bool FCortexCommandRouter::IsInBatch()
+{
+	return BatchDepth > 0;
+}
+
+TSharedPtr<FJsonObject> FCortexCommandRouter::DeepCopyJsonObject(const TSharedPtr<FJsonObject>& Source)
+{
+	if (!Source.IsValid())
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> Copy = MakeShared<FJsonObject>();
+	for (const auto& Pair : Source->Values)
+	{
+		Copy->SetField(Pair.Key, DeepCopyJsonValue(Pair.Value));
+	}
+	return Copy;
+}
+
+TSharedPtr<FJsonValue> FCortexCommandRouter::DeepCopyJsonValue(const TSharedPtr<FJsonValue>& Source)
+{
+	if (!Source.IsValid())
+	{
+		return MakeShared<FJsonValueNull>();
+	}
+
+	switch (Source->Type)
+	{
+	case EJson::String:
+	{
+		FString Str;
+		Source->TryGetString(Str);
+		return MakeShared<FJsonValueString>(Str);
+	}
+	case EJson::Number:
+	{
+		double Num;
+		Source->TryGetNumber(Num);
+		return MakeShared<FJsonValueNumber>(Num);
+	}
+	case EJson::Boolean:
+	{
+		bool Bool;
+		Source->TryGetBool(Bool);
+		return MakeShared<FJsonValueBoolean>(Bool);
+	}
+	case EJson::Array:
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Arr;
+		if (Source->TryGetArray(Arr))
+		{
+			TArray<TSharedPtr<FJsonValue>> CopyArr;
+			CopyArr.Reserve(Arr->Num());
+			for (const TSharedPtr<FJsonValue>& Elem : *Arr)
+			{
+				CopyArr.Add(DeepCopyJsonValue(Elem));
+			}
+			return MakeShared<FJsonValueArray>(CopyArr);
+		}
+		return MakeShared<FJsonValueNull>();
+	}
+	case EJson::Object:
+	{
+		const TSharedPtr<FJsonObject>* Obj;
+		if (Source->TryGetObject(Obj))
+		{
+			return MakeShared<FJsonValueObject>(DeepCopyJsonObject(*Obj));
+		}
+		return MakeShared<FJsonValueNull>();
+	}
+	case EJson::Null:
+	default:
+		return MakeShared<FJsonValueNull>();
+	}
+}
+
+bool FCortexCommandRouter::ResolveObjectRefs(
+	TSharedPtr<FJsonObject>& Params,
+	const TArray<TSharedPtr<FJsonValue>>& StepResults,
+	int32 CurrentStepIndex,
+	FString& OutError)
+{
+	if (!Params.IsValid())
+	{
+		return true;
+	}
+
+	// Iterate over all fields and resolve refs
+	TArray<FString> Keys;
+	Params->Values.GetKeys(Keys);
+
+	for (const FString& Key : Keys)
+	{
+		TSharedPtr<FJsonValue> Value = Params->Values[Key];
+		if (!ResolveValueRefs(Value, Key, StepResults, CurrentStepIndex, OutError, 0))
+		{
+			return false;
+		}
+		Params->SetField(Key, Value);
+	}
+
+	return true;
+}
+
+bool FCortexCommandRouter::ResolveValueRefs(
+	TSharedPtr<FJsonValue>& Value,
+	const FString& Key,
+	const TArray<TSharedPtr<FJsonValue>>& StepResults,
+	int32 CurrentStepIndex,
+	FString& OutError,
+	int32 Depth)
+{
+	if (!Value.IsValid())
+	{
+		return true;
+	}
+
+	// Depth check
+	if (Depth > 10)
+	{
+		OutError = TEXT("Max recursion depth (10) exceeded during $ref resolution");
+		return false;
+	}
+
+	// Check for string values that might be refs
+	if (Value->Type == EJson::String)
+	{
+		FString StrValue;
+		Value->TryGetString(StrValue);
+
+		// Check for escape: $$steps[ -> $steps[
+		if (StrValue.StartsWith(TEXT("$$steps[")))
+		{
+			FString UnescapedValue = StrValue.Mid(1); // Remove first $
+			Value = MakeShared<FJsonValueString>(UnescapedValue);
+			return true;
+		}
+
+		// Check for $ref pattern
+		if (StrValue.StartsWith(TEXT("$steps[")))
+		{
+			TSharedPtr<FJsonValue> ResolvedValue;
+			if (!ParseAndResolveRef(StrValue, StepResults, CurrentStepIndex, ResolvedValue, OutError))
+			{
+				return false;
+			}
+			Value = ResolvedValue;
+			return true;
+		}
+
+		// Warn if string contains $steps[ mid-string (but don't resolve)
+		if (StrValue.Contains(TEXT("$steps[")))
+		{
+			UE_LOG(LogCortex, Warning, TEXT("String field '%s' contains '$steps[' mid-string - this is not resolved. Value: %s"), *Key, *StrValue);
+		}
+
+		return true;
+	}
+
+	// Recursively resolve refs in arrays
+	if (Value->Type == EJson::Array)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Arr;
+		if (Value->TryGetArray(Arr))
+		{
+			TArray<TSharedPtr<FJsonValue>> NewArr;
+			NewArr.Reserve(Arr->Num());
+			for (TSharedPtr<FJsonValue> Elem : *Arr)
+			{
+				if (!ResolveValueRefs(Elem, Key, StepResults, CurrentStepIndex, OutError, Depth + 1))
+				{
+					return false;
+				}
+				NewArr.Add(Elem);
+			}
+			Value = MakeShared<FJsonValueArray>(NewArr);
+		}
+		return true;
+	}
+
+	// Recursively resolve refs in objects
+	if (Value->Type == EJson::Object)
+	{
+		const TSharedPtr<FJsonObject>* Obj;
+		if (Value->TryGetObject(Obj))
+		{
+			TSharedPtr<FJsonObject> NewObj = MakeShared<FJsonObject>(**Obj);
+			if (!ResolveObjectRefs(NewObj, StepResults, CurrentStepIndex, OutError))
+			{
+				return false;
+			}
+			Value = MakeShared<FJsonValueObject>(NewObj);
+		}
+		return true;
+	}
+
+	// Other types (number, bool, null) - no resolution needed
+	return true;
+}
+
+bool FCortexCommandRouter::ParseAndResolveRef(
+	const FString& RefString,
+	const TArray<TSharedPtr<FJsonValue>>& StepResults,
+	int32 CurrentStepIndex,
+	TSharedPtr<FJsonValue>& OutValue,
+	FString& OutError)
+{
+	// Parse: $steps[N].data.field.subfield
+	// Expected format: $steps[INDEX].PATH
+
+	// Find the closing bracket
+	int32 BracketStart = RefString.Find(TEXT("["));
+	int32 BracketEnd = RefString.Find(TEXT("]"));
+
+	if (BracketStart == INDEX_NONE || BracketEnd == INDEX_NONE || BracketEnd <= BracketStart)
+	{
+		OutError = FString::Printf(TEXT("Malformed $ref: missing or invalid brackets in '%s'"), *RefString);
+		return false;
+	}
+
+	// Extract index string
+	FString IndexStr = RefString.Mid(BracketStart + 1, BracketEnd - BracketStart - 1);
+	if (IndexStr.IsEmpty())
+	{
+		OutError = FString::Printf(TEXT("Malformed $ref: empty index in '%s'"), *RefString);
+		return false;
+	}
+
+	// Parse index
+	int32 StepIndex = FCString::Atoi(*IndexStr);
+
+	// Validate index range
+	if (StepIndex < 0)
+	{
+		OutError = FString::Printf(TEXT("Invalid $ref: negative index %d in '%s'"), StepIndex, *RefString);
+		return false;
+	}
+
+	if (StepIndex >= CurrentStepIndex)
+	{
+		OutError = FString::Printf(TEXT("Invalid $ref: reference to future/self step %d from step %d in '%s'"), StepIndex, CurrentStepIndex, *RefString);
+		return false;
+	}
+
+	if (StepIndex >= StepResults.Num())
+	{
+		OutError = FString::Printf(TEXT("Invalid $ref: step %d not found (only %d steps executed) in '%s'"), StepIndex, StepResults.Num(), *RefString);
+		return false;
+	}
+
+	// Extract path after ]
+	FString Path = RefString.Mid(BracketEnd + 1);
+	if (!Path.StartsWith(TEXT(".")))
+	{
+		OutError = FString::Printf(TEXT("Malformed $ref: expected '.' after index in '%s'"), *RefString);
+		return false;
+	}
+
+	Path = Path.Mid(1); // Remove leading '.'
+	if (Path.IsEmpty())
+	{
+		OutError = FString::Printf(TEXT("Malformed $ref: empty path after index in '%s'"), *RefString);
+		return false;
+	}
+
+	// Parse path to check for minimum depth
+	TArray<FString> PathParts;
+	Path.ParseIntoArray(PathParts, TEXT("."), true);
+
+	// Require at least 2 parts: data.field (can't just reference $steps[0].data)
+	if (PathParts.Num() < 2)
+	{
+		OutError = FString::Printf(TEXT("Malformed $ref: path must include field after 'data' in '%s'"), *RefString);
+		return false;
+	}
+
+	// Get the step result object
+	const TSharedPtr<FJsonValue>& StepResultValue = StepResults[StepIndex];
+	const TSharedPtr<FJsonObject>* StepResultObj;
+	if (!StepResultValue.IsValid() || !StepResultValue->TryGetObject(StepResultObj) || StepResultObj == nullptr)
+	{
+		OutError = FString::Printf(TEXT("Invalid $ref: step %d result is not a valid object"), StepIndex);
+		return false;
+	}
+
+	// Check if step succeeded
+	bool bStepSuccess = false;
+	(*StepResultObj)->TryGetBoolField(TEXT("success"), bStepSuccess);
+	if (!bStepSuccess)
+	{
+		OutError = FString::Printf(TEXT("Invalid $ref: step %d failed, cannot reference its data"), StepIndex);
+		return false;
+	}
+
+	// Navigate the path (PathParts already parsed above)
+	TSharedPtr<FJsonValue> CurrentValue = StepResultValue;
+
+	for (const FString& Part : PathParts)
+	{
+		const TSharedPtr<FJsonObject>* CurrentObj;
+		if (!CurrentValue.IsValid() || !CurrentValue->TryGetObject(CurrentObj) || CurrentObj == nullptr)
+		{
+			OutError = FString::Printf(TEXT("Invalid $ref: path '%s' not found in step %d result (intermediate object not found)"), *Path, StepIndex);
+			return false;
+		}
+
+		TSharedPtr<FJsonValue> FieldValue = (*CurrentObj)->TryGetField(Part);
+		if (!FieldValue.IsValid())
+		{
+			OutError = FString::Printf(TEXT("Invalid $ref: field '%s' not found in step %d result (path: '%s')"), *Part, StepIndex, *Path);
+			return false;
+		}
+
+		CurrentValue = FieldValue;
+	}
+
+	OutValue = CurrentValue;
+	return true;
+}
+
 FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObject>& Params)
 {
 	const TArray<TSharedPtr<FJsonValue>>* CommandsArray = nullptr;
@@ -154,7 +519,19 @@ FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObj
 		);
 	}
 
+	// Read stop_on_error parameter (default false)
+	bool bStopOnError = false;
+	Params->TryGetBoolField(TEXT("stop_on_error"), bStopOnError);
+
 	const double BatchStartTime = FPlatformTime::Seconds();
+
+	// Single transaction for entire batch
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Batch (%d commands)"), CommandsArray->Num())
+	));
+
+	// RAII: sets IsInBatch()=true, defers PostEditChange
+	FCortexBatchScope BatchScope;
 
 	TArray<TSharedPtr<FJsonValue>> ResultsArray;
 
@@ -174,6 +551,10 @@ FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObj
 			EntryResult->SetStringField(TEXT("error_message"), TEXT("Invalid command entry (not an object)"));
 			EntryResult->SetNumberField(TEXT("timing_ms"), 0.0);
 			ResultsArray.Add(MakeShared<FJsonValueObject>(EntryResult));
+			if (bStopOnError)
+			{
+				break;
+			}
 			continue;
 		}
 
@@ -189,6 +570,10 @@ FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObj
 			EntryResult->SetStringField(TEXT("error_message"), TEXT("Nested batch commands are not allowed"));
 			EntryResult->SetNumberField(TEXT("timing_ms"), 0.0);
 			ResultsArray.Add(MakeShared<FJsonValueObject>(EntryResult));
+			if (bStopOnError)
+			{
+				break;
+			}
 			continue;
 		}
 
@@ -203,8 +588,28 @@ FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObj
 			SubParams = MakeShared<FJsonObject>();
 		}
 
+		// Deep-copy params to prevent mutation of original batch request
+		TSharedPtr<FJsonObject> ParamsCopy = DeepCopyJsonObject(SubParams);
+
+		// Resolve $ref strings in the copied params
+		FString RefError;
+		if (!ResolveObjectRefs(ParamsCopy, ResultsArray, Index, RefError))
+		{
+			// $ref resolution failed
+			EntryResult->SetBoolField(TEXT("success"), false);
+			EntryResult->SetStringField(TEXT("error_code"), CortexErrorCodes::BatchRefResolutionFailed);
+			EntryResult->SetStringField(TEXT("error_message"), RefError);
+			EntryResult->SetNumberField(TEXT("timing_ms"), 0.0);
+			ResultsArray.Add(MakeShared<FJsonValueObject>(EntryResult));
+			if (bStopOnError)
+			{
+				break;
+			}
+			continue;
+		}
+
 		const double CmdStartTime = FPlatformTime::Seconds();
-		FCortexCommandResult SubResult = Execute(SubCommand, SubParams);
+		FCortexCommandResult SubResult = Execute(SubCommand, ParamsCopy);
 		const double CmdElapsed = (FPlatformTime::Seconds() - CmdStartTime) * 1000.0;
 
 		EntryResult->SetBoolField(TEXT("success"), SubResult.bSuccess);
@@ -224,6 +629,12 @@ FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObj
 		}
 
 		ResultsArray.Add(MakeShared<FJsonValueObject>(EntryResult));
+
+		// Stop on error if requested and step failed
+		if (bStopOnError && !SubResult.bSuccess)
+		{
+			break;
+		}
 	}
 
 	const double BatchElapsed = (FPlatformTime::Seconds() - BatchStartTime) * 1000.0;

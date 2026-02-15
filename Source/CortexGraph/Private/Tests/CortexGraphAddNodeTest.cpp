@@ -105,6 +105,54 @@ bool FCortexGraphAddNodeTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	// Test: invalid function owner class should return error
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_CallFunction"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("function_name"), TEXT("NonExistentClass.FakeFunction"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestFalse(TEXT("add_node with invalid class should fail"), Result.bSuccess);
+		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Test: invalid function name on valid class should return error
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_CallFunction"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("function_name"), TEXT("KismetSystemLibrary.NonExistentFunction"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestFalse(TEXT("add_node with invalid function should fail"), Result.bSuccess);
+		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Test: display_name should be populated for valid CallFunction node
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_CallFunction"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("function_name"), TEXT("GameplayStatics.GetGameMode"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node GetGameMode should succeed"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			FString DisplayName;
+			TestTrue(TEXT("Result should have display_name"), Result.Data->TryGetStringField(TEXT("display_name"), DisplayName));
+			TestTrue(TEXT("Display name should contain 'Game Mode'"),
+				DisplayName.Contains(TEXT("Game Mode")));
+		}
+	}
+
 	// Test: missing asset_path
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();

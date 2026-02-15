@@ -54,6 +54,12 @@ FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 		return FCortexMaterialGraphOps::Connect(Params);
 	if (Command == TEXT("disconnect"))
 		return FCortexMaterialGraphOps::Disconnect(Params);
+	if (Command == TEXT("auto_layout"))
+		return FCortexMaterialGraphOps::AutoLayout(Params);
+	if (Command == TEXT("set_node_property"))
+		return FCortexMaterialGraphOps::SetNodeProperty(Params);
+	if (Command == TEXT("get_node_pins"))
+		return FCortexMaterialGraphOps::GetNodePins(Params);
 
 	// Collection operations
 	if (Command == TEXT("list_collections"))
@@ -100,6 +106,9 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 		{ TEXT("list_connections"), TEXT("List all node connections in material") },
 		{ TEXT("connect"), TEXT("Connect nodes in material graph") },
 		{ TEXT("disconnect"), TEXT("Disconnect nodes in material graph") },
+		{ TEXT("auto_layout"), TEXT("Auto-layout material graph nodes by connection topology") },
+		{ TEXT("set_node_property"), TEXT("Set property value on material expression node") },
+		{ TEXT("get_node_pins"), TEXT("Get input and output pin names for a material expression node") },
 		{ TEXT("list_collections"), TEXT("List material parameter collections") },
 		{ TEXT("get_collection"), TEXT("Get collection with parameters") },
 		{ TEXT("create_collection"), TEXT("Create a material parameter collection") },

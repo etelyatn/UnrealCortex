@@ -21,6 +21,8 @@ public:
 	void Stop();
 	bool IsRunning() const;
 
+	static constexpr int32 MaxMessageSize = 2 * 1024 * 1024;  // 2MB
+
 private:
 	bool HandleConnectionAccepted(FSocket* ClientSocket, const FIPv4Endpoint& ClientEndpoint);
 	void ProcessClientData();
