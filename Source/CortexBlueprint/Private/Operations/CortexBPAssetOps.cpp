@@ -15,7 +15,7 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Kismet2/CompilerResultsLog.h"
 #include "ScopedTransaction.h"
-#include "UObject/UObjectIterator.h"
+#include "UObject/UObjectGlobals.h"
 
 UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FString& OutError)
 {
