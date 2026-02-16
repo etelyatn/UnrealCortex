@@ -296,20 +296,31 @@ TMap<FString, int32> FCortexGraphLayoutOps::AssignLayers(
 		}
 	}
 
-	// For RightToLeft direction, invert layers so result node is rightmost
+	// For RightToLeft direction, invert layers so entry points move rightmost.
+	// Only apply to exec-flow graphs — pure data-flow Kahn's already produces
+	// sources-left / sinks-right ordering naturally.
 	if (Direction == ECortexLayoutDirection::RightToLeft)
 	{
-		int32 MaxLayer = 0;
-		for (const auto& Pair : LayerAssignment)
+		int32 TotalExecEdgesForInversion = 0;
+		for (const FCortexLayoutNode& Node : Nodes)
 		{
-			if (Pair.Value > MaxLayer)
-			{
-				MaxLayer = Pair.Value;
-			}
+			TotalExecEdgesForInversion += Node.ExecOutputs.Num();
 		}
-		for (auto& Pair : LayerAssignment)
+
+		if (TotalExecEdgesForInversion > 0)
 		{
-			Pair.Value = MaxLayer - Pair.Value;
+			int32 MaxLayer = 0;
+			for (const auto& Pair : LayerAssignment)
+			{
+				if (Pair.Value > MaxLayer)
+				{
+					MaxLayer = Pair.Value;
+				}
+			}
+			for (auto& Pair : LayerAssignment)
+			{
+				Pair.Value = MaxLayer - Pair.Value;
+			}
 		}
 	}
 
