@@ -335,7 +335,7 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	}
 	else
 	{
-		// Try finding other classes dynamically (e.g., UK2Node_VariableGet, UK2Node_Event)
+		// Try finding other classes dynamically (e.g., UK2Node_Event, UK2Node_MacroInstance)
 		NodeClass = StaticLoadClass(UEdGraphNode::StaticClass(), nullptr,
 			*FString::Printf(TEXT("/Script/BlueprintGraph.%s"), *NodeClassName));
 		if (NodeClass == nullptr)
@@ -354,7 +354,7 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	}
 
 	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex:Add Node '%s'"), *NodeClassName)
+		FString::Printf(TEXT("Cortex: Add node %s"), *NodeClassName)
 	));
 
 	Graph->Modify();
@@ -441,6 +441,21 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 				else
 				{
 					// Self-context property (on the Blueprint's own class)
+					UClass* SelfClass = Blueprint->SkeletonGeneratedClass
+						? Blueprint->SkeletonGeneratedClass
+						: Blueprint->GeneratedClass;
+					if (SelfClass)
+					{
+						FProperty* SelfProp = SelfClass->FindPropertyByName(FName(*VariableName));
+						if (SelfProp == nullptr)
+						{
+							Graph->RemoveNode(NewNode);
+							return FCortexCommandRouter::Error(
+								CortexErrorCodes::InvalidField,
+								FString::Printf(TEXT("Self property not found: %s"), *VariableName)
+							);
+						}
+					}
 					VarNode->VariableReference.SetSelfMember(FName(*VariableName));
 				}
 			}

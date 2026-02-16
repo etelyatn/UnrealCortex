@@ -4,6 +4,8 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
 #include "GameFramework/Actor.h"
 
@@ -231,6 +233,48 @@ bool FCortexGraphAddNodeTest::RunTest(const FString& Parameters)
 
 		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
 		TestFalse(TEXT("add_node with invalid variable_name should fail"), Result.bSuccess);
+		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Test: VariableGet with self-context property
+	{
+		// Add a bool variable to the test Blueprint
+		FEdGraphPinType PinType;
+		PinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
+		FBlueprintEditorUtils::AddMemberVariable(TestBP, TEXT("bTestFlag"), PinType);
+		FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableGet"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("variable_name"), TEXT("bTestFlag"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node VariableGet self-context should succeed"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Pins = nullptr;
+			TestTrue(TEXT("Self-context VariableGet should have pins"), Result.Data->TryGetArrayField(TEXT("pins"), Pins));
+			if (Pins)
+			{
+				TestTrue(TEXT("Self-context VariableGet should have output pin"), Pins->Num() >= 1);
+			}
+		}
+	}
+
+	// Test: Invalid self-context variable name returns error
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableGet"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("variable_name"), TEXT("NonExistentSelfVar"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestFalse(TEXT("add_node with invalid self variable should fail"), Result.bSuccess);
 		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
 	}
 
