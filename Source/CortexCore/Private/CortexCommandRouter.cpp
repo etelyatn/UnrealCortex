@@ -18,6 +18,7 @@ int32 FCortexCommandRouter::BatchDepth = 0;
 
 // FCortexBatchScope implementation
 TSet<TWeakObjectPtr<UMaterial>> FCortexBatchScope::DirtyMaterials;
+TArray<FBatchCleanupCallback> FCortexBatchScope::CleanupActions;
 
 FCortexBatchScope::FCortexBatchScope()
 {
@@ -43,6 +44,13 @@ FCortexBatchScope::~FCortexBatchScope()
 			}
 		}
 		DirtyMaterials.Empty();
+
+		// Invoke generic cleanup actions registered by domain modules
+		for (const FBatchCleanupCallback& Action : CleanupActions)
+		{
+			Action();
+		}
+		CleanupActions.Empty();
 	}
 }
 
@@ -51,6 +59,14 @@ void FCortexBatchScope::MarkMaterialDirty(UMaterial* Material)
 	if (Material != nullptr)
 	{
 		DirtyMaterials.Add(Material);
+	}
+}
+
+void FCortexBatchScope::AddCleanupAction(FBatchCleanupCallback Callback)
+{
+	if (Callback)
+	{
+		CleanupActions.Add(MoveTemp(Callback));
 	}
 }
 
