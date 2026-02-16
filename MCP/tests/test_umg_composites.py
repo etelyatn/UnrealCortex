@@ -275,3 +275,26 @@ class TestBatchCommandGeneration:
         widgets = [{"class": "CanvasPanel", "name": "Root"}]
         commands = _build_widget_batch_commands("WBP_Test", "/Game/UI/", widgets, [])
         assert commands[0]["params"]["path"] == "/Game/UI"
+
+
+class TestCleanupOnFailure:
+    def test_batch_step_0_is_create(self):
+        """Step 0 must be bp.create for cleanup to work."""
+        widgets = [{"class": "CanvasPanel", "name": "Root"}]
+        commands = _build_widget_batch_commands("WBP_Test", "/Game/UI/", widgets, [])
+        assert commands[0]["command"] == "bp.create"
+
+
+class TestTimeoutScaling:
+    def test_small_screen_uses_minimum(self):
+        widgets = [{"class": "CanvasPanel", "name": "Root"}]
+        commands = _build_widget_batch_commands("WBP_Test", "/Game/UI/", widgets, [])
+        expected = max(60, len(commands) * 2)
+        assert expected == 60
+
+    def test_large_screen_scales(self):
+        children = [{"class": "TextBlock", "name": f"T{i}", "text": f"Item {i}"} for i in range(40)]
+        widgets = [{"class": "VerticalBox", "name": "Root", "children": children}]
+        commands = _build_widget_batch_commands("WBP_Test", "/Game/UI/", widgets, [])
+        expected = max(60, len(commands) * 2)
+        assert expected > 60
