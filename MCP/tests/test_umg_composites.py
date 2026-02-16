@@ -1,5 +1,7 @@
 """Unit tests for UMG widget composite tool helper functions."""
 
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -298,3 +300,54 @@ class TestTimeoutScaling:
         commands = _build_widget_batch_commands("WBP_Test", "/Game/UI/", widgets, [])
         expected = max(60, len(commands) * 2)
         assert expected > 60
+
+
+FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
+
+
+class TestFixtures:
+    def _load_fixture(self, name):
+        path = os.path.join(FIXTURE_DIR, name)
+        with open(path) as f:
+            return json.load(f)
+
+    def test_composite_to_batch_translation(self):
+        """Main menu composite request translates to correct batch commands."""
+        request = self._load_fixture("main_menu_composite_request.json")
+        commands = _build_widget_batch_commands(
+            request["name"], request["path"],
+            request["widgets"], request.get("animations", []),
+        )
+
+        expected = self._load_fixture("main_menu_batch_request.json")
+        assert len(commands) == len(expected["commands"])
+
+        # Verify counts
+        assert commands[0]["command"] == "bp.create"
+        widget_count = sum(1 for c in commands if c["command"] == "umg.add_widget")
+        styling_count = sum(1 for c in commands if c["command"].startswith("umg.set_"))
+        anim_count = sum(1 for c in commands if c["command"] == "umg.create_animation")
+
+        # 10 widgets: Root, Layout, Title, Subtitle, PlayBtn, PlayBtnText,
+        #             SettingsBtn, SettingsBtnText, QuitBtn, QuitBtnText
+        assert widget_count == 10
+        assert anim_count == 2
+
+    def test_deeply_nested_parent_names(self):
+        """Verify parent_name chain in deeply nested fixture."""
+        request = self._load_fixture("main_menu_composite_request.json")
+        commands = _build_widget_batch_commands(
+            request["name"], request["path"],
+            request["widgets"], request.get("animations", []),
+        )
+
+        add_cmds = [c for c in commands if c["command"] == "umg.add_widget"]
+        # Root -> parent ""
+        assert add_cmds[0]["params"]["parent_name"] == ""
+        assert add_cmds[0]["params"]["widget_name"] == "Root"
+        # Layout -> parent Root
+        assert add_cmds[1]["params"]["parent_name"] == "Root"
+        assert add_cmds[1]["params"]["widget_name"] == "Layout"
+        # PlayBtnText -> parent PlayBtn
+        play_text = [c for c in add_cmds if c["params"]["widget_name"] == "PlayBtnText"][0]
+        assert play_text["params"]["parent_name"] == "PlayBtn"
