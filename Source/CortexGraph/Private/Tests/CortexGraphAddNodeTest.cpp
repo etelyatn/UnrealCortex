@@ -173,6 +173,82 @@ bool FCortexGraphAddNodeTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
 	}
 
+	// Test: Add VariableSet node for external class property
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableSet"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("variable_name"), TEXT("bHidden"));
+		NParams->SetStringField(TEXT("variable_class"), TEXT("Actor"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node VariableSet should succeed"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Pins = nullptr;
+			TestTrue(TEXT("VariableSet should have pins"), Result.Data->TryGetArrayField(TEXT("pins"), Pins));
+			if (Pins)
+			{
+				TestTrue(TEXT("VariableSet should have multiple pins"), Pins->Num() >= 3);
+			}
+		}
+	}
+
+	// Test: Add VariableGet node for external class property
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableGet"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("variable_name"), TEXT("bHidden"));
+		NParams->SetStringField(TEXT("variable_class"), TEXT("Actor"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node VariableGet should succeed"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Pins = nullptr;
+			TestTrue(TEXT("VariableGet should have pins"), Result.Data->TryGetArrayField(TEXT("pins"), Pins));
+			if (Pins)
+			{
+				TestTrue(TEXT("VariableGet should have output pin"), Pins->Num() >= 1);
+			}
+		}
+	}
+
+	// Test: Invalid variable name returns error
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableSet"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("variable_name"), TEXT("NonExistentProperty"));
+		NParams->SetStringField(TEXT("variable_class"), TEXT("Actor"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestFalse(TEXT("add_node with invalid variable_name should fail"), Result.bSuccess);
+		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Test: Invalid variable class returns error
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableSet"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("variable_name"), TEXT("bHidden"));
+		NParams->SetStringField(TEXT("variable_class"), TEXT("NonExistentClass"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestFalse(TEXT("add_node with invalid variable_class should fail"), Result.bSuccess);
+		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
 	TestBP->MarkAsGarbage();
 
 	return true;

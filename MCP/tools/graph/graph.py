@@ -104,17 +104,26 @@ def register_graph_tools(mcp, connection: UEConnection):
 
         Creates a new node of the specified class at the given position with optional parameters.
 
+        Supported node types and their params:
+        - UK2Node_CallFunction: params '{"function_name": "ClassName.FunctionName"}'
+        - UK2Node_IfThenElse: no params needed
+        - UK2Node_VariableSet: params '{"variable_name": "bHidden", "variable_class": "Actor"}'
+        - UK2Node_VariableGet: params '{"variable_name": "bHidden", "variable_class": "Actor"}'
+          Omit variable_class for self-context (Blueprint's own variables).
+
         Args:
             asset_path: Full asset path to the Blueprint.
-            node_class: Class name of the node to create (e.g., 'UK2Node_CallFunction').
+            node_class: Class name of the node to create.
             graph_name: Name of the graph to add to (default: 'EventGraph').
             position: Optional JSON string with {x, y} coordinates (e.g., '{"x": 100, "y": 200}').
-            params: Optional JSON string with node-specific parameters (e.g., '{"FunctionName": "PrintString"}').
+            params: Optional JSON string with node-specific parameters.
 
         Returns:
             JSON with:
             - node_id: Identifier of the newly created node
-            - success: Whether the operation succeeded
+            - class: Node class name
+            - display_name: Display name of the node
+            - pins: Array of pin details
         """
         try:
             request = {

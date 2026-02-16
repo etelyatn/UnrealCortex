@@ -4,10 +4,14 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
+#include "EdGraphSchema_K2.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_IfThenElse.h"
+#include "K2Node_Variable.h"
+#include "K2Node_VariableSet.h"
+#include "K2Node_VariableGet.h"
 #include "ScopedTransaction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/PackageName.h"
@@ -321,6 +325,14 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	{
 		NodeClass = UK2Node_IfThenElse::StaticClass();
 	}
+	else if (NodeClassName == TEXT("UK2Node_VariableSet"))
+	{
+		NodeClass = UK2Node_VariableSet::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_VariableGet"))
+	{
+		NodeClass = UK2Node_VariableGet::StaticClass();
+	}
 	else
 	{
 		// Try finding other classes dynamically (e.g., UK2Node_VariableGet, UK2Node_Event)
@@ -353,7 +365,7 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	NewNode->NodePosY = PosY;
 	Graph->AddNode(NewNode, true, false);
 
-	// Handle CallFunction-specific setup
+	// Handle type-specific setup
 	// NodeParams = node-specific parameters (nested object), distinct from outer Params
 	const TSharedPtr<FJsonObject>* NodeParams = nullptr;
 	if (Params->TryGetObjectField(TEXT("params"), NodeParams) && NodeParams)
@@ -390,6 +402,46 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 					}
 
 					CallNode->SetFromFunction(Func);
+				}
+			}
+		}
+
+		UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(NewNode);
+		if (VarNode)
+		{
+			FString VariableName;
+			if ((*NodeParams)->TryGetStringField(TEXT("variable_name"), VariableName))
+			{
+				FString VariableClass;
+				if ((*NodeParams)->TryGetStringField(TEXT("variable_class"), VariableClass))
+				{
+					// External class property (e.g., PlayerController.bShowMouseCursor)
+					UClass* VarClass = FindFirstObject<UClass>(*VariableClass);
+					if (VarClass == nullptr)
+					{
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Variable owner class not found: %s"), *VariableClass)
+						);
+					}
+
+					FProperty* Prop = VarClass->FindPropertyByName(FName(*VariableName));
+					if (Prop == nullptr)
+					{
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Property not found: %s on class %s"), *VariableName, *VariableClass)
+						);
+					}
+
+					VarNode->SetFromProperty(Prop, false, VarClass);
+				}
+				else
+				{
+					// Self-context property (on the Blueprint's own class)
+					VarNode->VariableReference.SetSelfMember(FName(*VariableName));
 				}
 			}
 		}
@@ -580,7 +632,27 @@ FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObje
 	Node->Modify();
 
 	// Set the default value
-	Pin->DefaultValue = Value;
+	// For class/object pins, try to resolve and set DefaultObject
+	if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class ||
+		Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_SoftClass)
+	{
+		// Try to load the class from the value string
+		UClass* ClassObject = LoadClass<UObject>(nullptr, *Value);
+		if (ClassObject)
+		{
+			Pin->DefaultObject = ClassObject;
+			Pin->DefaultValue = TEXT("");  // Clear string value when using object reference
+		}
+		else
+		{
+			// Fallback to string value if class can't be loaded
+			Pin->DefaultValue = Value;
+		}
+	}
+	else
+	{
+		Pin->DefaultValue = Value;
+	}
 
 	Graph->NotifyGraphChanged();
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
