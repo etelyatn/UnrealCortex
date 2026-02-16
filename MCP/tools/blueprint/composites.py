@@ -132,3 +132,108 @@ def _validate_spec(
                     f"Node '{node.get('name')}' pin_value '{key}' contains '$steps[' "
                     f"which conflicts with batch $ref syntax"
                 )
+
+
+def _build_batch_commands(
+    name: str,
+    path: str,
+    bp_type: str,
+    variables: list[dict],
+    functions: list[dict],
+    nodes: list[dict],
+    connections: list[dict],
+    graph_name: str,
+) -> list[dict]:
+    """Translate Blueprint spec into batch commands with $ref wiring."""
+    path = path.rstrip("/")
+    commands: list[dict] = []
+
+    # Step 0: create blueprint
+    commands.append({
+        "command": "bp.create",
+        "params": {"name": name, "path": path, "type": bp_type},
+    })
+
+    # Steps 1..V: add variables
+    for var in variables:
+        var_params: dict[str, Any] = {
+            "asset_path": "$steps[0].data.asset_path",
+            "variable_name": var["name"],
+            "variable_type": var.get("type", "bool"),
+        }
+        if "default_value" in var:
+            var_params["default_value"] = var["default_value"]
+        if "is_exposed" in var:
+            var_params["is_exposed"] = var["is_exposed"]
+        if "category" in var:
+            var_params["category"] = var["category"]
+        commands.append({"command": "bp.add_variable", "params": var_params})
+
+    # Steps V+1..V+F: add functions
+    for func in functions:
+        func_params: dict[str, Any] = {
+            "asset_path": "$steps[0].data.asset_path",
+            "function_name": func["name"],
+        }
+        if "is_pure" in func:
+            func_params["is_pure"] = func["is_pure"]
+        if "access" in func:
+            func_params["access"] = func["access"]
+        commands.append({"command": "bp.add_function", "params": func_params})
+
+    # Build node_name -> step_index map
+    # node_step_index = 1 + len(variables) + len(functions) + node_index
+    node_name_to_step: dict[str, int] = {}
+    base_node_step = 1 + len(variables) + len(functions)
+
+    # Steps base..base+N: add nodes
+    for i, node in enumerate(nodes):
+        node_name = node.get("name", f"Node_{i}")
+        step_index = base_node_step + i
+        node_name_to_step[node_name] = step_index
+
+        add_params: dict[str, Any] = {
+            "asset_path": "$steps[0].data.asset_path",
+            "node_class": _resolve_class_name(node["class"]),
+            "graph_name": graph_name,
+        }
+        if node.get("params"):
+            add_params["params"] = node["params"]
+        commands.append({"command": "graph.add_node", "params": add_params})
+
+    # Steps: set pin values
+    for i, node in enumerate(nodes):
+        node_name = node.get("name", f"Node_{i}")
+        pin_values = node.get("pin_values")
+        if not pin_values:
+            continue
+        step_index = node_name_to_step[node_name]
+        for pin_name, value in pin_values.items():
+            commands.append({
+                "command": "graph.set_pin_value",
+                "params": {
+                    "asset_path": "$steps[0].data.asset_path",
+                    "node_id": f"$steps[{step_index}].data.node_id",
+                    "graph_name": graph_name,
+                    "pin_name": pin_name,
+                    "value": value,
+                },
+            })
+
+    # Steps: connections
+    for conn in connections:
+        src_parts = conn["from"].split(".", 1)
+        tgt_parts = conn["to"].split(".", 1)
+        commands.append({
+            "command": "graph.connect",
+            "params": {
+                "asset_path": "$steps[0].data.asset_path",
+                "source_node": f"$steps[{node_name_to_step[src_parts[0]]}].data.node_id",
+                "source_pin": src_parts[1],
+                "target_node": f"$steps[{node_name_to_step[tgt_parts[0]]}].data.node_id",
+                "target_pin": tgt_parts[1],
+                "graph_name": graph_name,
+            },
+        })
+
+    return commands

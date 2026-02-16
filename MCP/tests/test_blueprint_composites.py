@@ -13,6 +13,7 @@ from blueprint.composites import (
     _resolve_class_name,
     _contains_ref_syntax,
     _validate_spec,
+    _build_batch_commands,
 )
 
 
@@ -164,3 +165,156 @@ class TestValidation:
             ],
             connections=[{"from": "BeginPlay.then", "to": "Print.execute"}],
         )
+
+
+class TestBatchCommandGeneration:
+    """Test _build_batch_commands() function."""
+
+    def test_basic_blueprint_with_one_node(self):
+        """Basic BP with single event node generates create + add_node commands."""
+        nodes = [{"name": "BeginPlay", "class": "Event", "params": {"function_name": "Actor.ReceiveBeginPlay"}}]
+        commands = _build_batch_commands("BP_Test", "/Game/Blueprints/", "Actor", [], [], nodes, [], "EventGraph")
+
+        # Step 0: bp.create
+        assert commands[0]["command"] == "bp.create"
+        assert commands[0]["params"]["name"] == "BP_Test"
+        assert commands[0]["params"]["path"] == "/Game/Blueprints"
+        assert commands[0]["params"]["type"] == "Actor"
+
+        # Step 1: graph.add_node
+        assert commands[1]["command"] == "graph.add_node"
+        assert commands[1]["params"]["asset_path"] == "$steps[0].data.asset_path"
+        assert commands[1]["params"]["node_class"] == "UK2Node_Event"
+        assert commands[1]["params"]["params"]["function_name"] == "Actor.ReceiveBeginPlay"
+
+    def test_step_index_formula_with_vars_funcs_nodes(self):
+        """Step index formula: node_step = 1 + len(vars) + len(funcs) + node_index.
+
+        Example: 2 vars, 1 func, 3 nodes -> node steps are 4, 5, 6.
+        """
+        variables = [
+            {"name": "Health", "type": "float"},
+            {"name": "Speed", "type": "float"},
+        ]
+        functions = [{"name": "TakeDamage"}]
+        nodes = [
+            {"name": "A", "class": "Event", "params": {"function_name": "Actor.ReceiveBeginPlay"}},
+            {"name": "B", "class": "CallFunction", "params": {"function_name": "KismetSystemLibrary.PrintString"}},
+            {"name": "C", "class": "Branch"},
+        ]
+        commands = _build_batch_commands("BP_Test", "/Game/", "Actor", variables, functions, nodes, [], "EventGraph")
+
+        # Step 0: bp.create
+        # Steps 1-2: bp.add_variable x2
+        # Step 3: bp.add_function
+        # Steps 4-6: graph.add_node x3
+        assert commands[0]["command"] == "bp.create"
+        assert commands[1]["command"] == "bp.add_variable"
+        assert commands[2]["command"] == "bp.add_variable"
+        assert commands[3]["command"] == "bp.add_function"
+        assert commands[4]["command"] == "graph.add_node"
+        assert commands[5]["command"] == "graph.add_node"
+        assert commands[6]["command"] == "graph.add_node"
+
+    def test_connections_reference_correct_node_steps(self):
+        """Connections use $steps[{node_step}] to reference correct node."""
+        variables = [{"name": "Health", "type": "float"}]
+        nodes = [
+            {"name": "BeginPlay", "class": "Event", "params": {"function_name": "Actor.ReceiveBeginPlay"}},
+            {"name": "Print", "class": "CallFunction", "params": {"function_name": "KismetSystemLibrary.PrintString"}},
+        ]
+        connections = [{"from": "BeginPlay.then", "to": "Print.execute"}]
+        commands = _build_batch_commands("BP_Test", "/Game/", "Actor", variables, [], nodes, connections, "EventGraph")
+
+        # Step 0: bp.create
+        # Step 1: bp.add_variable
+        # Step 2: graph.add_node (BeginPlay) -> step index 2
+        # Step 3: graph.add_node (Print) -> step index 3
+        # Step 4: graph.connect
+        connect_cmd = [c for c in commands if c["command"] == "graph.connect"][0]
+        assert connect_cmd["params"]["source_node"] == "$steps[2].data.node_id"
+        assert connect_cmd["params"]["source_pin"] == "then"
+        assert connect_cmd["params"]["target_node"] == "$steps[3].data.node_id"
+        assert connect_cmd["params"]["target_pin"] == "execute"
+
+    def test_pin_values_reference_correct_node_step(self):
+        """pin_values generate graph.set_pin_value with correct $ref."""
+        nodes = [
+            {"name": "Print", "class": "CallFunction",
+             "params": {"function_name": "KismetSystemLibrary.PrintString"},
+             "pin_values": {"InString": "Hello!", "bPrintToScreen": "true"}},
+        ]
+        commands = _build_batch_commands("BP_Test", "/Game/", "Actor", [], [], nodes, [], "EventGraph")
+
+        # Step 0: bp.create
+        # Step 1: graph.add_node (Print)
+        # Steps 2-3: graph.set_pin_value x2
+        set_pin_cmds = [c for c in commands if c["command"] == "graph.set_pin_value"]
+        assert len(set_pin_cmds) == 2
+        assert set_pin_cmds[0]["params"]["node_id"] == "$steps[1].data.node_id"
+        pin_names = {c["params"]["pin_name"] for c in set_pin_cmds}
+        assert pin_names == {"InString", "bPrintToScreen"}
+
+    def test_command_order_create_vars_funcs_nodes_pins_connects(self):
+        """Commands ordered: create, variables, functions, nodes, pin_values, connections."""
+        variables = [{"name": "Health", "type": "float"}]
+        functions = [{"name": "Heal"}]
+        nodes = [
+            {"name": "A", "class": "Event", "params": {"function_name": "Actor.ReceiveBeginPlay"}},
+            {"name": "B", "class": "CallFunction",
+             "params": {"function_name": "KismetSystemLibrary.PrintString"},
+             "pin_values": {"InString": "Hi"}},
+        ]
+        connections = [{"from": "A.then", "to": "B.execute"}]
+        commands = _build_batch_commands("BP_Test", "/Game/", "Actor", variables, functions, nodes, connections, "EventGraph")
+
+        cmd_types = [c["command"] for c in commands]
+        # Expected order: bp.create, bp.add_variable, bp.add_function, add_node x2, set_pin_value, connect
+        assert cmd_types == [
+            "bp.create",
+            "bp.add_variable",
+            "bp.add_function",
+            "graph.add_node",
+            "graph.add_node",
+            "graph.set_pin_value",
+            "graph.connect",
+        ]
+
+    def test_empty_nodes_and_connections_vars_only(self):
+        """Variables-only BP generates create + add_variable commands."""
+        variables = [{"name": "Health", "type": "float", "default_value": "100.0", "is_exposed": True, "category": "Stats"}]
+        commands = _build_batch_commands("BP_Test", "/Game/", "Actor", variables, [], [], [], "EventGraph")
+
+        assert len(commands) == 2
+        assert commands[0]["command"] == "bp.create"
+        assert commands[1]["command"] == "bp.add_variable"
+        assert commands[1]["params"]["variable_name"] == "Health"
+        assert commands[1]["params"]["variable_type"] == "float"
+        assert commands[1]["params"]["default_value"] == "100.0"
+
+    def test_trailing_slash_normalized(self):
+        """Trailing slash on path is normalized."""
+        commands = _build_batch_commands("BP_Test", "/Game/Blueprints/", "Actor", [], [], [], [], "EventGraph")
+        assert commands[0]["params"]["path"] == "/Game/Blueprints"
+
+    def test_graph_name_passed_to_add_node(self):
+        """Custom graph_name is passed to add_node commands."""
+        nodes = [{"name": "A", "class": "Event", "params": {"function_name": "Actor.ReceiveBeginPlay"}}]
+        commands = _build_batch_commands("BP_Test", "/Game/", "Actor", [], [], nodes, [], "MyGraph")
+        add_cmd = [c for c in commands if c["command"] == "graph.add_node"][0]
+        assert add_cmd["params"]["graph_name"] == "MyGraph"
+
+
+class TestTimeoutScaling:
+    def test_small_batch_uses_minimum(self):
+        """Small batch uses 60s minimum timeout."""
+        commands = _build_batch_commands("BP_Test", "/Game/", "Actor", [], [], [], [], "EventGraph")
+        expected = max(60, len(commands) * 2)
+        assert expected == 60
+
+    def test_large_batch_scales(self):
+        """Large batch scales timeout beyond 60s."""
+        nodes = [{"name": f"N{i}", "class": "Event", "params": {"function_name": "Actor.ReceiveBeginPlay"}} for i in range(40)]
+        commands = _build_batch_commands("BP_Test", "/Game/", "Actor", [], [], nodes, [], "EventGraph")
+        expected = max(60, len(commands) * 2)
+        assert expected > 60
