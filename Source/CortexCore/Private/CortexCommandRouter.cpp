@@ -18,7 +18,7 @@ int32 FCortexCommandRouter::BatchDepth = 0;
 
 // FCortexBatchScope implementation
 TSet<TWeakObjectPtr<UMaterial>> FCortexBatchScope::DirtyMaterials;
-TArray<FBatchCleanupCallback> FCortexBatchScope::CleanupActions;
+TMap<FString, FCortexBatchScope::FBatchCleanupCallback> FCortexBatchScope::CleanupActions;
 
 FCortexBatchScope::FCortexBatchScope()
 {
@@ -31,6 +31,15 @@ FCortexBatchScope::~FCortexBatchScope()
 
 	if (FCortexCommandRouter::BatchDepth == 0)
 	{
+		// Invoke generic cleanup actions (MoveTemp for re-entrancy safety:
+		// callbacks like NotifyGraphChanged may trigger delegates that call AddCleanupAction)
+		TMap<FString, FBatchCleanupCallback> PendingActions = MoveTemp(CleanupActions);
+		CleanupActions.Empty();
+		for (auto& Pair : PendingActions)
+		{
+			Pair.Value();
+		}
+
 		// Flush deferred PostEditChange for all dirty materials
 		for (const TWeakObjectPtr<UMaterial>& WeakMat : DirtyMaterials)
 		{
@@ -44,13 +53,6 @@ FCortexBatchScope::~FCortexBatchScope()
 			}
 		}
 		DirtyMaterials.Empty();
-
-		// Invoke generic cleanup actions registered by domain modules
-		for (const FBatchCleanupCallback& Action : CleanupActions)
-		{
-			Action();
-		}
-		CleanupActions.Empty();
 	}
 }
 
@@ -62,11 +64,17 @@ void FCortexBatchScope::MarkMaterialDirty(UMaterial* Material)
 	}
 }
 
-void FCortexBatchScope::AddCleanupAction(FBatchCleanupCallback Callback)
+void FCortexBatchScope::AddCleanupAction(const FString& Key, FBatchCleanupCallback Callback)
 {
-	if (Callback)
+	if (!FCortexCommandRouter::IsInBatch())
 	{
-		CleanupActions.Add(MoveTemp(Callback));
+		UE_LOG(LogCortex, Warning, TEXT("AddCleanupAction called outside batch, executing immediately: %s"), *Key);
+		Callback();
+		return;
+	}
+	if (!CleanupActions.Contains(Key))
+	{
+		CleanupActions.Add(Key, MoveTemp(Callback));
 	}
 }
 
