@@ -1,0 +1,23 @@
+{
+  "name": "BP_HealthActor",
+  "path": "/Game/Blueprints/",
+  "type": "Actor",
+  "variables": [
+    {"name": "Health", "type": "float", "default_value": "100.0", "is_exposed": true, "category": "Stats"},
+    {"name": "MaxHealth", "type": "float", "default_value": "100.0", "is_exposed": true, "category": "Stats"}
+  ],
+  "functions": [
+    {"name": "TakeDamage"}
+  ],
+  "graph_name": "EventGraph",
+  "nodes": [
+    {"name": "BeginPlay", "class": "Event", "params": {"function_name": "Actor.ReceiveBeginPlay"}},
+    {"name": "PrintHealth", "class": "CallFunction",
+     "params": {"function_name": "KismetSystemLibrary.PrintString"},
+     "pin_values": {"InString": "Actor spawned with health!"}},
+    {"name": "GetHealth", "class": "VariableGet", "params": {"variable_name": "Health"}}
+  ],
+  "connections": [
+    {"from": "BeginPlay.then", "to": "PrintHealth.execute"}
+  ]
+}

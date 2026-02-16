@@ -1,5 +1,7 @@
 """Unit tests for Blueprint composite tool helper functions."""
 
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -362,3 +364,78 @@ class TestErrorPropagation:
         assert failed is not None
         assert failed["index"] == 1
         assert completed == 1
+
+
+FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
+
+
+class TestFixtures:
+    """Tests using health actor reference data."""
+
+    def _load_fixture(self, name):
+        path = os.path.join(FIXTURE_DIR, name)
+        with open(path) as f:
+            return json.load(f)
+
+    def test_composite_to_batch_translation(self):
+        """Composite request translates to expected batch commands."""
+        request = self._load_fixture("health_actor_composite_request.json")
+        commands = _build_batch_commands(
+            request["name"],
+            request["path"],
+            request.get("type", "Actor"),
+            request.get("variables", []),
+            request.get("functions", []),
+            request.get("nodes", []),
+            request.get("connections", []),
+            request.get("graph_name", "EventGraph"),
+        )
+
+        expected = self._load_fixture("health_actor_batch_request.json")
+        assert len(commands) == len(expected["commands"])
+
+        # Verify command types in order
+        assert commands[0]["command"] == "bp.create"
+        var_count = sum(1 for c in commands if c["command"] == "bp.add_variable")
+        func_count = sum(1 for c in commands if c["command"] == "bp.add_function")
+        node_count = sum(1 for c in commands if c["command"] == "graph.add_node")
+        pin_count = sum(1 for c in commands if c["command"] == "graph.set_pin_value")
+        connect_count = sum(1 for c in commands if c["command"] == "graph.connect")
+
+        assert var_count == 2
+        assert func_count == 1
+        assert node_count == 3
+        assert pin_count == 1  # InString on PrintHealth
+        assert connect_count == 1
+
+    def test_step_indices_match_expected(self):
+        """$ref step indices in batch commands match expected values."""
+        request = self._load_fixture("health_actor_composite_request.json")
+        commands = _build_batch_commands(
+            request["name"], request["path"],
+            request.get("type", "Actor"),
+            request.get("variables", []),
+            request.get("functions", []),
+            request.get("nodes", []),
+            request.get("connections", []),
+            request.get("graph_name", "EventGraph"),
+        )
+
+        # 2 vars + 1 func = offset 3, so node steps are 4, 5, 6
+        # Step 0: bp.create
+        # Steps 1-2: bp.add_variable
+        # Step 3: bp.add_function
+        # Steps 4-6: graph.add_node (BeginPlay=4, PrintHealth=5, GetHealth=6)
+        node_cmds = [c for c in commands if c["command"] == "graph.add_node"]
+        assert node_cmds[0]["params"]["node_class"] == "UK2Node_Event"
+        assert node_cmds[1]["params"]["node_class"] == "UK2Node_CallFunction"
+        assert node_cmds[2]["params"]["node_class"] == "UK2Node_VariableGet"
+
+        # Pin value should reference step 5 (PrintHealth)
+        pin_cmd = [c for c in commands if c["command"] == "graph.set_pin_value"][0]
+        assert pin_cmd["params"]["node_id"] == "$steps[5].data.node_id"
+
+        # Connection: BeginPlay(step 4) -> PrintHealth(step 5)
+        conn_cmd = [c for c in commands if c["command"] == "graph.connect"][0]
+        assert conn_cmd["params"]["source_node"] == "$steps[4].data.node_id"
+        assert conn_cmd["params"]["target_node"] == "$steps[5].data.node_id"
