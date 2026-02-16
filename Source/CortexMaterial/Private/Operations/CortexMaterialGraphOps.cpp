@@ -9,6 +9,7 @@
 #include "ScopedTransaction.h"
 #include "CortexBatchScope.h"
 #include "CortexCommandRouter.h"
+#include "CortexGraphLayoutOps.h"
 #include "UObject/UnrealType.h"
 
 UMaterialExpression* FCortexMaterialGraphOps::FindExpression(UMaterial* Material, const FString& NodeId)
@@ -622,180 +623,120 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 
 	FCortexCommandResult LoadError;
 	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (Material == nullptr)
-	{
-		return LoadError;
-	}
+	if (Material == nullptr) return LoadError;
 
 	if (!Material->GetEditorOnlyData())
 	{
 		return FCortexCommandRouter::Error(
-			CortexErrorCodes::SerializationError,
-			TEXT("Material has no editor data"));
+			CortexErrorCodes::SerializationError, TEXT("Material has no editor data"));
 	}
 
 	const TArray<UMaterialExpression*>& Expressions = Material->GetEditorOnlyData()->ExpressionCollection.Expressions;
 
 	if (Expressions.Num() == 0)
 	{
-		// Empty material - nothing to layout
 		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 		Data->SetStringField(TEXT("asset_path"), AssetPath);
 		Data->SetNumberField(TEXT("node_count"), 0);
 		return FCortexCommandRouter::Success(Data);
 	}
 
-	// Build adjacency map: for each expression, track which expressions connect TO it
-	TMap<UMaterialExpression*, TArray<UMaterialExpression*>> IncomingEdges;
+	// Convert Material expressions to abstract layout nodes
+	TMap<UMaterialExpression*, FString> ExprToId;
+
 	for (UMaterialExpression* Expr : Expressions)
 	{
 		if (!Expr) continue;
-		IncomingEdges.Add(Expr, TArray<UMaterialExpression*>());
+		ExprToId.Add(Expr, Expr->GetPathName());
 	}
 
-	// Scan all expression inputs to build the graph
+	// Check which expressions connect to MaterialResult
+	UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
+	TSet<FString> MaterialResultInputIds;
+	auto CheckResultInput = [&](const FExpressionInput& Input)
+	{
+		if (Input.Expression)
+		{
+			const FString* Id = ExprToId.Find(Input.Expression);
+			if (Id) MaterialResultInputIds.Add(*Id);
+		}
+	};
+	CheckResultInput(EditorData->BaseColor);
+	CheckResultInput(EditorData->Metallic);
+	CheckResultInput(EditorData->Specular);
+	CheckResultInput(EditorData->Roughness);
+	CheckResultInput(EditorData->Normal);
+	CheckResultInput(EditorData->EmissiveColor);
+	CheckResultInput(EditorData->Opacity);
+	CheckResultInput(EditorData->OpacityMask);
+
+	// Build forward adjacency map in single O(N*M) pass
+	TMap<FString, TArray<FString>> ForwardEdges;
 	for (UMaterialExpression* Expr : Expressions)
 	{
 		if (!Expr) continue;
-
 		for (FExpressionInputIterator It(Expr); It; ++It)
 		{
 			if (It.Input && It.Input->Expression)
 			{
-				UMaterialExpression* SourceExpr = It.Input->Expression;
-				if (IncomingEdges.Contains(Expr))
-				{
-					IncomingEdges[Expr].AddUnique(SourceExpr);
-				}
+				const FString* SourceId = ExprToId.Find(It.Input->Expression);
+				if (SourceId)
+					ForwardEdges.FindOrAdd(*SourceId).AddUnique(ExprToId[Expr]);
 			}
 		}
 	}
 
-	// Also check MaterialResult inputs
-	TArray<UMaterialExpression*> MaterialResultInputs;
-	UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
-
-	auto AddMaterialResultInput = [&](const FExpressionInput& Input)
+	// Build layout nodes with connectivity
+	TArray<FCortexLayoutNode> LayoutNodes;
+	for (UMaterialExpression* Expr : Expressions)
 	{
-		if (Input.Expression != nullptr)
-		{
-			MaterialResultInputs.AddUnique(Input.Expression);
-		}
-	};
-
-	AddMaterialResultInput(EditorData->BaseColor);
-	AddMaterialResultInput(EditorData->Metallic);
-	AddMaterialResultInput(EditorData->Specular);
-	AddMaterialResultInput(EditorData->Roughness);
-	AddMaterialResultInput(EditorData->Normal);
-	AddMaterialResultInput(EditorData->EmissiveColor);
-	AddMaterialResultInput(EditorData->Opacity);
-	AddMaterialResultInput(EditorData->OpacityMask);
-
-	// Calculate depth for each node using BFS from MaterialResult backwards
-	TMap<UMaterialExpression*, int32> NodeDepth;
-	TArray<UMaterialExpression*> Queue;
-	TSet<UMaterialExpression*> Visited;
-
-	// Start from MaterialResult inputs at depth 0
-	for (UMaterialExpression* Expr : MaterialResultInputs)
-	{
-		if (Expr && !Visited.Contains(Expr))
-		{
-			Queue.Add(Expr);
-			NodeDepth.Add(Expr, 0);
-			Visited.Add(Expr);
-		}
+		if (!Expr) continue;
+		FCortexLayoutNode LayoutNode;
+		LayoutNode.Id = ExprToId[Expr];
+		LayoutNode.bIsEntryPoint = MaterialResultInputIds.Contains(LayoutNode.Id);
+		int32 InputCount = 0;
+		for (FExpressionInputIterator It(Expr); It; ++It) InputCount++;
+		int32 OutputCount = Expr->GetOutputs().Num();
+		LayoutNode.Width = 150;
+		LayoutNode.Height = FMath::Max(80, 40 + FMath::Max(InputCount, OutputCount) * 26);
+		const TArray<FString>* Outputs = ForwardEdges.Find(LayoutNode.Id);
+		if (Outputs) LayoutNode.DataOutputs = *Outputs;
+		LayoutNodes.Add(LayoutNode);
 	}
 
-	// BFS to assign depths
-	int32 QueueIndex = 0;
-	while (QueueIndex < Queue.Num())
-	{
-		UMaterialExpression* Current = Queue[QueueIndex++];
-		int32 CurrentDepth = NodeDepth[Current];
+	// Run shared layout engine
+	FCortexLayoutConfig Config;
+	Config.Direction = ECortexLayoutDirection::RightToLeft;
+	double HSpacingVal = 0, VSpacingVal = 0;
+	if (Params->TryGetNumberField(TEXT("horizontal_spacing"), HSpacingVal) && HSpacingVal > 0)
+		Config.HorizontalSpacing = static_cast<int32>(HSpacingVal);
+	if (Params->TryGetNumberField(TEXT("vertical_spacing"), VSpacingVal) && VSpacingVal > 0)
+		Config.VerticalSpacing = static_cast<int32>(VSpacingVal);
 
-		// Process all incoming edges (expressions that feed into Current)
-		if (IncomingEdges.Contains(Current))
-		{
-			for (UMaterialExpression* Source : IncomingEdges[Current])
-			{
-				if (!Source) continue;
+	FCortexLayoutResult LayoutResult = FCortexGraphLayoutOps::CalculateLayout(LayoutNodes, Config);
 
-				int32 NewDepth = CurrentDepth + 1;
-
-				if (!NodeDepth.Contains(Source))
-				{
-					NodeDepth.Add(Source, NewDepth);
-					Queue.Add(Source);
-					Visited.Add(Source);
-				}
-				else
-				{
-					// Update to max depth (longest path)
-					int32& ExistingDepth = NodeDepth[Source];
-					if (NewDepth > ExistingDepth)
-					{
-						ExistingDepth = NewDepth;
-					}
-				}
-			}
-		}
-	}
-
-	// Find max depth
-	int32 MaxDepth = 0;
-	for (const auto& Pair : NodeDepth)
-	{
-		if (Pair.Value > MaxDepth)
-		{
-			MaxDepth = Pair.Value;
-		}
-	}
-
-	// Group nodes by depth column
-	TMap<int32, TArray<UMaterialExpression*>> DepthColumns;
-	for (const auto& Pair : NodeDepth)
-	{
-		if (!DepthColumns.Contains(Pair.Value))
-		{
-			DepthColumns.Add(Pair.Value, TArray<UMaterialExpression*>());
-		}
-		DepthColumns[Pair.Value].Add(Pair.Key);
-	}
-
-	// Position nodes
+	// Apply positions back to Material expressions
+	TUniquePtr<FScopedTransaction> Transaction;
 	if (!FCortexCommandRouter::IsInBatch())
 	{
-		FScopedTransaction Transaction(FText::FromString(
-			FString::Printf(TEXT("Cortex: Auto-Layout Material Graph"))
-		));
+		Transaction = MakeUnique<FScopedTransaction>(
+			FText::FromString(TEXT("Cortex: Auto-Layout Material Graph")));
 		Material->PreEditChange(nullptr);
 	}
 
-	const int32 ColumnSpacing = 250;
-	const int32 NodeSpacing = 150;
-
-	for (auto& ColumnPair : DepthColumns)
+	TMap<FString, UMaterialExpression*> IdToExpr;
+	for (UMaterialExpression* Expr : Expressions)
 	{
-		int32 Depth = ColumnPair.Key;
-		TArray<UMaterialExpression*>& NodesInColumn = ColumnPair.Value;
+		if (Expr) IdToExpr.Add(Expr->GetPathName(), Expr);
+	}
 
-		// X position: right-to-left layout (MaterialResult on right)
-		int32 X = -(MaxDepth - Depth + 1) * ColumnSpacing;
-
-		// Y position: centered vertically, spaced evenly
-		int32 TotalHeight = (NodesInColumn.Num() - 1) * NodeSpacing;
-		int32 StartY = -TotalHeight / 2;
-
-		for (int32 i = 0; i < NodesInColumn.Num(); ++i)
+	for (const auto& Pair : LayoutResult.Positions)
+	{
+		UMaterialExpression** ExprPtr = IdToExpr.Find(Pair.Key);
+		if (ExprPtr && *ExprPtr)
 		{
-			UMaterialExpression* Expr = NodesInColumn[i];
-			if (Expr)
-			{
-				Expr->MaterialExpressionEditorX = X;
-				Expr->MaterialExpressionEditorY = StartY + (i * NodeSpacing);
-			}
+			(*ExprPtr)->MaterialExpressionEditorX = Pair.Value.X;
+			(*ExprPtr)->MaterialExpressionEditorY = Pair.Value.Y;
 		}
 	}
 
@@ -811,8 +752,7 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
-	Data->SetNumberField(TEXT("node_count"), NodeDepth.Num());
-
+	Data->SetNumberField(TEXT("node_count"), LayoutResult.Positions.Num());
 	return FCortexCommandRouter::Success(Data);
 }
 
