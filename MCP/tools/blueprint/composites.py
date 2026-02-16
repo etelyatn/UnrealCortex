@@ -237,3 +237,206 @@ def _build_batch_commands(
         })
 
     return commands
+
+
+def register_blueprint_composite_tools(mcp, connection: UEConnection):
+    """Register Blueprint composite MCP tools."""
+
+    @mcp.tool()
+    def create_blueprint_graph(
+        name: str,
+        path: str,
+        type: str = "Actor",
+        parent_class: str = "",
+        variables: list[dict] = None,
+        functions: list[dict] = None,
+        graph_name: str = "EventGraph",
+        nodes: list[dict] = None,
+        connections: list[dict] = None,
+    ) -> str:
+        """Create a Blueprint with variables, functions, and graph logic in a single operation.
+
+        Creates a new Blueprint asset, adds variables, functions, graph nodes, sets pin values,
+        and wires connections. All operations execute atomically via batch.
+
+        Use this instead of calling create_blueprint + add_blueprint_variable + graph_add_node
+        individually when building a Blueprint from scratch.
+
+        Args:
+            name: Blueprint name (e.g., "BP_HealthSystem")
+            path: Directory path (e.g., "/Game/Blueprints/")
+            type: Blueprint base type: Actor, Component, Widget, Interface, FunctionLibrary
+            parent_class: Optional C++ parent class (overrides type)
+            variables: Array of variable specs with:
+                - name: Variable name
+                - type: Variable type (float, int, bool, string, Vector, etc.)
+                - default_value: Optional default value as string
+                - is_exposed: Optional bool for EditAnywhere
+                - category: Optional category name
+            functions: Array of function specs with:
+                - name: Function name
+                - is_pure: Optional bool
+                - access: Optional access level
+            graph_name: Target graph name (default: "EventGraph")
+            nodes: Array of node specs with:
+                - name: Unique identifier for referencing in connections
+                - class: Node class short name. Common classes:
+                    Event, CustomEvent, CallFunction, Branch, Sequence,
+                    VariableGet, VariableSet, SpawnActor, CastTo, ForEachLoop
+                - params: Optional dict of node-specific params (e.g., {"function_name": "KismetSystemLibrary.PrintString"})
+                - pin_values: Optional dict of pin default values (e.g., {"InString": "Hello!"})
+            connections: Array of connection specs using "NodeName.PinName" format:
+                - from: Source "NodeName.PinName" (e.g., "BeginPlay.then")
+                - to: Target "NodeName.PinName" (e.g., "PrintString.execute")
+
+                Common pin names by node type:
+                    Event: outputs "then"
+                    CallFunction: inputs "execute", outputs "then"
+                    Branch: inputs "execute", "Condition", outputs "True", "False"
+                    Sequence: inputs "execute", outputs "then 0", "then 1", ...
+                    VariableGet: output is variable name
+                    VariableSet: inputs "execute" + variable name, outputs "then"
+
+        Returns:
+            JSON with asset_path, node_count, variable_count, function_count, timing.
+            On failure: summary, asset_path, completed_steps, failed_step, total_steps.
+
+        Example:
+            create_blueprint_graph(
+                name="BP_HealthActor", path="/Game/Blueprints/",
+                variables=[{"name": "Health", "type": "float", "default_value": "100.0", "is_exposed": True}],
+                nodes=[
+                    {"name": "BeginPlay", "class": "Event", "params": {"function_name": "Actor.ReceiveBeginPlay"}},
+                    {"name": "PrintHealth", "class": "CallFunction",
+                     "params": {"function_name": "KismetSystemLibrary.PrintString"},
+                     "pin_values": {"InString": "Actor spawned!"}},
+                ],
+                connections=[{"from": "BeginPlay.then", "to": "PrintHealth.execute"}]
+            )
+        """
+        variables = variables or []
+        functions = functions or []
+        nodes = nodes or []
+        connections = connections or []
+
+        # 1. Validate spec
+        try:
+            _validate_spec(name, path, bp_type=type, variables=variables,
+                          functions=functions, nodes=nodes, connections=connections)
+        except ValueError as e:
+            return json.dumps({"success": False, "error": f"Invalid spec: {e}"})
+
+        # 2. Build batch commands
+        commands = _build_batch_commands(name, path, type, variables, functions, nodes, connections, graph_name)
+        total_steps = len(commands)
+
+        # 3. Send batch with stop_on_error
+        timeout = max(60, len(commands) * 2)
+        try:
+            batch_result = connection.send_command("batch", {
+                "stop_on_error": True,
+                "commands": commands,
+            }, timeout=timeout)
+        except RuntimeError as e:
+            return json.dumps({"success": False, "error": str(e)})
+        except (ConnectionError, TimeoutError, OSError) as e:
+            return json.dumps({"success": False, "error": f"Connection error: {e}"})
+
+        batch_data = batch_result.get("data", {})
+        results = batch_data.get("results", [])
+
+        # 4. Check for failures
+        asset_path = None
+        failed_step = None
+        completed_count = 0
+
+        for entry in results:
+            if entry.get("success"):
+                completed_count += 1
+                if entry.get("index") == 0 and "data" in entry:
+                    asset_path = entry["data"].get("asset_path")
+            else:
+                failed_step = entry
+                break
+
+        # 5. Handle failure
+        if failed_step is not None:
+            recovery_action = None
+            if asset_path:
+                try:
+                    connection.send_command("bp.delete", {"asset_path": asset_path, "force": True})
+                    recovery_action = {"action": "deleted_partial", "path": asset_path}
+                except Exception as e:
+                    recovery_action = {
+                        "action": "cleanup_failed",
+                        "path": asset_path,
+                        "error": str(e),
+                        "user_action_required": f"Manually delete partial asset at {asset_path}",
+                    }
+
+            response = {
+                "success": False,
+                "summary": f"Step {failed_step['index']} of {total_steps} failed: "
+                           f"{failed_step.get('command', '?')} - "
+                           f"{failed_step.get('error_message', 'Unknown error')}",
+                "asset_path": asset_path,
+                "completed_steps": completed_count,
+                "failed_step": {
+                    "index": failed_step["index"],
+                    "command": failed_step.get("command", ""),
+                    "error": failed_step.get("error_message", ""),
+                },
+                "total_steps": total_steps,
+            }
+            if recovery_action:
+                response["recovery_action"] = recovery_action
+            return json.dumps(response, indent=2)
+
+        # 6. Success — post-batch non-critical steps
+        warnings = []
+        if asset_path and nodes:
+            try:
+                connection.send_command("graph.auto_layout", {
+                    "asset_path": asset_path,
+                    "graph_name": graph_name,
+                })
+            except Exception as e:
+                logger.warning(f"auto_layout failed for {asset_path}: {e}", exc_info=True)
+                warnings.append({
+                    "step": "auto_layout",
+                    "error": str(e),
+                    "impact": "Node positions may need manual adjustment in editor",
+                })
+
+        if asset_path:
+            try:
+                connection.send_command("bp.compile", {"asset_path": asset_path})
+            except Exception as e:
+                logger.warning(f"compile failed for {asset_path}: {e}", exc_info=True)
+                warnings.append({"step": "compile", "error": str(e)})
+
+            try:
+                connection.send_command("bp.save", {"asset_path": asset_path})
+            except Exception as e:
+                logger.warning(f"save failed for {asset_path}: {e}", exc_info=True)
+                warnings.append({"step": "save", "error": str(e)})
+
+        node_count = sum(1 for c in commands if c["command"] == "graph.add_node")
+        connect_count = sum(1 for c in commands if c["command"] == "graph.connect")
+        pin_count = sum(1 for c in commands if c["command"] == "graph.set_pin_value")
+
+        response = {
+            "success": True,
+            "asset_path": asset_path,
+            "total_steps": total_steps,
+            "variable_count": len(variables),
+            "function_count": len(functions),
+            "node_count": node_count,
+            "connection_count": connect_count,
+            "pin_values_set": pin_count,
+            "total_timing_ms": batch_data.get("total_timing_ms", 0),
+        }
+        if warnings:
+            response["warnings"] = warnings
+
+        return json.dumps(response, indent=2)

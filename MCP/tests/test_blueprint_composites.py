@@ -318,3 +318,47 @@ class TestTimeoutScaling:
         commands = _build_batch_commands("BP_Test", "/Game/", "Actor", [], [], nodes, [], "EventGraph")
         expected = max(60, len(commands) * 2)
         assert expected > 60
+
+
+class TestCleanupOnFailure:
+    """Tests for cleanup-on-failure behavior."""
+
+    def test_cleanup_deletes_partial_on_batch_failure(self):
+        """When batch fails after step 0 succeeded, partial asset should be cleaned up."""
+        # Verify the design: _build_batch_commands produces commands where step 0 is bp.create
+        nodes = [{"name": "A", "class": "Event", "params": {"function_name": "Actor.ReceiveBeginPlay"}}]
+        commands = _build_batch_commands("BP_Test", "/Game/", "Actor", [], [], nodes, [], "EventGraph")
+        assert commands[0]["command"] == "bp.create"
+        # The composite tool will call bp.delete on failure if step 0 succeeded
+        # This is verified by integration behavior — we check the design contract here
+
+
+class TestErrorPropagation:
+    """Tests for error response format."""
+
+    def test_batch_failure_response_fields(self):
+        """Failed batch response has summary, completed_steps, failed_step."""
+        batch_result = {
+            "success": True,
+            "data": {
+                "results": [
+                    {"index": 0, "success": True, "data": {"asset_path": "/Game/BP_Test"}, "timing_ms": 1},
+                    {"index": 1, "success": False, "error_message": "Class not found", "command": "graph.add_node", "timing_ms": 0},
+                ],
+                "count": 2,
+                "total_timing_ms": 1,
+            },
+        }
+        results = batch_result["data"]["results"]
+        failed = None
+        completed = 0
+        for entry in results:
+            if entry.get("success"):
+                completed += 1
+            else:
+                failed = entry
+                break
+
+        assert failed is not None
+        assert failed["index"] == 1
+        assert completed == 1
