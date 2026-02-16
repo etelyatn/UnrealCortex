@@ -2,7 +2,6 @@
 
 import json
 import logging
-from typing import Any
 from cortex_mcp.tcp_client import UEConnection
 
 logger = logging.getLogger(__name__)
@@ -27,7 +26,7 @@ _STRUCTURAL_KEYS = {"class", "name", "children", "properties"}
 def _contains_ref_syntax(value):
     """Check if value or any nested element contains $steps[ syntax."""
     if isinstance(value, str):
-        return value.startswith("$steps[")
+        return "$steps[" in value
     elif isinstance(value, list):
         return any(_contains_ref_syntax(v) for v in value)
     elif isinstance(value, dict):
