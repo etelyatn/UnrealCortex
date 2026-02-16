@@ -106,3 +106,102 @@ def _validate_widget_spec(
     anim_names = [a.get("name", "") for a in animations]
     if len(anim_names) != len(set(anim_names)):
         raise ValueError("Duplicate animation names in spec")
+
+
+def _build_widget_batch_commands(
+    name: str,
+    path: str,
+    widgets: list[dict],
+    animations: list[dict],
+) -> list[dict]:
+    """Translate widget screen spec into batch commands."""
+    path = path.rstrip("/")
+    commands = []
+
+    # Step 0: create Widget Blueprint
+    commands.append({
+        "command": "bp.create",
+        "params": {"name": name, "path": path, "type": "Widget"},
+    })
+
+    # Flatten widget tree (depth-first, parent before children)
+    flat_widgets = _flatten_widget_tree(widgets)
+
+    # Add widget commands (all widgets before any styling)
+    for widget, parent_name in flat_widgets:
+        commands.append({
+            "command": "umg.add_widget",
+            "params": {
+                "asset_path": "$steps[0].data.asset_path",
+                "widget_class": widget["class"],
+                "widget_name": widget["name"],
+                "parent_name": parent_name,
+            },
+        })
+
+    # Styling commands (after all widgets exist)
+    for widget, _parent in flat_widgets:
+        widget_name = widget["name"]
+
+        for key, value in widget.items():
+            if key in _STRUCTURAL_KEYS:
+                continue
+
+            if key in _STYLING_KEYS:
+                command_name = _STYLING_KEYS[key]
+                params = {"asset_path": "$steps[0].data.asset_path", "widget_name": widget_name}
+
+                if key == "text":
+                    params["text"] = value
+                elif key == "color":
+                    params["color"] = value
+                    params["target"] = "foreground"
+                elif key == "font":
+                    if isinstance(value, dict):
+                        params.update(value)
+                    else:
+                        params["size"] = value
+                elif key == "brush":
+                    if isinstance(value, dict):
+                        params.update(value)
+                elif key == "padding":
+                    if isinstance(value, dict):
+                        params.update(value)
+                    else:
+                        params["padding"] = value
+                elif key == "anchor":
+                    params["preset"] = value
+                elif key == "alignment":
+                    if isinstance(value, dict):
+                        params.update(value)
+                elif key == "size":
+                    if isinstance(value, dict):
+                        params.update(value)
+                elif key == "visibility":
+                    params["visibility"] = value
+
+                commands.append({"command": command_name, "params": params})
+
+        # Generic properties
+        for prop_path, prop_value in (widget.get("properties") or {}).items():
+            commands.append({
+                "command": "umg.set_property",
+                "params": {
+                    "asset_path": "$steps[0].data.asset_path",
+                    "widget_name": widget_name,
+                    "property_path": prop_path,
+                    "value": prop_value,
+                },
+            })
+
+    # Animation commands
+    for anim in animations:
+        anim_params = {
+            "asset_path": "$steps[0].data.asset_path",
+            "animation_name": anim["name"],
+        }
+        if "length" in anim:
+            anim_params["length"] = anim["length"]
+        commands.append({"command": "umg.create_animation", "params": anim_params})
+
+    return commands
