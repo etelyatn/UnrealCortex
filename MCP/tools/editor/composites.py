@@ -1,11 +1,18 @@
 """Composite editor workflows built from primitive editor commands."""
 
+import importlib.util
 import json
 import logging
+import pathlib
 
 from cortex_mcp.response import format_response
 from cortex_mcp.tcp_client import UEConnection
-from tools.editor import _input
+
+# Load _input from the same directory (avoids package path dependency in dynamic loader)
+_input_path = pathlib.Path(__file__).parent / "_input.py"
+_input_spec = importlib.util.spec_from_file_location("editor._input", _input_path)
+_input = importlib.util.module_from_spec(_input_spec)
+_input_spec.loader.exec_module(_input)
 
 logger = logging.getLogger(__name__)
 
