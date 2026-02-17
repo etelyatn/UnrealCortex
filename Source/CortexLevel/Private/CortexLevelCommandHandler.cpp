@@ -6,6 +6,7 @@
 #include "Operations/CortexLevelDiscoveryOps.h"
 #include "Operations/CortexLevelOrganizationOps.h"
 #include "Operations/CortexLevelQueryOps.h"
+#include "Operations/CortexLevelStreamingOps.h"
 #include "Operations/CortexLevelTransformOps.h"
 
 FCortexCommandResult FCortexLevelCommandHandler::Execute(
@@ -120,6 +121,42 @@ FCortexCommandResult FCortexLevelCommandHandler::Execute(
     {
         return FCortexLevelOrganizationOps::UngroupActors(Params);
     }
+    if (Command == TEXT("get_info"))
+    {
+        return FCortexLevelStreamingOps::GetInfo(Params);
+    }
+    if (Command == TEXT("list_sublevels"))
+    {
+        return FCortexLevelStreamingOps::ListSublevels(Params);
+    }
+    if (Command == TEXT("load_sublevel"))
+    {
+        return FCortexLevelStreamingOps::LoadSublevel(Params);
+    }
+    if (Command == TEXT("unload_sublevel"))
+    {
+        return FCortexLevelStreamingOps::UnloadSublevel(Params);
+    }
+    if (Command == TEXT("set_sublevel_visibility"))
+    {
+        return FCortexLevelStreamingOps::SetSublevelVisibility(Params);
+    }
+    if (Command == TEXT("list_data_layers"))
+    {
+        return FCortexLevelStreamingOps::ListDataLayers(Params);
+    }
+    if (Command == TEXT("set_data_layer"))
+    {
+        return FCortexLevelStreamingOps::SetDataLayer(Params);
+    }
+    if (Command == TEXT("save_level"))
+    {
+        return FCortexLevelStreamingOps::SaveLevel(Params);
+    }
+    if (Command == TEXT("save_all"))
+    {
+        return FCortexLevelStreamingOps::SaveAll(Params);
+    }
 
     return FCortexCommandRouter::Error(
         CortexErrorCodes::UnknownCommand,
@@ -157,5 +194,14 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
         { TEXT("set_folder"), TEXT("Set actor outliner folder") },
         { TEXT("group_actors"), TEXT("Group multiple actors") },
         { TEXT("ungroup_actors"), TEXT("Ungroup grouped actors") },
+        { TEXT("get_info"), TEXT("Get current level/world info") },
+        { TEXT("list_sublevels"), TEXT("List streaming sublevels") },
+        { TEXT("load_sublevel"), TEXT("Mark sublevel to load") },
+        { TEXT("unload_sublevel"), TEXT("Mark sublevel to unload") },
+        { TEXT("set_sublevel_visibility"), TEXT("Set sublevel visibility state") },
+        { TEXT("list_data_layers"), TEXT("List data layers in current world") },
+        { TEXT("set_data_layer"), TEXT("Assign actor to data layer") },
+        { TEXT("save_level"), TEXT("Save current level without prompt") },
+        { TEXT("save_all"), TEXT("Save all dirty map/content packages without prompt") },
     };
 }
