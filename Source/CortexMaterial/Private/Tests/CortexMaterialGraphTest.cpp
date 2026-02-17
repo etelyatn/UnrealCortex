@@ -864,14 +864,14 @@ bool FCortexMaterialAutoLayoutDisconnectedTest::RunTest(const FString& Parameter
 
 	TestTrue(TEXT("auto_layout should succeed on disconnected nodes"), Result.bSuccess);
 
-	// auto_layout only positions nodes connected to MaterialResult
-	// Disconnected nodes are ignored, so node_count should be 0
+	// Shared layout engine positions all nodes including disconnected ones
+	// (as separate subgraphs), so node_count should be 3
 	if (Result.Data.IsValid())
 	{
 		double NodeCount = 0;
 		Result.Data->TryGetNumberField(TEXT("node_count"), NodeCount);
-		TestEqual(TEXT("node_count should be 0 (disconnected nodes not laid out)"),
-			static_cast<int32>(NodeCount), 0);
+		TestEqual(TEXT("node_count should be 3 (all nodes laid out by shared engine)"),
+			static_cast<int32>(NodeCount), 3);
 	}
 
 	// Cleanup
@@ -945,8 +945,12 @@ bool FCortexMaterialAutoLayoutCenteringTest::RunTest(const FString& Parameters)
 		TestNotNull(TEXT("Should find parameter node"), ParamNode);
 		if (ParamNode)
 		{
-			TestEqual(TEXT("Single node in column should be centered at y=0"),
-				ParamNode->MaterialExpressionEditorY, 0);
+			// Shared layout engine centers by total height including node dimensions:
+			// For a single node, StartY = -NodeHeight/2. The node height is calculated as
+			// max(80, 40 + max(inputs, outputs) * 26). A ScalarParameter has 0 inputs and
+			// 1 output, so height = max(80, 40 + 1*26) = 80, giving StartY = -40.
+			TestEqual(TEXT("Single node in column should be centered accounting for node height"),
+				ParamNode->MaterialExpressionEditorY, -40);
 		}
 	}
 

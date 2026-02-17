@@ -1,5 +1,7 @@
 #include "Operations/CortexGraphNodeOps.h"
 #include "CortexGraphModule.h"
+#include "CortexGraphLayoutOps.h"
+#include "CortexBatchScope.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
@@ -679,6 +681,201 @@ FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObje
 	Data->SetBoolField(TEXT("success"), true);
 
 	UE_LOG(LogCortexGraph, Log, TEXT("Set pin value %s.%s = %s"), *NodeId, *PinName, *Value);
+
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexGraphNodeOps::AutoLayout(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
+	}
+
+	FCortexCommandResult LoadError;
+	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
+	if (!Blueprint) return LoadError;
+
+	FString ModeStr;
+	Params->TryGetStringField(TEXT("mode"), ModeStr);
+	ECortexLayoutMode Mode = (ModeStr == TEXT("incremental"))
+		? ECortexLayoutMode::Incremental : ECortexLayoutMode::Full;
+
+	FString GraphFilter;
+	Params->TryGetStringField(TEXT("graph_name"), GraphFilter);
+
+	FCortexLayoutConfig Config;
+	Config.Direction = ECortexLayoutDirection::LeftToRight;
+	Config.Mode = Mode;
+
+	double HSpacingVal = 0, VSpacingVal = 0;
+	if (Params->TryGetNumberField(TEXT("horizontal_spacing"), HSpacingVal) && HSpacingVal > 0)
+	{
+		Config.HorizontalSpacing = static_cast<int32>(HSpacingVal);
+	}
+	if (Params->TryGetNumberField(TEXT("vertical_spacing"), VSpacingVal) && VSpacingVal > 0)
+	{
+		Config.VerticalSpacing = static_cast<int32>(VSpacingVal);
+	}
+
+	// Collect graphs to process
+	TArray<UEdGraph*> Graphs;
+	if (!GraphFilter.IsEmpty())
+	{
+		UEdGraph* Graph = FindGraph(Blueprint, GraphFilter, LoadError);
+		if (!Graph) return LoadError;
+		Graphs.Add(Graph);
+	}
+	else
+	{
+		for (UEdGraph* G : Blueprint->UbergraphPages) { if (G) Graphs.Add(G); }
+		for (UEdGraph* G : Blueprint->FunctionGraphs) { if (G) Graphs.Add(G); }
+		for (UEdGraph* G : Blueprint->MacroGraphs) { if (G) Graphs.Add(G); }
+	}
+
+	int32 TotalNodesProcessed = 0;
+
+	TUniquePtr<FScopedTransaction> Transaction;
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		Transaction = MakeUnique<FScopedTransaction>(
+			FText::FromString(TEXT("Cortex: Auto-Layout Blueprint Graphs")));
+	}
+
+	for (UEdGraph* Graph : Graphs)
+	{
+		TArray<FCortexLayoutNode> LayoutNodes;
+		TMap<FString, UEdGraphNode*> IdToNode;
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) continue;
+
+			// Skip comment nodes (class name contains "Comment")
+			if (Node->GetClass()->GetName() == TEXT("EdGraphNode_Comment"))
+			{
+				continue;
+			}
+
+			FCortexLayoutNode LN;
+			LN.Id = Node->GetName();
+			IdToNode.Add(LN.Id, Node);
+
+			bool bHasExecInput = false;
+			bool bHasExecOutput = false;
+			int32 InputPinCount = 0;
+			int32 OutputPinCount = 0;
+
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (!Pin) continue;
+				bool bIsExec = (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+				if (Pin->Direction == EGPD_Input)
+				{
+					InputPinCount++;
+					if (bIsExec) bHasExecInput = true;
+				}
+				else
+				{
+					OutputPinCount++;
+					if (bIsExec) bHasExecOutput = true;
+				}
+			}
+
+			LN.bIsEntryPoint = (!bHasExecInput && bHasExecOutput);
+			int32 PinRows = FMath::Max(InputPinCount, OutputPinCount);
+			LN.Width = 200;
+			LN.Height = FMath::Max(100, PinRows * 28 + 40);
+
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (!Pin || Pin->Direction != EGPD_Output) continue;
+				bool bIsExec = (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+				{
+					if (!LinkedPin || !LinkedPin->GetOwningNode()) continue;
+					FString TargetId = LinkedPin->GetOwningNode()->GetName();
+					if (bIsExec)
+					{
+						LN.ExecOutputs.AddUnique(TargetId);
+					}
+					else
+					{
+						LN.DataOutputs.AddUnique(TargetId);
+					}
+				}
+			}
+			LayoutNodes.Add(LN);
+		}
+
+		// Collect existing positions for incremental mode
+		TMap<FString, FIntPoint> ExistingPositions;
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node && !Node->GetClass()->GetName().Contains(TEXT("Comment")))
+			{
+				ExistingPositions.Add(Node->GetName(), FIntPoint(Node->NodePosX, Node->NodePosY));
+			}
+		}
+
+		FCortexLayoutResult LayoutResult = FCortexGraphLayoutOps::CalculateLayout(
+			LayoutNodes, Config, ExistingPositions);
+
+		for (const auto& Pair : LayoutResult.Positions)
+		{
+			UEdGraphNode** NodePtr = IdToNode.Find(Pair.Key);
+			if (NodePtr && *NodePtr)
+			{
+				(*NodePtr)->Modify();
+				(*NodePtr)->NodePosX = Pair.Value.X;
+				(*NodePtr)->NodePosY = Pair.Value.Y;
+			}
+		}
+
+		if (FCortexCommandRouter::IsInBatch())
+		{
+			FString GraphKey = FString::Printf(TEXT("graph.notify.%s"), *Graph->GetPathName());
+			FCortexBatchScope::AddCleanupAction(GraphKey,
+				[WeakGraph = TWeakObjectPtr<UEdGraph>(Graph)]()
+				{
+					if (UEdGraph* G = WeakGraph.Get()) G->NotifyGraphChanged();
+				});
+		}
+		else
+		{
+			Graph->NotifyGraphChanged();
+		}
+
+		TotalNodesProcessed += LayoutResult.Positions.Num();
+	}
+
+	if (FCortexCommandRouter::IsInBatch())
+	{
+		FString BPKey = FString::Printf(TEXT("bp.modified.%s"), *Blueprint->GetPathName());
+		FCortexBatchScope::AddCleanupAction(BPKey,
+			[WeakBP = TWeakObjectPtr<UBlueprint>(Blueprint)]()
+			{
+				if (UBlueprint* BP = WeakBP.Get())
+				{
+					FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+				}
+			});
+	}
+	else
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	}
+	Blueprint->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetNumberField(TEXT("node_count"), TotalNodesProcessed);
+	Data->SetNumberField(TEXT("graphs_processed"), Graphs.Num());
+
+	UE_LOG(LogCortexGraph, Log, TEXT("Auto-layout completed: %d nodes across %d graphs in %s"),
+		TotalNodesProcessed, Graphs.Num(), *AssetPath);
 
 	return FCortexCommandRouter::Success(Data);
 }

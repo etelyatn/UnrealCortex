@@ -1053,7 +1053,7 @@ bool FCortexBatchRefPartialStringTest::RunTest(const FString& Parameters)
 {
 	// Step 0: ping (returns {message: "pong"})
 	// Step 1: ping with partial ref string "prefix_$steps[0].data.message_suffix"
-	// Expected: Warning logged, string passes through unchanged, step succeeds
+	// Expected: Log message emitted, string passes through unchanged, step succeeds
 	FCortexCommandRouter Router;
 
 	TSharedPtr<FJsonObject> Step0 = MakeShared<FJsonObject>();

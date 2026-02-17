@@ -5,18 +5,17 @@
 
 class UMaterial;
 
-/** Callback type for deferred batch cleanup actions. */
-using FBatchCleanupCallback = TFunction<void()>;
-
 /**
  * RAII guard for batch execution.
  * Increments BatchDepth on construction, decrements on destruction.
- * On destruction, calls PostEditChange + RebuildGraph for all dirty materials,
- * then invokes all registered cleanup actions.
+ * On destruction, invokes all registered cleanup actions, then calls
+ * PostEditChange + RebuildGraph for all dirty materials.
  */
 class CORTEXCORE_API FCortexBatchScope
 {
 public:
+	using FBatchCleanupCallback = TFunction<void()>;
+
 	FCortexBatchScope();
 	~FCortexBatchScope();
 
@@ -27,13 +26,17 @@ public:
 	/** Mark a material as needing PostEditChange on batch end. */
 	static void MarkMaterialDirty(UMaterial* Material);
 
-	/** Register a cleanup action to run when the outermost batch scope ends. */
-	static void AddCleanupAction(FBatchCleanupCallback Callback);
+	/**
+	 * Register a cleanup action to run when the outermost batch ends.
+	 * Key-based deduplication: only the first callback per key is kept.
+	 * Domain modules use this for deferred notifications (NotifyGraphChanged, etc.)
+	 */
+	static void AddCleanupAction(const FString& Key, FBatchCleanupCallback Callback);
 
 private:
 	/** Materials that need PostEditChange when batch ends. */
 	static TSet<TWeakObjectPtr<UMaterial>> DirtyMaterials;
 
-	/** Generic cleanup callbacks registered by domain modules. */
-	static TArray<FBatchCleanupCallback> CleanupActions;
+	/** Generic cleanup actions keyed for deduplication. */
+	static TMap<FString, FBatchCleanupCallback> CleanupActions;
 };
