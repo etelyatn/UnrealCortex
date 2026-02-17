@@ -25,10 +25,13 @@ class CORTEXCORE_API FCortexCommandRouter : public ICortexCommandRegistry
 
 public:
 	/** Execute a command and return the result */
-	FCortexCommandResult Execute(const FString& Command, const TSharedPtr<FJsonObject>& Params);
+	FCortexCommandResult Execute(
+		const FString& Command,
+		const TSharedPtr<FJsonObject>& Params,
+		FDeferredResponseCallback DeferredCallback = nullptr);
 
 	/** Serialize a result to the response envelope JSON string */
-	static FString ResultToJson(const FCortexCommandResult& Result, double TimingMs);
+	static FString ResultToJson(const FCortexCommandResult& Result, double TimingMs, const FString& RequestId = TEXT(""));
 
 	/** Helper to build a success result */
 	static FCortexCommandResult Success(TSharedPtr<FJsonObject> Data);

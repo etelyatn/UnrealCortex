@@ -19,9 +19,9 @@ void FCortexCoreModule::StartupModule()
 
     TcpServer = MakeUnique<FCortexTcpServer>();
     TcpServer->Start(Settings->Port,
-        [this](const FString& Command, const TSharedPtr<FJsonObject>& Params)
+        [this](const FString& Command, const TSharedPtr<FJsonObject>& Params, FDeferredResponseCallback DeferredCallback)
         {
-            return CommandRouter->Execute(Command, Params);
+            return CommandRouter->Execute(Command, Params, MoveTemp(DeferredCallback));
         }
     );
 

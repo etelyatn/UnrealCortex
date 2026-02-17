@@ -26,9 +26,9 @@ bool FCortexDataCatalogTest::RunTest(const FString& Parameters)
 		MakeShared<FCortexDataCommandHandler>());
 	FCortexTcpServer Server;
 	const bool bStarted = Server.Start(TestPort,
-		[&CommandHandler](const FString& Command, const TSharedPtr<FJsonObject>& Params)
+		[&CommandHandler](const FString& Command, const TSharedPtr<FJsonObject>& Params, FDeferredResponseCallback DeferredCallback)
 		{
-			return CommandHandler.Execute(Command, Params);
+			return CommandHandler.Execute(Command, Params, MoveTemp(DeferredCallback));
 		});
 	TestTrue(TEXT("Server should start successfully"), bStarted);
 

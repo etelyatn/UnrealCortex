@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "ICortexDomainHandler.h"
 
-class CORTEXBLUEPRINT_API FCortexBPCommandHandler : public ICortexDomainHandler
+class FCortexEditorCommandHandler : public ICortexDomainHandler
 {
 public:
 	virtual FCortexCommandResult Execute(

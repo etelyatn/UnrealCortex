@@ -14,6 +14,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
+#include "Misc/ScopeLock.h"
 
 FCortexTcpServer::FCortexTcpServer()
 {
@@ -44,25 +45,44 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 		if (Listener->IsActive())
 		{
 			bRunning = true;
+			int32 BoundPort = Port;
+			if (FSocket* ListenSocket = Listener->GetSocket())
+			{
+				TSharedRef<FInternetAddr> LocalAddress =
+					ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
+				ListenSocket->GetAddress(*LocalAddress);
+				BoundPort = LocalAddress->GetPort();
+			}
 
 			// Write port file for MCP server auto-discovery
 			FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
-			FFileHelper::SaveStringToFile(FString::FromInt(Port), *PortFilePath);
-			UE_LOG(LogCortex, Log, TEXT("Wrote port file: %s (port %d)"), *PortFilePath, Port);
+			FFileHelper::SaveStringToFile(FString::FromInt(BoundPort), *PortFilePath);
+			UE_LOG(LogCortex, Log, TEXT("Wrote port file: %s (port %d)"), *PortFilePath, BoundPort);
 
 			TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(
 				FTickerDelegate::CreateLambda([this](float DeltaTime) -> bool
 				{
 					if (bRunning)
 					{
+						{
+							FScopeLock Lock(&PendingSocketsCS);
+							for (FSocket* PendingSocket : PendingClientSockets)
+							{
+								ClientSockets.Add(PendingSocket);
+								ReceiveBuffers.Add(PendingSocket, FString());
+							}
+							PendingClientSockets.Empty();
+						}
+
 						ProcessClientData();
+						CheckDeferredTimeouts();
 					}
 					return bRunning;
 				}),
 				0.0f
 			);
 
-			UE_LOG(LogCortex, Log, TEXT("TCP server listening on 127.0.0.1:%d"), Port);
+			UE_LOG(LogCortex, Log, TEXT("TCP server listening on 127.0.0.1:%d"), BoundPort);
 			return true;
 		}
 
@@ -102,7 +122,10 @@ void FCortexTcpServer::Stop()
 		}
 	}
 	ClientSockets.Empty();
+	PendingClientSockets.Empty();
 	ReceiveBuffers.Empty();
+	PendingDeferred.Empty();
+	NextDeferredId = 1;
 
 	Listener.Reset();
 
@@ -116,9 +139,9 @@ bool FCortexTcpServer::IsRunning() const
 
 bool FCortexTcpServer::HandleConnectionAccepted(FSocket* InClientSocket, const FIPv4Endpoint& ClientEndpoint)
 {
-	UE_LOG(LogCortex, Log, TEXT("Client connected from %s (total clients: %d)"), *ClientEndpoint.ToString(), ClientSockets.Num() + 1);
-	ClientSockets.Add(InClientSocket);
-	ReceiveBuffers.Add(InClientSocket, FString());
+	UE_LOG(LogCortex, Log, TEXT("Client connected from %s"), *ClientEndpoint.ToString());
+	FScopeLock Lock(&PendingSocketsCS);
+	PendingClientSockets.Add(InClientSocket);
 	return true;
 }
 
@@ -228,9 +251,14 @@ bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 				TEXT("MISSING_COMMAND"),
 				TEXT("JSON request missing 'command' field")
 			);
-			SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(MissingCmd, 0.0));
+			FString MissingCommandRequestId;
+			RequestJson->TryGetStringField(TEXT("id"), MissingCommandRequestId);
+			SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(MissingCmd, 0.0, MissingCommandRequestId));
 			continue;
 		}
+
+		FString RequestId;
+		RequestJson->TryGetStringField(TEXT("id"), RequestId);
 
 		// Extract params (optional)
 		const TSharedPtr<FJsonObject>* ParamsPtr = nullptr;
@@ -261,7 +289,14 @@ bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 
 		// Execute command with timing
 		const double StartTime = FPlatformTime::Seconds();
-		FCortexCommandResult Result = CommandDispatcher(Command, Params);
+		const int32 DeferredId = NextDeferredId++;
+		FCortexCommandResult Result = CommandDispatcher(
+			Command,
+			Params,
+			[this, DeferredId](FCortexCommandResult DeferredResult)
+			{
+				SendDeferredResponse(DeferredId, DeferredResult);
+			});
 		const double EndTime = FPlatformTime::Seconds();
 		const double TimingMs = (EndTime - StartTime) * 1000.0;
 		const double TimingSeconds = EndTime - StartTime;
@@ -305,7 +340,33 @@ bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 			}
 		}
 
-		SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(Result, TimingMs));
+		if (Result.bIsDeferred)
+		{
+			FCortexPendingDeferred Pending;
+			Pending.ClientSocket = InClientSocket;
+			Pending.RequestId = RequestId;
+			Pending.StartTime = StartTime;
+			Pending.TimeoutSeconds = DefaultDeferredTimeoutSeconds;
+			PendingDeferred.Add(DeferredId, Pending);
+
+			TSharedRef<FJsonObject> AckJson = MakeShared<FJsonObject>();
+			if (!RequestId.IsEmpty())
+			{
+				AckJson->SetStringField(TEXT("id"), RequestId);
+			}
+			AckJson->SetStringField(TEXT("status"), TEXT("deferred"));
+			AckJson->SetNumberField(TEXT("timeout_seconds"), Pending.TimeoutSeconds);
+
+			FString AckString;
+			TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> AckWriter =
+				TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&AckString);
+			FJsonSerializer::Serialize(AckJson, AckWriter);
+
+			SendResponse(InClientSocket, AckString);
+			continue;
+		}
+
+		SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(Result, TimingMs, RequestId));
 	}
 
 	return true;
@@ -339,6 +400,76 @@ void FCortexTcpServer::DestroyClientSocket(FSocket* InClientSocket)
 	}
 
 	ReceiveBuffers.Remove(InClientSocket);
+
+	TArray<int32> DeferredIdsToRemove;
+	for (const TPair<int32, FCortexPendingDeferred>& Pair : PendingDeferred)
+	{
+		if (Pair.Value.ClientSocket == InClientSocket)
+		{
+			DeferredIdsToRemove.Add(Pair.Key);
+		}
+	}
+	for (const int32 DeferredId : DeferredIdsToRemove)
+	{
+		PendingDeferred.Remove(DeferredId);
+	}
+
 	InClientSocket->Close();
 	ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(InClientSocket);
+}
+
+void FCortexTcpServer::SendDeferredResponse(int32 DeferredId, const FCortexCommandResult& Result)
+{
+	check(IsInGameThread());
+
+	FCortexPendingDeferred* Pending = PendingDeferred.Find(DeferredId);
+	if (Pending == nullptr || Pending->ClientSocket == nullptr)
+	{
+		return;
+	}
+
+	const double TimingMs = (FPlatformTime::Seconds() - Pending->StartTime) * 1000.0;
+	FString FinalResponse = FCortexCommandRouter::ResultToJson(Result, TimingMs, Pending->RequestId);
+
+	TSharedPtr<FJsonObject> ResponseJson;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(FinalResponse);
+	if (FJsonSerializer::Deserialize(Reader, ResponseJson) && ResponseJson.IsValid())
+	{
+		ResponseJson->SetStringField(TEXT("status"), TEXT("complete"));
+
+		FString CompleteString;
+		TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+			TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&CompleteString);
+		FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
+		SendResponse(Pending->ClientSocket, CompleteString);
+	}
+	else
+	{
+		SendResponse(Pending->ClientSocket, FinalResponse);
+	}
+
+	PendingDeferred.Remove(DeferredId);
+}
+
+void FCortexTcpServer::CheckDeferredTimeouts()
+{
+	TArray<int32> TimedOutDeferred;
+	const double Now = FPlatformTime::Seconds();
+
+	for (const TPair<int32, FCortexPendingDeferred>& Pair : PendingDeferred)
+	{
+		const FCortexPendingDeferred& Pending = Pair.Value;
+		if (Now - Pending.StartTime >= Pending.TimeoutSeconds)
+		{
+			TimedOutDeferred.Add(Pair.Key);
+		}
+	}
+
+	for (const int32 DeferredId : TimedOutDeferred)
+	{
+		FCortexCommandResult TimeoutResult = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			TEXT("Deferred command timed out"));
+		SendDeferredResponse(DeferredId, TimeoutResult);
+	}
 }

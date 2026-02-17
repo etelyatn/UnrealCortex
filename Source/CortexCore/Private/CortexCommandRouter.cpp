@@ -78,7 +78,10 @@ void FCortexBatchScope::AddCleanupAction(const FString& Key, FBatchCleanupCallba
 	}
 }
 
-FCortexCommandResult FCortexCommandRouter::Execute(const FString& Command, const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexCommandRouter::Execute(
+	const FString& Command,
+	const TSharedPtr<FJsonObject>& Params,
+	FDeferredResponseCallback DeferredCallback)
 {
 	// Built-in commands (no namespace)
 	if (Command == TEXT("ping"))
@@ -108,7 +111,7 @@ FCortexCommandResult FCortexCommandRouter::Execute(const FString& Command, const
 		{
 			if (Domain.Namespace == Namespace)
 			{
-				return Domain.Handler->Execute(SubCommand, Params);
+				return Domain.Handler->Execute(SubCommand, Params, MoveTemp(DeferredCallback));
 			}
 		}
 
@@ -119,9 +122,15 @@ FCortexCommandResult FCortexCommandRouter::Execute(const FString& Command, const
 	return Error(CortexErrorCodes::UnknownCommand, FString::Printf(TEXT("Unknown command: %s"), *Command));
 }
 
-FString FCortexCommandRouter::ResultToJson(const FCortexCommandResult& Result, double TimingMs)
+FString FCortexCommandRouter::ResultToJson(const FCortexCommandResult& Result, double TimingMs, const FString& RequestId)
 {
 	TSharedRef<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
+
+	if (!RequestId.IsEmpty())
+	{
+		ResponseJson->SetStringField(TEXT("id"), RequestId);
+	}
+
 	ResponseJson->SetBoolField(TEXT("success"), Result.bSuccess);
 
 	if (Result.bSuccess)
@@ -635,6 +644,14 @@ FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObj
 		const double CmdStartTime = FPlatformTime::Seconds();
 		FCortexCommandResult SubResult = Execute(SubCommand, ParamsCopy);
 		const double CmdElapsed = (FPlatformTime::Seconds() - CmdStartTime) * 1000.0;
+
+		if (SubResult.bIsDeferred)
+		{
+			SubResult = Error(
+				CortexErrorCodes::InvalidOperation,
+				TEXT("Deferred commands are not supported inside batch operations")
+			);
+		}
 
 		EntryResult->SetBoolField(TEXT("success"), SubResult.bSuccess);
 		EntryResult->SetNumberField(TEXT("timing_ms"), CmdElapsed);

@@ -5,8 +5,11 @@
 
 FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	const FString& Command,
-	const TSharedPtr<FJsonObject>& Params)
+	const TSharedPtr<FJsonObject>& Params,
+	FDeferredResponseCallback DeferredCallback)
 {
+	(void)DeferredCallback;
+
 	if (Command == TEXT("list_graphs"))
 	{
 		return FCortexGraphNodeOps::ListGraphs(Params);

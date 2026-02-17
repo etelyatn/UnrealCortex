@@ -63,9 +63,12 @@ namespace CortexErrorCodes
 struct CORTEXCORE_API FCortexCommandResult
 {
 	bool bSuccess = false;
+	bool bIsDeferred = false;
 	TSharedPtr<FJsonObject> Data;
 	FString ErrorCode;
 	FString ErrorMessage;
 	TSharedPtr<FJsonObject> ErrorDetails;
 	TArray<FString> Warnings;
 };
+
+using FDeferredResponseCallback = TFunction<void(FCortexCommandResult)>;

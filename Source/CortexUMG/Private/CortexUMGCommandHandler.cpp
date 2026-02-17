@@ -6,8 +6,11 @@
 
 FCortexCommandResult FCortexUMGCommandHandler::Execute(
     const FString& Command,
-    const TSharedPtr<FJsonObject>& Params)
+    const TSharedPtr<FJsonObject>& Params,
+    FDeferredResponseCallback DeferredCallback)
 {
+    (void)DeferredCallback;
+
     if (Command == TEXT("add_widget"))
     {
         return FCortexUMGWidgetTreeOps::AddWidget(Params);

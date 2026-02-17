@@ -9,8 +9,11 @@
 
 FCortexCommandResult FCortexDataCommandHandler::Execute(
     const FString& Command,
-    const TSharedPtr<FJsonObject>& Params)
+    const TSharedPtr<FJsonObject>& Params,
+    FDeferredResponseCallback DeferredCallback)
 {
+    (void)DeferredCallback;
+
     // Note: no longer static - virtual override of ICortexDomainHandler
     // DataTable operations
     if (Command == TEXT("list_datatables"))

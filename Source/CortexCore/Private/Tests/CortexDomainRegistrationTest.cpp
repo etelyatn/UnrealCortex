@@ -26,8 +26,10 @@ bool FCortexDomainRegistrationTest::RunTest(const FString& Parameters)
 	public:
 		virtual FCortexCommandResult Execute(
 			const FString& Command,
-			const TSharedPtr<FJsonObject>& Params) override
+			const TSharedPtr<FJsonObject>& Params,
+			FDeferredResponseCallback DeferredCallback = nullptr) override
 		{
+			(void)DeferredCallback;
 			return FCortexCommandRouter::Success(MakeShared<FJsonObject>());
 		}
 

@@ -7,8 +7,11 @@
 
 FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 	const FString& Command,
-	const TSharedPtr<FJsonObject>& Params)
+	const TSharedPtr<FJsonObject>& Params,
+	FDeferredResponseCallback DeferredCallback)
 {
+	(void)DeferredCallback;
+
 	// Asset operations
 	if (Command == TEXT("list_materials"))
 		return FCortexMaterialAssetOps::ListMaterials(Params);
