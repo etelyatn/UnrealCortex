@@ -12,6 +12,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
+#include "GameFramework/Actor.h"
 
 namespace
 {
@@ -144,5 +145,128 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 	Data->SetNumberField(TEXT("height"), Size.Y);
 	Data->SetNumberField(TEXT("file_size_bytes"), static_cast<double>(IFileManager::Get().FileSize(*OutputPath)));
 	Data->SetNumberField(TEXT("capture_time_ms"), CaptureTimeMs);
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexEditorViewportOps::SetViewportCamera(const TSharedPtr<FJsonObject>& Params)
+{
+	const TSharedPtr<FJsonObject>* LocationObj = nullptr;
+	if (!Params.IsValid() || !Params->TryGetObjectField(TEXT("location"), LocationObj) || LocationObj == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: location"));
+	}
+
+	const TSharedPtr<IAssetViewport> Viewport = GetActiveAssetViewport();
+	if (!Viewport.IsValid())
+	{
+		return FCortexCommandRouter::Error(TEXT("VIEWPORT_NOT_FOUND"), TEXT("No active editor viewport found"));
+	}
+
+	double X = 0.0;
+	double Y = 0.0;
+	double Z = 0.0;
+	(*LocationObj)->TryGetNumberField(TEXT("x"), X);
+	(*LocationObj)->TryGetNumberField(TEXT("y"), Y);
+	(*LocationObj)->TryGetNumberField(TEXT("z"), Z);
+
+	FEditorViewportClient& Client = Viewport->GetAssetViewportClient();
+	Client.SetViewLocation(FVector(X, Y, Z));
+
+	const TSharedPtr<FJsonObject>* RotationObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("rotation"), RotationObj) && RotationObj != nullptr)
+	{
+		double Pitch = 0.0;
+		double Yaw = 0.0;
+		double Roll = 0.0;
+		(*RotationObj)->TryGetNumberField(TEXT("pitch"), Pitch);
+		(*RotationObj)->TryGetNumberField(TEXT("yaw"), Yaw);
+		(*RotationObj)->TryGetNumberField(TEXT("roll"), Roll);
+		Client.SetViewRotation(FRotator(Pitch, Yaw, Roll));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("status"), TEXT("ok"));
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexEditorViewportOps::FocusActor(const TSharedPtr<FJsonObject>& Params)
+{
+	FString ActorPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("actor_path"), ActorPath) || ActorPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: actor_path"));
+	}
+
+	const TSharedPtr<IAssetViewport> Viewport = GetActiveAssetViewport();
+	if (!Viewport.IsValid())
+	{
+		return FCortexCommandRouter::Error(TEXT("VIEWPORT_NOT_FOUND"), TEXT("No active editor viewport found"));
+	}
+
+	AActor* Actor = FindObject<AActor>(nullptr, *ActorPath);
+	if (Actor == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Actor not found: %s"), *ActorPath));
+	}
+
+	FEditorViewportClient& Client = Viewport->GetAssetViewportClient();
+	Client.FocusViewportOnBox(Actor->GetComponentsBoundingBox(true), true);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("status"), TEXT("ok"));
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexEditorViewportOps::SetViewportMode(const TSharedPtr<FJsonObject>& Params)
+{
+	FString Mode;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("mode"), Mode) || Mode.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: mode"));
+	}
+
+	EViewModeIndex ViewMode = VMI_Lit;
+	if (Mode == TEXT("lit"))
+	{
+		ViewMode = VMI_Lit;
+	}
+	else if (Mode == TEXT("unlit"))
+	{
+		ViewMode = VMI_Unlit;
+	}
+	else if (Mode == TEXT("wireframe"))
+	{
+		ViewMode = VMI_BrushWireframe;
+	}
+	else if (Mode == TEXT("lit_wireframe"))
+	{
+		ViewMode = VMI_Lit_Wireframe;
+	}
+	else
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidValue,
+			FString::Printf(TEXT("Unsupported viewport mode: %s"), *Mode));
+	}
+
+	const TSharedPtr<IAssetViewport> Viewport = GetActiveAssetViewport();
+	if (!Viewport.IsValid())
+	{
+		return FCortexCommandRouter::Error(TEXT("VIEWPORT_NOT_FOUND"), TEXT("No active editor viewport found"));
+	}
+
+	FEditorViewportClient& Client = Viewport->GetAssetViewportClient();
+	Client.SetViewMode(ViewMode);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("status"), TEXT("ok"));
 	return FCortexCommandRouter::Success(Data);
 }

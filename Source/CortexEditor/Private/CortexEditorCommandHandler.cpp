@@ -76,6 +76,18 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	{
 		return FCortexEditorViewportOps::CaptureScreenshot(Params);
 	}
+	if (Command == TEXT("set_viewport_camera"))
+	{
+		return FCortexEditorViewportOps::SetViewportCamera(Params);
+	}
+	if (Command == TEXT("focus_actor"))
+	{
+		return FCortexEditorViewportOps::FocusActor(Params);
+	}
+	if (Command == TEXT("set_viewport_mode"))
+	{
+		return FCortexEditorViewportOps::SetViewportMode(Params);
+	}
 
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
