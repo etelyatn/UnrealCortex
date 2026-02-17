@@ -31,6 +31,8 @@ def format_response(data: dict, tool_name: str) -> str:
     truncatable_keys = [
         "rows", "results", "tags", "datatables", "data_assets",
         "string_tables", "assets", "entries", "resolved",
+        "actors", "components", "classes", "sublevels", "data_layers",
+        "selection", "matches",
     ]
     array_key = None
     for key in truncatable_keys:
