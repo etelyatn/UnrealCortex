@@ -4,6 +4,7 @@
 #include "Operations/CortexLevelActorOps.h"
 #include "Operations/CortexLevelComponentOps.h"
 #include "Operations/CortexLevelDiscoveryOps.h"
+#include "Operations/CortexLevelOrganizationOps.h"
 #include "Operations/CortexLevelQueryOps.h"
 #include "Operations/CortexLevelTransformOps.h"
 
@@ -95,6 +96,30 @@ FCortexCommandResult FCortexLevelCommandHandler::Execute(
     {
         return FCortexLevelQueryOps::GetSelection(Params);
     }
+    if (Command == TEXT("attach_actor"))
+    {
+        return FCortexLevelOrganizationOps::AttachActor(Params);
+    }
+    if (Command == TEXT("detach_actor"))
+    {
+        return FCortexLevelOrganizationOps::DetachActor(Params);
+    }
+    if (Command == TEXT("set_tags"))
+    {
+        return FCortexLevelOrganizationOps::SetTags(Params);
+    }
+    if (Command == TEXT("set_folder"))
+    {
+        return FCortexLevelOrganizationOps::SetFolder(Params);
+    }
+    if (Command == TEXT("group_actors"))
+    {
+        return FCortexLevelOrganizationOps::GroupActors(Params);
+    }
+    if (Command == TEXT("ungroup_actors"))
+    {
+        return FCortexLevelOrganizationOps::UngroupActors(Params);
+    }
 
     return FCortexCommandRouter::Error(
         CortexErrorCodes::UnknownCommand,
@@ -126,5 +151,11 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
         { TEXT("get_bounds"), TEXT("Compute bounds for filtered actors") },
         { TEXT("select_actors"), TEXT("Select actors in editor") },
         { TEXT("get_selection"), TEXT("Get current actor selection") },
+        { TEXT("attach_actor"), TEXT("Attach actor to parent actor") },
+        { TEXT("detach_actor"), TEXT("Detach actor from parent") },
+        { TEXT("set_tags"), TEXT("Replace actor tags") },
+        { TEXT("set_folder"), TEXT("Set actor outliner folder") },
+        { TEXT("group_actors"), TEXT("Group multiple actors") },
+        { TEXT("ungroup_actors"), TEXT("Ungroup grouped actors") },
     };
 }

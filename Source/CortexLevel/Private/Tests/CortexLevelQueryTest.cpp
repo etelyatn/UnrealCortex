@@ -15,7 +15,7 @@ namespace
         return Router;
     }
 
-    FString SpawnPointLight(FCortexCommandRouter& Router, const FString& Label, const FVector& Location)
+    FString SpawnPointLightQuery(FCortexCommandRouter& Router, const FString& Label, const FVector& Location)
     {
         TSharedPtr<FJsonObject> SpawnParams = MakeShared<FJsonObject>();
         SpawnParams->SetStringField(TEXT("class"), TEXT("PointLight"));
@@ -36,7 +36,7 @@ namespace
         return SpawnResult.Data->GetStringField(TEXT("name"));
     }
 
-    void DeleteActors(FCortexCommandRouter& Router, const TArray<FString>& ActorNames)
+    void DeleteActorsQuery(FCortexCommandRouter& Router, const TArray<FString>& ActorNames)
     {
         for (const FString& Name : ActorNames)
         {
@@ -68,9 +68,9 @@ bool FCortexLevelListActorsTest::RunTest(const FString& Parameters)
 
     FCortexCommandRouter Router = CreateLevelRouterQuery();
     TArray<FString> Spawned = {
-        SpawnPointLight(Router, TEXT("QueryLightA"), FVector(10, 0, 0)),
-        SpawnPointLight(Router, TEXT("QueryLightB"), FVector(20, 0, 0)),
-        SpawnPointLight(Router, TEXT("QueryLightC"), FVector(30, 0, 0))
+        SpawnPointLightQuery(Router, TEXT("QueryLightA"), FVector(10, 0, 0)),
+        SpawnPointLightQuery(Router, TEXT("QueryLightB"), FVector(20, 0, 0)),
+        SpawnPointLightQuery(Router, TEXT("QueryLightC"), FVector(30, 0, 0))
     };
 
     TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -86,7 +86,7 @@ bool FCortexLevelListActorsTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Should return at least 3 point lights"), Total >= 3);
     }
 
-    DeleteActors(Router, Spawned);
+    DeleteActorsQuery(Router, Spawned);
     return true;
 }
 
@@ -105,7 +105,7 @@ bool FCortexLevelListActorsTagsTest::RunTest(const FString& Parameters)
     }
 
     FCortexCommandRouter Router = CreateLevelRouterQuery();
-    const FString Tagged = SpawnPointLight(Router, TEXT("TagLight"), FVector(0, 100, 0));
+    const FString Tagged = SpawnPointLightQuery(Router, TEXT("TagLight"), FVector(0, 100, 0));
 
     TSharedPtr<FJsonObject> SetProp = MakeShared<FJsonObject>();
     SetProp->SetStringField(TEXT("actor"), Tagged);
@@ -130,7 +130,7 @@ bool FCortexLevelListActorsTagsTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Should match at least one tagged actor"), Count >= 1);
     }
 
-    DeleteActors(Router, { Tagged });
+    DeleteActorsQuery(Router, { Tagged });
     return true;
 }
 
@@ -150,8 +150,8 @@ bool FCortexLevelListActorsSpatialTest::RunTest(const FString& Parameters)
 
     FCortexCommandRouter Router = CreateLevelRouterQuery();
     TArray<FString> Spawned = {
-        SpawnPointLight(Router, TEXT("NearLight"), FVector(0, 0, 0)),
-        SpawnPointLight(Router, TEXT("FarLight"), FVector(5000, 0, 0))
+        SpawnPointLightQuery(Router, TEXT("NearLight"), FVector(0, 0, 0)),
+        SpawnPointLightQuery(Router, TEXT("FarLight"), FVector(5000, 0, 0))
     };
 
     TSharedPtr<FJsonObject> Region = MakeShared<FJsonObject>();
@@ -176,7 +176,7 @@ bool FCortexLevelListActorsSpatialTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Should return spatially filtered subset"), Count >= 1 && Count < 2 + 10000);
     }
 
-    DeleteActors(Router, Spawned);
+    DeleteActorsQuery(Router, Spawned);
     return true;
 }
 
@@ -196,9 +196,9 @@ bool FCortexLevelListActorsPaginationTest::RunTest(const FString& Parameters)
 
     FCortexCommandRouter Router = CreateLevelRouterQuery();
     TArray<FString> Spawned = {
-        SpawnPointLight(Router, TEXT("PageLightA"), FVector(0, 0, 0)),
-        SpawnPointLight(Router, TEXT("PageLightB"), FVector(100, 0, 0)),
-        SpawnPointLight(Router, TEXT("PageLightC"), FVector(200, 0, 0))
+        SpawnPointLightQuery(Router, TEXT("PageLightA"), FVector(0, 0, 0)),
+        SpawnPointLightQuery(Router, TEXT("PageLightB"), FVector(100, 0, 0)),
+        SpawnPointLightQuery(Router, TEXT("PageLightC"), FVector(200, 0, 0))
     };
 
     TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -223,7 +223,7 @@ bool FCortexLevelListActorsPaginationTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("Offset should echo input"), Offset, 0);
     }
 
-    DeleteActors(Router, Spawned);
+    DeleteActorsQuery(Router, Spawned);
     return true;
 }
 
@@ -243,8 +243,8 @@ bool FCortexLevelFindActorsTest::RunTest(const FString& Parameters)
 
     FCortexCommandRouter Router = CreateLevelRouterQuery();
     TArray<FString> Spawned = {
-        SpawnPointLight(Router, TEXT("FindTest_One"), FVector(0, 0, 0)),
-        SpawnPointLight(Router, TEXT("FindTest_Two"), FVector(100, 0, 0))
+        SpawnPointLightQuery(Router, TEXT("FindTest_One"), FVector(0, 0, 0)),
+        SpawnPointLightQuery(Router, TEXT("FindTest_Two"), FVector(100, 0, 0))
     };
 
     TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -260,7 +260,7 @@ bool FCortexLevelFindActorsTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Should match wildcard pattern"), Count >= 2);
     }
 
-    DeleteActors(Router, Spawned);
+    DeleteActorsQuery(Router, Spawned);
     return true;
 }
 
@@ -280,8 +280,8 @@ bool FCortexLevelGetBoundsTest::RunTest(const FString& Parameters)
 
     FCortexCommandRouter Router = CreateLevelRouterQuery();
     TArray<FString> Spawned = {
-        SpawnPointLight(Router, TEXT("BoundsA"), FVector(100, 200, 300)),
-        SpawnPointLight(Router, TEXT("BoundsB"), FVector(300, 400, 500))
+        SpawnPointLightQuery(Router, TEXT("BoundsA"), FVector(100, 200, 300)),
+        SpawnPointLightQuery(Router, TEXT("BoundsB"), FVector(300, 400, 500))
     };
 
     TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -301,7 +301,7 @@ bool FCortexLevelGetBoundsTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Actor count should be >=2"), ActorCount >= 2);
     }
 
-    DeleteActors(Router, Spawned);
+    DeleteActorsQuery(Router, Spawned);
     return true;
 }
 
@@ -321,8 +321,8 @@ bool FCortexLevelSelectActorsTest::RunTest(const FString& Parameters)
 
     FCortexCommandRouter Router = CreateLevelRouterQuery();
     TArray<FString> Spawned = {
-        SpawnPointLight(Router, TEXT("SelectA"), FVector(0, 0, 0)),
-        SpawnPointLight(Router, TEXT("SelectB"), FVector(50, 0, 0))
+        SpawnPointLightQuery(Router, TEXT("SelectA"), FVector(0, 0, 0)),
+        SpawnPointLightQuery(Router, TEXT("SelectB"), FVector(50, 0, 0))
     };
 
     TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -341,7 +341,7 @@ bool FCortexLevelSelectActorsTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("Should select two actors"), Count, 2);
     }
 
-    DeleteActors(Router, Spawned);
+    DeleteActorsQuery(Router, Spawned);
     return true;
 }
 
@@ -361,7 +361,7 @@ bool FCortexLevelGetSelectionTest::RunTest(const FString& Parameters)
 
     FCortexCommandRouter Router = CreateLevelRouterQuery();
     TArray<FString> Spawned = {
-        SpawnPointLight(Router, TEXT("SelGetA"), FVector(0, 0, 0))
+        SpawnPointLightQuery(Router, TEXT("SelGetA"), FVector(0, 0, 0))
     };
 
     TSharedPtr<FJsonObject> SelectParams = MakeShared<FJsonObject>();
@@ -381,6 +381,6 @@ bool FCortexLevelGetSelectionTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Selection count should be >=1"), Count >= 1);
     }
 
-    DeleteActors(Router, Spawned);
+    DeleteActorsQuery(Router, Spawned);
     return true;
 }
