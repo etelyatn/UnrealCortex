@@ -133,6 +133,11 @@ class UEConnection:
         Timeout applies to the total operation (including deferred ack + final).
         Raises ConnectionError if not connected after retry.
         Raises RuntimeError if the command fails.
+
+        Args:
+            command: Command name
+            params: Optional command parameters
+            timeout: Optional timeout in seconds for this command (overrides default)
         """
         last_error: Exception | None = None
 
@@ -140,7 +145,7 @@ class UEConnection:
             try:
                 with self._socket_lock:
                     self.connect()
-                    return self._send_and_receive(command, params, timeout)
+                    return self._send_and_receive(command, params, timeout=timeout)
             except ConnectionError as e:
                 last_error = e
                 self.disconnect()
@@ -177,7 +182,7 @@ class UEConnection:
         if cached is not None:
             return cached
 
-        response = self.send_command(command, params, timeout)
+        response = self.send_command(command, params, timeout=timeout)
         self._cache.set(key, response, ttl)
         return response
 
@@ -208,17 +213,22 @@ class UEConnection:
         params: dict | None = None,
         timeout: float | None = None,
     ) -> dict:
-        """Send a command and read the response. Internal method, no retry logic."""
+        """Send a command and read the response. Internal method, no retry logic.
+
+        Args:
+            command: Command name
+            params: Optional parameters
+            timeout: Optional timeout in seconds (overrides default recv timeout)
+        """
         request_id = uuid.uuid4().hex[:8]
         request = json.dumps(
             {"id": request_id, "command": command, "params": params or {}}
         ) + "\n"
-        timeout_seconds = timeout if timeout is not None else _RECV_TIMEOUT
         start = time.monotonic()
+        timeout_seconds = timeout if timeout is not None else _RECV_TIMEOUT
         deadline = start + timeout_seconds
         try:
             self._socket.sendall(request.encode("utf-8"))
-
             response = json.loads(self._read_response_line(deadline))
 
             # Deferred protocol: first line is ack; final line contains command result.

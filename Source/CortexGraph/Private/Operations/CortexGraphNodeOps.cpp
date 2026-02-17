@@ -1,13 +1,19 @@
 #include "Operations/CortexGraphNodeOps.h"
 #include "CortexGraphModule.h"
+#include "CortexGraphLayoutOps.h"
+#include "CortexBatchScope.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
+#include "EdGraphSchema_K2.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_IfThenElse.h"
+#include "K2Node_Variable.h"
+#include "K2Node_VariableSet.h"
+#include "K2Node_VariableGet.h"
 #include "ScopedTransaction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/PackageName.h"
@@ -321,9 +327,17 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	{
 		NodeClass = UK2Node_IfThenElse::StaticClass();
 	}
+	else if (NodeClassName == TEXT("UK2Node_VariableSet"))
+	{
+		NodeClass = UK2Node_VariableSet::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_VariableGet"))
+	{
+		NodeClass = UK2Node_VariableGet::StaticClass();
+	}
 	else
 	{
-		// Try finding other classes dynamically (e.g., UK2Node_VariableGet, UK2Node_Event)
+		// Try finding other classes dynamically (e.g., UK2Node_Event, UK2Node_MacroInstance)
 		NodeClass = StaticLoadClass(UEdGraphNode::StaticClass(), nullptr,
 			*FString::Printf(TEXT("/Script/BlueprintGraph.%s"), *NodeClassName));
 		if (NodeClass == nullptr)
@@ -342,7 +356,7 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	}
 
 	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex:Add Node '%s'"), *NodeClassName)
+		FString::Printf(TEXT("Cortex: Add node %s"), *NodeClassName)
 	));
 
 	Graph->Modify();
@@ -353,7 +367,7 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	NewNode->NodePosY = PosY;
 	Graph->AddNode(NewNode, true, false);
 
-	// Handle CallFunction-specific setup
+	// Handle type-specific setup
 	// NodeParams = node-specific parameters (nested object), distinct from outer Params
 	const TSharedPtr<FJsonObject>* NodeParams = nullptr;
 	if (Params->TryGetObjectField(TEXT("params"), NodeParams) && NodeParams)
@@ -369,16 +383,82 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 				FString FuncName;
 				if (FunctionName.Split(TEXT("."), &ClassName, &FuncName))
 				{
-					UClass* FuncClass = FindObject<UClass>(nullptr,
-						*FString::Printf(TEXT("/Script/Engine.%s"), *ClassName));
-					if (FuncClass)
+					UClass* FuncClass = FindFirstObject<UClass>(*ClassName);
+					if (FuncClass == nullptr)
 					{
-						UFunction* Func = FuncClass->FindFunctionByName(FName(*FuncName));
-						if (Func)
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Function owner class not found: %s"), *ClassName)
+						);
+					}
+
+					UFunction* Func = FuncClass->FindFunctionByName(FName(*FuncName));
+					if (Func == nullptr)
+					{
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Function not found: %s on class %s"), *FuncName, *ClassName)
+						);
+					}
+
+					CallNode->SetFromFunction(Func);
+				}
+			}
+		}
+
+		UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(NewNode);
+		if (VarNode)
+		{
+			FString VariableName;
+			if ((*NodeParams)->TryGetStringField(TEXT("variable_name"), VariableName))
+			{
+				FString VariableClass;
+				if ((*NodeParams)->TryGetStringField(TEXT("variable_class"), VariableClass))
+				{
+					// External class property (e.g., PlayerController.bShowMouseCursor)
+					UClass* VarClass = FindFirstObject<UClass>(*VariableClass);
+					if (VarClass == nullptr)
+					{
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Variable owner class not found: %s"), *VariableClass)
+						);
+					}
+
+					FProperty* Prop = VarClass->FindPropertyByName(FName(*VariableName));
+					if (Prop == nullptr)
+					{
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Property not found: %s on class %s"), *VariableName, *VariableClass)
+						);
+					}
+
+					VarNode->SetFromProperty(Prop, false, VarClass);
+				}
+				else
+				{
+					// Self-context property (on the Blueprint's own class)
+					UClass* SelfClass = Blueprint->SkeletonGeneratedClass
+						? Blueprint->SkeletonGeneratedClass
+						: Blueprint->GeneratedClass;
+					if (SelfClass)
+					{
+						FProperty* SelfProp = SelfClass->FindPropertyByName(FName(*VariableName));
+						if (SelfProp == nullptr)
 						{
-							CallNode->SetFromFunction(Func);
+							Graph->RemoveNode(NewNode);
+							return FCortexCommandRouter::Error(
+								CortexErrorCodes::InvalidField,
+								FString::Printf(TEXT("Self property not found: %s"), *VariableName)
+							);
 						}
 					}
+					VarNode->VariableReference.SetSelfMember(FName(*VariableName));
 				}
 			}
 		}
@@ -569,7 +649,27 @@ FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObje
 	Node->Modify();
 
 	// Set the default value
-	Pin->DefaultValue = Value;
+	// For class/object pins, try to resolve and set DefaultObject
+	if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class ||
+		Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_SoftClass)
+	{
+		// Try to load the class from the value string
+		UClass* ClassObject = LoadClass<UObject>(nullptr, *Value);
+		if (ClassObject)
+		{
+			Pin->DefaultObject = ClassObject;
+			Pin->DefaultValue = TEXT("");  // Clear string value when using object reference
+		}
+		else
+		{
+			// Fallback to string value if class can't be loaded
+			Pin->DefaultValue = Value;
+		}
+	}
+	else
+	{
+		Pin->DefaultValue = Value;
+	}
 
 	Graph->NotifyGraphChanged();
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
@@ -581,6 +681,201 @@ FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObje
 	Data->SetBoolField(TEXT("success"), true);
 
 	UE_LOG(LogCortexGraph, Log, TEXT("Set pin value %s.%s = %s"), *NodeId, *PinName, *Value);
+
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexGraphNodeOps::AutoLayout(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
+	}
+
+	FCortexCommandResult LoadError;
+	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
+	if (!Blueprint) return LoadError;
+
+	FString ModeStr;
+	Params->TryGetStringField(TEXT("mode"), ModeStr);
+	ECortexLayoutMode Mode = (ModeStr == TEXT("incremental"))
+		? ECortexLayoutMode::Incremental : ECortexLayoutMode::Full;
+
+	FString GraphFilter;
+	Params->TryGetStringField(TEXT("graph_name"), GraphFilter);
+
+	FCortexLayoutConfig Config;
+	Config.Direction = ECortexLayoutDirection::LeftToRight;
+	Config.Mode = Mode;
+
+	double HSpacingVal = 0, VSpacingVal = 0;
+	if (Params->TryGetNumberField(TEXT("horizontal_spacing"), HSpacingVal) && HSpacingVal > 0)
+	{
+		Config.HorizontalSpacing = static_cast<int32>(HSpacingVal);
+	}
+	if (Params->TryGetNumberField(TEXT("vertical_spacing"), VSpacingVal) && VSpacingVal > 0)
+	{
+		Config.VerticalSpacing = static_cast<int32>(VSpacingVal);
+	}
+
+	// Collect graphs to process
+	TArray<UEdGraph*> Graphs;
+	if (!GraphFilter.IsEmpty())
+	{
+		UEdGraph* Graph = FindGraph(Blueprint, GraphFilter, LoadError);
+		if (!Graph) return LoadError;
+		Graphs.Add(Graph);
+	}
+	else
+	{
+		for (UEdGraph* G : Blueprint->UbergraphPages) { if (G) Graphs.Add(G); }
+		for (UEdGraph* G : Blueprint->FunctionGraphs) { if (G) Graphs.Add(G); }
+		for (UEdGraph* G : Blueprint->MacroGraphs) { if (G) Graphs.Add(G); }
+	}
+
+	int32 TotalNodesProcessed = 0;
+
+	TUniquePtr<FScopedTransaction> Transaction;
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		Transaction = MakeUnique<FScopedTransaction>(
+			FText::FromString(TEXT("Cortex: Auto-Layout Blueprint Graphs")));
+	}
+
+	for (UEdGraph* Graph : Graphs)
+	{
+		TArray<FCortexLayoutNode> LayoutNodes;
+		TMap<FString, UEdGraphNode*> IdToNode;
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) continue;
+
+			// Skip comment nodes (class name contains "Comment")
+			if (Node->GetClass()->GetName() == TEXT("EdGraphNode_Comment"))
+			{
+				continue;
+			}
+
+			FCortexLayoutNode LN;
+			LN.Id = Node->GetName();
+			IdToNode.Add(LN.Id, Node);
+
+			bool bHasExecInput = false;
+			bool bHasExecOutput = false;
+			int32 InputPinCount = 0;
+			int32 OutputPinCount = 0;
+
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (!Pin) continue;
+				bool bIsExec = (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+				if (Pin->Direction == EGPD_Input)
+				{
+					InputPinCount++;
+					if (bIsExec) bHasExecInput = true;
+				}
+				else
+				{
+					OutputPinCount++;
+					if (bIsExec) bHasExecOutput = true;
+				}
+			}
+
+			LN.bIsEntryPoint = (!bHasExecInput && bHasExecOutput);
+			int32 PinRows = FMath::Max(InputPinCount, OutputPinCount);
+			LN.Width = 200;
+			LN.Height = FMath::Max(100, PinRows * 28 + 40);
+
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (!Pin || Pin->Direction != EGPD_Output) continue;
+				bool bIsExec = (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+				{
+					if (!LinkedPin || !LinkedPin->GetOwningNode()) continue;
+					FString TargetId = LinkedPin->GetOwningNode()->GetName();
+					if (bIsExec)
+					{
+						LN.ExecOutputs.AddUnique(TargetId);
+					}
+					else
+					{
+						LN.DataOutputs.AddUnique(TargetId);
+					}
+				}
+			}
+			LayoutNodes.Add(LN);
+		}
+
+		// Collect existing positions for incremental mode
+		TMap<FString, FIntPoint> ExistingPositions;
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node && !Node->GetClass()->GetName().Contains(TEXT("Comment")))
+			{
+				ExistingPositions.Add(Node->GetName(), FIntPoint(Node->NodePosX, Node->NodePosY));
+			}
+		}
+
+		FCortexLayoutResult LayoutResult = FCortexGraphLayoutOps::CalculateLayout(
+			LayoutNodes, Config, ExistingPositions);
+
+		for (const auto& Pair : LayoutResult.Positions)
+		{
+			UEdGraphNode** NodePtr = IdToNode.Find(Pair.Key);
+			if (NodePtr && *NodePtr)
+			{
+				(*NodePtr)->Modify();
+				(*NodePtr)->NodePosX = Pair.Value.X;
+				(*NodePtr)->NodePosY = Pair.Value.Y;
+			}
+		}
+
+		if (FCortexCommandRouter::IsInBatch())
+		{
+			FString GraphKey = FString::Printf(TEXT("graph.notify.%s"), *Graph->GetPathName());
+			FCortexBatchScope::AddCleanupAction(GraphKey,
+				[WeakGraph = TWeakObjectPtr<UEdGraph>(Graph)]()
+				{
+					if (UEdGraph* G = WeakGraph.Get()) G->NotifyGraphChanged();
+				});
+		}
+		else
+		{
+			Graph->NotifyGraphChanged();
+		}
+
+		TotalNodesProcessed += LayoutResult.Positions.Num();
+	}
+
+	if (FCortexCommandRouter::IsInBatch())
+	{
+		FString BPKey = FString::Printf(TEXT("bp.modified.%s"), *Blueprint->GetPathName());
+		FCortexBatchScope::AddCleanupAction(BPKey,
+			[WeakBP = TWeakObjectPtr<UBlueprint>(Blueprint)]()
+			{
+				if (UBlueprint* BP = WeakBP.Get())
+				{
+					FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+				}
+			});
+	}
+	else
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	}
+	Blueprint->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetNumberField(TEXT("node_count"), TotalNodesProcessed);
+	Data->SetNumberField(TEXT("graphs_processed"), Graphs.Num());
+
+	UE_LOG(LogCortexGraph, Log, TEXT("Auto-layout completed: %d nodes across %d graphs in %s"),
+		TotalNodesProcessed, Graphs.Num(), *AssetPath);
 
 	return FCortexCommandRouter::Success(Data);
 }

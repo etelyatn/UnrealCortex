@@ -10,7 +10,12 @@
     "CanContainContent": false,
     "IsBetaVersion": true,
     "Installed": false,
-    "Plugins": [],
+    "Plugins": [
+        {
+            "Name": "EnhancedInput",
+            "Enabled": true
+        }
+    ],
     "Modules": [
         {
             "Name": "CortexCore",
@@ -39,6 +44,11 @@
         },
         {
             "Name": "CortexMaterial",
+            "Type": "Editor",
+            "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexEditor",
             "Type": "Editor",
             "LoadingPhase": "PostEngineInit"
         },

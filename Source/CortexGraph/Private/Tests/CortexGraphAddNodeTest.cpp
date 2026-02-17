@@ -4,6 +4,8 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
 #include "GameFramework/Actor.h"
 
@@ -105,6 +107,54 @@ bool FCortexGraphAddNodeTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	// Test: invalid function owner class should return error
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_CallFunction"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("function_name"), TEXT("NonExistentClass.FakeFunction"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestFalse(TEXT("add_node with invalid class should fail"), Result.bSuccess);
+		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Test: invalid function name on valid class should return error
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_CallFunction"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("function_name"), TEXT("KismetSystemLibrary.NonExistentFunction"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestFalse(TEXT("add_node with invalid function should fail"), Result.bSuccess);
+		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Test: display_name should be populated for valid CallFunction node
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_CallFunction"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("function_name"), TEXT("GameplayStatics.GetGameMode"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node GetGameMode should succeed"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			FString DisplayName;
+			TestTrue(TEXT("Result should have display_name"), Result.Data->TryGetStringField(TEXT("display_name"), DisplayName));
+			TestTrue(TEXT("Display name should contain 'Game Mode'"),
+				DisplayName.Contains(TEXT("Game Mode")));
+		}
+	}
+
 	// Test: missing asset_path
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -122,6 +172,124 @@ bool FCortexGraphAddNodeTest::RunTest(const FString& Parameters)
 
 		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
 		TestFalse(TEXT("add_node without node_class should fail"), Result.bSuccess);
+		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Test: Add VariableSet node for external class property
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableSet"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("variable_name"), TEXT("bHidden"));
+		NParams->SetStringField(TEXT("variable_class"), TEXT("Actor"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node VariableSet should succeed"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Pins = nullptr;
+			TestTrue(TEXT("VariableSet should have pins"), Result.Data->TryGetArrayField(TEXT("pins"), Pins));
+			if (Pins)
+			{
+				TestTrue(TEXT("VariableSet should have multiple pins"), Pins->Num() >= 3);
+			}
+		}
+	}
+
+	// Test: Add VariableGet node for external class property
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableGet"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("variable_name"), TEXT("bHidden"));
+		NParams->SetStringField(TEXT("variable_class"), TEXT("Actor"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node VariableGet should succeed"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Pins = nullptr;
+			TestTrue(TEXT("VariableGet should have pins"), Result.Data->TryGetArrayField(TEXT("pins"), Pins));
+			if (Pins)
+			{
+				TestTrue(TEXT("VariableGet should have output pin"), Pins->Num() >= 1);
+			}
+		}
+	}
+
+	// Test: Invalid variable name returns error
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableSet"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("variable_name"), TEXT("NonExistentProperty"));
+		NParams->SetStringField(TEXT("variable_class"), TEXT("Actor"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestFalse(TEXT("add_node with invalid variable_name should fail"), Result.bSuccess);
+		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Test: VariableGet with self-context property
+	{
+		// Add a bool variable to the test Blueprint
+		FEdGraphPinType PinType;
+		PinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
+		FBlueprintEditorUtils::AddMemberVariable(TestBP, TEXT("bTestFlag"), PinType);
+		FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableGet"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("variable_name"), TEXT("bTestFlag"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node VariableGet self-context should succeed"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Pins = nullptr;
+			TestTrue(TEXT("Self-context VariableGet should have pins"), Result.Data->TryGetArrayField(TEXT("pins"), Pins));
+			if (Pins)
+			{
+				TestTrue(TEXT("Self-context VariableGet should have output pin"), Pins->Num() >= 1);
+			}
+		}
+	}
+
+	// Test: Invalid self-context variable name returns error
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableGet"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("variable_name"), TEXT("NonExistentSelfVar"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestFalse(TEXT("add_node with invalid self variable should fail"), Result.bSuccess);
+		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Test: Invalid variable class returns error
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableSet"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("variable_name"), TEXT("bHidden"));
+		NParams->SetStringField(TEXT("variable_class"), TEXT("NonExistentClass"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestFalse(TEXT("add_node with invalid variable_class should fail"), Result.bSuccess);
 		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
 	}
 

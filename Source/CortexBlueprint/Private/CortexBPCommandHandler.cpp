@@ -5,8 +5,11 @@
 
 FCortexCommandResult FCortexBPCommandHandler::Execute(
 	const FString& Command,
-	const TSharedPtr<FJsonObject>& Params)
+	const TSharedPtr<FJsonObject>& Params,
+	FDeferredResponseCallback DeferredCallback)
 {
+	(void)DeferredCallback;
+
 	if (Command == TEXT("create"))
 	{
 		return FCortexBPAssetOps::Create(Params);

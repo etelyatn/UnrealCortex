@@ -10,6 +10,7 @@ public class CortexMaterial : ModuleRules
         {
             "Core",
             "CortexCore",
+            "CortexGraph",
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]

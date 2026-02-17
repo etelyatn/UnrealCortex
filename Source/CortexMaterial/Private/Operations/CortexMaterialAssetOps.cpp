@@ -13,6 +13,7 @@
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
 #include "UObject/SavePackage.h"
+#include "ObjectTools.h"
 
 UMaterial* FCortexMaterialAssetOps::LoadMaterial(const FString& AssetPath, FCortexCommandResult& OutError)
 {
@@ -234,6 +235,12 @@ FCortexCommandResult FCortexMaterialAssetOps::CreateMaterial(const TSharedPtr<FJ
 		);
 	}
 
+	// Normalize trailing slash to prevent double-slash in path joining
+	while (AssetPath.EndsWith(TEXT("/")))
+	{
+		AssetPath = AssetPath.Left(AssetPath.Len() - 1);
+	}
+
 	const FString FullPath = FString::Printf(TEXT("%s/%s"), *AssetPath, *Name);
 	const FString PkgName = FPackageName::ObjectPathToPackageName(FullPath);
 	if (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName))
@@ -294,12 +301,35 @@ FCortexCommandResult FCortexMaterialAssetOps::DeleteMaterial(const TSharedPtr<FJ
 		return LoadError;
 	}
 
+	FString MaterialName = Material->GetName();
+
 	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex: Delete Material %s"), *Material->GetName())
+		FString::Printf(TEXT("Cortex: Delete Material %s"), *MaterialName)
 	));
 
-	Material->MarkAsGarbage();
-	Material->MarkPackageDirty();
+	// Get package file path before destroying
+	UPackage* Package = Material->GetOutermost();
+	FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		Package->GetName(), FPackageName::GetAssetPackageExtension());
+
+	// Use ObjectTools for proper asset deletion (handles references and cleanup)
+	TArray<UObject*> ObjectsToDelete;
+	ObjectsToDelete.Add(Material);
+	int32 DeletedCount = ObjectTools::ForceDeleteObjects(ObjectsToDelete, false);
+
+	if (DeletedCount == 0)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("Failed to delete material: %s (may have references)"), *AssetPath)
+		);
+	}
+
+	// Delete the .uasset file from disk if it still exists
+	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
+	{
+		IFileManager::Get().Delete(*PackageFilename);
+	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
@@ -460,6 +490,12 @@ FCortexCommandResult FCortexMaterialAssetOps::CreateInstance(const TSharedPtr<FJ
 		);
 	}
 
+	// Normalize trailing slash
+	while (AssetPath.EndsWith(TEXT("/")))
+	{
+		AssetPath = AssetPath.Left(AssetPath.Len() - 1);
+	}
+
 	// Validate parent exists
 	FCortexCommandResult LoadError;
 	UMaterial* ParentMaterial = LoadMaterial(ParentMaterialPath, LoadError);
@@ -524,12 +560,35 @@ FCortexCommandResult FCortexMaterialAssetOps::DeleteInstance(const TSharedPtr<FJ
 		return LoadError;
 	}
 
+	FString InstanceName = Instance->GetName();
+
 	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex: Delete Material Instance %s"), *Instance->GetName())
+		FString::Printf(TEXT("Cortex: Delete Material Instance %s"), *InstanceName)
 	));
 
-	Instance->MarkAsGarbage();
-	Instance->MarkPackageDirty();
+	// Get package file path before destroying
+	UPackage* Package = Instance->GetOutermost();
+	FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		Package->GetName(), FPackageName::GetAssetPackageExtension());
+
+	// Use ObjectTools for proper asset deletion
+	TArray<UObject*> ObjectsToDelete;
+	ObjectsToDelete.Add(Instance);
+	int32 DeletedCount = ObjectTools::ForceDeleteObjects(ObjectsToDelete, false);
+
+	if (DeletedCount == 0)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("Failed to delete material instance: %s (may have references)"), *AssetPath)
+		);
+	}
+
+	// Delete the .uasset file from disk if it still exists
+	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
+	{
+		IFileManager::Get().Delete(*PackageFilename);
+	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);

@@ -25,7 +25,8 @@ public:
 	/** Execute a command. Called on Game Thread. */
 	virtual FCortexCommandResult Execute(
 		const FString& Command,
-		const TSharedPtr<FJsonObject>& Params
+		const TSharedPtr<FJsonObject>& Params,
+		FDeferredResponseCallback DeferredCallback = nullptr
 	) = 0;
 
 	/** List supported commands for capability discovery. */

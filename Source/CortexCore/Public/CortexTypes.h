@@ -21,6 +21,7 @@ namespace CortexErrorCodes
 	static const FString CompositeWriteBlocked = TEXT("COMPOSITE_WRITE_BLOCKED");
 	static const FString BatchLimitExceeded = TEXT("BATCH_LIMIT_EXCEEDED");
 	static const FString BatchRecursionBlocked = TEXT("BATCH_RECURSION_BLOCKED");
+	static const FString BatchRefResolutionFailed = TEXT("BATCH_REF_RESOLUTION_FAILED");
 	static const FString GraphNotFound = TEXT("GRAPH_NOT_FOUND");
 	static const FString NodeNotFound = TEXT("NODE_NOT_FOUND");
 	static const FString PinNotFound = TEXT("PIN_NOT_FOUND");
@@ -86,9 +87,12 @@ namespace CortexErrorCodes
 struct CORTEXCORE_API FCortexCommandResult
 {
 	bool bSuccess = false;
+	bool bIsDeferred = false;
 	TSharedPtr<FJsonObject> Data;
 	FString ErrorCode;
 	FString ErrorMessage;
 	TSharedPtr<FJsonObject> ErrorDetails;
 	TArray<FString> Warnings;
 };
+
+using FDeferredResponseCallback = TFunction<void(FCortexCommandResult)>;

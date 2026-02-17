@@ -8,7 +8,8 @@ class CORTEXGRAPH_API FCortexGraphCommandHandler : public ICortexDomainHandler
 public:
 	virtual FCortexCommandResult Execute(
 		const FString& Command,
-		const TSharedPtr<FJsonObject>& Params
+		const TSharedPtr<FJsonObject>& Params,
+		FDeferredResponseCallback DeferredCallback = nullptr
 	) override;
 
 	virtual TArray<FCortexCommandInfo> GetSupportedCommands() const override;

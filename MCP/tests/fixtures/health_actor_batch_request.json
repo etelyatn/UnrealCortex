@@ -1,0 +1,95 @@
+{
+  "commands": [
+    {
+      "command": "bp.create",
+      "params": {
+        "name": "BP_HealthActor",
+        "path": "/Game/Blueprints",
+        "type": "Actor"
+      }
+    },
+    {
+      "command": "bp.add_variable",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "variable_name": "Health",
+        "variable_type": "float",
+        "default_value": "100.0",
+        "is_exposed": true,
+        "category": "Stats"
+      }
+    },
+    {
+      "command": "bp.add_variable",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "variable_name": "MaxHealth",
+        "variable_type": "float",
+        "default_value": "100.0",
+        "is_exposed": true,
+        "category": "Stats"
+      }
+    },
+    {
+      "command": "bp.add_function",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "function_name": "TakeDamage"
+      }
+    },
+    {
+      "command": "graph.add_node",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "node_class": "UK2Node_Event",
+        "graph_name": "EventGraph",
+        "params": {
+          "function_name": "Actor.ReceiveBeginPlay"
+        }
+      }
+    },
+    {
+      "command": "graph.add_node",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "node_class": "UK2Node_CallFunction",
+        "graph_name": "EventGraph",
+        "params": {
+          "function_name": "KismetSystemLibrary.PrintString"
+        }
+      }
+    },
+    {
+      "command": "graph.add_node",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "node_class": "UK2Node_VariableGet",
+        "graph_name": "EventGraph",
+        "params": {
+          "variable_name": "Health"
+        }
+      }
+    },
+    {
+      "command": "graph.set_pin_value",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "node_id": "$steps[5].data.node_id",
+        "graph_name": "EventGraph",
+        "pin_name": "InString",
+        "value": "Actor spawned with health!"
+      }
+    },
+    {
+      "command": "graph.connect",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "source_node": "$steps[4].data.node_id",
+        "source_pin": "then",
+        "target_node": "$steps[5].data.node_id",
+        "target_pin": "execute",
+        "graph_name": "EventGraph"
+      }
+    }
+  ]
+}

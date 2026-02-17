@@ -15,9 +15,7 @@ def _start_mock_server(handler):
     server_sock.listen(1)
     port = server_sock.getsockname()[1]
 
-    thread = threading.Thread(
-        target=handler, args=(server_sock,), daemon=True
-    )
+    thread = threading.Thread(target=handler, args=(server_sock,), daemon=True)
     thread.start()
     return server_sock, thread, port
 
@@ -31,11 +29,11 @@ def test_deferred_response_protocol():
             conn, _ = server_sock.accept()
         except OSError:
             return
+
         try:
             line = conn.recv(4096).decode("utf-8").strip()
             request = json.loads(line)
             received_request.update(request)
-
             req_id = request.get("id", "")
 
             ack = json.dumps(
@@ -89,10 +87,10 @@ def test_deferred_ack_and_final_same_packet():
             conn, _ = server_sock.accept()
         except OSError:
             return
+
         try:
             line = conn.recv(4096).decode("utf-8").strip()
             request = json.loads(line)
-
             req_id = request.get("id", "")
 
             ack = json.dumps(

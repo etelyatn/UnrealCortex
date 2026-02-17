@@ -1,0 +1,240 @@
+{
+  "commands": [
+    {
+      "command": "bp.create",
+      "params": {
+        "name": "WBP_MainMenu",
+        "path": "/Game/UI",
+        "type": "Widget"
+      }
+    },
+    {
+      "command": "umg.add_widget",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_class": "CanvasPanel",
+        "widget_name": "Root",
+        "parent_name": ""
+      }
+    },
+    {
+      "command": "umg.add_widget",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_class": "VerticalBox",
+        "widget_name": "Layout",
+        "parent_name": "Root"
+      }
+    },
+    {
+      "command": "umg.add_widget",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_class": "TextBlock",
+        "widget_name": "Title",
+        "parent_name": "Layout"
+      }
+    },
+    {
+      "command": "umg.add_widget",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_class": "TextBlock",
+        "widget_name": "Subtitle",
+        "parent_name": "Layout"
+      }
+    },
+    {
+      "command": "umg.add_widget",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_class": "Button",
+        "widget_name": "PlayBtn",
+        "parent_name": "Layout"
+      }
+    },
+    {
+      "command": "umg.add_widget",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_class": "TextBlock",
+        "widget_name": "PlayBtnText",
+        "parent_name": "PlayBtn"
+      }
+    },
+    {
+      "command": "umg.add_widget",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_class": "Button",
+        "widget_name": "SettingsBtn",
+        "parent_name": "Layout"
+      }
+    },
+    {
+      "command": "umg.add_widget",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_class": "TextBlock",
+        "widget_name": "SettingsBtnText",
+        "parent_name": "SettingsBtn"
+      }
+    },
+    {
+      "command": "umg.add_widget",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_class": "Button",
+        "widget_name": "QuitBtn",
+        "parent_name": "Layout"
+      }
+    },
+    {
+      "command": "umg.add_widget",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_class": "TextBlock",
+        "widget_name": "QuitBtnText",
+        "parent_name": "QuitBtn"
+      }
+    },
+    {
+      "command": "umg.set_anchor",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "Layout",
+        "preset": "FullStretch"
+      }
+    },
+    {
+      "command": "umg.set_padding",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "Layout",
+        "left": 40,
+        "top": 40,
+        "right": 40,
+        "bottom": 40
+      }
+    },
+    {
+      "command": "umg.set_text",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "Title",
+        "text": "Main Menu"
+      }
+    },
+    {
+      "command": "umg.set_font",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "Title",
+        "size": 48,
+        "typeface": "Bold"
+      }
+    },
+    {
+      "command": "umg.set_color",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "Title",
+        "color": "#FFFFFF",
+        "target": "foreground"
+      }
+    },
+    {
+      "command": "umg.set_text",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "Subtitle",
+        "text": "Welcome, Player"
+      }
+    },
+    {
+      "command": "umg.set_font",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "Subtitle",
+        "size": 24
+      }
+    },
+    {
+      "command": "umg.set_color",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "Subtitle",
+        "color": "#AAAAAA",
+        "target": "foreground"
+      }
+    },
+    {
+      "command": "umg.set_brush",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "PlayBtn",
+        "target": "normal",
+        "color": "#2196F3",
+        "draw_as": "RoundedBox",
+        "corner_radius": 12
+      }
+    },
+    {
+      "command": "umg.set_text",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "PlayBtnText",
+        "text": "Play"
+      }
+    },
+    {
+      "command": "umg.set_font",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "PlayBtnText",
+        "size": 20
+      }
+    },
+    {
+      "command": "umg.set_color",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "PlayBtnText",
+        "color": "#FFFFFF",
+        "target": "foreground"
+      }
+    },
+    {
+      "command": "umg.set_text",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "SettingsBtnText",
+        "text": "Settings"
+      }
+    },
+    {
+      "command": "umg.set_text",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "widget_name": "QuitBtnText",
+        "text": "Quit"
+      }
+    },
+    {
+      "command": "umg.create_animation",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "animation_name": "FadeIn",
+        "length": 0.5
+      }
+    },
+    {
+      "command": "umg.create_animation",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "animation_name": "FadeOut",
+        "length": 0.3
+      }
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "name": "WBP_MainMenu",
+  "path": "/Game/UI/",
+  "widgets": [
+    {
+      "class": "CanvasPanel", "name": "Root",
+      "children": [
+        {
+          "class": "VerticalBox", "name": "Layout", "anchor": "FullStretch",
+          "padding": {"left": 40, "top": 40, "right": 40, "bottom": 40},
+          "children": [
+            {"class": "TextBlock", "name": "Title", "text": "Main Menu",
+             "font": {"size": 48, "typeface": "Bold"}, "color": "#FFFFFF"},
+            {"class": "TextBlock", "name": "Subtitle", "text": "Welcome, Player",
+             "font": {"size": 24}, "color": "#AAAAAA"},
+            {"class": "Button", "name": "PlayBtn",
+             "brush": {"target": "normal", "color": "#2196F3", "draw_as": "RoundedBox", "corner_radius": 12},
+             "children": [
+               {"class": "TextBlock", "name": "PlayBtnText", "text": "Play",
+                "font": {"size": 20}, "color": "#FFFFFF"}
+             ]},
+            {"class": "Button", "name": "SettingsBtn",
+             "children": [
+               {"class": "TextBlock", "name": "SettingsBtnText", "text": "Settings"}
+             ]},
+            {"class": "Button", "name": "QuitBtn",
+             "children": [
+               {"class": "TextBlock", "name": "QuitBtnText", "text": "Quit"}
+             ]}
+          ]
+        }
+      ]
+    }
+  ],
+  "animations": [
+    {"name": "FadeIn", "length": 0.5},
+    {"name": "FadeOut", "length": 0.3}
+  ]
+}

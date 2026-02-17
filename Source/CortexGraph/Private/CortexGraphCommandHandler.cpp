@@ -5,8 +5,11 @@
 
 FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	const FString& Command,
-	const TSharedPtr<FJsonObject>& Params)
+	const TSharedPtr<FJsonObject>& Params,
+	FDeferredResponseCallback DeferredCallback)
 {
+	(void)DeferredCallback;
+
 	if (Command == TEXT("list_graphs"))
 	{
 		return FCortexGraphNodeOps::ListGraphs(Params);
@@ -39,6 +42,10 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	{
 		return FCortexGraphNodeOps::SetPinValue(Params);
 	}
+	if (Command == TEXT("auto_layout"))
+	{
+		return FCortexGraphNodeOps::AutoLayout(Params);
+	}
 
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
@@ -57,5 +64,6 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 		{ TEXT("connect"), TEXT("Connect two pins") },
 		{ TEXT("disconnect"), TEXT("Disconnect a pin") },
 		{ TEXT("set_pin_value"), TEXT("Set the default value of an input pin") },
+		{ TEXT("auto_layout"), TEXT("Auto-arrange nodes in Blueprint graphs for readability") },
 	};
 }

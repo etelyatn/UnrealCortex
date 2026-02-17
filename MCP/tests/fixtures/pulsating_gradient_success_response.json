@@ -1,0 +1,16 @@
+{
+  "success": true,
+  "asset_path": "/Game/Materials/M_PulsatingGradient",
+  "total_steps": 24,
+  "node_count": 9,
+  "connection_count": 10,
+  "properties_set": 4,
+  "total_timing_ms": 145,
+  "steps_summary": {
+    "create": 1,
+    "add_node": 9,
+    "set_node_property": 4,
+    "connect": 10,
+    "auto_layout": 1
+  }
+}

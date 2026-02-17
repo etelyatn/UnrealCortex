@@ -1,0 +1,219 @@
+{
+  "stop_on_error": true,
+  "commands": [
+    {
+      "command": "material.create_material",
+      "params": {
+        "name": "M_PulsatingGradient",
+        "asset_path": "/Game/Materials/"
+      }
+    },
+    {
+      "command": "material.add_node",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "expression_class": "MaterialExpressionConstant3Vector"
+      }
+    },
+    {
+      "command": "material.add_node",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "expression_class": "MaterialExpressionConstant3Vector"
+      }
+    },
+    {
+      "command": "material.add_node",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "expression_class": "MaterialExpressionTextureCoordinate"
+      }
+    },
+    {
+      "command": "material.add_node",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "expression_class": "MaterialExpressionTime"
+      }
+    },
+    {
+      "command": "material.add_node",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "expression_class": "MaterialExpressionLinearInterpolate"
+      }
+    },
+    {
+      "command": "material.add_node",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "expression_class": "MaterialExpressionSine"
+      }
+    },
+    {
+      "command": "material.add_node",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "expression_class": "MaterialExpressionScalarParameter"
+      }
+    },
+    {
+      "command": "material.add_node",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "expression_class": "MaterialExpressionMultiply"
+      }
+    },
+    {
+      "command": "material.add_node",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "expression_class": "MaterialExpressionMultiply"
+      }
+    },
+    {
+      "command": "material.set_node_property",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "node_id": "$steps[1].data.node_id",
+        "property_name": "Constant",
+        "value": {
+          "R": 1.0,
+          "G": 0.0,
+          "B": 0.0
+        }
+      }
+    },
+    {
+      "command": "material.set_node_property",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "node_id": "$steps[2].data.node_id",
+        "property_name": "Constant",
+        "value": {
+          "R": 0.0,
+          "G": 0.0,
+          "B": 1.0
+        }
+      }
+    },
+    {
+      "command": "material.set_node_property",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "node_id": "$steps[7].data.node_id",
+        "property_name": "ParameterName",
+        "value": "GlowStrength"
+      }
+    },
+    {
+      "command": "material.set_node_property",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "node_id": "$steps[7].data.node_id",
+        "property_name": "DefaultValue",
+        "value": 2.0
+      }
+    },
+    {
+      "command": "material.connect",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "source_node": "$steps[1].data.node_id",
+        "source_output": "RGB",
+        "target_node": "$steps[5].data.node_id",
+        "target_input": "A"
+      }
+    },
+    {
+      "command": "material.connect",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "source_node": "$steps[2].data.node_id",
+        "source_output": "RGB",
+        "target_node": "$steps[5].data.node_id",
+        "target_input": "B"
+      }
+    },
+    {
+      "command": "material.connect",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "source_node": "$steps[3].data.node_id",
+        "source_output": "UV",
+        "target_node": "$steps[5].data.node_id",
+        "target_input": "Alpha"
+      }
+    },
+    {
+      "command": "material.connect",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "source_node": "$steps[4].data.node_id",
+        "source_output": "Result",
+        "target_node": "$steps[6].data.node_id",
+        "target_input": "Input"
+      }
+    },
+    {
+      "command": "material.connect",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "source_node": "$steps[5].data.node_id",
+        "source_output": "Result",
+        "target_node": "$steps[8].data.node_id",
+        "target_input": "A"
+      }
+    },
+    {
+      "command": "material.connect",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "source_node": "$steps[6].data.node_id",
+        "source_output": "Result",
+        "target_node": "$steps[8].data.node_id",
+        "target_input": "B"
+      }
+    },
+    {
+      "command": "material.connect",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "source_node": "$steps[6].data.node_id",
+        "source_output": "Result",
+        "target_node": "$steps[9].data.node_id",
+        "target_input": "A"
+      }
+    },
+    {
+      "command": "material.connect",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "source_node": "$steps[7].data.node_id",
+        "source_output": "Result",
+        "target_node": "$steps[9].data.node_id",
+        "target_input": "B"
+      }
+    },
+    {
+      "command": "material.connect",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "source_node": "$steps[8].data.node_id",
+        "source_output": "Result",
+        "target_node": "MaterialResult",
+        "target_input": "EmissiveColor"
+      }
+    },
+    {
+      "command": "material.connect",
+      "params": {
+        "asset_path": "$steps[0].data.asset_path",
+        "source_node": "$steps[9].data.node_id",
+        "source_output": "Result",
+        "target_node": "MaterialResult",
+        "target_input": "BaseColor"
+      }
+    }
+  ]
+}
