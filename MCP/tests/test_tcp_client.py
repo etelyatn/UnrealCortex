@@ -42,16 +42,15 @@ class TestSendCommandTimeout:
         assert any(call[0][0] == 120.0 for call in calls), \
             f"Expected settimeout(120.0) in calls: {calls}"
 
-    def test_timeout_restored_after_call(self):
-        """After send_and_receive, socket timeout should be restored."""
+    def test_timeout_uses_deadline_based_socket_timeout(self):
+        """send_and_receive should apply per-read timeout from remaining deadline."""
         conn = UEConnection(port=99999)
         mock_socket = MagicMock()
         mock_socket.recv.return_value = b'{"success":true,"data":{}}\n'
-        mock_socket.gettimeout.return_value = 60.0
         conn._socket = mock_socket
 
         conn._send_and_receive("ping", timeout=120.0)
 
-        # Last settimeout call should restore original
+        # Last settimeout call should be a positive deadline-based value.
         last_call = mock_socket.settimeout.call_args_list[-1]
-        assert last_call[0][0] == 60.0
+        assert 0 < last_call[0][0] <= 120.0

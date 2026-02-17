@@ -57,6 +57,20 @@ namespace CortexErrorCodes
 	static const FString InvalidParameter = TEXT("INVALID_PARAMETER");
 	static const FString LimitExceeded = TEXT("LIMIT_EXCEEDED");
 	static const FString AssetAlreadyExists = TEXT("ASSET_ALREADY_EXISTS");
+	// Editor / PIE errors
+	static const FString PIENotActive = TEXT("PIE_NOT_ACTIVE");
+	static const FString PIEAlreadyActive = TEXT("PIE_ALREADY_ACTIVE");
+	static const FString PIEAlreadyPaused = TEXT("PIE_ALREADY_PAUSED");
+	static const FString PIENotPaused = TEXT("PIE_NOT_PAUSED");
+	static const FString PIETransitionInProgress = TEXT("PIE_TRANSITION_IN_PROGRESS");
+	static const FString PIETerminated = TEXT("PIE_TERMINATED");
+	static const FString PIEModeUnsupported = TEXT("PIE_MODE_UNSUPPORTED");
+	static const FString ViewportNotFound = TEXT("VIEWPORT_NOT_FOUND");
+	static const FString InputActionNotFound = TEXT("INPUT_ACTION_NOT_FOUND");
+	static const FString ScreenshotFailed = TEXT("SCREENSHOT_FAILED");
+	static const FString ConsoleCommandFailed = TEXT("CONSOLE_COMMAND_FAILED");
+	static const FString InvalidTimeScale = TEXT("INVALID_TIME_SCALE");
+	static const FString GameModeNotFound = TEXT("GAME_MODE_NOT_FOUND");
 }
 
 /** Result of a command execution */
