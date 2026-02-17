@@ -1,5 +1,18 @@
 #include "CortexEditorCommandHandler.h"
 #include "CortexCommandRouter.h"
+#include "CortexEditorPIEState.h"
+#include "Operations/CortexEditorPIEOps.h"
+#include "Operations/CortexEditorUtilityOps.h"
+
+FCortexEditorCommandHandler::FCortexEditorCommandHandler()
+{
+	PIEState = MakeUnique<FCortexEditorPIEState>();
+	PIEState->BindDelegates();
+}
+
+FCortexEditorCommandHandler::~FCortexEditorCommandHandler()
+{
+}
 
 FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	const FString& Command,
@@ -8,6 +21,23 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 {
 	(void)Params;
 	(void)DeferredCallback;
+
+	if (PIEState.IsValid() && Command == TEXT("get_pie_state"))
+	{
+		return FCortexEditorPIEOps::GetPIEState(*PIEState);
+	}
+	if (PIEState.IsValid() && Command == TEXT("start_pie"))
+	{
+		return FCortexEditorPIEOps::StartPIE(*PIEState, Params, MoveTemp(DeferredCallback));
+	}
+	if (PIEState.IsValid() && Command == TEXT("stop_pie"))
+	{
+		return FCortexEditorPIEOps::StopPIE(*PIEState, MoveTemp(DeferredCallback));
+	}
+	if (PIEState.IsValid() && Command == TEXT("get_editor_state"))
+	{
+		return FCortexEditorUtilityOps::GetEditorState(*PIEState);
+	}
 
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,

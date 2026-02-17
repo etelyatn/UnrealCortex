@@ -3,9 +3,14 @@
 #include "CoreMinimal.h"
 #include "ICortexDomainHandler.h"
 
+class FCortexEditorPIEState;
+
 class FCortexEditorCommandHandler : public ICortexDomainHandler
 {
 public:
+	FCortexEditorCommandHandler();
+	virtual ~FCortexEditorCommandHandler() override;
+
 	virtual FCortexCommandResult Execute(
 		const FString& Command,
 		const TSharedPtr<FJsonObject>& Params,
@@ -13,4 +18,7 @@ public:
 	) override;
 
 	virtual TArray<FCortexCommandInfo> GetSupportedCommands() const override;
+
+private:
+	TUniquePtr<FCortexEditorPIEState> PIEState;
 };
