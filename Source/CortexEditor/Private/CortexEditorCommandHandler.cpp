@@ -2,6 +2,7 @@
 #include "CortexCommandRouter.h"
 #include "CortexEditorPIEState.h"
 #include "Operations/CortexEditorPIEOps.h"
+#include "Operations/CortexEditorInputOps.h"
 #include "Operations/CortexEditorUtilityOps.h"
 
 FCortexEditorCommandHandler::FCortexEditorCommandHandler()
@@ -45,6 +46,18 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	if (PIEState.IsValid() && Command == TEXT("restart_pie"))
 	{
 		return FCortexEditorPIEOps::RestartPIE(*PIEState, Params, MoveTemp(DeferredCallback));
+	}
+	if (PIEState.IsValid() && Command == TEXT("inject_key"))
+	{
+		return FCortexEditorInputOps::InjectKey(*PIEState, Params);
+	}
+	if (PIEState.IsValid() && Command == TEXT("inject_mouse"))
+	{
+		return FCortexEditorInputOps::InjectMouse(*PIEState, Params);
+	}
+	if (PIEState.IsValid() && Command == TEXT("inject_input_action"))
+	{
+		return FCortexEditorInputOps::InjectInputAction(*PIEState, Params);
 	}
 	if (PIEState.IsValid() && Command == TEXT("get_editor_state"))
 	{
