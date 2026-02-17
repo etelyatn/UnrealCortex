@@ -10,11 +10,14 @@ import pytest
 tools_dir = Path(__file__).parent.parent / "tools"
 sys.path.insert(0, str(tools_dir))
 
+from unittest.mock import MagicMock
+
 from umg.composites import (
     _flatten_widget_tree,
     _validate_widget_spec,
     _contains_ref_syntax,
     _build_widget_batch_commands,
+    register_umg_composite_tools,
 )
 
 
@@ -140,6 +143,26 @@ class TestWidgetValidation:
             ],
         }]
         _validate_widget_spec("WBP_Test", "/Game/UI/", widgets, [{"name": "FadeIn", "length": 1.0}])
+
+    def test_unknown_styling_key_rejected(self):
+        """Unknown widget key raises ValueError listing valid styling keys."""
+        widgets = [{"class": "TextBlock", "name": "T", "font_size": 14}]
+        with pytest.raises(ValueError, match="unknown key 'font_size'"):
+            _validate_widget_spec("WBP_Test", "/Game/UI/", widgets)
+
+    def test_unknown_key_in_child_rejected(self):
+        """Unknown key inside a nested child is also rejected."""
+        widgets = [{
+            "class": "CanvasPanel", "name": "Root",
+            "children": [{"class": "TextBlock", "name": "T", "typo_key": "value"}],
+        }]
+        with pytest.raises(ValueError, match="unknown key 'typo_key'"):
+            _validate_widget_spec("WBP_Test", "/Game/UI/", widgets)
+
+    def test_properties_key_accepted(self):
+        """'properties' is a structural key and must not trigger unknown-key error."""
+        widgets = [{"class": "Image", "name": "Img", "properties": {"Brush.ImageSize.X": 64}}]
+        _validate_widget_spec("WBP_Test", "/Game/UI/", widgets)
 
 
 class TestBatchCommandGeneration:
@@ -351,3 +374,73 @@ class TestFixtures:
         # PlayBtnText -> parent PlayBtn
         play_text = [c for c in add_cmds if c["params"]["widget_name"] == "PlayBtnText"][0]
         assert play_text["params"]["parent_name"] == "PlayBtn"
+
+
+def _extract_tool(connection):
+    """Register composite tools with a mock MCP and return create_widget_screen."""
+    tools = {}
+
+    class MockMCP:
+        def tool(self):
+            def decorator(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return decorator
+
+    register_umg_composite_tools(MockMCP(), connection)
+    return tools["create_widget_screen"]
+
+
+class TestCompileFailureHandling:
+    """Tests for compile failure returning success: False."""
+
+    def test_compile_failure_returns_success_false(self):
+        """Widget compile failure returns success: False with error and suggestion."""
+        mock_connection = MagicMock()
+        batch_response = {
+            "success": True,
+            "data": {
+                "results": [
+                    {"index": 0, "success": True, "data": {"asset_path": "/Game/WBP_Test"}, "timing_ms": 1},
+                ],
+                "total_timing_ms": 1,
+            },
+        }
+        # batch OK, compile raises
+        mock_connection.send_command.side_effect = [
+            batch_response,
+            RuntimeError("Widget compilation error"),
+        ]
+
+        tool = _extract_tool(mock_connection)
+        result = json.loads(tool(
+            name="WBP_Test", path="/Game/UI/",
+            widgets=[{"class": "CanvasPanel", "name": "Root"}],
+        ))
+
+        assert result["success"] is False
+        assert "compil" in result["error"].lower()
+        assert "asset_path" in result
+        assert "suggestion" in result
+
+    def test_compile_success_returns_success_true(self):
+        """Successful compile+save returns success: True."""
+        mock_connection = MagicMock()
+        batch_response = {
+            "success": True,
+            "data": {
+                "results": [
+                    {"index": 0, "success": True, "data": {"asset_path": "/Game/WBP_Test"}, "timing_ms": 1},
+                ],
+                "total_timing_ms": 1,
+            },
+        }
+        mock_connection.send_command.return_value = batch_response
+
+        tool = _extract_tool(mock_connection)
+        result = json.loads(tool(
+            name="WBP_Test", path="/Game/UI/",
+            widgets=[{"class": "CanvasPanel", "name": "Root"}],
+        ))
+
+        assert result["success"] is True

@@ -11,11 +11,14 @@ import pytest
 tools_dir = Path(__file__).parent.parent / "tools"
 sys.path.insert(0, str(tools_dir))
 
+from unittest.mock import MagicMock
+
 from blueprint.composites import (
     _resolve_class_name,
     _contains_ref_syntax,
     _validate_spec,
     _build_batch_commands,
+    register_blueprint_composite_tools,
 )
 
 
@@ -83,8 +86,13 @@ class TestValidation:
 
     def test_valid_types(self):
         """All valid types should pass."""
-        for t in ["Actor", "Component", "Widget", "Interface", "FunctionLibrary"]:
+        for t in ["Actor", "Component", "Interface", "FunctionLibrary"]:
             _validate_spec("BP_Test", "/Game/", bp_type=t, nodes=[], connections=[])
+
+    def test_widget_type_rejected_with_redirect(self):
+        """Widget type is rejected with a message pointing to create_widget_screen."""
+        with pytest.raises(ValueError, match="create_widget_screen"):
+            _validate_spec("BP_Test", "/Game/", bp_type="Widget", nodes=[], connections=[])
 
     def test_duplicate_node_names(self):
         nodes = [
@@ -439,3 +447,86 @@ class TestFixtures:
         conn_cmd = [c for c in commands if c["command"] == "graph.connect"][0]
         assert conn_cmd["params"]["source_node"] == "$steps[4].data.node_id"
         assert conn_cmd["params"]["target_node"] == "$steps[5].data.node_id"
+
+
+def _extract_tool(connection):
+    """Register composite tools with a mock MCP and return create_blueprint_graph."""
+    tools = {}
+
+    class MockMCP:
+        def tool(self):
+            def decorator(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return decorator
+
+    register_blueprint_composite_tools(MockMCP(), connection)
+    return tools["create_blueprint_graph"]
+
+
+class TestParentClass:
+    """Tests for parent_class parameter wiring."""
+
+    def test_parent_class_forwarded_to_create(self):
+        """parent_class is passed to bp.create when provided."""
+        commands = _build_batch_commands(
+            "BP_Test", "/Game/", "Actor", [], [], [], [], "EventGraph",
+            parent_class="/Script/Engine.Character",
+        )
+        assert commands[0]["params"]["parent_class"] == "/Script/Engine.Character"
+
+    def test_parent_class_omitted_when_empty(self):
+        """parent_class is not included in bp.create params when empty string."""
+        commands = _build_batch_commands(
+            "BP_Test", "/Game/", "Actor", [], [], [], [], "EventGraph", parent_class="",
+        )
+        assert "parent_class" not in commands[0]["params"]
+
+
+class TestCompileFailureHandling:
+    """Tests for compile failure returning success: False."""
+
+    def test_compile_failure_returns_success_false(self):
+        """Compile failure returns success: False with error and suggestion."""
+        mock_connection = MagicMock()
+        batch_response = {
+            "success": True,
+            "data": {
+                "results": [
+                    {"index": 0, "success": True, "data": {"asset_path": "/Game/BP_Test"}, "timing_ms": 1},
+                ],
+                "total_timing_ms": 1,
+            },
+        }
+        # batch OK, auto_layout not called (no nodes), compile raises
+        mock_connection.send_command.side_effect = [
+            batch_response,
+            RuntimeError("2 compile errors"),
+        ]
+
+        tool = _extract_tool(mock_connection)
+        result = json.loads(tool(name="BP_Test", path="/Game/"))
+
+        assert result["success"] is False
+        assert "compil" in result["error"].lower()
+        assert "asset_path" in result
+        assert "suggestion" in result
+
+    def test_compile_success_returns_success_true(self):
+        """Successful compile+save returns success: True."""
+        mock_connection = MagicMock()
+        batch_response = {
+            "success": True,
+            "data": {
+                "results": [
+                    {"index": 0, "success": True, "data": {"asset_path": "/Game/BP_Test"}, "timing_ms": 1},
+                ],
+                "total_timing_ms": 1,
+            },
+        }
+        mock_connection.send_command.return_value = batch_response
+
+        tool = _extract_tool(mock_connection)
+        result = json.loads(tool(name="BP_Test", path="/Game/"))
+
+        assert result["success"] is True

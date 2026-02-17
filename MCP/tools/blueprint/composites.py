@@ -31,7 +31,7 @@ _BP_CLASS_MAP = {
     "SwitchInteger": "UK2Node_SwitchInteger",
 }
 
-_VALID_BP_TYPES = {"Actor", "Component", "Widget", "Interface", "FunctionLibrary"}
+_VALID_BP_TYPES = {"Actor", "Component", "Interface", "FunctionLibrary"}
 
 
 def _resolve_class_name(short_name: str) -> str:
@@ -68,6 +68,8 @@ def _validate_spec(
         raise ValueError("Missing required field: name")
     if not path:
         raise ValueError("Missing required field: path")
+    if bp_type == "Widget":
+        raise ValueError("type 'Widget' is not supported here. Use create_widget_screen instead.")
     if bp_type not in _VALID_BP_TYPES:
         raise ValueError(f"type must be one of {sorted(_VALID_BP_TYPES)}")
 
@@ -91,10 +93,7 @@ def _validate_spec(
     for i, node in enumerate(nodes):
         if "class" not in node:
             raise ValueError(f"Node at index {i} missing 'class' field")
-        n = node.get("name", "").strip()
-        if not n:
-            n = f"Node_{i}"
-            node["name"] = n
+        n = (node.get("name") or "").strip() or f"Node_{i}"
         node_names.append(n)
 
     if len(node_names) != len(set(node_names)):
@@ -143,16 +142,17 @@ def _build_batch_commands(
     nodes: list[dict],
     connections: list[dict],
     graph_name: str,
+    parent_class: str = "",
 ) -> list[dict]:
     """Translate Blueprint spec into batch commands with $ref wiring."""
     path = path.rstrip("/")
     commands: list[dict] = []
 
     # Step 0: create blueprint
-    commands.append({
-        "command": "bp.create",
-        "params": {"name": name, "path": path, "type": bp_type},
-    })
+    create_params: dict = {"name": name, "path": path, "type": bp_type}
+    if parent_class:
+        create_params["parent_class"] = parent_class
+    commands.append({"command": "bp.create", "params": create_params})
 
     # Steps 1..V: add variables
     for var in variables:
@@ -181,14 +181,14 @@ def _build_batch_commands(
             func_params["access"] = func["access"]
         commands.append({"command": "bp.add_function", "params": func_params})
 
-    # Build node_name -> step_index map
-    # node_step_index = 1 + len(variables) + len(functions) + node_index
+    # Build node_name -> step_index map dynamically to stay correct if
+    # variable/function command count ever changes conditionally.
     node_name_to_step: dict[str, int] = {}
-    base_node_step = 1 + len(variables) + len(functions)
+    base_node_step = len(commands)
 
     # Steps base..base+N: add nodes
     for i, node in enumerate(nodes):
-        node_name = node.get("name", f"Node_{i}")
+        node_name = (node.get("name") or "").strip() or f"Node_{i}"
         step_index = base_node_step + i
         node_name_to_step[node_name] = step_index
 
@@ -203,7 +203,7 @@ def _build_batch_commands(
 
     # Steps: set pin values
     for i, node in enumerate(nodes):
-        node_name = node.get("name", f"Node_{i}")
+        node_name = (node.get("name") or "").strip() or f"Node_{i}"
         pin_values = node.get("pin_values")
         if not pin_values:
             continue
@@ -265,8 +265,10 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         Args:
             name: Blueprint name (e.g., "BP_HealthSystem")
             path: Directory path (e.g., "/Game/Blueprints/")
-            type: Blueprint base type: Actor, Component, Widget, Interface, FunctionLibrary
-            parent_class: Optional C++ parent class (overrides type)
+            type: Blueprint base type: Actor, Component, Interface, FunctionLibrary
+                  (for Widget Blueprints use create_widget_screen instead)
+            parent_class: Optional C++ parent class path (e.g., "/Script/Engine.Character").
+                          When set, overrides the base type selection.
             variables: Array of variable specs with:
                 - name: Variable name
                 - type: Variable type (float, int, bool, string, Vector, etc.)
@@ -327,7 +329,7 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
             return json.dumps({"success": False, "error": f"Invalid spec: {e}"})
 
         # 2. Build batch commands
-        commands = _build_batch_commands(name, path, type, variables, functions, nodes, connections, graph_name)
+        commands = _build_batch_commands(name, path, type, variables, functions, nodes, connections, graph_name, parent_class)
         total_steps = len(commands)
 
         # 3. Send batch with stop_on_error
@@ -411,9 +413,21 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         if asset_path:
             try:
                 connection.send_command("bp.compile", {"asset_path": asset_path})
-            except Exception as e:
-                logger.warning(f"compile failed for {asset_path}: {e}", exc_info=True)
-                warnings.append({"step": "compile", "error": str(e)})
+            except (RuntimeError, ConnectionError, TimeoutError, OSError) as e:
+                # Compile failure is a hard error — save the uncompiled asset so the
+                # user can open it in the editor and diagnose the graph errors.
+                try:
+                    connection.send_command("bp.save", {"asset_path": asset_path})
+                except Exception:
+                    pass
+                return json.dumps({
+                    "success": False,
+                    "error": f"Blueprint compilation failed: {e}",
+                    "asset_path": asset_path,
+                    "suggestion": "Asset was created but has compile errors. "
+                                  "Open in Unreal Editor to diagnose graph issues, "
+                                  "then fix the spec and recreate.",
+                }, indent=2)
 
             try:
                 connection.send_command("bp.save", {"asset_path": asset_path})

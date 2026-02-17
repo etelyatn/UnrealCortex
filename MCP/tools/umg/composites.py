@@ -22,6 +22,9 @@ _STYLING_KEYS = {
 # Keys that are structural, not styling
 _STRUCTURAL_KEYS = {"class", "name", "children", "properties"}
 
+# All keys recognised on a widget dict
+_VALID_WIDGET_KEYS = _STRUCTURAL_KEYS | set(_STYLING_KEYS.keys())
+
 
 def _contains_ref_syntax(value):
     """Check if value or any nested element contains $steps[ syntax."""
@@ -76,6 +79,14 @@ def _validate_widget_spec(
                 raise ValueError(f"Widget at depth {depth} index {i} missing 'class' field")
             if "name" not in w:
                 raise ValueError(f"Widget at depth {depth} index {i} missing 'name' field")
+            # Reject unknown keys — silent drops train LLMs that typos are acceptable
+            for key in w:
+                if key not in _VALID_WIDGET_KEYS:
+                    raise ValueError(
+                        f"Widget '{w.get('name', '?')}' has unknown key '{key}'. "
+                        f"Valid styling keys: {sorted(_STYLING_KEYS.keys())}. "
+                        f"Use 'properties' for arbitrary widget properties."
+                    )
             # Check for $steps[ in styling values
             for key, value in w.items():
                 if key in _STRUCTURAL_KEYS:
@@ -347,9 +358,21 @@ def register_umg_composite_tools(mcp, connection: UEConnection):
         if asset_path:
             try:
                 connection.send_command("bp.compile", {"asset_path": asset_path})
-            except Exception as e:
-                logger.warning(f"compile failed for {asset_path}: {e}", exc_info=True)
-                warnings.append({"step": "compile", "error": str(e)})
+            except (RuntimeError, ConnectionError, TimeoutError, OSError) as e:
+                # Compile failure is a hard error — save the uncompiled asset so the
+                # user can open it in the editor and diagnose the widget tree errors.
+                try:
+                    connection.send_command("bp.save", {"asset_path": asset_path})
+                except Exception:
+                    pass
+                return json.dumps({
+                    "success": False,
+                    "error": f"Widget Blueprint compilation failed: {e}",
+                    "asset_path": asset_path,
+                    "suggestion": "Asset was created but has compile errors. "
+                                  "Open in Unreal Editor to inspect the widget tree, "
+                                  "then fix the spec and recreate.",
+                }, indent=2)
 
             try:
                 connection.send_command("bp.save", {"asset_path": asset_path})
