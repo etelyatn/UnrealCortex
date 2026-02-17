@@ -12,5 +12,8 @@ bool FCortexModuleLoadTest::RunTest(const FString& Parameters)
 {
 	const bool bLoaded = FModuleManager::Get().IsModuleLoaded(TEXT("CortexCore"));
 	TestTrue(TEXT("CortexCore module should be loaded"), bLoaded);
+
+	const bool bQALoaded = FModuleManager::Get().IsModuleLoaded(TEXT("CortexQA"));
+	TestTrue(TEXT("CortexQA module should be loaded"), bQALoaded);
 	return true;
 }

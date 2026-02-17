@@ -81,6 +81,14 @@ namespace CortexErrorCodes
 	static const FString ConsoleCommandFailed = TEXT("CONSOLE_COMMAND_FAILED");
 	static const FString InvalidTimeScale = TEXT("INVALID_TIME_SCALE");
 	static const FString GameModeNotFound = TEXT("GAME_MODE_NOT_FOUND");
+	// QA errors
+	static const FString NavigationFailed = TEXT("NAVIGATION_FAILED");
+	static const FString InteractionFailed = TEXT("INTERACTION_FAILED");
+	static const FString ConditionTimeout = TEXT("CONDITION_TIMEOUT");
+	static const FString AssertionFailed = TEXT("ASSERTION_FAILED");
+	static const FString InvalidCondition = TEXT("INVALID_CONDITION");
+	static const FString UnsupportedType = TEXT("UNSUPPORTED_TYPE");
+	static const FString MovementMethodUnavailable = TEXT("MOVEMENT_METHOD_UNAVAILABLE");
 }
 
 /** Result of a command execution */

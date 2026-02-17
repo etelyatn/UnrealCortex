@@ -1,0 +1,20 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "CortexCommandRouter.h"
+
+class AActor;
+class APlayerController;
+class UWorld;
+
+class FCortexQAUtils
+{
+public:
+    static UWorld* GetPIEWorld();
+    static APlayerController* GetPlayerController(UWorld* World);
+    static AActor* FindActorByName(UWorld* World, const FString& ActorIdentifier);
+    static FCortexCommandResult PIENotActiveError();
+
+    static void SetVectorArray(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FVector& Value);
+    static void SetRotatorArray(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FRotator& Value);
+};
