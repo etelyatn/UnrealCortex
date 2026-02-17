@@ -22,6 +22,7 @@ public class CortexQA : ModuleRules
             "NavigationSystem",
             "AIModule",
             "GameplayTags",
+            "InputCore",
             "CortexEditor",
         });
     }
