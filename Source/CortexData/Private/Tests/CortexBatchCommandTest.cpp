@@ -215,7 +215,7 @@ bool FCortexBatchCommandTest::RunTest(const FString& Parameters)
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 
 		TArray<TSharedPtr<FJsonValue>> Commands;
-		for (int32 i = 0; i < 21; ++i)
+		for (int32 i = 0; i < FCortexCommandRouter::MaxBatchSize + 1; ++i)
 		{
 			TSharedRef<FJsonObject> Cmd = MakeShared<FJsonObject>();
 			Cmd->SetStringField(TEXT("command"), TEXT("ping"));

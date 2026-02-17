@@ -357,10 +357,10 @@ bool FCortexCommandRouter::ResolveValueRefs(
 			return true;
 		}
 
-		// Warn if string contains $steps[ mid-string (but don't resolve)
+		// Log if string contains $steps[ mid-string (but don't resolve - value passes through unchanged)
 		if (StrValue.Contains(TEXT("$steps[")))
 		{
-			UE_LOG(LogCortex, Warning, TEXT("String field '%s' contains '$steps[' mid-string - this is not resolved. Value: %s"), *Key, *StrValue);
+			UE_LOG(LogCortex, Log, TEXT("String field '%s' contains '$steps[' mid-string - this is not resolved. Value: %s"), *Key, *StrValue);
 		}
 
 		return true;
