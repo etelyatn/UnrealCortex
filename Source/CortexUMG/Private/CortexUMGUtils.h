@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "CortexCommandRouter.h"
+#include "CortexPropertyUtils.h"
 #include "WidgetBlueprint.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/PanelWidget.h"
@@ -99,56 +100,6 @@ namespace CortexUMGUtils
 
     inline bool ResolvePropertyPath(UObject* Object, const FString& PropertyPath, FProperty*& OutProperty, void*& OutValuePtr)
     {
-        TArray<FString> Segments;
-        PropertyPath.ParseIntoArray(Segments, TEXT("."), true);
-
-        if (Segments.Num() == 0)
-        {
-            return false;
-        }
-
-        UStruct* CurrentStruct = Object->GetClass();
-        void* CurrentContainer = Object;
-        FProperty* CurrentProperty = nullptr;
-
-        for (int32 i = 0; i < Segments.Num(); ++i)
-        {
-            CurrentProperty = CurrentStruct->FindPropertyByName(FName(*Segments[i]));
-            if (!CurrentProperty)
-            {
-                return false;
-            }
-
-            void* ValuePtr = CurrentProperty->ContainerPtrToValuePtr<void>(CurrentContainer);
-
-            if (i == Segments.Num() - 1)
-            {
-                OutProperty = CurrentProperty;
-                OutValuePtr = ValuePtr;
-                return true;
-            }
-
-            if (FStructProperty* StructProp = CastField<FStructProperty>(CurrentProperty))
-            {
-                CurrentStruct = StructProp->Struct;
-                CurrentContainer = ValuePtr;
-            }
-            else if (FObjectProperty* ObjProp = CastField<FObjectProperty>(CurrentProperty))
-            {
-                UObject* ObjValue = *static_cast<UObject**>(ValuePtr);
-                if (!ObjValue)
-                {
-                    return false;
-                }
-                CurrentStruct = ObjValue->GetClass();
-                CurrentContainer = ObjValue;
-            }
-            else
-            {
-                return false;
-            }
-        }
-
-        return false;
+        return FCortexPropertyUtils::ResolvePropertyPath(Object, PropertyPath, OutProperty, OutValuePtr);
     }
 }
