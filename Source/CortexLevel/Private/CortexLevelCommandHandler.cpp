@@ -4,6 +4,7 @@
 #include "Operations/CortexLevelActorOps.h"
 #include "Operations/CortexLevelComponentOps.h"
 #include "Operations/CortexLevelDiscoveryOps.h"
+#include "Operations/CortexLevelQueryOps.h"
 #include "Operations/CortexLevelTransformOps.h"
 
 FCortexCommandResult FCortexLevelCommandHandler::Execute(
@@ -74,6 +75,26 @@ FCortexCommandResult FCortexLevelCommandHandler::Execute(
     {
         return FCortexLevelDiscoveryOps::DescribeClass(Params);
     }
+    if (Command == TEXT("list_actors"))
+    {
+        return FCortexLevelQueryOps::ListActors(Params);
+    }
+    if (Command == TEXT("find_actors"))
+    {
+        return FCortexLevelQueryOps::FindActors(Params);
+    }
+    if (Command == TEXT("get_bounds"))
+    {
+        return FCortexLevelQueryOps::GetBounds(Params);
+    }
+    if (Command == TEXT("select_actors"))
+    {
+        return FCortexLevelQueryOps::SelectActors(Params);
+    }
+    if (Command == TEXT("get_selection"))
+    {
+        return FCortexLevelQueryOps::GetSelection(Params);
+    }
 
     return FCortexCommandRouter::Error(
         CortexErrorCodes::UnknownCommand,
@@ -100,5 +121,10 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
         { TEXT("list_actor_classes"), TEXT("List curated actor classes by category") },
         { TEXT("list_component_classes"), TEXT("List curated component classes by category") },
         { TEXT("describe_class"), TEXT("Describe class properties and defaults") },
+        { TEXT("list_actors"), TEXT("List actors with filters and pagination") },
+        { TEXT("find_actors"), TEXT("Find actors by wildcard pattern") },
+        { TEXT("get_bounds"), TEXT("Compute bounds for filtered actors") },
+        { TEXT("select_actors"), TEXT("Select actors in editor") },
+        { TEXT("get_selection"), TEXT("Get current actor selection") },
     };
 }
