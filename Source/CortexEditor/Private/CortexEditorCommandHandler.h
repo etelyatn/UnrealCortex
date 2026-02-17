@@ -4,6 +4,7 @@
 #include "ICortexDomainHandler.h"
 
 class FCortexEditorPIEState;
+class FCortexEditorLogCapture;
 
 class FCortexEditorCommandHandler : public ICortexDomainHandler
 {
@@ -21,4 +22,5 @@ public:
 
 private:
 	TUniquePtr<FCortexEditorPIEState> PIEState;
+	TUniquePtr<FCortexEditorLogCapture> LogCapture;
 };

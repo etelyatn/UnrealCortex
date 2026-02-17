@@ -1,6 +1,7 @@
 #include "CortexEditorCommandHandler.h"
 #include "CortexCommandRouter.h"
 #include "CortexEditorPIEState.h"
+#include "CortexEditorLogCapture.h"
 #include "Operations/CortexEditorPIEOps.h"
 #include "Operations/CortexEditorInputOps.h"
 #include "Operations/CortexEditorUtilityOps.h"
@@ -10,10 +11,16 @@ FCortexEditorCommandHandler::FCortexEditorCommandHandler()
 {
 	PIEState = MakeUnique<FCortexEditorPIEState>();
 	PIEState->BindDelegates();
+	LogCapture = MakeUnique<FCortexEditorLogCapture>(5000);
+	LogCapture->StartCapture();
 }
 
 FCortexEditorCommandHandler::~FCortexEditorCommandHandler()
 {
+	if (LogCapture.IsValid())
+	{
+		LogCapture->StopCapture();
+	}
 }
 
 FCortexCommandResult FCortexEditorCommandHandler::Execute(
@@ -67,6 +74,10 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	if (PIEState.IsValid() && Command == TEXT("get_editor_state"))
 	{
 		return FCortexEditorUtilityOps::GetEditorState(*PIEState);
+	}
+	if (LogCapture.IsValid() && Command == TEXT("get_recent_logs"))
+	{
+		return FCortexEditorUtilityOps::GetRecentLogs(*LogCapture, Params);
 	}
 	if (Command == TEXT("get_viewport_info"))
 	{
