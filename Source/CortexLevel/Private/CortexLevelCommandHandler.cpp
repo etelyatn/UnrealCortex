@@ -2,6 +2,7 @@
 #include "CortexCommandRouter.h"
 #include "CortexTypes.h"
 #include "Operations/CortexLevelActorOps.h"
+#include "Operations/CortexLevelTransformOps.h"
 
 FCortexCommandResult FCortexLevelCommandHandler::Execute(
     const FString& Command,
@@ -23,6 +24,22 @@ FCortexCommandResult FCortexLevelCommandHandler::Execute(
     {
         return FCortexLevelActorOps::RenameActor(Params);
     }
+    if (Command == TEXT("get_actor"))
+    {
+        return FCortexLevelTransformOps::GetActor(Params);
+    }
+    if (Command == TEXT("set_transform"))
+    {
+        return FCortexLevelTransformOps::SetTransform(Params);
+    }
+    if (Command == TEXT("set_actor_property"))
+    {
+        return FCortexLevelTransformOps::SetActorProperty(Params);
+    }
+    if (Command == TEXT("get_actor_property"))
+    {
+        return FCortexLevelTransformOps::GetActorProperty(Params);
+    }
 
     return FCortexCommandRouter::Error(
         CortexErrorCodes::UnknownCommand,
@@ -37,5 +54,9 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
         { TEXT("delete_actor"), TEXT("Delete actor by name/label") },
         { TEXT("duplicate_actor"), TEXT("Duplicate an existing actor") },
         { TEXT("rename_actor"), TEXT("Change actor label") },
+        { TEXT("get_actor"), TEXT("Get full actor details") },
+        { TEXT("set_transform"), TEXT("Set actor location/rotation/scale") },
+        { TEXT("set_actor_property"), TEXT("Set actor UPROPERTY value") },
+        { TEXT("get_actor_property"), TEXT("Read actor UPROPERTY value") },
     };
 }
