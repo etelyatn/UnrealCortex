@@ -41,6 +41,11 @@
             "Name": "CortexMaterial",
             "Type": "Editor",
             "LoadingPhase": "PostEngineInit"
+        },
+        {
+            "Name": "CortexLevel",
+            "Type": "Editor",
+            "LoadingPhase": "PostEngineInit"
         }
     ]
 }
