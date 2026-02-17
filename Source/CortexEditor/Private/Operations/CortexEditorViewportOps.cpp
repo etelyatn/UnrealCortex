@@ -68,9 +68,27 @@ FCortexCommandResult FCortexEditorViewportOps::GetViewportInfo()
 	CameraLocation->SetNumberField(TEXT("x"), ViewLoc.X);
 	CameraLocation->SetNumberField(TEXT("y"), ViewLoc.Y);
 	CameraLocation->SetNumberField(TEXT("z"), ViewLoc.Z);
-	Data->SetStringField(
-		TEXT("view_mode"),
-		FString::Printf(TEXT("%d"), static_cast<int32>(ViewportClient.GetViewMode())));
+	const EViewModeIndex CurrentViewMode = ViewportClient.GetViewMode();
+	FString ViewModeStr;
+	switch (CurrentViewMode)
+	{
+	case VMI_Lit:
+		ViewModeStr = TEXT("lit");
+		break;
+	case VMI_Unlit:
+		ViewModeStr = TEXT("unlit");
+		break;
+	case VMI_BrushWireframe:
+		ViewModeStr = TEXT("wireframe");
+		break;
+	case VMI_Lit_Wireframe:
+		ViewModeStr = TEXT("lit_wireframe");
+		break;
+	default:
+		ViewModeStr = FString::Printf(TEXT("other_%d"), static_cast<int32>(CurrentViewMode));
+		break;
+	}
+	Data->SetStringField(TEXT("view_mode"), ViewModeStr);
 
 	return FCortexCommandRouter::Success(Data);
 }
@@ -81,7 +99,7 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 	if (!Viewport.IsValid() || Viewport->GetActiveViewport() == nullptr)
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("VIEWPORT_NOT_FOUND"),
+			CortexErrorCodes::ViewportNotFound,
 			TEXT("No active editor viewport found"));
 	}
 
@@ -102,7 +120,7 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 	if (Size.X <= 0 || Size.Y <= 0)
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("SCREENSHOT_FAILED"),
+			CortexErrorCodes::ScreenshotFailed,
 			TEXT("Active viewport has invalid resolution"));
 	}
 
@@ -113,7 +131,7 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 	if (!ActiveViewport->ReadPixels(Pixels))
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("SCREENSHOT_FAILED"),
+			CortexErrorCodes::ScreenshotFailed,
 			TEXT("Failed to read viewport pixels"));
 	}
 
@@ -123,7 +141,7 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 		!PngWrapper->SetRaw(Pixels.GetData(), Pixels.Num() * sizeof(FColor), Size.X, Size.Y, ERGBFormat::BGRA, 8))
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("SCREENSHOT_FAILED"),
+			CortexErrorCodes::ScreenshotFailed,
 			TEXT("Failed to encode PNG"));
 	}
 
@@ -133,7 +151,7 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 	if (!FFileHelper::SaveArrayToFile(FileBytes, *OutputPath))
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("SCREENSHOT_FAILED"),
+			CortexErrorCodes::ScreenshotFailed,
 			TEXT("Failed to write PNG file"));
 	}
 
@@ -161,7 +179,7 @@ FCortexCommandResult FCortexEditorViewportOps::SetViewportCamera(const TSharedPt
 	const TSharedPtr<IAssetViewport> Viewport = GetActiveAssetViewport();
 	if (!Viewport.IsValid())
 	{
-		return FCortexCommandRouter::Error(TEXT("VIEWPORT_NOT_FOUND"), TEXT("No active editor viewport found"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::ViewportNotFound, TEXT("No active editor viewport found"));
 	}
 
 	double X = 0.0;
@@ -204,14 +222,14 @@ FCortexCommandResult FCortexEditorViewportOps::FocusActor(const TSharedPtr<FJson
 	const TSharedPtr<IAssetViewport> Viewport = GetActiveAssetViewport();
 	if (!Viewport.IsValid())
 	{
-		return FCortexCommandRouter::Error(TEXT("VIEWPORT_NOT_FOUND"), TEXT("No active editor viewport found"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::ViewportNotFound, TEXT("No active editor viewport found"));
 	}
 
 	AActor* Actor = FindObject<AActor>(nullptr, *ActorPath);
 	if (Actor == nullptr)
 	{
 		return FCortexCommandRouter::Error(
-			CortexErrorCodes::AssetNotFound,
+			CortexErrorCodes::InvalidField,
 			FString::Printf(TEXT("Actor not found: %s"), *ActorPath));
 	}
 
@@ -260,7 +278,7 @@ FCortexCommandResult FCortexEditorViewportOps::SetViewportMode(const TSharedPtr<
 	const TSharedPtr<IAssetViewport> Viewport = GetActiveAssetViewport();
 	if (!Viewport.IsValid())
 	{
-		return FCortexCommandRouter::Error(TEXT("VIEWPORT_NOT_FOUND"), TEXT("No active editor viewport found"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::ViewportNotFound, TEXT("No active editor viewport found"));
 	}
 
 	FEditorViewportClient& Client = Viewport->GetAssetViewportClient();

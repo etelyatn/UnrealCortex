@@ -85,7 +85,7 @@ FCortexCommandResult FCortexEditorUtilityOps::ExecuteConsoleCommand(
 	if (!PIEState.IsActive() || GEditor == nullptr || GEditor->PlayWorld == nullptr)
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("PIE_NOT_ACTIVE"),
+			CortexErrorCodes::PIENotActive,
 			TEXT("PIE is not running. Call start_pie first."));
 	}
 
@@ -101,7 +101,7 @@ FCortexCommandResult FCortexEditorUtilityOps::ExecuteConsoleCommand(
 	if (!bOk)
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("CONSOLE_COMMAND_FAILED"),
+			CortexErrorCodes::ConsoleCommandFailed,
 			FString::Printf(TEXT("Console command failed: %s"), *Command));
 	}
 
@@ -131,7 +131,7 @@ FCortexCommandResult FCortexEditorUtilityOps::SetTimeDilation(
 	if (!PIEState.IsActive() || GEditor == nullptr || GEditor->PlayWorld == nullptr)
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("PIE_NOT_ACTIVE"),
+			CortexErrorCodes::PIENotActive,
 			TEXT("PIE is not running. Call start_pie first."));
 	}
 
@@ -147,7 +147,7 @@ FCortexCommandResult FCortexEditorUtilityOps::GetWorldInfo(const FCortexEditorPI
 	if (!PIEState.IsActive() || GEditor == nullptr || GEditor->PlayWorld == nullptr)
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("PIE_NOT_ACTIVE"),
+			CortexErrorCodes::PIENotActive,
 			TEXT("PIE is not running. Call start_pie first."));
 	}
 

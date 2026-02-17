@@ -89,7 +89,7 @@ void FCortexEditorPIEState::OnPIEEnded()
 
 	FCortexCommandResult ErrorResult;
 	ErrorResult.bSuccess = false;
-	ErrorResult.ErrorCode = TEXT("PIE_TERMINATED");
+	ErrorResult.ErrorCode = CortexErrorCodes::PIETerminated;
 	ErrorResult.ErrorMessage = TEXT("PIE session ended while command was pending");
 	CompletePendingCallbacks(ErrorResult);
 }

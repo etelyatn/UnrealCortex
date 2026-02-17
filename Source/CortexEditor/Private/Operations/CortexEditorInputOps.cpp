@@ -11,7 +11,7 @@ FCortexCommandResult ValidateInputContext(const FCortexEditorPIEState& PIEState)
 	if (!PIEState.IsActive())
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("PIE_NOT_ACTIVE"),
+			CortexErrorCodes::PIENotActive,
 			TEXT("PIE is not running. Call start_pie first."));
 	}
 
@@ -37,9 +37,9 @@ FCortexCommandResult FCortexEditorInputOps::InjectKey(
 	}
 
 	(void)Params;
-	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-	Data->SetStringField(TEXT("status"), TEXT("accepted"));
-	return FCortexCommandRouter::Success(Data);
+	return FCortexCommandRouter::Error(
+		CortexErrorCodes::InvalidOperation,
+		TEXT("inject_key is not yet implemented"));
 }
 
 FCortexCommandResult FCortexEditorInputOps::InjectMouse(
@@ -53,9 +53,9 @@ FCortexCommandResult FCortexEditorInputOps::InjectMouse(
 	}
 
 	(void)Params;
-	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-	Data->SetStringField(TEXT("status"), TEXT("accepted"));
-	return FCortexCommandRouter::Success(Data);
+	return FCortexCommandRouter::Error(
+		CortexErrorCodes::InvalidOperation,
+		TEXT("inject_mouse is not yet implemented"));
 }
 
 FCortexCommandResult FCortexEditorInputOps::InjectInputAction(
@@ -69,9 +69,9 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputAction(
 	}
 
 	(void)Params;
-	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-	Data->SetStringField(TEXT("status"), TEXT("accepted"));
-	return FCortexCommandRouter::Success(Data);
+	return FCortexCommandRouter::Error(
+		CortexErrorCodes::InvalidOperation,
+		TEXT("inject_input_action is not yet implemented"));
 }
 
 FCortexCommandResult FCortexEditorInputOps::InjectInputSequence(

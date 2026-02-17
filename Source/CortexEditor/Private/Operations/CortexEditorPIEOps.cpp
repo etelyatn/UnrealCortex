@@ -30,13 +30,13 @@ FCortexCommandResult FCortexEditorPIEOps::StartPIE(
 	if (PIEState.IsInTransition())
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("PIE_TRANSITION_IN_PROGRESS"),
+			CortexErrorCodes::PIETransitionInProgress,
 			TEXT("PIE is currently starting/stopping. Wait and retry."));
 	}
 	if (PIEState.IsActive())
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("PIE_ALREADY_ACTIVE"),
+			CortexErrorCodes::PIEAlreadyActive,
 			TEXT("PIE is already running. Call stop_pie or restart_pie."));
 	}
 
@@ -79,13 +79,13 @@ FCortexCommandResult FCortexEditorPIEOps::StopPIE(
 	if (PIEState.IsInTransition())
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("PIE_TRANSITION_IN_PROGRESS"),
+			CortexErrorCodes::PIETransitionInProgress,
 			TEXT("PIE is currently starting/stopping. Wait and retry."));
 	}
 	if (!PIEState.IsActive())
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("PIE_NOT_ACTIVE"),
+			CortexErrorCodes::PIENotActive,
 			TEXT("PIE is not running. Call start_pie first."));
 	}
 
@@ -114,13 +114,13 @@ FCortexCommandResult FCortexEditorPIEOps::PausePIE(FCortexEditorPIEState& PIESta
 	if (!PIEState.IsActive())
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("PIE_NOT_ACTIVE"),
+			CortexErrorCodes::PIENotActive,
 			TEXT("PIE is not running. Call start_pie first."));
 	}
 	if (PIEState.GetState() == ECortexPIEState::Paused)
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("PIE_ALREADY_PAUSED"),
+			CortexErrorCodes::PIEAlreadyPaused,
 			TEXT("PIE is already paused."));
 	}
 
@@ -144,7 +144,7 @@ FCortexCommandResult FCortexEditorPIEOps::ResumePIE(FCortexEditorPIEState& PIESt
 	if (PIEState.GetState() != ECortexPIEState::Paused)
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("PIE_NOT_PAUSED"),
+			CortexErrorCodes::PIENotPaused,
 			TEXT("PIE is not paused."));
 	}
 
@@ -171,13 +171,13 @@ FCortexCommandResult FCortexEditorPIEOps::RestartPIE(
 	if (PIEState.IsInTransition())
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("PIE_TRANSITION_IN_PROGRESS"),
+			CortexErrorCodes::PIETransitionInProgress,
 			TEXT("PIE is currently starting/stopping. Wait and retry."));
 	}
 	if (!PIEState.IsActive())
 	{
 		return FCortexCommandRouter::Error(
-			TEXT("PIE_NOT_ACTIVE"),
+			CortexErrorCodes::PIENotActive,
 			TEXT("PIE is not running. Call start_pie first."));
 	}
 
@@ -185,14 +185,15 @@ FCortexCommandResult FCortexEditorPIEOps::RestartPIE(
 	GEditor->RequestEndPlayMap();
 
 	const double RestartStartTime = FPlatformTime::Seconds();
+	FCortexEditorPIEState* PIEStatePtr = &PIEState;
 	FTSTicker::GetCoreTicker().AddTicker(
-		FTickerDelegate::CreateLambda([&PIEState, Params, Callback = MoveTemp(DeferredCallback), RestartStartTime](float DeltaTime) mutable
+		FTickerDelegate::CreateLambda([PIEStatePtr, Params, Callback = MoveTemp(DeferredCallback), RestartStartTime](float DeltaTime) mutable
 		{
 			(void)DeltaTime;
 
-			if (PIEState.GetState() == ECortexPIEState::Stopped)
+			if (PIEStatePtr->GetState() == ECortexPIEState::Stopped)
 			{
-				const FCortexCommandResult StartResult = FCortexEditorPIEOps::StartPIE(PIEState, Params, MoveTemp(Callback));
+				const FCortexCommandResult StartResult = FCortexEditorPIEOps::StartPIE(*PIEStatePtr, Params, MoveTemp(Callback));
 				if (!StartResult.bIsDeferred && Callback)
 				{
 					Callback(StartResult);
@@ -205,7 +206,7 @@ FCortexCommandResult FCortexEditorPIEOps::RestartPIE(
 				if (Callback)
 				{
 					FCortexCommandResult TimeoutResult = FCortexCommandRouter::Error(
-						TEXT("PIE_TERMINATED"),
+						CortexErrorCodes::PIETerminated,
 						TEXT("restart_pie timed out waiting for stop phase"));
 					Callback(TimeoutResult);
 				}
