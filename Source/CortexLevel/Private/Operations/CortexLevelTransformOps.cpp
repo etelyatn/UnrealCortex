@@ -12,34 +12,6 @@
 
 namespace
 {
-    bool ParseVectorField(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldName, FVector& OutVector)
-    {
-        const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
-        if (!Params->TryGetArrayField(FieldName, Values))
-        {
-            return false;
-        }
-
-        if (!Values || Values->Num() != 3)
-        {
-            return false;
-        }
-
-        OutVector.X = static_cast<float>((*Values)[0]->AsNumber());
-        OutVector.Y = static_cast<float>((*Values)[1]->AsNumber());
-        OutVector.Z = static_cast<float>((*Values)[2]->AsNumber());
-        return true;
-    }
-
-    void SetTransformOpsVectorArray(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FVector& Vector)
-    {
-        TArray<TSharedPtr<FJsonValue>> Values;
-        Values.Add(MakeShared<FJsonValueNumber>(Vector.X));
-        Values.Add(MakeShared<FJsonValueNumber>(Vector.Y));
-        Values.Add(MakeShared<FJsonValueNumber>(Vector.Z));
-        Json->SetArrayField(FieldName, Values);
-    }
-
     FString MobilityToString(EComponentMobility::Type Mobility)
     {
         switch (Mobility)
@@ -63,10 +35,10 @@ namespace
         Data->SetStringField(TEXT("class"), Actor->GetClass()->GetName());
         Data->SetStringField(TEXT("blueprint"), Actor->GetClass()->ClassGeneratedBy ? Actor->GetClass()->ClassGeneratedBy->GetPathName() : TEXT(""));
 
-        SetTransformOpsVectorArray(Data, TEXT("location"), Actor->GetActorLocation());
+        FCortexLevelUtils::SetVectorArray(Data, TEXT("location"), Actor->GetActorLocation());
         const FRotator Rotation = Actor->GetActorRotation();
-        SetTransformOpsVectorArray(Data, TEXT("rotation"), FVector(Rotation.Pitch, Rotation.Yaw, Rotation.Roll));
-        SetTransformOpsVectorArray(Data, TEXT("scale"), Actor->GetActorScale3D());
+        FCortexLevelUtils::SetVectorArray(Data, TEXT("rotation"), FVector(Rotation.Pitch, Rotation.Yaw, Rotation.Roll));
+        FCortexLevelUtils::SetVectorArray(Data, TEXT("scale"), Actor->GetActorScale3D());
 
         const USceneComponent* Root = Actor->GetRootComponent();
         Data->SetStringField(TEXT("mobility"), Root ? MobilityToString(Root->Mobility) : TEXT("Unknown"));
@@ -166,19 +138,19 @@ FCortexCommandResult FCortexLevelTransformOps::SetTransform(const TSharedPtr<FJs
     Actor->Modify();
 
     FVector Location;
-    if (ParseVectorField(Params, TEXT("location"), Location))
+    if (FCortexLevelUtils::ParseVectorField(Params, TEXT("location"), Location))
     {
         Actor->SetActorLocation(Location);
     }
 
     FVector Rotation;
-    if (ParseVectorField(Params, TEXT("rotation"), Rotation))
+    if (FCortexLevelUtils::ParseVectorField(Params, TEXT("rotation"), Rotation))
     {
         Actor->SetActorRotation(FRotator(Rotation.X, Rotation.Y, Rotation.Z));
     }
 
     FVector Scale;
-    if (ParseVectorField(Params, TEXT("scale"), Scale))
+    if (FCortexLevelUtils::ParseVectorField(Params, TEXT("scale"), Scale))
     {
         Actor->SetActorScale3D(Scale);
     }
@@ -298,7 +270,7 @@ FCortexCommandResult FCortexLevelTransformOps::GetActorProperty(const TSharedPtr
     }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-    Data->SetStringField(TEXT("name"), Actor->GetName());
+    Data->SetStringField(TEXT("actor"), Actor->GetName());
     Data->SetStringField(TEXT("property"), PropertyPath);
     Data->SetStringField(TEXT("type"), Property->GetCPPType());
     Data->SetField(TEXT("value"), FCortexSerializer::PropertyToJson(Property, ValuePtr));

@@ -54,9 +54,9 @@ def register_level_organization_tools(mcp, connection: UEConnection):
             return f"Error: {e}"
 
     @mcp.tool()
-    def ungroup_actors(actors: list[str]) -> str:
+    def ungroup_actors(group: str) -> str:
         try:
-            response = connection.send_command("level.ungroup_actors", {"actors": actors})
+            response = connection.send_command("level.ungroup_actors", {"group": group})
             return format_response(response.get("data", {}), "ungroup_actors")
         except (RuntimeError, ConnectionError) as e:
             return f"Error: {e}"

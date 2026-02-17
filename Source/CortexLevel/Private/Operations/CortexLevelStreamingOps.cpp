@@ -7,6 +7,8 @@
 #include "Engine/LevelStreaming.h"
 #include "FileHelpers.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/GameModeBase.h"
+#include "GameFramework/WorldSettings.h"
 #include "WorldPartition/DataLayer/DataLayerInstance.h"
 
 namespace
@@ -78,6 +80,15 @@ FCortexCommandResult FCortexLevelStreamingOps::GetInfo(const TSharedPtr<FJsonObj
     Data->SetStringField(TEXT("world_type"), WorldTypeToString(World->WorldType));
     Data->SetNumberField(TEXT("actor_count"), ActorCount);
     Data->SetBoolField(TEXT("is_world_partition"), World->IsPartitionedWorld());
+    Data->SetNumberField(TEXT("sublevels"), World->GetStreamingLevels().Num());
+
+    TSharedPtr<FJsonObject> WorldSettings = MakeShared<FJsonObject>();
+    if (AWorldSettings* Settings = World->GetWorldSettings())
+    {
+        WorldSettings->SetStringField(TEXT("game_mode"), Settings->DefaultGameMode ? Settings->DefaultGameMode->GetPathName() : TEXT(""));
+        WorldSettings->SetNumberField(TEXT("kill_z"), Settings->KillZ);
+    }
+    Data->SetObjectField(TEXT("world_settings"), WorldSettings);
 
     FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
     if (GEditor && GEditor->IsPlaySessionInProgress())
@@ -110,8 +121,8 @@ FCortexCommandResult FCortexLevelStreamingOps::ListSublevels(const TSharedPtr<FJ
         TSharedPtr<FJsonObject> LevelJson = MakeShared<FJsonObject>();
         LevelJson->SetStringField(TEXT("name"), FPackageName::GetShortName(Streaming->GetWorldAssetPackageName()));
         LevelJson->SetStringField(TEXT("path"), Streaming->GetWorldAssetPackageName());
-        LevelJson->SetBoolField(TEXT("loaded"), Streaming->IsLevelLoaded());
-        LevelJson->SetBoolField(TEXT("visible"), Streaming->GetShouldBeVisibleFlag());
+        LevelJson->SetBoolField(TEXT("is_loaded"), Streaming->IsLevelLoaded());
+        LevelJson->SetBoolField(TEXT("is_visible"), Streaming->GetShouldBeVisibleFlag());
         LevelJson->SetStringField(TEXT("streaming_method"), Streaming->GetClass()->GetName());
         Levels.Add(MakeShared<FJsonValueObject>(LevelJson));
     }
@@ -130,9 +141,9 @@ FCortexCommandResult FCortexLevelStreamingOps::LoadSublevel(const TSharedPtr<FJs
     }
 
     FString LevelName;
-    if (!Params->TryGetStringField(TEXT("level"), LevelName) || LevelName.IsEmpty())
+    if (!Params->TryGetStringField(TEXT("sublevel"), LevelName) || LevelName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::SublevelNotFound, TEXT("Missing required parameter: level"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::SublevelNotFound, TEXT("Missing required parameter: sublevel"));
     }
 
     FCortexCommandResult Error;
@@ -151,7 +162,7 @@ FCortexCommandResult FCortexLevelStreamingOps::LoadSublevel(const TSharedPtr<FJs
     Streaming->SetShouldBeLoaded(true);
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-    Data->SetStringField(TEXT("level"), FPackageName::GetShortName(Streaming->GetWorldAssetPackageName()));
+    Data->SetStringField(TEXT("sublevel"), FPackageName::GetShortName(Streaming->GetWorldAssetPackageName()));
     Data->SetBoolField(TEXT("loaded"), true);
     return FCortexCommandRouter::Success(Data);
 }
@@ -164,9 +175,9 @@ FCortexCommandResult FCortexLevelStreamingOps::UnloadSublevel(const TSharedPtr<F
     }
 
     FString LevelName;
-    if (!Params->TryGetStringField(TEXT("level"), LevelName) || LevelName.IsEmpty())
+    if (!Params->TryGetStringField(TEXT("sublevel"), LevelName) || LevelName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::SublevelNotFound, TEXT("Missing required parameter: level"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::SublevelNotFound, TEXT("Missing required parameter: sublevel"));
     }
 
     FCortexCommandResult Error;
@@ -185,7 +196,7 @@ FCortexCommandResult FCortexLevelStreamingOps::UnloadSublevel(const TSharedPtr<F
     Streaming->SetShouldBeLoaded(false);
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-    Data->SetStringField(TEXT("level"), FPackageName::GetShortName(Streaming->GetWorldAssetPackageName()));
+    Data->SetStringField(TEXT("sublevel"), FPackageName::GetShortName(Streaming->GetWorldAssetPackageName()));
     Data->SetBoolField(TEXT("loaded"), false);
     return FCortexCommandRouter::Success(Data);
 }
@@ -199,9 +210,9 @@ FCortexCommandResult FCortexLevelStreamingOps::SetSublevelVisibility(const TShar
 
     FString LevelName;
     bool bVisible = true;
-    if (!Params->TryGetStringField(TEXT("level"), LevelName) || LevelName.IsEmpty())
+    if (!Params->TryGetStringField(TEXT("sublevel"), LevelName) || LevelName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::SublevelNotFound, TEXT("Missing required parameter: level"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::SublevelNotFound, TEXT("Missing required parameter: sublevel"));
     }
     if (!Params->TryGetBoolField(TEXT("visible"), bVisible))
     {
@@ -224,7 +235,7 @@ FCortexCommandResult FCortexLevelStreamingOps::SetSublevelVisibility(const TShar
     Streaming->SetShouldBeVisible(bVisible);
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-    Data->SetStringField(TEXT("level"), FPackageName::GetShortName(Streaming->GetWorldAssetPackageName()));
+    Data->SetStringField(TEXT("sublevel"), FPackageName::GetShortName(Streaming->GetWorldAssetPackageName()));
     Data->SetBoolField(TEXT("visible"), bVisible);
     return FCortexCommandRouter::Success(Data);
 }
@@ -275,11 +286,11 @@ FCortexCommandResult FCortexLevelStreamingOps::SetDataLayer(const TSharedPtr<FJs
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
     }
 
-    FString ActorId;
+    const TArray<TSharedPtr<FJsonValue>>* ActorValues = nullptr;
     FString DataLayerName;
-    if (!Params->TryGetStringField(TEXT("actor"), ActorId) || ActorId.IsEmpty())
+    if (!Params->TryGetArrayField(TEXT("actors"), ActorValues) || !ActorValues)
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Missing required parameter: actor"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Missing required parameter: actors"));
     }
     if (!Params->TryGetStringField(TEXT("data_layer"), DataLayerName) || DataLayerName.IsEmpty())
     {
@@ -289,12 +300,6 @@ FCortexCommandResult FCortexLevelStreamingOps::SetDataLayer(const TSharedPtr<FJs
     FCortexCommandResult Error;
     UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
     if (!World)
-    {
-        return Error;
-    }
-
-    AActor* Actor = FCortexLevelUtils::FindActorByLabelOrPath(World, ActorId, Error);
-    if (!Actor)
     {
         return Error;
     }
@@ -316,14 +321,27 @@ FCortexCommandResult FCortexLevelStreamingOps::SetDataLayer(const TSharedPtr<FJs
         return FCortexCommandRouter::Error(CortexErrorCodes::DataLayerNotFound, FString::Printf(TEXT("Data layer not found: %s"), *DataLayerName));
     }
 
-    if (!DataLayerSubsystem->AddActorToDataLayer(Actor, Layer))
+    TArray<TSharedPtr<FJsonValue>> AssignedActors;
+    for (const TSharedPtr<FJsonValue>& Value : *ActorValues)
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Failed to assign actor to data layer"));
+        const FString ActorId = Value->AsString();
+        FCortexCommandResult FindError;
+        AActor* Actor = FCortexLevelUtils::FindActorByLabelOrPath(World, ActorId, FindError);
+        if (!Actor)
+        {
+            continue;
+        }
+
+        if (DataLayerSubsystem->AddActorToDataLayer(Actor, Layer))
+        {
+            AssignedActors.Add(MakeShared<FJsonValueString>(Actor->GetName()));
+        }
     }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-    Data->SetStringField(TEXT("actor"), Actor->GetName());
+    Data->SetArrayField(TEXT("actors"), AssignedActors);
     Data->SetStringField(TEXT("data_layer"), Layer->GetDataLayerShortName());
+    Data->SetNumberField(TEXT("count"), AssignedActors.Num());
     return FCortexCommandRouter::Success(Data);
 }
 

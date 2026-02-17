@@ -147,10 +147,14 @@ UClass* FCortexLevelUtils::ResolveActorClass(const FString& ClassIdentifier, FCo
 
     if (!ResolvedClass)
     {
-        UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *ClassIdentifier);
-        if (Blueprint)
+        const FString PkgName = FPackageName::ObjectPathToPackageName(ClassIdentifier);
+        if (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName))
         {
-            ResolvedClass = Blueprint->GeneratedClass;
+            UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *ClassIdentifier);
+            if (Blueprint)
+            {
+                ResolvedClass = Blueprint->GeneratedClass;
+            }
         }
     }
 
@@ -176,14 +180,9 @@ TSharedPtr<FJsonObject> FCortexLevelUtils::SerializeActorSummary(AActor* Actor)
 
     Json->SetStringField(TEXT("name"), Actor->GetName());
     Json->SetStringField(TEXT("label"), Actor->GetActorLabel());
-    Json->SetStringField(TEXT("class"), Actor->GetClass()->GetPathName());
+    Json->SetStringField(TEXT("class"), Actor->GetClass()->GetName());
 
-    TSharedPtr<FJsonObject> Location = MakeShared<FJsonObject>();
-    const FVector Position = Actor->GetActorLocation();
-    Location->SetNumberField(TEXT("x"), Position.X);
-    Location->SetNumberField(TEXT("y"), Position.Y);
-    Location->SetNumberField(TEXT("z"), Position.Z);
-    Json->SetObjectField(TEXT("location"), Location);
+    SetVectorArray(Json, TEXT("location"), Actor->GetActorLocation());
 
     Json->SetStringField(TEXT("folder"), Actor->GetFolderPath().ToString());
 
@@ -195,4 +194,53 @@ TSharedPtr<FJsonObject> FCortexLevelUtils::SerializeActorSummary(AActor* Actor)
     Json->SetArrayField(TEXT("tags"), Tags);
 
     return Json;
+}
+
+bool FCortexLevelUtils::TryParseVector(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldName, const FVector& DefaultValue, FVector& OutVector)
+{
+    OutVector = DefaultValue;
+
+    const TArray<TSharedPtr<FJsonValue>>* ArrayValue = nullptr;
+    if (!Params.IsValid() || !Params->TryGetArrayField(FieldName, ArrayValue))
+    {
+        return true;
+    }
+
+    if (!ArrayValue || ArrayValue->Num() != 3)
+    {
+        return false;
+    }
+
+    OutVector.X = static_cast<float>((*ArrayValue)[0]->AsNumber());
+    OutVector.Y = static_cast<float>((*ArrayValue)[1]->AsNumber());
+    OutVector.Z = static_cast<float>((*ArrayValue)[2]->AsNumber());
+    return true;
+}
+
+bool FCortexLevelUtils::ParseVectorField(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldName, FVector& OutVector)
+{
+    const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+    if (!Params->TryGetArrayField(FieldName, Values))
+    {
+        return false;
+    }
+
+    if (!Values || Values->Num() != 3)
+    {
+        return false;
+    }
+
+    OutVector.X = static_cast<float>((*Values)[0]->AsNumber());
+    OutVector.Y = static_cast<float>((*Values)[1]->AsNumber());
+    OutVector.Z = static_cast<float>((*Values)[2]->AsNumber());
+    return true;
+}
+
+void FCortexLevelUtils::SetVectorArray(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FVector& Vector)
+{
+    TArray<TSharedPtr<FJsonValue>> Values;
+    Values.Add(MakeShared<FJsonValueNumber>(Vector.X));
+    Values.Add(MakeShared<FJsonValueNumber>(Vector.Y));
+    Values.Add(MakeShared<FJsonValueNumber>(Vector.Z));
+    Json->SetArrayField(FieldName, Values);
 }

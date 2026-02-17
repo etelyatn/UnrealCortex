@@ -267,22 +267,25 @@ bool FCortexLevelUngroupActorsTest::RunTest(const FString& Parameters)
     GroupParams->SetArrayField(TEXT("actors"), GroupActors);
     FCortexCommandResult GroupResult = Router.Execute(TEXT("level.group_actors"), GroupParams);
 
-    TSharedPtr<FJsonObject> UngroupParams = MakeShared<FJsonObject>();
-    UngroupParams->SetArrayField(TEXT("actors"), GroupActors);
-    FCortexCommandResult Ungroup = Router.Execute(TEXT("level.ungroup_actors"), UngroupParams);
-
     if (World && World->IsPartitionedWorld())
     {
-        TestFalse(TEXT("ungroup_actors should fail on WP worlds"), Ungroup.bSuccess);
-        TestEqual(TEXT("Should return INVALID_OPERATION"), Ungroup.ErrorCode, CortexErrorCodes::InvalidOperation);
+        TestFalse(TEXT("group_actors should fail on WP worlds"), GroupResult.bSuccess);
+        DeleteActors(Router, { A, B });
+        return true;
     }
-    else
+
+    TestTrue(TEXT("group_actors should succeed for ungroup test"), GroupResult.bSuccess);
+
+    FString GroupName;
+    if (GroupResult.bSuccess && GroupResult.Data.IsValid())
     {
-        if (GroupResult.bSuccess)
-        {
-            TestTrue(TEXT("ungroup_actors should succeed"), Ungroup.bSuccess);
-        }
+        GroupResult.Data->TryGetStringField(TEXT("group"), GroupName);
     }
+
+    TSharedPtr<FJsonObject> UngroupParams = MakeShared<FJsonObject>();
+    UngroupParams->SetStringField(TEXT("group"), GroupName);
+    FCortexCommandResult Ungroup = Router.Execute(TEXT("level.ungroup_actors"), UngroupParams);
+    TestTrue(TEXT("ungroup_actors should succeed"), Ungroup.bSuccess);
 
     DeleteActors(Router, { A, B });
     return true;

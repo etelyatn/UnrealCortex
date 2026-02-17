@@ -27,26 +27,26 @@ def register_level_streaming_tools(mcp, connection: UEConnection):
             return f"Error: {e}"
 
     @mcp.tool()
-    def load_sublevel(level: str) -> str:
+    def load_sublevel(sublevel: str) -> str:
         try:
-            response = connection.send_command("level.load_sublevel", {"level": level})
+            response = connection.send_command("level.load_sublevel", {"sublevel": sublevel})
             return format_response(response.get("data", {}), "load_sublevel")
         except (RuntimeError, ConnectionError) as e:
             return f"Error: {e}"
 
     @mcp.tool()
-    def unload_sublevel(level: str) -> str:
+    def unload_sublevel(sublevel: str) -> str:
         try:
-            response = connection.send_command("level.unload_sublevel", {"level": level})
+            response = connection.send_command("level.unload_sublevel", {"sublevel": sublevel})
             return format_response(response.get("data", {}), "unload_sublevel")
         except (RuntimeError, ConnectionError) as e:
             return f"Error: {e}"
 
     @mcp.tool()
-    def set_sublevel_visibility(level: str, visible: bool) -> str:
+    def set_sublevel_visibility(sublevel: str, visible: bool) -> str:
         try:
             response = connection.send_command(
-                "level.set_sublevel_visibility", {"level": level, "visible": visible}
+                "level.set_sublevel_visibility", {"sublevel": sublevel, "visible": visible}
             )
             return format_response(response.get("data", {}), "set_sublevel_visibility")
         except (RuntimeError, ConnectionError) as e:
@@ -61,10 +61,10 @@ def register_level_streaming_tools(mcp, connection: UEConnection):
             return f"Error: {e}"
 
     @mcp.tool()
-    def set_data_layer(actor: str, data_layer: str) -> str:
+    def set_data_layer(actors: list[str], data_layer: str) -> str:
         try:
             response = connection.send_command(
-                "level.set_data_layer", {"actor": actor, "data_layer": data_layer}
+                "level.set_data_layer", {"actors": actors, "data_layer": data_layer}
             )
             return format_response(response.get("data", {}), "set_data_layer")
         except (RuntimeError, ConnectionError) as e:

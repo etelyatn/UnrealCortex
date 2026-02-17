@@ -13,38 +13,6 @@
 #include "ScopedTransaction.h"
 #include "Subsystems/EditorActorSubsystem.h"
 
-namespace
-{
-    bool TryParseVector(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldName, const FVector& DefaultValue, FVector& OutVector)
-    {
-        OutVector = DefaultValue;
-
-        const TArray<TSharedPtr<FJsonValue>>* ArrayValue = nullptr;
-        if (!Params.IsValid() || !Params->TryGetArrayField(FieldName, ArrayValue))
-        {
-            return true;
-        }
-
-        if (!ArrayValue || ArrayValue->Num() != 3)
-        {
-            return false;
-        }
-
-        OutVector.X = static_cast<float>((*ArrayValue)[0]->AsNumber());
-        OutVector.Y = static_cast<float>((*ArrayValue)[1]->AsNumber());
-        OutVector.Z = static_cast<float>((*ArrayValue)[2]->AsNumber());
-        return true;
-    }
-
-    void SetVectorArray(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FVector& Vector)
-    {
-        TArray<TSharedPtr<FJsonValue>> Values;
-        Values.Add(MakeShared<FJsonValueNumber>(Vector.X));
-        Values.Add(MakeShared<FJsonValueNumber>(Vector.Y));
-        Values.Add(MakeShared<FJsonValueNumber>(Vector.Z));
-        Json->SetArrayField(FieldName, Values);
-    }
-}
 
 FCortexCommandResult FCortexLevelActorOps::SpawnActor(const TSharedPtr<FJsonObject>& Params)
 {
@@ -73,19 +41,19 @@ FCortexCommandResult FCortexLevelActorOps::SpawnActor(const TSharedPtr<FJsonObje
     }
 
     FVector Location;
-    if (!TryParseVector(Params, TEXT("location"), FVector::ZeroVector, Location))
+    if (!FCortexLevelUtils::TryParseVector(Params, TEXT("location"), FVector::ZeroVector, Location))
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("location must be [x,y,z]"));
     }
 
     FVector RotationValues;
-    if (!TryParseVector(Params, TEXT("rotation"), FVector::ZeroVector, RotationValues))
+    if (!FCortexLevelUtils::TryParseVector(Params, TEXT("rotation"), FVector::ZeroVector, RotationValues))
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("rotation must be [pitch,yaw,roll]"));
     }
 
     FVector Scale;
-    if (!TryParseVector(Params, TEXT("scale"), FVector(1.0f), Scale))
+    if (!FCortexLevelUtils::TryParseVector(Params, TEXT("scale"), FVector(1.0f), Scale))
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("scale must be [x,y,z]"));
     }
@@ -166,9 +134,9 @@ FCortexCommandResult FCortexLevelActorOps::SpawnActor(const TSharedPtr<FJsonObje
     Data->SetStringField(TEXT("name"), SpawnedActor->GetName());
     Data->SetStringField(TEXT("label"), SpawnedActor->GetActorLabel());
     Data->SetStringField(TEXT("class"), SpawnedActor->GetClass()->GetName());
-    SetVectorArray(Data, TEXT("location"), SpawnedActor->GetActorLocation());
-    SetVectorArray(Data, TEXT("rotation"), FVector(SpawnedActor->GetActorRotation().Pitch, SpawnedActor->GetActorRotation().Yaw, SpawnedActor->GetActorRotation().Roll));
-    SetVectorArray(Data, TEXT("scale"), SpawnedActor->GetActorScale3D());
+    FCortexLevelUtils::SetVectorArray(Data, TEXT("location"), SpawnedActor->GetActorLocation());
+    FCortexLevelUtils::SetVectorArray(Data, TEXT("rotation"), FVector(SpawnedActor->GetActorRotation().Pitch, SpawnedActor->GetActorRotation().Yaw, SpawnedActor->GetActorRotation().Roll));
+    FCortexLevelUtils::SetVectorArray(Data, TEXT("scale"), SpawnedActor->GetActorScale3D());
     Data->SetStringField(TEXT("folder"), SpawnedActor->GetFolderPath().ToString());
 
     return Result;
@@ -266,7 +234,7 @@ FCortexCommandResult FCortexLevelActorOps::DuplicateActor(const TSharedPtr<FJson
     }
 
     FVector Offset;
-    if (!TryParseVector(Params, TEXT("offset"), FVector::ZeroVector, Offset))
+    if (!FCortexLevelUtils::TryParseVector(Params, TEXT("offset"), FVector::ZeroVector, Offset))
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("offset must be [x,y,z]"));
     }
@@ -292,7 +260,7 @@ FCortexCommandResult FCortexLevelActorOps::DuplicateActor(const TSharedPtr<FJson
     Data->SetStringField(TEXT("name"), DuplicatedActor->GetName());
     Data->SetStringField(TEXT("label"), DuplicatedActor->GetActorLabel());
     Data->SetStringField(TEXT("class"), DuplicatedActor->GetClass()->GetName());
-    SetVectorArray(Data, TEXT("location"), DuplicatedActor->GetActorLocation());
+    FCortexLevelUtils::SetVectorArray(Data, TEXT("location"), DuplicatedActor->GetActorLocation());
     return FCortexCommandRouter::Success(Data);
 }
 

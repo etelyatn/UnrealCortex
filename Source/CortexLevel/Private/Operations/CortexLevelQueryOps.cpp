@@ -19,29 +19,6 @@ namespace
         float Radius = 0.0f;
     };
 
-    bool ParseVectorArray(const TSharedPtr<FJsonObject>& Json, const TCHAR* FieldName, FVector& Out)
-    {
-        const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
-        if (!Json->TryGetArrayField(FieldName, Arr) || !Arr || Arr->Num() != 3)
-        {
-            return false;
-        }
-
-        Out.X = static_cast<float>((*Arr)[0]->AsNumber());
-        Out.Y = static_cast<float>((*Arr)[1]->AsNumber());
-        Out.Z = static_cast<float>((*Arr)[2]->AsNumber());
-        return true;
-    }
-
-    void SetQueryVectorArray(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FVector& Vec)
-    {
-        TArray<TSharedPtr<FJsonValue>> Arr;
-        Arr.Add(MakeShared<FJsonValueNumber>(Vec.X));
-        Arr.Add(MakeShared<FJsonValueNumber>(Vec.Y));
-        Arr.Add(MakeShared<FJsonValueNumber>(Vec.Z));
-        Json->SetArrayField(FieldName, Arr);
-    }
-
     bool ParseRegionFilter(const TSharedPtr<FJsonObject>& Params, FRegionFilter& OutRegion)
     {
         const TSharedPtr<FJsonObject>* RegionObj = nullptr;
@@ -62,7 +39,7 @@ namespace
         if (Type == TEXT("sphere"))
         {
             OutRegion.bSphere = true;
-            if (!ParseVectorArray(*RegionObj, TEXT("center"), OutRegion.Center))
+            if (!FCortexLevelUtils::ParseVectorField(*RegionObj, TEXT("center"), OutRegion.Center))
             {
                 return false;
             }
@@ -78,11 +55,11 @@ namespace
         if (Type == TEXT("box"))
         {
             OutRegion.bSphere = false;
-            if (!ParseVectorArray(*RegionObj, TEXT("center"), OutRegion.Center))
+            if (!FCortexLevelUtils::ParseVectorField(*RegionObj, TEXT("center"), OutRegion.Center))
             {
                 return false;
             }
-            if (!ParseVectorArray(*RegionObj, TEXT("extent"), OutRegion.Extent))
+            if (!FCortexLevelUtils::ParseVectorField(*RegionObj, TEXT("extent"), OutRegion.Extent))
             {
                 return false;
             }
@@ -336,10 +313,10 @@ FCortexCommandResult FCortexLevelQueryOps::GetBounds(const TSharedPtr<FJsonObjec
     const FVector Extent = (Max - Min) * 0.5f;
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-    SetQueryVectorArray(Data, TEXT("min"), Min);
-    SetQueryVectorArray(Data, TEXT("max"), Max);
-    SetQueryVectorArray(Data, TEXT("center"), Center);
-    SetQueryVectorArray(Data, TEXT("extent"), Extent);
+    FCortexLevelUtils::SetVectorArray(Data, TEXT("min"), Min);
+    FCortexLevelUtils::SetVectorArray(Data, TEXT("max"), Max);
+    FCortexLevelUtils::SetVectorArray(Data, TEXT("center"), Center);
+    FCortexLevelUtils::SetVectorArray(Data, TEXT("extent"), Extent);
     Data->SetNumberField(TEXT("actor_count"), Actors.Num());
     return FCortexCommandRouter::Success(Data);
 }

@@ -162,7 +162,7 @@ FCortexCommandResult FCortexLevelComponentOps::ListComponents(const TSharedPtr<F
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetStringField(TEXT("actor"), Actor->GetName());
     Data->SetArrayField(TEXT("components"), ComponentArray);
-    Data->SetNumberField(TEXT("component_count"), ComponentArray.Num());
+    Data->SetNumberField(TEXT("count"), ComponentArray.Num());
     return FCortexCommandRouter::Success(Data);
 }
 

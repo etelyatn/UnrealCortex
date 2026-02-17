@@ -261,10 +261,10 @@ FCortexCommandResult FCortexLevelOrganizationOps::UngroupActors(const TSharedPtr
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
     }
 
-    const TArray<TSharedPtr<FJsonValue>>* ActorValues = nullptr;
-    if (!Params->TryGetArrayField(TEXT("actors"), ActorValues) || !ActorValues)
+    FString GroupId;
+    if (!Params->TryGetStringField(TEXT("group"), GroupId) || GroupId.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing required parameter: actors"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Missing required parameter: group"));
     }
 
     FCortexCommandResult Error;
@@ -279,11 +279,24 @@ FCortexCommandResult FCortexLevelOrganizationOps::UngroupActors(const TSharedPtr
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Ungrouping is not supported in World Partition levels"));
     }
 
-    TArray<AActor*> ActorsToUngroup;
-    if (!ResolveActorList(World, *ActorValues, ActorsToUngroup))
+    AActor* GroupActor = FCortexLevelUtils::FindActorByLabelOrPath(World, GroupId, Error);
+    if (!GroupActor)
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("No actors matched for ungrouping"));
+        return Error;
     }
+
+    AGroupActor* Group = Cast<AGroupActor>(GroupActor);
+    if (!Group)
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidValue,
+            FString::Printf(TEXT("Actor '%s' is not a group actor"), *GroupId)
+        );
+    }
+
+    TArray<AActor*> GroupedActors;
+    Group->GetGroupActors(GroupedActors);
+    const int32 Count = GroupedActors.Num();
 
     UActorGroupingUtils* GroupingUtils = UActorGroupingUtils::Get();
     if (!GroupingUtils)
@@ -292,9 +305,10 @@ FCortexCommandResult FCortexLevelOrganizationOps::UngroupActors(const TSharedPtr
     }
 
     FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Ungroup Actors")));
-    GroupingUtils->UngroupActors(ActorsToUngroup);
+    GroupingUtils->UngroupActors({GroupActor});
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-    Data->SetNumberField(TEXT("count"), ActorsToUngroup.Num());
+    Data->SetStringField(TEXT("group"), GroupId);
+    Data->SetNumberField(TEXT("count"), Count);
     return FCortexCommandRouter::Success(Data);
 }
