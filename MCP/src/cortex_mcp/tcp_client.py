@@ -5,7 +5,9 @@ import pathlib
 import socket
 import json
 import logging
+import threading
 import time
+import uuid
 
 from .cache import ResponseCache
 
@@ -82,6 +84,8 @@ class UEConnection:
             self.port = discovered if discovered is not None else _DEFAULT_PORT
         self._socket: socket.socket | None = None
         self._cache = ResponseCache()
+        self._recv_buffer = b""
+        self._socket_lock = threading.Lock()
 
     @property
     def connected(self) -> bool:
@@ -115,11 +119,18 @@ class UEConnection:
             except OSError:
                 pass
             self._socket = None
+        self._recv_buffer = b""
 
-    def send_command(self, command: str, params: dict | None = None) -> dict:
+    def send_command(
+        self,
+        command: str,
+        params: dict | None = None,
+        timeout: float | None = None,
+    ) -> dict:
         """Send a command to the UE plugin and return the response.
 
         On connection failure, automatically retries once after a brief delay.
+        Timeout applies to the total operation (including deferred ack + final).
         Raises ConnectionError if not connected after retry.
         Raises RuntimeError if the command fails.
         """
@@ -127,8 +138,9 @@ class UEConnection:
 
         for attempt in range(2):
             try:
-                self.connect()
-                return self._send_and_receive(command, params)
+                with self._socket_lock:
+                    self.connect()
+                    return self._send_and_receive(command, params, timeout)
             except ConnectionError as e:
                 last_error = e
                 self.disconnect()
@@ -149,7 +161,11 @@ class UEConnection:
         raise last_error
 
     def send_command_cached(
-        self, command: str, params: dict | None = None, ttl: float = 300.0
+        self,
+        command: str,
+        params: dict | None = None,
+        ttl: float = 300.0,
+        timeout: float | None = None,
     ) -> dict:
         """Send a command with response caching.
 
@@ -161,7 +177,7 @@ class UEConnection:
         if cached is not None:
             return cached
 
-        response = self.send_command(command, params)
+        response = self.send_command(command, params, timeout)
         self._cache.set(key, response, ttl)
         return response
 
@@ -169,27 +185,58 @@ class UEConnection:
         """Invalidate cache entries. None clears all."""
         return self._cache.invalidate(pattern)
 
-    def _send_and_receive(self, command: str, params: dict | None = None) -> dict:
+    def _read_response_line(self, deadline: float) -> str:
+        """Read one newline-delimited JSON response line from the socket."""
+        while b"\n" not in self._recv_buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ConnectionError("Timed out waiting for Unreal Editor response")
+
+            self._socket.settimeout(remaining)
+            chunk = self._socket.recv(65536)
+            if not chunk:
+                self.disconnect()
+                raise ConnectionError("Connection closed by Unreal Editor")
+            self._recv_buffer += chunk
+
+        line, self._recv_buffer = self._recv_buffer.split(b"\n", 1)
+        return line.decode("utf-8")
+
+    def _send_and_receive(
+        self,
+        command: str,
+        params: dict | None = None,
+        timeout: float | None = None,
+    ) -> dict:
         """Send a command and read the response. Internal method, no retry logic."""
-        request = json.dumps({"command": command, "params": params or {}}) + "\n"
+        request_id = uuid.uuid4().hex[:8]
+        request = json.dumps(
+            {"id": request_id, "command": command, "params": params or {}}
+        ) + "\n"
+        timeout_seconds = timeout if timeout is not None else _RECV_TIMEOUT
         start = time.monotonic()
+        deadline = start + timeout_seconds
         try:
             self._socket.sendall(request.encode("utf-8"))
 
-            # Read line-delimited response (buffer until we get \n)
-            buffer = b""
-            while b"\n" not in buffer:
-                chunk = self._socket.recv(65536)
-                if not chunk:
-                    self.disconnect()
-                    raise ConnectionError("Connection closed by Unreal Editor")
-                buffer += chunk
+            response = json.loads(self._read_response_line(deadline))
+
+            # Deferred protocol: first line is ack; final line contains command result.
+            if response.get("status") == "deferred":
+                while True:
+                    response = json.loads(self._read_response_line(deadline))
+                    if response.get("id") and response.get("id") != request_id:
+                        logger.warning(
+                            "Ignoring mismatched deferred response id '%s' for '%s'",
+                            response.get("id"),
+                            command,
+                        )
+                        continue
+                    if response.get("status") in ("", None, "complete"):
+                        break
 
             elapsed = time.monotonic() - start
             logger.debug("Command '%s' completed in %.3fs", command, elapsed)
-
-            line = buffer.split(b"\n", 1)[0]
-            response = json.loads(line.decode("utf-8"))
 
             if not response.get("success"):
                 error = response.get("error", {})
@@ -200,6 +247,6 @@ class UEConnection:
 
             return response
 
-        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+        except (BrokenPipeError, ConnectionResetError, OSError, json.JSONDecodeError) as e:
             self.disconnect()
             raise ConnectionError(f"Lost connection to Unreal Editor: {e}") from e
