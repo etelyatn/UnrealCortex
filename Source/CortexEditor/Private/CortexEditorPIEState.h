@@ -30,6 +30,7 @@ public:
 	static FString StateToString(ECortexPIEState InState);
 
 	void RegisterPendingCallback(FDeferredResponseCallback&& Callback);
+	void CompletePendingCallbacks(const FCortexCommandResult& Result);
 	void OnPIEEnded();
 
 private:

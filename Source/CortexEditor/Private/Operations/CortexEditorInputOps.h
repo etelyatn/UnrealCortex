@@ -17,4 +17,8 @@ public:
 	static FCortexCommandResult InjectInputAction(
 		const FCortexEditorPIEState& PIEState,
 		const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult InjectInputSequence(
+		FCortexEditorPIEState& PIEState,
+		const TSharedPtr<FJsonObject>& Params,
+		FDeferredResponseCallback DeferredCallback);
 };

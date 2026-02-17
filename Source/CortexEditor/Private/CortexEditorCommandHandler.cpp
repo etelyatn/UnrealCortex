@@ -59,6 +59,10 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	{
 		return FCortexEditorInputOps::InjectInputAction(*PIEState, Params);
 	}
+	if (PIEState.IsValid() && Command == TEXT("inject_input_sequence"))
+	{
+		return FCortexEditorInputOps::InjectInputSequence(*PIEState, Params, MoveTemp(DeferredCallback));
+	}
 	if (PIEState.IsValid() && Command == TEXT("get_editor_state"))
 	{
 		return FCortexEditorUtilityOps::GetEditorState(*PIEState);

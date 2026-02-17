@@ -74,32 +74,33 @@ void FCortexEditorPIEState::RegisterPendingCallback(FDeferredResponseCallback&& 
 	PendingCallbacks.Add(MoveTemp(Callback));
 }
 
-void FCortexEditorPIEState::OnPIEEnded()
+void FCortexEditorPIEState::CompletePendingCallbacks(const FCortexCommandResult& Result)
 {
-	SetState(ECortexPIEState::Stopped);
-
 	for (FDeferredResponseCallback& Callback : PendingCallbacks)
 	{
-		FCortexCommandResult ErrorResult;
-		ErrorResult.bSuccess = false;
-		ErrorResult.ErrorCode = TEXT("PIE_TERMINATED");
-		ErrorResult.ErrorMessage = TEXT("PIE session ended while command was pending");
-		Callback(ErrorResult);
+		Callback(Result);
 	}
 	PendingCallbacks.Empty();
 }
 
+void FCortexEditorPIEState::OnPIEEnded()
+{
+	SetState(ECortexPIEState::Stopped);
+
+	FCortexCommandResult ErrorResult;
+	ErrorResult.bSuccess = false;
+	ErrorResult.ErrorCode = TEXT("PIE_TERMINATED");
+	ErrorResult.ErrorMessage = TEXT("PIE session ended while command was pending");
+	CompletePendingCallbacks(ErrorResult);
+}
+
 void FCortexEditorPIEState::CompletePendingSuccess()
 {
-	for (FDeferredResponseCallback& Callback : PendingCallbacks)
-	{
-		FCortexCommandResult SuccessResult;
-		SuccessResult.bSuccess = true;
-		SuccessResult.Data = MakeShared<FJsonObject>();
-		SuccessResult.Data->SetStringField(TEXT("state"), StateToString(State));
-		Callback(SuccessResult);
-	}
-	PendingCallbacks.Empty();
+	FCortexCommandResult SuccessResult;
+	SuccessResult.bSuccess = true;
+	SuccessResult.Data = MakeShared<FJsonObject>();
+	SuccessResult.Data->SetStringField(TEXT("state"), StateToString(State));
+	CompletePendingCallbacks(SuccessResult);
 }
 
 void FCortexEditorPIEState::HandlePrePIEStarted(bool bIsSimulating)
