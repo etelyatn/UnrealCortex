@@ -754,7 +754,7 @@ FCortexCommandResult FCortexGraphNodeOps::AutoLayout(const TSharedPtr<FJsonObjec
 			if (!Node) continue;
 
 			// Skip comment nodes (class name contains "Comment")
-			if (Node->GetClass()->GetName().Contains(TEXT("Comment")))
+			if (Node->GetClass()->GetName() == TEXT("EdGraphNode_Comment"))
 			{
 				continue;
 			}
