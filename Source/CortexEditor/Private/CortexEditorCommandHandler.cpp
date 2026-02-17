@@ -34,6 +34,18 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	{
 		return FCortexEditorPIEOps::StopPIE(*PIEState, MoveTemp(DeferredCallback));
 	}
+	if (PIEState.IsValid() && Command == TEXT("pause_pie"))
+	{
+		return FCortexEditorPIEOps::PausePIE(*PIEState);
+	}
+	if (PIEState.IsValid() && Command == TEXT("resume_pie"))
+	{
+		return FCortexEditorPIEOps::ResumePIE(*PIEState);
+	}
+	if (PIEState.IsValid() && Command == TEXT("restart_pie"))
+	{
+		return FCortexEditorPIEOps::RestartPIE(*PIEState, Params, MoveTemp(DeferredCallback));
+	}
 	if (PIEState.IsValid() && Command == TEXT("get_editor_state"))
 	{
 		return FCortexEditorUtilityOps::GetEditorState(*PIEState);

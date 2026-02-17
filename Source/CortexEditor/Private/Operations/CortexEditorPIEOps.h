@@ -16,4 +16,10 @@ public:
 	static FCortexCommandResult StopPIE(
 		FCortexEditorPIEState& PIEState,
 		FDeferredResponseCallback DeferredCallback);
+	static FCortexCommandResult PausePIE(FCortexEditorPIEState& PIEState);
+	static FCortexCommandResult ResumePIE(FCortexEditorPIEState& PIEState);
+	static FCortexCommandResult RestartPIE(
+		FCortexEditorPIEState& PIEState,
+		const TSharedPtr<FJsonObject>& Params,
+		FDeferredResponseCallback DeferredCallback);
 };

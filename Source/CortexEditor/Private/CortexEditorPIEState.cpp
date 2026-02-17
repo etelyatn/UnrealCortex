@@ -89,6 +89,19 @@ void FCortexEditorPIEState::OnPIEEnded()
 	PendingCallbacks.Empty();
 }
 
+void FCortexEditorPIEState::CompletePendingSuccess()
+{
+	for (FDeferredResponseCallback& Callback : PendingCallbacks)
+	{
+		FCortexCommandResult SuccessResult;
+		SuccessResult.bSuccess = true;
+		SuccessResult.Data = MakeShared<FJsonObject>();
+		SuccessResult.Data->SetStringField(TEXT("state"), StateToString(State));
+		Callback(SuccessResult);
+	}
+	PendingCallbacks.Empty();
+}
+
 void FCortexEditorPIEState::HandlePrePIEStarted(bool bIsSimulating)
 {
 	(void)bIsSimulating;
@@ -99,6 +112,7 @@ void FCortexEditorPIEState::HandlePostPIEStarted(bool bIsSimulating)
 {
 	(void)bIsSimulating;
 	SetState(ECortexPIEState::Playing);
+	CompletePendingSuccess();
 }
 
 void FCortexEditorPIEState::HandlePausePIE(bool bIsSimulating)
@@ -122,6 +136,12 @@ void FCortexEditorPIEState::HandlePrePIEEnded(bool bIsSimulating)
 void FCortexEditorPIEState::HandleEndPIE(bool bIsSimulating)
 {
 	(void)bIsSimulating;
+	if (State == ECortexPIEState::Stopping)
+	{
+		SetState(ECortexPIEState::Stopped);
+		CompletePendingSuccess();
+		return;
+	}
 	OnPIEEnded();
 }
 

@@ -82,3 +82,51 @@ bool FCortexEditorStartPIENotActiveTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorPausePIENotActiveTest,
+	"Cortex.Editor.PIE.PausePIE.ErrorWhenNotActive",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorPausePIENotActiveTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	const FCortexCommandResult Result = Handler.Execute(TEXT("pause_pie"), MakeShared<FJsonObject>());
+	TestFalse(TEXT("pause_pie should fail when not active"), Result.bSuccess);
+	TestEqual(TEXT("Error should be PIE_NOT_ACTIVE"), Result.ErrorCode, TEXT("PIE_NOT_ACTIVE"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorResumePIENotPausedTest,
+	"Cortex.Editor.PIE.ResumePIE.ErrorWhenNotPaused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorResumePIENotPausedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	const FCortexCommandResult Result = Handler.Execute(TEXT("resume_pie"), MakeShared<FJsonObject>());
+	TestFalse(TEXT("resume_pie should fail when not paused"), Result.bSuccess);
+	TestEqual(TEXT("Error should be PIE_NOT_PAUSED"), Result.ErrorCode, TEXT("PIE_NOT_PAUSED"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorRestartPIENotActiveTest,
+	"Cortex.Editor.PIE.RestartPIE.ErrorWhenNotActive",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorRestartPIENotActiveTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	const FCortexCommandResult Result = Handler.Execute(TEXT("restart_pie"), MakeShared<FJsonObject>());
+	TestFalse(TEXT("restart_pie should fail when not active"), Result.bSuccess);
+	TestEqual(TEXT("Error should be PIE_NOT_ACTIVE"), Result.ErrorCode, TEXT("PIE_NOT_ACTIVE"));
+	return true;
+}

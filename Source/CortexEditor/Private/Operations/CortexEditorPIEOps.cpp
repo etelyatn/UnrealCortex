@@ -4,6 +4,7 @@
 #include "Editor.h"
 #include "Editor/EditorEngine.h"
 #include "LevelEditor.h"
+#include "Containers/Ticker.h"
 
 FCortexCommandResult FCortexEditorPIEOps::GetPIEState(const FCortexEditorPIEState& PIEState)
 {
@@ -95,6 +96,125 @@ FCortexCommandResult FCortexEditorPIEOps::StopPIE(
 
 	PIEState.SetState(ECortexPIEState::Stopping);
 	GEditor->RequestEndPlayMap();
+
+	FCortexCommandResult Deferred;
+	Deferred.bIsDeferred = true;
+	return Deferred;
+}
+
+FCortexCommandResult FCortexEditorPIEOps::PausePIE(FCortexEditorPIEState& PIEState)
+{
+	if (GEditor == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::EditorNotReady,
+			TEXT("Editor is not ready"));
+	}
+
+	if (!PIEState.IsActive())
+	{
+		return FCortexCommandRouter::Error(
+			TEXT("PIE_NOT_ACTIVE"),
+			TEXT("PIE is not running. Call start_pie first."));
+	}
+	if (PIEState.GetState() == ECortexPIEState::Paused)
+	{
+		return FCortexCommandRouter::Error(
+			TEXT("PIE_ALREADY_PAUSED"),
+			TEXT("PIE is already paused."));
+	}
+
+	GEditor->SetPIEWorldsPaused(true);
+	PIEState.SetState(ECortexPIEState::Paused);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("state"), TEXT("paused"));
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexEditorPIEOps::ResumePIE(FCortexEditorPIEState& PIEState)
+{
+	if (GEditor == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::EditorNotReady,
+			TEXT("Editor is not ready"));
+	}
+
+	if (PIEState.GetState() != ECortexPIEState::Paused)
+	{
+		return FCortexCommandRouter::Error(
+			TEXT("PIE_NOT_PAUSED"),
+			TEXT("PIE is not paused."));
+	}
+
+	GEditor->SetPIEWorldsPaused(false);
+	PIEState.SetState(ECortexPIEState::Playing);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("state"), TEXT("playing"));
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexEditorPIEOps::RestartPIE(
+	FCortexEditorPIEState& PIEState,
+	const TSharedPtr<FJsonObject>& Params,
+	FDeferredResponseCallback DeferredCallback)
+{
+	if (GEditor == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::EditorNotReady,
+			TEXT("Editor is not ready"));
+	}
+
+	if (PIEState.IsInTransition())
+	{
+		return FCortexCommandRouter::Error(
+			TEXT("PIE_TRANSITION_IN_PROGRESS"),
+			TEXT("PIE is currently starting/stopping. Wait and retry."));
+	}
+	if (!PIEState.IsActive())
+	{
+		return FCortexCommandRouter::Error(
+			TEXT("PIE_NOT_ACTIVE"),
+			TEXT("PIE is not running. Call start_pie first."));
+	}
+
+	PIEState.SetState(ECortexPIEState::Stopping);
+	GEditor->RequestEndPlayMap();
+
+	const double RestartStartTime = FPlatformTime::Seconds();
+	FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateLambda([&PIEState, Params, Callback = MoveTemp(DeferredCallback), RestartStartTime](float DeltaTime) mutable
+		{
+			(void)DeltaTime;
+
+			if (PIEState.GetState() == ECortexPIEState::Stopped)
+			{
+				const FCortexCommandResult StartResult = FCortexEditorPIEOps::StartPIE(PIEState, Params, MoveTemp(Callback));
+				if (!StartResult.bIsDeferred && Callback)
+				{
+					Callback(StartResult);
+				}
+				return false;
+			}
+
+			if ((FPlatformTime::Seconds() - RestartStartTime) > 10.0)
+			{
+				if (Callback)
+				{
+					FCortexCommandResult TimeoutResult = FCortexCommandRouter::Error(
+						TEXT("PIE_TERMINATED"),
+						TEXT("restart_pie timed out waiting for stop phase"));
+					Callback(TimeoutResult);
+				}
+				return false;
+			}
+
+			return true;
+		}),
+		0.1f);
 
 	FCortexCommandResult Deferred;
 	Deferred.bIsDeferred = true;

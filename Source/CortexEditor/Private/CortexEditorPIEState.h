@@ -33,6 +33,8 @@ public:
 	void OnPIEEnded();
 
 private:
+	void CompletePendingSuccess();
+
 	void HandlePrePIEStarted(bool bIsSimulating);
 	void HandlePostPIEStarted(bool bIsSimulating);
 	void HandlePausePIE(bool bIsSimulating);
