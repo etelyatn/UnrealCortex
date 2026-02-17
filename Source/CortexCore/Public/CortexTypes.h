@@ -56,6 +56,16 @@ namespace CortexErrorCodes
 	static const FString InvalidParameter = TEXT("INVALID_PARAMETER");
 	static const FString LimitExceeded = TEXT("LIMIT_EXCEEDED");
 	static const FString AssetAlreadyExists = TEXT("ASSET_ALREADY_EXISTS");
+	// Level errors
+	static const FString ActorNotFound = TEXT("ACTOR_NOT_FOUND");
+	static const FString AmbiguousActor = TEXT("AMBIGUOUS_ACTOR");
+	static const FString ClassNotFound = TEXT("CLASS_NOT_FOUND");
+	static const FString ComponentNotFound = TEXT("COMPONENT_NOT_FOUND");
+	static const FString ComponentRemoveDenied = TEXT("COMPONENT_REMOVE_DENIED");
+	static const FString PropertyNotFound = TEXT("PROPERTY_NOT_FOUND");
+	static const FString SublevelNotFound = TEXT("SUBLEVEL_NOT_FOUND");
+	static const FString DataLayerNotFound = TEXT("DATA_LAYER_NOT_FOUND");
+	static const FString SpawnFailed = TEXT("SPAWN_FAILED");
 	// Editor / PIE errors
 	static const FString PIENotActive = TEXT("PIE_NOT_ACTIVE");
 	static const FString PIEAlreadyActive = TEXT("PIE_ALREADY_ACTIVE");
