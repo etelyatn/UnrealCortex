@@ -173,6 +173,35 @@ namespace
 		{
 			const FString ParentClassPath = FPackageName::ExportTextPathToObjectPath(ParentClassName);
 
+			// Resolve to UClass* — native classes are always loaded in editor, no disk I/O
+			UClass* ParentClass = FindObject<UClass>(nullptr, *ParentClassPath);
+			if (ParentClass)
+			{
+				static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
+				if (UserWidgetClass && ParentClass->IsChildOf(UserWidgetClass))
+				{
+					return TEXT("Widget");
+				}
+				if (ParentClass->IsChildOf(UActorComponent::StaticClass()))
+				{
+					return TEXT("Component");
+				}
+				if (ParentClass->IsChildOf(AActor::StaticClass()))
+				{
+					return TEXT("Actor");
+				}
+				if (ParentClass->IsChildOf(UBlueprintFunctionLibrary::StaticClass()))
+				{
+					return TEXT("FunctionLibrary");
+				}
+				if (ParentClass->IsChildOf(UInterface::StaticClass()))
+				{
+					return TEXT("Interface");
+				}
+				return TEXT("Unknown");
+			}
+
+			// Fallback: string matching for unloaded Blueprint-only parents
 			if (ParentClassPath.Contains(TEXT("UserWidget")))
 			{
 				return TEXT("Widget");

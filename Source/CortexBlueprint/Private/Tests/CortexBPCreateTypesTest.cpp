@@ -10,8 +10,6 @@
 #include "CortexTypes.h"
 #include "Misc/Guid.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogCortexBPTypesTests, Log, All);
-
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPCreateActorTypeTest,
 	"Cortex.Blueprint.Create.Types.Actor",

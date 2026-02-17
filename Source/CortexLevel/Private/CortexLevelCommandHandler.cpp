@@ -11,8 +11,11 @@
 
 FCortexCommandResult FCortexLevelCommandHandler::Execute(
     const FString& Command,
-    const TSharedPtr<FJsonObject>& Params)
+    const TSharedPtr<FJsonObject>& Params,
+    FDeferredResponseCallback DeferredCallback)
 {
+    (void)DeferredCallback;
+
     if (Command == TEXT("spawn_actor"))
     {
         return FCortexLevelActorOps::SpawnActor(Params);
