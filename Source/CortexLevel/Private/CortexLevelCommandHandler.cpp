@@ -2,6 +2,7 @@
 #include "CortexCommandRouter.h"
 #include "CortexTypes.h"
 #include "Operations/CortexLevelActorOps.h"
+#include "Operations/CortexLevelComponentOps.h"
 #include "Operations/CortexLevelTransformOps.h"
 
 FCortexCommandResult FCortexLevelCommandHandler::Execute(
@@ -40,6 +41,26 @@ FCortexCommandResult FCortexLevelCommandHandler::Execute(
     {
         return FCortexLevelTransformOps::GetActorProperty(Params);
     }
+    if (Command == TEXT("list_components"))
+    {
+        return FCortexLevelComponentOps::ListComponents(Params);
+    }
+    if (Command == TEXT("add_component"))
+    {
+        return FCortexLevelComponentOps::AddComponent(Params);
+    }
+    if (Command == TEXT("remove_component"))
+    {
+        return FCortexLevelComponentOps::RemoveComponent(Params);
+    }
+    if (Command == TEXT("get_component_property"))
+    {
+        return FCortexLevelComponentOps::GetComponentProperty(Params);
+    }
+    if (Command == TEXT("set_component_property"))
+    {
+        return FCortexLevelComponentOps::SetComponentProperty(Params);
+    }
 
     return FCortexCommandRouter::Error(
         CortexErrorCodes::UnknownCommand,
@@ -58,5 +79,10 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
         { TEXT("set_transform"), TEXT("Set actor location/rotation/scale") },
         { TEXT("set_actor_property"), TEXT("Set actor UPROPERTY value") },
         { TEXT("get_actor_property"), TEXT("Read actor UPROPERTY value") },
+        { TEXT("list_components"), TEXT("List actor components") },
+        { TEXT("add_component"), TEXT("Add component instance to actor") },
+        { TEXT("remove_component"), TEXT("Remove actor component instance") },
+        { TEXT("get_component_property"), TEXT("Read component property value") },
+        { TEXT("set_component_property"), TEXT("Set component property value") },
     };
 }
