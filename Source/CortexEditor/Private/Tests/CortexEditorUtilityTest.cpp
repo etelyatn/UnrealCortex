@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "CortexEditorLogCapture.h"
+#include "CortexEditorCommandHandler.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexEditorLogCaptureTest,
@@ -50,5 +51,59 @@ bool FCortexEditorLogCaptureCategoryFilterTest::RunTest(const FString& Parameter
 	const FCortexEditorLogResult BPLogs = LogCapture.GetRecentLogs(ELogVerbosity::Log, 30.0, -1, TEXT("Blueprint"));
 	TestEqual(TEXT("Should have 1 Blueprint entry"), BPLogs.Entries.Num(), 1);
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorExecuteConsoleNoPIETest,
+	"Cortex.Editor.Utility.ExecuteConsole.ErrorWhenNoPIE",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorExecuteConsoleNoPIETest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("command"), TEXT("stat fps"));
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("execute_console_command"), Params);
+	TestFalse(TEXT("execute_console_command should fail without PIE"), Result.bSuccess);
+	TestEqual(TEXT("Error should be PIE_NOT_ACTIVE"), Result.ErrorCode, TEXT("PIE_NOT_ACTIVE"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorSetTimeDilationInvalidScaleTest,
+	"Cortex.Editor.Utility.SetTimeDilation.InvalidScale",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorSetTimeDilationInvalidScaleTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetNumberField(TEXT("factor"), 0.0);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("set_time_dilation"), Params);
+	TestFalse(TEXT("set_time_dilation should fail for invalid factor"), Result.bSuccess);
+	TestEqual(TEXT("Error should be INVALID_VALUE"), Result.ErrorCode, TEXT("INVALID_VALUE"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorGetWorldInfoNoPIETest,
+	"Cortex.Editor.Utility.GetWorldInfo.ErrorWhenNoPIE",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorGetWorldInfoNoPIETest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	const FCortexCommandResult Result = Handler.Execute(TEXT("get_world_info"), MakeShared<FJsonObject>());
+	TestFalse(TEXT("get_world_info should fail without PIE"), Result.bSuccess);
+	TestEqual(TEXT("Error should be PIE_NOT_ACTIVE"), Result.ErrorCode, TEXT("PIE_NOT_ACTIVE"));
 	return true;
 }

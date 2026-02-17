@@ -75,6 +75,18 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	{
 		return FCortexEditorUtilityOps::GetEditorState(*PIEState);
 	}
+	if (PIEState.IsValid() && Command == TEXT("execute_console_command"))
+	{
+		return FCortexEditorUtilityOps::ExecuteConsoleCommand(*PIEState, Params);
+	}
+	if (PIEState.IsValid() && Command == TEXT("set_time_dilation"))
+	{
+		return FCortexEditorUtilityOps::SetTimeDilation(*PIEState, Params);
+	}
+	if (PIEState.IsValid() && Command == TEXT("get_world_info"))
+	{
+		return FCortexEditorUtilityOps::GetWorldInfo(*PIEState);
+	}
 	if (LogCapture.IsValid() && Command == TEXT("get_recent_logs"))
 	{
 		return FCortexEditorUtilityOps::GetRecentLogs(*LogCapture, Params);
