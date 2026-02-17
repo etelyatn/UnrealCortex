@@ -3,6 +3,7 @@
 #include "CortexTypes.h"
 #include "Operations/CortexLevelActorOps.h"
 #include "Operations/CortexLevelComponentOps.h"
+#include "Operations/CortexLevelDiscoveryOps.h"
 #include "Operations/CortexLevelTransformOps.h"
 
 FCortexCommandResult FCortexLevelCommandHandler::Execute(
@@ -61,6 +62,18 @@ FCortexCommandResult FCortexLevelCommandHandler::Execute(
     {
         return FCortexLevelComponentOps::SetComponentProperty(Params);
     }
+    if (Command == TEXT("list_actor_classes"))
+    {
+        return FCortexLevelDiscoveryOps::ListActorClasses(Params);
+    }
+    if (Command == TEXT("list_component_classes"))
+    {
+        return FCortexLevelDiscoveryOps::ListComponentClasses(Params);
+    }
+    if (Command == TEXT("describe_class"))
+    {
+        return FCortexLevelDiscoveryOps::DescribeClass(Params);
+    }
 
     return FCortexCommandRouter::Error(
         CortexErrorCodes::UnknownCommand,
@@ -84,5 +97,8 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
         { TEXT("remove_component"), TEXT("Remove actor component instance") },
         { TEXT("get_component_property"), TEXT("Read component property value") },
         { TEXT("set_component_property"), TEXT("Set component property value") },
+        { TEXT("list_actor_classes"), TEXT("List curated actor classes by category") },
+        { TEXT("list_component_classes"), TEXT("List curated component classes by category") },
+        { TEXT("describe_class"), TEXT("Describe class properties and defaults") },
     };
 }
