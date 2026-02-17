@@ -4,6 +4,7 @@
 #include "Operations/CortexEditorPIEOps.h"
 #include "Operations/CortexEditorInputOps.h"
 #include "Operations/CortexEditorUtilityOps.h"
+#include "Operations/CortexEditorViewportOps.h"
 
 FCortexEditorCommandHandler::FCortexEditorCommandHandler()
 {
@@ -66,6 +67,14 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	if (PIEState.IsValid() && Command == TEXT("get_editor_state"))
 	{
 		return FCortexEditorUtilityOps::GetEditorState(*PIEState);
+	}
+	if (Command == TEXT("get_viewport_info"))
+	{
+		return FCortexEditorViewportOps::GetViewportInfo();
+	}
+	if (Command == TEXT("capture_screenshot"))
+	{
+		return FCortexEditorViewportOps::CaptureScreenshot(Params);
 	}
 
 	return FCortexCommandRouter::Error(
