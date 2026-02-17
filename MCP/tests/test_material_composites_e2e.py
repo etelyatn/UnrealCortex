@@ -59,7 +59,7 @@ class TestMaterialCompositeE2E:
             },
         ]
         connections = [
-            {"from": "RoughnessValue.Out", "to": "Material.Roughness"},
+            {"from": "RoughnessValue.0", "to": "Material.Roughness"},
         ]
 
         # Build and execute batch
@@ -94,13 +94,13 @@ class TestMaterialCompositeE2E:
             except Exception:
                 pass  # Non-critical, may fail on complex graphs
 
-            # Verify material exists
-            info_result = conn.send_command("material.get_info", {
+            # Verify material exists via list_nodes
+            list_result = conn.send_command("material.list_nodes", {
                 "asset_path": asset_path,
             })
-            assert info_result.get("success") is True
-            info_data = info_result.get("data", {})
-            assert info_data.get("node_count", 0) >= 1  # At least our added node
+            assert list_result.get("success") is True
+            list_data = list_result.get("data", {})
+            assert list_data.get("count", 0) >= 2  # 1 expression + MaterialResult
 
         finally:
             # Cleanup: delete material
@@ -142,8 +142,8 @@ class TestMaterialCompositeE2E:
             },
         ]
         connections = [
-            {"from": "BaseColor.RGB", "to": "Material.BaseColor"},
-            {"from": "Metallic.Out", "to": "Material.Metallic"},
+            {"from": "BaseColor.0", "to": "Material.BaseColor"},
+            {"from": "Metallic.0", "to": "Material.Metallic"},
         ]
 
         # Build and execute batch
@@ -170,8 +170,8 @@ class TestMaterialCompositeE2E:
             asset_path = results[0]["data"]["asset_path"]
             assert asset_path.endswith(material_name)
 
-            # Verify counts: 1 create + 3 add_node + 4 set_property + 2 connect = 10 commands
-            assert len(commands) == 10
+            # Verify counts: 1 create + 3 add_node + 5 set_property + 2 connect = 11 commands
+            assert len(commands) == 11
 
             # Call auto_layout as separate post-batch command
             try:
@@ -184,12 +184,12 @@ class TestMaterialCompositeE2E:
                 print(f"auto_layout failed (non-critical): {e}")
 
             # Verify material exists and has correct node count
-            info_result = conn.send_command("material.get_info", {
+            list_result = conn.send_command("material.list_nodes", {
                 "asset_path": asset_path,
             })
-            assert info_result.get("success") is True
-            info_data = info_result.get("data", {})
-            assert info_data.get("node_count", 0) >= 3  # At least our 3 added nodes
+            assert list_result.get("success") is True
+            list_data = list_result.get("data", {})
+            assert list_data.get("count", 0) >= 4  # 3 expressions + MaterialResult
 
         finally:
             # Cleanup: delete material
@@ -226,11 +226,11 @@ class TestMaterialCompositeE2E:
             },
         ]
         connections = [
-            {"from": "Value1.Out", "to": "AddOp.A"},
-            {"from": "Value2.Out", "to": "AddOp.B"},
-            {"from": "AddOp.Out", "to": "MultiplyOp.A"},
-            {"from": "Value1.Out", "to": "MultiplyOp.B"},
-            {"from": "MultiplyOp.Out", "to": "Material.Roughness"},
+            {"from": "Value1.0", "to": "AddOp.A"},
+            {"from": "Value2.0", "to": "AddOp.B"},
+            {"from": "AddOp.0", "to": "MultiplyOp.A"},
+            {"from": "Value1.0", "to": "MultiplyOp.B"},
+            {"from": "MultiplyOp.0", "to": "Material.Roughness"},
         ]
 
         # Build and execute batch
@@ -268,13 +268,13 @@ class TestMaterialCompositeE2E:
             except Exception:
                 pass
 
-            # Verify material
-            info_result = conn.send_command("material.get_info", {
+            # Verify material via list_nodes
+            list_result = conn.send_command("material.list_nodes", {
                 "asset_path": asset_path,
             })
-            assert info_result.get("success") is True
-            info_data = info_result.get("data", {})
-            assert info_data.get("node_count", 0) >= 4
+            assert list_result.get("success") is True
+            list_data = list_result.get("data", {})
+            assert list_data.get("count", 0) >= 5  # 4 expressions + MaterialResult
 
         finally:
             # Cleanup
