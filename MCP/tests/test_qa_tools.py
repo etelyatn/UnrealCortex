@@ -3,7 +3,7 @@
 import json
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # Add tools/ to path for imports (matching existing tests)
 tools_dir = Path(__file__).parent.parent / "tools"
@@ -70,6 +70,27 @@ def test_action_tools_send_deferred_timeouts():
     )
 
 
+def test_wait_for_condition_timeout_forwarding():
+    mcp = MockMCP()
+    connection = MagicMock()
+    connection.send_command.return_value = {"data": {"condition_met": True}}
+
+    register_qa_action_tools(mcp, connection)
+    result = mcp.tools["wait_for_condition"](
+        type="actor_visible",
+        timeout=9.0,
+        actor="Door_01",
+    )
+
+    parsed = json.loads(result)
+    assert parsed["condition_met"] is True
+    connection.send_command.assert_called_with(
+        "qa.wait_for",
+        {"type": "actor_visible", "timeout": 9.0, "actor": "Door_01"},
+        timeout=14.0,
+    )
+
+
 def test_setup_tools_wiring():
     mcp = MockMCP()
     connection = MagicMock()
@@ -128,6 +149,53 @@ def test_composite_test_step_aggregates_summary():
     assert parsed["action_success"] is True
     assert parsed["assert_success"] is True
     assert parsed["finding_count"] == 0
+
+
+def test_run_scenario_inline_uses_log_cursor_and_writes_report():
+    mcp = MockMCP()
+    connection = MagicMock()
+
+    call_state = {"cursor": 0}
+
+    def send_command(command, params=None, timeout=None):
+        if command == "qa.look_at":
+            return {"success": True, "data": {"success": True}}
+        if command == "qa.wait_for":
+            return {"success": True, "data": {"timed_out": False}}
+        if command == "qa.observe_state":
+            return {"success": True, "data": {"actors": [], "player": {"location": [0, 0, 0]}}}
+        if command == "editor.get_recent_logs":
+            expected = call_state["cursor"]
+            assert params["cursor"] == expected
+            call_state["cursor"] = expected + 10
+            return {"success": True, "data": {"logs": [], "next_cursor": call_state["cursor"]}}
+        raise AssertionError(f"Unexpected command: {command}")
+
+    connection.send_command.side_effect = send_command
+    register_qa_composite_tools(mcp, connection)
+
+    scenario = [
+        {"command": "qa.look_at", "params": {"target": "Door_01"}},
+        {"command": "qa.wait_for", "params": {"type": "delay", "timeout": 1.0}},
+    ]
+    with patch(
+        "qa.composites.write_report_bundle",
+        return_value={
+            "report_dir": "QA/reports/mock",
+            "summary_path": "QA/reports/mock/summary.md",
+            "findings_path": "QA/reports/mock/findings.json",
+            "finding_count": 0,
+        },
+    ):
+        result = mcp.tools["run_scenario_inline"](
+            scenario_name="qa-inline",
+            steps=scenario,
+            verbose=False,
+        )
+    parsed = json.loads(result)
+    assert parsed["scenario"] == "qa-inline"
+    assert len(parsed["steps"]) == 2
+    assert parsed["report"]["finding_count"] == 0
 
 
 def test_detector_finds_multiple_issue_types():
