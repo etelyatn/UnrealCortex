@@ -700,18 +700,11 @@ FCortexCommandResult FCortexReflectOps::FindOverrides(const TSharedPtr<FJsonObje
 
 			if (ParentFunctions.Contains(Func->GetFName()))
 			{
-				// Find which ancestor actually declares this function
-				// Walk up until the super no longer has it
-				UClass* Ancestor = ParentClass;
-				while (Ancestor->GetSuperClass())
-				{
-					if (!Ancestor->GetSuperClass()->FindFunctionByName(Func->GetFName()))
-					{
-						break;
-					}
-					Ancestor = Ancestor->GetSuperClass();
-				}
-				FString DefinedIn = Ancestor->GetName();
+				// Find which ancestor declares this function via GetOwnerClass()
+				UFunction* DeclaredFunc = ParentClass->FindFunctionByName(Func->GetFName());
+				FString DefinedIn = DeclaredFunc
+					? DeclaredFunc->GetOwnerClass()->GetName()
+					: ParentClass->GetName();
 
 				TSharedPtr<FJsonObject> OverrideEntry = MakeShared<FJsonObject>();
 				OverrideEntry->SetStringField(TEXT("name"), Func->GetName());

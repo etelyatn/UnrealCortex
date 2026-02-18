@@ -81,13 +81,28 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexReflectOverridesDepthLimitTest::RunTest(const FString& Parameters)
 {
 	FCortexReflectCommandHandler Handler;
-	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("class_name"), TEXT("ACharacter"));
-	Params->SetNumberField(TEXT("depth"), 1);
 
-	FCortexCommandResult Result = Handler.Execute(TEXT("find_overrides"), Params);
+	// depth=0 means ClassDepth > 0 fails for all direct children => empty result
+	TSharedPtr<FJsonObject> ParamsDepth0 = MakeShared<FJsonObject>();
+	ParamsDepth0->SetStringField(TEXT("class_name"), TEXT("ACharacter"));
+	ParamsDepth0->SetNumberField(TEXT("depth"), 0);
+	FCortexCommandResult ResultDepth0 = Handler.Execute(TEXT("find_overrides"), ParamsDepth0);
+	TestTrue(TEXT("depth=0 should succeed"), ResultDepth0.bSuccess);
+	if (ResultDepth0.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Children;
+		if (ResultDepth0.Data->TryGetArrayField(TEXT("children"), Children))
+		{
+			TestEqual(TEXT("depth=0 should return no children"), Children->Num(), 0);
+		}
+	}
 
-	TestTrue(TEXT("find_overrides with depth=1 should succeed"), Result.bSuccess);
+	// depth=1 should succeed and include immediate Blueprint children
+	TSharedPtr<FJsonObject> ParamsDepth1 = MakeShared<FJsonObject>();
+	ParamsDepth1->SetStringField(TEXT("class_name"), TEXT("ACharacter"));
+	ParamsDepth1->SetNumberField(TEXT("depth"), 1);
+	FCortexCommandResult ResultDepth1 = Handler.Execute(TEXT("find_overrides"), ParamsDepth1);
+	TestTrue(TEXT("depth=1 should succeed"), ResultDepth1.bSuccess);
 
 	return true;
 }
