@@ -179,16 +179,18 @@ FCortexCommandResult FCortexQAActionOps::MoveTo(const TSharedPtr<FJsonObject>& P
     }
 
     const double StartSeconds = FPlatformTime::Seconds();
-    const FString MovementMethod = TEXT("navigation");
-    if (FNavigationSystem::GetCurrent<UNavigationSystemV1>(PIEWorld) != nullptr)
+    bool bUseNavigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(PIEWorld) != nullptr;
+    FString MovementMethod = bUseNavigation ? TEXT("navigation") : TEXT("direct");
+    if (bUseNavigation)
     {
         UAIBlueprintHelperLibrary::SimpleMoveToLocation(PC, TargetLocation);
     }
 
+    TWeakObjectPtr<APawn> WeakPawn = Pawn;
     TSharedPtr<FTimerHandle> TimerHandle = MakeShared<FTimerHandle>();
     PIEWorld->GetTimerManager().SetTimer(
         *TimerHandle,
-        [TimerHandle, DeferredCallback = MoveTemp(DeferredCallback), TargetLocation, AcceptanceRadius, TimeoutSeconds, StartSeconds, Pawn, PIEWorld, MovementMethod]() mutable
+        [TimerHandle, DeferredCallback = MoveTemp(DeferredCallback), TargetLocation, AcceptanceRadius, TimeoutSeconds, StartSeconds, WeakPawn, PIEWorld, MovementMethod, bUseNavigation]() mutable
         {
             if (GEditor == nullptr || GEditor->PlayWorld == nullptr)
             {
@@ -201,7 +203,8 @@ FCortexCommandResult FCortexQAActionOps::MoveTo(const TSharedPtr<FJsonObject>& P
                 return;
             }
 
-            if (Pawn == nullptr)
+            APawn* CurrentPawn = WeakPawn.Get();
+            if (CurrentPawn == nullptr)
             {
                 FCortexCommandResult Final = FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Player pawn no longer valid"));
                 DeferredCallback(MoveTemp(Final));
@@ -209,7 +212,19 @@ FCortexCommandResult FCortexQAActionOps::MoveTo(const TSharedPtr<FJsonObject>& P
                 return;
             }
 
-            const FVector Current = Pawn->GetActorLocation();
+            if (!bUseNavigation)
+            {
+                const float MoveSpeedUnitsPerSec = 600.0f;
+                const float Step = MoveSpeedUnitsPerSec * 0.1f;
+                const FVector NewLocation = FMath::VInterpConstantTo(
+                    CurrentPawn->GetActorLocation(),
+                    TargetLocation,
+                    0.1f,
+                    Step);
+                CurrentPawn->SetActorLocation(NewLocation, false, nullptr, ETeleportType::None);
+            }
+
+            const FVector Current = CurrentPawn->GetActorLocation();
             const double Distance = FVector::Dist(Current, TargetLocation);
             const double Elapsed = FPlatformTime::Seconds() - StartSeconds;
 
