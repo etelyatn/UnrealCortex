@@ -1,5 +1,6 @@
 #include "CortexReflectCommandHandler.h"
 #include "CortexCommandRouter.h"
+#include "Operations/CortexReflectOps.h"
 
 FCortexCommandResult FCortexReflectCommandHandler::Execute(
 	const FString& Command,
@@ -7,6 +8,11 @@ FCortexCommandResult FCortexReflectCommandHandler::Execute(
 	FDeferredResponseCallback DeferredCallback)
 {
 	(void)DeferredCallback;
+
+	if (Command == TEXT("class_detail"))
+	{
+		return FCortexReflectOps::ClassDetail(Params);
+	}
 
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
