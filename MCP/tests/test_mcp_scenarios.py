@@ -13,6 +13,7 @@ Run:
 """
 
 import json
+import os
 from pathlib import Path
 import uuid
 
@@ -961,8 +962,6 @@ async def test_scenario_editor_viewport(mcp_client):
     original_mode = data["view_mode"].lower()
 
     # Step 3: Set camera position and read back.
-    # Note: Using 1.0 tolerance for MCP layer (vs 0.01 for TCP) due to JSON
-    # serialization precision loss over async MCP communication.
     await call_tool(mcp_client, "set_viewport_camera", {
         "x": 800.0, "y": 400.0, "z": 300.0,
     })
@@ -982,7 +981,7 @@ async def test_scenario_editor_viewport(mcp_client):
     finally:
         if screenshot_path:
             try:
-                Path(screenshot_path).unlink()
+                os.unlink(screenshot_path)
             except OSError:
                 pass
 

@@ -3,7 +3,7 @@
 Requires a running Unreal Editor instance with the UnrealCortex plugin enabled.
 """
 
-import pathlib
+from pathlib import Path
 
 import pytest
 
@@ -125,7 +125,6 @@ def test_get_viewport_info(editor_connection):
 
 @pytest.mark.e2e
 def test_set_viewport_camera_and_readback(editor_connection):
-    # TCP protocol uses nested location dict; MCP layer will flatten to x/y/z params
     editor_connection.send_command("editor.set_viewport_camera", {
         "location": {"x": 500.0, "y": 300.0, "z": 200.0},
     })
@@ -149,11 +148,11 @@ def test_capture_screenshot(editor_connection):
         assert data["height"] > 0
         assert data["file_size_bytes"] > 0
         screenshot_path = data["path"]
-        assert pathlib.Path(screenshot_path).exists()
+        assert Path(screenshot_path).exists()
     finally:
         if screenshot_path:
             try:
-                pathlib.Path(screenshot_path).unlink()
+                Path(screenshot_path).unlink()
             except OSError:
                 pass
 
