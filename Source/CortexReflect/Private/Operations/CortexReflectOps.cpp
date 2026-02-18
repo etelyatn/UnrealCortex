@@ -3,12 +3,11 @@
 #include "UObject/UObjectIterator.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
-#include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/PackageName.h"
 
 // Returns the full C++ name of a class (e.g. "AActor" not "Actor").
 // UClass::GetName() strips the A/U prefix; GetPrefixCPP() gives it back.
-static FString GetCppClassName(const UClass* Class)
+FString FCortexReflectOps::GetCppClassName(const UClass* Class)
 {
 	if (!Class)
 	{
@@ -76,32 +75,18 @@ UClass* FCortexReflectOps::FindClassByName(const FString& ClassName, FCortexComm
 	TArray<FString> StrippedCandidates;  // short names to compare against GetName()
 
 	static const TCHAR* KnownPrefixes[] = { TEXT("A"), TEXT("U") };
-	bool bStripped = false;
 	for (const TCHAR* Prefix : KnownPrefixes)
 	{
 		if (ClassName.StartsWith(Prefix) && ClassName.Len() > 1)
 		{
 			FString Stripped = ClassName.Mid(1);
 			StrippedCandidates.Add(Stripped);
-			bStripped = true;
 			break;
 		}
 	}
 
-	// If no prefix was stripped, try adding common prefixes (bare "Actor" -> try "A"+"Actor" stripped = "Actor" already)
-	// and add the bare name as the fallback.
-	if (!bStripped)
-	{
-		// For bare name like "Actor", UClass::GetName() == "Actor", so exact match works directly.
-		// But we also want "Actor" to resolve to AActor (GetName()=="Actor"), which is the exact match.
-		// No prefix stripping needed — just search for the exact bare name.
-	}
-
 	// The bare name is always a candidate (either the already-stripped form or the original)
 	StrippedCandidates.Add(ClassName);
-
-	// Deduplicate: if stripping "AActor" gives "Actor" and we also add "AActor" (bare), remove duplicate.
-	// This happens when both are the same string — TArray uniqueness isn't needed since names differ.
 
 	// Single pass through all registered UClasses
 	TMap<FString, UClass*> Found;

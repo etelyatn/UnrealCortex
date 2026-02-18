@@ -15,4 +15,5 @@ public:
 private:
 	static UClass* FindClassByName(const FString& ClassName, FCortexCommandResult& OutError);
 	static bool IsProjectClass(const UClass* Class);
+	static FString GetCppClassName(const UClass* Class);
 };
