@@ -622,5 +622,121 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 
 FCortexCommandResult FCortexReflectOps::Search(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString Pattern;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("pattern"), Pattern))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("pattern parameter is required")
+		);
+	}
+
+	FString TypeFilter;
+	Params->TryGetStringField(TEXT("type_filter"), TypeFilter);
+
+	FString ModuleFilter;
+	Params->TryGetStringField(TEXT("module_filter"), ModuleFilter);
+
+	bool bIncludeEngine = false;
+	Params->TryGetBoolField(TEXT("include_engine"), bIncludeEngine);
+
+	int32 Limit = 50;
+	Params->TryGetNumberField(TEXT("limit"), Limit);
+
+	UClass* TypeFilterClass = nullptr;
+	if (!TypeFilter.IsEmpty())
+	{
+		FCortexCommandResult FindError;
+		TypeFilterClass = FindClassByName(TypeFilter, FindError);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ResultsArray;
+
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* Class = *It;
+		if (!Class)
+		{
+			continue;
+		}
+
+		// Case-insensitive pattern match against stripped name (without A/U prefix)
+		if (!Class->GetName().Contains(Pattern, ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
+
+		if (!bIncludeEngine && !IsProjectClass(Class))
+		{
+			continue;
+		}
+
+		if (TypeFilterClass && !Class->IsChildOf(TypeFilterClass))
+		{
+			continue;
+		}
+
+		if (!ModuleFilter.IsEmpty())
+		{
+			const FString* ModName = Class->FindMetaData(TEXT("ModuleName"));
+			if (!ModName || !ModName->Contains(ModuleFilter))
+			{
+				continue;
+			}
+		}
+
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("name"), GetCppClassName(Class));
+
+		if (Cast<UBlueprintGeneratedClass>(Class))
+		{
+			Entry->SetStringField(TEXT("type"), TEXT("blueprint"));
+			UBlueprint* BP = Cast<UBlueprint>(
+				Cast<UBlueprintGeneratedClass>(Class)->ClassGeneratedBy);
+			if (BP)
+			{
+				Entry->SetStringField(TEXT("asset_path"), BP->GetPathName());
+			}
+		}
+		else
+		{
+			Entry->SetStringField(TEXT("type"), TEXT("cpp"));
+			const FString* ModName = Class->FindMetaData(TEXT("ModuleName"));
+			if (ModName)
+			{
+				Entry->SetStringField(TEXT("module"), *ModName);
+			}
+		}
+
+		if (Class->GetSuperClass())
+		{
+			Entry->SetStringField(TEXT("parent"), GetCppClassName(Class->GetSuperClass()));
+		}
+
+		// BP children count (GetDerivedClasses per result — acceptable at limit=50)
+		TArray<UClass*> Derived;
+		GetDerivedClasses(Class, Derived, false);
+		int32 BPChildCount = 0;
+		for (UClass* D : Derived)
+		{
+			if (Cast<UBlueprintGeneratedClass>(D))
+			{
+				BPChildCount++;
+			}
+		}
+		Entry->SetNumberField(TEXT("blueprint_children_count"), BPChildCount);
+
+		ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+
+		if (ResultsArray.Num() >= Limit)
+		{
+			break;
+		}
+	}
+
+	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetArrayField(TEXT("results"), ResultsArray);
+	Result->SetNumberField(TEXT("total_results"), ResultsArray.Num());
+
+	return FCortexCommandRouter::Success(Result);
 }

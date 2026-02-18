@@ -9,6 +9,11 @@ FCortexCommandResult FCortexReflectCommandHandler::Execute(
 {
 	(void)DeferredCallback;
 
+	if (Command == TEXT("search"))
+	{
+		return FCortexReflectOps::Search(Params);
+	}
+
 	if (Command == TEXT("class_hierarchy"))
 	{
 		return FCortexReflectOps::ClassHierarchy(Params);
