@@ -13,6 +13,7 @@ Run:
 """
 
 import json
+import os
 from pathlib import Path
 import uuid
 
@@ -933,3 +934,66 @@ async def test_stress_bulk_scene_composite(mcp_client):
         for actor in reversed(spawned_actors):
             await _cleanup_actor(mcp_client, actor)
         await _sweep_actors(mcp_client, "MCPStress_scene_*")
+
+
+# ================================================================
+# Scenario 9: Editor Viewport Workflow (non-PIE)
+# ================================================================
+
+
+@pytest.mark.anyio
+@pytest.mark.scenario
+async def test_scenario_editor_viewport(mcp_client):
+    """Verify editor state -> move camera -> screenshot -> change view mode -> restore."""
+    original_mode = None
+    screenshot_path = None
+
+    # Step 1: Verify connected. Self-heal if PIE is running.
+    data = await call_tool(mcp_client, "get_editor_state", {})
+    assert "project_name" in data
+    if data.get("pie_state") != "stopped":
+        await call_tool(mcp_client, "stop_pie", {})
+        data = await call_tool(mcp_client, "get_editor_state", {})
+        assert data["pie_state"] == "stopped"
+
+    # Step 2: Capture baseline view mode for restore in step 5.
+    data = await call_tool(mcp_client, "get_viewport_info", {})
+    assert "view_mode" in data
+    original_mode = data["view_mode"].lower()
+
+    # Step 3: Set camera position and read back.
+    await call_tool(mcp_client, "set_viewport_camera", {
+        "x": 800.0, "y": 400.0, "z": 300.0,
+    })
+    data = await call_tool(mcp_client, "get_viewport_info", {})
+    cam = data["camera_location"]
+    assert cam["x"] == pytest.approx(800.0, abs=1.0)
+    assert cam["y"] == pytest.approx(400.0, abs=1.0)
+    assert cam["z"] == pytest.approx(300.0, abs=1.0)
+
+    # Step 4: Capture screenshot (auto-generated path).
+    try:
+        data = await call_tool(mcp_client, "capture_screenshot", {})
+        assert "path" in data
+        assert data.get("file_size_bytes", 0) > 0
+        screenshot_path = data["path"]
+        assert Path(screenshot_path).exists()
+    finally:
+        if screenshot_path:
+            try:
+                os.unlink(screenshot_path)
+            except OSError:
+                pass
+
+    # Step 5: Change view mode and verify, then restore.
+    try:
+        await call_tool(mcp_client, "set_viewport_mode", {"mode": "unlit"})
+        data = await call_tool(mcp_client, "get_viewport_info", {})
+        assert data["view_mode"].lower() == "unlit"
+    finally:
+        try:
+            await call_tool(mcp_client, "set_viewport_mode", {
+                "mode": original_mode or "lit",
+            })
+        except Exception:
+            pass

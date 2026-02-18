@@ -3,6 +3,8 @@
 Requires a running Unreal Editor instance with the UnrealCortex plugin enabled.
 """
 
+import pathlib
+
 import pytest
 
 from cortex_mcp.tcp_client import UEConnection
@@ -103,3 +105,105 @@ def test_start_pie_when_already_active(editor_connection):
             editor_connection.send_command("editor.stop_pie", {}, timeout=30.0)
         except Exception:
             pass
+
+
+# ================================================================
+# Viewport / Screenshot / Logs Operations (non-PIE, fast)
+# ================================================================
+
+
+@pytest.mark.e2e
+def test_get_viewport_info(editor_connection):
+    result = editor_connection.send_command("editor.get_viewport_info")
+    assert result["success"] is True
+    data = result["data"]
+    assert "resolution" in data
+    cam = data["camera_location"]
+    assert "x" in cam and "y" in cam and "z" in cam
+    assert "view_mode" in data
+
+
+@pytest.mark.e2e
+def test_set_viewport_camera_and_readback(editor_connection):
+    editor_connection.send_command("editor.set_viewport_camera", {
+        "location": {"x": 500.0, "y": 300.0, "z": 200.0},
+    })
+    result = editor_connection.send_command("editor.get_viewport_info")
+    assert result["success"] is True
+    cam = result["data"]["camera_location"]
+    assert cam["x"] == pytest.approx(500.0, abs=0.01)
+    assert cam["y"] == pytest.approx(300.0, abs=0.01)
+    assert cam["z"] == pytest.approx(200.0, abs=0.01)
+
+
+@pytest.mark.e2e
+def test_capture_screenshot(editor_connection):
+    screenshot_path = None
+    try:
+        result = editor_connection.send_command("editor.capture_screenshot", {})
+        assert result["success"] is True
+        data = result["data"]
+        assert "path" in data
+        assert data["width"] > 0
+        assert data["height"] > 0
+        assert data["file_size_bytes"] > 0
+        screenshot_path = data["path"]
+        assert pathlib.Path(screenshot_path).exists()
+    finally:
+        if screenshot_path:
+            try:
+                pathlib.Path(screenshot_path).unlink()
+            except OSError:
+                pass
+
+
+@pytest.mark.e2e
+def test_set_viewport_mode_cycle(editor_connection):
+    try:
+        for mode in ("unlit", "wireframe"):
+            editor_connection.send_command("editor.set_viewport_mode", {
+                "mode": mode,
+            })
+            result = editor_connection.send_command("editor.get_viewport_info")
+            assert result["success"] is True
+            assert result["data"]["view_mode"].lower() == mode
+    finally:
+        try:
+            editor_connection.send_command("editor.set_viewport_mode", {
+                "mode": "lit",
+            })
+        except Exception:
+            pass
+
+
+@pytest.mark.e2e
+def test_get_recent_logs(editor_connection):
+    result = editor_connection.send_command("editor.get_recent_logs", {
+        "since_seconds": 30.0,
+        "severity": "log",
+    })
+    assert result["success"] is True
+    data = result["data"]
+    assert isinstance(data["entries"], list)
+    assert isinstance(data["cursor"], (int, float))
+
+
+# ================================================================
+# Editor Error Cases
+# ================================================================
+
+
+@pytest.mark.e2e
+def test_set_viewport_mode_invalid(editor_connection):
+    with pytest.raises(RuntimeError):
+        editor_connection.send_command("editor.set_viewport_mode", {
+            "mode": "nonexistent_mode_12345",
+        })
+
+
+@pytest.mark.e2e
+def test_focus_actor_not_found(editor_connection):
+    with pytest.raises(RuntimeError):
+        editor_connection.send_command("editor.focus_actor", {
+            "actor_path": "/Game/NonExistent/Actor_12345",
+        })
