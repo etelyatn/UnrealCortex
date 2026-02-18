@@ -125,6 +125,7 @@ def test_get_viewport_info(editor_connection):
 
 @pytest.mark.e2e
 def test_set_viewport_camera_and_readback(editor_connection):
+    # TCP protocol uses nested location dict; MCP layer will flatten to x/y/z params
     editor_connection.send_command("editor.set_viewport_camera", {
         "location": {"x": 500.0, "y": 300.0, "z": 200.0},
     })
