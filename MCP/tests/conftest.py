@@ -4,7 +4,6 @@ All fixtures require a running Unreal Editor with UnrealCortex plugin.
 The editor writes Saved/CortexPort.txt which the TCP client auto-discovers.
 """
 
-import json
 import os
 import sys
 import uuid
@@ -87,6 +86,71 @@ def cleanup_assets(tcp_connection):
             tcp_connection.send_command("bp.delete", {
                 "asset_path": path, "force": True,
             })
+        except (RuntimeError, ConnectionError):
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Layer 1: Level E2E fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def cleanup_actors(tcp_connection):
+    """Collect actor labels/names during a test, delete all on teardown."""
+    created = []
+    yield created
+    for actor in reversed(created):
+        try:
+            tcp_connection.send_command("level.delete_actor", {"actor": actor})
+        except (RuntimeError, ConnectionError):
+            pass
+
+
+@pytest.fixture(scope="class")
+def actors_for_test(tcp_connection):
+    """Spawn 3 actors for read-oriented tests, cleanup on teardown.
+
+    Pre-cleans stale CortexE2E_ actors from previous crashed runs.
+    Yields dict mapping "light"/"mesh"/"camera" to actor labels.
+    """
+    # Pre-cleanup: remove stale actors from previous runs
+    try:
+        stale = tcp_connection.send_command(
+            "level.find_actors", {"pattern": "CortexE2E_*"},
+        )
+        for actor in stale.get("data", {}).get("actors", []):
+            name = actor.get("name") or actor.get("label", "")
+            if name:
+                try:
+                    tcp_connection.send_command(
+                        "level.delete_actor", {"actor": name},
+                    )
+                except (RuntimeError, ConnectionError):
+                    pass
+    except (RuntimeError, ConnectionError):
+        pass
+
+    suffix = uuid.uuid4().hex[:8]
+    specs = {
+        "light": ("PointLight", f"CortexE2E_light_{suffix}"),
+        "mesh": ("StaticMeshActor", f"CortexE2E_mesh_{suffix}"),
+        "camera": ("CameraActor", f"CortexE2E_camera_{suffix}"),
+    }
+    labels = {}
+    for key, (cls, label) in specs.items():
+        resp = tcp_connection.send_command("level.spawn_actor", {
+            "class": cls,
+            "label": label,
+        })
+        labels[key] = resp["data"]["label"]
+
+    yield labels
+
+    # Teardown
+    for label in reversed(list(labels.values())):
+        try:
+            tcp_connection.send_command("level.delete_actor", {"actor": label})
         except (RuntimeError, ConnectionError):
             pass
 

@@ -505,6 +505,208 @@ async def test_scenario_localization(mcp_client):
             pass  # remove_translation may not exist; unique key prevents pollution
 
 # ================================================================
+# Scenario 7: Level Scene Construction
+# ================================================================
+
+
+async def _cleanup_actor(client, actor: str) -> None:
+    """Best-effort delete of a test actor."""
+    try:
+        await client.call_tool("delete_actor", {"actor": actor})
+    except Exception:
+        pass
+
+
+async def _sweep_actors(client, pattern: str) -> None:
+    """Find and delete all actors matching pattern (safety net)."""
+    try:
+        data = await call_tool(client, "find_actors", {"pattern": pattern})
+        for actor in data.get("actors", []):
+            name = actor.get("name") or actor.get("label", "")
+            if name:
+                await _cleanup_actor(client, name)
+    except Exception:
+        pass
+
+
+@pytest.mark.anyio
+@pytest.mark.scenario
+async def test_scenario_level_scene(mcp_client):
+    """Spawn actors, transform, tag, organize, query, components, describe, cleanup."""
+    light_name = None
+    mesh_name = None
+    added_comp_name = None
+    try:
+        # Step 1: get_info — baseline
+        data = await call_tool(mcp_client, "get_info", {})
+        assert "level_name" in data
+
+        # Step 2: list_actor_classes — discovery
+        data = await call_tool(mcp_client, "list_actor_classes", {})
+        assert "classes" in data
+
+        # Step 3: spawn PointLight
+        light_label = _uniq("MCPScenario_light")
+        data = await call_tool(mcp_client, "spawn_actor", {
+            "class_name": "PointLight",
+            "label": light_label,
+        })
+        assert "name" in data
+        light_name = data["name"]
+
+        # Step 4: spawn StaticMeshActor
+        mesh_label = _uniq("MCPScenario_mesh")
+        data = await call_tool(mcp_client, "spawn_actor", {
+            "class_name": "StaticMeshActor",
+            "label": mesh_label,
+        })
+        assert "name" in data
+        mesh_name = data["name"]
+
+        # Step 5: set_transform on LIGHT
+        await call_tool(mcp_client, "set_transform", {
+            "actor": light_name,
+            "location": [100.0, 200.0, 300.0],
+        })
+
+        # Step 6: set_tags on LIGHT
+        data = await call_tool(mcp_client, "set_tags", {
+            "actor": light_name,
+            "tags": ["ScenarioTag"],
+        })
+        assert len(data.get("tags", [])) == 1
+
+        # Step 7: set_folder on LIGHT
+        await call_tool(mcp_client, "set_folder", {
+            "actor": light_name,
+            "folder": "CortexScenario",
+        })
+
+        # Step 8: attach LIGHT to MESH
+        await call_tool(mcp_client, "attach_actor", {
+            "actor": light_name,
+            "parent": mesh_name,
+        })
+
+        # Step 9: get_actor on LIGHT — verify attachment
+        data = await call_tool(mcp_client, "get_actor", {
+            "actor": light_name,
+        })
+        assert data.get("parent", "") != ""
+
+        # Step 10: find_actors by pattern
+        data = await call_tool(mcp_client, "find_actors", {
+            "pattern": "MCPScenario_*",
+        })
+        assert data.get("count", len(data.get("actors", []))) >= 2
+
+        # Step 11: select_actors
+        await call_tool(mcp_client, "select_actors", {
+            "actors": [light_name, mesh_name],
+        })
+
+        # Step 12: get_selection — verify
+        data = await call_tool(mcp_client, "get_selection", {})
+        assert data.get("count", len(data.get("actors", []))) >= 2
+
+        # Step 13: list_components on MESH
+        data = await call_tool(mcp_client, "list_components", {
+            "actor": mesh_name,
+        })
+        assert "components" in data
+
+        # Step 14: add_component on MESH
+        data = await call_tool(mcp_client, "add_component", {
+            "actor": mesh_name,
+            "class_name": "PointLightComponent",
+        })
+        assert "name" in data
+        added_comp_name = data["name"]
+
+        # Step 15: remove_component — cleanup added component
+        await call_tool(mcp_client, "remove_component", {
+            "actor": mesh_name,
+            "component": added_comp_name,
+        })
+        added_comp_name = None
+
+        # Step 16: describe_class PointLight
+        data = await call_tool(mcp_client, "describe_class", {
+            "class_name": "PointLight",
+        })
+        assert "class_name" in data
+        assert "properties" in data
+
+        # Step 17: detach LIGHT
+        await call_tool(mcp_client, "detach_actor", {
+            "actor": light_name,
+        })
+
+    finally:
+        if light_name:
+            await _cleanup_actor(mcp_client, light_name)
+        if mesh_name:
+            await _cleanup_actor(mcp_client, mesh_name)
+        await _sweep_actors(mcp_client, "MCPScenario_*")
+
+
+# ================================================================
+# Scenario 8: Composite Level Scene
+# ================================================================
+
+
+@pytest.mark.anyio
+@pytest.mark.scenario
+async def test_scenario_composite_level_scene(mcp_client):
+    """Create a multi-actor scene via create_level_scene composite tool."""
+    spawned_actors = []
+    try:
+        # Step 1: create_level_scene with 3 actors + attachment
+        data = await call_tool(mcp_client, "create_level_scene", {
+            "actors": [
+                {
+                    "id": "light",
+                    "class": "PointLight",
+                    "label": _uniq("MCPScenario_comp_light"),
+                    "location": [0.0, 0.0, 500.0],
+                },
+                {
+                    "id": "mesh",
+                    "class": "StaticMeshActor",
+                    "label": _uniq("MCPScenario_comp_mesh"),
+                    "location": [200.0, 0.0, 0.0],
+                },
+                {
+                    "id": "camera",
+                    "class": "CameraActor",
+                    "label": _uniq("MCPScenario_comp_cam"),
+                    "location": [-500.0, 0.0, 200.0],
+                },
+            ],
+            "organization": {
+                "attachments": [
+                    {"child": "light", "parent": "mesh"},
+                ],
+            },
+            "save": False,
+        })
+
+        # Step 2: Verify
+        assert data.get("actor_count", 0) == 3
+        spawned_actors = data.get("spawned_actors", [])
+        assert len(spawned_actors) == 3
+        # 3 spawns + 1 attachment = at least 4 completed steps
+        assert data.get("completed_steps", 0) >= 4
+
+    finally:
+        # Step 3: Delete all spawned actors
+        for actor in reversed(spawned_actors):
+            await _cleanup_actor(mcp_client, actor)
+        # Step 4: Safety net sweep
+        await _sweep_actors(mcp_client, "MCPScenario_comp_*")
+
+
+# ================================================================
 # Stress Tests
 # ================================================================
 
@@ -666,3 +868,68 @@ async def test_stress_concurrent_batch(mcp_client):
     assert "results" in data
     assert len(data["results"]) == 20
     assert all(r.get("success") for r in data["results"])
+
+
+@pytest.mark.anyio
+@pytest.mark.stress
+async def test_stress_rapid_actor_lifecycle(mcp_client):
+    """50 spawn+delete cycles to test actor lifecycle throughput."""
+    spawned_not_deleted = []
+    failures = 0
+    try:
+        for i in range(50):
+            label = _uniq(f"MCPStress_actor_{i:03d}")
+            try:
+                data = await call_tool(mcp_client, "spawn_actor", {
+                    "class_name": "PointLight",
+                    "label": label,
+                })
+                name = data.get("name", "")
+                spawned_not_deleted.append(name)
+                await call_tool(mcp_client, "delete_actor", {"actor": name})
+                spawned_not_deleted.remove(name)
+            except Exception:
+                failures += 1
+
+        assert failures < 3, f"Too many failures: {failures}/50"
+
+    finally:
+        # Clean up any actors that were spawned but not deleted
+        for actor in spawned_not_deleted:
+            await _cleanup_actor(mcp_client, actor)
+        await _sweep_actors(mcp_client, "MCPStress_actor_*")
+
+
+@pytest.mark.anyio
+@pytest.mark.stress
+async def test_stress_bulk_scene_composite(mcp_client):
+    """Create a 20-actor scene via composite tool."""
+    spawned_actors = []
+    try:
+        actors = [
+            {
+                "id": f"light_{i:03d}",
+                "class": "PointLight",
+                "label": _uniq(f"MCPStress_scene_{i:03d}"),
+                "location": [float(i * 200), 0.0, 500.0],
+            }
+            for i in range(20)
+        ]
+
+        data = await call_tool(mcp_client, "create_level_scene", {
+            "actors": actors,
+            "save": False,
+        })
+        spawned_actors = data.get("spawned_actors", [])
+        assert data.get("actor_count", 0) >= 20
+
+        # Verify via list_actors
+        data = await call_tool(mcp_client, "list_actors", {
+            "class_filter": "PointLight",
+        })
+        assert data.get("count", 0) >= 20
+
+    finally:
+        for actor in reversed(spawned_actors):
+            await _cleanup_actor(mcp_client, actor)
+        await _sweep_actors(mcp_client, "MCPStress_scene_*")
