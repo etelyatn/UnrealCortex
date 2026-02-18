@@ -3,6 +3,10 @@
 #include "UObject/UObjectIterator.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "Engine/SCS_Node.h"
+#include "GameFramework/Actor.h"
+#include "Components/ActorComponent.h"
 #include "Misc/PackageName.h"
 
 // Returns the full C++ name of a class (e.g. "AActor" not "Actor").
@@ -130,6 +134,161 @@ bool FCortexReflectOps::IsProjectClass(const UClass* Class)
 	return false;
 }
 
+TArray<FString> FCortexReflectOps::GetPropertyFlags(const FProperty* Property)
+{
+	TArray<FString> Flags;
+	if (Property->HasAnyPropertyFlags(CPF_BlueprintVisible))
+	{
+		if (Property->HasAnyPropertyFlags(CPF_BlueprintReadOnly))
+		{
+			Flags.Add(TEXT("BlueprintReadOnly"));
+		}
+		else
+		{
+			Flags.Add(TEXT("BlueprintReadWrite"));
+		}
+	}
+	if (Property->HasAnyPropertyFlags(CPF_Edit))
+	{
+		if (Property->HasAnyPropertyFlags(CPF_DisableEditOnInstance))
+		{
+			Flags.Add(TEXT("EditDefaultsOnly"));
+		}
+		else
+		{
+			Flags.Add(TEXT("EditAnywhere"));
+		}
+	}
+	if (Property->HasAnyPropertyFlags(CPF_Net))
+	{
+		Flags.Add(TEXT("Replicated"));
+	}
+	if (Property->HasAnyPropertyFlags(CPF_Config))
+	{
+		Flags.Add(TEXT("Config"));
+	}
+	if (Property->HasAnyPropertyFlags(CPF_Transient))
+	{
+		Flags.Add(TEXT("Transient"));
+	}
+	return Flags;
+}
+
+FString FCortexReflectOps::GetPropertyTypeName(const FProperty* Property)
+{
+	return Property->GetCPPType();
+}
+
+TSharedPtr<FJsonObject> FCortexReflectOps::SerializeProperty(const FProperty* Property, const UObject* CDO)
+{
+	TSharedPtr<FJsonObject> PropObj = MakeShared<FJsonObject>();
+	PropObj->SetStringField(TEXT("name"), Property->GetName());
+	PropObj->SetStringField(TEXT("type"), GetPropertyTypeName(Property));
+
+	TArray<FString> Flags = GetPropertyFlags(Property);
+	TArray<TSharedPtr<FJsonValue>> FlagsArray;
+	for (const FString& Flag : Flags)
+	{
+		FlagsArray.Add(MakeShared<FJsonValueString>(Flag));
+	}
+	PropObj->SetArrayField(TEXT("flags"), FlagsArray);
+
+	if (Property->HasMetaData(TEXT("Category")))
+	{
+		PropObj->SetStringField(TEXT("category"), Property->GetMetaData(TEXT("Category")));
+	}
+
+	if (CDO)
+	{
+		FString DefaultValue;
+		const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(CDO);
+		if (ValuePtr)
+		{
+			Property->ExportText_Direct(DefaultValue, ValuePtr, nullptr, nullptr, PPF_None);
+			if (!DefaultValue.IsEmpty())
+			{
+				PropObj->SetStringField(TEXT("default_value"), DefaultValue);
+			}
+		}
+	}
+
+	return PropObj;
+}
+
+TArray<FString> FCortexReflectOps::GetFunctionFlags(const UFunction* Function)
+{
+	TArray<FString> Flags;
+	if (Function->HasAnyFunctionFlags(FUNC_BlueprintCallable))
+	{
+		Flags.Add(TEXT("BlueprintCallable"));
+	}
+	if (Function->HasAnyFunctionFlags(FUNC_BlueprintEvent))
+	{
+		Flags.Add(TEXT("BlueprintImplementableEvent"));
+	}
+	if (Function->HasAnyFunctionFlags(FUNC_Native) && Function->HasAnyFunctionFlags(FUNC_Event))
+	{
+		Flags.Add(TEXT("BlueprintNativeEvent"));
+	}
+	if (Function->HasAnyFunctionFlags(FUNC_Const))
+	{
+		Flags.Add(TEXT("Const"));
+	}
+	if (Function->HasAnyFunctionFlags(FUNC_Static))
+	{
+		Flags.Add(TEXT("Static"));
+	}
+	if (Function->HasAnyFunctionFlags(FUNC_Net))
+	{
+		Flags.Add(TEXT("Replicated"));
+	}
+	return Flags;
+}
+
+TSharedPtr<FJsonObject> FCortexReflectOps::SerializeFunction(const UFunction* Function, const UClass* QueryClass)
+{
+	TSharedPtr<FJsonObject> FuncObj = MakeShared<FJsonObject>();
+	FuncObj->SetStringField(TEXT("name"), Function->GetName());
+
+	const FProperty* ReturnProp = Function->GetReturnProperty();
+	FuncObj->SetStringField(TEXT("return_type"),
+		ReturnProp ? GetPropertyTypeName(ReturnProp) : TEXT("void"));
+
+	TArray<TSharedPtr<FJsonValue>> ParamsArray;
+	for (TFieldIterator<FProperty> It(Function); It; ++It)
+	{
+		if (It->HasAnyPropertyFlags(CPF_Parm) && !It->HasAnyPropertyFlags(CPF_ReturnParm))
+		{
+			TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+			ParamObj->SetStringField(TEXT("name"), It->GetName());
+			ParamObj->SetStringField(TEXT("type"), GetPropertyTypeName(*It));
+			if (It->HasAnyPropertyFlags(CPF_OutParm))
+			{
+				ParamObj->SetBoolField(TEXT("is_out"), true);
+			}
+			ParamsArray.Add(MakeShared<FJsonValueObject>(ParamObj));
+		}
+	}
+	FuncObj->SetArrayField(TEXT("params"), ParamsArray);
+
+	TArray<FString> Flags = GetFunctionFlags(Function);
+	TArray<TSharedPtr<FJsonValue>> FlagsArray;
+	for (const FString& Flag : Flags)
+	{
+		FlagsArray.Add(MakeShared<FJsonValueString>(Flag));
+	}
+	FuncObj->SetArrayField(TEXT("flags"), FlagsArray);
+
+	bool bIsOverride = false;
+	if (QueryClass && QueryClass->GetSuperClass())
+	{
+		bIsOverride = QueryClass->GetSuperClass()->FindFunctionByName(Function->GetFName()) != nullptr;
+	}
+	FuncObj->SetBoolField(TEXT("is_override"), bIsOverride);
+
+	return FuncObj;
+}
+
 FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObject>& Params)
 {
 	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
@@ -146,6 +305,12 @@ FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject
 		);
 	}
 
+	bool bIncludeInherited = false;
+	if (Params.IsValid())
+	{
+		Params->TryGetBoolField(TEXT("include_inherited"), bIncludeInherited);
+	}
+
 	FCortexCommandResult FindError;
 	UClass* Class = FindClassByName(ClassName, FindError);
 	if (!Class)
@@ -154,10 +319,9 @@ FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject
 	}
 
 	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
-	// Use the full C++ name (e.g. "AActor") not the stripped reflection name (e.g. "Actor")
 	Result->SetStringField(TEXT("name"), GetCppClassName(Class));
 
-	// Determine type
+	// Type and asset info
 	UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(Class);
 	if (BPGC)
 	{
@@ -171,7 +335,6 @@ FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject
 	else
 	{
 		Result->SetStringField(TEXT("type"), TEXT("cpp"));
-		// GetMetaData returns const FString& (NOT GetMetaDataText which doesn't exist)
 		FString SourcePath = Class->GetMetaData(TEXT("ModuleRelativePath"));
 		if (!SourcePath.IsEmpty())
 		{
@@ -191,6 +354,108 @@ FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject
 	{
 		Result->SetStringField(TEXT("module"), *ModuleName);
 	}
+
+	// Interfaces
+	TArray<TSharedPtr<FJsonValue>> InterfacesArray;
+	for (const FImplementedInterface& Interface : Class->Interfaces)
+	{
+		if (Interface.Class)
+		{
+			InterfacesArray.Add(MakeShared<FJsonValueString>(GetCppClassName(Interface.Class)));
+		}
+	}
+	Result->SetArrayField(TEXT("interfaces"), InterfacesArray);
+
+	// CDO for default values and component discovery
+	UObject* CDO = Class->GetDefaultObject(false);
+
+	// Properties
+	TArray<TSharedPtr<FJsonValue>> PropertiesArray;
+	for (TFieldIterator<FProperty> It(Class); It; ++It)
+	{
+		if (It->HasAnyPropertyFlags(CPF_Parm))
+		{
+			continue;
+		}
+		if (!bIncludeInherited && It->GetOwnerClass() != Class)
+		{
+			continue;
+		}
+		PropertiesArray.Add(MakeShared<FJsonValueObject>(SerializeProperty(*It, CDO)));
+	}
+	Result->SetArrayField(TEXT("properties"), PropertiesArray);
+
+	// Functions
+	TArray<TSharedPtr<FJsonValue>> FunctionsArray;
+	for (TFieldIterator<UFunction> It(Class); It; ++It)
+	{
+		if (It->HasAnyFunctionFlags(FUNC_Delegate))
+		{
+			continue;
+		}
+		if (!bIncludeInherited && It->GetOwnerClass() != Class)
+		{
+			continue;
+		}
+		FunctionsArray.Add(MakeShared<FJsonValueObject>(SerializeFunction(*It, Class)));
+	}
+	Result->SetArrayField(TEXT("functions"), FunctionsArray);
+
+	// Components (from CDO default subobjects)
+	TArray<TSharedPtr<FJsonValue>> ComponentsArray;
+	if (CDO)
+	{
+		TArray<UObject*> DefaultSubobjects;
+		CDO->GetDefaultSubobjects(DefaultSubobjects);
+		for (UObject* Subobj : DefaultSubobjects)
+		{
+			if (UActorComponent* Comp = Cast<UActorComponent>(Subobj))
+			{
+				TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
+				CompObj->SetStringField(TEXT("name"), Comp->GetName());
+				CompObj->SetStringField(TEXT("type"), Comp->GetClass()->GetName());
+				ComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
+			}
+		}
+	}
+	else
+	{
+		Result->SetBoolField(TEXT("cdo_unavailable"), true);
+	}
+
+	// For BPs, also walk SCS nodes for BP-added components
+	if (BPGC)
+	{
+		UBlueprint* BP = Cast<UBlueprint>(BPGC->ClassGeneratedBy);
+		if (BP && BP->SimpleConstructionScript)
+		{
+			const TArray<USCS_Node*>& AllNodes = BP->SimpleConstructionScript->GetAllNodes();
+			for (const USCS_Node* Node : AllNodes)
+			{
+				if (Node && Node->ComponentClass)
+				{
+					TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
+					CompObj->SetStringField(TEXT("name"), Node->GetVariableName().ToString());
+					CompObj->SetStringField(TEXT("type"), Node->ComponentClass->GetName());
+					ComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
+				}
+			}
+		}
+	}
+	Result->SetArrayField(TEXT("components"), ComponentsArray);
+
+	// Blueprint children count
+	TArray<UClass*> DerivedClasses;
+	GetDerivedClasses(Class, DerivedClasses, false);
+	int32 BPChildCount = 0;
+	for (UClass* Derived : DerivedClasses)
+	{
+		if (Cast<UBlueprintGeneratedClass>(Derived))
+		{
+			BPChildCount++;
+		}
+	}
+	Result->SetNumberField(TEXT("blueprint_children_count"), BPChildCount);
 
 	return FCortexCommandRouter::Success(Result);
 }
