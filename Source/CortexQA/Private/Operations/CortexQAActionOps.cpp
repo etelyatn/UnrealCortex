@@ -247,6 +247,8 @@ FCortexCommandResult FCortexQAActionOps::MoveTo(const TSharedPtr<FJsonObject>& P
                 TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
                 Details->SetBoolField(TEXT("arrived"), false);
                 Details->SetNumberField(TEXT("distance_to_target"), Distance);
+                Details->SetNumberField(TEXT("duration_seconds"), Elapsed);
+                Details->SetStringField(TEXT("movement_method"), MovementMethod);
                 FCortexCommandResult Final = FCortexCommandRouter::Error(
                     CortexErrorCodes::ConditionTimeout,
                     TEXT("move_to timed out"),
@@ -309,10 +311,11 @@ FCortexCommandResult FCortexQAActionOps::WaitFor(const TSharedPtr<FJsonObject>& 
     }
 
     const double StartSeconds = FPlatformTime::Seconds();
+    TSharedPtr<FJsonValue> LastActualValue;
     TSharedPtr<FTimerHandle> TimerHandle = MakeShared<FTimerHandle>();
     PIEWorld->GetTimerManager().SetTimer(
         *TimerHandle,
-        [TimerHandle, DeferredCallback = MoveTemp(DeferredCallback), Params, TimeoutSeconds, StartSeconds, PIEWorld]() mutable
+        [TimerHandle, DeferredCallback = MoveTemp(DeferredCallback), Params, TimeoutSeconds, StartSeconds, PIEWorld, Type, LastActualValue]() mutable
         {
             if (GEditor == nullptr || GEditor->PlayWorld == nullptr)
             {
@@ -334,6 +337,11 @@ FCortexCommandResult FCortexQAActionOps::WaitFor(const TSharedPtr<FJsonObject>& 
                 return;
             }
 
+            if (Eval.ActualValue.IsValid())
+            {
+                LastActualValue = Eval.ActualValue;
+            }
+
             if (Eval.bPassed)
             {
                 TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -351,9 +359,18 @@ FCortexCommandResult FCortexQAActionOps::WaitFor(const TSharedPtr<FJsonObject>& 
             const double Elapsed = FPlatformTime::Seconds() - StartSeconds;
             if (Elapsed >= TimeoutSeconds)
             {
+                TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+                Details->SetStringField(TEXT("type"), Type);
+                Details->SetBoolField(TEXT("timed_out"), true);
+                Details->SetNumberField(TEXT("duration_seconds"), Elapsed);
+                if (LastActualValue.IsValid())
+                {
+                    Details->SetField(TEXT("actual_value"), LastActualValue);
+                }
                 FCortexCommandResult Final = FCortexCommandRouter::Error(
                     CortexErrorCodes::ConditionTimeout,
-                    TEXT("wait_for timed out"));
+                    TEXT("wait_for timed out"),
+                    Details);
                 DeferredCallback(MoveTemp(Final));
                 PIEWorld->GetTimerManager().ClearTimer(*TimerHandle);
             }
