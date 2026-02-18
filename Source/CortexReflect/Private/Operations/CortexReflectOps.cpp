@@ -927,14 +927,15 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 						{
 							RefObj->SetStringField(TEXT("type"), TEXT("read"));
 							RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableGet"));
+							ReferencesArray.Add(MakeShared<FJsonValueObject>(RefObj));
 						}
 						else if (VarNode->IsA<UK2Node_VariableSet>())
 						{
 							RefObj->SetStringField(TEXT("type"), TEXT("write"));
 							RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableSet"));
+							ReferencesArray.Add(MakeShared<FJsonValueObject>(RefObj));
 						}
-
-						ReferencesArray.Add(MakeShared<FJsonValueObject>(RefObj));
+						// else: unknown variable node subtype — silently skip
 					}
 				}
 
