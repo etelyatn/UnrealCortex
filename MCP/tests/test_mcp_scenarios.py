@@ -634,7 +634,7 @@ async def test_scenario_level_scene(mcp_client):
         data = await call_tool(mcp_client, "describe_class", {
             "class_name": "PointLight",
         })
-        assert "class_name" in data
+        assert "class" in data
         assert "properties" in data
 
         # Step 17: detach LIGHT

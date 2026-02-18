@@ -200,7 +200,10 @@ FCortexCommandResult FCortexLevelOrganizationOps::SetFolder(const TSharedPtr<FJs
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetStringField(TEXT("name"), Actor->GetName());
-    Data->SetStringField(TEXT("folder"), Actor->GetFolderPath().ToString());
+    const FName ResolvedFolderPath = Actor->GetFolderPath();
+    Data->SetStringField(
+        TEXT("folder"),
+        ResolvedFolderPath.IsNone() ? TEXT("") : ResolvedFolderPath.ToString());
     return FCortexCommandRouter::Success(Data);
 }
 

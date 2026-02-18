@@ -6,6 +6,7 @@ import logging
 import os
 import pathlib
 import sys
+import types
 from mcp.server.fastmcp import FastMCP
 from .tcp_client import UEConnection
 from .response import format_response
@@ -41,12 +42,32 @@ def _discover_and_register_tools(mcp_server, connection):
         logger.warning("Tools directory not found: %s", tools_dir)
         return
 
+    if "cortex_tools" not in sys.modules:
+        root_pkg = types.ModuleType("cortex_tools")
+        root_pkg.__path__ = [str(tools_dir)]  # type: ignore[attr-defined]
+        sys.modules["cortex_tools"] = root_pkg
+
     for py_file in sorted(tools_dir.rglob("*.py")):
         if py_file.name.startswith("_"):
             continue
-        module_name = py_file.stem
-        spec = importlib.util.spec_from_file_location(f"cortex_tools.{module_name}", py_file)
+
+        rel_parts = py_file.relative_to(tools_dir).with_suffix("").parts
+        module_name = f"cortex_tools.{'.'.join(rel_parts)}"
+
+        for idx in range(1, len(rel_parts)):
+            pkg_name = f"cortex_tools.{'.'.join(rel_parts[:idx])}"
+            if pkg_name in sys.modules:
+                continue
+            pkg = types.ModuleType(pkg_name)
+            pkg.__path__ = [str(tools_dir.joinpath(*rel_parts[:idx]))]  # type: ignore[attr-defined]
+            sys.modules[pkg_name] = pkg
+
+        spec = importlib.util.spec_from_file_location(module_name, py_file)
+        if spec is None or spec.loader is None:
+            logger.warning("Skipping tool module with invalid spec: %s", py_file)
+            continue
         module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
         spec.loader.exec_module(module)
 
         # Find and call register_*_tools functions
