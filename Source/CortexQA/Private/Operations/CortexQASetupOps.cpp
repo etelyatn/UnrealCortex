@@ -6,7 +6,6 @@
 #include "CortexSerializer.h"
 #include "CortexTypes.h"
 #include "GameFramework/Pawn.h"
-#include "GameFramework/PlayerController.h"
 
 namespace
 {
@@ -32,8 +31,7 @@ FCortexCommandResult FCortexQASetupOps::TeleportPlayer(const TSharedPtr<FJsonObj
         return FCortexQAUtils::PIENotActiveError();
     }
 
-    APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
-    APawn* Pawn = (PC != nullptr) ? PC->GetPawn() : nullptr;
+    APawn* Pawn = FCortexQAUtils::GetPlayerPawn(PIEWorld);
     if (Pawn == nullptr)
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("No player pawn found"));
@@ -135,12 +133,13 @@ FCortexCommandResult FCortexQASetupOps::SetRandomSeed(const TSharedPtr<FJsonObje
         return FCortexQAUtils::PIENotActiveError();
     }
 
-    int32 Seed = 0;
-    if (!Params.IsValid() || !Params->TryGetNumberField(TEXT("seed"), Seed))
+    double SeedDouble = 0.0;
+    if (!Params.IsValid() || !Params->TryGetNumberField(TEXT("seed"), SeedDouble))
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: seed"));
     }
 
+    const int32 Seed = static_cast<int32>(SeedDouble);
     FMath::RandInit(Seed);
     FMath::SRandInit(Seed);
 

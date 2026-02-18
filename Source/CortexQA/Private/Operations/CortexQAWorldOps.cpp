@@ -30,15 +30,65 @@ namespace
         return SideSign >= 0.0f ? TEXT("right") : TEXT("left");
     }
 
-    TSharedPtr<FJsonObject> SerializeActorState(
-        AActor* Actor,
-        const FVector* PlayerLocation,
-        const FVector* PlayerForward,
+    TSharedPtr<FJsonObject> SerializeActorForObserve(
+        const AActor* Actor,
+        const FVector& PlayerLocation,
+        const FVector& PlayerForward,
+        float Distance,
         UWorld* PIEWorld,
-        bool bIncludeLOS)
+        bool bIncludeLOS,
+        float InteractionRange)
     {
         TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
-        Json->SetStringField(TEXT("name"), Actor->GetName());
+        const FString Label = Actor->GetActorLabel();
+        Json->SetStringField(TEXT("name"), Label.IsEmpty() ? Actor->GetName() : Label);
+        Json->SetStringField(TEXT("class"), Actor->GetClass()->GetName());
+        FCortexQAUtils::SetVectorArray(Json, TEXT("location"), Actor->GetActorLocation());
+
+        Json->SetNumberField(TEXT("distance"), Distance);
+
+        const FVector DirectionToActor = (Actor->GetActorLocation() - PlayerLocation).GetSafeNormal();
+        const double Dot = FVector::DotProduct(PlayerForward, DirectionToActor);
+        const double Angle = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(Dot, -1.0, 1.0)));
+        const double Vertical = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(DirectionToActor.Z, -1.0, 1.0)));
+        const double SideSign = FVector::CrossProduct(PlayerForward, DirectionToActor).Z;
+
+        Json->SetStringField(TEXT("direction"), AngleToDirection(
+            static_cast<float>(Angle), static_cast<float>(Vertical), static_cast<float>(SideSign)));
+        Json->SetNumberField(TEXT("relative_angle"), Angle);
+        Json->SetBoolField(TEXT("in_interaction_range"), Distance <= InteractionRange);
+
+        TArray<TSharedPtr<FJsonValue>> Tags;
+        for (const FName& Tag : Actor->Tags)
+        {
+            Tags.Add(MakeShared<FJsonValueString>(Tag.ToString()));
+        }
+        Json->SetArrayField(TEXT("tags"), Tags);
+
+        if (bIncludeLOS && PIEWorld != nullptr)
+        {
+            FHitResult Hit;
+            FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(CortexQAObserveLOS), true);
+            TraceParams.AddIgnoredActor(Actor);
+            const bool bHit = PIEWorld->LineTraceSingleByChannel(
+                Hit,
+                PlayerLocation,
+                Actor->GetActorLocation(),
+                ECC_Visibility,
+                TraceParams);
+            Json->SetBoolField(TEXT("in_line_of_sight"), !bHit || Hit.GetActor() == Actor);
+        }
+
+        return Json;
+    }
+
+    TSharedPtr<FJsonObject> SerializeActorDetailed(
+        AActor* Actor,
+        UWorld* PIEWorld)
+    {
+        TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
+        const FString Label = Actor->GetActorLabel();
+        Json->SetStringField(TEXT("name"), Label.IsEmpty() ? Actor->GetName() : Label);
         Json->SetStringField(TEXT("class"), Actor->GetClass()->GetName());
         FCortexQAUtils::SetVectorArray(Json, TEXT("location"), Actor->GetActorLocation());
         FCortexQAUtils::SetRotatorArray(Json, TEXT("rotation"), Actor->GetActorRotation());
@@ -68,105 +118,116 @@ namespace
         }
         Json->SetArrayField(TEXT("components"), ComponentsJson);
 
-        if (PlayerLocation != nullptr && PlayerForward != nullptr)
-        {
-            const FVector ToActor = Actor->GetActorLocation() - *PlayerLocation;
-            const double Distance = ToActor.Size();
-            const FVector Dir = ToActor.GetSafeNormal();
-            const double Dot = FVector::DotProduct(*PlayerForward, Dir);
-            const double Angle = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(Dot, -1.0, 1.0)));
-            const double Vertical = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(Dir.Z, -1.0f, 1.0f)));
-            const double SideSign = FVector::CrossProduct(*PlayerForward, Dir).Z;
-
-            Json->SetNumberField(TEXT("distance"), Distance);
-            Json->SetNumberField(TEXT("relative_angle"), Angle);
-            Json->SetStringField(TEXT("relative_direction"), AngleToDirection(static_cast<float>(Angle), static_cast<float>(Vertical), static_cast<float>(SideSign)));
-            Json->SetBoolField(TEXT("in_interaction_range"), Distance <= 200.0);
-
-            if (bIncludeLOS && PIEWorld != nullptr)
-            {
-                FHitResult Hit;
-                FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(CortexQAObserveLOS), true);
-                TraceParams.AddIgnoredActor(Actor);
-                const bool bHit = PIEWorld->LineTraceSingleByChannel(
-                    Hit,
-                    *PlayerLocation,
-                    Actor->GetActorLocation(),
-                    ECC_Visibility,
-                    TraceParams);
-                Json->SetBoolField(TEXT("in_line_of_sight"), !bHit || Hit.GetActor() == Actor);
-            }
-        }
-
         return Json;
     }
 }
 
 FCortexCommandResult FCortexQAWorldOps::ObserveState(const TSharedPtr<FJsonObject>& Params)
-{    
+{
     UWorld* PIEWorld = FCortexQAUtils::GetPIEWorld();
     if (PIEWorld == nullptr)
     {
         return FCortexQAUtils::PIENotActiveError();
     }
 
-    bool bIncludeHidden = true;
+    APawn* PlayerPawn = FCortexQAUtils::GetPlayerPawn(PIEWorld);
+    if (PlayerPawn == nullptr)
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::ActorNotFound,
+            TEXT("No player pawn found in PIE world"));
+    }
+
+    // Parse params
+    double Radius = 5000.0;
+    int32 MaxActors = 20;
+    double InteractionRange = 200.0;
     bool bIncludeLOS = false;
     if (Params.IsValid())
     {
-        Params->TryGetBoolField(TEXT("include_hidden"), bIncludeHidden);
-        Params->TryGetBoolField(TEXT("include_line_of_sight"), bIncludeLOS);
-    }
-
-    FVector PlayerLocation = FVector::ZeroVector;
-    FVector PlayerForward = FVector::ForwardVector;
-    const FCortexCommandResult PlayerState = GetPlayerState(MakeShared<FJsonObject>());
-    const bool bHasPlayer = PlayerState.bSuccess && PlayerState.Data.IsValid();
-    if (bHasPlayer)
-    {
-        APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
-        APawn* Pawn = (PC != nullptr) ? PC->GetPawn() : nullptr;
-        if (Pawn != nullptr)
+        Params->TryGetNumberField(TEXT("radius"), Radius);
+        double MaxActorsDouble = MaxActors;
+        if (Params->TryGetNumberField(TEXT("max_actors"), MaxActorsDouble))
         {
-            PlayerLocation = Pawn->GetActorLocation();
-            PlayerForward = Pawn->GetActorForwardVector().GetSafeNormal();
+            MaxActors = static_cast<int32>(MaxActorsDouble);
         }
+        Params->TryGetNumberField(TEXT("interaction_range"), InteractionRange);
+        Params->TryGetBoolField(TEXT("include_los"), bIncludeLOS);
     }
 
-    TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-    TSharedPtr<FJsonObject> World = MakeShared<FJsonObject>();
-    World->SetNumberField(TEXT("time_seconds"), PIEWorld->GetTimeSeconds());
-    World->SetNumberField(TEXT("delta_seconds"), PIEWorld->GetDeltaSeconds());
-    Data->SetObjectField(TEXT("world"), World);
+    const FVector PlayerLocation = PlayerPawn->GetActorLocation();
+    const FVector PlayerForward = PlayerPawn->GetActorForwardVector().GetSafeNormal();
 
-    TArray<TSharedPtr<FJsonValue>> ActorsJson;
+    // Build player state
+    const FCortexCommandResult PlayerState = GetPlayerState(MakeShared<FJsonObject>());
+
+    // Collect nearby actors, filtering engine-internal actors
+    struct FActorDistance
+    {
+        AActor* Actor;
+        float Distance;
+    };
+    TArray<FActorDistance> NearbyActors;
+    int32 TotalActors = 0;
+
     for (TActorIterator<AActor> It(PIEWorld); It; ++It)
     {
         AActor* Actor = *It;
-        if (!IsValid(Actor))
+        if (!IsValid(Actor) || Actor == PlayerPawn || !Actor->GetRootComponent())
+        {
+            continue;
+        }
+        if (FCortexQAUtils::IsEngineInternalActor(Actor))
         {
             continue;
         }
 
-        if (!bIncludeHidden && Actor->IsHidden())
+        TotalActors++;
+        const float Distance = FVector::Dist(PlayerLocation, Actor->GetActorLocation());
+        if (Distance <= Radius)
         {
-            continue;
+            NearbyActors.Add({Actor, Distance});
         }
-
-        ActorsJson.Add(MakeShared<FJsonValueObject>(SerializeActorState(
-            Actor,
-            bHasPlayer ? &PlayerLocation : nullptr,
-            bHasPlayer ? &PlayerForward : nullptr,
-            PIEWorld,
-            bIncludeLOS)));
     }
-    Data->SetArrayField(TEXT("actors"), ActorsJson);
-    Data->SetNumberField(TEXT("actor_count"), ActorsJson.Num());
 
-    if (bHasPlayer)
+    // Sort by distance, cap at MaxActors
+    NearbyActors.Sort([](const FActorDistance& A, const FActorDistance& B)
+    {
+        return A.Distance < B.Distance;
+    });
+    if (NearbyActors.Num() > MaxActors)
+    {
+        NearbyActors.SetNum(MaxActors);
+    }
+
+    // Serialize nearby actors
+    TArray<TSharedPtr<FJsonValue>> ActorsJson;
+    for (const FActorDistance& Entry : NearbyActors)
+    {
+        ActorsJson.Add(MakeShared<FJsonValueObject>(SerializeActorForObserve(
+            Entry.Actor, PlayerLocation, PlayerForward, Entry.Distance,
+            PIEWorld, bIncludeLOS, static_cast<float>(InteractionRange))));
+    }
+
+    // Game state
+    TSharedPtr<FJsonObject> GameState = MakeShared<FJsonObject>();
+    GameState->SetNumberField(TEXT("elapsed_time"), PIEWorld->GetTimeSeconds());
+    GameState->SetStringField(TEXT("current_level"), PIEWorld->GetMapName());
+    GameState->SetNumberField(TEXT("frame_count"), static_cast<double>(GFrameCounter));
+
+    extern ENGINE_API float GAverageFPS;
+    GameState->SetNumberField(TEXT("fps"), GAverageFPS);
+
+    // Build response
+    TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+    if (PlayerState.bSuccess && PlayerState.Data.IsValid())
     {
         Data->SetObjectField(TEXT("player"), PlayerState.Data);
     }
+    Data->SetArrayField(TEXT("nearby_actors"), ActorsJson);
+    Data->SetObjectField(TEXT("game_state"), GameState);
+    Data->SetNumberField(TEXT("nearby_actor_count"), ActorsJson.Num());
+    Data->SetNumberField(TEXT("total_actors_in_level"), TotalActors);
 
     return FCortexCommandRouter::Success(Data);
 }
@@ -195,7 +256,7 @@ FCortexCommandResult FCortexQAWorldOps::GetActorState(const TSharedPtr<FJsonObje
             FString::Printf(TEXT("Actor not found: %s"), *ActorId));
     }
 
-    return FCortexCommandRouter::Success(SerializeActorState(Actor, nullptr, nullptr, PIEWorld, false));
+    return FCortexCommandRouter::Success(SerializeActorDetailed(Actor, PIEWorld));
 }
 
 FCortexCommandResult FCortexQAWorldOps::GetPlayerState(const TSharedPtr<FJsonObject>& Params)
@@ -208,21 +269,15 @@ FCortexCommandResult FCortexQAWorldOps::GetPlayerState(const TSharedPtr<FJsonObj
         return FCortexQAUtils::PIENotActiveError();
     }
 
-    APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
-    if (PC == nullptr)
-    {
-        return FCortexCommandRouter::Error(
-            CortexErrorCodes::ActorNotFound,
-            TEXT("No player controller found"));
-    }
-
-    APawn* Pawn = PC->GetPawn();
+    APawn* Pawn = FCortexQAUtils::GetPlayerPawn(PIEWorld);
     if (Pawn == nullptr)
     {
         return FCortexCommandRouter::Error(
             CortexErrorCodes::ActorNotFound,
             TEXT("No player pawn found"));
     }
+
+    APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     FCortexQAUtils::SetVectorArray(Data, TEXT("location"), Pawn->GetActorLocation());

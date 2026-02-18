@@ -11,8 +11,6 @@ FCortexCommandResult FCortexQACommandHandler::Execute(
     const TSharedPtr<FJsonObject>& Params,
     FDeferredResponseCallback DeferredCallback)
 {
-    (void)DeferredCallback;
-
     if (Command == TEXT("observe_state"))
     {
         return FCortexQAWorldOps::ObserveState(Params);

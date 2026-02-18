@@ -12,15 +12,11 @@ FCortexCommandResult FCortexQAAssertOps::AssertState(const TSharedPtr<FJsonObjec
         return FCortexQAUtils::PIENotActiveError();
     }
 
-    bool bExpected = true;
-    if (Params.IsValid())
-    {
-        Params->TryGetBoolField(TEXT("expected"), bExpected);
-    }
-
+    FString Expected;
     FString Message;
     if (Params.IsValid())
     {
+        Params->TryGetStringField(TEXT("expected"), Expected);
         Params->TryGetStringField(TEXT("message"), Message);
     }
 
@@ -30,12 +26,15 @@ FCortexCommandResult FCortexQAAssertOps::AssertState(const TSharedPtr<FJsonObjec
         return FCortexCommandRouter::Error(Eval.ErrorCode, Eval.ErrorMessage);
     }
 
-    const bool bPassed = (Eval.bPassed == bExpected);
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-    Data->SetBoolField(TEXT("passed"), bPassed);
+    Data->SetBoolField(TEXT("passed"), Eval.bPassed);
     Data->SetStringField(TEXT("message"), Message.IsEmpty()
-        ? (bPassed ? TEXT("Assertion passed") : TEXT("Assertion failed"))
+        ? (Eval.bPassed ? TEXT("Assertion passed") : TEXT("Assertion failed"))
         : Message);
+    if (!Expected.IsEmpty())
+    {
+        Data->SetStringField(TEXT("expected"), Expected);
+    }
     if (Eval.ActualValue.IsValid())
     {
         Data->SetField(TEXT("actual_value"), Eval.ActualValue);

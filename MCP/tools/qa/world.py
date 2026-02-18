@@ -8,9 +8,19 @@ def register_qa_world_tools(mcp, connection: UEConnection):
     """Register QA world-state query tools."""
 
     @mcp.tool()
-    def observe_game_state(include_line_of_sight: bool = False) -> str:
+    def observe_game_state(
+        radius: float = 5000.0,
+        max_actors: int = 20,
+        include_los: bool = False,
+        interaction_range: float = 200.0,
+    ) -> str:
         try:
-            params = {"include_line_of_sight": include_line_of_sight}
+            params = {
+                "radius": radius,
+                "max_actors": max_actors,
+                "include_los": include_los,
+                "interaction_range": interaction_range,
+            }
             response = connection.send_command("qa.observe_state", params)
             return format_response(response.get("data", {}), "observe_game_state")
         except (RuntimeError, ConnectionError) as e:

@@ -8,7 +8,6 @@
 #include "GameFramework/Actor.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Pawn.h"
-#include "GameFramework/PlayerController.h"
 
 namespace
 {
@@ -119,8 +118,7 @@ FCortexQAConditionEvalResult FCortexQAConditionUtils::Evaluate(UWorld* PIEWorld,
 
     if (Type == TEXT("player_near"))
     {
-        APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
-        APawn* Pawn = (PC != nullptr) ? PC->GetPawn() : nullptr;
+        APawn* Pawn = FCortexQAUtils::GetPlayerPawn(PIEWorld);
         if (Pawn == nullptr)
         {
             Result.ErrorCode = CortexErrorCodes::ActorNotFound;
@@ -156,8 +154,7 @@ FCortexQAConditionEvalResult FCortexQAConditionUtils::Evaluate(UWorld* PIEWorld,
 
     if (Type == TEXT("player_stopped"))
     {
-        APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
-        APawn* Pawn = (PC != nullptr) ? PC->GetPawn() : nullptr;
+        APawn* Pawn = FCortexQAUtils::GetPlayerPawn(PIEWorld);
         if (Pawn == nullptr)
         {
             Result.ErrorCode = CortexErrorCodes::ActorNotFound;

@@ -35,7 +35,7 @@ class MockMCP:
 def test_world_tools_registration_and_wiring():
     mcp = MockMCP()
     connection = MagicMock()
-    connection.send_command.return_value = {"data": {"actor_count": 1}}
+    connection.send_command.return_value = {"data": {"nearby_actor_count": 1}}
 
     register_qa_world_tools(mcp, connection)
 
@@ -43,11 +43,16 @@ def test_world_tools_registration_and_wiring():
     assert "get_actor_details" in mcp.tools
     assert "get_player_details" in mcp.tools
 
-    result = mcp.tools["observe_game_state"](include_line_of_sight=True)
+    result = mcp.tools["observe_game_state"](include_los=True)
     parsed = json.loads(result)
-    assert parsed["actor_count"] == 1
+    assert parsed["nearby_actor_count"] == 1
     connection.send_command.assert_called_with(
-        "qa.observe_state", {"include_line_of_sight": True}
+        "qa.observe_state", {
+            "radius": 5000.0,
+            "max_actors": 20,
+            "include_los": True,
+            "interaction_range": 200.0,
+        }
     )
 
 
@@ -128,7 +133,7 @@ def test_composite_test_step_aggregates_summary():
         if command == "qa.wait_for":
             return {"success": True, "data": {"timed_out": False}}
         if command == "qa.observe_state":
-            return {"success": True, "data": {"actors": [], "player": {"location": [0, 0, 0]}}}
+            return {"success": True, "data": {"nearby_actors": [], "player": {"location": [0, 0, 0]}}}
         if command == "editor.get_recent_logs":
             return {"success": True, "data": {"logs": []}}
         if command == "qa.assert_state":
@@ -143,7 +148,7 @@ def test_composite_test_step_aggregates_summary():
     result = mcp.tools["test_step"](
         action={"command": "qa.interact", "params": {"key": "E"}},
         wait={"command": "qa.wait_for", "params": {"type": "delay", "timeout": 1.0}},
-        assertion={"command": "qa.assert_state", "params": {"type": "delay", "expected": True}},
+        assertion={"command": "qa.assert_state", "params": {"type": "delay"}},
     )
     parsed = json.loads(result)
     assert parsed["action_success"] is True
@@ -163,7 +168,7 @@ def test_run_scenario_inline_uses_log_cursor_and_writes_report():
         if command == "qa.wait_for":
             return {"success": True, "data": {"timed_out": False}}
         if command == "qa.observe_state":
-            return {"success": True, "data": {"actors": [], "player": {"location": [0, 0, 0]}}}
+            return {"success": True, "data": {"nearby_actors": [], "player": {"location": [0, 0, 0]}}}
         if command == "editor.get_recent_logs":
             expected = call_state["cursor"]
             assert params["cursor"] == expected
@@ -202,8 +207,8 @@ def test_detector_finds_multiple_issue_types():
     findings = detect_structural_issues(
         observed_state={
             "player": {"location": [0.0, 0.0, -20000.0]},
-            "actors": [{"name": "BadActor", "location": [0.2, -0.1, 0.5]}],
-            "world": {"fps": 10.0},
+            "nearby_actors": [{"name": "BadActor", "location": [0.2, -0.1, 0.5]}],
+            "game_state": {"fps": 10.0},
         },
         wait_result={"timed_out": True},
         recent_logs={"logs": [{"level": "Error", "message": "Error: failure"}]},

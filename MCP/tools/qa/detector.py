@@ -26,7 +26,7 @@ def detect_structural_issues(
             }
         )
 
-    for actor in state.get("actors", []):
+    for actor in state.get("nearby_actors", []):
         actor_loc = actor.get("location")
         if not (isinstance(actor_loc, list) and len(actor_loc) == 3):
             continue
@@ -51,7 +51,7 @@ def detect_structural_issues(
             }
         )
 
-    fps = state.get("world", {}).get("fps")
+    fps = state.get("game_state", {}).get("fps")
     if isinstance(fps, (int, float)) and fps < min_fps:
         findings.append(
             {
