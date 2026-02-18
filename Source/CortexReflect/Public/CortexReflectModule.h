@@ -1,10 +1,11 @@
 #pragma once
 
-#include "Modules/ModuleInterface.h"
+#include "CoreMinimal.h"
+#include "Modules/ModuleManager.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogCortexReflect, Log, All);
 
-class FCortexReflectModule : public IModuleInterface
+class CORTEXREFLECT_API FCortexReflectModule : public IModuleInterface
 {
 public:
 	virtual void StartupModule() override;
