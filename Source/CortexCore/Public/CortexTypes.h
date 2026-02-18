@@ -89,6 +89,8 @@ namespace CortexErrorCodes
 	static const FString InvalidCondition = TEXT("INVALID_CONDITION");
 	static const FString UnsupportedType = TEXT("UNSUPPORTED_TYPE");
 	static const FString MovementMethodUnavailable = TEXT("MOVEMENT_METHOD_UNAVAILABLE");
+	// Reflect errors
+	static const FString SymbolNotFound = TEXT("SYMBOL_NOT_FOUND");
 }
 
 /** Result of a command execution */

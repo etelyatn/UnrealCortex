@@ -1,0 +1,26 @@
+#include "CortexReflectCommandHandler.h"
+#include "CortexCommandRouter.h"
+
+FCortexCommandResult FCortexReflectCommandHandler::Execute(
+	const FString& Command,
+	const TSharedPtr<FJsonObject>& Params,
+	FDeferredResponseCallback DeferredCallback)
+{
+	(void)DeferredCallback;
+
+	return FCortexCommandRouter::Error(
+		CortexErrorCodes::UnknownCommand,
+		FString::Printf(TEXT("Unknown reflect command: %s"), *Command)
+	);
+}
+
+TArray<FCortexCommandInfo> FCortexReflectCommandHandler::GetSupportedCommands() const
+{
+	return {
+		{ TEXT("class_hierarchy"), TEXT("Get class inheritance tree") },
+		{ TEXT("class_detail"), TEXT("Get detailed info for a single class") },
+		{ TEXT("find_overrides"), TEXT("Find Blueprint overrides of a class") },
+		{ TEXT("find_usages"), TEXT("Find cross-references to a symbol") },
+		{ TEXT("search"), TEXT("Search classes by pattern") },
+	};
+}
