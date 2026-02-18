@@ -9,6 +9,11 @@ FCortexCommandResult FCortexReflectCommandHandler::Execute(
 {
 	(void)DeferredCallback;
 
+	if (Command == TEXT("find_usages"))
+	{
+		return FCortexReflectOps::FindUsages(Params);
+	}
+
 	if (Command == TEXT("find_overrides"))
 	{
 		return FCortexReflectOps::FindOverrides(Params);

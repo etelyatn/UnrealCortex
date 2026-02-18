@@ -8,6 +8,12 @@
 #include "GameFramework/Actor.h"
 #include "Components/ActorComponent.h"
 #include "Misc/PackageName.h"
+#include "K2Node_Variable.h"
+#include "K2Node_VariableGet.h"
+#include "K2Node_VariableSet.h"
+#include "K2Node_CallFunction.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 
 // Returns the full C++ name of a class (e.g. "AActor" not "Actor").
 // UClass::GetName() strips the A/U prefix; GetPrefixCPP() gives it back.
@@ -772,7 +778,203 @@ FCortexCommandResult FCortexReflectOps::FindOverrides(const TSharedPtr<FJsonObje
 
 FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString SymbolName;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("symbol"), SymbolName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("symbol parameter is required")
+		);
+	}
+
+	FString ClassName;
+	if (!Params->TryGetStringField(TEXT("class_name"), ClassName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("class_name parameter is required")
+		);
+	}
+
+	FCortexCommandResult FindError;
+	UClass* OwnerClass = FindClassByName(ClassName, FindError);
+	if (!OwnerClass)
+	{
+		return FindError;
+	}
+
+	// Verify symbol exists on the class
+	FName SymbolFName(*SymbolName);
+	bool bIsProperty = OwnerClass->FindPropertyByName(SymbolFName) != nullptr;
+	bool bIsFunction = OwnerClass->FindFunctionByName(SymbolFName) != nullptr;
+
+	if (!bIsProperty && !bIsFunction)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SymbolNotFound,
+			FString::Printf(TEXT("Symbol '%s' not found on class '%s'"),
+				*SymbolName, *OwnerClass->GetName())
+		);
+	}
+
+	FString PathFilter;
+	Params->TryGetStringField(TEXT("path_filter"), PathFilter);
+
+	int32 Limit = 20;
+	Params->TryGetNumberField(TEXT("limit"), Limit);
+
+	int32 MaxBlueprints = 50;
+	Params->TryGetNumberField(TEXT("max_blueprints"), MaxBlueprints);
+
+	// Collect BP classes to scan: loaded (GetDerivedClasses) + unloaded (Asset Registry)
+	TSet<UBlueprint*> BlueprintsToScan;
+
+	// 1. Loaded BPs via GetDerivedClasses
+	TArray<UClass*> DerivedClasses;
+	GetDerivedClasses(OwnerClass, DerivedClasses, true);
+	for (UClass* DC : DerivedClasses)
+	{
+		if (BlueprintsToScan.Num() >= MaxBlueprints)
+		{
+			break;
+		}
+		if (UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(DC))
+		{
+			if (UBlueprint* BP = Cast<UBlueprint>(BPGC->ClassGeneratedBy))
+			{
+				if (PathFilter.IsEmpty() || BP->GetPathName().StartsWith(PathFilter))
+				{
+					BlueprintsToScan.Add(BP);
+				}
+			}
+		}
+	}
+
+	// 2. Unloaded BPs via Asset Registry
+	IAssetRegistry& AssetRegistry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+	if (!PathFilter.IsEmpty())
+	{
+		Filter.PackagePaths.Add(FName(*PathFilter));
+		Filter.bRecursivePaths = true;
+	}
+
+	TArray<FAssetData> Assets;
+	AssetRegistry.GetAssets(Filter, Assets);
+
+	for (const FAssetData& Asset : Assets)
+	{
+		if (BlueprintsToScan.Num() >= MaxBlueprints)
+		{
+			break;
+		}
+
+		FAssetTagValueRef ParentTag = Asset.TagsAndValues.FindTag("NativeParentClass");
+		if (ParentTag.IsSet())
+		{
+			UBlueprint* BP = Cast<UBlueprint>(Asset.GetAsset());
+			if (BP && !BlueprintsToScan.Contains(BP))
+			{
+				if (BP->GeneratedClass && BP->GeneratedClass->IsChildOf(OwnerClass))
+				{
+					BlueprintsToScan.Add(BP);
+				}
+			}
+		}
+	}
+
+	// Scan BP graphs for symbol references
+	TArray<TSharedPtr<FJsonValue>> UsagesArray;
+	int32 TotalUsages = 0;
+
+	for (UBlueprint* BP : BlueprintsToScan)
+	{
+		if (UsagesArray.Num() >= Limit)
+		{
+			break;
+		}
+
+		TArray<TSharedPtr<FJsonValue>> ReferencesArray;
+		TArray<UEdGraph*> AllGraphs;
+		BP->GetAllGraphs(AllGraphs);
+
+		for (UEdGraph* Graph : AllGraphs)
+		{
+			if (!Graph)
+			{
+				continue;
+			}
+
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (!Node)
+				{
+					continue;
+				}
+
+				if (bIsProperty)
+				{
+					UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(Node);
+					if (VarNode && VarNode->VariableReference.GetMemberName() == SymbolFName)
+					{
+						TSharedPtr<FJsonObject> RefObj = MakeShared<FJsonObject>();
+						RefObj->SetStringField(TEXT("context"), Graph->GetName());
+
+						if (VarNode->IsA<UK2Node_VariableGet>())
+						{
+							RefObj->SetStringField(TEXT("type"), TEXT("read"));
+							RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableGet"));
+						}
+						else if (VarNode->IsA<UK2Node_VariableSet>())
+						{
+							RefObj->SetStringField(TEXT("type"), TEXT("write"));
+							RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableSet"));
+						}
+
+						ReferencesArray.Add(MakeShared<FJsonValueObject>(RefObj));
+					}
+				}
+
+				if (bIsFunction)
+				{
+					UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+					if (CallNode && CallNode->FunctionReference.GetMemberName() == SymbolFName)
+					{
+						TSharedPtr<FJsonObject> RefObj = MakeShared<FJsonObject>();
+						RefObj->SetStringField(TEXT("context"), Graph->GetName());
+						RefObj->SetStringField(TEXT("type"), TEXT("call"));
+						RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_CallFunction"));
+						ReferencesArray.Add(MakeShared<FJsonValueObject>(RefObj));
+					}
+				}
+			}
+		}
+
+		if (ReferencesArray.Num() > 0)
+		{
+			TSharedPtr<FJsonObject> UsageObj = MakeShared<FJsonObject>();
+			UsageObj->SetStringField(TEXT("class_name"), BP->GetName());
+			UsageObj->SetStringField(TEXT("asset_path"), BP->GetPathName());
+			UsageObj->SetArrayField(TEXT("references"), ReferencesArray);
+			UsageObj->SetNumberField(TEXT("total_count"), ReferencesArray.Num());
+
+			UsagesArray.Add(MakeShared<FJsonValueObject>(UsageObj));
+			TotalUsages += ReferencesArray.Num();
+		}
+	}
+
+	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("symbol"), SymbolName);
+	Result->SetStringField(TEXT("defined_in"), OwnerClass->GetName());
+	Result->SetStringField(TEXT("symbol_type"), bIsProperty ? TEXT("property") : TEXT("function"));
+	Result->SetArrayField(TEXT("usages"), UsagesArray);
+	Result->SetNumberField(TEXT("total_usages"), TotalUsages);
+	Result->SetNumberField(TEXT("total_classes"), UsagesArray.Num());
+
+	return FCortexCommandRouter::Success(Result);
 }
 
 FCortexCommandResult FCortexReflectOps::Search(const TSharedPtr<FJsonObject>& Params)
