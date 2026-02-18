@@ -117,8 +117,8 @@ bool FCortexReflectHierarchyMaxResultsTest::RunTest(const FString& Parameters)
 		int32 TotalClasses;
 		if (Result.Data->TryGetNumberField(TEXT("total_classes"), TotalClasses))
 		{
-			TestTrue(TEXT("total_classes should not exceed max_results + 1 (root)"),
-				TotalClasses <= 4);
+			TestTrue(TEXT("total_classes should not exceed max_results"),
+				TotalClasses <= 3);
 		}
 	}
 
