@@ -9,7 +9,7 @@
 #include "Editor.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
-#include "GameFramework/PlayerInput.h"
+#include "InputKeyEventArgs.h"
 #include "NavigationSystem.h"
 
 namespace
@@ -122,7 +122,7 @@ FCortexCommandResult FCortexQAActionOps::Interact(const TSharedPtr<FJsonObject>&
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Invalid key name"));
     }
 
-    PC->InputKey(FInputKeyParams(InteractionKey, EInputEvent::IE_Pressed, 1.0, false));
+    PC->InputKey(FInputKeyEventArgs::CreateSimulated(InteractionKey, EInputEvent::IE_Pressed, 1.0f));
 
     TSharedPtr<FTimerHandle> ReleaseHandle = MakeShared<FTimerHandle>();
     PIEWorld->GetTimerManager().SetTimer(
@@ -131,7 +131,7 @@ FCortexCommandResult FCortexQAActionOps::Interact(const TSharedPtr<FJsonObject>&
         {
                 if (PC != nullptr)
                 {
-                PC->InputKey(FInputKeyParams(InteractionKey, EInputEvent::IE_Released, 0.0, false));
+                PC->InputKey(FInputKeyEventArgs::CreateSimulated(InteractionKey, EInputEvent::IE_Released, 0.0f));
                 }
         },
         0.1f,
