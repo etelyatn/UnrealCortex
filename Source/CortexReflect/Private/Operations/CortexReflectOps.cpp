@@ -612,7 +612,169 @@ FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject
 
 FCortexCommandResult FCortexReflectOps::FindOverrides(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString ClassName;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("class_name"), ClassName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("class_name parameter is required")
+		);
+	}
+
+	FCortexCommandResult FindError;
+	UClass* ParentClass = FindClassByName(ClassName, FindError);
+	if (!ParentClass)
+	{
+		return FindError;
+	}
+
+	int32 Depth = 2;
+	Params->TryGetNumberField(TEXT("depth"), Depth);
+
+	int32 Limit = 20;
+	Params->TryGetNumberField(TEXT("limit"), Limit);
+
+	// Collect parent's function names for override detection
+	TSet<FName> ParentFunctions;
+	for (TFieldIterator<UFunction> It(ParentClass); It; ++It)
+	{
+		ParentFunctions.Add(It->GetFName());
+	}
+
+	TArray<UClass*> AllDerived;
+	GetDerivedClasses(ParentClass, AllDerived, true);
+
+	TArray<TSharedPtr<FJsonValue>> ChildrenArray;
+	int32 TotalOverrides = 0;
+	TMap<FString, int32> OverrideCount;
+
+	for (UClass* DerivedClass : AllDerived)
+	{
+		if (ChildrenArray.Num() >= Limit)
+		{
+			break;
+		}
+
+		UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(DerivedClass);
+		if (!BPGC)
+		{
+			continue;
+		}
+
+		// Check depth
+		int32 ClassDepth = 0;
+		UClass* Walker = DerivedClass;
+		while (Walker && Walker != ParentClass)
+		{
+			ClassDepth++;
+			Walker = Walker->GetSuperClass();
+		}
+		if (ClassDepth > Depth)
+		{
+			continue;
+		}
+
+		UBlueprint* BP = Cast<UBlueprint>(BPGC->ClassGeneratedBy);
+		if (!BP)
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> ChildObj = MakeShared<FJsonObject>();
+		ChildObj->SetStringField(TEXT("name"), BP->GetName());
+		ChildObj->SetStringField(TEXT("type"), TEXT("blueprint"));
+
+		TArray<TSharedPtr<FJsonValue>> OverriddenFuncs;
+		TArray<TSharedPtr<FJsonValue>> OverriddenEvents;
+		TArray<TSharedPtr<FJsonValue>> CustomFuncs;
+		TArray<TSharedPtr<FJsonValue>> CustomVars;
+
+		// Use GetOwnerClass() filter for own-class functions
+		for (TFieldIterator<UFunction> It(DerivedClass); It; ++It)
+		{
+			const UFunction* Func = *It;
+			if (Func->GetOwnerClass() != DerivedClass)
+			{
+				continue;
+			}
+
+			if (ParentFunctions.Contains(Func->GetFName()))
+			{
+				// Find which ancestor actually declares this function
+				// Walk up until the super no longer has it
+				UClass* Ancestor = ParentClass;
+				while (Ancestor->GetSuperClass())
+				{
+					if (!Ancestor->GetSuperClass()->FindFunctionByName(Func->GetFName()))
+					{
+						break;
+					}
+					Ancestor = Ancestor->GetSuperClass();
+				}
+				FString DefinedIn = Ancestor->GetName();
+
+				TSharedPtr<FJsonObject> OverrideEntry = MakeShared<FJsonObject>();
+				OverrideEntry->SetStringField(TEXT("name"), Func->GetName());
+				OverrideEntry->SetStringField(TEXT("defined_in"), DefinedIn);
+
+				if (Func->HasAnyFunctionFlags(FUNC_BlueprintEvent))
+				{
+					OverriddenEvents.Add(MakeShared<FJsonValueObject>(OverrideEntry));
+				}
+				else
+				{
+					OverriddenFuncs.Add(MakeShared<FJsonValueObject>(OverrideEntry));
+				}
+				TotalOverrides++;
+
+				int32& Count = OverrideCount.FindOrAdd(Func->GetName());
+				Count++;
+			}
+			else
+			{
+				CustomFuncs.Add(MakeShared<FJsonValueString>(Func->GetName()));
+			}
+		}
+
+		// Custom variables (own class only)
+		for (TFieldIterator<FProperty> It(DerivedClass); It; ++It)
+		{
+			if (It->GetOwnerClass() == DerivedClass && !It->HasAnyPropertyFlags(CPF_Parm))
+			{
+				CustomVars.Add(MakeShared<FJsonValueString>(It->GetName()));
+			}
+		}
+
+		ChildObj->SetArrayField(TEXT("overridden_functions"), OverriddenFuncs);
+		ChildObj->SetArrayField(TEXT("overridden_events"), OverriddenEvents);
+		ChildObj->SetArrayField(TEXT("custom_functions"), CustomFuncs);
+		ChildObj->SetArrayField(TEXT("custom_variables"), CustomVars);
+
+		ChildrenArray.Add(MakeShared<FJsonValueObject>(ChildObj));
+	}
+
+	// Find most overridden function
+	FString MostOverridden;
+	int32 MaxOverrides = 0;
+	for (const auto& Pair : OverrideCount)
+	{
+		if (Pair.Value > MaxOverrides)
+		{
+			MaxOverrides = Pair.Value;
+			MostOverridden = Pair.Key;
+		}
+	}
+
+	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("class_name"), ParentClass->GetName());
+	Result->SetArrayField(TEXT("children"), ChildrenArray);
+	Result->SetNumberField(TEXT("total_overrides"), TotalOverrides);
+	if (!MostOverridden.IsEmpty())
+	{
+		Result->SetStringField(TEXT("most_overridden"), MostOverridden);
+	}
+
+	return FCortexCommandRouter::Success(Result);
 }
 
 FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>& Params)
