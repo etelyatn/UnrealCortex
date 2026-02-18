@@ -131,6 +131,31 @@ UClass* FCortexReflectOps::FindClassByName(const FString& ClassName, FCortexComm
 
 bool FCortexReflectOps::IsProjectClass(const UClass* Class)
 {
+	if (!Class)
+	{
+		return false;
+	}
+
+	// Blueprint in /Game/ is a project class
+	if (const UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(Class))
+	{
+		UBlueprint* BP = Cast<UBlueprint>(BPGC->ClassGeneratedBy);
+		return BP && BP->GetPathName().StartsWith(TEXT("/Game/"));
+	}
+
+	// C++ class: use ModuleRelativePath metadata.
+	// Engine source paths start with Runtime/, Editor/, Developer/, Programs/, or Plugins/.
+	// Project source paths are relative to the game module (e.g., "Characters/MyCharacter.h").
+	FString ModulePath = Class->GetMetaData(TEXT("ModuleRelativePath"));
+	if (!ModulePath.IsEmpty())
+	{
+		return !ModulePath.StartsWith(TEXT("Runtime/"))
+			&& !ModulePath.StartsWith(TEXT("Editor/"))
+			&& !ModulePath.StartsWith(TEXT("Developer/"))
+			&& !ModulePath.StartsWith(TEXT("Programs/"))
+			&& !ModulePath.StartsWith(TEXT("Plugins/"));
+	}
+
 	return false;
 }
 
@@ -289,9 +314,134 @@ TSharedPtr<FJsonObject> FCortexReflectOps::SerializeFunction(const UFunction* Fu
 	return FuncObj;
 }
 
+void FCortexReflectOps::BuildHierarchyTree(
+	UClass* Root,
+	TSharedPtr<FJsonObject>& OutNode,
+	int32 CurrentDepth,
+	int32 MaxDepth,
+	bool bIncludeBlueprint,
+	bool bIncludeEngine,
+	int32 MaxResults,
+	int32& OutTotalCount,
+	int32& OutCppCount,
+	int32& OutBPCount)
+{
+	OutNode = MakeShared<FJsonObject>();
+	OutNode->SetStringField(TEXT("name"), GetCppClassName(Root));
+
+	UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(Root);
+	if (BPGC)
+	{
+		OutNode->SetStringField(TEXT("type"), TEXT("blueprint"));
+		OutBPCount++;
+		UBlueprint* BP = Cast<UBlueprint>(BPGC->ClassGeneratedBy);
+		if (BP)
+		{
+			OutNode->SetStringField(TEXT("asset_path"), BP->GetPathName());
+		}
+	}
+	else
+	{
+		OutNode->SetStringField(TEXT("type"), TEXT("cpp"));
+		OutCppCount++;
+		const FString* ModName = Root->FindMetaData(TEXT("ModuleName"));
+		if (ModName)
+		{
+			OutNode->SetStringField(TEXT("module"), *ModName);
+		}
+		FString SourcePath = Root->GetMetaData(TEXT("ModuleRelativePath"));
+		if (!SourcePath.IsEmpty())
+		{
+			OutNode->SetStringField(TEXT("source_path"), SourcePath);
+		}
+	}
+	OutTotalCount++;
+
+	// Build children
+	TArray<TSharedPtr<FJsonValue>> ChildrenArray;
+	if (CurrentDepth < MaxDepth && OutTotalCount < MaxResults)
+	{
+		TArray<UClass*> DirectChildren;
+		GetDerivedClasses(Root, DirectChildren, false);
+
+		for (UClass* Child : DirectChildren)
+		{
+			if (OutTotalCount >= MaxResults)
+			{
+				break;
+			}
+
+			if (!bIncludeBlueprint && Cast<UBlueprintGeneratedClass>(Child))
+			{
+				continue;
+			}
+
+			if (!bIncludeEngine && !IsProjectClass(Child))
+			{
+				continue;
+			}
+
+			TSharedPtr<FJsonObject> ChildNode;
+			BuildHierarchyTree(
+				Child, ChildNode,
+				CurrentDepth + 1, MaxDepth,
+				bIncludeBlueprint, bIncludeEngine,
+				MaxResults,
+				OutTotalCount, OutCppCount, OutBPCount
+			);
+			ChildrenArray.Add(MakeShared<FJsonValueObject>(ChildNode));
+		}
+	}
+	OutNode->SetArrayField(TEXT("children"), ChildrenArray);
+}
+
 FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not implemented"));
+	FString RootName;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("root"), RootName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("root parameter is required")
+		);
+	}
+
+	FCortexCommandResult FindError;
+	UClass* RootClass = FindClassByName(RootName, FindError);
+	if (!RootClass)
+	{
+		return FindError;
+	}
+
+	// Parse parameters with safe defaults from design doc
+	int32 Depth = 2;
+	Params->TryGetNumberField(TEXT("depth"), Depth);
+
+	int32 MaxResults = 100;
+	Params->TryGetNumberField(TEXT("max_results"), MaxResults);
+
+	bool bIncludeBlueprint = true;
+	Params->TryGetBoolField(TEXT("include_blueprint"), bIncludeBlueprint);
+
+	bool bIncludeEngine = false;
+	Params->TryGetBoolField(TEXT("include_engine"), bIncludeEngine);
+
+	int32 TotalCount = 0, CppCount = 0, BPCount = 0;
+	TSharedPtr<FJsonObject> TreeNode;
+	BuildHierarchyTree(
+		RootClass, TreeNode,
+		0, Depth,
+		bIncludeBlueprint, bIncludeEngine,
+		MaxResults,
+		TotalCount, CppCount, BPCount
+	);
+
+	TreeNode->SetStringField(TEXT("root"), GetCppClassName(RootClass));
+	TreeNode->SetNumberField(TEXT("total_classes"), TotalCount);
+	TreeNode->SetNumberField(TEXT("cpp_count"), CppCount);
+	TreeNode->SetNumberField(TEXT("blueprint_count"), BPCount);
+
+	return FCortexCommandRouter::Success(TreeNode);
 }
 
 FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject>& Params)

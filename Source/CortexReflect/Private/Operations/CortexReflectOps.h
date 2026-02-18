@@ -16,6 +16,18 @@ private:
 	static UClass* FindClassByName(const FString& ClassName, FCortexCommandResult& OutError);
 	static bool IsProjectClass(const UClass* Class);
 	static FString GetCppClassName(const UClass* Class);
+	static void BuildHierarchyTree(
+		UClass* Root,
+		TSharedPtr<FJsonObject>& OutNode,
+		int32 CurrentDepth,
+		int32 MaxDepth,
+		bool bIncludeBlueprint,
+		bool bIncludeEngine,
+		int32 MaxResults,
+		int32& OutTotalCount,
+		int32& OutCppCount,
+		int32& OutBPCount
+	);
 	static TSharedPtr<FJsonObject> SerializeProperty(const FProperty* Property, const UObject* CDO);
 	static TSharedPtr<FJsonObject> SerializeFunction(const UFunction* Function, const UClass* QueryClass);
 	static TArray<FString> GetPropertyFlags(const FProperty* Property);
