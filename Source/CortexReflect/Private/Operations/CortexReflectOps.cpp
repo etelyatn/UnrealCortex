@@ -648,6 +648,10 @@ FCortexCommandResult FCortexReflectOps::Search(const TSharedPtr<FJsonObject>& Pa
 	{
 		FCortexCommandResult FindError;
 		TypeFilterClass = FindClassByName(TypeFilter, FindError);
+		if (!TypeFilterClass)
+		{
+			return FindError;
+		}
 	}
 
 	TArray<TSharedPtr<FJsonValue>> ResultsArray;
@@ -679,7 +683,7 @@ FCortexCommandResult FCortexReflectOps::Search(const TSharedPtr<FJsonObject>& Pa
 		if (!ModuleFilter.IsEmpty())
 		{
 			const FString* ModName = Class->FindMetaData(TEXT("ModuleName"));
-			if (!ModName || !ModName->Contains(ModuleFilter))
+			if (!ModName || !ModName->Contains(ModuleFilter, ESearchCase::IgnoreCase))
 			{
 				continue;
 			}
