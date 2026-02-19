@@ -164,6 +164,7 @@ FCortexCommandResult FCortexMaterialGraphOps::AddNode(const TSharedPtr<FJsonObje
 	}
 
 	UMaterialExpression* NewExpression = NewObject<UMaterialExpression>(Material, ExpClass);
+	NewExpression->bCollapsed = false;
 
 	// Set position if provided
 	const TSharedPtr<FJsonObject>* PositionObj = nullptr;
