@@ -875,14 +875,19 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 		FAssetTagValueRef ParentTag = Asset.TagsAndValues.FindTag("NativeParentClass");
 		if (ParentTag.IsSet())
 		{
-			// Pre-filter using the tag value before loading the asset.
+			// Pre-filter using the tag value before checking memory.
 			// NativeParentClass stores the native parent path (e.g. "/Script/Engine.Character").
 			// FindObject<UClass> resolves it from memory without triggering disk I/O.
 			FString NativeParentPath = ParentTag.AsString();
 			UClass* NativeParent = FindObject<UClass>(nullptr, *NativeParentPath);
 			if (NativeParent && NativeParent->IsChildOf(OwnerClass))
 			{
-				UBlueprint* BP = Cast<UBlueprint>(Asset.GetAsset());
+				// Only scan already-loaded Blueprints. If a Blueprint is not loaded, its
+				// UEdGraph nodes are not in memory and there is nothing to scan for symbol
+				// references. Using GetAsset() here would force a disk load inside a tight
+				// loop, which can trigger concurrent GC on partially-initialised objects
+				// and cause an access violation in the GC worker thread.
+				UBlueprint* BP = FindObject<UBlueprint>(nullptr, *Asset.GetSoftObjectPath().ToString());
 				if (BP && !BlueprintsToScan.Contains(BP))
 				{
 					if (BP->GeneratedClass && BP->GeneratedClass->IsChildOf(OwnerClass))
