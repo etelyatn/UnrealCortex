@@ -184,7 +184,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetColor(const TSharedPtr<FJso
     Data->SetBoolField(TEXT("set"), true);
     Data->SetStringField(TEXT("widget_name"), WidgetName);
     Data->SetStringField(TEXT("target"), Target);
-    Data->SetStringField(TEXT("color"), Color.ToFColor(true).ToHex());
+    Data->SetStringField(TEXT("color"), FString::Printf(TEXT("#%s"), *Color.ToFColor(true).ToHex()));
     return FCortexCommandRouter::Success(Data);
 }
 

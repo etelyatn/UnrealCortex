@@ -185,6 +185,10 @@ TArray<FString> FCortexReflectOps::GetPropertyFlags(const FProperty* Property)
 		{
 			Flags.Add(TEXT("EditDefaultsOnly"));
 		}
+		else if (Property->HasAnyPropertyFlags(CPF_DisableEditOnTemplate))
+		{
+			Flags.Add(TEXT("EditInstanceOnly"));
+		}
 		else
 		{
 			Flags.Add(TEXT("EditAnywhere"));
@@ -333,7 +337,7 @@ void FCortexReflectOps::BuildHierarchyTree(
 	int32& OutBPCount)
 {
 	OutNode = MakeShared<FJsonObject>();
-	OutNode->SetStringField(TEXT("name"), GetCppClassName(Root));
+	OutNode->SetStringField(TEXT("root"), GetCppClassName(Root));
 
 	UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(Root);
 	if (BPGC)
@@ -442,7 +446,6 @@ FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObj
 		TotalCount, CppCount, BPCount
 	);
 
-	TreeNode->SetStringField(TEXT("root"), GetCppClassName(RootClass));
 	TreeNode->SetNumberField(TEXT("total_classes"), TotalCount);
 	TreeNode->SetNumberField(TEXT("cpp_count"), CppCount);
 	TreeNode->SetNumberField(TEXT("blueprint_count"), BPCount);
@@ -569,7 +572,7 @@ FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject
 			{
 				TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
 				CompObj->SetStringField(TEXT("name"), Comp->GetName());
-				CompObj->SetStringField(TEXT("type"), Comp->GetClass()->GetName());
+				CompObj->SetStringField(TEXT("type"), GetCppClassName(Comp->GetClass()));
 				ComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
 			}
 		}
@@ -592,7 +595,7 @@ FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject
 				{
 					TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
 					CompObj->SetStringField(TEXT("name"), Node->GetVariableName().ToString());
-					CompObj->SetStringField(TEXT("type"), Node->ComponentClass->GetName());
+					CompObj->SetStringField(TEXT("type"), GetCppClassName(Node->ComponentClass));
 					ComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
 				}
 			}
