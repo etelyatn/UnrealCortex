@@ -18,6 +18,7 @@
 #include "ScopedTransaction.h"
 #include "UObject/UObjectGlobals.h"
 #include "ObjectTools.h"
+#include "Misc/TextBuffer.h"
 
 UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FString& OutError)
 {
@@ -743,10 +744,44 @@ FCortexCommandResult FCortexBPAssetOps::Delete(const TSharedPtr<FJsonObject>& Pa
 	FString PackageFilename = FPackageName::LongPackageNameToFilename(
 		Package->GetName(), FPackageName::GetAssetPackageExtension());
 
-	// Use ObjectTools for proper asset deletion (handles GC coordination)
+	// Delete the .uasset file from disk first.
+	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
+	{
+		IFileManager::Get().Delete(*PackageFilename);
+	}
+
+	// Prevent a LogAssetRegistry warning caused by a race between ForceDeleteObjects and
+	// the file watcher. ForceDeleteObjects calls AssetDeleted, which calls AddEmptyPackage
+	// only when UPackage::IsEmptyPackage returns true (i.e. no other RF_Public assets
+	// remain in the package). A pending FCA_Added event — queued by SavePackage when the
+	// asset was originally created — fires on the next engine tick; if the package is in
+	// CachedEmptyPackages at that point, the warning fires.
+	//
+	// Fix: place a temporary guard object (RF_Public, not an asset in the registry) in
+	// the package so IsEmptyPackage returns false, skipping AddEmptyPackage entirely.
+	// The guard is cleared and marked as garbage immediately after ForceDeleteObjects;
+	// the subsequent FCA_Removed event (from the file deletion above) cleans up any
+	// remaining registry state.
+	UTextBuffer* DeleteGuard = nullptr;
+	if (IsValid(Package))
+	{
+		DeleteGuard = NewObject<UTextBuffer>(Package, TEXT("__CortexDeleteGuard__"), RF_Public);
+	}
+
+	// Use ObjectTools for proper asset deletion (handles GC coordination, references)
 	TArray<UObject*> ObjectsToDelete;
 	ObjectsToDelete.Add(Blueprint);
 	int32 DeletedCount = ObjectTools::ForceDeleteObjects(ObjectsToDelete, false);
+
+	// Remove the guard — strip asset flags so it is invisible to IsAsset() queries.
+	// ForceDeleteObjects purges the undo buffer which may temporarily root objects,
+	// so we avoid MarkAsGarbage() to prevent an IsRooted() assertion. The guard has
+	// no external references and no RF_Standalone, so GC collects it naturally when
+	// the package is unloaded after the file watcher processes FCA_Removed.
+	if (DeleteGuard)
+	{
+		DeleteGuard->ClearFlags(RF_Public | RF_Standalone);
+	}
 
 	if (DeletedCount == 0)
 	{
@@ -754,12 +789,6 @@ FCortexCommandResult FCortexBPAssetOps::Delete(const TSharedPtr<FJsonObject>& Pa
 			CortexErrorCodes::SerializationError,
 			FString::Printf(TEXT("Failed to delete Blueprint: %s (may have references)"), *AssetPath)
 		);
-	}
-
-	// Delete the .uasset file from disk if it still exists
-	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
-	{
-		IFileManager::Get().Delete(*PackageFilename);
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();

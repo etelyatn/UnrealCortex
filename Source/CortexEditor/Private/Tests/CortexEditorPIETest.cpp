@@ -80,6 +80,18 @@ bool FCortexEditorStartPIENotActiveTest::RunTest(const FString& Parameters)
 	const FCortexCommandResult Result = Handler.Execute(TEXT("start_pie"), Params, MoveTemp(Callback));
 	TestTrue(TEXT("start_pie should be deferred"), Result.bIsDeferred);
 
+	// Cancel the pending PIE session to avoid contaminating subsequent tests.
+	// CancelRequestPlaySession() aborts a queued-but-not-yet-started session.
+	// RequestEndPlayMap() handles the case where it already started before we cancel.
+	if (GEditor != nullptr)
+	{
+		GEditor->CancelRequestPlaySession();
+		if (GEditor->PlayWorld != nullptr)
+		{
+			GEditor->RequestEndPlayMap();
+		}
+	}
+
 	return true;
 }
 
