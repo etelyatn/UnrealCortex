@@ -125,6 +125,12 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 	}
 
 	const double StartTime = FPlatformTime::Seconds();
+
+	// Force the viewport to render a fresh frame before capture
+	FEditorViewportClient& Client = Viewport->GetAssetViewportClient();
+	Client.Invalidate(true, true);
+	ActiveViewport->Draw(false);
+
 	FlushRenderingCommands();
 
 	TArray<FColor> Pixels;

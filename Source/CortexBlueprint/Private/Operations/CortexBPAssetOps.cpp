@@ -1,6 +1,5 @@
-// Copyright Andrei Sudarikov. All Rights Reserved.
-
 #include "CortexBPAssetOps.h"
+#include "Operations/CortexBPTypeUtils.h"
 #include "CortexBlueprintModule.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -14,6 +13,8 @@
 #include "Components/ActorComponent.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Kismet2/CompilerResultsLog.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
 #include "ScopedTransaction.h"
 #include "UObject/UObjectGlobals.h"
 #include "ObjectTools.h"
@@ -497,6 +498,24 @@ FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Para
 		// Resolve type from AssetRegistry tags to avoid loading every Blueprint asset.
 		BPObj->SetStringField(TEXT("type"), DetermineBlueprintType(AssetData));
 
+		// Parent class (extracted from AssetRegistry tags — no load required)
+		FString ParentClassName;
+		if (!AssetData.GetTagValue(FBlueprintTags::NativeParentClassPath, ParentClassName))
+		{
+			AssetData.GetTagValue(FBlueprintTags::ParentClassPath, ParentClassName);
+		}
+		if (!ParentClassName.IsEmpty())
+		{
+			const FString ClassPath = FPackageName::ExportTextPathToObjectPath(ParentClassName);
+			UClass* ParentClass = FindObject<UClass>(nullptr, *ClassPath);
+			BPObj->SetStringField(TEXT("parent_class"),
+				ParentClass ? ParentClass->GetName() : FPackageName::GetShortName(ClassPath));
+		}
+		else
+		{
+			BPObj->SetStringField(TEXT("parent_class"), TEXT(""));
+		}
+
 		BlueprintsArray.Add(MakeShared<FJsonValueObject>(BPObj));
 	}
 
@@ -566,7 +585,7 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 	{
 		TSharedPtr<FJsonObject> VarObj = MakeShared<FJsonObject>();
 		VarObj->SetStringField(TEXT("name"), Variable.VarName.ToString());
-		VarObj->SetStringField(TEXT("type"), Variable.VarType.PinCategory.ToString());
+		VarObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Variable.VarType));
 
 		// Add default value if available
 		if (!Variable.DefaultValue.IsEmpty())
@@ -578,6 +597,12 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 		bool bIsExposed = (Variable.PropertyFlags & CPF_BlueprintVisible) != 0;
 		VarObj->SetBoolField(TEXT("is_exposed"), bIsExposed);
 
+		// Add category if set
+		if (!Variable.Category.IsEmpty())
+		{
+			VarObj->SetStringField(TEXT("category"), Variable.Category.ToString());
+		}
+
 		VariablesArray.Add(MakeShared<FJsonValueObject>(VarObj));
 	}
 	InfoObj->SetArrayField(TEXT("variables"), VariablesArray);
@@ -586,12 +611,46 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 	TArray<TSharedPtr<FJsonValue>> FunctionsArray;
 	for (UEdGraph* Graph : BP->FunctionGraphs)
 	{
-		if (Graph)
+		if (!Graph)
 		{
-			TSharedPtr<FJsonObject> FuncObj = MakeShared<FJsonObject>();
-			FuncObj->SetStringField(TEXT("name"), Graph->GetName());
-			FunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
+			continue;
 		}
+
+		TSharedPtr<FJsonObject> FuncObj = MakeShared<FJsonObject>();
+		FuncObj->SetStringField(TEXT("name"), Graph->GetName());
+
+		// Serialize inputs from entry node's UserDefinedPins
+		TArray<TSharedPtr<FJsonValue>> InputsArr;
+		TArray<TSharedPtr<FJsonValue>> OutputsArr;
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(Node))
+			{
+				for (const TSharedPtr<FUserPinInfo>& Pin : Entry->UserDefinedPins)
+				{
+					TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+					P->SetStringField(TEXT("name"), Pin->PinName.ToString());
+					P->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Pin->PinType));
+					InputsArr.Add(MakeShared<FJsonValueObject>(P));
+				}
+			}
+			else if (UK2Node_FunctionResult* ResultNode = Cast<UK2Node_FunctionResult>(Node))
+			{
+				for (const TSharedPtr<FUserPinInfo>& Pin : ResultNode->UserDefinedPins)
+				{
+					TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+					P->SetStringField(TEXT("name"), Pin->PinName.ToString());
+					P->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Pin->PinType));
+					OutputsArr.Add(MakeShared<FJsonValueObject>(P));
+				}
+			}
+		}
+
+		FuncObj->SetArrayField(TEXT("inputs"), InputsArr);
+		FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
+
+		FunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
 	}
 	InfoObj->SetArrayField(TEXT("functions"), FunctionsArray);
 

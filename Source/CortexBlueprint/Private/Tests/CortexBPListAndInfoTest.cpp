@@ -1,5 +1,3 @@
-// Copyright Andrei Sudarikov. All Rights Reserved.
-
 #include "Misc/AutomationTest.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/Guid.h"
@@ -64,6 +62,11 @@ bool FCortexBPListTest::RunTest(const FString& Parameters)
 						FString Type;
 						BPObj->TryGetStringField(TEXT("type"), Type);
 						TestEqual(TEXT("Type should be Actor"), Type, TEXT("Actor"));
+
+						// BP-002a: parent_class should be present in list
+						FString ParentClass;
+						BPObj->TryGetStringField(TEXT("parent_class"), ParentClass);
+						TestEqual(TEXT("parent_class should be Actor"), ParentClass, TEXT("Actor"));
 
 						break;
 					}
@@ -183,6 +186,22 @@ bool FCortexBPGetInfoTest::RunTest(const FString& Parameters)
 		if (TestTrue(TEXT("Variables array should exist"), InfoResult.Data->TryGetArrayField(TEXT("variables"), VariablesArray)))
 		{
 			TestTrue(TEXT("Should have at least 3 variables"), VariablesArray->Num() >= 3);
+
+			// BP-002b: Verify friendly type names and category field
+			for (const TSharedPtr<FJsonValue>& VarVal : *VariablesArray)
+			{
+				const TSharedPtr<FJsonObject>& VarObj = VarVal->AsObject();
+				if (VarObj.IsValid())
+				{
+					FString VarName, VarType;
+					VarObj->TryGetStringField(TEXT("name"), VarName);
+					VarObj->TryGetStringField(TEXT("type"), VarType);
+
+					// Type should be user-friendly ("float", "bool") not internal ("real", "boolean")
+					TestFalse(TEXT("Variable type should not be 'real'"), VarType == TEXT("real"));
+					TestFalse(TEXT("Variable type should not be 'boolean'"), VarType == TEXT("boolean"));
+				}
+			}
 		}
 
 		// Verify functions array (BP_ComplexActor has CalculateDamage)

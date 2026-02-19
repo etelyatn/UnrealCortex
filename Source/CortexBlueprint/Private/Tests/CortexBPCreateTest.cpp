@@ -1,5 +1,3 @@
-// Copyright Andrei Sudarikov. All Rights Reserved.
-
 #include "Misc/AutomationTest.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/Guid.h"

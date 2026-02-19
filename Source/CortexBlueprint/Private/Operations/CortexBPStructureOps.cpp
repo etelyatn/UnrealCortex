@@ -1,96 +1,19 @@
 #include "Operations/CortexBPStructureOps.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPTypeUtils.h"
 #include "CortexBlueprintModule.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "ScopedTransaction.h"
 
-namespace
-{
-
-	/** Helper: resolve a type string to FEdGraphPinType */
-	FEdGraphPinType ResolveVariableType(const FString& TypeStr)
-	{
-		FEdGraphPinType PinType;
-
-		if (TypeStr == TEXT("bool"))
-		{
-			PinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
-		}
-		else if (TypeStr == TEXT("int") || TypeStr == TEXT("int32"))
-		{
-			PinType.PinCategory = UEdGraphSchema_K2::PC_Int;
-		}
-		else if (TypeStr == TEXT("float"))
-		{
-			PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
-			PinType.PinSubCategory = UEdGraphSchema_K2::PC_Float;
-		}
-		else if (TypeStr == TEXT("double"))
-		{
-			PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
-			PinType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
-		}
-		else if (TypeStr == TEXT("FString") || TypeStr == TEXT("string"))
-		{
-			PinType.PinCategory = UEdGraphSchema_K2::PC_String;
-		}
-		else if (TypeStr == TEXT("FName") || TypeStr == TEXT("name"))
-		{
-			PinType.PinCategory = UEdGraphSchema_K2::PC_Name;
-		}
-		else if (TypeStr == TEXT("FText") || TypeStr == TEXT("text"))
-		{
-			PinType.PinCategory = UEdGraphSchema_K2::PC_Text;
-		}
-		else if (TypeStr == TEXT("FVector") || TypeStr == TEXT("vector"))
-		{
-			PinType.PinCategory = UEdGraphSchema_K2::PC_Struct;
-			PinType.PinSubCategoryObject = TBaseStructure<FVector>::Get();
-		}
-		else if (TypeStr == TEXT("FRotator") || TypeStr == TEXT("rotator"))
-		{
-			PinType.PinCategory = UEdGraphSchema_K2::PC_Struct;
-			PinType.PinSubCategoryObject = TBaseStructure<FRotator>::Get();
-		}
-		else if (TypeStr == TEXT("FLinearColor"))
-		{
-			PinType.PinCategory = UEdGraphSchema_K2::PC_Struct;
-			PinType.PinSubCategoryObject = TBaseStructure<FLinearColor>::Get();
-		}
-		else
-		{
-			// Try to resolve as a class path (object reference)
-			UClass* FoundClass = FindObject<UClass>(ANY_PACKAGE, *TypeStr);
-			if (FoundClass != nullptr)
-			{
-				PinType.PinCategory = UEdGraphSchema_K2::PC_Object;
-				PinType.PinSubCategoryObject = FoundClass;
-			}
-			else
-			{
-				// Fallback: try as a struct
-				UScriptStruct* FoundStruct = FindObject<UScriptStruct>(ANY_PACKAGE, *TypeStr);
-				if (FoundStruct != nullptr)
-				{
-					PinType.PinCategory = UEdGraphSchema_K2::PC_Struct;
-					PinType.PinSubCategoryObject = FoundStruct;
-				}
-				else
-				{
-					// Default to wildcard if we can't resolve
-					PinType.PinCategory = UEdGraphSchema_K2::PC_Wildcard;
-				}
-			}
-		}
-
-		return PinType;
-	}
-}
+using CortexBPTypeUtils::ResolveVariableType;
+using CortexBPTypeUtils::FriendlyTypeName;
 
 FCortexCommandResult FCortexBPStructureOps::AddVariable(const TSharedPtr<FJsonObject>& Params)
 {
@@ -283,6 +206,63 @@ FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonOb
 		}
 	}
 
+	// Parse optional inputs/outputs arrays
+	const TArray<TSharedPtr<FJsonValue>>* InputsArray = nullptr;
+	Params->TryGetArrayField(TEXT("inputs"), InputsArray);
+
+	const TArray<TSharedPtr<FJsonValue>>* OutputsArray = nullptr;
+	Params->TryGetArrayField(TEXT("outputs"), OutputsArray);
+
+	// All-or-nothing validation: resolve all types before creating anything
+	struct FPinSpec
+	{
+		FString Name;
+		FEdGraphPinType PinType;
+	};
+
+	TArray<FPinSpec> InputSpecs;
+	TArray<FPinSpec> OutputSpecs;
+
+	auto ParsePinArray = [](const TArray<TSharedPtr<FJsonValue>>* Array, TArray<FPinSpec>& OutSpecs, FString& OutError) -> bool
+	{
+		if (!Array)
+		{
+			return true;
+		}
+		for (const TSharedPtr<FJsonValue>& Val : *Array)
+		{
+			const TSharedPtr<FJsonObject>& Obj = Val->AsObject();
+			if (!Obj.IsValid())
+			{
+				continue;
+			}
+
+			FString PinName, PinTypeStr;
+			if (!Obj->TryGetStringField(TEXT("name"), PinName) || !Obj->TryGetStringField(TEXT("type"), PinTypeStr))
+			{
+				OutError = TEXT("Each input/output requires 'name' and 'type' fields");
+				return false;
+			}
+
+			FEdGraphPinType PinType = ResolveVariableType(PinTypeStr);
+			if (PinType.PinCategory == UEdGraphSchema_K2::PC_Wildcard)
+			{
+				OutError = FString::Printf(TEXT("Unknown type '%s' for parameter '%s'"), *PinTypeStr, *PinName);
+				return false;
+			}
+
+			OutSpecs.Add({ PinName, PinType });
+		}
+		return true;
+	};
+
+	FString ValidationError;
+	if (!ParsePinArray(InputsArray, InputSpecs, ValidationError) ||
+		!ParsePinArray(OutputsArray, OutputSpecs, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, ValidationError);
+	}
+
 	FScopedTransaction Transaction(FText::FromString(
 		FString::Printf(TEXT("Cortex:Add Function %s"), *FuncName)
 	));
@@ -296,13 +276,81 @@ FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonOb
 	);
 
 	FBlueprintEditorUtils::AddFunctionGraph<UClass>(Blueprint, NewGraph, false, nullptr);
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
-	// Build response
+	// Find entry node
+	UK2Node_FunctionEntry* EntryNode = nullptr;
+	for (UEdGraphNode* Node : NewGraph->Nodes)
+	{
+		EntryNode = Cast<UK2Node_FunctionEntry>(Node);
+		if (EntryNode)
+		{
+			break;
+		}
+	}
+
+	// Add input pins to entry node
+	if (EntryNode && InputSpecs.Num() > 0)
+	{
+		for (const FPinSpec& Spec : InputSpecs)
+		{
+			EntryNode->CreateUserDefinedPin(FName(*Spec.Name), Spec.PinType, EGPD_Output);
+		}
+	}
+
+	// Add output pins to result node
+	if (OutputSpecs.Num() > 0 && EntryNode)
+	{
+		UK2Node_FunctionResult* ResultNode =
+			FBlueprintEditorUtils::FindOrCreateFunctionResultNode(EntryNode);
+
+		if (ResultNode)
+		{
+			for (const FPinSpec& Spec : OutputSpecs)
+			{
+				ResultNode->CreateUserDefinedPin(FName(*Spec.Name), Spec.PinType, EGPD_Input);
+			}
+		}
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+
+	// Build response — read back actual created pins, don't echo input
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetBoolField(TEXT("added"), true);
 	Data->SetStringField(TEXT("name"), FuncName);
 	Data->SetStringField(TEXT("graph_name"), NewGraph->GetName());
+
+	// Serialize inputs from actual UserDefinedPins on entry node
+	TArray<TSharedPtr<FJsonValue>> ResponseInputs;
+	if (EntryNode)
+	{
+		for (const TSharedPtr<FUserPinInfo>& PinInfo : EntryNode->UserDefinedPins)
+		{
+			TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+			PinObj->SetStringField(TEXT("name"), PinInfo->PinName.ToString());
+			PinObj->SetStringField(TEXT("type"), FriendlyTypeName(PinInfo->PinType));
+			ResponseInputs.Add(MakeShared<FJsonValueObject>(PinObj));
+		}
+	}
+	Data->SetArrayField(TEXT("inputs"), ResponseInputs);
+
+	// Serialize outputs from result node
+	TArray<TSharedPtr<FJsonValue>> ResponseOutputs;
+	for (UEdGraphNode* Node : NewGraph->Nodes)
+	{
+		if (UK2Node_FunctionResult* ResultNode = Cast<UK2Node_FunctionResult>(Node))
+		{
+			for (const TSharedPtr<FUserPinInfo>& PinInfo : ResultNode->UserDefinedPins)
+			{
+				TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+				PinObj->SetStringField(TEXT("name"), PinInfo->PinName.ToString());
+				PinObj->SetStringField(TEXT("type"), FriendlyTypeName(PinInfo->PinType));
+				ResponseOutputs.Add(MakeShared<FJsonValueObject>(PinObj));
+			}
+			break;
+		}
+	}
+	Data->SetArrayField(TEXT("outputs"), ResponseOutputs);
 
 	UE_LOG(LogCortexBlueprint, Log, TEXT("Added function '%s' to %s"), *FuncName, *AssetPath);
 

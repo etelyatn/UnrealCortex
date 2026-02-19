@@ -150,16 +150,44 @@ bool FCortexReflectOps::IsProjectClass(const UClass* Class)
 	}
 
 	// C++ class: use ModuleRelativePath metadata.
-	// Engine source paths start with Runtime/, Editor/, Developer/, Programs/, or Plugins/.
+	// Engine source paths start with Runtime/, Editor/, Developer/, Programs/.
 	// Project source paths are relative to the game module (e.g., "Characters/MyCharacter.h").
+	// Plugins/ is ambiguous — could be engine plugin or project-local plugin.
 	FString ModulePath = Class->GetMetaData(TEXT("ModuleRelativePath"));
 	if (!ModulePath.IsEmpty())
 	{
-		return !ModulePath.StartsWith(TEXT("Runtime/"))
-			&& !ModulePath.StartsWith(TEXT("Editor/"))
-			&& !ModulePath.StartsWith(TEXT("Developer/"))
-			&& !ModulePath.StartsWith(TEXT("Programs/"))
-			&& !ModulePath.StartsWith(TEXT("Plugins/"));
+		if (ModulePath.StartsWith(TEXT("Runtime/"))
+			|| ModulePath.StartsWith(TEXT("Editor/"))
+			|| ModulePath.StartsWith(TEXT("Developer/"))
+			|| ModulePath.StartsWith(TEXT("Programs/")))
+		{
+			return false;
+		}
+
+		if (ModulePath.StartsWith(TEXT("Plugins/")))
+		{
+			// Distinguish engine plugins from project plugins by checking
+			// if the module DLL is under the project directory.
+			const UPackage* ClassPackage = Class->GetOuterUPackage();
+			if (ClassPackage)
+			{
+				FString ModuleName = FPackageName::GetShortName(ClassPackage->GetFName());
+#if !IS_MONOLITHIC
+				FString ModuleFilename = FModuleManager::Get().GetModuleFilename(FName(*ModuleName));
+				if (!ModuleFilename.IsEmpty())
+				{
+					FPaths::NormalizeFilename(ModuleFilename);
+					FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+					FPaths::NormalizeFilename(ProjectDir);
+					return ModuleFilename.StartsWith(ProjectDir);
+				}
+#endif
+			}
+			return false;
+		}
+
+		// Not an engine prefix and not Plugins/ — project game module class
+		return true;
 	}
 
 	return false;

@@ -1,5 +1,3 @@
-// Copyright Andrei Sudarikov. All Rights Reserved.
-
 #include "Misc/AutomationTest.h"
 #include "CortexBPCommandHandler.h"
 #include "CortexTypes.h"
