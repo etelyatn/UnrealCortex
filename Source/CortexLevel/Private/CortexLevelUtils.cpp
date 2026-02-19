@@ -148,7 +148,10 @@ UClass* FCortexLevelUtils::ResolveActorClass(const FString& ClassIdentifier, FCo
     if (!ResolvedClass)
     {
         const FString PkgName = FPackageName::ObjectPathToPackageName(ClassIdentifier);
-        if (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName))
+        // Only call DoesPackageExist for valid mount-point paths (starting with "/") —
+        // bare class names like "NonExistentClass_XYZ" are not valid package paths and
+        // will trigger a LogPackageName warning inside DoesPackageExist.
+        if (PkgName.StartsWith(TEXT("/")) && (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName)))
         {
             UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *ClassIdentifier);
             if (Blueprint)

@@ -148,6 +148,6 @@ void FCortexEditorPIEState::HandleEndPIE(bool bIsSimulating)
 
 void FCortexEditorPIEState::HandleCancelPIE()
 {
-	UE_LOG(LogCortexEditor, Warning, TEXT("PIE cancelled"));
+	UE_LOG(LogCortexEditor, Log, TEXT("PIE cancelled"));
 	OnPIEEnded();
 }
