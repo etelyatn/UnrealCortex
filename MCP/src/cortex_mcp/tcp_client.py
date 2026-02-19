@@ -161,6 +161,11 @@ class UEConnection:
                         logger.info(
                             "Cleared %d cache entries on reconnect", cleared
                         )
+                    # Re-discover port in case editor restarted on a different port
+                    new_port = _discover_port()
+                    if new_port is not None and new_port != self.port:
+                        logger.info("Port changed %d → %d, updating", self.port, new_port)
+                        self.port = new_port
                     time.sleep(_RECONNECT_DELAY)
 
         raise last_error
