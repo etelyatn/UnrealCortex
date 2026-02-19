@@ -765,7 +765,7 @@ FCortexCommandResult FCortexReflectOps::FindOverrides(const TSharedPtr<FJsonObje
 	}
 
 	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
-	Result->SetStringField(TEXT("class_name"), ParentClass->GetName());
+	Result->SetStringField(TEXT("class_name"), GetCppClassName(ParentClass));
 	Result->SetArrayField(TEXT("children"), ChildrenArray);
 	Result->SetNumberField(TEXT("total_overrides"), TotalOverrides);
 	if (!MostOverridden.IsEmpty())
@@ -875,12 +875,20 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 		FAssetTagValueRef ParentTag = Asset.TagsAndValues.FindTag("NativeParentClass");
 		if (ParentTag.IsSet())
 		{
-			UBlueprint* BP = Cast<UBlueprint>(Asset.GetAsset());
-			if (BP && !BlueprintsToScan.Contains(BP))
+			// Pre-filter using the tag value before loading the asset.
+			// NativeParentClass stores the native parent path (e.g. "/Script/Engine.Character").
+			// FindObject<UClass> resolves it from memory without triggering disk I/O.
+			FString NativeParentPath = ParentTag.AsString();
+			UClass* NativeParent = FindObject<UClass>(nullptr, *NativeParentPath);
+			if (NativeParent && NativeParent->IsChildOf(OwnerClass))
 			{
-				if (BP->GeneratedClass && BP->GeneratedClass->IsChildOf(OwnerClass))
+				UBlueprint* BP = Cast<UBlueprint>(Asset.GetAsset());
+				if (BP && !BlueprintsToScan.Contains(BP))
 				{
-					BlueprintsToScan.Add(BP);
+					if (BP->GeneratedClass && BP->GeneratedClass->IsChildOf(OwnerClass))
+					{
+						BlueprintsToScan.Add(BP);
+					}
 				}
 			}
 		}
@@ -970,7 +978,9 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("symbol"), SymbolName);
 	Result->SetStringField(TEXT("defined_in"), OwnerClass->GetName());
-	Result->SetStringField(TEXT("symbol_type"), bIsProperty ? TEXT("property") : TEXT("function"));
+	FString SymbolType = (bIsProperty && bIsFunction) ? TEXT("both")
+		: bIsProperty ? TEXT("property") : TEXT("function");
+	Result->SetStringField(TEXT("symbol_type"), SymbolType);
 	Result->SetArrayField(TEXT("usages"), UsagesArray);
 	Result->SetNumberField(TEXT("total_usages"), TotalUsages);
 	Result->SetNumberField(TEXT("total_classes"), UsagesArray.Num());

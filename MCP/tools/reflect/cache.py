@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import pathlib
+import shutil
 import time
 from cortex_mcp.tcp_client import UEConnection
 from cortex_mcp.response import format_response
@@ -145,8 +146,6 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
         # Clear file cache
         cache_dir = _get_cache_dir()
         if cache_dir.exists():
-            import shutil
-
             shutil.rmtree(cache_dir, ignore_errors=True)
 
         # Re-scan

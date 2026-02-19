@@ -78,9 +78,10 @@ def register_reflect_context_tools(mcp, connection: UEConnection):
                     children.append(entry)
                 result["children"] = children
                 result["children_count"] = len(children)
-            except (ConnectionError, RuntimeError):
+            except (ConnectionError, RuntimeError) as e:
                 result["children"] = []
                 result["children_count"] = 0
+                result["children_error"] = str(e)
 
             return format_response(result, "query_class_context")
         except ConnectionError as e:
