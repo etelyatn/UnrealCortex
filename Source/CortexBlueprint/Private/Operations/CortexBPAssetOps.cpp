@@ -16,6 +16,7 @@
 #include "Kismet2/CompilerResultsLog.h"
 #include "ScopedTransaction.h"
 #include "UObject/UObjectGlobals.h"
+#include "ObjectTools.h"
 
 UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FString& OutError)
 {
@@ -321,8 +322,13 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 		}
 	}
 
-	// Combine name and path to form package path
-	FString PackagePath = FString::Printf(TEXT("%s/%s"), *Path, *Name);
+	// Combine name and path to form package path (strip trailing slash to avoid double slashes)
+	FString NormalizedPath = Path.TrimEnd();
+	while (NormalizedPath.EndsWith(TEXT("/")))
+	{
+		NormalizedPath.LeftChopInline(1);
+	}
+	FString PackagePath = FString::Printf(TEXT("%s/%s"), *NormalizedPath, *Name);
 
 	// Normalize path (ensure it starts with /Game/)
 	if (!PackagePath.StartsWith(TEXT("/")))
@@ -670,18 +676,32 @@ FCortexCommandResult FCortexBPAssetOps::Delete(const TSharedPtr<FJsonObject>& Pa
 	}
 
 	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex:Delete Blueprint %s"), *Blueprint->GetName())
+		FString::Printf(TEXT("Cortex: Delete Blueprint %s"), *Blueprint->GetName())
 	));
 
+	// Get package file path BEFORE destroying
 	UPackage* Package = Blueprint->GetOutermost();
+	FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		Package->GetName(), FPackageName::GetAssetPackageExtension());
 
-	// Remove from asset registry
-	FAssetRegistryModule::AssetDeleted(Blueprint);
+	// Use ObjectTools for proper asset deletion (handles GC coordination)
+	TArray<UObject*> ObjectsToDelete;
+	ObjectsToDelete.Add(Blueprint);
+	int32 DeletedCount = ObjectTools::ForceDeleteObjects(ObjectsToDelete, false);
 
-	// Mark for garbage collection
-	Blueprint->ClearFlags(RF_Standalone | RF_Public);
-	Blueprint->MarkAsGarbage();
-	Package->MarkAsGarbage();
+	if (DeletedCount == 0)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("Failed to delete Blueprint: %s (may have references)"), *AssetPath)
+		);
+	}
+
+	// Delete the .uasset file from disk if it still exists
+	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
+	{
+		IFileManager::Get().Delete(*PackageFilename);
+	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetBoolField(TEXT("deleted"), true);
@@ -727,6 +747,7 @@ FCortexCommandResult FCortexBPAssetOps::Duplicate(const TSharedPtr<FJsonObject>&
 		NewPath = FPackageName::GetLongPackagePath(SourceBP->GetOutermost()->GetName());
 	}
 
+	while (NewPath.EndsWith(TEXT("/"))) { NewPath.LeftChopInline(1); }
 	FString NewPackagePath = FString::Printf(TEXT("%s/%s"), *NewPath, *NewName);
 
 	// Check if destination already exists

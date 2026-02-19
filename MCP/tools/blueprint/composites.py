@@ -158,8 +158,8 @@ def _build_batch_commands(
     for var in variables:
         var_params: dict[str, Any] = {
             "asset_path": "$steps[0].data.asset_path",
-            "variable_name": var["name"],
-            "variable_type": var.get("type", "bool"),
+            "name": var["name"],
+            "type": var.get("type", "bool"),
         }
         if "default_value" in var:
             var_params["default_value"] = var["default_value"]
@@ -173,7 +173,7 @@ def _build_batch_commands(
     for func in functions:
         func_params: dict[str, Any] = {
             "asset_path": "$steps[0].data.asset_path",
-            "function_name": func["name"],
+            "name": func["name"],
         }
         if "is_pure" in func:
             func_params["is_pure"] = func["is_pure"]
