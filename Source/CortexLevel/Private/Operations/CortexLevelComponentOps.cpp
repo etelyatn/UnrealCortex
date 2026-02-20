@@ -6,6 +6,7 @@
 #include "CortexSerializer.h"
 #include "CortexTypes.h"
 #include "Dom/JsonValue.h"
+#include "Editor.h"
 #include "GameFramework/Actor.h"
 #include "ScopedTransaction.h"
 #include "UObject/UObjectIterator.h"
@@ -426,6 +427,18 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
     if (!FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, Warnings))
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, FString::Printf(TEXT("Failed to set property: %s"), *PropertyName));
+    }
+
+    // Notify the component that its render state is dirty so the GPU proxy
+    // refreshes. Without this, material overrides and other render properties
+    // set via raw property access are silently ignored by the renderer.
+    Component->MarkRenderStateDirty();
+
+    // Force the editor viewports to repaint so the change is visible immediately
+    // without requiring manual user interaction (e.g. mouse move or click).
+    if (GEditor)
+    {
+        GEditor->RedrawAllViewports();
     }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
