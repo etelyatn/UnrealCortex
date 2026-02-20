@@ -181,3 +181,71 @@ bool FCortexCreateDataAssetDuplicateTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDeleteDataAssetBasicTest,
+	"Cortex.Data.DataAsset.DeleteBasic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDeleteDataAssetBasicTest::RunTest(const FString& Parameters)
+{
+	const FString TestPath = TEXT("/Game/Temp/CortexTest_DeleteDA");
+
+	CleanupTestAsset(TestPath);
+
+	// Create a DataAsset manually to delete.
+	const FString AssetName = FPackageName::GetShortName(TestPath);
+	UPackage* TestPkg = CreatePackage(*TestPath);
+	UDataAsset* TestAsset = NewObject<UDataAsset>(
+		TestPkg,
+		UCortexTestDataAsset::StaticClass(),
+		FName(*AssetName),
+		RF_Public | RF_Standalone);
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	const FString Filename = FPackageName::LongPackageNameToFilename(
+		TestPkg->GetName(),
+		FPackageName::GetAssetPackageExtension());
+	const bool bSaved = UPackage::SavePackage(TestPkg, TestAsset, *Filename, SaveArgs);
+	TestTrue(TEXT("Setup: asset should save to disk"), bSaved);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestPath);
+
+	FCortexCommandResult Result = FCortexDataAssetOps::DeleteDataAsset(Params);
+	TestTrue(TEXT("Delete should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		bool bDeleted = false;
+		Result.Data->TryGetBoolField(TEXT("deleted"), bDeleted);
+		TestTrue(TEXT("deleted flag should be true"), bDeleted);
+	}
+
+	TestFalse(
+		TEXT("File should be deleted from disk"),
+		FPlatformFileManager::Get().GetPlatformFile().FileExists(*Filename));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDeleteDataAssetNotFoundTest,
+	"Cortex.Data.DataAsset.DeleteNotFound",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDeleteDataAssetNotFoundTest::RunTest(const FString& Parameters)
+{
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TEXT("/Game/Temp/CortexTest_DeleteDA_NotExist_XYZ"));
+
+	FCortexCommandResult Result = FCortexDataAssetOps::DeleteDataAsset(Params);
+
+	TestFalse(TEXT("Delete of non-existent asset should fail"), Result.bSuccess);
+	TestEqual(TEXT("Error code should be ASSET_NOT_FOUND"), Result.ErrorCode, TEXT("ASSET_NOT_FOUND"));
+
+	return true;
+}

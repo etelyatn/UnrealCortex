@@ -13,6 +13,7 @@
 #include "ObjectTools.h"
 #include "Misc/PackageName.h"
 #include "UObject/SavePackage.h"
+#include "Misc/TextBuffer.h"
 
 UDataAsset* FCortexDataAssetOps::LoadDataAsset(const FString& AssetPath, FCortexCommandResult& OutError)
 {
@@ -498,5 +499,127 @@ FCortexCommandResult FCortexDataAssetOps::CreateDataAsset(const TSharedPtr<FJson
 
 FCortexCommandResult FCortexDataAssetOps::DeleteDataAsset(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Not implemented"));
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: asset_path")
+		);
+	}
+
+	if (AssetPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Parameter 'asset_path' cannot be empty")
+		);
+	}
+
+	// Guard LoadObject against SkipPackage warnings.
+	const FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
+	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("DataAsset not found: %s"), *AssetPath)
+		);
+	}
+
+	// Normalize to object path so LoadObject resolves reliably.
+	const FString ObjName = FPackageName::GetShortName(PkgName);
+	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *PkgName, *ObjName);
+
+	UDataAsset* DataAsset = LoadObject<UDataAsset>(nullptr, *ObjectPath);
+	if (DataAsset == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("DataAsset not found: %s"), *AssetPath)
+		);
+	}
+
+	const FString AssetName = DataAsset->GetName();
+
+	// ForceDeleteObjects purges undo buffer, transaction effect is limited.
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Delete DataAsset %s"), *AssetName)
+	));
+
+	UPackage* Package = DataAsset->GetOutermost();
+	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		Package->GetName(),
+		FPackageName::GetAssetPackageExtension());
+
+	const auto TryDeletePackageFile = [&PackageFilename](int32 MaxAttempts) -> bool
+	{
+		for (int32 Attempt = 0; Attempt < MaxAttempts; ++Attempt)
+		{
+			if (!FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
+			{
+				return true;
+			}
+			if (IFileManager::Get().Delete(*PackageFilename, false, false, true))
+			{
+				return true;
+			}
+			FPlatformProcess::Sleep(0.01f);
+		}
+		return !FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename);
+	};
+
+	bool bDeletedOnDisk = true;
+	// Delete on-disk package first to avoid file watcher race warnings.
+	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
+	{
+		bDeletedOnDisk = TryDeletePackageFile(20);
+	}
+
+	// Guard object prevents false-positive "package marked deleted but modified on disk" warnings
+	// if a queued file watcher event races with ForceDeleteObjects.
+	UTextBuffer* DeleteGuard = nullptr;
+	if (IsValid(Package))
+	{
+		DeleteGuard = NewObject<UTextBuffer>(Package, TEXT("__CortexDeleteGuard__"), RF_Public);
+	}
+
+	TArray<UObject*> ObjectsToDelete;
+	ObjectsToDelete.Add(DataAsset);
+	const int32 DeletedCount = ObjectTools::ForceDeleteObjects(ObjectsToDelete, false);
+
+	if (DeleteGuard != nullptr)
+	{
+		DeleteGuard->ClearFlags(RF_Public | RF_Standalone);
+	}
+
+	// Retry file deletion after object destruction if initial file-first delete was blocked.
+	if ((!bDeletedOnDisk || FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
+		&& FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
+	{
+		bDeletedOnDisk = TryDeletePackageFile(20);
+	}
+
+	if (!bDeletedOnDisk && FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("Failed to delete DataAsset file: %s"), *PackageFilename)
+		);
+	}
+
+	if (DeletedCount == 0)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("Failed to delete DataAsset: %s (may have references)"), *AssetPath)
+		);
+	}
+
+	UE_LOG(LogCortexData, Log, TEXT("Deleted DataAsset: %s"), *AssetPath);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetBoolField(TEXT("deleted"), true);
+
+	return FCortexCommandRouter::Success(Data);
 }
