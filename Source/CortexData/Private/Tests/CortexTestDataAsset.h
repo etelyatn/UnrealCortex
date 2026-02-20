@@ -17,3 +17,10 @@ public:
 	UPROPERTY(EditAnywhere)
 	int32 TestNumber = 0;
 };
+
+/** Derived concrete DataAsset subclass for hierarchy filtering tests. */
+UCLASS()
+class UCortexDerivedTestDataAsset : public UCortexTestDataAsset
+{
+	GENERATED_BODY()
+};
