@@ -233,11 +233,12 @@ bool FCortexBPStructureOpsTest::RunTest(const FString& Parameters)
 			Result.ErrorCode, CortexErrorCodes::FunctionExists);
 	}
 
-	// Cleanup
+	// Cleanup: mark the entire package as garbage so the Blueprint, its
+	// GeneratedClass, and CDO are all collected together.
 	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
 	if (CreatedBP)
 	{
-		CreatedBP->MarkAsGarbage();
+		CreatedBP->GetOutermost()->MarkAsGarbage();
 	}
 
 	return true;

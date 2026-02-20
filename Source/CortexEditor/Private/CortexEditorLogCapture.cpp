@@ -23,12 +23,19 @@ void FCortexEditorLogCapture::StartCapture()
 
 void FCortexEditorLogCapture::StopCapture()
 {
-	FScopeLock Lock(&BufferCS);
-	if (bCapturing && GLog != nullptr)
+	// Set bCapturing = false inside the lock, then release before calling GLog.
+	// Holding BufferCS while calling GLog->RemoveOutputDevice() can deadlock:
+	// another thread may hold GLog's internal lock while trying to acquire BufferCS
+	// via Serialize() -> AddEntry(), creating an ABBA lock-order cycle.
 	{
-		GLog->RemoveOutputDevice(this);
+		FScopeLock Lock(&BufferCS);
+		if (!bCapturing || GLog == nullptr)
+		{
+			return;
+		}
 		bCapturing = false;
 	}
+	GLog->RemoveOutputDevice(this);
 }
 
 void FCortexEditorLogCapture::Serialize(const TCHAR* Message, ELogVerbosity::Type Verbosity, const FName& Category)

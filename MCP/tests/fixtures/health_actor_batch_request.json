@@ -12,8 +12,8 @@
       "command": "bp.add_variable",
       "params": {
         "asset_path": "$steps[0].data.asset_path",
-        "variable_name": "Health",
-        "variable_type": "float",
+        "name": "Health",
+        "type": "float",
         "default_value": "100.0",
         "is_exposed": true,
         "category": "Stats"
@@ -23,8 +23,8 @@
       "command": "bp.add_variable",
       "params": {
         "asset_path": "$steps[0].data.asset_path",
-        "variable_name": "MaxHealth",
-        "variable_type": "float",
+        "name": "MaxHealth",
+        "type": "float",
         "default_value": "100.0",
         "is_exposed": true,
         "category": "Stats"
@@ -34,7 +34,7 @@
       "command": "bp.add_function",
       "params": {
         "asset_path": "$steps[0].data.asset_path",
-        "function_name": "TakeDamage"
+        "name": "TakeDamage"
       }
     },
     {

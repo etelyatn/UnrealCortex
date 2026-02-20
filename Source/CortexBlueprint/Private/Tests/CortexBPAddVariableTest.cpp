@@ -129,11 +129,14 @@ bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 			Result.ErrorCode, CortexErrorCodes::InvalidField);
 	}
 
-	// Cleanup
+	// Cleanup: mark the entire package as garbage so the Blueprint, its
+	// GeneratedClass, and CDO are all collected together.  Marking only the
+	// UBlueprint object leaves the (dirty, uncompiled) GeneratedClass live,
+	// which causes a background GC worker crash on the next test.
 	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
 	if (CreatedBP)
 	{
-		CreatedBP->MarkAsGarbage();
+		CreatedBP->GetOutermost()->MarkAsGarbage();
 	}
 
 	return true;

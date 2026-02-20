@@ -298,8 +298,8 @@ class TestBatchCommandGeneration:
         assert len(commands) == 2
         assert commands[0]["command"] == "bp.create"
         assert commands[1]["command"] == "bp.add_variable"
-        assert commands[1]["params"]["variable_name"] == "Health"
-        assert commands[1]["params"]["variable_type"] == "float"
+        assert commands[1]["params"]["name"] == "Health"
+        assert commands[1]["params"]["type"] == "float"
         assert commands[1]["params"]["default_value"] == "100.0"
 
     def test_trailing_slash_normalized(self):

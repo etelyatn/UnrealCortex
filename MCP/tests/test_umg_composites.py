@@ -177,7 +177,7 @@ class TestBatchCommandGeneration:
         assert commands[0]["params"]["type"] == "Widget"
         assert commands[1]["command"] == "umg.add_widget"
         assert commands[1]["params"]["widget_class"] == "CanvasPanel"
-        assert commands[1]["params"]["widget_name"] == "Root"
+        assert commands[1]["params"]["name"] == "Root"
         assert commands[1]["params"]["parent_name"] == ""
 
     def test_nested_widgets_depth_first(self):
@@ -193,11 +193,11 @@ class TestBatchCommandGeneration:
 
         add_cmds = [c for c in commands if c["command"] == "umg.add_widget"]
         assert len(add_cmds) == 3
-        assert add_cmds[0]["params"]["widget_name"] == "Root"
+        assert add_cmds[0]["params"]["name"] == "Root"
         assert add_cmds[0]["params"]["parent_name"] == ""
-        assert add_cmds[1]["params"]["widget_name"] == "Title"
+        assert add_cmds[1]["params"]["name"] == "Title"
         assert add_cmds[1]["params"]["parent_name"] == "Root"
-        assert add_cmds[2]["params"]["widget_name"] == "Btn"
+        assert add_cmds[2]["params"]["name"] == "Btn"
         assert add_cmds[2]["params"]["parent_name"] == "Root"
 
     def test_styling_commands_after_all_widgets(self):
@@ -367,12 +367,12 @@ class TestFixtures:
         add_cmds = [c for c in commands if c["command"] == "umg.add_widget"]
         # Root -> parent ""
         assert add_cmds[0]["params"]["parent_name"] == ""
-        assert add_cmds[0]["params"]["widget_name"] == "Root"
+        assert add_cmds[0]["params"]["name"] == "Root"
         # Layout -> parent Root
         assert add_cmds[1]["params"]["parent_name"] == "Root"
-        assert add_cmds[1]["params"]["widget_name"] == "Layout"
+        assert add_cmds[1]["params"]["name"] == "Layout"
         # PlayBtnText -> parent PlayBtn
-        play_text = [c for c in add_cmds if c["params"]["widget_name"] == "PlayBtnText"][0]
+        play_text = [c for c in add_cmds if c["params"]["name"] == "PlayBtnText"][0]
         assert play_text["params"]["parent_name"] == "PlayBtn"
 
 

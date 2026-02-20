@@ -70,11 +70,9 @@ bool FCortexEditorStartPIENotActiveTest::RunTest(const FString& Parameters)
 	const TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("mode"), TEXT("selected_viewport"));
 
-	bool bCallbackFired = false;
-	FDeferredResponseCallback Callback = [&bCallbackFired](FCortexCommandResult Result)
+	FDeferredResponseCallback Callback = [](FCortexCommandResult Result)
 	{
 		(void)Result;
-		bCallbackFired = true;
 	};
 
 	const FCortexCommandResult Result = Handler.Execute(TEXT("start_pie"), Params, MoveTemp(Callback));

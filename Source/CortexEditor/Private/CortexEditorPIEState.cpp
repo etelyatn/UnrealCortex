@@ -1,5 +1,6 @@
 #include "CortexEditorPIEState.h"
 #include "CortexEditorModule.h"
+#include "Containers/Ticker.h"
 #include "Editor.h"
 
 FCortexEditorPIEState::FCortexEditorPIEState()
@@ -8,6 +9,14 @@ FCortexEditorPIEState::FCortexEditorPIEState()
 
 FCortexEditorPIEState::~FCortexEditorPIEState()
 {
+	// If HandleCancelPIE deferred OnPIEEnded() but the ticker hasn't fired yet,
+	// run cleanup now so pending callbacks are completed and state is consistent.
+	if (CancelDeferHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(CancelDeferHandle);
+		CancelDeferHandle.Reset();
+		OnPIEEnded();
+	}
 	UnbindDelegates();
 }
 
@@ -149,5 +158,17 @@ void FCortexEditorPIEState::HandleEndPIE(bool bIsSimulating)
 void FCortexEditorPIEState::HandleCancelPIE()
 {
 	UE_LOG(LogCortexEditor, Log, TEXT("PIE cancelled"));
-	OnPIEEnded();
+
+	// Do not call OnPIEEnded() synchronously here.
+	// CancelPIE can fire from inside RequestPlaySession() or CancelRequestPlaySession()
+	// while the engine holds internal locks.  Calling UE_LOG from within that call
+	// stack (via SetState -> UE_LOG inside OnPIEEnded) deadlocks against those locks.
+	// Defer to the next tick so we are safely outside the engine call.
+	CancelDeferHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateLambda([this](float) mutable
+		{
+			CancelDeferHandle.Reset();
+			OnPIEEnded();
+			return false;
+		}));
 }
