@@ -568,11 +568,10 @@ FCortexCommandResult FCortexDataAssetOps::DeleteDataAsset(const TSharedPtr<FJson
 		return !FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename);
 	};
 
-	bool bDeletedOnDisk = true;
 	// Delete on-disk package first to avoid file watcher race warnings.
 	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
 	{
-		bDeletedOnDisk = TryDeletePackageFile(20);
+		TryDeletePackageFile(20);
 	}
 
 	// Guard object prevents false-positive "package marked deleted but modified on disk" warnings
@@ -592,14 +591,13 @@ FCortexCommandResult FCortexDataAssetOps::DeleteDataAsset(const TSharedPtr<FJson
 		DeleteGuard->ClearFlags(RF_Public | RF_Standalone);
 	}
 
-	// Retry file deletion after object destruction if initial file-first delete was blocked.
-	if ((!bDeletedOnDisk || FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
-		&& FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
+	// Retry file deletion after object destruction if file still exists on disk.
+	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
 	{
-		bDeletedOnDisk = TryDeletePackageFile(20);
+		TryDeletePackageFile(20);
 	}
 
-	if (!bDeletedOnDisk && FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
+	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::SerializationError,

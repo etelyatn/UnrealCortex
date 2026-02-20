@@ -140,8 +140,9 @@ def register_data_asset_tools(mcp, connection: UEConnection):
                 props = json.loads(properties)
                 params["properties"] = props
             response = connection.send_command("data.create_data_asset", params)
-            connection.invalidate_cache("data.list_data_assets:")
-            connection.invalidate_cache("data.get_data_catalog:")
+            if response.get("success"):
+                connection.invalidate_cache("data.list_data_assets:")
+                connection.invalidate_cache("data.get_data_catalog:")
             return format_response(response.get("data", {}), "create_data_asset")
         except json.JSONDecodeError as e:
             return f"Error: Invalid JSON in properties: {e}"
@@ -170,8 +171,9 @@ def register_data_asset_tools(mcp, connection: UEConnection):
             response = connection.send_command("data.delete_data_asset", {
                 "asset_path": asset_path,
             })
-            connection.invalidate_cache("data.list_data_assets:")
-            connection.invalidate_cache("data.get_data_catalog:")
+            if response.get("success"):
+                connection.invalidate_cache("data.list_data_assets:")
+                connection.invalidate_cache("data.get_data_catalog:")
             return format_response(response.get("data", {}), "delete_data_asset")
         except ConnectionError as e:
             return f"Error: {e}"

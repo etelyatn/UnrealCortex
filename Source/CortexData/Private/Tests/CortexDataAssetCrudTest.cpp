@@ -183,6 +183,48 @@ bool FCortexCreateDataAssetDuplicateTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCreateDataAssetWithPropertiesTest,
+	"Cortex.Data.DataAsset.CreateWithProperties",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexCreateDataAssetWithPropertiesTest::RunTest(const FString& Parameters)
+{
+	const FString TestPath = TEXT("/Game/Temp/CortexTest_CreateDA_Props");
+
+	CleanupTestAsset(TestPath);
+
+	TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
+	Props->SetStringField(TEXT("TestProperty"), TEXT("Hello from CRUD"));
+	Props->SetNumberField(TEXT("TestNumber"), 42);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("class_name"), TEXT("CortexTestDataAsset"));
+	Params->SetStringField(TEXT("asset_path"), TestPath);
+	Params->SetObjectField(TEXT("properties"), Props);
+
+	FCortexCommandResult Result = FCortexDataAssetOps::CreateDataAsset(Params);
+
+	TestTrue(TEXT("Create with properties should succeed"), Result.bSuccess);
+
+	// Load and verify properties were applied.
+	const FString ObjPath = FString::Printf(TEXT("%s.%s"),
+		*TestPath, *FPackageName::GetShortName(TestPath));
+	UCortexTestDataAsset* Asset = LoadObject<UCortexTestDataAsset>(nullptr, *ObjPath);
+	TestNotNull(TEXT("Asset should be loadable"), Asset);
+
+	if (Asset != nullptr)
+	{
+		TestEqual(TEXT("TestProperty should be set"), Asset->TestProperty, TEXT("Hello from CRUD"));
+		TestEqual(TEXT("TestNumber should be set"), Asset->TestNumber, 42);
+	}
+
+	CleanupTestAsset(TestPath);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexDeleteDataAssetBasicTest,
 	"Cortex.Data.DataAsset.DeleteBasic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
