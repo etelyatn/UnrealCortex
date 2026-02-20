@@ -105,3 +105,75 @@ def register_data_asset_tools(mcp, connection: UEConnection):
             return f"Error: Invalid JSON in properties: {e}"
         except ConnectionError as e:
             return f"Error: {e}"
+
+    @mcp.tool()
+    def create_data_asset(class_name: str, asset_path: str, properties: str = "") -> str:
+        """Create a new DataAsset of a specified class.
+
+        Creates a new DataAsset instance at the given path, optionally setting
+        initial property values. The asset is saved to disk immediately.
+
+        Use list_data_assets to discover available DataAsset class names
+        (returned in the asset_class field of each entry).
+
+        Args:
+            class_name: UClass name of the DataAsset to create (e.g., 'SimMotorDataAsset').
+                        Accepts short names or full class paths. Must be a concrete (non-abstract)
+                        subclass of UDataAsset.
+            asset_path: Target package path (e.g., '/Game/Data/Parts/DA_Motor_2306').
+                        Both package path and full object path formats are accepted.
+            properties: Optional JSON string with initial property values (same format as
+                        update_data_asset). Example: '{"DisplayName": "New Motor", "KV": 2750}'
+
+        Returns:
+            JSON with:
+            - asset_path: Full object path of the created asset (use this with get/update/delete)
+            - asset_class: Resolved UClass name
+            - created: true
+        """
+        try:
+            params = {
+                "class_name": class_name,
+                "asset_path": asset_path,
+            }
+            if properties:
+                props = json.loads(properties)
+                params["properties"] = props
+            response = connection.send_command("data.create_data_asset", params)
+            if response.get("success"):
+                connection.invalidate_cache("data.list_data_assets:")
+                connection.invalidate_cache("data.get_data_catalog:")
+            return format_response(response.get("data", {}), "create_data_asset")
+        except json.JSONDecodeError as e:
+            return f"Error: Invalid JSON in properties: {e}"
+        except ConnectionError as e:
+            return f"Error: {e}"
+
+    @mcp.tool()
+    def delete_data_asset(asset_path: str) -> str:
+        """Delete a DataAsset by path.
+
+        Permanently removes the DataAsset from both memory and disk.
+        Use list_data_assets to find the asset path before deletion.
+
+        Args:
+            asset_path: Asset path of the DataAsset to delete.
+                        Both package path (e.g., '/Game/Data/Parts/DA_Motor_2306')
+                        and full object path (e.g., '/Game/Data/Parts/DA_Motor_2306.DA_Motor_2306')
+                        formats are accepted.
+
+        Returns:
+            JSON with:
+            - asset_path: Path of the deleted asset
+            - deleted: true
+        """
+        try:
+            response = connection.send_command("data.delete_data_asset", {
+                "asset_path": asset_path,
+            })
+            if response.get("success"):
+                connection.invalidate_cache("data.list_data_assets:")
+                connection.invalidate_cache("data.get_data_catalog:")
+            return format_response(response.get("data", {}), "delete_data_asset")
+        except ConnectionError as e:
+            return f"Error: {e}"
