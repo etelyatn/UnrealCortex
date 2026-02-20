@@ -243,6 +243,22 @@ bool FCortexDataAssetSubclassFilterTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("resolved_class should be empty for non-existent class"), ResolvedClass.IsEmpty());
 	}
 
+	FString Response5;
+	const bool bGotResponse5 = SendCommandAndReadResponse(
+		ClientSocket,
+		TEXT("{\"command\":\"data.list_data_assets\",\"params\":{\"class_filter\":\"Actor\"}}\n"),
+		Response5);
+	TestTrue(TEXT("Should receive response for non-DataAsset class filter"), bGotResponse5);
+
+	if (bGotResponse5)
+	{
+		const int32 NonDataAssetCount = ParseCountFromResponse(Response5);
+		TestEqual(TEXT("Non-DataAsset class filter should return 0 results"), NonDataAssetCount, 0);
+
+		const FString ResolvedClass = ParseResolvedClassFromResponse(Response5);
+		TestTrue(TEXT("resolved_class should be empty for non-DataAsset class"), ResolvedClass.IsEmpty());
+	}
+
 	SocketSubsystem->DestroySocket(ClientSocket);
 	Server.Stop();
 
