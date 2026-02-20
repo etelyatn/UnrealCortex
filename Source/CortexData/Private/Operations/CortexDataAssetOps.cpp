@@ -13,6 +13,7 @@
 #include "ObjectTools.h"
 #include "Misc/PackageName.h"
 #include "UObject/SavePackage.h"
+#include "UObject/UObjectIterator.h"
 #include "Misc/TextBuffer.h"
 
 UDataAsset* FCortexDataAssetOps::LoadDataAsset(const FString& AssetPath, FCortexCommandResult& OutError)
@@ -47,10 +48,53 @@ FCortexCommandResult FCortexDataAssetOps::ListDataAssets(const TSharedPtr<FJsonO
 		);
 	}
 
+	UClass* FilterBaseClass = UDataAsset::StaticClass();
+	if (!ClassFilter.IsEmpty())
+	{
+		UClass* ResolvedClass = FindObject<UClass>(nullptr, *ClassFilter);
+
+		if (!ResolvedClass && !ClassFilter.StartsWith(TEXT("/")))
+		{
+			const FString EnginePath = FString::Printf(TEXT("/Script/Engine.%s"), *ClassFilter);
+			ResolvedClass = FindObject<UClass>(nullptr, *EnginePath);
+		}
+
+		if (!ResolvedClass)
+		{
+			for (TObjectIterator<UClass> It; It; ++It)
+			{
+				UClass* Candidate = *It;
+				if (!IsValid(Candidate))
+				{
+					continue;
+				}
+
+				if (Candidate->GetName() == ClassFilter || Candidate->GetPathName() == ClassFilter)
+				{
+					ResolvedClass = Candidate;
+					break;
+				}
+			}
+		}
+
+		if (ResolvedClass && ResolvedClass->IsChildOf(UDataAsset::StaticClass()))
+		{
+			FilterBaseClass = ResolvedClass;
+		}
+		else
+		{
+			TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+			Data->SetArrayField(TEXT("data_assets"), TArray<TSharedPtr<FJsonValue>>());
+			Data->SetNumberField(TEXT("count"), 0);
+			Data->SetField(TEXT("resolved_class"), MakeShared<FJsonValueNull>());
+			return FCortexCommandRouter::Success(Data);
+		}
+	}
+
 	TArray<FAssetData> AssetDataList;
 
 	FARFilter Filter;
-	Filter.ClassPaths.Add(UDataAsset::StaticClass()->GetClassPathName());
+	Filter.ClassPaths.Add(FilterBaseClass->GetClassPathName());
 	Filter.bRecursiveClasses = true;
 	AssetRegistry->GetAssets(Filter, AssetDataList);
 
@@ -66,11 +110,6 @@ FCortexCommandResult FCortexDataAssetOps::ListDataAssets(const TSharedPtr<FJsonO
 			continue;
 		}
 
-		if (!ClassFilter.IsEmpty() && ClassName != ClassFilter)
-		{
-			continue;
-		}
-
 		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 		Entry->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
 		Entry->SetStringField(TEXT("path"), AssetPath);
@@ -81,6 +120,10 @@ FCortexCommandResult FCortexDataAssetOps::ListDataAssets(const TSharedPtr<FJsonO
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("data_assets"), ResultArray);
 	Data->SetNumberField(TEXT("count"), ResultArray.Num());
+	if (!ClassFilter.IsEmpty())
+	{
+		Data->SetStringField(TEXT("resolved_class"), FilterBaseClass->GetName());
+	}
 
 	return FCortexCommandRouter::Success(Data);
 }
