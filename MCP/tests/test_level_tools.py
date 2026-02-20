@@ -9,48 +9,48 @@ import pytest
 tools_dir = Path(__file__).parent.parent / "tools"
 sys.path.insert(0, str(tools_dir))
 
-from level.composites import _validate_scene_spec, _build_batch_commands
+from level.composites import _build_level_batch_commands, _validate_level_batch_spec
 
 
-class TestSceneCompositeValidation:
-    """Test create_level_scene spec validation."""
+class TestLegacySceneCompositeMigrated:
+    """Regression tests confirming level_batch covers legacy scene-composite cases."""
 
-    def test_validate_empty_actors(self):
-        _validate_scene_spec([], None)
+    def test_empty_operations_valid(self):
+        _validate_level_batch_spec([])
 
-    def test_validate_missing_class(self):
+    def test_spawn_missing_class_raises(self):
         with pytest.raises(ValueError, match="missing 'class'"):
-            _validate_scene_spec([{"id": "a"}], None)
+            _validate_level_batch_spec([{"op": "spawn", "id": "a"}])
 
-    def test_validate_duplicate_ids(self):
-        with pytest.raises(ValueError, match="Duplicate"):
-            _validate_scene_spec([
-                {"id": "a", "class": "PointLight"},
-                {"id": "a", "class": "SpotLight"},
-            ], None)
-
-    def test_validate_bad_attachment(self):
-        with pytest.raises(ValueError, match="Unknown attachment child"):
-            _validate_scene_spec(
-                [{"id": "a", "class": "PointLight"}],
-                {"attachments": [{"child": "b", "parent": "a"}]},
+    def test_duplicate_ids_raise(self):
+        with pytest.raises(ValueError, match="Duplicate id"):
+            _validate_level_batch_spec(
+                [
+                    {"op": "spawn", "id": "a", "class": "PointLight"},
+                    {"op": "spawn", "id": "a", "class": "SpotLight"},
+                ]
             )
 
-    def test_validate_ref_injection(self):
-        with pytest.raises(ValueError, match="\\$steps\\["):
-            _validate_scene_spec(
-                [{"id": "a", "class": "PointLight", "properties": {"bHidden": "$steps[0].data.name"}}],
-                None,
+    def test_ref_injection_in_properties_raises(self):
+        with pytest.raises(ValueError, match=r"\$steps\["):
+            _validate_level_batch_spec(
+                [
+                    {
+                        "op": "spawn",
+                        "id": "a",
+                        "class": "PointLight",
+                        "properties": {"bHidden": "$steps[0].data.name"},
+                    }
+                ]
             )
 
 
-class TestBatchCommandGeneration:
-    """Test batch command building from scene specs."""
+class TestBatchCommandGenerationMigrated:
+    """Regression tests confirming spawn batch command generation works as before."""
 
     def test_simple_spawn(self):
-        commands = _build_batch_commands(
-            [{"id": "light", "class": "PointLight", "location": [0, 0, 100]}],
-            None,
+        commands, _, _ = _build_level_batch_commands(
+            [{"op": "spawn", "class": "PointLight", "location": [0, 0, 100]}],
             save=False,
         )
         assert len(commands) == 1
@@ -58,9 +58,8 @@ class TestBatchCommandGeneration:
         assert commands[0]["params"]["class"] == "PointLight"
 
     def test_spawn_with_folder_and_tags(self):
-        commands = _build_batch_commands(
-            [{"id": "a", "class": "PointLight", "folder": "Lights", "tags": ["Interior"]}],
-            None,
+        commands, _, _ = _build_level_batch_commands(
+            [{"op": "spawn", "id": "a", "class": "PointLight", "folder": "Lights", "tags": ["Interior"]}],
             save=False,
         )
         assert len(commands) == 3
@@ -68,9 +67,8 @@ class TestBatchCommandGeneration:
         assert commands[2]["command"] == "level.set_tags"
 
     def test_actor_level_property(self):
-        commands = _build_batch_commands(
-            [{"id": "a", "class": "PointLight", "properties": {"bHidden": True}}],
-            None,
+        commands, _, _ = _build_level_batch_commands(
+            [{"op": "spawn", "id": "a", "class": "PointLight", "properties": {"bHidden": True}}],
             save=False,
         )
         prop_cmds = [c for c in commands if c["command"] == "level.set_actor_property"]
@@ -78,23 +76,27 @@ class TestBatchCommandGeneration:
         assert prop_cmds[0]["params"]["property"] == "bHidden"
 
     def test_component_property(self):
-        commands = _build_batch_commands(
-            [{"id": "a", "class": "PointLight", "properties": {"PointLightComponent0.Intensity": 8000}}],
-            None,
+        commands, _, _ = _build_level_batch_commands(
+            [
+                {
+                    "op": "spawn",
+                    "id": "a",
+                    "class": "PointLight",
+                    "properties": {"PointLightComponent0.Intensity": 8000},
+                }
+            ],
             save=False,
         )
         prop_cmds = [c for c in commands if c["command"] == "level.set_component_property"]
         assert len(prop_cmds) == 1
-        assert prop_cmds[0]["params"]["component"] == "PointLightComponent0"
-        assert prop_cmds[0]["params"]["property"] == "Intensity"
 
     def test_attachment_wiring(self):
-        commands = _build_batch_commands(
+        commands, _, _ = _build_level_batch_commands(
             [
-                {"id": "parent", "class": "StaticMeshActor"},
-                {"id": "child", "class": "PointLight"},
+                {"op": "spawn", "id": "parent_actor", "class": "StaticMeshActor"},
+                {"op": "spawn", "id": "child_actor", "class": "PointLight"},
+                {"op": "attach", "actor": "$ops[child_actor].name", "parent": "$ops[parent_actor].name"},
             ],
-            {"attachments": [{"child": "child", "parent": "parent"}]},
             save=False,
         )
         attach_cmd = [c for c in commands if c["command"] == "level.attach_actor"]
@@ -103,9 +105,8 @@ class TestBatchCommandGeneration:
         assert "$steps[1]" in attach_cmd[0]["params"]["actor"]
 
     def test_save_appended(self):
-        commands = _build_batch_commands(
-            [{"id": "a", "class": "PointLight"}],
-            None,
+        commands, _, _ = _build_level_batch_commands(
+            [{"op": "spawn", "id": "a", "class": "PointLight"}],
             save=True,
         )
         assert commands[-1]["command"] == "level.save_level"

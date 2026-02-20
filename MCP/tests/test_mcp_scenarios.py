@@ -659,36 +659,40 @@ async def test_scenario_level_scene(mcp_client):
 @pytest.mark.anyio
 @pytest.mark.scenario
 async def test_scenario_composite_level_scene(mcp_client):
-    """Create a multi-actor scene via create_level_scene composite tool."""
+    """Create a multi-actor scene via level_batch composite tool."""
     spawned_actors = []
     try:
-        # Step 1: create_level_scene with 3 actors + attachment
-        data = await call_tool(mcp_client, "create_level_scene", {
-            "actors": [
+        # Step 1: level_batch with 3 spawns + attachment
+        data = await call_tool(mcp_client, "level_batch", {
+            "operations": [
                 {
+                    "op": "spawn",
                     "id": "light",
                     "class": "PointLight",
                     "label": _uniq("MCPScenario_comp_light"),
                     "location": [0.0, 0.0, 500.0],
                 },
                 {
+                    "op": "spawn",
                     "id": "mesh",
                     "class": "StaticMeshActor",
                     "label": _uniq("MCPScenario_comp_mesh"),
                     "location": [200.0, 0.0, 0.0],
                 },
                 {
+                    "op": "spawn",
                     "id": "camera",
                     "class": "CameraActor",
                     "label": _uniq("MCPScenario_comp_cam"),
                     "location": [-500.0, 0.0, 200.0],
                 },
+                {
+                    "op": "attach",
+                    "actor": "$ops[light].name",
+                    "parent": "$ops[mesh].name",
+                },
             ],
-            "organization": {
-                "attachments": [
-                    {"child": "light", "parent": "mesh"},
-                ],
-            },
+            "stop_on_error": True,
             "save": False,
         })
 
@@ -907,8 +911,9 @@ async def test_stress_bulk_scene_composite(mcp_client):
     """Create a 20-actor scene via composite tool."""
     spawned_actors = []
     try:
-        actors = [
+        operations = [
             {
+                "op": "spawn",
                 "id": f"light_{i:03d}",
                 "class": "PointLight",
                 "label": _uniq(f"MCPStress_scene_{i:03d}"),
@@ -917,8 +922,8 @@ async def test_stress_bulk_scene_composite(mcp_client):
             for i in range(20)
         ]
 
-        data = await call_tool(mcp_client, "create_level_scene", {
-            "actors": actors,
+        data = await call_tool(mcp_client, "level_batch", {
+            "operations": operations,
             "save": False,
         })
         spawned_actors = data.get("spawned_actors", [])
