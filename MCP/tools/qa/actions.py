@@ -25,12 +25,25 @@ def register_qa_action_tools(mcp, connection: UEConnection):
             return f"Error: {e}"
 
     @mcp.tool()
-    def interact_with(target: str = "", key: str = "E") -> str:
+    def interact_with(target: str = "", key: str = "E", duration: float = 0.1) -> str:
+        """Simulate a key press interaction in the game world.
+
+        Presses the specified key for the given duration then releases it.
+        Use duration=0.1 (default) for a quick tap/click. Use longer durations
+        (e.g., 2.0) for hold-to-interact mechanics like charging or soldering.
+
+        Args:
+            target: Optional actor name to look at before interacting.
+            key: Unreal key name to press (default: "E"). Common values:
+                "E" (interact), "LeftMouseButton", "RightMouseButton", "F".
+            duration: How long to hold the key in seconds. 0.1 = tap, 2.0 = hold.
+                Clamped to [0.01, 30.0] on the C++ side.
+        """
         try:
-            params = {"key": key}
+            params = {"key": key, "duration": duration}
             if target:
                 params["target"] = target
-            response = connection.send_command("qa.interact", params)
+            response = connection.send_command("qa.interact", params, timeout=duration + 5.0)
             return format_response(response.get("data", {}), "interact_with")
         except (RuntimeError, ConnectionError) as e:
             return f"Error: {e}"

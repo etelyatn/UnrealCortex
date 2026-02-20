@@ -75,6 +75,58 @@ def test_action_tools_send_deferred_timeouts():
     )
 
 
+def test_interact_default_duration_sends_tap():
+    """interact_with with no duration sends default 0.1s tap."""
+    mcp = MockMCP()
+    connection = MagicMock()
+    connection.send_command.return_value = {"data": {"success": True, "key": "E", "duration": 0.1}}
+
+    register_qa_action_tools(mcp, connection)
+    result = mcp.tools["interact_with"](key="E")
+
+    parsed = json.loads(result)
+    assert parsed["success"] is True
+    connection.send_command.assert_called_with(
+        "qa.interact",
+        {"key": "E", "duration": 0.1},
+        timeout=5.1,
+    )
+
+
+def test_interact_hold_duration_sends_timeout():
+    """interact_with with duration=2.0 sends hold and sets TCP timeout."""
+    mcp = MockMCP()
+    connection = MagicMock()
+    connection.send_command.return_value = {"data": {"success": True, "key": "LeftMouseButton", "duration": 2.0}}
+
+    register_qa_action_tools(mcp, connection)
+    result = mcp.tools["interact_with"](key="LeftMouseButton", duration=2.0)
+
+    parsed = json.loads(result)
+    assert parsed["success"] is True
+    connection.send_command.assert_called_with(
+        "qa.interact",
+        {"key": "LeftMouseButton", "duration": 2.0},
+        timeout=7.0,
+    )
+
+
+def test_interact_with_target_and_duration():
+    """interact_with sends both target and duration when specified."""
+    mcp = MockMCP()
+    connection = MagicMock()
+    connection.send_command.return_value = {"data": {"success": True, "key": "LeftMouseButton", "duration": 2.0}}
+
+    register_qa_action_tools(mcp, connection)
+    mcp.tools["interact_with"](target="SolderPoint_01", key="LeftMouseButton", duration=2.0)
+
+    connection.send_command.assert_called_with(
+        "qa.interact",
+        {"key": "LeftMouseButton", "duration": 2.0, "target": "SolderPoint_01"},
+        timeout=7.0,
+    )
+
+
 def test_wait_for_condition_timeout_forwarding():
     mcp = MockMCP()
     connection = MagicMock()
