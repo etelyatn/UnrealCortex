@@ -17,7 +17,12 @@ def register_qa_composite_tools(mcp, connection: UEConnection):
         screenshot_name: str = "qa_step.png",
     ) -> str:
         try:
-            action_response = connection.send_command(action["command"], action.get("params", {}))
+            action_params = action.get("params", {})
+            action_duration = float(action_params.get("duration", 0))
+            action_timeout = float(action_params.get("timeout", 5.0))
+            action_response = connection.send_command(
+                action["command"], action_params, timeout=max(action_duration, action_timeout) + 5.0
+            )
 
             wait_response = None
             if wait is not None:
@@ -72,7 +77,9 @@ def register_qa_composite_tools(mcp, connection: UEConnection):
             for index, step in enumerate(steps):
                 command = step.get("command", "")
                 params = step.get("params", {})
-                timeout = float(params.get("timeout", 5.0)) + 5.0
+                duration = float(params.get("duration", 0))
+                base_timeout = float(params.get("timeout", 5.0))
+                timeout = max(duration, base_timeout) + 5.0
 
                 response = connection.send_command(command, params, timeout=timeout)
                 observed = connection.send_command("qa.observe_state", {})

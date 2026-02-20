@@ -255,6 +255,45 @@ def test_run_scenario_inline_uses_log_cursor_and_writes_report():
     assert parsed["report"]["finding_count"] == 0
 
 
+def test_run_scenario_inline_interact_duration_timeout():
+    """run_scenario_inline calculates timeout from duration for interact commands."""
+    mcp = MockMCP()
+    connection = MagicMock()
+
+    def send_command(command, params=None, timeout=None):
+        if command == "qa.interact":
+            assert timeout >= 15.0, f"Expected timeout >= 15.0 for duration=10.0, got {timeout}"
+            return {"success": True, "data": {"success": True, "key": "LeftMouseButton", "duration": 10.0}}
+        if command == "qa.observe_state":
+            return {"success": True, "data": {"nearby_actors": [], "player": {"location": [0, 0, 0]}}}
+        if command == "editor.get_recent_logs":
+            return {"success": True, "data": {"logs": [], "next_cursor": 10}}
+        raise AssertionError(f"Unexpected command: {command}")
+
+    connection.send_command.side_effect = send_command
+    register_qa_composite_tools(mcp, connection)
+
+    scenario = [
+        {"command": "qa.interact", "params": {"key": "LeftMouseButton", "duration": 10.0}},
+    ]
+    with patch(
+        "qa.composites.write_report_bundle",
+        return_value={
+            "report_dir": "QA/reports/mock",
+            "summary_path": "QA/reports/mock/summary.md",
+            "findings_path": "QA/reports/mock/findings.json",
+            "finding_count": 0,
+        },
+    ):
+        result = mcp.tools["run_scenario_inline"](
+            scenario_name="hold-test",
+            steps=scenario,
+            verbose=False,
+        )
+    parsed = json.loads(result)
+    assert parsed["steps"][0]["success"] is True
+
+
 def test_detector_finds_multiple_issue_types():
     findings = detect_structural_issues(
         observed_state={
