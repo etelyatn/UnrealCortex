@@ -6,6 +6,7 @@
 #include "CortexSerializer.h"
 #include "CortexTypes.h"
 #include "Dom/JsonValue.h"
+#include "Editor.h"
 #include "GameFramework/Actor.h"
 #include "ScopedTransaction.h"
 #include "UObject/UObjectIterator.h"
@@ -432,6 +433,13 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
     // refreshes. Without this, material overrides and other render properties
     // set via raw property access are silently ignored by the renderer.
     Component->MarkRenderStateDirty();
+
+    // Force the editor viewports to repaint so the change is visible immediately
+    // without requiring manual user interaction (e.g. mouse move or click).
+    if (GEditor)
+    {
+        GEditor->RedrawAllViewports();
+    }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetStringField(TEXT("actor"), Actor->GetName());
