@@ -10,7 +10,6 @@ import types
 from mcp.server.fastmcp import FastMCP
 from .tcp_client import UEConnection
 from .response import format_response
-from .process_cleanup import cleanup_stale_processes
 
 _log_level = getattr(logging, os.environ.get("CORTEX_LOG_LEVEL", "INFO").upper(), logging.INFO)
 logging.basicConfig(
@@ -19,9 +18,6 @@ logging.basicConfig(
     format="%(levelname)s:%(name)s:%(message)s",
 )
 logger = logging.getLogger(__name__)
-
-# Clean up any stale processes before starting (prevents "file in use" errors)
-cleanup_stale_processes()
 
 mcp = FastMCP("cortex")
 
