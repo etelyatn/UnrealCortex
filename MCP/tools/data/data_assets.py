@@ -30,7 +30,7 @@ def register_data_asset_tools(mcp, connection: UEConnection):
             JSON with 'data_assets' array, each containing:
             - name: Asset name (e.g., 'DA_CyberArm_Mk1')
             - path: Full asset path
-            - class_name: UClass name of the DataAsset
+            - asset_class: UClass name of the DataAsset
         """
         try:
             params = {}
