@@ -10,6 +10,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "ScopedTransaction.h"
+#include "Misc/PackageName.h"
 
 static FString CurveTableModeToString(ECurveTableMode Mode)
 {
@@ -26,6 +27,16 @@ static FString CurveTableModeToString(ECurveTableMode Mode)
 
 UCurveTable* FCortexDataCurveTableOps::LoadCurveTable(const FString& TablePath, FCortexCommandResult& OutError)
 {
+	const FString PkgName = FPackageName::ObjectPathToPackageName(TablePath);
+	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::TableNotFound,
+			FString::Printf(TEXT("CurveTable not found: %s"), *TablePath)
+		);
+		return nullptr;
+	}
+
 	UCurveTable* CurveTable = LoadObject<UCurveTable>(nullptr, *TablePath);
 	if (CurveTable == nullptr)
 	{
@@ -75,6 +86,15 @@ FCortexCommandResult FCortexDataCurveTableOps::ListCurveTables(const TSharedPtr<
 		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 		Entry->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
 		Entry->SetStringField(TEXT("path"), AssetPath);
+
+		const FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
+		if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+		{
+			Entry->SetNumberField(TEXT("row_count"), 0);
+			Entry->SetStringField(TEXT("curve_type"), TEXT("Unknown"));
+			ResultArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
 
 		// Load to get row count and curve type info
 		UCurveTable* LoadedTable = LoadObject<UCurveTable>(nullptr, *AssetPath);
