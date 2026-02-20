@@ -5,10 +5,14 @@
 #include "Engine/DataAsset.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "ScopedTransaction.h"
 #include "CortexEditorUtils.h"
+#include "ObjectTools.h"
+#include "Misc/PackageName.h"
+#include "UObject/SavePackage.h"
 
 UDataAsset* FCortexDataAssetOps::LoadDataAsset(const FString& AssetPath, FCortexCommandResult& OutError)
 {
@@ -301,4 +305,198 @@ FCortexCommandResult FCortexDataAssetOps::UpdateDataAsset(const TSharedPtr<FJson
 		Result.Warnings = MoveTemp(Warnings);
 		return Result;
 	}
+}
+
+UClass* FCortexDataAssetOps::ResolveDataAssetClass(const FString& ClassName, FCortexCommandResult& OutError)
+{
+	// Try full class path first (for example "/Script/Engine.DataAsset").
+	UClass* ResolvedClass = FindObject<UClass>(nullptr, *ClassName);
+
+	if (ResolvedClass == nullptr)
+	{
+		// Check UDataAsset base class by short name.
+		if (UDataAsset::StaticClass()->GetName() == ClassName)
+		{
+			ResolvedClass = UDataAsset::StaticClass();
+		}
+		else
+		{
+			// Search all UDataAsset subclasses by short name.
+			TArray<UClass*> DerivedClasses;
+			GetDerivedClasses(UDataAsset::StaticClass(), DerivedClasses, true);
+			for (UClass* Candidate : DerivedClasses)
+			{
+				if (Candidate != nullptr && Candidate->GetName() == ClassName)
+				{
+					ResolvedClass = Candidate;
+					break;
+				}
+			}
+		}
+	}
+
+	if (ResolvedClass == nullptr)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::ClassNotFound,
+			FString::Printf(TEXT("DataAsset class not found: %s"), *ClassName)
+		);
+		return nullptr;
+	}
+
+	if (!ResolvedClass->IsChildOf(UDataAsset::StaticClass()))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Class '%s' is not a UDataAsset subclass"), *ClassName)
+		);
+		return nullptr;
+	}
+
+	// Reject abstract classes - NewObject on abstract triggers ensure in editor.
+	if (ResolvedClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Cannot instantiate abstract class '%s'. Use a concrete subclass."), *ClassName)
+		);
+		return nullptr;
+	}
+
+	return ResolvedClass;
+}
+
+FCortexCommandResult FCortexDataAssetOps::CreateDataAsset(const TSharedPtr<FJsonObject>& Params)
+{
+	FString ClassName;
+	FString AssetPath;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("class_name"), ClassName)
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: class_name, asset_path")
+		);
+	}
+
+	if (ClassName.IsEmpty() || AssetPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Parameters 'class_name' and 'asset_path' cannot be empty")
+		);
+	}
+
+	FCortexCommandResult ClassError;
+	UClass* ResolvedClass = ResolveDataAssetClass(ClassName, ClassError);
+	if (ResolvedClass == nullptr)
+	{
+		return ClassError;
+	}
+
+	// Normalize object path to package path and derive asset object name.
+	const FString PackagePath = FPackageName::ObjectPathToPackageName(AssetPath);
+	const FString AssetName = FPackageName::GetShortName(PackagePath);
+
+	if (FindPackage(nullptr, *PackagePath) != nullptr || FPackageName::DoesPackageExist(PackagePath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetAlreadyExists,
+			FString::Printf(TEXT("Asset already exists: %s"), *PackagePath)
+		);
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Create DataAsset %s"), *AssetName)
+	));
+
+	UPackage* Package = CreatePackage(*PackagePath);
+	UDataAsset* NewAsset = NewObject<UDataAsset>(
+		Package,
+		ResolvedClass,
+		FName(*AssetName),
+		RF_Public | RF_Standalone
+	);
+	if (NewAsset == nullptr)
+	{
+		Package->MarkAsGarbage();
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("Failed to create DataAsset: %s"), *AssetPath)
+		);
+	}
+
+	TArray<FString> Warnings;
+	const TSharedPtr<FJsonObject>* PropertiesObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("properties"), PropertiesObj)
+		&& PropertiesObj != nullptr
+		&& (*PropertiesObj).IsValid())
+	{
+		const bool bApplied = FCortexSerializer::JsonToStruct(*PropertiesObj, ResolvedClass, NewAsset, Warnings);
+		if (!bApplied)
+		{
+			NewAsset->MarkAsGarbage();
+			Package->MarkAsGarbage();
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::SerializationError,
+				TEXT("Failed to apply initial properties to DataAsset")
+			);
+		}
+	}
+
+	Package->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(NewAsset);
+
+	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		Package->GetName(),
+		FPackageName::GetAssetPackageExtension());
+
+	const FString Directory = FPaths::GetPath(PackageFilename);
+	if (!FPaths::DirectoryExists(Directory))
+	{
+		IFileManager::Get().MakeDirectory(*Directory, true);
+	}
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	const bool bSaved = UPackage::SavePackage(Package, NewAsset, *PackageFilename, SaveArgs);
+	if (!bSaved)
+	{
+		NewAsset->MarkAsGarbage();
+		Package->MarkAsGarbage();
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("Failed to save DataAsset to disk: %s"), *AssetPath)
+		);
+	}
+
+	FCortexEditorUtils::NotifyAssetModified(NewAsset);
+
+	const FString FullObjectPath = FString::Printf(TEXT("%s.%s"), *PackagePath, *AssetName);
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), FullObjectPath);
+	Data->SetStringField(TEXT("asset_class"), ResolvedClass->GetName());
+	Data->SetBoolField(TEXT("created"), true);
+
+	if (Warnings.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> WarningsArray;
+		for (const FString& Warning : Warnings)
+		{
+			WarningsArray.Add(MakeShared<FJsonValueString>(Warning));
+		}
+		Data->SetArrayField(TEXT("warnings"), WarningsArray);
+	}
+
+	UE_LOG(LogCortexData, Log, TEXT("Created DataAsset: %s (class: %s)"), *FullObjectPath, *ClassName);
+
+	FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
+	Result.Warnings = MoveTemp(Warnings);
+	return Result;
+}
+
+FCortexCommandResult FCortexDataAssetOps::DeleteDataAsset(const TSharedPtr<FJsonObject>& Params)
+{
+	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Not implemented"));
 }

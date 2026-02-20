@@ -96,6 +96,14 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
     {
         return FCortexDataAssetOps::UpdateDataAsset(Params);
     }
+    if (Command == TEXT("create_data_asset"))
+    {
+        return FCortexDataAssetOps::CreateDataAsset(Params);
+    }
+    if (Command == TEXT("delete_data_asset"))
+    {
+        return FCortexDataAssetOps::DeleteDataAsset(Params);
+    }
 
     // Localization operations
     if (Command == TEXT("list_string_tables"))
@@ -159,6 +167,8 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
         { TEXT("list_data_assets"), TEXT("List DataAssets") },
         { TEXT("get_data_asset"), TEXT("Get DataAsset properties") },
         { TEXT("update_data_asset"), TEXT("Update DataAsset properties") },
+        { TEXT("create_data_asset"), TEXT("Create new DataAsset") },
+        { TEXT("delete_data_asset"), TEXT("Delete DataAsset") },
         { TEXT("list_string_tables"), TEXT("List StringTables") },
         { TEXT("get_translations"), TEXT("Get StringTable entries") },
         { TEXT("set_translation"), TEXT("Set StringTable entry") },
