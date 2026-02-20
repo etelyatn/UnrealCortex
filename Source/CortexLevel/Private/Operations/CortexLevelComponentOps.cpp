@@ -428,6 +428,11 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, FString::Printf(TEXT("Failed to set property: %s"), *PropertyName));
     }
 
+    // Notify the component that its render state is dirty so the GPU proxy
+    // refreshes. Without this, material overrides and other render properties
+    // set via raw property access are silently ignored by the renderer.
+    Component->MarkRenderStateDirty();
+
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetStringField(TEXT("actor"), Actor->GetName());
     Data->SetStringField(TEXT("component"), Component->GetName());

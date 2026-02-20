@@ -68,6 +68,14 @@ FCortexCommandResult FCortexEditorViewportOps::GetViewportInfo()
 	CameraLocation->SetNumberField(TEXT("x"), ViewLoc.X);
 	CameraLocation->SetNumberField(TEXT("y"), ViewLoc.Y);
 	CameraLocation->SetNumberField(TEXT("z"), ViewLoc.Z);
+
+	const FRotator ViewRot = ViewportClient.GetViewRotation();
+	TSharedPtr<FJsonObject> CameraRotation = MakeShared<FJsonObject>();
+	CameraRotation->SetNumberField(TEXT("pitch"), ViewRot.Pitch);
+	CameraRotation->SetNumberField(TEXT("yaw"), ViewRot.Yaw);
+	CameraRotation->SetNumberField(TEXT("roll"), ViewRot.Roll);
+	Data->SetObjectField(TEXT("camera_rotation"), CameraRotation);
+
 	const EViewModeIndex CurrentViewMode = ViewportClient.GetViewMode();
 	FString ViewModeStr;
 	switch (CurrentViewMode)
@@ -126,10 +134,15 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 
 	const double StartTime = FPlatformTime::Seconds();
 
-	// Force the viewport to render a fresh frame before capture
+	// Invalidate the viewport so Slate knows it needs a fresh render.
 	FEditorViewportClient& Client = Viewport->GetAssetViewportClient();
 	Client.Invalidate(true, true);
-	ActiveViewport->Draw(false);
+
+	// Force a Slate tick to trigger DrawWindow() → FSceneViewport::Draw()
+	// which populates RenderTargetTextureRHI with the current scene state.
+	// Without this, Slate skips re-rendering idle viewports and ReadPixels()
+	// returns the last cached frame (which may predate material changes).
+	FSlateApplication::Get().Tick(ESlateTickType::All);
 
 	FlushRenderingCommands();
 
@@ -139,6 +152,13 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::ScreenshotFailed,
 			TEXT("Failed to read viewport pixels"));
+	}
+
+	// UE viewport scene renders with alpha=0 (alpha channel is used for
+	// depth/stencil internally). Force opaque so PNG doesn't appear transparent.
+	for (FColor& Pixel : Pixels)
+	{
+		Pixel.A = 255;
 	}
 
 	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
