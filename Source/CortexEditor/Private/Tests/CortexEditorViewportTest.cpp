@@ -21,6 +21,7 @@ bool FCortexEditorGetViewportInfoTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Should have resolution"), Result.Data->HasField(TEXT("resolution")));
 		TestTrue(TEXT("Should have camera_location"), Result.Data->HasField(TEXT("camera_location")));
 		TestTrue(TEXT("Should have view_mode"), Result.Data->HasField(TEXT("view_mode")));
+		TestTrue(TEXT("Should have camera_rotation"), Result.Data->HasField(TEXT("camera_rotation")));
 	}
 
 	return true;

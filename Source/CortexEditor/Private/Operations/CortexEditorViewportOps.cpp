@@ -50,6 +50,12 @@ FCortexCommandResult FCortexEditorViewportOps::GetViewportInfo()
 
 	Data->SetStringField(TEXT("view_mode"), TEXT("unknown"));
 
+	TSharedPtr<FJsonObject> CameraRotation = MakeShared<FJsonObject>();
+	CameraRotation->SetNumberField(TEXT("pitch"), 0.0);
+	CameraRotation->SetNumberField(TEXT("yaw"), 0.0);
+	CameraRotation->SetNumberField(TEXT("roll"), 0.0);
+	Data->SetObjectField(TEXT("camera_rotation"), CameraRotation);
+
 	const TSharedPtr<IAssetViewport> Viewport = GetActiveAssetViewport();
 	if (!Viewport.IsValid())
 	{
@@ -70,11 +76,9 @@ FCortexCommandResult FCortexEditorViewportOps::GetViewportInfo()
 	CameraLocation->SetNumberField(TEXT("z"), ViewLoc.Z);
 
 	const FRotator ViewRot = ViewportClient.GetViewRotation();
-	TSharedPtr<FJsonObject> CameraRotation = MakeShared<FJsonObject>();
 	CameraRotation->SetNumberField(TEXT("pitch"), ViewRot.Pitch);
 	CameraRotation->SetNumberField(TEXT("yaw"), ViewRot.Yaw);
 	CameraRotation->SetNumberField(TEXT("roll"), ViewRot.Roll);
-	Data->SetObjectField(TEXT("camera_rotation"), CameraRotation);
 
 	const EViewModeIndex CurrentViewMode = ViewportClient.GetViewMode();
 	FString ViewModeStr;
