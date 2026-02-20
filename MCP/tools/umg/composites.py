@@ -144,7 +144,7 @@ def _build_widget_batch_commands(
             "params": {
                 "asset_path": "$steps[0].data.asset_path",
                 "widget_class": widget["class"],
-                "name": widget["name"],
+                "widget_name": widget["name"],
                 "parent_name": parent_name,
             },
         })
