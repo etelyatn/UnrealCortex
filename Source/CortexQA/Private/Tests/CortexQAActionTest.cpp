@@ -47,6 +47,24 @@ bool FCortexQAInteractNoPIETest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexQAInteractDurationRoutingNoPIETest,
+    "Cortex.QA.Action.Interact.DurationRoutingNoPIE",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexQAInteractDurationRoutingNoPIETest::RunTest(const FString& Parameters)
+{
+    FCortexCommandRouter Router = CreateQARouterActions();
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("key"), TEXT("LeftMouseButton"));
+    Params->SetNumberField(TEXT("duration"), 2.0);
+    const FCortexCommandResult Result = Router.Execute(TEXT("qa.interact"), Params);
+    TestFalse(TEXT("interact with duration should fail when PIE is not active"), Result.bSuccess);
+    TestEqual(TEXT("interact with duration should return PIE_NOT_ACTIVE"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexQAMoveToNoPIETest,
     "Cortex.QA.Action.MoveTo.NoPIE",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter

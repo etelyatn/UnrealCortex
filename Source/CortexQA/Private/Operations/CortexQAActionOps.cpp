@@ -96,12 +96,17 @@ FCortexCommandResult FCortexQAActionOps::LookAt(const TSharedPtr<FJsonObject>& P
     return FCortexCommandRouter::Success(Data);
 }
 
-FCortexCommandResult FCortexQAActionOps::Interact(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexQAActionOps::Interact(const TSharedPtr<FJsonObject>& Params, FDeferredResponseCallback DeferredCallback)
 {
     UWorld* PIEWorld = FCortexQAUtils::GetPIEWorld();
     if (PIEWorld == nullptr)
     {
         return FCortexQAUtils::PIENotActiveError();
+    }
+
+    if (!DeferredCallback)
+    {
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Deferred callback is required"));
     }
 
     APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
@@ -111,10 +116,13 @@ FCortexCommandResult FCortexQAActionOps::Interact(const TSharedPtr<FJsonObject>&
     }
 
     FString KeyName = TEXT("E");
+    double DurationSeconds = 0.1;
     if (Params.IsValid())
     {
         Params->TryGetStringField(TEXT("key"), KeyName);
+        Params->TryGetNumberField(TEXT("duration"), DurationSeconds);
     }
+    DurationSeconds = FMath::Clamp(DurationSeconds, 0.01, 30.0);
 
     const FKey InteractionKey(*KeyName);
     if (!InteractionKey.IsValid())
@@ -125,23 +133,45 @@ FCortexCommandResult FCortexQAActionOps::Interact(const TSharedPtr<FJsonObject>&
     PC->InputKey(FInputKeyEventArgs::CreateSimulated(InteractionKey, EInputEvent::IE_Pressed, 1.0f));
 
     TWeakObjectPtr<APlayerController> WeakPC = PC;
-    TSharedPtr<FTimerHandle> ReleaseHandle = MakeShared<FTimerHandle>();
+    const double StartGameTime = PIEWorld->GetTimeSeconds();
+    TSharedPtr<FTimerHandle> HoldHandle = MakeShared<FTimerHandle>();
     PIEWorld->GetTimerManager().SetTimer(
-        *ReleaseHandle,
-        [WeakPC, InteractionKey]()
+        *HoldHandle,
+        [HoldHandle, WeakPC, InteractionKey, KeyName, DurationSeconds, StartGameTime, DeferredCallback = MoveTemp(DeferredCallback)]() mutable
         {
-            if (APlayerController* ReleasedPC = WeakPC.Get())
+            if (GEditor == nullptr || GEditor->PlayWorld == nullptr)
             {
-                ReleasedPC->InputKey(FInputKeyEventArgs::CreateSimulated(InteractionKey, EInputEvent::IE_Released, 0.0f));
+                FCortexCommandResult Final = FCortexCommandRouter::Error(
+                    CortexErrorCodes::PIETerminated, TEXT("PIE terminated during interact hold"));
+                DeferredCallback(MoveTemp(Final));
+                return;
+            }
+
+            UWorld* CurrentPIEWorld = GEditor->PlayWorld;
+            const double Elapsed = CurrentPIEWorld->GetTimeSeconds() - StartGameTime;
+
+            if (Elapsed >= DurationSeconds)
+            {
+                if (APlayerController* ReleasedPC = WeakPC.Get())
+                {
+                    ReleasedPC->InputKey(FInputKeyEventArgs::CreateSimulated(InteractionKey, EInputEvent::IE_Released, 0.0f));
+                }
+
+                TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+                Data->SetBoolField(TEXT("success"), true);
+                Data->SetStringField(TEXT("key"), KeyName);
+                Data->SetNumberField(TEXT("duration"), Elapsed);
+                FCortexCommandResult Final = FCortexCommandRouter::Success(Data);
+                DeferredCallback(MoveTemp(Final));
+                CurrentPIEWorld->GetTimerManager().ClearTimer(*HoldHandle);
             }
         },
-        0.1f,
-        false);
+        0.05f,
+        true);
 
-    TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-    Data->SetBoolField(TEXT("success"), true);
-    Data->SetStringField(TEXT("key"), KeyName);
-    return FCortexCommandRouter::Success(Data);
+    FCortexCommandResult Deferred;
+    Deferred.bIsDeferred = true;
+    return Deferred;
 }
 
 FCortexCommandResult FCortexQAActionOps::MoveTo(const TSharedPtr<FJsonObject>& Params, FDeferredResponseCallback DeferredCallback)

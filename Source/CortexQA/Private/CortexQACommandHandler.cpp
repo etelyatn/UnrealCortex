@@ -29,7 +29,7 @@ FCortexCommandResult FCortexQACommandHandler::Execute(
     }
     if (Command == TEXT("interact"))
     {
-        return FCortexQAActionOps::Interact(Params);
+        return FCortexQAActionOps::Interact(Params, MoveTemp(DeferredCallback));
     }
     if (Command == TEXT("move_to"))
     {
