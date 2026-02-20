@@ -1573,8 +1573,16 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 				Entry->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
 				Entry->SetStringField(TEXT("path"), AssetData.GetObjectPathString());
 
+				const FString AssetPath = AssetData.GetObjectPathString();
+				const FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
+				if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+				{
+					StringTableArray.Add(MakeShared<FJsonValueObject>(Entry));
+					continue;
+				}
+
 				// Try to get entry count from the loaded table
-				UStringTable* LoadedTable = LoadObject<UStringTable>(nullptr, *AssetData.GetObjectPathString());
+				UStringTable* LoadedTable = LoadObject<UStringTable>(nullptr, *AssetPath);
 				if (LoadedTable != nullptr)
 				{
 					FStringTableConstRef TableRef = LoadedTable->GetStringTable();

@@ -9,9 +9,20 @@
 #include "Dom/JsonValue.h"
 #include "ScopedTransaction.h"
 #include "CortexEditorUtils.h"
+#include "Misc/PackageName.h"
 
 UStringTable* FCortexDataLocalizationOps::LoadStringTable(const FString& TablePath, FCortexCommandResult& OutError)
 {
+	const FString PkgName = FPackageName::ObjectPathToPackageName(TablePath);
+	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("StringTable not found: %s"), *TablePath)
+		);
+		return nullptr;
+	}
+
 	UStringTable* StringTable = LoadObject<UStringTable>(nullptr, *TablePath);
 	if (StringTable == nullptr)
 	{
@@ -61,6 +72,13 @@ FCortexCommandResult FCortexDataLocalizationOps::ListStringTables(const TSharedP
 		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 		Entry->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
 		Entry->SetStringField(TEXT("path"), AssetPath);
+
+		const FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
+		if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+		{
+			ResultArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
 
 		// Try to get namespace from the loaded string table
 		UStringTable* LoadedTable = LoadObject<UStringTable>(nullptr, *AssetPath);

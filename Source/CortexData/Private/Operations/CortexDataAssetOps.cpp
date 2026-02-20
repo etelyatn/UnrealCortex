@@ -18,6 +18,16 @@
 
 UDataAsset* FCortexDataAssetOps::LoadDataAsset(const FString& AssetPath, FCortexCommandResult& OutError)
 {
+	const FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
+	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("DataAsset not found: %s"), *AssetPath)
+		);
+		return nullptr;
+	}
+
 	UDataAsset* DataAsset = LoadObject<UDataAsset>(nullptr, *AssetPath);
 	if (DataAsset == nullptr)
 	{

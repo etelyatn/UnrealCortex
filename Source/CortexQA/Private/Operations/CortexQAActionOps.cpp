@@ -319,18 +319,38 @@ FCortexCommandResult FCortexQAActionOps::WaitFor(const TSharedPtr<FJsonObject>& 
 
     if (Type == TEXT("delay"))
     {
+        const double StartRealTime = FPlatformTime::Seconds();
+        const double ClampedTimeoutSeconds = FMath::Max(0.0, TimeoutSeconds);
         TSharedPtr<FTimerHandle> DelayHandle = MakeShared<FTimerHandle>();
         PIEWorld->GetTimerManager().SetTimer(
             *DelayHandle,
-            [DeferredCallback = MoveTemp(DeferredCallback)]() mutable
+            [PIEWorld, DelayHandle, DeferredCallback = MoveTemp(DeferredCallback), ClampedTimeoutSeconds, StartRealTime]() mutable
             {
-                TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-                Data->SetBoolField(TEXT("condition_met"), true);
-                FCortexCommandResult Final = FCortexCommandRouter::Success(Data);
-                DeferredCallback(MoveTemp(Final));
+                if (GEditor == nullptr || GEditor->PlayWorld == nullptr)
+                {
+                    FCortexCommandResult Final = FCortexCommandRouter::Error(
+                        CortexErrorCodes::PIETerminated,
+                        TEXT("PIE terminated during wait_for delay"));
+                    DeferredCallback(MoveTemp(Final));
+                    if (PIEWorld != nullptr)
+                    {
+                        PIEWorld->GetTimerManager().ClearTimer(*DelayHandle);
+                    }
+                    return;
+                }
+
+                const double Elapsed = FPlatformTime::Seconds() - StartRealTime;
+                if (Elapsed >= ClampedTimeoutSeconds)
+                {
+                    TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+                    Data->SetBoolField(TEXT("condition_met"), true);
+                    FCortexCommandResult Final = FCortexCommandRouter::Success(Data);
+                    DeferredCallback(MoveTemp(Final));
+                    PIEWorld->GetTimerManager().ClearTimer(*DelayHandle);
+                }
             },
-            static_cast<float>(FMath::Max(0.0, TimeoutSeconds)),
-            false);
+            0.1f,
+            true);
 
         FCortexCommandResult Deferred;
         Deferred.bIsDeferred = true;
