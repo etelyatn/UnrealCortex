@@ -57,6 +57,11 @@ namespace CortexErrorCodes
 	static const FString InvalidParameter = TEXT("INVALID_PARAMETER");
 	static const FString LimitExceeded = TEXT("LIMIT_EXCEEDED");
 	static const FString AssetAlreadyExists = TEXT("ASSET_ALREADY_EXISTS");
+	static const FString SaveFailed = TEXT("SAVE_FAILED");
+	static const FString EditorNotAvailable = TEXT("EDITOR_NOT_AVAILABLE");
+	static const FString NoDiskFile = TEXT("NO_DISK_FILE");
+	static const FString InvalidGlob = TEXT("INVALID_GLOB");
+	static const FString NoMatches = TEXT("NO_MATCHES");
 	// Level errors
 	static const FString ActorNotFound = TEXT("ACTOR_NOT_FOUND");
 	static const FString AmbiguousActor = TEXT("AMBIGUOUS_ACTOR");
