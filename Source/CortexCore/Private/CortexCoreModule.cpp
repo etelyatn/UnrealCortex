@@ -1,5 +1,6 @@
 #include "CortexCoreModule.h"
 #include "CortexCommandRouter.h"
+#include "CortexCoreCommandHandler.h"
 #include "CortexTcpServer.h"
 #include "CortexSettings.h"
 
@@ -26,6 +27,13 @@ void FCortexCoreModule::StartupModule()
     );
 
     UE_LOG(LogCortex, Log, TEXT("CortexCore TCP server started on port %d"), Settings->Port);
+
+    CommandRouter->RegisterDomain(
+        TEXT("core"),
+        TEXT("Cortex Core"),
+        TEXT("1.0.0"),
+        MakeShared<FCortexCoreCommandHandler>()
+    );
 }
 
 void FCortexCoreModule::ShutdownModule()
