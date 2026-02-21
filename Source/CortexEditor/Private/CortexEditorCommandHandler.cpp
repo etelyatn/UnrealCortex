@@ -9,7 +9,7 @@
 
 FCortexEditorCommandHandler::FCortexEditorCommandHandler()
 {
-	PIEState = MakeUnique<FCortexEditorPIEState>();
+	PIEState = MakeShared<FCortexEditorPIEState>();
 	PIEState->BindDelegates();
 	LogCapture = MakeUnique<FCortexEditorLogCapture>(5000);
 	LogCapture->StartCapture();
@@ -57,7 +57,7 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	}
 	if (PIEState.IsValid() && Command == TEXT("inject_key"))
 	{
-		return FCortexEditorInputOps::InjectKey(*PIEState, Params);
+		return FCortexEditorInputOps::InjectKey(PIEState, Params);
 	}
 	if (PIEState.IsValid() && Command == TEXT("inject_mouse"))
 	{
@@ -69,7 +69,7 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	}
 	if (PIEState.IsValid() && Command == TEXT("inject_input_sequence"))
 	{
-		return FCortexEditorInputOps::InjectInputSequence(*PIEState, Params, MoveTemp(DeferredCallback));
+		return FCortexEditorInputOps::InjectInputSequence(PIEState, Params, MoveTemp(DeferredCallback));
 	}
 	if (PIEState.IsValid() && Command == TEXT("get_editor_state"))
 	{
@@ -126,9 +126,9 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 		{ TEXT("resume_pie"), TEXT("Resume PIE") },
 		{ TEXT("get_pie_state"), TEXT("Get PIE state") },
 		{ TEXT("restart_pie"), TEXT("Restart PIE session") },
-		{ TEXT("inject_key"), TEXT("Inject keyboard input (not yet implemented)") },
-		{ TEXT("inject_mouse"), TEXT("Inject mouse input (not yet implemented)") },
-		{ TEXT("inject_input_action"), TEXT("Inject Enhanced Input action (not yet implemented)") },
+		{ TEXT("inject_key"), TEXT("Inject keyboard input into PIE") },
+		{ TEXT("inject_mouse"), TEXT("Inject mouse input into PIE") },
+		{ TEXT("inject_input_action"), TEXT("Inject Enhanced Input action into PIE") },
 		{ TEXT("inject_input_sequence"), TEXT("Execute timed input sequence") },
 		{ TEXT("capture_screenshot"), TEXT("Capture viewport screenshot") },
 		{ TEXT("get_viewport_info"), TEXT("Get viewport state") },

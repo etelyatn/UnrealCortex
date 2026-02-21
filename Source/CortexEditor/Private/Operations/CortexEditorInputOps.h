@@ -9,7 +9,7 @@ class FCortexEditorInputOps
 {
 public:
 	static FCortexCommandResult InjectKey(
-		const FCortexEditorPIEState& PIEState,
+		TSharedPtr<FCortexEditorPIEState> PIEState,
 		const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult InjectMouse(
 		const FCortexEditorPIEState& PIEState,
@@ -18,7 +18,7 @@ public:
 		const FCortexEditorPIEState& PIEState,
 		const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult InjectInputSequence(
-		FCortexEditorPIEState& PIEState,
+		TSharedPtr<FCortexEditorPIEState> PIEState,
 		const TSharedPtr<FJsonObject>& Params,
 		FDeferredResponseCallback DeferredCallback);
 };

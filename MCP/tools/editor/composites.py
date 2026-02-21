@@ -1,18 +1,9 @@
 """Composite editor workflows built from primitive editor commands."""
 
-import importlib.util
-import json
 import logging
-import pathlib
 
 from cortex_mcp.response import format_response
 from cortex_mcp.tcp_client import UEConnection
-
-# Load _input from the same directory (avoids package path dependency in dynamic loader)
-_input_path = pathlib.Path(__file__).parent / "_input.py"
-_input_spec = importlib.util.spec_from_file_location("editor._input", _input_path)
-_input = importlib.util.module_from_spec(_input_spec)
-_input_spec.loader.exec_module(_input)
 
 logger = logging.getLogger(__name__)
 
@@ -53,27 +44,52 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
             return f"Error: {e}"
 
     @mcp.tool()
-    def press_key(key: str, action: str = "tap", duration_ms: int = 50) -> str:
-        """Inject a key event into active PIE session."""
+    def press_key(key: str, action: str = "tap", duration_ms: int = 100) -> str:
+        """Inject a key event into active PIE session.
+
+        Args:
+            key: UE key name (for example "W", "SpaceBar", "LeftShift", "Enter",
+                "Escape", "F1", "LeftMouseButton"). Case-sensitive.
+            action: "tap" (press + timed release), "press", or "release".
+            duration_ms: Hold duration in ms for "tap" action (default 100).
+        """
         try:
-            response = _input.inject_key(connection, key, action=action, duration_ms=duration_ms)
+            response = connection.send_command(
+                "editor.inject_key",
+                {"key": key, "action": action, "duration_ms": duration_ms},
+            )
             return format_response(response.get("data", {}), "press_key")
         except (ConnectionError, RuntimeError) as e:
             return f"Error: {e}"
 
     @mcp.tool()
-    def run_input_sequence(steps_json: str, timeout: float = 60.0) -> str:
-        """Execute deferred timed input sequence.
+    def run_input_sequence(steps: list[dict], timeout: float = 60.0) -> str:
+        """Execute deferred timed input sequence during PIE.
 
         Args:
-            steps_json: JSON list of input steps with at_ms timestamps.
-            timeout: Total timeout for deferred completion.
+            steps: List of input steps. Each step has:
+                - at_ms (int): When to execute (ms from start)
+                - kind (str): "key", "mouse", or "action"
+                - For kind="key": key (str), action (str, default "tap"),
+                  duration_ms (int, default 100)
+                - For kind="mouse": action (str: "click"/"move"/"scroll"),
+                  button (str, for click), x/y (float), delta (float, for scroll)
+                - For kind="action": action_name (str), value (float, default 1.0)
+            timeout: Total timeout for deferred completion (default 60s).
+
+        Example:
+            steps=[
+                {"at_ms": 0, "kind": "key", "key": "W", "action": "press"},
+                {"at_ms": 500, "kind": "key", "key": "SpaceBar", "action": "tap"},
+                {"at_ms": 1000, "kind": "key", "key": "W", "action": "release"},
+            ]
         """
         try:
-            steps = json.loads(steps_json)
-            response = _input.inject_sequence(connection, steps, timeout=timeout)
+            response = connection.send_command(
+                "editor.inject_input_sequence",
+                {"steps": steps},
+                timeout=timeout,
+            )
             return format_response(response.get("data", {}), "run_input_sequence")
-        except json.JSONDecodeError as e:
-            return f"Error: Invalid JSON in steps_json: {e}"
         except (ConnectionError, RuntimeError) as e:
             return f"Error: {e}"

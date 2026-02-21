@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "CortexTypes.h"
+#include "Containers/Ticker.h"
 
 enum class ECortexPIEState : uint8
 {
@@ -31,6 +32,8 @@ public:
 
 	void RegisterPendingCallback(FDeferredResponseCallback&& Callback);
 	void CompletePendingCallbacks(const FCortexCommandResult& Result);
+	void RegisterInputTickerHandle(FTSTicker::FDelegateHandle Handle);
+	void CancelAllInputTickers();
 	void OnPIEEnded();
 
 private:
@@ -52,4 +55,5 @@ private:
 	// inside RequestPlaySession() or CancelRequestPlaySession() can deadlock with
 	// engine-internal locks.  We defer state cleanup to the next tick instead.
 	FTSTicker::FDelegateHandle CancelDeferHandle;
+	TArray<FTSTicker::FDelegateHandle> InputTickerHandles;
 };
