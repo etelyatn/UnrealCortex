@@ -292,3 +292,86 @@ bool FCortexAssetOpenDryRunTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetCloseSingleTest,
+	"Cortex.Core.Asset.CloseAsset.SinglePath",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetCloseSingleTest::RunTest(const FString& Parameters)
+{
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	TSharedPtr<FJsonObject> OpenParams = MakeShared<FJsonObject>();
+	OpenParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Data/DT_TestSimple"));
+	Router.Execute(TEXT("core.open_asset"), OpenParams);
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Data/DT_TestSimple"));
+
+	FCortexCommandResult Result = Router.Execute(TEXT("core.close_asset"), RequestParams);
+	TestTrue(TEXT("close_asset should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
+		Result.Data->TryGetArrayField(TEXT("results"), Results);
+		if (Results != nullptr && Results->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject>* Entry = nullptr;
+			(*Results)[0]->TryGetObject(Entry);
+			if (Entry != nullptr)
+			{
+				bool bClosed = false;
+				TestTrue(TEXT("closed should be present"), (*Entry)->TryGetBoolField(TEXT("closed"), bClosed));
+			}
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetCloseSaveBeforeCloseTest,
+	"Cortex.Core.Asset.CloseAsset.SaveBeforeClose",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetCloseSaveBeforeCloseTest::RunTest(const FString& Parameters)
+{
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	TSharedPtr<FJsonObject> OpenParams = MakeShared<FJsonObject>();
+	OpenParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Data/DT_TestSimple"));
+	Router.Execute(TEXT("core.open_asset"), OpenParams);
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Data/DT_TestSimple"));
+	RequestParams->SetBoolField(TEXT("save"), true);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("core.close_asset"), RequestParams);
+	TestTrue(TEXT("close_asset save=true should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
+		Result.Data->TryGetArrayField(TEXT("results"), Results);
+		if (Results != nullptr && Results->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject>* Entry = nullptr;
+			(*Results)[0]->TryGetObject(Entry);
+			if (Entry != nullptr)
+			{
+				bool bSaved = false;
+				TestTrue(TEXT("saved should be present"), (*Entry)->TryGetBoolField(TEXT("saved"), bSaved));
+			}
+		}
+	}
+
+	return true;
+}

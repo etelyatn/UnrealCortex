@@ -374,8 +374,117 @@ FCortexCommandResult FCortexAssetOps::OpenAsset(const TSharedPtr<FJsonObject>& P
 
 FCortexCommandResult FCortexAssetOps::CloseAsset(const TSharedPtr<FJsonObject>& Params)
 {
-	(void)Params;
-	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("core.close_asset not yet implemented"));
+#if WITH_EDITOR
+	if (GEditor == nullptr)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable, TEXT("Editor not available"));
+	}
+
+	bool bDryRun = false;
+	bool bSaveBeforeClose = false;
+	if (Params.IsValid())
+	{
+		Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
+		Params->TryGetBoolField(TEXT("save"), bSaveBeforeClose);
+	}
+
+	TArray<FAssetData> Assets;
+	FCortexCommandResult ResolveError;
+	if (!ResolveAssetPaths(Params, Assets, ResolveError))
+	{
+		return ResolveError;
+	}
+
+	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (AssetEditorSubsystem == nullptr)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable, TEXT("Asset editor subsystem unavailable"));
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ResultsArray;
+	ResultsArray.Reserve(Assets.Num());
+
+	for (const FAssetData& AssetData : Assets)
+	{
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+
+		if (!AssetData.IsValid())
+		{
+			Entry->SetStringField(TEXT("error"), CortexErrorCodes::AssetNotFound);
+			Entry->SetStringField(TEXT("message"), TEXT("Asset not found"));
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
+
+		const FString AssetPath = AssetData.GetObjectPathString();
+		Entry->SetStringField(TEXT("asset_path"), AssetPath);
+		Entry->SetStringField(TEXT("asset_type"), AssetData.AssetClassPath.GetAssetName().ToString());
+
+		UObject* Asset = AssetData.GetAsset();
+		if (Asset == nullptr)
+		{
+			Asset = AssetData.GetSoftObjectPath().TryLoad();
+		}
+		if (Asset == nullptr)
+		{
+			Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
+		}
+		if (Asset == nullptr)
+		{
+			Entry->SetStringField(TEXT("error"), CortexErrorCodes::AssetNotFound);
+			Entry->SetStringField(TEXT("message"), FString::Printf(TEXT("Failed to load: %s"), *AssetPath));
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
+
+		Entry->SetStringField(TEXT("asset_type"), GetAssetTypeName(Asset));
+		UPackage* Package = Asset->GetOutermost();
+		const bool bWasDirty = Package != nullptr && Package->IsDirty();
+		const bool bWasOpen = AssetEditorSubsystem->FindEditorsForAsset(Asset).Num() > 0;
+		Entry->SetBoolField(TEXT("was_dirty"), bWasDirty);
+		Entry->SetBoolField(TEXT("was_open"), bWasOpen);
+
+		if (bDryRun)
+		{
+			Entry->SetBoolField(TEXT("would_close"), bWasOpen);
+			Entry->SetBoolField(TEXT("would_save"), bSaveBeforeClose && bWasDirty);
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
+
+		bool bSaved = false;
+		if (bSaveBeforeClose && bWasDirty && Package != nullptr)
+		{
+			const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+				Package->GetName(),
+				FPackageName::GetAssetPackageExtension()
+			);
+
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+			SaveArgs.SaveFlags = SAVE_NoError;
+			bSaved = UPackage::SavePackage(Package, Asset, *PackageFilename, SaveArgs);
+		}
+		Entry->SetBoolField(TEXT("saved"), bSaved);
+
+		const bool bClosed = bWasOpen ? (AssetEditorSubsystem->CloseAllEditorsForAsset(Asset) > 0) : false;
+		Entry->SetBoolField(TEXT("closed"), bClosed);
+
+		ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetArrayField(TEXT("results"), ResultsArray);
+	Data->SetNumberField(TEXT("count"), ResultsArray.Num());
+	if (bDryRun)
+	{
+		Data->SetBoolField(TEXT("dry_run"), true);
+	}
+
+	return FCortexCommandRouter::Success(Data);
+#else
+	return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable, TEXT("Editor not available"));
+#endif
 }
 
 FCortexCommandResult FCortexAssetOps::ReloadAsset(const TSharedPtr<FJsonObject>& Params)
