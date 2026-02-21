@@ -267,7 +267,7 @@ FCortexCommandResult FCortexEditorInputOps::InjectKey(
 	}
 
 	const FKey Key(*KeyString);
-	if (!Key.IsValid())
+	if (!EKeys::GetKeyDetails(Key).IsValid())
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
@@ -530,7 +530,7 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputSequence(
 			}
 
 			const FKey Key(*KeyName);
-			if (!Key.IsValid())
+			if (!EKeys::GetKeyDetails(Key).IsValid())
 			{
 				return FCortexCommandRouter::Error(
 					CortexErrorCodes::InvalidField,
