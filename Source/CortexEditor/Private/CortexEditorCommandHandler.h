@@ -21,6 +21,6 @@ public:
 	virtual TArray<FCortexCommandInfo> GetSupportedCommands() const override;
 
 private:
-	TUniquePtr<FCortexEditorPIEState> PIEState;
+	TSharedPtr<FCortexEditorPIEState> PIEState;
 	TUniquePtr<FCortexEditorLogCapture> LogCapture;
 };

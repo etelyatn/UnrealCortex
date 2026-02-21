@@ -9,6 +9,8 @@ FCortexEditorPIEState::FCortexEditorPIEState()
 
 FCortexEditorPIEState::~FCortexEditorPIEState()
 {
+	CancelAllInputTickers();
+
 	// If HandleCancelPIE deferred OnPIEEnded() but the ticker hasn't fired yet,
 	// run cleanup now so pending callbacks are completed and state is consistent.
 	if (CancelDeferHandle.IsValid())
@@ -92,8 +94,31 @@ void FCortexEditorPIEState::CompletePendingCallbacks(const FCortexCommandResult&
 	PendingCallbacks.Empty();
 }
 
+void FCortexEditorPIEState::RegisterInputTickerHandle(FTSTicker::FDelegateHandle Handle)
+{
+	if (Handle.IsValid())
+	{
+		InputTickerHandles.Add(Handle);
+	}
+}
+
+void FCortexEditorPIEState::CancelAllInputTickers()
+{
+	for (FTSTicker::FDelegateHandle& Handle : InputTickerHandles)
+	{
+		if (Handle.IsValid())
+		{
+			FTSTicker::GetCoreTicker().RemoveTicker(Handle);
+			Handle.Reset();
+		}
+	}
+
+	InputTickerHandles.Empty();
+}
+
 void FCortexEditorPIEState::OnPIEEnded()
 {
+	CancelAllInputTickers();
 	SetState(ECortexPIEState::Stopped);
 
 	FCortexCommandResult ErrorResult;
@@ -146,6 +171,8 @@ void FCortexEditorPIEState::HandlePrePIEEnded(bool bIsSimulating)
 void FCortexEditorPIEState::HandleEndPIE(bool bIsSimulating)
 {
 	(void)bIsSimulating;
+	CancelAllInputTickers();
+
 	if (State == ECortexPIEState::Stopping)
 	{
 		SetState(ECortexPIEState::Stopped);
