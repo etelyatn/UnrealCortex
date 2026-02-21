@@ -1,6 +1,6 @@
 """Core domain tools for CortexMCP."""
 
-from tools.core.assets import register_core_asset_tools
+from .assets import register_core_asset_tools
 
 
 def register_core_tools(mcp, connection):

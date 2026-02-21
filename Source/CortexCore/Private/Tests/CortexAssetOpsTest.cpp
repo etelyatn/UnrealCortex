@@ -230,8 +230,8 @@ bool FCortexAssetOpenSingleTest::RunTest(const FString& Parameters)
 			if (Entry != nullptr)
 			{
 				bool bOpened = false;
-				(*Entry)->TryGetBoolField(TEXT("opened"), bOpened);
-				TestTrue(TEXT("opened should be true"), bOpened);
+				(*Entry)->TryGetBoolField(TEXT("editor_opened"), bOpened);
+				TestTrue(TEXT("editor_opened should be true"), bOpened);
 
 				bool bWasAlreadyOpen = false;
 				TestTrue(TEXT("was_already_open should be present"), (*Entry)->TryGetBoolField(TEXT("was_already_open"), bWasAlreadyOpen));
@@ -288,6 +288,96 @@ bool FCortexAssetOpenDryRunTest::RunTest(const FString& Parameters)
 		bool bDryRun = false;
 		Result.Data->TryGetBoolField(TEXT("dry_run"), bDryRun);
 		TestTrue(TEXT("dry_run should be true in response"), bDryRun);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetOpenAlreadyOpenTest,
+	"Cortex.Core.Asset.OpenAsset.AlreadyOpen",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetOpenAlreadyOpenTest::RunTest(const FString& Parameters)
+{
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Data/DT_TestSimple"));
+
+	// Open the first time
+	Router.Execute(TEXT("core.open_asset"), RequestParams);
+
+	// Open again — should report was_already_open=true
+	FCortexCommandResult Result = Router.Execute(TEXT("core.open_asset"), RequestParams);
+	TestTrue(TEXT("open_asset second call should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
+		Result.Data->TryGetArrayField(TEXT("results"), Results);
+		if (Results != nullptr && Results->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject>* Entry = nullptr;
+			(*Results)[0]->TryGetObject(Entry);
+			if (Entry != nullptr)
+			{
+				bool bWasAlreadyOpen = false;
+				(*Entry)->TryGetBoolField(TEXT("was_already_open"), bWasAlreadyOpen);
+				TestTrue(TEXT("was_already_open should be true on second open"), bWasAlreadyOpen);
+			}
+		}
+	}
+
+	// Clean up: close the asset
+	Router.Execute(TEXT("core.close_asset"), RequestParams);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetCloseNotOpenTest,
+	"Cortex.Core.Asset.CloseAsset.NotOpen",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetCloseNotOpenTest::RunTest(const FString& Parameters)
+{
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	// Ensure the asset is not open by closing it first
+	TSharedPtr<FJsonObject> CloseParams = MakeShared<FJsonObject>();
+	CloseParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Data/DT_TestSimple"));
+	Router.Execute(TEXT("core.close_asset"), CloseParams);
+
+	// Now close again — should succeed but report closed=false
+	FCortexCommandResult Result = Router.Execute(TEXT("core.close_asset"), CloseParams);
+	TestTrue(TEXT("close_asset on non-open asset should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
+		Result.Data->TryGetArrayField(TEXT("results"), Results);
+		if (Results != nullptr && Results->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject>* Entry = nullptr;
+			(*Results)[0]->TryGetObject(Entry);
+			if (Entry != nullptr)
+			{
+				bool bClosed = true;
+				(*Entry)->TryGetBoolField(TEXT("closed"), bClosed);
+				TestFalse(TEXT("closed should be false when asset was not open"), bClosed);
+
+				bool bWasOpen = true;
+				(*Entry)->TryGetBoolField(TEXT("was_open"), bWasOpen);
+				TestFalse(TEXT("was_open should be false"), bWasOpen);
+			}
+		}
 	}
 
 	return true;

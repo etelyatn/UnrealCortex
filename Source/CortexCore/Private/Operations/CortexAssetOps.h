@@ -24,5 +24,6 @@ private:
 		FCortexCommandResult& OutError);
 
 	static FAssetData ResolveLiteralAssetPath(const FString& AssetPath);
+	static UObject* LoadAssetWithFallbacks(const FAssetData& AssetData, const FString& AssetPath);
 	static FString GetAssetTypeName(const UObject* Asset);
 };

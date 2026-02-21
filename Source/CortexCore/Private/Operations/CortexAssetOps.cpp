@@ -7,12 +7,18 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/SavePackage.h"
 
-namespace
+UObject* FCortexAssetOps::LoadAssetWithFallbacks(const FAssetData& AssetData, const FString& AssetPath)
 {
-	bool IsArrayInput(const TSharedPtr<FJsonObject>& Params)
+	UObject* Asset = AssetData.GetAsset();
+	if (Asset == nullptr)
 	{
-		return Params.IsValid() && Params->HasTypedField<EJson::Array>(TEXT("asset_path"));
+		Asset = AssetData.GetSoftObjectPath().TryLoad();
 	}
+	if (Asset == nullptr)
+	{
+		Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
+	}
+	return Asset;
 }
 
 FAssetData FCortexAssetOps::ResolveLiteralAssetPath(const FString& AssetPath)
@@ -169,6 +175,12 @@ FString FCortexAssetOps::GetAssetTypeName(const UObject* Asset)
 
 FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& Params)
 {
+#if WITH_EDITOR
+	if (GEditor == nullptr)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable, TEXT("Editor not available"));
+	}
+
 	bool bDryRun = false;
 	bool bForce = false;
 	if (Params.IsValid())
@@ -203,16 +215,7 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 		Entry->SetStringField(TEXT("asset_path"), AssetPath);
 		Entry->SetStringField(TEXT("asset_type"), AssetData.AssetClassPath.GetAssetName().ToString());
 
-		UObject* Asset = AssetData.GetAsset();
-		if (Asset == nullptr)
-		{
-			Asset = AssetData.GetSoftObjectPath().TryLoad();
-		}
-		if (Asset == nullptr)
-		{
-			Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
-		}
-
+		UObject* Asset = LoadAssetWithFallbacks(AssetData, AssetPath);
 		if (Asset != nullptr)
 		{
 			Entry->SetStringField(TEXT("asset_type"), GetAssetTypeName(Asset));
@@ -231,7 +234,7 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 			continue;
 		}
 
-		const bool bWasDirty = Package != nullptr && Package->IsDirty();
+		const bool bWasDirty = Package->IsDirty();
 		Entry->SetBoolField(TEXT("was_dirty"), bWasDirty);
 
 		if (bDryRun)
@@ -242,7 +245,7 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 		}
 
 		bool bSaved = true;
-		if (Package != nullptr && (bForce || bWasDirty))
+		if (bForce || bWasDirty)
 		{
 			const FString PackageFilename = FPackageName::LongPackageNameToFilename(
 				Package->GetName(),
@@ -275,6 +278,9 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 	}
 
 	return FCortexCommandRouter::Success(Data);
+#else
+	return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable, TEXT("Editor not available"));
+#endif
 }
 
 FCortexCommandResult FCortexAssetOps::OpenAsset(const TSharedPtr<FJsonObject>& Params)
@@ -323,11 +329,7 @@ FCortexCommandResult FCortexAssetOps::OpenAsset(const TSharedPtr<FJsonObject>& P
 		Entry->SetStringField(TEXT("asset_path"), AssetPath);
 		Entry->SetStringField(TEXT("asset_type"), AssetData.AssetClassPath.GetAssetName().ToString());
 
-		UObject* Asset = AssetData.GetAsset();
-		if (Asset == nullptr)
-		{
-			Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
-		}
+		UObject* Asset = LoadAssetWithFallbacks(AssetData, AssetPath);
 		if (Asset == nullptr)
 		{
 			Entry->SetStringField(TEXT("error"), CortexErrorCodes::AssetNotFound);
@@ -349,7 +351,7 @@ FCortexCommandResult FCortexAssetOps::OpenAsset(const TSharedPtr<FJsonObject>& P
 
 		AssetEditorSubsystem->OpenEditorForAsset(Asset);
 		const bool bOpened = AssetEditorSubsystem->FindEditorsForAsset(Asset).Num() > 0;
-		Entry->SetBoolField(TEXT("opened"), bOpened);
+		Entry->SetBoolField(TEXT("editor_opened"), bOpened);
 		if (!bOpened)
 		{
 			Entry->SetStringField(TEXT("error"), CortexErrorCodes::InvalidOperation);
@@ -421,15 +423,7 @@ FCortexCommandResult FCortexAssetOps::CloseAsset(const TSharedPtr<FJsonObject>& 
 		Entry->SetStringField(TEXT("asset_path"), AssetPath);
 		Entry->SetStringField(TEXT("asset_type"), AssetData.AssetClassPath.GetAssetName().ToString());
 
-		UObject* Asset = AssetData.GetAsset();
-		if (Asset == nullptr)
-		{
-			Asset = AssetData.GetSoftObjectPath().TryLoad();
-		}
-		if (Asset == nullptr)
-		{
-			Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
-		}
+		UObject* Asset = LoadAssetWithFallbacks(AssetData, AssetPath);
 		if (Asset == nullptr)
 		{
 			Entry->SetStringField(TEXT("error"), CortexErrorCodes::AssetNotFound);
@@ -542,15 +536,7 @@ FCortexCommandResult FCortexAssetOps::ReloadAsset(const TSharedPtr<FJsonObject>&
 		Info.AssetPath = AssetData.GetObjectPathString();
 		Info.AssetType = AssetData.AssetClassPath.GetAssetName().ToString();
 
-		UObject* Asset = AssetData.GetAsset();
-		if (Asset == nullptr)
-		{
-			Asset = AssetData.GetSoftObjectPath().TryLoad();
-		}
-		if (Asset == nullptr)
-		{
-			Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *Info.AssetPath);
-		}
+		UObject* Asset = LoadAssetWithFallbacks(AssetData, Info.AssetPath);
 		if (Asset == nullptr)
 		{
 			ReloadInfos.Add(Info);
@@ -575,6 +561,9 @@ FCortexCommandResult FCortexAssetOps::ReloadAsset(const TSharedPtr<FJsonObject>&
 		ReloadInfos.Add(Info);
 	}
 
+	// ReloadPackages returns a single bool for the entire batch — if one package
+	// fails, all are reported as failed. Individual failure tracking would require
+	// reloading packages one at a time.
 	bool bReloadSucceeded = true;
 	if (!bDryRun && PackagesToReload.Num() > 0)
 	{
