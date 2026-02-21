@@ -3,6 +3,7 @@
 #include "CortexCommandRouter.h"
 #include "Editor.h"
 #include "Misc/PackageName.h"
+#include "PackageTools.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/SavePackage.h"
 
@@ -489,6 +490,169 @@ FCortexCommandResult FCortexAssetOps::CloseAsset(const TSharedPtr<FJsonObject>& 
 
 FCortexCommandResult FCortexAssetOps::ReloadAsset(const TSharedPtr<FJsonObject>& Params)
 {
-	(void)Params;
-	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("core.reload_asset not yet implemented"));
+#if WITH_EDITOR
+	if (GEditor == nullptr)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable, TEXT("Editor not available"));
+	}
+
+	bool bDryRun = false;
+	if (Params.IsValid())
+	{
+		Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
+	}
+
+	TArray<FAssetData> Assets;
+	FCortexCommandResult ResolveError;
+	if (!ResolveAssetPaths(Params, Assets, ResolveError))
+	{
+		return ResolveError;
+	}
+
+	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (AssetEditorSubsystem == nullptr)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable, TEXT("Asset editor subsystem unavailable"));
+	}
+
+	struct FReloadInfo
+	{
+		FString AssetPath;
+		FString AssetType;
+		bool bWasDirty = false;
+		bool bWasOpen = false;
+		bool bHasDiskFile = false;
+		UPackage* Package = nullptr;
+	};
+
+	TArray<FReloadInfo> ReloadInfos;
+	TArray<UPackage*> PackagesToReload;
+	ReloadInfos.Reserve(Assets.Num());
+
+	for (const FAssetData& AssetData : Assets)
+	{
+		FReloadInfo Info;
+
+		if (!AssetData.IsValid())
+		{
+			ReloadInfos.Add(Info);
+			continue;
+		}
+
+		Info.AssetPath = AssetData.GetObjectPathString();
+		Info.AssetType = AssetData.AssetClassPath.GetAssetName().ToString();
+
+		UObject* Asset = AssetData.GetAsset();
+		if (Asset == nullptr)
+		{
+			Asset = AssetData.GetSoftObjectPath().TryLoad();
+		}
+		if (Asset == nullptr)
+		{
+			Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *Info.AssetPath);
+		}
+		if (Asset == nullptr)
+		{
+			ReloadInfos.Add(Info);
+			continue;
+		}
+
+		Info.AssetType = GetAssetTypeName(Asset);
+		Info.Package = Asset->GetOutermost();
+		Info.bWasDirty = Info.Package != nullptr && Info.Package->IsDirty();
+		Info.bWasOpen = AssetEditorSubsystem->FindEditorsForAsset(Asset).Num() > 0;
+		Info.bHasDiskFile = Info.Package != nullptr && FPackageName::DoesPackageExist(Info.Package->GetName());
+
+		if (Info.bHasDiskFile && !bDryRun && Info.Package != nullptr)
+		{
+			if (Info.bWasOpen)
+			{
+				AssetEditorSubsystem->CloseAllEditorsForAsset(Asset);
+			}
+			PackagesToReload.AddUnique(Info.Package);
+		}
+
+		ReloadInfos.Add(Info);
+	}
+
+	bool bReloadSucceeded = true;
+	if (!bDryRun && PackagesToReload.Num() > 0)
+	{
+		FText ReloadError;
+		bReloadSucceeded = UPackageTools::ReloadPackages(
+			PackagesToReload,
+			ReloadError,
+			EReloadPackagesInteractionMode::AssumePositive
+		);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ResultsArray;
+	ResultsArray.Reserve(ReloadInfos.Num());
+
+	for (const FReloadInfo& Info : ReloadInfos)
+	{
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("asset_path"), Info.AssetPath);
+
+		if (Info.AssetPath.IsEmpty() || Info.AssetType.IsEmpty())
+		{
+			Entry->SetStringField(TEXT("error"), CortexErrorCodes::AssetNotFound);
+			Entry->SetStringField(TEXT("message"), TEXT("Asset not found"));
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
+
+		Entry->SetStringField(TEXT("asset_type"), Info.AssetType);
+		Entry->SetBoolField(TEXT("was_dirty"), Info.bWasDirty);
+
+		if (!Info.bHasDiskFile)
+		{
+			Entry->SetBoolField(TEXT("reloaded"), false);
+			Entry->SetStringField(TEXT("error"), CortexErrorCodes::NoDiskFile);
+			Entry->SetStringField(TEXT("message"), TEXT("Asset has no saved package on disk"));
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
+
+		if (bDryRun)
+		{
+			Entry->SetBoolField(TEXT("has_disk_file"), true);
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
+
+		const bool bFailed = Info.Package == nullptr || !bReloadSucceeded;
+		Entry->SetBoolField(TEXT("reloaded"), !bFailed);
+		Entry->SetBoolField(TEXT("discarded_changes"), Info.bWasDirty && !bFailed);
+
+		if (!bFailed && Info.bWasOpen)
+		{
+			UObject* ReloadedAsset = StaticLoadObject(UObject::StaticClass(), nullptr, *Info.AssetPath);
+			if (ReloadedAsset != nullptr)
+			{
+				AssetEditorSubsystem->OpenEditorForAsset(ReloadedAsset);
+			}
+		}
+
+		if (bFailed)
+		{
+			Entry->SetStringField(TEXT("error"), CortexErrorCodes::InvalidOperation);
+			Entry->SetStringField(TEXT("message"), FString::Printf(TEXT("Failed to reload: %s"), *Info.AssetPath));
+		}
+
+		ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetArrayField(TEXT("results"), ResultsArray);
+	Data->SetNumberField(TEXT("count"), ResultsArray.Num());
+	if (bDryRun)
+	{
+		Data->SetBoolField(TEXT("dry_run"), true);
+	}
+
+	return FCortexCommandRouter::Success(Data);
+#else
+	return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable, TEXT("Editor not available"));
+#endif
 }

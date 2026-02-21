@@ -375,3 +375,96 @@ bool FCortexAssetCloseSaveBeforeCloseTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetReloadSingleTest,
+	"Cortex.Core.Asset.ReloadAsset.SinglePath",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetReloadSingleTest::RunTest(const FString& Parameters)
+{
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Data/DT_TestSimple"));
+
+	FCortexCommandResult Result = Router.Execute(TEXT("core.reload_asset"), RequestParams);
+	TestTrue(TEXT("reload_asset should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
+		Result.Data->TryGetArrayField(TEXT("results"), Results);
+		if (Results != nullptr && Results->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject>* Entry = nullptr;
+			(*Results)[0]->TryGetObject(Entry);
+			if (Entry != nullptr)
+			{
+				bool bReloaded = false;
+				(*Entry)->TryGetBoolField(TEXT("reloaded"), bReloaded);
+				TestTrue(TEXT("reloaded should be true"), bReloaded);
+
+				FString AssetType;
+				(*Entry)->TryGetStringField(TEXT("asset_type"), AssetType);
+				TestFalse(TEXT("asset_type should not be empty"), AssetType.IsEmpty());
+			}
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetReloadNotFoundTest,
+	"Cortex.Core.Asset.ReloadAsset.NotFound",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetReloadNotFoundTest::RunTest(const FString& Parameters)
+{
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Data/DT_DoesNotExist_ABCXYZ"));
+
+	FCortexCommandResult Result = Router.Execute(TEXT("core.reload_asset"), RequestParams);
+	TestFalse(TEXT("reload_asset nonexistent should fail"), Result.bSuccess);
+	TestEqual(TEXT("Error code should be ASSET_NOT_FOUND"), Result.ErrorCode, TEXT("ASSET_NOT_FOUND"));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetReloadDryRunTest,
+	"Cortex.Core.Asset.ReloadAsset.DryRun",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetReloadDryRunTest::RunTest(const FString& Parameters)
+{
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Data/DT_TestSimple"));
+	RequestParams->SetBoolField(TEXT("dry_run"), true);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("core.reload_asset"), RequestParams);
+	TestTrue(TEXT("reload_asset dry_run should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		bool bDryRun = false;
+		Result.Data->TryGetBoolField(TEXT("dry_run"), bDryRun);
+		TestTrue(TEXT("dry_run should be true in response"), bDryRun);
+	}
+
+	return true;
+}
