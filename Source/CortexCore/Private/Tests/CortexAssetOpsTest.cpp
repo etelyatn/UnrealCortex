@@ -200,3 +200,95 @@ bool FCortexAssetSaveMissingParamTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetOpenSingleTest,
+	"Cortex.Core.Asset.OpenAsset.SinglePath",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetOpenSingleTest::RunTest(const FString& Parameters)
+{
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Data/DT_TestSimple"));
+
+	FCortexCommandResult Result = Router.Execute(TEXT("core.open_asset"), RequestParams);
+	TestTrue(TEXT("open_asset should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
+		Result.Data->TryGetArrayField(TEXT("results"), Results);
+		if (Results != nullptr && Results->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject>* Entry = nullptr;
+			(*Results)[0]->TryGetObject(Entry);
+			if (Entry != nullptr)
+			{
+				bool bOpened = false;
+				(*Entry)->TryGetBoolField(TEXT("opened"), bOpened);
+				TestTrue(TEXT("opened should be true"), bOpened);
+
+				bool bWasAlreadyOpen = false;
+				TestTrue(TEXT("was_already_open should be present"), (*Entry)->TryGetBoolField(TEXT("was_already_open"), bWasAlreadyOpen));
+			}
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetOpenNotFoundTest,
+	"Cortex.Core.Asset.OpenAsset.NotFound",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetOpenNotFoundTest::RunTest(const FString& Parameters)
+{
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Data/DT_DoesNotExist_ABCXYZ"));
+
+	FCortexCommandResult Result = Router.Execute(TEXT("core.open_asset"), RequestParams);
+	TestFalse(TEXT("open_asset nonexistent path should fail"), Result.bSuccess);
+	TestEqual(TEXT("Error code should be ASSET_NOT_FOUND"), Result.ErrorCode, TEXT("ASSET_NOT_FOUND"));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetOpenDryRunTest,
+	"Cortex.Core.Asset.OpenAsset.DryRun",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetOpenDryRunTest::RunTest(const FString& Parameters)
+{
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Data/DT_TestSimple"));
+	RequestParams->SetBoolField(TEXT("dry_run"), true);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("core.open_asset"), RequestParams);
+	TestTrue(TEXT("open_asset dry_run should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		bool bDryRun = false;
+		Result.Data->TryGetBoolField(TEXT("dry_run"), bDryRun);
+		TestTrue(TEXT("dry_run should be true in response"), bDryRun);
+	}
+
+	return true;
+}

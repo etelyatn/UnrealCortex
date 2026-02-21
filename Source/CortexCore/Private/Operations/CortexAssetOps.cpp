@@ -1,7 +1,9 @@
 #include "Operations/CortexAssetOps.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "CortexCommandRouter.h"
+#include "Editor.h"
 #include "Misc/PackageName.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/SavePackage.h"
 
 namespace
@@ -21,10 +23,16 @@ FAssetData FCortexAssetOps::ResolveLiteralAssetPath(const FString& AssetPath)
 		return FAssetData();
 	}
 
-	FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(AssetPath));
-	if (AssetData.IsValid())
+	const int32 LastSlash = AssetPath.Find(TEXT("/"), ESearchCase::CaseSensitive, ESearchDir::FromEnd);
+	const bool bHasObjectSuffix = LastSlash != INDEX_NONE && AssetPath.Mid(LastSlash + 1).Contains(TEXT("."));
+
+	if (bHasObjectSuffix)
 	{
-		return AssetData;
+		FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(AssetPath));
+		if (AssetData.IsValid())
+		{
+			return AssetData;
+		}
 	}
 
 	const FString PackageName = FPackageName::ObjectPathToPackageName(AssetPath);
@@ -197,6 +205,10 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 		UObject* Asset = AssetData.GetAsset();
 		if (Asset == nullptr)
 		{
+			Asset = AssetData.GetSoftObjectPath().TryLoad();
+		}
+		if (Asset == nullptr)
+		{
 			Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
 		}
 
@@ -266,8 +278,98 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 
 FCortexCommandResult FCortexAssetOps::OpenAsset(const TSharedPtr<FJsonObject>& Params)
 {
-	(void)Params;
-	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("core.open_asset not yet implemented"));
+#if WITH_EDITOR
+	if (GEditor == nullptr)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable, TEXT("Editor not available"));
+	}
+
+	bool bDryRun = false;
+	if (Params.IsValid())
+	{
+		Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
+	}
+
+	TArray<FAssetData> Assets;
+	FCortexCommandResult ResolveError;
+	if (!ResolveAssetPaths(Params, Assets, ResolveError))
+	{
+		return ResolveError;
+	}
+
+	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (AssetEditorSubsystem == nullptr)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable, TEXT("Asset editor subsystem unavailable"));
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ResultsArray;
+	ResultsArray.Reserve(Assets.Num());
+
+	for (const FAssetData& AssetData : Assets)
+	{
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+
+		if (!AssetData.IsValid())
+		{
+			Entry->SetStringField(TEXT("error"), CortexErrorCodes::AssetNotFound);
+			Entry->SetStringField(TEXT("message"), TEXT("Asset not found"));
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
+
+		const FString AssetPath = AssetData.GetObjectPathString();
+		Entry->SetStringField(TEXT("asset_path"), AssetPath);
+		Entry->SetStringField(TEXT("asset_type"), AssetData.AssetClassPath.GetAssetName().ToString());
+
+		UObject* Asset = AssetData.GetAsset();
+		if (Asset == nullptr)
+		{
+			Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
+		}
+		if (Asset == nullptr)
+		{
+			Entry->SetStringField(TEXT("error"), CortexErrorCodes::AssetNotFound);
+			Entry->SetStringField(TEXT("message"), FString::Printf(TEXT("Failed to load: %s"), *AssetPath));
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
+
+		Entry->SetStringField(TEXT("asset_type"), GetAssetTypeName(Asset));
+		const bool bWasAlreadyOpen = AssetEditorSubsystem->FindEditorsForAsset(Asset).Num() > 0;
+		Entry->SetBoolField(TEXT("was_already_open"), bWasAlreadyOpen);
+
+		if (bDryRun)
+		{
+			Entry->SetBoolField(TEXT("would_open"), true);
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
+
+		AssetEditorSubsystem->OpenEditorForAsset(Asset);
+		const bool bOpened = AssetEditorSubsystem->FindEditorsForAsset(Asset).Num() > 0;
+		Entry->SetBoolField(TEXT("opened"), bOpened);
+		if (!bOpened)
+		{
+			Entry->SetStringField(TEXT("error"), CortexErrorCodes::InvalidOperation);
+			Entry->SetStringField(TEXT("message"), FString::Printf(TEXT("Failed to open: %s"), *AssetPath));
+		}
+
+		ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetArrayField(TEXT("results"), ResultsArray);
+	Data->SetNumberField(TEXT("count"), ResultsArray.Num());
+	if (bDryRun)
+	{
+		Data->SetBoolField(TEXT("dry_run"), true);
+	}
+
+	return FCortexCommandRouter::Success(Data);
+#else
+	return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable, TEXT("Editor not available"));
+#endif
 }
 
 FCortexCommandResult FCortexAssetOps::CloseAsset(const TSharedPtr<FJsonObject>& Params)
