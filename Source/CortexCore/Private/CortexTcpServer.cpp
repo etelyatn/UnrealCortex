@@ -7,10 +7,13 @@
 #include "SocketSubsystem.h"
 #include "Sockets.h"
 #include "Containers/Ticker.h"
+#include "HAL/PlatformProcess.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "Misc/App.h"
+#include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
@@ -54,10 +57,33 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 				BoundPort = LocalAddress->GetPort();
 			}
 
-			// Write port file for MCP server auto-discovery
-			FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
-			FFileHelper::SaveStringToFile(FString::FromInt(BoundPort), *PortFilePath);
-			UE_LOG(LogCortex, Log, TEXT("Wrote port file: %s (port %d)"), *PortFilePath, BoundPort);
+			// Write JSON port file for MCP server auto-discovery
+			{
+				TSharedRef<FJsonObject> PortInfo = MakeShared<FJsonObject>();
+				PortInfo->SetNumberField(TEXT("port"), BoundPort);
+				PortInfo->SetNumberField(TEXT("pid"), FPlatformProcess::GetCurrentProcessId());
+				PortInfo->SetStringField(TEXT("project"), FApp::GetProjectName());
+
+				FString UProjectPath = FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath());
+				UProjectPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+				PortInfo->SetStringField(TEXT("project_path"), UProjectPath);
+				PortInfo->SetStringField(TEXT("started_at"), FDateTime::UtcNow().ToIso8601());
+
+				FString JsonString;
+				TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+					TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&JsonString);
+				FJsonSerializer::Serialize(PortInfo, Writer);
+
+				FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
+				FString TempFilePath = PortFilePath + TEXT(".tmp");
+				FFileHelper::SaveStringToFile(JsonString, *TempFilePath);
+				IFileManager::Get().Move(*PortFilePath, *TempFilePath, true);
+
+				UE_LOG(LogCortex, Log, TEXT("Wrote port file: %s (port %d, pid %d)"),
+					*PortFilePath,
+					BoundPort,
+					FPlatformProcess::GetCurrentProcessId());
+			}
 
 			TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(
 				FTickerDelegate::CreateLambda([this](float DeltaTime) -> bool
@@ -103,9 +129,10 @@ void FCortexTcpServer::Stop()
 
 	bRunning = false;
 
-	// Delete port file
+	// Delete port file and temp file
 	FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
 	IFileManager::Get().Delete(*PortFilePath);
+	IFileManager::Get().Delete(*(PortFilePath + TEXT(".tmp")));
 
 	if (TickDelegateHandle.IsValid())
 	{

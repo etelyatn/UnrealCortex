@@ -20,7 +20,31 @@ _DEFAULT_PORT = 8742
 _PORT_FILENAME = "CortexPort.txt"
 
 
-def _discover_port() -> int | None:
+def _parse_port_file(
+    port_file: pathlib.Path,
+) -> tuple[int, int | None, str | None] | None:
+    """Parse CortexPort.txt in JSON or plain integer format."""
+    try:
+        content = port_file.read_text().strip()
+        if content.startswith("{"):
+            data = json.loads(content)
+            port = int(data["port"])
+            pid = data.get("pid")
+            project_path = data.get("project_path")
+            if pid is not None:
+                pid = int(pid)
+            logger.info("Discovered port %d (pid=%s) from %s", port, pid, port_file)
+            return port, pid, project_path
+
+        port = int(content)
+        logger.info("Discovered port %d from %s (plain format)", port, port_file)
+        return port, None, None
+    except (ValueError, OSError, json.JSONDecodeError, KeyError) as e:
+        logger.warning("Failed to read port file %s: %s", port_file, e)
+        return None
+
+
+def _discover_port() -> tuple[int, int | None, str | None] | None:
     """Discover the Cortex TCP port from the port file written by CortexCore.
 
     Searches for CortexPort.txt in the Saved/ directory of the project root.
@@ -29,19 +53,14 @@ def _discover_port() -> int | None:
     2. Searching parent directories of this file for a .uproject file
 
     Returns:
-        The port number from the file, or None if not found.
+        Tuple of (port, pid, project_path), or None if not found.
     """
     # Try env var first
     project_dir = os.environ.get("CORTEX_PROJECT_DIR")
     if project_dir:
         port_file = pathlib.Path(project_dir) / "Saved" / _PORT_FILENAME
         if port_file.exists():
-            try:
-                port = int(port_file.read_text().strip())
-                logger.info("Discovered port %d from %s", port, port_file)
-                return port
-            except (ValueError, OSError) as e:
-                logger.warning("Failed to read port file %s: %s", port_file, e)
+            return _parse_port_file(port_file)
         else:
             logger.debug("Port file not found at %s", port_file)
         return None
@@ -53,12 +72,7 @@ def _discover_port() -> int | None:
         if uproject_files:
             port_file = current / "Saved" / _PORT_FILENAME
             if port_file.exists():
-                try:
-                    port = int(port_file.read_text().strip())
-                    logger.info("Discovered port %d from %s", port, port_file)
-                    return port
-                except (ValueError, OSError) as e:
-                    logger.warning("Failed to read port file %s: %s", port_file, e)
+                return _parse_port_file(port_file)
             else:
                 logger.debug("Port file not found at %s", port_file)
             return None
@@ -76,12 +90,17 @@ class UEConnection:
 
     def __init__(self, host: str = "127.0.0.1", port: int | None = None):
         self.host = host
+        self._pid: int | None = None
+        self._project_path: str | None = None
         if port is not None:
             self.port = port
         else:
             # Try port file discovery, then fallback to default
             discovered = _discover_port()
-            self.port = discovered if discovered is not None else _DEFAULT_PORT
+            if discovered is not None:
+                self.port, self._pid, self._project_path = discovered
+            else:
+                self.port = _DEFAULT_PORT
         self._socket: socket.socket | None = None
         self._cache = ResponseCache()
         self._recv_buffer = b""
@@ -162,10 +181,16 @@ class UEConnection:
                             "Cleared %d cache entries on reconnect", cleared
                         )
                     # Re-discover port in case editor restarted on a different port
-                    new_port = _discover_port()
-                    if new_port is not None and new_port != self.port:
-                        logger.info("Port changed %d → %d, updating", self.port, new_port)
-                        self.port = new_port
+                    result = _discover_port()
+                    if result is not None:
+                        new_port, new_pid, new_project_path = result
+                        if new_port != self.port:
+                            logger.info(
+                                "Port changed %d → %d, updating", self.port, new_port
+                            )
+                            self.port = new_port
+                        self._pid = new_pid
+                        self._project_path = new_project_path
                     time.sleep(_RECONNECT_DELAY)
 
         raise last_error
