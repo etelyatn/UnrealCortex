@@ -785,6 +785,7 @@ FCortexCommandResult FCortexGraphNodeOps::AutoLayout(const TSharedPtr<FJsonObjec
 			}
 
 			LN.bIsEntryPoint = (!bHasExecInput && bHasExecOutput);
+			LN.bIsExecNode = (bHasExecInput || bHasExecOutput);
 			int32 PinRows = FMath::Max(InputPinCount, OutputPinCount);
 			LN.Width = 200;
 			LN.Height = FMath::Max(100, PinRows * 28 + 40);
