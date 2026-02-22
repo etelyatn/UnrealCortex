@@ -11,6 +11,29 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
+static int32 ParsePortFromPortFileText(const FString& PortText)
+{
+	FString Trimmed = PortText;
+	Trimmed.TrimStartAndEndInline();
+
+	if (Trimmed.StartsWith(TEXT("{")))
+	{
+		TSharedPtr<FJsonObject> JsonObj;
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Trimmed);
+		if (FJsonSerializer::Deserialize(Reader, JsonObj) && JsonObj.IsValid())
+		{
+			int32 ParsedPort = 0;
+			if (JsonObj->TryGetNumberField(TEXT("port"), ParsedPort))
+			{
+				return ParsedPort;
+			}
+		}
+		return 0;
+	}
+
+	return FCString::Atoi(*Trimmed);
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexDeferredResultFieldsTest,
 	"Cortex.Core.Deferred.ResultHasDeferredField",
@@ -158,7 +181,7 @@ bool FCortexDeferredResponseE2ETest::RunTest(const FString& Parameters)
 		Server.Stop();
 		return true;
 	}
-	const int32 TestPort = FCString::Atoi(*PortText);
+	const int32 TestPort = ParsePortFromPortFileText(PortText);
 	TestTrue(TEXT("Port from file should be > 0"), TestPort > 0);
 	if (TestPort <= 0)
 	{
@@ -332,7 +355,7 @@ bool FCortexDeferredTimeoutTest::RunTest(const FString& Parameters)
 	const FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
 	const bool bReadPortFile = FFileHelper::LoadFileToString(PortText, *PortFilePath);
 	TestTrue(TEXT("Should read CortexPort.txt"), bReadPortFile);
-	const int32 TestPort = FCString::Atoi(*PortText);
+	const int32 TestPort = ParsePortFromPortFileText(PortText);
 	TestTrue(TEXT("Port from file should be > 0"), TestPort > 0);
 
 	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
