@@ -25,6 +25,7 @@ struct FCortexLayoutNode
 	TArray<FString> ExecOutputs;   // IDs of nodes connected via execution pins
 	TArray<FString> DataOutputs;   // IDs of nodes connected via data pins
 	bool bIsEntryPoint = false;    // Event nodes, MaterialResult inputs, etc.
+	bool bIsExecNode = false;      // Participates in execution flow (has exec pins)
 };
 
 /** Layout configuration */
