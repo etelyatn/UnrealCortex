@@ -43,6 +43,13 @@ struct FCortexLayoutResult
 	TMap<FString, FIntPoint> Positions;  // NodeId -> (X, Y)
 };
 
+namespace CortexGraphLayout
+{
+	constexpr float InnerGroupHorizontalSpacingRatio = 0.3f;
+	constexpr float InnerGroupVerticalSpacingRatio = 0.5f;
+	constexpr int32 GridSnapSize = 16;
+}
+
 /** Shared layout engine — domain modules convert their nodes to/from this format */
 class CORTEXGRAPH_API FCortexGraphLayoutOps
 {
@@ -82,4 +89,38 @@ private:
 
 	/** Find connected subgraphs for independent layout */
 	static TArray<TArray<FString>> FindSubgraphs(const TArray<FCortexLayoutNode>& Nodes);
+
+	/** Internal group representation for parameter group collapsing */
+	struct FCortexNodeGroup
+	{
+		FString ExecNodeId;
+		TArray<FString> DataNodeIds;
+		int32 GroupWidth = 0;
+		int32 GroupHeight = 0;
+	};
+
+	/** Discover parameter groups: BFS backward from exec nodes to claim pure data trees */
+	static TArray<FCortexNodeGroup> DiscoverGroups(
+		const TArray<FCortexLayoutNode>& Nodes,
+		const TMap<FString, const FCortexLayoutNode*>& NodeMap,
+		TMap<FString, int32>& OutNodeToGroupIndex
+	);
+
+	/** Build proxy nodes for top-level Sugiyama (one proxy per group + ungrouped nodes) */
+	static TArray<FCortexLayoutNode> BuildGroupProxyNodes(
+		const TArray<FCortexLayoutNode>& OriginalNodes,
+		const TArray<FCortexNodeGroup>& Groups,
+		const TMap<FString, int32>& NodeToGroupIndex,
+		const TMap<FString, const FCortexLayoutNode*>& NodeMap,
+		const FCortexLayoutConfig& Config
+	);
+
+	/** Expand group proxy positions into individual node positions */
+	static void ExpandGroupPositions(
+		const TArray<FCortexNodeGroup>& Groups,
+		const TMap<FString, int32>& NodeToGroupIndex,
+		const TMap<FString, const FCortexLayoutNode*>& NodeMap,
+		const FCortexLayoutConfig& Config,
+		FCortexLayoutResult& InOutResult
+	);
 };
