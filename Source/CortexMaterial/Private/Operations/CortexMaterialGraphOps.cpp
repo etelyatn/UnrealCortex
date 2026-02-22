@@ -697,6 +697,7 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 		// Mark MaterialResult-feeding nodes as entry points. With RightToLeft direction,
 		// layer inversion places entry points rightmost — matching MaterialResult's visual position.
 		LayoutNode.bIsEntryPoint = MaterialResultInputIds.Contains(LayoutNode.Id);
+		LayoutNode.bIsExecNode = false; // Material expressions are always pure data nodes.
 		int32 InputCount = 0;
 		for (FExpressionInputIterator It(Expr); It; ++It) InputCount++;
 		int32 OutputCount = Expr->GetOutputs().Num();

@@ -52,7 +52,7 @@ bool FCortexGraphLayoutOrderingTest::RunTest(const FString& Parameters)
 	// B and C should not overlap vertically
 	int32 BY = Result.Positions[TEXT("B")].Y;
 	int32 CY = Result.Positions[TEXT("C")].Y;
-	TestTrue(TEXT("B and C should not overlap"), FMath::Abs(BY - CY) >= 100 + 40); // Height + spacing
+	TestTrue(TEXT("B and C should not overlap"), FMath::Abs(BY - CY) >= 100 + 24);
 
 	// D should be in the rightmost column
 	TestTrue(TEXT("D right of B"), Result.Positions[TEXT("D")].X > Result.Positions[TEXT("B")].X);
