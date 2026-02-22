@@ -95,8 +95,6 @@ private:
 	{
 		FString ExecNodeId;
 		TArray<FString> DataNodeIds;
-		int32 GroupWidth = 0;
-		int32 GroupHeight = 0;
 	};
 
 	/** Discover parameter groups: BFS backward from exec nodes to claim pure data trees */

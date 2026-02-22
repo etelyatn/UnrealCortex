@@ -758,9 +758,68 @@ TArray<FCortexLayoutNode> FCortexGraphLayoutOps::BuildGroupProxyNodes(
 			}
 		}
 
-		const int32 ChainLength = Group.DataNodeIds.Num();
-		Proxy.Width = ChainLength * (MaxDataWidth + InnerHSpacing) + (*ExecPtr)->Width;
-		Proxy.Height = FMath::Max(MaxDataHeight + InnerVSpacing + (*ExecPtr)->Height, (*ExecPtr)->Height);
+		// Compute chain structure for accurate proxy dimensions
+		TSet<FString> GroupDataSet(Group.DataNodeIds);
+		TMap<FString, TArray<FString>> InnerForward;
+		TMap<FString, int32> InnerInDegree;
+		for (const FString& DataId : Group.DataNodeIds)
+		{
+			InnerInDegree.FindOrAdd(DataId);
+			const FCortexLayoutNode* const* DataPtr = NodeMap.Find(DataId);
+			if (!DataPtr)
+			{
+				continue;
+			}
+			for (const FString& TargetId : (*DataPtr)->DataOutputs)
+			{
+				if (GroupDataSet.Contains(TargetId))
+				{
+					InnerForward.FindOrAdd(DataId).Add(TargetId);
+					InnerInDegree.FindOrAdd(TargetId)++;
+				}
+			}
+		}
+
+		int32 ChainCount = 0;
+		TMap<FString, int32> ChainDepth;
+		TArray<FString> ChainQueue;
+		for (const FString& DataId : Group.DataNodeIds)
+		{
+			if (InnerInDegree.FindRef(DataId) == 0)
+			{
+				ChainCount++;
+				ChainQueue.Add(DataId);
+				ChainDepth.Add(DataId, 1);
+			}
+		}
+		ChainCount = FMath::Max(1, ChainCount);
+
+		int32 LongestChainLength = 1;
+		for (int32 Idx = 0; Idx < ChainQueue.Num(); ++Idx)
+		{
+			const FString& CurId = ChainQueue[Idx];
+			const int32 CurDepth = ChainDepth.FindRef(CurId);
+			LongestChainLength = FMath::Max(LongestChainLength, CurDepth);
+			const TArray<FString>* Forward = InnerForward.Find(CurId);
+			if (Forward)
+			{
+				for (const FString& NextId : *Forward)
+				{
+					int32& NextDepth = ChainDepth.FindOrAdd(NextId);
+					NextDepth = FMath::Max(NextDepth, CurDepth + 1);
+					LongestChainLength = FMath::Max(LongestChainLength, NextDepth);
+					int32& Deg = InnerInDegree.FindOrAdd(NextId);
+					Deg--;
+					if (Deg == 0)
+					{
+						ChainQueue.Add(NextId);
+					}
+				}
+			}
+		}
+
+		Proxy.Width = LongestChainLength * (MaxDataWidth + InnerHSpacing) + (*ExecPtr)->Width;
+		Proxy.Height = FMath::Max(ChainCount * (MaxDataHeight + InnerVSpacing), (*ExecPtr)->Height);
 
 		TArray<FString> FilteredDataOutputs;
 		for (const FString& TargetId : Proxy.DataOutputs)
@@ -830,8 +889,63 @@ void FCortexGraphLayoutOps::ExpandGroupPositions(
 			}
 		}
 
-		const int32 ChainLength = Group.DataNodeIds.Num();
-		const int32 DataRegionWidth = ChainLength * (MaxDataWidth + InnerHSpacing);
+		// Compute longest chain length via inner forward adjacency for accurate exec offset
+		TSet<FString> GroupDataSetForExec(Group.DataNodeIds);
+		TMap<FString, TArray<FString>> ExecInnerForward;
+		TMap<FString, int32> ExecInnerInDegree;
+		for (const FString& DataId : Group.DataNodeIds)
+		{
+			ExecInnerInDegree.FindOrAdd(DataId);
+			const FCortexLayoutNode* const* DataPtr = NodeMap.Find(DataId);
+			if (!DataPtr)
+			{
+				continue;
+			}
+			for (const FString& TargetId : (*DataPtr)->DataOutputs)
+			{
+				if (GroupDataSetForExec.Contains(TargetId))
+				{
+					ExecInnerForward.FindOrAdd(DataId).Add(TargetId);
+					ExecInnerInDegree.FindOrAdd(TargetId)++;
+				}
+			}
+		}
+
+		TMap<FString, int32> Depth;
+		TArray<FString> DepthQueue;
+		for (const FString& DataId : Group.DataNodeIds)
+		{
+			if (ExecInnerInDegree.FindRef(DataId) == 0)
+			{
+				DepthQueue.Add(DataId);
+				Depth.Add(DataId, 1);
+			}
+		}
+		int32 LongestChain = FMath::Max(1, DepthQueue.Num() > 0 ? 1 : 0);
+		for (int32 Idx = 0; Idx < DepthQueue.Num(); ++Idx)
+		{
+			const FString& CurId = DepthQueue[Idx];
+			const int32 CurDepth = Depth.FindRef(CurId);
+			LongestChain = FMath::Max(LongestChain, CurDepth);
+			const TArray<FString>* Forward = ExecInnerForward.Find(CurId);
+			if (Forward)
+			{
+				for (const FString& NextId : *Forward)
+				{
+					int32& NextDepth = Depth.FindOrAdd(NextId);
+					NextDepth = FMath::Max(NextDepth, CurDepth + 1);
+					LongestChain = FMath::Max(LongestChain, NextDepth);
+					int32& Deg = ExecInnerInDegree.FindOrAdd(NextId);
+					Deg--;
+					if (Deg == 0)
+					{
+						DepthQueue.Add(NextId);
+					}
+				}
+			}
+		}
+
+		const int32 DataRegionWidth = LongestChain * (MaxDataWidth + InnerHSpacing);
 
 		FIntPoint ExecPos = GroupPos;
 		ExecPos.X += DataRegionWidth;
@@ -937,16 +1051,24 @@ void FCortexGraphLayoutOps::ExpandGroupPositions(
 		}
 
 		const int32 LaneHeight = FMath::Max(1, MaxDataHeight + InnerVSpacing);
-		int32 DataX = GroupPos.X;
 		const int32 DataBaseY = GroupPos.Y + (*ExecPtr)->Height + InnerVSpacing;
+
+		// Per-lane X cursors so each chain starts independently from GroupPos.X
+		TMap<int32, int32> LaneXCursor;
+		for (int32 Lane = 0; Lane < NextLane; ++Lane)
+		{
+			LaneXCursor.Add(Lane, GroupPos.X);
+		}
+
 		for (const FString& DataId : TopoOrder)
 		{
 			const FCortexLayoutNode* const* DataPtr = NodeMap.Find(DataId);
 			const int32 Width = DataPtr ? (*DataPtr)->Width : 150;
 			const int32 Lane = NodeLaneIndex.FindRef(DataId);
 			const int32 DataY = DataBaseY + Lane * LaneHeight;
-			InOutResult.Positions.Add(DataId, FIntPoint(DataX, DataY));
-			DataX += Width + InnerHSpacing;
+			int32& LaneX = LaneXCursor.FindOrAdd(Lane);
+			InOutResult.Positions.Add(DataId, FIntPoint(LaneX, DataY));
+			LaneX += Width + InnerHSpacing;
 		}
 	}
 }
