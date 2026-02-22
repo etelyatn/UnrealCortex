@@ -16,6 +16,36 @@ def register_datatable_tools(mcp, connection: UEConnection):
     """Register all DataTable-related MCP tools."""
 
     @mcp.tool()
+    def create_datatable(table_path: str, row_struct: str) -> str:
+        """Create a new DataTable asset with the given row struct.
+
+        The DataTable is created at the specified path, saved to disk immediately,
+        and registered with the Asset Registry. Use add_datatable_row or
+        import_datatable_json to populate rows after creation.
+
+        Args:
+            table_path: Target asset path (e.g., '/Game/Sim/Data/DT_Manufacturers').
+                        Both package path and full object path formats are accepted.
+            row_struct: Short name of the FTableRowBase-derived struct
+                        (e.g., 'SimManufacturerDefinition'). Must be compiled into
+                        the project or a plugin.
+
+        Returns:
+            JSON with:
+            - table_path: Full object path of the created DataTable
+            - row_struct: Resolved struct name
+            - created: true if successful
+        """
+        try:
+            response = connection.send_command(
+                "data.create_datatable",
+                {"table_path": table_path, "row_struct": row_struct},
+            )
+            return format_response(response.get("data", {}), "create_datatable")
+        except ConnectionError as e:
+            return f"Error: {e}"
+
+    @mcp.tool()
     def list_datatables(path_filter: str = "") -> str:
         """List all DataTables currently loaded in the Unreal Editor.
 

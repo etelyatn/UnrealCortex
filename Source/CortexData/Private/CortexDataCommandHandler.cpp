@@ -16,6 +16,10 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
 
     // Note: no longer static - virtual override of ICortexDomainHandler
     // DataTable operations
+    if (Command == TEXT("create_datatable"))
+    {
+        return FCortexDataTableOps::CreateDataTable(Params);
+    }
     if (Command == TEXT("list_datatables"))
     {
         return FCortexDataTableOps::ListDatatables(Params);
@@ -148,6 +152,7 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
 TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() const
 {
     return {
+        { TEXT("create_datatable"), TEXT("Create a new DataTable asset") },
         { TEXT("list_datatables"), TEXT("List all DataTables") },
         { TEXT("get_datatable_schema"), TEXT("Get row struct schema") },
         { TEXT("query_datatable"), TEXT("Query rows with filtering") },

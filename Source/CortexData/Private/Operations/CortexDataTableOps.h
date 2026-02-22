@@ -10,6 +10,7 @@ class UCompositeDataTable;
 class FCortexDataTableOps
 {
 public:
+	static FCortexCommandResult CreateDataTable(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult ListDatatables(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult GetDatatableSchema(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult QueryDatatable(const TSharedPtr<FJsonObject>& Params);
@@ -24,6 +25,9 @@ public:
 	static FCortexCommandResult ResolveTags(const TSharedPtr<FJsonObject>& Params);
 
 private:
+	/** Resolve a row struct by short name, searching all UScriptStruct objects */
+	static UScriptStruct* ResolveRowStruct(const FString& StructName, FCortexCommandResult& OutError);
+
 	/** Load a DataTable by asset path, returns nullptr and sets OutError if not found */
 	static UDataTable* LoadDataTable(const FString& TablePath, FCortexCommandResult& OutError);
 
