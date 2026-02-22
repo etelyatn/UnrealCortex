@@ -51,16 +51,3 @@ bool FCortexShutdownCommandRegisteredTest::RunTest(const FString& Parameters)
 
 	return true;
 }
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FCortexShutdownDoubleGuardTest,
-	"Cortex.Core.Shutdown.DoubleGuard",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
-
-bool FCortexShutdownDoubleGuardTest::RunTest(const FString& Parameters)
-{
-	// Cannot call shutdown in automation because it exits the editor process.
-	AddInfo(TEXT("Double-guard behavior is covered by E2E lifecycle tests"));
-	return true;
-}

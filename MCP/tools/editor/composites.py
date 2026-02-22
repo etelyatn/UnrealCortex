@@ -107,7 +107,7 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
         try:
             response = connection.send_command("core.shutdown", {"force": force})
             return format_response(response.get("data", {}), "shutdown_editor")
-        except (ConnectionError, RuntimeError):
+        except ConnectionError:
             # Expected when editor closes socket during shutdown.
             return json.dumps(
                 {
@@ -116,6 +116,8 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
                     "note": "Connection closed as expected",
                 }
             )
+        except RuntimeError as e:
+            return json.dumps({"error": str(e)})
 
     @mcp.tool()
     def restart_editor(timeout: int = 120) -> str:
@@ -164,7 +166,7 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
 
                 connection.disconnect()
 
-                shutdown_deadline = min(start_time + 30, start_time + timeout)
+                shutdown_deadline = start_time + min(30, timeout)
                 while time.monotonic() < shutdown_deadline:
                     if not psutil.pid_exists(current_pid):
                         break

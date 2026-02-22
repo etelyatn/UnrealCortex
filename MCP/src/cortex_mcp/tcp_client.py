@@ -29,6 +29,9 @@ def _parse_port_file(
         if content.startswith("{"):
             data = json.loads(content)
             port = int(data["port"])
+            if not (1024 <= port <= 65535):
+                logger.warning("Invalid port %d in %s", port, port_file)
+                return None
             pid = data.get("pid")
             project_path = data.get("project_path")
             if pid is not None:
@@ -37,6 +40,9 @@ def _parse_port_file(
             return port, pid, project_path
 
         port = int(content)
+        if not (1024 <= port <= 65535):
+            logger.warning("Invalid port %d in %s", port, port_file)
+            return None
         logger.info("Discovered port %d from %s (plain format)", port, port_file)
         return port, None, None
     except (ValueError, OSError, json.JSONDecodeError, KeyError) as e:
