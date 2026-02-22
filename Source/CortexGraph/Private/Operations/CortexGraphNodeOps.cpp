@@ -14,6 +14,8 @@
 #include "K2Node_Variable.h"
 #include "K2Node_VariableSet.h"
 #include "K2Node_VariableGet.h"
+#include "K2Node_Event.h"
+#include "K2Node_ExecutionSequence.h"
 #include "ScopedTransaction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/PackageName.h"
@@ -335,6 +337,14 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	{
 		NodeClass = UK2Node_VariableGet::StaticClass();
 	}
+	else if (NodeClassName == TEXT("UK2Node_Event"))
+	{
+		NodeClass = UK2Node_Event::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_ExecutionSequence"))
+	{
+		NodeClass = UK2Node_ExecutionSequence::StaticClass();
+	}
 	else
 	{
 		// Try finding other classes dynamically (e.g., UK2Node_Event, UK2Node_MacroInstance)
@@ -459,6 +469,42 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 						}
 					}
 					VarNode->VariableReference.SetSelfMember(FName(*VariableName));
+				}
+			}
+		}
+
+		UK2Node_Event* EventNode = Cast<UK2Node_Event>(NewNode);
+		if (EventNode)
+		{
+			FString FunctionName;
+			if ((*NodeParams)->TryGetStringField(TEXT("function_name"), FunctionName))
+			{
+				FString ClassName;
+				FString FuncName;
+				if (FunctionName.Split(TEXT("."), &ClassName, &FuncName))
+				{
+					UClass* FuncClass = FindFirstObject<UClass>(*ClassName);
+					if (FuncClass == nullptr)
+					{
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Event owner class not found: %s"), *ClassName)
+						);
+					}
+
+					UFunction* Func = FuncClass->FindFunctionByName(FName(*FuncName));
+					if (Func == nullptr)
+					{
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Event function not found: %s on class %s"), *FuncName, *ClassName)
+						);
+					}
+
+					EventNode->EventReference.SetExternalMember(FName(*FuncName), FuncClass);
+					EventNode->bOverrideFunction = true;
 				}
 			}
 		}
