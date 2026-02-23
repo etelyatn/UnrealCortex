@@ -6,6 +6,7 @@
 #include "Materials/MaterialExpression.h"
 #include "CortexBatchScope.h"
 #include "CortexCommandRouter.h"
+#include "Operations/CortexMaterialGraphOps.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexMaterialAddNodeTest,
@@ -1245,9 +1246,11 @@ bool FCortexMaterialAutoLayoutNoOverlapTest::RunTest(const FString& Parameters)
 			R.Id = Expr->GetName();
 			R.X = Expr->MaterialExpressionEditorX;
 			R.Y = Expr->MaterialExpressionEditorY;
-			R.W = FMath::Max(Expr->GetWidth(), 112) + 80;
-			R.H = 30 + FMath::Max(Expr->GetHeight(), 80)
-				+ (!Expr->bHidePreviewWindow && !Expr->bCollapsed ? 116 : 0);
+			R.W = FMath::Max(Expr->GetWidth(), CortexMaterialLayout::MinNodeWidth)
+				+ CortexMaterialLayout::NodeChromePaddingX;
+			R.H = CortexMaterialLayout::TitleBarHeight
+				+ FMath::Max(Expr->GetHeight(), CortexMaterialLayout::MinNodeHeight)
+				+ (!Expr->bHidePreviewWindow && !Expr->bCollapsed ? CortexMaterialLayout::PreviewHeight : 0);
 			Rects.Add(R);
 		}
 
@@ -1304,28 +1307,49 @@ bool FCortexMaterialAutoLayoutAllInputsTest::RunTest(const FString& Parameters)
 		AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
 	}
 
-	UMaterial* MaterialForConnect = LoadObject<UMaterial>(nullptr, *MatPath);
-	TestNotNull(TEXT("Should load material for AmbientOcclusion setup"), MaterialForConnect);
-	if (MaterialForConnect)
-	{
-		UMaterialExpression* SourceExpr = nullptr;
-		for (UMaterialExpression* Expr : MaterialForConnect->GetExpressions())
-		{
-			if (Expr && Expr->GetName() == NodeId)
-			{
-				SourceExpr = Expr;
-				break;
-			}
-		}
+	TSharedPtr<FJsonObject> ConnectParams = MakeShared<FJsonObject>();
+	ConnectParams->SetStringField(TEXT("asset_path"), MatPath);
+	ConnectParams->SetStringField(TEXT("source_node"), NodeId);
+	ConnectParams->SetNumberField(TEXT("source_output"), 0);
+	ConnectParams->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+	ConnectParams->SetStringField(TEXT("target_input"), TEXT("AmbientOcclusion"));
+	FCortexCommandResult ConnectResult = Handler.Execute(TEXT("connect"), ConnectParams);
+	TestTrue(TEXT("connect AmbientOcclusion should succeed"), ConnectResult.bSuccess);
 
-		TestNotNull(TEXT("Should find source expression"), SourceExpr);
-		FExpressionInput* AOInput = MaterialForConnect->GetExpressionInputForProperty(MP_AmbientOcclusion);
-		TestNotNull(TEXT("AmbientOcclusion input should exist"), AOInput);
-		if (SourceExpr && AOInput)
+	TSharedPtr<FJsonObject> ListParams = MakeShared<FJsonObject>();
+	ListParams->SetStringField(TEXT("asset_path"), MatPath);
+	FCortexCommandResult ListResult = Handler.Execute(TEXT("list_connections"), ListParams);
+	TestTrue(TEXT("list_connections should succeed"), ListResult.bSuccess);
+	if (ListResult.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ConnectionsArray = nullptr;
+		if (ListResult.Data->TryGetArrayField(TEXT("connections"), ConnectionsArray) && ConnectionsArray)
 		{
-			AOInput->Expression = SourceExpr;
-			AOInput->OutputIndex = 0;
-			MaterialForConnect->MarkPackageDirty();
+			bool bFoundAmbientOcclusion = false;
+			for (const TSharedPtr<FJsonValue>& Value : *ConnectionsArray)
+			{
+				if (!Value.IsValid())
+				{
+					continue;
+				}
+
+				const TSharedPtr<FJsonObject> ConnectionObj = Value->AsObject();
+				if (!ConnectionObj.IsValid())
+				{
+					continue;
+				}
+
+				FString ListedTargetInput;
+				if (ConnectionObj->TryGetStringField(TEXT("target_input"), ListedTargetInput)
+					&& ListedTargetInput == TEXT("AmbientOcclusion"))
+				{
+					bFoundAmbientOcclusion = true;
+					break;
+				}
+			}
+
+			TestTrue(TEXT("AmbientOcclusion should be listed in material result connections"),
+				bFoundAmbientOcclusion);
 		}
 	}
 
@@ -1408,7 +1432,8 @@ bool FCortexMaterialAutoLayoutResultGapTest::RunTest(const FString& Parameters)
 			if (Expr && Expr->GetName() == NodeId)
 			{
 				const int32 RightEdge = Expr->MaterialExpressionEditorX
-					+ FMath::Max(Expr->GetWidth(), 112) + 80;
+					+ FMath::Max(Expr->GetWidth(), CortexMaterialLayout::MinNodeWidth)
+					+ CortexMaterialLayout::NodeChromePaddingX;
 				TestTrue(
 					FString::Printf(TEXT("Expression right edge (%d) should be left of x=0"), RightEdge),
 					RightEdge < 0);
