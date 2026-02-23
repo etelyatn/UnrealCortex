@@ -2,6 +2,8 @@
 #include "Modules/ModuleManager.h"
 #include "CortexCommandRouter.h"
 #include "CortexCoreModule.h"
+#include "Editor.h"
+#include "FileHelpers.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexAssetSaveSingleTest,
@@ -567,6 +569,19 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexAssetOpenWorldTest::RunTest(const FString& Parameters)
 {
+	const FString BaselineMapPackage = TEXT("/Game/Sim/Maps/Garage");
+	FString BaselineMapFilePath;
+	const bool bBaselineMapReady = FPackageName::TryConvertLongPackageNameToFilename(
+		BaselineMapPackage,
+		BaselineMapFilePath,
+		FPackageName::GetMapPackageExtension());
+	TestTrue(TEXT("Baseline map package should resolve to filename"), bBaselineMapReady);
+	if (bBaselineMapReady)
+	{
+		UWorld* BaselineWorld = UEditorLoadingAndSavingUtils::LoadMap(BaselineMapFilePath);
+		TestNotNull(TEXT("Baseline map should load before test"), BaselineWorld);
+	}
+
 	FCortexCoreModule& CoreModule =
 		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
 	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
@@ -580,11 +595,12 @@ bool FCortexAssetOpenWorldTest::RunTest(const FString& Parameters)
 	if (Result.bSuccess && Result.Data.IsValid())
 	{
 		const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
-		Result.Data->TryGetArrayField(TEXT("results"), Results);
-		if (Results != nullptr && Results->Num() > 0)
+		TestTrue(TEXT("Response has results array"), Result.Data->TryGetArrayField(TEXT("results"), Results));
+		if (Results != nullptr)
 		{
+			TestEqual(TEXT("Results should contain exactly one entry"), Results->Num(), 1);
 			const TSharedPtr<FJsonObject>* Entry = nullptr;
-			(*Results)[0]->TryGetObject(Entry);
+			TestTrue(TEXT("First result should be an object"), (*Results)[0]->TryGetObject(Entry));
 			if (Entry != nullptr)
 			{
 				bool bOpened = false;
@@ -600,6 +616,25 @@ bool FCortexAssetOpenWorldTest::RunTest(const FString& Parameters)
 				TestTrue(TEXT("was_already_open field should exist"),
 					(*Entry)->HasField(TEXT("was_already_open")));
 			}
+		}
+	}
+
+	if (bBaselineMapReady)
+	{
+		UWorld* RestoredWorld = UEditorLoadingAndSavingUtils::LoadMap(BaselineMapFilePath);
+		TestNotNull(TEXT("Baseline map should restore after world open test"), RestoredWorld);
+	}
+
+	if (GEditor != nullptr)
+	{
+		UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
+		TestNotNull(TEXT("Editor world should be valid"), EditorWorld);
+		if (EditorWorld != nullptr)
+		{
+			TestEqual(
+				TEXT("World-open test should restore baseline map to avoid leaking global editor state"),
+				EditorWorld->GetOutermost()->GetName(),
+				BaselineMapPackage);
 		}
 	}
 
