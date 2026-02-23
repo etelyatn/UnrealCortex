@@ -946,12 +946,12 @@ bool FCortexMaterialAutoLayoutCenteringTest::RunTest(const FString& Parameters)
 		if (ParamNode)
 		{
 			// Shared layout engine centers by total height including node dimensions:
-			// For a single node, StartY = -NodeHeight/2. The node height is calculated as
-			// max(80, 40 + max(inputs, outputs) * 26). A ScalarParameter has 0 inputs and
-			// 1 output, so height = max(80, 40 + 1*26) = 80, giving StartY = -40.
-			// After grid snapping (GridSnapSize=16): FloorToFloat(-40/16 + 0.5) * 16 = -32.
+			// For a single node, StartY = -NodeHeight/2. With UE API sizing:
+			// GetHeight() = Max(18 + 1*21, 130) = 130, preview visible (+116), title (+30)
+			// Total height = 30 + 130 + 116 = 276, StartY = -138.
+			// After grid snapping (GridSnapSize=16): RoundToInt(-138/16) * 16 = -144.
 			TestEqual(TEXT("Single node in column should be centered accounting for node height"),
-				ParamNode->MaterialExpressionEditorY, -32);
+				ParamNode->MaterialExpressionEditorY, -144);
 		}
 	}
 
@@ -1158,5 +1158,265 @@ bool FCortexMaterialAutoLayoutNodeSeparationTest::RunTest(const FString& Paramet
 	}
 
 	if (Material) Material->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialAutoLayoutNoOverlapTest,
+	"Cortex.Material.Graph.AutoLayout.NoOverlap",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialAutoLayoutNoOverlapTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestOverlap_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Overlap_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	auto AddNode = [&](const FString& ExprClass) -> FString
+	{
+		TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+		P->SetStringField(TEXT("asset_path"), MatPath);
+		P->SetStringField(TEXT("expression_class"), ExprClass);
+		FCortexCommandResult R = Handler.Execute(TEXT("add_node"), P);
+		FString Id;
+		if (R.Data.IsValid())
+		{
+			R.Data->TryGetStringField(TEXT("node_id"), Id);
+		}
+		return Id;
+	};
+
+	const FString SceneTex1 = AddNode(TEXT("MaterialExpressionSceneTexture"));
+	const FString SceneTex2 = AddNode(TEXT("MaterialExpressionSceneTexture"));
+	const FString Constant = AddNode(TEXT("MaterialExpressionConstant"));
+
+	auto Connect = [&](const FString& SourceNode, int32 SourceOutput, const FString& TargetInput)
+	{
+		TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+		P->SetStringField(TEXT("asset_path"), MatPath);
+		P->SetStringField(TEXT("source_node"), SourceNode);
+		P->SetNumberField(TEXT("source_output"), SourceOutput);
+		P->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+		P->SetStringField(TEXT("target_input"), TargetInput);
+		Handler.Execute(TEXT("connect"), P);
+	};
+
+	Connect(SceneTex1, 0, TEXT("BaseColor"));
+	Connect(Constant, 0, TEXT("Roughness"));
+	Connect(SceneTex2, 0, TEXT("EmissiveColor"));
+
+	TSharedPtr<FJsonObject> LayoutParams = MakeShared<FJsonObject>();
+	LayoutParams->SetStringField(TEXT("asset_path"), MatPath);
+	FCortexCommandResult Result = Handler.Execute(TEXT("auto_layout"), LayoutParams);
+	TestTrue(TEXT("auto_layout should succeed"), Result.bSuccess);
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MatPath);
+	TestNotNull(TEXT("Should load material"), Material);
+
+	if (Material)
+	{
+		struct FNodeRect
+		{
+			FString Id;
+			int32 X = 0;
+			int32 Y = 0;
+			int32 W = 0;
+			int32 H = 0;
+		};
+
+		TArray<FNodeRect> Rects;
+		for (UMaterialExpression* Expr : Material->GetExpressions())
+		{
+			if (!Expr)
+			{
+				continue;
+			}
+
+			FNodeRect R;
+			R.Id = Expr->GetName();
+			R.X = Expr->MaterialExpressionEditorX;
+			R.Y = Expr->MaterialExpressionEditorY;
+			R.W = FMath::Max(Expr->GetWidth(), 112) + 80;
+			R.H = 30 + FMath::Max(Expr->GetHeight(), 80)
+				+ (!Expr->bHidePreviewWindow && !Expr->bCollapsed ? 116 : 0);
+			Rects.Add(R);
+		}
+
+		for (int32 i = 0; i < Rects.Num(); ++i)
+		{
+			for (int32 j = i + 1; j < Rects.Num(); ++j)
+			{
+				const bool bOverlap =
+					Rects[i].X < Rects[j].X + Rects[j].W &&
+					Rects[j].X < Rects[i].X + Rects[i].W &&
+					Rects[i].Y < Rects[j].Y + Rects[j].H &&
+					Rects[j].Y < Rects[i].Y + Rects[i].H;
+
+				TestFalse(
+					FString::Printf(TEXT("Nodes %s and %s should not overlap"),
+						*Rects[i].Id, *Rects[j].Id),
+					bOverlap);
+			}
+		}
+
+		Material->MarkAsGarbage();
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialAutoLayoutAllInputsTest,
+	"Cortex.Material.Graph.AutoLayout.AllMaterialInputs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialAutoLayoutAllInputsTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestAllInputs_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_AllInputs_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionConstant"));
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+	FString NodeId;
+	if (AddResult.Data.IsValid())
+	{
+		AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+	}
+
+	UMaterial* MaterialForConnect = LoadObject<UMaterial>(nullptr, *MatPath);
+	TestNotNull(TEXT("Should load material for AmbientOcclusion setup"), MaterialForConnect);
+	if (MaterialForConnect)
+	{
+		UMaterialExpression* SourceExpr = nullptr;
+		for (UMaterialExpression* Expr : MaterialForConnect->GetExpressions())
+		{
+			if (Expr && Expr->GetName() == NodeId)
+			{
+				SourceExpr = Expr;
+				break;
+			}
+		}
+
+		TestNotNull(TEXT("Should find source expression"), SourceExpr);
+		FExpressionInput* AOInput = MaterialForConnect->GetExpressionInputForProperty(MP_AmbientOcclusion);
+		TestNotNull(TEXT("AmbientOcclusion input should exist"), AOInput);
+		if (SourceExpr && AOInput)
+		{
+			AOInput->Expression = SourceExpr;
+			AOInput->OutputIndex = 0;
+			MaterialForConnect->MarkPackageDirty();
+		}
+	}
+
+	TSharedPtr<FJsonObject> LayoutParams = MakeShared<FJsonObject>();
+	LayoutParams->SetStringField(TEXT("asset_path"), MatPath);
+	FCortexCommandResult Result = Handler.Execute(TEXT("auto_layout"), LayoutParams);
+	TestTrue(TEXT("auto_layout should succeed"), Result.bSuccess);
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MatPath);
+	TestNotNull(TEXT("Should load material"), Material);
+
+	if (Material)
+	{
+		for (UMaterialExpression* Expr : Material->GetExpressions())
+		{
+			if (Expr && Expr->GetName() == NodeId)
+			{
+				TestTrue(
+					TEXT("Node connected to AmbientOcclusion should be at negative X (left of MaterialResult)"),
+					Expr->MaterialExpressionEditorX < 0);
+				break;
+			}
+		}
+		Material->MarkAsGarbage();
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialAutoLayoutResultGapTest,
+	"Cortex.Material.Graph.AutoLayout.MaterialResultGap",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialAutoLayoutResultGapTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestResultGap_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_ResultGap_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionConstant"));
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+	FString NodeId;
+	if (AddResult.Data.IsValid())
+	{
+		AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+	}
+
+	TSharedPtr<FJsonObject> ConnectParams = MakeShared<FJsonObject>();
+	ConnectParams->SetStringField(TEXT("asset_path"), MatPath);
+	ConnectParams->SetStringField(TEXT("source_node"), NodeId);
+	ConnectParams->SetNumberField(TEXT("source_output"), 0);
+	ConnectParams->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+	ConnectParams->SetStringField(TEXT("target_input"), TEXT("Roughness"));
+	Handler.Execute(TEXT("connect"), ConnectParams);
+
+	TSharedPtr<FJsonObject> LayoutParams = MakeShared<FJsonObject>();
+	LayoutParams->SetStringField(TEXT("asset_path"), MatPath);
+	FCortexCommandResult Result = Handler.Execute(TEXT("auto_layout"), LayoutParams);
+	TestTrue(TEXT("auto_layout should succeed"), Result.bSuccess);
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MatPath);
+	TestNotNull(TEXT("Should load material"), Material);
+
+	if (Material)
+	{
+		for (UMaterialExpression* Expr : Material->GetExpressions())
+		{
+			if (Expr && Expr->GetName() == NodeId)
+			{
+				const int32 RightEdge = Expr->MaterialExpressionEditorX
+					+ FMath::Max(Expr->GetWidth(), 112) + 80;
+				TestTrue(
+					FString::Printf(TEXT("Expression right edge (%d) should be left of x=0"), RightEdge),
+					RightEdge < 0);
+				break;
+			}
+		}
+		Material->MarkAsGarbage();
+	}
+
 	return true;
 }

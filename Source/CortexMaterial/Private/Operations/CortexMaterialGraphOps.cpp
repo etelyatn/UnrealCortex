@@ -651,25 +651,22 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 		ExprToId.Add(Expr, Expr->GetPathName());
 	}
 
-	// Check which expressions connect to MaterialResult
-	UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
+	// Enumerate all material property inputs via UE API.
+	// Replaces hardcoded 8-input check to include all EMaterialProperty values.
 	TSet<FString> MaterialResultInputIds;
-	auto CheckResultInput = [&](const FExpressionInput& Input)
+	for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
 	{
-		if (Input.Expression)
+		FExpressionInput* Input = Material->GetExpressionInputForProperty(
+			static_cast<EMaterialProperty>(Prop));
+		if (Input && Input->Expression)
 		{
-			const FString* Id = ExprToId.Find(Input.Expression);
-			if (Id) MaterialResultInputIds.Add(*Id);
+			const FString* Id = ExprToId.Find(Input->Expression);
+			if (Id)
+			{
+				MaterialResultInputIds.Add(*Id);
+			}
 		}
-	};
-	CheckResultInput(EditorData->BaseColor);
-	CheckResultInput(EditorData->Metallic);
-	CheckResultInput(EditorData->Specular);
-	CheckResultInput(EditorData->Roughness);
-	CheckResultInput(EditorData->Normal);
-	CheckResultInput(EditorData->EmissiveColor);
-	CheckResultInput(EditorData->Opacity);
-	CheckResultInput(EditorData->OpacityMask);
+	}
 
 	// Build forward adjacency map in single O(N*M) pass
 	TMap<FString, TArray<FString>> ForwardEdges;
@@ -707,31 +704,52 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 		// layer inversion places entry points rightmost — matching MaterialResult's visual position.
 		LayoutNode.bIsEntryPoint = MaterialResultInputIds.Contains(LayoutNode.Id);
 		LayoutNode.bIsExecNode = false; // Material expressions are always pure data nodes.
-		int32 InputCount = 0;
-		for (FExpressionInputIterator It(Expr); It; ++It) InputCount++;
-		int32 OutputCount = Expr->GetOutputs().Num();
-		LayoutNode.Width = 150;
-		LayoutNode.Height = FMath::Max(80, 40 + FMath::Max(InputCount, OutputCount) * 26);
+		const int32 BaseWidth = FMath::Max(Expr->GetWidth(), CortexMaterialLayout::MinNodeWidth);
+		LayoutNode.Width = BaseWidth
+			+ (Expr->UsesLeftGutter() ? 32 : 0)
+			+ (Expr->UsesRightGutter() ? 32 : 0)
+			+ CortexMaterialLayout::NodeChromePaddingX;
+
+		const int32 BaseHeight = FMath::Max(Expr->GetHeight(), CortexMaterialLayout::MinNodeHeight);
+		const int32 PreviewAddition =
+			(!Expr->bHidePreviewWindow && !Expr->bCollapsed)
+			? CortexMaterialLayout::PreviewHeight : 0;
+		LayoutNode.Height = CortexMaterialLayout::TitleBarHeight + BaseHeight + PreviewAddition;
 		const TArray<FString>* Outputs = ForwardEdges.Find(LayoutNode.Id);
 		if (Outputs) LayoutNode.DataOutputs = *Outputs;
 		LayoutNodes.Add(LayoutNode);
 	}
 
 	// Add virtual MaterialResult sink — gives the layout engine a concrete rightmost anchor.
+	// Sized to match visible Material Output pins for more accurate spacing.
 	// Removed from positions after layout; not written back to any expression.
 	{
+		int32 VisiblePinCount = 0;
+		for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
+		{
+			const EMaterialProperty Property = static_cast<EMaterialProperty>(Prop);
+			if (Material->GetExpressionInputForProperty(Property)
+				&& Material->IsPropertySupported(Property))
+			{
+				++VisiblePinCount;
+			}
+		}
+
 		FCortexLayoutNode MaterialResultNode;
 		MaterialResultNode.Id = MaterialResultId;
-		MaterialResultNode.Width = 300;
-		MaterialResultNode.Height = 200;
+		MaterialResultNode.Width = CortexMaterialLayout::MaterialResultWidth;
+		MaterialResultNode.Height = CortexMaterialLayout::TitleBarHeight
+			+ FMath::Max(1, VisiblePinCount) * CortexMaterialLayout::PinRowHeight;
 		MaterialResultNode.bIsEntryPoint = false;
 		MaterialResultNode.bIsExecNode = false;
 		LayoutNodes.Add(MaterialResultNode);
 	}
 
-	// Run shared layout engine
+	// Run shared layout engine with material-appropriate defaults.
 	FCortexLayoutConfig Config;
 	Config.Direction = ECortexLayoutDirection::RightToLeft;
+	Config.HorizontalSpacing = CortexMaterialLayout::DefaultHorizontalSpacing;
+	Config.VerticalSpacing = CortexMaterialLayout::DefaultVerticalSpacing;
 	double HSpacingVal = 0, VSpacingVal = 0;
 	if (Params->TryGetNumberField(TEXT("horizontal_spacing"), HSpacingVal) && HSpacingVal > 0)
 		Config.HorizontalSpacing = static_cast<int32>(HSpacingVal);
