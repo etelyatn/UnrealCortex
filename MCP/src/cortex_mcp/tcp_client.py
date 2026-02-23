@@ -77,67 +77,131 @@ def _is_editor_alive(pid: int) -> bool:
 
 def _parse_port_file(
     port_file: pathlib.Path,
-) -> tuple[int, int | None, str | None] | None:
-    """Parse CortexPort.txt in JSON or plain integer format."""
+) -> EditorConnection | None:
+    """Parse a CortexPort-{PID}.txt file into an EditorConnection."""
     try:
         content = port_file.read_text().strip()
         if content.startswith("{"):
             data = json.loads(content)
             port = int(data["port"])
             pid = data.get("pid")
-            project_path = data.get("project_path")
+            started_at = data.get("started_at", "")
             if pid is not None:
                 pid = int(pid)
-            logger.info("Discovered port %d (pid=%s) from %s", port, pid, port_file)
-            return port, pid, project_path
+            logger.info("Parsed port file %s: port=%d pid=%s", port_file.name, port, pid)
+            return EditorConnection(
+                port=port,
+                pid=pid if pid is not None else 0,
+                started_at=started_at,
+                port_file=port_file,
+            )
 
+        # Legacy plain integer format
         port = int(content)
-        logger.info("Discovered port %d from %s (plain format)", port, port_file)
-        return port, None, None
+        logger.info("Parsed legacy port file %s: port=%d", port_file.name, port)
+        return EditorConnection(port=port, pid=0, started_at="", port_file=port_file)
     except (ValueError, OSError, json.JSONDecodeError, KeyError) as e:
         logger.warning("Failed to read port file %s: %s", port_file, e)
         return None
 
 
-def _discover_port() -> tuple[int, int | None, str | None] | None:
-    """Discover the Cortex TCP port from the port file written by CortexCore.
-
-    Searches for CortexPort.txt in the Saved/ directory of the project root.
-    The project root is determined by:
-    1. CORTEX_PROJECT_DIR environment variable (if set)
-    2. Searching parent directories of this file for a .uproject file
-
-    Returns:
-        Tuple of (port, pid, project_path), or None if not found.
-    """
-    # Try env var first
+def _find_saved_dir() -> pathlib.Path | None:
+    """Find the Saved/ directory for the current project."""
     project_dir = os.environ.get("CORTEX_PROJECT_DIR")
     if project_dir:
-        port_file = pathlib.Path(project_dir) / "Saved" / _PORT_FILENAME
-        if port_file.exists():
-            return _parse_port_file(port_file)
-        else:
-            logger.debug("Port file not found at %s", port_file)
-        return None
+        saved = pathlib.Path(project_dir) / "Saved"
+        return saved if saved.is_dir() else None
 
-    # Search parent directories for a .uproject file
     current = pathlib.Path(__file__).resolve().parent
-    for _ in range(20):  # Safety limit
-        uproject_files = list(current.glob("*.uproject"))
-        if uproject_files:
-            port_file = current / "Saved" / _PORT_FILENAME
-            if port_file.exists():
-                return _parse_port_file(port_file)
-            else:
-                logger.debug("Port file not found at %s", port_file)
-            return None
+    for _ in range(20):
+        if list(current.glob("*.uproject")):
+            saved = current / "Saved"
+            return saved if saved.is_dir() else None
         parent = current.parent
         if parent == current:
             break
         current = parent
-
-    logger.debug("No .uproject found in parent directories")
     return None
+
+
+def _discover_all_editors() -> list[EditorConnection]:
+    """Discover all live Unreal Editor instances from port files.
+
+    Returns list of EditorConnection for all editors whose PIDs are alive.
+    """
+    saved_dir = _find_saved_dir()
+    if saved_dir is None:
+        return []
+
+    port_files = list(saved_dir.glob("CortexPort-*.txt"))
+    if not port_files:
+        return []
+
+    editors = []
+    for pf in port_files:
+        conn = _parse_port_file(pf)
+        if conn is None:
+            continue
+        if conn.pid and not _is_editor_alive(conn.pid):
+            logger.debug("Skipping stale port file %s (PID %d dead)", pf.name, conn.pid)
+            continue
+        editors.append(conn)
+
+    if len(editors) > 1:
+        logger.warning(
+            "Multiple live editors detected: %s",
+            ", ".join(f"PID {e.pid} on port {e.port}" for e in editors),
+        )
+
+    return editors
+
+
+def _read_project_path(editor: EditorConnection) -> str | None:
+    """Read project_path from an EditorConnection's port file."""
+    try:
+        content = editor.port_file.read_text().strip()
+        if content.startswith("{"):
+            data = json.loads(content)
+            return data.get("project_path")
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def _discover_port() -> tuple[int, int | None, str | None] | None:
+    """Discover the Cortex TCP port from per-PID port files.
+
+    Selection priority:
+    1. CORTEX_EDITOR_PID env var - select matching PID
+    2. Most recently started editor (by started_at field)
+
+    Returns:
+        Tuple of (port, pid, project_path), or None if not found.
+    """
+    editors = _discover_all_editors()
+    if not editors:
+        return None
+
+    target_pid_str = os.environ.get("CORTEX_EDITOR_PID")
+    if target_pid_str:
+        try:
+            target_pid = int(target_pid_str)
+        except ValueError:
+            logger.warning("Invalid CORTEX_EDITOR_PID: %s", target_pid_str)
+            target_pid = None
+
+        if target_pid:
+            for editor in editors:
+                if editor.pid == target_pid:
+                    logger.info("Selected editor PID %d (via CORTEX_EDITOR_PID)", target_pid)
+                    return editor.port, editor.pid, _read_project_path(editor)
+            logger.warning("CORTEX_EDITOR_PID=%d not found among live editors", target_pid)
+            return None
+
+    editors.sort(key=lambda e: e.started_at, reverse=True)
+    selected = editors[0]
+    logger.info("Selected most recent editor: PID %d on port %d", selected.pid, selected.port)
+    return selected.port, selected.pid, _read_project_path(selected)
 
 
 class UEConnection:
