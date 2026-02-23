@@ -142,6 +142,10 @@ FCortexLayoutResult FCortexGraphLayoutOps::CalculateLayout(
 			if (!Existing || (Existing->X == 0 && Existing->Y == 0))
 			{
 				FilteredResult.Positions.Add(Pair.Key, Pair.Value);
+				if (const int32* Layer = FinalResult.LayerAssignment.Find(Pair.Key))
+				{
+					FilteredResult.LayerAssignment.Add(Pair.Key, *Layer);
+				}
 			}
 		}
 		return FilteredResult;
@@ -1332,22 +1336,42 @@ void FCortexGraphLayoutOps::RefineYPositions(
 					const FCortexLayoutNode* const* NodePtr = NodeMap.Find(NodeId);
 					const int32 Height = NodePtr ? (*NodePtr)->Height : 100;
 
-					TArray<int32> NeighborCenters;
+					TArray<FString> PrimaryNeighbors;
+					TArray<FString> SecondaryNeighbors;
 					const TArray<FString>* ConnectedNodes = Neighbors.Find(NodeId);
 					if (ConnectedNodes)
 					{
 						for (const FString& NeighborId : *ConnectedNodes)
 						{
+							const int32* NeighborLayer = InOutResult.LayerAssignment.Find(NeighborId);
+							const bool bIsPrimary = NeighborLayer &&
+								((bForward && *NeighborLayer < LayerIndex) || (!bForward && *NeighborLayer > LayerIndex));
+							if (bIsPrimary)
+							{
+								PrimaryNeighbors.Add(NeighborId);
+							}
+							else
+							{
+								SecondaryNeighbors.Add(NeighborId);
+							}
+						}
+					}
+
+					const TArray<FString>& SelectedNeighbors =
+						PrimaryNeighbors.Num() > 0 ? PrimaryNeighbors : SecondaryNeighbors;
+
+					TArray<int32> NeighborCenters;
+					for (const FString& NeighborId : SelectedNeighbors)
+					{
 							const FIntPoint* NeighborPos = InOutResult.Positions.Find(NeighborId);
 							if (!NeighborPos)
 							{
 								continue;
 							}
 
-							const FCortexLayoutNode* const* NeighborNode = NodeMap.Find(NeighborId);
-							const int32 NeighborHeight = NeighborNode ? (*NeighborNode)->Height : 100;
-							NeighborCenters.Add(NeighborPos->Y + NeighborHeight / 2);
-						}
+						const FCortexLayoutNode* const* NeighborNode = NodeMap.Find(NeighborId);
+						const int32 NeighborHeight = NeighborNode ? (*NeighborNode)->Height : 100;
+						NeighborCenters.Add(NeighborPos->Y + NeighborHeight / 2);
 					}
 
 					int32 TargetY = InOutResult.Positions[NodeId].Y;

@@ -221,11 +221,10 @@ bool FCortexGraphLayoutBranchAlignmentTest::RunTest(const FString& Parameters)
 	const int32 ACenterY = Result.Positions[TEXT("A")].Y + 50;
 	const int32 BCenterY = Result.Positions[TEXT("B")].Y + 50;
 	const int32 CCenterY = Result.Positions[TEXT("C")].Y + 50;
-	const int32 InputMin = FMath::Min(ACenterY, BCenterY);
-	const int32 InputMax = FMath::Max(ACenterY, BCenterY);
-	const int32 BandTolerance = CortexGraphLayout::GridSnapSize * 2;
-	TestTrue(TEXT("C remains within input center band (plus tolerance)"),
-		CCenterY >= InputMin - BandTolerance && CCenterY <= InputMax + BandTolerance);
+	const int32 MedianCenter = (ACenterY + BCenterY) / 2;
+	const int32 MedianTolerance = CortexGraphLayout::GridSnapSize * 4;
+	TestTrue(TEXT("C centered between A and B (within 64px)"),
+		FMath::Abs(CCenterY - MedianCenter) <= MedianTolerance);
 
 	const int32 DCenterY = Result.Positions[TEXT("D")].Y + 50;
 	TestTrue(TEXT("D aligned with C (within 32px)"),
