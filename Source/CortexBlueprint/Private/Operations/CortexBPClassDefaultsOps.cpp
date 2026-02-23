@@ -139,6 +139,54 @@ TArray<FString> FCortexBPClassDefaultsOps::FindSimilarPropertyNames(
 		Candidates.Add(TPair<FString, int32>(PropertyName, Prev[Len2]));
 	}
 
+	// Also search one level into struct properties for dot-notation paths
+	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	{
+		const FStructProperty* StructProp = CastField<FStructProperty>(*It);
+		if (!StructProp || !StructProp->Struct)
+		{
+			continue;
+		}
+
+		for (TFieldIterator<FProperty> MemberIt(StructProp->Struct); MemberIt; ++MemberIt)
+		{
+			const FString DotPath = FString::Printf(TEXT("%s.%s"), *(*It)->GetName(), *MemberIt->GetName());
+			const FString MemberName = MemberIt->GetName();
+
+			// Compare against the leaf name (user might type "bCanEverTick" meaning "PrimaryActorTick.bCanEverTick")
+			const int32 Len1 = Name.Len();
+			const int32 Len2 = MemberName.Len();
+
+			TArray<int32> NestedPrev;
+			TArray<int32> NestedCurr;
+			NestedPrev.SetNumUninitialized(Len2 + 1);
+			NestedCurr.SetNumUninitialized(Len2 + 1);
+
+			for (int32 J = 0; J <= Len2; ++J)
+			{
+				NestedPrev[J] = J;
+			}
+
+			for (int32 I = 1; I <= Len1; ++I)
+			{
+				NestedCurr[0] = I;
+				for (int32 J = 1; J <= Len2; ++J)
+				{
+					const int32 Cost =
+						(FChar::ToLower(Name[I - 1]) == FChar::ToLower(MemberName[J - 1])) ? 0 : 1;
+					NestedCurr[J] = FMath::Min3(
+						NestedPrev[J] + 1,
+						NestedCurr[J - 1] + 1,
+						NestedPrev[J - 1] + Cost);
+				}
+				Swap(NestedPrev, NestedCurr);
+			}
+
+			// Use dot-notation path as the suggestion
+			Candidates.Add(TPair<FString, int32>(DotPath, NestedPrev[Len2]));
+		}
+	}
+
 	Candidates.Sort([](const TPair<FString, int32>& A, const TPair<FString, int32>& B)
 	{
 		return A.Value < B.Value;
@@ -239,6 +287,38 @@ FCortexCommandResult FCortexBPClassDefaultsOps::GetClassDefaults(const TSharedPt
 			if (UStruct* OwnerStruct = Property->GetOwnerStruct())
 			{
 				PropertyInfo->SetStringField(TEXT("defined_in"), OwnerStruct->GetName());
+			}
+
+			// If property is a struct, add "members" with one level of member info
+			if (const FStructProperty* StructProp = CastField<FStructProperty>(Property))
+			{
+				TSharedPtr<FJsonObject> MembersObj = MakeShared<FJsonObject>();
+				const UScriptStruct* ScriptStruct = StructProp->Struct;
+				if (ScriptStruct)
+				{
+					for (TFieldIterator<FProperty> MemberIt(ScriptStruct); MemberIt; ++MemberIt)
+					{
+						FProperty* MemberProp = *MemberIt;
+						if (!MemberProp)
+						{
+							continue;
+						}
+
+						TSharedPtr<FJsonObject> MemberInfo = MakeShared<FJsonObject>();
+						MemberInfo->SetStringField(TEXT("type"), MemberProp->GetCPPType());
+						MemberInfo->SetStringField(TEXT("path"),
+							FString::Printf(TEXT("%s.%s"), *Property->GetName(), *MemberProp->GetName()));
+
+						// Serialize member value
+						void* MemberValuePtr = MemberProp->ContainerPtrToValuePtr<void>(ValuePtr);
+						const TSharedPtr<FJsonValue> MemberValue = FCortexSerializer::PropertyToJson(MemberProp, MemberValuePtr);
+						MemberInfo->SetField(TEXT("value"),
+							MemberValue.IsValid() ? MemberValue : MakeShared<FJsonValueNull>());
+
+						MembersObj->SetObjectField(MemberProp->GetName(), MemberInfo);
+					}
+				}
+				PropertyInfo->SetObjectField(TEXT("members"), MembersObj);
 			}
 
 			PropertiesObj->SetObjectField(Property->GetName(), PropertyInfo);

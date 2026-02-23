@@ -416,3 +416,115 @@ class TestFixtures:
         recovery = response["recovery_action"]
         assert recovery["action"] == "deleted_partial"
         assert recovery["path"] == "/Game/Materials/M_PulsatingGradient"
+
+
+class TestMaterialProperties:
+    """Tests for material_properties parameter in create_material_graph."""
+
+    def test_validate_spec_accepts_valid_dict(self):
+        """_validate_spec accepts a valid material_properties dict."""
+        nodes = [{"name": "A", "class": "Constant"}]
+        # Should not raise
+        _validate_spec("M_Test", "/Game/", nodes, [], material_properties={"BlendMode": "BLEND_Translucent"})
+
+    def test_validate_spec_accepts_none(self):
+        """_validate_spec accepts None for material_properties."""
+        nodes = [{"name": "A", "class": "Constant"}]
+        # Should not raise
+        _validate_spec("M_Test", "/Game/", nodes, [], material_properties=None)
+
+    def test_validate_spec_rejects_non_dict(self):
+        """_validate_spec rejects non-dict material_properties."""
+        nodes = [{"name": "A", "class": "Constant"}]
+        with pytest.raises(ValueError, match="material_properties must be a dict"):
+            _validate_spec("M_Test", "/Game/", nodes, [], material_properties="BlendMode")
+
+        with pytest.raises(ValueError, match="material_properties must be a dict"):
+            _validate_spec("M_Test", "/Game/", nodes, [], material_properties=["BlendMode"])
+
+    def test_build_commands_inserts_properties_after_create_before_nodes(self):
+        """material_properties commands appear after create but before add_node."""
+        nodes = [{"name": "Color", "class": "Constant3Vector"}]
+        connections = [{"from": "Color.RGB", "to": "Material.BaseColor"}]
+        mat_props = {"BlendMode": "BLEND_Translucent", "ShadingModel": "MSM_Unlit"}
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, connections, material_properties=mat_props)
+
+        # Step 0: create_material
+        assert commands[0]["command"] == "material.create_material"
+
+        # Steps 1-2: set_material_property (order matches dict insertion order)
+        assert commands[1]["command"] == "material.set_material_property"
+        assert commands[1]["params"]["property_name"] == "BlendMode"
+        assert commands[1]["params"]["value"] == "BLEND_Translucent"
+        assert commands[1]["params"]["asset_path"] == "$steps[0].data.asset_path"
+
+        assert commands[2]["command"] == "material.set_material_property"
+        assert commands[2]["params"]["property_name"] == "ShadingModel"
+        assert commands[2]["params"]["value"] == "MSM_Unlit"
+
+        # Step 3: add_node (offset by 2 property commands)
+        assert commands[3]["command"] == "material.add_node"
+
+        # Step 4: connect (references step 3 for node_id)
+        assert commands[4]["command"] == "material.connect"
+        assert commands[4]["params"]["source_node"] == "$steps[3].data.node_id"
+
+    def test_node_step_refs_offset_with_properties(self):
+        """Node $steps[N] references are correctly offset when material_properties are present."""
+        nodes = [
+            {"name": "A", "class": "Constant"},
+            {"name": "B", "class": "Multiply"},
+        ]
+        connections = [{"from": "A.0", "to": "B.A"}]
+        mat_props = {"BlendMode": "BLEND_Translucent"}
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, connections, material_properties=mat_props)
+
+        # Step 0: create_material
+        # Step 1: set_material_property (1 property)
+        # Step 2: add_node A
+        # Step 3: add_node B
+        # Step 4: connect A->B
+        assert commands[0]["command"] == "material.create_material"
+        assert commands[1]["command"] == "material.set_material_property"
+        assert commands[2]["command"] == "material.add_node"
+        assert commands[3]["command"] == "material.add_node"
+        assert commands[4]["command"] == "material.connect"
+
+        # Connect should reference step 2 (A) and step 3 (B)
+        assert commands[4]["params"]["source_node"] == "$steps[2].data.node_id"
+        assert commands[4]["params"]["target_node"] == "$steps[3].data.node_id"
+
+    def test_no_properties_unchanged_behavior(self):
+        """Without material_properties, behavior is unchanged (nodes start at step 1)."""
+        nodes = [{"name": "A", "class": "Constant"}]
+        connections = [{"from": "A.0", "to": "Material.BaseColor"}]
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, connections)
+
+        assert commands[0]["command"] == "material.create_material"
+        assert commands[1]["command"] == "material.add_node"
+        assert commands[2]["command"] == "material.connect"
+        assert commands[2]["params"]["source_node"] == "$steps[1].data.node_id"
+
+    def test_properties_with_node_params_correct_refs(self):
+        """set_node_property commands reference correct node steps when properties are present."""
+        nodes = [
+            {"name": "Tex", "class": "TextureSample", "params": {"Texture": "/Game/T_Base"}},
+        ]
+        connections = []
+        mat_props = {"BlendMode": "BLEND_Masked"}
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, connections, material_properties=mat_props)
+
+        # Step 0: create_material
+        # Step 1: set_material_property
+        # Step 2: add_node (Tex)
+        # Step 3: set_node_property (Tex.Texture)
+        assert commands[0]["command"] == "material.create_material"
+        assert commands[1]["command"] == "material.set_material_property"
+        assert commands[2]["command"] == "material.add_node"
+        assert commands[3]["command"] == "material.set_node_property"
+        assert commands[3]["params"]["node_id"] == "$steps[2].data.node_id"
+        assert commands[3]["params"]["property_name"] == "Texture"

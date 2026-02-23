@@ -356,3 +356,119 @@ bool FCortexBPSetClassDefaultsSuccessTest::RunTest(const FString& Parameters)
 	CleanupTestBlueprint(AssetPath);
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPClassDefaultsNestedDiscoveryTest,
+	"Cortex.Blueprint.ClassDefaults.Get.NestedDiscovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPClassDefaultsNestedDiscoveryTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	FCortexBPCommandHandler Handler;
+	const FString AssetPath = CreateTestBlueprint(Handler, Suffix);
+	TestFalse(TEXT("Test Blueprint should be created"), AssetPath.IsEmpty());
+	if (AssetPath.IsEmpty())
+	{
+		return true;
+	}
+
+	// Discovery mode (no properties specified)
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("blueprint_path"), AssetPath);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("get_class_defaults"), Params);
+	TestTrue(TEXT("Discovery should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		const TSharedPtr<FJsonObject>* PropsObj = nullptr;
+		if (Result.Data->TryGetObjectField(TEXT("properties"), PropsObj) && PropsObj)
+		{
+			// Look for PrimaryActorTick — it's an FTickFunction struct on AActor
+			const TSharedPtr<FJsonObject>* TickObj = nullptr;
+			if ((*PropsObj)->TryGetObjectField(TEXT("PrimaryActorTick"), TickObj) && TickObj)
+			{
+				// It should have a "members" object
+				const TSharedPtr<FJsonObject>* MembersObj = nullptr;
+				TestTrue(TEXT("PrimaryActorTick should have 'members' field"),
+					(*TickObj)->TryGetObjectField(TEXT("members"), MembersObj));
+
+				if (MembersObj && *MembersObj)
+				{
+					// Check that members has entries with path info
+					TestTrue(TEXT("members should have at least one entry"),
+						(*MembersObj)->Values.Num() > 0);
+
+					// Check a specific known member
+					const TSharedPtr<FJsonObject>* CanTickObj = nullptr;
+					if ((*MembersObj)->TryGetObjectField(TEXT("bCanEverTick"), CanTickObj) && CanTickObj)
+					{
+						FString Path;
+						(*CanTickObj)->TryGetStringField(TEXT("path"), Path);
+						TestEqual(TEXT("path should be dot-notation"),
+							Path, TEXT("PrimaryActorTick.bCanEverTick"));
+					}
+				}
+			}
+		}
+	}
+
+	CleanupTestBlueprint(AssetPath);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPClassDefaultsNestedFuzzySearchTest,
+	"Cortex.Blueprint.ClassDefaults.Get.NestedFuzzySearch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPClassDefaultsNestedFuzzySearchTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	FCortexBPCommandHandler Handler;
+	const FString AssetPath = CreateTestBlueprint(Handler, Suffix);
+	TestFalse(TEXT("Test Blueprint should be created"), AssetPath.IsEmpty());
+	if (AssetPath.IsEmpty())
+	{
+		return true;
+	}
+
+	// Request a nested property by its leaf name only — should get suggestion with dot path
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("blueprint_path"), AssetPath);
+	TArray<TSharedPtr<FJsonValue>> PropNames;
+	PropNames.Add(MakeShared<FJsonValueString>(TEXT("bCanEverTick")));
+	Params->SetArrayField(TEXT("properties"), PropNames);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("get_class_defaults"), Params);
+
+	// This should fail with PROPERTY_NOT_FOUND since bCanEverTick is not a top-level property
+	// But the suggestions should include the dot-notation path
+	TestFalse(TEXT("Should fail for nested-only property name"), Result.bSuccess);
+	TestEqual(TEXT("Error code should be PROPERTY_NOT_FOUND"),
+		Result.ErrorCode, CortexErrorCodes::PropertyNotFound);
+
+	if (Result.ErrorDetails.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Suggestions = nullptr;
+		if (Result.ErrorDetails->TryGetArrayField(TEXT("suggestions"), Suggestions) && Suggestions)
+		{
+			bool bFoundDotPath = false;
+			for (const auto& Sug : *Suggestions)
+			{
+				if (Sug->AsString().Contains(TEXT(".")))
+				{
+					bFoundDotPath = true;
+					break;
+				}
+			}
+			TestTrue(TEXT("Suggestions should include dot-notation paths"), bFoundDotPath);
+		}
+	}
+
+	CleanupTestBlueprint(AssetPath);
+	return true;
+}

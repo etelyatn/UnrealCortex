@@ -8,6 +8,7 @@
 #include "StructUtils/InstancedStruct.h"
 #include "UObject/SoftObjectPath.h"
 #include "Dom/JsonValue.h"
+#include "Misc/PackageName.h"
 
 TMap<const UScriptStruct*, TArray<UScriptStruct*>> FCortexSerializer::SubtypeCache;
 
@@ -645,6 +646,17 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		{
 			ObjProp->SetObjectPropertyValue(ValuePtr, nullptr);
 			return true;
+		}
+
+		// Guard against SkipPackage warnings for non-existent or invalid packages.
+		// Check IsValidLongPackageName first to skip DoesPackageExist for non-path values
+		// (e.g., bare numbers like "123" from type-mismatched JSON).
+		const FString PkgName = FPackageName::ObjectPathToPackageName(ObjectPath);
+		if (!FPackageName::IsValidLongPackageName(PkgName)
+			|| (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName)))
+		{
+			OutWarnings.Add(FString::Printf(TEXT("Package not found for object '%s'"), *ObjectPath));
+			return false;
 		}
 
 		UObject* LoadedObject = StaticLoadObject(ObjProp->PropertyClass, nullptr, *ObjectPath);
