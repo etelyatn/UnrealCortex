@@ -79,12 +79,23 @@ def _discover_and_register_tools(mcp_server, connection):
 def get_status() -> str:
     """Check connection status to Unreal Editor and get plugin/project info.
 
-    Returns connection status, plugin version, engine version, and project name.
-    Use this to verify the bridge is working before calling other tools.
+    Returns connection status, plugin version, engine version, project name,
+    connected editor info, and list of all available editors.
     """
+    from cortex_mcp.tcp_client import _discover_all_editors
+
     try:
         response = _connection.send_command("get_status")
-        return format_response(response.get("data", {}), "get_status")
+        data = response.get("data", {})
+
+        editors = _discover_all_editors()
+        data["connected_editor"] = {"pid": _connection._pid, "port": _connection.port}
+        data["available_editors"] = [
+            {"pid": editor.pid, "port": editor.port, "started_at": editor.started_at}
+            for editor in editors
+        ]
+
+        return format_response(data, "get_status")
     except ConnectionError as e:
         return f"Not connected to Unreal Editor: {e}"
 
