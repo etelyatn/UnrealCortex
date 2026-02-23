@@ -636,9 +636,10 @@ FCortexCommandResult FCortexMaterialAssetOps::SetMaterialProperty(const TSharedP
 
 	void* PropertyAddress = Property->ContainerPtrToValuePtr<void>(Material);
 
+	TUniquePtr<FScopedTransaction> Transaction;
 	if (!FCortexCommandRouter::IsInBatch())
 	{
-		FScopedTransaction Transaction(FText::FromString(
+		Transaction = MakeUnique<FScopedTransaction>(FText::FromString(
 			FString::Printf(TEXT("Cortex: Set Material Property %s"), *PropertyName)));
 		Material->Modify();
 		Material->PreEditChange(Property);

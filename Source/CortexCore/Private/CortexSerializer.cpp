@@ -418,8 +418,20 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	if (const FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
 	{
 		const UEnum* Enum = EnumProp->GetEnum();
-		const FString EnumString = JsonValue->AsString();
-		int64 EnumValue = Enum->GetValueByNameString(EnumString);
+		int64 EnumValue = INDEX_NONE;
+		FString InputValue;
+
+		if (JsonValue->Type == EJson::Number)
+		{
+			EnumValue = static_cast<int64>(JsonValue->AsNumber());
+			InputValue = FString::Printf(TEXT("%lld"), static_cast<long long>(EnumValue));
+		}
+		else
+		{
+			InputValue = JsonValue->AsString();
+			EnumValue = Enum->GetValueByNameString(InputValue);
+		}
+
 		if (EnumValue == INDEX_NONE)
 		{
 			TArray<FString> ValidValues;
@@ -430,7 +442,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 
 			OutWarnings.Add(FString::Printf(
 				TEXT("Unknown enum value '%s' for %s. Valid: %s"),
-				*EnumString, *Enum->GetName(), *FString::Join(ValidValues, TEXT(", "))));
+				*InputValue, *Enum->GetName(), *FString::Join(ValidValues, TEXT(", "))));
 			return false;
 		}
 		FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
@@ -443,8 +455,20 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	{
 		if (const UEnum* Enum = ByteProp->GetIntPropertyEnum())
 		{
-			const FString EnumString = JsonValue->AsString();
-			int64 EnumValue = Enum->GetValueByNameString(EnumString);
+			int64 EnumValue = INDEX_NONE;
+			FString InputValue;
+
+			if (JsonValue->Type == EJson::Number)
+			{
+				EnumValue = static_cast<int64>(JsonValue->AsNumber());
+				InputValue = FString::Printf(TEXT("%lld"), static_cast<long long>(EnumValue));
+			}
+			else
+			{
+				InputValue = JsonValue->AsString();
+				EnumValue = Enum->GetValueByNameString(InputValue);
+			}
+
 			if (EnumValue == INDEX_NONE)
 			{
 				TArray<FString> ValidValues;
@@ -455,7 +479,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 
 				OutWarnings.Add(FString::Printf(
 					TEXT("Unknown enum value '%s' for %s. Valid: %s"),
-					*EnumString, *Enum->GetName(), *FString::Join(ValidValues, TEXT(", "))));
+					*InputValue, *Enum->GetName(), *FString::Join(ValidValues, TEXT(", "))));
 				return false;
 			}
 			ByteProp->SetPropertyValue(ValuePtr, static_cast<uint8>(EnumValue));

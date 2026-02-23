@@ -314,3 +314,48 @@ bool FCortexSerializerEnumErrorByteTest::RunTest(const FString& Parameters)
 	TempObj->MarkAsGarbage();
 	return true;
 }
+
+// ============================================================================
+// Test: Byte enum properties accept numeric JSON values
+// ============================================================================
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerEnumNumericByteTest,
+	"Cortex.Core.Serializer.EnumNumeric.ByteProperty",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerEnumNumericByteTest::RunTest(const FString& Parameters)
+{
+	UClass* SceneTexClass = FindObject<UClass>(
+		nullptr, TEXT("/Script/Engine.MaterialExpressionSceneTexture"));
+	if (SceneTexClass == nullptr)
+	{
+		AddInfo(TEXT("MaterialExpressionSceneTexture class not found, skipping"));
+		return true;
+	}
+
+	FProperty* Property = SceneTexClass->FindPropertyByName(FName(TEXT("SceneTextureId")));
+	TestNotNull(TEXT("SceneTextureId property should exist"), Property);
+	if (Property == nullptr)
+	{
+		return true;
+	}
+
+	UObject* TempObj = NewObject<UObject>(GetTransientPackage(), SceneTexClass);
+	void* ValuePtr = Property->ContainerPtrToValuePtr<void>(TempObj);
+
+	TSharedPtr<FJsonValue> NumericValue = MakeShared<FJsonValueNumber>(14.0);
+	TArray<FString> Warnings;
+	const bool bResult = FCortexSerializer::JsonToProperty(NumericValue, Property, ValuePtr, Warnings);
+
+	TestTrue(TEXT("Numeric enum value should deserialize"), bResult);
+	TestEqual(TEXT("No warnings expected"), Warnings.Num(), 0);
+
+	if (const FByteProperty* ByteProp = CastField<FByteProperty>(Property))
+	{
+		TestEqual(TEXT("Enum byte should be 14"), static_cast<int32>(ByteProp->GetPropertyValue(ValuePtr)), 14);
+	}
+
+	TempObj->MarkAsGarbage();
+	return true;
+}
