@@ -450,6 +450,103 @@ class TestBlueprintCRUD:
 
 
 # ================================================================
+# Blueprint Domain — Class Defaults (CDO)
+# ================================================================
+
+
+@pytest.mark.e2e
+class TestBlueprintClassDefaults:
+    """Blueprint Class Default Object property tests."""
+
+    def test_get_class_defaults_discovery(self, tcp_connection, blueprint_for_test):
+        """Discovery mode: get all settable properties."""
+        resp = tcp_connection.send_command("bp.get_class_defaults", {
+            "blueprint_path": blueprint_for_test,
+        })
+        data = resp["data"]
+        assert "properties" in data
+        assert "class" in data
+        assert "parent_class" in data
+        assert data["count"] > 0
+
+    def test_get_class_defaults_specific(self, tcp_connection, blueprint_for_test):
+        """Read specific CDO properties by name."""
+        resp = tcp_connection.send_command("bp.get_class_defaults", {
+            "blueprint_path": blueprint_for_test,
+            "properties": ["bCanEverTick", "bReplicates"],
+        })
+        data = resp["data"]
+        props = data["properties"]
+        assert "bCanEverTick" in props
+        assert "bReplicates" in props
+        assert "type" in props["bCanEverTick"]
+        assert "value" in props["bCanEverTick"]
+
+    def test_set_class_defaults_bool(self, tcp_connection, blueprint_for_test):
+        """Set a bool CDO property and verify via get."""
+        tcp_connection.send_command("bp.set_class_defaults", {
+            "blueprint_path": blueprint_for_test,
+            "properties": {"bCanEverTick": True},
+            "compile": True,
+            "save": False,
+        })
+        resp = tcp_connection.send_command("bp.get_class_defaults", {
+            "blueprint_path": blueprint_for_test,
+            "properties": ["bCanEverTick"],
+        })
+        val = resp["data"]["properties"]["bCanEverTick"]["value"]
+        assert val is True
+
+    def test_set_class_defaults_batch(self, tcp_connection, blueprint_for_test):
+        """Set multiple CDO properties in one call."""
+        resp = tcp_connection.send_command("bp.set_class_defaults", {
+            "blueprint_path": blueprint_for_test,
+            "properties": {"bCanEverTick": True, "bReplicates": True},
+            "compile": False,
+            "save": False,
+        })
+        data = resp["data"]
+        assert "results" in data
+        assert "bCanEverTick" in data["results"]
+        assert "bReplicates" in data["results"]
+
+    def test_set_class_defaults_no_compile(self, tcp_connection, blueprint_for_test):
+        """compile=false should skip compilation."""
+        resp = tcp_connection.send_command("bp.set_class_defaults", {
+            "blueprint_path": blueprint_for_test,
+            "properties": {"bCanEverTick": False},
+            "compile": False,
+            "save": False,
+        })
+        data = resp["data"]
+        assert data["compiled"] is False
+        assert data["saved"] is False
+
+    def test_get_class_defaults_property_not_found(self, tcp_connection, blueprint_for_test):
+        """Misspelled property returns error with fuzzy suggestions."""
+        with pytest.raises(RuntimeError):
+            tcp_connection.send_command("bp.get_class_defaults", {
+                "blueprint_path": blueprint_for_test,
+                "properties": ["bCanEvrTick"],
+            })
+
+    def test_set_class_defaults_property_not_found(self, tcp_connection, blueprint_for_test):
+        """Non-existent property returns error."""
+        with pytest.raises(RuntimeError):
+            tcp_connection.send_command("bp.set_class_defaults", {
+                "blueprint_path": blueprint_for_test,
+                "properties": {"NonExistentProperty_12345": "value"},
+            })
+
+    def test_get_class_defaults_nonexistent_bp(self, tcp_connection):
+        """Non-existent Blueprint returns BLUEPRINT_NOT_FOUND."""
+        with pytest.raises(RuntimeError):
+            tcp_connection.send_command("bp.get_class_defaults", {
+                "blueprint_path": "/Game/NonExistent/BP_Ghost_12345",
+            })
+
+
+# ================================================================
 # Blueprint Domain — Error Cases
 # ================================================================
 

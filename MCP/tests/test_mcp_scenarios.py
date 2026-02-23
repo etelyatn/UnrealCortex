@@ -136,6 +136,86 @@ async def test_scenario_blueprint_lifecycle(mcp_client):
 
 
 # ================================================================
+# Scenario 1b: Class Defaults Workflow (CDO Properties)
+# ================================================================
+
+
+@pytest.mark.anyio
+@pytest.mark.scenario
+async def test_scenario_class_defaults_workflow(mcp_client):
+    """Create BP -> discover CDO properties -> read -> modify -> verify roundtrip -> cleanup."""
+    asset_path = None
+    try:
+        # Step 1: Create Actor Blueprint
+        data = await call_tool(mcp_client, "create_blueprint", {
+            "name": _uniq("MCPTest_CDO"),
+            "path": "/Game/Temp/CortexMCPTest",
+            "type": "Actor",
+        })
+        assert "asset_path" in data
+        asset_path = data["asset_path"]
+
+        # Step 2: Compile (ensures CDO exists)
+        await call_tool(mcp_client, "compile_blueprint", {
+            "asset_path": asset_path,
+        })
+
+        # Step 3: Discovery mode — get all settable properties
+        data = await call_tool(mcp_client, "get_class_defaults", {
+            "blueprint_path": asset_path,
+        })
+        assert "properties" in data
+        assert data["count"] > 0
+        assert "class" in data
+        assert "parent_class" in data
+
+        # Step 4: Read specific inherited C++ properties
+        data = await call_tool(mcp_client, "get_class_defaults", {
+            "blueprint_path": asset_path,
+            "properties": ["bCanEverTick", "bReplicates"],
+        })
+        props = data["properties"]
+        assert "bCanEverTick" in props
+        assert "bReplicates" in props
+        assert "type" in props["bCanEverTick"]
+        assert "value" in props["bCanEverTick"]
+
+        # Step 5: Set multiple CDO properties (batch)
+        data = await call_tool(mcp_client, "set_class_defaults", {
+            "blueprint_path": asset_path,
+            "properties": {"bCanEverTick": True, "bReplicates": True},
+            "compile": True,
+            "save": False,
+        })
+        assert "results" in data
+        assert data["results"]["bCanEverTick"]["success"] is True
+        assert data["results"]["bReplicates"]["success"] is True
+        assert data["compiled"] is True
+
+        # Step 6: Verify changes persisted via get
+        data = await call_tool(mcp_client, "get_class_defaults", {
+            "blueprint_path": asset_path,
+            "properties": ["bCanEverTick", "bReplicates"],
+        })
+        assert data["properties"]["bCanEverTick"]["value"] is True
+        assert data["properties"]["bReplicates"]["value"] is True
+
+        # Step 7: Set with compile=false, save=false
+        data = await call_tool(mcp_client, "set_class_defaults", {
+            "blueprint_path": asset_path,
+            "properties": {"bCanEverTick": False},
+            "compile": False,
+            "save": False,
+        })
+        assert data["compiled"] is False
+        assert data["saved"] is False
+
+    finally:
+        if asset_path:
+            await cleanup_blueprint(mcp_client, asset_path)
+
+
+# ================================================================
 # Scenario 2: Widget Builder (Blueprint + UMG)
 # ================================================================
 
