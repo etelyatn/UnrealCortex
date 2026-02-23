@@ -28,6 +28,53 @@ FCortexTcpServer::~FCortexTcpServer()
 	Stop();
 }
 
+void FCortexTcpServer::CleanupStalePortFiles()
+{
+	TArray<FString> PortFiles;
+	IFileManager::Get().FindFiles(
+		PortFiles,
+		*(FPaths::ProjectSavedDir() / TEXT("CortexPort-*.txt")),
+		true,
+		false);
+
+	const uint32 OurPID = FPlatformProcess::GetCurrentProcessId();
+
+	for (const FString& Filename : PortFiles)
+	{
+		// Parse PID from filename: CortexPort-{PID}.txt
+		FString PIDString = Filename;
+		if (!PIDString.RemoveFromStart(TEXT("CortexPort-")) ||
+			!PIDString.RemoveFromEnd(TEXT(".txt")))
+		{
+			continue;
+		}
+
+		const uint32 FilePID = FCString::Atoi(*PIDString);
+		if (FilePID == 0 || FilePID == OurPID)
+		{
+			continue;
+		}
+
+		FProcHandle Handle = FPlatformProcess::OpenProcess(FilePID);
+		if (Handle.IsValid())
+		{
+			const bool bRunning = FPlatformProcess::IsProcRunning(Handle);
+			FPlatformProcess::CloseProc(Handle);
+			if (bRunning)
+			{
+				continue;
+			}
+		}
+
+		const FString FullPath = FPaths::ProjectSavedDir() / Filename;
+		IFileManager::Get().Delete(*FullPath);
+		IFileManager::Get().Delete(*(FullPath + TEXT(".tmp")));
+		UE_LOG(LogCortex, Log, TEXT("Cleaned up stale port file: %s (PID %u no longer running)"),
+			*Filename,
+			FilePID);
+	}
+}
+
 bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 {
 	if (bRunning)
@@ -35,6 +82,8 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 		UE_LOG(LogCortex, Warning, TEXT("TCP server is already running"));
 		return false;
 	}
+
+	CleanupStalePortFiles();
 
 	CommandDispatcher = MoveTemp(InDispatcher);
 
