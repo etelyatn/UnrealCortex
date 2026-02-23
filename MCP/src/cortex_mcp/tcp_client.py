@@ -1,7 +1,10 @@
 """TCP client for communicating with the UnrealCortex plugin's TCP server."""
 
+import ctypes
+import dataclasses
 import os
 import pathlib
+import platform
 import socket
 import json
 import logging
@@ -11,6 +14,9 @@ import uuid
 
 from .cache import ResponseCache
 
+if platform.system() == "Windows":
+    from ctypes import wintypes
+
 logger = logging.getLogger(__name__)
 
 _CONNECT_TIMEOUT = 5.0
@@ -18,6 +24,55 @@ _RECV_TIMEOUT = 60.0
 _RECONNECT_DELAY = 0.5
 _DEFAULT_PORT = 8742
 _PORT_FILENAME = "CortexPort.txt"
+
+
+@dataclasses.dataclass(frozen=True)
+class EditorConnection:
+    """Metadata for a discovered Unreal Editor instance."""
+
+    port: int
+    pid: int
+    started_at: str
+    port_file: pathlib.Path
+
+
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _is_editor_alive(pid: int) -> bool:
+    """Check if PID is a live Unreal Editor process.
+
+    Windows: OpenProcess + QueryFullProcessImageNameW to verify executable.
+    Unix: os.kill(pid, 0) signal check.
+    """
+    if platform.system() == "Windows":
+        handle = ctypes.windll.kernel32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if not handle:
+            error = ctypes.GetLastError()
+            if error == 5:  # ERROR_ACCESS_DENIED - process exists
+                return True
+            return False
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(1024)
+            ok = ctypes.windll.kernel32.QueryFullProcessImageNameW(
+                handle, 0, buf, ctypes.byref(size)
+            )
+            if not ok:
+                return False
+            return "UnrealEditor" in buf.value
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
 
 
 def _parse_port_file(
