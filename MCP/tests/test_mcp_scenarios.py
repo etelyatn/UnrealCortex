@@ -1082,3 +1082,97 @@ async def test_scenario_editor_viewport(mcp_client):
             })
         except Exception:
             pass
+
+
+# ================================================================
+# Scenario 10: Material Property Workflow (Material Domain + Node Enum)
+# ================================================================
+
+
+async def _cleanup_material(client, asset_path: str) -> None:
+    """Best-effort delete of a test material."""
+    try:
+        await client.call_tool("delete_material", {"asset_path": asset_path})
+    except Exception:
+        pass
+
+
+@pytest.mark.anyio
+@pytest.mark.scenario
+async def test_scenario_material_property_workflow(mcp_client):
+    """Create material -> set domain to PostProcess -> add SceneTexture -> set enum -> verify."""
+    asset_path = None
+    try:
+        mat_name = _uniq("MCPTest_MatProp")
+        mat_dir = "/Game/Temp/CortexMCPTest"
+
+        # Step 1: Create material (defaults to Surface domain)
+        data = await call_tool(mcp_client, "create_material", {
+            "name": mat_name,
+            "asset_path": mat_dir,
+        })
+        assert "asset_path" in data
+        asset_path = data["asset_path"]
+
+        # Step 2: Verify initial domain is Surface
+        data = await call_tool(mcp_client, "get_material", {
+            "asset_path": asset_path,
+        })
+        assert data["material_domain"] == "Surface"
+
+        # Step 3: Set MaterialDomain to PostProcess (using pretty name alias)
+        data = await call_tool(mcp_client, "set_material_property", {
+            "asset_path": asset_path,
+            "property_name": "MaterialDomain",
+            "value": "PostProcess",
+        })
+        assert data.get("updated") is True
+
+        # Step 4: Verify domain changed
+        data = await call_tool(mcp_client, "get_material", {
+            "asset_path": asset_path,
+        })
+        assert data["material_domain"] == "PostProcess"
+
+        # Step 5: Add SceneTexture node
+        data = await call_tool(mcp_client, "add_material_node", {
+            "asset_path": asset_path,
+            "expression_class": "MaterialExpressionSceneTexture",
+        })
+        assert "node_id" in data
+        scene_tex_node = data["node_id"]
+
+        # Step 6: Set SceneTextureId enum property (FByteProperty)
+        data = await call_tool(mcp_client, "set_material_node_property", {
+            "asset_path": asset_path,
+            "node_id": scene_tex_node,
+            "property_name": "SceneTextureId",
+            "value": "PPI_PostProcessInput0",
+        })
+        assert data.get("updated") is True
+
+        # Step 7: Verify enum was set via get_material_node
+        data = await call_tool(mcp_client, "get_material_node", {
+            "asset_path": asset_path,
+            "node_id": scene_tex_node,
+        })
+        props = data.get("properties", {})
+        assert props.get("SceneTextureId") == "PPI_PostProcessInput0"
+
+        # Step 8: Set BlendMode using reflection name (not alias)
+        data = await call_tool(mcp_client, "set_material_property", {
+            "asset_path": asset_path,
+            "property_name": "BlendMode",
+            "value": "BLEND_Opaque",
+        })
+        assert data.get("updated") is True
+
+        # Step 9: Verify via get_material
+        data = await call_tool(mcp_client, "get_material", {
+            "asset_path": asset_path,
+        })
+        assert data["blend_mode"] == "Opaque"
+
+    finally:
+        if asset_path:
+            await _cleanup_material(mcp_client, asset_path)
