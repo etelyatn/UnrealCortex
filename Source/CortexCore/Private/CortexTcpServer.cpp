@@ -55,15 +55,10 @@ void FCortexTcpServer::CleanupStalePortFiles()
 			continue;
 		}
 
-		FProcHandle Handle = FPlatformProcess::OpenProcess(FilePID);
-		if (Handle.IsValid())
+		// Only delete when we can positively determine the process is not running.
+		if (FPlatformProcess::IsApplicationRunning(FilePID))
 		{
-			const bool bRunning = FPlatformProcess::IsProcRunning(Handle);
-			FPlatformProcess::CloseProc(Handle);
-			if (bRunning)
-			{
-				continue;
-			}
+			continue;
 		}
 
 		const FString FullPath = FPaths::ProjectSavedDir() / Filename;
