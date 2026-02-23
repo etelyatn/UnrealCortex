@@ -74,7 +74,7 @@ class TestRestartEditor:
         project_dir = tmp_path
         saved_dir = project_dir / "Saved"
         saved_dir.mkdir(parents=True)
-        port_file = saved_dir / "CortexPort.txt"
+        port_file = saved_dir / "CortexPort-5678.txt"
 
         def _popen_side_effect(*args, **kwargs):
             port_file.write_text(
