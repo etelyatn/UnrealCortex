@@ -16,17 +16,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
 from cortex_mcp.tcp_client import UEConnection
 from material.composites import _build_batch_commands
 
-# Skip if no UE editor running
-PORT_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "Saved", "CortexPort.txt")
-
 
 def _get_connection():
     """Get connection to UE editor, skip test if editor not running."""
-    if not os.path.exists(PORT_FILE):
-        pytest.skip("No CortexPort.txt — UE editor not running")
-    with open(PORT_FILE) as f:
-        port = int(f.read().strip())
-    conn = UEConnection(port=port)
+    conn = UEConnection()
+    if conn.port == 8742 and conn._pid is None:
+        pytest.skip("No CortexPort-*.txt - UE editor not running")
     try:
         conn.connect()
     except Exception:
