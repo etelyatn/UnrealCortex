@@ -74,15 +74,16 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 					TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&JsonString);
 				FJsonSerializer::Serialize(PortInfo, Writer);
 
-				FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
+				const uint32 CurrentPID = FPlatformProcess::GetCurrentProcessId();
+				PortFilePath = FPaths::ProjectSavedDir() / FString::Printf(TEXT("CortexPort-%u.txt"), CurrentPID);
 				FString TempFilePath = PortFilePath + TEXT(".tmp");
 				FFileHelper::SaveStringToFile(JsonString, *TempFilePath);
 				IFileManager::Get().Move(*PortFilePath, *TempFilePath, true);
 
-				UE_LOG(LogCortex, Log, TEXT("Wrote port file: %s (port %d, pid %d)"),
+				UE_LOG(LogCortex, Log, TEXT("Wrote port file: %s (port %d, pid %u)"),
 					*PortFilePath,
 					BoundPort,
-					FPlatformProcess::GetCurrentProcessId());
+					CurrentPID);
 			}
 
 			TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(
@@ -129,10 +130,12 @@ void FCortexTcpServer::Stop()
 
 	bRunning = false;
 
-	// Delete port file and temp file
-	FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
-	IFileManager::Get().Delete(*PortFilePath);
-	IFileManager::Get().Delete(*(PortFilePath + TEXT(".tmp")));
+	if (!PortFilePath.IsEmpty())
+	{
+		IFileManager::Get().Delete(*PortFilePath);
+		IFileManager::Get().Delete(*(PortFilePath + TEXT(".tmp")));
+		PortFilePath.Empty();
+	}
 
 	if (TickDelegateHandle.IsValid())
 	{

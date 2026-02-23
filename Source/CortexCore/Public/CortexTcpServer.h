@@ -63,4 +63,10 @@ private:
 	FCommandDispatcher CommandDispatcher;
 	TMap<int32, FCortexPendingDeferred> PendingDeferred;
 	int32 NextDeferredId = 1;
+
+	/** Full path to this editor's port file (CortexPort-{PID}.txt) */
+	FString PortFilePath;
+
+	/** Remove port files whose PIDs are no longer running */
+	static void CleanupStalePortFiles();
 };
