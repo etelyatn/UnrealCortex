@@ -53,6 +53,10 @@ FCortexLayoutResult FCortexGraphLayoutOps::CalculateLayout(
 
 		// Assign layers
 		TMap<FString, int32> LayerAssignment = AssignLayers(SubNodes, Config.Direction);
+		for (const auto& LayerPair : LayerAssignment)
+		{
+			FinalResult.LayerAssignment.Add(LayerPair.Key, LayerPair.Value);
+		}
 
 		// Order within layers
 		TMap<int32, TArray<FString>> OrderedLayers = OrderNodesInLayers(LayerAssignment, SubNodes);
@@ -82,6 +86,42 @@ FCortexLayoutResult FCortexGraphLayoutOps::CalculateLayout(
 
 	// Expand proxy coordinates back into individual grouped node positions
 	ExpandGroupPositions(Groups, NodeToGroupIndex, NodeMap, Config, FinalResult);
+
+	TMap<FString, int32> PreRefineExecY;
+	for (const FCortexNodeGroup& Group : Groups)
+	{
+		if (const FIntPoint* GroupPos = FinalResult.Positions.Find(Group.ExecNodeId))
+		{
+			PreRefineExecY.Add(Group.ExecNodeId, GroupPos->Y);
+		}
+	}
+
+	// Y-refinement: iterative median centering to reduce wire zigzag
+	RefineYPositions(EffectiveNodes, NodeToGroupIndex, Subgraphs, Config, FinalResult);
+
+	for (const FCortexNodeGroup& Group : Groups)
+	{
+		const int32* OriginalY = PreRefineExecY.Find(Group.ExecNodeId);
+		const FIntPoint* NewExecPos = FinalResult.Positions.Find(Group.ExecNodeId);
+		if (!OriginalY || !NewExecPos)
+		{
+			continue;
+		}
+
+		const int32 DeltaY = NewExecPos->Y - *OriginalY;
+		if (DeltaY == 0)
+		{
+			continue;
+		}
+
+		for (const FString& DataNodeId : Group.DataNodeIds)
+		{
+			if (FIntPoint* DataPos = FinalResult.Positions.Find(DataNodeId))
+			{
+				DataPos->Y += DeltaY;
+			}
+		}
+	}
 
 	// Snap all final positions to a stable grid.
 	for (auto& Pair : FinalResult.Positions)
@@ -1134,6 +1174,220 @@ void FCortexGraphLayoutOps::ExpandGroupPositions(
 			int32& LaneX = LaneXCursor.FindOrAdd(Lane);
 			InOutResult.Positions.Add(DataId, FIntPoint(LaneX, DataY));
 			LaneX += Width + InnerHSpacing;
+		}
+	}
+}
+
+void FCortexGraphLayoutOps::RefineYPositions(
+	const TArray<FCortexLayoutNode>& Nodes,
+	const TMap<FString, int32>& NodeToGroupIndex,
+	const TArray<TArray<FString>>& Subgraphs,
+	const FCortexLayoutConfig& Config,
+	FCortexLayoutResult& InOutResult)
+{
+	TMap<FString, const FCortexLayoutNode*> NodeMap;
+	for (const FCortexLayoutNode& Node : Nodes)
+	{
+		NodeMap.Add(Node.Id, &Node);
+	}
+
+	TMap<FString, TArray<FString>> Neighbors;
+	TMap<FString, int32> IncomingCount;
+	TMap<FString, int32> OutgoingCount;
+	for (const FCortexLayoutNode& Node : Nodes)
+	{
+		TArray<FString>& NodeNeighbors = Neighbors.FindOrAdd(Node.Id);
+		OutgoingCount.FindOrAdd(Node.Id) += Node.ExecOutputs.Num() + Node.DataOutputs.Num();
+		for (const FString& Target : Node.ExecOutputs)
+		{
+			NodeNeighbors.AddUnique(Target);
+			Neighbors.FindOrAdd(Target).AddUnique(Node.Id);
+			IncomingCount.FindOrAdd(Target)++;
+		}
+
+		for (const FString& Target : Node.DataOutputs)
+		{
+			NodeNeighbors.AddUnique(Target);
+			Neighbors.FindOrAdd(Target).AddUnique(Node.Id);
+			IncomingCount.FindOrAdd(Target)++;
+		}
+	}
+
+	TSet<FString> SkipSet;
+	for (const auto& Pair : NodeToGroupIndex)
+	{
+		if (!InOutResult.LayerAssignment.Contains(Pair.Key))
+		{
+			SkipSet.Add(Pair.Key);
+		}
+	}
+
+	TMap<FString, int32> NodeToSubgraph;
+	for (int32 SubgraphIndex = 0; SubgraphIndex < Subgraphs.Num(); ++SubgraphIndex)
+	{
+		for (const FString& Id : Subgraphs[SubgraphIndex])
+		{
+			NodeToSubgraph.Add(Id, SubgraphIndex);
+		}
+	}
+
+	TMap<int32, TMap<int32, TArray<FString>>> SubgraphLayers;
+	int32 RefinableCount = 0;
+	for (const auto& Pair : InOutResult.LayerAssignment)
+	{
+		if (SkipSet.Contains(Pair.Key))
+		{
+			continue;
+		}
+
+		if (!InOutResult.Positions.Contains(Pair.Key))
+		{
+			continue;
+		}
+
+		const int32* SubgraphIndex = NodeToSubgraph.Find(Pair.Key);
+		const int32 ResolvedSubgraph = SubgraphIndex ? *SubgraphIndex : 0;
+		SubgraphLayers.FindOrAdd(ResolvedSubgraph).FindOrAdd(Pair.Value).Add(Pair.Key);
+		++RefinableCount;
+	}
+
+	if (RefinableCount == 0)
+	{
+		return;
+	}
+
+	for (auto& SubgraphPair : SubgraphLayers)
+	{
+		for (auto& LayerPair : SubgraphPair.Value)
+		{
+			TArray<FString>& LayerNodes = LayerPair.Value;
+			LayerNodes.Sort([&IncomingCount, &OutgoingCount](const FString& A, const FString& B)
+			{
+				const int32 AIncoming = IncomingCount.FindRef(A);
+				const int32 AOutgoing = OutgoingCount.FindRef(A);
+				const int32 BIncoming = IncomingCount.FindRef(B);
+				const int32 BOutgoing = OutgoingCount.FindRef(B);
+				const bool ATransit = (AIncoming > 0 && AOutgoing > 0);
+				const bool BTransit = (BIncoming > 0 && BOutgoing > 0);
+				if (ATransit != BTransit)
+				{
+					return ATransit;
+				}
+
+				const bool ASource = (AIncoming == 0 && AOutgoing > 0);
+				const bool BSource = (BIncoming == 0 && BOutgoing > 0);
+				if (ASource != BSource)
+				{
+					return !ASource;
+				}
+
+				return A < B;
+			});
+		}
+	}
+
+	const int32 SnapCeil = ((Config.VerticalSpacing + CortexGraphLayout::GridSnapSize - 1)
+		/ CortexGraphLayout::GridSnapSize) * CortexGraphLayout::GridSnapSize;
+	const int32 PassCount = (RefinableCount > 300) ? 4 : 8;
+
+	for (int32 Pass = 0; Pass < PassCount; ++Pass)
+	{
+		const bool bForward = (Pass % 2 == 0);
+
+		for (auto& SubgraphPair : SubgraphLayers)
+		{
+			TMap<int32, TArray<FString>>& LayerMap = SubgraphPair.Value;
+
+			TArray<int32> LayerKeys;
+			LayerMap.GetKeys(LayerKeys);
+			LayerKeys.Sort();
+			if (!bForward)
+			{
+				Algo::Reverse(LayerKeys);
+			}
+
+			for (int32 LayerIndex : LayerKeys)
+			{
+				TArray<FString>& LayerNodes = LayerMap[LayerIndex];
+				if (LayerNodes.Num() == 0)
+				{
+					continue;
+				}
+
+				int32 OriginalTop = MAX_int32;
+				int32 OriginalBottom = MIN_int32;
+				for (const FString& Id : LayerNodes)
+				{
+					const int32 NodeY = InOutResult.Positions[Id].Y;
+					const FCortexLayoutNode* const* NodePtr = NodeMap.Find(Id);
+					const int32 NodeHeight = NodePtr ? (*NodePtr)->Height : 100;
+					OriginalTop = FMath::Min(OriginalTop, NodeY);
+					OriginalBottom = FMath::Max(OriginalBottom, NodeY + NodeHeight);
+				}
+				const int32 OriginalCenter = (OriginalTop + OriginalBottom) / 2;
+
+				TArray<TPair<int32, FString>> Targets;
+				for (const FString& NodeId : LayerNodes)
+				{
+					const FCortexLayoutNode* const* NodePtr = NodeMap.Find(NodeId);
+					const int32 Height = NodePtr ? (*NodePtr)->Height : 100;
+
+					TArray<int32> NeighborCenters;
+					const TArray<FString>* ConnectedNodes = Neighbors.Find(NodeId);
+					if (ConnectedNodes)
+					{
+						for (const FString& NeighborId : *ConnectedNodes)
+						{
+							const FIntPoint* NeighborPos = InOutResult.Positions.Find(NeighborId);
+							if (!NeighborPos)
+							{
+								continue;
+							}
+
+							const FCortexLayoutNode* const* NeighborNode = NodeMap.Find(NeighborId);
+							const int32 NeighborHeight = NeighborNode ? (*NeighborNode)->Height : 100;
+							NeighborCenters.Add(NeighborPos->Y + NeighborHeight / 2);
+						}
+					}
+
+					int32 TargetY = InOutResult.Positions[NodeId].Y;
+					if (NeighborCenters.Num() > 0)
+					{
+						NeighborCenters.Sort();
+						const int32 Mid = NeighborCenters.Num() / 2;
+						const int32 MedianCenter = (NeighborCenters.Num() % 2 == 1)
+							? NeighborCenters[Mid]
+							: (NeighborCenters[Mid - 1] + NeighborCenters[Mid]) / 2;
+						TargetY = MedianCenter - Height / 2;
+					}
+
+					Targets.Add(TPair<int32, FString>(TargetY, NodeId));
+				}
+
+				for (int32 Index = 1; Index < Targets.Num(); ++Index)
+				{
+					const FCortexLayoutNode* const* PrevNodePtr = NodeMap.Find(Targets[Index - 1].Value);
+					const int32 PrevHeight = PrevNodePtr ? (*PrevNodePtr)->Height : 100;
+					const int32 PrevBottom = Targets[Index - 1].Key + PrevHeight;
+					const int32 MinY = PrevBottom + SnapCeil;
+					if (Targets[Index].Key < MinY)
+					{
+						Targets[Index].Key = MinY;
+					}
+				}
+
+				const FCortexLayoutNode* const* LastNodePtr = NodeMap.Find(Targets.Last().Value);
+				const int32 LastHeight = LastNodePtr ? (*LastNodePtr)->Height : 100;
+				const int32 NewTop = Targets[0].Key;
+				const int32 NewBottom = Targets.Last().Key + LastHeight;
+				const int32 NewCenter = (NewTop + NewBottom) / 2;
+				const int32 Shift = (OriginalCenter - NewCenter) / 2;
+
+				for (auto& Target : Targets)
+				{
+					InOutResult.Positions[Target.Value].Y = Target.Key + Shift;
+				}
+			}
 		}
 	}
 }
