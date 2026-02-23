@@ -558,3 +558,50 @@ bool FCortexAssetReloadDryRunTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetOpenWorldTest,
+	"Cortex.Core.Asset.OpenAsset.WorldAsset",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetOpenWorldTest::RunTest(const FString& Parameters)
+{
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Maps/TestMap"));
+
+	FCortexCommandResult Result = Router.Execute(TEXT("core.open_asset"), RequestParams);
+	TestTrue(TEXT("open_asset World should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
+		Result.Data->TryGetArrayField(TEXT("results"), Results);
+		if (Results != nullptr && Results->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject>* Entry = nullptr;
+			(*Results)[0]->TryGetObject(Entry);
+			if (Entry != nullptr)
+			{
+				bool bOpened = false;
+				(*Entry)->TryGetBoolField(TEXT("editor_opened"), bOpened);
+				TestTrue(TEXT("editor_opened should be true for World"), bOpened);
+
+				FString AssetType;
+				(*Entry)->TryGetStringField(TEXT("asset_type"), AssetType);
+				TestTrue(TEXT("asset_type should be World"), AssetType.Contains(TEXT("World")));
+
+				bool bWasAlreadyOpen = true;
+				(*Entry)->TryGetBoolField(TEXT("was_already_open"), bWasAlreadyOpen);
+				TestTrue(TEXT("was_already_open field should exist"),
+					(*Entry)->HasField(TEXT("was_already_open")));
+			}
+		}
+	}
+
+	return true;
+}
