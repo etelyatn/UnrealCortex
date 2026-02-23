@@ -404,3 +404,136 @@ bool FCortexMaterialListInstancesTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialSetPropertyDomainTest,
+	"Cortex.Material.Asset.SetMaterialProperty.Domain",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialSetPropertyDomainTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestSetDomain_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_SetDomain_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	FCortexCommandResult CreateResult = Handler.Execute(TEXT("create_material"), CreateParams);
+	TestTrue(TEXT("Material creation should succeed"), CreateResult.bSuccess);
+
+	TSharedPtr<FJsonObject> SetParams = MakeShared<FJsonObject>();
+	SetParams->SetStringField(TEXT("asset_path"), MatPath);
+	SetParams->SetStringField(TEXT("property_name"), TEXT("MaterialDomain"));
+	SetParams->SetStringField(TEXT("value"), TEXT("MD_PostProcess"));
+	FCortexCommandResult SetResult = Handler.Execute(TEXT("set_material_property"), SetParams);
+
+	TestTrue(TEXT("set_material_property should succeed"), SetResult.bSuccess);
+
+	if (SetResult.Data.IsValid())
+	{
+		bool bUpdated = false;
+		SetResult.Data->TryGetBoolField(TEXT("updated"), bUpdated);
+		TestTrue(TEXT("updated should be true"), bUpdated);
+
+		FString ResultPath;
+		SetResult.Data->TryGetStringField(TEXT("asset_path"), ResultPath);
+		TestEqual(TEXT("asset_path should match"), ResultPath, MatPath);
+	}
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MatPath);
+	TestNotNull(TEXT("Should load material"), Material);
+	if (Material)
+	{
+		TestEqual(TEXT("MaterialDomain should be PostProcess"),
+			static_cast<int32>(Material->MaterialDomain),
+			static_cast<int32>(MD_PostProcess));
+		Material->MarkAsGarbage();
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialSetPropertyBlendModeTest,
+	"Cortex.Material.Asset.SetMaterialProperty.BlendMode",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialSetPropertyBlendModeTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestSetBlend_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_SetBlend_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	TSharedPtr<FJsonObject> SetParams = MakeShared<FJsonObject>();
+	SetParams->SetStringField(TEXT("asset_path"), MatPath);
+	SetParams->SetStringField(TEXT("property_name"), TEXT("BlendMode"));
+	SetParams->SetStringField(TEXT("value"), TEXT("BLEND_Masked"));
+	FCortexCommandResult SetResult = Handler.Execute(TEXT("set_material_property"), SetParams);
+
+	TestTrue(TEXT("set_material_property BlendMode should succeed"), SetResult.bSuccess);
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MatPath);
+	TestNotNull(TEXT("Should load material"), Material);
+	if (Material)
+	{
+		TestEqual(TEXT("BlendMode should be Masked"),
+			static_cast<int32>(Material->BlendMode),
+			static_cast<int32>(BLEND_Masked));
+		Material->MarkAsGarbage();
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialSetPropertyInvalidTest,
+	"Cortex.Material.Asset.SetMaterialProperty.InvalidProperty",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialSetPropertyInvalidTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestSetInvalid_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_SetInvalid_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	TSharedPtr<FJsonObject> SetParams = MakeShared<FJsonObject>();
+	SetParams->SetStringField(TEXT("asset_path"), MatPath);
+	SetParams->SetStringField(TEXT("property_name"), TEXT("NonExistentProperty"));
+	SetParams->SetStringField(TEXT("value"), TEXT("SomeValue"));
+	FCortexCommandResult SetResult = Handler.Execute(TEXT("set_material_property"), SetParams);
+
+	TestFalse(TEXT("Should fail for invalid property"), SetResult.bSuccess);
+	TestEqual(TEXT("Error code should be InvalidField"),
+		SetResult.ErrorCode, CortexErrorCodes::InvalidField);
+
+	UObject* LoadedAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedAsset)
+	{
+		LoadedAsset->MarkAsGarbage();
+	}
+
+	return true;
+}

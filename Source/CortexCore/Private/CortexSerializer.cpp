@@ -422,7 +422,15 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		int64 EnumValue = Enum->GetValueByNameString(EnumString);
 		if (EnumValue == INDEX_NONE)
 		{
-			OutWarnings.Add(FString::Printf(TEXT("Unknown enum value '%s' for enum '%s'"), *EnumString, *Enum->GetName()));
+			TArray<FString> ValidValues;
+			for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+			{
+				ValidValues.Add(Enum->GetNameStringByIndex(Index));
+			}
+
+			OutWarnings.Add(FString::Printf(
+				TEXT("Unknown enum value '%s' for %s. Valid: %s"),
+				*EnumString, *Enum->GetName(), *FString::Join(ValidValues, TEXT(", "))));
 			return false;
 		}
 		FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
@@ -439,7 +447,15 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 			int64 EnumValue = Enum->GetValueByNameString(EnumString);
 			if (EnumValue == INDEX_NONE)
 			{
-				OutWarnings.Add(FString::Printf(TEXT("Unknown enum value '%s' for enum '%s'"), *EnumString, *Enum->GetName()));
+				TArray<FString> ValidValues;
+				for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+				{
+					ValidValues.Add(Enum->GetNameStringByIndex(Index));
+				}
+
+				OutWarnings.Add(FString::Printf(
+					TEXT("Unknown enum value '%s' for %s. Valid: %s"),
+					*EnumString, *Enum->GetName(), *FString::Join(ValidValues, TEXT(", "))));
 				return false;
 			}
 			ByteProp->SetPropertyValue(ValuePtr, static_cast<uint8>(EnumValue));
