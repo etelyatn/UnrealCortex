@@ -1,6 +1,7 @@
 #include "CortexBPCommandHandler.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPClassDefaultsOps.h"
 #include "Operations/CortexBPStructureOps.h"
 
 FCortexCommandResult FCortexBPCommandHandler::Execute(
@@ -61,6 +62,16 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPStructureOps::AddFunction(Params);
 	}
 
+	if (Command == TEXT("get_class_defaults"))
+	{
+		return FCortexBPClassDefaultsOps::GetClassDefaults(Params);
+	}
+
+	if (Command == TEXT("set_class_defaults"))
+	{
+		return FCortexBPClassDefaultsOps::SetClassDefaults(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown bp command: %s"), *Command)
@@ -81,6 +92,8 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add({TEXT("add_variable"), TEXT("Add a variable to a Blueprint")});
 	Commands.Add({TEXT("remove_variable"), TEXT("Remove a variable from a Blueprint")});
 	Commands.Add({TEXT("add_function"), TEXT("Add a function to a Blueprint")});
+	Commands.Add({TEXT("get_class_defaults"), TEXT("Read default property values from a Blueprint CDO")});
+	Commands.Add({TEXT("set_class_defaults"), TEXT("Set default property values on a Blueprint CDO")});
 
 	return Commands;
 }
