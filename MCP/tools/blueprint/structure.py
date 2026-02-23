@@ -126,3 +126,71 @@ def register_blueprint_structure_tools(mcp, connection: UEConnection):
             return format_response(response.get("data", {}), "add_blueprint_function")
         except ConnectionError as e:
             return f"Error: {e}"
+
+    @mcp.tool()
+    def configure_timeline(
+        asset_path: str,
+        timeline_name: str,
+        length: float = 1.0,
+        loop: bool = False,
+        tracks: list[dict] | None = None,
+    ) -> str:
+        """Configure a Blueprint timeline's tracks and keyframes.
+
+        Args:
+            asset_path: Full path to the Blueprint
+            timeline_name: Timeline variable name
+            length: Timeline length in seconds
+            loop: Whether timeline loops
+            tracks: Optional list of tracks. Supported types: float, vector
+
+        Returns:
+            JSON with:
+            - timeline_name: Name of the configured timeline
+            - track_count: Total configured track count
+            - length: Timeline length
+            - loop: Looping state
+        """
+        try:
+            params = {
+                "asset_path": asset_path,
+                "timeline_name": timeline_name,
+                "length": length,
+                "loop": loop,
+            }
+            if tracks:
+                params["tracks"] = tracks
+            response = connection.send_command("bp.configure_timeline", params)
+            return format_response(response.get("data", {}), "configure_timeline")
+        except ConnectionError as e:
+            return f"Error: {e}"
+
+    @mcp.tool()
+    def set_component_defaults(
+        asset_path: str,
+        component_name: str,
+        properties: dict[str, str],
+    ) -> str:
+        """Set object-reference defaults on a Blueprint component template.
+
+        Args:
+            asset_path: Full path to the Blueprint
+            component_name: Component name in the Blueprint Components panel
+            properties: Map of property name to asset object path
+
+        Returns:
+            JSON with:
+            - component_name: Target component
+            - properties_set: Number of properties successfully applied
+            - errors: Optional list of per-property failures
+        """
+        try:
+            params = {
+                "asset_path": asset_path,
+                "component_name": component_name,
+                "properties": properties,
+            }
+            response = connection.send_command("bp.set_component_defaults", params)
+            return format_response(response.get("data", {}), "set_component_defaults")
+        except ConnectionError as e:
+            return f"Error: {e}"
