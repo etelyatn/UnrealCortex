@@ -4,6 +4,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"
+#include "Engine/TimelineTemplate.h"
 #include "Misc/PackageName.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -76,6 +77,42 @@ bool FCortexBPTimelineTest::RunTest(const FString& Parameters)
 		FCortexCommandResult Result = Handler.Execute(TEXT("configure_timeline"), Params);
 		TestFalse(TEXT("missing timeline_name should fail"), Result.bSuccess);
 		TestEqual(TEXT("error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Invalid updates should fail without mutating existing track set.
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TestBPPath);
+		Params->SetStringField(TEXT("timeline_name"), TEXT("BounceTimeline"));
+
+		TArray<TSharedPtr<FJsonValue>> TracksArray;
+		TSharedPtr<FJsonObject> BadTrack = MakeShared<FJsonObject>();
+		BadTrack->SetStringField(TEXT("type"), TEXT("float"));
+		BadTrack->SetStringField(TEXT("name"), TEXT("BadTrack"));
+		// Intentionally omit keys to force validation failure.
+		TracksArray.Add(MakeShared<FJsonValueObject>(BadTrack));
+		Params->SetArrayField(TEXT("tracks"), TracksArray);
+
+		FCortexCommandResult Result = Handler.Execute(TEXT("configure_timeline"), Params);
+		TestFalse(TEXT("invalid configure_timeline should fail"), Result.bSuccess);
+	}
+
+	{
+		if (UObject* Obj = LoadObject<UBlueprint>(nullptr, *TestBPPath))
+		{
+			UBlueprint* BP = Cast<UBlueprint>(Obj);
+			TestNotNull(TEXT("Blueprint should load"), BP);
+			if (BP != nullptr)
+			{
+				UTimelineTemplate* Timeline = BP->FindTimelineTemplateByVariableName(TEXT("BounceTimeline"));
+				TestNotNull(TEXT("Timeline should still exist"), Timeline);
+				if (Timeline != nullptr)
+				{
+					TestEqual(TEXT("Float tracks should remain unchanged after failed update"),
+						Timeline->FloatTracks.Num(), 1);
+				}
+			}
+		}
 	}
 
 	const FString PackagePath = FPackageName::ObjectPathToPackageName(TestBPPath);

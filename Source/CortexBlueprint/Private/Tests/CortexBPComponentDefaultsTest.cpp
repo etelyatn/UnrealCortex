@@ -2,6 +2,7 @@
 #include "CortexBPCommandHandler.h"
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"
 #include "Misc/PackageName.h"
 
@@ -34,6 +35,7 @@ bool FCortexBPComponentDefaultsTest::RunTest(const FString& Parameters)
 
 		TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
 		Properties->SetStringField(TEXT("StaticMesh"), TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+		Properties->SetStringField(TEXT("OverrideMaterials[0]"), TEXT("/Engine/EngineMaterials/DefaultMaterial.DefaultMaterial"));
 		Params->SetObjectField(TEXT("properties"), Properties);
 
 		FCortexCommandResult Result = Handler.Execute(TEXT("set_component_defaults"), Params);
@@ -43,7 +45,13 @@ bool FCortexBPComponentDefaultsTest::RunTest(const FString& Parameters)
 		{
 			double PropsSet = 0.0;
 			Result.Data->TryGetNumberField(TEXT("properties_set"), PropsSet);
-			TestEqual(TEXT("properties_set should be 1"), static_cast<int32>(PropsSet), 1);
+			TestEqual(TEXT("properties_set should be 2"), static_cast<int32>(PropsSet), 2);
+
+			const TArray<TSharedPtr<FJsonValue>>* Errors = nullptr;
+			bool bHasErrors = Result.Data->TryGetArrayField(TEXT("errors"), Errors)
+				&& Errors != nullptr
+				&& Errors->Num() > 0;
+			TestFalse(TEXT("set_component_defaults should not return errors"), bHasErrors);
 		}
 	}
 
