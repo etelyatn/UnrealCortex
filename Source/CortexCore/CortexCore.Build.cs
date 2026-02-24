@@ -24,6 +24,7 @@ public class CortexCore : ModuleRules
             "UnrealEd",
             "AssetRegistry",
             "EnhancedInput",
+            "InputCore",
         });
     }
 }

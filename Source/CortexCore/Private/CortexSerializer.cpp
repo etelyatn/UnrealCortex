@@ -9,6 +9,7 @@
 #include "UObject/SoftObjectPath.h"
 #include "Dom/JsonValue.h"
 #include "Misc/PackageName.h"
+#include "UObject/UObjectGlobals.h"
 
 TMap<const UScriptStruct*, TArray<UScriptStruct*>> FCortexSerializer::SubtypeCache;
 
@@ -353,6 +354,15 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		// For object properties, set to nullptr
 		if (const FObjectProperty* ObjProp = CastField<FObjectProperty>(Property))
 		{
+			// Clean up existing instanced sub-object before nulling
+			if (Property->HasAllPropertyFlags(CPF_InstancedReference))
+			{
+				UObject* Existing = ObjProp->GetObjectPropertyValue(ValuePtr);
+				if (Existing)
+				{
+					Existing->MarkAsGarbage();
+				}
+			}
 			ObjProp->SetObjectPropertyValue(ValuePtr, nullptr);
 			return true;
 		}
@@ -592,6 +602,23 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		}
 
 		FScriptArrayHelper ArrayHelper(ArrayProp, ValuePtr);
+
+		// Clean up existing instanced sub-objects before resize
+		if (ArrayProp->Inner->HasAllPropertyFlags(CPF_InstancedReference))
+		{
+			if (const FObjectProperty* InnerObjProp = CastField<FObjectProperty>(ArrayProp->Inner))
+			{
+				for (int32 i = 0; i < ArrayHelper.Num(); ++i)
+				{
+					UObject* Existing = InnerObjProp->GetObjectPropertyValue(ArrayHelper.GetRawPtr(i));
+					if (Existing)
+					{
+						Existing->MarkAsGarbage();
+					}
+				}
+			}
+		}
+
 		ArrayHelper.Resize(JsonArray->Num());
 		for (int32 Index = 0; Index < JsonArray->Num(); ++Index)
 		{
@@ -611,6 +638,26 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		}
 
 		FScriptMapHelper MapHelper(MapProp, ValuePtr);
+
+		// Clean up existing instanced sub-objects before clearing map
+		if (MapProp->ValueProp->HasAllPropertyFlags(CPF_InstancedReference))
+		{
+			if (const FObjectProperty* ValueObjProp = CastField<FObjectProperty>(MapProp->ValueProp))
+			{
+				for (int32 i = 0; i < MapHelper.GetMaxIndex(); ++i)
+				{
+					if (MapHelper.IsValidIndex(i))
+					{
+						UObject* Existing = ValueObjProp->GetObjectPropertyValue(MapHelper.GetValuePtr(i));
+						if (Existing)
+						{
+							Existing->MarkAsGarbage();
+						}
+					}
+				}
+			}
+		}
+
 		MapHelper.EmptyValues();
 
 		for (const auto& MapPair : (*MapObj)->Values)
@@ -657,9 +704,15 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		return true;
 	}
 
-	// Object property (hard reference)
+	// Object property — instanced sub-object path
 	if (const FObjectProperty* ObjProp = CastField<FObjectProperty>(Property))
 	{
+		if (Property->HasAllPropertyFlags(CPF_InstancedReference) && JsonValue->Type == EJson::Object)
+		{
+			return JsonToInstancedSubObject(JsonValue, ObjProp, ValuePtr, Outer, OutWarnings);
+		}
+
+		// Existing asset-reference path (unchanged)
 		const FString ObjectPath = JsonValue->AsString();
 		if (ObjectPath.IsEmpty())
 		{
@@ -699,6 +752,70 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	UE_LOG(LogCortex, Warning, TEXT("Unhandled property type for deserialization: %s (%s)"),
 		*Property->GetName(), *Property->GetClass()->GetName());
 	return false;
+}
+
+bool FCortexSerializer::JsonToInstancedSubObject(const TSharedPtr<FJsonValue>& JsonValue, const FObjectProperty* ObjProp, void* ValuePtr, UObject* Outer, TArray<FString>& OutWarnings)
+{
+	const TSharedPtr<FJsonObject>* JsonObj = nullptr;
+	if (!JsonValue->TryGetObject(JsonObj) || !JsonObj || !(*JsonObj).IsValid())
+	{
+		OutWarnings.Add(TEXT("Expected JSON object for instanced sub-object"));
+		return false;
+	}
+
+	// Extract _class discriminator
+	FString ClassName;
+	if (!(*JsonObj)->TryGetStringField(TEXT("_class"), ClassName) || ClassName.IsEmpty())
+	{
+		OutWarnings.Add(TEXT("Instanced sub-object missing '_class' field"));
+		return false;
+	}
+
+	// Resolve class: qualified path first, then short name fallback
+	UClass* ResolvedClass = nullptr;
+	if (ClassName.Contains(TEXT(".")) || ClassName.Contains(TEXT("/")))
+	{
+		ResolvedClass = Cast<UClass>(StaticFindObject(UClass::StaticClass(), nullptr, *ClassName, false));
+	}
+
+	if (ResolvedClass == nullptr)
+	{
+		ResolvedClass = FindFirstObjectSafe<UClass>(*ClassName, EFindFirstObjectOptions::NativeFirst);
+	}
+
+	if (ResolvedClass == nullptr)
+	{
+		OutWarnings.Add(FString::Printf(TEXT("Could not find class '%s' for instanced sub-object"), *ClassName));
+		return false;
+	}
+
+	// Validate class hierarchy
+	if (!ResolvedClass->IsChildOf(ObjProp->PropertyClass))
+	{
+		OutWarnings.Add(FString::Printf(TEXT("Class '%s' is not a subclass of '%s'"),
+			*ResolvedClass->GetName(), *ObjProp->PropertyClass->GetName()));
+		return false;
+	}
+
+	// Clean up existing sub-object
+	UObject* Existing = ObjProp->GetObjectPropertyValue(ValuePtr);
+	if (Existing)
+	{
+		Existing->MarkAsGarbage();
+	}
+
+	// Create new sub-object
+	UObject* NewSubObj = NewObject<UObject>(Outer, ResolvedClass);
+
+	// Deserialize properties if provided
+	const TSharedPtr<FJsonObject>* PropertiesObj = nullptr;
+	if ((*JsonObj)->TryGetObjectField(TEXT("properties"), PropertiesObj) && PropertiesObj && (*PropertiesObj).IsValid())
+	{
+		JsonToStruct(*PropertiesObj, ResolvedClass, NewSubObj, Outer, OutWarnings);
+	}
+
+	ObjProp->SetObjectPropertyValue(ValuePtr, NewSubObj);
+	return true;
 }
 
 TSharedPtr<FJsonObject> FCortexSerializer::GetStructSchema(const UStruct* StructType, bool bIncludeInherited)
