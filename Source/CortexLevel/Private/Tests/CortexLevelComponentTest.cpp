@@ -463,3 +463,68 @@ bool FCortexLevelSetComponentPropertyVisibilityTest::RunTest(const FString& Para
     DeleteActor(Router, ActorName);
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexLevelSetComponentPropertyScaleTest,
+    "Cortex.Level.Component.SetComponentPropertyScale",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelSetComponentPropertyScaleTest::RunTest(const FString& Parameters)
+{
+    if (!GEditor)
+    {
+        AddInfo(TEXT("No editor - skipping"));
+        return true;
+    }
+
+    FCortexCommandRouter Router = CreateLevelRouterComponent();
+    const FString ActorName = SpawnActor(Router, TEXT("StaticMeshActor"));
+    TestFalse(TEXT("Spawn should succeed"), ActorName.IsEmpty());
+
+    const TArray<TSharedPtr<FJsonValue>> Components = ListComponents(Router, ActorName);
+    const FString RootComp = FindComponentNameByClass(Components, TEXT("StaticMeshComponent"), true);
+    TestFalse(TEXT("Root component should exist"), RootComp.IsEmpty());
+
+    // Set RelativeScale3D
+    TSharedPtr<FJsonObject> SetParams = MakeShared<FJsonObject>();
+    SetParams->SetStringField(TEXT("actor"), ActorName);
+    SetParams->SetStringField(TEXT("component"), RootComp);
+    SetParams->SetStringField(TEXT("property"), TEXT("RelativeScale3D"));
+
+    TSharedPtr<FJsonObject> ScaleValue = MakeShared<FJsonObject>();
+    ScaleValue->SetNumberField(TEXT("X"), 2.0);
+    ScaleValue->SetNumberField(TEXT("Y"), 3.0);
+    ScaleValue->SetNumberField(TEXT("Z"), 0.5);
+    SetParams->SetObjectField(TEXT("value"), ScaleValue);
+
+    FCortexCommandResult SetResult = Router.Execute(TEXT("level.set_component_property"), SetParams);
+    TestTrue(TEXT("set_component_property RelativeScale3D should succeed"), SetResult.bSuccess);
+
+    // Verify
+    TSharedPtr<FJsonObject> GetParams = MakeShared<FJsonObject>();
+    GetParams->SetStringField(TEXT("actor"), ActorName);
+    GetParams->SetStringField(TEXT("component"), RootComp);
+    GetParams->SetStringField(TEXT("property"), TEXT("RelativeScale3D"));
+
+    FCortexCommandResult GetResult = Router.Execute(TEXT("level.get_component_property"), GetParams);
+    TestTrue(TEXT("get should succeed"), GetResult.bSuccess);
+
+    if (GetResult.bSuccess && GetResult.Data.IsValid())
+    {
+        const TSharedPtr<FJsonObject>* ValueObj = nullptr;
+        if (TestTrue(TEXT("value should be object"), GetResult.Data->TryGetObjectField(TEXT("value"), ValueObj)))
+        {
+            double X = 0.0, Y = 0.0, Z = 0.0;
+            (*ValueObj)->TryGetNumberField(TEXT("X"), X);
+            (*ValueObj)->TryGetNumberField(TEXT("Y"), Y);
+            (*ValueObj)->TryGetNumberField(TEXT("Z"), Z);
+            TestEqual(TEXT("X should be 2.0"), X, 2.0);
+            TestEqual(TEXT("Y should be 3.0"), Y, 3.0);
+            TestEqual(TEXT("Z should be 0.5"), Z, 0.5);
+        }
+    }
+
+    DeleteActor(Router, ActorName);
+    return true;
+}
