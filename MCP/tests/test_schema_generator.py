@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from cortex_mcp.schema_generator import find_project_root, get_schema_dir
 from cortex_mcp.schema_generator import render_data_schema, SCHEMA_VERSION, render_catalog
+from cortex_mcp.schema_generator import collect_data_domain
 
 
 class TestProjectRootDiscovery(unittest.TestCase):
@@ -238,3 +239,100 @@ class TestRenderCatalog(unittest.TestCase):
             data_summary=self.data_summary,
         )
         self.assertIn("| DT_TestItems | FTestItemRow |", result)
+
+
+from unittest.mock import MagicMock
+
+
+class TestCollectDataDomain(unittest.TestCase):
+
+    def _make_connection(self):
+        """Create a mock UEConnection with realistic responses."""
+        conn = MagicMock()
+
+        catalog_response = {
+            "success": True,
+            "data": {
+                "datatables": [
+                    {
+                        "name": "DT_Test",
+                        "path": "/Game/Data/DT_Test.DT_Test",
+                        "row_struct": "FTestRow",
+                        "row_count": 3,
+                        "is_composite": False,
+                        "parent_tables": [],
+                        "top_fields": ["Name", "Value"],
+                    },
+                ],
+                "tag_prefixes": [{"prefix": "Test", "count": 5}],
+                "data_asset_classes": [
+                    {"class_name": "TestAsset", "count": 1, "example_path": "/Game/DA_Test"},
+                ],
+                "string_tables": [],
+            },
+        }
+
+        schema_response = {
+            "success": True,
+            "data": {
+                "struct_name": "FTestRow",
+                "schema": [
+                    {"name": "Name", "type": "FName", "cpp_type": "FName"},
+                    {"name": "Value", "type": "int32", "cpp_type": "int32"},
+                ],
+            },
+        }
+
+        query_response = {
+            "success": True,
+            "data": {
+                "rows": [
+                    {"row_name": "Row1", "row_data": {"Name": "Test", "Value": 42}},
+                    {"row_name": "Row2", "row_data": {"Name": "Other", "Value": 99}},
+                ],
+                "total_count": 3,
+            },
+        }
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "data.get_data_catalog":
+                return catalog_response
+            elif command == "data.get_datatable_schema":
+                return schema_response
+            elif command == "data.query_datatable":
+                return query_response
+            elif command == "data.list_curve_tables":
+                return {"success": True, "data": {"curve_tables": []}}
+            return {"success": True, "data": {}}
+
+        conn.send_command.side_effect = mock_send
+        conn.send_command_cached.side_effect = mock_send
+        return conn
+
+    def test_collect_returns_catalog(self):
+        conn = self._make_connection()
+        result = collect_data_domain(conn)
+        self.assertIn("catalog", result)
+        self.assertEqual(len(result["catalog"]["datatables"]), 1)
+
+    def test_collect_returns_schemas(self):
+        conn = self._make_connection()
+        result = collect_data_domain(conn)
+        self.assertIn("schemas", result)
+        self.assertIn("FTestRow", result["schemas"])
+
+    def test_collect_returns_example_rows(self):
+        conn = self._make_connection()
+        result = collect_data_domain(conn)
+        self.assertIn("example_rows", result)
+        self.assertIn("DT_Test", result["example_rows"])
+        # Should have at most 2 example rows
+        self.assertLessEqual(len(result["example_rows"]["DT_Test"]), 2)
+
+    def test_collect_returns_summary(self):
+        conn = self._make_connection()
+        result = collect_data_domain(conn)
+        self.assertIn("summary", result)
+        self.assertEqual(len(result["summary"]["structs"]), 1)
+        self.assertEqual(result["summary"]["structs"][0]["name"], "FTestRow")
+        self.assertEqual(result["summary"]["structs"][0]["used_by"], "DT_Test")

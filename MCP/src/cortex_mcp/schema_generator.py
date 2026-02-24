@@ -344,3 +344,103 @@ def render_catalog(
             lines.append("")
 
     return "\n".join(lines)
+
+
+def collect_data_domain(connection) -> dict:
+    """Collect all data domain information from a live UE editor.
+
+    Calls existing TCP commands and assembles the raw data.
+
+    Args:
+        connection: UEConnection instance (connected to running editor).
+
+    Returns:
+        Dict with catalog, schemas, example_rows, curve_tables, enum_values, summary.
+    """
+    # 1. Get catalog
+    catalog_resp = connection.send_command("data.get_data_catalog", {})
+    catalog = catalog_resp.get("data", {})
+
+    # 2. Get schemas for each unique row struct
+    schemas = {}
+    struct_to_tables = {}  # struct_name -> [table_name, ...]
+    for table in catalog.get("datatables", []):
+        struct_name = table["row_struct"]
+        if struct_name not in struct_to_tables:
+            struct_to_tables[struct_name] = []
+        struct_to_tables[struct_name].append(table["name"])
+
+        if struct_name not in schemas:
+            try:
+                resp = connection.send_command(
+                    "data.get_datatable_schema",
+                    {"table_path": table["path"], "include_inherited": True},
+                )
+                schema_data = resp.get("data", {})
+                schemas[struct_name] = {
+                    "struct_name": struct_name,
+                    "parent": schema_data.get("parent_struct", "FTableRowBase"),
+                    "schema": schema_data.get("schema", []),
+                }
+            except (RuntimeError, ConnectionError) as e:
+                logger.warning("Failed to get schema for %s: %s", struct_name, e)
+
+    # 3. Get 1-2 example rows per table
+    example_rows = {}
+    for table in catalog.get("datatables", []):
+        try:
+            resp = connection.send_command(
+                "data.query_datatable",
+                {"table_path": table["path"], "limit": 2, "offset": 0},
+            )
+            rows = resp.get("data", {}).get("rows", [])
+            if rows:
+                example_rows[table["name"]] = rows[:2]
+        except (RuntimeError, ConnectionError) as e:
+            logger.warning("Failed to get example rows for %s: %s", table["name"], e)
+
+    # 4. Get curve tables
+    curve_tables = []
+    try:
+        resp = connection.send_command("data.list_curve_tables", {})
+        curve_tables = resp.get("data", {}).get("curve_tables", [])
+    except (RuntimeError, ConnectionError) as e:
+        logger.warning("Failed to list curve tables: %s", e)
+
+    # 5. Extract enum values from schemas
+    enum_values = {}
+    for schema_data in schemas.values():
+        for field in schema_data.get("schema", []):
+            if field.get("enum_values"):
+                enum_name = field.get("cpp_type", field.get("type", "Unknown"))
+                if enum_name not in enum_values:
+                    enum_values[enum_name] = field["enum_values"]
+
+    # 6. Build summary for catalog index
+    summary = {
+        "structs": [
+            {"name": name, "used_by": ", ".join(struct_to_tables.get(name, []))}
+            for name in schemas
+        ],
+        "tables": [
+            {"name": t["name"], "row_struct": t["row_struct"], "rows": t["row_count"]}
+            for t in catalog.get("datatables", [])
+        ],
+        "tag_prefixes": [
+            {"prefix": f"{tp['prefix']}.*", "count": tp["count"]}
+            for tp in catalog.get("tag_prefixes", [])
+        ],
+        "data_assets": [
+            {"class": ac["class_name"], "instances": ac["count"]}
+            for ac in catalog.get("data_asset_classes", [])
+        ],
+    }
+
+    return {
+        "catalog": catalog,
+        "schemas": schemas,
+        "example_rows": example_rows,
+        "curve_tables": curve_tables,
+        "enum_values": enum_values,
+        "summary": summary,
+    }
