@@ -230,3 +230,140 @@ bool FCortexSerializerInstancedSubObjectArrayTest::RunTest(const FString& Parame
 	IMC->MarkAsGarbage();
 	return true;
 }
+
+// ============================================================================
+// Test: Overwriting instanced array cleans up old sub-objects
+// ============================================================================
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerInstancedSubObjectCleanupTest,
+	"Cortex.Core.Serializer.InstancedSubObject.Cleanup",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerInstancedSubObjectCleanupTest::RunTest(const FString& Parameters)
+{
+	UInputMappingContext* IMC = NewObject<UInputMappingContext>(GetTransientPackage(),
+		NAME_None, RF_Transient);
+	UObject* Outer = IMC;
+
+	// Work with a local FEnhancedActionKeyMapping struct on the stack
+	FEnhancedActionKeyMapping Mapping;
+
+	const FProperty* ModifiersProp = FEnhancedActionKeyMapping::StaticStruct()->FindPropertyByName(TEXT("Modifiers"));
+	TestNotNull(TEXT("Should find Modifiers property"), ModifiersProp);
+	if (ModifiersProp == nullptr)
+	{
+		IMC->MarkAsGarbage();
+		return true;
+	}
+
+	void* ValuePtr = ModifiersProp->ContainerPtrToValuePtr<void>(&Mapping);
+
+	// First: set two modifiers
+	TSharedPtr<FJsonObject> Mod1 = MakeShared<FJsonObject>();
+	Mod1->SetStringField(TEXT("_class"), TEXT("InputModifierNegate"));
+	TSharedPtr<FJsonObject> Mod2 = MakeShared<FJsonObject>();
+	Mod2->SetStringField(TEXT("_class"), TEXT("InputModifierSwizzleAxis"));
+
+	TArray<TSharedPtr<FJsonValue>> FirstArray;
+	FirstArray.Add(MakeShared<FJsonValueObject>(Mod1));
+	FirstArray.Add(MakeShared<FJsonValueObject>(Mod2));
+
+	TArray<FString> Warnings;
+	FCortexSerializer::JsonToProperty(
+		MakeShared<FJsonValueArray>(FirstArray), ModifiersProp, ValuePtr, Outer, Warnings);
+
+	TestEqual(TEXT("Should have 2 modifiers after first set"), Mapping.Modifiers.Num(), 2);
+	if (Mapping.Modifiers.Num() != 2)
+	{
+		IMC->MarkAsGarbage();
+		return true;
+	}
+
+	UInputModifier* OldMod0 = Mapping.Modifiers[0];
+	UInputModifier* OldMod1 = Mapping.Modifiers[1];
+
+	// Second: overwrite with one modifier
+	TSharedPtr<FJsonObject> Mod3 = MakeShared<FJsonObject>();
+	Mod3->SetStringField(TEXT("_class"), TEXT("InputModifierDeadZone"));
+
+	TArray<TSharedPtr<FJsonValue>> SecondArray;
+	SecondArray.Add(MakeShared<FJsonValueObject>(Mod3));
+
+	Warnings.Empty();
+	FCortexSerializer::JsonToProperty(
+		MakeShared<FJsonValueArray>(SecondArray), ModifiersProp, ValuePtr, Outer, Warnings);
+
+	TestEqual(TEXT("Should have 1 modifier after overwrite"), Mapping.Modifiers.Num(), 1);
+	if (Mapping.Modifiers.Num() > 0)
+	{
+		TestTrue(TEXT("New modifier should be DeadZone"),
+			Mapping.Modifiers[0]->IsA<UInputModifierDeadZone>());
+	}
+
+	// Old sub-objects should be marked for garbage
+	TestTrue(TEXT("Old modifier 0 should be garbage"),
+		OldMod0->IsUnreachable() || !OldMod0->IsValidLowLevel() || OldMod0->HasAnyInternalFlags(EInternalObjectFlags::Garbage));
+	TestTrue(TEXT("Old modifier 1 should be garbage"),
+		OldMod1->IsUnreachable() || !OldMod1->IsValidLowLevel() || OldMod1->HasAnyInternalFlags(EInternalObjectFlags::Garbage));
+
+	// Cleanup remaining modifier
+	for (UInputModifier* Mod : Mapping.Modifiers)
+	{
+		if (Mod)
+		{
+			Mod->MarkAsGarbage();
+		}
+	}
+	IMC->MarkAsGarbage();
+	return true;
+}
+
+// ============================================================================
+// Test: Invalid _class name produces error
+// ============================================================================
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerInstancedSubObjectInvalidClassTest,
+	"Cortex.Core.Serializer.InstancedSubObject.InvalidClass",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerInstancedSubObjectInvalidClassTest::RunTest(const FString& Parameters)
+{
+	UInputMappingContext* IMC = NewObject<UInputMappingContext>(GetTransientPackage(),
+		NAME_None, RF_Transient);
+	UObject* Outer = IMC;
+
+	// Work with a local FEnhancedActionKeyMapping struct on the stack
+	FEnhancedActionKeyMapping Mapping;
+
+	TSharedPtr<FJsonObject> BadMod = MakeShared<FJsonObject>();
+	BadMod->SetStringField(TEXT("_class"), TEXT("NonExistentModifierClass"));
+
+	TArray<TSharedPtr<FJsonValue>> ModifiersArray;
+	ModifiersArray.Add(MakeShared<FJsonValueObject>(BadMod));
+
+	const FProperty* ModifiersProp = FEnhancedActionKeyMapping::StaticStruct()->FindPropertyByName(TEXT("Modifiers"));
+	TestNotNull(TEXT("Should find Modifiers property"), ModifiersProp);
+	if (ModifiersProp == nullptr)
+	{
+		IMC->MarkAsGarbage();
+		return true;
+	}
+
+	void* ValuePtr = ModifiersProp->ContainerPtrToValuePtr<void>(&Mapping);
+	TArray<FString> Warnings;
+
+	FCortexSerializer::JsonToProperty(
+		MakeShared<FJsonValueArray>(ModifiersArray), ModifiersProp, ValuePtr, Outer, Warnings);
+
+	TestTrue(TEXT("Should have warnings for invalid class"), Warnings.Num() > 0);
+	if (Warnings.Num() > 0)
+	{
+		TestTrue(TEXT("Warning should mention class name"),
+			Warnings[0].Contains(TEXT("NonExistentModifierClass")));
+	}
+
+	IMC->MarkAsGarbage();
+	return true;
+}
