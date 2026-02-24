@@ -444,3 +444,53 @@ def collect_data_domain(connection) -> dict:
         "enum_values": enum_values,
         "summary": summary,
     }
+
+
+def generate_schema(
+    connection,
+    schema_dir: pathlib.Path,
+    domain: str = "all",
+    project_name: str = "CortexSandbox",
+) -> dict:
+    """Generate schema files in the given directory.
+
+    Args:
+        connection: UEConnection instance.
+        schema_dir: Target directory (e.g., .cortex/schema/).
+        domain: "all" or specific domain name ("data", "blueprints").
+        project_name: Project name for catalog header.
+
+    Returns:
+        Dict with generated domain names and file paths.
+    """
+    result = {"generated": {}, "errors": []}
+    data_summary = None
+
+    if domain in ("all", "data"):
+        try:
+            collected = collect_data_domain(connection)
+            data_md = render_data_schema(
+                catalog=collected["catalog"],
+                schemas=collected["schemas"],
+                example_rows=collected["example_rows"],
+                curve_tables=collected["curve_tables"],
+                enum_values=collected["enum_values"],
+            )
+            atomic_write(schema_dir / "data.md", data_md)
+            data_summary = collected["summary"]
+            result["generated"]["data"] = str(schema_dir / "data.md")
+        except Exception as e:
+            logger.error("Failed to generate data schema: %s", e)
+            result["errors"].append(f"data: {e}")
+
+    # Future: if domain in ("all", "blueprints"): ...
+
+    # Always regenerate catalog
+    catalog_md = render_catalog(
+        project_name=project_name,
+        data_summary=data_summary,
+    )
+    atomic_write(schema_dir / "_catalog.md", catalog_md)
+    result["generated"]["_catalog"] = str(schema_dir / "_catalog.md")
+
+    return result

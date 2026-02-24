@@ -10,6 +10,7 @@ from unittest.mock import patch
 from cortex_mcp.schema_generator import find_project_root, get_schema_dir
 from cortex_mcp.schema_generator import render_data_schema, SCHEMA_VERSION, render_catalog
 from cortex_mcp.schema_generator import collect_data_domain
+from cortex_mcp.schema_generator import generate_schema
 
 
 class TestProjectRootDiscovery(unittest.TestCase):
@@ -336,3 +337,77 @@ class TestCollectDataDomain(unittest.TestCase):
         self.assertEqual(len(result["summary"]["structs"]), 1)
         self.assertEqual(result["summary"]["structs"][0]["name"], "FTestRow")
         self.assertEqual(result["summary"]["structs"][0]["used_by"], "DT_Test")
+
+
+class TestGenerateSchema(unittest.TestCase):
+
+    def test_generate_data_writes_files(self):
+        """Full integration: mock connection -> generate files -> verify content."""
+        conn = MagicMock()
+
+        catalog_resp = {
+            "success": True,
+            "data": {
+                "datatables": [
+                    {
+                        "name": "DT_Test",
+                        "path": "/Game/Data/DT_Test.DT_Test",
+                        "row_struct": "FTestRow",
+                        "row_count": 2,
+                        "is_composite": False,
+                        "parent_tables": [],
+                        "top_fields": ["Name"],
+                    },
+                ],
+                "tag_prefixes": [],
+                "data_asset_classes": [],
+                "string_tables": [],
+            },
+        }
+        schema_resp = {
+            "success": True,
+            "data": {
+                "struct_name": "FTestRow",
+                "schema": [{"name": "Name", "type": "FName", "cpp_type": "FName"}],
+            },
+        }
+        query_resp = {
+            "success": True,
+            "data": {"rows": [{"row_name": "R1", "row_data": {"Name": "X"}}], "total_count": 2},
+        }
+        curve_resp = {"success": True, "data": {"curve_tables": []}}
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "data.get_data_catalog":
+                return catalog_resp
+            elif command == "data.get_datatable_schema":
+                return schema_resp
+            elif command == "data.query_datatable":
+                return query_resp
+            elif command == "data.list_curve_tables":
+                return curve_resp
+            return {"success": True, "data": {}}
+
+        conn.send_command.side_effect = mock_send
+        conn.send_command_cached.side_effect = mock_send
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_dir = Path(tmpdir) / ".cortex" / "schema"
+            result = generate_schema(conn, schema_dir, domain="data", project_name="Test")
+
+            # Verify files exist
+            self.assertTrue((schema_dir / "data.md").exists())
+            self.assertTrue((schema_dir / "_catalog.md").exists())
+
+            # Verify data.md content
+            data_content = (schema_dir / "data.md").read_text(encoding="utf-8")
+            self.assertIn("DT_Test", data_content)
+            self.assertIn("FTestRow", data_content)
+
+            # Verify catalog content
+            catalog_content = (schema_dir / "_catalog.md").read_text(encoding="utf-8")
+            self.assertIn("## Schema Index", catalog_content)
+            self.assertIn("DT_Test", catalog_content)
+
+            # Verify return value
+            self.assertIn("data", result["generated"])
