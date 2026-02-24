@@ -344,3 +344,68 @@ bool FCortexLevelSetComponentPropertyTest::RunTest(const FString& Parameters)
     DeleteActor(Router, ActorName);
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexLevelSetComponentPropertyTransformTest,
+    "Cortex.Level.Component.SetComponentPropertyTransform",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelSetComponentPropertyTransformTest::RunTest(const FString& Parameters)
+{
+    if (!GEditor)
+    {
+        AddInfo(TEXT("No editor - skipping"));
+        return true;
+    }
+
+    FCortexCommandRouter Router = CreateLevelRouterComponent();
+    const FString ActorName = SpawnActor(Router, TEXT("StaticMeshActor"));
+    TestFalse(TEXT("Spawn should succeed"), ActorName.IsEmpty());
+
+    const TArray<TSharedPtr<FJsonValue>> Components = ListComponents(Router, ActorName);
+    const FString RootComp = FindComponentNameByClass(Components, TEXT("StaticMeshComponent"), true);
+    TestFalse(TEXT("Root component should exist"), RootComp.IsEmpty());
+
+    // Set RelativeLocation via set_component_property
+    TSharedPtr<FJsonObject> SetParams = MakeShared<FJsonObject>();
+    SetParams->SetStringField(TEXT("actor"), ActorName);
+    SetParams->SetStringField(TEXT("component"), RootComp);
+    SetParams->SetStringField(TEXT("property"), TEXT("RelativeLocation"));
+
+    TSharedPtr<FJsonObject> LocationValue = MakeShared<FJsonObject>();
+    LocationValue->SetNumberField(TEXT("X"), 100.0);
+    LocationValue->SetNumberField(TEXT("Y"), 200.0);
+    LocationValue->SetNumberField(TEXT("Z"), 300.0);
+    SetParams->SetObjectField(TEXT("value"), LocationValue);
+
+    FCortexCommandResult SetResult = Router.Execute(TEXT("level.set_component_property"), SetParams);
+    TestTrue(TEXT("set_component_property RelativeLocation should succeed"), SetResult.bSuccess);
+
+    // Verify via get_component_property
+    TSharedPtr<FJsonObject> GetParams = MakeShared<FJsonObject>();
+    GetParams->SetStringField(TEXT("actor"), ActorName);
+    GetParams->SetStringField(TEXT("component"), RootComp);
+    GetParams->SetStringField(TEXT("property"), TEXT("RelativeLocation"));
+
+    FCortexCommandResult GetResult = Router.Execute(TEXT("level.get_component_property"), GetParams);
+    TestTrue(TEXT("get should succeed"), GetResult.bSuccess);
+
+    if (GetResult.bSuccess && GetResult.Data.IsValid())
+    {
+        const TSharedPtr<FJsonObject>* ValueObj = nullptr;
+        if (TestTrue(TEXT("value should be object"), GetResult.Data->TryGetObjectField(TEXT("value"), ValueObj)))
+        {
+            double X = 0.0, Y = 0.0, Z = 0.0;
+            (*ValueObj)->TryGetNumberField(TEXT("X"), X);
+            (*ValueObj)->TryGetNumberField(TEXT("Y"), Y);
+            (*ValueObj)->TryGetNumberField(TEXT("Z"), Z);
+            TestEqual(TEXT("X should be 100"), X, 100.0);
+            TestEqual(TEXT("Y should be 200"), Y, 200.0);
+            TestEqual(TEXT("Z should be 300"), Z, 300.0);
+        }
+    }
+
+    DeleteActor(Router, ActorName);
+    return true;
+}
