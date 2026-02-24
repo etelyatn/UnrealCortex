@@ -157,3 +157,76 @@ bool FCortexSerializerInstancedSubObjectPropsTest::RunTest(const FString& Parame
 	IMC->MarkAsGarbage();
 	return true;
 }
+
+// ============================================================================
+// Test: Array of mixed instanced sub-object types
+// ============================================================================
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerInstancedSubObjectArrayTest,
+	"Cortex.Core.Serializer.InstancedSubObject.MixedArray",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerInstancedSubObjectArrayTest::RunTest(const FString& Parameters)
+{
+	// Use IMC as outer so instanced sub-objects are properly owned
+	UInputMappingContext* IMC = NewObject<UInputMappingContext>(GetTransientPackage(),
+		NAME_None, RF_Transient);
+	UObject* Outer = IMC;
+
+	// Work with a local FEnhancedActionKeyMapping struct on the stack
+	FEnhancedActionKeyMapping Mapping;
+
+	// SwizzleAxis + Negate (typical WASD config)
+	TSharedPtr<FJsonObject> SwizzleJson = MakeShared<FJsonObject>();
+	SwizzleJson->SetStringField(TEXT("_class"), TEXT("InputModifierSwizzleAxis"));
+
+	TSharedPtr<FJsonObject> NegateJson = MakeShared<FJsonObject>();
+	NegateJson->SetStringField(TEXT("_class"), TEXT("InputModifierNegate"));
+
+	TArray<TSharedPtr<FJsonValue>> ModifiersArray;
+	ModifiersArray.Add(MakeShared<FJsonValueObject>(SwizzleJson));
+	ModifiersArray.Add(MakeShared<FJsonValueObject>(NegateJson));
+
+	const FProperty* ModifiersProp = FEnhancedActionKeyMapping::StaticStruct()->FindPropertyByName(TEXT("Modifiers"));
+	TestNotNull(TEXT("Should find Modifiers property"), ModifiersProp);
+	if (ModifiersProp == nullptr)
+	{
+		IMC->MarkAsGarbage();
+		return true;
+	}
+
+	void* ValuePtr = ModifiersProp->ContainerPtrToValuePtr<void>(&Mapping);
+	TArray<FString> Warnings;
+
+	const bool bResult = FCortexSerializer::JsonToProperty(
+		MakeShared<FJsonValueArray>(ModifiersArray), ModifiersProp, ValuePtr, Outer, Warnings);
+
+	TestTrue(TEXT("Should succeed"), bResult);
+	TestEqual(TEXT("Should have 2 modifiers"), Mapping.Modifiers.Num(), 2);
+
+	if (Mapping.Modifiers.Num() == 2)
+	{
+		TestTrue(TEXT("First should be SwizzleAxis"),
+			Mapping.Modifiers[0]->IsA<UInputModifierSwizzleAxis>());
+		TestTrue(TEXT("Second should be Negate"),
+			Mapping.Modifiers[1]->IsA<UInputModifierNegate>());
+
+		// Both should have IMC as outer
+		TestEqual(TEXT("First outer is IMC"),
+			Mapping.Modifiers[0]->GetOuter(), Outer);
+		TestEqual(TEXT("Second outer is IMC"),
+			Mapping.Modifiers[1]->GetOuter(), Outer);
+	}
+
+	// Cleanup
+	for (UInputModifier* Mod : Mapping.Modifiers)
+	{
+		if (Mod)
+		{
+			Mod->MarkAsGarbage();
+		}
+	}
+	IMC->MarkAsGarbage();
+	return true;
+}
