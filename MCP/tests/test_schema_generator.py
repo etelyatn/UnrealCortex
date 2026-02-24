@@ -338,6 +338,43 @@ class TestCollectDataDomain(unittest.TestCase):
         self.assertEqual(result["summary"]["structs"][0]["name"], "FTestRow")
         self.assertEqual(result["summary"]["structs"][0]["used_by"], "DT_Test")
 
+    def test_collect_extracts_enum_values(self):
+        conn = MagicMock()
+        catalog_resp = {
+            "success": True,
+            "data": {
+                "datatables": [{"name": "DT_E", "path": "/Game/DT_E.DT_E", "row_struct": "FERow",
+                                 "row_count": 1, "is_composite": False, "parent_tables": [], "top_fields": []}],
+                "tag_prefixes": [], "data_asset_classes": [], "string_tables": [],
+            },
+        }
+        schema_resp = {
+            "success": True,
+            "data": {
+                "struct_name": "FERow",
+                "schema": [
+                    {"name": "Quality", "type": "EItemQuality", "cpp_type": "EItemQuality",
+                     "enum_values": ["Common", "Rare", "Epic"]},
+                ],
+            },
+        }
+        def mock_send(command, params=None, **kwargs):
+            if command == "data.get_data_catalog":
+                return catalog_resp
+            elif command == "data.get_datatable_schema":
+                return schema_resp
+            elif command == "data.query_datatable":
+                return {"success": True, "data": {"rows": [], "total_count": 0}}
+            elif command == "data.list_curve_tables":
+                return {"success": True, "data": {"curve_tables": []}}
+            return {"success": True, "data": {}}
+        conn.send_command.side_effect = mock_send
+        conn.send_command_cached.side_effect = mock_send
+
+        result = collect_data_domain(conn)
+        self.assertIn("EItemQuality", result["enum_values"])
+        self.assertEqual(result["enum_values"]["EItemQuality"], ["Common", "Rare", "Epic"])
+
 
 class TestGenerateSchema(unittest.TestCase):
 

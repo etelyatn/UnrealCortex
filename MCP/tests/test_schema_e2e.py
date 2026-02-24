@@ -37,7 +37,7 @@ class TestSchemaE2E:
             catalog_md = schema_dir / "_catalog.md"
             assert catalog_md.exists()
             catalog_content = catalog_md.read_text(encoding="utf-8")
-            assert "## Schema Overview" in content or "## Schema Overview" in catalog_content
+            assert "## Schema Overview" in catalog_content
             assert "## Schema Index" in catalog_content
 
     def test_generate_all(self, tcp_connection):
