@@ -409,46 +409,87 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
     UActorComponent* Component = FindComponentByName(Actor, ComponentName);
     if (!Component)
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ComponentNotFound, FString::Printf(TEXT("Component not found: %s"), *ComponentName));
+        return FCortexCommandRouter::Error(CortexErrorCodes::ComponentNotFound,
+            FString::Printf(TEXT("Component not found: %s"), *ComponentName));
     }
 
+    // Check handler registry for custom write logic
+    const FPropertyWriteHandler* CustomHandler = GetWriteHandlers().Find(FName(*PropertyName));
+
+    // Resolve the property for generic path and PECP notification
     FProperty* Property = Component->GetClass()->FindPropertyByName(FName(*PropertyName));
-    if (!Property)
+    if (!CustomHandler && !Property)
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::PropertyNotFound, FString::Printf(TEXT("Property not found: %s"), *PropertyName));
+        return FCortexCommandRouter::Error(CortexErrorCodes::PropertyNotFound,
+            FString::Printf(TEXT("Property not found: %s"), *PropertyName));
     }
-
-    void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Component);
 
     FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Set Component Property")));
     Component->Modify();
 
-    TArray<FString> Warnings;
-    if (!FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, Warnings))
+    // PreEditChange before any write (mirrors Details Panel pattern)
+    if (Property)
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, FString::Printf(TEXT("Failed to set property: %s"), *PropertyName));
+        Component->PreEditChange(Property);
     }
 
-    // Notify the component that its render state is dirty so the GPU proxy
-    // refreshes. Without this, material overrides and other render properties
-    // set via raw property access are silently ignored by the renderer.
-    Component->MarkRenderStateDirty();
+    TArray<FString> Warnings;
+    if (CustomHandler)
+    {
+        if (!(*CustomHandler)(Component, JsonValue, Warnings))
+        {
+            return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue,
+                FString::Printf(TEXT("Failed to set property: %s"), *PropertyName));
+        }
+    }
+    else
+    {
+        void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Component);
+        if (!FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, Warnings))
+        {
+            return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue,
+                FString::Printf(TEXT("Failed to set property: %s"), *PropertyName));
+        }
+    }
 
-    // Force the editor viewports to repaint so the change is visible immediately
-    // without requiring manual user interaction (e.g. mouse move or click).
+    // PostEditChangeProperty triggers UE's built-in setter propagation
+    // (transform hierarchy, visibility cascading, mobility re-registration, etc.)
+    if (Property)
+    {
+        FPropertyChangedEvent ChangedEvent(Property, EPropertyChangeType::ValueSet);
+        Component->PostEditChangeProperty(ChangedEvent);
+    }
+
+    // Belt-and-suspenders: mark render state dirty and refresh viewports
+    Component->MarkRenderStateDirty();
     if (GEditor)
     {
         GEditor->RedrawAllViewports();
     }
 
+    // Build response — re-read the value after PECP (it may have been clamped/normalized)
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetStringField(TEXT("actor"), Actor->GetName());
     Data->SetStringField(TEXT("component"), Component->GetName());
     Data->SetStringField(TEXT("property"), PropertyName);
-    Data->SetStringField(TEXT("type"), Property->GetCPPType());
-    Data->SetField(TEXT("value"), FCortexSerializer::PropertyToJson(Property, ValuePtr));
+
+    if (Property)
+    {
+        void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Component);
+        Data->SetStringField(TEXT("type"), Property->GetCPPType());
+        Data->SetField(TEXT("value"), FCortexSerializer::PropertyToJson(Property, ValuePtr));
+    }
 
     FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
     Result.Warnings = MoveTemp(Warnings);
     return Result;
+}
+
+const TMap<FName, FCortexLevelComponentOps::FPropertyWriteHandler>& FCortexLevelComponentOps::GetWriteHandlers()
+{
+    static const TMap<FName, FPropertyWriteHandler> Handlers;
+    // Empty: all properties currently work via generic write + PECP.
+    // Add handlers here only when a property's generic write itself fails
+    // (not for side effects — PostEditChangeProperty handles those).
+    return Handlers;
 }
