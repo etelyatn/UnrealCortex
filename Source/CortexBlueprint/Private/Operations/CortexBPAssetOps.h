@@ -56,4 +56,7 @@ public:
 
 	/** Load a Blueprint by asset path (with path normalization), returns nullptr and sets OutError if not found */
 	static UBlueprint* LoadBlueprint(const FString& AssetPath, FString& OutError);
+
+	/** Determine Blueprint type string (Actor, Component, Widget, Interface, FunctionLibrary) from a loaded UBlueprint */
+	static FString DetermineBlueprintType(const UBlueprint* BP);
 };

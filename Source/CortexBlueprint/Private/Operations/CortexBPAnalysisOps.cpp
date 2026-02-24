@@ -35,42 +35,6 @@
 
 namespace
 {
-FString DetermineBlueprintTypeForAnalysis(const UBlueprint* BP)
-{
-	if (!BP || !BP->ParentClass)
-	{
-		return TEXT("Unknown");
-	}
-
-	if (BP->BlueprintType == BPTYPE_Interface)
-	{
-		return TEXT("Interface");
-	}
-
-	if (BP->BlueprintType == BPTYPE_FunctionLibrary)
-	{
-		return TEXT("FunctionLibrary");
-	}
-
-	static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
-	if (UserWidgetClass && BP->ParentClass->IsChildOf(UserWidgetClass))
-	{
-		return TEXT("Widget");
-	}
-
-	if (BP->ParentClass->IsChildOf(UActorComponent::StaticClass()))
-	{
-		return TEXT("Component");
-	}
-
-	if (BP->ParentClass->IsChildOf(AActor::StaticClass()))
-	{
-		return TEXT("Actor");
-	}
-
-	return TEXT("Unknown");
-}
-
 int32 CountVariableUsage(UBlueprint* BP, const FName& VarName)
 {
 	int32 Count = 0;
@@ -148,6 +112,87 @@ bool IsFunctionPure(UEdGraph* Graph)
 	}
 
 	return false;
+}
+
+/** Extract the default value of the "Duration" pin from a latent call node (Delay, RetriggerableDelay, etc.) */
+FString ExtractDurationPinValue(const UK2Node_CallFunction* CallNode)
+{
+	if (!CallNode)
+	{
+		return FString();
+	}
+
+	// Delay / RetriggerableDelay use "Duration" pin
+	const UEdGraphPin* DurationPin = CallNode->FindPin(TEXT("Duration"));
+	if (DurationPin && !DurationPin->DefaultValue.IsEmpty())
+	{
+		return DurationPin->DefaultValue;
+	}
+
+	// MoveComponentTo uses "OverTime" pin
+	const UEdGraphPin* OverTimePin = CallNode->FindPin(TEXT("OverTime"));
+	if (OverTimePin && !OverTimePin->DefaultValue.IsEmpty())
+	{
+		return OverTimePin->DefaultValue;
+	}
+
+	return FString();
+}
+
+/** Check if a node is a latent call function node */
+bool IsLatentCallNode(const UEdGraphNode* Node)
+{
+	const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+	return CallNode && CallNode->IsLatentFunction();
+}
+
+/**
+ * Walk output exec pins from a latent node to find subsequent latent nodes in the same execution path.
+ * Returns the count of latent nodes in the chain (including the starting node).
+ */
+int32 CountDownstreamLatentNodes(UEdGraphNode* StartNode, TSet<UEdGraphNode*>& Visited)
+{
+	if (!StartNode || Visited.Contains(StartNode))
+	{
+		return 0;
+	}
+
+	Visited.Add(StartNode);
+	int32 MaxDownstream = 0;
+
+	for (UEdGraphPin* Pin : StartNode->Pins)
+	{
+		if (!Pin || Pin->Direction != EGPD_Output || Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+		{
+			continue;
+		}
+
+		for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+		{
+			if (!LinkedPin || !LinkedPin->GetOwningNode())
+			{
+				continue;
+			}
+
+			UEdGraphNode* NextNode = LinkedPin->GetOwningNode();
+
+			if (IsLatentCallNode(NextNode))
+			{
+				// Found another latent node — count it plus its downstream
+				TSet<UEdGraphNode*> ChildVisited = Visited;
+				int32 Downstream = 1 + CountDownstreamLatentNodes(NextNode, ChildVisited);
+				MaxDownstream = FMath::Max(MaxDownstream, Downstream);
+			}
+			else
+			{
+				// Non-latent node — keep walking through it
+				int32 Downstream = CountDownstreamLatentNodes(NextNode, Visited);
+				MaxDownstream = FMath::Max(MaxDownstream, Downstream);
+			}
+		}
+	}
+
+	return MaxDownstream;
 }
 
 FString CalculateMigrationConfidence(int32 TotalNodes, int32 LatentCount)
@@ -295,7 +340,7 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 
 			for (const UEdGraphPin* Pin : Node->Pins)
 			{
-				if (Pin)
+				if (Pin && Pin->Direction == EGPD_Output)
 				{
 					TotalConnections += Pin->LinkedTo.Num();
 				}
@@ -387,7 +432,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("name"), BP->GetName());
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
-	Data->SetStringField(TEXT("type"), DetermineBlueprintTypeForAnalysis(BP));
+	Data->SetStringField(TEXT("type"), FCortexBPAssetOps::DetermineBlueprintType(BP));
 	Data->SetStringField(TEXT("parent_class"), BP->ParentClass ? BP->ParentClass->GetName() : TEXT(""));
 	Data->SetBoolField(TEXT("is_compiled"), BP->Status == BS_UpToDate || BP->Status == BS_UpToDateWithWarnings);
 
@@ -399,7 +444,27 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		VarObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Variable.VarType));
 		VarObj->SetStringField(TEXT("default_value"), Variable.DefaultValue);
 		VarObj->SetBoolField(TEXT("is_exposed"), (Variable.PropertyFlags & CPF_BlueprintVisible) != 0);
+		VarObj->SetBoolField(TEXT("is_replicated"), (Variable.PropertyFlags & CPF_Net) != 0);
 		VarObj->SetStringField(TEXT("category"), Variable.Category.ToString());
+
+		// Container type from pin type
+		FString ContainerTypeStr = TEXT("None");
+		switch (Variable.VarType.ContainerType)
+		{
+		case EPinContainerType::Array:
+			ContainerTypeStr = TEXT("Array");
+			break;
+		case EPinContainerType::Set:
+			ContainerTypeStr = TEXT("Set");
+			break;
+		case EPinContainerType::Map:
+			ContainerTypeStr = TEXT("Map");
+			break;
+		default:
+			break;
+		}
+		VarObj->SetStringField(TEXT("container_type"), ContainerTypeStr);
+
 		VarObj->SetNumberField(TEXT("usage_count"), CountVariableUsage(BP, Variable.VarName));
 		VariablesArray.Add(MakeShared<FJsonValueObject>(VarObj));
 	}
@@ -487,6 +552,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		TArray<TSharedPtr<FJsonValue>> EventsArr;
 		TArray<TSharedPtr<FJsonValue>> CustomEventsArr;
 		TSharedPtr<FJsonObject> CustomEventParamsObj = MakeShared<FJsonObject>();
+		TArray<UEdGraphNode*> GraphLatentNodes;
 
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
@@ -510,7 +576,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 
 			if (const UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
 			{
-				const FString CustomEventName = CustomEvent->GetName();
+				const FString CustomEventName = CustomEvent->CustomFunctionName.ToString();
 				TArray<TSharedPtr<FJsonValue>> ParamArray;
 				for (const TSharedPtr<FUserPinInfo>& Pin : CustomEvent->UserDefinedPins)
 				{
@@ -527,15 +593,55 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 			{
 				if (CallNode->IsLatentFunction())
 				{
-					TSharedPtr<FJsonObject> LatentObj = MakeShared<FJsonObject>();
-					LatentObj->SetStringField(TEXT("node_type"), Node->GetClass()->GetName());
-					LatentObj->SetStringField(TEXT("graph"), Graph->GetName());
-					LatentObj->SetBoolField(TEXT("is_sequential"), false);
-					LatentObj->SetNumberField(TEXT("sequence_index"), 0);
-					LatentObj->SetNumberField(TEXT("sequence_length"), 1);
-					LatentNodesArray.Add(MakeShared<FJsonValueObject>(LatentObj));
+					GraphLatentNodes.Add(Node);
 				}
 			}
+		}
+
+		// Second pass: compute sequential chain info for latent nodes in this graph
+		for (UEdGraphNode* LatentNode : GraphLatentNodes)
+		{
+			const UK2Node_CallFunction* CallNode = CastChecked<UK2Node_CallFunction>(LatentNode);
+
+			TSharedPtr<FJsonObject> LatentObj = MakeShared<FJsonObject>();
+			LatentObj->SetStringField(TEXT("node_type"), LatentNode->GetClass()->GetName());
+			LatentObj->SetStringField(TEXT("graph"), Graph->GetName());
+
+			// Extract duration pin value
+			const FString DurationValue = ExtractDurationPinValue(CallNode);
+			if (!DurationValue.IsEmpty())
+			{
+				LatentObj->SetStringField(TEXT("duration_pin_value"), DurationValue);
+			}
+
+			// Compute sequential chain: how many latent nodes follow this one?
+			TSet<UEdGraphNode*> Visited;
+			const int32 DownstreamCount = CountDownstreamLatentNodes(LatentNode, Visited);
+			const int32 ChainLength = 1 + DownstreamCount;
+			const bool bIsSequential = ChainLength > 1;
+
+			LatentObj->SetBoolField(TEXT("is_sequential"), bIsSequential);
+			LatentObj->SetNumberField(TEXT("sequence_length"), ChainLength);
+
+			// Sequence index: find how many latent nodes are upstream of this one in the chain
+			int32 SequenceIndex = 0;
+			for (UEdGraphNode* OtherLatent : GraphLatentNodes)
+			{
+				if (OtherLatent == LatentNode)
+				{
+					continue;
+				}
+				// Check if OtherLatent has this node downstream
+				TSet<UEdGraphNode*> CheckVisited;
+				CountDownstreamLatentNodes(OtherLatent, CheckVisited);
+				if (CheckVisited.Contains(LatentNode))
+				{
+					++SequenceIndex;
+				}
+			}
+			LatentObj->SetNumberField(TEXT("sequence_index"), SequenceIndex);
+
+			LatentNodesArray.Add(MakeShared<FJsonValueObject>(LatentObj));
 		}
 
 		TSharedPtr<FJsonObject> GraphObj = MakeShared<FJsonObject>();

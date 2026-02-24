@@ -24,9 +24,16 @@ class MockMCP:
         return decorator
 
 
-def test_analyze_blueprint_for_migration_wires_command():
+def _setup():
+    """Create MCP and connection mocks, register tools, return (mcp, connection)."""
     mcp = MockMCP()
     connection = MagicMock()
+    register_blueprint_analysis_tools(mcp, connection)
+    return mcp, connection
+
+
+def test_analyze_blueprint_for_migration_wires_command():
+    mcp, connection = _setup()
     connection.send_command.return_value = {
         "data": {
             "name": "BP_Test",
@@ -35,7 +42,6 @@ def test_analyze_blueprint_for_migration_wires_command():
         }
     }
 
-    register_blueprint_analysis_tools(mcp, connection)
     assert "analyze_blueprint_for_migration" in mcp.tools
 
     result = mcp.tools["analyze_blueprint_for_migration"]("/Game/Blueprints/BP_Test")
@@ -46,3 +52,53 @@ def test_analyze_blueprint_for_migration_wires_command():
         "bp.analyze_for_migration",
         {"asset_path": "/Game/Blueprints/BP_Test"},
     )
+
+
+def test_connection_error_returns_json_error():
+    mcp, connection = _setup()
+    connection.send_command.side_effect = ConnectionError("TCP refused")
+
+    result = mcp.tools["analyze_blueprint_for_migration"]("/Game/BP_Test")
+    parsed = json.loads(result)
+    assert "error" in parsed
+    assert "Connection error" in parsed["error"]
+
+
+def test_runtime_error_returns_json_error():
+    mcp, connection = _setup()
+    connection.send_command.side_effect = RuntimeError("command failed")
+
+    result = mcp.tools["analyze_blueprint_for_migration"]("/Game/BP_Test")
+    parsed = json.loads(result)
+    assert "error" in parsed
+    assert "command failed" in parsed["error"]
+
+
+def test_timeout_error_returns_json_error():
+    mcp, connection = _setup()
+    connection.send_command.side_effect = TimeoutError("read timed out")
+
+    result = mcp.tools["analyze_blueprint_for_migration"]("/Game/BP_Test")
+    parsed = json.loads(result)
+    assert "error" in parsed
+    assert "read timed out" in parsed["error"]
+
+
+def test_os_error_returns_json_error():
+    mcp, connection = _setup()
+    connection.send_command.side_effect = OSError("socket closed")
+
+    result = mcp.tools["analyze_blueprint_for_migration"]("/Game/BP_Test")
+    parsed = json.loads(result)
+    assert "error" in parsed
+    assert "socket closed" in parsed["error"]
+
+
+def test_empty_data_returns_empty_fields():
+    mcp, connection = _setup()
+    connection.send_command.return_value = {"data": {}}
+
+    result = mcp.tools["analyze_blueprint_for_migration"]("/Game/BP_Test")
+    parsed = json.loads(result)
+    # Should not error — just returns the empty data
+    assert "error" not in parsed
