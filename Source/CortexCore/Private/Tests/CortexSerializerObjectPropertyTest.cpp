@@ -3,52 +3,16 @@
 #include "CortexSerializer.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Animation/NodeMappingContainer.h"
 #include "Components/ChildActorComponent.h"
 #include "Components/StaticMeshComponent.h"
 
 namespace
 {
-	FProperty* FindFirstSoftObjectProperty(const UClass* InClass)
+	FSoftObjectProperty* FindSoftObjectTestProperty(UNodeMappingContainer* InContainer)
 	{
-		for (TFieldIterator<FProperty> It(InClass); It; ++It)
-		{
-			if (CastField<FSoftObjectProperty>(*It) != nullptr)
-			{
-				return *It;
-			}
-		}
-		return nullptr;
-	}
-
-	bool FindSoftObjectTestTarget(UObject*& OutObject, FSoftObjectProperty*& OutProperty)
-	{
-		for (TObjectIterator<UClass> ClassIt; ClassIt; ++ClassIt)
-		{
-			UClass* Class = *ClassIt;
-			if (Class == nullptr || Class->HasAnyClassFlags(CLASS_Deprecated | CLASS_NewerVersionExists))
-			{
-				continue;
-			}
-
-			FProperty* FoundProperty = FindFirstSoftObjectProperty(Class);
-			FSoftObjectProperty* SoftProperty = CastField<FSoftObjectProperty>(FoundProperty);
-			if (SoftProperty == nullptr)
-			{
-				continue;
-			}
-
-			UObject* DefaultObject = Class->GetDefaultObject(false);
-			if (DefaultObject == nullptr)
-			{
-				continue;
-			}
-
-			OutObject = DefaultObject;
-			OutProperty = SoftProperty;
-			return true;
-		}
-
-		return false;
+		FProperty* Property = InContainer->GetClass()->FindPropertyByName(TEXT("SourceAsset"));
+		return CastField<FSoftObjectProperty>(Property);
 	}
 }
 
@@ -191,12 +155,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexSerializerSoftObjectScriptPathTest::RunTest(const FString& Parameters)
 {
-	UObject* TestObj = nullptr;
-	FSoftObjectProperty* SoftProp = nullptr;
-
-	if (!FindSoftObjectTestTarget(TestObj, SoftProp))
+	UNodeMappingContainer* TestObj = NewObject<UNodeMappingContainer>();
+	FSoftObjectProperty* SoftProp = FindSoftObjectTestProperty(TestObj);
+	TestNotNull(TEXT("Should find SourceAsset soft object property"), SoftProp);
+	if (SoftProp == nullptr)
 	{
-		AddInfo(TEXT("No FSoftObjectProperty test target found, skipping"));
+		TestObj->MarkAsGarbage();
 		return true;
 	}
 
@@ -213,6 +177,7 @@ bool FCortexSerializerSoftObjectScriptPathTest::RunTest(const FString& Parameter
 	TestEqual(TEXT("No warnings for valid /Script/ soft path"), Warnings.Num(), 0);
 
 	SoftProp->SetPropertyValue(ValuePtr, OriginalValue);
+	TestObj->MarkAsGarbage();
 	return true;
 }
 
@@ -227,12 +192,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexSerializerSoftObjectInvalidPathTest::RunTest(const FString& Parameters)
 {
-	UObject* TestObj = nullptr;
-	FSoftObjectProperty* SoftProp = nullptr;
-
-	if (!FindSoftObjectTestTarget(TestObj, SoftProp))
+	UNodeMappingContainer* TestObj = NewObject<UNodeMappingContainer>();
+	FSoftObjectProperty* SoftProp = FindSoftObjectTestProperty(TestObj);
+	TestNotNull(TEXT("Should find SourceAsset soft object property"), SoftProp);
+	if (SoftProp == nullptr)
 	{
-		AddInfo(TEXT("No FSoftObjectProperty test target found, skipping"));
+		TestObj->MarkAsGarbage();
 		return true;
 	}
 
@@ -249,5 +214,6 @@ bool FCortexSerializerSoftObjectInvalidPathTest::RunTest(const FString& Paramete
 	TestTrue(TEXT("Should have warning about missing package"), Warnings.Num() > 0);
 
 	SoftProp->SetPropertyValue(ValuePtr, OriginalValue);
+	TestObj->MarkAsGarbage();
 	return true;
 }
