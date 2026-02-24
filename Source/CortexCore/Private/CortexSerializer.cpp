@@ -564,16 +564,8 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 				return false;
 			}
 
-			// Find the UScriptStruct by name
-			UScriptStruct* FoundStruct = nullptr;
-			for (TObjectIterator<UScriptStruct> It; It; ++It)
-			{
-				if (It->GetName() == StructTypeName)
-				{
-					FoundStruct = *It;
-					break;
-				}
-			}
+			// Find the UScriptStruct by name (O(1) hash lookup)
+			UScriptStruct* FoundStruct = FindFirstObjectSafe<UScriptStruct>(*StructTypeName, EFindFirstObjectOptions::NativeFirst);
 
 			if (FoundStruct == nullptr)
 			{
@@ -989,15 +981,8 @@ TSharedPtr<FJsonObject> FCortexSerializer::GetPropertySchema(const FProperty* Pr
 				const UScriptStruct* BaseStruct = FindObject<UScriptStruct>(nullptr, *BaseStructMeta);
 				if (BaseStruct == nullptr)
 				{
-					// Try with short name
-					for (TObjectIterator<UScriptStruct> It; It; ++It)
-					{
-						if (It->GetName() == BaseStructMeta)
-						{
-							BaseStruct = *It;
-							break;
-						}
-					}
+					// Try with short name (O(1) hash lookup)
+					BaseStruct = FindFirstObjectSafe<UScriptStruct>(*BaseStructMeta, EFindFirstObjectOptions::NativeFirst);
 				}
 
 				if (BaseStruct != nullptr)
