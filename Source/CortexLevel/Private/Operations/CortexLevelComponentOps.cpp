@@ -434,30 +434,29 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
     }
 
     TArray<FString> Warnings;
+    bool bWriteSucceeded = false;
     if (CustomHandler)
     {
-        if (!(*CustomHandler)(Component, JsonValue, Warnings))
-        {
-            return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue,
-                FString::Printf(TEXT("Failed to set property: %s"), *PropertyName));
-        }
+        bWriteSucceeded = (*CustomHandler)(Component, JsonValue, Warnings);
     }
     else
     {
         void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Component);
-        if (!FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, Warnings))
-        {
-            return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue,
-                FString::Printf(TEXT("Failed to set property: %s"), *PropertyName));
-        }
+        bWriteSucceeded = FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, Warnings);
     }
 
-    // PostEditChangeProperty triggers UE's built-in setter propagation
+    // Always pair PostEditChangeProperty with PreEditChange — even if the write failed
     // (transform hierarchy, visibility cascading, mobility re-registration, etc.)
     if (Property)
     {
         FPropertyChangedEvent ChangedEvent(Property, EPropertyChangeType::ValueSet);
         Component->PostEditChangeProperty(ChangedEvent);
+    }
+
+    if (!bWriteSucceeded)
+    {
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue,
+            FString::Printf(TEXT("Failed to set property: %s"), *PropertyName));
     }
 
     // Belt-and-suspenders: mark render state dirty and refresh viewports
