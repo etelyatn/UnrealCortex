@@ -802,6 +802,13 @@ bool FCortexSerializer::JsonToInstancedSubObject(const TSharedPtr<FJsonValue>& J
 		return false;
 	}
 
+	// Cannot instantiate abstract classes
+	if (ResolvedClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		OutWarnings.Add(FString::Printf(TEXT("Class '%s' is abstract and cannot be instantiated"), *ResolvedClass->GetName()));
+		return false;
+	}
+
 	// Clean up existing sub-object
 	UObject* Existing = ObjProp->GetObjectPropertyValue(ValuePtr);
 	if (Existing)

@@ -23,6 +23,8 @@ public class CortexCore : ModuleRules
             "GameplayTags",
             "UnrealEd",
             "AssetRegistry",
+            // Test-only: required for CortexSerializerInstancedSubObjectTest.cpp (InputMappingContext, InputModifiers)
+            // Not used in production CortexCore code.
             "EnhancedInput",
             "InputCore",
         });

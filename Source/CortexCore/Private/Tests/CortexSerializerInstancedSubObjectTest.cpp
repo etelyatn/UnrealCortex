@@ -331,7 +331,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexSerializerInstancedSubObjectRoundTripTest::RunTest(const FString& Parameters)
 {
 	// Create mapping with modifiers programmatically
-	UInputMappingContext* IMC = NewObject<UInputMappingContext>();
+	UInputMappingContext* IMC = NewObject<UInputMappingContext>(GetTransientPackage(),
+		NAME_None, RF_Transient);
 	FEnhancedActionKeyMapping Mapping;
 
 	UInputModifierNegate* Negate = NewObject<UInputModifierNegate>(IMC);
@@ -373,7 +374,8 @@ bool FCortexSerializerInstancedSubObjectRoundTripTest::RunTest(const FString& Pa
 
 	// Deserialize back into a fresh mapping
 	FEnhancedActionKeyMapping Mapping2;
-	UInputMappingContext* IMC2 = NewObject<UInputMappingContext>();
+	UInputMappingContext* IMC2 = NewObject<UInputMappingContext>(GetTransientPackage(),
+		NAME_None, RF_Transient);
 
 	void* WritePtr = ModifiersProp->ContainerPtrToValuePtr<void>(&Mapping2);
 	TArray<FString> Warnings;
@@ -397,6 +399,10 @@ bool FCortexSerializerInstancedSubObjectRoundTripTest::RunTest(const FString& Pa
 			Mapping2.Modifiers[1]->IsA<UInputModifierSwizzleAxis>());
 	}
 
+	for (UInputModifier* Mod : Mapping2.Modifiers)
+	{
+		if (Mod) { Mod->MarkAsGarbage(); }
+	}
 	IMC->MarkAsGarbage();
 	IMC2->MarkAsGarbage();
 	return true;
