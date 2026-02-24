@@ -531,7 +531,7 @@ FCortexCommandResult FCortexDataTableOps::AddDatatableRow(const TSharedPtr<FJson
 	RowStruct->InitializeStruct(RowMemory);
 
 	TArray<FString> Warnings;
-	bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, RowMemory, Warnings);
+	bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, RowMemory, DataTable, Warnings);
 
 	if (!bDeserializeSuccess)
 	{
@@ -676,7 +676,7 @@ FCortexCommandResult FCortexDataTableOps::UpdateDatatableRow(const TSharedPtr<FJ
 		// Copy current values to temp
 		RowStruct->CopyScriptStruct(TempRowPtr, RowPtr);
 
-		bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, TempRowPtr, Warnings);
+		bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, TempRowPtr, DataTable, Warnings);
 
 		if (!bDeserializeSuccess)
 		{
@@ -741,7 +741,7 @@ FCortexCommandResult FCortexDataTableOps::UpdateDatatableRow(const TSharedPtr<FJ
 	));
 	DataTable->Modify();
 
-	bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, RowPtr, Warnings);
+	bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, RowPtr, DataTable, Warnings);
 
 	if (!bDeserializeSuccess)
 	{
@@ -996,7 +996,7 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 			RowStruct->InitializeStruct(TempMemory);
 
 			TArray<FString> RowWarnings;
-			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, TempMemory, RowWarnings);
+			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, TempMemory, DataTable, RowWarnings);
 
 			RowStruct->DestroyStruct(TempMemory);
 			FMemory::Free(TempMemory);
@@ -1039,7 +1039,7 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 		{
 			// Update existing row in place
 			TArray<FString> RowWarnings;
-			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, ExistingRow, RowWarnings);
+			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, ExistingRow, DataTable, RowWarnings);
 			if (!bSuccess)
 			{
 				Errors.Add(FString::Printf(TEXT("Row %d (%s): deserialization failed"), Index, *EntryRowName));
@@ -1059,7 +1059,7 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 			RowStruct->InitializeStruct(RowMemory);
 
 			TArray<FString> RowWarnings;
-			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, RowMemory, RowWarnings);
+			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, RowMemory, DataTable, RowWarnings);
 
 			if (!bSuccess)
 			{

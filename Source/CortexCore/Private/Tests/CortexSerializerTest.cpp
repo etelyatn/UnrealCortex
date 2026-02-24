@@ -299,7 +299,7 @@ bool FCortexSerializerEnumErrorByteTest::RunTest(const FString& Parameters)
 
 	TSharedPtr<FJsonValue> BadValue = MakeShared<FJsonValueString>(TEXT("InvalidEnumValue"));
 	TArray<FString> Warnings;
-	const bool bResult = FCortexSerializer::JsonToProperty(BadValue, Property, ValuePtr, Warnings);
+	const bool bResult = FCortexSerializer::JsonToProperty(BadValue, Property, ValuePtr, TempObj, Warnings);
 
 	TestFalse(TEXT("Should fail for invalid enum value"), bResult);
 	TestTrue(TEXT("Should have at least one warning"), Warnings.Num() > 0);
@@ -346,7 +346,7 @@ bool FCortexSerializerEnumNumericByteTest::RunTest(const FString& Parameters)
 
 	TSharedPtr<FJsonValue> NumericValue = MakeShared<FJsonValueNumber>(14.0);
 	TArray<FString> Warnings;
-	const bool bResult = FCortexSerializer::JsonToProperty(NumericValue, Property, ValuePtr, Warnings);
+	const bool bResult = FCortexSerializer::JsonToProperty(NumericValue, Property, ValuePtr, TempObj, Warnings);
 
 	TestTrue(TEXT("Numeric enum value should deserialize"), bResult);
 	TestEqual(TEXT("No warnings expected"), Warnings.Num(), 0);

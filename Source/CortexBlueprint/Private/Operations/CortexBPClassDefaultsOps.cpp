@@ -458,7 +458,7 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 		};
 		TArray<FAppliedPropertyChange> AppliedChanges;
 
-		const auto RollbackAppliedChanges = [&AppliedChanges]()
+		const auto RollbackAppliedChanges = [&AppliedChanges, CDO]()
 		{
 			for (int32 Index = AppliedChanges.Num() - 1; Index >= 0; --Index)
 			{
@@ -473,6 +473,7 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 					Change.PreviousValue,
 					Change.Property,
 					Change.ValuePtr,
+					CDO,
 					RestoreWarnings);
 			}
 		};
@@ -524,7 +525,7 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 			const TSharedPtr<FJsonValue> PreviousValue = FCortexSerializer::PropertyToJson(Property, ValuePtr);
 
 			TArray<FString> SetWarnings;
-			if (!FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, SetWarnings))
+			if (!FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, CDO, SetWarnings))
 			{
 				RollbackAppliedChanges();
 				TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();

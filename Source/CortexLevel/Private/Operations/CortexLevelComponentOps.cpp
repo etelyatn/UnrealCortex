@@ -442,7 +442,7 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
     else
     {
         void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Component);
-        bWriteSucceeded = FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, Warnings);
+        bWriteSucceeded = FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, Component, Warnings);
     }
 
     // Always pair PostEditChangeProperty with PreEditChange — even if the write failed

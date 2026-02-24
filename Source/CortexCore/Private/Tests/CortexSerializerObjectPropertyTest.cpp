@@ -47,7 +47,7 @@ bool FCortexSerializerObjectPropertyGuardTest::RunTest(const FString& Parameters
 
 	// The guard should catch the invalid package BEFORE calling StaticLoadObject,
 	// preventing SkipPackage warnings in the log
-	const bool bResult = FCortexSerializer::JsonToProperty(BadValue, MeshProp, ValuePtr, Warnings);
+	const bool bResult = FCortexSerializer::JsonToProperty(BadValue, MeshProp, ValuePtr, TestComp, Warnings);
 
 	TestFalse(TEXT("Should fail for non-existent object path"), bResult);
 	TestTrue(TEXT("Should have warning about missing package"), Warnings.Num() > 0);
@@ -87,7 +87,7 @@ bool FCortexSerializerObjectPropertyEmptyTest::RunTest(const FString& Parameters
 	void* ValuePtr = MeshProp->ContainerPtrToValuePtr<void>(TestComp);
 	TArray<FString> Warnings;
 
-	const bool bResult = FCortexSerializer::JsonToProperty(EmptyValue, MeshProp, ValuePtr, Warnings);
+	const bool bResult = FCortexSerializer::JsonToProperty(EmptyValue, MeshProp, ValuePtr, TestComp, Warnings);
 
 	TestTrue(TEXT("Empty path should succeed (sets nullptr)"), bResult);
 	TestEqual(TEXT("No warnings for empty path"), Warnings.Num(), 0);
@@ -123,7 +123,7 @@ bool FCortexSerializerObjectPropertyScriptPathTest::RunTest(const FString& Param
 	void* ValuePtr = ChildActorProp->ContainerPtrToValuePtr<void>(TestComp);
 	TArray<FString> Warnings;
 
-	const bool bResult = FCortexSerializer::JsonToProperty(ScriptPathValue, ChildActorProp, ValuePtr, Warnings);
+	const bool bResult = FCortexSerializer::JsonToProperty(ScriptPathValue, ChildActorProp, ValuePtr, TestComp, Warnings);
 
 	TestTrue(TEXT("Should succeed for /Script/ engine CDO path"), bResult);
 	TestEqual(TEXT("No warnings for valid /Script/ path"), Warnings.Num(), 0);
@@ -171,7 +171,7 @@ bool FCortexSerializerSoftObjectScriptPathTest::RunTest(const FString& Parameter
 	const FSoftObjectPtr OriginalValue = SoftProp->GetPropertyValue(ValuePtr);
 	TArray<FString> Warnings;
 
-	const bool bResult = FCortexSerializer::JsonToProperty(ScriptPathValue, SoftProp, ValuePtr, Warnings);
+	const bool bResult = FCortexSerializer::JsonToProperty(ScriptPathValue, SoftProp, ValuePtr, TestObj, Warnings);
 
 	TestTrue(TEXT("Should succeed for /Script/ soft object path"), bResult);
 	TestEqual(TEXT("No warnings for valid /Script/ soft path"), Warnings.Num(), 0);
@@ -208,7 +208,7 @@ bool FCortexSerializerSoftObjectInvalidPathTest::RunTest(const FString& Paramete
 	const FSoftObjectPtr OriginalValue = SoftProp->GetPropertyValue(ValuePtr);
 	TArray<FString> Warnings;
 
-	const bool bResult = FCortexSerializer::JsonToProperty(BadValue, SoftProp, ValuePtr, Warnings);
+	const bool bResult = FCortexSerializer::JsonToProperty(BadValue, SoftProp, ValuePtr, TestObj, Warnings);
 
 	TestFalse(TEXT("Should fail for non-existent soft object path"), bResult);
 	TestTrue(TEXT("Should have warning about missing package"), Warnings.Num() > 0);

@@ -304,7 +304,7 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 	return nullptr;
 }
 
-bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, const UStruct* StructType, void* StructData, TArray<FString>& OutWarnings)
+bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, const UStruct* StructType, void* StructData, UObject* Outer, TArray<FString>& OutWarnings)
 {
 	if (!JsonObject.IsValid() || StructType == nullptr || StructData == nullptr)
 	{
@@ -331,7 +331,7 @@ bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, 
 		}
 
 		void* ValuePtr = Property->ContainerPtrToValuePtr<void>(StructData);
-		if (!JsonToProperty(JsonValue, Property, ValuePtr, OutWarnings))
+		if (!JsonToProperty(JsonValue, Property, ValuePtr, Outer, OutWarnings))
 		{
 			OutWarnings.Add(FString::Printf(TEXT("Failed to deserialize field '%s'"), *FieldName));
 		}
@@ -340,7 +340,7 @@ bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, 
 	return true;
 }
 
-bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, const FProperty* Property, void* ValuePtr, TArray<FString>& OutWarnings)
+bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, const FProperty* Property, void* ValuePtr, UObject* Outer, TArray<FString>& OutWarnings)
 {
 	if (!JsonValue.IsValid() || Property == nullptr || ValuePtr == nullptr)
 	{
@@ -560,7 +560,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 
 			FInstancedStruct* Instance = static_cast<FInstancedStruct*>(ValuePtr);
 			Instance->InitializeAs(FoundStruct);
-			return JsonToStruct(*InnerObj, FoundStruct, Instance->GetMutableMemory(), OutWarnings);
+			return JsonToStruct(*InnerObj, FoundStruct, Instance->GetMutableMemory(), Outer, OutWarnings);
 		}
 
 		// FSoftObjectPath - deserialize from string path
@@ -578,7 +578,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 			OutWarnings.Add(FString::Printf(TEXT("Expected object for struct property '%s'"), *Property->GetName()));
 			return false;
 		}
-		return JsonToStruct(*NestedObj, StructProp->Struct, ValuePtr, OutWarnings);
+		return JsonToStruct(*NestedObj, StructProp->Struct, ValuePtr, Outer, OutWarnings);
 	}
 
 	// Array property
@@ -595,7 +595,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		ArrayHelper.Resize(JsonArray->Num());
 		for (int32 Index = 0; Index < JsonArray->Num(); ++Index)
 		{
-			JsonToProperty((*JsonArray)[Index], ArrayProp->Inner, ArrayHelper.GetRawPtr(Index), OutWarnings);
+			JsonToProperty((*JsonArray)[Index], ArrayProp->Inner, ArrayHelper.GetRawPtr(Index), Outer, OutWarnings);
 		}
 		return true;
 	}
@@ -623,7 +623,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 
 			// Import value
 			void* MapValuePtr = MapHelper.GetValuePtr(NewIndex);
-			JsonToProperty(MapPair.Value, MapProp->ValueProp, MapValuePtr, OutWarnings);
+			JsonToProperty(MapPair.Value, MapProp->ValueProp, MapValuePtr, Outer, OutWarnings);
 		}
 
 		MapHelper.Rehash();

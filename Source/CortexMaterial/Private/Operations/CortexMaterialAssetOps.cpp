@@ -646,7 +646,7 @@ FCortexCommandResult FCortexMaterialAssetOps::SetMaterialProperty(const TSharedP
 	}
 
 	TArray<FString> Warnings;
-	if (!FCortexSerializer::JsonToProperty(Value, Property, PropertyAddress, Warnings))
+	if (!FCortexSerializer::JsonToProperty(Value, Property, PropertyAddress, Material, Warnings))
 	{
 		FString WarningStr = Warnings.Num() > 0
 			? FString::Join(Warnings, TEXT("; "))

@@ -248,7 +248,7 @@ FCortexCommandResult FCortexDataAssetOps::UpdateDataAsset(const TSharedPtr<FJson
 		}
 
 		TArray<FString> Warnings;
-		bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*PropertiesObj, AssetClass, TempAsset, Warnings);
+		bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*PropertiesObj, AssetClass, TempAsset, TempAsset, Warnings);
 
 		if (!bDeserializeSuccess)
 		{
@@ -321,7 +321,7 @@ FCortexCommandResult FCortexDataAssetOps::UpdateDataAsset(const TSharedPtr<FJson
 		DataAsset->Modify();
 
 		TArray<FString> Warnings;
-		bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*PropertiesObj, AssetClass, DataAsset, Warnings);
+		bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*PropertiesObj, AssetClass, DataAsset, DataAsset, Warnings);
 
 		if (!bDeserializeSuccess)
 		{
@@ -487,7 +487,7 @@ FCortexCommandResult FCortexDataAssetOps::CreateDataAsset(const TSharedPtr<FJson
 		&& PropertiesObj != nullptr
 		&& (*PropertiesObj).IsValid())
 	{
-		const bool bApplied = FCortexSerializer::JsonToStruct(*PropertiesObj, ResolvedClass, NewAsset, Warnings);
+		const bool bApplied = FCortexSerializer::JsonToStruct(*PropertiesObj, ResolvedClass, NewAsset, NewAsset, Warnings);
 		if (!bApplied)
 		{
 			NewAsset->MarkAsGarbage();
