@@ -91,3 +91,69 @@ bool FCortexSerializerInstancedSubObjectTest::RunTest(const FString& Parameters)
 	IMC->MarkAsGarbage();
 	return true;
 }
+
+// ============================================================================
+// Test: Instanced sub-object with custom properties
+// ============================================================================
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerInstancedSubObjectPropsTest,
+	"Cortex.Core.Serializer.InstancedSubObject.WithProperties",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerInstancedSubObjectPropsTest::RunTest(const FString& Parameters)
+{
+	// Use IMC as outer so instanced sub-objects are properly owned
+	UInputMappingContext* IMC = NewObject<UInputMappingContext>(GetTransientPackage(),
+		NAME_None, RF_Transient);
+	UObject* Outer = IMC;
+
+	// Work with a local FEnhancedActionKeyMapping struct on the stack
+	FEnhancedActionKeyMapping Mapping;
+
+	// Build JSON: Negate modifier with only bX=true, bY=false, bZ=false
+	TSharedPtr<FJsonObject> PropsJson = MakeShared<FJsonObject>();
+	PropsJson->SetBoolField(TEXT("bX"), true);
+	PropsJson->SetBoolField(TEXT("bY"), false);
+	PropsJson->SetBoolField(TEXT("bZ"), false);
+
+	TSharedPtr<FJsonObject> ModifierJson = MakeShared<FJsonObject>();
+	ModifierJson->SetStringField(TEXT("_class"), TEXT("InputModifierNegate"));
+	ModifierJson->SetObjectField(TEXT("properties"), PropsJson);
+
+	TArray<TSharedPtr<FJsonValue>> ModifiersArray;
+	ModifiersArray.Add(MakeShared<FJsonValueObject>(ModifierJson));
+
+	const FProperty* ModifiersProp = FEnhancedActionKeyMapping::StaticStruct()->FindPropertyByName(TEXT("Modifiers"));
+	void* ValuePtr = ModifiersProp->ContainerPtrToValuePtr<void>(&Mapping);
+	TArray<FString> Warnings;
+
+	const bool bResult = FCortexSerializer::JsonToProperty(
+		MakeShared<FJsonValueArray>(ModifiersArray), ModifiersProp, ValuePtr, Outer, Warnings);
+
+	TestTrue(TEXT("Should succeed"), bResult);
+	TestEqual(TEXT("Should have 1 modifier"), Mapping.Modifiers.Num(), 1);
+
+	if (Mapping.Modifiers.Num() > 0)
+	{
+		UInputModifierNegate* Negate = Cast<UInputModifierNegate>(Mapping.Modifiers[0]);
+		TestNotNull(TEXT("Should be Negate modifier"), Negate);
+		if (Negate)
+		{
+			TestTrue(TEXT("bX should be true"), Negate->bX);
+			TestFalse(TEXT("bY should be false"), Negate->bY);
+			TestFalse(TEXT("bZ should be false"), Negate->bZ);
+		}
+	}
+
+	// Cleanup
+	for (UInputModifier* Mod : Mapping.Modifiers)
+	{
+		if (Mod)
+		{
+			Mod->MarkAsGarbage();
+		}
+	}
+	IMC->MarkAsGarbage();
+	return true;
+}
