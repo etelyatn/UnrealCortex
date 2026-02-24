@@ -1126,3 +1126,111 @@ bool FCortexMaterialSetNodePropertyEnumTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialAutoLayoutNodeSeparationTest,
+	"Cortex.Material.Graph.AutoLayout.NodeSeparation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialAutoLayoutNodeSeparationTest::RunTest(const FString& Parameters)
+{
+	// Regression test: nodes feeding MaterialResult must be placed at NEGATIVE X
+	// (to the left of MaterialResult at x=0) and nodes at different depths must
+	// be at different X positions.
+	//
+	// Graph: TextureCoordinate -> Multiply.A -> MaterialResult.BaseColor (2-hop chain)
+	//
+	// Expected after auto_layout:
+	//   TextureCoordinate.X < Multiply.X   (deeper node further left)
+	//   Multiply.X < 0                     (all expressions left of MaterialResult)
+	//
+	// Bug before fix: TextureCoordinate.X=0, Multiply.X=224 (both positive, overlap with MaterialResult)
+
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestLayoutSep_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Sep_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create material
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	// Add TextureCoordinate (source)
+	TSharedPtr<FJsonObject> AddUVParams = MakeShared<FJsonObject>();
+	AddUVParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddUVParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionTextureCoordinate"));
+	FCortexCommandResult UVResult = Handler.Execute(TEXT("add_node"), AddUVParams);
+	FString UVNodeId;
+	if (UVResult.Data.IsValid()) UVResult.Data->TryGetStringField(TEXT("node_id"), UVNodeId);
+
+	// Add Multiply (intermediate)
+	TSharedPtr<FJsonObject> AddMulParams = MakeShared<FJsonObject>();
+	AddMulParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddMulParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionMultiply"));
+	FCortexCommandResult MulResult = Handler.Execute(TEXT("add_node"), AddMulParams);
+	FString MulNodeId;
+	if (MulResult.Data.IsValid()) MulResult.Data->TryGetStringField(TEXT("node_id"), MulNodeId);
+
+	// TextureCoordinate -> Multiply.A
+	TSharedPtr<FJsonObject> Connect1 = MakeShared<FJsonObject>();
+	Connect1->SetStringField(TEXT("asset_path"), MatPath);
+	Connect1->SetStringField(TEXT("source_node"), UVNodeId);
+	Connect1->SetNumberField(TEXT("source_output"), 0);
+	Connect1->SetStringField(TEXT("target_node"), MulNodeId);
+	Connect1->SetStringField(TEXT("target_input"), TEXT("A"));
+	Handler.Execute(TEXT("connect"), Connect1);
+
+	// Multiply -> MaterialResult.BaseColor
+	TSharedPtr<FJsonObject> Connect2 = MakeShared<FJsonObject>();
+	Connect2->SetStringField(TEXT("asset_path"), MatPath);
+	Connect2->SetStringField(TEXT("source_node"), MulNodeId);
+	Connect2->SetNumberField(TEXT("source_output"), 0);
+	Connect2->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+	Connect2->SetStringField(TEXT("target_input"), TEXT("BaseColor"));
+	Handler.Execute(TEXT("connect"), Connect2);
+
+	// Run auto_layout
+	TSharedPtr<FJsonObject> LayoutParams = MakeShared<FJsonObject>();
+	LayoutParams->SetStringField(TEXT("asset_path"), MatPath);
+	FCortexCommandResult Result = Handler.Execute(TEXT("auto_layout"), LayoutParams);
+	TestTrue(TEXT("auto_layout should succeed"), Result.bSuccess);
+
+	// Read back positions
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MatPath);
+	TestNotNull(TEXT("Should load material"), Material);
+
+	if (Material && Material->GetEditorOnlyData())
+	{
+		UMaterialExpression* UVNode = nullptr;
+		UMaterialExpression* MulNode = nullptr;
+
+		for (UMaterialExpression* Expr : Material->GetEditorOnlyData()->ExpressionCollection.Expressions)
+		{
+			if (!Expr) continue;
+			if (Expr->GetName() == UVNodeId) UVNode = Expr;
+			if (Expr->GetName() == MulNodeId) MulNode = Expr;
+		}
+
+		TestNotNull(TEXT("Should find UV node"), UVNode);
+		TestNotNull(TEXT("Should find Multiply node"), MulNode);
+
+		if (UVNode && MulNode)
+		{
+			// Source (TextureCoordinate) must be further left than intermediate (Multiply)
+			TestTrue(TEXT("TextureCoordinate.X should be less than Multiply.X"),
+				UVNode->MaterialExpressionEditorX < MulNode->MaterialExpressionEditorX);
+
+			// All expression nodes should be to the LEFT of MaterialResult (negative X)
+			TestTrue(TEXT("Multiply.X should be negative (left of MaterialResult at x=0)"),
+				MulNode->MaterialExpressionEditorX < 0);
+		}
+	}
+
+	if (Material) Material->MarkAsGarbage();
+	return true;
+}

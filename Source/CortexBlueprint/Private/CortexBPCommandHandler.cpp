@@ -2,7 +2,9 @@
 #include "CortexCommandRouter.h"
 #include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPClassDefaultsOps.h"
+#include "Operations/CortexBPComponentOps.h"
 #include "Operations/CortexBPStructureOps.h"
+#include "Operations/CortexBPTimelineOps.h"
 
 FCortexCommandResult FCortexBPCommandHandler::Execute(
 	const FString& Command,
@@ -72,6 +74,16 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPClassDefaultsOps::SetClassDefaults(Params);
 	}
 
+	if (Command == TEXT("configure_timeline"))
+	{
+		return FCortexBPTimelineOps::ConfigureTimeline(Params);
+	}
+
+	if (Command == TEXT("set_component_defaults"))
+	{
+		return FCortexBPComponentOps::SetComponentDefaults(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown bp command: %s"), *Command)
@@ -94,6 +106,8 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add({TEXT("add_function"), TEXT("Add a function to a Blueprint")});
 	Commands.Add({TEXT("get_class_defaults"), TEXT("Read default property values from a Blueprint CDO")});
 	Commands.Add({TEXT("set_class_defaults"), TEXT("Set default property values on a Blueprint CDO")});
+	Commands.Add({TEXT("configure_timeline"), TEXT("Configure a Timeline node's tracks and keyframes")});
+	Commands.Add({TEXT("set_component_defaults"), TEXT("Set object-reference properties on a Blueprint component template")});
 
 	return Commands;
 }

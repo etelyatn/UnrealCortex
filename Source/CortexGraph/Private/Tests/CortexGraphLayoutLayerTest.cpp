@@ -70,3 +70,46 @@ bool FCortexGraphLayoutLayerTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphLayoutSourcePushbackTest,
+	"Cortex.Graph.Layout.SourcePushback",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphLayoutSourcePushbackTest::RunTest(const FString& Parameters)
+{
+	// Pure data-flow graph:
+	//   A -> B -> C   (chain: A at layer 0, B at layer 1, C at layer 2)
+	//   D -> C        (D is a source that feeds C, which is deep in the chain)
+	//
+	// Bug before fix: D stays at layer 0 (same column as A) despite its consumer C
+	// being at layer 2. This causes all sources to pile up in one tall column.
+	//
+	// Expected after fix: D is pushed to layer 1 (one before C at layer 2),
+	// same column as B. Shorter connection arrows, cleaner graph.
+
+	TArray<FCortexLayoutNode> Nodes;
+
+	FCortexLayoutNode NodeA; NodeA.Id = TEXT("A"); NodeA.DataOutputs = {TEXT("B")}; Nodes.Add(NodeA);
+	FCortexLayoutNode NodeB; NodeB.Id = TEXT("B"); NodeB.DataOutputs = {TEXT("C")}; Nodes.Add(NodeB);
+	FCortexLayoutNode NodeC; NodeC.Id = TEXT("C"); Nodes.Add(NodeC);
+	FCortexLayoutNode NodeD; NodeD.Id = TEXT("D"); NodeD.DataOutputs = {TEXT("C")}; Nodes.Add(NodeD);
+
+	FCortexLayoutConfig Config;
+	Config.Direction = ECortexLayoutDirection::LeftToRight;
+
+	FCortexLayoutResult Result = FCortexGraphLayoutOps::CalculateLayout(Nodes, Config);
+
+	TestTrue(TEXT("All 4 nodes have positions"), Result.Positions.Num() == 4);
+
+	// D must be pushed right of A (not piled at layer 0)
+	TestTrue(TEXT("D should be pushed right of A (not piled at same column)"),
+		Result.Positions[TEXT("D")].X > Result.Positions[TEXT("A")].X);
+
+	// D and B should be in the same column (both one layer before C)
+	TestEqual(TEXT("D and B should be at the same X (both at layer 1, one before C)"),
+		Result.Positions[TEXT("D")].X, Result.Positions[TEXT("B")].X);
+
+	return true;
+}

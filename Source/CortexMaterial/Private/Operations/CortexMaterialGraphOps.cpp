@@ -687,6 +687,15 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 		}
 	}
 
+	// Wire MaterialResult-feeding expressions to a virtual sink node.
+	// Without this, expressions that only connect to MaterialResult (not to other expressions)
+	// have empty DataOutputs and collapse to layer 0, making all nodes overlap at x=0.
+	const FString MaterialResultId = TEXT("__MaterialResult__");
+	for (const FString& Id : MaterialResultInputIds)
+	{
+		ForwardEdges.FindOrAdd(Id).AddUnique(MaterialResultId);
+	}
+
 	// Build layout nodes with connectivity
 	TArray<FCortexLayoutNode> LayoutNodes;
 	for (UMaterialExpression* Expr : Expressions)
@@ -708,6 +717,18 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 		LayoutNodes.Add(LayoutNode);
 	}
 
+	// Add virtual MaterialResult sink — gives the layout engine a concrete rightmost anchor.
+	// Removed from positions after layout; not written back to any expression.
+	{
+		FCortexLayoutNode MaterialResultNode;
+		MaterialResultNode.Id = MaterialResultId;
+		MaterialResultNode.Width = 300;
+		MaterialResultNode.Height = 200;
+		MaterialResultNode.bIsEntryPoint = false;
+		MaterialResultNode.bIsExecNode = false;
+		LayoutNodes.Add(MaterialResultNode);
+	}
+
 	// Run shared layout engine
 	FCortexLayoutConfig Config;
 	Config.Direction = ECortexLayoutDirection::RightToLeft;
@@ -718,6 +739,18 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 		Config.VerticalSpacing = static_cast<int32>(VSpacingVal);
 
 	FCortexLayoutResult LayoutResult = FCortexGraphLayoutOps::CalculateLayout(LayoutNodes, Config);
+
+	// Translate positions so MaterialResult lands at x=0.
+	// UE material editor convention: MaterialResult is at ~x=0; expressions are at negative x (to the left).
+	if (const FIntPoint* MRPos = LayoutResult.Positions.Find(MaterialResultId))
+	{
+		const int32 OffsetX = MRPos->X;
+		for (auto& Pair : LayoutResult.Positions)
+		{
+			Pair.Value.X -= OffsetX;
+		}
+		LayoutResult.Positions.Remove(MaterialResultId);
+	}
 
 	// Apply positions back to Material expressions
 	TUniquePtr<FScopedTransaction> Transaction;
@@ -756,7 +789,7 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
-	Data->SetNumberField(TEXT("node_count"), LayoutResult.Positions.Num());
+	Data->SetNumberField(TEXT("node_count"), Expressions.Num());
 	return FCortexCommandRouter::Success(Data);
 }
 

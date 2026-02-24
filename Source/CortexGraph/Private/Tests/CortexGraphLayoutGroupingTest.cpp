@@ -357,6 +357,112 @@ bool FCortexGraphLayoutGroupDataIslandTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// --- Test 9: Multi-hop data chains into middle exec nodes ---
+// Topology: ExecA → Branch → Delay → Print (exec chain)
+//           GetHealth → Greater → Branch   (2-hop data into middle exec)
+//           GetAL → BreakVec → FloatToStr → Print  (3-hop data into end exec)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphLayoutGroupComplexMixedTest,
+	"Cortex.Graph.Layout.Grouping.ComplexMixed",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphLayoutGroupComplexMixedTest::RunTest(const FString& Parameters)
+{
+	TArray<FCortexLayoutNode> Nodes;
+
+	// Exec chain
+	FCortexLayoutNode ExecA;
+	ExecA.Id = TEXT("ExecA");
+	ExecA.bIsEntryPoint = true;
+	ExecA.bIsExecNode = true;
+	ExecA.ExecOutputs = {TEXT("Branch")};
+	Nodes.Add(ExecA);
+
+	FCortexLayoutNode Branch;
+	Branch.Id = TEXT("Branch");
+	Branch.bIsExecNode = true;
+	Branch.ExecOutputs = {TEXT("Delay")};
+	Nodes.Add(Branch);
+
+	FCortexLayoutNode Delay;
+	Delay.Id = TEXT("Delay");
+	Delay.bIsExecNode = true;
+	Delay.ExecOutputs = {TEXT("Print")};
+	Nodes.Add(Delay);
+
+	FCortexLayoutNode Print;
+	Print.Id = TEXT("Print");
+	Print.bIsExecNode = true;
+	Nodes.Add(Print);
+
+	// 2-hop data chain feeding Branch (middle exec node)
+	FCortexLayoutNode GetHealth;
+	GetHealth.Id = TEXT("GetHealth");
+	GetHealth.bIsExecNode = false;
+	GetHealth.DataOutputs = {TEXT("Greater")};
+	Nodes.Add(GetHealth);
+
+	FCortexLayoutNode Greater;
+	Greater.Id = TEXT("Greater");
+	Greater.bIsExecNode = false;
+	Greater.DataOutputs = {TEXT("Branch")};
+	Nodes.Add(Greater);
+
+	// 3-hop data chain feeding Print (end exec node)
+	FCortexLayoutNode GetAL;
+	GetAL.Id = TEXT("GetAL");
+	GetAL.bIsExecNode = false;
+	GetAL.DataOutputs = {TEXT("BreakVec")};
+	Nodes.Add(GetAL);
+
+	FCortexLayoutNode BreakVec;
+	BreakVec.Id = TEXT("BreakVec");
+	BreakVec.bIsExecNode = false;
+	BreakVec.DataOutputs = {TEXT("FloatToStr")};
+	Nodes.Add(BreakVec);
+
+	FCortexLayoutNode FloatToStr;
+	FloatToStr.Id = TEXT("FloatToStr");
+	FloatToStr.bIsExecNode = false;
+	FloatToStr.DataOutputs = {TEXT("Print")};
+	Nodes.Add(FloatToStr);
+
+	FCortexLayoutConfig Config;
+	Config.Direction = ECortexLayoutDirection::LeftToRight;
+
+	FCortexLayoutResult Result = FCortexGraphLayoutOps::CalculateLayout(Nodes, Config);
+
+	TestTrue(TEXT("All 9 nodes positioned"), Result.Positions.Num() == 9);
+
+	// Exec chain flows left to right
+	TestTrue(TEXT("ExecA left of Branch"), Result.Positions[TEXT("ExecA")].X < Result.Positions[TEXT("Branch")].X);
+	TestTrue(TEXT("Branch left of Delay"), Result.Positions[TEXT("Branch")].X < Result.Positions[TEXT("Delay")].X);
+	TestTrue(TEXT("Delay left of Print"), Result.Positions[TEXT("Delay")].X < Result.Positions[TEXT("Print")].X);
+
+	// 2-hop data chain: both ancestors must be left of Branch (their exec consumer)
+	TestTrue(TEXT("GetHealth left of Branch"), Result.Positions[TEXT("GetHealth")].X < Result.Positions[TEXT("Branch")].X);
+	TestTrue(TEXT("Greater left of Branch"), Result.Positions[TEXT("Greater")].X < Result.Positions[TEXT("Branch")].X);
+	TestTrue(TEXT("GetHealth left of or equal Greater"), Result.Positions[TEXT("GetHealth")].X <= Result.Positions[TEXT("Greater")].X);
+
+	// 3-hop data chain must flow left to right and end left of Print
+	TestTrue(TEXT("GetAL left of BreakVec"), Result.Positions[TEXT("GetAL")].X <= Result.Positions[TEXT("BreakVec")].X);
+	TestTrue(TEXT("BreakVec left of FloatToStr"), Result.Positions[TEXT("BreakVec")].X < Result.Positions[TEXT("FloatToStr")].X);
+	TestTrue(TEXT("FloatToStr left of Print"), Result.Positions[TEXT("FloatToStr")].X < Result.Positions[TEXT("Print")].X);
+
+	// Data nodes must be near their exec consumer vertically (grouping places them together)
+	const int32 BranchY = Result.Positions[TEXT("Branch")].Y;
+	TestTrue(TEXT("GetHealth near Branch Y"), FMath::Abs(Result.Positions[TEXT("GetHealth")].Y - BranchY) < 400);
+	TestTrue(TEXT("Greater near Branch Y"), FMath::Abs(Result.Positions[TEXT("Greater")].Y - BranchY) < 400);
+
+	const int32 PrintY = Result.Positions[TEXT("Print")].Y;
+	TestTrue(TEXT("FloatToStr near Print Y"), FMath::Abs(Result.Positions[TEXT("FloatToStr")].Y - PrintY) < 400);
+	TestTrue(TEXT("BreakVec near Print Y"), FMath::Abs(Result.Positions[TEXT("BreakVec")].Y - PrintY) < 400);
+	TestTrue(TEXT("GetAL near Print Y"), FMath::Abs(Result.Positions[TEXT("GetAL")].Y - PrintY) < 400);
+
+	return true;
+}
+
 // --- Test 8: Grid snap applied to all positions ---
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexGraphLayoutGroupGridSnapTest,

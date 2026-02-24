@@ -240,6 +240,17 @@ TMap<FString, int32> FCortexGraphLayoutOps::AssignLayers(
 				}
 			}
 
+			// Capture sources before Kahn's modifies DataInDegree in-place.
+			// Needed for source pushback after the main pass.
+			TArray<FString> OriginalSources;
+			for (const FCortexLayoutNode& Node : Nodes)
+			{
+				if (DataInDegree.FindRef(Node.Id) == 0 && Node.DataOutputs.Num() > 0)
+				{
+					OriginalSources.Add(Node.Id);
+				}
+			}
+
 			TArray<FString> DataQueue;
 			for (const FCortexLayoutNode& Node : Nodes)
 			{
@@ -276,6 +287,31 @@ TMap<FString, int32> FCortexGraphLayoutOps::AssignLayers(
 					{
 						DataQueue.Add(TgtId);
 					}
+				}
+			}
+
+			// Source pushback: move source nodes closer to their consumers.
+			// Kahn's pins all sources at layer 0 regardless of how deep their consumers are,
+			// causing them to pile up in one tall column. Instead, place each source at
+			// MinConsumerLayer-1 (just before its earliest consumer in the chain).
+			for (const FString& SourceId : OriginalSources)
+			{
+				const FCortexLayoutNode* const* NodePtr = NodeMap.Find(SourceId);
+				if (!NodePtr) continue;
+
+				int32 MinConsumerLayer = INT_MAX;
+				for (const FString& TargetId : (*NodePtr)->DataOutputs)
+				{
+					const int32* TargetLayer = LayerAssignment.Find(TargetId);
+					if (TargetLayer && *TargetLayer < MinConsumerLayer)
+					{
+						MinConsumerLayer = *TargetLayer;
+					}
+				}
+
+				if (MinConsumerLayer > 1)
+				{
+					LayerAssignment[SourceId] = MinConsumerLayer - 1;
 				}
 			}
 		}
@@ -637,6 +673,17 @@ TArray<FCortexGraphLayoutOps::FCortexNodeGroup> FCortexGraphLayoutOps::DiscoverG
 		}
 	}
 
+	// Debug: log all nodes with their properties
+	for (const FCortexLayoutNode& Node : Nodes)
+	{
+		UE_LOG(LogCortexGraph, Verbose, TEXT("[DiscoverGroups] Node=%s IsExec=%d DataOutputs=%d"),
+			*Node.Id, (int32)Node.bIsExecNode, Node.DataOutputs.Num());
+		for (const FString& DataOut : Node.DataOutputs)
+		{
+			UE_LOG(LogCortexGraph, Verbose, TEXT("  -> DataOutput: %s"), *DataOut);
+		}
+	}
+
 	// Skip grouping when there are no exec nodes.
 	bool bHasAnyExecNode = false;
 	for (const FCortexLayoutNode& Node : Nodes)
@@ -647,6 +694,9 @@ TArray<FCortexGraphLayoutOps::FCortexNodeGroup> FCortexGraphLayoutOps::DiscoverG
 			break;
 		}
 	}
+
+	UE_LOG(LogCortexGraph, Log, TEXT("[DiscoverGroups] %d nodes, bHasAnyExecNode=%d, ReverseDataAdj entries=%d"),
+		Nodes.Num(), (int32)bHasAnyExecNode, ReverseDataAdj.Num());
 
 	if (!bHasAnyExecNode)
 	{
@@ -703,6 +753,8 @@ TArray<FCortexGraphLayoutOps::FCortexNodeGroup> FCortexGraphLayoutOps::DiscoverG
 
 		if (Group.DataNodeIds.Num() > 0)
 		{
+			UE_LOG(LogCortexGraph, Log, TEXT("[DiscoverGroups] Group formed: ExecNode=%s DataNodes=%d"),
+				*Group.ExecNodeId, Group.DataNodeIds.Num());
 			const int32 GroupIndex = Groups.Num();
 			OutNodeToGroupIndex.Add(Group.ExecNodeId, GroupIndex);
 			for (const FString& DataId : Group.DataNodeIds)
@@ -711,8 +763,14 @@ TArray<FCortexGraphLayoutOps::FCortexNodeGroup> FCortexGraphLayoutOps::DiscoverG
 			}
 			Groups.Add(MoveTemp(Group));
 		}
+		else
+		{
+			UE_LOG(LogCortexGraph, Verbose, TEXT("[DiscoverGroups] ExecNode=%s: no data ancestors found"),
+				*Node.Id);
+		}
 	}
 
+	UE_LOG(LogCortexGraph, Log, TEXT("[DiscoverGroups] Total groups formed: %d"), Groups.Num());
 	return Groups;
 }
 
@@ -1051,7 +1109,14 @@ void FCortexGraphLayoutOps::ExpandGroupPositions(
 		}
 
 		const int32 LaneHeight = FMath::Max(1, MaxDataHeight + InnerVSpacing);
-		const int32 DataBaseY = GroupPos.Y + (*ExecPtr)->Height + InnerVSpacing;
+
+		// Center data lanes vertically at the exec node's midpoint.
+		// NextLane = number of parallel data chains; each occupies LaneHeight pixels.
+		const int32 ExecCenterY = ExecPos.Y + (*ExecPtr)->Height / 2;
+		const int32 TotalDataHeight = NextLane > 0
+			? (NextLane - 1) * LaneHeight + MaxDataHeight
+			: 0;
+		const int32 DataBaseY = ExecCenterY - TotalDataHeight / 2;
 
 		// Per-lane X cursors so each chain starts independently from GroupPos.X
 		TMap<int32, int32> LaneXCursor;
