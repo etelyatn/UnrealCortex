@@ -409,3 +409,57 @@ bool FCortexLevelSetComponentPropertyTransformTest::RunTest(const FString& Param
     DeleteActor(Router, ActorName);
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexLevelSetComponentPropertyVisibilityTest,
+    "Cortex.Level.Component.SetComponentPropertyVisibility",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelSetComponentPropertyVisibilityTest::RunTest(const FString& Parameters)
+{
+    if (!GEditor)
+    {
+        AddInfo(TEXT("No editor - skipping"));
+        return true;
+    }
+
+    FCortexCommandRouter Router = CreateLevelRouterComponent();
+    const FString ActorName = SpawnActor(Router, TEXT("PointLight"));
+    TestFalse(TEXT("Spawn should succeed"), ActorName.IsEmpty());
+
+    const TArray<TSharedPtr<FJsonValue>> Components = ListComponents(Router, ActorName);
+    const FString LightComp = FindComponentNameByClass(Components, TEXT("PointLightComponent"));
+    TestFalse(TEXT("PointLightComponent should exist"), LightComp.IsEmpty());
+
+    // Set bVisible = false via set_component_property
+    TSharedPtr<FJsonObject> SetParams = MakeShared<FJsonObject>();
+    SetParams->SetStringField(TEXT("actor"), ActorName);
+    SetParams->SetStringField(TEXT("component"), LightComp);
+    SetParams->SetStringField(TEXT("property"), TEXT("bVisible"));
+    SetParams->SetBoolField(TEXT("value"), false);
+
+    FCortexCommandResult SetResult = Router.Execute(TEXT("level.set_component_property"), SetParams);
+    TestTrue(TEXT("set_component_property bVisible should succeed"), SetResult.bSuccess);
+
+    // Verify via get_component_property
+    TSharedPtr<FJsonObject> GetParams = MakeShared<FJsonObject>();
+    GetParams->SetStringField(TEXT("actor"), ActorName);
+    GetParams->SetStringField(TEXT("component"), LightComp);
+    GetParams->SetStringField(TEXT("property"), TEXT("bVisible"));
+
+    FCortexCommandResult GetResult = Router.Execute(TEXT("level.get_component_property"), GetParams);
+    TestTrue(TEXT("get should succeed"), GetResult.bSuccess);
+
+    if (GetResult.bSuccess && GetResult.Data.IsValid())
+    {
+        bool bValue = true;
+        if (TestTrue(TEXT("value should be bool"), GetResult.Data->TryGetBoolField(TEXT("value"), bValue)))
+        {
+            TestFalse(TEXT("bVisible should be false"), bValue);
+        }
+    }
+
+    DeleteActor(Router, ActorName);
+    return true;
+}
