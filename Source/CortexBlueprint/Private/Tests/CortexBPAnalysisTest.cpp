@@ -49,6 +49,24 @@ bool FCortexBPAnalyzeForMigrationBasicTest::RunTest(const FString& Parameters)
 			AnalyzeResult.Data->TryGetArrayField(TEXT("latent_nodes"), LatentNodesArray));
 		TestTrue(TEXT("complexity_metrics field should exist"),
 			AnalyzeResult.Data->TryGetObjectField(TEXT("complexity_metrics"), ComplexityObj));
+
+		if (ComplexityObj && ComplexityObj->IsValid())
+		{
+			bool bHasLatentNodes = false;
+			bool bHasEventDispatchers = false;
+			TestTrue(TEXT("complexity_metrics.has_latent_nodes should exist"),
+				(*ComplexityObj)->TryGetBoolField(TEXT("has_latent_nodes"), bHasLatentNodes));
+			TestTrue(TEXT("complexity_metrics.has_event_dispatchers should exist"),
+				(*ComplexityObj)->TryGetBoolField(TEXT("has_event_dispatchers"), bHasEventDispatchers));
+		}
+
+		if (GraphsArray && GraphsArray->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject> GraphObj = (*GraphsArray)[0]->AsObject();
+			const TSharedPtr<FJsonObject>* CustomEventParams = nullptr;
+			TestTrue(TEXT("graphs[0].custom_event_params should exist"),
+				GraphObj->TryGetObjectField(TEXT("custom_event_params"), CustomEventParams));
+		}
 	}
 
 	return true;

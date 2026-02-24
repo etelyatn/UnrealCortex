@@ -3,6 +3,9 @@
 #include "Operations/CortexBPTypeUtils.h"
 #include "CortexBlueprintModule.h"
 #include "CortexCommandRouter.h"
+#include "Curves/CurveFloat.h"
+#include "Curves/CurveLinearColor.h"
+#include "Curves/CurveVector.h"
 #include "Curves/RichCurve.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -20,6 +23,7 @@
 #include "K2Node_CustomEvent.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "UObject/FieldIterator.h"
@@ -163,6 +167,95 @@ FString CalculateMigrationConfidence(int32 TotalNodes, int32 LatentCount)
 	return TEXT("low");
 }
 
+int32 ComputeLongestExecDepthFromNode(
+	UEdGraphNode* Node,
+	TMap<UEdGraphNode*, int32>& Memo,
+	TSet<UEdGraphNode*>& ActiveStack)
+{
+	if (!Node)
+	{
+		return 0;
+	}
+
+	if (const int32* Cached = Memo.Find(Node))
+	{
+		return *Cached;
+	}
+
+	// Break cycles in looping graphs.
+	if (ActiveStack.Contains(Node))
+	{
+		return 0;
+	}
+
+	ActiveStack.Add(Node);
+
+	int32 MaxChildDepth = 0;
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (!Pin || Pin->Direction != EGPD_Output || Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+		{
+			continue;
+		}
+
+		for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+		{
+			if (!LinkedPin || !LinkedPin->GetOwningNode())
+			{
+				continue;
+			}
+			MaxChildDepth = FMath::Max(
+				MaxChildDepth,
+				ComputeLongestExecDepthFromNode(LinkedPin->GetOwningNode(), Memo, ActiveStack));
+		}
+	}
+
+	ActiveStack.Remove(Node);
+
+	const int32 Depth = 1 + MaxChildDepth;
+	Memo.Add(Node, Depth);
+	return Depth;
+}
+
+int32 ComputeGraphExecDepth(UEdGraph* Graph)
+{
+	if (!Graph)
+	{
+		return 0;
+	}
+
+	int32 MaxDepth = 0;
+	TMap<UEdGraphNode*, int32> Memo;
+
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (!Node)
+		{
+			continue;
+		}
+
+		bool bHasOutgoingExec = false;
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin && Pin->Direction == EGPD_Output && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+			{
+				bHasOutgoingExec = true;
+				break;
+			}
+		}
+
+		if (!bHasOutgoingExec)
+		{
+			continue;
+		}
+
+		TSet<UEdGraphNode*> ActiveStack;
+		MaxDepth = FMath::Max(MaxDepth, ComputeLongestExecDepthFromNode(Node, Memo, ActiveStack));
+	}
+
+	return MaxDepth;
+}
+
 TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 {
 	int32 TotalNodes = 0;
@@ -190,7 +283,7 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 			continue;
 		}
 
-		MaxGraphDepth = FMath::Max(MaxGraphDepth, Graph->Nodes.Num());
+		MaxGraphDepth = FMath::Max(MaxGraphDepth, ComputeGraphExecDepth(Graph));
 		TotalNodes += Graph->Nodes.Num();
 
 		for (UEdGraphNode* Node : Graph->Nodes)
@@ -265,8 +358,8 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 	Metrics->SetNumberField(TEXT("max_graph_depth"), MaxGraphDepth);
 	Metrics->SetBoolField(TEXT("has_tick"), bHasTick);
 	Metrics->SetBoolField(TEXT("has_timelines"), bHasTimelines);
-	Metrics->SetBoolField(TEXT("has_latent"), LatentCount > 0);
-	Metrics->SetBoolField(TEXT("has_dispatchers"), bHasDispatchers);
+	Metrics->SetBoolField(TEXT("has_latent_nodes"), LatentCount > 0);
+	Metrics->SetBoolField(TEXT("has_event_dispatchers"), bHasDispatchers);
 	Metrics->SetBoolField(TEXT("has_interfaces"), bHasInterfaces);
 	Metrics->SetStringField(TEXT("migration_confidence"), CalculateMigrationConfidence(TotalNodes, LatentCount));
 	Metrics->SetArrayField(TEXT("unsupported_node_types"), UnsupportedArray);
@@ -340,6 +433,16 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 					InputsArr.Add(MakeShared<FJsonValueObject>(PinObj));
 				}
 			}
+			else if (const UK2Node_FunctionResult* ResultNode = Cast<UK2Node_FunctionResult>(Node))
+			{
+				for (const TSharedPtr<FUserPinInfo>& Pin : ResultNode->UserDefinedPins)
+				{
+					TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+					PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+					PinObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Pin->PinType));
+					OutputsArr.Add(MakeShared<FJsonValueObject>(PinObj));
+				}
+			}
 		}
 		FuncObj->SetArrayField(TEXT("inputs"), InputsArr);
 		FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
@@ -383,6 +486,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		bool bGraphHasTick = false;
 		TArray<TSharedPtr<FJsonValue>> EventsArr;
 		TArray<TSharedPtr<FJsonValue>> CustomEventsArr;
+		TSharedPtr<FJsonObject> CustomEventParamsObj = MakeShared<FJsonObject>();
 
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
@@ -406,8 +510,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 
 			if (const UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
 			{
-				TSharedPtr<FJsonObject> CustomEventObj = MakeShared<FJsonObject>();
-				CustomEventObj->SetStringField(TEXT("name"), CustomEvent->GetName());
+				const FString CustomEventName = CustomEvent->GetName();
 				TArray<TSharedPtr<FJsonValue>> ParamArray;
 				for (const TSharedPtr<FUserPinInfo>& Pin : CustomEvent->UserDefinedPins)
 				{
@@ -416,8 +519,8 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 					ParamObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Pin->PinType));
 					ParamArray.Add(MakeShared<FJsonValueObject>(ParamObj));
 				}
-				CustomEventObj->SetArrayField(TEXT("params"), ParamArray);
-				CustomEventsArr.Add(MakeShared<FJsonValueObject>(CustomEventObj));
+				CustomEventsArr.Add(MakeShared<FJsonValueString>(CustomEventName));
+				CustomEventParamsObj->SetArrayField(CustomEventName, ParamArray);
 			}
 
 			if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
@@ -441,6 +544,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		GraphObj->SetBoolField(TEXT("has_tick"), bGraphHasTick);
 		GraphObj->SetArrayField(TEXT("events"), EventsArr);
 		GraphObj->SetArrayField(TEXT("custom_events"), CustomEventsArr);
+		GraphObj->SetObjectField(TEXT("custom_event_params"), CustomEventParamsObj);
 		GraphsArray.Add(MakeShared<FJsonValueObject>(GraphObj));
 	}
 	Data->SetArrayField(TEXT("graphs"), GraphsArray);
@@ -459,6 +563,8 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		TimelineObj->SetNumberField(TEXT("length"), Timeline->TimelineLength);
 		TimelineObj->SetBoolField(TEXT("auto_play"), Timeline->bAutoPlay);
 		TimelineObj->SetBoolField(TEXT("loop"), Timeline->bLoop);
+		// UTimelineTemplate does not store per-template play rate in UE 5.6.
+		// Runtime UTimelineComponent defaults to 1.0 unless adjusted by graph logic.
 		TimelineObj->SetNumberField(TEXT("play_rate"), 1.0);
 		TimelineObj->SetBoolField(TEXT("ignore_time_dilation"), Timeline->bIgnoreTimeDilation);
 
@@ -482,9 +588,79 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 			FloatTracksArray.Add(MakeShared<FJsonValueObject>(TrackObj));
 		}
 		TimelineObj->SetArrayField(TEXT("float_tracks"), FloatTracksArray);
-		TimelineObj->SetArrayField(TEXT("vector_tracks"), TArray<TSharedPtr<FJsonValue>>{});
-		TimelineObj->SetArrayField(TEXT("color_tracks"), TArray<TSharedPtr<FJsonValue>>{});
-		TimelineObj->SetArrayField(TEXT("event_tracks"), TArray<TSharedPtr<FJsonValue>>{});
+
+		TArray<TSharedPtr<FJsonValue>> VectorTracksArray;
+		for (const FTTVectorTrack& Track : Timeline->VectorTracks)
+		{
+			TSharedPtr<FJsonObject> TrackObj = MakeShared<FJsonObject>();
+			TrackObj->SetStringField(TEXT("name"), Track.GetTrackName().ToString());
+			TArray<TSharedPtr<FJsonValue>> KeysArray;
+			if (Track.CurveVector)
+			{
+				const FRichCurve& XCurve = Track.CurveVector->FloatCurves[0];
+				const FRichCurve& YCurve = Track.CurveVector->FloatCurves[1];
+				const FRichCurve& ZCurve = Track.CurveVector->FloatCurves[2];
+				for (const FRichCurveKey& Key : XCurve.GetConstRefOfKeys())
+				{
+					TSharedPtr<FJsonObject> KeyObj = MakeShared<FJsonObject>();
+					KeyObj->SetNumberField(TEXT("time"), Key.Time);
+					KeyObj->SetNumberField(TEXT("x"), XCurve.Eval(Key.Time));
+					KeyObj->SetNumberField(TEXT("y"), YCurve.Eval(Key.Time));
+					KeyObj->SetNumberField(TEXT("z"), ZCurve.Eval(Key.Time));
+					KeysArray.Add(MakeShared<FJsonValueObject>(KeyObj));
+				}
+			}
+			TrackObj->SetArrayField(TEXT("keys"), KeysArray);
+			VectorTracksArray.Add(MakeShared<FJsonValueObject>(TrackObj));
+		}
+		TimelineObj->SetArrayField(TEXT("vector_tracks"), VectorTracksArray);
+
+		TArray<TSharedPtr<FJsonValue>> ColorTracksArray;
+		for (const FTTLinearColorTrack& Track : Timeline->LinearColorTracks)
+		{
+			TSharedPtr<FJsonObject> TrackObj = MakeShared<FJsonObject>();
+			TrackObj->SetStringField(TEXT("name"), Track.GetTrackName().ToString());
+			TArray<TSharedPtr<FJsonValue>> KeysArray;
+			if (Track.CurveLinearColor)
+			{
+				const FRichCurve& RCurve = Track.CurveLinearColor->FloatCurves[0];
+				for (const FRichCurveKey& Key : RCurve.GetConstRefOfKeys())
+				{
+					const FLinearColor Value = Track.CurveLinearColor->GetLinearColorValue(Key.Time);
+					TSharedPtr<FJsonObject> KeyObj = MakeShared<FJsonObject>();
+					KeyObj->SetNumberField(TEXT("time"), Key.Time);
+					KeyObj->SetNumberField(TEXT("r"), Value.R);
+					KeyObj->SetNumberField(TEXT("g"), Value.G);
+					KeyObj->SetNumberField(TEXT("b"), Value.B);
+					KeyObj->SetNumberField(TEXT("a"), Value.A);
+					KeysArray.Add(MakeShared<FJsonValueObject>(KeyObj));
+				}
+			}
+			TrackObj->SetArrayField(TEXT("keys"), KeysArray);
+			ColorTracksArray.Add(MakeShared<FJsonValueObject>(TrackObj));
+		}
+		TimelineObj->SetArrayField(TEXT("color_tracks"), ColorTracksArray);
+
+		TArray<TSharedPtr<FJsonValue>> EventTracksArray;
+		for (const FTTEventTrack& Track : Timeline->EventTracks)
+		{
+			TSharedPtr<FJsonObject> TrackObj = MakeShared<FJsonObject>();
+			TrackObj->SetStringField(TEXT("name"), Track.GetTrackName().ToString());
+			TArray<TSharedPtr<FJsonValue>> KeysArray;
+			if (Track.CurveKeys)
+			{
+				for (const FRichCurveKey& Key : Track.CurveKeys->FloatCurve.GetConstRefOfKeys())
+				{
+					TSharedPtr<FJsonObject> KeyObj = MakeShared<FJsonObject>();
+					KeyObj->SetNumberField(TEXT("time"), Key.Time);
+					KeyObj->SetStringField(TEXT("event_name"), Track.GetFunctionName().ToString());
+					KeysArray.Add(MakeShared<FJsonValueObject>(KeyObj));
+				}
+			}
+			TrackObj->SetArrayField(TEXT("keys"), KeysArray);
+			EventTracksArray.Add(MakeShared<FJsonValueObject>(TrackObj));
+		}
+		TimelineObj->SetArrayField(TEXT("event_tracks"), EventTracksArray);
 
 		TimelinesArray.Add(MakeShared<FJsonValueObject>(TimelineObj));
 	}
