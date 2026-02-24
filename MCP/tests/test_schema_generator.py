@@ -48,15 +48,19 @@ class TestAtomicWrite(unittest.TestCase):
 
     def test_atomic_write_no_partial_on_error(self):
         from cortex_mcp.schema_generator import atomic_write
+        from unittest.mock import patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
             target = Path(tmpdir) / "test.md"
             target.write_text("original", encoding="utf-8")
 
-            # Write to a read-only directory subfolder to force rename failure
-            # Instead, just verify the temp file is cleaned up on success
-            atomic_write(target, "updated")
-            self.assertEqual(target.read_text(encoding="utf-8"), "updated")
+            # Force os.replace to fail — simulates disk-full or permission error
+            with patch("os.replace", side_effect=OSError("simulated failure")):
+                with self.assertRaises(OSError):
+                    atomic_write(target, "new content")
+
+            # Original file should be unchanged
+            self.assertEqual(target.read_text(encoding="utf-8"), "original")
             # No .tmp files left behind
             tmp_files = list(Path(tmpdir).glob("*.tmp"))
             self.assertEqual(len(tmp_files), 0)

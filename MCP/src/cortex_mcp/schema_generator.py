@@ -50,10 +50,7 @@ def atomic_write(path: pathlib.Path, content: str) -> None:
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             f.write(content)
-        # On Windows, target must not exist for rename
-        if path.exists():
-            path.unlink()
-        pathlib.Path(tmp_path).rename(path)
+        os.replace(tmp_path, path)
     except Exception:
         # Clean up temp file on failure
         try:
