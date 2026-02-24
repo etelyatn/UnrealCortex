@@ -631,10 +631,29 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	}
 
 	// Soft object property
-	if (const FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Property))
+	if (CastField<FSoftObjectProperty>(Property) != nullptr)
 	{
+		const FString ObjectPath = JsonValue->AsString();
+
+		if (!ObjectPath.IsEmpty())
+		{
+			// Fast path: object already loaded (engine CDOs, /Script/ objects).
+			UObject* FoundObject = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectPath, false);
+			if (FoundObject == nullptr)
+			{
+				// Guard against SkipPackage warnings for non-existent or invalid packages.
+				const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
+				if (!FPackageName::IsValidLongPackageName(PackageName)
+					|| (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName)))
+				{
+					OutWarnings.Add(FString::Printf(TEXT("Package not found for soft object '%s'"), *ObjectPath));
+					return false;
+				}
+			}
+		}
+
 		FSoftObjectPtr* SoftPtr = reinterpret_cast<FSoftObjectPtr*>(ValuePtr);
-		*SoftPtr = FSoftObjectPath(JsonValue->AsString());
+		*SoftPtr = FSoftObjectPath(ObjectPath);
 		return true;
 	}
 
@@ -645,6 +664,14 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		if (ObjectPath.IsEmpty())
 		{
 			ObjProp->SetObjectPropertyValue(ValuePtr, nullptr);
+			return true;
+		}
+
+		// Fast path: object already loaded (engine CDOs, /Script/ objects)
+		UObject* ExistingObject = StaticFindObject(ObjProp->PropertyClass, nullptr, *ObjectPath, false);
+		if (ExistingObject)
+		{
+			ObjProp->SetObjectPropertyValue(ValuePtr, ExistingObject);
 			return true;
 		}
 
