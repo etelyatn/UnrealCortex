@@ -288,6 +288,19 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 		const UObject* Object = ObjProp->GetObjectPropertyValue(ValuePtr);
 		if (Object != nullptr)
 		{
+			// Instanced sub-object: serialize as {"_class": "...", "properties": {...}}
+			if (Property->HasAllPropertyFlags(CPF_InstancedReference))
+			{
+				TSharedPtr<FJsonObject> SubObj = MakeShared<FJsonObject>();
+				SubObj->SetStringField(TEXT("_class"), Object->GetClass()->GetName());
+				TSharedPtr<FJsonObject> Props = StructToJson(Object->GetClass(), static_cast<const void*>(Object));
+				if (Props.IsValid() && Props->Values.Num() > 0)
+				{
+					SubObj->SetObjectField(TEXT("properties"), Props);
+				}
+				return MakeShared<FJsonValueObject>(SubObj);
+			}
+
 			return MakeShared<FJsonValueString>(Object->GetPathName());
 		}
 		return MakeShared<FJsonValueNull>();

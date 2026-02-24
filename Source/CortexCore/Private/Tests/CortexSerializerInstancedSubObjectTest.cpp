@@ -320,6 +320,89 @@ bool FCortexSerializerInstancedSubObjectCleanupTest::RunTest(const FString& Para
 }
 
 // ============================================================================
+// Test: Round-trip — serialize instanced sub-objects then deserialize back
+// ============================================================================
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerInstancedSubObjectRoundTripTest,
+	"Cortex.Core.Serializer.InstancedSubObject.RoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerInstancedSubObjectRoundTripTest::RunTest(const FString& Parameters)
+{
+	// Create mapping with modifiers programmatically
+	UInputMappingContext* IMC = NewObject<UInputMappingContext>();
+	FEnhancedActionKeyMapping Mapping;
+
+	UInputModifierNegate* Negate = NewObject<UInputModifierNegate>(IMC);
+	Negate->bX = true;
+	Negate->bY = false;
+	Negate->bZ = true;
+	Mapping.Modifiers.Add(Negate);
+
+	UInputModifierSwizzleAxis* Swizzle = NewObject<UInputModifierSwizzleAxis>(IMC);
+	Mapping.Modifiers.Add(Swizzle);
+
+	// Serialize: PropertyToJson should produce {"_class": "...", "properties": {...}}
+	const FProperty* ModifiersProp = FEnhancedActionKeyMapping::StaticStruct()->FindPropertyByName(TEXT("Modifiers"));
+	const void* ReadPtr = ModifiersProp->ContainerPtrToValuePtr<void>(&Mapping);
+	TSharedPtr<FJsonValue> Serialized = FCortexSerializer::PropertyToJson(ModifiersProp, ReadPtr);
+
+	TestNotNull(TEXT("Serialized should not be null"), Serialized.Get());
+	TestEqual(TEXT("Should be array"), Serialized->Type, EJson::Array);
+
+	const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+	TestTrue(TEXT("Should get array"), Serialized->TryGetArray(Arr));
+	if (Arr)
+	{
+		TestEqual(TEXT("Array should have 2 elements"), Arr->Num(), 2);
+
+		// First element should be an object with _class
+		if (Arr->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject>* FirstObj = nullptr;
+			TestTrue(TEXT("First element should be object"), (*Arr)[0]->TryGetObject(FirstObj));
+			if (FirstObj)
+			{
+				FString FirstClass;
+				TestTrue(TEXT("Should have _class"), (*FirstObj)->TryGetStringField(TEXT("_class"), FirstClass));
+				TestEqual(TEXT("First class should be InputModifierNegate"), FirstClass, TEXT("InputModifierNegate"));
+			}
+		}
+	}
+
+	// Deserialize back into a fresh mapping
+	FEnhancedActionKeyMapping Mapping2;
+	UInputMappingContext* IMC2 = NewObject<UInputMappingContext>();
+
+	void* WritePtr = ModifiersProp->ContainerPtrToValuePtr<void>(&Mapping2);
+	TArray<FString> Warnings;
+	const bool bResult = FCortexSerializer::JsonToProperty(Serialized, ModifiersProp, WritePtr, IMC2, Warnings);
+
+	TestTrue(TEXT("Deserialize should succeed"), bResult);
+	TestEqual(TEXT("Should have 2 modifiers"), Mapping2.Modifiers.Num(), 2);
+
+	if (Mapping2.Modifiers.Num() == 2)
+	{
+		UInputModifierNegate* RestoredNegate = Cast<UInputModifierNegate>(Mapping2.Modifiers[0]);
+		TestNotNull(TEXT("First should be Negate"), RestoredNegate);
+		if (RestoredNegate)
+		{
+			TestTrue(TEXT("bX should be true"), RestoredNegate->bX);
+			TestFalse(TEXT("bY should be false"), RestoredNegate->bY);
+			TestTrue(TEXT("bZ should be true"), RestoredNegate->bZ);
+		}
+
+		TestTrue(TEXT("Second should be SwizzleAxis"),
+			Mapping2.Modifiers[1]->IsA<UInputModifierSwizzleAxis>());
+	}
+
+	IMC->MarkAsGarbage();
+	IMC2->MarkAsGarbage();
+	return true;
+}
+
+// ============================================================================
 // Test: Invalid _class name produces error
 // ============================================================================
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
