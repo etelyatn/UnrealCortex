@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cortex_mcp.schema_generator import find_project_root, get_schema_dir
+from cortex_mcp.schema_generator import render_data_schema, SCHEMA_VERSION
 
 
 class TestProjectRootDiscovery(unittest.TestCase):
@@ -73,3 +74,109 @@ class TestAtomicWrite(unittest.TestCase):
             atomic_write(target, "nested content")
             self.assertTrue(target.exists())
             self.assertEqual(target.read_text(encoding="utf-8"), "nested content")
+
+
+class TestRenderDataSchema(unittest.TestCase):
+
+    def setUp(self):
+        """Mock data matching real TCP command response shapes."""
+        self.catalog = {
+            "datatables": [
+                {
+                    "name": "DT_TestItems",
+                    "path": "/Game/Data/DT_TestItems.DT_TestItems",
+                    "row_struct": "FTestItemRow",
+                    "row_count": 5,
+                    "is_composite": False,
+                    "parent_tables": [],
+                    "top_fields": ["ItemName", "Value", "Category"],
+                },
+            ],
+            "tag_prefixes": [
+                {"prefix": "Test.Category", "count": 10},
+            ],
+            "data_asset_classes": [
+                {"class_name": "TestDataAsset", "count": 2, "example_path": "/Game/Data/DA_Test"},
+            ],
+            "string_tables": [
+                {"name": "ST_TestUI", "path": "/Game/Loc/ST_TestUI.ST_TestUI", "entry_count": 15},
+            ],
+        }
+        self.schemas = {
+            "FTestItemRow": {
+                "struct_name": "FTestItemRow",
+                "parent": "FTableRowBase",
+                "schema": [
+                    {"name": "ItemName", "type": "FName", "cpp_type": "FName"},
+                    {"name": "Value", "type": "int32", "cpp_type": "int32", "default_value": "0"},
+                    {"name": "Category", "type": "FGameplayTag", "cpp_type": "FGameplayTag"},
+                ],
+            },
+        }
+        self.example_rows = {
+            "DT_TestItems": [
+                {"row_name": "Item_Sword", "row_data": {"ItemName": "Sword", "Value": 100, "Category": "Test.Category.Weapon"}},
+                {"row_name": "Item_Shield", "row_data": {"ItemName": "Shield", "Value": 50, "Category": "Test.Category.Armor"}},
+            ],
+        }
+        self.curve_tables = []
+        self.enum_values = {}
+
+    def test_render_contains_datatable_summary(self):
+        result = render_data_schema(
+            self.catalog, self.schemas, self.example_rows,
+            self.curve_tables, self.enum_values,
+        )
+        self.assertIn("DT_TestItems", result)
+        self.assertIn("FTestItemRow", result)
+        self.assertIn("/Game/Data/DT_TestItems", result)
+
+    def test_render_contains_struct_schema(self):
+        result = render_data_schema(
+            self.catalog, self.schemas, self.example_rows,
+            self.curve_tables, self.enum_values,
+        )
+        self.assertIn("## Struct Schemas", result)
+        self.assertIn("### FTestItemRow", result)
+        self.assertIn("name: ItemName", result)
+        self.assertIn("type: FName", result)
+
+    def test_render_contains_example_rows(self):
+        result = render_data_schema(
+            self.catalog, self.schemas, self.example_rows,
+            self.curve_tables, self.enum_values,
+        )
+        self.assertIn("## Example Rows", result)
+        self.assertIn("Item_Sword", result)
+
+    def test_render_contains_tag_prefixes(self):
+        result = render_data_schema(
+            self.catalog, self.schemas, self.example_rows,
+            self.curve_tables, self.enum_values,
+        )
+        self.assertIn("Test.Category", result)
+        self.assertIn("count: 10", result)
+
+    def test_render_contains_meta_header(self):
+        result = render_data_schema(
+            self.catalog, self.schemas, self.example_rows,
+            self.curve_tables, self.enum_values,
+        )
+        self.assertIn("schema-meta", result)
+        self.assertIn(f"schema_version: {SCHEMA_VERSION}", result)
+        self.assertIn("domain: data", result)
+
+    def test_render_contains_data_assets(self):
+        result = render_data_schema(
+            self.catalog, self.schemas, self.example_rows,
+            self.curve_tables, self.enum_values,
+        )
+        self.assertIn("TestDataAsset", result)
+        self.assertIn("count: 2", result)
+
+    def test_render_contains_string_tables(self):
+        result = render_data_schema(
+            self.catalog, self.schemas, self.example_rows,
+            self.curve_tables, self.enum_values,
+        )
+        self.assertIn("ST_TestUI", result)
