@@ -23,6 +23,7 @@ public class CortexBlueprint : ModuleRules
 			"Kismet",
 			"KismetCompiler",
 			"BlueprintGraph",
+			"GameplayTags",
 		});
 	}
 }
