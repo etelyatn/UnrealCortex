@@ -234,3 +234,113 @@ def render_data_schema(
         lines.append("")
 
     return "\n".join(lines)
+
+
+def render_catalog(
+    project_name: str,
+    data_summary: dict | None = None,
+    blueprint_summary: dict | None = None,
+) -> str:
+    """Render _catalog.md with overview and type-grouped index.
+
+    Args:
+        project_name: Name of the Unreal project.
+        data_summary: Dict with structs, tables, tag_prefixes, data_assets for data domain.
+        blueprint_summary: Dict with classes for blueprint domain (future).
+    """
+    lines = ["# Cortex Schema Catalog", ""]
+    meta = _render_meta("catalog").replace("domain: catalog", f"project: {project_name}")
+    lines.append(meta)
+    lines.append("")
+
+    # How to Use
+    lines.append("## How to Use")
+    lines.append("- Read THIS file first for project overview and index")
+    lines.append("- Read domain files only when working in that domain")
+    lines.append("- If a domain file is missing, use live MCP tools instead")
+    lines.append("- If generated timestamp is older than 24h, suggest /cortex-schema-refresh")
+    lines.append("")
+
+    # Schema Overview
+    lines.append("## Schema Overview")
+    lines.append("")
+    lines.append("| Domain | File | Structs | Tables | Tags | Assets | Blueprints |")
+    lines.append("|--------|------|---------|--------|------|--------|------------|")
+
+    data_s = data_summary or {}
+    data_structs = len(data_s.get("structs", []))
+    data_tables = len(data_s.get("tables", []))
+    data_tags = len(data_s.get("tag_prefixes", []))
+    data_assets = len(data_s.get("data_assets", []))
+    if data_structs or data_tables or data_tags or data_assets:
+        lines.append(
+            f"| data | data.md | {data_structs} | {data_tables} "
+            f"| {data_tags} prefixes | {data_assets} | — |"
+        )
+
+    bp_s = blueprint_summary or {}
+    bp_classes = len(bp_s.get("classes", []))
+    if bp_classes:
+        lines.append(f"| blueprints | blueprints.md | — | — | — | — | {bp_classes} |")
+
+    lines.append("")
+
+    # Schema Index
+    lines.append("## Schema Index")
+    lines.append("")
+
+    # Data domain index
+    if data_s:
+        lines.append("### data.md")
+        lines.append("")
+
+        structs = data_s.get("structs", [])
+        if structs:
+            lines.append("#### Structs")
+            lines.append("| Name | Used By |")
+            lines.append("|------|---------|")
+            for s in structs:
+                lines.append(f"| {s['name']} | {s['used_by']} |")
+            lines.append("")
+
+        tables = data_s.get("tables", [])
+        if tables:
+            lines.append("#### DataTables")
+            lines.append("| Name | Row Struct | Rows |")
+            lines.append("|------|------------|------|")
+            for t in tables:
+                lines.append(f"| {t['name']} | {t['row_struct']} | {t['rows']} |")
+            lines.append("")
+
+        tags = data_s.get("tag_prefixes", [])
+        if tags:
+            lines.append("#### GameplayTag Prefixes")
+            lines.append("| Prefix | Count |")
+            lines.append("|--------|-------|")
+            for tp in tags:
+                lines.append(f"| {tp['prefix']} | {tp['count']} |")
+            lines.append("")
+
+        assets = data_s.get("data_assets", [])
+        if assets:
+            lines.append("#### DataAssets")
+            lines.append("| Class | Instances |")
+            lines.append("|-------|-----------|")
+            for a in assets:
+                lines.append(f"| {a['class']} | {a['instances']} |")
+            lines.append("")
+
+    # Blueprint domain index (future)
+    if bp_s:
+        lines.append("### blueprints.md")
+        lines.append("")
+        bp_classes_list = bp_s.get("classes", [])
+        if bp_classes_list:
+            lines.append("#### Blueprint Classes")
+            lines.append("| Name | Parent |")
+            lines.append("|------|--------|")
+            for c in bp_classes_list:
+                lines.append(f"| {c['name']} | {c['parent']} |")
+            lines.append("")
+
+    return "\n".join(lines)

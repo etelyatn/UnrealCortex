@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cortex_mcp.schema_generator import find_project_root, get_schema_dir
-from cortex_mcp.schema_generator import render_data_schema, SCHEMA_VERSION
+from cortex_mcp.schema_generator import render_data_schema, SCHEMA_VERSION, render_catalog
 
 
 class TestProjectRootDiscovery(unittest.TestCase):
@@ -180,3 +180,61 @@ class TestRenderDataSchema(unittest.TestCase):
             self.curve_tables, self.enum_values,
         )
         self.assertIn("ST_TestUI", result)
+
+
+class TestRenderCatalog(unittest.TestCase):
+
+    def setUp(self):
+        self.data_summary = {
+            "structs": [
+                {"name": "FTestItemRow", "used_by": "DT_TestItems"},
+            ],
+            "tables": [
+                {"name": "DT_TestItems", "row_struct": "FTestItemRow", "rows": 5},
+            ],
+            "tag_prefixes": [
+                {"prefix": "Test.Category.*", "count": 10},
+            ],
+            "data_assets": [
+                {"class": "TestDataAsset", "instances": 2},
+            ],
+        }
+
+    def test_catalog_contains_overview_table(self):
+        result = render_catalog(
+            project_name="TestProject",
+            data_summary=self.data_summary,
+        )
+        self.assertIn("## Schema Overview", result)
+        self.assertIn("| data |", result)
+
+    def test_catalog_contains_index(self):
+        result = render_catalog(
+            project_name="TestProject",
+            data_summary=self.data_summary,
+        )
+        self.assertIn("## Schema Index", result)
+        self.assertIn("FTestItemRow", result)
+        self.assertIn("DT_TestItems", result)
+
+    def test_catalog_contains_how_to_use(self):
+        result = render_catalog(
+            project_name="TestProject",
+            data_summary=self.data_summary,
+        )
+        self.assertIn("## How to Use", result)
+
+    def test_catalog_index_has_struct_used_by(self):
+        result = render_catalog(
+            project_name="TestProject",
+            data_summary=self.data_summary,
+        )
+        # The struct index table should have "Used By" column
+        self.assertIn("| FTestItemRow | DT_TestItems |", result)
+
+    def test_catalog_index_has_table_row_struct(self):
+        result = render_catalog(
+            project_name="TestProject",
+            data_summary=self.data_summary,
+        )
+        self.assertIn("| DT_TestItems | FTestItemRow |", result)
