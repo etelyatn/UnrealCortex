@@ -530,3 +530,81 @@ class TestCompileFailureHandling:
         result = json.loads(tool(name="BP_Test", path="/Game/"))
 
         assert result["success"] is True
+
+
+class TestUpdateMode:
+    """Tests for create_blueprint_graph update mode."""
+
+    def test_update_mode_requires_asset_path(self):
+        with pytest.raises(ValueError, match="asset_path"):
+            _validate_spec(
+                "",
+                "",
+                bp_type="Actor",
+                nodes=[],
+                connections=[],
+                mode="update",
+                asset_path="",
+            )
+
+    def test_update_mode_allows_unknown_connection_nodes(self):
+        _validate_spec(
+            "",
+            "",
+            bp_type="Actor",
+            nodes=[{"name": "NewNode", "class": "CallFunction"}],
+            connections=[{"from": "ExistingNode.then", "to": "NewNode.execute"}],
+            mode="update",
+            asset_path="/Game/Blueprints/BP_Existing",
+        )
+
+    def test_update_mode_build_uses_existing_asset_without_create(self):
+        commands = _build_batch_commands(
+            "",
+            "",
+            "Actor",
+            [],
+            [],
+            [{"name": "NewNode", "class": "CallFunction"}],
+            [{"from": "ExistingNode.then", "to": "NewNode.execute"}],
+            "EventGraph",
+            mode="update",
+            asset_path="/Game/Blueprints/BP_Existing",
+        )
+
+        assert commands[0]["command"] == "graph.add_node"
+        assert commands[0]["params"]["asset_path"] == "/Game/Blueprints/BP_Existing"
+        connect_cmd = [c for c in commands if c["command"] == "graph.connect"][0]
+        assert connect_cmd["params"]["source_node"] == "ExistingNode"
+        assert connect_cmd["params"]["target_node"] == "$steps[0].data.node_id"
+
+    def test_update_mode_failure_does_not_delete_asset(self):
+        mock_connection = MagicMock()
+        mock_connection.send_command.return_value = {
+            "success": True,
+            "data": {
+                "results": [
+                    {
+                        "index": 0,
+                        "success": False,
+                        "error_message": "Node class invalid",
+                        "command": "graph.add_node",
+                        "timing_ms": 0,
+                    },
+                ],
+                "total_timing_ms": 0,
+            },
+        }
+
+        tool = _extract_tool(mock_connection)
+        result = json.loads(
+            tool(
+                mode="update",
+                asset_path="/Game/Blueprints/BP_Existing",
+                nodes=[{"name": "NewNode", "class": "BadNode"}],
+            )
+        )
+
+        assert result["success"] is False
+        delete_calls = [c for c in mock_connection.send_command.call_args_list if c.args[0] == "bp.delete"]
+        assert delete_calls == []
