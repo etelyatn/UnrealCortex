@@ -950,8 +950,9 @@ bool FCortexMaterialAutoLayoutCenteringTest::RunTest(const FString& Parameters)
 			// For a single node, StartY = -NodeHeight/2. The node height is calculated as
 			// max(80, 40 + max(inputs, outputs) * 26). A ScalarParameter has 0 inputs and
 			// 1 output, so height = max(80, 40 + 1*26) = 80, giving StartY = -40.
+			// After 16px grid snap: RoundToInt(-40/16.0f) * 16 = RoundToInt(-2.5f) * 16 = -2 * 16 = -32.
 			TestEqual(TEXT("Single node in column should be centered accounting for node height"),
-				ParamNode->MaterialExpressionEditorY, -40);
+				ParamNode->MaterialExpressionEditorY, -32);
 		}
 	}
 
