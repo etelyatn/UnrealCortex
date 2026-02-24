@@ -1080,6 +1080,10 @@ TSharedPtr<FJsonObject> FCortexSerializer::GetPropertySchema(const FProperty* Pr
 	{
 		Schema->SetStringField(TEXT("type"), TEXT("UObject*"));
 		Schema->SetStringField(TEXT("object_class"), ObjProp->PropertyClass->GetName());
+		if (Property->HasAllPropertyFlags(CPF_InstancedReference))
+		{
+			Schema->SetBoolField(TEXT("instanced"), true);
+		}
 		return Schema;
 	}
 
