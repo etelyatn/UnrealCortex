@@ -23,6 +23,7 @@ public class CortexCore : ModuleRules
             "GameplayTags",
             "UnrealEd",
             "AssetRegistry",
+            "EnhancedInput",
         });
     }
 }
