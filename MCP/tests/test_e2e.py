@@ -422,7 +422,11 @@ class TestBlueprintCRUD:
             "asset_path": blueprint_for_test,
         })
         data = resp["data"]
-        assert data.get("compiled") is True
+        assert data["compile_status"] in {"success", "warning"}
+        assert data["error_count"] == 0
+        assert "warning_count" in data
+        assert "diagnostics" in data
+        assert isinstance(data["diagnostics"], list)
 
     def test_duplicate_blueprint(self, tcp_connection, blueprint_for_test, cleanup_assets):
         resp = tcp_connection.send_command("bp.duplicate", {
