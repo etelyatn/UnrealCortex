@@ -180,6 +180,24 @@ Add to your `.mcp.json` (or equivalent MCP config):
 
 The editor writes a port file on startup (`Saved/CortexPort.txt`), the MCP server discovers it automatically. Multiple editor instances get their own ports — no conflicts.
 
+### Recommended: Install Cortex Toolkit
+
+UnrealCortex gives AI the raw tools. **[Cortex Toolkit](https://github.com/etelyatn/cortex-toolkit)** teaches it how to use them well — with domain-specific skills, specialist agents, and project memory.
+
+```bash
+claude plugin add etelyatn/cortex-toolkit/cortex-core      # Required
+claude plugin add etelyatn/cortex-toolkit/cortex-data       # Pick your domains
+# ... see Cortex Toolkit section below for all plugins
+```
+
+Then run:
+```
+/cortex-init       # Setup project memory and MCP config
+/cortex-start      # Guided onboarding — verifies connection, walks you through your first task
+```
+
+Run `/cortex-help` anytime to discover commands or get contextual "what to do next" suggestions.
+
 ## Architecture
 
 UnrealCortex is a **platform** designed to grow with AI capabilities. Each Unreal subsystem gets its own domain module that registers independently:
@@ -237,7 +255,7 @@ Install only what you need — each domain is a separate plugin:
 
 | Plugin | Domain | Key Skills | Agents |
 |--------|--------|------------|--------|
-| **cortex-core** | Foundation | cortex-init, cortex-build, cortex-test, cortex-status, cortex-editor | Game Architect, Game Designer, Blueprint Debugger, Test Debugger |
+| **cortex-core** | Foundation | cortex-init, cortex-start, cortex-help, cortex-build, cortex-test, cortex-status, cortex-editor | Game Architect, Game Designer, Blueprint Debugger, Test Debugger |
 | **cortex-data** | DataTables, DataAssets, Tags | cortex-data-review, cortex-data-create | Game Balancer, Data Architect |
 | **cortex-blueprint** | Blueprints, Graphs | cortex-bp-review, cortex-bp-create | Blueprint Developer, C++ Migration Specialist |
 | **cortex-ui** | UMG Widgets | cortex-ui-review, cortex-ui-create | UI Developer |
@@ -260,7 +278,7 @@ claude plugin add etelyatn/cortex-toolkit/cortex-qa
 claude plugin add etelyatn/cortex-toolkit/cortex-reflect
 ```
 
-After installation, run `/cortex-init` to set up project memory and configure MCP.
+After installation, run `/cortex-init` to set up project memory, then `/cortex-start` for guided onboarding. Run `/cortex-help` anytime to discover commands.
 
 ### Project Memory
 
