@@ -12,6 +12,63 @@
 #include "CortexGraphLayoutOps.h"
 #include "UObject/UnrealType.h"
 
+namespace
+{
+FString NormalizeMaterialPropertyToken(const FString& InName)
+{
+	FString Out = InName;
+	Out = Out.Replace(TEXT("_"), TEXT(""));
+	Out = Out.Replace(TEXT(" "), TEXT(""));
+	Out = Out.ToLower();
+	return Out;
+}
+
+FString MaterialPropertyToInputName(const EMaterialProperty Property)
+{
+	const UEnum* PropertyEnum = StaticEnum<EMaterialProperty>();
+	if (PropertyEnum == nullptr)
+	{
+		return TEXT("");
+	}
+
+	FString EnumName = PropertyEnum->GetNameStringByValue(static_cast<int64>(Property));
+	EnumName.RemoveFromStart(TEXT("MP_"));
+	return EnumName;
+}
+
+bool ResolveMaterialPropertyByInputName(const FString& InputName, EMaterialProperty& OutProperty)
+{
+	const UEnum* PropertyEnum = StaticEnum<EMaterialProperty>();
+	if (PropertyEnum == nullptr)
+	{
+		return false;
+	}
+
+	const FString NormalizedInput = NormalizeMaterialPropertyToken(InputName);
+	for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
+	{
+		const EMaterialProperty Property = static_cast<EMaterialProperty>(Prop);
+		const FString EnumDerivedName = MaterialPropertyToInputName(Property);
+		const FString NormalizedProperty = NormalizeMaterialPropertyToken(EnumDerivedName);
+		if (NormalizedInput == NormalizedProperty)
+		{
+			OutProperty = Property;
+			return true;
+		}
+
+		// Accept "CustomizedUV0" alias for "CustomizedUVs0".
+		const FString CustomizedAlias = NormalizedProperty.Replace(TEXT("customizeduvs"), TEXT("customizeduv"));
+		if (NormalizedInput == CustomizedAlias)
+		{
+			OutProperty = Property;
+			return true;
+		}
+	}
+
+	return false;
+}
+}
+
 UMaterialExpression* FCortexMaterialGraphOps::FindExpression(UMaterial* Material, const FString& NodeId)
 {
 	if (Material == nullptr || !Material->GetEditorOnlyData())
@@ -286,28 +343,21 @@ FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<F
 
 	UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
 
-	// Check material result inputs
-	auto CheckMaterialInput = [&](const FExpressionInput& Input, const FString& InputName)
+	// Enumerate all MaterialResult inputs via property API.
+	for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
 	{
-		if (Input.Expression != nullptr)
+		const EMaterialProperty Property = static_cast<EMaterialProperty>(Prop);
+		FExpressionInput* Input = Material->GetExpressionInputForProperty(Property);
+		if (Input && Input->Expression != nullptr)
 		{
 			TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
-			Entry->SetStringField(TEXT("source_node"), Input.Expression->GetName());
-			Entry->SetNumberField(TEXT("source_output"), Input.OutputIndex);
+			Entry->SetStringField(TEXT("source_node"), Input->Expression->GetName());
+			Entry->SetNumberField(TEXT("source_output"), Input->OutputIndex);
 			Entry->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
-			Entry->SetStringField(TEXT("target_input"), InputName);
+			Entry->SetStringField(TEXT("target_input"), MaterialPropertyToInputName(Property));
 			ConnectionsArray.Add(MakeShared<FJsonValueObject>(Entry));
 		}
-	};
-
-	CheckMaterialInput(EditorData->BaseColor, TEXT("BaseColor"));
-	CheckMaterialInput(EditorData->Metallic, TEXT("Metallic"));
-	CheckMaterialInput(EditorData->Specular, TEXT("Specular"));
-	CheckMaterialInput(EditorData->Roughness, TEXT("Roughness"));
-	CheckMaterialInput(EditorData->Normal, TEXT("Normal"));
-	CheckMaterialInput(EditorData->EmissiveColor, TEXT("EmissiveColor"));
-	CheckMaterialInput(EditorData->Opacity, TEXT("Opacity"));
-	CheckMaterialInput(EditorData->OpacityMask, TEXT("OpacityMask"));
+	}
 
 	// Check expression-to-expression connections
 	for (UMaterialExpression* Expression : EditorData->ExpressionCollection.Expressions)
@@ -430,31 +480,29 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 	// Connect to MaterialResult or expression
 	if (TargetNode == TEXT("MaterialResult"))
 	{
-		UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
-		FExpressionInput* Input = nullptr;
-
-		if (TargetInput == TEXT("BaseColor"))
-			Input = &EditorData->BaseColor;
-		else if (TargetInput == TEXT("Metallic"))
-			Input = &EditorData->Metallic;
-		else if (TargetInput == TEXT("Specular"))
-			Input = &EditorData->Specular;
-		else if (TargetInput == TEXT("Roughness"))
-			Input = &EditorData->Roughness;
-		else if (TargetInput == TEXT("Normal"))
-			Input = &EditorData->Normal;
-		else if (TargetInput == TEXT("EmissiveColor"))
-			Input = &EditorData->EmissiveColor;
-		else if (TargetInput == TEXT("Opacity"))
-			Input = &EditorData->Opacity;
-		else if (TargetInput == TEXT("OpacityMask"))
-			Input = &EditorData->OpacityMask;
-
-		if (Input == nullptr)
+		EMaterialProperty Property = MP_MAX;
+		if (!ResolveMaterialPropertyByInputName(TargetInput, Property))
 		{
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidConnection,
 				FString::Printf(TEXT("Unknown MaterialResult input: %s"), *TargetInput)
+			);
+		}
+
+		if (!Material->IsPropertySupported(Property))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidConnection,
+				FString::Printf(TEXT("MaterialResult input not supported: %s"), *TargetInput)
+			);
+		}
+
+		FExpressionInput* Input = Material->GetExpressionInputForProperty(Property);
+		if (Input == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidConnection,
+				FString::Printf(TEXT("MaterialResult input unavailable: %s"), *TargetInput)
 			);
 		}
 
@@ -556,31 +604,21 @@ FCortexCommandResult FCortexMaterialGraphOps::Disconnect(const TSharedPtr<FJsonO
 	// Disconnect from MaterialResult
 	if (TargetNode == TEXT("MaterialResult"))
 	{
-		UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
-		FExpressionInput* Input = nullptr;
-
-		if (TargetInput == TEXT("BaseColor"))
-			Input = &EditorData->BaseColor;
-		else if (TargetInput == TEXT("Metallic"))
-			Input = &EditorData->Metallic;
-		else if (TargetInput == TEXT("Specular"))
-			Input = &EditorData->Specular;
-		else if (TargetInput == TEXT("Roughness"))
-			Input = &EditorData->Roughness;
-		else if (TargetInput == TEXT("Normal"))
-			Input = &EditorData->Normal;
-		else if (TargetInput == TEXT("EmissiveColor"))
-			Input = &EditorData->EmissiveColor;
-		else if (TargetInput == TEXT("Opacity"))
-			Input = &EditorData->Opacity;
-		else if (TargetInput == TEXT("OpacityMask"))
-			Input = &EditorData->OpacityMask;
-
-		if (Input == nullptr)
+		EMaterialProperty Property = MP_MAX;
+		if (!ResolveMaterialPropertyByInputName(TargetInput, Property))
 		{
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidConnection,
 				FString::Printf(TEXT("Unknown MaterialResult input: %s"), *TargetInput)
+			);
+		}
+
+		FExpressionInput* Input = Material->GetExpressionInputForProperty(Property);
+		if (Input == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidConnection,
+				FString::Printf(TEXT("MaterialResult input unavailable: %s"), *TargetInput)
 			);
 		}
 
@@ -651,25 +689,22 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 		ExprToId.Add(Expr, Expr->GetPathName());
 	}
 
-	// Check which expressions connect to MaterialResult
-	UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
+	// Enumerate all material property inputs via UE API.
+	// Replaces hardcoded 8-input check to include all EMaterialProperty values.
 	TSet<FString> MaterialResultInputIds;
-	auto CheckResultInput = [&](const FExpressionInput& Input)
+	for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
 	{
-		if (Input.Expression)
+		FExpressionInput* Input = Material->GetExpressionInputForProperty(
+			static_cast<EMaterialProperty>(Prop));
+		if (Input && Input->Expression)
 		{
-			const FString* Id = ExprToId.Find(Input.Expression);
-			if (Id) MaterialResultInputIds.Add(*Id);
+			const FString* Id = ExprToId.Find(Input->Expression);
+			if (Id)
+			{
+				MaterialResultInputIds.Add(*Id);
+			}
 		}
-	};
-	CheckResultInput(EditorData->BaseColor);
-	CheckResultInput(EditorData->Metallic);
-	CheckResultInput(EditorData->Specular);
-	CheckResultInput(EditorData->Roughness);
-	CheckResultInput(EditorData->Normal);
-	CheckResultInput(EditorData->EmissiveColor);
-	CheckResultInput(EditorData->Opacity);
-	CheckResultInput(EditorData->OpacityMask);
+	}
 
 	// Build forward adjacency map in single O(N*M) pass
 	TMap<FString, TArray<FString>> ForwardEdges;
@@ -707,31 +742,52 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 		// layer inversion places entry points rightmost — matching MaterialResult's visual position.
 		LayoutNode.bIsEntryPoint = MaterialResultInputIds.Contains(LayoutNode.Id);
 		LayoutNode.bIsExecNode = false; // Material expressions are always pure data nodes.
-		int32 InputCount = 0;
-		for (FExpressionInputIterator It(Expr); It; ++It) InputCount++;
-		int32 OutputCount = Expr->GetOutputs().Num();
-		LayoutNode.Width = 150;
-		LayoutNode.Height = FMath::Max(80, 40 + FMath::Max(InputCount, OutputCount) * 26);
+		const int32 BaseWidth = FMath::Max(Expr->GetWidth(), CortexMaterialLayout::MinNodeWidth);
+		LayoutNode.Width = BaseWidth
+			+ (Expr->UsesLeftGutter() ? 32 : 0)
+			+ (Expr->UsesRightGutter() ? 32 : 0)
+			+ CortexMaterialLayout::NodeChromePaddingX;
+
+		const int32 BaseHeight = FMath::Max(Expr->GetHeight(), CortexMaterialLayout::MinNodeHeight);
+		const int32 PreviewAddition =
+			(!Expr->bHidePreviewWindow && !Expr->bCollapsed)
+			? CortexMaterialLayout::PreviewHeight : 0;
+		LayoutNode.Height = CortexMaterialLayout::TitleBarHeight + BaseHeight + PreviewAddition;
 		const TArray<FString>* Outputs = ForwardEdges.Find(LayoutNode.Id);
 		if (Outputs) LayoutNode.DataOutputs = *Outputs;
 		LayoutNodes.Add(LayoutNode);
 	}
 
 	// Add virtual MaterialResult sink — gives the layout engine a concrete rightmost anchor.
+	// Sized to match visible Material Output pins for more accurate spacing.
 	// Removed from positions after layout; not written back to any expression.
 	{
+		int32 VisiblePinCount = 0;
+		for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
+		{
+			const EMaterialProperty Property = static_cast<EMaterialProperty>(Prop);
+			if (Material->GetExpressionInputForProperty(Property)
+				&& Material->IsPropertySupported(Property))
+			{
+				++VisiblePinCount;
+			}
+		}
+
 		FCortexLayoutNode MaterialResultNode;
 		MaterialResultNode.Id = MaterialResultId;
-		MaterialResultNode.Width = 300;
-		MaterialResultNode.Height = 200;
+		MaterialResultNode.Width = CortexMaterialLayout::MaterialResultWidth;
+		MaterialResultNode.Height = CortexMaterialLayout::TitleBarHeight
+			+ FMath::Max(1, VisiblePinCount) * CortexMaterialLayout::PinRowHeight;
 		MaterialResultNode.bIsEntryPoint = false;
 		MaterialResultNode.bIsExecNode = false;
 		LayoutNodes.Add(MaterialResultNode);
 	}
 
-	// Run shared layout engine
+	// Run shared layout engine with material-appropriate defaults.
 	FCortexLayoutConfig Config;
 	Config.Direction = ECortexLayoutDirection::RightToLeft;
+	Config.HorizontalSpacing = CortexMaterialLayout::DefaultHorizontalSpacing;
+	Config.VerticalSpacing = CortexMaterialLayout::DefaultVerticalSpacing;
 	double HSpacingVal = 0, VSpacingVal = 0;
 	if (Params->TryGetNumberField(TEXT("horizontal_spacing"), HSpacingVal) && HSpacingVal > 0)
 		Config.HorizontalSpacing = static_cast<int32>(HSpacingVal);
