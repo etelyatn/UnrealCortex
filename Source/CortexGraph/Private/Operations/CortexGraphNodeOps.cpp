@@ -30,9 +30,64 @@
 #include "ScopedTransaction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/PackageName.h"
+#include "Editor.h"
+#include "Engine/World.h"
+#include "Engine/LevelScriptBlueprint.h"
 
 UBlueprint* FCortexGraphNodeOps::LoadBlueprint(const FString& AssetPath, FCortexCommandResult& OutError)
 {
+	// Level Script Blueprint: synthetic path __level_bp__:/Game/Maps/MapName
+	static const FString LevelBPPrefix = TEXT("__level_bp__:");
+	if (AssetPath.StartsWith(LevelBPPrefix))
+	{
+		const FString MapPath = AssetPath.Mid(LevelBPPrefix.Len());
+
+		UWorld* World = nullptr;
+		if (GEditor)
+		{
+			UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
+			if (EditorWorld && EditorWorld->GetOutermost()->GetName() == MapPath)
+			{
+				World = EditorWorld;
+			}
+		}
+
+		if (!World)
+		{
+			UPackage* MapPackage = LoadPackage(nullptr, *MapPath, LOAD_None);
+			if (!MapPackage)
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::AssetNotFound,
+					FString::Printf(TEXT("Map package not found: %s"), *MapPath)
+				);
+				return nullptr;
+			}
+			World = UWorld::FindWorldInPackage(MapPackage);
+		}
+
+		if (!World)
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::AssetNotFound,
+				FString::Printf(TEXT("No world found in map package: %s"), *MapPath)
+			);
+			return nullptr;
+		}
+
+		ULevelScriptBlueprint* LSB = World->PersistentLevel->GetLevelScriptBlueprint(/*bDontCreate=*/false);
+		if (!LSB)
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::AssetNotFound,
+				FString::Printf(TEXT("Failed to get Level Script Blueprint for: %s"), *MapPath)
+			);
+			return nullptr;
+		}
+
+		return LSB;
+	}
+
 	// Check if package exists before LoadObject to avoid SkipPackage warnings
 	FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
 	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))

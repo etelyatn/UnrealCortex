@@ -23,9 +23,56 @@
 #include "UObject/UObjectGlobals.h"
 #include "ObjectTools.h"
 #include "Misc/TextBuffer.h"
+#include "Editor.h"
+#include "Engine/World.h"
+#include "Engine/LevelScriptBlueprint.h"
 
 UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FString& OutError)
 {
+	// Level Script Blueprint: synthetic path __level_bp__:/Game/Maps/MapName
+	static const FString LevelBPPrefix = TEXT("__level_bp__:");
+	if (AssetPath.StartsWith(LevelBPPrefix))
+	{
+		const FString MapPath = AssetPath.Mid(LevelBPPrefix.Len());
+
+		// Use current editor world if it matches — avoids double-load
+		UWorld* World = nullptr;
+		if (GEditor)
+		{
+			UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
+			if (EditorWorld && EditorWorld->GetOutermost()->GetName() == MapPath)
+			{
+				World = EditorWorld;
+			}
+		}
+
+		if (!World)
+		{
+			UPackage* MapPackage = LoadPackage(nullptr, *MapPath, LOAD_None);
+			if (!MapPackage)
+			{
+				OutError = FString::Printf(TEXT("Map package not found: %s"), *MapPath);
+				return nullptr;
+			}
+			World = UWorld::FindWorldInPackage(MapPackage);
+		}
+
+		if (!World)
+		{
+			OutError = FString::Printf(TEXT("No world found in map package: %s"), *MapPath);
+			return nullptr;
+		}
+
+		ULevelScriptBlueprint* LSB = World->PersistentLevel->GetLevelScriptBlueprint(/*bDontCreate=*/false);
+		if (!LSB)
+		{
+			OutError = FString::Printf(TEXT("Failed to get Level Script Blueprint for: %s"), *MapPath);
+			return nullptr;
+		}
+
+		return LSB;
+	}
+
 	// Check if the asset is already in memory at the original path (e.g. transient BPs in tests)
 	// before applying /Game/ normalization, which would corrupt non-/Game/ paths.
 	if (AssetPath.StartsWith(TEXT("/")))
@@ -1087,6 +1134,18 @@ FCortexCommandResult FCortexBPAssetOps::Save(const TSharedPtr<FJsonObject>& Para
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: asset_path")
+		);
+	}
+
+	// Level Script Blueprints are saved via save_level, not bp.save
+	if (AssetPath.StartsWith(TEXT("__level_bp__:")))
+	{
+		const FString MapPath = AssetPath.Mid(FCString::Strlen(TEXT("__level_bp__:")));
+		return FCortexCommandRouter::Error(
+			TEXT("LevelBlueprintSaveError"),
+			FString::Printf(
+				TEXT("Use save_level with '%s' to persist Level Blueprint changes — bp.save does not apply to Level Script Blueprints"),
+				*MapPath)
 		);
 	}
 
