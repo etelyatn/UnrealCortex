@@ -569,7 +569,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexAssetOpenWorldTest::RunTest(const FString& Parameters)
 {
-	const FString BaselineMapPackage = TEXT("/Game/Sim/Maps/Garage");
+	const FString BaselineMapPackage = TEXT("/Game/Maps/TestMap");
 	FString BaselineMapFilePath;
 	const bool bBaselineMapReady = FPackageName::TryConvertLongPackageNameToFilename(
 		BaselineMapPackage,
@@ -587,7 +587,7 @@ bool FCortexAssetOpenWorldTest::RunTest(const FString& Parameters)
 	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
 
 	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
-	RequestParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Maps/TestMap"));
+	RequestParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Maps/TestRoomMap"));
 
 	FCortexCommandResult Result = Router.Execute(TEXT("core.open_asset"), RequestParams);
 	TestTrue(TEXT("open_asset World should succeed"), Result.bSuccess);
