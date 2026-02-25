@@ -8,6 +8,10 @@
 #include "Components/VerticalBox.h"
 #include "Components/HorizontalBox.h"
 #include "Components/Overlay.h"
+#include "Components/CanvasPanelSlot.h"
+#include "Components/HorizontalBoxSlot.h"
+#include "Components/VerticalBoxSlot.h"
+#include "Components/OverlaySlot.h"
 #include "Components/ScrollBox.h"
 #include "Components/SizeBox.h"
 #include "Components/ScaleBox.h"
@@ -395,6 +399,128 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::GetWidget(const TSharedPtr<FJsonOb
     }
     Data->SetArrayField(TEXT("children"), ChildNames);
     Data->SetNumberField(TEXT("child_count"), ChildCount);
+
+    // render_transform — use getters (direct access deprecated since UE 5.1)
+    {
+        const FWidgetTransform RT = Widget->GetRenderTransform();
+        const FVector2D Pivot = Widget->GetRenderTransformPivot();
+
+        TSharedPtr<FJsonObject> RTObj = MakeShared<FJsonObject>();
+
+        TSharedPtr<FJsonObject> TranslationObj = MakeShared<FJsonObject>();
+        TranslationObj->SetNumberField(TEXT("x"), RT.Translation.X);
+        TranslationObj->SetNumberField(TEXT("y"), RT.Translation.Y);
+        RTObj->SetObjectField(TEXT("translation"), TranslationObj);
+
+        TSharedPtr<FJsonObject> ScaleObj = MakeShared<FJsonObject>();
+        ScaleObj->SetNumberField(TEXT("x"), RT.Scale.X);
+        ScaleObj->SetNumberField(TEXT("y"), RT.Scale.Y);
+        RTObj->SetObjectField(TEXT("scale"), ScaleObj);
+
+        TSharedPtr<FJsonObject> ShearObj = MakeShared<FJsonObject>();
+        ShearObj->SetNumberField(TEXT("x"), RT.Shear.X);
+        ShearObj->SetNumberField(TEXT("y"), RT.Shear.Y);
+        RTObj->SetObjectField(TEXT("shear"), ShearObj);
+
+        RTObj->SetNumberField(TEXT("angle"), RT.Angle);
+
+        TSharedPtr<FJsonObject> PivotObj = MakeShared<FJsonObject>();
+        PivotObj->SetNumberField(TEXT("x"), Pivot.X);
+        PivotObj->SetNumberField(TEXT("y"), Pivot.Y);
+        RTObj->SetObjectField(TEXT("pivot"), PivotObj);
+
+        Data->SetObjectField(TEXT("render_transform"), RTObj);
+    }
+
+    // slot_type and slot detail
+    UPanelSlot* WidgetSlot = Widget->Slot;
+    if (WidgetSlot)
+    {
+        Data->SetStringField(TEXT("slot_type"), WidgetSlot->GetClass()->GetName());
+
+        if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(WidgetSlot))
+        {
+            TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
+
+            const FAnchors Anchors = CanvasSlot->GetAnchors();
+            TSharedPtr<FJsonObject> AnchorsObj = MakeShared<FJsonObject>();
+            TSharedPtr<FJsonObject> AnchorMin = MakeShared<FJsonObject>();
+            AnchorMin->SetNumberField(TEXT("x"), Anchors.Minimum.X);
+            AnchorMin->SetNumberField(TEXT("y"), Anchors.Minimum.Y);
+            TSharedPtr<FJsonObject> AnchorMax = MakeShared<FJsonObject>();
+            AnchorMax->SetNumberField(TEXT("x"), Anchors.Maximum.X);
+            AnchorMax->SetNumberField(TEXT("y"), Anchors.Maximum.Y);
+            AnchorsObj->SetObjectField(TEXT("min"), AnchorMin);
+            AnchorsObj->SetObjectField(TEXT("max"), AnchorMax);
+            SlotObj->SetObjectField(TEXT("anchors"), AnchorsObj);
+
+            const FMargin Offsets = CanvasSlot->GetOffsets();
+            TSharedPtr<FJsonObject> OffsetsObj = MakeShared<FJsonObject>();
+            OffsetsObj->SetNumberField(TEXT("left"), Offsets.Left);
+            OffsetsObj->SetNumberField(TEXT("top"), Offsets.Top);
+            OffsetsObj->SetNumberField(TEXT("right"), Offsets.Right);
+            OffsetsObj->SetNumberField(TEXT("bottom"), Offsets.Bottom);
+            SlotObj->SetObjectField(TEXT("offsets"), OffsetsObj);
+
+            const FVector2D Alignment = CanvasSlot->GetAlignment();
+            TSharedPtr<FJsonObject> AlignmentObj = MakeShared<FJsonObject>();
+            AlignmentObj->SetNumberField(TEXT("x"), Alignment.X);
+            AlignmentObj->SetNumberField(TEXT("y"), Alignment.Y);
+            SlotObj->SetObjectField(TEXT("alignment"), AlignmentObj);
+
+            SlotObj->SetNumberField(TEXT("z_order"), CanvasSlot->GetZOrder());
+            SlotObj->SetBoolField(TEXT("auto_size"), CanvasSlot->GetAutoSize());
+
+            Data->SetObjectField(TEXT("slot"), SlotObj);
+        }
+        else if (UHorizontalBoxSlot* HBoxSlot = Cast<UHorizontalBoxSlot>(WidgetSlot))
+        {
+            TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
+            const FMargin Padding = HBoxSlot->GetPadding();
+            TSharedPtr<FJsonObject> PaddingObj = MakeShared<FJsonObject>();
+            PaddingObj->SetNumberField(TEXT("left"), Padding.Left);
+            PaddingObj->SetNumberField(TEXT("top"), Padding.Top);
+            PaddingObj->SetNumberField(TEXT("right"), Padding.Right);
+            PaddingObj->SetNumberField(TEXT("bottom"), Padding.Bottom);
+            SlotObj->SetObjectField(TEXT("padding"), PaddingObj);
+            Data->SetObjectField(TEXT("slot"), SlotObj);
+        }
+        else if (UVerticalBoxSlot* VBoxSlot = Cast<UVerticalBoxSlot>(WidgetSlot))
+        {
+            TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
+            const FMargin Padding = VBoxSlot->GetPadding();
+            TSharedPtr<FJsonObject> PaddingObj = MakeShared<FJsonObject>();
+            PaddingObj->SetNumberField(TEXT("left"), Padding.Left);
+            PaddingObj->SetNumberField(TEXT("top"), Padding.Top);
+            PaddingObj->SetNumberField(TEXT("right"), Padding.Right);
+            PaddingObj->SetNumberField(TEXT("bottom"), Padding.Bottom);
+            SlotObj->SetObjectField(TEXT("padding"), PaddingObj);
+            Data->SetObjectField(TEXT("slot"), SlotObj);
+        }
+        else if (UOverlaySlot* OverlaySlot = Cast<UOverlaySlot>(WidgetSlot))
+        {
+            TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
+            const FMargin Padding = OverlaySlot->GetPadding();
+            TSharedPtr<FJsonObject> PaddingObj = MakeShared<FJsonObject>();
+            PaddingObj->SetNumberField(TEXT("left"), Padding.Left);
+            PaddingObj->SetNumberField(TEXT("top"), Padding.Top);
+            PaddingObj->SetNumberField(TEXT("right"), Padding.Right);
+            PaddingObj->SetNumberField(TEXT("bottom"), Padding.Bottom);
+            SlotObj->SetObjectField(TEXT("padding"), PaddingObj);
+            Data->SetObjectField(TEXT("slot"), SlotObj);
+        }
+        else
+        {
+            Data->SetField(TEXT("slot"), MakeShared<FJsonValueNull>());
+        }
+    }
+    else
+    {
+        // Root widget — no slot
+        Data->SetStringField(TEXT("slot_type"), TEXT(""));
+        Data->SetField(TEXT("slot"), MakeShared<FJsonValueNull>());
+    }
+
     return FCortexCommandRouter::Success(Data);
 }
 
