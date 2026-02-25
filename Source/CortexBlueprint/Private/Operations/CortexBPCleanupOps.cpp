@@ -1,0 +1,205 @@
+#include "Operations/CortexBPCleanupOps.h"
+#include "Operations/CortexBPAssetOps.h"
+#include "CortexBlueprintModule.h"
+#include "CortexCommandRouter.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "EdGraph/EdGraph.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Components/SceneComponent.h"
+#include "GameFramework/Actor.h"
+#include "UObject/Package.h"
+#include "Misc/PackageName.h"
+#include "ScopedTransaction.h"
+
+FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: asset_path"));
+	}
+
+	FString LoadError;
+	UBlueprint* BP = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
+	if (!BP)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+	}
+
+	const bool bCompile = Params->HasField(TEXT("compile")) ? Params->GetBoolField(TEXT("compile")) : true;
+
+	TSharedPtr<FJsonObject> ResponseData = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> Warnings;
+	TArray<TSharedPtr<FJsonValue>> RemovedVars;
+	TArray<TSharedPtr<FJsonValue>> RemovedFuncs;
+	bool bReparented = false;
+
+	// --- Validate reparent target before opening transaction ---
+	FString NewParentClassPath;
+	UClass* NewParentClass = nullptr;
+	if (Params->TryGetStringField(TEXT("new_parent_class"), NewParentClassPath) && !NewParentClassPath.IsEmpty())
+	{
+		NewParentClass = FindObject<UClass>(nullptr, *NewParentClassPath);
+		if (!NewParentClass)
+		{
+			NewParentClass = LoadClass<UObject>(nullptr, *NewParentClassPath);
+		}
+		if (!NewParentClass)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("Parent class not found: %s"), *NewParentClassPath));
+		}
+
+		// Type compatibility check
+		const bool bBPIsActor = BP->ParentClass && BP->ParentClass->IsChildOf(AActor::StaticClass());
+		const bool bNewIsActor = NewParentClass->IsChildOf(AActor::StaticClass());
+		if (bBPIsActor != bNewIsActor)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("Type mismatch: cannot reparent Actor BP to non-Actor class or vice versa"));
+		}
+	}
+
+	// Wrap all mutations in a single transaction (constructed after all validation)
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Cleanup Migration %s"), *BP->GetName())));
+
+	// --- Reparent ---
+	if (NewParentClass)
+	{
+		// SCS root component warning
+		if (BP->SimpleConstructionScript)
+		{
+			const USCS_Node* BPRoot = BP->SimpleConstructionScript->GetDefaultSceneRootNode();
+			if (BPRoot && NewParentClass->GetDefaultObject<AActor>() &&
+				NewParentClass->GetDefaultObject<AActor>()->GetRootComponent())
+			{
+				Warnings.Add(MakeShared<FJsonValueString>(
+					TEXT("SCS root component conflict detected - verify component hierarchy")));
+			}
+		}
+
+		BP->Modify();
+		if (BP->SimpleConstructionScript)
+		{
+			BP->SimpleConstructionScript->Modify();
+		}
+		// FBlueprintEditorUtils::ReparentBlueprint does not exist in UE 5.6.
+		// Direct ParentClass assignment is the correct approach here, matching
+		// what the Blueprint editor's own reparent dialog uses internally.
+		BP->ParentClass = NewParentClass;
+		FBlueprintEditorUtils::RefreshAllNodes(BP);
+		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+		bReparented = true;
+		ResponseData->SetStringField(TEXT("new_parent"), NewParentClass->GetName());
+	}
+	ResponseData->SetBoolField(TEXT("reparented"), bReparented);
+
+	// --- Remove variables ---
+	const TArray<TSharedPtr<FJsonValue>>* VarsArray;
+	if (Params->TryGetArrayField(TEXT("remove_variables"), VarsArray))
+	{
+		for (const TSharedPtr<FJsonValue>& VarVal : *VarsArray)
+		{
+			const FString VarName = VarVal->AsString();
+			if (VarName.IsEmpty()) { continue; }
+
+			// Check variable exists
+			const bool bExists = BP->NewVariables.ContainsByPredicate(
+				[&VarName](const FBPVariableDescription& V) {
+					return V.VarName.ToString() == VarName;
+				});
+
+			if (bExists)
+			{
+				FBlueprintEditorUtils::RemoveMemberVariable(BP, FName(*VarName));
+				RemovedVars.Add(MakeShared<FJsonValueString>(VarName));
+			}
+			else
+			{
+				Warnings.Add(MakeShared<FJsonValueString>(
+					FString::Printf(TEXT("Variable '%s' not found, skipped"), *VarName)));
+			}
+		}
+	}
+	ResponseData->SetArrayField(TEXT("removed_variables"), RemovedVars);
+
+	// --- Remove functions ---
+	const TArray<TSharedPtr<FJsonValue>>* FuncsArray;
+	if (Params->TryGetArrayField(TEXT("remove_functions"), FuncsArray))
+	{
+		for (const TSharedPtr<FJsonValue>& FuncVal : *FuncsArray)
+		{
+			const FString FuncName = FuncVal->AsString();
+			if (FuncName.IsEmpty()) { continue; }
+
+			UEdGraph* GraphToRemove = nullptr;
+			for (UEdGraph* Graph : BP->FunctionGraphs)
+			{
+				if (Graph && Graph->GetName() == FuncName)
+				{
+					GraphToRemove = Graph;
+					break;
+				}
+			}
+
+			if (GraphToRemove)
+			{
+				FBlueprintEditorUtils::RemoveGraph(BP, GraphToRemove);
+				RemovedFuncs.Add(MakeShared<FJsonValueString>(FuncName));
+			}
+			else
+			{
+				Warnings.Add(MakeShared<FJsonValueString>(
+					FString::Printf(TEXT("Function '%s' not found, skipped"), *FuncName)));
+			}
+		}
+	}
+	ResponseData->SetArrayField(TEXT("removed_functions"), RemovedFuncs);
+
+	// --- Finalize ---
+	// Note: BP->Modify() is omitted here — RemoveMemberVariable and RemoveGraph
+	// call Modify() internally, and the reparent block calls it explicitly.
+
+	if (bCompile)
+	{
+		FKismetEditorUtilities::CompileBlueprint(BP);
+		ResponseData->SetBoolField(TEXT("compiled"), true);
+		ResponseData->SetStringField(TEXT("compile_status"),
+			(BP->Status == BS_UpToDate || BP->Status == BS_UpToDateWithWarnings)
+				? TEXT("UpToDate") : TEXT("Error"));
+	}
+	else
+	{
+		ResponseData->SetBoolField(TEXT("compiled"), false);
+	}
+
+	// Persist to disk (skip transient packages used by tests)
+	if (!BP->GetPackage()->GetName().StartsWith(TEXT("/Engine/Transient")))
+	{
+		FString PackageFilename;
+		if (FPackageName::TryConvertLongPackageNameToFilename(
+				BP->GetPackage()->GetName(), PackageFilename, TEXT(".uasset")))
+		{
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+			UPackage::SavePackage(BP->GetPackage(), BP, *PackageFilename, SaveArgs);
+		}
+	}
+
+	ResponseData->SetArrayField(TEXT("warnings"), Warnings);
+
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Cleanup migration: %s — reparented=%d, removed %d vars, %d funcs"),
+		*BP->GetName(), bReparented, RemovedVars.Num(), RemovedFuncs.Num());
+
+	return FCortexCommandRouter::Success(ResponseData);
+}
