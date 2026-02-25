@@ -12,6 +12,8 @@
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_DynamicCast.h"
+#include "K2Node_SpawnActorFromClass.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 
@@ -848,6 +850,16 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 		);
 	}
 
+	FString Scope = TEXT("all");
+	Params->TryGetStringField(TEXT("scope"), Scope);
+	if (Scope != TEXT("all") && Scope != TEXT("derived"))
+	{
+		Scope = TEXT("all");
+	}
+
+	bool bDeepScan = false;
+	Params->TryGetBoolField(TEXT("deep_scan"), bDeepScan);
+
 	FString PathFilter;
 	Params->TryGetStringField(TEXT("path_filter"), PathFilter);
 
@@ -856,94 +868,173 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 
 	int32 MaxBlueprints = 50;
 	Params->TryGetNumberField(TEXT("max_blueprints"), MaxBlueprints);
-
-	// Collect BP classes to scan: loaded (GetDerivedClasses) + unloaded (Asset Registry)
-	TSet<UBlueprint*> BlueprintsToScan;
-
-	// 1. Loaded BPs via GetDerivedClasses
-	TArray<UClass*> DerivedClasses;
-	GetDerivedClasses(OwnerClass, DerivedClasses, true);
-	for (UClass* DC : DerivedClasses)
+	if (MaxBlueprints <= 0)
 	{
-		if (BlueprintsToScan.Num() >= MaxBlueprints)
-		{
-			break;
-		}
-		if (UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(DC))
-		{
-			if (UBlueprint* BP = Cast<UBlueprint>(BPGC->ClassGeneratedBy))
-			{
-				if (PathFilter.IsEmpty() || BP->GetPathName().StartsWith(PathFilter))
-				{
-					BlueprintsToScan.Add(BP);
-				}
-			}
-		}
+		MaxBlueprints = 50;
 	}
 
-	// 2. Unloaded BPs via Asset Registry
 	IAssetRegistry& AssetRegistry =
 		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
-	FARFilter Filter;
-	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
-	Filter.bRecursiveClasses = true;
-	if (!PathFilter.IsEmpty())
-	{
-		Filter.PackagePaths.Add(FName(*PathFilter));
-		Filter.bRecursivePaths = true;
-	}
 
-	TArray<FAssetData> Assets;
-	AssetRegistry.GetAssets(Filter, Assets);
+	TMap<FString, UBlueprint*> LoadedBlueprintsByPath;
+	TMap<FString, FString> UnloadedBlueprintObjectPaths;
 
-	for (const FAssetData& Asset : Assets)
+	auto AddLoadedBlueprint = [&LoadedBlueprintsByPath, &PathFilter](UBlueprint* Blueprint)
 	{
-		if (BlueprintsToScan.Num() >= MaxBlueprints)
+		if (!Blueprint)
 		{
-			break;
+			return;
 		}
 
-		FAssetTagValueRef ParentTag = Asset.TagsAndValues.FindTag("NativeParentClass");
-		if (ParentTag.IsSet())
+		const FString AssetPath = Blueprint->GetPathName();
+		if (!PathFilter.IsEmpty() && !AssetPath.StartsWith(PathFilter))
 		{
-			// Pre-filter using the tag value before checking memory.
-			// NativeParentClass stores the native parent path (e.g. "/Script/Engine.Character").
-			// FindObject<UClass> resolves it from memory without triggering disk I/O.
-			FString NativeParentPath = ParentTag.AsString();
+			return;
+		}
+
+		LoadedBlueprintsByPath.FindOrAdd(AssetPath, Blueprint);
+	};
+
+	auto AddBlueprintAsset = [
+		&LoadedBlueprintsByPath,
+		&UnloadedBlueprintObjectPaths,
+		&PathFilter
+	](const FAssetData& Asset)
+	{
+		if (!Asset.IsValid())
+		{
+			return;
+		}
+
+		if (Asset.AssetClassPath != UBlueprint::StaticClass()->GetClassPathName())
+		{
+			return;
+		}
+
+		const FString PackagePath = Asset.PackageName.ToString();
+		if (!PathFilter.IsEmpty() && !PackagePath.StartsWith(PathFilter))
+		{
+			return;
+		}
+
+		const FString ObjectPath = Asset.GetSoftObjectPath().ToString();
+		UBlueprint* LoadedBlueprint = FindObject<UBlueprint>(nullptr, *ObjectPath);
+		if (LoadedBlueprint)
+		{
+			LoadedBlueprintsByPath.FindOrAdd(LoadedBlueprint->GetPathName(), LoadedBlueprint);
+			return;
+		}
+
+		UnloadedBlueprintObjectPaths.FindOrAdd(PackagePath, ObjectPath);
+	};
+
+	if (Scope == TEXT("derived"))
+	{
+		// Existing behavior: derive from owner class then enrich with Asset Registry candidates.
+		TArray<UClass*> DerivedClasses;
+		GetDerivedClasses(OwnerClass, DerivedClasses, true);
+		for (UClass* DerivedClass : DerivedClasses)
+		{
+			if (UBlueprintGeneratedClass* BlueprintClass = Cast<UBlueprintGeneratedClass>(DerivedClass))
+			{
+				AddLoadedBlueprint(Cast<UBlueprint>(BlueprintClass->ClassGeneratedBy));
+			}
+		}
+
+		FARFilter Filter;
+		Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+		Filter.bRecursiveClasses = true;
+		if (!PathFilter.IsEmpty())
+		{
+			Filter.PackagePaths.Add(FName(*PathFilter));
+			Filter.bRecursivePaths = true;
+		}
+
+		TArray<FAssetData> Assets;
+		AssetRegistry.GetAssets(Filter, Assets);
+		for (const FAssetData& Asset : Assets)
+		{
+			const FAssetTagValueRef ParentTag = Asset.TagsAndValues.FindTag("NativeParentClass");
+			if (!ParentTag.IsSet())
+			{
+				continue;
+			}
+
+			const FString NativeParentPath = ParentTag.AsString();
 			UClass* NativeParent = FindObject<UClass>(nullptr, *NativeParentPath);
 			if (NativeParent && NativeParent->IsChildOf(OwnerClass))
 			{
-				// Only scan already-loaded Blueprints. If a Blueprint is not loaded, its
-				// UEdGraph nodes are not in memory and there is nothing to scan for symbol
-				// references. Using GetAsset() here would force a disk load inside a tight
-				// loop, which can trigger concurrent GC on partially-initialised objects
-				// and cause an access violation in the GC worker thread.
-				UBlueprint* BP = FindObject<UBlueprint>(nullptr, *Asset.GetSoftObjectPath().ToString());
-				if (BP && !BlueprintsToScan.Contains(BP))
-				{
-					if (BP->GeneratedClass && BP->GeneratedClass->IsChildOf(OwnerClass))
-					{
-						BlueprintsToScan.Add(BP);
-					}
-				}
+				AddBlueprintAsset(Asset);
+			}
+		}
+	}
+	else
+	{
+		// Expanded behavior: scan all Blueprint packages that reference the owner class package.
+		const FString OwnerPackagePath = OwnerClass->GetOutermost()->GetName();
+		TArray<FAssetDependency> Referencers;
+		AssetRegistry.GetReferencers(
+			FAssetIdentifier(FName(*OwnerPackagePath)),
+			Referencers,
+			UE::AssetRegistry::EDependencyCategory::Package
+		);
+
+		for (const FAssetDependency& Referencer : Referencers)
+		{
+			const FString ReferencerPackagePath = Referencer.AssetId.PackageName.ToString();
+			if (ReferencerPackagePath.IsEmpty())
+			{
+				continue;
+			}
+
+			TArray<FAssetData> AssetsInPackage;
+			AssetRegistry.GetAssetsByPackageName(FName(*ReferencerPackagePath), AssetsInPackage, true);
+			for (const FAssetData& PackageAsset : AssetsInPackage)
+			{
+				AddBlueprintAsset(PackageAsset);
+			}
+		}
+
+		// Keep loaded child blueprints in candidate set even if referencer tags are incomplete.
+		TArray<UClass*> DerivedClasses;
+		GetDerivedClasses(OwnerClass, DerivedClasses, true);
+		for (UClass* DerivedClass : DerivedClasses)
+		{
+			if (UBlueprintGeneratedClass* BlueprintClass = Cast<UBlueprintGeneratedClass>(DerivedClass))
+			{
+				AddLoadedBlueprint(Cast<UBlueprint>(BlueprintClass->ClassGeneratedBy));
 			}
 		}
 	}
 
-	// Scan BP graphs for symbol references
 	TArray<TSharedPtr<FJsonValue>> UsagesArray;
 	int32 TotalUsages = 0;
+	int32 BlueprintsScanned = 0;
+	TSet<FString> NotScannedPathSet;
 
-	for (UBlueprint* BP : BlueprintsToScan)
+	auto AddNotScannedPath = [&NotScannedPathSet](const FString& AssetPath)
 	{
-		if (UsagesArray.Num() >= Limit)
+		if (!AssetPath.IsEmpty())
 		{
-			break;
+			NotScannedPathSet.Add(AssetPath);
+		}
+	};
+
+	auto ScanBlueprintForUsages = [
+		OwnerClass,
+		bIsProperty,
+		bIsFunction,
+		SymbolFName
+	](UBlueprint* Blueprint)
+	{
+		TArray<TSharedPtr<FJsonValue>> ReferenceResults;
+		if (!Blueprint)
+		{
+			return ReferenceResults;
 		}
 
-		TArray<TSharedPtr<FJsonValue>> ReferencesArray;
 		TArray<UEdGraph*> AllGraphs;
-		BP->GetAllGraphs(AllGraphs);
+		Blueprint->GetAllGraphs(AllGraphs);
 
 		for (UEdGraph* Graph : AllGraphs)
 		{
@@ -971,15 +1062,14 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 						{
 							RefObj->SetStringField(TEXT("type"), TEXT("read"));
 							RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableGet"));
-							ReferencesArray.Add(MakeShared<FJsonValueObject>(RefObj));
+							ReferenceResults.Add(MakeShared<FJsonValueObject>(RefObj));
 						}
 						else if (VarNode->IsA<UK2Node_VariableSet>())
 						{
 							RefObj->SetStringField(TEXT("type"), TEXT("write"));
 							RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableSet"));
-							ReferencesArray.Add(MakeShared<FJsonValueObject>(RefObj));
+							ReferenceResults.Add(MakeShared<FJsonValueObject>(RefObj));
 						}
-						// else: unknown variable node subtype — silently skip
 					}
 				}
 
@@ -992,17 +1082,149 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 						RefObj->SetStringField(TEXT("context"), Graph->GetName());
 						RefObj->SetStringField(TEXT("type"), TEXT("call"));
 						RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_CallFunction"));
-						ReferencesArray.Add(MakeShared<FJsonValueObject>(RefObj));
+						ReferenceResults.Add(MakeShared<FJsonValueObject>(RefObj));
+					}
+				}
+
+				UK2Node_DynamicCast* CastNode = Cast<UK2Node_DynamicCast>(Node);
+				if (CastNode && CastNode->TargetType && CastNode->TargetType->IsChildOf(OwnerClass))
+				{
+					TSharedPtr<FJsonObject> RefObj = MakeShared<FJsonObject>();
+					RefObj->SetStringField(TEXT("context"), Graph->GetName());
+					RefObj->SetStringField(TEXT("type"), TEXT("cast"));
+					RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_DynamicCast"));
+					ReferenceResults.Add(MakeShared<FJsonValueObject>(RefObj));
+				}
+
+				UK2Node_SpawnActorFromClass* SpawnNode = Cast<UK2Node_SpawnActorFromClass>(Node);
+				if (SpawnNode)
+				{
+					UEdGraphPin* ClassPin = SpawnNode->GetClassPin();
+					if (ClassPin && ClassPin->DefaultObject)
+					{
+						UClass* SpawnClass = Cast<UClass>(ClassPin->DefaultObject);
+						if (SpawnClass && SpawnClass->IsChildOf(OwnerClass))
+						{
+							TSharedPtr<FJsonObject> RefObj = MakeShared<FJsonObject>();
+							RefObj->SetStringField(TEXT("context"), Graph->GetName());
+							RefObj->SetStringField(TEXT("type"), TEXT("spawn"));
+							RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_SpawnActorFromClass"));
+							ReferenceResults.Add(MakeShared<FJsonValueObject>(RefObj));
+						}
 					}
 				}
 			}
 		}
 
-		if (ReferencesArray.Num() > 0)
+		if (USimpleConstructionScript* SCS = Blueprint->SimpleConstructionScript)
+		{
+			for (USCS_Node* SCSNode : SCS->GetAllNodes())
+			{
+				if (!SCSNode || !SCSNode->ComponentClass)
+				{
+					continue;
+				}
+
+				if (SCSNode->ComponentClass->IsChildOf(OwnerClass))
+				{
+					TSharedPtr<FJsonObject> RefObj = MakeShared<FJsonObject>();
+					RefObj->SetStringField(TEXT("context"), TEXT("SimpleConstructionScript"));
+					RefObj->SetStringField(TEXT("type"), TEXT("component"));
+					RefObj->SetStringField(TEXT("node_class"), TEXT("USCS_Node"));
+					ReferenceResults.Add(MakeShared<FJsonValueObject>(RefObj));
+				}
+			}
+		}
+
+		return ReferenceResults;
+	};
+
+	TArray<FString> LoadedPaths;
+	LoadedBlueprintsByPath.GetKeys(LoadedPaths);
+	LoadedPaths.Sort();
+
+	for (const FString& LoadedPath : LoadedPaths)
+	{
+		if (BlueprintsScanned >= MaxBlueprints)
+		{
+			AddNotScannedPath(LoadedPath);
+			continue;
+		}
+
+		UBlueprint* Blueprint = nullptr;
+		if (UBlueprint** FoundBlueprint = LoadedBlueprintsByPath.Find(LoadedPath))
+		{
+			Blueprint = *FoundBlueprint;
+		}
+
+		if (!Blueprint)
+		{
+			AddNotScannedPath(LoadedPath);
+			continue;
+		}
+
+		TArray<TSharedPtr<FJsonValue>> ReferencesArray = ScanBlueprintForUsages(Blueprint);
+		BlueprintsScanned++;
+
+		if (ReferencesArray.Num() > 0 && UsagesArray.Num() < Limit)
 		{
 			TSharedPtr<FJsonObject> UsageObj = MakeShared<FJsonObject>();
-			UsageObj->SetStringField(TEXT("class_name"), BP->GetName());
-			UsageObj->SetStringField(TEXT("asset_path"), BP->GetPathName());
+			UsageObj->SetStringField(TEXT("class_name"), Blueprint->GetName());
+			UsageObj->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
+			UsageObj->SetArrayField(TEXT("references"), ReferencesArray);
+			UsageObj->SetNumberField(TEXT("total_count"), ReferencesArray.Num());
+			UsagesArray.Add(MakeShared<FJsonValueObject>(UsageObj));
+			TotalUsages += ReferencesArray.Num();
+		}
+	}
+
+	TArray<FString> UnloadedPackagePaths;
+	UnloadedBlueprintObjectPaths.GetKeys(UnloadedPackagePaths);
+	UnloadedPackagePaths.Sort();
+
+	for (const FString& PackagePath : UnloadedPackagePaths)
+	{
+		if (BlueprintsScanned >= MaxBlueprints)
+		{
+			AddNotScannedPath(PackagePath);
+			continue;
+		}
+
+		const FString* ObjectPath = UnloadedBlueprintObjectPaths.Find(PackagePath);
+		if (!ObjectPath)
+		{
+			AddNotScannedPath(PackagePath);
+			continue;
+		}
+
+		if (!bDeepScan)
+		{
+			AddNotScannedPath(PackagePath);
+			continue;
+		}
+
+		const FString LoadPackagePath = FPackageName::ObjectPathToPackageName(*ObjectPath);
+		if (!FindPackage(nullptr, *LoadPackagePath) && !FPackageName::DoesPackageExist(LoadPackagePath))
+		{
+			AddNotScannedPath(PackagePath);
+			continue;
+		}
+
+		UBlueprint* LoadedBlueprint = LoadObject<UBlueprint>(nullptr, *(*ObjectPath));
+		if (!LoadedBlueprint)
+		{
+			AddNotScannedPath(PackagePath);
+			continue;
+		}
+
+		TArray<TSharedPtr<FJsonValue>> ReferencesArray = ScanBlueprintForUsages(LoadedBlueprint);
+		BlueprintsScanned++;
+
+		if (ReferencesArray.Num() > 0 && UsagesArray.Num() < Limit)
+		{
+			TSharedPtr<FJsonObject> UsageObj = MakeShared<FJsonObject>();
+			UsageObj->SetStringField(TEXT("class_name"), LoadedBlueprint->GetName());
+			UsageObj->SetStringField(TEXT("asset_path"), LoadedBlueprint->GetPathName());
 			UsageObj->SetArrayField(TEXT("references"), ReferencesArray);
 			UsageObj->SetNumberField(TEXT("total_count"), ReferencesArray.Num());
 
@@ -1011,15 +1233,210 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 		}
 	}
 
+	TArray<TSharedPtr<FJsonValue>> NotScannedPaths;
+	for (const FString& NotScannedPath : NotScannedPathSet)
+	{
+		NotScannedPaths.Add(MakeShared<FJsonValueString>(NotScannedPath));
+	}
+
+	TSharedPtr<FJsonObject> NotScannedObj = MakeShared<FJsonObject>();
+	NotScannedObj->SetNumberField(TEXT("count"), NotScannedPaths.Num());
+	NotScannedObj->SetArrayField(TEXT("paths"), NotScannedPaths);
+
 	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("symbol"), SymbolName);
 	Result->SetStringField(TEXT("defined_in"), OwnerClass->GetName());
 	FString SymbolType = (bIsProperty && bIsFunction) ? TEXT("both")
 		: bIsProperty ? TEXT("property") : TEXT("function");
 	Result->SetStringField(TEXT("symbol_type"), SymbolType);
+	Result->SetStringField(TEXT("scope"), Scope);
+	Result->SetNumberField(TEXT("blueprints_scanned"), BlueprintsScanned);
+	Result->SetObjectField(TEXT("not_scanned"), NotScannedObj);
 	Result->SetArrayField(TEXT("usages"), UsagesArray);
 	Result->SetNumberField(TEXT("total_usages"), TotalUsages);
 	Result->SetNumberField(TEXT("total_classes"), UsagesArray.Num());
+
+	return FCortexCommandRouter::Success(Result);
+}
+
+FCortexCommandResult FCortexReflectOps::GetDependencies(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("asset_path parameter is required")
+		);
+	}
+
+	AssetPath = FPackageName::ObjectPathToPackageName(AssetPath);
+
+	FString CategoryStr;
+	Params->TryGetStringField(TEXT("category"), CategoryStr);
+
+	int32 Limit = 100;
+	Params->TryGetNumberField(TEXT("limit"), Limit);
+	if (Limit <= 0)
+	{
+		Limit = 100;
+	}
+
+	UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All;
+	if (CategoryStr == TEXT("package"))
+	{
+		Category = UE::AssetRegistry::EDependencyCategory::Package;
+	}
+
+	IAssetRegistry& AssetRegistry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	TArray<FAssetDependency> Dependencies;
+	AssetRegistry.GetDependencies(FAssetIdentifier(FName(*AssetPath)), Dependencies, Category);
+
+	TArray<TSharedPtr<FJsonValue>> DepsArray;
+	for (const FAssetDependency& Dependency : Dependencies)
+	{
+		if (DepsArray.Num() >= Limit)
+		{
+			break;
+		}
+
+		const FString PackageName = Dependency.AssetId.PackageName.ToString();
+		if (PackageName.IsEmpty())
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> DependencyObj = MakeShared<FJsonObject>();
+		DependencyObj->SetStringField(TEXT("package"), PackageName);
+
+		const bool bIsCode = PackageName.StartsWith(TEXT("/Script/"));
+		DependencyObj->SetBoolField(TEXT("is_code"), bIsCode);
+
+		if (bIsCode)
+		{
+			const FString ModuleName = FPackageName::GetShortName(FName(*PackageName));
+			DependencyObj->SetStringField(TEXT("module"), ModuleName);
+		}
+		else
+		{
+			TArray<FAssetData> Assets;
+			AssetRegistry.GetAssetsByPackageName(FName(*PackageName), Assets, true);
+			if (Assets.Num() > 0)
+			{
+				DependencyObj->SetStringField(
+					TEXT("asset_class"),
+					Assets[0].AssetClassPath.GetAssetName().ToString()
+				);
+			}
+		}
+
+		const bool bHard = EnumHasAnyFlags(
+			Dependency.Properties,
+			UE::AssetRegistry::EDependencyProperty::Hard
+		);
+		DependencyObj->SetStringField(TEXT("type"), bHard ? TEXT("hard") : TEXT("soft"));
+
+		DepsArray.Add(MakeShared<FJsonValueObject>(DependencyObj));
+	}
+
+	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), AssetPath);
+	Result->SetArrayField(TEXT("dependencies"), DepsArray);
+	Result->SetNumberField(TEXT("total"), DepsArray.Num());
+	Result->SetNumberField(TEXT("total_unfiltered"), Dependencies.Num());
+
+	return FCortexCommandRouter::Success(Result);
+}
+
+FCortexCommandResult FCortexReflectOps::GetReferencers(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("asset_path parameter is required")
+		);
+	}
+
+	AssetPath = FPackageName::ObjectPathToPackageName(AssetPath);
+
+	FString CategoryStr;
+	Params->TryGetStringField(TEXT("category"), CategoryStr);
+
+	int32 Limit = 100;
+	Params->TryGetNumberField(TEXT("limit"), Limit);
+	if (Limit <= 0)
+	{
+		Limit = 100;
+	}
+
+	UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All;
+	if (CategoryStr == TEXT("package"))
+	{
+		Category = UE::AssetRegistry::EDependencyCategory::Package;
+	}
+
+	IAssetRegistry& AssetRegistry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	TArray<FAssetDependency> Referencers;
+	AssetRegistry.GetReferencers(FAssetIdentifier(FName(*AssetPath)), Referencers, Category);
+
+	TArray<TSharedPtr<FJsonValue>> ReferencerArray;
+	for (const FAssetDependency& Referencer : Referencers)
+	{
+		if (ReferencerArray.Num() >= Limit)
+		{
+			break;
+		}
+
+		const FString PackageName = Referencer.AssetId.PackageName.ToString();
+		if (PackageName.IsEmpty())
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> ReferencerObj = MakeShared<FJsonObject>();
+		ReferencerObj->SetStringField(TEXT("package"), PackageName);
+
+		const bool bIsCode = PackageName.StartsWith(TEXT("/Script/"));
+		ReferencerObj->SetBoolField(TEXT("is_code"), bIsCode);
+
+		if (bIsCode)
+		{
+			const FString ModuleName = FPackageName::GetShortName(FName(*PackageName));
+			ReferencerObj->SetStringField(TEXT("module"), ModuleName);
+		}
+		else
+		{
+			TArray<FAssetData> Assets;
+			AssetRegistry.GetAssetsByPackageName(FName(*PackageName), Assets, true);
+			if (Assets.Num() > 0)
+			{
+				ReferencerObj->SetStringField(
+					TEXT("asset_class"),
+					Assets[0].AssetClassPath.GetAssetName().ToString()
+				);
+			}
+		}
+
+		const bool bHard = EnumHasAnyFlags(
+			Referencer.Properties,
+			UE::AssetRegistry::EDependencyProperty::Hard
+		);
+		ReferencerObj->SetStringField(TEXT("type"), bHard ? TEXT("hard") : TEXT("soft"));
+
+		ReferencerArray.Add(MakeShared<FJsonValueObject>(ReferencerObj));
+	}
+
+	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), AssetPath);
+	Result->SetArrayField(TEXT("referencers"), ReferencerArray);
+	Result->SetNumberField(TEXT("total"), ReferencerArray.Num());
+	Result->SetNumberField(TEXT("total_unfiltered"), Referencers.Num());
 
 	return FCortexCommandRouter::Success(Result);
 }

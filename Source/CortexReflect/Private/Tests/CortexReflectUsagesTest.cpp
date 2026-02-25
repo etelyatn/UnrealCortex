@@ -119,3 +119,80 @@ bool FCortexReflectUsagesMissingClassNameTest::RunTest(const FString& Parameters
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectUsagesScopeAllTest,
+	"Cortex.Reflect.Usages.ScopeAll",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectUsagesScopeAllTest::RunTest(const FString& Parameters)
+{
+	FCortexReflectCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("symbol"), TEXT("JumpMaxHoldTime"));
+	Params->SetStringField(TEXT("class_name"), TEXT("ACharacter"));
+	Params->SetStringField(TEXT("scope"), TEXT("all"));
+
+	FCortexCommandResult Result = Handler.Execute(TEXT("find_usages"), Params);
+
+	TestTrue(TEXT("find_usages with scope=all should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		TestTrue(TEXT("Should have scope field"), Result.Data->HasField(TEXT("scope")));
+		TestTrue(TEXT("Should have blueprints_scanned field"),
+			Result.Data->HasField(TEXT("blueprints_scanned")));
+		TestTrue(TEXT("Should have not_scanned field"), Result.Data->HasField(TEXT("not_scanned")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectUsagesScopeDerivedTest,
+	"Cortex.Reflect.Usages.ScopeDerived",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectUsagesScopeDerivedTest::RunTest(const FString& Parameters)
+{
+	FCortexReflectCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("symbol"), TEXT("JumpMaxHoldTime"));
+	Params->SetStringField(TEXT("class_name"), TEXT("ACharacter"));
+	Params->SetStringField(TEXT("scope"), TEXT("derived"));
+
+	FCortexCommandResult Result = Handler.Execute(TEXT("find_usages"), Params);
+
+	TestTrue(TEXT("find_usages with scope=derived should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		const FString Scope = Result.Data->GetStringField(TEXT("scope"));
+		TestEqual(TEXT("Scope should be derived"), Scope, FString(TEXT("derived")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectUsagesDeepScanParamTest,
+	"Cortex.Reflect.Usages.DeepScanParam",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectUsagesDeepScanParamTest::RunTest(const FString& Parameters)
+{
+	FCortexReflectCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("symbol"), TEXT("JumpMaxHoldTime"));
+	Params->SetStringField(TEXT("class_name"), TEXT("ACharacter"));
+	Params->SetBoolField(TEXT("deep_scan"), false);
+
+	FCortexCommandResult Result = Handler.Execute(TEXT("find_usages"), Params);
+
+	TestTrue(TEXT("find_usages with deep_scan param should succeed"), Result.bSuccess);
+
+	return true;
+}

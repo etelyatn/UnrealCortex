@@ -11,6 +11,8 @@ public:
 	static FCortexCommandResult FindOverrides(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult FindUsages(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult Search(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult GetDependencies(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult GetReferencers(const TSharedPtr<FJsonObject>& Params);
 
 private:
 	static UClass* FindClassByName(const FString& ClassName, FCortexCommandResult& OutError);
