@@ -33,6 +33,7 @@ def format_response(data: dict, tool_name: str) -> str:
         "string_tables", "assets", "entries", "resolved",
         "actors", "components", "classes", "sublevels", "data_layers",
         "selection", "matches", "children", "usages",
+        "affected", "dependencies", "referencers",
     ]
     array_key = None
     for key in truncatable_keys:
