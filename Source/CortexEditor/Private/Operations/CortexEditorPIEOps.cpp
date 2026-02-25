@@ -42,6 +42,7 @@ FCortexCommandResult FCortexEditorPIEOps::StartPIE(
 
 	if (DeferredCallback)
 	{
+		// ID unused: PIE lifecycle completes all general callbacks via broadcast
 		const uint32 CallbackId = PIEState.RegisterPendingCallback(MoveTemp(DeferredCallback));
 		(void)CallbackId;
 	}
@@ -92,6 +93,7 @@ FCortexCommandResult FCortexEditorPIEOps::StopPIE(
 
 	if (DeferredCallback)
 	{
+		// ID unused: PIE lifecycle completes all general callbacks via broadcast
 		const uint32 CallbackId = PIEState.RegisterPendingCallback(MoveTemp(DeferredCallback));
 		(void)CallbackId;
 	}
@@ -187,6 +189,8 @@ FCortexCommandResult FCortexEditorPIEOps::RestartPIE(
 	GEditor->RequestEndPlayMap();
 
 	const double RestartStartTime = FPlatformTime::Seconds();
+	// Raw pointer: safe because PIEState is owned by FCortexEditorModule which outlives all tickers.
+	// The 10s timeout provides an additional safety bound.
 	FCortexEditorPIEState* PIEStatePtr = &PIEState;
 	FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateLambda([PIEStatePtr, Params, Callback = MoveTemp(DeferredCallback), RestartStartTime](float DeltaTime) mutable

@@ -55,9 +55,9 @@ private:
 
 	ECortexPIEState State = ECortexPIEState::Stopped;
 	TMap<uint32, FDeferredResponseCallback> PendingCallbacks;
-	uint32 NextCallbackId = 0;
+	uint32 NextCallbackId = 0;  // Wraps at UINT32_MAX; collision unreachable in practice
 	TMap<uint32, FDeferredResponseCallback> PendingInputCallbacks;
-	uint32 NextInputCallbackId = 0;
+	uint32 NextInputCallbackId = 0;  // Wraps at UINT32_MAX; collision unreachable in practice
 
 	// Handle for the deferred OnPIEEnded() ticker scheduled by HandleCancelPIE().
 	// Calling UE_LOG from within a CancelPIE delegate broadcast that is itself fired

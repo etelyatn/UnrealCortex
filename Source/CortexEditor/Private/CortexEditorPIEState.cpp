@@ -170,11 +170,12 @@ void FCortexEditorPIEState::OnPIEEnded()
 	CancelAllInputTickers();
 	SetState(ECortexPIEState::Stopped);
 
+	// Input callbacks already completed with OperationCancelled by CancelAllInputTickers() above.
+	// Only general PIE callbacks (start_pie, stop_pie) need PIETerminated here.
 	FCortexCommandResult ErrorResult;
 	ErrorResult.bSuccess = false;
 	ErrorResult.ErrorCode = CortexErrorCodes::PIETerminated;
 	ErrorResult.ErrorMessage = TEXT("PIE session ended while command was pending");
-	CompletePendingInputCallbacks(ErrorResult);
 	CompletePendingCallbacks(ErrorResult);
 }
 
@@ -221,6 +222,10 @@ void FCortexEditorPIEState::HandlePrePIEEnded(bool bIsSimulating)
 void FCortexEditorPIEState::HandleEndPIE(bool bIsSimulating)
 {
 	(void)bIsSimulating;
+
+	// Cancel input tickers early so they cannot fire during PIE teardown.
+	// OnPIEEnded() calls CancelAllInputTickers() again, but that is a safe no-op
+	// (empty handles array, bHadInputTickers is false, fresh token already set).
 	CancelAllInputTickers();
 
 	if (State == ECortexPIEState::Stopping)
