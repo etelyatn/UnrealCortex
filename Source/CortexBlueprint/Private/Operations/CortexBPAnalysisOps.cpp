@@ -345,6 +345,55 @@ int32 ComputeGraphExecDepth(UEdGraph* Graph)
 	return MaxDepth;
 }
 
+FString DetermineParentFunctionType(UBlueprint* BP, const FName& FuncName)
+{
+	// Walk to first native ancestor
+	UClass* NativeParent = BP->ParentClass;
+	while (NativeParent && NativeParent->ClassGeneratedBy != nullptr)
+	{
+		NativeParent = NativeParent->GetSuperClass();
+	}
+	if (!NativeParent) { return TEXT(""); }
+
+	UFunction* ParentFunc = NativeParent->FindFunctionByName(FuncName);
+	if (!ParentFunc) { return TEXT(""); }
+
+	const bool bBlueprintEvent = (ParentFunc->FunctionFlags & FUNC_BlueprintEvent) != 0;
+	const bool bNative = (ParentFunc->FunctionFlags & FUNC_Native) != 0;
+
+	if (bBlueprintEvent && bNative) { return TEXT("BlueprintNativeEvent"); }
+	if (bBlueprintEvent) { return TEXT("BlueprintImplementableEvent"); }
+	return TEXT("BlueprintCallable");
+}
+
+FString DetermineRPCType(UBlueprint* BP, const FName& FuncName)
+{
+	UClass* SearchClass = BP->SkeletonGeneratedClass
+		? BP->SkeletonGeneratedClass
+		: BP->GeneratedClass;
+	if (!SearchClass) { return TEXT("None"); }
+
+	UFunction* Func = SearchClass->FindFunctionByName(FuncName);
+	if (!Func) { return TEXT("None"); }
+
+	if (Func->FunctionFlags & FUNC_NetServer) { return TEXT("Server"); }
+	if (Func->FunctionFlags & FUNC_NetClient) { return TEXT("Client"); }
+	if (Func->FunctionFlags & FUNC_NetMulticast) { return TEXT("NetMulticast"); }
+	if (Func->FunctionFlags & FUNC_Net) { return TEXT("Replicated"); }
+	return TEXT("None");
+}
+
+bool IsRPCReliable(UBlueprint* BP, const FName& FuncName)
+{
+	UClass* SearchClass = BP->SkeletonGeneratedClass
+		? BP->SkeletonGeneratedClass
+		: BP->GeneratedClass;
+	if (!SearchClass) { return false; }
+
+	UFunction* Func = SearchClass->FindFunctionByName(FuncName);
+	return Func && (Func->FunctionFlags & FUNC_NetReliable) != 0;
+}
+
 TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 {
 	int32 TotalNodes = 0;
@@ -610,6 +659,20 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		}
 		FuncObj->SetArrayField(TEXT("inputs"), InputsArr);
 		FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
+
+		// V3: Override detection
+		const FName FuncName = *Graph->GetName();
+		const FString ParentFuncType = DetermineParentFunctionType(BP, FuncName);
+		FuncObj->SetBoolField(TEXT("is_override"), !ParentFuncType.IsEmpty());
+		if (!ParentFuncType.IsEmpty())
+		{
+			FuncObj->SetStringField(TEXT("parent_function_type"), ParentFuncType);
+		}
+
+		// V3: RPC type
+		FuncObj->SetStringField(TEXT("rpc_type"), DetermineRPCType(BP, FuncName));
+		FuncObj->SetBoolField(TEXT("is_reliable"), IsRPCReliable(BP, FuncName));
+
 		FunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
 	}
 	Data->SetArrayField(TEXT("functions"), FunctionsArray);

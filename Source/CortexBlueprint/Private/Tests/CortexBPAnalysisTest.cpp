@@ -318,3 +318,46 @@ bool FCortexBPAnalysisV3VariableFieldsTest::RunTest(const FString& Parameters)
 	TestBP->MarkAsGarbage();
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexBPAnalysisV3FunctionFieldsTest,
+    "Cortex.Blueprint.Analysis.V3FunctionFields",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV3FunctionFieldsTest::RunTest(const FString& Parameters)
+{
+    UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+        AActor::StaticClass(),
+        GetTransientPackage(),
+        FName(TEXT("BP_V3FuncFieldsTest")),
+        BPTYPE_Normal,
+        UBlueprint::StaticClass(),
+        UBlueprintGeneratedClass::StaticClass());
+    TestNotNull(TEXT("Test Blueprint created"), TestBP);
+    if (!TestBP) { return false; }
+
+    // Add a function graph with a unique name to avoid duplicate function conflicts
+    UEdGraph* FuncGraph = FBlueprintEditorUtils::CreateNewGraph(
+        TestBP, FName(TEXT("V3UniqueFunc")), UEdGraph::StaticClass(),
+        UEdGraphSchema_K2::StaticClass());
+    FBlueprintEditorUtils::AddFunctionGraph<UClass>(TestBP, FuncGraph, true, static_cast<UClass*>(nullptr));
+    FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+    FCortexBPCommandHandler Handler;
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+    FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+    TestTrue(TEXT("Analysis succeeded"), Result.bSuccess);
+
+    const TArray<TSharedPtr<FJsonValue>>* Functions;
+    TestTrue(TEXT("Has functions"), Result.Data->TryGetArrayField(TEXT("functions"), Functions));
+    if (Functions && Functions->Num() > 0)
+    {
+        const TSharedPtr<FJsonObject>& FuncObj = (*Functions)[0]->AsObject();
+        TestTrue(TEXT("Has is_override"), FuncObj->HasField(TEXT("is_override")));
+        TestTrue(TEXT("Has rpc_type"), FuncObj->HasField(TEXT("rpc_type")));
+    }
+
+    TestBP->MarkAsGarbage();
+    return true;
+}
