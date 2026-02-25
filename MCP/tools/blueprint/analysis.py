@@ -37,7 +37,7 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
-    async def cleanup_blueprint_migration(
+    def cleanup_blueprint_migration(
         asset_path: str,
         new_parent_class: str | None = None,
         remove_variables: list[str] | None = None,
@@ -63,4 +63,10 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
             params["remove_variables"] = remove_variables
         if remove_functions:
             params["remove_functions"] = remove_functions
-        return await connection.send_command("bp.cleanup_migration", params)
+        try:
+            response = connection.send_command("bp.cleanup_migration", params)
+            return format_response(response.get("data", {}), "cleanup_blueprint_migration")
+        except ConnectionError as e:
+            return json.dumps({"error": f"Connection error: {e}"})
+        except (RuntimeError, TimeoutError, OSError) as e:
+            return json.dumps({"error": str(e)})
