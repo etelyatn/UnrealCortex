@@ -315,13 +315,19 @@ FCortexCommandResult FCortexEditorInputOps::InjectKey(
 		return FCortexCommandRouter::Success(Data);
 	}
 
-	DispatchKeyEvent(Key, IE_Pressed);
+	const bool bPressDispatched = DispatchKeyEvent(Key, IE_Pressed);
 
 	const float DelaySeconds = static_cast<float>(FMath::Max(0.0, DurationMs) / 1000.0);
 	TWeakPtr<FCortexEditorPIEState> WeakPIE = PIEState;
+	const TSharedRef<FThreadSafeBool> CancelToken = PIEState->GetInputCancelToken();
 	const FTSTicker::FDelegateHandle Handle = FTSTicker::GetCoreTicker().AddTicker(
-		FTickerDelegate::CreateLambda([Key, WeakPIE](float) -> bool
+		FTickerDelegate::CreateLambda([Key, WeakPIE, CancelToken](float) -> bool
 		{
+			if (*CancelToken)
+			{
+				return false;
+			}
+
 			const TSharedPtr<FCortexEditorPIEState> PIE = WeakPIE.Pin();
 			if (PIE.IsValid() && PIE->IsActive() && FSlateApplication::IsInitialized())
 			{
@@ -333,7 +339,7 @@ FCortexCommandResult FCortexEditorInputOps::InjectKey(
 		DelaySeconds);
 	PIEState->RegisterInputTickerHandle(Handle);
 
-	Data->SetBoolField(TEXT("dispatched"), true);
+	Data->SetBoolField(TEXT("dispatched"), bPressDispatched);
 	Data->SetNumberField(TEXT("duration_ms"), DurationMs);
 	return FCortexCommandRouter::Success(Data);
 }
@@ -641,8 +647,10 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputSequence(
 	const int32 TotalSteps = ValidatedSteps.Num();
 	const TSharedRef<int32, ESPMode::ThreadSafe> CompletedSteps = MakeShared<int32, ESPMode::ThreadSafe>(0);
 	const TSharedRef<bool, ESPMode::ThreadSafe> bCompleted = MakeShared<bool, ESPMode::ThreadSafe>(false);
+	const uint32 CallbackId = PIEState->RegisterPendingInputCallback(MoveTemp(DeferredCallback));
+	const double SequenceStartTime = FPlatformTime::Seconds();
 
-	const auto CompleteIfDone = [CompletedSteps, TotalSteps, MaxAtMs, bCompleted](
+	const auto CompleteIfDone = [CompletedSteps, TotalSteps, MaxAtMs, bCompleted, CallbackId, SequenceStartTime](
 		const TSharedPtr<FCortexEditorPIEState>& ActivePIEState)
 	{
 		if (!ActivePIEState.IsValid() || *bCompleted || *CompletedSteps < TotalSteps)
@@ -651,16 +659,17 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputSequence(
 		}
 
 		*bCompleted = true;
+		const double ActualDurationMs = (FPlatformTime::Seconds() - SequenceStartTime) * 1000.0;
 
 		FCortexCommandResult Final;
 		Final.bSuccess = true;
 		Final.Data = MakeShared<FJsonObject>();
 		Final.Data->SetNumberField(TEXT("steps_executed"), *CompletedSteps);
 		Final.Data->SetNumberField(TEXT("total_duration_ms"), MaxAtMs);
-		ActivePIEState->CompletePendingCallbacks(Final);
+		Final.Data->SetNumberField(TEXT("actual_duration_ms"), ActualDurationMs);
+		ActivePIEState->CompletePendingInputCallback(CallbackId, Final);
 	};
-
-	PIEState->RegisterPendingCallback(MoveTemp(DeferredCallback));
+	const TSharedRef<FThreadSafeBool> CancelToken = PIEState->GetInputCancelToken();
 
 	for (const FCortexValidatedSequenceStep& Step : ValidatedSteps)
 	{
@@ -674,10 +683,15 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputSequence(
 				StepObj,
 				StepKind,
 				CompletedSteps,
-				CompleteIfDone
+				CompleteIfDone,
+				CancelToken
 			](float DeltaTime) -> bool
 			{
 				(void)DeltaTime;
+				if (*CancelToken)
+				{
+					return false;
+				}
 
 				const TSharedPtr<FCortexEditorPIEState> ActivePIEState = WeakPIEState.Pin();
 				if (!ActivePIEState.IsValid() || !StepObj.IsValid())

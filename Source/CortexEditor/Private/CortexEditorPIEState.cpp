@@ -80,18 +80,54 @@ FString FCortexEditorPIEState::StateToString(ECortexPIEState InState)
 	}
 }
 
-void FCortexEditorPIEState::RegisterPendingCallback(FDeferredResponseCallback&& Callback)
+uint32 FCortexEditorPIEState::RegisterPendingCallback(FDeferredResponseCallback&& Callback)
 {
-	PendingCallbacks.Add(MoveTemp(Callback));
+	const uint32 Id = ++NextCallbackId;
+	PendingCallbacks.Add(Id, MoveTemp(Callback));
+	return Id;
+}
+
+void FCortexEditorPIEState::CompletePendingCallback(uint32 CallbackId, const FCortexCommandResult& Result)
+{
+	FDeferredResponseCallback Callback;
+	if (PendingCallbacks.RemoveAndCopyValue(CallbackId, Callback))
+	{
+		Callback(Result);
+	}
 }
 
 void FCortexEditorPIEState::CompletePendingCallbacks(const FCortexCommandResult& Result)
 {
-	for (FDeferredResponseCallback& Callback : PendingCallbacks)
+	TMap<uint32, FDeferredResponseCallback> CallbacksCopy = MoveTemp(PendingCallbacks);
+	for (TPair<uint32, FDeferredResponseCallback>& Pair : CallbacksCopy)
+	{
+		Pair.Value(Result);
+	}
+}
+
+uint32 FCortexEditorPIEState::RegisterPendingInputCallback(FDeferredResponseCallback&& Callback)
+{
+	const uint32 Id = ++NextInputCallbackId;
+	PendingInputCallbacks.Add(Id, MoveTemp(Callback));
+	return Id;
+}
+
+void FCortexEditorPIEState::CompletePendingInputCallback(uint32 CallbackId, const FCortexCommandResult& Result)
+{
+	FDeferredResponseCallback Callback;
+	if (PendingInputCallbacks.RemoveAndCopyValue(CallbackId, Callback))
 	{
 		Callback(Result);
 	}
-	PendingCallbacks.Empty();
+}
+
+void FCortexEditorPIEState::CompletePendingInputCallbacks(const FCortexCommandResult& Result)
+{
+	TMap<uint32, FDeferredResponseCallback> CallbacksCopy = MoveTemp(PendingInputCallbacks);
+	for (TPair<uint32, FDeferredResponseCallback>& Pair : CallbacksCopy)
+	{
+		Pair.Value(Result);
+	}
 }
 
 void FCortexEditorPIEState::RegisterInputTickerHandle(FTSTicker::FDelegateHandle Handle)
@@ -104,6 +140,10 @@ void FCortexEditorPIEState::RegisterInputTickerHandle(FTSTicker::FDelegateHandle
 
 void FCortexEditorPIEState::CancelAllInputTickers()
 {
+	*InputCancelToken = true;
+	InputCancelToken = MakeShared<FThreadSafeBool>(false);
+	const bool bHadInputTickers = InputTickerHandles.Num() > 0;
+
 	for (FTSTicker::FDelegateHandle& Handle : InputTickerHandles)
 	{
 		if (Handle.IsValid())
@@ -114,6 +154,15 @@ void FCortexEditorPIEState::CancelAllInputTickers()
 	}
 
 	InputTickerHandles.Empty();
+
+	if (bHadInputTickers)
+	{
+		FCortexCommandResult CancelResult;
+		CancelResult.bSuccess = false;
+		CancelResult.ErrorCode = TEXT("OperationCancelled");
+		CancelResult.ErrorMessage = TEXT("Input sequence cancelled");
+		CompletePendingInputCallbacks(CancelResult);
+	}
 }
 
 void FCortexEditorPIEState::OnPIEEnded()
@@ -121,6 +170,8 @@ void FCortexEditorPIEState::OnPIEEnded()
 	CancelAllInputTickers();
 	SetState(ECortexPIEState::Stopped);
 
+	// Input callbacks already completed with OperationCancelled by CancelAllInputTickers() above.
+	// Only general PIE callbacks (start_pie, stop_pie) need PIETerminated here.
 	FCortexCommandResult ErrorResult;
 	ErrorResult.bSuccess = false;
 	ErrorResult.ErrorCode = CortexErrorCodes::PIETerminated;
@@ -171,6 +222,10 @@ void FCortexEditorPIEState::HandlePrePIEEnded(bool bIsSimulating)
 void FCortexEditorPIEState::HandleEndPIE(bool bIsSimulating)
 {
 	(void)bIsSimulating;
+
+	// Cancel input tickers early so they cannot fire during PIE teardown.
+	// OnPIEEnded() calls CancelAllInputTickers() again, but that is a safe no-op
+	// (empty handles array, bHadInputTickers is false, fresh token already set).
 	CancelAllInputTickers();
 
 	if (State == ECortexPIEState::Stopping)

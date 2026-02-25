@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "CortexTypes.h"
 #include "Containers/Ticker.h"
+#include "HAL/ThreadSafeBool.h"
 
 enum class ECortexPIEState : uint8
 {
@@ -30,10 +31,15 @@ public:
 
 	static FString StateToString(ECortexPIEState InState);
 
-	void RegisterPendingCallback(FDeferredResponseCallback&& Callback);
+	uint32 RegisterPendingCallback(FDeferredResponseCallback&& Callback);
+	void CompletePendingCallback(uint32 CallbackId, const FCortexCommandResult& Result);
 	void CompletePendingCallbacks(const FCortexCommandResult& Result);
+	uint32 RegisterPendingInputCallback(FDeferredResponseCallback&& Callback);
+	void CompletePendingInputCallback(uint32 CallbackId, const FCortexCommandResult& Result);
+	void CompletePendingInputCallbacks(const FCortexCommandResult& Result);
 	void RegisterInputTickerHandle(FTSTicker::FDelegateHandle Handle);
 	void CancelAllInputTickers();
+	TSharedRef<FThreadSafeBool> GetInputCancelToken() const { return InputCancelToken; }
 	void OnPIEEnded();
 
 private:
@@ -48,7 +54,10 @@ private:
 	void HandleCancelPIE();
 
 	ECortexPIEState State = ECortexPIEState::Stopped;
-	TArray<FDeferredResponseCallback> PendingCallbacks;
+	TMap<uint32, FDeferredResponseCallback> PendingCallbacks;
+	uint32 NextCallbackId = 0;  // Wraps at UINT32_MAX; collision unreachable in practice
+	TMap<uint32, FDeferredResponseCallback> PendingInputCallbacks;
+	uint32 NextInputCallbackId = 0;  // Wraps at UINT32_MAX; collision unreachable in practice
 
 	// Handle for the deferred OnPIEEnded() ticker scheduled by HandleCancelPIE().
 	// Calling UE_LOG from within a CancelPIE delegate broadcast that is itself fired
@@ -56,4 +65,5 @@ private:
 	// engine-internal locks.  We defer state cleanup to the next tick instead.
 	FTSTicker::FDelegateHandle CancelDeferHandle;
 	TArray<FTSTicker::FDelegateHandle> InputTickerHandles;
+	TSharedRef<FThreadSafeBool> InputCancelToken = MakeShared<FThreadSafeBool>(false);
 };

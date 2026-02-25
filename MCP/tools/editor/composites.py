@@ -59,6 +59,11 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
                 "Escape", "F1", "LeftMouseButton"). Case-sensitive.
             action: "tap" (press + timed release), "press", or "release".
             duration_ms: Hold duration in ms for "tap" action (default 100).
+
+        Returns:
+            Includes `dispatched` from Slate event handling. For `action="tap"`,
+            `dispatched` reflects whether the press event was consumed by a widget.
+            `false` means the event was dispatched but not handled.
         """
         try:
             response = connection.send_command(
@@ -83,6 +88,13 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
                   button (str, for click), x/y (float), delta (float, for scroll)
                 - For kind="action": action_name (str), value (float, default 1.0)
             timeout: Total timeout for deferred completion (default 60s).
+
+        Returns:
+            On success, response data includes:
+            - `steps_executed`
+            - `total_duration_ms` (scheduled max step time)
+            - `actual_duration_ms` (wall-clock elapsed time)
+            On cancellation, command may return `OperationCancelled`.
 
         Example:
             steps=[
