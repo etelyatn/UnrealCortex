@@ -226,10 +226,14 @@ bool FCortexBPCompileDiagnosticsReferenceTest::RunTest(const FString& Parameters
 	FString ReferencedMember;
 	TestTrue(TEXT("node_class should exist"),
 		TypedDiag->TryGetStringField(TEXT("node_class"), NodeClass));
-	TestTrue(TEXT("referenced_class should be non-empty"),
-		TypedDiag->TryGetStringField(TEXT("referenced_class"), ReferencedClass) && !ReferencedClass.IsEmpty());
-	TestTrue(TEXT("referenced_member should be non-empty"),
-		TypedDiag->TryGetStringField(TEXT("referenced_member"), ReferencedMember) && !ReferencedMember.IsEmpty());
+	TestTrue(TEXT("referenced_class should exist"),
+		TypedDiag->TryGetStringField(TEXT("referenced_class"), ReferencedClass));
+	TestEqual(TEXT("referenced_class should be ActorComponent"),
+		ReferencedClass, TEXT("ActorComponent"));
+	TestTrue(TEXT("referenced_member should exist"),
+		TypedDiag->TryGetStringField(TEXT("referenced_member"), ReferencedMember));
+	TestEqual(TEXT("referenced_member should be DefinitelyMissingFunction"),
+		ReferencedMember, TEXT("DefinitelyMissingFunction"));
 
 	CleanupBlueprint();
 

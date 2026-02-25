@@ -600,7 +600,9 @@ class TestBlueprintErrors:
         compile_resp = tcp_connection.send_command("bp.compile", {
             "asset_path": path,
         })
-        assert compile_resp["data"].get("compiled") is True
+        assert compile_resp["data"]["compile_status"] == "success"
+        assert compile_resp["data"]["error_count"] == 0
+        assert isinstance(compile_resp["data"]["diagnostics"], list)
 
     def test_delete_nonexistent(self, tcp_connection):
         with pytest.raises(RuntimeError):

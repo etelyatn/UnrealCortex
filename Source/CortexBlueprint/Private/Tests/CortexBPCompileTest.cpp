@@ -45,6 +45,7 @@ bool FCortexBPCompileTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("warning_count exists"),
 			Result.Data->TryGetNumberField(TEXT("warning_count"), WarningCount));
 		TestEqual(TEXT("error_count should be 0"), ErrorCount, 0.0);
+		TestEqual(TEXT("warning_count should be 0"), WarningCount, 0.0);
 		TestTrue(TEXT("diagnostics array exists"),
 			Result.Data->TryGetArrayField(TEXT("diagnostics"), Diagnostics));
 		TestEqual(TEXT("diagnostics should be empty"), Diagnostics ? Diagnostics->Num() : -1, 0);
