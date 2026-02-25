@@ -12,6 +12,7 @@
 #include "Components/ActorComponent.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "UObject/UnrealType.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPCleanupRemoveVariableTest,
@@ -139,6 +140,110 @@ bool FCortexBPCleanupRejectsInvalidReparentTest::RunTest(const FString& Paramete
 	TestFalse(TEXT("Cleanup should reject invalid reparent"), Result.bSuccess);
 	TestEqual(TEXT("Error code should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
 	TestTrue(TEXT("Parent class should remain unchanged"), TestBP->ParentClass == OriginalParent);
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPCleanupWidgetReparentTypeFamilyTest,
+	"Cortex.Blueprint.Cleanup.WidgetReparentTypeFamily",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPCleanupWidgetReparentTypeFamilyTest::RunTest(const FString& Parameters)
+{
+	UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
+	UClass* WidgetBlueprintClass = FindObject<UClass>(nullptr, TEXT("/Script/UMGEditor.WidgetBlueprint"));
+	if (!UserWidgetClass || !WidgetBlueprintClass)
+	{
+		AddInfo(TEXT("UMG not available; skipping widget reparent test"));
+		return true;
+	}
+
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		UserWidgetClass,
+		GetTransientPackage(),
+		FName(TEXT("WBP_CleanupWidgetReparentTest")),
+		BPTYPE_Normal,
+		WidgetBlueprintClass,
+		UBlueprintGeneratedClass::StaticClass());
+	if (!TestBP) { return false; }
+
+	FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	Params->SetStringField(TEXT("new_parent_class"), TEXT("/Script/UMG.UserWidget"));
+	Params->SetBoolField(TEXT("compile"), false);
+
+	const FCortexCommandResult Result = FCortexBPCleanupOps::CleanupMigration(Params);
+	TestTrue(TEXT("Widget->Widget reparent is allowed"), Result.bSuccess);
+
+	Params->SetStringField(TEXT("new_parent_class"), TEXT("/Script/Engine.Actor"));
+	const FCortexCommandResult BadResult = FCortexBPCleanupOps::CleanupMigration(Params);
+	TestFalse(TEXT("Widget->Actor reparent is rejected"), BadResult.bSuccess);
+	TestEqual(TEXT("Invalid field code"), BadResult.ErrorCode, CortexErrorCodes::InvalidField);
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPCleanupWidgetPreservationTest,
+	"Cortex.Blueprint.Cleanup.WidgetPreservation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPCleanupWidgetPreservationTest::RunTest(const FString& Parameters)
+{
+	UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
+	UClass* WidgetBlueprintClass = FindObject<UClass>(nullptr, TEXT("/Script/UMGEditor.WidgetBlueprint"));
+	if (!UserWidgetClass || !WidgetBlueprintClass)
+	{
+		AddInfo(TEXT("UMG not available; skipping widget preservation test"));
+		return true;
+	}
+
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		UserWidgetClass,
+		GetTransientPackage(),
+		FName(TEXT("WBP_CleanupPreservationTest")),
+		BPTYPE_Normal,
+		WidgetBlueprintClass,
+		UBlueprintGeneratedClass::StaticClass());
+	if (!TestBP) { return false; }
+
+	FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+	FObjectProperty* WidgetTreeProp = CastField<FObjectProperty>(
+		TestBP->GetClass()->FindPropertyByName(TEXT("WidgetTree")));
+	UObject* WidgetTreeBefore = nullptr;
+	if (WidgetTreeProp)
+	{
+		WidgetTreeBefore = WidgetTreeProp->GetObjectPropertyValue(
+			WidgetTreeProp->ContainerPtrToValuePtr<void>(TestBP));
+	}
+	TestNotNull(TEXT("WidgetTree should exist before cleanup"), WidgetTreeBefore);
+
+	FArrayProperty* AnimsProp = CastField<FArrayProperty>(
+		TestBP->GetClass()->FindPropertyByName(TEXT("Animations")));
+	TestNotNull(TEXT("Animations property should exist"), AnimsProp);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	Params->SetStringField(TEXT("new_parent_class"), TEXT("/Script/UMG.UserWidget"));
+	Params->SetBoolField(TEXT("compile"), false);
+
+	const FCortexCommandResult Result = FCortexBPCleanupOps::CleanupMigration(Params);
+	TestTrue(TEXT("Cleanup should succeed"), Result.bSuccess);
+
+	UObject* WidgetTreeAfter = nullptr;
+	if (WidgetTreeProp)
+	{
+		WidgetTreeAfter = WidgetTreeProp->GetObjectPropertyValue(
+			WidgetTreeProp->ContainerPtrToValuePtr<void>(TestBP));
+	}
+	TestNotNull(TEXT("WidgetTree must survive cleanup"), WidgetTreeAfter);
+	TestTrue(TEXT("Widget BP has no SCS"), TestBP->SimpleConstructionScript == nullptr);
 
 	TestBP->MarkAsGarbage();
 	return true;
