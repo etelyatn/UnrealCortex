@@ -8,9 +8,11 @@
   <img src="https://img.shields.io/badge/License-MIT-lightgrey?style=flat-square" alt="MIT">
 </p>
 
-**A structured RPC layer for Unreal Engine subsystems, with an MCP adapter for AI assistants.**
+**Give your AI hands inside Unreal Engine.**
 
-UnrealCortex is an editor plugin that exposes Unreal Engine subsystems — `UDataTable`, `UBlueprint`, UMG, materials, levels — as namespaced RPC commands over a local TCP server. An MCP adapter makes those commands callable from AI assistants. All UObject access dispatches to the Game Thread via `AsyncTask(ENamedThreads::GameThread)`. All mutations are wrapped in `FScopedTransaction` — standard Ctrl+Z undo works. Zero runtime footprint: all 10 modules declare `Type: Editor`, load at `PostEngineInit`, and are stripped from shipping builds.
+Your AI assistant can already write code. UnrealCortex lets it work *inside* the editor — querying DataTables, editing Blueprint graphs, building UMG hierarchies, placing actors, and even playing and testing your game autonomously. No copy-pasting, no file exports. Changes appear live with full undo support.
+
+All UObject access dispatches to the Game Thread via `AsyncTask(ENamedThreads::GameThread)`. All mutations are wrapped in `FScopedTransaction` — standard Ctrl+Z undo works. Zero runtime footprint: all 10 modules declare `Type: Editor`, load at `PostEngineInit`, and are stripped from shipping builds.
 
 > **Status:** v0.1.0 Beta — All 10 domain modules shipped and tested.
 
@@ -19,59 +21,18 @@ UnrealCortex is an editor plugin that exposes Unreal Engine subsystems — `UDat
 ## Architecture
 
 ```mermaid
-flowchart TD
-    AI["AI Assistant\n(Claude Code, Cursor)"]
-    MCP["MCP Server\nPlugins/UnrealCortex/MCP\n(Python)"]
-    TCP["TCP 127.0.0.1:8742+\nauto-discovered via\nSaved/CortexPort.txt"]
-    Core["CortexCore\nTCP server · router\nJSON serializer"]
+flowchart LR
+    AI["AI Assistant"]
+    MCP["Python MCP Server"]
+    Core["CortexCore\nC++ Plugin"]
+    UE["Unreal Editor"]
 
-    subgraph Shared ["Shared Infrastructure"]
-        Graph["CortexGraph\nBlueprintGraph · KismetCompiler"]
-        Editor["CortexEditor\nLevelEditor · Slate · EnhancedInput"]
-    end
-
-    subgraph Domains ["Domain Modules"]
-        BP["CortexBlueprint"]
-        Mat["CortexMaterial"]
-        Data["CortexData"]
-        QA["CortexQA"]
-        Level["CortexLevel"]
-        UMG["CortexUMG"]
-        Reflect["CortexReflect"]
-    end
-
-    UE["Unreal Editor\nGame Thread\nUObject · AssetRegistry\nFScopedTransaction"]
-
-    AI <-->|"MCP tools"| MCP
-    MCP <-->|"JSON commands\ndata.query_datatable\nbp.create · graph.add_node"| TCP
-    TCP <-->|"ICortexDomainHandler\nAsyncTask GameThread"| Core
-    Core --> Shared
-    Core --> Domains
-    BP --> Graph
-    Mat --> Graph
-    QA --> Editor
-    Shared <--> UE
-    Domains <--> UE
+    AI <-- "MCP tools" --> MCP
+    MCP <-- "JSON over TCP" --> Core
+    Core <-- "Game Thread\nUObject access" --> UE
 ```
 
-Commands are namespaced: `{domain}.{command}`. CortexCore routes to the registered `ICortexDomainHandler` and dispatches to the Game Thread. CortexCore binds port 8742 by default and auto-increments if busy — the active port is written to `Saved/CortexPort.txt` on startup, supporting multiple simultaneous editor instances.
-
-### Module Dependencies
-
-| Module | Depends On | Key UE Engine Modules |
-|--------|-----------|----------------------|
-| **CortexCore** | — | `Sockets` · `Networking` · `Json` · `JsonUtilities` · `GameplayTags` · `UnrealEd` · `AssetRegistry` |
-| **CortexGraph** | CortexCore | `BlueprintGraph` · `KismetCompiler` · `UnrealEd` |
-| **CortexBlueprint** | CortexCore · CortexGraph | `BlueprintGraph` · `Kismet` · `KismetCompiler` · `AssetRegistry` · `GameplayTags` |
-| **CortexMaterial** | CortexCore · CortexGraph | `MaterialEditor` · `AssetRegistry` |
-| **CortexData** | CortexCore | `GameplayTags` · `AssetRegistry` · `UnrealEd` |
-| **CortexEditor** | CortexCore | `LevelEditor` · `Slate` · `SlateCore` · `EnhancedInput` · `ImageWrapper` · `RenderCore` |
-| **CortexQA** | CortexCore · CortexEditor | `NavigationSystem` · `AIModule` · `GameplayTags` |
-| **CortexLevel** | CortexCore | `LevelEditor` · `DataLayerEditor` |
-| **CortexUMG** | CortexCore | `UMG` · `UMGEditor` · `Slate` · `SlateCore` · `MovieScene` |
-| **CortexReflect** | CortexCore | `AssetRegistry` · `BlueprintGraph` · `Kismet` |
-
-Domain modules depend only on CortexCore (and shared infrastructure: CortexGraph, CortexEditor). Never on each other.
+Commands are namespaced: `{domain}.{command}` — e.g. `data.query_datatable`, `bp.create`, `graph.add_node`. CortexCore routes each command to its registered domain handler and dispatches to the Game Thread. The port is auto-discovered via `Saved/CortexPort.txt` — multiple editor instances each get their own port.
 
 ---
 
@@ -131,9 +92,9 @@ Open your project in the Unreal Editor. CortexCore writes `Saved/CortexPort.txt`
 > [!NOTE]
 > UnrealCortex provides the raw MCP tools. **[Cortex Toolkit](https://github.com/etelyatn/cortex-toolkit)** adds domain-specific skills, specialist agents, and project memory so the AI knows *when* and *how* to use them. Recommended for all workflows.
 
-**Option A — Claude Code marketplace (installs all plugins):**
+**Option A — Claude Code marketplace:**
 
-Run this slash command inside Claude Code:
+Run this slash command inside Claude Code to add the marketplace, then browse and install only the domains you need:
 ```
 /plugin marketplace add etelyatn/cortex-toolkit
 ```
@@ -371,6 +332,23 @@ void FMyDomainModule::StartupModule()
 ```
 
 `GetSupportedCommands()` feeds the `get_capabilities` built-in command — the AI can discover what your domain exposes automatically. Drop Python tools into `MCP/tools/mydomain/` and they are discovered at server start with no registration boilerplate.
+
+### Module Dependencies
+
+| Module | Depends On | Key UE Engine Modules |
+|--------|-----------|----------------------|
+| **CortexCore** | — | `Sockets` · `Networking` · `Json` · `JsonUtilities` · `GameplayTags` · `UnrealEd` · `AssetRegistry` |
+| **CortexGraph** | CortexCore | `BlueprintGraph` · `KismetCompiler` · `UnrealEd` |
+| **CortexBlueprint** | CortexCore · CortexGraph | `BlueprintGraph` · `Kismet` · `KismetCompiler` · `AssetRegistry` · `GameplayTags` |
+| **CortexMaterial** | CortexCore · CortexGraph | `MaterialEditor` · `AssetRegistry` |
+| **CortexData** | CortexCore | `GameplayTags` · `AssetRegistry` · `UnrealEd` |
+| **CortexEditor** | CortexCore | `LevelEditor` · `Slate` · `SlateCore` · `EnhancedInput` · `ImageWrapper` · `RenderCore` |
+| **CortexQA** | CortexCore · CortexEditor | `NavigationSystem` · `AIModule` · `GameplayTags` |
+| **CortexLevel** | CortexCore | `LevelEditor` · `DataLayerEditor` |
+| **CortexUMG** | CortexCore | `UMG` · `UMGEditor` · `Slate` · `SlateCore` · `MovieScene` |
+| **CortexReflect** | CortexCore | `AssetRegistry` · `BlueprintGraph` · `Kismet` |
+
+Domain modules depend only on CortexCore (and shared infrastructure: CortexGraph, CortexEditor). Never on each other.
 
 ### Cook and Packaging Safety
 
