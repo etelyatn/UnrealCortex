@@ -1024,6 +1024,97 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 	return FCortexCommandRouter::Success(Result);
 }
 
+FCortexCommandResult FCortexReflectOps::GetDependencies(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("asset_path parameter is required")
+		);
+	}
+
+	AssetPath = FPackageName::ObjectPathToPackageName(AssetPath);
+
+	FString CategoryStr;
+	Params->TryGetStringField(TEXT("category"), CategoryStr);
+
+	int32 Limit = 100;
+	Params->TryGetNumberField(TEXT("limit"), Limit);
+	if (Limit <= 0)
+	{
+		Limit = 100;
+	}
+
+	UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All;
+	if (CategoryStr == TEXT("package"))
+	{
+		Category = UE::AssetRegistry::EDependencyCategory::Package;
+	}
+
+	IAssetRegistry& AssetRegistry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	TArray<FAssetDependency> Dependencies;
+	AssetRegistry.GetDependencies(FAssetIdentifier(FName(*AssetPath)), Dependencies, Category);
+
+	TArray<TSharedPtr<FJsonValue>> DepsArray;
+	for (const FAssetDependency& Dependency : Dependencies)
+	{
+		if (DepsArray.Num() >= Limit)
+		{
+			break;
+		}
+
+		const FString PackageName = Dependency.AssetId.PackageName.ToString();
+		if (PackageName.IsEmpty())
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> DependencyObj = MakeShared<FJsonObject>();
+		DependencyObj->SetStringField(TEXT("package"), PackageName);
+
+		const bool bIsCode = PackageName.StartsWith(TEXT("/Script/"));
+		DependencyObj->SetBoolField(TEXT("is_code"), bIsCode);
+
+		if (bIsCode)
+		{
+			const FString ModuleName = FPackageName::GetShortName(FName(*PackageName));
+			DependencyObj->SetStringField(TEXT("module"), ModuleName);
+		}
+		else
+		{
+			TArray<FAssetData> Assets;
+			AssetRegistry.GetAssetsByPackageName(FName(*PackageName), Assets, true);
+			if (Assets.Num() > 0)
+			{
+				DependencyObj->SetStringField(
+					TEXT("asset_class"),
+					Assets[0].AssetClassPath.GetAssetName().ToString()
+				);
+			}
+		}
+
+		const bool bHard = EnumHasAnyFlags(
+			Dependency.Properties,
+			UE::AssetRegistry::EDependencyProperty::Hard
+		);
+		DependencyObj->SetStringField(TEXT("type"), bHard ? TEXT("hard") : TEXT("soft"));
+
+		DepsArray.Add(MakeShared<FJsonValueObject>(DependencyObj));
+	}
+
+	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), AssetPath);
+	Result->SetArrayField(TEXT("dependencies"), DepsArray);
+	Result->SetNumberField(TEXT("total"), DepsArray.Num());
+	Result->SetNumberField(TEXT("total_unfiltered"), Dependencies.Num());
+
+	return FCortexCommandRouter::Success(Result);
+}
+
 FCortexCommandResult FCortexReflectOps::Search(const TSharedPtr<FJsonObject>& Params)
 {
 	FString Pattern;
