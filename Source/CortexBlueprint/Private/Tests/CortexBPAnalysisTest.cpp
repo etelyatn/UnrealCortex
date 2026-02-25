@@ -422,3 +422,43 @@ bool FCortexBPAnalysisV3ConstructionScriptTest::RunTest(const FString& Parameter
     TestBP->MarkAsGarbage();
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexBPAnalysisV3ConfidenceTest,
+    "Cortex.Blueprint.Analysis.V3Confidence",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV3ConfidenceTest::RunTest(const FString& Parameters)
+{
+    UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+        AActor::StaticClass(),
+        GetTransientPackage(),
+        FName(TEXT("BP_V3ConfidenceTest")),
+        BPTYPE_Normal,
+        UBlueprint::StaticClass(),
+        UBlueprintGeneratedClass::StaticClass());
+    TestNotNull(TEXT("Test Blueprint created"), TestBP);
+    if (!TestBP) { return false; }
+
+    FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+    FCortexBPCommandHandler Handler;
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+    FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+    TestTrue(TEXT("Analysis succeeded"), Result.bSuccess);
+
+    const TSharedPtr<FJsonObject>* Metrics;
+    TestTrue(TEXT("Has metrics"), Result.Data->TryGetObjectField(TEXT("complexity_metrics"), Metrics));
+    if (Metrics)
+    {
+        TestTrue(TEXT("Has macro_instance_count"), (*Metrics)->HasField(TEXT("macro_instance_count")));
+        TestTrue(TEXT("Has parent_is_blueprint"), (*Metrics)->HasField(TEXT("parent_is_blueprint")));
+        TestTrue(TEXT("Has unsupported_node_count"), (*Metrics)->HasField(TEXT("unsupported_node_count")));
+        TestTrue(TEXT("Has user_defined_type_count"), (*Metrics)->HasField(TEXT("user_defined_type_count")));
+        TestTrue(TEXT("Has interface_count"), (*Metrics)->HasField(TEXT("interface_count")));
+    }
+
+    TestBP->MarkAsGarbage();
+    return true;
+}

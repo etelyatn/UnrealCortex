@@ -24,6 +24,7 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
+#include "K2Node_MacroInstance.h"
 #include "K2Node_SpawnActor.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
@@ -35,7 +36,7 @@
 #include "Components/ActorComponent.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "GameplayTagContainer.h"
-#include "Engine/UserDefinedStruct.h"
+#include "StructUtils/UserDefinedStruct.h"
 #include "Engine/UserDefinedEnum.h"
 #include "Net/UnrealNetwork.h"
 
@@ -241,20 +242,25 @@ FString ResolveReferenceType(const FEdGraphPinType& PinType)
 	return TEXT("Hard");
 }
 
-FString CalculateMigrationConfidence(int32 TotalNodes, int32 LatentCount)
+FString CalculateMigrationConfidence(
+	int32 TotalNodes, int32 LatentCount, int32 UnsupportedCount,
+	bool bParentIsBP, int32 MacroCount, int32 InterfaceCount, int32 UserTypeCount)
 {
-	if (TotalNodes < 20 && LatentCount == 0)
-	{
-		return TEXT("high");
-	}
-	if (TotalNodes < 50 && LatentCount <= 2)
-	{
-		return TEXT("high");
-	}
-	if (TotalNodes < 100)
-	{
-		return TEXT("medium");
-	}
+	// Start with baseline from node count
+	int32 Score = 100;
+
+	if (TotalNodes >= 100) { Score -= 40; }
+	else if (TotalNodes >= 50) { Score -= 20; }
+
+	Score -= LatentCount * 10;
+	Score -= UnsupportedCount * 5;
+	Score -= MacroCount * 3;
+	if (bParentIsBP) { Score -= 30; }
+	if (InterfaceCount > 2) { Score -= (InterfaceCount - 2) * 10; }
+	Score -= UserTypeCount * 15;
+
+	if (Score >= 70) { return TEXT("high"); }
+	if (Score >= 40) { return TEXT("medium"); }
 	return TEXT("low");
 }
 
@@ -594,6 +600,9 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 	int32 TotalConnections = 0;
 	int32 MaxGraphDepth = 0;
 	int32 LatentCount = 0;
+	int32 MacroInstanceCount = 0;
+	int32 UnsupportedNodeOccurrences = 0;
+	int32 UserDefinedTypeCount = 0;
 	bool bHasTick = false;
 	bool bHasTimelines = BP && BP->Timelines.Num() > 0;
 	bool bHasDispatchers = false;
@@ -650,6 +659,11 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 				}
 			}
 
+			if (Cast<UK2Node_MacroInstance>(Node))
+			{
+				++MacroInstanceCount;
+			}
+
 			const FString NodeClassName = Node->GetClass()->GetName();
 			bool bKnownPrefix = false;
 			for (const FString& Prefix : KnownNodePrefixes)
@@ -663,6 +677,26 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 			if (!bKnownPrefix)
 			{
 				UnsupportedNodeClasses.Add(NodeClassName);
+				++UnsupportedNodeOccurrences;
+			}
+		}
+	}
+
+	// After the main graph loop, count user-defined struct/enum dependencies
+	for (const FBPVariableDescription& Variable : BP->NewVariables)
+	{
+		if (Variable.VarType.PinCategory == UEdGraphSchema_K2::PC_Struct)
+		{
+			if (Cast<UUserDefinedStruct>(Variable.VarType.PinSubCategoryObject.Get()))
+			{
+				++UserDefinedTypeCount;
+			}
+		}
+		else if (Variable.VarType.PinCategory == UEdGraphSchema_K2::PC_Byte || Variable.VarType.PinCategory == UEdGraphSchema_K2::PC_Enum)
+		{
+			if (Cast<UUserDefinedEnum>(Variable.VarType.PinSubCategoryObject.Get()))
+			{
+				++UserDefinedTypeCount;
 			}
 		}
 	}
@@ -684,6 +718,9 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 		UnsupportedArray.Add(MakeShared<FJsonValueString>(NodeClass));
 	}
 
+	const bool bParentIsBP = BP->ParentClass && BP->ParentClass->ClassGeneratedBy != nullptr;
+	const int32 InterfaceCount = BP->ImplementedInterfaces.Num();
+
 	TSharedPtr<FJsonObject> Metrics = MakeShared<FJsonObject>();
 	Metrics->SetNumberField(TEXT("total_nodes"), TotalNodes);
 	Metrics->SetNumberField(TEXT("total_connections"), TotalConnections);
@@ -693,7 +730,14 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 	Metrics->SetBoolField(TEXT("has_latent_nodes"), LatentCount > 0);
 	Metrics->SetBoolField(TEXT("has_event_dispatchers"), bHasDispatchers);
 	Metrics->SetBoolField(TEXT("has_interfaces"), bHasInterfaces);
-	Metrics->SetStringField(TEXT("migration_confidence"), CalculateMigrationConfidence(TotalNodes, LatentCount));
+	Metrics->SetNumberField(TEXT("macro_instance_count"), MacroInstanceCount);
+	Metrics->SetBoolField(TEXT("parent_is_blueprint"), bParentIsBP);
+	Metrics->SetNumberField(TEXT("unsupported_node_count"), UnsupportedNodeOccurrences);
+	Metrics->SetNumberField(TEXT("user_defined_type_count"), UserDefinedTypeCount);
+	Metrics->SetNumberField(TEXT("interface_count"), InterfaceCount);
+	Metrics->SetStringField(TEXT("migration_confidence"),
+		CalculateMigrationConfidence(TotalNodes, LatentCount, UnsupportedNodeOccurrences,
+			bParentIsBP, MacroInstanceCount, InterfaceCount, UserDefinedTypeCount));
 	Metrics->SetArrayField(TEXT("unsupported_node_types"), UnsupportedArray);
 	return Metrics;
 }
