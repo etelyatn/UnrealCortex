@@ -80,18 +80,29 @@ FString FCortexEditorPIEState::StateToString(ECortexPIEState InState)
 	}
 }
 
-void FCortexEditorPIEState::RegisterPendingCallback(FDeferredResponseCallback&& Callback)
+uint32 FCortexEditorPIEState::RegisterPendingCallback(FDeferredResponseCallback&& Callback)
 {
-	PendingCallbacks.Add(MoveTemp(Callback));
+	const uint32 Id = ++NextCallbackId;
+	PendingCallbacks.Add(Id, MoveTemp(Callback));
+	return Id;
+}
+
+void FCortexEditorPIEState::CompletePendingCallback(uint32 CallbackId, const FCortexCommandResult& Result)
+{
+	FDeferredResponseCallback Callback;
+	if (PendingCallbacks.RemoveAndCopyValue(CallbackId, Callback))
+	{
+		Callback(Result);
+	}
 }
 
 void FCortexEditorPIEState::CompletePendingCallbacks(const FCortexCommandResult& Result)
 {
-	for (FDeferredResponseCallback& Callback : PendingCallbacks)
+	TMap<uint32, FDeferredResponseCallback> CallbacksCopy = MoveTemp(PendingCallbacks);
+	for (TPair<uint32, FDeferredResponseCallback>& Pair : CallbacksCopy)
 	{
-		Callback(Result);
+		Pair.Value(Result);
 	}
-	PendingCallbacks.Empty();
 }
 
 void FCortexEditorPIEState::RegisterInputTickerHandle(FTSTicker::FDelegateHandle Handle)
@@ -104,6 +115,10 @@ void FCortexEditorPIEState::RegisterInputTickerHandle(FTSTicker::FDelegateHandle
 
 void FCortexEditorPIEState::CancelAllInputTickers()
 {
+	*InputCancelToken = true;
+	InputCancelToken = MakeShared<FThreadSafeBool>(false);
+	const bool bHadInputTickers = InputTickerHandles.Num() > 0;
+
 	for (FTSTicker::FDelegateHandle& Handle : InputTickerHandles)
 	{
 		if (Handle.IsValid())
@@ -114,6 +129,15 @@ void FCortexEditorPIEState::CancelAllInputTickers()
 	}
 
 	InputTickerHandles.Empty();
+
+	if (bHadInputTickers)
+	{
+		FCortexCommandResult CancelResult;
+		CancelResult.bSuccess = false;
+		CancelResult.ErrorCode = TEXT("OperationCancelled");
+		CancelResult.ErrorMessage = TEXT("Input sequence cancelled");
+		CompletePendingCallbacks(CancelResult);
+	}
 }
 
 void FCortexEditorPIEState::OnPIEEnded()

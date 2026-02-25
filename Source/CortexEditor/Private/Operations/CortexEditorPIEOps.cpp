@@ -42,7 +42,8 @@ FCortexCommandResult FCortexEditorPIEOps::StartPIE(
 
 	if (DeferredCallback)
 	{
-		PIEState.RegisterPendingCallback(MoveTemp(DeferredCallback));
+		const uint32 CallbackId = PIEState.RegisterPendingCallback(MoveTemp(DeferredCallback));
+		(void)CallbackId;
 	}
 
 	FRequestPlaySessionParams RequestParams;
@@ -91,7 +92,8 @@ FCortexCommandResult FCortexEditorPIEOps::StopPIE(
 
 	if (DeferredCallback)
 	{
-		PIEState.RegisterPendingCallback(MoveTemp(DeferredCallback));
+		const uint32 CallbackId = PIEState.RegisterPendingCallback(MoveTemp(DeferredCallback));
+		(void)CallbackId;
 	}
 
 	PIEState.SetState(ECortexPIEState::Stopping);
