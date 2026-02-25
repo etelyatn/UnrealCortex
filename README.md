@@ -192,11 +192,10 @@ claude plugin add etelyatn/cortex-toolkit/cortex-data       # Pick your domains
 
 Then run:
 ```
-/cortex-init       # Setup project memory and MCP config
-/cortex-start      # Guided onboarding — verifies connection, walks you through your first task
+/cortex-start      # Guided onboarding — checks setup, verifies connection, walks you through your first task
 ```
 
-Run `/cortex-help` anytime to discover commands or get contextual "what to do next" suggestions.
+`/cortex-start` handles everything: if your project isn't configured yet, it guides you through setup. Run `/cortex-help` anytime to discover commands or get "what to do next" suggestions.
 
 ## Architecture
 
@@ -278,7 +277,7 @@ claude plugin add etelyatn/cortex-toolkit/cortex-qa
 claude plugin add etelyatn/cortex-toolkit/cortex-reflect
 ```
 
-After installation, run `/cortex-init` to set up project memory, then `/cortex-start` for guided onboarding. Run `/cortex-help` anytime to discover commands.
+After installation, run `/cortex-start` — it handles setup, verifies your connection, and walks you through your first task. Run `/cortex-help` anytime to discover commands.
 
 ### Project Memory
 
