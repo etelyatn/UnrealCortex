@@ -5,6 +5,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
 #include "GameFramework/Actor.h"
 
@@ -612,6 +613,16 @@ bool FCortexBPAnalysisV4SupplementalSectionsTest::RunTest(const FString& Paramet
 		UBlueprintGeneratedClass::StaticClass());
 	if (!TestBP) { return false; }
 
+	UEdGraph* FuncGraph = FBlueprintEditorUtils::CreateNewGraph(
+		TestBP, FName(TEXT("V4SupplementalFunction")), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(TestBP, FuncGraph, true, static_cast<UClass*>(nullptr));
+
+	FEdGraphPinType LocalVarType;
+	LocalVarType.PinCategory = UEdGraphSchema_K2::PC_Int;
+	const bool bAddedLocal = FBlueprintEditorUtils::AddLocalVariable(
+		TestBP, FuncGraph, FName(TEXT("LocalCounter")), LocalVarType, TEXT("3"));
+	TestTrue(TEXT("Local variable added"), bAddedLocal);
+
 	FKismetEditorUtilities::CompileBlueprint(TestBP);
 
 	FCortexBPCommandHandler Handler;
@@ -632,9 +643,31 @@ bool FCortexBPAnalysisV4SupplementalSectionsTest::RunTest(const FString& Paramet
 	const TArray<TSharedPtr<FJsonValue>>* Functions = nullptr;
 	if (Result.Data->TryGetArrayField(TEXT("functions"), Functions) && Functions && Functions->Num() > 0)
 	{
-		const TSharedPtr<FJsonObject> Fn = (*Functions)[0]->AsObject();
-		TestTrue(TEXT("Function has access"), Fn->HasField(TEXT("access")));
-		TestTrue(TEXT("Function has local_variables"), Fn->HasField(TEXT("local_variables")));
+		bool bFoundTargetFunction = false;
+		for (const TSharedPtr<FJsonValue>& FunctionValue : *Functions)
+		{
+			const TSharedPtr<FJsonObject> Fn = FunctionValue->AsObject();
+			if (!Fn.IsValid())
+			{
+				continue;
+			}
+
+			FString FunctionName;
+			Fn->TryGetStringField(TEXT("name"), FunctionName);
+			if (FunctionName != TEXT("V4SupplementalFunction"))
+			{
+				continue;
+			}
+
+			bFoundTargetFunction = true;
+			TestTrue(TEXT("Function has access"), Fn->HasField(TEXT("access")));
+			TestTrue(TEXT("Function has local_variables"), Fn->HasField(TEXT("local_variables")));
+
+			const TArray<TSharedPtr<FJsonValue>>& LocalVariables = Fn->GetArrayField(TEXT("local_variables"));
+			TestTrue(TEXT("Function local_variables should contain added local"), LocalVariables.Num() >= 1);
+			break;
+		}
+		TestTrue(TEXT("Found supplemental function"), bFoundTargetFunction);
 	}
 
 	TestBP->MarkAsGarbage();

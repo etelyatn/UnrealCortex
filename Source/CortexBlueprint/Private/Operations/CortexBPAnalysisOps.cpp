@@ -606,6 +606,55 @@ bool IsWidgetBlueprint(const UBlueprint* BP)
 	return WidgetBlueprintClass && BP && BP->IsA(WidgetBlueprintClass);
 }
 
+const FArrayProperty* FindArrayProperty(const UClass* OwnerClass, const FName PropertyName)
+{
+	return OwnerClass ? CastField<FArrayProperty>(OwnerClass->FindPropertyByName(PropertyName)) : nullptr;
+}
+
+const FObjectProperty* FindObjectProperty(const UClass* OwnerClass, const FName PropertyName)
+{
+	return OwnerClass ? CastField<FObjectProperty>(OwnerClass->FindPropertyByName(PropertyName)) : nullptr;
+}
+
+const FClassProperty* FindClassProperty(const UClass* OwnerClass, const FName PropertyName)
+{
+	return OwnerClass ? CastField<FClassProperty>(OwnerClass->FindPropertyByName(PropertyName)) : nullptr;
+}
+
+const FBoolProperty* FindBoolProperty(const UClass* OwnerClass, const FName PropertyName)
+{
+	return OwnerClass ? CastField<FBoolProperty>(OwnerClass->FindPropertyByName(PropertyName)) : nullptr;
+}
+
+FString ResolveWidgetParentName(UObject* WidgetObject)
+{
+	if (!WidgetObject)
+	{
+		return TEXT("");
+	}
+
+	const FObjectProperty* SlotProp = FindObjectProperty(WidgetObject->GetClass(), TEXT("Slot"));
+	if (!SlotProp)
+	{
+		return TEXT("");
+	}
+
+	UObject* SlotObj = SlotProp->GetObjectPropertyValue_InContainer(WidgetObject);
+	if (!SlotObj)
+	{
+		return TEXT("");
+	}
+
+	const FObjectProperty* ParentProp = FindObjectProperty(SlotObj->GetClass(), TEXT("Parent"));
+	if (!ParentProp)
+	{
+		return TEXT("");
+	}
+
+	UObject* ParentWidgetObj = ParentProp->GetObjectPropertyValue_InContainer(SlotObj);
+	return ParentWidgetObj ? ParentWidgetObj->GetName() : TEXT("");
+}
+
 TArray<TSharedPtr<FJsonValue>> ExtractWidgetEntities(UBlueprint* BP, const TMap<FString, TSet<FString>>& BoundEventsMap)
 {
 	TArray<TSharedPtr<FJsonValue>> Result;
@@ -614,27 +663,34 @@ TArray<TSharedPtr<FJsonValue>> ExtractWidgetEntities(UBlueprint* BP, const TMap<
 		return Result;
 	}
 
-	for (const FBPVariableDescription& Variable : BP->NewVariables)
+	const FObjectProperty* WidgetTreeProp = FindObjectProperty(BP->GetClass(), TEXT("WidgetTree"));
+	UObject* WidgetTreeObj = WidgetTreeProp ? WidgetTreeProp->GetObjectPropertyValue_InContainer(BP) : nullptr;
+	if (!WidgetTreeObj)
 	{
-		static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
-		if (Variable.VarType.PinCategory != UEdGraphSchema_K2::PC_Object || !UserWidgetClass)
+		return Result;
+	}
+
+	const FArrayProperty* AllWidgetsProp = FindArrayProperty(WidgetTreeObj->GetClass(), TEXT("AllWidgets"));
+	const FObjectProperty* WidgetObjProp = AllWidgetsProp ? CastField<FObjectProperty>(AllWidgetsProp->Inner) : nullptr;
+	if (!AllWidgetsProp || !WidgetObjProp)
+	{
+		return Result;
+	}
+
+	FScriptArrayHelper WidgetsArray(AllWidgetsProp, AllWidgetsProp->ContainerPtrToValuePtr<void>(WidgetTreeObj));
+	static UClass* ListViewBaseClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.ListViewBase"));
+
+	for (int32 Index = 0; Index < WidgetsArray.Num(); ++Index)
+	{
+		UObject* WidgetObject = WidgetObjProp->GetObjectPropertyValue(WidgetsArray.GetRawPtr(Index));
+		if (!WidgetObject)
 		{
 			continue;
 		}
 
-		const UClass* ObjClass = Cast<UClass>(Variable.VarType.PinSubCategoryObject.Get());
-		if (!ObjClass || !ObjClass->IsChildOf(UserWidgetClass))
-		{
-			continue;
-		}
-
-		const FString Name = Variable.VarName.ToString();
-		TSharedPtr<FJsonObject> WidgetObj = MakeShared<FJsonObject>();
-		WidgetObj->SetStringField(TEXT("name"), Name);
-		WidgetObj->SetStringField(TEXT("class"), ObjClass->GetName());
-		WidgetObj->SetStringField(TEXT("class_path"), ObjClass->GetPathName());
-		WidgetObj->SetBoolField(TEXT("is_variable"), true);
-		WidgetObj->SetStringField(TEXT("parent_widget"), TEXT(""));
+		const FString Name = WidgetObject->GetName();
+		const FBoolProperty* IsVariableProp = FindBoolProperty(WidgetObject->GetClass(), TEXT("bIsVariable"));
+		const bool bIsVariable = IsVariableProp ? IsVariableProp->GetPropertyValue_InContainer(WidgetObject) : false;
 
 		TArray<TSharedPtr<FJsonValue>> BoundEventsArr;
 		if (const TSet<FString>* BoundEvents = BoundEventsMap.Find(Name))
@@ -644,7 +700,31 @@ TArray<TSharedPtr<FJsonValue>> ExtractWidgetEntities(UBlueprint* BP, const TMap<
 				BoundEventsArr.Add(MakeShared<FJsonValueString>(DelegateName));
 			}
 		}
+
+		if (!bIsVariable && BoundEventsArr.Num() == 0)
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> WidgetObj = MakeShared<FJsonObject>();
+		WidgetObj->SetStringField(TEXT("name"), Name);
+		WidgetObj->SetStringField(TEXT("class"), WidgetObject->GetClass()->GetName());
+		WidgetObj->SetStringField(TEXT("class_path"), WidgetObject->GetClass()->GetPathName());
+		WidgetObj->SetBoolField(TEXT("is_variable"), bIsVariable);
+		WidgetObj->SetStringField(TEXT("parent_widget"), ResolveWidgetParentName(WidgetObject));
 		WidgetObj->SetArrayField(TEXT("bound_events_in_graph"), BoundEventsArr);
+
+		if (ListViewBaseClass && WidgetObject->GetClass()->IsChildOf(ListViewBaseClass))
+		{
+			WidgetObj->SetStringField(TEXT("list_view_type"), WidgetObject->GetClass()->GetName());
+			if (const FClassProperty* EntryWidgetClassProp = FindClassProperty(WidgetObject->GetClass(), TEXT("EntryWidgetClass")))
+			{
+				if (UClass* EntryWidgetClass = Cast<UClass>(EntryWidgetClassProp->GetObjectPropertyValue_InContainer(WidgetObject)))
+				{
+					WidgetObj->SetStringField(TEXT("entry_widget_class"), EntryWidgetClass->GetPathName());
+				}
+			}
+		}
 
 		Result.Add(MakeShared<FJsonValueObject>(WidgetObj));
 	}
@@ -655,39 +735,250 @@ TArray<TSharedPtr<FJsonValue>> ExtractWidgetEntities(UBlueprint* BP, const TMap<
 TArray<TSharedPtr<FJsonValue>> ExtractNamedSlots(UBlueprint* BP)
 {
 	TArray<TSharedPtr<FJsonValue>> Result;
-	if (!BP)
+	if (!BP || !BP->GeneratedClass)
 	{
 		return Result;
 	}
+
+	const FArrayProperty* NamedSlotsProp = FindArrayProperty(BP->GeneratedClass->GetClass(), TEXT("NamedSlots"));
+	const FNameProperty* NameInnerProp = NamedSlotsProp ? CastField<FNameProperty>(NamedSlotsProp->Inner) : nullptr;
+	if (!NamedSlotsProp || !NameInnerProp)
+	{
+		return Result;
+	}
+
+	FScriptArrayHelper SlotsArray(NamedSlotsProp, NamedSlotsProp->ContainerPtrToValuePtr<void>(BP->GeneratedClass));
+	for (int32 Index = 0; Index < SlotsArray.Num(); ++Index)
+	{
+		const FName SlotName = NameInnerProp->GetPropertyValue(SlotsArray.GetRawPtr(Index));
+		if (SlotName.IsNone())
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
+		SlotObj->SetStringField(TEXT("name"), SlotName.ToString());
+		Result.Add(MakeShared<FJsonValueObject>(SlotObj));
+	}
+
 	return Result;
 }
 
 TArray<TSharedPtr<FJsonValue>> ExtractWidgetAnimations(UBlueprint* BP)
 {
 	TArray<TSharedPtr<FJsonValue>> Result;
-	if (!BP)
+	if (!BP || !BP->GeneratedClass)
 	{
 		return Result;
 	}
+
+	const FArrayProperty* AnimationsProp = FindArrayProperty(BP->GeneratedClass->GetClass(), TEXT("Animations"));
+	const FObjectProperty* AnimationObjProp = AnimationsProp ? CastField<FObjectProperty>(AnimationsProp->Inner) : nullptr;
+	if (!AnimationsProp || !AnimationObjProp)
+	{
+		return Result;
+	}
+
+	bool bHasAnimationGraphCalls = false;
+	TArray<UEdGraph*> AllGraphs;
+	BP->GetAllGraphs(AllGraphs);
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		if (!Graph)
+		{
+			continue;
+		}
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+			if (!CallNode)
+			{
+				continue;
+			}
+			if (UFunction* TargetFunction = CallNode->GetTargetFunction())
+			{
+				const FString FunctionName = TargetFunction->GetName();
+				if (FunctionName.Contains(TEXT("PlayAnimation")) || FunctionName.Contains(TEXT("StopAnimation")))
+				{
+					bHasAnimationGraphCalls = true;
+					break;
+				}
+			}
+		}
+		if (bHasAnimationGraphCalls)
+		{
+			break;
+		}
+	}
+
+	FScriptArrayHelper AnimationsArray(AnimationsProp, AnimationsProp->ContainerPtrToValuePtr<void>(BP->GeneratedClass));
+	for (int32 Index = 0; Index < AnimationsArray.Num(); ++Index)
+	{
+		UObject* AnimationObj = AnimationObjProp->GetObjectPropertyValue(AnimationsArray.GetRawPtr(Index));
+		if (!AnimationObj)
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> AnimationJson = MakeShared<FJsonObject>();
+		AnimationJson->SetStringField(TEXT("name"), AnimationObj->GetName());
+		AnimationJson->SetStringField(TEXT("class"), AnimationObj->GetClass()->GetName());
+		AnimationJson->SetStringField(TEXT("class_path"), AnimationObj->GetClass()->GetPathName());
+		AnimationJson->SetBoolField(TEXT("referenced_in_graph"), bHasAnimationGraphCalls);
+
+		TArray<TSharedPtr<FJsonValue>> BoundWidgets;
+		const FArrayProperty* BindingsProp = FindArrayProperty(AnimationObj->GetClass(), TEXT("AnimationBindings"));
+		const FStructProperty* BindingStructProp = BindingsProp ? CastField<FStructProperty>(BindingsProp->Inner) : nullptr;
+		if (BindingsProp && BindingStructProp)
+		{
+			const FNameProperty* WidgetNameProp = CastField<FNameProperty>(BindingStructProp->Struct->FindPropertyByName(TEXT("WidgetName")));
+			FScriptArrayHelper BindingArray(BindingsProp, BindingsProp->ContainerPtrToValuePtr<void>(AnimationObj));
+			for (int32 BindingIndex = 0; BindingIndex < BindingArray.Num(); ++BindingIndex)
+			{
+				if (!WidgetNameProp)
+				{
+					continue;
+				}
+				const FName WidgetName = WidgetNameProp->GetPropertyValue_InContainer(BindingArray.GetRawPtr(BindingIndex));
+				if (!WidgetName.IsNone())
+				{
+					BoundWidgets.Add(MakeShared<FJsonValueString>(WidgetName.ToString()));
+				}
+			}
+		}
+		AnimationJson->SetArrayField(TEXT("bound_widget_names"), BoundWidgets);
+		Result.Add(MakeShared<FJsonValueObject>(AnimationJson));
+	}
+
 	return Result;
 }
 
 TArray<TSharedPtr<FJsonValue>> ExtractWidgetBindings(UBlueprint* BP)
 {
 	TArray<TSharedPtr<FJsonValue>> Result;
-	if (!BP)
+	if (!BP || !BP->GeneratedClass)
 	{
 		return Result;
 	}
+
+	const FArrayProperty* BindingsProp = FindArrayProperty(BP->GeneratedClass->GetClass(), TEXT("Bindings"));
+	const FStructProperty* BindingStructProp = BindingsProp ? CastField<FStructProperty>(BindingsProp->Inner) : nullptr;
+	if (!BindingsProp || !BindingStructProp)
+	{
+		return Result;
+	}
+
+	const FStrProperty* ObjectNameProp = CastField<FStrProperty>(BindingStructProp->Struct->FindPropertyByName(TEXT("ObjectName")));
+	const FNameProperty* PropertyNameProp = CastField<FNameProperty>(BindingStructProp->Struct->FindPropertyByName(TEXT("PropertyName")));
+	const FNameProperty* FunctionNameProp = CastField<FNameProperty>(BindingStructProp->Struct->FindPropertyByName(TEXT("FunctionName")));
+
+	FScriptArrayHelper BindingsArray(BindingsProp, BindingsProp->ContainerPtrToValuePtr<void>(BP->GeneratedClass));
+	for (int32 Index = 0; Index < BindingsArray.Num(); ++Index)
+	{
+		void* BindingData = BindingsArray.GetRawPtr(Index);
+		if (!BindingData)
+		{
+			continue;
+		}
+
+		const FString WidgetName = ObjectNameProp ? ObjectNameProp->GetPropertyValue_InContainer(BindingData) : TEXT("");
+		const FString PropertyPath = PropertyNameProp ? PropertyNameProp->GetPropertyValue_InContainer(BindingData).ToString() : TEXT("");
+		const FName BoundFunctionName = FunctionNameProp ? FunctionNameProp->GetPropertyValue_InContainer(BindingData) : NAME_None;
+
+		bool bIsPure = false;
+		FString ReturnType = TEXT("");
+		if (!BoundFunctionName.IsNone())
+		{
+			for (UEdGraph* Graph : BP->FunctionGraphs)
+			{
+				if (Graph && Graph->GetFName() == BoundFunctionName)
+				{
+					bIsPure = IsFunctionPure(Graph);
+					for (UEdGraphNode* Node : Graph->Nodes)
+					{
+						if (const UK2Node_FunctionResult* ResultNode = Cast<UK2Node_FunctionResult>(Node))
+						{
+							if (ResultNode->UserDefinedPins.Num() > 0 && ResultNode->UserDefinedPins[0].IsValid())
+							{
+								ReturnType = CortexBPTypeUtils::FriendlyTypeName(ResultNode->UserDefinedPins[0]->PinType);
+							}
+							break;
+						}
+					}
+					break;
+				}
+			}
+		}
+
+		TSharedPtr<FJsonObject> BindingObj = MakeShared<FJsonObject>();
+		BindingObj->SetStringField(TEXT("widget_name"), WidgetName);
+		BindingObj->SetStringField(TEXT("property_path"), PropertyPath);
+		BindingObj->SetStringField(TEXT("bound_function"), BoundFunctionName.ToString());
+		BindingObj->SetBoolField(TEXT("is_pure"), bIsPure);
+		BindingObj->SetStringField(TEXT("return_type"), ReturnType);
+		Result.Add(MakeShared<FJsonValueObject>(BindingObj));
+	}
+
 	return Result;
 }
 
-TSharedPtr<FJsonObject> BuildWidgetDependencies(const TSharedPtr<FJsonObject>& Data)
+TSharedPtr<FJsonObject> BuildWidgetDependencies(const TSharedPtr<FJsonObject>& Data, UBlueprint* BP)
 {
-	(void)Data;
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-	TArray<TSharedPtr<FJsonValue>> ReferencesWidgets;
+	TSet<FString> ReferencesWidgetPaths;
 	TArray<TSharedPtr<FJsonValue>> ReferencedByWidgets;
+
+	if (Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* WidgetsArray = nullptr;
+		if (Data->TryGetArrayField(TEXT("widgets"), WidgetsArray) && WidgetsArray)
+		{
+			for (const TSharedPtr<FJsonValue>& WidgetVal : *WidgetsArray)
+			{
+				const TSharedPtr<FJsonObject> WidgetObj = WidgetVal->AsObject();
+				if (!WidgetObj.IsValid() || !WidgetObj->HasField(TEXT("entry_widget_class")))
+				{
+					continue;
+				}
+
+				const FString EntryWidgetClassPath = WidgetObj->GetStringField(TEXT("entry_widget_class"));
+				if (!EntryWidgetClassPath.IsEmpty())
+				{
+					ReferencesWidgetPaths.Add(EntryWidgetClassPath);
+				}
+			}
+		}
+	}
+
+	if (BP)
+	{
+		static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
+		for (const FBPVariableDescription& VarDesc : BP->NewVariables)
+		{
+			if (VarDesc.VarType.PinCategory == UEdGraphSchema_K2::PC_Class)
+			{
+				const UClass* PinClass = Cast<UClass>(VarDesc.VarType.PinSubCategoryObject.Get());
+				if (UserWidgetClass && PinClass && PinClass->IsChildOf(UserWidgetClass))
+				{
+					if (!VarDesc.DefaultValue.IsEmpty())
+					{
+						ReferencesWidgetPaths.Add(VarDesc.DefaultValue);
+					}
+					else
+					{
+						ReferencesWidgetPaths.Add(PinClass->GetPathName());
+					}
+				}
+			}
+		}
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ReferencesWidgets;
+	for (const FString& Path : ReferencesWidgetPaths)
+	{
+		ReferencesWidgets.Add(MakeShared<FJsonValueString>(Path));
+	}
+
 	Result->SetArrayField(TEXT("references_widgets"), ReferencesWidgets);
 	Result->SetArrayField(TEXT("referenced_by_widgets"), ReferencedByWidgets);
 	return Result;
@@ -1233,21 +1524,40 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		FuncObj->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
 		FuncObj->SetBoolField(TEXT("has_latent_nodes"), HasLatentNodesInGraph(Graph));
 		FuncObj->SetBoolField(TEXT("is_pure"), IsFunctionPure(Graph));
-		FuncObj->SetStringField(TEXT("access"), TEXT("public"));
 
 		TArray<TSharedPtr<FJsonValue>> InputsArr;
 		TArray<TSharedPtr<FJsonValue>> OutputsArr;
 		TArray<TSharedPtr<FJsonValue>> LocalVariablesArr;
+		FString AccessSpec = TEXT("public");
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
 			if (const UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(Node))
 			{
+				const int32 FunctionFlags = Entry->GetFunctionFlags();
+				if ((FunctionFlags & FUNC_Private) != 0)
+				{
+					AccessSpec = TEXT("private");
+				}
+				else if ((FunctionFlags & FUNC_Protected) != 0)
+				{
+					AccessSpec = TEXT("protected");
+				}
+
 				for (const TSharedPtr<FUserPinInfo>& Pin : Entry->UserDefinedPins)
 				{
 					TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
 					PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
 					PinObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Pin->PinType));
 					InputsArr.Add(MakeShared<FJsonValueObject>(PinObj));
+				}
+
+				for (const FBPVariableDescription& LocalVar : Entry->LocalVariables)
+				{
+					TSharedPtr<FJsonObject> LocalObj = MakeShared<FJsonObject>();
+					LocalObj->SetStringField(TEXT("name"), LocalVar.VarName.ToString());
+					LocalObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(LocalVar.VarType));
+					LocalObj->SetStringField(TEXT("default_value"), LocalVar.DefaultValue);
+					LocalVariablesArr.Add(MakeShared<FJsonValueObject>(LocalObj));
 				}
 			}
 			else if (const UK2Node_FunctionResult* ResultNode = Cast<UK2Node_FunctionResult>(Node))
@@ -1261,6 +1571,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 				}
 			}
 		}
+		FuncObj->SetStringField(TEXT("access"), AccessSpec);
 		FuncObj->SetArrayField(TEXT("inputs"), InputsArr);
 		FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
 		FuncObj->SetArrayField(TEXT("local_variables"), LocalVariablesArr);
@@ -1302,7 +1613,8 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 			CompObj->SetStringField(TEXT("class_path"), SCSNode->ComponentTemplate->GetClass()->GetPathName());
 			CompObj->SetBoolField(TEXT("is_root"), SCSNode == RootNode);
 			CompObj->SetBoolField(TEXT("is_scene_component"), SCSNode->ComponentTemplate->IsA<USceneComponent>());
-			CompObj->SetBoolField(TEXT("is_inherited"), false);
+			const bool bIsInherited = !SCSNode->ParentComponentOwnerClassName.IsNone();
+			CompObj->SetBoolField(TEXT("is_inherited"), bIsInherited);
 			CompObj->SetStringField(TEXT("parent_component"), SCSNode->ParentComponentOrVariableName.ToString());
 			CompObj->SetStringField(TEXT("attach_socket"), SCSNode->AttachToName.ToString());
 
@@ -1670,7 +1982,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 	Data->SetArrayField(TEXT("referenced_user_types"), BuildReferencedUserTypes(BP));
 	Data->SetArrayField(TEXT("cdo_overrides"), BuildCDOOverrides(BP));
 	Data->SetArrayField(TEXT("instanced_subobjects"), BuildInstancedSubobjects(BP));
-	Data->SetObjectField(TEXT("widget_dependencies"), BuildWidgetDependencies(Data));
+	Data->SetObjectField(TEXT("widget_dependencies"), BuildWidgetDependencies(Data, BP));
 
 	Data->SetArrayField(TEXT("entity_summary"), BuildEntitySummary(Data));
 	Data->SetObjectField(TEXT("complexity_metrics"), BuildComplexityMetrics(BP));
