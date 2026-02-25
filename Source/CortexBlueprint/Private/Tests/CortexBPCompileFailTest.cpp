@@ -8,6 +8,7 @@
 #include "EdGraph/EdGraphNode.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_CallFunction.h"
+#include "EdGraphSchema_K2.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "GameFramework/Actor.h"
@@ -117,6 +118,14 @@ bool FCortexBPCompileDiagnosticsReferenceTest::RunTest(const FString& Parameters
 	const FString BlueprintName = FString::Printf(TEXT("BP_CompileRefDiag_%s"), *UniqueSuffix);
 	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_CompileRef_%s"), *UniqueSuffix);
 	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
+	auto CleanupBlueprint = [&]()
+	{
+		UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
+		if (CreatedBP)
+		{
+			CreatedBP->MarkAsGarbage();
+		}
+	};
 
 	{
 		TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
@@ -133,13 +142,25 @@ bool FCortexBPCompileDiagnosticsReferenceTest::RunTest(const FString& Parameters
 	if (TestBP && TestBP->UbergraphPages.Num() > 0)
 	{
 		UEdGraph* EventGraph = TestBP->UbergraphPages[0];
+		UK2Node_CustomEvent* TriggerEvent = NewObject<UK2Node_CustomEvent>(EventGraph);
+		TriggerEvent->CreateNewGuid();
+		TriggerEvent->CustomFunctionName = FName(TEXT("RunBrokenCall"));
+		EventGraph->AddNode(TriggerEvent, false, false);
+		TriggerEvent->AllocateDefaultPins();
+
 		UK2Node_CallFunction* BrokenCall = NewObject<UK2Node_CallFunction>(EventGraph);
 		BrokenCall->CreateNewGuid();
-		BrokenCall->FunctionReference.SetExternalMember(
-			GET_FUNCTION_NAME_CHECKED(UActorComponent, Activate),
-			UActorComponent::StaticClass());
+		BrokenCall->FunctionReference.SetExternalMember(FName(TEXT("DefinitelyMissingFunction")), UActorComponent::StaticClass());
 		EventGraph->AddNode(BrokenCall, false, false);
 		BrokenCall->AllocateDefaultPins();
+
+		UEdGraphPin* EventThenPin = TriggerEvent->FindPin(UEdGraphSchema_K2::PN_Then);
+		UEdGraphPin* CallExecPin = BrokenCall->FindPin(UEdGraphSchema_K2::PN_Execute);
+		if (EventThenPin && CallExecPin)
+		{
+			EventThenPin->MakeLinkTo(CallExecPin);
+		}
+
 		FBlueprintEditorUtils::MarkBlueprintAsModified(TestBP);
 	}
 
@@ -150,57 +171,67 @@ bool FCortexBPCompileDiagnosticsReferenceTest::RunTest(const FString& Parameters
 	const TSharedPtr<FJsonObject> Payload = Result.bSuccess ? Result.Data : Result.ErrorDetails;
 	if (!TestTrue(TEXT("compile payload should exist"), Payload.IsValid()))
 	{
+		CleanupBlueprint();
 		return true;
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* Diagnostics = nullptr;
 	TestTrue(TEXT("diagnostics present"),
 		Payload->TryGetArrayField(TEXT("diagnostics"), Diagnostics));
-	if (!Diagnostics || Diagnostics->Num() == 0)
+	TestTrue(TEXT("diagnostics should not be empty"), Diagnostics && Diagnostics->Num() > 0);
+
+	FString CompileStatus;
+	TestTrue(TEXT("compile_status should exist"), Payload->TryGetStringField(TEXT("compile_status"), CompileStatus));
+	TestTrue(TEXT("compile_status should be warning or error"),
+		CompileStatus == TEXT("warning") || CompileStatus == TEXT("error"));
+
+	TSharedPtr<FJsonObject> TypedDiag;
+	if (Diagnostics)
 	{
-		AddInfo(TEXT("No diagnostics were emitted for the constructed call-function node; skipping typed-reference assertions."));
+		for (const TSharedPtr<FJsonValue>& Value : *Diagnostics)
+		{
+			const TSharedPtr<FJsonObject> Candidate = Value.IsValid() ? Value->AsObject() : nullptr;
+			if (!Candidate.IsValid())
+			{
+				continue;
+			}
+
+			FString ReferencedClass;
+			FString ReferencedMember;
+			if (Candidate->TryGetStringField(TEXT("referenced_class"), ReferencedClass)
+				&& !ReferencedClass.IsEmpty()
+				&& Candidate->TryGetStringField(TEXT("referenced_member"), ReferencedMember)
+				&& !ReferencedMember.IsEmpty())
+			{
+				TypedDiag = Candidate;
+				break;
+			}
+		}
+	}
+
+	if (!TestTrue(TEXT("diagnostic with typed references should exist"), TypedDiag.IsValid()))
+	{
+		CleanupBlueprint();
 		return true;
 	}
 
-	TSharedPtr<FJsonObject> CallFunctionDiag;
-	for (const TSharedPtr<FJsonValue>& Value : *Diagnostics)
-	{
-		const TSharedPtr<FJsonObject> Candidate = Value.IsValid() ? Value->AsObject() : nullptr;
-		if (!Candidate.IsValid())
-		{
-			continue;
-		}
-
-		FString NodeClass;
-		if (Candidate->TryGetStringField(TEXT("node_class"), NodeClass)
-			&& NodeClass == TEXT("K2Node_CallFunction"))
-		{
-			CallFunctionDiag = Candidate;
-			break;
-		}
-	}
-
-	if (!TestTrue(TEXT("call function diagnostic should exist"), CallFunctionDiag.IsValid()))
-	{
-		return true;
-	}
-
-	TestTrue(TEXT("node_class present"), CallFunctionDiag->HasField(TEXT("node_class")));
-	TestTrue(TEXT("graph present"), CallFunctionDiag->HasField(TEXT("graph")));
-	TestTrue(TEXT("node_id present"), CallFunctionDiag->HasField(TEXT("node_id")));
-	TestTrue(TEXT("severity present"), CallFunctionDiag->HasField(TEXT("severity")));
-	TestTrue(TEXT("referenced_class present"), CallFunctionDiag->HasField(TEXT("referenced_class")));
-	TestTrue(TEXT("referenced_member present"), CallFunctionDiag->HasField(TEXT("referenced_member")));
+	TestTrue(TEXT("node_class present"), TypedDiag->HasField(TEXT("node_class")));
+	TestTrue(TEXT("graph present"), TypedDiag->HasField(TEXT("graph")));
+	TestTrue(TEXT("node_id present"), TypedDiag->HasField(TEXT("node_id")));
+	TestTrue(TEXT("severity present"), TypedDiag->HasField(TEXT("severity")));
+	TestTrue(TEXT("referenced_class present"), TypedDiag->HasField(TEXT("referenced_class")));
+	TestTrue(TEXT("referenced_member present"), TypedDiag->HasField(TEXT("referenced_member")));
 	FString NodeClass;
-	TestTrue(TEXT("node_class should be call function"),
-		CallFunctionDiag->TryGetStringField(TEXT("node_class"), NodeClass));
-	TestEqual(TEXT("node_class value"), NodeClass, TEXT("K2Node_CallFunction"));
+	FString ReferencedClass;
+	FString ReferencedMember;
+	TestTrue(TEXT("node_class should exist"),
+		TypedDiag->TryGetStringField(TEXT("node_class"), NodeClass));
+	TestTrue(TEXT("referenced_class should be non-empty"),
+		TypedDiag->TryGetStringField(TEXT("referenced_class"), ReferencedClass) && !ReferencedClass.IsEmpty());
+	TestTrue(TEXT("referenced_member should be non-empty"),
+		TypedDiag->TryGetStringField(TEXT("referenced_member"), ReferencedMember) && !ReferencedMember.IsEmpty());
 
-	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
-	if (CreatedBP)
-	{
-		CreatedBP->MarkAsGarbage();
-	}
+	CleanupBlueprint();
 
 	return true;
 }

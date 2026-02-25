@@ -265,9 +265,21 @@ namespace
 			return;
 		}
 
+		const UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNode(Node);
+		UClass* SelfScope = nullptr;
+		if (Blueprint)
+		{
+			SelfScope = Blueprint->GeneratedClass ? Blueprint->GeneratedClass : Blueprint->SkeletonGeneratedClass;
+		}
+
 		if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
 		{
-			if (UClass* ParentClass = CallNode->FunctionReference.GetMemberParentClass())
+			UClass* ParentClass = CallNode->FunctionReference.GetMemberParentClass(SelfScope);
+			if (!ParentClass)
+			{
+				ParentClass = CallNode->FunctionReference.GetMemberParentClass();
+			}
+			if (ParentClass)
 			{
 				Diagnostic->SetStringField(TEXT("referenced_class"), ParentClass->GetName());
 			}
@@ -282,7 +294,12 @@ namespace
 
 		if (const UK2Node_Variable* VariableNode = Cast<UK2Node_Variable>(Node))
 		{
-			if (UClass* ParentClass = VariableNode->VariableReference.GetMemberParentClass())
+			UClass* ParentClass = VariableNode->VariableReference.GetMemberParentClass(SelfScope);
+			if (!ParentClass)
+			{
+				ParentClass = VariableNode->VariableReference.GetMemberParentClass();
+			}
+			if (ParentClass)
 			{
 				Diagnostic->SetStringField(TEXT("referenced_class"), ParentClass->GetName());
 			}
@@ -297,7 +314,12 @@ namespace
 
 		if (const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
 		{
-			if (UClass* ParentClass = EventNode->EventReference.GetMemberParentClass())
+			UClass* ParentClass = EventNode->EventReference.GetMemberParentClass(SelfScope);
+			if (!ParentClass)
+			{
+				ParentClass = EventNode->EventReference.GetMemberParentClass();
+			}
+			if (ParentClass)
 			{
 				Diagnostic->SetStringField(TEXT("referenced_class"), ParentClass->GetName());
 			}
