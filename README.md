@@ -2,15 +2,15 @@
 
 **Modular MCP Plugin for AI-Powered Unreal Engine Development**
 
-UnrealCortex turns AI into an Unreal Engine co-developer. Instead of just generating code snippets you paste in, your AI assistant can directly see what's inside the editor — DataTables, Blueprint graphs, UMG widgets, gameplay tags — and modify them in place. It understands the project the way you do.
+UnrealCortex turns AI into an Unreal Engine co-developer. Instead of just generating code snippets you paste in, your AI assistant can directly see what's inside the editor — DataTables, Blueprint graphs, UMG widgets, materials, level actors, gameplay state — and modify them in place. It understands the project the way you do.
 
 Built on the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP), UnrealCortex bridges the gap between AI capabilities and the Unreal Editor. The AI doesn't need screenshots or exported files. It reads your project's live state, reasons about it, and makes changes — with full undo/redo support.
 
-> **Status:** v0.1.0 Beta — Core platform and Data domain are stable. Blueprint, Graph, and UMG domains are in active development.
+> **Status:** v0.1.0 Beta — All 10 domain modules shipped and tested.
 
 ## The Problem
 
-AI assistants are powerful at reasoning about code, but they're blind inside Unreal Engine. They can't see your DataTable schemas, can't inspect Blueprint node graphs, can't read widget hierarchies. Every interaction requires you to manually describe or export what's in the editor, interpret the AI's response, and apply changes by hand.
+AI assistants are powerful at reasoning about code, but they're blind inside Unreal Engine. They can't see your DataTable schemas, can't inspect Blueprint node graphs, can't read widget hierarchies, can't query what actors are in a level. Every interaction requires you to manually describe or export what's in the editor, interpret the AI's response, and apply changes by hand.
 
 That back-and-forth is the bottleneck. The AI is fast; the human bridge between AI and editor is slow.
 
@@ -22,16 +22,18 @@ UnrealCortex removes the bridge. Your AI assistant connects directly to the runn
 - **"Add a Health field to the CharacterStats table"** — It modifies the row, saves the asset, and the change appears in the editor
 - **"Show me the event graph of BP_Enemy"** — It reads the node graph with pin types, connections, and coordinates
 - **"Create a HUD widget with a health bar and ammo counter"** — It builds the widget hierarchy, sets properties, and wires up animations
-- **"Bulk import these 200 items into the loot table"** — It imports with validation, dry-run support, and upsert/replace modes
+- **"Place 20 torch actors along this hallway"** — It spawns actors, sets transforms, and organizes them into folders
+- **"Play the game and verify the door opens when the player approaches"** — It starts PIE, moves the player, and asserts game state
 
 The AI operates at the same level as the editor — not through file exports, not through screenshots, but through direct structured access to Unreal's object system.
 
 ## How It Works
 
 ```
-AI Assistant  ←→  MCP Server (Python)  ←→  TCP  ←→  CortexCore (C++)  ←→  Unreal Editor
-                                                          ↓
-                                              Domain Modules (Data, Graph, BP, UMG)
+AI Assistant  <-->  MCP Server (Python)  <-->  TCP  <-->  CortexCore (C++)  <-->  Unreal Editor
+                                                              |
+                                          Domain Modules (Data, Graph, Blueprint, UMG,
+                                           Material, Level, Editor, QA, Reflect)
 ```
 
 1. **CortexCore** runs inside the editor as a C++ plugin, providing a TCP server and generic UStruct-to-JSON serialization
@@ -82,6 +84,57 @@ AI can inspect and modify materials, material instances, and parameter collectio
 **Material graphs:** List expression nodes, inspect connections, add/remove nodes, and wire them together.
 **Parameter collections:** Create and manage material parameter collections — add, remove, and set collection parameters for global material control.
 
+### Level Design — CortexLevel
+
+AI can build and organize levels through direct actor manipulation — no manual placement required.
+
+**Actor lifecycle:** Spawn actors by class, delete, duplicate, rename. Set transforms with position, rotation, and scale. Query bounding boxes for spatial reasoning.
+**Discovery:** List all actors, find by class, tag, or name. Select actors programmatically.
+**Components:** Add, remove, list components. Get and set any component property via reflection.
+**Organization:** Assign actors to folders, set gameplay tags, group/ungroup, attach/detach hierarchies.
+**Streaming:** List, load, and unload sublevels. Control sublevel visibility. Manage data layers.
+**Batch operations:** `level_batch` composite command for multi-step scene construction in a single call.
+
+### Editor Control — CortexEditor
+
+AI can drive the editor itself — starting play sessions, capturing screenshots, and injecting input.
+
+**PIE lifecycle:** Start, stop, pause, resume, and restart Play-In-Editor sessions.
+**Viewport:** Get and set camera position/rotation, capture screenshots, switch render modes.
+**Input injection:** Press keys, run multi-step input sequences with configurable timing between actions.
+**Editor management:** Shutdown, restart the editor. Execute console commands. Adjust time dilation.
+**Diagnostics:** Query world info, viewport state, and recent log output.
+
+### Gameplay QA — CortexQA
+
+AI can play-test your game — moving through the world, interacting with objects, and verifying behavior.
+
+**World queries:** List actors with details, inspect specific actors and the player character at runtime.
+**Game actions:** Move the player to locations, interact with objects, look at targets, teleport to coordinates.
+**Assertions:** Assert game state conditions, wait for conditions with timeout, record named test steps.
+**Scenario engine:** `run_scenario_inline` executes multi-step test sequences — move here, interact with that, verify this state — in a single declarative call.
+**Reproducibility:** Set random seed for deterministic test runs.
+
+### Project Analysis — CortexReflect
+
+AI can understand your project's class architecture — both C++ and Blueprint — without reading source files.
+
+**Project scanning:** Scan the project to build a class hierarchy cache from loaded modules and Blueprint assets.
+**Class queries:** Query any class for its properties, functions, metadata, and parent chain. Get full context (self + parent + children) in one call.
+**Hierarchy navigation:** Walk the class tree to understand inheritance relationships across C++ and Blueprint boundaries.
+**Override detection:** Find which Blueprint classes override specific C++ base functions.
+**Usage search:** Search for references and usages of a class across all loaded Blueprint assets.
+
+## Known Limitations
+
+These are the current boundaries of the beta. They're on the roadmap but not yet resolved:
+
+- **Widget animation tracks:** Named animations can be created and listed, but property track binding and keyframe creation are not yet implemented
+- **Blueprint compile diagnostics:** `bp.compile` returns success/failure but error locations are unstructured text, not node-level diagnostics
+- **Concurrent input sequences:** `run_input_sequence` works correctly for single-agent use; concurrent sequences from multiple agents may route callbacks incorrectly
+- **Reflect coverage:** `query_class_hierarchy` and `find_usages` only see Blueprint classes loaded in memory; unloaded Blueprints are silently skipped
+- **Batch pipeline:** No transactional rollback; if a batch step fails, completed steps are not undone
+
 ## Getting Started
 
 ### Requirements
@@ -112,9 +165,8 @@ Add to your `.mcp.json` (or equivalent MCP config):
 {
   "mcpServers": {
     "cortex_mcp": {
-      "type": "stdio",
       "command": "uv",
-      "args": ["run", "--directory", "Plugins/UnrealCortex/MCP", "cortex_mcp"]
+      "args": ["run", "--directory", "Plugins/UnrealCortex/MCP", "cortex-mcp"]
     }
   }
 }
@@ -127,6 +179,24 @@ Add to your `.mcp.json` (or equivalent MCP config):
 3. Ask it anything — "What DataTables are in this project?" is a good first test
 
 The editor writes a port file on startup (`Saved/CortexPort.txt`), the MCP server discovers it automatically. Multiple editor instances get their own ports — no conflicts.
+
+### Recommended: Install Cortex Toolkit
+
+UnrealCortex gives AI the raw tools. **[Cortex Toolkit](https://github.com/etelyatn/cortex-toolkit)** teaches it how to use them well — with domain-specific skills, specialist agents, and project memory.
+
+```bash
+claude plugin add etelyatn/cortex-toolkit/cortex-core      # Required
+claude plugin add etelyatn/cortex-toolkit/cortex-data       # Pick your domains
+# ... see Cortex Toolkit section below for all plugins
+```
+
+Then run:
+```
+/cortex-init       # Setup project memory and MCP config
+/cortex-start      # Guided onboarding — verifies connection, walks you through your first task
+```
+
+Run `/cortex-help` anytime to discover commands or get contextual "what to do next" suggestions.
 
 ## Architecture
 
@@ -145,9 +215,9 @@ void FCortexDataModule::StartupModule()
 }
 ```
 
-**Domain isolation:** Modules depend only on CortexCore, never on each other. New domains don't risk breaking existing ones.
+**Domain isolation:** Modules depend only on CortexCore (and shared infrastructure modules like CortexGraph or CortexEditor), never on each other. New domains don't risk breaking existing ones.
 
-**Generic serialization:** CortexCore's reflection-based serializer handles any UStruct → JSON conversion. Domain modules focus on logic, not formatting.
+**Generic serialization:** CortexCore's reflection-based serializer handles any UStruct to JSON conversion. Domain modules focus on logic, not formatting.
 
 **Game Thread safety:** All UObject operations dispatch to the Game Thread automatically. Domain authors don't think about threading.
 
@@ -155,14 +225,15 @@ void FCortexDataModule::StartupModule()
 
 ## What's Next
 
-The modular architecture exists so that AI capabilities can expand domain by domain. As each module ships, AI gains deeper access to another part of Unreal Engine development:
+The modular architecture exists so that AI capabilities can expand domain by domain. Coming up:
 
 | Domain | What AI will be able to do |
 |--------|---------------------------|
 | **CortexAnimation** | Work with animation montages, state machines, blend spaces |
-| **CortexLevel** | Inspect and manipulate level actors, transforms, components |
+| **CortexNiagara** | Modify particle system parameters, emitter configuration |
+| **Enhanced migration tooling** | Multi-Blueprint orchestrated Blueprint-to-C++ migration workflows |
 
-The long-term vision: an AI that can work across the full breadth of Unreal Engine — data, logic, UI, materials, animation, levels — the same way a senior developer navigates between subsystems. Not replacing the developer, but eliminating the tedious translation layer between "what the AI knows how to do" and "what the editor needs."
+The long-term vision: an AI that can work across the full breadth of Unreal Engine — data, logic, UI, materials, animation, levels, testing — the same way a senior developer navigates between subsystems. Not replacing the developer, but eliminating the tedious translation layer between "what the AI knows how to do" and "what the editor needs."
 
 ## Cortex Toolkit
 
@@ -184,11 +255,14 @@ Install only what you need — each domain is a separate plugin:
 
 | Plugin | Domain | Key Skills | Agents |
 |--------|--------|------------|--------|
-| **cortex-core** | Foundation | cortex-init, cortex-build, cortex-test, cortex-status | Game Architect, Game Designer, Blueprint Debugger |
+| **cortex-core** | Foundation | cortex-init, cortex-start, cortex-help, cortex-build, cortex-test, cortex-status, cortex-editor | Game Architect, Game Designer, Blueprint Debugger, Test Debugger |
 | **cortex-data** | DataTables, DataAssets, Tags | cortex-data-review, cortex-data-create | Game Balancer, Data Architect |
 | **cortex-blueprint** | Blueprints, Graphs | cortex-bp-review, cortex-bp-create | Blueprint Developer, C++ Migration Specialist |
 | **cortex-ui** | UMG Widgets | cortex-ui-review, cortex-ui-create | UI Developer |
 | **cortex-material** | Materials, Instances, Collections | cortex-material-review, cortex-material-create | Material Designer |
+| **cortex-level** | Actors, Components, Streaming | cortex-level-review, cortex-level-create | Level Designer |
+| **cortex-qa** | Gameplay QA, Scenarios | cortex-qa-init, cortex-qa-run | QA Engineer |
+| **cortex-reflect** | Class Hierarchy, Cross-refs | cortex-reflect | Project Analyzer |
 
 ### Install
 
@@ -199,9 +273,12 @@ claude plugin add etelyatn/cortex-toolkit/cortex-data       # Pick your domains
 claude plugin add etelyatn/cortex-toolkit/cortex-blueprint
 claude plugin add etelyatn/cortex-toolkit/cortex-ui
 claude plugin add etelyatn/cortex-toolkit/cortex-material
+claude plugin add etelyatn/cortex-toolkit/cortex-level
+claude plugin add etelyatn/cortex-toolkit/cortex-qa
+claude plugin add etelyatn/cortex-toolkit/cortex-reflect
 ```
 
-After installation, run `/cortex-init` to set up project memory and configure MCP.
+After installation, run `/cortex-init` to set up project memory, then `/cortex-start` for guided onboarding. Run `/cortex-help` anytime to discover commands.
 
 ### Project Memory
 
@@ -209,13 +286,16 @@ The toolkit creates a `.cortex/` directory in your project root:
 
 ```
 .cortex/
-├── config.yaml          ← engine path, active domains
-├── context.md           ← shared project knowledge (read every session)
+├── config.yaml          <- engine path, active domains
+├── context.md           <- shared project knowledge (read every session)
 └── domains/
-    ├── data.md          ← table schemas, balance rules
-    ├── blueprints.md    ← class hierarchy, conventions
-    ├── umg.md           ← screen inventory, style guide
-    └── material.md      ← material conventions, instance hierarchies
+    ├── data.md          <- table schemas, balance rules
+    ├── blueprints.md    <- class hierarchy, conventions
+    ├── material.md      <- material conventions, instance hierarchies
+    ├── umg.md           <- screen inventory, style guide
+    ├── level.md         <- actor conventions, level structure
+    ├── qa.md            <- test scenarios, assertion patterns
+    └── reflect.md       <- class hierarchy notes, scan patterns
 ```
 
 Fill these files with your project's specifics. Agents read them at the start of every session, so they work within your conventions without repeated explanations.
