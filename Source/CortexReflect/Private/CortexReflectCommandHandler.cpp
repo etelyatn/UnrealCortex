@@ -39,6 +39,11 @@ FCortexCommandResult FCortexReflectCommandHandler::Execute(
 		return FCortexReflectOps::GetDependencies(Params);
 	}
 
+	if (Command == TEXT("get_referencers"))
+	{
+		return FCortexReflectOps::GetReferencers(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown reflect command: %s"), *Command)
@@ -54,5 +59,6 @@ TArray<FCortexCommandInfo> FCortexReflectCommandHandler::GetSupportedCommands() 
 		{ TEXT("find_usages"), TEXT("Find cross-references to a symbol") },
 		{ TEXT("search"), TEXT("Search classes by pattern") },
 		{ TEXT("get_dependencies"), TEXT("Get asset dependencies from Asset Registry") },
+		{ TEXT("get_referencers"), TEXT("Get asset referencers from Asset Registry") },
 	};
 }

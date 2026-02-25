@@ -1115,6 +1115,97 @@ FCortexCommandResult FCortexReflectOps::GetDependencies(const TSharedPtr<FJsonOb
 	return FCortexCommandRouter::Success(Result);
 }
 
+FCortexCommandResult FCortexReflectOps::GetReferencers(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("asset_path parameter is required")
+		);
+	}
+
+	AssetPath = FPackageName::ObjectPathToPackageName(AssetPath);
+
+	FString CategoryStr;
+	Params->TryGetStringField(TEXT("category"), CategoryStr);
+
+	int32 Limit = 100;
+	Params->TryGetNumberField(TEXT("limit"), Limit);
+	if (Limit <= 0)
+	{
+		Limit = 100;
+	}
+
+	UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All;
+	if (CategoryStr == TEXT("package"))
+	{
+		Category = UE::AssetRegistry::EDependencyCategory::Package;
+	}
+
+	IAssetRegistry& AssetRegistry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	TArray<FAssetDependency> Referencers;
+	AssetRegistry.GetReferencers(FAssetIdentifier(FName(*AssetPath)), Referencers, Category);
+
+	TArray<TSharedPtr<FJsonValue>> ReferencerArray;
+	for (const FAssetDependency& Referencer : Referencers)
+	{
+		if (ReferencerArray.Num() >= Limit)
+		{
+			break;
+		}
+
+		const FString PackageName = Referencer.AssetId.PackageName.ToString();
+		if (PackageName.IsEmpty())
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> ReferencerObj = MakeShared<FJsonObject>();
+		ReferencerObj->SetStringField(TEXT("package"), PackageName);
+
+		const bool bIsCode = PackageName.StartsWith(TEXT("/Script/"));
+		ReferencerObj->SetBoolField(TEXT("is_code"), bIsCode);
+
+		if (bIsCode)
+		{
+			const FString ModuleName = FPackageName::GetShortName(FName(*PackageName));
+			ReferencerObj->SetStringField(TEXT("module"), ModuleName);
+		}
+		else
+		{
+			TArray<FAssetData> Assets;
+			AssetRegistry.GetAssetsByPackageName(FName(*PackageName), Assets, true);
+			if (Assets.Num() > 0)
+			{
+				ReferencerObj->SetStringField(
+					TEXT("asset_class"),
+					Assets[0].AssetClassPath.GetAssetName().ToString()
+				);
+			}
+		}
+
+		const bool bHard = EnumHasAnyFlags(
+			Referencer.Properties,
+			UE::AssetRegistry::EDependencyProperty::Hard
+		);
+		ReferencerObj->SetStringField(TEXT("type"), bHard ? TEXT("hard") : TEXT("soft"));
+
+		ReferencerArray.Add(MakeShared<FJsonValueObject>(ReferencerObj));
+	}
+
+	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("asset_path"), AssetPath);
+	Result->SetArrayField(TEXT("referencers"), ReferencerArray);
+	Result->SetNumberField(TEXT("total"), ReferencerArray.Num());
+	Result->SetNumberField(TEXT("total_unfiltered"), Referencers.Num());
+
+	return FCortexCommandRouter::Success(Result);
+}
+
 FCortexCommandResult FCortexReflectOps::Search(const TSharedPtr<FJsonObject>& Params)
 {
 	FString Pattern;
