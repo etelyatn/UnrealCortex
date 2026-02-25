@@ -65,14 +65,16 @@ Rebuild your project. All 10 modules load automatically at `PostEngineInit` — 
 
 ### Step 2 — Set Up the MCP Server
 
-Run once to install Python dependencies:
+Install Python dependencies (required regardless of AI assistant):
 
 ```bash
 cd Plugins/UnrealCortex/MCP
 uv sync
 ```
 
-Add to your `.mcp.json` (relative to your project root — always open your AI assistant from the project directory):
+**If you're using Cortex Toolkit with Claude Code** — skip the rest of this step. `/cortex-init` (Step 3) will write your `.mcp.json` automatically.
+
+**If you're using another AI assistant (Cursor, etc.) or setting up manually**, add to your `.mcp.json` at your project root:
 
 ```json
 {
@@ -87,14 +89,14 @@ Add to your `.mcp.json` (relative to your project root — always open your AI a
 
 Open your project in the Unreal Editor. CortexCore writes `Saved/CortexPort.txt` on startup — the MCP server discovers it automatically. If the editor is not open, MCP tool calls will return an `EDITOR_NOT_RUNNING` error. If you restart the editor, the MCP server picks up the new port file automatically.
 
-### Step 3 — Install Cortex Toolkit
+### Step 3 — Install Cortex Toolkit *(Claude Code only)*
 
 > [!NOTE]
-> UnrealCortex provides the raw MCP tools. **[Cortex Toolkit](https://github.com/etelyatn/cortex-toolkit)** adds domain-specific skills, specialist agents, and project memory so the AI knows *when* and *how* to use them. Recommended for all workflows.
+> **[Cortex Toolkit](https://github.com/etelyatn/cortex-toolkit)** is currently available for **Claude Code only**. It adds domain-specific skills, specialist agents, and project memory — and handles MCP configuration automatically via `/cortex-init`. Recommended if you use Claude Code.
 
-**Option A — Claude Code marketplace:**
+**Option A — Marketplace (browse and install only the domains you need):**
 
-Run this slash command inside Claude Code to add the marketplace, then browse and install only the domains you need:
+Run inside Claude Code:
 ```
 /plugin marketplace add etelyatn/cortex-toolkit
 ```
@@ -112,7 +114,7 @@ claude plugin add etelyatn/cortex-toolkit/cortex-qa
 claude plugin add etelyatn/cortex-toolkit/cortex-reflect
 ```
 
-Then run `/cortex-start` inside Claude Code — it checks your setup, verifies the editor connection, and walks you through your first task. Run once to initialize your project; use `/cortex-help` during any session for contextual suggestions. If the connection check fails, confirm the Unreal Editor is open with the plugin loaded.
+Then run `/cortex-init` inside Claude Code to configure your project and set up `.mcp.json`. After that, `/cortex-start` verifies the connection and walks you through your first task. Use `/cortex-help` anytime for contextual suggestions.
 
 ---
 
