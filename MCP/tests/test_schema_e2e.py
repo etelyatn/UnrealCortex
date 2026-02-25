@@ -7,7 +7,7 @@ import pytest
 
 from cortex_mcp.schema_generator import generate_schema, SCHEMA_VERSION
 
-
+@pytest.mark.e2e
 class TestSchemaE2E:
     """End-to-end schema generation against live Unreal Editor."""
 

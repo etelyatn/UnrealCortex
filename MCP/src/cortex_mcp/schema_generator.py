@@ -536,9 +536,14 @@ def generate_schema(
             atomic_write(schema_dir / "data.md", data_md)
             data_summary = collected["summary"]
             result["generated"]["data"] = str(schema_dir / "data.md")
+        except (ConnectionError, RuntimeError) as e:
+            logger.error("Failed to generate data schema: %s", e)
+            result["errors"].append(f"data: {e}")
+            raise
         except Exception as e:
             logger.error("Failed to generate data schema: %s", e)
             result["errors"].append(f"data: {e}")
+            raise RuntimeError(f"Failed to generate data schema: {e}") from e
 
     # Future: if domain in ("all", "blueprints"): ...
 

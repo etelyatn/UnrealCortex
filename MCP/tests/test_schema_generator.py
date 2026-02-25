@@ -490,6 +490,27 @@ class TestGenerateSchema(unittest.TestCase):
             self.assertIn("engine: 5.6", catalog_content)
             self.assertIn("plugin: 1.2.0", catalog_content)
 
+    def test_generate_raises_when_data_domain_unavailable(self):
+        """Connection errors during required domain generation should fail hard."""
+        conn = MagicMock()
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "get_status":
+                return {"success": True, "data": {"engine_version": "5.6", "plugin_version": "1.2.0"}}
+            if command == "data.get_data_catalog":
+                raise ConnectionError("editor unavailable")
+            return {"success": True, "data": {}}
+
+        conn.send_command.side_effect = mock_send
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_dir = Path(tmpdir) / ".cortex" / "schema"
+            with self.assertRaises(ConnectionError):
+                generate_schema(conn, schema_dir, domain="data", project_name="Test")
+
+            self.assertFalse((schema_dir / "data.md").exists())
+            self.assertFalse((schema_dir / "_catalog.md").exists())
+
 
 class TestReadMetaFromFile(unittest.TestCase):
 
