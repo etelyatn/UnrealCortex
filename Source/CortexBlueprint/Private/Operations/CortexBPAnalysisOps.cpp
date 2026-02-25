@@ -396,6 +396,108 @@ bool IsRPCReliable(UBlueprint* BP, const FName& FuncName)
 	return Func && (Func->FunctionFlags & FUNC_NetReliable) != 0;
 }
 
+TArray<TSharedPtr<FJsonValue>> DetectInputBindings(UBlueprint* BP)
+{
+	TArray<TSharedPtr<FJsonValue>> Bindings;
+
+	// Lazy class resolution — returns null if EnhancedInput not used
+	static UClass* EIAClass = nullptr;
+	static UClass* EIAEventClass = nullptr;
+	static bool bClassesResolved = false;
+	if (!bClassesResolved)
+	{
+		EIAClass = FindObject<UClass>(nullptr, TEXT("/Script/InputBlueprintNodes.K2Node_EnhancedInputAction"));
+		if (!EIAClass)
+		{
+			EIAClass = FindFirstObject<UClass>(TEXT("K2Node_EnhancedInputAction"), EFindFirstObjectOptions::None);
+		}
+		EIAEventClass = FindObject<UClass>(nullptr, TEXT("/Script/InputBlueprintNodes.K2Node_EnhancedInputActionEvent"));
+		if (!EIAEventClass)
+		{
+			EIAEventClass = FindFirstObject<UClass>(TEXT("K2Node_EnhancedInputActionEvent"), EFindFirstObjectOptions::None);
+		}
+		bClassesResolved = true;
+	}
+
+	if (!EIAClass && !EIAEventClass) { return Bindings; }
+
+	TArray<UEdGraph*> AllGraphs;
+	BP->GetAllGraphs(AllGraphs);
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		if (!Graph) { continue; }
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) { continue; }
+
+			if (EIAClass && Node->IsA(EIAClass))
+			{
+				// Combined node: access InputAction via reflection
+				FString ActionName;
+				if (FObjectProperty* ActionProp = CastField<FObjectProperty>(
+						Node->GetClass()->FindPropertyByName(TEXT("InputAction"))))
+				{
+					if (const UObject* ActionObj = ActionProp->GetObjectPropertyValue(
+							ActionProp->ContainerPtrToValuePtr<void>(Node)))
+					{
+						ActionName = ActionObj->GetName();
+					}
+				}
+
+				// Iterate output exec pins for trigger types
+				for (UEdGraphPin* Pin : Node->Pins)
+				{
+					if (Pin && Pin->Direction == EGPD_Output &&
+						Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec &&
+						Pin->LinkedTo.Num() > 0)
+					{
+						TSharedPtr<FJsonObject> BindingObj = MakeShared<FJsonObject>();
+						BindingObj->SetStringField(TEXT("action_name"), ActionName);
+						BindingObj->SetStringField(TEXT("trigger_event"), Pin->PinName.ToString());
+						Bindings.Add(MakeShared<FJsonValueObject>(BindingObj));
+					}
+				}
+			}
+			else if (EIAEventClass && Node->IsA(EIAEventClass))
+			{
+				// Single-trigger node: read fields via reflection
+				FString ActionName;
+				FString TriggerEvent;
+
+				if (FObjectProperty* ActionProp = CastField<FObjectProperty>(
+						Node->GetClass()->FindPropertyByName(TEXT("InputAction"))))
+				{
+					if (const UObject* ActionObj = ActionProp->GetObjectPropertyValue(
+							ActionProp->ContainerPtrToValuePtr<void>(Node)))
+					{
+						ActionName = ActionObj->GetName();
+					}
+				}
+
+				if (FByteProperty* TriggerProp = CastField<FByteProperty>(
+						Node->GetClass()->FindPropertyByName(TEXT("TriggerEvent"))))
+				{
+					const uint8 Val = *TriggerProp->ContainerPtrToValuePtr<uint8>(Node);
+					if (const UEnum* TriggerEnum = TriggerProp->GetIntPropertyEnum())
+					{
+						TriggerEvent = TriggerEnum->GetNameStringByValue(Val);
+					}
+				}
+
+				if (!ActionName.IsEmpty())
+				{
+					TSharedPtr<FJsonObject> BindingObj = MakeShared<FJsonObject>();
+					BindingObj->SetStringField(TEXT("action_name"), ActionName);
+					BindingObj->SetStringField(TEXT("trigger_event"), TriggerEvent);
+					Bindings.Add(MakeShared<FJsonValueObject>(BindingObj));
+				}
+			}
+		}
+	}
+
+	return Bindings;
+}
+
 TSharedPtr<FJsonObject> AnalyzeConstructionScript(UBlueprint* BP)
 {
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -1085,6 +1187,9 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		InterfacesArray.Add(MakeShared<FJsonValueObject>(InterfaceObj));
 	}
 	Data->SetArrayField(TEXT("interfaces_implemented"), InterfacesArray);
+
+	// V3: Enhanced Input bindings
+	Data->SetArrayField(TEXT("input_bindings"), DetectInputBindings(BP));
 
 	// V3: Construction script analysis
 	Data->SetObjectField(TEXT("construction_script"), AnalyzeConstructionScript(BP));
