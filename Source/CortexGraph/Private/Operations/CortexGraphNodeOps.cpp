@@ -16,6 +16,17 @@
 #include "K2Node_VariableGet.h"
 #include "K2Node_Event.h"
 #include "K2Node_ExecutionSequence.h"
+#include "K2Node_CustomEvent.h"
+#include "K2Node_Self.h"
+#include "K2Node_Knot.h"
+#include "K2Node_MakeArray.h"
+#include "K2Node_Timeline.h"
+#include "K2Node_SpawnActorFromClass.h"
+#include "K2Node_DynamicCast.h"
+#include "K2Node_MacroInstance.h"
+#include "K2Node_SwitchEnum.h"
+#include "K2Node_SwitchString.h"
+#include "K2Node_SwitchInteger.h"
 #include "ScopedTransaction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/PackageName.h"
@@ -345,16 +356,74 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	{
 		NodeClass = UK2Node_ExecutionSequence::StaticClass();
 	}
-	else
+	else if (NodeClassName == TEXT("UK2Node_CustomEvent"))
 	{
-		// Try finding other classes dynamically (e.g., UK2Node_Event, UK2Node_MacroInstance)
-		NodeClass = StaticLoadClass(UEdGraphNode::StaticClass(), nullptr,
-			*FString::Printf(TEXT("/Script/BlueprintGraph.%s"), *NodeClassName));
-		if (NodeClass == nullptr)
+		NodeClass = UK2Node_CustomEvent::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_Self"))
+	{
+		NodeClass = UK2Node_Self::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_Knot"))
+	{
+		NodeClass = UK2Node_Knot::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_MakeArray"))
+	{
+		NodeClass = UK2Node_MakeArray::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_Timeline"))
+	{
+		// Timeline requires a UTimelineTemplate in Blueprint->Timelines with matching name/guid.
+		// Adding without one produces a compile error.
+		const TSharedPtr<FJsonObject>* NodeParams = nullptr;
+		FString TimelineName;
+		if (!Params->TryGetObjectField(TEXT("params"), NodeParams) ||
+			!(*NodeParams)->TryGetStringField(TEXT("timeline_name"), TimelineName) ||
+			TimelineName.IsEmpty())
 		{
-			NodeClass = StaticLoadClass(UEdGraphNode::StaticClass(), nullptr,
-				*FString::Printf(TEXT("/Script/Engine.%s"), *NodeClassName));
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("TimelineNameRequired: timeline_name param is required for Timeline nodes")
+			);
 		}
+		NodeClass = UK2Node_Timeline::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_SpawnActorFromClass"))
+	{
+		NodeClass = UK2Node_SpawnActorFromClass::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_DynamicCast"))
+	{
+		NodeClass = UK2Node_DynamicCast::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_MacroInstance"))
+	{
+		// MacroInstance requires SetMacroGraph(); adding without macro_path produces a node with no pins.
+		const TSharedPtr<FJsonObject>* NodeParams = nullptr;
+		FString MacroPath;
+		if (!Params->TryGetObjectField(TEXT("params"), NodeParams) ||
+			!(*NodeParams)->TryGetStringField(TEXT("macro_path"), MacroPath) ||
+			MacroPath.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("MacroPathRequired: macro_path param is required for MacroInstance nodes")
+			);
+		}
+		NodeClass = UK2Node_MacroInstance::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_SwitchEnum"))
+	{
+		NodeClass = UK2Node_SwitchEnum::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_SwitchString"))
+	{
+		NodeClass = UK2Node_SwitchString::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_SwitchInteger"))
+	{
+		NodeClass = UK2Node_SwitchInteger::StaticClass();
 	}
 
 	if (NodeClass == nullptr)
