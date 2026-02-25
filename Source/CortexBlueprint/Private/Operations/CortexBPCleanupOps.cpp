@@ -60,25 +60,23 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 				FString::Printf(TEXT("Parent class not found: %s"), *NewParentClassPath));
 		}
 
-		// Type compatibility check: only Actor->Actor and Component->Component are allowed.
+		// Type compatibility check: allow same-family reparent only.
+		static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
 		const UClass* CurrentParent = BP->ParentClass.Get();
 		const bool bCurrentIsActor = CurrentParent && CurrentParent->IsChildOf(AActor::StaticClass());
 		const bool bCurrentIsComponent = CurrentParent && CurrentParent->IsChildOf(UActorComponent::StaticClass());
+		const bool bCurrentIsWidget = UserWidgetClass && CurrentParent && CurrentParent->IsChildOf(UserWidgetClass);
 		const bool bNewIsActor = NewParentClass->IsChildOf(AActor::StaticClass());
 		const bool bNewIsComponent = NewParentClass->IsChildOf(UActorComponent::StaticClass());
+		const bool bNewIsWidget = UserWidgetClass && NewParentClass->IsChildOf(UserWidgetClass);
 
-		if ((!bCurrentIsActor && !bCurrentIsComponent) || (!bNewIsActor && !bNewIsComponent))
+		if (!((bCurrentIsActor && bNewIsActor) ||
+			  (bCurrentIsComponent && bNewIsComponent) ||
+			  (bCurrentIsWidget && bNewIsWidget)))
 		{
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidField,
-				TEXT("Type mismatch: only Actor and ActorComponent Blueprint reparenting is supported"));
-		}
-
-		if ((bCurrentIsActor != bNewIsActor) || (bCurrentIsComponent != bNewIsComponent))
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				TEXT("Type mismatch: cannot reparent Actor BP to non-Actor class or Component BP to non-Component class"));
+				TEXT("Type mismatch: reparenting is only supported within the same type family (Actor->Actor, Component->Component, Widget->Widget)"));
 		}
 	}
 

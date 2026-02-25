@@ -22,13 +22,16 @@
 #include "K2Node_Event.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_ComponentBoundEvent.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
+#include "K2Node_Knot.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_SpawnActor.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "EdGraphNode_Comment.h"
 #include "UObject/FieldIterator.h"
 #include "UObject/UnrealType.h"
 #include "Components/SceneComponent.h"
@@ -402,6 +405,340 @@ bool IsRPCReliable(UBlueprint* BP, const FName& FuncName)
 	return Func && (Func->FunctionFlags & FUNC_NetReliable) != 0;
 }
 
+struct FDelegateInfo
+{
+	FString Name;
+	TArray<TPair<FString, FString>> Params;
+};
+
+TArray<FDelegateInfo> DiscoverDelegates(const UClass* Class)
+{
+	TArray<FDelegateInfo> Result;
+	if (!Class)
+	{
+		return Result;
+	}
+
+	for (TFieldIterator<FMulticastDelegateProperty> It(Class); It; ++It)
+	{
+		FMulticastDelegateProperty* DelegateProp = *It;
+		if (!DelegateProp || !DelegateProp->HasAnyPropertyFlags(CPF_BlueprintAssignable))
+		{
+			continue;
+		}
+
+		FDelegateInfo Info;
+		Info.Name = DelegateProp->GetName();
+		if (UFunction* SigFunc = DelegateProp->SignatureFunction)
+		{
+			for (TFieldIterator<FProperty> ParamIt(SigFunc); ParamIt; ++ParamIt)
+			{
+				FProperty* Param = *ParamIt;
+				if (Param && Param->HasAnyPropertyFlags(CPF_Parm) && !Param->HasAnyPropertyFlags(CPF_ReturnParm))
+				{
+					Info.Params.Emplace(Param->GetName(), Param->GetCPPType());
+				}
+			}
+		}
+		Result.Add(MoveTemp(Info));
+	}
+
+	return Result;
+}
+
+TMap<FString, TSet<FString>> DiscoverBoundEvents(UBlueprint* BP)
+{
+	TMap<FString, TSet<FString>> BoundEvents;
+	if (!BP)
+	{
+		return BoundEvents;
+	}
+
+	TArray<UEdGraph*> AllGraphs;
+	BP->GetAllGraphs(AllGraphs);
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		if (!Graph)
+		{
+			continue;
+		}
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (UK2Node_ComponentBoundEvent* BoundEvent = Cast<UK2Node_ComponentBoundEvent>(Node))
+			{
+				const FString EntityName = BoundEvent->ComponentPropertyName.ToString();
+				const FString DelegateName = BoundEvent->DelegatePropertyName.ToString();
+				BoundEvents.FindOrAdd(EntityName).Add(DelegateName);
+			}
+		}
+	}
+
+	return BoundEvents;
+}
+
+TSharedPtr<FJsonValue> SerializeDelegateInfo(const FDelegateInfo& Info)
+{
+	TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+	Obj->SetStringField(TEXT("name"), Info.Name);
+
+	TArray<TSharedPtr<FJsonValue>> ParamsArray;
+	for (const TPair<FString, FString>& Param : Info.Params)
+	{
+		TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+		ParamObj->SetStringField(TEXT("name"), Param.Key);
+		ParamObj->SetStringField(TEXT("type"), Param.Value);
+		ParamsArray.Add(MakeShared<FJsonValueObject>(ParamObj));
+	}
+	Obj->SetArrayField(TEXT("params"), ParamsArray);
+	return MakeShared<FJsonValueObject>(Obj);
+}
+
+TArray<TSharedPtr<FJsonValue>> BuildReferencedUserTypes(UBlueprint* BP)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	if (!BP)
+	{
+		return Result;
+	}
+
+	for (const FBPVariableDescription& Variable : BP->NewVariables)
+	{
+		UObject* TypeObj = Variable.VarType.PinSubCategoryObject.Get();
+		if (!TypeObj)
+		{
+			continue;
+		}
+
+		if (!TypeObj->IsA<UUserDefinedStruct>() && !TypeObj->IsA<UUserDefinedEnum>())
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+		Obj->SetStringField(TEXT("name"), TypeObj->GetName());
+		Obj->SetStringField(TEXT("asset_path"), TypeObj->GetPathName());
+		Obj->SetStringField(TEXT("kind"), TypeObj->IsA<UUserDefinedStruct>() ? TEXT("struct") : TEXT("enum"));
+		Result.Add(MakeShared<FJsonValueObject>(Obj));
+	}
+
+	return Result;
+}
+
+TArray<TSharedPtr<FJsonValue>> BuildCDOOverrides(UBlueprint* BP)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	if (!BP || !BP->GeneratedClass || !BP->ParentClass)
+	{
+		return Result;
+	}
+
+	UObject* ChildCDO = BP->GeneratedClass->GetDefaultObject();
+	UObject* ParentCDO = BP->ParentClass->GetDefaultObject();
+	if (!ChildCDO || !ParentCDO)
+	{
+		return Result;
+	}
+
+	for (TFieldIterator<FProperty> It(BP->GeneratedClass, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+	{
+		FProperty* Prop = *It;
+		if (!Prop || !Prop->HasAnyPropertyFlags(CPF_Edit))
+		{
+			continue;
+		}
+
+		if (!Prop->IsA<FNumericProperty>() && !Prop->IsA<FBoolProperty>() &&
+			!Prop->IsA<FNameProperty>() && !Prop->IsA<FStrProperty>() &&
+			!Prop->IsA<FEnumProperty>() && !Prop->IsA<FByteProperty>())
+		{
+			continue;
+		}
+
+		if (!Prop->Identical_InContainer(ChildCDO, ParentCDO))
+		{
+			TSharedPtr<FJsonObject> OverrideObj = MakeShared<FJsonObject>();
+			OverrideObj->SetStringField(TEXT("name"), Prop->GetName());
+			OverrideObj->SetStringField(TEXT("type"), Prop->GetCPPType());
+			Result.Add(MakeShared<FJsonValueObject>(OverrideObj));
+		}
+	}
+
+	return Result;
+}
+
+TArray<TSharedPtr<FJsonValue>> BuildInstancedSubobjects(UBlueprint* BP)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	if (!BP)
+	{
+		return Result;
+	}
+
+	for (const FBPVariableDescription& Variable : BP->NewVariables)
+	{
+		if ((Variable.PropertyFlags & CPF_PersistentInstance) == 0)
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+		Obj->SetStringField(TEXT("name"), Variable.VarName.ToString());
+		Obj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Variable.VarType));
+		Result.Add(MakeShared<FJsonValueObject>(Obj));
+	}
+
+	return Result;
+}
+
+FString ResolveTypeAssetPath(const FEdGraphPinType& PinType)
+{
+	if (const UObject* TypeObj = PinType.PinSubCategoryObject.Get())
+	{
+		return TypeObj->GetPathName();
+	}
+	return TEXT("");
+}
+
+bool IsWidgetBlueprint(const UBlueprint* BP)
+{
+	static UClass* WidgetBlueprintClass = FindObject<UClass>(nullptr, TEXT("/Script/UMGEditor.WidgetBlueprint"));
+	return WidgetBlueprintClass && BP && BP->IsA(WidgetBlueprintClass);
+}
+
+TArray<TSharedPtr<FJsonValue>> ExtractWidgetEntities(UBlueprint* BP, const TMap<FString, TSet<FString>>& BoundEventsMap)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	if (!BP)
+	{
+		return Result;
+	}
+
+	for (const FBPVariableDescription& Variable : BP->NewVariables)
+	{
+		static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
+		if (Variable.VarType.PinCategory != UEdGraphSchema_K2::PC_Object || !UserWidgetClass)
+		{
+			continue;
+		}
+
+		const UClass* ObjClass = Cast<UClass>(Variable.VarType.PinSubCategoryObject.Get());
+		if (!ObjClass || !ObjClass->IsChildOf(UserWidgetClass))
+		{
+			continue;
+		}
+
+		const FString Name = Variable.VarName.ToString();
+		TSharedPtr<FJsonObject> WidgetObj = MakeShared<FJsonObject>();
+		WidgetObj->SetStringField(TEXT("name"), Name);
+		WidgetObj->SetStringField(TEXT("class"), ObjClass->GetName());
+		WidgetObj->SetStringField(TEXT("class_path"), ObjClass->GetPathName());
+		WidgetObj->SetBoolField(TEXT("is_variable"), true);
+		WidgetObj->SetStringField(TEXT("parent_widget"), TEXT(""));
+
+		TArray<TSharedPtr<FJsonValue>> BoundEventsArr;
+		if (const TSet<FString>* BoundEvents = BoundEventsMap.Find(Name))
+		{
+			for (const FString& DelegateName : *BoundEvents)
+			{
+				BoundEventsArr.Add(MakeShared<FJsonValueString>(DelegateName));
+			}
+		}
+		WidgetObj->SetArrayField(TEXT("bound_events_in_graph"), BoundEventsArr);
+
+		Result.Add(MakeShared<FJsonValueObject>(WidgetObj));
+	}
+
+	return Result;
+}
+
+TArray<TSharedPtr<FJsonValue>> ExtractNamedSlots(UBlueprint* BP)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	if (!BP)
+	{
+		return Result;
+	}
+	return Result;
+}
+
+TArray<TSharedPtr<FJsonValue>> ExtractWidgetAnimations(UBlueprint* BP)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	if (!BP)
+	{
+		return Result;
+	}
+	return Result;
+}
+
+TArray<TSharedPtr<FJsonValue>> ExtractWidgetBindings(UBlueprint* BP)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	if (!BP)
+	{
+		return Result;
+	}
+	return Result;
+}
+
+TSharedPtr<FJsonObject> BuildWidgetDependencies(const TSharedPtr<FJsonObject>& Data)
+{
+	(void)Data;
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> ReferencesWidgets;
+	TArray<TSharedPtr<FJsonValue>> ReferencedByWidgets;
+	Result->SetArrayField(TEXT("references_widgets"), ReferencesWidgets);
+	Result->SetArrayField(TEXT("referenced_by_widgets"), ReferencedByWidgets);
+	return Result;
+}
+
+TArray<TSharedPtr<FJsonValue>> BuildEntitySummary(const TSharedPtr<FJsonObject>& Data)
+{
+	TArray<TSharedPtr<FJsonValue>> Summary;
+	if (!Data.IsValid())
+	{
+		return Summary;
+	}
+
+	auto AddFromArray = [&Summary, &Data](const TCHAR* ArrayField, const TCHAR* EntityType)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ArrayValues = nullptr;
+		if (!Data->TryGetArrayField(ArrayField, ArrayValues) || !ArrayValues)
+		{
+			return;
+		}
+
+		for (const TSharedPtr<FJsonValue>& Value : *ArrayValues)
+		{
+			const TSharedPtr<FJsonObject> Obj = Value->AsObject();
+			if (!Obj.IsValid() || !Obj->HasField(TEXT("name")))
+			{
+				continue;
+			}
+
+			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("name"), Obj->GetStringField(TEXT("name")));
+			Entry->SetStringField(TEXT("entity_type"), EntityType);
+			if (Obj->HasField(TEXT("class")))
+			{
+				Entry->SetStringField(TEXT("class"), Obj->GetStringField(TEXT("class")));
+			}
+			Summary.Add(MakeShared<FJsonValueObject>(Entry));
+		}
+	};
+
+	AddFromArray(TEXT("scs_components"), TEXT("scs_component"));
+	AddFromArray(TEXT("dynamic_components"), TEXT("dynamic_component"));
+	AddFromArray(TEXT("timelines"), TEXT("timeline"));
+	AddFromArray(TEXT("event_dispatchers"), TEXT("event_dispatcher"));
+	AddFromArray(TEXT("widgets"), TEXT("widget"));
+	AddFromArray(TEXT("widget_animations"), TEXT("widget_animation"));
+	AddFromArray(TEXT("named_slots"), TEXT("named_slot"));
+
+	return Summary;
+}
+
 TArray<TSharedPtr<FJsonValue>> DetectInputBindings(UBlueprint* BP)
 {
 	TArray<TSharedPtr<FJsonValue>> Bindings;
@@ -604,6 +941,7 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 	int32 MacroInstanceCount = 0;
 	int32 UnsupportedNodeOccurrences = 0;
 	int32 UserDefinedTypeCount = 0;
+	int32 GraphLogicNodeCount = 0;
 	bool bHasTick = false;
 	bool bHasTimelines = BP && BP->Timelines.Num() > 0;
 	bool bHasDispatchers = false;
@@ -633,6 +971,23 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 			if (!Node)
 			{
 				continue;
+			}
+
+			bool bCountAsLogic = true;
+			if (Cast<UK2Node_VariableGet>(Node) || Cast<UK2Node_VariableSet>(Node) || Cast<UEdGraphNode_Comment>(Node) || Cast<UK2Node_Knot>(Node))
+			{
+				bCountAsLogic = false;
+			}
+			if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
+			{
+				if (CallNode->IsNodePure())
+				{
+					bCountAsLogic = false;
+				}
+			}
+			if (bCountAsLogic)
+			{
+				++GraphLogicNodeCount;
 			}
 
 			for (const UEdGraphPin* Pin : Node->Pins)
@@ -736,6 +1091,7 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 	Metrics->SetNumberField(TEXT("unsupported_node_count"), UnsupportedNodeOccurrences);
 	Metrics->SetNumberField(TEXT("user_defined_type_count"), UserDefinedTypeCount);
 	Metrics->SetNumberField(TEXT("interface_count"), InterfaceCount);
+	Metrics->SetNumberField(TEXT("graph_logic_node_count"), GraphLogicNodeCount);
 	Metrics->SetStringField(TEXT("migration_confidence"),
 		CalculateMigrationConfidence(TotalNodes, LatentCount, UnsupportedNodeOccurrences,
 			bParentIsBP, MacroInstanceCount, InterfaceCount, UserDefinedTypeCount));
@@ -762,11 +1118,15 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	const bool bIsWidgetBP = IsWidgetBlueprint(BP);
+	const FString BlueprintType = bIsWidgetBP ? TEXT("WidgetBlueprint") : FCortexBPAssetOps::DetermineBlueprintType(BP);
 	Data->SetStringField(TEXT("name"), BP->GetName());
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
-	Data->SetStringField(TEXT("type"), FCortexBPAssetOps::DetermineBlueprintType(BP));
+	Data->SetStringField(TEXT("type"), BlueprintType);
 	Data->SetStringField(TEXT("parent_class"), BP->ParentClass ? BP->ParentClass->GetName() : TEXT(""));
+	Data->SetStringField(TEXT("parent_class_path"), BP->ParentClass ? BP->ParentClass->GetPathName() : TEXT(""));
 	Data->SetBoolField(TEXT("is_compiled"), BP->Status == BS_UpToDate || BP->Status == BS_UpToDateWithWarnings);
+	const TMap<FString, TSet<FString>> BoundEventsMap = DiscoverBoundEvents(BP);
 
 	TArray<TSharedPtr<FJsonValue>> VariablesArray;
 	for (const FBPVariableDescription& Variable : BP->NewVariables)
@@ -777,7 +1137,9 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		VarObj->SetStringField(TEXT("default_value"), Variable.DefaultValue);
 		VarObj->SetBoolField(TEXT("is_exposed"), (Variable.PropertyFlags & CPF_BlueprintVisible) != 0);
 		VarObj->SetBoolField(TEXT("is_replicated"), (Variable.PropertyFlags & CPF_Net) != 0);
+		VarObj->SetBoolField(TEXT("is_instanced"), (Variable.PropertyFlags & CPF_PersistentInstance) != 0);
 		VarObj->SetStringField(TEXT("category"), Variable.Category.ToString());
+		VarObj->SetStringField(TEXT("type_asset_path"), ResolveTypeAssetPath(Variable.VarType));
 
 		// Container type from pin type
 		FString ContainerTypeStr = TEXT("None");
@@ -871,9 +1233,11 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		FuncObj->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
 		FuncObj->SetBoolField(TEXT("has_latent_nodes"), HasLatentNodesInGraph(Graph));
 		FuncObj->SetBoolField(TEXT("is_pure"), IsFunctionPure(Graph));
+		FuncObj->SetStringField(TEXT("access"), TEXT("public"));
 
 		TArray<TSharedPtr<FJsonValue>> InputsArr;
 		TArray<TSharedPtr<FJsonValue>> OutputsArr;
+		TArray<TSharedPtr<FJsonValue>> LocalVariablesArr;
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
 			if (const UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(Node))
@@ -899,6 +1263,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		}
 		FuncObj->SetArrayField(TEXT("inputs"), InputsArr);
 		FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
+		FuncObj->SetArrayField(TEXT("local_variables"), LocalVariablesArr);
 
 		// V3: Override detection
 		const FName FuncName = *Graph->GetName();
@@ -917,7 +1282,8 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 	}
 	Data->SetArrayField(TEXT("functions"), FunctionsArray);
 
-	TArray<TSharedPtr<FJsonValue>> ComponentsArray;
+	TArray<TSharedPtr<FJsonValue>> SCSComponentsArray;
+	TSet<FName> SCSVariableNames;
 	if (BP->SimpleConstructionScript)
 	{
 		USCS_Node* RootNode = BP->SimpleConstructionScript->GetDefaultSceneRootNode();
@@ -928,16 +1294,60 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 				continue;
 			}
 
+			SCSVariableNames.Add(SCSNode->GetVariableName());
 			TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
-			CompObj->SetStringField(TEXT("name"), SCSNode->GetVariableName().ToString());
+			const FString CompVarName = SCSNode->GetVariableName().ToString();
+			CompObj->SetStringField(TEXT("name"), CompVarName);
 			CompObj->SetStringField(TEXT("class"), SCSNode->ComponentTemplate->GetClass()->GetName());
+			CompObj->SetStringField(TEXT("class_path"), SCSNode->ComponentTemplate->GetClass()->GetPathName());
 			CompObj->SetBoolField(TEXT("is_root"), SCSNode == RootNode);
 			CompObj->SetBoolField(TEXT("is_scene_component"), SCSNode->ComponentTemplate->IsA<USceneComponent>());
+			CompObj->SetBoolField(TEXT("is_inherited"), false);
 			CompObj->SetStringField(TEXT("parent_component"), SCSNode->ParentComponentOrVariableName.ToString());
-			ComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
+			CompObj->SetStringField(TEXT("attach_socket"), SCSNode->AttachToName.ToString());
+
+			TArray<TSharedPtr<FJsonValue>> DelegatesArr;
+			TArray<TSharedPtr<FJsonValue>> BoundEventsArr;
+			const TSet<FString>* BoundDelegateNames = BoundEventsMap.Find(CompVarName);
+			const TArray<FDelegateInfo> AllDelegates = DiscoverDelegates(SCSNode->ComponentTemplate->GetClass());
+			for (const FDelegateInfo& DelegateInfo : AllDelegates)
+			{
+				if (BoundDelegateNames && BoundDelegateNames->Contains(DelegateInfo.Name))
+				{
+					DelegatesArr.Add(SerializeDelegateInfo(DelegateInfo));
+					BoundEventsArr.Add(MakeShared<FJsonValueString>(DelegateInfo.Name));
+				}
+			}
+			CompObj->SetArrayField(TEXT("delegates"), DelegatesArr);
+			CompObj->SetArrayField(TEXT("bound_events_in_graph"), BoundEventsArr);
+
+			SCSComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
 		}
 	}
-	Data->SetArrayField(TEXT("components"), ComponentsArray);
+	Data->SetArrayField(TEXT("scs_components"), SCSComponentsArray);
+
+	TArray<TSharedPtr<FJsonValue>> DynamicComponentsArray;
+	for (UActorComponent* TemplateComponent : BP->ComponentTemplates)
+	{
+		if (!TemplateComponent)
+		{
+			continue;
+		}
+
+		if (SCSVariableNames.Contains(TemplateComponent->GetFName()))
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> DynComp = MakeShared<FJsonObject>();
+		DynComp->SetStringField(TEXT("name"), TemplateComponent->GetName());
+		DynComp->SetStringField(TEXT("class"), TemplateComponent->GetClass()->GetName());
+		DynComp->SetStringField(TEXT("class_path"), TemplateComponent->GetClass()->GetPathName());
+		DynComp->SetStringField(TEXT("creation_graph"), TEXT("Unknown"));
+		DynComp->SetBoolField(TEXT("is_conditional"), false);
+		DynamicComponentsArray.Add(MakeShared<FJsonValueObject>(DynComp));
+	}
+	Data->SetArrayField(TEXT("dynamic_components"), DynamicComponentsArray);
 
 	TArray<TSharedPtr<FJsonValue>> GraphsArray;
 	TArray<TSharedPtr<FJsonValue>> LatentNodesArray;
@@ -1071,6 +1481,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		TimelineObj->SetNumberField(TEXT("length"), Timeline->TimelineLength);
 		TimelineObj->SetBoolField(TEXT("auto_play"), Timeline->bAutoPlay);
 		TimelineObj->SetBoolField(TEXT("loop"), Timeline->bLoop);
+		TimelineObj->SetBoolField(TEXT("replicated"), Timeline->bReplicated);
 		// UTimelineTemplate does not store per-template play rate in UE 5.6.
 		// Runtime UTimelineComponent defaults to 1.0 unless adjusted by graph logic.
 		TimelineObj->SetNumberField(TEXT("play_rate"), 1.0);
@@ -1240,6 +1651,28 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 	// V3: Construction script analysis
 	Data->SetObjectField(TEXT("construction_script"), AnalyzeConstructionScript(BP));
 
+	TArray<TSharedPtr<FJsonValue>> WidgetsArray;
+	TArray<TSharedPtr<FJsonValue>> NamedSlotsArray;
+	TArray<TSharedPtr<FJsonValue>> WidgetAnimationsArray;
+	TArray<TSharedPtr<FJsonValue>> WidgetBindingsArray;
+	if (bIsWidgetBP)
+	{
+		WidgetsArray = ExtractWidgetEntities(BP, BoundEventsMap);
+		NamedSlotsArray = ExtractNamedSlots(BP);
+		WidgetAnimationsArray = ExtractWidgetAnimations(BP);
+		WidgetBindingsArray = ExtractWidgetBindings(BP);
+	}
+	Data->SetArrayField(TEXT("widgets"), WidgetsArray);
+	Data->SetArrayField(TEXT("named_slots"), NamedSlotsArray);
+	Data->SetArrayField(TEXT("widget_animations"), WidgetAnimationsArray);
+	Data->SetArrayField(TEXT("widget_bindings"), WidgetBindingsArray);
+
+	Data->SetArrayField(TEXT("referenced_user_types"), BuildReferencedUserTypes(BP));
+	Data->SetArrayField(TEXT("cdo_overrides"), BuildCDOOverrides(BP));
+	Data->SetArrayField(TEXT("instanced_subobjects"), BuildInstancedSubobjects(BP));
+	Data->SetObjectField(TEXT("widget_dependencies"), BuildWidgetDependencies(Data));
+
+	Data->SetArrayField(TEXT("entity_summary"), BuildEntitySummary(Data));
 	Data->SetObjectField(TEXT("complexity_metrics"), BuildComplexityMetrics(BP));
 
 	return FCortexCommandRouter::Success(Data);

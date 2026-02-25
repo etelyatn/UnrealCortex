@@ -36,6 +36,7 @@ bool FCortexBPAnalyzeForMigrationBasicTest::RunTest(const FString& Parameters)
 		const TArray<TSharedPtr<FJsonValue>>* VariablesArray = nullptr;
 		const TArray<TSharedPtr<FJsonValue>>* FunctionsArray = nullptr;
 		const TArray<TSharedPtr<FJsonValue>>* ComponentsArray = nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* DynComponentsArray = nullptr;
 		const TArray<TSharedPtr<FJsonValue>>* GraphsArray = nullptr;
 		const TArray<TSharedPtr<FJsonValue>>* TimelinesArray = nullptr;
 		const TArray<TSharedPtr<FJsonValue>>* DispatchersArray = nullptr;
@@ -47,8 +48,10 @@ bool FCortexBPAnalyzeForMigrationBasicTest::RunTest(const FString& Parameters)
 			AnalyzeResult.Data->TryGetArrayField(TEXT("variables"), VariablesArray));
 		TestTrue(TEXT("functions field should exist"),
 			AnalyzeResult.Data->TryGetArrayField(TEXT("functions"), FunctionsArray));
-		TestTrue(TEXT("components field should exist"),
-			AnalyzeResult.Data->TryGetArrayField(TEXT("components"), ComponentsArray));
+		TestTrue(TEXT("scs_components field should exist"),
+			AnalyzeResult.Data->TryGetArrayField(TEXT("scs_components"), ComponentsArray));
+		TestTrue(TEXT("dynamic_components field should exist"),
+			AnalyzeResult.Data->TryGetArrayField(TEXT("dynamic_components"), DynComponentsArray));
 		TestTrue(TEXT("graphs field should exist"),
 			AnalyzeResult.Data->TryGetArrayField(TEXT("graphs"), GraphsArray));
 		TestTrue(TEXT("timelines field should exist"),
@@ -100,6 +103,22 @@ bool FCortexBPAnalyzeForMigrationBasicTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("graphs[0] should have node_count"), GraphObj->HasField(TEXT("node_count")));
 			TestTrue(TEXT("graphs[0] should have has_tick"), GraphObj->HasField(TEXT("has_tick")));
 			TestTrue(TEXT("graphs[0] should have custom_event_params"), GraphObj->HasField(TEXT("custom_event_params")));
+		}
+
+		if (ComponentsArray && ComponentsArray->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject> FirstComp = (*ComponentsArray)[0]->AsObject();
+			TestTrue(TEXT("scs_component should have delegates field"),
+				FirstComp->HasField(TEXT("delegates")));
+			TestTrue(TEXT("scs_component should have bound_events_in_graph field"),
+				FirstComp->HasField(TEXT("bound_events_in_graph")));
+		}
+
+		if (TimelinesArray && TimelinesArray->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject> FirstTimeline = (*TimelinesArray)[0]->AsObject();
+			TestTrue(TEXT("timeline should have replicated field"),
+				FirstTimeline->HasField(TEXT("replicated")));
 		}
 	}
 
@@ -227,6 +246,18 @@ bool FCortexBPAnalyzeForMigrationSelfContainedTest::RunTest(const FString& Param
 			(*Metrics)->TryGetStringField(TEXT("migration_confidence"), Confidence);
 			TestEqual(TEXT("Simple BP should have high confidence"), Confidence, TEXT("high"));
 		}
+
+		TestTrue(TEXT("dynamic_components should exist"), Result.Data->HasField(TEXT("dynamic_components")));
+		TestTrue(TEXT("instanced_subobjects should exist"), Result.Data->HasField(TEXT("instanced_subobjects")));
+		TestTrue(TEXT("referenced_user_types should exist"), Result.Data->HasField(TEXT("referenced_user_types")));
+		TestTrue(TEXT("cdo_overrides should exist"), Result.Data->HasField(TEXT("cdo_overrides")));
+		TestTrue(TEXT("entity_summary should exist"), Result.Data->HasField(TEXT("entity_summary")));
+
+		FString ParentClassPath;
+		TestTrue(TEXT("parent_class_path should exist"),
+			Result.Data->TryGetStringField(TEXT("parent_class_path"), ParentClassPath));
+		TestTrue(TEXT("parent_class_path should contain /Script/"),
+			ParentClassPath.Contains(TEXT("/Script/")));
 	}
 
 	// Cleanup
@@ -321,6 +352,7 @@ bool FCortexBPAnalysisV3VariableFieldsTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Has is_save_game"), VarObj->HasField(TEXT("is_save_game")));
 		TestTrue(TEXT("Has is_transient"), VarObj->HasField(TEXT("is_transient")));
 		TestTrue(TEXT("Has is_gameplay_tag"), VarObj->HasField(TEXT("is_gameplay_tag")));
+		TestTrue(TEXT("Has is_instanced"), VarObj->HasField(TEXT("is_instanced")));
 		TestEqual(TEXT("uproperty_specifier should be None for internal var"),
 			VarObj->GetStringField(TEXT("uproperty_specifier")), FString(TEXT("None")));
 		TestEqual(TEXT("blueprint_access should be None for internal var"),
@@ -368,6 +400,8 @@ bool FCortexBPAnalysisV3FunctionFieldsTest::RunTest(const FString& Parameters)
         const TSharedPtr<FJsonObject>& FuncObj = (*Functions)[0]->AsObject();
         TestTrue(TEXT("Has is_override"), FuncObj->HasField(TEXT("is_override")));
         TestTrue(TEXT("Has rpc_type"), FuncObj->HasField(TEXT("rpc_type")));
+        TestTrue(TEXT("Has access"), FuncObj->HasField(TEXT("access")));
+        TestTrue(TEXT("Has local_variables"), FuncObj->HasField(TEXT("local_variables")));
     }
 
     TestBP->MarkAsGarbage();
@@ -471,6 +505,317 @@ bool FCortexBPAnalysisV3ConfidenceTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Has interface_count"), (*Metrics)->HasField(TEXT("interface_count")));
     }
 
-    TestBP->MarkAsGarbage();
-    return true;
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisV4TopLevelSchemaTest,
+	"Cortex.Blueprint.Analysis.V4TopLevelSchema",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV4TopLevelSchemaTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_V4SchemaTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Test BP created"), TestBP);
+	if (!TestBP) { return false; }
+
+	FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	const FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	TestTrue(TEXT("Analysis succeeded"), Result.bSuccess);
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		TestBP->MarkAsGarbage();
+		return false;
+	}
+
+	TestTrue(TEXT("Has scs_components"), Result.Data->HasField(TEXT("scs_components")));
+	TestTrue(TEXT("Has dynamic_components"), Result.Data->HasField(TEXT("dynamic_components")));
+	TestTrue(TEXT("Has widgets"), Result.Data->HasField(TEXT("widgets")));
+	TestTrue(TEXT("Has widget_animations"), Result.Data->HasField(TEXT("widget_animations")));
+	TestTrue(TEXT("Has named_slots"), Result.Data->HasField(TEXT("named_slots")));
+	TestTrue(TEXT("Has instanced_subobjects"), Result.Data->HasField(TEXT("instanced_subobjects")));
+	TestTrue(TEXT("Has entity_summary"), Result.Data->HasField(TEXT("entity_summary")));
+	TestTrue(TEXT("Has referenced_user_types"), Result.Data->HasField(TEXT("referenced_user_types")));
+	TestTrue(TEXT("Has cdo_overrides"), Result.Data->HasField(TEXT("cdo_overrides")));
+	TestFalse(TEXT("Legacy components field removed"), Result.Data->HasField(TEXT("components")));
+	TestTrue(TEXT("Has widget_bindings"), Result.Data->HasField(TEXT("widget_bindings")));
+	TestTrue(TEXT("Has widget_dependencies"), Result.Data->HasField(TEXT("widget_dependencies")));
+
+	const TSharedPtr<FJsonObject>* Metrics = nullptr;
+	TestTrue(TEXT("Has complexity_metrics"),
+		Result.Data->TryGetObjectField(TEXT("complexity_metrics"), Metrics));
+	if (Metrics && Metrics->IsValid())
+	{
+		TestTrue(TEXT("Has graph_logic_node_count"), (*Metrics)->HasField(TEXT("graph_logic_node_count")));
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisV4BoundDelegatesOnlyTest,
+	"Cortex.Blueprint.Analysis.V4BoundDelegatesOnly",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV4BoundDelegatesOnlyTest::RunTest(const FString& Parameters)
+{
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TEXT("/Game/Blueprints/BP_ComplexActor"));
+	const FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	if (!Result.bSuccess)
+	{
+		AddInfo(TEXT("BP_ComplexActor missing; skip content-dependent assertions"));
+		return true;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Scs = nullptr;
+	if (Result.Data->TryGetArrayField(TEXT("scs_components"), Scs) && Scs && Scs->Num() > 0)
+	{
+		const TSharedPtr<FJsonObject> First = (*Scs)[0]->AsObject();
+		TestTrue(TEXT("scs component has bound_events_in_graph"), First->HasField(TEXT("bound_events_in_graph")));
+		if (First->HasField(TEXT("delegates")) && First->HasField(TEXT("bound_events_in_graph")))
+		{
+			const TArray<TSharedPtr<FJsonValue>>& Delegates = First->GetArrayField(TEXT("delegates"));
+			const TArray<TSharedPtr<FJsonValue>>& Bound = First->GetArrayField(TEXT("bound_events_in_graph"));
+			TestTrue(TEXT("delegate list should not exceed bound event list"), Delegates.Num() <= Bound.Num());
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisV4SupplementalSectionsTest,
+	"Cortex.Blueprint.Analysis.V4SupplementalSections",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV4SupplementalSectionsTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_V4Supplemental")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	if (!TestBP) { return false; }
+
+	FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	const FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	TestTrue(TEXT("Analysis succeeded"), Result.bSuccess);
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		TestBP->MarkAsGarbage();
+		return false;
+	}
+
+	TestTrue(TEXT("Has referenced_user_types"), Result.Data->HasField(TEXT("referenced_user_types")));
+	TestTrue(TEXT("Has cdo_overrides"), Result.Data->HasField(TEXT("cdo_overrides")));
+	TestTrue(TEXT("Has instanced_subobjects"), Result.Data->HasField(TEXT("instanced_subobjects")));
+
+	const TArray<TSharedPtr<FJsonValue>>* Functions = nullptr;
+	if (Result.Data->TryGetArrayField(TEXT("functions"), Functions) && Functions && Functions->Num() > 0)
+	{
+		const TSharedPtr<FJsonObject> Fn = (*Functions)[0]->AsObject();
+		TestTrue(TEXT("Function has access"), Fn->HasField(TEXT("access")));
+		TestTrue(TEXT("Function has local_variables"), Fn->HasField(TEXT("local_variables")));
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisWidgetTypeDetectionTest,
+	"Cortex.Blueprint.Analysis.V4WidgetTypeDetection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisWidgetTypeDetectionTest::RunTest(const FString& Parameters)
+{
+	UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
+	UClass* WidgetBlueprintClass = FindObject<UClass>(nullptr, TEXT("/Script/UMGEditor.WidgetBlueprint"));
+	if (!UserWidgetClass || !WidgetBlueprintClass)
+	{
+		AddInfo(TEXT("UMG module not available - skipping Widget type detection test"));
+		return true;
+	}
+
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		UserWidgetClass,
+		GetTransientPackage(),
+		FName(TEXT("WBP_V4TypeTest")),
+		BPTYPE_Normal,
+		WidgetBlueprintClass,
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Widget Blueprint created"), TestBP);
+	if (!TestBP) { return false; }
+
+	FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	TestTrue(TEXT("Analysis should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		FString Type;
+		Result.Data->TryGetStringField(TEXT("type"), Type);
+		TestEqual(TEXT("Type should be WidgetBlueprint"), Type, TEXT("WidgetBlueprint"));
+		TestTrue(TEXT("widgets should exist"), Result.Data->HasField(TEXT("widgets")));
+		TestTrue(TEXT("widget_animations should exist"), Result.Data->HasField(TEXT("widget_animations")));
+		TestTrue(TEXT("named_slots should exist"), Result.Data->HasField(TEXT("named_slots")));
+		TestTrue(TEXT("widget_bindings should exist"), Result.Data->HasField(TEXT("widget_bindings")));
+		TestTrue(TEXT("widget_dependencies should exist"), Result.Data->HasField(TEXT("widget_dependencies")));
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisV4WidgetEntitiesTest,
+	"Cortex.Blueprint.Analysis.V4WidgetEntities",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV4WidgetEntitiesTest::RunTest(const FString& Parameters)
+{
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TEXT("/Game/UI/WBP_Inventory"));
+	const FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	if (!Result.bSuccess)
+	{
+		AddInfo(TEXT("WBP_Inventory missing; skip content-dependent assertions"));
+		return true;
+	}
+
+	FString Type;
+	Result.Data->TryGetStringField(TEXT("type"), Type);
+	TestEqual(TEXT("type is WidgetBlueprint"), Type, TEXT("WidgetBlueprint"));
+
+	const TArray<TSharedPtr<FJsonValue>>* Widgets = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* NamedSlots = nullptr;
+	TestTrue(TEXT("Has widgets"), Result.Data->TryGetArrayField(TEXT("widgets"), Widgets));
+	TestTrue(TEXT("Has named_slots"), Result.Data->TryGetArrayField(TEXT("named_slots"), NamedSlots));
+
+	if (Widgets)
+	{
+		for (const TSharedPtr<FJsonValue>& WidgetVal : *Widgets)
+		{
+			const TSharedPtr<FJsonObject> WidgetObj = WidgetVal->AsObject();
+			if (!WidgetObj.IsValid()) { continue; }
+			const bool bIsVariable = WidgetObj->GetBoolField(TEXT("is_variable"));
+			const int32 BoundCount = WidgetObj->GetArrayField(TEXT("bound_events_in_graph")).Num();
+			TestTrue(TEXT("Widget passes filter"), bIsVariable || BoundCount > 0);
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisV4WidgetMetadataTest,
+	"Cortex.Blueprint.Analysis.V4WidgetMetadata",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV4WidgetMetadataTest::RunTest(const FString& Parameters)
+{
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TEXT("/Game/UI/WBP_Inventory"));
+	const FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	if (!Result.bSuccess)
+	{
+		AddInfo(TEXT("WBP_Inventory missing; skip content-dependent assertions"));
+		return true;
+	}
+
+	TestTrue(TEXT("Has widget_animations"), Result.Data->HasField(TEXT("widget_animations")));
+	TestTrue(TEXT("Has widget_bindings"), Result.Data->HasField(TEXT("widget_bindings")));
+	TestTrue(TEXT("Has widget_dependencies"), Result.Data->HasField(TEXT("widget_dependencies")));
+
+	const TArray<TSharedPtr<FJsonValue>>* Widgets = nullptr;
+	if (Result.Data->TryGetArrayField(TEXT("widgets"), Widgets) && Widgets)
+	{
+		for (const TSharedPtr<FJsonValue>& WidgetVal : *Widgets)
+		{
+			const TSharedPtr<FJsonObject> WidgetObj = WidgetVal->AsObject();
+			if (!WidgetObj.IsValid()) { continue; }
+			if (WidgetObj->HasField(TEXT("list_view_type")))
+			{
+				TestTrue(TEXT("ListView has entry_widget_class"), WidgetObj->HasField(TEXT("entry_widget_class")));
+			}
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisV4EntitySummaryTest,
+	"Cortex.Blueprint.Analysis.V4EntitySummary",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV4EntitySummaryTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_V4EntitySummary")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	if (!TestBP) { return false; }
+
+	FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	const FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	TestTrue(TEXT("Analysis succeeded"), Result.bSuccess);
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		TestBP->MarkAsGarbage();
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Summary = nullptr;
+	TestTrue(TEXT("entity_summary exists"), Result.Data->TryGetArrayField(TEXT("entity_summary"), Summary));
+	if (Summary && Summary->Num() > 0)
+	{
+		const TSharedPtr<FJsonObject> Entry = (*Summary)[0]->AsObject();
+		TestTrue(TEXT("Summary has name"), Entry->HasField(TEXT("name")));
+		TestTrue(TEXT("Summary has entity_type"), Entry->HasField(TEXT("entity_type")));
+	}
+
+	const TSharedPtr<FJsonObject>* Metrics = nullptr;
+	TestTrue(TEXT("metrics exists"), Result.Data->TryGetObjectField(TEXT("complexity_metrics"), Metrics));
+	if (Metrics && Metrics->IsValid())
+	{
+		double LogicCount = -1;
+		TestTrue(TEXT("graph_logic_node_count numeric"), (*Metrics)->TryGetNumberField(TEXT("graph_logic_node_count"), LogicCount));
+		TestTrue(TEXT("graph_logic_node_count non-negative"), LogicCount >= 0);
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
 }
