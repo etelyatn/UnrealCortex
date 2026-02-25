@@ -17,15 +17,12 @@ _BP_CLASS_MAP = {
     "Sequence": "UK2Node_ExecutionSequence",
     "VariableGet": "UK2Node_VariableGet",
     "VariableSet": "UK2Node_VariableSet",
-    "FunctionEntry": "UK2Node_FunctionEntry",
-    "FunctionResult": "UK2Node_FunctionResult",
     "Self": "UK2Node_Self",
     "Knot": "UK2Node_Knot",
     "MakeArray": "UK2Node_MakeArray",
     "Timeline": "UK2Node_Timeline",
     "SpawnActor": "UK2Node_SpawnActorFromClass",
     "CastTo": "UK2Node_DynamicCast",
-    "ForEachLoop": "UK2Node_MacroInstance",
     "SwitchEnum": "UK2Node_SwitchEnum",
     "SwitchString": "UK2Node_SwitchString",
     "SwitchInteger": "UK2Node_SwitchInteger",
@@ -40,7 +37,11 @@ def _resolve_class_name(short_name: str) -> str:
         return _BP_CLASS_MAP[short_name]
     if short_name.startswith("UK2Node_"):
         return short_name
-    return f"UK2Node_{short_name}"
+    raise ValueError(
+        f"Unknown node class '{short_name}'. "
+        f"Known short names: {sorted(_BP_CLASS_MAP.keys())}. "
+        f"Or pass a full UK2Node_* class name directly."
+    )
 
 
 def _contains_ref_syntax(value):
@@ -311,7 +312,11 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                 - name: Unique identifier for referencing in connections
                 - class: Node class short name. Common classes:
                     Event, CustomEvent, CallFunction, Branch, Sequence,
-                    VariableGet, VariableSet, SpawnActor, CastTo, ForEachLoop
+                    VariableGet, VariableSet, SpawnActor, CastTo,
+                    Timeline (requires params.timeline_name),
+                    MacroInstance (requires params.macro_path).
+                    Note: ForEach loops use CallFunction with
+                    function_name: "KismetArrayLibrary.Array_ForEach"
                 - params: Optional dict of node-specific params (e.g., {"function_name": "KismetSystemLibrary.PrintString"})
                 - pin_values: Optional dict of pin default values (e.g., {"InString": "Hello!"})
             connections: Array of connection specs using "NodeName.PinName" format:

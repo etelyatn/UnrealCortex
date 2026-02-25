@@ -37,9 +37,12 @@ class TestClassNameResolution:
         assert _resolve_class_name("UK2Node_Event") == "UK2Node_Event"
         assert _resolve_class_name("UK2Node_CallFunction") == "UK2Node_CallFunction"
 
-    def test_unknown_gets_prefix(self):
-        """Unknown class name gets UK2Node_ prefix."""
-        assert _resolve_class_name("MyCustomNode") == "UK2Node_MyCustomNode"
+    def test_unknown_raises_error(self):
+        """Unknown class name raises ValueError with helpful message."""
+        with pytest.raises(ValueError) as exc_info:
+            _resolve_class_name("MyCustomNode")
+        assert "Unknown node class 'MyCustomNode'" in str(exc_info.value)
+        assert "Known short names:" in str(exc_info.value)
 
     def test_alias_mapping(self):
         """Alias names map correctly."""
@@ -47,7 +50,6 @@ class TestClassNameResolution:
         assert _resolve_class_name("VariableSet") == "UK2Node_VariableSet"
         assert _resolve_class_name("SpawnActor") == "UK2Node_SpawnActorFromClass"
         assert _resolve_class_name("CastTo") == "UK2Node_DynamicCast"
-        assert _resolve_class_name("ForEachLoop") == "UK2Node_MacroInstance"
 
 
 class TestContainsRefSyntax:
@@ -601,7 +603,7 @@ class TestUpdateMode:
             tool(
                 mode="update",
                 asset_path="/Game/Blueprints/BP_Existing",
-                nodes=[{"name": "NewNode", "class": "BadNode"}],
+                nodes=[{"name": "NewNode", "class": "CallFunction"}],
             )
         )
 
