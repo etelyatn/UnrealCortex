@@ -28,6 +28,48 @@ FCortexTcpServer::~FCortexTcpServer()
 	Stop();
 }
 
+void FCortexTcpServer::CleanupStalePortFiles()
+{
+	TArray<FString> PortFiles;
+	IFileManager::Get().FindFiles(
+		PortFiles,
+		*(FPaths::ProjectSavedDir() / TEXT("CortexPort-*.txt")),
+		true,
+		false);
+
+	const uint32 OurPID = FPlatformProcess::GetCurrentProcessId();
+
+	for (const FString& Filename : PortFiles)
+	{
+		// Parse PID from filename: CortexPort-{PID}.txt
+		FString PIDString = Filename;
+		if (!PIDString.RemoveFromStart(TEXT("CortexPort-")) ||
+			!PIDString.RemoveFromEnd(TEXT(".txt")))
+		{
+			continue;
+		}
+
+		const uint32 FilePID = FCString::Atoi(*PIDString);
+		if (FilePID == 0 || FilePID == OurPID)
+		{
+			continue;
+		}
+
+		// Only delete when we can positively determine the process is not running.
+		if (FPlatformProcess::IsApplicationRunning(FilePID))
+		{
+			continue;
+		}
+
+		const FString FullPath = FPaths::ProjectSavedDir() / Filename;
+		IFileManager::Get().Delete(*FullPath);
+		IFileManager::Get().Delete(*(FullPath + TEXT(".tmp")));
+		UE_LOG(LogCortex, Log, TEXT("Cleaned up stale port file: %s (PID %u no longer running)"),
+			*Filename,
+			FilePID);
+	}
+}
+
 bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 {
 	if (bRunning)
@@ -35,6 +77,8 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 		UE_LOG(LogCortex, Warning, TEXT("TCP server is already running"));
 		return false;
 	}
+
+	CleanupStalePortFiles();
 
 	CommandDispatcher = MoveTemp(InDispatcher);
 
@@ -74,15 +118,16 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 					TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&JsonString);
 				FJsonSerializer::Serialize(PortInfo, Writer);
 
-				FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
+				const uint32 CurrentPID = FPlatformProcess::GetCurrentProcessId();
+				PortFilePath = FPaths::ProjectSavedDir() / FString::Printf(TEXT("CortexPort-%u.txt"), CurrentPID);
 				FString TempFilePath = PortFilePath + TEXT(".tmp");
 				FFileHelper::SaveStringToFile(JsonString, *TempFilePath);
 				IFileManager::Get().Move(*PortFilePath, *TempFilePath, true);
 
-				UE_LOG(LogCortex, Log, TEXT("Wrote port file: %s (port %d, pid %d)"),
+				UE_LOG(LogCortex, Log, TEXT("Wrote port file: %s (port %d, pid %u)"),
 					*PortFilePath,
 					BoundPort,
-					FPlatformProcess::GetCurrentProcessId());
+					CurrentPID);
 			}
 
 			TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(
@@ -129,10 +174,12 @@ void FCortexTcpServer::Stop()
 
 	bRunning = false;
 
-	// Delete port file and temp file
-	FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
-	IFileManager::Get().Delete(*PortFilePath);
-	IFileManager::Get().Delete(*(PortFilePath + TEXT(".tmp")));
+	if (!PortFilePath.IsEmpty())
+	{
+		IFileManager::Get().Delete(*PortFilePath);
+		IFileManager::Get().Delete(*(PortFilePath + TEXT(".tmp")));
+		PortFilePath.Empty();
+	}
 
 	if (TickDelegateHandle.IsValid())
 	{

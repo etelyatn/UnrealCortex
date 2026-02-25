@@ -1,7 +1,7 @@
 """Shared fixtures for MCP E2E and scenario tests.
 
 All fixtures require a running Unreal Editor with UnrealCortex plugin.
-The editor writes Saved/CortexPort.txt which the TCP client auto-discovers.
+The editor writes Saved/CortexPort-{PID}.txt which the TCP client auto-discovers.
 """
 
 import os
@@ -36,7 +36,7 @@ def _create_temp_blueprint(tcp_connection, prefix: str, bp_type: str) -> str:
 def tcp_connection():
     """Session-wide TCP connection to Unreal Editor.
 
-    Auto-discovers port from Saved/CortexPort.txt.
+    Auto-discovers port from Saved/CortexPort-{PID}.txt.
     Auto-connects on first send_command() call.
     """
     conn = UEConnection()

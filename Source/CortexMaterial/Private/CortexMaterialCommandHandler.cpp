@@ -21,6 +21,8 @@ FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 		return FCortexMaterialAssetOps::CreateMaterial(Params);
 	if (Command == TEXT("delete_material"))
 		return FCortexMaterialAssetOps::DeleteMaterial(Params);
+	if (Command == TEXT("set_material_property"))
+		return FCortexMaterialAssetOps::SetMaterialProperty(Params);
 	if (Command == TEXT("list_instances"))
 		return FCortexMaterialAssetOps::ListInstances(Params);
 	if (Command == TEXT("get_instance"))
@@ -93,6 +95,7 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 		{ TEXT("get_material"), TEXT("Get material details") },
 		{ TEXT("create_material"), TEXT("Create a new UMaterial") },
 		{ TEXT("delete_material"), TEXT("Delete a material asset") },
+		{ TEXT("set_material_property"), TEXT("Set a property on a UMaterial asset") },
 		{ TEXT("list_instances"), TEXT("List material instances") },
 		{ TEXT("get_instance"), TEXT("Get instance details with overrides") },
 		{ TEXT("create_instance"), TEXT("Create a UMaterialInstanceConstant") },

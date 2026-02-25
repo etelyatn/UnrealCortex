@@ -2,6 +2,7 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "HAL/PlatformProcess.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
@@ -13,12 +14,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexPortFileTest::RunTest(const FString& Parameters)
 {
-	FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
+	const uint32 CurrentPID = FPlatformProcess::GetCurrentProcessId();
+	const FString ExpectedFilename = FString::Printf(TEXT("CortexPort-%u.txt"), CurrentPID);
+	const FString PortFilePath = FPaths::ProjectSavedDir() / ExpectedFilename;
 
-	// Port file should exist when server is running (but may not exist in -nullrhi test mode)
 	if (!FPaths::FileExists(PortFilePath))
 	{
-		// In test mode without a real server, skip this test
 		AddInfo(TEXT("Port file not found - skipping test (expected in -nullrhi mode)"));
 		return true;
 	}
@@ -48,6 +49,7 @@ bool FCortexPortFileTest::RunTest(const FString& Parameters)
 	int32 Pid = 0;
 	TestTrue(TEXT("Has 'pid' field"), Json->TryGetNumberField(TEXT("pid"), Pid));
 	TestTrue(TEXT("PID is positive"), Pid > 0);
+	TestTrue(TEXT("PID matches current process"), static_cast<uint32>(Pid) == CurrentPID);
 
 	FString Project;
 	TestTrue(TEXT("Has 'project' field"), Json->TryGetStringField(TEXT("project"), Project));

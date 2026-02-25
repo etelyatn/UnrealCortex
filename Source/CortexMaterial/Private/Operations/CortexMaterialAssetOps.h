@@ -17,6 +17,7 @@ public:
 	static FCortexCommandResult GetInstance(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult CreateInstance(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult DeleteInstance(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult SetMaterialProperty(const TSharedPtr<FJsonObject>& Params);
 
 	// Helper methods (public for use by other operations)
 	static UMaterial* LoadMaterial(const FString& AssetPath, FCortexCommandResult& OutError);

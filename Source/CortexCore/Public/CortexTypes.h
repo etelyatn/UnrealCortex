@@ -69,6 +69,8 @@ namespace CortexErrorCodes
 	static const FString ComponentNotFound = TEXT("COMPONENT_NOT_FOUND");
 	static const FString ComponentRemoveDenied = TEXT("COMPONENT_REMOVE_DENIED");
 	static const FString PropertyNotFound = TEXT("PROPERTY_NOT_FOUND");
+	static const FString PropertyNotEditable = TEXT("PROPERTY_NOT_EDITABLE");
+	static const FString TypeMismatch = TEXT("TYPE_MISMATCH");
 	static const FString SublevelNotFound = TEXT("SUBLEVEL_NOT_FOUND");
 	static const FString DataLayerNotFound = TEXT("DATA_LAYER_NOT_FOUND");
 	static const FString SpawnFailed = TEXT("SPAWN_FAILED");

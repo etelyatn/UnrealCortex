@@ -257,3 +257,58 @@ def register_material_graph_tools(mcp, connection: UEConnection):
         except Exception as e:
             logger.error(f"disconnect_material_nodes failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})
+
+    @mcp.tool()
+    def set_material_node_property(
+        asset_path: str,
+        node_id: str,
+        property_name: str,
+        value: Any,
+    ) -> str:
+        """Set a property value on a material expression node.
+
+        Use after add_material_node to configure node-specific properties like
+        parameter names, texture references, tiling values, or enum settings.
+
+        For enum/byte properties (e.g., SceneTextureId, SamplerType), pass the
+        UE enum string (e.g., "PPI_PostProcessInput0") or integer value.
+
+        Use get_material_node to discover available properties and current values
+        for a specific expression type before setting them.
+
+        For material-level properties (BlendMode, MaterialDomain), use
+        set_material_property instead.
+
+        Args:
+            asset_path: Full asset path to the material
+            node_id: ID of the node (from list_material_nodes or add_material_node)
+            property_name: UProperty name on the expression class (e.g., "ParameterName",
+                           "Texture", "UTiling", "SceneTextureId", "DefaultValue")
+            value: Value to set. Type depends on the property:
+                   - String/Name: "MyParam"
+                   - Float: 2.0
+                   - Int: 5
+                   - Bool: true
+                   - Color: {"R": 1.0, "G": 0.0, "B": 0.0, "A": 1.0}
+                   - Vector: {"X": 100.0, "Y": 200.0, "Z": 0.0}
+                   - Object ref: "/Game/Textures/T_Wood_D"
+                   - Enum: "PPI_PostProcessInput0" or 14
+
+        Returns:
+            JSON with:
+            - node_id: Node identifier
+            - property_name: Name of the property that was set
+            - updated: True if successful
+        """
+        try:
+            params = {
+                "asset_path": asset_path,
+                "node_id": node_id,
+                "property_name": property_name,
+                "value": value,
+            }
+            result = connection.send_command("material.set_node_property", params)
+            return format_response(result.get("data", {}), "set_material_node_property")
+        except Exception as e:
+            logger.error(f"set_material_node_property failed: {e}", exc_info=True)
+            return json.dumps({"error": str(e)})

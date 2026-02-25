@@ -3,6 +3,7 @@
 #include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPAnalysisOps.h"
 #include "Operations/CortexBPCleanupOps.h"
+#include "Operations/CortexBPClassDefaultsOps.h"
 #include "Operations/CortexBPComponentOps.h"
 #include "Operations/CortexBPStructureOps.h"
 #include "Operations/CortexBPTimelineOps.h"
@@ -65,6 +66,16 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPStructureOps::AddFunction(Params);
 	}
 
+	if (Command == TEXT("get_class_defaults"))
+	{
+		return FCortexBPClassDefaultsOps::GetClassDefaults(Params);
+	}
+
+	if (Command == TEXT("set_class_defaults"))
+	{
+		return FCortexBPClassDefaultsOps::SetClassDefaults(Params);
+	}
+
 	if (Command == TEXT("configure_timeline"))
 	{
 		return FCortexBPTimelineOps::ConfigureTimeline(Params);
@@ -105,6 +116,8 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add({TEXT("add_variable"), TEXT("Add a variable to a Blueprint")});
 	Commands.Add({TEXT("remove_variable"), TEXT("Remove a variable from a Blueprint")});
 	Commands.Add({TEXT("add_function"), TEXT("Add a function to a Blueprint")});
+	Commands.Add({TEXT("get_class_defaults"), TEXT("Read default property values from a Blueprint CDO")});
+	Commands.Add({TEXT("set_class_defaults"), TEXT("Set default property values on a Blueprint CDO")});
 	Commands.Add({TEXT("configure_timeline"), TEXT("Configure a Timeline node's tracks and keyframes")});
 	Commands.Add({TEXT("set_component_defaults"), TEXT("Set object-reference properties on a Blueprint component template")});
 	Commands.Add({TEXT("analyze_for_migration"), TEXT("Analyze a Blueprint for C++ migration")});

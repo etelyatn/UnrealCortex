@@ -450,6 +450,103 @@ class TestBlueprintCRUD:
 
 
 # ================================================================
+# Blueprint Domain — Class Defaults (CDO)
+# ================================================================
+
+
+@pytest.mark.e2e
+class TestBlueprintClassDefaults:
+    """Blueprint Class Default Object property tests."""
+
+    def test_get_class_defaults_discovery(self, tcp_connection, blueprint_for_test):
+        """Discovery mode: get all settable properties."""
+        resp = tcp_connection.send_command("bp.get_class_defaults", {
+            "blueprint_path": blueprint_for_test,
+        })
+        data = resp["data"]
+        assert "properties" in data
+        assert "class" in data
+        assert "parent_class" in data
+        assert data["count"] > 0
+
+    def test_get_class_defaults_specific(self, tcp_connection, blueprint_for_test):
+        """Read specific CDO properties by name."""
+        resp = tcp_connection.send_command("bp.get_class_defaults", {
+            "blueprint_path": blueprint_for_test,
+            "properties": ["bCanEverTick", "bReplicates"],
+        })
+        data = resp["data"]
+        props = data["properties"]
+        assert "bCanEverTick" in props
+        assert "bReplicates" in props
+        assert "type" in props["bCanEverTick"]
+        assert "value" in props["bCanEverTick"]
+
+    def test_set_class_defaults_bool(self, tcp_connection, blueprint_for_test):
+        """Set a bool CDO property and verify via get."""
+        tcp_connection.send_command("bp.set_class_defaults", {
+            "blueprint_path": blueprint_for_test,
+            "properties": {"bCanEverTick": True},
+            "compile": True,
+            "save": False,
+        })
+        resp = tcp_connection.send_command("bp.get_class_defaults", {
+            "blueprint_path": blueprint_for_test,
+            "properties": ["bCanEverTick"],
+        })
+        val = resp["data"]["properties"]["bCanEverTick"]["value"]
+        assert val is True
+
+    def test_set_class_defaults_batch(self, tcp_connection, blueprint_for_test):
+        """Set multiple CDO properties in one call."""
+        resp = tcp_connection.send_command("bp.set_class_defaults", {
+            "blueprint_path": blueprint_for_test,
+            "properties": {"bCanEverTick": True, "bReplicates": True},
+            "compile": False,
+            "save": False,
+        })
+        data = resp["data"]
+        assert "results" in data
+        assert "bCanEverTick" in data["results"]
+        assert "bReplicates" in data["results"]
+
+    def test_set_class_defaults_no_compile(self, tcp_connection, blueprint_for_test):
+        """compile=false should skip compilation."""
+        resp = tcp_connection.send_command("bp.set_class_defaults", {
+            "blueprint_path": blueprint_for_test,
+            "properties": {"bCanEverTick": False},
+            "compile": False,
+            "save": False,
+        })
+        data = resp["data"]
+        assert data["compiled"] is False
+        assert data["saved"] is False
+
+    def test_get_class_defaults_property_not_found(self, tcp_connection, blueprint_for_test):
+        """Misspelled property returns error with fuzzy suggestions."""
+        with pytest.raises(RuntimeError):
+            tcp_connection.send_command("bp.get_class_defaults", {
+                "blueprint_path": blueprint_for_test,
+                "properties": ["bCanEvrTick"],
+            })
+
+    def test_set_class_defaults_property_not_found(self, tcp_connection, blueprint_for_test):
+        """Non-existent property returns error."""
+        with pytest.raises(RuntimeError):
+            tcp_connection.send_command("bp.set_class_defaults", {
+                "blueprint_path": blueprint_for_test,
+                "properties": {"NonExistentProperty_12345": "value"},
+            })
+
+    def test_get_class_defaults_nonexistent_bp(self, tcp_connection):
+        """Non-existent Blueprint returns BLUEPRINT_NOT_FOUND."""
+        with pytest.raises(RuntimeError):
+            tcp_connection.send_command("bp.get_class_defaults", {
+                "blueprint_path": "/Game/NonExistent/BP_Ghost_12345",
+            })
+
+
+# ================================================================
 # Blueprint Domain — Error Cases
 # ================================================================
 
@@ -814,6 +911,150 @@ class TestUMGErrors:
                 "widget_name": "BadColorTarget",
                 "color": "not-a-color",
             })
+
+# ================================================================
+# Material Domain — Property Setters
+# ================================================================
+
+
+@pytest.mark.e2e
+class TestMaterialPropertySetters:
+    """Test set_material_property and set_material_node_property via TCP."""
+
+    def _create_temp_material(self, tcp_connection, prefix="M_E2E"):
+        name = _uniq(prefix)
+        resp = tcp_connection.send_command("material.create_material", {
+            "asset_path": "/Game/Temp/CortexMCPTest",
+            "name": name,
+        })
+        return resp["data"]["asset_path"]
+
+    def _delete_material(self, tcp_connection, asset_path):
+        try:
+            tcp_connection.send_command("material.delete_material", {
+                "asset_path": asset_path,
+            })
+        except (RuntimeError, ConnectionError):
+            pass
+
+    def test_set_material_domain_post_process(self, tcp_connection):
+        """Set MaterialDomain to MD_PostProcess and verify."""
+        path = self._create_temp_material(tcp_connection, "M_E2E_Domain")
+        try:
+            resp = tcp_connection.send_command("material.set_material_property", {
+                "asset_path": path,
+                "property_name": "MaterialDomain",
+                "value": "MD_PostProcess",
+            })
+            assert resp["data"]["updated"] is True
+
+            # Verify via get_material
+            resp = tcp_connection.send_command("material.get_material", {
+                "asset_path": path,
+            })
+            assert resp["data"]["material_domain"] == "PostProcess"
+        finally:
+            self._delete_material(tcp_connection, path)
+
+    def test_set_material_blend_mode(self, tcp_connection):
+        """Set BlendMode to BLEND_Masked and verify."""
+        path = self._create_temp_material(tcp_connection, "M_E2E_Blend")
+        try:
+            resp = tcp_connection.send_command("material.set_material_property", {
+                "asset_path": path,
+                "property_name": "BlendMode",
+                "value": "BLEND_Masked",
+            })
+            assert resp["data"]["updated"] is True
+
+            resp = tcp_connection.send_command("material.get_material", {
+                "asset_path": path,
+            })
+            assert resp["data"]["blend_mode"] == "Masked"
+        finally:
+            self._delete_material(tcp_connection, path)
+
+    def test_set_material_bool_property(self, tcp_connection):
+        """Set TwoSided bool property."""
+        path = self._create_temp_material(tcp_connection, "M_E2E_Bool")
+        try:
+            resp = tcp_connection.send_command("material.set_material_property", {
+                "asset_path": path,
+                "property_name": "TwoSided",
+                "value": True,
+            })
+            assert resp["data"]["updated"] is True
+
+            resp = tcp_connection.send_command("material.get_material", {
+                "asset_path": path,
+            })
+            assert resp["data"]["two_sided"] is True
+        finally:
+            self._delete_material(tcp_connection, path)
+
+    def test_set_material_property_invalid(self, tcp_connection):
+        """Invalid property name returns error."""
+        path = self._create_temp_material(tcp_connection, "M_E2E_Invalid")
+        try:
+            with pytest.raises(RuntimeError, match="not found"):
+                tcp_connection.send_command("material.set_material_property", {
+                    "asset_path": path,
+                    "property_name": "NonExistentProp",
+                    "value": "whatever",
+                })
+        finally:
+            self._delete_material(tcp_connection, path)
+
+    def test_set_node_property_byte_enum(self, tcp_connection):
+        """Set SceneTextureId (FByteProperty enum) on SceneTexture node."""
+        path = self._create_temp_material(tcp_connection, "M_E2E_Enum")
+        try:
+            # Add SceneTexture node
+            resp = tcp_connection.send_command("material.add_node", {
+                "asset_path": path,
+                "expression_class": "MaterialExpressionSceneTexture",
+            })
+            node_id = resp["data"]["node_id"]
+
+            # Set SceneTextureId
+            resp = tcp_connection.send_command("material.set_node_property", {
+                "asset_path": path,
+                "node_id": node_id,
+                "property_name": "SceneTextureId",
+                "value": "PPI_PostProcessInput0",
+            })
+            assert resp["data"]["updated"] is True
+
+            # Verify via get_node
+            resp = tcp_connection.send_command("material.get_node", {
+                "asset_path": path,
+                "node_id": node_id,
+            })
+            props = resp["data"].get("properties", {})
+            assert props.get("SceneTextureId") == "PPI_PostProcessInput0"
+        finally:
+            self._delete_material(tcp_connection, path)
+
+    def test_set_node_property_invalid_enum(self, tcp_connection):
+        """Invalid enum value returns error with valid values listed."""
+        path = self._create_temp_material(tcp_connection, "M_E2E_BadEnum")
+        try:
+            resp = tcp_connection.send_command("material.add_node", {
+                "asset_path": path,
+                "expression_class": "MaterialExpressionSceneTexture",
+            })
+            node_id = resp["data"]["node_id"]
+
+            with pytest.raises(RuntimeError, match="Valid"):
+                tcp_connection.send_command("material.set_node_property", {
+                    "asset_path": path,
+                    "node_id": node_id,
+                    "property_name": "SceneTextureId",
+                    "value": "InvalidEnumValue",
+                })
+        finally:
+            self._delete_material(tcp_connection, path)
+
 
 # ================================================================
 # Data Domain — Expanded Error/Edge Cases

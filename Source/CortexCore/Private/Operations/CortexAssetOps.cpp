@@ -2,6 +2,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "CortexCommandRouter.h"
 #include "Editor.h"
+#include "FileHelpers.h"
 #include "Misc/PackageName.h"
 #include "PackageTools.h"
 #include "Subsystems/AssetEditorSubsystem.h"
@@ -339,6 +340,60 @@ FCortexCommandResult FCortexAssetOps::OpenAsset(const TSharedPtr<FJsonObject>& P
 		}
 
 		Entry->SetStringField(TEXT("asset_type"), GetAssetTypeName(Asset));
+
+		if (Asset->IsA<UWorld>())
+		{
+			const FString RequestedPackageName = FPackageName::ObjectPathToPackageName(AssetPath);
+			UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
+			const bool bIsAlreadyOpen = EditorWorld != nullptr
+				&& EditorWorld->GetOutermost()->GetName() == RequestedPackageName;
+
+			Entry->SetBoolField(TEXT("was_already_open"), bIsAlreadyOpen);
+
+			if (bDryRun)
+			{
+				Entry->SetBoolField(TEXT("would_open"), true);
+				ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+				continue;
+			}
+
+			if (bIsAlreadyOpen)
+			{
+				Entry->SetBoolField(TEXT("editor_opened"), true);
+				ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+				continue;
+			}
+
+			if (GEditor->PlayWorld)
+			{
+				GEditor->EndPlayMap();
+			}
+
+			FString MapFilePath;
+			if (!FPackageName::TryConvertLongPackageNameToFilename(
+					RequestedPackageName, MapFilePath, FPackageName::GetMapPackageExtension()))
+			{
+				Entry->SetStringField(TEXT("error"), CortexErrorCodes::InvalidOperation);
+				Entry->SetStringField(TEXT("message"),
+					FString::Printf(TEXT("Failed to resolve map path: %s"), *AssetPath));
+				ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+				continue;
+			}
+
+			UWorld* LoadedWorld = UEditorLoadingAndSavingUtils::LoadMap(MapFilePath);
+			const bool bOpened = LoadedWorld != nullptr;
+			Entry->SetBoolField(TEXT("editor_opened"), bOpened);
+			if (!bOpened)
+			{
+				Entry->SetStringField(TEXT("error"), CortexErrorCodes::InvalidOperation);
+				Entry->SetStringField(TEXT("message"),
+					FString::Printf(TEXT("Failed to load map: %s"), *AssetPath));
+			}
+
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
+
 		const bool bWasAlreadyOpen = AssetEditorSubsystem->FindEditorsForAsset(Asset).Num() > 0;
 		Entry->SetBoolField(TEXT("was_already_open"), bWasAlreadyOpen);
 

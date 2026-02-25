@@ -10,6 +10,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "HAL/PlatformProcess.h"
 
 static int32 ParsePortFromPortFileText(const FString& PortText)
 {
@@ -173,9 +174,10 @@ bool FCortexDeferredResponseE2ETest::RunTest(const FString& Parameters)
 	}
 
 	FString PortText;
-	const FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
+	const uint32 CurrentPID = FPlatformProcess::GetCurrentProcessId();
+	const FString PortFilePath = FPaths::ProjectSavedDir() / FString::Printf(TEXT("CortexPort-%u.txt"), CurrentPID);
 	const bool bReadPortFile = FFileHelper::LoadFileToString(PortText, *PortFilePath);
-	TestTrue(TEXT("Should read CortexPort.txt"), bReadPortFile);
+	TestTrue(TEXT("Should read CortexPort-{PID}.txt"), bReadPortFile);
 	if (!bReadPortFile)
 	{
 		Server.Stop();
@@ -352,9 +354,10 @@ bool FCortexDeferredTimeoutTest::RunTest(const FString& Parameters)
 	}
 
 	FString PortText;
-	const FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("CortexPort.txt");
+	const uint32 CurrentPID = FPlatformProcess::GetCurrentProcessId();
+	const FString PortFilePath = FPaths::ProjectSavedDir() / FString::Printf(TEXT("CortexPort-%u.txt"), CurrentPID);
 	const bool bReadPortFile = FFileHelper::LoadFileToString(PortText, *PortFilePath);
-	TestTrue(TEXT("Should read CortexPort.txt"), bReadPortFile);
+	TestTrue(TEXT("Should read CortexPort-{PID}.txt"), bReadPortFile);
 	const int32 TestPort = ParsePortFromPortFileText(PortText);
 	TestTrue(TEXT("Port from file should be > 0"), TestPort > 0);
 

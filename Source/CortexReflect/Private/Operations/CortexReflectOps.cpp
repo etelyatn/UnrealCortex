@@ -365,7 +365,7 @@ void FCortexReflectOps::BuildHierarchyTree(
 	int32& OutBPCount)
 {
 	OutNode = MakeShared<FJsonObject>();
-	OutNode->SetStringField(TEXT("root"), GetCppClassName(Root));
+	OutNode->SetStringField(TEXT("name"), GetCppClassName(Root));
 
 	UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(Root);
 	if (BPGC)

@@ -22,7 +22,7 @@ bool FCortexReflectHierarchyBasicTest::RunTest(const FString& Parameters)
 	if (Result.Data.IsValid())
 	{
 		FString Root;
-		Result.Data->TryGetStringField(TEXT("root"), Root);
+		Result.Data->TryGetStringField(TEXT("name"), Root);
 		TestEqual(TEXT("Root should be AActor"), Root, TEXT("AActor"));
 
 		const TArray<TSharedPtr<FJsonValue>>* ChildrenArray;
@@ -189,6 +189,68 @@ bool FCortexReflectHierarchyDefaultsTest::RunTest(const FString& Parameters)
 
 	FCortexCommandResult Result = Handler.Execute(TEXT("class_hierarchy"), Params);
 	TestTrue(TEXT("Should succeed with defaults"), Result.bSuccess);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectHierarchyChildNameFieldTest,
+	"Cortex.Reflect.Hierarchy.ChildNameField",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectHierarchyChildNameFieldTest::RunTest(const FString& Parameters)
+{
+	FCortexReflectCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("root"), TEXT("APawn"));
+	Params->SetNumberField(TEXT("depth"), 1);
+	Params->SetBoolField(TEXT("include_engine"), true);
+
+	FCortexCommandResult Result = Handler.Execute(TEXT("class_hierarchy"), Params);
+	TestTrue(TEXT("class_hierarchy should succeed"), Result.bSuccess);
+
+	if (!Result.Data.IsValid())
+	{
+		AddError(TEXT("Result data is invalid"));
+		return true;
+	}
+
+	// Root node must have "name" field
+	FString RootName;
+	TestTrue(TEXT("Root should have 'name' field"),
+		Result.Data->TryGetStringField(TEXT("name"), RootName));
+	TestFalse(TEXT("Root 'name' should not be empty"), RootName.IsEmpty());
+	TestEqual(TEXT("Root name should be APawn"), RootName, TEXT("APawn"));
+
+	// Each child must have a non-empty "name" field
+	const TArray<TSharedPtr<FJsonValue>>* Children;
+	if (Result.Data->TryGetArrayField(TEXT("children"), Children))
+	{
+		TestTrue(TEXT("APawn should have at least one child with include_engine"),
+			Children->Num() > 0);
+
+		for (int32 i = 0; i < Children->Num(); i++)
+		{
+			const TSharedPtr<FJsonObject>& Child = (*Children)[i]->AsObject();
+			TestTrue(FString::Printf(TEXT("Child[%d] should be a valid object"), i),
+				Child.IsValid());
+			if (Child.IsValid())
+			{
+				FString ChildName;
+				TestTrue(FString::Printf(TEXT("Child[%d] should have 'name' field"), i),
+					Child->TryGetStringField(TEXT("name"), ChildName));
+				TestFalse(FString::Printf(TEXT("Child[%d] 'name' should not be empty"), i),
+					ChildName.IsEmpty());
+				TestNotEqual(FString::Printf(TEXT("Child[%d] 'name' should not be 'Unknown'"), i),
+					ChildName, FString(TEXT("Unknown")));
+			}
+		}
+	}
+	else
+	{
+		AddError(TEXT("Result should have children array"));
+	}
 
 	return true;
 }

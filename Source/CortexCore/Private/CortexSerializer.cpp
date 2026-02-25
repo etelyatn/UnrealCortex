@@ -8,6 +8,8 @@
 #include "StructUtils/InstancedStruct.h"
 #include "UObject/SoftObjectPath.h"
 #include "Dom/JsonValue.h"
+#include "Misc/PackageName.h"
+#include "UObject/UObjectGlobals.h"
 
 TMap<const UScriptStruct*, TArray<UScriptStruct*>> FCortexSerializer::SubtypeCache;
 
@@ -286,6 +288,19 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 		const UObject* Object = ObjProp->GetObjectPropertyValue(ValuePtr);
 		if (Object != nullptr)
 		{
+			// Instanced sub-object: serialize as {"_class": "...", "properties": {...}}
+			if (Property->HasAllPropertyFlags(CPF_InstancedReference))
+			{
+				TSharedPtr<FJsonObject> SubObj = MakeShared<FJsonObject>();
+				SubObj->SetStringField(TEXT("_class"), Object->GetClass()->GetName());
+				TSharedPtr<FJsonObject> Props = StructToJson(Object->GetClass(), static_cast<const void*>(Object));
+				if (Props.IsValid() && Props->Values.Num() > 0)
+				{
+					SubObj->SetObjectField(TEXT("properties"), Props);
+				}
+				return MakeShared<FJsonValueObject>(SubObj);
+			}
+
 			return MakeShared<FJsonValueString>(Object->GetPathName());
 		}
 		return MakeShared<FJsonValueNull>();
@@ -303,7 +318,7 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 	return nullptr;
 }
 
-bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, const UStruct* StructType, void* StructData, TArray<FString>& OutWarnings)
+bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, const UStruct* StructType, void* StructData, UObject* Outer, TArray<FString>& OutWarnings)
 {
 	if (!JsonObject.IsValid() || StructType == nullptr || StructData == nullptr)
 	{
@@ -330,7 +345,7 @@ bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, 
 		}
 
 		void* ValuePtr = Property->ContainerPtrToValuePtr<void>(StructData);
-		if (!JsonToProperty(JsonValue, Property, ValuePtr, OutWarnings))
+		if (!JsonToProperty(JsonValue, Property, ValuePtr, Outer, OutWarnings))
 		{
 			OutWarnings.Add(FString::Printf(TEXT("Failed to deserialize field '%s'"), *FieldName));
 		}
@@ -339,7 +354,7 @@ bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, 
 	return true;
 }
 
-bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, const FProperty* Property, void* ValuePtr, TArray<FString>& OutWarnings)
+bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, const FProperty* Property, void* ValuePtr, UObject* Outer, TArray<FString>& OutWarnings)
 {
 	if (!JsonValue.IsValid() || Property == nullptr || ValuePtr == nullptr)
 	{
@@ -352,6 +367,15 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		// For object properties, set to nullptr
 		if (const FObjectProperty* ObjProp = CastField<FObjectProperty>(Property))
 		{
+			// Clean up existing instanced sub-object before nulling
+			if (Property->HasAllPropertyFlags(CPF_InstancedReference))
+			{
+				UObject* Existing = ObjProp->GetObjectPropertyValue(ValuePtr);
+				if (Existing)
+				{
+					Existing->MarkAsGarbage();
+				}
+			}
 			ObjProp->SetObjectPropertyValue(ValuePtr, nullptr);
 			return true;
 		}
@@ -418,11 +442,31 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	if (const FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
 	{
 		const UEnum* Enum = EnumProp->GetEnum();
-		const FString EnumString = JsonValue->AsString();
-		int64 EnumValue = Enum->GetValueByNameString(EnumString);
+		int64 EnumValue = INDEX_NONE;
+		FString InputValue;
+
+		if (JsonValue->Type == EJson::Number)
+		{
+			EnumValue = static_cast<int64>(JsonValue->AsNumber());
+			InputValue = FString::Printf(TEXT("%lld"), static_cast<long long>(EnumValue));
+		}
+		else
+		{
+			InputValue = JsonValue->AsString();
+			EnumValue = Enum->GetValueByNameString(InputValue);
+		}
+
 		if (EnumValue == INDEX_NONE)
 		{
-			OutWarnings.Add(FString::Printf(TEXT("Unknown enum value '%s' for enum '%s'"), *EnumString, *Enum->GetName()));
+			TArray<FString> ValidValues;
+			for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+			{
+				ValidValues.Add(Enum->GetNameStringByIndex(Index));
+			}
+
+			OutWarnings.Add(FString::Printf(
+				TEXT("Unknown enum value '%s' for %s. Valid: %s"),
+				*InputValue, *Enum->GetName(), *FString::Join(ValidValues, TEXT(", "))));
 			return false;
 		}
 		FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
@@ -435,11 +479,31 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	{
 		if (const UEnum* Enum = ByteProp->GetIntPropertyEnum())
 		{
-			const FString EnumString = JsonValue->AsString();
-			int64 EnumValue = Enum->GetValueByNameString(EnumString);
+			int64 EnumValue = INDEX_NONE;
+			FString InputValue;
+
+			if (JsonValue->Type == EJson::Number)
+			{
+				EnumValue = static_cast<int64>(JsonValue->AsNumber());
+				InputValue = FString::Printf(TEXT("%lld"), static_cast<long long>(EnumValue));
+			}
+			else
+			{
+				InputValue = JsonValue->AsString();
+				EnumValue = Enum->GetValueByNameString(InputValue);
+			}
+
 			if (EnumValue == INDEX_NONE)
 			{
-				OutWarnings.Add(FString::Printf(TEXT("Unknown enum value '%s' for enum '%s'"), *EnumString, *Enum->GetName()));
+				TArray<FString> ValidValues;
+				for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+				{
+					ValidValues.Add(Enum->GetNameStringByIndex(Index));
+				}
+
+				OutWarnings.Add(FString::Printf(
+					TEXT("Unknown enum value '%s' for %s. Valid: %s"),
+					*InputValue, *Enum->GetName(), *FString::Join(ValidValues, TEXT(", "))));
 				return false;
 			}
 			ByteProp->SetPropertyValue(ValuePtr, static_cast<uint8>(EnumValue));
@@ -500,16 +564,8 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 				return false;
 			}
 
-			// Find the UScriptStruct by name
-			UScriptStruct* FoundStruct = nullptr;
-			for (TObjectIterator<UScriptStruct> It; It; ++It)
-			{
-				if (It->GetName() == StructTypeName)
-				{
-					FoundStruct = *It;
-					break;
-				}
-			}
+			// Find the UScriptStruct by name (O(1) hash lookup)
+			UScriptStruct* FoundStruct = FindFirstObjectSafe<UScriptStruct>(*StructTypeName, EFindFirstObjectOptions::NativeFirst);
 
 			if (FoundStruct == nullptr)
 			{
@@ -519,7 +575,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 
 			FInstancedStruct* Instance = static_cast<FInstancedStruct*>(ValuePtr);
 			Instance->InitializeAs(FoundStruct);
-			return JsonToStruct(*InnerObj, FoundStruct, Instance->GetMutableMemory(), OutWarnings);
+			return JsonToStruct(*InnerObj, FoundStruct, Instance->GetMutableMemory(), Outer, OutWarnings);
 		}
 
 		// FSoftObjectPath - deserialize from string path
@@ -537,7 +593,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 			OutWarnings.Add(FString::Printf(TEXT("Expected object for struct property '%s'"), *Property->GetName()));
 			return false;
 		}
-		return JsonToStruct(*NestedObj, StructProp->Struct, ValuePtr, OutWarnings);
+		return JsonToStruct(*NestedObj, StructProp->Struct, ValuePtr, Outer, OutWarnings);
 	}
 
 	// Array property
@@ -551,10 +607,27 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		}
 
 		FScriptArrayHelper ArrayHelper(ArrayProp, ValuePtr);
+
+		// Clean up existing instanced sub-objects before resize
+		if (ArrayProp->Inner->HasAllPropertyFlags(CPF_InstancedReference))
+		{
+			if (const FObjectProperty* InnerObjProp = CastField<FObjectProperty>(ArrayProp->Inner))
+			{
+				for (int32 i = 0; i < ArrayHelper.Num(); ++i)
+				{
+					UObject* Existing = InnerObjProp->GetObjectPropertyValue(ArrayHelper.GetRawPtr(i));
+					if (Existing)
+					{
+						Existing->MarkAsGarbage();
+					}
+				}
+			}
+		}
+
 		ArrayHelper.Resize(JsonArray->Num());
 		for (int32 Index = 0; Index < JsonArray->Num(); ++Index)
 		{
-			JsonToProperty((*JsonArray)[Index], ArrayProp->Inner, ArrayHelper.GetRawPtr(Index), OutWarnings);
+			JsonToProperty((*JsonArray)[Index], ArrayProp->Inner, ArrayHelper.GetRawPtr(Index), Outer, OutWarnings);
 		}
 		return true;
 	}
@@ -570,6 +643,26 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		}
 
 		FScriptMapHelper MapHelper(MapProp, ValuePtr);
+
+		// Clean up existing instanced sub-objects before clearing map
+		if (MapProp->ValueProp->HasAllPropertyFlags(CPF_InstancedReference))
+		{
+			if (const FObjectProperty* ValueObjProp = CastField<FObjectProperty>(MapProp->ValueProp))
+			{
+				for (int32 i = 0; i < MapHelper.GetMaxIndex(); ++i)
+				{
+					if (MapHelper.IsValidIndex(i))
+					{
+						UObject* Existing = ValueObjProp->GetObjectPropertyValue(MapHelper.GetValuePtr(i));
+						if (Existing)
+						{
+							Existing->MarkAsGarbage();
+						}
+					}
+				}
+			}
+		}
+
 		MapHelper.EmptyValues();
 
 		for (const auto& MapPair : (*MapObj)->Values)
@@ -582,7 +675,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 
 			// Import value
 			void* MapValuePtr = MapHelper.GetValuePtr(NewIndex);
-			JsonToProperty(MapPair.Value, MapProp->ValueProp, MapValuePtr, OutWarnings);
+			JsonToProperty(MapPair.Value, MapProp->ValueProp, MapValuePtr, Outer, OutWarnings);
 		}
 
 		MapHelper.Rehash();
@@ -590,21 +683,65 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	}
 
 	// Soft object property
-	if (const FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Property))
+	if (CastField<FSoftObjectProperty>(Property) != nullptr)
 	{
+		const FString ObjectPath = JsonValue->AsString();
+
+		if (!ObjectPath.IsEmpty())
+		{
+			// Fast path: object already loaded (engine CDOs, /Script/ objects).
+			UObject* FoundObject = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectPath, false);
+			if (FoundObject == nullptr)
+			{
+				// Guard against SkipPackage warnings for non-existent or invalid packages.
+				const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
+				if (!FPackageName::IsValidLongPackageName(PackageName)
+					|| (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName)))
+				{
+					OutWarnings.Add(FString::Printf(TEXT("Package not found for soft object '%s'"), *ObjectPath));
+					return false;
+				}
+			}
+		}
+
 		FSoftObjectPtr* SoftPtr = reinterpret_cast<FSoftObjectPtr*>(ValuePtr);
-		*SoftPtr = FSoftObjectPath(JsonValue->AsString());
+		*SoftPtr = FSoftObjectPath(ObjectPath);
 		return true;
 	}
 
-	// Object property (hard reference)
+	// Object property — instanced sub-object path
 	if (const FObjectProperty* ObjProp = CastField<FObjectProperty>(Property))
 	{
+		if (Property->HasAllPropertyFlags(CPF_InstancedReference) && JsonValue->Type == EJson::Object)
+		{
+			return JsonToInstancedSubObject(JsonValue, ObjProp, ValuePtr, Outer, OutWarnings);
+		}
+
+		// Existing asset-reference path (unchanged)
 		const FString ObjectPath = JsonValue->AsString();
 		if (ObjectPath.IsEmpty())
 		{
 			ObjProp->SetObjectPropertyValue(ValuePtr, nullptr);
 			return true;
+		}
+
+		// Fast path: object already loaded (engine CDOs, /Script/ objects)
+		UObject* ExistingObject = StaticFindObject(ObjProp->PropertyClass, nullptr, *ObjectPath, false);
+		if (ExistingObject)
+		{
+			ObjProp->SetObjectPropertyValue(ValuePtr, ExistingObject);
+			return true;
+		}
+
+		// Guard against SkipPackage warnings for non-existent or invalid packages.
+		// Check IsValidLongPackageName first to skip DoesPackageExist for non-path values
+		// (e.g., bare numbers like "123" from type-mismatched JSON).
+		const FString PkgName = FPackageName::ObjectPathToPackageName(ObjectPath);
+		if (!FPackageName::IsValidLongPackageName(PkgName)
+			|| (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName)))
+		{
+			OutWarnings.Add(FString::Printf(TEXT("Package not found for object '%s'"), *ObjectPath));
+			return false;
 		}
 
 		UObject* LoadedObject = StaticLoadObject(ObjProp->PropertyClass, nullptr, *ObjectPath);
@@ -620,6 +757,77 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	UE_LOG(LogCortex, Warning, TEXT("Unhandled property type for deserialization: %s (%s)"),
 		*Property->GetName(), *Property->GetClass()->GetName());
 	return false;
+}
+
+bool FCortexSerializer::JsonToInstancedSubObject(const TSharedPtr<FJsonValue>& JsonValue, const FObjectProperty* ObjProp, void* ValuePtr, UObject* Outer, TArray<FString>& OutWarnings)
+{
+	const TSharedPtr<FJsonObject>* JsonObj = nullptr;
+	if (!JsonValue->TryGetObject(JsonObj) || !JsonObj || !(*JsonObj).IsValid())
+	{
+		OutWarnings.Add(TEXT("Expected JSON object for instanced sub-object"));
+		return false;
+	}
+
+	// Extract _class discriminator
+	FString ClassName;
+	if (!(*JsonObj)->TryGetStringField(TEXT("_class"), ClassName) || ClassName.IsEmpty())
+	{
+		OutWarnings.Add(TEXT("Instanced sub-object missing '_class' field"));
+		return false;
+	}
+
+	// Resolve class: qualified path first, then short name fallback
+	UClass* ResolvedClass = nullptr;
+	if (ClassName.Contains(TEXT(".")) || ClassName.Contains(TEXT("/")))
+	{
+		ResolvedClass = Cast<UClass>(StaticFindObject(UClass::StaticClass(), nullptr, *ClassName, false));
+	}
+
+	if (ResolvedClass == nullptr)
+	{
+		ResolvedClass = FindFirstObjectSafe<UClass>(*ClassName, EFindFirstObjectOptions::NativeFirst);
+	}
+
+	if (ResolvedClass == nullptr)
+	{
+		OutWarnings.Add(FString::Printf(TEXT("Could not find class '%s' for instanced sub-object"), *ClassName));
+		return false;
+	}
+
+	// Validate class hierarchy
+	if (!ResolvedClass->IsChildOf(ObjProp->PropertyClass))
+	{
+		OutWarnings.Add(FString::Printf(TEXT("Class '%s' is not a subclass of '%s'"),
+			*ResolvedClass->GetName(), *ObjProp->PropertyClass->GetName()));
+		return false;
+	}
+
+	// Cannot instantiate abstract classes
+	if (ResolvedClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		OutWarnings.Add(FString::Printf(TEXT("Class '%s' is abstract and cannot be instantiated"), *ResolvedClass->GetName()));
+		return false;
+	}
+
+	// Clean up existing sub-object
+	UObject* Existing = ObjProp->GetObjectPropertyValue(ValuePtr);
+	if (Existing)
+	{
+		Existing->MarkAsGarbage();
+	}
+
+	// Create new sub-object
+	UObject* NewSubObj = NewObject<UObject>(Outer, ResolvedClass);
+
+	// Deserialize properties if provided
+	const TSharedPtr<FJsonObject>* PropertiesObj = nullptr;
+	if ((*JsonObj)->TryGetObjectField(TEXT("properties"), PropertiesObj) && PropertiesObj && (*PropertiesObj).IsValid())
+	{
+		JsonToStruct(*PropertiesObj, ResolvedClass, NewSubObj, Outer, OutWarnings);
+	}
+
+	ObjProp->SetObjectPropertyValue(ValuePtr, NewSubObj);
+	return true;
 }
 
 TSharedPtr<FJsonObject> FCortexSerializer::GetStructSchema(const UStruct* StructType, bool bIncludeInherited)
@@ -780,15 +988,8 @@ TSharedPtr<FJsonObject> FCortexSerializer::GetPropertySchema(const FProperty* Pr
 				const UScriptStruct* BaseStruct = FindObject<UScriptStruct>(nullptr, *BaseStructMeta);
 				if (BaseStruct == nullptr)
 				{
-					// Try with short name
-					for (TObjectIterator<UScriptStruct> It; It; ++It)
-					{
-						if (It->GetName() == BaseStructMeta)
-						{
-							BaseStruct = *It;
-							break;
-						}
-					}
+					// Try with short name (O(1) hash lookup)
+					BaseStruct = FindFirstObjectSafe<UScriptStruct>(*BaseStructMeta, EFindFirstObjectOptions::NativeFirst);
 				}
 
 				if (BaseStruct != nullptr)
@@ -871,6 +1072,10 @@ TSharedPtr<FJsonObject> FCortexSerializer::GetPropertySchema(const FProperty* Pr
 	{
 		Schema->SetStringField(TEXT("type"), TEXT("UObject*"));
 		Schema->SetStringField(TEXT("object_class"), ObjProp->PropertyClass->GetName());
+		if (Property->HasAllPropertyFlags(CPF_InstancedReference))
+		{
+			Schema->SetBoolField(TEXT("instanced"), true);
+		}
 		return Schema;
 	}
 

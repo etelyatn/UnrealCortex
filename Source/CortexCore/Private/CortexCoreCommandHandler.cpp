@@ -1,5 +1,6 @@
 #include "CortexCoreCommandHandler.h"
 #include "CortexCommandRouter.h"
+#include "Operations/CortexAssetDeletionOps.h"
 #include "Operations/CortexAssetOps.h"
 #include "Containers/Ticker.h"
 #include "HAL/PlatformMisc.h"
@@ -27,6 +28,14 @@ FCortexCommandResult FCortexCoreCommandHandler::Execute(
 	if (Command == TEXT("reload_asset"))
 	{
 		return FCortexAssetOps::ReloadAsset(Params);
+	}
+	if (Command == TEXT("delete_asset"))
+	{
+		return FCortexAssetDeletionOps::DeleteAsset(Params);
+	}
+	if (Command == TEXT("delete_folder"))
+	{
+		return FCortexAssetDeletionOps::DeleteFolder(Params);
 	}
 	if (Command == TEXT("shutdown"))
 	{
@@ -83,6 +92,8 @@ TArray<FCortexCommandInfo> FCortexCoreCommandHandler::GetSupportedCommands() con
 		{ TEXT("open_asset"), TEXT("Open asset editor tab(s)") },
 		{ TEXT("close_asset"), TEXT("Close asset editor tab(s)") },
 		{ TEXT("reload_asset"), TEXT("Discard changes and reload asset(s) from disk") },
+		{ TEXT("delete_asset"), TEXT("Delete a single asset by path") },
+		{ TEXT("delete_folder"), TEXT("Delete all assets in a folder") },
 		{ TEXT("shutdown"), TEXT("Gracefully shut down the editor") },
 	};
 }
