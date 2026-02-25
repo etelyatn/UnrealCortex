@@ -10,9 +10,11 @@
 #include "EdGraph/EdGraph.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
 #include "GameFramework/Actor.h"
 #include "UObject/Package.h"
+#include "UObject/SavePackage.h"
 #include "Misc/PackageName.h"
 #include "ScopedTransaction.h"
 
@@ -58,14 +60,25 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 				FString::Printf(TEXT("Parent class not found: %s"), *NewParentClassPath));
 		}
 
-		// Type compatibility check
-		const bool bBPIsActor = BP->ParentClass && BP->ParentClass->IsChildOf(AActor::StaticClass());
+		// Type compatibility check: only Actor->Actor and Component->Component are allowed.
+		const UClass* CurrentParent = BP->ParentClass.Get();
+		const bool bCurrentIsActor = CurrentParent && CurrentParent->IsChildOf(AActor::StaticClass());
+		const bool bCurrentIsComponent = CurrentParent && CurrentParent->IsChildOf(UActorComponent::StaticClass());
 		const bool bNewIsActor = NewParentClass->IsChildOf(AActor::StaticClass());
-		if (bBPIsActor != bNewIsActor)
+		const bool bNewIsComponent = NewParentClass->IsChildOf(UActorComponent::StaticClass());
+
+		if ((!bCurrentIsActor && !bCurrentIsComponent) || (!bNewIsActor && !bNewIsComponent))
 		{
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidField,
-				TEXT("Type mismatch: cannot reparent Actor BP to non-Actor class or vice versa"));
+				TEXT("Type mismatch: only Actor and ActorComponent Blueprint reparenting is supported"));
+		}
+
+		if ((bCurrentIsActor != bNewIsActor) || (bCurrentIsComponent != bNewIsComponent))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("Type mismatch: cannot reparent Actor BP to non-Actor class or Component BP to non-Component class"));
 		}
 	}
 
@@ -77,11 +90,11 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 	if (NewParentClass)
 	{
 		// SCS root component warning
-		if (BP->SimpleConstructionScript)
+		if (BP->SimpleConstructionScript && NewParentClass->IsChildOf(AActor::StaticClass()))
 		{
 			const USCS_Node* BPRoot = BP->SimpleConstructionScript->GetDefaultSceneRootNode();
-			if (BPRoot && NewParentClass->GetDefaultObject<AActor>() &&
-				NewParentClass->GetDefaultObject<AActor>()->GetRootComponent())
+			const AActor* NewParentCDO = Cast<AActor>(NewParentClass->GetDefaultObject(false));
+			if (BPRoot && NewParentCDO && NewParentCDO->GetRootComponent())
 			{
 				Warnings.Add(MakeShared<FJsonValueString>(
 					TEXT("SCS root component conflict detected - verify component hierarchy")));
@@ -192,7 +205,19 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 		{
 			FSavePackageArgs SaveArgs;
 			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-			UPackage::SavePackage(BP->GetPackage(), BP, *PackageFilename, SaveArgs);
+			const bool bSaved = UPackage::SavePackage(BP->GetPackage(), BP, *PackageFilename, SaveArgs);
+			if (!bSaved)
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::SaveFailed,
+					FString::Printf(TEXT("Failed to save cleaned Blueprint package: %s"), *BP->GetPackage()->GetName()));
+			}
+		}
+		else
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::SaveFailed,
+				FString::Printf(TEXT("Failed to resolve package filename for: %s"), *BP->GetPackage()->GetName()));
 		}
 	}
 

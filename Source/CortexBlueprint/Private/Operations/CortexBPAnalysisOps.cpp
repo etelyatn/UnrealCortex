@@ -409,20 +409,21 @@ TArray<TSharedPtr<FJsonValue>> DetectInputBindings(UBlueprint* BP)
 	// Lazy class resolution — returns null if EnhancedInput not used
 	static UClass* EIAClass = nullptr;
 	static UClass* EIAEventClass = nullptr;
-	static bool bClassesResolved = false;
-	if (!bClassesResolved)
+	if (!EIAClass)
 	{
 		EIAClass = FindObject<UClass>(nullptr, TEXT("/Script/InputBlueprintNodes.K2Node_EnhancedInputAction"));
 		if (!EIAClass)
 		{
 			EIAClass = FindFirstObject<UClass>(TEXT("K2Node_EnhancedInputAction"), EFindFirstObjectOptions::None);
 		}
+	}
+	if (!EIAEventClass)
+	{
 		EIAEventClass = FindObject<UClass>(nullptr, TEXT("/Script/InputBlueprintNodes.K2Node_EnhancedInputActionEvent"));
 		if (!EIAEventClass)
 		{
 			EIAEventClass = FindFirstObject<UClass>(TEXT("K2Node_EnhancedInputActionEvent"), EFindFirstObjectOptions::None);
 		}
-		bClassesResolved = true;
 	}
 
 	if (!EIAClass && !EIAEventClass) { return Bindings; }
@@ -801,8 +802,9 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		// V3: UPROPERTY specifier resolution
 		const uint64 Flags = Variable.PropertyFlags;
 		VarObj->SetStringField(TEXT("uproperty_specifier"), ResolveUPropertySpecifier(Flags));
+		const bool bBPVisible = (Flags & CPF_BlueprintVisible) != 0;
 		VarObj->SetStringField(TEXT("blueprint_access"),
-			(Flags & CPF_BlueprintReadOnly) != 0 ? TEXT("ReadOnly") : TEXT("ReadWrite"));
+			bBPVisible ? ((Flags & CPF_BlueprintReadOnly) != 0 ? TEXT("ReadOnly") : TEXT("ReadWrite")) : TEXT("None"));
 		VarObj->SetBoolField(TEXT("is_save_game"), (Flags & CPF_SaveGame) != 0);
 		VarObj->SetBoolField(TEXT("is_transient"), (Flags & CPF_Transient) != 0);
 

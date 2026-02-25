@@ -283,6 +283,14 @@ bool FCortexBPAnalysisV3VariableFieldsTest::RunTest(const FString& Parameters)
 	PinType.PinCategory = UEdGraphSchema_K2::PC_Float;
 	const bool bAdded = FBlueprintEditorUtils::AddMemberVariable(TestBP, TEXT("TestHealth"), PinType);
 	TestTrue(TEXT("Variable added"), bAdded);
+	if (!bAdded || TestBP->NewVariables.Num() == 0)
+	{
+		TestBP->MarkAsGarbage();
+		return false;
+	}
+
+	// Explicitly make it internal/transient to verify "None" access output.
+	TestBP->NewVariables[0].PropertyFlags = CPF_Transient;
 
 	// Compile
 	FKismetEditorUtilities::CompileBlueprint(TestBP);
@@ -313,6 +321,10 @@ bool FCortexBPAnalysisV3VariableFieldsTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Has is_save_game"), VarObj->HasField(TEXT("is_save_game")));
 		TestTrue(TEXT("Has is_transient"), VarObj->HasField(TEXT("is_transient")));
 		TestTrue(TEXT("Has is_gameplay_tag"), VarObj->HasField(TEXT("is_gameplay_tag")));
+		TestEqual(TEXT("uproperty_specifier should be None for internal var"),
+			VarObj->GetStringField(TEXT("uproperty_specifier")), FString(TEXT("None")));
+		TestEqual(TEXT("blueprint_access should be None for internal var"),
+			VarObj->GetStringField(TEXT("blueprint_access")), FString(TEXT("None")));
 	}
 
 	TestBP->MarkAsGarbage();
