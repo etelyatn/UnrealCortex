@@ -105,6 +105,31 @@ void FCortexEditorPIEState::CompletePendingCallbacks(const FCortexCommandResult&
 	}
 }
 
+uint32 FCortexEditorPIEState::RegisterPendingInputCallback(FDeferredResponseCallback&& Callback)
+{
+	const uint32 Id = ++NextInputCallbackId;
+	PendingInputCallbacks.Add(Id, MoveTemp(Callback));
+	return Id;
+}
+
+void FCortexEditorPIEState::CompletePendingInputCallback(uint32 CallbackId, const FCortexCommandResult& Result)
+{
+	FDeferredResponseCallback Callback;
+	if (PendingInputCallbacks.RemoveAndCopyValue(CallbackId, Callback))
+	{
+		Callback(Result);
+	}
+}
+
+void FCortexEditorPIEState::CompletePendingInputCallbacks(const FCortexCommandResult& Result)
+{
+	TMap<uint32, FDeferredResponseCallback> CallbacksCopy = MoveTemp(PendingInputCallbacks);
+	for (TPair<uint32, FDeferredResponseCallback>& Pair : CallbacksCopy)
+	{
+		Pair.Value(Result);
+	}
+}
+
 void FCortexEditorPIEState::RegisterInputTickerHandle(FTSTicker::FDelegateHandle Handle)
 {
 	if (Handle.IsValid())
@@ -136,7 +161,7 @@ void FCortexEditorPIEState::CancelAllInputTickers()
 		CancelResult.bSuccess = false;
 		CancelResult.ErrorCode = TEXT("OperationCancelled");
 		CancelResult.ErrorMessage = TEXT("Input sequence cancelled");
-		CompletePendingCallbacks(CancelResult);
+		CompletePendingInputCallbacks(CancelResult);
 	}
 }
 
@@ -149,6 +174,7 @@ void FCortexEditorPIEState::OnPIEEnded()
 	ErrorResult.bSuccess = false;
 	ErrorResult.ErrorCode = CortexErrorCodes::PIETerminated;
 	ErrorResult.ErrorMessage = TEXT("PIE session ended while command was pending");
+	CompletePendingInputCallbacks(ErrorResult);
 	CompletePendingCallbacks(ErrorResult);
 }
 

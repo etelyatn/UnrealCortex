@@ -154,7 +154,7 @@ bool FCortexEditorPIEStateCancelTokenTest::RunTest(const FString& Parameters)
 
 	bool bCallbackFired = false;
 	FString CallbackErrorCode;
-	PIEState.RegisterPendingCallback([&bCallbackFired, &CallbackErrorCode](FCortexCommandResult Result)
+	PIEState.RegisterPendingInputCallback([&bCallbackFired, &CallbackErrorCode](FCortexCommandResult Result)
 	{
 		bCallbackFired = true;
 		CallbackErrorCode = Result.ErrorCode;
@@ -176,6 +176,58 @@ bool FCortexEditorPIEStateCancelTokenTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("New token should be false"), *NewToken);
 	TestTrue(TEXT("Callback should have fired on cancel"), bCallbackFired);
 	TestEqual(TEXT("Error code should be OperationCancelled"), CallbackErrorCode, FString(TEXT("OperationCancelled")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorPIEStateCancelInputTickerDoesNotCancelGeneralCallbacksTest,
+	"Cortex.Editor.PIEState.CancelInputTickerDoesNotCancelGeneralCallbacks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorPIEStateCancelInputTickerDoesNotCancelGeneralCallbacksTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorPIEState PIEState;
+
+	bool bGeneralCallbackFired = false;
+	bool bInputCallbackFired = false;
+	FString GeneralErrorCode;
+	FString InputErrorCode;
+
+	PIEState.RegisterPendingCallback([&bGeneralCallbackFired, &GeneralErrorCode](FCortexCommandResult Result)
+	{
+		bGeneralCallbackFired = true;
+		GeneralErrorCode = Result.ErrorCode;
+	});
+
+	PIEState.RegisterPendingInputCallback([&bInputCallbackFired, &InputErrorCode](FCortexCommandResult Result)
+	{
+		bInputCallbackFired = true;
+		InputErrorCode = Result.ErrorCode;
+	});
+
+	const FTSTicker::FDelegateHandle Handle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateLambda([](float) -> bool
+		{
+			return false;
+		}),
+		10.0f);
+	PIEState.RegisterInputTickerHandle(Handle);
+
+	PIEState.CancelAllInputTickers();
+
+	TestFalse(TEXT("General callback should remain pending"), bGeneralCallbackFired);
+	TestTrue(TEXT("Input callback should be completed on cancel"), bInputCallbackFired);
+	TestEqual(TEXT("Input callback should be OperationCancelled"), InputErrorCode, FString(TEXT("OperationCancelled")));
+
+	FCortexCommandResult SuccessResult;
+	SuccessResult.bSuccess = true;
+	PIEState.CompletePendingCallbacks(SuccessResult);
+
+	TestTrue(TEXT("General callback should complete on general broadcast"), bGeneralCallbackFired);
+	TestEqual(TEXT("General callback error code should remain empty"), GeneralErrorCode, FString(TEXT("")));
 
 	return true;
 }

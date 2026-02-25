@@ -34,6 +34,9 @@ public:
 	uint32 RegisterPendingCallback(FDeferredResponseCallback&& Callback);
 	void CompletePendingCallback(uint32 CallbackId, const FCortexCommandResult& Result);
 	void CompletePendingCallbacks(const FCortexCommandResult& Result);
+	uint32 RegisterPendingInputCallback(FDeferredResponseCallback&& Callback);
+	void CompletePendingInputCallback(uint32 CallbackId, const FCortexCommandResult& Result);
+	void CompletePendingInputCallbacks(const FCortexCommandResult& Result);
 	void RegisterInputTickerHandle(FTSTicker::FDelegateHandle Handle);
 	void CancelAllInputTickers();
 	TSharedRef<FThreadSafeBool> GetInputCancelToken() const { return InputCancelToken; }
@@ -53,6 +56,8 @@ private:
 	ECortexPIEState State = ECortexPIEState::Stopped;
 	TMap<uint32, FDeferredResponseCallback> PendingCallbacks;
 	uint32 NextCallbackId = 0;
+	TMap<uint32, FDeferredResponseCallback> PendingInputCallbacks;
+	uint32 NextInputCallbackId = 0;
 
 	// Handle for the deferred OnPIEEnded() ticker scheduled by HandleCancelPIE().
 	// Calling UE_LOG from within a CancelPIE delegate broadcast that is itself fired

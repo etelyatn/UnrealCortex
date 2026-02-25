@@ -647,7 +647,7 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputSequence(
 	const int32 TotalSteps = ValidatedSteps.Num();
 	const TSharedRef<int32, ESPMode::ThreadSafe> CompletedSteps = MakeShared<int32, ESPMode::ThreadSafe>(0);
 	const TSharedRef<bool, ESPMode::ThreadSafe> bCompleted = MakeShared<bool, ESPMode::ThreadSafe>(false);
-	const uint32 CallbackId = PIEState->RegisterPendingCallback(MoveTemp(DeferredCallback));
+	const uint32 CallbackId = PIEState->RegisterPendingInputCallback(MoveTemp(DeferredCallback));
 	const double SequenceStartTime = FPlatformTime::Seconds();
 
 	const auto CompleteIfDone = [CompletedSteps, TotalSteps, MaxAtMs, bCompleted, CallbackId, SequenceStartTime](
@@ -667,7 +667,7 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputSequence(
 		Final.Data->SetNumberField(TEXT("steps_executed"), *CompletedSteps);
 		Final.Data->SetNumberField(TEXT("total_duration_ms"), MaxAtMs);
 		Final.Data->SetNumberField(TEXT("actual_duration_ms"), ActualDurationMs);
-		ActivePIEState->CompletePendingCallback(CallbackId, Final);
+		ActivePIEState->CompletePendingInputCallback(CallbackId, Final);
 	};
 	const TSharedRef<FThreadSafeBool> CancelToken = PIEState->GetInputCancelToken();
 
