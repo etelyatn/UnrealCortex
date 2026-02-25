@@ -5,6 +5,7 @@
 #include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"
 #include "Misc/PackageName.h"
+#include "Misc/Guid.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPComponentDefaultsTest,
@@ -15,12 +16,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPComponentDefaultsTest::RunTest(const FString& Parameters)
 {
 	FCortexBPCommandHandler Handler;
-	const FString TestPath = TEXT("/Game/Temp/CortexBPTest_CompDefaults");
-	const FString TestBPPath = TestPath + TEXT("/BP_CompDefaultsTest");
+	const FString UniqueSuffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString BlueprintName = FString::Printf(TEXT("BP_CompDefaultsTest_%s"), *UniqueSuffix);
+	const FString TestPath = FString::Printf(TEXT("/Game/Temp/CortexBPTest_CompDefaults_%s"), *UniqueSuffix);
+	const FString TestBPPath = FString::Printf(TEXT("%s/%s"), *TestPath, *BlueprintName);
 
 	{
 		TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
-		CreateParams->SetStringField(TEXT("name"), TEXT("BP_CompDefaultsTest"));
+		CreateParams->SetStringField(TEXT("name"), BlueprintName);
 		CreateParams->SetStringField(TEXT("path"), TestPath);
 		CreateParams->SetStringField(TEXT("type"), TEXT("Actor"));
 		CreateParams->SetStringField(TEXT("parent_class"), TEXT("StaticMeshActor"));
