@@ -5,10 +5,10 @@
 #include "Materials/MaterialExpression.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
-#include "Misc/PackageName.h"
 #include "ScopedTransaction.h"
 #include "CortexBatchScope.h"
 #include "CortexCommandRouter.h"
+#include "CortexSerializer.h"
 #include "CortexGraphLayoutOps.h"
 #include "UObject/UnrealType.h"
 
@@ -912,178 +912,17 @@ FCortexCommandResult FCortexMaterialGraphOps::SetNodeProperty(const TSharedPtr<F
 		Material->PreEditChange(nullptr);
 	}
 
-	// Set property value based on type
 	void* PropertyAddress = Property->ContainerPtrToValuePtr<void>(Expression);
 
-	if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
+	TArray<FString> Warnings;
+	if (!FCortexSerializer::JsonToProperty(Value, Property, PropertyAddress, Expression, Warnings))
 	{
-		FString StringValue;
-		if (Value->TryGetString(StringValue))
-		{
-			StrProp->SetPropertyValue(PropertyAddress, StringValue);
-		}
-		else
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				TEXT("value must be a string for FStrProperty"));
-		}
-	}
-	else if (FNameProperty* NameProp = CastField<FNameProperty>(Property))
-	{
-		FString StringValue;
-		if (Value->TryGetString(StringValue))
-		{
-			NameProp->SetPropertyValue(PropertyAddress, FName(*StringValue));
-		}
-		else
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				TEXT("value must be a string for FNameProperty"));
-		}
-	}
-	else if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Property))
-	{
-		double DoubleValue;
-		if (Value->TryGetNumber(DoubleValue))
-		{
-			FloatProp->SetPropertyValue(PropertyAddress, static_cast<float>(DoubleValue));
-		}
-		else
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				TEXT("value must be a number for FFloatProperty"));
-		}
-	}
-	else if (FIntProperty* IntProp = CastField<FIntProperty>(Property))
-	{
-		double DoubleValue;
-		if (Value->TryGetNumber(DoubleValue))
-		{
-			IntProp->SetPropertyValue(PropertyAddress, static_cast<int32>(DoubleValue));
-		}
-		else
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				TEXT("value must be a number for FIntProperty"));
-		}
-	}
-	else if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
-	{
-		bool BoolValue;
-		if (Value->TryGetBool(BoolValue))
-		{
-			BoolProp->SetPropertyValue(PropertyAddress, BoolValue);
-		}
-		else
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				TEXT("value must be a boolean for FBoolProperty"));
-		}
-	}
-	else if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
-	{
-		// FLinearColor - from [R, G, B, A] array
-		if (StructProp->Struct == TBaseStructure<FLinearColor>::Get())
-		{
-			const TArray<TSharedPtr<FJsonValue>>* ColorArray = nullptr;
-			if (Value->TryGetArray(ColorArray) && ColorArray->Num() == 4)
-			{
-				FLinearColor* Color = static_cast<FLinearColor*>(PropertyAddress);
-				Color->R = static_cast<float>((*ColorArray)[0]->AsNumber());
-				Color->G = static_cast<float>((*ColorArray)[1]->AsNumber());
-				Color->B = static_cast<float>((*ColorArray)[2]->AsNumber());
-				Color->A = static_cast<float>((*ColorArray)[3]->AsNumber());
-			}
-			else
-			{
-				return FCortexCommandRouter::Error(
-					CortexErrorCodes::InvalidField,
-					TEXT("value must be [R, G, B, A] array for FLinearColor"));
-			}
-		}
-		// FVector - from [X, Y, Z] array
-		else if (StructProp->Struct == TBaseStructure<FVector>::Get())
-		{
-			const TArray<TSharedPtr<FJsonValue>>* VecArray = nullptr;
-			if (Value->TryGetArray(VecArray) && VecArray->Num() == 3)
-			{
-				FVector* Vec = static_cast<FVector*>(PropertyAddress);
-				Vec->X = (*VecArray)[0]->AsNumber();
-				Vec->Y = (*VecArray)[1]->AsNumber();
-				Vec->Z = (*VecArray)[2]->AsNumber();
-			}
-			else
-			{
-				return FCortexCommandRouter::Error(
-					CortexErrorCodes::InvalidField,
-					TEXT("value must be [X, Y, Z] array for FVector"));
-			}
-		}
-		else
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				FString::Printf(TEXT("Unsupported struct type: %s"), *StructProp->Struct->GetName())
-			);
-		}
-	}
-	else if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Property))
-	{
-		FString ObjectPath;
-		if (Value->TryGetString(ObjectPath))
-		{
-			FSoftObjectPath SoftPath(ObjectPath);
-			FSoftObjectPtr* SoftPtrAddress = static_cast<FSoftObjectPtr*>(PropertyAddress);
-			*SoftPtrAddress = FSoftObjectPtr(SoftPath);
-		}
-		else
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				TEXT("value must be a string (object path) for FSoftObjectProperty"));
-		}
-	}
-	else if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Property))
-	{
-		FString ObjectPath;
-		if (Value->TryGetString(ObjectPath))
-		{
-			// Guard LoadObject to prevent SkipPackage warnings
-			FString PkgName = FPackageName::ObjectPathToPackageName(ObjectPath);
-			if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
-			{
-				return FCortexCommandRouter::Error(
-					CortexErrorCodes::AssetNotFound,
-					FString::Printf(TEXT("Object not found: %s"), *ObjectPath));
-			}
-
-			UObject* Obj = LoadObject<UObject>(nullptr, *ObjectPath);
-			if (Obj == nullptr)
-			{
-				return FCortexCommandRouter::Error(
-					CortexErrorCodes::AssetNotFound,
-					FString::Printf(TEXT("Failed to load object: %s"), *ObjectPath));
-			}
-			ObjProp->SetPropertyValue(PropertyAddress, Obj);
-		}
-		else
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				TEXT("value must be a string (object path) for FObjectProperty"));
-		}
-	}
-	else
-	{
+		FString WarningStr = Warnings.Num() > 0
+			? FString::Join(Warnings, TEXT("; "))
+			: TEXT("unsupported type");
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			FString::Printf(TEXT("Unsupported property type: %s"), *Property->GetClass()->GetName())
-		);
+			FString::Printf(TEXT("Failed to set property '%s': %s"), *PropertyName, *WarningStr));
 	}
 
 	if (!FCortexCommandRouter::IsInBatch())

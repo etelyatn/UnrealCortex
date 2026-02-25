@@ -133,12 +133,14 @@ def _contains_ref_syntax(value):
     return False
 
 
-def _validate_spec(name, path, nodes, connections):
+def _validate_spec(name, path, nodes, connections, material_properties=None):
     """Validate the material graph spec. Raises ValueError on invalid spec."""
     if not name:
         raise ValueError("Missing required field: name")
     if not path:
         raise ValueError("Missing required field: path")
+    if material_properties is not None and not isinstance(material_properties, dict):
+        raise ValueError("material_properties must be a dict")
     if not isinstance(nodes, list):
         raise ValueError("nodes must be an array")
     if not isinstance(connections, list):
@@ -229,7 +231,7 @@ def _validate_spec(name, path, nodes, connections):
                 )
 
 
-def _build_batch_commands(name, path, nodes, connections):
+def _build_batch_commands(name, path, nodes, connections, material_properties=None):
     """Translate material spec into batch commands with $ref wiring."""
     # Normalize trailing slash to prevent double-slash paths
     path = path.rstrip("/")
@@ -242,10 +244,22 @@ def _build_batch_commands(name, path, nodes, connections):
         "params": {"name": name, "asset_path": path},
     })
 
+    # Steps 1..P: set material-level properties (before adding nodes)
+    if material_properties:
+        for prop_name, prop_value in material_properties.items():
+            commands.append({
+                "command": "material.set_material_property",
+                "params": {
+                    "asset_path": "$steps[0].data.asset_path",
+                    "property_name": prop_name,
+                    "value": prop_value,
+                },
+            })
+
     # Map node name → step index (for $ref wiring)
     node_step_map = {}
 
-    # Steps 1..N: add nodes
+    # Steps P+1..N: add nodes
     for i, node in enumerate(nodes):
         node_name = node.get("name", f"Node_{i}")
         expression_class = _resolve_class_name(node["class"])
@@ -321,6 +335,7 @@ def register_material_composite_tools(mcp, connection: UEConnection):
         path: str,
         nodes: list[dict],
         connections: list[dict],
+        material_properties: dict | None = None,
     ) -> str:
         """Create a material with expression nodes and connections in a single operation.
 
@@ -362,6 +377,10 @@ def register_material_composite_tools(mcp, connection: UEConnection):
 
                 Material result inputs: BaseColor, Normal, Metallic, Roughness,
                     Specular, EmissiveColor, Opacity, OpacityMask, WorldPositionOffset
+            material_properties: Optional dict of material-level properties to set.
+                Keys are property names, values are the property values.
+                Applied after material creation, before adding nodes.
+                Example: {"BlendMode": "BLEND_Translucent", "ShadingModel": "MSM_Unlit"}
 
         Returns:
             JSON with asset_path, node_count, connection_count, timing.
@@ -386,7 +405,7 @@ def register_material_composite_tools(mcp, connection: UEConnection):
         """
         # 1. Validate spec
         try:
-            _validate_spec(name, path, nodes, connections)
+            _validate_spec(name, path, nodes, connections, material_properties)
         except ValueError as e:
             return json.dumps({
                 "success": False,
@@ -394,7 +413,7 @@ def register_material_composite_tools(mcp, connection: UEConnection):
             })
 
         # 2. Build batch commands
-        commands = _build_batch_commands(name, path, nodes, connections)
+        commands = _build_batch_commands(name, path, nodes, connections, material_properties)
         total_steps = len(commands)
 
         # 3. Send batch with stop_on_error
@@ -485,6 +504,7 @@ def register_material_composite_tools(mcp, connection: UEConnection):
         node_count = sum(1 for c in commands if c["command"] == "material.add_node")
         connect_count = sum(1 for c in commands if c["command"] == "material.connect")
         prop_count = sum(1 for c in commands if c["command"] == "material.set_node_property")
+        mat_prop_count = sum(1 for c in commands if c["command"] == "material.set_material_property")
 
         response = {
             "success": True,
@@ -493,9 +513,11 @@ def register_material_composite_tools(mcp, connection: UEConnection):
             "node_count": node_count,
             "connection_count": connect_count,
             "properties_set": prop_count,
+            "material_properties_set": mat_prop_count,
             "total_timing_ms": batch_data.get("total_timing_ms", 0),
             "steps_summary": {
                 "create": 1,
+                "set_material_property": mat_prop_count,
                 "add_node": node_count,
                 "set_node_property": prop_count,
                 "connect": connect_count,

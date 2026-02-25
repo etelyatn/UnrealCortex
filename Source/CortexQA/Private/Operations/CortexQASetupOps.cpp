@@ -111,7 +111,7 @@ FCortexCommandResult FCortexQASetupOps::SetActorProperty(const TSharedPtr<FJsonO
     }
 
     TArray<FString> Warnings;
-    if (!FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, Warnings))
+    if (!FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, Actor, Warnings))
     {
         return FCortexCommandRouter::Error(
             CortexErrorCodes::UnsupportedType,

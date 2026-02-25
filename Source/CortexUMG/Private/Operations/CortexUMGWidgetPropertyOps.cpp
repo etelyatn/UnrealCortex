@@ -964,7 +964,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetProperty(const TSharedPtr<F
     if (JsonValue.IsValid())
     {
         TArray<FString> Warnings;
-        if (!FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, Warnings))
+        if (!FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, Widget, Warnings))
         {
             return FCortexCommandRouter::Error(
                 CortexErrorCodes::InvalidPropertyValue,

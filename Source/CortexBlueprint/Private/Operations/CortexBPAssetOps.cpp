@@ -22,6 +22,21 @@
 
 UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FString& OutError)
 {
+	// Check if the asset is already in memory at the original path (e.g. transient BPs in tests)
+	// before applying /Game/ normalization, which would corrupt non-/Game/ paths.
+	if (AssetPath.StartsWith(TEXT("/")))
+	{
+		const FString OrigPkgName = FPackageName::ObjectPathToPackageName(AssetPath);
+		if (FindPackage(nullptr, *OrigPkgName))
+		{
+			UBlueprint* InMemoryBP = FindObject<UBlueprint>(nullptr, *AssetPath);
+			if (InMemoryBP)
+			{
+				return InMemoryBP;
+			}
+		}
+	}
+
 	// Normalize path (ensure it starts with /Game/)
 	FString NormalizedPath = AssetPath;
 	if (!NormalizedPath.StartsWith(TEXT("/")))
@@ -58,11 +73,48 @@ UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FString& 
 	return BP;
 }
 
+FString FCortexBPAssetOps::DetermineBlueprintType(const UBlueprint* BP)
+{
+	if (!BP || !BP->ParentClass)
+	{
+		return TEXT("Unknown");
+	}
+
+	if (BP->BlueprintType == BPTYPE_Interface)
+	{
+		return TEXT("Interface");
+	}
+
+	if (BP->BlueprintType == BPTYPE_FunctionLibrary)
+	{
+		return TEXT("FunctionLibrary");
+	}
+
+	// Check for Widget using dynamic resolution to avoid compile-time dependency on UMG
+	static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
+	if (UserWidgetClass && BP->ParentClass->IsChildOf(UserWidgetClass))
+	{
+		return TEXT("Widget");
+	}
+
+	if (BP->ParentClass->IsChildOf(UActorComponent::StaticClass()))
+	{
+		return TEXT("Component");
+	}
+
+	if (BP->ParentClass->IsChildOf(AActor::StaticClass()))
+	{
+		return TEXT("Actor");
+	}
+
+	return TEXT("Unknown");
+}
+
 namespace
 {
 
 	/** Helper: Determine parent class and blueprint class from type string */
-	bool DetermineBlueprintType(
+	bool ResolveTypeToClasses(
 		const FString& TypeStr,
 		UClass*& OutParentClass,
 		TSubclassOf<UBlueprint>& OutBlueprintClass,
@@ -115,46 +167,8 @@ namespace
 		return false;
 	}
 
-	/** Helper: Determine Blueprint type string from a loaded UBlueprint using class hierarchy */
-	FString DetermineBlueprintType(const UBlueprint* BP)
-	{
-		if (!BP || !BP->ParentClass)
-		{
-			return TEXT("Unknown");
-		}
-
-		if (BP->BlueprintType == BPTYPE_Interface)
-		{
-			return TEXT("Interface");
-		}
-
-		if (BP->BlueprintType == BPTYPE_FunctionLibrary)
-		{
-			return TEXT("FunctionLibrary");
-		}
-
-		// Check for Widget using dynamic resolution to avoid compile-time dependency on UMG
-		static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
-		if (UserWidgetClass && BP->ParentClass->IsChildOf(UserWidgetClass))
-		{
-			return TEXT("Widget");
-		}
-
-		if (BP->ParentClass->IsChildOf(UActorComponent::StaticClass()))
-		{
-			return TEXT("Component");
-		}
-
-		if (BP->ParentClass->IsChildOf(AActor::StaticClass()))
-		{
-			return TEXT("Actor");
-		}
-
-		return TEXT("Unknown");
-	}
-
 	/** Helper: Determine Blueprint type string from AssetRegistry tags (without loading the asset). */
-	FString DetermineBlueprintType(const FAssetData& AssetData)
+	FString DetermineTypeFromAssetData(const FAssetData& AssetData)
 	{
 		const FString BlueprintTypeTag = AssetData.GetTagValueRef<FString>(FBlueprintTags::BlueprintType);
 		if (BlueprintTypeTag == TEXT("BPType_Interface"))
@@ -315,7 +329,7 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 		}
 
 		FString TypeError;
-		if (!DetermineBlueprintType(TypeStr, ParentClass, BlueprintClass, TypeError))
+		if (!ResolveTypeToClasses(TypeStr, ParentClass, BlueprintClass, TypeError))
 		{
 			Result.bSuccess = false;
 			Result.ErrorCode = CortexErrorCodes::InvalidBlueprintType;
@@ -436,7 +450,7 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 	FString ResponseType = TypeStr;
 	if (ResponseType.IsEmpty())
 	{
-		ResponseType = DetermineBlueprintType(NewBP);
+		ResponseType = FCortexBPAssetOps::DetermineBlueprintType(NewBP);
 	}
 	Result.Data->SetStringField(TEXT("type"), ResponseType);
 	Result.Data->SetStringField(TEXT("parent_class"), ParentClass ? ParentClass->GetName() : TEXT(""));
@@ -497,7 +511,7 @@ FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Para
 		BPObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
 
 		// Resolve type from AssetRegistry tags to avoid loading every Blueprint asset.
-		BPObj->SetStringField(TEXT("type"), DetermineBlueprintType(AssetData));
+		BPObj->SetStringField(TEXT("type"), DetermineTypeFromAssetData(AssetData));
 
 		// Parent class (extracted from AssetRegistry tags — no load required)
 		FString ParentClassName;
@@ -567,7 +581,7 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 	InfoObj->SetStringField(TEXT("asset_path"), AssetPath);
 
 	// Determine type using shared helper
-	FString Type = DetermineBlueprintType(BP);
+	FString Type = FCortexBPAssetOps::DetermineBlueprintType(BP);
 	InfoObj->SetStringField(TEXT("type"), Type);
 
 	// Parent class

@@ -4,6 +4,7 @@
 #include "Misc/Guid.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
+#include "Materials/MaterialExpressionSceneTexture.h"
 #include "CortexBatchScope.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexMaterialGraphOps.h"
@@ -1050,6 +1051,79 @@ bool FCortexMaterialAutoLayoutCycleTest::RunTest(const FString& Parameters)
 	// Cleanup
 	UObject* LoadedAsset = LoadObject<UMaterial>(nullptr, *MatPath);
 	if (LoadedAsset) LoadedAsset->MarkAsGarbage();
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialSetNodePropertyEnumTest,
+	"Cortex.Material.Graph.SetNodeProperty.ByteEnum",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialSetNodePropertyEnumTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestEnumProp_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_EnumProp_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionSceneTexture"));
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+	TestTrue(TEXT("add_node SceneTexture should succeed"), AddResult.bSuccess);
+
+	FString NodeId;
+	if (AddResult.Data.IsValid())
+	{
+		AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+	}
+
+	TSharedPtr<FJsonObject> SetParams = MakeShared<FJsonObject>();
+	SetParams->SetStringField(TEXT("asset_path"), MatPath);
+	SetParams->SetStringField(TEXT("node_id"), NodeId);
+	SetParams->SetStringField(TEXT("property_name"), TEXT("SceneTextureId"));
+	SetParams->SetStringField(TEXT("value"), TEXT("PPI_PostProcessInput0"));
+	FCortexCommandResult SetResult = Handler.Execute(TEXT("set_node_property"), SetParams);
+
+	TestTrue(TEXT("Should set FByteProperty enum (SceneTextureId)"), SetResult.bSuccess);
+
+	if (SetResult.Data.IsValid())
+	{
+		bool bUpdated = false;
+		SetResult.Data->TryGetBoolField(TEXT("updated"), bUpdated);
+		TestTrue(TEXT("updated should be true"), bUpdated);
+	}
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (Material)
+	{
+		for (UMaterialExpression* Expr : Material->GetExpressions())
+		{
+			if (Expr->GetName() == NodeId)
+			{
+				UMaterialExpressionSceneTexture* SceneTex =
+					Cast<UMaterialExpressionSceneTexture>(Expr);
+				TestNotNull(TEXT("Should cast to SceneTexture"), SceneTex);
+				if (SceneTex)
+				{
+					TestEqual(TEXT("SceneTextureId should be PPI_PostProcessInput0"),
+						static_cast<int32>(SceneTex->SceneTextureId),
+						static_cast<int32>(PPI_PostProcessInput0));
+				}
+				break;
+			}
+		}
+		Material->MarkAsGarbage();
+	}
 
 	return true;
 }

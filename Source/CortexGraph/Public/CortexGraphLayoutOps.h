@@ -41,6 +41,7 @@ struct FCortexLayoutConfig
 struct FCortexLayoutResult
 {
 	TMap<FString, FIntPoint> Positions;  // NodeId -> (X, Y)
+	TMap<FString, int32> LayerAssignment;  // NodeId -> layer index
 };
 
 namespace CortexGraphLayout
@@ -118,6 +119,15 @@ private:
 		const TArray<FCortexNodeGroup>& Groups,
 		const TMap<FString, int32>& NodeToGroupIndex,
 		const TMap<FString, const FCortexLayoutNode*>& NodeMap,
+		const FCortexLayoutConfig& Config,
+		FCortexLayoutResult& InOutResult
+	);
+
+	/** Refine Y positions using iterative median centering to minimize wire length */
+	static void RefineYPositions(
+		const TArray<FCortexLayoutNode>& Nodes,
+		const TMap<FString, int32>& NodeToGroupIndex,
+		const TArray<TArray<FString>>& Subgraphs,
 		const FCortexLayoutConfig& Config,
 		FCortexLayoutResult& InOutResult
 	);

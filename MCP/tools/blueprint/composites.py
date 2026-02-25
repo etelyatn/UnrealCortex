@@ -62,16 +62,22 @@ def _validate_spec(
     functions: list[dict] | None = None,
     nodes: list[dict] | None = None,
     connections: list[dict] | None = None,
+    mode: str = "create",
+    asset_path: str = "",
 ):
     """Validate the Blueprint graph spec. Raises ValueError on invalid spec."""
-    if not name:
-        raise ValueError("Missing required field: name")
-    if not path:
-        raise ValueError("Missing required field: path")
-    if bp_type == "Widget":
-        raise ValueError("type 'Widget' is not supported here. Use create_widget_screen instead.")
-    if bp_type not in _VALID_BP_TYPES:
-        raise ValueError(f"type must be one of {sorted(_VALID_BP_TYPES)}")
+    if mode == "update":
+        if not asset_path:
+            raise ValueError("Missing required field: asset_path (required in update mode)")
+    else:
+        if not name:
+            raise ValueError("Missing required field: name")
+        if not path:
+            raise ValueError("Missing required field: path")
+        if bp_type == "Widget":
+            raise ValueError("type 'Widget' is not supported here. Use create_widget_screen instead.")
+        if bp_type not in _VALID_BP_TYPES:
+            raise ValueError(f"type must be one of {sorted(_VALID_BP_TYPES)}")
 
     variables = variables or []
     functions = functions or []
@@ -112,10 +118,12 @@ def _validate_spec(
         if len(tgt_parts) != 2:
             raise ValueError(f"Invalid 'to' format: {conn['to']} (expected 'NodeName.PinName')")
 
-        if src_parts[0] not in node_name_set:
-            raise ValueError(f"Unknown source node: {src_parts[0]}")
-        if tgt_parts[0] not in node_name_set:
-            raise ValueError(f"Unknown target node: {tgt_parts[0]}")
+        # In update mode, unknown node names are allowed (pre-existing nodes).
+        if mode != "update":
+            if src_parts[0] not in node_name_set:
+                raise ValueError(f"Unknown source node: {src_parts[0]}")
+            if tgt_parts[0] not in node_name_set:
+                raise ValueError(f"Unknown target node: {tgt_parts[0]}")
 
     # No $steps[ in user params or pin_values
     for node in nodes:
@@ -143,21 +151,29 @@ def _build_batch_commands(
     connections: list[dict],
     graph_name: str,
     parent_class: str = "",
+    mode: str = "create",
+    asset_path: str = "",
 ) -> list[dict]:
     """Translate Blueprint spec into batch commands with $ref wiring."""
     path = path.rstrip("/")
     commands: list[dict] = []
 
-    # Step 0: create blueprint
-    create_params: dict = {"name": name, "path": path, "type": bp_type}
-    if parent_class:
-        create_params["parent_class"] = parent_class
-    commands.append({"command": "bp.create", "params": create_params})
+    if mode == "create":
+        # Step 0: create blueprint
+        create_params: dict = {"name": name, "path": path, "type": bp_type}
+        if parent_class:
+            create_params["parent_class"] = parent_class
+        commands.append({"command": "bp.create", "params": create_params})
+        # In create mode, asset_path comes from step 0 result.
+        asset_path_ref = "$steps[0].data.asset_path"
+    else:
+        # In update mode, use the provided asset_path directly (no create step).
+        asset_path_ref = asset_path
 
     # Steps 1..V: add variables
     for var in variables:
         var_params: dict[str, Any] = {
-            "asset_path": "$steps[0].data.asset_path",
+            "asset_path": asset_path_ref,
             "name": var["name"],
             "type": var.get("type", "bool"),
         }
@@ -172,7 +188,7 @@ def _build_batch_commands(
     # Steps V+1..V+F: add functions
     for func in functions:
         func_params: dict[str, Any] = {
-            "asset_path": "$steps[0].data.asset_path",
+            "asset_path": asset_path_ref,
             "name": func["name"],
         }
         if "is_pure" in func:
@@ -193,7 +209,7 @@ def _build_batch_commands(
         node_name_to_step[node_name] = step_index
 
         add_params: dict[str, Any] = {
-            "asset_path": "$steps[0].data.asset_path",
+            "asset_path": asset_path_ref,
             "node_class": _resolve_class_name(node["class"]),
             "graph_name": graph_name,
         }
@@ -212,7 +228,7 @@ def _build_batch_commands(
             commands.append({
                 "command": "graph.set_pin_value",
                 "params": {
-                    "asset_path": "$steps[0].data.asset_path",
+                    "asset_path": asset_path_ref,
                     "node_id": f"$steps[{step_index}].data.node_id",
                     "graph_name": graph_name,
                     "pin_name": pin_name,
@@ -224,13 +240,22 @@ def _build_batch_commands(
     for conn in connections:
         src_parts = conn["from"].split(".", 1)
         tgt_parts = conn["to"].split(".", 1)
+        if src_parts[0] in node_name_to_step:
+            src_ref = f"$steps[{node_name_to_step[src_parts[0]]}].data.node_id"
+        else:
+            src_ref = src_parts[0]
+        if tgt_parts[0] in node_name_to_step:
+            tgt_ref = f"$steps[{node_name_to_step[tgt_parts[0]]}].data.node_id"
+        else:
+            tgt_ref = tgt_parts[0]
+
         commands.append({
             "command": "graph.connect",
             "params": {
-                "asset_path": "$steps[0].data.asset_path",
-                "source_node": f"$steps[{node_name_to_step[src_parts[0]]}].data.node_id",
+                "asset_path": asset_path_ref,
+                "source_node": src_ref,
                 "source_pin": src_parts[1],
-                "target_node": f"$steps[{node_name_to_step[tgt_parts[0]]}].data.node_id",
+                "target_node": tgt_ref,
                 "target_pin": tgt_parts[1],
                 "graph_name": graph_name,
             },
@@ -244,8 +269,8 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def create_blueprint_graph(
-        name: str,
-        path: str,
+        name: str = "",
+        path: str = "",
         type: str = "Actor",
         parent_class: str = "",
         variables: list[dict] = None,
@@ -253,6 +278,8 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         graph_name: str = "EventGraph",
         nodes: list[dict] = None,
         connections: list[dict] = None,
+        mode: str = "create",
+        asset_path: str = "",
     ) -> str:
         """Create a Blueprint with variables, functions, and graph logic in a single operation.
 
@@ -290,6 +317,9 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
             connections: Array of connection specs using "NodeName.PinName" format:
                 - from: Source "NodeName.PinName" (e.g., "BeginPlay.then")
                 - to: Target "NodeName.PinName" (e.g., "PrintString.execute")
+            mode: Operation mode. "create" (default) creates a new Blueprint.
+                  "update" appends to an existing Blueprint (requires asset_path).
+            asset_path: Required in update mode. Path to existing Blueprint asset.
 
                 Common pin names by node type:
                     Event: outputs "then"
@@ -324,12 +354,16 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         # 1. Validate spec
         try:
             _validate_spec(name, path, bp_type=type, variables=variables,
-                          functions=functions, nodes=nodes, connections=connections)
+                          functions=functions, nodes=nodes, connections=connections,
+                          mode=mode, asset_path=asset_path)
         except ValueError as e:
             return json.dumps({"success": False, "error": f"Invalid spec: {e}"})
 
         # 2. Build batch commands
-        commands = _build_batch_commands(name, path, type, variables, functions, nodes, connections, graph_name, parent_class)
+        commands = _build_batch_commands(
+            name, path, type, variables, functions, nodes, connections,
+            graph_name, parent_class, mode=mode, asset_path=asset_path
+        )
         total_steps = len(commands)
 
         # 3. Send batch with stop_on_error
@@ -348,14 +382,14 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         results = batch_data.get("results", [])
 
         # 4. Check for failures
-        asset_path = None
+        asset_path = asset_path if mode == "update" else None
         failed_step = None
         completed_count = 0
 
         for entry in results:
             if entry.get("success"):
                 completed_count += 1
-                if entry.get("index") == 0 and "data" in entry:
+                if mode == "create" and entry.get("index") == 0 and "data" in entry:
                     asset_path = entry["data"].get("asset_path")
             else:
                 failed_step = entry
@@ -364,7 +398,7 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         # 5. Handle failure
         if failed_step is not None:
             recovery_action = None
-            if asset_path:
+            if asset_path and mode == "create":
                 try:
                     connection.send_command("bp.delete", {"asset_path": asset_path, "force": True})
                     recovery_action = {"action": "deleted_partial", "path": asset_path}

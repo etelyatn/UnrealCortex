@@ -14,6 +14,8 @@
 #include "IAssetTools.h"
 #include "UObject/SavePackage.h"
 #include "ObjectTools.h"
+#include "CortexSerializer.h"
+#include "CortexBatchScope.h"
 
 UMaterial* FCortexMaterialAssetOps::LoadMaterial(const FString& AssetPath, FCortexCommandResult& OutError)
 {
@@ -593,6 +595,82 @@ FCortexCommandResult FCortexMaterialAssetOps::DeleteInstance(const TSharedPtr<FJ
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetBoolField(TEXT("deleted"), true);
+
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexMaterialAssetOps::SetMaterialProperty(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath, PropertyName;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("property_name"), PropertyName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, property_name"));
+	}
+
+	TSharedPtr<FJsonValue> Value = Params->TryGetField(TEXT("value"));
+	if (!Value.IsValid())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: value"));
+	}
+
+	FCortexCommandResult LoadError;
+	UMaterial* Material = LoadMaterial(AssetPath, LoadError);
+	if (Material == nullptr)
+	{
+		return LoadError;
+	}
+
+	FProperty* Property = UMaterial::StaticClass()->FindPropertyByName(FName(*PropertyName));
+	if (Property == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Property '%s' not found on UMaterial"), *PropertyName));
+	}
+
+	void* PropertyAddress = Property->ContainerPtrToValuePtr<void>(Material);
+
+	TUniquePtr<FScopedTransaction> Transaction;
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		Transaction = MakeUnique<FScopedTransaction>(FText::FromString(
+			FString::Printf(TEXT("Cortex: Set Material Property %s"), *PropertyName)));
+		Material->Modify();
+		Material->PreEditChange(Property);
+	}
+
+	TArray<FString> Warnings;
+	if (!FCortexSerializer::JsonToProperty(Value, Property, PropertyAddress, Material, Warnings))
+	{
+		FString WarningStr = Warnings.Num() > 0
+			? FString::Join(Warnings, TEXT("; "))
+			: TEXT("unsupported type");
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Failed to set property '%s': %s"), *PropertyName, *WarningStr));
+	}
+
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		FPropertyChangedEvent PropertyChangedEvent(Property);
+		Material->PostEditChangeProperty(PropertyChangedEvent);
+	}
+	else
+	{
+		FCortexBatchScope::MarkMaterialDirty(Material);
+	}
+	Material->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetStringField(TEXT("property_name"), PropertyName);
+	Data->SetBoolField(TEXT("updated"), true);
 
 	return FCortexCommandRouter::Success(Data);
 }

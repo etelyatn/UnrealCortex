@@ -2,10 +2,41 @@
 
 import json
 import logging
+from typing import Any
 from cortex_mcp.tcp_client import UEConnection
 from cortex_mcp.response import format_response
 
 logger = logging.getLogger(__name__)
+
+
+_ENUM_ALIASES = {
+    "BlendMode": {
+        "Opaque": "BLEND_Opaque",
+        "Masked": "BLEND_Masked",
+        "Translucent": "BLEND_Translucent",
+        "Additive": "BLEND_Additive",
+        "Modulate": "BLEND_Modulate",
+    },
+    "MaterialDomain": {
+        "Surface": "MD_Surface",
+        "DeferredDecal": "MD_DeferredDecal",
+        "LightFunction": "MD_LightFunction",
+        "PostProcess": "MD_PostProcess",
+        "UI": "MD_UI",
+    },
+    "ShadingModel": {
+        "Unlit": "MSM_Unlit",
+        "DefaultLit": "MSM_DefaultLit",
+        "Subsurface": "MSM_Subsurface",
+        "ClearCoat": "MSM_ClearCoat",
+    },
+}
+
+
+def _normalize_enum_value(property_name: str, value: str) -> str:
+    """Normalize pretty enum names to UE reflection names."""
+    aliases = _ENUM_ALIASES.get(property_name, {})
+    return aliases.get(value, value)
 
 
 def register_material_asset_tools(mcp, connection: UEConnection):
@@ -205,4 +236,43 @@ def register_material_asset_tools(mcp, connection: UEConnection):
             return format_response(result.get("data", {}), "delete_material_instance")
         except Exception as e:
             logger.error(f"delete_instance failed: {e}", exc_info=True)
+            return json.dumps({"error": str(e)})
+
+    @mcp.tool()
+    def set_material_property(
+        asset_path: str,
+        property_name: str,
+        value: Any,
+    ) -> str:
+        """Set a property on a UMaterial asset (not expression nodes).
+
+        Use this to configure material-level settings like domain, blend mode,
+        shading model, and two-sided rendering. For expression node properties
+        (ParameterName, DefaultValue, SceneTextureId), use set_material_node_property.
+
+        Args:
+            asset_path: Full asset path to the material (e.g., "/Game/Materials/M_MyMat")
+            property_name: UProperty name on UMaterial.
+            value: Value to set (type depends on property_name)
+
+        Returns:
+            JSON with:
+            - asset_path: Material path
+            - property_name: Name of the property that was set
+            - updated: True if successful
+        """
+        try:
+            normalized_value = value
+            if isinstance(value, str):
+                normalized_value = _normalize_enum_value(property_name, value)
+
+            params = {
+                "asset_path": asset_path,
+                "property_name": property_name,
+                "value": normalized_value,
+            }
+            result = connection.send_command("material.set_material_property", params)
+            return format_response(result.get("data", {}), "set_material_property")
+        except Exception as e:
+            logger.error(f"set_material_property failed: {e}", exc_info=True)
             return json.dumps({"error": str(e)})

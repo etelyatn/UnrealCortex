@@ -127,21 +127,23 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
             return json.dumps({"error": "CORTEX_PROJECT_DIR not set"})
 
         saved_dir = pathlib.Path(project_dir) / "Saved"
-        port_file = saved_dir / "CortexPort.txt"
         lock_file = saved_dir / "CortexRestarting.lock"
 
         current_pid = connection._pid
         project_path = connection._project_path
+        port_file_pattern = f"CortexPort-{current_pid}.txt" if current_pid else None
 
-        if not project_path and port_file.exists():
-            try:
-                content = port_file.read_text().strip()
-                if content.startswith("{"):
-                    data = json.loads(content)
-                    current_pid = current_pid or data.get("pid")
-                    project_path = data.get("project_path")
-            except (json.JSONDecodeError, OSError):
-                pass
+        if not project_path and current_pid:
+            pid_port_file = saved_dir / f"CortexPort-{current_pid}.txt"
+            if pid_port_file.exists():
+                try:
+                    content = pid_port_file.read_text().strip()
+                    if content.startswith("{"):
+                        data = json.loads(content)
+                        current_pid = current_pid or data.get("pid")
+                        project_path = data.get("project_path")
+                except (json.JSONDecodeError, OSError):
+                    pass
 
         if not project_path:
             return json.dumps(
@@ -179,10 +181,12 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
                             }
                         )
 
-            try:
-                port_file.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if current_pid:
+                old_port_file = saved_dir / f"CortexPort-{current_pid}.txt"
+                try:
+                    old_port_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
             # Phase 2: launch editor
             engine_path = os.environ.get("UE_56_PATH", "")
@@ -217,20 +221,22 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
 
             while time.monotonic() < launch_deadline:
                 time.sleep(3)
-                if port_file.exists():
+                for port_file in saved_dir.glob("CortexPort-*.txt"):
+                    if port_file_pattern and port_file.name == port_file_pattern:
+                        continue
                     try:
                         content = port_file.read_text().strip()
                         if content.startswith("{"):
                             data = json.loads(content)
-                            new_pid = data.get("pid")
-                            if new_pid and new_pid != current_pid:
+                            found_pid = data.get("pid")
+                            if found_pid and found_pid != current_pid:
+                                new_pid = found_pid
                                 new_port = int(data["port"])
                                 break
-                        else:
-                            new_port = int(content)
-                            break
                     except (json.JSONDecodeError, ValueError, OSError, KeyError):
                         continue
+                if new_port is not None:
+                    break
 
             if new_port is None:
                 return json.dumps(

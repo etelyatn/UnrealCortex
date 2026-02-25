@@ -2,6 +2,8 @@
 #include "Modules/ModuleManager.h"
 #include "CortexCommandRouter.h"
 #include "CortexCoreModule.h"
+#include "Editor.h"
+#include "FileHelpers.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexAssetSaveSingleTest,
@@ -554,6 +556,86 @@ bool FCortexAssetReloadDryRunTest::RunTest(const FString& Parameters)
 		bool bDryRun = false;
 		Result.Data->TryGetBoolField(TEXT("dry_run"), bDryRun);
 		TestTrue(TEXT("dry_run should be true in response"), bDryRun);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetOpenWorldTest,
+	"Cortex.Core.Asset.OpenAsset.WorldAsset",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetOpenWorldTest::RunTest(const FString& Parameters)
+{
+	const FString BaselineMapPackage = TEXT("/Game/Sim/Maps/Garage");
+	FString BaselineMapFilePath;
+	const bool bBaselineMapReady = FPackageName::TryConvertLongPackageNameToFilename(
+		BaselineMapPackage,
+		BaselineMapFilePath,
+		FPackageName::GetMapPackageExtension());
+	TestTrue(TEXT("Baseline map package should resolve to filename"), bBaselineMapReady);
+	if (bBaselineMapReady)
+	{
+		UWorld* BaselineWorld = UEditorLoadingAndSavingUtils::LoadMap(BaselineMapFilePath);
+		TestNotNull(TEXT("Baseline map should load before test"), BaselineWorld);
+	}
+
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Maps/TestMap"));
+
+	FCortexCommandResult Result = Router.Execute(TEXT("core.open_asset"), RequestParams);
+	TestTrue(TEXT("open_asset World should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
+		TestTrue(TEXT("Response has results array"), Result.Data->TryGetArrayField(TEXT("results"), Results));
+		if (Results != nullptr)
+		{
+			TestEqual(TEXT("Results should contain exactly one entry"), Results->Num(), 1);
+			const TSharedPtr<FJsonObject>* Entry = nullptr;
+			TestTrue(TEXT("First result should be an object"), (*Results)[0]->TryGetObject(Entry));
+			if (Entry != nullptr)
+			{
+				bool bOpened = false;
+				(*Entry)->TryGetBoolField(TEXT("editor_opened"), bOpened);
+				TestTrue(TEXT("editor_opened should be true for World"), bOpened);
+
+				FString AssetType;
+				(*Entry)->TryGetStringField(TEXT("asset_type"), AssetType);
+				TestTrue(TEXT("asset_type should be World"), AssetType.Contains(TEXT("World")));
+
+				bool bWasAlreadyOpen = true;
+				(*Entry)->TryGetBoolField(TEXT("was_already_open"), bWasAlreadyOpen);
+				TestTrue(TEXT("was_already_open field should exist"),
+					(*Entry)->HasField(TEXT("was_already_open")));
+			}
+		}
+	}
+
+	if (bBaselineMapReady)
+	{
+		UWorld* RestoredWorld = UEditorLoadingAndSavingUtils::LoadMap(BaselineMapFilePath);
+		TestNotNull(TEXT("Baseline map should restore after world open test"), RestoredWorld);
+	}
+
+	if (GEditor != nullptr)
+	{
+		UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
+		TestNotNull(TEXT("Editor world should be valid"), EditorWorld);
+		if (EditorWorld != nullptr)
+		{
+			TestEqual(
+				TEXT("World-open test should restore baseline map to avoid leaking global editor state"),
+				EditorWorld->GetOutermost()->GetName(),
+				BaselineMapPackage);
+		}
 	}
 
 	return true;

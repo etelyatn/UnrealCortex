@@ -6,6 +6,7 @@
 #include "Engine/CompositeDataTable.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/TextProperty.h"
+#include "UObject/SavePackage.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "GameplayTagContainer.h"
@@ -16,6 +17,7 @@
 #include "Internationalization/StringTable.h"
 #include "Internationalization/StringTableCore.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/AssetData.h"
 #include "Engine/DataAsset.h"
 #include "ScopedTransaction.h"
@@ -529,7 +531,7 @@ FCortexCommandResult FCortexDataTableOps::AddDatatableRow(const TSharedPtr<FJson
 	RowStruct->InitializeStruct(RowMemory);
 
 	TArray<FString> Warnings;
-	bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, RowMemory, Warnings);
+	bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, RowMemory, DataTable, Warnings);
 
 	if (!bDeserializeSuccess)
 	{
@@ -674,7 +676,7 @@ FCortexCommandResult FCortexDataTableOps::UpdateDatatableRow(const TSharedPtr<FJ
 		// Copy current values to temp
 		RowStruct->CopyScriptStruct(TempRowPtr, RowPtr);
 
-		bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, TempRowPtr, Warnings);
+		bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, TempRowPtr, DataTable, Warnings);
 
 		if (!bDeserializeSuccess)
 		{
@@ -739,7 +741,7 @@ FCortexCommandResult FCortexDataTableOps::UpdateDatatableRow(const TSharedPtr<FJ
 	));
 	DataTable->Modify();
 
-	bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, RowPtr, Warnings);
+	bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*RowData, RowStruct, RowPtr, DataTable, Warnings);
 
 	if (!bDeserializeSuccess)
 	{
@@ -994,7 +996,7 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 			RowStruct->InitializeStruct(TempMemory);
 
 			TArray<FString> RowWarnings;
-			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, TempMemory, RowWarnings);
+			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, TempMemory, DataTable, RowWarnings);
 
 			RowStruct->DestroyStruct(TempMemory);
 			FMemory::Free(TempMemory);
@@ -1037,7 +1039,7 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 		{
 			// Update existing row in place
 			TArray<FString> RowWarnings;
-			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, ExistingRow, RowWarnings);
+			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, ExistingRow, DataTable, RowWarnings);
 			if (!bSuccess)
 			{
 				Errors.Add(FString::Printf(TEXT("Row %d (%s): deserialization failed"), Index, *EntryRowName));
@@ -1057,7 +1059,7 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 			RowStruct->InitializeStruct(RowMemory);
 
 			TArray<FString> RowWarnings;
-			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, RowMemory, RowWarnings);
+			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, RowMemory, DataTable, RowWarnings);
 
 			if (!bSuccess)
 			{
@@ -1784,6 +1786,151 @@ FCortexCommandResult FCortexDataTableOps::ResolveTags(const TSharedPtr<FJsonObje
 	Data->SetArrayField(TEXT("resolved"), ResolvedArray);
 	Data->SetNumberField(TEXT("resolved_count"), ResolvedArray.Num());
 	Data->SetArrayField(TEXT("unresolved_tags"), UnresolvedArray);
+
+	return FCortexCommandRouter::Success(Data);
+}
+
+UScriptStruct* FCortexDataTableOps::ResolveRowStruct(const FString& StructName, FCortexCommandResult& OutError)
+{
+	// Try full path first (e.g. "/Script/CortexSandbox.SimManufacturerDefinition")
+	UScriptStruct* Resolved = FindObject<UScriptStruct>(nullptr, *StructName);
+	if (Resolved != nullptr)
+	{
+		return Resolved;
+	}
+
+	// Search all UScriptStructs by short name
+	for (TObjectIterator<UScriptStruct> It; It; ++It)
+	{
+		UScriptStruct* Candidate = *It;
+		if (IsValid(Candidate) && Candidate->GetName() == StructName)
+		{
+			Resolved = Candidate;
+			break;
+		}
+	}
+
+	if (Resolved == nullptr)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidStructType,
+			FString::Printf(TEXT("Row struct not found: %s"), *StructName)
+		);
+		return nullptr;
+	}
+
+	// Must derive from FTableRowBase
+	if (!Resolved->IsChildOf(FTableRowBase::StaticStruct()))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidStructType,
+			FString::Printf(TEXT("Struct '%s' does not inherit from FTableRowBase"), *StructName)
+		);
+		return nullptr;
+	}
+
+	return Resolved;
+}
+
+FCortexCommandResult FCortexDataTableOps::CreateDataTable(const TSharedPtr<FJsonObject>& Params)
+{
+	FString TablePath;
+	FString RowStructName;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("table_path"), TablePath)
+		|| !Params->TryGetStringField(TEXT("row_struct"), RowStructName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: table_path, row_struct")
+		);
+	}
+
+	if (TablePath.IsEmpty() || RowStructName.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Parameters 'table_path' and 'row_struct' cannot be empty")
+		);
+	}
+
+	FCortexCommandResult StructError;
+	UScriptStruct* RowStruct = ResolveRowStruct(RowStructName, StructError);
+	if (RowStruct == nullptr)
+	{
+		return StructError;
+	}
+
+	const FString PackagePath = FPackageName::ObjectPathToPackageName(TablePath);
+	const FString AssetName = FPackageName::GetShortName(PackagePath);
+
+	if (FindPackage(nullptr, *PackagePath) != nullptr || FPackageName::DoesPackageExist(PackagePath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetAlreadyExists,
+			FString::Printf(TEXT("Asset already exists: %s"), *PackagePath)
+		);
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Create DataTable %s"), *AssetName)
+	));
+
+	UPackage* Package = CreatePackage(*PackagePath);
+	UDataTable* NewTable = NewObject<UDataTable>(
+		Package,
+		UDataTable::StaticClass(),
+		FName(*AssetName),
+		RF_Public | RF_Standalone
+	);
+	if (NewTable == nullptr)
+	{
+		Package->MarkAsGarbage();
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("Failed to create DataTable: %s"), *TablePath)
+		);
+	}
+
+	NewTable->RowStruct = RowStruct;
+
+	Package->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(NewTable);
+
+	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		Package->GetName(),
+		FPackageName::GetAssetPackageExtension()
+	);
+
+	const FString Directory = FPaths::GetPath(PackageFilename);
+	if (!FPaths::DirectoryExists(Directory))
+	{
+		IFileManager::Get().MakeDirectory(*Directory, true);
+	}
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	const bool bSaved = UPackage::SavePackage(Package, NewTable, *PackageFilename, SaveArgs);
+	if (!bSaved)
+	{
+		NewTable->MarkAsGarbage();
+		Package->MarkAsGarbage();
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("Failed to save DataTable to disk: %s"), *TablePath)
+		);
+	}
+
+	FCortexEditorUtils::NotifyAssetModified(NewTable);
+
+	const FString FullObjectPath = FString::Printf(TEXT("%s.%s"), *PackagePath, *AssetName);
+
+	UE_LOG(LogCortexData, Log, TEXT("Created DataTable: %s (struct: %s)"), *FullObjectPath, *RowStructName);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("table_path"), FullObjectPath);
+	Data->SetStringField(TEXT("row_struct"), RowStruct->GetName());
+	Data->SetBoolField(TEXT("created"), true);
 
 	return FCortexCommandRouter::Success(Data);
 }
