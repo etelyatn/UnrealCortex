@@ -361,3 +361,33 @@ bool FCortexBPAnalysisV3FunctionFieldsTest::RunTest(const FString& Parameters)
     TestBP->MarkAsGarbage();
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexBPAnalysisV3ConstructionScriptTest,
+    "Cortex.Blueprint.Analysis.V3ConstructionScript",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV3ConstructionScriptTest::RunTest(const FString& Parameters)
+{
+    UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+        AActor::StaticClass(),
+        GetTransientPackage(),
+        FName(TEXT("BP_V3ConstructionTest")),
+        BPTYPE_Normal,
+        UBlueprint::StaticClass(),
+        UBlueprintGeneratedClass::StaticClass());
+    TestNotNull(TEXT("Test Blueprint created"), TestBP);
+    if (!TestBP) { return false; }
+
+    FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+    FCortexBPCommandHandler Handler;
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+    FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+    TestTrue(TEXT("Analysis succeeded"), Result.bSuccess);
+    TestTrue(TEXT("Has construction_script"), Result.Data->HasField(TEXT("construction_script")));
+
+    TestBP->MarkAsGarbage();
+    return true;
+}

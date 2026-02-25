@@ -24,8 +24,10 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
+#include "K2Node_SpawnActor.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "UObject/FieldIterator.h"
 #include "UObject/UnrealType.h"
 #include "Components/SceneComponent.h"
@@ -392,6 +394,96 @@ bool IsRPCReliable(UBlueprint* BP, const FName& FuncName)
 
 	UFunction* Func = SearchClass->FindFunctionByName(FuncName);
 	return Func && (Func->FunctionFlags & FUNC_NetReliable) != 0;
+}
+
+TSharedPtr<FJsonObject> AnalyzeConstructionScript(UBlueprint* BP)
+{
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+
+	UEdGraph* ConstructionScript = FBlueprintEditorUtils::FindUserConstructionScript(BP);
+	if (!ConstructionScript)
+	{
+		Result->SetNumberField(TEXT("node_count"), 0);
+		Result->SetBoolField(TEXT("has_expensive_calls"), false);
+		Result->SetArrayField(TEXT("expensive_call_types"), {});
+		Result->SetStringField(TEXT("recommended_translation"), TEXT("constructor"));
+		return Result;
+	}
+
+	Result->SetNumberField(TEXT("node_count"), ConstructionScript->Nodes.Num());
+
+	TSet<FString> ExpensiveCallTypes;
+	bool bHasWorldQueries = false;
+
+	for (UEdGraphNode* Node : ConstructionScript->Nodes)
+	{
+		if (!Node) { continue; }
+
+		// Check by node class cast
+		if (Cast<UK2Node_SpawnActor>(Node))
+		{
+			ExpensiveCallTypes.Add(TEXT("SpawnActor"));
+			bHasWorldQueries = true;
+			continue;
+		}
+
+		// Check by function name for CallFunction nodes
+		if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
+		{
+			if (UFunction* TargetFunc = CallNode->GetTargetFunction())
+			{
+				const FString FuncName = TargetFunc->GetName();
+				if (FuncName.Contains(TEXT("LineTrace")) || FuncName.Contains(TEXT("SphereTrace")) ||
+					FuncName.Contains(TEXT("BoxTrace")) || FuncName.Contains(TEXT("CapsuleTrace")))
+				{
+					ExpensiveCallTypes.Add(TEXT("LineTrace"));
+					bHasWorldQueries = true;
+				}
+				else if (FuncName.Contains(TEXT("SpawnActor")))
+				{
+					ExpensiveCallTypes.Add(TEXT("SpawnActor"));
+					bHasWorldQueries = true;
+				}
+				else if (FuncName.Contains(TEXT("LoadObject")) || FuncName.Contains(TEXT("LoadAsset")))
+				{
+					ExpensiveCallTypes.Add(TEXT("LoadAsset"));
+				}
+			}
+		}
+
+		// Check for async load node by class name (avoid hard dependency)
+		const FString NodeClassName = Node->GetClass()->GetName();
+		if (NodeClassName == TEXT("K2Node_LoadAsset"))
+		{
+			ExpensiveCallTypes.Add(TEXT("LoadAsset"));
+		}
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ExpensiveArr;
+	for (const FString& Type : ExpensiveCallTypes)
+	{
+		ExpensiveArr.Add(MakeShared<FJsonValueString>(Type));
+	}
+	Result->SetBoolField(TEXT("has_expensive_calls"), ExpensiveCallTypes.Num() > 0);
+	Result->SetArrayField(TEXT("expensive_call_types"), ExpensiveArr);
+
+	// Heuristic: pure defaults → constructor, world queries → BeginPlay, else → OnConstruction
+	FString Recommendation;
+	if (bHasWorldQueries)
+	{
+		Recommendation = TEXT("BeginPlay");
+	}
+	else if (ConstructionScript->Nodes.Num() <= 3)
+	{
+		Recommendation = TEXT("constructor");
+	}
+	else
+	{
+		Recommendation = TEXT("OnConstruction");
+	}
+	Result->SetStringField(TEXT("recommended_translation"), Recommendation);
+
+	return Result;
 }
 
 TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
@@ -993,6 +1085,9 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		InterfacesArray.Add(MakeShared<FJsonValueObject>(InterfaceObj));
 	}
 	Data->SetArrayField(TEXT("interfaces_implemented"), InterfacesArray);
+
+	// V3: Construction script analysis
+	Data->SetObjectField(TEXT("construction_script"), AnalyzeConstructionScript(BP));
 
 	Data->SetObjectField(TEXT("complexity_metrics"), BuildComplexityMetrics(BP));
 
