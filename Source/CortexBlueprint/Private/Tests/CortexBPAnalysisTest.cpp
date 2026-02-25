@@ -259,3 +259,218 @@ bool FCortexBPAnalyzeForMigrationInvalidPathTest::RunTest(const FString& Paramet
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisV3VariableFieldsTest,
+	"Cortex.Blueprint.Analysis.V3VariableFields",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV3VariableFieldsTest::RunTest(const FString& Parameters)
+{
+	// Create transient Blueprint (same pattern as SelfContainedTest)
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_V3VarFieldsTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Test Blueprint created"), TestBP);
+	if (!TestBP) { return false; }
+
+	// Add a variable with known flags
+	FEdGraphPinType PinType;
+	PinType.PinCategory = UEdGraphSchema_K2::PC_Float;
+	const bool bAdded = FBlueprintEditorUtils::AddMemberVariable(TestBP, TEXT("TestHealth"), PinType);
+	TestTrue(TEXT("Variable added"), bAdded);
+	if (!bAdded || TestBP->NewVariables.Num() == 0)
+	{
+		TestBP->MarkAsGarbage();
+		return false;
+	}
+
+	// Explicitly make it internal/transient to verify "None" access output.
+	TestBP->NewVariables[0].PropertyFlags = CPF_Transient;
+
+	// Compile
+	FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+	// Run analysis via command handler (same pattern as SelfContainedTest)
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	TestTrue(TEXT("Analysis succeeded"), Result.bSuccess);
+
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		TestBP->MarkAsGarbage();
+		return false;
+	}
+
+	// Check variable has new V3 fields
+	const TArray<TSharedPtr<FJsonValue>>* Variables = nullptr;
+	TestTrue(TEXT("Has variables"), Result.Data->TryGetArrayField(TEXT("variables"), Variables));
+	if (Variables && Variables->Num() > 0)
+	{
+		const TSharedPtr<FJsonObject>& VarObj = (*Variables)[0]->AsObject();
+		TestTrue(TEXT("Has uproperty_specifier"), VarObj->HasField(TEXT("uproperty_specifier")));
+		TestTrue(TEXT("Has blueprint_access"), VarObj->HasField(TEXT("blueprint_access")));
+		TestTrue(TEXT("Has reference_type"), VarObj->HasField(TEXT("reference_type")));
+		TestTrue(TEXT("Has replication object"), VarObj->HasField(TEXT("replication")));
+		TestTrue(TEXT("Has is_save_game"), VarObj->HasField(TEXT("is_save_game")));
+		TestTrue(TEXT("Has is_transient"), VarObj->HasField(TEXT("is_transient")));
+		TestTrue(TEXT("Has is_gameplay_tag"), VarObj->HasField(TEXT("is_gameplay_tag")));
+		TestEqual(TEXT("uproperty_specifier should be None for internal var"),
+			VarObj->GetStringField(TEXT("uproperty_specifier")), FString(TEXT("None")));
+		TestEqual(TEXT("blueprint_access should be None for internal var"),
+			VarObj->GetStringField(TEXT("blueprint_access")), FString(TEXT("None")));
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexBPAnalysisV3FunctionFieldsTest,
+    "Cortex.Blueprint.Analysis.V3FunctionFields",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV3FunctionFieldsTest::RunTest(const FString& Parameters)
+{
+    UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+        AActor::StaticClass(),
+        GetTransientPackage(),
+        FName(TEXT("BP_V3FuncFieldsTest")),
+        BPTYPE_Normal,
+        UBlueprint::StaticClass(),
+        UBlueprintGeneratedClass::StaticClass());
+    TestNotNull(TEXT("Test Blueprint created"), TestBP);
+    if (!TestBP) { return false; }
+
+    // Add a function graph with a unique name to avoid duplicate function conflicts
+    UEdGraph* FuncGraph = FBlueprintEditorUtils::CreateNewGraph(
+        TestBP, FName(TEXT("V3UniqueFunc")), UEdGraph::StaticClass(),
+        UEdGraphSchema_K2::StaticClass());
+    FBlueprintEditorUtils::AddFunctionGraph<UClass>(TestBP, FuncGraph, true, static_cast<UClass*>(nullptr));
+    FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+    FCortexBPCommandHandler Handler;
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+    FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+    TestTrue(TEXT("Analysis succeeded"), Result.bSuccess);
+
+    const TArray<TSharedPtr<FJsonValue>>* Functions;
+    TestTrue(TEXT("Has functions"), Result.Data->TryGetArrayField(TEXT("functions"), Functions));
+    if (Functions && Functions->Num() > 0)
+    {
+        const TSharedPtr<FJsonObject>& FuncObj = (*Functions)[0]->AsObject();
+        TestTrue(TEXT("Has is_override"), FuncObj->HasField(TEXT("is_override")));
+        TestTrue(TEXT("Has rpc_type"), FuncObj->HasField(TEXT("rpc_type")));
+    }
+
+    TestBP->MarkAsGarbage();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexBPAnalysisV3InputBindingsTest,
+    "Cortex.Blueprint.Analysis.V3InputBindings",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV3InputBindingsTest::RunTest(const FString& Parameters)
+{
+    UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+        AActor::StaticClass(),
+        GetTransientPackage(),
+        FName(TEXT("BP_V3InputTest")),
+        BPTYPE_Normal,
+        UBlueprint::StaticClass(),
+        UBlueprintGeneratedClass::StaticClass());
+    TestNotNull(TEXT("Test Blueprint created"), TestBP);
+    if (!TestBP) { return false; }
+
+    FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+    FCortexBPCommandHandler Handler;
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+    FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+    TestTrue(TEXT("Analysis succeeded"), Result.bSuccess);
+    // Should have the field even if empty
+    TestTrue(TEXT("Has input_bindings"), Result.Data->HasField(TEXT("input_bindings")));
+
+    TestBP->MarkAsGarbage();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexBPAnalysisV3ConstructionScriptTest,
+    "Cortex.Blueprint.Analysis.V3ConstructionScript",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV3ConstructionScriptTest::RunTest(const FString& Parameters)
+{
+    UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+        AActor::StaticClass(),
+        GetTransientPackage(),
+        FName(TEXT("BP_V3ConstructionTest")),
+        BPTYPE_Normal,
+        UBlueprint::StaticClass(),
+        UBlueprintGeneratedClass::StaticClass());
+    TestNotNull(TEXT("Test Blueprint created"), TestBP);
+    if (!TestBP) { return false; }
+
+    FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+    FCortexBPCommandHandler Handler;
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+    FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+    TestTrue(TEXT("Analysis succeeded"), Result.bSuccess);
+    TestTrue(TEXT("Has construction_script"), Result.Data->HasField(TEXT("construction_script")));
+
+    TestBP->MarkAsGarbage();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexBPAnalysisV3ConfidenceTest,
+    "Cortex.Blueprint.Analysis.V3Confidence",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV3ConfidenceTest::RunTest(const FString& Parameters)
+{
+    UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+        AActor::StaticClass(),
+        GetTransientPackage(),
+        FName(TEXT("BP_V3ConfidenceTest")),
+        BPTYPE_Normal,
+        UBlueprint::StaticClass(),
+        UBlueprintGeneratedClass::StaticClass());
+    TestNotNull(TEXT("Test Blueprint created"), TestBP);
+    if (!TestBP) { return false; }
+
+    FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+    FCortexBPCommandHandler Handler;
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+    FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+    TestTrue(TEXT("Analysis succeeded"), Result.bSuccess);
+
+    const TSharedPtr<FJsonObject>* Metrics;
+    TestTrue(TEXT("Has metrics"), Result.Data->TryGetObjectField(TEXT("complexity_metrics"), Metrics));
+    if (Metrics)
+    {
+        TestTrue(TEXT("Has macro_instance_count"), (*Metrics)->HasField(TEXT("macro_instance_count")));
+        TestTrue(TEXT("Has parent_is_blueprint"), (*Metrics)->HasField(TEXT("parent_is_blueprint")));
+        TestTrue(TEXT("Has unsupported_node_count"), (*Metrics)->HasField(TEXT("unsupported_node_count")));
+        TestTrue(TEXT("Has user_defined_type_count"), (*Metrics)->HasField(TEXT("user_defined_type_count")));
+        TestTrue(TEXT("Has interface_count"), (*Metrics)->HasField(TEXT("interface_count")));
+    }
+
+    TestBP->MarkAsGarbage();
+    return true;
+}

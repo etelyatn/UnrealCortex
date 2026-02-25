@@ -24,14 +24,21 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
+#include "K2Node_MacroInstance.h"
+#include "K2Node_SpawnActor.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "UObject/FieldIterator.h"
 #include "UObject/UnrealType.h"
 #include "Components/SceneComponent.h"
 #include "GameFramework/Actor.h"
 #include "Components/ActorComponent.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "GameplayTagContainer.h"
+#include "StructUtils/UserDefinedStruct.h"
+#include "Engine/UserDefinedEnum.h"
+#include "Net/UnrealNetwork.h"
 
 namespace
 {
@@ -195,20 +202,65 @@ int32 CountDownstreamLatentNodes(UEdGraphNode* StartNode, TSet<UEdGraphNode*>& V
 	return MaxDownstream;
 }
 
-FString CalculateMigrationConfidence(int32 TotalNodes, int32 LatentCount)
+FString ResolveUPropertySpecifier(uint64 Flags)
 {
-	if (TotalNodes < 20 && LatentCount == 0)
+	const bool bEdit = (Flags & CPF_Edit) != 0;
+	const bool bNoInstance = (Flags & CPF_DisableEditOnInstance) != 0;
+	const bool bNoTemplate = (Flags & CPF_DisableEditOnTemplate) != 0;
+	const bool bBPVisible = (Flags & CPF_BlueprintVisible) != 0;
+
+	if (bEdit)
 	{
-		return TEXT("high");
+		if (bNoInstance) { return TEXT("EditDefaultsOnly"); }
+		if (bNoTemplate) { return TEXT("EditInstanceOnly"); }
+		return TEXT("EditAnywhere");
 	}
-	if (TotalNodes < 50 && LatentCount <= 2)
+	if (bBPVisible)
 	{
-		return TEXT("high");
+		if (bNoInstance) { return TEXT("VisibleDefaultsOnly"); }
+		if (bNoTemplate) { return TEXT("VisibleInstanceOnly"); }
+		return TEXT("VisibleAnywhere");
 	}
-	if (TotalNodes < 100)
+	return TEXT("None");
+}
+
+FString ResolveReferenceType(const FEdGraphPinType& PinType)
+{
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_SoftObject ||
+		PinType.PinCategory == UEdGraphSchema_K2::PC_SoftClass)
 	{
-		return TEXT("medium");
+		return TEXT("Soft");
 	}
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_Interface)
+	{
+		return TEXT("Interface");
+	}
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_Object && PinType.bIsWeakPointer)
+	{
+		return TEXT("Weak");
+	}
+	return TEXT("Hard");
+}
+
+FString CalculateMigrationConfidence(
+	int32 TotalNodes, int32 LatentCount, int32 UnsupportedCount,
+	bool bParentIsBP, int32 MacroCount, int32 InterfaceCount, int32 UserTypeCount)
+{
+	// Start with baseline from node count
+	int32 Score = 100;
+
+	if (TotalNodes >= 100) { Score -= 40; }
+	else if (TotalNodes >= 50) { Score -= 20; }
+
+	Score -= LatentCount * 10;
+	Score -= UnsupportedCount * 5;
+	Score -= MacroCount * 3;
+	if (bParentIsBP) { Score -= 30; }
+	if (InterfaceCount > 2) { Score -= (InterfaceCount - 2) * 10; }
+	Score -= UserTypeCount * 15;
+
+	if (Score >= 70) { return TEXT("high"); }
+	if (Score >= 40) { return TEXT("medium"); }
 	return TEXT("low");
 }
 
@@ -301,12 +353,257 @@ int32 ComputeGraphExecDepth(UEdGraph* Graph)
 	return MaxDepth;
 }
 
+FString DetermineParentFunctionType(UBlueprint* BP, const FName& FuncName)
+{
+	// Walk to first native ancestor
+	UClass* NativeParent = BP->ParentClass;
+	while (NativeParent && NativeParent->ClassGeneratedBy != nullptr)
+	{
+		NativeParent = NativeParent->GetSuperClass();
+	}
+	if (!NativeParent) { return TEXT(""); }
+
+	UFunction* ParentFunc = NativeParent->FindFunctionByName(FuncName);
+	if (!ParentFunc) { return TEXT(""); }
+
+	const bool bBlueprintEvent = (ParentFunc->FunctionFlags & FUNC_BlueprintEvent) != 0;
+	const bool bNative = (ParentFunc->FunctionFlags & FUNC_Native) != 0;
+
+	if (bBlueprintEvent && bNative) { return TEXT("BlueprintNativeEvent"); }
+	if (bBlueprintEvent) { return TEXT("BlueprintImplementableEvent"); }
+	return TEXT("BlueprintCallable");
+}
+
+FString DetermineRPCType(UBlueprint* BP, const FName& FuncName)
+{
+	UClass* SearchClass = BP->SkeletonGeneratedClass
+		? BP->SkeletonGeneratedClass
+		: BP->GeneratedClass;
+	if (!SearchClass) { return TEXT("None"); }
+
+	UFunction* Func = SearchClass->FindFunctionByName(FuncName);
+	if (!Func) { return TEXT("None"); }
+
+	if (Func->FunctionFlags & FUNC_NetServer) { return TEXT("Server"); }
+	if (Func->FunctionFlags & FUNC_NetClient) { return TEXT("Client"); }
+	if (Func->FunctionFlags & FUNC_NetMulticast) { return TEXT("NetMulticast"); }
+	if (Func->FunctionFlags & FUNC_Net) { return TEXT("Replicated"); }
+	return TEXT("None");
+}
+
+bool IsRPCReliable(UBlueprint* BP, const FName& FuncName)
+{
+	UClass* SearchClass = BP->SkeletonGeneratedClass
+		? BP->SkeletonGeneratedClass
+		: BP->GeneratedClass;
+	if (!SearchClass) { return false; }
+
+	UFunction* Func = SearchClass->FindFunctionByName(FuncName);
+	return Func && (Func->FunctionFlags & FUNC_NetReliable) != 0;
+}
+
+TArray<TSharedPtr<FJsonValue>> DetectInputBindings(UBlueprint* BP)
+{
+	TArray<TSharedPtr<FJsonValue>> Bindings;
+
+	// Lazy class resolution — returns null if EnhancedInput not used
+	static UClass* EIAClass = nullptr;
+	static UClass* EIAEventClass = nullptr;
+	if (!EIAClass)
+	{
+		EIAClass = FindObject<UClass>(nullptr, TEXT("/Script/InputBlueprintNodes.K2Node_EnhancedInputAction"));
+		if (!EIAClass)
+		{
+			EIAClass = FindFirstObject<UClass>(TEXT("K2Node_EnhancedInputAction"), EFindFirstObjectOptions::None);
+		}
+	}
+	if (!EIAEventClass)
+	{
+		EIAEventClass = FindObject<UClass>(nullptr, TEXT("/Script/InputBlueprintNodes.K2Node_EnhancedInputActionEvent"));
+		if (!EIAEventClass)
+		{
+			EIAEventClass = FindFirstObject<UClass>(TEXT("K2Node_EnhancedInputActionEvent"), EFindFirstObjectOptions::None);
+		}
+	}
+
+	if (!EIAClass && !EIAEventClass) { return Bindings; }
+
+	TArray<UEdGraph*> AllGraphs;
+	BP->GetAllGraphs(AllGraphs);
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		if (!Graph) { continue; }
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) { continue; }
+
+			if (EIAClass && Node->IsA(EIAClass))
+			{
+				// Combined node: access InputAction via reflection
+				FString ActionName;
+				if (FObjectProperty* ActionProp = CastField<FObjectProperty>(
+						Node->GetClass()->FindPropertyByName(TEXT("InputAction"))))
+				{
+					if (const UObject* ActionObj = ActionProp->GetObjectPropertyValue(
+							ActionProp->ContainerPtrToValuePtr<void>(Node)))
+					{
+						ActionName = ActionObj->GetName();
+					}
+				}
+
+				// Iterate output exec pins for trigger types
+				for (UEdGraphPin* Pin : Node->Pins)
+				{
+					if (Pin && Pin->Direction == EGPD_Output &&
+						Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec &&
+						Pin->LinkedTo.Num() > 0)
+					{
+						TSharedPtr<FJsonObject> BindingObj = MakeShared<FJsonObject>();
+						BindingObj->SetStringField(TEXT("action_name"), ActionName);
+						BindingObj->SetStringField(TEXT("trigger_event"), Pin->PinName.ToString());
+						Bindings.Add(MakeShared<FJsonValueObject>(BindingObj));
+					}
+				}
+			}
+			else if (EIAEventClass && Node->IsA(EIAEventClass))
+			{
+				// Single-trigger node: read fields via reflection
+				FString ActionName;
+				FString TriggerEvent;
+
+				if (FObjectProperty* ActionProp = CastField<FObjectProperty>(
+						Node->GetClass()->FindPropertyByName(TEXT("InputAction"))))
+				{
+					if (const UObject* ActionObj = ActionProp->GetObjectPropertyValue(
+							ActionProp->ContainerPtrToValuePtr<void>(Node)))
+					{
+						ActionName = ActionObj->GetName();
+					}
+				}
+
+				if (FByteProperty* TriggerProp = CastField<FByteProperty>(
+						Node->GetClass()->FindPropertyByName(TEXT("TriggerEvent"))))
+				{
+					const uint8 Val = *TriggerProp->ContainerPtrToValuePtr<uint8>(Node);
+					if (const UEnum* TriggerEnum = TriggerProp->GetIntPropertyEnum())
+					{
+						TriggerEvent = TriggerEnum->GetNameStringByValue(Val);
+					}
+				}
+
+				if (!ActionName.IsEmpty())
+				{
+					TSharedPtr<FJsonObject> BindingObj = MakeShared<FJsonObject>();
+					BindingObj->SetStringField(TEXT("action_name"), ActionName);
+					BindingObj->SetStringField(TEXT("trigger_event"), TriggerEvent);
+					Bindings.Add(MakeShared<FJsonValueObject>(BindingObj));
+				}
+			}
+		}
+	}
+
+	return Bindings;
+}
+
+TSharedPtr<FJsonObject> AnalyzeConstructionScript(UBlueprint* BP)
+{
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+
+	UEdGraph* ConstructionScript = FBlueprintEditorUtils::FindUserConstructionScript(BP);
+	if (!ConstructionScript)
+	{
+		Result->SetNumberField(TEXT("node_count"), 0);
+		Result->SetBoolField(TEXT("has_expensive_calls"), false);
+		Result->SetArrayField(TEXT("expensive_call_types"), {});
+		Result->SetStringField(TEXT("recommended_translation"), TEXT("constructor"));
+		return Result;
+	}
+
+	Result->SetNumberField(TEXT("node_count"), ConstructionScript->Nodes.Num());
+
+	TSet<FString> ExpensiveCallTypes;
+	bool bHasWorldQueries = false;
+
+	for (UEdGraphNode* Node : ConstructionScript->Nodes)
+	{
+		if (!Node) { continue; }
+
+		// Check by node class cast
+		if (Cast<UK2Node_SpawnActor>(Node))
+		{
+			ExpensiveCallTypes.Add(TEXT("SpawnActor"));
+			bHasWorldQueries = true;
+			continue;
+		}
+
+		// Check by function name for CallFunction nodes
+		if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
+		{
+			if (UFunction* TargetFunc = CallNode->GetTargetFunction())
+			{
+				const FString FuncName = TargetFunc->GetName();
+				if (FuncName.Contains(TEXT("LineTrace")) || FuncName.Contains(TEXT("SphereTrace")) ||
+					FuncName.Contains(TEXT("BoxTrace")) || FuncName.Contains(TEXT("CapsuleTrace")))
+				{
+					ExpensiveCallTypes.Add(TEXT("LineTrace"));
+					bHasWorldQueries = true;
+				}
+				else if (FuncName.Contains(TEXT("SpawnActor")))
+				{
+					ExpensiveCallTypes.Add(TEXT("SpawnActor"));
+					bHasWorldQueries = true;
+				}
+				else if (FuncName.Contains(TEXT("LoadObject")) || FuncName.Contains(TEXT("LoadAsset")))
+				{
+					ExpensiveCallTypes.Add(TEXT("LoadAsset"));
+				}
+			}
+		}
+
+		// Check for async load node by class name (avoid hard dependency)
+		const FString NodeClassName = Node->GetClass()->GetName();
+		if (NodeClassName == TEXT("K2Node_LoadAsset"))
+		{
+			ExpensiveCallTypes.Add(TEXT("LoadAsset"));
+		}
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ExpensiveArr;
+	for (const FString& Type : ExpensiveCallTypes)
+	{
+		ExpensiveArr.Add(MakeShared<FJsonValueString>(Type));
+	}
+	Result->SetBoolField(TEXT("has_expensive_calls"), ExpensiveCallTypes.Num() > 0);
+	Result->SetArrayField(TEXT("expensive_call_types"), ExpensiveArr);
+
+	// Heuristic: pure defaults → constructor, world queries → BeginPlay, else → OnConstruction
+	FString Recommendation;
+	if (bHasWorldQueries)
+	{
+		Recommendation = TEXT("BeginPlay");
+	}
+	else if (ConstructionScript->Nodes.Num() <= 3)
+	{
+		Recommendation = TEXT("constructor");
+	}
+	else
+	{
+		Recommendation = TEXT("OnConstruction");
+	}
+	Result->SetStringField(TEXT("recommended_translation"), Recommendation);
+
+	return Result;
+}
+
 TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 {
 	int32 TotalNodes = 0;
 	int32 TotalConnections = 0;
 	int32 MaxGraphDepth = 0;
 	int32 LatentCount = 0;
+	int32 MacroInstanceCount = 0;
+	int32 UnsupportedNodeOccurrences = 0;
+	int32 UserDefinedTypeCount = 0;
 	bool bHasTick = false;
 	bool bHasTimelines = BP && BP->Timelines.Num() > 0;
 	bool bHasDispatchers = false;
@@ -363,6 +660,11 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 				}
 			}
 
+			if (Cast<UK2Node_MacroInstance>(Node))
+			{
+				++MacroInstanceCount;
+			}
+
 			const FString NodeClassName = Node->GetClass()->GetName();
 			bool bKnownPrefix = false;
 			for (const FString& Prefix : KnownNodePrefixes)
@@ -376,6 +678,26 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 			if (!bKnownPrefix)
 			{
 				UnsupportedNodeClasses.Add(NodeClassName);
+				++UnsupportedNodeOccurrences;
+			}
+		}
+	}
+
+	// After the main graph loop, count user-defined struct/enum dependencies
+	for (const FBPVariableDescription& Variable : BP->NewVariables)
+	{
+		if (Variable.VarType.PinCategory == UEdGraphSchema_K2::PC_Struct)
+		{
+			if (Cast<UUserDefinedStruct>(Variable.VarType.PinSubCategoryObject.Get()))
+			{
+				++UserDefinedTypeCount;
+			}
+		}
+		else if (Variable.VarType.PinCategory == UEdGraphSchema_K2::PC_Byte || Variable.VarType.PinCategory == UEdGraphSchema_K2::PC_Enum)
+		{
+			if (Cast<UUserDefinedEnum>(Variable.VarType.PinSubCategoryObject.Get()))
+			{
+				++UserDefinedTypeCount;
 			}
 		}
 	}
@@ -397,6 +719,9 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 		UnsupportedArray.Add(MakeShared<FJsonValueString>(NodeClass));
 	}
 
+	const bool bParentIsBP = BP->ParentClass && BP->ParentClass->ClassGeneratedBy != nullptr;
+	const int32 InterfaceCount = BP->ImplementedInterfaces.Num();
+
 	TSharedPtr<FJsonObject> Metrics = MakeShared<FJsonObject>();
 	Metrics->SetNumberField(TEXT("total_nodes"), TotalNodes);
 	Metrics->SetNumberField(TEXT("total_connections"), TotalConnections);
@@ -406,7 +731,14 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 	Metrics->SetBoolField(TEXT("has_latent_nodes"), LatentCount > 0);
 	Metrics->SetBoolField(TEXT("has_event_dispatchers"), bHasDispatchers);
 	Metrics->SetBoolField(TEXT("has_interfaces"), bHasInterfaces);
-	Metrics->SetStringField(TEXT("migration_confidence"), CalculateMigrationConfidence(TotalNodes, LatentCount));
+	Metrics->SetNumberField(TEXT("macro_instance_count"), MacroInstanceCount);
+	Metrics->SetBoolField(TEXT("parent_is_blueprint"), bParentIsBP);
+	Metrics->SetNumberField(TEXT("unsupported_node_count"), UnsupportedNodeOccurrences);
+	Metrics->SetNumberField(TEXT("user_defined_type_count"), UserDefinedTypeCount);
+	Metrics->SetNumberField(TEXT("interface_count"), InterfaceCount);
+	Metrics->SetStringField(TEXT("migration_confidence"),
+		CalculateMigrationConfidence(TotalNodes, LatentCount, UnsupportedNodeOccurrences,
+			bParentIsBP, MacroInstanceCount, InterfaceCount, UserDefinedTypeCount));
 	Metrics->SetArrayField(TEXT("unsupported_node_types"), UnsupportedArray);
 	return Metrics;
 }
@@ -466,6 +798,62 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		VarObj->SetStringField(TEXT("container_type"), ContainerTypeStr);
 
 		VarObj->SetNumberField(TEXT("usage_count"), CountVariableUsage(BP, Variable.VarName));
+
+		// V3: UPROPERTY specifier resolution
+		const uint64 Flags = Variable.PropertyFlags;
+		VarObj->SetStringField(TEXT("uproperty_specifier"), ResolveUPropertySpecifier(Flags));
+		const bool bBPVisible = (Flags & CPF_BlueprintVisible) != 0;
+		VarObj->SetStringField(TEXT("blueprint_access"),
+			bBPVisible ? ((Flags & CPF_BlueprintReadOnly) != 0 ? TEXT("ReadOnly") : TEXT("ReadWrite")) : TEXT("None"));
+		VarObj->SetBoolField(TEXT("is_save_game"), (Flags & CPF_SaveGame) != 0);
+		VarObj->SetBoolField(TEXT("is_transient"), (Flags & CPF_Transient) != 0);
+
+		// V3: Reference type
+		VarObj->SetStringField(TEXT("reference_type"), ResolveReferenceType(Variable.VarType));
+
+		// V3: Replication details
+		TSharedPtr<FJsonObject> ReplicationObj = MakeShared<FJsonObject>();
+		const bool bReplicated = (Flags & CPF_Net) != 0;
+		ReplicationObj->SetBoolField(TEXT("is_replicated"), bReplicated);
+		if (bReplicated)
+		{
+			const UEnum* CondEnum = StaticEnum<ELifetimeCondition>();
+			const FString CondStr = CondEnum
+				? CondEnum->GetNameStringByValue(static_cast<int64>(Variable.ReplicationCondition.GetValue()))
+				: TEXT("COND_None");
+			ReplicationObj->SetStringField(TEXT("condition"), CondStr);
+			ReplicationObj->SetStringField(TEXT("notify_func"), Variable.RepNotifyFunc.ToString());
+		}
+		else
+		{
+			ReplicationObj->SetStringField(TEXT("condition"), TEXT("COND_None"));
+			ReplicationObj->SetStringField(TEXT("notify_func"), TEXT(""));
+		}
+		VarObj->SetObjectField(TEXT("replication"), ReplicationObj);
+
+		// V3: Gameplay Tag detection
+		bool bIsGameplayTag = false;
+		FString GameplayTagType;
+		if (Variable.VarType.PinCategory == UEdGraphSchema_K2::PC_Struct)
+		{
+			const UScriptStruct* Struct = Cast<UScriptStruct>(Variable.VarType.PinSubCategoryObject.Get());
+			if (Struct == TBaseStructure<FGameplayTag>::Get())
+			{
+				bIsGameplayTag = true;
+				GameplayTagType = TEXT("FGameplayTag");
+			}
+			else if (Struct == TBaseStructure<FGameplayTagContainer>::Get())
+			{
+				bIsGameplayTag = true;
+				GameplayTagType = TEXT("FGameplayTagContainer");
+			}
+		}
+		VarObj->SetBoolField(TEXT("is_gameplay_tag"), bIsGameplayTag);
+		if (bIsGameplayTag)
+		{
+			VarObj->SetStringField(TEXT("gameplay_tag_type"), GameplayTagType);
+		}
+
 		VariablesArray.Add(MakeShared<FJsonValueObject>(VarObj));
 	}
 	Data->SetArrayField(TEXT("variables"), VariablesArray);
@@ -511,6 +899,20 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		}
 		FuncObj->SetArrayField(TEXT("inputs"), InputsArr);
 		FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
+
+		// V3: Override detection
+		const FName FuncName = *Graph->GetName();
+		const FString ParentFuncType = DetermineParentFunctionType(BP, FuncName);
+		FuncObj->SetBoolField(TEXT("is_override"), !ParentFuncType.IsEmpty());
+		if (!ParentFuncType.IsEmpty())
+		{
+			FuncObj->SetStringField(TEXT("parent_function_type"), ParentFuncType);
+		}
+
+		// V3: RPC type
+		FuncObj->SetStringField(TEXT("rpc_type"), DetermineRPCType(BP, FuncName));
+		FuncObj->SetBoolField(TEXT("is_reliable"), IsRPCReliable(BP, FuncName));
+
 		FunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
 	}
 	Data->SetArrayField(TEXT("functions"), FunctionsArray);
@@ -831,6 +1233,12 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		InterfacesArray.Add(MakeShared<FJsonValueObject>(InterfaceObj));
 	}
 	Data->SetArrayField(TEXT("interfaces_implemented"), InterfacesArray);
+
+	// V3: Enhanced Input bindings
+	Data->SetArrayField(TEXT("input_bindings"), DetectInputBindings(BP));
+
+	// V3: Construction script analysis
+	Data->SetObjectField(TEXT("construction_script"), AnalyzeConstructionScript(BP));
 
 	Data->SetObjectField(TEXT("complexity_metrics"), BuildComplexityMetrics(BP));
 

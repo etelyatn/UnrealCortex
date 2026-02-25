@@ -22,6 +22,21 @@
 
 UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FString& OutError)
 {
+	// Check if the asset is already in memory at the original path (e.g. transient BPs in tests)
+	// before applying /Game/ normalization, which would corrupt non-/Game/ paths.
+	if (AssetPath.StartsWith(TEXT("/")))
+	{
+		const FString OrigPkgName = FPackageName::ObjectPathToPackageName(AssetPath);
+		if (FindPackage(nullptr, *OrigPkgName))
+		{
+			UBlueprint* InMemoryBP = FindObject<UBlueprint>(nullptr, *AssetPath);
+			if (InMemoryBP)
+			{
+				return InMemoryBP;
+			}
+		}
+	}
+
 	// Normalize path (ensure it starts with /Game/)
 	FString NormalizedPath = AssetPath;
 	if (!NormalizedPath.StartsWith(TEXT("/")))

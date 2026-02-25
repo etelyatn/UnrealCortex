@@ -2,6 +2,7 @@
 #include "CortexCommandRouter.h"
 #include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPAnalysisOps.h"
+#include "Operations/CortexBPCleanupOps.h"
 #include "Operations/CortexBPComponentOps.h"
 #include "Operations/CortexBPStructureOps.h"
 #include "Operations/CortexBPTimelineOps.h"
@@ -79,6 +80,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPAnalysisOps::AnalyzeForMigration(Params);
 	}
 
+	if (Command == TEXT("cleanup_migration"))
+	{
+		return FCortexBPCleanupOps::CleanupMigration(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown bp command: %s"), *Command)
@@ -102,6 +108,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add({TEXT("configure_timeline"), TEXT("Configure a Timeline node's tracks and keyframes")});
 	Commands.Add({TEXT("set_component_defaults"), TEXT("Set object-reference properties on a Blueprint component template")});
 	Commands.Add({TEXT("analyze_for_migration"), TEXT("Analyze a Blueprint for C++ migration")});
+	Commands.Add({TEXT("cleanup_migration"), TEXT("Clean up a Blueprint after C++ migration")});
 
 	return Commands;
 }
