@@ -161,9 +161,12 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
 
         Returns:
             JSON with:
-            - compiled: true if compilation succeeded
             - asset_path: Path of compiled Blueprint
-            - warnings: Array of warning messages (if any)
+            - compile_status: success | warning | error
+            - error_count: Number of compiler errors
+            - warning_count: Number of compiler warnings
+            - diagnostics: Array of node-level diagnostics
+              (non-node compiler messages are counted but may not appear here)
         """
         try:
             params = {"asset_path": asset_path}
