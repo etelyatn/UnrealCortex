@@ -2,40 +2,18 @@
 
 import json
 import logging
-import pathlib
 import time
 
 from cortex_mcp.schema_generator import (
     find_project_root,
     generate_schema,
     get_schema_dir,
+    read_meta_from_file,
     SCHEMA_VERSION,
 )
 from cortex_mcp.tcp_client import UEConnection
 
 logger = logging.getLogger(__name__)
-
-
-def _read_meta_from_file(path: pathlib.Path) -> dict | None:
-    """Parse schema-meta comment block from a .md file."""
-    if not path.exists():
-        return None
-    try:
-        content = path.read_text(encoding="utf-8")
-        start = content.find("<!-- schema-meta")
-        end = content.find("-->", start)
-        if start == -1 or end == -1:
-            return None
-        meta_text = content[start + len("<!-- schema-meta"):end].strip()
-        meta = {}
-        for line in meta_text.split("\n"):
-            line = line.strip()
-            if ":" in line:
-                key, _, value = line.partition(":")
-                meta[key.strip()] = value.strip()
-        return meta
-    except OSError:
-        return None
 
 
 def register_schema_tools(mcp, connection: UEConnection):
@@ -103,7 +81,7 @@ def register_schema_tools(mcp, connection: UEConnection):
         for md_file in schema_dir.glob("*.md"):
             if md_file.name.startswith("_") or md_file.name == "README.md":
                 continue
-            meta = _read_meta_from_file(md_file)
+            meta = read_meta_from_file(md_file)
             domain_name = md_file.stem
             if meta:
                 generated = meta.get("generated", "unknown")
@@ -121,7 +99,7 @@ def register_schema_tools(mcp, connection: UEConnection):
                     "error": "No meta block found",
                 }
 
-        catalog_meta = _read_meta_from_file(schema_dir / "_catalog.md")
+        catalog_meta = read_meta_from_file(schema_dir / "_catalog.md")
 
         return json.dumps({
             "exists": True,

@@ -11,6 +11,7 @@ from cortex_mcp.schema_generator import find_project_root, get_schema_dir
 from cortex_mcp.schema_generator import render_data_schema, SCHEMA_VERSION, render_catalog
 from cortex_mcp.schema_generator import collect_data_domain
 from cortex_mcp.schema_generator import generate_schema
+from cortex_mcp.schema_generator import read_meta_from_file
 
 
 class TestProjectRootDiscovery(unittest.TestCase):
@@ -448,3 +449,128 @@ class TestGenerateSchema(unittest.TestCase):
 
             # Verify return value
             self.assertIn("data", result["generated"])
+
+    def test_generate_fetches_engine_version(self):
+        """generate_schema calls get_status for engine/plugin version."""
+        conn = MagicMock()
+
+        status_resp = {
+            "success": True,
+            "data": {
+                "engine_version": "5.6",
+                "plugin_version": "1.2.0",
+            },
+        }
+        catalog_resp = {
+            "success": True,
+            "data": {
+                "datatables": [],
+                "tag_prefixes": [],
+                "data_asset_classes": [],
+                "string_tables": [],
+            },
+        }
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "get_status":
+                return status_resp
+            if command == "data.get_data_catalog":
+                return catalog_resp
+            if command == "data.list_curve_tables":
+                return {"success": True, "data": {"curve_tables": []}}
+            return {"success": True, "data": {}}
+
+        conn.send_command.side_effect = mock_send
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_dir = Path(tmpdir) / ".cortex" / "schema"
+            generate_schema(conn, schema_dir, domain="data", project_name="Test")
+
+            catalog_content = (schema_dir / "_catalog.md").read_text(encoding="utf-8")
+            self.assertIn("engine: 5.6", catalog_content)
+            self.assertIn("plugin: 1.2.0", catalog_content)
+
+
+class TestReadMetaFromFile(unittest.TestCase):
+
+    def test_read_valid_meta(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "test.md"
+            path.write_text(
+                "# Test\n\n<!-- schema-meta\nschema_version: 1\n"
+                "generated: 2026-02-24T14:30:00Z\ndomain: data\n-->\n\nContent.",
+                encoding="utf-8",
+            )
+            meta = read_meta_from_file(path)
+            self.assertIsNotNone(meta)
+            self.assertEqual(meta["schema_version"], "1")
+            self.assertEqual(meta["domain"], "data")
+            self.assertEqual(meta["generated"], "2026-02-24T14:30:00Z")
+
+    def test_read_missing_file(self):
+        result = read_meta_from_file(Path("/nonexistent/path.md"))
+        self.assertIsNone(result)
+
+    def test_read_no_meta_block(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "no_meta.md"
+            path.write_text("# Just a regular file\n\nNo meta here.", encoding="utf-8")
+            result = read_meta_from_file(path)
+            self.assertIsNone(result)
+
+    def test_read_corrupt_meta_block(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "corrupt.md"
+            # Meta block without closing -->
+            path.write_text("<!-- schema-meta\nschema_version: 1\n", encoding="utf-8")
+            result = read_meta_from_file(path)
+            self.assertIsNone(result)
+
+    def test_read_meta_with_extra_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "extra.md"
+            path.write_text(
+                "<!-- schema-meta\nschema_version: 1\ngenerated: 2026-02-24T14:30:00Z\n"
+                "domain: catalog\nproject: MyProject\nengine: 5.6\nplugin: 1.0.0\n-->\n",
+                encoding="utf-8",
+            )
+            meta = read_meta_from_file(path)
+            self.assertIsNotNone(meta)
+            self.assertEqual(meta["project"], "MyProject")
+            self.assertEqual(meta["engine"], "5.6")
+            self.assertEqual(meta["plugin"], "1.0.0")
+
+
+class TestRenderMetaExtra(unittest.TestCase):
+
+    def test_render_meta_with_extra_fields(self):
+        from cortex_mcp.schema_generator import _render_meta
+        result = _render_meta("catalog", project="TestProject", engine="5.6")
+        self.assertIn("domain: catalog", result)
+        self.assertIn("project: TestProject", result)
+        self.assertIn("engine: 5.6", result)
+
+    def test_render_meta_without_extra(self):
+        from cortex_mcp.schema_generator import _render_meta
+        result = _render_meta("data")
+        self.assertIn("domain: data", result)
+        self.assertNotIn("project:", result)
+
+
+class TestCatalogVersionInfo(unittest.TestCase):
+
+    def test_catalog_includes_engine_plugin_version(self):
+        result = render_catalog(
+            project_name="Test",
+            engine_version="5.6",
+            plugin_version="1.0.0",
+        )
+        self.assertIn("project: Test", result)
+        self.assertIn("engine: 5.6", result)
+        self.assertIn("plugin: 1.0.0", result)
+
+    def test_catalog_omits_empty_versions(self):
+        result = render_catalog(project_name="Test")
+        self.assertIn("project: Test", result)
+        self.assertNotIn("engine:", result)
+        self.assertNotIn("plugin:", result)

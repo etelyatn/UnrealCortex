@@ -62,8 +62,8 @@ def atomic_write(path: pathlib.Path, content: str) -> None:
         raise
 
 
-def _yaml_field(field: dict, indent: int = 2) -> str:
-    """Render a single schema field as YAML."""
+def _yaml_field(field: dict, indent: int = 2) -> list[str]:
+    """Render a single schema field as YAML lines."""
     prefix = " " * indent
     lines = [f"{prefix}- name: {field['name']}"]
     lines.append(f"{prefix}  type: {field.get('type', field.get('cpp_type', 'unknown'))}")
@@ -79,20 +79,53 @@ def _yaml_field(field: dict, indent: int = 2) -> str:
     if field.get("fields"):
         lines.append(f"{prefix}  nested_fields:")
         for sub in field["fields"]:
-            lines.extend(_yaml_field(sub, indent + 4).split("\n"))
+            lines.extend(_yaml_field(sub, indent + 4))
+    return lines
+
+
+def _render_meta(domain: str, **extra) -> str:
+    """Render the schema-meta HTML comment block.
+
+    Args:
+        domain: The domain name (e.g., "data", "catalog").
+        **extra: Additional key-value pairs to include in the meta block.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines = [
+        "<!-- schema-meta",
+        f"schema_version: {SCHEMA_VERSION}",
+        f"generated: {now}",
+        f"domain: {domain}",
+    ]
+    for key, value in extra.items():
+        lines.append(f"{key}: {value}")
+    lines.append("-->")
     return "\n".join(lines)
 
 
-def _render_meta(domain: str) -> str:
-    """Render the schema-meta HTML comment block."""
-    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return (
-        f"<!-- schema-meta\n"
-        f"schema_version: {SCHEMA_VERSION}\n"
-        f"generated: {now}\n"
-        f"domain: {domain}\n"
-        f"-->"
-    )
+def read_meta_from_file(path: pathlib.Path) -> dict | None:
+    """Parse schema-meta comment block from a .md file.
+
+    Companion to _render_meta — keeps read/write pair together.
+    """
+    if not path.exists():
+        return None
+    try:
+        content = path.read_text(encoding="utf-8")
+        start = content.find("<!-- schema-meta")
+        end = content.find("-->", start)
+        if start == -1 or end == -1:
+            return None
+        meta_text = content[start + len("<!-- schema-meta"):end].strip()
+        meta = {}
+        for line in meta_text.split("\n"):
+            line = line.strip()
+            if ":" in line:
+                key, _, value = line.partition(":")
+                meta[key.strip()] = value.strip()
+        return meta
+    except OSError:
+        return None
 
 
 def render_data_schema(
@@ -139,7 +172,7 @@ def render_data_schema(
             if fields:
                 lines.append("fields:")
                 for field in fields:
-                    lines.append(_yaml_field(field))
+                    lines.extend(_yaml_field(field))
             lines.append("```")
             lines.append("")
 
@@ -240,6 +273,8 @@ def render_catalog(
     project_name: str,
     data_summary: dict | None = None,
     blueprint_summary: dict | None = None,
+    engine_version: str = "",
+    plugin_version: str = "",
 ) -> str:
     """Render _catalog.md with overview and type-grouped index.
 
@@ -247,10 +282,16 @@ def render_catalog(
         project_name: Name of the Unreal project.
         data_summary: Dict with structs, tables, tag_prefixes, data_assets for data domain.
         blueprint_summary: Dict with classes for blueprint domain (future).
+        engine_version: Unreal Engine version (e.g., "5.6").
+        plugin_version: UnrealCortex plugin version (e.g., "1.0.0").
     """
+    extra = {"project": project_name}
+    if engine_version:
+        extra["engine"] = engine_version
+    if plugin_version:
+        extra["plugin"] = plugin_version
     lines = ["# Cortex Schema Catalog", ""]
-    meta = _render_meta("catalog").replace("domain: catalog", f"project: {project_name}")
-    lines.append(meta)
+    lines.append(_render_meta("catalog", **extra))
     lines.append("")
 
     # How to Use
@@ -450,7 +491,9 @@ def generate_schema(
     connection,
     schema_dir: pathlib.Path,
     domain: str = "all",
-    project_name: str = "CortexSandbox",
+    project_name: str = "Unknown",
+    engine_version: str = "",
+    plugin_version: str = "",
 ) -> dict:
     """Generate schema files in the given directory.
 
@@ -459,10 +502,24 @@ def generate_schema(
         schema_dir: Target directory (e.g., .cortex/schema/).
         domain: "all" or specific domain name ("data", "blueprints").
         project_name: Project name for catalog header.
+        engine_version: Unreal Engine version (e.g., "5.6").
+        plugin_version: UnrealCortex plugin version (e.g., "1.0.0").
 
     Returns:
         Dict with generated domain names and file paths.
     """
+    # Fetch engine/plugin version from editor if not provided
+    if not engine_version or not plugin_version:
+        try:
+            status = connection.send_command("get_status", {})
+            status_data = status.get("data", status)
+            if not engine_version:
+                engine_version = status_data.get("engine_version", "")
+            if not plugin_version:
+                plugin_version = status_data.get("plugin_version", "")
+        except (RuntimeError, ConnectionError) as e:
+            logger.warning("Failed to get editor status for version info: %s", e)
+
     result = {"generated": {}, "errors": []}
     data_summary = None
 
@@ -489,6 +546,8 @@ def generate_schema(
     catalog_md = render_catalog(
         project_name=project_name,
         data_summary=data_summary,
+        engine_version=engine_version,
+        plugin_version=plugin_version,
     )
     atomic_write(schema_dir / "_catalog.md", catalog_md)
     result["generated"]["_catalog"] = str(schema_dir / "_catalog.md")
