@@ -259,3 +259,62 @@ bool FCortexBPAnalyzeForMigrationInvalidPathTest::RunTest(const FString& Paramet
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisV3VariableFieldsTest,
+	"Cortex.Blueprint.Analysis.V3VariableFields",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisV3VariableFieldsTest::RunTest(const FString& Parameters)
+{
+	// Create transient Blueprint (same pattern as SelfContainedTest)
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_V3VarFieldsTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Test Blueprint created"), TestBP);
+	if (!TestBP) { return false; }
+
+	// Add a variable with known flags
+	FEdGraphPinType PinType;
+	PinType.PinCategory = UEdGraphSchema_K2::PC_Float;
+	const bool bAdded = FBlueprintEditorUtils::AddMemberVariable(TestBP, TEXT("TestHealth"), PinType);
+	TestTrue(TEXT("Variable added"), bAdded);
+
+	// Compile
+	FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+	// Run analysis via command handler (same pattern as SelfContainedTest)
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	TestTrue(TEXT("Analysis succeeded"), Result.bSuccess);
+
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		TestBP->MarkAsGarbage();
+		return false;
+	}
+
+	// Check variable has new V3 fields
+	const TArray<TSharedPtr<FJsonValue>>* Variables = nullptr;
+	TestTrue(TEXT("Has variables"), Result.Data->TryGetArrayField(TEXT("variables"), Variables));
+	if (Variables && Variables->Num() > 0)
+	{
+		const TSharedPtr<FJsonObject>& VarObj = (*Variables)[0]->AsObject();
+		TestTrue(TEXT("Has uproperty_specifier"), VarObj->HasField(TEXT("uproperty_specifier")));
+		TestTrue(TEXT("Has blueprint_access"), VarObj->HasField(TEXT("blueprint_access")));
+		TestTrue(TEXT("Has reference_type"), VarObj->HasField(TEXT("reference_type")));
+		TestTrue(TEXT("Has replication object"), VarObj->HasField(TEXT("replication")));
+		TestTrue(TEXT("Has is_save_game"), VarObj->HasField(TEXT("is_save_game")));
+		TestTrue(TEXT("Has is_transient"), VarObj->HasField(TEXT("is_transient")));
+		TestTrue(TEXT("Has is_gameplay_tag"), VarObj->HasField(TEXT("is_gameplay_tag")));
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}

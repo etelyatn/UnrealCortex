@@ -32,6 +32,10 @@
 #include "GameFramework/Actor.h"
 #include "Components/ActorComponent.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "GameplayTagContainer.h"
+#include "Engine/UserDefinedStruct.h"
+#include "Engine/UserDefinedEnum.h"
+#include "Net/UnrealNetwork.h"
 
 namespace
 {
@@ -193,6 +197,46 @@ int32 CountDownstreamLatentNodes(UEdGraphNode* StartNode, TSet<UEdGraphNode*>& V
 	}
 
 	return MaxDownstream;
+}
+
+FString ResolveUPropertySpecifier(uint64 Flags)
+{
+	const bool bEdit = (Flags & CPF_Edit) != 0;
+	const bool bNoInstance = (Flags & CPF_DisableEditOnInstance) != 0;
+	const bool bNoTemplate = (Flags & CPF_DisableEditOnTemplate) != 0;
+	const bool bBPVisible = (Flags & CPF_BlueprintVisible) != 0;
+
+	if (bEdit)
+	{
+		if (bNoInstance) { return TEXT("EditDefaultsOnly"); }
+		if (bNoTemplate) { return TEXT("EditInstanceOnly"); }
+		return TEXT("EditAnywhere");
+	}
+	if (bBPVisible)
+	{
+		if (bNoInstance) { return TEXT("VisibleDefaultsOnly"); }
+		if (bNoTemplate) { return TEXT("VisibleInstanceOnly"); }
+		return TEXT("VisibleAnywhere");
+	}
+	return TEXT("None");
+}
+
+FString ResolveReferenceType(const FEdGraphPinType& PinType)
+{
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_SoftObject ||
+		PinType.PinCategory == UEdGraphSchema_K2::PC_SoftClass)
+	{
+		return TEXT("Soft");
+	}
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_Interface)
+	{
+		return TEXT("Interface");
+	}
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_Object && PinType.bIsWeakPointer)
+	{
+		return TEXT("Weak");
+	}
+	return TEXT("Hard");
 }
 
 FString CalculateMigrationConfidence(int32 TotalNodes, int32 LatentCount)
@@ -466,6 +510,61 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		VarObj->SetStringField(TEXT("container_type"), ContainerTypeStr);
 
 		VarObj->SetNumberField(TEXT("usage_count"), CountVariableUsage(BP, Variable.VarName));
+
+		// V3: UPROPERTY specifier resolution
+		const uint64 Flags = Variable.PropertyFlags;
+		VarObj->SetStringField(TEXT("uproperty_specifier"), ResolveUPropertySpecifier(Flags));
+		VarObj->SetStringField(TEXT("blueprint_access"),
+			(Flags & CPF_BlueprintReadOnly) != 0 ? TEXT("ReadOnly") : TEXT("ReadWrite"));
+		VarObj->SetBoolField(TEXT("is_save_game"), (Flags & CPF_SaveGame) != 0);
+		VarObj->SetBoolField(TEXT("is_transient"), (Flags & CPF_Transient) != 0);
+
+		// V3: Reference type
+		VarObj->SetStringField(TEXT("reference_type"), ResolveReferenceType(Variable.VarType));
+
+		// V3: Replication details
+		TSharedPtr<FJsonObject> ReplicationObj = MakeShared<FJsonObject>();
+		const bool bReplicated = (Flags & CPF_Net) != 0;
+		ReplicationObj->SetBoolField(TEXT("is_replicated"), bReplicated);
+		if (bReplicated)
+		{
+			const UEnum* CondEnum = StaticEnum<ELifetimeCondition>();
+			const FString CondStr = CondEnum
+				? CondEnum->GetNameStringByValue(static_cast<int64>(Variable.ReplicationCondition.GetValue()))
+				: TEXT("COND_None");
+			ReplicationObj->SetStringField(TEXT("condition"), CondStr);
+			ReplicationObj->SetStringField(TEXT("notify_func"), Variable.RepNotifyFunc.ToString());
+		}
+		else
+		{
+			ReplicationObj->SetStringField(TEXT("condition"), TEXT("COND_None"));
+			ReplicationObj->SetStringField(TEXT("notify_func"), TEXT(""));
+		}
+		VarObj->SetObjectField(TEXT("replication"), ReplicationObj);
+
+		// V3: Gameplay Tag detection
+		bool bIsGameplayTag = false;
+		FString GameplayTagType;
+		if (Variable.VarType.PinCategory == UEdGraphSchema_K2::PC_Struct)
+		{
+			const UScriptStruct* Struct = Cast<UScriptStruct>(Variable.VarType.PinSubCategoryObject.Get());
+			if (Struct == TBaseStructure<FGameplayTag>::Get())
+			{
+				bIsGameplayTag = true;
+				GameplayTagType = TEXT("FGameplayTag");
+			}
+			else if (Struct == TBaseStructure<FGameplayTagContainer>::Get())
+			{
+				bIsGameplayTag = true;
+				GameplayTagType = TEXT("FGameplayTagContainer");
+			}
+		}
+		VarObj->SetBoolField(TEXT("is_gameplay_tag"), bIsGameplayTag);
+		if (bIsGameplayTag)
+		{
+			VarObj->SetStringField(TEXT("gameplay_tag_type"), GameplayTagType);
+		}
+
 		VariablesArray.Add(MakeShared<FJsonValueObject>(VarObj));
 	}
 	Data->SetArrayField(TEXT("variables"), VariablesArray);
