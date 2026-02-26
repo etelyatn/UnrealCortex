@@ -25,6 +25,8 @@
 #include "K2Node_ComponentBoundEvent.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
+#include "K2Node_CallDelegate.h"
+#include "K2Node_AssignDelegate.h"
 #include "K2Node_Knot.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_SpawnActor.h"
@@ -1662,6 +1664,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 	Data->SetArrayField(TEXT("dynamic_components"), DynamicComponentsArray);
 
 	TArray<TSharedPtr<FJsonValue>> GraphsArray;
+	TArray<TSharedPtr<FJsonValue>> PerGraphElementsArray;
 	TArray<TSharedPtr<FJsonValue>> LatentNodesArray;
 	TArray<UEdGraph*> AllGraphs;
 	BP->GetAllGraphs(AllGraphs);
@@ -1677,6 +1680,10 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		TArray<TSharedPtr<FJsonValue>> CustomEventsArr;
 		TSharedPtr<FJsonObject> CustomEventParamsObj = MakeShared<FJsonObject>();
 		TArray<UEdGraphNode*> GraphLatentNodes;
+		TSet<FString> VariablesRead;
+		TSet<FString> VariablesWritten;
+		TSet<FString> ComponentsReferenced;
+		TSet<FString> DispatchersCalled;
 
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
@@ -1719,6 +1726,35 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 				{
 					GraphLatentNodes.Add(Node);
 				}
+
+				if (const UFunction* TargetFunction = CallNode->GetTargetFunction())
+				{
+					if (const UClass* OwnerClass = TargetFunction->GetOwnerClass())
+					{
+						if (OwnerClass->IsChildOf(UActorComponent::StaticClass()))
+						{
+							ComponentsReferenced.Add(OwnerClass->GetName());
+						}
+					}
+				}
+			}
+
+			if (const UK2Node_VariableGet* VariableGet = Cast<UK2Node_VariableGet>(Node))
+			{
+				VariablesRead.Add(VariableGet->GetVarName().ToString());
+			}
+			else if (const UK2Node_VariableSet* VariableSet = Cast<UK2Node_VariableSet>(Node))
+			{
+				VariablesWritten.Add(VariableSet->GetVarName().ToString());
+			}
+
+			if (const UK2Node_CallDelegate* CallDelegateNode = Cast<UK2Node_CallDelegate>(Node))
+			{
+				DispatchersCalled.Add(CallDelegateNode->GetPropertyName().ToString());
+			}
+			else if (const UK2Node_AssignDelegate* AssignDelegateNode = Cast<UK2Node_AssignDelegate>(Node))
+			{
+				DispatchersCalled.Add(AssignDelegateNode->GetPropertyName().ToString());
 			}
 		}
 
@@ -1776,8 +1812,30 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		GraphObj->SetArrayField(TEXT("custom_events"), CustomEventsArr);
 		GraphObj->SetObjectField(TEXT("custom_event_params"), CustomEventParamsObj);
 		GraphsArray.Add(MakeShared<FJsonValueObject>(GraphObj));
+
+		auto SetToJsonArray = [](const TSet<FString>& Values)
+		{
+			TArray<TSharedPtr<FJsonValue>> Array;
+			for (const FString& Value : Values)
+			{
+				Array.Add(MakeShared<FJsonValueString>(Value));
+			}
+			return Array;
+		};
+
+		TSharedPtr<FJsonObject> PerGraphObj = MakeShared<FJsonObject>();
+		PerGraphObj->SetStringField(TEXT("name"), Graph->GetName());
+		PerGraphObj->SetStringField(TEXT("entry_type"),
+			EventsArr.Num() > 0 ? TEXT("Event") : (BP->FunctionGraphs.Contains(Graph) ? TEXT("Function") : TEXT("Graph")));
+		PerGraphObj->SetArrayField(TEXT("variables_read"), SetToJsonArray(VariablesRead));
+		PerGraphObj->SetArrayField(TEXT("variables_written"), SetToJsonArray(VariablesWritten));
+		PerGraphObj->SetArrayField(TEXT("components_referenced"), SetToJsonArray(ComponentsReferenced));
+		PerGraphObj->SetArrayField(TEXT("dispatchers_called"), SetToJsonArray(DispatchersCalled));
+		PerGraphObj->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
+		PerGraphElementsArray.Add(MakeShared<FJsonValueObject>(PerGraphObj));
 	}
 	Data->SetArrayField(TEXT("graphs"), GraphsArray);
+	Data->SetArrayField(TEXT("per_graph_elements"), PerGraphElementsArray);
 	Data->SetArrayField(TEXT("latent_nodes"), LatentNodesArray);
 
 	TArray<TSharedPtr<FJsonValue>> TimelinesArray;

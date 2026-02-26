@@ -5,6 +5,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "K2Node_VariableGet.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
 #include "GameFramework/Actor.h"
@@ -848,6 +849,93 @@ bool FCortexBPAnalysisV4EntitySummaryTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("graph_logic_node_count numeric"), (*Metrics)->TryGetNumberField(TEXT("graph_logic_node_count"), LogicCount));
 		TestTrue(TEXT("graph_logic_node_count non-negative"), LogicCount >= 0);
 	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisPerGraphElementsTest,
+	"Cortex.Blueprint.Analysis.PerGraphElements",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisPerGraphElementsTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_PerGraphElementsTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Test Blueprint created"), TestBP);
+	if (!TestBP)
+	{
+		return false;
+	}
+
+	FEdGraphPinType FloatType;
+	FloatType.PinCategory = UEdGraphSchema_K2::PC_Float;
+	const bool bVariableAdded = FBlueprintEditorUtils::AddMemberVariable(TestBP, TEXT("Health"), FloatType, TEXT("100.0"));
+	TestTrue(TEXT("Health variable added"), bVariableAdded);
+
+	UEdGraph* EventGraph = TestBP->UbergraphPages.Num() > 0 ? TestBP->UbergraphPages[0] : nullptr;
+	TestNotNull(TEXT("Event graph exists"), EventGraph);
+	if (EventGraph)
+	{
+		UK2Node_VariableGet* VariableGet = NewObject<UK2Node_VariableGet>(EventGraph);
+		VariableGet->VariableReference.SetSelfMember(TEXT("Health"));
+		EventGraph->AddNode(VariableGet, true, false);
+		VariableGet->AllocateDefaultPins();
+	}
+
+	FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	const FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	TestTrue(TEXT("Analysis succeeded"), Result.bSuccess);
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		TestBP->MarkAsGarbage();
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* PerGraphElements = nullptr;
+	TestTrue(TEXT("Has per_graph_elements"),
+		Result.Data->TryGetArrayField(TEXT("per_graph_elements"), PerGraphElements));
+
+	bool bFoundHealthRead = false;
+	if (PerGraphElements)
+	{
+		for (const TSharedPtr<FJsonValue>& EntryValue : *PerGraphElements)
+		{
+			const TSharedPtr<FJsonObject> Entry = EntryValue->AsObject();
+			if (!Entry.IsValid())
+			{
+				continue;
+			}
+
+			FString Name;
+			Entry->TryGetStringField(TEXT("name"), Name);
+			if (Name != TEXT("EventGraph"))
+			{
+				continue;
+			}
+
+			const TArray<TSharedPtr<FJsonValue>> Reads = Entry->GetArrayField(TEXT("variables_read"));
+			for (const TSharedPtr<FJsonValue>& ReadValue : Reads)
+			{
+				if (ReadValue->AsString() == TEXT("Health"))
+				{
+					bFoundHealthRead = true;
+					break;
+				}
+			}
+		}
+	}
+	TestTrue(TEXT("EventGraph variables_read contains Health"), bFoundHealthRead);
 
 	TestBP->MarkAsGarbage();
 	return true;
