@@ -50,6 +50,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPAssetOps::Save(Params);
 	}
 
+	if (Command == TEXT("rename"))
+	{
+		return FCortexBPAssetOps::Rename(Params);
+	}
+
 	// Structure operations
 	if (Command == TEXT("add_variable"))
 	{
@@ -118,6 +123,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add({TEXT("duplicate"), TEXT("Duplicate a Blueprint asset")});
 	Commands.Add({TEXT("compile"), TEXT("Compile a Blueprint")});
 	Commands.Add({TEXT("save"), TEXT("Save a Blueprint")});
+	Commands.Add({TEXT("rename"), TEXT("Rename/move a Blueprint asset")});
 	Commands.Add({TEXT("add_variable"), TEXT("Add a variable to a Blueprint")});
 	Commands.Add({TEXT("remove_variable"), TEXT("Remove a variable from a Blueprint")});
 	Commands.Add({TEXT("add_function"), TEXT("Add a function to a Blueprint")});
