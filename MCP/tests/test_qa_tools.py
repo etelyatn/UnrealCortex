@@ -313,6 +313,23 @@ def test_detector_finds_multiple_issue_types():
     assert "logs" in categories
 
 
+def test_detector_handles_object_vectors():
+    """detect_structural_issues works with named vector objects post-migration."""
+    findings = detect_structural_issues(
+        observed_state={
+            "player": {"location": {"x": 0.0, "y": 0.0, "z": -20000.0}},
+            "nearby_actors": [{"name": "BadActor", "location": {"x": 0.2, "y": -0.1, "z": 0.5}}],
+            "game_state": {"fps": 10.0},
+        },
+        wait_result={"timed_out": True},
+        recent_logs={"logs": [{"level": "Error", "message": "Error: failure"}]},
+    )
+
+    categories = {f["category"] for f in findings}
+    assert "physics" in categories, "Must still detect fall-through with object vectors"
+    assert "placement" in categories, "Must still detect near-origin with object vectors"
+
+
 def test_reporter_writes_summary_and_findings(tmp_path):
     bundle = write_report_bundle(
         scenario_name="Door Smoke",

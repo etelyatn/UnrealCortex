@@ -3,6 +3,32 @@
 from __future__ import annotations
 
 
+def _get_vector_z(value) -> float | None:
+    """Extract Z from either [x,y,z] or {x,y,z}."""
+    if isinstance(value, dict):
+        z_value = value.get("z")
+        return float(z_value) if isinstance(z_value, (int, float)) else None
+    if isinstance(value, list) and len(value) == 3:
+        z_value = value[2]
+        return float(z_value) if isinstance(z_value, (int, float)) else None
+    return None
+
+
+def _get_vector_components(value) -> tuple[float, float, float] | None:
+    """Extract (x, y, z) from either [x,y,z] or {x,y,z}."""
+    if isinstance(value, dict):
+        x = value.get("x")
+        y = value.get("y")
+        z = value.get("z")
+        if all(isinstance(component, (int, float)) for component in (x, y, z)):
+            return float(x), float(y), float(z)
+        return None
+    if isinstance(value, list) and len(value) == 3:
+        if all(isinstance(component, (int, float)) for component in value):
+            return float(value[0]), float(value[1]), float(value[2])
+    return None
+
+
 def detect_structural_issues(
     observed_state: dict | None,
     wait_result: dict | None = None,
@@ -16,21 +42,23 @@ def detect_structural_issues(
     player = state.get("player", {})
 
     location = player.get("location")
-    if isinstance(location, list) and len(location) == 3 and location[2] < kill_z:
+    location_z = _get_vector_z(location)
+    if location_z is not None and location_z < kill_z:
         findings.append(
             {
                 "severity": "CRITICAL",
                 "category": "physics",
                 "summary": "Player fell below kill Z threshold",
-                "details": {"z": location[2], "kill_z": kill_z},
+                "details": {"z": location_z, "kill_z": kill_z},
             }
         )
 
     for actor in state.get("nearby_actors", []):
         actor_loc = actor.get("location")
-        if not (isinstance(actor_loc, list) and len(actor_loc) == 3):
+        components = _get_vector_components(actor_loc)
+        if components is None:
             continue
-        near_origin = abs(actor_loc[0]) <= 1.0 and abs(actor_loc[1]) <= 1.0 and abs(actor_loc[2]) <= 1.0
+        near_origin = abs(components[0]) <= 1.0 and abs(components[1]) <= 1.0 and abs(components[2]) <= 1.0
         if near_origin:
             findings.append(
                 {
