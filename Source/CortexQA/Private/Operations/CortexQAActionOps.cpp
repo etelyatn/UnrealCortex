@@ -91,6 +91,117 @@ FCortexCommandResult FCortexQAActionOps::LookAt(const TSharedPtr<FJsonObject>& P
     return FCortexCommandRouter::Success(Data);
 }
 
+FCortexCommandResult FCortexQAActionOps::LookTo(const TSharedPtr<FJsonObject>& Params, FDeferredResponseCallback DeferredCallback)
+{
+    UWorld* PIEWorld = FCortexQAUtils::GetPIEWorld();
+    if (PIEWorld == nullptr)
+    {
+        return FCortexQAUtils::PIENotActiveError();
+    }
+
+    APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
+    APawn* Pawn = FCortexQAUtils::GetPlayerPawn(PIEWorld);
+    if (PC == nullptr || Pawn == nullptr)
+    {
+        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("No player controller or pawn"));
+    }
+
+    double Yaw = 0.0;
+    if (!Params.IsValid() || !Params->TryGetNumberField(TEXT("yaw"), Yaw))
+    {
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: yaw"));
+    }
+
+    double Pitch = 0.0;
+    double Duration = 0.0;
+    if (Params.IsValid())
+    {
+        Params->TryGetNumberField(TEXT("pitch"), Pitch);
+        Params->TryGetNumberField(TEXT("duration"), Duration);
+    }
+
+    const FRotator TargetRotation(Pitch, Yaw, 0.0);
+    if (Duration <= 0.0)
+    {
+        PC->SetControlRotation(TargetRotation);
+
+        TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+        FCortexQAUtils::SetVectorObject(Data, TEXT("location"), Pawn->GetActorLocation());
+        FCortexQAUtils::SetRotatorObject(Data, TEXT("rotation"), PC->GetControlRotation());
+        Data->SetNumberField(TEXT("yaw"), Yaw);
+        Data->SetNumberField(TEXT("pitch"), Pitch);
+        Data->SetNumberField(TEXT("duration"), 0.0);
+        Data->SetBoolField(TEXT("interpolated"), false);
+        return FCortexCommandRouter::Success(Data);
+    }
+
+    if (!DeferredCallback)
+    {
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Deferred callback is required"));
+    }
+
+    const FRotator StartRotation = PC->GetControlRotation();
+    const float YawDelta = FMath::Abs(FMath::FindDeltaAngleDegrees(StartRotation.Yaw, TargetRotation.Yaw));
+    const float PitchDelta = FMath::Abs(FMath::FindDeltaAngleDegrees(StartRotation.Pitch, TargetRotation.Pitch));
+    const float MaxAngularDelta = FMath::Max(YawDelta, PitchDelta);
+    const float InterpSpeed = MaxAngularDelta / static_cast<float>(Duration);
+    const double StartGameTime = PIEWorld->GetTimeSeconds();
+
+    TWeakObjectPtr<APlayerController> WeakPC = PC;
+    TWeakObjectPtr<APawn> WeakPawn = Pawn;
+    TSharedPtr<FTimerHandle> TimerHandle = MakeShared<FTimerHandle>();
+    PIEWorld->GetTimerManager().SetTimer(
+        *TimerHandle,
+        [TimerHandle, WeakPC, WeakPawn, TargetRotation, InterpSpeed, Duration, StartGameTime, DeferredCallback = MoveTemp(DeferredCallback)]() mutable
+        {
+            if (GEditor == nullptr || GEditor->PlayWorld == nullptr)
+            {
+                FCortexCommandResult Final = FCortexCommandRouter::Error(CortexErrorCodes::PIETerminated, TEXT("PIE terminated during look_to"));
+                DeferredCallback(MoveTemp(Final));
+                return;
+            }
+
+            UWorld* CurrentPIEWorld = GEditor->PlayWorld;
+            APlayerController* CurrentPC = WeakPC.Get();
+            APawn* CurrentPawn = WeakPawn.Get();
+            if (CurrentPC == nullptr || CurrentPawn == nullptr)
+            {
+                FCortexCommandResult Final = FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Player controller or pawn no longer valid"));
+                DeferredCallback(MoveTemp(Final));
+                CurrentPIEWorld->GetTimerManager().ClearTimer(*TimerHandle);
+                return;
+            }
+
+            const FRotator Current = CurrentPC->GetControlRotation();
+            const FRotator Next = FMath::RInterpConstantTo(Current, TargetRotation, 0.05f, InterpSpeed);
+            CurrentPC->SetControlRotation(Next);
+
+            const double Elapsed = CurrentPIEWorld->GetTimeSeconds() - StartGameTime;
+            if (Next.Equals(TargetRotation, 1.0f) || Elapsed >= Duration)
+            {
+                CurrentPC->SetControlRotation(TargetRotation);
+
+                TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+                FCortexQAUtils::SetVectorObject(Data, TEXT("location"), CurrentPawn->GetActorLocation());
+                FCortexQAUtils::SetRotatorObject(Data, TEXT("rotation"), CurrentPC->GetControlRotation());
+                Data->SetNumberField(TEXT("yaw"), TargetRotation.Yaw);
+                Data->SetNumberField(TEXT("pitch"), TargetRotation.Pitch);
+                Data->SetNumberField(TEXT("duration"), Elapsed);
+                Data->SetBoolField(TEXT("interpolated"), true);
+
+                FCortexCommandResult Final = FCortexCommandRouter::Success(Data);
+                DeferredCallback(MoveTemp(Final));
+                CurrentPIEWorld->GetTimerManager().ClearTimer(*TimerHandle);
+            }
+        },
+        0.05f,
+        true);
+
+    FCortexCommandResult Deferred;
+    Deferred.bIsDeferred = true;
+    return Deferred;
+}
+
 FCortexCommandResult FCortexQAActionOps::Interact(const TSharedPtr<FJsonObject>& Params, FDeferredResponseCallback DeferredCallback)
 {
     UWorld* PIEWorld = FCortexQAUtils::GetPIEWorld();

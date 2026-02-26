@@ -32,6 +32,40 @@ bool FCortexQALookAtNoPIETest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexQALookToNoPIETest,
+    "Cortex.QA.Action.LookTo.NoPIE",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexQALookToNoPIETest::RunTest(const FString& Parameters)
+{
+    FCortexCommandRouter Router = CreateQARouterActions();
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetNumberField(TEXT("yaw"), 90.0);
+    const FCortexCommandResult Result = Router.Execute(TEXT("qa.look_to"), Params);
+
+    TestFalse(TEXT("look_to should fail when PIE is not active"), Result.bSuccess);
+    TestEqual(TEXT("look_to should return PIE_NOT_ACTIVE"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexQALookToMissingYawTest,
+    "Cortex.QA.Action.LookTo.MissingYaw",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexQALookToMissingYawTest::RunTest(const FString& Parameters)
+{
+    FCortexCommandRouter Router = CreateQARouterActions();
+    const FCortexCommandResult Result = Router.Execute(TEXT("qa.look_to"), MakeShared<FJsonObject>());
+
+    TestFalse(TEXT("look_to should fail without yaw"), Result.bSuccess);
+    TestEqual(TEXT("look_to should return PIE_NOT_ACTIVE before validation in editor tests"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexQAInteractNoPIETest,
     "Cortex.QA.Action.Interact.NoPIE",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
