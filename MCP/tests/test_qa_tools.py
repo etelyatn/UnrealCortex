@@ -204,6 +204,20 @@ def test_check_stuck_wiring():
     )
 
 
+def test_get_visible_actors_wiring():
+    mcp = MockMCP()
+    connection = MagicMock()
+    connection.send_command.return_value = {"data": {"count": 0, "actors": []}}
+
+    register_qa_world_tools(mcp, connection)
+
+    assert "get_visible_actors" in mcp.tools
+    result = mcp.tools["get_visible_actors"](max_distance=5000.0, require_los=True)
+    parsed = json.loads(result)
+    assert parsed["count"] == 0
+    assert parsed["actors"] == []
+
+
 def test_assertion_tool_captures_screenshot_on_failure():
     mcp = MockMCP()
     connection = MagicMock()

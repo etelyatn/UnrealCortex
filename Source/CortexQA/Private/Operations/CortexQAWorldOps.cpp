@@ -405,3 +405,162 @@ FCortexCommandResult FCortexQAWorldOps::ProbeForward(const TSharedPtr<FJsonObjec
 
     return FCortexCommandRouter::Success(Data);
 }
+
+FCortexCommandResult FCortexQAWorldOps::GetVisibleActors(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* PIEWorld = FCortexQAUtils::GetPIEWorld();
+    if (PIEWorld == nullptr)
+    {
+        return FCortexQAUtils::PIENotActiveError();
+    }
+
+    APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
+    APawn* Pawn = FCortexQAUtils::GetPlayerPawn(PIEWorld);
+    if (PC == nullptr || Pawn == nullptr || PC->PlayerCameraManager == nullptr)
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::ActorNotFound,
+            TEXT("No player controller, pawn, or camera manager"));
+    }
+
+    double MaxDistance = 5000.0;
+    int32 MaxActors = 20;
+    bool bRequireLOS = true;
+    FString TagFilter;
+    if (Params.IsValid())
+    {
+        Params->TryGetNumberField(TEXT("max_distance"), MaxDistance);
+        double MaxActorsDouble = static_cast<double>(MaxActors);
+        if (Params->TryGetNumberField(TEXT("max_actors"), MaxActorsDouble))
+        {
+            MaxActors = static_cast<int32>(MaxActorsDouble);
+        }
+        Params->TryGetBoolField(TEXT("require_los"), bRequireLOS);
+        Params->TryGetStringField(TEXT("tag"), TagFilter);
+    }
+    MaxDistance = FMath::Max(0.0, MaxDistance);
+    MaxActors = FMath::Max(1, MaxActors);
+
+    const FVector CameraLocation = PC->PlayerCameraManager->GetCameraLocation();
+    const FRotator CameraRotation = PC->PlayerCameraManager->GetCameraRotation();
+    const FVector CameraForward = CameraRotation.Vector().GetSafeNormal();
+    const float CameraFOV = PC->PlayerCameraManager->GetFOVAngle();
+    const float HalfFOV = CameraFOV * 0.5f;
+
+    struct FVisibleActorEntry
+    {
+        AActor* Actor = nullptr;
+        float Distance = 0.0f;
+        float YawOffset = 0.0f;
+        float PitchOffset = 0.0f;
+        float LookAtYaw = 0.0f;
+        float LookAtPitch = 0.0f;
+        bool bInLineOfSight = false;
+    };
+
+    TArray<FVisibleActorEntry> VisibleActors;
+    for (TActorIterator<AActor> It(PIEWorld); It; ++It)
+    {
+        AActor* Actor = *It;
+        if (!IsValid(Actor) || Actor == Pawn || !Actor->GetRootComponent())
+        {
+            continue;
+        }
+        if (FCortexQAUtils::IsEngineInternalActor(Actor))
+        {
+            continue;
+        }
+        if (!TagFilter.IsEmpty() && !Actor->Tags.Contains(FName(*TagFilter)))
+        {
+            continue;
+        }
+
+        const FVector ActorLocation = Actor->GetActorLocation();
+        const float Distance = FVector::Dist(CameraLocation, ActorLocation);
+        if (Distance > MaxDistance)
+        {
+            continue;
+        }
+
+        const FVector DirectionToActor = (ActorLocation - CameraLocation).GetSafeNormal();
+        const float Angle = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(FVector::DotProduct(CameraForward, DirectionToActor), -1.0f, 1.0f)));
+        if (Angle > HalfFOV)
+        {
+            continue;
+        }
+
+        FHitResult LOSHit;
+        FCollisionQueryParams LOSParams(SCENE_QUERY_STAT(CortexQAVisibleActorsLOS), true);
+        LOSParams.AddIgnoredActor(Pawn);
+        const bool bLOSBlockingHit = PIEWorld->LineTraceSingleByChannel(
+            LOSHit,
+            CameraLocation,
+            ActorLocation,
+            ECC_Visibility,
+            LOSParams);
+        const bool bInLineOfSight = !bLOSBlockingHit || LOSHit.GetActor() == Actor;
+        if (bRequireLOS && !bInLineOfSight)
+        {
+            continue;
+        }
+
+        const FRotator LookAtRotation = (ActorLocation - CameraLocation).Rotation();
+
+        const FVector Forward2D = FVector(CameraForward.X, CameraForward.Y, 0.0f).GetSafeNormal();
+        const FVector ToActor2D = FVector(DirectionToActor.X, DirectionToActor.Y, 0.0f).GetSafeNormal();
+        const float YawOffset = FMath::RadiansToDegrees(FMath::Atan2(
+            FVector::CrossProduct(Forward2D, ToActor2D).Z,
+            FVector::DotProduct(Forward2D, ToActor2D)));
+        const float PitchOffset = FMath::FindDeltaAngleDegrees(CameraRotation.Pitch, LookAtRotation.Pitch);
+
+        FVisibleActorEntry Entry;
+        Entry.Actor = Actor;
+        Entry.Distance = Distance;
+        Entry.YawOffset = YawOffset;
+        Entry.PitchOffset = PitchOffset;
+        Entry.LookAtYaw = LookAtRotation.Yaw;
+        Entry.LookAtPitch = LookAtRotation.Pitch;
+        Entry.bInLineOfSight = bInLineOfSight;
+        VisibleActors.Add(Entry);
+    }
+
+    VisibleActors.Sort([](const FVisibleActorEntry& A, const FVisibleActorEntry& B)
+    {
+        return A.Distance < B.Distance;
+    });
+    if (VisibleActors.Num() > MaxActors)
+    {
+        VisibleActors.SetNum(MaxActors);
+    }
+
+    TArray<TSharedPtr<FJsonValue>> ActorArray;
+    for (const FVisibleActorEntry& Entry : VisibleActors)
+    {
+        TSharedPtr<FJsonObject> ActorData = SerializeActorForObserve(
+            Entry.Actor,
+            CameraLocation,
+            CameraForward,
+            Entry.Distance,
+            PIEWorld,
+            false,
+            200.0f);
+
+        ActorData->SetNumberField(TEXT("yaw_offset"), Entry.YawOffset);
+        ActorData->SetNumberField(TEXT("pitch_offset"), Entry.PitchOffset);
+        ActorData->SetNumberField(TEXT("look_at_yaw"), Entry.LookAtYaw);
+        ActorData->SetNumberField(TEXT("look_at_pitch"), Entry.LookAtPitch);
+        ActorData->SetStringField(TEXT("path"), Entry.Actor->GetPathName());
+        ActorData->SetBoolField(TEXT("in_line_of_sight"), Entry.bInLineOfSight);
+
+        ActorArray.Add(MakeShared<FJsonValueObject>(ActorData));
+    }
+
+    TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+    FCortexQAUtils::SetVectorObject(Data, TEXT("camera_location"), CameraLocation);
+    FCortexQAUtils::SetRotatorObject(Data, TEXT("camera_rotation"), CameraRotation);
+    Data->SetNumberField(TEXT("camera_fov"), CameraFOV);
+    Data->SetNumberField(TEXT("count"), ActorArray.Num());
+    Data->SetArrayField(TEXT("actors"), ActorArray);
+
+    return FCortexCommandRouter::Success(Data);
+}

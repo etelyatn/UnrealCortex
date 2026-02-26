@@ -64,3 +64,23 @@ def register_qa_world_tools(mcp, connection: UEConnection):
             return format_response(response.get("data", {}), "check_stuck")
         except (RuntimeError, ConnectionError) as e:
             return f"Error: {e}"
+
+    @mcp.tool()
+    def get_visible_actors(
+        max_distance: float = 5000.0,
+        max_actors: int = 20,
+        require_los: bool = True,
+        tag: str = "",
+    ) -> str:
+        try:
+            params = {
+                "max_distance": max_distance,
+                "max_actors": max_actors,
+                "require_los": require_los,
+            }
+            if tag:
+                params["tag"] = tag
+            response = connection.send_command("qa.get_visible_actors", params)
+            return format_response(response.get("data", {}), "get_visible_actors")
+        except (RuntimeError, ConnectionError) as e:
+            return f"Error: {e}"

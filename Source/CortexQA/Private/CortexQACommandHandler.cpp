@@ -27,6 +27,10 @@ FCortexCommandResult FCortexQACommandHandler::Execute(
     {
         return FCortexQAWorldOps::ProbeForward(Params);
     }
+    if (Command == TEXT("get_visible_actors"))
+    {
+        return FCortexQAWorldOps::GetVisibleActors(Params);
+    }
     if (Command == TEXT("look_at"))
     {
         return FCortexQAActionOps::LookAt(Params);
@@ -81,6 +85,7 @@ TArray<FCortexCommandInfo> FCortexQACommandHandler::GetSupportedCommands() const
         { TEXT("get_actor_state"), TEXT("Get detailed state for a specific actor in PIE") },
         { TEXT("get_player_state"), TEXT("Get detailed player pawn/controller state in PIE") },
         { TEXT("probe_forward"), TEXT("Raycast from camera forward to detect obstacles and actors") },
+        { TEXT("get_visible_actors"), TEXT("Query actors currently inside the camera field of view") },
         { TEXT("look_at"), TEXT("Rotate player control to face a target actor or world location") },
         { TEXT("look_to"), TEXT("Set absolute camera yaw/pitch with optional interpolation duration") },
         { TEXT("check_stuck"), TEXT("Detect whether player movement is blocked over a short interval") },

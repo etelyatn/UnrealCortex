@@ -10,4 +10,5 @@ public:
     static FCortexCommandResult GetActorState(const TSharedPtr<FJsonObject>& Params);
     static FCortexCommandResult GetPlayerState(const TSharedPtr<FJsonObject>& Params);
     static FCortexCommandResult ProbeForward(const TSharedPtr<FJsonObject>& Params);
+    static FCortexCommandResult GetVisibleActors(const TSharedPtr<FJsonObject>& Params);
 };

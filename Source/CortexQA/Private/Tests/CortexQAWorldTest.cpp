@@ -82,3 +82,19 @@ bool FCortexQAProbeForwardNoPIETest::RunTest(const FString& Parameters)
     TestEqual(TEXT("probe_forward should return PIE_NOT_ACTIVE"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexQAGetVisibleActorsNoPIETest,
+    "Cortex.QA.World.GetVisibleActors.NoPIE",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexQAGetVisibleActorsNoPIETest::RunTest(const FString& Parameters)
+{
+    FCortexCommandRouter Router = CreateQARouterWorld();
+    const FCortexCommandResult Result = Router.Execute(TEXT("qa.get_visible_actors"), MakeShared<FJsonObject>());
+
+    TestFalse(TEXT("get_visible_actors should fail when PIE is not active"), Result.bSuccess);
+    TestEqual(TEXT("get_visible_actors should return PIE_NOT_ACTIVE"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
+    return true;
+}
