@@ -10,9 +10,7 @@
 
 **Give your AI hands inside Unreal Engine.**
 
-Your AI assistant can already write code. UnrealCortex lets it work *inside* the editor — querying DataTables, editing Blueprint graphs, building UMG hierarchies, placing actors, and even playing and testing your game autonomously. No copy-pasting, no file exports. Changes appear live with full undo support.
-
-All UObject access dispatches to the Game Thread via `AsyncTask(ENamedThreads::GameThread)`. All mutations are wrapped in `FScopedTransaction` — standard Ctrl+Z undo works. Zero runtime footprint: all 10 modules declare `Type: Editor`, load at `PostEngineInit`, and are stripped from shipping builds.
+Your AI assistant can already write code. UnrealCortex lets it work *inside* the editor — querying DataTables, editing Blueprint graphs, building UMG hierarchies, placing actors, converting Blueprints to C++, and even playing and testing your game autonomously. No copy-pasting, no file exports. Changes appear live with full undo support.
 
 > **Status:** v0.1.0 Beta — All 10 domain modules shipped and tested.
 
@@ -41,7 +39,7 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 </details>
 
 <details>
-<summary><strong>Blueprint — CortexBlueprint + CortexGraph</strong> &nbsp;·&nbsp; Create, modify, and compile Blueprints structurally</summary>
+<summary><strong>Blueprint — CortexBlueprint + CortexGraph</strong> &nbsp;·&nbsp; Create, modify, compile, and migrate Blueprints</summary>
 
 <br>
 
@@ -49,7 +47,9 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 **Graph editing:** Traverse EventGraphs, function graphs, and macros via `UEdGraph`. Add and remove nodes. Connect pins with type-safe validation — mismatches return clear errors, not silent failures.
 
-**Example tasks:** *"Create a BP_DoorInteractable with a boolean IsLocked variable and an Interact event"* · *"Add a health regeneration function that ticks every second using a timer node"* · *"Wire up the OnOverlap event to toggle visibility and play a sound cue"*
+**Blueprint-to-C++ migration:** The AI reads the full Blueprint structure — variables, functions, graph nodes, pin connections — and generates equivalent C++ code. Combined with CortexReflect's class hierarchy awareness, it understands inheritance, overrides, and dependencies before writing a single line.
+
+**Example tasks:** *"Convert BP_EnemyBase to a C++ class preserving all variables and function signatures"* · *"Create a BP_DoorInteractable with a boolean IsLocked variable and an Interact event"* · *"Wire up the OnOverlap event to toggle visibility and play a sound cue"*
 
 </details>
 
@@ -145,7 +145,7 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 </details>
 
 <details>
-<summary><strong>Project Analysis — CortexReflect</strong> &nbsp;·&nbsp; Class hierarchy, properties, cross-references</summary>
+<summary><strong>Project Analysis — CortexReflect</strong> &nbsp;·&nbsp; Class hierarchy, properties, cross-references, migration intelligence</summary>
 
 <br>
 
@@ -159,7 +159,9 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 **Usage search:** Search for references to a class across all loaded Blueprint assets.
 
-**Example tasks:** *"Show me all Blueprint classes that inherit from ABaseEnemy"* · *"Which Blueprints override the TakeDamage function?"* · *"List every property on BP_PlayerCharacter including inherited ones"*
+**Migration intelligence:** Before converting a Blueprint to C++, the AI uses Reflect to understand the full picture — what the class inherits, which functions it overrides, what other Blueprints reference it — so the generated C++ is correct and nothing breaks downstream.
+
+**Example tasks:** *"Show me all Blueprint classes that inherit from ABaseEnemy"* · *"Which Blueprints override the TakeDamage function?"* · *"Analyze BP_InventorySystem dependencies before I migrate it to C++"*
 
 </details>
 
