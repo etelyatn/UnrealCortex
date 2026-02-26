@@ -18,129 +18,6 @@ All UObject access dispatches to the Game Thread via `AsyncTask(ENamedThreads::G
 
 ---
 
-## Architecture
-
-```mermaid
-flowchart LR
-    AI["AI Assistant"]
-    MCP["Python MCP Server"]
-    Core["CortexCore\nC++ Plugin"]
-    UE["Unreal Editor"]
-
-    AI <-- "MCP tools" --> MCP
-    MCP <-- "JSON over TCP" --> Core
-    Core <-- "Game Thread\nUObject access" --> UE
-```
-
-Commands are namespaced: `{domain}.{command}` — e.g. `data.query_datatable`, `bp.create`, `graph.add_node`. CortexCore routes each command to its registered domain handler and dispatches to the Game Thread. The port is auto-discovered via `Saved/CortexPort.txt` — multiple editor instances each get their own port.
-
----
-
-## Quick Start
-
-### Requirements
-
-- Unreal Engine 5.6+
-- Python 3.10+ with [uv](https://docs.astral.sh/uv/) (`pip install uv` or see [uv docs](https://docs.astral.sh/uv/getting-started/installation/))
-- An MCP-compatible AI assistant ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), Cursor, etc.)
-
-### Step 1 — Install the Plugin
-
-```bash
-cd YourProject/Plugins
-git submodule add https://github.com/etelyatn/UnrealCortex.git UnrealCortex
-```
-
-Add the plugin to your `.uproject`:
-
-```json
-{
-  "Plugins": [
-    { "Name": "UnrealCortex", "Enabled": true }
-  ]
-}
-```
-
-Rebuild your project. All 10 modules load automatically at `PostEngineInit` — after `IAssetRegistry` and the Blueprint compilation system are ready. All modules are `Type: Editor` and are stripped from shipping builds.
-
-### Step 2 — Set Up the MCP Server
-
-Install Python dependencies (required regardless of AI assistant):
-
-```bash
-cd Plugins/UnrealCortex/MCP
-uv sync
-```
-
-**If you're using Cortex Toolkit with Claude Code** — skip the rest of this step. `/cortex-init` (Step 3) will write your `.mcp.json` automatically.
-
-**If you're using another AI assistant (Cursor, etc.) or setting up manually**, add to your `.mcp.json` at your project root:
-
-```json
-{
-  "mcpServers": {
-    "cortex_mcp": {
-      "command": "uv",
-      "args": ["run", "--directory", "Plugins/UnrealCortex/MCP", "cortex-mcp"]
-    }
-  }
-}
-```
-
-Open your project in the Unreal Editor. CortexCore writes `Saved/CortexPort.txt` on startup — the MCP server discovers it automatically. If the editor is not open, MCP tool calls will return an `EDITOR_NOT_RUNNING` error. If you restart the editor, the MCP server picks up the new port file automatically.
-
-### Step 3 — Install Cortex Toolkit *(Claude Code only)*
-
-> [!NOTE]
-> **[Cortex Toolkit](https://github.com/etelyatn/cortex-toolkit)** is currently available for **Claude Code only**. It adds domain-specific skills, specialist agents, and project memory — and handles MCP configuration automatically via `/cortex-init`. Recommended if you use Claude Code.
-
-**Option A — Marketplace (browse and install only the domains you need):**
-
-Run inside Claude Code:
-```
-/plugin marketplace add etelyatn/cortex-toolkit
-```
-
-**Option B — Install selectively from your terminal:**
-
-```bash
-claude plugin add etelyatn/cortex-toolkit/cortex-core      # Required
-claude plugin add etelyatn/cortex-toolkit/cortex-data       # Pick your domains
-claude plugin add etelyatn/cortex-toolkit/cortex-blueprint
-claude plugin add etelyatn/cortex-toolkit/cortex-ui
-claude plugin add etelyatn/cortex-toolkit/cortex-material
-claude plugin add etelyatn/cortex-toolkit/cortex-level
-claude plugin add etelyatn/cortex-toolkit/cortex-qa
-claude plugin add etelyatn/cortex-toolkit/cortex-reflect
-```
-
-Then run `/cortex-init` inside Claude Code to configure your project and set up `.mcp.json`. After that, `/cortex-start` verifies the connection and walks you through your first task. Use `/cortex-help` anytime for contextual suggestions.
-
----
-
-## Project Memory
-
-> [!IMPORTANT]
-> Cortex Toolkit creates a `.cortex/` directory in your project root. Fill it with your project's conventions — table schemas, Blueprint naming rules, material hierarchies, screen inventory. Instead of explaining your conventions in every chat, write them once and every agent respects them automatically.
-
-The session-start hook injects `context.md` automatically. Domain agents read their specific file (e.g., `domains/blueprints.md`) before every task.
-
-```
-.cortex/
-├── config.yaml          ← engine path, active domains
-├── context.md           ← shared project knowledge (read every session)
-└── domains/
-    ├── data.md          ← table schemas, balance rules
-    ├── blueprints.md    ← class hierarchy, conventions
-    ├── material.md      ← material conventions, instance hierarchies
-    ├── umg.md           ← screen inventory, style guide
-    ├── level.md         ← actor conventions, level structure
-    ├── qa.md            ← test scenarios, assertion patterns
-    └── reflect.md       ← class hierarchy notes, scan scope
-```
-
----
-
 ## What AI Can Do
 
 <details>
@@ -269,6 +146,152 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 **Usage search:** Search for references to a class across all loaded Blueprint assets.
 
 </details>
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    AI["AI Assistant\n(Claude Code, Cursor, etc.)"]
+    MCP["Python MCP Server"]
+    Core["CortexCore\nCommand Router · TCP Server"]
+
+    subgraph Modules["Domain Modules (C++ Plugin)"]
+        direction LR
+        Data["CortexData\nDataTables · Tags\nDataAssets · Curves"]
+        BP["CortexBlueprint\nBlueprint CRUD\nGraph Editing"]
+        Mat["CortexMaterial\nMaterials · Instances\nParameter Collections"]
+        UMG["CortexUMG\nWidget Trees\nProperties · Animations"]
+        Level["CortexLevel\nActors · Components\nStreaming"]
+        Editor["CortexEditor\nPIE · Viewport\nInput · Console"]
+        QA["CortexQA\nGame Actions\nAssertions · Scenarios"]
+        Reflect["CortexReflect\nClass Hierarchy\nCross-references"]
+    end
+
+    UE["Unreal Editor"]
+
+    AI <-- "MCP protocol" --> MCP
+    MCP <-- "JSON over TCP" --> Core
+    Core --> Modules
+    Modules <-- "Game Thread\nUObject access" --> UE
+```
+
+Commands are namespaced: `{domain}.{command}` — e.g. `data.query_datatable`, `bp.create`, `graph.add_node`. CortexCore routes each command to its registered domain handler and dispatches to the Game Thread. The port is auto-discovered via `Saved/CortexPort.txt` — multiple editor instances each get their own port.
+
+---
+
+## Quick Start
+
+### Requirements
+
+- Unreal Engine 5.6+
+- Python 3.10+ with [uv](https://docs.astral.sh/uv/) (`pip install uv` or see [uv docs](https://docs.astral.sh/uv/getting-started/installation/))
+- An MCP-compatible AI assistant ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), Cursor, etc.)
+
+### Step 1 — Install the Plugin
+
+```bash
+cd YourProject/Plugins
+git submodule add https://github.com/etelyatn/UnrealCortex.git UnrealCortex
+```
+
+Add the plugin to your `.uproject`:
+
+```json
+{
+  "Plugins": [
+    { "Name": "UnrealCortex", "Enabled": true }
+  ]
+}
+```
+
+Rebuild your project. All 10 modules load automatically at `PostEngineInit` — after `IAssetRegistry` and the Blueprint compilation system are ready. All modules are `Type: Editor` and are stripped from shipping builds.
+
+### Step 2 — Install Python Dependencies
+
+```bash
+cd Plugins/UnrealCortex/MCP
+uv sync
+```
+
+### Step 3 — Connect Your AI Assistant
+
+Choose one of the two installation paths below.
+
+#### Option A — Automatic Setup with Cortex Toolkit *(Claude Code)*
+
+> [!NOTE]
+> **[Cortex Toolkit](https://github.com/etelyatn/cortex-toolkit)** adds domain-specific skills, specialist agents, and project memory on top of UnrealCortex. Currently available for **Claude Code only**. It handles MCP configuration, editor auto-launch, and context injection automatically.
+
+**Install the toolkit** — browse the marketplace and pick only the domains you need:
+
+```
+/plugin marketplace add etelyatn/cortex-toolkit
+```
+
+Or install selectively from your terminal:
+
+```bash
+claude plugin add etelyatn/cortex-toolkit/cortex-core      # Required
+claude plugin add etelyatn/cortex-toolkit/cortex-data       # Pick your domains
+claude plugin add etelyatn/cortex-toolkit/cortex-blueprint
+claude plugin add etelyatn/cortex-toolkit/cortex-ui
+claude plugin add etelyatn/cortex-toolkit/cortex-material
+claude plugin add etelyatn/cortex-toolkit/cortex-level
+claude plugin add etelyatn/cortex-toolkit/cortex-qa
+claude plugin add etelyatn/cortex-toolkit/cortex-reflect
+```
+
+**Initialize your project** — run `/cortex-init` inside Claude Code. It will:
+
+1. Detect your Unreal Engine installation
+2. Scan the plugin for enabled domain modules
+3. Create `.mcp.json` with the correct MCP server configuration
+4. Set up `.cortex/` project memory directory with domain knowledge templates
+
+After that, `/cortex-start` verifies the connection and walks you through your first task. Use `/cortex-help` anytime for contextual suggestions.
+
+#### Option B — Manual Setup *(Cursor, Windsurf, or any MCP client)*
+
+Create `.mcp.json` at your project root:
+
+```json
+{
+  "mcpServers": {
+    "cortex_mcp": {
+      "command": "uv",
+      "args": ["run", "--directory", "Plugins/UnrealCortex/MCP", "cortex-mcp"],
+      "env": { "CORTEX_PROJECT_DIR": "." }
+    }
+  }
+}
+```
+
+Open your project in the Unreal Editor. CortexCore writes `Saved/CortexPort.txt` on startup — the MCP server discovers it automatically. If the editor is not open, MCP tool calls will return an `EDITOR_NOT_RUNNING` error. If you restart the editor, the MCP server picks up the new port file automatically.
+
+---
+
+## Project Memory
+
+> [!IMPORTANT]
+> Cortex Toolkit creates a `.cortex/` directory in your project root. Fill it with your project's conventions — table schemas, Blueprint naming rules, material hierarchies, screen inventory. Instead of explaining your conventions in every chat, write them once and every agent respects them automatically.
+
+The session-start hook injects `context.md` automatically. Domain agents read their specific file (e.g., `domains/blueprints.md`) before every task.
+
+```
+.cortex/
+├── config.yaml          ← engine path, active domains
+├── context.md           ← shared project knowledge (read every session)
+└── domains/
+    ├── data.md          ← table schemas, balance rules
+    ├── blueprints.md    ← class hierarchy, conventions
+    ├── material.md      ← material conventions, instance hierarchies
+    ├── umg.md           ← screen inventory, style guide
+    ├── level.md         ← actor conventions, level structure
+    ├── qa.md            ← test scenarios, assertion patterns
+    └── reflect.md       ← class hierarchy notes, scan scope
+```
 
 ---
 
