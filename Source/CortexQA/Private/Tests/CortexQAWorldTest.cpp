@@ -64,3 +64,21 @@ bool FCortexQAGetPlayerStateNoPIETest::RunTest(const FString& Parameters)
     TestEqual(TEXT("get_player_state should return PIE_NOT_ACTIVE"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexQAProbeForwardNoPIETest,
+    "Cortex.QA.World.ProbeForward.NoPIE",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexQAProbeForwardNoPIETest::RunTest(const FString& Parameters)
+{
+    FCortexCommandRouter Router = CreateQARouterWorld();
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetNumberField(TEXT("distance"), 3000.0);
+    const FCortexCommandResult Result = Router.Execute(TEXT("qa.probe_forward"), Params);
+
+    TestFalse(TEXT("probe_forward should fail when PIE is not active"), Result.bSuccess);
+    TestEqual(TEXT("probe_forward should return PIE_NOT_ACTIVE"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
+    return true;
+}

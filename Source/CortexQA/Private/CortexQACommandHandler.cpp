@@ -23,6 +23,10 @@ FCortexCommandResult FCortexQACommandHandler::Execute(
     {
         return FCortexQAWorldOps::GetPlayerState(Params);
     }
+    if (Command == TEXT("probe_forward"))
+    {
+        return FCortexQAWorldOps::ProbeForward(Params);
+    }
     if (Command == TEXT("look_at"))
     {
         return FCortexQAActionOps::LookAt(Params);
@@ -68,6 +72,7 @@ TArray<FCortexCommandInfo> FCortexQACommandHandler::GetSupportedCommands() const
         { TEXT("observe_state"), TEXT("Full world state snapshot for AI decision-making") },
         { TEXT("get_actor_state"), TEXT("Get detailed state for a specific actor in PIE") },
         { TEXT("get_player_state"), TEXT("Get detailed player pawn/controller state in PIE") },
+        { TEXT("probe_forward"), TEXT("Raycast from camera forward to detect obstacles and actors") },
         { TEXT("look_at"), TEXT("Rotate player control to face a target actor or world location") },
         { TEXT("interact"), TEXT("Inject interaction key input for gameplay interaction") },
         { TEXT("move_to"), TEXT("Move player to a target actor/location using deferred response") },

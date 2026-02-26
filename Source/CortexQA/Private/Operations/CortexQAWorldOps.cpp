@@ -8,6 +8,7 @@
 #include "GameFramework/Actor.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 #include "Camera/PlayerCameraManager.h"
 #include "CollisionQueryParams.h"
 
@@ -297,6 +298,109 @@ FCortexCommandResult FCortexQAWorldOps::GetPlayerState(const TSharedPtr<FJsonObj
         FCortexQAUtils::SetVectorObject(Data, TEXT("camera_location"), CameraManager->GetCameraLocation());
         FCortexQAUtils::SetRotatorObject(Data, TEXT("camera_rotation"), CameraManager->GetCameraRotation());
         Data->SetNumberField(TEXT("camera_fov"), CameraManager->GetFOVAngle());
+    }
+
+    return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexQAWorldOps::ProbeForward(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* PIEWorld = FCortexQAUtils::GetPIEWorld();
+    if (PIEWorld == nullptr)
+    {
+        return FCortexQAUtils::PIENotActiveError();
+    }
+
+    APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
+    APawn* Pawn = FCortexQAUtils::GetPlayerPawn(PIEWorld);
+    if (PC == nullptr || Pawn == nullptr || PC->PlayerCameraManager == nullptr)
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::ActorNotFound,
+            TEXT("No player controller, pawn, or camera manager"));
+    }
+
+    double MaxDistance = 3000.0;
+    if (Params.IsValid())
+    {
+        Params->TryGetNumberField(TEXT("distance"), MaxDistance);
+    }
+    MaxDistance = FMath::Max(0.0, MaxDistance);
+
+    ECollisionChannel Channel = ECC_Visibility;
+    FString ChannelString;
+    if (Params.IsValid() && Params->TryGetStringField(TEXT("channel"), ChannelString))
+    {
+        if (ChannelString == TEXT("camera"))
+        {
+            Channel = ECC_Camera;
+        }
+        else if (ChannelString == TEXT("pawn"))
+        {
+            Channel = ECC_Pawn;
+        }
+    }
+
+    const FVector Start = PC->PlayerCameraManager->GetCameraLocation();
+    const FVector Forward = PC->PlayerCameraManager->GetCameraRotation().Vector();
+    const FVector End = Start + (Forward * MaxDistance);
+
+    FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(CortexQAProbeForward), true);
+    TraceParams.AddIgnoredActor(Pawn);
+    TraceParams.AddIgnoredActor(PC->PlayerCameraManager);
+
+    FHitResult Hit;
+    const bool bHit = PIEWorld->LineTraceSingleByChannel(Hit, Start, End, Channel, TraceParams);
+
+    TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+    if (bHit && Hit.bBlockingHit)
+    {
+        Data->SetBoolField(TEXT("hit"), true);
+        Data->SetNumberField(TEXT("distance"), Hit.Distance);
+        FCortexQAUtils::SetVectorObject(Data, TEXT("location"), Hit.ImpactPoint);
+        FCortexQAUtils::SetVectorObject(Data, TEXT("surface_normal"), Hit.ImpactNormal);
+
+        const FVector DirectionToHit = (Hit.ImpactPoint - Start).GetSafeNormal();
+        const FRotator LookRotation = DirectionToHit.Rotation();
+        Data->SetNumberField(TEXT("look_yaw"), LookRotation.Yaw);
+        Data->SetNumberField(TEXT("look_pitch"), LookRotation.Pitch);
+
+        AActor* HitActor = Hit.GetActor();
+        if (HitActor != nullptr)
+        {
+            Data->SetStringField(TEXT("hit_type"), TEXT("actor"));
+
+            TSharedPtr<FJsonObject> ActorData = MakeShared<FJsonObject>();
+            const FString Label = HitActor->GetActorLabel();
+            ActorData->SetStringField(TEXT("name"), Label.IsEmpty() ? HitActor->GetName() : Label);
+            ActorData->SetStringField(TEXT("path"), HitActor->GetPathName());
+            ActorData->SetStringField(TEXT("class"), HitActor->GetClass()->GetName());
+            ActorData->SetBoolField(TEXT("in_interaction_range"), Hit.Distance <= 200.0);
+
+            TArray<TSharedPtr<FJsonValue>> Tags;
+            for (const FName& Tag : HitActor->Tags)
+            {
+                Tags.Add(MakeShared<FJsonValueString>(Tag.ToString()));
+            }
+            ActorData->SetArrayField(TEXT("tags"), Tags);
+            Data->SetObjectField(TEXT("actor"), ActorData);
+        }
+        else
+        {
+            Data->SetStringField(TEXT("hit_type"), TEXT("geometry"));
+            Data->SetField(TEXT("actor"), MakeShared<FJsonValueNull>());
+        }
+    }
+    else
+    {
+        Data->SetBoolField(TEXT("hit"), false);
+        Data->SetNumberField(TEXT("distance"), MaxDistance);
+        Data->SetField(TEXT("location"), MakeShared<FJsonValueNull>());
+        Data->SetField(TEXT("surface_normal"), MakeShared<FJsonValueNull>());
+        Data->SetStringField(TEXT("hit_type"), TEXT("none"));
+        Data->SetField(TEXT("look_yaw"), MakeShared<FJsonValueNull>());
+        Data->SetField(TEXT("look_pitch"), MakeShared<FJsonValueNull>());
+        Data->SetField(TEXT("actor"), MakeShared<FJsonValueNull>());
     }
 
     return FCortexCommandRouter::Success(Data);

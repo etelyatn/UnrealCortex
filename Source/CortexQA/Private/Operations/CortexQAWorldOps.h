@@ -9,4 +9,5 @@ public:
     static FCortexCommandResult ObserveState(const TSharedPtr<FJsonObject>& Params);
     static FCortexCommandResult GetActorState(const TSharedPtr<FJsonObject>& Params);
     static FCortexCommandResult GetPlayerState(const TSharedPtr<FJsonObject>& Params);
+    static FCortexCommandResult ProbeForward(const TSharedPtr<FJsonObject>& Params);
 };
