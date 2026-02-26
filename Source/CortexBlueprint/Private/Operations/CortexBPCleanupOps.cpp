@@ -228,6 +228,67 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 	return FCortexCommandRouter::Success(ResponseData);
 }
 
+FCortexCommandResult FCortexBPCleanupOps::RecompileDependents(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: asset_path"));
+	}
+
+	FString LoadError;
+	UBlueprint* TargetBlueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
+	if (!TargetBlueprint)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+	}
+
+	TArray<UBlueprint*> DependentBlueprints;
+	FBlueprintEditorUtils::GetDependentBlueprints(TargetBlueprint, DependentBlueprints);
+
+	TArray<TSharedPtr<FJsonValue>> ResultsArray;
+	ResultsArray.Reserve(DependentBlueprints.Num());
+	int32 SuccessCount = 0;
+
+	for (UBlueprint* DependentBlueprint : DependentBlueprints)
+	{
+		if (!DependentBlueprint)
+		{
+			continue;
+		}
+
+		FBlueprintEditorUtils::RefreshAllNodes(DependentBlueprint);
+		FKismetEditorUtilities::CompileBlueprint(DependentBlueprint);
+
+		const bool bCompiled =
+			DependentBlueprint->Status == BS_UpToDate ||
+			DependentBlueprint->Status == BS_UpToDateWithWarnings;
+		SuccessCount += bCompiled ? 1 : 0;
+
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("blueprint"), DependentBlueprint->GetPathName());
+		Entry->SetStringField(TEXT("status"), bCompiled ? TEXT("success") : TEXT("error"));
+
+		TArray<TSharedPtr<FJsonValue>> Errors;
+		if (!bCompiled)
+		{
+			Errors.Add(MakeShared<FJsonValueString>(TEXT("Blueprint did not compile to UpToDate status")));
+		}
+		Entry->SetArrayField(TEXT("errors"), Errors);
+		ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetNumberField(TEXT("dependent_count"), DependentBlueprints.Num());
+	Data->SetNumberField(TEXT("recompiled_count"), SuccessCount);
+	Data->SetArrayField(TEXT("results"), ResultsArray);
+
+	return FCortexCommandRouter::Success(Data);
+}
+
 FCortexCommandResult FCortexBPCleanupOps::RemoveSCSComponent(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
