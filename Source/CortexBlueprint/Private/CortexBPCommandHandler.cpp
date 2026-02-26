@@ -96,6 +96,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPCleanupOps::CleanupMigration(Params);
 	}
 
+	if (Command == TEXT("remove_scs_component"))
+	{
+		return FCortexBPCleanupOps::RemoveSCSComponent(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown bp command: %s"), *Command)
@@ -122,6 +127,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add({TEXT("set_component_defaults"), TEXT("Set object-reference properties on a Blueprint component template")});
 	Commands.Add({TEXT("analyze_for_migration"), TEXT("Analyze a Blueprint for C++ migration")});
 	Commands.Add({TEXT("cleanup_migration"), TEXT("Clean up a Blueprint after C++ migration")});
+	Commands.Add({TEXT("remove_scs_component"), TEXT("Remove an SCS component node from a Blueprint (use after migrating to C++ UPROPERTY)")});
 
 	return Commands;
 }

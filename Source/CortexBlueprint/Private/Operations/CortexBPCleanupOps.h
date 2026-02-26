@@ -13,4 +13,12 @@ public:
 	 *         compile (bool, optional, default true)
 	 */
 	static FCortexCommandResult CleanupMigration(const TSharedPtr<FJsonObject>& Params);
+
+	/**
+	 * Remove an SCS (Simple Construction Script) component node from a Blueprint.
+	 * Used when migrating Blueprint-layer components to C++ UPROPERTY members.
+	 * Params: asset_path (string), component_name (string),
+	 *         compile (bool, optional, default true)
+	 */
+	static FCortexCommandResult RemoveSCSComponent(const TSharedPtr<FJsonObject>& Params);
 };
