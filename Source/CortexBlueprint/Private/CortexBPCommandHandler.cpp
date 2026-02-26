@@ -5,6 +5,7 @@
 #include "Operations/CortexBPCleanupOps.h"
 #include "Operations/CortexBPClassDefaultsOps.h"
 #include "Operations/CortexBPComponentOps.h"
+#include "Operations/CortexBPRedirectorOps.h"
 #include "Operations/CortexBPStructureOps.h"
 #include "Operations/CortexBPTimelineOps.h"
 
@@ -106,6 +107,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPCleanupOps::RemoveSCSComponent(Params);
 	}
 
+	if (Command == TEXT("fixup_redirectors"))
+	{
+		return FCortexBPRedirectorOps::FixupRedirectors(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown bp command: %s"), *Command)
@@ -134,6 +140,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add({TEXT("analyze_for_migration"), TEXT("Analyze a Blueprint for C++ migration")});
 	Commands.Add({TEXT("cleanup_migration"), TEXT("Clean up a Blueprint after C++ migration")});
 	Commands.Add({TEXT("remove_scs_component"), TEXT("Remove an SCS component node from a Blueprint (use after migrating to C++ UPROPERTY)")});
+	Commands.Add({TEXT("fixup_redirectors"), TEXT("Fix up redirectors under a content path")});
 
 	return Commands;
 }
