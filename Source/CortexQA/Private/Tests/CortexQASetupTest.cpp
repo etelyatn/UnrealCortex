@@ -73,6 +73,21 @@ bool FCortexQASetRandomSeedNoPIETest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexQATeleportMissingLocationNoPIETest,
+    "Cortex.QA.Setup.TeleportPlayer.MissingLocationNoPIE",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexQATeleportMissingLocationNoPIETest::RunTest(const FString& Parameters)
+{
+    FCortexCommandRouter Router = CreateQARouterSetup();
+    const FCortexCommandResult Result = Router.Execute(TEXT("qa.teleport_player"), MakeShared<FJsonObject>());
+    TestFalse(TEXT("teleport_player should fail when PIE is not active"), Result.bSuccess);
+    TestEqual(TEXT("teleport_player should return PIE_NOT_ACTIVE"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexQASetVectorObjectTest,
     "Cortex.QA.Utils.SetVectorObject.ProducesNamedFields",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter

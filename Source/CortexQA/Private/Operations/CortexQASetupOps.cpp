@@ -6,6 +6,7 @@
 #include "CortexSerializer.h"
 #include "CortexTypes.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 
 FCortexCommandResult FCortexQASetupOps::TeleportPlayer(const TSharedPtr<FJsonObject>& Params)
 {
@@ -45,11 +46,20 @@ FCortexCommandResult FCortexQASetupOps::TeleportPlayer(const TSharedPtr<FJsonObj
     }
 
     Pawn->SetActorLocationAndRotation(Location, Rotation, false, nullptr, ETeleportType::TeleportPhysics);
+    APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
+    if (PC != nullptr)
+    {
+        PC->SetControlRotation(Rotation);
+    }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetBoolField(TEXT("success"), true);
     FCortexQAUtils::SetVectorObject(Data, TEXT("location"), Pawn->GetActorLocation());
     FCortexQAUtils::SetRotatorObject(Data, TEXT("rotation"), Pawn->GetActorRotation());
+    if (PC != nullptr)
+    {
+        FCortexQAUtils::SetRotatorObject(Data, TEXT("control_rotation"), PC->GetControlRotation());
+    }
     return FCortexCommandRouter::Success(Data);
 }
 
