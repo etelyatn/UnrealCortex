@@ -36,6 +36,8 @@ All UObject access dispatches to the Game Thread via `AsyncTask(ENamedThreads::G
 
 Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate with metadata so the AI knows what it's working with.
 
+**Example tasks:** *"Create a QuestRewards DataTable with columns for XP, Gold, and ItemID"* · *"Analyze all loot tables and flag rows where drop rate exceeds 15%"* · *"Add a new GameplayTag Quest.MainStory.Act2 and register it"* · *"Bulk-import 50 weapon definitions from this JSON into DT_Weapons"*
+
 </details>
 
 <details>
@@ -46,6 +48,8 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 **Asset management:** Create, duplicate, delete, list Blueprints. Add variables with types, defaults, and categories. Add functions and events. Compile with error feedback via `FKismetCompilerContext`.
 
 **Graph editing:** Traverse EventGraphs, function graphs, and macros via `UEdGraph`. Add and remove nodes. Connect pins with type-safe validation — mismatches return clear errors, not silent failures.
+
+**Example tasks:** *"Create a BP_DoorInteractable with a boolean IsLocked variable and an Interact event"* · *"Add a health regeneration function that ticks every second using a timer node"* · *"Wire up the OnOverlap event to toggle visibility and play a sound cue"*
 
 </details>
 
@@ -59,6 +63,8 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 **Properties:** Read and write any widget property — text, colors, visibility, padding, alignment. Schema introspection returns available properties for any widget class.
 
 **Animations:** Create, list, and manage widget animations.
+
+**Example tasks:** *"Build a main menu with Play, Settings, and Quit buttons in a vertical box"* · *"Change the health bar color to red when below 25%"* · *"Add a fade-in animation to the game over screen"*
 
 </details>
 
@@ -74,6 +80,8 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 **Material graphs:** List expression nodes, inspect connections, add/remove nodes, wire them together.
 
 **Parameter collections:** Create and manage material parameter collections — add, remove, and set collection parameters.
+
+**Example tasks:** *"Create a glass material with adjustable opacity and refraction"* · *"Set all M_Wall instances to use the brick texture and tint them warm beige"* · *"Add a global TimeOfDay parameter collection and wire it to all outdoor materials"*
 
 </details>
 
@@ -94,6 +102,8 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 **Batch:** `level_batch` composite command for multi-step scene construction in a single call.
 
+**Example tasks:** *"Place 12 torches along the corridor with 300-unit spacing"* · *"Find all actors tagged 'Destructible' and move them into the Gameplay folder"* · *"Spawn a point light on every actor named 'Lamp*' and set intensity to 5000"*
+
 </details>
 
 <details>
@@ -110,6 +120,8 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 **Editor management:** Execute console commands. Adjust time dilation. Shutdown/restart editor.
 
 **Diagnostics:** Query world info, viewport state, and recent log output.
+
+**Example tasks:** *"Start PIE, take a screenshot of the main menu, then stop"* · *"Move the viewport camera to the boss arena and capture a top-down shot"* · *"Set time dilation to 0.25 so I can debug the dash animation"*
 
 </details>
 
@@ -128,6 +140,8 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 **Reproducibility:** Set random seed for deterministic test runs.
 
+**Example tasks:** *"Walk to the shop NPC, interact, and verify the shop menu opens"* · *"Run a full playthrough: spawn, pick up the sword, enter the dungeon, kill the first enemy"* · *"Assert that the player's health drops after stepping on the lava tile"*
+
 </details>
 
 <details>
@@ -145,6 +159,8 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 **Usage search:** Search for references to a class across all loaded Blueprint assets.
 
+**Example tasks:** *"Show me all Blueprint classes that inherit from ABaseEnemy"* · *"Which Blueprints override the TakeDamage function?"* · *"List every property on BP_PlayerCharacter including inherited ones"*
+
 </details>
 
 ---
@@ -153,20 +169,20 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 ```mermaid
 flowchart TB
-    AI["AI Assistant\n(Claude Code, Cursor, etc.)"]
+    AI["AI Assistant<br/>(Claude Code, Cursor, etc.)"]
     MCP["Python MCP Server"]
-    Core["CortexCore\nCommand Router · TCP Server"]
+    Core["CortexCore<br/>Command Router · TCP Server"]
 
     subgraph Modules["Domain Modules (C++ Plugin)"]
         direction LR
-        Data["CortexData\nDataTables · Tags\nDataAssets · Curves"]
-        BP["CortexBlueprint\nBlueprint CRUD\nGraph Editing"]
-        Mat["CortexMaterial\nMaterials · Instances\nParameter Collections"]
-        UMG["CortexUMG\nWidget Trees\nProperties · Animations"]
-        Level["CortexLevel\nActors · Components\nStreaming"]
-        Editor["CortexEditor\nPIE · Viewport\nInput · Console"]
-        QA["CortexQA\nGame Actions\nAssertions · Scenarios"]
-        Reflect["CortexReflect\nClass Hierarchy\nCross-references"]
+        Data["CortexData<br/>DataTables · Tags<br/>DataAssets · Curves"]
+        BP["CortexBlueprint<br/>Blueprint CRUD<br/>Graph Editing"]
+        Mat["CortexMaterial<br/>Materials · Instances<br/>Parameter Collections"]
+        UMG["CortexUMG<br/>Widget Trees<br/>Properties · Animations"]
+        Level["CortexLevel<br/>Actors · Components<br/>Streaming"]
+        Editor["CortexEditor<br/>PIE · Viewport<br/>Input · Console"]
+        QA["CortexQA<br/>Game Actions<br/>Assertions · Scenarios"]
+        Reflect["CortexReflect<br/>Class Hierarchy<br/>Cross-references"]
     end
 
     UE["Unreal Editor"]
@@ -174,7 +190,7 @@ flowchart TB
     AI <-- "MCP protocol" --> MCP
     MCP <-- "JSON over TCP" --> Core
     Core --> Modules
-    Modules <-- "Game Thread\nUObject access" --> UE
+    Modules <-- "Game Thread<br/>UObject access" --> UE
 ```
 
 Commands are namespaced: `{domain}.{command}` — e.g. `data.query_datatable`, `bp.create`, `graph.add_node`. CortexCore routes each command to its registered domain handler and dispatches to the Game Thread. The port is auto-discovered via `Saved/CortexPort.txt` — multiple editor instances each get their own port.
