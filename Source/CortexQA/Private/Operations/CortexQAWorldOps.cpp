@@ -43,7 +43,7 @@ namespace
         const FString Label = Actor->GetActorLabel();
         Json->SetStringField(TEXT("name"), Label.IsEmpty() ? Actor->GetName() : Label);
         Json->SetStringField(TEXT("class"), Actor->GetClass()->GetName());
-        FCortexQAUtils::SetVectorArray(Json, TEXT("location"), Actor->GetActorLocation());
+        FCortexQAUtils::SetVectorObject(Json, TEXT("location"), Actor->GetActorLocation());
 
         Json->SetNumberField(TEXT("distance"), Distance);
 
@@ -90,9 +90,9 @@ namespace
         const FString Label = Actor->GetActorLabel();
         Json->SetStringField(TEXT("name"), Label.IsEmpty() ? Actor->GetName() : Label);
         Json->SetStringField(TEXT("class"), Actor->GetClass()->GetName());
-        FCortexQAUtils::SetVectorArray(Json, TEXT("location"), Actor->GetActorLocation());
-        FCortexQAUtils::SetRotatorArray(Json, TEXT("rotation"), Actor->GetActorRotation());
-        FCortexQAUtils::SetVectorArray(Json, TEXT("scale"), Actor->GetActorScale3D());
+        FCortexQAUtils::SetVectorObject(Json, TEXT("location"), Actor->GetActorLocation());
+        FCortexQAUtils::SetRotatorObject(Json, TEXT("rotation"), Actor->GetActorRotation());
+        FCortexQAUtils::SetVectorObject(Json, TEXT("scale"), Actor->GetActorScale3D());
         Json->SetBoolField(TEXT("is_hidden"), Actor->IsHidden());
 
         TArray<TSharedPtr<FJsonValue>> Tags;
@@ -280,9 +280,9 @@ FCortexCommandResult FCortexQAWorldOps::GetPlayerState(const TSharedPtr<FJsonObj
     APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-    FCortexQAUtils::SetVectorArray(Data, TEXT("location"), Pawn->GetActorLocation());
-    FCortexQAUtils::SetRotatorArray(Data, TEXT("rotation"), Pawn->GetActorRotation());
-    FCortexQAUtils::SetVectorArray(Data, TEXT("velocity"), Pawn->GetVelocity());
+    FCortexQAUtils::SetVectorObject(Data, TEXT("location"), Pawn->GetActorLocation());
+    FCortexQAUtils::SetRotatorObject(Data, TEXT("rotation"), Pawn->GetActorRotation());
+    FCortexQAUtils::SetVectorObject(Data, TEXT("velocity"), Pawn->GetVelocity());
     Data->SetNumberField(TEXT("speed"), Pawn->GetVelocity().Size());
     Data->SetBoolField(TEXT("is_moving"), !Pawn->GetVelocity().IsNearlyZero());
     Data->SetStringField(TEXT("pawn_class"), Pawn->GetClass()->GetName());
@@ -294,8 +294,8 @@ FCortexCommandResult FCortexQAWorldOps::GetPlayerState(const TSharedPtr<FJsonObj
 
     if (APlayerCameraManager* CameraManager = PC->PlayerCameraManager)
     {
-        FCortexQAUtils::SetVectorArray(Data, TEXT("camera_location"), CameraManager->GetCameraLocation());
-        FCortexQAUtils::SetRotatorArray(Data, TEXT("camera_rotation"), CameraManager->GetCameraRotation());
+        FCortexQAUtils::SetVectorObject(Data, TEXT("camera_location"), CameraManager->GetCameraLocation());
+        FCortexQAUtils::SetRotatorObject(Data, TEXT("camera_rotation"), CameraManager->GetCameraRotation());
         Data->SetNumberField(TEXT("camera_fov"), CameraManager->GetFOVAngle());
     }
 

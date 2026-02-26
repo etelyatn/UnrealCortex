@@ -7,22 +7,6 @@
 #include "CortexTypes.h"
 #include "GameFramework/Pawn.h"
 
-namespace
-{
-    bool ParseVector(const TArray<TSharedPtr<FJsonValue>>& Array, FVector& Out)
-    {
-        if (Array.Num() != 3)
-        {
-            return false;
-        }
-        Out = FVector(
-            static_cast<float>(Array[0]->AsNumber()),
-            static_cast<float>(Array[1]->AsNumber()),
-            static_cast<float>(Array[2]->AsNumber()));
-        return true;
-    }
-}
-
 FCortexCommandResult FCortexQASetupOps::TeleportPlayer(const TSharedPtr<FJsonObject>& Params)
 {
     UWorld* PIEWorld = FCortexQAUtils::GetPIEWorld();
@@ -37,36 +21,35 @@ FCortexCommandResult FCortexQASetupOps::TeleportPlayer(const TSharedPtr<FJsonObj
         return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("No player pawn found"));
     }
 
-    const TArray<TSharedPtr<FJsonValue>>* LocationArray = nullptr;
-    if (!Params.IsValid() || !Params->TryGetArrayField(TEXT("location"), LocationArray) || LocationArray == nullptr)
+    const TSharedPtr<FJsonValue> LocationValue = Params.IsValid() ? Params->TryGetField(TEXT("location")) : nullptr;
+    FVector Location = FVector::ZeroVector;
+    FString LocationError;
+    if (!LocationValue.IsValid() || !FCortexQAUtils::ParseVectorParam(LocationValue, Location, LocationError))
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: location"));
-    }
-
-    FVector Location;
-    if (!ParseVector(*LocationArray, Location))
-    {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("location must be [x,y,z]"));
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidField,
+            FString::Printf(TEXT("Invalid location: %s"), *LocationError));
     }
 
     FRotator Rotation = Pawn->GetActorRotation();
-    const TArray<TSharedPtr<FJsonValue>>* RotationArray = nullptr;
-    if (Params->TryGetArrayField(TEXT("rotation"), RotationArray) && RotationArray != nullptr)
+    const TSharedPtr<FJsonValue> RotationValue = Params.IsValid() ? Params->TryGetField(TEXT("rotation")) : nullptr;
+    if (RotationValue.IsValid())
     {
-        FVector RotationVec;
-        if (!ParseVector(*RotationArray, RotationVec))
+        FString RotationError;
+        if (!FCortexQAUtils::ParseRotatorParam(RotationValue, Rotation, RotationError))
         {
-            return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("rotation must be [pitch,yaw,roll]"));
+            return FCortexCommandRouter::Error(
+                CortexErrorCodes::InvalidField,
+                FString::Printf(TEXT("Invalid rotation: %s"), *RotationError));
         }
-        Rotation = FRotator(RotationVec.X, RotationVec.Y, RotationVec.Z);
     }
 
     Pawn->SetActorLocationAndRotation(Location, Rotation, false, nullptr, ETeleportType::TeleportPhysics);
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetBoolField(TEXT("success"), true);
-    FCortexQAUtils::SetVectorArray(Data, TEXT("location"), Pawn->GetActorLocation());
-    FCortexQAUtils::SetRotatorArray(Data, TEXT("rotation"), Pawn->GetActorRotation());
+    FCortexQAUtils::SetVectorObject(Data, TEXT("location"), Pawn->GetActorLocation());
+    FCortexQAUtils::SetRotatorObject(Data, TEXT("rotation"), Pawn->GetActorRotation());
     return FCortexCommandRouter::Success(Data);
 }
 

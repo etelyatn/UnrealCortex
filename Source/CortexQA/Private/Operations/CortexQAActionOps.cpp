@@ -44,22 +44,17 @@ namespace
             return true;
         }
 
-        if (TargetValue->Type == EJson::Array)
+        FString ParseError;
+        FVector ParsedTarget = FVector::ZeroVector;
+        if (FCortexQAUtils::ParseVectorParam(TargetValue, ParsedTarget, ParseError))
         {
-            const TArray<TSharedPtr<FJsonValue>>& Array = TargetValue->AsArray();
-            if (Array.Num() != 3)
-            {
-                OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("target array must have 3 elements"));
-                return false;
-            }
-            OutTarget = FVector(
-                static_cast<float>(Array[0]->AsNumber()),
-                static_cast<float>(Array[1]->AsNumber()),
-                static_cast<float>(Array[2]->AsNumber()));
+            OutTarget = ParsedTarget;
             return true;
         }
 
-        OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("target must be actor name or [x,y,z]"));
+        OutError = FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidField,
+            FString::Printf(TEXT("target must be actor name or vector object/array: %s"), *ParseError));
         return false;
     }
 }
@@ -92,7 +87,7 @@ FCortexCommandResult FCortexQAActionOps::LookAt(const TSharedPtr<FJsonObject>& P
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetBoolField(TEXT("success"), true);
-    FCortexQAUtils::SetRotatorArray(Data, TEXT("control_rotation"), LookRotation);
+    FCortexQAUtils::SetRotatorObject(Data, TEXT("control_rotation"), LookRotation);
     return FCortexCommandRouter::Success(Data);
 }
 
@@ -260,7 +255,7 @@ FCortexCommandResult FCortexQAActionOps::MoveTo(const TSharedPtr<FJsonObject>& P
             {
                 TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
                 Data->SetBoolField(TEXT("arrived"), true);
-                FCortexQAUtils::SetVectorArray(Data, TEXT("final_location"), Current);
+                FCortexQAUtils::SetVectorObject(Data, TEXT("final_location"), Current);
                 Data->SetNumberField(TEXT("distance_to_target"), Distance);
                 Data->SetNumberField(TEXT("duration_seconds"), Elapsed);
                 Data->SetStringField(TEXT("movement_method"), MovementMethod);
@@ -274,7 +269,7 @@ FCortexCommandResult FCortexQAActionOps::MoveTo(const TSharedPtr<FJsonObject>& P
             {
                 TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
                 Data->SetBoolField(TEXT("arrived"), false);
-                FCortexQAUtils::SetVectorArray(Data, TEXT("final_location"), Current);
+                FCortexQAUtils::SetVectorObject(Data, TEXT("final_location"), Current);
                 Data->SetNumberField(TEXT("distance_to_target"), Distance);
                 Data->SetNumberField(TEXT("duration_seconds"), Elapsed);
                 Data->SetStringField(TEXT("reason"), TEXT("timeout"));
