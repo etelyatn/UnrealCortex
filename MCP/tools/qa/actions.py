@@ -57,6 +57,19 @@ def register_qa_action_tools(mcp, connection: UEConnection):
             return f"Error: {e}"
 
     @mcp.tool()
+    def look_to(yaw: float, pitch: float = 0.0, duration: float = 0.0) -> str:
+        try:
+            params = {"yaw": yaw, "pitch": pitch, "duration": duration}
+            timeout = duration + 5.0 if duration > 0.0 else None
+            if timeout is None:
+                response = connection.send_command("qa.look_to", params)
+            else:
+                response = connection.send_command("qa.look_to", params, timeout=timeout)
+            return format_response(response.get("data", {}), "look_to")
+        except (RuntimeError, ConnectionError) as e:
+            return f"Error: {e}"
+
+    @mcp.tool()
     def wait_for_condition(
         type: str,
         timeout: float = 5.0,

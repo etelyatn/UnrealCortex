@@ -41,3 +41,26 @@ def register_qa_world_tools(mcp, connection: UEConnection):
             return format_response(response.get("data", {}), "get_player_details")
         except (RuntimeError, ConnectionError) as e:
             return f"Error: {e}"
+
+    @mcp.tool()
+    def probe_forward(distance: float = 3000.0, channel: str = "visibility") -> str:
+        try:
+            response = connection.send_command(
+                "qa.probe_forward",
+                {"distance": distance, "channel": channel},
+            )
+            return format_response(response.get("data", {}), "probe_forward")
+        except (RuntimeError, ConnectionError) as e:
+            return f"Error: {e}"
+
+    @mcp.tool()
+    def check_stuck(duration: float = 0.5, threshold: float = 10.0) -> str:
+        try:
+            response = connection.send_command(
+                "qa.check_stuck",
+                {"duration": duration, "threshold": threshold},
+                timeout=duration + 5.0,
+            )
+            return format_response(response.get("data", {}), "check_stuck")
+        except (RuntimeError, ConnectionError) as e:
+            return f"Error: {e}"

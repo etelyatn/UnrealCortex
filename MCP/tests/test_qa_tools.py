@@ -75,6 +75,22 @@ def test_action_tools_send_deferred_timeouts():
     )
 
 
+def test_look_to_wiring():
+    mcp = MockMCP()
+    connection = MagicMock()
+    connection.send_command.return_value = {"data": {"yaw": 90.0, "pitch": 0.0}}
+
+    register_qa_action_tools(mcp, connection)
+
+    assert "look_to" in mcp.tools
+    result = mcp.tools["look_to"](yaw=90.0, pitch=0.0, duration=0.0)
+    parsed = json.loads(result)
+    assert parsed["yaw"] == 90.0
+    connection.send_command.assert_called_with(
+        "qa.look_to", {"yaw": 90.0, "pitch": 0.0, "duration": 0.0}
+    )
+
+
 def test_interact_default_duration_sends_tap():
     """interact_with with no duration sends default 0.1s tap."""
     mcp = MockMCP()
@@ -156,6 +172,36 @@ def test_setup_tools_wiring():
     register_qa_setup_tools(mcp, connection)
     mcp.tools["set_random_seed"](123)
     connection.send_command.assert_called_with("qa.set_random_seed", {"seed": 123})
+
+
+def test_probe_forward_wiring():
+    mcp = MockMCP()
+    connection = MagicMock()
+    connection.send_command.return_value = {"data": {"hit": False, "distance": 3000.0}}
+
+    register_qa_world_tools(mcp, connection)
+
+    assert "probe_forward" in mcp.tools
+    result = mcp.tools["probe_forward"](distance=5000.0)
+    parsed = json.loads(result)
+    assert parsed["hit"] is False
+
+
+def test_check_stuck_wiring():
+    mcp = MockMCP()
+    connection = MagicMock()
+    connection.send_command.return_value = {"data": {"is_stuck": False, "distance_moved": 50.0}}
+
+    register_qa_world_tools(mcp, connection)
+
+    assert "check_stuck" in mcp.tools
+    result = mcp.tools["check_stuck"](duration=1.0)
+    parsed = json.loads(result)
+    assert parsed["is_stuck"] is False
+    connection.send_command.assert_called_with(
+        "qa.check_stuck", {"duration": 1.0, "threshold": 10.0},
+        timeout=6.0,
+    )
 
 
 def test_assertion_tool_captures_screenshot_on_failure():

@@ -35,6 +35,10 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
             params["game_mode"] = game_mode
         try:
             connection.send_command("editor.start_pie", params, timeout=60.0)
+            connection.send_command(
+                "editor.execute_console_command",
+                {"command": "t.IdleWhenNotForeground 0"},
+            )
             state = connection.send_command("editor.get_pie_state")
             return format_response(state.get("data", {}), "start_pie_session")
         except (ConnectionError, RuntimeError) as e:
