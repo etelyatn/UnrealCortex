@@ -218,6 +218,30 @@ def test_get_visible_actors_wiring():
     assert parsed["actors"] == []
 
 
+def test_visible_actor_to_look_to_chain_contract():
+    """Contract check: visible actor look angles can feed look_to directly."""
+    mcp = MockMCP()
+    connection = MagicMock()
+
+    def send_command(command, params=None, timeout=None):
+        if command == "qa.get_visible_actors":
+            return {"data": {"count": 1, "actors": [{"look_at_yaw": 120.0, "look_at_pitch": -5.0}]}}
+        if command == "qa.look_to":
+            return {"data": {"yaw": params["yaw"], "pitch": params["pitch"], "duration": params["duration"]}}
+        raise AssertionError(f"Unexpected command: {command}")
+
+    connection.send_command.side_effect = send_command
+    register_qa_world_tools(mcp, connection)
+    register_qa_action_tools(mcp, connection)
+
+    visible = json.loads(mcp.tools["get_visible_actors"]())
+    target = visible["actors"][0]
+    result = json.loads(mcp.tools["look_to"](yaw=target["look_at_yaw"], pitch=target["look_at_pitch"]))
+
+    assert result["yaw"] == 120.0
+    assert result["pitch"] == -5.0
+
+
 def test_assertion_tool_captures_screenshot_on_failure():
     mcp = MockMCP()
     connection = MagicMock()
