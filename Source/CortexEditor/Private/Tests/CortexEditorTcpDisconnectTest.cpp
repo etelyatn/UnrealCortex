@@ -21,7 +21,8 @@ bool FCortexEditorTcpDisconnectTest::RunTest(const FString& Parameters)
 	Handler.OnTcpClientDisconnected();
 
 	// If we reach here without crashing, the wiring is correct.
-	TestTrue(TEXT("OnTcpClientDisconnected should complete without crash"), true);
+	// Actual cancel-token behaviour is covered by CancelTokenInvalidatesOldToken.
+	AddInfo(TEXT("Smoke test: OnTcpClientDisconnected with no active PIE session completed without crash"));
 
 	return true;
 }

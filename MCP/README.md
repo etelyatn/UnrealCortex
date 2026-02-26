@@ -9,7 +9,7 @@ cd Plugins/UnrealCortex/MCP
 uv run python -m cortex_mcp
 ```
 
-Port is auto-discovered from `Saved/CortexPort.txt` (written by CortexCore on editor startup). Override with `CORTEX_PORT=8742` env var.
+Port is auto-discovered from `Saved/CortexPort-{PID}.txt` (written by CortexCore on editor startup; one file per running editor instance). Override with `CORTEX_PORT=8742` env var.
 
 ## Directory Layout
 

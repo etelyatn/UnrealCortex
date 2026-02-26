@@ -496,6 +496,7 @@ void FCortexTcpServer::DestroyClientSocket(FSocket* InClientSocket)
 	InClientSocket->Close();
 	ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(InClientSocket);
 
+	check(IsInGameThread());
 	if (ClientDisconnectCallback)
 	{
 		ClientDisconnectCallback();

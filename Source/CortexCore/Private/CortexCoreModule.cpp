@@ -67,6 +67,10 @@ void FCortexCoreModule::SetClientDisconnectCallback(FCortexTcpServer::FClientDis
     {
         TcpServer->SetClientDisconnectCallback(MoveTemp(Callback));
     }
+    else
+    {
+        UE_LOG(LogCortex, Warning, TEXT("SetClientDisconnectCallback: TcpServer not ready — callback dropped"));
+    }
 }
 
 IMPLEMENT_MODULE(FCortexCoreModule, CortexCore)
