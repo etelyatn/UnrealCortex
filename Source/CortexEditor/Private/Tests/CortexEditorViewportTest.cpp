@@ -81,3 +81,22 @@ bool FCortexEditorFocusActorMissingPathTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, TEXT("INVALID_FIELD"));
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorScreenshotPIESourceNoPIETest,
+	"Cortex.Editor.Viewport.CaptureScreenshot.PIESourceNoPIE",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorScreenshotPIESourceNoPIETest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("source"), TEXT("pie"));
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("capture_screenshot"), Params);
+	TestFalse(TEXT("capture_screenshot should fail for source=pie when PIE is not active"), Result.bSuccess);
+	TestEqual(TEXT("Error should be PIE_NOT_ACTIVE"), Result.ErrorCode, TEXT("PIE_NOT_ACTIVE"));
+	return true;
+}

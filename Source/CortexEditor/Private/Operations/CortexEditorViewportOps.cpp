@@ -13,6 +13,8 @@
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "GameFramework/Actor.h"
+#include "Engine/GameViewportClient.h"
+#include "Editor.h"
 
 namespace
 {
@@ -107,12 +109,10 @@ FCortexCommandResult FCortexEditorViewportOps::GetViewportInfo()
 
 FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPtr<FJsonObject>& Params)
 {
-	const TSharedPtr<IAssetViewport> Viewport = GetActiveAssetViewport();
-	if (!Viewport.IsValid() || Viewport->GetActiveViewport() == nullptr)
+	FString Source = TEXT("editor");
+	if (Params.IsValid())
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::ViewportNotFound,
-			TEXT("No active editor viewport found"));
+		Params->TryGetStringField(TEXT("source"), Source);
 	}
 
 	FString OutputPath;
@@ -127,8 +127,47 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 		OutputPath = Dir / FString::Printf(TEXT("cortex_%s.png"), *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
 	}
 
-	FViewport* ActiveViewport = Viewport->GetActiveViewport();
-	const FIntPoint Size = ActiveViewport->GetSizeXY();
+	FViewport* CaptureViewport = nullptr;
+	FString SourceOut = TEXT("editor");
+
+	if (Source == TEXT("pie"))
+	{
+		if (GEditor == nullptr || GEditor->PlayWorld == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::PIENotActive,
+				TEXT("PIE is not running. Cannot capture PIE screenshot."));
+		}
+
+		UGameViewportClient* GameViewportClient = GEditor->PlayWorld->GetGameViewport();
+		if (GameViewportClient == nullptr || GameViewportClient->Viewport == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::ViewportNotFound,
+				TEXT("PIE viewport not available"));
+		}
+
+		CaptureViewport = GameViewportClient->Viewport;
+		SourceOut = TEXT("pie");
+	}
+	else
+	{
+		const TSharedPtr<IAssetViewport> Viewport = GetActiveAssetViewport();
+		if (!Viewport.IsValid() || Viewport->GetActiveViewport() == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::ViewportNotFound,
+				TEXT("No active editor viewport found"));
+		}
+
+		// Invalidate and tick only for editor viewport path.
+		FEditorViewportClient& Client = Viewport->GetAssetViewportClient();
+		Client.Invalidate(true, true);
+		FSlateApplication::Get().Tick(ESlateTickType::All);
+		CaptureViewport = Viewport->GetActiveViewport();
+	}
+
+	const FIntPoint Size = CaptureViewport->GetSizeXY();
 	if (Size.X <= 0 || Size.Y <= 0)
 	{
 		return FCortexCommandRouter::Error(
@@ -137,21 +176,10 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 	}
 
 	const double StartTime = FPlatformTime::Seconds();
-
-	// Invalidate the viewport so Slate knows it needs a fresh render.
-	FEditorViewportClient& Client = Viewport->GetAssetViewportClient();
-	Client.Invalidate(true, true);
-
-	// Force a Slate tick to trigger DrawWindow() → FSceneViewport::Draw()
-	// which populates RenderTargetTextureRHI with the current scene state.
-	// Without this, Slate skips re-rendering idle viewports and ReadPixels()
-	// returns the last cached frame (which may predate material changes).
-	FSlateApplication::Get().Tick(ESlateTickType::All);
-
 	FlushRenderingCommands();
 
 	TArray<FColor> Pixels;
-	if (!ActiveViewport->ReadPixels(Pixels))
+	if (!CaptureViewport->ReadPixels(Pixels))
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::ScreenshotFailed,
@@ -193,6 +221,7 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 	Data->SetNumberField(TEXT("height"), Size.Y);
 	Data->SetNumberField(TEXT("file_size_bytes"), static_cast<double>(IFileManager::Get().FileSize(*OutputPath)));
 	Data->SetNumberField(TEXT("capture_time_ms"), CaptureTimeMs);
+	Data->SetStringField(TEXT("source"), SourceOut);
 	return FCortexCommandRouter::Success(Data);
 }
 

@@ -24,9 +24,9 @@ def register_editor_viewport_tools(mcp, connection: UEConnection):
             return f"Error: {e}"
 
     @mcp.tool()
-    def capture_screenshot(output_path: str = "") -> str:
+    def capture_screenshot(output_path: str = "", source: str = "editor") -> str:
         """Capture a PNG screenshot from the active editor viewport."""
-        params = {}
+        params = {"source": source}
         if output_path:
             params["output_path"] = output_path
         try:
