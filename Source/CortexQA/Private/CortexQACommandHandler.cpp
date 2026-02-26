@@ -35,6 +35,10 @@ FCortexCommandResult FCortexQACommandHandler::Execute(
     {
         return FCortexQAActionOps::LookTo(Params, MoveTemp(DeferredCallback));
     }
+    if (Command == TEXT("check_stuck"))
+    {
+        return FCortexQAActionOps::CheckStuck(Params, MoveTemp(DeferredCallback));
+    }
     if (Command == TEXT("interact"))
     {
         return FCortexQAActionOps::Interact(Params, MoveTemp(DeferredCallback));
@@ -79,6 +83,7 @@ TArray<FCortexCommandInfo> FCortexQACommandHandler::GetSupportedCommands() const
         { TEXT("probe_forward"), TEXT("Raycast from camera forward to detect obstacles and actors") },
         { TEXT("look_at"), TEXT("Rotate player control to face a target actor or world location") },
         { TEXT("look_to"), TEXT("Set absolute camera yaw/pitch with optional interpolation duration") },
+        { TEXT("check_stuck"), TEXT("Detect whether player movement is blocked over a short interval") },
         { TEXT("interact"), TEXT("Inject interaction key input for gameplay interaction") },
         { TEXT("move_to"), TEXT("Move player to a target actor/location using deferred response") },
         { TEXT("wait_for"), TEXT("Wait for flat-condition evaluation using deferred response") },

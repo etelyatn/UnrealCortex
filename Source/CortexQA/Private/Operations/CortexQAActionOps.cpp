@@ -5,8 +5,11 @@
 #include "CortexQAUtils.h"
 #include "CortexTypes.h"
 #include "Blueprint/AIBlueprintHelperLibrary.h"
+#include "Camera/PlayerCameraManager.h"
+#include "CollisionQueryParams.h"
 #include "Dom/JsonValue.h"
 #include "Editor.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "InputKeyEventArgs.h"
@@ -193,6 +196,149 @@ FCortexCommandResult FCortexQAActionOps::LookTo(const TSharedPtr<FJsonObject>& P
                 DeferredCallback(MoveTemp(Final));
                 CurrentPIEWorld->GetTimerManager().ClearTimer(*TimerHandle);
             }
+        },
+        0.05f,
+        true);
+
+    FCortexCommandResult Deferred;
+    Deferred.bIsDeferred = true;
+    return Deferred;
+}
+
+FCortexCommandResult FCortexQAActionOps::CheckStuck(const TSharedPtr<FJsonObject>& Params, FDeferredResponseCallback DeferredCallback)
+{
+    UWorld* PIEWorld = FCortexQAUtils::GetPIEWorld();
+    if (PIEWorld == nullptr)
+    {
+        return FCortexQAUtils::PIENotActiveError();
+    }
+
+    APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
+    APawn* Pawn = FCortexQAUtils::GetPlayerPawn(PIEWorld);
+    if (PC == nullptr || Pawn == nullptr || PC->PlayerCameraManager == nullptr)
+    {
+        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("No player controller, pawn, or camera manager"));
+    }
+
+    double Duration = 0.5;
+    double Threshold = 10.0;
+    if (Params.IsValid())
+    {
+        Params->TryGetNumberField(TEXT("duration"), Duration);
+        Params->TryGetNumberField(TEXT("threshold"), Threshold);
+    }
+    Duration = FMath::Max(0.0, Duration);
+    Threshold = FMath::Max(0.0, Threshold);
+
+    const FVector StartLocation = Pawn->GetActorLocation();
+    auto BuildResult = [StartLocation, Threshold](UWorld* World, APlayerController* CurrentPC, APawn* CurrentPawn, double DurationSeconds)
+    {
+        const FVector EndLocation = CurrentPawn->GetActorLocation();
+        const FVector Velocity = CurrentPawn->GetVelocity();
+        const double DistanceMoved = FVector::Dist(StartLocation, EndLocation);
+        const bool bIsStuck = DistanceMoved <= Threshold;
+
+        UCharacterMovementComponent* Movement = CurrentPawn->FindComponentByClass<UCharacterMovementComponent>();
+        const bool bIsFalling = Movement != nullptr && Movement->IsFalling();
+
+        TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+        Data->SetBoolField(TEXT("is_stuck"), bIsStuck);
+        Data->SetNumberField(TEXT("distance_moved"), DistanceMoved);
+        Data->SetNumberField(TEXT("threshold"), Threshold);
+        Data->SetNumberField(TEXT("duration"), DurationSeconds);
+        FCortexQAUtils::SetVectorObject(Data, TEXT("start_location"), StartLocation);
+        FCortexQAUtils::SetVectorObject(Data, TEXT("end_location"), EndLocation);
+        FCortexQAUtils::SetVectorObject(Data, TEXT("velocity"), Velocity);
+        Data->SetNumberField(TEXT("speed"), Velocity.Size());
+        Data->SetBoolField(TEXT("is_falling"), bIsFalling);
+
+        if (!bIsStuck)
+        {
+            Data->SetField(TEXT("obstruction"), MakeShared<FJsonValueNull>());
+            return FCortexCommandRouter::Success(Data);
+        }
+
+        const FVector TraceStart = CurrentPC->PlayerCameraManager->GetCameraLocation();
+        const FVector TraceForward = CurrentPC->PlayerCameraManager->GetCameraRotation().Vector();
+        const FVector TraceEnd = TraceStart + (TraceForward * 500.0f);
+
+        FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(CortexQACheckStuck), true);
+        TraceParams.AddIgnoredActor(CurrentPawn);
+        TraceParams.AddIgnoredActor(CurrentPC->PlayerCameraManager);
+
+        FHitResult Hit;
+        const bool bHit = World->LineTraceSingleByChannel(Hit, TraceStart, TraceEnd, ECC_Visibility, TraceParams);
+        if (!bHit || !Hit.bBlockingHit)
+        {
+            Data->SetField(TEXT("obstruction"), MakeShared<FJsonValueNull>());
+            return FCortexCommandRouter::Success(Data);
+        }
+
+        TSharedPtr<FJsonObject> Obstruction = MakeShared<FJsonObject>();
+        Obstruction->SetNumberField(TEXT("distance"), Hit.Distance);
+        FCortexQAUtils::SetVectorObject(Obstruction, TEXT("location"), Hit.ImpactPoint);
+
+        AActor* HitActor = Hit.GetActor();
+        if (HitActor != nullptr)
+        {
+            Obstruction->SetStringField(TEXT("type"), TEXT("actor"));
+            Obstruction->SetStringField(TEXT("name"), HitActor->GetName());
+            Obstruction->SetStringField(TEXT("path"), HitActor->GetPathName());
+        }
+        else
+        {
+            Obstruction->SetStringField(TEXT("type"), TEXT("geometry"));
+        }
+
+        Data->SetObjectField(TEXT("obstruction"), Obstruction);
+        return FCortexCommandRouter::Success(Data);
+    };
+
+    if (Duration <= 0.0)
+    {
+        return BuildResult(PIEWorld, PC, Pawn, 0.0);
+    }
+
+    if (!DeferredCallback)
+    {
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Deferred callback is required"));
+    }
+
+    TWeakObjectPtr<APlayerController> WeakPC = PC;
+    TWeakObjectPtr<APawn> WeakPawn = Pawn;
+    const double StartGameTime = PIEWorld->GetTimeSeconds();
+    TSharedPtr<FTimerHandle> TimerHandle = MakeShared<FTimerHandle>();
+    PIEWorld->GetTimerManager().SetTimer(
+        *TimerHandle,
+        [TimerHandle, BuildResult, WeakPC, WeakPawn, StartGameTime, Duration, DeferredCallback = MoveTemp(DeferredCallback)]() mutable
+        {
+            if (GEditor == nullptr || GEditor->PlayWorld == nullptr)
+            {
+                FCortexCommandResult Final = FCortexCommandRouter::Error(CortexErrorCodes::PIETerminated, TEXT("PIE terminated during check_stuck"));
+                DeferredCallback(MoveTemp(Final));
+                return;
+            }
+
+            UWorld* CurrentPIEWorld = GEditor->PlayWorld;
+            const double Elapsed = CurrentPIEWorld->GetTimeSeconds() - StartGameTime;
+            if (Elapsed < Duration)
+            {
+                return;
+            }
+
+            APlayerController* CurrentPC = WeakPC.Get();
+            APawn* CurrentPawn = WeakPawn.Get();
+            if (CurrentPC == nullptr || CurrentPawn == nullptr || CurrentPC->PlayerCameraManager == nullptr)
+            {
+                FCortexCommandResult Final = FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Player controller or pawn no longer valid"));
+                DeferredCallback(MoveTemp(Final));
+                CurrentPIEWorld->GetTimerManager().ClearTimer(*TimerHandle);
+                return;
+            }
+
+            FCortexCommandResult Final = BuildResult(CurrentPIEWorld, CurrentPC, CurrentPawn, Elapsed);
+            DeferredCallback(MoveTemp(Final));
+            CurrentPIEWorld->GetTimerManager().ClearTimer(*TimerHandle);
         },
         0.05f,
         true);

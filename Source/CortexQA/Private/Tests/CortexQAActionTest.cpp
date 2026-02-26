@@ -136,3 +136,19 @@ bool FCortexQAWaitForNoPIETest::RunTest(const FString& Parameters)
     TestEqual(TEXT("wait_for should return PIE_NOT_ACTIVE"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexQACheckStuckNoPIETest,
+    "Cortex.QA.Action.CheckStuck.NoPIE",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexQACheckStuckNoPIETest::RunTest(const FString& Parameters)
+{
+    FCortexCommandRouter Router = CreateQARouterActions();
+    const FCortexCommandResult Result = Router.Execute(TEXT("qa.check_stuck"), MakeShared<FJsonObject>());
+
+    TestFalse(TEXT("check_stuck should fail when PIE is not active"), Result.bSuccess);
+    TestEqual(TEXT("check_stuck should return PIE_NOT_ACTIVE"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
+    return true;
+}
