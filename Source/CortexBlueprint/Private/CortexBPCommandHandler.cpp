@@ -4,6 +4,7 @@
 #include "Operations/CortexBPAnalysisOps.h"
 #include "Operations/CortexBPCleanupOps.h"
 #include "Operations/CortexBPClassDefaultsOps.h"
+#include "Operations/CortexBPCompareOps.h"
 #include "Operations/CortexBPComponentOps.h"
 #include "Operations/CortexBPRedirectorOps.h"
 #include "Operations/CortexBPStructureOps.h"
@@ -117,6 +118,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPRedirectorOps::FixupRedirectors(Params);
 	}
 
+	if (Command == TEXT("compare_blueprints"))
+	{
+		return FCortexBPCompareOps::CompareBlueprints(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown bp command: %s"), *Command)
@@ -147,6 +153,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add({TEXT("remove_scs_component"), TEXT("Remove an SCS component node from a Blueprint (use after migrating to C++ UPROPERTY)")});
 	Commands.Add({TEXT("recompile_dependents"), TEXT("Recompile Blueprints that depend on a target Blueprint")});
 	Commands.Add({TEXT("fixup_redirectors"), TEXT("Fix up redirectors under a content path")});
+	Commands.Add({TEXT("compare_blueprints"), TEXT("Compare two Blueprints and return structural differences")});
 
 	return Commands;
 }
