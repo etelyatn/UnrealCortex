@@ -5,11 +5,14 @@
 #include "CortexCommandRouter.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "Engine/SCS_Node.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "EdGraphSchema_K2.h"
 #include "GameFramework/Actor.h"
 #include "Components/ActorComponent.h"
+#include "Components/SceneComponent.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "UObject/UnrealType.h"
@@ -244,6 +247,184 @@ bool FCortexBPCleanupWidgetPreservationTest::RunTest(const FString& Parameters)
 	}
 	TestNotNull(TEXT("WidgetTree must survive cleanup"), WidgetTreeAfter);
 	TestTrue(TEXT("Widget BP has no SCS"), TestBP->SimpleConstructionScript == nullptr);
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// RemoveSCSComponent tests
+// ---------------------------------------------------------------------------
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveSCSComponentLeafTest,
+	"Cortex.Blueprint.Cleanup.RemoveSCSComponent.Leaf",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRemoveSCSComponentLeafTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_RemoveSCSLeafTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Test Blueprint created"), TestBP);
+	if (!TestBP) { return false; }
+
+	USimpleConstructionScript* SCS = TestBP->SimpleConstructionScript;
+	TestNotNull(TEXT("SCS exists"), SCS);
+	if (!SCS) { TestBP->MarkAsGarbage(); return false; }
+
+	USCS_Node* LeafNode = SCS->CreateNode(USceneComponent::StaticClass(), FName(TEXT("LeafComp")));
+	SCS->AddNode(LeafNode);
+	FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+	TestTrue(TEXT("LeafComp exists before removal"),
+		SCS->GetAllNodes().ContainsByPredicate([](const USCS_Node* N) {
+			return N && N->GetVariableName() == FName(TEXT("LeafComp"));
+		}));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	Params->SetStringField(TEXT("component_name"), TEXT("LeafComp"));
+	Params->SetBoolField(TEXT("compile"), true);
+
+	FCortexCommandResult Result = FCortexBPCleanupOps::RemoveSCSComponent(Params);
+	TestTrue(TEXT("RemoveSCSComponent succeeded"), Result.bSuccess);
+
+	TestFalse(TEXT("LeafComp removed from SCS"),
+		SCS->GetAllNodes().ContainsByPredicate([](const USCS_Node* N) {
+			return N && N->GetVariableName() == FName(TEXT("LeafComp"));
+		}));
+
+	FString CompileStatus;
+	if (Result.Data.IsValid() && Result.Data->TryGetStringField(TEXT("compile_status"), CompileStatus))
+	{
+		TestEqual(TEXT("compile_status is UpToDate"), CompileStatus, FString(TEXT("UpToDate")));
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveSCSComponentChildrenPromotedTest,
+	"Cortex.Blueprint.Cleanup.RemoveSCSComponent.ChildrenPromoted",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRemoveSCSComponentChildrenPromotedTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_RemoveSCSChildPromoteTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Test Blueprint created"), TestBP);
+	if (!TestBP) { return false; }
+
+	USimpleConstructionScript* SCS = TestBP->SimpleConstructionScript;
+	TestNotNull(TEXT("SCS exists"), SCS);
+	if (!SCS) { TestBP->MarkAsGarbage(); return false; }
+
+	// Build hierarchy: ParentComp → MiddleComp → ChildComp
+	USCS_Node* ParentNode = SCS->CreateNode(USceneComponent::StaticClass(), FName(TEXT("ParentComp")));
+	USCS_Node* MiddleNode = SCS->CreateNode(USceneComponent::StaticClass(), FName(TEXT("MiddleComp")));
+	USCS_Node* ChildNode  = SCS->CreateNode(USceneComponent::StaticClass(), FName(TEXT("ChildComp")));
+	SCS->AddNode(ParentNode);
+	ParentNode->AddChildNode(MiddleNode);
+	MiddleNode->AddChildNode(ChildNode);
+	FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+	// Remove MiddleComp — ChildComp should be promoted to ParentComp
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	Params->SetStringField(TEXT("component_name"), TEXT("MiddleComp"));
+	Params->SetBoolField(TEXT("compile"), false);
+
+	FCortexCommandResult Result = FCortexBPCleanupOps::RemoveSCSComponent(Params);
+	TestTrue(TEXT("RemoveSCSComponent succeeded"), Result.bSuccess);
+
+	TestFalse(TEXT("MiddleComp removed"),
+		SCS->GetAllNodes().ContainsByPredicate([](const USCS_Node* N) {
+			return N && N->GetVariableName() == FName(TEXT("MiddleComp"));
+		}));
+
+	TestTrue(TEXT("ChildComp still exists"),
+		SCS->GetAllNodes().ContainsByPredicate([](const USCS_Node* N) {
+			return N && N->GetVariableName() == FName(TEXT("ChildComp"));
+		}));
+
+	TestTrue(TEXT("ChildComp promoted to ParentComp"),
+		ParentNode->GetChildNodes().ContainsByPredicate([](const USCS_Node* N) {
+			return N && N->GetVariableName() == FName(TEXT("ChildComp"));
+		}));
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveSCSComponentNotFoundTest,
+	"Cortex.Blueprint.Cleanup.RemoveSCSComponent.NotFound",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRemoveSCSComponentNotFoundTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_RemoveSCSNotFoundTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Test Blueprint created"), TestBP);
+	if (!TestBP) { return false; }
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	Params->SetStringField(TEXT("component_name"), TEXT("DoesNotExist"));
+	Params->SetBoolField(TEXT("compile"), false);
+
+	FCortexCommandResult Result = FCortexBPCleanupOps::RemoveSCSComponent(Params);
+	TestFalse(TEXT("Returns failure for missing component"), Result.bSuccess);
+	TestEqual(TEXT("Error code is ComponentNotFound"), Result.ErrorCode, CortexErrorCodes::ComponentNotFound);
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveSCSComponentNoSCSTest,
+	"Cortex.Blueprint.Cleanup.RemoveSCSComponent.NoSCS",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRemoveSCSComponentNoSCSTest::RunTest(const FString& Parameters)
+{
+	// UActorComponent parent produces a Blueprint with no SimpleConstructionScript
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		UActorComponent::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_RemoveSCSNoSCSTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Test Blueprint created"), TestBP);
+	if (!TestBP) { return false; }
+
+	TestNull(TEXT("Blueprint has no SCS"), TestBP->SimpleConstructionScript);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	Params->SetStringField(TEXT("component_name"), TEXT("AnyComp"));
+	Params->SetBoolField(TEXT("compile"), false);
+
+	FCortexCommandResult Result = FCortexBPCleanupOps::RemoveSCSComponent(Params);
+	TestFalse(TEXT("Returns failure when no SCS"), Result.bSuccess);
+	TestEqual(TEXT("Error code is InvalidField"), Result.ErrorCode, CortexErrorCodes::InvalidField);
 
 	TestBP->MarkAsGarbage();
 	return true;

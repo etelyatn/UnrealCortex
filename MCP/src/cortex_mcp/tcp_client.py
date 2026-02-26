@@ -23,7 +23,6 @@ _CONNECT_TIMEOUT = 5.0
 _RECV_TIMEOUT = 60.0
 _RECONNECT_DELAY = 0.5
 _DEFAULT_PORT = 8742
-_PORT_FILENAME = "CortexPort.txt"
 
 
 @dataclasses.dataclass(frozen=True)
