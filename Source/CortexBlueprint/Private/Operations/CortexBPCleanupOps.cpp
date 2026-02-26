@@ -260,7 +260,7 @@ FCortexCommandResult FCortexBPCleanupOps::RemoveSCSComponent(const TSharedPtr<FJ
 	USCS_Node* TargetNode = nullptr;
 	for (USCS_Node* Node : SCS->GetAllNodes())
 	{
-		if (Node && Node->GetVariableName().ToString() == ComponentName)
+		if (Node && Node->GetVariableName() == FName(*ComponentName))
 		{
 			TargetNode = Node;
 			break;
@@ -281,37 +281,31 @@ FCortexCommandResult FCortexBPCleanupOps::RemoveSCSComponent(const TSharedPtr<FJ
 
 	BP->Modify();
 	SCS->Modify();
+	TargetNode->Modify();
 
-	// Detach children from this node and re-attach to its parent before removal
-	TArray<USCS_Node*> Children = TargetNode->GetChildNodes();
-	USCS_Node* ParentNode = SCS->FindParentNode(TargetNode);
-	for (USCS_Node* Child : Children)
-	{
-		if (Child)
-		{
-			TargetNode->RemoveChildNode(Child);
-			if (ParentNode)
-			{
-				ParentNode->AddChildNode(Child);
-			}
-			else
-			{
-				SCS->AddNode(Child);
-			}
-		}
-	}
-
-	// Remove the node from the SCS
+	// RemoveNodeAndPromoteChildren re-parents children to the removed node's parent
+	// and removes the node from all SCS arrays — it is the canonical API for this operation.
 	SCS->RemoveNodeAndPromoteChildren(TargetNode);
 
 	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 
+	TSharedPtr<FJsonObject> ResponseData = MakeShared<FJsonObject>();
+	ResponseData->SetStringField(TEXT("removed_component"), ComponentName);
+
 	if (bCompile)
 	{
 		FKismetEditorUtilities::CompileBlueprint(BP);
+		ResponseData->SetBoolField(TEXT("compiled"), true);
+		ResponseData->SetStringField(TEXT("compile_status"),
+			(BP->Status == BS_UpToDate || BP->Status == BS_UpToDateWithWarnings)
+				? TEXT("UpToDate") : TEXT("Error"));
+	}
+	else
+	{
+		ResponseData->SetBoolField(TEXT("compiled"), false);
 	}
 
-	// Persist to disk
+	// Persist to disk (skip transient packages used by tests)
 	if (!BP->GetPackage()->GetName().StartsWith(TEXT("/Engine/Transient")))
 	{
 		FString PackageFilename;
@@ -328,12 +322,15 @@ FCortexCommandResult FCortexBPCleanupOps::RemoveSCSComponent(const TSharedPtr<FJ
 					FString::Printf(TEXT("Failed to save Blueprint after SCS removal: %s"), *BP->GetPackage()->GetName()));
 			}
 		}
+		else
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::SaveFailed,
+				FString::Printf(TEXT("Failed to resolve package filename for: %s"), *BP->GetPackage()->GetName()));
+		}
 	}
 
 	UE_LOG(LogCortexBlueprint, Log, TEXT("Removed SCS component '%s' from %s"), *ComponentName, *BP->GetName());
 
-	TSharedPtr<FJsonObject> ResponseData = MakeShared<FJsonObject>();
-	ResponseData->SetStringField(TEXT("removed_component"), ComponentName);
-	ResponseData->SetBoolField(TEXT("compiled"), bCompile);
 	return FCortexCommandRouter::Success(ResponseData);
 }
