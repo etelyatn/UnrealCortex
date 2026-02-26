@@ -25,6 +25,8 @@ public:
 		const TSharedPtr<FJsonObject>& Params,
 		FDeferredResponseCallback DeferredCallback)>;
 
+	using FClientDisconnectCallback = TFunction<void()>;
+
 	FCortexTcpServer();
 	~FCortexTcpServer();
 
@@ -32,6 +34,7 @@ public:
 	void Stop();
 	bool IsRunning() const;
 	void SendDeferredResponse(int32 DeferredId, const FCortexCommandResult& Result);
+	void SetClientDisconnectCallback(FClientDisconnectCallback Callback);
 
 	static constexpr int32 MaxMessageSize = 2 * 1024 * 1024;  // 2MB
 
@@ -63,6 +66,8 @@ private:
 	FCommandDispatcher CommandDispatcher;
 	TMap<int32, FCortexPendingDeferred> PendingDeferred;
 	int32 NextDeferredId = 1;
+
+	FClientDisconnectCallback ClientDisconnectCallback;
 
 	/** Full path to this editor's port file (CortexPort-{PID}.txt) */
 	FString PortFilePath;

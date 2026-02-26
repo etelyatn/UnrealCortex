@@ -8,15 +8,22 @@ void FCortexEditorModule::StartupModule()
 {
 	UE_LOG(LogCortexEditor, Log, TEXT("CortexEditor module starting up"));
 
-	ICortexCommandRegistry& Registry =
-		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"))
-		.GetCommandRegistry();
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
 
+	ICortexCommandRegistry& Registry = CoreModule.GetCommandRegistry();
+
+	auto Handler = MakeShared<FCortexEditorCommandHandler>();
 	Registry.RegisterDomain(
 		TEXT("editor"),
 		TEXT("Cortex Editor"),
 		TEXT("1.0.0"),
-		MakeShared<FCortexEditorCommandHandler>());
+		Handler);
+
+	CoreModule.SetClientDisconnectCallback([Handler]()
+	{
+		Handler->OnTcpClientDisconnected();
+	});
 
 	UE_LOG(LogCortexEditor, Log, TEXT("CortexEditor registered with CortexCore"));
 }

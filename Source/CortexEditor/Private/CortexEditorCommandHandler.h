@@ -20,6 +20,8 @@ public:
 
 	virtual TArray<FCortexCommandInfo> GetSupportedCommands() const override;
 
+	void OnTcpClientDisconnected();
+
 private:
 	TSharedPtr<FCortexEditorPIEState> PIEState;
 	TUniquePtr<FCortexEditorLogCapture> LogCapture;

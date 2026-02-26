@@ -61,4 +61,12 @@ FCortexCommandRouter& FCortexCoreModule::GetCommandRouter()
     return *CommandRouter;
 }
 
+void FCortexCoreModule::SetClientDisconnectCallback(FCortexTcpServer::FClientDisconnectCallback Callback)
+{
+    if (TcpServer.IsValid())
+    {
+        TcpServer->SetClientDisconnectCallback(MoveTemp(Callback));
+    }
+}
+
 IMPLEMENT_MODULE(FCortexCoreModule, CortexCore)

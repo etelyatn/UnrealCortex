@@ -206,6 +206,11 @@ void FCortexTcpServer::Stop()
 	UE_LOG(LogCortex, Log, TEXT("TCP server stopped"));
 }
 
+void FCortexTcpServer::SetClientDisconnectCallback(FClientDisconnectCallback Callback)
+{
+	ClientDisconnectCallback = MoveTemp(Callback);
+}
+
 bool FCortexTcpServer::IsRunning() const
 {
 	return bRunning;
@@ -490,6 +495,11 @@ void FCortexTcpServer::DestroyClientSocket(FSocket* InClientSocket)
 
 	InClientSocket->Close();
 	ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(InClientSocket);
+
+	if (ClientDisconnectCallback)
+	{
+		ClientDisconnectCallback();
+	}
 }
 
 void FCortexTcpServer::SendDeferredResponse(int32 DeferredId, const FCortexCommandResult& Result)

@@ -1,4 +1,5 @@
 #include "CortexEditorCommandHandler.h"
+#include "CortexEditorModule.h"
 #include "CortexCommandRouter.h"
 #include "CortexEditorPIEState.h"
 #include "CortexEditorLogCapture.h"
@@ -141,4 +142,13 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 		{ TEXT("get_editor_state"), TEXT("Get general editor state") },
 		{ TEXT("get_world_info"), TEXT("Get PIE world metadata") },
 	};
+}
+
+void FCortexEditorCommandHandler::OnTcpClientDisconnected()
+{
+	if (PIEState.IsValid())
+	{
+		UE_LOG(LogCortexEditor, Log, TEXT("TCP client disconnected — cancelling pending input tickers"));
+		PIEState->CancelAllInputTickers();
+	}
 }
