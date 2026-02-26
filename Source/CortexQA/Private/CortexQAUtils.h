@@ -6,6 +6,7 @@
 class AActor;
 class APawn;
 class APlayerController;
+class FJsonValue;
 class UWorld;
 
 class FCortexQAUtils
@@ -20,6 +21,8 @@ public:
     /** Check if an actor is engine-internal and should be filtered from QA observe results. */
     static bool IsEngineInternalActor(const AActor* Actor);
 
-    static void SetVectorArray(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FVector& Value);
-    static void SetRotatorArray(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FRotator& Value);
+    static void SetVectorObject(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FVector& Value);
+    static void SetRotatorObject(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FRotator& Value);
+    static bool ParseVectorParam(const TSharedPtr<FJsonValue>& Value, FVector& OutVector, FString& OutError);
+    static bool ParseRotatorParam(const TSharedPtr<FJsonValue>& Value, FRotator& OutRotator, FString& OutError);
 };

@@ -85,20 +85,133 @@ bool FCortexQAUtils::IsEngineInternalActor(const AActor* Actor)
         || Actor->IsA<AInfo>();
 }
 
-void FCortexQAUtils::SetVectorArray(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FVector& Value)
+void FCortexQAUtils::SetVectorObject(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FVector& Value)
 {
-    TArray<TSharedPtr<FJsonValue>> Array;
-    Array.Add(MakeShared<FJsonValueNumber>(Value.X));
-    Array.Add(MakeShared<FJsonValueNumber>(Value.Y));
-    Array.Add(MakeShared<FJsonValueNumber>(Value.Z));
-    Json->SetArrayField(FieldName, Array);
+    TSharedPtr<FJsonObject> ObjectValue = MakeShared<FJsonObject>();
+    ObjectValue->SetNumberField(TEXT("x"), Value.X);
+    ObjectValue->SetNumberField(TEXT("y"), Value.Y);
+    ObjectValue->SetNumberField(TEXT("z"), Value.Z);
+    Json->SetObjectField(FieldName, ObjectValue);
 }
 
-void FCortexQAUtils::SetRotatorArray(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FRotator& Value)
+void FCortexQAUtils::SetRotatorObject(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FRotator& Value)
 {
-    TArray<TSharedPtr<FJsonValue>> Array;
-    Array.Add(MakeShared<FJsonValueNumber>(Value.Pitch));
-    Array.Add(MakeShared<FJsonValueNumber>(Value.Yaw));
-    Array.Add(MakeShared<FJsonValueNumber>(Value.Roll));
-    Json->SetArrayField(FieldName, Array);
+    TSharedPtr<FJsonObject> ObjectValue = MakeShared<FJsonObject>();
+    ObjectValue->SetNumberField(TEXT("pitch"), Value.Pitch);
+    ObjectValue->SetNumberField(TEXT("yaw"), Value.Yaw);
+    ObjectValue->SetNumberField(TEXT("roll"), Value.Roll);
+    Json->SetObjectField(FieldName, ObjectValue);
+}
+
+bool FCortexQAUtils::ParseVectorParam(const TSharedPtr<FJsonValue>& Value, FVector& OutVector, FString& OutError)
+{
+    if (!Value.IsValid())
+    {
+        OutError = TEXT("Value is null");
+        return false;
+    }
+
+    if (Value->Type == EJson::Object)
+    {
+        const TSharedPtr<FJsonObject>& ObjectValue = Value->AsObject();
+        if (!ObjectValue.IsValid())
+        {
+            OutError = TEXT("Object is invalid");
+            return false;
+        }
+
+        double X = 0.0;
+        double Y = 0.0;
+        double Z = 0.0;
+        if (!ObjectValue->TryGetNumberField(TEXT("x"), X)
+            || !ObjectValue->TryGetNumberField(TEXT("y"), Y)
+            || !ObjectValue->TryGetNumberField(TEXT("z"), Z))
+        {
+            OutError = TEXT("Object must have x, y, z number fields");
+            return false;
+        }
+
+        OutVector = FVector(X, Y, Z);
+        return true;
+    }
+
+    if (Value->Type == EJson::Array)
+    {
+        const TArray<TSharedPtr<FJsonValue>>& ArrayValue = Value->AsArray();
+        if (ArrayValue.Num() != 3)
+        {
+            OutError = TEXT("Array must have 3 elements");
+            return false;
+        }
+
+        if (!ArrayValue[0].IsValid() || !ArrayValue[1].IsValid() || !ArrayValue[2].IsValid())
+        {
+            OutError = TEXT("Array elements must be numbers");
+            return false;
+        }
+
+        const double X = ArrayValue[0]->AsNumber();
+        const double Y = ArrayValue[1]->AsNumber();
+        const double Z = ArrayValue[2]->AsNumber();
+        OutVector = FVector(X, Y, Z);
+        return true;
+    }
+
+    OutError = TEXT("Must be object {x,y,z} or array [x,y,z]");
+    return false;
+}
+
+bool FCortexQAUtils::ParseRotatorParam(const TSharedPtr<FJsonValue>& Value, FRotator& OutRotator, FString& OutError)
+{
+    if (!Value.IsValid())
+    {
+        OutError = TEXT("Value is null");
+        return false;
+    }
+
+    if (Value->Type == EJson::Object)
+    {
+        const TSharedPtr<FJsonObject>& ObjectValue = Value->AsObject();
+        if (!ObjectValue.IsValid())
+        {
+            OutError = TEXT("Object is invalid");
+            return false;
+        }
+
+        double Pitch = 0.0;
+        double Yaw = 0.0;
+        double Roll = 0.0;
+        if (!ObjectValue->TryGetNumberField(TEXT("pitch"), Pitch)
+            || !ObjectValue->TryGetNumberField(TEXT("yaw"), Yaw)
+            || !ObjectValue->TryGetNumberField(TEXT("roll"), Roll))
+        {
+            OutError = TEXT("Object must have pitch, yaw, roll number fields");
+            return false;
+        }
+
+        OutRotator = FRotator(Pitch, Yaw, Roll);
+        return true;
+    }
+
+    if (Value->Type == EJson::Array)
+    {
+        const TArray<TSharedPtr<FJsonValue>>& ArrayValue = Value->AsArray();
+        if (ArrayValue.Num() != 3)
+        {
+            OutError = TEXT("Array must have 3 elements");
+            return false;
+        }
+
+        if (!ArrayValue[0].IsValid() || !ArrayValue[1].IsValid() || !ArrayValue[2].IsValid())
+        {
+            OutError = TEXT("Array elements must be numbers");
+            return false;
+        }
+
+        OutRotator = FRotator(ArrayValue[0]->AsNumber(), ArrayValue[1]->AsNumber(), ArrayValue[2]->AsNumber());
+        return true;
+    }
+
+    OutError = TEXT("Must be object {pitch,yaw,roll} or array [pitch,yaw,roll]");
+    return false;
 }
