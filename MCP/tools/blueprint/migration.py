@@ -112,3 +112,31 @@ def register_blueprint_migration_tools(mcp, connection: UEConnection):
             return json.dumps({"error": f"Connection error: {e}"})
         except (RuntimeError, TimeoutError, OSError) as e:
             return json.dumps({"error": str(e)})
+
+    @mcp.tool()
+    def delete_orphaned_nodes(
+        asset_path: str,
+        graph_name: str,
+        compile: bool = True,
+    ) -> str:
+        """Delete orphaned nodes from a Blueprint event graph.
+
+        Orphaned nodes are those not reachable from any event entry node via
+        exec pin chains. Event entry nodes are always preserved.
+
+        Args:
+            asset_path: Blueprint object path (e.g. /Game/Blueprints/BP_Foo).
+            graph_name: Name of the graph to clean (e.g. "EventGraph").
+            compile: Recompile the Blueprint after cleanup (default True).
+        """
+        try:
+            response = connection.send_command("bp.delete_orphaned_nodes", {
+                "asset_path": asset_path,
+                "graph_name": graph_name,
+                "compile": compile,
+            })
+            return format_response(response.get("data", {}), "delete_orphaned_nodes")
+        except ConnectionError as e:
+            return json.dumps({"error": f"Connection error: {e}"})
+        except (RuntimeError, TimeoutError, OSError) as e:
+            return json.dumps({"error": str(e)})
