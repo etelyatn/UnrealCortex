@@ -7,6 +7,7 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "EdGraphSchema_K2.h"
 #include "GameFramework/Actor.h"
+#include "UObject/UnrealType.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPCompareIdenticalTest,
@@ -117,6 +118,78 @@ bool FCortexBPCompareDifferentTest::RunTest(const FString& Parameters)
 	}
 	TestFalse(TEXT("Different blueprints should not match"), bMatch);
 	TestTrue(TEXT("Different blueprints should report at least one difference"), DifferenceCount > 0);
+
+	TargetBP->MarkAsGarbage();
+	SourceBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPCompareDanglingRefTest,
+	"Cortex.Blueprint.Compare.DanglingObjectRef",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPCompareDanglingRefTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* SourceBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_CompareDangling_Source")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Source BP created"), SourceBP);
+	if (!SourceBP)
+	{
+		return false;
+	}
+
+	FEdGraphPinType ObjRefType;
+	ObjRefType.PinCategory = UEdGraphSchema_K2::PC_Object;
+	ObjRefType.PinSubCategoryObject = UObject::StaticClass();
+	FBlueprintEditorUtils::AddMemberVariable(SourceBP, TEXT("DanglingRef"), ObjRefType);
+
+	FKismetEditorUtilities::CompileBlueprint(SourceBP);
+
+	UBlueprint* TargetBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_CompareDangling_Target")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Target BP created"), TargetBP);
+	if (!TargetBP)
+	{
+		SourceBP->MarkAsGarbage();
+		return false;
+	}
+
+	FBlueprintEditorUtils::AddMemberVariable(TargetBP, TEXT("DanglingRef"), ObjRefType);
+
+	FKismetEditorUtilities::CompileBlueprint(TargetBP);
+
+	if (SourceBP->GeneratedClass)
+	{
+		UObject* SourceCDO = SourceBP->GeneratedClass->GetDefaultObject(false);
+		if (SourceCDO)
+		{
+			FProperty* RefProp = SourceBP->GeneratedClass->FindPropertyByName(FName(TEXT("DanglingRef")));
+			FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(RefProp);
+			if (ObjProp)
+			{
+				void* ValuePtr = ObjProp->ContainerPtrToValuePtr<void>(SourceCDO);
+				*reinterpret_cast<UObject**>(ValuePtr) = reinterpret_cast<UObject*>(~static_cast<UPTRINT>(0));
+			}
+		}
+	}
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("source_path"), SourceBP->GetPathName());
+	Params->SetStringField(TEXT("target_path"), TargetBP->GetPathName());
+	const FCortexCommandResult Result = FCortexBPCompareOps::CompareBlueprints(Params);
+	TestTrue(TEXT("compare_blueprints should succeed even with dangling refs"), Result.bSuccess);
 
 	TargetBP->MarkAsGarbage();
 	SourceBP->MarkAsGarbage();

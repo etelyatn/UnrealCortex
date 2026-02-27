@@ -228,19 +228,51 @@ FCortexCommandResult FCortexBPCompareOps::CompareBlueprints(const TSharedPtr<FJs
 		{
 			for (TFieldIterator<FProperty> PropIt(SourceCDO->GetClass()); PropIt; ++PropIt)
 			{
-				FProperty* Property = *PropIt;
-				if (!Property || !Property->HasAnyPropertyFlags(CPF_BlueprintVisible))
+				FProperty* SourceProperty = *PropIt;
+				if (!SourceProperty || !SourceProperty->HasAnyPropertyFlags(CPF_BlueprintVisible))
 				{
 					continue;
 				}
 
+				FProperty* TargetProperty = TargetCDO->GetClass()->FindPropertyByName(SourceProperty->GetFName());
+				if (!TargetProperty || !SourceProperty->SameType(TargetProperty))
+				{
+					continue;
+				}
+
+				const void* SourceValuePtr = SourceProperty->ContainerPtrToValuePtr<void>(SourceCDO);
+				const void* TargetValuePtr = TargetProperty->ContainerPtrToValuePtr<void>(TargetCDO);
+
 				++TotalChecks;
-				if (!Property->Identical_InContainer(SourceCDO, TargetCDO))
+
+				FObjectPropertyBase* SourceObjProp = CastField<FObjectPropertyBase>(SourceProperty);
+				FObjectPropertyBase* TargetObjProp = CastField<FObjectPropertyBase>(TargetProperty);
+				if (SourceObjProp && TargetObjProp)
+				{
+					UObject* SourceObj = SourceObjProp->GetObjectPropertyValue(SourceValuePtr);
+					UObject* TargetObj = TargetObjProp->GetObjectPropertyValue(TargetValuePtr);
+					if (SourceObj != TargetObj)
+					{
+						const FString SourceObjText = SourceObj
+							? FString::Printf(TEXT("0x%p"), SourceObj)
+							: TEXT("<null>");
+						const FString TargetObjText = TargetObj
+							? FString::Printf(TEXT("0x%p"), TargetObj)
+							: TEXT("<null>");
+						AddDifference(Differences, TEXT("cdo"), SourceProperty->GetName(),
+							TEXT("CDO object property differs"),
+							SourceObjText,
+							TargetObjText);
+					}
+					continue;
+				}
+
+				if (!SourceProperty->Identical(SourceValuePtr, TargetValuePtr))
 				{
 					FString SourceVal, TargetVal;
-					Property->ExportText_InContainer(0, SourceVal, SourceCDO, SourceCDO, nullptr, PPF_None);
-					Property->ExportText_InContainer(0, TargetVal, TargetCDO, TargetCDO, nullptr, PPF_None);
-					AddDifference(Differences, TEXT("cdo"), Property->GetName(),
+					SourceProperty->ExportText_Direct(SourceVal, SourceValuePtr, SourceValuePtr, nullptr, PPF_None);
+					TargetProperty->ExportText_Direct(TargetVal, TargetValuePtr, TargetValuePtr, nullptr, PPF_None);
+					AddDifference(Differences, TEXT("cdo"), SourceProperty->GetName(),
 						TEXT("CDO property differs"), SourceVal, TargetVal);
 				}
 			}
