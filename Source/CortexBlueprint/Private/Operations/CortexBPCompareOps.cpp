@@ -7,7 +7,6 @@
 #include "Engine/Blueprint.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
-#include "UObject/ObjectPtr.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -252,21 +251,14 @@ FCortexCommandResult FCortexBPCompareOps::CompareBlueprints(const TSharedPtr<FJs
 				{
 					UObject* SourceObj = SourceObjProp->GetObjectPropertyValue(SourceValuePtr);
 					UObject* TargetObj = TargetObjProp->GetObjectPropertyValue(TargetValuePtr);
-					if ((SourceObj && !IsValid(SourceObj)) || (TargetObj && !IsValid(TargetObj)))
-					{
-						const FString SourceObjText = SourceObj ? (IsValid(SourceObj) ? SourceObj->GetPathName() : TEXT("<invalid>")) : TEXT("<null>");
-						const FString TargetObjText = TargetObj ? (IsValid(TargetObj) ? TargetObj->GetPathName() : TEXT("<invalid>")) : TEXT("<null>");
-						AddDifference(Differences, TEXT("cdo"), SourceProperty->GetName(),
-							TEXT("CDO property has invalid object reference"),
-							SourceObjText,
-							TargetObjText);
-						continue;
-					}
-
 					if (SourceObj != TargetObj)
 					{
-						const FString SourceObjText = SourceObj ? SourceObj->GetPathName() : TEXT("<null>");
-						const FString TargetObjText = TargetObj ? TargetObj->GetPathName() : TEXT("<null>");
+						const FString SourceObjText = SourceObj
+							? FString::Printf(TEXT("0x%p"), SourceObj)
+							: TEXT("<null>");
+						const FString TargetObjText = TargetObj
+							? FString::Printf(TEXT("0x%p"), TargetObj)
+							: TEXT("<null>");
 						AddDifference(Differences, TEXT("cdo"), SourceProperty->GetName(),
 							TEXT("CDO object property differs"),
 							SourceObjText,

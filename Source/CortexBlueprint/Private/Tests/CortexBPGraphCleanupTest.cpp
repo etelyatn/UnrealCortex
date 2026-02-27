@@ -11,6 +11,7 @@
 #include "EdGraphSchema_K2.h"
 #include "GameFramework/Actor.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "Kismet/KismetStringLibrary.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPDeleteOrphanedNodesTest,
@@ -147,6 +148,178 @@ bool FCortexBPDeleteOrphanedNodesConnectedTest::RunTest(const FString& Parameter
 	}
 	TestEqual(TEXT("No nodes deleted from clean graph"), DeletedCount, 0);
 	TestEqual(TEXT("Node count unchanged"), EventGraph->Nodes.Num(), NodeCountBefore);
+
+	BP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPDeleteOrphanedNodesPreservesDataDepsTest,
+	"Cortex.Blueprint.GraphCleanup.DeleteOrphanedNodes.PreservesDataDependencies",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPDeleteOrphanedNodesPreservesDataDepsTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* BP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_OrphanDataDepsTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("BP created"), BP);
+	if (!BP)
+	{
+		return false;
+	}
+
+	UEdGraph* EventGraph = nullptr;
+	for (UEdGraph* Graph : BP->UbergraphPages)
+	{
+		if (Graph && Graph->GetFName() == UEdGraphSchema_K2::GN_EventGraph)
+		{
+			EventGraph = Graph;
+			break;
+		}
+	}
+	TestNotNull(TEXT("EventGraph found"), EventGraph);
+	if (!EventGraph)
+	{
+		BP->MarkAsGarbage();
+		return false;
+	}
+
+	UK2Node_Event* BeginPlayEvent = nullptr;
+	for (UEdGraphNode* Node : EventGraph->Nodes)
+	{
+		if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
+		{
+			BeginPlayEvent = EventNode;
+			break;
+		}
+	}
+	TestNotNull(TEXT("Event node found"), BeginPlayEvent);
+	if (!BeginPlayEvent)
+	{
+		BP->MarkAsGarbage();
+		return false;
+	}
+
+	UK2Node_CallFunction* PrintNode = NewObject<UK2Node_CallFunction>(EventGraph);
+	PrintNode->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("PrintString")));
+	EventGraph->AddNode(PrintNode, false, false);
+	PrintNode->AllocateDefaultPins();
+
+	UK2Node_CallFunction* ConnectedPureNode = NewObject<UK2Node_CallFunction>(EventGraph);
+	ConnectedPureNode->SetFromFunction(UKismetStringLibrary::StaticClass()->FindFunctionByName(TEXT("Conv_IntToString")));
+	EventGraph->AddNode(ConnectedPureNode, false, false);
+	ConnectedPureNode->AllocateDefaultPins();
+
+	UK2Node_CallFunction* OrphanPureNode = NewObject<UK2Node_CallFunction>(EventGraph);
+	OrphanPureNode->SetFromFunction(UKismetStringLibrary::StaticClass()->FindFunctionByName(TEXT("Conv_IntToString")));
+	EventGraph->AddNode(OrphanPureNode, false, false);
+	OrphanPureNode->AllocateDefaultPins();
+
+	UEdGraphPin* EventThenPin = BeginPlayEvent->FindPin(UEdGraphSchema_K2::PN_Then);
+	UEdGraphPin* PrintExecPin = PrintNode->FindPin(UEdGraphSchema_K2::PN_Execute);
+	UEdGraphPin* PureOutPin = nullptr;
+	for (UEdGraphPin* Pin : ConnectedPureNode->Pins)
+	{
+		if (Pin
+			&& Pin->Direction == EGPD_Output
+			&& Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+		{
+			PureOutPin = Pin;
+			break;
+		}
+	}
+	UEdGraphPin* PrintStringPin = PrintNode->FindPin(TEXT("InString"));
+	TestNotNull(TEXT("Event then pin found"), EventThenPin);
+	TestNotNull(TEXT("Print exec pin found"), PrintExecPin);
+	TestNotNull(TEXT("Pure output pin found"), PureOutPin);
+	TestNotNull(TEXT("Print InString pin found"), PrintStringPin);
+	if (!EventThenPin || !PrintExecPin || !PureOutPin || !PrintStringPin)
+	{
+		BP->MarkAsGarbage();
+		return false;
+	}
+
+	EventThenPin->MakeLinkTo(PrintExecPin);
+	PureOutPin->MakeLinkTo(PrintStringPin);
+
+	UEdGraphNode* ConnectedPureNodePtr = ConnectedPureNode;
+	UEdGraphNode* OrphanPureNodePtr = OrphanPureNode;
+
+	FKismetEditorUtilities::CompileBlueprint(BP);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), BP->GetPathName());
+	Params->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+	const FCortexCommandResult Result = FCortexBPGraphCleanupOps::DeleteOrphanedNodes(Params);
+	TestTrue(TEXT("delete_orphaned_nodes succeeded"), Result.bSuccess);
+
+	bool bConnectedNodeExists = false;
+	bool bOrphanNodeExists = false;
+	for (UEdGraphNode* Node : EventGraph->Nodes)
+	{
+		if (!Node)
+		{
+			continue;
+		}
+
+		if (Node == ConnectedPureNodePtr)
+		{
+			bConnectedNodeExists = true;
+		}
+		if (Node == OrphanPureNodePtr)
+		{
+			bOrphanNodeExists = true;
+		}
+	}
+
+	TestTrue(TEXT("Pure node connected to live exec chain should be preserved"), bConnectedNodeExists);
+	TestFalse(TEXT("Unlinked pure node should be deleted"), bOrphanNodeExists);
+
+	BP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPDeleteOrphanedNodesRejectsFunctionGraphTest,
+	"Cortex.Blueprint.GraphCleanup.DeleteOrphanedNodes.RejectsFunctionGraphs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPDeleteOrphanedNodesRejectsFunctionGraphTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* BP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_OrphanRejectFunctionGraphTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("BP created"), BP);
+	if (!BP)
+	{
+		return false;
+	}
+
+	UEdGraph* FunctionGraph = FBlueprintEditorUtils::CreateNewGraph(
+		BP,
+		FName(TEXT("TestCleanupFunctionGraph")),
+		UEdGraph::StaticClass(),
+		UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(BP, FunctionGraph, true, static_cast<UClass*>(nullptr));
+	FKismetEditorUtilities::CompileBlueprint(BP);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), BP->GetPathName());
+	Params->SetStringField(TEXT("graph_name"), TEXT("TestCleanupFunctionGraph"));
+	const FCortexCommandResult Result = FCortexBPGraphCleanupOps::DeleteOrphanedNodes(Params);
+	TestFalse(TEXT("delete_orphaned_nodes should reject non-event graphs"), Result.bSuccess);
+	TestEqual(TEXT("Error code is InvalidField"), Result.ErrorCode, CortexErrorCodes::InvalidField);
 
 	BP->MarkAsGarbage();
 	return true;

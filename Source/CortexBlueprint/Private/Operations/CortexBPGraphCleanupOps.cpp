@@ -16,8 +16,9 @@
 
 namespace
 {
-	void GatherReachableExecNodes(UEdGraph* Graph, TSet<UEdGraphNode*>& OutReachable)
+	void GatherReachableExecNodesFromEvents(UEdGraph* Graph, TSet<UEdGraphNode*>& OutReachable, bool& bOutHasEventNode)
 	{
+		bOutHasEventNode = false;
 		if (!Graph)
 		{
 			return;
@@ -28,6 +29,7 @@ namespace
 		{
 			if (Node && Node->IsA<UK2Node_Event>())
 			{
+				bOutHasEventNode = true;
 				OutReachable.Add(Node);
 				Queue.Add(Node);
 			}
@@ -71,6 +73,48 @@ namespace
 			}
 		}
 	}
+
+	void ExpandToLinkedDataDependencies(UEdGraph* Graph, TSet<UEdGraphNode*>& InOutReachable)
+	{
+		if (!Graph || InOutReachable.Num() == 0)
+		{
+			return;
+		}
+
+		TArray<UEdGraphNode*> Queue = InOutReachable.Array();
+		int32 QueueIndex = 0;
+		while (QueueIndex < Queue.Num())
+		{
+			UEdGraphNode* CurrentNode = Queue[QueueIndex++];
+			if (!CurrentNode)
+			{
+				continue;
+			}
+
+			for (UEdGraphPin* Pin : CurrentNode->Pins)
+			{
+				if (!Pin)
+				{
+					continue;
+				}
+
+				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+				{
+					if (!LinkedPin)
+					{
+						continue;
+					}
+
+					UEdGraphNode* LinkedNode = LinkedPin->GetOwningNode();
+					if (LinkedNode && !InOutReachable.Contains(LinkedNode))
+					{
+						InOutReachable.Add(LinkedNode);
+						Queue.Add(LinkedNode);
+					}
+				}
+			}
+		}
+	}
 }
 
 FCortexCommandResult FCortexBPGraphCleanupOps::DeleteOrphanedNodes(const TSharedPtr<FJsonObject>& Params)
@@ -105,27 +149,17 @@ FCortexCommandResult FCortexBPGraphCleanupOps::DeleteOrphanedNodes(const TShared
 
 	if (!TargetGraph)
 	{
-		for (UEdGraph* Graph : Blueprint->FunctionGraphs)
-		{
-			if (Graph && Graph->GetName() == GraphName)
-			{
-				TargetGraph = Graph;
-				break;
-			}
-		}
-	}
-
-	if (!TargetGraph)
-	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			FString::Printf(TEXT("Graph not found: %s"), *GraphName));
+			FString::Printf(TEXT("Event graph not found: %s"), *GraphName));
 	}
 
 	const bool bCompile = Params->HasField(TEXT("compile")) ? Params->GetBoolField(TEXT("compile")) : true;
 
 	TSet<UEdGraphNode*> ReachableNodes;
-	GatherReachableExecNodes(TargetGraph, ReachableNodes);
+	bool bHasEventNode = false;
+	GatherReachableExecNodesFromEvents(TargetGraph, ReachableNodes, bHasEventNode);
+	ExpandToLinkedDataDependencies(TargetGraph, ReachableNodes);
 
 	TArray<UEdGraphNode*> NodesToDelete;
 	for (UEdGraphNode* Node : TargetGraph->Nodes)
@@ -135,7 +169,7 @@ FCortexCommandResult FCortexBPGraphCleanupOps::DeleteOrphanedNodes(const TShared
 			continue;
 		}
 
-		if (!ReachableNodes.Contains(Node))
+		if (bHasEventNode && !ReachableNodes.Contains(Node))
 		{
 			NodesToDelete.Add(Node);
 		}

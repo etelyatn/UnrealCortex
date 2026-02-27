@@ -7,7 +7,6 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "EdGraphSchema_K2.h"
 #include "GameFramework/Actor.h"
-#include "Engine/Texture2D.h"
 #include "UObject/UnrealType.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -180,9 +179,8 @@ bool FCortexBPCompareDanglingRefTest::RunTest(const FString& Parameters)
 			FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(RefProp);
 			if (ObjProp)
 			{
-				UObject* TempObj = NewObject<UTexture2D>(GetTransientPackage(), FName(TEXT("TempDanglingTarget")));
-				ObjProp->SetObjectPropertyValue(ObjProp->ContainerPtrToValuePtr<void>(SourceCDO), TempObj);
-				TempObj->MarkAsGarbage();
+				void* ValuePtr = ObjProp->ContainerPtrToValuePtr<void>(SourceCDO);
+				*reinterpret_cast<UObject**>(ValuePtr) = reinterpret_cast<UObject*>(~static_cast<UPTRINT>(0));
 			}
 		}
 	}
