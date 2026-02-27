@@ -52,7 +52,10 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def press_key(key: str, action: str = "tap", duration_ms: int = 100) -> str:
-        """Inject a key event into active PIE session.
+        """Inject a single key event into active PIE session.
+
+        Use this for simple, single-key inputs (jump, confirm, cancel, etc.).
+        For timed multi-step sequences, use run_input_sequence instead.
 
         Args:
             key: UE key name (for example "W", "SpaceBar", "LeftShift", "Enter",
@@ -76,7 +79,11 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def run_input_sequence(steps: list[dict], timeout: float = 60.0) -> str:
-        """Execute deferred timed input sequence during PIE.
+        """Execute a timed multi-step input sequence during PIE.
+
+        Use this when you need multiple inputs at specific timestamps, or inputs
+        spaced across time (e.g., walk forward then turn). For a single keypress,
+        use press_key instead.
 
         Args:
             steps: List of input steps. Each step has:
