@@ -37,6 +37,24 @@ bool FCortexBPRenameBasicTest::RunTest(const FString& Parameters)
 	UBlueprint* RenamedBP = FCortexBPAssetOps::LoadBlueprint(DestPath, LoadError);
 	TestNotNull(TEXT("Blueprint loadable at new path"), RenamedBP);
 
+	// Verify the rename response reports a redirector was created.
+	// RenameAssets creates a redirector in memory at the old path; it is flushed to disk
+	// only when explicitly saved or via fixup_redirectors. The response field is the reliable indicator.
+	TestTrue(TEXT("RenameResult has response data"), RenameResult.Data.IsValid());
+	if (RenameResult.Data.IsValid())
+	{
+		bool bRedirectorCreated = false;
+		RenameResult.Data->TryGetBoolField(TEXT("redirector_created"), bRedirectorCreated);
+		TestTrue(TEXT("Response reports redirector_created=true"), bRedirectorCreated);
+	}
+
+	// Cleanup: delete created assets to prevent disk pollution
+	// Note: FCortexBPAssetOps::Delete calls ForceDeleteObjects which handles object cleanup;
+	// do not call MarkAsGarbage() on the pointer afterwards.
+	TSharedPtr<FJsonObject> DeleteParams = MakeShared<FJsonObject>();
+	DeleteParams->SetStringField(TEXT("asset_path"), DestPath);
+	FCortexBPAssetOps::Delete(DeleteParams);
+
 	return true;
 }
 
@@ -82,6 +100,17 @@ bool FCortexBPRenameBatchSwapTest::RunTest(const FString& Parameters)
 
 	UBlueprint* NewABP = FCortexBPAssetOps::LoadBlueprint(APath, LoadError);
 	TestNotNull(TEXT("A now points to former B"), NewABP);
+
+	// Cleanup: delete all created assets
+	// Note: FCortexBPAssetOps::Delete calls ForceDeleteObjects which handles object cleanup;
+	// do not call MarkAsGarbage() on the pointers afterwards.
+	TSharedPtr<FJsonObject> DeleteBackup = MakeShared<FJsonObject>();
+	DeleteBackup->SetStringField(TEXT("asset_path"), BackupPath);
+	FCortexBPAssetOps::Delete(DeleteBackup);
+
+	TSharedPtr<FJsonObject> DeleteA = MakeShared<FJsonObject>();
+	DeleteA->SetStringField(TEXT("asset_path"), APath);
+	FCortexBPAssetOps::Delete(DeleteA);
 
 	return true;
 }

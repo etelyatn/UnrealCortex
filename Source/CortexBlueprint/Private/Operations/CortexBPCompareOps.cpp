@@ -15,12 +15,19 @@ namespace
 		TArray<TSharedPtr<FJsonValue>>& Differences,
 		const FString& Section,
 		const FString& Item,
-		const FString& Message)
+		const FString& Message,
+		const FString& SourceValue = FString(),
+		const FString& TargetValue = FString())
 	{
 		TSharedPtr<FJsonObject> Diff = MakeShared<FJsonObject>();
 		Diff->SetStringField(TEXT("section"), Section);
 		Diff->SetStringField(TEXT("item"), Item);
 		Diff->SetStringField(TEXT("message"), Message);
+		if (!SourceValue.IsEmpty() || !TargetValue.IsEmpty())
+		{
+			Diff->SetStringField(TEXT("source_value"), SourceValue);
+			Diff->SetStringField(TEXT("target_value"), TargetValue);
+		}
 		Differences.Add(MakeShared<FJsonValueObject>(Diff));
 	}
 
@@ -102,7 +109,10 @@ FCortexCommandResult FCortexBPCompareOps::CompareBlueprints(const TSharedPtr<FJs
 			const FBPVariableDescription* const* TargetVarPtr = TargetVars.Find(VarName);
 			if (!SourceVarPtr || !TargetVarPtr)
 			{
-				AddDifference(Differences, TEXT("variables"), VarName, TEXT("Variable missing on one side"));
+				AddDifference(Differences, TEXT("variables"), VarName,
+					TEXT("Variable missing on one side"),
+					SourceVarPtr ? TEXT("present") : TEXT("missing"),
+					TargetVarPtr ? TEXT("present") : TEXT("missing"));
 				continue;
 			}
 
@@ -111,11 +121,15 @@ FCortexCommandResult FCortexBPCompareOps::CompareBlueprints(const TSharedPtr<FJs
 			if (SourceType != TargetType)
 			{
 				AddDifference(Differences, TEXT("variables"), VarName,
-					FString::Printf(TEXT("Type differs: %s vs %s"), *SourceType, *TargetType));
+					FString::Printf(TEXT("Type differs: %s vs %s"), *SourceType, *TargetType),
+					SourceType, TargetType);
 			}
 			if ((*SourceVarPtr)->DefaultValue != (*TargetVarPtr)->DefaultValue)
 			{
-				AddDifference(Differences, TEXT("variables"), VarName, TEXT("Default value differs"));
+				AddDifference(Differences, TEXT("variables"), VarName,
+					TEXT("Default value differs"),
+					(*SourceVarPtr)->DefaultValue,
+					(*TargetVarPtr)->DefaultValue);
 			}
 		}
 	}
@@ -150,7 +164,10 @@ FCortexCommandResult FCortexBPCompareOps::CompareBlueprints(const TSharedPtr<FJs
 				[&FunctionName](const UEdGraph* Graph) { return Graph && Graph->GetName() == FunctionName; });
 			if (bInSource != bInTarget)
 			{
-				AddDifference(Differences, TEXT("functions"), FunctionName, TEXT("Function missing on one side"));
+				AddDifference(Differences, TEXT("functions"), FunctionName,
+					TEXT("Function missing on one side"),
+					bInSource ? TEXT("present") : TEXT("missing"),
+					bInTarget ? TEXT("present") : TEXT("missing"));
 			}
 		}
 	}
@@ -195,7 +212,10 @@ FCortexCommandResult FCortexBPCompareOps::CompareBlueprints(const TSharedPtr<FJs
 			const bool bInTarget = TargetComponents.Contains(ComponentEntry);
 			if (bInSource != bInTarget)
 			{
-				AddDifference(Differences, TEXT("components"), ComponentEntry, TEXT("Component differs"));
+				AddDifference(Differences, TEXT("components"), ComponentEntry,
+					TEXT("Component differs"),
+					bInSource ? TEXT("present") : TEXT("missing"),
+					bInTarget ? TEXT("present") : TEXT("missing"));
 			}
 		}
 	}
@@ -217,7 +237,11 @@ FCortexCommandResult FCortexBPCompareOps::CompareBlueprints(const TSharedPtr<FJs
 				++TotalChecks;
 				if (!Property->Identical_InContainer(SourceCDO, TargetCDO))
 				{
-					AddDifference(Differences, TEXT("cdo"), Property->GetName(), TEXT("CDO property differs"));
+					FString SourceVal, TargetVal;
+					Property->ExportText_InContainer(0, SourceVal, SourceCDO, SourceCDO, nullptr, PPF_None);
+					Property->ExportText_InContainer(0, TargetVal, TargetCDO, TargetCDO, nullptr, PPF_None);
+					AddDifference(Differences, TEXT("cdo"), Property->GetName(),
+						TEXT("CDO property differs"), SourceVal, TargetVal);
 				}
 			}
 		}

@@ -245,6 +245,10 @@ FCortexCommandResult FCortexBPCleanupOps::RecompileDependents(const TSharedPtr<F
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Recompile Dependents of %s"), *TargetBlueprint->GetName())
+	));
+
 	TArray<UBlueprint*> DependentBlueprints;
 	FBlueprintEditorUtils::GetDependentBlueprints(TargetBlueprint, DependentBlueprints);
 

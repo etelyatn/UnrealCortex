@@ -6,6 +6,7 @@
 #include "IAssetTools.h"
 #include "Misc/PackageName.h"
 #include "UObject/ObjectRedirector.h"
+#include "ScopedTransaction.h"
 
 FCortexCommandResult FCortexBPRedirectorOps::FixupRedirectors(const TSharedPtr<FJsonObject>& Params)
 {
@@ -60,6 +61,9 @@ FCortexCommandResult FCortexBPRedirectorOps::FixupRedirectors(const TSharedPtr<F
 
 	if (Redirectors.Num() > 0)
 	{
+		FScopedTransaction Transaction(FText::FromString(
+			FString::Printf(TEXT("Cortex: Fixup Redirectors in %s"), *Path)
+		));
 		FAssetToolsModule& AssetToolsModule =
 			FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
 		AssetToolsModule.Get().FixupReferencers(Redirectors);

@@ -1260,26 +1260,42 @@ FCortexCommandResult FCortexBPAssetOps::Rename(const TSharedPtr<FJsonObject>& Pa
 		);
 	}
 
-	// Fail fast in MCP context if referencers exist, to avoid rename prompts.
+	// In MCP context, IAssetTools::RenameAssets shows a blocking dialog when level packages
+	// (placed instances) reference the Blueprint. Filter to only world/map package referencers.
 	IAssetRegistry& AssetRegistry =
 		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 	TArray<FAssetIdentifier> Referencers;
 	AssetRegistry.GetReferencers(FAssetIdentifier(SourceBlueprint->GetOutermost()->GetFName()), Referencers);
 
-	if (Referencers.Num() > 0)
+	TArray<FString> LevelReferencers;
+	for (const FAssetIdentifier& Ref : Referencers)
+	{
+		TArray<FAssetData> RefAssets;
+		FARFilter RefFilter;
+		RefFilter.PackageNames.Add(Ref.PackageName);
+		AssetRegistry.GetAssets(RefFilter, RefAssets);
+		for (const FAssetData& RefAsset : RefAssets)
+		{
+			if (RefAsset.AssetClassPath == UWorld::StaticClass()->GetClassPathName())
+			{
+				LevelReferencers.Add(Ref.PackageName.ToString());
+			}
+		}
+	}
+
+	if (LevelReferencers.Num() > 0)
 	{
 		TArray<TSharedPtr<FJsonValue>> RefArray;
-		RefArray.Reserve(Referencers.Num());
-		for (const FAssetIdentifier& Referencer : Referencers)
+		RefArray.Reserve(LevelReferencers.Num());
+		for (const FString& Ref : LevelReferencers)
 		{
-			RefArray.Add(MakeShared<FJsonValueString>(Referencer.ToString()));
+			RefArray.Add(MakeShared<FJsonValueString>(Ref));
 		}
-
 		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
-		Details->SetArrayField(TEXT("references"), RefArray);
+		Details->SetArrayField(TEXT("level_references"), RefArray);
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::HasReferences,
-			TEXT("Rename blocked due to existing references"),
+			FString::Printf(TEXT("Rename blocked: Blueprint is placed in %d level(s). Fix up level placements before renaming."), LevelReferencers.Num()),
 			Details
 		);
 	}
