@@ -7,6 +7,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
+#include "UObject/ObjectPtr.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -228,19 +229,58 @@ FCortexCommandResult FCortexBPCompareOps::CompareBlueprints(const TSharedPtr<FJs
 		{
 			for (TFieldIterator<FProperty> PropIt(SourceCDO->GetClass()); PropIt; ++PropIt)
 			{
-				FProperty* Property = *PropIt;
-				if (!Property || !Property->HasAnyPropertyFlags(CPF_BlueprintVisible))
+				FProperty* SourceProperty = *PropIt;
+				if (!SourceProperty || !SourceProperty->HasAnyPropertyFlags(CPF_BlueprintVisible))
 				{
 					continue;
 				}
 
+				FProperty* TargetProperty = TargetCDO->GetClass()->FindPropertyByName(SourceProperty->GetFName());
+				if (!TargetProperty || !SourceProperty->SameType(TargetProperty))
+				{
+					continue;
+				}
+
+				const void* SourceValuePtr = SourceProperty->ContainerPtrToValuePtr<void>(SourceCDO);
+				const void* TargetValuePtr = TargetProperty->ContainerPtrToValuePtr<void>(TargetCDO);
+
 				++TotalChecks;
-				if (!Property->Identical_InContainer(SourceCDO, TargetCDO))
+
+				FObjectPropertyBase* SourceObjProp = CastField<FObjectPropertyBase>(SourceProperty);
+				FObjectPropertyBase* TargetObjProp = CastField<FObjectPropertyBase>(TargetProperty);
+				if (SourceObjProp && TargetObjProp)
+				{
+					UObject* SourceObj = SourceObjProp->GetObjectPropertyValue(SourceValuePtr);
+					UObject* TargetObj = TargetObjProp->GetObjectPropertyValue(TargetValuePtr);
+					if ((SourceObj && !IsValid(SourceObj)) || (TargetObj && !IsValid(TargetObj)))
+					{
+						const FString SourceObjText = SourceObj ? (IsValid(SourceObj) ? SourceObj->GetPathName() : TEXT("<invalid>")) : TEXT("<null>");
+						const FString TargetObjText = TargetObj ? (IsValid(TargetObj) ? TargetObj->GetPathName() : TEXT("<invalid>")) : TEXT("<null>");
+						AddDifference(Differences, TEXT("cdo"), SourceProperty->GetName(),
+							TEXT("CDO property has invalid object reference"),
+							SourceObjText,
+							TargetObjText);
+						continue;
+					}
+
+					if (SourceObj != TargetObj)
+					{
+						const FString SourceObjText = SourceObj ? SourceObj->GetPathName() : TEXT("<null>");
+						const FString TargetObjText = TargetObj ? TargetObj->GetPathName() : TEXT("<null>");
+						AddDifference(Differences, TEXT("cdo"), SourceProperty->GetName(),
+							TEXT("CDO object property differs"),
+							SourceObjText,
+							TargetObjText);
+					}
+					continue;
+				}
+
+				if (!SourceProperty->Identical(SourceValuePtr, TargetValuePtr))
 				{
 					FString SourceVal, TargetVal;
-					Property->ExportText_InContainer(0, SourceVal, SourceCDO, SourceCDO, nullptr, PPF_None);
-					Property->ExportText_InContainer(0, TargetVal, TargetCDO, TargetCDO, nullptr, PPF_None);
-					AddDifference(Differences, TEXT("cdo"), Property->GetName(),
+					SourceProperty->ExportText_Direct(SourceVal, SourceValuePtr, SourceValuePtr, nullptr, PPF_None);
+					TargetProperty->ExportText_Direct(TargetVal, TargetValuePtr, TargetValuePtr, nullptr, PPF_None);
+					AddDifference(Differences, TEXT("cdo"), SourceProperty->GetName(),
 						TEXT("CDO property differs"), SourceVal, TargetVal);
 				}
 			}
