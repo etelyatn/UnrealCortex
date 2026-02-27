@@ -84,3 +84,31 @@ def register_blueprint_migration_tools(mcp, connection: UEConnection):
             return json.dumps({"error": f"Connection error: {e}"})
         except (RuntimeError, TimeoutError, OSError) as e:
             return json.dumps({"error": str(e)})
+
+    @mcp.tool()
+    def remove_scs_component(
+        asset_path: str,
+        component_name: str,
+        compile: bool = True,
+    ) -> str:
+        """Remove an SCS component node from a Blueprint.
+
+        Use after migrating a component to a C++ UPROPERTY. Children of the
+        removed node are re-parented to its parent automatically.
+
+        Args:
+            asset_path: Blueprint object path (e.g. /Game/Blueprints/BP_Foo).
+            component_name: SCS variable name of the component to remove.
+            compile: Recompile the Blueprint after removal (default True).
+        """
+        try:
+            response = connection.send_command("bp.remove_scs_component", {
+                "asset_path": asset_path,
+                "component_name": component_name,
+                "compile": compile,
+            })
+            return format_response(response.get("data", {}), "remove_scs_component")
+        except ConnectionError as e:
+            return json.dumps({"error": f"Connection error: {e}"})
+        except (RuntimeError, TimeoutError, OSError) as e:
+            return json.dumps({"error": str(e)})
