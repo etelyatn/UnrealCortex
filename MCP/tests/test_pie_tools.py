@@ -68,3 +68,26 @@ class TestStartPieFPSThrottle:
 
         result = mcp.tools["start_pie"]()
         assert "Error" not in result
+
+
+class TestRestartPieFPSThrottle:
+    """restart_pie should also inject FPS throttle commands."""
+
+    def test_restart_pie_sends_fps_throttle_commands(self):
+        conn = MagicMock(spec=UEConnection)
+        conn.send_command.return_value = {
+            "success": True,
+            "data": {"state": "Playing", "mode": "selected_viewport"},
+        }
+
+        mcp = MockMCP()
+        register_editor_pie_tools(mcp, conn)
+
+        mcp.tools["restart_pie"]()
+
+        expected_calls = [
+            call("editor.restart_pie", {"mode": "selected_viewport"}, timeout=90.0),
+            call("editor.execute_console_command", {"command": "t.MaxFPS 0"}),
+            call("editor.execute_console_command", {"command": "t.UnfocusedFrameRateLimit 0"}),
+        ]
+        conn.send_command.assert_has_calls(expected_calls)
