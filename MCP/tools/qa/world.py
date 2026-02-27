@@ -70,7 +70,7 @@ def register_qa_world_tools(mcp, connection: UEConnection):
         max_distance: float = 5000.0,
         max_actors: int = 20,
         require_los: bool = True,
-        tag: str = "",
+        tags: list[str] | None = None,
     ) -> str:
         try:
             params = {
@@ -78,8 +78,8 @@ def register_qa_world_tools(mcp, connection: UEConnection):
                 "max_actors": max_actors,
                 "require_los": require_los,
             }
-            if tag:
-                params["tag"] = tag
+            if tags:
+                params["tags"] = tags
             response = connection.send_command("qa.get_visible_actors", params)
             return format_response(response.get("data", {}), "get_visible_actors")
         except (RuntimeError, ConnectionError) as e:

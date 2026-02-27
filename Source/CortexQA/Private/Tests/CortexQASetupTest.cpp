@@ -73,17 +73,18 @@ bool FCortexQASetRandomSeedNoPIETest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FCortexQATeleportMissingLocationNoPIETest,
-    "Cortex.QA.Setup.TeleportPlayer.MissingLocationNoPIE",
+    FCortexQATeleportNoPIEGuardFirstTest,
+    "Cortex.QA.Setup.TeleportPlayer.NoPIEGuardFirst",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FCortexQATeleportMissingLocationNoPIETest::RunTest(const FString& Parameters)
+bool FCortexQATeleportNoPIEGuardFirstTest::RunTest(const FString& Parameters)
 {
+    // PIE guard fires before param validation — missing location still returns PIENotActive
     FCortexCommandRouter Router = CreateQARouterSetup();
     const FCortexCommandResult Result = Router.Execute(TEXT("qa.teleport_player"), MakeShared<FJsonObject>());
     TestFalse(TEXT("teleport_player should fail when PIE is not active"), Result.bSuccess);
-    TestEqual(TEXT("teleport_player should return PIE_NOT_ACTIVE"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
+    TestEqual(TEXT("teleport_player should return PIE_NOT_ACTIVE (fires before location validation)"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
     return true;
 }
 

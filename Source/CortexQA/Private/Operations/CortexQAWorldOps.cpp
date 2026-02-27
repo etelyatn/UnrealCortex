@@ -426,7 +426,7 @@ FCortexCommandResult FCortexQAWorldOps::GetVisibleActors(const TSharedPtr<FJsonO
     double MaxDistance = 5000.0;
     int32 MaxActors = 20;
     bool bRequireLOS = true;
-    FString TagFilter;
+    TArray<FString> TagFilters;
     if (Params.IsValid())
     {
         Params->TryGetNumberField(TEXT("max_distance"), MaxDistance);
@@ -436,7 +436,18 @@ FCortexCommandResult FCortexQAWorldOps::GetVisibleActors(const TSharedPtr<FJsonO
             MaxActors = static_cast<int32>(MaxActorsDouble);
         }
         Params->TryGetBoolField(TEXT("require_los"), bRequireLOS);
-        Params->TryGetStringField(TEXT("tag"), TagFilter);
+        const TArray<TSharedPtr<FJsonValue>>* TagsArray = nullptr;
+        if (Params->TryGetArrayField(TEXT("tags"), TagsArray))
+        {
+            for (const TSharedPtr<FJsonValue>& TagValue : *TagsArray)
+            {
+                FString TagStr;
+                if (TagValue->TryGetString(TagStr) && !TagStr.IsEmpty())
+                {
+                    TagFilters.Add(TagStr);
+                }
+            }
+        }
     }
     MaxDistance = FMath::Max(0.0, MaxDistance);
     MaxActors = FMath::Max(1, MaxActors);
@@ -470,9 +481,21 @@ FCortexCommandResult FCortexQAWorldOps::GetVisibleActors(const TSharedPtr<FJsonO
         {
             continue;
         }
-        if (!TagFilter.IsEmpty() && !Actor->Tags.Contains(FName(*TagFilter)))
+        if (!TagFilters.IsEmpty())
         {
-            continue;
+            bool bMatchesAnyTag = false;
+            for (const FString& TagFilter : TagFilters)
+            {
+                if (Actor->Tags.Contains(FName(*TagFilter)))
+                {
+                    bMatchesAnyTag = true;
+                    break;
+                }
+            }
+            if (!bMatchesAnyTag)
+            {
+                continue;
+            }
         }
 
         const FVector ActorLocation = Actor->GetActorLocation();

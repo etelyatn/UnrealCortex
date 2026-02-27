@@ -81,6 +81,50 @@ def test_check_stuck_schema_contract():
     assert isinstance(response["is_falling"], bool)
 
 
+def test_check_stuck_obstruction_schema_contract():
+    response = {
+        "is_stuck": True,
+        "distance_moved": 0.5,
+        "threshold": 10.0,
+        "duration": 0.5,
+        "start_location": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "end_location": {"x": 0.5, "y": 0.0, "z": 0.0},
+        "velocity": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "speed": 0.0,
+        "is_falling": False,
+        "obstruction": {
+            "hit": True,
+            "distance": 45.0,
+            "location": {"x": 45.0, "y": 0.0, "z": 0.0},
+            "hit_type": "geometry",
+            "actor": None,
+        },
+    }
+
+    assert isinstance(response["is_stuck"], bool)
+    assert response["is_stuck"] is True
+    obstruction = response["obstruction"]
+    assert isinstance(obstruction, dict)
+    assert obstruction["hit"] is True
+    assert isinstance(obstruction["distance"], (int, float))
+    assert_vector_object(obstruction["location"], "obstruction.location")
+    assert obstruction["hit_type"] in {"actor", "geometry"}
+    assert "actor" in obstruction
+
+    # Also verify actor-hit variant
+    actor_obstruction = {
+        "hit": True,
+        "distance": 120.0,
+        "location": {"x": 120.0, "y": 0.0, "z": 0.0},
+        "hit_type": "actor",
+        "actor": {"name": "Wall_01", "path": "/Game/Level/Wall_01"},
+    }
+    assert actor_obstruction["hit_type"] == "actor"
+    assert isinstance(actor_obstruction["actor"], dict)
+    assert "name" in actor_obstruction["actor"]
+    assert "path" in actor_obstruction["actor"]
+
+
 def test_get_visible_actors_schema_contract():
     response = {
         "camera_location": {"x": 0.0, "y": 0.0, "z": 100.0},

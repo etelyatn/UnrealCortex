@@ -275,19 +275,23 @@ FCortexCommandResult FCortexQAActionOps::CheckStuck(const TSharedPtr<FJsonObject
         }
 
         TSharedPtr<FJsonObject> Obstruction = MakeShared<FJsonObject>();
+        Obstruction->SetBoolField(TEXT("hit"), true);
         Obstruction->SetNumberField(TEXT("distance"), Hit.Distance);
         FCortexQAUtils::SetVectorObject(Obstruction, TEXT("location"), Hit.ImpactPoint);
 
         AActor* HitActor = Hit.GetActor();
         if (HitActor != nullptr)
         {
-            Obstruction->SetStringField(TEXT("type"), TEXT("actor"));
-            Obstruction->SetStringField(TEXT("name"), HitActor->GetName());
-            Obstruction->SetStringField(TEXT("path"), HitActor->GetPathName());
+            Obstruction->SetStringField(TEXT("hit_type"), TEXT("actor"));
+            TSharedPtr<FJsonObject> ActorData = MakeShared<FJsonObject>();
+            ActorData->SetStringField(TEXT("name"), HitActor->GetName());
+            ActorData->SetStringField(TEXT("path"), HitActor->GetPathName());
+            Obstruction->SetObjectField(TEXT("actor"), ActorData);
         }
         else
         {
-            Obstruction->SetStringField(TEXT("type"), TEXT("geometry"));
+            Obstruction->SetStringField(TEXT("hit_type"), TEXT("geometry"));
+            Obstruction->SetField(TEXT("actor"), MakeShared<FJsonValueNull>());
         }
 
         Data->SetObjectField(TEXT("obstruction"), Obstruction);

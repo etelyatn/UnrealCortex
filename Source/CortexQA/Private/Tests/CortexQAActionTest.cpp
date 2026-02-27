@@ -50,18 +50,19 @@ bool FCortexQALookToNoPIETest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FCortexQALookToMissingYawTest,
-    "Cortex.QA.Action.LookTo.MissingYaw",
+    FCortexQALookToNoPIEGuardFirstTest,
+    "Cortex.QA.Action.LookTo.NoPIEGuardFirst",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FCortexQALookToMissingYawTest::RunTest(const FString& Parameters)
+bool FCortexQALookToNoPIEGuardFirstTest::RunTest(const FString& Parameters)
 {
+    // PIE guard fires before param validation — missing yaw still returns PIENotActive
     FCortexCommandRouter Router = CreateQARouterActions();
     const FCortexCommandResult Result = Router.Execute(TEXT("qa.look_to"), MakeShared<FJsonObject>());
 
-    TestFalse(TEXT("look_to should fail without yaw"), Result.bSuccess);
-    TestEqual(TEXT("look_to should return PIE_NOT_ACTIVE before validation in editor tests"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
+    TestFalse(TEXT("look_to should fail when PIE is not active"), Result.bSuccess);
+    TestEqual(TEXT("look_to should return PIE_NOT_ACTIVE (fires before yaw validation)"), Result.ErrorCode, CortexErrorCodes::PIENotActive);
     return true;
 }
 
