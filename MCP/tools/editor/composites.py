@@ -15,6 +15,23 @@ from cortex_mcp.tcp_client import UEConnection
 logger = logging.getLogger(__name__)
 
 
+def _inject_fps_throttle(connection: UEConnection) -> None:
+    """Disable FPS throttling for AI-driven PIE sessions.
+
+    Duplicated from pie.py to avoid cross-module import issues in test context.
+    """
+    try:
+        connection.send_command(
+            "editor.execute_console_command", {"command": "t.MaxFPS 0"},
+        )
+        connection.send_command(
+            "editor.execute_console_command",
+            {"command": "t.UnfocusedFrameRateLimit 0"},
+        )
+    except (ConnectionError, RuntimeError):
+        logger.warning("Failed to disable FPS throttle — PIE may run at reduced FPS")
+
+
 def register_editor_composite_tools(mcp, connection: UEConnection):
     """Register composite editor tools."""
 
@@ -35,6 +52,7 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
             params["game_mode"] = game_mode
         try:
             connection.send_command("editor.start_pie", params, timeout=60.0)
+            _inject_fps_throttle(connection)
             state = connection.send_command("editor.get_pie_state")
             return format_response(state.get("data", {}), "start_pie_session")
         except (ConnectionError, RuntimeError) as e:
