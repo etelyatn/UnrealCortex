@@ -41,7 +41,7 @@ bool FCortexQASupportedCommandsTest::RunTest(const FString& Parameters)
 {
     FCortexQACommandHandler Handler;
     const TArray<FCortexCommandInfo> Commands = Handler.GetSupportedCommands();
-    TestEqual(TEXT("Handler should expose full QA command set"), Commands.Num(), 11);
+    TestEqual(TEXT("Handler should expose full QA command set"), Commands.Num(), 15);
 
     TSet<FString> Names;
     for (const FCortexCommandInfo& Info : Commands)
@@ -60,5 +60,9 @@ bool FCortexQASupportedCommandsTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Supported commands should include set_actor_property"), Names.Contains(TEXT("set_actor_property")));
     TestTrue(TEXT("Supported commands should include set_random_seed"), Names.Contains(TEXT("set_random_seed")));
     TestTrue(TEXT("Supported commands should include assert_state"), Names.Contains(TEXT("assert_state")));
+    TestTrue(TEXT("Supported commands should include look_to"), Names.Contains(TEXT("look_to")));
+    TestTrue(TEXT("Supported commands should include probe_forward"), Names.Contains(TEXT("probe_forward")));
+    TestTrue(TEXT("Supported commands should include check_stuck"), Names.Contains(TEXT("check_stuck")));
+    TestTrue(TEXT("Supported commands should include get_visible_actors"), Names.Contains(TEXT("get_visible_actors")));
     return true;
 }
