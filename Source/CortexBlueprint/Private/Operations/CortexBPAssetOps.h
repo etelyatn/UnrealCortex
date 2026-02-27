@@ -54,6 +54,12 @@ public:
 	 */
 	static FCortexCommandResult Save(const TSharedPtr<FJsonObject>& Params);
 
+	/**
+	 * Rename/move a Blueprint asset and create redirector at old path.
+	 * Params: source_path (string), dest_path (string)
+	 */
+	static FCortexCommandResult Rename(const TSharedPtr<FJsonObject>& Params);
+
 	/** Load a Blueprint by asset path (with path normalization), returns nullptr and sets OutError if not found */
 	static UBlueprint* LoadBlueprint(const FString& AssetPath, FString& OutError);
 

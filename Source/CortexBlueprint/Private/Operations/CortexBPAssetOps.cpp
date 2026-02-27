@@ -5,6 +5,8 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Blueprint/BlueprintSupport.h"
 #include "UObject/SavePackage.h"
@@ -1181,6 +1183,144 @@ FCortexCommandResult FCortexBPAssetOps::Save(const TSharedPtr<FJsonObject>& Para
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 
 	UE_LOG(LogCortexBlueprint, Log, TEXT("Saved Blueprint: %s"), *AssetPath);
+
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexBPAssetOps::Rename(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params.IsValid())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing params object")
+		);
+	}
+
+	FString SourcePath;
+	FString DestPath;
+	if (!Params->TryGetStringField(TEXT("source_path"), SourcePath) || SourcePath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: source_path")
+		);
+	}
+	if (!Params->TryGetStringField(TEXT("dest_path"), DestPath) || DestPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: dest_path")
+		);
+	}
+
+	// Normalize destination to object path form (/Game/Path/AssetName)
+	FString NormalizedDestPath = DestPath;
+	if (!NormalizedDestPath.StartsWith(TEXT("/")))
+	{
+		NormalizedDestPath = TEXT("/Game/") + NormalizedDestPath;
+	}
+	else if (!NormalizedDestPath.StartsWith(TEXT("/Game/")))
+	{
+		NormalizedDestPath = TEXT("/Game") + NormalizedDestPath;
+	}
+
+	if (SourcePath == NormalizedDestPath)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("source_path and dest_path must be different")
+		);
+	}
+
+	FString LoadError;
+	UBlueprint* SourceBlueprint = LoadBlueprint(SourcePath, LoadError);
+	if (!SourceBlueprint)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+	}
+
+	const FString DestPackagePath = FPackageName::ObjectPathToPackageName(NormalizedDestPath);
+	const FString DestAssetName = FPackageName::GetShortName(DestPackagePath);
+	const FString DestFolderPath = FPackageName::GetLongPackagePath(DestPackagePath);
+
+	if (DestAssetName.IsEmpty() || DestFolderPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Invalid destination path: %s"), *NormalizedDestPath)
+		);
+	}
+
+	if (FindPackage(nullptr, *DestPackagePath) || FPackageName::DoesPackageExist(DestPackagePath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::BlueprintAlreadyExists,
+			FString::Printf(TEXT("Blueprint already exists at destination: %s"), *NormalizedDestPath)
+		);
+	}
+
+	// In MCP context, IAssetTools::RenameAssets shows a blocking dialog when level packages
+	// (placed instances) reference the Blueprint. Filter to only world/map package referencers.
+	IAssetRegistry& AssetRegistry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	TArray<FAssetIdentifier> Referencers;
+	AssetRegistry.GetReferencers(FAssetIdentifier(SourceBlueprint->GetOutermost()->GetFName()), Referencers);
+
+	TArray<FString> LevelReferencers;
+	for (const FAssetIdentifier& Ref : Referencers)
+	{
+		TArray<FAssetData> RefAssets;
+		FARFilter RefFilter;
+		RefFilter.PackageNames.Add(Ref.PackageName);
+		AssetRegistry.GetAssets(RefFilter, RefAssets);
+		for (const FAssetData& RefAsset : RefAssets)
+		{
+			if (RefAsset.AssetClassPath == UWorld::StaticClass()->GetClassPathName())
+			{
+				LevelReferencers.Add(Ref.PackageName.ToString());
+			}
+		}
+	}
+
+	if (LevelReferencers.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> RefArray;
+		RefArray.Reserve(LevelReferencers.Num());
+		for (const FString& Ref : LevelReferencers)
+		{
+			RefArray.Add(MakeShared<FJsonValueString>(Ref));
+		}
+		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+		Details->SetArrayField(TEXT("level_references"), RefArray);
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::HasReferences,
+			FString::Printf(TEXT("Rename blocked: Blueprint is placed in %d level(s). Fix up level placements before renaming."), LevelReferencers.Num()),
+			Details
+		);
+	}
+
+	FAssetToolsModule& AssetToolsModule =
+		FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+	TArray<FAssetRenameData> RenameAssets;
+	RenameAssets.Emplace(SourceBlueprint, DestFolderPath, DestAssetName);
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Rename Blueprint %s"), *SourceBlueprint->GetName())
+	));
+	const bool bRenamed = AssetToolsModule.Get().RenameAssets(RenameAssets);
+	if (!bRenamed)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("Failed to rename Blueprint from %s to %s"), *SourcePath, *NormalizedDestPath)
+		);
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("old_path"), SourcePath);
+	Data->SetStringField(TEXT("new_path"), NormalizedDestPath);
+	Data->SetBoolField(TEXT("redirector_created"), true);
 
 	return FCortexCommandRouter::Success(Data);
 }
