@@ -6,6 +6,7 @@
 #include "Operations/CortexBPClassDefaultsOps.h"
 #include "Operations/CortexBPCompareOps.h"
 #include "Operations/CortexBPComponentOps.h"
+#include "Operations/CortexBPGraphCleanupOps.h"
 #include "Operations/CortexBPRedirectorOps.h"
 #include "Operations/CortexBPStructureOps.h"
 #include "Operations/CortexBPTimelineOps.h"
@@ -123,6 +124,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPCompareOps::CompareBlueprints(Params);
 	}
 
+	if (Command == TEXT("delete_orphaned_nodes"))
+	{
+		return FCortexBPGraphCleanupOps::DeleteOrphanedNodes(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown bp command: %s"), *Command)
@@ -154,6 +160,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add({TEXT("recompile_dependents"), TEXT("Recompile Blueprints that depend on a target Blueprint")});
 	Commands.Add({TEXT("fixup_redirectors"), TEXT("Fix up redirectors under a content path")});
 	Commands.Add({TEXT("compare_blueprints"), TEXT("Compare two Blueprints and return structural differences")});
+	Commands.Add({TEXT("delete_orphaned_nodes"), TEXT("Delete orphaned nodes from a Blueprint graph")});
 
 	return Commands;
 }
