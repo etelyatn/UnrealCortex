@@ -254,10 +254,10 @@ FCortexCommandResult FCortexBPCompareOps::CompareBlueprints(const TSharedPtr<FJs
 					if (SourceObj != TargetObj)
 					{
 						const FString SourceObjText = SourceObj
-							? FString::Printf(TEXT("0x%p"), SourceObj)
+							? (IsValid(SourceObj) ? SourceObj->GetPathName() : TEXT("<invalid>"))
 							: TEXT("<null>");
 						const FString TargetObjText = TargetObj
-							? FString::Printf(TEXT("0x%p"), TargetObj)
+							? (IsValid(TargetObj) ? TargetObj->GetPathName() : TEXT("<invalid>"))
 							: TEXT("<null>");
 						AddDifference(Differences, TEXT("cdo"), SourceProperty->GetName(),
 							TEXT("CDO object property differs"),
