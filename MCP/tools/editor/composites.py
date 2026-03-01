@@ -227,6 +227,7 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
                     "-nosplash",
                     "-nopause",
                     "-AutoDeclinePackageRecovery",
+                    '-ExecCmds="Mainframe.ShowRestoreAssetsPromptOnStartup 0"',
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
