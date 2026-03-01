@@ -51,8 +51,18 @@ def register_widget_property_tools(mcp, connection: UEConnection):
     def set_font(
         asset_path: str, widget_name: str, size: int = 0,
         typeface: str = "", letter_spacing: float = 0,
+        family: str = "",
     ) -> str:
-        """Set font properties on a text widget."""
+        """Set font properties on a text widget.
+
+        Args:
+            asset_path: Widget Blueprint asset path
+            widget_name: Name of the TextBlock widget
+            size: Font size in points
+            typeface: Typeface name within the font family (e.g., "Bold", "Light")
+            letter_spacing: Letter spacing adjustment
+            family: Font family name (e.g., "Roboto") or asset path (e.g., "/Game/Fonts/MyFont")
+        """
         params = {"asset_path": asset_path, "widget_name": widget_name}
         if size > 0:
             params["size"] = size
@@ -60,6 +70,8 @@ def register_widget_property_tools(mcp, connection: UEConnection):
             params["typeface"] = typeface
         if letter_spacing != 0:
             params["letter_spacing"] = letter_spacing
+        if family:
+            params["family"] = family
         try:
             response = connection.send_command("umg.set_font", params)
             connection.invalidate_cache("umg.")
@@ -170,7 +182,11 @@ def register_widget_property_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def set_property(asset_path: str, widget_name: str, property_path: str, value: str) -> str:
-        """Set any widget property via reflection path."""
+        """Set any widget property via reflection path.
+
+        Use "slot." prefix to access slot properties (e.g., "slot.Padding.Left",
+        "slot.HorizontalAlignment"). Call get_schema to discover available slot properties.
+        """
         params = {
             "asset_path": asset_path,
             "widget_name": widget_name,
@@ -189,7 +205,10 @@ def register_widget_property_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def get_property(asset_path: str, widget_name: str, property_path: str) -> str:
-        """Read any widget property value via reflection path."""
+        """Read any widget property value via reflection path.
+
+        Use "slot." prefix to read slot properties (e.g., "slot.Padding.Left").
+        """
         try:
             response = connection.send_command("umg.get_property", {
                 "asset_path": asset_path,
@@ -202,7 +221,11 @@ def register_widget_property_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def get_schema(asset_path: str, widget_name: str, category: str = "") -> str:
-        """Get editable property schema for a widget."""
+        """Get editable property schema for a widget.
+
+        Returns widget properties and, if the widget has a parent panel, slot_type
+        and slot_properties (prefixed with "slot." for direct use in set_property).
+        """
         params = {"asset_path": asset_path, "widget_name": widget_name}
         if category:
             params["category"] = category

@@ -1,6 +1,7 @@
 #include "Operations/CortexUMGWidgetTreeOps.h"
 #include "CortexUMGUtils.h"
 #include "WidgetBlueprint.h"
+#include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Widget.h"
 #include "Components/PanelWidget.h"
@@ -26,41 +27,110 @@
 #include "Components/EditableText.h"
 #include "Components/RichTextBlock.h"
 #include "Components/CircularThrobber.h"
+#include "Components/UniformGridPanel.h"
+#include "Components/WrapBox.h"
+#include "Components/WidgetSwitcher.h"
+#include "Components/ComboBoxString.h"
 #include "ScopedTransaction.h"
 #include "Engine/Engine.h"
+#include "Engine/Blueprint.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Misc/PackageName.h"
+#include "UObject/UObjectGlobals.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 
+struct FCuratedWidgetEntry
+{
+    const TCHAR* Name;
+    const TCHAR* Category;
+    bool bIsPanel;
+    const TCHAR* Description;
+    UClass* (*GetClass)();
+};
+
+static const TArray<FCuratedWidgetEntry>& GetCuratedWidgetEntries()
+{
+    static const TArray<FCuratedWidgetEntry> Entries = {
+        { TEXT("CanvasPanel"), TEXT("Panel"), true, TEXT("Free-form positioning with anchors"), &UCanvasPanel::StaticClass },
+        { TEXT("VerticalBox"), TEXT("Panel"), true, TEXT("Stack children vertically"), &UVerticalBox::StaticClass },
+        { TEXT("HorizontalBox"), TEXT("Panel"), true, TEXT("Stack children horizontally"), &UHorizontalBox::StaticClass },
+        { TEXT("Overlay"), TEXT("Panel"), true, TEXT("Stack children on top of each other"), &UOverlay::StaticClass },
+        { TEXT("ScrollBox"), TEXT("Panel"), true, TEXT("Scrollable container"), &UScrollBox::StaticClass },
+        { TEXT("SizeBox"), TEXT("Panel"), true, TEXT("Override child size constraints"), &USizeBox::StaticClass },
+        { TEXT("ScaleBox"), TEXT("Panel"), true, TEXT("Scale child to fit"), &UScaleBox::StaticClass },
+        { TEXT("UniformGridPanel"), TEXT("Panel"), true, TEXT("Grid with equal-sized cells"), &UUniformGridPanel::StaticClass },
+        { TEXT("WrapBox"), TEXT("Panel"), true, TEXT("Wraps children to next line"), &UWrapBox::StaticClass },
+        { TEXT("WidgetSwitcher"), TEXT("Panel"), true, TEXT("Shows one child at a time"), &UWidgetSwitcher::StaticClass },
+        { TEXT("Button"), TEXT("Common"), true, TEXT("Clickable button"), &UButton::StaticClass },
+        { TEXT("TextBlock"), TEXT("Common"), false, TEXT("Display text"), &UTextBlock::StaticClass },
+        { TEXT("RichTextBlock"), TEXT("Common"), false, TEXT("Rich formatted text"), &URichTextBlock::StaticClass },
+        { TEXT("Image"), TEXT("Common"), false, TEXT("Display image or color"), &UImage::StaticClass },
+        { TEXT("Border"), TEXT("Common"), true, TEXT("Single child with border/background"), &UBorder::StaticClass },
+        { TEXT("Spacer"), TEXT("Common"), false, TEXT("Empty space"), &USpacer::StaticClass },
+        { TEXT("ProgressBar"), TEXT("Common"), false, TEXT("Progress indicator"), &UProgressBar::StaticClass },
+        { TEXT("CircularThrobber"), TEXT("Common"), false, TEXT("Loading spinner"), &UCircularThrobber::StaticClass },
+        { TEXT("CheckBox"), TEXT("Input"), false, TEXT("Toggle checkbox"), &UCheckBox::StaticClass },
+        { TEXT("Slider"), TEXT("Input"), false, TEXT("Sliding value selector"), &USlider::StaticClass },
+        { TEXT("EditableText"), TEXT("Input"), false, TEXT("Single-line text input"), &UEditableText::StaticClass },
+        { TEXT("ComboBoxString"), TEXT("Input"), false, TEXT("Dropdown string selector"), &UComboBoxString::StaticClass },
+    };
+    return Entries;
+}
+
 UClass* FCortexUMGWidgetTreeOps::ResolveWidgetClass(const FString& ClassName)
 {
-    static TMap<FString, UClass*> ClassMap;
-    if (ClassMap.Num() == 0)
+    // Tier 1: Curated array (case-insensitive, hot-reload safe)
+    for (const FCuratedWidgetEntry& Entry : GetCuratedWidgetEntries())
     {
-        ClassMap.Add(TEXT("CanvasPanel"), UCanvasPanel::StaticClass());
-        ClassMap.Add(TEXT("VerticalBox"), UVerticalBox::StaticClass());
-        ClassMap.Add(TEXT("HorizontalBox"), UHorizontalBox::StaticClass());
-        ClassMap.Add(TEXT("Overlay"), UOverlay::StaticClass());
-        ClassMap.Add(TEXT("ScrollBox"), UScrollBox::StaticClass());
-        ClassMap.Add(TEXT("SizeBox"), USizeBox::StaticClass());
-        ClassMap.Add(TEXT("ScaleBox"), UScaleBox::StaticClass());
-        ClassMap.Add(TEXT("Button"), UButton::StaticClass());
-        ClassMap.Add(TEXT("TextBlock"), UTextBlock::StaticClass());
-        ClassMap.Add(TEXT("Image"), UImage::StaticClass());
-        ClassMap.Add(TEXT("Border"), UBorder::StaticClass());
-        ClassMap.Add(TEXT("Spacer"), USpacer::StaticClass());
-        ClassMap.Add(TEXT("ProgressBar"), UProgressBar::StaticClass());
-        ClassMap.Add(TEXT("Slider"), USlider::StaticClass());
-        ClassMap.Add(TEXT("CheckBox"), UCheckBox::StaticClass());
-        ClassMap.Add(TEXT("EditableText"), UEditableText::StaticClass());
-        ClassMap.Add(TEXT("RichTextBlock"), URichTextBlock::StaticClass());
-        ClassMap.Add(TEXT("CircularThrobber"), UCircularThrobber::StaticClass());
+        if (ClassName.Equals(Entry.Name, ESearchCase::IgnoreCase))
+        {
+            return Entry.GetClass();
+        }
     }
 
-    if (UClass** Found = ClassMap.Find(ClassName))
+    // Tier 2: Native C++ class lookup.
     {
-        return *Found;
+        FString LookupName = ClassName;
+        if (LookupName.StartsWith(TEXT("U")))
+        {
+            LookupName = LookupName.Mid(1);
+        }
+
+        UClass* FoundClass = FindFirstObjectSafe<UClass>(*LookupName, EFindFirstObjectOptions::NativeFirst);
+        if (!FoundClass)
+        {
+            FoundClass = FindFirstObjectSafe<UClass>(*ClassName, EFindFirstObjectOptions::NativeFirst);
+        }
+
+        if (FoundClass)
+        {
+            if (!FoundClass->IsChildOf(UWidget::StaticClass()))
+            {
+                return nullptr;
+            }
+            if (!FoundClass->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+            {
+                return FoundClass;
+            }
+        }
     }
+
+    // Tier 3: Widget Blueprint asset path resolution.
+    if (ClassName.StartsWith(TEXT("/")) || ClassName.Contains(TEXT(".")))
+    {
+        const FString PkgName = FPackageName::ObjectPathToPackageName(ClassName);
+        if (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName))
+        {
+            UObject* Obj = StaticLoadObject(UWidgetBlueprint::StaticClass(), nullptr, *ClassName);
+            UWidgetBlueprint* WBP = Cast<UWidgetBlueprint>(Obj);
+            if (WBP && WBP->GeneratedClass && WBP->GeneratedClass->IsChildOf(UUserWidget::StaticClass()))
+            {
+                return WBP->GeneratedClass;
+            }
+        }
+    }
+
     return nullptr;
 }
 
@@ -74,6 +144,17 @@ TSharedPtr<FJsonObject> FCortexUMGWidgetTreeOps::BuildWidgetTreeJson(UWidget* Wi
     TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
     Obj->SetStringField(TEXT("name"), Widget->GetName());
     Obj->SetStringField(TEXT("class"), Widget->GetClass()->GetName());
+
+    // WBP breadcrumb for nested user widgets.
+    if (Widget->GetClass()->IsChildOf(UUserWidget::StaticClass()) &&
+        Widget->GetClass() != UUserWidget::StaticClass())
+    {
+        Obj->SetBoolField(TEXT("is_user_widget"), true);
+        if (UBlueprint* BP = Cast<UBlueprint>(Widget->GetClass()->ClassGeneratedBy))
+        {
+            Obj->SetStringField(TEXT("widget_blueprint"), BP->GetPathName());
+        }
+    }
 
     TArray<TSharedPtr<FJsonValue>> ChildArray;
     if (UPanelWidget* Panel = Cast<UPanelWidget>(Widget))
@@ -529,49 +610,21 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::ListWidgetClasses(const TSharedPtr
     FString CategoryFilter;
     Params->TryGetStringField(TEXT("category"), CategoryFilter);
 
-    struct FWidgetClassInfo
-    {
-        FString Name;
-        FString Category;
-        bool bIsPanel;
-        FString Description;
-    };
-
-    static const TArray<FWidgetClassInfo> AllClasses = {
-        { TEXT("CanvasPanel"), TEXT("Panel"), true, TEXT("Allows widgets at arbitrary positions") },
-        { TEXT("VerticalBox"), TEXT("Panel"), true, TEXT("Arranges children vertically") },
-        { TEXT("HorizontalBox"), TEXT("Panel"), true, TEXT("Arranges children horizontally") },
-        { TEXT("Overlay"), TEXT("Panel"), true, TEXT("Stacks children on top of each other") },
-        { TEXT("ScrollBox"), TEXT("Panel"), true, TEXT("Scrollable panel") },
-        { TEXT("SizeBox"), TEXT("Panel"), true, TEXT("Overrides child desired size") },
-        { TEXT("ScaleBox"), TEXT("Panel"), true, TEXT("Scales child to fit") },
-        { TEXT("Button"), TEXT("Common"), true, TEXT("Clickable button with one child") },
-        { TEXT("TextBlock"), TEXT("Common"), false, TEXT("Displays static text") },
-        { TEXT("Image"), TEXT("Common"), false, TEXT("Displays a texture or material") },
-        { TEXT("Border"), TEXT("Common"), true, TEXT("Container with background brush") },
-        { TEXT("Spacer"), TEXT("Common"), false, TEXT("Empty space placeholder") },
-        { TEXT("ProgressBar"), TEXT("Common"), false, TEXT("Progress indicator") },
-        { TEXT("Slider"), TEXT("Input"), false, TEXT("Draggable slider") },
-        { TEXT("CheckBox"), TEXT("Input"), false, TEXT("Toggle checkbox") },
-        { TEXT("EditableText"), TEXT("Input"), false, TEXT("Single-line text input") },
-        { TEXT("RichTextBlock"), TEXT("Common"), false, TEXT("Rich formatted text") },
-        { TEXT("CircularThrobber"), TEXT("Common"), false, TEXT("Loading spinner") },
-    };
-
     TArray<TSharedPtr<FJsonValue>> ClassArray;
-    for (const FWidgetClassInfo& Info : AllClasses)
+    for (const FCuratedWidgetEntry& Entry : GetCuratedWidgetEntries())
     {
-        if (!CategoryFilter.IsEmpty() && Info.Category != CategoryFilter)
+        if (!CategoryFilter.IsEmpty() &&
+            !FString(Entry.Category).Equals(CategoryFilter, ESearchCase::IgnoreCase))
         {
             continue;
         }
 
-        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
-        Entry->SetStringField(TEXT("name"), Info.Name);
-        Entry->SetStringField(TEXT("category"), Info.Category);
-        Entry->SetBoolField(TEXT("is_panel"), Info.bIsPanel);
-        Entry->SetStringField(TEXT("description"), Info.Description);
-        ClassArray.Add(MakeShared<FJsonValueObject>(Entry));
+        TSharedPtr<FJsonObject> EntryObj = MakeShared<FJsonObject>();
+        EntryObj->SetStringField(TEXT("name"), Entry.Name);
+        EntryObj->SetStringField(TEXT("category"), Entry.Category);
+        EntryObj->SetBoolField(TEXT("is_panel"), Entry.bIsPanel);
+        EntryObj->SetStringField(TEXT("description"), Entry.Description);
+        ClassArray.Add(MakeShared<FJsonValueObject>(EntryObj));
     }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
