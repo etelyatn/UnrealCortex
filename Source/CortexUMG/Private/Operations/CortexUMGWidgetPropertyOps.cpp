@@ -13,6 +13,7 @@
 #include "Components/SizeBox.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Engine/Font.h"
+#include "Engine/FontFace.h"
 #include "ScopedTransaction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "CortexSerializer.h"
@@ -201,7 +202,7 @@ static UObject* ResolveFontAsset(const FString& Family)
         }
 
         UObject* FontObj = StaticLoadObject(UObject::StaticClass(), nullptr, *Path);
-        if (FontObj && FontObj->IsA<UFont>())
+        if (FontObj && (FontObj->IsA<UFont>() || FontObj->IsA<UFontFace>()))
         {
             return FontObj;
         }
@@ -267,7 +268,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetFont(const TSharedPtr<FJson
         else
         {
             return FCortexCommandRouter::Error(
-                CortexErrorCodes::AssetNotFound,
+                CortexErrorCodes::FontNotFound,
                 FString::Printf(TEXT("Font family '%s' not found. Try an engine font name (e.g., 'Roboto') or asset path (e.g., '/Game/Fonts/MyFont')"), *Family));
         }
     }

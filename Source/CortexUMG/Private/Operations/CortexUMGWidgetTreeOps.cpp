@@ -629,6 +629,7 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::ListWidgetClasses(const TSharedPtr
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetArrayField(TEXT("classes"), ClassArray);
+    Data->SetNumberField(TEXT("count"), ClassArray.Num());
     return FCortexCommandRouter::Success(Data);
 }
 

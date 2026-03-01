@@ -72,6 +72,7 @@ bool FCortexUMGGetSchemaSlotTest::RunTest(const FString& Parameters)
 
                 // Check at least one property has slot. prefix in name
                 bool bFoundSlotPrefix = false;
+                bool bFoundPadding = false;
                 for (const TSharedPtr<FJsonValue>& PropVal : *SlotProps)
                 {
                     const TSharedPtr<FJsonObject>* PropObj = nullptr;
@@ -81,11 +82,15 @@ bool FCortexUMGGetSchemaSlotTest::RunTest(const FString& Parameters)
                         if (Name.StartsWith(TEXT("slot.")))
                         {
                             bFoundSlotPrefix = true;
-                            break;
+                        }
+                        if (Name == TEXT("slot.Padding"))
+                        {
+                            bFoundPadding = true;
                         }
                     }
                 }
                 TestTrue(TEXT("Slot property names should start with 'slot.'"), bFoundSlotPrefix);
+                TestTrue(TEXT("VerticalBoxSlot should include 'slot.Padding'"), bFoundPadding);
             }
         }
     }

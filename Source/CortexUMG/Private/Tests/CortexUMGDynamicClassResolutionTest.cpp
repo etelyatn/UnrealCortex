@@ -70,6 +70,18 @@ bool FCortexUMGDynamicClassResolutionTest::RunTest(const FString& Parameters)
         TestFalse(TEXT("Non-existent class should fail"), Result.bSuccess);
     }
 
+    // Test 4: Abstract class should be rejected
+    {
+        TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+        P->SetStringField(TEXT("asset_path"), AssetPath);
+        P->SetStringField(TEXT("widget_class"), TEXT("PanelWidget"));
+        P->SetStringField(TEXT("name"), TEXT("AbstractTest"));
+        P->SetStringField(TEXT("parent_name"), TEXT("Root"));
+
+        FCortexCommandResult Result = Router.Execute(TEXT("umg.add_widget"), P);
+        TestFalse(TEXT("Abstract class 'PanelWidget' should fail"), Result.bSuccess);
+    }
+
     WBP->MarkAsGarbage();
     return true;
 }
