@@ -48,6 +48,7 @@ namespace CortexErrorCodes
 	static const FString InvalidPropertyPath = TEXT("INVALID_PROPERTY_PATH");
 	static const FString InvalidPropertyValue = TEXT("INVALID_PROPERTY_VALUE");
 	static const FString NotTextWidget = TEXT("NOT_TEXT_WIDGET");
+	static const FString FontNotFound = TEXT("FONT_NOT_FOUND");
 	// Material errors
 	static const FString MaterialNotFound = TEXT("MATERIAL_NOT_FOUND");
 	static const FString InstanceNotFound = TEXT("INSTANCE_NOT_FOUND");

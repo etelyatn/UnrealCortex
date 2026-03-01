@@ -6,6 +6,7 @@
 #include "WidgetBlueprint.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/PanelWidget.h"
+#include "Components/Widget.h"
 #include "Misc/PackageName.h"
 
 namespace CortexUMGUtils
@@ -100,6 +101,23 @@ namespace CortexUMGUtils
 
     inline bool ResolvePropertyPath(UObject* Object, const FString& PropertyPath, FProperty*& OutProperty, void*& OutValuePtr)
     {
+        if (PropertyPath.StartsWith(TEXT("slot.")))
+        {
+            UWidget* Widget = Cast<UWidget>(Object);
+            if (!Widget || !Widget->Slot)
+            {
+                return false;
+            }
+
+            const FString SlotPath = PropertyPath.Mid(5);
+            if (SlotPath.IsEmpty())
+            {
+                return false;
+            }
+
+            return FCortexPropertyUtils::ResolvePropertyPath(Widget->Slot, SlotPath, OutProperty, OutValuePtr);
+        }
+
         return FCortexPropertyUtils::ResolvePropertyPath(Object, PropertyPath, OutProperty, OutValuePtr);
     }
 }

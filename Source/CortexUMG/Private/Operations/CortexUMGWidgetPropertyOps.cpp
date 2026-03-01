@@ -12,11 +12,14 @@
 #include "Components/ProgressBar.h"
 #include "Components/SizeBox.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Engine/Font.h"
+#include "Engine/FontFace.h"
 #include "ScopedTransaction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "CortexSerializer.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Misc/PackageName.h"
 
 bool FCortexUMGWidgetPropertyOps::ParseColor(const FString& ColorString, FLinearColor& OutColor)
 {
@@ -188,6 +191,38 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetColor(const TSharedPtr<FJso
     return FCortexCommandRouter::Success(Data);
 }
 
+static UObject* ResolveFontAsset(const FString& Family)
+{
+    auto TryLoadFont = [](const FString& Path) -> UObject*
+    {
+        const FString PkgName = FPackageName::ObjectPathToPackageName(Path);
+        if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+        {
+            return nullptr;
+        }
+
+        UObject* FontObj = StaticLoadObject(UObject::StaticClass(), nullptr, *Path);
+        if (FontObj && (FontObj->IsA<UFont>() || FontObj->IsA<UFontFace>()))
+        {
+            return FontObj;
+        }
+        return nullptr;
+    };
+
+    if (Family.StartsWith(TEXT("/")))
+    {
+        return TryLoadFont(Family);
+    }
+
+    UObject* Result = TryLoadFont(FString::Printf(TEXT("/Engine/EngineFonts/%s"), *Family));
+    if (Result)
+    {
+        return Result;
+    }
+
+    return TryLoadFont(FString::Printf(TEXT("/Game/Fonts/%s"), *Family));
+}
+
 FCortexCommandResult FCortexUMGWidgetPropertyOps::SetFont(const TSharedPtr<FJsonObject>& Params)
 {
     const FString AssetPath = Params->GetStringField(TEXT("asset_path"));
@@ -221,6 +256,22 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetFont(const TSharedPtr<FJson
     WBP->Modify();
 
     FSlateFontInfo FontInfo = TextBlock->GetFont();
+
+    FString Family;
+    if (Params->TryGetStringField(TEXT("family"), Family))
+    {
+        UObject* FontAsset = ResolveFontAsset(Family);
+        if (FontAsset)
+        {
+            FontInfo.FontObject = FontAsset;
+        }
+        else
+        {
+            return FCortexCommandRouter::Error(
+                CortexErrorCodes::FontNotFound,
+                FString::Printf(TEXT("Font family '%s' not found. Try an engine font name (e.g., 'Roboto') or asset path (e.g., '/Game/Fonts/MyFont')"), *Family));
+        }
+    }
 
     int32 Size = 0;
     if (Params->TryGetNumberField(TEXT("size"), Size))
@@ -267,6 +318,10 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetFont(const TSharedPtr<FJson
     if (!Typeface.IsEmpty())
     {
         FontJson->SetStringField(TEXT("typeface"), Typeface);
+    }
+    if (!Family.IsEmpty())
+    {
+        FontJson->SetStringField(TEXT("family"), Family);
     }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -1070,5 +1125,41 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::GetSchema(const TSharedPtr<FJs
     Data->SetStringField(TEXT("widget_name"), WidgetName);
     Data->SetStringField(TEXT("class"), Widget->GetClass()->GetName());
     Data->SetArrayField(TEXT("properties"), Properties);
+
+    // Slot properties are only present when the widget is parented in a panel.
+    if (Widget->Slot)
+    {
+        Data->SetStringField(TEXT("slot_type"), Widget->Slot->GetClass()->GetName());
+
+        TArray<TSharedPtr<FJsonValue>> SlotProperties;
+        for (TFieldIterator<FProperty> PropIt(Widget->Slot->GetClass()); PropIt; ++PropIt)
+        {
+            FProperty* SlotProp = *PropIt;
+            if (!SlotProp->HasAnyPropertyFlags(CPF_Edit))
+            {
+                continue;
+            }
+
+            TSharedPtr<FJsonObject> SlotPropInfo = MakeShared<FJsonObject>();
+            SlotPropInfo->SetStringField(TEXT("name"),
+                FString::Printf(TEXT("slot.%s"), *SlotProp->GetName()));
+            SlotPropInfo->SetStringField(TEXT("type"), SlotProp->GetCPPType());
+
+            const FString SlotCategory = SlotProp->GetMetaData(TEXT("Category"));
+            if (!SlotCategory.IsEmpty())
+            {
+                SlotPropInfo->SetStringField(TEXT("category"), SlotCategory);
+            }
+
+            if (SlotProp->HasMetaData(TEXT("AdvancedDisplay")))
+            {
+                SlotPropInfo->SetBoolField(TEXT("advanced"), true);
+            }
+
+            SlotProperties.Add(MakeShared<FJsonValueObject>(SlotPropInfo));
+        }
+        Data->SetArrayField(TEXT("slot_properties"), SlotProperties);
+    }
+
     return FCortexCommandRouter::Success(Data);
 }

@@ -241,19 +241,21 @@ def register_umg_composite_tools(mcp, connection: UEConnection):
             path: Directory path (e.g., "/Game/UI/")
             widgets: Hierarchical widget tree. Each widget has:
                 - class: Widget class name (CanvasPanel, VerticalBox, HorizontalBox,
-                    Overlay, TextBlock, Button, Image, ScrollBox, etc.)
+                    Overlay, TextBlock, Button, Image, ScrollBox, etc.) or WBP asset path
+                    for user widgets (e.g., "/Game/UI/WBP_HealthBar")
                 - name: Unique identifier
                 - children: Optional nested child widgets
                 - text: Set text content (TextBlock/RichTextBlock)
                 - color: Set foreground color (hex string like "#FFFFFF")
-                - font: Set font (dict with size, typeface, letter_spacing)
+                - font: Set font (dict with size, typeface, letter_spacing, family)
                 - brush: Set brush (dict with target, color, draw_as, corner_radius)
                 - padding: Set padding (number for uniform, or dict {left,top,right,bottom})
                 - anchor: Set anchor preset (string like "FullStretch", "Center")
                 - alignment: Set alignment (dict with horizontal, vertical)
                 - size: Set size (dict with width, height, size_rule)
                 - visibility: Set visibility ("Visible", "Collapsed", "Hidden")
-                - properties: Dict of generic property_path:value pairs for anything else
+                - properties: Dict of generic property_path:value pairs for anything else.
+                    Use "slot." prefix for slot properties (e.g., "slot.Padding.Left": 16)
             animations: Optional array of animation specs:
                 - name: Animation name
                 - length: Duration in seconds
