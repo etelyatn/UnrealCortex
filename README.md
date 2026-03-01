@@ -195,7 +195,7 @@ flowchart TB
     Modules <-- "Game Thread<br/>UObject access" --> UE
 ```
 
-Commands are namespaced: `{domain}.{command}` — e.g. `data.query_datatable`, `bp.create`, `graph.add_node`. CortexCore routes each command to its registered domain handler and dispatches to the Game Thread. The port is auto-discovered via `Saved/CortexPort.txt` — multiple editor instances each get their own port.
+Commands are namespaced: `{domain}.{command}` — e.g. `data.query_datatable`, `bp.create`, `graph.add_node`. CortexCore routes each command to its registered domain handler and dispatches to the Game Thread. The port is auto-discovered via `Saved/CortexPort-{PID}.txt` — multiple editor instances each get their own port.
 
 ---
 
@@ -237,29 +237,18 @@ uv sync
 
 Choose one of the two installation paths below.
 
-#### Option A — Automatic Setup with Cortex Toolkit *(Claude Code)*
+#### Option A — Automatic Setup with Cortex Toolkit *(Claude Code, Codex, Cursor)*
 
 > [!NOTE]
-> **[Cortex Toolkit](https://github.com/etelyatn/cortex-toolkit)** adds domain-specific skills, specialist agents, and project memory on top of UnrealCortex. Currently available for **Claude Code only**. It handles MCP configuration, editor auto-launch, and context injection automatically.
+> **[Cortex Toolkit](https://github.com/etelyatn/cortex-toolkit)** adds 26 domain-specific skills, 14 specialist agents, and project memory on top of UnrealCortex. It handles MCP configuration, editor auto-launch, and context injection automatically.
 
-**Install the toolkit** — browse the marketplace and pick only the domains you need:
-
-```
-/plugin marketplace add etelyatn/cortex-toolkit
-```
-
-Or install selectively from your terminal:
+**Install the toolkit:**
 
 ```bash
-claude plugin add etelyatn/cortex-toolkit/cortex-core      # Required
-claude plugin add etelyatn/cortex-toolkit/cortex-data       # Pick your domains
-claude plugin add etelyatn/cortex-toolkit/cortex-blueprint
-claude plugin add etelyatn/cortex-toolkit/cortex-ui
-claude plugin add etelyatn/cortex-toolkit/cortex-material
-claude plugin add etelyatn/cortex-toolkit/cortex-level
-claude plugin add etelyatn/cortex-toolkit/cortex-qa
-claude plugin add etelyatn/cortex-toolkit/cortex-reflect
+claude plugin add etelyatn/cortex-toolkit
 ```
+
+For Codex or Cursor setup, see the [Cortex Toolkit README](https://github.com/etelyatn/cortex-toolkit).
 
 **Initialize your project** — run `/cortex-init` inside Claude Code. It will:
 
@@ -286,7 +275,7 @@ Create `.mcp.json` at your project root:
 }
 ```
 
-Open your project in the Unreal Editor. CortexCore writes `Saved/CortexPort.txt` on startup — the MCP server discovers it automatically. If the editor is not open, MCP tool calls will return an `EDITOR_NOT_RUNNING` error. If you restart the editor, the MCP server picks up the new port file automatically.
+Open your project in the Unreal Editor. CortexCore writes `Saved/CortexPort-{PID}.txt` on startup (one per editor instance) — the MCP server discovers it automatically. If the editor is not open, MCP tool calls will return an `EDITOR_NOT_RUNNING` error. If you restart the editor, the MCP server picks up the new port file automatically. Multiple editors can run simultaneously — each gets its own port.
 
 ---
 
