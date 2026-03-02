@@ -227,6 +227,119 @@ def render_catalog(
     return "\n".join(lines)
 
 
+def _flatten_hierarchy(node: dict, rows: list[dict], depth: int = 0) -> None:
+    """Flatten hierarchy tree into rows with depth metadata."""
+    if not isinstance(node, dict):
+        return
+
+    rows.append(
+        {
+            "name": node.get("name", ""),
+            "type": node.get("type", ""),
+            "asset_path": node.get("asset_path", ""),
+            "depth": depth,
+            "parent": node.get("parent", ""),
+        }
+    )
+    for child in node.get("children", []):
+        if isinstance(child, dict):
+            _flatten_hierarchy(child, rows, depth + 1)
+
+
+def collect_blueprint_domain(connection) -> dict:
+    """Collect Blueprint class hierarchy from reflect.class_hierarchy."""
+    params = {
+        "root": "AActor",
+        "depth": 10,
+        "max_results": 5000,
+        "include_engine": False,
+        "include_blueprint": True,
+    }
+    response = connection.send_command_cached(
+        "reflect.class_hierarchy",
+        params=params,
+        ttl=3600,
+    )
+    data = _decode_data(response)
+    rows: list[dict] = []
+    _flatten_hierarchy(data, rows)
+    classes = [
+        {
+            "name": row.get("name", ""),
+            "parent": row.get("parent", ""),
+            "type": row.get("type", ""),
+            "asset_path": row.get("asset_path", ""),
+            "depth": row.get("depth", 0),
+        }
+        for row in rows
+    ]
+    return {
+        "hierarchy": data,
+        "classes": classes,
+        "blueprint_count": data.get("blueprint_count", 0),
+        "cpp_count": data.get("cpp_count", 0),
+        "project_cpp_count": data.get("project_cpp_count", 0),
+        "engine_cpp_count": data.get("engine_cpp_count", 0),
+        "project_blueprint_count": data.get("project_blueprint_count", 0),
+    }
+
+
+def render_blueprint_catalog(blueprint_data: dict) -> str:
+    """Render blueprints.md with hierarchy and summary counts."""
+    lines = ["# Blueprint Catalog", "", _render_meta("blueprints"), ""]
+
+    bp_count = blueprint_data.get("blueprint_count", 0)
+    cpp_count = blueprint_data.get("cpp_count", 0)
+    project_cpp_count = blueprint_data.get("project_cpp_count", 0)
+    engine_cpp_count = blueprint_data.get("engine_cpp_count", 0)
+    lines.append(
+        f"Summary: {bp_count} blueprints, {cpp_count} cpp classes "
+        f"({project_cpp_count} project / {engine_cpp_count} engine)."
+    )
+    lines.append("")
+
+    lines.append("## Hierarchy")
+    hierarchy = blueprint_data.get("hierarchy", {})
+    rows: list[dict] = []
+    _flatten_hierarchy(hierarchy, rows)
+    if not rows:
+        lines.append("- No hierarchy data available.")
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append("| Class | Type | Asset Path |")
+    lines.append("|-------|------|------------|")
+    for row in rows:
+        indent = "  " * int(row.get("depth", 0))
+        name = f"{indent}{row.get('name', '')}"
+        cls_type = row.get("type", "")
+        asset_path = row.get("asset_path", "")
+        lines.append(f"| `{name}` | {cls_type} | {asset_path} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def update_domain_auto_section(content: str, section_name: str, new_content: str) -> str:
+    """Replace text between marker pairs, preserving surrounding human-authored content."""
+    start_marker = f"<!-- auto:{section_name}:start -->"
+    end_marker = f"<!-- auto:{section_name}:end -->"
+
+    start_idx = content.find(start_marker)
+    end_idx = content.find(end_marker)
+
+    if start_idx == -1 or end_idx == -1:
+        if start_idx != -1 or end_idx != -1:
+            logger.warning(
+                "Found partial auto markers for '%s' — both start and end required",
+                section_name,
+            )
+        return content
+
+    before = content[: start_idx + len(start_marker)]
+    after = content[end_idx:]
+    return f"{before}\n{new_content}\n{after}"
+
+
 def _decode_data(response: dict, fallback=None) -> dict:
     """Decode the 'data' field from a TCP response.
 
@@ -707,6 +820,7 @@ def generate_schema(
 
     result = {"generated": {}, "errors": []}
     data_summary = None
+    blueprint_summary = None
 
     if domain in ("all", "data"):
         try:
@@ -742,12 +856,40 @@ def generate_schema(
             result["errors"].append(f"data: {e}")
             raise RuntimeError(f"Failed to generate data schema: {e}") from e
 
-    # Future: if domain in ("all", "blueprints"): ...
+    if domain in ("all", "blueprints"):
+        try:
+            blueprint_summary = collect_blueprint_domain(connection)
+            blueprints_md = render_blueprint_catalog(blueprint_summary)
+            atomic_write(schema_dir / "blueprints.md", blueprints_md)
+            result["generated"]["blueprints"] = str(schema_dir / "blueprints.md")
+
+            project_root = find_project_root()
+            domain_file = project_root / ".cortex" / "domains" / "blueprints.md"
+            if domain_file.exists():
+                original = domain_file.read_text(encoding="utf-8")
+                auto_stats = (
+                    f"**Blueprints:** {blueprint_summary.get('blueprint_count', 0)} total, "
+                    f"{blueprint_summary.get('project_cpp_count', 0)} project cpp, "
+                    f"{blueprint_summary.get('engine_cpp_count', 0)} engine cpp"
+                )
+                updated = update_domain_auto_section(original, "blueprint-stats", auto_stats)
+                if updated != original:
+                    atomic_write(domain_file, updated)
+                    result["generated"]["blueprint_domain"] = str(domain_file)
+        except (ConnectionError, RuntimeError) as e:
+            logger.error("Failed to generate blueprint schema: %s", e)
+            result["errors"].append(f"blueprints: {e}")
+            raise
+        except Exception as e:
+            logger.error("Failed to generate blueprint schema: %s", e)
+            result["errors"].append(f"blueprints: {e}")
+            raise RuntimeError(f"Failed to generate blueprint schema: {e}") from e
 
     # Always regenerate catalog
     catalog_md = render_catalog(
         project_name=project_name,
         data_summary=data_summary,
+        blueprint_summary=blueprint_summary,
         engine_version=engine_version,
         plugin_version=plugin_version,
     )

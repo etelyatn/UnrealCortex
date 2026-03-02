@@ -48,9 +48,9 @@ static void CollectReferencedCollections(
 	}
 
 	TArray<UMaterialParameterCollection*> SortedCollections = UniqueCollections.Array();
-	SortedCollections.Sort([](const UMaterialParameterCollection* A, const UMaterialParameterCollection* B)
+	SortedCollections.Sort([](const UMaterialParameterCollection& A, const UMaterialParameterCollection& B)
 	{
-		return A->GetPathName() < B->GetPathName();
+		return A.GetPathName() < B.GetPathName();
 	});
 
 	for (UMaterialParameterCollection* Collection : SortedCollections)

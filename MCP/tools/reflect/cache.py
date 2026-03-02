@@ -4,14 +4,13 @@ import json
 import logging
 import os
 import pathlib
-import shutil
 import time
 from cortex_mcp.tcp_client import UEConnection
 from cortex_mcp.response import format_response
 
 logger = logging.getLogger(__name__)
 
-_CACHE_DIR_NAME = "CortexReflect"
+_CACHE_DIR_NAME = "Cortex"
 
 
 def _get_cache_dir() -> pathlib.Path:
@@ -44,7 +43,7 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
     """Register cache management tools."""
 
     @mcp.tool()
-    def scan_project(root: str = "AActor") -> str:
+    def scan_project(root: str = "AActor", project_only: bool = True) -> str:
         """Full project scan — builds cache of class hierarchy and details.
 
         Call this once at session start to populate the cache.
@@ -52,6 +51,7 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
 
         Args:
             root: Root class to scan from (default 'AActor'). Use 'UObject' for everything.
+            project_only: If true, only include project classes. If false, include engine too.
 
         Returns:
             Scan summary with class count and timing.
@@ -64,23 +64,38 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
                     "root": root,
                     "depth": 10,
                     "max_results": 5000,
-                    "include_engine": False,
+                    "include_engine": not project_only,
                 },
                 ttl=3600,
             )
             elapsed = time.time() - start
             data = response.get("data", {})
 
-            # Write meta.json so reflect_cache_status can check freshness
-            cache_dir = _get_cache_dir()
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            meta = {
-                "timestamp": time.time(),
-                "class_count": data.get("total_classes", 0),
-                "cache_mode": "persistent",
-                "root": root,
-            }
-            (cache_dir / "meta.json").write_text(json.dumps(meta))
+            try:
+                cache_dir = _get_cache_dir()
+                cache_dir.mkdir(parents=True, exist_ok=True)
+
+                cache_envelope = {
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "params": {
+                        "root": root,
+                        "depth": 10,
+                        "max_results": 5000,
+                        "include_engine": not project_only,
+                    },
+                    "data": data,
+                }
+                (cache_dir / "reflect-cache.json").write_text(json.dumps(cache_envelope))
+
+                meta = {
+                    "timestamp": time.time(),
+                    "class_count": data.get("total_classes", 0),
+                    "cache_mode": "persistent",
+                    "root": root,
+                }
+                (cache_dir / "meta.json").write_text(json.dumps(meta))
+            except OSError as e:
+                logger.warning("Failed to write reflect cache file: %s", e)
 
             return format_response(
                 {
@@ -88,6 +103,9 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
                     "total_classes": data.get("total_classes", 0),
                     "cpp_count": data.get("cpp_count", 0),
                     "blueprint_count": data.get("blueprint_count", 0),
+                    "project_cpp_count": data.get("project_cpp_count", 0),
+                    "engine_cpp_count": data.get("engine_cpp_count", 0),
+                    "project_blueprint_count": data.get("project_blueprint_count", 0),
                     "scan_time_seconds": round(elapsed, 2),
                 },
                 "scan_project",
@@ -106,8 +124,27 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
             Cache metadata: cached (bool), age_seconds, class_count, stale flag.
         """
         cache_dir = _get_cache_dir()
-        meta_file = cache_dir / "meta.json"
+        cache_file = cache_dir / "reflect-cache.json"
+        if cache_file.exists():
+            try:
+                cache = json.loads(cache_file.read_text())
+                data = cache.get("data", {})
+                age = time.time() - cache_file.stat().st_mtime
+                return json.dumps(
+                    {
+                        "cached": True,
+                        "age_seconds": int(age),
+                        "class_count": data.get("total_classes", 0),
+                        "cache_mode": "persistent",
+                        "source": "file",
+                        "stale": age > 3600,
+                    },
+                    indent=2,
+                )
+            except (json.JSONDecodeError, OSError):
+                pass
 
+        meta_file = cache_dir / "meta.json"
         if not meta_file.exists():
             return json.dumps(
                 {"cached": False, "suggestion": "Run scan_project to build the cache."},
@@ -123,6 +160,7 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
                     "age_seconds": int(age),
                     "class_count": meta.get("class_count", 0),
                     "cache_mode": meta.get("cache_mode", "persistent"),
+                    "source": "meta",
                     "stale": age > 3600,
                 },
                 indent=2,
@@ -146,7 +184,10 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
         # Clear file cache
         cache_dir = _get_cache_dir()
         if cache_dir.exists():
-            shutil.rmtree(cache_dir, ignore_errors=True)
+            for file_name in ("reflect-cache.json", "meta.json"):
+                file_path = cache_dir / file_name
+                if file_path.exists():
+                    file_path.unlink()
 
         # Re-scan
         return scan_project()

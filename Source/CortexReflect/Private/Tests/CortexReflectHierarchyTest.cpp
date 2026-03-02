@@ -254,3 +254,42 @@ bool FCortexReflectHierarchyChildNameFieldTest::RunTest(const FString& Parameter
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectHierarchyCountBreakdownTest,
+	"Cortex.Reflect.Hierarchy.CountBreakdown",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectHierarchyCountBreakdownTest::RunTest(const FString& Parameters)
+{
+	FCortexReflectCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> ParamsObj = MakeShared<FJsonObject>();
+	ParamsObj->SetStringField(TEXT("root"), TEXT("AActor"));
+	ParamsObj->SetNumberField(TEXT("depth"), 2);
+	ParamsObj->SetNumberField(TEXT("max_results"), 500);
+	ParamsObj->SetBoolField(TEXT("include_engine"), true);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("class_hierarchy"), ParamsObj);
+	TestTrue(TEXT("Should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		TestTrue(TEXT("Should have project_cpp_count"), Result.Data->HasField(TEXT("project_cpp_count")));
+		TestTrue(TEXT("Should have engine_cpp_count"), Result.Data->HasField(TEXT("engine_cpp_count")));
+		TestTrue(
+			TEXT("Should have project_blueprint_count"),
+			Result.Data->HasField(TEXT("project_blueprint_count"))
+		);
+
+		const int32 ProjectCpp = Result.Data->GetIntegerField(TEXT("project_cpp_count"));
+		const int32 EngineCpp = Result.Data->GetIntegerField(TEXT("engine_cpp_count"));
+		const int32 TotalCpp = Result.Data->GetIntegerField(TEXT("cpp_count"));
+
+		TestEqual(TEXT("Project + Engine CPP should equal total CPP"), ProjectCpp + EngineCpp, TotalCpp);
+		TestTrue(TEXT("Should have some engine classes with include_engine=true"), EngineCpp > 0);
+	}
+
+	return true;
+}
