@@ -630,14 +630,22 @@ class TestGenerateSchema(unittest.TestCase):
             schema_dir = Path(tmpdir) / ".cortex" / "schema"
             result = generate_schema(conn, schema_dir, domain="data", project_name="Test")
 
-            # Verify files exist
-            self.assertTrue((schema_dir / "data.md").exists())
+            # Verify split files exist (v2 structure)
+            self.assertTrue((schema_dir / "data" / "_index.md").exists())
+            self.assertTrue((schema_dir / "data" / "structs.md").exists())
+            self.assertTrue((schema_dir / "data" / "formats.md").exists())
             self.assertTrue((schema_dir / "_catalog.md").exists())
+            # Old monolithic file should NOT be created
+            self.assertFalse((schema_dir / "data.md").exists())
 
-            # Verify data.md content
-            data_content = (schema_dir / "data.md").read_text(encoding="utf-8")
-            self.assertIn("DT_Test", data_content)
-            self.assertIn("FTestRow", data_content)
+            # Verify data/_index.md content
+            index_content = (schema_dir / "data" / "_index.md").read_text(encoding="utf-8")
+            self.assertIn("DT_Test", index_content)
+            self.assertIn("FTestRow", index_content)
+
+            # Verify data/structs.md content
+            structs_content = (schema_dir / "data" / "structs.md").read_text(encoding="utf-8")
+            self.assertIn("FTestRow", structs_content)
 
             # Verify catalog content
             catalog_content = (schema_dir / "_catalog.md").read_text(encoding="utf-8")
@@ -645,7 +653,9 @@ class TestGenerateSchema(unittest.TestCase):
             self.assertIn("DT_Test", catalog_content)
 
             # Verify return value
-            self.assertIn("data", result["generated"])
+            self.assertIn("data_index", result["generated"])
+            self.assertIn("data_structs", result["generated"])
+            self.assertIn("data_formats", result["generated"])
 
     def test_generate_fetches_engine_version(self):
         """generate_schema calls get_status for engine/plugin version."""
@@ -1222,3 +1232,95 @@ class TestRenderDataFormats(unittest.TestCase):
         result = render_data_formats({})
         self.assertIn("schema-meta", result)
         self.assertIn("domain: data-formats", result)
+
+
+class TestGenerateSchemaV2(unittest.TestCase):
+
+    def _make_connection(self):
+        conn = MagicMock()
+
+        catalog_data = {
+            "datatables": [
+                {"name": "DT_Test", "path": "/Game/Data/DT_Test.DT_Test", "row_struct": "FTestRow",
+                 "row_count": 2, "is_composite": False, "parent_tables": [], "top_fields": ["Name"]},
+            ],
+            "tag_prefixes": [{"prefix": "Test", "count": 5}],
+            "data_asset_classes": [],
+            "string_tables": [],
+        }
+        schema_data = {
+            "struct_name": "FTestRow",
+            "schema": [{"name": "Name", "type": "FName", "cpp_type": "FName"}],
+        }
+        query_data = {
+            "rows": [{"row_name": "R1", "row_data": {"Name": "TestVal"}}],
+            "total_count": 2,
+        }
+        status_data = {"engine_version": "5.6", "plugin_version": "1.0.0"}
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "get_status":
+                return {"success": True, "data": status_data}
+            if command == "data.get_data_catalog":
+                return {"success": True, "data": catalog_data}
+            elif command == "data.get_datatable_schema":
+                return {"success": True, "data": schema_data}
+            elif command == "data.query_datatable":
+                return {"success": True, "data": query_data}
+            elif command == "data.list_curve_tables":
+                return {"success": True, "data": {"curve_tables": []}}
+            return {"success": True, "data": {}}
+
+        conn.send_command.side_effect = mock_send
+        return conn
+
+    def test_generates_split_files(self):
+        conn = self._make_connection()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_dir = Path(tmpdir) / ".cortex" / "schema"
+            result = generate_schema(conn, schema_dir, domain="data", project_name="Test")
+
+            self.assertTrue((schema_dir / "data" / "_index.md").exists())
+            self.assertTrue((schema_dir / "data" / "structs.md").exists())
+            self.assertTrue((schema_dir / "data" / "formats.md").exists())
+            self.assertTrue((schema_dir / "_catalog.md").exists())
+            # Old monolithic file should NOT be created
+            self.assertFalse((schema_dir / "data.md").exists())
+
+    def test_deletes_old_data_md(self):
+        conn = self._make_connection()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_dir = Path(tmpdir) / ".cortex" / "schema"
+            schema_dir.mkdir(parents=True)
+            # Create old v1 file
+            old_file = schema_dir / "data.md"
+            old_file.write_text("old v1 content", encoding="utf-8")
+
+            generate_schema(conn, schema_dir, domain="data", project_name="Test")
+
+            self.assertFalse(old_file.exists())
+
+    def test_schema_version_is_2(self):
+        from cortex_mcp.schema_generator import SCHEMA_VERSION
+        self.assertEqual(SCHEMA_VERSION, 2)
+
+    def test_catalog_references_subdirectory(self):
+        conn = self._make_connection()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_dir = Path(tmpdir) / ".cortex" / "schema"
+            generate_schema(conn, schema_dir, domain="data", project_name="Test")
+
+            catalog = (schema_dir / "_catalog.md").read_text(encoding="utf-8")
+            self.assertIn("data/_index.md", catalog)
+            self.assertIn("data/structs.md", catalog)
+            self.assertIn("data/formats.md", catalog)
+
+    def test_result_contains_all_files(self):
+        conn = self._make_connection()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_dir = Path(tmpdir) / ".cortex" / "schema"
+            result = generate_schema(conn, schema_dir, domain="data", project_name="Test")
+
+            self.assertIn("data_index", result["generated"])
+            self.assertIn("data_structs", result["generated"])
+            self.assertIn("data_formats", result["generated"])

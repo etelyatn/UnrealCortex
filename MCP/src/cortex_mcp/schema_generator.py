@@ -10,7 +10,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _get_caller_path() -> pathlib.Path:
@@ -316,7 +316,7 @@ def render_catalog(
     data_assets = len(data_s.get("data_assets", []))
     if data_structs or data_tables or data_tags or data_assets:
         lines.append(
-            f"| data | data.md | {data_structs} | {data_tables} "
+            f"| data | data/_index.md, data/structs.md, data/formats.md | {data_structs} | {data_tables} "
             f"| {data_tags} prefixes | {data_assets} | — |"
         )
 
@@ -333,7 +333,7 @@ def render_catalog(
 
     # Data domain index
     if data_s:
-        lines.append("### data.md")
+        lines.append("### data/_index.md, data/structs.md, data/formats.md")
         lines.append("")
 
         structs = data_s.get("structs", [])
@@ -703,18 +703,24 @@ def collect_data_domain(connection, project_root: pathlib.Path | None = None) ->
             except (RuntimeError, ConnectionError) as e:
                 logger.warning("Failed to get schema for %s: %s", struct_name, e)
 
-    # 3. Get 1-2 example rows per table
+    # 3. Collect 1 example row per unique struct (not per table), skip composites
     example_rows = {}
+    seen_structs_for_examples: set[str] = set()
     for table in catalog.get("datatables", []):
+        if table.get("is_composite"):
+            continue
+        if table["row_struct"] in seen_structs_for_examples:
+            continue
         try:
             resp = connection.send_command(
                 "data.query_datatable",
-                {"table_path": table["path"], "limit": 2, "offset": 0},
+                {"table_path": table["path"], "limit": 1, "offset": 0},
             )
             query_result = _decode_data(resp)
             rows = query_result.get("rows", [])
             if rows:
-                example_rows[table["name"]] = rows[:2]
+                example_rows[table["name"]] = rows[:1]
+                seen_structs_for_examples.add(table["row_struct"])
         except (RuntimeError, ConnectionError) as e:
             logger.warning("Failed to get example rows for %s: %s", table["name"], e)
 
@@ -756,10 +762,14 @@ def collect_data_domain(connection, project_root: pathlib.Path | None = None) ->
         ],
     }
 
+    # 7. Compute format examples (1 per unique struct)
+    format_examples = collect_format_examples(catalog, example_rows)
+
     return {
         "catalog": catalog,
         "schemas": schemas,
         "example_rows": example_rows,
+        "format_examples": format_examples,
         "curve_tables": curve_tables,
         "enum_values": enum_values,
         "summary": summary,
@@ -805,16 +815,28 @@ def generate_schema(
     if domain in ("all", "data"):
         try:
             collected = collect_data_domain(connection, project_root=schema_dir.parent.parent)
-            data_md = render_data_schema(
-                catalog=collected["catalog"],
-                schemas=collected["schemas"],
-                example_rows=collected["example_rows"],
-                curve_tables=collected["curve_tables"],
-                enum_values=collected["enum_values"],
-            )
-            atomic_write(schema_dir / "data.md", data_md)
+
+            # Write data/_index.md
+            index_md = render_data_index(collected["catalog"])
+            atomic_write(schema_dir / "data" / "_index.md", index_md)
+            result["generated"]["data_index"] = str(schema_dir / "data" / "_index.md")
+
+            # Write data/structs.md
+            structs_md = render_data_structs(collected["schemas"])
+            atomic_write(schema_dir / "data" / "structs.md", structs_md)
+            result["generated"]["data_structs"] = str(schema_dir / "data" / "structs.md")
+
+            # Write data/formats.md
+            formats_md = render_data_formats(collected["format_examples"])
+            atomic_write(schema_dir / "data" / "formats.md", formats_md)
+            result["generated"]["data_formats"] = str(schema_dir / "data" / "formats.md")
+
             data_summary = collected["summary"]
-            result["generated"]["data"] = str(schema_dir / "data.md")
+
+            # Clean up old v1 monolithic file
+            old_data_md = schema_dir / "data.md"
+            if old_data_md.exists():
+                old_data_md.unlink()
         except (ConnectionError, RuntimeError) as e:
             logger.error("Failed to generate data schema: %s", e)
             result["errors"].append(f"data: {e}")
