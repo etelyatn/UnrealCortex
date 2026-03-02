@@ -963,6 +963,60 @@ class TestFilterExcludedPaths(unittest.TestCase):
         self.assertEqual(result[0]["class_name"], "DA_A")
 
 
+class TestRenderDataIndex(unittest.TestCase):
+
+    def setUp(self):
+        self.catalog = {
+            "datatables": [
+                {"name": "PT_Meds", "path": "/Game/Data/PT_Meds.PT_Meds", "row_struct": "RipProductDefinition", "row_count": 204, "is_composite": False, "parent_tables": []},
+                {"name": "PT_Organics", "path": "/Game/Data/PT_Organics.PT_Organics", "row_struct": "RipProductDefinition", "row_count": 109, "is_composite": False, "parent_tables": []},
+                {"name": "DT_SeamData", "path": "/Game/Data/DT_SeamData.DT_SeamData", "row_struct": "RipCutPointDataRow", "row_count": 3, "is_composite": False, "parent_tables": []},
+                {"name": "CPT_Products", "path": "/Game/Data/CPT_Products.CPT_Products", "row_struct": "RipProductDefinition", "row_count": 671, "is_composite": True, "parent_tables": ["/Game/Data/PT_Meds", "/Game/Data/PT_Organics"]},
+            ],
+            "tag_prefixes": [{"prefix": "Med", "count": 10}],
+            "data_asset_classes": [{"class_name": "RipRecipeAsset", "count": 5, "example_path": "/Game/Data/DA_Test"}],
+            "string_tables": [],
+        }
+
+    def test_groups_tables_by_struct(self):
+        from cortex_mcp.schema_generator import render_data_index
+        result = render_data_index(self.catalog)
+        self.assertIn("RipProductDefinition", result)
+        self.assertIn("PT_Meds", result)
+        self.assertIn("PT_Organics", result)
+
+    def test_composite_tables_separate_section(self):
+        from cortex_mcp.schema_generator import render_data_index
+        result = render_data_index(self.catalog)
+        self.assertIn("Composite", result)
+        self.assertIn("CPT_Products", result)
+        # Verify the composite source tables are shown with the arrow format
+        self.assertIn("<-", result)
+
+    def test_composites_not_in_regular_groups(self):
+        from cortex_mcp.schema_generator import render_data_index
+        result = render_data_index(self.catalog)
+        # CPT_Products should not be in the regular struct group count
+        # The struct group should list 2 tables (PT_Meds, PT_Organics), not 3
+        self.assertIn("2 tables", result)
+
+    def test_includes_tag_prefixes(self):
+        from cortex_mcp.schema_generator import render_data_index
+        result = render_data_index(self.catalog)
+        self.assertIn("Med", result)
+
+    def test_includes_data_assets(self):
+        from cortex_mcp.schema_generator import render_data_index
+        result = render_data_index(self.catalog)
+        self.assertIn("RipRecipeAsset", result)
+
+    def test_includes_meta_block(self):
+        from cortex_mcp.schema_generator import render_data_index
+        result = render_data_index(self.catalog)
+        self.assertIn("schema-meta", result)
+        self.assertIn("domain: data-index", result)
+
+
 class TestTruncateNestedFields(unittest.TestCase):
 
     def test_collapses_engine_struct_at_depth_1(self):

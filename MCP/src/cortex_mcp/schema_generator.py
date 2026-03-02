@@ -489,6 +489,65 @@ def truncate_nested_fields(
     return result
 
 
+def render_data_index(catalog: dict) -> str:
+    """Render data/_index.md — table listing grouped by struct type.
+
+    Composite tables listed separately with source tables.
+    """
+    lines = ["# Data Domain Index", "", _render_meta("data-index"), ""]
+
+    tables = catalog.get("datatables", [])
+    regular = [t for t in tables if not t.get("is_composite")]
+    composites = [t for t in tables if t.get("is_composite")]
+
+    # Group regular tables by struct
+    struct_groups: dict[str, list[dict]] = {}
+    for t in regular:
+        struct_groups.setdefault(t.get("row_struct", "Unknown"), []).append(t)
+
+    for struct_name, group in struct_groups.items():
+        total_rows = sum(t["row_count"] for t in group)
+        lines.append(f"## {struct_name} ({len(group)} tables, {total_rows} rows)")
+        table_list = " ".join(f"{t['name']}({t['row_count']})" for t in group)
+        lines.append(table_list)
+        lines.append("")
+
+    # Composite tables
+    if composites:
+        lines.append("## Composites")
+        for t in composites:
+            parents = t.get("parent_tables", [])
+            parent_names = ", ".join(p.rsplit("/", 1)[-1] for p in parents)
+            lines.append(f"{t['name']}({t['row_count']}) <- {parent_names}")
+        lines.append("")
+
+    # Tag prefixes
+    tag_prefixes = catalog.get("tag_prefixes", [])
+    if tag_prefixes:
+        lines.append("## Tags")
+        for tp in tag_prefixes:
+            lines.append(f"- {tp['prefix']} ({tp['count']})")
+        lines.append("")
+
+    # DataAsset classes
+    asset_classes = catalog.get("data_asset_classes", [])
+    if asset_classes:
+        lines.append("## DataAssets")
+        for ac in asset_classes:
+            lines.append(f"- {ac['class_name']} ({ac['count']})")
+        lines.append("")
+
+    # StringTables
+    string_tables = catalog.get("string_tables", [])
+    if string_tables:
+        lines.append("## StringTables")
+        for st in string_tables:
+            lines.append(f"- {st['name']} ({st.get('entry_count', '?')} entries)")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def collect_data_domain(connection, project_root: pathlib.Path | None = None) -> dict:
     """Collect all data domain information from a live UE editor.
 
