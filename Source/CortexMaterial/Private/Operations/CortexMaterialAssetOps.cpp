@@ -2,7 +2,9 @@
 #include "CortexMaterialModule.h"
 #include "CortexEditorUtils.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "Materials/MaterialParameterCollection.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/AssetData.h"
 #include "Dom/JsonObject.h"
@@ -16,6 +18,51 @@
 #include "ObjectTools.h"
 #include "CortexSerializer.h"
 #include "CortexBatchScope.h"
+
+namespace
+{
+static constexpr int32 SM6_MAX_COLLECTION_REFERENCES = 2;
+
+// Collect distinct MPC references from top-level material expressions.
+static void CollectReferencedCollections(
+	const UMaterial* Material,
+	TArray<TSharedPtr<FJsonValue>>& OutCollections,
+	TArray<TSharedPtr<FJsonValue>>& OutWarnings)
+{
+	if (!Material || !Material->GetEditorOnlyData())
+	{
+		return;
+	}
+
+	TSet<UMaterialParameterCollection*> UniqueCollections;
+	for (UMaterialExpression* Expr : Material->GetEditorOnlyData()->ExpressionCollection.Expressions)
+	{
+		if (const UMaterialExpressionCollectionParameter* CollectionParam =
+			Cast<UMaterialExpressionCollectionParameter>(Expr))
+		{
+			if (CollectionParam->Collection)
+			{
+				UniqueCollections.Add(CollectionParam->Collection);
+			}
+		}
+	}
+
+	for (UMaterialParameterCollection* Collection : UniqueCollections)
+	{
+		TSharedPtr<FJsonObject> ColObj = MakeShared<FJsonObject>();
+		ColObj->SetStringField(TEXT("name"), Collection->GetName());
+		ColObj->SetStringField(TEXT("asset_path"), Collection->GetPathName());
+		OutCollections.Add(MakeShared<FJsonValueObject>(ColObj));
+	}
+
+	if (UniqueCollections.Num() > SM6_MAX_COLLECTION_REFERENCES)
+	{
+		OutWarnings.Add(MakeShared<FJsonValueString>(
+			FString::Printf(TEXT("References %d MaterialParameterCollections - SM6 limit is %d"),
+				UniqueCollections.Num(), SM6_MAX_COLLECTION_REFERENCES)));
+	}
+}
+}
 
 UMaterial* FCortexMaterialAssetOps::LoadMaterial(const FString& AssetPath, FCortexCommandResult& OutError)
 {
@@ -206,6 +253,10 @@ FCortexCommandResult FCortexMaterialAssetOps::GetMaterial(const TSharedPtr<FJson
 		}
 	}
 
+	TArray<TSharedPtr<FJsonValue>> CollectionsArray;
+	TArray<TSharedPtr<FJsonValue>> Sm6Warnings;
+	CollectReferencedCollections(Material, CollectionsArray, Sm6Warnings);
+
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("name"), Material->GetName());
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
@@ -217,6 +268,8 @@ FCortexCommandResult FCortexMaterialAssetOps::GetMaterial(const TSharedPtr<FJson
 	Data->SetNumberField(TEXT("node_count"), NodeCount);
 	Data->SetObjectField(TEXT("parameter_count"), ParamCount);
 	Data->SetNumberField(TEXT("instance_count"), InstanceCount);
+	Data->SetArrayField(TEXT("referenced_collections"), CollectionsArray);
+	Data->SetArrayField(TEXT("sm6_warnings"), Sm6Warnings);
 
 	return FCortexCommandRouter::Success(Data);
 }
