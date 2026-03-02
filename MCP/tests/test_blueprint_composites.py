@@ -610,3 +610,43 @@ class TestUpdateMode:
         assert result["success"] is False
         delete_calls = [c for c in mock_connection.send_command.call_args_list if c.args[0] == "bp.delete"]
         assert delete_calls == []
+
+
+class TestBlueprintVerificationIntegration:
+    """Integration tests for blueprint verification in the composite response."""
+
+    def test_success_includes_verification(self):
+        mock_connection = MagicMock()
+        # Expected call sequence for an empty Blueprint (no nodes → no auto_layout):
+        #   Call 1: batch (create + compile + save)
+        #   Call 2: bp.compile
+        #   Call 3: bp.save
+        #   Call 4: bp.get_info  (verification readback)
+        #   Call 5: graph.list_nodes  (verification readback)
+        mock_connection.send_command.side_effect = [
+            {
+                "data": {
+                    "results": [
+                        {"index": 0, "success": True, "data": {"asset_path": "/Game/BP_Test"}},
+                    ],
+                    "total_timing_ms": 50,
+                }
+            },
+            {"data": {"success": True}},
+            {"data": {"success": True}},
+            {
+                "data": {
+                    "is_compiled": True,
+                    "variables": [],
+                    "functions": [],
+                    "graphs": [{"name": "EventGraph", "node_count": 0}],
+                }
+            },
+            {"data": {"nodes": []}},
+        ]
+
+        tool = _extract_tool(mock_connection)
+        result = json.loads(tool(name="BP_Test", path="/Game/"))
+
+        assert result["success"] is True
+        assert result["verification"]["verified"] is True

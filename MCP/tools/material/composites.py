@@ -2,7 +2,10 @@
 
 import json
 import logging
+import re
 from typing import Any
+from cortex_mcp.verification import VERIFICATION_TIMEOUT
+from cortex_mcp.verification.material import verify_material
 from cortex_mcp.tcp_client import UEConnection
 
 logger = logging.getLogger(__name__)
@@ -108,6 +111,11 @@ _PIN_MAP = {
     # LinearInterpolate (alias for Lerp — full UE class name variant)
     "LinearInterpolate": {"outputs": ["0"], "inputs": ["A", "B", "Alpha"]},
 }
+
+
+def _to_snake_case(name: str) -> str:
+    """Convert common material property names to snake_case for verifier checks."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
 
 
 def _resolve_class_name(short_name: str) -> str:
@@ -524,6 +532,55 @@ def register_material_composite_tools(mcp, connection: UEConnection):
                 "auto_layout": 1,
             },
         }
+
+        # Verification readback is informational. It must not downgrade successful creation.
+        try:
+            mat_data = connection.send_command(
+                "material.get_material",
+                {"asset_path": asset_path},
+                timeout=VERIFICATION_TIMEOUT,
+            )
+            nodes_data = connection.send_command(
+                "material.list_nodes",
+                {"asset_path": asset_path},
+                timeout=VERIFICATION_TIMEOUT,
+            )
+            connections_data = connection.send_command(
+                "material.list_connections",
+                {"asset_path": asset_path},
+                timeout=VERIFICATION_TIMEOUT,
+            )
+            mat_result = mat_data.get("data", mat_data)
+            readback = {
+                "node_count": mat_result.get("node_count", 0),
+                "blend_mode": mat_result.get("blend_mode"),
+                "shading_model": mat_result.get("shading_model"),
+                "nodes": nodes_data.get("data", nodes_data).get("nodes", []),
+                "connections": connections_data.get("data", connections_data).get("connections", []),
+            }
+            verification_spec = {
+                "nodes": nodes,
+                "connections": connections,
+                "material_properties": {
+                    _to_snake_case(key): value for key, value in (material_properties or {}).items()
+                },
+            }
+            verification_result = verify_material(verification_spec, readback)
+            response["verification"] = verification_result.to_dict()
+            if verification_result.verified is False:
+                failed_count = sum(1 for check in verification_result.checks.values() if not check.passed)
+                response["warning"] = (
+                    f"Verification failed: {failed_count} of {len(verification_result.checks)} "
+                    "checks did not pass"
+                )
+        except Exception as exc:
+            logger.warning("Material verification readback failed: %s", exc, exc_info=True)
+            response["verification"] = {
+                "verified": None,
+                "error_code": "READBACK_FAILED",
+                "error": f"Verification readback failed: {exc}",
+            }
+
         if warnings:
             response["warnings"] = warnings
 

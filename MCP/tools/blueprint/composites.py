@@ -3,6 +3,8 @@
 import json
 import logging
 from typing import Any
+from cortex_mcp.verification import VERIFICATION_TIMEOUT
+from cortex_mcp.verification.blueprint import verify_blueprint
 from cortex_mcp.tcp_client import UEConnection
 
 logger = logging.getLogger(__name__)
@@ -489,6 +491,44 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
             "pin_values_set": pin_count,
             "total_timing_ms": batch_data.get("total_timing_ms", 0),
         }
+
+        try:
+            info_data = connection.send_command(
+                "bp.get_info",
+                {"asset_path": asset_path},
+                timeout=VERIFICATION_TIMEOUT,
+            )
+            nodes_data = connection.send_command(
+                "graph.list_nodes",
+                {"asset_path": asset_path, "graph_name": graph_name},
+                timeout=VERIFICATION_TIMEOUT,
+            )
+            readback = {
+                "info": info_data.get("data", info_data),
+                "nodes": nodes_data.get("data", nodes_data).get("nodes", []),
+            }
+            verification_spec = {
+                "variables": variables,
+                "functions": functions,
+                "nodes": nodes,
+                "graph_name": graph_name,
+            }
+            verification_result = verify_blueprint(verification_spec, readback)
+            response["verification"] = verification_result.to_dict()
+            if verification_result.verified is False:
+                failed_count = sum(1 for check in verification_result.checks.values() if not check.passed)
+                response["warning"] = (
+                    f"Verification failed: {failed_count} of {len(verification_result.checks)} "
+                    "checks did not pass"
+                )
+        except Exception as exc:
+            logger.warning("Blueprint verification readback failed: %s", exc, exc_info=True)
+            response["verification"] = {
+                "verified": None,
+                "error_code": "READBACK_FAILED",
+                "error": f"Verification readback failed: {exc}",
+            }
+
         if warnings:
             response["warnings"] = warnings
 

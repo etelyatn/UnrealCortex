@@ -2,6 +2,8 @@
 
 import json
 import logging
+from cortex_mcp.verification import VERIFICATION_TIMEOUT
+from cortex_mcp.verification.umg import verify_umg
 from cortex_mcp.tcp_client import UEConnection
 
 logger = logging.getLogger(__name__)
@@ -397,6 +399,30 @@ def register_umg_composite_tools(mcp, connection: UEConnection):
             "animation_count": anim_count,
             "total_timing_ms": batch_data.get("total_timing_ms", 0),
         }
+
+        try:
+            tree_data = connection.send_command(
+                "umg.get_tree",
+                {"asset_path": asset_path},
+                timeout=VERIFICATION_TIMEOUT,
+            )
+            tree_result = tree_data.get("data", tree_data)
+            verification_result = verify_umg({"widgets": widgets}, {"tree": tree_result.get("root", {})})
+            response["verification"] = verification_result.to_dict()
+            if verification_result.verified is False:
+                failed_count = sum(1 for check in verification_result.checks.values() if not check.passed)
+                response["warning"] = (
+                    f"Verification failed: {failed_count} of {len(verification_result.checks)} "
+                    "checks did not pass"
+                )
+        except Exception as exc:
+            logger.warning("UMG verification readback failed: %s", exc, exc_info=True)
+            response["verification"] = {
+                "verified": None,
+                "error_code": "READBACK_FAILED",
+                "error": f"Verification readback failed: {exc}",
+            }
+
         if warnings:
             response["warnings"] = warnings
 
