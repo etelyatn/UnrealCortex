@@ -74,10 +74,21 @@ def _is_editor_alive(pid: int) -> bool:
             return True
 
 
+def _pid_from_port_filename(port_file: pathlib.Path) -> int:
+    """Extract PID from a CortexPort-{PID}.txt filename. Returns 0 if not parseable."""
+    stem = port_file.stem  # e.g. "CortexPort-51372"
+    if stem.startswith("CortexPort-"):
+        raw = stem[len("CortexPort-"):]
+        if raw.isdigit():
+            return int(raw)
+    return 0
+
+
 def _parse_port_file(
     port_file: pathlib.Path,
 ) -> EditorConnection | None:
     """Parse a CortexPort-{PID}.txt file into an EditorConnection."""
+    pid_from_name = _pid_from_port_filename(port_file)
     try:
         content = port_file.read_text().strip()
         if content.startswith("{"):
@@ -87,10 +98,12 @@ def _parse_port_file(
             started_at = data.get("started_at", "")
             if pid is not None:
                 pid = int(pid)
+            else:
+                pid = pid_from_name
             logger.info("Parsed port file %s: port=%d pid=%s", port_file.name, port, pid)
             return EditorConnection(
                 port=port,
-                pid=pid if pid is not None else 0,
+                pid=pid,
                 started_at=started_at,
                 port_file=port_file,
             )
@@ -98,7 +111,7 @@ def _parse_port_file(
         # Legacy plain integer format
         port = int(content)
         logger.info("Parsed legacy port file %s: port=%d", port_file.name, port)
-        return EditorConnection(port=port, pid=0, started_at="", port_file=port_file)
+        return EditorConnection(port=port, pid=pid_from_name, started_at="", port_file=port_file)
     except (ValueError, OSError, json.JSONDecodeError, KeyError) as e:
         logger.warning("Failed to read port file %s: %s", port_file, e)
         return None

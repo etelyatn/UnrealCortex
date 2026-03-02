@@ -189,7 +189,8 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
 
                 connection.disconnect()
 
-                shutdown_deadline = min(start_time + 30, start_time + timeout)
+                remaining = timeout - (time.monotonic() - start_time)
+                shutdown_deadline = time.monotonic() + min(30.0, max(0.0, remaining))
                 while time.monotonic() < shutdown_deadline:
                     if not psutil.pid_exists(current_pid):
                         break

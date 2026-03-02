@@ -16,6 +16,7 @@ from cortex_mcp.tcp_client import (
     _discover_port,
     _discover_all_editors,
     _is_editor_alive,
+    _parse_port_file,
     EditorConnection,
 )
 
@@ -85,18 +86,33 @@ class TestPortFileParsing:
             assert project_path == "C:/test.uproject"
 
     def test_parse_plain_text_port_file(self, tmp_path):
-        """Plain integer port file should still work (backward compat)."""
+        """Plain integer port file should still work; PID extracted from filename."""
         port_file = tmp_path / "Saved" / "CortexPort-4321.txt"
         port_file.parent.mkdir(parents=True)
         port_file.write_text("8742")
 
-        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}):
+        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}), patch(
+            "cortex_mcp.tcp_client._is_editor_alive", return_value=True
+        ):
             result = _discover_port()
             assert result is not None
             port, pid, project_path = result
             assert port == 8742
-            assert pid == 0
+            assert pid == 4321
             assert project_path is None
+
+    def test_parse_json_port_file_without_pid_uses_filename(self, tmp_path):
+        """JSON port file without 'pid' field should extract PID from filename."""
+        port_file = tmp_path / "Saved" / "CortexPort-9876.txt"
+        port_file.parent.mkdir(parents=True)
+        port_file.write_text(
+            '{"port":8742,"project_path":"C:/test.uproject","started_at":"2026-01-01T00:00:00Z"}'
+        )
+
+        result = _parse_port_file(port_file)
+        assert result is not None
+        assert result.port == 8742
+        assert result.pid == 9876  # from filename, not JSON
 
     def test_parse_corrupt_port_file(self, tmp_path):
         """Corrupt port file should return None."""
