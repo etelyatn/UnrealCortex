@@ -458,8 +458,6 @@ def _truncate_value(value: Any, max_items: int = 3) -> str:
             shown = ", ".join(str(v) for v in value[:max_items])
             return f"[{shown}, ...(+{len(value) - max_items} more)]"
         return json.dumps(value)
-    if isinstance(value, str):
-        return f"`{value}`"
     return f"`{value}`"
 
 
