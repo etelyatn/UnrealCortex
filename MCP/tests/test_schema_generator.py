@@ -994,6 +994,32 @@ class TestFilterDataAssetClasses(unittest.TestCase):
         self.assertEqual(quest["count"], 2)
         self.assertTrue(quest["example_path"].startswith("/Game/Data/"))
 
+    def test_removes_class_when_all_paths_excluded(self):
+        from cortex_mcp.schema_generator import filter_data_asset_classes
+        classes = [
+            {
+                "class_name": "PackAsset",
+                "count": 2,
+                "example_path": "/Game/StarterContent/DA_A",
+                "asset_paths": ["/Game/StarterContent/DA_A", "/Game/StarterContent/DA_B"],
+            },
+        ]
+        result = filter_data_asset_classes(classes, ["StarterContent"])
+        self.assertEqual(result, [])
+
+    def test_preserves_entry_when_asset_paths_absent(self):
+        from cortex_mcp.schema_generator import filter_data_asset_classes
+        classes = [
+            {
+                "class_name": "LegacyAsset",
+                "count": 5,
+                "example_path": "/Game/StarterContent/DA_Old",
+            },
+        ]
+        result = filter_data_asset_classes(classes, ["StarterContent"])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["class_name"], "LegacyAsset")
+
 
 class TestRenderDataIndex(unittest.TestCase):
 
