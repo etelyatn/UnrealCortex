@@ -84,6 +84,10 @@ def register_material_asset_tools(mcp, connection: UEConnection):
             - is_masked: Whether material uses masking
             - node_count: Number of expression nodes in material graph
             - parameter_count: Object with counts of scalar, vector, and texture parameters
+            - referenced_collections: Array of collection objects:
+              - name: Collection name
+              - asset_path: Full collection asset path
+            - sm6_warnings: Array of warning strings (empty if no issues)
         """
         try:
             params = {"asset_path": asset_path}
@@ -177,6 +181,8 @@ def register_material_asset_tools(mcp, connection: UEConnection):
             - asset_path: Full asset path
             - parent_material: Path to parent material
             - overrides: Object containing arrays of scalar, vector, and texture parameter overrides
+            - referenced_collections: Array of collection objects (name, asset_path) from parent material
+            - sm6_warnings: Array of warning strings (empty if no issues)
         """
         try:
             params = {"asset_path": asset_path}

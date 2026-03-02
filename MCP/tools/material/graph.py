@@ -51,6 +51,8 @@ def register_material_graph_tools(mcp, connection: UEConnection):
             - node_id: Node identifier
             - expression_class: Type of expression (e.g., "MaterialExpressionScalarParameter")
             - position: Object with x and y coordinates
+            - collection_path: (CollectionParameter only) Asset path of referenced MaterialParameterCollection
+            - parameter_name: (CollectionParameter only) Name of referenced parameter in the collection
             - properties: Object with node-specific properties (varies by expression type)
         """
         try:
