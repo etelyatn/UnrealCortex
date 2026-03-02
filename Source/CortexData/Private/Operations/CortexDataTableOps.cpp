@@ -1550,6 +1550,7 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 			// Group by class name
 			TMap<FString, int32> ClassCounts;
 			TMap<FString, FString> ClassExamplePath;
+			TMap<FString, TArray<FString>> ClassAssetPaths;
 			for (const FAssetData& AssetData : AssetDataList)
 			{
 				const FString PackagePath = AssetData.PackagePath.ToString();
@@ -1562,10 +1563,12 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 				}
 
 				FString ClassName = AssetData.AssetClassPath.GetAssetName().ToString();
+				const FString ObjectPath = AssetData.GetObjectPathString();
 				ClassCounts.FindOrAdd(ClassName)++;
+				ClassAssetPaths.FindOrAdd(ClassName).Add(ObjectPath);
 				if (!ClassExamplePath.Contains(ClassName))
 				{
-					ClassExamplePath.Add(ClassName, AssetData.GetObjectPathString());
+					ClassExamplePath.Add(ClassName, ObjectPath);
 				}
 			}
 
@@ -1578,6 +1581,15 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 				if (const FString* Example = ClassExamplePath.Find(Pair.Key))
 				{
 					ClassEntry->SetStringField(TEXT("example_path"), *Example);
+				}
+				if (const TArray<FString>* AssetPaths = ClassAssetPaths.Find(Pair.Key))
+				{
+					TArray<TSharedPtr<FJsonValue>> AssetPathArray;
+					for (const FString& Path : *AssetPaths)
+					{
+						AssetPathArray.Add(MakeShared<FJsonValueString>(Path));
+					}
+					ClassEntry->SetArrayField(TEXT("asset_paths"), AssetPathArray);
 				}
 				ClassArray.Add(MakeShared<FJsonValueObject>(ClassEntry));
 			}

@@ -332,6 +332,76 @@ class TestCollectDataDomain(unittest.TestCase):
         self.assertIn("DT_Items", table_names)
         self.assertNotIn("DT_StarterTable", table_names)
 
+    def test_excludes_file_filters_string_tables_and_curve_tables(self):
+        conn = MagicMock()
+
+        catalog_response = {
+            "success": True,
+            "data": {
+                "datatables": [
+                    {
+                        "name": "DT_Items",
+                        "path": "/Game/Data/DT_Items.DT_Items",
+                        "row_struct": "FItemRow",
+                        "row_count": 1,
+                        "is_composite": False,
+                        "parent_tables": [],
+                        "top_fields": ["Name"],
+                    },
+                ],
+                "tag_prefixes": [],
+                "data_asset_classes": [],
+                "string_tables": [
+                    {"name": "ST_Local", "path": "/Game/Loc/ST_Local.ST_Local", "entry_count": 10},
+                    {"name": "ST_Starter", "path": "/Game/StarterContent/ST_Starter.ST_Starter", "entry_count": 5},
+                ],
+            },
+        }
+
+        schema_response = {
+            "success": True,
+            "data": {
+                "struct_name": "FItemRow",
+                "schema": [{"name": "Name", "type": "FName", "cpp_type": "FName"}],
+            },
+        }
+
+        curve_response = {
+            "success": True,
+            "data": {
+                "curve_tables": [
+                    {"name": "CT_Local", "path": "/Game/Data/CT_Local.CT_Local", "row_count": 2},
+                    {"name": "CT_Starter", "path": "/Game/StarterContent/CT_Starter.CT_Starter", "row_count": 2},
+                ],
+            },
+        }
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "data.get_data_catalog":
+                return catalog_response
+            if command == "data.get_datatable_schema":
+                return schema_response
+            if command == "data.query_datatable":
+                return {"success": True, "data": {"rows": [], "total_count": 0}}
+            if command == "data.list_curve_tables":
+                return curve_response
+            return {"success": True, "data": {}}
+
+        conn.send_command.side_effect = mock_send
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            excludes_dir = Path(tmpdir) / ".cortex" / "config"
+            excludes_dir.mkdir(parents=True)
+            (excludes_dir / "schema_excludes.txt").write_text("StarterContent\n", encoding="utf-8")
+            result = collect_data_domain(conn, project_root=Path(tmpdir))
+
+        string_names = [s["name"] for s in result["catalog"]["string_tables"]]
+        self.assertIn("ST_Local", string_names)
+        self.assertNotIn("ST_Starter", string_names)
+        curve_names = [c["name"] for c in result["curve_tables"]]
+        self.assertIn("CT_Local", curve_names)
+        self.assertNotIn("CT_Starter", curve_names)
+
     def test_collect_extracts_enum_values(self):
         conn = MagicMock()
         catalog_resp = {
@@ -791,35 +861,31 @@ class TestDecodeData(unittest.TestCase):
 
 class TestFilterEngineTags(unittest.TestCase):
 
-    def test_filters_engine_tag_prefixes(self):
+    def test_does_not_filter_by_default(self):
         from cortex_mcp.schema_generator import filter_engine_tags
         tags = [
             {"prefix": "Game.Item", "count": 10},
             {"prefix": "EnhancedInput", "count": 50},
-            {"prefix": "InputUserSettings", "count": 30},
-            {"prefix": "Platform", "count": 20},
-            {"prefix": "Input", "count": 15},
-            {"prefix": "InputMode", "count": 5},
             {"prefix": "Player.Stats", "count": 8},
         ]
         result = filter_engine_tags(tags)
         prefixes = [t["prefix"] for t in result]
         self.assertIn("Game.Item", prefixes)
+        self.assertIn("EnhancedInput", prefixes)
         self.assertIn("Player.Stats", prefixes)
-        self.assertNotIn("EnhancedInput", prefixes)
-        self.assertNotIn("InputUserSettings", prefixes)
-        self.assertNotIn("Platform", prefixes)
-        self.assertNotIn("Input", prefixes)
-        self.assertNotIn("InputMode", prefixes)
 
-    def test_preserves_all_project_tags(self):
+    def test_filters_when_excludes_are_provided(self):
         from cortex_mcp.schema_generator import filter_engine_tags
         tags = [
+            {"prefix": "EnhancedInput", "count": 50},
+            {"prefix": "Input", "count": 15},
             {"prefix": "Ability", "count": 5},
-            {"prefix": "Status", "count": 3},
         ]
-        result = filter_engine_tags(tags)
-        self.assertEqual(len(result), 2)
+        result = filter_engine_tags(tags, excluded_prefixes={"EnhancedInput"})
+        prefixes = [t["prefix"] for t in result]
+        self.assertNotIn("EnhancedInput", prefixes)
+        self.assertIn("Input", prefixes)
+        self.assertIn("Ability", prefixes)
 
 
 class TestCatalogVersionInfo(unittest.TestCase):
@@ -896,6 +962,37 @@ class TestFilterExcludedPaths(unittest.TestCase):
         result = filter_excluded_paths(classes, ["Sci-fi_UI_Pack"], path_key="example_path")
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["class_name"], "DA_A")
+
+
+class TestFilterDataAssetClasses(unittest.TestCase):
+
+    def test_filters_asset_paths_per_class_and_recounts(self):
+        from cortex_mcp.schema_generator import filter_data_asset_classes
+        classes = [
+            {
+                "class_name": "QuestAsset",
+                "count": 3,
+                "example_path": "/Game/StarterContent/DA_Quest_A",
+                "asset_paths": [
+                    "/Game/StarterContent/DA_Quest_A",
+                    "/Game/Data/DA_Quest_B",
+                    "/Game/Data/DA_Quest_C",
+                ],
+            },
+            {
+                "class_name": "StarterOnlyAsset",
+                "count": 1,
+                "example_path": "/Game/StarterContent/DA_Only",
+                "asset_paths": ["/Game/StarterContent/DA_Only"],
+            },
+        ]
+        result = filter_data_asset_classes(classes, ["StarterContent"])
+        names = [c["class_name"] for c in result]
+        self.assertIn("QuestAsset", names)
+        self.assertNotIn("StarterOnlyAsset", names)
+        quest = next(c for c in result if c["class_name"] == "QuestAsset")
+        self.assertEqual(quest["count"], 2)
+        self.assertTrue(quest["example_path"].startswith("/Game/Data/"))
 
 
 class TestRenderDataIndex(unittest.TestCase):

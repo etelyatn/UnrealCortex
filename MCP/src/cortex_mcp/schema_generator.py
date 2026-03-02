@@ -247,22 +247,8 @@ def _decode_data(response: dict, fallback=None) -> dict:
     return raw if isinstance(raw, dict) else fallback
 
 
-# Engine tag prefixes to exclude from schema output
-ENGINE_TAG_PREFIXES = frozenset({
-    "EnhancedInput", "InputUserSettings", "Platform", "Input", "InputMode",
-})
-
-
-def filter_engine_tags(tag_prefixes: list[dict]) -> list[dict]:
-    """Remove engine-injected GameplayTag prefixes."""
-    return [tp for tp in tag_prefixes if tp.get("prefix") not in ENGINE_TAG_PREFIXES]
-
-
-def load_schema_excludes(path: pathlib.Path) -> list[str]:
-    """Load path exclusion patterns from a config file.
-
-    Each non-empty, non-comment line is a substring to match against asset paths.
-    """
+def _load_pattern_file(path: pathlib.Path) -> list[str]:
+    """Load non-empty, non-comment lines from a config file."""
     if not path.exists():
         return []
     try:
@@ -272,11 +258,67 @@ def load_schema_excludes(path: pathlib.Path) -> list[str]:
         return []
 
 
+def filter_engine_tags(
+    tag_prefixes: list[dict],
+    excluded_prefixes: set[str] | None = None,
+) -> list[dict]:
+    """Remove configured GameplayTag prefixes.
+
+    Filtering is opt-in via excluded_prefixes to avoid dropping legitimate project roots.
+    """
+    if not excluded_prefixes:
+        return tag_prefixes
+    return [tp for tp in tag_prefixes if tp.get("prefix") not in excluded_prefixes]
+
+
+def load_schema_excludes(path: pathlib.Path) -> list[str]:
+    """Load path exclusion patterns from a config file.
+
+    Each non-empty, non-comment line is a substring to match against asset paths.
+    """
+    return _load_pattern_file(path)
+
+
+def load_schema_tag_excludes(path: pathlib.Path) -> list[str]:
+    """Load tag prefix exclusions from config file."""
+    return _load_pattern_file(path)
+
+
 def filter_excluded_paths(items: list[dict], excludes: list[str], path_key: str = "path") -> list[dict]:
     """Filter items whose path field contains any exclusion pattern."""
     if not excludes:
         return items
     return [item for item in items if not any(ex in item.get(path_key, "") for ex in excludes)]
+
+
+def filter_data_asset_classes(data_asset_classes: list[dict], excludes: list[str]) -> list[dict]:
+    """Filter DataAsset class summaries using per-asset paths when available.
+
+    If asset_paths are unavailable, preserve the entry to avoid false removals.
+    """
+    if not excludes:
+        return data_asset_classes
+
+    filtered: list[dict] = []
+    for entry in data_asset_classes:
+        asset_paths = entry.get("asset_paths")
+        if isinstance(asset_paths, list):
+            included_paths = [
+                p for p in asset_paths
+                if isinstance(p, str) and not any(ex in p for ex in excludes)
+            ]
+            if not included_paths:
+                continue
+            new_entry = dict(entry)
+            new_entry["count"] = len(included_paths)
+            new_entry["example_path"] = included_paths[0]
+            new_entry["asset_paths"] = included_paths
+            filtered.append(new_entry)
+            continue
+
+        # No per-asset path list available; keep entry to avoid inaccurate dropping.
+        filtered.append(entry)
+    return filtered
 
 
 # Engine/Slate types to collapse at depth 1 (type name only, no nested fields)
@@ -501,16 +543,28 @@ def collect_data_domain(connection, project_root: pathlib.Path | None = None) ->
     # 1. Get catalog
     catalog_resp = connection.send_command("data.get_data_catalog", {})
     catalog = _decode_data(catalog_resp)
-    catalog["tag_prefixes"] = filter_engine_tags(catalog.get("tag_prefixes", []))
+    excludes: list[str] = []
+    tag_excludes: list[str] = []
+    if project_root is not None:
+        config_dir = project_root / ".cortex" / "config"
+        excludes = load_schema_excludes(config_dir / "schema_excludes.txt")
+        tag_excludes = load_schema_tag_excludes(config_dir / "schema_tag_excludes.txt")
+
+    catalog["tag_prefixes"] = filter_engine_tags(
+        catalog.get("tag_prefixes", []),
+        excluded_prefixes=set(tag_excludes),
+    )
 
     # Apply user-configured path exclusions
-    if project_root is not None:
-        excludes = load_schema_excludes(project_root / ".cortex" / "config" / "schema_excludes.txt")
+    if excludes:
         catalog["datatables"] = filter_excluded_paths(catalog.get("datatables", []), excludes)
-        catalog["data_asset_classes"] = filter_excluded_paths(
+        catalog["string_tables"] = filter_excluded_paths(
+            catalog.get("string_tables", []),
+            excludes,
+        )
+        catalog["data_asset_classes"] = filter_data_asset_classes(
             catalog.get("data_asset_classes", []),
             excludes,
-            path_key="example_path",
         )
 
     # 2. Get schemas for each unique row struct
@@ -570,6 +624,8 @@ def collect_data_domain(connection, project_root: pathlib.Path | None = None) ->
         resp = connection.send_command("data.list_curve_tables", {})
         curve_result = _decode_data(resp)
         curve_tables = curve_result.get("curve_tables", [])
+        if excludes:
+            curve_tables = filter_excluded_paths(curve_tables, excludes)
     except (RuntimeError, ConnectionError) as e:
         logger.warning("Failed to list curve tables: %s", e)
 
