@@ -70,17 +70,27 @@ def register_editor_viewport_tools(mcp, connection: UEConnection):
 
         Opens the Blueprint asset editor, navigates to the graph containing the node,
         and centers the viewport on it with selection. Use after graph_list_nodes or
-        graph_get_node when you need to direct attention to a specific node.
+        graph_get_node when you need to direct the user's attention to a specific node
+        -- for example, a node with incorrect pin values, a broken connection, or a
+        compilation error source.
+
+        This is a UI navigation tool, not a data tool:
+        - To READ node data without opening the editor, use graph_get_node.
+        - To OPEN a Blueprint without focusing a specific node, use open_asset.
+        - To FOCUS a level actor in the 3D viewport, use focus_actor.
 
         Args:
-            asset_path: Full asset path to the Blueprint.
-            node_id: The node ID to focus (from graph_list_nodes).
-            graph_name: Optional graph name. If omitted, searches all graphs for the node.
+            asset_path: Full asset path to the Blueprint
+                        (e.g., '/Game/UI/WBP_UpgradeItem.WBP_UpgradeItem').
+            node_id: The node ID to focus (e.g., 'K2Node_FormatText_0').
+                     Get IDs from graph_list_nodes.
+            graph_name: Optional graph name (e.g., 'UpdateLocked').
+                        If omitted, searches all graphs for the node.
 
         Returns:
             JSON with focused node details:
             - asset_path: The Blueprint asset path
-            - graph_name: The graph containing the node
+            - graph_name: The graph containing the node (useful when graph_name was omitted)
             - node_id: The focused node ID
             - display_name: Human-readable node title
             - node_class: The node UClass name
