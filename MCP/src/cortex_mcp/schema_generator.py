@@ -387,6 +387,25 @@ def render_catalog(
     return "\n".join(lines)
 
 
+def _decode_data(response: dict, fallback=None) -> dict:
+    """Decode the 'data' field from a TCP response.
+
+    The TCP protocol wraps payloads as JSON-encoded strings.
+    This safely handles both string and already-decoded dict responses.
+    """
+    if fallback is None:
+        fallback = {}
+    raw = response.get("data", fallback)
+    if raw is None:
+        return fallback
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return fallback
+    return raw
+
+
 def collect_data_domain(connection) -> dict:
     """Collect all data domain information from a live UE editor.
 

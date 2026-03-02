@@ -12,6 +12,7 @@ from cortex_mcp.schema_generator import render_data_schema, SCHEMA_VERSION, rend
 from cortex_mcp.schema_generator import collect_data_domain
 from cortex_mcp.schema_generator import generate_schema
 from cortex_mcp.schema_generator import read_meta_from_file
+from cortex_mcp.schema_generator import _decode_data
 
 
 class TestProjectRootDiscovery(unittest.TestCase):
@@ -638,6 +639,36 @@ class TestRenderMetaExtra(unittest.TestCase):
         result = _render_meta("data")
         self.assertIn("domain: data", result)
         self.assertNotIn("project:", result)
+
+
+class TestDecodeData(unittest.TestCase):
+    """Unit tests for _decode_data helper."""
+
+    def test_decodes_json_string(self):
+        resp = {"data": '{"key": "value"}'}
+        self.assertEqual(_decode_data(resp), {"key": "value"})
+
+    def test_passes_through_dict(self):
+        resp = {"data": {"key": "value"}}
+        self.assertEqual(_decode_data(resp), {"key": "value"})
+
+    def test_returns_fallback_on_invalid_json(self):
+        resp = {"data": "not valid json"}
+        self.assertEqual(_decode_data(resp), {})
+
+    def test_returns_fallback_on_missing_data_key(self):
+        self.assertEqual(_decode_data({}), {})
+
+    def test_returns_fallback_on_none_data(self):
+        self.assertEqual(_decode_data({"data": None}), {})
+
+    def test_returns_fallback_on_empty_string(self):
+        resp = {"data": ""}
+        self.assertEqual(_decode_data(resp), {})
+
+    def test_custom_fallback(self):
+        resp = {"data": "bad"}
+        self.assertEqual(_decode_data(resp, fallback=[]), [])
 
 
 class TestCatalogVersionInfo(unittest.TestCase):
