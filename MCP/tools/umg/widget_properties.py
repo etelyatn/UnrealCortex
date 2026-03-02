@@ -208,6 +208,9 @@ def register_widget_property_tools(mcp, connection: UEConnection):
         """Read any widget property value via reflection path.
 
         Use "slot." prefix to read slot properties (e.g., "slot.Padding.Left").
+        FText properties include an optional `string_table` sibling field
+        with {table_id, key} when backed by a StringTable.
+        The `value` field remains the resolved string.
         """
         try:
             response = connection.send_command("umg.get_property", {

@@ -16,6 +16,7 @@
 #include "ScopedTransaction.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "UObject/TextProperty.h"
 #include "UObject/SavePackage.h"
 
 namespace
@@ -277,6 +278,15 @@ FCortexCommandResult FCortexBPClassDefaultsOps::GetClassDefaults(const TSharedPt
 				SerializedValue.IsValid()
 					? SerializedValue
 					: MakeShared<FJsonValueNull>());
+			if (const FTextProperty* TextProperty = CastField<FTextProperty>(Property))
+			{
+				const TSharedPtr<FJsonObject> TextJson = FCortexSerializer::TextToJson(
+					TextProperty->GetPropertyValue(ValuePtr));
+				if (TextJson->HasField(TEXT("string_table")))
+				{
+					PropertyInfo->SetObjectField(TEXT("string_table"), TextJson->GetObjectField(TEXT("string_table")));
+				}
+			}
 
 			const FString Category = Property->GetMetaData(TEXT("Category"));
 			if (!Category.IsEmpty())
@@ -314,6 +324,15 @@ FCortexCommandResult FCortexBPClassDefaultsOps::GetClassDefaults(const TSharedPt
 						const TSharedPtr<FJsonValue> MemberValue = FCortexSerializer::PropertyToJson(MemberProp, MemberValuePtr);
 						MemberInfo->SetField(TEXT("value"),
 							MemberValue.IsValid() ? MemberValue : MakeShared<FJsonValueNull>());
+						if (const FTextProperty* MemberTextProperty = CastField<FTextProperty>(MemberProp))
+						{
+							const TSharedPtr<FJsonObject> TextJson = FCortexSerializer::TextToJson(
+								MemberTextProperty->GetPropertyValue(MemberValuePtr));
+							if (TextJson->HasField(TEXT("string_table")))
+							{
+								MemberInfo->SetObjectField(TEXT("string_table"), TextJson->GetObjectField(TEXT("string_table")));
+							}
+						}
 
 						MembersObj->SetObjectField(MemberProp->GetName(), MemberInfo);
 					}
@@ -359,6 +378,15 @@ FCortexCommandResult FCortexBPClassDefaultsOps::GetClassDefaults(const TSharedPt
 				SerializedValue.IsValid()
 					? SerializedValue
 					: MakeShared<FJsonValueNull>());
+			if (const FTextProperty* TextProperty = CastField<FTextProperty>(Property))
+			{
+				const TSharedPtr<FJsonObject> TextJson = FCortexSerializer::TextToJson(
+					TextProperty->GetPropertyValue(ValuePtr));
+				if (TextJson->HasField(TEXT("string_table")))
+				{
+					PropertyInfo->SetObjectField(TEXT("string_table"), TextJson->GetObjectField(TEXT("string_table")));
+				}
+			}
 
 			const FString Category = Property->GetMetaData(TEXT("Category"));
 			if (!Category.IsEmpty())

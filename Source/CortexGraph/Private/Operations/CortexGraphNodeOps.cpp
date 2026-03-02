@@ -1,5 +1,6 @@
 #include "Operations/CortexGraphNodeOps.h"
 #include "CortexGraphModule.h"
+#include "CortexSerializer.h"
 #include "CortexGraphLayoutOps.h"
 #include "CortexBatchScope.h"
 #include "Engine/Blueprint.h"
@@ -667,6 +668,10 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializePin(const UEdGraphPin* Pin
 	if (bDetailed)
 	{
 		PinEntry->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+		if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Text && !Pin->DefaultTextValue.IsEmpty())
+		{
+			PinEntry->SetObjectField(TEXT("default_text_value"), FCortexSerializer::TextToJson(Pin->DefaultTextValue));
+		}
 		PinEntry->SetBoolField(TEXT("is_connected"), Pin->LinkedTo.Num() > 0);
 	}
 	return PinEntry;

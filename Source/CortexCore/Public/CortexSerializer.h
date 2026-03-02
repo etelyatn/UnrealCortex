@@ -17,6 +17,9 @@ public:
 	/** Serialize a single FProperty value to a JSON value */
 	static TSharedPtr<FJsonValue> PropertyToJson(const FProperty* Property, const void* ValuePtr);
 
+	/** Serialize FText to JSON with optional string table source metadata. */
+	static TSharedPtr<FJsonObject> TextToJson(const FText& Text);
+
 	/** Deserialize JSON into a UStruct instance. Returns true on success.
 	 *  Outer is the owning UObject for instanced sub-object creation. */
 	static bool JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, const UStruct* StructType, void* StructData, UObject* Outer, TArray<FString>& OutWarnings);

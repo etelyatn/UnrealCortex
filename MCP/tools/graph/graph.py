@@ -81,6 +81,9 @@ def register_graph_tools(mcp, connection: UEConnection):
             - display_name: Display name of the node
             - position: {x, y} coordinates
             - pins: Detailed array of all input/output pins
+              Text-type pins now include `default_text_value` with:
+              - value: Resolved display string
+              - string_table: Optional {table_id, key} when backed by a StringTable
         """
         try:
             response = connection.send_command_cached("graph.get_node", {
