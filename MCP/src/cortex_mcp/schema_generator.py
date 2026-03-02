@@ -438,10 +438,16 @@ def collect_data_domain(connection) -> dict:
                     {"table_path": table["path"], "include_inherited": True},
                 )
                 schema_data = _decode_data(resp)
+                raw_schema = schema_data.get("schema", [])
+                # TCP may return schema as {"struct_name":..,"fields":[..]}
+                if isinstance(raw_schema, dict):
+                    fields = raw_schema.get("fields", [])
+                else:
+                    fields = raw_schema
                 schemas[struct_name] = {
                     "struct_name": struct_name,
                     "parent": schema_data.get("parent_struct", "FTableRowBase"),
-                    "schema": schema_data.get("schema", []),
+                    "schema": fields,
                 }
             except (RuntimeError, ConnectionError) as e:
                 logger.warning("Failed to get schema for %s: %s", struct_name, e)

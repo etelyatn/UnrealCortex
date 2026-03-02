@@ -440,6 +440,71 @@ class TestCollectDataDomainJsonStringResponse(unittest.TestCase):
         self.assertEqual(len(result["summary"]["structs"]), 1)
 
 
+class TestCollectDataDomainDictSchema(unittest.TestCase):
+    """Real TCP format: schema is a dict with struct_name and fields."""
+
+    def test_collect_handles_dict_schema_format(self):
+        """Schema response may nest fields inside a dict, not a flat list."""
+        conn = MagicMock()
+
+        catalog_data = {
+            "datatables": [
+                {
+                    "name": "DT_Test",
+                    "path": "/Game/Data/DT_Test.DT_Test",
+                    "row_struct": "FTestRow",
+                    "row_count": 3,
+                    "is_composite": False,
+                    "parent_tables": [],
+                    "top_fields": ["Name", "Value"],
+                },
+            ],
+            "tag_prefixes": [],
+            "data_asset_classes": [],
+            "string_tables": [],
+        }
+        # Real TCP format: schema is a dict, not a list
+        schema_data = {
+            "table_path": "/Game/Data/DT_Test.DT_Test",
+            "row_struct_name": "FTestRow",
+            "schema": {
+                "struct_name": "FTestRow",
+                "fields": [
+                    {"name": "Name", "type": "FName", "cpp_type": "FName"},
+                    {"name": "Value", "type": "int32", "cpp_type": "int32"},
+                ],
+            },
+        }
+        query_data = {
+            "rows": [
+                {"row_name": "Row1", "row_data": {"Name": "Test", "Value": 42}},
+            ],
+            "total_count": 3,
+        }
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "data.get_data_catalog":
+                return {"success": True, "data": catalog_data}
+            elif command == "data.get_datatable_schema":
+                return {"success": True, "data": schema_data}
+            elif command == "data.query_datatable":
+                return {"success": True, "data": query_data}
+            elif command == "data.list_curve_tables":
+                return {"success": True, "data": {"curve_tables": []}}
+            return {"success": True, "data": {}}
+
+        conn.send_command.side_effect = mock_send
+
+        result = collect_data_domain(conn)
+
+        self.assertIn("FTestRow", result["schemas"])
+        schema = result["schemas"]["FTestRow"]
+        # schema["schema"] should be a list of fields, not the raw dict
+        self.assertIsInstance(schema["schema"], list)
+        self.assertEqual(len(schema["schema"]), 2)
+        self.assertEqual(schema["schema"][0]["name"], "Name")
+
+
 class TestGenerateSchema(unittest.TestCase):
 
     def test_generate_data_writes_files(self):
