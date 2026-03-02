@@ -86,7 +86,9 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 	{
 		FIPv4Endpoint ListenEndpoint(FIPv4Address::InternalLoopback, Port);
 
-		Listener = MakeUnique<FTcpListener>(ListenEndpoint);
+		// Disable SO_REUSEADDR so bind() fails when another editor already owns this port.
+		// On Linux this can also reject TIME_WAIT ports; the auto-increment range mitigates it.
+		Listener = MakeUnique<FTcpListener>(ListenEndpoint, FTimespan::FromMilliseconds(100), false);
 		Listener->OnConnectionAccepted().BindRaw(this, &FCortexTcpServer::HandleConnectionAccepted);
 
 		if (Listener->IsActive())

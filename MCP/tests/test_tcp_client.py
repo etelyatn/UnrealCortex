@@ -2,6 +2,7 @@
 
 import socket
 from unittest.mock import MagicMock, patch, PropertyMock
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +19,7 @@ from cortex_mcp.tcp_client import (
     _is_editor_alive,
     _parse_port_file,
     EditorConnection,
+    logger as tcp_logger,
 )
 
 
@@ -80,10 +82,11 @@ class TestPortFileParsing:
         ):
             result = _discover_port()
             assert result is not None
-            port, pid, project_path = result
+            port, pid, project_path, project_name = result
             assert port == 8742
             assert pid == 1234
             assert project_path == "C:/test.uproject"
+            assert project_name == "Test"
 
     def test_parse_plain_text_port_file(self, tmp_path):
         """Plain integer port file should still work; PID extracted from filename."""
@@ -96,10 +99,11 @@ class TestPortFileParsing:
         ):
             result = _discover_port()
             assert result is not None
-            port, pid, project_path = result
+            port, pid, project_path, project_name = result
             assert port == 8742
             assert pid == 4321
             assert project_path is None
+            assert project_name == ""
 
     def test_parse_json_port_file_without_pid_uses_filename(self, tmp_path):
         """JSON port file without 'pid' field should extract PID from filename."""
@@ -142,10 +146,11 @@ class TestMultiEditorDiscovery:
         ):
             result = _discover_port()
             assert result is not None
-            port, pid, project_path = result
+            port, pid, project_path, project_name = result
             assert port == 8742
             assert pid == 1234
             assert project_path == "C:/test.uproject"
+            assert project_name == "Test"
 
     def test_skips_dead_pid(self, tmp_path):
         """Port files with dead PIDs should be skipped."""
@@ -181,6 +186,7 @@ class TestMultiEditorDiscovery:
             assert result is not None
             assert result[0] == 8742
             assert result[1] == 1000
+            assert result[3] == "Test"
 
     def test_selects_most_recent_without_env_var(self, tmp_path):
         """Without CORTEX_EDITOR_PID, selects most recent by started_at."""
@@ -201,6 +207,7 @@ class TestMultiEditorDiscovery:
             assert result is not None
             assert result[0] == 8743
             assert result[1] == 2000
+            assert result[3] == "Test"
 
     def test_discover_all_editors(self, tmp_path):
         """_discover_all_editors returns all live editors."""
@@ -220,3 +227,126 @@ class TestMultiEditorDiscovery:
             editors = _discover_all_editors()
             assert len(editors) == 2
             assert all(isinstance(e, EditorConnection) for e in editors)
+
+
+class TestProjectValidation:
+    """Tests for post-connect project name validation."""
+
+    def test_project_field_in_editor_connection(self):
+        """EditorConnection should carry project name."""
+        ec = EditorConnection(
+            port=8742, pid=1234, started_at="", port_file=Path("test.txt"), project="MyProject"
+        )
+        assert ec.project == "MyProject"
+
+    def test_project_field_defaults_to_empty(self):
+        """EditorConnection project should default to empty string."""
+        ec = EditorConnection(
+            port=8742, pid=1234, started_at="", port_file=Path("test.txt")
+        )
+        assert ec.project == ""
+
+    def test_parse_port_file_reads_project(self, tmp_path):
+        """_parse_port_file should read project field from JSON."""
+        port_file = tmp_path / "CortexPort-1234.txt"
+        port_file.write_text(
+            '{"port":8742,"pid":1234,"project":"CortexSandbox",'
+            '"project_path":"C:/test.uproject","started_at":"2026-01-01T00:00:00Z"}'
+        )
+        result = _parse_port_file(port_file)
+        assert result is not None
+        assert result.project == "CortexSandbox"
+
+    def test_discover_port_populates_expected_project(self, tmp_path):
+        """_discover_port should return project name from port file."""
+        saved = tmp_path / "Saved"
+        saved.mkdir()
+        (saved / "CortexPort-1234.txt").write_text(
+            '{"port":8742,"pid":1234,"project":"CortexSandbox",'
+            '"project_path":"C:/test.uproject","started_at":"2026-01-01T00:00:00Z"}'
+        )
+        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}), patch(
+            "cortex_mcp.tcp_client._is_editor_alive", return_value=True
+        ):
+            result = _discover_port()
+            assert result is not None
+            port, pid, project_path, project_name = result
+            assert project_name == "CortexSandbox"
+
+    def test_validate_project_logs_warning_on_mismatch(self):
+        """_validate_project should log warning when project doesn't match."""
+        conn = UEConnection(port=99999)
+        conn._expected_project = "CortexSandbox"
+
+        mock_socket = MagicMock()
+        mock_socket.recv.return_value = (
+            b'{"success":true,"data":{"project_name":"Ripper","plugin_version":"1.0.0"}}\n'
+        )
+        conn._socket = mock_socket
+
+        with patch.object(tcp_logger, "warning") as mock_warn:
+            conn._validate_project()
+            mock_warn.assert_called_once()
+            assert "Ripper" in mock_warn.call_args[0][1]
+            assert "CortexSandbox" in mock_warn.call_args[0][2]
+
+    def test_validate_project_no_warning_on_match(self):
+        """_validate_project should not warn when projects match."""
+        conn = UEConnection(port=99999)
+        conn._expected_project = "CortexSandbox"
+
+        mock_socket = MagicMock()
+        mock_socket.recv.return_value = (
+            b'{"success":true,"data":{"project_name":"CortexSandbox","plugin_version":"1.0.0"}}\n'
+        )
+        conn._socket = mock_socket
+
+        with patch.object(tcp_logger, "warning") as mock_warn:
+            conn._validate_project()
+            mock_warn.assert_not_called()
+
+    def test_validate_project_skipped_when_no_expected_project(self):
+        """_validate_project should no-op if expected project is empty."""
+        conn = UEConnection(port=99999)
+        conn._expected_project = ""
+        conn._socket = MagicMock()
+
+        conn._validate_project()
+        conn._socket.sendall.assert_not_called()
+
+    def test_validate_project_handles_connection_error_without_disconnecting(self):
+        """_validate_project should not crash or disconnect on network error."""
+        conn = UEConnection(port=99999)
+        conn._expected_project = "CortexSandbox"
+        mock_socket = MagicMock()
+        mock_socket.sendall.side_effect = BrokenPipeError("broken")
+        conn._socket = mock_socket
+
+        conn._validate_project()
+        assert conn._socket is not None
+
+    def test_connect_flow_calls_validate_with_expected_project(self):
+        """Full connect() flow should call _validate_project when expected_project is set."""
+        conn = UEConnection(port=99999)
+        conn._expected_project = "CortexSandbox"
+
+        with patch.object(conn, "_validate_project") as mock_validate, patch(
+            "socket.socket"
+        ) as mock_sock_cls, patch.object(conn, "load_file_caches"):
+            mock_sock = MagicMock()
+            mock_sock_cls.return_value = mock_sock
+            conn.connect()
+            mock_validate.assert_called_once()
+
+    def test_connect_flow_skips_validate_without_expected_project(self):
+        """Full connect() flow should skip _validate_project when expected_project is empty."""
+        conn = UEConnection(port=99999)
+        conn._expected_project = ""
+
+        with patch.object(conn, "_validate_project") as mock_validate, patch(
+            "socket.socket"
+        ) as mock_sock_cls, patch.object(conn, "load_file_caches"):
+            mock_sock = MagicMock()
+            mock_sock_cls.return_value = mock_sock
+            conn.connect()
+            mock_validate.assert_not_called()
