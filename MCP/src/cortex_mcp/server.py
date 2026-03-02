@@ -28,7 +28,6 @@ _connection = UEConnection(
     host=os.environ.get("CORTEX_HOST", "127.0.0.1"),
     port=int(_port_override) if _port_override else None,
 )
-_connection.load_file_caches()
 
 _TTL_CATALOG = 600  # 10 min
 

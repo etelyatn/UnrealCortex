@@ -495,6 +495,21 @@ FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObj
 		ProjectCppCount, ProjectBPCount
 	);
 
+	// Keep the root node in the hierarchy for context, but in project-only mode
+	// exclude an engine root class from aggregate counts.
+	if (!bIncludeEngine && !IsProjectClass(RootClass))
+	{
+		TotalCount = FMath::Max(0, TotalCount - 1);
+		if (Cast<UBlueprintGeneratedClass>(RootClass))
+		{
+			BPCount = FMath::Max(0, BPCount - 1);
+		}
+		else
+		{
+			CppCount = FMath::Max(0, CppCount - 1);
+		}
+	}
+
 	TreeNode->SetNumberField(TEXT("total_classes"), TotalCount);
 	TreeNode->SetNumberField(TEXT("cpp_count"), CppCount);
 	TreeNode->SetNumberField(TEXT("blueprint_count"), BPCount);

@@ -187,7 +187,10 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
             for file_name in ("reflect-cache.json", "meta.json"):
                 file_path = cache_dir / file_name
                 if file_path.exists():
-                    file_path.unlink()
+                    try:
+                        file_path.unlink()
+                    except OSError as e:
+                        logger.warning("Failed to delete cache file %s: %s", file_path, e)
 
         # Re-scan
         return scan_project()

@@ -293,3 +293,31 @@ bool FCortexReflectHierarchyCountBreakdownTest::RunTest(const FString& Parameter
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectHierarchyProjectOnlyCountsTest,
+	"Cortex.Reflect.Hierarchy.ProjectOnlyCounts",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectHierarchyProjectOnlyCountsTest::RunTest(const FString& Parameters)
+{
+	FCortexReflectCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> ParamsObj = MakeShared<FJsonObject>();
+	ParamsObj->SetStringField(TEXT("root"), TEXT("AActor"));
+	ParamsObj->SetNumberField(TEXT("depth"), 2);
+	ParamsObj->SetNumberField(TEXT("max_results"), 500);
+	ParamsObj->SetBoolField(TEXT("include_engine"), false);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("class_hierarchy"), ParamsObj);
+	TestTrue(TEXT("Should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		const int32 EngineCpp = Result.Data->GetIntegerField(TEXT("engine_cpp_count"));
+		TestEqual(TEXT("Project-only mode should report zero engine classes"), EngineCpp, 0);
+	}
+
+	return true;
+}
