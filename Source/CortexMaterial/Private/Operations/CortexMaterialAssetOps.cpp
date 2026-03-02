@@ -47,7 +47,13 @@ static void CollectReferencedCollections(
 		}
 	}
 
-	for (UMaterialParameterCollection* Collection : UniqueCollections)
+	TArray<UMaterialParameterCollection*> SortedCollections = UniqueCollections.Array();
+	SortedCollections.Sort([](const UMaterialParameterCollection* A, const UMaterialParameterCollection* B)
+	{
+		return A->GetPathName() < B->GetPathName();
+	});
+
+	for (UMaterialParameterCollection* Collection : SortedCollections)
 	{
 		TSharedPtr<FJsonObject> ColObj = MakeShared<FJsonObject>();
 		ColObj->SetStringField(TEXT("name"), Collection->GetName());

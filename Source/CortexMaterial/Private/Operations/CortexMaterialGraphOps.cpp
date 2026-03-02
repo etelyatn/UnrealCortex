@@ -182,8 +182,8 @@ FCortexCommandResult FCortexMaterialGraphOps::GetNode(const TSharedPtr<FJsonObje
 		if (CollectionParam->Collection)
 		{
 			Data->SetStringField(TEXT("collection_path"), CollectionParam->Collection->GetPathName());
+			Data->SetStringField(TEXT("parameter_name"), CollectionParam->ParameterName.ToString());
 		}
-		Data->SetStringField(TEXT("parameter_name"), CollectionParam->ParameterName.ToString());
 	}
 
 	return FCortexCommandRouter::Success(Data);
