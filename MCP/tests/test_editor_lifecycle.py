@@ -111,3 +111,40 @@ class TestRestartEditor:
             result = mcp.tools["restart_editor"](timeout=10)
             payload = json.loads(result)
             assert "error" in payload
+
+    @patch.dict(os.environ, {"UE_56_PATH": "C:/UE_5.6"}, clear=False)
+    def test_restart_reads_project_path_from_port_file_when_pid_unknown(self, tmp_path):
+        """project_path is read from port file when connection._pid/_project_path are None (e.g. CORTEX_PORT override)."""
+        conn = MagicMock(spec=UEConnection)
+        conn._pid = None
+        conn._project_path = None
+        conn.send_command.return_value = {"success": True, "data": {"subsystems": {"core": True}}}
+
+        saved_dir = tmp_path / "Saved"
+        saved_dir.mkdir(parents=True)
+
+        new_port_file = saved_dir / "CortexPort-5678.txt"
+
+        def _popen_side_effect(*args, **kwargs):
+            new_port_file.write_text(
+                '{"port":8743,"pid":5678,"project_path":"C:/test/Test.uproject","started_at":"2026-01-01T01:00:00Z"}'
+            )
+            return MagicMock()
+
+        # Existing port file with project_path — present before shutdown, absent after
+        existing_port_file = saved_dir / "CortexPort-1234.txt"
+        existing_port_file.write_text(
+            '{"port":8742,"project_path":"C:/test/Test.uproject","started_at":"2026-01-01T00:00:00Z"}'
+        )
+
+        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
+                patch("composites.psutil.pid_exists", return_value=False), \
+                patch("composites.subprocess.Popen", side_effect=_popen_side_effect), \
+                patch("composites.time.sleep", return_value=None):
+            mcp = MockMCP()
+            register_editor_composite_tools(mcp, conn)
+            result = mcp.tools["restart_editor"](timeout=30)
+            payload = json.loads(result)
+
+        assert payload.get("message") == "Editor restarted successfully", f"Unexpected result: {payload}"
+        assert payload["port"] == 8743
