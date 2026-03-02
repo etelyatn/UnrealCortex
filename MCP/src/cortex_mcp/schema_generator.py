@@ -498,7 +498,10 @@ def render_data_index(catalog: dict) -> str:
         lines.append("## Composites")
         for t in composites:
             parents = t.get("parent_tables", [])
-            parent_names = ", ".join(p.rsplit("/", 1)[-1] for p in parents)
+            parent_names = ", ".join(
+                p["name"] if isinstance(p, dict) else p.rsplit("/", 1)[-1]
+                for p in parents
+            )
             lines.append(f"{t['name']}({t['row_count']}) <- {parent_names}")
         lines.append("")
 
