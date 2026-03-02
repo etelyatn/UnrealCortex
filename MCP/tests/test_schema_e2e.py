@@ -66,7 +66,7 @@ class TestSchemaE2E:
             catalog_content = (schema_dir / "_catalog.md").read_text(encoding="utf-8")
 
             # Catalog should reference data subdirectory
-            assert "data/" in catalog_content
+            assert "data/_index.md" in catalog_content
 
     def test_schema_status_after_generate(self, tcp_connection):
         """Schema files should carry correct version after generation."""

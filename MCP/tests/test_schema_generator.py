@@ -1057,6 +1057,35 @@ class TestRenderDataIndex(unittest.TestCase):
         self.assertIn("schema-meta", result)
         self.assertIn("domain: data-index", result)
 
+    def test_composite_parent_tables_as_dicts(self):
+        """render_data_index handles parent_tables as list of dicts (live editor format)."""
+        from cortex_mcp.schema_generator import render_data_index
+        catalog = {
+            "datatables": [
+                {
+                    "name": "PT_Meds",
+                    "path": "/Game/Data/PT_Meds.PT_Meds",
+                    "row_struct": "FMedRow",
+                    "row_count": 10,
+                    "is_composite": False,
+                    "parent_tables": [],
+                },
+                {
+                    "name": "CPT_All",
+                    "path": "/Game/Data/CPT_All.CPT_All",
+                    "row_struct": "FMedRow",
+                    "row_count": 10,
+                    "is_composite": True,
+                    "parent_tables": [{"name": "PT_Meds", "path": "/Game/Data/PT_Meds"}],
+                },
+            ],
+            "tag_prefixes": [],
+            "data_asset_classes": [],
+            "string_tables": [],
+        }
+        result = render_data_index(catalog)
+        self.assertIn("CPT_All(10) <- PT_Meds", result)
+
 
 class TestTruncateNestedFields(unittest.TestCase):
 
