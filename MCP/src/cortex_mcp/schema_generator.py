@@ -407,6 +407,17 @@ def _decode_data(response: dict, fallback=None) -> dict:
     return raw if isinstance(raw, dict) else fallback
 
 
+# Engine tag prefixes to exclude from schema output
+ENGINE_TAG_PREFIXES = frozenset({
+    "EnhancedInput", "InputUserSettings", "Platform", "Input", "InputMode",
+})
+
+
+def filter_engine_tags(tag_prefixes: list[dict]) -> list[dict]:
+    """Remove engine-injected GameplayTag prefixes."""
+    return [tp for tp in tag_prefixes if tp.get("prefix") not in ENGINE_TAG_PREFIXES]
+
+
 def collect_data_domain(connection) -> dict:
     """Collect all data domain information from a live UE editor.
 
@@ -421,6 +432,7 @@ def collect_data_domain(connection) -> dict:
     # 1. Get catalog
     catalog_resp = connection.send_command("data.get_data_catalog", {})
     catalog = _decode_data(catalog_resp)
+    catalog["tag_prefixes"] = filter_engine_tags(catalog.get("tag_prefixes", []))
 
     # 2. Get schemas for each unique row struct
     schemas = {}

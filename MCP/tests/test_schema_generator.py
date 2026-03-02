@@ -785,6 +785,39 @@ class TestDecodeData(unittest.TestCase):
         self.assertEqual(_decode_data(resp), {})
 
 
+class TestFilterEngineTags(unittest.TestCase):
+
+    def test_filters_engine_tag_prefixes(self):
+        from cortex_mcp.schema_generator import filter_engine_tags
+        tags = [
+            {"prefix": "Game.Item", "count": 10},
+            {"prefix": "EnhancedInput", "count": 50},
+            {"prefix": "InputUserSettings", "count": 30},
+            {"prefix": "Platform", "count": 20},
+            {"prefix": "Input", "count": 15},
+            {"prefix": "InputMode", "count": 5},
+            {"prefix": "Player.Stats", "count": 8},
+        ]
+        result = filter_engine_tags(tags)
+        prefixes = [t["prefix"] for t in result]
+        self.assertIn("Game.Item", prefixes)
+        self.assertIn("Player.Stats", prefixes)
+        self.assertNotIn("EnhancedInput", prefixes)
+        self.assertNotIn("InputUserSettings", prefixes)
+        self.assertNotIn("Platform", prefixes)
+        self.assertNotIn("Input", prefixes)
+        self.assertNotIn("InputMode", prefixes)
+
+    def test_preserves_all_project_tags(self):
+        from cortex_mcp.schema_generator import filter_engine_tags
+        tags = [
+            {"prefix": "Ability", "count": 5},
+            {"prefix": "Status", "count": 3},
+        ]
+        result = filter_engine_tags(tags)
+        self.assertEqual(len(result), 2)
+
+
 class TestCatalogVersionInfo(unittest.TestCase):
 
     def test_catalog_includes_engine_plugin_version(self):
