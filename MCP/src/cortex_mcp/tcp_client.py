@@ -263,8 +263,7 @@ class UEConnection:
             sock.connect((self.host, self.port))
             sock.settimeout(_RECV_TIMEOUT)
             self._socket = sock
-            if self._expected_project:
-                self._validate_project()
+            self._validate_project()
             if not self._loaded_file_cache:
                 self.load_file_caches()
                 self._loaded_file_cache = True
@@ -519,7 +518,10 @@ class UEConnection:
                 data += chunk
 
             if data:
-                response = json.loads(data.split(b"\n", 1)[0].decode("utf-8"))
+                first_line, remainder = data.split(b"\n", 1)
+                if remainder:
+                    self._recv_buffer = remainder + self._recv_buffer
+                response = json.loads(first_line.decode("utf-8"))
                 actual_project = response.get("data", {}).get("project_name", "")
                 if actual_project and actual_project != self._expected_project:
                     logger.warning(

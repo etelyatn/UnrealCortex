@@ -338,8 +338,8 @@ class TestProjectValidation:
             conn.connect()
             mock_validate.assert_called_once()
 
-    def test_connect_flow_skips_validate_without_expected_project(self):
-        """Full connect() flow should skip _validate_project when expected_project is empty."""
+    def test_connect_flow_calls_validate_even_without_expected_project(self):
+        """Full connect() flow should always call _validate_project (it no-ops internally)."""
         conn = UEConnection(port=99999)
         conn._expected_project = ""
 
@@ -349,4 +349,4 @@ class TestProjectValidation:
             mock_sock = MagicMock()
             mock_sock_cls.return_value = mock_sock
             conn.connect()
-            mock_validate.assert_not_called()
+            mock_validate.assert_called_once()
