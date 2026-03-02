@@ -656,7 +656,7 @@ def generate_schema(
 
     if domain in ("all", "data"):
         try:
-            collected = collect_data_domain(connection, project_root=schema_dir.parent.parent)
+            collected = collect_data_domain(connection, project_root=find_project_root())
 
             # Write data/_index.md
             index_md = render_data_index(collected["catalog"])
