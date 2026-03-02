@@ -255,7 +255,7 @@ void FCortexBPSearchOps::SearchClassDefaults(
 		return;
 	}
 
-	for (TFieldIterator<FProperty> It(GeneratedClass, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+	for (TFieldIterator<FProperty> It(GeneratedClass); It; ++It)
 	{
 		if (OutMatches.Num() >= MaxResults)
 		{
@@ -338,7 +338,7 @@ void FCortexBPSearchOps::SearchWidgetTree(
 	int32 MaxResults,
 	TArray<FSearchMatch>& OutMatches)
 {
-	static UClass* WidgetBlueprintClass = FindObject<UClass>(nullptr, TEXT("/Script/UMGEditor.WidgetBlueprint"));
+	UClass* WidgetBlueprintClass = FindObject<UClass>(nullptr, TEXT("/Script/UMGEditor.WidgetBlueprint"));
 	if (!WidgetBlueprintClass || !Blueprint->IsA(WidgetBlueprintClass))
 	{
 		return;
