@@ -16,7 +16,23 @@ from material.composites import (
     _resolve_class_name,
     _validate_spec,
     _build_batch_commands,
+    register_material_composite_tools,
 )
+
+
+def _extract_tool(connection):
+    """Register composite tool with a mock MCP and return create_material_graph."""
+    tools = {}
+
+    class MockMCP:
+        def tool(self):
+            def decorator(fn):
+                tools[fn.__name__] = fn
+                return fn
+            return decorator
+
+    register_material_composite_tools(MockMCP(), connection)
+    return tools["create_material_graph"]
 
 
 class TestClassNameResolution:
@@ -528,3 +544,66 @@ class TestMaterialProperties:
         assert commands[3]["command"] == "material.set_node_property"
         assert commands[3]["params"]["node_id"] == "$steps[2].data.node_id"
         assert commands[3]["params"]["property_name"] == "Texture"
+
+
+class TestMaterialVerificationIntegration:
+    """Integration tests for material verification in the composite response."""
+
+    def test_success_includes_verification(self):
+        mock_connection = MagicMock()
+        mock_connection.send_command.side_effect = [
+            {
+                "data": {
+                    "results": [
+                        {"index": 0, "success": True, "data": {"asset_path": "/Game/M_Test"}},
+                        {"index": 1, "success": True, "data": {"node_id": "Expr_0"}},
+                    ],
+                    "total_timing_ms": 50,
+                }
+            },
+            {"data": {"success": True}},
+            {"data": {"node_count": 2, "blend_mode": "Opaque", "shading_model": "DefaultLit"}},
+            {"data": {"nodes": [
+                {"expression_class": "MaterialExpressionConstant"},
+                {"expression_class": "MaterialExpressionMaterialOutput"},
+            ]}},
+            {"data": {"connections": []}},
+        ]
+
+        tool = _extract_tool(mock_connection)
+        result = json.loads(tool(
+            name="M_Test",
+            path="/Game/",
+            nodes=[{"name": "C", "class": "Constant"}],
+            connections=[],
+        ))
+
+        assert result["success"] is True
+        assert result["verification"]["verified"] is True
+
+    def test_readback_failure_degrades_gracefully(self):
+        mock_connection = MagicMock()
+        mock_connection.send_command.side_effect = [
+            {
+                "data": {
+                    "results": [
+                        {"index": 0, "success": True, "data": {"asset_path": "/Game/M_Test"}},
+                    ],
+                    "total_timing_ms": 5,
+                }
+            },
+            {"data": {"success": True}},
+            ConnectionError("TCP dropped"),
+        ]
+
+        tool = _extract_tool(mock_connection)
+        result = json.loads(tool(
+            name="M_Test",
+            path="/Game/",
+            nodes=[],
+            connections=[],
+        ))
+
+        assert result["success"] is True
+        assert result["verification"]["verified"] is None
+        assert result["verification"]["error_code"] == "READBACK_FAILED"
