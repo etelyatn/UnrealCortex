@@ -444,3 +444,44 @@ class TestCompileFailureHandling:
         ))
 
         assert result["success"] is True
+
+
+class TestUMGVerificationIntegration:
+    """Integration tests for UMG verification in the composite response."""
+
+    def test_success_includes_verification(self):
+        mock_connection = MagicMock()
+        mock_connection.send_command.side_effect = [
+            {
+                "data": {
+                    "results": [
+                        {"index": 0, "success": True, "data": {"asset_path": "/Game/WBP_Test"}},
+                        {"index": 1, "success": True, "data": {}},
+                    ],
+                    "total_timing_ms": 20,
+                }
+            },
+            {"data": {"success": True}},
+            {"data": {"success": True}},
+            {"data": {"root": {
+                "name": "RootCanvas",
+                "class": "CanvasPanel",
+                "children": [
+                    {"name": "Title", "class": "TextBlock", "children": []},
+                ],
+            }}},
+        ]
+
+        tool = _extract_tool(mock_connection)
+        result = json.loads(tool(
+            name="WBP_Test",
+            path="/Game/UI/",
+            widgets=[{
+                "class": "CanvasPanel",
+                "name": "RootCanvas",
+                "children": [{"class": "TextBlock", "name": "Title"}],
+            }],
+        ))
+
+        assert result["success"] is True
+        assert result["verification"]["verified"] is True

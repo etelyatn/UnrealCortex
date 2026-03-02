@@ -1363,8 +1363,8 @@ bool FCortexMaterialAutoLayoutNoOverlapTest::RunTest(const FString& Parameters)
 		return Id;
 	};
 
-	const FString SceneTex1 = AddNode(TEXT("MaterialExpressionSceneTexture"));
-	const FString SceneTex2 = AddNode(TEXT("MaterialExpressionSceneTexture"));
+	const FString SceneTex1 = AddNode(TEXT("MaterialExpressionTextureCoordinate"));
+	const FString SceneTex2 = AddNode(TEXT("MaterialExpressionTextureCoordinate"));
 	const FString Constant = AddNode(TEXT("MaterialExpressionConstant"));
 
 	auto Connect = [&](const FString& SourceNode, int32 SourceOutput, const FString& TargetInput)

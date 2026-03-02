@@ -1,9 +1,36 @@
 #include "Misc/AutomationTest.h"
 #include "CortexCommandRouter.h"
 #include "CortexLevelCommandHandler.h"
+#include "HAL/PlatformFileManager.h"
+#include "Misc/PackageName.h"
 
 namespace
 {
+    bool TryGetCurrentLevelFilename(FCortexCommandRouter& Router, FString& OutFilename)
+    {
+        const FCortexCommandResult InfoResult = Router.Execute(TEXT("level.get_info"), MakeShared<FJsonObject>());
+        if (!InfoResult.bSuccess || !InfoResult.Data.IsValid())
+        {
+            return false;
+        }
+
+        FString LevelPath;
+        if (!InfoResult.Data->TryGetStringField(TEXT("level_path"), LevelPath) || LevelPath.IsEmpty())
+        {
+            return false;
+        }
+
+        OutFilename = FPackageName::LongPackageNameToFilename(LevelPath, FPackageName::GetMapPackageExtension());
+        return !OutFilename.IsEmpty();
+    }
+
+    bool CanOpenForExclusiveWrite(const FString& Filename)
+    {
+        IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+        TUniquePtr<IFileHandle> Handle(PlatformFile.OpenWrite(*Filename, false, false));
+        return Handle.IsValid();
+    }
+
     FCortexCommandRouter CreateLevelRouterStreaming()
     {
         FCortexCommandRouter Router;
@@ -67,6 +94,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexLevelSaveLevelTest::RunTest(const FString& Parameters)
 {
     FCortexCommandRouter Router = CreateLevelRouterStreaming();
+
+    FString LevelFilename;
+    if (TryGetCurrentLevelFilename(Router, LevelFilename) && !CanOpenForExclusiveWrite(LevelFilename))
+    {
+        AddInfo(FString::Printf(TEXT("Skipping save_level: map file is locked by another process (%s)"), *LevelFilename));
+        return true;
+    }
+
     FCortexCommandResult Result = Router.Execute(TEXT("level.save_level"), MakeShared<FJsonObject>());
     TestTrue(TEXT("save_level should succeed"), Result.bSuccess);
 
@@ -89,6 +124,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexLevelSaveAllTest::RunTest(const FString& Parameters)
 {
     FCortexCommandRouter Router = CreateLevelRouterStreaming();
+
+    FString LevelFilename;
+    if (TryGetCurrentLevelFilename(Router, LevelFilename) && !CanOpenForExclusiveWrite(LevelFilename))
+    {
+        AddInfo(FString::Printf(TEXT("Skipping save_all: map file is locked by another process (%s)"), *LevelFilename));
+        return true;
+    }
+
     FCortexCommandResult Result = Router.Execute(TEXT("level.save_all"), MakeShared<FJsonObject>());
     TestTrue(TEXT("save_all should succeed"), Result.bSuccess);
 

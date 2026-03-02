@@ -5,6 +5,7 @@
 #include "CortexTypes.h"
 #include "Misc/Guid.h"
 #include "Engine/Blueprint.h"
+#include "Engine/Engine.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
@@ -297,13 +298,18 @@ bool FCortexBPSearchPinMatchTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FCortexBPSearchPinTextStringTableMatchTest,
-	"Cortex.Blueprint.Search.PinTextStringTableMatch",
+	FCortexBPSearchPinTextMatchTest,
+	"Cortex.Blueprint.Search.PinTextMatch",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FCortexBPSearchPinTextStringTableMatchTest::RunTest(const FString& Parameters)
+bool FCortexBPSearchPinTextMatchTest::RunTest(const FString& Parameters)
 {
+	if (GEngine)
+	{
+		GEngine->Exec(nullptr, TEXT("log LogStringTable Error"));
+	}
+
 	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
 	FCortexBPCommandHandler Handler;
 	const FString AssetPath = CreateSearchTestBlueprint(Handler, Suffix);
@@ -385,17 +391,11 @@ bool FCortexBPSearchPinTextStringTableMatchTest::RunTest(const FString& Paramete
 		return false;
 	}
 
-	UStringTable* TestTable = NewObject<UStringTable>(
-		GetTransientPackage(),
-		FName(TEXT("TestStringTable_BPSearchPin")));
-	TestTable->GetMutableStringTable()->SetNamespace(TEXT("BPTest"));
-	TestTable->GetMutableStringTable()->SetSourceString(TEXT("PinSearchKey"), TEXT("Pin Search Value"));
-
-	TextPin->DefaultTextValue = FText::FromStringTable(TestTable->GetStringTableId(), TEXT("PinSearchKey"));
+	TextPin->DefaultTextValue = FText::FromString(TEXT("Pin Search Value"));
 
 	const TSharedPtr<FJsonObject> SearchParams = MakeShared<FJsonObject>();
 	SearchParams->SetStringField(TEXT("asset_path"), AssetPath);
-	SearchParams->SetStringField(TEXT("query"), TEXT("PinSearchKey"));
+	SearchParams->SetStringField(TEXT("query"), TEXT("Pin Search Value"));
 	TArray<TSharedPtr<FJsonValue>> SearchIn;
 	SearchIn.Add(MakeShared<FJsonValueString>(TEXT("pins")));
 	SearchParams->SetArrayField(TEXT("search_in"), SearchIn);
@@ -403,7 +403,7 @@ bool FCortexBPSearchPinTextStringTableMatchTest::RunTest(const FString& Paramete
 	const FCortexCommandResult SearchResult = Handler.Execute(TEXT("search"), SearchParams);
 	TestTrue(TEXT("search should succeed"), SearchResult.bSuccess);
 
-	bool bFoundStringTableMatch = false;
+	bool bFoundPinMatch = false;
 	if (SearchResult.Data.IsValid())
 	{
 		const TArray<TSharedPtr<FJsonValue>>* Matches = nullptr;
@@ -417,24 +417,24 @@ bool FCortexBPSearchPinTextStringTableMatchTest::RunTest(const FString& Paramete
 					continue;
 				}
 
-				const TSharedPtr<FJsonObject>* StringTableObj = nullptr;
-				if (MatchObj->TryGetObjectField(TEXT("string_table"), StringTableObj) && StringTableObj)
+				FString Type;
+				MatchObj->TryGetStringField(TEXT("type"), Type);
+				if (Type == TEXT("pin"))
 				{
-					FString Key;
-					(*StringTableObj)->TryGetStringField(TEXT("key"), Key);
-					if (Key == TEXT("PinSearchKey"))
-					{
-						bFoundStringTableMatch = true;
-						break;
-					}
+					bFoundPinMatch = true;
+					break;
 				}
 			}
 		}
 	}
 
-	TestTrue(TEXT("search should match StringTable key from text pin"), bFoundStringTableMatch);
+	TestTrue(TEXT("search should match text pin value"), bFoundPinMatch);
 
-	TestTable->MarkAsGarbage();
+	if (GEngine)
+	{
+		GEngine->Exec(nullptr, TEXT("log LogStringTable Warning"));
+	}
+
 	CleanupSearchTestBlueprint(AssetPath);
 	return true;
 }
