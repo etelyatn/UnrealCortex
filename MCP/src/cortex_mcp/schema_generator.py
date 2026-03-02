@@ -419,7 +419,7 @@ def collect_data_domain(connection) -> dict:
     """
     # 1. Get catalog
     catalog_resp = connection.send_command("data.get_data_catalog", {})
-    catalog = catalog_resp.get("data", {})
+    catalog = _decode_data(catalog_resp)
 
     # 2. Get schemas for each unique row struct
     schemas = {}
@@ -436,7 +436,7 @@ def collect_data_domain(connection) -> dict:
                     "data.get_datatable_schema",
                     {"table_path": table["path"], "include_inherited": True},
                 )
-                schema_data = resp.get("data", {})
+                schema_data = _decode_data(resp)
                 schemas[struct_name] = {
                     "struct_name": struct_name,
                     "parent": schema_data.get("parent_struct", "FTableRowBase"),
@@ -453,7 +453,8 @@ def collect_data_domain(connection) -> dict:
                 "data.query_datatable",
                 {"table_path": table["path"], "limit": 2, "offset": 0},
             )
-            rows = resp.get("data", {}).get("rows", [])
+            query_result = _decode_data(resp)
+            rows = query_result.get("rows", [])
             if rows:
                 example_rows[table["name"]] = rows[:2]
         except (RuntimeError, ConnectionError) as e:
@@ -463,7 +464,8 @@ def collect_data_domain(connection) -> dict:
     curve_tables = []
     try:
         resp = connection.send_command("data.list_curve_tables", {})
-        curve_tables = resp.get("data", {}).get("curve_tables", [])
+        curve_result = _decode_data(resp)
+        curve_tables = curve_result.get("curve_tables", [])
     except (RuntimeError, ConnectionError) as e:
         logger.warning("Failed to list curve tables: %s", e)
 
