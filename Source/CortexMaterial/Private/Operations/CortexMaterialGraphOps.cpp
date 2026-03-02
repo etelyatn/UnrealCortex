@@ -3,6 +3,8 @@
 #include "CortexMaterialModule.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
+#include "Materials/MaterialExpressionCollectionParameter.h"
+#include "Materials/MaterialParameterCollection.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "ScopedTransaction.h"
@@ -173,6 +175,16 @@ FCortexCommandResult FCortexMaterialGraphOps::GetNode(const TSharedPtr<FJsonObje
 	Position->SetNumberField(TEXT("x"), Expression->MaterialExpressionEditorX);
 	Position->SetNumberField(TEXT("y"), Expression->MaterialExpressionEditorY);
 	Data->SetObjectField(TEXT("position"), Position);
+
+	if (const UMaterialExpressionCollectionParameter* CollectionParam =
+		Cast<UMaterialExpressionCollectionParameter>(Expression))
+	{
+		if (CollectionParam->Collection)
+		{
+			Data->SetStringField(TEXT("collection_path"), CollectionParam->Collection->GetPathName());
+		}
+		Data->SetStringField(TEXT("parameter_name"), CollectionParam->ParameterName.ToString());
+	}
 
 	return FCortexCommandRouter::Success(Data);
 }

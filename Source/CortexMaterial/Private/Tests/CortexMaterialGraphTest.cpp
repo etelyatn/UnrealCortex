@@ -169,6 +169,99 @@ bool FCortexMaterialGetNodeTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialGetNodeCollectionParamTest,
+	"Cortex.Material.Graph.GetNode.CollectionParameter",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialGetNodeCollectionParamTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestGetNodeCP_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_GetNodeCP_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	const FString MpcName = FString::Printf(TEXT("MPC_Test_%s"), *Suffix);
+	const FString MpcDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_MPC_%s"), *Suffix);
+
+	FCortexMaterialCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> CreateMpcParams = MakeShared<FJsonObject>();
+	CreateMpcParams->SetStringField(TEXT("asset_path"), MpcDir);
+	CreateMpcParams->SetStringField(TEXT("name"), MpcName);
+	FCortexCommandResult MpcResult = Handler.Execute(TEXT("create_collection"), CreateMpcParams);
+	TestTrue(TEXT("create_collection should succeed"), MpcResult.bSuccess);
+
+	FString MpcPath;
+	if (MpcResult.Data.IsValid())
+	{
+		MpcResult.Data->TryGetStringField(TEXT("asset_path"), MpcPath);
+	}
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionCollectionParameter"));
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+	TestTrue(TEXT("add_node should succeed"), AddResult.bSuccess);
+
+	FString NodeId;
+	if (AddResult.Data.IsValid())
+	{
+		AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+	}
+
+	{
+		TSharedPtr<FJsonObject> GetParams = MakeShared<FJsonObject>();
+		GetParams->SetStringField(TEXT("asset_path"), MatPath);
+		GetParams->SetStringField(TEXT("node_id"), NodeId);
+		FCortexCommandResult NoColResult = Handler.Execute(TEXT("get_node"), GetParams);
+		TestTrue(TEXT("get_node should succeed (no collection)"), NoColResult.bSuccess);
+		if (NoColResult.Data.IsValid())
+		{
+			TestFalse(TEXT("collection_path should NOT exist when no collection assigned"),
+				NoColResult.Data->HasField(TEXT("collection_path")));
+		}
+	}
+
+	TSharedPtr<FJsonObject> SetPropParams = MakeShared<FJsonObject>();
+	SetPropParams->SetStringField(TEXT("asset_path"), MatPath);
+	SetPropParams->SetStringField(TEXT("node_id"), NodeId);
+	SetPropParams->SetStringField(TEXT("property_name"), TEXT("Collection"));
+	SetPropParams->SetStringField(TEXT("value"), MpcPath);
+	FCortexCommandResult SetResult = Handler.Execute(TEXT("set_node_property"), SetPropParams);
+	TestTrue(TEXT("set_node_property Collection should succeed"), SetResult.bSuccess);
+
+	TSharedPtr<FJsonObject> GetParams = MakeShared<FJsonObject>();
+	GetParams->SetStringField(TEXT("asset_path"), MatPath);
+	GetParams->SetStringField(TEXT("node_id"), NodeId);
+	FCortexCommandResult Result = Handler.Execute(TEXT("get_node"), GetParams);
+
+	TestTrue(TEXT("get_node should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		FString CollectionPath;
+		Result.Data->TryGetStringField(TEXT("collection_path"), CollectionPath);
+		TestFalse(TEXT("collection_path should be populated"), CollectionPath.IsEmpty());
+		TestTrue(TEXT("collection_path should contain MPC path"), CollectionPath.Contains(MpcName));
+		TestTrue(TEXT("parameter_name field should exist"), Result.Data->HasField(TEXT("parameter_name")));
+	}
+
+	UObject* LoadedMat = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedMat) LoadedMat->MarkAsGarbage();
+
+	UObject* LoadedMpc = LoadObject<UObject>(nullptr, *MpcPath);
+	if (LoadedMpc) LoadedMpc->MarkAsGarbage();
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexMaterialRemoveNodeTest,
 	"Cortex.Material.Graph.RemoveNode",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
