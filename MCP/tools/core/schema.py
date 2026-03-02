@@ -78,6 +78,8 @@ def register_schema_tools(mcp, connection: UEConnection):
             })
 
         domains = {}
+
+        # Scan root-level domain files (v1 layout)
         for md_file in schema_dir.glob("*.md"):
             if md_file.name.startswith("_") or md_file.name == "README.md":
                 continue
@@ -97,6 +99,31 @@ def register_schema_tools(mcp, connection: UEConnection):
                     "file": md_file.name,
                     "generated": "unknown",
                     "error": "No meta block found",
+                }
+
+        # Scan subdirectories (v2 layout)
+        for subdir in schema_dir.iterdir():
+            if not subdir.is_dir() or subdir.name.startswith("_"):
+                continue
+            domain_name = subdir.name
+            files = {}
+            oldest_generated = None
+            for md_file in sorted(subdir.glob("*.md")):
+                meta = read_meta_from_file(md_file)
+                if meta:
+                    files[md_file.name] = meta.get("generated", "unknown")
+                    gen = meta.get("generated")
+                    if oldest_generated is None or (gen and gen < oldest_generated):
+                        oldest_generated = gen
+            if files:
+                first_file = next(iter(sorted(subdir.glob("*.md"))))
+                first_meta = read_meta_from_file(first_file)
+                version = int(first_meta.get("schema_version", "0")) if first_meta else 0
+                domains[domain_name] = {
+                    "files": files,
+                    "generated": oldest_generated or "unknown",
+                    "schema_version": version,
+                    "version_current": version == SCHEMA_VERSION,
                 }
 
         catalog_meta = read_meta_from_file(schema_dir / "_catalog.md")

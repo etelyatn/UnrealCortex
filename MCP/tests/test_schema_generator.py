@@ -1355,3 +1355,33 @@ class TestGenerateSchemaV2(unittest.TestCase):
             self.assertIn("data_index", result["generated"])
             self.assertIn("data_structs", result["generated"])
             self.assertIn("data_formats", result["generated"])
+
+
+class TestSchemaStatusV2(unittest.TestCase):
+
+    def test_status_detects_v2_subdirectory(self):
+        """schema_status should detect data/ subdirectory structure."""
+        # This is an integration test — we test the read_meta_from_file path
+        # since schema_status depends on the MCP server wrapper
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_dir = Path(tmpdir) / ".cortex" / "schema"
+            data_dir = schema_dir / "data"
+            data_dir.mkdir(parents=True)
+
+            # Write v2 files with meta blocks
+            from cortex_mcp.schema_generator import _render_meta
+            (data_dir / "_index.md").write_text(
+                f"# Index\n\n{_render_meta('data-index')}\n",
+                encoding="utf-8",
+            )
+            (data_dir / "structs.md").write_text(
+                f"# Structs\n\n{_render_meta('data-structs')}\n",
+                encoding="utf-8",
+            )
+
+            # Verify meta can be read from subdirectory files
+            from cortex_mcp.schema_generator import read_meta_from_file
+            meta = read_meta_from_file(data_dir / "_index.md")
+            self.assertIsNotNone(meta)
+            self.assertEqual(meta["domain"], "data-index")
+            self.assertEqual(meta["schema_version"], "2")
