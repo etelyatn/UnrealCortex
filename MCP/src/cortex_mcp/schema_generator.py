@@ -387,6 +387,25 @@ def render_catalog(
     return "\n".join(lines)
 
 
+def _decode_data(response: dict, fallback=None) -> dict:
+    """Decode the 'data' field from a TCP response.
+
+    The TCP protocol wraps payloads as JSON-encoded strings.
+    This safely handles both string and already-decoded dict responses.
+    """
+    if fallback is None:
+        fallback = {}
+    raw = response.get("data", fallback)
+    if raw is None:
+        return fallback
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return fallback
+    return raw
+
+
 def collect_data_domain(connection) -> dict:
     """Collect all data domain information from a live UE editor.
 
@@ -400,7 +419,7 @@ def collect_data_domain(connection) -> dict:
     """
     # 1. Get catalog
     catalog_resp = connection.send_command("data.get_data_catalog", {})
-    catalog = catalog_resp.get("data", {})
+    catalog = _decode_data(catalog_resp)
 
     # 2. Get schemas for each unique row struct
     schemas = {}
@@ -417,7 +436,7 @@ def collect_data_domain(connection) -> dict:
                     "data.get_datatable_schema",
                     {"table_path": table["path"], "include_inherited": True},
                 )
-                schema_data = resp.get("data", {})
+                schema_data = _decode_data(resp)
                 schemas[struct_name] = {
                     "struct_name": struct_name,
                     "parent": schema_data.get("parent_struct", "FTableRowBase"),
@@ -434,7 +453,8 @@ def collect_data_domain(connection) -> dict:
                 "data.query_datatable",
                 {"table_path": table["path"], "limit": 2, "offset": 0},
             )
-            rows = resp.get("data", {}).get("rows", [])
+            query_result = _decode_data(resp)
+            rows = query_result.get("rows", [])
             if rows:
                 example_rows[table["name"]] = rows[:2]
         except (RuntimeError, ConnectionError) as e:
@@ -444,7 +464,8 @@ def collect_data_domain(connection) -> dict:
     curve_tables = []
     try:
         resp = connection.send_command("data.list_curve_tables", {})
-        curve_tables = resp.get("data", {}).get("curve_tables", [])
+        curve_result = _decode_data(resp)
+        curve_tables = curve_result.get("curve_tables", [])
     except (RuntimeError, ConnectionError) as e:
         logger.warning("Failed to list curve tables: %s", e)
 
@@ -512,7 +533,7 @@ def generate_schema(
     if not engine_version or not plugin_version:
         try:
             status = connection.send_command("get_status", {})
-            status_data = status.get("data", status)
+            status_data = _decode_data(status)
             if not engine_version:
                 engine_version = status_data.get("engine_version", "")
             if not plugin_version:

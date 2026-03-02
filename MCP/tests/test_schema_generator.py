@@ -12,6 +12,7 @@ from cortex_mcp.schema_generator import render_data_schema, SCHEMA_VERSION, rend
 from cortex_mcp.schema_generator import collect_data_domain
 from cortex_mcp.schema_generator import generate_schema
 from cortex_mcp.schema_generator import read_meta_from_file
+from cortex_mcp.schema_generator import _decode_data
 
 
 class TestProjectRootDiscovery(unittest.TestCase):
@@ -377,6 +378,68 @@ class TestCollectDataDomain(unittest.TestCase):
         self.assertEqual(result["enum_values"]["EItemQuality"], ["Common", "Rare", "Epic"])
 
 
+class TestCollectDataDomainJsonStringResponse(unittest.TestCase):
+    """Reproduce bug: TCP protocol returns data as JSON string, not dict."""
+
+    def test_collect_handles_json_string_data_field(self):
+        """collect_data_domain must decode JSON-string 'data' fields."""
+        conn = MagicMock()
+
+        catalog_data = {
+            "datatables": [
+                {
+                    "name": "DT_Test",
+                    "path": "/Game/Data/DT_Test.DT_Test",
+                    "row_struct": "FTestRow",
+                    "row_count": 3,
+                    "is_composite": False,
+                    "parent_tables": [],
+                    "top_fields": ["Name", "Value"],
+                },
+            ],
+            "tag_prefixes": [{"prefix": "Test", "count": 5}],
+            "data_asset_classes": [
+                {"class_name": "TestAsset", "count": 1, "example_path": "/Game/DA_Test"},
+            ],
+            "string_tables": [],
+        }
+        schema_data = {
+            "struct_name": "FTestRow",
+            "schema": [
+                {"name": "Name", "type": "FName", "cpp_type": "FName"},
+                {"name": "Value", "type": "int32", "cpp_type": "int32"},
+            ],
+        }
+        query_data = {
+            "rows": [
+                {"row_name": "Row1", "row_data": {"Name": "Test", "Value": 42}},
+            ],
+            "total_count": 3,
+        }
+        curve_data = {"curve_tables": []}
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "data.get_data_catalog":
+                return {"success": True, "data": json.dumps(catalog_data)}
+            elif command == "data.get_datatable_schema":
+                return {"success": True, "data": json.dumps(schema_data)}
+            elif command == "data.query_datatable":
+                return {"success": True, "data": json.dumps(query_data)}
+            elif command == "data.list_curve_tables":
+                return {"success": True, "data": json.dumps(curve_data)}
+            return {"success": True, "data": "{}"}
+
+        conn.send_command.side_effect = mock_send
+
+        result = collect_data_domain(conn)
+
+        self.assertIn("catalog", result)
+        self.assertEqual(len(result["catalog"]["datatables"]), 1)
+        self.assertIn("FTestRow", result["schemas"])
+        self.assertIn("DT_Test", result["example_rows"])
+        self.assertEqual(len(result["summary"]["structs"]), 1)
+
+
 class TestGenerateSchema(unittest.TestCase):
 
     def test_generate_data_writes_files(self):
@@ -490,6 +553,37 @@ class TestGenerateSchema(unittest.TestCase):
             self.assertIn("engine: 5.6", catalog_content)
             self.assertIn("plugin: 1.2.0", catalog_content)
 
+    def test_generate_handles_json_string_status(self):
+        """get_status may also return JSON-string data field."""
+        conn = MagicMock()
+
+        status_data = {"engine_version": "5.6", "plugin_version": "1.3.0"}
+        catalog_data = {
+            "datatables": [],
+            "tag_prefixes": [],
+            "data_asset_classes": [],
+            "string_tables": [],
+        }
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "get_status":
+                return {"success": True, "data": json.dumps(status_data)}
+            if command == "data.get_data_catalog":
+                return {"success": True, "data": json.dumps(catalog_data)}
+            if command == "data.list_curve_tables":
+                return {"success": True, "data": json.dumps({"curve_tables": []})}
+            return {"success": True, "data": "{}"}
+
+        conn.send_command.side_effect = mock_send
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_dir = Path(tmpdir) / ".cortex" / "schema"
+            generate_schema(conn, schema_dir, domain="data", project_name="Test")
+
+            catalog_content = (schema_dir / "_catalog.md").read_text(encoding="utf-8")
+            self.assertIn("engine: 5.6", catalog_content)
+            self.assertIn("plugin: 1.3.0", catalog_content)
+
     def test_generate_raises_when_data_domain_unavailable(self):
         """Connection errors during required domain generation should fail hard."""
         conn = MagicMock()
@@ -576,6 +670,36 @@ class TestRenderMetaExtra(unittest.TestCase):
         result = _render_meta("data")
         self.assertIn("domain: data", result)
         self.assertNotIn("project:", result)
+
+
+class TestDecodeData(unittest.TestCase):
+    """Unit tests for _decode_data helper."""
+
+    def test_decodes_json_string(self):
+        resp = {"data": '{"key": "value"}'}
+        self.assertEqual(_decode_data(resp), {"key": "value"})
+
+    def test_passes_through_dict(self):
+        resp = {"data": {"key": "value"}}
+        self.assertEqual(_decode_data(resp), {"key": "value"})
+
+    def test_returns_fallback_on_invalid_json(self):
+        resp = {"data": "not valid json"}
+        self.assertEqual(_decode_data(resp), {})
+
+    def test_returns_fallback_on_missing_data_key(self):
+        self.assertEqual(_decode_data({}), {})
+
+    def test_returns_fallback_on_none_data(self):
+        self.assertEqual(_decode_data({"data": None}), {})
+
+    def test_returns_fallback_on_empty_string(self):
+        resp = {"data": ""}
+        self.assertEqual(_decode_data(resp), {})
+
+    def test_custom_fallback(self):
+        resp = {"data": "bad"}
+        self.assertEqual(_decode_data(resp, fallback=[]), [])
 
 
 class TestCatalogVersionInfo(unittest.TestCase):
