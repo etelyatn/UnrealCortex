@@ -377,6 +377,68 @@ class TestCollectDataDomain(unittest.TestCase):
         self.assertEqual(result["enum_values"]["EItemQuality"], ["Common", "Rare", "Epic"])
 
 
+class TestCollectDataDomainJsonStringResponse(unittest.TestCase):
+    """Reproduce bug: TCP protocol returns data as JSON string, not dict."""
+
+    def test_collect_handles_json_string_data_field(self):
+        """collect_data_domain must decode JSON-string 'data' fields."""
+        conn = MagicMock()
+
+        catalog_data = {
+            "datatables": [
+                {
+                    "name": "DT_Test",
+                    "path": "/Game/Data/DT_Test.DT_Test",
+                    "row_struct": "FTestRow",
+                    "row_count": 3,
+                    "is_composite": False,
+                    "parent_tables": [],
+                    "top_fields": ["Name", "Value"],
+                },
+            ],
+            "tag_prefixes": [{"prefix": "Test", "count": 5}],
+            "data_asset_classes": [
+                {"class_name": "TestAsset", "count": 1, "example_path": "/Game/DA_Test"},
+            ],
+            "string_tables": [],
+        }
+        schema_data = {
+            "struct_name": "FTestRow",
+            "schema": [
+                {"name": "Name", "type": "FName", "cpp_type": "FName"},
+                {"name": "Value", "type": "int32", "cpp_type": "int32"},
+            ],
+        }
+        query_data = {
+            "rows": [
+                {"row_name": "Row1", "row_data": {"Name": "Test", "Value": 42}},
+            ],
+            "total_count": 3,
+        }
+        curve_data = {"curve_tables": []}
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "data.get_data_catalog":
+                return {"success": True, "data": json.dumps(catalog_data)}
+            elif command == "data.get_datatable_schema":
+                return {"success": True, "data": json.dumps(schema_data)}
+            elif command == "data.query_datatable":
+                return {"success": True, "data": json.dumps(query_data)}
+            elif command == "data.list_curve_tables":
+                return {"success": True, "data": json.dumps(curve_data)}
+            return {"success": True, "data": "{}"}
+
+        conn.send_command.side_effect = mock_send
+
+        result = collect_data_domain(conn)
+
+        self.assertIn("catalog", result)
+        self.assertEqual(len(result["catalog"]["datatables"]), 1)
+        self.assertIn("FTestRow", result["schemas"])
+        self.assertIn("DT_Test", result["example_rows"])
+        self.assertEqual(len(result["summary"]["structs"]), 1)
+
+
 class TestGenerateSchema(unittest.TestCase):
 
     def test_generate_data_writes_files(self):
