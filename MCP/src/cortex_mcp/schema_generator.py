@@ -548,6 +548,44 @@ def render_data_index(catalog: dict) -> str:
     return "\n".join(lines)
 
 
+def _compact_field(field: dict, indent: int = 2) -> list[str]:
+    """Render a field in compact notation: `Name: Type (default: X)`."""
+    prefix = " " * indent
+    type_name = field.get("type", field.get("cpp_type", "unknown"))
+    parts = [f"{prefix}- {field.get('name', '<unknown>')}: {type_name}"]
+    if field.get("default_value"):
+        parts[0] += f" (default: {field['default_value']})"
+    if field.get("enum_values"):
+        vals = ", ".join(field["enum_values"])
+        parts[0] += f" [{vals}]"
+    if field.get("element_type"):
+        elem = field["element_type"]
+        if isinstance(elem, dict):
+            parts[0] += f"<{elem.get('type', elem.get('cpp_type', ''))}>"
+    lines = parts
+    if field.get("fields"):
+        for sub in field["fields"]:
+            lines.extend(_compact_field(sub, indent + 2))
+    return lines
+
+
+def render_data_structs(schemas: dict[str, dict]) -> str:
+    """Render data/structs.md — struct field definitions with depth limiting."""
+    lines = ["# Data Struct Schemas", "", _render_meta("data-structs"), ""]
+
+    for struct_name, schema_data in schemas.items():
+        parent = schema_data.get("parent", "FTableRowBase")
+        lines.append(f"## {struct_name} (extends {parent})")
+        raw_fields = schema_data.get("schema", [])
+        # Apply depth limiting before rendering
+        fields = truncate_nested_fields(raw_fields, max_depth=3, engine_max_depth=1)
+        for field in fields:
+            lines.extend(_compact_field(field))
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def collect_data_domain(connection, project_root: pathlib.Path | None = None) -> dict:
     """Collect all data domain information from a live UE editor.
 

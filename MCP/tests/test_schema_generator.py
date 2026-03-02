@@ -1084,3 +1084,64 @@ class TestTruncateNestedFields(unittest.TestCase):
         l1 = result[0]["fields"][0]
         l2 = l1["fields"][0]
         self.assertNotIn("fields", l2)  # L2's children (L3) cut at depth 3
+
+
+class TestRenderDataStructs(unittest.TestCase):
+
+    def setUp(self):
+        self.schemas = {
+            "FTestRow": {
+                "struct_name": "FTestRow",
+                "parent": "FTableRowBase",
+                "schema": [
+                    {"name": "ItemName", "type": "FName"},
+                    {"name": "Price", "type": "int32", "default_value": "0"},
+                    {"name": "Tag", "type": "FGameplayTag"},
+                    {"name": "Brush", "type": "SlateBrush", "fields": [
+                        {"name": "TintColor", "type": "SlateColor", "fields": [
+                            {"name": "R", "type": "float"},
+                        ]},
+                    ]},
+                ],
+            },
+        }
+
+    def test_renders_struct_with_fields(self):
+        from cortex_mcp.schema_generator import render_data_structs
+        result = render_data_structs(self.schemas)
+        self.assertIn("FTestRow", result)
+        self.assertIn("ItemName: FName", result)
+        self.assertIn("Price: int32", result)
+
+    def test_engine_struct_collapsed(self):
+        from cortex_mcp.schema_generator import render_data_structs
+        result = render_data_structs(self.schemas)
+        self.assertIn("Brush: SlateBrush", result)
+        # Should NOT contain nested TintColor fields
+        self.assertNotIn("TintColor", result)
+
+    def test_includes_default_values(self):
+        from cortex_mcp.schema_generator import render_data_structs
+        result = render_data_structs(self.schemas)
+        self.assertIn("default: 0", result)
+
+    def test_includes_meta_block(self):
+        from cortex_mcp.schema_generator import render_data_structs
+        result = render_data_structs(self.schemas)
+        self.assertIn("schema-meta", result)
+        self.assertIn("domain: data-structs", result)
+
+    def test_includes_enum_values(self):
+        from cortex_mcp.schema_generator import render_data_structs
+        schemas = {
+            "FEnumRow": {
+                "struct_name": "FEnumRow",
+                "parent": "FTableRowBase",
+                "schema": [
+                    {"name": "Quality", "type": "EQuality", "enum_values": ["Common", "Rare"]},
+                ],
+            },
+        }
+        result = render_data_structs(schemas)
+        self.assertIn("Common", result)
+        self.assertIn("Rare", result)
