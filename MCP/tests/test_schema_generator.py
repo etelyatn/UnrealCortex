@@ -553,6 +553,37 @@ class TestGenerateSchema(unittest.TestCase):
             self.assertIn("engine: 5.6", catalog_content)
             self.assertIn("plugin: 1.2.0", catalog_content)
 
+    def test_generate_handles_json_string_status(self):
+        """get_status may also return JSON-string data field."""
+        conn = MagicMock()
+
+        status_data = {"engine_version": "5.6", "plugin_version": "1.3.0"}
+        catalog_data = {
+            "datatables": [],
+            "tag_prefixes": [],
+            "data_asset_classes": [],
+            "string_tables": [],
+        }
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "get_status":
+                return {"success": True, "data": json.dumps(status_data)}
+            if command == "data.get_data_catalog":
+                return {"success": True, "data": json.dumps(catalog_data)}
+            if command == "data.list_curve_tables":
+                return {"success": True, "data": json.dumps({"curve_tables": []})}
+            return {"success": True, "data": "{}"}
+
+        conn.send_command.side_effect = mock_send
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_dir = Path(tmpdir) / ".cortex" / "schema"
+            generate_schema(conn, schema_dir, domain="data", project_name="Test")
+
+            catalog_content = (schema_dir / "_catalog.md").read_text(encoding="utf-8")
+            self.assertIn("engine: 5.6", catalog_content)
+            self.assertIn("plugin: 1.3.0", catalog_content)
+
     def test_generate_raises_when_data_domain_unavailable(self):
         """Connection errors during required domain generation should fail hard."""
         conn = MagicMock()

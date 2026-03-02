@@ -533,7 +533,7 @@ def generate_schema(
     if not engine_version or not plugin_version:
         try:
             status = connection.send_command("get_status", {})
-            status_data = status.get("data", status)
+            status_data = _decode_data(status)
             if not engine_version:
                 engine_version = status_data.get("engine_version", "")
             if not plugin_version:
