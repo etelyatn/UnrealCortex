@@ -33,6 +33,9 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
             - class: Generated class name
             - parent_class: Parent class name
             - properties: Object mapping property names to type, value, category, and defined_in
+              FText properties include an optional `string_table` sibling field
+              with {table_id, key} when backed by a StringTable.
+              The `value` field remains the resolved string.
             - count: Number of properties returned
         """
         try:

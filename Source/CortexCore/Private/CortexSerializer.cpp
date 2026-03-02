@@ -9,9 +9,28 @@
 #include "UObject/SoftObjectPath.h"
 #include "Dom/JsonValue.h"
 #include "Misc/PackageName.h"
+#include "Internationalization/Text.h"
 #include "UObject/UObjectGlobals.h"
 
 TMap<const UScriptStruct*, TArray<UScriptStruct*>> FCortexSerializer::SubtypeCache;
+
+TSharedPtr<FJsonObject> FCortexSerializer::TextToJson(const FText& Text)
+{
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("value"), Text.ToString());
+
+	FName TableId;
+	FString Key;
+	if (FTextInspector::GetTableIdAndKey(Text, TableId, Key))
+	{
+		TSharedPtr<FJsonObject> StringTableObject = MakeShared<FJsonObject>();
+		StringTableObject->SetStringField(TEXT("table_id"), TableId.ToString());
+		StringTableObject->SetStringField(TEXT("key"), Key);
+		Result->SetObjectField(TEXT("string_table"), StringTableObject);
+	}
+
+	return Result;
+}
 
 TSharedPtr<FJsonObject> FCortexSerializer::StructToJson(const UStruct* StructType, const void* StructData)
 {

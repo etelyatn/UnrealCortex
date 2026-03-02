@@ -20,6 +20,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Misc/PackageName.h"
+#include "UObject/TextProperty.h"
 
 bool FCortexUMGWidgetPropertyOps::ParseColor(const FString& ColorString, FLinearColor& OutColor)
 {
@@ -1072,6 +1073,15 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::GetProperty(const TSharedPtr<F
     Data->SetStringField(TEXT("widget_name"), WidgetName);
     Data->SetStringField(TEXT("property_path"), PropertyPath);
     Data->SetField(TEXT("value"), JsonValue.IsValid() ? JsonValue : MakeShared<FJsonValueNull>());
+    if (const FTextProperty* TextProperty = CastField<FTextProperty>(Property))
+    {
+        const TSharedPtr<FJsonObject> TextJson = FCortexSerializer::TextToJson(
+            TextProperty->GetPropertyValue(ValuePtr));
+        if (TextJson->HasField(TEXT("string_table")))
+        {
+            Data->SetObjectField(TEXT("string_table"), TextJson->GetObjectField(TEXT("string_table")));
+        }
+    }
     Data->SetStringField(TEXT("type"), Property->GetCPPType());
     return FCortexCommandRouter::Success(Data);
 }
