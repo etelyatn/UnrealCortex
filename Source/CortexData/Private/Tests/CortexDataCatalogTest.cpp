@@ -8,6 +8,7 @@
 #include "CortexTcpServer.h"
 #include "CortexCommandRouter.h"
 #include "CortexDataCommandHandler.h"
+#include "Operations/CortexDataTableOps.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
@@ -188,6 +189,112 @@ bool FCortexDataCatalogTest::RunTest(const FString& Parameters)
 	SocketSubsystem->DestroySocket(ClientSocket);
 	Server.Stop();
 	TestFalse(TEXT("Server should report not running after stop"), Server.IsRunning());
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataCatalogNoEngineAssetsTest,
+	"Cortex.Data.Catalog.NoEngineAssets",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter
+)
+
+bool FCortexDataCatalogNoEngineAssetsTest::RunTest(const FString& Parameters)
+{
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	FCortexCommandResult Result = FCortexDataTableOps::GetDataCatalog(Params);
+
+	TestTrue(TEXT("GetDataCatalog succeeds"), Result.bSuccess);
+
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		AddError(TEXT("GetDataCatalog returned no data"));
+		return false;
+	}
+
+	// Check DataAsset example_path starts with /Game/
+	const TArray<TSharedPtr<FJsonValue>>* AssetArray = nullptr;
+	if (Result.Data->TryGetArrayField(TEXT("data_asset_classes"), AssetArray))
+	{
+		for (const TSharedPtr<FJsonValue>& Entry : *AssetArray)
+		{
+			const TSharedPtr<FJsonObject>* EntryObj = nullptr;
+			if (Entry->TryGetObject(EntryObj))
+			{
+				FString ExamplePath;
+				if ((*EntryObj)->TryGetStringField(TEXT("example_path"), ExamplePath))
+				{
+					TestTrue(
+						FString::Printf(TEXT("DataAsset example_path starts with /Game/: %s"), *ExamplePath),
+						ExamplePath.StartsWith(TEXT("/Game/"))
+					);
+				}
+			}
+		}
+	}
+
+	// Check StringTable paths start with /Game/
+	const TArray<TSharedPtr<FJsonValue>>* StringArray = nullptr;
+	if (Result.Data->TryGetArrayField(TEXT("string_tables"), StringArray))
+	{
+		for (const TSharedPtr<FJsonValue>& Entry : *StringArray)
+		{
+			const TSharedPtr<FJsonObject>* EntryObj = nullptr;
+			if (Entry->TryGetObject(EntryObj))
+			{
+				FString Path;
+				if ((*EntryObj)->TryGetStringField(TEXT("path"), Path))
+				{
+					TestTrue(
+						FString::Printf(TEXT("StringTable path starts with /Game/: %s"), *Path),
+						Path.StartsWith(TEXT("/Game/"))
+					);
+				}
+			}
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataCatalogNoEngineTablesTest,
+	"Cortex.Data.Catalog.NoEngineDataTables",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter
+)
+
+bool FCortexDataCatalogNoEngineTablesTest::RunTest(const FString& Parameters)
+{
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	FCortexCommandResult Result = FCortexDataTableOps::GetDataCatalog(Params);
+
+	TestTrue(TEXT("GetDataCatalog succeeds"), Result.bSuccess);
+
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		AddError(TEXT("GetDataCatalog returned no data"));
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* DatatablesArray = nullptr;
+	TestTrue(TEXT("Has datatables array"), Result.Data->TryGetArrayField(TEXT("datatables"), DatatablesArray));
+
+	if (DatatablesArray != nullptr)
+	{
+		TestTrue(TEXT("DataTables array is non-empty (CortexSandbox has tables in Content/Data/)"), DatatablesArray->Num() > 0);
+		for (const TSharedPtr<FJsonValue>& Entry : *DatatablesArray)
+		{
+			const TSharedPtr<FJsonObject>* EntryObj = nullptr;
+			if (Entry->TryGetObject(EntryObj))
+			{
+				FString Path = (*EntryObj)->GetStringField(TEXT("path"));
+				TestTrue(
+					FString::Printf(TEXT("DataTable path starts with /Game/: %s"), *Path),
+					Path.StartsWith(TEXT("/Game/"))
+				);
+			}
+		}
+	}
 
 	return true;
 }

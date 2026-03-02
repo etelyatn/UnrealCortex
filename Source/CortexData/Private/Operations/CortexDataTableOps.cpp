@@ -1434,42 +1434,65 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 	{
 		TArray<TSharedPtr<FJsonValue>> DatatablesArray;
 
-		for (TObjectIterator<UDataTable> It; It; ++It)
+		IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+		if (AssetRegistry != nullptr)
 		{
-			UDataTable* DataTable = *It;
-			if (DataTable == nullptr)
+			FARFilter Filter;
+			Filter.ClassPaths.Add(UDataTable::StaticClass()->GetClassPathName());
+			Filter.bRecursiveClasses = true;
+			Filter.PackagePaths.Add(FName(TEXT("/Game")));
+			Filter.bRecursivePaths = true;
+
+			TArray<FAssetData> AssetDataList;
+			AssetRegistry->GetAssets(Filter, AssetDataList);
+
+			for (const FAssetData& AssetData : AssetDataList)
 			{
-				continue;
-			}
-
-			TSharedRef<FJsonObject> EntryJson = MakeShared<FJsonObject>();
-			EntryJson->SetStringField(TEXT("name"), DataTable->GetName());
-			EntryJson->SetStringField(TEXT("path"), DataTable->GetPathName());
-
-			const UScriptStruct* RowStruct = DataTable->GetRowStruct();
-			EntryJson->SetStringField(TEXT("row_struct"), RowStruct ? RowStruct->GetName() : TEXT("None"));
-			EntryJson->SetNumberField(TEXT("row_count"), DataTable->GetRowMap().Num());
-
-			const UCompositeDataTable* CompositeTable = Cast<UCompositeDataTable>(DataTable);
-			EntryJson->SetBoolField(TEXT("is_composite"), CompositeTable != nullptr);
-			if (CompositeTable != nullptr)
-			{
-				EntryJson->SetArrayField(TEXT("parent_tables"), GetParentTablesJsonArray(CompositeTable));
-			}
-
-			// top_fields: first 8 field names from the row struct
-			if (RowStruct != nullptr)
-			{
-				TArray<TSharedPtr<FJsonValue>> FieldNamesArray;
-				int32 FieldCount = 0;
-				for (TFieldIterator<FProperty> PropIt(RowStruct); PropIt && FieldCount < 8; ++PropIt, ++FieldCount)
+				// Skip internal engine subpaths under /Game/
+				const FString PackagePath = AssetData.PackagePath.ToString();
+				if (PackagePath.Contains(TEXT("__ExternalActors__"))
+					|| PackagePath.Contains(TEXT("__ExternalObjects__"))
+					|| PackagePath.Contains(TEXT("/Developers/"))
+					|| PackagePath.Contains(TEXT("/Collections/")))
 				{
-					FieldNamesArray.Add(MakeShared<FJsonValueString>(PropIt->GetName()));
+					continue;
 				}
-				EntryJson->SetArrayField(TEXT("top_fields"), FieldNamesArray);
-			}
 
-			DatatablesArray.Add(MakeShared<FJsonValueObject>(EntryJson));
+				UDataTable* DataTable = Cast<UDataTable>(AssetData.GetAsset());
+				if (DataTable == nullptr)
+				{
+					continue;
+				}
+
+				TSharedRef<FJsonObject> EntryJson = MakeShared<FJsonObject>();
+				EntryJson->SetStringField(TEXT("name"), DataTable->GetName());
+				EntryJson->SetStringField(TEXT("path"), DataTable->GetPathName());
+
+				const UScriptStruct* RowStruct = DataTable->GetRowStruct();
+				EntryJson->SetStringField(TEXT("row_struct"), RowStruct ? RowStruct->GetName() : TEXT("None"));
+				EntryJson->SetNumberField(TEXT("row_count"), DataTable->GetRowMap().Num());
+
+				const UCompositeDataTable* CompositeTable = Cast<UCompositeDataTable>(DataTable);
+				EntryJson->SetBoolField(TEXT("is_composite"), CompositeTable != nullptr);
+				if (CompositeTable != nullptr)
+				{
+					EntryJson->SetArrayField(TEXT("parent_tables"), GetParentTablesJsonArray(CompositeTable));
+				}
+
+				// top_fields: first 8 field names from the row struct
+				if (RowStruct != nullptr)
+				{
+					TArray<TSharedPtr<FJsonValue>> FieldNamesArray;
+					int32 FieldCount = 0;
+					for (TFieldIterator<FProperty> PropIt(RowStruct); PropIt && FieldCount < 8; ++PropIt, ++FieldCount)
+					{
+						FieldNamesArray.Add(MakeShared<FJsonValueString>(PropIt->GetName()));
+					}
+					EntryJson->SetArrayField(TEXT("top_fields"), FieldNamesArray);
+				}
+
+				DatatablesArray.Add(MakeShared<FJsonValueObject>(EntryJson));
+			}
 		}
 
 		Data->SetArrayField(TEXT("datatables"), DatatablesArray);
@@ -1518,6 +1541,8 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 			FARFilter Filter;
 			Filter.ClassPaths.Add(UDataAsset::StaticClass()->GetClassPathName());
 			Filter.bRecursiveClasses = true;
+			Filter.PackagePaths.Add(FName(TEXT("/Game")));
+			Filter.bRecursivePaths = true;
 
 			TArray<FAssetData> AssetDataList;
 			AssetRegistry->GetAssets(Filter, AssetDataList);
@@ -1525,13 +1550,25 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 			// Group by class name
 			TMap<FString, int32> ClassCounts;
 			TMap<FString, FString> ClassExamplePath;
+			TMap<FString, TArray<FString>> ClassAssetPaths;
 			for (const FAssetData& AssetData : AssetDataList)
 			{
+				const FString PackagePath = AssetData.PackagePath.ToString();
+				if (PackagePath.Contains(TEXT("__ExternalActors__"))
+					|| PackagePath.Contains(TEXT("__ExternalObjects__"))
+					|| PackagePath.Contains(TEXT("/Developers/"))
+					|| PackagePath.Contains(TEXT("/Collections/")))
+				{
+					continue;
+				}
+
 				FString ClassName = AssetData.AssetClassPath.GetAssetName().ToString();
+				const FString ObjectPath = AssetData.GetObjectPathString();
 				ClassCounts.FindOrAdd(ClassName)++;
+				ClassAssetPaths.FindOrAdd(ClassName).Add(ObjectPath);
 				if (!ClassExamplePath.Contains(ClassName))
 				{
-					ClassExamplePath.Add(ClassName, AssetData.GetObjectPathString());
+					ClassExamplePath.Add(ClassName, ObjectPath);
 				}
 			}
 
@@ -1544,6 +1581,15 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 				if (const FString* Example = ClassExamplePath.Find(Pair.Key))
 				{
 					ClassEntry->SetStringField(TEXT("example_path"), *Example);
+				}
+				if (const TArray<FString>* AssetPaths = ClassAssetPaths.Find(Pair.Key))
+				{
+					TArray<TSharedPtr<FJsonValue>> AssetPathArray;
+					for (const FString& Path : *AssetPaths)
+					{
+						AssetPathArray.Add(MakeShared<FJsonValueString>(Path));
+					}
+					ClassEntry->SetArrayField(TEXT("asset_paths"), AssetPathArray);
 				}
 				ClassArray.Add(MakeShared<FJsonValueObject>(ClassEntry));
 			}
@@ -1564,6 +1610,8 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 			FARFilter Filter;
 			Filter.ClassPaths.Add(UStringTable::StaticClass()->GetClassPathName());
 			Filter.bRecursiveClasses = true;
+			Filter.PackagePaths.Add(FName(TEXT("/Game")));
+			Filter.bRecursivePaths = true;
 
 			TArray<FAssetData> AssetDataList;
 			AssetRegistry->GetAssets(Filter, AssetDataList);
@@ -1571,6 +1619,15 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 			TArray<TSharedPtr<FJsonValue>> StringTableArray;
 			for (const FAssetData& AssetData : AssetDataList)
 			{
+				const FString PackagePath = AssetData.PackagePath.ToString();
+				if (PackagePath.Contains(TEXT("__ExternalActors__"))
+					|| PackagePath.Contains(TEXT("__ExternalObjects__"))
+					|| PackagePath.Contains(TEXT("/Developers/"))
+					|| PackagePath.Contains(TEXT("/Collections/")))
+				{
+					continue;
+				}
+
 				TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 				Entry->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
 				Entry->SetStringField(TEXT("path"), AssetData.GetObjectPathString());

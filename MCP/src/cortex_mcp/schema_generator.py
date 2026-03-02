@@ -6,10 +6,11 @@ import logging
 import os
 import pathlib
 import tempfile
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _get_caller_path() -> pathlib.Path:
@@ -128,147 +129,6 @@ def read_meta_from_file(path: pathlib.Path) -> dict | None:
         return None
 
 
-def render_data_schema(
-    catalog: dict,
-    schemas: dict[str, dict],
-    example_rows: dict[str, list],
-    curve_tables: list[dict],
-    enum_values: dict[str, list[str]],
-) -> str:
-    """Render the data domain schema as Markdown+YAML.
-
-    Args:
-        catalog: Response from data.get_data_catalog (datatables, tag_prefixes, etc.)
-        schemas: Dict of struct_name -> schema response from data.get_datatable_schema
-        example_rows: Dict of table_name -> list of {row_name, row_data} (1-2 per table)
-        curve_tables: List of curve table entries from data.list_curve_tables
-        enum_values: Dict of enum_name -> list of string values
-    """
-    lines = ["# Data Domain Schema", "", _render_meta("data"), ""]
-
-    # DataTables summary table
-    tables = catalog.get("datatables", [])
-    if tables:
-        lines.append("## DataTables")
-        lines.append("")
-        lines.append("| Table | Struct | Rows | Path |")
-        lines.append("|-------|--------|------|------|")
-        for t in tables:
-            lines.append(
-                f"| {t['name']} | {t['row_struct']} | {t['row_count']} | {t['path'].split('.')[0]} |"
-            )
-        lines.append("")
-
-    # Struct schemas
-    if schemas:
-        lines.append("## Struct Schemas")
-        lines.append("")
-        for struct_name, schema_data in schemas.items():
-            lines.append(f"### {struct_name}")
-            lines.append("```yaml")
-            parent = schema_data.get("parent", "FTableRowBase")
-            lines.append(f"parent: {parent}")
-            fields = schema_data.get("schema", [])
-            if fields:
-                lines.append("fields:")
-                for field in fields:
-                    lines.extend(_yaml_field(field))
-            lines.append("```")
-            lines.append("")
-
-    # Example rows
-    if example_rows:
-        lines.append("## Example Rows")
-        lines.append("")
-        for table_name, rows in example_rows.items():
-            total = next(
-                (t["row_count"] for t in tables if t["name"] == table_name), len(rows)
-            )
-            lines.append(f"### {table_name} ({len(rows)} of {total})")
-            lines.append("```yaml")
-            for row in rows:
-                lines.append(f"- RowName: {row['row_name']}")
-                for k, v in row.get("row_data", {}).items():
-                    if isinstance(v, list):
-                        lines.append(f"  {k}: {json.dumps(v)}")
-                    elif isinstance(v, str):
-                        lines.append(f'  {k}: "{v}"')
-                    else:
-                        lines.append(f"  {k}: {v}")
-                lines.append("")
-            lines.append("```")
-            lines.append("")
-
-    # GameplayTag prefixes
-    tag_prefixes = catalog.get("tag_prefixes", [])
-    if tag_prefixes:
-        lines.append("## GameplayTag Prefixes")
-        lines.append("")
-        lines.append("```yaml")
-        lines.append("prefixes:")
-        for tp in tag_prefixes:
-            lines.append(f"  - prefix: {tp['prefix']}")
-            lines.append(f"    count: {tp['count']}")
-        lines.append("```")
-        lines.append("")
-
-    # DataAsset classes
-    asset_classes = catalog.get("data_asset_classes", [])
-    if asset_classes:
-        lines.append("## DataAsset Classes")
-        lines.append("")
-        lines.append("```yaml")
-        lines.append("classes:")
-        for ac in asset_classes:
-            lines.append(f"  - name: {ac['class_name']}")
-            lines.append(f"    count: {ac['count']}")
-            if ac.get("example_path"):
-                lines.append(f"    example: {ac['example_path']}")
-        lines.append("```")
-        lines.append("")
-
-    # CurveTable summaries
-    if curve_tables:
-        lines.append("## CurveTables")
-        lines.append("")
-        lines.append("| Name | Rows | Type | Path |")
-        lines.append("|------|------|------|------|")
-        for ct in curve_tables:
-            lines.append(
-                f"| {ct['name']} | {ct.get('row_count', '?')} "
-                f"| {ct.get('curve_type', '?')} | {ct['path'].split('.')[0]} |"
-            )
-        lines.append("")
-
-    # StringTable summaries
-    string_tables = catalog.get("string_tables", [])
-    if string_tables:
-        lines.append("## StringTables")
-        lines.append("")
-        lines.append("| Name | Entries | Path |")
-        lines.append("|------|---------|------|")
-        for st in string_tables:
-            lines.append(
-                f"| {st['name']} | {st.get('entry_count', '?')} | {st['path'].split('.')[0]} |"
-            )
-        lines.append("")
-
-    # Enum values
-    if enum_values:
-        lines.append("## Enum Values")
-        lines.append("")
-        lines.append("```yaml")
-        lines.append("enums:")
-        for enum_name, values in enum_values.items():
-            vals = ", ".join(values)
-            lines.append(f"  - name: {enum_name}")
-            lines.append(f"    values: [{vals}]")
-        lines.append("```")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
 def render_catalog(
     project_name: str,
     data_summary: dict | None = None,
@@ -315,7 +175,7 @@ def render_catalog(
     data_assets = len(data_s.get("data_assets", []))
     if data_structs or data_tables or data_tags or data_assets:
         lines.append(
-            f"| data | data.md | {data_structs} | {data_tables} "
+            f"| data | data/_index.md, data/structs.md, data/formats.md | {data_structs} | {data_tables} "
             f"| {data_tags} prefixes | {data_assets} | — |"
         )
 
@@ -332,43 +192,23 @@ def render_catalog(
 
     # Data domain index
     if data_s:
-        lines.append("### data.md")
+        lines.append("### data/")
+        lines.append("")
+        lines.append("| File | Purpose | When to read |")
+        lines.append("|------|---------|-------------|")
+        lines.append("| data/_index.md | Table listing, tags, assets | Working with data domain |")
+        lines.append("| data/structs.md | Struct field definitions | Need field types/names |")
+        lines.append("| data/formats.md | Format examples (1 per struct) | Need serialization format |")
         lines.append("")
 
         structs = data_s.get("structs", [])
         if structs:
-            lines.append("#### Structs")
-            lines.append("| Name | Used By |")
-            lines.append("|------|---------|")
-            for s in structs:
-                lines.append(f"| {s['name']} | {s['used_by']} |")
+            lines.append(f"**Structs:** {', '.join(s['name'] for s in structs)}")
             lines.append("")
 
         tables = data_s.get("tables", [])
         if tables:
-            lines.append("#### DataTables")
-            lines.append("| Name | Row Struct | Rows |")
-            lines.append("|------|------------|------|")
-            for t in tables:
-                lines.append(f"| {t['name']} | {t['row_struct']} | {t['rows']} |")
-            lines.append("")
-
-        tags = data_s.get("tag_prefixes", [])
-        if tags:
-            lines.append("#### GameplayTag Prefixes")
-            lines.append("| Prefix | Count |")
-            lines.append("|--------|-------|")
-            for tp in tags:
-                lines.append(f"| {tp['prefix']} | {tp['count']} |")
-            lines.append("")
-
-        assets = data_s.get("data_assets", [])
-        if assets:
-            lines.append("#### DataAssets")
-            lines.append("| Class | Instances |")
-            lines.append("|-------|-----------|")
-            for a in assets:
-                lines.append(f"| {a['class']} | {a['instances']} |")
+            lines.append(f"**Tables:** {len(tables)} total")
             lines.append("")
 
     # Blueprint domain index (future)
@@ -407,13 +247,295 @@ def _decode_data(response: dict, fallback=None) -> dict:
     return raw if isinstance(raw, dict) else fallback
 
 
-def collect_data_domain(connection) -> dict:
+def _load_pattern_file(path: pathlib.Path) -> list[str]:
+    """Load non-empty, non-comment lines from a config file."""
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        return [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
+    except OSError:
+        return []
+
+
+def filter_engine_tags(
+    tag_prefixes: list[dict],
+    excluded_prefixes: set[str] | None = None,
+) -> list[dict]:
+    """Remove configured GameplayTag prefixes.
+
+    Filtering is opt-in via excluded_prefixes to avoid dropping legitimate project roots.
+    """
+    if not excluded_prefixes:
+        return tag_prefixes
+    return [tp for tp in tag_prefixes if tp.get("prefix") not in excluded_prefixes]
+
+
+def load_schema_excludes(path: pathlib.Path) -> list[str]:
+    """Load path exclusion patterns from a config file.
+
+    Each non-empty, non-comment line is a substring to match against asset paths.
+    """
+    return _load_pattern_file(path)
+
+
+def load_schema_tag_excludes(path: pathlib.Path) -> list[str]:
+    """Load tag prefix exclusions from config file."""
+    return _load_pattern_file(path)
+
+
+def filter_excluded_paths(items: list[dict], excludes: list[str], path_key: str = "path") -> list[dict]:
+    """Filter items whose path field contains any exclusion pattern."""
+    if not excludes:
+        return items
+    return [item for item in items if not any(ex in item.get(path_key, "") for ex in excludes)]
+
+
+def filter_data_asset_classes(data_asset_classes: list[dict], excludes: list[str]) -> list[dict]:
+    """Filter DataAsset class summaries using per-asset paths when available.
+
+    If asset_paths are unavailable, preserve the entry to avoid false removals.
+    """
+    if not excludes:
+        return data_asset_classes
+
+    filtered: list[dict] = []
+    for entry in data_asset_classes:
+        asset_paths = entry.get("asset_paths")
+        if isinstance(asset_paths, list):
+            included_paths = [
+                p for p in asset_paths
+                if isinstance(p, str) and not any(ex in p for ex in excludes)
+            ]
+            if not included_paths:
+                continue
+            new_entry = dict(entry)
+            new_entry["count"] = len(included_paths)
+            new_entry["example_path"] = included_paths[0]
+            new_entry["asset_paths"] = included_paths
+            filtered.append(new_entry)
+            continue
+
+        # No per-asset path list available; keep entry to avoid inaccurate dropping.
+        filtered.append(entry)
+    return filtered
+
+
+# Engine/Slate types to collapse at depth 1 (type name only, no nested fields)
+ENGINE_STRUCT_NAMES = frozenset({
+    "SlateBrush", "SlateColor", "SlateFontInfo", "FontOutlineSettings",
+    "LinearColor", "Vector2D", "Vector", "Rotator", "Transform",
+    "Margin", "InputScaleBias", "InputScaleBiasClamp",
+    "RuntimeFloatCurve", "RichCurve",
+})
+
+
+def _is_engine_type(type_name: str) -> bool:
+    """Check if a type is an engine/Slate struct that should be collapsed."""
+    clean = type_name.removeprefix("F")
+    return clean in ENGINE_STRUCT_NAMES or type_name in ENGINE_STRUCT_NAMES
+
+
+def truncate_nested_fields(
+    fields: list[dict],
+    max_depth: int = 3,
+    engine_collapse_depth: int = 0,
+    _current_depth: int = 0,
+) -> list[dict]:
+    """Truncate nested struct fields based on depth limits.
+
+    max_depth controls how many nesting levels project structs show.
+    engine_collapse_depth controls when engine/Slate struct children are collapsed.
+    A value of 0 means collapse immediately (type name only, no children shown).
+    A field at _current_depth expands its children only if _current_depth < limit,
+    so max_depth=3 shows children at depths 0, 1, 2 (3 levels visible).
+    """
+    result = []
+    for field in fields:
+        field_copy = {k: v for k, v in field.items() if k != "fields"}
+        nested = field.get("fields")
+        if nested:
+            type_name = field.get("type", field.get("cpp_type", ""))
+            if _is_engine_type(type_name):
+                if _current_depth < engine_collapse_depth:
+                    field_copy["fields"] = truncate_nested_fields(
+                        nested, max_depth, engine_collapse_depth, _current_depth + 1
+                    )
+                # else: omit fields (collapsed)
+            elif _current_depth < max_depth - 1:
+                field_copy["fields"] = truncate_nested_fields(
+                    nested, max_depth, engine_collapse_depth, _current_depth + 1
+                )
+            # else: omit fields (depth exceeded)
+        result.append(field_copy)
+    return result
+
+
+def render_data_index(catalog: dict) -> str:
+    """Render data/_index.md — table listing grouped by struct type.
+
+    Composite tables listed separately with source tables.
+    """
+    lines = ["# Data Domain Index", "", _render_meta("data-index"), ""]
+
+    tables = catalog.get("datatables", [])
+    regular = [t for t in tables if not t.get("is_composite")]
+    composites = [t for t in tables if t.get("is_composite")]
+
+    # Group regular tables by struct
+    struct_groups: dict[str, list[dict]] = {}
+    for t in regular:
+        struct_groups.setdefault(t.get("row_struct", "Unknown"), []).append(t)
+
+    for struct_name, group in struct_groups.items():
+        total_rows = sum(t["row_count"] for t in group)
+        lines.append(f"## {struct_name} ({len(group)} tables, {total_rows} rows)")
+        table_list = " ".join(f"{t['name']}({t['row_count']})" for t in group)
+        lines.append(table_list)
+        lines.append("")
+
+    # Composite tables
+    if composites:
+        lines.append("## Composites")
+        for t in composites:
+            parents = t.get("parent_tables", [])
+            parent_names = ", ".join(
+                p["name"] if isinstance(p, dict) else p.rsplit("/", 1)[-1]
+                for p in parents
+            )
+            lines.append(f"{t['name']}({t['row_count']}) <- {parent_names}")
+        lines.append("")
+
+    # Tag prefixes
+    tag_prefixes = catalog.get("tag_prefixes", [])
+    if tag_prefixes:
+        lines.append("## Tags")
+        for tp in tag_prefixes:
+            lines.append(f"- {tp['prefix']} ({tp['count']})")
+        lines.append("")
+
+    # DataAsset classes
+    asset_classes = catalog.get("data_asset_classes", [])
+    if asset_classes:
+        lines.append("## DataAssets")
+        for ac in asset_classes:
+            lines.append(f"- {ac['class_name']} ({ac['count']})")
+        lines.append("")
+
+    # StringTables
+    string_tables = catalog.get("string_tables", [])
+    if string_tables:
+        lines.append("## StringTables")
+        for st in string_tables:
+            lines.append(f"- {st['name']} ({st.get('entry_count', '?')} entries)")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _compact_field(field: dict, indent: int = 2) -> list[str]:
+    """Render a field in compact notation: `Name: Type (default: X)`."""
+    prefix = " " * indent
+    type_name = field.get("type", field.get("cpp_type", "unknown"))
+    parts = [f"{prefix}- {field.get('name', '<unknown>')}: {type_name}"]
+    if field.get("default_value"):
+        parts[0] += f" (default: {field['default_value']})"
+    if field.get("enum_values"):
+        vals = ", ".join(field["enum_values"])
+        parts[0] += f" [{vals}]"
+    if field.get("element_type"):
+        elem = field["element_type"]
+        if isinstance(elem, dict):
+            parts[0] += f"<{elem.get('type', elem.get('cpp_type', ''))}>"
+    lines = parts
+    if field.get("fields"):
+        for sub in field["fields"]:
+            lines.extend(_compact_field(sub, indent + 2))
+    return lines
+
+
+def render_data_structs(schemas: dict[str, dict]) -> str:
+    """Render data/structs.md — struct field definitions with depth limiting."""
+    lines = ["# Data Struct Schemas", "", _render_meta("data-structs"), ""]
+
+    for struct_name, schema_data in schemas.items():
+        parent = schema_data.get("parent", "FTableRowBase")
+        lines.append(f"## {struct_name} (extends {parent})")
+        raw_fields = schema_data.get("schema", [])
+        # Apply depth limiting before rendering
+        fields = truncate_nested_fields(raw_fields, max_depth=3, engine_collapse_depth=0)
+        for field in fields:
+            lines.extend(_compact_field(field))
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def collect_format_examples(
+    catalog: dict,
+    example_rows: dict[str, list],
+) -> dict[str, dict]:
+    """Collect 1 format example per unique struct type. Skip composites."""
+    seen_structs: dict[str, dict] = {}
+    for table in catalog.get("datatables", []):
+        if table.get("is_composite"):
+            continue
+        struct_name = table.get("row_struct", "Unknown")
+        if struct_name in seen_structs:
+            continue
+        rows = example_rows.get(table["name"], [])
+        if rows:
+            row = rows[0]
+            seen_structs[struct_name] = {
+                "source_table": table["name"],
+                "row_data": row.get("row_data", {}),
+            }
+    return seen_structs
+
+
+def _truncate_value(value: Any, max_items: int = 3) -> str:
+    """Format a value for display, truncating long arrays."""
+    if isinstance(value, list):
+        if len(value) > max_items:
+            shown = ", ".join(str(v) for v in value[:max_items])
+            return f"[{shown}, ...(+{len(value) - max_items} more)]"
+        return json.dumps(value)
+    return f"`{value}`"
+
+
+def render_data_formats(format_examples: dict[str, dict]) -> str:
+    """Render data/formats.md — 1 compact format example per unique struct."""
+    lines = ["# Data Format Examples", "", _render_meta("data-formats"), ""]
+
+    if not format_examples:
+        lines.append("No format examples available.")
+        lines.append("")
+        return "\n".join(lines)
+
+    for struct_name, example in format_examples.items():
+        source = example.get("source_table", "unknown")
+        row_data = example.get("row_data", {})
+        lines.append(f"## {struct_name}")
+        lines.append(f"Source: {source}")
+        if row_data:
+            lines.append("| Field | Example |")
+            lines.append("|-------|---------|")
+            for field_name, value in row_data.items():
+                lines.append(f"| {field_name} | {_truncate_value(value)} |")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def collect_data_domain(connection, project_root: pathlib.Path | None = None) -> dict:
     """Collect all data domain information from a live UE editor.
 
     Calls existing TCP commands and assembles the raw data.
 
     Args:
         connection: UEConnection instance (connected to running editor).
+        project_root: Project root directory used to locate .cortex/config/schema_excludes.txt.
+            Pass None to skip path exclusion.
 
     Returns:
         Dict with catalog, schemas, example_rows, curve_tables, enum_values, summary.
@@ -421,6 +543,29 @@ def collect_data_domain(connection) -> dict:
     # 1. Get catalog
     catalog_resp = connection.send_command("data.get_data_catalog", {})
     catalog = _decode_data(catalog_resp)
+    excludes: list[str] = []
+    tag_excludes: list[str] = []
+    if project_root is not None:
+        config_dir = project_root / ".cortex" / "config"
+        excludes = load_schema_excludes(config_dir / "schema_excludes.txt")
+        tag_excludes = load_schema_tag_excludes(config_dir / "schema_tag_excludes.txt")
+
+    catalog["tag_prefixes"] = filter_engine_tags(
+        catalog.get("tag_prefixes", []),
+        excluded_prefixes=set(tag_excludes),
+    )
+
+    # Apply user-configured path exclusions
+    if excludes:
+        catalog["datatables"] = filter_excluded_paths(catalog.get("datatables", []), excludes)
+        catalog["string_tables"] = filter_excluded_paths(
+            catalog.get("string_tables", []),
+            excludes,
+        )
+        catalog["data_asset_classes"] = filter_data_asset_classes(
+            catalog.get("data_asset_classes", []),
+            excludes,
+        )
 
     # 2. Get schemas for each unique row struct
     schemas = {}
@@ -452,18 +597,24 @@ def collect_data_domain(connection) -> dict:
             except (RuntimeError, ConnectionError) as e:
                 logger.warning("Failed to get schema for %s: %s", struct_name, e)
 
-    # 3. Get 1-2 example rows per table
+    # 3. Collect 1 example row per unique struct (not per table), skip composites
     example_rows = {}
+    seen_structs_for_examples: set[str] = set()
     for table in catalog.get("datatables", []):
+        if table.get("is_composite"):
+            continue
+        if table["row_struct"] in seen_structs_for_examples:
+            continue
         try:
             resp = connection.send_command(
                 "data.query_datatable",
-                {"table_path": table["path"], "limit": 2, "offset": 0},
+                {"table_path": table["path"], "limit": 1, "offset": 0},
             )
             query_result = _decode_data(resp)
             rows = query_result.get("rows", [])
             if rows:
-                example_rows[table["name"]] = rows[:2]
+                example_rows[table["name"]] = rows[:1]
+                seen_structs_for_examples.add(table["row_struct"])
         except (RuntimeError, ConnectionError) as e:
             logger.warning("Failed to get example rows for %s: %s", table["name"], e)
 
@@ -473,6 +624,8 @@ def collect_data_domain(connection) -> dict:
         resp = connection.send_command("data.list_curve_tables", {})
         curve_result = _decode_data(resp)
         curve_tables = curve_result.get("curve_tables", [])
+        if excludes:
+            curve_tables = filter_excluded_paths(curve_tables, excludes)
     except (RuntimeError, ConnectionError) as e:
         logger.warning("Failed to list curve tables: %s", e)
 
@@ -505,10 +658,14 @@ def collect_data_domain(connection) -> dict:
         ],
     }
 
+    # 7. Compute format examples (1 per unique struct)
+    format_examples = collect_format_examples(catalog, example_rows)
+
     return {
         "catalog": catalog,
         "schemas": schemas,
         "example_rows": example_rows,
+        "format_examples": format_examples,
         "curve_tables": curve_tables,
         "enum_values": enum_values,
         "summary": summary,
@@ -553,17 +710,29 @@ def generate_schema(
 
     if domain in ("all", "data"):
         try:
-            collected = collect_data_domain(connection)
-            data_md = render_data_schema(
-                catalog=collected["catalog"],
-                schemas=collected["schemas"],
-                example_rows=collected["example_rows"],
-                curve_tables=collected["curve_tables"],
-                enum_values=collected["enum_values"],
-            )
-            atomic_write(schema_dir / "data.md", data_md)
+            collected = collect_data_domain(connection, project_root=find_project_root())
+
+            # Write data/_index.md
+            index_md = render_data_index(collected["catalog"])
+            atomic_write(schema_dir / "data" / "_index.md", index_md)
+            result["generated"]["data_index"] = str(schema_dir / "data" / "_index.md")
+
+            # Write data/structs.md
+            structs_md = render_data_structs(collected["schemas"])
+            atomic_write(schema_dir / "data" / "structs.md", structs_md)
+            result["generated"]["data_structs"] = str(schema_dir / "data" / "structs.md")
+
+            # Write data/formats.md
+            formats_md = render_data_formats(collected["format_examples"])
+            atomic_write(schema_dir / "data" / "formats.md", formats_md)
+            result["generated"]["data_formats"] = str(schema_dir / "data" / "formats.md")
+
             data_summary = collected["summary"]
-            result["generated"]["data"] = str(schema_dir / "data.md")
+
+            # Clean up old v1 monolithic file
+            old_data_md = schema_dir / "data.md"
+            if old_data_md.exists():
+                old_data_md.unlink()
         except (ConnectionError, RuntimeError) as e:
             logger.error("Failed to generate data schema: %s", e)
             result["errors"].append(f"data: {e}")
