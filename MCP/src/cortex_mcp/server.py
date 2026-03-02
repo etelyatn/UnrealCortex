@@ -10,6 +10,7 @@ import types
 from mcp.server.fastmcp import FastMCP
 from .tcp_client import UEConnection
 from .response import format_response
+from .schema_generator import _decode_data
 
 _log_level = getattr(logging, os.environ.get("CORTEX_LOG_LEVEL", "INFO").upper(), logging.INFO)
 logging.basicConfig(
@@ -86,7 +87,7 @@ def get_status() -> str:
 
     try:
         response = _connection.send_command("get_status")
-        data = response.get("data", {})
+        data = _decode_data(response)
 
         editors = _discover_all_editors()
         data["connected_editor"] = {"pid": _connection._pid, "port": _connection.port}
