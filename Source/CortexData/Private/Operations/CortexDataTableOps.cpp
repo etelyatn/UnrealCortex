@@ -1541,6 +1541,8 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 			FARFilter Filter;
 			Filter.ClassPaths.Add(UDataAsset::StaticClass()->GetClassPathName());
 			Filter.bRecursiveClasses = true;
+			Filter.PackagePaths.Add(FName(TEXT("/Game")));
+			Filter.bRecursivePaths = true;
 
 			TArray<FAssetData> AssetDataList;
 			AssetRegistry->GetAssets(Filter, AssetDataList);
@@ -1550,6 +1552,15 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 			TMap<FString, FString> ClassExamplePath;
 			for (const FAssetData& AssetData : AssetDataList)
 			{
+				const FString PackagePath = AssetData.PackagePath.ToString();
+				if (PackagePath.Contains(TEXT("__ExternalActors__"))
+					|| PackagePath.Contains(TEXT("__ExternalObjects__"))
+					|| PackagePath.Contains(TEXT("/Developers/"))
+					|| PackagePath.Contains(TEXT("/Collections/")))
+				{
+					continue;
+				}
+
 				FString ClassName = AssetData.AssetClassPath.GetAssetName().ToString();
 				ClassCounts.FindOrAdd(ClassName)++;
 				if (!ClassExamplePath.Contains(ClassName))
@@ -1587,6 +1598,8 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 			FARFilter Filter;
 			Filter.ClassPaths.Add(UStringTable::StaticClass()->GetClassPathName());
 			Filter.bRecursiveClasses = true;
+			Filter.PackagePaths.Add(FName(TEXT("/Game")));
+			Filter.bRecursivePaths = true;
 
 			TArray<FAssetData> AssetDataList;
 			AssetRegistry->GetAssets(Filter, AssetDataList);
@@ -1594,6 +1607,15 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 			TArray<TSharedPtr<FJsonValue>> StringTableArray;
 			for (const FAssetData& AssetData : AssetDataList)
 			{
+				const FString PackagePath = AssetData.PackagePath.ToString();
+				if (PackagePath.Contains(TEXT("__ExternalActors__"))
+					|| PackagePath.Contains(TEXT("__ExternalObjects__"))
+					|| PackagePath.Contains(TEXT("/Developers/"))
+					|| PackagePath.Contains(TEXT("/Collections/")))
+				{
+					continue;
+				}
+
 				TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 				Entry->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
 				Entry->SetStringField(TEXT("path"), AssetData.GetObjectPathString());
