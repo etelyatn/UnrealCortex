@@ -65,6 +65,36 @@ def register_editor_viewport_tools(mcp, connection: UEConnection):
             return f"Error: {e}"
 
     @mcp.tool()
+    def focus_node(asset_path: str, node_id: str, graph_name: str = "") -> str:
+        """Open a Blueprint in the editor and focus a specific graph node.
+
+        Opens the Blueprint asset editor, navigates to the graph containing the node,
+        and centers the viewport on it with selection. Use after graph_list_nodes or
+        graph_get_node when you need to direct attention to a specific node.
+
+        Args:
+            asset_path: Full asset path to the Blueprint.
+            node_id: The node ID to focus (from graph_list_nodes).
+            graph_name: Optional graph name. If omitted, searches all graphs for the node.
+
+        Returns:
+            JSON with focused node details:
+            - asset_path: The Blueprint asset path
+            - graph_name: The graph containing the node
+            - node_id: The focused node ID
+            - display_name: Human-readable node title
+            - node_class: The node UClass name
+        """
+        params = {"asset_path": asset_path, "node_id": node_id}
+        if graph_name:
+            params["graph_name"] = graph_name
+        try:
+            response = connection.send_command("editor.focus_node", params)
+            return format_response(response.get("data", {}), "focus_node")
+        except (ConnectionError, RuntimeError) as e:
+            return f"Error: {e}"
+
+    @mcp.tool()
     def set_viewport_mode(mode: str = "lit") -> str:
         """Set viewport rendering mode (lit, unlit, wireframe, lit_wireframe)."""
         try:
