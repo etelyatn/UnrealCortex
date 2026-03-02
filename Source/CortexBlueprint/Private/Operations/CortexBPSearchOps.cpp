@@ -1,5 +1,6 @@
 #include "Operations/CortexBPSearchOps.h"
 
+#include "CortexBlueprintModule.h"
 #include "Operations/CortexBPAssetOps.h"
 #include "CortexCommandRouter.h"
 #include "Engine/Blueprint.h"
