@@ -297,16 +297,16 @@ def _is_engine_type(type_name: str) -> bool:
 def truncate_nested_fields(
     fields: list[dict],
     max_depth: int = 3,
-    engine_max_depth: int = 1,
+    engine_collapse_depth: int = 0,
     _current_depth: int = 0,
 ) -> list[dict]:
     """Truncate nested struct fields based on depth limits.
 
     max_depth controls how many nesting levels project structs show.
-    engine_max_depth controls the same for engine/Slate structs.
-    A field at _current_depth expands its children only if
-    _current_depth < (limit - 1), so max_depth=3 shows 2 levels of children
-    and engine_max_depth=1 shows 0 levels (type name only).
+    engine_collapse_depth controls when engine/Slate struct children are collapsed.
+    A value of 0 means collapse immediately (type name only, no children shown).
+    A field at _current_depth expands its children only if _current_depth < limit,
+    so max_depth=3 shows children at depths 0, 1, 2 (3 levels visible).
     """
     result = []
     for field in fields:
@@ -315,14 +315,14 @@ def truncate_nested_fields(
         if nested:
             type_name = field.get("type", field.get("cpp_type", ""))
             if _is_engine_type(type_name):
-                if _current_depth < engine_max_depth - 1:
+                if _current_depth < engine_collapse_depth:
                     field_copy["fields"] = truncate_nested_fields(
-                        nested, max_depth, engine_max_depth, _current_depth + 1
+                        nested, max_depth, engine_collapse_depth, _current_depth + 1
                     )
                 # else: omit fields (collapsed)
             elif _current_depth < max_depth - 1:
                 field_copy["fields"] = truncate_nested_fields(
-                    nested, max_depth, engine_max_depth, _current_depth + 1
+                    nested, max_depth, engine_collapse_depth, _current_depth + 1
                 )
             # else: omit fields (depth exceeded)
         result.append(field_copy)
@@ -421,7 +421,7 @@ def render_data_structs(schemas: dict[str, dict]) -> str:
         lines.append(f"## {struct_name} (extends {parent})")
         raw_fields = schema_data.get("schema", [])
         # Apply depth limiting before rendering
-        fields = truncate_nested_fields(raw_fields, max_depth=3, engine_max_depth=1)
+        fields = truncate_nested_fields(raw_fields, max_depth=3, engine_collapse_depth=0)
         for field in fields:
             lines.extend(_compact_field(field))
         lines.append("")

@@ -1004,7 +1004,7 @@ class TestTruncateNestedFields(unittest.TestCase):
                 ],
             },
         ]
-        result = truncate_nested_fields(fields, max_depth=3, engine_max_depth=1)
+        result = truncate_nested_fields(fields, max_depth=3, engine_collapse_depth=0)
         # Engine struct SlateBrush should have no nested fields at depth > 1
         brush = result[0]
         self.assertEqual(brush["type"], "SlateBrush")
@@ -1022,7 +1022,7 @@ class TestTruncateNestedFields(unittest.TestCase):
                 ],
             },
         ]
-        result = truncate_nested_fields(fields, max_depth=3, engine_max_depth=1)
+        result = truncate_nested_fields(fields, max_depth=3, engine_collapse_depth=0)
         self.assertIn("fields", result[0])
         self.assertEqual(len(result[0]["fields"]), 2)
 
@@ -1043,7 +1043,7 @@ class TestTruncateNestedFields(unittest.TestCase):
                 ],
             },
         ]
-        result = truncate_nested_fields(fields, max_depth=3, engine_max_depth=1)
+        result = truncate_nested_fields(fields, max_depth=3, engine_collapse_depth=0)
         # With max_depth=3, the condition is _current_depth < 2, so L2 (depth 2) has children cut
         l1 = result[0]["fields"][0]
         l2 = l1["fields"][0]
