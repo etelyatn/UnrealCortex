@@ -418,13 +418,36 @@ def filter_engine_tags(tag_prefixes: list[dict]) -> list[dict]:
     return [tp for tp in tag_prefixes if tp.get("prefix") not in ENGINE_TAG_PREFIXES]
 
 
-def collect_data_domain(connection) -> dict:
+def load_schema_excludes(path: pathlib.Path) -> list[str]:
+    """Load path exclusion patterns from a config file.
+
+    Each non-empty, non-comment line is a substring to match against asset paths.
+    """
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        return [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
+    except OSError:
+        return []
+
+
+def filter_excluded_paths(items: list[dict], excludes: list[str], path_key: str = "path") -> list[dict]:
+    """Filter items whose path field contains any exclusion pattern."""
+    if not excludes:
+        return items
+    return [item for item in items if not any(ex in item.get(path_key, "") for ex in excludes)]
+
+
+def collect_data_domain(connection, project_root: pathlib.Path | None = None) -> dict:
     """Collect all data domain information from a live UE editor.
 
     Calls existing TCP commands and assembles the raw data.
 
     Args:
         connection: UEConnection instance (connected to running editor).
+        project_root: Project root directory used to locate .cortex/config/schema_excludes.txt.
+            Pass None to skip path exclusion.
 
     Returns:
         Dict with catalog, schemas, example_rows, curve_tables, enum_values, summary.
@@ -433,6 +456,16 @@ def collect_data_domain(connection) -> dict:
     catalog_resp = connection.send_command("data.get_data_catalog", {})
     catalog = _decode_data(catalog_resp)
     catalog["tag_prefixes"] = filter_engine_tags(catalog.get("tag_prefixes", []))
+
+    # Apply user-configured path exclusions
+    if project_root is not None:
+        excludes = load_schema_excludes(project_root / ".cortex" / "config" / "schema_excludes.txt")
+        catalog["datatables"] = filter_excluded_paths(catalog.get("datatables", []), excludes)
+        catalog["data_asset_classes"] = filter_excluded_paths(
+            catalog.get("data_asset_classes", []),
+            excludes,
+            path_key="example_path",
+        )
 
     # 2. Get schemas for each unique row struct
     schemas = {}
@@ -565,7 +598,7 @@ def generate_schema(
 
     if domain in ("all", "data"):
         try:
-            collected = collect_data_domain(connection)
+            collected = collect_data_domain(connection, project_root=schema_dir.parent.parent)
             data_md = render_data_schema(
                 catalog=collected["catalog"],
                 schemas=collected["schemas"],

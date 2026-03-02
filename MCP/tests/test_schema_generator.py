@@ -340,6 +340,75 @@ class TestCollectDataDomain(unittest.TestCase):
         self.assertEqual(result["summary"]["structs"][0]["name"], "FTestRow")
         self.assertEqual(result["summary"]["structs"][0]["used_by"], "DT_Test")
 
+    def test_excludes_file_filters_datatable(self):
+        import tempfile
+        conn = MagicMock()
+
+        catalog_response = {
+            "success": True,
+            "data": {
+                "datatables": [
+                    {
+                        "name": "DT_Items",
+                        "path": "/Game/Data/DT_Items.DT_Items",
+                        "row_struct": "FItemRow",
+                        "row_count": 2,
+                        "is_composite": False,
+                        "parent_tables": [],
+                        "top_fields": ["Name"],
+                    },
+                    {
+                        "name": "DT_StarterTable",
+                        "path": "/Game/StarterContent/DT_StarterTable.DT_StarterTable",
+                        "row_struct": "FStarterRow",
+                        "row_count": 1,
+                        "is_composite": False,
+                        "parent_tables": [],
+                        "top_fields": ["Name"],
+                    },
+                ],
+                "tag_prefixes": [],
+                "data_asset_classes": [],
+                "string_tables": [],
+            },
+        }
+
+        schema_response = {
+            "success": True,
+            "data": {
+                "struct_name": "FItemRow",
+                "schema": [{"name": "Name", "type": "FName", "cpp_type": "FName"}],
+            },
+        }
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "data.get_data_catalog":
+                return catalog_response
+            elif command == "data.get_datatable_schema":
+                return schema_response
+            elif command == "data.query_datatable":
+                return {"success": True, "data": {"rows": [], "total_count": 0}}
+            elif command == "data.list_curve_tables":
+                return {"success": True, "data": {"curve_tables": []}}
+            return {"success": True, "data": {}}
+
+        conn.send_command.side_effect = mock_send
+        conn.send_command_cached.side_effect = mock_send
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            excludes_dir = Path(tmpdir) / ".cortex" / "config"
+            excludes_dir.mkdir(parents=True)
+            (excludes_dir / "schema_excludes.txt").write_text(
+                "StarterContent\n", encoding="utf-8"
+            )
+
+            result = collect_data_domain(conn, project_root=Path(tmpdir))
+
+        tables = result["catalog"]["datatables"]
+        table_names = [t["name"] for t in tables]
+        self.assertIn("DT_Items", table_names)
+        self.assertNotIn("DT_StarterTable", table_names)
+
     def test_collect_extracts_enum_values(self):
         conn = MagicMock()
         catalog_resp = {
@@ -835,3 +904,60 @@ class TestCatalogVersionInfo(unittest.TestCase):
         self.assertIn("project: Test", result)
         self.assertNotIn("engine:", result)
         self.assertNotIn("plugin:", result)
+
+
+class TestLoadSchemaExcludes(unittest.TestCase):
+
+    def test_loads_excludes_from_file(self):
+        from cortex_mcp.schema_generator import load_schema_excludes
+        with tempfile.TemporaryDirectory() as tmpdir:
+            excludes_path = Path(tmpdir) / "schema_excludes.txt"
+            excludes_path.write_text(
+                "# Marketplace assets\nSci-fi_UI_Pack\n\n# Epic samples\nStarterContent\n",
+                encoding="utf-8",
+            )
+            result = load_schema_excludes(excludes_path)
+            self.assertEqual(result, ["Sci-fi_UI_Pack", "StarterContent"])
+
+    def test_returns_empty_if_file_missing(self):
+        from cortex_mcp.schema_generator import load_schema_excludes
+        result = load_schema_excludes(Path("/nonexistent/schema_excludes.txt"))
+        self.assertEqual(result, [])
+
+    def test_ignores_blank_lines_and_comments(self):
+        from cortex_mcp.schema_generator import load_schema_excludes
+        with tempfile.TemporaryDirectory() as tmpdir:
+            excludes_path = Path(tmpdir) / "schema_excludes.txt"
+            excludes_path.write_text("# comment\n\n  \nValidPattern\n  # indented comment\n", encoding="utf-8")
+            result = load_schema_excludes(excludes_path)
+            self.assertEqual(result, ["ValidPattern"])
+
+
+class TestFilterExcludedPaths(unittest.TestCase):
+
+    def test_filters_tables_matching_excludes(self):
+        from cortex_mcp.schema_generator import filter_excluded_paths
+        tables = [
+            {"name": "DT_Items", "path": "/Game/Data/DT_Items.DT_Items"},
+            {"name": "DT_UI", "path": "/Game/Sci-fi_UI_Pack/DT_UI.DT_UI"},
+            {"name": "DT_Starter", "path": "/Game/StarterContent/DT_Starter.DT_Starter"},
+        ]
+        result = filter_excluded_paths(tables, ["Sci-fi_UI_Pack", "StarterContent"])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["name"], "DT_Items")
+
+    def test_no_excludes_returns_all(self):
+        from cortex_mcp.schema_generator import filter_excluded_paths
+        tables = [{"name": "DT_A", "path": "/Game/Data/DT_A.DT_A"}]
+        result = filter_excluded_paths(tables, [])
+        self.assertEqual(len(result), 1)
+
+    def test_filters_by_custom_path_key(self):
+        from cortex_mcp.schema_generator import filter_excluded_paths
+        classes = [
+            {"class_name": "DA_A", "example_path": "/Game/Data/DA_A"},
+            {"class_name": "DA_Pack", "example_path": "/Game/Sci-fi_UI_Pack/DA_Pack"},
+        ]
+        result = filter_excluded_paths(classes, ["Sci-fi_UI_Pack"], path_key="example_path")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["class_name"], "DA_A")
