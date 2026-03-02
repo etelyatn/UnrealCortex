@@ -71,7 +71,7 @@ class TestMaterialVerification:
         readback = self._make_readback(node_count=2, nodes=[{"expression_class": "MaterialExpressionConstant"}])
         result = verify_material(spec, readback)
         assert result.verified is False
-        assert result.checks["node_exists:TextureSample"].passed is False
+        assert result.checks["node_count:TextureSample"].passed is False
 
     def test_connection_count_mismatch(self):
         spec = self._make_spec(
@@ -123,6 +123,24 @@ class TestMaterialVerification:
         assert "checks" in payload
         for check in payload["checks"].values():
             assert set(check.keys()) == {"expected", "actual", "pass"}
+
+    def test_duplicate_spec_class_requires_matching_count(self):
+        spec = self._make_spec(
+            nodes=[
+                {"name": "TexA", "class": "TextureSample"},
+                {"name": "TexB", "class": "TextureSample"},
+            ]
+        )
+        readback = self._make_readback(
+            node_count=3,
+            nodes=[
+                {"expression_class": "MaterialExpressionTextureSample"},
+                {"expression_class": "MaterialExpressionMaterialOutput"},
+            ],
+        )
+        result = verify_material(spec, readback)
+        assert result.verified is False
+        assert result.checks["node_count:TextureSample"].passed is False
 
     def test_readback_failure_result(self):
         result = VerificationResult(verified=None, error_code="READBACK_FAILED", error="Connection timeout")
@@ -213,6 +231,22 @@ class TestBlueprintVerification:
         readback = self._make_readback(is_compiled=True, graphs=[{"name": "EventGraph", "node_count": 1}])
         result = verify_blueprint(spec, readback)
         assert "connection_count" not in result.checks
+
+    def test_duplicate_spec_class_requires_matching_count(self):
+        spec = self._make_spec(
+            nodes=[
+                {"name": "A", "class": "CallFunction"},
+                {"name": "B", "class": "CallFunction"},
+            ]
+        )
+        readback = self._make_readback(
+            is_compiled=True,
+            graphs=[{"name": "EventGraph", "node_count": 3}],
+            nodes=[{"class": "K2Node_CallFunction"}],
+        )
+        result = verify_blueprint(spec, readback)
+        assert result.verified is False
+        assert result.checks["node_count:CallFunction"].passed is False
 
 
 class TestUMGVerification:

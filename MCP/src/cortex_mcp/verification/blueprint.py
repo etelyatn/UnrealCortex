@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+
 from . import CheckResult, VerificationResult, check_exists, check_gte
 
 _CLASS_MAP = {
@@ -58,10 +60,25 @@ def verify_blueprint(spec: dict, readback: dict) -> VerificationResult:
         name, check = check_gte("graph_node_count", len(spec_nodes), graph_info.get("node_count", 0))
         checks[name] = check
 
-    readback_classes = {_normalize_node_class(node.get("class", "")) for node in readback.get("nodes", [])}
+    expected_class_counts = Counter(
+        _normalize_node_class(node.get("class", "")) for node in spec_nodes if node.get("class", "")
+    )
+    actual_class_counts = Counter(
+        _normalize_node_class(node.get("class", "")) for node in readback.get("nodes", []) if node.get("class", "")
+    )
     for node in spec_nodes:
-        spec_class = _normalize_node_class(node.get("class", ""))
-        name, check = check_exists(f"node_exists:{node.get('class', '')}", spec_class in readback_classes)
+        normalized = _normalize_node_class(node.get("class", ""))
+        if not normalized:
+            continue
+        short_name = node.get("class", "")
+        check_name = f"node_count:{short_name}"
+        if check_name in checks:
+            continue
+        name, check = check_gte(
+            check_name,
+            expected_class_counts.get(normalized, 0),
+            actual_class_counts.get(normalized, 0),
+        )
         checks[name] = check
 
     verified = all(check.passed for check in checks.values())

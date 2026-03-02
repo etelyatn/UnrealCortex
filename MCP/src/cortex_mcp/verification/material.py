@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from . import CheckResult, VerificationResult, check_eq, check_exists, check_gte
+from collections import Counter
+
+from . import CheckResult, VerificationResult, check_eq, check_gte
 
 _CLASS_PREFIX = "MaterialExpression"
 
@@ -32,11 +34,19 @@ def verify_material(spec: dict, readback: dict) -> VerificationResult:
         )
         checks[name] = check
 
-    readback_classes = {node.get("expression_class", "") for node in readback.get("nodes", [])}
-    for node in spec_nodes:
-        node_class = node.get("class", "")
-        full_class = _normalize_class(node_class)
-        name, check = check_exists(f"node_exists:{node_class}", full_class in readback_classes)
+    expected_class_counts = Counter(
+        _normalize_class(node.get("class", "")) for node in spec_nodes if node.get("class", "")
+    )
+    actual_class_counts = Counter(
+        node.get("expression_class", "") for node in readback.get("nodes", []) if node.get("expression_class", "")
+    )
+    for full_class, expected_count in expected_class_counts.items():
+        short_class = full_class[len(_CLASS_PREFIX):] if full_class.startswith(_CLASS_PREFIX) else full_class
+        name, check = check_gte(
+            f"node_count:{short_class}",
+            expected_count,
+            actual_class_counts.get(full_class, 0),
+        )
         checks[name] = check
 
     if "blend_mode" in spec_props:
