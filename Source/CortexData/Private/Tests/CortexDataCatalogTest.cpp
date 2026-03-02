@@ -281,6 +281,7 @@ bool FCortexDataCatalogNoEngineTablesTest::RunTest(const FString& Parameters)
 
 	if (DatatablesArray != nullptr)
 	{
+		TestTrue(TEXT("DataTables array is non-empty (CortexSandbox has tables in Content/Data/)"), DatatablesArray->Num() > 0);
 		for (const TSharedPtr<FJsonValue>& Entry : *DatatablesArray)
 		{
 			const TSharedPtr<FJsonObject>* EntryObj = nullptr;
