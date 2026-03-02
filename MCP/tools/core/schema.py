@@ -101,6 +101,10 @@ def register_schema_tools(mcp, connection: UEConnection):
                     "error": "No meta block found",
                 }
 
+        # Note: v2 subdirectory entries are written after v1 entries, so v2 wins
+        # if both data.md (v1) and data/ subdir (v2) exist simultaneously.
+        # generate_schema deletes data.md during v2 generation, so this
+        # only matters during partially-migrated states.
         # Scan subdirectories (v2 layout)
         for subdir in schema_dir.iterdir():
             if not subdir.is_dir() or subdir.name.startswith("_"):
