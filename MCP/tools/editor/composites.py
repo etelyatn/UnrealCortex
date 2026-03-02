@@ -150,7 +150,6 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
 
         current_pid = connection._pid
         project_path = connection._project_path
-        port_file_pattern = f"CortexPort-{current_pid}.txt" if current_pid else None
 
         if not project_path:
             for _pf in saved_dir.glob("CortexPort-*.txt"):
@@ -163,11 +162,11 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
                             project_path = found_path
                             if not current_pid:
                                 current_pid = data.get("pid")
-                            if not port_file_pattern:
-                                port_file_pattern = _pf.name
                             break
                 except (json.JSONDecodeError, OSError):
                     continue
+
+        port_file_pattern = f"CortexPort-{current_pid}.txt" if current_pid else None
 
         if not project_path:
             return json.dumps(

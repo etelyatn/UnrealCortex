@@ -148,3 +148,46 @@ class TestRestartEditor:
 
         assert payload.get("message") == "Editor restarted successfully", f"Unexpected result: {payload}"
         assert payload["port"] == 8743
+
+    @patch.dict(os.environ, {"UE_56_PATH": "C:/UE_5.6"}, clear=False)
+    def test_restart_shuts_down_discovered_pid_when_connection_pid_unknown(self, tmp_path):
+        """When _pid=None but port file has a live PID, Phase 1 shuts it down via that discovered PID."""
+        conn = MagicMock(spec=UEConnection)
+        conn._pid = None
+        conn._project_path = None
+        # shutdown raises ConnectionError (expected — editor closes socket), status succeeds
+        conn.send_command.side_effect = [
+            ConnectionError("Connection closed"),
+            {"success": True, "data": {"subsystems": {"core": True}}},
+        ]
+
+        saved_dir = tmp_path / "Saved"
+        saved_dir.mkdir(parents=True)
+
+        existing_port_file = saved_dir / "CortexPort-1234.txt"
+        existing_port_file.write_text(
+            '{"port":8742,"pid":1234,"project_path":"C:/test/Test.uproject","started_at":"2026-01-01T00:00:00Z"}'
+        )
+
+        new_port_file = saved_dir / "CortexPort-5678.txt"
+
+        def _popen_side_effect(*args, **kwargs):
+            existing_port_file.unlink(missing_ok=True)
+            new_port_file.write_text(
+                '{"port":8743,"pid":5678,"project_path":"C:/test/Test.uproject","started_at":"2026-01-01T01:00:00Z"}'
+            )
+            return MagicMock()
+
+        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
+                patch("composites.psutil.pid_exists", side_effect=[True, False]), \
+                patch("composites.subprocess.Popen", side_effect=_popen_side_effect), \
+                patch("composites.time.sleep", return_value=None):
+            mcp = MockMCP()
+            register_editor_composite_tools(mcp, conn)
+            result = mcp.tools["restart_editor"](timeout=30)
+            payload = json.loads(result)
+
+        assert payload.get("message") == "Editor restarted successfully", f"Unexpected result: {payload}"
+        assert payload["port"] == 8743
+        conn.send_command.assert_any_call("core.shutdown", {"force": True})
+        conn.disconnect.assert_called_once()
