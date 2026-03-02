@@ -20,12 +20,22 @@ UWorld* FCortexLevelUtils::GetEditorWorld(FCortexCommandResult& OutError)
         return nullptr;
     }
 
+    UWorld* PreviewFallback = nullptr;
     for (const FWorldContext& Context : GEngine->GetWorldContexts())
     {
-        if ((Context.WorldType == EWorldType::Editor || Context.WorldType == EWorldType::EditorPreview) && Context.World())
+        if (Context.WorldType == EWorldType::Editor && Context.World())
         {
             return Context.World();
         }
+        if (Context.WorldType == EWorldType::EditorPreview && Context.World() && !PreviewFallback)
+        {
+            PreviewFallback = Context.World();
+        }
+    }
+
+    if (PreviewFallback)
+    {
+        return PreviewFallback;
     }
 
     OutError = FCortexCommandRouter::Error(
