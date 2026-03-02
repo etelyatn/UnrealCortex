@@ -108,6 +108,8 @@ def register_schema_tools(mcp, connection: UEConnection):
             domain_name = subdir.name
             files = {}
             oldest_generated = None
+            version = 0
+            first_file_seen = False
             for md_file in sorted(subdir.glob("*.md")):
                 meta = read_meta_from_file(md_file)
                 if meta:
@@ -115,10 +117,10 @@ def register_schema_tools(mcp, connection: UEConnection):
                     gen = meta.get("generated")
                     if oldest_generated is None or (gen and gen < oldest_generated):
                         oldest_generated = gen
+                    if not first_file_seen:
+                        version = int(meta.get("schema_version", "0"))
+                        first_file_seen = True
             if files:
-                first_file = next(iter(sorted(subdir.glob("*.md"))))
-                first_meta = read_meta_from_file(first_file)
-                version = int(first_meta.get("schema_version", "0")) if first_meta else 0
                 domains[domain_name] = {
                     "files": files,
                     "generated": oldest_generated or "unknown",
