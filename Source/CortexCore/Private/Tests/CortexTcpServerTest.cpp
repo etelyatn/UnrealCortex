@@ -16,6 +16,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexTcpServerExclusivePortTest,
+	"Cortex.Core.TcpServer.ExclusivePort",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
 bool FCortexTcpServerPingPongTest::RunTest(const FString& Parameters)
 {
 	// Arrange: Start the TCP server on a test port
@@ -145,6 +151,106 @@ bool FCortexTcpServerPingPongTest::RunTest(const FString& Parameters)
 	SocketSubsystem->DestroySocket(ClientSocket);
 	Server.Stop();
 	TestFalse(TEXT("Server should report not running after stop"), Server.IsRunning());
+
+	return true;
+}
+
+bool FCortexTcpServerExclusivePortTest::RunTest(const FString& Parameters)
+{
+	// Arrange: Start first server on a test port.
+	const int32 TestPort = 18900;
+	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+	TestNotNull(TEXT("Socket subsystem should exist"), SocketSubsystem);
+	if (SocketSubsystem == nullptr)
+	{
+		return true;
+	}
+
+	FCortexCommandRouter Router1;
+	FCortexTcpServer Server1;
+	const bool bServer1Started = Server1.Start(TestPort,
+		[&Router1](const FString& Command, const TSharedPtr<FJsonObject>& Params, FDeferredResponseCallback DeferredCallback)
+		{
+			return Router1.Execute(Command, Params, MoveTemp(DeferredCallback));
+		});
+	TestTrue(TEXT("First server should start on test port"), bServer1Started);
+
+	if (!bServer1Started)
+	{
+		return true;
+	}
+
+	// FTcpListener binds asynchronously on its worker thread.
+	FPlatformProcess::Sleep(0.1f);
+
+	// Occupy the remainder of the auto-increment range so Server2 can only start
+	// if it illegally shares TestPort with Server1.
+	TArray<FSocket*> BlockingSockets;
+	const auto CleanupBlockingSockets = [&BlockingSockets, SocketSubsystem]()
+	{
+		for (FSocket* Socket : BlockingSockets)
+		{
+			if (Socket != nullptr)
+			{
+				Socket->Close();
+				SocketSubsystem->DestroySocket(Socket);
+			}
+		}
+		BlockingSockets.Empty();
+	};
+
+	for (int32 Port = TestPort + 1; Port < TestPort + 100; ++Port)
+	{
+		FSocket* BlockingSocket = SocketSubsystem->CreateSocket(
+			NAME_Stream,
+			*FString::Printf(TEXT("CortexExclusivePortBlocker_%d"), Port),
+			false);
+		if (BlockingSocket == nullptr)
+		{
+			AddError(FString::Printf(TEXT("Failed to create blocking socket for port %d"), Port));
+			CleanupBlockingSockets();
+			Server1.Stop();
+			return true;
+		}
+
+		BlockingSocket->SetReuseAddr(false);
+
+		FIPv4Endpoint BlockingEndpoint(FIPv4Address::InternalLoopback, Port);
+		const bool bBound = BlockingSocket->Bind(*BlockingEndpoint.ToInternetAddr());
+		const bool bListening = bBound && BlockingSocket->Listen(1);
+		if (!bListening)
+		{
+			AddError(FString::Printf(TEXT("Failed to block port %d"), Port));
+			BlockingSocket->Close();
+			SocketSubsystem->DestroySocket(BlockingSocket);
+			CleanupBlockingSockets();
+			Server1.Stop();
+			return true;
+		}
+
+		BlockingSockets.Add(BlockingSocket);
+	}
+
+	// Act: Attempt to bind a second server on the same port.
+	AddExpectedError(
+		TEXT("LogCortex: Failed to bind TCP server on ports"),
+		EAutomationExpectedErrorFlags::Contains,
+		1);
+	FCortexCommandRouter Router2;
+	FCortexTcpServer Server2;
+	const bool bServer2Started = Server2.Start(TestPort,
+		[&Router2](const FString& Command, const TSharedPtr<FJsonObject>& Params, FDeferredResponseCallback DeferredCallback)
+		{
+			return Router2.Execute(Command, Params, MoveTemp(DeferredCallback));
+		});
+
+	// Assert: second bind should fail while the first server is active.
+	TestFalse(TEXT("Second server should fail to bind same port"), bServer2Started);
+
+	// Cleanup
+	Server1.Stop();
+	Server2.Stop();
+	CleanupBlockingSockets();
 
 	return true;
 }

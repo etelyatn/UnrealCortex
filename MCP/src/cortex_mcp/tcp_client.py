@@ -33,6 +33,7 @@ class EditorConnection:
     pid: int
     started_at: str
     port_file: pathlib.Path
+    project: str = ""
 
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -106,12 +107,19 @@ def _parse_port_file(
                 pid=pid,
                 started_at=started_at,
                 port_file=port_file,
+                project=data.get("project", ""),
             )
 
         # Legacy plain integer format
         port = int(content)
         logger.info("Parsed legacy port file %s: port=%d", port_file.name, port)
-        return EditorConnection(port=port, pid=pid_from_name, started_at="", port_file=port_file)
+        return EditorConnection(
+            port=port,
+            pid=pid_from_name,
+            started_at="",
+            port_file=port_file,
+            project="",
+        )
     except (ValueError, OSError, json.JSONDecodeError, KeyError) as e:
         logger.warning("Failed to read port file %s: %s", port_file, e)
         return None
@@ -180,7 +188,7 @@ def _read_project_path(editor: EditorConnection) -> str | None:
     return None
 
 
-def _discover_port() -> tuple[int, int | None, str | None] | None:
+def _discover_port() -> tuple[int, int | None, str | None, str] | None:
     """Discover the Cortex TCP port from per-PID port files.
 
     Selection priority:
@@ -188,7 +196,7 @@ def _discover_port() -> tuple[int, int | None, str | None] | None:
     2. Most recently started editor (by started_at field)
 
     Returns:
-        Tuple of (port, pid, project_path), or None if not found.
+        Tuple of (port, pid, project_path, project_name), or None if not found.
     """
     editors = _discover_all_editors()
     if not editors:
@@ -206,14 +214,14 @@ def _discover_port() -> tuple[int, int | None, str | None] | None:
             for editor in editors:
                 if editor.pid == target_pid:
                     logger.info("Selected editor PID %d (via CORTEX_EDITOR_PID)", target_pid)
-                    return editor.port, editor.pid, _read_project_path(editor)
+                    return editor.port, editor.pid, _read_project_path(editor), editor.project
             logger.warning("CORTEX_EDITOR_PID=%d not found among live editors", target_pid)
             return None
 
     editors.sort(key=lambda e: e.started_at, reverse=True)
     selected = editors[0]
     logger.info("Selected most recent editor: PID %d on port %d", selected.pid, selected.port)
-    return selected.port, selected.pid, _read_project_path(selected)
+    return selected.port, selected.pid, _read_project_path(selected), selected.project
 
 
 class UEConnection:
@@ -223,13 +231,14 @@ class UEConnection:
         self.host = host
         self._pid: int | None = None
         self._project_path: str | None = None
+        self._expected_project: str = ""
         if port is not None:
             self.port = port
         else:
             # Try port file discovery, then fallback to default
             discovered = _discover_port()
             if discovered is not None:
-                self.port, self._pid, self._project_path = discovered
+                self.port, self._pid, self._project_path, self._expected_project = discovered
             else:
                 self.port = _DEFAULT_PORT
         self._socket: socket.socket | None = None
@@ -254,6 +263,7 @@ class UEConnection:
             sock.connect((self.host, self.port))
             sock.settimeout(_RECV_TIMEOUT)
             self._socket = sock
+            self._validate_project()
             if not self._loaded_file_cache:
                 self.load_file_caches()
                 self._loaded_file_cache = True
@@ -318,7 +328,7 @@ class UEConnection:
                     # Re-discover port in case editor restarted on a different port
                     result = _discover_port()
                     if result is not None:
-                        new_port, new_pid, new_project_path = result
+                        new_port, new_pid, new_project_path, new_project = result
                         if new_port != self.port:
                             logger.info(
                                 "Port changed %d → %d, updating", self.port, new_port
@@ -326,6 +336,7 @@ class UEConnection:
                             self.port = new_port
                         self._pid = new_pid
                         self._project_path = new_project_path
+                        self._expected_project = new_project
                     time.sleep(_RECONNECT_DELAY)
 
         raise last_error
@@ -488,3 +499,42 @@ class UEConnection:
         except (BrokenPipeError, ConnectionResetError, OSError, json.JSONDecodeError) as e:
             self.disconnect()
             raise ConnectionError(f"Lost connection to Unreal Editor: {e}") from e
+
+    def _validate_project(self) -> None:
+        """Warn if the connected editor project name differs from expected."""
+        if self._socket is None or not self._expected_project:
+            return
+
+        try:
+            request = json.dumps({"command": "get_status", "params": {}}) + "\n"
+            self._socket.sendall(request.encode("utf-8"))
+
+            self._socket.settimeout(5.0)
+            data = b""
+            while b"\n" not in data:
+                chunk = self._socket.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+
+            if data:
+                first_line, remainder = data.split(b"\n", 1)
+                if remainder:
+                    self._recv_buffer = remainder + self._recv_buffer
+                response = json.loads(first_line.decode("utf-8"))
+                actual_project = response.get("data", {}).get("project_name", "")
+                if actual_project and actual_project != self._expected_project:
+                    logger.warning(
+                        "Connected to '%s' but expected '%s' — wrong editor on port %d. "
+                        "Check for stale port files in Saved/.",
+                        actual_project,
+                        self._expected_project,
+                        self.port,
+                    )
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.debug("Project validation skipped: %s", e)
+        finally:
+            try:
+                self._socket.settimeout(_RECV_TIMEOUT)
+            except OSError:
+                pass
