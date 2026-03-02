@@ -108,6 +108,10 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	{
 		return FCortexEditorViewportOps::FocusActor(Params);
 	}
+	if (Command == TEXT("focus_node"))
+	{
+		return FCortexEditorViewportOps::FocusNode(Params);
+	}
 	if (Command == TEXT("set_viewport_mode"))
 	{
 		return FCortexEditorViewportOps::SetViewportMode(Params);
@@ -135,6 +139,7 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 		{ TEXT("get_viewport_info"), TEXT("Get viewport state") },
 		{ TEXT("set_viewport_camera"), TEXT("Position viewport camera") },
 		{ TEXT("focus_actor"), TEXT("Frame actor in viewport") },
+		{ TEXT("focus_node"), TEXT("Open Blueprint editor and focus a specific graph node") },
 		{ TEXT("set_viewport_mode"), TEXT("Change view mode") },
 		{ TEXT("execute_console_command"), TEXT("Run console command in PIE") },
 		{ TEXT("get_recent_logs"), TEXT("Get recent log entries") },

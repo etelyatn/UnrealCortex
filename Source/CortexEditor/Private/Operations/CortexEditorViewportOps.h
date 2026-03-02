@@ -10,5 +10,6 @@ public:
 	static FCortexCommandResult CaptureScreenshot(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult SetViewportCamera(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult FocusActor(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult FocusNode(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult SetViewportMode(const TSharedPtr<FJsonObject>& Params);
 };

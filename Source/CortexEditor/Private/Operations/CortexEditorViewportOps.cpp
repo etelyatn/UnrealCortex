@@ -10,9 +10,14 @@
 #include "Modules/ModuleManager.h"
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "GameFramework/Actor.h"
+#include "Engine/Blueprint.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "Kismet2/KismetEditorUtilities.h"
 
 namespace
 {
@@ -316,5 +321,123 @@ FCortexCommandResult FCortexEditorViewportOps::SetViewportMode(const TSharedPtr<
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("status"), TEXT("ok"));
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexEditorViewportOps::FocusNode(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	FString NodeId;
+	FString GraphName;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("node_id"), NodeId))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path and node_id"));
+	}
+
+	Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+	const FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
+	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+	}
+
+	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
+	if (Blueprint == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Could not load Blueprint: %s"), *AssetPath));
+	}
+
+	TArray<UEdGraph*> AllGraphs;
+	Blueprint->GetAllGraphs(AllGraphs);
+
+	UEdGraph* TargetGraph = nullptr;
+	UEdGraphNode* TargetNode = nullptr;
+
+	if (GraphName.IsEmpty())
+	{
+		for (UEdGraph* Graph : AllGraphs)
+		{
+			if (Graph == nullptr)
+			{
+				continue;
+			}
+
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (Node && Node->GetName() == NodeId)
+				{
+					TargetGraph = Graph;
+					TargetNode = Node;
+					break;
+				}
+			}
+			if (TargetNode)
+			{
+				break;
+			}
+		}
+
+		if (TargetNode == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::NodeNotFound,
+				FString::Printf(TEXT("No graph contains node: %s"), *NodeId));
+		}
+	}
+	else
+	{
+		for (UEdGraph* Graph : AllGraphs)
+		{
+			if (Graph && Graph->GetName() == GraphName)
+			{
+				TargetGraph = Graph;
+				break;
+			}
+		}
+
+		if (TargetGraph == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::NodeNotFound,
+				FString::Printf(TEXT("Graph not found: %s"), *GraphName));
+		}
+
+		for (UEdGraphNode* Node : TargetGraph->Nodes)
+		{
+			if (Node && Node->GetName() == NodeId)
+			{
+				TargetNode = Node;
+				break;
+			}
+		}
+
+		if (TargetNode == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::NodeNotFound,
+				FString::Printf(TEXT("Node not found in graph %s: %s"),
+					*TargetGraph->GetName(), *NodeId));
+		}
+	}
+
+	FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(TargetNode);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetStringField(TEXT("graph_name"), TargetGraph->GetName());
+	Data->SetStringField(TEXT("node_id"), TargetNode->GetName());
+	Data->SetStringField(TEXT("display_name"),
+		TargetNode->GetNodeTitle(ENodeTitleType::ListView).ToString());
+	Data->SetStringField(TEXT("node_class"), TargetNode->GetClass()->GetName());
+
 	return FCortexCommandRouter::Success(Data);
 }
