@@ -514,7 +514,7 @@ FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObj
 	TreeNode->SetNumberField(TEXT("cpp_count"), CppCount);
 	TreeNode->SetNumberField(TEXT("blueprint_count"), BPCount);
 	TreeNode->SetNumberField(TEXT("project_cpp_count"), ProjectCppCount);
-	TreeNode->SetNumberField(TEXT("engine_cpp_count"), CppCount - ProjectCppCount);
+	TreeNode->SetNumberField(TEXT("engine_cpp_count"), FMath::Max(0, CppCount - ProjectCppCount));
 	TreeNode->SetNumberField(TEXT("project_blueprint_count"), ProjectBPCount);
 	TSharedPtr<FJsonObject> CacheParams = MakeShared<FJsonObject>();
 	CacheParams->SetStringField(TEXT("root"), RootName);
@@ -542,30 +542,19 @@ bool FCortexReflectOps::WriteReflectCache(
 	Envelope->SetStringField(TEXT("timestamp"), FDateTime::UtcNow().ToIso8601());
 	Envelope->SetObjectField(TEXT("data"), HierarchyData);
 
-	TSharedPtr<FJsonObject> ParamsObj = MakeShared<FJsonObject>();
 	if (Params.IsValid())
 	{
-		FString Root = TEXT("AActor");
-		int32 Depth = 10;
-		int32 MaxResults = 5000;
-		bool bIncludeEngine = false;
-		Params->TryGetStringField(TEXT("root"), Root);
-		Params->TryGetNumberField(TEXT("depth"), Depth);
-		Params->TryGetNumberField(TEXT("max_results"), MaxResults);
-		Params->TryGetBoolField(TEXT("include_engine"), bIncludeEngine);
-		ParamsObj->SetStringField(TEXT("root"), Root);
-		ParamsObj->SetNumberField(TEXT("depth"), Depth);
-		ParamsObj->SetNumberField(TEXT("max_results"), MaxResults);
-		ParamsObj->SetBoolField(TEXT("include_engine"), bIncludeEngine);
+		Envelope->SetObjectField(TEXT("params"), Params);
 	}
 	else
 	{
-		ParamsObj->SetStringField(TEXT("root"), TEXT("AActor"));
-		ParamsObj->SetNumberField(TEXT("depth"), 10);
-		ParamsObj->SetNumberField(TEXT("max_results"), 5000);
-		ParamsObj->SetBoolField(TEXT("include_engine"), false);
+		TSharedPtr<FJsonObject> DefaultParams = MakeShared<FJsonObject>();
+		DefaultParams->SetStringField(TEXT("root"), TEXT("AActor"));
+		DefaultParams->SetNumberField(TEXT("depth"), 5);
+		DefaultParams->SetNumberField(TEXT("max_results"), 1000);
+		DefaultParams->SetBoolField(TEXT("include_engine"), false);
+		Envelope->SetObjectField(TEXT("params"), DefaultParams);
 	}
-	Envelope->SetObjectField(TEXT("params"), ParamsObj);
 
 	FString JsonString;
 	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =

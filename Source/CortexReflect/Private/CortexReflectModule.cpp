@@ -59,8 +59,8 @@ void FCortexReflectModule::RunAutoScan()
 
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("root"), TEXT("AActor"));
-	Params->SetNumberField(TEXT("depth"), 10);
-	Params->SetNumberField(TEXT("max_results"), 5000);
+	Params->SetNumberField(TEXT("depth"), 5);
+	Params->SetNumberField(TEXT("max_results"), 1000);
 	Params->SetBoolField(TEXT("include_engine"), false);
 
 	const FCortexCommandResult Result = FCortexReflectOps::ClassHierarchy(Params);

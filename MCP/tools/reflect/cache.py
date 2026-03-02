@@ -14,7 +14,7 @@ _CACHE_DIR_NAME = "Cortex"
 
 
 def _get_cache_dir() -> pathlib.Path:
-    """Get the cache directory path (Saved/CortexReflect/).
+    """Get the cache directory path (Saved/Cortex/).
 
     Uses CORTEX_PROJECT_DIR env var if set, otherwise walks up to find .uproject.
     """
@@ -85,7 +85,10 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
                     },
                     "data": data,
                 }
-                (cache_dir / "reflect-cache.json").write_text(json.dumps(cache_envelope))
+                cache_path = cache_dir / "reflect-cache.json"
+                tmp_path = cache_path.with_suffix(".json.tmp")
+                tmp_path.write_text(json.dumps(cache_envelope))
+                tmp_path.replace(cache_path)
 
                 meta = {
                     "timestamp": time.time(),
@@ -93,7 +96,10 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
                     "cache_mode": "persistent",
                     "root": root,
                 }
-                (cache_dir / "meta.json").write_text(json.dumps(meta))
+                meta_path = cache_dir / "meta.json"
+                meta_tmp = meta_path.with_suffix(".json.tmp")
+                meta_tmp.write_text(json.dumps(meta))
+                meta_tmp.replace(meta_path)
             except OSError as e:
                 logger.warning("Failed to write reflect cache file: %s", e)
 
