@@ -24,14 +24,20 @@ def editor_connection():
     conn.disconnect()
 
 
-@pytest.fixture(autouse=True)
-def ensure_pie_stopped(editor_connection):
+def _stop_pie_if_running(conn):
     try:
-        state = editor_connection.send_command("editor.get_pie_state")
+        state = conn.send_command("editor.get_pie_state")
         if state.get("data", {}).get("state") != "stopped":
-            editor_connection.send_command("editor.stop_pie", {}, timeout=30.0)
+            conn.send_command("editor.stop_pie", {}, timeout=30.0)
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def ensure_pie_stopped(editor_connection):
+    _stop_pie_if_running(editor_connection)
+    yield
+    _stop_pie_if_running(editor_connection)
 
 
 @pytest.mark.e2e
@@ -99,13 +105,6 @@ def test_pause_resume(editor_connection):
 
 @pytest.mark.e2e
 def test_start_pie_when_already_active(editor_connection):
-    try:
-        state = editor_connection.send_command("editor.get_pie_state")
-        if state["data"]["state"] != "stopped":
-            editor_connection.send_command("editor.stop_pie", {}, timeout=30.0)
-    except Exception:
-        pass
-
     first_start = None
     last_exc = None
     for _ in range(2):

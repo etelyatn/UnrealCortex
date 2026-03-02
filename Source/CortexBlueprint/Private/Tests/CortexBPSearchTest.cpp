@@ -298,12 +298,12 @@ bool FCortexBPSearchPinMatchTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FCortexBPSearchPinTextStringTableMatchTest,
-	"Cortex.Blueprint.Search.PinTextStringTableMatch",
+	FCortexBPSearchPinTextMatchTest,
+	"Cortex.Blueprint.Search.PinTextMatch",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FCortexBPSearchPinTextStringTableMatchTest::RunTest(const FString& Parameters)
+bool FCortexBPSearchPinTextMatchTest::RunTest(const FString& Parameters)
 {
 	if (GEngine)
 	{

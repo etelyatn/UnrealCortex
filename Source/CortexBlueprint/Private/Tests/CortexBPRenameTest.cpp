@@ -67,6 +67,11 @@ bool FCortexBPRenameBasicTest::RunTest(const FString& Parameters)
 	FixupParams->SetBoolField(TEXT("recursive"), true);
 	FCortexBPRedirectorOps::FixupRedirectors(FixupParams);
 
+	if (GEngine)
+	{
+		GEngine->Exec(nullptr, TEXT("log LogAssetRegistry Warning"));
+	}
+
 	return true;
 }
 
@@ -133,6 +138,11 @@ bool FCortexBPRenameBatchSwapTest::RunTest(const FString& Parameters)
 	FixupParams->SetStringField(TEXT("path"), FolderPath);
 	FixupParams->SetBoolField(TEXT("recursive"), true);
 	FCortexBPRedirectorOps::FixupRedirectors(FixupParams);
+
+	if (GEngine)
+	{
+		GEngine->Exec(nullptr, TEXT("log LogAssetRegistry Warning"));
+	}
 
 	return true;
 }

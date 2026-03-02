@@ -57,5 +57,10 @@ bool FCortexBPFixupRedirectorsTest::RunTest(const FString& Parameters)
 	// Run fixup once more after cleanup delete so redirector package state is fully flushed.
 	Handler.Execute(TEXT("fixup_redirectors"), FixupParams);
 
+	if (GEngine)
+	{
+		GEngine->Exec(nullptr, TEXT("log LogAssetRegistry Warning"));
+	}
+
 	return true;
 }
