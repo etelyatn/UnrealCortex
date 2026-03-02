@@ -10,6 +10,9 @@
 #include "Dom/JsonValue.h"
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
+#include "Misc/Paths.h"
+#include "HAL/FileManager.h"
+#include "Math/UnrealMathUtility.h"
 #include "Materials/Material.h"
 #include "MaterialGraph/MaterialGraph.h"
 #include "ScopedTransaction.h"
@@ -706,6 +709,35 @@ FCortexCommandResult FCortexCommandRouter::HandleGetStatus(const TSharedPtr<FJso
 	Subsystems->SetBoolField(TEXT("gameplay_tags"), true);
 	Subsystems->SetBoolField(TEXT("localization"), true);
 	Data->SetObjectField(TEXT("subsystems"), Subsystems);
+
+	{
+		const FString CacheDir = FPaths::ProjectSavedDir() / TEXT("Cortex");
+		auto CheckCacheFile = [&CacheDir](const FString& FileName) -> TSharedPtr<FJsonObject>
+		{
+			TSharedPtr<FJsonObject> CacheInfo = MakeShared<FJsonObject>();
+			const FString FilePath = CacheDir / FileName;
+			const FFileStatData StatData = IFileManager::Get().GetStatData(*FilePath);
+
+			if (StatData.bIsValid)
+			{
+				CacheInfo->SetBoolField(TEXT("warm"), true);
+				const double AgeSeconds =
+					(FDateTime::UtcNow() - StatData.ModificationTime).GetTotalSeconds();
+				CacheInfo->SetNumberField(TEXT("age_seconds"), FMath::RoundToInt(AgeSeconds));
+			}
+			else
+			{
+				CacheInfo->SetBoolField(TEXT("warm"), false);
+			}
+
+			return CacheInfo;
+		};
+
+		TSharedPtr<FJsonObject> Caches = MakeShared<FJsonObject>();
+		Caches->SetObjectField(TEXT("reflect"), CheckCacheFile(TEXT("reflect-cache.json")));
+		Caches->SetObjectField(TEXT("blueprint"), CheckCacheFile(TEXT("blueprint-cache.json")));
+		Data->SetObjectField(TEXT("caches"), Caches);
+	}
 
 	return Success(Data);
 }

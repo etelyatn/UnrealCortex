@@ -10,4 +10,10 @@ class CORTEXREFLECT_API FCortexReflectModule : public IModuleInterface
 public:
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
+
+private:
+	FDelegateHandle PostEngineInitHandle;
+
+	void OnPostEngineInit();
+	void RunAutoScan();
 };

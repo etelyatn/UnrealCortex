@@ -236,6 +236,7 @@ class UEConnection:
         self._cache = ResponseCache()
         self._recv_buffer = b""
         self._socket_lock = threading.Lock()
+        self._loaded_file_cache = False
 
     @property
     def connected(self) -> bool:
@@ -253,6 +254,9 @@ class UEConnection:
             sock.connect((self.host, self.port))
             sock.settimeout(_RECV_TIMEOUT)
             self._socket = sock
+            if not self._loaded_file_cache:
+                self.load_file_caches()
+                self._loaded_file_cache = True
             logger.info("Connected to Unreal Editor at %s:%d", self.host, self.port)
         except (ConnectionRefusedError, TimeoutError, OSError) as e:
             self._socket = None
@@ -350,6 +354,69 @@ class UEConnection:
     def invalidate_cache(self, pattern: str | None) -> int:
         """Invalidate cache entries. None clears all."""
         return self._cache.invalidate(pattern)
+
+    def _find_cache_dir(self) -> pathlib.Path | None:
+        """Find Saved/Cortex/ directory."""
+        project_dir = os.environ.get("CORTEX_PROJECT_DIR")
+        if project_dir:
+            found = pathlib.Path(project_dir) / "Saved" / "Cortex"
+            return found if found.exists() else None
+
+        current = pathlib.Path(__file__).resolve().parent
+        for _ in range(20):
+            if list(current.glob("*.uproject")):
+                found = current / "Saved" / "Cortex"
+                return found if found.exists() else None
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+        return None
+
+    def load_file_caches(self) -> None:
+        """Load cached responses from Saved/Cortex/ files if fresh."""
+        cache_dir = self._find_cache_dir()
+        if cache_dir is None:
+            return
+
+        reflect_file = cache_dir / "reflect-cache.json"
+        if not reflect_file.exists():
+            return
+
+        try:
+            cache = json.loads(reflect_file.read_text())
+            age = time.time() - reflect_file.stat().st_mtime
+            if age > 3600:
+                logger.info("Reflect cache too old (%ds), skipping", int(age))
+                return
+
+            data = cache.get("data", {})
+            if data.get("total_classes") is None or "name" not in data:
+                logger.warning("Reflect cache has unexpected shape, skipping")
+                return
+
+            params = cache.get(
+                "params",
+                {
+                    "root": "AActor",
+                    "depth": 10,
+                    "max_results": 5000,
+                    "include_engine": False,
+                },
+            )
+            key = self._cache.make_key("reflect.class_hierarchy", params)
+            self._cache.set(
+                key,
+                {"success": True, "data": data},
+                ttl=max(1, 3600 - int(age)),
+            )
+            logger.info(
+                "Loaded reflect cache from file (age: %ds, %d classes)",
+                int(age),
+                data.get("total_classes", 0),
+            )
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to load reflect cache: %s", e)
 
     def _read_response_line(self, deadline: float) -> str:
         """Read one newline-delimited JSON response line from the socket."""

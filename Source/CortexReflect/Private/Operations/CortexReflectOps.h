@@ -13,6 +13,10 @@ public:
 	static FCortexCommandResult Search(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult GetDependencies(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult GetReferencers(const TSharedPtr<FJsonObject>& Params);
+	static bool WriteReflectCache(
+		const TSharedPtr<FJsonObject>& HierarchyData,
+		const TSharedPtr<FJsonObject>& Params = nullptr
+	);
 
 private:
 	static UClass* FindClassByName(const FString& ClassName, FCortexCommandResult& OutError);
@@ -28,7 +32,9 @@ private:
 		int32 MaxResults,
 		int32& OutTotalCount,
 		int32& OutCppCount,
-		int32& OutBPCount
+		int32& OutBPCount,
+		int32& OutProjectCppCount,
+		int32& OutProjectBPCount
 	);
 	static TSharedPtr<FJsonObject> SerializeProperty(const FProperty* Property, const UObject* CDO);
 	static TSharedPtr<FJsonObject> SerializeFunction(const UFunction* Function, const UClass* QueryClass);

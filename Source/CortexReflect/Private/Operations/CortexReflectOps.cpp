@@ -16,6 +16,9 @@
 #include "K2Node_SpawnActorFromClass.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Serialization/JsonSerializer.h"
 
 // Returns the full C++ name of a class (e.g. "AActor" not "Actor").
 // UClass::GetName() strips the A/U prefix; GetPrefixCPP() gives it back.
@@ -364,7 +367,9 @@ void FCortexReflectOps::BuildHierarchyTree(
 	int32 MaxResults,
 	int32& OutTotalCount,
 	int32& OutCppCount,
-	int32& OutBPCount)
+	int32& OutBPCount,
+	int32& OutProjectCppCount,
+	int32& OutProjectBPCount)
 {
 	OutNode = MakeShared<FJsonObject>();
 	OutNode->SetStringField(TEXT("name"), GetCppClassName(Root));
@@ -374,6 +379,10 @@ void FCortexReflectOps::BuildHierarchyTree(
 	{
 		OutNode->SetStringField(TEXT("type"), TEXT("blueprint"));
 		OutBPCount++;
+		if (IsProjectClass(Root))
+		{
+			OutProjectBPCount++;
+		}
 		UBlueprint* BP = Cast<UBlueprint>(BPGC->ClassGeneratedBy);
 		if (BP)
 		{
@@ -384,6 +393,10 @@ void FCortexReflectOps::BuildHierarchyTree(
 	{
 		OutNode->SetStringField(TEXT("type"), TEXT("cpp"));
 		OutCppCount++;
+		if (IsProjectClass(Root))
+		{
+			OutProjectCppCount++;
+		}
 		const FString* ModName = Root->FindMetaData(TEXT("ModuleName"));
 		if (ModName)
 		{
@@ -427,7 +440,8 @@ void FCortexReflectOps::BuildHierarchyTree(
 				CurrentDepth + 1, MaxDepth,
 				bIncludeBlueprint, bIncludeEngine,
 				MaxResults,
-				OutTotalCount, OutCppCount, OutBPCount
+				OutTotalCount, OutCppCount, OutBPCount,
+				OutProjectCppCount, OutProjectBPCount
 			);
 			ChildrenArray.Add(MakeShared<FJsonValueObject>(ChildNode));
 		}
@@ -466,21 +480,103 @@ FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObj
 	bool bIncludeEngine = false;
 	Params->TryGetBoolField(TEXT("include_engine"), bIncludeEngine);
 
-	int32 TotalCount = 0, CppCount = 0, BPCount = 0;
+	int32 TotalCount = 0;
+	int32 CppCount = 0;
+	int32 BPCount = 0;
+	int32 ProjectCppCount = 0;
+	int32 ProjectBPCount = 0;
 	TSharedPtr<FJsonObject> TreeNode;
 	BuildHierarchyTree(
 		RootClass, TreeNode,
 		0, Depth,
 		bIncludeBlueprint, bIncludeEngine,
 		MaxResults,
-		TotalCount, CppCount, BPCount
+		TotalCount, CppCount, BPCount,
+		ProjectCppCount, ProjectBPCount
 	);
+
+	// Keep the root node in the hierarchy for context, but in project-only mode
+	// exclude an engine root class from aggregate counts.
+	if (!bIncludeEngine && !IsProjectClass(RootClass))
+	{
+		TotalCount = FMath::Max(0, TotalCount - 1);
+		if (Cast<UBlueprintGeneratedClass>(RootClass))
+		{
+			BPCount = FMath::Max(0, BPCount - 1);
+		}
+		else
+		{
+			CppCount = FMath::Max(0, CppCount - 1);
+		}
+	}
 
 	TreeNode->SetNumberField(TEXT("total_classes"), TotalCount);
 	TreeNode->SetNumberField(TEXT("cpp_count"), CppCount);
 	TreeNode->SetNumberField(TEXT("blueprint_count"), BPCount);
+	TreeNode->SetNumberField(TEXT("project_cpp_count"), ProjectCppCount);
+	TreeNode->SetNumberField(TEXT("engine_cpp_count"), FMath::Max(0, CppCount - ProjectCppCount));
+	TreeNode->SetNumberField(TEXT("project_blueprint_count"), ProjectBPCount);
+	TSharedPtr<FJsonObject> CacheParams = MakeShared<FJsonObject>();
+	CacheParams->SetStringField(TEXT("root"), RootName);
+	CacheParams->SetNumberField(TEXT("depth"), Depth);
+	CacheParams->SetNumberField(TEXT("max_results"), MaxResults);
+	CacheParams->SetBoolField(TEXT("include_engine"), bIncludeEngine);
+	WriteReflectCache(TreeNode, CacheParams);
 
 	return FCortexCommandRouter::Success(TreeNode);
+}
+
+bool FCortexReflectOps::WriteReflectCache(
+	const TSharedPtr<FJsonObject>& HierarchyData,
+	const TSharedPtr<FJsonObject>& Params)
+{
+	if (!HierarchyData.IsValid())
+	{
+		return false;
+	}
+
+	const FString CacheDir = FPaths::ProjectSavedDir() / TEXT("Cortex");
+	IFileManager::Get().MakeDirectory(*CacheDir, true);
+
+	TSharedPtr<FJsonObject> Envelope = MakeShared<FJsonObject>();
+	Envelope->SetStringField(TEXT("timestamp"), FDateTime::UtcNow().ToIso8601());
+	Envelope->SetObjectField(TEXT("data"), HierarchyData);
+
+	if (Params.IsValid())
+	{
+		Envelope->SetObjectField(TEXT("params"), Params);
+	}
+	else
+	{
+		TSharedPtr<FJsonObject> DefaultParams = MakeShared<FJsonObject>();
+		DefaultParams->SetStringField(TEXT("root"), TEXT("AActor"));
+		DefaultParams->SetNumberField(TEXT("depth"), 5);
+		DefaultParams->SetNumberField(TEXT("max_results"), 1000);
+		DefaultParams->SetBoolField(TEXT("include_engine"), false);
+		Envelope->SetObjectField(TEXT("params"), DefaultParams);
+	}
+
+	FString JsonString;
+	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&JsonString);
+	FJsonSerializer::Serialize(Envelope.ToSharedRef(), Writer);
+
+	const FString CachePath = CacheDir / TEXT("reflect-cache.json");
+	const FString TempPath = CachePath + TEXT(".tmp");
+	if (!FFileHelper::SaveStringToFile(JsonString, *TempPath))
+	{
+		UE_LOG(LogCortexReflect, Warning, TEXT("Failed to write reflect cache temp file: %s"), *TempPath);
+		return false;
+	}
+
+	if (!IFileManager::Get().Move(*CachePath, *TempPath, true, true))
+	{
+		UE_LOG(LogCortexReflect, Warning, TEXT("Failed to move reflect cache temp file: %s"), *TempPath);
+		return false;
+	}
+
+	UE_LOG(LogCortexReflect, Log, TEXT("Wrote reflect cache: %s"), *CachePath);
+	return true;
 }
 
 FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject>& Params)
