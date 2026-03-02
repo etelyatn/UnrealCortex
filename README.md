@@ -209,10 +209,32 @@ Commands are namespaced: `{domain}.{command}` — e.g. `data.query_datatable`, `
 
 ### Step 1 — Install the Plugin
 
+Create the `Developer` folder if it doesn't exist, then install using one of the two methods below.
+
+#### Option A — Git Submodule *(recommended for version-controlled projects)*
+
 ```bash
-cd YourProject/Plugins
+mkdir -p YourProject/Plugins/Developer
+cd YourProject/Plugins/Developer
 git submodule add https://github.com/etelyatn/UnrealCortex.git UnrealCortex
 ```
+
+#### Option B — Manual Download
+
+1. Go to [github.com/etelyatn/UnrealCortex](https://github.com/etelyatn/UnrealCortex)
+2. Click **Code → Download ZIP** (or download a tagged release from the [Releases](https://github.com/etelyatn/UnrealCortex/releases) page)
+3. Extract the contents so the folder structure is:
+   ```
+   YourProject/
+   └── Plugins/
+       └── Developer/
+           └── UnrealCortex/
+               ├── Source/
+               ├── MCP/
+               └── UnrealCortex.uplugin
+   ```
+
+#### After Either Method
 
 Add the plugin to your `.uproject`:
 
@@ -229,7 +251,7 @@ Rebuild your project. All 10 modules load automatically at `PostEngineInit` — 
 ### Step 2 — Install Python Dependencies
 
 ```bash
-cd Plugins/UnrealCortex/MCP
+cd Plugins/Developer/UnrealCortex/MCP
 uv sync
 ```
 
@@ -245,7 +267,8 @@ Choose one of the two installation paths below.
 **Install the toolkit:**
 
 ```bash
-claude plugin add etelyatn/cortex-toolkit
+claude plugin marketplace add etelyatn/cortex-toolkit
+claude plugin install cortex-toolkit
 ```
 
 For Codex or Cursor setup, see the [Cortex Toolkit README](https://github.com/etelyatn/cortex-toolkit).
@@ -268,7 +291,7 @@ Create `.mcp.json` at your project root:
   "mcpServers": {
     "cortex_mcp": {
       "command": "uv",
-      "args": ["run", "--directory", "Plugins/UnrealCortex/MCP", "cortex-mcp"],
+      "args": ["run", "--directory", "Plugins/Developer/UnrealCortex/MCP", "cortex-mcp"],
       "env": { "CORTEX_PROJECT_DIR": "." }
     }
   }
