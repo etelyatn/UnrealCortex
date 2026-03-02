@@ -701,6 +701,24 @@ class TestDecodeData(unittest.TestCase):
         resp = {"data": "bad"}
         self.assertEqual(_decode_data(resp, fallback=[]), [])
 
+    def test_returns_fallback_when_json_decodes_to_non_dict(self):
+        """json.loads can return a list or string — must still return dict."""
+        resp = {"data": '["a", "b"]'}
+        self.assertEqual(_decode_data(resp), {})
+
+    def test_returns_fallback_when_json_decodes_to_bare_string(self):
+        resp = {"data": '"hello"'}
+        self.assertEqual(_decode_data(resp), {})
+
+    def test_returns_fallback_when_raw_is_list(self):
+        """data field could be a list instead of dict."""
+        resp = {"data": ["a", "b"]}
+        self.assertEqual(_decode_data(resp), {})
+
+    def test_returns_fallback_when_raw_is_int(self):
+        resp = {"data": 42}
+        self.assertEqual(_decode_data(resp), {})
+
 
 class TestCatalogVersionInfo(unittest.TestCase):
 

@@ -400,10 +400,11 @@ def _decode_data(response: dict, fallback=None) -> dict:
         return fallback
     if isinstance(raw, str):
         try:
-            return json.loads(raw)
+            decoded = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             return fallback
-    return raw
+        return decoded if isinstance(decoded, dict) else fallback
+    return raw if isinstance(raw, dict) else fallback
 
 
 def collect_data_domain(connection) -> dict:
