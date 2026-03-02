@@ -4,6 +4,7 @@ Requires a running Unreal Editor instance with the UnrealCortex plugin enabled.
 """
 
 from pathlib import Path
+import time
 
 import pytest
 
@@ -21,6 +22,16 @@ def editor_connection():
         pytest.skip(f"No running Unreal Editor available for editor E2E tests: {exc}")
     yield conn
     conn.disconnect()
+
+
+@pytest.fixture(autouse=True)
+def ensure_pie_stopped(editor_connection):
+    try:
+        state = editor_connection.send_command("editor.get_pie_state")
+        if state.get("data", {}).get("state") != "stopped":
+            editor_connection.send_command("editor.stop_pie", {}, timeout=30.0)
+    except Exception:
+        pass
 
 
 @pytest.mark.e2e
@@ -88,9 +99,29 @@ def test_pause_resume(editor_connection):
 
 @pytest.mark.e2e
 def test_start_pie_when_already_active(editor_connection):
-    first_start = editor_connection.send_command(
-        "editor.start_pie", {"mode": "selected_viewport"}, timeout=60.0
-    )
+    try:
+        state = editor_connection.send_command("editor.get_pie_state")
+        if state["data"]["state"] != "stopped":
+            editor_connection.send_command("editor.stop_pie", {}, timeout=30.0)
+    except Exception:
+        pass
+
+    first_start = None
+    last_exc = None
+    for _ in range(2):
+        try:
+            first_start = editor_connection.send_command(
+                "editor.start_pie", {"mode": "selected_viewport"}, timeout=60.0
+            )
+            break
+        except RuntimeError as exc:
+            last_exc = exc
+            if "PIE_TERMINATED" not in str(exc):
+                raise
+            time.sleep(1.0)
+
+    if first_start is None:
+        raise last_exc
     assert first_start["success"] is True
 
     try:

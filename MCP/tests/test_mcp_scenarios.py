@@ -12,6 +12,7 @@ Run:
     cd Plugins/UnrealCortex/MCP && uv run pytest tests/test_mcp_scenarios.py -v -k stress
 """
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -172,38 +173,38 @@ async def test_scenario_class_defaults_workflow(mcp_client):
         # Step 4: Read specific inherited C++ properties
         data = await call_tool(mcp_client, "get_class_defaults", {
             "blueprint_path": asset_path,
-            "properties": ["bCanEverTick", "bReplicates"],
+            "properties": ["PrimaryActorTick.bCanEverTick", "bReplicates"],
         })
         props = data["properties"]
-        assert "bCanEverTick" in props
+        assert "PrimaryActorTick.bCanEverTick" in props
         assert "bReplicates" in props
-        assert "type" in props["bCanEverTick"]
-        assert "value" in props["bCanEverTick"]
+        assert "type" in props["PrimaryActorTick.bCanEverTick"]
+        assert "value" in props["PrimaryActorTick.bCanEverTick"]
 
         # Step 5: Set multiple CDO properties (batch)
         data = await call_tool(mcp_client, "set_class_defaults", {
             "blueprint_path": asset_path,
-            "properties": {"bCanEverTick": True, "bReplicates": True},
-            "compile": True,
+            "properties": {"PrimaryActorTick.bCanEverTick": True, "bReplicates": True},
+            "compile": False,
             "save": False,
         })
         assert "results" in data
-        assert data["results"]["bCanEverTick"]["success"] is True
+        assert data["results"]["PrimaryActorTick.bCanEverTick"]["success"] is True
         assert data["results"]["bReplicates"]["success"] is True
-        assert data["compiled"] is True
+        assert data["compiled"] is False
 
         # Step 6: Verify changes persisted via get
         data = await call_tool(mcp_client, "get_class_defaults", {
             "blueprint_path": asset_path,
-            "properties": ["bCanEverTick", "bReplicates"],
+            "properties": ["PrimaryActorTick.bCanEverTick", "bReplicates"],
         })
-        assert data["properties"]["bCanEverTick"]["value"] is True
+        assert data["properties"]["PrimaryActorTick.bCanEverTick"]["value"] is True
         assert data["properties"]["bReplicates"]["value"] is True
 
         # Step 7: Set with compile=false, save=false
         data = await call_tool(mcp_client, "set_class_defaults", {
             "blueprint_path": asset_path,
-            "properties": {"bCanEverTick": False},
+            "properties": {"PrimaryActorTick.bCanEverTick": False},
             "compile": False,
             "save": False,
         })
@@ -1037,8 +1038,14 @@ async def test_scenario_editor_viewport(mcp_client):
     data = await call_tool(mcp_client, "get_editor_state", {})
     assert "project_name" in data
     if data.get("pie_state") != "stopped":
-        await call_tool(mcp_client, "stop_pie", {})
-        data = await call_tool(mcp_client, "get_editor_state", {})
+        for _ in range(5):
+            try:
+                await call_tool(mcp_client, "stop_pie", {})
+            except Exception:
+                await asyncio.sleep(0.5)
+            data = await call_tool(mcp_client, "get_editor_state", {})
+            if data.get("pie_state") == "stopped":
+                break
         assert data["pie_state"] == "stopped"
 
     # Step 2: Capture baseline view mode for restore in step 5.

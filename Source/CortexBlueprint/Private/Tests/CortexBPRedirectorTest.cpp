@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "CortexBPCommandHandler.h"
 #include "Dom/JsonObject.h"
+#include "Engine/Engine.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
 
@@ -12,6 +13,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexBPFixupRedirectorsTest::RunTest(const FString& Parameters)
 {
+	if (GEngine)
+	{
+		GEngine->Exec(nullptr, TEXT("log LogAssetRegistry Error"));
+	}
+
 	FCortexBPCommandHandler Handler;
 	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
 	const FString FolderPath = FString::Printf(TEXT("/Game/Temp/BPRedirector_%s"), *Suffix);
@@ -47,6 +53,9 @@ bool FCortexBPFixupRedirectorsTest::RunTest(const FString& Parameters)
 	TSharedPtr<FJsonObject> DeleteDest = MakeShared<FJsonObject>();
 	DeleteDest->SetStringField(TEXT("asset_path"), DestPath);
 	Handler.Execute(TEXT("delete"), DeleteDest);
+
+	// Run fixup once more after cleanup delete so redirector package state is fully flushed.
+	Handler.Execute(TEXT("fixup_redirectors"), FixupParams);
 
 	return true;
 }

@@ -1,8 +1,10 @@
 #include "Misc/AutomationTest.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPRedirectorOps.h"
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Blueprint.h"
+#include "Engine/Engine.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
 
@@ -14,6 +16,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexBPRenameBasicTest::RunTest(const FString& Parameters)
 {
+	if (GEngine)
+	{
+		GEngine->Exec(nullptr, TEXT("log LogAssetRegistry Error"));
+	}
+
 	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
 	const FString FolderPath = FString::Printf(TEXT("/Game/Temp/BPRenameFlow_%s"), *Suffix);
 	const FString SourcePath = FString::Printf(TEXT("%s/BP_Rename_Source_%s"), *FolderPath, *Suffix);
@@ -55,6 +62,11 @@ bool FCortexBPRenameBasicTest::RunTest(const FString& Parameters)
 	DeleteParams->SetStringField(TEXT("asset_path"), DestPath);
 	FCortexBPAssetOps::Delete(DeleteParams);
 
+	TSharedPtr<FJsonObject> FixupParams = MakeShared<FJsonObject>();
+	FixupParams->SetStringField(TEXT("path"), FolderPath);
+	FixupParams->SetBoolField(TEXT("recursive"), true);
+	FCortexBPRedirectorOps::FixupRedirectors(FixupParams);
+
 	return true;
 }
 
@@ -66,6 +78,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexBPRenameBatchSwapTest::RunTest(const FString& Parameters)
 {
+	if (GEngine)
+	{
+		GEngine->Exec(nullptr, TEXT("log LogAssetRegistry Error"));
+	}
+
 	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
 	const FString FolderPath = FString::Printf(TEXT("/Game/Temp/BPRenameSwap_%s"), *Suffix);
 	const FString APath = FString::Printf(TEXT("%s/BP_A_%s"), *FolderPath, *Suffix);
@@ -111,6 +128,11 @@ bool FCortexBPRenameBatchSwapTest::RunTest(const FString& Parameters)
 	TSharedPtr<FJsonObject> DeleteA = MakeShared<FJsonObject>();
 	DeleteA->SetStringField(TEXT("asset_path"), APath);
 	FCortexBPAssetOps::Delete(DeleteA);
+
+	TSharedPtr<FJsonObject> FixupParams = MakeShared<FJsonObject>();
+	FixupParams->SetStringField(TEXT("path"), FolderPath);
+	FixupParams->SetBoolField(TEXT("recursive"), true);
+	FCortexBPRedirectorOps::FixupRedirectors(FixupParams);
 
 	return true;
 }

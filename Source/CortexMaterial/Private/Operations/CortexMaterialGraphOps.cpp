@@ -176,6 +176,35 @@ FCortexCommandResult FCortexMaterialGraphOps::GetNode(const TSharedPtr<FJsonObje
 	Position->SetNumberField(TEXT("y"), Expression->MaterialExpressionEditorY);
 	Data->SetObjectField(TEXT("position"), Position);
 
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	for (TFieldIterator<FProperty> It(Expression->GetClass()); It; ++It)
+	{
+		FProperty* Property = *It;
+		if (!Property)
+		{
+			continue;
+		}
+
+		if (!Property->HasAnyPropertyFlags(CPF_Edit)
+			|| Property->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated | CPF_DisableEditOnInstance))
+		{
+			continue;
+		}
+
+		const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Expression);
+		if (!ValuePtr)
+		{
+			continue;
+		}
+
+		const TSharedPtr<FJsonValue> SerializedValue = FCortexSerializer::PropertyToJson(Property, ValuePtr);
+		if (SerializedValue.IsValid())
+		{
+			Properties->SetField(Property->GetName(), SerializedValue);
+		}
+	}
+	Data->SetObjectField(TEXT("properties"), Properties);
+
 	if (const UMaterialExpressionCollectionParameter* CollectionParam =
 		Cast<UMaterialExpressionCollectionParameter>(Expression))
 	{
