@@ -37,7 +37,8 @@ def verify_blueprint(spec: dict, readback: dict) -> VerificationResult:
         return VerificationResult(
             verified=False,
             error_code="COMPILE_FAILED",
-            error="Blueprint is not compiled after composite execution",
+            skipped=["graph_exists", "graph_node_count", "node_count"],
+            message="Structural verification skipped — Blueprint did not compile.",
             checks=checks,
         )
 

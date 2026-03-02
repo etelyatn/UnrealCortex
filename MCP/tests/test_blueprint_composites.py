@@ -617,6 +617,12 @@ class TestBlueprintVerificationIntegration:
 
     def test_success_includes_verification(self):
         mock_connection = MagicMock()
+        # Expected call sequence for an empty Blueprint (no nodes → no auto_layout):
+        #   Call 1: batch (create + compile + save)
+        #   Call 2: bp.compile
+        #   Call 3: bp.save
+        #   Call 4: bp.get_info  (verification readback)
+        #   Call 5: graph.list_nodes  (verification readback)
         mock_connection.send_command.side_effect = [
             {
                 "data": {

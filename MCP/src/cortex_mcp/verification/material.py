@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from . import CheckResult, VerificationResult, check_eq, check_gte
+from . import CheckResult, VerificationResult, check_eq, check_exists, check_gte
 
 _CLASS_PREFIX = "MaterialExpression"
 
@@ -49,16 +49,16 @@ def verify_material(spec: dict, readback: dict) -> VerificationResult:
         )
         checks[name] = check
 
-    if "blend_mode" in spec_props:
-        name, check = check_eq("blend_mode", spec_props["blend_mode"], readback.get("blend_mode"))
-        checks[name] = check
-
-    if "shading_model" in spec_props:
-        name, check = check_eq(
-            "shading_model",
-            spec_props["shading_model"],
-            readback.get("shading_model"),
-        )
+    # blend_mode and shading_model are exposed directly by get_material; check with equality.
+    # All other material_properties keys are verified for presence only — get_material may
+    # not expose every settable property in its response.
+    for prop_key, prop_value in spec_props.items():
+        if prop_key == "blend_mode":
+            name, check = check_eq("blend_mode", prop_value, readback.get("blend_mode"))
+        elif prop_key == "shading_model":
+            name, check = check_eq("shading_model", prop_value, readback.get("shading_model"))
+        else:
+            name, check = check_exists(f"property:{prop_key}", prop_key in readback)
         checks[name] = check
 
     verified = all(check.passed for check in checks.values())

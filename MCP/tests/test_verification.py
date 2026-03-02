@@ -193,6 +193,8 @@ class TestBlueprintVerification:
         result = verify_blueprint(spec, readback)
         assert result.verified is False
         assert result.error_code == "COMPILE_FAILED"
+        assert result.skipped is not None
+        assert result.message is not None
 
     def test_missing_variable(self):
         spec = self._make_spec(variables=[{"name": "Health"}, {"name": "Speed"}])

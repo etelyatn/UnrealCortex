@@ -27,6 +27,8 @@ def _flatten_tree(root: dict) -> list[dict]:
     return flat
 
 
+# Note: animation_count is not verified here because get_tree does not return animation
+# data in its response — animations are a separate resource not exposed by the tree readback.
 def verify_umg(spec: dict, readback: dict) -> VerificationResult:
     checks: dict[str, CheckResult] = {}
 

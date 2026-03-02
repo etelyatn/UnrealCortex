@@ -243,50 +243,50 @@ class TestCleanupOnFailure:
 
     def test_cleanup_deletes_partial_on_batch_failure(self):
         """When batch fails after step 0 succeeded, partial asset should be deleted."""
-        # This is integration behavior — test the logic flow with mocks
         mock_conn = MagicMock()
 
         # Simulate: step 0 succeeds (create_material), step 1 fails
         mock_conn.send_command.side_effect = [
-            # First call: batch command
+            # Call 1: batch — step 0 succeeds, step 1 fails
             {
                 "success": True,
                 "data": {
                     "results": [
                         {"index": 0, "success": True, "data": {"asset_path": "/Game/M_Test"}, "timing_ms": 1},
-                        {"index": 1, "success": False, "error_message": "Pin not found", "timing_ms": 0},
+                        {"index": 1, "success": False, "error_message": "Pin not found", "command": "material.add_node", "timing_ms": 0},
                     ],
                     "count": 2,
                     "total_timing_ms": 1,
                 },
             },
-            # Second call: delete_material cleanup
+            # Call 2: material.delete_material cleanup
             {"success": True, "data": {}},
         ]
 
-        # Import the inner functions to verify cleanup logic
-        from material.composites import _build_batch_commands, _validate_spec
-
-        # The actual composite tool calls connection.send_command twice on failure:
-        # 1. batch command
-        # 2. material.delete_material (cleanup)
-        # We verify the mock was called with delete_material
         nodes = [{"class": "Constant", "name": "A"}]
-        connections = [{"from": "A.Out", "to": "Material.BaseColor"}]
-        commands = _build_batch_commands("M_Test", "/Game/", nodes, connections)
-        assert len(commands) > 0  # Sanity check
+        connections = [{"from": "A.0", "to": "Material.BaseColor"}]
+        tool = _extract_tool(mock_conn)
+        result = json.loads(tool(name="M_Test", path="/Game/", nodes=nodes, connections=connections))
+
+        assert result["success"] is False
+        delete_calls = [
+            c for c in mock_conn.send_command.call_args_list
+            if c.args[0] == "material.delete_material"
+        ]
+        assert len(delete_calls) == 1
+        assert delete_calls[0].args[1]["asset_path"] == "/Game/M_Test"
 
 
 class TestAutoLayoutWarning:
     """Tests for auto_layout failure returning success with warning."""
 
     def test_auto_layout_failure_returns_success_with_warning(self):
-        """If auto_layout fails after successful batch, response should still be success."""
+        """If auto_layout fails after successful batch, response should still be success with warning."""
         mock_conn = MagicMock()
 
-        # batch succeeds, auto_layout fails
+        # Call sequence: batch → auto_layout (raises) → get_material → list_nodes → list_connections
         mock_conn.send_command.side_effect = [
-            # batch success
+            # Call 1: batch — all steps succeed
             {
                 "success": True,
                 "data": {
@@ -298,14 +298,22 @@ class TestAutoLayoutWarning:
                     "total_timing_ms": 2,
                 },
             },
-            # auto_layout raises exception
+            # Call 2: auto_layout raises — should be caught, result still success
             RuntimeError("auto_layout failed: graph too complex"),
+            # Calls 3–5: verification readback
+            {"data": {"node_count": 1, "blend_mode": None, "shading_model": None}},
+            {"data": {"nodes": [{"expression_class": "MaterialExpressionConstant"}]}},
+            {"data": {"connections": []}},
         ]
 
-        # The composite tool should catch the auto_layout error and return success with warning
-        # This tests the design requirement that auto_layout is non-critical
-        # We verify the mock expectations — actual behavior tested in E2E
-        assert mock_conn.send_command.side_effect is not None
+        nodes = [{"class": "Constant", "name": "A"}]
+        connections = [{"from": "A.0", "to": "Material.BaseColor"}]
+        tool = _extract_tool(mock_conn)
+        result = json.loads(tool(name="M_Test", path="/Game/", nodes=nodes, connections=connections))
+
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any(w["step"] == "auto_layout" for w in result["warnings"])
 
 
 class TestErrorPropagation:
