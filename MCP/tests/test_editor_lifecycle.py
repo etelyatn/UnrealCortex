@@ -134,7 +134,7 @@ class TestRestartEditor:
         # Existing port file with project_path — present before shutdown, absent after
         existing_port_file = saved_dir / "CortexPort-1234.txt"
         existing_port_file.write_text(
-            '{"port":8742,"project_path":"C:/test/Test.uproject","started_at":"2026-01-01T00:00:00Z"}'
+            '{"port":8742,"pid":1234,"project_path":"C:/test/Test.uproject","started_at":"2026-01-01T00:00:00Z"}'
         )
 
         with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
