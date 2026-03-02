@@ -439,6 +439,56 @@ def filter_excluded_paths(items: list[dict], excludes: list[str], path_key: str 
     return [item for item in items if not any(ex in item.get(path_key, "") for ex in excludes)]
 
 
+# Engine/Slate types to collapse at depth 1 (type name only, no nested fields)
+ENGINE_STRUCT_NAMES = frozenset({
+    "SlateBrush", "SlateColor", "SlateFontInfo", "FontOutlineSettings",
+    "LinearColor", "Vector2D", "Vector", "Rotator", "Transform",
+    "Margin", "InputScaleBias", "InputScaleBiasClamp",
+    "RuntimeFloatCurve", "RichCurve",
+})
+
+
+def _is_engine_type(type_name: str) -> bool:
+    """Check if a type is an engine/Slate struct that should be collapsed."""
+    clean = type_name.removeprefix("F")
+    return clean in ENGINE_STRUCT_NAMES or type_name in ENGINE_STRUCT_NAMES
+
+
+def truncate_nested_fields(
+    fields: list[dict],
+    max_depth: int = 3,
+    engine_max_depth: int = 1,
+    _current_depth: int = 0,
+) -> list[dict]:
+    """Truncate nested struct fields based on depth limits.
+
+    max_depth controls how many nesting levels project structs show.
+    engine_max_depth controls the same for engine/Slate structs.
+    A field at _current_depth expands its children only if
+    _current_depth < (limit - 1), so max_depth=3 shows 2 levels of children
+    and engine_max_depth=1 shows 0 levels (type name only).
+    """
+    result = []
+    for field in fields:
+        field_copy = {k: v for k, v in field.items() if k != "fields"}
+        nested = field.get("fields")
+        if nested:
+            type_name = field.get("type", field.get("cpp_type", ""))
+            if _is_engine_type(type_name):
+                if _current_depth < engine_max_depth - 1:
+                    field_copy["fields"] = truncate_nested_fields(
+                        nested, max_depth, engine_max_depth, _current_depth + 1
+                    )
+                # else: omit fields (collapsed)
+            elif _current_depth < max_depth - 1:
+                field_copy["fields"] = truncate_nested_fields(
+                    nested, max_depth, engine_max_depth, _current_depth + 1
+                )
+            # else: omit fields (depth exceeded)
+        result.append(field_copy)
+    return result
+
+
 def collect_data_domain(connection, project_root: pathlib.Path | None = None) -> dict:
     """Collect all data domain information from a live UE editor.
 

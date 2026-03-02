@@ -961,3 +961,72 @@ class TestFilterExcludedPaths(unittest.TestCase):
         result = filter_excluded_paths(classes, ["Sci-fi_UI_Pack"], path_key="example_path")
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["class_name"], "DA_A")
+
+
+class TestTruncateNestedFields(unittest.TestCase):
+
+    def test_collapses_engine_struct_at_depth_1(self):
+        from cortex_mcp.schema_generator import truncate_nested_fields
+        fields = [
+            {
+                "name": "BrushImage",
+                "type": "SlateBrush",
+                "fields": [
+                    {
+                        "name": "TintColor",
+                        "type": "SlateColor",
+                        "fields": [
+                            {"name": "SpecifiedColor", "type": "LinearColor", "fields": [
+                                {"name": "R", "type": "float"},
+                                {"name": "G", "type": "float"},
+                            ]},
+                        ],
+                    },
+                    {"name": "ImageSize", "type": "Vector2D"},
+                ],
+            },
+        ]
+        result = truncate_nested_fields(fields, max_depth=3, engine_max_depth=1)
+        # Engine struct SlateBrush should have no nested fields at depth > 1
+        brush = result[0]
+        self.assertEqual(brush["type"], "SlateBrush")
+        self.assertNotIn("fields", brush)
+
+    def test_preserves_project_struct_nesting(self):
+        from cortex_mcp.schema_generator import truncate_nested_fields
+        fields = [
+            {
+                "name": "ItemData",
+                "type": "RipProductDefinition",
+                "fields": [
+                    {"name": "Name", "type": "FName"},
+                    {"name": "Price", "type": "int32"},
+                ],
+            },
+        ]
+        result = truncate_nested_fields(fields, max_depth=3, engine_max_depth=1)
+        self.assertIn("fields", result[0])
+        self.assertEqual(len(result[0]["fields"]), 2)
+
+    def test_caps_project_struct_at_max_depth(self):
+        from cortex_mcp.schema_generator import truncate_nested_fields
+        fields = [
+            {
+                "name": "Deep",
+                "type": "ProjectDeep",
+                "fields": [
+                    {"name": "L1", "type": "ProjectL1", "fields": [
+                        {"name": "L2", "type": "ProjectL2", "fields": [
+                            {"name": "L3", "type": "ProjectL3", "fields": [
+                                {"name": "L4", "type": "int32"},
+                            ]},
+                        ]},
+                    ]},
+                ],
+            },
+        ]
+        result = truncate_nested_fields(fields, max_depth=3, engine_max_depth=1)
+        # With max_depth=3, the condition is _current_depth < 2, so L2 (depth 2) has children cut
+        l1 = result[0]["fields"][0]
+        l2 = l1["fields"][0]
+        self.assertNotIn("fields", l2)  # L2's children (L3) cut at depth 3
