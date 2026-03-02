@@ -1434,42 +1434,65 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 	{
 		TArray<TSharedPtr<FJsonValue>> DatatablesArray;
 
-		for (TObjectIterator<UDataTable> It; It; ++It)
+		IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+		if (AssetRegistry != nullptr)
 		{
-			UDataTable* DataTable = *It;
-			if (DataTable == nullptr)
+			FARFilter Filter;
+			Filter.ClassPaths.Add(UDataTable::StaticClass()->GetClassPathName());
+			Filter.bRecursiveClasses = true;
+			Filter.PackagePaths.Add(FName(TEXT("/Game")));
+			Filter.bRecursivePaths = true;
+
+			TArray<FAssetData> AssetDataList;
+			AssetRegistry->GetAssets(Filter, AssetDataList);
+
+			for (const FAssetData& AssetData : AssetDataList)
 			{
-				continue;
-			}
-
-			TSharedRef<FJsonObject> EntryJson = MakeShared<FJsonObject>();
-			EntryJson->SetStringField(TEXT("name"), DataTable->GetName());
-			EntryJson->SetStringField(TEXT("path"), DataTable->GetPathName());
-
-			const UScriptStruct* RowStruct = DataTable->GetRowStruct();
-			EntryJson->SetStringField(TEXT("row_struct"), RowStruct ? RowStruct->GetName() : TEXT("None"));
-			EntryJson->SetNumberField(TEXT("row_count"), DataTable->GetRowMap().Num());
-
-			const UCompositeDataTable* CompositeTable = Cast<UCompositeDataTable>(DataTable);
-			EntryJson->SetBoolField(TEXT("is_composite"), CompositeTable != nullptr);
-			if (CompositeTable != nullptr)
-			{
-				EntryJson->SetArrayField(TEXT("parent_tables"), GetParentTablesJsonArray(CompositeTable));
-			}
-
-			// top_fields: first 8 field names from the row struct
-			if (RowStruct != nullptr)
-			{
-				TArray<TSharedPtr<FJsonValue>> FieldNamesArray;
-				int32 FieldCount = 0;
-				for (TFieldIterator<FProperty> PropIt(RowStruct); PropIt && FieldCount < 8; ++PropIt, ++FieldCount)
+				// Skip internal engine subpaths under /Game/
+				const FString PackagePath = AssetData.PackagePath.ToString();
+				if (PackagePath.Contains(TEXT("__ExternalActors__"))
+					|| PackagePath.Contains(TEXT("__ExternalObjects__"))
+					|| PackagePath.Contains(TEXT("/Developers/"))
+					|| PackagePath.Contains(TEXT("/Collections/")))
 				{
-					FieldNamesArray.Add(MakeShared<FJsonValueString>(PropIt->GetName()));
+					continue;
 				}
-				EntryJson->SetArrayField(TEXT("top_fields"), FieldNamesArray);
-			}
 
-			DatatablesArray.Add(MakeShared<FJsonValueObject>(EntryJson));
+				UDataTable* DataTable = Cast<UDataTable>(AssetData.GetAsset());
+				if (DataTable == nullptr)
+				{
+					continue;
+				}
+
+				TSharedRef<FJsonObject> EntryJson = MakeShared<FJsonObject>();
+				EntryJson->SetStringField(TEXT("name"), DataTable->GetName());
+				EntryJson->SetStringField(TEXT("path"), DataTable->GetPathName());
+
+				const UScriptStruct* RowStruct = DataTable->GetRowStruct();
+				EntryJson->SetStringField(TEXT("row_struct"), RowStruct ? RowStruct->GetName() : TEXT("None"));
+				EntryJson->SetNumberField(TEXT("row_count"), DataTable->GetRowMap().Num());
+
+				const UCompositeDataTable* CompositeTable = Cast<UCompositeDataTable>(DataTable);
+				EntryJson->SetBoolField(TEXT("is_composite"), CompositeTable != nullptr);
+				if (CompositeTable != nullptr)
+				{
+					EntryJson->SetArrayField(TEXT("parent_tables"), GetParentTablesJsonArray(CompositeTable));
+				}
+
+				// top_fields: first 8 field names from the row struct
+				if (RowStruct != nullptr)
+				{
+					TArray<TSharedPtr<FJsonValue>> FieldNamesArray;
+					int32 FieldCount = 0;
+					for (TFieldIterator<FProperty> PropIt(RowStruct); PropIt && FieldCount < 8; ++PropIt, ++FieldCount)
+					{
+						FieldNamesArray.Add(MakeShared<FJsonValueString>(PropIt->GetName()));
+					}
+					EntryJson->SetArrayField(TEXT("top_fields"), FieldNamesArray);
+				}
+
+				DatatablesArray.Add(MakeShared<FJsonValueObject>(EntryJson));
+			}
 		}
 
 		Data->SetArrayField(TEXT("datatables"), DatatablesArray);

@@ -8,6 +8,7 @@
 #include "CortexTcpServer.h"
 #include "CortexCommandRouter.h"
 #include "CortexDataCommandHandler.h"
+#include "Operations/CortexDataTableOps.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
@@ -188,6 +189,47 @@ bool FCortexDataCatalogTest::RunTest(const FString& Parameters)
 	SocketSubsystem->DestroySocket(ClientSocket);
 	Server.Stop();
 	TestFalse(TEXT("Server should report not running after stop"), Server.IsRunning());
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataCatalogNoEngineTablesTest,
+	"Cortex.Data.Catalog.NoEngineDataTables",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter
+)
+
+bool FCortexDataCatalogNoEngineTablesTest::RunTest(const FString& Parameters)
+{
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	FCortexCommandResult Result = FCortexDataTableOps::GetDataCatalog(Params);
+
+	TestTrue(TEXT("GetDataCatalog succeeds"), Result.bSuccess);
+
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		AddError(TEXT("GetDataCatalog returned no data"));
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* DatatablesArray = nullptr;
+	TestTrue(TEXT("Has datatables array"), Result.Data->TryGetArrayField(TEXT("datatables"), DatatablesArray));
+
+	if (DatatablesArray != nullptr)
+	{
+		for (const TSharedPtr<FJsonValue>& Entry : *DatatablesArray)
+		{
+			const TSharedPtr<FJsonObject>* EntryObj = nullptr;
+			if (Entry->TryGetObject(EntryObj))
+			{
+				FString Path = (*EntryObj)->GetStringField(TEXT("path"));
+				TestTrue(
+					FString::Printf(TEXT("DataTable path starts with /Game/: %s"), *Path),
+					Path.StartsWith(TEXT("/Game/"))
+				);
+			}
+		}
+	}
 
 	return true;
 }
