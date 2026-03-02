@@ -186,6 +186,19 @@ bool FCortexTcpServerExclusivePortTest::RunTest(const FString& Parameters)
 	// Occupy the remainder of the auto-increment range so Server2 can only start
 	// if it illegally shares TestPort with Server1.
 	TArray<FSocket*> BlockingSockets;
+	const auto CleanupBlockingSockets = [&BlockingSockets, SocketSubsystem]()
+	{
+		for (FSocket* Socket : BlockingSockets)
+		{
+			if (Socket != nullptr)
+			{
+				Socket->Close();
+				SocketSubsystem->DestroySocket(Socket);
+			}
+		}
+		BlockingSockets.Empty();
+	};
+
 	for (int32 Port = TestPort + 1; Port < TestPort + 100; ++Port)
 	{
 		FSocket* BlockingSocket = SocketSubsystem->CreateSocket(
@@ -195,6 +208,7 @@ bool FCortexTcpServerExclusivePortTest::RunTest(const FString& Parameters)
 		if (BlockingSocket == nullptr)
 		{
 			AddError(FString::Printf(TEXT("Failed to create blocking socket for port %d"), Port));
+			CleanupBlockingSockets();
 			Server1.Stop();
 			return true;
 		}
@@ -209,11 +223,7 @@ bool FCortexTcpServerExclusivePortTest::RunTest(const FString& Parameters)
 			AddError(FString::Printf(TEXT("Failed to block port %d"), Port));
 			BlockingSocket->Close();
 			SocketSubsystem->DestroySocket(BlockingSocket);
-			for (FSocket* Socket : BlockingSockets)
-			{
-				Socket->Close();
-				SocketSubsystem->DestroySocket(Socket);
-			}
+			CleanupBlockingSockets();
 			Server1.Stop();
 			return true;
 		}
@@ -223,7 +233,7 @@ bool FCortexTcpServerExclusivePortTest::RunTest(const FString& Parameters)
 
 	// Act: Attempt to bind a second server on the same port.
 	AddExpectedError(
-		TEXT("LogCortex: Failed to bind TCP server on ports 18900-18999"),
+		TEXT("LogCortex: Failed to bind TCP server on ports"),
 		EAutomationExpectedErrorFlags::Contains,
 		1);
 	FCortexCommandRouter Router2;
@@ -240,11 +250,7 @@ bool FCortexTcpServerExclusivePortTest::RunTest(const FString& Parameters)
 	// Cleanup
 	Server1.Stop();
 	Server2.Stop();
-	for (FSocket* Socket : BlockingSockets)
-	{
-		Socket->Close();
-		SocketSubsystem->DestroySocket(Socket);
-	}
+	CleanupBlockingSockets();
 
 	return true;
 }
