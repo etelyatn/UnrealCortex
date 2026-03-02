@@ -218,8 +218,10 @@ class TestRenderCatalog(unittest.TestCase):
             data_summary=self.data_summary,
         )
         self.assertIn("## Schema Index", result)
+        # v2: catalog shows struct name in summary line, not in table rows
         self.assertIn("FTestItemRow", result)
-        self.assertIn("DT_TestItems", result)
+        # v2: table count shown as summary stat, not per-table rows
+        self.assertIn("Tables:", result)
 
     def test_catalog_contains_how_to_use(self):
         result = render_catalog(
@@ -228,20 +230,47 @@ class TestRenderCatalog(unittest.TestCase):
         )
         self.assertIn("## How to Use", result)
 
-    def test_catalog_index_has_struct_used_by(self):
+    def test_catalog_index_has_struct_summary(self):
         result = render_catalog(
             project_name="TestProject",
             data_summary=self.data_summary,
         )
-        # The struct index table should have "Used By" column
-        self.assertIn("| FTestItemRow | DT_TestItems |", result)
+        # v2: structs listed as bold summary, not table rows
+        self.assertIn("**Structs:** FTestItemRow", result)
 
-    def test_catalog_index_has_table_row_struct(self):
+    def test_catalog_index_has_table_count_summary(self):
         result = render_catalog(
             project_name="TestProject",
             data_summary=self.data_summary,
         )
-        self.assertIn("| DT_TestItems | FTestItemRow |", result)
+        # v2: table count shown as summary stat
+        self.assertIn("**Tables:** 1 total", result)
+
+
+class TestRenderCatalogV2(unittest.TestCase):
+
+    def setUp(self):
+        self.data_summary = {
+            "structs": [{"name": "FTestRow", "used_by": "DT_Test"}],
+            "tables": [{"name": "DT_Test", "row_struct": "FTestRow", "rows": 5}],
+            "tag_prefixes": [{"prefix": "Test.*", "count": 10}],
+            "data_assets": [{"class": "TestAsset", "instances": 2}],
+        }
+
+    def test_catalog_references_data_subdirectory(self):
+        result = render_catalog(project_name="Test", data_summary=self.data_summary)
+        self.assertIn("data/_index.md", result)
+        self.assertIn("data/structs.md", result)
+        self.assertIn("data/formats.md", result)
+        # Should NOT reference old data.md as a standalone entry
+        # (data.md appears as substring in data/... paths, so check for exact reference)
+        self.assertNotIn("| data.md |", result)
+
+    def test_catalog_has_progressive_disclosure_guidance(self):
+        result = render_catalog(project_name="Test", data_summary=self.data_summary)
+        self.assertIn("table listing", result.lower())
+        self.assertIn("struct", result.lower())
+        self.assertIn("format", result.lower())
 
 
 from unittest.mock import MagicMock
@@ -650,7 +679,9 @@ class TestGenerateSchema(unittest.TestCase):
             # Verify catalog content
             catalog_content = (schema_dir / "_catalog.md").read_text(encoding="utf-8")
             self.assertIn("## Schema Index", catalog_content)
-            self.assertIn("DT_Test", catalog_content)
+            # v2: catalog shows struct summary and table count, not individual table names
+            self.assertIn("FTestRow", catalog_content)
+            self.assertIn("Tables:", catalog_content)
 
             # Verify return value
             self.assertIn("data_index", result["generated"])

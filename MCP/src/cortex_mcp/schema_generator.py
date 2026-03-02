@@ -333,43 +333,23 @@ def render_catalog(
 
     # Data domain index
     if data_s:
-        lines.append("### data/_index.md, data/structs.md, data/formats.md")
+        lines.append("### data/")
+        lines.append("")
+        lines.append("| File | Purpose | When to read |")
+        lines.append("|------|---------|-------------|")
+        lines.append("| data/_index.md | Table listing, tags, assets | Working with data domain |")
+        lines.append("| data/structs.md | Struct field definitions | Need field types/names |")
+        lines.append("| data/formats.md | Format examples (1 per struct) | Need serialization format |")
         lines.append("")
 
         structs = data_s.get("structs", [])
         if structs:
-            lines.append("#### Structs")
-            lines.append("| Name | Used By |")
-            lines.append("|------|---------|")
-            for s in structs:
-                lines.append(f"| {s['name']} | {s['used_by']} |")
+            lines.append(f"**Structs:** {', '.join(s['name'] for s in structs)}")
             lines.append("")
 
         tables = data_s.get("tables", [])
         if tables:
-            lines.append("#### DataTables")
-            lines.append("| Name | Row Struct | Rows |")
-            lines.append("|------|------------|------|")
-            for t in tables:
-                lines.append(f"| {t['name']} | {t['row_struct']} | {t['rows']} |")
-            lines.append("")
-
-        tags = data_s.get("tag_prefixes", [])
-        if tags:
-            lines.append("#### GameplayTag Prefixes")
-            lines.append("| Prefix | Count |")
-            lines.append("|--------|-------|")
-            for tp in tags:
-                lines.append(f"| {tp['prefix']} | {tp['count']} |")
-            lines.append("")
-
-        assets = data_s.get("data_assets", [])
-        if assets:
-            lines.append("#### DataAssets")
-            lines.append("| Class | Instances |")
-            lines.append("|-------|-----------|")
-            for a in assets:
-                lines.append(f"| {a['class']} | {a['instances']} |")
+            lines.append(f"**Tables:** {len(tables)} total")
             lines.append("")
 
     # Blueprint domain index (future)
