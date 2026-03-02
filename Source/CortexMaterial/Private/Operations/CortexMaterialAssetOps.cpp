@@ -518,11 +518,17 @@ FCortexCommandResult FCortexMaterialAssetOps::GetInstance(const TSharedPtr<FJson
 	Overrides->SetArrayField(TEXT("vector"), VectorOverrides);
 	Overrides->SetArrayField(TEXT("texture"), TextureOverrides);
 
+	TArray<TSharedPtr<FJsonValue>> CollectionsArray;
+	TArray<TSharedPtr<FJsonValue>> Sm6Warnings;
+	CollectReferencedCollections(Instance->GetMaterial(), CollectionsArray, Sm6Warnings);
+
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("name"), Instance->GetName());
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetStringField(TEXT("parent_material"), ParentMaterialPath);
 	Data->SetObjectField(TEXT("overrides"), Overrides);
+	Data->SetArrayField(TEXT("referenced_collections"), CollectionsArray);
+	Data->SetArrayField(TEXT("sm6_warnings"), Sm6Warnings);
 
 	return FCortexCommandRouter::Success(Data);
 }

@@ -304,6 +304,112 @@ bool FCortexMaterialGetReferencedCollectionsTest::RunTest(const FString& Paramet
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialGetInstanceReferencedCollectionsTest,
+	"Cortex.Material.Asset.GetInstance.ReferencedCollections",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialGetInstanceReferencedCollectionsTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestInstRefCol_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_InstRefCol_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	const FString MpcName = FString::Printf(TEXT("MPC_TestInst_%s"), *Suffix);
+	const FString MpcDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_MPCInst_%s"), *Suffix);
+	TSharedPtr<FJsonObject> CreateMpcParams = MakeShared<FJsonObject>();
+	CreateMpcParams->SetStringField(TEXT("asset_path"), MpcDir);
+	CreateMpcParams->SetStringField(TEXT("name"), MpcName);
+	FCortexCommandResult MpcResult = Handler.Execute(TEXT("create_collection"), CreateMpcParams);
+	TestTrue(TEXT("create_collection should succeed"), MpcResult.bSuccess);
+
+	FString MpcPath;
+	if (MpcResult.Data.IsValid())
+	{
+		MpcResult.Data->TryGetStringField(TEXT("asset_path"), MpcPath);
+	}
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionCollectionParameter"));
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+
+	FString NodeId;
+	if (AddResult.Data.IsValid())
+	{
+		AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+	}
+
+	TSharedPtr<FJsonObject> SetPropParams = MakeShared<FJsonObject>();
+	SetPropParams->SetStringField(TEXT("asset_path"), MatPath);
+	SetPropParams->SetStringField(TEXT("node_id"), NodeId);
+	SetPropParams->SetStringField(TEXT("property_name"), TEXT("Collection"));
+	SetPropParams->SetStringField(TEXT("value"), MpcPath);
+	Handler.Execute(TEXT("set_node_property"), SetPropParams);
+
+	const FString InstName = FString::Printf(TEXT("MI_TestInstRefCol_%s"), *Suffix);
+	const FString InstDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_InstRefColInst_%s"), *Suffix);
+	TSharedPtr<FJsonObject> CreateInstParams = MakeShared<FJsonObject>();
+	CreateInstParams->SetStringField(TEXT("asset_path"), InstDir);
+	CreateInstParams->SetStringField(TEXT("name"), InstName);
+	CreateInstParams->SetStringField(TEXT("parent_material"), MatPath);
+	FCortexCommandResult InstResult = Handler.Execute(TEXT("create_instance"), CreateInstParams);
+	TestTrue(TEXT("create_instance should succeed"), InstResult.bSuccess);
+
+	FString InstPath;
+	if (InstResult.Data.IsValid())
+	{
+		InstResult.Data->TryGetStringField(TEXT("asset_path"), InstPath);
+	}
+
+	TSharedPtr<FJsonObject> GetParams = MakeShared<FJsonObject>();
+	GetParams->SetStringField(TEXT("asset_path"), InstPath);
+	FCortexCommandResult Result = Handler.Execute(TEXT("get_instance"), GetParams);
+
+	TestTrue(TEXT("get_instance should succeed"), Result.bSuccess);
+
+	if (Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Collections = nullptr;
+		TestTrue(TEXT("referenced_collections should exist"),
+			Result.Data->TryGetArrayField(TEXT("referenced_collections"), Collections));
+
+		if (Collections)
+		{
+			TestEqual(TEXT("should reference 1 collection"), Collections->Num(), 1);
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Warnings = nullptr;
+		TestTrue(TEXT("sm6_warnings should exist"),
+			Result.Data->TryGetArrayField(TEXT("sm6_warnings"), Warnings));
+
+		if (Warnings)
+		{
+			TestEqual(TEXT("sm6_warnings should be empty for 1 collection"), Warnings->Num(), 0);
+		}
+	}
+
+	UObject* LoadedInst = LoadObject<UObject>(nullptr, *InstPath);
+	if (LoadedInst) LoadedInst->MarkAsGarbage();
+
+	UObject* LoadedMat = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedMat) LoadedMat->MarkAsGarbage();
+
+	UObject* LoadedMpc = LoadObject<UObject>(nullptr, *MpcPath);
+	if (LoadedMpc) LoadedMpc->MarkAsGarbage();
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexMaterialGetNotFoundTest,
 	"Cortex.Material.Asset.GetMaterial.NotFound",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
