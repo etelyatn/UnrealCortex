@@ -1145,3 +1145,80 @@ class TestRenderDataStructs(unittest.TestCase):
         result = render_data_structs(schemas)
         self.assertIn("Common", result)
         self.assertIn("Rare", result)
+
+
+class TestCollectFormatExamples(unittest.TestCase):
+
+    def test_one_example_per_struct(self):
+        from cortex_mcp.schema_generator import collect_format_examples
+        catalog = {
+            "datatables": [
+                {"name": "PT_Meds", "path": "/Game/PT_Meds.PT_Meds", "row_struct": "ProductDef", "row_count": 200, "is_composite": False},
+                {"name": "PT_Organics", "path": "/Game/PT_Organics.PT_Organics", "row_struct": "ProductDef", "row_count": 100, "is_composite": False},
+                {"name": "DT_Seam", "path": "/Game/DT_Seam.DT_Seam", "row_struct": "SeamRow", "row_count": 3, "is_composite": False},
+            ],
+        }
+        example_rows = {
+            "PT_Meds": [{"row_name": "Med1", "row_data": {"Name": "Aspirin", "Price": 10}}],
+            "PT_Organics": [{"row_name": "Org1", "row_data": {"Name": "Biomass", "Price": 5}}],
+            "DT_Seam": [{"row_name": "S1", "row_data": {"Data": [1, 2]}}],
+        }
+        result = collect_format_examples(catalog, example_rows)
+        # Should have 2 entries (one per unique struct), not 3
+        self.assertEqual(len(result), 2)
+        self.assertIn("ProductDef", result)
+        self.assertIn("SeamRow", result)
+
+    def test_skips_composite_tables(self):
+        from cortex_mcp.schema_generator import collect_format_examples
+        catalog = {
+            "datatables": [
+                {"name": "PT_Meds", "path": "/Game/PT_Meds.PT_Meds", "row_struct": "ProductDef", "row_count": 200, "is_composite": False},
+                {"name": "CPT_All", "path": "/Game/CPT_All.CPT_All", "row_struct": "ProductDef", "row_count": 671, "is_composite": True},
+            ],
+        }
+        example_rows = {
+            "PT_Meds": [{"row_name": "Med1", "row_data": {"Name": "Test"}}],
+            "CPT_All": [{"row_name": "All1", "row_data": {"Name": "FromComposite"}}],
+        }
+        result = collect_format_examples(catalog, example_rows)
+        self.assertEqual(len(result), 1)
+        # Source should be the non-composite table
+        self.assertEqual(result["ProductDef"]["source_table"], "PT_Meds")
+
+
+class TestRenderDataFormats(unittest.TestCase):
+
+    def test_renders_compact_table_format(self):
+        from cortex_mcp.schema_generator import render_data_formats
+        format_examples = {
+            "ProductDef": {
+                "source_table": "PT_Meds",
+                "row_data": {"Name": "Aspirin", "Price": 10, "Tag": "Med.Painkiller"},
+                "schemas": {"Name": "FName", "Price": "int32", "Tag": "FGameplayTag"},
+            },
+        }
+        result = render_data_formats(format_examples)
+        self.assertIn("ProductDef", result)
+        self.assertIn("PT_Meds", result)
+        self.assertIn("| Name |", result)
+        self.assertIn("Aspirin", result)
+
+    def test_truncates_long_arrays(self):
+        from cortex_mcp.schema_generator import render_data_formats
+        long_array = list(range(50))
+        format_examples = {
+            "ArrayRow": {
+                "source_table": "DT_Test",
+                "row_data": {"Items": long_array},
+                "schemas": {"Items": "TArray<int32>"},
+            },
+        }
+        result = render_data_formats(format_examples)
+        self.assertIn("+47 more", result)
+
+    def test_includes_meta_block(self):
+        from cortex_mcp.schema_generator import render_data_formats
+        result = render_data_formats({})
+        self.assertIn("schema-meta", result)
+        self.assertIn("domain: data-formats", result)

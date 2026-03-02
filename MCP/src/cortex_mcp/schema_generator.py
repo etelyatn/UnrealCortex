@@ -6,6 +6,7 @@ import logging
 import os
 import pathlib
 import tempfile
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -581,6 +582,64 @@ def render_data_structs(schemas: dict[str, dict]) -> str:
         fields = truncate_nested_fields(raw_fields, max_depth=3, engine_max_depth=1)
         for field in fields:
             lines.extend(_compact_field(field))
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def collect_format_examples(
+    catalog: dict,
+    example_rows: dict[str, list],
+) -> dict[str, dict]:
+    """Collect 1 format example per unique struct type. Skip composites."""
+    seen_structs: dict[str, dict] = {}
+    for table in catalog.get("datatables", []):
+        if table.get("is_composite"):
+            continue
+        struct_name = table.get("row_struct", "Unknown")
+        if struct_name in seen_structs:
+            continue
+        rows = example_rows.get(table["name"], [])
+        if rows:
+            row = rows[0]
+            seen_structs[struct_name] = {
+                "source_table": table["name"],
+                "row_data": row.get("row_data", {}),
+            }
+    return seen_structs
+
+
+def _truncate_value(value: Any, max_items: int = 3) -> str:
+    """Format a value for display, truncating long arrays."""
+    if isinstance(value, list):
+        if len(value) > max_items:
+            shown = ", ".join(str(v) for v in value[:max_items])
+            return f"[{shown}, ...(+{len(value) - max_items} more)]"
+        return json.dumps(value)
+    if isinstance(value, str):
+        return f"`{value}`"
+    return f"`{value}`"
+
+
+def render_data_formats(format_examples: dict[str, dict]) -> str:
+    """Render data/formats.md — 1 compact format example per unique struct."""
+    lines = ["# Data Format Examples", "", _render_meta("data-formats"), ""]
+
+    if not format_examples:
+        lines.append("No format examples available.")
+        lines.append("")
+        return "\n".join(lines)
+
+    for struct_name, example in format_examples.items():
+        source = example.get("source_table", "unknown")
+        row_data = example.get("row_data", {})
+        lines.append(f"## {struct_name}")
+        lines.append(f"Source: {source}")
+        if row_data:
+            lines.append("| Field | Example |")
+            lines.append("|-------|---------|")
+            for field_name, value in row_data.items():
+                lines.append(f"| {field_name} | {_truncate_value(value)} |")
         lines.append("")
 
     return "\n".join(lines)
