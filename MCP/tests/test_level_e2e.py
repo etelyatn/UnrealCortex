@@ -17,6 +17,17 @@ def _uniq(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 
+@pytest.fixture(autouse=True)
+def ensure_editor_not_in_pie(tcp_connection):
+    """Level actor operations require editor world (non-PIE)."""
+    try:
+        state = tcp_connection.send_command("editor.get_pie_state", {})
+        if state.get("data", {}).get("state") != "stopped":
+            tcp_connection.send_command("editor.stop_pie", {}, timeout=30.0)
+    except Exception:
+        pass
+
+
 # ================================================================
 # Discovery (read-only, no fixtures)
 # ================================================================
@@ -97,19 +108,19 @@ class TestLevelActorLifecycle:
         cleanup_actors.append(data["name"])
 
     def test_duplicate_actor(self, tcp_connection, cleanup_actors):
+        src_label = _uniq("CortexE2E_dup_src")
         resp = tcp_connection.send_command("level.spawn_actor", {
             "class": "PointLight",
-            "label": _uniq("CortexE2E_dup_src"),
+            "label": src_label,
         })
-        src_name = resp["data"]["name"]
-        cleanup_actors.append(src_name)
+        cleanup_actors.append(src_label)
 
         dup_resp = tcp_connection.send_command("level.duplicate_actor", {
-            "actor": src_name,
+            "actor": src_label,
             "offset": [100.0, 0.0, 0.0],
         })
         dup_name = dup_resp["data"]["name"]
-        assert dup_name != src_name
+        assert dup_name != resp["data"]["name"]
         cleanup_actors.append(dup_name)
 
     def test_rename_actor(self, tcp_connection, cleanup_actors):
@@ -128,26 +139,26 @@ class TestLevelActorLifecycle:
         assert rename_resp["data"]["label"] == new_label
 
     def test_delete_actor(self, tcp_connection):
+        label = _uniq("CortexE2E_delete")
         resp = tcp_connection.send_command("level.spawn_actor", {
             "class": "PointLight",
-            "label": _uniq("CortexE2E_delete"),
+            "label": label,
         })
-        name = resp["data"]["name"]
 
         del_resp = tcp_connection.send_command("level.delete_actor", {
-            "actor": name,
+            "actor": label,
         })
         assert "name" in del_resp["data"]
 
     def test_delete_actor_with_confirm_class(self, tcp_connection):
+        label = _uniq("CortexE2E_confirm_del")
         resp = tcp_connection.send_command("level.spawn_actor", {
             "class": "PointLight",
-            "label": _uniq("CortexE2E_confirm_del"),
+            "label": label,
         })
-        name = resp["data"]["name"]
 
         del_resp = tcp_connection.send_command("level.delete_actor", {
-            "actor": name,
+            "actor": label,
             "confirm_class": "PointLight",
         })
         assert "name" in del_resp["data"]

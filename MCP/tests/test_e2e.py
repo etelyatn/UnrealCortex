@@ -477,48 +477,48 @@ class TestBlueprintClassDefaults:
         """Read specific CDO properties by name."""
         resp = tcp_connection.send_command("bp.get_class_defaults", {
             "blueprint_path": blueprint_for_test,
-            "properties": ["bCanEverTick", "bReplicates"],
+            "properties": ["PrimaryActorTick.bCanEverTick", "bReplicates"],
         })
         data = resp["data"]
         props = data["properties"]
-        assert "bCanEverTick" in props
+        assert "PrimaryActorTick.bCanEverTick" in props
         assert "bReplicates" in props
-        assert "type" in props["bCanEverTick"]
-        assert "value" in props["bCanEverTick"]
+        assert "type" in props["PrimaryActorTick.bCanEverTick"]
+        assert "value" in props["PrimaryActorTick.bCanEverTick"]
 
     def test_set_class_defaults_bool(self, tcp_connection, blueprint_for_test):
         """Set a bool CDO property and verify via get."""
         tcp_connection.send_command("bp.set_class_defaults", {
             "blueprint_path": blueprint_for_test,
-            "properties": {"bCanEverTick": True},
-            "compile": True,
+            "properties": {"PrimaryActorTick.bCanEverTick": True},
+            "compile": False,
             "save": False,
         })
         resp = tcp_connection.send_command("bp.get_class_defaults", {
             "blueprint_path": blueprint_for_test,
-            "properties": ["bCanEverTick"],
+            "properties": ["PrimaryActorTick.bCanEverTick"],
         })
-        val = resp["data"]["properties"]["bCanEverTick"]["value"]
+        val = resp["data"]["properties"]["PrimaryActorTick.bCanEverTick"]["value"]
         assert val is True
 
     def test_set_class_defaults_batch(self, tcp_connection, blueprint_for_test):
         """Set multiple CDO properties in one call."""
         resp = tcp_connection.send_command("bp.set_class_defaults", {
             "blueprint_path": blueprint_for_test,
-            "properties": {"bCanEverTick": True, "bReplicates": True},
+            "properties": {"PrimaryActorTick.bCanEverTick": True, "bReplicates": True},
             "compile": False,
             "save": False,
         })
         data = resp["data"]
         assert "results" in data
-        assert "bCanEverTick" in data["results"]
+        assert "PrimaryActorTick.bCanEverTick" in data["results"]
         assert "bReplicates" in data["results"]
 
     def test_set_class_defaults_no_compile(self, tcp_connection, blueprint_for_test):
         """compile=false should skip compilation."""
         resp = tcp_connection.send_command("bp.set_class_defaults", {
             "blueprint_path": blueprint_for_test,
-            "properties": {"bCanEverTick": False},
+            "properties": {"PrimaryActorTick.bCanEverTick": False},
             "compile": False,
             "save": False,
         })

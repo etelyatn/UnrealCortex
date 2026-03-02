@@ -876,7 +876,7 @@ bool FCortexBPAnalysisPerGraphElementsTest::RunTest(const FString& Parameters)
 
 	FEdGraphPinType FloatType;
 	FloatType.PinCategory = UEdGraphSchema_K2::PC_Float;
-	const bool bVariableAdded = FBlueprintEditorUtils::AddMemberVariable(TestBP, TEXT("Health"), FloatType, TEXT("100.0"));
+	const bool bVariableAdded = FBlueprintEditorUtils::AddMemberVariable(TestBP, TEXT("Health"), FloatType);
 	TestTrue(TEXT("Health variable added"), bVariableAdded);
 
 	UEdGraph* EventGraph = TestBP->UbergraphPages.Num() > 0 ? TestBP->UbergraphPages[0] : nullptr;
