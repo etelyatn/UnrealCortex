@@ -1,6 +1,7 @@
 
 #include "Operations/CortexDataAssetOps.h"
 #include "CortexDataModule.h"
+#include "CortexLogCapture.h"
 #include "CortexSerializer.h"
 #include "Engine/DataAsset.h"
 #include "AssetRegistry/IAssetRegistry.h"
@@ -157,12 +158,17 @@ FCortexCommandResult FCortexDataAssetOps::GetDataAsset(const TSharedPtr<FJsonObj
 		);
 	}
 
+	FCortexLogCapture LogCapture;
+
 	FCortexCommandResult LoadError;
 	UDataAsset* DataAsset = LoadDataAsset(AssetPath, LoadError);
 	if (DataAsset == nullptr)
 	{
 		return LoadError;
 	}
+
+	const FString PackageName = FPackageName::ObjectPathToPackageName(AssetPath);
+	TArray<FString> Warnings = LogCapture.GetWarnings(PackageName);
 
 	UClass* AssetClass = DataAsset->GetClass();
 
@@ -173,7 +179,20 @@ FCortexCommandResult FCortexDataAssetOps::GetDataAsset(const TSharedPtr<FJsonObj
 	Data->SetStringField(TEXT("asset_class"), AssetClass->GetName());
 	Data->SetObjectField(TEXT("properties"), Properties);
 
-	return FCortexCommandRouter::Success(Data);
+	if (Warnings.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> WarningsArray;
+		WarningsArray.Reserve(Warnings.Num());
+		for (const FString& Warning : Warnings)
+		{
+			WarningsArray.Add(MakeShared<FJsonValueString>(Warning));
+		}
+		Data->SetArrayField(TEXT("warnings"), WarningsArray);
+	}
+
+	FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
+	Result.Warnings = MoveTemp(Warnings);
+	return Result;
 }
 
 FCortexCommandResult FCortexDataAssetOps::UpdateDataAsset(const TSharedPtr<FJsonObject>& Params)
