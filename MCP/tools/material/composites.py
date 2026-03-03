@@ -141,7 +141,7 @@ def _contains_ref_syntax(value):
     return False
 
 
-def _validate_spec(name, path, nodes, connections, material_properties=None):
+def _validate_spec(name, path, nodes, connections, material_properties=None, instances=None):
     """Validate the material graph spec. Raises ValueError on invalid spec."""
     if not name:
         raise ValueError("Missing required field: name")
@@ -237,6 +237,50 @@ def _validate_spec(name, path, nodes, connections, material_properties=None):
                     f"Node '{node.get('name')}' param '{key}' contains '$steps[' "
                     f"which conflicts with batch $ref syntax"
                 )
+
+    # Validate instances (if provided).
+    if instances is not None:
+        if not isinstance(instances, list):
+            raise ValueError("instances must be a list")
+
+        # Build ParameterName -> node class map from nodes.
+        param_node_map = {}
+        for node in nodes:
+            param_name = (node.get("params") or {}).get("ParameterName")
+            if param_name:
+                param_node_map[param_name] = node.get("class", "")
+
+        instance_names = set()
+        for i, inst in enumerate(instances):
+            if not isinstance(inst, dict):
+                raise ValueError(f"Instance {i} must be a dict")
+            if "name" not in inst or not inst.get("name"):
+                raise ValueError(f"Instance {i} missing 'name'")
+
+            inst_name = inst["name"]
+            if inst_name in instance_names:
+                raise ValueError(f"Duplicate instance name: '{inst_name}'")
+            instance_names.add(inst_name)
+
+            params = inst.get("parameters", {})
+            if not isinstance(params, dict):
+                raise ValueError(f"Instance '{inst_name}' 'parameters' must be a dict")
+
+            for param_name in params:
+                if param_name not in param_node_map:
+                    available = sorted(param_node_map.keys()) if param_node_map else []
+                    raise ValueError(
+                        f"Parameter '{param_name}' not found in parent material. "
+                        f"Available: {available}"
+                    )
+                node_class = param_node_map[param_name]
+                inferred_type = _infer_param_type(node_class)
+                if inferred_type is None:
+                    raise ValueError(
+                        f"Cannot infer type for parameter '{param_name}' from "
+                        f"node class '{node_class}'. Use create_material_instance "
+                        f"with explicit types instead."
+                    )
 
 
 _VALID_PARAM_TYPES = {"scalar", "vector", "texture"}
