@@ -525,6 +525,7 @@ def register_material_composite_tools(mcp, connection: UEConnection):
         nodes: list[dict],
         connections: list[dict],
         material_properties: dict | None = None,
+        instances: list[dict] | None = None,
     ) -> str:
         """Create a material with expression nodes and connections in a single operation.
 
@@ -570,6 +571,12 @@ def register_material_composite_tools(mcp, connection: UEConnection):
                 Keys are property names, values are the property values.
                 Applied after material creation, before adding nodes.
                 Example: {"BlendMode": "BLEND_Translucent", "ShadingModel": "MSM_Unlit"}
+            instances: Optional array of material instances to create after the material.
+                Each instance supports:
+                - name: Instance name.
+                - path: Optional directory path (defaults to material path).
+                - parameters: Dict of overrides {ParamName: value}. Parameter types are
+                  inferred from the material parameter node classes.
 
         Returns:
             JSON with asset_path, node_count, connection_count, timing.
@@ -594,7 +601,7 @@ def register_material_composite_tools(mcp, connection: UEConnection):
         """
         # 1. Validate spec
         try:
-            _validate_spec(name, path, nodes, connections, material_properties)
+            _validate_spec(name, path, nodes, connections, material_properties, instances)
         except ValueError as e:
             return json.dumps({
                 "success": False,
@@ -602,7 +609,7 @@ def register_material_composite_tools(mcp, connection: UEConnection):
             })
 
         # 2. Build batch commands
-        commands = _build_batch_commands(name, path, nodes, connections, material_properties)
+        commands = _build_batch_commands(name, path, nodes, connections, material_properties, instances)
         total_steps = len(commands)
 
         # 3. Send batch with stop_on_error
@@ -640,21 +647,32 @@ def register_material_composite_tools(mcp, connection: UEConnection):
 
         # 5. Handle failure
         if failed_step is not None:
-            # Cleanup partial asset if step 0 succeeded
             recovery_action = None
+            created_assets = []
             if asset_path:
+                created_assets.append(("material", asset_path))
+            for entry in results:
+                if entry.get("success") and "data" in entry:
+                    cmd_index = entry["index"]
+                    if cmd_index < len(commands) and commands[cmd_index]["command"] == "material.create_instance":
+                        inst_path = entry["data"].get("asset_path")
+                        if inst_path:
+                            created_assets.append(("instance", inst_path))
+
+            cleanup_results = []
+            for asset_type, cleanup_path in reversed(created_assets):
+                delete_cmd = f"material.delete_{asset_type}"
                 try:
-                    connection.send_command("material.delete_material", {
-                        "asset_path": asset_path,
-                    })
-                    recovery_action = {"action": "deleted_partial", "path": asset_path}
+                    connection.send_command(delete_cmd, {"asset_path": cleanup_path})
+                    cleanup_results.append({"deleted": cleanup_path})
                 except Exception as e:
-                    recovery_action = {
-                        "action": "cleanup_failed",
-                        "path": asset_path,
-                        "error": str(e),
-                        "user_action_required": f"Manually delete partial asset at {asset_path}"
-                    }
+                    cleanup_results.append({"failed": cleanup_path, "error": str(e)})
+
+            if cleanup_results:
+                recovery_action = {
+                    "action": "deleted_partial",
+                    "cleaned_up": cleanup_results,
+                }
 
             response = {
                 "success": False,
@@ -713,6 +731,25 @@ def register_material_composite_tools(mcp, connection: UEConnection):
                 "auto_layout": 1,
             },
         }
+
+        if instances:
+            instance_results = []
+            for entry in results:
+                if entry.get("success") and "data" in entry:
+                    cmd_index = entry["index"]
+                    if cmd_index < len(commands) and commands[cmd_index]["command"] == "material.create_instance":
+                        inst_path = entry["data"].get("asset_path")
+                        inst_name = commands[cmd_index]["params"].get("name", "")
+                        param_count = 0
+                        if cmd_index + 1 < len(commands) and commands[cmd_index + 1]["command"] == "material.set_parameters":
+                            param_count = len(commands[cmd_index + 1]["params"].get("parameters", []))
+                        instance_results.append({
+                            "name": inst_name,
+                            "asset_path": inst_path,
+                            "override_count": param_count,
+                        })
+            response["instances"] = instance_results
+            response["instance_count"] = len(instance_results)
 
         # Verification readback is informational. It must not downgrade successful creation.
         try:
