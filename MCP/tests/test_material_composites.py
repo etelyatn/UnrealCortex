@@ -1133,6 +1133,136 @@ class TestCreateMaterialInstanceTool:
         assert "Batch command rejected" in result["error"]
 
 
+class TestCreateMaterialGraphWithInstances:
+    """Tests for create_material_graph with instances parameter."""
+
+    def _make_batch_success(self, num_steps, instance_paths=None):
+        """Build a mock batch success response."""
+        results = []
+        for i in range(num_steps):
+            data = {"timing_ms": 1}
+            if i == 0:
+                data["data"] = {"asset_path": "/Game/M_Test"}
+            elif instance_paths:
+                for inst_path in instance_paths:
+                    if len(results) == inst_path[0]:
+                        data["data"] = {"asset_path": inst_path[1]}
+                        break
+                else:
+                    data["data"] = {"node_id": f"Expr_{i}"}
+            else:
+                data["data"] = {"node_id": f"Expr_{i}"}
+            data["index"] = i
+            data["success"] = True
+            results.append(data)
+        return {
+            "success": True,
+            "data": {"results": results, "total_timing_ms": num_steps},
+        }
+
+    def test_success_includes_instances_in_response(self):
+        """Success response includes instances array with paths."""
+        mock_conn = MagicMock()
+
+        nodes = [
+            {"name": "R", "class": "ScalarParameter", "params": {"ParameterName": "Roughness"}},
+        ]
+        connections = []
+        instances = [{"name": "MI_A", "parameters": {"Roughness": 0.3}}]
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, connections, instances=instances)
+        num_steps = len(commands)
+        inst_idx = next(i for i, c in enumerate(commands) if c["command"] == "material.create_instance")
+
+        batch_results = []
+        for i in range(num_steps):
+            entry = {"index": i, "success": True, "timing_ms": 1}
+            if i == 0:
+                entry["data"] = {"asset_path": "/Game/M_Test"}
+            elif i == inst_idx:
+                entry["data"] = {"asset_path": "/Game/MI_A"}
+            else:
+                entry["data"] = {"node_id": f"Expr_{i}"}
+            batch_results.append(entry)
+
+        mock_conn.send_command.side_effect = [
+            {"success": True, "data": {"results": batch_results, "total_timing_ms": 10}},
+            {"data": {"success": True}},
+            {"data": {"node_count": 2, "blend_mode": None, "shading_model": None}},
+            {"data": {"nodes": [{"expression_class": "MaterialExpressionScalarParameter"}]}},
+            {"data": {"connections": []}},
+        ]
+
+        tools = _extract_tools(mock_conn)
+        result = json.loads(tools["create_material_graph"](
+            name="M_Test",
+            path="/Game/",
+            nodes=nodes,
+            connections=connections,
+            instances=instances,
+        ))
+
+        assert result["success"] is True
+        assert result["asset_path"] == "/Game/M_Test"
+        assert "instances" in result
+        assert len(result["instances"]) == 1
+        assert result["instances"][0]["name"] == "MI_A"
+        assert result["instances"][0]["asset_path"] == "/Game/MI_A"
+
+    def test_instance_failure_cleans_up_all(self):
+        """When instance creation fails, material and prior instances are cleaned up."""
+        mock_conn = MagicMock()
+
+        nodes = [
+            {"name": "R", "class": "ScalarParameter", "params": {"ParameterName": "Roughness"}},
+        ]
+        instances = [
+            {"name": "MI_A", "parameters": {"Roughness": 0.3}},
+            {"name": "MI_B", "parameters": {"Roughness": 0.8}},
+        ]
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, [], instances=instances)
+        inst_indices = [i for i, c in enumerate(commands) if c["command"] == "material.create_instance"]
+        assert len(inst_indices) == 2
+
+        batch_results = []
+        for i in range(len(commands)):
+            entry = {"index": i, "success": True, "timing_ms": 1}
+            if i == 0:
+                entry["data"] = {"asset_path": "/Game/M_Test"}
+            elif i == inst_indices[0]:
+                entry["data"] = {"asset_path": "/Game/MI_A"}
+            elif i == inst_indices[1]:
+                entry["data"] = {"asset_path": "/Game/MI_B"}
+            else:
+                entry["data"] = {"node_id": f"Expr_{i}"}
+            batch_results.append(entry)
+
+        last_set_params_idx = max(i for i, c in enumerate(commands) if c["command"] == "material.set_parameters")
+        batch_results[last_set_params_idx]["success"] = False
+        batch_results[last_set_params_idx]["error_message"] = "Parameter not found"
+        batch_results[last_set_params_idx]["command"] = "material.set_parameters"
+        batch_results = batch_results[:last_set_params_idx + 1]
+
+        mock_conn.send_command.side_effect = [
+            {"success": True, "data": {"results": batch_results, "total_timing_ms": 10}},
+            {"success": True, "data": {}},
+            {"success": True, "data": {}},
+            {"success": True, "data": {}},
+        ]
+
+        tools = _extract_tools(mock_conn)
+        result = json.loads(tools["create_material_graph"](
+            name="M_Test",
+            path="/Game/",
+            nodes=nodes,
+            connections=[],
+            instances=instances,
+        ))
+
+        assert result["success"] is False
+        assert "recovery_action" in result
+
 class TestMaterialVerificationIntegration:
     """Integration tests for material verification in the composite response."""
 
