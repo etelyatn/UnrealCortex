@@ -239,6 +239,13 @@ class TestInstancesInGraphSpec:
         instances = [{"name": "MI_NoParams"}]
         _validate_spec("M_Test", "/Game/", [], [], instances=instances)
 
+    def test_instance_path_must_be_string(self):
+        """Validation fails when instance path is not a string."""
+        nodes = self._sample_nodes()
+        instances = [{"name": "MI_BadPath", "path": 123, "parameters": {"Roughness": 0.5}}]
+        with pytest.raises(ValueError, match="path must be a non-empty string"):
+            _validate_spec("M_Test", "/Game/", nodes, [], instances=instances)
+
 
 class TestBatchCommandGeneration:
     """Test _build_batch_commands() function."""
@@ -1262,6 +1269,54 @@ class TestCreateMaterialGraphWithInstances:
 
         assert result["success"] is False
         assert "recovery_action" in result
+
+    def test_instance_failure_cleanup_reports_partial_failure(self):
+        """Cleanup failure reports explicit partial cleanup failure action."""
+        mock_conn = MagicMock()
+
+        nodes = [
+            {"name": "R", "class": "ScalarParameter", "params": {"ParameterName": "Roughness"}},
+        ]
+        instances = [
+            {"name": "MI_A", "parameters": {"Roughness": 0.3}},
+        ]
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, [], instances=instances)
+        last_set_params_idx = max(i for i, c in enumerate(commands) if c["command"] == "material.set_parameters")
+        inst_idx = next(i for i, c in enumerate(commands) if c["command"] == "material.create_instance")
+
+        batch_results = []
+        for i in range(last_set_params_idx + 1):
+            entry = {"index": i, "success": True, "timing_ms": 1}
+            if i == 0:
+                entry["data"] = {"asset_path": "/Game/M_Test"}
+            elif i == inst_idx:
+                entry["data"] = {"asset_path": "/Game/MI_A"}
+            else:
+                entry["data"] = {"node_id": f"Expr_{i}"}
+            batch_results.append(entry)
+        batch_results[last_set_params_idx]["success"] = False
+        batch_results[last_set_params_idx]["error_message"] = "Parameter not found"
+        batch_results[last_set_params_idx]["command"] = "material.set_parameters"
+
+        mock_conn.send_command.side_effect = [
+            {"success": True, "data": {"results": batch_results, "total_timing_ms": 10}},
+            RuntimeError("delete instance failed"),
+            {"success": True, "data": {}},
+        ]
+
+        tools = _extract_tools(mock_conn)
+        result = json.loads(tools["create_material_graph"](
+            name="M_Test",
+            path="/Game/",
+            nodes=nodes,
+            connections=[],
+            instances=instances,
+        ))
+
+        assert result["success"] is False
+        assert result["recovery_action"]["action"] == "cleanup_failed_partial"
+        assert "user_action_required" in result["recovery_action"]
 
 class TestMaterialVerificationIntegration:
     """Integration tests for material verification in the composite response."""

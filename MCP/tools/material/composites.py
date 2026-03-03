@@ -265,6 +265,10 @@ def _validate_spec(name, path, nodes, connections, material_properties=None, ins
             params = inst.get("parameters", {})
             if not isinstance(params, dict):
                 raise ValueError(f"Instance '{inst_name}' 'parameters' must be a dict")
+            if "path" in inst:
+                inst_path = inst.get("path")
+                if not isinstance(inst_path, str) or not inst_path.strip():
+                    raise ValueError(f"Instance '{inst_name}' path must be a non-empty string")
 
             for param_name in params:
                 if param_name not in param_node_map:
@@ -669,10 +673,16 @@ def register_material_composite_tools(mcp, connection: UEConnection):
                     cleanup_results.append({"failed": cleanup_path, "error": str(e)})
 
             if cleanup_results:
+                had_cleanup_failures = any("failed" in result for result in cleanup_results)
                 recovery_action = {
-                    "action": "deleted_partial",
+                    "action": "cleanup_failed_partial" if had_cleanup_failures else "deleted_partial",
                     "cleaned_up": cleanup_results,
                 }
+                if had_cleanup_failures:
+                    failed_paths = [r["failed"] for r in cleanup_results if "failed" in r]
+                    recovery_action["user_action_required"] = [
+                        f"Manually delete partial asset at {path}" for path in failed_paths
+                    ]
 
             response = {
                 "success": False,
