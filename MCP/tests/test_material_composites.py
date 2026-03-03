@@ -17,6 +17,7 @@ from material.composites import (
     _validate_spec,
     _build_batch_commands,
     _validate_instance_spec,
+    _build_instance_batch_commands,
     register_material_composite_tools,
 )
 
@@ -645,6 +646,84 @@ class TestInstanceValidation:
     def test_empty_parameters_allowed(self):
         """Empty parameters list is valid (instance with no overrides)."""
         _validate_instance_spec("MI_Test", "/Game/", "/Game/M_Parent", [])
+
+
+class TestInstanceBatchCommands:
+    """Test _build_instance_batch_commands() function."""
+
+    def test_basic_instance_with_params(self):
+        """Instance with scalar and vector parameters generates correct commands."""
+        commands = _build_instance_batch_commands(
+            name="MI_Test",
+            path="/Game/Materials/",
+            parent="/Game/Materials/M_Parent",
+            parameters=[
+                {"name": "Roughness", "type": "scalar", "value": 0.5},
+                {"name": "Color", "type": "vector", "value": {"R": 1, "G": 0, "B": 0, "A": 1}},
+            ],
+        )
+
+        assert commands[0]["command"] == "material.create_instance"
+        assert commands[0]["params"]["name"] == "MI_Test"
+        assert commands[0]["params"]["asset_path"] == "/Game/Materials"
+        assert commands[0]["params"]["parent_material"] == "/Game/Materials/M_Parent"
+
+        assert commands[1]["command"] == "material.set_parameters"
+        assert commands[1]["params"]["asset_path"] == "$steps[0].data.asset_path"
+        params_list = commands[1]["params"]["parameters"]
+        assert len(params_list) == 2
+        assert params_list[0]["parameter_name"] == "Roughness"
+        assert params_list[0]["parameter_type"] == "scalar"
+        assert params_list[0]["value"] == 0.5
+        assert params_list[1]["parameter_name"] == "Color"
+        assert params_list[1]["parameter_type"] == "vector"
+
+    def test_no_parameters(self):
+        """Instance with no parameters generates only create command."""
+        commands = _build_instance_batch_commands(
+            name="MI_Empty",
+            path="/Game/",
+            parent="/Game/M_Parent",
+            parameters=[],
+        )
+
+        assert len(commands) == 1
+        assert commands[0]["command"] == "material.create_instance"
+
+    def test_parent_ref_override(self):
+        """parent_ref parameter overrides parent for batch merging."""
+        commands = _build_instance_batch_commands(
+            name="MI_Test",
+            path="/Game/",
+            parent="ignored_when_ref_provided",
+            parameters=[{"name": "R", "type": "scalar", "value": 0.5}],
+            parent_ref="$steps[0].data.asset_path",
+        )
+
+        assert commands[0]["params"]["parent_material"] == "$steps[0].data.asset_path"
+
+    def test_step_offset(self):
+        """step_offset adjusts $steps references for batch merging."""
+        commands = _build_instance_batch_commands(
+            name="MI_Test",
+            path="/Game/",
+            parent="/Game/M_Parent",
+            parameters=[{"name": "R", "type": "scalar", "value": 0.5}],
+            step_offset=10,
+        )
+
+        assert commands[1]["params"]["asset_path"] == "$steps[10].data.asset_path"
+
+    def test_trailing_slash_normalized(self):
+        """Trailing slash on path is stripped."""
+        commands = _build_instance_batch_commands(
+            name="MI_Test",
+            path="/Game/Materials/",
+            parent="/Game/M_Parent",
+            parameters=[],
+        )
+
+        assert commands[0]["params"]["asset_path"] == "/Game/Materials"
 
 
 class TestMaterialVerificationIntegration:
