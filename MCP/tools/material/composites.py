@@ -239,6 +239,40 @@ def _validate_spec(name, path, nodes, connections, material_properties=None):
                 )
 
 
+_VALID_PARAM_TYPES = {"scalar", "vector", "texture"}
+
+
+def _validate_instance_spec(name, path, parent, parameters):
+    """Validate the material instance spec. Raises ValueError on invalid spec."""
+    if not name:
+        raise ValueError("Missing required field: name")
+    if not path:
+        raise ValueError("Missing required field: path")
+    if not parent:
+        raise ValueError("Missing required field: parent")
+    if not isinstance(parameters, list):
+        raise ValueError("parameters must be a list")
+
+    seen_names = set()
+    for i, param in enumerate(parameters):
+        if not isinstance(param, dict):
+            raise ValueError(f"Parameter {i} must be a dict")
+        if "name" not in param or not param["name"]:
+            raise ValueError(f"Parameter {i} missing 'name'")
+        if "type" not in param or not param["type"]:
+            raise ValueError(f"Parameter {i} missing 'type'")
+        if "value" not in param:
+            raise ValueError(f"Parameter {i} missing 'value'")
+        if param["type"] not in _VALID_PARAM_TYPES:
+            raise ValueError(
+                f"Invalid parameter type '{param['type']}' for '{param['name']}'. "
+                f"Must be one of: {sorted(_VALID_PARAM_TYPES)}"
+            )
+        if param["name"] in seen_names:
+            raise ValueError(f"Duplicate parameter name: '{param['name']}'")
+        seen_names.add(param["name"])
+
+
 def _build_batch_commands(name, path, nodes, connections, material_properties=None):
     """Translate material spec into batch commands with $ref wiring."""
     # Normalize trailing slash to prevent double-slash paths
@@ -329,6 +363,53 @@ def _build_batch_commands(name, path, nodes, connections, material_properties=No
         commands.append({
             "command": "material.connect",
             "params": connect_params,
+        })
+
+    return commands
+
+
+def _build_instance_batch_commands(name, path, parent, parameters, parent_ref=None, step_offset=0):
+    """Translate instance spec into batch commands with $ref wiring.
+
+    Args:
+        name: Instance name.
+        path: Directory path for the instance.
+        parent: Parent material asset path (used when parent_ref is None).
+        parameters: List of parameter overrides [{name, type, value}].
+        parent_ref: Optional $steps[N] reference to use as parent_material.
+        step_offset: Step index where this instance's commands start in merged batch.
+
+    Returns:
+        List of batch command dicts.
+    """
+    path = path.rstrip("/")
+
+    commands = []
+
+    commands.append({
+        "command": "material.create_instance",
+        "params": {
+            "name": name,
+            "asset_path": path,
+            "parent_material": parent_ref if parent_ref else parent,
+        },
+    })
+
+    if parameters:
+        params_list = [
+            {
+                "parameter_name": p["name"],
+                "parameter_type": p["type"],
+                "value": p["value"],
+            }
+            for p in parameters
+        ]
+        commands.append({
+            "command": "material.set_parameters",
+            "params": {
+                "asset_path": f"$steps[{step_offset}].data.asset_path",
+                "parameters": params_list,
+            },
         })
 
     return commands
@@ -583,5 +664,141 @@ def register_material_composite_tools(mcp, connection: UEConnection):
 
         if warnings:
             response["warnings"] = warnings
+
+        return json.dumps(response, indent=2)
+
+    @mcp.tool()
+    def create_material_instance(
+        name: str,
+        path: str,
+        parent: str,
+        parameters: list[dict] | None = None,
+    ) -> str:
+        """Create a material instance with parameter overrides in a single operation.
+
+        Creates a new UMaterialInstanceConstant and sets all specified parameter
+        overrides. All operations execute atomically via batch - if any step fails,
+        the partial instance is cleaned up.
+
+        Args:
+            name: Instance name.
+            path: Directory path.
+            parent: Parent material asset path.
+            parameters: Optional array of parameter overrides with {name,type,value}.
+
+        Returns:
+            JSON result including asset_path, parent_material, and parameter_count.
+            On failure returns error summary and failed step info.
+        """
+        params = parameters or []
+
+        try:
+            _validate_instance_spec(name, path, parent, params)
+        except ValueError as e:
+            return json.dumps({"success": False, "error": f"Invalid spec: {e}"})
+
+        commands = _build_instance_batch_commands(name, path, parent, params)
+        total_steps = len(commands)
+        timeout = max(30, total_steps * 2)
+
+        try:
+            batch_result = connection.send_command("batch", {
+                "stop_on_error": True,
+                "commands": commands,
+            }, timeout=timeout)
+        except RuntimeError as e:
+            return json.dumps({"success": False, "error": str(e)})
+        except (ConnectionError, TimeoutError, OSError) as e:
+            return json.dumps({"success": False, "error": f"Connection error: {e}"})
+
+        if not batch_result.get("success", False):
+            return json.dumps({
+                "success": False,
+                "error": batch_result.get("error", "Batch execution failed"),
+            })
+
+        batch_data = batch_result.get("data", {})
+        results = batch_data.get("results", [])
+
+        asset_path = None
+        failed_step = None
+        completed_count = 0
+
+        for entry in results:
+            if entry.get("success"):
+                completed_count += 1
+                if entry.get("index") == 0 and "data" in entry:
+                    asset_path = entry["data"].get("asset_path")
+            else:
+                failed_step = entry
+                break
+
+        if failed_step is not None:
+            recovery_action = None
+            if asset_path:
+                try:
+                    connection.send_command("material.delete_instance", {
+                        "asset_path": asset_path,
+                    })
+                    recovery_action = {"action": "deleted_partial", "path": asset_path}
+                except Exception as e:
+                    recovery_action = {
+                        "action": "cleanup_failed",
+                        "path": asset_path,
+                        "error": str(e),
+                        "user_action_required": f"Manually delete partial instance at {asset_path}",
+                    }
+
+            response = {
+                "success": False,
+                "summary": f"Step {failed_step['index']} of {total_steps} failed: "
+                           f"{failed_step.get('command', '?')} - "
+                           f"{failed_step.get('error_message', 'Unknown error')}",
+                "asset_path": asset_path,
+                "parent_material": parent,
+                "completed_steps": completed_count,
+                "failed_step": {
+                    "index": failed_step["index"],
+                    "command": failed_step.get("command", ""),
+                    "error": failed_step.get("error_message", ""),
+                },
+                "total_steps": total_steps,
+            }
+            if recovery_action:
+                response["recovery_action"] = recovery_action
+            return json.dumps(response, indent=2)
+
+        response = {
+            "success": True,
+            "asset_path": asset_path,
+            "parent_material": parent,
+            "parameter_count": len(params),
+            "total_steps": total_steps,
+            "total_timing_ms": batch_data.get("total_timing_ms", 0),
+        }
+
+        try:
+            instance_data = connection.send_command(
+                "material.get_instance",
+                {"asset_path": asset_path},
+                timeout=VERIFICATION_TIMEOUT,
+            )
+            inst_result = instance_data.get("data", instance_data)
+            overrides = inst_result.get("overrides", {})
+            override_count = sum(len(v) for v in overrides.values() if isinstance(v, list))
+            if override_count != len(params):
+                response["warning"] = f"Expected {len(params)} overrides, found {override_count}"
+            response["verification"] = {
+                "verified": override_count == len(params),
+                "override_count": override_count,
+                "expected_count": len(params),
+            }
+        except Exception as exc:
+            logger.warning("Instance verification readback failed: %s", exc, exc_info=True)
+            response["verification"] = {
+                "verified": None,
+                "error_code": "READBACK_FAILED",
+                "error": f"Verification readback failed: {exc}",
+            }
 
         return json.dumps(response, indent=2)

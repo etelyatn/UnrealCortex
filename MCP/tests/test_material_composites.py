@@ -16,12 +16,14 @@ from material.composites import (
     _resolve_class_name,
     _validate_spec,
     _build_batch_commands,
+    _validate_instance_spec,
+    _build_instance_batch_commands,
     register_material_composite_tools,
 )
 
 
-def _extract_tool(connection):
-    """Register composite tool with a mock MCP and return create_material_graph."""
+def _extract_tools(connection):
+    """Register composite tools with a mock MCP and return tool dict."""
     tools = {}
 
     class MockMCP:
@@ -32,7 +34,7 @@ def _extract_tool(connection):
             return decorator
 
     register_material_composite_tools(MockMCP(), connection)
-    return tools["create_material_graph"]
+    return tools
 
 
 class TestClassNameResolution:
@@ -265,7 +267,7 @@ class TestCleanupOnFailure:
 
         nodes = [{"class": "Constant", "name": "A"}]
         connections = [{"from": "A.0", "to": "Material.BaseColor"}]
-        tool = _extract_tool(mock_conn)
+        tool = _extract_tools(mock_conn)["create_material_graph"]
         result = json.loads(tool(name="M_Test", path="/Game/", nodes=nodes, connections=connections))
 
         assert result["success"] is False
@@ -308,7 +310,7 @@ class TestAutoLayoutWarning:
 
         nodes = [{"class": "Constant", "name": "A"}]
         connections = [{"from": "A.0", "to": "Material.BaseColor"}]
-        tool = _extract_tool(mock_conn)
+        tool = _extract_tools(mock_conn)["create_material_graph"]
         result = json.loads(tool(name="M_Test", path="/Game/", nodes=nodes, connections=connections))
 
         assert result["success"] is True
@@ -554,6 +556,359 @@ class TestMaterialProperties:
         assert commands[3]["params"]["property_name"] == "Texture"
 
 
+class TestInstanceValidation:
+    """Test _validate_instance_spec() function."""
+
+    def test_valid_spec(self):
+        """Valid instance spec passes validation."""
+        _validate_instance_spec(
+            name="MI_Test",
+            path="/Game/Materials/",
+            parent="/Game/Materials/M_Parent",
+            parameters=[
+                {"name": "Roughness", "type": "scalar", "value": 0.5},
+            ],
+        )
+
+    def test_missing_name(self):
+        """Validation fails when name is missing."""
+        with pytest.raises(ValueError, match="Missing required field: name"):
+            _validate_instance_spec("", "/Game/", "/Game/M_Parent", [])
+
+    def test_missing_path(self):
+        """Validation fails when path is missing."""
+        with pytest.raises(ValueError, match="Missing required field: path"):
+            _validate_instance_spec("MI_Test", "", "/Game/M_Parent", [])
+
+    def test_missing_parent(self):
+        """Validation fails when parent is missing."""
+        with pytest.raises(ValueError, match="Missing required field: parent"):
+            _validate_instance_spec("MI_Test", "/Game/", "", [])
+
+    def test_parameters_not_list(self):
+        """Validation fails when parameters is not a list."""
+        with pytest.raises(ValueError, match="parameters must be a list"):
+            _validate_instance_spec("MI_Test", "/Game/", "/Game/M_Parent", "bad")
+
+    def test_parameter_missing_name(self):
+        """Validation fails when parameter missing name."""
+        with pytest.raises(ValueError, match="missing 'name'"):
+            _validate_instance_spec(
+                "MI_Test",
+                "/Game/",
+                "/Game/M_Parent",
+                [{"type": "scalar", "value": 0.5}],
+            )
+
+    def test_parameter_missing_type(self):
+        """Validation fails when parameter missing type."""
+        with pytest.raises(ValueError, match="missing 'type'"):
+            _validate_instance_spec(
+                "MI_Test",
+                "/Game/",
+                "/Game/M_Parent",
+                [{"name": "Roughness", "value": 0.5}],
+            )
+
+    def test_parameter_invalid_type(self):
+        """Validation fails when parameter has invalid type."""
+        with pytest.raises(ValueError, match="Invalid parameter type"):
+            _validate_instance_spec(
+                "MI_Test",
+                "/Game/",
+                "/Game/M_Parent",
+                [{"name": "Roughness", "type": "integer", "value": 1}],
+            )
+
+    def test_parameter_missing_value(self):
+        """Validation fails when parameter missing value."""
+        with pytest.raises(ValueError, match="missing 'value'"):
+            _validate_instance_spec(
+                "MI_Test",
+                "/Game/",
+                "/Game/M_Parent",
+                [{"name": "Roughness", "type": "scalar"}],
+            )
+
+    def test_duplicate_parameter_names(self):
+        """Validation fails on duplicate parameter names."""
+        with pytest.raises(ValueError, match="Duplicate parameter name"):
+            _validate_instance_spec(
+                "MI_Test",
+                "/Game/",
+                "/Game/M_Parent",
+                [
+                    {"name": "Roughness", "type": "scalar", "value": 0.5},
+                    {"name": "Roughness", "type": "scalar", "value": 0.8},
+                ],
+            )
+
+    def test_empty_parameters_allowed(self):
+        """Empty parameters list is valid (instance with no overrides)."""
+        _validate_instance_spec("MI_Test", "/Game/", "/Game/M_Parent", [])
+
+
+class TestInstanceBatchCommands:
+    """Test _build_instance_batch_commands() function."""
+
+    def test_basic_instance_with_params(self):
+        """Instance with scalar and vector parameters generates correct commands."""
+        commands = _build_instance_batch_commands(
+            name="MI_Test",
+            path="/Game/Materials/",
+            parent="/Game/Materials/M_Parent",
+            parameters=[
+                {"name": "Roughness", "type": "scalar", "value": 0.5},
+                {"name": "Color", "type": "vector", "value": {"R": 1, "G": 0, "B": 0, "A": 1}},
+            ],
+        )
+
+        assert commands[0]["command"] == "material.create_instance"
+        assert commands[0]["params"]["name"] == "MI_Test"
+        assert commands[0]["params"]["asset_path"] == "/Game/Materials"
+        assert commands[0]["params"]["parent_material"] == "/Game/Materials/M_Parent"
+
+        assert commands[1]["command"] == "material.set_parameters"
+        assert commands[1]["params"]["asset_path"] == "$steps[0].data.asset_path"
+        params_list = commands[1]["params"]["parameters"]
+        assert len(params_list) == 2
+        assert params_list[0]["parameter_name"] == "Roughness"
+        assert params_list[0]["parameter_type"] == "scalar"
+        assert params_list[0]["value"] == 0.5
+        assert params_list[1]["parameter_name"] == "Color"
+        assert params_list[1]["parameter_type"] == "vector"
+
+    def test_no_parameters(self):
+        """Instance with no parameters generates only create command."""
+        commands = _build_instance_batch_commands(
+            name="MI_Empty",
+            path="/Game/",
+            parent="/Game/M_Parent",
+            parameters=[],
+        )
+
+        assert len(commands) == 1
+        assert commands[0]["command"] == "material.create_instance"
+
+    def test_parent_ref_override(self):
+        """parent_ref parameter overrides parent for batch merging."""
+        commands = _build_instance_batch_commands(
+            name="MI_Test",
+            path="/Game/",
+            parent="ignored_when_ref_provided",
+            parameters=[{"name": "R", "type": "scalar", "value": 0.5}],
+            parent_ref="$steps[0].data.asset_path",
+        )
+
+        assert commands[0]["params"]["parent_material"] == "$steps[0].data.asset_path"
+
+    def test_step_offset(self):
+        """step_offset adjusts $steps references for batch merging."""
+        commands = _build_instance_batch_commands(
+            name="MI_Test",
+            path="/Game/",
+            parent="/Game/M_Parent",
+            parameters=[{"name": "R", "type": "scalar", "value": 0.5}],
+            step_offset=10,
+        )
+
+        assert commands[1]["params"]["asset_path"] == "$steps[10].data.asset_path"
+
+    def test_trailing_slash_normalized(self):
+        """Trailing slash on path is stripped."""
+        commands = _build_instance_batch_commands(
+            name="MI_Test",
+            path="/Game/Materials/",
+            parent="/Game/M_Parent",
+            parameters=[],
+        )
+
+        assert commands[0]["params"]["asset_path"] == "/Game/Materials"
+
+
+class TestCreateMaterialInstanceTool:
+    """Tests for create_material_instance composite tool."""
+
+    def test_success_response(self):
+        """Successful creation returns asset_path and parameter_count."""
+        mock_conn = MagicMock()
+        mock_conn.send_command.side_effect = [
+            {
+                "success": True,
+                "data": {
+                    "results": [
+                        {
+                            "index": 0,
+                            "success": True,
+                            "data": {
+                                "asset_path": "/Game/Materials/MI_Test",
+                                "name": "MI_Test",
+                                "parent_material": "/Game/Materials/M_Parent",
+                            },
+                            "timing_ms": 5,
+                        },
+                        {
+                            "index": 1,
+                            "success": True,
+                            "data": {
+                                "success_count": 2,
+                                "total_count": 2,
+                            },
+                            "timing_ms": 3,
+                        },
+                    ],
+                    "total_timing_ms": 8,
+                },
+            },
+            {
+                "data": {
+                    "name": "MI_Test",
+                    "asset_path": "/Game/Materials/MI_Test",
+                    "parent_material": "/Game/Materials/M_Parent",
+                    "overrides": {
+                        "scalar": [{"name": "Roughness", "value": 0.5}],
+                        "vector": [{"name": "Color", "value": [1, 0, 0, 1]}],
+                        "texture": [],
+                    },
+                },
+            },
+        ]
+
+        tools = _extract_tools(mock_conn)
+        result = json.loads(tools["create_material_instance"](
+            name="MI_Test",
+            path="/Game/Materials/",
+            parent="/Game/Materials/M_Parent",
+            parameters=[
+                {"name": "Roughness", "type": "scalar", "value": 0.5},
+                {"name": "Color", "type": "vector", "value": {"R": 1, "G": 0, "B": 0, "A": 1}},
+            ],
+        ))
+
+        assert result["success"] is True
+        assert result["asset_path"] == "/Game/Materials/MI_Test"
+        assert result["parameter_count"] == 2
+        assert result["parent_material"] == "/Game/Materials/M_Parent"
+
+    def test_validation_error(self):
+        """Invalid spec returns error without calling batch."""
+        mock_conn = MagicMock()
+        tools = _extract_tools(mock_conn)
+        result = json.loads(tools["create_material_instance"](
+            name="",
+            path="/Game/",
+            parent="/Game/M_Parent",
+            parameters=[],
+        ))
+
+        assert result["success"] is False
+        assert "Invalid spec" in result["error"]
+        mock_conn.send_command.assert_not_called()
+
+    def test_batch_failure_cleanup(self):
+        """Failure after create triggers cleanup via delete_instance."""
+        mock_conn = MagicMock()
+        mock_conn.send_command.side_effect = [
+            {
+                "success": True,
+                "data": {
+                    "results": [
+                        {
+                            "index": 0,
+                            "success": True,
+                            "data": {"asset_path": "/Game/MI_Test"},
+                            "timing_ms": 1,
+                        },
+                        {
+                            "index": 1,
+                            "success": False,
+                            "error_message": "Bad parameter",
+                            "command": "material.set_parameters",
+                            "timing_ms": 0,
+                        },
+                    ],
+                    "total_timing_ms": 1,
+                },
+            },
+            {"success": True, "data": {}},
+        ]
+
+        tools = _extract_tools(mock_conn)
+        result = json.loads(tools["create_material_instance"](
+            name="MI_Test",
+            path="/Game/",
+            parent="/Game/M_Parent",
+            parameters=[{"name": "Bad", "type": "scalar", "value": 0.5}],
+        ))
+
+        assert result["success"] is False
+        assert result["completed_steps"] == 1
+        assert result["failed_step"]["index"] == 1
+
+        delete_calls = [
+            c for c in mock_conn.send_command.call_args_list
+            if c.args[0] == "material.delete_instance"
+        ]
+        assert len(delete_calls) == 1
+
+    def test_no_params_success(self):
+        """Instance with no parameters creates successfully."""
+        mock_conn = MagicMock()
+        mock_conn.send_command.side_effect = [
+            {
+                "success": True,
+                "data": {
+                    "results": [
+                        {
+                            "index": 0,
+                            "success": True,
+                            "data": {"asset_path": "/Game/MI_Empty"},
+                            "timing_ms": 3,
+                        },
+                    ],
+                    "total_timing_ms": 3,
+                },
+            },
+            {
+                "data": {
+                    "name": "MI_Empty",
+                    "asset_path": "/Game/MI_Empty",
+                    "parent_material": "/Game/M_Parent",
+                    "overrides": {"scalar": [], "vector": [], "texture": []},
+                },
+            },
+        ]
+
+        tools = _extract_tools(mock_conn)
+        result = json.loads(tools["create_material_instance"](
+            name="MI_Empty",
+            path="/Game/",
+            parent="/Game/M_Parent",
+            parameters=[],
+        ))
+
+        assert result["success"] is True
+        assert result["parameter_count"] == 0
+
+    def test_batch_top_level_failure(self):
+        """Top-level batch failure returns an error response."""
+        mock_conn = MagicMock()
+        mock_conn.send_command.side_effect = [
+            {"success": False, "error": "Batch command rejected"},
+        ]
+
+        tools = _extract_tools(mock_conn)
+        result = json.loads(tools["create_material_instance"](
+            name="MI_Fail",
+            path="/Game/",
+            parent="/Game/M_Parent",
+            parameters=[],
+        ))
+
+        assert result["success"] is False
+        assert "Batch command rejected" in result["error"]
+
+
 class TestMaterialVerificationIntegration:
     """Integration tests for material verification in the composite response."""
 
@@ -578,7 +933,7 @@ class TestMaterialVerificationIntegration:
             {"data": {"connections": []}},
         ]
 
-        tool = _extract_tool(mock_connection)
+        tool = _extract_tools(mock_connection)["create_material_graph"]
         result = json.loads(tool(
             name="M_Test",
             path="/Game/",
@@ -604,7 +959,7 @@ class TestMaterialVerificationIntegration:
             ConnectionError("TCP dropped"),
         ]
 
-        tool = _extract_tool(mock_connection)
+        tool = _extract_tools(mock_connection)["create_material_graph"]
         result = json.loads(tool(
             name="M_Test",
             path="/Game/",
@@ -615,3 +970,4 @@ class TestMaterialVerificationIntegration:
         assert result["success"] is True
         assert result["verification"]["verified"] is None
         assert result["verification"]["error_code"] == "READBACK_FAILED"
+
