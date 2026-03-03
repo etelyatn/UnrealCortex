@@ -336,6 +336,115 @@ class TestBatchCommandGeneration:
         assert commands[4]["params"]["target_node"] == "$steps[2].data.node_id"
 
 
+class TestBatchCommandsWithInstances:
+    """Test _build_batch_commands() with instances parameter."""
+
+    def _sample_nodes(self):
+        return [
+            {"name": "Color", "class": "VectorParameter", "params": {"ParameterName": "BaseColor"}},
+            {"name": "Rough", "class": "ScalarParameter", "params": {"ParameterName": "Roughness"}},
+        ]
+
+    def test_material_plus_one_instance(self):
+        """Material with one instance generates correct command sequence."""
+        nodes = self._sample_nodes()
+        connections = [{"from": "Color.0", "to": "Material.BaseColor"}]
+        instances = [
+            {
+                "name": "MI_Red",
+                "parameters": {
+                    "BaseColor": {"R": 1, "G": 0, "B": 0},
+                    "Roughness": 0.5,
+                },
+            },
+        ]
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, connections, instances=instances)
+        cmd_types = [c["command"] for c in commands]
+
+        assert cmd_types[0] == "material.create_material"
+        assert "core.save_asset" in cmd_types
+        assert "material.create_instance" in cmd_types
+        assert "material.set_parameters" in cmd_types
+
+        save_idx = cmd_types.index("core.save_asset")
+        inst_idx = cmd_types.index("material.create_instance")
+        assert save_idx < inst_idx
+
+        create_inst = commands[inst_idx]
+        assert create_inst["params"]["parent_material"] == "$steps[0].data.asset_path"
+
+        set_params = [c for c in commands if c["command"] == "material.set_parameters"]
+        assert len(set_params) == 1
+        assert set_params[0]["params"]["asset_path"] == f"$steps[{inst_idx}].data.asset_path"
+
+        params_list = set_params[0]["params"]["parameters"]
+        param_types = {p["parameter_name"]: p["parameter_type"] for p in params_list}
+        assert param_types["BaseColor"] == "vector"
+        assert param_types["Roughness"] == "scalar"
+
+    def test_material_plus_two_instances(self):
+        """Two instances generate separate create + set_parameters blocks."""
+        nodes = self._sample_nodes()
+        instances = [
+            {"name": "MI_A", "parameters": {"Roughness": 0.3}},
+            {"name": "MI_B", "parameters": {"Roughness": 0.8}},
+        ]
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, [], instances=instances)
+
+        create_instances = [
+            (i, c) for i, c in enumerate(commands) if c["command"] == "material.create_instance"
+        ]
+        assert len(create_instances) == 2
+        for _, cmd in create_instances:
+            assert cmd["params"]["parent_material"] == "$steps[0].data.asset_path"
+
+        set_params = [(i, c) for i, c in enumerate(commands) if c["command"] == "material.set_parameters"]
+        assert len(set_params) == 2
+        assert set_params[0][1]["params"]["asset_path"] == f"$steps[{create_instances[0][0]}].data.asset_path"
+        assert set_params[1][1]["params"]["asset_path"] == f"$steps[{create_instances[1][0]}].data.asset_path"
+
+    def test_instance_inherits_path(self):
+        """Instance path defaults to material path."""
+        nodes = [{"name": "R", "class": "ScalarParameter", "params": {"ParameterName": "R"}}]
+        instances = [{"name": "MI_X", "parameters": {"R": 0.5}}]
+        commands = _build_batch_commands("M_Test", "/Game/Materials/", nodes, [], instances=instances)
+
+        create_inst = [c for c in commands if c["command"] == "material.create_instance"][0]
+        assert create_inst["params"]["asset_path"] == "/Game/Materials"
+
+    def test_instance_with_path_override(self):
+        """Instance can override the default path."""
+        nodes = [{"name": "R", "class": "ScalarParameter", "params": {"ParameterName": "R"}}]
+        instances = [{"name": "MI_X", "path": "/Game/Instances/", "parameters": {"R": 0.5}}]
+        commands = _build_batch_commands("M_Test", "/Game/Materials/", nodes, [], instances=instances)
+
+        create_inst = [c for c in commands if c["command"] == "material.create_instance"][0]
+        assert create_inst["params"]["asset_path"] == "/Game/Instances"
+
+    def test_no_instances_unchanged(self):
+        """Without instances parameter, behavior is unchanged."""
+        nodes = [{"name": "A", "class": "Constant"}]
+        connections = [{"from": "A.0", "to": "Material.BaseColor"}]
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, connections)
+
+        cmd_types = [c["command"] for c in commands]
+        assert "material.create_instance" not in cmd_types
+        assert "core.save_asset" not in cmd_types
+        assert "material.set_parameters" not in cmd_types
+
+    def test_instance_no_params_no_set_parameters(self):
+        """Instance with empty parameters does not generate set_parameters command."""
+        nodes = [{"name": "R", "class": "ScalarParameter", "params": {"ParameterName": "R"}}]
+        instances = [{"name": "MI_Empty", "parameters": {}}]
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, [], instances=instances)
+
+        cmd_types = [c["command"] for c in commands]
+        assert "material.create_instance" in cmd_types
+        assert "material.set_parameters" not in cmd_types
+
+
 class TestTimeoutScaling:
     def test_small_batch_uses_default(self):
         """Batch of 10 commands should use 60s timeout (max(60, 10*2) = 60)."""
