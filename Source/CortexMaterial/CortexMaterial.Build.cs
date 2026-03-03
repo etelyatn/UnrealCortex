@@ -15,6 +15,7 @@ public class CortexMaterial : ModuleRules
 
         PrivateDependencyModuleNames.AddRange(new string[]
         {
+            "CortexEditor",
             "CoreUObject",
             "Engine",
             "Json",

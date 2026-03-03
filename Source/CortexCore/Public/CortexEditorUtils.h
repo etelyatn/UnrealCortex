@@ -4,7 +4,9 @@
 
 class UObject;
 
-/** Shared editor utility functions for the UnrealCortex plugin */
+/** Shared editor utility functions for the UnrealCortex plugin.
+ *  For PIE-specific utilities (GetPIEWorld, FindActorInPIE, PIENotActiveError),
+ *  use FCortexPIEUtils from CortexEditor module instead. */
 class CORTEXCORE_API FCortexEditorUtils
 {
 public:
