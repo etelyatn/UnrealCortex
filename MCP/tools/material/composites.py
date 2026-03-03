@@ -368,6 +368,53 @@ def _build_batch_commands(name, path, nodes, connections, material_properties=No
     return commands
 
 
+def _build_instance_batch_commands(name, path, parent, parameters, parent_ref=None, step_offset=0):
+    """Translate instance spec into batch commands with $ref wiring.
+
+    Args:
+        name: Instance name.
+        path: Directory path for the instance.
+        parent: Parent material asset path (used when parent_ref is None).
+        parameters: List of parameter overrides [{name, type, value}].
+        parent_ref: Optional $steps[N] reference to use as parent_material.
+        step_offset: Step index where this instance's commands start in merged batch.
+
+    Returns:
+        List of batch command dicts.
+    """
+    path = path.rstrip("/")
+
+    commands = []
+
+    commands.append({
+        "command": "material.create_instance",
+        "params": {
+            "name": name,
+            "asset_path": path,
+            "parent_material": parent_ref if parent_ref else parent,
+        },
+    })
+
+    if parameters:
+        params_list = [
+            {
+                "parameter_name": p["name"],
+                "parameter_type": p["type"],
+                "value": p["value"],
+            }
+            for p in parameters
+        ]
+        commands.append({
+            "command": "material.set_parameters",
+            "params": {
+                "asset_path": f"$steps[{step_offset}].data.asset_path",
+                "parameters": params_list,
+            },
+        })
+
+    return commands
+
+
 def register_material_composite_tools(mcp, connection: UEConnection):
     """Register material composite MCP tools."""
 
