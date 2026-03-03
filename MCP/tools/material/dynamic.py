@@ -95,7 +95,14 @@ def register_material_dynamic_tools(mcp, connection: UEConnection):
         component_name: str = "",
         slot_index: int = 0,
     ) -> str:
-        """Remove a Dynamic Material Instance and revert to the parent material."""
+        """Remove a Dynamic Material Instance and revert to the parent material.
+
+        Reverts the material slot to the DMI's parent material. Unlike delete_instance
+        (which deletes saved material instance assets), this only removes the transient
+        runtime instance.
+
+        Requires PIE Playing or Paused. Related: create_dynamic_instance, get_dynamic_instance.
+        """
         try:
             params = {"actor_path": actor_path, "slot_index": slot_index}
             if component_name:
@@ -117,7 +124,11 @@ def register_material_dynamic_tools(mcp, connection: UEConnection):
     ) -> str:
         """Set a material parameter on a Dynamic Material Instance at runtime.
 
-        Requires PIE Playing or Paused.
+        Unlike set_parameter (which modifies saved material instance assets), this
+        changes the live DMI value visible in-game immediately. Changes are transient
+        and lost when PIE stops.
+
+        Requires PIE Playing or Paused. Related: get_dynamic_parameter, set_dynamic_parameters.
         """
         try:
             params: dict[str, Any] = {
@@ -142,7 +153,14 @@ def register_material_dynamic_tools(mcp, connection: UEConnection):
         component_name: str = "",
         slot_index: int = 0,
     ) -> str:
-        """Get a single parameter value from a Dynamic Material Instance."""
+        """Get a single parameter value from a Dynamic Material Instance.
+
+        Returns the parameter's current value, default value, type, and override status.
+        Unlike get_parameter (which reads saved material instance assets), this reads
+        the live DMI state in PIE.
+
+        Requires PIE Playing or Paused. Related: list_dynamic_parameters, set_dynamic_parameter.
+        """
         try:
             params = {"actor_path": actor_path, "name": name, "slot_index": slot_index}
             if component_name:
@@ -159,7 +177,14 @@ def register_material_dynamic_tools(mcp, connection: UEConnection):
         component_name: str = "",
         slot_index: int = 0,
     ) -> str:
-        """List all overrideable parameters on a Dynamic Material Instance."""
+        """List all overrideable parameters on a Dynamic Material Instance.
+
+        Returns scalar, vector, and texture parameters with their current/default
+        values and override status. Unlike list_parameters (which reads saved material
+        instance assets), this reads live DMI state in PIE.
+
+        Requires PIE Playing or Paused. Related: get_dynamic_parameter, get_dynamic_instance.
+        """
         try:
             params = {"actor_path": actor_path, "slot_index": slot_index}
             if component_name:
@@ -177,7 +202,14 @@ def register_material_dynamic_tools(mcp, connection: UEConnection):
         component_name: str = "",
         slot_index: int = 0,
     ) -> str:
-        """Set multiple parameters on a Dynamic Material Instance in a single call."""
+        """Set multiple parameters on a Dynamic Material Instance in a single call.
+
+        Batch alternative to set_dynamic_parameter. Each parameter in the array is
+        applied independently — partial failures are reported per-item without
+        rolling back successful ones.
+
+        Requires PIE Playing or Paused. Related: set_dynamic_parameter, list_dynamic_parameters.
+        """
         try:
             params: dict[str, Any] = {
                 "actor_path": actor_path,
@@ -199,7 +231,15 @@ def register_material_dynamic_tools(mcp, connection: UEConnection):
         component_name: str = "",
         slot_index: int = 0,
     ) -> str:
-        """Reset a parameter on a Dynamic Material Instance to its parent default."""
+        """Reset a parameter on a Dynamic Material Instance to its parent default.
+
+        Sets the parameter value back to the parent material's default. Unlike
+        reset_parameter (which clears overrides on saved material instances), this
+        operates on a live DMI in PIE. Note: the parameter remains in the override
+        array (UE limitation) but its value matches the default.
+
+        Requires PIE Playing or Paused. Related: set_dynamic_parameter, get_dynamic_parameter.
+        """
         try:
             params = {"actor_path": actor_path, "name": name, "slot_index": slot_index}
             if component_name:

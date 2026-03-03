@@ -1,6 +1,6 @@
 #include "Operations/CortexMaterialDynamicOps.h"
 
-#include "CortexEditorUtils.h"
+#include "CortexPIEUtils.h"
 #include "CortexMaterialModule.h"
 #include "CortexTypes.h"
 #include "Components/PrimitiveComponent.h"
@@ -12,10 +12,10 @@
 
 UWorld* FCortexMaterialDynamicOps::GetPIEWorldOrError(FCortexCommandResult& OutError)
 {
-	UWorld* World = FCortexEditorUtils::GetPIEWorld();
+	UWorld* World = FCortexPIEUtils::GetPIEWorld();
 	if (World == nullptr)
 	{
-		OutError = FCortexEditorUtils::PIENotActiveError();
+		OutError = FCortexPIEUtils::PIENotActiveError();
 	}
 
 	return World;
@@ -35,12 +35,15 @@ UPrimitiveComponent* FCortexMaterialDynamicOps::ResolveComponent(
 		return nullptr;
 	}
 
-	AActor* Actor = FCortexEditorUtils::FindActorInPIE(World, ActorPath);
+	AActor* Actor = FCortexPIEUtils::FindActorInPIE(World, ActorPath);
 	if (Actor == nullptr)
 	{
+		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+		Details->SetStringField(TEXT("recovery_hint"), TEXT("Use level.find_actors to discover actors in the PIE world."));
 		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::ActorNotFound,
-			FString::Printf(TEXT("Actor not found in PIE world: %s. Use level.find_actors to discover actors."), *ActorPath));
+			FString::Printf(TEXT("Actor not found in PIE world: %s"), *ActorPath),
+			Details);
 		return nullptr;
 	}
 
@@ -179,12 +182,15 @@ UMaterialInstanceDynamic* FCortexMaterialDynamicOps::ResolveDMI(
 	UMaterialInstanceDynamic* DMI = Cast<UMaterialInstanceDynamic>(Material);
 	if (DMI == nullptr)
 	{
+		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+		Details->SetStringField(TEXT("recovery_hint"), TEXT("Call create_dynamic_instance first to create a DMI on this slot."));
 		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::NotDynamicInstance,
 			FString::Printf(
-				TEXT("Slot %d on component '%s' does not have a Dynamic Material Instance. Call create_dynamic_instance first."),
+				TEXT("Slot %d on component '%s' does not have a Dynamic Material Instance."),
 				OutSlotIndex,
-				*OutComponent->GetName()));
+				*OutComponent->GetName()),
+			Details);
 		return nullptr;
 	}
 
@@ -206,12 +212,15 @@ FCortexCommandResult FCortexMaterialDynamicOps::ListDynamicInstances(const TShar
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("actor_path is required"));
 	}
 
-	AActor* Actor = FCortexEditorUtils::FindActorInPIE(World, ActorPath);
+	AActor* Actor = FCortexPIEUtils::FindActorInPIE(World, ActorPath);
 	if (Actor == nullptr)
 	{
+		TSharedPtr<FJsonObject> NotFoundDetails = MakeShared<FJsonObject>();
+		NotFoundDetails->SetStringField(TEXT("recovery_hint"), TEXT("Use level.find_actors to discover actors in the PIE world."));
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::ActorNotFound,
-			FString::Printf(TEXT("Actor not found in PIE world: %s"), *ActorPath));
+			FString::Printf(TEXT("Actor not found in PIE world: %s"), *ActorPath),
+			NotFoundDetails);
 	}
 
 	const FString ActorName = Actor->GetActorLabel().IsEmpty() ? Actor->GetName() : Actor->GetActorLabel();
@@ -326,6 +335,66 @@ bool FCortexMaterialDynamicOps::IsParameterOverridden(
 	}
 
 	return false;
+}
+
+int32 FCortexMaterialDynamicOps::CountParameters(const TSharedPtr<FJsonObject>& ParametersJson)
+{
+	int32 Count = 0;
+	const TArray<TSharedPtr<FJsonValue>>* TypedArray = nullptr;
+	if (ParametersJson->TryGetArrayField(TEXT("scalar"), TypedArray))
+	{
+		Count += TypedArray->Num();
+	}
+	if (ParametersJson->TryGetArrayField(TEXT("vector"), TypedArray))
+	{
+		Count += TypedArray->Num();
+	}
+	if (ParametersJson->TryGetArrayField(TEXT("texture"), TypedArray))
+	{
+		Count += TypedArray->Num();
+	}
+	return Count;
+}
+
+FString FCortexMaterialDynamicOps::DetermineParameterType(UMaterialInstanceDynamic* DMI, const FName& ParamName)
+{
+	{
+		TArray<FMaterialParameterInfo> Infos;
+		TArray<FGuid> Guids;
+		DMI->GetAllScalarParameterInfo(Infos, Guids);
+		for (const FMaterialParameterInfo& Info : Infos)
+		{
+			if (Info.Name == ParamName)
+			{
+				return TEXT("scalar");
+			}
+		}
+	}
+	{
+		TArray<FMaterialParameterInfo> Infos;
+		TArray<FGuid> Guids;
+		DMI->GetAllVectorParameterInfo(Infos, Guids);
+		for (const FMaterialParameterInfo& Info : Infos)
+		{
+			if (Info.Name == ParamName)
+			{
+				return TEXT("vector");
+			}
+		}
+	}
+	{
+		TArray<FMaterialParameterInfo> Infos;
+		TArray<FGuid> Guids;
+		DMI->GetAllTextureParameterInfo(Infos, Guids);
+		for (const FMaterialParameterInfo& Info : Infos)
+		{
+			if (Info.Name == ParamName)
+			{
+				return TEXT("texture");
+			}
+		}
+	}
+	return FString();
 }
 
 TSharedPtr<FJsonObject> FCortexMaterialDynamicOps::SerializeParameters(UMaterialInstanceDynamic* DMI)
@@ -560,20 +629,6 @@ FCortexCommandResult FCortexMaterialDynamicOps::GetDynamicInstance(const TShared
 	}
 
 	TSharedPtr<FJsonObject> ParametersJson = SerializeParameters(DMI);
-	int32 ParameterCount = 0;
-	const TArray<TSharedPtr<FJsonValue>>* TypedArray = nullptr;
-	if (ParametersJson->TryGetArrayField(TEXT("scalar"), TypedArray))
-	{
-		ParameterCount += TypedArray->Num();
-	}
-	if (ParametersJson->TryGetArrayField(TEXT("vector"), TypedArray))
-	{
-		ParameterCount += TypedArray->Num();
-	}
-	if (ParametersJson->TryGetArrayField(TEXT("texture"), TypedArray))
-	{
-		ParameterCount += TypedArray->Num();
-	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("actor"), ActorName);
@@ -581,7 +636,7 @@ FCortexCommandResult FCortexMaterialDynamicOps::GetDynamicInstance(const TShared
 	Data->SetNumberField(TEXT("slot_index"), SlotIndex);
 	Data->SetStringField(TEXT("parent_material"), DMI->Parent != nullptr ? DMI->Parent->GetPathName() : TEXT(""));
 	Data->SetObjectField(TEXT("parameters"), ParametersJson);
-	Data->SetNumberField(TEXT("parameter_count"), ParameterCount);
+	Data->SetNumberField(TEXT("parameter_count"), CountParameters(ParametersJson));
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -605,12 +660,15 @@ FCortexCommandResult FCortexMaterialDynamicOps::CreateDynamicInstance(const TSha
 	UMaterialInterface* CurrentMaterial = Component->GetMaterial(SlotIndex);
 	if (CurrentMaterial != nullptr && CurrentMaterial->IsA<UMaterialInstanceDynamic>())
 	{
+		TSharedPtr<FJsonObject> AlreadyDetails = MakeShared<FJsonObject>();
+		AlreadyDetails->SetStringField(TEXT("recovery_hint"), TEXT("Call destroy_dynamic_instance first to reset, then create a new one."));
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::AlreadyDynamicInstance,
 			FString::Printf(
-				TEXT("Slot %d on component '%s' already has a Dynamic Material Instance. Call destroy_dynamic_instance first to reset."),
+				TEXT("Slot %d on component '%s' already has a Dynamic Material Instance."),
 				SlotIndex,
-				*Component->GetName()));
+				*Component->GetName()),
+			AlreadyDetails);
 	}
 
 	UMaterialInterface* SourceMaterial = CurrentMaterial;
@@ -689,22 +747,7 @@ FCortexCommandResult FCortexMaterialDynamicOps::CreateDynamicInstance(const TSha
 
 	TSharedPtr<FJsonObject> ParametersJson = SerializeParameters(DMI);
 	Data->SetObjectField(TEXT("parameters"), ParametersJson);
-
-	int32 ParameterCount = 0;
-	const TArray<TSharedPtr<FJsonValue>>* TypedArray = nullptr;
-	if (ParametersJson->TryGetArrayField(TEXT("scalar"), TypedArray))
-	{
-		ParameterCount += TypedArray->Num();
-	}
-	if (ParametersJson->TryGetArrayField(TEXT("vector"), TypedArray))
-	{
-		ParameterCount += TypedArray->Num();
-	}
-	if (ParametersJson->TryGetArrayField(TEXT("texture"), TypedArray))
-	{
-		ParameterCount += TypedArray->Num();
-	}
-	Data->SetNumberField(TEXT("parameter_count"), ParameterCount);
+	Data->SetNumberField(TEXT("parameter_count"), CountParameters(ParametersJson));
 
 	return FCortexCommandRouter::Success(Data);
 }
@@ -840,64 +883,52 @@ FCortexCommandResult FCortexMaterialDynamicOps::GetDynamicParameter(const TShare
 	}
 
 	const FName MaterialParamName(*ParamName);
+	const FString ParamType = DetermineParameterType(DMI, MaterialParamName);
 
-	float ScalarValue = 0.0f;
-	if (DMI->GetScalarParameterValue(MaterialParamName, ScalarValue))
+	if (ParamType.IsEmpty())
 	{
-		float Default = 0.0f;
-		DMI->GetScalarParameterDefaultValue(FMaterialParameterInfo(MaterialParamName), Default);
-
-		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-		Data->SetStringField(TEXT("actor"), ActorName);
-		Data->SetStringField(TEXT("component_name"), Component->GetName());
-		Data->SetNumberField(TEXT("slot_index"), SlotIndex);
-		Data->SetStringField(TEXT("parameter_name"), ParamName);
-		Data->SetStringField(TEXT("type"), TEXT("scalar"));
-		Data->SetNumberField(TEXT("default_value"), Default);
-		Data->SetNumberField(TEXT("current_value"), ScalarValue);
-		Data->SetBoolField(TEXT("is_overridden"), IsParameterOverridden(DMI, MaterialParamName, TEXT("scalar")));
-		return FCortexCommandRouter::Success(Data);
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::ParameterNotFound,
+			FString::Printf(TEXT("Parameter '%s' not found on dynamic material instance."), *ParamName));
 	}
 
-	FLinearColor VectorValue;
-	if (DMI->GetVectorParameterValue(MaterialParamName, VectorValue))
-	{
-		FLinearColor Default;
-		DMI->GetVectorParameterDefaultValue(FMaterialParameterInfo(MaterialParamName), Default);
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("actor"), ActorName);
+	Data->SetStringField(TEXT("component_name"), Component->GetName());
+	Data->SetNumberField(TEXT("slot_index"), SlotIndex);
+	Data->SetStringField(TEXT("parameter_name"), ParamName);
+	Data->SetStringField(TEXT("type"), ParamType);
 
-		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-		Data->SetStringField(TEXT("actor"), ActorName);
-		Data->SetStringField(TEXT("component_name"), Component->GetName());
-		Data->SetNumberField(TEXT("slot_index"), SlotIndex);
-		Data->SetStringField(TEXT("parameter_name"), ParamName);
-		Data->SetStringField(TEXT("type"), TEXT("vector"));
-		Data->SetArrayField(TEXT("default_value"), ColorToJsonArray(Default));
-		Data->SetArrayField(TEXT("current_value"), ColorToJsonArray(VectorValue));
-		Data->SetBoolField(TEXT("is_overridden"), IsParameterOverridden(DMI, MaterialParamName, TEXT("vector")));
-		return FCortexCommandRouter::Success(Data);
+	if (ParamType == TEXT("scalar"))
+	{
+		float CurrentValue = 0.0f;
+		DMI->GetScalarParameterValue(MaterialParamName, CurrentValue);
+		float DefaultValue = 0.0f;
+		DMI->GetScalarParameterDefaultValue(FMaterialParameterInfo(MaterialParamName), DefaultValue);
+		Data->SetNumberField(TEXT("default_value"), DefaultValue);
+		Data->SetNumberField(TEXT("current_value"), CurrentValue);
+	}
+	else if (ParamType == TEXT("vector"))
+	{
+		FLinearColor CurrentValue;
+		DMI->GetVectorParameterValue(MaterialParamName, CurrentValue);
+		FLinearColor DefaultValue;
+		DMI->GetVectorParameterDefaultValue(FMaterialParameterInfo(MaterialParamName), DefaultValue);
+		Data->SetArrayField(TEXT("default_value"), ColorToJsonArray(DefaultValue));
+		Data->SetArrayField(TEXT("current_value"), ColorToJsonArray(CurrentValue));
+	}
+	else if (ParamType == TEXT("texture"))
+	{
+		UTexture* CurrentValue = nullptr;
+		DMI->GetTextureParameterValue(MaterialParamName, CurrentValue);
+		UTexture* DefaultValue = nullptr;
+		DMI->GetTextureParameterDefaultValue(FMaterialParameterInfo(MaterialParamName), DefaultValue);
+		Data->SetStringField(TEXT("default_value"), DefaultValue != nullptr ? DefaultValue->GetPathName() : TEXT(""));
+		Data->SetStringField(TEXT("current_value"), CurrentValue != nullptr ? CurrentValue->GetPathName() : TEXT(""));
 	}
 
-	UTexture* TextureValue = nullptr;
-	if (DMI->GetTextureParameterValue(MaterialParamName, TextureValue))
-	{
-		UTexture* Default = nullptr;
-		DMI->GetTextureParameterDefaultValue(FMaterialParameterInfo(MaterialParamName), Default);
-
-		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-		Data->SetStringField(TEXT("actor"), ActorName);
-		Data->SetStringField(TEXT("component_name"), Component->GetName());
-		Data->SetNumberField(TEXT("slot_index"), SlotIndex);
-		Data->SetStringField(TEXT("parameter_name"), ParamName);
-		Data->SetStringField(TEXT("type"), TEXT("texture"));
-		Data->SetStringField(TEXT("default_value"), Default != nullptr ? Default->GetPathName() : TEXT(""));
-		Data->SetStringField(TEXT("current_value"), TextureValue != nullptr ? TextureValue->GetPathName() : TEXT(""));
-		Data->SetBoolField(TEXT("is_overridden"), IsParameterOverridden(DMI, MaterialParamName, TEXT("texture")));
-		return FCortexCommandRouter::Success(Data);
-	}
-
-	return FCortexCommandRouter::Error(
-		CortexErrorCodes::ParameterNotFound,
-		FString::Printf(TEXT("Parameter '%s' not found on dynamic material instance."), *ParamName));
+	Data->SetBoolField(TEXT("is_overridden"), IsParameterOverridden(DMI, MaterialParamName, ParamType));
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialDynamicOps::ListDynamicParameters(const TSharedPtr<FJsonObject>& Params)
@@ -920,28 +951,13 @@ FCortexCommandResult FCortexMaterialDynamicOps::ListDynamicParameters(const TSha
 
 	TSharedPtr<FJsonObject> ParametersJson = SerializeParameters(DMI);
 
-	int32 ParameterCount = 0;
-	const TArray<TSharedPtr<FJsonValue>>* TypedArray = nullptr;
-	if (ParametersJson->TryGetArrayField(TEXT("scalar"), TypedArray))
-	{
-		ParameterCount += TypedArray->Num();
-	}
-	if (ParametersJson->TryGetArrayField(TEXT("vector"), TypedArray))
-	{
-		ParameterCount += TypedArray->Num();
-	}
-	if (ParametersJson->TryGetArrayField(TEXT("texture"), TypedArray))
-	{
-		ParameterCount += TypedArray->Num();
-	}
-
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("actor"), ActorName);
 	Data->SetStringField(TEXT("component_name"), Component->GetName());
 	Data->SetNumberField(TEXT("slot_index"), SlotIndex);
 	Data->SetStringField(TEXT("parent_material"), DMI->Parent != nullptr ? DMI->Parent->GetPathName() : TEXT(""));
 	Data->SetObjectField(TEXT("parameters"), ParametersJson);
-	Data->SetNumberField(TEXT("parameter_count"), ParameterCount);
+	Data->SetNumberField(TEXT("parameter_count"), CountParameters(ParametersJson));
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -1047,62 +1063,52 @@ FCortexCommandResult FCortexMaterialDynamicOps::ResetDynamicParameter(const TSha
 	}
 
 	const FName MaterialParamName(*ParamName);
+	const FString ParamType = DetermineParameterType(DMI, MaterialParamName);
 
-	float ScalarCurrent = 0.0f;
-	if (DMI->GetScalarParameterValue(MaterialParamName, ScalarCurrent))
+	if (ParamType.IsEmpty())
 	{
-		float ScalarDefault = 0.0f;
-		DMI->GetScalarParameterDefaultValue(FMaterialParameterInfo(MaterialParamName), ScalarDefault);
-		DMI->SetScalarParameterValue(MaterialParamName, ScalarDefault);
-
-		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-		Data->SetStringField(TEXT("actor"), ActorName);
-		Data->SetStringField(TEXT("component_name"), Component->GetName());
-		Data->SetNumberField(TEXT("slot_index"), SlotIndex);
-		Data->SetStringField(TEXT("parameter_name"), ParamName);
-		Data->SetStringField(TEXT("type"), TEXT("scalar"));
-		Data->SetNumberField(TEXT("previous_value"), ScalarCurrent);
-		Data->SetNumberField(TEXT("reset_to"), ScalarDefault);
-		return FCortexCommandRouter::Success(Data);
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::ParameterNotFound,
+			FString::Printf(TEXT("Parameter '%s' not found on dynamic material instance."), *ParamName));
 	}
 
-	FLinearColor VectorCurrent;
-	if (DMI->GetVectorParameterValue(MaterialParamName, VectorCurrent))
-	{
-		FLinearColor VectorDefault;
-		DMI->GetVectorParameterDefaultValue(FMaterialParameterInfo(MaterialParamName), VectorDefault);
-		DMI->SetVectorParameterValue(MaterialParamName, VectorDefault);
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("actor"), ActorName);
+	Data->SetStringField(TEXT("component_name"), Component->GetName());
+	Data->SetNumberField(TEXT("slot_index"), SlotIndex);
+	Data->SetStringField(TEXT("parameter_name"), ParamName);
+	Data->SetStringField(TEXT("type"), ParamType);
 
-		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-		Data->SetStringField(TEXT("actor"), ActorName);
-		Data->SetStringField(TEXT("component_name"), Component->GetName());
-		Data->SetNumberField(TEXT("slot_index"), SlotIndex);
-		Data->SetStringField(TEXT("parameter_name"), ParamName);
-		Data->SetStringField(TEXT("type"), TEXT("vector"));
-		Data->SetArrayField(TEXT("previous_value"), ColorToJsonArray(VectorCurrent));
-		Data->SetArrayField(TEXT("reset_to"), ColorToJsonArray(VectorDefault));
-		return FCortexCommandRouter::Success(Data);
+	if (ParamType == TEXT("scalar"))
+	{
+		float Current = 0.0f;
+		DMI->GetScalarParameterValue(MaterialParamName, Current);
+		float Default = 0.0f;
+		DMI->GetScalarParameterDefaultValue(FMaterialParameterInfo(MaterialParamName), Default);
+		DMI->SetScalarParameterValue(MaterialParamName, Default);
+		Data->SetNumberField(TEXT("previous_value"), Current);
+		Data->SetNumberField(TEXT("reset_to"), Default);
+	}
+	else if (ParamType == TEXT("vector"))
+	{
+		FLinearColor Current;
+		DMI->GetVectorParameterValue(MaterialParamName, Current);
+		FLinearColor Default;
+		DMI->GetVectorParameterDefaultValue(FMaterialParameterInfo(MaterialParamName), Default);
+		DMI->SetVectorParameterValue(MaterialParamName, Default);
+		Data->SetArrayField(TEXT("previous_value"), ColorToJsonArray(Current));
+		Data->SetArrayField(TEXT("reset_to"), ColorToJsonArray(Default));
+	}
+	else if (ParamType == TEXT("texture"))
+	{
+		UTexture* Current = nullptr;
+		DMI->GetTextureParameterValue(MaterialParamName, Current);
+		UTexture* Default = nullptr;
+		DMI->GetTextureParameterDefaultValue(FMaterialParameterInfo(MaterialParamName), Default);
+		DMI->SetTextureParameterValue(MaterialParamName, Default);
+		Data->SetStringField(TEXT("previous_value"), Current != nullptr ? Current->GetPathName() : TEXT(""));
+		Data->SetStringField(TEXT("reset_to"), Default != nullptr ? Default->GetPathName() : TEXT(""));
 	}
 
-	UTexture* TextureCurrent = nullptr;
-	if (DMI->GetTextureParameterValue(MaterialParamName, TextureCurrent))
-	{
-		UTexture* TextureDefault = nullptr;
-		DMI->GetTextureParameterDefaultValue(FMaterialParameterInfo(MaterialParamName), TextureDefault);
-		DMI->SetTextureParameterValue(MaterialParamName, TextureDefault);
-
-		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-		Data->SetStringField(TEXT("actor"), ActorName);
-		Data->SetStringField(TEXT("component_name"), Component->GetName());
-		Data->SetNumberField(TEXT("slot_index"), SlotIndex);
-		Data->SetStringField(TEXT("parameter_name"), ParamName);
-		Data->SetStringField(TEXT("type"), TEXT("texture"));
-		Data->SetStringField(TEXT("previous_value"), TextureCurrent != nullptr ? TextureCurrent->GetPathName() : TEXT(""));
-		Data->SetStringField(TEXT("reset_to"), TextureDefault != nullptr ? TextureDefault->GetPathName() : TEXT(""));
-		return FCortexCommandRouter::Success(Data);
-	}
-
-	return FCortexCommandRouter::Error(
-		CortexErrorCodes::ParameterNotFound,
-		FString::Printf(TEXT("Parameter '%s' not found on dynamic material instance."), *ParamName));
+	return FCortexCommandRouter::Success(Data);
 }

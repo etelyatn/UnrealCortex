@@ -54,4 +54,9 @@ private:
 
 	static TArray<TSharedPtr<FJsonValue>> ColorToJsonArray(const FLinearColor& Color);
 	static bool IsParameterOverridden(UMaterialInstanceDynamic* DMI, const FName& ParamName, const FString& ParamType);
+	static int32 CountParameters(const TSharedPtr<FJsonObject>& ParametersJson);
+
+	/** Determine parameter type by enumerating all parameter infos.
+	 *  Returns "scalar", "vector", "texture", or empty string if not found. */
+	static FString DetermineParameterType(UMaterialInstanceDynamic* DMI, const FName& ParamName);
 };

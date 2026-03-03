@@ -1,6 +1,6 @@
 #include "CortexQAUtils.h"
 
-#include "CortexEditorUtils.h"
+#include "CortexPIEUtils.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameStateBase.h"
@@ -12,7 +12,7 @@
 
 UWorld* FCortexQAUtils::GetPIEWorld()
 {
-    return FCortexEditorUtils::GetPIEWorld();
+    return FCortexPIEUtils::GetPIEWorld();
 }
 
 APlayerController* FCortexQAUtils::GetPlayerController(UWorld* World)
@@ -33,12 +33,12 @@ APawn* FCortexQAUtils::GetPlayerPawn(UWorld* World)
 
 AActor* FCortexQAUtils::FindActorByName(UWorld* World, const FString& ActorIdentifier)
 {
-    return FCortexEditorUtils::FindActorInPIE(World, ActorIdentifier);
+    return FCortexPIEUtils::FindActorInPIE(World, ActorIdentifier);
 }
 
 FCortexCommandResult FCortexQAUtils::PIENotActiveError()
 {
-    return FCortexEditorUtils::PIENotActiveError();
+    return FCortexPIEUtils::PIENotActiveError();
 }
 
 bool FCortexQAUtils::IsEngineInternalActor(const AActor* Actor)
