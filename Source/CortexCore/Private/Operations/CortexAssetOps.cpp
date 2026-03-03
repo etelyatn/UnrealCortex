@@ -1,6 +1,7 @@
 #include "Operations/CortexAssetOps.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "CortexCommandRouter.h"
+#include "CortexLogCapture.h"
 #include "Editor.h"
 #include "FileHelpers.h"
 #include "Misc/PackageName.h"
@@ -330,6 +331,7 @@ FCortexCommandResult FCortexAssetOps::OpenAsset(const TSharedPtr<FJsonObject>& P
 		Entry->SetStringField(TEXT("asset_path"), AssetPath);
 		Entry->SetStringField(TEXT("asset_type"), AssetData.AssetClassPath.GetAssetName().ToString());
 
+		FCortexLogCapture LogCapture;
 		UObject* Asset = LoadAssetWithFallbacks(AssetData, AssetPath);
 		if (Asset == nullptr)
 		{
@@ -337,6 +339,19 @@ FCortexCommandResult FCortexAssetOps::OpenAsset(const TSharedPtr<FJsonObject>& P
 			Entry->SetStringField(TEXT("message"), FString::Printf(TEXT("Failed to load: %s"), *AssetPath));
 			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
 			continue;
+		}
+
+		const FString PackageName = FPackageName::ObjectPathToPackageName(AssetPath);
+		const TArray<FString> AssetWarnings = LogCapture.GetWarnings(PackageName);
+		if (AssetWarnings.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> WarningsArray;
+			WarningsArray.Reserve(AssetWarnings.Num());
+			for (const FString& Warning : AssetWarnings)
+			{
+				WarningsArray.Add(MakeShared<FJsonValueString>(Warning));
+			}
+			Entry->SetArrayField(TEXT("warnings"), WarningsArray);
 		}
 
 		Entry->SetStringField(TEXT("asset_type"), GetAssetTypeName(Asset));
