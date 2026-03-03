@@ -86,10 +86,22 @@ FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 	// Dynamic material instance operations (PIE required)
 	if (Command == TEXT("list_dynamic_instances"))
 		return FCortexMaterialDynamicOps::ListDynamicInstances(Params);
+	if (Command == TEXT("get_dynamic_instance"))
+		return FCortexMaterialDynamicOps::GetDynamicInstance(Params);
 	if (Command == TEXT("create_dynamic_instance"))
 		return FCortexMaterialDynamicOps::CreateDynamicInstance(Params);
 	if (Command == TEXT("destroy_dynamic_instance"))
 		return FCortexMaterialDynamicOps::DestroyDynamicInstance(Params);
+	if (Command == TEXT("set_dynamic_parameter"))
+		return FCortexMaterialDynamicOps::SetDynamicParameter(Params);
+	if (Command == TEXT("get_dynamic_parameter"))
+		return FCortexMaterialDynamicOps::GetDynamicParameter(Params);
+	if (Command == TEXT("list_dynamic_parameters"))
+		return FCortexMaterialDynamicOps::ListDynamicParameters(Params);
+	if (Command == TEXT("set_dynamic_parameters"))
+		return FCortexMaterialDynamicOps::SetDynamicParameters(Params);
+	if (Command == TEXT("reset_dynamic_parameter"))
+		return FCortexMaterialDynamicOps::ResetDynamicParameter(Params);
 
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
@@ -132,7 +144,13 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 		{ TEXT("remove_collection_parameter"), TEXT("Remove parameter from collection") },
 		{ TEXT("set_collection_parameter"), TEXT("Set collection parameter value") },
 		{ TEXT("list_dynamic_instances"), TEXT("List material slots and DMI status on a PIE actor") },
+		{ TEXT("get_dynamic_instance"), TEXT("Get DMI details with all parameters") },
 		{ TEXT("create_dynamic_instance"), TEXT("Create a Dynamic Material Instance on a PIE actor slot") },
 		{ TEXT("destroy_dynamic_instance"), TEXT("Remove a DMI and revert to parent material") },
+		{ TEXT("set_dynamic_parameter"), TEXT("Set parameter on a DMI at runtime") },
+		{ TEXT("get_dynamic_parameter"), TEXT("Get single parameter from a DMI") },
+		{ TEXT("list_dynamic_parameters"), TEXT("List all overrideable parameters on a DMI") },
+		{ TEXT("set_dynamic_parameters"), TEXT("Batch set multiple parameters on a DMI") },
+		{ TEXT("reset_dynamic_parameter"), TEXT("Reset a DMI parameter to parent default") },
 	};
 }
