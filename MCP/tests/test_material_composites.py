@@ -16,6 +16,7 @@ from material.composites import (
     _resolve_class_name,
     _validate_spec,
     _build_batch_commands,
+    _validate_instance_spec,
     register_material_composite_tools,
 )
 
@@ -552,6 +553,98 @@ class TestMaterialProperties:
         assert commands[3]["command"] == "material.set_node_property"
         assert commands[3]["params"]["node_id"] == "$steps[2].data.node_id"
         assert commands[3]["params"]["property_name"] == "Texture"
+
+
+class TestInstanceValidation:
+    """Test _validate_instance_spec() function."""
+
+    def test_valid_spec(self):
+        """Valid instance spec passes validation."""
+        _validate_instance_spec(
+            name="MI_Test",
+            path="/Game/Materials/",
+            parent="/Game/Materials/M_Parent",
+            parameters=[
+                {"name": "Roughness", "type": "scalar", "value": 0.5},
+            ],
+        )
+
+    def test_missing_name(self):
+        """Validation fails when name is missing."""
+        with pytest.raises(ValueError, match="Missing required field: name"):
+            _validate_instance_spec("", "/Game/", "/Game/M_Parent", [])
+
+    def test_missing_path(self):
+        """Validation fails when path is missing."""
+        with pytest.raises(ValueError, match="Missing required field: path"):
+            _validate_instance_spec("MI_Test", "", "/Game/M_Parent", [])
+
+    def test_missing_parent(self):
+        """Validation fails when parent is missing."""
+        with pytest.raises(ValueError, match="Missing required field: parent"):
+            _validate_instance_spec("MI_Test", "/Game/", "", [])
+
+    def test_parameters_not_list(self):
+        """Validation fails when parameters is not a list."""
+        with pytest.raises(ValueError, match="parameters must be a list"):
+            _validate_instance_spec("MI_Test", "/Game/", "/Game/M_Parent", "bad")
+
+    def test_parameter_missing_name(self):
+        """Validation fails when parameter missing name."""
+        with pytest.raises(ValueError, match="missing 'name'"):
+            _validate_instance_spec(
+                "MI_Test",
+                "/Game/",
+                "/Game/M_Parent",
+                [{"type": "scalar", "value": 0.5}],
+            )
+
+    def test_parameter_missing_type(self):
+        """Validation fails when parameter missing type."""
+        with pytest.raises(ValueError, match="missing 'type'"):
+            _validate_instance_spec(
+                "MI_Test",
+                "/Game/",
+                "/Game/M_Parent",
+                [{"name": "Roughness", "value": 0.5}],
+            )
+
+    def test_parameter_invalid_type(self):
+        """Validation fails when parameter has invalid type."""
+        with pytest.raises(ValueError, match="Invalid parameter type"):
+            _validate_instance_spec(
+                "MI_Test",
+                "/Game/",
+                "/Game/M_Parent",
+                [{"name": "Roughness", "type": "integer", "value": 1}],
+            )
+
+    def test_parameter_missing_value(self):
+        """Validation fails when parameter missing value."""
+        with pytest.raises(ValueError, match="missing 'value'"):
+            _validate_instance_spec(
+                "MI_Test",
+                "/Game/",
+                "/Game/M_Parent",
+                [{"name": "Roughness", "type": "scalar"}],
+            )
+
+    def test_duplicate_parameter_names(self):
+        """Validation fails on duplicate parameter names."""
+        with pytest.raises(ValueError, match="Duplicate parameter name"):
+            _validate_instance_spec(
+                "MI_Test",
+                "/Game/",
+                "/Game/M_Parent",
+                [
+                    {"name": "Roughness", "type": "scalar", "value": 0.5},
+                    {"name": "Roughness", "type": "scalar", "value": 0.8},
+                ],
+            )
+
+    def test_empty_parameters_allowed(self):
+        """Empty parameters list is valid (instance with no overrides)."""
+        _validate_instance_spec("MI_Test", "/Game/", "/Game/M_Parent", [])
 
 
 class TestMaterialVerificationIntegration:
