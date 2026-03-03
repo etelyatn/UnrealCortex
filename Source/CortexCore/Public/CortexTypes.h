@@ -63,6 +63,10 @@ namespace CortexErrorCodes
 	static const FString NoDiskFile = TEXT("NO_DISK_FILE");
 	static const FString InvalidGlob = TEXT("INVALID_GLOB");
 	static const FString NoMatches = TEXT("NO_MATCHES");
+	// Dynamic material instance errors
+	static const FString NotDynamicInstance = TEXT("NOT_DYNAMIC_INSTANCE");
+	static const FString AlreadyDynamicInstance = TEXT("ALREADY_DYNAMIC_INSTANCE");
+	static const FString AmbiguousComponent = TEXT("AMBIGUOUS_COMPONENT");
 	// Level errors
 	static const FString ActorNotFound = TEXT("ACTOR_NOT_FOUND");
 	static const FString AmbiguousActor = TEXT("AMBIGUOUS_ACTOR");
