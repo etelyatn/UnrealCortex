@@ -1,8 +1,6 @@
 #include "CortexQAUtils.h"
 
-#include "CortexTypes.h"
-#include "Editor.h"
-#include "EngineUtils.h"
+#include "CortexEditorUtils.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameStateBase.h"
@@ -14,12 +12,7 @@
 
 UWorld* FCortexQAUtils::GetPIEWorld()
 {
-    if (GEditor == nullptr)
-    {
-        return nullptr;
-    }
-
-    return GEditor->PlayWorld;
+    return FCortexEditorUtils::GetPIEWorld();
 }
 
 APlayerController* FCortexQAUtils::GetPlayerController(UWorld* World)
@@ -40,35 +33,12 @@ APawn* FCortexQAUtils::GetPlayerPawn(UWorld* World)
 
 AActor* FCortexQAUtils::FindActorByName(UWorld* World, const FString& ActorIdentifier)
 {
-    if (World == nullptr || ActorIdentifier.IsEmpty())
-    {
-        return nullptr;
-    }
-
-    for (TActorIterator<AActor> It(World); It; ++It)
-    {
-        AActor* Actor = *It;
-        if (!IsValid(Actor))
-        {
-            continue;
-        }
-
-        if (Actor->GetActorLabel() == ActorIdentifier ||
-            Actor->GetName() == ActorIdentifier ||
-            Actor->GetPathName() == ActorIdentifier)
-        {
-            return Actor;
-        }
-    }
-
-    return nullptr;
+    return FCortexEditorUtils::FindActorInPIE(World, ActorIdentifier);
 }
 
 FCortexCommandResult FCortexQAUtils::PIENotActiveError()
 {
-    return FCortexCommandRouter::Error(
-        CortexErrorCodes::PIENotActive,
-        TEXT("PIE is not running. Start PIE before using QA commands."));
+    return FCortexEditorUtils::PIENotActiveError();
 }
 
 bool FCortexQAUtils::IsEngineInternalActor(const AActor* Actor)
