@@ -141,7 +141,7 @@ def _contains_ref_syntax(value):
     return False
 
 
-def _validate_spec(name, path, nodes, connections, material_properties=None):
+def _validate_spec(name, path, nodes, connections, material_properties=None, instances=None):
     """Validate the material graph spec. Raises ValueError on invalid spec."""
     if not name:
         raise ValueError("Missing required field: name")
@@ -238,8 +238,74 @@ def _validate_spec(name, path, nodes, connections, material_properties=None):
                     f"which conflicts with batch $ref syntax"
                 )
 
+    # Validate instances (if provided).
+    if instances is not None:
+        if not isinstance(instances, list):
+            raise ValueError("instances must be a list")
+
+        # Build ParameterName -> node class map from nodes.
+        param_node_map = {}
+        for node in nodes:
+            param_name = (node.get("params") or {}).get("ParameterName")
+            if param_name:
+                param_node_map[param_name] = node.get("class", "")
+
+        instance_names = set()
+        for i, inst in enumerate(instances):
+            if not isinstance(inst, dict):
+                raise ValueError(f"Instance {i} must be a dict")
+            if "name" not in inst or not inst.get("name"):
+                raise ValueError(f"Instance {i} missing 'name'")
+
+            inst_name = inst["name"]
+            if inst_name in instance_names:
+                raise ValueError(f"Duplicate instance name: '{inst_name}'")
+            instance_names.add(inst_name)
+
+            params = inst.get("parameters", {})
+            if not isinstance(params, dict):
+                raise ValueError(f"Instance '{inst_name}' 'parameters' must be a dict")
+            if "path" in inst:
+                inst_path = inst.get("path")
+                if not isinstance(inst_path, str) or not inst_path.strip():
+                    raise ValueError(f"Instance '{inst_name}' path must be a non-empty string")
+
+            for param_name in params:
+                if param_name not in param_node_map:
+                    available = sorted(param_node_map.keys()) if param_node_map else []
+                    raise ValueError(
+                        f"Parameter '{param_name}' not found in parent material. "
+                        f"Available: {available}"
+                    )
+                node_class = param_node_map[param_name]
+                inferred_type = _infer_param_type(node_class)
+                if inferred_type is None:
+                    raise ValueError(
+                        f"Cannot infer type for parameter '{param_name}' from "
+                        f"node class '{node_class}'. Use create_material_instance "
+                        f"with explicit types instead."
+                    )
+
 
 _VALID_PARAM_TYPES = {"scalar", "vector", "texture"}
+
+# Node class -> parameter type mapping for type inference.
+_PARAM_TYPE_MAP = {
+    "ScalarParameter": "scalar",
+    "MaterialExpressionScalarParameter": "scalar",
+    "VectorParameter": "vector",
+    "MaterialExpressionVectorParameter": "vector",
+    "TextureParameter": "texture",
+    "MaterialExpressionTextureSampleParameter2D": "texture",
+    "TextureSampleParameter2D": "texture",
+    "TextureObjectParameter": "texture",
+    "MaterialExpressionTextureObjectParameter": "texture",
+}
+
+
+def _infer_param_type(node_class):
+    """Infer parameter type from node class name."""
+    return _PARAM_TYPE_MAP.get(node_class)
 
 
 def _validate_instance_spec(name, path, parent, parameters):
@@ -273,7 +339,7 @@ def _validate_instance_spec(name, path, parent, parameters):
         seen_names.add(param["name"])
 
 
-def _build_batch_commands(name, path, nodes, connections, material_properties=None):
+def _build_batch_commands(name, path, nodes, connections, material_properties=None, instances=None):
     """Translate material spec into batch commands with $ref wiring."""
     # Normalize trailing slash to prevent double-slash paths
     path = path.rstrip("/")
@@ -365,6 +431,44 @@ def _build_batch_commands(name, path, nodes, connections, material_properties=No
             "params": connect_params,
         })
 
+    # Instance commands are appended after material graph setup.
+    if instances:
+        # Build ParameterName -> inferred type map from material nodes.
+        param_type_map = {}
+        for node in nodes:
+            param_name = (node.get("params") or {}).get("ParameterName")
+            if param_name:
+                inferred = _infer_param_type(node.get("class", ""))
+                if inferred:
+                    param_type_map[param_name] = inferred
+
+        # Save parent material before creating instances to ensure persistence ordering.
+        commands.append({
+            "command": "core.save_asset",
+            "params": {"asset_path": "$steps[0].data.asset_path"},
+        })
+
+        for inst in instances:
+            inst_path = inst.get("path", path).rstrip("/")
+            inst_params = inst.get("parameters", {})
+            param_list = [
+                {
+                    "name": param_name,
+                    "type": param_type_map[param_name],
+                    "value": param_value,
+                }
+                for param_name, param_value in inst_params.items()
+            ]
+            inst_commands = _build_instance_batch_commands(
+                name=inst["name"],
+                path=inst_path,
+                parent="",
+                parameters=param_list,
+                parent_ref="$steps[0].data.asset_path",
+                step_offset=len(commands),
+            )
+            commands.extend(inst_commands)
+
     return commands
 
 
@@ -425,6 +529,7 @@ def register_material_composite_tools(mcp, connection: UEConnection):
         nodes: list[dict],
         connections: list[dict],
         material_properties: dict | None = None,
+        instances: list[dict] | None = None,
     ) -> str:
         """Create a material with expression nodes and connections in a single operation.
 
@@ -470,6 +575,12 @@ def register_material_composite_tools(mcp, connection: UEConnection):
                 Keys are property names, values are the property values.
                 Applied after material creation, before adding nodes.
                 Example: {"BlendMode": "BLEND_Translucent", "ShadingModel": "MSM_Unlit"}
+            instances: Optional array of material instances to create after the material.
+                Each instance supports:
+                - name: Instance name.
+                - path: Optional directory path (defaults to material path).
+                - parameters: Dict of overrides {ParamName: value}. Parameter types are
+                  inferred from the material parameter node classes.
 
         Returns:
             JSON with asset_path, node_count, connection_count, timing.
@@ -494,7 +605,7 @@ def register_material_composite_tools(mcp, connection: UEConnection):
         """
         # 1. Validate spec
         try:
-            _validate_spec(name, path, nodes, connections, material_properties)
+            _validate_spec(name, path, nodes, connections, material_properties, instances)
         except ValueError as e:
             return json.dumps({
                 "success": False,
@@ -502,7 +613,7 @@ def register_material_composite_tools(mcp, connection: UEConnection):
             })
 
         # 2. Build batch commands
-        commands = _build_batch_commands(name, path, nodes, connections, material_properties)
+        commands = _build_batch_commands(name, path, nodes, connections, material_properties, instances)
         total_steps = len(commands)
 
         # 3. Send batch with stop_on_error
@@ -540,21 +651,38 @@ def register_material_composite_tools(mcp, connection: UEConnection):
 
         # 5. Handle failure
         if failed_step is not None:
-            # Cleanup partial asset if step 0 succeeded
             recovery_action = None
+            created_assets = []
             if asset_path:
+                created_assets.append(("material", asset_path))
+            for entry in results:
+                if entry.get("success") and "data" in entry:
+                    cmd_index = entry["index"]
+                    if cmd_index < len(commands) and commands[cmd_index]["command"] == "material.create_instance":
+                        inst_path = entry["data"].get("asset_path")
+                        if inst_path:
+                            created_assets.append(("instance", inst_path))
+
+            cleanup_results = []
+            for asset_type, cleanup_path in reversed(created_assets):
+                delete_cmd = f"material.delete_{asset_type}"
                 try:
-                    connection.send_command("material.delete_material", {
-                        "asset_path": asset_path,
-                    })
-                    recovery_action = {"action": "deleted_partial", "path": asset_path}
+                    connection.send_command(delete_cmd, {"asset_path": cleanup_path})
+                    cleanup_results.append({"deleted": cleanup_path})
                 except Exception as e:
-                    recovery_action = {
-                        "action": "cleanup_failed",
-                        "path": asset_path,
-                        "error": str(e),
-                        "user_action_required": f"Manually delete partial asset at {asset_path}"
-                    }
+                    cleanup_results.append({"failed": cleanup_path, "error": str(e)})
+
+            if cleanup_results:
+                had_cleanup_failures = any("failed" in result for result in cleanup_results)
+                recovery_action = {
+                    "action": "cleanup_failed_partial" if had_cleanup_failures else "deleted_partial",
+                    "cleaned_up": cleanup_results,
+                }
+                if had_cleanup_failures:
+                    failed_paths = [r["failed"] for r in cleanup_results if "failed" in r]
+                    recovery_action["user_action_required"] = [
+                        f"Manually delete partial asset at {path}" for path in failed_paths
+                    ]
 
             response = {
                 "success": False,
@@ -613,6 +741,25 @@ def register_material_composite_tools(mcp, connection: UEConnection):
                 "auto_layout": 1,
             },
         }
+
+        if instances:
+            instance_results = []
+            for entry in results:
+                if entry.get("success") and "data" in entry:
+                    cmd_index = entry["index"]
+                    if cmd_index < len(commands) and commands[cmd_index]["command"] == "material.create_instance":
+                        inst_path = entry["data"].get("asset_path")
+                        inst_name = commands[cmd_index]["params"].get("name", "")
+                        param_count = 0
+                        if cmd_index + 1 < len(commands) and commands[cmd_index + 1]["command"] == "material.set_parameters":
+                            param_count = len(commands[cmd_index + 1]["params"].get("parameters", []))
+                        instance_results.append({
+                            "name": inst_name,
+                            "asset_path": inst_path,
+                            "override_count": param_count,
+                        })
+            response["instances"] = instance_results
+            response["instance_count"] = len(instance_results)
 
         # Verification readback is informational. It must not downgrade successful creation.
         try:

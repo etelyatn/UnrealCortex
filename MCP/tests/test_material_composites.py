@@ -18,6 +18,7 @@ from material.composites import (
     _build_batch_commands,
     _validate_instance_spec,
     _build_instance_batch_commands,
+    _infer_param_type,
     register_material_composite_tools,
 )
 
@@ -60,6 +61,39 @@ class TestClassNameResolution:
         """Special mappings like Lerp → LinearInterpolate."""
         assert _resolve_class_name("Lerp") == "MaterialExpressionLinearInterpolate"
         assert _resolve_class_name("Desaturation") == "MaterialExpressionDesaturation"
+
+
+class TestParamTypeInference:
+    """Test _infer_param_type() from node class."""
+
+    def test_scalar_parameter(self):
+        """ScalarParameter nodes infer as scalar."""
+        assert _infer_param_type("ScalarParameter") == "scalar"
+        assert _infer_param_type("MaterialExpressionScalarParameter") == "scalar"
+
+    def test_vector_parameter(self):
+        """VectorParameter nodes infer as vector."""
+        assert _infer_param_type("VectorParameter") == "vector"
+        assert _infer_param_type("MaterialExpressionVectorParameter") == "vector"
+
+    def test_texture_parameter(self):
+        """TextureParameter nodes infer as texture."""
+        assert _infer_param_type("TextureParameter") == "texture"
+        assert _infer_param_type("MaterialExpressionTextureSampleParameter2D") == "texture"
+
+    def test_static_switch_parameter(self):
+        """StaticSwitchParameter is not a runtime parameter — returns None."""
+        assert _infer_param_type("StaticSwitchParameter") is None
+
+    def test_non_parameter_node(self):
+        """Non-parameter nodes return None."""
+        assert _infer_param_type("Multiply") is None
+        assert _infer_param_type("Constant") is None
+        assert _infer_param_type("Time") is None
+
+    def test_unknown_class(self):
+        """Unknown class returns None."""
+        assert _infer_param_type("MaterialExpressionCustomThing") is None
 
 
 class TestValidation:
@@ -123,6 +157,94 @@ class TestValidation:
         connections = [{"from": "InvalidFormat", "to": "Material.BaseColor"}]
         with pytest.raises(ValueError, match="Invalid 'from'"):
             _validate_spec("M_Test", "/Game/", nodes, connections)
+
+
+class TestInstancesInGraphSpec:
+    """Test _validate_spec() with instances parameter."""
+
+    def _sample_nodes(self):
+        """Return sample nodes with parameter expressions."""
+        return [
+            {"name": "Color", "class": "VectorParameter", "params": {"ParameterName": "BaseColor"}},
+            {"name": "Rough", "class": "ScalarParameter", "params": {"ParameterName": "Roughness"}},
+        ]
+
+    def test_valid_instances(self):
+        """Valid instances pass validation."""
+        nodes = self._sample_nodes()
+        instances = [
+            {
+                "name": "MI_Red",
+                "parameters": {
+                    "BaseColor": {"R": 1, "G": 0, "B": 0},
+                    "Roughness": 0.5,
+                },
+            },
+        ]
+        _validate_spec("M_Test", "/Game/", nodes, [], instances=instances)
+
+    def test_none_instances_allowed(self):
+        """None instances is allowed (no instances created)."""
+        _validate_spec("M_Test", "/Game/", [{"name": "A", "class": "Constant"}], [], instances=None)
+
+    def test_instances_not_list(self):
+        """Validation fails when instances is not a list."""
+        with pytest.raises(ValueError, match="instances must be a list"):
+            _validate_spec("M_Test", "/Game/", [], [], instances="bad")
+
+    def test_instance_missing_name(self):
+        """Validation fails when instance missing name."""
+        with pytest.raises(ValueError, match="missing 'name'"):
+            _validate_spec("M_Test", "/Game/", [], [], instances=[{"parameters": {}}])
+
+    def test_instance_parameters_not_dict(self):
+        """Validation fails when instance parameters is not a dict."""
+        with pytest.raises(ValueError, match="'parameters' must be a dict"):
+            _validate_spec("M_Test", "/Game/", [], [], instances=[{"name": "MI_X", "parameters": []}])
+
+    def test_instance_param_not_in_nodes(self):
+        """Validation fails when instance parameter name not found in nodes."""
+        nodes = self._sample_nodes()
+        instances = [{"name": "MI_X", "parameters": {"NonExistent": 0.5}}]
+        with pytest.raises(ValueError, match="not found in parent material.*Available"):
+            _validate_spec("M_Test", "/Game/", nodes, [], instances=instances)
+
+    def test_instance_param_type_not_inferable(self):
+        """Validation fails when parameter node class is not inferable."""
+        nodes = [
+            {"name": "Mul", "class": "Multiply", "params": {"ParameterName": "NotAParam"}},
+        ]
+        instances = [{"name": "MI_X", "parameters": {"NotAParam": 0.5}}]
+        with pytest.raises(ValueError, match="Cannot infer type"):
+            _validate_spec("M_Test", "/Game/", nodes, [], instances=instances)
+
+    def test_duplicate_instance_names(self):
+        """Validation fails on duplicate instance names."""
+        nodes = self._sample_nodes()
+        instances = [
+            {"name": "MI_Same", "parameters": {"Roughness": 0.5}},
+            {"name": "MI_Same", "parameters": {"Roughness": 0.8}},
+        ]
+        with pytest.raises(ValueError, match="Duplicate instance name"):
+            _validate_spec("M_Test", "/Game/", nodes, [], instances=instances)
+
+    def test_empty_parameters_dict_allowed(self):
+        """Instance with empty parameters dict is valid."""
+        nodes = self._sample_nodes()
+        instances = [{"name": "MI_Default", "parameters": {}}]
+        _validate_spec("M_Test", "/Game/", nodes, [], instances=instances)
+
+    def test_parameters_defaults_to_empty(self):
+        """Instance without parameters key defaults to empty dict."""
+        instances = [{"name": "MI_NoParams"}]
+        _validate_spec("M_Test", "/Game/", [], [], instances=instances)
+
+    def test_instance_path_must_be_string(self):
+        """Validation fails when instance path is not a string."""
+        nodes = self._sample_nodes()
+        instances = [{"name": "MI_BadPath", "path": 123, "parameters": {"Roughness": 0.5}}]
+        with pytest.raises(ValueError, match="path must be a non-empty string"):
+            _validate_spec("M_Test", "/Game/", nodes, [], instances=instances)
 
 
 class TestBatchCommandGeneration:
@@ -219,6 +341,115 @@ class TestBatchCommandGeneration:
         assert commands[3]["params"]["node_id"] == "$steps[1].data.node_id"
         assert commands[4]["params"]["source_node"] == "$steps[1].data.node_id"
         assert commands[4]["params"]["target_node"] == "$steps[2].data.node_id"
+
+
+class TestBatchCommandsWithInstances:
+    """Test _build_batch_commands() with instances parameter."""
+
+    def _sample_nodes(self):
+        return [
+            {"name": "Color", "class": "VectorParameter", "params": {"ParameterName": "BaseColor"}},
+            {"name": "Rough", "class": "ScalarParameter", "params": {"ParameterName": "Roughness"}},
+        ]
+
+    def test_material_plus_one_instance(self):
+        """Material with one instance generates correct command sequence."""
+        nodes = self._sample_nodes()
+        connections = [{"from": "Color.0", "to": "Material.BaseColor"}]
+        instances = [
+            {
+                "name": "MI_Red",
+                "parameters": {
+                    "BaseColor": {"R": 1, "G": 0, "B": 0},
+                    "Roughness": 0.5,
+                },
+            },
+        ]
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, connections, instances=instances)
+        cmd_types = [c["command"] for c in commands]
+
+        assert cmd_types[0] == "material.create_material"
+        assert "core.save_asset" in cmd_types
+        assert "material.create_instance" in cmd_types
+        assert "material.set_parameters" in cmd_types
+
+        save_idx = cmd_types.index("core.save_asset")
+        inst_idx = cmd_types.index("material.create_instance")
+        assert save_idx < inst_idx
+
+        create_inst = commands[inst_idx]
+        assert create_inst["params"]["parent_material"] == "$steps[0].data.asset_path"
+
+        set_params = [c for c in commands if c["command"] == "material.set_parameters"]
+        assert len(set_params) == 1
+        assert set_params[0]["params"]["asset_path"] == f"$steps[{inst_idx}].data.asset_path"
+
+        params_list = set_params[0]["params"]["parameters"]
+        param_types = {p["parameter_name"]: p["parameter_type"] for p in params_list}
+        assert param_types["BaseColor"] == "vector"
+        assert param_types["Roughness"] == "scalar"
+
+    def test_material_plus_two_instances(self):
+        """Two instances generate separate create + set_parameters blocks."""
+        nodes = self._sample_nodes()
+        instances = [
+            {"name": "MI_A", "parameters": {"Roughness": 0.3}},
+            {"name": "MI_B", "parameters": {"Roughness": 0.8}},
+        ]
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, [], instances=instances)
+
+        create_instances = [
+            (i, c) for i, c in enumerate(commands) if c["command"] == "material.create_instance"
+        ]
+        assert len(create_instances) == 2
+        for _, cmd in create_instances:
+            assert cmd["params"]["parent_material"] == "$steps[0].data.asset_path"
+
+        set_params = [(i, c) for i, c in enumerate(commands) if c["command"] == "material.set_parameters"]
+        assert len(set_params) == 2
+        assert set_params[0][1]["params"]["asset_path"] == f"$steps[{create_instances[0][0]}].data.asset_path"
+        assert set_params[1][1]["params"]["asset_path"] == f"$steps[{create_instances[1][0]}].data.asset_path"
+
+    def test_instance_inherits_path(self):
+        """Instance path defaults to material path."""
+        nodes = [{"name": "R", "class": "ScalarParameter", "params": {"ParameterName": "R"}}]
+        instances = [{"name": "MI_X", "parameters": {"R": 0.5}}]
+        commands = _build_batch_commands("M_Test", "/Game/Materials/", nodes, [], instances=instances)
+
+        create_inst = [c for c in commands if c["command"] == "material.create_instance"][0]
+        assert create_inst["params"]["asset_path"] == "/Game/Materials"
+
+    def test_instance_with_path_override(self):
+        """Instance can override the default path."""
+        nodes = [{"name": "R", "class": "ScalarParameter", "params": {"ParameterName": "R"}}]
+        instances = [{"name": "MI_X", "path": "/Game/Instances/", "parameters": {"R": 0.5}}]
+        commands = _build_batch_commands("M_Test", "/Game/Materials/", nodes, [], instances=instances)
+
+        create_inst = [c for c in commands if c["command"] == "material.create_instance"][0]
+        assert create_inst["params"]["asset_path"] == "/Game/Instances"
+
+    def test_no_instances_unchanged(self):
+        """Without instances parameter, behavior is unchanged."""
+        nodes = [{"name": "A", "class": "Constant"}]
+        connections = [{"from": "A.0", "to": "Material.BaseColor"}]
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, connections)
+
+        cmd_types = [c["command"] for c in commands]
+        assert "material.create_instance" not in cmd_types
+        assert "core.save_asset" not in cmd_types
+        assert "material.set_parameters" not in cmd_types
+
+    def test_instance_no_params_no_set_parameters(self):
+        """Instance with empty parameters does not generate set_parameters command."""
+        nodes = [{"name": "R", "class": "ScalarParameter", "params": {"ParameterName": "R"}}]
+        instances = [{"name": "MI_Empty", "parameters": {}}]
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, [], instances=instances)
+
+        cmd_types = [c["command"] for c in commands]
+        assert "material.create_instance" in cmd_types
+        assert "material.set_parameters" not in cmd_types
 
 
 class TestTimeoutScaling:
@@ -908,6 +1139,184 @@ class TestCreateMaterialInstanceTool:
         assert result["success"] is False
         assert "Batch command rejected" in result["error"]
 
+
+class TestCreateMaterialGraphWithInstances:
+    """Tests for create_material_graph with instances parameter."""
+
+    def _make_batch_success(self, num_steps, instance_paths=None):
+        """Build a mock batch success response."""
+        results = []
+        for i in range(num_steps):
+            data = {"timing_ms": 1}
+            if i == 0:
+                data["data"] = {"asset_path": "/Game/M_Test"}
+            elif instance_paths:
+                for inst_path in instance_paths:
+                    if len(results) == inst_path[0]:
+                        data["data"] = {"asset_path": inst_path[1]}
+                        break
+                else:
+                    data["data"] = {"node_id": f"Expr_{i}"}
+            else:
+                data["data"] = {"node_id": f"Expr_{i}"}
+            data["index"] = i
+            data["success"] = True
+            results.append(data)
+        return {
+            "success": True,
+            "data": {"results": results, "total_timing_ms": num_steps},
+        }
+
+    def test_success_includes_instances_in_response(self):
+        """Success response includes instances array with paths."""
+        mock_conn = MagicMock()
+
+        nodes = [
+            {"name": "R", "class": "ScalarParameter", "params": {"ParameterName": "Roughness"}},
+        ]
+        connections = []
+        instances = [{"name": "MI_A", "parameters": {"Roughness": 0.3}}]
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, connections, instances=instances)
+        num_steps = len(commands)
+        inst_idx = next(i for i, c in enumerate(commands) if c["command"] == "material.create_instance")
+
+        batch_results = []
+        for i in range(num_steps):
+            entry = {"index": i, "success": True, "timing_ms": 1}
+            if i == 0:
+                entry["data"] = {"asset_path": "/Game/M_Test"}
+            elif i == inst_idx:
+                entry["data"] = {"asset_path": "/Game/MI_A"}
+            else:
+                entry["data"] = {"node_id": f"Expr_{i}"}
+            batch_results.append(entry)
+
+        mock_conn.send_command.side_effect = [
+            {"success": True, "data": {"results": batch_results, "total_timing_ms": 10}},
+            {"data": {"success": True}},
+            {"data": {"node_count": 2, "blend_mode": None, "shading_model": None}},
+            {"data": {"nodes": [{"expression_class": "MaterialExpressionScalarParameter"}]}},
+            {"data": {"connections": []}},
+        ]
+
+        tools = _extract_tools(mock_conn)
+        result = json.loads(tools["create_material_graph"](
+            name="M_Test",
+            path="/Game/",
+            nodes=nodes,
+            connections=connections,
+            instances=instances,
+        ))
+
+        assert result["success"] is True
+        assert result["asset_path"] == "/Game/M_Test"
+        assert "instances" in result
+        assert len(result["instances"]) == 1
+        assert result["instances"][0]["name"] == "MI_A"
+        assert result["instances"][0]["asset_path"] == "/Game/MI_A"
+
+    def test_instance_failure_cleans_up_all(self):
+        """When instance creation fails, material and prior instances are cleaned up."""
+        mock_conn = MagicMock()
+
+        nodes = [
+            {"name": "R", "class": "ScalarParameter", "params": {"ParameterName": "Roughness"}},
+        ]
+        instances = [
+            {"name": "MI_A", "parameters": {"Roughness": 0.3}},
+            {"name": "MI_B", "parameters": {"Roughness": 0.8}},
+        ]
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, [], instances=instances)
+        inst_indices = [i for i, c in enumerate(commands) if c["command"] == "material.create_instance"]
+        assert len(inst_indices) == 2
+
+        batch_results = []
+        for i in range(len(commands)):
+            entry = {"index": i, "success": True, "timing_ms": 1}
+            if i == 0:
+                entry["data"] = {"asset_path": "/Game/M_Test"}
+            elif i == inst_indices[0]:
+                entry["data"] = {"asset_path": "/Game/MI_A"}
+            elif i == inst_indices[1]:
+                entry["data"] = {"asset_path": "/Game/MI_B"}
+            else:
+                entry["data"] = {"node_id": f"Expr_{i}"}
+            batch_results.append(entry)
+
+        last_set_params_idx = max(i for i, c in enumerate(commands) if c["command"] == "material.set_parameters")
+        batch_results[last_set_params_idx]["success"] = False
+        batch_results[last_set_params_idx]["error_message"] = "Parameter not found"
+        batch_results[last_set_params_idx]["command"] = "material.set_parameters"
+        batch_results = batch_results[:last_set_params_idx + 1]
+
+        mock_conn.send_command.side_effect = [
+            {"success": True, "data": {"results": batch_results, "total_timing_ms": 10}},
+            {"success": True, "data": {}},
+            {"success": True, "data": {}},
+            {"success": True, "data": {}},
+        ]
+
+        tools = _extract_tools(mock_conn)
+        result = json.loads(tools["create_material_graph"](
+            name="M_Test",
+            path="/Game/",
+            nodes=nodes,
+            connections=[],
+            instances=instances,
+        ))
+
+        assert result["success"] is False
+        assert "recovery_action" in result
+
+    def test_instance_failure_cleanup_reports_partial_failure(self):
+        """Cleanup failure reports explicit partial cleanup failure action."""
+        mock_conn = MagicMock()
+
+        nodes = [
+            {"name": "R", "class": "ScalarParameter", "params": {"ParameterName": "Roughness"}},
+        ]
+        instances = [
+            {"name": "MI_A", "parameters": {"Roughness": 0.3}},
+        ]
+
+        commands = _build_batch_commands("M_Test", "/Game/", nodes, [], instances=instances)
+        last_set_params_idx = max(i for i, c in enumerate(commands) if c["command"] == "material.set_parameters")
+        inst_idx = next(i for i, c in enumerate(commands) if c["command"] == "material.create_instance")
+
+        batch_results = []
+        for i in range(last_set_params_idx + 1):
+            entry = {"index": i, "success": True, "timing_ms": 1}
+            if i == 0:
+                entry["data"] = {"asset_path": "/Game/M_Test"}
+            elif i == inst_idx:
+                entry["data"] = {"asset_path": "/Game/MI_A"}
+            else:
+                entry["data"] = {"node_id": f"Expr_{i}"}
+            batch_results.append(entry)
+        batch_results[last_set_params_idx]["success"] = False
+        batch_results[last_set_params_idx]["error_message"] = "Parameter not found"
+        batch_results[last_set_params_idx]["command"] = "material.set_parameters"
+
+        mock_conn.send_command.side_effect = [
+            {"success": True, "data": {"results": batch_results, "total_timing_ms": 10}},
+            RuntimeError("delete instance failed"),
+            {"success": True, "data": {}},
+        ]
+
+        tools = _extract_tools(mock_conn)
+        result = json.loads(tools["create_material_graph"](
+            name="M_Test",
+            path="/Game/",
+            nodes=nodes,
+            connections=[],
+            instances=instances,
+        ))
+
+        assert result["success"] is False
+        assert result["recovery_action"]["action"] == "cleanup_failed_partial"
+        assert "user_action_required" in result["recovery_action"]
 
 class TestMaterialVerificationIntegration:
     """Integration tests for material verification in the composite response."""

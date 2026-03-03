@@ -338,3 +338,147 @@ class TestMaterialCompositeE2E:
                     })
                 except Exception:
                     pass  # May already be deleted by composite cleanup
+
+
+@pytest.mark.e2e
+class TestMaterialWithInstancesE2E:
+    """E2E tests for create_material_graph with instances."""
+
+    def test_material_with_one_instance(self):
+        """Create material with ScalarParameter + one instance with override."""
+        conn = _get_connection()
+
+        material_name = _uniq("M_E2E_WithInst")
+        nodes = [
+            {
+                "class": "ScalarParameter",
+                "name": "RoughnessParam",
+                "params": {"ParameterName": "Roughness", "DefaultValue": 0.5},
+            },
+        ]
+        connections = [{"from": "RoughnessParam.0", "to": "Material.Roughness"}]
+        instances = [
+            {
+                "name": _uniq("MI_E2E_Override"),
+                "parameters": {"Roughness": 0.8},
+            },
+        ]
+
+        commands = _build_batch_commands(
+            material_name, "/Game/Temp/CortexMCPTest/", nodes, connections, instances=instances
+        )
+
+        asset_path = None
+        instance_path = None
+
+        try:
+            result = conn.send_command("batch", {
+                "stop_on_error": True,
+                "commands": commands,
+            }, timeout=120)
+
+            assert result.get("success") is True
+            results = result["data"]["results"]
+            for entry in results:
+                assert entry.get("success") is True, (
+                    f"Step {entry.get('index')} failed: {entry.get('error_message')}"
+                )
+
+            asset_path = results[0]["data"]["asset_path"]
+            inst_results = [
+                r for i, r in enumerate(results) if commands[i]["command"] == "material.create_instance"
+            ]
+            assert len(inst_results) == 1
+            instance_path = inst_results[0]["data"]["asset_path"]
+
+            info = conn.send_command("material.get_instance", {"asset_path": instance_path})
+            assert info.get("success") is True
+            overrides = info.get("data", {}).get("overrides", {})
+            scalar_names = [p["name"] for p in overrides.get("scalar", [])]
+            assert "Roughness" in scalar_names
+
+        finally:
+            for p in [instance_path, asset_path]:
+                if p:
+                    try:
+                        conn.send_command("material.delete_instance", {"asset_path": p})
+                    except Exception:
+                        try:
+                            conn.send_command("material.delete_material", {"asset_path": p})
+                        except Exception:
+                            pass
+
+    def test_material_with_two_instances(self):
+        """Create material with two instances having different overrides."""
+        conn = _get_connection()
+
+        material_name = _uniq("M_E2E_TwoInst")
+        nodes = [
+            {
+                "class": "ScalarParameter",
+                "name": "RParam",
+                "params": {"ParameterName": "Roughness", "DefaultValue": 0.5},
+            },
+            {
+                "class": "VectorParameter",
+                "name": "CParam",
+                "params": {"ParameterName": "Color"},
+            },
+        ]
+        connections = [
+            {"from": "RParam.0", "to": "Material.Roughness"},
+            {"from": "CParam.0", "to": "Material.BaseColor"},
+        ]
+        instances = [
+            {"name": _uniq("MI_E2E_A"), "parameters": {"Roughness": 0.3}},
+            {
+                "name": _uniq("MI_E2E_B"),
+                "parameters": {
+                    "Roughness": 0.9,
+                    "Color": {"R": 1, "G": 0, "B": 0, "A": 1},
+                },
+            },
+        ]
+
+        commands = _build_batch_commands(
+            material_name, "/Game/Temp/CortexMCPTest/", nodes, connections, instances=instances
+        )
+
+        asset_path = None
+        inst_paths = []
+        try:
+            result = conn.send_command("batch", {
+                "stop_on_error": True,
+                "commands": commands,
+            }, timeout=120)
+
+            assert result.get("success") is True
+            results = result["data"]["results"]
+            for entry in results:
+                assert entry.get("success") is True, (
+                    f"Step {entry.get('index')} failed: {entry.get('error_message')}"
+                )
+
+            asset_path = results[0]["data"]["asset_path"]
+            for i, r in enumerate(results):
+                if commands[i]["command"] == "material.create_instance":
+                    inst_paths.append(r["data"]["asset_path"])
+            assert len(inst_paths) == 2
+
+            info = conn.send_command("material.get_instance", {"asset_path": inst_paths[1]})
+            assert info.get("success") is True
+            overrides = info.get("data", {}).get("overrides", {})
+            scalar_names = [p["name"] for p in overrides.get("scalar", [])]
+            vector_names = [p["name"] for p in overrides.get("vector", [])]
+            assert "Roughness" in scalar_names
+            assert "Color" in vector_names
+
+        finally:
+            for p in inst_paths + ([asset_path] if asset_path else []):
+                try:
+                    conn.send_command("material.delete_instance", {"asset_path": p})
+                except Exception:
+                    try:
+                        conn.send_command("material.delete_material", {"asset_path": p})
+                    except Exception:
+                        pass
