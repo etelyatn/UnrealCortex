@@ -119,7 +119,25 @@ UPrimitiveComponent* FCortexMaterialDynamicOps::ResolveComponent(
 	OutSlotIndex = 0;
 	if (Params->HasField(TEXT("slot_index")))
 	{
-		OutSlotIndex = static_cast<int32>(Params->GetNumberField(TEXT("slot_index")));
+		double SlotIndexValue = 0.0;
+		if (!Params->TryGetNumberField(TEXT("slot_index"), SlotIndexValue))
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidParameter,
+				TEXT("slot_index must be a number"));
+			return nullptr;
+		}
+
+		const int32 ParsedSlotIndex = static_cast<int32>(SlotIndexValue);
+		if (FMath::Abs(SlotIndexValue - static_cast<double>(ParsedSlotIndex)) > KINDA_SMALL_NUMBER)
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidParameter,
+				TEXT("slot_index must be an integer"));
+			return nullptr;
+		}
+
+		OutSlotIndex = ParsedSlotIndex;
 	}
 
 	const int32 NumMaterials = TargetComp->GetNumMaterials();
@@ -469,7 +487,7 @@ bool FCortexMaterialDynamicOps::ApplyParameter(
 	if (ParamType == TEXT("vector"))
 	{
 		const TArray<TSharedPtr<FJsonValue>>* ColorArray = nullptr;
-		if (!Value.IsValid() || !Value->TryGetArray(ColorArray) || ColorArray->Num() < 4)
+		if (!Value.IsValid() || !Value->TryGetArray(ColorArray) || ColorArray->Num() != 4)
 		{
 			OutError = FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidParameter,
@@ -493,6 +511,12 @@ bool FCortexMaterialDynamicOps::ApplyParameter(
 			CortexErrorCodes::InvalidParameter,
 			FString::Printf(TEXT("Expected asset path string for texture parameter '%s'"), *ParamName));
 		return false;
+	}
+
+	if (TexturePath.IsEmpty())
+	{
+		DMI->SetTextureParameterValue(Name, nullptr);
+		return true;
 	}
 
 	FString PackageName = FPackageName::ObjectPathToPackageName(TexturePath);
