@@ -1152,6 +1152,7 @@ class TestBlueprintAnalysis:
         assert isinstance(data["timelines"], list)
         assert isinstance(data["event_dispatchers"], list)
         assert isinstance(data["latent_nodes"], list)
+        assert isinstance(data["complexity_metrics"], dict)
         assert isinstance(data["graphs"], list)
         assert isinstance(data["interfaces_implemented"], list)
 
@@ -1170,8 +1171,10 @@ class TestBlueprintAnalysis:
         variables = resp["data"]["variables"]
         assert len(variables) > 0
         for var in variables:
+            # is_replicated is the flat top-level bool (not the nested "replication" object)
             assert "is_replicated" in var
             assert "container_type" in var
+            assert "usage_count" in var
 
     def test_analyze_for_migration_complexity_metrics(self, tcp_connection):
         resp = tcp_connection.send_command(
@@ -1180,4 +1183,5 @@ class TestBlueprintAnalysis:
         )
         metrics = resp["data"]["complexity_metrics"]
         assert metrics["total_nodes"] > 0
+        assert "total_connections" in metrics
         assert metrics["migration_confidence"] in {"high", "medium", "low"}
