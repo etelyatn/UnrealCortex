@@ -159,6 +159,87 @@ class TestValidation:
             _validate_spec("M_Test", "/Game/", nodes, connections)
 
 
+class TestInstancesInGraphSpec:
+    """Test _validate_spec() with instances parameter."""
+
+    def _sample_nodes(self):
+        """Return sample nodes with parameter expressions."""
+        return [
+            {"name": "Color", "class": "VectorParameter", "params": {"ParameterName": "BaseColor"}},
+            {"name": "Rough", "class": "ScalarParameter", "params": {"ParameterName": "Roughness"}},
+        ]
+
+    def test_valid_instances(self):
+        """Valid instances pass validation."""
+        nodes = self._sample_nodes()
+        instances = [
+            {
+                "name": "MI_Red",
+                "parameters": {
+                    "BaseColor": {"R": 1, "G": 0, "B": 0},
+                    "Roughness": 0.5,
+                },
+            },
+        ]
+        _validate_spec("M_Test", "/Game/", nodes, [], instances=instances)
+
+    def test_none_instances_allowed(self):
+        """None instances is allowed (no instances created)."""
+        _validate_spec("M_Test", "/Game/", [{"name": "A", "class": "Constant"}], [], instances=None)
+
+    def test_instances_not_list(self):
+        """Validation fails when instances is not a list."""
+        with pytest.raises(ValueError, match="instances must be a list"):
+            _validate_spec("M_Test", "/Game/", [], [], instances="bad")
+
+    def test_instance_missing_name(self):
+        """Validation fails when instance missing name."""
+        with pytest.raises(ValueError, match="missing 'name'"):
+            _validate_spec("M_Test", "/Game/", [], [], instances=[{"parameters": {}}])
+
+    def test_instance_parameters_not_dict(self):
+        """Validation fails when instance parameters is not a dict."""
+        with pytest.raises(ValueError, match="'parameters' must be a dict"):
+            _validate_spec("M_Test", "/Game/", [], [], instances=[{"name": "MI_X", "parameters": []}])
+
+    def test_instance_param_not_in_nodes(self):
+        """Validation fails when instance parameter name not found in nodes."""
+        nodes = self._sample_nodes()
+        instances = [{"name": "MI_X", "parameters": {"NonExistent": 0.5}}]
+        with pytest.raises(ValueError, match="not found in parent material.*Available"):
+            _validate_spec("M_Test", "/Game/", nodes, [], instances=instances)
+
+    def test_instance_param_type_not_inferable(self):
+        """Validation fails when parameter node class is not inferable."""
+        nodes = [
+            {"name": "Mul", "class": "Multiply", "params": {"ParameterName": "NotAParam"}},
+        ]
+        instances = [{"name": "MI_X", "parameters": {"NotAParam": 0.5}}]
+        with pytest.raises(ValueError, match="Cannot infer type"):
+            _validate_spec("M_Test", "/Game/", nodes, [], instances=instances)
+
+    def test_duplicate_instance_names(self):
+        """Validation fails on duplicate instance names."""
+        nodes = self._sample_nodes()
+        instances = [
+            {"name": "MI_Same", "parameters": {"Roughness": 0.5}},
+            {"name": "MI_Same", "parameters": {"Roughness": 0.8}},
+        ]
+        with pytest.raises(ValueError, match="Duplicate instance name"):
+            _validate_spec("M_Test", "/Game/", nodes, [], instances=instances)
+
+    def test_empty_parameters_dict_allowed(self):
+        """Instance with empty parameters dict is valid."""
+        nodes = self._sample_nodes()
+        instances = [{"name": "MI_Default", "parameters": {}}]
+        _validate_spec("M_Test", "/Game/", nodes, [], instances=instances)
+
+    def test_parameters_defaults_to_empty(self):
+        """Instance without parameters key defaults to empty dict."""
+        instances = [{"name": "MI_NoParams"}]
+        _validate_spec("M_Test", "/Game/", [], [], instances=instances)
+
+
 class TestBatchCommandGeneration:
     """Test _build_batch_commands() function."""
 
