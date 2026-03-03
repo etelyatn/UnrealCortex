@@ -711,6 +711,12 @@ def register_material_composite_tools(mcp, connection: UEConnection):
         except (ConnectionError, TimeoutError, OSError) as e:
             return json.dumps({"success": False, "error": f"Connection error: {e}"})
 
+        if not batch_result.get("success", False):
+            return json.dumps({
+                "success": False,
+                "error": batch_result.get("error", "Batch execution failed"),
+            })
+
         batch_data = batch_result.get("data", {})
         results = batch_data.get("results", [])
 

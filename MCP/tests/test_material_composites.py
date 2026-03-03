@@ -890,6 +890,24 @@ class TestCreateMaterialInstanceTool:
         assert result["success"] is True
         assert result["parameter_count"] == 0
 
+    def test_batch_top_level_failure(self):
+        """Top-level batch failure returns an error response."""
+        mock_conn = MagicMock()
+        mock_conn.send_command.side_effect = [
+            {"success": False, "error": "Batch command rejected"},
+        ]
+
+        tools = _extract_tools(mock_conn)
+        result = json.loads(tools["create_material_instance"](
+            name="MI_Fail",
+            path="/Game/",
+            parent="/Game/M_Parent",
+            parameters=[],
+        ))
+
+        assert result["success"] is False
+        assert "Batch command rejected" in result["error"]
+
 
 class TestMaterialVerificationIntegration:
     """Integration tests for material verification in the composite response."""
