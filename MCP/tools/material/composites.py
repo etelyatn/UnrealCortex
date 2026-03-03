@@ -239,6 +239,40 @@ def _validate_spec(name, path, nodes, connections, material_properties=None):
                 )
 
 
+_VALID_PARAM_TYPES = {"scalar", "vector", "texture"}
+
+
+def _validate_instance_spec(name, path, parent, parameters):
+    """Validate the material instance spec. Raises ValueError on invalid spec."""
+    if not name:
+        raise ValueError("Missing required field: name")
+    if not path:
+        raise ValueError("Missing required field: path")
+    if not parent:
+        raise ValueError("Missing required field: parent")
+    if not isinstance(parameters, list):
+        raise ValueError("parameters must be a list")
+
+    seen_names = set()
+    for i, param in enumerate(parameters):
+        if not isinstance(param, dict):
+            raise ValueError(f"Parameter {i} must be a dict")
+        if "name" not in param or not param["name"]:
+            raise ValueError(f"Parameter {i} missing 'name'")
+        if "type" not in param or not param["type"]:
+            raise ValueError(f"Parameter {i} missing 'type'")
+        if "value" not in param:
+            raise ValueError(f"Parameter {i} missing 'value'")
+        if param["type"] not in _VALID_PARAM_TYPES:
+            raise ValueError(
+                f"Invalid parameter type '{param['type']}' for '{param['name']}'. "
+                f"Must be one of: {sorted(_VALID_PARAM_TYPES)}"
+            )
+        if param["name"] in seen_names:
+            raise ValueError(f"Duplicate parameter name: '{param['name']}'")
+        seen_names.add(param["name"])
+
+
 def _build_batch_commands(name, path, nodes, connections, material_properties=None):
     """Translate material spec into batch commands with $ref wiring."""
     # Normalize trailing slash to prevent double-slash paths
