@@ -1,11 +1,14 @@
 #include "Operations/CortexMaterialDynamicOps.h"
 
 #include "CortexEditorUtils.h"
+#include "CortexMaterialModule.h"
 #include "CortexTypes.h"
 #include "Components/PrimitiveComponent.h"
+#include "Engine/Texture.h"
 #include "GameFramework/Actor.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/PackageName.h"
 
 UWorld* FCortexMaterialDynamicOps::GetPIEWorldOrError(FCortexCommandResult& OutError)
 {
@@ -258,6 +261,262 @@ FCortexCommandResult FCortexMaterialDynamicOps::ListDynamicInstances(const TShar
 	return FCortexCommandRouter::Success(Data);
 }
 
+TArray<TSharedPtr<FJsonValue>> FCortexMaterialDynamicOps::ColorToJsonArray(const FLinearColor& Color)
+{
+	TArray<TSharedPtr<FJsonValue>> Array;
+	Array.Add(MakeShared<FJsonValueNumber>(Color.R));
+	Array.Add(MakeShared<FJsonValueNumber>(Color.G));
+	Array.Add(MakeShared<FJsonValueNumber>(Color.B));
+	Array.Add(MakeShared<FJsonValueNumber>(Color.A));
+	return Array;
+}
+
+bool FCortexMaterialDynamicOps::IsParameterOverridden(
+	UMaterialInstanceDynamic* DMI,
+	const FName& ParamName,
+	const FString& ParamType)
+{
+	if (ParamType == TEXT("scalar"))
+	{
+		for (const FScalarParameterValue& Scalar : DMI->ScalarParameterValues)
+		{
+			if (Scalar.ParameterInfo.Name == ParamName)
+			{
+				return true;
+			}
+		}
+	}
+	else if (ParamType == TEXT("vector"))
+	{
+		for (const FVectorParameterValue& Vector : DMI->VectorParameterValues)
+		{
+			if (Vector.ParameterInfo.Name == ParamName)
+			{
+				return true;
+			}
+		}
+	}
+	else if (ParamType == TEXT("texture"))
+	{
+		for (const FTextureParameterValue& Texture : DMI->TextureParameterValues)
+		{
+			if (Texture.ParameterInfo.Name == ParamName)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+TSharedPtr<FJsonObject> FCortexMaterialDynamicOps::SerializeParameters(UMaterialInstanceDynamic* DMI)
+{
+	TSharedPtr<FJsonObject> ParamsJson = MakeShared<FJsonObject>();
+
+	TArray<FMaterialParameterInfo> ScalarInfos;
+	TArray<FGuid> ScalarGuids;
+	DMI->GetAllScalarParameterInfo(ScalarInfos, ScalarGuids);
+
+	TArray<TSharedPtr<FJsonValue>> ScalarArray;
+	for (const FMaterialParameterInfo& Info : ScalarInfos)
+	{
+		float CurrentValue = 0.0f;
+		DMI->GetScalarParameterValue(Info.Name, CurrentValue);
+
+		float DefaultValue = 0.0f;
+		DMI->GetScalarParameterDefaultValue(Info, DefaultValue);
+
+		TSharedPtr<FJsonObject> ParamJson = MakeShared<FJsonObject>();
+		ParamJson->SetStringField(TEXT("name"), Info.Name.ToString());
+		ParamJson->SetNumberField(TEXT("default_value"), DefaultValue);
+		ParamJson->SetNumberField(TEXT("current_value"), CurrentValue);
+		ParamJson->SetBoolField(TEXT("is_overridden"), IsParameterOverridden(DMI, Info.Name, TEXT("scalar")));
+		ScalarArray.Add(MakeShared<FJsonValueObject>(ParamJson));
+	}
+	ParamsJson->SetArrayField(TEXT("scalar"), ScalarArray);
+
+	TArray<FMaterialParameterInfo> VectorInfos;
+	TArray<FGuid> VectorGuids;
+	DMI->GetAllVectorParameterInfo(VectorInfos, VectorGuids);
+
+	TArray<TSharedPtr<FJsonValue>> VectorArray;
+	for (const FMaterialParameterInfo& Info : VectorInfos)
+	{
+		FLinearColor CurrentValue;
+		DMI->GetVectorParameterValue(Info.Name, CurrentValue);
+
+		FLinearColor DefaultValue;
+		DMI->GetVectorParameterDefaultValue(Info, DefaultValue);
+
+		TSharedPtr<FJsonObject> ParamJson = MakeShared<FJsonObject>();
+		ParamJson->SetStringField(TEXT("name"), Info.Name.ToString());
+		ParamJson->SetArrayField(TEXT("default_value"), ColorToJsonArray(DefaultValue));
+		ParamJson->SetArrayField(TEXT("current_value"), ColorToJsonArray(CurrentValue));
+		ParamJson->SetBoolField(TEXT("is_overridden"), IsParameterOverridden(DMI, Info.Name, TEXT("vector")));
+		VectorArray.Add(MakeShared<FJsonValueObject>(ParamJson));
+	}
+	ParamsJson->SetArrayField(TEXT("vector"), VectorArray);
+
+	TArray<FMaterialParameterInfo> TextureInfos;
+	TArray<FGuid> TextureGuids;
+	DMI->GetAllTextureParameterInfo(TextureInfos, TextureGuids);
+
+	TArray<TSharedPtr<FJsonValue>> TextureArray;
+	for (const FMaterialParameterInfo& Info : TextureInfos)
+	{
+		UTexture* CurrentTexture = nullptr;
+		DMI->GetTextureParameterValue(Info.Name, CurrentTexture);
+
+		UTexture* DefaultTexture = nullptr;
+		DMI->GetTextureParameterDefaultValue(Info, DefaultTexture);
+
+		TSharedPtr<FJsonObject> ParamJson = MakeShared<FJsonObject>();
+		ParamJson->SetStringField(TEXT("name"), Info.Name.ToString());
+		ParamJson->SetStringField(TEXT("default_value"), DefaultTexture != nullptr ? DefaultTexture->GetPathName() : TEXT(""));
+		ParamJson->SetStringField(TEXT("current_value"), CurrentTexture != nullptr ? CurrentTexture->GetPathName() : TEXT(""));
+		ParamJson->SetBoolField(TEXT("is_overridden"), IsParameterOverridden(DMI, Info.Name, TEXT("texture")));
+		TextureArray.Add(MakeShared<FJsonValueObject>(ParamJson));
+	}
+	ParamsJson->SetArrayField(TEXT("texture"), TextureArray);
+
+	return ParamsJson;
+}
+
+bool FCortexMaterialDynamicOps::ApplyParameter(
+	UMaterialInstanceDynamic* DMI,
+	const FString& ParamName,
+	const FString& ParamType,
+	const TSharedPtr<FJsonValue>& Value,
+	FCortexCommandResult& OutError)
+{
+	const FName Name(*ParamName);
+	bool bParamExists = false;
+
+	if (ParamType == TEXT("scalar"))
+	{
+		TArray<FMaterialParameterInfo> Infos;
+		TArray<FGuid> Guids;
+		DMI->GetAllScalarParameterInfo(Infos, Guids);
+		for (const FMaterialParameterInfo& Info : Infos)
+		{
+			if (Info.Name == Name)
+			{
+				bParamExists = true;
+				break;
+			}
+		}
+	}
+	else if (ParamType == TEXT("vector"))
+	{
+		TArray<FMaterialParameterInfo> Infos;
+		TArray<FGuid> Guids;
+		DMI->GetAllVectorParameterInfo(Infos, Guids);
+		for (const FMaterialParameterInfo& Info : Infos)
+		{
+			if (Info.Name == Name)
+			{
+				bParamExists = true;
+				break;
+			}
+		}
+	}
+	else if (ParamType == TEXT("texture"))
+	{
+		TArray<FMaterialParameterInfo> Infos;
+		TArray<FGuid> Guids;
+		DMI->GetAllTextureParameterInfo(Infos, Guids);
+		for (const FMaterialParameterInfo& Info : Infos)
+		{
+			if (Info.Name == Name)
+			{
+				bParamExists = true;
+				break;
+			}
+		}
+	}
+	else
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::TypeMismatch,
+			FString::Printf(TEXT("Invalid parameter type '%s'. Expected: scalar, vector, or texture."), *ParamType));
+		return false;
+	}
+
+	if (!bParamExists)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::ParameterNotFound,
+			FString::Printf(TEXT("Parameter '%s' of type '%s' not found on this dynamic material instance."), *ParamName, *ParamType));
+		return false;
+	}
+
+	if (ParamType == TEXT("scalar"))
+	{
+		double ScalarValue = 0.0;
+		if (!Value.IsValid() || !Value->TryGetNumber(ScalarValue))
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidParameter,
+				FString::Printf(TEXT("Expected number for scalar parameter '%s'"), *ParamName));
+			return false;
+		}
+
+		DMI->SetScalarParameterValue(Name, static_cast<float>(ScalarValue));
+		return true;
+	}
+
+	if (ParamType == TEXT("vector"))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ColorArray = nullptr;
+		if (!Value.IsValid() || !Value->TryGetArray(ColorArray) || ColorArray->Num() < 4)
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidParameter,
+				FString::Printf(TEXT("Expected array of 4 floats [R,G,B,A] for vector parameter '%s'"), *ParamName));
+			return false;
+		}
+
+		FLinearColor Color(
+			static_cast<float>((*ColorArray)[0]->AsNumber()),
+			static_cast<float>((*ColorArray)[1]->AsNumber()),
+			static_cast<float>((*ColorArray)[2]->AsNumber()),
+			static_cast<float>((*ColorArray)[3]->AsNumber()));
+		DMI->SetVectorParameterValue(Name, Color);
+		return true;
+	}
+
+	FString TexturePath;
+	if (!Value.IsValid() || !Value->TryGetString(TexturePath))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidParameter,
+			FString::Printf(TEXT("Expected asset path string for texture parameter '%s'"), *ParamName));
+		return false;
+	}
+
+	FString PackageName = FPackageName::ObjectPathToPackageName(TexturePath);
+	if (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Texture not found: %s"), *TexturePath));
+		return false;
+	}
+
+	UTexture* Texture = LoadObject<UTexture>(nullptr, *TexturePath);
+	if (Texture == nullptr)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Texture not found: %s"), *TexturePath));
+		return false;
+	}
+
+	DMI->SetTextureParameterValue(Name, Texture);
+	return true;
+}
+
 FCortexCommandResult FCortexMaterialDynamicOps::GetDynamicInstance(const TSharedPtr<FJsonObject>& Params)
 {
 	(void)Params;
@@ -266,14 +525,155 @@ FCortexCommandResult FCortexMaterialDynamicOps::GetDynamicInstance(const TShared
 
 FCortexCommandResult FCortexMaterialDynamicOps::CreateDynamicInstance(const TSharedPtr<FJsonObject>& Params)
 {
-	(void)Params;
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("create_dynamic_instance not implemented yet"));
+	FCortexCommandResult Error;
+	UWorld* World = GetPIEWorldOrError(Error);
+	if (World == nullptr)
+	{
+		return Error;
+	}
+
+	FString ActorName;
+	int32 SlotIndex = 0;
+	UPrimitiveComponent* Component = ResolveComponent(World, Params, ActorName, SlotIndex, Error);
+	if (Component == nullptr)
+	{
+		return Error;
+	}
+
+	UMaterialInterface* CurrentMaterial = Component->GetMaterial(SlotIndex);
+	if (CurrentMaterial != nullptr && CurrentMaterial->IsA<UMaterialInstanceDynamic>())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AlreadyDynamicInstance,
+			FString::Printf(
+				TEXT("Slot %d on component '%s' already has a Dynamic Material Instance. Call destroy_dynamic_instance first to reset."),
+				SlotIndex,
+				*Component->GetName()));
+	}
+
+	UMaterialInterface* SourceMaterial = CurrentMaterial;
+	const FString PreviousMaterialPath = CurrentMaterial != nullptr ? CurrentMaterial->GetPathName() : TEXT("");
+
+	FString SourceMaterialPath;
+	if (Params.IsValid() && Params->TryGetStringField(TEXT("source_material"), SourceMaterialPath) && !SourceMaterialPath.IsEmpty())
+	{
+		const FString PackageName = FPackageName::ObjectPathToPackageName(SourceMaterialPath);
+		if (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::MaterialNotFound,
+				FString::Printf(TEXT("Source material not found: %s"), *SourceMaterialPath));
+		}
+
+		SourceMaterial = LoadObject<UMaterialInterface>(nullptr, *SourceMaterialPath);
+		if (SourceMaterial == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::MaterialNotFound,
+				FString::Printf(TEXT("Failed to load source material: %s"), *SourceMaterialPath));
+		}
+	}
+
+	if (SourceMaterial == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::MaterialNotFound,
+			FString::Printf(TEXT("No material on slot %d to create dynamic instance from."), SlotIndex));
+	}
+
+	UMaterialInstanceDynamic* DMI = UMaterialInstanceDynamic::Create(SourceMaterial, Component);
+	Component->SetMaterial(SlotIndex, DMI);
+
+	const TArray<TSharedPtr<FJsonValue>>* ParametersArray = nullptr;
+	if (Params.IsValid() && Params->TryGetArrayField(TEXT("parameters"), ParametersArray))
+	{
+		for (const TSharedPtr<FJsonValue>& ParamValue : *ParametersArray)
+		{
+			const TSharedPtr<FJsonObject>* ParamObject = nullptr;
+			if (!ParamValue->TryGetObject(ParamObject))
+			{
+				continue;
+			}
+
+			FString ParamName;
+			FString ParamType;
+			(*ParamObject)->TryGetStringField(TEXT("name"), ParamName);
+			(*ParamObject)->TryGetStringField(TEXT("type"), ParamType);
+			const TSharedPtr<FJsonValue> ValueField = (*ParamObject)->TryGetField(TEXT("value"));
+			if (ParamName.IsEmpty() || ParamType.IsEmpty() || !ValueField.IsValid())
+			{
+				continue;
+			}
+
+			FCortexCommandResult ParameterError;
+			if (!ApplyParameter(DMI, ParamName, ParamType, ValueField, ParameterError))
+			{
+				UE_LOG(
+					LogCortexMaterial,
+					Warning,
+					TEXT("Failed to apply initial dynamic parameter '%s': %s"),
+					*ParamName,
+					*ParameterError.ErrorMessage);
+			}
+		}
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("actor"), ActorName);
+	Data->SetStringField(TEXT("component_name"), Component->GetName());
+	Data->SetNumberField(TEXT("slot_index"), SlotIndex);
+	Data->SetStringField(TEXT("parent_material"), SourceMaterial->GetPathName());
+	Data->SetStringField(TEXT("previous_material"), PreviousMaterialPath);
+
+	TSharedPtr<FJsonObject> ParametersJson = SerializeParameters(DMI);
+	Data->SetObjectField(TEXT("parameters"), ParametersJson);
+
+	int32 ParameterCount = 0;
+	const TArray<TSharedPtr<FJsonValue>>* TypedArray = nullptr;
+	if (ParametersJson->TryGetArrayField(TEXT("scalar"), TypedArray))
+	{
+		ParameterCount += TypedArray->Num();
+	}
+	if (ParametersJson->TryGetArrayField(TEXT("vector"), TypedArray))
+	{
+		ParameterCount += TypedArray->Num();
+	}
+	if (ParametersJson->TryGetArrayField(TEXT("texture"), TypedArray))
+	{
+		ParameterCount += TypedArray->Num();
+	}
+	Data->SetNumberField(TEXT("parameter_count"), ParameterCount);
+
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialDynamicOps::DestroyDynamicInstance(const TSharedPtr<FJsonObject>& Params)
 {
-	(void)Params;
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("destroy_dynamic_instance not implemented yet"));
+	FCortexCommandResult Error;
+	UWorld* World = GetPIEWorldOrError(Error);
+	if (World == nullptr)
+	{
+		return Error;
+	}
+
+	UPrimitiveComponent* Component = nullptr;
+	FString ActorName;
+	int32 SlotIndex = 0;
+	UMaterialInstanceDynamic* DMI = ResolveDMI(World, Params, Component, ActorName, SlotIndex, Error);
+	if (DMI == nullptr)
+	{
+		return Error;
+	}
+
+	UMaterialInterface* Parent = DMI->Parent;
+	Component->SetMaterial(SlotIndex, Parent);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("actor"), ActorName);
+	Data->SetStringField(TEXT("component_name"), Component->GetName());
+	Data->SetNumberField(TEXT("slot_index"), SlotIndex);
+	Data->SetStringField(TEXT("reverted_to"), Parent != nullptr ? Parent->GetPathName() : TEXT(""));
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialDynamicOps::SetDynamicParameter(const TSharedPtr<FJsonObject>& Params)
@@ -304,46 +704,4 @@ FCortexCommandResult FCortexMaterialDynamicOps::ResetDynamicParameter(const TSha
 {
 	(void)Params;
 	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("reset_dynamic_parameter not implemented yet"));
-}
-
-TSharedPtr<FJsonObject> FCortexMaterialDynamicOps::SerializeParameters(UMaterialInstanceDynamic* DMI)
-{
-	(void)DMI;
-	return MakeShared<FJsonObject>();
-}
-
-bool FCortexMaterialDynamicOps::ApplyParameter(
-	UMaterialInstanceDynamic* DMI,
-	const FString& ParamName,
-	const FString& ParamType,
-	const TSharedPtr<FJsonValue>& Value,
-	FCortexCommandResult& OutError)
-{
-	(void)DMI;
-	(void)ParamName;
-	(void)ParamType;
-	(void)Value;
-	OutError = FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("apply parameter helper not implemented yet"));
-	return false;
-}
-
-TArray<TSharedPtr<FJsonValue>> FCortexMaterialDynamicOps::ColorToJsonArray(const FLinearColor& Color)
-{
-	TArray<TSharedPtr<FJsonValue>> Array;
-	Array.Add(MakeShared<FJsonValueNumber>(Color.R));
-	Array.Add(MakeShared<FJsonValueNumber>(Color.G));
-	Array.Add(MakeShared<FJsonValueNumber>(Color.B));
-	Array.Add(MakeShared<FJsonValueNumber>(Color.A));
-	return Array;
-}
-
-bool FCortexMaterialDynamicOps::IsParameterOverridden(
-	UMaterialInstanceDynamic* DMI,
-	const FName& ParamName,
-	const FString& ParamType)
-{
-	(void)DMI;
-	(void)ParamName;
-	(void)ParamType;
-	return false;
 }

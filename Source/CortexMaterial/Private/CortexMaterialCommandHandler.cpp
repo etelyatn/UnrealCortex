@@ -86,6 +86,10 @@ FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 	// Dynamic material instance operations (PIE required)
 	if (Command == TEXT("list_dynamic_instances"))
 		return FCortexMaterialDynamicOps::ListDynamicInstances(Params);
+	if (Command == TEXT("create_dynamic_instance"))
+		return FCortexMaterialDynamicOps::CreateDynamicInstance(Params);
+	if (Command == TEXT("destroy_dynamic_instance"))
+		return FCortexMaterialDynamicOps::DestroyDynamicInstance(Params);
 
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
@@ -128,5 +132,7 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 		{ TEXT("remove_collection_parameter"), TEXT("Remove parameter from collection") },
 		{ TEXT("set_collection_parameter"), TEXT("Set collection parameter value") },
 		{ TEXT("list_dynamic_instances"), TEXT("List material slots and DMI status on a PIE actor") },
+		{ TEXT("create_dynamic_instance"), TEXT("Create a Dynamic Material Instance on a PIE actor slot") },
+		{ TEXT("destroy_dynamic_instance"), TEXT("Remove a DMI and revert to parent material") },
 	};
 }
