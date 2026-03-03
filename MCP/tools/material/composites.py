@@ -241,6 +241,24 @@ def _validate_spec(name, path, nodes, connections, material_properties=None):
 
 _VALID_PARAM_TYPES = {"scalar", "vector", "texture"}
 
+# Node class -> parameter type mapping for type inference.
+_PARAM_TYPE_MAP = {
+    "ScalarParameter": "scalar",
+    "MaterialExpressionScalarParameter": "scalar",
+    "VectorParameter": "vector",
+    "MaterialExpressionVectorParameter": "vector",
+    "TextureParameter": "texture",
+    "MaterialExpressionTextureSampleParameter2D": "texture",
+    "TextureSampleParameter2D": "texture",
+    "TextureObjectParameter": "texture",
+    "MaterialExpressionTextureObjectParameter": "texture",
+}
+
+
+def _infer_param_type(node_class):
+    """Infer parameter type from node class name."""
+    return _PARAM_TYPE_MAP.get(node_class)
+
 
 def _validate_instance_spec(name, path, parent, parameters):
     """Validate the material instance spec. Raises ValueError on invalid spec."""
