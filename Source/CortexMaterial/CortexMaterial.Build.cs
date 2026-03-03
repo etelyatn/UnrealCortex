@@ -11,6 +11,7 @@ public class CortexMaterial : ModuleRules
             "Core",
             "CortexCore",
             "CortexGraph",
+            "CortexEditor",
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]
