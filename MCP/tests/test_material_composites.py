@@ -18,6 +18,7 @@ from material.composites import (
     _build_batch_commands,
     _validate_instance_spec,
     _build_instance_batch_commands,
+    _infer_param_type,
     register_material_composite_tools,
 )
 
@@ -60,6 +61,39 @@ class TestClassNameResolution:
         """Special mappings like Lerp → LinearInterpolate."""
         assert _resolve_class_name("Lerp") == "MaterialExpressionLinearInterpolate"
         assert _resolve_class_name("Desaturation") == "MaterialExpressionDesaturation"
+
+
+class TestParamTypeInference:
+    """Test _infer_param_type() from node class."""
+
+    def test_scalar_parameter(self):
+        """ScalarParameter nodes infer as scalar."""
+        assert _infer_param_type("ScalarParameter") == "scalar"
+        assert _infer_param_type("MaterialExpressionScalarParameter") == "scalar"
+
+    def test_vector_parameter(self):
+        """VectorParameter nodes infer as vector."""
+        assert _infer_param_type("VectorParameter") == "vector"
+        assert _infer_param_type("MaterialExpressionVectorParameter") == "vector"
+
+    def test_texture_parameter(self):
+        """TextureParameter nodes infer as texture."""
+        assert _infer_param_type("TextureParameter") == "texture"
+        assert _infer_param_type("MaterialExpressionTextureSampleParameter2D") == "texture"
+
+    def test_static_switch_parameter(self):
+        """StaticSwitchParameter is not a runtime parameter — returns None."""
+        assert _infer_param_type("StaticSwitchParameter") is None
+
+    def test_non_parameter_node(self):
+        """Non-parameter nodes return None."""
+        assert _infer_param_type("Multiply") is None
+        assert _infer_param_type("Constant") is None
+        assert _infer_param_type("Time") is None
+
+    def test_unknown_class(self):
+        """Unknown class returns None."""
+        assert _infer_param_type("MaterialExpressionCustomThing") is None
 
 
 class TestValidation:
