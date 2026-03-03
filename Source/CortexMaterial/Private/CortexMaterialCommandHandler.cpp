@@ -4,6 +4,7 @@
 #include "Operations/CortexMaterialParamOps.h"
 #include "Operations/CortexMaterialGraphOps.h"
 #include "Operations/CortexMaterialCollectionOps.h"
+#include "Operations/CortexMaterialDynamicOps.h"
 
 FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 	const FString& Command,
@@ -82,6 +83,10 @@ FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 	if (Command == TEXT("set_collection_parameter"))
 		return FCortexMaterialCollectionOps::SetCollectionParameter(Params);
 
+	// Dynamic material instance operations (PIE required)
+	if (Command == TEXT("list_dynamic_instances"))
+		return FCortexMaterialDynamicOps::ListDynamicInstances(Params);
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown material command: %s"), *Command)
@@ -122,5 +127,6 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 		{ TEXT("add_collection_parameter"), TEXT("Add parameter to collection") },
 		{ TEXT("remove_collection_parameter"), TEXT("Remove parameter from collection") },
 		{ TEXT("set_collection_parameter"), TEXT("Set collection parameter value") },
+		{ TEXT("list_dynamic_instances"), TEXT("List material slots and DMI status on a PIE actor") },
 	};
 }
