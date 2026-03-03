@@ -15,6 +15,10 @@ def _uniq(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 
+# Permanent test content paths
+_COMPLEX_ACTOR_PATH = "/Game/Blueprints/BP_ComplexActor"
+
+
 def _add_print_string_node(tcp_connection, asset_path: str, graph_name: str = "EventGraph") -> str:
     resp = tcp_connection.send_command("graph.add_node", {
         "asset_path": asset_path,
@@ -1128,8 +1132,6 @@ class TestDataExpanded:
 # Blueprint Domain — Migration Analysis
 # ================================================================
 
-_COMPLEX_ACTOR_PATH = "/Game/Blueprints/BP_ComplexActor"
-
 
 @pytest.mark.e2e
 class TestBlueprintAnalysis:
@@ -1169,7 +1171,7 @@ class TestBlueprintAnalysis:
             {"asset_path": _COMPLEX_ACTOR_PATH},
         )
         variables = resp["data"]["variables"]
-        assert len(variables) > 0
+        assert len(variables) > 0, f"BP_ComplexActor returned no variables: {resp['data']}"
         for var in variables:
             # is_replicated is the flat top-level bool (not the nested "replication" object)
             assert "is_replicated" in var
@@ -1182,6 +1184,6 @@ class TestBlueprintAnalysis:
             {"asset_path": _COMPLEX_ACTOR_PATH},
         )
         metrics = resp["data"]["complexity_metrics"]
-        assert metrics["total_nodes"] > 0
-        assert "total_connections" in metrics
+        assert metrics["total_nodes"] > 0, f"BP_ComplexActor total_nodes should be > 0: {metrics}"
+        assert isinstance(metrics["total_connections"], int) and metrics["total_connections"] >= 0
         assert metrics["migration_confidence"] in {"high", "medium", "low"}
