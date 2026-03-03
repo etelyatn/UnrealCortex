@@ -15,6 +15,10 @@ def _uniq(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 
+# Permanent test content paths
+_COMPLEX_ACTOR_PATH = "/Game/Blueprints/BP_ComplexActor"
+
+
 def _add_print_string_node(tcp_connection, asset_path: str, graph_name: str = "EventGraph") -> str:
     resp = tcp_connection.send_command("graph.add_node", {
         "asset_path": asset_path,
@@ -1122,3 +1126,64 @@ class TestDataExpanded:
         data = resp["data"]
         assert data["total_matches"] == 0
         assert len(data["results"]) == 0
+
+
+# ================================================================
+# Blueprint Domain — Migration Analysis
+# ================================================================
+
+
+@pytest.mark.e2e
+class TestBlueprintAnalysis:
+    """Tests for bp.analyze_for_migration against BP_ComplexActor."""
+
+    def test_analyze_for_migration(self, tcp_connection):
+        resp = tcp_connection.send_command(
+            "bp.analyze_for_migration",
+            {"asset_path": _COMPLEX_ACTOR_PATH},
+        )
+        data = resp["data"]
+        assert "variables" in data
+        assert "timelines" in data
+        assert "event_dispatchers" in data
+        assert "latent_nodes" in data
+        assert "complexity_metrics" in data
+        assert "graphs" in data
+        assert "interfaces_implemented" in data
+        assert isinstance(data["variables"], list)
+        assert isinstance(data["timelines"], list)
+        assert isinstance(data["event_dispatchers"], list)
+        assert isinstance(data["latent_nodes"], list)
+        assert isinstance(data["complexity_metrics"], dict)
+        assert isinstance(data["graphs"], list)
+        assert isinstance(data["interfaces_implemented"], list)
+
+    def test_analyze_for_migration_not_found(self, tcp_connection):
+        with pytest.raises(RuntimeError):
+            tcp_connection.send_command(
+                "bp.analyze_for_migration",
+                {"asset_path": "/Game/NonExistent/BP_Ghost_12345"},
+            )
+
+    def test_analyze_for_migration_variable_schema(self, tcp_connection):
+        resp = tcp_connection.send_command(
+            "bp.analyze_for_migration",
+            {"asset_path": _COMPLEX_ACTOR_PATH},
+        )
+        variables = resp["data"]["variables"]
+        assert len(variables) > 0, f"BP_ComplexActor returned no variables: {resp['data']}"
+        for var in variables:
+            # is_replicated is the flat top-level bool (not the nested "replication" object)
+            assert "is_replicated" in var
+            assert "container_type" in var
+            assert "usage_count" in var
+
+    def test_analyze_for_migration_complexity_metrics(self, tcp_connection):
+        resp = tcp_connection.send_command(
+            "bp.analyze_for_migration",
+            {"asset_path": _COMPLEX_ACTOR_PATH},
+        )
+        metrics = resp["data"]["complexity_metrics"]
+        assert metrics["total_nodes"] > 0, f"BP_ComplexActor total_nodes should be > 0: {metrics}"
+        assert isinstance(metrics["total_connections"], int) and metrics["total_connections"] >= 0
+        assert metrics["migration_confidence"] in {"high", "medium", "low"}
