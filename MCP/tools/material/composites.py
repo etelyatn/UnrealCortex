@@ -335,7 +335,7 @@ def _validate_instance_spec(name, path, parent, parameters):
         seen_names.add(param["name"])
 
 
-def _build_batch_commands(name, path, nodes, connections, material_properties=None):
+def _build_batch_commands(name, path, nodes, connections, material_properties=None, instances=None):
     """Translate material spec into batch commands with $ref wiring."""
     # Normalize trailing slash to prevent double-slash paths
     path = path.rstrip("/")
@@ -426,6 +426,44 @@ def _build_batch_commands(name, path, nodes, connections, material_properties=No
             "command": "material.connect",
             "params": connect_params,
         })
+
+    # Instance commands are appended after material graph setup.
+    if instances:
+        # Build ParameterName -> inferred type map from material nodes.
+        param_type_map = {}
+        for node in nodes:
+            param_name = (node.get("params") or {}).get("ParameterName")
+            if param_name:
+                inferred = _infer_param_type(node.get("class", ""))
+                if inferred:
+                    param_type_map[param_name] = inferred
+
+        # Save parent material before creating instances to ensure persistence ordering.
+        commands.append({
+            "command": "core.save_asset",
+            "params": {"asset_path": "$steps[0].data.asset_path"},
+        })
+
+        for inst in instances:
+            inst_path = inst.get("path", path).rstrip("/")
+            inst_params = inst.get("parameters", {})
+            param_list = [
+                {
+                    "name": param_name,
+                    "type": param_type_map[param_name],
+                    "value": param_value,
+                }
+                for param_name, param_value in inst_params.items()
+            ]
+            inst_commands = _build_instance_batch_commands(
+                name=inst["name"],
+                path=inst_path,
+                parent="",
+                parameters=param_list,
+                parent_ref="$steps[0].data.asset_path",
+                step_offset=len(commands),
+            )
+            commands.extend(inst_commands)
 
     return commands
 
