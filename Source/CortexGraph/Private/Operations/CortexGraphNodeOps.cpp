@@ -459,6 +459,10 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 	{
 		SearchGraph(Graph);
 	}
+	for (UEdGraph* Graph : Blueprint->MacroGraphs)
+	{
+		SearchGraph(Graph);
+	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("results"), ResultsArray);

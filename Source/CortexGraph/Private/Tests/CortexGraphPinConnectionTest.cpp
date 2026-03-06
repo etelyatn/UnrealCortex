@@ -55,6 +55,13 @@ bool FCortexGraphPinConnectionTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	TestFalse(TEXT("NodeIdA should not be empty"), NodeIdA.IsEmpty());
+	if (NodeIdA.IsEmpty())
+	{
+		TestBP->MarkAsGarbage();
+		return false;
+	}
+
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"), AssetPath);
@@ -68,6 +75,13 @@ bool FCortexGraphPinConnectionTest::RunTest(const FString& Parameters)
 		{
 			R.Data->TryGetStringField(TEXT("node_id"), NodeIdB);
 		}
+	}
+
+	TestFalse(TEXT("NodeIdB should not be empty"), NodeIdB.IsEmpty());
+	if (NodeIdB.IsEmpty())
+	{
+		TestBP->MarkAsGarbage();
+		return false;
 	}
 
 	{

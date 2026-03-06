@@ -5,7 +5,9 @@
 #include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "GameFramework/Actor.h"
+#include "K2Node_IfThenElse.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexGraphSearchNodesTest,
@@ -45,14 +47,24 @@ bool FCortexGraphSearchNodesTest::RunTest(const FString& Parameters)
 		TSharedPtr<FJsonObject> NP = MakeShared<FJsonObject>();
 		NP->SetStringField(TEXT("function_name"), TEXT("KismetSystemLibrary.PrintString"));
 		Params->SetObjectField(TEXT("params"), NP);
-		Router.Execute(TEXT("graph.add_node"), Params);
+		const FCortexCommandResult AddR = Router.Execute(TEXT("graph.add_node"), Params);
+		if (!TestTrue(FString::Printf(TEXT("Setup add_node PrintString[%d] should succeed"), i), AddR.bSuccess))
+		{
+			TestBP->MarkAsGarbage();
+			return false;
+		}
 	}
 
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"), AssetPath);
 		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_IfThenElse"));
-		Router.Execute(TEXT("graph.add_node"), Params);
+		const FCortexCommandResult AddR = Router.Execute(TEXT("graph.add_node"), Params);
+		if (!TestTrue(TEXT("Setup add_node IfThenElse should succeed"), AddR.bSuccess))
+		{
+			TestBP->MarkAsGarbage();
+			return false;
+		}
 	}
 
 	{
@@ -123,6 +135,88 @@ bool FCortexGraphSearchNodesTest::RunTest(const FString& Parameters)
 			if (ResultsArray)
 			{
 				TestEqual(TEXT("Should return empty results"), ResultsArray->Num(), 0);
+			}
+		}
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphSearchNodesMacroGraphTest,
+	"Cortex.Graph.SearchNodes.MacroGraph",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphSearchNodesMacroGraphTest::RunTest(const FString& Parameters)
+{
+	UPackage* TestPackage = NewObject<UPackage>(nullptr, TEXT("/Temp/CortexGraphSearchNodesMacroTest"), RF_Transient);
+	TestPackage->SetPackageFlags(PKG_PlayInEditor);
+
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		TestPackage,
+		TEXT("BP_SearchNodesMacroTest"),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass()
+	);
+	TestNotNull(TEXT("Test Blueprint created"), TestBP);
+	if (!TestBP)
+	{
+		return false;
+	}
+
+	// Create a macro graph and add a node directly to it
+	UEdGraph* MacroGraph = FBlueprintEditorUtils::CreateNewGraph(
+		TestBP,
+		FName(TEXT("TestMacro")),
+		UEdGraph::StaticClass(),
+		UEdGraphSchema_K2::StaticClass()
+	);
+	TestNotNull(TEXT("Macro graph created"), MacroGraph);
+	if (!MacroGraph)
+	{
+		TestBP->MarkAsGarbage();
+		return false;
+	}
+	TestBP->MacroGraphs.Add(MacroGraph);
+
+	UEdGraphNode* MacroNode = NewObject<UEdGraphNode>(MacroGraph, UK2Node_IfThenElse::StaticClass());
+	MacroNode->CreateNewGuid();
+	MacroGraph->AddNode(MacroNode, true, false);
+	MacroNode->AllocateDefaultPins();
+
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("graph"), TEXT("Cortex Graph"), TEXT("1.0.0"), MakeShared<FCortexGraphCommandHandler>());
+
+	const FString AssetPath = TestBP->GetPathName();
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), AssetPath);
+	Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_IfThenElse"));
+	const FCortexCommandResult R = Router.Execute(TEXT("graph.search_nodes"), Params);
+	TestTrue(TEXT("search_nodes should succeed"), R.bSuccess);
+
+	if (R.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+		R.Data->TryGetArrayField(TEXT("results"), ResultsArray);
+		TestNotNull(TEXT("Should have results array"), ResultsArray);
+		if (ResultsArray)
+		{
+			TestEqual(TEXT("Should find node in macro graph"), ResultsArray->Num(), 1);
+			if (ResultsArray->Num() > 0)
+			{
+				const TSharedPtr<FJsonObject>* Entry = nullptr;
+				(*ResultsArray)[0]->TryGetObject(Entry);
+				if (Entry)
+				{
+					FString GraphName;
+					(*Entry)->TryGetStringField(TEXT("graph_name"), GraphName);
+					TestEqual(TEXT("graph_name should be the macro graph"), GraphName, FString(TEXT("TestMacro")));
+				}
 			}
 		}
 	}

@@ -48,7 +48,7 @@ FCortexCommandResult FCortexDataAssetSearchOps::SearchAssets(const TSharedPtr<FJ
 		if (AssetRegistry->IsLoadingAssets())
 		{
 			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
+				CortexErrorCodes::EditorNotReady,
 				TEXT("Asset Registry scan in progress - retry search_assets in a few seconds")
 			);
 		}

@@ -50,7 +50,7 @@ bool FCortexBPGetClassDefaultsMissingPathTest::RunTest(const FString& Parameters
 
 	const FCortexCommandResult Result = Handler.Execute(TEXT("get_class_defaults"), Params);
 
-	TestFalse(TEXT("Should fail without blueprint_path"), Result.bSuccess);
+	TestFalse(TEXT("Should fail without asset_path"), Result.bSuccess);
 	TestEqual(TEXT("Error code should be INVALID_FIELD"),
 		Result.ErrorCode, CortexErrorCodes::InvalidField);
 
@@ -114,6 +114,41 @@ bool FCortexBPGetClassDefaultsDiscoveryTest::RunTest(const FString& Parameters)
 		FString ParentClass;
 		Result.Data->TryGetStringField(TEXT("parent_class"), ParentClass);
 		TestEqual(TEXT("parent_class should be Actor"), ParentClass, TEXT("Actor"));
+	}
+
+	CleanupTestBlueprint(AssetPath);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGetClassDefaultsAssetPathTest,
+	"Cortex.Blueprint.ClassDefaults.Get.AssetPath",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPGetClassDefaultsAssetPathTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	FCortexBPCommandHandler Handler;
+	const FString AssetPath = CreateTestBlueprint(Handler, Suffix);
+	TestFalse(TEXT("Test Blueprint should be created"), AssetPath.IsEmpty());
+	if (AssetPath.IsEmpty())
+	{
+		return true;
+	}
+
+	// Use asset_path (primary field, not the deprecated blueprint_path)
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), AssetPath);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("get_class_defaults"), Params);
+
+	TestTrue(TEXT("get_class_defaults via asset_path should succeed"), Result.bSuccess);
+	if (Result.Data.IsValid())
+	{
+		const TSharedPtr<FJsonObject>* PropsObj = nullptr;
+		TestTrue(TEXT("Should have properties object"),
+			Result.Data->TryGetObjectField(TEXT("properties"), PropsObj));
 	}
 
 	CleanupTestBlueprint(AssetPath);
