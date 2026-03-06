@@ -53,6 +53,7 @@ def register_graph_tools(mcp, connection: UEConnection):
             - display_name: Display name of the node
             - position: {x, y} coordinates
             - pin_count: Number of pins on the node
+            - connected_pin_count: Number of pins with at least one connection
         """
         try:
             response = connection.send_command_cached("graph.list_nodes", {
@@ -81,6 +82,12 @@ def register_graph_tools(mcp, connection: UEConnection):
             - display_name: Display name of the node
             - position: {x, y} coordinates
             - pins: Detailed array of all input/output pins
+              - is_connected: True if this pin has at least one link
+              - connected_to: Array present ONLY when is_connected=True (field absent = disconnected,
+                not empty array). Use entry.get("connected_to", []) defensively. Each entry:
+                - node_id: GetName() of the connected node (stale after Blueprint compile/reload;
+                  re-run graph_list_nodes after compile_blueprint or set_class_defaults(compile=True))
+                - pin: Name of the connected pin
               Text-type pins now include `default_text_value` with:
               - value: Resolved display string
               - string_table: Optional {table_id, key} when backed by a StringTable

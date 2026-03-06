@@ -265,6 +265,17 @@ FCortexCommandResult FCortexGraphNodeOps::ListNodes(const TSharedPtr<FJsonObject
 		Pos->SetNumberField(TEXT("y"), Node->NodePosY);
 		Entry->SetObjectField(TEXT("position"), Pos);
 		Entry->SetNumberField(TEXT("pin_count"), Node->Pins.Num());
+
+		int32 ConnectedPinCount = 0;
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin != nullptr && Pin->LinkedTo.Num() > 0)
+			{
+				++ConnectedPinCount;
+			}
+		}
+		Entry->SetNumberField(TEXT("connected_pin_count"), ConnectedPinCount);
+
 		NodesArray.Add(MakeShared<FJsonValueObject>(Entry));
 	}
 
