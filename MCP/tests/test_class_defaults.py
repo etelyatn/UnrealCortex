@@ -51,7 +51,10 @@ class TestGetClassDefaults:
         assert parsed["blueprint_path"] == "/Game/Test/BP_Test"
         connection.send_command.assert_called_once_with(
             "bp.get_class_defaults",
-            {"blueprint_path": "/Game/Test/BP_Test"},
+            {
+                "asset_path": "/Game/Test/BP_Test",
+                "blueprint_path": "/Game/Test/BP_Test",
+            },
         )
 
     def test_specific_properties_are_forwarded(self):
@@ -67,6 +70,7 @@ class TestGetClassDefaults:
         connection.send_command.assert_called_once_with(
             "bp.get_class_defaults",
             {
+                "asset_path": "/Game/Test/BP_Test",
                 "blueprint_path": "/Game/Test/BP_Test",
                 "properties": ["bReplicates", "NetCullDistanceSquared"],
             },
@@ -87,6 +91,7 @@ class TestSetClassDefaults:
         connection.send_command.assert_called_once_with(
             "bp.set_class_defaults",
             {
+                "asset_path": "/Game/Test/BP_Test",
                 "blueprint_path": "/Game/Test/BP_Test",
                 "properties": {"bReplicates": True},
                 "compile": True,
@@ -109,6 +114,7 @@ class TestSetClassDefaults:
         connection.send_command.assert_called_once_with(
             "bp.set_class_defaults",
             {
+                "asset_path": "/Game/Test/BP_Test",
                 "blueprint_path": "/Game/Test/BP_Test",
                 "properties": {"MaxHealth": 200.0},
                 "compile": False,
