@@ -13,8 +13,9 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def get_class_defaults(
-        asset_path: str,
+        asset_path: str = "",
         properties: list[str] | None = None,
+        blueprint_path: str = "",
     ) -> str:
         """Read default property values from a Blueprint's Class Default Object (CDO).
 
@@ -24,6 +25,7 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
 
         Args:
             asset_path: Full asset path to the Blueprint (e.g., '/Game/Blueprints/BP_Character')
+            blueprint_path: Deprecated alias for asset_path.
             properties: Optional list of property names to read. Omit or pass empty list
                 to discover all settable properties with their types and categories.
 
@@ -40,8 +42,14 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
 
             Note: response currently returns key "blueprint_path" (not "asset_path").
         """
+        if not asset_path:
+            asset_path = blueprint_path
+
         try:
-            params = {"asset_path": asset_path}
+            params = {
+                "asset_path": asset_path,
+                "blueprint_path": asset_path,
+            }
             if properties:
                 params["properties"] = properties
             response = connection.send_command("bp.get_class_defaults", params)
@@ -51,10 +59,11 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def set_class_defaults(
-        asset_path: str,
-        properties: dict,
+        asset_path: str = "",
+        properties: dict | None = None,
         compile: bool = True,
         save: bool = True,
+        blueprint_path: str = "",
     ) -> str:
         """Set default property values on a Blueprint's Class Default Object (CDO).
 
@@ -65,6 +74,7 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
 
         Args:
             asset_path: Full asset path to the Blueprint (e.g., '/Game/Blueprints/BP_Character')
+            blueprint_path: Deprecated alias for asset_path.
             properties: Dictionary mapping property names to their new values.
             compile: Auto-compile the Blueprint after setting properties (default: true)
             save: Auto-save the Blueprint to disk after setting properties (default: true)
@@ -80,10 +90,14 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
 
             Note: response currently returns key "blueprint_path" (not "asset_path").
         """
+        if not asset_path:
+            asset_path = blueprint_path
+
         try:
             params = {
                 "asset_path": asset_path,
-                "properties": properties,
+                "blueprint_path": asset_path,
+                "properties": properties or {},
                 "compile": compile,
                 "save": save,
             }
