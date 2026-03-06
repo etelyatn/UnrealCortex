@@ -13,7 +13,7 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def get_class_defaults(
-        blueprint_path: str,
+        asset_path: str,
         properties: list[str] | None = None,
     ) -> str:
         """Read default property values from a Blueprint's Class Default Object (CDO).
@@ -23,7 +23,7 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
         For reading properties on placed actor instances in a level, use get_actor_property instead.
 
         Args:
-            blueprint_path: Full asset path to the Blueprint (e.g., '/Game/Blueprints/BP_Character')
+            asset_path: Full asset path to the Blueprint (e.g., '/Game/Blueprints/BP_Character')
             properties: Optional list of property names to read. Omit or pass empty list
                 to discover all settable properties with their types and categories.
 
@@ -37,9 +37,11 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
               with {table_id, key} when backed by a StringTable.
               The `value` field remains the resolved string.
             - count: Number of properties returned
+
+            Note: response currently returns key "blueprint_path" (not "asset_path").
         """
         try:
-            params = {"blueprint_path": blueprint_path}
+            params = {"asset_path": asset_path}
             if properties:
                 params["properties"] = properties
             response = connection.send_command("bp.get_class_defaults", params)
@@ -49,7 +51,7 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def set_class_defaults(
-        blueprint_path: str,
+        asset_path: str,
         properties: dict,
         compile: bool = True,
         save: bool = True,
@@ -62,7 +64,7 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
         For setting properties on placed actor instances in a level, use set_actor_property instead.
 
         Args:
-            blueprint_path: Full asset path to the Blueprint (e.g., '/Game/Blueprints/BP_Character')
+            asset_path: Full asset path to the Blueprint (e.g., '/Game/Blueprints/BP_Character')
             properties: Dictionary mapping property names to their new values.
             compile: Auto-compile the Blueprint after setting properties (default: true)
             save: Auto-save the Blueprint to disk after setting properties (default: true)
@@ -75,10 +77,12 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
             - saved: Whether save was performed and succeeded
             - compile_errors: Array of compilation errors (if any)
             - warnings: Array of warning messages
+
+            Note: response currently returns key "blueprint_path" (not "asset_path").
         """
         try:
             params = {
-                "blueprint_path": blueprint_path,
+                "asset_path": asset_path,
                 "properties": properties,
                 "compile": compile,
                 "save": save,
