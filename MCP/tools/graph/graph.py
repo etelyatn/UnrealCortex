@@ -103,6 +103,51 @@ def register_graph_tools(mcp, connection: UEConnection):
             return f"Error: {e}"
 
     @mcp.tool()
+    def graph_search_nodes(
+        asset_path: str,
+        node_class: str = "",
+        function_name: str = "",
+        display_name: str = "",
+    ) -> str:
+        """Search nodes across all Blueprint graphs.
+
+        Finds nodes server-side using one or more filters.
+
+        Args:
+            asset_path: Full asset path to the Blueprint.
+            node_class: Optional node class filter (exact match; accepts both
+                'UK2Node_IfThenElse' and 'K2Node_IfThenElse').
+            function_name: Optional partial/case-insensitive function-name filter
+                for UK2Node_CallFunction nodes (matches UFunction::GetName()).
+            display_name: Optional partial/case-insensitive node display name filter.
+
+        Returns:
+            JSON with:
+            - results: Array of matching nodes
+              - node_id: Node identifier
+              - class: Runtime class name
+              - display_name: Node display title
+              - graph_name: Graph containing this node
+            - count: Number of matches
+        """
+        if not node_class and not function_name and not display_name:
+            return "Error: At least one filter required: node_class, function_name, or display_name"
+
+        try:
+            params = {"asset_path": asset_path}
+            if node_class:
+                params["node_class"] = node_class
+            if function_name:
+                params["function_name"] = function_name
+            if display_name:
+                params["display_name"] = display_name
+
+            response = connection.send_command_cached("graph.search_nodes", params, ttl=_TTL_GRAPHS)
+            return format_response(response.get("data", {}), "search_nodes")
+        except ConnectionError as e:
+            return f"Error: {e}"
+
+    @mcp.tool()
     def graph_add_node(
         asset_path: str,
         node_class: str,
