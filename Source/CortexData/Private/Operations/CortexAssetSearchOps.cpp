@@ -43,7 +43,22 @@ FCortexCommandResult FCortexDataAssetSearchOps::SearchAssets(const TSharedPtr<FJ
 	}
 
 	TArray<FAssetData> AssetDataList;
-	AssetRegistry->GetAssets(Filter, AssetDataList);
+	if (PathFilter.IsEmpty())
+	{
+		if (AssetRegistry->IsLoadingAssets())
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("Asset Registry scan in progress - retry search_assets in a few seconds")
+			);
+		}
+
+		AssetRegistry->GetAllAssets(AssetDataList);
+	}
+	else
+	{
+		AssetRegistry->GetAssets(Filter, AssetDataList);
+	}
 
 	TArray<TSharedPtr<FJsonValue>> ResultArray;
 	int32 Count = 0;
