@@ -44,6 +44,8 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
         """
         if not asset_path:
             asset_path = blueprint_path
+        if not asset_path:
+            return "Error: Missing required parameter: asset_path (or blueprint_path alias)"
 
         try:
             params = {
@@ -92,12 +94,16 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
         """
         if not asset_path:
             asset_path = blueprint_path
+        if not asset_path:
+            return "Error: Missing required parameter: asset_path (or blueprint_path alias)"
+        if not properties:
+            return "Error: Missing or empty required parameter: properties"
 
         try:
             params = {
                 "asset_path": asset_path,
                 "blueprint_path": asset_path,
-                "properties": properties or {},
+                "properties": properties,
                 "compile": compile,
                 "save": save,
             }
