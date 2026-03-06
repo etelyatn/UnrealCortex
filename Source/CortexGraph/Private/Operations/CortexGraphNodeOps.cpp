@@ -350,6 +350,122 @@ FCortexCommandResult FCortexGraphNodeOps::GetNode(const TSharedPtr<FJsonObject>&
 	return FCortexCommandRouter::Success(Data);
 }
 
+FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: asset_path")
+		);
+	}
+
+	FString NodeClass;
+	FString FunctionName;
+	FString DisplayName;
+	Params->TryGetStringField(TEXT("node_class"), NodeClass);
+	Params->TryGetStringField(TEXT("function_name"), FunctionName);
+	Params->TryGetStringField(TEXT("display_name"), DisplayName);
+
+	if (NodeClass.IsEmpty() && FunctionName.IsEmpty() && DisplayName.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("At least one filter required: node_class, function_name, or display_name")
+		);
+	}
+
+	FCortexCommandResult LoadError;
+	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
+	if (Blueprint == nullptr)
+	{
+		return LoadError;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ResultsArray;
+
+	auto SearchGraph = [&](UEdGraph* Graph)
+	{
+		if (Graph == nullptr)
+		{
+			return;
+		}
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node == nullptr)
+			{
+				continue;
+			}
+
+			if (!NodeClass.IsEmpty())
+			{
+				const FString RuntimeClassName = Node->GetClass()->GetName();
+				const FString FilterNoPrefix = NodeClass.StartsWith(TEXT("U")) ? NodeClass.Mid(1) : NodeClass;
+				if (RuntimeClassName != NodeClass && RuntimeClassName != FilterNoPrefix)
+				{
+					continue;
+				}
+			}
+
+			if (!DisplayName.IsEmpty())
+			{
+				const FString NodeDisplayName = Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString();
+				if (!NodeDisplayName.Contains(DisplayName, ESearchCase::IgnoreCase))
+				{
+					continue;
+				}
+			}
+
+			if (!FunctionName.IsEmpty())
+			{
+				const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+				if (CallNode == nullptr)
+				{
+					continue;
+				}
+
+				FString FunctionNameToMatch;
+				if (const UFunction* TargetFunction = CallNode->GetTargetFunction())
+				{
+					FunctionNameToMatch = TargetFunction->GetName();
+				}
+				else
+				{
+					FunctionNameToMatch = CallNode->FunctionReference.GetMemberName().ToString();
+				}
+
+				if (!FunctionNameToMatch.Contains(FunctionName, ESearchCase::IgnoreCase))
+				{
+					continue;
+				}
+			}
+
+			TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("node_id"), Node->GetName());
+			Entry->SetStringField(TEXT("class"), Node->GetClass()->GetName());
+			Entry->SetStringField(TEXT("display_name"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+			Entry->SetStringField(TEXT("graph_name"), Graph->GetName());
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+		}
+	};
+
+	for (UEdGraph* Graph : Blueprint->UbergraphPages)
+	{
+		SearchGraph(Graph);
+	}
+	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+	{
+		SearchGraph(Graph);
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetArrayField(TEXT("results"), ResultsArray);
+	Data->SetNumberField(TEXT("count"), ResultsArray.Num());
+	return FCortexCommandRouter::Success(Data);
+}
+
 FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
