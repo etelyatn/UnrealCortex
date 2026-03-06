@@ -673,6 +673,25 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializePin(const UEdGraphPin* Pin
 			PinEntry->SetObjectField(TEXT("default_text_value"), FCortexSerializer::TextToJson(Pin->DefaultTextValue));
 		}
 		PinEntry->SetBoolField(TEXT("is_connected"), Pin->LinkedTo.Num() > 0);
+
+		if (Pin->LinkedTo.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> ConnArray;
+			for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				if (LinkedPin == nullptr || !IsValid(LinkedPin->GetOwningNode()))
+				{
+					continue;
+				}
+
+				TSharedRef<FJsonObject> Conn = MakeShared<FJsonObject>();
+				Conn->SetStringField(TEXT("node_id"), LinkedPin->GetOwningNode()->GetName());
+				Conn->SetStringField(TEXT("pin"), LinkedPin->PinName.ToString());
+				ConnArray.Add(MakeShared<FJsonValueObject>(Conn));
+			}
+
+			PinEntry->SetArrayField(TEXT("connected_to"), ConnArray);
+		}
 	}
 	return PinEntry;
 }
