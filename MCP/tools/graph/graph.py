@@ -53,6 +53,7 @@ def register_graph_tools(mcp, connection: UEConnection):
             - display_name: Display name of the node
             - position: {x, y} coordinates
             - pin_count: Number of pins on the node
+            - connected_pin_count: Number of pins with at least one connection
         """
         try:
             response = connection.send_command_cached("graph.list_nodes", {
@@ -81,6 +82,12 @@ def register_graph_tools(mcp, connection: UEConnection):
             - display_name: Display name of the node
             - position: {x, y} coordinates
             - pins: Detailed array of all input/output pins
+              - is_connected: True if this pin has at least one link
+              - connected_to: Array present ONLY when is_connected=True (field absent = disconnected,
+                not empty array). Use entry.get("connected_to", []) defensively. Each entry:
+                - node_id: GetName() of the connected node (stale after Blueprint compile/reload;
+                  re-run graph_list_nodes after compile_blueprint or set_class_defaults(compile=True))
+                - pin: Name of the connected pin
               Text-type pins now include `default_text_value` with:
               - value: Resolved display string
               - string_table: Optional {table_id, key} when backed by a StringTable
@@ -92,6 +99,51 @@ def register_graph_tools(mcp, connection: UEConnection):
                 "graph_name": graph_name
             }, ttl=_TTL_GRAPHS)
             return format_response(response.get("data", {}), "get_node")
+        except ConnectionError as e:
+            return f"Error: {e}"
+
+    @mcp.tool()
+    def graph_search_nodes(
+        asset_path: str,
+        node_class: str = "",
+        function_name: str = "",
+        display_name: str = "",
+    ) -> str:
+        """Search nodes across all Blueprint graphs.
+
+        Finds nodes server-side using one or more filters.
+
+        Args:
+            asset_path: Full asset path to the Blueprint.
+            node_class: Optional node class filter (exact match; accepts both
+                'UK2Node_IfThenElse' and 'K2Node_IfThenElse').
+            function_name: Optional partial/case-insensitive function-name filter
+                for UK2Node_CallFunction nodes (matches UFunction::GetName()).
+            display_name: Optional partial/case-insensitive node display name filter.
+
+        Returns:
+            JSON with:
+            - results: Array of matching nodes
+              - node_id: Node identifier
+              - class: Runtime class name
+              - display_name: Node display title
+              - graph_name: Graph containing this node
+            - count: Number of matches
+        """
+        if not node_class and not function_name and not display_name:
+            return "Error: At least one filter required: node_class, function_name, or display_name"
+
+        try:
+            params = {"asset_path": asset_path}
+            if node_class:
+                params["node_class"] = node_class
+            if function_name:
+                params["function_name"] = function_name
+            if display_name:
+                params["display_name"] = display_name
+
+            response = connection.send_command_cached("graph.search_nodes", params, ttl=_TTL_GRAPHS)
+            return format_response(response.get("data", {}), "search_nodes")
         except ConnectionError as e:
             return f"Error: {e}"
 

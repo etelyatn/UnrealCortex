@@ -22,6 +22,10 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	{
 		return FCortexGraphNodeOps::GetNode(Params);
 	}
+	if (Command == TEXT("search_nodes"))
+	{
+		return FCortexGraphNodeOps::SearchNodes(Params);
+	}
 	if (Command == TEXT("add_node"))
 	{
 		return FCortexGraphNodeOps::AddNode(Params);
@@ -59,6 +63,7 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 		{ TEXT("list_graphs"), TEXT("List all graphs in an asset") },
 		{ TEXT("list_nodes"), TEXT("List nodes in a graph") },
 		{ TEXT("get_node"), TEXT("Get node details with all pins") },
+		{ TEXT("search_nodes"), TEXT("Search nodes across graphs by class, function name, or display name") },
 		{ TEXT("add_node"), TEXT("Add a node to a graph") },
 		{ TEXT("remove_node"), TEXT("Remove a node and clean up connections") },
 		{ TEXT("connect"), TEXT("Connect two pins") },

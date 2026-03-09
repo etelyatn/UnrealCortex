@@ -213,11 +213,15 @@ FCortexCommandResult FCortexBPClassDefaultsOps::GetClassDefaults(const TSharedPt
 	}
 
 	FString BlueprintPath;
-	if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath) || BlueprintPath.IsEmpty())
+	if (!Params->TryGetStringField(TEXT("asset_path"), BlueprintPath))
+	{
+		Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+	}
+	if (BlueprintPath.IsEmpty())
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			TEXT("Missing or empty 'blueprint_path' field"));
+			TEXT("Missing or empty 'asset_path' field"));
 	}
 
 	FString LoadError;
@@ -424,11 +428,15 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 	}
 
 	FString BlueprintPath;
-	if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath) || BlueprintPath.IsEmpty())
+	if (!Params->TryGetStringField(TEXT("asset_path"), BlueprintPath))
+	{
+		Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+	}
+	if (BlueprintPath.IsEmpty())
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			TEXT("Missing or empty 'blueprint_path' field"));
+			TEXT("Missing or empty 'asset_path' field"));
 	}
 
 	const TSharedPtr<FJsonObject>* PropertiesObject = nullptr;

@@ -79,12 +79,19 @@ bool FCortexGraphListNodesTest::RunTest(const FString& Parameters)
                         (*NodeObj)->TryGetStringField(TEXT("node_id"), NodeId);
                         TestFalse(TEXT("node_id should not be empty"), NodeId.IsEmpty());
 
-                        FString NodeClass;
-                        (*NodeObj)->TryGetStringField(TEXT("class"), NodeClass);
-                        TestFalse(TEXT("class should not be empty"), NodeClass.IsEmpty());
-                    }
-                }
-            }
+						FString NodeClass;
+						(*NodeObj)->TryGetStringField(TEXT("class"), NodeClass);
+						TestFalse(TEXT("class should not be empty"), NodeClass.IsEmpty());
+
+						double ConnPinCount = 0.0;
+						(*NodeObj)->TryGetNumberField(TEXT("connected_pin_count"), ConnPinCount);
+						TestTrue(
+							TEXT("connected_pin_count field should exist"),
+							(*NodeObj)->HasField(TEXT("connected_pin_count"))
+						);
+					}
+				}
+			}
         }
     }
 
