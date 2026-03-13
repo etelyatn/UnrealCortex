@@ -110,7 +110,7 @@ void SCortexChatPanel::SendMessage(const FString& Message)
     FCortexChatRequest Request;
     Request.Prompt = Message;
     Request.SessionId = SessionId;
-    Request.bIsFirstMessage = MessageCount == 0;
+    Request.bIsFirstMessage = !bHasConfirmedSession;
     Request.AccessMode = FCortexFrontendSettings::Get().GetAccessMode();
     Request.bSkipPermissions = FCortexFrontendSettings::Get().GetSkipPermissions();
     Request.WorkingDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
@@ -120,8 +120,6 @@ void SCortexChatPanel::SendMessage(const FString& Message)
     {
         Request.McpConfigPath = FPaths::ConvertRelativePathToFull(McpPath);
     }
-
-    ++MessageCount;
 
     CliRunner->ExecuteAsync(
         Request,
@@ -151,10 +149,10 @@ void SCortexChatPanel::NewChat()
     }
 
     SessionId = GenerateSessionId();
-    MessageCount = 0;
     CurrentStreamingEntry.Reset();
     StreamingText.Empty();
     bAutoScroll = true;
+    bHasConfirmedSession = false;
 
     if (Toolbar.IsValid())
     {
@@ -178,6 +176,15 @@ void SCortexChatPanel::OnStreamEvent(const FCortexStreamEvent& Event)
     switch (Event.Type)
     {
     case ECortexStreamEventType::SessionInit:
+        if (!Event.SessionId.IsEmpty())
+        {
+            SessionId = Event.SessionId;
+            bHasConfirmedSession = true;
+            if (Toolbar.IsValid())
+            {
+                Toolbar->SetSessionId(SessionId);
+            }
+        }
         if (Toolbar.IsValid())
         {
             Toolbar->SetStatus(TEXT("Connected"));
@@ -254,19 +261,31 @@ void SCortexChatPanel::OnStreamEvent(const FCortexStreamEvent& Event)
 
 void SCortexChatPanel::OnComplete(const FString& FullText, bool bSuccess)
 {
+    const bool bHadEmptyStreamingEntry = CurrentStreamingEntry.IsValid() && CurrentStreamingEntry->Text.IsEmpty();
+
     if (InputArea.IsValid())
     {
         InputArea->SetStreaming(false);
     }
-    CurrentStreamingEntry.Reset();
-    StreamingText.Empty();
 
-    if (!bSuccess && !FullText.IsEmpty())
+    if (bSuccess)
     {
-        TSharedPtr<FCortexChatEntry> ErrorEntry = MakeShared<FCortexChatEntry>();
-        ErrorEntry->Type = ECortexChatEntryType::AssistantMessage;
-        ErrorEntry->Text = FString::Printf(TEXT("Error: %s"), *FullText);
-        ChatEntries.Add(ErrorEntry);
+        const FString FinalAssistantText = !FullText.IsEmpty() ? FullText : StreamingText;
+        ReplaceCurrentStreamingEntry(BuildAssistantEntries(FinalAssistantText));
+    }
+    else
+    {
+        if (bHadEmptyStreamingEntry && CurrentStreamingEntry.IsValid())
+        {
+            ChatEntries.RemoveSingle(CurrentStreamingEntry);
+        }
+        if (!FullText.IsEmpty())
+        {
+            TSharedPtr<FCortexChatEntry> ErrorEntry = MakeShared<FCortexChatEntry>();
+            ErrorEntry->Type = ECortexChatEntryType::AssistantMessage;
+            ErrorEntry->Text = FString::Printf(TEXT("Error: %s"), *FullText);
+            ChatEntries.Add(ErrorEntry);
+        }
         if (ChatList.IsValid())
         {
             ChatList->RequestListRefresh();
@@ -277,6 +296,9 @@ void SCortexChatPanel::OnComplete(const FString& FullText, bool bSuccess)
         }
     }
 
+    CurrentStreamingEntry.Reset();
+    StreamingText.Empty();
+
     if (InputArea.IsValid())
     {
         InputArea->FocusInput();
@@ -284,6 +306,92 @@ void SCortexChatPanel::OnComplete(const FString& FullText, bool bSuccess)
     if (bAutoScroll)
     {
         ScrollToBottom();
+    }
+}
+
+TArray<TSharedPtr<FCortexChatEntry>> SCortexChatPanel::BuildAssistantEntries(const FString& FullText) const
+{
+    TArray<TSharedPtr<FCortexChatEntry>> Entries;
+    FString RemainingText = FullText;
+
+    while (!RemainingText.IsEmpty())
+    {
+        const int32 BlockStart = RemainingText.Find(TEXT("```"), ESearchCase::CaseSensitive, ESearchDir::FromStart);
+        if (BlockStart == INDEX_NONE)
+        {
+            TSharedPtr<FCortexChatEntry> TextEntry = MakeShared<FCortexChatEntry>();
+            TextEntry->Type = ECortexChatEntryType::AssistantMessage;
+            TextEntry->Text = RemainingText;
+            Entries.Add(TextEntry);
+            break;
+        }
+
+        const FString BeforeBlock = RemainingText.Left(BlockStart);
+        if (!BeforeBlock.IsEmpty())
+        {
+            TSharedPtr<FCortexChatEntry> TextEntry = MakeShared<FCortexChatEntry>();
+            TextEntry->Type = ECortexChatEntryType::AssistantMessage;
+            TextEntry->Text = BeforeBlock;
+            Entries.Add(TextEntry);
+        }
+
+        const int32 BlockContentStart = BlockStart + 3;
+        const int32 BlockEnd = RemainingText.Find(TEXT("```"), ESearchCase::CaseSensitive, ESearchDir::FromStart, BlockContentStart);
+        if (BlockEnd == INDEX_NONE)
+        {
+            TSharedPtr<FCortexChatEntry> TextEntry = MakeShared<FCortexChatEntry>();
+            TextEntry->Type = ECortexChatEntryType::AssistantMessage;
+            TextEntry->Text = RemainingText.Mid(BlockStart);
+            Entries.Add(TextEntry);
+            break;
+        }
+
+        FString BlockText = RemainingText.Mid(BlockContentStart, BlockEnd - BlockContentStart);
+        int32 FirstNewlineIndex = INDEX_NONE;
+        if (BlockText.FindChar(TEXT('\n'), FirstNewlineIndex))
+        {
+            BlockText = BlockText.Mid(FirstNewlineIndex + 1);
+        }
+        BlockText.TrimStartAndEndInline();
+
+        TSharedPtr<FCortexChatEntry> CodeBlockEntry = MakeShared<FCortexChatEntry>();
+        CodeBlockEntry->Type = ECortexChatEntryType::CodeBlock;
+        CodeBlockEntry->Text = BlockText;
+        Entries.Add(CodeBlockEntry);
+
+        RemainingText = RemainingText.Mid(BlockEnd + 3);
+    }
+
+    if (Entries.Num() == 0)
+    {
+        TSharedPtr<FCortexChatEntry> TextEntry = MakeShared<FCortexChatEntry>();
+        TextEntry->Type = ECortexChatEntryType::AssistantMessage;
+        TextEntry->Text = FullText;
+        Entries.Add(TextEntry);
+    }
+
+    return Entries;
+}
+
+void SCortexChatPanel::ReplaceCurrentStreamingEntry(const TArray<TSharedPtr<FCortexChatEntry>>& ReplacementEntries)
+{
+    if (!CurrentStreamingEntry.IsValid())
+    {
+        return;
+    }
+
+    const int32 CurrentIndex = ChatEntries.IndexOfByKey(CurrentStreamingEntry);
+    if (CurrentIndex == INDEX_NONE)
+    {
+        return;
+    }
+
+    ChatEntries.RemoveAt(CurrentIndex);
+    ChatEntries.Insert(ReplacementEntries, CurrentIndex);
+
+    if (ChatList.IsValid())
+    {
+        ChatList->RequestListRefresh();
     }
 }
 

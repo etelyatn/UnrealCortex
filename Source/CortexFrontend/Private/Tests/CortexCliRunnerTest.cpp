@@ -1,5 +1,7 @@
 #include "Misc/AutomationTest.h"
+#define private public
 #include "Process/CortexCliRunner.h"
+#undef private
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliRunnerBuildCommandLineTest, "Cortex.Frontend.CliRunner.BuildCommandLine", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliRunnerConcurrencyGuardTest, "Cortex.Frontend.CliRunner.ConcurrencyGuard", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -8,8 +10,22 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliRunnerAllowedToolsTest, "Cortex.Front
 bool FCortexCliRunnerBuildCommandLineTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+
     FCortexCliRunner Runner;
-    TestFalse(TEXT("Runner should not be executing initially"), Runner.IsExecuting());
+    FCortexChatRequest Request;
+    Request.SessionId = TEXT("session-123");
+    Request.bIsFirstMessage = false;
+    Request.AccessMode = ECortexAccessMode::ReadOnly;
+    Request.bSkipPermissions = true;
+    Request.McpConfigPath = TEXT("D:/UnrealProjects/CortexSandbox/.mcp.json");
+
+    const FString CommandLine = Runner.BuildCommandLine(Request);
+
+    TestTrue(TEXT("Session id should be included"), CommandLine.Contains(TEXT("--session-id \"session-123\"")));
+    TestTrue(TEXT("Resume flag should be included for non-first messages"), CommandLine.Contains(TEXT("--resume")));
+    TestTrue(TEXT("Skip permissions flag should be included"), CommandLine.Contains(TEXT("--dangerously-skip-permissions")));
+    TestTrue(TEXT("Read-only allowed tools should be present"), CommandLine.Contains(TEXT("mcp__cortex_mcp__get_*")));
+    TestTrue(TEXT("MCP config path should be included"), CommandLine.Contains(TEXT("--mcp-config \"D:/UnrealProjects/CortexSandbox/.mcp.json\"")));
     return true;
 }
 
@@ -24,16 +40,15 @@ bool FCortexCliRunnerConcurrencyGuardTest::RunTest(const FString& Parameters)
 bool FCortexCliRunnerAllowedToolsTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
-    FCortexChatRequest ReadOnlyReq;
-    ReadOnlyReq.AccessMode = ECortexAccessMode::ReadOnly;
 
-    FCortexChatRequest GuidedReq;
-    GuidedReq.AccessMode = ECortexAccessMode::Guided;
+    FCortexCliRunner Runner;
+    const FString ReadOnlyTools = Runner.BuildAllowedToolsArg(ECortexAccessMode::ReadOnly);
+    const FString GuidedTools = Runner.BuildAllowedToolsArg(ECortexAccessMode::Guided);
+    const FString FullAccessTools = Runner.BuildAllowedToolsArg(ECortexAccessMode::FullAccess);
 
-    FCortexChatRequest FullReq;
-    FullReq.AccessMode = ECortexAccessMode::FullAccess;
-
-    TestTrue(TEXT("ReadOnly != Guided"), ReadOnlyReq.AccessMode != GuidedReq.AccessMode);
-    TestTrue(TEXT("Guided != FullAccess"), GuidedReq.AccessMode != FullReq.AccessMode);
+    TestTrue(TEXT("Read-only tools should include list access"), ReadOnlyTools.Contains(TEXT("mcp__cortex_mcp__list_*")));
+    TestFalse(TEXT("Read-only tools should not include spawn access"), ReadOnlyTools.Contains(TEXT("mcp__cortex_mcp__spawn_*")));
+    TestTrue(TEXT("Guided tools should include spawn access"), GuidedTools.Contains(TEXT("mcp__cortex_mcp__spawn_*")));
+    TestTrue(TEXT("Full access should have no restrictions"), FullAccessTools.IsEmpty());
     return true;
 }

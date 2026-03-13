@@ -44,6 +44,11 @@ public:
     void Construct(const FArguments& InArgs);
     virtual ~SCortexChatPanel();
 
+    friend class FCortexChatPanelConstructTest;
+    friend class FCortexChatPanelSessionInitTest;
+    friend class FCortexChatPanelFailureCleanupTest;
+    friend class FCortexChatPanelCodeBlockTest;
+
 private:
     void SendMessage(const FString& Message);
     void CancelRequest();
@@ -53,6 +58,8 @@ private:
     void OnComplete(const FString& FullText, bool bSuccess);
 
     TSharedRef<ITableRow> GenerateRow(TSharedPtr<FCortexChatEntry> Entry, const TSharedRef<STableViewBase>& OwnerTable);
+    TArray<TSharedPtr<FCortexChatEntry>> BuildAssistantEntries(const FString& FullText) const;
+    void ReplaceCurrentStreamingEntry(const TArray<TSharedPtr<FCortexChatEntry>>& ReplacementEntries);
 
     void ScrollToBottom();
     FString GenerateSessionId() const;
@@ -64,8 +71,8 @@ private:
     TArray<TSharedPtr<FCortexChatEntry>> ChatEntries;
     TUniquePtr<FCortexCliRunner> CliRunner;
     FString SessionId;
-    int32 MessageCount = 0;
     bool bAutoScroll = true;
+    bool bHasConfirmedSession = false;
 
     TSharedPtr<FCortexChatEntry> CurrentStreamingEntry;
     FString StreamingText;

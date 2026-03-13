@@ -44,6 +44,10 @@ public:
     virtual void Stop() override;
     virtual void Exit() override;
 
+    friend class FCortexCliRunnerBuildCommandLineTest;
+    friend class FCortexCliRunnerConcurrencyGuardTest;
+    friend class FCortexCliRunnerAllowedToolsTest;
+
 private:
     FString BuildCommandLine(const FCortexChatRequest& Request);
     FString BuildAllowedToolsArg(ECortexAccessMode Mode);
