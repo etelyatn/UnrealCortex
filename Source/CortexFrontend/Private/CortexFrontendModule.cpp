@@ -1,14 +1,15 @@
 #include "CortexFrontendModule.h"
 
-#include "Framework/Application/SlateApplication.h"
 #include "Framework/Docking/TabManager.h"
 #include "IToolMenusModule.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "Widgets/Text/STextBlock.h"
+#include "Widgets/SCortexChatPanel.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Text/STextBlock.h"
 
 DEFINE_LOG_CATEGORY(LogCortexFrontend);
 
@@ -67,8 +68,7 @@ TSharedRef<SDockTab> FCortexFrontendModule::SpawnChatTab(const FSpawnTabArgs& Ar
     return SNew(SDockTab)
         .TabRole(NomadTab)
         [
-            SNew(STextBlock)
-            .Text(FText::FromString(TEXT("Cortex AI Chat - Coming Soon")))
+            SNew(SCortexChatPanel)
         ];
 }
 
