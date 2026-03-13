@@ -27,6 +27,7 @@ public:
     friend class FCortexChatPanelSessionInitTest;
     friend class FCortexChatPanelFailureCleanupTest;
     friend class FCortexChatPanelCodeBlockTest;
+    friend class FCortexChatPanelRejectedSendDoesNotAppendEntriesTest;
 
 private:
     void SendMessage(const FString& Message);

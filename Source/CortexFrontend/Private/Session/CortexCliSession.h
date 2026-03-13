@@ -31,6 +31,7 @@ public:
     FString GetSessionId() const;
     ECortexSessionState GetState() const;
     void AddUserPromptEntry(const FString& Message);
+    void RollbackLastPromptEntries();
     void UpdateStreamingAssistantText(const FString& Text, bool bAppend);
     void ReplaceStreamingEntry(const TArray<TSharedPtr<FCortexChatEntry>>& ReplacementEntries);
     void ClearConversation();
@@ -47,6 +48,8 @@ private:
     friend class FCortexCliSessionQueuePromptWhileSpawningTest;
     friend class FCortexCliSessionTurnCompleteReturnsIdleTest;
     friend class FCortexCliSessionCancelTransitionsTest;
+    friend class FCortexCliSessionNewChatGeneratesFreshSessionIdTest;
+    friend class FCortexChatPanelRejectedSendDoesNotAppendEntriesTest;
 
     FString BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const;
     FString BuildAllowedToolsArg(ECortexAccessMode AccessMode) const;
@@ -55,6 +58,7 @@ private:
     void CleanupProcess();
     void WakeWorker();
     FString ConsumePendingPromptEnvelope();
+    ECortexAccessMode GetPendingAccessMode() const;
     bool TransitionState(ECortexSessionState ExpectedState, ECortexSessionState NewState, const FString& Reason = FString());
     void BroadcastStateChange(ECortexSessionState PreviousState, ECortexSessionState NewState, const FString& Reason);
     ECortexSessionState GetStateForTest() const;
@@ -74,7 +78,7 @@ private:
     void* StdinReadPipe = nullptr;
     void* StdinWritePipe = nullptr;
     FEvent* PromptReadyEvent = nullptr;
-    FCriticalSection PromptMutex;
+    mutable FCriticalSection PromptMutex;
     TArray<TSharedPtr<FCortexChatEntry>> ChatEntries;
     TSharedPtr<FCortexChatEntry> CurrentStreamingEntry;
 };

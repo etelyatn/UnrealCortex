@@ -71,7 +71,7 @@ uint32 FCortexCliWorker::Run()
             continue;
         }
 
-        const double StartTime = FPlatformTime::Seconds();
+        double LastDataTime = FPlatformTime::Seconds();
         bool bTurnComplete = false;
 
         while (!bStopRequested.load(std::memory_order_relaxed))
@@ -79,6 +79,7 @@ uint32 FCortexCliWorker::Run()
             FString Chunk = SessionPin->StdoutReadPipe != nullptr ? FPlatformProcess::ReadPipe(SessionPin->StdoutReadPipe) : FString();
             if (!Chunk.IsEmpty())
             {
+                LastDataTime = FPlatformTime::Seconds();
                 const bool bSawResult = Chunk.Contains(TEXT("\"type\":\"result\""));
                 ParseAndDispatch(Chunk);
                 bTurnComplete = bSawResult;
@@ -101,7 +102,7 @@ uint32 FCortexCliWorker::Run()
                 break;
             }
 
-            if (FPlatformTime::Seconds() - StartTime > CortexCliWorkerTimeoutSeconds)
+            if (FPlatformTime::Seconds() - LastDataTime > CortexCliWorkerTimeoutSeconds)
             {
                 AsyncTask(ENamedThreads::GameThread, [WeakSession = Session]()
                 {

@@ -9,6 +9,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildPromptEnvelopeTest, "Cort
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionQueuePromptWhileSpawningTest, "Cortex.Frontend.CliSession.QueuePromptWhileSpawning", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionTurnCompleteReturnsIdleTest, "Cortex.Frontend.CliSession.TurnCompleteReturnsIdle", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCancelTransitionsTest, "Cortex.Frontend.CliSession.CancelTransitions", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionNewChatGeneratesFreshSessionIdTest, "Cortex.Frontend.CliSession.NewChatGeneratesFreshSessionId", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendModuleGetOrCreateSessionTest, "Cortex.Frontend.Module.GetOrCreateSession", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexCliSessionBuildInitialLaunchArgsTest::RunTest(const FString& Parameters)
@@ -132,6 +133,23 @@ bool FCortexCliSessionCancelTransitionsTest::RunTest(const FString& Parameters)
 
     TestTrue(TEXT("Cancel should be accepted while processing"), Session.Cancel());
     TestEqual(TEXT("State-only cancel should move directly to respawning when no process exists"), Session.GetStateForTest(), ECortexSessionState::Respawning);
+    return true;
+}
+
+bool FCortexCliSessionNewChatGeneratesFreshSessionIdTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("session-before");
+
+    FCortexCliSession Session(Config);
+    const FString OriginalSessionId = Session.GetSessionId();
+
+    Session.NewChat();
+
+    TestNotEqual(TEXT("New chat should generate a fresh session id"), Session.GetSessionId(), OriginalSessionId);
+    TestEqual(TEXT("New chat should reset session state to inactive"), Session.GetStateForTest(), ECortexSessionState::Inactive);
     return true;
 }
 

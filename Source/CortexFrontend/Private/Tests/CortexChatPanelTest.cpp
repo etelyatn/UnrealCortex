@@ -8,6 +8,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatPanelConstructTest, "Cortex.Frontend
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatPanelSessionInitTest, "Cortex.Frontend.ChatPanel.BindsModuleSession", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatPanelFailureCleanupTest, "Cortex.Frontend.ChatPanel.FailureRemovesEmptyStreamingEntry", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatPanelCodeBlockTest, "Cortex.Frontend.ChatPanel.SuccessMaterializesCodeBlocks", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatPanelRejectedSendDoesNotAppendEntriesTest, "Cortex.Frontend.ChatPanel.RejectedSendDoesNotAppendEntries", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexChatPanelConstructTest::RunTest(const FString& Parameters)
 {
@@ -113,5 +114,26 @@ bool FCortexChatPanelCodeBlockTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Success should materialize a code block entry"), bFoundCodeBlock);
     TestTrue(TEXT("Success should preserve text before code block"), bFoundLeadingText);
     TestTrue(TEXT("Success should preserve text after code block"), bFoundTrailingText);
+    return true;
+}
+
+bool FCortexChatPanelRejectedSendDoesNotAppendEntriesTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    if (!FSlateApplication::IsInitialized())
+    {
+        AddInfo(TEXT("Slate not initialized - skipping UI test"));
+        return true;
+    }
+
+    TSharedRef<SCortexChatPanel> Panel = SNew(SCortexChatPanel);
+    TSharedPtr<FCortexCliSession> Session = Panel->SessionWeak.Pin();
+    Session->ClearConversation();
+    Session->SetStateForTest(ECortexSessionState::Terminated);
+
+    Panel->SendMessage(TEXT("Should be rejected"));
+
+    TestEqual(TEXT("Rejected sends should not append user or assistant entries"), Panel->ChatEntries.Num(), 0);
     return true;
 }

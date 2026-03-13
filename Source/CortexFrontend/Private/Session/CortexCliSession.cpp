@@ -1,6 +1,7 @@
 #include "Session/CortexCliSession.h"
 
 #include "Async/Async.h"
+#include "Misc/Guid.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/Paths.h"
 #include "Session/CortexCliWorker.h"
@@ -13,8 +14,11 @@ FCortexCliSession::FCortexCliSession(const FCortexSessionConfig& InConfig)
 
 bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
 {
-    PendingPrompt = Request.Prompt;
-    PendingAccessMode = Request.AccessMode;
+    {
+        FScopeLock Lock(&PromptMutex);
+        PendingPrompt = Request.Prompt;
+        PendingAccessMode = Request.AccessMode;
+    }
 
     ECortexSessionState CurrentState = State.load();
     if (CurrentState == ECortexSessionState::Inactive)
@@ -81,8 +85,11 @@ bool FCortexCliSession::Cancel()
 
 void FCortexCliSession::NewChat()
 {
+    CleanupProcess();
     ClearConversation();
-    BroadcastStateChange(State.exchange(ECortexSessionState::Inactive), ECortexSessionState::Inactive, TEXT("New chat"));
+    Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
+    const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Inactive);
+    BroadcastStateChange(PreviousState, ECortexSessionState::Inactive, TEXT("New chat"));
 }
 
 void FCortexCliSession::Shutdown()
@@ -162,7 +169,7 @@ void FCortexCliSession::HandleProcessExited(const FString& Reason)
         {
             return;
         }
-        if (!SpawnProcess(PendingAccessMode.Get(ECortexAccessMode::ReadOnly), true))
+        if (!SpawnProcess(GetPendingAccessMode(), true))
         {
             const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Inactive);
             BroadcastStateChange(PreviousState, ECortexSessionState::Inactive, TEXT("Failed to respawn Claude CLI"));
@@ -321,6 +328,15 @@ void FCortexCliSession::CleanupProcess()
         Worker.Reset();
     }
 
+    if (ProcessHandle.IsValid() && FPlatformProcess::IsProcRunning(ProcessHandle))
+    {
+        FPlatformProcess::TerminateProc(ProcessHandle, true);
+        while (FPlatformProcess::IsProcRunning(ProcessHandle))
+        {
+            FPlatformProcess::Sleep(0.01f);
+        }
+    }
+
     if (StdoutReadPipe != nullptr || StdoutWritePipe != nullptr)
     {
         FPlatformProcess::ClosePipe(StdoutReadPipe, StdoutWritePipe);
@@ -370,6 +386,12 @@ FString FCortexCliSession::ConsumePendingPromptEnvelope()
     return Envelope;
 }
 
+ECortexAccessMode FCortexCliSession::GetPendingAccessMode() const
+{
+    FScopeLock Lock(&PromptMutex);
+    return PendingAccessMode.Get(ECortexAccessMode::ReadOnly);
+}
+
 const TArray<TSharedPtr<FCortexChatEntry>>& FCortexCliSession::GetChatEntries() const
 {
     return ChatEntries;
@@ -395,6 +417,20 @@ void FCortexCliSession::AddUserPromptEntry(const FString& Message)
     CurrentStreamingEntry = MakeShared<FCortexChatEntry>();
     CurrentStreamingEntry->Type = ECortexChatEntryType::AssistantMessage;
     ChatEntries.Add(CurrentStreamingEntry);
+}
+
+void FCortexCliSession::RollbackLastPromptEntries()
+{
+    if (CurrentStreamingEntry.IsValid())
+    {
+        ChatEntries.RemoveSingle(CurrentStreamingEntry);
+        CurrentStreamingEntry.Reset();
+    }
+
+    if (ChatEntries.Num() > 0 && ChatEntries.Last()->Type == ECortexChatEntryType::UserMessage)
+    {
+        ChatEntries.RemoveAt(ChatEntries.Num() - 1);
+    }
 }
 
 void FCortexCliSession::UpdateStreamingAssistantText(const FString& Text, bool bAppend)
@@ -436,6 +472,7 @@ void FCortexCliSession::ReplaceStreamingEntry(const TArray<TSharedPtr<FCortexCha
 
 void FCortexCliSession::ClearConversation()
 {
+    FScopeLock Lock(&PromptMutex);
     PendingPrompt.Reset();
     PendingAccessMode.Reset();
     CurrentStreamingEntry.Reset();
@@ -475,6 +512,7 @@ void FCortexCliSession::SetStateForTest(ECortexSessionState NewState)
 
 FString FCortexCliSession::GetPendingPromptForTest() const
 {
+    FScopeLock Lock(&PromptMutex);
     return PendingPrompt.Get(TEXT(""));
 }
 

@@ -92,6 +92,8 @@ void SCortexChatPanel::SendMessage(const FString& Message)
     Session->AddUserPromptEntry(Message);
     if (!Session->SendPrompt(Request))
     {
+        Session->RollbackLastPromptEntries();
+        RefreshVisibleEntries();
         return;
     }
 
