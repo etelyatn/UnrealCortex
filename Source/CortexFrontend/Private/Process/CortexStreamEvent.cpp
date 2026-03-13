@@ -1,0 +1,167 @@
+#include "Process/CortexStreamEvent.h"
+
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
+
+TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FString& JsonLine)
+{
+    TArray<FCortexStreamEvent> Events;
+
+    if (JsonLine.IsEmpty())
+    {
+        return Events;
+    }
+
+    TSharedPtr<FJsonObject> JsonObj;
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonLine);
+    if (!FJsonSerializer::Deserialize(Reader, JsonObj) || !JsonObj.IsValid())
+    {
+        return Events;
+    }
+
+    FString Type;
+    if (!JsonObj->TryGetStringField(TEXT("type"), Type))
+    {
+        return Events;
+    }
+
+    if (Type == TEXT("system"))
+    {
+        FString SubType;
+        JsonObj->TryGetStringField(TEXT("subtype"), SubType);
+        if (SubType == TEXT("init"))
+        {
+            FCortexStreamEvent Event;
+            Event.Type = ECortexStreamEventType::SessionInit;
+            JsonObj->TryGetStringField(TEXT("session_id"), Event.SessionId);
+            Event.RawJson = JsonLine;
+            Events.Add(MoveTemp(Event));
+        }
+        return Events;
+    }
+
+    if (Type == TEXT("assistant") || Type == TEXT("user"))
+    {
+        const TSharedPtr<FJsonObject>* MessageObj = nullptr;
+        if (!JsonObj->TryGetObjectField(TEXT("message"), MessageObj) || MessageObj == nullptr)
+        {
+            return Events;
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>* ContentArray = nullptr;
+        if (!(*MessageObj)->TryGetArrayField(TEXT("content"), ContentArray) || ContentArray == nullptr)
+        {
+            return Events;
+        }
+
+        for (const TSharedPtr<FJsonValue>& ContentValue : *ContentArray)
+        {
+            const TSharedPtr<FJsonObject>* ContentObj = nullptr;
+            if (!ContentValue.IsValid() || !ContentValue->TryGetObject(ContentObj) || ContentObj == nullptr)
+            {
+                continue;
+            }
+
+            FString ContentType;
+            if (!(*ContentObj)->TryGetStringField(TEXT("type"), ContentType))
+            {
+                continue;
+            }
+
+            if (Type == TEXT("assistant") && ContentType == TEXT("text"))
+            {
+                FCortexStreamEvent Event;
+                Event.Type = ECortexStreamEventType::TextContent;
+                (*ContentObj)->TryGetStringField(TEXT("text"), Event.Text);
+                Event.RawJson = JsonLine;
+                Events.Add(MoveTemp(Event));
+            }
+            else if (Type == TEXT("assistant") && ContentType == TEXT("tool_use"))
+            {
+                FCortexStreamEvent Event;
+                Event.Type = ECortexStreamEventType::ToolUse;
+                (*ContentObj)->TryGetStringField(TEXT("name"), Event.ToolName);
+                (*ContentObj)->TryGetStringField(TEXT("id"), Event.ToolCallId);
+
+                const TSharedPtr<FJsonObject>* InputObj = nullptr;
+                if ((*ContentObj)->TryGetObjectField(TEXT("input"), InputObj) && InputObj != nullptr)
+                {
+                    TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Event.ToolInput);
+                    FJsonSerializer::Serialize((*InputObj).ToSharedRef(), Writer);
+                    Writer->Close();
+                }
+
+                Event.RawJson = JsonLine;
+                Events.Add(MoveTemp(Event));
+            }
+            else if (Type == TEXT("user") && ContentType == TEXT("tool_result"))
+            {
+                FCortexStreamEvent Event;
+                Event.Type = ECortexStreamEventType::ToolResult;
+                (*ContentObj)->TryGetStringField(TEXT("tool_use_id"), Event.ToolCallId);
+
+                if (!(*ContentObj)->TryGetStringField(TEXT("content"), Event.ToolResultContent))
+                {
+                    const TArray<TSharedPtr<FJsonValue>>* ResultArray = nullptr;
+                    if ((*ContentObj)->TryGetArrayField(TEXT("content"), ResultArray) && ResultArray != nullptr)
+                    {
+                        for (const TSharedPtr<FJsonValue>& Block : *ResultArray)
+                        {
+                            const TSharedPtr<FJsonObject>* BlockObj = nullptr;
+                            if (!Block.IsValid() || !Block->TryGetObject(BlockObj) || BlockObj == nullptr)
+                            {
+                                continue;
+                            }
+
+                            FString BlockType;
+                            if ((*BlockObj)->TryGetStringField(TEXT("type"), BlockType) && BlockType == TEXT("text"))
+                            {
+                                FString BlockText;
+                                if ((*BlockObj)->TryGetStringField(TEXT("text"), BlockText))
+                                {
+                                    if (!Event.ToolResultContent.IsEmpty())
+                                    {
+                                        Event.ToolResultContent += TEXT("\n");
+                                    }
+                                    Event.ToolResultContent += BlockText;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Event.RawJson = JsonLine;
+                Events.Add(MoveTemp(Event));
+            }
+        }
+
+        return Events;
+    }
+
+    if (Type == TEXT("result"))
+    {
+        FCortexStreamEvent Event;
+        Event.Type = ECortexStreamEventType::Result;
+        JsonObj->TryGetStringField(TEXT("result"), Event.ResultText);
+        JsonObj->TryGetBoolField(TEXT("is_error"), Event.bIsError);
+
+        double DurationMs = 0.0;
+        JsonObj->TryGetNumberField(TEXT("duration_ms"), DurationMs);
+        Event.DurationMs = static_cast<int32>(DurationMs);
+
+        double NumTurns = 0.0;
+        JsonObj->TryGetNumberField(TEXT("num_turns"), NumTurns);
+        Event.NumTurns = static_cast<int32>(NumTurns);
+
+        double TotalCostUsd = 0.0;
+        JsonObj->TryGetNumberField(TEXT("total_cost_usd"), TotalCostUsd);
+        Event.TotalCostUsd = static_cast<float>(TotalCostUsd);
+
+        JsonObj->TryGetStringField(TEXT("session_id"), Event.SessionId);
+        Event.RawJson = JsonLine;
+        Events.Add(MoveTemp(Event));
+    }
+
+    return Events;
+}
