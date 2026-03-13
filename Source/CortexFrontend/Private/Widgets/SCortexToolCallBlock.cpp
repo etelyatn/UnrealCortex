@@ -49,9 +49,3 @@ void SCortexToolCallBlock::Construct(const FArguments& InArgs)
         ]
     ];
 }
-
-void SCortexToolCallBlock::SetResult(const FString& Result, int32 DurationMs)
-{
-    (void)Result;
-    (void)DurationMs;
-}

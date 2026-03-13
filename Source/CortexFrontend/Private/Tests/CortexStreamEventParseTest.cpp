@@ -7,6 +7,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseToolUseTest, "Cortex.Fro
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseToolResultTest, "Cortex.Frontend.StreamEvent.ParseToolResult", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseResultTest, "Cortex.Frontend.StreamEvent.ParseResult", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseMixedContentTest, "Cortex.Frontend.StreamEvent.ParseMixedContent", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseContentBlockDeltaTest, "Cortex.Frontend.StreamEvent.ParseContentBlockDelta", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseSystemErrorTest, "Cortex.Frontend.StreamEvent.ParseSystemError", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseEmptyTest, "Cortex.Frontend.StreamEvent.ParseEmpty", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexStreamEventParseSystemTest::RunTest(const FString& Parameters)
@@ -96,6 +98,35 @@ bool FCortexStreamEventParseMixedContentTest::RunTest(const FString& Parameters)
     {
         TestEqual(TEXT("First should be TextContent"), static_cast<uint8>(Events[0].Type), static_cast<uint8>(ECortexStreamEventType::TextContent));
         TestEqual(TEXT("Second should be ToolUse"), static_cast<uint8>(Events[1].Type), static_cast<uint8>(ECortexStreamEventType::ToolUse));
+    }
+    return true;
+}
+
+bool FCortexStreamEventParseContentBlockDeltaTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const FString JsonLine = TEXT("{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello \"}}");
+    const TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseNdjsonLine(JsonLine);
+    TestEqual(TEXT("Should produce 1 event"), Events.Num(), 1);
+    if (Events.Num() == 1)
+    {
+        TestEqual(TEXT("Type should be ContentBlockDelta"), static_cast<uint8>(Events[0].Type), static_cast<uint8>(ECortexStreamEventType::ContentBlockDelta));
+        TestEqual(TEXT("Text should be the delta"), Events[0].Text, FString(TEXT("Hello ")));
+    }
+    return true;
+}
+
+bool FCortexStreamEventParseSystemErrorTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const FString JsonLine = TEXT("{\"type\":\"system\",\"subtype\":\"error\",\"message\":\"Rate limit exceeded\"}");
+    const TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseNdjsonLine(JsonLine);
+    TestEqual(TEXT("Should produce 1 event"), Events.Num(), 1);
+    if (Events.Num() == 1)
+    {
+        TestEqual(TEXT("Type should be SystemError"), static_cast<uint8>(Events[0].Type), static_cast<uint8>(ECortexStreamEventType::SystemError));
+        TestEqual(TEXT("Text should contain error message"), Events[0].Text, FString(TEXT("Rate limit exceeded")));
+        TestTrue(TEXT("bIsError should be true"), Events[0].bIsError);
     }
     return true;
 }

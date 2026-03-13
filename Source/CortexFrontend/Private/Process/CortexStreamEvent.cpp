@@ -38,6 +38,33 @@ TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FStrin
             Event.RawJson = JsonLine;
             Events.Add(MoveTemp(Event));
         }
+        else if (SubType == TEXT("error") || SubType == TEXT("warning"))
+        {
+            FCortexStreamEvent Event;
+            Event.Type = ECortexStreamEventType::SystemError;
+            JsonObj->TryGetStringField(TEXT("message"), Event.Text);
+            Event.bIsError = SubType == TEXT("error");
+            Event.RawJson = JsonLine;
+            Events.Add(MoveTemp(Event));
+        }
+        return Events;
+    }
+
+    if (Type == TEXT("content_block_delta"))
+    {
+        const TSharedPtr<FJsonObject>* DeltaObj = nullptr;
+        if (JsonObj->TryGetObjectField(TEXT("delta"), DeltaObj) && DeltaObj != nullptr)
+        {
+            FString DeltaType;
+            if ((*DeltaObj)->TryGetStringField(TEXT("type"), DeltaType) && DeltaType == TEXT("text_delta"))
+            {
+                FCortexStreamEvent Event;
+                Event.Type = ECortexStreamEventType::ContentBlockDelta;
+                (*DeltaObj)->TryGetStringField(TEXT("text"), Event.Text);
+                Event.RawJson = JsonLine;
+                Events.Add(MoveTemp(Event));
+            }
+        }
         return Events;
     }
 
@@ -55,6 +82,10 @@ TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FStrin
             return Events;
         }
 
+        // For assistant messages, concatenate all text blocks into a single TextContent event
+        FString ConcatenatedText;
+        TArray<FCortexStreamEvent> NonTextEvents;
+
         for (const TSharedPtr<FJsonValue>& ContentValue : *ContentArray)
         {
             const TSharedPtr<FJsonObject>* ContentObj = nullptr;
@@ -71,11 +102,9 @@ TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FStrin
 
             if (Type == TEXT("assistant") && ContentType == TEXT("text"))
             {
-                FCortexStreamEvent Event;
-                Event.Type = ECortexStreamEventType::TextContent;
-                (*ContentObj)->TryGetStringField(TEXT("text"), Event.Text);
-                Event.RawJson = JsonLine;
-                Events.Add(MoveTemp(Event));
+                FString BlockText;
+                (*ContentObj)->TryGetStringField(TEXT("text"), BlockText);
+                ConcatenatedText += BlockText;
             }
             else if (Type == TEXT("assistant") && ContentType == TEXT("tool_use"))
             {
@@ -93,7 +122,7 @@ TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FStrin
                 }
 
                 Event.RawJson = JsonLine;
-                Events.Add(MoveTemp(Event));
+                NonTextEvents.Add(MoveTemp(Event));
             }
             else if (Type == TEXT("user") && ContentType == TEXT("tool_result"))
             {
@@ -132,9 +161,20 @@ TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FStrin
                 }
 
                 Event.RawJson = JsonLine;
-                Events.Add(MoveTemp(Event));
+                NonTextEvents.Add(MoveTemp(Event));
             }
         }
+
+        // Emit concatenated text first, then tool events
+        if (!ConcatenatedText.IsEmpty())
+        {
+            FCortexStreamEvent TextEvent;
+            TextEvent.Type = ECortexStreamEventType::TextContent;
+            TextEvent.Text = ConcatenatedText;
+            TextEvent.RawJson = JsonLine;
+            Events.Add(MoveTemp(TextEvent));
+        }
+        Events.Append(MoveTemp(NonTextEvents));
 
         return Events;
     }

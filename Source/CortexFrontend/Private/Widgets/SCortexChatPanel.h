@@ -26,6 +26,7 @@ struct FCortexChatEntry
 {
     ECortexChatEntryType Type = ECortexChatEntryType::AssistantMessage;
     FString Text;
+    FString Language;
     FString ToolName;
     FString ToolInput;
     FString ToolResult;
@@ -75,5 +76,4 @@ private:
     bool bHasConfirmedSession = false;
 
     TSharedPtr<FCortexChatEntry> CurrentStreamingEntry;
-    FString StreamingText;
 };

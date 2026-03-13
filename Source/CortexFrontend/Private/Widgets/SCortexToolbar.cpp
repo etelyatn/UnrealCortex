@@ -21,7 +21,7 @@ void SCortexToolbar::Construct(const FArguments& InArgs)
         .Padding(4.0f, 2.0f)
         .VAlign(VAlign_Center)
         [
-            SNew(SComboButton)
+            SAssignNew(ModeComboButton, SComboButton)
             .OnGetMenuContent(this, &SCortexToolbar::GenerateModeMenu)
             .ButtonContent()
             [
@@ -131,6 +131,14 @@ void SCortexToolbar::SetStatus(const FString& Status)
 void SCortexToolbar::SetMode(ECortexAccessMode Mode)
 {
     CurrentMode = Mode;
+}
+
+void SCortexToolbar::SetModeSelectionEnabled(bool bEnabled)
+{
+    if (ModeComboButton.IsValid())
+    {
+        ModeComboButton->SetEnabled(bEnabled);
+    }
 }
 
 void SCortexToolbar::OnModeSelected(ECortexAccessMode Mode)

@@ -24,6 +24,7 @@ public:
     void SetSessionId(const FString& SessionId);
     void SetStatus(const FString& Status);
     void SetMode(ECortexAccessMode Mode);
+    void SetModeSelectionEnabled(bool bEnabled);
 
 private:
     TSharedRef<SWidget> GenerateModeMenu();
@@ -37,4 +38,5 @@ private:
 
     TSharedPtr<STextBlock> SessionIdText;
     TSharedPtr<STextBlock> StatusText;
+    TSharedPtr<SWidget> ModeComboButton;
 };

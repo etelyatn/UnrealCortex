@@ -75,4 +75,5 @@ private:
 
     FString NdjsonLineBuffer;
     FString AccumulatedText;
+    FString RawOutputBuffer;  // Captures non-JSON lines for error diagnostics
 };

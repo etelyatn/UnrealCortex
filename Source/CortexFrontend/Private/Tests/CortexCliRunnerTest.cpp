@@ -1,7 +1,5 @@
 #include "Misc/AutomationTest.h"
-#define private public
 #include "Process/CortexCliRunner.h"
-#undef private
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliRunnerBuildCommandLineTest, "Cortex.Frontend.CliRunner.BuildCommandLine", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliRunnerConcurrencyGuardTest, "Cortex.Frontend.CliRunner.ConcurrencyGuard", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -49,6 +47,9 @@ bool FCortexCliRunnerAllowedToolsTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Read-only tools should include list access"), ReadOnlyTools.Contains(TEXT("mcp__cortex_mcp__list_*")));
     TestFalse(TEXT("Read-only tools should not include spawn access"), ReadOnlyTools.Contains(TEXT("mcp__cortex_mcp__spawn_*")));
     TestTrue(TEXT("Guided tools should include spawn access"), GuidedTools.Contains(TEXT("mcp__cortex_mcp__spawn_*")));
+    TestFalse(TEXT("Guided tools should not include destructive graph ops"), GuidedTools.Contains(TEXT("mcp__cortex_mcp__graph_remove_*")));
+    TestFalse(TEXT("Guided tools should not include graph disconnect"), GuidedTools.Contains(TEXT("mcp__cortex_mcp__graph_disconnect")));
+    TestTrue(TEXT("Guided tools should include graph add ops"), GuidedTools.Contains(TEXT("mcp__cortex_mcp__graph_add_*")));
     TestTrue(TEXT("Full access should have no restrictions"), FullAccessTools.IsEmpty());
     return true;
 }

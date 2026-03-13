@@ -1,8 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "Framework/Application/SlateApplication.h"
-#define private public
 #include "Widgets/SCortexChatPanel.h"
-#undef private
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatPanelConstructTest, "Cortex.Frontend.ChatPanel.Construct", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatPanelSessionInitTest, "Cortex.Frontend.ChatPanel.SessionInitUpdatesSessionId", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

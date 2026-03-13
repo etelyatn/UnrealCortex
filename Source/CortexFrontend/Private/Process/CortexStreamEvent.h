@@ -7,9 +7,11 @@ enum class ECortexStreamEventType : uint8
 {
     SessionInit,
     TextContent,
+    ContentBlockDelta,
     ToolUse,
     ToolResult,
     Result,
+    SystemError,
     Unknown
 };
 

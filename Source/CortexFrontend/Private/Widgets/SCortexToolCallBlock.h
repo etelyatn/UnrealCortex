@@ -16,6 +16,4 @@ public:
     SLATE_END_ARGS()
 
     void Construct(const FArguments& InArgs);
-
-    void SetResult(const FString& Result, int32 DurationMs);
 };

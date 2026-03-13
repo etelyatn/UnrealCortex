@@ -89,7 +89,6 @@ void SCortexChatPanel::SendMessage(const FString& Message)
     CurrentStreamingEntry->Type = ECortexChatEntryType::AssistantMessage;
     CurrentStreamingEntry->Text = TEXT("");
     ChatEntries.Add(CurrentStreamingEntry);
-    StreamingText.Empty();
 
     if (ChatList.IsValid())
     {
@@ -105,6 +104,7 @@ void SCortexChatPanel::SendMessage(const FString& Message)
     if (Toolbar.IsValid())
     {
         Toolbar->SetStatus(TEXT("Connecting..."));
+        Toolbar->SetModeSelectionEnabled(false);
     }
 
     FCortexChatRequest Request;
@@ -150,7 +150,6 @@ void SCortexChatPanel::NewChat()
 
     SessionId = GenerateSessionId();
     CurrentStreamingEntry.Reset();
-    StreamingText.Empty();
     bAutoScroll = true;
     bHasConfirmedSession = false;
 
@@ -158,6 +157,7 @@ void SCortexChatPanel::NewChat()
     {
         Toolbar->SetSessionId(SessionId);
         Toolbar->SetStatus(FString());
+        Toolbar->SetModeSelectionEnabled(true);
     }
     if (InputArea.IsValid())
     {
@@ -191,14 +191,34 @@ void SCortexChatPanel::OnStreamEvent(const FCortexStreamEvent& Event)
         }
         break;
 
-    case ECortexStreamEventType::TextContent:
-        StreamingText += Event.Text;
+    case ECortexStreamEventType::ContentBlockDelta:
+        // Incremental delta — append to current streaming entry
         if (CurrentStreamingEntry.IsValid())
         {
-            CurrentStreamingEntry->Text = StreamingText;
+            CurrentStreamingEntry->Text += Event.Text;
             if (CurrentStreamingEntry->MessageWidget.IsValid())
             {
-                CurrentStreamingEntry->MessageWidget->SetText(StreamingText);
+                CurrentStreamingEntry->MessageWidget->SetText(CurrentStreamingEntry->Text);
+            }
+        }
+        if (Toolbar.IsValid())
+        {
+            Toolbar->SetStatus(TEXT("Streaming..."));
+        }
+        if (bAutoScroll)
+        {
+            ScrollToBottom();
+        }
+        break;
+
+    case ECortexStreamEventType::TextContent:
+        // Full assistant message snapshot — replace current text
+        if (CurrentStreamingEntry.IsValid())
+        {
+            CurrentStreamingEntry->Text = Event.Text;
+            if (CurrentStreamingEntry->MessageWidget.IsValid())
+            {
+                CurrentStreamingEntry->MessageWidget->SetText(CurrentStreamingEntry->Text);
             }
         }
         if (Toolbar.IsValid())
@@ -254,6 +274,14 @@ void SCortexChatPanel::OnStreamEvent(const FCortexStreamEvent& Event)
         }
         break;
 
+    case ECortexStreamEventType::SystemError:
+        UE_LOG(LogCortexFrontend, Warning, TEXT("CLI system event: %s"), *Event.Text);
+        if (Toolbar.IsValid())
+        {
+            Toolbar->SetStatus(Event.bIsError ? TEXT("System Error") : TEXT("Warning"));
+        }
+        break;
+
     default:
         break;
     }
@@ -267,10 +295,14 @@ void SCortexChatPanel::OnComplete(const FString& FullText, bool bSuccess)
     {
         InputArea->SetStreaming(false);
     }
+    if (Toolbar.IsValid())
+    {
+        Toolbar->SetModeSelectionEnabled(true);
+    }
 
     if (bSuccess)
     {
-        const FString FinalAssistantText = !FullText.IsEmpty() ? FullText : StreamingText;
+        const FString FinalAssistantText = !FullText.IsEmpty() ? FullText : (CurrentStreamingEntry.IsValid() ? CurrentStreamingEntry->Text : FString());
         ReplaceCurrentStreamingEntry(BuildAssistantEntries(FinalAssistantText));
     }
     else
@@ -297,7 +329,6 @@ void SCortexChatPanel::OnComplete(const FString& FullText, bool bSuccess)
     }
 
     CurrentStreamingEntry.Reset();
-    StreamingText.Empty();
 
     if (InputArea.IsValid())
     {
@@ -347,9 +378,15 @@ TArray<TSharedPtr<FCortexChatEntry>> SCortexChatPanel::BuildAssistantEntries(con
         }
 
         FString BlockText = RemainingText.Mid(BlockContentStart, BlockEnd - BlockContentStart);
+        FString Language = TEXT("text");
         int32 FirstNewlineIndex = INDEX_NONE;
         if (BlockText.FindChar(TEXT('\n'), FirstNewlineIndex))
         {
+            const FString LangTag = BlockText.Left(FirstNewlineIndex).TrimStartAndEnd();
+            if (!LangTag.IsEmpty())
+            {
+                Language = LangTag;
+            }
             BlockText = BlockText.Mid(FirstNewlineIndex + 1);
         }
         BlockText.TrimStartAndEndInline();
@@ -357,6 +394,7 @@ TArray<TSharedPtr<FCortexChatEntry>> SCortexChatPanel::BuildAssistantEntries(con
         TSharedPtr<FCortexChatEntry> CodeBlockEntry = MakeShared<FCortexChatEntry>();
         CodeBlockEntry->Type = ECortexChatEntryType::CodeBlock;
         CodeBlockEntry->Text = BlockText;
+        CodeBlockEntry->Language = Language;
         Entries.Add(CodeBlockEntry);
 
         RemainingText = RemainingText.Mid(BlockEnd + 3);
@@ -432,7 +470,7 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatEntry>
     case ECortexChatEntryType::CodeBlock:
         Content = SNew(SCortexCodeBlock)
             .Code(Entry->Text)
-            .Language(TEXT("text"));
+            .Language(Entry->Language);
         break;
     }
 

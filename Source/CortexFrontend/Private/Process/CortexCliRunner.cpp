@@ -3,9 +3,10 @@
 #include "Async/Async.h"
 #include "CortexFrontendModule.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTime.h"
 #include "Misc/Paths.h"
-#include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonWriter.h"
+
+static constexpr double CortexCliTimeoutSeconds = 300.0;
 
 FCortexCliRunner::FCortexCliRunner() = default;
 
@@ -25,6 +26,8 @@ FCortexCliRunner::~FCortexCliRunner()
 
 bool FCortexCliRunner::ExecuteAsync(const FCortexChatRequest& Request, FOnCortexComplete OnComplete, FOnCortexStreamEvent OnStreamEvent)
 {
+    check(IsInGameThread());
+
     if (bIsExecuting.load())
     {
         UE_LOG(LogCortexFrontend, Warning, TEXT("CLI runner is already executing"));
@@ -74,6 +77,7 @@ bool FCortexCliRunner::Init()
     StopCounter.store(0);
     NdjsonLineBuffer.Empty();
     AccumulatedText.Empty();
+    RawOutputBuffer.Empty();
     return true;
 }
 
@@ -81,6 +85,7 @@ uint32 FCortexCliRunner::Run()
 {
     if (!CreateProcessPipes())
     {
+        bIsExecuting.store(false);
         const FOnCortexComplete CompleteCopy = OnCompleteDelegate;
         AsyncTask(ENamedThreads::GameThread, [CompleteCopy]()
         {
@@ -89,14 +94,18 @@ uint32 FCortexCliRunner::Run()
         return 1;
     }
 
-    FString Executable = CachedCliInfo.Path;
-    FString CommandLine = BuildCommandLine(CurrentRequest);
-    FString Params = CommandLine;
-    if (CachedCliInfo.bIsCmd)
-    {
-        Params = FString::Printf(TEXT("/c \"%s\" %s"), *CachedCliInfo.Path, *CommandLine);
-        Executable = TEXT("cmd.exe");
-    }
+    FString Executable;
+    FString Params;
+    const FString CommandLine = BuildCommandLine(CurrentRequest);
+
+#if PLATFORM_WINDOWS
+    // Always wrap in cmd.exe on Windows to merge stderr into stdout via 2>&1
+    Executable = TEXT("cmd.exe");
+    Params = FString::Printf(TEXT("/c \"\"%s\" %s 2>&1\""), *CachedCliInfo.Path, *CommandLine);
+#else
+    Executable = CachedCliInfo.Path;
+    Params = CommandLine;
+#endif
 
     FString WorkingDir = CurrentRequest.WorkingDirectory;
     if (WorkingDir.IsEmpty())
@@ -109,6 +118,7 @@ uint32 FCortexCliRunner::Run()
     if (!ProcessHandle.IsValid())
     {
         CleanupHandles();
+        bIsExecuting.store(false);
         const FOnCortexComplete CompleteCopy = OnCompleteDelegate;
         AsyncTask(ENamedThreads::GameThread, [CompleteCopy]()
         {
@@ -136,8 +146,15 @@ uint32 FCortexCliRunner::Run()
     FPlatformProcess::GetProcReturnCode(ProcessHandle, &ExitCode);
     CleanupHandles();
 
+    if (ExitCode != 0)
+    {
+        UE_LOG(LogCortexFrontend, Warning, TEXT("Claude process exited with code %d. RawOutput: %s"),
+            ExitCode, *RawOutputBuffer);
+    }
+
     const bool bSuccess = ExitCode == 0 && !StopCounter.load();
-    const FString FinalText = AccumulatedText;
+    const FString FinalText = !AccumulatedText.IsEmpty() ? AccumulatedText : RawOutputBuffer;
+    bIsExecuting.store(false);
     const FOnCortexComplete CompleteCopy = OnCompleteDelegate;
     AsyncTask(ENamedThreads::GameThread, [CompleteCopy, FinalText, bSuccess]()
     {
@@ -159,18 +176,23 @@ void FCortexCliRunner::Exit()
 
 FString FCortexCliRunner::BuildCommandLine(const FCortexChatRequest& Request)
 {
-    FString Cmd = TEXT("-p --verbose --output-format stream-json --input-format stream-json --include-partial-messages ");
+    FString Cmd = TEXT("-p --verbose --output-format stream-json --include-partial-messages ");
 
+    // The CLI normally prompts on stdin for tool permissions, which would hang since
+    // stdin is closed after sending the prompt. The 3-mode access system (ReadOnly,
+    // Guided, FullAccess) is the replacement safety layer for permission control.
     if (Request.bSkipPermissions)
     {
         Cmd += TEXT("--dangerously-skip-permissions ");
     }
 
-    Cmd += FString::Printf(TEXT("--session-id \"%s\" "), *Request.SessionId);
-
-    if (!Request.bIsFirstMessage)
+    if (Request.bIsFirstMessage)
     {
-        Cmd += TEXT("--resume ");
+        Cmd += FString::Printf(TEXT("--session-id \"%s\" "), *Request.SessionId);
+    }
+    else
+    {
+        Cmd += TEXT("--continue ");
     }
 
     const FString AllowedTools = BuildAllowedToolsArg(Request.AccessMode);
@@ -211,7 +233,16 @@ FString FCortexCliRunner::BuildAllowedToolsArg(ECortexAccessMode Mode)
     case ECortexAccessMode::ReadOnly:
         return TEXT("mcp__cortex_mcp__get_*,mcp__cortex_mcp__list_*,mcp__cortex_mcp__search_*,mcp__cortex_mcp__query_*,mcp__cortex_mcp__describe_*,mcp__cortex_mcp__find_*,mcp__cortex_mcp__schema_*,mcp__cortex_mcp__reflect_*");
     case ECortexAccessMode::Guided:
-        return TEXT("mcp__cortex_mcp__get_*,mcp__cortex_mcp__list_*,mcp__cortex_mcp__search_*,mcp__cortex_mcp__query_*,mcp__cortex_mcp__describe_*,mcp__cortex_mcp__find_*,mcp__cortex_mcp__schema_*,mcp__cortex_mcp__reflect_*,mcp__cortex_mcp__spawn_*,mcp__cortex_mcp__create_*,mcp__cortex_mcp__add_*,mcp__cortex_mcp__set_*,mcp__cortex_mcp__compile_*,mcp__cortex_mcp__connect_*,mcp__cortex_mcp__graph_*,mcp__cortex_mcp__open_*,mcp__cortex_mcp__close_*,mcp__cortex_mcp__focus_*,mcp__cortex_mcp__select_*,mcp__cortex_mcp__rename_*");
+        // Read operations
+        return TEXT("mcp__cortex_mcp__get_*,mcp__cortex_mcp__list_*,mcp__cortex_mcp__search_*,mcp__cortex_mcp__query_*,mcp__cortex_mcp__describe_*,mcp__cortex_mcp__find_*,mcp__cortex_mcp__schema_*,mcp__cortex_mcp__reflect_*,"
+            // Reversible create/edit operations
+            "mcp__cortex_mcp__spawn_*,mcp__cortex_mcp__create_*,mcp__cortex_mcp__add_*,mcp__cortex_mcp__set_*,mcp__cortex_mcp__compile_*,mcp__cortex_mcp__connect_*,"
+            // Graph operations (excluding destructive: graph_remove_node, graph_disconnect)
+            "mcp__cortex_mcp__graph_add_*,mcp__cortex_mcp__graph_connect,mcp__cortex_mcp__graph_list_*,mcp__cortex_mcp__graph_get_*,mcp__cortex_mcp__graph_set_*,mcp__cortex_mcp__graph_search_*,mcp__cortex_mcp__graph_auto_layout,"
+            // Navigation/view operations
+            "mcp__cortex_mcp__open_*,mcp__cortex_mcp__close_*,mcp__cortex_mcp__focus_*,mcp__cortex_mcp__select_*,"
+            // Additional reversible write operations
+            "mcp__cortex_mcp__rename_*,mcp__cortex_mcp__configure_*,mcp__cortex_mcp__import_*,mcp__cortex_mcp__update_*,mcp__cortex_mcp__duplicate_*,mcp__cortex_mcp__reparent*,mcp__cortex_mcp__attach_*,mcp__cortex_mcp__detach_*,mcp__cortex_mcp__register_*,mcp__cortex_mcp__reload_*");
     case ECortexAccessMode::FullAccess:
         return FString();
     }
@@ -221,27 +252,9 @@ FString FCortexCliRunner::BuildAllowedToolsArg(ECortexAccessMode Mode)
 
 FString FCortexCliRunner::BuildStdinPayload(const FString& Prompt)
 {
-    TSharedPtr<FJsonObject> TextBlock = MakeShared<FJsonObject>();
-    TextBlock->SetStringField(TEXT("type"), TEXT("text"));
-    TextBlock->SetStringField(TEXT("text"), Prompt);
-
-    TArray<TSharedPtr<FJsonValue>> ContentArray;
-    ContentArray.Add(MakeShared<FJsonValueObject>(TextBlock));
-
-    TSharedPtr<FJsonObject> Message = MakeShared<FJsonObject>();
-    Message->SetStringField(TEXT("role"), TEXT("user"));
-    Message->SetArrayField(TEXT("content"), ContentArray);
-
-    TSharedPtr<FJsonObject> Envelope = MakeShared<FJsonObject>();
-    Envelope->SetStringField(TEXT("type"), TEXT("user"));
-    Envelope->SetObjectField(TEXT("message"), Message);
-
-    FString JsonLine;
-    TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&JsonLine);
-    FJsonSerializer::Serialize(Envelope.ToSharedRef(), Writer);
-    Writer->Close();
-    JsonLine += TEXT("\n");
-    return JsonLine;
+    // Plain text — claude -p reads stdin as the prompt when no argument is given.
+    // This is compatible with both --session-id (first message) and --continue (subsequent).
+    return Prompt + TEXT("\n");
 }
 
 bool FCortexCliRunner::CreateProcessPipes()
@@ -266,8 +279,17 @@ bool FCortexCliRunner::CreateProcessPipes()
 
 void FCortexCliRunner::ReadProcessOutput()
 {
+    const double StartTime = FPlatformTime::Seconds();
+
     while (!StopCounter.load())
     {
+        if (FPlatformTime::Seconds() - StartTime > CortexCliTimeoutSeconds)
+        {
+            UE_LOG(LogCortexFrontend, Warning, TEXT("CLI process timed out after %.0f seconds"), CortexCliTimeoutSeconds);
+            FPlatformProcess::TerminateProc(ProcessHandle, true);
+            break;
+        }
+
         const FString Chunk = FPlatformProcess::ReadPipe(ReadPipe);
         if (!Chunk.IsEmpty())
         {
@@ -313,11 +335,27 @@ void FCortexCliRunner::ParseAndEmitLines(const FString& Chunk)
         }
 
         TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseNdjsonLine(Line);
+        if (Events.IsEmpty() && !Line.StartsWith(TEXT("{")))
+        {
+            // Non-JSON line — likely stderr (error message from Claude or cmd.exe)
+            UE_LOG(LogCortexFrontend, Warning, TEXT("Non-JSON output: %s"), *Line);
+            RawOutputBuffer += Line + TEXT("\n");
+        }
         for (FCortexStreamEvent& Event : Events)
         {
-            if (Event.Type == ECortexStreamEventType::TextContent)
+            if (Event.Type == ECortexStreamEventType::ContentBlockDelta)
             {
                 AccumulatedText += Event.Text;
+            }
+            else if (Event.Type == ECortexStreamEventType::TextContent)
+            {
+                // Full assistant message snapshot — replace accumulated text
+                AccumulatedText = Event.Text;
+            }
+            else if (Event.Type == ECortexStreamEventType::Result && Event.bIsError)
+            {
+                UE_LOG(LogCortexFrontend, Warning, TEXT("Claude result error: %s"), *Event.ResultText);
+                RawOutputBuffer += Event.ResultText;
             }
 
             if (OnStreamEventDelegate.IsBound())

@@ -61,10 +61,8 @@ void FCortexFrontendModule::ShutdownModule()
     }
 }
 
-TSharedRef<SDockTab> FCortexFrontendModule::SpawnChatTab(const FSpawnTabArgs& Args)
+TSharedRef<SDockTab> FCortexFrontendModule::SpawnChatTab(const FSpawnTabArgs& /*Args*/)
 {
-    (void)Args;
-
     return SNew(SDockTab)
         .TabRole(NomadTab)
         [

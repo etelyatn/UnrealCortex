@@ -9,7 +9,6 @@ public class CortexFrontend : ModuleRules
         PublicDependencyModuleNames.AddRange(new string[]
         {
             "Core",
-            "CortexCore",
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]
