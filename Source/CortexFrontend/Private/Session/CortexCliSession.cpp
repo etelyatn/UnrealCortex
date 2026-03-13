@@ -1,9 +1,94 @@
 #include "Session/CortexCliSession.h"
 
+#include "Session/CortexCliWorker.h"
+
 FCortexCliSession::FCortexCliSession(const FCortexSessionConfig& InConfig)
     : Config(InConfig)
     , State(ECortexSessionState::Inactive)
 {
+}
+
+bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
+{
+    const ECortexSessionState CurrentState = State.load();
+    switch (CurrentState)
+    {
+    case ECortexSessionState::Inactive:
+        PendingPrompt = Request.Prompt;
+        PendingAccessMode = Request.AccessMode;
+        BroadcastStateChange(CurrentState, ECortexSessionState::Spawning, TEXT("Initial prompt queued"));
+        State.store(ECortexSessionState::Spawning);
+        return true;
+
+    case ECortexSessionState::Spawning:
+        PendingPrompt = Request.Prompt;
+        PendingAccessMode = Request.AccessMode;
+        return true;
+
+    case ECortexSessionState::Idle:
+        PendingPrompt = Request.Prompt;
+        PendingAccessMode = Request.AccessMode;
+        BroadcastStateChange(CurrentState, ECortexSessionState::Processing, TEXT("Prompt dispatched"));
+        State.store(ECortexSessionState::Processing);
+        return true;
+
+    default:
+        return false;
+    }
+}
+
+bool FCortexCliSession::Cancel()
+{
+    return TransitionState(ECortexSessionState::Processing, ECortexSessionState::Cancelling, TEXT("Cancellation requested"));
+}
+
+void FCortexCliSession::NewChat()
+{
+    PendingPrompt.Reset();
+    PendingAccessMode.Reset();
+    BroadcastStateChange(State.exchange(ECortexSessionState::Inactive), ECortexSessionState::Inactive, TEXT("New chat"));
+}
+
+void FCortexCliSession::Shutdown()
+{
+    const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Terminated);
+    BroadcastStateChange(PreviousState, ECortexSessionState::Terminated, TEXT("Shutdown"));
+}
+
+void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
+{
+    OnStreamEvent.Broadcast(Event);
+
+    if (Event.Type != ECortexStreamEventType::Result)
+    {
+        return;
+    }
+
+    FCortexTurnResult Result;
+    Result.ResultText = Event.ResultText;
+    Result.bIsError = Event.bIsError;
+    Result.DurationMs = Event.DurationMs;
+    Result.NumTurns = Event.NumTurns;
+    Result.TotalCostUsd = Event.TotalCostUsd;
+    Result.SessionId = Event.SessionId;
+
+    const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Idle);
+    BroadcastStateChange(PreviousState, ECortexSessionState::Idle, TEXT("Turn complete"));
+    OnTurnComplete.Broadcast(Result);
+}
+
+void FCortexCliSession::HandleProcessExited(const FString& Reason)
+{
+    const ECortexSessionState CurrentState = State.load();
+    if (CurrentState == ECortexSessionState::Cancelling)
+    {
+        BroadcastStateChange(CurrentState, ECortexSessionState::Respawning, Reason);
+        State.store(ECortexSessionState::Respawning);
+        return;
+    }
+
+    BroadcastStateChange(CurrentState, ECortexSessionState::Inactive, Reason);
+    State.store(ECortexSessionState::Inactive);
 }
 
 FString FCortexCliSession::BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const
@@ -83,4 +168,40 @@ FString FCortexCliSession::BuildPromptEnvelope(const FString& Prompt) const
     EscapedPrompt.ReplaceInline(TEXT("\r"), TEXT("\\r"));
     EscapedPrompt.ReplaceInline(TEXT("\t"), TEXT("\\t"));
     return FString::Printf(TEXT("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"%s\"}}\n"), *EscapedPrompt);
+}
+
+bool FCortexCliSession::TransitionState(ECortexSessionState ExpectedState, ECortexSessionState NewState, const FString& Reason)
+{
+    ECortexSessionState LocalExpected = ExpectedState;
+    if (!State.compare_exchange_strong(LocalExpected, NewState))
+    {
+        return false;
+    }
+
+    BroadcastStateChange(ExpectedState, NewState, Reason);
+    return true;
+}
+
+void FCortexCliSession::BroadcastStateChange(ECortexSessionState PreviousState, ECortexSessionState NewState, const FString& Reason)
+{
+    FCortexSessionStateChange Change;
+    Change.PreviousState = PreviousState;
+    Change.NewState = NewState;
+    Change.Reason = Reason;
+    OnStateChanged.Broadcast(Change);
+}
+
+ECortexSessionState FCortexCliSession::GetStateForTest() const
+{
+    return State.load();
+}
+
+void FCortexCliSession::SetStateForTest(ECortexSessionState NewState)
+{
+    State.store(NewState);
+}
+
+FString FCortexCliSession::GetPendingPromptForTest() const
+{
+    return PendingPrompt.Get(TEXT(""));
 }

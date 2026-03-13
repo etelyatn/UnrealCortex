@@ -1,9 +1,15 @@
 #include "Misc/AutomationTest.h"
+#include "CortexFrontendModule.h"
+#include "Modules/ModuleManager.h"
 #include "Session/CortexCliSession.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildInitialLaunchArgsTest, "Cortex.Frontend.CliSession.BuildInitialLaunchArgs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildResumeLaunchArgsTest, "Cortex.Frontend.CliSession.BuildResumeLaunchArgs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildPromptEnvelopeTest, "Cortex.Frontend.CliSession.BuildPromptEnvelope", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionQueuePromptWhileSpawningTest, "Cortex.Frontend.CliSession.QueuePromptWhileSpawning", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionTurnCompleteReturnsIdleTest, "Cortex.Frontend.CliSession.TurnCompleteReturnsIdle", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCancelTransitionsTest, "Cortex.Frontend.CliSession.CancelTransitions", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendModuleGetOrCreateSessionTest, "Cortex.Frontend.Module.GetOrCreateSession", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexCliSessionBuildInitialLaunchArgsTest::RunTest(const FString& Parameters)
 {
@@ -57,5 +63,92 @@ bool FCortexCliSessionBuildPromptEnvelopeTest::RunTest(const FString& Parameters
     TestTrue(TEXT("Envelope should encode user role"), Envelope.Contains(TEXT("\"role\":\"user\"")));
     TestTrue(TEXT("Envelope should encode prompt content"), Envelope.Contains(TEXT("\"content\":\"Inspect the selected actor\"")));
     TestTrue(TEXT("Envelope should terminate with newline"), Envelope.EndsWith(TEXT("\n")));
+    return true;
+}
+
+bool FCortexCliSessionQueuePromptWhileSpawningTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("session-queue");
+
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Spawning);
+
+    FCortexPromptRequest PromptRequest;
+    PromptRequest.Prompt = TEXT("queued prompt");
+    PromptRequest.AccessMode = ECortexAccessMode::Guided;
+
+    TestTrue(TEXT("Prompt should be accepted while spawning"), Session.SendPrompt(PromptRequest));
+    TestEqual(TEXT("Prompt should remain queued until process ready"), Session.GetPendingPromptForTest(), FString(TEXT("queued prompt")));
+    TestEqual(TEXT("Session should remain spawning while prompt is queued"), Session.GetStateForTest(), ECortexSessionState::Spawning);
+    return true;
+}
+
+bool FCortexCliSessionTurnCompleteReturnsIdleTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("session-turn");
+
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Processing);
+
+    FCortexTurnResult CapturedResult;
+    bool bDelegateCalled = false;
+    Session.OnTurnComplete.AddLambda([&CapturedResult, &bDelegateCalled](const FCortexTurnResult& Result)
+    {
+        CapturedResult = Result;
+        bDelegateCalled = true;
+    });
+
+    FCortexStreamEvent ResultEvent;
+    ResultEvent.Type = ECortexStreamEventType::Result;
+    ResultEvent.ResultText = TEXT("assistant reply");
+    ResultEvent.DurationMs = 42;
+    ResultEvent.NumTurns = 3;
+    ResultEvent.TotalCostUsd = 1.25f;
+    ResultEvent.SessionId = TEXT("session-turn");
+
+    Session.HandleWorkerEvent(ResultEvent);
+
+    TestTrue(TEXT("Turn complete delegate should fire"), bDelegateCalled);
+    TestEqual(TEXT("Result text should be forwarded"), CapturedResult.ResultText, FString(TEXT("assistant reply")));
+    TestEqual(TEXT("Session should return to idle after turn completion"), Session.GetStateForTest(), ECortexSessionState::Idle);
+    return true;
+}
+
+bool FCortexCliSessionCancelTransitionsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("session-cancel");
+
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Processing);
+
+    TestTrue(TEXT("Cancel should be accepted while processing"), Session.Cancel());
+    TestEqual(TEXT("Cancel should move session into cancelling"), Session.GetStateForTest(), ECortexSessionState::Cancelling);
+
+    Session.HandleProcessExited(TEXT("cancel complete"));
+
+    TestEqual(TEXT("Exited cancelling session should move to respawning"), Session.GetStateForTest(), ECortexSessionState::Respawning);
+    return true;
+}
+
+bool FCortexFrontendModuleGetOrCreateSessionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexFrontendModule& Module = FModuleManager::LoadModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+
+    const TSharedPtr<FCortexCliSession> FirstSession = Module.GetOrCreateSession().Pin();
+    const TSharedPtr<FCortexCliSession> SecondSession = Module.GetOrCreateSession().Pin();
+
+    TestTrue(TEXT("Module should create a session"), FirstSession.IsValid());
+    TestTrue(TEXT("Module should return the same session instance"), FirstSession == SecondSession);
     return true;
 }
