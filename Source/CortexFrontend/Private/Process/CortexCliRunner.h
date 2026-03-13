@@ -5,17 +5,11 @@
 #include "HAL/RunnableThread.h"
 #include "Process/CortexCliDiscovery.h"
 #include "Process/CortexStreamEvent.h"
+#include "Session/CortexSessionTypes.h"
 #include <atomic>
 
 DECLARE_DELEGATE_OneParam(FOnCortexStreamEvent, const FCortexStreamEvent&);
 DECLARE_DELEGATE_TwoParams(FOnCortexComplete, const FString&, bool);
-
-enum class ECortexAccessMode : uint8
-{
-    ReadOnly,
-    Guided,
-    FullAccess
-};
 
 struct FCortexChatRequest
 {
