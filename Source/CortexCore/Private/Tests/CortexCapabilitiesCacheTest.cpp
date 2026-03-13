@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "CortexCommandRouter.h"
+#include "CortexCoreCommandHandler.h"
 #include "ICortexDomainHandler.h"
 #include "CortexCoreModule.h"
 #include "HAL/FileManager.h"
@@ -111,6 +112,103 @@ bool FCortexCapabilitiesParamSerializationTest::RunTest(const FString& Parameter
 
 	TestTrue(TEXT("Enriched command has params"), (*QueryCmd)->HasTypedField<EJson::Array>(TEXT("params")));
 	TestFalse(TEXT("Plain command omits params"), (*PlainCmd)->HasField(TEXT("params")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCapabilitiesRepresentativeMetadataTest,
+	"Cortex.Core.Capabilities.RepresentativeMetadata",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexCapabilitiesRepresentativeMetadataTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FModuleManager::Get().LoadModule(TEXT("CortexGraph"));
+	FModuleManager::Get().LoadModule(TEXT("CortexReflect"));
+
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	const FCortexCommandResult CapResult = CoreModule.GetCommandRouter().Execute(TEXT("get_capabilities"), MakeShared<FJsonObject>());
+	TestTrue(TEXT("get_capabilities succeeded"), CapResult.bSuccess);
+
+	const TSharedPtr<FJsonObject>* DomainsObj = nullptr;
+	TestTrue(
+		TEXT("Capabilities contain domains object"),
+		CapResult.Data.IsValid() && CapResult.Data->TryGetObjectField(TEXT("domains"), DomainsObj) && DomainsObj != nullptr);
+
+	if (DomainsObj == nullptr)
+	{
+		return false;
+	}
+
+	auto FindCommand = [](const TSharedPtr<FJsonObject>& DomainObj, const FString& CommandName) -> const TSharedPtr<FJsonObject>*
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Commands = nullptr;
+		if (!DomainObj.IsValid() || !DomainObj->TryGetArrayField(TEXT("commands"), Commands) || Commands == nullptr)
+		{
+			return nullptr;
+		}
+
+		for (const TSharedPtr<FJsonValue>& CommandValue : *Commands)
+		{
+			const TSharedPtr<FJsonObject>* CommandObj = nullptr;
+			if (CommandValue->TryGetObject(CommandObj) && CommandObj != nullptr)
+			{
+				FString Name;
+				if ((*CommandObj)->TryGetStringField(TEXT("name"), Name) && Name == CommandName)
+				{
+					return CommandObj;
+				}
+			}
+		}
+
+		return nullptr;
+	};
+
+	const TSharedPtr<FJsonObject>* CoreDomain = nullptr;
+	const TSharedPtr<FJsonObject>* GraphDomain = nullptr;
+	const TSharedPtr<FJsonObject>* ReflectDomain = nullptr;
+	TestTrue(TEXT("Core domain present"), (*DomainsObj)->TryGetObjectField(TEXT("core"), CoreDomain) && CoreDomain != nullptr);
+	TestTrue(TEXT("Graph domain present"), (*DomainsObj)->TryGetObjectField(TEXT("graph"), GraphDomain) && GraphDomain != nullptr);
+	TestTrue(TEXT("Reflect domain present"), (*DomainsObj)->TryGetObjectField(TEXT("reflect"), ReflectDomain) && ReflectDomain != nullptr);
+
+	if (CoreDomain == nullptr || GraphDomain == nullptr || ReflectDomain == nullptr)
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* SaveAssetCmd = FindCommand(*CoreDomain, TEXT("save_asset"));
+	const TSharedPtr<FJsonObject>* AddNodeCmd = FindCommand(*GraphDomain, TEXT("add_node"));
+	const TSharedPtr<FJsonObject>* ClassHierarchyCmd = FindCommand(*ReflectDomain, TEXT("class_hierarchy"));
+
+	TestTrue(TEXT("core.save_asset metadata present"), SaveAssetCmd != nullptr);
+	TestTrue(TEXT("graph.add_node metadata present"), AddNodeCmd != nullptr);
+	TestTrue(TEXT("reflect.class_hierarchy metadata present"), ClassHierarchyCmd != nullptr);
+
+	if (SaveAssetCmd == nullptr || AddNodeCmd == nullptr || ClassHierarchyCmd == nullptr)
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* SaveParams = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* AddNodeParams = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* ClassHierarchyParams = nullptr;
+
+	TestTrue(TEXT("core.save_asset params present"), (*SaveAssetCmd)->TryGetArrayField(TEXT("params"), SaveParams) && SaveParams != nullptr);
+	TestTrue(TEXT("graph.add_node params present"), (*AddNodeCmd)->TryGetArrayField(TEXT("params"), AddNodeParams) && AddNodeParams != nullptr);
+	TestTrue(TEXT("reflect.class_hierarchy params present"), (*ClassHierarchyCmd)->TryGetArrayField(TEXT("params"), ClassHierarchyParams) && ClassHierarchyParams != nullptr);
+
+	if (SaveParams == nullptr || AddNodeParams == nullptr || ClassHierarchyParams == nullptr)
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("core.save_asset param count"), SaveParams->Num(), 3);
+	TestEqual(TEXT("graph.add_node param count"), AddNodeParams->Num(), 4);
+	TestEqual(TEXT("reflect.class_hierarchy param count"), ClassHierarchyParams->Num(), 5);
 
 	return true;
 }

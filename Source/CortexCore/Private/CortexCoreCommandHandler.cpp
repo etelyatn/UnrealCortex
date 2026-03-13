@@ -88,12 +88,26 @@ FCortexCommandResult FCortexCoreCommandHandler::Execute(
 TArray<FCortexCommandInfo> FCortexCoreCommandHandler::GetSupportedCommands() const
 {
 	return {
-		{ TEXT("save_asset"), TEXT("Save asset(s) to disk") },
-		{ TEXT("open_asset"), TEXT("Open asset editor tab(s)") },
-		{ TEXT("close_asset"), TEXT("Close asset editor tab(s)") },
-		{ TEXT("reload_asset"), TEXT("Discard changes and reload asset(s) from disk") },
-		{ TEXT("delete_asset"), TEXT("Delete a single asset by path") },
-		{ TEXT("delete_folder"), TEXT("Delete all assets in a folder") },
-		{ TEXT("shutdown"), TEXT("Gracefully shut down the editor") },
+		FCortexCommandInfo{ TEXT("save_asset"), TEXT("Save asset(s) to disk") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path, paths, or glob to save"))
+			.Optional(TEXT("force"), TEXT("boolean"), TEXT("Save even when the asset is not dirty"))
+			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview which assets would be saved")),
+		FCortexCommandInfo{ TEXT("open_asset"), TEXT("Open asset editor tab(s)") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path, paths, or glob to open"))
+			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview which assets would be opened")),
+		FCortexCommandInfo{ TEXT("close_asset"), TEXT("Close asset editor tab(s)") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path, paths, or glob to close"))
+			.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save dirty assets before closing"))
+			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview which assets would be closed")),
+		FCortexCommandInfo{ TEXT("reload_asset"), TEXT("Discard changes and reload asset(s) from disk") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path, paths, or glob to reload"))
+			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview which assets would be reloaded")),
+		FCortexCommandInfo{ TEXT("delete_asset"), TEXT("Delete a single asset by path") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to delete")),
+		FCortexCommandInfo{ TEXT("delete_folder"), TEXT("Delete all assets in a folder") }
+			.Required(TEXT("folder_path"), TEXT("string"), TEXT("Folder path to delete"))
+			.Optional(TEXT("recursive"), TEXT("boolean"), TEXT("Delete assets in subfolders as well")),
+		FCortexCommandInfo{ TEXT("shutdown"), TEXT("Gracefully shut down the editor") }
+			.Optional(TEXT("force"), TEXT("boolean"), TEXT("Discard dirty packages before exit")),
 	};
 }
