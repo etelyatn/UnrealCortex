@@ -24,6 +24,14 @@ public:
     void HandleWorkerEvent(const FCortexStreamEvent& Event);
     void HandleProcessExited(const FString& Reason);
 
+    const TArray<TSharedPtr<FCortexChatEntry>>& GetChatEntries() const;
+    FString GetSessionId() const;
+    ECortexSessionState GetState() const;
+    void AddUserPromptEntry(const FString& Message);
+    void UpdateStreamingAssistantText(const FString& Text, bool bAppend);
+    void ReplaceStreamingEntry(const TArray<TSharedPtr<FCortexChatEntry>>& ReplacementEntries);
+    void ClearConversation();
+
     FOnCortexSessionStreamEvent OnStreamEvent;
     FOnCortexSessionTurnComplete OnTurnComplete;
     FOnCortexSessionStateChanged OnStateChanged;
@@ -44,6 +52,7 @@ private:
     ECortexSessionState GetStateForTest() const;
     void SetStateForTest(ECortexSessionState NewState);
     FString GetPendingPromptForTest() const;
+    TSharedPtr<FCortexChatEntry> GetCurrentStreamingEntry() const;
 
     FCortexSessionConfig Config;
     FCortexCliInfo CachedCliInfo;
@@ -51,4 +60,6 @@ private:
     TOptional<FString> PendingPrompt;
     TOptional<ECortexAccessMode> PendingAccessMode;
     TUniquePtr<FCortexCliWorker> Worker;
+    TArray<TSharedPtr<FCortexChatEntry>> ChatEntries;
+    TSharedPtr<FCortexChatEntry> CurrentStreamingEntry;
 };

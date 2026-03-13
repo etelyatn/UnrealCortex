@@ -44,8 +44,7 @@ bool FCortexCliSession::Cancel()
 
 void FCortexCliSession::NewChat()
 {
-    PendingPrompt.Reset();
-    PendingAccessMode.Reset();
+    ClearConversation();
     BroadcastStateChange(State.exchange(ECortexSessionState::Inactive), ECortexSessionState::Inactive, TEXT("New chat"));
 }
 
@@ -59,22 +58,58 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 {
     OnStreamEvent.Broadcast(Event);
 
-    if (Event.Type != ECortexStreamEventType::Result)
+    switch (Event.Type)
     {
+    case ECortexStreamEventType::ContentBlockDelta:
+        UpdateStreamingAssistantText(Event.Text, true);
+        return;
+
+    case ECortexStreamEventType::TextContent:
+        UpdateStreamingAssistantText(Event.Text, false);
+        return;
+
+    case ECortexStreamEventType::ToolUse:
+    {
+        TSharedPtr<FCortexChatEntry> ToolEntry = MakeShared<FCortexChatEntry>();
+        ToolEntry->Type = ECortexChatEntryType::ToolCall;
+        ToolEntry->ToolName = Event.ToolName;
+        ToolEntry->ToolCallId = Event.ToolCallId;
+        ToolEntry->ToolInput = Event.ToolInput;
+        ChatEntries.Add(ToolEntry);
         return;
     }
 
-    FCortexTurnResult Result;
-    Result.ResultText = Event.ResultText;
-    Result.bIsError = Event.bIsError;
-    Result.DurationMs = Event.DurationMs;
-    Result.NumTurns = Event.NumTurns;
-    Result.TotalCostUsd = Event.TotalCostUsd;
-    Result.SessionId = Event.SessionId;
+    case ECortexStreamEventType::ToolResult:
+        for (int32 Index = ChatEntries.Num() - 1; Index >= 0; --Index)
+        {
+            if (ChatEntries[Index]->Type == ECortexChatEntryType::ToolCall && ChatEntries[Index]->ToolCallId == Event.ToolCallId)
+            {
+                ChatEntries[Index]->ToolResult = Event.ToolResultContent;
+                ChatEntries[Index]->bIsToolComplete = true;
+                break;
+            }
+        }
+        return;
 
-    const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Idle);
-    BroadcastStateChange(PreviousState, ECortexSessionState::Idle, TEXT("Turn complete"));
-    OnTurnComplete.Broadcast(Result);
+    case ECortexStreamEventType::Result:
+    {
+        FCortexTurnResult Result;
+        Result.ResultText = Event.ResultText;
+        Result.bIsError = Event.bIsError;
+        Result.DurationMs = Event.DurationMs;
+        Result.NumTurns = Event.NumTurns;
+        Result.TotalCostUsd = Event.TotalCostUsd;
+        Result.SessionId = Event.SessionId;
+
+        const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Idle);
+        BroadcastStateChange(PreviousState, ECortexSessionState::Idle, TEXT("Turn complete"));
+        OnTurnComplete.Broadcast(Result);
+        return;
+    }
+
+    default:
+        return;
+    }
 }
 
 void FCortexCliSession::HandleProcessExited(const FString& Reason)
@@ -170,6 +205,78 @@ FString FCortexCliSession::BuildPromptEnvelope(const FString& Prompt) const
     return FString::Printf(TEXT("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"%s\"}}\n"), *EscapedPrompt);
 }
 
+const TArray<TSharedPtr<FCortexChatEntry>>& FCortexCliSession::GetChatEntries() const
+{
+    return ChatEntries;
+}
+
+FString FCortexCliSession::GetSessionId() const
+{
+    return Config.SessionId;
+}
+
+ECortexSessionState FCortexCliSession::GetState() const
+{
+    return State.load();
+}
+
+void FCortexCliSession::AddUserPromptEntry(const FString& Message)
+{
+    TSharedPtr<FCortexChatEntry> UserEntry = MakeShared<FCortexChatEntry>();
+    UserEntry->Type = ECortexChatEntryType::UserMessage;
+    UserEntry->Text = Message;
+    ChatEntries.Add(UserEntry);
+
+    CurrentStreamingEntry = MakeShared<FCortexChatEntry>();
+    CurrentStreamingEntry->Type = ECortexChatEntryType::AssistantMessage;
+    ChatEntries.Add(CurrentStreamingEntry);
+}
+
+void FCortexCliSession::UpdateStreamingAssistantText(const FString& Text, bool bAppend)
+{
+    if (!CurrentStreamingEntry.IsValid())
+    {
+        CurrentStreamingEntry = MakeShared<FCortexChatEntry>();
+        CurrentStreamingEntry->Type = ECortexChatEntryType::AssistantMessage;
+        ChatEntries.Add(CurrentStreamingEntry);
+    }
+
+    if (bAppend)
+    {
+        CurrentStreamingEntry->Text += Text;
+    }
+    else
+    {
+        CurrentStreamingEntry->Text = Text;
+    }
+}
+
+void FCortexCliSession::ReplaceStreamingEntry(const TArray<TSharedPtr<FCortexChatEntry>>& ReplacementEntries)
+{
+    if (!CurrentStreamingEntry.IsValid())
+    {
+        return;
+    }
+
+    const int32 CurrentIndex = ChatEntries.IndexOfByKey(CurrentStreamingEntry);
+    if (CurrentIndex == INDEX_NONE)
+    {
+        return;
+    }
+
+    ChatEntries.RemoveAt(CurrentIndex);
+    ChatEntries.Insert(ReplacementEntries, CurrentIndex);
+    CurrentStreamingEntry.Reset();
+}
+
+void FCortexCliSession::ClearConversation()
+{
+    PendingPrompt.Reset();
+    PendingAccessMode.Reset();
+    CurrentStreamingEntry.Reset();
+    ChatEntries.Reset();
+}
+
 bool FCortexCliSession::TransitionState(ECortexSessionState ExpectedState, ECortexSessionState NewState, const FString& Reason)
 {
     ECortexSessionState LocalExpected = ExpectedState;
@@ -204,4 +311,9 @@ void FCortexCliSession::SetStateForTest(ECortexSessionState NewState)
 FString FCortexCliSession::GetPendingPromptForTest() const
 {
     return PendingPrompt.Get(TEXT(""));
+}
+
+TSharedPtr<FCortexChatEntry> FCortexCliSession::GetCurrentStreamingEntry() const
+{
+    return CurrentStreamingEntry;
 }

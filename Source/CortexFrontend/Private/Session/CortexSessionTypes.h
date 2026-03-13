@@ -51,3 +51,24 @@ struct FCortexSessionStateChange
     ECortexSessionState NewState = ECortexSessionState::Inactive;
     FString Reason;
 };
+
+enum class ECortexChatEntryType : uint8
+{
+    UserMessage,
+    AssistantMessage,
+    ToolCall,
+    CodeBlock
+};
+
+struct FCortexChatEntry
+{
+    ECortexChatEntryType Type = ECortexChatEntryType::AssistantMessage;
+    FString Text;
+    FString Language;
+    FString ToolName;
+    FString ToolInput;
+    FString ToolResult;
+    FString ToolCallId;
+    int32 DurationMs = 0;
+    bool bIsToolComplete = false;
+};
