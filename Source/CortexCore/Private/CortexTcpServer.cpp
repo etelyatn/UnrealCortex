@@ -2,6 +2,7 @@
 #include "CortexTcpServer.h"
 #include "CortexCoreModule.h"
 #include "CortexCommandRouter.h"
+#include "CortexFileUtils.h"
 #include "CortexSettings.h"
 #include "Common/TcpListener.h"
 #include "SocketSubsystem.h"
@@ -122,9 +123,7 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 
 				const uint32 CurrentPID = FPlatformProcess::GetCurrentProcessId();
 				PortFilePath = FPaths::ProjectSavedDir() / FString::Printf(TEXT("CortexPort-%u.txt"), CurrentPID);
-				FString TempFilePath = PortFilePath + TEXT(".tmp");
-				FFileHelper::SaveStringToFile(JsonString, *TempFilePath);
-				IFileManager::Get().Move(*PortFilePath, *TempFilePath, true);
+				FCortexFileUtils::AtomicWriteFile(PortFilePath, JsonString);
 
 				UE_LOG(LogCortex, Log, TEXT("Wrote port file: %s (port %d, pid %u)"),
 					*PortFilePath,

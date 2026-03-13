@@ -2,6 +2,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "CortexTypes.h"
 #include "ICortexCommandRegistry.h"
 #include "ICortexDomainHandler.h"
@@ -24,6 +25,8 @@ class CORTEXCORE_API FCortexCommandRouter : public ICortexCommandRegistry
 	friend class FCortexBatchScope;
 
 public:
+	~FCortexCommandRouter();
+
 	/** Execute a command and return the result */
 	FCortexCommandResult Execute(
 		const FString& Command,
@@ -100,4 +103,9 @@ private:
 	static int32 BatchDepth;
 
 	TArray<FCortexRegisteredDomain> RegisteredDomains;
+	bool bCapabilitiesCacheDirty = false;
+	bool bCacheTickerScheduled = false;
+	FTSTicker::FDelegateHandle CacheTickerHandle;
+
+	bool WriteCapabilitiesCache();
 };
