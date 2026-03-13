@@ -1,0 +1,1676 @@
+{
+  "blueprint": {
+    "add_blueprint_function": {
+      "file": "tools/blueprint/structure.py",
+      "params": [
+        "asset_path",
+        "name",
+        "is_pure",
+        "access",
+        "inputs",
+        "outputs"
+      ]
+    },
+    "add_blueprint_variable": {
+      "file": "tools/blueprint/structure.py",
+      "params": [
+        "asset_path",
+        "name",
+        "type",
+        "default_value",
+        "is_exposed",
+        "category"
+      ]
+    },
+    "analyze_blueprint_for_migration": {
+      "file": "tools/blueprint/analysis.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "blueprint_search": {
+      "file": "tools/blueprint/search.py",
+      "params": [
+        "asset_path",
+        "query",
+        "search_in",
+        "case_sensitive",
+        "max_results"
+      ]
+    },
+    "cleanup_blueprint_migration": {
+      "file": "tools/blueprint/analysis.py",
+      "params": [
+        "asset_path",
+        "new_parent_class",
+        "remove_variables",
+        "remove_functions",
+        "migrated_overrides",
+        "compile"
+      ]
+    },
+    "compare_blueprints": {
+      "file": "tools/blueprint/migration.py",
+      "params": [
+        "source_path",
+        "target_path",
+        "sections"
+      ]
+    },
+    "compile_blueprint": {
+      "file": "tools/blueprint/assets.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "configure_timeline": {
+      "file": "tools/blueprint/structure.py",
+      "params": [
+        "asset_path",
+        "timeline_name",
+        "length",
+        "loop",
+        "tracks"
+      ]
+    },
+    "create_blueprint": {
+      "file": "tools/blueprint/assets.py",
+      "params": [
+        "name",
+        "path",
+        "type",
+        "parent_class"
+      ]
+    },
+    "create_blueprint_graph": {
+      "file": "tools/blueprint/composites.py",
+      "params": [
+        "name",
+        "path",
+        "type",
+        "parent_class",
+        "variables",
+        "functions",
+        "graph_name",
+        "nodes",
+        "connections",
+        "mode",
+        "asset_path"
+      ]
+    },
+    "delete_blueprint": {
+      "file": "tools/blueprint/assets.py",
+      "params": [
+        "asset_path",
+        "force"
+      ]
+    },
+    "delete_orphaned_nodes": {
+      "file": "tools/blueprint/migration.py",
+      "params": [
+        "asset_path",
+        "graph_name",
+        "compile"
+      ]
+    },
+    "duplicate_blueprint": {
+      "file": "tools/blueprint/assets.py",
+      "params": [
+        "asset_path",
+        "new_name",
+        "new_path"
+      ]
+    },
+    "fixup_redirectors": {
+      "file": "tools/blueprint/migration.py",
+      "params": [
+        "path",
+        "recursive"
+      ]
+    },
+    "get_blueprint_info": {
+      "file": "tools/blueprint/assets.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "get_class_defaults": {
+      "file": "tools/blueprint/class_defaults.py",
+      "params": [
+        "asset_path",
+        "properties",
+        "blueprint_path"
+      ]
+    },
+    "get_level_blueprint": {
+      "file": "tools/blueprint/level_blueprint.py",
+      "params": [
+        "map_path"
+      ]
+    },
+    "list_blueprints": {
+      "file": "tools/blueprint/assets.py",
+      "params": [
+        "path",
+        "type"
+      ]
+    },
+    "recompile_dependent_blueprints": {
+      "file": "tools/blueprint/migration.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "remove_blueprint_variable": {
+      "file": "tools/blueprint/structure.py",
+      "params": [
+        "asset_path",
+        "name"
+      ]
+    },
+    "remove_scs_component": {
+      "file": "tools/blueprint/migration.py",
+      "params": [
+        "asset_path",
+        "component_name",
+        "compile"
+      ]
+    },
+    "rename_blueprint": {
+      "file": "tools/blueprint/migration.py",
+      "params": [
+        "source_path",
+        "dest_path"
+      ]
+    },
+    "save_blueprint": {
+      "file": "tools/blueprint/assets.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "set_class_defaults": {
+      "file": "tools/blueprint/class_defaults.py",
+      "params": [
+        "asset_path",
+        "properties",
+        "compile",
+        "save",
+        "blueprint_path"
+      ]
+    },
+    "set_component_defaults": {
+      "file": "tools/blueprint/structure.py",
+      "params": [
+        "asset_path",
+        "component_name",
+        "properties"
+      ]
+    }
+  },
+  "core": {
+    "close_asset": {
+      "file": "tools/core/assets.py",
+      "params": [
+        "asset_path",
+        "save",
+        "dry_run"
+      ]
+    },
+    "delete_asset": {
+      "file": "tools/core/asset_deletion.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "delete_folder": {
+      "file": "tools/core/asset_deletion.py",
+      "params": [
+        "folder_path",
+        "recursive"
+      ]
+    },
+    "generate_project_schema": {
+      "file": "tools/core/schema.py",
+      "params": [
+        "domain"
+      ]
+    },
+    "open_asset": {
+      "file": "tools/core/assets.py",
+      "params": [
+        "asset_path",
+        "dry_run"
+      ]
+    },
+    "reload_asset": {
+      "file": "tools/core/assets.py",
+      "params": [
+        "asset_path",
+        "dry_run"
+      ]
+    },
+    "save_asset": {
+      "file": "tools/core/assets.py",
+      "params": [
+        "asset_path",
+        "force",
+        "dry_run"
+      ]
+    },
+    "schema_status": {
+      "file": "tools/core/schema.py",
+      "params": []
+    },
+    "switch_editor": {
+      "file": "tools/core/switch_editor.py",
+      "params": [
+        "pid"
+      ]
+    }
+  },
+  "data": {
+    "add_datatable_row": {
+      "file": "tools/data/datatables.py",
+      "params": [
+        "table_path",
+        "row_name",
+        "row_data"
+      ]
+    },
+    "batch_query": {
+      "file": "tools/data/datatables.py",
+      "params": [
+        "commands"
+      ]
+    },
+    "create_data_asset": {
+      "file": "tools/data/data_assets.py",
+      "params": [
+        "class_name",
+        "asset_path",
+        "properties"
+      ]
+    },
+    "create_datatable": {
+      "file": "tools/data/datatables.py",
+      "params": [
+        "table_path",
+        "row_struct"
+      ]
+    },
+    "delete_data_asset": {
+      "file": "tools/data/data_assets.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "delete_datatable_row": {
+      "file": "tools/data/datatables.py",
+      "params": [
+        "table_path",
+        "row_name"
+      ]
+    },
+    "get_curve_table": {
+      "file": "tools/data/curve_tables.py",
+      "params": [
+        "table_path",
+        "row_name"
+      ]
+    },
+    "get_data_asset": {
+      "file": "tools/data/data_assets.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "get_datatable_row": {
+      "file": "tools/data/datatables.py",
+      "params": [
+        "table_path",
+        "row_name"
+      ]
+    },
+    "get_datatable_schema": {
+      "file": "tools/data/datatables.py",
+      "params": [
+        "table_path",
+        "include_inherited"
+      ]
+    },
+    "get_struct_schema": {
+      "file": "tools/data/datatables.py",
+      "params": [
+        "struct_name",
+        "include_subtypes"
+      ]
+    },
+    "get_translations": {
+      "file": "tools/data/localization.py",
+      "params": [
+        "string_table_path",
+        "key_pattern"
+      ]
+    },
+    "import_datatable_json": {
+      "file": "tools/data/datatables.py",
+      "params": [
+        "table_path",
+        "rows",
+        "mode",
+        "dry_run"
+      ]
+    },
+    "list_curve_tables": {
+      "file": "tools/data/curve_tables.py",
+      "params": [
+        "path_filter"
+      ]
+    },
+    "list_data_assets": {
+      "file": "tools/data/data_assets.py",
+      "params": [
+        "class_filter",
+        "path_filter"
+      ]
+    },
+    "list_datatables": {
+      "file": "tools/data/datatables.py",
+      "params": [
+        "path_filter"
+      ]
+    },
+    "list_gameplay_tags": {
+      "file": "tools/data/gameplay_tags.py",
+      "params": [
+        "prefix",
+        "include_source_file"
+      ]
+    },
+    "list_string_tables": {
+      "file": "tools/data/localization.py",
+      "params": [
+        "path_filter"
+      ]
+    },
+    "query_datatable": {
+      "file": "tools/data/datatables.py",
+      "params": [
+        "table_path",
+        "row_name_pattern",
+        "row_names",
+        "fields",
+        "limit",
+        "offset"
+      ]
+    },
+    "register_gameplay_tag": {
+      "file": "tools/data/gameplay_tags.py",
+      "params": [
+        "tag",
+        "ini_file",
+        "dev_comment"
+      ]
+    },
+    "register_gameplay_tags": {
+      "file": "tools/data/gameplay_tags.py",
+      "params": [
+        "tags"
+      ]
+    },
+    "resolve_tags": {
+      "file": "tools/data/datatables.py",
+      "params": [
+        "table_path",
+        "tag_field",
+        "tags",
+        "fields"
+      ]
+    },
+    "search_assets": {
+      "file": "tools/data/assets.py",
+      "params": [
+        "query",
+        "class_filter",
+        "path_filter",
+        "limit"
+      ]
+    },
+    "search_datatable_content": {
+      "file": "tools/data/datatables.py",
+      "params": [
+        "table_path",
+        "search_text",
+        "fields",
+        "preview_fields",
+        "limit"
+      ]
+    },
+    "set_translation": {
+      "file": "tools/data/localization.py",
+      "params": [
+        "string_table_path",
+        "key",
+        "text"
+      ]
+    },
+    "update_curve_table_row": {
+      "file": "tools/data/curve_tables.py",
+      "params": [
+        "table_path",
+        "row_name",
+        "keys"
+      ]
+    },
+    "update_data_asset": {
+      "file": "tools/data/data_assets.py",
+      "params": [
+        "asset_path",
+        "properties",
+        "dry_run"
+      ]
+    },
+    "update_datatable_row": {
+      "file": "tools/data/datatables.py",
+      "params": [
+        "table_path",
+        "row_name",
+        "row_data",
+        "dry_run"
+      ]
+    },
+    "validate_gameplay_tag": {
+      "file": "tools/data/gameplay_tags.py",
+      "params": [
+        "tag"
+      ]
+    }
+  },
+  "editor": {
+    "capture_screenshot": {
+      "file": "tools/editor/viewport.py",
+      "params": [
+        "output_path"
+      ]
+    },
+    "execute_console_command": {
+      "file": "tools/editor/utilities.py",
+      "params": [
+        "command"
+      ]
+    },
+    "focus_actor": {
+      "file": "tools/editor/viewport.py",
+      "params": [
+        "actor_path"
+      ]
+    },
+    "focus_node": {
+      "file": "tools/editor/viewport.py",
+      "params": [
+        "asset_path",
+        "node_id",
+        "graph_name"
+      ]
+    },
+    "get_editor_state": {
+      "file": "tools/editor/utilities.py",
+      "params": []
+    },
+    "get_pie_state": {
+      "file": "tools/editor/pie.py",
+      "params": []
+    },
+    "get_recent_logs": {
+      "file": "tools/editor/utilities.py",
+      "params": [
+        "severity",
+        "since_seconds",
+        "since_cursor",
+        "category"
+      ]
+    },
+    "get_viewport_info": {
+      "file": "tools/editor/viewport.py",
+      "params": []
+    },
+    "get_world_info": {
+      "file": "tools/editor/utilities.py",
+      "params": []
+    },
+    "pause_pie": {
+      "file": "tools/editor/pie.py",
+      "params": []
+    },
+    "press_key": {
+      "file": "tools/editor/composites.py",
+      "params": [
+        "key",
+        "action",
+        "duration_ms"
+      ]
+    },
+    "restart_editor": {
+      "file": "tools/editor/composites.py",
+      "params": [
+        "timeout"
+      ]
+    },
+    "restart_pie": {
+      "file": "tools/editor/pie.py",
+      "params": [
+        "mode"
+      ]
+    },
+    "resume_pie": {
+      "file": "tools/editor/pie.py",
+      "params": []
+    },
+    "run_input_sequence": {
+      "file": "tools/editor/composites.py",
+      "params": [
+        "steps",
+        "timeout"
+      ]
+    },
+    "set_time_dilation": {
+      "file": "tools/editor/utilities.py",
+      "params": [
+        "factor"
+      ]
+    },
+    "set_viewport_camera": {
+      "file": "tools/editor/viewport.py",
+      "params": [
+        "x",
+        "y",
+        "z",
+        "pitch",
+        "yaw",
+        "roll"
+      ]
+    },
+    "set_viewport_mode": {
+      "file": "tools/editor/viewport.py",
+      "params": [
+        "mode"
+      ]
+    },
+    "shutdown_editor": {
+      "file": "tools/editor/composites.py",
+      "params": [
+        "force"
+      ]
+    },
+    "start_pie": {
+      "file": "tools/editor/pie.py",
+      "params": [
+        "mode",
+        "map",
+        "game_mode"
+      ]
+    },
+    "start_pie_session": {
+      "file": "tools/editor/composites.py",
+      "params": [
+        "mode",
+        "map",
+        "game_mode"
+      ]
+    },
+    "stop_pie": {
+      "file": "tools/editor/pie.py",
+      "params": []
+    },
+    "stop_pie_session": {
+      "file": "tools/editor/composites.py",
+      "params": []
+    }
+  },
+  "graph": {
+    "graph_add_node": {
+      "file": "tools/graph/graph.py",
+      "params": [
+        "asset_path",
+        "node_class",
+        "graph_name",
+        "position",
+        "params"
+      ]
+    },
+    "graph_auto_layout": {
+      "file": "tools/graph/layout.py",
+      "params": [
+        "asset_path",
+        "mode",
+        "graph_name",
+        "horizontal_spacing",
+        "vertical_spacing"
+      ]
+    },
+    "graph_connect": {
+      "file": "tools/graph/graph.py",
+      "params": [
+        "asset_path",
+        "source_node",
+        "source_pin",
+        "target_node",
+        "target_pin",
+        "graph_name"
+      ]
+    },
+    "graph_disconnect": {
+      "file": "tools/graph/graph.py",
+      "params": [
+        "asset_path",
+        "node_id",
+        "pin_name",
+        "graph_name"
+      ]
+    },
+    "graph_get_node": {
+      "file": "tools/graph/graph.py",
+      "params": [
+        "asset_path",
+        "node_id",
+        "graph_name"
+      ]
+    },
+    "graph_list_graphs": {
+      "file": "tools/graph/graph.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "graph_list_nodes": {
+      "file": "tools/graph/graph.py",
+      "params": [
+        "asset_path",
+        "graph_name"
+      ]
+    },
+    "graph_remove_node": {
+      "file": "tools/graph/graph.py",
+      "params": [
+        "asset_path",
+        "node_id",
+        "graph_name"
+      ]
+    },
+    "graph_search_nodes": {
+      "file": "tools/graph/graph.py",
+      "params": [
+        "asset_path",
+        "node_class",
+        "function_name",
+        "display_name"
+      ]
+    },
+    "graph_set_pin_value": {
+      "file": "tools/graph/graph.py",
+      "params": [
+        "asset_path",
+        "node_id",
+        "pin_name",
+        "value",
+        "graph_name"
+      ]
+    }
+  },
+  "level": {
+    "add_component": {
+      "file": "tools/level/components.py",
+      "params": [
+        "actor",
+        "class_name",
+        "name"
+      ]
+    },
+    "attach_actor": {
+      "file": "tools/level/organization.py",
+      "params": [
+        "actor",
+        "parent",
+        "socket"
+      ]
+    },
+    "delete_actor": {
+      "file": "tools/level/actors.py",
+      "params": [
+        "actor",
+        "confirm_class"
+      ]
+    },
+    "describe_class": {
+      "file": "tools/level/discovery.py",
+      "params": [
+        "class_name"
+      ]
+    },
+    "detach_actor": {
+      "file": "tools/level/organization.py",
+      "params": [
+        "actor"
+      ]
+    },
+    "duplicate_actor": {
+      "file": "tools/level/actors.py",
+      "params": [
+        "actor",
+        "offset"
+      ]
+    },
+    "find_actors": {
+      "file": "tools/level/queries.py",
+      "params": [
+        "pattern"
+      ]
+    },
+    "get_actor": {
+      "file": "tools/level/transforms.py",
+      "params": [
+        "actor"
+      ]
+    },
+    "get_actor_property": {
+      "file": "tools/level/transforms.py",
+      "params": [
+        "actor",
+        "property_path"
+      ]
+    },
+    "get_bounds": {
+      "file": "tools/level/queries.py",
+      "params": [
+        "class_filter",
+        "tags",
+        "folder",
+        "region"
+      ]
+    },
+    "get_component_property": {
+      "file": "tools/level/components.py",
+      "params": [
+        "actor",
+        "component",
+        "property_path"
+      ]
+    },
+    "get_info": {
+      "file": "tools/level/streaming.py",
+      "params": []
+    },
+    "get_selection": {
+      "file": "tools/level/queries.py",
+      "params": []
+    },
+    "group_actors": {
+      "file": "tools/level/organization.py",
+      "params": [
+        "actors"
+      ]
+    },
+    "level_batch": {
+      "file": "tools/level/composites.py",
+      "params": [
+        "operations",
+        "stop_on_error",
+        "save"
+      ]
+    },
+    "list_actor_classes": {
+      "file": "tools/level/discovery.py",
+      "params": [
+        "category"
+      ]
+    },
+    "list_actors": {
+      "file": "tools/level/queries.py",
+      "params": [
+        "class_filter",
+        "tags",
+        "folder",
+        "region",
+        "limit",
+        "offset"
+      ]
+    },
+    "list_component_classes": {
+      "file": "tools/level/discovery.py",
+      "params": [
+        "category"
+      ]
+    },
+    "list_components": {
+      "file": "tools/level/components.py",
+      "params": [
+        "actor"
+      ]
+    },
+    "list_data_layers": {
+      "file": "tools/level/streaming.py",
+      "params": []
+    },
+    "list_sublevels": {
+      "file": "tools/level/streaming.py",
+      "params": []
+    },
+    "load_sublevel": {
+      "file": "tools/level/streaming.py",
+      "params": [
+        "sublevel"
+      ]
+    },
+    "remove_component": {
+      "file": "tools/level/components.py",
+      "params": [
+        "actor",
+        "component"
+      ]
+    },
+    "rename_actor": {
+      "file": "tools/level/actors.py",
+      "params": [
+        "actor",
+        "label"
+      ]
+    },
+    "save_all": {
+      "file": "tools/level/streaming.py",
+      "params": []
+    },
+    "save_level": {
+      "file": "tools/level/streaming.py",
+      "params": []
+    },
+    "select_actors": {
+      "file": "tools/level/queries.py",
+      "params": [
+        "actors",
+        "add"
+      ]
+    },
+    "set_actor_property": {
+      "file": "tools/level/transforms.py",
+      "params": [
+        "actor",
+        "property_path",
+        "value"
+      ]
+    },
+    "set_component_property": {
+      "file": "tools/level/components.py",
+      "params": [
+        "actor",
+        "component",
+        "property_path",
+        "value"
+      ]
+    },
+    "set_data_layer": {
+      "file": "tools/level/streaming.py",
+      "params": [
+        "actors",
+        "data_layer"
+      ]
+    },
+    "set_folder": {
+      "file": "tools/level/organization.py",
+      "params": [
+        "actor",
+        "folder"
+      ]
+    },
+    "set_sublevel_visibility": {
+      "file": "tools/level/streaming.py",
+      "params": [
+        "sublevel",
+        "visible"
+      ]
+    },
+    "set_tags": {
+      "file": "tools/level/organization.py",
+      "params": [
+        "actor",
+        "tags"
+      ]
+    },
+    "set_transform": {
+      "file": "tools/level/transforms.py",
+      "params": [
+        "actor",
+        "location",
+        "rotation",
+        "scale"
+      ]
+    },
+    "spawn_actor": {
+      "file": "tools/level/actors.py",
+      "params": [
+        "class_name",
+        "location",
+        "rotation",
+        "scale",
+        "label",
+        "folder",
+        "mesh",
+        "material"
+      ]
+    },
+    "ungroup_actors": {
+      "file": "tools/level/organization.py",
+      "params": [
+        "group"
+      ]
+    },
+    "unload_sublevel": {
+      "file": "tools/level/streaming.py",
+      "params": [
+        "sublevel"
+      ]
+    }
+  },
+  "material": {
+    "add_collection_parameter": {
+      "file": "tools/material/collections.py",
+      "params": [
+        "asset_path",
+        "parameter_name",
+        "parameter_type",
+        "default_value"
+      ]
+    },
+    "add_material_node": {
+      "file": "tools/material/graph.py",
+      "params": [
+        "asset_path",
+        "expression_class",
+        "position_x",
+        "position_y"
+      ]
+    },
+    "connect_material_nodes": {
+      "file": "tools/material/graph.py",
+      "params": [
+        "asset_path",
+        "source_node",
+        "source_output",
+        "target_node",
+        "target_input"
+      ]
+    },
+    "create_dynamic_instance": {
+      "file": "tools/material/dynamic.py",
+      "params": [
+        "actor_path",
+        "component_name",
+        "slot_index",
+        "source_material",
+        "parameters"
+      ]
+    },
+    "create_instance": {
+      "file": "tools/material/assets.py",
+      "params": [
+        "asset_path",
+        "name",
+        "parent_material"
+      ]
+    },
+    "create_material": {
+      "file": "tools/material/assets.py",
+      "params": [
+        "asset_path",
+        "name"
+      ]
+    },
+    "create_material_collection": {
+      "file": "tools/material/collections.py",
+      "params": [
+        "asset_path",
+        "name"
+      ]
+    },
+    "create_material_graph": {
+      "file": "tools/material/composites.py",
+      "params": [
+        "name",
+        "path",
+        "nodes",
+        "connections",
+        "material_properties",
+        "instances"
+      ]
+    },
+    "create_material_instance": {
+      "file": "tools/material/composites.py",
+      "params": [
+        "name",
+        "path",
+        "parent",
+        "parameters"
+      ]
+    },
+    "delete_instance": {
+      "file": "tools/material/assets.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "delete_material": {
+      "file": "tools/material/assets.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "delete_material_collection": {
+      "file": "tools/material/collections.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "destroy_dynamic_instance": {
+      "file": "tools/material/dynamic.py",
+      "params": [
+        "actor_path",
+        "component_name",
+        "slot_index"
+      ]
+    },
+    "disconnect_material_nodes": {
+      "file": "tools/material/graph.py",
+      "params": [
+        "asset_path",
+        "target_node",
+        "target_input"
+      ]
+    },
+    "get_dynamic_instance": {
+      "file": "tools/material/dynamic.py",
+      "params": [
+        "actor_path",
+        "component_name",
+        "slot_index"
+      ]
+    },
+    "get_dynamic_parameter": {
+      "file": "tools/material/dynamic.py",
+      "params": [
+        "actor_path",
+        "name",
+        "component_name",
+        "slot_index"
+      ]
+    },
+    "get_instance": {
+      "file": "tools/material/assets.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "get_material": {
+      "file": "tools/material/assets.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "get_material_collection": {
+      "file": "tools/material/collections.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "get_material_node": {
+      "file": "tools/material/graph.py",
+      "params": [
+        "asset_path",
+        "node_id"
+      ]
+    },
+    "get_material_node_pins": {
+      "file": "tools/material/graph.py",
+      "params": [
+        "asset_path",
+        "node_id"
+      ]
+    },
+    "get_parameter": {
+      "file": "tools/material/parameters.py",
+      "params": [
+        "asset_path",
+        "parameter_name"
+      ]
+    },
+    "list_dynamic_instances": {
+      "file": "tools/material/dynamic.py",
+      "params": [
+        "actor_path"
+      ]
+    },
+    "list_dynamic_parameters": {
+      "file": "tools/material/dynamic.py",
+      "params": [
+        "actor_path",
+        "component_name",
+        "slot_index"
+      ]
+    },
+    "list_instances": {
+      "file": "tools/material/assets.py",
+      "params": [
+        "path",
+        "parent_material"
+      ]
+    },
+    "list_material_collections": {
+      "file": "tools/material/collections.py",
+      "params": [
+        "path",
+        "recursive"
+      ]
+    },
+    "list_material_connections": {
+      "file": "tools/material/graph.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "list_material_nodes": {
+      "file": "tools/material/graph.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "list_materials": {
+      "file": "tools/material/assets.py",
+      "params": [
+        "path",
+        "recursive"
+      ]
+    },
+    "list_parameters": {
+      "file": "tools/material/parameters.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "remove_collection_parameter": {
+      "file": "tools/material/collections.py",
+      "params": [
+        "asset_path",
+        "parameter_name"
+      ]
+    },
+    "remove_material_node": {
+      "file": "tools/material/graph.py",
+      "params": [
+        "asset_path",
+        "node_id"
+      ]
+    },
+    "reset_dynamic_parameter": {
+      "file": "tools/material/dynamic.py",
+      "params": [
+        "actor_path",
+        "name",
+        "component_name",
+        "slot_index"
+      ]
+    },
+    "reset_parameter": {
+      "file": "tools/material/parameters.py",
+      "params": [
+        "asset_path",
+        "parameter_name"
+      ]
+    },
+    "set_collection_parameter": {
+      "file": "tools/material/collections.py",
+      "params": [
+        "asset_path",
+        "parameter_name",
+        "value"
+      ]
+    },
+    "set_dynamic_parameter": {
+      "file": "tools/material/dynamic.py",
+      "params": [
+        "actor_path",
+        "name",
+        "parameter_type",
+        "value",
+        "component_name",
+        "slot_index"
+      ]
+    },
+    "set_dynamic_parameters": {
+      "file": "tools/material/dynamic.py",
+      "params": [
+        "actor_path",
+        "parameters",
+        "component_name",
+        "slot_index"
+      ]
+    },
+    "set_material_node_property": {
+      "file": "tools/material/graph.py",
+      "params": [
+        "asset_path",
+        "node_id",
+        "property_name",
+        "value"
+      ]
+    },
+    "set_material_property": {
+      "file": "tools/material/assets.py",
+      "params": [
+        "asset_path",
+        "property_name",
+        "value"
+      ]
+    },
+    "set_parameter": {
+      "file": "tools/material/parameters.py",
+      "params": [
+        "asset_path",
+        "parameter_name",
+        "parameter_type",
+        "value"
+      ]
+    },
+    "set_parameters": {
+      "file": "tools/material/parameters.py",
+      "params": [
+        "asset_path",
+        "parameters"
+      ]
+    }
+  },
+  "qa": {
+    "assert_game_state": {
+      "file": "tools/qa/assertions.py",
+      "params": [
+        "type",
+        "actor",
+        "property",
+        "value",
+        "expected",
+        "message"
+      ]
+    },
+    "get_actor_details": {
+      "file": "tools/qa/world.py",
+      "params": [
+        "actor"
+      ]
+    },
+    "get_player_details": {
+      "file": "tools/qa/world.py",
+      "params": []
+    },
+    "interact_with": {
+      "file": "tools/qa/actions.py",
+      "params": [
+        "target",
+        "key",
+        "duration"
+      ]
+    },
+    "look_at_target": {
+      "file": "tools/qa/actions.py",
+      "params": [
+        "target"
+      ]
+    },
+    "move_player_to": {
+      "file": "tools/qa/actions.py",
+      "params": [
+        "target",
+        "timeout",
+        "acceptance_radius"
+      ]
+    },
+    "observe_game_state": {
+      "file": "tools/qa/world.py",
+      "params": [
+        "radius",
+        "max_actors",
+        "include_los",
+        "interaction_range"
+      ]
+    },
+    "run_scenario_inline": {
+      "file": "tools/qa/composites.py",
+      "params": [
+        "scenario_name",
+        "steps",
+        "verbose"
+      ]
+    },
+    "set_actor_property": {
+      "file": "tools/qa/setup.py",
+      "params": [
+        "actor",
+        "property",
+        "value"
+      ]
+    },
+    "set_random_seed": {
+      "file": "tools/qa/setup.py",
+      "params": [
+        "seed"
+      ]
+    },
+    "teleport_player": {
+      "file": "tools/qa/setup.py",
+      "params": [
+        "location",
+        "rotation"
+      ]
+    },
+    "test_step": {
+      "file": "tools/qa/composites.py",
+      "params": [
+        "action",
+        "wait",
+        "assertion",
+        "screenshot_name"
+      ]
+    },
+    "wait_for_condition": {
+      "file": "tools/qa/actions.py",
+      "params": [
+        "type",
+        "timeout",
+        "actor",
+        "property",
+        "value"
+      ]
+    }
+  },
+  "reflect": {
+    "get_dependencies": {
+      "file": "tools/reflect/dependencies.py",
+      "params": [
+        "asset_path",
+        "category",
+        "limit"
+      ]
+    },
+    "get_referencers": {
+      "file": "tools/reflect/referencers.py",
+      "params": [
+        "asset_path",
+        "category",
+        "limit"
+      ]
+    },
+    "impact_analysis": {
+      "file": "tools/reflect/impact.py",
+      "params": [
+        "target_class",
+        "symbol",
+        "change_type",
+        "deep_scan",
+        "path_filter",
+        "max_blueprints"
+      ]
+    },
+    "query_class_context": {
+      "file": "tools/reflect/context.py",
+      "params": [
+        "class_name",
+        "detail"
+      ]
+    },
+    "query_class_detail": {
+      "file": "tools/reflect/detail.py",
+      "params": [
+        "class_name",
+        "include_inherited",
+        "detail"
+      ]
+    },
+    "query_class_hierarchy": {
+      "file": "tools/reflect/hierarchy.py",
+      "params": [
+        "root",
+        "depth",
+        "include_blueprint",
+        "include_engine",
+        "max_results"
+      ]
+    },
+    "query_overrides": {
+      "file": "tools/reflect/overrides.py",
+      "params": [
+        "class_name",
+        "depth",
+        "limit"
+      ]
+    },
+    "query_usages": {
+      "file": "tools/reflect/usages.py",
+      "params": [
+        "symbol",
+        "class_name",
+        "scope",
+        "deep_scan",
+        "path_filter",
+        "limit",
+        "max_blueprints"
+      ]
+    },
+    "rebuild_graph_cache": {
+      "file": "tools/reflect/cache.py",
+      "params": []
+    },
+    "reflect_cache_status": {
+      "file": "tools/reflect/cache.py",
+      "params": []
+    },
+    "scan_project": {
+      "file": "tools/reflect/cache.py",
+      "params": [
+        "root",
+        "project_only"
+      ]
+    }
+  },
+  "umg": {
+    "add_widget": {
+      "file": "tools/umg/widget_tree.py",
+      "params": [
+        "asset_path",
+        "widget_class",
+        "name",
+        "parent_name",
+        "slot_index"
+      ]
+    },
+    "create_animation": {
+      "file": "tools/umg/widget_animations.py",
+      "params": [
+        "asset_path",
+        "animation_name",
+        "length"
+      ]
+    },
+    "create_widget_screen": {
+      "file": "tools/umg/composites.py",
+      "params": [
+        "name",
+        "path",
+        "widgets",
+        "animations"
+      ]
+    },
+    "duplicate_widget": {
+      "file": "tools/umg/widget_tree.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "new_name",
+        "name_prefix"
+      ]
+    },
+    "get_property": {
+      "file": "tools/umg/widget_properties.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "property_path"
+      ]
+    },
+    "get_schema": {
+      "file": "tools/umg/widget_properties.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "category"
+      ]
+    },
+    "get_tree": {
+      "file": "tools/umg/widget_tree.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "get_widget": {
+      "file": "tools/umg/widget_tree.py",
+      "params": [
+        "asset_path",
+        "widget_name"
+      ]
+    },
+    "list_animations": {
+      "file": "tools/umg/widget_animations.py",
+      "params": [
+        "asset_path"
+      ]
+    },
+    "list_widget_classes": {
+      "file": "tools/umg/widget_tree.py",
+      "params": [
+        "category"
+      ]
+    },
+    "remove_animation": {
+      "file": "tools/umg/widget_animations.py",
+      "params": [
+        "asset_path",
+        "animation_name"
+      ]
+    },
+    "remove_widget": {
+      "file": "tools/umg/widget_tree.py",
+      "params": [
+        "asset_path",
+        "widget_name"
+      ]
+    },
+    "reparent": {
+      "file": "tools/umg/widget_tree.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "new_parent",
+        "slot_index"
+      ]
+    },
+    "set_alignment": {
+      "file": "tools/umg/widget_properties.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "horizontal",
+        "vertical"
+      ]
+    },
+    "set_anchor": {
+      "file": "tools/umg/widget_properties.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "preset"
+      ]
+    },
+    "set_brush": {
+      "file": "tools/umg/widget_properties.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "target",
+        "color",
+        "draw_as",
+        "corner_radius"
+      ]
+    },
+    "set_color": {
+      "file": "tools/umg/widget_properties.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "color",
+        "target"
+      ]
+    },
+    "set_font": {
+      "file": "tools/umg/widget_properties.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "size",
+        "typeface",
+        "letter_spacing",
+        "family"
+      ]
+    },
+    "set_padding": {
+      "file": "tools/umg/widget_properties.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "padding",
+        "target"
+      ]
+    },
+    "set_property": {
+      "file": "tools/umg/widget_properties.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "property_path",
+        "value"
+      ]
+    },
+    "set_size": {
+      "file": "tools/umg/widget_properties.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "width",
+        "height",
+        "size_rule",
+        "fill_ratio"
+      ]
+    },
+    "set_text": {
+      "file": "tools/umg/widget_properties.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "text"
+      ]
+    },
+    "set_visibility": {
+      "file": "tools/umg/widget_properties.py",
+      "params": [
+        "asset_path",
+        "widget_name",
+        "visibility"
+      ]
+    }
+  }
+}
