@@ -761,6 +761,25 @@ FCortexCommandResult FCortexCommandRouter::HandleGetCapabilities(const TSharedPt
 			TSharedPtr<FJsonObject> CmdObj = MakeShared<FJsonObject>();
 			CmdObj->SetStringField(TEXT("name"), CmdInfo.Name);
 			CmdObj->SetStringField(TEXT("description"), CmdInfo.Description);
+
+			if (CmdInfo.Params.Num() > 0)
+			{
+				TArray<TSharedPtr<FJsonValue>> ParamsArray;
+				ParamsArray.Reserve(CmdInfo.Params.Num());
+
+				for (const FCortexParamInfo& ParamInfo : CmdInfo.Params)
+				{
+					TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+					ParamObj->SetStringField(TEXT("name"), ParamInfo.Name);
+					ParamObj->SetStringField(TEXT("type"), ParamInfo.Type);
+					ParamObj->SetBoolField(TEXT("required"), ParamInfo.bRequired);
+					ParamObj->SetStringField(TEXT("description"), ParamInfo.Description);
+					ParamsArray.Add(MakeShared<FJsonValueObject>(ParamObj));
+				}
+
+				CmdObj->SetArrayField(TEXT("params"), ParamsArray);
+			}
+
 			CommandArray.Add(MakeShared<FJsonValueObject>(CmdObj));
 		}
 		DomainObj->SetArrayField(TEXT("commands"), CommandArray);
