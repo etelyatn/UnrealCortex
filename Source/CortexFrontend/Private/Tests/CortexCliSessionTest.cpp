@@ -131,11 +131,7 @@ bool FCortexCliSessionCancelTransitionsTest::RunTest(const FString& Parameters)
     Session.SetStateForTest(ECortexSessionState::Processing);
 
     TestTrue(TEXT("Cancel should be accepted while processing"), Session.Cancel());
-    TestEqual(TEXT("Cancel should move session into cancelling"), Session.GetStateForTest(), ECortexSessionState::Cancelling);
-
-    Session.HandleProcessExited(TEXT("cancel complete"));
-
-    TestEqual(TEXT("Exited cancelling session should move to respawning"), Session.GetStateForTest(), ECortexSessionState::Respawning);
+    TestEqual(TEXT("State-only cancel should move directly to respawning when no process exists"), Session.GetStateForTest(), ECortexSessionState::Respawning);
     return true;
 }
 

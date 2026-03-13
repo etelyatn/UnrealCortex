@@ -1,9 +1,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/Event.h"
 #include "Process/CortexCliDiscovery.h"
 #include "Process/CortexStreamEvent.h"
 #include "Session/CortexSessionTypes.h"
+#include <atomic>
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnCortexSessionStreamEvent, const FCortexStreamEvent&);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnCortexSessionTurnComplete, const FCortexTurnResult&);
@@ -37,6 +40,7 @@ public:
     FOnCortexSessionStateChanged OnStateChanged;
 
 private:
+    friend class FCortexCliWorker;
     friend class FCortexCliSessionBuildInitialLaunchArgsTest;
     friend class FCortexCliSessionBuildResumeLaunchArgsTest;
     friend class FCortexCliSessionBuildPromptEnvelopeTest;
@@ -47,6 +51,10 @@ private:
     FString BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const;
     FString BuildAllowedToolsArg(ECortexAccessMode AccessMode) const;
     FString BuildPromptEnvelope(const FString& Prompt) const;
+    bool SpawnProcess(ECortexAccessMode AccessMode, bool bResumeSession);
+    void CleanupProcess();
+    void WakeWorker();
+    FString ConsumePendingPromptEnvelope();
     bool TransitionState(ECortexSessionState ExpectedState, ECortexSessionState NewState, const FString& Reason = FString());
     void BroadcastStateChange(ECortexSessionState PreviousState, ECortexSessionState NewState, const FString& Reason);
     ECortexSessionState GetStateForTest() const;
@@ -60,6 +68,13 @@ private:
     TOptional<FString> PendingPrompt;
     TOptional<ECortexAccessMode> PendingAccessMode;
     TUniquePtr<FCortexCliWorker> Worker;
+    FProcHandle ProcessHandle;
+    void* StdoutReadPipe = nullptr;
+    void* StdoutWritePipe = nullptr;
+    void* StdinReadPipe = nullptr;
+    void* StdinWritePipe = nullptr;
+    FEvent* PromptReadyEvent = nullptr;
+    FCriticalSection PromptMutex;
     TArray<TSharedPtr<FCortexChatEntry>> ChatEntries;
     TSharedPtr<FCortexChatEntry> CurrentStreamingEntry;
 };

@@ -1,5 +1,8 @@
 #include "Session/CortexCliSession.h"
 
+#include "Async/Async.h"
+#include "HAL/PlatformProcess.h"
+#include "Misc/Paths.h"
 #include "Session/CortexCliWorker.h"
 
 FCortexCliSession::FCortexCliSession(const FCortexSessionConfig& InConfig)
@@ -10,36 +13,70 @@ FCortexCliSession::FCortexCliSession(const FCortexSessionConfig& InConfig)
 
 bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
 {
-    const ECortexSessionState CurrentState = State.load();
-    switch (CurrentState)
+    PendingPrompt = Request.Prompt;
+    PendingAccessMode = Request.AccessMode;
+
+    ECortexSessionState CurrentState = State.load();
+    if (CurrentState == ECortexSessionState::Inactive)
     {
-    case ECortexSessionState::Inactive:
-        PendingPrompt = Request.Prompt;
-        PendingAccessMode = Request.AccessMode;
-        BroadcastStateChange(CurrentState, ECortexSessionState::Spawning, TEXT("Initial prompt queued"));
+        BroadcastStateChange(CurrentState, ECortexSessionState::Spawning, TEXT("Spawning persistent Claude CLI session"));
         State.store(ECortexSessionState::Spawning);
-        return true;
+        if (!SpawnProcess(Request.AccessMode, false))
+        {
+            const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Inactive);
+            BroadcastStateChange(PreviousState, ECortexSessionState::Inactive, TEXT("Failed to spawn Claude CLI"));
+            return false;
+        }
 
-    case ECortexSessionState::Spawning:
-        PendingPrompt = Request.Prompt;
-        PendingAccessMode = Request.AccessMode;
-        return true;
+        CurrentState = State.load();
+    }
 
-    case ECortexSessionState::Idle:
-        PendingPrompt = Request.Prompt;
-        PendingAccessMode = Request.AccessMode;
-        BroadcastStateChange(CurrentState, ECortexSessionState::Processing, TEXT("Prompt dispatched"));
-        State.store(ECortexSessionState::Processing);
-        return true;
+    if (CurrentState == ECortexSessionState::Respawning)
+    {
+        if (!SpawnProcess(Request.AccessMode, true))
+        {
+            const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Inactive);
+            BroadcastStateChange(PreviousState, ECortexSessionState::Inactive, TEXT("Failed to resume Claude CLI session"));
+            return false;
+        }
 
-    default:
+        CurrentState = State.load();
+    }
+
+    if (CurrentState == ECortexSessionState::Spawning)
+    {
+        return true;
+    }
+
+    if (CurrentState != ECortexSessionState::Idle)
+    {
         return false;
     }
+
+    const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Processing);
+    BroadcastStateChange(PreviousState, ECortexSessionState::Processing, TEXT("Prompt dispatched"));
+    WakeWorker();
+    return true;
 }
 
 bool FCortexCliSession::Cancel()
 {
-    return TransitionState(ECortexSessionState::Processing, ECortexSessionState::Cancelling, TEXT("Cancellation requested"));
+    if (!TransitionState(ECortexSessionState::Processing, ECortexSessionState::Cancelling, TEXT("Cancellation requested")))
+    {
+        return false;
+    }
+
+    if (ProcessHandle.IsValid())
+    {
+        FPlatformProcess::TerminateProc(ProcessHandle, true);
+        HandleProcessExited(TEXT("Cancellation requested"));
+    }
+    else
+    {
+        const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Respawning);
+        BroadcastStateChange(PreviousState, ECortexSessionState::Respawning, TEXT("Cancellation requested"));
+    }
+    return true;
 }
 
 void FCortexCliSession::NewChat()
@@ -50,6 +87,7 @@ void FCortexCliSession::NewChat()
 
 void FCortexCliSession::Shutdown()
 {
+    CleanupProcess();
     const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Terminated);
     BroadcastStateChange(PreviousState, ECortexSessionState::Terminated, TEXT("Shutdown"));
 }
@@ -117,11 +155,23 @@ void FCortexCliSession::HandleProcessExited(const FString& Reason)
     const ECortexSessionState CurrentState = State.load();
     if (CurrentState == ECortexSessionState::Cancelling)
     {
+        CleanupProcess();
         BroadcastStateChange(CurrentState, ECortexSessionState::Respawning, Reason);
         State.store(ECortexSessionState::Respawning);
+        if (!CachedCliInfo.bIsValid)
+        {
+            return;
+        }
+        if (!SpawnProcess(PendingAccessMode.Get(ECortexAccessMode::ReadOnly), true))
+        {
+            const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Inactive);
+            BroadcastStateChange(PreviousState, ECortexSessionState::Inactive, TEXT("Failed to respawn Claude CLI"));
+            return;
+        }
         return;
     }
 
+    CleanupProcess();
     BroadcastStateChange(CurrentState, ECortexSessionState::Inactive, Reason);
     State.store(ECortexSessionState::Inactive);
 }
@@ -203,6 +253,121 @@ FString FCortexCliSession::BuildPromptEnvelope(const FString& Prompt) const
     EscapedPrompt.ReplaceInline(TEXT("\r"), TEXT("\\r"));
     EscapedPrompt.ReplaceInline(TEXT("\t"), TEXT("\\t"));
     return FString::Printf(TEXT("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"%s\"}}\n"), *EscapedPrompt);
+}
+
+bool FCortexCliSession::SpawnProcess(ECortexAccessMode AccessMode, bool bResumeSession)
+{
+    CleanupProcess();
+
+    CachedCliInfo = FCortexCliDiscovery::FindClaude();
+    if (!CachedCliInfo.bIsValid)
+    {
+        return false;
+    }
+
+    if (!FPlatformProcess::CreatePipe(StdoutReadPipe, StdoutWritePipe, false))
+    {
+        return false;
+    }
+
+    if (!FPlatformProcess::CreatePipe(StdinReadPipe, StdinWritePipe, true))
+    {
+        FPlatformProcess::ClosePipe(StdoutReadPipe, StdoutWritePipe);
+        StdoutReadPipe = nullptr;
+        StdoutWritePipe = nullptr;
+        return false;
+    }
+
+    const FString WorkingDirectory = !Config.WorkingDirectory.IsEmpty()
+        ? Config.WorkingDirectory
+        : FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+    const FString CommandLine = BuildLaunchCommandLine(bResumeSession, AccessMode);
+
+    ProcessHandle = FPlatformProcess::CreateProc(
+        *CachedCliInfo.Path,
+        *CommandLine,
+        false,
+        true,
+        false,
+        nullptr,
+        0,
+        *WorkingDirectory,
+        StdoutWritePipe,
+        StdinReadPipe);
+
+    if (!ProcessHandle.IsValid())
+    {
+        CleanupProcess();
+        return false;
+    }
+
+    if (PromptReadyEvent == nullptr)
+    {
+        PromptReadyEvent = FPlatformProcess::GetSynchEventFromPool(false);
+    }
+
+    Worker = MakeUnique<FCortexCliWorker>(AsShared());
+
+    const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Idle);
+    BroadcastStateChange(PreviousState, ECortexSessionState::Idle, TEXT("Claude CLI session ready"));
+    return true;
+}
+
+void FCortexCliSession::CleanupProcess()
+{
+    if (Worker)
+    {
+        Worker->Stop();
+        Worker.Reset();
+    }
+
+    if (StdoutReadPipe != nullptr || StdoutWritePipe != nullptr)
+    {
+        FPlatformProcess::ClosePipe(StdoutReadPipe, StdoutWritePipe);
+        StdoutReadPipe = nullptr;
+        StdoutWritePipe = nullptr;
+    }
+
+    if (StdinReadPipe != nullptr || StdinWritePipe != nullptr)
+    {
+        FPlatformProcess::ClosePipe(StdinReadPipe, StdinWritePipe);
+        StdinReadPipe = nullptr;
+        StdinWritePipe = nullptr;
+    }
+
+    if (ProcessHandle.IsValid())
+    {
+        FPlatformProcess::CloseProc(ProcessHandle);
+        ProcessHandle.Reset();
+    }
+
+    if (PromptReadyEvent != nullptr)
+    {
+        FPlatformProcess::ReturnSynchEventToPool(PromptReadyEvent);
+        PromptReadyEvent = nullptr;
+    }
+}
+
+void FCortexCliSession::WakeWorker()
+{
+    if (PromptReadyEvent != nullptr)
+    {
+        PromptReadyEvent->Trigger();
+    }
+}
+
+FString FCortexCliSession::ConsumePendingPromptEnvelope()
+{
+    FScopeLock Lock(&PromptMutex);
+
+    if (!PendingPrompt.IsSet())
+    {
+        return FString();
+    }
+
+    const FString Envelope = BuildPromptEnvelope(PendingPrompt.GetValue());
+    PendingPrompt.Reset();
+    return Envelope;
 }
 
 const TArray<TSharedPtr<FCortexChatEntry>>& FCortexCliSession::GetChatEntries() const

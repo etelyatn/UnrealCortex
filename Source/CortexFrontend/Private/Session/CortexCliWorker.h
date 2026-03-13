@@ -18,7 +18,10 @@ public:
     virtual void Stop() override;
 
 private:
+    void ParseAndDispatch(const FString& Chunk);
+
     TWeakPtr<FCortexCliSession> Session;
     FRunnableThread* Thread = nullptr;
     std::atomic<bool> bStopRequested{false};
+    FString NdjsonLineBuffer;
 };
