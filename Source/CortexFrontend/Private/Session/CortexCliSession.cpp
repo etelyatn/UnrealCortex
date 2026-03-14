@@ -589,6 +589,7 @@ void FCortexCliSession::UpdateStreamingAssistantText(const FString& Text, bool b
 	{
 		CurrentStreamingEntry = MakeShared<FCortexChatEntry>();
 		CurrentStreamingEntry->Type = ECortexChatEntryType::AssistantMessage;
+		CurrentStreamingEntry->TurnIndex = CurrentTurnIndex;
 		ChatEntries.Add(CurrentStreamingEntry);
 	}
 
