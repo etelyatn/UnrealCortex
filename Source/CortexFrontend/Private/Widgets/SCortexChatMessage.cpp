@@ -13,6 +13,8 @@
 
 void SCortexChatMessage::Construct(const FArguments& InArgs)
 {
+    SetCanTick(true);
+
     bIsUser = InArgs._IsUser;
     bIsStreaming = InArgs._IsStreaming;
 
@@ -95,7 +97,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                     SNew(SRichTextBlock)
                     .Text(FText::FromString(HeaderText))
                     .DecoratorStyleSet(&FCortexRichTextStyle::Get())
-                    .AutoWrapText(true))
+                    .WrapTextAt(TAttribute<float>::Create([this]() { return WrapWidth; })))
             ];
             break;
         }
@@ -134,7 +136,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                         SNew(SRichTextBlock)
                         .Text(FText::FromString(DisplayText))
                         .DecoratorStyleSet(&FCortexRichTextStyle::Get())
-                        .AutoWrapText(true))
+                        .WrapTextAt(TAttribute<float>::Create([this]() { return WrapWidth; })))
                 ];
             }
             Box->AddSlot()
@@ -165,7 +167,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                         SNew(SRichTextBlock)
                         .Text(FText::FromString(DisplayText))
                         .DecoratorStyleSet(&FCortexRichTextStyle::Get())
-                        .AutoWrapText(true))
+                        .WrapTextAt(TAttribute<float>::Create([this]() { return WrapWidth; })))
                 ];
             }
             Box->AddSlot()
@@ -194,7 +196,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                     SNew(SRichTextBlock)
                     .Text(FText::FromString(DisplayText))
                     .DecoratorStyleSet(&FCortexRichTextStyle::Get())
-                    .AutoWrapText(true))
+                    .WrapTextAt(TAttribute<float>::Create([this]() { return WrapWidth; })))
             ];
             break;
         }
@@ -202,6 +204,14 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
     }
 
     return Box;
+}
+
+void SCortexChatMessage::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
+{
+    // Subtract the 8px left+right padding from the content column to get usable text width.
+    const float NewWidth = FMath::Max(100.0f, AllottedGeometry.GetLocalSize().X - 16.0f);
+    WrapWidth = NewWidth;
+    SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
 }
 
 void SCortexChatMessage::SetText(const FString& NewText)
