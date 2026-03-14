@@ -8,9 +8,19 @@ import pathlib
 import sys
 import types
 from mcp.server.fastmcp import FastMCP
+from .capabilities import build_router_docstrings, load_capabilities_cache
 from .tcp_client import UEConnection
 from .response import format_response
 from .schema_generator import _decode_data
+from .tools.composites.blueprint import register_blueprint_compose_tools
+from .tools.composites.level import register_level_compose_tools
+from .tools.composites.material import register_material_compose_tools
+from .tools.composites.scenario import register_scenario_compose_tools
+from .tools.composites.widget import register_widget_compose_tools
+from .tools.routers import register_router_tools
+from .tools.standalone.editor import register_editor_standalone_tools
+from .tools.standalone.qa import register_qa_standalone_tools
+from .tools.standalone.schema import register_schema_standalone_tools
 
 _log_level = getattr(logging, os.environ.get("CORTEX_LOG_LEVEL", "INFO").upper(), logging.INFO)
 logging.basicConfig(
@@ -74,6 +84,20 @@ def _discover_and_register_tools(mcp_server, connection):
                 if callable(register_fn):
                     register_fn(mcp_server, connection)
                     logger.info("Registered tools from %s/%s", py_file.parent.name, py_file.name)
+
+
+def _register_explicit_tools(mcp_server, connection) -> None:
+    """Register the new consolidated tools before legacy discovery."""
+    docstrings = build_router_docstrings(load_capabilities_cache())
+    register_router_tools(mcp_server, connection, docstrings)
+    register_blueprint_compose_tools(mcp_server, connection)
+    register_material_compose_tools(mcp_server, connection)
+    register_widget_compose_tools(mcp_server, connection)
+    register_level_compose_tools(mcp_server, connection)
+    register_scenario_compose_tools(mcp_server, connection)
+    register_editor_standalone_tools(mcp_server, connection)
+    register_schema_standalone_tools(mcp_server, connection)
+    register_qa_standalone_tools(mcp_server, connection)
 
 
 @mcp.tool()
@@ -145,7 +169,8 @@ def refresh_cache() -> str:
     return json.dumps({"cleared": True, "previous_stats": stats})
 
 
-# Discover and register tools from tools/ directory
+# Register explicit consolidated tools, then keep legacy discovery during migration.
+_register_explicit_tools(mcp, _connection)
 _discover_and_register_tools(mcp, _connection)
 
 
