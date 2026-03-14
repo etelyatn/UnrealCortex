@@ -168,3 +168,83 @@ bool FCortexFrontendModuleGetOrCreateSessionTest::RunTest(const FString& Paramet
     TestTrue(TEXT("Module should return the same session instance"), FirstSession == SecondSession);
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionTurnIndexIncrementsTest,
+    "Cortex.Frontend.Session.TurnIndexIncrements",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionTurnIndexIncrementsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-turn");
+    FCortexCliSession Session(Config);
+
+    Session.AddUserPromptEntry(TEXT("First message"));
+    const TArray<TSharedPtr<FCortexChatEntry>>& Entries = Session.GetChatEntries();
+    TestEqual(TEXT("First entry TurnIndex should be 1"), Entries.Last()->TurnIndex, 1);
+
+    Session.AddUserPromptEntry(TEXT("Second message"));
+    TestEqual(TEXT("Second entry TurnIndex should be 2"), Entries.Last()->TurnIndex, 2);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionTokenAccumulationTest,
+    "Cortex.Frontend.Session.TokenAccumulation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionTokenAccumulationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-tokens");
+    FCortexCliSession Session(Config);
+
+    FCortexStreamEvent Event;
+    Event.Type = ECortexStreamEventType::TextContent;
+    Event.Text = TEXT("Hello");
+    Event.InputTokens = 1500;
+    Event.OutputTokens = 200;
+    Event.CacheReadTokens = 800;
+    Event.CacheCreationTokens = 100;
+    Session.HandleWorkerEvent(Event);
+
+    TestEqual(TEXT("TotalInputTokens after first event"), Session.GetTotalInputTokens(), (int64)1500);
+    TestEqual(TEXT("TotalOutputTokens after first event"), Session.GetTotalOutputTokens(), (int64)200);
+    TestEqual(TEXT("ConversationContextTokens"), Session.GetConversationContextTokens(), (int64)1500);
+
+    // NewChat should preserve session totals but reset conversation context
+    Session.NewChat();
+    TestEqual(TEXT("TotalInputTokens after NewChat"), Session.GetTotalInputTokens(), (int64)1500);
+    TestEqual(TEXT("ConversationContextTokens after NewChat"), Session.GetConversationContextTokens(), (int64)0);
+
+    // Second event should accumulate
+    Session.HandleWorkerEvent(Event);
+    TestEqual(TEXT("TotalInputTokens after second event"), Session.GetTotalInputTokens(), (int64)3000);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionModelInfoTest,
+    "Cortex.Frontend.Session.ModelInfo",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionModelInfoTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-model");
+    FCortexCliSession Session(Config);
+
+    FCortexStreamEvent InitEvent;
+    InitEvent.Type = ECortexStreamEventType::SessionInit;
+    InitEvent.Model = TEXT("claude-sonnet-4-6");
+    InitEvent.SessionId = TEXT("abc-123");
+    Session.HandleWorkerEvent(InitEvent);
+
+    TestEqual(TEXT("ModelId"), Session.GetModelId(), FString(TEXT("claude-sonnet-4-6")));
+    TestEqual(TEXT("Provider"), Session.GetProvider(), FString(TEXT("Claude Code")));
+
+    return true;
+}

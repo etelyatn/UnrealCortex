@@ -115,6 +115,8 @@ void FCortexCliSession::NewChat()
 	ClearConversation();
 	Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
 	ConsecutiveSpawnFailures = 0;
+	CurrentTurnIndex = 0;
+	ConversationContextTokens = 0;
 	const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Inactive);
 	BroadcastStateChange(PreviousState, ECortexSessionState::Inactive, TEXT("New chat"));
 	UE_LOG(LogCortexFrontend, Log, TEXT("New chat: session %s"), *Config.SessionId);
@@ -131,6 +133,35 @@ void FCortexCliSession::Shutdown()
 
 void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 {
+	// Accumulate token usage (before state guard — applies even during state transitions)
+	if (Event.InputTokens > 0 || Event.OutputTokens > 0)
+	{
+		TotalInputTokens += Event.InputTokens;
+		TotalOutputTokens += Event.OutputTokens;
+		TotalCacheReadTokens += Event.CacheReadTokens;
+		TotalCacheCreationTokens += Event.CacheCreationTokens;
+		ConversationContextTokens = Event.InputTokens;
+		OnTokenUsageUpdated.Broadcast();
+	}
+
+	// Extract model info from init event
+	if (Event.Type == ECortexStreamEventType::SessionInit && !Event.Model.IsEmpty())
+	{
+		ModelId = Event.Model;
+		if (ModelId.Contains(TEXT("claude")))
+		{
+			Provider = TEXT("Claude Code");
+		}
+		else if (ModelId.Contains(TEXT("gpt")) || ModelId.Contains(TEXT("o1")) || ModelId.Contains(TEXT("codex")))
+		{
+			Provider = TEXT("Codex");
+		}
+		else
+		{
+			Provider = TEXT("Unknown");
+		}
+	}
+
 	const ECortexSessionState CurrentState = State.load();
 
 	// Ignore stale events after cleanup
@@ -522,13 +553,17 @@ ECortexSessionState FCortexCliSession::GetState() const
 
 void FCortexCliSession::AddUserPromptEntry(const FString& Message)
 {
+	++CurrentTurnIndex;
+
 	TSharedPtr<FCortexChatEntry> UserEntry = MakeShared<FCortexChatEntry>();
 	UserEntry->Type = ECortexChatEntryType::UserMessage;
 	UserEntry->Text = Message;
+	UserEntry->TurnIndex = CurrentTurnIndex;
 	ChatEntries.Add(UserEntry);
 
 	CurrentStreamingEntry = MakeShared<FCortexChatEntry>();
 	CurrentStreamingEntry->Type = ECortexChatEntryType::AssistantMessage;
+	CurrentStreamingEntry->TurnIndex = CurrentTurnIndex;
 	ChatEntries.Add(CurrentStreamingEntry);
 }
 

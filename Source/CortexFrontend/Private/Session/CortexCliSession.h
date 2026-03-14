@@ -41,6 +41,23 @@ public:
 	FOnCortexSessionTurnComplete OnTurnComplete;
 	FOnCortexSessionStateChanged OnStateChanged;
 
+	DECLARE_MULTICAST_DELEGATE(FOnTokenUsageUpdated);
+	FOnTokenUsageUpdated OnTokenUsageUpdated;
+
+	int64 GetTotalInputTokens() const { return TotalInputTokens; }
+	int64 GetTotalOutputTokens() const { return TotalOutputTokens; }
+	int64 GetTotalCacheReadTokens() const { return TotalCacheReadTokens; }
+	int64 GetTotalCacheCreationTokens() const { return TotalCacheCreationTokens; }
+	int64 GetConversationContextTokens() const { return ConversationContextTokens; }
+	FString GetModelId() const { return ModelId; }
+	FString GetProvider() const { return Provider; }
+
+	static float CalculateCacheHitRate(int64 CacheRead, int64 Input)
+	{
+		const int64 Total = CacheRead + Input;
+		return (Total > 0) ? static_cast<float>(CacheRead) / static_cast<float>(Total) * 100.0f : 0.0f;
+	}
+
 private:
 	friend class FCortexCliWorker;
 	friend class FCortexCliSessionBuildInitialLaunchArgsTest;
@@ -69,6 +86,22 @@ private:
 	void SetStateForTest(ECortexSessionState NewState);
 	FString GetPendingPromptForTest() const;
 	TSharedPtr<FCortexChatEntry> GetCurrentStreamingEntry() const;
+
+	// Session-scoped token accumulators (survive conversation resets)
+	int64 TotalInputTokens = 0;
+	int64 TotalOutputTokens = 0;
+	int64 TotalCacheReadTokens = 0;
+	int64 TotalCacheCreationTokens = 0;
+
+	// Per-conversation context tracking (reset on NewChat)
+	int64 ConversationContextTokens = 0;
+
+	// Model info (set once from system.init)
+	FString ModelId;
+	FString Provider;
+
+	// Turn counter (incremented per user prompt, reset on NewChat)
+	int32 CurrentTurnIndex = 0;
 
 	FCortexSessionConfig Config;
 	FCortexCliInfo CachedCliInfo;
