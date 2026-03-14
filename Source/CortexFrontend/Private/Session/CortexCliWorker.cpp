@@ -1,164 +1,193 @@
 #include "Session/CortexCliWorker.h"
 
 #include "Async/Async.h"
+#include "CortexFrontendModule.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "Session/CortexCliSession.h"
 
 namespace
 {
-    constexpr double CortexCliWorkerTimeoutSeconds = 300.0;
+	constexpr double CortexCliWorkerTimeoutSeconds = 300.0;
 }
 
-FCortexCliWorker::FCortexCliWorker(TWeakPtr<FCortexCliSession> InSession)
-    : Session(InSession)
+FCortexCliWorker::FCortexCliWorker(
+	TWeakPtr<FCortexCliSession> InSession,
+	void* InStdoutReadPipe,
+	void* InStdinWritePipe,
+	FProcHandle InProcessHandle,
+	FEvent* InPromptReadyEvent)
+	: WeakSession(InSession)
+	, StdoutReadPipe(InStdoutReadPipe)
+	, StdinWritePipe(InStdinWritePipe)
+	, ProcessHandle(InProcessHandle)
+	, PromptReadyEvent(InPromptReadyEvent)
 {
-    Thread = FRunnableThread::Create(this, TEXT("CortexCliWorker"), 0, TPri_Normal);
+	Thread = FRunnableThread::Create(this, TEXT("CortexCliWorker"), 0, TPri_Normal);
 }
 
 FCortexCliWorker::~FCortexCliWorker()
 {
-    Stop();
+	Stop();
 
-    if (Thread)
-    {
-        Thread->Kill(true);
-        delete Thread;
-        Thread = nullptr;
-    }
+	if (Thread)
+	{
+		Thread->Kill(true);
+		delete Thread;
+		Thread = nullptr;
+	}
 }
 
 bool FCortexCliWorker::Init()
 {
-    return true;
+	return true;
 }
 
 uint32 FCortexCliWorker::Run()
 {
-    while (!bStopRequested.load(std::memory_order_acquire))
-    {
-        const TSharedPtr<FCortexCliSession> SessionPin = Session.Pin();
-        if (!SessionPin.IsValid())
-        {
-            break;
-        }
+	UE_LOG(LogCortexFrontend, Log, TEXT("CLI Worker thread started"));
 
-        if (SessionPin->PromptReadyEvent == nullptr || !SessionPin->PromptReadyEvent->Wait(100))
-        {
-            continue;
-        }
+	while (!bStopRequested.load(std::memory_order_acquire))
+	{
+		if (PromptReadyEvent == nullptr || !PromptReadyEvent->Wait(1000))
+		{
+			continue;
+		}
 
-        if (bStopRequested.load(std::memory_order_acquire))
-        {
-            break;
-        }
+		if (bStopRequested.load(std::memory_order_acquire))
+		{
+			break;
+		}
 
-        const FString PromptEnvelope = SessionPin->ConsumePendingPromptEnvelope();
-        if (PromptEnvelope.IsEmpty())
-        {
-            continue;
-        }
+		// Briefly pin Session to consume the pending prompt envelope
+		FString PromptEnvelope;
+		{
+			TSharedPtr<FCortexCliSession> SessionPin = WeakSession.Pin();
+			if (!SessionPin.IsValid())
+			{
+				break;
+			}
+			PromptEnvelope = SessionPin->ConsumePendingPromptEnvelope();
+		}
 
-        if (SessionPin->StdinWritePipe == nullptr || !FPlatformProcess::WritePipe(SessionPin->StdinWritePipe, PromptEnvelope))
-        {
-            AsyncTask(ENamedThreads::GameThread, [WeakSession = Session]()
-            {
-                if (const TSharedPtr<FCortexCliSession> Pinned = WeakSession.Pin())
-                {
-                    Pinned->HandleProcessExited(TEXT("Failed to write prompt to Claude CLI"));
-                }
-            });
-            continue;
-        }
+		if (PromptEnvelope.IsEmpty())
+		{
+			continue;
+		}
 
-        double LastDataTime = FPlatformTime::Seconds();
-        bool bTurnComplete = false;
+		if (StdinWritePipe == nullptr || !FPlatformProcess::WritePipe(StdinWritePipe, PromptEnvelope))
+		{
+			UE_LOG(LogCortexFrontend, Warning, TEXT("Failed to write prompt to CLI stdin"));
+			AsyncTask(ENamedThreads::GameThread, [WeakCopy = WeakSession]()
+			{
+				if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
+				{
+					Pinned->HandleProcessExited(TEXT("Failed to write prompt to Claude CLI"));
+				}
+			});
+			continue;
+		}
 
-        while (!bStopRequested.load(std::memory_order_relaxed))
-        {
-            FString Chunk = SessionPin->StdoutReadPipe != nullptr ? FPlatformProcess::ReadPipe(SessionPin->StdoutReadPipe) : FString();
-            if (!Chunk.IsEmpty())
-            {
-                LastDataTime = FPlatformTime::Seconds();
-                const bool bSawResult = Chunk.Contains(TEXT("\"type\":\"result\""));
-                ParseAndDispatch(Chunk);
-                bTurnComplete = bSawResult;
-                if (bTurnComplete)
-                {
-                    break;
-                }
-                continue;
-            }
+		UE_LOG(LogCortexFrontend, Verbose, TEXT("Prompt written to CLI stdin, entering response read loop"));
 
-            if (!FPlatformProcess::IsProcRunning(SessionPin->ProcessHandle))
-            {
-                AsyncTask(ENamedThreads::GameThread, [WeakSession = Session]()
-                {
-                    if (const TSharedPtr<FCortexCliSession> Pinned = WeakSession.Pin())
-                    {
-                        Pinned->HandleProcessExited(TEXT("Claude CLI process exited"));
-                    }
-                });
-                break;
-            }
+		double LastDataTime = FPlatformTime::Seconds();
 
-            if (FPlatformTime::Seconds() - LastDataTime > CortexCliWorkerTimeoutSeconds)
-            {
-                AsyncTask(ENamedThreads::GameThread, [WeakSession = Session]()
-                {
-                    if (const TSharedPtr<FCortexCliSession> Pinned = WeakSession.Pin())
-                    {
-                        Pinned->HandleProcessExited(TEXT("Claude CLI timed out"));
-                    }
-                });
-                break;
-            }
+		while (!bStopRequested.load(std::memory_order_relaxed))
+		{
+			FString Chunk = StdoutReadPipe != nullptr
+				? FPlatformProcess::ReadPipe(StdoutReadPipe)
+				: FString();
 
-            FPlatformProcess::Sleep(0.01f);
-        }
-    }
+			if (!Chunk.IsEmpty())
+			{
+				LastDataTime = FPlatformTime::Seconds();
+				const bool bSawResult = ParseAndDispatch(Chunk);
+				if (bSawResult)
+				{
+					UE_LOG(LogCortexFrontend, Log, TEXT("Turn complete (result event received)"));
+					break;
+				}
+				continue;
+			}
 
-    return 0;
+			if (!FPlatformProcess::IsProcRunning(ProcessHandle))
+			{
+				UE_LOG(LogCortexFrontend, Log, TEXT("CLI process exited during response read"));
+				AsyncTask(ENamedThreads::GameThread, [WeakCopy = WeakSession]()
+				{
+					if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
+					{
+						Pinned->HandleProcessExited(TEXT("Claude CLI process exited"));
+					}
+				});
+				break;
+			}
+
+			if (FPlatformTime::Seconds() - LastDataTime > CortexCliWorkerTimeoutSeconds)
+			{
+				UE_LOG(LogCortexFrontend, Warning, TEXT("CLI response timed out after %.0f seconds"), CortexCliWorkerTimeoutSeconds);
+				AsyncTask(ENamedThreads::GameThread, [WeakCopy = WeakSession]()
+				{
+					if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
+					{
+						Pinned->HandleProcessExited(TEXT("Claude CLI timed out"));
+					}
+				});
+				break;
+			}
+
+			FPlatformProcess::Sleep(0.01f);
+		}
+	}
+
+	UE_LOG(LogCortexFrontend, Log, TEXT("CLI Worker thread exiting"));
+	return 0;
 }
 
 void FCortexCliWorker::Stop()
 {
-    bStopRequested.store(true, std::memory_order_release);
+	bStopRequested.store(true, std::memory_order_release);
 
-    if (const TSharedPtr<FCortexCliSession> SessionPin = Session.Pin())
-    {
-        if (SessionPin->PromptReadyEvent != nullptr)
-        {
-            SessionPin->PromptReadyEvent->Trigger();
-        }
-    }
+	if (PromptReadyEvent != nullptr)
+	{
+		PromptReadyEvent->Trigger();
+	}
 }
 
-void FCortexCliWorker::ParseAndDispatch(const FString& Chunk)
+bool FCortexCliWorker::ParseAndDispatch(const FString& Chunk)
 {
-    NdjsonLineBuffer += Chunk;
+	bool bSawResult = false;
 
-    int32 NewlineIndex = INDEX_NONE;
-    while (NdjsonLineBuffer.FindChar(TEXT('\n'), NewlineIndex))
-    {
-        const FString Line = NdjsonLineBuffer.Left(NewlineIndex).TrimEnd();
-        NdjsonLineBuffer.RightChopInline(NewlineIndex + 1, EAllowShrinking::No);
+	NdjsonLineBuffer += Chunk;
 
-        if (Line.IsEmpty())
-        {
-            continue;
-        }
+	int32 NewlineIndex = INDEX_NONE;
+	while (NdjsonLineBuffer.FindChar(TEXT('\n'), NewlineIndex))
+	{
+		const FString Line = NdjsonLineBuffer.Left(NewlineIndex).TrimEnd();
+		NdjsonLineBuffer.RightChopInline(NewlineIndex + 1, EAllowShrinking::No);
 
-        TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseNdjsonLine(Line);
-        for (const FCortexStreamEvent& Event : Events)
-        {
-            AsyncTask(ENamedThreads::GameThread, [WeakSession = Session, Event]()
-            {
-                if (const TSharedPtr<FCortexCliSession> Pinned = WeakSession.Pin())
-                {
-                    Pinned->HandleWorkerEvent(Event);
-                }
-            });
-        }
-    }
+		if (Line.IsEmpty())
+		{
+			continue;
+		}
+
+		TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseNdjsonLine(Line);
+		for (const FCortexStreamEvent& Event : Events)
+		{
+			if (Event.Type == ECortexStreamEventType::Result)
+			{
+				bSawResult = true;
+			}
+
+			AsyncTask(ENamedThreads::GameThread, [WeakCopy = WeakSession, Event]()
+			{
+				if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
+				{
+					Pinned->HandleWorkerEvent(Event);
+				}
+			});
+		}
+	}
+
+	return bSawResult;
 }

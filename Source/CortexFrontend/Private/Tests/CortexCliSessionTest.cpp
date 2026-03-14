@@ -132,7 +132,9 @@ bool FCortexCliSessionCancelTransitionsTest::RunTest(const FString& Parameters)
     Session.SetStateForTest(ECortexSessionState::Processing);
 
     TestTrue(TEXT("Cancel should be accepted while processing"), Session.Cancel());
-    TestEqual(TEXT("State-only cancel should move directly to respawning when no process exists"), Session.GetStateForTest(), ECortexSessionState::Respawning);
+    // No process exists and CLI is not discovered, so cancel falls through:
+    // Cancelling -> HandleProcessExited -> Respawning -> CLI not found -> Inactive
+    TestEqual(TEXT("Cancel with no process should fall back to inactive"), Session.GetStateForTest(), ECortexSessionState::Inactive);
     return true;
 }
 

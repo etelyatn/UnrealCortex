@@ -2,6 +2,7 @@
 
 #include "Framework/Docking/TabManager.h"
 #include "IToolMenusModule.h"
+#include "Misc/CoreDelegates.h"
 #include "Session/CortexCliSession.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
@@ -44,6 +45,8 @@ void FCortexFrontendModule::StartupModule()
                 }))));
         }));
 
+    FCoreDelegates::OnPreExit.AddRaw(this, &FCortexFrontendModule::HandlePreExit);
+
     UE_LOG(LogCortexFrontend, Log, TEXT("CortexFrontend registered tab and menu"));
 }
 
@@ -51,6 +54,7 @@ void FCortexFrontendModule::ShutdownModule()
 {
     UE_LOG(LogCortexFrontend, Log, TEXT("CortexFrontend module shutting down"));
 
+    FCoreDelegates::OnPreExit.RemoveAll(this);
     ReleaseSessions();
 
     if (IToolMenusModule::IsAvailable())
@@ -107,6 +111,12 @@ void FCortexFrontendModule::ReleaseSessions()
     }
 
     Sessions.Reset();
+}
+
+void FCortexFrontendModule::HandlePreExit()
+{
+    UE_LOG(LogCortexFrontend, Log, TEXT("PreExit: releasing sessions"));
+    ReleaseSessions();
 }
 
 IMPLEMENT_MODULE(FCortexFrontendModule, CortexFrontend)

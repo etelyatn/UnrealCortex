@@ -70,5 +70,6 @@ struct FCortexChatEntry
     FString ToolResult;
     FString ToolCallId;
     int32 DurationMs = 0;
+    double ToolStartTime = 0.0;
     bool bIsToolComplete = false;
 };

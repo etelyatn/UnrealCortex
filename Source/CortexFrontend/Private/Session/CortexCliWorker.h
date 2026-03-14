@@ -10,18 +10,27 @@ class FCortexCliSession;
 class FCortexCliWorker : public FRunnable
 {
 public:
-    explicit FCortexCliWorker(TWeakPtr<FCortexCliSession> InSession);
-    virtual ~FCortexCliWorker() override;
+	FCortexCliWorker(
+		TWeakPtr<FCortexCliSession> InSession,
+		void* InStdoutReadPipe,
+		void* InStdinWritePipe,
+		FProcHandle InProcessHandle,
+		FEvent* InPromptReadyEvent);
+	virtual ~FCortexCliWorker() override;
 
-    virtual bool Init() override;
-    virtual uint32 Run() override;
-    virtual void Stop() override;
+	virtual bool Init() override;
+	virtual uint32 Run() override;
+	virtual void Stop() override;
 
 private:
-    void ParseAndDispatch(const FString& Chunk);
+	bool ParseAndDispatch(const FString& Chunk);
 
-    TWeakPtr<FCortexCliSession> Session;
-    FRunnableThread* Thread = nullptr;
-    std::atomic<bool> bStopRequested{false};
-    FString NdjsonLineBuffer;
+	TWeakPtr<FCortexCliSession> WeakSession;
+	void* StdoutReadPipe;
+	void* StdinWritePipe;
+	FProcHandle ProcessHandle;
+	FEvent* PromptReadyEvent;
+	FRunnableThread* Thread = nullptr;
+	std::atomic<bool> bStopRequested{false};
+	FString NdjsonLineBuffer;
 };

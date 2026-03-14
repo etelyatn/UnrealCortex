@@ -19,6 +19,7 @@ public:
 private:
     TSharedRef<SDockTab> SpawnChatTab(const FSpawnTabArgs& Args);
     void ReleaseSessions();
+    void HandlePreExit();
 
     static const FName CortexChatTabId;
     FDelegateHandle StartupCallbackHandle;
