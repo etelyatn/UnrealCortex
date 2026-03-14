@@ -11,21 +11,21 @@
 // Context calculation helpers (moved from SCortexContextBar)
 namespace CortexContextUtils
 {
-    static const int64 DefaultContextLimit = 200000;
+    constexpr int64 DefaultContextLimit = 200000;
 
-    static int64 GetContextLimit(const FString& ModelId)
+    int64 GetContextLimit()
     {
-        // All Claude models currently have 200K context
+        // All Claude models currently have 200K context (constant for now)
         return DefaultContextLimit;
     }
 
-    static float CalculatePercentage(int64 Used, int64 Max)
+    float CalculatePercentage(int64 Used, int64 Max)
     {
         if (Max <= 0) return 0.0f;
         return static_cast<float>(Used) / static_cast<float>(Max) * 100.0f;
     }
 
-    static FLinearColor GetContextColor(float Percentage)
+    FLinearColor GetContextColor(float Percentage)
     {
         if (Percentage >= 80.0f)
         {
@@ -139,7 +139,7 @@ void SCortexChatToolbar::OnTokenUsageUpdated()
     if (!Session.IsValid()) return;
 
     const int64 Used = Session->GetConversationContextTokens();
-    const int64 Max = CortexContextUtils::GetContextLimit(Session->GetModelId());
+    const int64 Max = CortexContextUtils::GetContextLimit();
     const float Percentage = CortexContextUtils::CalculatePercentage(Used, Max);
 
     if (ContextColorBox.IsValid())
@@ -149,7 +149,13 @@ void SCortexChatToolbar::OnTokenUsageUpdated()
 
     if (ContextLabel.IsValid())
     {
-        const FString Label = FString::Printf(TEXT("%lldk / %lldk"), Used / 1000, Max / 1000);
+        const FString UsedStr = (Used < 1000)
+            ? FString::Printf(TEXT("%lld"), Used)
+            : FString::Printf(TEXT("%lldk"), Used / 1000);
+        const FString MaxStr = (Max < 1000)
+            ? FString::Printf(TEXT("%lld"), Max)
+            : FString::Printf(TEXT("%lldk"), Max / 1000);
+        const FString Label = UsedStr + TEXT(" / ") + MaxStr;
         ContextLabel->SetText(FText::FromString(Label));
     }
 }
