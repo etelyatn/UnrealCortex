@@ -295,7 +295,6 @@ TArray<TSharedPtr<FCortexChatEntry>> SCortexChatPanel::BuildAssistantEntries(con
 
 void SCortexChatPanel::RefreshVisibleEntries()
 {
-    MessageWidgetCache.Reset();
     DisplayRows.Reset();
 
     TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
@@ -428,16 +427,14 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatDispla
         }
 
         // Assistant text below
-        TSharedPtr<SCortexChatMessage> MessageWidget;
         TurnBox->AddSlot()
         .AutoHeight()
         [
-            SAssignNew(MessageWidget, SCortexChatMessage)
+            SNew(SCortexChatMessage)
             .Message(Row->PrimaryEntry->Text)
             .IsUser(false)
             .IsStreaming(bEntryIsStreaming)
         ];
-        MessageWidgetCache.Add(Row, MessageWidget);
 
         Content = TurnBox;
         break;
