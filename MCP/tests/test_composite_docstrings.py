@@ -140,3 +140,67 @@ class TestLevelComposeDocstring:
     def test_not_one_liner(self, tools):
         doc = tools.get("level_compose", "")
         assert len(doc) > 200
+
+
+# --- router disambiguation hints ---
+
+from unittest.mock import patch  # noqa: E402
+
+# Minimal fake capabilities that mirrors the real schema structure.
+# commands must be a list of dicts (each with at least a "name" key),
+# matching what _format_command_signature expects.
+_FAKE_CAPS = {
+    "domains": {
+        "material": {
+            "commands": [
+                {"name": "create_material_graph", "params": []},
+                {"name": "set_material_property", "params": []},
+            ]
+        },
+        "blueprint": {
+            "commands": [
+                {"name": "create_blueprint", "params": []},
+                {"name": "compile_blueprint", "params": []},
+            ]
+        },
+        "umg": {
+            "commands": [
+                {"name": "get_widget_tree", "params": []},
+                {"name": "set_widget_property", "params": []},
+            ]
+        },
+        "level": {
+            "commands": [
+                {"name": "spawn_actor", "params": []},
+                {"name": "get_actors", "params": []},
+            ]
+        },
+    }
+}
+
+
+class TestRouterDisambiguation:
+    """Router docstrings must mention composite alternatives for creation tasks."""
+
+    def _build(self) -> dict[str, str]:
+        from cortex_mcp.capabilities import build_router_docstrings
+        # Patch load_capabilities_cache so tests never need a live editor or schema file
+        with patch("cortex_mcp.capabilities.load_capabilities_cache", return_value=_FAKE_CAPS):
+            return build_router_docstrings(_FAKE_CAPS)
+
+    def test_material_cmd_mentions_material_compose(self):
+        doc = self._build().get("material", "")
+        assert "material_compose" in doc, \
+            "material_cmd docstring must reference material_compose for graph creation"
+
+    def test_blueprint_cmd_mentions_blueprint_compose(self):
+        doc = self._build().get("blueprint", "")
+        assert "blueprint_compose" in doc
+
+    def test_umg_cmd_mentions_widget_compose(self):
+        doc = self._build().get("umg", "")
+        assert "widget_compose" in doc
+
+    def test_level_cmd_mentions_level_compose(self):
+        doc = self._build().get("level", "")
+        assert "level_compose" in doc
