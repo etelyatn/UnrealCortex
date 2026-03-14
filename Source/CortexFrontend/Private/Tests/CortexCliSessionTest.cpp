@@ -212,7 +212,7 @@ bool FCortexCliSessionTokenAccumulationTest::RunTest(const FString& Parameters)
 
     TestEqual(TEXT("TotalInputTokens after first event"), Session.GetTotalInputTokens(), (int64)1500);
     TestEqual(TEXT("TotalOutputTokens after first event"), Session.GetTotalOutputTokens(), (int64)200);
-    TestEqual(TEXT("ConversationContextTokens"), Session.GetConversationContextTokens(), (int64)1500);
+    TestEqual(TEXT("ConversationContextTokens"), Session.GetConversationContextTokens(), (int64)2400);
 
     // NewChat should preserve session totals but reset conversation context
     Session.NewChat();
@@ -246,5 +246,31 @@ bool FCortexCliSessionModelInfoTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("ModelId"), Session.GetModelId(), FString(TEXT("claude-sonnet-4-6")));
     TestEqual(TEXT("Provider"), Session.GetProvider(), FString(TEXT("Claude Code")));
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionContextTokensIncludesCacheTest,
+    "Cortex.Frontend.Session.ContextTokensIncludesCache",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionContextTokensIncludesCacheTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-ctx");
+    FCortexCliSession Session(Config);
+
+    FCortexStreamEvent Event;
+    Event.Type = ECortexStreamEventType::TextContent;
+    Event.Text = TEXT("Hello");
+    Event.InputTokens = 50;
+    Event.OutputTokens = 100;
+    Event.CacheReadTokens = 45000;
+    Event.CacheCreationTokens = 5000;
+    Session.HandleWorkerEvent(Event);
+
+    // Context should be total: input + cache_read + cache_creation = 50050
+    TestEqual(TEXT("ConversationContextTokens should include all input sources"),
+        Session.GetConversationContextTokens(), static_cast<int64>(50050));
     return true;
 }

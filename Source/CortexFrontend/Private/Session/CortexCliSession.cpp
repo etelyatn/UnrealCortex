@@ -141,7 +141,7 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 		TotalOutputTokens += Event.OutputTokens;
 		TotalCacheReadTokens += Event.CacheReadTokens;
 		TotalCacheCreationTokens += Event.CacheCreationTokens;
-		ConversationContextTokens = Event.InputTokens;
+		ConversationContextTokens = Event.InputTokens + Event.CacheReadTokens + Event.CacheCreationTokens;
 		OnTokenUsageUpdated.Broadcast();
 	}
 
