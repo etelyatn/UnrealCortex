@@ -74,7 +74,7 @@ private:
 	friend class FCortexCliSessionNewChatGeneratesFreshSessionIdTest;
 	friend class FCortexChatPanelRejectedSendDoesNotAppendEntriesTest;
 	friend class FCortexCliSessionToolCallTurnIndexTest;
-	friend class FCortexCliSessionConnectTransitionsToSpawningTest;
+	friend class FCortexCliSessionConnectTest;
 	friend class FCortexCliSessionPendingPromptDrainedAfterSpawnTest;
 
 	FString BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const;

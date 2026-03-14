@@ -22,6 +22,8 @@ bool FCortexRichTextStyleRegistrationTest::RunTest(const FString& Parameters)
         Style.HasWidgetStyle<FTextBlockStyle>(FName("Italic")));
     TestTrue(TEXT("Should have Code style"),
         Style.HasWidgetStyle<FTextBlockStyle>(FName("Code")));
+    TestTrue(TEXT("Should have Default style"),
+        Style.HasWidgetStyle<FTextBlockStyle>(FName("Default")));
 
     // Clean up
     FCortexRichTextStyle::Shutdown();

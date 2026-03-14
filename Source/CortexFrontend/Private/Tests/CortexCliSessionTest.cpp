@@ -3,33 +3,40 @@
 #include "Modules/ModuleManager.h"
 #include "Session/CortexCliSession.h"
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionConnectTransitionsToSpawningTest,
-    "Cortex.Frontend.Session.ConnectTransitionsToSpawning",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionConnectTest,
+    "Cortex.Frontend.Session.Connect",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FCortexCliSessionConnectTransitionsToSpawningTest::RunTest(const FString& Parameters)
+bool FCortexCliSessionConnectTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
     FCortexSessionConfig Config;
     Config.SessionId = TEXT("test-connect");
-    // Must be heap-allocated via TSharedPtr because SpawnProcess calls AsShared()
     TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(Config);
 
     TestEqual(TEXT("Should start Inactive"), Session->GetStateForTest(), ECortexSessionState::Inactive);
 
     const bool bResult = Session->Connect();
-    // Connect will attempt to spawn. If CLI is not found, falls back to Inactive.
-    // If CLI is found, transitions to Idle. Either way the state machine was exercised.
 
-    // Either Idle (spawn succeeded) or Inactive (spawn failed — no CLI binary)
-    const ECortexSessionState StateAfter = Session->GetStateForTest();
-    TestTrue(TEXT("Connect should attempt state transition"),
-        StateAfter == ECortexSessionState::Idle ||
-        StateAfter == ECortexSessionState::Inactive);
+    if (bResult)
+    {
+        // CLI found and process spawned: state is Idle or Processing (if pending prompt drained)
+        const ECortexSessionState StateAfter = Session->GetStateForTest();
+        TestTrue(TEXT("Successful Connect should leave state Idle or Processing"),
+            StateAfter == ECortexSessionState::Idle ||
+            StateAfter == ECortexSessionState::Processing);
+    }
+    else
+    {
+        // CLI not found: Connect() rolled back to Inactive cleanly.
+        // Returning true here is intentional — no CLI is a valid CI environment,
+        // not a test failure. The meaningful assertion is the rollback check below.
+        TestEqual(TEXT("Failed Connect should restore Inactive state"),
+            Session->GetStateForTest(), ECortexSessionState::Inactive);
+        AddInfo(TEXT("Claude CLI not found — connect failed cleanly (expected in CI)"));
+    }
 
-    // Always shut down cleanly so worker thread exits and pipes close
     Session->Shutdown();
-
     return true;
 }
 

@@ -154,7 +154,6 @@ void SCortexChatPanel::NewChat()
     {
         Session->NewChat();  // Calls CleanupProcess() internally — kills old CLI subprocess
         Session->Connect();
-        RefreshVisibleEntries();
         if (ChatToolbar.IsValid())
         {
             ChatToolbar->SetSessionId(Session->GetSessionId());
