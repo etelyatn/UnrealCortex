@@ -29,6 +29,9 @@ public:
 	void HandleProcessExited(const FString& Reason);
 
 	const TArray<TSharedPtr<FCortexChatEntry>>& GetChatEntries() const;
+#if WITH_DEV_AUTOMATION_TESTS
+	TArray<TSharedPtr<FCortexChatEntry>>& GetChatEntriesMutable() { return ChatEntries; }
+#endif
 	TSharedPtr<FCortexChatEntry> GetCurrentStreamingEntry() const;
 	FString GetSessionId() const;
 	ECortexSessionState GetState() const;
