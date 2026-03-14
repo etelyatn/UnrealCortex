@@ -1,7 +1,6 @@
 """Unit tests for multi-editor switch/status MCP tooling."""
 
 import json
-import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -12,7 +11,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, str(SRC_DIR))
 
 from cortex_mcp.tcp_client import EditorConnection, UEConnection
-from core.switch_editor import register_switch_editor_tools
+from cortex_mcp.tools.routers import make_router
 
 
 class MockMCP:
@@ -42,17 +41,16 @@ class TestSwitchEditorTool:
         conn.port = 8742
         conn._pid = 1000
         conn._project_path = "C:/Project/Test.uproject"
-        mcp = MockMCP()
-        register_switch_editor_tools(mcp, conn)
+        router = make_router("core", conn, "core docs")
 
         editors = [
             _editor(8742, 1000, "2026-01-01T00:00:00Z"),
             _editor(8743, 2000, "2026-01-01T01:00:00Z"),
         ]
-        with patch("core.switch_editor._discover_all_editors", return_value=editors), patch(
-            "core.switch_editor._is_editor_alive", return_value=True
+        with patch("cortex_mcp.tools.routers._discover_all_editors", return_value=editors), patch(
+            "cortex_mcp.tools.routers._is_editor_alive", return_value=True
         ) as is_alive:
-            payload = json.loads(mcp.tools["switch_editor"](pid=2000))
+            payload = json.loads(router("switch_editor", {"pid": 2000}))
 
         is_alive.assert_called_once_with(2000)
         conn.disconnect.assert_called_once()
@@ -63,29 +61,27 @@ class TestSwitchEditorTool:
 
     def test_switch_editor_by_pid_returns_error_for_dead_pid(self):
         conn = MagicMock(spec=UEConnection)
-        mcp = MockMCP()
-        register_switch_editor_tools(mcp, conn)
+        router = make_router("core", conn, "core docs")
 
-        with patch("core.switch_editor._discover_all_editors", return_value=[_editor(8742, 1000, "2026-01-01T00:00:00Z")]), patch(
-            "core.switch_editor._is_editor_alive", return_value=False
+        with patch("cortex_mcp.tools.routers._discover_all_editors", return_value=[_editor(8742, 1000, "2026-01-01T00:00:00Z")]), patch(
+            "cortex_mcp.tools.routers._is_editor_alive", return_value=False
         ):
-            payload = json.loads(mcp.tools["switch_editor"](pid=9999))
+            payload = json.loads(router("switch_editor", {"pid": 9999}))
 
         assert payload["error"] == "EDITOR_NOT_FOUND"
         conn.disconnect.assert_not_called()
 
     def test_switch_editor_without_pid_selects_most_recent(self):
         conn = MagicMock(spec=UEConnection)
-        mcp = MockMCP()
-        register_switch_editor_tools(mcp, conn)
+        router = make_router("core", conn, "core docs")
 
         editors = [
             _editor(8742, 1000, "2026-01-01T00:00:00Z"),
             _editor(8744, 3000, "2026-01-01T02:00:00Z"),
             _editor(8743, 2000, "2026-01-01T01:00:00Z"),
         ]
-        with patch("core.switch_editor._discover_all_editors", return_value=editors):
-            payload = json.loads(mcp.tools["switch_editor"]())
+        with patch("cortex_mcp.tools.routers._discover_all_editors", return_value=editors):
+            payload = json.loads(router("switch_editor"))
 
         conn.disconnect.assert_called_once()
         assert payload["pid"] == 3000

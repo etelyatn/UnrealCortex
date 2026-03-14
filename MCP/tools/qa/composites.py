@@ -1,9 +1,8 @@
 """QA composite workflow tools."""
 
+from cortex_mcp.qa import detect_structural_issues, write_report_bundle
 from cortex_mcp.response import format_response
 from cortex_mcp.tcp_client import UEConnection
-from .detector import detect_structural_issues
-from .reporter import write_report_bundle
 
 
 def register_qa_composite_tools(mcp, connection: UEConnection):
