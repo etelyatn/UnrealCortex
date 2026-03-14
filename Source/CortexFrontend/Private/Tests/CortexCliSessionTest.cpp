@@ -339,13 +339,11 @@ bool FCortexCliSessionPendingPromptDrainedAfterSpawnTest::RunTest(const FString&
     Config.SessionId = TEXT("test-drain");
     FCortexCliSession Session(Config);
 
-    // Simulate: prompt arrived while session was Spawning
-    Session.SetStateForTest(ECortexSessionState::Spawning);
-    Session.SetPendingPromptForTest(TEXT("queued message"));  // mutex-safe internally
-
     // Verify the drain transition: Idle -> Processing when pending prompt exists.
-    // Note: DrainPendingPromptForTest directly exercises TransitionState, not SpawnProcess.
-    // Full SpawnProcess integration testing requires a mockable WakeWorker (out of scope).
+    // DrainPendingPromptForTest internally resets state to Idle before running the
+    // CAS, so the pre-drain state does not matter. We test that TransitionState
+    // correctly moves to Processing when a prompt is pending.
+    Session.SetPendingPromptForTest(TEXT("queued message"));  // mutex-safe internally
     Session.DrainPendingPromptForTest();
 
     TestEqual(TEXT("State should be Processing after draining queued prompt"),

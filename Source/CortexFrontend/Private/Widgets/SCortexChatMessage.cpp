@@ -97,7 +97,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                     SNew(SRichTextBlock)
                     .Text(FText::FromString(HeaderText))
                     .DecoratorStyleSet(&FCortexRichTextStyle::Get())
-                    .WrapTextAt(TAttribute<float>::Create([this]() { return WrapWidth; })))
+                    .WrapTextAt(TAttribute<float>::CreateSP(this, &SCortexChatMessage::GetWrapWidth)))
             ];
             break;
         }
@@ -136,7 +136,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                         SNew(SRichTextBlock)
                         .Text(FText::FromString(DisplayText))
                         .DecoratorStyleSet(&FCortexRichTextStyle::Get())
-                        .WrapTextAt(TAttribute<float>::Create([this]() { return WrapWidth; })))
+                        .WrapTextAt(TAttribute<float>::CreateSP(this, &SCortexChatMessage::GetWrapWidth)))
                 ];
             }
             Box->AddSlot()
@@ -167,7 +167,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                         SNew(SRichTextBlock)
                         .Text(FText::FromString(DisplayText))
                         .DecoratorStyleSet(&FCortexRichTextStyle::Get())
-                        .WrapTextAt(TAttribute<float>::Create([this]() { return WrapWidth; })))
+                        .WrapTextAt(TAttribute<float>::CreateSP(this, &SCortexChatMessage::GetWrapWidth)))
                 ];
             }
             Box->AddSlot()
@@ -196,7 +196,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                     SNew(SRichTextBlock)
                     .Text(FText::FromString(DisplayText))
                     .DecoratorStyleSet(&FCortexRichTextStyle::Get())
-                    .WrapTextAt(TAttribute<float>::Create([this]() { return WrapWidth; })))
+                    .WrapTextAt(TAttribute<float>::CreateSP(this, &SCortexChatMessage::GetWrapWidth)))
             ];
             break;
         }
