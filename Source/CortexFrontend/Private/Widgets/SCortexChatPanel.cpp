@@ -15,8 +15,16 @@
 
 void SCortexChatPanel::Construct(const FArguments& InArgs)
 {
-    FCortexFrontendModule& Module = FModuleManager::LoadModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
-    SessionWeak = Module.GetOrCreateSession();
+    // Use injected session if provided, otherwise fall back to module
+    if (InArgs._Session.IsValid())
+    {
+        SessionWeak = InArgs._Session;
+    }
+    else
+    {
+        FCortexFrontendModule& Module = FModuleManager::LoadModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+        SessionWeak = Module.GetOrCreateSession();
+    }
 
     const ECortexAccessMode InitialMode = FCortexFrontendSettings::Get().GetAccessMode();
 

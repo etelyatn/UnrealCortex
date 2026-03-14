@@ -18,6 +18,7 @@ class SCortexChatPanel : public SCompoundWidget
 {
 public:
     SLATE_BEGIN_ARGS(SCortexChatPanel) {}
+        SLATE_ARGUMENT(TWeakPtr<FCortexCliSession>, Session)
     SLATE_END_ARGS()
 
     void Construct(const FArguments& InArgs);

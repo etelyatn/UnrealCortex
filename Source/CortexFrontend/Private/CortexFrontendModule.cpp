@@ -6,7 +6,7 @@
 #include "Session/CortexCliSession.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
-#include "Widgets/SCortexChatPanel.h"
+#include "Widgets/SCortexWorkbench.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 #include "Framework/Application/SlateApplication.h"
@@ -15,7 +15,7 @@
 
 DEFINE_LOG_CATEGORY(LogCortexFrontend);
 
-const FName FCortexFrontendModule::CortexChatTabId(TEXT("CortexChat"));
+const FName FCortexFrontendModule::CortexChatTabId(TEXT("CortexFrontend"));
 
 void FCortexFrontendModule::StartupModule()
 {
@@ -24,8 +24,8 @@ void FCortexFrontendModule::StartupModule()
     FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
         CortexChatTabId,
         FOnSpawnTab::CreateRaw(this, &FCortexFrontendModule::SpawnChatTab))
-        .SetDisplayName(FText::FromString(TEXT("Cortex AI Chat")))
-        .SetTooltipText(FText::FromString(TEXT("Open the Cortex AI Chat panel")))
+        .SetDisplayName(FText::FromString(TEXT("Cortex Frontend")))
+        .SetTooltipText(FText::FromString(TEXT("Open the Cortex Frontend panel")))
         .SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"))
         .SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory());
 
@@ -36,8 +36,8 @@ void FCortexFrontendModule::StartupModule()
             FToolMenuSection& Section = Menu->FindOrAddSection(TEXT("Cortex"));
             Section.AddEntry(FToolMenuEntry::InitMenuEntry(
                 TEXT("CortexChat"),
-                FText::FromString(TEXT("AI Chat")),
-                FText::FromString(TEXT("Open Cortex AI Chat panel")),
+                FText::FromString(TEXT("Cortex Frontend")),
+                FText::FromString(TEXT("Open Cortex Frontend panel")),
                 FSlateIcon(),
                 FUIAction(FExecuteAction::CreateLambda([]()
                 {
@@ -93,11 +93,16 @@ TWeakPtr<FCortexCliSession> FCortexFrontendModule::GetOrCreateSession()
 
 TSharedRef<SDockTab> FCortexFrontendModule::SpawnChatTab(const FSpawnTabArgs& /*Args*/)
 {
-    return SNew(SDockTab)
-        .TabRole(NomadTab)
-        [
-            SNew(SCortexChatPanel)
-        ];
+    TSharedRef<SDockTab> DockTab = SNew(SDockTab)
+        .TabRole(NomadTab);
+
+    DockTab->SetContent(
+        SNew(SCortexWorkbench)
+        .OwnerTab(DockTab)
+        .Session(GetOrCreateSession())
+    );
+
+    return DockTab;
 }
 
 void FCortexFrontendModule::ReleaseSessions()
