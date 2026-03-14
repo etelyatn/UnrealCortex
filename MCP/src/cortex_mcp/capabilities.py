@@ -45,10 +45,10 @@ def load_capabilities_cache() -> dict | None:
 
 
 _COMPOSITE_HINTS: dict[str, str] = {
-    "material": "\nFor creating a full material graph from scratch, use material_compose instead of chaining material_cmd calls.",
-    "blueprint": "\nFor creating or updating a full Blueprint, use blueprint_compose instead of chaining blueprint_cmd calls.",
-    "umg": "\nFor creating a complete Widget Blueprint screen, use widget_compose instead of chaining umg_cmd calls.",
-    "level": "\nFor batch actor operations, use level_compose instead of chaining level_cmd calls.",
+    "material": "For creating a full material graph from scratch, use material_compose instead of chaining material_cmd calls.\n",
+    "blueprint": "For creating or updating a full Blueprint, use blueprint_compose instead of chaining blueprint_cmd calls.\n",
+    "umg": "For creating a complete Widget Blueprint screen, use widget_compose instead of chaining umg_cmd calls.\n",
+    "level": "For batch actor operations, use level_compose instead of chaining level_cmd calls.\n",
 }
 
 
@@ -57,10 +57,9 @@ def minimal_router_docstrings() -> dict[str, str]:
     docstrings: dict[str, str] = {}
     for domain in _DOMAINS:
         tool_name = f"{domain}_cmd"
-        docstrings[domain] = (
-            f"Route UnrealCortex {domain} commands through `{tool_name}(command, params)`."
-            + _COMPOSITE_HINTS.get(domain, "")
-        )
+        hint = _COMPOSITE_HINTS.get(domain, "")
+        base = f"Route UnrealCortex {domain} commands through `{tool_name}(command, params)`."
+        docstrings[domain] = (hint + base) if hint else base
 
     docstrings["core"] += "\nAvailable commands:\n- get_status()\n- save_asset(asset_path: string, only_if_is_dirty: boolean = optional)"
     docstrings["data"] += "\nAvailable commands:\n- query_datatable(table_path: string, row_filter: string = optional)"
@@ -89,7 +88,9 @@ def build_router_docstrings(capabilities: dict | None) -> dict[str, str]:
         ]
         for command in commands:
             lines.append(f"- {_format_command_signature(command)}")
-        docstrings[domain_name] = "\n".join(lines) + _COMPOSITE_HINTS.get(domain_name, "")
+        hint = _COMPOSITE_HINTS.get(domain_name, "")
+        body = "\n".join(lines)
+        docstrings[domain_name] = (hint + body) if hint else body
 
     return docstrings
 

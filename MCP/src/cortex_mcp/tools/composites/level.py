@@ -37,7 +37,7 @@ def register_level_compose_tools(mcp, connection) -> None:
 
     @mcp.tool(name="level_compose", description=_level_doc)
     def level_compose(
-        operations: list,
+        operations: list[dict],
         stop_on_error: bool = False,
         save: bool = True,
     ) -> str:

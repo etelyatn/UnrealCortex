@@ -40,8 +40,8 @@ def register_widget_compose_tools(mcp, connection) -> None:
     def widget_compose(
         name: str,
         path: str,
-        widgets: list,
-        animations: Optional[list] = None,
+        widgets: list[dict],
+        animations: Optional[list[dict]] = None,
     ) -> str:
         return captured["create_widget_screen"](
             name=name,

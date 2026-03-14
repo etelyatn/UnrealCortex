@@ -1,11 +1,11 @@
 {
   "core": "Route UnrealCortex core commands through `core_cmd(command, params)`.\nAvailable commands:\n- get_status()\n- save_asset(asset_path: string, only_if_is_dirty: boolean = optional)",
   "data": "Route UnrealCortex data commands through `data_cmd(command, params)`.\nAvailable commands:\n- query_datatable(table_path: string, row_filter: string = optional)",
-  "blueprint": "Route UnrealCortex blueprint commands through `blueprint_cmd(command, params)`.\nFor creating or updating a full Blueprint, use blueprint_compose instead of chaining blueprint_cmd calls.",
+  "blueprint": "For creating or updating a full Blueprint, use blueprint_compose instead of chaining blueprint_cmd calls.\nRoute UnrealCortex blueprint commands through `blueprint_cmd(command, params)`.",
   "graph": "Route UnrealCortex graph commands through `graph_cmd(command, params)`.",
-  "level": "Route UnrealCortex level commands through `level_cmd(command, params)`.\nFor batch actor operations, use level_compose instead of chaining level_cmd calls.",
-  "material": "Route UnrealCortex material commands through `material_cmd(command, params)`.\nFor creating a full material graph from scratch, use material_compose instead of chaining material_cmd calls.",
-  "umg": "Route UnrealCortex umg commands through `umg_cmd(command, params)`.\nFor creating a complete Widget Blueprint screen, use widget_compose instead of chaining umg_cmd calls.",
+  "level": "For batch actor operations, use level_compose instead of chaining level_cmd calls.\nRoute UnrealCortex level commands through `level_cmd(command, params)`.",
+  "material": "For creating a full material graph from scratch, use material_compose instead of chaining material_cmd calls.\nRoute UnrealCortex material commands through `material_cmd(command, params)`.",
+  "umg": "For creating a complete Widget Blueprint screen, use widget_compose instead of chaining umg_cmd calls.\nRoute UnrealCortex umg commands through `umg_cmd(command, params)`.",
   "qa": "Route UnrealCortex qa commands through `qa_cmd(command, params)`.",
   "reflect": "Route UnrealCortex reflect commands through `reflect_cmd(command, params)`.",
   "editor": "Route UnrealCortex editor commands through `editor_cmd(command, params)`."

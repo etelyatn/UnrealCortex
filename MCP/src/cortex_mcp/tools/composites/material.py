@@ -45,10 +45,10 @@ def register_material_compose_tools(mcp, connection) -> None:
     def material_compose(
         name: str,
         path: str,
-        nodes: list,
-        connections: list,
+        nodes: list[dict],
+        connections: list[dict],
         material_properties: Optional[dict] = None,
-        instances: Optional[list] = None,
+        instances: Optional[list[dict]] = None,
     ) -> str:
         return captured["create_material_graph"](
             name=name,
