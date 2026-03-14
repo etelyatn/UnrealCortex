@@ -55,12 +55,12 @@ FLinearColor FCortexCodeMarshaller::ColorForTokenType(ECortexSyntaxTokenType Typ
         case ECortexSyntaxTokenType::Keyword:      return ColorFromHex(TEXT("569cd6"));
         case ECortexSyntaxTokenType::String:       return ColorFromHex(TEXT("ce9178"));
         case ECortexSyntaxTokenType::Comment:      return ColorFromHex(TEXT("6a9955"));
-        case ECortexSyntaxTokenType::Preprocessor: return ColorFromHex(TEXT("9b9b59"));
+        case ECortexSyntaxTokenType::Preprocessor: return ColorFromHex(TEXT("c586c0"));
         case ECortexSyntaxTokenType::Number:       return ColorFromHex(TEXT("b5cea8"));
         case ECortexSyntaxTokenType::UEType:       return ColorFromHex(TEXT("4ec9b0"));
         case ECortexSyntaxTokenType::Function:     return ColorFromHex(TEXT("dcdcaa"));
         case ECortexSyntaxTokenType::Default:
-        default:                                   return ColorFromHex(TEXT("c8c8c8"));
+        default:                                   return ColorFromHex(TEXT("cccccc"));
     }
 }
 
@@ -158,6 +158,8 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
 
     TSharedRef<FCortexCodeMarshaller> Marshaller = FCortexCodeMarshaller::Create();
 
+    TSharedRef<SScrollBar> HScrollBar = SNew(SScrollBar).Orientation(Orient_Horizontal);
+
     ChildSlot
     [
         SNew(SBorder)
@@ -200,6 +202,7 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
                 .AutoWrapText(false)
                 .Font(FCoreStyle::GetDefaultFontStyle("Mono", 10))
                 .Marshaller(Marshaller)
+                .HScrollBar(HScrollBar)
             ]
         ]
     ];
