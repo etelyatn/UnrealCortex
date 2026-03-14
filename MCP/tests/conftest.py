@@ -164,7 +164,7 @@ def cleanup_assets(tcp_connection):
                 elif asset_type == "material_instance":
                     tcp_connection.send_command("material.delete_instance", {"asset_path": asset_path})
                 else:
-                    tcp_connection.send_command("bp.delete", {"asset_path": asset_path})
+                    tcp_connection.send_command("blueprint.delete", {"asset_path": asset_path})
             except Exception:
                 pass
 
@@ -173,7 +173,7 @@ def cleanup_assets(tcp_connection):
 def blueprint_for_test(tcp_connection, cleanup_assets):
     name = _uniq("BP_E2E")
     resp = tcp_connection.send_command(
-        "bp.create",
+        "blueprint.create",
         {"name": name, "path": "/Game/Temp/CortexMCPTest", "type": "Actor"},
     )
     asset_path = resp["data"]["asset_path"]
@@ -185,7 +185,7 @@ def blueprint_for_test(tcp_connection, cleanup_assets):
 def widget_bp_for_test(tcp_connection, cleanup_assets):
     name = _uniq("WBP_E2E")
     resp = tcp_connection.send_command(
-        "bp.create",
+        "blueprint.create",
         {"name": name, "path": "/Game/Temp/CortexMCPTest", "type": "Widget"},
     )
     asset_path = resp["data"]["asset_path"]
@@ -259,7 +259,7 @@ def _map_tool_call(name: str, args: dict) -> tuple[str, dict]:
         "set_class_defaults": "set_class_defaults",
     }
     if name in blueprint_map:
-        return "__tcp__", {"command": f"bp.{blueprint_map[name]}", "params": args}
+        return "__tcp__", {"command": f"blueprint.{blueprint_map[name]}", "params": args}
 
     umg_names = {
         "add_widget", "remove_widget", "reparent", "get_tree", "get_widget", "list_widget_classes",

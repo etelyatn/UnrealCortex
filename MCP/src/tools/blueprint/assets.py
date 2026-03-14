@@ -45,7 +45,7 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
             }
             if parent_class:
                 params["parent_class"] = parent_class
-            response = connection.send_command("bp.create", params)
+            response = connection.send_command("blueprint.create", params)
             return format_response(response.get("data", {}), "create_blueprint")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -74,7 +74,7 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
                 params["path"] = path
             if type:
                 params["type"] = type
-            response = connection.send_command("bp.list", params)
+            response = connection.send_command("blueprint.list", params)
             return format_response(response.get("data", {}), "list_blueprints")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -98,7 +98,7 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
         """
         try:
             params = {"asset_path": asset_path}
-            response = connection.send_command("bp.get_info", params)
+            response = connection.send_command("blueprint.get_info", params)
             return format_response(response.get("data", {}), "get_blueprint_info")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -120,7 +120,7 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
             params = {"asset_path": asset_path}
             if force:
                 params["force"] = True
-            response = connection.send_command("bp.delete", params)
+            response = connection.send_command("blueprint.delete", params)
             return format_response(response.get("data", {}), "delete_blueprint")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -147,7 +147,7 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
             }
             if new_path:
                 params["new_path"] = new_path
-            response = connection.send_command("bp.duplicate", params)
+            response = connection.send_command("blueprint.duplicate", params)
             return format_response(response.get("data", {}), "duplicate_blueprint")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -170,7 +170,7 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
         """
         try:
             params = {"asset_path": asset_path}
-            response = connection.send_command("bp.compile", params)
+            response = connection.send_command("blueprint.compile", params)
             return format_response(response.get("data", {}), "compile_blueprint")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -189,7 +189,7 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
         """
         try:
             params = {"asset_path": asset_path}
-            response = connection.send_command("bp.save", params)
+            response = connection.send_command("blueprint.save", params)
             return format_response(response.get("data", {}), "save_blueprint")
         except ConnectionError as e:
             return f"Error: {e}"

@@ -173,7 +173,7 @@ class TestBatchCommandGeneration:
         widgets = [{"class": "CanvasPanel", "name": "Root"}]
         commands = _build_widget_batch_commands("WBP_Test", "/Game/UI/", widgets, [])
 
-        assert commands[0]["command"] == "bp.create"
+        assert commands[0]["command"] == "blueprint.create"
         assert commands[0]["params"]["type"] == "Widget"
         assert commands[1]["command"] == "umg.add_widget"
         assert commands[1]["params"]["widget_class"] == "CanvasPanel"
@@ -307,7 +307,7 @@ class TestCleanupOnFailure:
         """Step 0 must be bp.create for cleanup to work."""
         widgets = [{"class": "CanvasPanel", "name": "Root"}]
         commands = _build_widget_batch_commands("WBP_Test", "/Game/UI/", widgets, [])
-        assert commands[0]["command"] == "bp.create"
+        assert commands[0]["command"] == "blueprint.create"
 
 
 class TestTimeoutScaling:
@@ -346,7 +346,7 @@ class TestFixtures:
         assert len(commands) == len(expected["commands"])
 
         # Verify counts
-        assert commands[0]["command"] == "bp.create"
+        assert commands[0]["command"] == "blueprint.create"
         widget_count = sum(1 for c in commands if c["command"] == "umg.add_widget")
         styling_count = sum(1 for c in commands if c["command"].startswith("umg.set_"))
         anim_count = sum(1 for c in commands if c["command"] == "umg.create_animation")

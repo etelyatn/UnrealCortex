@@ -21,7 +21,7 @@ def register_blueprint_migration_tools(mcp, connection: UEConnection):
             dest_path: Destination Blueprint object path.
         """
         try:
-            response = connection.send_command("bp.rename", {
+            response = connection.send_command("blueprint.rename", {
                 "source_path": source_path,
                 "dest_path": dest_path,
             })
@@ -40,7 +40,7 @@ def register_blueprint_migration_tools(mcp, connection: UEConnection):
             recursive: Whether to include subdirectories.
         """
         try:
-            response = connection.send_command("bp.fixup_redirectors", {
+            response = connection.send_command("blueprint.fixup_redirectors", {
                 "path": path,
                 "recursive": recursive,
             })
@@ -54,7 +54,7 @@ def register_blueprint_migration_tools(mcp, connection: UEConnection):
     def recompile_dependent_blueprints(asset_path: str) -> str:
         """Recompile Blueprints that depend on the given Blueprint."""
         try:
-            response = connection.send_command("bp.recompile_dependents", {
+            response = connection.send_command("blueprint.recompile_dependents", {
                 "asset_path": asset_path,
             })
             return format_response(response.get("data", {}), "recompile_dependent_blueprints")
@@ -78,7 +78,7 @@ def register_blueprint_migration_tools(mcp, connection: UEConnection):
             params["sections"] = sections
 
         try:
-            response = connection.send_command("bp.compare_blueprints", params)
+            response = connection.send_command("blueprint.compare_blueprints", params)
             return format_response(response.get("data", {}), "compare_blueprints")
         except ConnectionError as e:
             return json.dumps({"error": f"Connection error: {e}"})
@@ -102,7 +102,7 @@ def register_blueprint_migration_tools(mcp, connection: UEConnection):
             compile: Recompile the Blueprint after removal (default True).
         """
         try:
-            response = connection.send_command("bp.remove_scs_component", {
+            response = connection.send_command("blueprint.remove_scs_component", {
                 "asset_path": asset_path,
                 "component_name": component_name,
                 "compile": compile,
@@ -130,7 +130,7 @@ def register_blueprint_migration_tools(mcp, connection: UEConnection):
             compile: Recompile the Blueprint after cleanup (default True).
         """
         try:
-            response = connection.send_command("bp.delete_orphaned_nodes", {
+            response = connection.send_command("blueprint.delete_orphaned_nodes", {
                 "asset_path": asset_path,
                 "graph_name": graph_name,
                 "compile": compile,

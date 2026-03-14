@@ -44,6 +44,13 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                         ttl=_TTL_CATALOG,
                     )
                     return format_response(response.get("data", {}), "get_data_catalog")
+                if command == "batch_query":
+                    import json as _json
+                    commands = route_params.get("commands", [])
+                    if isinstance(commands, str):
+                        commands = _json.loads(commands)
+                    response = connection.send_command("batch", {"commands": commands})
+                    return format_response(response.get("data", {}), "batch_query")
 
             response = connection.send_command(_qualify_command(domain, command), route_params)
             return format_response(response.get("data", {}), f"{domain}_cmd")

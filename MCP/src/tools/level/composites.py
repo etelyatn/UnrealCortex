@@ -168,7 +168,7 @@ def _build_level_batch_commands(operations, save):
         }
 
         if op_type == "spawn":
-            spawn_params = {"class": op["class"]}
+            spawn_params = {"class_name": op["class"]}
             for field in ("location", "rotation", "scale", "label", "mesh", "material"):
                 if field in op:
                     spawn_params[field] = op[field]

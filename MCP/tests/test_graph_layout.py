@@ -32,7 +32,7 @@ def test_graph_auto_layout_calls_correct_command():
         "graph.auto_layout", {"asset_path": "/Game/BP_Test", "mode": "full"}
     )
     connection.invalidate_cache.assert_any_call("graph.")
-    connection.invalidate_cache.assert_any_call("bp.")
+    connection.invalidate_cache.assert_any_call("blueprint.")
 
 
 def test_graph_auto_layout_optional_params_excluded_when_none():
@@ -116,4 +116,4 @@ def test_graph_auto_layout_invalidates_both_caches():
 
     invalidate_calls = [c[0][0] for c in connection.invalidate_cache.call_args_list]
     assert "graph." in invalidate_calls
-    assert "bp." in invalidate_calls
+    assert "blueprint." in invalidate_calls

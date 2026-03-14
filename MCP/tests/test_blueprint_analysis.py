@@ -49,7 +49,7 @@ def test_analyze_blueprint_for_migration_wires_command():
     assert parsed["name"] == "BP_Test"
     assert parsed["complexity_metrics"]["migration_confidence"] == "high"
     connection.send_command.assert_called_once_with(
-        "bp.analyze_for_migration",
+        "blueprint.analyze_for_migration",
         {"asset_path": "/Game/Blueprints/BP_Test"},
     )
 

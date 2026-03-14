@@ -375,7 +375,7 @@ class TestBlueprintCRUD:
     """Blueprint CRUD tests. Uses blueprint_for_test fixture for read ops."""
 
     def test_create_blueprint(self, tcp_connection, cleanup_assets):
-        resp = tcp_connection.send_command("bp.create", {
+        resp = tcp_connection.send_command("blueprint.create", {
             "name": _uniq("BP_E2E_Create"),
             "path": "/Game/Temp/CortexMCPTest",
             "type": "Actor",
@@ -386,7 +386,7 @@ class TestBlueprintCRUD:
 
     def test_create_blueprint_types(self, tcp_connection, cleanup_assets):
         for bp_type in ["Widget", "Component", "FunctionLibrary"]:
-            resp = tcp_connection.send_command("bp.create", {
+            resp = tcp_connection.send_command("blueprint.create", {
                 "name": _uniq(f"BP_E2E_{bp_type}"),
                 "path": "/Game/Temp/CortexMCPTest",
                 "type": bp_type,
@@ -395,7 +395,7 @@ class TestBlueprintCRUD:
             cleanup_assets.append(resp["data"]["asset_path"])
 
     def test_list_blueprints(self, tcp_connection, blueprint_for_test):
-        resp = tcp_connection.send_command("bp.list", {
+        resp = tcp_connection.send_command("blueprint.list", {
             "path": "/Game/Temp/CortexMCPTest",
         })
         data = resp["data"]
@@ -403,7 +403,7 @@ class TestBlueprintCRUD:
         assert len(data["blueprints"]) > 0
 
     def test_get_blueprint_info(self, tcp_connection, blueprint_for_test):
-        resp = tcp_connection.send_command("bp.get_info", {
+        resp = tcp_connection.send_command("blueprint.get_info", {
             "asset_path": blueprint_for_test,
         })
         data = resp["data"]
@@ -412,30 +412,30 @@ class TestBlueprintCRUD:
         assert "graphs" in data
 
     def test_add_variable(self, tcp_connection, blueprint_for_test):
-        tcp_connection.send_command("bp.add_variable", {
+        tcp_connection.send_command("blueprint.add_variable", {
             "asset_path": blueprint_for_test,
             "name": "TestHealth",
             "type": "Float",
         })
-        info = tcp_connection.send_command("bp.get_info", {
+        info = tcp_connection.send_command("blueprint.get_info", {
             "asset_path": blueprint_for_test,
         })
         var_names = [v["name"] for v in info["data"]["variables"]]
         assert "TestHealth" in var_names
 
     def test_add_function(self, tcp_connection, blueprint_for_test):
-        tcp_connection.send_command("bp.add_function", {
+        tcp_connection.send_command("blueprint.add_function", {
             "asset_path": blueprint_for_test,
             "name": "TestTakeDamage",
         })
-        info = tcp_connection.send_command("bp.get_info", {
+        info = tcp_connection.send_command("blueprint.get_info", {
             "asset_path": blueprint_for_test,
         })
         func_names = [f["name"] for f in info["data"]["functions"]]
         assert "TestTakeDamage" in func_names
 
     def test_compile_blueprint(self, tcp_connection, blueprint_for_test):
-        resp = tcp_connection.send_command("bp.compile", {
+        resp = tcp_connection.send_command("blueprint.compile", {
             "asset_path": blueprint_for_test,
         })
         data = resp["data"]
@@ -446,7 +446,7 @@ class TestBlueprintCRUD:
         assert isinstance(data["diagnostics"], list)
 
     def test_duplicate_blueprint(self, tcp_connection, blueprint_for_test, cleanup_assets):
-        resp = tcp_connection.send_command("bp.duplicate", {
+        resp = tcp_connection.send_command("blueprint.duplicate", {
             "asset_path": blueprint_for_test,
             "new_name": _uniq("BP_E2E_Duplicated"),
         })
@@ -454,19 +454,19 @@ class TestBlueprintCRUD:
         cleanup_assets.append(resp["data"]["new_asset_path"])
 
     def test_save_blueprint(self, tcp_connection, blueprint_for_test):
-        resp = tcp_connection.send_command("bp.save", {
+        resp = tcp_connection.send_command("blueprint.save", {
             "asset_path": blueprint_for_test,
         })
         assert resp["data"].get("success") is True or "asset_path" in resp["data"]
 
     def test_delete_blueprint(self, tcp_connection):
-        create_resp = tcp_connection.send_command("bp.create", {
+        create_resp = tcp_connection.send_command("blueprint.create", {
             "name": _uniq("BP_E2E_ToDelete"),
             "path": "/Game/Temp/CortexMCPTest",
             "type": "Actor",
         })
         path = create_resp["data"]["asset_path"]
-        resp = tcp_connection.send_command("bp.delete", {"asset_path": path})
+        resp = tcp_connection.send_command("blueprint.delete", {"asset_path": path})
         assert resp["data"].get("success") is True or "asset_path" in resp["data"]
 
 
@@ -481,7 +481,7 @@ class TestBlueprintClassDefaults:
 
     def test_get_class_defaults_discovery(self, tcp_connection, blueprint_for_test):
         """Discovery mode: get all settable properties."""
-        resp = tcp_connection.send_command("bp.get_class_defaults", {
+        resp = tcp_connection.send_command("blueprint.get_class_defaults", {
             "blueprint_path": blueprint_for_test,
         })
         data = resp["data"]
@@ -492,7 +492,7 @@ class TestBlueprintClassDefaults:
 
     def test_get_class_defaults_specific(self, tcp_connection, blueprint_for_test):
         """Read specific CDO properties by name."""
-        resp = tcp_connection.send_command("bp.get_class_defaults", {
+        resp = tcp_connection.send_command("blueprint.get_class_defaults", {
             "blueprint_path": blueprint_for_test,
             "properties": ["PrimaryActorTick.bCanEverTick", "bReplicates"],
         })
@@ -505,13 +505,13 @@ class TestBlueprintClassDefaults:
 
     def test_set_class_defaults_bool(self, tcp_connection, blueprint_for_test):
         """Set a bool CDO property and verify via get."""
-        tcp_connection.send_command("bp.set_class_defaults", {
+        tcp_connection.send_command("blueprint.set_class_defaults", {
             "blueprint_path": blueprint_for_test,
             "properties": {"PrimaryActorTick.bCanEverTick": True},
             "compile": False,
             "save": False,
         })
-        resp = tcp_connection.send_command("bp.get_class_defaults", {
+        resp = tcp_connection.send_command("blueprint.get_class_defaults", {
             "blueprint_path": blueprint_for_test,
             "properties": ["PrimaryActorTick.bCanEverTick"],
         })
@@ -520,7 +520,7 @@ class TestBlueprintClassDefaults:
 
     def test_set_class_defaults_batch(self, tcp_connection, blueprint_for_test):
         """Set multiple CDO properties in one call."""
-        resp = tcp_connection.send_command("bp.set_class_defaults", {
+        resp = tcp_connection.send_command("blueprint.set_class_defaults", {
             "blueprint_path": blueprint_for_test,
             "properties": {"PrimaryActorTick.bCanEverTick": True, "bReplicates": True},
             "compile": False,
@@ -533,7 +533,7 @@ class TestBlueprintClassDefaults:
 
     def test_set_class_defaults_no_compile(self, tcp_connection, blueprint_for_test):
         """compile=false should skip compilation."""
-        resp = tcp_connection.send_command("bp.set_class_defaults", {
+        resp = tcp_connection.send_command("blueprint.set_class_defaults", {
             "blueprint_path": blueprint_for_test,
             "properties": {"PrimaryActorTick.bCanEverTick": False},
             "compile": False,
@@ -546,7 +546,7 @@ class TestBlueprintClassDefaults:
     def test_get_class_defaults_property_not_found(self, tcp_connection, blueprint_for_test):
         """Misspelled property returns error with fuzzy suggestions."""
         with pytest.raises(RuntimeError):
-            tcp_connection.send_command("bp.get_class_defaults", {
+            tcp_connection.send_command("blueprint.get_class_defaults", {
                 "blueprint_path": blueprint_for_test,
                 "properties": ["bCanEvrTick"],
             })
@@ -554,7 +554,7 @@ class TestBlueprintClassDefaults:
     def test_set_class_defaults_property_not_found(self, tcp_connection, blueprint_for_test):
         """Non-existent property returns error."""
         with pytest.raises(RuntimeError):
-            tcp_connection.send_command("bp.set_class_defaults", {
+            tcp_connection.send_command("blueprint.set_class_defaults", {
                 "blueprint_path": blueprint_for_test,
                 "properties": {"NonExistentProperty_12345": "value"},
             })
@@ -562,7 +562,7 @@ class TestBlueprintClassDefaults:
     def test_get_class_defaults_nonexistent_bp(self, tcp_connection):
         """Non-existent Blueprint returns BLUEPRINT_NOT_FOUND."""
         with pytest.raises(RuntimeError):
-            tcp_connection.send_command("bp.get_class_defaults", {
+            tcp_connection.send_command("blueprint.get_class_defaults", {
                 "blueprint_path": "/Game/NonExistent/BP_Ghost_12345",
             })
 
@@ -576,7 +576,7 @@ class TestBlueprintClassDefaults:
 class TestBlueprintErrors:
     def test_create_blueprint_invalid_path(self, tcp_connection):
         with pytest.raises(RuntimeError):
-            tcp_connection.send_command("bp.create", {
+            tcp_connection.send_command("blueprint.create", {
                 "name": _uniq("BP_InvalidType"),
                 "path": "/Game/Temp/CortexMCPTest",
                 "type": "DefinitelyInvalidType_12345",
@@ -584,14 +584,14 @@ class TestBlueprintErrors:
 
     def test_get_info_nonexistent(self, tcp_connection):
         with pytest.raises(RuntimeError):
-            tcp_connection.send_command("bp.get_info", {
+            tcp_connection.send_command("blueprint.get_info", {
                 "asset_path": "/Game/NonExistent/BP_DoesNotExist_12345",
             })
 
     def test_add_variable_duplicate_name(self, tcp_connection, blueprint_for_test):
         # Ensure variable exists
         try:
-            tcp_connection.send_command("bp.add_variable", {
+            tcp_connection.send_command("blueprint.add_variable", {
                 "asset_path": blueprint_for_test,
                 "name": "DuplicateVar",
                 "type": "Bool",
@@ -600,21 +600,21 @@ class TestBlueprintErrors:
             pass  # May already exist from previous run
         # Adding same name again should fail
         with pytest.raises(RuntimeError):
-            tcp_connection.send_command("bp.add_variable", {
+            tcp_connection.send_command("blueprint.add_variable", {
                 "asset_path": blueprint_for_test,
                 "name": "DuplicateVar",
                 "type": "Bool",
             })
 
     def test_compile_fresh_bp(self, tcp_connection, cleanup_assets):
-        resp = tcp_connection.send_command("bp.create", {
+        resp = tcp_connection.send_command("blueprint.create", {
             "name": _uniq("BP_E2E_CompileTest"),
             "path": "/Game/Temp/CortexMCPTest",
             "type": "Actor",
         })
         path = resp["data"]["asset_path"]
         cleanup_assets.append(path)
-        compile_resp = tcp_connection.send_command("bp.compile", {
+        compile_resp = tcp_connection.send_command("blueprint.compile", {
             "asset_path": path,
         })
         assert compile_resp["data"]["compile_status"] == "success"
@@ -623,7 +623,7 @@ class TestBlueprintErrors:
 
     def test_delete_nonexistent(self, tcp_connection):
         with pytest.raises(RuntimeError):
-            tcp_connection.send_command("bp.delete", {
+            tcp_connection.send_command("blueprint.delete", {
                 "asset_path": "/Game/NonExistent/BP_Ghost_12345",
             })
 
@@ -1152,7 +1152,7 @@ class TestBlueprintAnalysis:
 
     def test_analyze_for_migration(self, tcp_connection):
         resp = tcp_connection.send_command(
-            "bp.analyze_for_migration",
+            "blueprint.analyze_for_migration",
             {"asset_path": _COMPLEX_ACTOR_PATH},
         )
         data = resp["data"]
@@ -1174,13 +1174,13 @@ class TestBlueprintAnalysis:
     def test_analyze_for_migration_not_found(self, tcp_connection):
         with pytest.raises(RuntimeError):
             tcp_connection.send_command(
-                "bp.analyze_for_migration",
+                "blueprint.analyze_for_migration",
                 {"asset_path": "/Game/NonExistent/BP_Ghost_12345"},
             )
 
     def test_analyze_for_migration_variable_schema(self, tcp_connection):
         resp = tcp_connection.send_command(
-            "bp.analyze_for_migration",
+            "blueprint.analyze_for_migration",
             {"asset_path": _COMPLEX_ACTOR_PATH},
         )
         variables = resp["data"]["variables"]
@@ -1193,7 +1193,7 @@ class TestBlueprintAnalysis:
 
     def test_analyze_for_migration_complexity_metrics(self, tcp_connection):
         resp = tcp_connection.send_command(
-            "bp.analyze_for_migration",
+            "blueprint.analyze_for_migration",
             {"asset_path": _COMPLEX_ACTOR_PATH},
         )
         metrics = resp["data"]["complexity_metrics"]

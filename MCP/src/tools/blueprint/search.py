@@ -52,7 +52,7 @@ def register_blueprint_search_tools(mcp, connection: UEConnection):
             if search_in:
                 params["search_in"] = search_in
 
-            response = connection.send_command("bp.search", params)
+            response = connection.send_command("blueprint.search", params)
             return format_response(response.get("data", {}), "blueprint_search")
         except ConnectionError as exc:
             return json.dumps({"error": f"Connection error: {exc}"})

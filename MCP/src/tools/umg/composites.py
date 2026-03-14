@@ -132,7 +132,7 @@ def _build_widget_batch_commands(
 
     # Step 0: create Widget Blueprint
     commands.append({
-        "command": "bp.create",
+        "command": "blueprint.create",
         "params": {"name": name, "path": path, "type": "Widget"},
     })
 
@@ -329,7 +329,7 @@ def register_umg_composite_tools(mcp, connection: UEConnection):
             recovery_action = None
             if asset_path:
                 try:
-                    connection.send_command("bp.delete", {"asset_path": asset_path, "force": True})
+                    connection.send_command("blueprint.delete", {"asset_path": asset_path, "force": True})
                     recovery_action = {"action": "deleted_partial", "path": asset_path}
                 except Exception as e:
                     recovery_action = {
@@ -361,12 +361,12 @@ def register_umg_composite_tools(mcp, connection: UEConnection):
         warnings = []
         if asset_path:
             try:
-                connection.send_command("bp.compile", {"asset_path": asset_path})
+                connection.send_command("blueprint.compile", {"asset_path": asset_path})
             except (RuntimeError, ConnectionError, TimeoutError, OSError) as e:
                 # Compile failure is a hard error — save the uncompiled asset so the
                 # user can open it in the editor and diagnose the widget tree errors.
                 try:
-                    connection.send_command("bp.save", {"asset_path": asset_path})
+                    connection.send_command("blueprint.save", {"asset_path": asset_path})
                 except Exception:
                     pass
                 return json.dumps({
@@ -379,7 +379,7 @@ def register_umg_composite_tools(mcp, connection: UEConnection):
                 }, indent=2)
 
             try:
-                connection.send_command("bp.save", {"asset_path": asset_path})
+                connection.send_command("blueprint.save", {"asset_path": asset_path})
             except Exception as e:
                 logger.warning(f"save failed for {asset_path}: {e}", exc_info=True)
                 warnings.append({"step": "save", "error": str(e)})

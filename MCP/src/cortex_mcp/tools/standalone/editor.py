@@ -14,6 +14,7 @@ from tools.editor.composites import register_editor_composite_tools
 
 def register_editor_standalone_tools(mcp, connection) -> None:
     """Register standalone editor tools."""
+    # _CaptureMCP: intercept legacy registration, re-export under consolidated names.
     captured: dict[str, callable] = {}
 
     class _CaptureMCP:

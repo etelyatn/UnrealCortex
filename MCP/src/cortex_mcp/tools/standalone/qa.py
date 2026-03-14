@@ -14,6 +14,7 @@ from tools.qa.composites import register_qa_composite_tools
 
 def register_qa_standalone_tools(mcp, connection) -> None:
     """Register QA standalone tools."""
+    # _CaptureMCP: intercept legacy registration, re-export under consolidated names.
     captured: dict[str, callable] = {}
 
     class _CaptureMCP:

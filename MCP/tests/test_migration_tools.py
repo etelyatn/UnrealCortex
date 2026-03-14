@@ -23,7 +23,7 @@ def test_blueprint_migration_tool_flow(tcp_connection):
     created_paths = []
 
     try:
-        create_resp = tcp_connection.send_command("bp.create", {
+        create_resp = tcp_connection.send_command("blueprint.create", {
             "name": source_name,
             "path": path,
             "type": "Actor",
@@ -31,7 +31,7 @@ def test_blueprint_migration_tool_flow(tcp_connection):
         assert create_resp.get("success", False)
         created_paths.append(source_path)
 
-        dup_resp = tcp_connection.send_command("bp.duplicate", {
+        dup_resp = tcp_connection.send_command("blueprint.duplicate", {
             "asset_path": source_path,
             "new_name": copy_name,
             "new_path": path,
@@ -39,7 +39,7 @@ def test_blueprint_migration_tool_flow(tcp_connection):
         assert dup_resp.get("success", False)
         created_paths.append(copy_path)
 
-        rename_resp = tcp_connection.send_command("bp.rename", {
+        rename_resp = tcp_connection.send_command("blueprint.rename", {
             "source_path": copy_path,
             "dest_path": renamed_path,
         })
@@ -48,14 +48,14 @@ def test_blueprint_migration_tool_flow(tcp_connection):
         # copy_path becomes redirector after rename; keep renamed path for cleanup
         created_paths = [source_path, renamed_path]
 
-        compare_resp = tcp_connection.send_command("bp.compare_blueprints", {
+        compare_resp = tcp_connection.send_command("blueprint.compare_blueprints", {
             "source_path": source_path,
             "target_path": renamed_path,
         })
         assert compare_resp.get("success", False)
         assert "match" in compare_resp.get("data", {})
 
-        fixup_resp = tcp_connection.send_command("bp.fixup_redirectors", {
+        fixup_resp = tcp_connection.send_command("blueprint.fixup_redirectors", {
             "path": path,
             "recursive": True,
         })
@@ -64,7 +64,7 @@ def test_blueprint_migration_tool_flow(tcp_connection):
     finally:
         for asset_path in reversed(created_paths):
             try:
-                tcp_connection.send_command("bp.delete", {
+                tcp_connection.send_command("blueprint.delete", {
                     "asset_path": asset_path,
                     "force": True,
                 })

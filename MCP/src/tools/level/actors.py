@@ -22,7 +22,7 @@ def register_level_actor_tools(mcp, connection: UEConnection):
         material: str = "",
     ) -> str:
         try:
-            params = {"class": class_name, "location": location}
+            params = {"class_name": class_name, "location": location}
             if rotation is not None:
                 params["rotation"] = rotation
             if scale is not None:

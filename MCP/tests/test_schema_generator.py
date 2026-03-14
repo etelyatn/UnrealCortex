@@ -30,7 +30,9 @@ class TestProjectRootDiscovery(unittest.TestCase):
             nested = Path(tmpdir) / "Plugins" / "MCP" / "src"
             nested.mkdir(parents=True)
 
-            with patch("cortex_mcp.schema_generator._get_caller_path", return_value=nested):
+            with patch("cortex_mcp.schema_generator._get_caller_path", return_value=nested), \
+                 patch.dict(os.environ, {}, clear=False) as env:
+                env.pop("CORTEX_PROJECT_DIR", None)
                 result = find_project_root()
                 self.assertEqual(result, Path(tmpdir))
 

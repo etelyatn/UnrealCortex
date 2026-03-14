@@ -54,7 +54,7 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
             }
             if properties:
                 params["properties"] = properties
-            response = connection.send_command("bp.get_class_defaults", params)
+            response = connection.send_command("blueprint.get_class_defaults", params)
             return format_response(response.get("data", {}), "get_class_defaults")
         except ConnectionError as exc:
             return f"Error: {exc}"
@@ -107,7 +107,7 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
                 "compile": compile,
                 "save": save,
             }
-            response = connection.send_command("bp.set_class_defaults", params)
+            response = connection.send_command("blueprint.set_class_defaults", params)
             return format_response(response.get("data", {}), "set_class_defaults")
         except ConnectionError as exc:
             return f"Error: {exc}"

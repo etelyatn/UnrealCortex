@@ -46,7 +46,7 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
             JSON object from `bp.analyze_for_migration`.
         """
         try:
-            response = connection.send_command("bp.analyze_for_migration", {
+            response = connection.send_command("blueprint.analyze_for_migration", {
                 "asset_path": asset_path,
             })
             return format_response(response.get("data", {}), "analyze_blueprint_for_migration")
@@ -112,7 +112,7 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
         if remove_functions:
             params["remove_functions"] = remove_functions
         try:
-            response = connection.send_command("bp.cleanup_migration", params)
+            response = connection.send_command("blueprint.cleanup_migration", params)
             cleanup_data = response.get("data", {})
 
             if not migrated_overrides:
@@ -149,14 +149,14 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
 
             if pruned_names:
                 # Clean up orphaned downstream chains and compile.
-                connection.send_command("bp.delete_orphaned_nodes", {
+                connection.send_command("blueprint.delete_orphaned_nodes", {
                     "asset_path": asset_path,
                     "graph_name": "EventGraph",
                     "compile": compile,
                 })
             elif compile:
                 # No event nodes removed but compile was deferred from bp.cleanup_migration.
-                connection.send_command("bp.compile", {"asset_path": asset_path})
+                connection.send_command("blueprint.compile", {"asset_path": asset_path})
 
             result = dict(cleanup_data)
             result["pruned_event_nodes"] = len(pruned_names)

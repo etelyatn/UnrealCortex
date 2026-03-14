@@ -14,6 +14,7 @@ from tools.qa.composites import register_qa_composite_tools
 
 def register_scenario_compose_tools(mcp, connection) -> None:
     """Register the scenario composition tool under its explicit name."""
+    # _CaptureMCP: intercept legacy registration, re-export under consolidated names.
     captured: dict[str, callable] = {}
 
     class _CaptureMCP:

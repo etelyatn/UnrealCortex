@@ -81,10 +81,10 @@ def register_widget_property_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def set_brush(
-        asset_path: str, widget_name: str, target: str,
+        asset_path: str, widget_name: str, target: str = "",
         color: str = "", draw_as: str = "", corner_radius: float = 0,
     ) -> str:
-        """Set brush appearance for widget states."""
+        """Set brush appearance for widget states. For Button widgets, target defaults to "normal"."""
         params = {"asset_path": asset_path, "widget_name": widget_name, "target": target}
         if color:
             params["color"] = color

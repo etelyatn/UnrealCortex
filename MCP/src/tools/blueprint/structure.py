@@ -50,7 +50,7 @@ def register_blueprint_structure_tools(mcp, connection: UEConnection):
                 params["is_exposed"] = True
             if category:
                 params["category"] = category
-            response = connection.send_command("bp.add_variable", params)
+            response = connection.send_command("blueprint.add_variable", params)
             return format_response(response.get("data", {}), "add_blueprint_variable")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -73,7 +73,7 @@ def register_blueprint_structure_tools(mcp, connection: UEConnection):
                 "asset_path": asset_path,
                 "name": name,
             }
-            response = connection.send_command("bp.remove_variable", params)
+            response = connection.send_command("blueprint.remove_variable", params)
             return format_response(response.get("data", {}), "remove_blueprint_variable")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -122,7 +122,7 @@ def register_blueprint_structure_tools(mcp, connection: UEConnection):
                 params["inputs"] = inputs
             if outputs:
                 params["outputs"] = outputs
-            response = connection.send_command("bp.add_function", params)
+            response = connection.send_command("blueprint.add_function", params)
             return format_response(response.get("data", {}), "add_blueprint_function")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -160,7 +160,7 @@ def register_blueprint_structure_tools(mcp, connection: UEConnection):
             }
             if tracks:
                 params["tracks"] = tracks
-            response = connection.send_command("bp.configure_timeline", params)
+            response = connection.send_command("blueprint.configure_timeline", params)
             return format_response(response.get("data", {}), "configure_timeline")
         except ConnectionError as e:
             return f"Error: {e}"
@@ -190,7 +190,7 @@ def register_blueprint_structure_tools(mcp, connection: UEConnection):
                 "component_name": component_name,
                 "properties": properties,
             }
-            response = connection.send_command("bp.set_component_defaults", params)
+            response = connection.send_command("blueprint.set_component_defaults", params)
             return format_response(response.get("data", {}), "set_component_defaults")
         except ConnectionError as e:
             return f"Error: {e}"

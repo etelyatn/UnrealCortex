@@ -43,5 +43,5 @@ def register_graph_layout_tools(mcp, connection: UEConnection):
             params["vertical_spacing"] = vertical_spacing
         response = connection.send_command("graph.auto_layout", params)
         connection.invalidate_cache("graph.")
-        connection.invalidate_cache("bp.")
+        connection.invalidate_cache("blueprint.")
         return json.dumps(response.get("data", {}), indent=2)

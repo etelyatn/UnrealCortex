@@ -14,6 +14,7 @@ from tools.core.schema import register_schema_tools
 
 def register_schema_standalone_tools(mcp, connection) -> None:
     """Register schema generation/status tools."""
+    # _CaptureMCP: intercept legacy registration, re-export under consolidated names.
     captured: dict[str, callable] = {}
 
     class _CaptureMCP:

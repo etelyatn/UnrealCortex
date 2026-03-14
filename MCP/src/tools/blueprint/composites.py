@@ -166,7 +166,7 @@ def _build_batch_commands(
         create_params: dict = {"name": name, "path": path, "type": bp_type}
         if parent_class:
             create_params["parent_class"] = parent_class
-        commands.append({"command": "bp.create", "params": create_params})
+        commands.append({"command": "blueprint.create", "params": create_params})
         # In create mode, asset_path comes from step 0 result.
         asset_path_ref = "$steps[0].data.asset_path"
     else:
@@ -186,7 +186,7 @@ def _build_batch_commands(
             var_params["is_exposed"] = var["is_exposed"]
         if "category" in var:
             var_params["category"] = var["category"]
-        commands.append({"command": "bp.add_variable", "params": var_params})
+        commands.append({"command": "blueprint.add_variable", "params": var_params})
 
     # Steps V+1..V+F: add functions
     for func in functions:
@@ -198,7 +198,7 @@ def _build_batch_commands(
             func_params["is_pure"] = func["is_pure"]
         if "access" in func:
             func_params["access"] = func["access"]
-        commands.append({"command": "bp.add_function", "params": func_params})
+        commands.append({"command": "blueprint.add_function", "params": func_params})
 
     # Build node_name -> step_index map dynamically to stay correct if
     # variable/function command count ever changes conditionally.
@@ -407,7 +407,7 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
             recovery_action = None
             if asset_path and mode == "create":
                 try:
-                    connection.send_command("bp.delete", {"asset_path": asset_path, "force": True})
+                    connection.send_command("blueprint.delete", {"asset_path": asset_path, "force": True})
                     recovery_action = {"action": "deleted_partial", "path": asset_path}
                 except Exception as e:
                     recovery_action = {
@@ -453,12 +453,12 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
 
         if asset_path:
             try:
-                connection.send_command("bp.compile", {"asset_path": asset_path})
+                connection.send_command("blueprint.compile", {"asset_path": asset_path})
             except (RuntimeError, ConnectionError, TimeoutError, OSError) as e:
                 # Compile failure is a hard error — save the uncompiled asset so the
                 # user can open it in the editor and diagnose the graph errors.
                 try:
-                    connection.send_command("bp.save", {"asset_path": asset_path})
+                    connection.send_command("blueprint.save", {"asset_path": asset_path})
                 except Exception:
                     pass
                 return json.dumps({
@@ -471,7 +471,7 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                 }, indent=2)
 
             try:
-                connection.send_command("bp.save", {"asset_path": asset_path})
+                connection.send_command("blueprint.save", {"asset_path": asset_path})
             except Exception as e:
                 logger.warning(f"save failed for {asset_path}: {e}", exc_info=True)
                 warnings.append({"step": "save", "error": str(e)})
@@ -494,7 +494,7 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
 
         try:
             info_data = connection.send_command(
-                "bp.get_info",
+                "blueprint.get_info",
                 {"asset_path": asset_path},
                 timeout=VERIFICATION_TIMEOUT,
             )
