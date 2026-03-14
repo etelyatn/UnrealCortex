@@ -547,6 +547,10 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 				&& IsPositionalNumericStruct(StructProp->Struct))
 			{
 				TArray<const FProperty*> Fields;
+				// ExcludeSuper: positional contract is defined for the struct's own declared fields only.
+				// A struct with inherited numeric fields would pass this check but the promotion loop
+				// would only write the child's own fields, silently leaving parent fields at defaults.
+				// In practice, all UE math structs (FLinearColor, FVector, etc.) have no numeric parents.
 				for (TFieldIterator<FProperty> It(StructProp->Struct, EFieldIteratorFlags::ExcludeSuper); It; ++It)
 				{
 					Fields.Add(*It);
@@ -1166,12 +1170,20 @@ bool FCortexSerializer::IsPositionalNumericStruct(const UScriptStruct* Struct)
 		return false;
 	}
 
+	// Note: FQuat (X,Y,Z,W) and FRotator (Pitch,Yaw,Roll) pass this check — their memory
+	// layout matches declaration order, so positional promotion is technically correct.
+	// However, callers may assume W-first quaternion convention or alphabetical rotator order.
+	// FMatrix also passes (16 floats) — count mismatch is the only safety net for wrong usage.
 	if (const bool* Cached = PositionalNumericStructCache.Find(Struct))
 	{
 		return *Cached;
 	}
 
 	bool bAllNumeric = true;
+	// ExcludeSuper: positional contract is defined for the struct's own declared fields only.
+	// A struct with inherited numeric fields would pass this check but the promotion loop
+	// would only write the child's own fields, silently leaving parent fields at defaults.
+	// In practice, all UE math structs (FLinearColor, FVector, etc.) have no numeric parents.
 	for (TFieldIterator<FProperty> It(Struct, EFieldIteratorFlags::ExcludeSuper); It; ++It)
 	{
 		const FProperty* Prop = *It;
