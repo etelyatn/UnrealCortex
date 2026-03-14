@@ -174,7 +174,7 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
     ChildSlot
     [
         SNew(SBorder)
-        .BorderBackgroundColor(FLinearColor(0.05f, 0.05f, 0.08f, 1.0f))
+        .BorderBackgroundColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("242424"))))
         .Padding(0.0f)
         [
             SNew(SVerticalBox)
@@ -189,7 +189,7 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
                 [
                     SNew(STextBlock)
                     .Text(FText::FromString(InArgs._Language))
-                    .ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+                    .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
                 ]
                 + SHorizontalBox::Slot()
                 .AutoWidth()

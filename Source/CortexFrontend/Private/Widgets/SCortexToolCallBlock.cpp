@@ -52,7 +52,7 @@ void SCortexToolCallBlock::RebuildContent()
         [
             SNew(STextBlock)
             .Text(FText::FromString(HeaderText))
-            .ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.7f, 0.9f)))
+            .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("cccccc")))))
         ]
     ];
 
@@ -83,7 +83,7 @@ void SCortexToolCallBlock::RebuildContent()
                 SNew(STextBlock)
                 .Text(FText::FromString(RowText))
                 .Font(FCoreStyle::GetDefaultFontStyle("Mono", 9))
-                .ColorAndOpacity(FSlateColor(FLinearColor(0.7f, 0.7f, 0.7f)))
+                .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("cccccc")))))
             ];
 
             if (!ResultSummary.IsEmpty())
@@ -95,7 +95,7 @@ void SCortexToolCallBlock::RebuildContent()
                     SNew(STextBlock)
                     .Text(FText::FromString(ResultSummary))
                     .Font(FCoreStyle::GetDefaultFontStyle("Mono", 8))
-                    .ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+                    .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
                     .AutoWrapText(true)
                 ];
             }

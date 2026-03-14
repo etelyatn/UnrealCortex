@@ -20,7 +20,7 @@ void SCortexChatToolbar::Construct(const FArguments& InArgs)
         [
             SAssignNew(SessionIdText, STextBlock)
             .Text(FText::FromString(TEXT("")))
-            .ColorAndOpacity(FLinearColor(0.6f, 0.6f, 0.6f))
+            .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
         ]
         // New Chat button (right side)
         + SHorizontalBox::Slot()

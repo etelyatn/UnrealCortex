@@ -77,7 +77,7 @@ void SCortexContextBar::Construct(const FArguments& InArgs)
             SAssignNew(UsageLabel, STextBlock)
             .Text(FText::FromString(TEXT("0 / 200k")))
             .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-            .ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+            .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
         ]
     ];
 

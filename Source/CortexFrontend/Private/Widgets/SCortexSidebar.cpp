@@ -56,7 +56,7 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 			[
 				SNew(STextBlock)
 				.Text(FText::FromString(TEXT("\u25C0")))
-				.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+				.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
 			]
 		]
 		// Scrollable content
@@ -91,7 +91,7 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 					[
 						SAssignNew(ModelText, STextBlock)
 						.Text(FText::FromString(TEXT("\u2014")))
-						.ColorAndOpacity(FLinearColor(0.6f, 0.6f, 0.6f))
+						.ColorAndOpacity(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888"))))
 					]
 				]
 			]

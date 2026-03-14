@@ -27,7 +27,7 @@ void SCortexChatMessage::Construct(const FArguments& InArgs)
         [
             SNew(STextBlock)
             .Text(FText::FromString(bIsUser ? TEXT("You") : TEXT("Claude")))
-            .ColorAndOpacity(FSlateColor(FLinearColor(0.58f, 0.63f, 0.73f)))
+            .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
         ]
         // Left border accent + content
         + SVerticalBox::Slot()
