@@ -547,7 +547,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 				&& IsPositionalNumericStruct(StructProp->Struct))
 			{
 				TArray<const FProperty*> Fields;
-				for (TFieldIterator<FProperty> It(StructProp->Struct); It; ++It)
+				for (TFieldIterator<FProperty> It(StructProp->Struct, EFieldIteratorFlags::ExcludeSuper); It; ++It)
 				{
 					Fields.Add(*It);
 				}
@@ -1163,7 +1163,6 @@ bool FCortexSerializer::IsPositionalNumericStruct(const UScriptStruct* Struct)
 	// Callers must use {"R":r,"G":g,"B":b,"A":a} form instead.
 	if (Struct == TBaseStructure<FColor>::Get())
 	{
-		PositionalNumericStructCache.Add(Struct, false);
 		return false;
 	}
 
@@ -1173,7 +1172,7 @@ bool FCortexSerializer::IsPositionalNumericStruct(const UScriptStruct* Struct)
 	}
 
 	bool bAllNumeric = true;
-	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	for (TFieldIterator<FProperty> It(Struct, EFieldIteratorFlags::ExcludeSuper); It; ++It)
 	{
 		const FProperty* Prop = *It;
 		bool bIsScalar =
