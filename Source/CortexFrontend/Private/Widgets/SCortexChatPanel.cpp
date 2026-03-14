@@ -348,21 +348,36 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatEntry>
         const int32 TurnIdx = Entry->TurnIndex;
         if (RenderedToolGroups.Contains(TurnIdx))
         {
-            // Already rendered this group — return zero-height row
             return SNew(STableRow<TSharedPtr<FCortexChatEntry>>, OwnerTable)
                 .Padding(FMargin(0.0f))
                 [ SNullWidget::NullWidget ];
         }
         RenderedToolGroups.Add(TurnIdx);
 
-        // Collect all tool calls for this TurnIndex
+        // Collect consecutive tool calls from this position with same TurnIndex
         TArray<TSharedPtr<FCortexChatEntry>> GroupCalls;
-        for (const TSharedPtr<FCortexChatEntry>& E : ChatEntries)
+        const int32 StartIdx = ChatEntries.IndexOfByKey(Entry);
+        if (StartIdx != INDEX_NONE)
         {
-            if (E->Type == ECortexChatEntryType::ToolCall && E->TurnIndex == TurnIdx)
+            for (int32 i = StartIdx; i < ChatEntries.Num(); ++i)
             {
-                GroupCalls.Add(E);
+                const TSharedPtr<FCortexChatEntry>& E = ChatEntries[i];
+                if (E->Type == ECortexChatEntryType::ToolCall && E->TurnIndex == TurnIdx)
+                {
+                    GroupCalls.Add(E);
+                }
+                else if (E->Type == ECortexChatEntryType::ToolCall)
+                {
+                    // Different TurnIndex tool call — stop
+                    break;
+                }
+                // Non-tool entries between tool calls of same turn: keep scanning
             }
+        }
+
+        if (GroupCalls.IsEmpty())
+        {
+            GroupCalls.Add(Entry);
         }
 
         Content = SNew(SCortexToolCallBlock)
