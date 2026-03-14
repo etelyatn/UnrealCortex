@@ -31,6 +31,20 @@ def test_deferred_response_protocol():
             return
 
         try:
+            handshake = json.loads(conn.recv(4096).decode("utf-8").strip())
+            conn.sendall(
+                (
+                    json.dumps(
+                        {
+                            "id": handshake.get("id", ""),
+                            "success": True,
+                            "data": {"domains": []},
+                        }
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            )
+
             line = conn.recv(4096).decode("utf-8").strip()
             request = json.loads(line)
             received_request.update(request)
@@ -89,6 +103,20 @@ def test_deferred_ack_and_final_same_packet():
             return
 
         try:
+            handshake = json.loads(conn.recv(4096).decode("utf-8").strip())
+            conn.sendall(
+                (
+                    json.dumps(
+                        {
+                            "id": handshake.get("id", ""),
+                            "success": True,
+                            "data": {"domains": []},
+                        }
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            )
+
             line = conn.recv(4096).decode("utf-8").strip()
             request = json.loads(line)
             req_id = request.get("id", "")

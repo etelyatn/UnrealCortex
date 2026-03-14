@@ -1,196 +1,113 @@
-"""Shared fixtures for MCP E2E and scenario tests.
+"""Shared pytest path setup for legacy tool-module imports."""
 
-All fixtures require a running Unreal Editor with UnrealCortex plugin.
-The editor writes Saved/CortexPort-{PID}.txt which the TCP client auto-discovers.
-"""
+from __future__ import annotations
 
-import os
 import sys
 import uuid
 from pathlib import Path
 
 import pytest
 
-# Ensure cortex_mcp is importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
 from cortex_mcp.tcp_client import UEConnection
 
 
-# ---------------------------------------------------------------------------
-# Layer 1: TCP E2E fixtures
-# ---------------------------------------------------------------------------
+_TESTS_DIR = Path(__file__).resolve().parent
+_MCP_ROOT = _TESTS_DIR.parent
+_SRC_DIR = _MCP_ROOT / "src"
+_TOOLS_DIR = _SRC_DIR / "tools"
+_EDITOR_TOOLS_DIR = _TOOLS_DIR / "editor"
+
+for path in (_SRC_DIR, _TOOLS_DIR, _EDITOR_TOOLS_DIR):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
 
 
-def _create_temp_blueprint(tcp_connection, prefix: str, bp_type: str) -> str:
-    """Create a uniquely named temp Blueprint to avoid cross-run collisions."""
-    resp = tcp_connection.send_command("bp.create", {
-        "name": f"{prefix}_{uuid.uuid4().hex[:8]}",
-        "path": "/Game/Temp/CortexMCPTest",
-        "type": bp_type,
-    })
-    return resp["data"]["asset_path"]
+def _uniq(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 
 @pytest.fixture(scope="session")
 def tcp_connection():
-    """Session-wide TCP connection to Unreal Editor.
-
-    Auto-discovers port from Saved/CortexPort-{PID}.txt.
-    Auto-connects on first send_command() call.
-    """
     conn = UEConnection()
-    yield conn
-    conn.disconnect()
-
-
-@pytest.fixture(scope="class")
-def blueprint_for_test(tcp_connection):
-    """Create a temporary Actor BP for Blueprint/Graph CRUD tests.
-
-    Created once per test class, deleted on teardown.
-    """
-    asset_path = _create_temp_blueprint(tcp_connection, "BP_E2E_Fixture", "Actor")
-    yield asset_path
+    conn.connect()
     try:
-        tcp_connection.send_command("bp.delete", {
-            "asset_path": asset_path, "force": True,
-        })
-    except (RuntimeError, ConnectionError):
-        pass
+        yield conn
+    finally:
+        conn.disconnect()
 
 
-@pytest.fixture(scope="class")
-def widget_bp_for_test(tcp_connection):
-    """Create a temporary Widget BP for UMG CRUD tests.
-
-    Created once per test class, deleted on teardown.
-    """
-    asset_path = _create_temp_blueprint(tcp_connection, "WBP_E2E_Fixture", "Widget")
-    yield asset_path
-    try:
-        tcp_connection.send_command("bp.delete", {
-            "asset_path": asset_path, "force": True,
-        })
-    except (RuntimeError, ConnectionError):
-        pass
-
-
-@pytest.fixture()
+@pytest.fixture
 def cleanup_assets(tcp_connection):
-    """Collect created asset paths during a test, delete all on teardown."""
-    created = []
-    yield created
-    for path in reversed(created):
-        try:
-            tcp_connection.send_command("bp.delete", {
-                "asset_path": path, "force": True,
-            })
-        except (RuntimeError, ConnectionError):
-            pass
-
-
-# ---------------------------------------------------------------------------
-# Layer 1: Level E2E fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-def cleanup_actors(tcp_connection):
-    """Collect actor labels/names during a test, delete all on teardown."""
-    created = []
-    yield created
-    for actor in reversed(created):
-        try:
-            tcp_connection.send_command("level.delete_actor", {"actor": actor})
-        except (RuntimeError, ConnectionError):
-            pass
-
-
-@pytest.fixture(scope="class")
-def actors_for_test(tcp_connection):
-    """Spawn 3 actors for read-oriented tests, cleanup on teardown.
-
-    Pre-cleans stale CortexE2E_ actors from previous crashed runs.
-    Yields dict mapping "light"/"mesh"/"camera" to actor labels.
-    """
-    # Pre-cleanup: remove stale actors from previous runs
+    created: list[tuple[str, str]] = []
     try:
-        stale = tcp_connection.send_command(
-            "level.find_actors", {"pattern": "CortexE2E_*"},
-        )
-        for actor in stale.get("data", {}).get("actors", []):
-            name = actor.get("name") or actor.get("label", "")
-            if name:
-                try:
-                    tcp_connection.send_command(
-                        "level.delete_actor", {"actor": name},
-                    )
-                except (RuntimeError, ConnectionError):
-                    pass
-    except (RuntimeError, ConnectionError):
-        pass
+        yield created
+    finally:
+        for asset_type, asset_path in reversed(created):
+            try:
+                if asset_type == "material":
+                    tcp_connection.send_command("material.delete_material", {"asset_path": asset_path})
+                elif asset_type == "material_instance":
+                    tcp_connection.send_command("material.delete_instance", {"asset_path": asset_path})
+                else:
+                    tcp_connection.send_command("bp.delete", {"asset_path": asset_path})
+            except Exception:
+                pass
 
-    suffix = uuid.uuid4().hex[:8]
+
+@pytest.fixture
+def blueprint_for_test(tcp_connection, cleanup_assets):
+    name = _uniq("BP_E2E")
+    resp = tcp_connection.send_command(
+        "bp.create",
+        {"name": name, "path": "/Game/Temp/CortexMCPTest", "type": "Actor"},
+    )
+    asset_path = resp["data"]["asset_path"]
+    cleanup_assets.append(("blueprint", asset_path))
+    return asset_path
+
+
+@pytest.fixture
+def widget_bp_for_test(tcp_connection, cleanup_assets):
+    name = _uniq("WBP_E2E")
+    resp = tcp_connection.send_command(
+        "bp.create",
+        {"name": name, "path": "/Game/Temp/CortexMCPTest", "type": "Widget"},
+    )
+    asset_path = resp["data"]["asset_path"]
+    cleanup_assets.append(("blueprint", asset_path))
+    return asset_path
+
+
+@pytest.fixture
+def cleanup_actors(tcp_connection):
+    created: list[str] = []
+    try:
+        yield created
+    finally:
+        for actor_name in reversed(created):
+            try:
+                tcp_connection.send_command("level.delete_actor", {"actor": actor_name})
+            except Exception:
+                pass
+
+
+@pytest.fixture
+def actors_for_test(tcp_connection, cleanup_actors):
+    actors = {}
     specs = {
-        "light": ("PointLight", f"CortexE2E_light_{suffix}"),
-        "mesh": ("StaticMeshActor", f"CortexE2E_mesh_{suffix}"),
-        "camera": ("CameraActor", f"CortexE2E_camera_{suffix}"),
+        "light": {"class_name": "PointLight", "label": _uniq("CortexLight")},
+        "camera": {"class_name": "CameraActor", "label": _uniq("CortexCamera")},
+        "mesh": {"class_name": "StaticMeshActor", "label": _uniq("CortexMesh")},
     }
-    labels = {}
-    for key, (cls, label) in specs.items():
-        resp = tcp_connection.send_command("level.spawn_actor", {
-            "class": cls,
-            "label": label,
-        })
-        labels[key] = resp["data"]["label"]
 
-    yield labels
+    for key, spec in specs.items():
+        resp = tcp_connection.send_command(
+            "level.spawn_actor",
+            {"class_name": spec["class_name"], "label": spec["label"]},
+        )
+        actor_name = resp["data"]["name"]
+        cleanup_actors.append(actor_name)
+        actors[key] = actor_name
 
-    # Teardown
-    for label in reversed(list(labels.values())):
-        try:
-            tcp_connection.send_command("level.delete_actor", {"actor": label})
-        except (RuntimeError, ConnectionError):
-            pass
-
-
-# ---------------------------------------------------------------------------
-# Layer 2: MCP Scenario fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def anyio_backend():
-    return "asyncio"
-
-
-@pytest.fixture(scope="module")
-async def mcp_client():
-    """MCP test client connected to the cortex_mcp server.
-
-    The server's TCP connection auto-discovers the running Unreal Editor.
-    All registered MCP tools are available through client.call_tool().
-    """
-    from mcp import ClientSession, StdioServerParameters, stdio_client
-
-    mcp_root = Path(__file__).resolve().parents[1]
-    src_path = str(mcp_root / "src")
-    env = os.environ.copy()
-    env["PYTHONPATH"] = src_path + (
-        os.pathsep + env["PYTHONPATH"] if "PYTHONPATH" in env else ""
-    )
-
-    server = StdioServerParameters(
-        command=sys.executable,
-        args=["-m", "cortex_mcp.server"],
-        cwd=str(mcp_root),
-        env=env,
-    )
-
-    async with stdio_client(server) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            yield session
-
-
+    return actors
