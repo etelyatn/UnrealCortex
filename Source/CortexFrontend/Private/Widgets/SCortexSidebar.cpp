@@ -54,7 +54,7 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 				return FReply::Handled();
 			})
 			[
-				SNew(STextBlock)
+				SAssignNew(CollapseButtonText, STextBlock)
 				.Text(FText::FromString(TEXT("\u25C0")))
 				.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
 			]
@@ -161,9 +161,12 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 	UpdateModelDisplay();
 }
 
-void SCortexSidebar::SetCollapsed(bool /*bCollapsed*/)
+void SCortexSidebar::SetCollapsed(bool bCollapsed)
 {
-	// Visual collapse is driven by SCortexWorkbench via GetSidebarWidth()
+	if (CollapseButtonText.IsValid())
+	{
+		CollapseButtonText->SetText(FText::FromString(bCollapsed ? TEXT("\u25B6") : TEXT("\u25C0")));
+	}
 }
 
 void SCortexSidebar::OnTokenUsageUpdated()

@@ -28,6 +28,7 @@ private:
 
 	TWeakPtr<FCortexCliSession> SessionWeak;
 	FOnCortexSidebarToggle OnCollapse;
+	TSharedPtr<STextBlock> CollapseButtonText;
 	TSharedPtr<STextBlock> ProviderText;
 	TSharedPtr<STextBlock> ModelText;
 	TSharedPtr<STextBlock> InputTokensText;

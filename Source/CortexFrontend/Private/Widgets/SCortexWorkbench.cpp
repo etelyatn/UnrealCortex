@@ -69,21 +69,31 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 			TabContents.IsValid() ? TabContents.ToSharedRef() : SNullWidget::NullWidget
 		]
 	];
+
+	// Apply initial collapsed icon state now that Sidebar widget is constructed
+	if (bSidebarCollapsed && Sidebar.IsValid())
+	{
+		Sidebar->SetCollapsed(true);
+	}
 }
 
 void SCortexWorkbench::OnSidebarToggle()
 {
 	bSidebarCollapsed = !bSidebarCollapsed;
 
+	if (Sidebar.IsValid())
+	{
+		Sidebar->SetCollapsed(bSidebarCollapsed);
+	}
+
 	GConfig->SetBool(TEXT("CortexFrontend"), TEXT("SidebarCollapsed"), bSidebarCollapsed, GEditorPerProjectIni);
-	GConfig->SetFloat(TEXT("CortexFrontend"), TEXT("SidebarSizeCoefficient"),
-		bSidebarCollapsed ? 0.0f : CachedSidebarCoefficient, GEditorPerProjectIni);
+	GConfig->SetFloat(TEXT("CortexFrontend"), TEXT("SidebarSizeCoefficient"), CachedSidebarCoefficient, GEditorPerProjectIni);
 	GConfig->Flush(false, GEditorPerProjectIni);
 }
 
 FOptionalSize SCortexWorkbench::GetSidebarWidth() const
 {
-	return bSidebarCollapsed ? FOptionalSize(24.0f) : FOptionalSize();
+	return bSidebarCollapsed ? FOptionalSize(32.0f) : FOptionalSize();
 }
 
 TSharedRef<SDockTab> SCortexWorkbench::SpawnChatTab(const FSpawnTabArgs& /*Args*/)
