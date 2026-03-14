@@ -2,6 +2,7 @@
 
 #include "CortexFrontendModule.h"
 #include "Session/CortexCliSession.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/Layout/SBorder.h"
@@ -13,6 +14,7 @@
 void SCortexSidebar::Construct(const FArguments& InArgs)
 {
 	SessionWeak = InArgs._Session;
+	OnCollapse = InArgs._OnCollapse;
 
 	// Subscribe to session events using weak lambda (SWidget doesn't support AddSP directly)
 	if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
@@ -38,94 +40,118 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 
 	ChildSlot
 	[
-		SNew(SScrollBox)
-		// Header
-		+ SScrollBox::Slot()
-		.Padding(8.0f, 4.0f)
+		SNew(SVerticalBox)
+		// Collapse button row
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.HAlign(HAlign_Right)
 		[
-			SNew(STextBlock)
-			.Text(FText::FromString(TEXT("CORTEX")))
-			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
-		]
-		// AI Model section
-		+ SScrollBox::Slot()
-		[
-			SNew(SExpandableArea)
-			.AreaTitle(FText::FromString(TEXT("AI Model")))
-			.InitiallyCollapsed(false)
-			.BodyContent()
+			SNew(SButton)
+			.ButtonStyle(FCoreStyle::Get(), "NoBorder")
+			.OnClicked_Lambda([this]() -> FReply
+			{
+				OnCollapse.ExecuteIfBound();
+				return FReply::Handled();
+			})
 			[
-				SNew(SVerticalBox)
-				+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
-				[
-					SAssignNew(ProviderText, STextBlock)
-					.Text(FText::FromString(TEXT("—")))
-					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
-				]
-				+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
-				[
-					SAssignNew(ModelText, STextBlock)
-					.Text(FText::FromString(TEXT("—")))
-					.ColorAndOpacity(FLinearColor(0.6f, 0.6f, 0.6f))
-				]
+				SNew(STextBlock)
+				.Text(FText::FromString(TEXT("\u25C0")))
+				.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
 			]
 		]
-		// Connection section
-		+ SScrollBox::Slot()
+		// Scrollable content
+		+ SVerticalBox::Slot()
+		.FillHeight(1.0f)
 		[
-			SNew(SExpandableArea)
-			.AreaTitle(FText::FromString(TEXT("Connection")))
-			.InitiallyCollapsed(false)
-			.BodyContent()
+			SNew(SScrollBox)
+			// Header
+			+ SScrollBox::Slot()
+			.Padding(8.0f, 4.0f)
 			[
-				SNew(SVerticalBox)
-				+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+				SNew(STextBlock)
+				.Text(FText::FromString(TEXT("CORTEX")))
+				.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+			]
+			// AI Model section
+			+ SScrollBox::Slot()
+			[
+				SNew(SExpandableArea)
+				.AreaTitle(FText::FromString(TEXT("AI Model")))
+				.InitiallyCollapsed(false)
+				.BodyContent()
 				[
-					SAssignNew(StateText, STextBlock)
-					.Text(FText::FromString(TEXT("Inactive")))
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+					[
+						SAssignNew(ProviderText, STextBlock)
+						.Text(FText::FromString(TEXT("\u2014")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+					[
+						SAssignNew(ModelText, STextBlock)
+						.Text(FText::FromString(TEXT("\u2014")))
+						.ColorAndOpacity(FLinearColor(0.6f, 0.6f, 0.6f))
+					]
 				]
 			]
-		]
-		// Tokens section
-		+ SScrollBox::Slot()
-		[
-			SNew(SExpandableArea)
-			.AreaTitle(FText::FromString(TEXT("Tokens")))
-			.InitiallyCollapsed(false)
-			.BodyContent()
+			// Connection section
+			+ SScrollBox::Slot()
 			[
-				SNew(SVerticalBox)
-				+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+				SNew(SExpandableArea)
+				.AreaTitle(FText::FromString(TEXT("Connection")))
+				.InitiallyCollapsed(false)
+				.BodyContent()
 				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot().FillWidth(1.0f)
-					[ SNew(STextBlock).Text(FText::FromString(TEXT("Input:"))) ]
-					+ SHorizontalBox::Slot().AutoWidth()
-					[ SAssignNew(InputTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+					[
+						SAssignNew(StateText, STextBlock)
+						.Text(FText::FromString(TEXT("Inactive")))
+					]
 				]
-				+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+			]
+			// Tokens section
+			+ SScrollBox::Slot()
+			[
+				SNew(SExpandableArea)
+				.AreaTitle(FText::FromString(TEXT("Tokens")))
+				.InitiallyCollapsed(false)
+				.BodyContent()
 				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot().FillWidth(1.0f)
-					[ SNew(STextBlock).Text(FText::FromString(TEXT("Output:"))) ]
-					+ SHorizontalBox::Slot().AutoWidth()
-					[ SAssignNew(OutputTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
-				]
-				+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot().FillWidth(1.0f)
-					[ SNew(STextBlock).Text(FText::FromString(TEXT("Cache:"))) ]
-					+ SHorizontalBox::Slot().AutoWidth()
-					[ SAssignNew(CacheTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
-				]
-				+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot().FillWidth(1.0f)
-					[ SNew(STextBlock).Text(FText::FromString(TEXT("Hit Rate:"))) ]
-					+ SHorizontalBox::Slot().AutoWidth()
-					[ SAssignNew(CacheHitRateText, STextBlock).Text(FText::FromString(TEXT("0%"))) ]
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1.0f)
+						[ SNew(STextBlock).Text(FText::FromString(TEXT("Input:"))) ]
+						+ SHorizontalBox::Slot().AutoWidth()
+						[ SAssignNew(InputTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1.0f)
+						[ SNew(STextBlock).Text(FText::FromString(TEXT("Output:"))) ]
+						+ SHorizontalBox::Slot().AutoWidth()
+						[ SAssignNew(OutputTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1.0f)
+						[ SNew(STextBlock).Text(FText::FromString(TEXT("Cache:"))) ]
+						+ SHorizontalBox::Slot().AutoWidth()
+						[ SAssignNew(CacheTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1.0f)
+						[ SNew(STextBlock).Text(FText::FromString(TEXT("Hit Rate:"))) ]
+						+ SHorizontalBox::Slot().AutoWidth()
+						[ SAssignNew(CacheHitRateText, STextBlock).Text(FText::FromString(TEXT("0%"))) ]
+					]
 				]
 			]
 		]
@@ -137,7 +163,7 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 
 void SCortexSidebar::SetCollapsed(bool /*bCollapsed*/)
 {
-	// Placeholder — Task 13 implements full collapse
+	// Visual collapse is driven by SCortexWorkbench via GetSidebarWidth()
 }
 
 void SCortexSidebar::OnTokenUsageUpdated()
@@ -211,10 +237,10 @@ void SCortexSidebar::UpdateModelDisplay()
 
 	if (ProviderText.IsValid())
 	{
-		ProviderText->SetText(FText::FromString(Provider.IsEmpty() ? TEXT("—") : Provider));
+		ProviderText->SetText(FText::FromString(Provider.IsEmpty() ? TEXT("\u2014") : Provider));
 	}
 	if (ModelText.IsValid())
 	{
-		ModelText->SetText(FText::FromString(Model.IsEmpty() ? TEXT("—") : Model));
+		ModelText->SetText(FText::FromString(Model.IsEmpty() ? TEXT("\u2014") : Model));
 	}
 }

@@ -18,6 +18,11 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 	GConfig->GetFloat(TEXT("CortexFrontend"), TEXT("SidebarSizeCoefficient"), SidebarCoeff, GEditorPerProjectIni);
 	CachedSidebarCoefficient = FMath::Clamp(SidebarCoeff, 0.10f, 0.50f);
 
+	// Read collapsed state from config
+	bool bStoredCollapsed = false;
+	GConfig->GetBool(TEXT("CortexFrontend"), TEXT("SidebarCollapsed"), bStoredCollapsed, GEditorPerProjectIni);
+	bSidebarCollapsed = bStoredCollapsed;
+
 	// Create local tab manager
 	check(InArgs._OwnerTab.IsValid());
 	TabManager = FGlobalTabmanager::Get()->NewTabManager(InArgs._OwnerTab.ToSharedRef());
@@ -48,10 +53,15 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 		.Orientation(EOrientation::Orient_Horizontal)
 		+ SSplitter::Slot()
 		.Value(CachedSidebarCoefficient)
-		.MinSize(180.0f)
+		.MinSize(0.0f)
 		[
-			SAssignNew(Sidebar, SCortexSidebar)
-			.Session(SessionWeak)
+			SAssignNew(SidebarBox, SBox)
+			.WidthOverride(this, &SCortexWorkbench::GetSidebarWidth)
+			[
+				SAssignNew(Sidebar, SCortexSidebar)
+				.Session(SessionWeak)
+				.OnCollapse(FOnCortexSidebarToggle::CreateSP(this, &SCortexWorkbench::OnSidebarToggle))
+			]
 		]
 		+ SSplitter::Slot()
 		.Value(1.0f - CachedSidebarCoefficient)
@@ -59,6 +69,21 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 			TabContents.IsValid() ? TabContents.ToSharedRef() : SNullWidget::NullWidget
 		]
 	];
+}
+
+void SCortexWorkbench::OnSidebarToggle()
+{
+	bSidebarCollapsed = !bSidebarCollapsed;
+
+	GConfig->SetBool(TEXT("CortexFrontend"), TEXT("SidebarCollapsed"), bSidebarCollapsed, GEditorPerProjectIni);
+	GConfig->SetFloat(TEXT("CortexFrontend"), TEXT("SidebarSizeCoefficient"),
+		bSidebarCollapsed ? 0.0f : CachedSidebarCoefficient, GEditorPerProjectIni);
+	GConfig->Flush(false, GEditorPerProjectIni);
+}
+
+FOptionalSize SCortexWorkbench::GetSidebarWidth() const
+{
+	return bSidebarCollapsed ? FOptionalSize(24.0f) : FOptionalSize();
 }
 
 TSharedRef<SDockTab> SCortexWorkbench::SpawnChatTab(const FSpawnTabArgs& /*Args*/)

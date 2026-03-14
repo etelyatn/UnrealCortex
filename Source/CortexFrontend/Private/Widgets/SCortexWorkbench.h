@@ -3,9 +3,10 @@
 #include "CoreMinimal.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SCortexSidebar.h"
 
 class FCortexCliSession;
-class SCortexSidebar;
 
 class SCortexWorkbench : public SCompoundWidget
 {
@@ -21,10 +22,14 @@ public:
 
 private:
 	TSharedRef<SDockTab> SpawnChatTab(const FSpawnTabArgs& Args);
+	void OnSidebarToggle();
+	FOptionalSize GetSidebarWidth() const;
 
 	TSharedPtr<FTabManager> TabManager;
 	TWeakPtr<FCortexCliSession> SessionWeak;
 	TSharedPtr<SCortexSidebar> Sidebar;
+	TSharedPtr<SBox> SidebarBox;
 
 	float CachedSidebarCoefficient = 0.20f;
+	bool bSidebarCollapsed = false;
 };

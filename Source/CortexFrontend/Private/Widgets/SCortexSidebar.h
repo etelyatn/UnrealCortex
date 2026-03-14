@@ -6,11 +6,14 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
+DECLARE_DELEGATE(FOnCortexSidebarToggle);
+
 class SCortexSidebar : public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS(SCortexSidebar) {}
 		SLATE_ARGUMENT(TWeakPtr<FCortexCliSession>, Session)
+		SLATE_EVENT(FOnCortexSidebarToggle, OnCollapse)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
@@ -24,6 +27,7 @@ private:
 	void UpdateModelDisplay();
 
 	TWeakPtr<FCortexCliSession> SessionWeak;
+	FOnCortexSidebarToggle OnCollapse;
 	TSharedPtr<STextBlock> ProviderText;
 	TSharedPtr<STextBlock> ModelText;
 	TSharedPtr<STextBlock> InputTokensText;
