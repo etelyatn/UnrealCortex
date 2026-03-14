@@ -29,6 +29,7 @@ public:
 	void HandleProcessExited(const FString& Reason);
 
 	const TArray<TSharedPtr<FCortexChatEntry>>& GetChatEntries() const;
+	TSharedPtr<FCortexChatEntry> GetCurrentStreamingEntry() const;
 	FString GetSessionId() const;
 	ECortexSessionState GetState() const;
 	void AddUserPromptEntry(const FString& Message);
@@ -85,7 +86,6 @@ private:
 	ECortexSessionState GetStateForTest() const;
 	void SetStateForTest(ECortexSessionState NewState);
 	FString GetPendingPromptForTest() const;
-	TSharedPtr<FCortexChatEntry> GetCurrentStreamingEntry() const;
 
 	// Session-scoped token accumulators (survive conversation resets)
 	int64 TotalInputTokens = 0;

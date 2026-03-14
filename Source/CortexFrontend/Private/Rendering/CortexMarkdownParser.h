@@ -11,22 +11,6 @@ enum class ECortexMarkdownBlockType : uint8
 	OrderedList
 };
 
-enum class ECortexMarkdownInlineType : uint8
-{
-	Text,
-	Bold,
-	Italic,
-	InlineCode,
-	Link
-};
-
-struct FCortexMarkdownInline
-{
-	ECortexMarkdownInlineType Type = ECortexMarkdownInlineType::Text;
-	FString Text;
-	FString Url;  // For links only
-};
-
 struct FCortexMarkdownBlock
 {
 	ECortexMarkdownBlockType Type = ECortexMarkdownBlockType::Paragraph;
@@ -34,9 +18,6 @@ struct FCortexMarkdownBlock
 	FString Language;  // For CodeBlock only
 	int32 HeaderLevel = 0;  // For Header only (1-3)
 	TArray<FString> ListItems;  // For list types
-
-	/** Parse inline formatting within this block's text. */
-	TArray<FCortexMarkdownInline> GetInlines() const;
 };
 
 namespace CortexMarkdownParser

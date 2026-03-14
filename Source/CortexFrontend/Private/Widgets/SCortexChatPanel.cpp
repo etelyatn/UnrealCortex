@@ -326,10 +326,14 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatEntry>
 
     case ECortexChatEntryType::AssistantMessage:
     {
+        TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
+        const bool bEntryIsStreaming = Session.IsValid() && (Session->GetCurrentStreamingEntry() == Entry);
+
         TSharedPtr<SCortexChatMessage> MessageWidget;
         Content = SAssignNew(MessageWidget, SCortexChatMessage)
             .Message(Entry->Text)
-            .IsUser(false);
+            .IsUser(false)
+            .IsStreaming(bEntryIsStreaming);
         MessageWidgetCache.Add(Entry, MessageWidget);
         break;
     }

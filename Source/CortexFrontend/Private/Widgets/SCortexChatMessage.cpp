@@ -12,6 +12,7 @@
 void SCortexChatMessage::Construct(const FArguments& InArgs)
 {
     bIsUser = InArgs._IsUser;
+    bIsStreaming = InArgs._IsStreaming;
 
     const FLinearColor AccentColor = bIsUser
         ? FLinearColor(0.055f, 0.647f, 0.914f)  // #0ea5e9 user blue
@@ -76,12 +77,13 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
         case ECortexMarkdownBlockType::Header:
         {
             const float FontSize = Block.HeaderLevel <= 1 ? 14.0f : (Block.HeaderLevel <= 2 ? 12.0f : 11.0f);
+            const FString HeaderText = bIsUser ? Block.RawText : CortexMarkdownParser::ToRichText(Block.RawText);
             Box->AddSlot()
             .AutoHeight()
             .Padding(0.0f, 4.0f, 0.0f, 2.0f)
             [
                 SNew(STextBlock)
-                .Text(FText::FromString(Block.RawText))
+                .Text(FText::FromString(HeaderText))
                 .Font(FCoreStyle::GetDefaultFontStyle("Bold", static_cast<int32>(FontSize)))
                 .AutoWrapText(true)
             ];
@@ -182,6 +184,20 @@ void SCortexChatMessage::SetText(const FString& NewText)
 
     if (NewText.IsEmpty())
     {
+        return;
+    }
+
+    if (bIsStreaming)
+    {
+        // During streaming: single plain text block — no full markdown parse
+        ContentBox->AddSlot()
+        .AutoHeight()
+        [
+            SNew(STextBlock)
+            .Text(FText::FromString(NewText))
+            .AutoWrapText(true)
+            .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("cccccc")))))
+        ];
         return;
     }
 

@@ -244,12 +244,3 @@ FString CortexMarkdownParser::ToRichText(const FString& InlineMarkdown)
 	return Result;
 }
 
-TArray<FCortexMarkdownInline> FCortexMarkdownBlock::GetInlines() const
-{
-	TArray<FCortexMarkdownInline> Inlines;
-	FCortexMarkdownInline Inline;
-	Inline.Type = ECortexMarkdownInlineType::Text;
-	Inline.Text = RawText;
-	Inlines.Add(Inline);
-	return Inlines;
-}

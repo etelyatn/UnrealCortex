@@ -119,6 +119,7 @@ void FCortexCliSession::NewChat()
 	ConversationContextTokens = 0;
 	const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Inactive);
 	BroadcastStateChange(PreviousState, ECortexSessionState::Inactive, TEXT("New chat"));
+	OnTokenUsageUpdated.Broadcast();
 	UE_LOG(LogCortexFrontend, Log, TEXT("New chat: session %s"), *Config.SessionId);
 }
 

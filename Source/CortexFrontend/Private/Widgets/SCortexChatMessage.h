@@ -11,10 +11,12 @@ class SCortexChatMessage : public SCompoundWidget
 public:
     SLATE_BEGIN_ARGS(SCortexChatMessage)
         : _IsUser(true)
+        , _IsStreaming(false)
     {
     }
         SLATE_ARGUMENT(FString, Message)
         SLATE_ARGUMENT(bool, IsUser)
+        SLATE_ARGUMENT(bool, IsStreaming)
     SLATE_END_ARGS()
 
     void Construct(const FArguments& InArgs);
@@ -25,4 +27,5 @@ private:
 
     TSharedPtr<SVerticalBox> ContentBox;
     bool bIsUser = true;
+    bool bIsStreaming = false;
 };
