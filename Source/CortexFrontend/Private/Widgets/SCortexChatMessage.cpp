@@ -106,12 +106,15 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
             TSharedRef<SVerticalBox> ListBox = SNew(SVerticalBox);
             for (const FString& Item : Block.ListItems)
             {
+                const FString DisplayText = bIsUser
+                    ? (TEXT("\u2022 ") + Item)
+                    : (TEXT("\u2022 ") + CortexMarkdownParser::ToRichText(Item));
                 ListBox->AddSlot()
                 .AutoHeight()
                 .Padding(0.0f, 1.0f)
                 [
                     SNew(STextBlock)
-                    .Text(FText::FromString(TEXT("\u2022 ") + Item))
+                    .Text(FText::FromString(DisplayText))
                     .AutoWrapText(true)
                 ];
             }
@@ -127,12 +130,15 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
             TSharedRef<SVerticalBox> ListBox = SNew(SVerticalBox);
             for (int32 i = 0; i < Block.ListItems.Num(); ++i)
             {
+                const FString DisplayText = bIsUser
+                    ? (FString::Printf(TEXT("%d. "), i + 1) + Block.ListItems[i])
+                    : (FString::Printf(TEXT("%d. "), i + 1) + CortexMarkdownParser::ToRichText(Block.ListItems[i]));
                 ListBox->AddSlot()
                 .AutoHeight()
                 .Padding(0.0f, 1.0f)
                 [
                     SNew(STextBlock)
-                    .Text(FText::FromString(FString::Printf(TEXT("%d. "), i + 1) + Block.ListItems[i]))
+                    .Text(FText::FromString(DisplayText))
                     .AutoWrapText(true)
                 ];
             }
@@ -146,12 +152,15 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
         case ECortexMarkdownBlockType::Paragraph:
         default:
         {
+            const FString DisplayText = bIsUser
+                ? Block.RawText
+                : CortexMarkdownParser::ToRichText(Block.RawText);
             Box->AddSlot()
             .AutoHeight()
             .Padding(0.0f, 2.0f)
             [
                 SNew(STextBlock)
-                .Text(FText::FromString(Block.RawText))
+                .Text(FText::FromString(DisplayText))
                 .AutoWrapText(true)
             ];
             break;

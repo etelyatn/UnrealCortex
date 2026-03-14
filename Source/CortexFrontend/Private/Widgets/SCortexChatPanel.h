@@ -53,5 +53,5 @@ private:
     TArray<TSharedPtr<FCortexChatEntry>> ChatEntries;
     bool bAutoScroll = true;
     TMap<TSharedPtr<FCortexChatEntry>, TSharedPtr<SCortexChatMessage>> MessageWidgetCache;
-    TSet<int32> RenderedToolGroups;
+    TSet<TSharedPtr<FCortexChatEntry>> ToolGroupHeaders;
 };

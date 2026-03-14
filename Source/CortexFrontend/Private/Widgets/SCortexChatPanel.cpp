@@ -274,7 +274,6 @@ TArray<TSharedPtr<FCortexChatEntry>> SCortexChatPanel::BuildAssistantEntries(con
 void SCortexChatPanel::RefreshVisibleEntries()
 {
     MessageWidgetCache.Reset();
-    RenderedToolGroups.Reset();
 
     if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
     {
@@ -283,6 +282,18 @@ void SCortexChatPanel::RefreshVisibleEntries()
     else
     {
         ChatEntries.Reset();
+    }
+
+    // Pre-compute which ToolCall entries are group headers (first of their TurnIndex)
+    ToolGroupHeaders.Reset();
+    TSet<int32> SeenTurnIndices;
+    for (const TSharedPtr<FCortexChatEntry>& E : ChatEntries)
+    {
+        if (E->Type == ECortexChatEntryType::ToolCall && !SeenTurnIndices.Contains(E->TurnIndex))
+        {
+            SeenTurnIndices.Add(E->TurnIndex);
+            ToolGroupHeaders.Add(E);
+        }
     }
 
     if (ChatList.IsValid())
@@ -298,33 +309,6 @@ void SCortexChatPanel::UpdateStateDrivenUi(ECortexSessionState State)
         InputArea->SetStreaming(State == ECortexSessionState::Spawning || State == ECortexSessionState::Processing);
         InputArea->SetInputEnabled(State == ECortexSessionState::Inactive || State == ECortexSessionState::Idle);
     }
-
-    FString StatusText;
-    switch (State)
-    {
-    case ECortexSessionState::Inactive:
-        StatusText = TEXT("Ready");
-        break;
-    case ECortexSessionState::Spawning:
-        StatusText = TEXT("Starting...");
-        break;
-    case ECortexSessionState::Idle:
-        StatusText = TEXT("Connected");
-        break;
-    case ECortexSessionState::Processing:
-        StatusText = TEXT("Thinking...");
-        break;
-    case ECortexSessionState::Cancelling:
-        StatusText = TEXT("Cancelling...");
-        break;
-    case ECortexSessionState::Respawning:
-        StatusText = TEXT("Restarting session...");
-        break;
-    case ECortexSessionState::Terminated:
-        StatusText = TEXT("Disconnected");
-        break;
-    }
-
 
 }
 
@@ -352,39 +336,22 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatEntry>
 
     case ECortexChatEntryType::ToolCall:
     {
-        const int32 TurnIdx = Entry->TurnIndex;
-        if (RenderedToolGroups.Contains(TurnIdx))
+        if (!ToolGroupHeaders.Contains(Entry))
         {
+            // Not the group header — return zero-height null row
             return SNew(STableRow<TSharedPtr<FCortexChatEntry>>, OwnerTable)
                 .Padding(FMargin(0.0f))
                 [ SNullWidget::NullWidget ];
         }
-        RenderedToolGroups.Add(TurnIdx);
 
-        // Collect consecutive tool calls from this position with same TurnIndex
+        // This is the group header — collect all entries with same TurnIndex
         TArray<TSharedPtr<FCortexChatEntry>> GroupCalls;
-        const int32 StartIdx = ChatEntries.IndexOfByKey(Entry);
-        if (StartIdx != INDEX_NONE)
+        for (const TSharedPtr<FCortexChatEntry>& E : ChatEntries)
         {
-            for (int32 i = StartIdx; i < ChatEntries.Num(); ++i)
+            if (E->Type == ECortexChatEntryType::ToolCall && E->TurnIndex == Entry->TurnIndex)
             {
-                const TSharedPtr<FCortexChatEntry>& E = ChatEntries[i];
-                if (E->Type == ECortexChatEntryType::ToolCall && E->TurnIndex == TurnIdx)
-                {
-                    GroupCalls.Add(E);
-                }
-                else if (E->Type == ECortexChatEntryType::ToolCall)
-                {
-                    // Different TurnIndex tool call — stop
-                    break;
-                }
-                // Non-tool entries between tool calls of same turn: keep scanning
+                GroupCalls.Add(E);
             }
-        }
-
-        if (GroupCalls.IsEmpty())
-        {
-            GroupCalls.Add(Entry);
         }
 
         Content = SNew(SCortexToolCallBlock)

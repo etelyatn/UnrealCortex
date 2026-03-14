@@ -21,7 +21,7 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 	{
 		TWeakPtr<SCortexSidebar> SidebarWeak = SharedThis(this);
 
-		Session->OnTokenUsageUpdated.AddLambda([SidebarWeak]()
+		TokenUsageHandle = Session->OnTokenUsageUpdated.AddLambda([SidebarWeak]()
 		{
 			if (TSharedPtr<SCortexSidebar> Pinned = SidebarWeak.Pin())
 			{
@@ -29,7 +29,7 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 			}
 		});
 
-		Session->OnStateChanged.AddLambda([SidebarWeak](const FCortexSessionStateChange& Change)
+		StateChangedHandle = Session->OnStateChanged.AddLambda([SidebarWeak](const FCortexSessionStateChange& Change)
 		{
 			if (TSharedPtr<SCortexSidebar> Pinned = SidebarWeak.Pin())
 			{
@@ -159,6 +159,15 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 
 	// Initial update
 	UpdateModelDisplay();
+}
+
+SCortexSidebar::~SCortexSidebar()
+{
+	if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
+	{
+		Session->OnTokenUsageUpdated.Remove(TokenUsageHandle);
+		Session->OnStateChanged.Remove(StateChangedHandle);
+	}
 }
 
 void SCortexSidebar::SetCollapsed(bool bCollapsed)

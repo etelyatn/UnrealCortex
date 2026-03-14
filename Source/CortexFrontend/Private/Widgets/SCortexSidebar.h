@@ -17,6 +17,7 @@ public:
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
+	~SCortexSidebar();
 
 	void SetCollapsed(bool bCollapsed);
 
@@ -27,6 +28,8 @@ private:
 	void UpdateModelDisplay();
 
 	TWeakPtr<FCortexCliSession> SessionWeak;
+	FDelegateHandle TokenUsageHandle;
+	FDelegateHandle StateChangedHandle;
 	FOnCortexSidebarToggle OnCollapse;
 	TSharedPtr<STextBlock> CollapseButtonText;
 	TSharedPtr<STextBlock> ProviderText;

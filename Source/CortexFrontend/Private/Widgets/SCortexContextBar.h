@@ -15,6 +15,7 @@ public:
     SLATE_END_ARGS()
 
     void Construct(const FArguments& InArgs);
+    ~SCortexContextBar();
 
     static float CalculatePercentage(int64 Used, int64 Max);
     static FLinearColor GetContextColor(float Percentage);
@@ -25,6 +26,7 @@ private:
     TWeakPtr<FCortexCliSession> SessionWeak;
     TSharedPtr<SProgressBar> ProgressBar;
     TSharedPtr<STextBlock> UsageLabel;
+    FDelegateHandle TokenUsageHandle;
 
     // Context window sizes by model prefix (tokens)
     static const TMap<FString, int64>& GetContextLimits();

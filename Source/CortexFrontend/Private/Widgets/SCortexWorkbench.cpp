@@ -77,6 +77,15 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 	}
 }
 
+SCortexWorkbench::~SCortexWorkbench()
+{
+	if (TabManager.IsValid())
+	{
+		TabManager->UnregisterTabSpawner(TEXT("CortexChat"));
+		FGlobalTabmanager::Get()->UnregisterTabSpawner(TEXT("CortexChat"));
+	}
+}
+
 void SCortexWorkbench::OnSidebarToggle()
 {
 	bSidebarCollapsed = !bSidebarCollapsed;
@@ -99,7 +108,7 @@ FOptionalSize SCortexWorkbench::GetSidebarWidth() const
 TSharedRef<SDockTab> SCortexWorkbench::SpawnChatTab(const FSpawnTabArgs& /*Args*/)
 {
 	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
-		.TabRole(ETabRole::DocumentTab);
+		.TabRole(ETabRole::PanelTab);
 
 	DockTab->SetContent(
 		SNew(SCortexChatPanel)

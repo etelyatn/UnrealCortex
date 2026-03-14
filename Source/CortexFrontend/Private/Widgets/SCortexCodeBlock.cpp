@@ -4,7 +4,6 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Text/BaseTextLayoutMarshaller.h"
 #include "Framework/Text/ITextLayoutMarshaller.h"
-#include "Framework/Text/SlateTextLayout.h"
 #include "Framework/Text/SlateTextRun.h"
 #include "Framework/Text/TextLayout.h"
 #include "HAL/PlatformApplicationMisc.h"
@@ -66,8 +65,7 @@ FLinearColor FCortexCodeMarshaller::ColorForTokenType(ECortexSyntaxTokenType Typ
 
 void FCortexCodeMarshaller::SetText(const FString& SourceString, FTextLayout& TargetTextLayout)
 {
-    const FTextBlockStyle& DefaultStyle =
-        static_cast<FSlateTextLayout&>(TargetTextLayout).GetDefaultTextStyle();
+    const FTextBlockStyle DefaultStyle = FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>(TEXT("NormalText"));
 
     // Split the source into per-line ranges so that each call to
     // TokenizeBlock aligns with the same line indices.

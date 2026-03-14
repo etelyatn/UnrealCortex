@@ -84,13 +84,21 @@ void SCortexContextBar::Construct(const FArguments& InArgs)
     if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
     {
         TWeakPtr<SCortexContextBar> SelfWeak = SharedThis(this);
-        Session->OnTokenUsageUpdated.AddLambda([SelfWeak]()
+        TokenUsageHandle = Session->OnTokenUsageUpdated.AddLambda([SelfWeak]()
         {
             if (TSharedPtr<SCortexContextBar> Self = SelfWeak.Pin())
             {
                 Self->OnTokenUsageUpdated();
             }
         });
+    }
+}
+
+SCortexContextBar::~SCortexContextBar()
+{
+    if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
+    {
+        Session->OnTokenUsageUpdated.Remove(TokenUsageHandle);
     }
 }
 
