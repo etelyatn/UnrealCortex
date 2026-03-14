@@ -16,8 +16,10 @@
 #include "K2Node_SpawnActorFromClass.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "Modules/ModuleManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/App.h"
 #include "Serialization/JsonSerializer.h"
 
 // Returns the full C++ name of a class (e.g. "AActor" not "Actor").
@@ -154,45 +156,63 @@ bool FCortexReflectOps::IsProjectClass(const UClass* Class)
 		return BP && BP->GetPathName().StartsWith(TEXT("/Game/"));
 	}
 
-	// C++ class: use ModuleRelativePath metadata.
-	// Engine source paths start with Runtime/, Editor/, Developer/, Programs/.
-	// Project source paths are relative to the game module (e.g., "Characters/MyCharacter.h").
-	// Plugins/ is ambiguous — could be engine plugin or project-local plugin.
+	// C++ class: resolve the owning module binary first. This distinguishes
+	// engine modules from project modules and project-local plugins reliably.
+	const UPackage* ClassPackage = Class->GetOuterUPackage();
+	FString ModuleName;
+	if (ClassPackage)
+	{
+		ModuleName = ClassPackage->GetName();
+		static const FString ScriptPrefix(TEXT("/Script/"));
+		if (ModuleName.StartsWith(ScriptPrefix))
+		{
+			ModuleName.RightChopInline(ScriptPrefix.Len(), EAllowShrinking::No);
+		}
+#if !IS_MONOLITHIC
+		FString ModuleFilename;
+		if (FModuleManager::Get().ModuleExists(*ModuleName, &ModuleFilename))
+		{
+			if (!ModuleFilename.IsEmpty())
+			{
+				FPaths::NormalizeFilename(ModuleFilename);
+
+				FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+				FPaths::NormalizeFilename(ProjectDir);
+				if (ModuleFilename.StartsWith(ProjectDir))
+				{
+					return true;
+				}
+
+				FString EngineDir = FPaths::ConvertRelativePathToFull(FPaths::EngineDir());
+				FPaths::NormalizeFilename(EngineDir);
+				if (ModuleFilename.StartsWith(EngineDir))
+				{
+					return false;
+				}
+			}
+		}
+#endif
+	}
+
+	// Fallback to metadata for modules that do not resolve to a binary path.
 	FString ModulePath = Class->GetMetaData(TEXT("ModuleRelativePath"));
 	if (!ModulePath.IsEmpty())
 	{
+		if (ModuleName.StartsWith(TEXT("Cortex")) || ModuleName.Equals(FApp::GetProjectName(), ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+
 		if (ModulePath.StartsWith(TEXT("Runtime/"))
 			|| ModulePath.StartsWith(TEXT("Editor/"))
 			|| ModulePath.StartsWith(TEXT("Developer/"))
-			|| ModulePath.StartsWith(TEXT("Programs/")))
+			|| ModulePath.StartsWith(TEXT("Programs/"))
+			|| ModulePath.StartsWith(TEXT("Plugins/")))
 		{
 			return false;
 		}
 
-		if (ModulePath.StartsWith(TEXT("Plugins/")))
-		{
-			// Distinguish engine plugins from project plugins by checking
-			// if the module DLL is under the project directory.
-			const UPackage* ClassPackage = Class->GetOuterUPackage();
-			if (ClassPackage)
-			{
-				FString ModuleName = FPackageName::GetShortName(ClassPackage->GetFName());
-#if !IS_MONOLITHIC
-				FString ModuleFilename = FModuleManager::Get().GetModuleFilename(FName(*ModuleName));
-				if (!ModuleFilename.IsEmpty())
-				{
-					FPaths::NormalizeFilename(ModuleFilename);
-					FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-					FPaths::NormalizeFilename(ProjectDir);
-					return ModuleFilename.StartsWith(ProjectDir);
-				}
-#endif
-			}
-			return false;
-		}
-
-		// Not an engine prefix and not Plugins/ — project game module class
-		return true;
+		return false;
 	}
 
 	return false;
