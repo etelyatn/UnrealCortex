@@ -267,6 +267,7 @@ TArray<TSharedPtr<FCortexChatEntry>> SCortexChatPanel::BuildAssistantEntries(con
 void SCortexChatPanel::RefreshVisibleEntries()
 {
     MessageWidgetCache.Reset();
+    RenderedToolGroups.Reset();
 
     if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
     {
@@ -343,13 +344,31 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatEntry>
     }
 
     case ECortexChatEntryType::ToolCall:
+    {
+        const int32 TurnIdx = Entry->TurnIndex;
+        if (RenderedToolGroups.Contains(TurnIdx))
+        {
+            // Already rendered this group — return zero-height row
+            return SNew(STableRow<TSharedPtr<FCortexChatEntry>>, OwnerTable)
+                .Padding(FMargin(0.0f))
+                [ SNullWidget::NullWidget ];
+        }
+        RenderedToolGroups.Add(TurnIdx);
+
+        // Collect all tool calls for this TurnIndex
+        TArray<TSharedPtr<FCortexChatEntry>> GroupCalls;
+        for (const TSharedPtr<FCortexChatEntry>& E : ChatEntries)
+        {
+            if (E->Type == ECortexChatEntryType::ToolCall && E->TurnIndex == TurnIdx)
+            {
+                GroupCalls.Add(E);
+            }
+        }
+
         Content = SNew(SCortexToolCallBlock)
-            .ToolName(Entry->ToolName)
-            .ToolInput(Entry->ToolInput)
-            .ToolResult(Entry->ToolResult)
-            .DurationMs(Entry->DurationMs)
-            .bIsComplete(Entry->bIsToolComplete);
+            .ToolCalls(GroupCalls);
         break;
+    }
 
     case ECortexChatEntryType::CodeBlock:
         Content = SNew(SCortexCodeBlock)
