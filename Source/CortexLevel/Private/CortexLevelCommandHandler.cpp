@@ -171,7 +171,7 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
 {
     return {
         FCortexCommandInfo{ TEXT("spawn_actor"), TEXT("Spawn actor by class or Blueprint path") }
-            .Required(TEXT("class"), TEXT("string"), TEXT("Actor class or Blueprint asset path"))
+            .Required(TEXT("class_name"), TEXT("string"), TEXT("Actor class or Blueprint asset path"))
             .Required(TEXT("location"), TEXT("array"), TEXT("Spawn location"))
             .Optional(TEXT("rotation"), TEXT("array"), TEXT("Optional spawn rotation"))
             .Optional(TEXT("scale"), TEXT("array"), TEXT("Optional spawn scale"))

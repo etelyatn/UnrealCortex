@@ -24,7 +24,7 @@ void FCortexBlueprintModule::StartupModule()
 		.GetCommandRegistry();
 
 	Registry.RegisterDomain(
-		TEXT("bp"),
+		TEXT("blueprint"),
 		TEXT("Cortex Blueprint"),
 		TEXT("1.0.0"),
 		MakeShared<FCortexBPCommandHandler>()

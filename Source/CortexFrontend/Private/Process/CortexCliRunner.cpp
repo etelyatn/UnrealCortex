@@ -186,13 +186,14 @@ FString FCortexCliRunner::BuildCommandLine(const FCortexChatRequest& Request)
         Cmd += TEXT("--dangerously-skip-permissions ");
     }
 
-    if (Request.bIsFirstMessage)
+    if (!Request.SessionId.IsEmpty())
     {
         Cmd += FString::Printf(TEXT("--session-id \"%s\" "), *Request.SessionId);
     }
-    else
+
+    if (!Request.bIsFirstMessage)
     {
-        Cmd += TEXT("--continue ");
+        Cmd += TEXT("--resume ");
     }
 
     const FString AllowedTools = BuildAllowedToolsArg(Request.AccessMode);

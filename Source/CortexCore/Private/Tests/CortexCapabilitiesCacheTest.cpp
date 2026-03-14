@@ -291,9 +291,13 @@ bool FCortexCapabilitiesCacheDestroyBeforeTickerTest::RunTest(const FString& Par
 			TEXT("Cache Test"),
 			TEXT("1.0.0"),
 			MakeShared<FCapabilitiesTestHandler>());
+		// Router destroyed here before ticker fires — destructor must not crash
 	}
 
-	TestTrue(TEXT("Router destruction before ticker does not crash"), true);
+	// If we reached this point, destruction succeeded without crashing.
+	// Verify the cache was NOT written (ticker never fired).
+	const FString CachePath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Cortex"), TEXT("capabilities-cache.json"));
+	TestFalse(TEXT("Cache should not exist when ticker never fired"), FPaths::FileExists(CachePath));
 	DeleteCapabilitiesCache();
 	return true;
 }

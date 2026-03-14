@@ -209,7 +209,7 @@ bool FCortexCapabilitiesSnapshotTest::RunTest(const FString& Parameters)
 	AssertCapabilityMatchesSnapshot(TEXT("material"), TEXT("set_parameter"), TEXT("set_parameter"),
 		{ TEXT("asset_path"), TEXT("parameter_name"), TEXT("parameter_type"), TEXT("value") });
 	AssertCapabilityMatchesSnapshot(TEXT("level"), TEXT("spawn_actor"), TEXT("spawn_actor"),
-		{ TEXT("class"), TEXT("location"), TEXT("rotation"), TEXT("scale"), TEXT("label"), TEXT("folder"), TEXT("mesh"), TEXT("material") });
+		{ TEXT("class_name"), TEXT("location"), TEXT("rotation"), TEXT("scale"), TEXT("label"), TEXT("folder"), TEXT("mesh"), TEXT("material") });
 	AssertCapabilityMatchesSnapshot(TEXT("umg"), TEXT("add_widget"), TEXT("add_widget"),
 		{ TEXT("asset_path"), TEXT("widget_class"), TEXT("name"), TEXT("parent_name"), TEXT("slot_index") });
 	AssertCapabilityMatchesSnapshot(TEXT("qa"), TEXT("move_to"), TEXT("move_player_to"),

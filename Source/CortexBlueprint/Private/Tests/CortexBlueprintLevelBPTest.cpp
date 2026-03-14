@@ -18,15 +18,15 @@ bool FCortexBlueprintLevelBPSaveRejectionTest::RunTest(const FString& Parameters
 	(void)Parameters;
 
 	FCortexCommandRouter Router;
-	Router.RegisterDomain(TEXT("bp"), TEXT("Cortex Blueprint"), TEXT("1.0.0"),
+	Router.RegisterDomain(TEXT("blueprint"), TEXT("Cortex Blueprint"), TEXT("1.0.0"),
 		MakeShared<FCortexBPCommandHandler>());
 
 	TSharedPtr<FJsonObject> SaveParams = MakeShared<FJsonObject>();
 	SaveParams->SetStringField(TEXT("asset_path"), TEXT("__level_bp__:/Game/Maps/TestMap"));
 
-	FCortexCommandResult Result = Router.Execute(TEXT("bp.save"), SaveParams);
+	FCortexCommandResult Result = Router.Execute(TEXT("blueprint.save"), SaveParams);
 
-	TestFalse(TEXT("bp.save on level BP path should fail"), Result.bSuccess);
+	TestFalse(TEXT("blueprint.save on level BP path should fail"), Result.bSuccess);
 	TestEqual(TEXT("Error code should be LevelBlueprintSaveError"),
 		Result.ErrorCode, FString(TEXT("LevelBlueprintSaveError")));
 
