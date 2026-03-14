@@ -5,6 +5,7 @@
 #include "Widgets/SCompoundWidget.h"
 
 class FCortexCliSession;
+class SCortexSidebar;
 
 class SCortexWorkbench : public SCompoundWidget
 {
@@ -23,6 +24,7 @@ private:
 
 	TSharedPtr<FTabManager> TabManager;
 	TWeakPtr<FCortexCliSession> SessionWeak;
+	TSharedPtr<SCortexSidebar> Sidebar;
 
 	float CachedSidebarCoefficient = 0.20f;
 };

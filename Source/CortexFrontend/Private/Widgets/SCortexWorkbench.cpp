@@ -6,6 +6,7 @@
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/SCortexChatPanel.h"
+#include "Widgets/SCortexSidebar.h"
 #include "Session/CortexCliSession.h"
 
 void SCortexWorkbench::Construct(const FArguments& InArgs)
@@ -49,8 +50,8 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 		.Value(CachedSidebarCoefficient)
 		.MinSize(180.0f)
 		[
-			SNew(STextBlock)
-			.Text(FText::FromString(TEXT("Sidebar placeholder")))
+			SAssignNew(Sidebar, SCortexSidebar)
+			.Session(SessionWeak)
 		]
 		+ SSplitter::Slot()
 		.Value(1.0f - CachedSidebarCoefficient)

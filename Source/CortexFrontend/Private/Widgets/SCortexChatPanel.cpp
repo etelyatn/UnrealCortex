@@ -7,7 +7,7 @@
 #include "Widgets/SCortexCodeBlock.h"
 #include "Widgets/SCortexInputArea.h"
 #include "Widgets/SCortexToolCallBlock.h"
-#include "Widgets/SCortexToolbar.h"
+#include "Widgets/SCortexChatToolbar.h"
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Views/SListView.h"
@@ -26,17 +26,13 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
         SessionWeak = Module.GetOrCreateSession();
     }
 
-    const ECortexAccessMode InitialMode = FCortexFrontendSettings::Get().GetAccessMode();
-
     ChildSlot
     [
         SNew(SVerticalBox)
         + SVerticalBox::Slot()
         .AutoHeight()
         [
-            SAssignNew(Toolbar, SCortexToolbar)
-            .InitialMode(InitialMode)
-            .OnModeChanged(this, &SCortexChatPanel::OnModeChanged)
+            SAssignNew(ChatToolbar, SCortexChatToolbar)
             .OnNewChat(FOnCortexNewChat::CreateSP(this, &SCortexChatPanel::NewChat))
         ]
         + SVerticalBox::Slot()
@@ -73,9 +69,9 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
         Session->OnStateChanged.AddSP(this, &SCortexChatPanel::OnSessionStateChanged);
 
         RefreshVisibleEntries();
-        if (Toolbar.IsValid())
+        if (ChatToolbar.IsValid())
         {
-            Toolbar->SetSessionId(Session->GetSessionId());
+            ChatToolbar->SetSessionId(Session->GetSessionId());
         }
         UpdateStateDrivenUi(Session->GetState());
     }
@@ -131,26 +127,21 @@ void SCortexChatPanel::NewChat()
     {
         Session->NewChat();
         RefreshVisibleEntries();
-        if (Toolbar.IsValid())
+        if (ChatToolbar.IsValid())
         {
-            Toolbar->SetSessionId(Session->GetSessionId());
+            ChatToolbar->SetSessionId(Session->GetSessionId());
         }
         UpdateStateDrivenUi(Session->GetState());
     }
-}
-
-void SCortexChatPanel::OnModeChanged(ECortexAccessMode Mode)
-{
-    FCortexFrontendSettings::Get().SetAccessMode(Mode);
 }
 
 void SCortexChatPanel::OnStreamEvent(const FCortexStreamEvent& Event)
 {
     if (Event.Type == ECortexStreamEventType::SessionInit)
     {
-        if (Toolbar.IsValid() && !Event.SessionId.IsEmpty())
+        if (ChatToolbar.IsValid() && !Event.SessionId.IsEmpty())
         {
-            Toolbar->SetSessionId(Event.SessionId);
+            ChatToolbar->SetSessionId(Event.SessionId);
         }
         return;
     }
@@ -300,11 +291,6 @@ void SCortexChatPanel::UpdateStateDrivenUi(ECortexSessionState State)
         InputArea->SetInputEnabled(State == ECortexSessionState::Inactive || State == ECortexSessionState::Idle);
     }
 
-    if (Toolbar.IsValid())
-    {
-        Toolbar->SetModeSelectionEnabled(State == ECortexSessionState::Inactive || State == ECortexSessionState::Idle);
-    }
-
     FString StatusText;
     switch (State)
     {
@@ -331,10 +317,7 @@ void SCortexChatPanel::UpdateStateDrivenUi(ECortexSessionState State)
         break;
     }
 
-    if (Toolbar.IsValid())
-    {
-        Toolbar->SetStatus(StatusText);
-    }
+
 }
 
 TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatEntry> Entry, const TSharedRef<STableViewBase>& OwnerTable)

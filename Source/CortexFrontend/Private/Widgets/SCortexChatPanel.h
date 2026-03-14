@@ -7,8 +7,8 @@
 #include "Widgets/SCompoundWidget.h"
 
 class SCortexChatMessage;
+class SCortexChatToolbar;
 class SCortexInputArea;
-class SCortexToolbar;
 class STableViewBase;
 
 template <typename ItemType>
@@ -34,7 +34,6 @@ private:
     void SendMessage(const FString& Message);
     void CancelRequest();
     void NewChat();
-    void OnModeChanged(ECortexAccessMode Mode);
     void OnStreamEvent(const FCortexStreamEvent& Event);
     void OnTurnComplete(const FCortexTurnResult& Result);
     void OnSessionStateChanged(const FCortexSessionStateChange& Change);
@@ -46,7 +45,7 @@ private:
 
     void ScrollToBottom();
 
-    TSharedPtr<SCortexToolbar> Toolbar;
+    TSharedPtr<SCortexChatToolbar> ChatToolbar;
     TSharedPtr<SCortexInputArea> InputArea;
     TSharedPtr<SListView<TSharedPtr<FCortexChatEntry>>> ChatList;
     TWeakPtr<FCortexCliSession> SessionWeak;
