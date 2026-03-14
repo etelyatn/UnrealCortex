@@ -2,8 +2,10 @@
 
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "Rendering/CortexSyntaxHighlighter.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Text/SMultiLineEditableText.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
@@ -48,10 +50,11 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
             .AutoHeight()
             .Padding(8.0f, 4.0f)
             [
-                SNew(STextBlock)
+                SNew(SMultiLineEditableText)
                 .Text(FText::FromString(CodeContent))
-                .Font(FCoreStyle::GetDefaultFontStyle("Mono", 10))
+                .IsReadOnly(true)
                 .AutoWrapText(false)
+                .Font(FCoreStyle::GetDefaultFontStyle("Mono", 10))
             ]
         ]
     ];
