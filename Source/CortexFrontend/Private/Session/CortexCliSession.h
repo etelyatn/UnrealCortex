@@ -20,6 +20,7 @@ class FCortexCliSession : public TSharedFromThis<FCortexCliSession>
 public:
 	explicit FCortexCliSession(const FCortexSessionConfig& InConfig);
 
+	bool Connect();
 	bool SendPrompt(const FCortexPromptRequest& Request);
 	bool Cancel();
 	void NewChat();
@@ -73,6 +74,7 @@ private:
 	friend class FCortexCliSessionNewChatGeneratesFreshSessionIdTest;
 	friend class FCortexChatPanelRejectedSendDoesNotAppendEntriesTest;
 	friend class FCortexCliSessionToolCallTurnIndexTest;
+	friend class FCortexCliSessionConnectTransitionsToSpawningTest;
 
 	FString BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const;
 	FString BuildAllowedToolsArg(ECortexAccessMode AccessMode) const;

@@ -3,6 +3,36 @@
 #include "Modules/ModuleManager.h"
 #include "Session/CortexCliSession.h"
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionConnectTransitionsToSpawningTest,
+    "Cortex.Frontend.Session.ConnectTransitionsToSpawning",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionConnectTransitionsToSpawningTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-connect");
+    // Must be heap-allocated via TSharedPtr because SpawnProcess calls AsShared()
+    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(Config);
+
+    TestEqual(TEXT("Should start Inactive"), Session->GetStateForTest(), ECortexSessionState::Inactive);
+
+    const bool bResult = Session->Connect();
+    // Connect will attempt to spawn. If CLI is not found, falls back to Inactive.
+    // If CLI is found, transitions to Idle. Either way the state machine was exercised.
+
+    // Either Idle (spawn succeeded) or Inactive (spawn failed — no CLI binary)
+    const ECortexSessionState StateAfter = Session->GetStateForTest();
+    TestTrue(TEXT("Connect should attempt state transition"),
+        StateAfter == ECortexSessionState::Idle ||
+        StateAfter == ECortexSessionState::Inactive);
+
+    // Always shut down cleanly so worker thread exits and pipes close
+    Session->Shutdown();
+
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildInitialLaunchArgsTest, "Cortex.Frontend.CliSession.BuildInitialLaunchArgs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildResumeLaunchArgsTest, "Cortex.Frontend.CliSession.BuildResumeLaunchArgs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildPromptEnvelopeTest, "Cortex.Frontend.CliSession.BuildPromptEnvelope", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

@@ -20,6 +20,22 @@ FCortexCliSession::FCortexCliSession(const FCortexSessionConfig& InConfig)
 {
 }
 
+bool FCortexCliSession::Connect()
+{
+	if (!TransitionState(ECortexSessionState::Inactive, ECortexSessionState::Spawning, TEXT("Auto-connect")))
+	{
+		return false;
+	}
+
+	if (!SpawnProcess(ECortexAccessMode::FullAccess, false))
+	{
+		TransitionState(ECortexSessionState::Spawning, ECortexSessionState::Inactive, TEXT("Failed to spawn on connect"));
+		return false;
+	}
+
+	return true;
+}
+
 bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
 {
 	{
