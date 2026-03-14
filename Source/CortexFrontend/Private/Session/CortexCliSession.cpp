@@ -465,9 +465,41 @@ bool FCortexCliSession::SpawnProcess(ECortexAccessMode AccessMode, bool bResumeS
 		ProcessHandle,
 		PromptReadyEvent);
 
-	const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Idle);
-	BroadcastStateChange(PreviousState, ECortexSessionState::Idle, TEXT("Claude CLI session ready"));
+	// CAS: the compare_exchange_strong IS the atomicity guard against Cancel() races.
+	// The pre-check below is an optimization to avoid the log noise of a failing CAS
+	// when the state is clearly wrong — it does not close the race (the CAS does).
+	ECortexSessionState ExpectedState = State.load();
+	if (ExpectedState != ECortexSessionState::Spawning && ExpectedState != ECortexSessionState::Respawning)
+	{
+		UE_LOG(LogCortexFrontend, Log, TEXT("SpawnProcess: unexpected state %d before Idle transition, aborting"), static_cast<int32>(ExpectedState));
+		CleanupProcess();
+		return false;
+	}
+	if (!State.compare_exchange_strong(ExpectedState, ECortexSessionState::Idle))
+	{
+		// Cancel() raced and changed state between the load above and this CAS
+		UE_LOG(LogCortexFrontend, Log, TEXT("SpawnProcess: lost CAS race (state now %d), aborting Idle transition"), static_cast<int32>(ExpectedState));
+		CleanupProcess();
+		return false;
+	}
+	BroadcastStateChange(ExpectedState, ECortexSessionState::Idle, TEXT("Claude CLI session ready"));
 	UE_LOG(LogCortexFrontend, Log, TEXT("Claude CLI session ready (resume=%s)"), bResumeSession ? TEXT("true") : TEXT("false"));
+
+	// Drain any prompt queued during Spawning. Uses TransitionState (CAS) so a concurrent
+	// Cancel() between here and the CAS is handled safely.
+	bool bHasPendingPrompt = false;
+	{
+		FScopeLock Lock(&PromptMutex);
+		bHasPendingPrompt = PendingPrompt.IsSet();
+	}
+	if (bHasPendingPrompt)
+	{
+		if (TransitionState(ECortexSessionState::Idle, ECortexSessionState::Processing, TEXT("Draining queued prompt")))
+		{
+			WakeWorker();
+		}
+	}
+
 	return true;
 }
 
@@ -719,6 +751,28 @@ FString FCortexCliSession::GetPendingPromptForTest() const
 {
 	FScopeLock Lock(&PromptMutex);
 	return PendingPrompt.Get(TEXT(""));
+}
+
+void FCortexCliSession::SetPendingPromptForTest(const FString& Prompt)
+{
+	FScopeLock Lock(&PromptMutex);
+	PendingPrompt = Prompt;
+}
+
+void FCortexCliSession::DrainPendingPromptForTest()
+{
+	// Tests the Idle -> Processing drain transition in isolation.
+	// Does not test SpawnProcess directly (WakeWorker is not mockable).
+	bool bHasPendingPrompt = false;
+	{
+		FScopeLock Lock(&PromptMutex);
+		bHasPendingPrompt = PendingPrompt.IsSet();
+	}
+	if (bHasPendingPrompt)
+	{
+		State.store(ECortexSessionState::Idle);
+		TransitionState(ECortexSessionState::Idle, ECortexSessionState::Processing, TEXT("Draining queued prompt (test)"));
+	}
 }
 
 TSharedPtr<FCortexChatEntry> FCortexCliSession::GetCurrentStreamingEntry() const

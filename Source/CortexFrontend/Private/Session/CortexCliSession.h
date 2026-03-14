@@ -75,6 +75,7 @@ private:
 	friend class FCortexChatPanelRejectedSendDoesNotAppendEntriesTest;
 	friend class FCortexCliSessionToolCallTurnIndexTest;
 	friend class FCortexCliSessionConnectTransitionsToSpawningTest;
+	friend class FCortexCliSessionPendingPromptDrainedAfterSpawnTest;
 
 	FString BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const;
 	FString BuildAllowedToolsArg(ECortexAccessMode AccessMode) const;
@@ -92,6 +93,8 @@ private:
 	ECortexSessionState GetStateForTest() const;
 	void SetStateForTest(ECortexSessionState NewState);
 	FString GetPendingPromptForTest() const;
+	void SetPendingPromptForTest(const FString& Prompt);  // mutex-safe
+	void DrainPendingPromptForTest();
 
 	// Session-scoped token accumulators (survive conversation resets)
 	int64 TotalInputTokens = 0;

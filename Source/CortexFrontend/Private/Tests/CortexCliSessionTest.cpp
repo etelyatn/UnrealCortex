@@ -321,6 +321,33 @@ bool FCortexCliSessionToolCallTurnIndexTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionPendingPromptDrainedAfterSpawnTest,
+    "Cortex.Frontend.Session.PendingPromptDrainedAfterSpawn",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionPendingPromptDrainedAfterSpawnTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-drain");
+    FCortexCliSession Session(Config);
+
+    // Simulate: prompt arrived while session was Spawning
+    Session.SetStateForTest(ECortexSessionState::Spawning);
+    Session.SetPendingPromptForTest(TEXT("queued message"));  // mutex-safe internally
+
+    // Verify the drain transition: Idle -> Processing when pending prompt exists.
+    // Note: DrainPendingPromptForTest directly exercises TransitionState, not SpawnProcess.
+    // Full SpawnProcess integration testing requires a mockable WakeWorker (out of scope).
+    Session.DrainPendingPromptForTest();
+
+    TestEqual(TEXT("State should be Processing after draining queued prompt"),
+        Session.GetStateForTest(), ECortexSessionState::Processing);
+
+    Session.Shutdown();
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionContextTokensIncludesCacheTest,
     "Cortex.Frontend.Session.ContextTokensIncludesCache",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
