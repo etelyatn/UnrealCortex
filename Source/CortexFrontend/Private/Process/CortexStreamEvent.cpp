@@ -35,6 +35,7 @@ TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FStrin
             FCortexStreamEvent Event;
             Event.Type = ECortexStreamEventType::SessionInit;
             JsonObj->TryGetStringField(TEXT("session_id"), Event.SessionId);
+            JsonObj->TryGetStringField(TEXT("model"), Event.Model);
             Event.RawJson = JsonLine;
             Events.Add(MoveTemp(Event));
         }

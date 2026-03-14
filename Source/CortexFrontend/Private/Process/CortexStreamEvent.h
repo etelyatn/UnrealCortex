@@ -30,6 +30,13 @@ struct FCortexStreamEvent
     float TotalCostUsd = 0.0f;
     FString ResultText;
     FString RawJson;
+    // Token usage (from message_start/message_delta usage objects)
+    int64 InputTokens = 0;
+    int64 OutputTokens = 0;
+    int64 CacheReadTokens = 0;
+    int64 CacheCreationTokens = 0;
+    // Model info (from system.init)
+    FString Model;
 };
 
 namespace CortexStreamEventParser

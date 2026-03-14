@@ -10,6 +10,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseMixedContentTest, "Corte
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseContentBlockDeltaTest, "Cortex.Frontend.StreamEvent.ParseContentBlockDelta", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseSystemErrorTest, "Cortex.Frontend.StreamEvent.ParseSystemError", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseEmptyTest, "Cortex.Frontend.StreamEvent.ParseEmpty", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseSystemInitModelTest, "Cortex.Frontend.StreamEvent.ParseSystemInitModel", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexStreamEventParseSystemTest::RunTest(const FString& Parameters)
 {
@@ -140,5 +141,18 @@ bool FCortexStreamEventParseEmptyTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Invalid JSON should produce 0 events"), Events.Num(), 0);
     Events = CortexStreamEventParser::ParseNdjsonLine(TEXT("{\"foo\":1}"));
     TestEqual(TEXT("Missing type should produce 0 events"), Events.Num(), 0);
+    return true;
+}
+
+bool FCortexStreamEventParseSystemInitModelTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const FString JsonLine = TEXT("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"abc-123\",\"model\":\"claude-sonnet-4-6\"}");
+    const TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseNdjsonLine(JsonLine);
+    TestEqual(TEXT("Should produce 1 event"), Events.Num(), 1);
+    if (Events.Num() == 1)
+    {
+        TestEqual(TEXT("Model should be extracted"), Events[0].Model, FString(TEXT("claude-sonnet-4-6")));
+    }
     return true;
 }
