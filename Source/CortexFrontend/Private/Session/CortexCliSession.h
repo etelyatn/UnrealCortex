@@ -49,11 +49,11 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnTokenUsageUpdated);
 	FOnTokenUsageUpdated OnTokenUsageUpdated;
 
-	int64 GetTotalInputTokens() const { return TotalInputTokens; }
-	int64 GetTotalOutputTokens() const { return TotalOutputTokens; }
-	int64 GetTotalCacheReadTokens() const { return TotalCacheReadTokens; }
-	int64 GetTotalCacheCreationTokens() const { return TotalCacheCreationTokens; }
-	int64 GetConversationContextTokens() const { return ConversationContextTokens; }
+	int64 GetTotalInputTokens() const { return TotalInputTokens.load(); }
+	int64 GetTotalOutputTokens() const { return TotalOutputTokens.load(); }
+	int64 GetTotalCacheReadTokens() const { return TotalCacheReadTokens.load(); }
+	int64 GetTotalCacheCreationTokens() const { return TotalCacheCreationTokens.load(); }
+	int64 GetConversationContextTokens() const { return ConversationContextTokens.load(); }
 	FString GetModelId() const { return ModelId; }
 	FString GetProvider() const { return Provider; }
 
@@ -97,13 +97,15 @@ private:
 	void DrainPendingPromptForTest();
 
 	// Session-scoped token accumulators (survive conversation resets)
-	int64 TotalInputTokens = 0;
-	int64 TotalOutputTokens = 0;
-	int64 TotalCacheReadTokens = 0;
-	int64 TotalCacheCreationTokens = 0;
+	// Atomic: written on worker thread, read on Game Thread for display
+	std::atomic<int64> TotalInputTokens{0};
+	std::atomic<int64> TotalOutputTokens{0};
+	std::atomic<int64> TotalCacheReadTokens{0};
+	std::atomic<int64> TotalCacheCreationTokens{0};
 
 	// Per-conversation context tracking (reset on NewChat)
-	int64 ConversationContextTokens = 0;
+	// Atomic: written on worker thread, read on Game Thread for display
+	std::atomic<int64> ConversationContextTokens{0};
 
 	// Model info (set once from system.init)
 	FString ModelId;

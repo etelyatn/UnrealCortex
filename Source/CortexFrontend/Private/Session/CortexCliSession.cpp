@@ -132,7 +132,7 @@ void FCortexCliSession::NewChat()
 	Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
 	ConsecutiveSpawnFailures = 0;
 	CurrentTurnIndex = 0;
-	ConversationContextTokens = 0;
+	ConversationContextTokens.store(0);
 	const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Inactive);
 	BroadcastStateChange(PreviousState, ECortexSessionState::Inactive, TEXT("New chat"));
 	OnTokenUsageUpdated.Broadcast();
@@ -153,11 +153,11 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 	// Accumulate token usage (before state guard — applies even during state transitions)
 	if (Event.InputTokens > 0 || Event.OutputTokens > 0)
 	{
-		TotalInputTokens += Event.InputTokens;
-		TotalOutputTokens += Event.OutputTokens;
-		TotalCacheReadTokens += Event.CacheReadTokens;
-		TotalCacheCreationTokens += Event.CacheCreationTokens;
-		ConversationContextTokens = Event.InputTokens + Event.CacheReadTokens + Event.CacheCreationTokens;
+		TotalInputTokens.fetch_add(Event.InputTokens);
+		TotalOutputTokens.fetch_add(Event.OutputTokens);
+		TotalCacheReadTokens.fetch_add(Event.CacheReadTokens);
+		TotalCacheCreationTokens.fetch_add(Event.CacheCreationTokens);
+		ConversationContextTokens.store(Event.InputTokens + Event.CacheReadTokens + Event.CacheCreationTokens);
 		OnTokenUsageUpdated.Broadcast();
 	}
 
