@@ -166,6 +166,19 @@ FString CortexMarkdownParser::ToRichText(const FString& InlineMarkdown)
 {
 	FString Result = InlineMarkdown;
 
+	// Known limitations of this parser:
+	// - Sequential passes (bold then italic) mean nested spans like **bold _italic_**
+	//   produce partially correct output. The bold pass wraps correctly; the italic
+	//   pass then finds _italic_ inside the Bold tag and wraps it — SRichTextBlock
+	//   may or may not render nested tags. This is not fixed intentionally; fixing
+	//   nested spans requires a real recursive parser, not sequential ReplaceInline passes.
+	// - Adjacent markers like **bold1** **bold2** are handled correctly (each pass
+	//   consumes its own delimiters). Escaped markers like \* are not supported.
+	// - All < and > are HTML-entity-escaped before tag wrapping. This prevents
+	//   C++ generics (TArray<int32>) from breaking the SRichTextBlock XML parser.
+	//   It also means angle brackets in code spans are rendered as &lt;/&gt; in the
+	//   rich text input (SRichTextBlock decodes them back to < and > for display).
+
 	// Escape angle brackets before tag wrapping (prevents SRichTextBlock
 	// from choking on C++ types like TArray<int32>)
 	Result.ReplaceInline(TEXT("<"), TEXT("&lt;"));
