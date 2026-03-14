@@ -367,12 +367,9 @@ void SCortexChatPanel::RefreshVisibleEntries()
     }
 
     // Inject greeting row when idle with no messages
-    if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
+    if (Session.IsValid() && Session->GetState() == ECortexSessionState::Idle && Session->GetChatEntries().IsEmpty() && GreetingRow.IsValid())
     {
-        if (Session->GetState() == ECortexSessionState::Idle && Session->GetChatEntries().IsEmpty() && GreetingRow.IsValid())
-        {
-            DisplayRows.Insert(GreetingRow, 0);
-        }
+        DisplayRows.Insert(GreetingRow, 0);
     }
 
     if (ChatList.IsValid())
