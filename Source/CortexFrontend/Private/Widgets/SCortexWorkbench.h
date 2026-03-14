@@ -24,7 +24,7 @@ public:
 private:
 	TSharedRef<SDockTab> SpawnChatTab(const FSpawnTabArgs& Args);
 	void OnSidebarToggle();
-	FOptionalSize GetSidebarWidth() const;
+	float GetSidebarSlotValue() const;
 
 	TSharedPtr<FTabManager> TabManager;
 	TWeakPtr<FCortexCliSession> SessionWeak;
