@@ -1,11 +1,13 @@
 #include "Widgets/SCortexChatMessage.h"
 
 #include "Rendering/CortexMarkdownParser.h"
+#include "Rendering/CortexRichTextStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SNullWidget.h"
+#include "Widgets/Text/SRichTextBlock.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/SCortexCodeBlock.h"
 
@@ -83,10 +85,17 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
             .AutoHeight()
             .Padding(0.0f, 4.0f, 0.0f, 2.0f)
             [
-                SNew(STextBlock)
-                .Text(FText::FromString(HeaderText))
-                .Font(FCoreStyle::GetDefaultFontStyle("Bold", static_cast<int32>(FontSize)))
-                .AutoWrapText(true)
+                bIsUser
+                ? static_cast<TSharedRef<SWidget>>(
+                    SNew(STextBlock)
+                    .Text(FText::FromString(HeaderText))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Bold", static_cast<int32>(FontSize)))
+                    .AutoWrapText(true))
+                : static_cast<TSharedRef<SWidget>>(
+                    SNew(SRichTextBlock)
+                    .Text(FText::FromString(HeaderText))
+                    .DecoratorStyleSet(&FCortexRichTextStyle::Get())
+                    .AutoWrapText(true))
             ];
             break;
         }
@@ -116,9 +125,16 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                 .AutoHeight()
                 .Padding(0.0f, 1.0f)
                 [
-                    SNew(STextBlock)
-                    .Text(FText::FromString(DisplayText))
-                    .AutoWrapText(true)
+                    bIsUser
+                    ? static_cast<TSharedRef<SWidget>>(
+                        SNew(STextBlock)
+                        .Text(FText::FromString(DisplayText))
+                        .AutoWrapText(true))
+                    : static_cast<TSharedRef<SWidget>>(
+                        SNew(SRichTextBlock)
+                        .Text(FText::FromString(DisplayText))
+                        .DecoratorStyleSet(&FCortexRichTextStyle::Get())
+                        .AutoWrapText(true))
                 ];
             }
             Box->AddSlot()
@@ -140,9 +156,16 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                 .AutoHeight()
                 .Padding(0.0f, 1.0f)
                 [
-                    SNew(STextBlock)
-                    .Text(FText::FromString(DisplayText))
-                    .AutoWrapText(true)
+                    bIsUser
+                    ? static_cast<TSharedRef<SWidget>>(
+                        SNew(STextBlock)
+                        .Text(FText::FromString(DisplayText))
+                        .AutoWrapText(true))
+                    : static_cast<TSharedRef<SWidget>>(
+                        SNew(SRichTextBlock)
+                        .Text(FText::FromString(DisplayText))
+                        .DecoratorStyleSet(&FCortexRichTextStyle::Get())
+                        .AutoWrapText(true))
                 ];
             }
             Box->AddSlot()
@@ -162,9 +185,16 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
             .AutoHeight()
             .Padding(0.0f, 2.0f)
             [
-                SNew(STextBlock)
-                .Text(FText::FromString(DisplayText))
-                .AutoWrapText(true)
+                bIsUser
+                ? static_cast<TSharedRef<SWidget>>(
+                    SNew(STextBlock)
+                    .Text(FText::FromString(DisplayText))
+                    .AutoWrapText(true))
+                : static_cast<TSharedRef<SWidget>>(
+                    SNew(SRichTextBlock)
+                    .Text(FText::FromString(DisplayText))
+                    .DecoratorStyleSet(&FCortexRichTextStyle::Get())
+                    .AutoWrapText(true))
             ];
             break;
         }
