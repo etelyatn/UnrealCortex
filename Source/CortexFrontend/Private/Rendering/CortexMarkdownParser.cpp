@@ -166,6 +166,11 @@ FString CortexMarkdownParser::ToRichText(const FString& InlineMarkdown)
 {
 	FString Result = InlineMarkdown;
 
+	// Escape angle brackets before tag wrapping (prevents SRichTextBlock
+	// from choking on C++ types like TArray<int32>)
+	Result.ReplaceInline(TEXT("<"), TEXT("&lt;"));
+	Result.ReplaceInline(TEXT(">"), TEXT("&gt;"));
+
 	// Bold: **text** → <Bold>text</>
 	{
 		FString Out;

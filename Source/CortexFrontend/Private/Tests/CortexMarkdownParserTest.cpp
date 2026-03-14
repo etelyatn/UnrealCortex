@@ -73,3 +73,22 @@ bool FCortexMarkdownParserListTest::RunTest(const FString& Parameters)
 	}
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexMarkdownParserEscapingTest,
+	"Cortex.Frontend.MarkdownParser.AngleBracketEscaping",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexMarkdownParserEscapingTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	// Inline code with angle brackets: `TArray<int32>` must escape the inner <>
+	const FString Result = CortexMarkdownParser::ToRichText(TEXT("Use `TArray<int32>` for arrays"));
+
+	// The angle brackets inside <Code>...</> must be escaped so SRichTextBlock
+	// doesn't try to parse <int32> as a decorator tag
+	TestTrue(TEXT("Should escape < inside code span"),
+		Result.Contains(TEXT("TArray&lt;int32&gt;")));
+	TestTrue(TEXT("Should still have Code tag"), Result.Contains(TEXT("<Code>")));
+	TestFalse(TEXT("Should not have literal <int32>"), Result.Contains(TEXT("<int32>")));
+	return true;
+}
