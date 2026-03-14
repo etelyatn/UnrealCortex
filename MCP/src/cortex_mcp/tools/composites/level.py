@@ -11,9 +11,15 @@ if str(_MCP_ROOT) not in sys.path:
 
 from tools.level.composites import register_level_composite_tools
 
+_LEVEL_DISAMBIG = (
+    "COMPOSITE tool — use for batch actor operations. "
+    "For individual level commands use level_cmd.\n\n"
+)
+
 
 def register_level_compose_tools(mcp, connection) -> None:
     """Register level composition tools."""
+    # _CaptureMCP: intercept legacy registration, re-export under consolidated names.
     captured: dict[str, callable] = {}
 
     class _CaptureMCP:
@@ -26,6 +32,17 @@ def register_level_compose_tools(mcp, connection) -> None:
 
     register_level_composite_tools(_CaptureMCP(), connection)
 
-    @mcp.tool(name="level_compose")
-    def level_compose(**kwargs) -> str:
-        return captured["level_batch"](**kwargs)
+    # Build description BEFORE decoration — FastMCP reads description= at decoration time
+    _level_doc = _LEVEL_DISAMBIG + (captured.get("level_batch").__doc__ or "")
+
+    @mcp.tool(name="level_compose", description=_level_doc)
+    def level_compose(
+        operations: list,
+        stop_on_error: bool = False,
+        save: bool = True,
+    ) -> str:
+        return captured["level_batch"](
+            operations=operations,
+            stop_on_error=stop_on_error,
+            save=save,
+        )
