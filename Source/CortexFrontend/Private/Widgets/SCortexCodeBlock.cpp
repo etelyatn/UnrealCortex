@@ -1,18 +1,162 @@
 #include "Widgets/SCortexCodeBlock.h"
 
+#include "CortexFrontendModule.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Text/BaseTextLayoutMarshaller.h"
+#include "Framework/Text/ITextLayoutMarshaller.h"
+#include "Framework/Text/SlateTextLayout.h"
+#include "Framework/Text/SlateTextRun.h"
+#include "Framework/Text/TextLayout.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Rendering/CortexSyntaxHighlighter.h"
 #include "Styling/CoreStyle.h"
+#include "Styling/SlateTypes.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Text/SMultiLineEditableText.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/SMultiLineEditableText.h"
 #include "Widgets/Text/STextBlock.h"
+
+// ---------------------------------------------------------------------------
+// FCortexCodeMarshaller — applies syntax highlighting to a text layout.
+// Private to this translation unit.
+// ---------------------------------------------------------------------------
+
+class FCortexCodeMarshaller : public FBaseTextLayoutMarshaller
+{
+public:
+    static TSharedRef<FCortexCodeMarshaller> Create()
+    {
+        return MakeShareable(new FCortexCodeMarshaller());
+    }
+
+    // ITextLayoutMarshaller
+    virtual void SetText(const FString& SourceString, FTextLayout& TargetTextLayout) override;
+    virtual void GetText(FString& TargetString, const FTextLayout& SourceTextLayout) override;
+
+private:
+    FCortexCodeMarshaller() = default;
+
+    /** Return the linear color for a given token type. */
+    static FLinearColor ColorForTokenType(ECortexSyntaxTokenType Type);
+};
+
+// ---------------------------------------------------------------------------
+
+static FLinearColor ColorFromHex(const TCHAR* Hex)
+{
+    return FLinearColor::FromSRGBColor(FColor::FromHex(Hex));
+}
+
+FLinearColor FCortexCodeMarshaller::ColorForTokenType(ECortexSyntaxTokenType Type)
+{
+    switch (Type)
+    {
+        case ECortexSyntaxTokenType::Keyword:      return ColorFromHex(TEXT("569cd6"));
+        case ECortexSyntaxTokenType::String:       return ColorFromHex(TEXT("ce9178"));
+        case ECortexSyntaxTokenType::Comment:      return ColorFromHex(TEXT("6a9955"));
+        case ECortexSyntaxTokenType::Preprocessor: return ColorFromHex(TEXT("9b9b59"));
+        case ECortexSyntaxTokenType::Number:       return ColorFromHex(TEXT("b5cea8"));
+        case ECortexSyntaxTokenType::UEType:       return ColorFromHex(TEXT("4ec9b0"));
+        case ECortexSyntaxTokenType::Function:     return ColorFromHex(TEXT("dcdcaa"));
+        case ECortexSyntaxTokenType::Default:
+        default:                                   return ColorFromHex(TEXT("c8c8c8"));
+    }
+}
+
+void FCortexCodeMarshaller::SetText(const FString& SourceString, FTextLayout& TargetTextLayout)
+{
+    const FTextBlockStyle& DefaultStyle =
+        static_cast<FSlateTextLayout&>(TargetTextLayout).GetDefaultTextStyle();
+
+    // Split the source into per-line ranges so that each call to
+    // TokenizeBlock aligns with the same line indices.
+    TArray<FTextRange> LineRanges;
+    FTextRange::CalculateLineRangesFromString(SourceString, LineRanges);
+
+    // Tokenize the entire block at once.
+    const TArray<TArray<FCortexSyntaxRun>> TokenLines =
+        CortexSyntaxHighlighter::TokenizeBlock(SourceString);
+
+    TArray<FTextLayout::FNewLineData> LinesToAdd;
+    LinesToAdd.Reserve(LineRanges.Num());
+
+    for (int32 LineIdx = 0; LineIdx < LineRanges.Num(); ++LineIdx)
+    {
+        const FTextRange& LineRange = LineRanges[LineIdx];
+
+        // Shared pointer to the line's text slice (within the full source).
+        TSharedRef<FString> LineText =
+            MakeShareable(new FString(SourceString.Mid(LineRange.BeginIndex, LineRange.Len())));
+
+        TArray<TSharedRef<IRun>> Runs;
+
+        if (TokenLines.IsValidIndex(LineIdx) && !TokenLines[LineIdx].IsEmpty())
+        {
+            const TArray<FCortexSyntaxRun>& TokenRuns = TokenLines[LineIdx];
+
+            int32 RunOffset = 0;
+            for (const FCortexSyntaxRun& SyntaxRun : TokenRuns)
+            {
+                if (SyntaxRun.Text.IsEmpty())
+                {
+                    continue;
+                }
+
+                FTextBlockStyle TokenStyle = DefaultStyle;
+                TokenStyle.SetColorAndOpacity(
+                    FSlateColor(ColorForTokenType(SyntaxRun.Type)));
+
+                const int32 StartIdx = RunOffset;
+                const int32 EndIdx   = RunOffset + SyntaxRun.Text.Len();
+                const FTextRange TokenRange(StartIdx, EndIdx);
+
+                Runs.Add(FSlateTextRun::Create(FRunInfo(), LineText, TokenStyle, TokenRange));
+
+                RunOffset = EndIdx;
+            }
+
+            // If tokenizer left trailing characters uncovered, fill with default style.
+            if (RunOffset < LineText->Len())
+            {
+                FTextBlockStyle TrailingStyle = DefaultStyle;
+                TrailingStyle.SetColorAndOpacity(
+                    FSlateColor(ColorForTokenType(ECortexSyntaxTokenType::Default)));
+                Runs.Add(FSlateTextRun::Create(
+                    FRunInfo(), LineText, TrailingStyle,
+                    FTextRange(RunOffset, LineText->Len())));
+            }
+        }
+
+        // Fallback: render the whole line with default style.
+        if (Runs.IsEmpty())
+        {
+            FTextBlockStyle FallbackStyle = DefaultStyle;
+            FallbackStyle.SetColorAndOpacity(
+                FSlateColor(ColorForTokenType(ECortexSyntaxTokenType::Default)));
+            Runs.Add(FSlateTextRun::Create(FRunInfo(), LineText, FallbackStyle));
+        }
+
+        LinesToAdd.Emplace(MoveTemp(LineText), MoveTemp(Runs));
+    }
+
+    TargetTextLayout.AddLines(LinesToAdd);
+}
+
+void FCortexCodeMarshaller::GetText(FString& TargetString, const FTextLayout& SourceTextLayout)
+{
+    SourceTextLayout.GetAsText(TargetString);
+}
+
+// ---------------------------------------------------------------------------
+// SCortexCodeBlock
+// ---------------------------------------------------------------------------
 
 void SCortexCodeBlock::Construct(const FArguments& InArgs)
 {
     CodeContent = InArgs._Code;
+
+    TSharedRef<FCortexCodeMarshaller> Marshaller = FCortexCodeMarshaller::Create();
 
     ChildSlot
     [
@@ -55,6 +199,7 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
                 .IsReadOnly(true)
                 .AutoWrapText(false)
                 .Font(FCoreStyle::GetDefaultFontStyle("Mono", 10))
+                .Marshaller(Marshaller)
             ]
         ]
     ];
