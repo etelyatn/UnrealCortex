@@ -1,6 +1,7 @@
 #include "Widgets/SCortexSidebar.h"
 
 #include "CortexFrontendModule.h"
+#include "CortexFrontendSettings.h"
 #include "Session/CortexCliSession.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SScrollBox.h"
@@ -108,6 +109,33 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 					[
 						SAssignNew(StateText, STextBlock)
 						.Text(FText::FromString(TEXT("Inactive")))
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(4.0f, 2.0f)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Access: ")))
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+							.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
+						]
+						+ SHorizontalBox::Slot()
+						.FillWidth(1.0f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text_Lambda([]()
+							{
+								return FText::FromString(FCortexFrontendSettings::Get().GetAccessModeString());
+							})
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+							.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("cccccc")))))
+						]
 					]
 				]
 			]
