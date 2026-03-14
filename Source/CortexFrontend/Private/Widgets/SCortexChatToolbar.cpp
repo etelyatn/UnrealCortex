@@ -9,7 +9,7 @@
 #include "Styling/CoreStyle.h"
 
 // Context calculation helpers (moved from SCortexContextBar)
-namespace CortexContextUtils
+namespace
 {
     constexpr int64 DefaultContextLimit = 200000;
 
@@ -74,7 +74,7 @@ void SCortexChatToolbar::Construct(const FArguments& InArgs)
                 .HeightOverride(8.0f)
                 [
                     SAssignNew(ContextColorBox, SBorder)
-                    .BorderBackgroundColor(CortexContextUtils::GetContextColor(0.0f))
+                    .BorderBackgroundColor(GetContextColor(0.0f))
                 ]
             ]
             + SHorizontalBox::Slot()
@@ -139,12 +139,12 @@ void SCortexChatToolbar::OnTokenUsageUpdated()
     if (!Session.IsValid()) return;
 
     const int64 Used = Session->GetConversationContextTokens();
-    const int64 Max = CortexContextUtils::GetContextLimit();
-    const float Percentage = CortexContextUtils::CalculatePercentage(Used, Max);
+    const int64 Max = GetContextLimit();
+    const float Percentage = CalculatePercentage(Used, Max);
 
     if (ContextColorBox.IsValid())
     {
-        ContextColorBox->SetBorderBackgroundColor(CortexContextUtils::GetContextColor(Percentage));
+        ContextColorBox->SetBorderBackgroundColor(GetContextColor(Percentage));
     }
 
     if (ContextLabel.IsValid())

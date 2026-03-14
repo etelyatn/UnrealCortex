@@ -70,7 +70,7 @@ void SCortexChatMessage::Construct(const FArguments& InArgs)
     }
 }
 
-TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text) const
+TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
 {
     const TArray<FCortexMarkdownBlock> Blocks = CortexMarkdownParser::ParseBlocks(Text);
     TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);

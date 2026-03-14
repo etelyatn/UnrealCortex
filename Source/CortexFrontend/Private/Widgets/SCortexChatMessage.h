@@ -28,7 +28,7 @@ public:
     float GetWrapWidth() const { return WrapWidth; }
 
 private:
-    TSharedRef<SWidget> BuildContentForText(const FString& Text) const;
+    TSharedRef<SWidget> BuildContentForText(const FString& Text);
 
     TSharedPtr<SVerticalBox> ContentBox;
     bool bIsUser = true;
