@@ -334,19 +334,41 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJso
 	}
 	else if (ParameterType == TEXT("vector"))
 	{
+		FLinearColor Color = FLinearColor::Transparent;
+		bool bParsedColor = false;
+
 		const TArray<TSharedPtr<FJsonValue>>* ColorArray = nullptr;
-		if (!Params->TryGetArrayField(TEXT("value"), ColorArray) || ColorArray->Num() != 4)
+		if (Params->TryGetArrayField(TEXT("value"), ColorArray) && ColorArray->Num() == 4)
 		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidParameter, TEXT("Missing or invalid vector value (expects [R, G, B, A])"));
+			Color = FLinearColor(
+				(*ColorArray)[0]->AsNumber(),
+				(*ColorArray)[1]->AsNumber(),
+				(*ColorArray)[2]->AsNumber(),
+				(*ColorArray)[3]->AsNumber()
+			);
+			bParsedColor = true;
+		}
+		else
+		{
+			const TSharedPtr<FJsonObject>* ColorObject = nullptr;
+			if (Params->TryGetObjectField(TEXT("value"), ColorObject)
+				&& ColorObject != nullptr
+				&& (*ColorObject).IsValid()
+				&& (*ColorObject)->TryGetNumberField(TEXT("R"), Color.R)
+				&& (*ColorObject)->TryGetNumberField(TEXT("G"), Color.G)
+				&& (*ColorObject)->TryGetNumberField(TEXT("B"), Color.B)
+				&& (*ColorObject)->TryGetNumberField(TEXT("A"), Color.A))
+			{
+				bParsedColor = true;
+			}
 		}
 
-		FLinearColor Color(
-			(*ColorArray)[0]->AsNumber(),
-			(*ColorArray)[1]->AsNumber(),
-			(*ColorArray)[2]->AsNumber(),
-			(*ColorArray)[3]->AsNumber()
-		);
+		if (!bParsedColor)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidParameter,
+				TEXT("Missing or invalid vector value (expects [R, G, B, A] or {R,G,B,A})"));
+		}
 
 		Instance->SetVectorParameterValueEditorOnly(ParamName, Color);
 		Instance->PostEditChange();
