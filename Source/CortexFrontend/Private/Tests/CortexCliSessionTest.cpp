@@ -249,6 +249,48 @@ bool FCortexCliSessionModelInfoTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionToolCallTurnIndexTest,
+    "Cortex.Frontend.Session.ToolCallTurnIndex",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionToolCallTurnIndexTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-toolcall-turn");
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Processing);
+
+    Session.AddUserPromptEntry(TEXT("Do something"));
+    // CurrentTurnIndex is now 1
+
+    FCortexStreamEvent ToolEvent;
+    ToolEvent.Type = ECortexStreamEventType::ToolUse;
+    ToolEvent.ToolName = TEXT("list_actors");
+    ToolEvent.ToolCallId = TEXT("call-1");
+    Session.HandleWorkerEvent(ToolEvent);
+
+    const TArray<TSharedPtr<FCortexChatEntry>>& Entries = Session.GetChatEntries();
+    // Find the tool call entry
+    TSharedPtr<FCortexChatEntry> ToolEntry;
+    for (const auto& E : Entries)
+    {
+        if (E->Type == ECortexChatEntryType::ToolCall)
+        {
+            ToolEntry = E;
+            break;
+        }
+    }
+
+    TestTrue(TEXT("Tool call entry should exist"), ToolEntry.IsValid());
+    if (ToolEntry.IsValid())
+    {
+        TestEqual(TEXT("Tool call TurnIndex should match current turn"),
+            ToolEntry->TurnIndex, 1);
+    }
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionContextTokensIncludesCacheTest,
     "Cortex.Frontend.Session.ContextTokensIncludesCache",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

@@ -190,6 +190,7 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 		ToolEntry->ToolName = Event.ToolName;
 		ToolEntry->ToolCallId = Event.ToolCallId;
 		ToolEntry->ToolInput = Event.ToolInput;
+		ToolEntry->TurnIndex = CurrentTurnIndex;
 		ToolEntry->ToolStartTime = FPlatformTime::Seconds();
 		ChatEntries.Add(ToolEntry);
 		return;
@@ -615,6 +616,14 @@ void FCortexCliSession::ReplaceStreamingEntry(const TArray<TSharedPtr<FCortexCha
 	}
 
 	ChatEntries.RemoveAt(CurrentIndex);
+
+	// Propagate TurnIndex from streaming entry to replacement entries
+	const int32 TurnIndex = CurrentStreamingEntry->TurnIndex;
+	for (const TSharedPtr<FCortexChatEntry>& Entry : ReplacementEntries)
+	{
+		Entry->TurnIndex = TurnIndex;
+	}
+
 	ChatEntries.Insert(ReplacementEntries, CurrentIndex);
 	CurrentStreamingEntry.Reset();
 }

@@ -69,6 +69,7 @@ private:
 	friend class FCortexCliSessionCancelTransitionsTest;
 	friend class FCortexCliSessionNewChatGeneratesFreshSessionIdTest;
 	friend class FCortexChatPanelRejectedSendDoesNotAppendEntriesTest;
+	friend class FCortexCliSessionToolCallTurnIndexTest;
 
 	FString BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const;
 	FString BuildAllowedToolsArg(ECortexAccessMode AccessMode) const;
