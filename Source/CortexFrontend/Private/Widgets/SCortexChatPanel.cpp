@@ -70,19 +70,38 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
         ]
     ];
 
+    // Create stable greeting row (reused across refreshes for cache stability)
+    {
+        TSharedPtr<FCortexChatEntry> GreetingEntry = MakeShared<FCortexChatEntry>();
+        GreetingEntry->Type = ECortexChatEntryType::AssistantMessage;
+        GreetingEntry->Text = TEXT("Hello! I'm Claude. Ask me anything about your Unreal project \u2014 Blueprints, C++, assets, scenes, or anything else.");
+
+        GreetingRow = MakeShared<FCortexChatDisplayRow>();
+        GreetingRow->RowType = ECortexChatRowType::AssistantTurn;
+        GreetingRow->PrimaryEntry = GreetingEntry;
+    }
+
     if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
     {
         Session->OnStreamEvent.AddSP(this, &SCortexChatPanel::OnStreamEvent);
         Session->OnTurnComplete.AddSP(this, &SCortexChatPanel::OnTurnComplete);
         Session->OnStateChanged.AddSP(this, &SCortexChatPanel::OnSessionStateChanged);
 
-        RefreshVisibleEntries();
+        // Auto-connect if session is inactive
+        if (Session->GetState() == ECortexSessionState::Inactive)
+        {
+            Session->Connect();
+        }
+
         if (ChatToolbar.IsValid())
         {
             ChatToolbar->SetSessionId(Session->GetSessionId());
         }
         UpdateStateDrivenUi(Session->GetState());
     }
+
+    // Initial refresh to show greeting if already Idle
+    RefreshVisibleEntries();
 }
 
 SCortexChatPanel::~SCortexChatPanel()
@@ -133,7 +152,8 @@ void SCortexChatPanel::NewChat()
 {
     if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
     {
-        Session->NewChat();
+        Session->NewChat();  // Calls CleanupProcess() internally — kills old CLI subprocess
+        Session->Connect();
         RefreshVisibleEntries();
         if (ChatToolbar.IsValid())
         {
@@ -199,6 +219,7 @@ void SCortexChatPanel::OnTurnComplete(const FCortexTurnResult& Result)
 void SCortexChatPanel::OnSessionStateChanged(const FCortexSessionStateChange& Change)
 {
     UpdateStateDrivenUi(Change.NewState);
+    RefreshVisibleEntries();  // Inject greeting row on Idle, remove on other states
 }
 
 TArray<TSharedPtr<FCortexChatEntry>> SCortexChatPanel::BuildAssistantEntries(const FString& FullText) const
@@ -342,6 +363,15 @@ void SCortexChatPanel::RefreshVisibleEntries()
         case ECortexChatEntryType::ToolCall:
             // Consumed via ToolCallsByTurn — skip standalone rows
             break;
+        }
+    }
+
+    // Inject greeting row when idle with no messages
+    if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
+    {
+        if (Session->GetState() == ECortexSessionState::Idle && Session->GetChatEntries().IsEmpty() && GreetingRow.IsValid())
+        {
+            DisplayRows.Insert(GreetingRow, 0);
         }
     }
 

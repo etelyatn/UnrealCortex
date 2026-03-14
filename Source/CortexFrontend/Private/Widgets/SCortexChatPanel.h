@@ -55,6 +55,7 @@ private:
     TWeakPtr<FCortexCliSession> SessionWeak;
 
     TArray<TSharedPtr<FCortexChatDisplayRow>> DisplayRows;
+    TSharedPtr<FCortexChatDisplayRow> GreetingRow;
     bool bAutoScroll = true;
     TMap<TSharedPtr<FCortexChatDisplayRow>, TSharedPtr<SCortexChatMessage>> MessageWidgetCache;
 };
