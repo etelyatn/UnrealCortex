@@ -2,7 +2,7 @@
 import importlib
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import pytest
 
 # Ensure src is on path (mirrors how the server loads tools)
@@ -143,8 +143,6 @@ class TestLevelComposeDocstring:
 
 
 # --- router disambiguation hints ---
-
-from unittest.mock import patch  # noqa: E402
 
 # Minimal fake capabilities that mirrors the real schema structure.
 # commands must be a list of dicts (each with at least a "name" key),
