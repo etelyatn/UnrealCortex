@@ -10,6 +10,7 @@
 class SCortexChatMessage;
 class SCortexChatToolbar;
 class SCortexInputArea;
+class SCortexProcessingIndicator;
 class STableViewBase;
 
 template <typename ItemType>
@@ -49,6 +50,7 @@ private:
 
     TSharedPtr<SCortexChatToolbar> ChatToolbar;
     TSharedPtr<SCortexInputArea> InputArea;
+    TSharedPtr<SCortexProcessingIndicator> ProcessingIndicator;
     TSharedPtr<SListView<TSharedPtr<FCortexChatDisplayRow>>> ChatList;
     TWeakPtr<FCortexCliSession> SessionWeak;
 
