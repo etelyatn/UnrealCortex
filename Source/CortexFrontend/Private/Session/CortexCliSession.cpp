@@ -2,6 +2,7 @@
 
 #include "Async/Async.h"
 #include "CortexFrontendModule.h"
+#include "CortexFrontendSettings.h"
 #include "Misc/Guid.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
@@ -27,7 +28,7 @@ bool FCortexCliSession::Connect()
 		return false;
 	}
 
-	if (!SpawnProcess(ECortexAccessMode::FullAccess, false))
+	if (!SpawnProcess(FCortexFrontendSettings::Get().GetAccessMode(), false))
 	{
 		TransitionState(ECortexSessionState::Spawning, ECortexSessionState::Inactive, TEXT("Failed to spawn on connect"));
 		return false;
