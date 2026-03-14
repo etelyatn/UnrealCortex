@@ -4,7 +4,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
-class STextBlock;
+class SVerticalBox;
 
 class SCortexChatMessage : public SCompoundWidget
 {
@@ -21,5 +21,8 @@ public:
     void SetText(const FString& NewText);
 
 private:
-    TSharedPtr<STextBlock> MessageText;
+    TSharedRef<SWidget> BuildContentForText(const FString& Text) const;
+
+    TSharedPtr<SVerticalBox> ContentBox;
+    bool bIsUser = true;
 };

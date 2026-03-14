@@ -1,43 +1,184 @@
 #include "Widgets/SCortexChatMessage.h"
 
+#include "Rendering/CortexMarkdownParser.h"
+#include "Styling/CoreStyle.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Widgets/SCortexCodeBlock.h"
 
 void SCortexChatMessage::Construct(const FArguments& InArgs)
 {
-    const FLinearColor BackgroundColor = InArgs._IsUser ? FLinearColor(0.25f, 0.25f, 0.45f, 0.15f) : FLinearColor(0.1f, 0.1f, 0.1f, 0.3f);
+    bIsUser = InArgs._IsUser;
+
+    const FLinearColor AccentColor = bIsUser
+        ? FLinearColor(0.055f, 0.647f, 0.914f)  // #0ea5e9 user blue
+        : FLinearColor(0.231f, 0.549f, 0.231f);  // #3b8c3b assistant green
 
     ChildSlot
     [
         SNew(SVerticalBox)
+        // Role label
         + SVerticalBox::Slot()
         .AutoHeight()
         .Padding(0.0f, 0.0f, 0.0f, 2.0f)
         [
             SNew(STextBlock)
-            .Text(FText::FromString(InArgs._IsUser ? TEXT("You") : TEXT("Claude")))
+            .Text(FText::FromString(bIsUser ? TEXT("You") : TEXT("Claude")))
             .ColorAndOpacity(FSlateColor(FLinearColor(0.58f, 0.63f, 0.73f)))
         ]
+        // Left border accent + content
         + SVerticalBox::Slot()
         .AutoHeight()
         [
-            SNew(SBorder)
-            .BorderBackgroundColor(BackgroundColor)
-            .Padding(FMargin(12.0f, 8.0f))
+            SNew(SHorizontalBox)
+            // Left color accent border
+            + SHorizontalBox::Slot()
+            .AutoWidth()
             [
-                SAssignNew(MessageText, STextBlock)
-                .Text(FText::FromString(InArgs._Message))
-                .AutoWrapText(true)
+                SNew(SBox)
+                .WidthOverride(3.0f)
+                [
+                    SNew(SBorder)
+                    .BorderBackgroundColor(AccentColor)
+                    [
+                        SNullWidget::NullWidget
+                    ]
+                ]
+            ]
+            // Message content
+            + SHorizontalBox::Slot()
+            .FillWidth(1.0f)
+            .Padding(FMargin(8.0f, 4.0f))
+            [
+                SAssignNew(ContentBox, SVerticalBox)
             ]
         ]
     ];
+
+    if (!InArgs._Message.IsEmpty())
+    {
+        SetText(InArgs._Message);
+    }
+}
+
+TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text) const
+{
+    const TArray<FCortexMarkdownBlock> Blocks = CortexMarkdownParser::ParseBlocks(Text);
+    TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+
+    for (const FCortexMarkdownBlock& Block : Blocks)
+    {
+        switch (Block.Type)
+        {
+        case ECortexMarkdownBlockType::Header:
+        {
+            const float FontSize = Block.HeaderLevel <= 1 ? 14.0f : (Block.HeaderLevel <= 2 ? 12.0f : 11.0f);
+            Box->AddSlot()
+            .AutoHeight()
+            .Padding(0.0f, 4.0f, 0.0f, 2.0f)
+            [
+                SNew(STextBlock)
+                .Text(FText::FromString(Block.RawText))
+                .Font(FCoreStyle::GetDefaultFontStyle("Bold", static_cast<int32>(FontSize)))
+                .AutoWrapText(true)
+            ];
+            break;
+        }
+
+        case ECortexMarkdownBlockType::CodeBlock:
+        {
+            Box->AddSlot()
+            .AutoHeight()
+            .Padding(0.0f, 4.0f)
+            [
+                SNew(SCortexCodeBlock)
+                .Code(Block.RawText)
+                .Language(Block.Language)
+            ];
+            break;
+        }
+
+        case ECortexMarkdownBlockType::UnorderedList:
+        {
+            TSharedRef<SVerticalBox> ListBox = SNew(SVerticalBox);
+            for (const FString& Item : Block.ListItems)
+            {
+                ListBox->AddSlot()
+                .AutoHeight()
+                .Padding(0.0f, 1.0f)
+                [
+                    SNew(STextBlock)
+                    .Text(FText::FromString(TEXT("\u2022 ") + Item))
+                    .AutoWrapText(true)
+                ];
+            }
+            Box->AddSlot()
+            .AutoHeight()
+            .Padding(0.0f, 2.0f)
+            [ ListBox ];
+            break;
+        }
+
+        case ECortexMarkdownBlockType::OrderedList:
+        {
+            TSharedRef<SVerticalBox> ListBox = SNew(SVerticalBox);
+            for (int32 i = 0; i < Block.ListItems.Num(); ++i)
+            {
+                ListBox->AddSlot()
+                .AutoHeight()
+                .Padding(0.0f, 1.0f)
+                [
+                    SNew(STextBlock)
+                    .Text(FText::FromString(FString::Printf(TEXT("%d. "), i + 1) + Block.ListItems[i]))
+                    .AutoWrapText(true)
+                ];
+            }
+            Box->AddSlot()
+            .AutoHeight()
+            .Padding(0.0f, 2.0f)
+            [ ListBox ];
+            break;
+        }
+
+        case ECortexMarkdownBlockType::Paragraph:
+        default:
+        {
+            Box->AddSlot()
+            .AutoHeight()
+            .Padding(0.0f, 2.0f)
+            [
+                SNew(STextBlock)
+                .Text(FText::FromString(Block.RawText))
+                .AutoWrapText(true)
+            ];
+            break;
+        }
+        }
+    }
+
+    return Box;
 }
 
 void SCortexChatMessage::SetText(const FString& NewText)
 {
-    if (MessageText.IsValid())
+    if (!ContentBox.IsValid())
     {
-        MessageText->SetText(FText::FromString(NewText));
+        return;
     }
+
+    ContentBox->ClearChildren();
+
+    if (NewText.IsEmpty())
+    {
+        return;
+    }
+
+    ContentBox->AddSlot()
+    .AutoHeight()
+    [
+        BuildContentForText(NewText)
+    ];
 }
