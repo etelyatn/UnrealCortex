@@ -9,6 +9,7 @@
 void SCortexToolCallBlock::Construct(const FArguments& InArgs)
 {
     ToolCallList = InArgs._ToolCalls;
+    OnToggled = InArgs._OnToggled;
 
     ChildSlot
     [
@@ -22,6 +23,7 @@ FReply SCortexToolCallBlock::OnToggleExpand()
 {
     bIsExpanded = !bIsExpanded;
     RebuildContent();
+    OnToggled.ExecuteIfBound();
     return FReply::Handled();
 }
 
