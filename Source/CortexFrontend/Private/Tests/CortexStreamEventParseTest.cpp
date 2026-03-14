@@ -11,6 +11,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseContentBlockDeltaTest, "
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseSystemErrorTest, "Cortex.Frontend.StreamEvent.ParseSystemError", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseEmptyTest, "Cortex.Frontend.StreamEvent.ParseEmpty", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseSystemInitModelTest, "Cortex.Frontend.StreamEvent.ParseSystemInitModel", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseUsageTest, "Cortex.Frontend.StreamEvent.ParseUsage", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexStreamEventParseSystemTest::RunTest(const FString& Parameters)
 {
@@ -153,6 +154,27 @@ bool FCortexStreamEventParseSystemInitModelTest::RunTest(const FString& Paramete
     if (Events.Num() == 1)
     {
         TestEqual(TEXT("Model should be extracted"), Events[0].Model, FString(TEXT("claude-sonnet-4-6")));
+    }
+    return true;
+}
+
+bool FCortexStreamEventParseUsageTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    // assistant message with usage object at message level
+    const FString JsonLine = TEXT("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hello\"}],\"usage\":{\"input_tokens\":1500,\"output_tokens\":200,\"cache_read_input_tokens\":800,\"cache_creation_input_tokens\":100}}}");
+    const TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseNdjsonLine(JsonLine);
+    TestTrue(TEXT("Should produce at least 1 event"), Events.Num() >= 1);
+
+    // Find the text event — it should carry the usage data
+    const FCortexStreamEvent* TextEvent = Events.FindByPredicate([](const FCortexStreamEvent& E) { return E.Type == ECortexStreamEventType::TextContent; });
+    TestNotNull(TEXT("Should have a TextContent event"), TextEvent);
+    if (TextEvent)
+    {
+        TestEqual(TEXT("InputTokens"), TextEvent->InputTokens, (int64)1500);
+        TestEqual(TEXT("OutputTokens"), TextEvent->OutputTokens, (int64)200);
+        TestEqual(TEXT("CacheReadTokens"), TextEvent->CacheReadTokens, (int64)800);
+        TestEqual(TEXT("CacheCreationTokens"), TextEvent->CacheCreationTokens, (int64)100);
     }
     return true;
 }

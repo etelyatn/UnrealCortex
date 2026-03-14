@@ -83,6 +83,18 @@ TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FStrin
             return Events;
         }
 
+        // Extract usage if present on the message object
+        int64 MsgInputTokens = 0, MsgOutputTokens = 0, MsgCacheReadTokens = 0, MsgCacheCreationTokens = 0;
+        const TSharedPtr<FJsonObject>* UsageObj = nullptr;
+        if ((*MessageObj)->TryGetObjectField(TEXT("usage"), UsageObj) && UsageObj != nullptr)
+        {
+            double Val = 0.0;
+            if ((*UsageObj)->TryGetNumberField(TEXT("input_tokens"), Val)) MsgInputTokens = static_cast<int64>(Val);
+            if ((*UsageObj)->TryGetNumberField(TEXT("output_tokens"), Val)) MsgOutputTokens = static_cast<int64>(Val);
+            if ((*UsageObj)->TryGetNumberField(TEXT("cache_read_input_tokens"), Val)) MsgCacheReadTokens = static_cast<int64>(Val);
+            if ((*UsageObj)->TryGetNumberField(TEXT("cache_creation_input_tokens"), Val)) MsgCacheCreationTokens = static_cast<int64>(Val);
+        }
+
         // For assistant messages, concatenate all text blocks into a single TextContent event
         FString ConcatenatedText;
         TArray<FCortexStreamEvent> NonTextEvents;
@@ -172,6 +184,10 @@ TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FStrin
             FCortexStreamEvent TextEvent;
             TextEvent.Type = ECortexStreamEventType::TextContent;
             TextEvent.Text = ConcatenatedText;
+            TextEvent.InputTokens = MsgInputTokens;
+            TextEvent.OutputTokens = MsgOutputTokens;
+            TextEvent.CacheReadTokens = MsgCacheReadTokens;
+            TextEvent.CacheCreationTokens = MsgCacheCreationTokens;
             TextEvent.RawJson = JsonLine;
             Events.Add(MoveTemp(TextEvent));
         }
