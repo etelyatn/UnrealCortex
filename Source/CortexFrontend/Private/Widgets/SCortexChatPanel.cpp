@@ -5,6 +5,7 @@
 #include "Modules/ModuleManager.h"
 #include "Widgets/SCortexChatMessage.h"
 #include "Widgets/SCortexCodeBlock.h"
+#include "Widgets/SCortexContextBar.h"
 #include "Widgets/SCortexInputArea.h"
 #include "Widgets/SCortexToolCallBlock.h"
 #include "Widgets/SCortexChatToolbar.h"
@@ -47,6 +48,12 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
             .ListItemsSource(&ChatEntries)
             .OnGenerateRow(this, &SCortexChatPanel::GenerateRow)
             .SelectionMode(ESelectionMode::None)
+        ]
+        + SVerticalBox::Slot()
+        .AutoHeight()
+        [
+            SNew(SCortexContextBar)
+            .Session(SessionWeak)
         ]
         + SVerticalBox::Slot()
         .AutoHeight()
