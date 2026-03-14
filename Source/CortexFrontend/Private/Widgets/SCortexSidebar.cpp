@@ -152,7 +152,7 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 					[
 						SNew(SHorizontalBox)
 						+ SHorizontalBox::Slot().FillWidth(1.0f)
-						[ SNew(STextBlock).Text(FText::FromString(TEXT("Input:"))) ]
+						[ SNew(STextBlock).Text(FText::FromString(TEXT("In (new):"))) ]
 						+ SHorizontalBox::Slot().AutoWidth()
 						[ SAssignNew(InputTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
 					]
@@ -160,7 +160,7 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 					[
 						SNew(SHorizontalBox)
 						+ SHorizontalBox::Slot().FillWidth(1.0f)
-						[ SNew(STextBlock).Text(FText::FromString(TEXT("Output:"))) ]
+						[ SNew(STextBlock).Text(FText::FromString(TEXT("Out:"))) ]
 						+ SHorizontalBox::Slot().AutoWidth()
 						[ SAssignNew(OutputTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
 					]
@@ -168,7 +168,7 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 					[
 						SNew(SHorizontalBox)
 						+ SHorizontalBox::Slot().FillWidth(1.0f)
-						[ SNew(STextBlock).Text(FText::FromString(TEXT("Cache:"))) ]
+						[ SNew(STextBlock).Text(FText::FromString(TEXT("Cache \u2191:"))) ]
 						+ SHorizontalBox::Slot().AutoWidth()
 						[ SAssignNew(CacheTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
 					]
