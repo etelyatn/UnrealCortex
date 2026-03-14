@@ -95,7 +95,7 @@ void FCortexCodeMarshaller::SetText(const FString& SourceString, FTextLayout& Ta
         {
             const TArray<FCortexSyntaxRun>& TokenRuns = TokenLines[LineIdx];
 
-            int32 RunOffset = 0;
+            int32 LastRunEnd = 0;
             for (const FCortexSyntaxRun& SyntaxRun : TokenRuns)
             {
                 if (SyntaxRun.Text.IsEmpty())
@@ -103,28 +103,39 @@ void FCortexCodeMarshaller::SetText(const FString& SourceString, FTextLayout& Ta
                     continue;
                 }
 
+                // Fill gap before this run if any (chars not covered by tokenizer).
+                if (SyntaxRun.StartIndex > LastRunEnd)
+                {
+                    FTextBlockStyle GapStyle = DefaultStyle;
+                    GapStyle.SetColorAndOpacity(
+                        FSlateColor(ColorForTokenType(ECortexSyntaxTokenType::Default)));
+                    Runs.Add(FSlateTextRun::Create(
+                        FRunInfo(), LineText, GapStyle,
+                        FTextRange(LastRunEnd, SyntaxRun.StartIndex)));
+                }
+
                 FTextBlockStyle TokenStyle = DefaultStyle;
                 TokenStyle.SetColorAndOpacity(
                     FSlateColor(ColorForTokenType(SyntaxRun.Type)));
 
-                const int32 StartIdx = RunOffset;
-                const int32 EndIdx   = RunOffset + SyntaxRun.Text.Len();
-                const FTextRange TokenRange(StartIdx, EndIdx);
+                const int32 RunStart = SyntaxRun.StartIndex;
+                const int32 RunEnd   = RunStart + SyntaxRun.Text.Len();
+                const FTextRange TokenRange(RunStart, RunEnd);
 
                 Runs.Add(FSlateTextRun::Create(FRunInfo(), LineText, TokenStyle, TokenRange));
 
-                RunOffset = EndIdx;
+                LastRunEnd = RunEnd;
             }
 
             // If tokenizer left trailing characters uncovered, fill with default style.
-            if (RunOffset < LineText->Len())
+            if (LastRunEnd < LineText->Len())
             {
                 FTextBlockStyle TrailingStyle = DefaultStyle;
                 TrailingStyle.SetColorAndOpacity(
                     FSlateColor(ColorForTokenType(ECortexSyntaxTokenType::Default)));
                 Runs.Add(FSlateTextRun::Create(
                     FRunInfo(), LineText, TrailingStyle,
-                    FTextRange(RunOffset, LineText->Len())));
+                    FTextRange(LastRunEnd, LineText->Len())));
             }
         }
 
@@ -194,6 +205,7 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
             ]
             + SVerticalBox::Slot()
             .AutoHeight()
+            .MaxHeight(400.0f)
             .Padding(8.0f, 4.0f)
             [
                 SNew(SMultiLineEditableText)
