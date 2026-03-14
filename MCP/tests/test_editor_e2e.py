@@ -237,3 +237,11 @@ def test_focus_actor_not_found(editor_connection):
         editor_connection.send_command("editor.focus_actor", {
             "actor_path": "/Game/NonExistent/Actor_12345",
         })
+
+
+@pytest.mark.anyio
+@pytest.mark.e2e
+async def test_editor_router_tool(mcp_client):
+    result = await mcp_client.call_tool("editor_cmd", {"command": "get_editor_state", "params": {}})
+    payload = __import__("json").loads(result.content[0].text)
+    assert "project_name" in payload

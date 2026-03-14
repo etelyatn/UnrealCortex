@@ -9,6 +9,7 @@ Run:
 
 import pytest
 import uuid
+import json
 
 
 def _uniq(prefix: str) -> str:
@@ -86,6 +87,18 @@ class TestCoreConnection:
         data_domain = data["domains"]["data"]
         assert "commands" in data_domain
         assert len(data_domain["commands"]) > 0
+
+
+@pytest.mark.anyio
+@pytest.mark.e2e
+async def test_core_and_data_router_tools(mcp_client):
+    status = await mcp_client.call_tool("core_cmd", {"command": "get_status"})
+    status_data = json.loads(status.content[0].text)
+    assert "project_name" in status_data
+
+    tables = await mcp_client.call_tool("data_cmd", {"command": "list_datatables", "params": {}})
+    table_data = json.loads(tables.content[0].text)
+    assert "datatables" in table_data
 
 
 # ================================================================

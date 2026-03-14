@@ -9,6 +9,7 @@ Run:
 import subprocess
 import uuid
 from pathlib import Path
+import json
 
 import pytest
 
@@ -735,3 +736,11 @@ class TestLevelErrors:
                 tcp_connection.send_command("level.delete_actor", {"actor": name})
             except (RuntimeError, ConnectionError):
                 pass
+
+
+@pytest.mark.anyio
+@pytest.mark.e2e
+async def test_level_router_tool(mcp_client):
+    result = await mcp_client.call_tool("level_cmd", {"command": "get_info", "params": {}})
+    payload = json.loads(result.content[0].text)
+    assert "level_name" in payload

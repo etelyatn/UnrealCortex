@@ -1,17 +1,13 @@
 """MCP server exposing Unreal Engine systems to AI tools via UnrealCortex."""
 
-import importlib.util
-import json
 import logging
 import os
-import pathlib
 import sys
-import types
 from mcp.server.fastmcp import FastMCP
 from .capabilities import build_router_docstrings, load_capabilities_cache
-from .tcp_client import UEConnection
 from .response import format_response
 from .schema_generator import _decode_data
+from .tcp_client import UEConnection
 from .tools.composites.blueprint import register_blueprint_compose_tools
 from .tools.composites.level import register_level_compose_tools
 from .tools.composites.material import register_material_compose_tools
@@ -42,52 +38,8 @@ _connection = UEConnection(
 _TTL_CATALOG = 600  # 10 min
 
 
-def _discover_and_register_tools(mcp_server, connection):
-    """Scan tools/ directory for register_*_tools functions."""
-    tools_dir = pathlib.Path(__file__).parent.parent.parent / "tools"
-    if not tools_dir.exists():
-        logger.warning("Tools directory not found: %s", tools_dir)
-        return
-
-    if "cortex_tools" not in sys.modules:
-        root_pkg = types.ModuleType("cortex_tools")
-        root_pkg.__path__ = [str(tools_dir)]  # type: ignore[attr-defined]
-        sys.modules["cortex_tools"] = root_pkg
-
-    for py_file in sorted(tools_dir.rglob("*.py")):
-        if py_file.name.startswith("_"):
-            continue
-
-        rel_parts = py_file.relative_to(tools_dir).with_suffix("").parts
-        module_name = f"cortex_tools.{'.'.join(rel_parts)}"
-
-        for idx in range(1, len(rel_parts)):
-            pkg_name = f"cortex_tools.{'.'.join(rel_parts[:idx])}"
-            if pkg_name in sys.modules:
-                continue
-            pkg = types.ModuleType(pkg_name)
-            pkg.__path__ = [str(tools_dir.joinpath(*rel_parts[:idx]))]  # type: ignore[attr-defined]
-            sys.modules[pkg_name] = pkg
-
-        spec = importlib.util.spec_from_file_location(module_name, py_file)
-        if spec is None or spec.loader is None:
-            logger.warning("Skipping tool module with invalid spec: %s", py_file)
-            continue
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-
-        # Find and call register_*_tools functions
-        for attr_name in dir(module):
-            if attr_name.startswith("register_") and attr_name.endswith("_tools"):
-                register_fn = getattr(module, attr_name)
-                if callable(register_fn):
-                    register_fn(mcp_server, connection)
-                    logger.info("Registered tools from %s/%s", py_file.parent.name, py_file.name)
-
-
 def _register_explicit_tools(mcp_server, connection) -> None:
-    """Register the new consolidated tools before legacy discovery."""
+    """Register the consolidated 19-tool MCP surface."""
     docstrings = build_router_docstrings(load_capabilities_cache())
     register_router_tools(mcp_server, connection, docstrings)
     register_blueprint_compose_tools(mcp_server, connection)
@@ -100,50 +52,26 @@ def _register_explicit_tools(mcp_server, connection) -> None:
     register_qa_standalone_tools(mcp_server, connection)
 
 
-@mcp.tool()
 def get_status() -> str:
-    """Check connection status to Unreal Editor and get plugin/project info.
-
-    Returns connection status, plugin version, engine version, project name,
-    connected editor info, and list of all available editors.
-    """
+    """Compatibility helper for tests; not MCP-registered."""
     from cortex_mcp.tcp_client import _discover_all_editors
 
     try:
         response = _connection.send_command("get_status")
         data = _decode_data(response)
-
         editors = _discover_all_editors()
         data["connected_editor"] = {"pid": _connection._pid, "port": _connection.port}
         data["available_editors"] = [
             {"pid": editor.pid, "port": editor.port, "started_at": editor.started_at}
             for editor in editors
         ]
-
         return format_response(data, "get_status")
     except ConnectionError as e:
         return f"Not connected to Unreal Editor: {e}"
 
 
-@mcp.tool()
 def get_data_catalog() -> str:
-    """Get a compact overview of all project data in a single call.
-
-    Returns DataTables (with top field names), GameplayTag prefixes, DataAsset classes,
-    and StringTables. Useful when you need to understand the project's data structure
-    or discover what tables/assets exist before making targeted queries.
-
-    The catalog is cached for 10 minutes. Use refresh_cache if data has changed
-    externally (e.g., new tables created in editor, C++ recompile).
-
-    Returns:
-        JSON with:
-        - datatables: Array of {name, path, row_struct, row_count, is_composite,
-          parent_tables, top_fields} for each loaded DataTable
-        - tag_prefixes: Array of {prefix, count} for GameplayTag top-level categories
-        - data_asset_classes: Array of {class_name, count, example_path} grouped by class
-        - string_tables: Array of {name, path, entry_count} for each StringTable
-    """
+    """Compatibility helper for tests; not MCP-registered."""
     try:
         response = _connection.send_command_cached(
             "data.get_data_catalog", {}, ttl=_TTL_CATALOG
@@ -153,25 +81,12 @@ def get_data_catalog() -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
 def refresh_cache() -> str:
-    """Clear all cached data and force fresh reads from Unreal Editor.
-
-    Use this when you know data has changed outside of MCP tools
-    (e.g., new DataTables created in editor, C++ structs recompiled,
-    assets imported). The cache also auto-clears on editor reconnect.
-
-    Returns:
-        JSON with cache stats before clearing.
-    """
-    stats = _connection._cache.stats
+    """Compatibility helper for tests; not MCP-registered."""
     _connection.invalidate_cache(None)
-    return json.dumps({"cleared": True, "previous_stats": stats})
-
-
-# Register explicit consolidated tools, then keep legacy discovery during migration.
+    return '{"cleared": true}'
+# Register explicit consolidated tools only.
 _register_explicit_tools(mcp, _connection)
-_discover_and_register_tools(mcp, _connection)
 
 
 def main():

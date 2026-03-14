@@ -264,6 +264,10 @@ class UEConnection:
             sock.settimeout(_RECV_TIMEOUT)
             self._socket = sock
             self._validate_project()
+            try:
+                self._send_and_receive("get_capabilities", {})
+            except Exception as e:
+                logger.warning("Failed to fetch capabilities during handshake: %s", e)
             if not self._loaded_file_cache:
                 self.load_file_caches()
                 self._loaded_file_cache = True
