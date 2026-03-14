@@ -4,6 +4,7 @@
 
 class SDockTab;
 class FSpawnTabArgs;
+class FCortexCliSession;
 
 CORTEXFRONTEND_API DECLARE_LOG_CATEGORY_EXTERN(LogCortexFrontend, Log, All);
 
@@ -13,9 +14,14 @@ public:
     virtual void StartupModule() override;
     virtual void ShutdownModule() override;
 
+    TWeakPtr<FCortexCliSession> GetOrCreateSession();
+
 private:
     TSharedRef<SDockTab> SpawnChatTab(const FSpawnTabArgs& Args);
+    void ReleaseSessions();
+    void HandlePreExit();
 
     static const FName CortexChatTabId;
     FDelegateHandle StartupCallbackHandle;
+    TArray<TSharedPtr<FCortexCliSession>> Sessions;
 };

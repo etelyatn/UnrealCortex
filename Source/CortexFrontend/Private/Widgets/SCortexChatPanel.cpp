@@ -2,8 +2,7 @@
 
 #include "CortexFrontendModule.h"
 #include "CortexFrontendSettings.h"
-#include "Misc/Guid.h"
-#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
 #include "Widgets/SCortexChatMessage.h"
 #include "Widgets/SCortexCodeBlock.h"
 #include "Widgets/SCortexInputArea.h"
@@ -16,8 +15,8 @@
 
 void SCortexChatPanel::Construct(const FArguments& InArgs)
 {
-    SessionId = GenerateSessionId();
-    CliRunner = MakeUnique<FCortexCliRunner>();
+    FCortexFrontendModule& Module = FModuleManager::LoadModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+    SessionWeak = Module.GetOrCreateSession();
 
     const ECortexAccessMode InitialMode = FCortexFrontendSettings::Get().GetAccessMode();
 
@@ -59,110 +58,76 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
         ]
     ];
 
-    if (Toolbar.IsValid())
+    if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
     {
-        Toolbar->SetSessionId(SessionId);
+        Session->OnStreamEvent.AddSP(this, &SCortexChatPanel::OnStreamEvent);
+        Session->OnTurnComplete.AddSP(this, &SCortexChatPanel::OnTurnComplete);
+        Session->OnStateChanged.AddSP(this, &SCortexChatPanel::OnSessionStateChanged);
+
+        RefreshVisibleEntries();
+        if (Toolbar.IsValid())
+        {
+            Toolbar->SetSessionId(Session->GetSessionId());
+        }
+        UpdateStateDrivenUi(Session->GetState());
     }
 }
 
 SCortexChatPanel::~SCortexChatPanel()
 {
-    if (CliRunner && CliRunner->IsExecuting())
-    {
-        CliRunner->Cancel();
-    }
 }
 
 void SCortexChatPanel::SendMessage(const FString& Message)
 {
-    if (!CliRunner || CliRunner->IsExecuting())
+    TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
+    if (!Session.IsValid())
     {
         return;
     }
 
-    TSharedPtr<FCortexChatEntry> UserEntry = MakeShared<FCortexChatEntry>();
-    UserEntry->Type = ECortexChatEntryType::UserMessage;
-    UserEntry->Text = Message;
-    ChatEntries.Add(UserEntry);
+    FCortexPromptRequest Request;
+    Request.Prompt = Message;
+    Request.AccessMode = FCortexFrontendSettings::Get().GetAccessMode();
 
-    CurrentStreamingEntry = MakeShared<FCortexChatEntry>();
-    CurrentStreamingEntry->Type = ECortexChatEntryType::AssistantMessage;
-    CurrentStreamingEntry->Text = TEXT("");
-    ChatEntries.Add(CurrentStreamingEntry);
-
-    if (ChatList.IsValid())
+    Session->AddUserPromptEntry(Message);
+    if (!Session->SendPrompt(Request))
     {
-        ChatList->RequestListRefresh();
+        Session->RollbackLastPromptEntries();
+        RefreshVisibleEntries();
+        return;
     }
-    ScrollToBottom();
+
+    RefreshVisibleEntries();
 
     if (InputArea.IsValid())
     {
         InputArea->ClearInput();
-        InputArea->SetStreaming(true);
-    }
-    if (Toolbar.IsValid())
-    {
-        Toolbar->SetStatus(TEXT("Connecting..."));
-        Toolbar->SetModeSelectionEnabled(false);
     }
 
-    FCortexChatRequest Request;
-    Request.Prompt = Message;
-    Request.SessionId = SessionId;
-    Request.bIsFirstMessage = !bHasConfirmedSession;
-    Request.AccessMode = FCortexFrontendSettings::Get().GetAccessMode();
-    Request.bSkipPermissions = FCortexFrontendSettings::Get().GetSkipPermissions();
-    Request.WorkingDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-
-    FString McpPath = FPaths::Combine(FPaths::ProjectDir(), TEXT(".mcp.json"));
-    if (FPaths::FileExists(McpPath))
-    {
-        Request.McpConfigPath = FPaths::ConvertRelativePathToFull(McpPath);
-    }
-
-    CliRunner->ExecuteAsync(
-        Request,
-        FOnCortexComplete::CreateSP(this, &SCortexChatPanel::OnComplete),
-        FOnCortexStreamEvent::CreateSP(this, &SCortexChatPanel::OnStreamEvent));
+    UpdateStateDrivenUi(Session->GetState());
+    ScrollToBottom();
 }
 
 void SCortexChatPanel::CancelRequest()
 {
-    if (CliRunner)
+    if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
     {
-        CliRunner->Cancel();
+        Session->Cancel();
+        UpdateStateDrivenUi(Session->GetState());
     }
 }
 
 void SCortexChatPanel::NewChat()
 {
-    if (CliRunner && CliRunner->IsExecuting())
+    if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
     {
-        CliRunner->Cancel();
-    }
-
-    ChatEntries.Empty();
-    if (ChatList.IsValid())
-    {
-        ChatList->RequestListRefresh();
-    }
-
-    SessionId = GenerateSessionId();
-    CurrentStreamingEntry.Reset();
-    bAutoScroll = true;
-    bHasConfirmedSession = false;
-
-    if (Toolbar.IsValid())
-    {
-        Toolbar->SetSessionId(SessionId);
-        Toolbar->SetStatus(FString());
-        Toolbar->SetModeSelectionEnabled(true);
-    }
-    if (InputArea.IsValid())
-    {
-        InputArea->SetStreaming(false);
-        InputArea->FocusInput();
+        Session->NewChat();
+        RefreshVisibleEntries();
+        if (Toolbar.IsValid())
+        {
+            Toolbar->SetSessionId(Session->GetSessionId());
+        }
+        UpdateStateDrivenUi(Session->GetState());
     }
 }
 
@@ -173,162 +138,46 @@ void SCortexChatPanel::OnModeChanged(ECortexAccessMode Mode)
 
 void SCortexChatPanel::OnStreamEvent(const FCortexStreamEvent& Event)
 {
-    switch (Event.Type)
+    if (Event.Type == ECortexStreamEventType::SessionInit)
     {
-    case ECortexStreamEventType::SessionInit:
-        if (!Event.SessionId.IsEmpty())
+        if (Toolbar.IsValid() && !Event.SessionId.IsEmpty())
         {
-            SessionId = Event.SessionId;
-            bHasConfirmedSession = true;
-            if (Toolbar.IsValid())
-            {
-                Toolbar->SetSessionId(SessionId);
-            }
+            Toolbar->SetSessionId(Event.SessionId);
         }
-        if (Toolbar.IsValid())
-        {
-            Toolbar->SetStatus(TEXT("Connected"));
-        }
-        break;
-
-    case ECortexStreamEventType::ContentBlockDelta:
-        // Incremental delta — append to current streaming entry
-        if (CurrentStreamingEntry.IsValid())
-        {
-            CurrentStreamingEntry->Text += Event.Text;
-            if (CurrentStreamingEntry->MessageWidget.IsValid())
-            {
-                CurrentStreamingEntry->MessageWidget->SetText(CurrentStreamingEntry->Text);
-            }
-        }
-        if (Toolbar.IsValid())
-        {
-            Toolbar->SetStatus(TEXT("Streaming..."));
-        }
-        if (bAutoScroll)
-        {
-            ScrollToBottom();
-        }
-        break;
-
-    case ECortexStreamEventType::TextContent:
-        // Full assistant message snapshot — replace current text
-        if (CurrentStreamingEntry.IsValid())
-        {
-            CurrentStreamingEntry->Text = Event.Text;
-            if (CurrentStreamingEntry->MessageWidget.IsValid())
-            {
-                CurrentStreamingEntry->MessageWidget->SetText(CurrentStreamingEntry->Text);
-            }
-        }
-        if (Toolbar.IsValid())
-        {
-            Toolbar->SetStatus(TEXT("Streaming..."));
-        }
-        if (bAutoScroll)
-        {
-            ScrollToBottom();
-        }
-        break;
-
-    case ECortexStreamEventType::ToolUse:
-    {
-        TSharedPtr<FCortexChatEntry> ToolEntry = MakeShared<FCortexChatEntry>();
-        ToolEntry->Type = ECortexChatEntryType::ToolCall;
-        ToolEntry->ToolName = Event.ToolName;
-        ToolEntry->ToolCallId = Event.ToolCallId;
-        ToolEntry->ToolInput = Event.ToolInput;
-        ToolEntry->bIsToolComplete = false;
-        ChatEntries.Add(ToolEntry);
-        if (ChatList.IsValid())
-        {
-            ChatList->RequestListRefresh();
-        }
-        if (bAutoScroll)
-        {
-            ScrollToBottom();
-        }
-        break;
+        return;
     }
 
-    case ECortexStreamEventType::ToolResult:
-        for (int32 Index = ChatEntries.Num() - 1; Index >= 0; --Index)
-        {
-            if (ChatEntries[Index]->Type == ECortexChatEntryType::ToolCall && ChatEntries[Index]->ToolCallId == Event.ToolCallId)
-            {
-                ChatEntries[Index]->ToolResult = Event.ToolResultContent;
-                ChatEntries[Index]->bIsToolComplete = true;
-                if (ChatList.IsValid())
-                {
-                    ChatList->RequestListRefresh();
-                }
-                break;
-            }
-        }
-        break;
-
-    case ECortexStreamEventType::Result:
-        if (Toolbar.IsValid())
-        {
-            Toolbar->SetStatus(FString::Printf(TEXT("Done %dms"), Event.DurationMs));
-        }
-        break;
-
-    case ECortexStreamEventType::SystemError:
-        UE_LOG(LogCortexFrontend, Warning, TEXT("CLI system event: %s"), *Event.Text);
-        if (Toolbar.IsValid())
-        {
-            Toolbar->SetStatus(Event.bIsError ? TEXT("System Error") : TEXT("Warning"));
-        }
-        break;
-
-    default:
-        break;
+    RefreshVisibleEntries();
+    if (bAutoScroll)
+    {
+        ScrollToBottom();
     }
 }
 
-void SCortexChatPanel::OnComplete(const FString& FullText, bool bSuccess)
+void SCortexChatPanel::OnTurnComplete(const FCortexTurnResult& Result)
 {
-    const bool bHadEmptyStreamingEntry = CurrentStreamingEntry.IsValid() && CurrentStreamingEntry->Text.IsEmpty();
-
-    if (InputArea.IsValid())
+    TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
+    if (!Session.IsValid())
     {
-        InputArea->SetStreaming(false);
-    }
-    if (Toolbar.IsValid())
-    {
-        Toolbar->SetModeSelectionEnabled(true);
+        return;
     }
 
-    if (bSuccess)
+    if (Result.bIsError)
     {
-        const FString FinalAssistantText = !FullText.IsEmpty() ? FullText : (CurrentStreamingEntry.IsValid() ? CurrentStreamingEntry->Text : FString());
-        ReplaceCurrentStreamingEntry(BuildAssistantEntries(FinalAssistantText));
+        TArray<TSharedPtr<FCortexChatEntry>> ErrorEntries;
+        TSharedPtr<FCortexChatEntry> ErrorEntry = MakeShared<FCortexChatEntry>();
+        ErrorEntry->Type = ECortexChatEntryType::AssistantMessage;
+        ErrorEntry->Text = FString::Printf(TEXT("Error: %s"), *Result.ResultText);
+        ErrorEntries.Add(ErrorEntry);
+        Session->ReplaceStreamingEntry(ErrorEntries);
     }
     else
     {
-        if (bHadEmptyStreamingEntry && CurrentStreamingEntry.IsValid())
-        {
-            ChatEntries.RemoveSingle(CurrentStreamingEntry);
-        }
-        if (!FullText.IsEmpty())
-        {
-            TSharedPtr<FCortexChatEntry> ErrorEntry = MakeShared<FCortexChatEntry>();
-            ErrorEntry->Type = ECortexChatEntryType::AssistantMessage;
-            ErrorEntry->Text = FString::Printf(TEXT("Error: %s"), *FullText);
-            ChatEntries.Add(ErrorEntry);
-        }
-        if (ChatList.IsValid())
-        {
-            ChatList->RequestListRefresh();
-        }
-        if (Toolbar.IsValid())
-        {
-            Toolbar->SetStatus(TEXT("Error"));
-        }
+        Session->ReplaceStreamingEntry(BuildAssistantEntries(Result.ResultText));
     }
 
-    CurrentStreamingEntry.Reset();
+    RefreshVisibleEntries();
+    UpdateStateDrivenUi(Session->GetState());
 
     if (InputArea.IsValid())
     {
@@ -338,6 +187,11 @@ void SCortexChatPanel::OnComplete(const FString& FullText, bool bSuccess)
     {
         ScrollToBottom();
     }
+}
+
+void SCortexChatPanel::OnSessionStateChanged(const FCortexSessionStateChange& Change)
+{
+    UpdateStateDrivenUi(Change.NewState);
 }
 
 TArray<TSharedPtr<FCortexChatEntry>> SCortexChatPanel::BuildAssistantEntries(const FString& FullText) const
@@ -411,25 +265,67 @@ TArray<TSharedPtr<FCortexChatEntry>> SCortexChatPanel::BuildAssistantEntries(con
     return Entries;
 }
 
-void SCortexChatPanel::ReplaceCurrentStreamingEntry(const TArray<TSharedPtr<FCortexChatEntry>>& ReplacementEntries)
+void SCortexChatPanel::RefreshVisibleEntries()
 {
-    if (!CurrentStreamingEntry.IsValid())
-    {
-        return;
-    }
+    MessageWidgetCache.Reset();
 
-    const int32 CurrentIndex = ChatEntries.IndexOfByKey(CurrentStreamingEntry);
-    if (CurrentIndex == INDEX_NONE)
+    if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
     {
-        return;
+        ChatEntries = Session->GetChatEntries();
     }
-
-    ChatEntries.RemoveAt(CurrentIndex);
-    ChatEntries.Insert(ReplacementEntries, CurrentIndex);
+    else
+    {
+        ChatEntries.Reset();
+    }
 
     if (ChatList.IsValid())
     {
         ChatList->RequestListRefresh();
+    }
+}
+
+void SCortexChatPanel::UpdateStateDrivenUi(ECortexSessionState State)
+{
+    if (InputArea.IsValid())
+    {
+        InputArea->SetStreaming(State == ECortexSessionState::Spawning || State == ECortexSessionState::Processing);
+        InputArea->SetInputEnabled(State == ECortexSessionState::Inactive || State == ECortexSessionState::Idle);
+    }
+
+    if (Toolbar.IsValid())
+    {
+        Toolbar->SetModeSelectionEnabled(State == ECortexSessionState::Inactive || State == ECortexSessionState::Idle);
+    }
+
+    FString StatusText;
+    switch (State)
+    {
+    case ECortexSessionState::Inactive:
+        StatusText = TEXT("Ready");
+        break;
+    case ECortexSessionState::Spawning:
+        StatusText = TEXT("Starting...");
+        break;
+    case ECortexSessionState::Idle:
+        StatusText = TEXT("Connected");
+        break;
+    case ECortexSessionState::Processing:
+        StatusText = TEXT("Thinking...");
+        break;
+    case ECortexSessionState::Cancelling:
+        StatusText = TEXT("Cancelling...");
+        break;
+    case ECortexSessionState::Respawning:
+        StatusText = TEXT("Restarting session...");
+        break;
+    case ECortexSessionState::Terminated:
+        StatusText = TEXT("Disconnected");
+        break;
+    }
+
+    if (Toolbar.IsValid())
+    {
+        Toolbar->SetStatus(StatusText);
     }
 }
 
@@ -440,13 +336,10 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatEntry>
     switch (Entry->Type)
     {
     case ECortexChatEntryType::UserMessage:
-    {
-        TSharedPtr<SCortexChatMessage> MessageWidget;
-        Content = SAssignNew(MessageWidget, SCortexChatMessage)
+        Content = SNew(SCortexChatMessage)
             .Message(Entry->Text)
             .IsUser(true);
         break;
-    }
 
     case ECortexChatEntryType::AssistantMessage:
     {
@@ -454,7 +347,7 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatEntry>
         Content = SAssignNew(MessageWidget, SCortexChatMessage)
             .Message(Entry->Text)
             .IsUser(false);
-        Entry->MessageWidget = MessageWidget;
+        MessageWidgetCache.Add(Entry, MessageWidget);
         break;
     }
 
@@ -487,9 +380,4 @@ void SCortexChatPanel::ScrollToBottom()
     {
         ChatList->RequestScrollIntoView(ChatEntries.Last());
     }
-}
-
-FString SCortexChatPanel::GenerateSessionId() const
-{
-    return FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
 }

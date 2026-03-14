@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Process/CortexCliRunner.h"
+#include "Session/CortexSessionTypes.h"
 
 class FCortexFrontendSettings
 {

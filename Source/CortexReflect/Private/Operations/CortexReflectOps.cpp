@@ -154,45 +154,25 @@ bool FCortexReflectOps::IsProjectClass(const UClass* Class)
 		return BP && BP->GetPathName().StartsWith(TEXT("/Game/"));
 	}
 
-	// C++ class: use ModuleRelativePath metadata.
-	// Engine source paths start with Runtime/, Editor/, Developer/, Programs/.
-	// Project source paths are relative to the game module (e.g., "Characters/MyCharacter.h").
-	// Plugins/ is ambiguous — could be engine plugin or project-local plugin.
-	FString ModulePath = Class->GetMetaData(TEXT("ModuleRelativePath"));
-	if (!ModulePath.IsEmpty())
+	// C++ class: check if the module DLL lives under the project directory.
+	// Engine and engine-plugin modules are in the UE install tree; project and
+	// project-plugin modules are in the project directory.
+	// Note: ModuleRelativePath metadata is module-relative (e.g. "Classes/GameFramework/Actor.h"),
+	// not engine-root-relative, so it cannot reliably distinguish engine from project classes.
+	const UPackage* ClassPackage = Class->GetOuterUPackage();
+	if (ClassPackage)
 	{
-		if (ModulePath.StartsWith(TEXT("Runtime/"))
-			|| ModulePath.StartsWith(TEXT("Editor/"))
-			|| ModulePath.StartsWith(TEXT("Developer/"))
-			|| ModulePath.StartsWith(TEXT("Programs/")))
-		{
-			return false;
-		}
-
-		if (ModulePath.StartsWith(TEXT("Plugins/")))
-		{
-			// Distinguish engine plugins from project plugins by checking
-			// if the module DLL is under the project directory.
-			const UPackage* ClassPackage = Class->GetOuterUPackage();
-			if (ClassPackage)
-			{
-				FString ModuleName = FPackageName::GetShortName(ClassPackage->GetFName());
+		const FName ModuleFName = FName(*FPackageName::GetShortName(ClassPackage->GetFName()));
 #if !IS_MONOLITHIC
-				FString ModuleFilename = FModuleManager::Get().GetModuleFilename(FName(*ModuleName));
-				if (!ModuleFilename.IsEmpty())
-				{
-					FPaths::NormalizeFilename(ModuleFilename);
-					FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-					FPaths::NormalizeFilename(ProjectDir);
-					return ModuleFilename.StartsWith(ProjectDir);
-				}
-#endif
-			}
-			return false;
+		if (FModuleManager::Get().IsModuleLoaded(ModuleFName))
+		{
+			FString ModuleFilename = FModuleManager::Get().GetModuleFilename(ModuleFName);
+			FPaths::NormalizeFilename(ModuleFilename);
+			FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+			FPaths::NormalizeFilename(ProjectDir);
+			return ModuleFilename.StartsWith(ProjectDir);
 		}
-
-		// Not an engine prefix and not Plugins/ — project game module class
-		return true;
+#endif
 	}
 
 	return false;

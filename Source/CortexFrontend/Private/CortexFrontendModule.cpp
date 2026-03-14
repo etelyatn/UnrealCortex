@@ -2,6 +2,8 @@
 
 #include "Framework/Docking/TabManager.h"
 #include "IToolMenusModule.h"
+#include "Misc/CoreDelegates.h"
+#include "Session/CortexCliSession.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
 #include "Widgets/SCortexChatPanel.h"
@@ -43,12 +45,17 @@ void FCortexFrontendModule::StartupModule()
                 }))));
         }));
 
+    FCoreDelegates::OnPreExit.AddRaw(this, &FCortexFrontendModule::HandlePreExit);
+
     UE_LOG(LogCortexFrontend, Log, TEXT("CortexFrontend registered tab and menu"));
 }
 
 void FCortexFrontendModule::ShutdownModule()
 {
     UE_LOG(LogCortexFrontend, Log, TEXT("CortexFrontend module shutting down"));
+
+    FCoreDelegates::OnPreExit.RemoveAll(this);
+    ReleaseSessions();
 
     if (IToolMenusModule::IsAvailable())
     {
@@ -61,6 +68,29 @@ void FCortexFrontendModule::ShutdownModule()
     }
 }
 
+TWeakPtr<FCortexCliSession> FCortexFrontendModule::GetOrCreateSession()
+{
+    if (Sessions.Num() > 0 && Sessions[0].IsValid())
+    {
+        return Sessions[0];
+    }
+
+    FCortexSessionConfig Config;
+    Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
+    Config.WorkingDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+
+    const FString McpPath = FPaths::Combine(FPaths::ProjectDir(), TEXT(".mcp.json"));
+    if (FPaths::FileExists(McpPath))
+    {
+        Config.McpConfigPath = FPaths::ConvertRelativePathToFull(McpPath);
+    }
+
+    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(Config);
+    Sessions.Reset();
+    Sessions.Add(Session);
+    return Session;
+}
+
 TSharedRef<SDockTab> FCortexFrontendModule::SpawnChatTab(const FSpawnTabArgs& /*Args*/)
 {
     return SNew(SDockTab)
@@ -68,6 +98,25 @@ TSharedRef<SDockTab> FCortexFrontendModule::SpawnChatTab(const FSpawnTabArgs& /*
         [
             SNew(SCortexChatPanel)
         ];
+}
+
+void FCortexFrontendModule::ReleaseSessions()
+{
+    for (const TSharedPtr<FCortexCliSession>& Session : Sessions)
+    {
+        if (Session.IsValid())
+        {
+            Session->Shutdown();
+        }
+    }
+
+    Sessions.Reset();
+}
+
+void FCortexFrontendModule::HandlePreExit()
+{
+    UE_LOG(LogCortexFrontend, Log, TEXT("PreExit: releasing sessions"));
+    ReleaseSessions();
 }
 
 IMPLEMENT_MODULE(FCortexFrontendModule, CortexFrontend)
