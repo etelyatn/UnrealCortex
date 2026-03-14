@@ -3,6 +3,13 @@
 #include "CoreMinimal.h"
 #include "CortexCommandRouter.h"
 
+enum class ECortexModuleOrigin : uint8
+{
+	Unknown,
+	Project,
+	Engine
+};
+
 class FCortexReflectOps
 {
 public:
@@ -16,6 +23,11 @@ public:
 	static bool WriteReflectCache(
 		const TSharedPtr<FJsonObject>& HierarchyData,
 		const TSharedPtr<FJsonObject>& Params = nullptr
+	);
+	static ECortexModuleOrigin ClassifyNativeModuleFromMetadata(
+		const FString& ModuleName,
+		const FString& ModuleRelativePath,
+		const TMap<FString, ECortexModuleOrigin>& PluginModuleOrigins
 	);
 
 private:

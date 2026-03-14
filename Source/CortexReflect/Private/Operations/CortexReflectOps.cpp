@@ -17,10 +17,55 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Modules/ModuleManager.h"
+#include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/App.h"
 #include "Serialization/JsonSerializer.h"
+
+namespace
+{
+TMap<FString, ECortexModuleOrigin> BuildPluginModuleOrigins()
+{
+	TMap<FString, ECortexModuleOrigin> ModuleOrigins;
+
+	const FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+
+	for (const TSharedRef<IPlugin>& Plugin : IPluginManager::Get().GetDiscoveredPlugins())
+	{
+		ECortexModuleOrigin Origin = ECortexModuleOrigin::Engine;
+		if (Plugin->GetLoadedFrom() == EPluginLoadedFrom::Project)
+		{
+			Origin = ECortexModuleOrigin::Project;
+		}
+		else
+		{
+			FString PluginBaseDir = FPaths::ConvertRelativePathToFull(Plugin->GetBaseDir());
+			FPaths::NormalizeFilename(PluginBaseDir);
+			FString NormalizedProjectDir = ProjectDir;
+			FPaths::NormalizeFilename(NormalizedProjectDir);
+
+			if (PluginBaseDir.StartsWith(NormalizedProjectDir))
+			{
+				Origin = ECortexModuleOrigin::Project;
+			}
+		}
+
+		for (const FModuleDescriptor& Module : Plugin->GetDescriptor().Modules)
+		{
+			ModuleOrigins.FindOrAdd(Module.Name.ToString()) = Origin;
+		}
+	}
+
+	return ModuleOrigins;
+}
+
+const TMap<FString, ECortexModuleOrigin>& GetPluginModuleOrigins()
+{
+	static const TMap<FString, ECortexModuleOrigin> ModuleOrigins = BuildPluginModuleOrigins();
+	return ModuleOrigins;
+}
+}
 
 // Returns the full C++ name of a class (e.g. "AActor" not "Actor").
 // UClass::GetName() strips the A/U prefix; GetPrefixCPP() gives it back.
@@ -192,22 +237,30 @@ bool FCortexReflectOps::IsProjectClass(const UClass* Class)
 			}
 		}
 #endif
+
+		FModuleStatus ModuleStatus;
+		if (FModuleManager::Get().QueryModule(*ModuleName, ModuleStatus) && ModuleStatus.bIsGameModule)
+		{
+			return true;
+		}
 	}
 
 	// Fallback to metadata for modules that do not resolve to a binary path.
 	FString ModulePath = Class->GetMetaData(TEXT("ModuleRelativePath"));
 	if (!ModulePath.IsEmpty())
 	{
-		if (ModuleName.StartsWith(TEXT("Cortex")) || ModuleName.Equals(FApp::GetProjectName(), ESearchCase::IgnoreCase))
+		const ECortexModuleOrigin ModuleOrigin = ClassifyNativeModuleFromMetadata(
+			ModuleName,
+			ModulePath,
+			GetPluginModuleOrigins()
+		);
+
+		if (ModuleOrigin == ECortexModuleOrigin::Project)
 		{
 			return true;
 		}
 
-		if (ModulePath.StartsWith(TEXT("Runtime/"))
-			|| ModulePath.StartsWith(TEXT("Editor/"))
-			|| ModulePath.StartsWith(TEXT("Developer/"))
-			|| ModulePath.StartsWith(TEXT("Programs/"))
-			|| ModulePath.StartsWith(TEXT("Plugins/")))
+		if (ModuleOrigin == ECortexModuleOrigin::Engine)
 		{
 			return false;
 		}
@@ -216,6 +269,34 @@ bool FCortexReflectOps::IsProjectClass(const UClass* Class)
 	}
 
 	return false;
+}
+
+ECortexModuleOrigin FCortexReflectOps::ClassifyNativeModuleFromMetadata(
+	const FString& ModuleName,
+	const FString& ModuleRelativePath,
+	const TMap<FString, ECortexModuleOrigin>& PluginModuleOrigins
+)
+{
+	if (const ECortexModuleOrigin* PluginOrigin = PluginModuleOrigins.Find(ModuleName))
+	{
+		return *PluginOrigin;
+	}
+
+	if (ModuleName.Equals(FApp::GetProjectName(), ESearchCase::IgnoreCase))
+	{
+		return ECortexModuleOrigin::Project;
+	}
+
+	if (ModuleRelativePath.StartsWith(TEXT("Runtime/"))
+		|| ModuleRelativePath.StartsWith(TEXT("Editor/"))
+		|| ModuleRelativePath.StartsWith(TEXT("Developer/"))
+		|| ModuleRelativePath.StartsWith(TEXT("Programs/"))
+		|| ModuleRelativePath.StartsWith(TEXT("Plugins/")))
+	{
+		return ECortexModuleOrigin::Engine;
+	}
+
+	return ECortexModuleOrigin::Unknown;
 }
 
 TArray<FString> FCortexReflectOps::GetPropertyFlags(const FProperty* Property)

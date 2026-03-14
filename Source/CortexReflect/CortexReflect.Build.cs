@@ -17,6 +17,7 @@ public class CortexReflect : ModuleRules
 			"CoreUObject",
 			"Engine",
 			"UnrealEd",
+			"Projects",
 			"AssetRegistry",
 			"Json",
 			"BlueprintGraph",

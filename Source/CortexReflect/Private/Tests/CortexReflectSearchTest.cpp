@@ -1,6 +1,42 @@
 #include "Misc/AutomationTest.h"
 #include "CortexReflectCommandHandler.h"
+#include "Operations/CortexReflectOps.h"
 #include "CortexTypes.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectMetadataProjectPluginModuleClassificationTest,
+	"Cortex.Reflect.Metadata.ProjectPluginModuleClassification",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectMetadataProjectPluginModuleClassificationTest::RunTest(const FString& Parameters)
+{
+	TMap<FString, ECortexModuleOrigin> PluginModuleOrigins;
+	PluginModuleOrigins.Add(TEXT("MyGameplayTools"), ECortexModuleOrigin::Project);
+	PluginModuleOrigins.Add(TEXT("Paper2D"), ECortexModuleOrigin::Engine);
+
+	TestEqual(
+		TEXT("Project plugin modules should classify from descriptor ownership, not naming"),
+		FCortexReflectOps::ClassifyNativeModuleFromMetadata(
+			TEXT("MyGameplayTools"),
+			TEXT("Plugins/MyGameplayTools/Public/MyGameplayToolsSubsystem.h"),
+			PluginModuleOrigins
+		),
+		ECortexModuleOrigin::Project
+	);
+
+	TestEqual(
+		TEXT("Engine plugin modules should remain non-project"),
+		FCortexReflectOps::ClassifyNativeModuleFromMetadata(
+			TEXT("Paper2D"),
+			TEXT("Plugins/2D/Paper2D/Source/Paper2D/Classes/PaperCharacter.h"),
+			PluginModuleOrigins
+		),
+		ECortexModuleOrigin::Engine
+	);
+
+	return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexReflectSearchBasicTest,
