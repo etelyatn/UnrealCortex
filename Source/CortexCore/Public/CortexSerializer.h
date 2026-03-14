@@ -28,6 +28,11 @@ public:
 	 *  Outer is the owning UObject for instanced sub-object creation. */
 	static bool JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, const FProperty* Property, void* ValuePtr, UObject* Outer, TArray<FString>& OutWarnings);
 
+	/** Returns true when all fields of Struct are numeric scalars and positional
+	 *  array assignment is semantically safe. FColor is always false.
+	 *  Result is cached per UScriptStruct*. */
+	static bool IsPositionalNumericStruct(const UScriptStruct* Struct);
+
 	/** Get schema for a UStruct (field names, types, enum values, nested schemas) */
 	static TSharedPtr<FJsonObject> GetStructSchema(const UStruct* StructType, bool bIncludeInherited = true);
 
@@ -43,4 +48,7 @@ private:
 
 	/** Cache for TInstancedStruct subtype discovery */
 	static TMap<const UScriptStruct*, TArray<UScriptStruct*>> SubtypeCache;
+
+	/** Cache for IsPositionalNumericStruct results */
+	static TMap<const UScriptStruct*, bool> PositionalNumericStructCache;
 };
