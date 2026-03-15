@@ -30,6 +30,22 @@ void FCortexFrontendSettings::SetSkipPermissions(bool bSkip)
     Save();
 }
 
+void FCortexFrontendSettings::SetSelectedModel(const FString& Model)
+{
+    SelectedModel = Model;
+    Save();
+}
+
+TArray<FString> FCortexFrontendSettings::GetAvailableModels() const
+{
+    if (bHasCustomModels)
+    {
+        return CustomModels;
+    }
+    // Default list — updating the plugin binary updates these
+    return {TEXT("Default"), TEXT("claude-sonnet-4-6"), TEXT("claude-opus-4-6"), TEXT("claude-haiku-4-5-20251001")};
+}
+
 void FCortexFrontendSettings::Load()
 {
     const FString FilePath = GetSettingsFilePath();
@@ -68,6 +84,27 @@ void FCortexFrontendSettings::Load()
     {
         bSkipPermissions = bStoredSkipPermissions;
     }
+
+    if (JsonObject->TryGetStringField(TEXT("selected_model"), SelectedModel) == false)
+    {
+        SelectedModel = TEXT("Default");
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* ModelsArray = nullptr;
+    if (JsonObject->TryGetArrayField(TEXT("available_models"), ModelsArray))
+    {
+        CustomModels.Reset();
+        for (const TSharedPtr<FJsonValue>& Value : *ModelsArray)
+        {
+            FString ModelStr;
+            if (Value->TryGetString(ModelStr))
+            {
+                CustomModels.Add(ModelStr);
+            }
+        }
+        // Only use custom list if it's non-empty; empty array falls back to defaults
+        bHasCustomModels = CustomModels.Num() > 0;
+    }
 }
 
 void FCortexFrontendSettings::Save()
@@ -92,6 +129,17 @@ void FCortexFrontendSettings::Save()
     TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
     JsonObject->SetStringField(TEXT("access_mode"), AccessModeString);
     JsonObject->SetBoolField(TEXT("skip_permissions"), bSkipPermissions);
+    JsonObject->SetStringField(TEXT("selected_model"), SelectedModel);
+
+    if (bHasCustomModels)
+    {
+        TArray<TSharedPtr<FJsonValue>> ModelsArray;
+        for (const FString& Model : CustomModels)
+        {
+            ModelsArray.Add(MakeShareable(new FJsonValueString(Model)));
+        }
+        JsonObject->SetArrayField(TEXT("available_models"), ModelsArray);
+    }
 
     FString JsonString;
     TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);

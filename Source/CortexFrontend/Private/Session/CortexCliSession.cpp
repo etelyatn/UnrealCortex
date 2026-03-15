@@ -345,6 +345,12 @@ FString FCortexCliSession::BuildLaunchCommandLine(bool bResumeSession, ECortexAc
 		CommandLine += FString::Printf(TEXT("--session-id \"%s\" "), *Config.SessionId);
 	}
 
+	const FString& SelectedModel = FCortexFrontendSettings::Get().GetSelectedModel();
+	if (!SelectedModel.IsEmpty() && SelectedModel != TEXT("Default"))
+	{
+		CommandLine += FString::Printf(TEXT("--model \"%s\" "), *SelectedModel);
+	}
+
 	const FString AllowedTools = BuildAllowedToolsArg(AccessMode);
 	if (!AllowedTools.IsEmpty())
 	{

@@ -25,6 +25,10 @@ public:
     bool GetSkipPermissions() const { return bSkipPermissions; }
     void SetSkipPermissions(bool bSkip);
 
+    FString GetSelectedModel() const { return SelectedModel; }
+    void SetSelectedModel(const FString& Model);
+    TArray<FString> GetAvailableModels() const;
+
     void Load();
     void Save();
 
@@ -34,4 +38,7 @@ private:
 
     ECortexAccessMode AccessMode = ECortexAccessMode::ReadOnly;
     bool bSkipPermissions = true;
+    FString SelectedModel = TEXT("Default");
+    bool bHasCustomModels = false;
+    TArray<FString> CustomModels;
 };

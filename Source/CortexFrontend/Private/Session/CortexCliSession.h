@@ -76,6 +76,7 @@ private:
 	friend class FCortexCliSessionToolCallTurnIndexTest;
 	friend class FCortexCliSessionConnectTest;
 	friend class FCortexCliSessionPendingPromptDrainedAfterSpawnTest;
+	friend class FCortexCliSessionModelFlagTest;
 
 	FString BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const;
 	FString BuildAllowedToolsArg(ECortexAccessMode AccessMode) const;

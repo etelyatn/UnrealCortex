@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "CortexFrontendModule.h"
+#include "CortexFrontendSettings.h"
 #include "Modules/ModuleManager.h"
 #include "Session/CortexCliSession.h"
 
@@ -376,5 +377,33 @@ bool FCortexCliSessionContextTokensIncludesCacheTest::RunTest(const FString& Par
     // Context should be total: input + cache_read + cache_creation = 50050
     TestEqual(TEXT("ConversationContextTokens should include all input sources"),
         Session.GetConversationContextTokens(), static_cast<int64>(50050));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionModelFlagTest,
+    "Cortex.Frontend.Session.ModelFlag",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionModelFlagTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-model-flag");
+    FCortexCliSession Session(Config);
+
+    // When model is "Default", no --model flag
+    FCortexFrontendSettings::Get().SetSelectedModel(TEXT("Default"));
+    FString CmdLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::FullAccess);
+    TestFalse(TEXT("Default should not include --model flag"),
+        CmdLine.Contains(TEXT("--model")));
+
+    // When model is explicit, --model flag present
+    FCortexFrontendSettings::Get().SetSelectedModel(TEXT("claude-opus-4-6"));
+    CmdLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::FullAccess);
+    TestTrue(TEXT("Explicit model should include --model flag"),
+        CmdLine.Contains(TEXT("--model \"claude-opus-4-6\"")));
+
+    // Reset to default
+    FCortexFrontendSettings::Get().SetSelectedModel(TEXT("Default"));
     return true;
 }
