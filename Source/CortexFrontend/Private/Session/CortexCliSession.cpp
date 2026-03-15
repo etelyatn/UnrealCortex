@@ -171,18 +171,7 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 	if (Event.Type == ECortexStreamEventType::SessionInit && !Event.Model.IsEmpty())
 	{
 		ModelId = Event.Model;
-		if (ModelId.Contains(TEXT("claude")))
-		{
-			Provider = TEXT("Claude Code");
-		}
-		else if (ModelId.Contains(TEXT("gpt")) || ModelId.Contains(TEXT("o1")) || ModelId.Contains(TEXT("codex")))
-		{
-			Provider = TEXT("Codex");
-		}
-		else
-		{
-			Provider = TEXT("Unknown");
-		}
+		Provider = TEXT("Claude Code");
 	}
 
 	const ECortexSessionState CurrentState = State.load();
