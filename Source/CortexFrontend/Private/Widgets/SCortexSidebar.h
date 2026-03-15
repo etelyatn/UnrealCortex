@@ -41,4 +41,7 @@ private:
 	TArray<TSharedPtr<FString>> AccessModeOptions;
 	TSharedPtr<SComboBox<TSharedPtr<FString>>> AccessModeComboBox;
 	TSharedPtr<FString> SelectedAccessModeOption;
+	TArray<TSharedPtr<FString>> EffortOptions;
+	TSharedPtr<SComboBox<TSharedPtr<FString>>> EffortComboBox;
+	TSharedPtr<FString> SelectedEffortOption;
 };
