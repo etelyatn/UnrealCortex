@@ -4,6 +4,7 @@
 #include "Session/CortexCliSession.h"
 #include "Session/CortexSessionTypes.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/SCompoundWidget.h"
 
 DECLARE_DELEGATE(FOnCortexSidebarToggle);
@@ -34,4 +35,7 @@ private:
 	TSharedPtr<STextBlock> ProviderText;
 	TSharedPtr<STextBlock> ModelText;
 	TSharedPtr<STextBlock> StateText;
+	TArray<TSharedPtr<FString>> ModelOptions;
+	TSharedPtr<SComboBox<TSharedPtr<FString>>> ModelComboBox;
+	TSharedPtr<FString> SelectedModelOption;
 };

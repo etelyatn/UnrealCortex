@@ -17,6 +17,23 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 	SessionWeak = InArgs._Session;
 	OnCollapse = InArgs._OnCollapse;
 
+	// Populate model dropdown options
+	const TArray<FString> Models = FCortexFrontendSettings::Get().GetAvailableModels();
+	const FString& Selected = FCortexFrontendSettings::Get().GetSelectedModel();
+	for (const FString& Model : Models)
+	{
+		TSharedPtr<FString> Option = MakeShared<FString>(Model);
+		ModelOptions.Add(Option);
+		if (Model == Selected)
+		{
+			SelectedModelOption = Option;
+		}
+	}
+	if (!SelectedModelOption.IsValid() && ModelOptions.Num() > 0)
+	{
+		SelectedModelOption = ModelOptions[0];
+	}
+
 	// Subscribe to session events using weak lambda (SWidget doesn't support AddSP directly)
 	if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
 	{
@@ -90,8 +107,42 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
 					[
+						SAssignNew(ModelComboBox, SComboBox<TSharedPtr<FString>>)
+						.OptionsSource(&ModelOptions)
+						.OnSelectionChanged_Lambda([this](TSharedPtr<FString> Selection, ESelectInfo::Type)
+						{
+							if (Selection.IsValid())
+							{
+								SelectedModelOption = Selection;
+								FCortexFrontendSettings::Get().SetSelectedModel(*Selection);
+							}
+						})
+						.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+						{
+							return SNew(STextBlock).Text(FText::FromString(*Item));
+						})
+						[
+							SNew(STextBlock)
+							.Text_Lambda([this]() -> FText
+							{
+								return SelectedModelOption.IsValid()
+									? FText::FromString(*SelectedModelOption)
+									: FText::FromString(TEXT("Default"));
+							})
+						]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f)
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Applied on new chat session")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("666666")))))
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 8.0f, 2.0f)
+					[
 						SAssignNew(ModelText, STextBlock)
-						.Text(FText::FromString(TEXT("\u2014")))
+						.Text(FText::FromString(TEXT("Active: \u2014")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
 						.ColorAndOpacity(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888"))))
 					]
 				]
@@ -210,6 +261,9 @@ void SCortexSidebar::UpdateModelDisplay()
 	}
 	if (ModelText.IsValid())
 	{
-		ModelText->SetText(FText::FromString(Model.IsEmpty() ? TEXT("\u2014") : Model));
+		const FString ActiveLabel = Model.IsEmpty()
+			? TEXT("Active: \u2014")
+			: FString::Printf(TEXT("Active: %s"), *Model);
+		ModelText->SetText(FText::FromString(ActiveLabel));
 	}
 }
