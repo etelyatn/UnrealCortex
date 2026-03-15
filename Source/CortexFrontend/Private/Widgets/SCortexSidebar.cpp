@@ -4,6 +4,8 @@
 #include "CortexFrontendSettings.h"
 #include "Session/CortexCliSession.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SSegmentedControl.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/Layout/SBorder.h"
@@ -309,6 +311,72 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 						.Text(FText::FromString(TEXT("Active: \u2014")))
 						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
 						.ColorAndOpacity(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888"))))
+					]
+				]
+			]
+			// Session section
+			+ SScrollBox::Slot()
+			[
+				SNew(SExpandableArea)
+				.AreaTitle(FText::FromString(TEXT("Session")))
+				.InitiallyCollapsed(false)
+				.BodyContent()
+				[
+					SNew(SVerticalBox)
+					// Workflow mode label + toggle
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 8.0f, 1.0f)
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Workflow")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 4.0f)
+					[
+						SAssignNew(WorkflowToggle, SSegmentedControl<ECortexWorkflowMode>)
+						.Value(FCortexFrontendSettings::Get().GetWorkflowMode())
+						.OnValueChanged_Lambda([](ECortexWorkflowMode NewMode)
+						{
+							FCortexFrontendSettings::Get().SetWorkflowMode(NewMode);
+						})
+						.ToolTipText(FText::FromString(TEXT("Direct = act immediately, no planning workflows. Skills like /commit and /review-pr are unavailable. Thorough = full brainstorming, spec review, and planning with all skills.")))
+						+ SSegmentedControl<ECortexWorkflowMode>::Slot(ECortexWorkflowMode::Direct)
+						.Text(FText::FromString(TEXT("Direct")))
+						+ SSegmentedControl<ECortexWorkflowMode>::Slot(ECortexWorkflowMode::Thorough)
+						.Text(FText::FromString(TEXT("Thorough")))
+					]
+					// Project context checkbox
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 8.0f, 2.0f)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+						[
+							SAssignNew(ProjectContextCheckbox, SCheckBox)
+							.IsChecked_Lambda([]() -> ECheckBoxState
+							{
+								return FCortexFrontendSettings::Get().GetProjectContext()
+									? ECheckBoxState::Checked
+									: ECheckBoxState::Unchecked;
+							})
+							.OnCheckStateChanged_Lambda([](ECheckBoxState NewState)
+							{
+								FCortexFrontendSettings::Get().SetProjectContext(
+									NewState == ECheckBoxState::Checked);
+							})
+							.ToolTipText(FText::FromString(TEXT("Include project instructions (CLAUDE.md), settings, and tool permissions. Turning off may require re-approving MCP tools.")))
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Project Context")))
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+							.ToolTipText(FText::FromString(TEXT("Include project instructions (CLAUDE.md), settings, and tool permissions. Turning off may require re-approving MCP tools.")))
+						]
 					]
 				]
 			]

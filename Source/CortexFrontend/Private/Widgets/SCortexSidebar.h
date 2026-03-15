@@ -4,7 +4,9 @@
 #include "Session/CortexCliSession.h"
 #include "Session/CortexSessionTypes.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SSegmentedControl.h"
 #include "Widgets/SCompoundWidget.h"
 
 DECLARE_DELEGATE(FOnCortexSidebarToggle);
@@ -44,4 +46,6 @@ private:
 	TArray<TSharedPtr<FString>> EffortOptions;
 	TSharedPtr<SComboBox<TSharedPtr<FString>>> EffortComboBox;
 	TSharedPtr<FString> SelectedEffortOption;
+	TSharedPtr<SSegmentedControl<ECortexWorkflowMode>> WorkflowToggle;
+	TSharedPtr<SCheckBox> ProjectContextCheckbox;
 };
