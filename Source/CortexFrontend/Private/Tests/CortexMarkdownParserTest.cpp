@@ -92,3 +92,20 @@ bool FCortexMarkdownParserEscapingTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Should not have literal <int32>"), Result.Contains(TEXT("<int32>")));
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexMarkdownParserUnderscoreIdentifierTest,
+	"Cortex.Frontend.MarkdownParser.UnderscoreIdentifier",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexMarkdownParserUnderscoreIdentifierTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	// Identifiers with underscores must NOT be treated as italic
+	const FString Result = CortexMarkdownParser::ToRichText(TEXT("Use BP_SimpleActor_Component in the level"));
+
+	TestFalse(TEXT("Should not contain <Italic> tag"),
+		Result.Contains(TEXT("<Italic>")));
+	TestTrue(TEXT("Should preserve BP_SimpleActor_Component intact"),
+		Result.Contains(TEXT("BP_SimpleActor_Component")));
+	return true;
+}

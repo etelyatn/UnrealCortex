@@ -208,17 +208,17 @@ FString CortexMarkdownParser::ToRichText(const FString& InlineMarkdown)
 		Result = Out;
 	}
 
-	// Italic: *text* or _text_ → <Italic>text</>
+	// Italic: *text* → <Italic>text</>
+	// Note: _text_ deliberately NOT supported — underscores are ubiquitous in
+	// UE identifiers (BP_SimpleActor, FVector_NetQuantize) and would break them.
 	{
 		FString Out;
 		int32 i = 0;
 		while (i < Result.Len())
 		{
-			if (Result[i] == TEXT('*') || Result[i] == TEXT('_'))
+			if (Result[i] == TEXT('*'))
 			{
-				const TCHAR Marker = Result[i];
-				FString MarkerStr;
-				MarkerStr.AppendChar(Marker);
+				FString MarkerStr(TEXT("*"));
 				int32 End = Result.Find(MarkerStr, ESearchCase::CaseSensitive, ESearchDir::FromStart, i + 1);
 				if (End != INDEX_NONE && End > i + 1)
 				{
