@@ -55,7 +55,7 @@ class TestBatchCommandGenerationMigrated:
         )
         assert len(commands) == 1
         assert commands[0]["command"] == "level.spawn_actor"
-        assert commands[0]["params"]["class"] == "PointLight"
+        assert commands[0]["params"]["class_name"] == "PointLight"
 
     def test_spawn_with_folder_and_tags(self):
         commands, _, _ = _build_level_batch_commands(

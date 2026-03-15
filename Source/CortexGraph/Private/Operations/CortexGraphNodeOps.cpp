@@ -1179,7 +1179,7 @@ FCortexCommandResult FCortexGraphNodeOps::AutoLayout(const TSharedPtr<FJsonObjec
 
 	if (FCortexCommandRouter::IsInBatch())
 	{
-		FString BPKey = FString::Printf(TEXT("bp.modified.%s"), *Blueprint->GetPathName());
+		FString BPKey = FString::Printf(TEXT("blueprint.modified.%s"), *Blueprint->GetPathName());
 		FCortexBatchScope::AddCleanupAction(BPKey,
 			[WeakBP = TWeakObjectPtr<UBlueprint>(Blueprint)]()
 			{

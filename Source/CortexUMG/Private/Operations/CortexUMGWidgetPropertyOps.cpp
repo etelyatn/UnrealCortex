@@ -360,21 +360,22 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetBrush(const TSharedPtr<FJso
     bool bApplied = false;
     if (UButton* Button = Cast<UButton>(Widget))
     {
+        const FString ButtonTarget = Target.IsEmpty() ? TEXT("normal") : Target;
         FButtonStyle Style = Button->GetStyle();
         FSlateBrush* BrushPtr = nullptr;
-        if (Target == TEXT("normal"))
+        if (ButtonTarget == TEXT("normal"))
         {
             BrushPtr = &Style.Normal;
         }
-        else if (Target == TEXT("hovered"))
+        else if (ButtonTarget == TEXT("hovered"))
         {
             BrushPtr = &Style.Hovered;
         }
-        else if (Target == TEXT("pressed"))
+        else if (ButtonTarget == TEXT("pressed"))
         {
             BrushPtr = &Style.Pressed;
         }
-        else if (Target == TEXT("disabled"))
+        else if (ButtonTarget == TEXT("disabled"))
         {
             BrushPtr = &Style.Disabled;
         }

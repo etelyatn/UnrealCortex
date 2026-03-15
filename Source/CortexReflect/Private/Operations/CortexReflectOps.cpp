@@ -16,9 +16,56 @@
 #include "K2Node_SpawnActorFromClass.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "Modules/ModuleManager.h"
+#include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/App.h"
 #include "Serialization/JsonSerializer.h"
+
+namespace
+{
+TMap<FString, ECortexModuleOrigin> BuildPluginModuleOrigins()
+{
+	TMap<FString, ECortexModuleOrigin> ModuleOrigins;
+
+	const FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+
+	for (const TSharedRef<IPlugin>& Plugin : IPluginManager::Get().GetDiscoveredPlugins())
+	{
+		ECortexModuleOrigin Origin = ECortexModuleOrigin::Engine;
+		if (Plugin->GetLoadedFrom() == EPluginLoadedFrom::Project)
+		{
+			Origin = ECortexModuleOrigin::Project;
+		}
+		else
+		{
+			FString PluginBaseDir = FPaths::ConvertRelativePathToFull(Plugin->GetBaseDir());
+			FPaths::NormalizeFilename(PluginBaseDir);
+			FString NormalizedProjectDir = ProjectDir;
+			FPaths::NormalizeFilename(NormalizedProjectDir);
+
+			if (PluginBaseDir.StartsWith(NormalizedProjectDir))
+			{
+				Origin = ECortexModuleOrigin::Project;
+			}
+		}
+
+		for (const FModuleDescriptor& Module : Plugin->GetDescriptor().Modules)
+		{
+			ModuleOrigins.FindOrAdd(Module.Name.ToString()) = Origin;
+		}
+	}
+
+	return ModuleOrigins;
+}
+
+const TMap<FString, ECortexModuleOrigin>& GetPluginModuleOrigins()
+{
+	static const TMap<FString, ECortexModuleOrigin> ModuleOrigins = BuildPluginModuleOrigins();
+	return ModuleOrigins;
+}
+}
 
 // Returns the full C++ name of a class (e.g. "AActor" not "Actor").
 // UClass::GetName() strips the A/U prefix; GetPrefixCPP() gives it back.
@@ -154,28 +201,102 @@ bool FCortexReflectOps::IsProjectClass(const UClass* Class)
 		return BP && BP->GetPathName().StartsWith(TEXT("/Game/"));
 	}
 
-	// C++ class: check if the module DLL lives under the project directory.
-	// Engine and engine-plugin modules are in the UE install tree; project and
-	// project-plugin modules are in the project directory.
-	// Note: ModuleRelativePath metadata is module-relative (e.g. "Classes/GameFramework/Actor.h"),
-	// not engine-root-relative, so it cannot reliably distinguish engine from project classes.
+	// C++ class: resolve the owning module binary first. This distinguishes
+	// engine modules from project modules and project-local plugins reliably.
 	const UPackage* ClassPackage = Class->GetOuterUPackage();
+	FString ModuleName;
 	if (ClassPackage)
 	{
-		const FName ModuleFName = FName(*FPackageName::GetShortName(ClassPackage->GetFName()));
-#if !IS_MONOLITHIC
-		if (FModuleManager::Get().IsModuleLoaded(ModuleFName))
+		ModuleName = ClassPackage->GetName();
+		static const FString ScriptPrefix(TEXT("/Script/"));
+		if (ModuleName.StartsWith(ScriptPrefix))
 		{
-			FString ModuleFilename = FModuleManager::Get().GetModuleFilename(ModuleFName);
-			FPaths::NormalizeFilename(ModuleFilename);
-			FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-			FPaths::NormalizeFilename(ProjectDir);
-			return ModuleFilename.StartsWith(ProjectDir);
+			ModuleName.RightChopInline(ScriptPrefix.Len(), EAllowShrinking::No);
+		}
+#if !IS_MONOLITHIC
+		FString ModuleFilename;
+		if (FModuleManager::Get().ModuleExists(*ModuleName, &ModuleFilename))
+		{
+			if (!ModuleFilename.IsEmpty())
+			{
+				FPaths::NormalizeFilename(ModuleFilename);
+
+				FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+				FPaths::NormalizeFilename(ProjectDir);
+				if (ModuleFilename.StartsWith(ProjectDir))
+				{
+					return true;
+				}
+
+				FString EngineDir = FPaths::ConvertRelativePathToFull(FPaths::EngineDir());
+				FPaths::NormalizeFilename(EngineDir);
+				if (ModuleFilename.StartsWith(EngineDir))
+				{
+					return false;
+				}
+			}
 		}
 #endif
+
+		FModuleStatus ModuleStatus;
+		if (FModuleManager::Get().QueryModule(*ModuleName, ModuleStatus) && ModuleStatus.bIsGameModule)
+		{
+			return true;
+		}
+	}
+
+	// Fallback to metadata for modules that do not resolve to a binary path.
+	FString ModulePath = Class->GetMetaData(TEXT("ModuleRelativePath"));
+	if (!ModulePath.IsEmpty())
+	{
+		const ECortexModuleOrigin ModuleOrigin = ClassifyNativeModuleFromMetadata(
+			ModuleName,
+			ModulePath,
+			GetPluginModuleOrigins()
+		);
+
+		if (ModuleOrigin == ECortexModuleOrigin::Project)
+		{
+			return true;
+		}
+
+		if (ModuleOrigin == ECortexModuleOrigin::Engine)
+		{
+			return false;
+		}
+
+		return false;
 	}
 
 	return false;
+}
+
+ECortexModuleOrigin FCortexReflectOps::ClassifyNativeModuleFromMetadata(
+	const FString& ModuleName,
+	const FString& ModuleRelativePath,
+	const TMap<FString, ECortexModuleOrigin>& PluginModuleOrigins
+)
+{
+	if (const ECortexModuleOrigin* PluginOrigin = PluginModuleOrigins.Find(ModuleName))
+	{
+		return *PluginOrigin;
+	}
+
+	if (ModuleName.Equals(FApp::GetProjectName(), ESearchCase::IgnoreCase))
+	{
+		return ECortexModuleOrigin::Project;
+	}
+
+	if (ModuleRelativePath.StartsWith(TEXT("Runtime/"))
+		|| ModuleRelativePath.StartsWith(TEXT("Editor/"))
+		|| ModuleRelativePath.StartsWith(TEXT("Developer/"))
+		|| ModuleRelativePath.StartsWith(TEXT("Programs/"))
+		|| ModuleRelativePath.StartsWith(TEXT("Plugins/")))
+	{
+		return ECortexModuleOrigin::Engine;
+	}
+
+	return ECortexModuleOrigin::Unknown;
 }
 
 TArray<FString> FCortexReflectOps::GetPropertyFlags(const FProperty* Property)

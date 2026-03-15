@@ -12,10 +12,10 @@ sys.path.insert(0, str(tools_dir))
 from qa.actions import register_qa_action_tools
 from qa.assertions import register_qa_assertion_tools
 from qa.composites import register_qa_composite_tools
-from qa.detector import detect_structural_issues
-from qa.reporter import write_report_bundle
 from qa.setup import register_qa_setup_tools
 from qa.world import register_qa_world_tools
+from cortex_mcp.qa.detector import detect_structural_issues
+from cortex_mcp.qa.reporter import write_report_bundle
 
 
 class MockMCP:

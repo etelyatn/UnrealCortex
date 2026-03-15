@@ -152,34 +152,104 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
 TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() const
 {
     return {
-        { TEXT("create_datatable"), TEXT("Create a new DataTable asset") },
-        { TEXT("list_datatables"), TEXT("List all DataTables") },
-        { TEXT("get_datatable_schema"), TEXT("Get row struct schema") },
-        { TEXT("query_datatable"), TEXT("Query rows with filtering") },
-        { TEXT("get_datatable_row"), TEXT("Get single row by name") },
-        { TEXT("get_struct_schema"), TEXT("Get schema for any UStruct") },
-        { TEXT("add_datatable_row"), TEXT("Add new row") },
-        { TEXT("update_datatable_row"), TEXT("Update existing row") },
-        { TEXT("delete_datatable_row"), TEXT("Delete row") },
-        { TEXT("import_datatable_json"), TEXT("Bulk import rows") },
-        { TEXT("search_datatable_content"), TEXT("Full-text search in tables") },
-        { TEXT("get_data_catalog"), TEXT("Discovery catalog of all data") },
-        { TEXT("resolve_tags"), TEXT("Look up rows by GameplayTag") },
-        { TEXT("list_gameplay_tags"), TEXT("List GameplayTags by prefix") },
-        { TEXT("validate_gameplay_tag"), TEXT("Check if tag is registered") },
-        { TEXT("register_gameplay_tag"), TEXT("Register single tag") },
-        { TEXT("register_gameplay_tags"), TEXT("Batch register tags") },
-        { TEXT("list_data_assets"), TEXT("List DataAssets") },
-        { TEXT("get_data_asset"), TEXT("Get DataAsset properties") },
-        { TEXT("update_data_asset"), TEXT("Update DataAsset properties") },
-        { TEXT("create_data_asset"), TEXT("Create new DataAsset") },
-        { TEXT("delete_data_asset"), TEXT("Delete DataAsset") },
-        { TEXT("list_string_tables"), TEXT("List StringTables") },
-        { TEXT("get_translations"), TEXT("Get StringTable entries") },
-        { TEXT("set_translation"), TEXT("Set StringTable entry") },
-        { TEXT("search_assets"), TEXT("Asset Registry search") },
-        { TEXT("list_curve_tables"), TEXT("List CurveTables") },
-        { TEXT("get_curve_table"), TEXT("Get curve rows") },
-        { TEXT("update_curve_table_row"), TEXT("Update curve row") },
+        FCortexCommandInfo{ TEXT("create_datatable"), TEXT("Create a new DataTable asset") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))
+            .Required(TEXT("row_struct"), TEXT("string"), TEXT("Row struct type name")),
+        FCortexCommandInfo{ TEXT("list_datatables"), TEXT("List all DataTables") }
+            .Optional(TEXT("path_filter"), TEXT("string"), TEXT("Optional asset path prefix filter")),
+        FCortexCommandInfo{ TEXT("get_datatable_schema"), TEXT("Get row struct schema") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable asset path"))
+            .Optional(TEXT("include_inherited"), TEXT("boolean"), TEXT("Include inherited struct fields")),
+        FCortexCommandInfo{ TEXT("query_datatable"), TEXT("Query rows with filtering") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable asset path"))
+            .Optional(TEXT("row_name_pattern"), TEXT("string"), TEXT("Wildcard row-name filter"))
+            .Optional(TEXT("row_names"), TEXT("array"), TEXT("Exact row names to fetch"))
+            .Optional(TEXT("fields"), TEXT("array"), TEXT("Subset of fields to serialize"))
+            .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum rows to return"))
+            .Optional(TEXT("offset"), TEXT("number"), TEXT("Pagination offset")),
+        FCortexCommandInfo{ TEXT("get_datatable_row"), TEXT("Get single row by name") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable asset path"))
+            .Required(TEXT("row_name"), TEXT("string"), TEXT("Row identifier")),
+        FCortexCommandInfo{ TEXT("get_struct_schema"), TEXT("Get schema for any UStruct") }
+            .Required(TEXT("struct_name"), TEXT("string"), TEXT("Struct type name"))
+            .Optional(TEXT("include_subtypes"), TEXT("boolean"), TEXT("Include known instanced-struct subtypes")),
+        FCortexCommandInfo{ TEXT("add_datatable_row"), TEXT("Add new row") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))
+            .Required(TEXT("row_name"), TEXT("string"), TEXT("New row identifier"))
+            .Required(TEXT("row_data"), TEXT("object"), TEXT("Row payload to insert")),
+        FCortexCommandInfo{ TEXT("update_datatable_row"), TEXT("Update existing row") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))
+            .Required(TEXT("row_name"), TEXT("string"), TEXT("Existing row identifier"))
+            .Required(TEXT("row_data"), TEXT("object"), TEXT("Partial row payload to merge"))
+            .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview changes without writing")),
+        FCortexCommandInfo{ TEXT("delete_datatable_row"), TEXT("Delete row") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))
+            .Required(TEXT("row_name"), TEXT("string"), TEXT("Row identifier to delete")),
+        FCortexCommandInfo{ TEXT("import_datatable_json"), TEXT("Bulk import rows") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))
+            .Required(TEXT("rows"), TEXT("array"), TEXT("Rows to import"))
+            .Optional(TEXT("mode"), TEXT("string"), TEXT("Import mode"))
+            .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Validate without writing")),
+        FCortexCommandInfo{ TEXT("search_datatable_content"), TEXT("Full-text search in tables") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable asset path"))
+            .Required(TEXT("search_text"), TEXT("string"), TEXT("Case-insensitive search text"))
+            .Optional(TEXT("fields"), TEXT("array"), TEXT("Fields to search"))
+            .Optional(TEXT("preview_fields"), TEXT("array"), TEXT("Fields to include in match previews"))
+            .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum matches to return")),
+        FCortexCommandInfo{ TEXT("get_data_catalog"), TEXT("Discovery catalog of all data") },
+        FCortexCommandInfo{ TEXT("resolve_tags"), TEXT("Look up rows by GameplayTag") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))
+            .Required(TEXT("tag_field"), TEXT("string"), TEXT("Field containing GameplayTags"))
+            .Required(TEXT("tags"), TEXT("array"), TEXT("GameplayTags to resolve"))
+            .Optional(TEXT("fields"), TEXT("array"), TEXT("Fields to include in results")),
+        FCortexCommandInfo{ TEXT("list_gameplay_tags"), TEXT("List GameplayTags by prefix") }
+            .Optional(TEXT("prefix"), TEXT("string"), TEXT("Optional tag prefix filter"))
+            .Optional(TEXT("include_source_file"), TEXT("boolean"), TEXT("Include source file metadata")),
+        FCortexCommandInfo{ TEXT("validate_gameplay_tag"), TEXT("Check if tag is registered") }
+            .Required(TEXT("tag"), TEXT("string"), TEXT("GameplayTag to validate")),
+        FCortexCommandInfo{ TEXT("register_gameplay_tag"), TEXT("Register single tag") }
+            .Required(TEXT("tag"), TEXT("string"), TEXT("GameplayTag to register"))
+            .Optional(TEXT("dev_comment"), TEXT("string"), TEXT("Optional developer comment"))
+            .Optional(TEXT("source"), TEXT("string"), TEXT("Tag source name")),
+        FCortexCommandInfo{ TEXT("register_gameplay_tags"), TEXT("Batch register tags") }
+            .Required(TEXT("tags"), TEXT("array"), TEXT("GameplayTags to register")),
+        FCortexCommandInfo{ TEXT("list_data_assets"), TEXT("List DataAssets") }
+            .Optional(TEXT("class_name"), TEXT("string"), TEXT("Optional class filter"))
+            .Optional(TEXT("path_filter"), TEXT("string"), TEXT("Optional asset path prefix")),
+        FCortexCommandInfo{ TEXT("get_data_asset"), TEXT("Get DataAsset properties") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("DataAsset path")),
+        FCortexCommandInfo{ TEXT("update_data_asset"), TEXT("Update DataAsset properties") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("DataAsset path"))
+            .Required(TEXT("properties"), TEXT("object"), TEXT("Properties to update"))
+            .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview changes without writing")),
+        FCortexCommandInfo{ TEXT("create_data_asset"), TEXT("Create new DataAsset") }
+            .Required(TEXT("class_name"), TEXT("string"), TEXT("DataAsset class name"))
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Target asset path"))
+            .Optional(TEXT("properties"), TEXT("object"), TEXT("Initial property values")),
+        FCortexCommandInfo{ TEXT("delete_data_asset"), TEXT("Delete DataAsset") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("DataAsset path")),
+        FCortexCommandInfo{ TEXT("list_string_tables"), TEXT("List StringTables") }
+            .Optional(TEXT("path_filter"), TEXT("string"), TEXT("Optional asset path prefix")),
+        FCortexCommandInfo{ TEXT("get_translations"), TEXT("Get StringTable entries") }
+            .Required(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable asset path"))
+            .Optional(TEXT("key_pattern"), TEXT("string"), TEXT("Optional key filter")),
+        FCortexCommandInfo{ TEXT("set_translation"), TEXT("Set StringTable entry") }
+            .Required(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable asset path"))
+            .Required(TEXT("key"), TEXT("string"), TEXT("StringTable key"))
+            .Required(TEXT("text"), TEXT("string"), TEXT("Localized text value")),
+        FCortexCommandInfo{ TEXT("search_assets"), TEXT("Asset Registry search") }
+            .Optional(TEXT("query"), TEXT("string"), TEXT("Search text"))
+            .Optional(TEXT("class_names"), TEXT("array"), TEXT("Allowed asset classes"))
+            .Optional(TEXT("path_prefixes"), TEXT("array"), TEXT("Allowed asset path prefixes"))
+            .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum assets to return")),
+        FCortexCommandInfo{ TEXT("list_curve_tables"), TEXT("List CurveTables") }
+            .Optional(TEXT("path_filter"), TEXT("string"), TEXT("Optional asset path prefix")),
+        FCortexCommandInfo{ TEXT("get_curve_table"), TEXT("Get curve rows") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("CurveTable asset path"))
+            .Optional(TEXT("row_name"), TEXT("string"), TEXT("Optional row filter")),
+        FCortexCommandInfo{ TEXT("update_curve_table_row"), TEXT("Update curve row") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("CurveTable asset path"))
+            .Required(TEXT("row_name"), TEXT("string"), TEXT("Curve row identifier"))
+            .Required(TEXT("keyframes"), TEXT("array"), TEXT("Curve keyframes to apply")),
     };
 }

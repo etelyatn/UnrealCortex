@@ -201,3 +201,99 @@ bool FCortexMaterialSetParamsBatchTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialSetParamsVectorObjectTest,
+	"Cortex.Material.Param.SetParameters.VectorObject",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialSetParamsVectorObjectTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestVectorParent_%s"), *Suffix);
+	const FString InstName = FString::Printf(TEXT("MI_TestVector_%s"), *Suffix);
+	const FString Dir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Vector_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *Dir, *MatName);
+	const FString InstPath = FString::Printf(TEXT("%s/%s"), *Dir, *InstName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> MatParams = MakeShared<FJsonObject>();
+	MatParams->SetStringField(TEXT("asset_path"), Dir);
+	MatParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), MatParams);
+
+	TSharedPtr<FJsonObject> InstParams = MakeShared<FJsonObject>();
+	InstParams->SetStringField(TEXT("asset_path"), Dir);
+	InstParams->SetStringField(TEXT("name"), InstName);
+	InstParams->SetStringField(TEXT("parent_material"), MatPath);
+	Handler.Execute(TEXT("create_instance"), InstParams);
+
+	TSharedRef<FJsonObject> VectorValue = MakeShared<FJsonObject>();
+	VectorValue->SetNumberField(TEXT("R"), 1.0);
+	VectorValue->SetNumberField(TEXT("G"), 0.0);
+	VectorValue->SetNumberField(TEXT("B"), 0.0);
+	VectorValue->SetNumberField(TEXT("A"), 1.0);
+
+	TArray<TSharedPtr<FJsonValue>> ParamsArray;
+	TSharedRef<FJsonObject> VectorParam = MakeShared<FJsonObject>();
+	VectorParam->SetStringField(TEXT("parameter_name"), TEXT("TestColor"));
+	VectorParam->SetStringField(TEXT("parameter_type"), TEXT("vector"));
+	VectorParam->SetObjectField(TEXT("value"), VectorValue);
+	ParamsArray.Add(MakeShared<FJsonValueObject>(VectorParam));
+
+	TSharedPtr<FJsonObject> SetParams = MakeShared<FJsonObject>();
+	SetParams->SetStringField(TEXT("asset_path"), InstPath);
+	SetParams->SetArrayField(TEXT("parameters"), ParamsArray);
+
+	FCortexCommandResult SetResult = Handler.Execute(TEXT("set_parameters"), SetParams);
+	TestTrue(TEXT("set_parameters should succeed for vector object values"), SetResult.bSuccess);
+
+	TSharedPtr<FJsonObject> GetParams = MakeShared<FJsonObject>();
+	GetParams->SetStringField(TEXT("asset_path"), InstPath);
+	FCortexCommandResult GetResult = Handler.Execute(TEXT("get_instance"), GetParams);
+
+	TestTrue(TEXT("get_instance should succeed"), GetResult.bSuccess);
+
+	if (GetResult.Data.IsValid())
+	{
+		const TSharedPtr<FJsonObject>* Overrides = nullptr;
+		TestTrue(TEXT("Should include overrides"), GetResult.Data->TryGetObjectField(TEXT("overrides"), Overrides));
+
+		if (Overrides && (*Overrides).IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* VectorOverrides = nullptr;
+			TestTrue(TEXT("Should include vector overrides"), (*Overrides)->TryGetArrayField(TEXT("vector"), VectorOverrides));
+
+			bool bFoundTestColor = false;
+			if (VectorOverrides != nullptr)
+			{
+				for (const TSharedPtr<FJsonValue>& EntryValue : *VectorOverrides)
+				{
+					const TSharedPtr<FJsonObject>* Entry = nullptr;
+					if (!EntryValue->TryGetObject(Entry) || Entry == nullptr || !(*Entry).IsValid())
+					{
+						continue;
+					}
+
+					FString ParamName;
+					if ((*Entry)->TryGetStringField(TEXT("name"), ParamName) && ParamName == TEXT("TestColor"))
+					{
+						bFoundTestColor = true;
+						break;
+					}
+				}
+			}
+
+			TestTrue(TEXT("Vector override should be persisted"), bFoundTestColor);
+		}
+	}
+
+	UObject* InstAsset = LoadObject<UMaterialInstanceConstant>(nullptr, *InstPath);
+	if (InstAsset) InstAsset->MarkAsGarbage();
+	UObject* MatAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (MatAsset) MatAsset->MarkAsGarbage();
+
+	return true;
+}

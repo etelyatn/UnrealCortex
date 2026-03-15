@@ -35,7 +35,10 @@ bool FCortexDomainRegistrationTest::RunTest(const FString& Parameters)
 
 		virtual TArray<FCortexCommandInfo> GetSupportedCommands() const override
 		{
-			return { { TEXT("test_cmd"), TEXT("A test command") } };
+			return {
+				FCortexCommandInfo{ TEXT("test_cmd"), TEXT("A test command") }
+					.Required(TEXT("asset_path"), TEXT("string"), TEXT("Path to the target asset"))
+			};
 		}
 	};
 
@@ -50,6 +53,28 @@ bool FCortexDomainRegistrationTest::RunTest(const FString& Parameters)
 	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
 	FCortexCommandResult CapResult = Router.Execute(TEXT("get_capabilities"), MakeShared<FJsonObject>());
 	TestTrue(TEXT("get_capabilities succeeded"), CapResult.bSuccess);
+
+	const TSharedPtr<FJsonObject>* DomainsObj = nullptr;
+	TestTrue(
+		TEXT("Capabilities contain domains object"),
+		CapResult.Data.IsValid() && CapResult.Data->TryGetObjectField(TEXT("domains"), DomainsObj) && DomainsObj != nullptr);
+
+	const TSharedPtr<FJsonObject>* TestDomainObj = nullptr;
+	TestTrue(
+		TEXT("Capabilities include test domain metadata"),
+		DomainsObj != nullptr && (*DomainsObj)->TryGetObjectField(TEXT("test"), TestDomainObj) && TestDomainObj != nullptr);
+
+	const TArray<TSharedPtr<FJsonValue>>* Commands = nullptr;
+	TestTrue(
+		TEXT("Test domain publishes commands"),
+		TestDomainObj != nullptr && (*TestDomainObj)->TryGetArrayField(TEXT("commands"), Commands) && Commands != nullptr && Commands->Num() == 1);
+
+	const TSharedPtr<FJsonObject>* CommandObj = nullptr;
+	TestTrue(
+		TEXT("Test command serializes as object"),
+		Commands != nullptr && (*Commands)[0]->TryGetObject(CommandObj) && CommandObj != nullptr);
+
+	TestTrue(TEXT("Builder-backed command serializes params"), CommandObj != nullptr && (*CommandObj)->HasTypedField<EJson::Array>(TEXT("params")));
 
 	// Verify the test domain command routes correctly
 	FCortexCommandResult CmdResult = Router.Execute(TEXT("test.test_cmd"), MakeShared<FJsonObject>());

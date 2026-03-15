@@ -1,0 +1,57 @@
+{
+  "plugin_version": "0.1.0",
+  "domains": {
+    "core": {
+      "name": "Cortex Core",
+      "version": "1.0.0",
+      "commands": [
+        {
+          "name": "get_status",
+          "description": "Get plugin and editor status"
+        },
+        {
+          "name": "save_asset",
+          "description": "Save an asset by path",
+          "params": [
+            {
+              "name": "asset_path",
+              "type": "string",
+              "required": true,
+              "description": "Asset path to save"
+            },
+            {
+              "name": "only_if_is_dirty",
+              "type": "boolean",
+              "required": false,
+              "description": "Only save dirty assets"
+            }
+          ]
+        }
+      ]
+    },
+    "data": {
+      "name": "Cortex Data",
+      "version": "1.0.0",
+      "commands": [
+        {
+          "name": "query_datatable",
+          "description": "Query a DataTable",
+          "params": [
+            {
+              "name": "table_path",
+              "type": "string",
+              "required": true,
+              "description": "DataTable asset path"
+            },
+            {
+              "name": "row_filter",
+              "type": "string",
+              "required": false,
+              "description": "Optional row filter"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

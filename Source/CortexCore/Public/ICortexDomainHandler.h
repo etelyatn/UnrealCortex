@@ -7,10 +7,48 @@
 /**
  * Info about a command supported by a domain handler.
  */
-struct CORTEXCORE_API FCortexCommandInfo
+struct CORTEXCORE_API FCortexParamInfo
 {
 	FString Name;
+	FString Type;
+	bool bRequired = false;
 	FString Description;
+};
+
+struct CORTEXCORE_API FCortexCommandInfo
+{
+	// WARNING: No user-declared constructors - aggregate init is required
+	// for unannotated domains (e.g., {TEXT("name"), TEXT("desc")}).
+	// Adding a constructor will break compilation in all handler files.
+	FString Name;
+	FString Description;
+	TArray<FCortexParamInfo> Params;
+
+	FCortexCommandInfo& Param(
+		const FString& ParamName,
+		const FString& ParamType,
+		bool bParamRequired,
+		const FString& ParamDescription)
+	{
+		Params.Add({ ParamName, ParamType, bParamRequired, ParamDescription });
+		return *this;
+	}
+
+	FCortexCommandInfo& Required(
+		const FString& ParamName,
+		const FString& ParamType,
+		const FString& ParamDescription)
+	{
+		return Param(ParamName, ParamType, true, ParamDescription);
+	}
+
+	FCortexCommandInfo& Optional(
+		const FString& ParamName,
+		const FString& ParamType,
+		const FString& ParamDescription)
+	{
+		return Param(ParamName, ParamType, false, ParamDescription);
+	}
 };
 
 /**

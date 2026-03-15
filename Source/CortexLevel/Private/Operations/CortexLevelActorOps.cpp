@@ -22,9 +22,9 @@ FCortexCommandResult FCortexLevelActorOps::SpawnActor(const TSharedPtr<FJsonObje
     }
 
     FString ClassIdentifier;
-    if (!Params->TryGetStringField(TEXT("class"), ClassIdentifier) || ClassIdentifier.IsEmpty())
+    if (!Params->TryGetStringField(TEXT("class_name"), ClassIdentifier) || ClassIdentifier.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ClassNotFound, TEXT("Missing required parameter: class"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::ClassNotFound, TEXT("Missing required parameter: class_name"));
     }
 
     FCortexCommandResult Error;

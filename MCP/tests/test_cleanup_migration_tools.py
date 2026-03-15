@@ -48,7 +48,7 @@ def test_no_overrides_passes_compile_flag_directly():
     mcp.tools["cleanup_blueprint_migration"](asset_path="/Game/BP_Test")
 
     connection.send_command.assert_called_once_with(
-        "bp.cleanup_migration",
+        "blueprint.cleanup_migration",
         {"asset_path": "/Game/BP_Test", "compile": True},
     )
 
@@ -78,7 +78,7 @@ def test_known_override_defers_compile_in_cleanup_migration():
 
     cleanup_call = next(
         c for c in connection.send_command.call_args_list
-        if c.args[0] == "bp.cleanup_migration"
+        if c.args[0] == "blueprint.cleanup_migration"
     )
     assert cleanup_call.args[1]["compile"] is False
 
@@ -165,7 +165,7 @@ def test_known_override_calls_delete_orphaned_nodes():
     )
 
     connection.send_command.assert_any_call(
-        "bp.delete_orphaned_nodes",
+        "blueprint.delete_orphaned_nodes",
         {"asset_path": "/Game/BP_Test", "graph_name": "EventGraph", "compile": True},
     )
 
@@ -190,7 +190,7 @@ def test_delete_orphaned_nodes_respects_compile_false():
     )
 
     connection.send_command.assert_any_call(
-        "bp.delete_orphaned_nodes",
+        "blueprint.delete_orphaned_nodes",
         {"asset_path": "/Game/BP_Test", "graph_name": "EventGraph", "compile": False},
     )
 
@@ -235,7 +235,7 @@ def test_unknown_override_does_not_raise():
     assert parsed["pruned_event_nodes"] == 0
 
     calls = [c.args[0] for c in connection.send_command.call_args_list]
-    assert "bp.delete_orphaned_nodes" not in calls
+    assert "blueprint.delete_orphaned_nodes" not in calls
 
 
 def test_unknown_override_no_remove_node_called():
@@ -251,7 +251,7 @@ def test_unknown_override_no_remove_node_called():
     calls = [c.args[0] for c in connection.send_command.call_args_list]
     assert "graph.list_nodes" not in calls
     assert "graph.remove_node" not in calls
-    assert "bp.delete_orphaned_nodes" not in calls
+    assert "blueprint.delete_orphaned_nodes" not in calls
 
 
 def test_unknown_override_still_compiles():
@@ -266,7 +266,7 @@ def test_unknown_override_still_compiles():
     )
 
     connection.send_command.assert_any_call(
-        "bp.compile",
+        "blueprint.compile",
         {"asset_path": "/Game/BP_Test"},
     )
 
@@ -291,7 +291,7 @@ def test_no_matching_node_still_compiles():
     )
 
     connection.send_command.assert_any_call(
-        "bp.compile",
+        "blueprint.compile",
         {"asset_path": "/Game/BP_Test"},
     )
 
@@ -393,7 +393,7 @@ def test_remove_variables_forwarded_to_cleanup_migration():
 
     cleanup_call = next(
         c for c in connection.send_command.call_args_list
-        if c.args[0] == "bp.cleanup_migration"
+        if c.args[0] == "blueprint.cleanup_migration"
     )
     assert cleanup_call.args[1]["remove_variables"] == ["Health", "Speed"]
 
@@ -497,7 +497,7 @@ def test_no_matching_node_compile_false_does_not_compile():
     )
 
     calls = [c.args[0] for c in connection.send_command.call_args_list]
-    assert "bp.compile" not in calls
+    assert "blueprint.compile" not in calls
 
 
 # --- Malformed node data (missing node_id) ---

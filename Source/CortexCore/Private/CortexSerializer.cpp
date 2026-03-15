@@ -13,6 +13,7 @@
 #include "UObject/UObjectGlobals.h"
 
 TMap<const UScriptStruct*, TArray<UScriptStruct*>> FCortexSerializer::SubtypeCache;
+TMap<const UScriptStruct*, bool> FCortexSerializer::PositionalNumericStructCache;
 
 TSharedPtr<FJsonObject> FCortexSerializer::TextToJson(const FText& Text)
 {
@@ -535,6 +536,51 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	// Struct property
 	if (const FStructProperty* StructProp = CastField<FStructProperty>(Property))
 	{
+		// ── Array-to-struct promotion ────────────────────────────────────────────
+		// Accepts [v0, v1, v2, v3] for numeric structs like FLinearColor and FVector.
+		// Positional order matches C++ declaration order (R,G,B,A for FLinearColor).
+		// FColor is excluded: its memory layout is B,G,R,A — see IsPositionalNumericStruct.
+		{
+			const TArray<TSharedPtr<FJsonValue>>* JsonArray = nullptr;
+			if (JsonValue->TryGetArray(JsonArray)
+				&& JsonArray != nullptr
+				&& IsPositionalNumericStruct(StructProp->Struct))
+			{
+				TArray<const FProperty*> Fields;
+				// ExcludeSuper: positional contract is defined for the struct's own declared fields only.
+				// A struct with inherited numeric fields would pass this check but the promotion loop
+				// would only write the child's own fields, silently leaving parent fields at defaults.
+				// In practice, all UE math structs (FLinearColor, FVector, etc.) have no numeric parents.
+				for (TFieldIterator<FProperty> It(StructProp->Struct, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+				{
+					Fields.Add(*It);
+				}
+
+				if (JsonArray->Num() != Fields.Num())
+				{
+					OutWarnings.Add(FString::Printf(
+						TEXT("Array-to-struct: property '%s' (struct '%s') needs %d elements, got %d"),
+						*Property->GetName(),
+						*StructProp->Struct->GetName(),
+						Fields.Num(),
+						JsonArray->Num()));
+					return false;
+				}
+
+				bool bSuccess = true;
+				for (int32 i = 0; i < Fields.Num(); ++i)
+				{
+					void* FieldPtr = Fields[i]->ContainerPtrToValuePtr<void>(ValuePtr);
+					if (!JsonToProperty((*JsonArray)[i], Fields[i], FieldPtr, Outer, OutWarnings))
+					{
+						bSuccess = false;
+					}
+				}
+				return bSuccess;
+			}
+		}
+		// ── End array-to-struct promotion ───────────────────────────────────────
+
 		// FGameplayTag - deserialize from tag string
 		if (StructProp->Struct == FGameplayTag::StaticStruct())
 		{
@@ -1108,6 +1154,62 @@ TSharedPtr<FJsonObject> FCortexSerializer::GetPropertySchema(const FProperty* Pr
 	// Fallback
 	Schema->SetStringField(TEXT("type"), TEXT("unknown"));
 	return Schema;
+}
+
+bool FCortexSerializer::IsPositionalNumericStruct(const UScriptStruct* Struct)
+{
+	if (Struct == nullptr)
+	{
+		return false;
+	}
+
+	// FColor: B,G,R,A memory layout makes positional promotion unsafe.
+	// Callers must use {"R":r,"G":g,"B":b,"A":a} form instead.
+	if (Struct == TBaseStructure<FColor>::Get())
+	{
+		return false;
+	}
+
+	// Note: FQuat (X,Y,Z,W) and FRotator (Pitch,Yaw,Roll) pass this check — their memory
+	// layout matches declaration order, so positional promotion is technically correct.
+	// However, callers may assume W-first quaternion convention or alphabetical rotator order.
+	// FMatrix also passes (16 floats) — count mismatch is the only safety net for wrong usage.
+	if (const bool* Cached = PositionalNumericStructCache.Find(Struct))
+	{
+		return *Cached;
+	}
+
+	bool bAllNumeric = true;
+	// ExcludeSuper: positional contract is defined for the struct's own declared fields only.
+	// A struct with inherited numeric fields would pass this check but the promotion loop
+	// would only write the child's own fields, silently leaving parent fields at defaults.
+	// In practice, all UE math structs (FLinearColor, FVector, etc.) have no numeric parents.
+	for (TFieldIterator<FProperty> It(Struct, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+	{
+		const FProperty* Prop = *It;
+		bool bIsScalar =
+			Prop->IsA<FFloatProperty>()  ||
+			Prop->IsA<FDoubleProperty>() ||
+			Prop->IsA<FIntProperty>()    ||
+			Prop->IsA<FInt64Property>();
+
+		if (!bIsScalar)
+		{
+			if (const FByteProperty* ByteProp = CastField<FByteProperty>(Prop))
+			{
+				bIsScalar = (ByteProp->GetIntPropertyEnum() == nullptr);
+			}
+		}
+
+		if (!bIsScalar)
+		{
+			bAllNumeric = false;
+			break;
+		}
+	}
+
+	PositionalNumericStructCache.Add(Struct, bAllNumeric);
+	return bAllNumeric;
 }
 
 TArray<UScriptStruct*> FCortexSerializer::FindInstancedStructSubtypes(const UScriptStruct* BaseStruct)

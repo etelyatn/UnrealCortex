@@ -2,6 +2,7 @@
 #include "CortexCommandRouter.h"
 #include "CortexBatchScope.h"
 #include "CortexCoreModule.h"
+#include "CortexFileUtils.h"
 #include "ICortexDomainHandler.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/App.h"
@@ -12,12 +13,73 @@
 #include "Serialization/JsonSerializer.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
+#include "Containers/Ticker.h"
 #include "Math/UnrealMathUtility.h"
 #include "Materials/Material.h"
 #include "MaterialGraph/MaterialGraph.h"
 #include "ScopedTransaction.h"
 
 int32 FCortexCommandRouter::BatchDepth = 0;
+
+namespace
+{
+TSharedPtr<FJsonObject> BuildCapabilitiesData(const TArray<FCortexRegisteredDomain>& RegisteredDomains)
+{
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("plugin_version"), TEXT("0.1.0"));
+
+	TSharedPtr<FJsonObject> Domains = MakeShared<FJsonObject>();
+
+	for (const FCortexRegisteredDomain& Domain : RegisteredDomains)
+	{
+		TSharedPtr<FJsonObject> DomainObj = MakeShared<FJsonObject>();
+		DomainObj->SetStringField(TEXT("name"), Domain.DisplayName);
+		DomainObj->SetStringField(TEXT("version"), Domain.Version);
+
+		TArray<TSharedPtr<FJsonValue>> CommandArray;
+		for (const FCortexCommandInfo& CmdInfo : Domain.Handler->GetSupportedCommands())
+		{
+			TSharedPtr<FJsonObject> CmdObj = MakeShared<FJsonObject>();
+			CmdObj->SetStringField(TEXT("name"), CmdInfo.Name);
+			CmdObj->SetStringField(TEXT("description"), CmdInfo.Description);
+
+			if (CmdInfo.Params.Num() > 0)
+			{
+				TArray<TSharedPtr<FJsonValue>> ParamsArray;
+				ParamsArray.Reserve(CmdInfo.Params.Num());
+
+				for (const FCortexParamInfo& ParamInfo : CmdInfo.Params)
+				{
+					TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+					ParamObj->SetStringField(TEXT("name"), ParamInfo.Name);
+					ParamObj->SetStringField(TEXT("type"), ParamInfo.Type);
+					ParamObj->SetBoolField(TEXT("required"), ParamInfo.bRequired);
+					ParamObj->SetStringField(TEXT("description"), ParamInfo.Description);
+					ParamsArray.Add(MakeShared<FJsonValueObject>(ParamObj));
+				}
+
+				CmdObj->SetArrayField(TEXT("params"), ParamsArray);
+			}
+
+			CommandArray.Add(MakeShared<FJsonValueObject>(CmdObj));
+		}
+		DomainObj->SetArrayField(TEXT("commands"), CommandArray);
+
+		Domains->SetObjectField(Domain.Namespace, DomainObj);
+	}
+
+	Data->SetObjectField(TEXT("domains"), Domains);
+	return Data;
+}
+}
+
+FCortexCommandRouter::~FCortexCommandRouter()
+{
+	if (!IsEngineExitRequested() && CacheTickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(CacheTickerHandle);
+	}
+}
 
 // FCortexBatchScope implementation
 TSet<TWeakObjectPtr<UMaterial>> FCortexBatchScope::DirtyMaterials;
@@ -202,6 +264,22 @@ void FCortexCommandRouter::RegisterDomain(
 	TSharedPtr<ICortexDomainHandler> Handler)
 {
 	RegisteredDomains.Add({ Namespace, DisplayName, Version, Handler });
+	bCapabilitiesCacheDirty = true;
+
+	if (!bCacheTickerScheduled)
+	{
+		bCacheTickerScheduled = true;
+		CacheTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+			FTickerDelegate::CreateLambda([this](float) -> bool
+			{
+				WriteCapabilitiesCache();
+				bCacheTickerScheduled = false;
+				CacheTickerHandle.Reset();
+				return false;
+			}),
+			0.0f);
+	}
+
 	UE_LOG(LogCortex, Log, TEXT("Registered domain: %s (%s v%s)"),
 		*Namespace, *DisplayName, *Version);
 }
@@ -209,6 +287,33 @@ void FCortexCommandRouter::RegisterDomain(
 const TArray<FCortexRegisteredDomain>& FCortexCommandRouter::GetRegisteredDomains() const
 {
 	return RegisteredDomains;
+}
+
+bool FCortexCommandRouter::WriteCapabilitiesCache()
+{
+	if (!bCapabilitiesCacheDirty && FPaths::FileExists(FPaths::ProjectSavedDir() / TEXT("Cortex/capabilities-cache.json")))
+	{
+		return true;
+	}
+
+	const TSharedPtr<FJsonObject> Data = BuildCapabilitiesData(RegisteredDomains);
+
+	FString JsonString;
+	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&JsonString);
+	if (!FJsonSerializer::Serialize(Data.ToSharedRef(), Writer))
+	{
+		return false;
+	}
+
+	const FString CachePath = FPaths::ProjectSavedDir() / TEXT("Cortex/capabilities-cache.json");
+	if (!FCortexFileUtils::AtomicWriteFile(CachePath, JsonString))
+	{
+		return false;
+	}
+
+	bCapabilitiesCacheDirty = false;
+	return true;
 }
 
 FCortexCommandResult FCortexCommandRouter::HandlePing(const TSharedPtr<FJsonObject>& Params)
@@ -744,30 +849,14 @@ FCortexCommandResult FCortexCommandRouter::HandleGetStatus(const TSharedPtr<FJso
 
 FCortexCommandResult FCortexCommandRouter::HandleGetCapabilities(const TSharedPtr<FJsonObject>& Params)
 {
-	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-	Data->SetStringField(TEXT("plugin_version"), TEXT("0.1.0"));
+	(void)Params;
+	TSharedPtr<FJsonObject> Data = BuildCapabilitiesData(RegisteredDomains);
 
-	TSharedPtr<FJsonObject> Domains = MakeShared<FJsonObject>();
-
-	for (const FCortexRegisteredDomain& Domain : RegisteredDomains)
+	const FString CachePath = FPaths::ProjectSavedDir() / TEXT("Cortex/capabilities-cache.json");
+	if (bCapabilitiesCacheDirty || !FPaths::FileExists(CachePath))
 	{
-		TSharedPtr<FJsonObject> DomainObj = MakeShared<FJsonObject>();
-		DomainObj->SetStringField(TEXT("name"), Domain.DisplayName);
-		DomainObj->SetStringField(TEXT("version"), Domain.Version);
-
-		TArray<TSharedPtr<FJsonValue>> CommandArray;
-		for (const FCortexCommandInfo& CmdInfo : Domain.Handler->GetSupportedCommands())
-		{
-			TSharedPtr<FJsonObject> CmdObj = MakeShared<FJsonObject>();
-			CmdObj->SetStringField(TEXT("name"), CmdInfo.Name);
-			CmdObj->SetStringField(TEXT("description"), CmdInfo.Description);
-			CommandArray.Add(MakeShared<FJsonValueObject>(CmdObj));
-		}
-		DomainObj->SetArrayField(TEXT("commands"), CommandArray);
-
-		Domains->SetObjectField(Domain.Namespace, DomainObj);
+		WriteCapabilitiesCache();
 	}
 
-	Data->SetObjectField(TEXT("domains"), Domains);
 	return Success(Data);
 }

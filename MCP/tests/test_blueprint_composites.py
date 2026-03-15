@@ -188,7 +188,7 @@ class TestBatchCommandGeneration:
         commands = _build_batch_commands("BP_Test", "/Game/Blueprints/", "Actor", [], [], nodes, [], "EventGraph")
 
         # Step 0: bp.create
-        assert commands[0]["command"] == "bp.create"
+        assert commands[0]["command"] == "blueprint.create"
         assert commands[0]["params"]["name"] == "BP_Test"
         assert commands[0]["params"]["path"] == "/Game/Blueprints"
         assert commands[0]["params"]["type"] == "Actor"
@@ -220,10 +220,10 @@ class TestBatchCommandGeneration:
         # Steps 1-2: bp.add_variable x2
         # Step 3: bp.add_function
         # Steps 4-6: graph.add_node x3
-        assert commands[0]["command"] == "bp.create"
-        assert commands[1]["command"] == "bp.add_variable"
-        assert commands[2]["command"] == "bp.add_variable"
-        assert commands[3]["command"] == "bp.add_function"
+        assert commands[0]["command"] == "blueprint.create"
+        assert commands[1]["command"] == "blueprint.add_variable"
+        assert commands[2]["command"] == "blueprint.add_variable"
+        assert commands[3]["command"] == "blueprint.add_function"
         assert commands[4]["command"] == "graph.add_node"
         assert commands[5]["command"] == "graph.add_node"
         assert commands[6]["command"] == "graph.add_node"
@@ -283,9 +283,9 @@ class TestBatchCommandGeneration:
         cmd_types = [c["command"] for c in commands]
         # Expected order: bp.create, bp.add_variable, bp.add_function, add_node x2, set_pin_value, connect
         assert cmd_types == [
-            "bp.create",
-            "bp.add_variable",
-            "bp.add_function",
+            "blueprint.create",
+            "blueprint.add_variable",
+            "blueprint.add_function",
             "graph.add_node",
             "graph.add_node",
             "graph.set_pin_value",
@@ -298,8 +298,8 @@ class TestBatchCommandGeneration:
         commands = _build_batch_commands("BP_Test", "/Game/", "Actor", variables, [], [], [], "EventGraph")
 
         assert len(commands) == 2
-        assert commands[0]["command"] == "bp.create"
-        assert commands[1]["command"] == "bp.add_variable"
+        assert commands[0]["command"] == "blueprint.create"
+        assert commands[1]["command"] == "blueprint.add_variable"
         assert commands[1]["params"]["name"] == "Health"
         assert commands[1]["params"]["type"] == "float"
         assert commands[1]["params"]["default_value"] == "100.0"
@@ -340,7 +340,7 @@ class TestCleanupOnFailure:
         # Verify the design: _build_batch_commands produces commands where step 0 is bp.create
         nodes = [{"name": "A", "class": "Event", "params": {"function_name": "Actor.ReceiveBeginPlay"}}]
         commands = _build_batch_commands("BP_Test", "/Game/", "Actor", [], [], nodes, [], "EventGraph")
-        assert commands[0]["command"] == "bp.create"
+        assert commands[0]["command"] == "blueprint.create"
         # The composite tool will call bp.delete on failure if step 0 succeeded
         # This is verified by integration behavior — we check the design contract here
 
@@ -405,9 +405,9 @@ class TestFixtures:
         assert len(commands) == len(expected["commands"])
 
         # Verify command types in order
-        assert commands[0]["command"] == "bp.create"
-        var_count = sum(1 for c in commands if c["command"] == "bp.add_variable")
-        func_count = sum(1 for c in commands if c["command"] == "bp.add_function")
+        assert commands[0]["command"] == "blueprint.create"
+        var_count = sum(1 for c in commands if c["command"] == "blueprint.add_variable")
+        func_count = sum(1 for c in commands if c["command"] == "blueprint.add_function")
         node_count = sum(1 for c in commands if c["command"] == "graph.add_node")
         pin_count = sum(1 for c in commands if c["command"] == "graph.set_pin_value")
         connect_count = sum(1 for c in commands if c["command"] == "graph.connect")
@@ -608,7 +608,7 @@ class TestUpdateMode:
         )
 
         assert result["success"] is False
-        delete_calls = [c for c in mock_connection.send_command.call_args_list if c.args[0] == "bp.delete"]
+        delete_calls = [c for c in mock_connection.send_command.call_args_list if c.args[0] == "blueprint.delete"]
         assert delete_calls == []
 
 

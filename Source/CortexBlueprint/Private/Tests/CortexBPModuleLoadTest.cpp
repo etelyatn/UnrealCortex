@@ -17,7 +17,7 @@ bool FCortexBPModuleLoadTest::RunTest(const FString& Parameters)
 	bool bIsLoaded = FModuleManager::Get().IsModuleLoaded(TEXT("CortexBlueprint"));
 	TestTrue(TEXT("CortexBlueprint module should be loaded"), bIsLoaded);
 
-	// Verify bp domain is registered by executing get_capabilities
+	// Verify blueprint domain is registered by executing get_capabilities
 	FCortexCoreModule& CoreModule =
 		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
 	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
@@ -25,14 +25,14 @@ bool FCortexBPModuleLoadTest::RunTest(const FString& Parameters)
 	FCortexCommandResult CapResult = Router.Execute(TEXT("get_capabilities"), MakeShared<FJsonObject>());
 	TestTrue(TEXT("get_capabilities should succeed"), CapResult.bSuccess);
 
-	// Verify "bp" domain appears in capabilities
+	// Verify "blueprint" domain appears in capabilities
 	bool bFoundBP = false;
 	if (CapResult.Data.IsValid())
 	{
 		const TSharedPtr<FJsonObject>* DomainsObj = nullptr;
 		if (CapResult.Data->TryGetObjectField(TEXT("domains"), DomainsObj) && DomainsObj != nullptr)
 		{
-			bFoundBP = (*DomainsObj)->HasField(TEXT("bp"));
+			bFoundBP = (*DomainsObj)->HasField(TEXT("blueprint"));
 		}
 		else
 		{
@@ -44,7 +44,7 @@ bool FCortexBPModuleLoadTest::RunTest(const FString& Parameters)
 		AddError(TEXT("get_capabilities did not return valid data"));
 	}
 
-	TestTrue(TEXT("bp domain should be registered"), bFoundBP);
+	TestTrue(TEXT("blueprint domain should be registered"), bFoundBP);
 
 	return true;
 }

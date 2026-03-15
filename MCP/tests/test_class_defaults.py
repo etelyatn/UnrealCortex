@@ -50,7 +50,7 @@ class TestGetClassDefaults:
         parsed = json.loads(result_json)
         assert parsed["blueprint_path"] == "/Game/Test/BP_Test"
         connection.send_command.assert_called_once_with(
-            "bp.get_class_defaults",
+            "blueprint.get_class_defaults",
             {
                 "asset_path": "/Game/Test/BP_Test",
                 "blueprint_path": "/Game/Test/BP_Test",
@@ -68,7 +68,7 @@ class TestGetClassDefaults:
         )
 
         connection.send_command.assert_called_once_with(
-            "bp.get_class_defaults",
+            "blueprint.get_class_defaults",
             {
                 "asset_path": "/Game/Test/BP_Test",
                 "blueprint_path": "/Game/Test/BP_Test",
@@ -86,7 +86,7 @@ class TestGetClassDefaults:
         tools["get_class_defaults"](blueprint_path="/Game/Test/BP_Test")
 
         connection.send_command.assert_called_once_with(
-            "bp.get_class_defaults",
+            "blueprint.get_class_defaults",
             {
                 "asset_path": "/Game/Test/BP_Test",
                 "blueprint_path": "/Game/Test/BP_Test",
@@ -106,7 +106,7 @@ class TestSetClassDefaults:
         )
 
         connection.send_command.assert_called_once_with(
-            "bp.set_class_defaults",
+            "blueprint.set_class_defaults",
             {
                 "asset_path": "/Game/Test/BP_Test",
                 "blueprint_path": "/Game/Test/BP_Test",
@@ -129,7 +129,7 @@ class TestSetClassDefaults:
         )
 
         connection.send_command.assert_called_once_with(
-            "bp.set_class_defaults",
+            "blueprint.set_class_defaults",
             {
                 "asset_path": "/Game/Test/BP_Test",
                 "blueprint_path": "/Game/Test/BP_Test",
