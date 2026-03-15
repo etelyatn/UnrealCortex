@@ -61,6 +61,19 @@ FCortexCommandRouter& FCortexCoreModule::GetCommandRouter()
     return *CommandRouter;
 }
 
+void FCortexCoreModule::RequestSerialization(const FCortexSerializationRequest& Request, FOnSerializationComplete Callback)
+{
+	if (SerializationHandler.IsBound())
+	{
+		SerializationHandler.Execute(Request, Callback);
+	}
+	else
+	{
+		UE_LOG(LogCortex, Warning, TEXT("RequestSerialization called but no handler bound"));
+		Callback.Execute(false, TEXT("{\"error\":\"No serialization handler bound\"}"));
+	}
+}
+
 void FCortexCoreModule::SetClientDisconnectCallback(FCortexTcpServer::FClientDisconnectCallback Callback)
 {
     if (TcpServer.IsValid())
