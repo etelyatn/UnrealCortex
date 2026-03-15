@@ -100,28 +100,6 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
     RefreshVisibleEntries();
 }
 
-void SCortexChatPanel::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
-{
-    SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
-
-    // Flush any throttled streaming refresh
-    if (bStreamingRefreshPending)
-    {
-        const double Now = FPlatformTime::Seconds();
-        constexpr double MinRefreshInterval = 0.25;
-        if (Now - LastStreamingRefreshTime >= MinRefreshInterval)
-        {
-            RefreshVisibleEntries();
-            if (bAutoScroll)
-            {
-                ScrollToBottom();
-            }
-            LastStreamingRefreshTime = Now;
-            bStreamingRefreshPending = false;
-        }
-    }
-}
-
 SCortexChatPanel::~SCortexChatPanel()
 {
     if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
@@ -200,51 +178,22 @@ void SCortexChatPanel::OnStreamEvent(const FCortexStreamEvent& Event)
         return;
     }
 
-    // Structural events (tool calls, complete messages) refresh immediately
-    if (Event.Type == ECortexStreamEventType::ToolUse
-        || Event.Type == ECortexStreamEventType::ToolResult
-        || Event.Type == ECortexStreamEventType::TextContent)
+    // Text streaming (ContentBlockDelta) is NOT shown in the chat list.
+    // The full formatted response appears only on turn complete.
+    // The processing indicator widget handles real-time status display.
+    if (Event.Type == ECortexStreamEventType::ContentBlockDelta)
     {
-        RebuildStableRows();
+        return;
+    }
+
+    // SystemError events show immediately
+    if (Event.Type == ECortexStreamEventType::SystemError)
+    {
         RefreshVisibleEntries();
         if (bAutoScroll)
         {
             ScrollToBottom();
         }
-        LastStreamingRefreshTime = FPlatformTime::Seconds();
-        bStreamingRefreshPending = false;
-        return;
-    }
-
-    // Throttle ContentBlockDelta refreshes to ~4 times per second.
-    // The text is still accumulated in CurrentStreamingEntry by the session layer,
-    // but we only rebuild the widget periodically to avoid visual glitching.
-    if (Event.Type == ECortexStreamEventType::ContentBlockDelta)
-    {
-        const double Now = FPlatformTime::Seconds();
-        constexpr double MinRefreshInterval = 0.25;
-        if (Now - LastStreamingRefreshTime >= MinRefreshInterval)
-        {
-            RefreshVisibleEntries();
-            if (bAutoScroll)
-            {
-                ScrollToBottom();
-            }
-            LastStreamingRefreshTime = Now;
-            bStreamingRefreshPending = false;
-        }
-        else
-        {
-            bStreamingRefreshPending = true;
-        }
-        return;
-    }
-
-    // All other events (SystemError, etc.)
-    RefreshVisibleEntries();
-    if (bAutoScroll)
-    {
-        ScrollToBottom();
     }
 }
 
@@ -454,17 +403,9 @@ void SCortexChatPanel::RefreshVisibleEntries()
             DisplayRows.Insert(GreetingRow, 0);
         }
 
-        // Add fresh streaming row (new pointer each call so SListView calls GenerateRow and shows updated text)
-        TSharedPtr<FCortexChatEntry> StreamingEntry = Session->GetCurrentStreamingEntry();
-        if (StreamingEntry.IsValid())
-        {
-            TSharedPtr<FCortexChatDisplayRow> StreamingRow = MakeShared<FCortexChatDisplayRow>();
-            StreamingRow->RowType = ECortexChatRowType::AssistantTurn;
-            StreamingRow->PrimaryEntry = StreamingEntry;
-            DisplayRows.Add(StreamingRow);
-        }
-
-        // Processing indicator is handled by the separate SCortexProcessingIndicator widget
+        // Streaming text is NOT shown during processing.
+        // The full formatted response appears on turn complete.
+        // Processing status is shown by the SCortexProcessingIndicator widget.
     }
 
     if (ChatList.IsValid())
@@ -514,19 +455,15 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatDispla
 
         case ECortexChatRowType::AssistantTurn:
         {
-            TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
-            const bool bEntryIsStreaming = Session.IsValid() && (Session->GetCurrentStreamingEntry() == Row->PrimaryEntry);
-
             TSharedRef<SVerticalBox> TurnBox = SNew(SVerticalBox);
 
-            // Assistant text first (includes "Claude" role label)
+            // Assistant text (includes "Claude" role label)
             TurnBox->AddSlot()
             .AutoHeight()
             [
                 SNew(SCortexChatMessage)
                 .Message(Row->PrimaryEntry->Text)
                 .IsUser(false)
-                .IsStreaming(bEntryIsStreaming)
             ];
 
             // Tool calls below the role label

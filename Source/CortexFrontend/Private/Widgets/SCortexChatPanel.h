@@ -25,7 +25,6 @@ public:
 
     void Construct(const FArguments& InArgs);
     virtual ~SCortexChatPanel();
-    virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
     friend class FCortexChatPanelConstructTest;
     friend class FCortexChatPanelSessionInitTest;
@@ -60,6 +59,4 @@ private:
     TSharedPtr<FCortexChatDisplayRow> GreetingRow;
     TArray<TSharedPtr<FCortexChatDisplayRow>> StableRows;  // Completed rows — rebuilt only when entries change
     bool bAutoScroll = true;
-    double LastStreamingRefreshTime = 0.0;  // Throttle streaming text refreshes
-    bool bStreamingRefreshPending = false;  // Deferred refresh needed
 };
