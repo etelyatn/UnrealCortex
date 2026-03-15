@@ -11,9 +11,15 @@ bool FCortexSettingsEffortDefaultTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
     FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    const ECortexEffortLevel Original = Settings.GetEffortLevel();
+
+    Settings.SetEffortLevel(ECortexEffortLevel::Default);
     TestEqual(TEXT("Default effort is Default"),
         static_cast<uint8>(Settings.GetEffortLevel()),
         static_cast<uint8>(ECortexEffortLevel::Default));
+
+    Settings.SetEffortLevel(Original);
+    Settings.ClearPendingChanges();
     return true;
 }
 
@@ -184,6 +190,11 @@ bool FCortexSettingsDirtyDelegateTest::RunTest(const FString& Parameters)
     FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
     const ECortexEffortLevel OrigEffort = Settings.GetEffortLevel();
 
+    // Ensure we start from a value other than Low so the transition to Low fires the delegate
+    if (Settings.GetEffortLevel() == ECortexEffortLevel::Low)
+    {
+        Settings.SetEffortLevel(ECortexEffortLevel::Default);
+    }
     Settings.ClearPendingChanges();
 
     int32 BroadcastCount = 0;
