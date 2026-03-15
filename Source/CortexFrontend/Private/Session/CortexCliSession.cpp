@@ -340,6 +340,27 @@ FString FCortexCliSession::BuildLaunchCommandLine(bool bResumeSession, ECortexAc
 		CommandLine += FString::Printf(TEXT("--model \"%s\" "), *SelectedModel);
 	}
 
+	// Effort flag (omitted when Default)
+	const ECortexEffortLevel Effort = FCortexFrontendSettings::Get().GetEffortLevel();
+	if (Effort != ECortexEffortLevel::Default)
+	{
+		CommandLine += FString::Printf(TEXT("--effort \"%s\" "),
+			*FCortexFrontendSettings::Get().GetEffortLevelString());
+	}
+
+	// Workflow: Direct mode disables slash commands
+	const ECortexWorkflowMode Workflow = FCortexFrontendSettings::Get().GetWorkflowMode();
+	if (Workflow == ECortexWorkflowMode::Direct)
+	{
+		CommandLine += TEXT("--disable-slash-commands ");
+	}
+
+	// Project context off: restrict setting sources
+	if (!FCortexFrontendSettings::Get().GetProjectContext())
+	{
+		CommandLine += TEXT("--setting-sources \"user,local\" ");
+	}
+
 	const FString AllowedTools = BuildAllowedToolsArg(AccessMode);
 	if (!AllowedTools.IsEmpty())
 	{
@@ -365,8 +386,38 @@ FString FCortexCliSession::BuildLaunchCommandLine(bool bResumeSession, ECortexAc
 		break;
 	}
 
-	const FString SystemPrompt = FString::Printf(TEXT("You are running inside the Unreal Editor's Cortex AI Chat panel. You have access to Cortex MCP tools for querying and manipulating the editor. Current access mode: %s."), *ModeString);
-	CommandLine += FString::Printf(TEXT("--append-system-prompt \"%s\" "), *SystemPrompt.Replace(TEXT("\""), TEXT("\\\"")));
+	FString SystemPrompt = FString::Printf(
+		TEXT("You are running inside the Unreal Editor's Cortex AI Chat panel. "
+			 "You have access to Cortex MCP tools for querying and manipulating the editor. "
+			 "Current access mode: %s."), *ModeString);
+
+	if (Workflow == ECortexWorkflowMode::Direct)
+	{
+		SystemPrompt += TEXT(" Workflow mode: Direct. Act immediately on requests using MCP tools. "
+			"Do not create planning documents, design docs, spec files, or brainstorming files. "
+			"Do not follow documentation-first workflows. Be concise. Prefer action over ceremony.");
+	}
+
+	const FString& Directive = FCortexFrontendSettings::Get().GetCustomDirective();
+	if (!Directive.IsEmpty())
+	{
+		FString Sanitized = Directive;
+		Sanitized.ReplaceInline(TEXT("\n"), TEXT(" "));
+		Sanitized.ReplaceInline(TEXT("\r"), TEXT(" "));
+		Sanitized.ReplaceInline(TEXT("\t"), TEXT(" "));
+		Sanitized.ReplaceInline(TEXT("$("), TEXT(""));
+		Sanitized.ReplaceInline(TEXT("`"), TEXT(""));
+		Sanitized.ReplaceInline(TEXT("%"), TEXT(""));
+		Sanitized.ReplaceInline(TEXT("^"), TEXT(""));
+		Sanitized.ReplaceInline(TEXT("|"), TEXT(""));
+		Sanitized.ReplaceInline(TEXT("&"), TEXT(""));
+		Sanitized.ReplaceInline(TEXT(">"), TEXT(""));
+		Sanitized.ReplaceInline(TEXT("<"), TEXT(""));
+		SystemPrompt += TEXT(" ") + Sanitized;
+	}
+
+	CommandLine += FString::Printf(TEXT("--append-system-prompt \"%s\" "),
+		*SystemPrompt.Replace(TEXT("\""), TEXT("\\\"")));
 
 	return CommandLine;
 }

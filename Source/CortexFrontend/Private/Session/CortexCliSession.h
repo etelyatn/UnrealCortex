@@ -77,6 +77,15 @@ private:
 	friend class FCortexCliSessionConnectTest;
 	friend class FCortexCliSessionPendingPromptDrainedAfterSpawnTest;
 	friend class FCortexCliSessionModelFlagTest;
+	friend class FCortexCmdLineEffortDefaultTest;
+	friend class FCortexCmdLineEffortMediumTest;
+	friend class FCortexCmdLineWorkflowDirectTest;
+	friend class FCortexCmdLineWorkflowThoroughTest;
+	friend class FCortexCmdLineProjectContextOffTest;
+	friend class FCortexCmdLineProjectContextOnTest;
+	friend class FCortexCmdLineDirectiveTest;
+	friend class FCortexCmdLineDirectiveEmptyTest;
+	friend class FCortexCmdLineDirectiveSanitizationTest;
 
 	FString BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const;
 	FString BuildAllowedToolsArg(ECortexAccessMode AccessMode) const;
