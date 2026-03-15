@@ -6,6 +6,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SSegmentedControl.h"
 #include "Widgets/SCompoundWidget.h"
 
@@ -48,4 +49,5 @@ private:
 	TSharedPtr<FString> SelectedEffortOption;
 	TSharedPtr<SSegmentedControl<ECortexWorkflowMode>> WorkflowToggle;
 	TSharedPtr<SCheckBox> ProjectContextCheckbox;
+	TSharedPtr<SEditableTextBox> DirectiveTextBox;
 };

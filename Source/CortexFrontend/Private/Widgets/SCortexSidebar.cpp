@@ -380,6 +380,33 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 					]
 				]
 			]
+			// Custom Directive section
+			+ SScrollBox::Slot()
+			[
+				SNew(SExpandableArea)
+				.AreaTitle(FText::FromString(TEXT("Custom Directive")))
+				.InitiallyCollapsed(true)
+				.BodyContent()
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f)
+					[
+						SAssignNew(DirectiveTextBox, SEditableTextBox)
+						.HintText(FText::FromString(TEXT("Optional instructions...")))
+						.Text(FText::FromString(FCortexFrontendSettings::Get().GetCustomDirective()))
+						.OnTextCommitted_Lambda([](const FText& NewText, ETextCommit::Type CommitType)
+						{
+							FString Directive = NewText.ToString();
+							if (Directive.Len() > 500)
+							{
+								Directive = Directive.Left(500);
+							}
+							FCortexFrontendSettings::Get().SetCustomDirective(Directive);
+						})
+						.ToolTipText(FText::FromString(TEXT("Extra instructions added to every message. Example: 'Focus on Blueprint work' or 'Respond concisely'.")))
+					]
+				]
+			]
 			// Connection section
 			+ SScrollBox::Slot()
 			[
