@@ -57,6 +57,17 @@ void SCortexChatToolbar::Construct(const FArguments& InArgs)
             .Text(FText::FromString(TEXT("")))
             .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
         ]
+        // Active model label
+        + SHorizontalBox::Slot()
+        .AutoWidth()
+        .VAlign(VAlign_Center)
+        .Padding(4.0f, 4.0f)
+        [
+            SAssignNew(ModelLabel, STextBlock)
+            .Text(FText::FromString(TEXT("")))
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+            .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("6a9955")))))
+        ]
         // Context indicator (right side)
         + SHorizontalBox::Slot()
         .AutoWidth()
@@ -133,6 +144,14 @@ void SCortexChatToolbar::SetSessionId(const FString& SessionId)
     }
 }
 
+void SCortexChatToolbar::SetModelLabel(const FString& ModelId)
+{
+    if (ModelLabel.IsValid() && !ModelId.IsEmpty())
+    {
+        ModelLabel->SetText(FText::FromString(ModelId));
+    }
+}
+
 void SCortexChatToolbar::OnTokenUsageUpdated()
 {
     TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
@@ -157,5 +176,14 @@ void SCortexChatToolbar::OnTokenUsageUpdated()
             : FString::Printf(TEXT("%lldk"), Max / 1000);
         const FString Label = UsedStr + TEXT(" / ") + MaxStr;
         ContextLabel->SetText(FText::FromString(Label));
+    }
+
+    if (ModelLabel.IsValid())
+    {
+        const FString& Model = Session->GetModelId();
+        if (!Model.IsEmpty())
+        {
+            ModelLabel->SetText(FText::FromString(Model));
+        }
     }
 }

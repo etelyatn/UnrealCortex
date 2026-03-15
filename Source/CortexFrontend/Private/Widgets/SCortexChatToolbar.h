@@ -19,6 +19,7 @@ public:
     ~SCortexChatToolbar();
 
     void SetSessionId(const FString& SessionId);
+    void SetModelLabel(const FString& ModelId);
 
     FOnCortexNewChat OnNewChat;
 
@@ -27,6 +28,7 @@ private:
 
     TWeakPtr<FCortexCliSession> SessionWeak;
     TSharedPtr<STextBlock> SessionIdText;
+    TSharedPtr<STextBlock> ModelLabel;
     TSharedPtr<SBorder> ContextColorBox;
     TSharedPtr<STextBlock> ContextLabel;
     FDelegateHandle TokenUsageHandle;
