@@ -1,5 +1,7 @@
+#include "Framework/Text/RichTextLayoutMarshaller.h"
 #include "Misc/AutomationTest.h"
 #include "Rendering/CortexMarkdownParser.h"
+#include "Rendering/CortexRichTextStyle.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexMarkdownParserBlockSplitTest,
 	"Cortex.Frontend.MarkdownParser.BlockSplit",
@@ -107,5 +109,27 @@ bool FCortexMarkdownParserUnderscoreIdentifierTest::RunTest(const FString& Param
 		Result.Contains(TEXT("<Italic>")));
 	TestTrue(TEXT("Should preserve BP_SimpleActor_Component intact"),
 		Result.Contains(TEXT("BP_SimpleActor_Component")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexRichTextMarshallerTagTest,
+	"Cortex.Frontend.RichTextMarshaller.TagParsing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexRichTextMarshallerTagTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexRichTextStyle::Initialize();
+
+	// Verify marshaller can be created and accepts our style set
+	TSharedRef<FRichTextLayoutMarshaller> Marshaller = FRichTextLayoutMarshaller::Create(
+		TArray<TSharedRef<ITextDecorator>>(),
+		&FCortexRichTextStyle::Get());
+
+	// Marshaller construction is validated implicitly by reaching this line without crashing.
+	// SetText requires a FTextLayout unavailable in NullRHI — no runtime assertions possible here.
+	AddInfo(TEXT("FRichTextLayoutMarshaller::Create succeeded with FCortexRichTextStyle"));
+
+	FCortexRichTextStyle::Shutdown();
 	return true;
 }

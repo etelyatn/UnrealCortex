@@ -7,6 +7,8 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SNullWidget.h"
+#include "Framework/Text/RichTextLayoutMarshaller.h"
+#include "Widgets/Text/SMultiLineEditableText.h"
 #include "Widgets/Text/SRichTextBlock.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/SCortexCodeBlock.h"
@@ -123,20 +125,29 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                 const FString DisplayText = bIsUser
                     ? (TEXT("\u2022 ") + Item)
                     : (TEXT("\u2022 ") + CortexMarkdownParser::ToRichText(Item));
+                TSharedRef<SWidget> ItemWidget = SNullWidget::NullWidget;
+                if (bIsUser)
+                {
+                    ItemWidget = SNew(STextBlock)
+                        .Text(FText::FromString(DisplayText))
+                        .AutoWrapText(true);
+                }
+                else
+                {
+                    ItemWidget = SNew(SMultiLineEditableText)
+                        .Marshaller(FRichTextLayoutMarshaller::Create(
+                            TArray<TSharedRef<ITextDecorator>>(),
+                            &FCortexRichTextStyle::Get()))
+                        .Text(FText::FromString(DisplayText))
+                        .IsReadOnly(true)
+                        .WrapTextAt(TAttribute<float>::CreateSP(this, &SCortexChatMessage::GetWrapWidth));
+                }
+
                 ListBox->AddSlot()
                 .AutoHeight()
                 .Padding(0.0f, 1.0f)
                 [
-                    bIsUser
-                    ? static_cast<TSharedRef<SWidget>>(
-                        SNew(STextBlock)
-                        .Text(FText::FromString(DisplayText))
-                        .AutoWrapText(true))
-                    : static_cast<TSharedRef<SWidget>>(
-                        SNew(SRichTextBlock)
-                        .Text(FText::FromString(DisplayText))
-                        .DecoratorStyleSet(&FCortexRichTextStyle::Get())
-                        .WrapTextAt(TAttribute<float>::CreateSP(this, &SCortexChatMessage::GetWrapWidth)))
+                    ItemWidget
                 ];
             }
             Box->AddSlot()
@@ -154,20 +165,29 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                 const FString DisplayText = bIsUser
                     ? (FString::Printf(TEXT("%d. "), i + 1) + Block.ListItems[i])
                     : (FString::Printf(TEXT("%d. "), i + 1) + CortexMarkdownParser::ToRichText(Block.ListItems[i]));
+                TSharedRef<SWidget> ItemWidget = SNullWidget::NullWidget;
+                if (bIsUser)
+                {
+                    ItemWidget = SNew(STextBlock)
+                        .Text(FText::FromString(DisplayText))
+                        .AutoWrapText(true);
+                }
+                else
+                {
+                    ItemWidget = SNew(SMultiLineEditableText)
+                        .Marshaller(FRichTextLayoutMarshaller::Create(
+                            TArray<TSharedRef<ITextDecorator>>(),
+                            &FCortexRichTextStyle::Get()))
+                        .Text(FText::FromString(DisplayText))
+                        .IsReadOnly(true)
+                        .WrapTextAt(TAttribute<float>::CreateSP(this, &SCortexChatMessage::GetWrapWidth));
+                }
+
                 ListBox->AddSlot()
                 .AutoHeight()
                 .Padding(0.0f, 1.0f)
                 [
-                    bIsUser
-                    ? static_cast<TSharedRef<SWidget>>(
-                        SNew(STextBlock)
-                        .Text(FText::FromString(DisplayText))
-                        .AutoWrapText(true))
-                    : static_cast<TSharedRef<SWidget>>(
-                        SNew(SRichTextBlock)
-                        .Text(FText::FromString(DisplayText))
-                        .DecoratorStyleSet(&FCortexRichTextStyle::Get())
-                        .WrapTextAt(TAttribute<float>::CreateSP(this, &SCortexChatMessage::GetWrapWidth)))
+                    ItemWidget
                 ];
             }
             Box->AddSlot()
@@ -183,20 +203,30 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
             const FString DisplayText = bIsUser
                 ? Block.RawText
                 : CortexMarkdownParser::ToRichText(Block.RawText);
+
+            TSharedRef<SWidget> TextWidget = SNullWidget::NullWidget;
+            if (bIsUser)
+            {
+                TextWidget = SNew(STextBlock)
+                    .Text(FText::FromString(DisplayText))
+                    .AutoWrapText(true);
+            }
+            else
+            {
+                TextWidget = SNew(SMultiLineEditableText)
+                    .Marshaller(FRichTextLayoutMarshaller::Create(
+                        TArray<TSharedRef<ITextDecorator>>(),
+                        &FCortexRichTextStyle::Get()))
+                    .Text(FText::FromString(DisplayText))
+                    .IsReadOnly(true)
+                    .WrapTextAt(TAttribute<float>::CreateSP(this, &SCortexChatMessage::GetWrapWidth));
+            }
+
             Box->AddSlot()
             .AutoHeight()
             .Padding(0.0f, 2.0f)
             [
-                bIsUser
-                ? static_cast<TSharedRef<SWidget>>(
-                    SNew(STextBlock)
-                    .Text(FText::FromString(DisplayText))
-                    .AutoWrapText(true))
-                : static_cast<TSharedRef<SWidget>>(
-                    SNew(SRichTextBlock)
-                    .Text(FText::FromString(DisplayText))
-                    .DecoratorStyleSet(&FCortexRichTextStyle::Get())
-                    .WrapTextAt(TAttribute<float>::CreateSP(this, &SCortexChatMessage::GetWrapWidth)))
+                TextWidget
             ];
             break;
         }
