@@ -1,5 +1,6 @@
 #include "Widgets/SCortexChatMessage.h"
 
+#include "Rendering/CortexChatMarshaller.h"
 #include "Rendering/CortexMarkdownParser.h"
 #include "Rendering/CortexRichTextStyle.h"
 #include "Styling/CoreStyle.h"
@@ -7,7 +8,6 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SNullWidget.h"
-#include "Framework/Text/RichTextLayoutMarshaller.h"
 #include "Widgets/Text/SMultiLineEditableText.h"
 #include "Widgets/Text/SRichTextBlock.h"
 #include "Widgets/Text/STextBlock.h"
@@ -135,9 +135,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                 else
                 {
                     ItemWidget = SNew(SMultiLineEditableText)
-                        .Marshaller(FRichTextLayoutMarshaller::Create(
-                            TArray<TSharedRef<ITextDecorator>>(),
-                            &FCortexRichTextStyle::Get()))
+                        .Marshaller(FCortexChatMarshaller::Create())
                         .Text(FText::FromString(DisplayText))
                         .IsReadOnly(true)
                         .WrapTextAt(TAttribute<float>::CreateSP(this, &SCortexChatMessage::GetWrapWidth));
@@ -175,9 +173,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                 else
                 {
                     ItemWidget = SNew(SMultiLineEditableText)
-                        .Marshaller(FRichTextLayoutMarshaller::Create(
-                            TArray<TSharedRef<ITextDecorator>>(),
-                            &FCortexRichTextStyle::Get()))
+                        .Marshaller(FCortexChatMarshaller::Create())
                         .Text(FText::FromString(DisplayText))
                         .IsReadOnly(true)
                         .WrapTextAt(TAttribute<float>::CreateSP(this, &SCortexChatMessage::GetWrapWidth));
@@ -214,9 +210,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
             else
             {
                 TextWidget = SNew(SMultiLineEditableText)
-                    .Marshaller(FRichTextLayoutMarshaller::Create(
-                        TArray<TSharedRef<ITextDecorator>>(),
-                        &FCortexRichTextStyle::Get()))
+                    .Marshaller(FCortexChatMarshaller::Create())
                     .Text(FText::FromString(DisplayText))
                     .IsReadOnly(true)
                     .WrapTextAt(TAttribute<float>::CreateSP(this, &SCortexChatMessage::GetWrapWidth));

@@ -1,5 +1,5 @@
-#include "Framework/Text/RichTextLayoutMarshaller.h"
 #include "Misc/AutomationTest.h"
+#include "Rendering/CortexChatMarshaller.h"
 #include "Rendering/CortexMarkdownParser.h"
 #include "Rendering/CortexRichTextStyle.h"
 
@@ -112,23 +112,18 @@ bool FCortexMarkdownParserUnderscoreIdentifierTest::RunTest(const FString& Param
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexRichTextMarshallerTagTest,
-	"Cortex.Frontend.RichTextMarshaller.TagParsing",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatMarshallerCreateTest,
+	"Cortex.Frontend.ChatMarshaller.Create",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FCortexRichTextMarshallerTagTest::RunTest(const FString& Parameters)
+bool FCortexChatMarshallerCreateTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 	FCortexRichTextStyle::Initialize();
 
-	// Verify marshaller can be created and accepts our style set
-	TSharedRef<FRichTextLayoutMarshaller> Marshaller = FRichTextLayoutMarshaller::Create(
-		TArray<TSharedRef<ITextDecorator>>(),
-		&FCortexRichTextStyle::Get());
-
-	// Marshaller construction is validated implicitly by reaching this line without crashing.
-	// SetText requires a FTextLayout unavailable in NullRHI — no runtime assertions possible here.
-	AddInfo(TEXT("FRichTextLayoutMarshaller::Create succeeded with FCortexRichTextStyle"));
+	// Verify marshaller can be created — catches linker issues and style set problems
+	TSharedRef<FCortexChatMarshaller> Marshaller = FCortexChatMarshaller::Create();
+	AddInfo(TEXT("FCortexChatMarshaller::Create succeeded"));
 
 	FCortexRichTextStyle::Shutdown();
 	return true;

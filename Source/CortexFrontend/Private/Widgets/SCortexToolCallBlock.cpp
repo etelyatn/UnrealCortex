@@ -27,6 +27,21 @@ FReply SCortexToolCallBlock::OnToggleExpand()
     return FReply::Handled();
 }
 
+static FString FormatDuration(int32 Ms)
+{
+    if (Ms < 1000)
+    {
+        return FString::Printf(TEXT("%dms"), Ms);
+    }
+    if (Ms < 60000)
+    {
+        return FString::Printf(TEXT("%.1fs"), static_cast<float>(Ms) / 1000.0f);
+    }
+    const int32 Minutes = Ms / 60000;
+    const float Seconds = (Ms % 60000) / 1000.0f;
+    return FString::Printf(TEXT("%dm %.0fs"), Minutes, Seconds);
+}
+
 void SCortexToolCallBlock::RebuildContent()
 {
     ContentBox->ClearChildren();
@@ -38,11 +53,11 @@ void SCortexToolCallBlock::RebuildContent()
     }
 
     const FString Arrow = bIsExpanded ? TEXT("\u25bc") : TEXT("\u25b6");
-    const FString HeaderText = FString::Printf(TEXT("%s %d tool call%s  %dms"),
+    const FString HeaderText = FString::Printf(TEXT("%s %d tool call%s  %s"),
         *Arrow,
         ToolCallList.Num(),
         ToolCallList.Num() == 1 ? TEXT("") : TEXT("s"),
-        TotalMs);
+        *FormatDuration(TotalMs));
 
     // Header row — clickable toggle
     ContentBox->AddSlot()
@@ -63,10 +78,10 @@ void SCortexToolCallBlock::RebuildContent()
         for (const TSharedPtr<FCortexChatEntry>& Call : ToolCallList)
         {
             const FString StatusIcon = Call->bIsToolComplete ? TEXT("\u2713") : TEXT("\u2026");
-            const FString RowText = FString::Printf(TEXT("  %s %s  %dms"),
+            const FString RowText = FString::Printf(TEXT("  %s %s  %s"),
                 *StatusIcon,
                 *Call->ToolName,
-                Call->DurationMs);
+                *FormatDuration(Call->DurationMs));
 
             FString ResultSummary;
             if (!Call->ToolResult.IsEmpty())

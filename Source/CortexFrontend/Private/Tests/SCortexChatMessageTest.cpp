@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "Rendering/CortexRichTextStyle.h"
 #include "Widgets/SCortexChatMessage.h"
 #include "Framework/Application/SlateApplication.h"
 
@@ -45,6 +46,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSCortexChatMessageWrapWidthDefaultTest,
 bool FSCortexChatMessageWrapWidthDefaultTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    // Ensure style set is initialized — module startup handles this in production,
+    // but NullRHI test runner may not fully initialize editor modules.
+    FCortexRichTextStyle::Initialize();
+
     // This test guards the WrapWidth default value initialization.
     // It does NOT verify that SRichTextBlock uses WrapTextAt — that is enforced
     // by code review of BuildContentForText. A unit test cannot inspect Slate

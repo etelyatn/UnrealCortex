@@ -25,7 +25,6 @@ private:
 	TSharedPtr<STextBlock> StatusLabel;
 	TSharedPtr<STextBlock> DotsLabel;
 	TSharedPtr<STextBlock> ElapsedLabel;
-	TSharedPtr<STextBlock> TokensLabel;
 	double IndicatorStartTime = 0.0;
 	int32 DotPhase = 0;
 	double LastDotTime = 0.0;

@@ -118,13 +118,22 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 				.BodyContent()
 				[
 					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 8.0f, 2.0f)
 					[
 						SAssignNew(ProviderText, STextBlock)
 						.Text(FText::FromString(TEXT("\u2014")))
 						.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
 					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+					// Model label
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 8.0f, 1.0f)
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Model")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
+					]
+					// Model dropdown
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 2.0f)
 					[
 						SAssignNew(ModelComboBox, SComboBox<TSharedPtr<FString>>)
 						.OptionsSource(&ModelOptions)
@@ -138,7 +147,13 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 						})
 						.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
 						{
-							return SNew(STextBlock).Text(FText::FromString(*Item));
+							return SNew(SBox)
+								.Padding(FMargin(4.0f, 2.0f))
+								[
+									SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+								];
 						})
 						[
 							SNew(STextBlock)
@@ -148,16 +163,72 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 									? FText::FromString(*SelectedModelOption)
 									: FText::FromString(TEXT("Default"));
 							})
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
 						]
 					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f)
+					// Access label
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 8.0f, 1.0f)
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Access")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
+					]
+					// Access dropdown
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 2.0f)
+					[
+						SAssignNew(AccessModeComboBox, SComboBox<TSharedPtr<FString>>)
+						.OptionsSource(&AccessModeOptions)
+						.OnSelectionChanged_Lambda([this](TSharedPtr<FString> Selection, ESelectInfo::Type)
+						{
+							if (Selection.IsValid())
+							{
+								SelectedAccessModeOption = Selection;
+								if (*Selection == TEXT("Read-Only"))
+								{
+									FCortexFrontendSettings::Get().SetAccessMode(ECortexAccessMode::ReadOnly);
+								}
+								else if (*Selection == TEXT("Guided"))
+								{
+									FCortexFrontendSettings::Get().SetAccessMode(ECortexAccessMode::Guided);
+								}
+								else if (*Selection == TEXT("Full Access"))
+								{
+									FCortexFrontendSettings::Get().SetAccessMode(ECortexAccessMode::FullAccess);
+								}
+							}
+						})
+						.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+						{
+							return SNew(SBox)
+								.Padding(FMargin(4.0f, 2.0f))
+								[
+									SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+								];
+						})
+						[
+							SNew(STextBlock)
+							.Text_Lambda([this]() -> FText
+							{
+								return SelectedAccessModeOption.IsValid()
+									? FText::FromString(*SelectedAccessModeOption)
+									: FText::FromString(TEXT("Read-Only"));
+							})
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+						]
+					]
+					// Hint text
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 4.0f)
 					[
 						SNew(STextBlock)
 						.Text(FText::FromString(TEXT("Applied on new chat session")))
-						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+						.Font(FCoreStyle::GetDefaultFontStyle("Italic", 7))
 						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("666666")))))
 					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 8.0f, 2.0f)
+					// Active model
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f, 8.0f, 4.0f)
 					[
 						SAssignNew(ModelText, STextBlock)
 						.Text(FText::FromString(TEXT("Active: \u2014")))
@@ -179,69 +250,6 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 					[
 						SAssignNew(StateText, STextBlock)
 						.Text(FText::FromString(TEXT("Inactive")))
-					]
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					.Padding(4.0f, 2.0f)
-					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						[
-							SNew(STextBlock)
-							.Text(FText::FromString(TEXT("Access: ")))
-							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-							.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
-						]
-						+ SHorizontalBox::Slot()
-						.FillWidth(1.0f)
-						.VAlign(VAlign_Center)
-						[
-							SAssignNew(AccessModeComboBox, SComboBox<TSharedPtr<FString>>)
-							.OptionsSource(&AccessModeOptions)
-							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> Selection, ESelectInfo::Type)
-							{
-								if (Selection.IsValid())
-								{
-									SelectedAccessModeOption = Selection;
-									if (*Selection == TEXT("Read-Only"))
-									{
-										FCortexFrontendSettings::Get().SetAccessMode(ECortexAccessMode::ReadOnly);
-									}
-									else if (*Selection == TEXT("Guided"))
-									{
-										FCortexFrontendSettings::Get().SetAccessMode(ECortexAccessMode::Guided);
-									}
-									else if (*Selection == TEXT("Full Access"))
-									{
-										FCortexFrontendSettings::Get().SetAccessMode(ECortexAccessMode::FullAccess);
-									}
-								}
-							})
-							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
-							{
-								return SNew(STextBlock).Text(FText::FromString(*Item));
-							})
-							[
-								SNew(STextBlock)
-								.Text_Lambda([this]() -> FText
-								{
-									return SelectedAccessModeOption.IsValid()
-										? FText::FromString(*SelectedAccessModeOption)
-										: FText::FromString(TEXT("Read-Only"));
-								})
-							]
-						]
-					]
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					.Padding(4.0f, 0.0f)
-					[
-						SNew(STextBlock)
-						.Text(FText::FromString(TEXT("Applied on new chat session")))
-						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
-						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("666666")))))
 					]
 				]
 			]

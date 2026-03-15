@@ -49,15 +49,6 @@ void SCortexProcessingIndicator::Construct(const FArguments& InArgs)
 			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
 			.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
 		]
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.VAlign(VAlign_Center)
-		.Padding(4.0f, 4.0f)
-		[
-			SAssignNew(TokensLabel, STextBlock)
-			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-			.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
-		]
 	];
 
 	if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
@@ -153,23 +144,4 @@ void SCortexProcessingIndicator::Tick(const FGeometry& AllottedGeometry, const d
 		ElapsedLabel->SetText(FText::FromString(FString::Printf(TEXT("%ds"), Elapsed)));
 	}
 
-	// Token count (only during Processing)
-	if (TokensLabel.IsValid() && CurrentState == ECortexSessionState::Processing)
-	{
-		if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
-		{
-			const int64 Tokens = Session->GetTotalOutputTokens();
-			if (Tokens > 0)
-			{
-				const FString Label = Tokens >= 1000
-					? FString::Printf(TEXT("%.1fk tokens"), static_cast<float>(Tokens) / 1000.0f)
-					: FString::Printf(TEXT("%lld tokens"), Tokens);
-				TokensLabel->SetText(FText::FromString(Label));
-			}
-		}
-	}
-	else if (TokensLabel.IsValid())
-	{
-		TokensLabel->SetText(FText::GetEmpty());
-	}
 }

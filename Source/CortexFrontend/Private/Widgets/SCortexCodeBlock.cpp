@@ -173,6 +173,7 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
     ChildSlot
     [
         SNew(SBorder)
+        .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
         .BorderBackgroundColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("1a1a1a"))))
         .Padding(0.0f)
         [

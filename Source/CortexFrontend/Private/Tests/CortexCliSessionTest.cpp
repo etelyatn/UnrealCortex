@@ -68,6 +68,10 @@ bool FCortexCliSessionBuildInitialLaunchArgsTest::RunTest(const FString& Paramet
     TestFalse(TEXT("Initial launch should not include resume"), CommandLine.Contains(TEXT("--resume")));
     TestTrue(TEXT("Initial launch should include MCP config"), CommandLine.Contains(TEXT("--mcp-config \"D:/UnrealProjects/CortexSandbox/.mcp.json\"")));
     TestTrue(TEXT("Initial launch should include allowed tools"), CommandLine.Contains(TEXT("--allowedTools")));
+    TestTrue(TEXT("Guided should include Edit built-in tool"), CommandLine.Contains(TEXT("Edit")));
+    TestTrue(TEXT("Guided should include Write built-in tool"), CommandLine.Contains(TEXT("Write")));
+    TestTrue(TEXT("Guided should include Bash built-in tool"), CommandLine.Contains(TEXT("Bash")));
+    TestTrue(TEXT("Guided should include Read built-in tool"), CommandLine.Contains(TEXT("Read")));
     return true;
 }
 
@@ -84,7 +88,13 @@ bool FCortexCliSessionBuildResumeLaunchArgsTest::RunTest(const FString& Paramete
 
     TestTrue(TEXT("Resume launch should include resume"), CommandLine.Contains(TEXT("--resume \"session-456\"")));
     TestFalse(TEXT("Resume launch should not include session id"), CommandLine.Contains(TEXT("--session-id")));
-    TestTrue(TEXT("Resume launch should include read-only tool patterns"), CommandLine.Contains(TEXT("mcp__cortex_mcp__get_*")));
+    TestTrue(TEXT("Resume launch should include read-only MCP patterns"), CommandLine.Contains(TEXT("mcp__cortex_mcp__get_*")));
+    TestTrue(TEXT("Read-Only should include Read built-in tool"), CommandLine.Contains(TEXT("Read")));
+    TestTrue(TEXT("Read-Only should include Glob built-in tool"), CommandLine.Contains(TEXT("Glob")));
+    TestTrue(TEXT("Read-Only should include Grep built-in tool"), CommandLine.Contains(TEXT("Grep")));
+    TestFalse(TEXT("Read-Only should NOT include Edit built-in tool"), CommandLine.Contains(TEXT(",Edit,")));
+    TestFalse(TEXT("Read-Only should NOT include Write built-in tool"), CommandLine.Contains(TEXT(",Write,")));
+    TestFalse(TEXT("Read-Only should NOT include Bash built-in tool"), CommandLine.Contains(TEXT(",Bash,")));
     return true;
 }
 
