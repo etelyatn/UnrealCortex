@@ -6,7 +6,6 @@
 #include "Widgets/SCortexChatMessage.h"
 #include "Widgets/SCortexCodeBlock.h"
 #include "Widgets/SCortexInputArea.h"
-#include "Widgets/SCortexProcessingIndicator.h"
 #include "Widgets/SCortexToolCallBlock.h"
 #include "Widgets/SCortexChatToolbar.h"
 #include "Widgets/Layout/SSeparator.h"
@@ -35,6 +34,8 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
         [
             SAssignNew(ChatToolbar, SCortexChatToolbar)
             .OnNewChat(FOnCortexNewChat::CreateSP(this, &SCortexChatPanel::NewChat))
+            .OnConnect(FOnCortexConnect::CreateSP(this, &SCortexChatPanel::Connect))
+            .OnReconnect(FOnCortexReconnect::CreateSP(this, &SCortexChatPanel::Reconnect))
             .Session(SessionWeak)
         ]
         + SVerticalBox::Slot()
@@ -49,12 +50,6 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
             .ListItemsSource(&DisplayRows)
             .OnGenerateRow(this, &SCortexChatPanel::GenerateRow)
             .SelectionMode(ESelectionMode::None)
-        ]
-        + SVerticalBox::Slot()
-        .AutoHeight()
-        [
-            SAssignNew(ProcessingIndicator, SCortexProcessingIndicator)
-            .Session(SessionWeak)
         ]
         + SVerticalBox::Slot()
         .AutoHeight()
@@ -87,12 +82,6 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
         Session->OnTurnComplete.AddSP(this, &SCortexChatPanel::OnTurnComplete);
         Session->OnStateChanged.AddSP(this, &SCortexChatPanel::OnSessionStateChanged);
 
-        // Auto-connect if session is inactive
-        if (Session->GetState() == ECortexSessionState::Inactive)
-        {
-            Session->Connect();
-        }
-
         if (ChatToolbar.IsValid())
         {
             ChatToolbar->SetSessionId(Session->GetSessionId());
@@ -100,7 +89,8 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
         UpdateStateDrivenUi(Session->GetState());
     }
 
-    // Initial refresh to show greeting if already Idle
+    // Initial build
+    RebuildStableRows();
     RefreshVisibleEntries();
 }
 
@@ -130,10 +120,12 @@ void SCortexChatPanel::SendMessage(const FString& Message)
     if (!Session->SendPrompt(Request))
     {
         Session->RollbackLastPromptEntries();
+        RebuildStableRows();
         RefreshVisibleEntries();
         return;
     }
 
+    RebuildStableRows();
     RefreshVisibleEntries();
 
     if (InputArea.IsValid())
@@ -164,8 +156,23 @@ void SCortexChatPanel::NewChat()
         {
             ChatToolbar->SetSessionId(Session->GetSessionId());
         }
+        RebuildStableRows();
+        RefreshVisibleEntries();
+    }
+}
+
+void SCortexChatPanel::Connect()
+{
+    if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
+    {
+        Session->Connect();
         UpdateStateDrivenUi(Session->GetState());
     }
+}
+
+void SCortexChatPanel::Reconnect()
+{
+    NewChat();
 }
 
 void SCortexChatPanel::OnStreamEvent(const FCortexStreamEvent& Event)
@@ -208,6 +215,7 @@ void SCortexChatPanel::OnTurnComplete(const FCortexTurnResult& Result)
         Session->ReplaceStreamingEntry(BuildAssistantEntries(Result.ResultText));
     }
 
+    RebuildStableRows();
     RefreshVisibleEntries();
     UpdateStateDrivenUi(Session->GetState());
 
@@ -298,20 +306,19 @@ TArray<TSharedPtr<FCortexChatEntry>> SCortexChatPanel::BuildAssistantEntries(con
     return Entries;
 }
 
-void SCortexChatPanel::RefreshVisibleEntries()
+void SCortexChatPanel::RebuildStableRows()
 {
-    DisplayRows.Reset();
+    StableRows.Reset();
 
     TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
     if (!Session.IsValid())
     {
-        if (ChatList.IsValid()) ChatList->RequestListRefresh();
         return;
     }
 
     const TArray<TSharedPtr<FCortexChatEntry>>& Entries = Session->GetChatEntries();
+    const TSharedPtr<FCortexChatEntry> StreamingEntry = Session->GetCurrentStreamingEntry();
 
-    // Group tool calls with their following AssistantMessage by TurnIndex
     // Pass 1: collect tool calls per turn
     TMap<int32, TArray<TSharedPtr<FCortexChatEntry>>> ToolCallsByTurn;
     for (const TSharedPtr<FCortexChatEntry>& E : Entries)
@@ -322,10 +329,15 @@ void SCortexChatPanel::RefreshVisibleEntries()
         }
     }
 
-    // Pass 2: build display rows
+    // Pass 2: build stable display rows (skip the live streaming entry)
     TSet<int32> ConsumedToolTurns;
     for (const TSharedPtr<FCortexChatEntry>& E : Entries)
     {
+        if (E == StreamingEntry)
+        {
+            continue;  // Handled fresh in RefreshVisibleEntries
+        }
+
         switch (E->Type)
         {
         case ECortexChatEntryType::UserMessage:
@@ -333,7 +345,7 @@ void SCortexChatPanel::RefreshVisibleEntries()
             TSharedPtr<FCortexChatDisplayRow> Row = MakeShared<FCortexChatDisplayRow>();
             Row->RowType = ECortexChatRowType::UserMessage;
             Row->PrimaryEntry = E;
-            DisplayRows.Add(Row);
+            StableRows.Add(Row);
             break;
         }
 
@@ -342,7 +354,6 @@ void SCortexChatPanel::RefreshVisibleEntries()
             TSharedPtr<FCortexChatDisplayRow> Row = MakeShared<FCortexChatDisplayRow>();
             Row->RowType = ECortexChatRowType::AssistantTurn;
             Row->PrimaryEntry = E;
-            // Attach tool calls from same turn
             if (!ConsumedToolTurns.Contains(E->TurnIndex))
             {
                 if (TArray<TSharedPtr<FCortexChatEntry>>* ToolCalls = ToolCallsByTurn.Find(E->TurnIndex))
@@ -351,7 +362,7 @@ void SCortexChatPanel::RefreshVisibleEntries()
                     ConsumedToolTurns.Add(E->TurnIndex);
                 }
             }
-            DisplayRows.Add(Row);
+            StableRows.Add(Row);
             break;
         }
 
@@ -360,20 +371,53 @@ void SCortexChatPanel::RefreshVisibleEntries()
             TSharedPtr<FCortexChatDisplayRow> Row = MakeShared<FCortexChatDisplayRow>();
             Row->RowType = ECortexChatRowType::CodeBlock;
             Row->PrimaryEntry = E;
-            DisplayRows.Add(Row);
+            StableRows.Add(Row);
             break;
         }
 
         case ECortexChatEntryType::ToolCall:
-            // Consumed via ToolCallsByTurn — skip standalone rows
-            break;
+            break;  // Consumed via ToolCallsByTurn
         }
     }
+}
 
-    // Inject greeting row when idle with no messages
-    if (Session.IsValid() && Session->GetState() == ECortexSessionState::Idle && Session->GetChatEntries().IsEmpty() && GreetingRow.IsValid())
+void SCortexChatPanel::RefreshVisibleEntries()
+{
+    TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
+
+    // Compose DisplayRows from stable base + optional streaming row + optional processing tail
+    DisplayRows = StableRows;
+
+    if (Session.IsValid())
     {
-        DisplayRows.Insert(GreetingRow, 0);
+        // Re-add greeting at front when idle with no messages
+        if (Session->GetState() == ECortexSessionState::Idle && Session->GetChatEntries().IsEmpty() && GreetingRow.IsValid())
+        {
+            DisplayRows.Insert(GreetingRow, 0);
+        }
+
+        // Add fresh streaming row (new pointer each call so SListView calls GenerateRow and shows updated text)
+        TSharedPtr<FCortexChatEntry> StreamingEntry = Session->GetCurrentStreamingEntry();
+        if (StreamingEntry.IsValid())
+        {
+            TSharedPtr<FCortexChatDisplayRow> StreamingRow = MakeShared<FCortexChatDisplayRow>();
+            StreamingRow->RowType = ECortexChatRowType::AssistantTurn;
+            StreamingRow->PrimaryEntry = StreamingEntry;
+            DisplayRows.Add(StreamingRow);
+        }
+
+        // Append fresh processing row during active states.
+        // Must be a new TSharedPtr each call: SListView reuses widgets for stable pointers,
+        // so a persistent member would show stale text after Spawning -> Processing transition.
+        const ECortexSessionState State = Session->GetState();
+        if (State == ECortexSessionState::Spawning
+            || State == ECortexSessionState::Processing
+            || State == ECortexSessionState::Respawning)
+        {
+            TSharedPtr<FCortexChatDisplayRow> ProcessingRow = MakeShared<FCortexChatDisplayRow>();
+            ProcessingRow->RowType = ECortexChatRowType::ProcessingRow;
+            DisplayRows.Add(ProcessingRow);
+        }
     }
 
     if (ChatList.IsValid())
@@ -450,6 +494,18 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatDispla
             .Code(Row->PrimaryEntry->Text)
             .Language(Row->PrimaryEntry->Language);
         break;
+
+    case ECortexChatRowType::ProcessingRow:
+    {
+        TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
+        const FString StatusText = (Session.IsValid() && Session->GetState() == ECortexSessionState::Spawning)
+            ? TEXT("Connecting...")
+            : TEXT("...");
+        Content = SNew(SCortexChatMessage)
+            .Message(StatusText)
+            .IsUser(false);
+        break;
+    }
     }
 
     return SNew(STableRow<TSharedPtr<FCortexChatDisplayRow>>, OwnerTable)
