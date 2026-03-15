@@ -2,6 +2,7 @@
 
 #include "Async/Async.h"
 #include "CortexFrontendModule.h"
+#include "CortexFrontendSettings.h"
 #include "Misc/Guid.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
@@ -18,6 +19,28 @@ FCortexCliSession::FCortexCliSession(const FCortexSessionConfig& InConfig)
 	: Config(InConfig)
 	, State(ECortexSessionState::Inactive)
 {
+}
+
+bool FCortexCliSession::Connect()
+{
+	UE_LOG(LogCortexFrontend, Log, TEXT("Connect() called, current state: %d"), static_cast<int32>(State.load()));
+
+	if (!TransitionState(ECortexSessionState::Inactive, ECortexSessionState::Spawning, TEXT("Auto-connect")))
+	{
+		UE_LOG(LogCortexFrontend, Warning, TEXT("Connect() failed: state was not Inactive (was %d)"), static_cast<int32>(State.load()));
+		return false;
+	}
+
+	if (!SpawnProcess(FCortexFrontendSettings::Get().GetAccessMode(), false))
+	{
+		UE_LOG(LogCortexFrontend, Warning, TEXT("Connect() failed: SpawnProcess returned false"));
+		TransitionState(ECortexSessionState::Spawning, ECortexSessionState::Inactive, TEXT("Failed to spawn on connect"));
+		return false;
+	}
+
+	FCortexFrontendSettings::Get().ClearPendingChanges();
+	UE_LOG(LogCortexFrontend, Log, TEXT("Connect() succeeded, state now: %d"), static_cast<int32>(State.load()));
+	return true;
 }
 
 bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
@@ -43,6 +66,14 @@ bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
 		}
 
 		CurrentState = State.load();
+
+		// SpawnProcess may have already drained the pending prompt (Idle → Processing).
+		// In that case the prompt is already sent — return success.
+		if (CurrentState == ECortexSessionState::Processing)
+		{
+			UE_LOG(LogCortexFrontend, Log, TEXT("Prompt drained during spawn"));
+			return true;
+		}
 	}
 
 	if (CurrentState == ECortexSessionState::Spawning)
@@ -108,6 +139,37 @@ bool FCortexCliSession::Cancel()
 	return true;
 }
 
+bool FCortexCliSession::Reconnect()
+{
+	check(IsInGameThread());
+
+	if (!TransitionState(ECortexSessionState::Idle, ECortexSessionState::Respawning, TEXT("Reconnect requested")))
+	{
+		UE_LOG(LogCortexFrontend, Log, TEXT("Reconnect() rejected: state was not Idle (was %d)"),
+			static_cast<int32>(State.load()));
+		return false;
+	}
+
+	CleanupProcess();
+
+	// Uses --resume to fork from existing conversation context.
+	// TODO: Verify empirically whether --resume alone re-applies --append-system-prompt
+	// and --setting-sources. If not, add --fork-session flag to BuildLaunchCommandLine.
+	const ECortexAccessMode AccessMode = FCortexFrontendSettings::Get().GetAccessMode();
+	if (!SpawnProcess(AccessMode, true))
+	{
+		UE_LOG(LogCortexFrontend, Warning, TEXT("Reconnect() failed: SpawnProcess returned false"));
+		State.store(ECortexSessionState::Inactive);
+		BroadcastStateChange(ECortexSessionState::Respawning, ECortexSessionState::Inactive,
+			TEXT("Failed to reconnect"));
+		return false;
+	}
+
+	FCortexFrontendSettings::Get().ClearPendingChanges();
+	UE_LOG(LogCortexFrontend, Log, TEXT("Reconnect() succeeded with session %s"), *Config.SessionId);
+	return true;
+}
+
 void FCortexCliSession::NewChat()
 {
 	CancelGraceTimer();
@@ -116,9 +178,10 @@ void FCortexCliSession::NewChat()
 	Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
 	ConsecutiveSpawnFailures = 0;
 	CurrentTurnIndex = 0;
-	ConversationContextTokens = 0;
+	ConversationContextTokens.store(0);
 	const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Inactive);
 	BroadcastStateChange(PreviousState, ECortexSessionState::Inactive, TEXT("New chat"));
+	OnTokenUsageUpdated.Broadcast();
 	UE_LOG(LogCortexFrontend, Log, TEXT("New chat: session %s"), *Config.SessionId);
 }
 
@@ -136,11 +199,11 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 	// Accumulate token usage (before state guard — applies even during state transitions)
 	if (Event.InputTokens > 0 || Event.OutputTokens > 0)
 	{
-		TotalInputTokens += Event.InputTokens;
-		TotalOutputTokens += Event.OutputTokens;
-		TotalCacheReadTokens += Event.CacheReadTokens;
-		TotalCacheCreationTokens += Event.CacheCreationTokens;
-		ConversationContextTokens = Event.InputTokens;
+		TotalInputTokens.fetch_add(Event.InputTokens);
+		TotalOutputTokens.fetch_add(Event.OutputTokens);
+		TotalCacheReadTokens.fetch_add(Event.CacheReadTokens);
+		TotalCacheCreationTokens.fetch_add(Event.CacheCreationTokens);
+		ConversationContextTokens.store(Event.InputTokens + Event.CacheReadTokens + Event.CacheCreationTokens);
 		OnTokenUsageUpdated.Broadcast();
 	}
 
@@ -148,18 +211,7 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 	if (Event.Type == ECortexStreamEventType::SessionInit && !Event.Model.IsEmpty())
 	{
 		ModelId = Event.Model;
-		if (ModelId.Contains(TEXT("claude")))
-		{
-			Provider = TEXT("Claude Code");
-		}
-		else if (ModelId.Contains(TEXT("gpt")) || ModelId.Contains(TEXT("o1")) || ModelId.Contains(TEXT("codex")))
-		{
-			Provider = TEXT("Codex");
-		}
-		else
-		{
-			Provider = TEXT("Unknown");
-		}
+		Provider = TEXT("Claude Code");
 	}
 
 	const ECortexSessionState CurrentState = State.load();
@@ -189,6 +241,7 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 		ToolEntry->ToolName = Event.ToolName;
 		ToolEntry->ToolCallId = Event.ToolCallId;
 		ToolEntry->ToolInput = Event.ToolInput;
+		ToolEntry->TurnIndex = CurrentTurnIndex;
 		ToolEntry->ToolStartTime = FPlatformTime::Seconds();
 		ChatEntries.Add(ToolEntry);
 		return;
@@ -270,19 +323,19 @@ void FCortexCliSession::HandleProcessExited(const FString& Reason)
 			ConsecutiveSpawnFailures = 0;
 			Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
 			UE_LOG(LogCortexFrontend, Warning, TEXT("Max respawn attempts exceeded, starting fresh session %s"), *Config.SessionId);
-			BroadcastStateChange(CurrentState, ECortexSessionState::Inactive, TEXT("Session could not be resumed. Started fresh."));
 			State.store(ECortexSessionState::Inactive);
+			BroadcastStateChange(CurrentState, ECortexSessionState::Inactive, TEXT("Session could not be resumed. Started fresh."));
 			return;
 		}
 
-		BroadcastStateChange(CurrentState, ECortexSessionState::Respawning, Reason);
 		State.store(ECortexSessionState::Respawning);
+		BroadcastStateChange(CurrentState, ECortexSessionState::Respawning, Reason);
 
 		if (!CachedCliInfo.bIsValid)
 		{
 			UE_LOG(LogCortexFrontend, Log, TEXT("Cannot respawn: Claude CLI not found"));
-			BroadcastStateChange(ECortexSessionState::Respawning, ECortexSessionState::Inactive, TEXT("Claude CLI not found"));
 			State.store(ECortexSessionState::Inactive);
+			BroadcastStateChange(ECortexSessionState::Respawning, ECortexSessionState::Inactive, TEXT("Claude CLI not found"));
 			return;
 		}
 
@@ -290,8 +343,8 @@ void FCortexCliSession::HandleProcessExited(const FString& Reason)
 		if (!SpawnProcess(GetPendingAccessMode(), true))
 		{
 			UE_LOG(LogCortexFrontend, Warning, TEXT("Respawn failed"));
-			BroadcastStateChange(ECortexSessionState::Respawning, ECortexSessionState::Inactive, TEXT("Failed to respawn Claude CLI"));
 			State.store(ECortexSessionState::Inactive);
+			BroadcastStateChange(ECortexSessionState::Respawning, ECortexSessionState::Inactive, TEXT("Failed to respawn Claude CLI"));
 			return;
 		}
 		return;
@@ -321,6 +374,33 @@ FString FCortexCliSession::BuildLaunchCommandLine(bool bResumeSession, ECortexAc
 		CommandLine += FString::Printf(TEXT("--session-id \"%s\" "), *Config.SessionId);
 	}
 
+	const FString& SelectedModel = FCortexFrontendSettings::Get().GetSelectedModel();
+	if (!SelectedModel.IsEmpty() && SelectedModel != TEXT("Default"))
+	{
+		CommandLine += FString::Printf(TEXT("--model \"%s\" "), *SelectedModel);
+	}
+
+	// Effort flag (omitted when Default)
+	const ECortexEffortLevel Effort = FCortexFrontendSettings::Get().GetEffortLevel();
+	if (Effort != ECortexEffortLevel::Default)
+	{
+		CommandLine += FString::Printf(TEXT("--effort \"%s\" "),
+			*FCortexFrontendSettings::Get().GetEffortLevelString());
+	}
+
+	// Workflow: Direct mode disables slash commands
+	const ECortexWorkflowMode Workflow = FCortexFrontendSettings::Get().GetWorkflowMode();
+	if (Workflow == ECortexWorkflowMode::Direct)
+	{
+		CommandLine += TEXT("--disable-slash-commands ");
+	}
+
+	// Project context off: restrict setting sources
+	if (!FCortexFrontendSettings::Get().GetProjectContext())
+	{
+		CommandLine += TEXT("--setting-sources \"user,local\" ");
+	}
+
 	const FString AllowedTools = BuildAllowedToolsArg(AccessMode);
 	if (!AllowedTools.IsEmpty())
 	{
@@ -346,24 +426,64 @@ FString FCortexCliSession::BuildLaunchCommandLine(bool bResumeSession, ECortexAc
 		break;
 	}
 
-	const FString SystemPrompt = FString::Printf(TEXT("You are running inside the Unreal Editor's Cortex AI Chat panel. You have access to Cortex MCP tools for querying and manipulating the editor. Current access mode: %s."), *ModeString);
-	CommandLine += FString::Printf(TEXT("--append-system-prompt \"%s\" "), *SystemPrompt.Replace(TEXT("\""), TEXT("\\\"")));
+	FString SystemPrompt = FString::Printf(
+		TEXT("You are running inside the Unreal Editor's Cortex AI Chat panel. "
+			 "You have access to Cortex MCP tools for querying and manipulating the editor. "
+			 "Current access mode: %s."), *ModeString);
+
+	if (Workflow == ECortexWorkflowMode::Direct)
+	{
+		SystemPrompt += TEXT(" Workflow mode: Direct. Act immediately on requests using MCP tools. "
+			"Do not create planning documents, design docs, spec files, or brainstorming files. "
+			"Do not follow documentation-first workflows. Be concise. Prefer action over ceremony.");
+	}
+
+	const FString Directive = FCortexFrontendSettings::Get().GetCustomDirective();
+	if (!Directive.IsEmpty())
+	{
+		FString Sanitized = Directive;
+		Sanitized.ReplaceInline(TEXT("\n"), TEXT(" "));
+		Sanitized.ReplaceInline(TEXT("\r"), TEXT(" "));
+		Sanitized.ReplaceInline(TEXT("\t"), TEXT(" "));
+		Sanitized.ReplaceInline(TEXT("$("), TEXT(""));
+		Sanitized.ReplaceInline(TEXT("`"), TEXT(""));
+		Sanitized.ReplaceInline(TEXT("%"), TEXT(""));
+		Sanitized.ReplaceInline(TEXT("^"), TEXT(""));
+		Sanitized.ReplaceInline(TEXT("|"), TEXT(""));
+		Sanitized.ReplaceInline(TEXT("&"), TEXT(""));
+		Sanitized.ReplaceInline(TEXT(">"), TEXT(""));
+		Sanitized.ReplaceInline(TEXT("<"), TEXT(""));
+		SystemPrompt += TEXT(" ") + Sanitized;
+	}
+
+	CommandLine += FString::Printf(TEXT("--append-system-prompt \"%s\" "),
+		*SystemPrompt.Replace(TEXT("\""), TEXT("\\\"")));
 
 	return CommandLine;
 }
 
 FString FCortexCliSession::BuildAllowedToolsArg(ECortexAccessMode AccessMode) const
 {
+	// Built-in Claude Code tools allowed per access mode.
+	// --allowedTools is a whitelist: only listed tools are available to the LLM.
+	// Without listing built-in tools, the LLM can bypass MCP restrictions via Edit/Write/Bash.
+	static const TCHAR* ReadOnlyBuiltins = TEXT("Read,Glob,Grep,Agent,WebFetch,WebSearch,AskUserQuestion,TodoRead,TodoWrite");
+	static const TCHAR* GuidedBuiltins = TEXT("Read,Edit,Write,Bash,Glob,Grep,Agent,WebFetch,WebSearch,NotebookEdit,AskUserQuestion,TodoRead,TodoWrite");
+
 	switch (AccessMode)
 	{
 	case ECortexAccessMode::ReadOnly:
-		return TEXT("mcp__cortex_mcp__get_*,mcp__cortex_mcp__list_*,mcp__cortex_mcp__search_*,mcp__cortex_mcp__query_*,mcp__cortex_mcp__describe_*,mcp__cortex_mcp__find_*,mcp__cortex_mcp__schema_*,mcp__cortex_mcp__reflect_*");
+		return FString::Printf(TEXT("%s,"
+			"mcp__cortex_mcp__get_*,mcp__cortex_mcp__list_*,mcp__cortex_mcp__search_*,mcp__cortex_mcp__query_*,mcp__cortex_mcp__describe_*,mcp__cortex_mcp__find_*,mcp__cortex_mcp__schema_*,mcp__cortex_mcp__reflect_*"),
+			ReadOnlyBuiltins);
 	case ECortexAccessMode::Guided:
-		return TEXT("mcp__cortex_mcp__get_*,mcp__cortex_mcp__list_*,mcp__cortex_mcp__search_*,mcp__cortex_mcp__query_*,mcp__cortex_mcp__describe_*,mcp__cortex_mcp__find_*,mcp__cortex_mcp__schema_*,mcp__cortex_mcp__reflect_*,"
+		return FString::Printf(TEXT("%s,"
+			"mcp__cortex_mcp__get_*,mcp__cortex_mcp__list_*,mcp__cortex_mcp__search_*,mcp__cortex_mcp__query_*,mcp__cortex_mcp__describe_*,mcp__cortex_mcp__find_*,mcp__cortex_mcp__schema_*,mcp__cortex_mcp__reflect_*,"
 			"mcp__cortex_mcp__spawn_*,mcp__cortex_mcp__create_*,mcp__cortex_mcp__add_*,mcp__cortex_mcp__set_*,mcp__cortex_mcp__compile_*,mcp__cortex_mcp__connect_*,"
 			"mcp__cortex_mcp__graph_add_*,mcp__cortex_mcp__graph_connect,mcp__cortex_mcp__graph_list_*,mcp__cortex_mcp__graph_get_*,mcp__cortex_mcp__graph_set_*,mcp__cortex_mcp__graph_search_*,mcp__cortex_mcp__graph_auto_layout,"
 			"mcp__cortex_mcp__open_*,mcp__cortex_mcp__close_*,mcp__cortex_mcp__focus_*,mcp__cortex_mcp__select_*,"
-			"mcp__cortex_mcp__rename_*,mcp__cortex_mcp__configure_*,mcp__cortex_mcp__import_*,mcp__cortex_mcp__update_*,mcp__cortex_mcp__duplicate_*,mcp__cortex_mcp__reparent*,mcp__cortex_mcp__attach_*,mcp__cortex_mcp__detach_*,mcp__cortex_mcp__register_*,mcp__cortex_mcp__reload_*");
+			"mcp__cortex_mcp__rename_*,mcp__cortex_mcp__configure_*,mcp__cortex_mcp__import_*,mcp__cortex_mcp__update_*,mcp__cortex_mcp__duplicate_*,mcp__cortex_mcp__reparent*,mcp__cortex_mcp__attach_*,mcp__cortex_mcp__detach_*,mcp__cortex_mcp__register_*,mcp__cortex_mcp__reload_*"),
+			GuidedBuiltins);
 	case ECortexAccessMode::FullAccess:
 		return FString();
 	}
@@ -447,9 +567,41 @@ bool FCortexCliSession::SpawnProcess(ECortexAccessMode AccessMode, bool bResumeS
 		ProcessHandle,
 		PromptReadyEvent);
 
-	const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Idle);
-	BroadcastStateChange(PreviousState, ECortexSessionState::Idle, TEXT("Claude CLI session ready"));
+	// CAS: the compare_exchange_strong IS the atomicity guard against Cancel() races.
+	// The pre-check below is an optimization to avoid the log noise of a failing CAS
+	// when the state is clearly wrong — it does not close the race (the CAS does).
+	ECortexSessionState ExpectedState = State.load();
+	if (ExpectedState != ECortexSessionState::Spawning && ExpectedState != ECortexSessionState::Respawning)
+	{
+		UE_LOG(LogCortexFrontend, Log, TEXT("SpawnProcess: unexpected state %d before Idle transition, aborting"), static_cast<int32>(ExpectedState));
+		CleanupProcess();
+		return false;
+	}
+	if (!State.compare_exchange_strong(ExpectedState, ECortexSessionState::Idle))
+	{
+		// Cancel() raced and changed state between the load above and this CAS
+		UE_LOG(LogCortexFrontend, Log, TEXT("SpawnProcess: lost CAS race (state now %d), aborting Idle transition"), static_cast<int32>(ExpectedState));
+		CleanupProcess();
+		return false;
+	}
+	BroadcastStateChange(ExpectedState, ECortexSessionState::Idle, TEXT("Claude CLI session ready"));
 	UE_LOG(LogCortexFrontend, Log, TEXT("Claude CLI session ready (resume=%s)"), bResumeSession ? TEXT("true") : TEXT("false"));
+
+	// Drain any prompt queued during Spawning. Uses TransitionState (CAS) so a concurrent
+	// Cancel() between here and the CAS is handled safely.
+	bool bHasPendingPrompt = false;
+	{
+		FScopeLock Lock(&PromptMutex);
+		bHasPendingPrompt = PendingPrompt.IsSet();
+	}
+	if (bHasPendingPrompt)
+	{
+		if (TransitionState(ECortexSessionState::Idle, ECortexSessionState::Processing, TEXT("Draining queued prompt")))
+		{
+			WakeWorker();
+		}
+	}
+
 	return true;
 }
 
@@ -587,6 +739,7 @@ void FCortexCliSession::UpdateStreamingAssistantText(const FString& Text, bool b
 	{
 		CurrentStreamingEntry = MakeShared<FCortexChatEntry>();
 		CurrentStreamingEntry->Type = ECortexChatEntryType::AssistantMessage;
+		CurrentStreamingEntry->TurnIndex = CurrentTurnIndex;
 		ChatEntries.Add(CurrentStreamingEntry);
 	}
 
@@ -614,6 +767,14 @@ void FCortexCliSession::ReplaceStreamingEntry(const TArray<TSharedPtr<FCortexCha
 	}
 
 	ChatEntries.RemoveAt(CurrentIndex);
+
+	// Propagate TurnIndex from streaming entry to replacement entries
+	const int32 TurnIndex = CurrentStreamingEntry->TurnIndex;
+	for (const TSharedPtr<FCortexChatEntry>& Entry : ReplacementEntries)
+	{
+		Entry->TurnIndex = TurnIndex;
+	}
+
 	ChatEntries.Insert(ReplacementEntries, CurrentIndex);
 	CurrentStreamingEntry.Reset();
 }
@@ -692,6 +853,28 @@ FString FCortexCliSession::GetPendingPromptForTest() const
 {
 	FScopeLock Lock(&PromptMutex);
 	return PendingPrompt.Get(TEXT(""));
+}
+
+void FCortexCliSession::SetPendingPromptForTest(const FString& Prompt)
+{
+	FScopeLock Lock(&PromptMutex);
+	PendingPrompt = Prompt;
+}
+
+void FCortexCliSession::DrainPendingPromptForTest()
+{
+	// Tests the Idle -> Processing drain transition in isolation.
+	// Does not test SpawnProcess directly (WakeWorker is not mockable).
+	bool bHasPendingPrompt = false;
+	{
+		FScopeLock Lock(&PromptMutex);
+		bHasPendingPrompt = PendingPrompt.IsSet();
+	}
+	if (bHasPendingPrompt)
+	{
+		State.store(ECortexSessionState::Idle);
+		TransitionState(ECortexSessionState::Idle, ECortexSessionState::Processing, TEXT("Draining queued prompt (test)"));
+	}
 }
 
 TSharedPtr<FCortexChatEntry> FCortexCliSession::GetCurrentStreamingEntry() const

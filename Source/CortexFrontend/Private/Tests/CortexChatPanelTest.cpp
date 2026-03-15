@@ -64,10 +64,12 @@ bool FCortexChatPanelFailureCleanupTest::RunTest(const FString& Parameters)
     Result.bIsError = true;
     Panel->OnTurnComplete(Result);
 
-    TestEqual(TEXT("Failure should preserve the user entry and replace the streaming entry"), Panel->ChatEntries.Num(), 2);
-    if (Panel->ChatEntries.Num() == 2)
+    TestEqual(TEXT("Failure should produce 2 display rows"), Panel->DisplayRows.Num(), 2);
+    if (Panel->DisplayRows.Num() == 2)
     {
-        TestEqual(TEXT("Trailing entry should be assistant error text"), Panel->ChatEntries[1]->Text, FString(TEXT("Error: Failed to start Claude process")));
+        TestEqual(TEXT("Row 1 should be assistant error"),
+            Panel->DisplayRows[1]->PrimaryEntry->Text,
+            FString(TEXT("Error: Failed to start Claude process")));
     }
     return true;
 }
@@ -95,17 +97,17 @@ bool FCortexChatPanelCodeBlockTest::RunTest(const FString& Parameters)
     bool bFoundCodeBlock = false;
     bool bFoundLeadingText = false;
     bool bFoundTrailingText = false;
-    for (const TSharedPtr<FCortexChatEntry>& Entry : Panel->ChatEntries)
+    for (const TSharedPtr<FCortexChatDisplayRow>& Row : Panel->DisplayRows)
     {
-        if (Entry->Type == ECortexChatEntryType::CodeBlock && Entry->Text.Contains(TEXT("int Value = 42;")))
+        if (Row->RowType == ECortexChatRowType::CodeBlock && Row->PrimaryEntry->Text.Contains(TEXT("int Value = 42;")))
         {
             bFoundCodeBlock = true;
         }
-        if (Entry->Type == ECortexChatEntryType::AssistantMessage && Entry->Text.Contains(TEXT("Before")))
+        if (Row->RowType == ECortexChatRowType::AssistantTurn && Row->PrimaryEntry->Text.Contains(TEXT("Before")))
         {
             bFoundLeadingText = true;
         }
-        if (Entry->Type == ECortexChatEntryType::AssistantMessage && Entry->Text.Contains(TEXT("After")))
+        if (Row->RowType == ECortexChatRowType::AssistantTurn && Row->PrimaryEntry->Text.Contains(TEXT("After")))
         {
             bFoundTrailingText = true;
         }
@@ -134,6 +136,6 @@ bool FCortexChatPanelRejectedSendDoesNotAppendEntriesTest::RunTest(const FString
 
     Panel->SendMessage(TEXT("Should be rejected"));
 
-    TestEqual(TEXT("Rejected sends should not append user or assistant entries"), Panel->ChatEntries.Num(), 0);
+    TestEqual(TEXT("Rejected sends should not append display rows"), Panel->DisplayRows.Num(), 0);
     return true;
 }

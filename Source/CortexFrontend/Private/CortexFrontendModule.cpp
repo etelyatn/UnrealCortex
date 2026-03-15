@@ -3,6 +3,7 @@
 #include "Framework/Docking/TabManager.h"
 #include "IToolMenusModule.h"
 #include "Misc/CoreDelegates.h"
+#include "Rendering/CortexRichTextStyle.h"
 #include "Session/CortexCliSession.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
@@ -20,6 +21,8 @@ const FName FCortexFrontendModule::CortexChatTabId(TEXT("CortexFrontend"));
 void FCortexFrontendModule::StartupModule()
 {
     UE_LOG(LogCortexFrontend, Log, TEXT("CortexFrontend module starting up"));
+
+    FCortexRichTextStyle::Initialize();
 
     FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
         CortexChatTabId,
@@ -66,6 +69,8 @@ void FCortexFrontendModule::ShutdownModule()
     {
         FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(CortexChatTabId);
     }
+
+    FCortexRichTextStyle::Shutdown();
 }
 
 TWeakPtr<FCortexCliSession> FCortexFrontendModule::GetOrCreateSession()

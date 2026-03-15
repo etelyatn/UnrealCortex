@@ -1,7 +1,45 @@
 #include "Misc/AutomationTest.h"
 #include "CortexFrontendModule.h"
+#include "CortexFrontendSettings.h"
 #include "Modules/ModuleManager.h"
 #include "Session/CortexCliSession.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionConnectTest,
+    "Cortex.Frontend.Session.Connect",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionConnectTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-connect");
+    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(Config);
+
+    TestEqual(TEXT("Should start Inactive"), Session->GetStateForTest(), ECortexSessionState::Inactive);
+
+    const bool bResult = Session->Connect();
+
+    if (bResult)
+    {
+        // CLI found and process spawned: state is Idle or Processing (if pending prompt drained)
+        const ECortexSessionState StateAfter = Session->GetStateForTest();
+        TestTrue(TEXT("Successful Connect should leave state Idle or Processing"),
+            StateAfter == ECortexSessionState::Idle ||
+            StateAfter == ECortexSessionState::Processing);
+    }
+    else
+    {
+        // CLI not found: Connect() rolled back to Inactive cleanly.
+        // Returning true here is intentional — no CLI is a valid CI environment,
+        // not a test failure. The meaningful assertion is the rollback check below.
+        TestEqual(TEXT("Failed Connect should restore Inactive state"),
+            Session->GetStateForTest(), ECortexSessionState::Inactive);
+        AddInfo(TEXT("Claude CLI not found — connect failed cleanly (expected in CI)"));
+    }
+
+    Session->Shutdown();
+    return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildInitialLaunchArgsTest, "Cortex.Frontend.CliSession.BuildInitialLaunchArgs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildResumeLaunchArgsTest, "Cortex.Frontend.CliSession.BuildResumeLaunchArgs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -30,6 +68,10 @@ bool FCortexCliSessionBuildInitialLaunchArgsTest::RunTest(const FString& Paramet
     TestFalse(TEXT("Initial launch should not include resume"), CommandLine.Contains(TEXT("--resume")));
     TestTrue(TEXT("Initial launch should include MCP config"), CommandLine.Contains(TEXT("--mcp-config \"D:/UnrealProjects/CortexSandbox/.mcp.json\"")));
     TestTrue(TEXT("Initial launch should include allowed tools"), CommandLine.Contains(TEXT("--allowedTools")));
+    TestTrue(TEXT("Guided should include Edit built-in tool"), CommandLine.Contains(TEXT("Edit")));
+    TestTrue(TEXT("Guided should include Write built-in tool"), CommandLine.Contains(TEXT("Write")));
+    TestTrue(TEXT("Guided should include Bash built-in tool"), CommandLine.Contains(TEXT("Bash")));
+    TestTrue(TEXT("Guided should include Read built-in tool"), CommandLine.Contains(TEXT("Read")));
     return true;
 }
 
@@ -46,7 +88,13 @@ bool FCortexCliSessionBuildResumeLaunchArgsTest::RunTest(const FString& Paramete
 
     TestTrue(TEXT("Resume launch should include resume"), CommandLine.Contains(TEXT("--resume \"session-456\"")));
     TestFalse(TEXT("Resume launch should not include session id"), CommandLine.Contains(TEXT("--session-id")));
-    TestTrue(TEXT("Resume launch should include read-only tool patterns"), CommandLine.Contains(TEXT("mcp__cortex_mcp__get_*")));
+    TestTrue(TEXT("Resume launch should include read-only MCP patterns"), CommandLine.Contains(TEXT("mcp__cortex_mcp__get_*")));
+    TestTrue(TEXT("Read-Only should include Read built-in tool"), CommandLine.Contains(TEXT("Read")));
+    TestTrue(TEXT("Read-Only should include Glob built-in tool"), CommandLine.Contains(TEXT("Glob")));
+    TestTrue(TEXT("Read-Only should include Grep built-in tool"), CommandLine.Contains(TEXT("Grep")));
+    TestFalse(TEXT("Read-Only should NOT include Edit built-in tool"), CommandLine.Contains(TEXT(",Edit,")));
+    TestFalse(TEXT("Read-Only should NOT include Write built-in tool"), CommandLine.Contains(TEXT(",Write,")));
+    TestFalse(TEXT("Read-Only should NOT include Bash built-in tool"), CommandLine.Contains(TEXT(",Bash,")));
     return true;
 }
 
@@ -212,7 +260,7 @@ bool FCortexCliSessionTokenAccumulationTest::RunTest(const FString& Parameters)
 
     TestEqual(TEXT("TotalInputTokens after first event"), Session.GetTotalInputTokens(), (int64)1500);
     TestEqual(TEXT("TotalOutputTokens after first event"), Session.GetTotalOutputTokens(), (int64)200);
-    TestEqual(TEXT("ConversationContextTokens"), Session.GetConversationContextTokens(), (int64)1500);
+    TestEqual(TEXT("ConversationContextTokens"), Session.GetConversationContextTokens(), (int64)2400);
 
     // NewChat should preserve session totals but reset conversation context
     Session.NewChat();
@@ -246,5 +294,126 @@ bool FCortexCliSessionModelInfoTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("ModelId"), Session.GetModelId(), FString(TEXT("claude-sonnet-4-6")));
     TestEqual(TEXT("Provider"), Session.GetProvider(), FString(TEXT("Claude Code")));
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionToolCallTurnIndexTest,
+    "Cortex.Frontend.Session.ToolCallTurnIndex",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionToolCallTurnIndexTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-toolcall-turn");
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Processing);
+
+    Session.AddUserPromptEntry(TEXT("Do something"));
+    // CurrentTurnIndex is now 1
+
+    FCortexStreamEvent ToolEvent;
+    ToolEvent.Type = ECortexStreamEventType::ToolUse;
+    ToolEvent.ToolName = TEXT("list_actors");
+    ToolEvent.ToolCallId = TEXT("call-1");
+    Session.HandleWorkerEvent(ToolEvent);
+
+    const TArray<TSharedPtr<FCortexChatEntry>>& Entries = Session.GetChatEntries();
+    // Find the tool call entry
+    TSharedPtr<FCortexChatEntry> ToolEntry;
+    for (const auto& E : Entries)
+    {
+        if (E->Type == ECortexChatEntryType::ToolCall)
+        {
+            ToolEntry = E;
+            break;
+        }
+    }
+
+    TestTrue(TEXT("Tool call entry should exist"), ToolEntry.IsValid());
+    if (ToolEntry.IsValid())
+    {
+        TestEqual(TEXT("Tool call TurnIndex should match current turn"),
+            ToolEntry->TurnIndex, 1);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionPendingPromptDrainedAfterSpawnTest,
+    "Cortex.Frontend.Session.PendingPromptDrainedAfterSpawn",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionPendingPromptDrainedAfterSpawnTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-drain");
+    FCortexCliSession Session(Config);
+
+    // Verify the drain transition: Idle -> Processing when pending prompt exists.
+    // DrainPendingPromptForTest internally resets state to Idle before running the
+    // CAS, so the pre-drain state does not matter. We test that TransitionState
+    // correctly moves to Processing when a prompt is pending.
+    Session.SetPendingPromptForTest(TEXT("queued message"));  // mutex-safe internally
+    Session.DrainPendingPromptForTest();
+
+    TestEqual(TEXT("State should be Processing after draining queued prompt"),
+        Session.GetStateForTest(), ECortexSessionState::Processing);
+
+    Session.Shutdown();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionContextTokensIncludesCacheTest,
+    "Cortex.Frontend.Session.ContextTokensIncludesCache",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionContextTokensIncludesCacheTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-ctx");
+    FCortexCliSession Session(Config);
+
+    FCortexStreamEvent Event;
+    Event.Type = ECortexStreamEventType::TextContent;
+    Event.Text = TEXT("Hello");
+    Event.InputTokens = 50;
+    Event.OutputTokens = 100;
+    Event.CacheReadTokens = 45000;
+    Event.CacheCreationTokens = 5000;
+    Session.HandleWorkerEvent(Event);
+
+    // Context should be total: input + cache_read + cache_creation = 50050
+    TestEqual(TEXT("ConversationContextTokens should include all input sources"),
+        Session.GetConversationContextTokens(), static_cast<int64>(50050));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionModelFlagTest,
+    "Cortex.Frontend.Session.ModelFlag",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionModelFlagTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-model-flag");
+    FCortexCliSession Session(Config);
+
+    // When model is "Default", no --model flag
+    FCortexFrontendSettings::Get().SetSelectedModel(TEXT("Default"));
+    FString CmdLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::FullAccess);
+    TestFalse(TEXT("Default should not include --model flag"),
+        CmdLine.Contains(TEXT("--model")));
+
+    // When model is explicit, --model flag present
+    FCortexFrontendSettings::Get().SetSelectedModel(TEXT("claude-opus-4-6"));
+    CmdLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::FullAccess);
+    TestTrue(TEXT("Explicit model should include --model flag"),
+        CmdLine.Contains(TEXT("--model \"claude-opus-4-6\"")));
+
+    // Reset to default
+    FCortexFrontendSettings::Get().SetSelectedModel(TEXT("Default"));
     return true;
 }

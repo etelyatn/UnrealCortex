@@ -1,5 +1,7 @@
 #include "Misc/AutomationTest.h"
+#include "Rendering/CortexChatMarshaller.h"
 #include "Rendering/CortexMarkdownParser.h"
+#include "Rendering/CortexRichTextStyle.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexMarkdownParserBlockSplitTest,
 	"Cortex.Frontend.MarkdownParser.BlockSplit",
@@ -71,5 +73,58 @@ bool FCortexMarkdownParserListTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Should be unordered list"), static_cast<uint8>(Blocks[0].Type), static_cast<uint8>(ECortexMarkdownBlockType::UnorderedList));
 		TestEqual(TEXT("Should have 3 items"), Blocks[0].ListItems.Num(), 3);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexMarkdownParserEscapingTest,
+	"Cortex.Frontend.MarkdownParser.AngleBracketEscaping",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexMarkdownParserEscapingTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	// Inline code with angle brackets: `TArray<int32>` must escape the inner <>
+	const FString Result = CortexMarkdownParser::ToRichText(TEXT("Use `TArray<int32>` for arrays"));
+
+	// The angle brackets inside <Code>...</> must be escaped so SRichTextBlock
+	// doesn't try to parse <int32> as a decorator tag
+	TestTrue(TEXT("Should escape < inside code span"),
+		Result.Contains(TEXT("TArray&lt;int32&gt;")));
+	TestTrue(TEXT("Should still have Code tag"), Result.Contains(TEXT("<Code>")));
+	TestFalse(TEXT("Should not have literal <int32>"), Result.Contains(TEXT("<int32>")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexMarkdownParserUnderscoreIdentifierTest,
+	"Cortex.Frontend.MarkdownParser.UnderscoreIdentifier",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexMarkdownParserUnderscoreIdentifierTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	// Identifiers with underscores must NOT be treated as italic
+	const FString Result = CortexMarkdownParser::ToRichText(TEXT("Use BP_SimpleActor_Component in the level"));
+
+	TestFalse(TEXT("Should not contain <Italic> tag"),
+		Result.Contains(TEXT("<Italic>")));
+	TestTrue(TEXT("Should preserve BP_SimpleActor_Component intact"),
+		Result.Contains(TEXT("BP_SimpleActor_Component")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatMarshallerCreateTest,
+	"Cortex.Frontend.ChatMarshaller.Create",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexChatMarshallerCreateTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexRichTextStyle::Initialize();
+
+	// Verify marshaller can be created — catches linker issues and style set problems
+	TSharedRef<FCortexChatMarshaller> Marshaller = FCortexChatMarshaller::Create();
+	AddInfo(TEXT("FCortexChatMarshaller::Create succeeded"));
+
+	FCortexRichTextStyle::Shutdown();
 	return true;
 }

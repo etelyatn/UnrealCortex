@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "Rendering/CortexRichTextStyle.h"
 #include "Widgets/SCortexChatMessage.h"
 #include "Framework/Application/SlateApplication.h"
 
@@ -35,5 +36,31 @@ bool FCortexChatMessageMarkdownWidgetTest::RunTest(const FString& Parameters)
         AddInfo(TEXT("Desired size is 0 (NullRHI / no layout pass) — size assertions skipped"));
     }
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSCortexChatMessageWrapWidthDefaultTest,
+    "Cortex.Frontend.ChatMessage.WrapWidthDefault",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FSCortexChatMessageWrapWidthDefaultTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    // Ensure style set is initialized — module startup handles this in production,
+    // but NullRHI test runner may not fully initialize editor modules.
+    FCortexRichTextStyle::Initialize();
+
+    // This test guards the WrapWidth default value initialization.
+    // It does NOT verify that SRichTextBlock uses WrapTextAt — that is enforced
+    // by code review of BuildContentForText. A unit test cannot inspect Slate
+    // widget attributes without a rendered layout pass (NullRHI has no geometry).
+    TSharedRef<SCortexChatMessage> Widget = SNew(SCortexChatMessage)
+        .Message(TEXT("Test message"))
+        .IsUser(false);
+
+    // Default WrapWidth must be positive and large enough for SListView to calculate
+    // a meaningful row height before the first tick runs.
+    TestTrue(TEXT("Default WrapWidth should be positive"), Widget->GetWrapWidth() > 0.0f);
+    TestTrue(TEXT("Default WrapWidth should be at least 100px"), Widget->GetWrapWidth() >= 100.0f);
     return true;
 }

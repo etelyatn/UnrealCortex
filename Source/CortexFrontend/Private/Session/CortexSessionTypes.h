@@ -10,6 +10,21 @@ enum class ECortexAccessMode : uint8
     FullAccess
 };
 
+enum class ECortexEffortLevel : uint8
+{
+    Default,
+    Low,
+    Medium,
+    High,
+    Maximum
+};
+
+enum class ECortexWorkflowMode : uint8
+{
+    Direct,
+    Thorough
+};
+
 enum class ECortexSessionState : uint8
 {
     Inactive,

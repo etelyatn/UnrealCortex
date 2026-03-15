@@ -47,97 +47,99 @@ uint32 FCortexCliWorker::Run()
 {
 	UE_LOG(LogCortexFrontend, Log, TEXT("CLI Worker thread started"));
 
+	double LastDataTime = FPlatformTime::Seconds();
+	bool bAwaitingResult = false;
+
+	// Unified poll loop: always read stdout (captures init events + response data)
+	// and non-blocking check for pending prompts. This ensures CLI events emitted
+	// before the first user prompt are processed immediately.
 	while (!bStopRequested.load(std::memory_order_acquire))
 	{
-		if (PromptReadyEvent == nullptr || !PromptReadyEvent->Wait(1000))
+		// Send pending prompt if signaled (non-blocking check)
+		if (PromptReadyEvent != nullptr && PromptReadyEvent->Wait(0))
 		{
-			continue;
-		}
-
-		if (bStopRequested.load(std::memory_order_acquire))
-		{
-			break;
-		}
-
-		// Briefly pin Session to consume the pending prompt envelope
-		FString PromptEnvelope;
-		{
-			TSharedPtr<FCortexCliSession> SessionPin = WeakSession.Pin();
-			if (!SessionPin.IsValid())
+			if (bStopRequested.load(std::memory_order_acquire))
 			{
 				break;
 			}
-			PromptEnvelope = SessionPin->ConsumePendingPromptEnvelope();
+
+			FString PromptEnvelope;
+			{
+				TSharedPtr<FCortexCliSession> SessionPin = WeakSession.Pin();
+				if (!SessionPin.IsValid())
+				{
+					break;
+				}
+				PromptEnvelope = SessionPin->ConsumePendingPromptEnvelope();
+			}
+
+			if (!PromptEnvelope.IsEmpty())
+			{
+				if (StdinWritePipe == nullptr || !FPlatformProcess::WritePipe(StdinWritePipe, PromptEnvelope))
+				{
+					UE_LOG(LogCortexFrontend, Warning, TEXT("Failed to write prompt to CLI stdin"));
+					AsyncTask(ENamedThreads::GameThread, [WeakCopy = WeakSession]()
+					{
+						if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
+						{
+							Pinned->HandleProcessExited(TEXT("Failed to write prompt to Claude CLI"));
+						}
+					});
+					break;
+				}
+
+				UE_LOG(LogCortexFrontend, Verbose, TEXT("Prompt written to CLI stdin"));
+				bAwaitingResult = true;
+				LastDataTime = FPlatformTime::Seconds();
+			}
 		}
 
-		if (PromptEnvelope.IsEmpty())
+		// Always read stdout — captures both init events and response data
+		FString Chunk = StdoutReadPipe != nullptr
+			? FPlatformProcess::ReadPipe(StdoutReadPipe)
+			: FString();
+
+		if (!Chunk.IsEmpty())
 		{
+			LastDataTime = FPlatformTime::Seconds();
+			const bool bSawResult = ParseAndDispatch(Chunk);
+			if (bSawResult)
+			{
+				UE_LOG(LogCortexFrontend, Log, TEXT("Turn complete (result event received)"));
+				bAwaitingResult = false;
+			}
 			continue;
 		}
 
-		if (StdinWritePipe == nullptr || !FPlatformProcess::WritePipe(StdinWritePipe, PromptEnvelope))
+		// No data — check process health
+		if (!FPlatformProcess::IsProcRunning(ProcessHandle))
 		{
-			UE_LOG(LogCortexFrontend, Warning, TEXT("Failed to write prompt to CLI stdin"));
+			UE_LOG(LogCortexFrontend, Log, TEXT("CLI process exited"));
 			AsyncTask(ENamedThreads::GameThread, [WeakCopy = WeakSession]()
 			{
 				if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
 				{
-					Pinned->HandleProcessExited(TEXT("Failed to write prompt to Claude CLI"));
+					Pinned->HandleProcessExited(TEXT("Claude CLI process exited"));
 				}
 			});
-			continue;
+			break;
 		}
 
-		UE_LOG(LogCortexFrontend, Verbose, TEXT("Prompt written to CLI stdin, entering response read loop"));
-
-		double LastDataTime = FPlatformTime::Seconds();
-
-		while (!bStopRequested.load(std::memory_order_relaxed))
+		// Timeout check (only while awaiting a response to a sent prompt)
+		if (bAwaitingResult && FPlatformTime::Seconds() - LastDataTime > CortexCliWorkerTimeoutSeconds)
 		{
-			FString Chunk = StdoutReadPipe != nullptr
-				? FPlatformProcess::ReadPipe(StdoutReadPipe)
-				: FString();
-
-			if (!Chunk.IsEmpty())
+			UE_LOG(LogCortexFrontend, Warning, TEXT("CLI response timed out after %.0f seconds"), CortexCliWorkerTimeoutSeconds);
+			AsyncTask(ENamedThreads::GameThread, [WeakCopy = WeakSession]()
 			{
-				LastDataTime = FPlatformTime::Seconds();
-				const bool bSawResult = ParseAndDispatch(Chunk);
-				if (bSawResult)
+				if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
 				{
-					UE_LOG(LogCortexFrontend, Log, TEXT("Turn complete (result event received)"));
-					break;
+					Pinned->HandleProcessExited(TEXT("Claude CLI timed out"));
 				}
-				continue;
-			}
-
-			if (!FPlatformProcess::IsProcRunning(ProcessHandle))
-			{
-				UE_LOG(LogCortexFrontend, Log, TEXT("CLI process exited during response read"));
-				AsyncTask(ENamedThreads::GameThread, [WeakCopy = WeakSession]()
-				{
-					if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
-					{
-						Pinned->HandleProcessExited(TEXT("Claude CLI process exited"));
-					}
-				});
-				break;
-			}
-
-			if (FPlatformTime::Seconds() - LastDataTime > CortexCliWorkerTimeoutSeconds)
-			{
-				UE_LOG(LogCortexFrontend, Warning, TEXT("CLI response timed out after %.0f seconds"), CortexCliWorkerTimeoutSeconds);
-				AsyncTask(ENamedThreads::GameThread, [WeakCopy = WeakSession]()
-				{
-					if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
-					{
-						Pinned->HandleProcessExited(TEXT("Claude CLI timed out"));
-					}
-				});
-				break;
-			}
-
-			FPlatformProcess::Sleep(0.01f);
+			});
+			break;
 		}
+
+		FPlatformProcess::Sleep(0.01f);
 	}
 
 	UE_LOG(LogCortexFrontend, Log, TEXT("CLI Worker thread exiting"));

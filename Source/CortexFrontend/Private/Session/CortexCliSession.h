@@ -20,8 +20,10 @@ class FCortexCliSession : public TSharedFromThis<FCortexCliSession>
 public:
 	explicit FCortexCliSession(const FCortexSessionConfig& InConfig);
 
+	bool Connect();
 	bool SendPrompt(const FCortexPromptRequest& Request);
 	bool Cancel();
+	bool Reconnect();
 	void NewChat();
 	void Shutdown();
 
@@ -29,6 +31,10 @@ public:
 	void HandleProcessExited(const FString& Reason);
 
 	const TArray<TSharedPtr<FCortexChatEntry>>& GetChatEntries() const;
+#if WITH_DEV_AUTOMATION_TESTS
+	TArray<TSharedPtr<FCortexChatEntry>>& GetChatEntriesMutable() { return ChatEntries; }
+#endif
+	TSharedPtr<FCortexChatEntry> GetCurrentStreamingEntry() const;
 	FString GetSessionId() const;
 	ECortexSessionState GetState() const;
 	void AddUserPromptEntry(const FString& Message);
@@ -44,11 +50,11 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnTokenUsageUpdated);
 	FOnTokenUsageUpdated OnTokenUsageUpdated;
 
-	int64 GetTotalInputTokens() const { return TotalInputTokens; }
-	int64 GetTotalOutputTokens() const { return TotalOutputTokens; }
-	int64 GetTotalCacheReadTokens() const { return TotalCacheReadTokens; }
-	int64 GetTotalCacheCreationTokens() const { return TotalCacheCreationTokens; }
-	int64 GetConversationContextTokens() const { return ConversationContextTokens; }
+	int64 GetTotalInputTokens() const { return TotalInputTokens.load(); }
+	int64 GetTotalOutputTokens() const { return TotalOutputTokens.load(); }
+	int64 GetTotalCacheReadTokens() const { return TotalCacheReadTokens.load(); }
+	int64 GetTotalCacheCreationTokens() const { return TotalCacheCreationTokens.load(); }
+	int64 GetConversationContextTokens() const { return ConversationContextTokens.load(); }
 	FString GetModelId() const { return ModelId; }
 	FString GetProvider() const { return Provider; }
 
@@ -68,6 +74,22 @@ private:
 	friend class FCortexCliSessionCancelTransitionsTest;
 	friend class FCortexCliSessionNewChatGeneratesFreshSessionIdTest;
 	friend class FCortexChatPanelRejectedSendDoesNotAppendEntriesTest;
+	friend class FCortexCliSessionToolCallTurnIndexTest;
+	friend class FCortexCliSessionConnectTest;
+	friend class FCortexCliSessionPendingPromptDrainedAfterSpawnTest;
+	friend class FCortexCliSessionModelFlagTest;
+	friend class FCortexCmdLineEffortDefaultTest;
+	friend class FCortexCmdLineEffortMediumTest;
+	friend class FCortexCmdLineWorkflowDirectTest;
+	friend class FCortexCmdLineWorkflowThoroughTest;
+	friend class FCortexCmdLineProjectContextOffTest;
+	friend class FCortexCmdLineProjectContextOnTest;
+	friend class FCortexCmdLineDirectiveTest;
+	friend class FCortexCmdLineDirectiveEmptyTest;
+	friend class FCortexCmdLineDirectiveSanitizationTest;
+	friend class FCortexReconnectRejectsNonIdleTest;
+	friend class FCortexReconnectFromIdleTransitionsTest;
+	friend class FCortexReconnectDirtyStatePreservedOnFailureTest;
 
 	FString BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const;
 	FString BuildAllowedToolsArg(ECortexAccessMode AccessMode) const;
@@ -85,16 +107,19 @@ private:
 	ECortexSessionState GetStateForTest() const;
 	void SetStateForTest(ECortexSessionState NewState);
 	FString GetPendingPromptForTest() const;
-	TSharedPtr<FCortexChatEntry> GetCurrentStreamingEntry() const;
+	void SetPendingPromptForTest(const FString& Prompt);  // mutex-safe
+	void DrainPendingPromptForTest();
 
 	// Session-scoped token accumulators (survive conversation resets)
-	int64 TotalInputTokens = 0;
-	int64 TotalOutputTokens = 0;
-	int64 TotalCacheReadTokens = 0;
-	int64 TotalCacheCreationTokens = 0;
+	// Atomic: written on worker thread, read on Game Thread for display
+	std::atomic<int64> TotalInputTokens{0};
+	std::atomic<int64> TotalOutputTokens{0};
+	std::atomic<int64> TotalCacheReadTokens{0};
+	std::atomic<int64> TotalCacheCreationTokens{0};
 
 	// Per-conversation context tracking (reset on NewChat)
-	int64 ConversationContextTokens = 0;
+	// Atomic: written on worker thread, read on Game Thread for display
+	std::atomic<int64> ConversationContextTokens{0};
 
 	// Model info (set once from system.init)
 	FString ModelId;

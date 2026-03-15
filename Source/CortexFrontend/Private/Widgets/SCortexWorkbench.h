@@ -17,13 +17,14 @@ public:
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
+	virtual ~SCortexWorkbench();
 
 	TSharedPtr<FTabManager> GetTabManager() const { return TabManager; }
 
 private:
 	TSharedRef<SDockTab> SpawnChatTab(const FSpawnTabArgs& Args);
 	void OnSidebarToggle();
-	FOptionalSize GetSidebarWidth() const;
+	float GetSidebarSlotValue() const;
 
 	TSharedPtr<FTabManager> TabManager;
 	TWeakPtr<FCortexCliSession> SessionWeak;

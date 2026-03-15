@@ -1,8 +1,11 @@
 #include "Widgets/SCortexSidebar.h"
 
 #include "CortexFrontendModule.h"
+#include "CortexFrontendSettings.h"
 #include "Session/CortexCliSession.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SSegmentedControl.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/Layout/SBorder.h"
@@ -16,12 +19,71 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 	SessionWeak = InArgs._Session;
 	OnCollapse = InArgs._OnCollapse;
 
+	// Populate model dropdown options
+	const TArray<FString> Models = FCortexFrontendSettings::Get().GetAvailableModels();
+	const FString& Selected = FCortexFrontendSettings::Get().GetSelectedModel();
+	for (const FString& Model : Models)
+	{
+		TSharedPtr<FString> Option = MakeShared<FString>(Model);
+		ModelOptions.Add(Option);
+		if (Model == Selected)
+		{
+			SelectedModelOption = Option;
+		}
+	}
+	if (!SelectedModelOption.IsValid() && ModelOptions.Num() > 0)
+	{
+		SelectedModelOption = ModelOptions[0];
+	}
+
+	// Populate access mode dropdown
+	AccessModeOptions.Add(MakeShared<FString>(TEXT("Read-Only")));
+	AccessModeOptions.Add(MakeShared<FString>(TEXT("Guided")));
+	AccessModeOptions.Add(MakeShared<FString>(TEXT("Full Access")));
+
+	const FString CurrentMode = FCortexFrontendSettings::Get().GetAccessModeString();
+	for (const TSharedPtr<FString>& Option : AccessModeOptions)
+	{
+		if (*Option == CurrentMode)
+		{
+			SelectedAccessModeOption = Option;
+			break;
+		}
+	}
+	if (!SelectedAccessModeOption.IsValid())
+	{
+		SelectedAccessModeOption = AccessModeOptions[0];
+	}
+
+	// Populate effort dropdown
+	static const TArray<FString> EffortNames = {
+		TEXT("Default"), TEXT("Low"), TEXT("Medium"), TEXT("High"), TEXT("Max")
+	};
+	static const TArray<ECortexEffortLevel> EffortValues = {
+		ECortexEffortLevel::Default, ECortexEffortLevel::Low,
+		ECortexEffortLevel::Medium, ECortexEffortLevel::High, ECortexEffortLevel::Maximum
+	};
+	const ECortexEffortLevel CurrentEffort = FCortexFrontendSettings::Get().GetEffortLevel();
+	for (int32 i = 0; i < EffortNames.Num(); ++i)
+	{
+		TSharedPtr<FString> Option = MakeShared<FString>(EffortNames[i]);
+		EffortOptions.Add(Option);
+		if (EffortValues[i] == CurrentEffort)
+		{
+			SelectedEffortOption = Option;
+		}
+	}
+	if (!SelectedEffortOption.IsValid() && EffortOptions.Num() > 0)
+	{
+		SelectedEffortOption = EffortOptions[0];
+	}
+
 	// Subscribe to session events using weak lambda (SWidget doesn't support AddSP directly)
 	if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
 	{
 		TWeakPtr<SCortexSidebar> SidebarWeak = SharedThis(this);
 
-		Session->OnTokenUsageUpdated.AddLambda([SidebarWeak]()
+		TokenUsageHandle = Session->OnTokenUsageUpdated.AddLambda([SidebarWeak]()
 		{
 			if (TSharedPtr<SCortexSidebar> Pinned = SidebarWeak.Pin())
 			{
@@ -29,7 +91,7 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 			}
 		});
 
-		Session->OnStateChanged.AddLambda([SidebarWeak](const FCortexSessionStateChange& Change)
+		StateChangedHandle = Session->OnStateChanged.AddLambda([SidebarWeak](const FCortexSessionStateChange& Change)
 		{
 			if (TSharedPtr<SCortexSidebar> Pinned = SidebarWeak.Pin())
 			{
@@ -81,17 +143,267 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 				.BodyContent()
 				[
 					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 8.0f, 2.0f)
 					[
 						SAssignNew(ProviderText, STextBlock)
 						.Text(FText::FromString(TEXT("\u2014")))
 						.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
 					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+					// Model label
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 8.0f, 1.0f)
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Model")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
+					]
+					// Model dropdown
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 2.0f)
+					[
+						SAssignNew(ModelComboBox, SComboBox<TSharedPtr<FString>>)
+						.OptionsSource(&ModelOptions)
+						.OnSelectionChanged_Lambda([this](TSharedPtr<FString> Selection, ESelectInfo::Type)
+						{
+							if (Selection.IsValid())
+							{
+								SelectedModelOption = Selection;
+								FCortexFrontendSettings::Get().SetSelectedModel(*Selection);
+							}
+						})
+						.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+						{
+							return SNew(SBox)
+								.Padding(FMargin(4.0f, 2.0f))
+								[
+									SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+								];
+						})
+						.ToolTipText(FText::FromString(TEXT("AI model for this session. Larger models are more capable but slower.")))
+						[
+							SNew(STextBlock)
+							.Text_Lambda([this]() -> FText
+							{
+								return SelectedModelOption.IsValid()
+									? FText::FromString(*SelectedModelOption)
+									: FText::FromString(TEXT("Default"));
+							})
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+						]
+					]
+					// Effort label
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 8.0f, 1.0f)
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Effort")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
+						.ToolTipText(FText::FromString(TEXT("How much thinking the AI does. Default = model decides, Low = fast and brief, Max = thorough and detailed.")))
+					]
+					// Effort dropdown
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 2.0f)
+					[
+						SAssignNew(EffortComboBox, SComboBox<TSharedPtr<FString>>)
+						.OptionsSource(&EffortOptions)
+						.OnSelectionChanged_Lambda([this](TSharedPtr<FString> Selection, ESelectInfo::Type)
+						{
+							if (Selection.IsValid())
+							{
+								SelectedEffortOption = Selection;
+								const FString& Val = *Selection;
+								ECortexEffortLevel Level = ECortexEffortLevel::Default;
+								if (Val == TEXT("Low")) Level = ECortexEffortLevel::Low;
+								else if (Val == TEXT("Medium")) Level = ECortexEffortLevel::Medium;
+								else if (Val == TEXT("High")) Level = ECortexEffortLevel::High;
+								else if (Val == TEXT("Max")) Level = ECortexEffortLevel::Maximum;
+								FCortexFrontendSettings::Get().SetEffortLevel(Level);
+							}
+						})
+						.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+						{
+							return SNew(SBox)
+								.Padding(FMargin(4.0f, 2.0f))
+								[
+									SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+								];
+						})
+						.ToolTipText(FText::FromString(TEXT("How much thinking the AI does. Default = model decides, Low = fast and brief, Max = thorough and detailed.")))
+						[
+							SNew(STextBlock)
+							.Text_Lambda([this]() -> FText
+							{
+								return SelectedEffortOption.IsValid()
+									? FText::FromString(*SelectedEffortOption)
+									: FText::FromString(TEXT("Default"));
+							})
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+						]
+					]
+					// Access label
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 8.0f, 1.0f)
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Access")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
+					]
+					// Access dropdown
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 2.0f)
+					[
+						SAssignNew(AccessModeComboBox, SComboBox<TSharedPtr<FString>>)
+						.OptionsSource(&AccessModeOptions)
+						.OnSelectionChanged_Lambda([this](TSharedPtr<FString> Selection, ESelectInfo::Type)
+						{
+							if (Selection.IsValid())
+							{
+								SelectedAccessModeOption = Selection;
+								if (*Selection == TEXT("Read-Only"))
+								{
+									FCortexFrontendSettings::Get().SetAccessMode(ECortexAccessMode::ReadOnly);
+								}
+								else if (*Selection == TEXT("Guided"))
+								{
+									FCortexFrontendSettings::Get().SetAccessMode(ECortexAccessMode::Guided);
+								}
+								else if (*Selection == TEXT("Full Access"))
+								{
+									FCortexFrontendSettings::Get().SetAccessMode(ECortexAccessMode::FullAccess);
+								}
+							}
+						})
+						.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+						{
+							return SNew(SBox)
+								.Padding(FMargin(4.0f, 2.0f))
+								[
+									SNew(STextBlock)
+									.Text(FText::FromString(*Item))
+									.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+								];
+						})
+						.ToolTipText(FText::FromString(TEXT("Controls which tools the AI can use. Read-Only = queries only, Guided = can create and edit, Full Access = unrestricted.")))
+						[
+							SNew(STextBlock)
+							.Text_Lambda([this]() -> FText
+							{
+								return SelectedAccessModeOption.IsValid()
+									? FText::FromString(*SelectedAccessModeOption)
+									: FText::FromString(TEXT("Read-Only"));
+							})
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+						]
+					]
+					// Hint text
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 4.0f)
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Applied on new chat session")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Italic", 7))
+						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("666666")))))
+					]
+					// Active model
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f, 8.0f, 4.0f)
 					[
 						SAssignNew(ModelText, STextBlock)
-						.Text(FText::FromString(TEXT("\u2014")))
+						.Text(FText::FromString(TEXT("Active: \u2014")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
 						.ColorAndOpacity(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888"))))
+					]
+				]
+			]
+			// Session section
+			+ SScrollBox::Slot()
+			[
+				SNew(SExpandableArea)
+				.AreaTitle(FText::FromString(TEXT("Session")))
+				.InitiallyCollapsed(false)
+				.BodyContent()
+				[
+					SNew(SVerticalBox)
+					// Workflow mode label + toggle
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 8.0f, 1.0f)
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Workflow")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 4.0f)
+					[
+						SAssignNew(WorkflowToggle, SSegmentedControl<ECortexWorkflowMode>)
+						.Value(FCortexFrontendSettings::Get().GetWorkflowMode())
+						.OnValueChanged_Lambda([](ECortexWorkflowMode NewMode)
+						{
+							FCortexFrontendSettings::Get().SetWorkflowMode(NewMode);
+						})
+						.ToolTipText(FText::FromString(TEXT("Direct = act immediately, no planning workflows. Skills like /commit and /review-pr are unavailable. Thorough = full brainstorming, spec review, and planning with all skills.")))
+						+ SSegmentedControl<ECortexWorkflowMode>::Slot(ECortexWorkflowMode::Direct)
+						.Text(FText::FromString(TEXT("Direct")))
+						+ SSegmentedControl<ECortexWorkflowMode>::Slot(ECortexWorkflowMode::Thorough)
+						.Text(FText::FromString(TEXT("Thorough")))
+					]
+					// Project context checkbox
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f, 8.0f, 2.0f)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+						[
+							SAssignNew(ProjectContextCheckbox, SCheckBox)
+							.IsChecked_Lambda([]() -> ECheckBoxState
+							{
+								return FCortexFrontendSettings::Get().GetProjectContext()
+									? ECheckBoxState::Checked
+									: ECheckBoxState::Unchecked;
+							})
+							.OnCheckStateChanged_Lambda([](ECheckBoxState NewState)
+							{
+								FCortexFrontendSettings::Get().SetProjectContext(
+									NewState == ECheckBoxState::Checked);
+							})
+							.ToolTipText(FText::FromString(TEXT("Include project instructions (CLAUDE.md), settings, and tool permissions. Turning off may require re-approving MCP tools.")))
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(TEXT("Project Context")))
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+							.ToolTipText(FText::FromString(TEXT("Include project instructions (CLAUDE.md), settings, and tool permissions. Turning off may require re-approving MCP tools.")))
+						]
+					]
+				]
+			]
+			// Custom Directive section
+			+ SScrollBox::Slot()
+			[
+				SNew(SExpandableArea)
+				.AreaTitle(FText::FromString(TEXT("Custom Directive")))
+				.InitiallyCollapsed(true)
+				.BodyContent()
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f)
+					[
+						SAssignNew(DirectiveTextBox, SEditableTextBox)
+						.HintText(FText::FromString(TEXT("Optional instructions...")))
+						.Text(FText::FromString(FCortexFrontendSettings::Get().GetCustomDirective()))
+						.OnTextCommitted_Lambda([](const FText& NewText, ETextCommit::Type CommitType)
+						{
+							FString Directive = NewText.ToString();
+							if (Directive.Len() > 500)
+							{
+								Directive = Directive.Left(500);
+							}
+							FCortexFrontendSettings::Get().SetCustomDirective(Directive);
+						})
+						.ToolTipText(FText::FromString(TEXT("Extra instructions added to every message. Example: 'Focus on Blueprint work' or 'Respond concisely'.")))
 					]
 				]
 			]
@@ -109,48 +421,12 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 						SAssignNew(StateText, STextBlock)
 						.Text(FText::FromString(TEXT("Inactive")))
 					]
-				]
-			]
-			// Tokens section
-			+ SScrollBox::Slot()
-			[
-				SNew(SExpandableArea)
-				.AreaTitle(FText::FromString(TEXT("Tokens")))
-				.InitiallyCollapsed(false)
-				.BodyContent()
-				[
-					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 4.0f)
 					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().FillWidth(1.0f)
-						[ SNew(STextBlock).Text(FText::FromString(TEXT("Input:"))) ]
-						+ SHorizontalBox::Slot().AutoWidth()
-						[ SAssignNew(InputTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
-					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().FillWidth(1.0f)
-						[ SNew(STextBlock).Text(FText::FromString(TEXT("Output:"))) ]
-						+ SHorizontalBox::Slot().AutoWidth()
-						[ SAssignNew(OutputTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
-					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().FillWidth(1.0f)
-						[ SNew(STextBlock).Text(FText::FromString(TEXT("Cache:"))) ]
-						+ SHorizontalBox::Slot().AutoWidth()
-						[ SAssignNew(CacheTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
-					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().FillWidth(1.0f)
-						[ SNew(STextBlock).Text(FText::FromString(TEXT("Hit Rate:"))) ]
-						+ SHorizontalBox::Slot().AutoWidth()
-						[ SAssignNew(CacheHitRateText, STextBlock).Text(FText::FromString(TEXT("0%"))) ]
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Settings apply on new chat session")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Italic", 7))
+						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("666666")))))
 					]
 				]
 			]
@@ -159,6 +435,15 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 
 	// Initial update
 	UpdateModelDisplay();
+}
+
+SCortexSidebar::~SCortexSidebar()
+{
+	if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
+	{
+		Session->OnTokenUsageUpdated.Remove(TokenUsageHandle);
+		Session->OnStateChanged.Remove(StateChangedHandle);
+	}
 }
 
 void SCortexSidebar::SetCollapsed(bool bCollapsed)
@@ -171,7 +456,6 @@ void SCortexSidebar::SetCollapsed(bool bCollapsed)
 
 void SCortexSidebar::OnTokenUsageUpdated()
 {
-	UpdateTokenDisplay();
 	UpdateModelDisplay();
 }
 
@@ -200,33 +484,6 @@ void SCortexSidebar::OnSessionStateChanged(const FCortexSessionStateChange& Chan
 	StateText->SetText(FText::FromString(StateToString(Change.NewState)));
 }
 
-void SCortexSidebar::UpdateTokenDisplay()
-{
-	const TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
-	if (!Session.IsValid())
-	{
-		return;
-	}
-
-	if (InputTokensText.IsValid())
-	{
-		InputTokensText->SetText(FText::FromString(FString::Printf(TEXT("%lld"), Session->GetTotalInputTokens())));
-	}
-	if (OutputTokensText.IsValid())
-	{
-		OutputTokensText->SetText(FText::FromString(FString::Printf(TEXT("%lld"), Session->GetTotalOutputTokens())));
-	}
-	if (CacheTokensText.IsValid())
-	{
-		CacheTokensText->SetText(FText::FromString(FString::Printf(TEXT("%lld"), Session->GetTotalCacheReadTokens())));
-	}
-	if (CacheHitRateText.IsValid())
-	{
-		const float Rate = FCortexCliSession::CalculateCacheHitRate(Session->GetTotalCacheReadTokens(), Session->GetTotalInputTokens());
-		CacheHitRateText->SetText(FText::FromString(FString::Printf(TEXT("%.1f%%"), Rate)));
-	}
-}
-
 void SCortexSidebar::UpdateModelDisplay()
 {
 	const TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
@@ -244,6 +501,9 @@ void SCortexSidebar::UpdateModelDisplay()
 	}
 	if (ModelText.IsValid())
 	{
-		ModelText->SetText(FText::FromString(Model.IsEmpty() ? TEXT("\u2014") : Model));
+		const FString ActiveLabel = Model.IsEmpty()
+			? TEXT("Active: \u2014")
+			: FString::Printf(TEXT("Active: %s"), *Model);
+		ModelText->SetText(FText::FromString(ActiveLabel));
 	}
 }

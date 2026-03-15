@@ -4,11 +4,11 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Text/BaseTextLayoutMarshaller.h"
 #include "Framework/Text/ITextLayoutMarshaller.h"
-#include "Framework/Text/SlateTextLayout.h"
 #include "Framework/Text/SlateTextRun.h"
 #include "Framework/Text/TextLayout.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Rendering/CortexSyntaxHighlighter.h"
+#include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateTypes.h"
 #include "Widgets/Input/SButton.h"
@@ -66,8 +66,7 @@ FLinearColor FCortexCodeMarshaller::ColorForTokenType(ECortexSyntaxTokenType Typ
 
 void FCortexCodeMarshaller::SetText(const FString& SourceString, FTextLayout& TargetTextLayout)
 {
-    const FTextBlockStyle& DefaultStyle =
-        static_cast<FSlateTextLayout&>(TargetTextLayout).GetDefaultTextStyle();
+    const FTextBlockStyle DefaultStyle = FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>(TEXT("NormalText"));
 
     // Split the source into per-line ranges so that each call to
     // TokenizeBlock aligns with the same line indices.
@@ -170,14 +169,17 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
     TSharedRef<FCortexCodeMarshaller> Marshaller = FCortexCodeMarshaller::Create();
 
     TSharedRef<SScrollBar> HScrollBar = SNew(SScrollBar).Orientation(Orient_Horizontal);
+    TSharedRef<SScrollBar> VScrollBar = SNew(SScrollBar).Orientation(Orient_Vertical);
 
     ChildSlot
     [
         SNew(SBorder)
-        .BorderBackgroundColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("242424"))))
+        .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+        .BorderBackgroundColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("0f0f0f"))))
         .Padding(0.0f)
         [
             SNew(SVerticalBox)
+            // Language label + Copy button header
             + SVerticalBox::Slot()
             .AutoHeight()
             [
@@ -203,18 +205,46 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
                     ]
                 ]
             ]
+            // Code content with scrollbars
             + SVerticalBox::Slot()
             .AutoHeight()
             .MaxHeight(400.0f)
-            .Padding(8.0f, 4.0f)
             [
-                SNew(SMultiLineEditableText)
-                .Text(FText::FromString(CodeContent))
-                .IsReadOnly(true)
-                .AutoWrapText(false)
-                .Font(FCoreStyle::GetDefaultFontStyle("Mono", 10))
-                .Marshaller(Marshaller)
-                .HScrollBar(HScrollBar)
+                SNew(SBorder)
+                .BorderBackgroundColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("0f0f0f"))))
+                .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                .Padding(0.0f)
+                [
+                    SNew(SVerticalBox)
+                    + SVerticalBox::Slot()
+                    .FillHeight(1.0f)
+                    [
+                        SNew(SHorizontalBox)
+                        + SHorizontalBox::Slot()
+                        .FillWidth(1.0f)
+                        .Padding(8.0f, 4.0f, 0.0f, 4.0f)
+                        [
+                            SNew(SMultiLineEditableText)
+                            .Text(FText::FromString(CodeContent))
+                            .IsReadOnly(true)
+                            .AutoWrapText(false)
+                            .Font(FCoreStyle::GetDefaultFontStyle("Mono", 10))
+                            .Marshaller(Marshaller)
+                            .HScrollBar(HScrollBar)
+                            .VScrollBar(VScrollBar)
+                        ]
+                        + SHorizontalBox::Slot()
+                        .AutoWidth()
+                        [
+                            VScrollBar
+                        ]
+                    ]
+                    + SVerticalBox::Slot()
+                    .AutoHeight()
+                    [
+                        HScrollBar
+                    ]
+                ]
             ]
         ]
     ];

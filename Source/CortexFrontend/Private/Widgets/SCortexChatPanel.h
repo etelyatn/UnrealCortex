@@ -3,12 +3,14 @@
 #include "CoreMinimal.h"
 #include "Process/CortexStreamEvent.h"
 #include "Session/CortexCliSession.h"
+#include "Widgets/CortexDisplayTypes.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
 class SCortexChatMessage;
 class SCortexChatToolbar;
 class SCortexInputArea;
+class SCortexProcessingIndicator;
 class STableViewBase;
 
 template <typename ItemType>
@@ -29,6 +31,7 @@ public:
     friend class FCortexChatPanelFailureCleanupTest;
     friend class FCortexChatPanelCodeBlockTest;
     friend class FCortexChatPanelRejectedSendDoesNotAppendEntriesTest;
+    friend class FCortexDisplayRowGroupingTest;
 
 private:
     void SendMessage(const FString& Message);
@@ -38,20 +41,22 @@ private:
     void OnTurnComplete(const FCortexTurnResult& Result);
     void OnSessionStateChanged(const FCortexSessionStateChange& Change);
 
-    TSharedRef<ITableRow> GenerateRow(TSharedPtr<FCortexChatEntry> Entry, const TSharedRef<STableViewBase>& OwnerTable);
+    TSharedRef<ITableRow> GenerateRow(TSharedPtr<FCortexChatDisplayRow> Row, const TSharedRef<STableViewBase>& OwnerTable);
     TArray<TSharedPtr<FCortexChatEntry>> BuildAssistantEntries(const FString& FullText) const;
     void RefreshVisibleEntries();
+    void RebuildStableRows();
     void UpdateStateDrivenUi(ECortexSessionState State);
 
     void ScrollToBottom();
 
     TSharedPtr<SCortexChatToolbar> ChatToolbar;
     TSharedPtr<SCortexInputArea> InputArea;
-    TSharedPtr<SListView<TSharedPtr<FCortexChatEntry>>> ChatList;
+    TSharedPtr<SCortexProcessingIndicator> ProcessingIndicator;
+    TSharedPtr<SListView<TSharedPtr<FCortexChatDisplayRow>>> ChatList;
     TWeakPtr<FCortexCliSession> SessionWeak;
 
-    TArray<TSharedPtr<FCortexChatEntry>> ChatEntries;
+    TArray<TSharedPtr<FCortexChatDisplayRow>> DisplayRows;
+    TSharedPtr<FCortexChatDisplayRow> GreetingRow;
+    TArray<TSharedPtr<FCortexChatDisplayRow>> StableRows;  // Completed rows — rebuilt only when entries change
     bool bAutoScroll = true;
-    TMap<TSharedPtr<FCortexChatEntry>, TSharedPtr<SCortexChatMessage>> MessageWidgetCache;
-    TSet<int32> RenderedToolGroups;
 };

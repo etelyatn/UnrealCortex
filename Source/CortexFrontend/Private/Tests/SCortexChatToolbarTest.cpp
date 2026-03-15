@@ -29,3 +29,27 @@ bool FCortexChatToolbarNewChatCallbackTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatToolbarContextIndicatorTest,
+    "Cortex.Frontend.ChatToolbar.ContextIndicatorConstructs",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexChatToolbarContextIndicatorTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized())
+    {
+        AddInfo(TEXT("Slate not initialized, skipping"));
+        return true;
+    }
+
+    // Construct toolbar without a session — context indicator should default gracefully
+    TSharedRef<SCortexChatToolbar> Toolbar = SNew(SCortexChatToolbar);
+    TestTrue(TEXT("Toolbar with no session should construct without crash"),
+        Toolbar->GetVisibility() != EVisibility::Hidden);
+
+    // SetSessionId should not crash
+    Toolbar->SetSessionId(TEXT("test-session-abc"));
+
+    return true;
+}

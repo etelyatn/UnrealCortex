@@ -166,6 +166,24 @@ FString CortexMarkdownParser::ToRichText(const FString& InlineMarkdown)
 {
 	FString Result = InlineMarkdown;
 
+	// Known limitations of this parser:
+	// - Sequential passes (bold then italic) mean nested spans like **bold _italic_**
+	//   produce partially correct output. The bold pass wraps correctly; the italic
+	//   pass then finds _italic_ inside the Bold tag and wraps it — SRichTextBlock
+	//   may or may not render nested tags. This is not fixed intentionally; fixing
+	//   nested spans requires a real recursive parser, not sequential ReplaceInline passes.
+	// - Adjacent markers like **bold1** **bold2** are handled correctly (each pass
+	//   consumes its own delimiters). Escaped markers like \* are not supported.
+	// - All < and > are HTML-entity-escaped before tag wrapping. This prevents
+	//   C++ generics (TArray<int32>) from breaking the SRichTextBlock XML parser.
+	//   It also means angle brackets in code spans are rendered as &lt;/&gt; in the
+	//   rich text input (SRichTextBlock decodes them back to < and > for display).
+
+	// Escape angle brackets before tag wrapping (prevents SRichTextBlock
+	// from choking on C++ types like TArray<int32>)
+	Result.ReplaceInline(TEXT("<"), TEXT("&lt;"));
+	Result.ReplaceInline(TEXT(">"), TEXT("&gt;"));
+
 	// Bold: **text** → <Bold>text</>
 	{
 		FString Out;
@@ -190,17 +208,17 @@ FString CortexMarkdownParser::ToRichText(const FString& InlineMarkdown)
 		Result = Out;
 	}
 
-	// Italic: *text* or _text_ → <Italic>text</>
+	// Italic: *text* → <Italic>text</>
+	// Note: _text_ deliberately NOT supported — underscores are ubiquitous in
+	// UE identifiers (BP_SimpleActor, FVector_NetQuantize) and would break them.
 	{
 		FString Out;
 		int32 i = 0;
 		while (i < Result.Len())
 		{
-			if (Result[i] == TEXT('*') || Result[i] == TEXT('_'))
+			if (Result[i] == TEXT('*'))
 			{
-				const TCHAR Marker = Result[i];
-				FString MarkerStr;
-				MarkerStr.AppendChar(Marker);
+				FString MarkerStr(TEXT("*"));
 				int32 End = Result.Find(MarkerStr, ESearchCase::CaseSensitive, ESearchDir::FromStart, i + 1);
 				if (End != INDEX_NONE && End > i + 1)
 				{
@@ -244,12 +262,3 @@ FString CortexMarkdownParser::ToRichText(const FString& InlineMarkdown)
 	return Result;
 }
 
-TArray<FCortexMarkdownInline> FCortexMarkdownBlock::GetInlines() const
-{
-	TArray<FCortexMarkdownInline> Inlines;
-	FCortexMarkdownInline Inline;
-	Inline.Type = ECortexMarkdownInlineType::Text;
-	Inline.Text = RawText;
-	Inlines.Add(Inline);
-	return Inlines;
-}

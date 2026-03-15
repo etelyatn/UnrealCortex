@@ -52,11 +52,10 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 		SNew(SSplitter)
 		.Orientation(EOrientation::Orient_Horizontal)
 		+ SSplitter::Slot()
-		.Value(CachedSidebarCoefficient)
+		.Value(TAttribute<float>(this, &SCortexWorkbench::GetSidebarSlotValue))
 		.MinSize(0.0f)
 		[
 			SAssignNew(SidebarBox, SBox)
-			.WidthOverride(this, &SCortexWorkbench::GetSidebarWidth)
 			[
 				SAssignNew(Sidebar, SCortexSidebar)
 				.Session(SessionWeak)
@@ -77,6 +76,15 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 	}
 }
 
+SCortexWorkbench::~SCortexWorkbench()
+{
+	if (TabManager.IsValid())
+	{
+		TabManager->CloseAllAreas();
+		TabManager->UnregisterTabSpawner(TEXT("CortexChat"));
+	}
+}
+
 void SCortexWorkbench::OnSidebarToggle()
 {
 	bSidebarCollapsed = !bSidebarCollapsed;
@@ -91,15 +99,15 @@ void SCortexWorkbench::OnSidebarToggle()
 	GConfig->Flush(false, GEditorPerProjectIni);
 }
 
-FOptionalSize SCortexWorkbench::GetSidebarWidth() const
+float SCortexWorkbench::GetSidebarSlotValue() const
 {
-	return bSidebarCollapsed ? FOptionalSize(32.0f) : FOptionalSize();
+	return bSidebarCollapsed ? 0.02f : CachedSidebarCoefficient;
 }
 
 TSharedRef<SDockTab> SCortexWorkbench::SpawnChatTab(const FSpawnTabArgs& /*Args*/)
 {
 	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
-		.TabRole(ETabRole::DocumentTab);
+		.TabRole(ETabRole::PanelTab);
 
 	DockTab->SetContent(
 		SNew(SCortexChatPanel)
