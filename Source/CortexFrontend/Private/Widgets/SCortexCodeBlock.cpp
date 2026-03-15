@@ -8,6 +8,7 @@
 #include "Framework/Text/TextLayout.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Rendering/CortexSyntaxHighlighter.h"
+#include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateTypes.h"
 #include "Widgets/Input/SButton.h"
@@ -204,15 +205,20 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
             + SVerticalBox::Slot()
             .AutoHeight()
             .MaxHeight(400.0f)
-            .Padding(8.0f, 4.0f)
             [
-                SNew(SMultiLineEditableText)
-                .Text(FText::FromString(CodeContent))
-                .IsReadOnly(true)
-                .AutoWrapText(false)
-                .Font(FCoreStyle::GetDefaultFontStyle("Mono", 10))
-                .Marshaller(Marshaller)
-                .HScrollBar(HScrollBar)
+                SNew(SBorder)
+                .BorderBackgroundColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("1a1a1a"))))
+                .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                .Padding(8.0f, 4.0f)
+                [
+                    SNew(SMultiLineEditableText)
+                    .Text(FText::FromString(CodeContent))
+                    .IsReadOnly(true)
+                    .AutoWrapText(false)
+                    .Font(FCoreStyle::GetDefaultFontStyle("Mono", 10))
+                    .Marshaller(Marshaller)
+                    .HScrollBar(HScrollBar)
+                ]
             ]
         ]
     ];
