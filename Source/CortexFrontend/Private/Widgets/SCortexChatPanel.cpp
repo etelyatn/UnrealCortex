@@ -106,6 +106,12 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
 
 SCortexChatPanel::~SCortexChatPanel()
 {
+    if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
+    {
+        Session->OnStreamEvent.RemoveAll(this);
+        Session->OnTurnComplete.RemoveAll(this);
+        Session->OnStateChanged.RemoveAll(this);
+    }
 }
 
 void SCortexChatPanel::SendMessage(const FString& Message)
@@ -405,13 +411,23 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatDispla
 
         TSharedRef<SVerticalBox> TurnBox = SNew(SVerticalBox);
 
-        // Tool calls on top (if any)
+        // Assistant text first (includes "Claude" role label)
+        TurnBox->AddSlot()
+        .AutoHeight()
+        [
+            SNew(SCortexChatMessage)
+            .Message(Row->PrimaryEntry->Text)
+            .IsUser(false)
+            .IsStreaming(bEntryIsStreaming)
+        ];
+
+        // Tool calls below the role label
         if (Row->ToolCalls.Num() > 0)
         {
             TWeakPtr<SListView<TSharedPtr<FCortexChatDisplayRow>>> WeakChatList = ChatList;
             TurnBox->AddSlot()
             .AutoHeight()
-            .Padding(8.0f, 4.0f, 8.0f, 0.0f)
+            .Padding(8.0f, 0.0f, 8.0f, 4.0f)
             [
                 SNew(SCortexToolCallBlock)
                 .ToolCalls(Row->ToolCalls)
@@ -424,16 +440,6 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatDispla
                 }))
             ];
         }
-
-        // Assistant text below
-        TurnBox->AddSlot()
-        .AutoHeight()
-        [
-            SNew(SCortexChatMessage)
-            .Message(Row->PrimaryEntry->Text)
-            .IsUser(false)
-            .IsStreaming(bEntryIsStreaming)
-        ];
 
         Content = TurnBox;
         break;
