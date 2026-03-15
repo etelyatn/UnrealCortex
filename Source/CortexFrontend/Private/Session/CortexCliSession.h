@@ -23,6 +23,7 @@ public:
 	bool Connect();
 	bool SendPrompt(const FCortexPromptRequest& Request);
 	bool Cancel();
+	bool Reconnect();
 	void NewChat();
 	void Shutdown();
 
@@ -86,6 +87,9 @@ private:
 	friend class FCortexCmdLineDirectiveTest;
 	friend class FCortexCmdLineDirectiveEmptyTest;
 	friend class FCortexCmdLineDirectiveSanitizationTest;
+	friend class FCortexReconnectRejectsNonIdleTest;
+	friend class FCortexReconnectFromIdleTransitionsTest;
+	friend class FCortexReconnectDirtyStatePreservedOnFailureTest;
 
 	FString BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const;
 	FString BuildAllowedToolsArg(ECortexAccessMode AccessMode) const;

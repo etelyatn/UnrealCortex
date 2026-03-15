@@ -38,6 +38,7 @@ bool FCortexCliSession::Connect()
 		return false;
 	}
 
+	FCortexFrontendSettings::Get().ClearPendingChanges();
 	UE_LOG(LogCortexFrontend, Log, TEXT("Connect() succeeded, state now: %d"), static_cast<int32>(State.load()));
 	return true;
 }
@@ -127,6 +128,37 @@ bool FCortexCliSession::Cancel()
 		}),
 		GracePeriodSeconds);
 
+	return true;
+}
+
+bool FCortexCliSession::Reconnect()
+{
+	check(IsInGameThread());
+
+	if (!TransitionState(ECortexSessionState::Idle, ECortexSessionState::Respawning, TEXT("Reconnect requested")))
+	{
+		UE_LOG(LogCortexFrontend, Log, TEXT("Reconnect() rejected: state was not Idle (was %d)"),
+			static_cast<int32>(State.load()));
+		return false;
+	}
+
+	CleanupProcess();
+
+	// Uses --resume to fork from existing conversation context.
+	// TODO: Verify empirically whether --resume alone re-applies --append-system-prompt
+	// and --setting-sources. If not, add --fork-session flag to BuildLaunchCommandLine.
+	const ECortexAccessMode AccessMode = FCortexFrontendSettings::Get().GetAccessMode();
+	if (!SpawnProcess(AccessMode, true))
+	{
+		UE_LOG(LogCortexFrontend, Warning, TEXT("Reconnect() failed: SpawnProcess returned false"));
+		BroadcastStateChange(ECortexSessionState::Respawning, ECortexSessionState::Inactive,
+			TEXT("Failed to reconnect"));
+		State.store(ECortexSessionState::Inactive);
+		return false;
+	}
+
+	FCortexFrontendSettings::Get().ClearPendingChanges();
+	UE_LOG(LogCortexFrontend, Log, TEXT("Reconnect() succeeded with session %s"), *Config.SessionId);
 	return true;
 }
 
