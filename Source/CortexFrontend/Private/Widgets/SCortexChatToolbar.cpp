@@ -42,6 +42,8 @@ namespace
 void SCortexChatToolbar::Construct(const FArguments& InArgs)
 {
     OnNewChat = InArgs._OnNewChat;
+    OnConnect = InArgs._OnConnect;
+    OnReconnect = InArgs._OnReconnect;
     SessionWeak = InArgs._Session;
 
     ChildSlot
@@ -98,6 +100,36 @@ void SCortexChatToolbar::Construct(const FArguments& InArgs)
                 .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
             ]
         ]
+        // Connect button (shown when disconnected)
+        + SHorizontalBox::Slot()
+        .AutoWidth()
+        .VAlign(VAlign_Center)
+        .Padding(4.0f)
+        [
+            SAssignNew(ConnectButton, SButton)
+            .Text(FText::FromString(TEXT("Connect")))
+            .Visibility(EVisibility::Collapsed)
+            .OnClicked_Lambda([this]() -> FReply
+            {
+                OnConnect.ExecuteIfBound();
+                return FReply::Handled();
+            })
+        ]
+        // Reconnect button (shown when connected)
+        + SHorizontalBox::Slot()
+        .AutoWidth()
+        .VAlign(VAlign_Center)
+        .Padding(4.0f)
+        [
+            SAssignNew(ReconnectButton, SButton)
+            .Text(FText::FromString(TEXT("Reconnect")))
+            .Visibility(EVisibility::Collapsed)
+            .OnClicked_Lambda([this]() -> FReply
+            {
+                OnReconnect.ExecuteIfBound();
+                return FReply::Handled();
+            })
+        ]
         // New Chat button (right side)
         + SHorizontalBox::Slot()
         .AutoWidth()
@@ -114,10 +146,10 @@ void SCortexChatToolbar::Construct(const FArguments& InArgs)
         ]
     ];
 
-    // Subscribe to token updates
     if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
     {
         TWeakPtr<SCortexChatToolbar> SelfWeak = SharedThis(this);
+
         TokenUsageHandle = Session->OnTokenUsageUpdated.AddLambda([SelfWeak]()
         {
             if (TSharedPtr<SCortexChatToolbar> Self = SelfWeak.Pin())
@@ -125,6 +157,16 @@ void SCortexChatToolbar::Construct(const FArguments& InArgs)
                 Self->OnTokenUsageUpdated();
             }
         });
+
+        StateChangedHandle = Session->OnStateChanged.AddLambda([SelfWeak](const FCortexSessionStateChange& Change)
+        {
+            if (TSharedPtr<SCortexChatToolbar> Self = SelfWeak.Pin())
+            {
+                Self->OnSessionStateChanged(Change);
+            }
+        });
+
+        UpdateConnectionState(Session->GetState());
     }
 }
 
@@ -133,6 +175,7 @@ SCortexChatToolbar::~SCortexChatToolbar()
     if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
     {
         Session->OnTokenUsageUpdated.Remove(TokenUsageHandle);
+        Session->OnStateChanged.Remove(StateChangedHandle);
     }
 }
 
@@ -178,12 +221,43 @@ void SCortexChatToolbar::OnTokenUsageUpdated()
         ContextLabel->SetText(FText::FromString(Label));
     }
 
-    if (ModelLabel.IsValid())
+    const ECortexSessionState CurrentState = Session->GetState();
+    const bool bIsDisconnected = CurrentState == ECortexSessionState::Inactive
+        || CurrentState == ECortexSessionState::Terminated;
+    if (ModelLabel.IsValid() && !bIsDisconnected)
     {
         const FString& Model = Session->GetModelId();
         if (!Model.IsEmpty())
         {
             ModelLabel->SetText(FText::FromString(Model));
         }
+    }
+}
+
+void SCortexChatToolbar::OnSessionStateChanged(const FCortexSessionStateChange& Change)
+{
+    UpdateConnectionState(Change.NewState);
+}
+
+void SCortexChatToolbar::UpdateConnectionState(ECortexSessionState State)
+{
+    const bool bDisconnected = State == ECortexSessionState::Inactive || State == ECortexSessionState::Terminated;
+    const bool bConnected = State == ECortexSessionState::Idle;
+    // Transient states (Spawning, Processing, Cancelling, Respawning) intentionally show neither button:
+    // they resolve automatically to Idle or Inactive/Terminated, so no user action is possible.
+
+    if (ConnectButton.IsValid())
+    {
+        ConnectButton->SetVisibility(bDisconnected ? EVisibility::Visible : EVisibility::Collapsed);
+    }
+    if (ReconnectButton.IsValid())
+    {
+        ReconnectButton->SetVisibility(bConnected ? EVisibility::Visible : EVisibility::Collapsed);
+    }
+
+    // Hide model label when disconnected — it shows stale data from the previous session
+    if (bDisconnected && ModelLabel.IsValid())
+    {
+        ModelLabel->SetText(FText::FromString(TEXT("")));
     }
 }

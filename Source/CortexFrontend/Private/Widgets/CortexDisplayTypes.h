@@ -12,11 +12,14 @@ enum class ECortexChatRowType : uint8
 	UserMessage,
 	AssistantTurn,   // Tool calls (optional) + assistant text combined
 	CodeBlock,
+	ProcessingRow,   // Transient row shown while session is Spawning or Processing
 };
 
 struct FCortexChatDisplayRow
 {
 	ECortexChatRowType RowType = ECortexChatRowType::UserMessage;
-	TSharedPtr<FCortexChatEntry> PrimaryEntry;           // Text or code block content
-	TArray<TSharedPtr<FCortexChatEntry>> ToolCalls;      // Empty for non-assistant turns
+	// PrimaryEntry is valid for all row types EXCEPT ProcessingRow, which has no text entry.
+	// Code that iterates DisplayRows must check RowType before accessing PrimaryEntry.
+	TSharedPtr<FCortexChatEntry> PrimaryEntry;
+	TArray<TSharedPtr<FCortexChatEntry>> ToolCalls;  // Empty for non-assistant turns
 };

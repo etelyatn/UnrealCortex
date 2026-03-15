@@ -166,7 +166,6 @@ void SCortexChatPanel::Connect()
     if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
     {
         Session->Connect();
-        UpdateStateDrivenUi(Session->GetState());
     }
 }
 
@@ -430,10 +429,12 @@ void SCortexChatPanel::UpdateStateDrivenUi(ECortexSessionState State)
 {
     if (InputArea.IsValid())
     {
-        InputArea->SetStreaming(State == ECortexSessionState::Spawning || State == ECortexSessionState::Processing);
+        const bool bActive = State == ECortexSessionState::Spawning
+            || State == ECortexSessionState::Processing
+            || State == ECortexSessionState::Respawning;
+        InputArea->SetStreaming(bActive);
         InputArea->SetInputEnabled(State == ECortexSessionState::Inactive || State == ECortexSessionState::Idle);
     }
-
 }
 
 TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatDisplayRow> Row, const TSharedRef<STableViewBase>& OwnerTable)
