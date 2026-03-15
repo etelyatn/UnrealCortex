@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "Session/CortexSessionTypes.h"
 
+DECLARE_MULTICAST_DELEGATE(FOnCortexPendingChangesUpdated);
+
 class FCortexFrontendSettings
 {
 public:
@@ -29,16 +31,53 @@ public:
     void SetSelectedModel(const FString& Model);
     TArray<FString> GetAvailableModels() const;
 
+    ECortexEffortLevel GetEffortLevel() const { return EffortLevel; }
+    void SetEffortLevel(ECortexEffortLevel Level);
+
+    ECortexWorkflowMode GetWorkflowMode() const { return WorkflowMode; }
+    void SetWorkflowMode(ECortexWorkflowMode Mode);
+
+    bool GetProjectContext() const { return bProjectContext; }
+    void SetProjectContext(bool bEnabled);
+
+    FString GetCustomDirective() const { return CustomDirective; }
+    void SetCustomDirective(const FString& Directive);
+
+    FString GetEffortLevelString() const
+    {
+        switch (EffortLevel)
+        {
+        case ECortexEffortLevel::Default:  return TEXT("default");
+        case ECortexEffortLevel::Low:      return TEXT("low");
+        case ECortexEffortLevel::Medium:   return TEXT("medium");
+        case ECortexEffortLevel::High:     return TEXT("high");
+        case ECortexEffortLevel::Maximum:  return TEXT("max");
+        default:                           return TEXT("default");
+        }
+    }
+
+    bool HasPendingChanges() const;
+    void ClearPendingChanges();
+
+    FOnCortexPendingChangesUpdated OnPendingChangesUpdated;
+
     void Load();
     void Save();
 
 private:
     FCortexFrontendSettings();
     FString GetSettingsFilePath() const;
+    void MarkDirty();
 
     ECortexAccessMode AccessMode = ECortexAccessMode::ReadOnly;
     bool bSkipPermissions = true;
     FString SelectedModel = TEXT("Default");
     bool bHasCustomModels = false;
     TArray<FString> CustomModels;
+
+    ECortexEffortLevel EffortLevel = ECortexEffortLevel::Default;
+    ECortexWorkflowMode WorkflowMode = ECortexWorkflowMode::Direct;
+    bool bProjectContext = true;
+    FString CustomDirective;
+    bool bHasPendingChanges = false;
 };
