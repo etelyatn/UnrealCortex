@@ -2,6 +2,7 @@
 
 #include "HAL/PlatformTime.h"
 #include "Styling/CoreStyle.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -30,10 +31,14 @@ void SCortexProcessingIndicator::Construct(const FArguments& InArgs)
 		.VAlign(VAlign_Center)
 		.Padding(4.0f, 4.0f)
 		[
-			SAssignNew(DotsLabel, STextBlock)
-			.Text(FText::FromString(TEXT("\u25CF")))
-			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-			.ColorAndOpacity(AmberColor)
+			SNew(SBox)
+			.WidthOverride(48.0f)
+			[
+				SAssignNew(DotsLabel, STextBlock)
+				.Text(FText::FromString(TEXT("\u25CF")))
+				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+				.ColorAndOpacity(AmberColor)
+			]
 		]
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
