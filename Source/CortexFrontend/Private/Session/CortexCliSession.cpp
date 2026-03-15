@@ -23,17 +23,22 @@ FCortexCliSession::FCortexCliSession(const FCortexSessionConfig& InConfig)
 
 bool FCortexCliSession::Connect()
 {
+	UE_LOG(LogCortexFrontend, Log, TEXT("Connect() called, current state: %d"), static_cast<int32>(State.load()));
+
 	if (!TransitionState(ECortexSessionState::Inactive, ECortexSessionState::Spawning, TEXT("Auto-connect")))
 	{
+		UE_LOG(LogCortexFrontend, Warning, TEXT("Connect() failed: state was not Inactive (was %d)"), static_cast<int32>(State.load()));
 		return false;
 	}
 
 	if (!SpawnProcess(FCortexFrontendSettings::Get().GetAccessMode(), false))
 	{
+		UE_LOG(LogCortexFrontend, Warning, TEXT("Connect() failed: SpawnProcess returned false"));
 		TransitionState(ECortexSessionState::Spawning, ECortexSessionState::Inactive, TEXT("Failed to spawn on connect"));
 		return false;
 	}
 
+	UE_LOG(LogCortexFrontend, Log, TEXT("Connect() succeeded, state now: %d"), static_cast<int32>(State.load()));
 	return true;
 }
 
