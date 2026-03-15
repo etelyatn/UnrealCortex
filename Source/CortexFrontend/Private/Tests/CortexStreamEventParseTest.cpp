@@ -12,6 +12,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseSystemErrorTest, "Cortex
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseEmptyTest, "Cortex.Frontend.StreamEvent.ParseEmpty", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseSystemInitModelTest, "Cortex.Frontend.StreamEvent.ParseSystemInitModel", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseUsageTest, "Cortex.Frontend.StreamEvent.ParseUsage", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseStreamEventDeltaTest, "Cortex.Frontend.StreamEvent.ParseStreamEventDelta", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseStreamEventNonDeltaTest, "Cortex.Frontend.StreamEvent.ParseStreamEventNonDelta", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexStreamEventParseSystemTest::RunTest(const FString& Parameters)
 {
@@ -156,6 +158,31 @@ bool FCortexStreamEventParseSystemInitModelTest::RunTest(const FString& Paramete
         TestEqual(TEXT("Model should be extracted"), Events[0].Model, FString(TEXT("claude-sonnet-4-6")));
     }
     return true;
+}
+
+bool FCortexStreamEventParseStreamEventDeltaTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	// Real Claude CLI format: content_block_delta wrapped in stream_event
+	const FString JsonLine = TEXT("{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}},\"session_id\":\"sess-1\",\"uuid\":\"abc\"}");
+	const TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseNdjsonLine(JsonLine);
+	TestEqual(TEXT("Should produce 1 event"), Events.Num(), 1);
+	if (Events.Num() == 1)
+	{
+		TestEqual(TEXT("Type should be ContentBlockDelta"), static_cast<uint8>(Events[0].Type), static_cast<uint8>(ECortexStreamEventType::ContentBlockDelta));
+		TestEqual(TEXT("Text should be the delta"), Events[0].Text, FString(TEXT("Hi")));
+	}
+	return true;
+}
+
+bool FCortexStreamEventParseStreamEventNonDeltaTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	// Non-delta stream events (message_start, content_block_stop, etc.) should produce 0 events
+	const FString JsonLine = TEXT("{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-4-6\"}},\"session_id\":\"sess-1\"}");
+	const TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseNdjsonLine(JsonLine);
+	TestEqual(TEXT("Non-delta stream_event should produce 0 events"), Events.Num(), 0);
+	return true;
 }
 
 bool FCortexStreamEventParseUsageTest::RunTest(const FString& Parameters)

@@ -169,15 +169,17 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
     TSharedRef<FCortexCodeMarshaller> Marshaller = FCortexCodeMarshaller::Create();
 
     TSharedRef<SScrollBar> HScrollBar = SNew(SScrollBar).Orientation(Orient_Horizontal);
+    TSharedRef<SScrollBar> VScrollBar = SNew(SScrollBar).Orientation(Orient_Vertical);
 
     ChildSlot
     [
         SNew(SBorder)
         .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
-        .BorderBackgroundColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("1a1a1a"))))
+        .BorderBackgroundColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("0f0f0f"))))
         .Padding(0.0f)
         [
             SNew(SVerticalBox)
+            // Language label + Copy button header
             + SVerticalBox::Slot()
             .AutoHeight()
             [
@@ -203,22 +205,45 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
                     ]
                 ]
             ]
+            // Code content with scrollbars
             + SVerticalBox::Slot()
             .AutoHeight()
             .MaxHeight(400.0f)
             [
                 SNew(SBorder)
-                .BorderBackgroundColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("1a1a1a"))))
+                .BorderBackgroundColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("0f0f0f"))))
                 .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
-                .Padding(8.0f, 4.0f)
+                .Padding(0.0f)
                 [
-                    SNew(SMultiLineEditableText)
-                    .Text(FText::FromString(CodeContent))
-                    .IsReadOnly(true)
-                    .AutoWrapText(false)
-                    .Font(FCoreStyle::GetDefaultFontStyle("Mono", 10))
-                    .Marshaller(Marshaller)
-                    .HScrollBar(HScrollBar)
+                    SNew(SVerticalBox)
+                    + SVerticalBox::Slot()
+                    .FillHeight(1.0f)
+                    [
+                        SNew(SHorizontalBox)
+                        + SHorizontalBox::Slot()
+                        .FillWidth(1.0f)
+                        .Padding(8.0f, 4.0f, 0.0f, 4.0f)
+                        [
+                            SNew(SMultiLineEditableText)
+                            .Text(FText::FromString(CodeContent))
+                            .IsReadOnly(true)
+                            .AutoWrapText(false)
+                            .Font(FCoreStyle::GetDefaultFontStyle("Mono", 10))
+                            .Marshaller(Marshaller)
+                            .HScrollBar(HScrollBar)
+                            .VScrollBar(VScrollBar)
+                        ]
+                        + SHorizontalBox::Slot()
+                        .AutoWidth()
+                        [
+                            VScrollBar
+                        ]
+                    ]
+                    + SVerticalBox::Slot()
+                    .AutoHeight()
+                    [
+                        HScrollBar
+                    ]
                 ]
             ]
         ]

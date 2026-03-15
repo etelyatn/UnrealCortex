@@ -43,8 +43,6 @@ namespace
 void SCortexChatToolbar::Construct(const FArguments& InArgs)
 {
     OnNewChat = InArgs._OnNewChat;
-    OnConnect = InArgs._OnConnect;
-    OnReconnect = InArgs._OnReconnect;
     SessionWeak = InArgs._Session;
 
     ChildSlot
@@ -101,36 +99,6 @@ void SCortexChatToolbar::Construct(const FArguments& InArgs)
                 .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
             ]
         ]
-        // Connect button (shown when disconnected)
-        + SHorizontalBox::Slot()
-        .AutoWidth()
-        .VAlign(VAlign_Center)
-        .Padding(4.0f)
-        [
-            SAssignNew(ConnectButton, SButton)
-            .Text(FText::FromString(TEXT("Connect")))
-            .Visibility(EVisibility::Collapsed)
-            .OnClicked_Lambda([this]() -> FReply
-            {
-                OnConnect.ExecuteIfBound();
-                return FReply::Handled();
-            })
-        ]
-        // Reconnect button (shown when connected)
-        + SHorizontalBox::Slot()
-        .AutoWidth()
-        .VAlign(VAlign_Center)
-        .Padding(4.0f)
-        [
-            SAssignNew(ReconnectButton, SButton)
-            .Text(FText::FromString(TEXT("Reconnect")))
-            .Visibility(EVisibility::Collapsed)
-            .OnClicked_Lambda([this]() -> FReply
-            {
-                OnReconnect.ExecuteIfBound();
-                return FReply::Handled();
-            })
-        ]
         // New Chat button (right side)
         + SHorizontalBox::Slot()
         .AutoWidth()
@@ -166,8 +134,6 @@ void SCortexChatToolbar::Construct(const FArguments& InArgs)
                 Self->OnSessionStateChanged(Change);
             }
         });
-
-        UpdateConnectionState(Session->GetState());
     }
 }
 
@@ -238,24 +204,8 @@ void SCortexChatToolbar::OnTokenUsageUpdated()
 
 void SCortexChatToolbar::OnSessionStateChanged(const FCortexSessionStateChange& Change)
 {
-    UpdateConnectionState(Change.NewState);
-}
-
-void SCortexChatToolbar::UpdateConnectionState(ECortexSessionState State)
-{
-    const bool bDisconnected = State == ECortexSessionState::Inactive || State == ECortexSessionState::Terminated;
-    const bool bConnected = State == ECortexSessionState::Idle;
-    // Transient states (Spawning, Processing, Cancelling, Respawning) intentionally show neither button:
-    // they resolve automatically to Idle or Inactive/Terminated, so no user action is possible.
-
-    if (ConnectButton.IsValid())
-    {
-        ConnectButton->SetVisibility(bDisconnected ? EVisibility::Visible : EVisibility::Collapsed);
-    }
-    if (ReconnectButton.IsValid())
-    {
-        ReconnectButton->SetVisibility(bConnected ? EVisibility::Visible : EVisibility::Collapsed);
-    }
+    const bool bDisconnected = Change.NewState == ECortexSessionState::Inactive
+        || Change.NewState == ECortexSessionState::Terminated;
 
     // Hide model label when disconnected — it shows stale data from the previous session
     if (bDisconnected && ModelLabel.IsValid())

@@ -51,6 +51,35 @@ TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FStrin
         return Events;
     }
 
+    // Claude CLI wraps streaming events in {"type":"stream_event","event":{...}}.
+    // Unwrap and extract content_block_delta for incremental text streaming.
+    if (Type == TEXT("stream_event"))
+    {
+        const TSharedPtr<FJsonObject>* InnerEventObj = nullptr;
+        if (JsonObj->TryGetObjectField(TEXT("event"), InnerEventObj) && InnerEventObj != nullptr)
+        {
+            FString InnerType;
+            if ((*InnerEventObj)->TryGetStringField(TEXT("type"), InnerType) && InnerType == TEXT("content_block_delta"))
+            {
+                const TSharedPtr<FJsonObject>* DeltaObj = nullptr;
+                if ((*InnerEventObj)->TryGetObjectField(TEXT("delta"), DeltaObj) && DeltaObj != nullptr)
+                {
+                    FString DeltaType;
+                    if ((*DeltaObj)->TryGetStringField(TEXT("type"), DeltaType) && DeltaType == TEXT("text_delta"))
+                    {
+                        FCortexStreamEvent Event;
+                        Event.Type = ECortexStreamEventType::ContentBlockDelta;
+                        (*DeltaObj)->TryGetStringField(TEXT("text"), Event.Text);
+                        Event.RawJson = JsonLine;
+                        Events.Add(MoveTemp(Event));
+                    }
+                }
+            }
+        }
+        return Events;
+    }
+
+    // Legacy format: content_block_delta at root level (kept for backward compatibility)
     if (Type == TEXT("content_block_delta"))
     {
         const TSharedPtr<FJsonObject>* DeltaObj = nullptr;

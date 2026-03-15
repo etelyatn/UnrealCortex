@@ -10,6 +10,7 @@
 class SCortexChatMessage;
 class SCortexChatToolbar;
 class SCortexInputArea;
+class SCortexProcessingIndicator;
 class STableViewBase;
 
 template <typename ItemType>
@@ -24,6 +25,7 @@ public:
 
     void Construct(const FArguments& InArgs);
     virtual ~SCortexChatPanel();
+    virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
     friend class FCortexChatPanelConstructTest;
     friend class FCortexChatPanelSessionInitTest;
@@ -36,8 +38,6 @@ private:
     void SendMessage(const FString& Message);
     void CancelRequest();
     void NewChat();
-    void Connect();
-    void Reconnect();
     void OnStreamEvent(const FCortexStreamEvent& Event);
     void OnTurnComplete(const FCortexTurnResult& Result);
     void OnSessionStateChanged(const FCortexSessionStateChange& Change);
@@ -52,6 +52,7 @@ private:
 
     TSharedPtr<SCortexChatToolbar> ChatToolbar;
     TSharedPtr<SCortexInputArea> InputArea;
+    TSharedPtr<SCortexProcessingIndicator> ProcessingIndicator;
     TSharedPtr<SListView<TSharedPtr<FCortexChatDisplayRow>>> ChatList;
     TWeakPtr<FCortexCliSession> SessionWeak;
 
@@ -59,4 +60,6 @@ private:
     TSharedPtr<FCortexChatDisplayRow> GreetingRow;
     TArray<TSharedPtr<FCortexChatDisplayRow>> StableRows;  // Completed rows — rebuilt only when entries change
     bool bAutoScroll = true;
+    double LastStreamingRefreshTime = 0.0;  // Throttle streaming text refreshes
+    bool bStreamingRefreshPending = false;  // Deferred refresh needed
 };

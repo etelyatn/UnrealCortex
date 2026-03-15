@@ -3,9 +3,11 @@
 #include "CortexFrontendModule.h"
 #include "CortexFrontendSettings.h"
 #include "Modules/ModuleManager.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/SCortexChatMessage.h"
 #include "Widgets/SCortexCodeBlock.h"
 #include "Widgets/SCortexInputArea.h"
+#include "Widgets/SCortexProcessingIndicator.h"
 #include "Widgets/SCortexToolCallBlock.h"
 #include "Widgets/SCortexChatToolbar.h"
 #include "Widgets/Layout/SSeparator.h"
@@ -34,8 +36,6 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
         [
             SAssignNew(ChatToolbar, SCortexChatToolbar)
             .OnNewChat(FOnCortexNewChat::CreateSP(this, &SCortexChatPanel::NewChat))
-            .OnConnect(FOnCortexConnect::CreateSP(this, &SCortexChatPanel::Connect))
-            .OnReconnect(FOnCortexReconnect::CreateSP(this, &SCortexChatPanel::Reconnect))
             .Session(SessionWeak)
         ]
         + SVerticalBox::Slot()
@@ -50,6 +50,12 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
             .ListItemsSource(&DisplayRows)
             .OnGenerateRow(this, &SCortexChatPanel::GenerateRow)
             .SelectionMode(ESelectionMode::None)
+        ]
+        + SVerticalBox::Slot()
+        .AutoHeight()
+        [
+            SAssignNew(ProcessingIndicator, SCortexProcessingIndicator)
+            .Session(SessionWeak)
         ]
         + SVerticalBox::Slot()
         .AutoHeight()
@@ -69,7 +75,7 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
     {
         TSharedPtr<FCortexChatEntry> GreetingEntry = MakeShared<FCortexChatEntry>();
         GreetingEntry->Type = ECortexChatEntryType::AssistantMessage;
-        GreetingEntry->Text = TEXT("Hello! I'm Claude. Ask me anything about your Unreal project \u2014 Blueprints, C++, assets, scenes, or anything else.");
+        GreetingEntry->Text = TEXT("Send a message to start a new session.");
 
         GreetingRow = MakeShared<FCortexChatDisplayRow>();
         GreetingRow->RowType = ECortexChatRowType::AssistantTurn;
@@ -92,6 +98,28 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
     // Initial build
     RebuildStableRows();
     RefreshVisibleEntries();
+}
+
+void SCortexChatPanel::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
+{
+    SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+
+    // Flush any throttled streaming refresh
+    if (bStreamingRefreshPending)
+    {
+        const double Now = FPlatformTime::Seconds();
+        constexpr double MinRefreshInterval = 0.25;
+        if (Now - LastStreamingRefreshTime >= MinRefreshInterval)
+        {
+            RefreshVisibleEntries();
+            if (bAutoScroll)
+            {
+                ScrollToBottom();
+            }
+            LastStreamingRefreshTime = Now;
+            bStreamingRefreshPending = false;
+        }
+    }
 }
 
 SCortexChatPanel::~SCortexChatPanel()
@@ -161,19 +189,6 @@ void SCortexChatPanel::NewChat()
     }
 }
 
-void SCortexChatPanel::Connect()
-{
-    if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
-    {
-        Session->Connect();
-    }
-}
-
-void SCortexChatPanel::Reconnect()
-{
-    NewChat();
-}
-
 void SCortexChatPanel::OnStreamEvent(const FCortexStreamEvent& Event)
 {
     if (Event.Type == ECortexStreamEventType::SessionInit)
@@ -185,6 +200,47 @@ void SCortexChatPanel::OnStreamEvent(const FCortexStreamEvent& Event)
         return;
     }
 
+    // Structural events (tool calls, complete messages) refresh immediately
+    if (Event.Type == ECortexStreamEventType::ToolUse
+        || Event.Type == ECortexStreamEventType::ToolResult
+        || Event.Type == ECortexStreamEventType::TextContent)
+    {
+        RebuildStableRows();
+        RefreshVisibleEntries();
+        if (bAutoScroll)
+        {
+            ScrollToBottom();
+        }
+        LastStreamingRefreshTime = FPlatformTime::Seconds();
+        bStreamingRefreshPending = false;
+        return;
+    }
+
+    // Throttle ContentBlockDelta refreshes to ~4 times per second.
+    // The text is still accumulated in CurrentStreamingEntry by the session layer,
+    // but we only rebuild the widget periodically to avoid visual glitching.
+    if (Event.Type == ECortexStreamEventType::ContentBlockDelta)
+    {
+        const double Now = FPlatformTime::Seconds();
+        constexpr double MinRefreshInterval = 0.25;
+        if (Now - LastStreamingRefreshTime >= MinRefreshInterval)
+        {
+            RefreshVisibleEntries();
+            if (bAutoScroll)
+            {
+                ScrollToBottom();
+            }
+            LastStreamingRefreshTime = Now;
+            bStreamingRefreshPending = false;
+        }
+        else
+        {
+            bStreamingRefreshPending = true;
+        }
+        return;
+    }
+
+    // All other events (SystemError, etc.)
     RefreshVisibleEntries();
     if (bAutoScroll)
     {
@@ -389,8 +445,11 @@ void SCortexChatPanel::RefreshVisibleEntries()
 
     if (Session.IsValid())
     {
-        // Re-add greeting at front when idle with no messages
-        if (Session->GetState() == ECortexSessionState::Idle && Session->GetChatEntries().IsEmpty() && GreetingRow.IsValid())
+        // Re-add greeting at front when idle/inactive with no messages
+        const bool bShowGreeting = (Session->GetState() == ECortexSessionState::Idle
+            || Session->GetState() == ECortexSessionState::Inactive)
+            && Session->GetChatEntries().IsEmpty();
+        if (bShowGreeting && GreetingRow.IsValid())
         {
             DisplayRows.Insert(GreetingRow, 0);
         }
@@ -405,18 +464,7 @@ void SCortexChatPanel::RefreshVisibleEntries()
             DisplayRows.Add(StreamingRow);
         }
 
-        // Append fresh processing row during active states.
-        // Must be a new TSharedPtr each call: SListView reuses widgets for stable pointers,
-        // so a persistent member would show stale text after Spawning -> Processing transition.
-        const ECortexSessionState State = Session->GetState();
-        if (State == ECortexSessionState::Spawning
-            || State == ECortexSessionState::Processing
-            || State == ECortexSessionState::Respawning)
-        {
-            TSharedPtr<FCortexChatDisplayRow> ProcessingRow = MakeShared<FCortexChatDisplayRow>();
-            ProcessingRow->RowType = ECortexChatRowType::ProcessingRow;
-            DisplayRows.Add(ProcessingRow);
-        }
+        // Processing indicator is handled by the separate SCortexProcessingIndicator widget
     }
 
     if (ChatList.IsValid())
@@ -441,72 +489,79 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatDispla
 {
     TSharedRef<SWidget> Content = SNullWidget::NullWidget;
 
-    switch (Row->RowType)
+    // Greeting row — centered muted text, no role label
+    if (Row == GreetingRow)
     {
-    case ECortexChatRowType::UserMessage:
-        Content = SNew(SCortexChatMessage)
-            .Message(Row->PrimaryEntry->Text)
-            .IsUser(true);
-        break;
-
-    case ECortexChatRowType::AssistantTurn:
+        Content = SNew(SBox)
+            .HAlign(HAlign_Center)
+            .Padding(0.0f, 40.0f, 0.0f, 8.0f)
+            [
+                SNew(STextBlock)
+                .Text(FText::FromString(Row->PrimaryEntry->Text))
+                .Font(FCoreStyle::GetDefaultFontStyle("Italic", 10))
+                .ColorAndOpacity(FSlateColor(FLinearColor(0.4f, 0.4f, 0.4f)))
+            ];
+    }
+    else
     {
-        TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
-        const bool bEntryIsStreaming = Session.IsValid() && (Session->GetCurrentStreamingEntry() == Row->PrimaryEntry);
-
-        TSharedRef<SVerticalBox> TurnBox = SNew(SVerticalBox);
-
-        // Assistant text first (includes "Claude" role label)
-        TurnBox->AddSlot()
-        .AutoHeight()
-        [
-            SNew(SCortexChatMessage)
-            .Message(Row->PrimaryEntry->Text)
-            .IsUser(false)
-            .IsStreaming(bEntryIsStreaming)
-        ];
-
-        // Tool calls below the role label
-        if (Row->ToolCalls.Num() > 0)
+        switch (Row->RowType)
         {
-            TWeakPtr<SListView<TSharedPtr<FCortexChatDisplayRow>>> WeakChatList = ChatList;
+        case ECortexChatRowType::UserMessage:
+            Content = SNew(SCortexChatMessage)
+                .Message(Row->PrimaryEntry->Text)
+                .IsUser(true);
+            break;
+
+        case ECortexChatRowType::AssistantTurn:
+        {
+            TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
+            const bool bEntryIsStreaming = Session.IsValid() && (Session->GetCurrentStreamingEntry() == Row->PrimaryEntry);
+
+            TSharedRef<SVerticalBox> TurnBox = SNew(SVerticalBox);
+
+            // Assistant text first (includes "Claude" role label)
             TurnBox->AddSlot()
             .AutoHeight()
-            .Padding(8.0f, 0.0f, 8.0f, 4.0f)
             [
-                SNew(SCortexToolCallBlock)
-                .ToolCalls(Row->ToolCalls)
-                .OnToggled(FSimpleDelegate::CreateLambda([WeakChatList]()
-                {
-                    if (TSharedPtr<SListView<TSharedPtr<FCortexChatDisplayRow>>> List = WeakChatList.Pin())
-                    {
-                        List->RequestListRefresh();
-                    }
-                }))
+                SNew(SCortexChatMessage)
+                .Message(Row->PrimaryEntry->Text)
+                .IsUser(false)
+                .IsStreaming(bEntryIsStreaming)
             ];
+
+            // Tool calls below the role label
+            if (Row->ToolCalls.Num() > 0)
+            {
+                TWeakPtr<SListView<TSharedPtr<FCortexChatDisplayRow>>> WeakChatList = ChatList;
+                TurnBox->AddSlot()
+                .AutoHeight()
+                .Padding(8.0f, 0.0f, 8.0f, 4.0f)
+                [
+                    SNew(SCortexToolCallBlock)
+                    .ToolCalls(Row->ToolCalls)
+                    .OnToggled(FSimpleDelegate::CreateLambda([WeakChatList]()
+                    {
+                        if (TSharedPtr<SListView<TSharedPtr<FCortexChatDisplayRow>>> List = WeakChatList.Pin())
+                        {
+                            List->RequestListRefresh();
+                        }
+                    }))
+                ];
+            }
+
+            Content = TurnBox;
+            break;
         }
 
-        Content = TurnBox;
-        break;
-    }
+        case ECortexChatRowType::CodeBlock:
+            Content = SNew(SCortexCodeBlock)
+                .Code(Row->PrimaryEntry->Text)
+                .Language(Row->PrimaryEntry->Language);
+            break;
 
-    case ECortexChatRowType::CodeBlock:
-        Content = SNew(SCortexCodeBlock)
-            .Code(Row->PrimaryEntry->Text)
-            .Language(Row->PrimaryEntry->Language);
-        break;
-
-    case ECortexChatRowType::ProcessingRow:
-    {
-        TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
-        const FString StatusText = (Session.IsValid() && Session->GetState() == ECortexSessionState::Spawning)
-            ? TEXT("Connecting...")
-            : TEXT("...");
-        Content = SNew(SCortexChatMessage)
-            .Message(StatusText)
-            .IsUser(false);
-        break;
-    }
+        case ECortexChatRowType::ProcessingRow:
+            break;  // Handled by SCortexProcessingIndicator widget
+        }
     }
 
     return SNew(STableRow<TSharedPtr<FCortexChatDisplayRow>>, OwnerTable)

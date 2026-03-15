@@ -20,6 +20,7 @@ FCortexFrontendSettings::FCortexFrontendSettings()
 
 void FCortexFrontendSettings::SetAccessMode(ECortexAccessMode Mode)
 {
+    check(IsInGameThread());
     if (AccessMode == Mode) return;
     AccessMode = Mode;
     MarkDirty();
@@ -28,6 +29,7 @@ void FCortexFrontendSettings::SetAccessMode(ECortexAccessMode Mode)
 
 void FCortexFrontendSettings::SetSkipPermissions(bool bSkip)
 {
+    check(IsInGameThread());
     if (bSkipPermissions == bSkip) return;
     bSkipPermissions = bSkip;
     MarkDirty();
@@ -36,6 +38,7 @@ void FCortexFrontendSettings::SetSkipPermissions(bool bSkip)
 
 void FCortexFrontendSettings::SetSelectedModel(const FString& Model)
 {
+    check(IsInGameThread());
     if (SelectedModel == Model) return;
     SelectedModel = Model;
     MarkDirty();
@@ -54,6 +57,7 @@ TArray<FString> FCortexFrontendSettings::GetAvailableModels() const
 
 void FCortexFrontendSettings::SetEffortLevel(ECortexEffortLevel Level)
 {
+    check(IsInGameThread());
     if (EffortLevel == Level) return;
     EffortLevel = Level;
     MarkDirty();
@@ -62,6 +66,7 @@ void FCortexFrontendSettings::SetEffortLevel(ECortexEffortLevel Level)
 
 void FCortexFrontendSettings::SetWorkflowMode(ECortexWorkflowMode Mode)
 {
+    check(IsInGameThread());
     if (WorkflowMode == Mode) return;
     WorkflowMode = Mode;
     MarkDirty();
@@ -70,6 +75,7 @@ void FCortexFrontendSettings::SetWorkflowMode(ECortexWorkflowMode Mode)
 
 void FCortexFrontendSettings::SetProjectContext(bool bEnabled)
 {
+    check(IsInGameThread());
     if (bProjectContext == bEnabled) return;
     bProjectContext = bEnabled;
     MarkDirty();
@@ -78,6 +84,7 @@ void FCortexFrontendSettings::SetProjectContext(bool bEnabled)
 
 void FCortexFrontendSettings::SetCustomDirective(const FString& Directive)
 {
+    check(IsInGameThread());
     FString Clamped = Directive.Left(500);
     if (CustomDirective == Clamped) return;
     CustomDirective = Clamped;

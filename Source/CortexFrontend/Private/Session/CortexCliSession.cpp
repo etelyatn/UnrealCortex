@@ -66,6 +66,14 @@ bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
 		}
 
 		CurrentState = State.load();
+
+		// SpawnProcess may have already drained the pending prompt (Idle → Processing).
+		// In that case the prompt is already sent — return success.
+		if (CurrentState == ECortexSessionState::Processing)
+		{
+			UE_LOG(LogCortexFrontend, Log, TEXT("Prompt drained during spawn"));
+			return true;
+		}
 	}
 
 	if (CurrentState == ECortexSessionState::Spawning)
@@ -151,9 +159,9 @@ bool FCortexCliSession::Reconnect()
 	if (!SpawnProcess(AccessMode, true))
 	{
 		UE_LOG(LogCortexFrontend, Warning, TEXT("Reconnect() failed: SpawnProcess returned false"));
+		State.store(ECortexSessionState::Inactive);
 		BroadcastStateChange(ECortexSessionState::Respawning, ECortexSessionState::Inactive,
 			TEXT("Failed to reconnect"));
-		State.store(ECortexSessionState::Inactive);
 		return false;
 	}
 
@@ -315,19 +323,19 @@ void FCortexCliSession::HandleProcessExited(const FString& Reason)
 			ConsecutiveSpawnFailures = 0;
 			Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
 			UE_LOG(LogCortexFrontend, Warning, TEXT("Max respawn attempts exceeded, starting fresh session %s"), *Config.SessionId);
-			BroadcastStateChange(CurrentState, ECortexSessionState::Inactive, TEXT("Session could not be resumed. Started fresh."));
 			State.store(ECortexSessionState::Inactive);
+			BroadcastStateChange(CurrentState, ECortexSessionState::Inactive, TEXT("Session could not be resumed. Started fresh."));
 			return;
 		}
 
-		BroadcastStateChange(CurrentState, ECortexSessionState::Respawning, Reason);
 		State.store(ECortexSessionState::Respawning);
+		BroadcastStateChange(CurrentState, ECortexSessionState::Respawning, Reason);
 
 		if (!CachedCliInfo.bIsValid)
 		{
 			UE_LOG(LogCortexFrontend, Log, TEXT("Cannot respawn: Claude CLI not found"));
-			BroadcastStateChange(ECortexSessionState::Respawning, ECortexSessionState::Inactive, TEXT("Claude CLI not found"));
 			State.store(ECortexSessionState::Inactive);
+			BroadcastStateChange(ECortexSessionState::Respawning, ECortexSessionState::Inactive, TEXT("Claude CLI not found"));
 			return;
 		}
 
@@ -335,8 +343,8 @@ void FCortexCliSession::HandleProcessExited(const FString& Reason)
 		if (!SpawnProcess(GetPendingAccessMode(), true))
 		{
 			UE_LOG(LogCortexFrontend, Warning, TEXT("Respawn failed"));
-			BroadcastStateChange(ECortexSessionState::Respawning, ECortexSessionState::Inactive, TEXT("Failed to respawn Claude CLI"));
 			State.store(ECortexSessionState::Inactive);
+			BroadcastStateChange(ECortexSessionState::Respawning, ECortexSessionState::Inactive, TEXT("Failed to respawn Claude CLI"));
 			return;
 		}
 		return;
@@ -430,7 +438,7 @@ FString FCortexCliSession::BuildLaunchCommandLine(bool bResumeSession, ECortexAc
 			"Do not follow documentation-first workflows. Be concise. Prefer action over ceremony.");
 	}
 
-	const FString& Directive = FCortexFrontendSettings::Get().GetCustomDirective();
+	const FString Directive = FCortexFrontendSettings::Get().GetCustomDirective();
 	if (!Directive.IsEmpty())
 	{
 		FString Sanitized = Directive;

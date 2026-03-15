@@ -100,22 +100,6 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 		});
 	}
 
-	// Settings delegate — subscribe unconditionally (not gated on session existence)
-	{
-		TWeakPtr<SCortexSidebar> SidebarWeakForSettings = SharedThis(this);
-		PendingChangesHandle = FCortexFrontendSettings::Get().OnPendingChangesUpdated.AddLambda([SidebarWeakForSettings]()
-		{
-			if (TSharedPtr<SCortexSidebar> Pinned = SidebarWeakForSettings.Pin())
-			{
-				if (Pinned->ReconnectBanner.IsValid())
-				{
-					const bool bShow = FCortexFrontendSettings::Get().HasPendingChanges();
-					Pinned->ReconnectBanner->SetVisibility(bShow ? EVisibility::Visible : EVisibility::Collapsed);
-				}
-			}
-		});
-	}
-
 	ChildSlot
 	[
 		SNew(SVerticalBox)
@@ -437,37 +421,12 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 						SAssignNew(StateText, STextBlock)
 						.Text(FText::FromString(TEXT("Inactive")))
 					]
-					// Reconnect banner (hidden by default)
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 4.0f)
+					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 4.0f)
 					[
-						SAssignNew(ReconnectBanner, SVerticalBox)
-						.Visibility(EVisibility::Collapsed)
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
-						[
-							SNew(STextBlock)
-							.Text(FText::FromString(FString(TEXT("\u26A0")) + TEXT(" Settings changed \u2014 reconnect to apply")))
-							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-							.ColorAndOpacity(FLinearColor(0.9f, 0.3f, 0.3f, 1.0f))
-						]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
-						[
-							SNew(SButton)
-							.Text(FText::FromString(TEXT("Reconnect")))
-							.ToolTipText(FText::FromString(TEXT("Restart the AI session to apply changed settings.")))
-							.IsEnabled_Lambda([this]() -> bool
-							{
-								TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
-								return Session.IsValid() && Session->GetState() == ECortexSessionState::Idle;
-							})
-							.OnClicked_Lambda([this]() -> FReply
-							{
-								if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
-								{
-									Session->Reconnect();
-								}
-								return FReply::Handled();
-							})
-						]
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Settings apply on new chat session")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Italic", 7))
+						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("666666")))))
 					]
 				]
 			]
@@ -485,7 +444,6 @@ SCortexSidebar::~SCortexSidebar()
 		Session->OnTokenUsageUpdated.Remove(TokenUsageHandle);
 		Session->OnStateChanged.Remove(StateChangedHandle);
 	}
-	FCortexFrontendSettings::Get().OnPendingChangesUpdated.Remove(PendingChangesHandle);
 }
 
 void SCortexSidebar::SetCollapsed(bool bCollapsed)

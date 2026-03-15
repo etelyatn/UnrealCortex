@@ -50,6 +50,4 @@ private:
 	TSharedPtr<SSegmentedControl<ECortexWorkflowMode>> WorkflowToggle;
 	TSharedPtr<SCheckBox> ProjectContextCheckbox;
 	TSharedPtr<SEditableTextBox> DirectiveTextBox;
-	TSharedPtr<SVerticalBox> ReconnectBanner;
-	FDelegateHandle PendingChangesHandle;
 };
