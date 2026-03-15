@@ -1,5 +1,6 @@
 #include "Widgets/SCortexChatToolbar.h"
 
+#include "CortexFrontendSettings.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
@@ -229,7 +230,8 @@ void SCortexChatToolbar::OnTokenUsageUpdated()
         const FString& Model = Session->GetModelId();
         if (!Model.IsEmpty())
         {
-            ModelLabel->SetText(FText::FromString(Model));
+            ModelLabel->SetText(FText::FromString(
+                FCortexFrontendSettings::GetModelLabelWithEffort(Model)));
         }
     }
 }

@@ -56,6 +56,16 @@ public:
         }
     }
 
+    static FString GetModelLabelWithEffort(const FString& ModelId)
+    {
+        const ECortexEffortLevel Level = Get().GetEffortLevel();
+        if (Level == ECortexEffortLevel::Default)
+        {
+            return ModelId;
+        }
+        return FString::Printf(TEXT("%s [%s]"), *ModelId, *Get().GetEffortLevelString());
+    }
+
     bool HasPendingChanges() const;
     void ClearPendingChanges();
 
