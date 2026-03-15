@@ -139,49 +139,6 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 					]
 				]
 			]
-			// Tokens section
-			+ SScrollBox::Slot()
-			[
-				SNew(SExpandableArea)
-				.AreaTitle(FText::FromString(TEXT("Tokens")))
-				.InitiallyCollapsed(false)
-				.BodyContent()
-				[
-					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
-					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().FillWidth(1.0f)
-						[ SNew(STextBlock).Text(FText::FromString(TEXT("In (new):"))) ]
-						+ SHorizontalBox::Slot().AutoWidth()
-						[ SAssignNew(InputTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
-					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().FillWidth(1.0f)
-						[ SNew(STextBlock).Text(FText::FromString(TEXT("Out:"))) ]
-						+ SHorizontalBox::Slot().AutoWidth()
-						[ SAssignNew(OutputTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
-					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().FillWidth(1.0f)
-						[ SNew(STextBlock).Text(FText::FromString(TEXT("Cache \u2191:"))) ]
-						+ SHorizontalBox::Slot().AutoWidth()
-						[ SAssignNew(CacheTokensText, STextBlock).Text(FText::FromString(TEXT("0"))) ]
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(8.0f, 2.0f)
-					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().FillWidth(1.0f)
-						[ SNew(STextBlock).Text(FText::FromString(TEXT("Hit Rate:"))) ]
-						+ SHorizontalBox::Slot().AutoWidth()
-						[ SAssignNew(CacheHitRateText, STextBlock).Text(FText::FromString(TEXT("0%"))) ]
-					]
-				]
-			]
 		]
 	];
 
@@ -208,7 +165,6 @@ void SCortexSidebar::SetCollapsed(bool bCollapsed)
 
 void SCortexSidebar::OnTokenUsageUpdated()
 {
-	UpdateTokenDisplay();
 	UpdateModelDisplay();
 }
 
@@ -235,33 +191,6 @@ void SCortexSidebar::OnSessionStateChanged(const FCortexSessionStateChange& Chan
 	};
 
 	StateText->SetText(FText::FromString(StateToString(Change.NewState)));
-}
-
-void SCortexSidebar::UpdateTokenDisplay()
-{
-	const TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
-	if (!Session.IsValid())
-	{
-		return;
-	}
-
-	if (InputTokensText.IsValid())
-	{
-		InputTokensText->SetText(FText::FromString(FString::Printf(TEXT("%lld"), Session->GetTotalInputTokens())));
-	}
-	if (OutputTokensText.IsValid())
-	{
-		OutputTokensText->SetText(FText::FromString(FString::Printf(TEXT("%lld"), Session->GetTotalOutputTokens())));
-	}
-	if (CacheTokensText.IsValid())
-	{
-		CacheTokensText->SetText(FText::FromString(FString::Printf(TEXT("%lld"), Session->GetTotalCacheReadTokens())));
-	}
-	if (CacheHitRateText.IsValid())
-	{
-		const float Rate = FCortexCliSession::CalculateCacheHitRate(Session->GetTotalCacheReadTokens(), Session->GetTotalInputTokens());
-		CacheHitRateText->SetText(FText::FromString(FString::Printf(TEXT("%.1f%%"), Rate)));
-	}
 }
 
 void SCortexSidebar::UpdateModelDisplay()

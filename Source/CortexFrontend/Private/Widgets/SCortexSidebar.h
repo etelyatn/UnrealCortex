@@ -24,7 +24,6 @@ public:
 private:
 	void OnTokenUsageUpdated();
 	void OnSessionStateChanged(const FCortexSessionStateChange& Change);
-	void UpdateTokenDisplay();
 	void UpdateModelDisplay();
 
 	TWeakPtr<FCortexCliSession> SessionWeak;
@@ -34,9 +33,5 @@ private:
 	TSharedPtr<STextBlock> CollapseButtonText;
 	TSharedPtr<STextBlock> ProviderText;
 	TSharedPtr<STextBlock> ModelText;
-	TSharedPtr<STextBlock> InputTokensText;
-	TSharedPtr<STextBlock> OutputTokensText;
-	TSharedPtr<STextBlock> CacheTokensText;
-	TSharedPtr<STextBlock> CacheHitRateText;
 	TSharedPtr<STextBlock> StateText;
 };
