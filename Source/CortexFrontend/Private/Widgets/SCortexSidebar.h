@@ -38,4 +38,7 @@ private:
 	TArray<TSharedPtr<FString>> ModelOptions;
 	TSharedPtr<SComboBox<TSharedPtr<FString>>> ModelComboBox;
 	TSharedPtr<FString> SelectedModelOption;
+	TArray<TSharedPtr<FString>> AccessModeOptions;
+	TSharedPtr<SComboBox<TSharedPtr<FString>>> AccessModeComboBox;
+	TSharedPtr<FString> SelectedAccessModeOption;
 };

@@ -34,6 +34,25 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 		SelectedModelOption = ModelOptions[0];
 	}
 
+	// Populate access mode dropdown
+	AccessModeOptions.Add(MakeShared<FString>(TEXT("Read-Only")));
+	AccessModeOptions.Add(MakeShared<FString>(TEXT("Guided")));
+	AccessModeOptions.Add(MakeShared<FString>(TEXT("Full Access")));
+
+	const FString CurrentMode = FCortexFrontendSettings::Get().GetAccessModeString();
+	for (const TSharedPtr<FString>& Option : AccessModeOptions)
+	{
+		if (*Option == CurrentMode)
+		{
+			SelectedAccessModeOption = Option;
+			break;
+		}
+	}
+	if (!SelectedAccessModeOption.IsValid())
+	{
+		SelectedAccessModeOption = AccessModeOptions[0];
+	}
+
 	// Subscribe to session events using weak lambda (SWidget doesn't support AddSP directly)
 	if (TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin())
 	{
@@ -179,14 +198,50 @@ void SCortexSidebar::Construct(const FArguments& InArgs)
 						.FillWidth(1.0f)
 						.VAlign(VAlign_Center)
 						[
-							SNew(STextBlock)
-							.Text_Lambda([]()
+							SAssignNew(AccessModeComboBox, SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&AccessModeOptions)
+							.OnSelectionChanged_Lambda([this](TSharedPtr<FString> Selection, ESelectInfo::Type)
 							{
-								return FText::FromString(FCortexFrontendSettings::Get().GetAccessModeString());
+								if (Selection.IsValid())
+								{
+									SelectedAccessModeOption = Selection;
+									if (*Selection == TEXT("Read-Only"))
+									{
+										FCortexFrontendSettings::Get().SetAccessMode(ECortexAccessMode::ReadOnly);
+									}
+									else if (*Selection == TEXT("Guided"))
+									{
+										FCortexFrontendSettings::Get().SetAccessMode(ECortexAccessMode::Guided);
+									}
+									else if (*Selection == TEXT("Full Access"))
+									{
+										FCortexFrontendSettings::Get().SetAccessMode(ECortexAccessMode::FullAccess);
+									}
+								}
 							})
-							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-							.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("cccccc")))))
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+							{
+								return SNew(STextBlock).Text(FText::FromString(*Item));
+							})
+							[
+								SNew(STextBlock)
+								.Text_Lambda([this]() -> FText
+								{
+									return SelectedAccessModeOption.IsValid()
+										? FText::FromString(*SelectedAccessModeOption)
+										: FText::FromString(TEXT("Read-Only"));
+								})
+							]
 						]
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(4.0f, 0.0f)
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(TEXT("Applied on new chat session")))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+						.ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("666666")))))
 					]
 				]
 			]
