@@ -2,8 +2,10 @@
 
 #include "Styling/AppStyle.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/Text/STextBlock.h"
 
 void SCortexConversionConfig::Construct(const FArguments& InArgs)
@@ -288,6 +290,14 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 				]
 			]
 
+			// Destination section (conditional — only if project ancestors detected)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 16)
+			[
+				BuildDestinationSection(Payload)
+			]
+
 			// Events and Functions list
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -424,6 +434,190 @@ ECortexConversionDepth SCortexConversionConfig::DefaultDepthForScope(ECortexConv
 {
 	// All scopes default to CppCore per spec
 	return ECortexConversionDepth::CppCore;
+}
+
+TSharedRef<SWidget> SCortexConversionConfig::BuildDestinationSection(const FCortexConversionPayload& Payload)
+{
+	if (Payload.DetectedProjectAncestors.Num() == 0)
+	{
+		return SNullWidget::NullWidget; // No project ancestors — always "Create new class"
+	}
+
+	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+
+	// Section header
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 0, 0, 8)
+	[
+		SNew(STextBlock)
+		.Text(NSLOCTEXT("CortexConversion", "DestLabel", "Destination"))
+		.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+	];
+
+	// Show detected ancestor info
+	const FProjectClassInfo& FirstAncestor = Payload.DetectedProjectAncestors[0];
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 0, 0, 8)
+	[
+		SNew(STextBlock)
+		.Text(FText::FromString(FString::Printf(TEXT("Detected project class: %s (%s)"),
+			*FirstAncestor.ClassName, *FirstAncestor.ModuleName)))
+		.ColorAndOpacity(FSlateColor(FLinearColor(0.3f, 0.8f, 0.3f)))
+	];
+
+	// If multiple ancestors, show radio buttons for each
+	if (Payload.DetectedProjectAncestors.Num() > 1)
+	{
+		for (int32 i = 0; i < Payload.DetectedProjectAncestors.Num(); ++i)
+		{
+			const FProjectClassInfo& Info = Payload.DetectedProjectAncestors[i];
+			Box->AddSlot()
+			.AutoHeight()
+			.Padding(8, 2)
+			[
+				SNew(SCheckBox)
+				.Style(FAppStyle::Get(), "RadioButton")
+				.IsChecked_Lambda([this, i]()
+				{
+					if (!Context.IsValid()) return ECheckBoxState::Unchecked;
+					return (Context->TargetClassName == Context->Payload.DetectedProjectAncestors[i].ClassName)
+						? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+				})
+				.OnCheckStateChanged_Lambda([this, i](ECheckBoxState State)
+				{
+					if (State == ECheckBoxState::Checked)
+					{
+						OnTargetAncestorSelected(i);
+					}
+				})
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(FString::Printf(TEXT("%s (%s)"),
+						*Info.ClassName, *Info.ModuleName)))
+				]
+			];
+		}
+	}
+
+	// Create new class option
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 4)
+	[
+		SNew(SCheckBox)
+		.Style(FAppStyle::Get(), "RadioButton")
+		.IsChecked_Lambda([this]()
+		{
+			return IsDestinationSelected(ECortexConversionDestination::CreateNewClass)
+				? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		})
+		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+		{
+			if (State == ECheckBoxState::Checked)
+			{
+				OnDestinationChanged(ECortexConversionDestination::CreateNewClass);
+			}
+		})
+		[
+			SNew(STextBlock)
+			.Text(NSLOCTEXT("CortexConversion", "DestNewClass", "Create new class (default)"))
+		]
+	];
+
+	// Inject into existing option — label is dynamic based on selected ancestor
+	FString DefaultAncestorName = FirstAncestor.ClassName;
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 4)
+	[
+		SNew(SCheckBox)
+		.Style(FAppStyle::Get(), "RadioButton")
+		.IsChecked_Lambda([this]()
+		{
+			return IsDestinationSelected(ECortexConversionDestination::InjectIntoExisting)
+				? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		})
+		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+		{
+			if (State == ECheckBoxState::Checked)
+			{
+				OnDestinationChanged(ECortexConversionDestination::InjectIntoExisting);
+			}
+		})
+		[
+			SNew(STextBlock)
+			.Text_Lambda([this, DefaultAncestorName]() -> FText
+			{
+				const FString& Name = (Context.IsValid() && !Context->TargetClassName.IsEmpty())
+					? Context->TargetClassName : DefaultAncestorName;
+				return FText::FromString(FString::Printf(TEXT("Inject into %s"), *Name));
+			})
+		]
+	];
+
+	// Source file warning if not resolved
+	if (!FirstAncestor.bSourceFileResolved)
+	{
+		Box->AddSlot()
+		.AutoHeight()
+		.Padding(0, 4)
+		[
+			SNew(STextBlock)
+			.Text(NSLOCTEXT("CortexConversion", "DestNoSource",
+				"Note: Implementation file not auto-detected. Inject mode will provide header context only."))
+			.ColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.7f, 0.2f)))
+			.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
+		];
+	}
+
+	// Wrap in a border with green tint
+	return SNew(SBorder)
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderBackgroundColor(FLinearColor(0.15f, 0.25f, 0.15f, 1.0f))
+		.Padding(8.0f)
+		[
+			Box
+		];
+}
+
+bool SCortexConversionConfig::IsDestinationSelected(ECortexConversionDestination Dest) const
+{
+	return Context.IsValid() && Context->SelectedDestination == Dest;
+}
+
+void SCortexConversionConfig::OnDestinationChanged(ECortexConversionDestination NewDest)
+{
+	if (!Context.IsValid()) return;
+
+	Context->SelectedDestination = NewDest;
+
+	if (NewDest == ECortexConversionDestination::CreateNewClass)
+	{
+		Context->TargetClassName.Empty();
+		Context->TargetHeaderPath.Empty();
+		Context->TargetSourcePath.Empty();
+	}
+	else if (NewDest == ECortexConversionDestination::InjectIntoExisting
+		&& Context->TargetClassName.IsEmpty()
+		&& Context->Payload.DetectedProjectAncestors.Num() > 0)
+	{
+		// Auto-select first ancestor if none selected
+		OnTargetAncestorSelected(0);
+	}
+}
+
+void SCortexConversionConfig::OnTargetAncestorSelected(int32 AncestorIndex)
+{
+	if (!Context.IsValid()) return;
+	if (!Context->Payload.DetectedProjectAncestors.IsValidIndex(AncestorIndex)) return;
+
+	const FProjectClassInfo& Info = Context->Payload.DetectedProjectAncestors[AncestorIndex];
+	Context->TargetClassName = Info.ClassName;
+	Context->TargetHeaderPath = Info.HeaderPath;
+	Context->TargetSourcePath = Info.SourcePath;
+	Context->SelectedDestination = ECortexConversionDestination::InjectIntoExisting;
 }
 
 void SCortexConversionConfig::OnEventOrFunctionSelected(const FString& Name)

@@ -31,6 +31,11 @@ private:
 	bool IsDepthSelected(ECortexConversionDepth Depth) const;
 	ECortexConversionDepth DefaultDepthForScope(ECortexConversionScope Scope) const;
 
+	void OnDestinationChanged(ECortexConversionDestination NewDest);
+	bool IsDestinationSelected(ECortexConversionDestination Dest) const;
+	void OnTargetAncestorSelected(int32 AncestorIndex);
+	TSharedRef<SWidget> BuildDestinationSection(const FCortexConversionPayload& Payload);
+
 	TSharedPtr<FCortexConversionContext> Context;
 	FOnConvertClicked OnConvert;
 };
