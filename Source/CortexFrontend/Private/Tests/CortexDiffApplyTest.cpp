@@ -2,34 +2,57 @@
 #include "Conversion/CortexDiffParser.h"
 
 // ---------------------------------------------------------------------------
-// Helper: simulate the accumulator apply algorithm
-// Returns the modified text, or the original text on failure (setting OutFailedIndex)
+// Helper: simulate the production apply algorithm from SCortexConversionChat
+// Continues past failures (partial apply), detects ambiguity, uses accumulator.
 // ---------------------------------------------------------------------------
 namespace
 {
-    FString ApplySearchReplacePairs(
-        const FString& OriginalText,
-        const TArray<FCortexFrontendSearchReplacePair>& Pairs,
-        int32& OutFailedIndex)
+    struct FApplyResult
     {
-        OutFailedIndex = -1;
-        FString Current = OriginalText;
+        FString ResultText;
+        int32 AppliedCount = 0;
+        int32 SkippedNotFound = 0;
+        int32 SkippedAmbiguous = 0;
+    };
+
+    FApplyResult ApplySearchReplacePairs(
+        const FString& OriginalText,
+        const TArray<FCortexFrontendSearchReplacePair>& Pairs)
+    {
+        FApplyResult Result;
+        FString WorkingText = OriginalText;
+        WorkingText.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
 
         for (int32 i = 0; i < Pairs.Num(); ++i)
         {
-            const int32 Pos = Current.Find(Pairs[i].SearchText, ESearchCase::CaseSensitive);
+            const int32 Pos = WorkingText.Find(
+                Pairs[i].SearchText, ESearchCase::CaseSensitive, ESearchDir::FromStart);
+
             if (Pos == INDEX_NONE)
             {
-                OutFailedIndex = i;
-                return OriginalText;  // Return untouched original on failure
+                ++Result.SkippedNotFound;
+                continue;
             }
-            // Replace first occurrence only
-            Current = Current.Left(Pos)
+
+            // Check ambiguity: second occurrence of same search text
+            const int32 Pos2 = WorkingText.Find(
+                Pairs[i].SearchText, ESearchCase::CaseSensitive, ESearchDir::FromStart,
+                Pos + Pairs[i].SearchText.Len());
+            if (Pos2 != INDEX_NONE)
+            {
+                ++Result.SkippedAmbiguous;
+                continue;
+            }
+
+            // Splice — replace first (and only) occurrence
+            WorkingText = WorkingText.Left(Pos)
                 + Pairs[i].ReplaceText
-                + Current.Mid(Pos + Pairs[i].SearchText.Len());
+                + WorkingText.Mid(Pos + Pairs[i].SearchText.Len());
+            ++Result.AppliedCount;
         }
 
-        return Current;
+        Result.ResultText = WorkingText;
+        return Result;
     }
 }
 
@@ -49,17 +72,16 @@ bool FCortexDiffApplySinglePairTest::RunTest(const FString& Parameters)
     TArray<FCortexFrontendSearchReplacePair> Pairs;
     Pairs.Add({ TEXT("float JumpForce;\n"), TEXT("float JumpForce = 1000.0f;\n") });
 
-    int32 FailedIndex = -1;
-    const FString Result = ApplySearchReplacePairs(Original, Pairs, FailedIndex);
+    const FApplyResult Result = ApplySearchReplacePairs(Original, Pairs);
 
-    TestEqual(TEXT("FailedIndex should be -1 (success)"), FailedIndex, -1);
-    TestEqual(TEXT("Result"), Result, FString(TEXT("float JumpForce = 1000.0f;\n")));
+    TestEqual(TEXT("AppliedCount should be 1"), Result.AppliedCount, 1);
+    TestEqual(TEXT("Result"), Result.ResultText, FString(TEXT("float JumpForce = 1000.0f;\n")));
 
     return true;
 }
 
 // ---------------------------------------------------------------------------
-// Test: multiple pairs applied in order
+// Test: multiple pairs applied in order (accumulator)
 // ---------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDiffApplyMultiplePairsTest,
     "Cortex.Frontend.DiffApply.MultiplePairs",
@@ -77,19 +99,18 @@ bool FCortexDiffApplyMultiplePairsTest::RunTest(const FString& Parameters)
     Pairs.Add({ TEXT("int A = 1;\n"), TEXT("int A = 2;\n") });
     Pairs.Add({ TEXT("int B = 3;\n"), TEXT("int B = 4;\n") });
 
-    int32 FailedIndex = -1;
-    const FString Result = ApplySearchReplacePairs(Original, Pairs, FailedIndex);
+    const FApplyResult Result = ApplySearchReplacePairs(Original, Pairs);
 
-    TestEqual(TEXT("FailedIndex should be -1"), FailedIndex, -1);
+    TestEqual(TEXT("AppliedCount should be 2"), Result.AppliedCount, 2);
     TestEqual(TEXT("Result"),
-        Result,
+        Result.ResultText,
         FString(TEXT("int A = 2;\n") TEXT("int B = 4;\n")));
 
     return true;
 }
 
 // ---------------------------------------------------------------------------
-// Test: search text not found — returns original, sets failed index
+// Test: search text not found — skips pair, continues
 // ---------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDiffApplyNotFoundTest,
     "Cortex.Frontend.DiffApply.NotFound",
@@ -104,17 +125,18 @@ bool FCortexDiffApplyNotFoundTest::RunTest(const FString& Parameters)
     TArray<FCortexFrontendSearchReplacePair> Pairs;
     Pairs.Add({ TEXT("float Y = 5.0f;\n"), TEXT("float Y = 10.0f;\n") });  // Y not in text
 
-    int32 FailedIndex = -1;
-    const FString Result = ApplySearchReplacePairs(Original, Pairs, FailedIndex);
+    const FApplyResult Result = ApplySearchReplacePairs(Original, Pairs);
 
-    TestEqual(TEXT("FailedIndex should be 0"), FailedIndex, 0);
-    TestEqual(TEXT("Result should be unchanged original"), Result, Original);
+    TestEqual(TEXT("AppliedCount should be 0"), Result.AppliedCount, 0);
+    TestEqual(TEXT("SkippedNotFound should be 1"), Result.SkippedNotFound, 1);
+    TestEqual(TEXT("ResultText unchanged"), Result.ResultText, Original);
 
     return true;
 }
 
 // ---------------------------------------------------------------------------
-// Test: second pair fails — returns original, sets failed index to 1
+// Test: partial failure — first pair applies, second pair not found
+//       Production continues and applies what it can (partial apply)
 // ---------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDiffApplyPartialFailureTest,
     "Cortex.Frontend.DiffApply.PartialFailure",
@@ -129,30 +151,37 @@ bool FCortexDiffApplyPartialFailureTest::RunTest(const FString& Parameters)
         TEXT("int B = 3;\n");
 
     TArray<FCortexFrontendSearchReplacePair> Pairs;
-    Pairs.Add({ TEXT("int A = 1;\n"), TEXT("int A = 2;\n") });          // ok
-    Pairs.Add({ TEXT("int MISSING = 99;\n"), TEXT("int MISSING = 0;\n") });  // fails
+    Pairs.Add({ TEXT("int A = 1;\n"), TEXT("int A = 2;\n") });          // found, applied
+    Pairs.Add({ TEXT("int MISSING = 99;\n"), TEXT("int MISSING = 0;\n") });  // not found, skipped
 
-    int32 FailedIndex = -1;
-    const FString Result = ApplySearchReplacePairs(Original, Pairs, FailedIndex);
+    const FApplyResult Result = ApplySearchReplacePairs(Original, Pairs);
 
-    TestEqual(TEXT("FailedIndex should be 1"), FailedIndex, 1);
-    TestEqual(TEXT("Result should be unchanged original"), Result, Original);
+    // Production semantics: continues past failure, applies pair 1, warns about pair 2
+    TestEqual(TEXT("AppliedCount should be 1"), Result.AppliedCount, 1);
+    TestEqual(TEXT("SkippedNotFound should be 1"), Result.SkippedNotFound, 1);
+    // Result contains pair 1's change
+    TestTrue(TEXT("Result should contain applied change"),
+        Result.ResultText.Contains(TEXT("int A = 2;")));
+    // Result preserves non-matched content
+    TestTrue(TEXT("Result should preserve other content"),
+        Result.ResultText.Contains(TEXT("int B = 3;")));
 
     return true;
 }
 
 // ---------------------------------------------------------------------------
-// Test: first occurrence only (not all occurrences)
+// Test: ambiguous match (search text appears twice) — pair is skipped
+//       Production detects ambiguity and skips rather than guessing
 // ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDiffApplyFirstOccurrenceOnlyTest,
-    "Cortex.Frontend.DiffApply.FirstOccurrenceOnly",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDiffApplyAmbiguousTest,
+    "Cortex.Frontend.DiffApply.Ambiguous",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FCortexDiffApplyFirstOccurrenceOnlyTest::RunTest(const FString& Parameters)
+bool FCortexDiffApplyAmbiguousTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
 
-    // Two identical lines — only first should be replaced
+    // Two identical lines — ambiguous, should be skipped
     const FString Original =
         TEXT("int X = 0;\n")
         TEXT("int X = 0;\n");
@@ -160,13 +189,11 @@ bool FCortexDiffApplyFirstOccurrenceOnlyTest::RunTest(const FString& Parameters)
     TArray<FCortexFrontendSearchReplacePair> Pairs;
     Pairs.Add({ TEXT("int X = 0;\n"), TEXT("int X = 1;\n") });
 
-    int32 FailedIndex = -1;
-    const FString Result = ApplySearchReplacePairs(Original, Pairs, FailedIndex);
+    const FApplyResult Result = ApplySearchReplacePairs(Original, Pairs);
 
-    TestEqual(TEXT("FailedIndex should be -1"), FailedIndex, -1);
-    TestEqual(TEXT("Only first occurrence replaced"),
-        Result,
-        FString(TEXT("int X = 1;\n") TEXT("int X = 0;\n")));
+    TestEqual(TEXT("AppliedCount should be 0"), Result.AppliedCount, 0);
+    TestEqual(TEXT("SkippedAmbiguous should be 1"), Result.SkippedAmbiguous, 1);
+    TestEqual(TEXT("ResultText unchanged"), Result.ResultText, Original);
 
     return true;
 }
@@ -189,13 +216,38 @@ bool FCortexDiffApplyDeletionTest::RunTest(const FString& Parameters)
     TArray<FCortexFrontendSearchReplacePair> Pairs;
     Pairs.Add({ TEXT("// TODO: remove this\n"), TEXT("") });
 
-    int32 FailedIndex = -1;
-    const FString Result = ApplySearchReplacePairs(Original, Pairs, FailedIndex);
+    const FApplyResult Result = ApplySearchReplacePairs(Original, Pairs);
 
-    TestEqual(TEXT("FailedIndex should be -1"), FailedIndex, -1);
+    TestEqual(TEXT("AppliedCount should be 1"), Result.AppliedCount, 1);
     TestEqual(TEXT("Result should have line deleted"),
-        Result,
+        Result.ResultText,
         FString(TEXT("int X = 0;\n")));
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Test: accumulator order — second pair's search matches result of first pair
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDiffApplyAccumulatorOrderTest,
+    "Cortex.Frontend.DiffApply.AccumulatorOrder",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexDiffApplyAccumulatorOrderTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Second pair's search text matches the RESULT of the first pair
+    const FString Original = TEXT("AAA\nBBB\n");
+
+    TArray<FCortexFrontendSearchReplacePair> Pairs;
+    Pairs.Add({ TEXT("AAA\n"), TEXT("CCC\n") });
+    Pairs.Add({ TEXT("CCC\n"), TEXT("DDD\n") });  // matches first pair's output
+
+    const FApplyResult Result = ApplySearchReplacePairs(Original, Pairs);
+
+    TestEqual(TEXT("AppliedCount should be 2"), Result.AppliedCount, 2);
+    TestEqual(TEXT("Result"), Result.ResultText, FString(TEXT("DDD\nBBB\n")));
 
     return true;
 }
