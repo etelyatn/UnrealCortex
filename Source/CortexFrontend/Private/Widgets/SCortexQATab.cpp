@@ -195,12 +195,37 @@ void SCortexQATab::OnStopClicked()
 
 void SCortexQATab::OnStopAndReplayClicked()
 {
-    OnStopClicked();
-    // After refresh, the newest session should be at index 0
-    if (SessionManager->GetSessions().Num() > 0)
+    FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+    FCortexCommandRouter& Router = Core.GetCommandRouter();
+
+    FCortexCommandResult StopResult = Router.Execute(TEXT("qa.stop_recording"), MakeShared<FJsonObject>());
+
+    if (Toolbar.IsValid())
     {
-        OnSessionSelected(0);
-        OnReplayClicked();
+        Toolbar->SetRecording(false);
+    }
+    if (SessionList.IsValid())
+    {
+        SessionList->SetEnabled(true);
+    }
+
+    RefreshSessions();
+
+    if (!StopResult.bSuccess || !StopResult.Data.IsValid())
+    {
+        return;
+    }
+
+    const FString SavedPath = StopResult.Data->GetStringField(TEXT("path"));
+    const TArray<FCortexQASessionListItem>& AllSessions = SessionManager->GetSessions();
+    for (int32 i = 0; i < AllSessions.Num(); i++)
+    {
+        if (AllSessions[i].FilePath == SavedPath)
+        {
+            OnSessionSelected(i);
+            OnReplayClicked();
+            break;
+        }
     }
 }
 
@@ -224,16 +249,22 @@ void SCortexQATab::OnReplayClicked()
     Params->SetStringField(TEXT("path"), Sessions[SelectedSessionIndex].FilePath);
     Params->SetStringField(TEXT("on_failure"), TEXT("continue"));
 
+    TWeakPtr<SCortexQATab> WeakSelf = SharedThis(this);
     Router.Execute(TEXT("qa.replay_session"), Params,
-        [this](FCortexCommandResult Result)
+        [WeakSelf](FCortexCommandResult Result)
         {
-            AsyncTask(ENamedThreads::GameThread, [this, Result]()
+            AsyncTask(ENamedThreads::GameThread, [WeakSelf, Result]()
             {
-                if (Toolbar.IsValid())
+                TSharedPtr<SCortexQATab> Self = WeakSelf.Pin();
+                if (!Self.IsValid())
                 {
-                    Toolbar->SetPIEStatus(Result.bSuccess ? TEXT("Replay Complete") : TEXT("Replay Failed"));
+                    return;
                 }
-                RefreshSessions();
+                if (Self->Toolbar.IsValid())
+                {
+                    Self->Toolbar->SetPIEStatus(Result.bSuccess ? TEXT("Replay Complete") : TEXT("Replay Failed"));
+                }
+                Self->RefreshSessions();
             });
         });
 

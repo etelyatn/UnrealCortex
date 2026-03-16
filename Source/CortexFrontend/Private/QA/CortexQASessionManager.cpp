@@ -36,14 +36,34 @@ void FCortexQASessionManager::RefreshSessionList()
 
         FCortexQASessionListItem Item;
         Item.FilePath = FullPath;
-        Item.Name = Root->GetStringField(TEXT("name"));
-        Item.Source = Root->GetStringField(TEXT("source"));
-        Item.MapPath = Root->GetStringField(TEXT("map"));
-        FDateTime::ParseIso8601(*Root->GetStringField(TEXT("recorded_at")), Item.RecordedAt);
-        Item.bComplete = Root->GetBoolField(TEXT("complete"));
 
-        const TArray<TSharedPtr<FJsonValue>>& StepsArr = Root->GetArrayField(TEXT("steps"));
-        Item.StepCount = StepsArr.Num();
+        // Required fields — skip item if missing
+        FString Name;
+        if (!Root->TryGetStringField(TEXT("name"), Name) || Name.IsEmpty())
+        {
+            continue;
+        }
+        Item.Name = Name;
+
+        // Optional fields with defaults
+        Root->TryGetStringField(TEXT("source"), Item.Source);
+        Root->TryGetStringField(TEXT("map"), Item.MapPath);
+
+        FString RecordedAtStr;
+        if (Root->TryGetStringField(TEXT("recorded_at"), RecordedAtStr))
+        {
+            FDateTime::ParseIso8601(*RecordedAtStr, Item.RecordedAt);
+        }
+
+        bool bComplete = false;
+        Root->TryGetBoolField(TEXT("complete"), bComplete);
+        Item.bComplete = bComplete;
+
+        const TArray<TSharedPtr<FJsonValue>>* StepsPtr = nullptr;
+        if (Root->TryGetArrayField(TEXT("steps"), StepsPtr) && StepsPtr != nullptr)
+        {
+            Item.StepCount = StepsPtr->Num();
+        }
 
         const TSharedPtr<FJsonObject>* LastRunObj = nullptr;
         if (Root->TryGetObjectField(TEXT("last_run"), LastRunObj))
