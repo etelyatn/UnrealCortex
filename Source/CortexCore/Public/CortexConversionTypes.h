@@ -11,6 +11,31 @@ enum class ECortexConversionScope : uint8
 	EventOrFunction
 };
 
+// ── Conversion depth enum ──
+enum class ECortexConversionDepth : uint8
+{
+	PerformanceShell,
+	CppCore,          // default
+	FullExtraction
+};
+
+// ── Conversion destination enum ──
+enum class ECortexConversionDestination : uint8
+{
+	CreateNewClass,       // default
+	InjectIntoExisting
+};
+
+// ── Detected project ancestor class info ──
+struct CORTEXCORE_API FProjectClassInfo
+{
+	FString ClassName;            // e.g., "AMyPlayerCharacter"
+	FString ModuleName;           // e.g., "MyGame"
+	FString HeaderPath;           // absolute path to .h file
+	FString SourcePath;           // absolute path to .cpp file (may be empty)
+	bool bSourceFileResolved = false;
+};
+
 // ── Lightweight payload for initial event (toolbar → frontend) ──
 struct CORTEXCORE_API FCortexConversionPayload
 {
@@ -24,6 +49,8 @@ struct CORTEXCORE_API FCortexConversionPayload
 	TArray<FString> EventNames;      // e.g. "ReceiveBeginPlay", "OnOverlap"
 	TArray<FString> FunctionNames;   // e.g. "CalculateDamage", "GetSpeed"
 	TArray<FString> GraphNames;      // all graph names in the BP
+
+	TArray<FProjectClassInfo> DetectedProjectAncestors; // populated by CortexBlueprint
 };
 
 // ── Serialization request (frontend → blueprint, via core) ──

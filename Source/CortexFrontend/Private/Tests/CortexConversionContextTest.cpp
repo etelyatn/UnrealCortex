@@ -78,3 +78,84 @@ bool FCortexConversionContextCreationTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionDepthEnumTest,
+    "Cortex.Frontend.Conversion.Types.DepthEnum",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionDepthEnumTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Verify all three depth levels exist and have distinct values
+    TestNotEqual(TEXT("PerformanceShell != CppCore"),
+        static_cast<uint8>(ECortexConversionDepth::PerformanceShell),
+        static_cast<uint8>(ECortexConversionDepth::CppCore));
+    TestNotEqual(TEXT("CppCore != FullExtraction"),
+        static_cast<uint8>(ECortexConversionDepth::CppCore),
+        static_cast<uint8>(ECortexConversionDepth::FullExtraction));
+    TestNotEqual(TEXT("PerformanceShell != FullExtraction"),
+        static_cast<uint8>(ECortexConversionDepth::PerformanceShell),
+        static_cast<uint8>(ECortexConversionDepth::FullExtraction));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionDestinationEnumTest,
+    "Cortex.Frontend.Conversion.Types.DestinationEnum",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionDestinationEnumTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    TestNotEqual(TEXT("CreateNewClass != InjectIntoExisting"),
+        static_cast<uint8>(ECortexConversionDestination::CreateNewClass),
+        static_cast<uint8>(ECortexConversionDestination::InjectIntoExisting));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexProjectClassInfoDefaultsTest,
+    "Cortex.Frontend.Conversion.Types.ProjectClassInfoDefaults",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexProjectClassInfoDefaultsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Verify default values are safe
+    FProjectClassInfo Default;
+    TestFalse(TEXT("Default bSourceFileResolved should be false"), Default.bSourceFileResolved);
+    TestTrue(TEXT("Default ClassName should be empty"), Default.ClassName.IsEmpty());
+    TestTrue(TEXT("Default HeaderPath should be empty"), Default.HeaderPath.IsEmpty());
+    TestTrue(TEXT("Default SourcePath should be empty"), Default.SourcePath.IsEmpty());
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPayloadDetectedAncestorsFieldTest,
+    "Cortex.Frontend.Conversion.Types.PayloadAncestorsField",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexPayloadDetectedAncestorsFieldTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Verify payload starts with empty ancestors and can hold them
+    FCortexConversionPayload Payload;
+    TestEqual(TEXT("DetectedProjectAncestors should start empty"),
+        Payload.DetectedProjectAncestors.Num(), 0);
+
+    FProjectClassInfo Info;
+    Info.ClassName = TEXT("ATestCharacter");
+    Info.ModuleName = TEXT("TestModule");
+    Payload.DetectedProjectAncestors.Add(Info);
+
+    TestEqual(TEXT("Should have 1 ancestor after add"),
+        Payload.DetectedProjectAncestors.Num(), 1);
+    TestEqual(TEXT("Ancestor class name"),
+        Payload.DetectedProjectAncestors[0].ClassName, FString(TEXT("ATestCharacter")));
+
+    return true;
+}
