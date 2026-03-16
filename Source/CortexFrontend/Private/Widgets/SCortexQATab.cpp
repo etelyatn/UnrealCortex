@@ -1,5 +1,6 @@
 // Source/CortexFrontend/Private/Widgets/SCortexQATab.cpp
 #include "Widgets/SCortexQATab.h"
+#include "Widgets/SCortexQACommandBar.h"
 #include "Widgets/SCortexQADetailPanel.h"
 #include "Widgets/SCortexQASessionList.h"
 #include "Widgets/SCortexQAToolbar.h"
@@ -12,7 +13,6 @@
 #include "Session/CortexSessionTypes.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SBox.h"
-#include "Widgets/Text/STextBlock.h"
 
 void SCortexQATab::Construct(const FArguments& InArgs)
 {
@@ -69,13 +69,13 @@ void SCortexQATab::Construct(const FArguments& InArgs)
             ]
         ]
 
-        // Command bar placeholder
+        // Command bar
         + SVerticalBox::Slot()
         .AutoHeight()
         .Padding(4.f)
         [
-            SNew(STextBlock)
-            .Text(FText::FromString(TEXT("[Command Bar Placeholder]")))
+            SAssignNew(CommandBar, SCortexQACommandBar)
+            .OnGenerate(FOnQAGenerateClicked::CreateSP(this, &SCortexQATab::OnGenerateClicked))
         ]
     ];
 
