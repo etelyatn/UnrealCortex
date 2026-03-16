@@ -1,11 +1,13 @@
 #include "Widgets/SCortexWorkbench.h"
 
+#include "CortexFrontendModule.h"
 #include "Framework/Docking/TabManager.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/SCortexChatPanel.h"
+#include "Widgets/SCortexConversionTab.h"
 #include "Widgets/SCortexSidebar.h"
 #include "Session/CortexCliSession.h"
 
@@ -78,10 +80,89 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 
 SCortexWorkbench::~SCortexWorkbench()
 {
+	// Clean up all conversion tab spawners before releasing TabManager
+	TArray<FName> TabIds;
+	ConversionContexts.GetKeys(TabIds);
+	for (const FName& TabId : TabIds)
+	{
+		CleanupConversionTab(TabId);
+	}
+
 	if (TabManager.IsValid())
 	{
 		TabManager->CloseAllAreas();
 		TabManager->UnregisterTabSpawner(TEXT("CortexChat"));
+	}
+}
+
+void SCortexWorkbench::SpawnConversionTab(const FCortexConversionPayload& Payload)
+{
+	if (!TabManager.IsValid())
+	{
+		return;
+	}
+
+	TSharedPtr<FCortexConversionContext> Context = MakeShared<FCortexConversionContext>(Payload);
+	ConversionContexts.Add(Context->TabId, Context);
+
+	// Warn at 10+ tabs
+	if (ConversionContexts.Num() >= 10)
+	{
+		UE_LOG(LogCortexFrontend, Warning,
+			TEXT("10+ conversion tabs open — consider closing unused tabs"));
+	}
+
+	TabManager->RegisterTabSpawner(Context->TabId,
+		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnConversionTabContent, Context))
+		.SetDisplayName(FText::FromString(
+			FString::Printf(TEXT("%s — Convert"), *Payload.BlueprintName)));
+
+	TabManager->TryInvokeTab(Context->TabId);
+}
+
+TSharedRef<SDockTab> SCortexWorkbench::SpawnConversionTabContent(
+	const FSpawnTabArgs& /*Args*/, TSharedPtr<FCortexConversionContext> Context)
+{
+	FName TabId = Context->TabId;
+
+	TSharedRef<SDockTab> Tab = SNew(SDockTab)
+		.TabRole(ETabRole::DocumentTab)
+		.Label(FText::FromString(
+			FString::Printf(TEXT("%s — Convert"), *Context->Payload.BlueprintName)))
+		.OnTabClosed_Lambda([this, TabId](TSharedRef<SDockTab>)
+		{
+			CleanupConversionTab(TabId);
+		})
+		[
+			SNew(SCortexConversionTab)
+			.Context(Context)
+		];
+
+	return Tab;
+}
+
+void SCortexWorkbench::CleanupConversionTab(FName TabId)
+{
+	TSharedPtr<FCortexConversionContext>* FoundContext = ConversionContexts.Find(TabId);
+	if (FoundContext && FoundContext->IsValid())
+	{
+		// Shut down the tab's CLI session
+		if ((*FoundContext)->Session.IsValid())
+		{
+			(*FoundContext)->Session->Shutdown();
+
+			FCortexFrontendModule& FrontendModule =
+				FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+			FrontendModule.UnregisterSession((*FoundContext)->Session);
+		}
+	}
+
+	ConversionContexts.Remove(TabId);
+
+	// Defensive: TabManager may be null during workbench destruction
+	if (TabManager.IsValid())
+	{
+		TabManager->UnregisterTabSpawner(TabId);
 	}
 }
 

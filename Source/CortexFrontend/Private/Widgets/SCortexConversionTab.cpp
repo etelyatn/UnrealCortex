@@ -4,10 +4,12 @@
 #include "CortexCoreModule.h"
 #include "CortexFrontendModule.h"
 #include "Conversion/CortexConversionPrompts.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Session/CortexCliSession.h"
 #include "Widgets/SCortexCodeCanvas.h"
 #include "Widgets/SCortexConversionChat.h"
 #include "Widgets/SCortexConversionConfig.h"
+#include "Widgets/SCortexCreateFilesDialog.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 
@@ -154,10 +156,10 @@ void SCortexConversionTab::StartConversion()
 		return;
 	}
 
-	// TODO (Chunk 8, Task 21): Register session with module for PreExit cleanup
-	// FCortexFrontendModule& FrontendModule =
-	//     FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
-	// FrontendModule.RegisterSession(Context->Session);
+	// Register session with module for PreExit cleanup
+	FCortexFrontendModule& FrontendModule =
+		FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+	FrontendModule.RegisterSession(Context->Session);
 
 	// Bind the chat widget to the now-created session
 	if (ConversionChat.IsValid())
@@ -174,5 +176,13 @@ void SCortexConversionTab::StartConversion()
 
 void SCortexConversionTab::OnCreateFilesRequested()
 {
-	// TODO (Chunk 8, Task 20): Open SCortexCreateFilesDialog modal
+	if (!Context.IsValid() || !Context->Document.IsValid())
+	{
+		return;
+	}
+
+	// Find the parent window for the modal dialog
+	TSharedPtr<SWindow> ParentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
+
+	SCortexCreateFilesDialog::ShowModal(Context->Document, ParentWindow);
 }

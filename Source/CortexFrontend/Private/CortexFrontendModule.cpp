@@ -1,5 +1,7 @@
 #include "CortexFrontendModule.h"
 
+#include "CortexCoreModule.h"
+#include "CortexConversionTypes.h"
 #include "Framework/Docking/TabManager.h"
 #include "IToolMenusModule.h"
 #include "Misc/CoreDelegates.h"
@@ -50,6 +52,14 @@ void FCortexFrontendModule::StartupModule()
 
     FCoreDelegates::OnPreExit.AddRaw(this, &FCortexFrontendModule::HandlePreExit);
 
+    // Subscribe to conversion events from CortexBlueprint (via CortexCore)
+    if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexCore")))
+    {
+        FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+        ConversionDelegateHandle = Core.OnConversionRequested().AddRaw(
+            this, &FCortexFrontendModule::OnConversionRequested);
+    }
+
     UE_LOG(LogCortexFrontend, Log, TEXT("CortexFrontend registered tab and menu"));
 }
 
@@ -58,6 +68,13 @@ void FCortexFrontendModule::ShutdownModule()
     UE_LOG(LogCortexFrontend, Log, TEXT("CortexFrontend module shutting down"));
 
     FCoreDelegates::OnPreExit.RemoveAll(this);
+
+    if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexCore")))
+    {
+        FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+        Core.OnConversionRequested().Remove(ConversionDelegateHandle);
+    }
+
     ReleaseSessions();
 
     if (IToolMenusModule::IsAvailable())
@@ -98,16 +115,41 @@ TWeakPtr<FCortexCliSession> FCortexFrontendModule::GetOrCreateSession()
 
 TSharedRef<SDockTab> FCortexFrontendModule::SpawnChatTab(const FSpawnTabArgs& /*Args*/)
 {
-    TSharedRef<SDockTab> DockTab = SNew(SDockTab)
-        .TabRole(NomadTab);
+    TSharedRef<SDockTab> DockTab = SNew(SDockTab).TabRole(NomadTab);
 
-    DockTab->SetContent(
-        SNew(SCortexWorkbench)
+    TSharedRef<SCortexWorkbench> Workbench = SNew(SCortexWorkbench)
         .OwnerTab(DockTab)
-        .Session(GetOrCreateSession())
-    );
+        .Session(GetOrCreateSession());
 
+    WorkbenchWeak = Workbench;  // Store weak ref for conversion routing
+    DockTab->SetContent(Workbench);
     return DockTab;
+}
+
+void FCortexFrontendModule::OnConversionRequested(const FCortexConversionPayload& Payload)
+{
+    // Auto-open the CortexFrontend panel
+    FGlobalTabmanager::Get()->TryInvokeTab(CortexChatTabId);
+
+    // Route to workbench via stored weak reference (safe — no static_cast)
+    TSharedPtr<SCortexWorkbench> Workbench = WorkbenchWeak.Pin();
+    if (Workbench.IsValid())
+    {
+        Workbench->SpawnConversionTab(Payload);
+    }
+}
+
+void FCortexFrontendModule::RegisterSession(TSharedPtr<FCortexCliSession> Session)
+{
+    if (Session.IsValid())
+    {
+        Sessions.AddUnique(Session);
+    }
+}
+
+void FCortexFrontendModule::UnregisterSession(TSharedPtr<FCortexCliSession> Session)
+{
+    Sessions.Remove(Session);
 }
 
 void FCortexFrontendModule::ReleaseSessions()
