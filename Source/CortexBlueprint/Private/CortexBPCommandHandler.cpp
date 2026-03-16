@@ -135,6 +135,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPSearchOps::Search(Params);
 	}
 
+	if (Command == TEXT("reparent"))
+	{
+		return FCortexBPAssetOps::Reparent(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown bp command: %s"), *Command)
@@ -239,6 +244,9 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("search_in"), TEXT("array"), TEXT("Search scopes"))
 		.Optional(TEXT("case_sensitive"), TEXT("boolean"), TEXT("Case-sensitive matching"))
 		.Optional(TEXT("max_results"), TEXT("number"), TEXT("Maximum matches to return")));
+	Commands.Add(FCortexCommandInfo{TEXT("reparent"), TEXT("Reparent a Blueprint to a new parent class")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("new_parent"), TEXT("string"), TEXT("New parent class (Blueprint path or C++ class name)")));
 
 	return Commands;
 }

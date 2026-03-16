@@ -60,6 +60,12 @@ public:
 	 */
 	static FCortexCommandResult Rename(const TSharedPtr<FJsonObject>& Params);
 
+	/**
+	 * Reparent a Blueprint to a new parent class
+	 * Params: asset_path (string), new_parent (string - Blueprint path or C++ class name)
+	 */
+	static FCortexCommandResult Reparent(const TSharedPtr<FJsonObject>& Params);
+
 	/** Load a Blueprint by asset path (with path normalization), returns nullptr and sets OutError if not found */
 	static UBlueprint* LoadBlueprint(const FString& AssetPath, FString& OutError);
 
