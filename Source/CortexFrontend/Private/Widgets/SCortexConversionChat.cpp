@@ -335,12 +335,12 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 
 		case ECortexChatRowType::CodeBlock:
 		{
-			const bool bHasTarget = !Row->PrimaryEntry->CodeBlockTarget.IsEmpty();
-			const bool bShowApplyButtons = bHasTarget && Context.IsValid() && !Context->bIsInitialGeneration;
+			const bool bIsFollowUp = Row->PrimaryEntry->TurnIndex > 1;
+			const FString Target = Row->PrimaryEntry->CodeBlockTarget;
 
-			if (bShowApplyButtons)
+			if (bIsFollowUp && Context.IsValid())
 			{
-				// Code block with Apply button for follow-up responses
+				// Follow-up code block: show with Apply button(s)
 				TSharedRef<SVerticalBox> CodeWithApply = SNew(SVerticalBox);
 
 				CodeWithApply->AddSlot()
@@ -351,57 +351,98 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 					.Language(Row->PrimaryEntry->Language)
 				];
 
-				// Apply button based on target
-				FString Target = Row->PrimaryEntry->CodeBlockTarget;
-				FString ButtonLabel;
-				if (Target == TEXT("header"))
-				{
-					ButtonLabel = TEXT("Apply to .h");
-				}
-				else if (Target == TEXT("implementation"))
-				{
-					ButtonLabel = TEXT("Apply to .cpp");
-				}
-				else if (Target == TEXT("snippet"))
-				{
-					ButtonLabel = TEXT("Apply Snippet");
-				}
-
 				FString CodeText = Row->PrimaryEntry->Text;
 				TSharedPtr<FCortexConversionContext> CtxCopy = Context;
 
-				CodeWithApply->AddSlot()
-				.AutoHeight()
-				.Padding(8.0f, 4.0f)
-				[
-					SNew(SButton)
-					.Text(FText::FromString(ButtonLabel))
-					.OnClicked_Lambda([CtxCopy, Target, CodeText]()
+				if (!Target.IsEmpty())
+				{
+					// Tagged block: single Apply button for the specified target
+					FString ButtonLabel;
+					if (Target == TEXT("header"))
 					{
-						if (CtxCopy.IsValid() && CtxCopy->Document.IsValid())
+						ButtonLabel = TEXT("Apply to .h");
+					}
+					else if (Target == TEXT("implementation"))
+					{
+						ButtonLabel = TEXT("Apply to .cpp");
+					}
+					else if (Target == TEXT("snippet"))
+					{
+						ButtonLabel = TEXT("Apply Snippet");
+					}
+
+					CodeWithApply->AddSlot()
+					.AutoHeight()
+					.Padding(8.0f, 4.0f)
+					[
+						SNew(SButton)
+						.Text(FText::FromString(ButtonLabel))
+						.OnClicked_Lambda([CtxCopy, Target, CodeText]()
 						{
-							if (Target == TEXT("header"))
+							if (CtxCopy.IsValid() && CtxCopy->Document.IsValid())
 							{
-								CtxCopy->Document->UpdateHeader(CodeText);
+								if (Target == TEXT("header"))
+								{
+									CtxCopy->Document->UpdateHeader(CodeText);
+								}
+								else if (Target == TEXT("implementation"))
+								{
+									CtxCopy->Document->UpdateImplementation(CodeText);
+								}
+								else if (Target == TEXT("snippet"))
+								{
+									CtxCopy->Document->UpdateSnippet(CodeText);
+								}
 							}
-							else if (Target == TEXT("implementation"))
+							return FReply::Handled();
+						})
+					];
+				}
+				else
+				{
+					// Untagged block: offer both .h and .cpp Apply options
+					CodeWithApply->AddSlot()
+					.AutoHeight()
+					.Padding(8.0f, 4.0f)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(0, 0, 4, 0)
+						[
+							SNew(SButton)
+							.Text(FText::FromString(TEXT("Apply to .h")))
+							.OnClicked_Lambda([CtxCopy, CodeText]()
 							{
-								CtxCopy->Document->UpdateImplementation(CodeText);
-							}
-							else if (Target == TEXT("snippet"))
+								if (CtxCopy.IsValid() && CtxCopy->Document.IsValid())
+								{
+									CtxCopy->Document->UpdateHeader(CodeText);
+								}
+								return FReply::Handled();
+							})
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							SNew(SButton)
+							.Text(FText::FromString(TEXT("Apply to .cpp")))
+							.OnClicked_Lambda([CtxCopy, CodeText]()
 							{
-								CtxCopy->Document->UpdateSnippet(CodeText);
-							}
-						}
-						return FReply::Handled();
-					})
-				];
+								if (CtxCopy.IsValid() && CtxCopy->Document.IsValid())
+								{
+									CtxCopy->Document->UpdateImplementation(CodeText);
+								}
+								return FReply::Handled();
+							})
+						]
+					];
+				}
 
 				Content = CodeWithApply;
 			}
 			else
 			{
-				// Plain code block (initial generation or untagged)
+				// Initial generation: plain code block (auto-applied to canvas)
 				Content = SNew(SCortexCodeBlock)
 					.Code(Row->PrimaryEntry->Text)
 					.Language(Row->PrimaryEntry->Language);
@@ -464,8 +505,9 @@ void SCortexConversionChat::RefreshVisibleEntries()
 				continue;
 			}
 
-			// Skip code blocks that were applied to the canvas (have a target tag)
-			if (Entry->Type == ECortexChatEntryType::CodeBlock && !Entry->CodeBlockTarget.IsEmpty())
+			// Skip code blocks that were auto-applied to canvas during initial generation.
+			// Follow-up code blocks (TurnIndex > 1) must remain visible with Apply buttons.
+			if (Entry->Type == ECortexChatEntryType::CodeBlock && !Entry->CodeBlockTarget.IsEmpty() && Entry->TurnIndex <= 1)
 			{
 				continue;
 			}

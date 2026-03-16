@@ -50,6 +50,39 @@ struct FCortexConversionContext
         TabGuid = FGuid::NewGuid();
         TabId = *FString::Printf(TEXT("CortexConversion_%s"), *TabGuid.ToString(EGuidFormats::DigitsWithHyphensLower));
         Document = MakeShared<FCortexCodeDocument>();
+
+        // Derive class name from Blueprint name (strip UE asset prefixes, add A/U type prefix)
+        FString DerivedName = InPayload.BlueprintName;
+        if (DerivedName.StartsWith(TEXT("WBP_")))
+        {
+            DerivedName = DerivedName.Mid(4);
+        }
+        else if (DerivedName.StartsWith(TEXT("ABP_")))
+        {
+            DerivedName = DerivedName.Mid(4);
+        }
+        else if (DerivedName.StartsWith(TEXT("BP_")))
+        {
+            DerivedName = DerivedName.Mid(3);
+        }
+        else if (DerivedName.StartsWith(TEXT("B_")))
+        {
+            DerivedName = DerivedName.Mid(2);
+        }
+        if (!DerivedName.IsEmpty() && DerivedName[0] != TEXT('A') && DerivedName[0] != TEXT('U'))
+        {
+            if (InPayload.ParentClassName.Contains(TEXT("Actor"))
+                || InPayload.ParentClassName.Contains(TEXT("Pawn"))
+                || InPayload.ParentClassName.Contains(TEXT("Character")))
+            {
+                DerivedName = TEXT("A") + DerivedName;
+            }
+            else
+            {
+                DerivedName = TEXT("U") + DerivedName;
+            }
+        }
+        Document->ClassName = DerivedName;
     }
 
     FGuid TabGuid;

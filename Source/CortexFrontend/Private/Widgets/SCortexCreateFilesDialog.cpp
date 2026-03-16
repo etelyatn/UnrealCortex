@@ -10,6 +10,25 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Text/STextBlock.h"
 
+namespace
+{
+	/** Strip single-letter UE type prefix (A, U, F, S, E, I, T) for file naming. */
+	FString StripUETypePrefix(const FString& InName)
+	{
+		if (InName.Len() >= 2 && FChar::IsUpper(InName[0]) && FChar::IsUpper(InName[1]))
+		{
+			const TCHAR Prefix = InName[0];
+			if (Prefix == TEXT('A') || Prefix == TEXT('U') || Prefix == TEXT('F')
+				|| Prefix == TEXT('S') || Prefix == TEXT('E') || Prefix == TEXT('I')
+				|| Prefix == TEXT('T'))
+			{
+				return InName.Mid(1);
+			}
+		}
+		return InName;
+	}
+}
+
 bool SCortexCreateFilesDialog::ShowModal(TSharedPtr<FCortexCodeDocument> Document, TSharedPtr<SWindow> ParentWindow)
 {
 	TSharedRef<SWindow> DialogWindow = SNew(SWindow)
@@ -44,10 +63,11 @@ void SCortexCreateFilesDialog::Construct(const FArguments& InArgs)
 		ClassName = Document->ClassName;
 	}
 
-	// Default paths
+	// Default paths — strip UE type prefix (A/U/F...) from filename
 	const FString SourceDir = FPaths::Combine(FPaths::ProjectDir(), TEXT("Source"));
-	HeaderPath = FPaths::Combine(SourceDir, FString::Printf(TEXT("Public/%s.h"), *ClassName));
-	ImplPath = FPaths::Combine(SourceDir, FString::Printf(TEXT("Private/%s.cpp"), *ClassName));
+	const FString FileName = StripUETypePrefix(ClassName);
+	HeaderPath = FPaths::Combine(SourceDir, FString::Printf(TEXT("Public/%s.h"), *FileName));
+	ImplPath = FPaths::Combine(SourceDir, FString::Printf(TEXT("Private/%s.cpp"), *FileName));
 
 	ChildSlot
 	[
