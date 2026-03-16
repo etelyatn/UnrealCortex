@@ -1,4 +1,4 @@
-#include "Widgets/SCortexConversionChat.h"
+﻿#include "Widgets/SCortexConversionChat.h"
 
 #include "CortexFrontendModule.h"
 #include "Rendering/CortexMarkdownParser.h"
@@ -346,9 +346,13 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 				CodeWithApply->AddSlot()
 				.AutoHeight()
 				[
-					SNew(SCortexCodeBlock)
-					.Code(Row->PrimaryEntry->Text)
-					.Language(Row->PrimaryEntry->Language)
+					SNew(SBox)
+					.MaxDesiredHeight(400.0f)
+					[
+						SNew(SCortexCodeBlock)
+						.Code(Row->PrimaryEntry->Text)
+						.Language(Row->PrimaryEntry->Language)
+					]
 				];
 
 				FString CodeText = Row->PrimaryEntry->Text;
@@ -443,9 +447,13 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 			else
 			{
 				// Initial generation: plain code block (auto-applied to canvas)
-				Content = SNew(SCortexCodeBlock)
-					.Code(Row->PrimaryEntry->Text)
-					.Language(Row->PrimaryEntry->Language);
+				Content = SNew(SBox)
+				.MaxDesiredHeight(400.0f)
+				[
+					SNew(SCortexCodeBlock)
+						.Code(Row->PrimaryEntry->Text)
+						.Language(Row->PrimaryEntry->Language)
+				];
 			}
 			break;
 		}

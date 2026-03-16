@@ -205,10 +205,9 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
                     ]
                 ]
             ]
-            // Code content with scrollbars
+            // Code content with scrollbars — callers that need a height cap should wrap in SBox::MaxDesiredHeight
             + SVerticalBox::Slot()
-            .AutoHeight()
-            .MaxHeight(400.0f)
+            .FillHeight(1.0f)
             [
                 SNew(SBorder)
                 .BorderBackgroundColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("0f0f0f"))))

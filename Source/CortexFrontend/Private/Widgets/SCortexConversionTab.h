@@ -5,8 +5,9 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
-class SWidgetSwitcher;
+class SCortexCodeCanvas;
 class SCortexConversionChat;
+class SWidgetSwitcher;
 
 class SCortexConversionTab : public SCompoundWidget
 {
@@ -25,5 +26,6 @@ private:
 
 	TSharedPtr<FCortexConversionContext> Context;
 	TSharedPtr<SWidgetSwitcher> ViewSwitcher;
+	TSharedPtr<SCortexCodeCanvas> CodeCanvas;
 	TSharedPtr<SCortexConversionChat> ConversionChat;
 };

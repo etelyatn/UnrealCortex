@@ -6,6 +6,7 @@
 #include "Widgets/SCompoundWidget.h"
 
 class SCortexCodeBlock;
+class SCortexConversionOverlay;
 class SWidgetSwitcher;
 class STextBlock;
 
@@ -21,6 +22,13 @@ public:
 
 	void Construct(const FArguments& InArgs);
 	virtual ~SCortexCodeCanvas();
+
+	/** Show/hide the animated processing overlay. Call SetProcessing(true) before conversion
+	 *  starts and SetProcessing(false) once the first code chunk arrives. */
+	void SetProcessing(bool bProcessing);
+
+	/** Forward the serialized token count to the overlay so it can display an ETA. */
+	void SetTokenCount(int32 Tokens);
 
 private:
 	void OnDocumentChanged(ECortexCodeTab ChangedTab);
@@ -38,7 +46,9 @@ private:
 	TSharedPtr<SCortexCodeBlock> ImplementationBlock;
 	TSharedPtr<STextBlock> HeaderTabLabel;
 	TSharedPtr<STextBlock> ImplTabLabel;
+	TSharedPtr<SCortexConversionOverlay> ProcessingOverlay;
 	FOnCreateFilesClicked OnCreateFilesDelegate;
 	ECortexCodeTab CurrentTab = ECortexCodeTab::Header;
 	FDelegateHandle DocumentChangedHandle;
+	bool bIsProcessing = false;
 };

@@ -61,14 +61,14 @@ void SCortexConversionTab::Construct(const FArguments& InArgs)
 			SNew(SSplitter)
 			.Orientation(EOrientation::Orient_Horizontal)
 			+ SSplitter::Slot()
-			.Value(0.5f)
+			.Value(0.6f)
 			[
-				SNew(SCortexCodeCanvas)
+				SAssignNew(CodeCanvas, SCortexCodeCanvas)
 				.Document(Context->Document)
 				.OnCreateFiles(FOnCreateFilesClicked::CreateSP(this, &SCortexConversionTab::OnCreateFilesRequested))
 			]
 			+ SSplitter::Slot()
-			.Value(0.5f)
+			.Value(0.4f)
 			[
 				SAssignNew(ConversionChat, SCortexConversionChat)
 				.Context(Context)
@@ -91,6 +91,12 @@ void SCortexConversionTab::OnConvertClicked()
 	if (ViewSwitcher.IsValid())
 	{
 		ViewSwitcher->SetActiveWidgetIndex(1);
+	}
+
+	// Show animated processing overlay on the canvas until code arrives
+	if (CodeCanvas.IsValid())
+	{
+		CodeCanvas->SetProcessing(true);
 	}
 
 	UE_LOG(LogCortexFrontend, Log, TEXT("=== BP-to-C++ Conversion Started ==="));
@@ -150,6 +156,12 @@ void SCortexConversionTab::OnConvertClicked()
 					SerializeMs,
 					JsonBytes / 1024,
 					EstimatedTokens));
+
+				// Feed token count to the canvas overlay for ETA display
+				if (CodeCanvas.IsValid())
+				{
+					CodeCanvas->SetTokenCount(EstimatedTokens);
+				}
 
 				// Token budget check
 				if (EstimatedTokens > 80000)

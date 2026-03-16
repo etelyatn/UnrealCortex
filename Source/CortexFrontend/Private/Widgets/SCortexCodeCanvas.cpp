@@ -1,7 +1,9 @@
 #include "Widgets/SCortexCodeCanvas.h"
 
 #include "Widgets/SCortexCodeBlock.h"
+#include "Widgets/SCortexConversionOverlay.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
@@ -85,23 +87,35 @@ void SCortexCodeCanvas::Construct(const FArguments& InArgs)
 			]
 		]
 
-		// Code display
+		// Code display — wrapped in SOverlay so the processing animation can sit on top
 		+ SVerticalBox::Slot()
 		.FillHeight(1.0f)
 		[
-			SAssignNew(CodeSwitcher, SWidgetSwitcher)
-			.WidgetIndex(0)
-			+ SWidgetSwitcher::Slot()
+			SNew(SOverlay)
+
+			// Slot 0: syntax-highlighted code
+			+ SOverlay::Slot()
 			[
-				SAssignNew(HeaderBlock, SCortexCodeBlock)
-				.Code(Document.IsValid() ? Document->HeaderCode : FString())
-				.Language(TEXT("cpp"))
+				SAssignNew(CodeSwitcher, SWidgetSwitcher)
+				.WidgetIndex(0)
+				+ SWidgetSwitcher::Slot()
+				[
+					SAssignNew(HeaderBlock, SCortexCodeBlock)
+					.Code(Document.IsValid() ? Document->HeaderCode : FString())
+					.Language(TEXT("cpp"))
+				]
+				+ SWidgetSwitcher::Slot()
+				[
+					SAssignNew(ImplementationBlock, SCortexCodeBlock)
+					.Code(Document.IsValid() ? Document->ImplementationCode : FString())
+					.Language(TEXT("cpp"))
+				]
 			]
-			+ SWidgetSwitcher::Slot()
+
+			// Slot 1: animated overlay shown while LLM is generating (hidden by default)
+			+ SOverlay::Slot()
 			[
-				SAssignNew(ImplementationBlock, SCortexCodeBlock)
-				.Code(Document.IsValid() ? Document->ImplementationCode : FString())
-				.Language(TEXT("cpp"))
+				SAssignNew(ProcessingOverlay, SCortexConversionOverlay)
 			]
 		]
 
@@ -116,6 +130,12 @@ void SCortexCodeCanvas::Construct(const FArguments& InArgs)
 			.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
 		]
 	];
+
+	// Processing overlay starts hidden; caller enables it via SetProcessing(true)
+	if (ProcessingOverlay.IsValid())
+	{
+		ProcessingOverlay->SetVisibility(EVisibility::Collapsed);
+	}
 
 	// Subscribe to document changes
 	if (Document.IsValid())
@@ -149,7 +169,30 @@ void SCortexCodeCanvas::OnDocumentChanged(ECortexCodeTab ChangedTab)
 		ImplementationBlock->SetCode(Document->ImplementationCode);
 	}
 
+	// Dismiss the processing overlay as soon as any code arrives
+	if (bIsProcessing && (!Document->HeaderCode.IsEmpty() || !Document->ImplementationCode.IsEmpty()))
+	{
+		SetProcessing(false);
+	}
+
 	UpdateTabLabels();
+}
+
+void SCortexCodeCanvas::SetProcessing(bool bProcessing)
+{
+	bIsProcessing = bProcessing;
+	if (ProcessingOverlay.IsValid())
+	{
+		ProcessingOverlay->SetVisibility(bProcessing ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed);
+	}
+}
+
+void SCortexCodeCanvas::SetTokenCount(int32 Tokens)
+{
+	if (ProcessingOverlay.IsValid())
+	{
+		ProcessingOverlay->SetTokenCount(Tokens);
+	}
 }
 
 FReply SCortexCodeCanvas::OnCopyClicked()
