@@ -1,5 +1,6 @@
 // Source/CortexFrontend/Private/Widgets/SCortexQATab.cpp
 #include "Widgets/SCortexQATab.h"
+#include "Widgets/SCortexQASessionList.h"
 #include "Widgets/SCortexQAToolbar.h"
 #include "CortexCoreModule.h"
 #include "CortexCoreDelegates.h"
@@ -49,8 +50,13 @@ void SCortexQATab::Construct(const FArguments& InArgs)
             + SSplitter::Slot()
             .Value(0.35f)
             [
-                SNew(STextBlock)
-                .Text(FText::FromString(TEXT("[Session List Placeholder]")))
+                SAssignNew(SessionList, SCortexQASessionList)
+                .OnSessionSelected(FOnQASessionSelected::CreateSP(this, &SCortexQATab::OnSessionSelected))
+                .OnSessionDeleted(FOnQASessionDeleted::CreateLambda([this](int32 Index)
+                {
+                    SessionManager->DeleteSession(Index);
+                    RefreshSessions();
+                }))
             ]
 
             + SSplitter::Slot()
@@ -70,6 +76,8 @@ void SCortexQATab::Construct(const FArguments& InArgs)
             .Text(FText::FromString(TEXT("[Command Bar Placeholder]")))
         ]
     ];
+
+    RefreshSessions();
 }
 
 SCortexQATab::~SCortexQATab()
@@ -189,4 +197,8 @@ void SCortexQATab::OnAIGenerationComplete(const FCortexTurnResult& /*Result*/)
 void SCortexQATab::RefreshSessions()
 {
     SessionManager->RefreshSessionList();
+    if (SessionList.IsValid())
+    {
+        SessionList->SetSessions(SessionManager->GetSessions());
+    }
 }
