@@ -8,6 +8,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/SCortexChatPanel.h"
 #include "Widgets/SCortexConversionTab.h"
+#include "Widgets/SCortexQATab.h"
 #include "Widgets/SCortexSidebar.h"
 #include "Session/CortexCliSession.h"
 
@@ -35,8 +36,14 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnChatTab))
 		.SetDisplayName(FText::FromString(TEXT("Chat")));
 
+	// Register QA tab spawner
+	TabManager->RegisterTabSpawner(
+		FName(TEXT("CortexQA")),
+		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnQATab))
+		.SetDisplayName(FText::FromString(TEXT("QA")));
+
 	// Define layout
-	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("CortexFrontendLayout_v1.0")
+	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("CortexFrontendLayout_v1.1")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
@@ -44,6 +51,7 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 			(
 				FTabManager::NewStack()
 				->AddTab(FName(TEXT("CortexChat")), ETabState::OpenedTab)
+				->AddTab(FName(TEXT("CortexQA")), ETabState::ClosedTab)
 			)
 		);
 
@@ -92,6 +100,7 @@ SCortexWorkbench::~SCortexWorkbench()
 	{
 		TabManager->CloseAllAreas();
 		TabManager->UnregisterTabSpawner(TEXT("CortexChat"));
+		TabManager->UnregisterTabSpawner(TEXT("CortexQA"));
 	}
 }
 
@@ -181,6 +190,18 @@ TSharedRef<SDockTab> SCortexWorkbench::SpawnChatTab(const FSpawnTabArgs& /*Args*
 	DockTab->SetContent(
 		SNew(SCortexChatPanel)
 		.Session(SessionWeak)
+	);
+
+	return DockTab;
+}
+
+TSharedRef<SDockTab> SCortexWorkbench::SpawnQATab(const FSpawnTabArgs& /*Args*/)
+{
+	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
+		.TabRole(ETabRole::PanelTab);
+
+	DockTab->SetContent(
+		SNew(SCortexQATab)
 	);
 
 	return DockTab;

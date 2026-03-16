@@ -1,10 +1,22 @@
 #include "CortexQACommandHandler.h"
 #include "CortexCommandRouter.h"
 #include "CortexTypes.h"
+#include "CortexCoreModule.h"
 #include "Operations/CortexQAActionOps.h"
 #include "Operations/CortexQAAssertOps.h"
 #include "Operations/CortexQASetupOps.h"
 #include "Operations/CortexQAWorldOps.h"
+#include "CortexQAUtils.h"
+#include "Recording/CortexQARecorder.h"
+#include "Recording/CortexQAReplaySequencer.h"
+#include "Recording/CortexQASessionSerializer.h"
+
+FCortexQACommandHandler::FCortexQACommandHandler()
+    : Recorder(MakeShared<FCortexQARecorder>())
+{
+}
+
+FCortexQACommandHandler::~FCortexQACommandHandler() = default;
 
 FCortexCommandResult FCortexQACommandHandler::Execute(
     const FString& Command,
@@ -54,6 +66,22 @@ FCortexCommandResult FCortexQACommandHandler::Execute(
     if (Command == TEXT("assert_state"))
     {
         return FCortexQAAssertOps::AssertState(Params);
+    }
+    if (Command == TEXT("start_recording"))
+    {
+        return StartRecording(Params);
+    }
+    if (Command == TEXT("stop_recording"))
+    {
+        return StopRecordingCmd(Params);
+    }
+    if (Command == TEXT("replay_session"))
+    {
+        return ReplaySession(Params, MoveTemp(DeferredCallback));
+    }
+    if (Command == TEXT("cancel_replay"))
+    {
+        return CancelReplay(Params);
     }
 
     return FCortexCommandRouter::Error(
@@ -105,5 +133,180 @@ TArray<FCortexCommandInfo> FCortexQACommandHandler::GetSupportedCommands() const
             .Optional(TEXT("value"), TEXT("object"), TEXT("Observed value"))
             .Optional(TEXT("expected"), TEXT("object"), TEXT("Expected value"))
             .Optional(TEXT("message"), TEXT("string"), TEXT("Assertion failure context")),
+        FCortexCommandInfo{ TEXT("start_recording"), TEXT("Start recording QA session in PIE") }
+            .Optional(TEXT("name"), TEXT("string"), TEXT("Session name")),
+        FCortexCommandInfo{ TEXT("stop_recording"), TEXT("Stop recording and save session to disk") },
+        FCortexCommandInfo{ TEXT("replay_session"), TEXT("Replay a recorded or AI-generated QA session") }
+            .Required(TEXT("path"), TEXT("string"), TEXT("Session file path"))
+            .Optional(TEXT("on_failure"), TEXT("string"), TEXT("Failure policy: continue or stop")),
+        FCortexCommandInfo{ TEXT("cancel_replay"), TEXT("Cancel an in-progress replay") },
     };
+}
+
+FCortexCommandResult FCortexQACommandHandler::StartRecording(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* PIEWorld = FCortexQAUtils::GetPIEWorld();
+    if (PIEWorld == nullptr)
+    {
+        return FCortexQAUtils::PIENotActiveError();
+    }
+
+    if (SessionState != ECortexQASessionState::Idle)
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::SessionBusy,
+            TEXT("Recording or replay already in progress"));
+    }
+
+    FString Name = TEXT("Recording");
+    if (Params.IsValid())
+    {
+        Params->TryGetStringField(TEXT("name"), Name);
+    }
+
+    if (!Recorder->StartRecording(PIEWorld, Name))
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidOperation,
+            TEXT("Failed to start recording"));
+    }
+
+    SessionState = ECortexQASessionState::Recording;
+
+    TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+    Data->SetStringField(TEXT("status"), TEXT("recording"));
+    Data->SetStringField(TEXT("name"), Name);
+    return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexQACommandHandler::StopRecordingCmd(const TSharedPtr<FJsonObject>& Params)
+{
+    if (SessionState != ECortexQASessionState::Recording)
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidOperation,
+            TEXT("Not currently recording"));
+    }
+
+    // Capture metadata before StopRecording() clears/resets recorder state
+    const int32 StepCount = Recorder->GetRecordedSteps().Num();
+    const double DurationSeconds = StepCount > 0
+        ? Recorder->GetRecordedSteps().Last().TimestampMs / 1000.0
+        : 0.0;
+
+    const FString Path = Recorder->StopRecording();
+    SessionState = ECortexQASessionState::Idle;
+
+    if (Path.IsEmpty())
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::SerializationError,
+            TEXT("Failed to save recording"));
+    }
+
+    TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+    Data->SetStringField(TEXT("path"), Path);
+    Data->SetNumberField(TEXT("step_count"), StepCount);
+    Data->SetNumberField(TEXT("duration"), DurationSeconds);
+    return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexQACommandHandler::ReplaySession(
+    const TSharedPtr<FJsonObject>& Params,
+    FDeferredResponseCallback DeferredCallback)
+{
+    UWorld* PIEWorld = FCortexQAUtils::GetPIEWorld();
+    if (PIEWorld == nullptr)
+    {
+        return FCortexQAUtils::PIENotActiveError();
+    }
+
+    if (SessionState != ECortexQASessionState::Idle)
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::SessionBusy,
+            TEXT("Recording or replay already in progress"));
+    }
+
+    if (!Params.IsValid() || !Params->HasField(TEXT("path")))
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidField,
+            TEXT("Missing required param: path"));
+    }
+
+    const FString SessionPath = Params->GetStringField(TEXT("path"));
+
+    // Load session
+    FCortexQASessionInfo Session;
+    if (!FCortexQASessionSerializer::LoadSession(SessionPath, Session))
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::SessionNotFound,
+            FString::Printf(TEXT("Session file not found: %s"), *SessionPath));
+    }
+
+    // Map validation
+    FString CurrentMap = PIEWorld->GetMapName();
+    CurrentMap.RemoveFromStart(TEXT("UEDPIE_0_"));
+    if (!Session.MapPath.IsEmpty() && !CurrentMap.Contains(Session.MapPath) && !Session.MapPath.Contains(CurrentMap))
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::MapMismatch,
+            FString::Printf(TEXT("Session recorded on %s, current map is %s"), *Session.MapPath, *CurrentMap));
+    }
+
+    // Parse on_failure policy
+    EQAReplayOnFailure OnFailure = EQAReplayOnFailure::Continue;
+    FString OnFailureStr;
+    if (Params->TryGetStringField(TEXT("on_failure"), OnFailureStr) && OnFailureStr == TEXT("stop"))
+    {
+        OnFailure = EQAReplayOnFailure::Stop;
+    }
+
+    // Create sequencer and start replay
+    SessionState = ECortexQASessionState::Replaying;
+
+    FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+    ActiveSequencer = MakeShared<FCortexQAReplaySequencer>();
+    TWeakPtr<FCortexQACommandHandler> WeakSelf = SharedThis(this);
+    ActiveSequencer->Start(
+        Session.Steps,
+        Core.GetCommandRouter(),
+        [WeakSelf, SessionPath, DeferredCb = MoveTemp(DeferredCallback)](FCortexCommandResult FinalResult)
+        {
+            TSharedPtr<FCortexQACommandHandler> Self = WeakSelf.Pin();
+            if (!Self.IsValid())
+            {
+                return;
+            }
+            Self->SessionState = ECortexQASessionState::Idle;
+            Self->ActiveSequencer.Reset();
+
+            if (DeferredCb)
+            {
+                DeferredCb(MoveTemp(FinalResult));
+            }
+        },
+        OnFailure);
+
+    FCortexCommandResult Deferred;
+    Deferred.bIsDeferred = true;
+    return Deferred;
+}
+
+FCortexCommandResult FCortexQACommandHandler::CancelReplay(const TSharedPtr<FJsonObject>& Params)
+{
+    if (SessionState != ECortexQASessionState::Replaying || !ActiveSequencer.IsValid())
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidOperation,
+            TEXT("No replay in progress to cancel"));
+    }
+
+    ActiveSequencer->Cancel();
+
+    TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+    Data->SetStringField(TEXT("status"), TEXT("cancelling"));
+    return FCortexCommandRouter::Success(Data);
 }
