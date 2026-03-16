@@ -2,6 +2,7 @@
 #include "Misc/AutomationTest.h"
 #include "QA/CortexQASessionManager.h"
 #include "HAL/PlatformFileManager.h"
+#include "Misc/FileHelper.h"
 
 namespace
 {

@@ -1,5 +1,6 @@
 // Source/CortexFrontend/Private/QA/CortexQASessionManager.cpp
 #include "QA/CortexQASessionManager.h"
+#include "Widgets/SCortexQADetailPanel.h"
 #include "Dom/JsonObject.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
@@ -80,6 +81,62 @@ void FCortexQASessionManager::RefreshSessionList()
     {
         return A.RecordedAt > B.RecordedAt;
     });
+}
+
+TArray<FCortexQADetailStep> FCortexQASessionManager::LoadSteps(int32 Index) const
+{
+    TArray<FCortexQADetailStep> Result;
+    if (!Sessions.IsValidIndex(Index))
+    {
+        return Result;
+    }
+
+    FString JsonStr;
+    if (!FFileHelper::LoadFileToString(JsonStr, *Sessions[Index].FilePath))
+    {
+        return Result;
+    }
+
+    TSharedPtr<FJsonObject> Root;
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonStr);
+    if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+    {
+        return Result;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* StepsArr = nullptr;
+    if (!Root->TryGetArrayField(TEXT("steps"), StepsArr) || StepsArr == nullptr)
+    {
+        return Result;
+    }
+
+    for (int32 i = 0; i < StepsArr->Num(); i++)
+    {
+        const TSharedPtr<FJsonObject> StepObj = (*StepsArr)[i]->AsObject();
+        if (!StepObj.IsValid())
+        {
+            continue;
+        }
+
+        FCortexQADetailStep Step;
+        Step.Index = i;
+        StepObj->TryGetStringField(TEXT("type"), Step.Type);
+
+        // Serialize params object to a compact string for display
+        const TSharedPtr<FJsonObject>* ParamsObj = nullptr;
+        if (StepObj->TryGetObjectField(TEXT("params"), ParamsObj) && ParamsObj != nullptr)
+        {
+            FString ParamsStr;
+            TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+                TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&ParamsStr);
+            FJsonSerializer::Serialize((*ParamsObj).ToSharedRef(), Writer);
+            Step.ParamsText = ParamsStr;
+        }
+
+        Result.Add(Step);
+    }
+
+    return Result;
 }
 
 bool FCortexQASessionManager::DeleteSession(int32 Index)

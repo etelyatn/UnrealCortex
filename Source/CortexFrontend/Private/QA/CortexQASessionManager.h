@@ -22,6 +22,9 @@ public:
     /** Delete session at index. */
     bool DeleteSession(int32 Index);
 
+    /** Load the step list for a session by index. Returns empty array on failure. */
+    TArray<struct FCortexQADetailStep> LoadSteps(int32 Index) const;
+
     /** Get the recordings directory. */
     const FString& GetRecordingsDir() const { return RecordingsDir; }
 

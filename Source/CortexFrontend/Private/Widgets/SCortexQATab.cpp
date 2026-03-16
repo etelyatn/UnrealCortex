@@ -145,6 +145,21 @@ void SCortexQATab::OnDomainProgress(const FName& DomainName, const TSharedPtr<FJ
 void SCortexQATab::OnSessionSelected(int32 Index)
 {
     SelectedSessionIndex = Index;
+
+    if (!DetailPanel.IsValid())
+    {
+        return;
+    }
+
+    if (Index == INDEX_NONE || !SessionManager->GetSessions().IsValidIndex(Index))
+    {
+        DetailPanel->Clear();
+        return;
+    }
+
+    const TArray<FCortexQASessionListItem>& Sessions = SessionManager->GetSessions();
+    TArray<FCortexQADetailStep> Steps = SessionManager->LoadSteps(Index);
+    DetailPanel->SetSession(&Sessions[Index], Steps);
 }
 
 void SCortexQATab::OnRecordConfirmed(const FString& SessionName)
@@ -308,6 +323,11 @@ void SCortexQATab::OnGenerateClicked(const FString& Prompt)
         QACliSession->OnTurnComplete.AddSP(this, &SCortexQATab::OnAIGenerationComplete);
     }
 
+    if (CommandBar.IsValid())
+    {
+        CommandBar->SetGenerating(true);
+    }
+
     FCortexPromptRequest Request;
     Request.Prompt = Prompt;
     QACliSession->SendPrompt(Request);
@@ -321,6 +341,11 @@ void SCortexQATab::OnAIGenerationComplete(const FCortexTurnResult& /*Result*/)
     if (SessionManager->GetSessions().Num() > 0)
     {
         OnSessionSelected(0);
+    }
+
+    if (CommandBar.IsValid())
+    {
+        CommandBar->SetGenerating(false);
     }
 }
 
