@@ -46,16 +46,44 @@ bool FCortexCliWorker::Init()
 uint32 FCortexCliWorker::Run()
 {
 	UE_LOG(LogCortexFrontend, Log, TEXT("CLI Worker thread started"));
+	UE_LOG(LogCortexFrontend, Log, TEXT("CLI Worker: stdout pipe=%p, stdin pipe=%p, process valid=%s"),
+		StdoutReadPipe, StdinWritePipe,
+		ProcessHandle.IsValid() ? TEXT("true") : TEXT("false"));
 
 	double LastDataTime = FPlatformTime::Seconds();
+	double LastHeartbeatTime = FPlatformTime::Seconds();
 	bool bAwaitingResult = false;
 
-	// Unified poll loop: always read stdout (captures init events + response data)
-	// and non-blocking check for pending prompts. This ensures CLI events emitted
-	// before the first user prompt are processed immediately.
+	// This thread ONLY reads stdout. Stdin writes happen on a background thread
+	// (launched below when PromptReadyEvent fires). This prevents deadlock:
+	// the reader never blocks, so stdout is always drained, so the CLI process
+	// never blocks on stdout writes, so it keeps reading stdin.
+
 	while (!bStopRequested.load(std::memory_order_acquire))
 	{
-		// Send pending prompt if signaled (non-blocking check)
+		// === STEP 1: Read stdout (never blocks for long) ===
+		FString Chunk = StdoutReadPipe != nullptr
+			? FPlatformProcess::ReadPipe(StdoutReadPipe)
+			: FString();
+
+		if (!Chunk.IsEmpty())
+		{
+			LastDataTime = FPlatformTime::Seconds();
+
+			const bool bSawResult = ParseAndDispatch(Chunk);
+			if (bSawResult)
+			{
+				UE_LOG(LogCortexFrontend, Log, TEXT("Turn complete (result event received)"));
+				bAwaitingResult = false;
+			}
+			// Loop immediately to drain more stdout
+			continue;
+		}
+
+		// === STEP 2: Launch stdin write on separate thread when signaled ===
+		// WritePipe can block if the CLI isn't reading stdin yet (pipe buffer full).
+		// By writing on a SEPARATE thread, this thread keeps draining stdout,
+		// preventing the bidirectional pipe deadlock.
 		if (PromptReadyEvent != nullptr && PromptReadyEvent->Wait(0))
 		{
 			if (bStopRequested.load(std::memory_order_acquire))
@@ -75,43 +103,48 @@ uint32 FCortexCliWorker::Run()
 
 			if (!PromptEnvelope.IsEmpty())
 			{
-				if (StdinWritePipe == nullptr || !FPlatformProcess::WritePipe(StdinWritePipe, PromptEnvelope))
-				{
-					UE_LOG(LogCortexFrontend, Warning, TEXT("Failed to write prompt to CLI stdin"));
-					AsyncTask(ENamedThreads::GameThread, [WeakCopy = WeakSession]()
-					{
-						if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
-						{
-							Pinned->HandleProcessExited(TEXT("Failed to write prompt to Claude CLI"));
-						}
-					});
-					break;
-				}
-
-				UE_LOG(LogCortexFrontend, Verbose, TEXT("Prompt written to CLI stdin"));
+				UE_LOG(LogCortexFrontend, Log, TEXT("Launching stdin write on background thread (%d chars)..."),
+					PromptEnvelope.Len());
 				bAwaitingResult = true;
 				LastDataTime = FPlatformTime::Seconds();
+
+				// Capture by value — the background thread outlives this scope
+				void* WritePipe = StdinWritePipe;
+				TWeakPtr<FCortexCliSession> WeakCopy = WeakSession;
+				Async(EAsyncExecution::ThreadPool,
+					[PromptEnvelope, WritePipe, WeakCopy]()
+					{
+						if (WritePipe == nullptr)
+						{
+							UE_LOG(LogCortexFrontend, Warning, TEXT("Stdin write: pipe is null"));
+							return;
+						}
+
+						UE_LOG(LogCortexFrontend, Log, TEXT("Stdin write: starting (%d chars)..."),
+							PromptEnvelope.Len());
+
+						const bool bSuccess = FPlatformProcess::WritePipe(WritePipe, PromptEnvelope);
+
+						if (bSuccess)
+						{
+							UE_LOG(LogCortexFrontend, Log, TEXT("Stdin write: completed successfully"));
+						}
+						else
+						{
+							UE_LOG(LogCortexFrontend, Warning, TEXT("Stdin write: FAILED"));
+							AsyncTask(ENamedThreads::GameThread, [WeakCopy]()
+							{
+								if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
+								{
+									Pinned->HandleProcessExited(TEXT("Failed to write prompt to Claude CLI"));
+								}
+							});
+						}
+					});
 			}
 		}
 
-		// Always read stdout — captures both init events and response data
-		FString Chunk = StdoutReadPipe != nullptr
-			? FPlatformProcess::ReadPipe(StdoutReadPipe)
-			: FString();
-
-		if (!Chunk.IsEmpty())
-		{
-			LastDataTime = FPlatformTime::Seconds();
-			const bool bSawResult = ParseAndDispatch(Chunk);
-			if (bSawResult)
-			{
-				UE_LOG(LogCortexFrontend, Log, TEXT("Turn complete (result event received)"));
-				bAwaitingResult = false;
-			}
-			continue;
-		}
-
-		// No data — check process health
+		// === STEP 3: Check process health ===
 		if (!FPlatformProcess::IsProcRunning(ProcessHandle))
 		{
 			UE_LOG(LogCortexFrontend, Log, TEXT("CLI process exited"));
@@ -125,7 +158,7 @@ uint32 FCortexCliWorker::Run()
 			break;
 		}
 
-		// Timeout check (only while awaiting a response to a sent prompt)
+		// Timeout check
 		if (bAwaitingResult && FPlatformTime::Seconds() - LastDataTime > CortexCliWorkerTimeoutSeconds)
 		{
 			UE_LOG(LogCortexFrontend, Warning, TEXT("CLI response timed out after %.0f seconds"), CortexCliWorkerTimeoutSeconds);
@@ -137,6 +170,19 @@ uint32 FCortexCliWorker::Run()
 				}
 			});
 			break;
+		}
+
+		// Heartbeat
+		const double Now = FPlatformTime::Seconds();
+		if (Now - LastHeartbeatTime > 5.0)
+		{
+			const double WaitingSecs = Now - LastDataTime;
+			UE_LOG(LogCortexFrontend, Log,
+				TEXT("CLI Worker heartbeat: %.0fs elapsed, awaiting=%s, process=%s"),
+				WaitingSecs,
+				bAwaitingResult ? TEXT("YES") : TEXT("no"),
+				FPlatformProcess::IsProcRunning(ProcessHandle) ? TEXT("running") : TEXT("DEAD"));
+			LastHeartbeatTime = Now;
 		}
 
 		FPlatformProcess::Sleep(0.01f);
@@ -179,6 +225,11 @@ bool FCortexCliWorker::ParseAndDispatch(const FString& Chunk)
 			if (Event.Type == ECortexStreamEventType::Result)
 			{
 				bSawResult = true;
+			}
+
+			if (Event.Type == ECortexStreamEventType::SessionInit)
+			{
+				UE_LOG(LogCortexFrontend, Log, TEXT("CLI init event received"));
 			}
 
 			AsyncTask(ENamedThreads::GameThread, [WeakCopy = WeakSession, Event]()

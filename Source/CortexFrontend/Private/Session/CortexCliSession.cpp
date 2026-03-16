@@ -380,50 +380,46 @@ FString FCortexCliSession::BuildLaunchCommandLine(bool bResumeSession, ECortexAc
 		CommandLine += FString::Printf(TEXT("--model \"%s\" "), *SelectedModel);
 	}
 
-	// Effort flag (omitted when Default)
-	const ECortexEffortLevel Effort = FCortexFrontendSettings::Get().GetEffortLevel();
-	if (Effort != ECortexEffortLevel::Default)
+	// Conversion mode: no MCP servers at all.
+	// Without --strict-mcp-config, the CLI loads user-configured MCP servers
+	// (Notion, Gmail, etc.) which can hang for 30s+ on auth/connection.
+	if (Config.bConversionMode)
 	{
-		CommandLine += FString::Printf(TEXT("--effort \"%s\" "),
-			*FCortexFrontendSettings::Get().GetEffortLevelString());
+		CommandLine += TEXT("--strict-mcp-config ");
 	}
-
-	// Workflow: Direct mode disables slash commands
-	const ECortexWorkflowMode Workflow = FCortexFrontendSettings::Get().GetWorkflowMode();
-	if (Workflow == ECortexWorkflowMode::Direct)
+	else
 	{
-		CommandLine += TEXT("--disable-slash-commands ");
-	}
+		// Effort flag (omitted when Default)
+		const ECortexEffortLevel Effort = FCortexFrontendSettings::Get().GetEffortLevel();
+		if (Effort != ECortexEffortLevel::Default)
+		{
+			CommandLine += FString::Printf(TEXT("--effort \"%s\" "),
+				*FCortexFrontendSettings::Get().GetEffortLevelString());
+		}
 
-	// Project context off: restrict setting sources
-	if (!FCortexFrontendSettings::Get().GetProjectContext())
-	{
-		CommandLine += TEXT("--setting-sources \"user,local\" ");
-	}
+		// Workflow: Direct mode disables slash commands
+		const ECortexWorkflowMode Workflow = FCortexFrontendSettings::Get().GetWorkflowMode();
+		if (Workflow == ECortexWorkflowMode::Direct)
+		{
+			CommandLine += TEXT("--disable-slash-commands ");
+		}
 
-	const FString AllowedTools = BuildAllowedToolsArg(AccessMode);
-	if (!AllowedTools.IsEmpty())
-	{
-		CommandLine += FString::Printf(TEXT("--allowedTools \"%s\" "), *AllowedTools);
-	}
+		// Project context off: restrict setting sources
+		if (!FCortexFrontendSettings::Get().GetProjectContext())
+		{
+			CommandLine += TEXT("--setting-sources \"user,local\" ");
+		}
 
-	if (!Config.McpConfigPath.IsEmpty())
-	{
-		CommandLine += FString::Printf(TEXT("--mcp-config \"%s\" "), *Config.McpConfigPath.Replace(TEXT("\\"), TEXT("/")));
-	}
+		const FString AllowedTools = BuildAllowedToolsArg(AccessMode);
+		if (!AllowedTools.IsEmpty())
+		{
+			CommandLine += FString::Printf(TEXT("--allowedTools \"%s\" "), *AllowedTools);
+		}
 
-	FString ModeString;
-	switch (AccessMode)
-	{
-	case ECortexAccessMode::ReadOnly:
-		ModeString = TEXT("Read-Only");
-		break;
-	case ECortexAccessMode::Guided:
-		ModeString = TEXT("Guided");
-		break;
-	case ECortexAccessMode::FullAccess:
-		ModeString = TEXT("Full Access");
-		break;
+		if (!Config.McpConfigPath.IsEmpty())
+		{
+			CommandLine += FString::Printf(TEXT("--mcp-config \"%s\" "), *Config.McpConfigPath.Replace(TEXT("\\"), TEXT("/")));
+		}
 	}
 
 	// Config.SystemPrompt takes precedence (used by conversion tabs); otherwise build default.
@@ -434,11 +430,26 @@ FString FCortexCliSession::BuildLaunchCommandLine(bool bResumeSession, ECortexAc
 	}
 	else
 	{
+		FString ModeString;
+		switch (AccessMode)
+		{
+		case ECortexAccessMode::ReadOnly:
+			ModeString = TEXT("Read-Only");
+			break;
+		case ECortexAccessMode::Guided:
+			ModeString = TEXT("Guided");
+			break;
+		case ECortexAccessMode::FullAccess:
+			ModeString = TEXT("Full Access");
+			break;
+		}
+
 		SystemPrompt = FString::Printf(
 			TEXT("You are running inside the Unreal Editor's Cortex AI Chat panel. "
 				 "You have access to Cortex MCP tools for querying and manipulating the editor. "
 				 "Current access mode: %s."), *ModeString);
 
+		const ECortexWorkflowMode Workflow = FCortexFrontendSettings::Get().GetWorkflowMode();
 		if (Workflow == ECortexWorkflowMode::Direct)
 		{
 			SystemPrompt += TEXT(" Workflow mode: Direct. Act immediately on requests using MCP tools. "
@@ -622,25 +633,38 @@ void FCortexCliSession::CleanupProcess()
 		Worker->Stop();
 	}
 
-	// 2. Close stdin to signal graceful process exit
-	CloseStdinPipe();
-
-	// 3. Wait up to 2s for process to exit, then force-kill
+	// 2. Force-kill the process FIRST.
+	//    This is critical: the worker thread may be blocked in WritePipe/ReadPipe.
+	//    Killing the process invalidates all pipe handles, causing blocked pipe
+	//    operations to fail immediately so the worker thread can exit.
 	if (ProcessHandle.IsValid() && FPlatformProcess::IsProcRunning(ProcessHandle))
 	{
-		const double WaitStart = FPlatformTime::Seconds();
-		while (FPlatformProcess::IsProcRunning(ProcessHandle) && (FPlatformTime::Seconds() - WaitStart) < 2.0)
+		if (Config.bConversionMode)
 		{
-			FPlatformProcess::Sleep(0.01f);
-		}
-		if (FPlatformProcess::IsProcRunning(ProcessHandle))
-		{
-			UE_LOG(LogCortexFrontend, Log, TEXT("Process did not exit within grace period, force-killing"));
+			// Conversion: kill immediately — no grace period
 			FPlatformProcess::TerminateProc(ProcessHandle, true);
+		}
+		else
+		{
+			// Chat: close stdin for graceful exit, then wait up to 2s
+			CloseStdinPipe();
+			const double WaitStart = FPlatformTime::Seconds();
+			while (FPlatformProcess::IsProcRunning(ProcessHandle) && (FPlatformTime::Seconds() - WaitStart) < 2.0)
+			{
+				FPlatformProcess::Sleep(0.01f);
+			}
+			if (FPlatformProcess::IsProcRunning(ProcessHandle))
+			{
+				UE_LOG(LogCortexFrontend, Log, TEXT("Process did not exit within grace period, force-killing"));
+				FPlatformProcess::TerminateProc(ProcessHandle, true);
+			}
 		}
 	}
 
-	// 4. Join Worker thread (safe: process is dead, Worker will exit quickly)
+	// 3. Close stdin pipe (may already be closed for chat sessions)
+	CloseStdinPipe();
+
+	// 4. Join Worker thread (safe: process is dead, pipe ops fail immediately)
 	if (Worker)
 	{
 		Worker.Reset();

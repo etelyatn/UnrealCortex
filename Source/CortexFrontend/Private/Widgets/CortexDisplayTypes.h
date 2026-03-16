@@ -13,6 +13,7 @@ enum class ECortexChatRowType : uint8
 	AssistantTurn,   // Tool calls (optional) + assistant text combined
 	CodeBlock,
 	ProcessingRow,   // Transient row shown while session is Spawning or Processing
+	StatusRow,       // Step-by-step status message (e.g., "Serializing Blueprint...")
 };
 
 struct FCortexChatDisplayRow

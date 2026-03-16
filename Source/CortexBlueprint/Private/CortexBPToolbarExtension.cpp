@@ -6,6 +6,7 @@
 #include "CortexBlueprintModule.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_Event.h"
+#include "Styling/AppStyle.h"
 #include "ToolMenus.h"
 #include "Toolkits/AssetEditorToolkitMenuContext.h"
 #include "Framework/Application/SlateApplication.h"
@@ -25,7 +26,8 @@ void FCortexBPToolbarExtension::Register()
 				FUIAction(),
 				FNewToolMenuDelegate::CreateStatic(&FCortexBPToolbarExtension::BuildMenu),
 				NSLOCTEXT("CortexBlueprint", "CortexToolbar", "Cortex"),
-				NSLOCTEXT("CortexBlueprint", "CortexToolbarTooltip", "Cortex AI tools for this Blueprint")
+				NSLOCTEXT("CortexBlueprint", "CortexToolbarTooltip", "Cortex AI tools for this Blueprint"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details")
 			));
 		}));
 }

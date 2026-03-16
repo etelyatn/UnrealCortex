@@ -43,6 +43,7 @@ struct FCortexSessionConfig
     FString McpConfigPath;
     FString SystemPrompt;  // Optional system prompt override (used by conversion tabs)
     bool bSkipPermissions = true;
+    bool bConversionMode = false;  // Lightweight mode: no MCP, no project context, no tools
 };
 
 struct FCortexPromptRequest

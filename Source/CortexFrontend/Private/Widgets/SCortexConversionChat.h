@@ -27,6 +27,9 @@ public:
 	/** Bind to session after it's created (called from SCortexConversionTab::StartConversion). */
 	void BindSession();
 
+	/** Add a status message to the chat (shown as a step in the conversion process). */
+	void AddStatusMessage(const FString& Message);
+
 private:
 	void SendMessage(const FString& Message);
 	void CancelRequest();
@@ -40,12 +43,17 @@ private:
 
 	TArray<TSharedPtr<FCortexChatEntry>> BuildAssistantEntries(const FString& FullText) const;
 	void ProcessCodeBlocks(const TArray<TSharedPtr<FCortexChatEntry>>& Entries);
+	void CollapseStatusMessages(const FCortexTurnResult& Result);
 	void RefreshVisibleEntries();
 	void ScrollToBottom();
 
 	TSharedPtr<FCortexConversionContext> Context;
 	TSharedPtr<SCortexInputArea> InputArea;
 	TSharedPtr<SListView<TSharedPtr<FCortexChatDisplayRow>>> ChatList;
+	TSharedPtr<SBox> ProcessingIndicatorBox;
+
+	/** Status messages pushed before/during session creation. */
+	TArray<TSharedPtr<FCortexChatDisplayRow>> StatusRows;
 
 	TArray<TSharedPtr<FCortexChatDisplayRow>> DisplayRows;
 	bool bAutoScroll = true;

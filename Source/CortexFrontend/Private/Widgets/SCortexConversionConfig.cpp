@@ -1,6 +1,7 @@
 #include "Widgets/SCortexConversionConfig.h"
 
-#include "Widgets/Input/SButton.h"
+#include "Styling/AppStyle.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
@@ -76,13 +77,24 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 				.AutoHeight()
 				.Padding(0, 2)
 				[
-					SNew(SButton)
-					.Text(NSLOCTEXT("CortexConversion", "ScopeEntire", "Entire Blueprint"))
-					.OnClicked_Lambda([this]()
+					SNew(SCheckBox)
+					.Style(FAppStyle::Get(), "RadioButton")
+					.IsChecked_Lambda([this]()
 					{
-						OnScopeChanged(ECortexConversionScope::EntireBlueprint);
-						return FReply::Handled();
+						return IsScopeSelected(ECortexConversionScope::EntireBlueprint)
+							? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 					})
+					.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+					{
+						if (State == ECheckBoxState::Checked)
+						{
+							OnScopeChanged(ECortexConversionScope::EntireBlueprint);
+						}
+					})
+					[
+						SNew(STextBlock)
+						.Text(NSLOCTEXT("CortexConversion", "ScopeEntire", "Entire Blueprint"))
+					]
 				]
 
 				// Selected Nodes
@@ -90,15 +102,27 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 				.AutoHeight()
 				.Padding(0, 2)
 				[
-					SNew(SButton)
-					.Text(FText::FromString(FString::Printf(TEXT("Selected Nodes (%d selected)"),
-						Payload.SelectedNodeIds.Num())))
+					SNew(SCheckBox)
+					.Style(FAppStyle::Get(), "RadioButton")
 					.IsEnabled(bHasSelectedNodes)
-					.OnClicked_Lambda([this]()
+					.IsChecked_Lambda([this]()
 					{
-						OnScopeChanged(ECortexConversionScope::SelectedNodes);
-						return FReply::Handled();
+						return IsScopeSelected(ECortexConversionScope::SelectedNodes)
+							? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 					})
+					.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+					{
+						if (State == ECheckBoxState::Checked)
+						{
+							OnScopeChanged(ECortexConversionScope::SelectedNodes);
+						}
+					})
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(FString::Printf(TEXT("Selected Nodes (%d selected)"),
+							Payload.SelectedNodeIds.Num())))
+						.IsEnabled(bHasSelectedNodes)
+					]
 				]
 
 				// Current Graph
@@ -106,14 +130,25 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 				.AutoHeight()
 				.Padding(0, 2)
 				[
-					SNew(SButton)
-					.Text(FText::FromString(FString::Printf(TEXT("Current Graph (%s)"),
-						*Payload.CurrentGraphName)))
-					.OnClicked_Lambda([this]()
+					SNew(SCheckBox)
+					.Style(FAppStyle::Get(), "RadioButton")
+					.IsChecked_Lambda([this]()
 					{
-						OnScopeChanged(ECortexConversionScope::CurrentGraph);
-						return FReply::Handled();
+						return IsScopeSelected(ECortexConversionScope::CurrentGraph)
+							? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 					})
+					.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+					{
+						if (State == ECheckBoxState::Checked)
+						{
+							OnScopeChanged(ECortexConversionScope::CurrentGraph);
+						}
+					})
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(FString::Printf(TEXT("Current Graph (%s)"),
+							*Payload.CurrentGraphName)))
+					]
 				]
 			]
 
@@ -143,6 +178,11 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildEventFunctionList(const FCorte
 {
 	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
 
+	if (Payload.EventNames.Num() == 0 && Payload.FunctionNames.Num() == 0)
+	{
+		return Box;
+	}
+
 	Box->AddSlot()
 	.AutoHeight()
 	.Padding(0, 0, 0, 4)
@@ -158,17 +198,24 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildEventFunctionList(const FCorte
 		.AutoHeight()
 		.Padding(0, 2)
 		[
-			SNew(SButton)
-			.Text(FText::FromString(FString::Printf(TEXT("Event: %s"), *EventName)))
-			.OnClicked_Lambda([this, EventName]()
+			SNew(SCheckBox)
+			.Style(FAppStyle::Get(), "RadioButton")
+			.IsChecked_Lambda([this, EventName]()
 			{
-				if (Context.IsValid())
-				{
-					Context->SelectedScope = ECortexConversionScope::EventOrFunction;
-					Context->TargetEventOrFunction = EventName;
-				}
-				return FReply::Handled();
+				return IsEventOrFunctionSelected(EventName)
+					? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 			})
+			.OnCheckStateChanged_Lambda([this, EventName](ECheckBoxState State)
+			{
+				if (State == ECheckBoxState::Checked)
+				{
+					OnEventOrFunctionSelected(EventName);
+				}
+			})
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(FString::Printf(TEXT("Event: %s"), *EventName)))
+			]
 		];
 	}
 
@@ -178,21 +225,40 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildEventFunctionList(const FCorte
 		.AutoHeight()
 		.Padding(0, 2)
 		[
-			SNew(SButton)
-			.Text(FText::FromString(FString::Printf(TEXT("Function: %s"), *FuncName)))
-			.OnClicked_Lambda([this, FuncName]()
+			SNew(SCheckBox)
+			.Style(FAppStyle::Get(), "RadioButton")
+			.IsChecked_Lambda([this, FuncName]()
 			{
-				if (Context.IsValid())
-				{
-					Context->SelectedScope = ECortexConversionScope::EventOrFunction;
-					Context->TargetEventOrFunction = FuncName;
-				}
-				return FReply::Handled();
+				return IsEventOrFunctionSelected(FuncName)
+					? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 			})
+			.OnCheckStateChanged_Lambda([this, FuncName](ECheckBoxState State)
+			{
+				if (State == ECheckBoxState::Checked)
+				{
+					OnEventOrFunctionSelected(FuncName);
+				}
+			})
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(FString::Printf(TEXT("Function: %s"), *FuncName)))
+			]
 		];
 	}
 
 	return Box;
+}
+
+bool SCortexConversionConfig::IsScopeSelected(ECortexConversionScope Scope) const
+{
+	return Context.IsValid() && Context->SelectedScope == Scope;
+}
+
+bool SCortexConversionConfig::IsEventOrFunctionSelected(const FString& Name) const
+{
+	return Context.IsValid()
+		&& Context->SelectedScope == ECortexConversionScope::EventOrFunction
+		&& Context->TargetEventOrFunction == Name;
 }
 
 void SCortexConversionConfig::OnScopeChanged(ECortexConversionScope NewScope)
@@ -200,6 +266,16 @@ void SCortexConversionConfig::OnScopeChanged(ECortexConversionScope NewScope)
 	if (Context.IsValid())
 	{
 		Context->SelectedScope = NewScope;
+		Context->TargetEventOrFunction.Empty();
+	}
+}
+
+void SCortexConversionConfig::OnEventOrFunctionSelected(const FString& Name)
+{
+	if (Context.IsValid())
+	{
+		Context->SelectedScope = ECortexConversionScope::EventOrFunction;
+		Context->TargetEventOrFunction = Name;
 	}
 }
 

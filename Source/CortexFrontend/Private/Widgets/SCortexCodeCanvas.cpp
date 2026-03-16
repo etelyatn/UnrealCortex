@@ -7,6 +7,12 @@
 #include "Widgets/Text/STextBlock.h"
 #include "HAL/PlatformApplicationMisc.h"
 
+namespace
+{
+	const FLinearColor ActiveTabColor(0.9f, 0.9f, 0.9f);
+	const FLinearColor InactiveTabColor(0.45f, 0.45f, 0.45f);
+}
+
 void SCortexCodeCanvas::Construct(const FArguments& InArgs)
 {
 	Document = InArgs._Document;
@@ -27,24 +33,34 @@ void SCortexCodeCanvas::Construct(const FArguments& InArgs)
 			.Padding(2)
 			[
 				SNew(SButton)
-				.Text(NSLOCTEXT("CortexCodeCanvas", "HeaderTab", ".h"))
 				.OnClicked_Lambda([this]()
 				{
 					SwitchToTab(ECortexCodeTab::Header);
 					return FReply::Handled();
 				})
+				[
+					SAssignNew(HeaderTabLabel, STextBlock)
+					.Text(NSLOCTEXT("CortexCodeCanvas", "HeaderTab", ".h"))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+					.ColorAndOpacity(FSlateColor(ActiveTabColor))
+				]
 			]
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
 			.Padding(2)
 			[
 				SNew(SButton)
-				.Text(NSLOCTEXT("CortexCodeCanvas", "ImplTab", ".cpp"))
 				.OnClicked_Lambda([this]()
 				{
 					SwitchToTab(ECortexCodeTab::Implementation);
 					return FReply::Handled();
 				})
+				[
+					SAssignNew(ImplTabLabel, STextBlock)
+					.Text(NSLOCTEXT("CortexCodeCanvas", "ImplTab", ".cpp"))
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+					.ColorAndOpacity(FSlateColor(InactiveTabColor))
+				]
 			]
 			+ SHorizontalBox::Slot()
 			.FillWidth(1.0f)
@@ -132,6 +148,8 @@ void SCortexCodeCanvas::OnDocumentChanged(ECortexCodeTab ChangedTab)
 	{
 		ImplementationBlock->SetCode(Document->ImplementationCode);
 	}
+
+	UpdateTabLabels();
 }
 
 FReply SCortexCodeCanvas::OnCopyClicked()
@@ -162,4 +180,55 @@ void SCortexCodeCanvas::SwitchToTab(ECortexCodeTab Tab)
 	{
 		CodeSwitcher->SetActiveWidgetIndex(Tab == ECortexCodeTab::Header ? 0 : 1);
 	}
+	UpdateTabLabels();
+}
+
+void SCortexCodeCanvas::UpdateTabLabels()
+{
+	if (!Document.IsValid())
+	{
+		return;
+	}
+
+	const int32 HeaderLines = CountLines(Document->HeaderCode);
+	const int32 ImplLines = CountLines(Document->ImplementationCode);
+	const bool bHeaderActive = (CurrentTab == ECortexCodeTab::Header);
+
+	if (HeaderTabLabel.IsValid())
+	{
+		FString Label = HeaderLines > 0
+			? FString::Printf(TEXT(".h (%d lines)"), HeaderLines)
+			: TEXT(".h");
+		HeaderTabLabel->SetText(FText::FromString(Label));
+		HeaderTabLabel->SetFont(FCoreStyle::GetDefaultFontStyle(bHeaderActive ? "Bold" : "Regular", 10));
+		HeaderTabLabel->SetColorAndOpacity(FSlateColor(bHeaderActive ? ActiveTabColor : InactiveTabColor));
+	}
+
+	if (ImplTabLabel.IsValid())
+	{
+		FString Label = ImplLines > 0
+			? FString::Printf(TEXT(".cpp (%d lines)"), ImplLines)
+			: TEXT(".cpp");
+		ImplTabLabel->SetText(FText::FromString(Label));
+		ImplTabLabel->SetFont(FCoreStyle::GetDefaultFontStyle(!bHeaderActive ? "Bold" : "Regular", 10));
+		ImplTabLabel->SetColorAndOpacity(FSlateColor(!bHeaderActive ? ActiveTabColor : InactiveTabColor));
+	}
+}
+
+int32 SCortexCodeCanvas::CountLines(const FString& Code)
+{
+	if (Code.IsEmpty())
+	{
+		return 0;
+	}
+
+	int32 Lines = 1;
+	for (const TCHAR& Ch : Code)
+	{
+		if (Ch == TEXT('\n'))
+		{
+			++Lines;
+		}
+	}
+	return Lines;
 }

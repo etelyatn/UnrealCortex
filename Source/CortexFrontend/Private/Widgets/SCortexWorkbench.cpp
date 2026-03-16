@@ -80,7 +80,7 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 
 SCortexWorkbench::~SCortexWorkbench()
 {
-	// Clean up all conversion tab spawners before releasing TabManager
+	// Clean up all conversion tab contexts (sessions)
 	TArray<FName> TabIds;
 	ConversionContexts.GetKeys(TabIds);
 	for (const FName& TabId : TabIds)
@@ -112,23 +112,13 @@ void SCortexWorkbench::SpawnConversionTab(const FCortexConversionPayload& Payloa
 			TEXT("10+ conversion tabs open — consider closing unused tabs"));
 	}
 
-	TabManager->RegisterTabSpawner(Context->TabId,
-		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnConversionTabContent, Context))
-		.SetDisplayName(FText::FromString(
-			FString::Printf(TEXT("%s — Convert"), *Payload.BlueprintName)));
-
-	TabManager->TryInvokeTab(Context->TabId);
-}
-
-TSharedRef<SDockTab> SCortexWorkbench::SpawnConversionTabContent(
-	const FSpawnTabArgs& /*Args*/, TSharedPtr<FCortexConversionContext> Context)
-{
 	FName TabId = Context->TabId;
 
+	// Create the tab directly (unmanaged) and dock it next to the chat tab
 	TSharedRef<SDockTab> Tab = SNew(SDockTab)
 		.TabRole(ETabRole::DocumentTab)
 		.Label(FText::FromString(
-			FString::Printf(TEXT("%s — Convert"), *Context->Payload.BlueprintName)))
+			FString::Printf(TEXT("%s — Convert"), *Payload.BlueprintName)))
 		.OnTabClosed_Lambda([this, TabId](TSharedRef<SDockTab>)
 		{
 			CleanupConversionTab(TabId);
@@ -138,7 +128,11 @@ TSharedRef<SDockTab> SCortexWorkbench::SpawnConversionTabContent(
 			.Context(Context)
 		];
 
-	return Tab;
+	// Insert as document tab next to the CortexChat tab
+	TabManager->InsertNewDocumentTab(
+		FName(TEXT("CortexChat")),
+		FTabManager::ESearchPreference::PreferLiveTab,
+		Tab);
 }
 
 void SCortexWorkbench::CleanupConversionTab(FName TabId)
@@ -158,12 +152,6 @@ void SCortexWorkbench::CleanupConversionTab(FName TabId)
 	}
 
 	ConversionContexts.Remove(TabId);
-
-	// Defensive: TabManager may be null during workbench destruction
-	if (TabManager.IsValid())
-	{
-		TabManager->UnregisterTabSpawner(TabId);
-	}
 }
 
 void SCortexWorkbench::OnSidebarToggle()

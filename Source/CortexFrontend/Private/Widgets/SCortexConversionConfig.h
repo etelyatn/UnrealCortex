@@ -20,6 +20,10 @@ public:
 private:
 	FReply OnConvertButtonClicked();
 	void OnScopeChanged(ECortexConversionScope NewScope);
+	void OnEventOrFunctionSelected(const FString& Name);
+
+	bool IsScopeSelected(ECortexConversionScope Scope) const;
+	bool IsEventOrFunctionSelected(const FString& Name) const;
 
 	TSharedRef<SWidget> BuildEventFunctionList(const FCortexConversionPayload& Payload);
 

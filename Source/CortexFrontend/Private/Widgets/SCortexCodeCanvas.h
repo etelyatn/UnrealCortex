@@ -7,6 +7,7 @@
 
 class SCortexCodeBlock;
 class SWidgetSwitcher;
+class STextBlock;
 
 DECLARE_DELEGATE(FOnCreateFilesClicked);
 
@@ -26,11 +27,17 @@ private:
 	FReply OnCopyClicked();
 	FReply OnCreateFilesButtonClicked();
 	void SwitchToTab(ECortexCodeTab Tab);
+	void UpdateTabLabels();
+
+	/** Count newlines in a string to get line count. */
+	static int32 CountLines(const FString& Code);
 
 	TSharedPtr<FCortexCodeDocument> Document;
 	TSharedPtr<SWidgetSwitcher> CodeSwitcher;
 	TSharedPtr<SCortexCodeBlock> HeaderBlock;
 	TSharedPtr<SCortexCodeBlock> ImplementationBlock;
+	TSharedPtr<STextBlock> HeaderTabLabel;
+	TSharedPtr<STextBlock> ImplTabLabel;
 	FOnCreateFilesClicked OnCreateFilesDelegate;
 	ECortexCodeTab CurrentTab = ECortexCodeTab::Header;
 	FDelegateHandle DocumentChangedHandle;

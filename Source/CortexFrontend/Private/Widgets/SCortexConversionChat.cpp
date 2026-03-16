@@ -6,9 +6,11 @@
 #include "Widgets/SCortexChatMessage.h"
 #include "Widgets/SCortexCodeBlock.h"
 #include "Widgets/SCortexInputArea.h"
+#include "Widgets/SCortexProcessingIndicator.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
 
@@ -28,6 +30,13 @@ void SCortexConversionChat::Construct(const FArguments& InArgs)
 			.ListItemsSource(&DisplayRows)
 			.OnGenerateRow(this, &SCortexConversionChat::GenerateRow)
 			.SelectionMode(ESelectionMode::None)
+		]
+
+		// Processing indicator (populated lazily when session is created)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			SAssignNew(ProcessingIndicatorBox, SBox)
 		]
 
 		// Input area
@@ -51,6 +60,15 @@ void SCortexConversionChat::BindSession()
 		Context->Session->OnStreamEvent.AddSP(this, &SCortexConversionChat::OnStreamEvent);
 		Context->Session->OnTurnComplete.AddSP(this, &SCortexConversionChat::OnTurnComplete);
 		Context->Session->OnStateChanged.AddSP(this, &SCortexConversionChat::OnSessionStateChanged);
+
+		// Create processing indicator now that session exists
+		if (ProcessingIndicatorBox.IsValid())
+		{
+			ProcessingIndicatorBox->SetContent(
+				SNew(SCortexProcessingIndicator)
+				.Session(Context->Session)
+			);
+		}
 	}
 }
 
@@ -62,6 +80,26 @@ SCortexConversionChat::~SCortexConversionChat()
 		Context->Session->OnTurnComplete.RemoveAll(this);
 		Context->Session->OnStateChanged.RemoveAll(this);
 	}
+}
+
+void SCortexConversionChat::AddStatusMessage(const FString& Message)
+{
+	TSharedPtr<FCortexChatEntry> Entry = MakeShared<FCortexChatEntry>();
+	Entry->Type = ECortexChatEntryType::AssistantMessage;
+	Entry->Text = Message;
+
+	TSharedPtr<FCortexChatDisplayRow> Row = MakeShared<FCortexChatDisplayRow>();
+	Row->PrimaryEntry = Entry;
+	Row->RowType = ECortexChatRowType::StatusRow;
+
+	StatusRows.Add(Row);
+	DisplayRows.Add(Row);
+
+	if (ChatList.IsValid())
+	{
+		ChatList->RequestListRefresh();
+	}
+	ScrollToBottom();
 }
 
 void SCortexConversionChat::SendMessage(const FString& Message)
@@ -143,6 +181,9 @@ void SCortexConversionChat::OnTurnComplete(const FCortexTurnResult& Result)
 	{
 		Context->bIsInitialGeneration = false;
 	}
+
+	// Collapse status messages into a short summary
+	CollapseStatusMessages(Result);
 
 	RefreshVisibleEntries();
 	ScrollToBottom();
@@ -251,6 +292,31 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 	{
 		switch (Row->RowType)
 		{
+		case ECortexChatRowType::StatusRow:
+		{
+			// Status messages: gray italic text with a subtle left border
+			Content = SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(0, 0, 6, 0)
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(TEXT("|")))
+					.ColorAndOpacity(FSlateColor(FLinearColor(0.3f, 0.5f, 0.8f)))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(Row->PrimaryEntry->Text))
+					.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.6f, 0.7f)))
+					.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
+					.AutoWrapText(true)
+				];
+			break;
+		}
+
 		case ECortexChatRowType::UserMessage:
 		{
 			Content = SNew(SCortexChatMessage)
@@ -355,39 +421,73 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 		];
 }
 
+void SCortexConversionChat::CollapseStatusMessages(const FCortexTurnResult& Result)
+{
+	// Replace all step-by-step status rows with a single compact summary
+	StatusRows.Empty();
+
+	TSharedPtr<FCortexChatEntry> SummaryEntry = MakeShared<FCortexChatEntry>();
+	SummaryEntry->Type = ECortexChatEntryType::AssistantMessage;
+
+	if (Result.bIsError)
+	{
+		SummaryEntry->Text = FString::Printf(TEXT("Conversion failed (%dms): %s"),
+			Result.DurationMs, *Result.ResultText);
+	}
+	else
+	{
+		SummaryEntry->Text = FString::Printf(TEXT("Converted in %.1fs"),
+			Result.DurationMs / 1000.0);
+	}
+
+	TSharedPtr<FCortexChatDisplayRow> SummaryRow = MakeShared<FCortexChatDisplayRow>();
+	SummaryRow->PrimaryEntry = SummaryEntry;
+	SummaryRow->RowType = ECortexChatRowType::StatusRow;
+	StatusRows.Add(SummaryRow);
+}
+
 void SCortexConversionChat::RefreshVisibleEntries()
 {
 	DisplayRows.Empty();
 
-	if (!Context.IsValid() || !Context->Session.IsValid())
+	// Status messages first (serialization steps, session status, etc.)
+	DisplayRows.Append(StatusRows);
+
+	if (Context.IsValid() && Context->Session.IsValid())
 	{
-		if (ChatList.IsValid())
+		const TArray<TSharedPtr<FCortexChatEntry>>& Entries = Context->Session->GetChatEntries();
+		for (const TSharedPtr<FCortexChatEntry>& Entry : Entries)
 		{
-			ChatList->RequestListRefresh();
-		}
-		return;
-	}
+			// Skip the initial BP JSON user message — it's internal, not user-typed
+			if (Entry->Type == ECortexChatEntryType::UserMessage && Entry->TurnIndex <= 1)
+			{
+				continue;
+			}
 
-	const TArray<TSharedPtr<FCortexChatEntry>>& Entries = Context->Session->GetChatEntries();
-	for (const TSharedPtr<FCortexChatEntry>& Entry : Entries)
-	{
-		TSharedPtr<FCortexChatDisplayRow> Row = MakeShared<FCortexChatDisplayRow>();
-		Row->PrimaryEntry = Entry;
+			// Skip code blocks that were applied to the canvas (have a target tag)
+			if (Entry->Type == ECortexChatEntryType::CodeBlock && !Entry->CodeBlockTarget.IsEmpty())
+			{
+				continue;
+			}
 
-		if (Entry->Type == ECortexChatEntryType::UserMessage)
-		{
-			Row->RowType = ECortexChatRowType::UserMessage;
-		}
-		else if (Entry->Type == ECortexChatEntryType::CodeBlock)
-		{
-			Row->RowType = ECortexChatRowType::CodeBlock;
-		}
-		else
-		{
-			Row->RowType = ECortexChatRowType::AssistantTurn;
-		}
+			TSharedPtr<FCortexChatDisplayRow> Row = MakeShared<FCortexChatDisplayRow>();
+			Row->PrimaryEntry = Entry;
 
-		DisplayRows.Add(Row);
+			if (Entry->Type == ECortexChatEntryType::UserMessage)
+			{
+				Row->RowType = ECortexChatRowType::UserMessage;
+			}
+			else if (Entry->Type == ECortexChatEntryType::CodeBlock)
+			{
+				Row->RowType = ECortexChatRowType::CodeBlock;
+			}
+			else
+			{
+				Row->RowType = ECortexChatRowType::AssistantTurn;
+			}
+
+			DisplayRows.Add(Row);
+		}
 	}
 
 	if (ChatList.IsValid())

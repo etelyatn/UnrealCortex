@@ -20,6 +20,7 @@ public:
 private:
 	void OnConvertClicked();
 	void StartConversion();
+	void StatusMessage(const FString& Message);
 	void OnCreateFilesRequested();
 
 	TSharedPtr<FCortexConversionContext> Context;
