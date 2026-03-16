@@ -5,6 +5,7 @@
 #include "Session/CortexCliSession.h"
 #include "Widgets/SCortexChatMessage.h"
 #include "Widgets/SCortexCodeBlock.h"
+#include "Widgets/SCortexDiffBlock.h"
 #include "Widgets/SCortexInputArea.h"
 #include "Widgets/SCortexProcessingIndicator.h"
 #include "Widgets/Input/SButton.h"
@@ -154,6 +155,9 @@ void SCortexConversionChat::OnTurnComplete(const FCortexTurnResult& Result)
 	{
 		return;
 	}
+
+	// Clear diff apply warnings from previous interactions
+	WarningRows.Empty();
 
 	if (Result.bIsError)
 	{
@@ -337,6 +341,118 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 		{
 			const bool bIsFollowUp = Row->PrimaryEntry->TurnIndex > 1;
 			const FString Target = Row->PrimaryEntry->CodeBlockTarget;
+
+			// Diff block: render as unified diff view with targeted apply
+			if (bIsFollowUp && Row->bIsDiffBlock && Context.IsValid())
+			{
+				TSharedPtr<FCortexConversionContext> CtxCopy = Context;
+				TArray<FCortexFrontendSearchReplacePair> PairsCopy = Row->SearchReplacePairs;
+				TWeakPtr<SCortexConversionChat> WeakSelf = StaticCastSharedRef<SCortexConversionChat>(AsShared());
+
+				Content = SNew(SCortexDiffBlock)
+					.Target(Target)
+					.Pairs(Row->SearchReplacePairs)
+					.OnApply_Lambda([CtxCopy, PairsCopy, Target, WeakSelf]()
+					{
+						if (!CtxCopy.IsValid() || !CtxCopy->Document.IsValid())
+						{
+							return FReply::Handled();
+						}
+
+						auto* Doc = CtxCopy->Document.Get();
+
+						// Determine which document text to work on
+						FString WorkingText;
+						if (Target == TEXT("header"))
+						{
+							WorkingText = Doc->HeaderCode;
+						}
+						else if (Target == TEXT("implementation"))
+						{
+							WorkingText = Doc->ImplementationCode;
+						}
+						else if (Target == TEXT("snippet"))
+						{
+							WorkingText = Doc->SnippetCode;
+						}
+
+						// Save snapshot before first apply
+						Doc->SaveSnapshot();
+
+						// Canonicalize (defensive)
+						WorkingText.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
+
+						bool bAnyApplied = false;
+						for (int32 i = 0; i < PairsCopy.Num(); ++i)
+						{
+							const FCortexFrontendSearchReplacePair& Pair = PairsCopy[i];
+							const int32 Pos = WorkingText.Find(
+								*Pair.SearchText, ESearchCase::CaseSensitive,
+								ESearchDir::FromStart);
+
+							if (Pos == INDEX_NONE)
+							{
+								if (auto Pinned = WeakSelf.Pin())
+								{
+									Pinned->AddWarningEntry(FString::Printf(
+										TEXT("Could not find match for change %d — skipped"), i + 1));
+								}
+								continue;
+							}
+
+							// Check for ambiguity
+							const int32 Pos2 = WorkingText.Find(
+								*Pair.SearchText, ESearchCase::CaseSensitive,
+								ESearchDir::FromStart, Pos + Pair.SearchText.Len());
+							if (Pos2 != INDEX_NONE)
+							{
+								if (auto Pinned = WeakSelf.Pin())
+								{
+									Pinned->AddWarningEntry(FString::Printf(
+										TEXT("Ambiguous match for change %d — skipped (search text appears multiple times)"), i + 1));
+								}
+								continue;
+							}
+
+							// Splice
+							WorkingText = WorkingText.Left(Pos) + Pair.ReplaceText
+								+ WorkingText.Mid(Pos + Pair.SearchText.Len());
+							bAnyApplied = true;
+						}
+
+						if (bAnyApplied)
+						{
+							if (Target == TEXT("header"))
+							{
+								Doc->UpdateHeader(WorkingText);
+							}
+							else if (Target == TEXT("implementation"))
+							{
+								Doc->UpdateImplementation(WorkingText);
+							}
+							else if (Target == TEXT("snippet"))
+							{
+								Doc->UpdateSnippet(WorkingText);
+							}
+						}
+
+						return FReply::Handled();
+					})
+					.OnRevert_Lambda([CtxCopy]()
+					{
+						if (CtxCopy.IsValid() && CtxCopy->Document.IsValid())
+						{
+							CtxCopy->Document->RevertToSnapshot();
+						}
+						return FReply::Handled();
+					})
+					.IsRevertVisible_Lambda([CtxCopy]()
+					{
+						return CtxCopy.IsValid() && CtxCopy->Document.IsValid()
+							&& CtxCopy->Document->bHasSnapshot;
+					});
+				break;
+			}
 
 			if (bIsFollowUp && Context.IsValid())
 			{
@@ -530,6 +646,17 @@ void SCortexConversionChat::RefreshVisibleEntries()
 			else if (Entry->Type == ECortexChatEntryType::CodeBlock)
 			{
 				Row->RowType = ECortexChatRowType::CodeBlock;
+
+				// Parse diff markers for tagged follow-up code blocks
+				if (!Entry->CodeBlockTarget.IsEmpty() && Entry->TurnIndex > 1)
+				{
+					TArray<FCortexFrontendSearchReplacePair> DiffPairs;
+					if (CortexDiffParser::Parse(Entry->Text, DiffPairs))
+					{
+						Row->bIsDiffBlock = true;
+						Row->SearchReplacePairs = MoveTemp(DiffPairs);
+					}
+				}
 			}
 			else
 			{
@@ -539,6 +666,9 @@ void SCortexConversionChat::RefreshVisibleEntries()
 			DisplayRows.Add(Row);
 		}
 	}
+
+	// Append diff apply warnings (persist until next turn)
+	DisplayRows.Append(WarningRows);
 
 	if (ChatList.IsValid())
 	{
@@ -552,4 +682,20 @@ void SCortexConversionChat::ScrollToBottom()
 	{
 		ChatList->RequestScrollIntoView(DisplayRows.Last());
 	}
+}
+
+void SCortexConversionChat::AddWarningEntry(const FString& Message)
+{
+	TSharedPtr<FCortexChatEntry> Entry = MakeShared<FCortexChatEntry>();
+	Entry->Type = ECortexChatEntryType::AssistantMessage;
+	Entry->Text = Message;
+
+	TSharedPtr<FCortexChatDisplayRow> Row = MakeShared<FCortexChatDisplayRow>();
+	Row->PrimaryEntry = Entry;
+	Row->RowType = ECortexChatRowType::StatusRow;
+
+	WarningRows.Add(Row);
+
+	RefreshVisibleEntries();
+	ScrollToBottom();
 }
