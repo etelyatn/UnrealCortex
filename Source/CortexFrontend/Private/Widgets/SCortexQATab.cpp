@@ -5,12 +5,15 @@
 #include "Widgets/SCortexQASessionList.h"
 #include "Widgets/SCortexQAToolbar.h"
 #include "CortexCoreModule.h"
+#include "CortexCommandRouter.h"
 #include "CortexCoreDelegates.h"
 #include "CortexFrontendModule.h"
 #include "Dom/JsonObject.h"
 #include "QA/CortexQASessionManager.h"
+#include "QA/CortexQATabTypes.h"
 #include "Session/CortexCliSession.h"
 #include "Session/CortexSessionTypes.h"
+#include "Async/Async.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SBox.h"
 
@@ -119,6 +122,24 @@ void SCortexQATab::OnDomainProgress(const FName& DomainName, const TSharedPtr<FJ
     {
         RefreshSessions();
     }
+    else if (Type == TEXT("recording_step") && Toolbar.IsValid())
+    {
+        const FString StepType = Data->GetStringField(TEXT("step_type"));
+        FString Target;
+        Data->TryGetStringField(TEXT("target"), Target);
+        Toolbar->AddRecordingStep(StepType, Target);
+    }
+    else if (Type == TEXT("replay_progress") && DetailPanel.IsValid())
+    {
+        const int32 CurrentStep = static_cast<int32>(Data->GetNumberField(TEXT("current_step")));
+        DetailPanel->SetReplayProgress(CurrentStep);
+    }
+    else if (Type == TEXT("step_completed") && DetailPanel.IsValid())
+    {
+        // Refresh detail panel to show step results
+        DetailPanel->SetReplayProgress(
+            static_cast<int32>(Data->GetNumberField(TEXT("step_index"))) + 1);
+    }
 }
 
 void SCortexQATab::OnSessionSelected(int32 Index)
@@ -128,22 +149,98 @@ void SCortexQATab::OnSessionSelected(int32 Index)
 
 void SCortexQATab::OnRecordConfirmed(const FString& SessionName)
 {
-    // Stub — full implementation in Task 16
+    FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+    FCortexCommandRouter& Router = Core.GetCommandRouter();
+
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("name"), SessionName);
+
+    FCortexCommandResult Result = Router.Execute(TEXT("qa.start_recording"), Params);
+
+    if (Result.bSuccess)
+    {
+        if (Toolbar.IsValid())
+        {
+            Toolbar->SetRecording(true);
+        }
+        if (SessionList.IsValid())
+        {
+            SessionList->SetEnabled(false);
+        }
+    }
+    else
+    {
+        UE_LOG(LogCortexFrontend, Warning, TEXT("Failed to start recording: %s"), *Result.ErrorMessage);
+    }
 }
 
 void SCortexQATab::OnStopClicked()
 {
-    // Stub — full implementation in Task 16
+    FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+    FCortexCommandRouter& Router = Core.GetCommandRouter();
+
+    Router.Execute(TEXT("qa.stop_recording"), MakeShared<FJsonObject>());
+
+    if (Toolbar.IsValid())
+    {
+        Toolbar->SetRecording(false);
+    }
+    if (SessionList.IsValid())
+    {
+        SessionList->SetEnabled(true);
+    }
+
+    RefreshSessions();
 }
 
 void SCortexQATab::OnStopAndReplayClicked()
 {
-    // Stub — full implementation in Task 16
+    OnStopClicked();
+    // After refresh, the newest session should be at index 0
+    if (SessionManager->GetSessions().Num() > 0)
+    {
+        OnSessionSelected(0);
+        OnReplayClicked();
+    }
 }
 
 void SCortexQATab::OnReplayClicked()
 {
-    // Stub — full implementation in Task 16
+    if (SelectedSessionIndex == INDEX_NONE)
+    {
+        return;
+    }
+
+    const TArray<FCortexQASessionListItem>& Sessions = SessionManager->GetSessions();
+    if (!Sessions.IsValidIndex(SelectedSessionIndex))
+    {
+        return;
+    }
+
+    FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+    FCortexCommandRouter& Router = Core.GetCommandRouter();
+
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("path"), Sessions[SelectedSessionIndex].FilePath);
+    Params->SetStringField(TEXT("on_failure"), TEXT("continue"));
+
+    Router.Execute(TEXT("qa.replay_session"), Params,
+        [this](FCortexCommandResult Result)
+        {
+            AsyncTask(ENamedThreads::GameThread, [this, Result]()
+            {
+                if (Toolbar.IsValid())
+                {
+                    Toolbar->SetPIEStatus(Result.bSuccess ? TEXT("Replay Complete") : TEXT("Replay Failed"));
+                }
+                RefreshSessions();
+            });
+        });
+
+    if (Toolbar.IsValid())
+    {
+        Toolbar->SetPIEStatus(TEXT("Replaying..."));
+    }
 }
 
 void SCortexQATab::OnDeleteClicked()
