@@ -65,6 +65,17 @@ FCortexCommandResult FCortexLevelActorOps::SpawnActor(const TSharedPtr<FJsonObje
     FActorSpawnParameters SpawnParameters;
     SpawnParameters.ObjectFlags |= RF_Transactional;
 
+    FString LevelName;
+    if (Params->TryGetStringField(TEXT("level"), LevelName) && !LevelName.IsEmpty())
+    {
+        ULevel* TargetLevel = FCortexLevelUtils::ResolveSublevel(World, LevelName, Error);
+        if (!TargetLevel)
+        {
+            return Error;
+        }
+        SpawnParameters.OverrideLevel = TargetLevel;
+    }
+
     AActor* SpawnedActor = World->SpawnActor<AActor>(ActorClass, FTransform(Rotation, Location, Scale), SpawnParameters);
     if (!SpawnedActor)
     {
