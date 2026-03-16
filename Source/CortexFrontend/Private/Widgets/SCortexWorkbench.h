@@ -28,6 +28,7 @@ public:
 
 private:
 	TSharedRef<SDockTab> SpawnChatTab(const FSpawnTabArgs& Args);
+	TSharedRef<SDockTab> SpawnQATab(const FSpawnTabArgs& Args);
 	void CleanupConversionTab(FName TabId);
 	void OnSidebarToggle();
 	float GetSidebarSlotValue() const;
