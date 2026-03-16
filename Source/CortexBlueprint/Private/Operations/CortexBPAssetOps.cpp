@@ -1324,3 +1324,105 @@ FCortexCommandResult FCortexBPAssetOps::Rename(const TSharedPtr<FJsonObject>& Pa
 
 	return FCortexCommandRouter::Success(Data);
 }
+
+FCortexCommandResult FCortexBPAssetOps::Reparent(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params.IsValid())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing params object")
+		);
+	}
+
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: asset_path")
+		);
+	}
+
+	FString NewParent;
+	if (!Params->TryGetStringField(TEXT("new_parent"), NewParent) || NewParent.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: new_parent")
+		);
+	}
+
+	// Load the Blueprint to reparent
+	FString LoadError;
+	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
+	if (!Blueprint)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+	}
+
+	// Resolve the new parent class
+	UClass* NewParentClass = nullptr;
+
+	// First try as a Blueprint asset path
+	FString ParentLoadError;
+	UBlueprint* ParentBP = LoadBlueprint(NewParent, ParentLoadError);
+	if (ParentBP && ParentBP->GeneratedClass)
+	{
+		NewParentClass = ParentBP->GeneratedClass;
+	}
+	else
+	{
+		// Try as a C++ class name (full path or short name)
+		NewParentClass = FindObject<UClass>(nullptr, *NewParent);
+		if (!NewParentClass)
+		{
+			NewParentClass = FindFirstObject<UClass>(*NewParent, EFindFirstObjectOptions::NativeFirst);
+		}
+	}
+
+	if (!NewParentClass)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidParentClass,
+			FString::Printf(TEXT("Could not resolve new parent: %s (tried as Blueprint path and C++ class name)"), *NewParent)
+		);
+	}
+
+	// Check that the new parent is different
+	FString OldParentName = Blueprint->ParentClass ? Blueprint->ParentClass->GetName() : TEXT("None");
+	if (Blueprint->ParentClass == NewParentClass)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Blueprint already has parent class: %s"), *NewParentClass->GetName())
+		);
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Reparent Blueprint %s to %s"), *Blueprint->GetName(), *NewParentClass->GetName())
+	));
+
+	// Perform the reparent — direct ParentClass assignment is the correct approach,
+	// matching what the Blueprint editor's own reparent dialog uses internally.
+	Blueprint->ParentClass = NewParentClass;
+	FBlueprintEditorUtils::RefreshAllNodes(Blueprint);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	// Compile the reparented Blueprint
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	// Mark dirty for save
+	Blueprint->GetOutermost()->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetStringField(TEXT("old_parent"), OldParentName);
+	Data->SetStringField(TEXT("new_parent"), NewParentClass->GetName());
+	Data->SetBoolField(TEXT("reparented"), true);
+
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Reparented Blueprint %s: %s -> %s"),
+		*AssetPath, *OldParentName, *NewParentClass->GetName());
+
+	return FCortexCommandRouter::Success(Data);
+}
