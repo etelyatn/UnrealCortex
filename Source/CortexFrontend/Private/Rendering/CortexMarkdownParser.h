@@ -16,6 +16,7 @@ struct FCortexMarkdownBlock
 	ECortexMarkdownBlockType Type = ECortexMarkdownBlockType::Paragraph;
 	FString RawText;
 	FString Language;  // For CodeBlock only
+	FString CodeBlockTarget;  // For CodeBlock: "header", "implementation", "snippet", or empty
 	int32 HeaderLevel = 0;  // For Header only (1-3)
 	TArray<FString> ListItems;  // For list types
 };

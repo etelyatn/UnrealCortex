@@ -91,6 +91,7 @@ TArray<FCortexMarkdownBlock> CortexMarkdownParser::ParseBlocks(const FString& Ma
 	TArray<FString> CurrentLines;
 	bool bInCodeBlock = false;
 	FString CodeLanguage;
+	FString CodeBlockTarget;
 	TArray<FString> CodeLines;
 
 	auto FlushCurrentLines = [&]()
@@ -113,11 +114,13 @@ TArray<FCortexMarkdownBlock> CortexMarkdownParser::ParseBlocks(const FString& Ma
 				FCortexMarkdownBlock Block;
 				Block.Type = ECortexMarkdownBlockType::CodeBlock;
 				Block.Language = CodeLanguage;
+				Block.CodeBlockTarget = CodeBlockTarget;
 				Block.RawText = FString::Join(CodeLines, TEXT("\n"));
 				Blocks.Add(Block);
 				bInCodeBlock = false;
 				CodeLines.Empty();
 				CodeLanguage.Reset();
+				CodeBlockTarget.Reset();
 			}
 			else
 			{
@@ -131,7 +134,29 @@ TArray<FCortexMarkdownBlock> CortexMarkdownParser::ParseBlocks(const FString& Ma
 		{
 			FlushCurrentLines();
 			bInCodeBlock = true;
-			CodeLanguage = Line.Mid(3).TrimStartAndEnd();
+			FString LangTag = Line.Mid(3).TrimStartAndEnd();
+
+			// Parse optional :suffix (e.g., "cpp:header" → language="cpp", target="header")
+			int32 ColonPos = INDEX_NONE;
+			if (LangTag.FindChar(TEXT(':'), ColonPos))
+			{
+				CodeLanguage = LangTag.Left(ColonPos);
+				FString Suffix = LangTag.Mid(ColonPos + 1);
+				// Whitelist valid targets — treat unknown suffixes as untagged
+				if (Suffix == TEXT("header") || Suffix == TEXT("implementation") || Suffix == TEXT("snippet"))
+				{
+					CodeBlockTarget = Suffix;
+				}
+				else
+				{
+					CodeBlockTarget.Reset();
+				}
+			}
+			else
+			{
+				CodeLanguage = LangTag;
+				CodeBlockTarget.Reset();
+			}
 			continue;
 		}
 
@@ -151,6 +176,7 @@ TArray<FCortexMarkdownBlock> CortexMarkdownParser::ParseBlocks(const FString& Ma
 		FCortexMarkdownBlock Block;
 		Block.Type = ECortexMarkdownBlockType::CodeBlock;
 		Block.Language = CodeLanguage;
+		Block.CodeBlockTarget = CodeBlockTarget;
 		Block.RawText = FString::Join(CodeLines, TEXT("\n"));
 		Blocks.Add(Block);
 	}
