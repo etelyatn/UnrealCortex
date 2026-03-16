@@ -23,6 +23,8 @@ public class CortexQA : ModuleRules
             "AIModule",
             "GameplayTags",
             "InputCore",
+            "Slate",
+            "SlateCore",
             "CortexEditor",
         });
     }
