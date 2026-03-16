@@ -105,3 +105,24 @@ bool FCortexQANewCommandsRegisteredTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexQAMutualExclusionStateTest,
+    "Cortex.QA.RecordingCommands.MutualExclusionState",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexQAMutualExclusionStateTest::RunTest(const FString& Parameters)
+{
+    // Without PIE, start_recording fails before setting state.
+    // We verify the handler exposes session state and that SESSION_BUSY
+    // error code exists in our error codes.
+    FCortexQACommandHandler Handler;
+    TestEqual(TEXT("Handler should start in Idle state"),
+        static_cast<int32>(Handler.GetSessionState()),
+        static_cast<int32>(ECortexQASessionState::Idle));
+
+    // SESSION_BUSY error code should be defined
+    TestFalse(TEXT("SessionBusy error code should be non-empty"),
+        CortexErrorCodes::SessionBusy.IsEmpty());
+    return true;
+}
