@@ -159,3 +159,36 @@ bool FCortexPayloadDetectedAncestorsFieldTest::RunTest(const FString& Parameters
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionContextDepthDefaultTest,
+    "Cortex.Frontend.Conversion.Context.DepthDefault",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionContextDepthDefaultTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexConversionPayload Payload;
+    Payload.BlueprintPath = TEXT("/Game/Test/BP_Test");
+    Payload.BlueprintName = TEXT("BP_Test");
+    Payload.ParentClassName = TEXT("Actor");
+
+    auto Context = MakeShared<FCortexConversionContext>(Payload);
+
+    // Default depth should be CppCore
+    TestEqual(TEXT("Default depth should be CppCore"),
+        static_cast<uint8>(Context->SelectedDepth),
+        static_cast<uint8>(ECortexConversionDepth::CppCore));
+
+    // Default destination should be CreateNewClass
+    TestEqual(TEXT("Default destination should be CreateNewClass"),
+        static_cast<uint8>(Context->SelectedDestination),
+        static_cast<uint8>(ECortexConversionDestination::CreateNewClass));
+
+    // Target fields should be empty by default
+    TestTrue(TEXT("TargetClassName empty"), Context->TargetClassName.IsEmpty());
+    TestTrue(TEXT("TargetHeaderPath empty"), Context->TargetHeaderPath.IsEmpty());
+    TestTrue(TEXT("TargetSourcePath empty"), Context->TargetSourcePath.IsEmpty());
+
+    return true;
+}

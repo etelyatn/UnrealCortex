@@ -92,6 +92,11 @@ struct FCortexConversionContext
     TSharedPtr<FCortexCliSession> Session;
     ECortexConversionScope SelectedScope = ECortexConversionScope::EntireBlueprint;
     FString TargetEventOrFunction;  // For EventOrFunction scope — stores selected name
+    ECortexConversionDepth SelectedDepth = ECortexConversionDepth::CppCore;
+    ECortexConversionDestination SelectedDestination = ECortexConversionDestination::CreateNewClass;
+    FString TargetClassName;       // selected ancestor class name, empty if CreateNewClass
+    FString TargetHeaderPath;      // path to existing .h file, empty if CreateNewClass
+    FString TargetSourcePath;      // path to existing .cpp file, empty if CreateNewClass
     bool bConversionStarted = false;
     bool bIsInitialGeneration = true;
 };
