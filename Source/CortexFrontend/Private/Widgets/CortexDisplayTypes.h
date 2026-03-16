@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Conversion/CortexDiffParser.h"
 #include "Session/CortexSessionTypes.h"
 
 /**
@@ -23,4 +24,8 @@ struct FCortexChatDisplayRow
 	// Code that iterates DisplayRows must check RowType before accessing PrimaryEntry.
 	TSharedPtr<FCortexChatEntry> PrimaryEntry;
 	TArray<TSharedPtr<FCortexChatEntry>> ToolCalls;  // Empty for non-assistant turns
+
+	// Diff support (populated during row construction for diff-type code blocks)
+	bool bIsDiffBlock = false;
+	TArray<FCortexFrontendSearchReplacePair> SearchReplacePairs;
 };
