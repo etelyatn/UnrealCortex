@@ -1,5 +1,6 @@
 // Source/CortexFrontend/Private/Widgets/SCortexQATab.cpp
 #include "Widgets/SCortexQATab.h"
+#include "Widgets/SCortexQAToolbar.h"
 #include "CortexCoreModule.h"
 #include "CortexCoreDelegates.h"
 #include "CortexFrontendModule.h"
@@ -27,13 +28,15 @@ void SCortexQATab::Construct(const FArguments& InArgs)
     [
         SNew(SVerticalBox)
 
-        // Toolbar placeholder
+        // Toolbar
         + SVerticalBox::Slot()
         .AutoHeight()
         .Padding(4.f)
         [
-            SNew(STextBlock)
-            .Text(FText::FromString(TEXT("QA Tab — Record / Replay / Generate")))
+            SAssignNew(Toolbar, SCortexQAToolbar)
+            .OnRecordConfirmed(FOnQARecordConfirmed::CreateSP(this, &SCortexQATab::OnRecordConfirmed))
+            .OnStop(FOnQAStopClicked::CreateSP(this, &SCortexQATab::OnStopClicked))
+            .OnStopAndReplay(FOnQAStopAndReplayClicked::CreateSP(this, &SCortexQATab::OnStopAndReplayClicked))
         ]
 
         // Main content: session list | detail panel
