@@ -18,7 +18,7 @@ namespace
     FString SpawnPointLight(FCortexCommandRouter& Router)
     {
         TSharedPtr<FJsonObject> SpawnParams = MakeShared<FJsonObject>();
-        SpawnParams->SetStringField(TEXT("class"), TEXT("PointLight"));
+        SpawnParams->SetStringField(TEXT("class_name"), TEXT("PointLight"));
         TArray<TSharedPtr<FJsonValue>> Loc;
         Loc.Add(MakeShared<FJsonValueNumber>(10.0));
         Loc.Add(MakeShared<FJsonValueNumber>(20.0));

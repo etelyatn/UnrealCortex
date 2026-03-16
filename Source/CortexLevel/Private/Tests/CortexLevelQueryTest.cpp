@@ -18,7 +18,7 @@ namespace
     FString SpawnPointLightQuery(FCortexCommandRouter& Router, const FString& Label, const FVector& Location)
     {
         TSharedPtr<FJsonObject> SpawnParams = MakeShared<FJsonObject>();
-        SpawnParams->SetStringField(TEXT("class"), TEXT("PointLight"));
+        SpawnParams->SetStringField(TEXT("class_name"), TEXT("PointLight"));
         SpawnParams->SetStringField(TEXT("label"), Label);
 
         TArray<TSharedPtr<FJsonValue>> Loc;
