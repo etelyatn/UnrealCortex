@@ -20,7 +20,7 @@ public:
 
 private:
 	void OnConvertClicked();
-	void StartConversion();
+	void StartConversion(const FString& AssembledSystemPrompt);
 	void StatusMessage(const FString& Message);
 	void OnCreateFilesRequested();
 

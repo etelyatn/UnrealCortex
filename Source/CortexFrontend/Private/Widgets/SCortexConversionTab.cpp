@@ -3,6 +3,7 @@
 #include "CortexConversionTypes.h"
 #include "CortexCoreModule.h"
 #include "CortexFrontendModule.h"
+#include "Conversion/CortexConversionPromptAssembler.h"
 #include "Conversion/CortexConversionPrompts.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/PlatformTime.h"
@@ -103,6 +104,11 @@ void SCortexConversionTab::OnConvertClicked()
 	UE_LOG(LogCortexFrontend, Log, TEXT("  Blueprint: %s"), *Context->Payload.BlueprintName);
 	UE_LOG(LogCortexFrontend, Log, TEXT("  Path: %s"), *Context->Payload.BlueprintPath);
 	UE_LOG(LogCortexFrontend, Log, TEXT("  Scope: %s"), *ScopeStr);
+	UE_LOG(LogCortexFrontend, Log, TEXT("  Depth: %d"), static_cast<int32>(Context->SelectedDepth));
+	if (Context->SelectedDestination == ECortexConversionDestination::InjectIntoExisting)
+	{
+		UE_LOG(LogCortexFrontend, Log, TEXT("  Destination: Inject into %s"), *Context->TargetClassName);
+	}
 	if (Context->SelectedScope == ECortexConversionScope::EventOrFunction)
 	{
 		UE_LOG(LogCortexFrontend, Log, TEXT("  Target: %s"), *Context->TargetEventOrFunction);
@@ -182,11 +188,21 @@ void SCortexConversionTab::OnConvertClicked()
 						EstimatedTokens));
 				}
 
-				// === Step 3: Start CLI session ===
+				// === Step 3: Assemble layered prompt ===
+				const bool bSnippetMode = FCortexConversionPromptAssembler::ShouldUseSnippetMode(
+					Context->SelectedScope, Context->SelectedDepth);
+				Context->Document->bIsSnippetMode = bSnippetMode;
+
+				FString AssembledPrompt = FCortexConversionPromptAssembler::Assemble(*Context, Json);
+
+				UE_LOG(LogCortexFrontend, Log, TEXT("  Prompt assembled: %d chars, snippet=%s"),
+					AssembledPrompt.Len(), bSnippetMode ? TEXT("true") : TEXT("false"));
+
+				// === Step 4: Start CLI session with assembled prompt ===
 				StatusMessage(TEXT("[Step 2/4] Starting CLI session (lightweight, no MCP)..."));
 				const double SessionStart = FPlatformTime::Seconds();
 
-				StartConversion();
+				StartConversion(AssembledPrompt);
 
 				if (!Context.IsValid() || !Context->Session.IsValid())
 				{
@@ -199,13 +215,8 @@ void SCortexConversionTab::OnConvertClicked()
 				UE_LOG(LogCortexFrontend, Log, TEXT("  Session ready: %.1fms"), SessionMs);
 				StatusMessage(FString::Printf(TEXT("[Step 2/4] Session ready (%.0fms)"), SessionMs));
 
-				// === Step 4: Send prompt ===
+				// === Step 5: Send prompt ===
 				StatusMessage(TEXT("[Step 3/4] Sending conversion request to LLM..."));
-
-				const bool bSnippetMode =
-					Context->SelectedScope == ECortexConversionScope::SelectedNodes
-					|| Context->SelectedScope == ECortexConversionScope::EventOrFunction;
-				Context->Document->bIsSnippetMode = bSnippetMode;
 
 				FString InitialMessage = CortexConversionPrompts::BuildInitialUserMessage(Json);
 				Context->Session->AddUserPromptEntry(InitialMessage);
@@ -226,7 +237,7 @@ void SCortexConversionTab::OnConvertClicked()
 			}));
 }
 
-void SCortexConversionTab::StartConversion()
+void SCortexConversionTab::StartConversion(const FString& AssembledSystemPrompt)
 {
 	if (!Context.IsValid())
 	{
@@ -235,24 +246,16 @@ void SCortexConversionTab::StartConversion()
 
 	Context->bConversionStarted = true;
 
-	// Create a lightweight CLI session — no MCP servers, no project context.
-	// Conversion only needs: system prompt + BP JSON -> LLM -> C++ code.
 	FCortexSessionConfig SessionConfig;
 	SessionConfig.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
 	SessionConfig.WorkingDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
 	SessionConfig.bConversionMode = true;
 
-	// NO McpConfigPath — conversion doesn't need MCP tools.
-	// This avoids 15-20s startup for cortex_mcp, context7, etc.
+	// Use the fully assembled layered prompt (Base + Scope + Depth + Mode + Fragments)
+	SessionConfig.SystemPrompt = AssembledSystemPrompt;
 
-	// Set scope-aware system prompt
-	const bool bSnippetMode =
-		Context->SelectedScope == ECortexConversionScope::SelectedNodes
-		|| Context->SelectedScope == ECortexConversionScope::EventOrFunction;
-	// TODO(Task 12): Use FCortexConversionPromptAssembler::Assemble() here.
-	// FullClassSystemPrompt() and SnippetSystemPrompt() were removed in Task 6 refactor.
-	// Temporarily use BaseSystemPrompt() as a placeholder until Task 12 wires up the assembler.
-	SessionConfig.SystemPrompt = CortexConversionPrompts::BaseSystemPrompt();
+	const bool bSnippetMode = FCortexConversionPromptAssembler::ShouldUseSnippetMode(
+		Context->SelectedScope, Context->SelectedDepth);
 
 	UE_LOG(LogCortexFrontend, Log, TEXT("  Creating CLI session: id=%s, conversion_mode=true, snippet=%s"),
 		*SessionConfig.SessionId, bSnippetMode ? TEXT("true") : TEXT("false"));
