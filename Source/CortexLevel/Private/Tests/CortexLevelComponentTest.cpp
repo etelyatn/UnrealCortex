@@ -19,7 +19,7 @@ namespace
     FString SpawnActor(FCortexCommandRouter& Router, const FString& ClassName)
     {
         TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-        Params->SetStringField(TEXT("class"), ClassName);
+        Params->SetStringField(TEXT("class_name"), ClassName);
 
         TArray<TSharedPtr<FJsonValue>> Loc;
         Loc.Add(MakeShared<FJsonValueNumber>(0.0));
