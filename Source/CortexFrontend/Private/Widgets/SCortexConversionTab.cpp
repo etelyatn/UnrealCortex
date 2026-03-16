@@ -89,6 +89,23 @@ void SCortexConversionTab::OnConvertClicked()
 			{
 				if (bSuccess)
 				{
+					// Token budget check
+					const int32 EstimatedTokens = Json.Len() / 4;
+					if (EstimatedTokens > 80000)
+					{
+						UE_LOG(LogCortexFrontend, Error,
+							TEXT("Blueprint serialization exceeds 80k tokens (%d estimated). Select a narrower scope."),
+							EstimatedTokens);
+						// TODO: Show error in config view
+						return;
+					}
+					if (EstimatedTokens > 40000)
+					{
+						UE_LOG(LogCortexFrontend, Warning,
+							TEXT("Blueprint serialization is %d estimated tokens. Consider a narrower scope for better results."),
+							EstimatedTokens);
+					}
+
 					// Start session and switch to code canvas + chat view
 					StartConversion();
 
