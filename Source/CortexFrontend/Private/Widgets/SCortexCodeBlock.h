@@ -4,6 +4,8 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
+class SMultiLineEditableText;
+
 class SCortexCodeBlock : public SCompoundWidget
 {
 public:
@@ -14,8 +16,13 @@ public:
 
     void Construct(const FArguments& InArgs);
 
+    /** Update displayed code dynamically (re-applies syntax highlighting). */
+    void SetCode(const FString& NewCode);
+
 private:
     FReply OnCopyClicked();
 
     FString CodeContent;
+
+    TSharedPtr<SMultiLineEditableText> CodeTextWidget;
 };

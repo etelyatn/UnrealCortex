@@ -224,7 +224,7 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
                         .FillWidth(1.0f)
                         .Padding(8.0f, 4.0f, 0.0f, 4.0f)
                         [
-                            SNew(SMultiLineEditableText)
+                            SAssignNew(CodeTextWidget, SMultiLineEditableText)
                             .Text(FText::FromString(CodeContent))
                             .IsReadOnly(true)
                             .AutoWrapText(false)
@@ -248,6 +248,17 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
             ]
         ]
     ];
+}
+
+void SCortexCodeBlock::SetCode(const FString& NewCode)
+{
+    CodeContent = NewCode;
+
+    if (CodeTextWidget.IsValid())
+    {
+        // SetText triggers the marshaller to re-tokenize and re-apply syntax highlighting.
+        CodeTextWidget->SetText(FText::FromString(CodeContent));
+    }
 }
 
 FReply SCortexCodeBlock::OnCopyClicked()
