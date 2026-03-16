@@ -98,9 +98,11 @@ FCortexCommandResult FCortexEditorViewportOps::GetViewportInfo()
 	case VMI_BrushWireframe:
 		ViewModeStr = TEXT("wireframe");
 		break;
+#if !UE_VERSION_OLDER_THAN(5, 6, 0)
 	case VMI_Lit_Wireframe:
 		ViewModeStr = TEXT("lit_wireframe");
 		break;
+#endif
 	default:
 		ViewModeStr = FString::Printf(TEXT("other_%d"), static_cast<int32>(CurrentViewMode));
 		break;
@@ -299,10 +301,12 @@ FCortexCommandResult FCortexEditorViewportOps::SetViewportMode(const TSharedPtr<
 	{
 		ViewMode = VMI_BrushWireframe;
 	}
+#if !UE_VERSION_OLDER_THAN(5, 6, 0)
 	else if (Mode == TEXT("lit_wireframe"))
 	{
 		ViewMode = VMI_Lit_Wireframe;
 	}
+#endif
 	else
 	{
 		return FCortexCommandRouter::Error(
