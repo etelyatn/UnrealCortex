@@ -249,9 +249,10 @@ void SCortexConversionTab::StartConversion()
 	const bool bSnippetMode =
 		Context->SelectedScope == ECortexConversionScope::SelectedNodes
 		|| Context->SelectedScope == ECortexConversionScope::EventOrFunction;
-	SessionConfig.SystemPrompt = bSnippetMode
-		? CortexConversionPrompts::SnippetSystemPrompt()
-		: CortexConversionPrompts::FullClassSystemPrompt();
+	// TODO(Task 12): Use FCortexConversionPromptAssembler::Assemble() here.
+	// FullClassSystemPrompt() and SnippetSystemPrompt() were removed in Task 6 refactor.
+	// Temporarily use BaseSystemPrompt() as a placeholder until Task 12 wires up the assembler.
+	SessionConfig.SystemPrompt = CortexConversionPrompts::BaseSystemPrompt();
 
 	UE_LOG(LogCortexFrontend, Log, TEXT("  Creating CLI session: id=%s, conversion_mode=true, snippet=%s"),
 		*SessionConfig.SessionId, bSnippetMode ? TEXT("true") : TEXT("false"));
