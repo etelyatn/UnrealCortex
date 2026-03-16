@@ -34,13 +34,14 @@ FCortexQARecorder::~FCortexQARecorder()
         }
         InputRecorder->StopRecording();
 
-        FEditorDelegates::EndPIE.Remove(EndPIEHandle);
-
         if (UWorld* World = PIEWorldWeak.Get())
         {
             World->GetTimerManager().ClearTimer(PositionSampleTimer);
         }
     }
+
+    // Always unbind PIE delegate — safe no-op if handle is already invalid
+    FEditorDelegates::EndPIE.Remove(EndPIEHandle);
 }
 
 bool FCortexQARecorder::StartRecording(UWorld* PIEWorld, const FString& SessionName)

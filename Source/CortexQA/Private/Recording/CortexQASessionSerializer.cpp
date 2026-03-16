@@ -274,12 +274,28 @@ bool FCortexQASessionSerializer::UpdateLastRun(
     }
     Session.LastRun = LastRun;
 
-    // Overwrite in-place: save to same directory with same name
-    // To avoid suffix logic, delete original first
-    IFileManager::Get().Delete(*FilePath);
+    // Write to a temp file first — ensures original is not lost if write fails
     FString OutPath;
     const FString Directory = FPaths::GetPath(FilePath);
-    return SaveSession(Session, Directory, OutPath);
+    if (!SaveSession(Session, Directory, OutPath))
+    {
+        return false;
+    }
+
+    // SaveSession wrote to a potentially new name (suffix collision avoidance).
+    // Move that file to the original path (overwriting it atomically).
+    // IFileManager::Move overwrites destination by default.
+    if (OutPath != FilePath)
+    {
+        if (!IFileManager::Get().Move(*FilePath, *OutPath))
+        {
+            // Clean up the orphaned save
+            IFileManager::Get().Delete(*OutPath);
+            return false;
+        }
+    }
+
+    return true;
 }
 
 FString FCortexQASessionSerializer::GetDefaultRecordingsDir()
