@@ -376,9 +376,6 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 							WorkingText = Doc->SnippetCode;
 						}
 
-						// Save snapshot before first apply
-						Doc->SaveSnapshot();
-
 						// Canonicalize (defensive)
 						WorkingText.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
 
@@ -422,6 +419,8 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 
 						if (bAnyApplied)
 						{
+							// Save snapshot only when we actually apply something
+							Doc->SaveSnapshot();
 							if (Target == TEXT("header"))
 							{
 								Doc->UpdateHeader(WorkingText);
