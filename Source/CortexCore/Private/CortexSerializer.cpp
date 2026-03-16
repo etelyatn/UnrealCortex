@@ -5,7 +5,11 @@
 #include "UObject/TextProperty.h"
 #include "UObject/EnumProperty.h"
 #include "GameplayTagContainer.h"
+#if UE_VERSION_OLDER_THAN(5, 5, 0)
+#include "InstancedStruct.h"
+#else
 #include "StructUtils/InstancedStruct.h"
+#endif
 #include "UObject/SoftObjectPath.h"
 #include "Dom/JsonValue.h"
 #include "Misc/PackageName.h"

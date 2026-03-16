@@ -11,8 +11,24 @@
 #include "Dom/JsonValue.h"
 #include "GameplayTagContainer.h"
 #include "GameplayTagsManager.h"
+#if UE_VERSION_OLDER_THAN(5, 5, 0)
+#include "InstancedStruct.h"
+#else
 #include "StructUtils/InstancedStruct.h"
+#endif
 #include "UObject/SoftObjectPath.h"
+
+namespace
+{
+	void AddDataTableRowCompat(UDataTable* DataTable, FName RowName, uint8* RowMemory, const UScriptStruct* RowStruct)
+	{
+#if UE_VERSION_OLDER_THAN(5, 6, 0)
+		DataTable->AddRow(RowName, *reinterpret_cast<const FTableRowBase*>(RowMemory));
+#else
+		DataTable->AddRow(RowName, RowMemory, RowStruct);
+#endif
+	}
+}
 #include "Internationalization/Text.h"
 #include "Internationalization/StringTable.h"
 #include "Internationalization/StringTableCore.h"
@@ -548,7 +564,7 @@ FCortexCommandResult FCortexDataTableOps::AddDatatableRow(const TSharedPtr<FJson
 	));
 	DataTable->Modify();
 
-	DataTable->AddRow(RowFName, RowMemory, RowStruct);
+	AddDataTableRowCompat(DataTable, RowFName, RowMemory, RowStruct);
 
 	RowStruct->DestroyStruct(RowMemory);
 	FMemory::Free(RowMemory);
@@ -1074,7 +1090,7 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 				Warnings.Add(FString::Printf(TEXT("Row %d (%s): %s"), Index, *EntryRowName, *W));
 			}
 
-			DataTable->AddRow(EntryRowFName, RowMemory, RowStruct);
+			AddDataTableRowCompat(DataTable, EntryRowFName, RowMemory, RowStruct);
 
 			RowStruct->DestroyStruct(RowMemory);
 			FMemory::Free(RowMemory);
