@@ -1,6 +1,7 @@
 #include "CortexBlueprintModule.h"
 #include "CortexBPToolbarExtension.h"
 #include "CortexCoreModule.h"
+#include "Operations/CortexBPSerializationOps.h"
 #include "ICortexCommandRegistry.h"
 #include "CortexBPCommandHandler.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -49,11 +50,22 @@ void FCortexBlueprintModule::StartupModule()
 
 	FCortexBPToolbarExtension::Register();
 
+	// Bind serialization handler for BP-to-C++ conversion
+	FCortexCoreModule& CoreModule = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	CoreModule.SetSerializationHandler(
+		FOnCortexSerializationRequested::CreateStatic(&FCortexBPSerializationOps::Serialize));
+
 	UE_LOG(LogCortexBlueprint, Log, TEXT("CortexBlueprint registered with CortexCore"));
 }
 
 void FCortexBlueprintModule::ShutdownModule()
 {
+	if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexCore")))
+	{
+		FCortexCoreModule& CoreModule = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+		CoreModule.ClearSerializationHandler();
+	}
+
 	FCortexBPToolbarExtension::Unregister();
 
 	if (GEditor != nullptr)
