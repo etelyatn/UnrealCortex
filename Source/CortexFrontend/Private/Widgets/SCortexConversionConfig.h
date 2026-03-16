@@ -35,6 +35,7 @@ private:
 	bool IsDestinationSelected(ECortexConversionDestination Dest) const;
 	void OnTargetAncestorSelected(int32 AncestorIndex);
 	TSharedRef<SWidget> BuildDestinationSection(const FCortexConversionPayload& Payload);
+	TSharedRef<SWidget> BuildWarningBars(const FCortexConversionPayload& Payload);
 
 	TSharedPtr<FCortexConversionContext> Context;
 	FOnConvertClicked OnConvert;

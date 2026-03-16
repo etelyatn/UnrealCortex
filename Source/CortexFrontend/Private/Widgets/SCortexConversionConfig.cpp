@@ -298,6 +298,14 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 				BuildDestinationSection(Payload)
 			]
 
+			// Warning bars (conditional)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 8)
+			[
+				BuildWarningBars(Payload)
+			]
+
 			// Events and Functions list
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -633,4 +641,47 @@ FReply SCortexConversionConfig::OnConvertButtonClicked()
 {
 	OnConvert.ExecuteIfBound();
 	return FReply::Handled();
+}
+
+TSharedRef<SWidget> SCortexConversionConfig::BuildWarningBars(const FCortexConversionPayload& Payload)
+{
+	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+
+	auto AddWarning = [&Box](const FText& Message, FLinearColor Color = FLinearColor(0.9f, 0.7f, 0.2f))
+	{
+		Box->AddSlot()
+		.AutoHeight()
+		.Padding(0, 2)
+		[
+			SNew(SBorder)
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderBackgroundColor(FLinearColor(Color.R * 0.3f, Color.G * 0.3f, Color.B * 0.3f, 1.0f))
+			.Padding(8.0f)
+			[
+				SNew(STextBlock)
+				.Text(Message)
+				.ColorAndOpacity(FSlateColor(Color))
+				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+				.AutoWrapText(true)
+			]
+		];
+	};
+
+	// Data-only Blueprint (no events, no functions — only property values)
+	if (Payload.EventNames.Num() == 0 && Payload.FunctionNames.Num() == 0
+		&& Payload.GraphNames.Num() <= 1) // Only ConstructionScript or similar
+	{
+		AddWarning(NSLOCTEXT("CortexConversion", "WarnDataOnly",
+			"This Blueprint has no logic. Consider using a UDataAsset or struct instead of class conversion."));
+	}
+
+	// AnimBP detection via parent class name
+	if (Payload.ParentClassName.Contains(TEXT("AnimInstance")))
+	{
+		AddWarning(NSLOCTEXT("CortexConversion", "WarnAnimBP",
+			"AnimBP detected. Requires specialized conversion patterns. Generated code will include AnimInstance-specific guidance."),
+			FLinearColor(0.4f, 0.7f, 1.0f)); // Blue info color
+	}
+
+	return Box;
 }
