@@ -1,5 +1,6 @@
 // Source/CortexFrontend/Private/Widgets/SCortexQATab.cpp
 #include "Widgets/SCortexQATab.h"
+#include "Widgets/SCortexQADetailPanel.h"
 #include "Widgets/SCortexQASessionList.h"
 #include "Widgets/SCortexQAToolbar.h"
 #include "CortexCoreModule.h"
@@ -62,8 +63,9 @@ void SCortexQATab::Construct(const FArguments& InArgs)
             + SSplitter::Slot()
             .Value(0.65f)
             [
-                SNew(STextBlock)
-                .Text(FText::FromString(TEXT("[Detail Panel Placeholder]")))
+                SAssignNew(DetailPanel, SCortexQADetailPanel)
+                .OnReplay(FOnQAReplayClicked::CreateSP(this, &SCortexQATab::OnReplayClicked))
+                .OnDelete(FOnQADeleteClicked::CreateSP(this, &SCortexQATab::OnDeleteClicked))
             ]
         ]
 
