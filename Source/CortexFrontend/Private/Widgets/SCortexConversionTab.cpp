@@ -254,11 +254,8 @@ void SCortexConversionTab::StartConversion(const FString& AssembledSystemPrompt)
 	// Use the fully assembled layered prompt (Base + Scope + Depth + Mode + Fragments)
 	SessionConfig.SystemPrompt = AssembledSystemPrompt;
 
-	const bool bSnippetMode = FCortexConversionPromptAssembler::ShouldUseSnippetMode(
-		Context->SelectedScope, Context->SelectedDepth);
-
-	UE_LOG(LogCortexFrontend, Log, TEXT("  Creating CLI session: id=%s, conversion_mode=true, snippet=%s"),
-		*SessionConfig.SessionId, bSnippetMode ? TEXT("true") : TEXT("false"));
+	UE_LOG(LogCortexFrontend, Log, TEXT("  Creating CLI session: id=%s, conversion_mode=true"),
+		*SessionConfig.SessionId);
 
 	Context->Session = MakeShared<FCortexCliSession>(SessionConfig);
 

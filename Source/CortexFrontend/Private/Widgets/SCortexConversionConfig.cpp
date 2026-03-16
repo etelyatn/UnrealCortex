@@ -440,7 +440,9 @@ void SCortexConversionConfig::OnDepthChanged(ECortexConversionDepth NewDepth)
 
 ECortexConversionDepth SCortexConversionConfig::DefaultDepthForScope(ECortexConversionScope Scope) const
 {
-	// All scopes default to CppCore per spec
+	// All scopes use CppCore as default per spec. Scope parameter reserved for future
+	// differentiation (e.g., SelectedNodes could default to PerformanceShell).
+	(void)Scope;
 	return ECortexConversionDepth::CppCore;
 }
 
@@ -463,15 +465,19 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildDestinationSection(const FCort
 		.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
 	];
 
-	// Show detected ancestor info
+	// Show detected ancestor info — single name when exactly one, count summary when multiple
 	const FProjectClassInfo& FirstAncestor = Payload.DetectedProjectAncestors[0];
+	const FString InfoText = (Payload.DetectedProjectAncestors.Num() == 1)
+		? FString::Printf(TEXT("Detected project class: %s (%s)"),
+			*FirstAncestor.ClassName, *FirstAncestor.ModuleName)
+		: FString::Printf(TEXT("Detected %d project classes — select inject target:"),
+			Payload.DetectedProjectAncestors.Num());
 	Box->AddSlot()
 	.AutoHeight()
 	.Padding(0, 0, 0, 8)
 	[
 		SNew(STextBlock)
-		.Text(FText::FromString(FString::Printf(TEXT("Detected project class: %s (%s)"),
-			*FirstAncestor.ClassName, *FirstAncestor.ModuleName)))
+		.Text(FText::FromString(InfoText))
 		.ColorAndOpacity(FSlateColor(FLinearColor(0.3f, 0.8f, 0.3f)))
 	];
 
