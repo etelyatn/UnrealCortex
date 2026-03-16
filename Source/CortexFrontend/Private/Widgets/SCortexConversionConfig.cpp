@@ -152,6 +152,142 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 				]
 			]
 
+			// Conversion Depth section
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 16)
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0, 0, 0, 8)
+				[
+					SNew(STextBlock)
+					.Text(NSLOCTEXT("CortexConversion", "DepthLabel", "Conversion Depth"))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+				]
+
+				// Performance Shell
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0, 2)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SCheckBox)
+						.Style(FAppStyle::Get(), "RadioButton")
+						.IsChecked_Lambda([this]()
+						{
+							return IsDepthSelected(ECortexConversionDepth::PerformanceShell)
+								? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+						})
+						.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+						{
+							if (State == ECheckBoxState::Checked)
+							{
+								OnDepthChanged(ECortexConversionDepth::PerformanceShell);
+							}
+						})
+						[
+							SNew(STextBlock)
+							.Text(NSLOCTEXT("CortexConversion", "DepthPerfShell", "Performance Shell"))
+						]
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(20, 0, 0, 4)
+				[
+					SNew(STextBlock)
+					.Text(NSLOCTEXT("CortexConversion", "DepthPerfShellDesc",
+						"Hot paths only — Tick, loops, heavy math"))
+					.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+				]
+
+				// C++ Core (default)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0, 2)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SCheckBox)
+						.Style(FAppStyle::Get(), "RadioButton")
+						.IsChecked_Lambda([this]()
+						{
+							return IsDepthSelected(ECortexConversionDepth::CppCore)
+								? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+						})
+						.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+						{
+							if (State == ECheckBoxState::Checked)
+							{
+								OnDepthChanged(ECortexConversionDepth::CppCore);
+							}
+						})
+						[
+							SNew(STextBlock)
+							.Text(NSLOCTEXT("CortexConversion", "DepthCppCore", "C++ Core (recommended)"))
+						]
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(20, 0, 0, 4)
+				[
+					SNew(STextBlock)
+					.Text(NSLOCTEXT("CortexConversion", "DepthCppCoreDesc",
+						"All logic — thin Blueprint shell for cosmetics/tuning"))
+					.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+				]
+
+				// Full Extraction
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0, 2)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SCheckBox)
+						.Style(FAppStyle::Get(), "RadioButton")
+						.IsChecked_Lambda([this]()
+						{
+							return IsDepthSelected(ECortexConversionDepth::FullExtraction)
+								? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+						})
+						.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+						{
+							if (State == ECheckBoxState::Checked)
+							{
+								OnDepthChanged(ECortexConversionDepth::FullExtraction);
+							}
+						})
+						[
+							SNew(STextBlock)
+							.Text(NSLOCTEXT("CortexConversion", "DepthFullExtract", "Full Extraction"))
+						]
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(20, 0, 0, 4)
+				[
+					SNew(STextBlock)
+					.Text(NSLOCTEXT("CortexConversion", "DepthFullExtractDesc",
+						"Everything — self-contained C++ class, no BP hooks"))
+					.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+				]
+			]
+
 			// Events and Functions list
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -267,7 +403,27 @@ void SCortexConversionConfig::OnScopeChanged(ECortexConversionScope NewScope)
 	{
 		Context->SelectedScope = NewScope;
 		Context->TargetEventOrFunction.Empty();
+		Context->SelectedDepth = DefaultDepthForScope(NewScope);
 	}
+}
+
+bool SCortexConversionConfig::IsDepthSelected(ECortexConversionDepth Depth) const
+{
+	return Context.IsValid() && Context->SelectedDepth == Depth;
+}
+
+void SCortexConversionConfig::OnDepthChanged(ECortexConversionDepth NewDepth)
+{
+	if (Context.IsValid())
+	{
+		Context->SelectedDepth = NewDepth;
+	}
+}
+
+ECortexConversionDepth SCortexConversionConfig::DefaultDepthForScope(ECortexConversionScope Scope) const
+{
+	// All scopes default to CppCore per spec
+	return ECortexConversionDepth::CppCore;
 }
 
 void SCortexConversionConfig::OnEventOrFunctionSelected(const FString& Name)

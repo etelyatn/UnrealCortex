@@ -27,6 +27,10 @@ private:
 
 	TSharedRef<SWidget> BuildEventFunctionList(const FCortexConversionPayload& Payload);
 
+	void OnDepthChanged(ECortexConversionDepth NewDepth);
+	bool IsDepthSelected(ECortexConversionDepth Depth) const;
+	ECortexConversionDepth DefaultDepthForScope(ECortexConversionScope Scope) const;
+
 	TSharedPtr<FCortexConversionContext> Context;
 	FOnConvertClicked OnConvert;
 };
