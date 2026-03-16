@@ -33,6 +33,10 @@ struct CORTEXCORE_API FCortexSerializationRequest
 	ECortexConversionScope Scope;
 	FString TargetGraphName;          // for CurrentGraph / EventOrFunction scope
 	TArray<FString> SelectedNodeIds;  // for SelectedNodes scope
+
+	// When true, emit compact JSON: sequential int IDs, short type names, no x/y/comment.
+	// Reduces token usage by ~30-40% for LLM conversion requests.
+	bool bConversionMode = false;
 };
 
 // Result callback type — returns serialized JSON

@@ -46,20 +46,41 @@ void FCortexBPSerializationOps::Serialize(const FCortexSerializationRequest& Req
 	}
 
 	FString Json;
-	switch (Request.Scope)
+	if (Request.bConversionMode)
 	{
-	case ECortexConversionScope::EntireBlueprint:
-		Json = SerializeEntireBlueprint(Blueprint);
-		break;
-	case ECortexConversionScope::SelectedNodes:
-		Json = SerializeSelectedNodes(Blueprint, Request.SelectedNodeIds);
-		break;
-	case ECortexConversionScope::CurrentGraph:
-		Json = SerializeGraph(Blueprint, Request.TargetGraphName);
-		break;
-	case ECortexConversionScope::EventOrFunction:
-		Json = SerializeEventOrFunction(Blueprint, Request.TargetGraphName);
-		break;
+		switch (Request.Scope)
+		{
+		case ECortexConversionScope::EntireBlueprint:
+			Json = SerializeEntireBlueprintCompact(Blueprint);
+			break;
+		case ECortexConversionScope::SelectedNodes:
+			Json = SerializeSelectedNodesCompact(Blueprint, Request.SelectedNodeIds);
+			break;
+		case ECortexConversionScope::CurrentGraph:
+			Json = SerializeGraphCompact(Blueprint, Request.TargetGraphName);
+			break;
+		case ECortexConversionScope::EventOrFunction:
+			Json = SerializeEventOrFunctionCompact(Blueprint, Request.TargetGraphName);
+			break;
+		}
+	}
+	else
+	{
+		switch (Request.Scope)
+		{
+		case ECortexConversionScope::EntireBlueprint:
+			Json = SerializeEntireBlueprint(Blueprint);
+			break;
+		case ECortexConversionScope::SelectedNodes:
+			Json = SerializeSelectedNodes(Blueprint, Request.SelectedNodeIds);
+			break;
+		case ECortexConversionScope::CurrentGraph:
+			Json = SerializeGraph(Blueprint, Request.TargetGraphName);
+			break;
+		case ECortexConversionScope::EventOrFunction:
+			Json = SerializeEventOrFunction(Blueprint, Request.TargetGraphName);
+			break;
+		}
 	}
 
 	Callback.Execute(true, Json);
@@ -431,6 +452,332 @@ FString FCortexBPSerializationOps::SerializeEventOrFunction(UBlueprint* Blueprin
 			for (UEdGraphNode* ReachableNode : ReachableNodes)
 			{
 				NodesJson.Add(MakeShared<FJsonValueObject>(NodeToJson(ReachableNode)));
+			}
+			Root->SetField(TEXT("nodes"), MakeShared<FJsonValueArray>(NodesJson));
+			Root->SetNumberField(TEXT("node_count"), NodesJson.Num());
+
+			FString Output;
+			TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output, 0);
+			FJsonSerializer::Serialize(Root, Writer);
+			return Output;
+		}
+	}
+
+	return TEXT("{\"error\":\"Event or function not found\"}");
+}
+
+// ── Compact serialization (bConversionMode=true) ─────────────────────────────
+// Strips x/y positions, comments, full type paths; uses sequential int node IDs.
+
+TSharedRef<FJsonObject> FCortexBPSerializationOps::NodeToJsonCompact(
+	UEdGraphNode* Node,
+	const TMap<UEdGraphNode*, int32>& IndexMap)
+{
+	TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
+
+	// Sequential integer ID instead of 36-char UUID
+	if (const int32* Idx = IndexMap.Find(Node))
+	{
+		Obj->SetNumberField(TEXT("id"), *Idx);
+	}
+
+	Obj->SetStringField(TEXT("class"), Node->GetClass()->GetName());
+	Obj->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::ListView).ToString());
+	// x, y, comment intentionally omitted
+
+	TArray<TSharedPtr<FJsonValue>> PinsJson;
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin->bHidden) continue;
+
+		TSharedRef<FJsonObject> PinObj = MakeShared<FJsonObject>();
+		PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+		PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("input") : TEXT("output"));
+		PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+
+		if (!Pin->PinType.PinSubCategory.IsNone())
+		{
+			PinObj->SetStringField(TEXT("sub_type"), Pin->PinType.PinSubCategory.ToString());
+		}
+
+		// Short class name only — full path (/Script/Engine.Actor) not needed for C++ translation
+		if (Pin->PinType.PinSubCategoryObject.IsValid())
+		{
+			PinObj->SetStringField(TEXT("type_object"), Pin->PinType.PinSubCategoryObject->GetName());
+		}
+
+		if (Pin->PinType.ContainerType != EPinContainerType::None)
+		{
+			PinObj->SetStringField(TEXT("container"),
+				Pin->PinType.ContainerType == EPinContainerType::Array ? TEXT("array") :
+				Pin->PinType.ContainerType == EPinContainerType::Set ? TEXT("set") : TEXT("map"));
+		}
+		if (Pin->PinType.bIsReference)
+		{
+			PinObj->SetBoolField(TEXT("is_reference"), true);
+		}
+		if (Pin->PinType.bIsConst)
+		{
+			PinObj->SetBoolField(TEXT("is_const"), true);
+		}
+		if (!Pin->DefaultValue.IsEmpty())
+		{
+			PinObj->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+		}
+
+		// Connections: use integer indices instead of UUIDs
+		if (Pin->LinkedTo.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> LinksJson;
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				UEdGraphNode* LinkedNode = LinkedPin->GetOwningNode();
+				if (const int32* LinkedIdx = IndexMap.Find(LinkedNode))
+				{
+					TSharedRef<FJsonObject> LinkObj = MakeShared<FJsonObject>();
+					LinkObj->SetNumberField(TEXT("node_id"), *LinkedIdx);
+					LinkObj->SetStringField(TEXT("pin"), LinkedPin->PinName.ToString());
+					LinksJson.Add(MakeShared<FJsonValueObject>(LinkObj));
+				}
+			}
+			if (LinksJson.Num() > 0)
+			{
+				PinObj->SetField(TEXT("connected_to"), MakeShared<FJsonValueArray>(LinksJson));
+			}
+		}
+
+		PinsJson.Add(MakeShared<FJsonValueObject>(PinObj));
+	}
+	Obj->SetField(TEXT("pins"), MakeShared<FJsonValueArray>(PinsJson));
+
+	return Obj;
+}
+
+TSharedRef<FJsonObject> FCortexBPSerializationOps::GraphToJsonCompact(UEdGraph* Graph)
+{
+	// Build index map: stable ordering for reproducible integer IDs
+	TMap<UEdGraphNode*, int32> IndexMap;
+	IndexMap.Reserve(Graph->Nodes.Num());
+	for (int32 i = 0; i < Graph->Nodes.Num(); ++i)
+	{
+		IndexMap.Add(Graph->Nodes[i], i);
+	}
+
+	TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
+	Obj->SetStringField(TEXT("name"), Graph->GetFName().ToString());
+
+	TArray<TSharedPtr<FJsonValue>> NodesJson;
+	NodesJson.Reserve(Graph->Nodes.Num());
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		NodesJson.Add(MakeShared<FJsonValueObject>(NodeToJsonCompact(Node, IndexMap)));
+	}
+	Obj->SetField(TEXT("nodes"), MakeShared<FJsonValueArray>(NodesJson));
+
+	return Obj;
+}
+
+FString FCortexBPSerializationOps::SerializeEntireBlueprintCompact(UBlueprint* Blueprint)
+{
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("blueprint_name"), Blueprint->GetName());
+	Root->SetStringField(TEXT("parent_class"),
+		Blueprint->ParentClass ? Blueprint->ParentClass->GetName() : TEXT("None"));
+
+	Root->SetField(TEXT("variables"), MakeShared<FJsonValueArray>(VariablesToJson(Blueprint)));
+	Root->SetField(TEXT("components"), MakeShared<FJsonValueArray>(ComponentsToJson(Blueprint)));
+
+	TArray<TSharedPtr<FJsonValue>> GraphsJson;
+	for (UEdGraph* Graph : Blueprint->UbergraphPages)
+	{
+		GraphsJson.Add(MakeShared<FJsonValueObject>(GraphToJsonCompact(Graph)));
+	}
+	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+	{
+		GraphsJson.Add(MakeShared<FJsonValueObject>(GraphToJsonCompact(Graph)));
+	}
+	Root->SetField(TEXT("graphs"), MakeShared<FJsonValueArray>(GraphsJson));
+
+	FString Output;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output, 0);
+	FJsonSerializer::Serialize(Root, Writer);
+	return Output;
+}
+
+FString FCortexBPSerializationOps::SerializeSelectedNodesCompact(UBlueprint* Blueprint, const TArray<FString>& NodeIds)
+{
+	TSet<FString> NodeIdSet(NodeIds);
+
+	TArray<UEdGraphNode*> MatchedNodes;
+	TArray<UEdGraph*> AllGraphs;
+	Blueprint->GetAllGraphs(AllGraphs);
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (NodeIdSet.Contains(Node->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens)))
+			{
+				MatchedNodes.Add(Node);
+			}
+		}
+	}
+
+	TMap<UEdGraphNode*, int32> IndexMap;
+	IndexMap.Reserve(MatchedNodes.Num());
+	for (int32 i = 0; i < MatchedNodes.Num(); ++i)
+	{
+		IndexMap.Add(MatchedNodes[i], i);
+	}
+
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("blueprint_name"), Blueprint->GetName());
+	Root->SetStringField(TEXT("scope"), TEXT("selected_nodes"));
+
+	TArray<TSharedPtr<FJsonValue>> NodesJson;
+	NodesJson.Reserve(MatchedNodes.Num());
+	for (UEdGraphNode* Node : MatchedNodes)
+	{
+		NodesJson.Add(MakeShared<FJsonValueObject>(NodeToJsonCompact(Node, IndexMap)));
+	}
+	Root->SetField(TEXT("nodes"), MakeShared<FJsonValueArray>(NodesJson));
+
+	FString Output;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output, 0);
+	FJsonSerializer::Serialize(Root, Writer);
+	return Output;
+}
+
+FString FCortexBPSerializationOps::SerializeGraphCompact(UBlueprint* Blueprint, const FString& GraphName)
+{
+	TArray<UEdGraph*> AllGraphs;
+	Blueprint->GetAllGraphs(AllGraphs);
+
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		if (Graph->GetFName().ToString() == GraphName)
+		{
+			TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+			Root->SetStringField(TEXT("blueprint_name"), Blueprint->GetName());
+			Root->SetStringField(TEXT("parent_class"),
+				Blueprint->ParentClass ? Blueprint->ParentClass->GetName() : TEXT("None"));
+			Root->SetStringField(TEXT("scope"), TEXT("graph"));
+
+			Root->SetField(TEXT("variables"), MakeShared<FJsonValueArray>(VariablesToJson(Blueprint)));
+			Root->SetField(TEXT("components"), MakeShared<FJsonValueArray>(ComponentsToJson(Blueprint)));
+
+			TArray<TSharedPtr<FJsonValue>> GraphsJson;
+			GraphsJson.Add(MakeShared<FJsonValueObject>(GraphToJsonCompact(Graph)));
+			Root->SetField(TEXT("graphs"), MakeShared<FJsonValueArray>(GraphsJson));
+
+			FString Output;
+			TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output, 0);
+			FJsonSerializer::Serialize(Root, Writer);
+			return Output;
+		}
+	}
+
+	return TEXT("{\"error\":\"Graph not found\"}");
+}
+
+FString FCortexBPSerializationOps::SerializeEventOrFunctionCompact(UBlueprint* Blueprint, const FString& TargetName)
+{
+	// Function graphs
+	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+	{
+		if (Graph->GetFName().ToString() == TargetName)
+		{
+			TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+			Root->SetStringField(TEXT("blueprint_name"), Blueprint->GetName());
+			Root->SetStringField(TEXT("scope"), TEXT("function"));
+			Root->SetStringField(TEXT("target"), TargetName);
+
+			TArray<TSharedPtr<FJsonValue>> GraphsJson;
+			GraphsJson.Add(MakeShared<FJsonValueObject>(GraphToJsonCompact(Graph)));
+			Root->SetField(TEXT("graphs"), MakeShared<FJsonValueArray>(GraphsJson));
+
+			FString Output;
+			TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output, 0);
+			FJsonSerializer::Serialize(Root, Writer);
+			return Output;
+		}
+	}
+
+	// Event traversal — same two-pass algorithm as verbose variant
+	for (UEdGraph* Graph : Blueprint->UbergraphPages)
+	{
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
+			if (!EventNode) continue;
+
+			FString EventTitle = EventNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
+			if (EventTitle != TargetName) continue;
+
+			TSet<UEdGraphNode*> ReachableSet;
+			TArray<UEdGraphNode*> WorkQueue;
+			WorkQueue.Add(EventNode);
+			ReachableSet.Add(EventNode);
+
+			// Pass 1: exec-flow traversal
+			while (WorkQueue.Num() > 0)
+			{
+				UEdGraphNode* Current = WorkQueue.Pop();
+				for (UEdGraphPin* Pin : Current->Pins)
+				{
+					if (Pin->Direction != EGPD_Output) continue;
+					if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec) continue;
+					for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+					{
+						UEdGraphNode* LinkedNode = LinkedPin->GetOwningNode();
+						if (!ReachableSet.Contains(LinkedNode))
+						{
+							ReachableSet.Add(LinkedNode);
+							WorkQueue.Add(LinkedNode);
+						}
+					}
+				}
+			}
+
+			// Pass 2: follow data inputs backward for pure/helper nodes
+			TArray<UEdGraphNode*> DataQueue(ReachableSet.Array());
+			while (DataQueue.Num() > 0)
+			{
+				UEdGraphNode* Current = DataQueue.Pop();
+				for (UEdGraphPin* Pin : Current->Pins)
+				{
+					if (Pin->Direction != EGPD_Input) continue;
+					if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+					for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+					{
+						UEdGraphNode* LinkedNode = LinkedPin->GetOwningNode();
+						if (!ReachableSet.Contains(LinkedNode))
+						{
+							ReachableSet.Add(LinkedNode);
+							DataQueue.Add(LinkedNode);
+						}
+					}
+				}
+			}
+
+			// Build stable-ordered array and index map
+			TArray<UEdGraphNode*> ReachableNodes = ReachableSet.Array();
+			TMap<UEdGraphNode*, int32> IndexMap;
+			IndexMap.Reserve(ReachableNodes.Num());
+			for (int32 i = 0; i < ReachableNodes.Num(); ++i)
+			{
+				IndexMap.Add(ReachableNodes[i], i);
+			}
+
+			TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+			Root->SetStringField(TEXT("blueprint_name"), Blueprint->GetName());
+			Root->SetStringField(TEXT("scope"), TEXT("event"));
+			Root->SetStringField(TEXT("target"), TargetName);
+
+			TArray<TSharedPtr<FJsonValue>> NodesJson;
+			NodesJson.Reserve(ReachableNodes.Num());
+			for (UEdGraphNode* ReachableNode : ReachableNodes)
+			{
+				NodesJson.Add(MakeShared<FJsonValueObject>(NodeToJsonCompact(ReachableNode, IndexMap)));
 			}
 			Root->SetField(TEXT("nodes"), MakeShared<FJsonValueArray>(NodesJson));
 			Root->SetNumberField(TEXT("node_count"), NodesJson.Num());

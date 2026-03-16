@@ -111,6 +111,7 @@ void SCortexConversionTab::OnConvertClicked()
 	FCortexSerializationRequest Request;
 	Request.BlueprintPath = Context->Payload.BlueprintPath;
 	Request.Scope = Context->SelectedScope;
+	Request.bConversionMode = true;
 
 	if (Context->SelectedScope == ECortexConversionScope::CurrentGraph)
 	{

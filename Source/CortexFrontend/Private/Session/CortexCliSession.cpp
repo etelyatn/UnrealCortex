@@ -380,12 +380,17 @@ FString FCortexCliSession::BuildLaunchCommandLine(bool bResumeSession, ECortexAc
 		CommandLine += FString::Printf(TEXT("--model \"%s\" "), *SelectedModel);
 	}
 
-	// Conversion mode: no MCP servers at all.
-	// Without --strict-mcp-config, the CLI loads user-configured MCP servers
-	// (Notion, Gmail, etc.) which can hang for 30s+ on auth/connection.
+	// Conversion mode: minimal CLI footprint for pure LLM translation.
+	// - --strict-mcp-config: no external MCP servers (Notion, Gmail, etc. can hang 30s+)
+	// - --setting-sources "user,local": excludes "project" source, preventing CLAUDE.md
+	//   injection (project CLAUDE.md adds thousands of tokens to every conversion request)
+	// - --effort "low": disables extended thinking, which can fire automatically on large
+	//   blueprint JSON inputs and add 10-30k thinking tokens (~minutes of extra latency)
 	if (Config.bConversionMode)
 	{
 		CommandLine += TEXT("--strict-mcp-config ");
+		CommandLine += TEXT("--setting-sources \"user,local\" ");
+		CommandLine += TEXT("--effort \"low\" ");
 	}
 	else
 	{

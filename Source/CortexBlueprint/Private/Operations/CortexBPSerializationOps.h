@@ -31,6 +31,17 @@ private:
 	/** Helper: serialize a UEdGraphNode to JSON. */
 	static TSharedRef<FJsonObject> NodeToJson(class UEdGraphNode* Node);
 
+	// ── Compact variants (bConversionMode=true) ──
+	// Strip x/y positions, comments, full type paths; use sequential int IDs.
+
+	static FString SerializeEntireBlueprintCompact(class UBlueprint* Blueprint);
+	static FString SerializeSelectedNodesCompact(class UBlueprint* Blueprint, const TArray<FString>& NodeIds);
+	static FString SerializeGraphCompact(class UBlueprint* Blueprint, const FString& GraphName);
+	static FString SerializeEventOrFunctionCompact(class UBlueprint* Blueprint, const FString& TargetName);
+
+	static TSharedRef<FJsonObject> GraphToJsonCompact(class UEdGraph* Graph);
+	static TSharedRef<FJsonObject> NodeToJsonCompact(class UEdGraphNode* Node, const TMap<class UEdGraphNode*, int32>& IndexMap);
+
 	/** Helper: serialize Blueprint variables to JSON array. */
 	static TArray<TSharedPtr<FJsonValue>> VariablesToJson(class UBlueprint* Blueprint);
 
