@@ -58,7 +58,7 @@ struct CORTEXCORE_API FCortexSerializationRequest
 {
 	FString BlueprintPath;
 	ECortexConversionScope Scope;
-	FString TargetGraphName;          // for CurrentGraph / EventOrFunction scope
+	TArray<FString> TargetGraphNames;  // for CurrentGraph / EventOrFunction scope
 	TArray<FString> SelectedNodeIds;  // for SelectedNodes scope
 
 	// When true, emit compact JSON: sequential int IDs, short type names, no x/y/comment.

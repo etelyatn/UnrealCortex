@@ -57,10 +57,23 @@ void FCortexBPSerializationOps::Serialize(const FCortexSerializationRequest& Req
 			Json = SerializeSelectedNodesCompact(Blueprint, Request.SelectedNodeIds);
 			break;
 		case ECortexConversionScope::CurrentGraph:
-			Json = SerializeGraphCompact(Blueprint, Request.TargetGraphName);
+			Json = Request.TargetGraphNames.Num() > 0
+				? SerializeGraphCompact(Blueprint, Request.TargetGraphNames[0])
+				: FString();
 			break;
 		case ECortexConversionScope::EventOrFunction:
-			Json = SerializeEventOrFunctionCompact(Blueprint, Request.TargetGraphName);
+			if (Request.TargetGraphNames.Num() == 0)
+			{
+				Json = TEXT("{\"error\":\"No target events or functions specified\"}");
+			}
+			else if (Request.TargetGraphNames.Num() == 1)
+			{
+				Json = SerializeEventOrFunctionCompact(Blueprint, Request.TargetGraphNames[0]);
+			}
+			else
+			{
+				Json = SerializeMultipleEventOrFunctionCompact(Blueprint, Request.TargetGraphNames);
+			}
 			break;
 		}
 	}
@@ -75,10 +88,23 @@ void FCortexBPSerializationOps::Serialize(const FCortexSerializationRequest& Req
 			Json = SerializeSelectedNodes(Blueprint, Request.SelectedNodeIds);
 			break;
 		case ECortexConversionScope::CurrentGraph:
-			Json = SerializeGraph(Blueprint, Request.TargetGraphName);
+			Json = Request.TargetGraphNames.Num() > 0
+				? SerializeGraph(Blueprint, Request.TargetGraphNames[0])
+				: FString();
 			break;
 		case ECortexConversionScope::EventOrFunction:
-			Json = SerializeEventOrFunction(Blueprint, Request.TargetGraphName);
+			if (Request.TargetGraphNames.Num() == 0)
+			{
+				Json = TEXT("{\"error\":\"No target events or functions specified\"}");
+			}
+			else if (Request.TargetGraphNames.Num() == 1)
+			{
+				Json = SerializeEventOrFunction(Blueprint, Request.TargetGraphNames[0]);
+			}
+			else
+			{
+				Json = SerializeMultipleEventOrFunction(Blueprint, Request.TargetGraphNames);
+			}
 			break;
 		}
 	}
@@ -466,6 +492,33 @@ FString FCortexBPSerializationOps::SerializeEventOrFunction(UBlueprint* Blueprin
 	return TEXT("{\"error\":\"Event or function not found\"}");
 }
 
+FString FCortexBPSerializationOps::SerializeMultipleEventOrFunction(UBlueprint* Blueprint, const TArray<FString>& TargetNames)
+{
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("blueprint_name"), Blueprint->GetName());
+	Root->SetStringField(TEXT("scope"), TEXT("multiple_functions"));
+
+	TArray<TSharedPtr<FJsonValue>> FunctionsArray;
+	for (const FString& Name : TargetNames)
+	{
+		FString SingleJson = SerializeEventOrFunction(Blueprint, Name);
+
+		TSharedPtr<FJsonObject> Parsed;
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(SingleJson);
+		if (FJsonSerializer::Deserialize(Reader, Parsed) && Parsed.IsValid())
+		{
+			FunctionsArray.Add(MakeShared<FJsonValueObject>(Parsed.ToSharedRef()));
+		}
+	}
+	Root->SetField(TEXT("functions"), MakeShared<FJsonValueArray>(FunctionsArray));
+	Root->SetNumberField(TEXT("function_count"), FunctionsArray.Num());
+
+	FString Output;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output, 0);
+	FJsonSerializer::Serialize(Root, Writer);
+	return Output;
+}
+
 // ── Compact serialization (bConversionMode=true) ─────────────────────────────
 // Strips x/y positions, comments, full type paths; uses sequential int node IDs.
 
@@ -790,4 +843,31 @@ FString FCortexBPSerializationOps::SerializeEventOrFunctionCompact(UBlueprint* B
 	}
 
 	return TEXT("{\"error\":\"Event or function not found\"}");
+}
+
+FString FCortexBPSerializationOps::SerializeMultipleEventOrFunctionCompact(UBlueprint* Blueprint, const TArray<FString>& TargetNames)
+{
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("blueprint_name"), Blueprint->GetName());
+	Root->SetStringField(TEXT("scope"), TEXT("multiple_functions"));
+
+	TArray<TSharedPtr<FJsonValue>> FunctionsArray;
+	for (const FString& Name : TargetNames)
+	{
+		FString SingleJson = SerializeEventOrFunctionCompact(Blueprint, Name);
+
+		TSharedPtr<FJsonObject> Parsed;
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(SingleJson);
+		if (FJsonSerializer::Deserialize(Reader, Parsed) && Parsed.IsValid())
+		{
+			FunctionsArray.Add(MakeShared<FJsonValueObject>(Parsed.ToSharedRef()));
+		}
+	}
+	Root->SetField(TEXT("functions"), MakeShared<FJsonValueArray>(FunctionsArray));
+	Root->SetNumberField(TEXT("function_count"), FunctionsArray.Num());
+
+	FString Output;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output, 0);
+	FJsonSerializer::Serialize(Root, Writer);
+	return Output;
 }

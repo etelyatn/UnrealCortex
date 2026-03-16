@@ -20,12 +20,14 @@ public:
 private:
 	FReply OnConvertButtonClicked();
 	void OnScopeChanged(ECortexConversionScope NewScope);
-	void OnEventOrFunctionSelected(const FString& Name);
+	void OnEventSelected(const FString& Name);
+	void OnFunctionToggled(const FString& Name, bool bChecked);
 
 	bool IsScopeSelected(ECortexConversionScope Scope) const;
-	bool IsEventOrFunctionSelected(const FString& Name) const;
+	bool IsEventSelected(const FString& Name) const;
+	bool IsFunctionChecked(const FString& Name) const;
 
-	TSharedRef<SWidget> BuildEventFunctionList(const FCortexConversionPayload& Payload);
+	TSharedRef<SWidget> BuildScopeAndTargetSection(const FCortexConversionPayload& Payload);
 
 	void OnDepthChanged(ECortexConversionDepth NewDepth);
 	bool IsDepthSelected(ECortexConversionDepth Depth) const;

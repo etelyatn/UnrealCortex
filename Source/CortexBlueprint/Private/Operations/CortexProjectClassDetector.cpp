@@ -1,5 +1,6 @@
 #include "Operations/CortexProjectClassDetector.h"
 
+#include "CortexBlueprintModule.h"
 #include "CortexConversionTypes.h"
 #include "Engine/Blueprint.h"
 #include "Misc/Paths.h"
@@ -74,9 +75,14 @@ namespace
 		for (const FString& ProjectFile : ProjectFiles)
 		{
 			FString Content;
-			if (FFileHelper::LoadFileToString(Content, *FPaths::Combine(ProjectDir, ProjectFile)))
+			FString FullPath = FPaths::Combine(ProjectDir, ProjectFile);
+			if (FFileHelper::LoadFileToString(Content, *FullPath))
 			{
 				ExtractModuleNames(Content, CachedProjectModuleNames);
+			}
+			else
+			{
+				UE_LOG(LogCortexBlueprint, Warning, TEXT("ProjectClassDetector: Failed to read %s"), *FullPath);
 			}
 		}
 
@@ -92,8 +98,15 @@ namespace
 			{
 				ExtractModuleNames(Content, CachedProjectModuleNames);
 			}
+			else
+			{
+				UE_LOG(LogCortexBlueprint, Warning, TEXT("ProjectClassDetector: Failed to read %s"), *PluginFile);
+			}
 			CachedPluginDirs.Add(FPaths::GetPath(PluginFile));
 		}
+
+		UE_LOG(LogCortexBlueprint, Log, TEXT("ProjectClassDetector: Cached %d project module(s) from %d plugin dir(s)"),
+			CachedProjectModuleNames.Num(), CachedPluginDirs.Num());
 	}
 }
 

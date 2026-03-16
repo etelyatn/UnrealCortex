@@ -111,7 +111,15 @@ void SCortexConversionTab::OnConvertClicked()
 	}
 	if (Context->SelectedScope == ECortexConversionScope::EventOrFunction)
 	{
-		UE_LOG(LogCortexFrontend, Log, TEXT("  Target: %s"), *Context->TargetEventOrFunction);
+		if (!Context->TargetEventOrFunction.IsEmpty())
+		{
+			UE_LOG(LogCortexFrontend, Log, TEXT("  Target event: %s"), *Context->TargetEventOrFunction);
+		}
+		if (Context->SelectedFunctions.Num() > 0)
+		{
+			UE_LOG(LogCortexFrontend, Log, TEXT("  Target functions: %s"),
+				*FString::Join(Context->SelectedFunctions, TEXT(", ")));
+		}
 	}
 
 	StatusMessage(FString::Printf(TEXT("[Step 1/4] Serializing Blueprint (%s: %s)..."),
@@ -127,11 +135,19 @@ void SCortexConversionTab::OnConvertClicked()
 
 	if (Context->SelectedScope == ECortexConversionScope::CurrentGraph)
 	{
-		Request.TargetGraphName = Context->Payload.CurrentGraphName;
+		Request.TargetGraphNames.Add(Context->Payload.CurrentGraphName);
 	}
 	if (Context->SelectedScope == ECortexConversionScope::EventOrFunction)
 	{
-		Request.TargetGraphName = Context->TargetEventOrFunction;
+		// Single event takes priority; if no event, use multi-select functions
+		if (!Context->TargetEventOrFunction.IsEmpty())
+		{
+			Request.TargetGraphNames.Add(Context->TargetEventOrFunction);
+		}
+		else
+		{
+			Request.TargetGraphNames = Context->SelectedFunctions;
+		}
 	}
 	if (Context->SelectedScope == ECortexConversionScope::SelectedNodes)
 	{

@@ -124,7 +124,7 @@ bool FCortexBPSerializeCompactEventOrFunctionTest::RunTest(const FString& Parame
 	FCortexSerializationRequest Request;
 	Request.BlueprintPath = TEXT("/Game/Blueprints/BP_SimpleActor");
 	Request.Scope = ECortexConversionScope::EventOrFunction;
-	Request.TargetGraphName = TEXT("ReceiveBeginPlay");
+	Request.TargetGraphNames.Add(TEXT("ReceiveBeginPlay"));
 	Request.bConversionMode = true;
 
 	bool bSuccess = false;

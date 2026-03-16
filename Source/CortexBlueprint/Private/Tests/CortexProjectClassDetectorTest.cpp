@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "CortexConversionTypes.h"
+#include "GameFramework/Actor.h"
 #include "Operations/CortexProjectClassDetector.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexProjectClassDetectorEngineParentTest,

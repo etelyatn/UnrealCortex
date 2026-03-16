@@ -95,8 +95,7 @@ TArray<FString> FCortexConversionPromptAssembler::SelectFragments(const FString&
 	if (BlueprintJson.Contains(TEXT("K2Node_CreateDelegate"))
 		|| BlueprintJson.Contains(TEXT("MulticastInlineDelegate"))
 		|| BlueprintJson.Contains(TEXT("MulticastDelegate"))
-		|| BlueprintJson.Contains(TEXT("EventDispatcher"))
-		|| BlueprintJson.Contains(TEXT("OnComponent")))
+		|| BlueprintJson.Contains(TEXT("EventDispatcher")))
 	{
 		Result.Add(TEXT("delegates-events.md"));
 	}
@@ -104,8 +103,8 @@ TArray<FString> FCortexConversionPromptAssembler::SelectFragments(const FString&
 	// Replication
 	if (BlueprintJson.Contains(TEXT("Replicated"))
 		|| BlueprintJson.Contains(TEXT("RepNotify"))
-		|| BlueprintJson.Contains(TEXT("Server,"))
-		|| BlueprintJson.Contains(TEXT("Client,"))
+		|| BlueprintJson.Contains(TEXT("\"Server\""))
+		|| BlueprintJson.Contains(TEXT("\"Client\""))
 		|| BlueprintJson.Contains(TEXT("NetMulticast")))
 	{
 		Result.Add(TEXT("replication.md"));
@@ -113,7 +112,7 @@ TArray<FString> FCortexConversionPromptAssembler::SelectFragments(const FString&
 
 	// Latent nodes
 	if (BlueprintJson.Contains(TEXT("K2Node_Timeline"))
-		|| BlueprintJson.Contains(TEXT("Delay"))
+		|| BlueprintJson.Contains(TEXT("K2Node_Delay"))
 		|| BlueprintJson.Contains(TEXT("AsyncLoad"))
 		|| BlueprintJson.Contains(TEXT("K2Node_LatentGameplayTaskCall")))
 	{

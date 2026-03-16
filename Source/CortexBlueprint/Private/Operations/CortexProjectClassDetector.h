@@ -6,6 +6,10 @@ struct FProjectClassInfo;
 class UBlueprint;
 class UClass;
 
+/**
+ * Detects project-owned ancestor classes in a Blueprint's parent chain.
+ * All static methods must be called on Game Thread (uses file-scope cache).
+ */
 class FCortexProjectClassDetector
 {
 public:

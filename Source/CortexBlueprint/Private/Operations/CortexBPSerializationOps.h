@@ -25,6 +25,9 @@ private:
 	/** Serialize a single event or function. */
 	static FString SerializeEventOrFunction(class UBlueprint* Blueprint, const FString& TargetName);
 
+	/** Serialize multiple events/functions into a combined JSON array. */
+	static FString SerializeMultipleEventOrFunction(class UBlueprint* Blueprint, const TArray<FString>& TargetNames);
+
 	/** Helper: serialize a UEdGraph to JSON. */
 	static TSharedRef<FJsonObject> GraphToJson(class UEdGraph* Graph);
 
@@ -38,6 +41,7 @@ private:
 	static FString SerializeSelectedNodesCompact(class UBlueprint* Blueprint, const TArray<FString>& NodeIds);
 	static FString SerializeGraphCompact(class UBlueprint* Blueprint, const FString& GraphName);
 	static FString SerializeEventOrFunctionCompact(class UBlueprint* Blueprint, const FString& TargetName);
+	static FString SerializeMultipleEventOrFunctionCompact(class UBlueprint* Blueprint, const TArray<FString>& TargetNames);
 
 	static TSharedRef<FJsonObject> GraphToJsonCompact(class UEdGraph* Graph);
 	static TSharedRef<FJsonObject> NodeToJsonCompact(class UEdGraphNode* Node, const TMap<class UEdGraphNode*, int32>& IndexMap);

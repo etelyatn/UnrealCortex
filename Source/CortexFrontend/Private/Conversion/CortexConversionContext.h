@@ -91,7 +91,8 @@ struct FCortexConversionContext
     TSharedPtr<FCortexCodeDocument> Document;
     TSharedPtr<FCortexCliSession> Session;
     ECortexConversionScope SelectedScope = ECortexConversionScope::EntireBlueprint;
-    FString TargetEventOrFunction;  // For EventOrFunction scope — stores selected name
+    FString TargetEventOrFunction;   // For EventOrFunction scope — stores selected event name
+    TArray<FString> SelectedFunctions; // For multi-select function scope — stores checked function names
     ECortexConversionDepth SelectedDepth = ECortexConversionDepth::CppCore;
     ECortexConversionDestination SelectedDestination = ECortexConversionDestination::CreateNewClass;
     FString TargetClassName;       // selected ancestor class name, empty if CreateNewClass
