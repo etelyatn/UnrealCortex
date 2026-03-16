@@ -192,3 +192,27 @@ bool FCortexDiffParserCRLFCanonTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDiffParserEmptySearchTextTest,
+    "Cortex.Frontend.DiffParser.EmptySearchText",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexDiffParserEmptySearchTextTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Empty search text — would match every position, must be rejected
+    const FString Input =
+        TEXT("<<<<<<< SEARCH\n")
+        TEXT("=======\n")
+        TEXT("int X = 0;\n")
+        TEXT(">>>>>>> REPLACE");
+
+    TArray<FCortexFrontendSearchReplacePair> Pairs;
+    const bool bIsDiff = CortexDiffParser::Parse(Input, Pairs);
+
+    TestFalse(TEXT("Should reject empty search text"), bIsDiff);
+    TestEqual(TEXT("Should produce 0 pairs"), Pairs.Num(), 0);
+
+    return true;
+}

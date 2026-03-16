@@ -70,12 +70,15 @@ bool CortexDiffParser::Parse(const FString& CodeBlockText, TArray<FCortexFronten
         {
             if (Trimmed == TEXT(">>>>>>> REPLACE"))
             {
-                FCortexFrontendSearchReplacePair Pair;
-                Pair.SearchText = FString::Join(SearchLines, TEXT("\n"));
-                if (!SearchLines.IsEmpty())
+                // Reject empty search text — would match every position, undefined behavior in apply
+                if (SearchLines.IsEmpty())
                 {
-                    Pair.SearchText += TEXT("\n");
+                    OutPairs.Empty();
+                    return false;
                 }
+
+                FCortexFrontendSearchReplacePair Pair;
+                Pair.SearchText = FString::Join(SearchLines, TEXT("\n")) + TEXT("\n");
                 Pair.ReplaceText = FString::Join(ReplaceLines, TEXT("\n"));
                 if (!ReplaceLines.IsEmpty())
                 {
