@@ -1,5 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "Conversion/CortexConversionPrompts.h"
+#include "Conversion/CortexConversionPromptAssembler.h"
+#include "Conversion/CortexConversionContext.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPromptBaseSystemTest,
     "Cortex.Frontend.Conversion.Prompts.BaseSystem",
@@ -112,6 +114,152 @@ bool FCortexPromptInjectModeLayerTest::RunTest(const FString& Parameters)
         LayerStr.Contains(TEXT("existing")));
     TestTrue(TEXT("Should mention conflict avoidance"),
         LayerStr.Contains(TEXT("duplicate")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexAssemblerShouldUseSnippetModeTest,
+    "Cortex.Frontend.Conversion.Assembler.ShouldUseSnippetMode",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexAssemblerShouldUseSnippetModeTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // EntireBlueprint always uses FullClass regardless of depth
+    TestFalse(TEXT("EntireBlueprint+PerfShell = FullClass"),
+        FCortexConversionPromptAssembler::ShouldUseSnippetMode(
+            ECortexConversionScope::EntireBlueprint, ECortexConversionDepth::PerformanceShell));
+    TestFalse(TEXT("EntireBlueprint+CppCore = FullClass"),
+        FCortexConversionPromptAssembler::ShouldUseSnippetMode(
+            ECortexConversionScope::EntireBlueprint, ECortexConversionDepth::CppCore));
+    TestFalse(TEXT("EntireBlueprint+FullExtraction = FullClass"),
+        FCortexConversionPromptAssembler::ShouldUseSnippetMode(
+            ECortexConversionScope::EntireBlueprint, ECortexConversionDepth::FullExtraction));
+
+    // SelectedNodes with non-FullExtraction = Snippet
+    TestTrue(TEXT("SelectedNodes+CppCore = Snippet"),
+        FCortexConversionPromptAssembler::ShouldUseSnippetMode(
+            ECortexConversionScope::SelectedNodes, ECortexConversionDepth::CppCore));
+
+    // SelectedNodes with FullExtraction = FullClass
+    TestFalse(TEXT("SelectedNodes+FullExtraction = FullClass"),
+        FCortexConversionPromptAssembler::ShouldUseSnippetMode(
+            ECortexConversionScope::SelectedNodes, ECortexConversionDepth::FullExtraction));
+
+    // EventOrFunction with CppCore = Snippet
+    TestTrue(TEXT("EventOrFunction+CppCore = Snippet"),
+        FCortexConversionPromptAssembler::ShouldUseSnippetMode(
+            ECortexConversionScope::EventOrFunction, ECortexConversionDepth::CppCore));
+
+    // CurrentGraph with PerfShell = Snippet
+    TestTrue(TEXT("CurrentGraph+PerfShell = Snippet"),
+        FCortexConversionPromptAssembler::ShouldUseSnippetMode(
+            ECortexConversionScope::CurrentGraph, ECortexConversionDepth::PerformanceShell));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexAssemblerSelectFragmentsTest,
+    "Cortex.Frontend.Conversion.Assembler.SelectFragments",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexAssemblerSelectFragmentsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // core-patterns.md is always selected
+    {
+        TArray<FString> Frags = FCortexConversionPromptAssembler::SelectFragments(TEXT("{}"));
+        TestTrue(TEXT("core-patterns always included"),
+            Frags.Contains(TEXT("core-patterns.md")));
+    }
+
+    // Timeline triggers latent-nodes.md
+    {
+        FString Json = TEXT("{\"nodes\":[{\"class\":\"K2Node_Timeline\"}]}");
+        TArray<FString> Frags = FCortexConversionPromptAssembler::SelectFragments(Json);
+        TestTrue(TEXT("K2Node_Timeline triggers latent-nodes"),
+            Frags.Contains(TEXT("latent-nodes.md")));
+    }
+
+    // MulticastDelegate triggers delegates-events.md
+    {
+        FString Json = TEXT("{\"nodes\":[{\"class\":\"MulticastDelegate\"}]}");
+        TArray<FString> Frags = FCortexConversionPromptAssembler::SelectFragments(Json);
+        TestTrue(TEXT("MulticastDelegate triggers delegates-events"),
+            Frags.Contains(TEXT("delegates-events.md")));
+    }
+
+    // FlipFlop triggers bp-flow-nodes.md
+    {
+        FString Json = TEXT("{\"nodes\":[{\"class\":\"FlipFlop\"}]}");
+        TArray<FString> Frags = FCortexConversionPromptAssembler::SelectFragments(Json);
+        TestTrue(TEXT("FlipFlop triggers bp-flow-nodes"),
+            Frags.Contains(TEXT("bp-flow-nodes.md")));
+    }
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexAssemblerAssembleBasicTest,
+    "Cortex.Frontend.Conversion.Assembler.AssembleBasic",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexAssemblerAssembleBasicTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexConversionPayload Payload;
+    Payload.BlueprintPath = TEXT("/Game/Test/BP_Test");
+    Payload.BlueprintName = TEXT("BP_Test");
+    Payload.ParentClassName = TEXT("Actor");
+
+    auto Context = MakeShared<FCortexConversionContext>(Payload);
+    Context->SelectedScope = ECortexConversionScope::EntireBlueprint;
+    Context->SelectedDepth = ECortexConversionDepth::CppCore;
+
+    FString Prompt = FCortexConversionPromptAssembler::Assemble(*Context, TEXT("{}"));
+
+    // Should contain base prompt content
+    TestTrue(TEXT("Contains role definition"), Prompt.Contains(TEXT("Blueprint-to-C++ conversion")));
+
+    // Should contain full class scope layer
+    TestTrue(TEXT("Contains header tag"), Prompt.Contains(TEXT("cpp:header")));
+
+    // Should contain CppCore depth layer
+    TestTrue(TEXT("Contains BlueprintImplementableEvent"), Prompt.Contains(TEXT("BlueprintImplementableEvent")));
+
+    // Should NOT contain inject mode (default is CreateNewClass)
+    TestFalse(TEXT("No inject mode"), Prompt.Contains(TEXT("INJECT MODE")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexAssemblerAssembleInjectModeTest,
+    "Cortex.Frontend.Conversion.Assembler.AssembleInjectMode",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexAssemblerAssembleInjectModeTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexConversionPayload Payload;
+    Payload.BlueprintPath = TEXT("/Game/Test/BP_Test");
+    Payload.BlueprintName = TEXT("BP_Test");
+    Payload.ParentClassName = TEXT("Actor");
+
+    auto Context = MakeShared<FCortexConversionContext>(Payload);
+    Context->SelectedScope = ECortexConversionScope::EntireBlueprint;
+    Context->SelectedDepth = ECortexConversionDepth::CppCore;
+    Context->SelectedDestination = ECortexConversionDestination::InjectIntoExisting;
+    Context->TargetClassName = TEXT("AMyCharacter");
+
+    FString Prompt = FCortexConversionPromptAssembler::Assemble(*Context, TEXT("{}"));
+
+    // Should contain inject mode instructions
+    TestTrue(TEXT("Contains INJECT MODE"), Prompt.Contains(TEXT("INJECT MODE")));
+    TestTrue(TEXT("Contains duplicate avoidance"), Prompt.Contains(TEXT("duplicate")));
 
     return true;
 }
