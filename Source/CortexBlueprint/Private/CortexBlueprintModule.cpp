@@ -1,4 +1,5 @@
 #include "CortexBlueprintModule.h"
+#include "CortexBPToolbarExtension.h"
 #include "CortexCoreModule.h"
 #include "ICortexCommandRegistry.h"
 #include "CortexBPCommandHandler.h"
@@ -46,11 +47,15 @@ void FCortexBlueprintModule::StartupModule()
 		OnAssetRegistryReady();
 	}
 
+	FCortexBPToolbarExtension::Register();
+
 	UE_LOG(LogCortexBlueprint, Log, TEXT("CortexBlueprint registered with CortexCore"));
 }
 
 void FCortexBlueprintModule::ShutdownModule()
 {
+	FCortexBPToolbarExtension::Unregister();
+
 	if (GEditor != nullptr)
 	{
 		GEditor->GetTimerManager()->ClearTimer(CacheWriteTimerHandle);

@@ -24,6 +24,9 @@ public class CortexBlueprint : ModuleRules
 			"KismetCompiler",
 			"BlueprintGraph",
 			"GameplayTags",
+			"ToolMenus",    // for toolbar extension
+			"Slate",
+			"SlateCore",
 		});
 	}
 }
