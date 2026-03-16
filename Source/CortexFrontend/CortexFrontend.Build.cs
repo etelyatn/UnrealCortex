@@ -25,6 +25,7 @@ public class CortexFrontend : ModuleRules
             "JsonUtilities",
             "ToolMenus",
             "Projects",
+            "CortexCore",
         });
     }
 }
