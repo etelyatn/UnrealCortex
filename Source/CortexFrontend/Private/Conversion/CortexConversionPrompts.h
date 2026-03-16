@@ -36,8 +36,13 @@ namespace CortexConversionPrompts
             "- Use ```cpp:implementation for .cpp file content\n"
             "- Always output both the header and implementation as separate tagged blocks\n"
             "- Generate a complete class with includes, UCLASS macro, constructor, etc.\n\n"
-            "When the user asks for modifications, you may output only the changed file (header or implementation) if only one changed. "
-            "Use the same tagged format. Output the COMPLETE file contents, not just changed lines."
+            "For follow-up modifications requested by the user, return ONLY the changed sections using this exact format for each changed section:\n\n"
+            "<<<<<<< SEARCH\n"
+            "[exact existing code to find]\n"
+            "=======\n"
+            "[replacement code]\n"
+            ">>>>>>> REPLACE\n\n"
+            "You may include multiple SEARCH/REPLACE blocks if needed. Do not return the full file for follow-up modifications."
         );
     }
 
@@ -50,7 +55,13 @@ namespace CortexConversionPrompts
             "- Use ```cpp:snippet for code snippets\n"
             "- If the snippet naturally forms a complete function, you may use ```cpp:header and ```cpp:implementation instead\n"
             "- Do NOT generate full class boilerplate unless the nodes represent a complete class\n"
-            "- Focus on translating the specific logic represented by the nodes"
+            "- Focus on translating the specific logic represented by the nodes\n\n"
+            "For follow-up modifications, use the SEARCH/REPLACE format:\n\n"
+            "<<<<<<< SEARCH\n"
+            "[exact existing snippet text to find]\n"
+            "=======\n"
+            "[replacement text]\n"
+            ">>>>>>> REPLACE"
         );
     }
 
