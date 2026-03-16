@@ -33,7 +33,7 @@ bool FCortexLevelSpawnActorTest::RunTest(const FString& Parameters)
     FCortexCommandRouter Router = CreateLevelRouter();
 
     TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-    Params->SetStringField(TEXT("class"), TEXT("PointLight"));
+    Params->SetStringField(TEXT("class_name"), TEXT("PointLight"));
     TArray<TSharedPtr<FJsonValue>> Location;
     Location.Add(MakeShared<FJsonValueNumber>(100.0));
     Location.Add(MakeShared<FJsonValueNumber>(200.0));
@@ -81,7 +81,7 @@ bool FCortexLevelDeleteActorTest::RunTest(const FString& Parameters)
     FCortexCommandRouter Router = CreateLevelRouter();
 
     TSharedPtr<FJsonObject> SpawnParams = MakeShared<FJsonObject>();
-    SpawnParams->SetStringField(TEXT("class"), TEXT("PointLight"));
+    SpawnParams->SetStringField(TEXT("class_name"), TEXT("PointLight"));
     TArray<TSharedPtr<FJsonValue>> Loc;
     Loc.Add(MakeShared<FJsonValueNumber>(0.0));
     Loc.Add(MakeShared<FJsonValueNumber>(0.0));
@@ -133,7 +133,7 @@ bool FCortexLevelDuplicateActorTest::RunTest(const FString& Parameters)
     FCortexCommandRouter Router = CreateLevelRouter();
 
     TSharedPtr<FJsonObject> SpawnParams = MakeShared<FJsonObject>();
-    SpawnParams->SetStringField(TEXT("class"), TEXT("PointLight"));
+    SpawnParams->SetStringField(TEXT("class_name"), TEXT("PointLight"));
     TArray<TSharedPtr<FJsonValue>> Loc;
     Loc.Add(MakeShared<FJsonValueNumber>(500.0));
     Loc.Add(MakeShared<FJsonValueNumber>(0.0));
@@ -192,7 +192,7 @@ bool FCortexLevelRenameActorTest::RunTest(const FString& Parameters)
     FCortexCommandRouter Router = CreateLevelRouter();
 
     TSharedPtr<FJsonObject> SpawnParams = MakeShared<FJsonObject>();
-    SpawnParams->SetStringField(TEXT("class"), TEXT("PointLight"));
+    SpawnParams->SetStringField(TEXT("class_name"), TEXT("PointLight"));
     TArray<TSharedPtr<FJsonValue>> Loc;
     Loc.Add(MakeShared<FJsonValueNumber>(0.0));
     Loc.Add(MakeShared<FJsonValueNumber>(0.0));
