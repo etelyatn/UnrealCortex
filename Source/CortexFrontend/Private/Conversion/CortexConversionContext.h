@@ -20,24 +20,58 @@ struct FCortexCodeDocument
     FString TargetPath;
     bool bIsSnippetMode = false;
 
+    // Snapshot for revert (stored before diff apply)
+    FString PreviousHeaderCode;
+    FString PreviousImplementationCode;
+    FString PreviousSnippetCode;
+    bool bHasSnapshot = false;
+
     FOnCodeDocumentChanged OnDocumentChanged;
 
     void UpdateHeader(const FString& NewCode)
     {
         HeaderCode = NewCode;
+        HeaderCode.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
         OnDocumentChanged.Broadcast(ECortexCodeTab::Header);
     }
 
     void UpdateImplementation(const FString& NewCode)
     {
         ImplementationCode = NewCode;
+        ImplementationCode.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
         OnDocumentChanged.Broadcast(ECortexCodeTab::Implementation);
     }
 
     void UpdateSnippet(const FString& NewCode)
     {
         SnippetCode = NewCode;
+        SnippetCode.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
         OnDocumentChanged.Broadcast(ECortexCodeTab::Snippet);
+    }
+
+    void SaveSnapshot()
+    {
+        if (!bHasSnapshot)
+        {
+            PreviousHeaderCode = HeaderCode;
+            PreviousImplementationCode = ImplementationCode;
+            PreviousSnippetCode = SnippetCode;
+            bHasSnapshot = true;
+        }
+    }
+
+    void RevertToSnapshot()
+    {
+        if (bHasSnapshot)
+        {
+            HeaderCode = PreviousHeaderCode;
+            ImplementationCode = PreviousImplementationCode;
+            SnippetCode = PreviousSnippetCode;
+            bHasSnapshot = false;
+            OnDocumentChanged.Broadcast(ECortexCodeTab::Header);
+            OnDocumentChanged.Broadcast(ECortexCodeTab::Implementation);
+            OnDocumentChanged.Broadcast(ECortexCodeTab::Snippet);
+        }
     }
 };
 
