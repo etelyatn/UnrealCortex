@@ -7,7 +7,7 @@
 class FCortexQARecorder;
 class FCortexQAReplaySequencer;
 
-class CORTEXQA_API FCortexQACommandHandler : public ICortexDomainHandler
+class CORTEXQA_API FCortexQACommandHandler : public ICortexDomainHandler, public TSharedFromThis<FCortexQACommandHandler>
 {
 public:
     FCortexQACommandHandler();

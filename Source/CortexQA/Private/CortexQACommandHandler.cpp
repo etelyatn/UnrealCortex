@@ -188,6 +188,12 @@ FCortexCommandResult FCortexQACommandHandler::StopRecordingCmd(const TSharedPtr<
             TEXT("Not currently recording"));
     }
 
+    // Capture metadata before StopRecording() clears/resets recorder state
+    const int32 StepCount = Recorder->GetRecordedSteps().Num();
+    const double DurationSeconds = StepCount > 0
+        ? Recorder->GetRecordedSteps().Last().TimestampMs / 1000.0
+        : 0.0;
+
     const FString Path = Recorder->StopRecording();
     SessionState = ECortexQASessionState::Idle;
 
@@ -200,9 +206,8 @@ FCortexCommandResult FCortexQACommandHandler::StopRecordingCmd(const TSharedPtr<
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetStringField(TEXT("path"), Path);
-    Data->SetNumberField(TEXT("step_count"), Recorder->GetRecordedSteps().Num());
-    Data->SetNumberField(TEXT("duration"), Recorder->GetRecordedSteps().Num() > 0 ?
-        Recorder->GetRecordedSteps().Last().TimestampMs / 1000.0 : 0.0);
+    Data->SetNumberField(TEXT("step_count"), StepCount);
+    Data->SetNumberField(TEXT("duration"), DurationSeconds);
     return FCortexCommandRouter::Success(Data);
 }
 
@@ -264,13 +269,19 @@ FCortexCommandResult FCortexQACommandHandler::ReplaySession(
 
     FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
     ActiveSequencer = MakeShared<FCortexQAReplaySequencer>();
+    TWeakPtr<FCortexQACommandHandler> WeakSelf = SharedThis(this);
     ActiveSequencer->Start(
         Session.Steps,
         Core.GetCommandRouter(),
-        [this, SessionPath, DeferredCb = MoveTemp(DeferredCallback)](FCortexCommandResult FinalResult)
+        [WeakSelf, SessionPath, DeferredCb = MoveTemp(DeferredCallback)](FCortexCommandResult FinalResult)
         {
-            SessionState = ECortexQASessionState::Idle;
-            ActiveSequencer.Reset();
+            TSharedPtr<FCortexQACommandHandler> Self = WeakSelf.Pin();
+            if (!Self.IsValid())
+            {
+                return;
+            }
+            Self->SessionState = ECortexQASessionState::Idle;
+            Self->ActiveSequencer.Reset();
 
             if (DeferredCb)
             {
