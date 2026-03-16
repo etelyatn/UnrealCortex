@@ -41,6 +41,7 @@ struct FCortexSessionConfig
     FString SessionId;
     FString WorkingDirectory;
     FString McpConfigPath;
+    FString SystemPrompt;  // Optional system prompt override (used by conversion tabs)
     bool bSkipPermissions = true;
 };
 
@@ -80,6 +81,7 @@ struct FCortexChatEntry
     ECortexChatEntryType Type = ECortexChatEntryType::AssistantMessage;
     FString Text;
     FString Language;
+    FString CodeBlockTarget;  // "header", "implementation", "snippet", or empty
     FString ToolName;
     FString ToolInput;
     FString ToolResult;

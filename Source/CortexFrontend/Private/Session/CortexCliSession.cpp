@@ -426,34 +426,43 @@ FString FCortexCliSession::BuildLaunchCommandLine(bool bResumeSession, ECortexAc
 		break;
 	}
 
-	FString SystemPrompt = FString::Printf(
-		TEXT("You are running inside the Unreal Editor's Cortex AI Chat panel. "
-			 "You have access to Cortex MCP tools for querying and manipulating the editor. "
-			 "Current access mode: %s."), *ModeString);
-
-	if (Workflow == ECortexWorkflowMode::Direct)
+	// Config.SystemPrompt takes precedence (used by conversion tabs); otherwise build default.
+	FString SystemPrompt;
+	if (!Config.SystemPrompt.IsEmpty())
 	{
-		SystemPrompt += TEXT(" Workflow mode: Direct. Act immediately on requests using MCP tools. "
-			"Do not create planning documents, design docs, spec files, or brainstorming files. "
-			"Do not follow documentation-first workflows. Be concise. Prefer action over ceremony.");
+		SystemPrompt = Config.SystemPrompt;
 	}
-
-	const FString Directive = FCortexFrontendSettings::Get().GetCustomDirective();
-	if (!Directive.IsEmpty())
+	else
 	{
-		FString Sanitized = Directive;
-		Sanitized.ReplaceInline(TEXT("\n"), TEXT(" "));
-		Sanitized.ReplaceInline(TEXT("\r"), TEXT(" "));
-		Sanitized.ReplaceInline(TEXT("\t"), TEXT(" "));
-		Sanitized.ReplaceInline(TEXT("$("), TEXT(""));
-		Sanitized.ReplaceInline(TEXT("`"), TEXT(""));
-		Sanitized.ReplaceInline(TEXT("%"), TEXT(""));
-		Sanitized.ReplaceInline(TEXT("^"), TEXT(""));
-		Sanitized.ReplaceInline(TEXT("|"), TEXT(""));
-		Sanitized.ReplaceInline(TEXT("&"), TEXT(""));
-		Sanitized.ReplaceInline(TEXT(">"), TEXT(""));
-		Sanitized.ReplaceInline(TEXT("<"), TEXT(""));
-		SystemPrompt += TEXT(" ") + Sanitized;
+		SystemPrompt = FString::Printf(
+			TEXT("You are running inside the Unreal Editor's Cortex AI Chat panel. "
+				 "You have access to Cortex MCP tools for querying and manipulating the editor. "
+				 "Current access mode: %s."), *ModeString);
+
+		if (Workflow == ECortexWorkflowMode::Direct)
+		{
+			SystemPrompt += TEXT(" Workflow mode: Direct. Act immediately on requests using MCP tools. "
+				"Do not create planning documents, design docs, spec files, or brainstorming files. "
+				"Do not follow documentation-first workflows. Be concise. Prefer action over ceremony.");
+		}
+
+		const FString Directive = FCortexFrontendSettings::Get().GetCustomDirective();
+		if (!Directive.IsEmpty())
+		{
+			FString Sanitized = Directive;
+			Sanitized.ReplaceInline(TEXT("\n"), TEXT(" "));
+			Sanitized.ReplaceInline(TEXT("\r"), TEXT(" "));
+			Sanitized.ReplaceInline(TEXT("\t"), TEXT(" "));
+			Sanitized.ReplaceInline(TEXT("$("), TEXT(""));
+			Sanitized.ReplaceInline(TEXT("`"), TEXT(""));
+			Sanitized.ReplaceInline(TEXT("%"), TEXT(""));
+			Sanitized.ReplaceInline(TEXT("^"), TEXT(""));
+			Sanitized.ReplaceInline(TEXT("|"), TEXT(""));
+			Sanitized.ReplaceInline(TEXT("&"), TEXT(""));
+			Sanitized.ReplaceInline(TEXT(">"), TEXT(""));
+			Sanitized.ReplaceInline(TEXT("<"), TEXT(""));
+			SystemPrompt += TEXT(" ") + Sanitized;
+		}
 	}
 
 	CommandLine += FString::Printf(TEXT("--append-system-prompt \"%s\" "),
