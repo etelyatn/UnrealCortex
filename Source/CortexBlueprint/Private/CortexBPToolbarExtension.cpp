@@ -6,6 +6,7 @@
 #include "CortexBlueprintModule.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_Event.h"
+#include "Operations/CortexProjectClassDetector.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
 #include "Toolkits/AssetEditorToolkitMenuContext.h"
@@ -140,6 +141,9 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 	{
 		Payload.FunctionNames.Add(Graph->GetFName().ToString());
 	}
+
+	// Detect project-owned ancestor classes for destination selection
+	Payload.DetectedProjectAncestors = FCortexProjectClassDetector::FindProjectAncestors(Blueprint);
 
 	return Payload;
 }
