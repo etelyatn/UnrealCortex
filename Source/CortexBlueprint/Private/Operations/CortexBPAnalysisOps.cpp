@@ -41,7 +41,11 @@
 #include "Components/ActorComponent.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "GameplayTagContainer.h"
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
 #include "StructUtils/UserDefinedStruct.h"
+#else
+#include "Engine/UserDefinedStruct.h"
+#endif
 #include "Engine/UserDefinedEnum.h"
 #include "Net/UnrealNetwork.h"
 

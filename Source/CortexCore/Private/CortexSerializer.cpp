@@ -5,6 +5,7 @@
 #include "UObject/TextProperty.h"
 #include "UObject/EnumProperty.h"
 #include "GameplayTagContainer.h"
+#include "Misc/EngineVersionComparison.h"
 #if UE_VERSION_OLDER_THAN(5, 5, 0)
 #include "InstancedStruct.h"
 #else

@@ -1,8 +1,36 @@
 #include "Operations/CortexMaterialGraphOps.h"
 #include "Operations/CortexMaterialAssetOps.h"
 #include "CortexMaterialModule.h"
+#include "Misc/EngineVersionComparison.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
+#include "MaterialDomain.h"
+
+// UE 5.4 compatibility: FExpressionInputIterator was added in UE 5.5
+#if UE_VERSION_OLDER_THAN(5, 5, 0)
+struct FExpressionInputIterator
+{
+	FExpressionInputIterator(UMaterialExpression* InExpr)
+		: Inputs(InExpr ? InExpr->GetInputs() : TArray<FExpressionInput*>())
+		, Index(0)
+	{
+		Input = Inputs.IsValidIndex(0) ? Inputs[0] : nullptr;
+	}
+
+	explicit operator bool() const { return Inputs.IsValidIndex(Index); }
+
+	FExpressionInputIterator& operator++()
+	{
+		++Index;
+		Input = Inputs.IsValidIndex(Index) ? Inputs[Index] : nullptr;
+		return *this;
+	}
+
+	TArray<FExpressionInput*> Inputs;
+	FExpressionInput* Input = nullptr;
+	int32 Index = 0;
+};
+#endif
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Dom/JsonObject.h"

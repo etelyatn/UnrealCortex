@@ -4,7 +4,12 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "GameplayTagContainer.h"
+#include "Misc/EngineVersionComparison.h"
+#if UE_VERSION_OLDER_THAN(5, 5, 0)
+#include "InstancedStruct.h"
+#else
 #include "StructUtils/InstancedStruct.h"
+#endif
 
 // ============================================================================
 // Test: FVector serialization (numeric properties - doubles)

@@ -1,5 +1,6 @@
 
 #include "Misc/AutomationTest.h"
+#include "Misc/EngineVersionComparison.h"
 #include "CortexCommandRouter.h"
 #include "CortexDataCommandHandler.h"
 #include "Dom/JsonObject.h"
@@ -41,7 +42,11 @@ bool FCortexUndoDirectTest::RunTest(const FString& Parameters)
 
 		uint8* RowMemory = static_cast<uint8*>(FMemory::Malloc(FTableRowBase::StaticStruct()->GetStructureSize()));
 		FTableRowBase::StaticStruct()->InitializeStruct(RowMemory);
+#if UE_VERSION_OLDER_THAN(5, 6, 0)
+		TestTable->AddRow(FName(TEXT("DirectRow")), *reinterpret_cast<const FTableRowBase*>(RowMemory));
+#else
 		TestTable->AddRow(FName(TEXT("DirectRow")), RowMemory, FTableRowBase::StaticStruct());
+#endif
 		FTableRowBase::StaticStruct()->DestroyStruct(RowMemory);
 		FMemory::Free(RowMemory);
 	}

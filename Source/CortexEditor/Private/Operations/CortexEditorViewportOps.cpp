@@ -1,4 +1,5 @@
 #include "Operations/CortexEditorViewportOps.h"
+#include "Misc/EngineVersionComparison.h"
 #include "CortexCommandRouter.h"
 #include "Framework/Application/SlateApplication.h"
 #include "LevelEditor.h"

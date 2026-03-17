@@ -3,6 +3,7 @@
 #include "CortexTypes.h"
 #include "Misc/Guid.h"
 #include "Materials/Material.h"
+#include "MaterialDomain.h"
 #include "Materials/MaterialInstanceConstant.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
