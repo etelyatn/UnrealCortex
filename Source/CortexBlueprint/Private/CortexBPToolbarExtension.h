@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "CortexAnalysisTypes.h"
 
 class FBlueprintEditor;
 
@@ -25,4 +26,10 @@ private:
 
 	/** Build a lightweight payload from the current Blueprint editor state. */
 	static struct FCortexConversionPayload CapturePayload(TSharedPtr<FBlueprintEditor> Editor);
+
+	/** Handle "Analyze Blueprint" click — captures context, runs pre-scan, and broadcasts. */
+	static void OnAnalyzeBPClicked(TWeakPtr<FBlueprintEditor> WeakEditor);
+
+	/** Build an analysis payload from the current Blueprint editor state. */
+	static FCortexAnalysisPayload CaptureAnalysisPayload(TSharedPtr<FBlueprintEditor> Editor);
 };
