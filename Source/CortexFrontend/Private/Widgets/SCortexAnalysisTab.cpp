@@ -155,13 +155,16 @@ void SCortexAnalysisTab::Construct(const FArguments& InArgs)
 
 SCortexAnalysisTab::~SCortexAnalysisTab()
 {
-    if (BlueprintCompiledHandle.IsValid() && Context.IsValid())
+    if (BlueprintCompiledHandle.IsValid())
     {
-        const FString PkgName = FPackageName::ObjectPathToPackageName(Context->Payload.BlueprintPath);
-        if (UBlueprint* Blueprint = FindObject<UBlueprint>(nullptr, *Context->Payload.BlueprintPath))
+        if (Context.IsValid())
         {
-            Blueprint->OnCompiled().Remove(BlueprintCompiledHandle);
+            if (UBlueprint* Blueprint = FindObject<UBlueprint>(nullptr, *Context->Payload.BlueprintPath))
+            {
+                Blueprint->OnCompiled().Remove(BlueprintCompiledHandle);
+            }
         }
+        BlueprintCompiledHandle.Reset();
     }
 
     // Session cleanup
@@ -281,17 +284,20 @@ void SCortexAnalysisTab::OnAnalyzeClicked()
     }
 
     FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+    TWeakPtr<SCortexAnalysisTab> WeakSelf = SharedThis(this);
     Core.RequestSerialization(Request,
         FOnSerializationComplete::CreateLambda(
-            [this, SerializeStart, TotalStart, ScopeStr](const FCortexSerializationResult& SerResult)
+            [WeakSelf, SerializeStart, TotalStart, ScopeStr](const FCortexSerializationResult& SerResult)
             {
+                TSharedPtr<SCortexAnalysisTab> Self = WeakSelf.Pin();
+                if (!Self.IsValid()) return;
                 const double SerializeMs = (FPlatformTime::Seconds() - SerializeStart) * 1000.0;
 
                 if (!SerResult.bSuccess)
                 {
                     UE_LOG(LogCortexFrontend, Error, TEXT("  Analysis serialization FAILED: %s"),
                         *SerResult.JsonPayload);
-                    StatusMessage(FString::Printf(TEXT("[Error] Serialization failed: %s"),
+                    Self->StatusMessage(FString::Printf(TEXT("[Error] Serialization failed: %s"),
                         *SerResult.JsonPayload));
                     return;
                 }
@@ -302,77 +308,77 @@ void SCortexAnalysisTab::OnAnalyzeClicked()
                 UE_LOG(LogCortexFrontend, Log, TEXT("  Serialization complete: %.1fms, ~%d tokens, %d node mappings"),
                     SerializeMs, EstimatedTokens, SerResult.NodeIdMapping.Num());
 
-                StatusMessage(FString::Printf(TEXT("[Step 1/4] Serialized (%.0fms, ~%d tokens)"),
+                Self->StatusMessage(FString::Printf(TEXT("[Step 1/4] Serialized (%.0fms, ~%d tokens)"),
                     SerializeMs, EstimatedTokens));
 
                 // Token budget check
                 if (EstimatedTokens > 80000)
                 {
-                    StatusMessage(FString::Printf(
+                    Self->StatusMessage(FString::Printf(
                         TEXT("[Error] Blueprint too large (%d tokens). Select a narrower scope."),
                         EstimatedTokens));
                     return;
                 }
                 if (EstimatedTokens > 40000)
                 {
-                    StatusMessage(FString::Printf(
+                    Self->StatusMessage(FString::Printf(
                         TEXT("[Warning] Large Blueprint (%d tokens). Consider narrower scope."),
                         EstimatedTokens));
                 }
 
                 // Take ownership of cloned graphs and node mappings
                 FCortexSerializationResult MutableResult = SerResult;
-                Context->TakeOwnershipOfClonedGraphs(MutableResult);
+                Self->Context->TakeOwnershipOfClonedGraphs(MutableResult);
 
                 // Set initial graph in preview
-                if (!Context->Payload.CurrentGraphName.IsEmpty())
+                if (!Self->Context->Payload.CurrentGraphName.IsEmpty())
                 {
-                    Context->SetActiveGraph(FName(*Context->Payload.CurrentGraphName));
+                    Self->Context->SetActiveGraph(FName(*Self->Context->Payload.CurrentGraphName));
                 }
-                else if (Context->ClonedGraphs.Num() > 0)
+                else if (Self->Context->ClonedGraphs.Num() > 0)
                 {
-                    auto It = Context->ClonedGraphs.CreateIterator();
-                    Context->ActiveClonedGraph = It.Value();
+                    auto It = Self->Context->ClonedGraphs.CreateIterator();
+                    Self->Context->ActiveClonedGraph = It.Value();
                 }
 
-                if (GraphPreview.IsValid() && Context->GetActiveClonedGraph())
+                if (Self->GraphPreview.IsValid() && Self->Context->GetActiveClonedGraph())
                 {
-                    GraphPreview->SetInitialGraph(Context->GetActiveClonedGraph());
+                    Self->GraphPreview->SetInitialGraph(Self->Context->GetActiveClonedGraph());
                 }
 
                 // Assemble system prompt (focus layers only — BP data goes in user message)
-                FString SystemPrompt = FCortexAnalysisPromptAssembler::Assemble(*Context);
+                FString SystemPrompt = FCortexAnalysisPromptAssembler::Assemble(*Self->Context);
 
                 // Start CLI session
-                StatusMessage(TEXT("[Step 2/4] Starting CLI session..."));
-                StartAnalysis(SystemPrompt);
+                Self->StatusMessage(TEXT("[Step 2/4] Starting CLI session..."));
+                Self->StartAnalysis(SystemPrompt);
 
-                if (!Context.IsValid() || !Context->Session.IsValid())
+                if (!Self->Context.IsValid() || !Self->Context->Session.IsValid())
                 {
-                    StatusMessage(TEXT("[Error] Failed to start CLI session."));
+                    Self->StatusMessage(TEXT("[Error] Failed to start CLI session."));
                     return;
                 }
 
                 const double SessionMs = (FPlatformTime::Seconds() - TotalStart) * 1000.0;
-                StatusMessage(FString::Printf(TEXT("[Step 2/4] Session ready (%.0fms)"), SessionMs));
+                Self->StatusMessage(FString::Printf(TEXT("[Step 2/4] Session ready (%.0fms)"), SessionMs));
 
                 // Send initial analysis prompt
-                StatusMessage(TEXT("[Step 3/4] Sending analysis request..."));
+                Self->StatusMessage(TEXT("[Step 3/4] Sending analysis request..."));
 
                 FString InitialMessage = FCortexAnalysisPromptAssembler::BuildInitialUserMessage(
-                    *Context, Json);
-                Context->Session->AddUserPromptEntry(InitialMessage);
+                    *Self->Context, Json);
+                Self->Context->Session->AddUserPromptEntry(InitialMessage);
 
                 FCortexPromptRequest PromptRequest;
                 PromptRequest.Prompt = InitialMessage;
-                if (!Context->Session->SendPrompt(PromptRequest))
+                if (!Self->Context->Session->SendPrompt(PromptRequest))
                 {
-                    StatusMessage(TEXT("[Error] Failed to send prompt."));
+                    Self->StatusMessage(TEXT("[Error] Failed to send prompt."));
                     return;
                 }
 
                 const double TotalMs = (FPlatformTime::Seconds() - TotalStart) * 1000.0;
-                StatusMessage(FString::Printf(
+                Self->StatusMessage(FString::Printf(
                     TEXT("[Step 4/4] Waiting for analysis... (setup %.0fms)"), TotalMs));
             }));
 }

@@ -85,20 +85,24 @@ struct FCortexAnalysisContext : public FGCObject
         NodeIdMapping = MoveTemp(SerResult.NodeIdMapping);
         NodeDisplayNames = MoveTemp(SerResult.NodeDisplayNames);
 
-        // Build node -> graph name mapping from cloned graphs
+        // Build node -> graph name mapping from cloned graphs.
+        // Reverse map first (O(n)) to avoid O(n*m) inner loop.
+        TMap<FGuid, int32> GuidToNodeId;
+        GuidToNodeId.Reserve(NodeIdMapping.Num());
+        for (const auto& IdPair : NodeIdMapping)
+        {
+            GuidToNodeId.Add(IdPair.Value, IdPair.Key);
+        }
+
         for (const auto& Pair : ClonedGraphs)
         {
             for (UEdGraphNode* Node : Pair.Value->Nodes)
             {
                 if (Node)
                 {
-                    for (const auto& IdPair : NodeIdMapping)
+                    if (const int32* NodeId = GuidToNodeId.Find(Node->NodeGuid))
                     {
-                        if (IdPair.Value == Node->NodeGuid)
-                        {
-                            NodeGraphNames.Add(IdPair.Key, Pair.Key.ToString());
-                            break;
-                        }
+                        NodeGraphNames.Add(*NodeId, Pair.Key.ToString());
                     }
                 }
             }

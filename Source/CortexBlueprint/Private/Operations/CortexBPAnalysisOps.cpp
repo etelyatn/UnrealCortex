@@ -2076,6 +2076,7 @@ TArray<FCortexPreScanFinding> FCortexBPAnalysisOps::RunPreScan(UBlueprint* Bluep
 			if (Node->bHasCompilerMessage)
 			{
 				FCortexPreScanFinding Finding;
+				// EMessageSeverity: CriticalError=0, Error=1, Warning=3 — lower value = higher severity
 				Finding.Type = (Node->ErrorType <= EMessageSeverity::Error)
 					? ECortexPreScanType::CompilationError
 					: ECortexPreScanType::CompilationWarning;

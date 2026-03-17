@@ -237,7 +237,7 @@ void SCortexAnalysisChat::CollapseStatusMessages(const FCortexTurnResult& Result
 	else
 	{
 		SummaryEntry->Text = FString::Printf(TEXT("Analysis completed in %.1fs"),
-			Result.DurationMs / 1000.0);
+			(double)Result.DurationMs / 1000.0);
 	}
 
 	TSharedPtr<FCortexChatDisplayRow> SummaryRow = MakeShared<FCortexChatDisplayRow>();

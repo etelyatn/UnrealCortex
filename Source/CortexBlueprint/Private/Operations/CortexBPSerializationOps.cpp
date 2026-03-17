@@ -77,6 +77,31 @@ void FCortexBPSerializationOps::Serialize(const FCortexSerializationRequest& Req
 			}
 			break;
 		}
+		case ECortexConversionScope::SelectedNodes:
+		{
+			// Collect graphs that contain any of the requested node GUIDs
+			TSet<UEdGraph*> GraphSet;
+			TArray<UEdGraph*> AllGraphs;
+			Blueprint->GetAllGraphs(AllGraphs);
+			for (const FString& NodeIdStr : Request.SelectedNodeIds)
+			{
+				FGuid NodeGuid;
+				if (!FGuid::Parse(NodeIdStr, NodeGuid)) continue;
+				for (UEdGraph* G : AllGraphs)
+				{
+					for (UEdGraphNode* Node : G->Nodes)
+					{
+						if (Node && Node->NodeGuid == NodeGuid)
+						{
+							GraphSet.Add(G);
+							break;
+						}
+					}
+				}
+			}
+			TargetGraphs = GraphSet.Array();
+			break;
+		}
 		default:
 			break;
 		}
