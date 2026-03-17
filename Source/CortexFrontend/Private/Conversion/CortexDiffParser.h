@@ -17,4 +17,23 @@ namespace CortexDiffParser
      * treat the block as a regular full-file code block.
      */
     bool Parse(const FString& CodeBlockText, TArray<FCortexFrontendSearchReplacePair>& OutPairs);
+
+    /**
+     * Normalize text for reliable diff matching: strip all \r characters and
+     * trailing whitespace per line. AI-generated search text often differs from
+     * stored document content in invisible trailing spaces or stray \r.
+     */
+    inline FString NormalizeForDiff(const FString& Text)
+    {
+        FString Result = Text;
+        Result.ReplaceInline(TEXT("\r"), TEXT(""));
+
+        TArray<FString> Lines;
+        Result.ParseIntoArray(Lines, TEXT("\n"), false);
+        for (FString& Line : Lines)
+        {
+            Line = Line.TrimEnd();
+        }
+        return FString::Join(Lines, TEXT("\n"));
+    }
 }

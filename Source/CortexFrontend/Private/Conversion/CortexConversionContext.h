@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Conversion/CortexDiffParser.h"
 #include "CortexConversionTypes.h"
 
 class FCortexCliSession;
@@ -30,22 +31,19 @@ struct FCortexCodeDocument
 
     void UpdateHeader(const FString& NewCode)
     {
-        HeaderCode = NewCode;
-        HeaderCode.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
+        HeaderCode = CortexDiffParser::NormalizeForDiff(NewCode);
         OnDocumentChanged.Broadcast(ECortexCodeTab::Header);
     }
 
     void UpdateImplementation(const FString& NewCode)
     {
-        ImplementationCode = NewCode;
-        ImplementationCode.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
+        ImplementationCode = CortexDiffParser::NormalizeForDiff(NewCode);
         OnDocumentChanged.Broadcast(ECortexCodeTab::Implementation);
     }
 
     void UpdateSnippet(const FString& NewCode)
     {
-        SnippetCode = NewCode;
-        SnippetCode.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
+        SnippetCode = CortexDiffParser::NormalizeForDiff(NewCode);
         OnDocumentChanged.Broadcast(ECortexCodeTab::Snippet);
     }
 
@@ -128,10 +126,16 @@ struct FCortexConversionContext
     FString TargetEventOrFunction;   // For EventOrFunction scope — stores selected event name
     TArray<FString> SelectedFunctions; // For multi-select function scope — stores checked function names
     ECortexConversionDepth SelectedDepth = ECortexConversionDepth::CppCore;
+    FString CustomInstructions;        // Used when SelectedDepth == Custom
     ECortexConversionDestination SelectedDestination = ECortexConversionDestination::CreateNewClass;
     FString TargetClassName;       // selected ancestor class name, empty if CreateNewClass
     FString TargetHeaderPath;      // path to existing .h file, empty if CreateNewClass
     FString TargetSourcePath;      // path to existing .cpp file, empty if CreateNewClass
     bool bConversionStarted = false;
     bool bIsInitialGeneration = true;
+
+    // Token estimation (populated by background serialization on config panel open)
+    int32 EstimatedTotalTokens = 0;   // EntireBlueprint scope total
+    bool bTokenEstimateReady = false;
+    TMap<FString, int32> PerFunctionTokens;  // per event/function token estimates
 };

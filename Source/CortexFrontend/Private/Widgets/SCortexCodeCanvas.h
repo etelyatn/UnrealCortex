@@ -7,8 +7,8 @@
 
 class SCortexCodeBlock;
 class SCortexConversionOverlay;
-class SWidgetSwitcher;
 class STextBlock;
+class SWidgetSwitcher;
 
 DECLARE_DELEGATE(FOnCreateFilesClicked);
 
@@ -23,8 +23,7 @@ public:
 	void Construct(const FArguments& InArgs);
 	virtual ~SCortexCodeCanvas();
 
-	/** Show/hide the animated processing overlay. Call SetProcessing(true) before conversion
-	 *  starts and SetProcessing(false) once the first code chunk arrives. */
+	/** Show/hide the animated processing overlay. */
 	void SetProcessing(bool bProcessing);
 
 	/** Forward the serialized token count to the overlay so it can display an ETA. */
@@ -34,21 +33,20 @@ private:
 	void OnDocumentChanged(ECortexCodeTab ChangedTab);
 	FReply OnCopyClicked();
 	FReply OnCreateFilesButtonClicked();
-	void SwitchToTab(ECortexCodeTab Tab);
-	void UpdateTabLabels();
+	void UpdateLabels();
 
-	/** Count newlines in a string to get line count. */
 	static int32 CountLines(const FString& Code);
 
 	TSharedPtr<FCortexCodeDocument> Document;
-	TSharedPtr<SWidgetSwitcher> CodeSwitcher;
 	TSharedPtr<SCortexCodeBlock> HeaderBlock;
 	TSharedPtr<SCortexCodeBlock> ImplementationBlock;
-	TSharedPtr<STextBlock> HeaderTabLabel;
-	TSharedPtr<STextBlock> ImplTabLabel;
+	TSharedPtr<SCortexCodeBlock> SnippetBlock;
+	TSharedPtr<STextBlock> HeaderLabel;
+	TSharedPtr<STextBlock> ImplLabel;
+	TSharedPtr<STextBlock> SnippetLabel;
 	TSharedPtr<SCortexConversionOverlay> ProcessingOverlay;
+	TSharedPtr<SWidgetSwitcher> ModeSwitcher;
 	FOnCreateFilesClicked OnCreateFilesDelegate;
-	ECortexCodeTab CurrentTab = ECortexCodeTab::Header;
 	FDelegateHandle DocumentChangedHandle;
 	bool bIsProcessing = false;
 };

@@ -20,8 +20,7 @@ namespace
         const TArray<FCortexFrontendSearchReplacePair>& Pairs)
     {
         FApplyResult Result;
-        FString WorkingText = OriginalText;
-        WorkingText.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
+        FString WorkingText = CortexDiffParser::NormalizeForDiff(OriginalText);
 
         for (int32 i = 0; i < Pairs.Num(); ++i)
         {
@@ -248,6 +247,80 @@ bool FCortexDiffApplyAccumulatorOrderTest::RunTest(const FString& Parameters)
 
     TestEqual(TEXT("AppliedCount should be 2"), Result.AppliedCount, 2);
     TestEqual(TEXT("Result"), Result.ResultText, FString(TEXT("DDD\nBBB\n")));
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Test: trailing whitespace normalization — search text has trailing spaces
+//       that the document doesn't have (or vice versa). NormalizeForDiff
+//       strips trailing whitespace per line so the match still succeeds.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDiffApplyTrailingWhitespaceTest,
+    "Cortex.Frontend.DiffApply.TrailingWhitespace",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexDiffApplyTrailingWhitespaceTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Document has trailing spaces on lines; search text does not
+    const FString Original = TEXT("int A = 1;   \nint B = 2;\t\n");
+
+    // Parse a diff block where the search text has NO trailing whitespace
+    const FString DiffBlock =
+        TEXT("<<<<<<< SEARCH\n")
+        TEXT("int A = 1;\n")
+        TEXT("=======\n")
+        TEXT("int A = 99;\n")
+        TEXT(">>>>>>> REPLACE");
+
+    TArray<FCortexFrontendSearchReplacePair> Pairs;
+    const bool bParsed = CortexDiffParser::Parse(DiffBlock, Pairs);
+    TestTrue(TEXT("Should parse diff"), bParsed);
+
+    if (Pairs.Num() == 1)
+    {
+        const FApplyResult Result = ApplySearchReplacePairs(Original, Pairs);
+        TestEqual(TEXT("AppliedCount should be 1"), Result.AppliedCount, 1);
+        TestTrue(TEXT("Result should contain replacement"),
+            Result.ResultText.Contains(TEXT("int A = 99;")));
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Test: stray \r characters — document has \r that isn't part of \r\n
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDiffApplyStrayCarriageReturnTest,
+    "Cortex.Frontend.DiffApply.StrayCarriageReturn",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexDiffApplyStrayCarriageReturnTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Document has stray \r (not followed by \n)
+    const FString Original = TEXT("int A = 1;\r\nint B = 2;\n");
+
+    const FString DiffBlock =
+        TEXT("<<<<<<< SEARCH\n")
+        TEXT("int A = 1;\n")
+        TEXT("=======\n")
+        TEXT("int A = 99;\n")
+        TEXT(">>>>>>> REPLACE");
+
+    TArray<FCortexFrontendSearchReplacePair> Pairs;
+    CortexDiffParser::Parse(DiffBlock, Pairs);
+
+    if (Pairs.Num() == 1)
+    {
+        const FApplyResult Result = ApplySearchReplacePairs(Original, Pairs);
+        TestEqual(TEXT("AppliedCount should be 1"), Result.AppliedCount, 1);
+        TestTrue(TEXT("Result should contain replacement"),
+            Result.ResultText.Contains(TEXT("int A = 99;")));
+    }
 
     return true;
 }

@@ -209,6 +209,29 @@ int32 SCortexConversionOverlay::OnPaint(const FPaintArgs& Args, const FGeometry&
 		OutDrawElements, LayerId + 2, InWidgetStyle, bParentEnabled);
 }
 
+void SCortexConversionOverlay::ResetTimer()
+{
+	StartTime = FPlatformTime::Seconds();
+	LastDotTime = StartTime;
+	AnimTime = 0.0f;
+	DotPhase = 0;
+	TokenCount = 0;
+	EstimatedSeconds = 0.0f;
+
+	if (ElapsedLabel.IsValid())
+	{
+		ElapsedLabel->SetText(FText::FromString(TEXT("0s")));
+	}
+	if (PhaseLabel.IsValid())
+	{
+		PhaseLabel->SetText(NSLOCTEXT("CortexConversionOverlay", "Phase", "Serializing Blueprint..."));
+	}
+	if (TokenLabel.IsValid())
+	{
+		TokenLabel->SetVisibility(EVisibility::Collapsed);
+	}
+}
+
 void SCortexConversionOverlay::SetTokenCount(int32 Tokens)
 {
 	TokenCount = Tokens;

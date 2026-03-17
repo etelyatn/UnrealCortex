@@ -20,9 +20,8 @@ bool CortexDiffParser::Parse(const FString& CodeBlockText, TArray<FCortexFronten
         return false;
     }
 
-    // Canonicalize line endings
-    FString Normalized = CodeBlockText;
-    Normalized.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
+    // Canonicalize: strip all \r and trailing whitespace per line
+    FString Normalized = NormalizeForDiff(CodeBlockText);
 
     TArray<FString> Lines;
     Normalized.ParseIntoArray(Lines, TEXT("\n"), false);
