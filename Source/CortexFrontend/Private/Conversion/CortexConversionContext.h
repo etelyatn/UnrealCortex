@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Conversion/CortexDiffParser.h"
 #include "CortexConversionTypes.h"
 
 class FCortexCliSession;
@@ -30,22 +31,19 @@ struct FCortexCodeDocument
 
     void UpdateHeader(const FString& NewCode)
     {
-        HeaderCode = NewCode;
-        HeaderCode.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
+        HeaderCode = CortexDiffParser::NormalizeForDiff(NewCode);
         OnDocumentChanged.Broadcast(ECortexCodeTab::Header);
     }
 
     void UpdateImplementation(const FString& NewCode)
     {
-        ImplementationCode = NewCode;
-        ImplementationCode.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
+        ImplementationCode = CortexDiffParser::NormalizeForDiff(NewCode);
         OnDocumentChanged.Broadcast(ECortexCodeTab::Implementation);
     }
 
     void UpdateSnippet(const FString& NewCode)
     {
-        SnippetCode = NewCode;
-        SnippetCode.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
+        SnippetCode = CortexDiffParser::NormalizeForDiff(NewCode);
         OnDocumentChanged.Broadcast(ECortexCodeTab::Snippet);
     }
 

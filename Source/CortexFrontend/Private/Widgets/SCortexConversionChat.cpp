@@ -482,8 +482,9 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 							WorkingText = Doc->SnippetCode;
 						}
 
-						// Canonicalize (defensive)
-						WorkingText.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
+						// Normalize for reliable matching: strip \r and trailing whitespace per line
+						// (AI search text may differ from stored content in invisible whitespace)
+						WorkingText = CortexDiffParser::NormalizeForDiff(WorkingText);
 
 						bool bAnyApplied = false;
 						for (int32 i = 0; i < PairsCopy.Num(); ++i)
