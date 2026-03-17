@@ -319,7 +319,17 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
     @mcp.tool()
     def shutdown_editor(force: bool = True) -> str:
         """Gracefully shut down the Unreal Editor."""
-        return json.dumps(do_shutdown_editor(connection, force))
+        try:
+            response = connection.send_command("core.shutdown", {"force": force})
+            return format_response(response.get("data", {}), "shutdown_editor")
+        except (ConnectionError, RuntimeError):
+            return json.dumps(
+                {
+                    "message": "Shutdown initiated",
+                    "force": force,
+                    "note": "Connection closed as expected",
+                }
+            )
 
     @mcp.tool()
     def restart_editor(timeout: int = 120) -> str:
