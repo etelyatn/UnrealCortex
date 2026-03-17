@@ -47,6 +47,8 @@ private:
 	void RefreshVisibleEntries();
 	void ScrollToBottom();
 
+	void AddWarningEntry(const FString& Message);
+
 	TSharedPtr<FCortexConversionContext> Context;
 	TSharedPtr<SCortexInputArea> InputArea;
 	TSharedPtr<SListView<TSharedPtr<FCortexChatDisplayRow>>> ChatList;
@@ -54,6 +56,9 @@ private:
 
 	/** Status messages pushed before/during session creation. */
 	TArray<TSharedPtr<FCortexChatDisplayRow>> StatusRows;
+
+	/** Warnings from diff apply failures — appended to DisplayRows during RefreshVisibleEntries, cleared on next turn. */
+	TArray<TSharedPtr<FCortexChatDisplayRow>> WarningRows;
 
 	TArray<TSharedPtr<FCortexChatDisplayRow>> DisplayRows;
 	bool bAutoScroll = true;

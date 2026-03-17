@@ -109,17 +109,10 @@ void SCortexConversionTab::OnConvertClicked()
 	{
 		UE_LOG(LogCortexFrontend, Log, TEXT("  Destination: Inject into %s"), *Context->TargetClassName);
 	}
-	if (Context->SelectedScope == ECortexConversionScope::EventOrFunction)
+	if (Context->SelectedScope == ECortexConversionScope::EventOrFunction && Context->SelectedFunctions.Num() > 0)
 	{
-		if (!Context->TargetEventOrFunction.IsEmpty())
-		{
-			UE_LOG(LogCortexFrontend, Log, TEXT("  Target event: %s"), *Context->TargetEventOrFunction);
-		}
-		if (Context->SelectedFunctions.Num() > 0)
-		{
-			UE_LOG(LogCortexFrontend, Log, TEXT("  Target functions: %s"),
-				*FString::Join(Context->SelectedFunctions, TEXT(", ")));
-		}
+		UE_LOG(LogCortexFrontend, Log, TEXT("  Target events/functions: %s"),
+			*FString::Join(Context->SelectedFunctions, TEXT(", ")));
 	}
 
 	StatusMessage(FString::Printf(TEXT("[Step 1/4] Serializing Blueprint (%s: %s)..."),
@@ -139,15 +132,7 @@ void SCortexConversionTab::OnConvertClicked()
 	}
 	if (Context->SelectedScope == ECortexConversionScope::EventOrFunction)
 	{
-		// Single event takes priority; if no event, use multi-select functions
-		if (!Context->TargetEventOrFunction.IsEmpty())
-		{
-			Request.TargetGraphNames.Add(Context->TargetEventOrFunction);
-		}
-		else
-		{
-			Request.TargetGraphNames = Context->SelectedFunctions;
-		}
+		Request.TargetGraphNames = Context->SelectedFunctions;
 	}
 	if (Context->SelectedScope == ECortexConversionScope::SelectedNodes)
 	{
@@ -294,6 +279,17 @@ void SCortexConversionTab::StartConversion(const FString& AssembledSystemPrompt)
 	if (ConversionChat.IsValid())
 	{
 		ConversionChat->BindSession();
+	}
+
+	// Dismiss canvas overlay when the session ends (cancel, error, or completion)
+	Context->Session->OnTurnComplete.AddSP(this, &SCortexConversionTab::OnSessionTurnComplete);
+}
+
+void SCortexConversionTab::OnSessionTurnComplete(const FCortexTurnResult& /*Result*/)
+{
+	if (CodeCanvas.IsValid())
+	{
+		CodeCanvas->SetProcessing(false);
 	}
 }
 

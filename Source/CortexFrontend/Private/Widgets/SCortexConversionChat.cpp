@@ -5,6 +5,7 @@
 #include "Session/CortexCliSession.h"
 #include "Widgets/SCortexChatMessage.h"
 #include "Widgets/SCortexCodeBlock.h"
+#include "Widgets/SCortexDiffBlock.h"
 #include "Widgets/SCortexInputArea.h"
 #include "Widgets/SCortexProcessingIndicator.h"
 #include "Widgets/Input/SButton.h"
@@ -155,6 +156,9 @@ void SCortexConversionChat::OnTurnComplete(const FCortexTurnResult& Result)
 		return;
 	}
 
+	// Clear diff apply warnings from previous interactions
+	WarningRows.Empty();
+
 	if (Result.bIsError)
 	{
 		TArray<TSharedPtr<FCortexChatEntry>> ErrorEntries;
@@ -251,6 +255,95 @@ void SCortexConversionChat::ProcessCodeBlocks(const TArray<TSharedPtr<FCortexCha
 		return;
 	}
 
+	// During initial generation, infer targets for any untagged C++ code blocks.
+	// LLMs sometimes tag one block (e.g., implementation) but leave the other
+	// untagged, or output all blocks without tags. This handles all combinations.
+	if (Context->bIsInitialGeneration)
+	{
+		// First pass: collect tagged targets and untagged blocks
+		bool bHasTaggedHeader = false;
+		bool bHasTaggedImpl = false;
+		bool bHasTaggedSnippet = false;
+		TArray<TSharedPtr<FCortexChatEntry>> UntaggedCodeBlocks;
+
+		for (const TSharedPtr<FCortexChatEntry>& Entry : Entries)
+		{
+			if (Entry->Type != ECortexChatEntryType::CodeBlock)
+			{
+				continue;
+			}
+			if (Entry->CodeBlockTarget == TEXT("header"))
+			{
+				bHasTaggedHeader = true;
+			}
+			else if (Entry->CodeBlockTarget == TEXT("implementation"))
+			{
+				bHasTaggedImpl = true;
+			}
+			else if (Entry->CodeBlockTarget == TEXT("snippet"))
+			{
+				bHasTaggedSnippet = true;
+			}
+			else if (Entry->Language == TEXT("cpp") || Entry->Language == TEXT("c++") || Entry->Language == TEXT("h"))
+			{
+				UntaggedCodeBlocks.Add(Entry);
+			}
+		}
+
+		// Second pass: infer targets for untagged blocks, skipping targets
+		// already claimed by tagged blocks
+		if (UntaggedCodeBlocks.Num() > 0)
+		{
+			UE_LOG(LogCortexFrontend, Warning,
+				TEXT("ProcessCodeBlocks: %d untagged C++ blocks found (tagged: header=%d impl=%d snippet=%d) — inferring targets"),
+				UntaggedCodeBlocks.Num(),
+				bHasTaggedHeader ? 1 : 0,
+				bHasTaggedImpl ? 1 : 0,
+				bHasTaggedSnippet ? 1 : 0);
+
+			if (Context->Document->bIsSnippetMode)
+			{
+				// Snippet mode: all untagged blocks become snippets
+				for (const TSharedPtr<FCortexChatEntry>& Block : UntaggedCodeBlocks)
+				{
+					if (!bHasTaggedSnippet)
+					{
+						Block->CodeBlockTarget = TEXT("snippet");
+					}
+				}
+			}
+			else
+			{
+				// Full-class mode: infer header vs implementation from content
+				for (const TSharedPtr<FCortexChatEntry>& Block : UntaggedCodeBlocks)
+				{
+					const FString& Code = Block->Text;
+					const bool bLooksLikeHeader = Code.Contains(TEXT("#pragma once"))
+						|| Code.Contains(TEXT("UCLASS("))
+						|| Code.Contains(TEXT("USTRUCT("))
+						|| Code.Contains(TEXT("GENERATED_BODY()"));
+
+					if (bLooksLikeHeader && !bHasTaggedHeader)
+					{
+						Block->CodeBlockTarget = TEXT("header");
+						bHasTaggedHeader = true;
+					}
+					else if (!bHasTaggedImpl)
+					{
+						Block->CodeBlockTarget = TEXT("implementation");
+						bHasTaggedImpl = true;
+					}
+					else if (!bHasTaggedHeader)
+					{
+						// Last resort: if implementation is claimed, try header
+						Block->CodeBlockTarget = TEXT("header");
+						bHasTaggedHeader = true;
+					}
+				}
+			}
+		}
+	}
+
 	for (const TSharedPtr<FCortexChatEntry>& Entry : Entries)
 	{
 		if (Entry->Type != ECortexChatEntryType::CodeBlock)
@@ -279,6 +372,23 @@ void SCortexConversionChat::ProcessCodeBlocks(const TArray<TSharedPtr<FCortexCha
 			}
 		}
 		// For follow-up modifications, Apply buttons are added during row generation
+	}
+
+	// In full-class mode, warn if implementation was generated but header was not.
+	// This happens when the LLM ignores the tagging instructions.
+	if (Context->bIsInitialGeneration && !Context->Document->bIsSnippetMode)
+	{
+		const bool bHasImpl = !Context->Document->ImplementationCode.IsEmpty();
+		const bool bHasHeader = !Context->Document->HeaderCode.IsEmpty();
+
+		if (bHasImpl && !bHasHeader)
+		{
+			UE_LOG(LogCortexFrontend, Warning,
+				TEXT("ProcessCodeBlocks: Full-class mode — implementation generated but header is missing"));
+			AddStatusMessage(TEXT(
+				"[Warning] Header file was not generated. "
+				"Ask: \"Please provide the .h file using the ```cpp:header tag.\""));
+		}
 	}
 }
 
@@ -337,6 +447,118 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 		{
 			const bool bIsFollowUp = Row->PrimaryEntry->TurnIndex > 1;
 			const FString Target = Row->PrimaryEntry->CodeBlockTarget;
+
+			// Diff block: render as unified diff view with targeted apply
+			if (bIsFollowUp && Row->bIsDiffBlock && Context.IsValid())
+			{
+				TSharedPtr<FCortexConversionContext> CtxCopy = Context;
+				TArray<FCortexFrontendSearchReplacePair> PairsCopy = Row->SearchReplacePairs;
+				TWeakPtr<SCortexConversionChat> WeakSelf = StaticCastSharedRef<SCortexConversionChat>(AsShared());
+
+				Content = SNew(SCortexDiffBlock)
+					.Target(Target)
+					.Pairs(Row->SearchReplacePairs)
+					.OnApply_Lambda([CtxCopy, PairsCopy, Target, WeakSelf]()
+					{
+						if (!CtxCopy.IsValid() || !CtxCopy->Document.IsValid())
+						{
+							return FReply::Handled();
+						}
+
+						auto* Doc = CtxCopy->Document.Get();
+
+						// Determine which document text to work on
+						FString WorkingText;
+						if (Target == TEXT("header"))
+						{
+							WorkingText = Doc->HeaderCode;
+						}
+						else if (Target == TEXT("implementation"))
+						{
+							WorkingText = Doc->ImplementationCode;
+						}
+						else if (Target == TEXT("snippet"))
+						{
+							WorkingText = Doc->SnippetCode;
+						}
+
+						// Normalize for reliable matching: strip \r and trailing whitespace per line
+						// (AI search text may differ from stored content in invisible whitespace)
+						WorkingText = CortexDiffParser::NormalizeForDiff(WorkingText);
+
+						bool bAnyApplied = false;
+						for (int32 i = 0; i < PairsCopy.Num(); ++i)
+						{
+							const FCortexFrontendSearchReplacePair& Pair = PairsCopy[i];
+							const int32 Pos = WorkingText.Find(
+								*Pair.SearchText, ESearchCase::CaseSensitive,
+								ESearchDir::FromStart);
+
+							if (Pos == INDEX_NONE)
+							{
+								if (auto Pinned = WeakSelf.Pin())
+								{
+									Pinned->AddWarningEntry(FString::Printf(
+										TEXT("Could not find match for change %d — skipped"), i + 1));
+								}
+								continue;
+							}
+
+							// Check for ambiguity
+							const int32 Pos2 = WorkingText.Find(
+								*Pair.SearchText, ESearchCase::CaseSensitive,
+								ESearchDir::FromStart, Pos + Pair.SearchText.Len());
+							if (Pos2 != INDEX_NONE)
+							{
+								if (auto Pinned = WeakSelf.Pin())
+								{
+									Pinned->AddWarningEntry(FString::Printf(
+										TEXT("Ambiguous match for change %d — skipped (search text appears multiple times)"), i + 1));
+								}
+								continue;
+							}
+
+							// Splice
+							WorkingText = WorkingText.Left(Pos) + Pair.ReplaceText
+								+ WorkingText.Mid(Pos + Pair.SearchText.Len());
+							bAnyApplied = true;
+						}
+
+						if (bAnyApplied)
+						{
+							// Save snapshot only when we actually apply something
+							Doc->SaveSnapshot();
+							if (Target == TEXT("header"))
+							{
+								Doc->UpdateHeader(WorkingText);
+							}
+							else if (Target == TEXT("implementation"))
+							{
+								Doc->UpdateImplementation(WorkingText);
+							}
+							else if (Target == TEXT("snippet"))
+							{
+								Doc->UpdateSnippet(WorkingText);
+							}
+						}
+
+						return FReply::Handled();
+					})
+					.OnRevert_Lambda([CtxCopy]()
+					{
+						if (CtxCopy.IsValid() && CtxCopy->Document.IsValid())
+						{
+							CtxCopy->Document->RevertToSnapshot();
+						}
+						return FReply::Handled();
+					})
+					.IsRevertVisible_Lambda([CtxCopy]()
+					{
+						return CtxCopy.IsValid() && CtxCopy->Document.IsValid()
+							&& CtxCopy->Document->bHasSnapshot;
+					});
+				break;
+			}
 
 			if (bIsFollowUp && Context.IsValid())
 			{
@@ -530,6 +752,17 @@ void SCortexConversionChat::RefreshVisibleEntries()
 			else if (Entry->Type == ECortexChatEntryType::CodeBlock)
 			{
 				Row->RowType = ECortexChatRowType::CodeBlock;
+
+				// Parse diff markers for tagged follow-up code blocks
+				if (!Entry->CodeBlockTarget.IsEmpty() && Entry->TurnIndex > 1)
+				{
+					TArray<FCortexFrontendSearchReplacePair> DiffPairs;
+					if (CortexDiffParser::Parse(Entry->Text, DiffPairs))
+					{
+						Row->bIsDiffBlock = true;
+						Row->SearchReplacePairs = MoveTemp(DiffPairs);
+					}
+				}
 			}
 			else
 			{
@@ -539,6 +772,9 @@ void SCortexConversionChat::RefreshVisibleEntries()
 			DisplayRows.Add(Row);
 		}
 	}
+
+	// Append diff apply warnings (persist until next turn)
+	DisplayRows.Append(WarningRows);
 
 	if (ChatList.IsValid())
 	{
@@ -552,4 +788,20 @@ void SCortexConversionChat::ScrollToBottom()
 	{
 		ChatList->RequestScrollIntoView(DisplayRows.Last());
 	}
+}
+
+void SCortexConversionChat::AddWarningEntry(const FString& Message)
+{
+	TSharedPtr<FCortexChatEntry> Entry = MakeShared<FCortexChatEntry>();
+	Entry->Type = ECortexChatEntryType::AssistantMessage;
+	Entry->Text = Message;
+
+	TSharedPtr<FCortexChatDisplayRow> Row = MakeShared<FCortexChatDisplayRow>();
+	Row->PrimaryEntry = Entry;
+	Row->RowType = ECortexChatRowType::StatusRow;
+
+	WarningRows.Add(Row);
+
+	RefreshVisibleEntries();
+	ScrollToBottom();
 }

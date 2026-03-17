@@ -16,7 +16,8 @@ enum class ECortexConversionDepth : uint8
 {
 	PerformanceShell,
 	CppCore,          // default
-	FullExtraction
+	FullExtraction,
+	Custom            // user-written freeform instructions
 };
 
 // ── Conversion destination enum ──
