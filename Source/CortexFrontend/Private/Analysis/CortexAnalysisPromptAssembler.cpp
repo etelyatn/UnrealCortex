@@ -54,6 +54,10 @@ Look for: poor naming (generic variable names like "NewVar", "Bool1"), overly co
 ## C++ Migration Readiness Focus
 Look for: heavy math operations (vector math, matrix operations), large data iterations (ForEachLoop with >100 elements), frequently-called functions (called from Tick or per-frame delegates), complex state machines, string-heavy operations, performance-critical game logic that would benefit from native execution.)");
 
+    const TCHAR* EngineFixGuidanceLayer = TEXT(R"(
+## Engine Error Fix Guidance Focus
+The ENGINE DIAGNOSTICS section lists issues already detected by the engine. For each one, provide specific fix guidance: what went wrong, step-by-step fix instructions, and potential root causes. Do NOT re-report these as new findings — reference them and add remediation context.)");
+
     FString PreScanFindingsToString(const TArray<FCortexPreScanFinding>& Findings, int32 MaxCount = 50)
     {
         if (Findings.Num() == 0)
@@ -99,8 +103,8 @@ FString FCortexAnalysisPromptAssembler::Assemble(
         case ECortexFindingCategory::Bug:              Prompt += BugFocusLayer;  break;
         case ECortexFindingCategory::Performance:      Prompt += PerfFocusLayer; break;
         case ECortexFindingCategory::Quality:          Prompt += QualityFocusLayer; break;
-        case ECortexFindingCategory::CppCandidate:     Prompt += CppFocusLayer;  break;
-        case ECortexFindingCategory::EngineFixGuidance: break;
+        case ECortexFindingCategory::CppCandidate:      Prompt += CppFocusLayer;          break;
+        case ECortexFindingCategory::EngineFixGuidance: Prompt += EngineFixGuidanceLayer; break;
         }
     }
 
@@ -132,8 +136,8 @@ FString FCortexAnalysisPromptAssembler::BuildInitialUserMessage(
         case ECortexFindingCategory::Bug:              FocusNames.Add(TEXT("Bugs & Logic Errors")); break;
         case ECortexFindingCategory::Performance:      FocusNames.Add(TEXT("Performance")); break;
         case ECortexFindingCategory::Quality:          FocusNames.Add(TEXT("Blueprint Quality")); break;
-        case ECortexFindingCategory::CppCandidate:     FocusNames.Add(TEXT("C++ Migration Readiness")); break;
-        case ECortexFindingCategory::EngineFixGuidance: break;
+        case ECortexFindingCategory::CppCandidate:      FocusNames.Add(TEXT("C++ Migration Readiness"));       break;
+        case ECortexFindingCategory::EngineFixGuidance: FocusNames.Add(TEXT("Engine Error Fix Guidance")); break;
         }
     }
     Message += FString::Join(FocusNames, TEXT(", "));

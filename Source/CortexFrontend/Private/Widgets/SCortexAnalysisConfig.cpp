@@ -24,6 +24,12 @@ void SCortexAnalysisConfig::Construct(const FArguments& InArgs)
 
 	const FCortexAnalysisPayload& Payload = Context->Payload;
 
+	// Auto-check Fix Guidance when pre-scan found issues
+	if (Payload.PreScanFindings.Num() > 0)
+	{
+		EnabledFocusAreas.Add(ECortexFindingCategory::EngineFixGuidance);
+	}
+
 	ChildSlot
 	[
 		SNew(SScrollBox)
@@ -244,6 +250,12 @@ TSharedRef<SWidget> SCortexAnalysisConfig::BuildFocusCheckboxes()
 			MakeFocusRow(
 				NSLOCTEXT("CortexAnalysis", "FocusCpp", "C++ Migration Readiness"),
 				ECortexFindingCategory::CppCandidate)
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(8, 2, 0, 0)
+		[
+			MakeFocusRow(
+				NSLOCTEXT("CortexAnalysis", "FocusEngineErrors", "Fix Guidance for Engine Errors"),
+				ECortexFindingCategory::EngineFixGuidance)
 		];
 }
 
