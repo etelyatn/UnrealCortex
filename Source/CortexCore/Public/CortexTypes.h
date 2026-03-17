@@ -101,6 +101,11 @@ namespace CortexErrorCodes
 	static const FString InvalidCondition = TEXT("INVALID_CONDITION");
 	static const FString UnsupportedType = TEXT("UNSUPPORTED_TYPE");
 	static const FString MovementMethodUnavailable = TEXT("MOVEMENT_METHOD_UNAVAILABLE");
+	// QA recording/replay errors
+	static const FString SessionBusy = TEXT("SESSION_BUSY");
+	static const FString MapMismatch = TEXT("MAP_MISMATCH");
+	static const FString SessionNotFound = TEXT("SESSION_NOT_FOUND");
+	static const FString ReplayCancelled = TEXT("REPLAY_CANCELLED");
 	// Reflect errors
 	static const FString SymbolNotFound = TEXT("SYMBOL_NOT_FOUND");
 }

@@ -41,7 +41,7 @@ bool FCortexQASupportedCommandsTest::RunTest(const FString& Parameters)
 {
     FCortexQACommandHandler Handler;
     const TArray<FCortexCommandInfo> Commands = Handler.GetSupportedCommands();
-    TestEqual(TEXT("Handler should expose full QA command set"), Commands.Num(), 11);
+    TestEqual(TEXT("Handler should expose full QA command set"), Commands.Num(), 15);
 
     TSet<FString> Names;
     for (const FCortexCommandInfo& Info : Commands)

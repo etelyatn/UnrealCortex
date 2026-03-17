@@ -15,6 +15,9 @@ public:
     static UClass* ResolveActorClass(const FString& ClassIdentifier, FCortexCommandResult& OutError);
     static TSharedPtr<FJsonObject> SerializeActorSummary(AActor* Actor);
 
+    /** Resolve a sublevel by short name (e.g. "LVL_Cubic_Campus_BPs") to its loaded ULevel*. */
+    static ULevel* ResolveSublevel(UWorld* World, const FString& SublevelName, FCortexCommandResult& OutError);
+
     /** Parse a [X,Y,Z] JSON array field with a default fallback. Returns false only if format is invalid. */
     static bool TryParseVector(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldName, const FVector& DefaultValue, FVector& OutVector);
 

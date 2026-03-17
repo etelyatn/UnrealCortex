@@ -4,6 +4,7 @@
 #include "Dom/JsonObject.h"
 #include "Engine/Blueprint.h"
 #include "Engine/Engine.h"
+#include "Engine/LevelStreaming.h"
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
 #include "Misc/PackageName.h"
@@ -256,4 +257,33 @@ void FCortexLevelUtils::SetVectorArray(TSharedPtr<FJsonObject> Json, const TCHAR
     Values.Add(MakeShared<FJsonValueNumber>(Vector.Y));
     Values.Add(MakeShared<FJsonValueNumber>(Vector.Z));
     Json->SetArrayField(FieldName, Values);
+}
+
+ULevel* FCortexLevelUtils::ResolveSublevel(UWorld* World, const FString& SublevelName, FCortexCommandResult& OutError)
+{
+    if (!World)
+    {
+        OutError = FCortexCommandRouter::Error(CortexErrorCodes::EditorNotReady, TEXT("World is not available"));
+        return nullptr;
+    }
+
+    for (ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
+    {
+        if (!StreamingLevel || !StreamingLevel->GetLoadedLevel())
+        {
+            continue;
+        }
+
+        const FString PackageName = StreamingLevel->GetWorldAssetPackageFName().ToString();
+        if (PackageName.EndsWith(SublevelName) || StreamingLevel->GetWorldAsset().GetAssetName() == SublevelName)
+        {
+            return StreamingLevel->GetLoadedLevel();
+        }
+    }
+
+    OutError = FCortexCommandRouter::Error(
+        CortexErrorCodes::InvalidValue,
+        FString::Printf(TEXT("Sublevel not found or not loaded: %s"), *SublevelName)
+    );
+    return nullptr;
 }

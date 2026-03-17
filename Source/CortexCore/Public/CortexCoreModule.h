@@ -5,6 +5,7 @@
 #include "ICortexCommandRegistry.h"
 #include "CortexTcpServer.h"
 #include "CortexConversionTypes.h"
+#include "CortexCoreDelegates.h"
 
 CORTEXCORE_API DECLARE_LOG_CATEGORY_EXTERN(LogCortex, Log, All);
 
@@ -28,6 +29,9 @@ public:
 	// Conversion UI delegates
 	FOnCortexConversionRequested& OnConversionRequested() { return ConversionRequestedDelegate; }
 
+	// Generic domain progress delegate
+	FOnCortexDomainProgress& OnDomainProgress() { return DomainProgressDelegate; }
+
 	// Serialization callback — CortexBlueprint binds at startup, unbinds at shutdown
 	void SetSerializationHandler(FOnCortexSerializationRequested Handler)
 	{
@@ -42,5 +46,6 @@ private:
 	TUniquePtr<FCortexTcpServer> TcpServer;
 
 	FOnCortexConversionRequested ConversionRequestedDelegate;
+	FOnCortexDomainProgress DomainProgressDelegate;
 	FOnCortexSerializationRequested SerializationHandler;
 };
