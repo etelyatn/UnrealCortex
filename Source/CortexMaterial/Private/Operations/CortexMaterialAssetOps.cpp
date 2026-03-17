@@ -2,6 +2,7 @@
 #include "CortexMaterialModule.h"
 #include "CortexEditorUtils.h"
 #include "Materials/Material.h"
+#include "MaterialDomain.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialParameterCollection.h"

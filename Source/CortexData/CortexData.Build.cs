@@ -23,6 +23,7 @@ public class CortexData : ModuleRules
             "Networking",
             "AssetRegistry",
             "UnrealEd",
+            "StructUtils",
         });
     }
 }
