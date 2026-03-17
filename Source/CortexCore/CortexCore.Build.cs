@@ -27,6 +27,7 @@ public class CortexCore : ModuleRules
             // Not used in production CortexCore code.
             "EnhancedInput",
             "InputCore",
+            "StructUtils",
         });
     }
 }
