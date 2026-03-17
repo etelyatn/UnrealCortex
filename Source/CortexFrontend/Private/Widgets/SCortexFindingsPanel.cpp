@@ -1,6 +1,7 @@
 // Source/CortexFrontend/Private/Widgets/SCortexFindingsPanel.cpp
 #include "Widgets/SCortexFindingsPanel.h"
 
+#include "Analysis/CortexAnalysisContext.h"
 #include "Analysis/CortexFindingTypes.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
@@ -33,6 +34,7 @@ void SCortexFindingsPanel::Construct(const FArguments& InArgs)
             SAssignNew(FindingsList, SListView<TSharedPtr<FCortexAnalysisFinding>>)
             .ListItemsSource(&FindingsData)
             .OnGenerateRow(this, &SCortexFindingsPanel::GenerateRow)
+            .OnSelectionChanged(this, &SCortexFindingsPanel::OnSelectionChanged)
             .SelectionMode(ESelectionMode::Single)
         ]
     ];
@@ -70,11 +72,6 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
         SNew(SBorder)
         .BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
         .Padding(8)
-        .OnMouseButtonDown_Lambda([this, Finding](const FGeometry&, const FPointerEvent&)
-        {
-            OnFindingClicked(Finding);
-            return FReply::Handled();
-        })
         [
             SNew(SVerticalBox)
 
@@ -106,6 +103,13 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
     ];
 }
 
+void SCortexFindingsPanel::OnSelectionChanged(
+    TSharedPtr<FCortexAnalysisFinding> Finding,
+    ESelectInfo::Type SelectionType)
+{
+    OnFindingClicked(Finding);
+}
+
 void SCortexFindingsPanel::OnFindingClicked(TSharedPtr<FCortexAnalysisFinding> Finding)
 {
     if (Finding.IsValid())
@@ -121,16 +125,16 @@ FText SCortexFindingsPanel::GetSummaryText() const
         return NSLOCTEXT("CortexAnalysis", "NoFindings", "No findings yet");
     }
 
-    int32 Bugs = 0, Perf = 0, Quality = 0, Cpp = 0;
+    int32 Bugs = 0, Perf = 0, Quality = 0, Cpp = 0, EngFix = 0;
     for (const auto& F : FindingsData)
     {
         switch (F->Category)
         {
-        case ECortexFindingCategory::Bug:           ++Bugs;    break;
-        case ECortexFindingCategory::Performance:   ++Perf;    break;
-        case ECortexFindingCategory::Quality:       ++Quality; break;
-        case ECortexFindingCategory::CppCandidate:  ++Cpp;     break;
-        default:                                               break;
+        case ECortexFindingCategory::Bug:                ++Bugs;    break;
+        case ECortexFindingCategory::Performance:        ++Perf;    break;
+        case ECortexFindingCategory::Quality:            ++Quality; break;
+        case ECortexFindingCategory::CppCandidate:       ++Cpp;     break;
+        case ECortexFindingCategory::EngineFixGuidance:  ++EngFix;  break;
         }
     }
 
@@ -144,6 +148,7 @@ FText SCortexFindingsPanel::GetSummaryText() const
     if (Perf > 0)    Append(FString::Printf(TEXT("%d perf"), Perf));
     if (Quality > 0) Append(FString::Printf(TEXT("%d quality"), Quality));
     if (Cpp > 0)     Append(FString::Printf(TEXT("%d C++"), Cpp));
+    if (EngFix > 0)  Append(FString::Printf(TEXT("%d engine"), EngFix));
 
     return FText::FromString(Summary);
 }

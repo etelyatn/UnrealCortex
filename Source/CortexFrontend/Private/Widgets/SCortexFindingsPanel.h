@@ -2,8 +2,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Analysis/CortexAnalysisContext.h"
 #include "Analysis/CortexFindingTypes.h"
+
+struct FCortexAnalysisContext;
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Views/SListView.h"
@@ -36,6 +37,7 @@ private:
         TSharedPtr<FCortexAnalysisFinding> Finding,
         const TSharedRef<STableViewBase>& OwnerTable);
 
+    void OnSelectionChanged(TSharedPtr<FCortexAnalysisFinding> Finding, ESelectInfo::Type SelectionType);
     void OnFindingClicked(TSharedPtr<FCortexAnalysisFinding> Finding);
     FText GetSummaryText() const;
     FSlateColor GetSeverityColor(ECortexFindingSeverity Severity) const;
