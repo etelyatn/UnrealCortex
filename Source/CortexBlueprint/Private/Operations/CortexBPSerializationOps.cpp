@@ -48,6 +48,92 @@ void FCortexBPSerializationOps::Serialize(const FCortexSerializationRequest& Req
 		return;
 	}
 
+	// ── Analysis path: globally monotonic IDs, positions, optional cloning ──
+	if (Request.bBuildNodeIdMapping || Request.bIncludePositions || Request.bCloneGraphs)
+	{
+		int32 RunningCounter = 0;
+		TMap<int32, FGuid> NodeIdMapping;
+		TMap<int32, FString> NodeDisplayNames;
+
+		// Determine target graphs
+		TArray<UEdGraph*> TargetGraphs;
+		switch (Request.Scope)
+		{
+		case ECortexConversionScope::EntireBlueprint:
+			for (UEdGraph* G : Blueprint->UbergraphPages) TargetGraphs.Add(G);
+			for (UEdGraph* G : Blueprint->FunctionGraphs) TargetGraphs.Add(G);
+			break;
+		case ECortexConversionScope::CurrentGraph:
+		case ECortexConversionScope::EventOrFunction:
+		{
+			TArray<UEdGraph*> AllGraphs;
+			Blueprint->GetAllGraphs(AllGraphs);
+			for (UEdGraph* G : AllGraphs)
+			{
+				if (Request.TargetGraphNames.Contains(G->GetFName().ToString()))
+				{
+					TargetGraphs.Add(G);
+				}
+			}
+			break;
+		}
+		default:
+			break;
+		}
+
+		// Build root JSON object
+		TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+		Root->SetStringField(TEXT("blueprint_name"), Blueprint->GetName());
+		Root->SetStringField(TEXT("parent_class"),
+			Blueprint->ParentClass ? Blueprint->ParentClass->GetName() : TEXT("None"));
+
+		Root->SetField(TEXT("variables"), MakeShared<FJsonValueArray>(VariablesToJson(Blueprint)));
+		Root->SetField(TEXT("components"), MakeShared<FJsonValueArray>(ComponentsToJson(Blueprint)));
+
+		TArray<TSharedPtr<FJsonValue>> GraphsJson;
+		for (UEdGraph* G : TargetGraphs)
+		{
+			GraphsJson.Add(MakeShared<FJsonValueObject>(
+				GraphToJsonCompact(G, RunningCounter, Request.bIncludePositions,
+					Request.bBuildNodeIdMapping ? &NodeIdMapping : nullptr,
+					Request.bBuildNodeIdMapping ? &NodeDisplayNames : nullptr)));
+		}
+		Root->SetField(TEXT("graphs"), MakeShared<FJsonValueArray>(GraphsJson));
+
+		FString Output;
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output, 0);
+		FJsonSerializer::Serialize(Root, Writer);
+
+		FCortexSerializationResult Result;
+		Result.bSuccess = true;
+		Result.JsonPayload = Output;
+		Result.NodeIdMapping = MoveTemp(NodeIdMapping);
+		Result.NodeDisplayNames = MoveTemp(NodeDisplayNames);
+
+		// Graph cloning
+		if (Request.bCloneGraphs && TargetGraphs.Num() > 0)
+		{
+			FString TempPkgName = FString::Printf(
+				TEXT("/Temp/CortexAnalysis_%s"), *FGuid::NewGuid().ToString());
+			UPackage* TempPackage = CreatePackage(*TempPkgName);
+			TempPackage->SetFlags(RF_Transient);
+
+			for (UEdGraph* SourceGraph : TargetGraphs)
+			{
+				UEdGraph* ClonedGraph = DuplicateObject<UEdGraph>(
+					SourceGraph, TempPackage, SourceGraph->GetFName());
+				ClonedGraph->SetFlags(RF_Transient);
+			}
+
+			TempPackage->ClearDirtyFlag();
+			TempPackage->AddToRoot();  // Prevent GC until caller takes ownership
+			Result.ClonedGraphPackage = TempPackage;
+		}
+
+		Callback.Execute(Result);
+		return;
+	}
+
 	FString Json;
 	if (Request.bConversionMode)
 	{
@@ -849,6 +935,65 @@ FString FCortexBPSerializationOps::SerializeEventOrFunctionCompact(UBlueprint* B
 	}
 
 	return TEXT("{\"error\":\"Event or function not found\"}");
+}
+
+TSharedRef<FJsonObject> FCortexBPSerializationOps::GraphToJsonCompact(
+	UEdGraph* Graph,
+	int32& RunningCounter,
+	bool bIncludePositions,
+	TMap<int32, FGuid>* OutNodeIdMapping,
+	TMap<int32, FString>* OutNodeDisplayNames)
+{
+	// Build index map with globally monotonic IDs
+	TMap<UEdGraphNode*, int32> IndexMap;
+	IndexMap.Reserve(Graph->Nodes.Num());
+	for (int32 i = 0; i < Graph->Nodes.Num(); ++i)
+	{
+		const int32 GlobalId = RunningCounter++;
+		IndexMap.Add(Graph->Nodes[i], GlobalId);
+
+		if (OutNodeIdMapping)
+		{
+			OutNodeIdMapping->Add(GlobalId, Graph->Nodes[i]->NodeGuid);
+		}
+		if (OutNodeDisplayNames)
+		{
+			OutNodeDisplayNames->Add(GlobalId,
+				Graph->Nodes[i]->GetNodeTitle(ENodeTitleType::ListView).ToString());
+		}
+	}
+
+	TSharedRef<FJsonObject> Obj = MakeShared<FJsonObject>();
+	Obj->SetStringField(TEXT("name"), Graph->GetFName().ToString());
+
+	TArray<TSharedPtr<FJsonValue>> NodesJson;
+	NodesJson.Reserve(Graph->Nodes.Num());
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		NodesJson.Add(MakeShared<FJsonValueObject>(
+			NodeToJsonCompact(Node, IndexMap, bIncludePositions)));
+	}
+	Obj->SetField(TEXT("nodes"), MakeShared<FJsonValueArray>(NodesJson));
+
+	return Obj;
+}
+
+TSharedRef<FJsonObject> FCortexBPSerializationOps::NodeToJsonCompact(
+	UEdGraphNode* Node,
+	const TMap<UEdGraphNode*, int32>& IndexMap,
+	bool bIncludePositions)
+{
+	// Call existing NodeToJsonCompact for base fields (the one without bIncludePositions)
+	TSharedRef<FJsonObject> Obj = NodeToJsonCompact(Node, IndexMap);
+
+	// Add positions if requested
+	if (bIncludePositions)
+	{
+		Obj->SetNumberField(TEXT("x"), Node->NodePosX);
+		Obj->SetNumberField(TEXT("y"), Node->NodePosY);
+	}
+
+	return Obj;
 }
 
 FString FCortexBPSerializationOps::SerializeMultipleEventOrFunctionCompact(UBlueprint* Blueprint, const TArray<FString>& TargetNames)
