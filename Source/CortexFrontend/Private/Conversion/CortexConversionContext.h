@@ -128,10 +128,16 @@ struct FCortexConversionContext
     FString TargetEventOrFunction;   // For EventOrFunction scope — stores selected event name
     TArray<FString> SelectedFunctions; // For multi-select function scope — stores checked function names
     ECortexConversionDepth SelectedDepth = ECortexConversionDepth::CppCore;
+    FString CustomInstructions;        // Used when SelectedDepth == Custom
     ECortexConversionDestination SelectedDestination = ECortexConversionDestination::CreateNewClass;
     FString TargetClassName;       // selected ancestor class name, empty if CreateNewClass
     FString TargetHeaderPath;      // path to existing .h file, empty if CreateNewClass
     FString TargetSourcePath;      // path to existing .cpp file, empty if CreateNewClass
     bool bConversionStarted = false;
     bool bIsInitialGeneration = true;
+
+    // Token estimation (populated by background serialization on config panel open)
+    int32 EstimatedTotalTokens = 0;   // EntireBlueprint scope total
+    bool bTokenEstimateReady = false;
+    TMap<FString, int32> PerFunctionTokens;  // per event/function token estimates
 };

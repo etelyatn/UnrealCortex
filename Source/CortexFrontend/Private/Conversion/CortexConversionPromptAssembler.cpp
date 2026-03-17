@@ -39,6 +39,16 @@ FString FCortexConversionPromptAssembler::Assemble(
 	case ECortexConversionDepth::FullExtraction:
 		Result += CortexConversionPrompts::DepthLayerFullExtraction();
 		break;
+	case ECortexConversionDepth::Custom:
+		if (!Context.CustomInstructions.IsEmpty())
+		{
+			Result += FString::Printf(TEXT("Conversion Instructions: CUSTOM\n\n%s"), *Context.CustomInstructions);
+		}
+		else
+		{
+			Result += CortexConversionPrompts::DepthLayerCppCore();
+		}
+		break;
 	}
 	Result += TEXT("\n\n");
 
@@ -173,19 +183,10 @@ FString FCortexConversionPromptAssembler::LoadFragment(const FString& Filename)
 bool FCortexConversionPromptAssembler::ShouldUseSnippetMode(
 	ECortexConversionScope Scope, ECortexConversionDepth Depth)
 {
-	// EntireBlueprint always uses FullClass
-	if (Scope == ECortexConversionScope::EntireBlueprint)
-	{
-		return false;
-	}
-
-	// FullExtraction always uses FullClass (generates complete standalone class)
-	if (Depth == ECortexConversionDepth::FullExtraction)
-	{
-		return false;
-	}
-
-	// All other combinations: SelectedNodes/CurrentGraph/EventOrFunction
-	// with PerformanceShell or CppCore use Snippet
-	return true;
+	// Snippet mode only for PerformanceShell with a narrow scope —
+	// extracting one hot function as a code fragment.
+	// All other depths (CppCore, FullExtraction, Custom) always produce
+	// a complete class with header + implementation (full-class mode).
+	return Depth == ECortexConversionDepth::PerformanceShell
+		&& Scope != ECortexConversionScope::EntireBlueprint;
 }

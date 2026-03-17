@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Conversion/CortexConversionContext.h"
+#include "Session/CortexSessionTypes.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
@@ -23,6 +24,7 @@ private:
 	void StartConversion(const FString& AssembledSystemPrompt);
 	void StatusMessage(const FString& Message);
 	void OnCreateFilesRequested();
+	void OnSessionTurnComplete(const FCortexTurnResult& Result);
 
 	TSharedPtr<FCortexConversionContext> Context;
 	TSharedPtr<SWidgetSwitcher> ViewSwitcher;

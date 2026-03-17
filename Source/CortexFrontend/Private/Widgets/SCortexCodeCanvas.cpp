@@ -3,16 +3,16 @@
 #include "Widgets/SCortexCodeBlock.h"
 #include "Widgets/SCortexConversionOverlay.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/SOverlay.h"
+#include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 #include "HAL/PlatformApplicationMisc.h"
 
 namespace
 {
-	const FLinearColor ActiveTabColor(0.9f, 0.9f, 0.9f);
-	const FLinearColor InactiveTabColor(0.45f, 0.45f, 0.45f);
+	const FLinearColor LabelColor(0.55f, 0.7f, 0.85f);
 }
 
 void SCortexCodeCanvas::Construct(const FArguments& InArgs)
@@ -20,50 +20,95 @@ void SCortexCodeCanvas::Construct(const FArguments& InArgs)
 	Document = InArgs._Document;
 	OnCreateFilesDelegate = InArgs._OnCreateFiles;
 
+	// ── Full-class layout: header (40%) + thin separator + implementation (60%) ──
+	TSharedRef<SWidget> FullClassLayout =
+		SNew(SVerticalBox)
+
+		// .h label
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(8, 4, 8, 2)
+		[
+			SAssignNew(HeaderLabel, STextBlock)
+			.Text(NSLOCTEXT("CortexCodeCanvas", "HeaderLabel", ".h"))
+			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+			.ColorAndOpacity(FSlateColor(LabelColor))
+		]
+
+		// Header code block (40% of remaining height)
+		+ SVerticalBox::Slot()
+		.FillHeight(0.4f)
+		[
+			SAssignNew(HeaderBlock, SCortexCodeBlock)
+			.Code(Document.IsValid() ? Document->HeaderCode : FString())
+			.Language(TEXT("cpp"))
+		]
+
+		// Thin divider
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			SNew(SSeparator)
+			.Orientation(Orient_Horizontal)
+			.Thickness(1.0f)
+		]
+
+		// .cpp label
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(8, 4, 8, 2)
+		[
+			SAssignNew(ImplLabel, STextBlock)
+			.Text(NSLOCTEXT("CortexCodeCanvas", "ImplLabel", ".cpp"))
+			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+			.ColorAndOpacity(FSlateColor(LabelColor))
+		]
+
+		// Implementation code block (60% of remaining height)
+		+ SVerticalBox::Slot()
+		.FillHeight(0.6f)
+		[
+			SAssignNew(ImplementationBlock, SCortexCodeBlock)
+			.Code(Document.IsValid() ? Document->ImplementationCode : FString())
+			.Language(TEXT("cpp"))
+		];
+
+	// ── Snippet layout: single panel ──
+	TSharedRef<SWidget> SnippetLayout =
+		SNew(SVerticalBox)
+
+		// Snippet label
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(8, 4, 8, 2)
+		[
+			SAssignNew(SnippetLabel, STextBlock)
+			.Text(NSLOCTEXT("CortexCodeCanvas", "SnippetLabel", "Snippet"))
+			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+			.ColorAndOpacity(FSlateColor(LabelColor))
+		]
+
+		// Snippet code (fills remaining space)
+		+ SVerticalBox::Slot()
+		.FillHeight(1.0f)
+		[
+			SAssignNew(SnippetBlock, SCortexCodeBlock)
+			.Code(Document.IsValid() ? Document->SnippetCode : FString())
+			.Language(TEXT("cpp"))
+		];
+
+	// ── Mode switcher: index 0 = full-class, index 1 = snippet ──
+	// Start in full-class mode; switches to snippet when bIsSnippetMode is set
 	ChildSlot
 	[
 		SNew(SVerticalBox)
 
-		// Tab bar: .h / .cpp + Copy + Create Files
+		// Action bar: Copy + Create Files
 		+ SVerticalBox::Slot()
 		.AutoHeight()
 		.Padding(4)
 		[
 			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2)
-			[
-				SNew(SButton)
-				.OnClicked_Lambda([this]()
-				{
-					SwitchToTab(ECortexCodeTab::Header);
-					return FReply::Handled();
-				})
-				[
-					SAssignNew(HeaderTabLabel, STextBlock)
-					.Text(NSLOCTEXT("CortexCodeCanvas", "HeaderTab", ".h"))
-					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
-					.ColorAndOpacity(FSlateColor(ActiveTabColor))
-				]
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2)
-			[
-				SNew(SButton)
-				.OnClicked_Lambda([this]()
-				{
-					SwitchToTab(ECortexCodeTab::Implementation);
-					return FReply::Handled();
-				})
-				[
-					SAssignNew(ImplTabLabel, STextBlock)
-					.Text(NSLOCTEXT("CortexCodeCanvas", "ImplTab", ".cpp"))
-					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
-					.ColorAndOpacity(FSlateColor(InactiveTabColor))
-				]
-			]
 			+ SHorizontalBox::Slot()
 			.FillWidth(1.0f)
 			[
@@ -74,7 +119,7 @@ void SCortexCodeCanvas::Construct(const FArguments& InArgs)
 			.Padding(2)
 			[
 				SNew(SButton)
-				.Text(NSLOCTEXT("CortexCodeCanvas", "Copy", "Copy"))
+				.Text(NSLOCTEXT("CortexCodeCanvas", "Copy", "Copy All"))
 				.OnClicked(this, &SCortexCodeCanvas::OnCopyClicked)
 			]
 			+ SHorizontalBox::Slot()
@@ -93,26 +138,25 @@ void SCortexCodeCanvas::Construct(const FArguments& InArgs)
 		[
 			SNew(SOverlay)
 
-			// Slot 0: syntax-highlighted code
 			+ SOverlay::Slot()
 			[
-				SAssignNew(CodeSwitcher, SWidgetSwitcher)
+				SAssignNew(ModeSwitcher, SWidgetSwitcher)
 				.WidgetIndex(0)
+
+				// Index 0: full-class (header + implementation)
 				+ SWidgetSwitcher::Slot()
 				[
-					SAssignNew(HeaderBlock, SCortexCodeBlock)
-					.Code(Document.IsValid() ? Document->HeaderCode : FString())
-					.Language(TEXT("cpp"))
+					FullClassLayout
 				]
+
+				// Index 1: snippet
 				+ SWidgetSwitcher::Slot()
 				[
-					SAssignNew(ImplementationBlock, SCortexCodeBlock)
-					.Code(Document.IsValid() ? Document->ImplementationCode : FString())
-					.Language(TEXT("cpp"))
+					SnippetLayout
 				]
 			]
 
-			// Slot 1: animated overlay shown while LLM is generating (hidden by default)
+			// Animated overlay shown while LLM is generating (hidden by default)
 			+ SOverlay::Slot()
 			[
 				SAssignNew(ProcessingOverlay, SCortexConversionOverlay)
@@ -125,7 +169,7 @@ void SCortexCodeCanvas::Construct(const FArguments& InArgs)
 		.Padding(8, 4)
 		[
 			SNew(STextBlock)
-			.Text(NSLOCTEXT("CortexCodeCanvas", "Footer", "Read-only — modify via chat"))
+			.Text(NSLOCTEXT("CortexCodeCanvas", "Footer", "Read-only \u2014 modify via chat"))
 			.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
 			.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
 		]
@@ -143,6 +187,9 @@ void SCortexCodeCanvas::Construct(const FArguments& InArgs)
 		DocumentChangedHandle = Document->OnDocumentChanged.AddSP(
 			this, &SCortexCodeCanvas::OnDocumentChanged);
 	}
+
+	// Set initial label state (shows "not generated" until code arrives)
+	UpdateLabels();
 }
 
 SCortexCodeCanvas::~SCortexCodeCanvas()
@@ -160,6 +207,16 @@ void SCortexCodeCanvas::OnDocumentChanged(ECortexCodeTab ChangedTab)
 		return;
 	}
 
+	// Switch mode on first code arrival if snippet mode was set after construction
+	if (ModeSwitcher.IsValid())
+	{
+		const int32 TargetIndex = Document->bIsSnippetMode ? 1 : 0;
+		if (ModeSwitcher->GetActiveWidgetIndex() != TargetIndex)
+		{
+			ModeSwitcher->SetActiveWidgetIndex(TargetIndex);
+		}
+	}
+
 	if (ChangedTab == ECortexCodeTab::Header && HeaderBlock.IsValid())
 	{
 		HeaderBlock->SetCode(Document->HeaderCode);
@@ -168,14 +225,18 @@ void SCortexCodeCanvas::OnDocumentChanged(ECortexCodeTab ChangedTab)
 	{
 		ImplementationBlock->SetCode(Document->ImplementationCode);
 	}
+	else if (ChangedTab == ECortexCodeTab::Snippet && SnippetBlock.IsValid())
+	{
+		SnippetBlock->SetCode(Document->SnippetCode);
+	}
 
 	// Dismiss the processing overlay as soon as any code arrives
-	if (bIsProcessing && (!Document->HeaderCode.IsEmpty() || !Document->ImplementationCode.IsEmpty()))
+	if (bIsProcessing && (!Document->HeaderCode.IsEmpty() || !Document->ImplementationCode.IsEmpty() || !Document->SnippetCode.IsEmpty()))
 	{
 		SetProcessing(false);
 	}
 
-	UpdateTabLabels();
+	UpdateLabels();
 }
 
 void SCortexCodeCanvas::SetProcessing(bool bProcessing)
@@ -183,6 +244,10 @@ void SCortexCodeCanvas::SetProcessing(bool bProcessing)
 	bIsProcessing = bProcessing;
 	if (ProcessingOverlay.IsValid())
 	{
+		if (bProcessing)
+		{
+			ProcessingOverlay->ResetTimer();
+		}
 		ProcessingOverlay->SetVisibility(bProcessing ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed);
 	}
 }
@@ -202,11 +267,19 @@ FReply SCortexCodeCanvas::OnCopyClicked()
 		return FReply::Handled();
 	}
 
-	const FString& Code = (CurrentTab == ECortexCodeTab::Header)
-		? Document->HeaderCode
-		: Document->ImplementationCode;
+	if (Document->bIsSnippetMode)
+	{
+		FPlatformApplicationMisc::ClipboardCopy(*Document->SnippetCode);
+	}
+	else
+	{
+		// Copy both header and implementation separated by a marker
+		FString Combined = FString::Printf(TEXT("// === %s.h ===\n%s\n\n// === %s.cpp ===\n%s"),
+			*Document->ClassName, *Document->HeaderCode,
+			*Document->ClassName, *Document->ImplementationCode);
+		FPlatformApplicationMisc::ClipboardCopy(*Combined);
+	}
 
-	FPlatformApplicationMisc::ClipboardCopy(*Code);
 	return FReply::Handled();
 }
 
@@ -216,45 +289,39 @@ FReply SCortexCodeCanvas::OnCreateFilesButtonClicked()
 	return FReply::Handled();
 }
 
-void SCortexCodeCanvas::SwitchToTab(ECortexCodeTab Tab)
-{
-	CurrentTab = Tab;
-	if (CodeSwitcher.IsValid())
-	{
-		CodeSwitcher->SetActiveWidgetIndex(Tab == ECortexCodeTab::Header ? 0 : 1);
-	}
-	UpdateTabLabels();
-}
-
-void SCortexCodeCanvas::UpdateTabLabels()
+void SCortexCodeCanvas::UpdateLabels()
 {
 	if (!Document.IsValid())
 	{
 		return;
 	}
 
-	const int32 HeaderLines = CountLines(Document->HeaderCode);
-	const int32 ImplLines = CountLines(Document->ImplementationCode);
-	const bool bHeaderActive = (CurrentTab == ECortexCodeTab::Header);
-
-	if (HeaderTabLabel.IsValid())
+	if (Document->bIsSnippetMode && SnippetLabel.IsValid())
 	{
-		FString Label = HeaderLines > 0
-			? FString::Printf(TEXT(".h (%d lines)"), HeaderLines)
-			: TEXT(".h");
-		HeaderTabLabel->SetText(FText::FromString(Label));
-		HeaderTabLabel->SetFont(FCoreStyle::GetDefaultFontStyle(bHeaderActive ? "Bold" : "Regular", 10));
-		HeaderTabLabel->SetColorAndOpacity(FSlateColor(bHeaderActive ? ActiveTabColor : InactiveTabColor));
+		const int32 Lines = CountLines(Document->SnippetCode);
+		FString Label = Lines > 0
+			? FString::Printf(TEXT("Snippet (%d lines)"), Lines)
+			: TEXT("Snippet");
+		SnippetLabel->SetText(FText::FromString(Label));
+		return;
 	}
 
-	if (ImplTabLabel.IsValid())
+	if (HeaderLabel.IsValid())
 	{
-		FString Label = ImplLines > 0
-			? FString::Printf(TEXT(".cpp (%d lines)"), ImplLines)
-			: TEXT(".cpp");
-		ImplTabLabel->SetText(FText::FromString(Label));
-		ImplTabLabel->SetFont(FCoreStyle::GetDefaultFontStyle(!bHeaderActive ? "Bold" : "Regular", 10));
-		ImplTabLabel->SetColorAndOpacity(FSlateColor(!bHeaderActive ? ActiveTabColor : InactiveTabColor));
+		const int32 Lines = CountLines(Document->HeaderCode);
+		FString Label = Lines > 0
+			? FString::Printf(TEXT("%s.h (%d lines)"), *Document->ClassName, Lines)
+			: FString::Printf(TEXT("%s.h \u2014 not generated"), *Document->ClassName);
+		HeaderLabel->SetText(FText::FromString(Label));
+	}
+
+	if (ImplLabel.IsValid())
+	{
+		const int32 Lines = CountLines(Document->ImplementationCode);
+		FString Label = Lines > 0
+			? FString::Printf(TEXT("%s.cpp (%d lines)"), *Document->ClassName, Lines)
+			: FString::Printf(TEXT("%s.cpp \u2014 not generated"), *Document->ClassName);
+		ImplLabel->SetText(FText::FromString(Label));
 	}
 }
 

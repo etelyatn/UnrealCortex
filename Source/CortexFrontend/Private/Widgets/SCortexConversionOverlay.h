@@ -27,6 +27,9 @@ public:
 	 *  Total estimate = ~10s connection overhead + (tokens / 1000) * 10s LLM execution. */
 	void SetTokenCount(int32 Tokens);
 
+	/** Reset the elapsed timer and animation state. Call when processing starts. */
+	void ResetTimer();
+
 private:
 	TSharedPtr<STextBlock> DotsLabel;
 	TSharedPtr<STextBlock> ElapsedLabel;

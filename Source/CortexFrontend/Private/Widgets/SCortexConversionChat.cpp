@@ -255,6 +255,95 @@ void SCortexConversionChat::ProcessCodeBlocks(const TArray<TSharedPtr<FCortexCha
 		return;
 	}
 
+	// During initial generation, infer targets for any untagged C++ code blocks.
+	// LLMs sometimes tag one block (e.g., implementation) but leave the other
+	// untagged, or output all blocks without tags. This handles all combinations.
+	if (Context->bIsInitialGeneration)
+	{
+		// First pass: collect tagged targets and untagged blocks
+		bool bHasTaggedHeader = false;
+		bool bHasTaggedImpl = false;
+		bool bHasTaggedSnippet = false;
+		TArray<TSharedPtr<FCortexChatEntry>> UntaggedCodeBlocks;
+
+		for (const TSharedPtr<FCortexChatEntry>& Entry : Entries)
+		{
+			if (Entry->Type != ECortexChatEntryType::CodeBlock)
+			{
+				continue;
+			}
+			if (Entry->CodeBlockTarget == TEXT("header"))
+			{
+				bHasTaggedHeader = true;
+			}
+			else if (Entry->CodeBlockTarget == TEXT("implementation"))
+			{
+				bHasTaggedImpl = true;
+			}
+			else if (Entry->CodeBlockTarget == TEXT("snippet"))
+			{
+				bHasTaggedSnippet = true;
+			}
+			else if (Entry->Language == TEXT("cpp") || Entry->Language == TEXT("c++") || Entry->Language == TEXT("h"))
+			{
+				UntaggedCodeBlocks.Add(Entry);
+			}
+		}
+
+		// Second pass: infer targets for untagged blocks, skipping targets
+		// already claimed by tagged blocks
+		if (UntaggedCodeBlocks.Num() > 0)
+		{
+			UE_LOG(LogCortexFrontend, Warning,
+				TEXT("ProcessCodeBlocks: %d untagged C++ blocks found (tagged: header=%d impl=%d snippet=%d) — inferring targets"),
+				UntaggedCodeBlocks.Num(),
+				bHasTaggedHeader ? 1 : 0,
+				bHasTaggedImpl ? 1 : 0,
+				bHasTaggedSnippet ? 1 : 0);
+
+			if (Context->Document->bIsSnippetMode)
+			{
+				// Snippet mode: all untagged blocks become snippets
+				for (const TSharedPtr<FCortexChatEntry>& Block : UntaggedCodeBlocks)
+				{
+					if (!bHasTaggedSnippet)
+					{
+						Block->CodeBlockTarget = TEXT("snippet");
+					}
+				}
+			}
+			else
+			{
+				// Full-class mode: infer header vs implementation from content
+				for (const TSharedPtr<FCortexChatEntry>& Block : UntaggedCodeBlocks)
+				{
+					const FString& Code = Block->Text;
+					const bool bLooksLikeHeader = Code.Contains(TEXT("#pragma once"))
+						|| Code.Contains(TEXT("UCLASS("))
+						|| Code.Contains(TEXT("USTRUCT("))
+						|| Code.Contains(TEXT("GENERATED_BODY()"));
+
+					if (bLooksLikeHeader && !bHasTaggedHeader)
+					{
+						Block->CodeBlockTarget = TEXT("header");
+						bHasTaggedHeader = true;
+					}
+					else if (!bHasTaggedImpl)
+					{
+						Block->CodeBlockTarget = TEXT("implementation");
+						bHasTaggedImpl = true;
+					}
+					else if (!bHasTaggedHeader)
+					{
+						// Last resort: if implementation is claimed, try header
+						Block->CodeBlockTarget = TEXT("header");
+						bHasTaggedHeader = true;
+					}
+				}
+			}
+		}
+	}
+
 	for (const TSharedPtr<FCortexChatEntry>& Entry : Entries)
 	{
 		if (Entry->Type != ECortexChatEntryType::CodeBlock)
@@ -283,6 +372,23 @@ void SCortexConversionChat::ProcessCodeBlocks(const TArray<TSharedPtr<FCortexCha
 			}
 		}
 		// For follow-up modifications, Apply buttons are added during row generation
+	}
+
+	// In full-class mode, warn if implementation was generated but header was not.
+	// This happens when the LLM ignores the tagging instructions.
+	if (Context->bIsInitialGeneration && !Context->Document->bIsSnippetMode)
+	{
+		const bool bHasImpl = !Context->Document->ImplementationCode.IsEmpty();
+		const bool bHasHeader = !Context->Document->HeaderCode.IsEmpty();
+
+		if (bHasImpl && !bHasHeader)
+		{
+			UE_LOG(LogCortexFrontend, Warning,
+				TEXT("ProcessCodeBlocks: Full-class mode — implementation generated but header is missing"));
+			AddStatusMessage(TEXT(
+				"[Warning] Header file was not generated. "
+				"Ask: \"Please provide the .h file using the ```cpp:header tag.\""));
+		}
 	}
 }
 
