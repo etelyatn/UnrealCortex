@@ -3,10 +3,18 @@
 
 #include "Analysis/CortexAnalysisContext.h"
 #include "Analysis/CortexFindingTypes.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "Engine/Blueprint.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Misc/PackageName.h"
+#include "UObject/UObjectGlobals.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
+#include "Editor.h"
 
 void SCortexFindingsPanel::Construct(const FArguments& InArgs)
 {
@@ -98,6 +106,56 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
                     *Finding->GraphName,
                     *Finding->NodeDisplayName)))
                 .ColorAndOpacity(FSlateColor(FLinearColor::Gray))
+            ]
+
+            // "Open in BP" button — navigates to the real node in Blueprint editor
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            .HAlign(HAlign_Right)
+            .Padding(0, 4, 0, 0)
+            [
+                SNew(SButton)
+                .Text(NSLOCTEXT("CortexAnalysis", "OpenInBP", "Open in BP"))
+                .ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("SimpleButton"))
+                .IsEnabled_Lambda([this]()
+                {
+                    // Disabled during PIE
+                    return !GEditor || !GEditor->IsPlaySessionInProgress();
+                })
+                .OnClicked_Lambda([this, Finding]()
+                {
+                    if (!Finding.IsValid() || !Finding->NodeGuid.IsValid()) return FReply::Handled();
+                    if (!Context.IsValid()) return FReply::Handled();
+
+                    // Load source Blueprint and find the real node
+                    const FString PkgName = FPackageName::ObjectPathToPackageName(
+                        Context->Payload.BlueprintPath);
+                    if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+                    {
+                        return FReply::Handled();
+                    }
+
+                    UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr,
+                        *Context->Payload.BlueprintPath);
+                    if (!Blueprint) return FReply::Handled();
+
+                    // Find node by GUID across all graphs
+                    TArray<UEdGraph*> AllGraphs;
+                    Blueprint->GetAllGraphs(AllGraphs);
+                    for (UEdGraph* Graph : AllGraphs)
+                    {
+                        for (UEdGraphNode* Node : Graph->Nodes)
+                        {
+                            if (Node && Node->NodeGuid == Finding->NodeGuid)
+                            {
+                                FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(Node);
+                                return FReply::Handled();
+                            }
+                        }
+                    }
+
+                    return FReply::Handled();
+                })
             ]
         ]
     ];

@@ -5,10 +5,12 @@
 #include "EdGraph/EdGraphNode.h"
 #include "Engine/Blueprint.h"
 #include "GraphEditor.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
 #include "UObject/UObjectGlobals.h"
 #include "Widgets/Input/STextComboBox.h"
 #include "Widgets/Layout/SBox.h"
+#include "Editor.h"
 
 void SCortexGraphPreview::Construct(const FArguments& InArgs)
 {
@@ -74,11 +76,46 @@ void SCortexGraphPreview::RecreateGraphEditor(UEdGraph* Graph)
     FGraphAppearanceInfo AppearanceInfo;
     AppearanceInfo.CornerText = FText::GetEmpty();
 
+    SGraphEditor::FGraphEditorEvents GraphEvents;
+    GraphEvents.OnNodeDoubleClicked = FSingleNodeEvent::CreateLambda(
+        [this](UEdGraphNode* ClonedNode)
+        {
+            if (!ClonedNode || !Context.IsValid()) return;
+            if (GEditor && GEditor->IsPlaySessionInProgress()) return;
+
+            // Find the real node in the source Blueprint by matching GUID
+            const FString PkgName = FPackageName::ObjectPathToPackageName(
+                Context->Payload.BlueprintPath);
+            if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+            {
+                return;
+            }
+
+            UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr,
+                *Context->Payload.BlueprintPath);
+            if (!Blueprint) return;
+
+            TArray<UEdGraph*> AllGraphs;
+            Blueprint->GetAllGraphs(AllGraphs);
+            for (UEdGraph* Graph : AllGraphs)
+            {
+                for (UEdGraphNode* Node : Graph->Nodes)
+                {
+                    if (Node && Node->NodeGuid == ClonedNode->NodeGuid)
+                    {
+                        FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(Node);
+                        return;
+                    }
+                }
+            }
+        });
+
     GraphEditorContainer->SetContent(
         SAssignNew(GraphEditorWidget, SGraphEditor)
         .GraphToEdit(Graph)
         .IsEditable(false)
         .Appearance(AppearanceInfo)
+        .GraphEvents(GraphEvents)
     );
 }
 
