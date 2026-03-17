@@ -26,6 +26,8 @@ public class CortexFrontend : ModuleRules
             "ToolMenus",
             "Projects",
             "CortexCore",
+            "GraphEditor",
+            "BlueprintGraph",
         });
     }
 }
