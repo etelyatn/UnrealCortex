@@ -30,7 +30,6 @@ private:
 	TSharedRef<SWidget> BuildFocusCheckboxes();
 
 	void OnFocusToggled(ECortexFindingCategory Category, ECheckBoxState NewState);
-	bool IsFocusChecked(ECortexFindingCategory Category) const;
 
 	void OnScopeChanged(ECortexConversionScope NewScope);
 	void OnFunctionToggled(const FString& Name, bool bChecked);

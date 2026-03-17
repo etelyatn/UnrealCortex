@@ -1,7 +1,6 @@
 // SCortexAnalysisConfig.cpp
 #include "Widgets/SCortexAnalysisConfig.h"
 
-#include "CortexFrontendModule.h"
 #include "Analysis/CortexFindingTypes.h"
 #include "Widgets/SCortexScopeSelector.h"
 #include "Widgets/Input/SButton.h"
@@ -154,7 +153,7 @@ TSharedRef<SWidget> SCortexAnalysisConfig::BuildPreScanSection()
 	FString Summary;
 	auto Append = [&Summary](const FString& Part)
 	{
-		if (!Summary.IsEmpty()) Summary += TEXT(" \u00b7 ");
+		if (!Summary.IsEmpty()) Summary += TEXT(" \xB7 ");
 		Summary += Part;
 	};
 	if (Errors > 0)     Append(FString::Printf(TEXT("%d errors"), Errors));
@@ -254,11 +253,6 @@ void SCortexAnalysisConfig::OnFocusToggled(ECortexFindingCategory Category, EChe
 		EnabledFocusAreas.Add(Category);
 	else
 		EnabledFocusAreas.Remove(Category);
-}
-
-bool SCortexAnalysisConfig::IsFocusChecked(ECortexFindingCategory Category) const
-{
-	return EnabledFocusAreas.Contains(Category);
 }
 
 FReply SCortexAnalysisConfig::OnAnalyzeButtonClicked()
