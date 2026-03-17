@@ -8,6 +8,7 @@
 DECLARE_DELEGATE_OneParam(FOnQARecordConfirmed, const FString& /* SessionName */);
 DECLARE_DELEGATE(FOnQAStopClicked);
 DECLARE_DELEGATE(FOnQAStopAndReplayClicked);
+DECLARE_DELEGATE(FOnQACancelReplayClicked);
 
 class SCortexQAToolbar : public SCompoundWidget
 {
@@ -16,12 +17,16 @@ public:
         SLATE_EVENT(FOnQARecordConfirmed, OnRecordConfirmed)
         SLATE_EVENT(FOnQAStopClicked, OnStop)
         SLATE_EVENT(FOnQAStopAndReplayClicked, OnStopAndReplay)
+        SLATE_EVENT(FOnQACancelReplayClicked, OnCancelReplay)
     SLATE_END_ARGS()
 
     void Construct(const FArguments& InArgs);
 
     /** Update the recording state display. */
     void SetRecording(bool bRecording);
+
+    /** Update the replaying state display. */
+    void SetReplaying(bool bReplaying);
 
     /** Add a step to the live recording ticker. */
     void AddRecordingStep(const FString& StepType, const FString& Target);
@@ -36,8 +41,10 @@ private:
     FOnQARecordConfirmed OnRecordConfirmed;
     FOnQAStopClicked OnStop;
     FOnQAStopAndReplayClicked OnStopAndReplay;
+    FOnQACancelReplayClicked OnCancelReplay;
 
     bool bIsRecording = false;
+    bool bIsReplaying = false;
     bool bShowingNameInput = false;
     TSharedPtr<STextBlock> StatusText;
     TSharedPtr<STextBlock> TickerText;
