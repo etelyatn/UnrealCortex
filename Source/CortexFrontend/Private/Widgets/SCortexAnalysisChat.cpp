@@ -92,12 +92,7 @@ void SCortexAnalysisChat::AddStatusMessage(const FString& Message)
 	Row->RowType = ECortexChatRowType::StatusRow;
 
 	StatusRows.Add(Row);
-	DisplayRows.Add(Row);
-
-	if (ChatList.IsValid())
-	{
-		ChatList->RequestListRefresh();
-	}
+	RefreshVisibleEntries();
 	ScrollToBottom();
 }
 
