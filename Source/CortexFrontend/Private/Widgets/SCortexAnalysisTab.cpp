@@ -5,12 +5,17 @@
 #include "CortexCoreModule.h"
 #include "CortexFrontendModule.h"
 #include "Analysis/CortexAnalysisPromptAssembler.h"
+#include "Editor.h"
+#include "Engine/Blueprint.h"
+#include "Misc/PackageName.h"
+#include "UObject/UObjectGlobals.h"
 #include "HAL/PlatformTime.h"
 #include "Session/CortexCliSession.h"
 #include "Widgets/SCortexAnalysisChat.h"
 #include "Widgets/SCortexAnalysisConfig.h"
 #include "Widgets/SCortexFindingsPanel.h"
 #include "Widgets/SCortexGraphPreview.h"
+#include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 
@@ -48,51 +53,186 @@ void SCortexAnalysisTab::Construct(const FArguments& InArgs)
             .OnAnalyze(FOnAnalyzeClicked::CreateSP(this, &SCortexAnalysisTab::OnAnalyzeClicked))
         ]
 
-        // Index 1: Results (graph preview + findings + chat)
+        // Index 1: Results (banner + graph preview + findings + chat)
         + SWidgetSwitcher::Slot()
         [
-            SNew(SSplitter)
-            .Orientation(EOrientation::Orient_Horizontal)
-            .MinimumSlotHeight(200.0f)
+            SNew(SVerticalBox)
 
-            // Left: Graph preview
-            + SSplitter::Slot()
-            .Value(0.5f)
+            // Recompile banner (hidden by default)
+            + SVerticalBox::Slot()
+            .AutoHeight()
             [
-                SAssignNew(GraphPreview, SCortexGraphPreview)
-                .Context(Context)
+                SAssignNew(RecompileBanner, SBorder)
+                .BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+                .Padding(8)
+                .Visibility(EVisibility::Collapsed)
+                .BorderBackgroundColor(FLinearColor(0.8f, 0.6f, 0.0f))
+                [
+                    SNew(SHorizontalBox)
+                    + SHorizontalBox::Slot()
+                    .FillWidth(1.0f)
+                    .VAlign(VAlign_Center)
+                    [
+                        SNew(STextBlock)
+                        .Text(NSLOCTEXT("CortexAnalysis", "BPModified",
+                            "Blueprint was modified. Re-analyze?"))
+                    ]
+                    + SHorizontalBox::Slot()
+                    .AutoWidth()
+                    .Padding(8, 0, 0, 0)
+                    [
+                        SNew(SButton)
+                        .Text(NSLOCTEXT("CortexAnalysis", "ReAnalyze", "Re-analyze"))
+                        .OnClicked_Lambda([this]()
+                        {
+                            OnReAnalyzeClicked();
+                            return FReply::Handled();
+                        })
+                    ]
+                ]
             ]
 
-            // Right: Findings + Chat (vertical split)
-            + SSplitter::Slot()
-            .Value(0.5f)
+            // Results splitter (graph + findings + chat)
+            + SVerticalBox::Slot()
+            .FillHeight(1.0f)
             [
                 SNew(SSplitter)
-                .Orientation(EOrientation::Orient_Vertical)
+                .Orientation(EOrientation::Orient_Horizontal)
                 .MinimumSlotHeight(200.0f)
 
-                // Top: Findings panel (40%)
+                // Left: Graph preview
                 + SSplitter::Slot()
-                .Value(0.4f)
+                .Value(0.5f)
                 [
-                    SAssignNew(FindingsPanel, SCortexFindingsPanel)
+                    SAssignNew(GraphPreview, SCortexGraphPreview)
                     .Context(Context)
-                    .OnFindingSelected(FOnFindingSelected::CreateSP(
-                        this, &SCortexAnalysisTab::OnFindingSelected))
                 ]
 
-                // Bottom: Chat (60%)
+                // Right: Findings + Chat (vertical split)
                 + SSplitter::Slot()
-                .Value(0.6f)
+                .Value(0.5f)
                 [
-                    SAssignNew(AnalysisChat, SCortexAnalysisChat)
-                    .Context(Context)
-                    .OnNewFinding(FOnNewFinding::CreateSP(
-                        this, &SCortexAnalysisTab::OnNewFinding))
+                    SNew(SSplitter)
+                    .Orientation(EOrientation::Orient_Vertical)
+                    .MinimumSlotHeight(200.0f)
+
+                    // Top: Findings panel (40%)
+                    + SSplitter::Slot()
+                    .Value(0.4f)
+                    [
+                        SAssignNew(FindingsPanel, SCortexFindingsPanel)
+                        .Context(Context)
+                        .OnFindingSelected(FOnFindingSelected::CreateSP(
+                            this, &SCortexAnalysisTab::OnFindingSelected))
+                    ]
+
+                    // Bottom: Chat (60%)
+                    + SSplitter::Slot()
+                    .Value(0.6f)
+                    [
+                        SAssignNew(AnalysisChat, SCortexAnalysisChat)
+                        .Context(Context)
+                        .OnNewFinding(FOnNewFinding::CreateSP(
+                            this, &SCortexAnalysisTab::OnNewFinding))
+                    ]
                 ]
             ]
         ]
     ];
+
+    // Subscribe to this Blueprint's compiled event
+    // UBlueprint::OnCompiled() fires with UBlueprint* — correct for filtering by path
+    const FString PkgName = FPackageName::ObjectPathToPackageName(Context->Payload.BlueprintPath);
+    if (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName))
+    {
+        if (UBlueprint* Blueprint = FindObject<UBlueprint>(nullptr, *Context->Payload.BlueprintPath))
+        {
+            BlueprintCompiledHandle = Blueprint->OnCompiled().AddSP(
+                this, &SCortexAnalysisTab::OnBlueprintCompiled);
+        }
+    }
+}
+
+SCortexAnalysisTab::~SCortexAnalysisTab()
+{
+    if (BlueprintCompiledHandle.IsValid() && Context.IsValid())
+    {
+        const FString PkgName = FPackageName::ObjectPathToPackageName(Context->Payload.BlueprintPath);
+        if (UBlueprint* Blueprint = FindObject<UBlueprint>(nullptr, *Context->Payload.BlueprintPath))
+        {
+            Blueprint->OnCompiled().Remove(BlueprintCompiledHandle);
+        }
+    }
+
+    // Session cleanup
+    if (Context.IsValid() && Context->Session.IsValid())
+    {
+        Context->Session->OnTurnComplete.RemoveAll(this);
+        Context->Session->Shutdown();
+
+        if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexFrontend")))
+        {
+            FCortexFrontendModule& FrontendModule =
+                FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+            FrontendModule.UnregisterSession(Context->Session);
+        }
+    }
+}
+
+void SCortexAnalysisTab::OnBlueprintCompiled(UBlueprint* Blueprint)
+{
+    if (!Context.IsValid()) return;
+    if (!Blueprint || Blueprint->GetPathName() != Context->Payload.BlueprintPath) return;
+
+    // Show banner
+    if (RecompileBanner.IsValid())
+    {
+        RecompileBanner->SetVisibility(EVisibility::Visible);
+    }
+}
+
+void SCortexAnalysisTab::OnReAnalyzeClicked()
+{
+    if (!Context.IsValid()) return;
+
+    // Kill current session
+    if (Context->Session.IsValid())
+    {
+        Context->Session->Shutdown();
+        if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexFrontend")))
+        {
+            FCortexFrontendModule& FrontendModule =
+                FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+            FrontendModule.UnregisterSession(Context->Session);
+        }
+        Context->Session.Reset();
+    }
+
+    // Clear findings
+    Context->Findings.Empty();
+    Context->FindingDedup.Empty();
+    if (FindingsPanel.IsValid())
+    {
+        FindingsPanel->ClearFindings();
+    }
+    if (GraphPreview.IsValid())
+    {
+        GraphPreview->ClearAnnotations();
+    }
+
+    // Hide recompile banner
+    if (RecompileBanner.IsValid())
+    {
+        RecompileBanner->SetVisibility(EVisibility::Collapsed);
+    }
+
+    // Switch back to config view
+    Context->bAnalysisStarted = false;
+    Context->bIsInitialGeneration = true;
+    if (ViewSwitcher.IsValid())
+    {
+        ViewSwitcher->SetActiveWidgetIndex(0);
+    }
 }
 
 void SCortexAnalysisTab::OnAnalyzeClicked()

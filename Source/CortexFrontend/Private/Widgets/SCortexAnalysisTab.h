@@ -13,6 +13,7 @@ class SCortexGraphPreview;
 class SCortexFindingsPanel;
 class SCortexAnalysisChat;
 class SWidgetSwitcher;
+class SBorder;
 
 class SCortexAnalysisTab : public SCompoundWidget
 {
@@ -22,6 +23,7 @@ public:
     SLATE_END_ARGS()
 
     void Construct(const FArguments& InArgs);
+    virtual ~SCortexAnalysisTab();
 
 private:
     void OnAnalyzeClicked();
@@ -31,9 +33,15 @@ private:
     void OnNewFinding(const FCortexAnalysisFinding& Finding);
     void StatusMessage(const FString& Message);
 
+    // Re-analysis
+    void OnReAnalyzeClicked();
+    void OnBlueprintCompiled(UBlueprint* Blueprint);
+
     TSharedPtr<FCortexAnalysisContext> Context;
     TSharedPtr<SWidgetSwitcher> ViewSwitcher;
     TSharedPtr<SCortexGraphPreview> GraphPreview;
     TSharedPtr<SCortexFindingsPanel> FindingsPanel;
     TSharedPtr<SCortexAnalysisChat> AnalysisChat;
+    TSharedPtr<SBorder> RecompileBanner;
+    FDelegateHandle BlueprintCompiledHandle;
 };
