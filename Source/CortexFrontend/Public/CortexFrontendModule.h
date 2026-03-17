@@ -7,6 +7,7 @@ class FSpawnTabArgs;
 class FCortexCliSession;
 class SCortexWorkbench;
 struct FCortexConversionPayload;
+struct FCortexAnalysisPayload;
 
 CORTEXFRONTEND_API DECLARE_LOG_CATEGORY_EXTERN(LogCortexFrontend, Log, All);
 
@@ -27,12 +28,14 @@ public:
 private:
     TSharedRef<SDockTab> SpawnChatTab(const FSpawnTabArgs& Args);
     void OnConversionRequested(const FCortexConversionPayload& Payload);
+    void OnAnalysisRequested(const FCortexAnalysisPayload& Payload);
     void ReleaseSessions();
     void HandlePreExit();
 
     static const FName CortexChatTabId;
     FDelegateHandle StartupCallbackHandle;
     FDelegateHandle ConversionDelegateHandle;
+    FDelegateHandle AnalysisDelegateHandle;
     TArray<TSharedPtr<FCortexCliSession>> Sessions;
     TWeakPtr<SCortexWorkbench> WorkbenchWeak;
 };

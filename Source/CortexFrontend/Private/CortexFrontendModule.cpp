@@ -1,6 +1,7 @@
 #include "CortexFrontendModule.h"
 
 #include "CortexCoreModule.h"
+#include "CortexAnalysisTypes.h"
 #include "CortexConversionTypes.h"
 #include "Framework/Docking/TabManager.h"
 #include "IToolMenusModule.h"
@@ -58,6 +59,8 @@ void FCortexFrontendModule::StartupModule()
         FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
         ConversionDelegateHandle = Core.OnConversionRequested().AddRaw(
             this, &FCortexFrontendModule::OnConversionRequested);
+        AnalysisDelegateHandle = Core.OnAnalysisRequested().AddRaw(
+            this, &FCortexFrontendModule::OnAnalysisRequested);
     }
 
     UE_LOG(LogCortexFrontend, Log, TEXT("CortexFrontend registered tab and menu"));
@@ -73,6 +76,15 @@ void FCortexFrontendModule::ShutdownModule()
     {
         FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
         Core.OnConversionRequested().Remove(ConversionDelegateHandle);
+    }
+
+    if (AnalysisDelegateHandle.IsValid())
+    {
+        if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexCore")))
+        {
+            FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+            Core.OnAnalysisRequested().Remove(AnalysisDelegateHandle);
+        }
     }
 
     ReleaseSessions();
@@ -136,6 +148,17 @@ void FCortexFrontendModule::OnConversionRequested(const FCortexConversionPayload
     if (Workbench.IsValid())
     {
         Workbench->SpawnConversionTab(Payload);
+    }
+}
+
+void FCortexFrontendModule::OnAnalysisRequested(const FCortexAnalysisPayload& Payload)
+{
+    FGlobalTabmanager::Get()->TryInvokeTab(CortexChatTabId);
+
+    TSharedPtr<SCortexWorkbench> Workbench = WorkbenchWeak.Pin();
+    if (Workbench.IsValid())
+    {
+        Workbench->SpawnAnalysisTab(Payload);
     }
 }
 
