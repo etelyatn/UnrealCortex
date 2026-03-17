@@ -10,8 +10,10 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "editor"))
 
+import threading
+
 from cortex_mcp.tcp_client import UEConnection
-from composites import register_editor_composite_tools
+from composites import do_restart_editor, do_shutdown_editor, register_editor_composite_tools
 
 
 class MockMCP:
@@ -191,3 +193,132 @@ class TestRestartEditor:
         assert payload["port"] == 8743
         conn.send_command.assert_any_call("core.shutdown", {"force": True})
         conn.disconnect.assert_called_once()
+
+
+class TestDoShutdownEditor:
+    """Tests for the do_shutdown_editor standalone function."""
+
+    def test_returns_dict_on_success(self):
+        conn = MagicMock(spec=UEConnection)
+        conn.send_command.return_value = {
+            "success": True,
+            "data": {"message": "Shutdown initiated", "force": True},
+        }
+
+        result = do_shutdown_editor(conn, force=True)
+
+        assert isinstance(result, dict)
+        conn.send_command.assert_called_with("core.shutdown", {"force": True})
+
+    def test_returns_dict_on_connection_error(self):
+        conn = MagicMock(spec=UEConnection)
+        conn.send_command.side_effect = ConnectionError("Connection lost")
+
+        result = do_shutdown_editor(conn, force=True)
+
+        assert isinstance(result, dict)
+        assert result["message"] == "Shutdown initiated"
+        assert result["force"] is True
+        assert "note" in result
+
+    def test_force_false_passed_through(self):
+        conn = MagicMock(spec=UEConnection)
+        conn.send_command.side_effect = ConnectionError("dropped")
+
+        result = do_shutdown_editor(conn, force=False)
+
+        assert result["force"] is False
+        conn.send_command.assert_called_with("core.shutdown", {"force": False})
+
+
+class TestDoRestartEditor:
+    """Tests for the do_restart_editor standalone function."""
+
+    def test_returns_error_dict_when_project_dir_not_set(self):
+        conn = MagicMock(spec=UEConnection)
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CORTEX_PROJECT_DIR", None)
+            result = do_restart_editor(conn, timeout=10)
+
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert "CORTEX_PROJECT_DIR" in result["error"]
+
+    def test_returns_error_dict_when_project_path_unknown(self, tmp_path):
+        conn = MagicMock(spec=UEConnection)
+        conn._pid = None
+        conn._project_path = None
+
+        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False):
+            result = do_restart_editor(conn, timeout=10)
+
+        assert isinstance(result, dict)
+        assert "error" in result
+
+    @patch.dict(os.environ, {"UE_56_PATH": "C:/UE_5.6"}, clear=False)
+    def test_returns_success_dict_on_full_flow(self, tmp_path):
+        conn = MagicMock(spec=UEConnection)
+        conn._pid = 1234
+        conn._project_path = "C:/test/Test.uproject"
+        conn.send_command.side_effect = [
+            {"success": True, "data": {"message": "Shutdown initiated"}},
+            {"success": True, "data": {"subsystems": {"core": True}}},
+        ]
+
+        saved_dir = tmp_path / "Saved"
+        saved_dir.mkdir(parents=True)
+        port_file = saved_dir / "CortexPort-5678.txt"
+
+        def _popen_side_effect(*args, **kwargs):
+            port_file.write_text(
+                '{"port":8743,"pid":5678,"project":"Test","project_path":"C:/test/Test.uproject","started_at":"2026-01-01T00:00:00Z"}'
+            )
+            return MagicMock()
+
+        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
+                patch("composites.psutil.pid_exists", side_effect=[True, False]), \
+                patch("composites.subprocess.Popen", side_effect=_popen_side_effect), \
+                patch("composites.time.sleep", return_value=None):
+            result = do_restart_editor(conn, timeout=30)
+
+        assert isinstance(result, dict)
+        assert result["message"] == "Editor restarted successfully"
+        assert result["port"] == 8743
+        assert result["pid"] == 5678
+
+    @patch.dict(os.environ, {"UE_56_PATH": "C:/UE_5.6"}, clear=False)
+    def test_cancel_between_phases_returns_cancelled(self, tmp_path):
+        conn = MagicMock(spec=UEConnection)
+        conn._pid = None
+        conn._project_path = "C:/test/Test.uproject"
+
+        saved_dir = tmp_path / "Saved"
+        saved_dir.mkdir(parents=True)
+
+        cancel = threading.Event()
+
+        def _popen_side_effect(*args, **kwargs):
+            # Signal cancellation after launch so Phase 3 check fires
+            cancel.set()
+            return MagicMock()
+
+        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
+                patch("composites.subprocess.Popen", side_effect=_popen_side_effect), \
+                patch("composites.time.sleep", return_value=None):
+            result = do_restart_editor(conn, timeout=30, cancel=cancel)
+
+        assert isinstance(result, dict)
+        assert result.get("cancelled") is True
+
+    def test_cancel_none_does_not_raise(self, tmp_path):
+        """Passing cancel=None (default) works without error."""
+        conn = MagicMock(spec=UEConnection)
+        conn._pid = None
+        conn._project_path = None
+
+        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False):
+            result = do_restart_editor(conn, timeout=5, cancel=None)
+
+        assert isinstance(result, dict)
+        assert "error" in result

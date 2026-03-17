@@ -5,6 +5,7 @@ import logging
 import os
 import pathlib
 import subprocess
+import threading
 import time
 
 import psutil
@@ -13,6 +14,201 @@ from cortex_mcp.response import format_response
 from cortex_mcp.tcp_client import UEConnection
 
 logger = logging.getLogger(__name__)
+
+
+def do_shutdown_editor(connection: UEConnection, force: bool = True) -> dict:
+    """Shut down the Unreal Editor and return a result dict."""
+    try:
+        response = connection.send_command("core.shutdown", {"force": force})
+        return response.get("data", {})
+    except (ConnectionError, RuntimeError):
+        # Expected when editor closes socket during shutdown.
+        return {
+            "message": "Shutdown initiated",
+            "force": force,
+            "note": "Connection closed as expected",
+        }
+
+
+def do_restart_editor(
+    connection: UEConnection,
+    timeout: int = 120,
+    cancel: threading.Event | None = None,
+) -> dict:
+    """Restart the Unreal Editor: shutdown, relaunch, and verify MCP.
+
+    Args:
+        connection: Active UEConnection to the editor.
+        timeout: Total timeout in seconds for the full restart sequence.
+        cancel: Optional threading.Event. If set between phases, returns early
+                with {"cancelled": True}.
+
+    Returns:
+        A dict with restart results or an error dict.
+    """
+    start_time = time.monotonic()
+
+    project_dir = os.environ.get("CORTEX_PROJECT_DIR", "")
+    if not project_dir:
+        return {"error": "CORTEX_PROJECT_DIR not set"}
+
+    saved_dir = pathlib.Path(project_dir) / "Saved"
+    lock_file = saved_dir / "CortexRestarting.lock"
+
+    current_pid = connection._pid
+    project_path = connection._project_path
+
+    if not project_path:
+        for _pf in saved_dir.glob("CortexPort-*.txt"):
+            try:
+                content = _pf.read_text().strip()
+                if content.startswith("{"):
+                    data = json.loads(content)
+                    found_path = data.get("project_path")
+                    if found_path:
+                        project_path = found_path
+                        if not current_pid:
+                            current_pid = data.get("pid")
+                        break
+            except (json.JSONDecodeError, OSError):
+                continue
+
+    port_file_pattern = f"CortexPort-{current_pid}.txt" if current_pid else None
+
+    if not project_path:
+        return {
+            "error": "Cannot determine .uproject path. "
+            "Ensure editor was started with enhanced port file.",
+        }
+
+    try:
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_file.write_text(str(int(time.time())))
+
+        # Phase 1: shutdown if running
+        if current_pid and psutil.pid_exists(current_pid):
+            try:
+                connection.send_command("core.shutdown", {"force": True})
+            except (ConnectionError, RuntimeError):
+                pass
+
+            connection.disconnect()
+
+            remaining = timeout - (time.monotonic() - start_time)
+            shutdown_deadline = time.monotonic() + min(30.0, max(0.0, remaining))
+            while time.monotonic() < shutdown_deadline:
+                if not psutil.pid_exists(current_pid):
+                    break
+                time.sleep(2)
+            else:
+                if psutil.pid_exists(current_pid):
+                    return {
+                        "error": "Shutdown timeout",
+                        "pid": current_pid,
+                        "message": "Editor did not exit within 30s. Kill manually if needed.",
+                    }
+
+        if cancel and cancel.is_set():
+            return {"cancelled": True}
+
+        if current_pid:
+            old_port_file = saved_dir / f"CortexPort-{current_pid}.txt"
+            try:
+                old_port_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        # Phase 2: launch editor
+        engine_path = os.environ.get("UE_56_PATH", "")
+        if not engine_path:
+            return {"error": "UE_56_PATH not set - cannot launch editor"}
+
+        editor_exe = (
+            pathlib.Path(engine_path)
+            / "Engine"
+            / "Binaries"
+            / "Win64"
+            / "UnrealEditor.exe"
+        )
+
+        subprocess.Popen(
+            [
+                str(editor_exe),
+                project_path,
+                "-nosplash",
+                "-nopause",
+                "-AutoDeclinePackageRecovery",
+                '-ExecCmds="Mainframe.ShowRestoreAssetsPromptOnStartup 0"',
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        if cancel and cancel.is_set():
+            return {"cancelled": True}
+
+        # Phase 3: wait for new port
+        remaining = timeout - (time.monotonic() - start_time)
+        launch_deadline = time.monotonic() + max(0.0, remaining)
+        new_port = None
+        new_pid = None
+
+        while time.monotonic() < launch_deadline:
+            time.sleep(3)
+            if cancel and cancel.is_set():
+                return {"cancelled": True}
+            for port_file in saved_dir.glob("CortexPort-*.txt"):
+                if port_file_pattern and port_file.name == port_file_pattern:
+                    continue
+                try:
+                    content = port_file.read_text().strip()
+                    if content.startswith("{"):
+                        data = json.loads(content)
+                        found_pid = data.get("pid")
+                        if found_pid and found_pid != current_pid:
+                            new_pid = found_pid
+                            new_port = int(data["port"])
+                            break
+                except (json.JSONDecodeError, ValueError, OSError, KeyError):
+                    continue
+            if new_port is not None:
+                break
+
+        if new_port is None:
+            return {
+                "error": "Launch timeout",
+                "message": f"Editor did not start within {timeout}s",
+            }
+
+        if cancel and cancel.is_set():
+            return {"cancelled": True}
+
+        # Phase 4: verify
+        connection.port = new_port
+        connection._pid = new_pid
+        connection._project_path = project_path
+
+        try:
+            status = connection.send_command("get_status")
+            domains = status.get("data", {}).get("subsystems", {})
+        except (ConnectionError, RuntimeError) as exc:
+            return {
+                "error": f"Verification failed: {exc}",
+                "port": new_port,
+                "pid": new_pid,
+            }
+
+        elapsed = time.monotonic() - start_time
+        return {
+            "message": "Editor restarted successfully",
+            "port": new_port,
+            "pid": new_pid,
+            "project": pathlib.Path(project_path).stem,
+            "domains": domains,
+            "restart_time_seconds": round(elapsed, 1),
+        }
+    finally:
+        lock_file.unlink(missing_ok=True)
 
 
 def register_editor_composite_tools(mcp, connection: UEConnection):
@@ -123,182 +319,9 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
     @mcp.tool()
     def shutdown_editor(force: bool = True) -> str:
         """Gracefully shut down the Unreal Editor."""
-        try:
-            response = connection.send_command("core.shutdown", {"force": force})
-            return format_response(response.get("data", {}), "shutdown_editor")
-        except (ConnectionError, RuntimeError):
-            # Expected when editor closes socket during shutdown.
-            return json.dumps(
-                {
-                    "message": "Shutdown initiated",
-                    "force": force,
-                    "note": "Connection closed as expected",
-                }
-            )
+        return json.dumps(do_shutdown_editor(connection, force))
 
     @mcp.tool()
     def restart_editor(timeout: int = 120) -> str:
         """Restart the Unreal Editor: shutdown, relaunch, and verify MCP."""
-        start_time = time.monotonic()
-
-        project_dir = os.environ.get("CORTEX_PROJECT_DIR", "")
-        if not project_dir:
-            return json.dumps({"error": "CORTEX_PROJECT_DIR not set"})
-
-        saved_dir = pathlib.Path(project_dir) / "Saved"
-        lock_file = saved_dir / "CortexRestarting.lock"
-
-        current_pid = connection._pid
-        project_path = connection._project_path
-
-        if not project_path:
-            for _pf in saved_dir.glob("CortexPort-*.txt"):
-                try:
-                    content = _pf.read_text().strip()
-                    if content.startswith("{"):
-                        data = json.loads(content)
-                        found_path = data.get("project_path")
-                        if found_path:
-                            project_path = found_path
-                            if not current_pid:
-                                current_pid = data.get("pid")
-                            break
-                except (json.JSONDecodeError, OSError):
-                    continue
-
-        port_file_pattern = f"CortexPort-{current_pid}.txt" if current_pid else None
-
-        if not project_path:
-            return json.dumps(
-                {
-                    "error": "Cannot determine .uproject path. "
-                    "Ensure editor was started with enhanced port file.",
-                }
-            )
-
-        try:
-            lock_file.parent.mkdir(parents=True, exist_ok=True)
-            lock_file.write_text(str(int(time.time())))
-
-            # Phase 1: shutdown if running
-            if current_pid and psutil.pid_exists(current_pid):
-                try:
-                    connection.send_command("core.shutdown", {"force": True})
-                except (ConnectionError, RuntimeError):
-                    pass
-
-                connection.disconnect()
-
-                remaining = timeout - (time.monotonic() - start_time)
-                shutdown_deadline = time.monotonic() + min(30.0, max(0.0, remaining))
-                while time.monotonic() < shutdown_deadline:
-                    if not psutil.pid_exists(current_pid):
-                        break
-                    time.sleep(2)
-                else:
-                    if psutil.pid_exists(current_pid):
-                        return json.dumps(
-                            {
-                                "error": "Shutdown timeout",
-                                "pid": current_pid,
-                                "message": "Editor did not exit within 30s. Kill manually if needed.",
-                            }
-                        )
-
-            if current_pid:
-                old_port_file = saved_dir / f"CortexPort-{current_pid}.txt"
-                try:
-                    old_port_file.unlink(missing_ok=True)
-                except OSError:
-                    pass
-
-            # Phase 2: launch editor
-            engine_path = os.environ.get("UE_56_PATH", "")
-            if not engine_path:
-                return json.dumps({"error": "UE_56_PATH not set - cannot launch editor"})
-
-            editor_exe = (
-                pathlib.Path(engine_path)
-                / "Engine"
-                / "Binaries"
-                / "Win64"
-                / "UnrealEditor.exe"
-            )
-
-            subprocess.Popen(
-                [
-                    str(editor_exe),
-                    project_path,
-                    "-nosplash",
-                    "-nopause",
-                    "-AutoDeclinePackageRecovery",
-                    '-ExecCmds="Mainframe.ShowRestoreAssetsPromptOnStartup 0"',
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-
-            # Phase 3: wait for new port
-            remaining = timeout - (time.monotonic() - start_time)
-            launch_deadline = time.monotonic() + max(0.0, remaining)
-            new_port = None
-            new_pid = None
-
-            while time.monotonic() < launch_deadline:
-                time.sleep(3)
-                for port_file in saved_dir.glob("CortexPort-*.txt"):
-                    if port_file_pattern and port_file.name == port_file_pattern:
-                        continue
-                    try:
-                        content = port_file.read_text().strip()
-                        if content.startswith("{"):
-                            data = json.loads(content)
-                            found_pid = data.get("pid")
-                            if found_pid and found_pid != current_pid:
-                                new_pid = found_pid
-                                new_port = int(data["port"])
-                                break
-                    except (json.JSONDecodeError, ValueError, OSError, KeyError):
-                        continue
-                if new_port is not None:
-                    break
-
-            if new_port is None:
-                return json.dumps(
-                    {
-                        "error": "Launch timeout",
-                        "message": f"Editor did not start within {timeout}s",
-                    }
-                )
-
-            # Phase 4: verify
-            connection.port = new_port
-            connection._pid = new_pid
-            connection._project_path = project_path
-
-            try:
-                status = connection.send_command("get_status")
-                domains = status.get("data", {}).get("subsystems", {})
-            except (ConnectionError, RuntimeError) as exc:
-                return json.dumps(
-                    {
-                        "error": f"Verification failed: {exc}",
-                        "port": new_port,
-                        "pid": new_pid,
-                    }
-                )
-
-            elapsed = time.monotonic() - start_time
-            return json.dumps(
-                {
-                    "message": "Editor restarted successfully",
-                    "port": new_port,
-                    "pid": new_pid,
-                    "project": pathlib.Path(project_path).stem,
-                    "domains": domains,
-                    "restart_time_seconds": round(elapsed, 1),
-                },
-                indent=2,
-            )
-        finally:
-            lock_file.unlink(missing_ok=True)
+        return json.dumps(do_restart_editor(connection, timeout), indent=2)
