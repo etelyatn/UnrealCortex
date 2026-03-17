@@ -8,6 +8,7 @@
 #include "Engine/Blueprint.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
+#include "TimerManager.h"
 #include "UObject/UObjectGlobals.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBorder.h"
@@ -62,9 +63,32 @@ void SCortexFindingsPanel::ClearFindings()
 
 void SCortexFindingsPanel::RequestRefresh()
 {
-    if (FindingsList.IsValid())
+    if (bRefreshPending) return;  // Already scheduled
+
+    bRefreshPending = true;
+
+    // Debounce: refresh after 150ms to batch streaming findings
+    if (GEditor)
     {
-        FindingsList->RequestListRefresh();
+        GEditor->GetTimerManager()->SetTimer(
+            RefreshTimerHandle, FTimerDelegate::CreateLambda([this]()
+            {
+                bRefreshPending = false;
+                if (FindingsList.IsValid())
+                {
+                    FindingsList->RequestListRefresh();
+                }
+            }),
+            0.15f, false);
+    }
+    else
+    {
+        // Fallback: refresh immediately if GEditor unavailable
+        bRefreshPending = false;
+        if (FindingsList.IsValid())
+        {
+            FindingsList->RequestListRefresh();
+        }
     }
 }
 

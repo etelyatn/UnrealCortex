@@ -48,4 +48,7 @@ private:
     TSharedPtr<SListView<TSharedPtr<FCortexAnalysisFinding>>> FindingsList;
     TArray<TSharedPtr<FCortexAnalysisFinding>> FindingsData;
     TSharedPtr<STextBlock> SummaryText;
+
+    FTimerHandle RefreshTimerHandle;
+    bool bRefreshPending = false;
 };
