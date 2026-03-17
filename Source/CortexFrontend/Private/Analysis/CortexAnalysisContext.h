@@ -41,6 +41,9 @@ struct FCortexAnalysisContext : public FGCObject
     bool bIsInitialGeneration = true;
 
     // Cloned graphs for preview
+    // NOTE: DuplicateObject retains hard GC references from node internals (UK2Node_FunctionEntry,
+    // UK2Node_Event, etc.) back to the source Blueprint package. While the tab is open, this
+    // prevents the source Blueprint from being GC'd — intentional, as the user has it open.
     TObjectPtr<UPackage> TempPackage = nullptr;
     TMap<FName, TObjectPtr<UEdGraph>> ClonedGraphs;  // GraphName -> cloned graph
     TObjectPtr<UEdGraph> ActiveClonedGraph = nullptr;
@@ -49,6 +52,7 @@ struct FCortexAnalysisContext : public FGCObject
     TMap<int32, FGuid> NodeIdMapping;            // node_N -> FGuid
     TMap<int32, FString> NodeDisplayNames;       // node_N -> "Cast To BP_Player"
     TMap<int32, FString> NodeGraphNames;         // node_N -> "EventGraph"
+    TSet<FGuid> AnalyzedNodeGuids;               // GUIDs of nodes in analyzed scope (fast membership check for AnnotateNode)
 
     // Findings
     TArray<FCortexAnalysisFinding> Findings;
@@ -60,7 +64,8 @@ struct FCortexAnalysisContext : public FGCObject
     TMap<FString, int32> PerFunctionTokens;
 
     /** Store cloned graphs from serialization result. Caller must have called AddToRoot()
-     *  on the package. This method calls RemoveFromRoot() since FGCObject takes over. */
+     *  on the package. This method calls RemoveFromRoot() since FGCObject takes over.
+     *  Also nulls SerResult.ClonedGraphPackage to prevent double-free by the caller. */
     void TakeOwnershipOfClonedGraphs(FCortexSerializationResult& SerResult)
     {
         if (SerResult.ClonedGraphPackage)
@@ -80,18 +85,24 @@ struct FCortexAnalysisContext : public FGCObject
                 }
                 return true;
             });
+
+            // Null out the raw pointer so the caller cannot accidentally double-free
+            SerResult.ClonedGraphPackage = nullptr;
         }
 
         NodeIdMapping = MoveTemp(SerResult.NodeIdMapping);
         NodeDisplayNames = MoveTemp(SerResult.NodeDisplayNames);
 
-        // Build node -> graph name mapping from cloned graphs.
-        // Reverse map first (O(n)) to avoid O(n*m) inner loop.
+        // Build GuidToNodeId reverse map (O(n)) and AnalyzedNodeGuids set simultaneously.
+        // AnalyzedNodeGuids enables AnnotateNode to skip lazily-cloned graph nodes whose
+        // GUIDs were never part of the serialized scope the AI analyzed.
         TMap<FGuid, int32> GuidToNodeId;
         GuidToNodeId.Reserve(NodeIdMapping.Num());
+        AnalyzedNodeGuids.Reserve(NodeIdMapping.Num());
         for (const auto& IdPair : NodeIdMapping)
         {
             GuidToNodeId.Add(IdPair.Value, IdPair.Key);
+            AnalyzedNodeGuids.Add(IdPair.Value);
         }
 
         for (const auto& Pair : ClonedGraphs)
@@ -174,6 +185,9 @@ struct FCortexAnalysisContext : public FGCObject
         {
             Collector.AddReferencedObject(Pair.Value);
         }
+        // ActiveClonedGraph is always a value in ClonedGraphs (invariant enforced by
+        // SetActiveGraph). This call is redundant safety — guards against future direct
+        // assignments to ActiveClonedGraph that bypass SetActiveGraph.
         Collector.AddReferencedObject(ActiveClonedGraph);
     }
 

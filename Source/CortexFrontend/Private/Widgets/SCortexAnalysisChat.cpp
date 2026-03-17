@@ -192,6 +192,12 @@ void SCortexAnalysisChat::ProcessFindings(const FString& FullText)
 		if (Finding.NodeDisplayName.StartsWith(TEXT("node_")))
 		{
 			const FString IdStr = Finding.NodeDisplayName.Mid(5);
+			// Guard against malformed LLM output like "node_abc" — FCString::Atoi returns 0
+			// for non-numeric strings, which would silently resolve to node_0.
+			if (!IdStr.IsNumeric())
+			{
+				continue;
+			}
 			const int32 NodeId = FCString::Atoi(*IdStr);
 
 			FGuid ResolvedGuid;

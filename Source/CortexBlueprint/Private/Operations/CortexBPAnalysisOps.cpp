@@ -2060,6 +2060,20 @@ TArray<FCortexPreScanFinding> FCortexBPAnalysisOps::RunPreScan(UBlueprint* Bluep
 		return Findings;
 	}
 
+	// If the Blueprint is dirty (modified since last compile), node-level compiler
+	// message fields (bHasCompilerMessage, ErrorType, ErrorMsg) reflect the previous
+	// compile — not the current source. Surface this as a warning so the AI prompt
+	// can note that diagnostics may be stale.
+	if (Blueprint->Status == EBlueprintStatus::BS_Dirty ||
+		Blueprint->Status == EBlueprintStatus::BS_Unknown)
+	{
+		FCortexPreScanFinding DirtyWarning;
+		DirtyWarning.Type = ECortexPreScanType::CompilationWarning;
+		DirtyWarning.Description = TEXT("Blueprint has unsaved changes and may need recompilation — compiler diagnostics below reflect the previous compile state and may be stale.");
+		DirtyWarning.GraphName = TEXT("");
+		Findings.Add(MoveTemp(DirtyWarning));
+	}
+
 	TArray<UEdGraph*> AllGraphs;
 	Blueprint->GetAllGraphs(AllGraphs);
 

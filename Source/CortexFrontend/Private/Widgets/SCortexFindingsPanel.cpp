@@ -51,6 +51,19 @@ void SCortexFindingsPanel::Construct(const FArguments& InArgs)
 
 void SCortexFindingsPanel::AddFinding(const FCortexAnalysisFinding& Finding)
 {
+    // On the dedup update path, Context->AddFinding updates an existing finding in-place
+    // and fires OnNewFinding with the updated data. Check for an existing panel entry by
+    // FindingIndex and update it rather than appending a duplicate row.
+    for (const TSharedPtr<FCortexAnalysisFinding>& Existing : FindingsData)
+    {
+        if (Existing->FindingIndex == Finding.FindingIndex)
+        {
+            *Existing = Finding;
+            RequestRefresh();
+            return;
+        }
+    }
+
     FindingsData.Add(MakeShared<FCortexAnalysisFinding>(Finding));
     RequestRefresh();
 }

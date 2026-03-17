@@ -140,6 +140,12 @@ void SCortexGraphPreview::AnnotateNode(
 {
     if (!Context.IsValid()) return;
 
+    // Only annotate nodes that were part of the analyzed scope. Lazily-cloned graphs
+    // (added via SwitchToGraph for graphs outside the original serialization scope) have
+    // the same node GUIDs as the source Blueprint but were never analyzed — annotating
+    // them would show findings that don't correspond to anything the AI examined.
+    if (!Context->AnalyzedNodeGuids.Contains(NodeGuid)) return;
+
     UEdGraph* ActiveGraph = Context->GetActiveClonedGraph();
     if (!ActiveGraph) return;
 
@@ -163,9 +169,12 @@ void SCortexGraphPreview::AnnotateNode(
         break;
     }
 
+    // RefreshNode forces the existing SGraphNode widget to reconstruct and re-read
+    // bHasCompilerMessage/ErrorMsg. NotifyGraphChanged() only handles topology changes
+    // (nodes added/removed) and does not update error state on existing node widgets.
     if (GraphEditorWidget.IsValid())
     {
-        GraphEditorWidget->NotifyGraphChanged();
+        GraphEditorWidget->RefreshNode(*Node);
     }
 }
 
@@ -185,10 +194,10 @@ void SCortexGraphPreview::ClearAnnotations()
         }
     }
 
-    if (GraphEditorWidget.IsValid())
-    {
-        GraphEditorWidget->NotifyGraphChanged();
-    }
+    // Recreate the graph editor to force all SGraphNode widgets to reconstruct and
+    // re-read the cleared error state. NotifyGraphChanged() only handles topology
+    // changes and does not update error visuals on existing node widgets.
+    RecreateGraphEditor(ActiveGraph);
 }
 
 void SCortexGraphPreview::OnGraphSelected(

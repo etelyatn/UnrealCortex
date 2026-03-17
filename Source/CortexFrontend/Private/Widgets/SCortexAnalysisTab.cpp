@@ -150,6 +150,12 @@ void SCortexAnalysisTab::Construct(const FArguments& InArgs)
             BlueprintCompiledHandle = Blueprint->OnCompiled().AddSP(
                 this, &SCortexAnalysisTab::OnBlueprintCompiled);
         }
+        else
+        {
+            UE_LOG(LogCortexFrontend, Warning,
+                TEXT("SCortexAnalysisTab: Blueprint not in memory at construction (%s) — recompile banner will not show"),
+                *Context->Payload.BlueprintPath);
+        }
     }
 }
 
@@ -303,6 +309,10 @@ void SCortexAnalysisTab::OnAnalyzeClicked()
                 }
 
                 const FString& Json = SerResult.JsonPayload;
+                // ~4 chars/token for ASCII Blueprint JSON. For CJK variable/node names,
+                // FString::Len() returns UTF-16 code units (1 per CJK char) but those
+                // tokenize as 1-3 tokens each — this will underestimate for CJK-heavy content.
+                // The hard cutoff at 80K is conservative in the common (ASCII) case.
                 const int32 EstimatedTokens = Json.Len() / 4;
 
                 UE_LOG(LogCortexFrontend, Log, TEXT("  Serialization complete: %.1fms, ~%d tokens, %d node mappings"),
@@ -311,22 +321,10 @@ void SCortexAnalysisTab::OnAnalyzeClicked()
                 Self->StatusMessage(FString::Printf(TEXT("[Step 1/4] Serialized (%.0fms, ~%d tokens)"),
                     SerializeMs, EstimatedTokens));
 
-                // Token budget check
-                if (EstimatedTokens > 80000)
-                {
-                    Self->StatusMessage(FString::Printf(
-                        TEXT("[Error] Blueprint too large (%d tokens). Select a narrower scope."),
-                        EstimatedTokens));
-                    return;
-                }
-                if (EstimatedTokens > 40000)
-                {
-                    Self->StatusMessage(FString::Printf(
-                        TEXT("[Warning] Large Blueprint (%d tokens). Consider narrower scope."),
-                        EstimatedTokens));
-                }
-
-                // Take ownership of cloned graphs and node mappings
+                // Take ownership of cloned graphs IMMEDIATELY — before any early-return paths.
+                // TakeOwnershipOfClonedGraphs transfers the AddToRoot'd package to FCortexAnalysisContext,
+                // whose destructor calls RemoveFromRoot + MarkAsGarbage. Without this, an early return
+                // below (e.g., token budget check) would leave the package permanently rooted.
                 FCortexSerializationResult MutableResult = SerResult;
                 Self->Context->TakeOwnershipOfClonedGraphs(MutableResult);
 
@@ -344,6 +342,21 @@ void SCortexAnalysisTab::OnAnalyzeClicked()
                 if (Self->GraphPreview.IsValid() && Self->Context->GetActiveClonedGraph())
                 {
                     Self->GraphPreview->SetInitialGraph(Self->Context->GetActiveClonedGraph());
+                }
+
+                // Token budget check — early return is now safe: package is under context ownership.
+                if (EstimatedTokens > 80000)
+                {
+                    Self->StatusMessage(FString::Printf(
+                        TEXT("[Error] Blueprint too large (%d tokens). Select a narrower scope."),
+                        EstimatedTokens));
+                    return;
+                }
+                if (EstimatedTokens > 40000)
+                {
+                    Self->StatusMessage(FString::Printf(
+                        TEXT("[Warning] Large Blueprint (%d tokens). Consider narrower scope."),
+                        EstimatedTokens));
                 }
 
                 // Assemble system prompt (focus layers only — BP data goes in user message)

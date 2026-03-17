@@ -35,6 +35,9 @@ struct FCortexAnalysisFinding
 
     FString GetDeduplicationKey() const
     {
-        return FString::Printf(TEXT("%s::%s"), *NodeGuid.ToString(), *Title);
+        // Include Category so same-node same-title findings in different categories
+        // (e.g., both a bug and a performance issue on the same node) are not collapsed.
+        return FString::Printf(TEXT("%s::%s::%d"),
+            *NodeGuid.ToString(), *Title, (int32)Category);
     }
 };
