@@ -109,6 +109,7 @@ void SCortexGraphPreview::AnnotateNode(
     UEdGraphNode* Node = FindNodeByGuid(ActiveGraph, NodeGuid);
     if (!Node) return;
 
+    // No Modify() — these are RF_Transient clones that are never saved or undone
     Node->bHasCompilerMessage = true;
     Node->ErrorMsg = Message;
 
@@ -123,6 +124,11 @@ void SCortexGraphPreview::AnnotateNode(
     default:
         Node->ErrorType = EMessageSeverity::Info;
         break;
+    }
+
+    if (GraphEditorWidget.IsValid())
+    {
+        GraphEditorWidget->NotifyGraphChanged();
     }
 }
 
@@ -140,6 +146,11 @@ void SCortexGraphPreview::ClearAnnotations()
             Node->bHasCompilerMessage = false;
             Node->ErrorMsg.Empty();
         }
+    }
+
+    if (GraphEditorWidget.IsValid())
+    {
+        GraphEditorWidget->NotifyGraphChanged();
     }
 }
 
