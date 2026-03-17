@@ -990,9 +990,9 @@ void SCortexConversionConfig::RequestTokenEstimate()
 
 	Core.RequestSerialization(Request,
 		FOnSerializationComplete::CreateLambda(
-			[WeakContext](bool bSuccess, const FString& Json)
+			[WeakContext](const FCortexSerializationResult& SerResult)
 			{
-				if (!bSuccess)
+				if (!SerResult.bSuccess)
 				{
 					return;
 				}
@@ -1003,7 +1003,7 @@ void SCortexConversionConfig::RequestTokenEstimate()
 					return;
 				}
 
-				Ctx->EstimatedTotalTokens = Json.Len() / 4;
+				Ctx->EstimatedTotalTokens = SerResult.JsonPayload.Len() / 4;
 				Ctx->bTokenEstimateReady = true;
 
 				UE_LOG(LogCortexFrontend, Log, TEXT("Token estimate ready: ~%d tokens for EntireBlueprint"),
@@ -1025,16 +1025,16 @@ void SCortexConversionConfig::RequestTokenEstimate()
 
 		Core.RequestSerialization(FuncRequest,
 			FOnSerializationComplete::CreateLambda(
-				[WeakContext, FuncName](bool bSuccess, const FString& Json)
+				[WeakContext, FuncName](const FCortexSerializationResult& SerResult)
 				{
-					if (!bSuccess)
+					if (!SerResult.bSuccess)
 					{
 						return;
 					}
 					TSharedPtr<FCortexConversionContext> Ctx = WeakContext.Pin();
 					if (Ctx.IsValid())
 					{
-						Ctx->PerFunctionTokens.Add(FuncName, Json.Len() / 4);
+						Ctx->PerFunctionTokens.Add(FuncName, SerResult.JsonPayload.Len() / 4);
 					}
 				}));
 	}

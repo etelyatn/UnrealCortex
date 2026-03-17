@@ -41,7 +41,10 @@ void FCortexBPSerializationOps::Serialize(const FCortexSerializationRequest& Req
 	UBlueprint* Blueprint = LoadBlueprintSafe(Request.BlueprintPath, LoadError);
 	if (!Blueprint)
 	{
-		Callback.Execute(false, FString::Printf(TEXT("{\"error\":\"%s\"}"), *LoadError));
+		FCortexSerializationResult ErrorResult;
+		ErrorResult.bSuccess = false;
+		ErrorResult.JsonPayload = FString::Printf(TEXT("{\"error\":\"%s\"}"), *LoadError);
+		Callback.Execute(ErrorResult);
 		return;
 	}
 
@@ -109,7 +112,10 @@ void FCortexBPSerializationOps::Serialize(const FCortexSerializationRequest& Req
 		}
 	}
 
-	Callback.Execute(true, Json);
+	FCortexSerializationResult Result;
+	Result.bSuccess = true;
+	Result.JsonPayload = Json;
+	Callback.Execute(Result);
 }
 
 TSharedRef<FJsonObject> FCortexBPSerializationOps::NodeToJson(UEdGraphNode* Node)

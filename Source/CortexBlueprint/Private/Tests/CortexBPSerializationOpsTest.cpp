@@ -20,10 +20,10 @@ bool FCortexBPSerializeEntireBlueprintTest::RunTest(const FString& Parameters)
 	bool bSuccess = false;
 	FString JsonResult;
 	FCortexBPSerializationOps::Serialize(Request,
-		FOnSerializationComplete::CreateLambda([&](bool bOk, const FString& Json)
+		FOnSerializationComplete::CreateLambda([&](const FCortexSerializationResult& SerResult)
 		{
-			bSuccess = bOk;
-			JsonResult = Json;
+			bSuccess = SerResult.bSuccess;
+			JsonResult = SerResult.JsonPayload;
 		}));
 
 	TestTrue(TEXT("Serialization should succeed"), bSuccess);
@@ -70,17 +70,17 @@ bool FCortexBPSerializeCompactModeTest::RunTest(const FString& Parameters)
 	bool bVerboseOk = false, bCompactOk = false;
 
 	FCortexBPSerializationOps::Serialize(VerboseRequest,
-		FOnSerializationComplete::CreateLambda([&](bool bOk, const FString& Json)
+		FOnSerializationComplete::CreateLambda([&](const FCortexSerializationResult& SerResult)
 		{
-			bVerboseOk = bOk;
-			VerboseJson = Json;
+			bVerboseOk = SerResult.bSuccess;
+			VerboseJson = SerResult.JsonPayload;
 		}));
 
 	FCortexBPSerializationOps::Serialize(CompactRequest,
-		FOnSerializationComplete::CreateLambda([&](bool bOk, const FString& Json)
+		FOnSerializationComplete::CreateLambda([&](const FCortexSerializationResult& SerResult)
 		{
-			bCompactOk = bOk;
-			CompactJson = Json;
+			bCompactOk = SerResult.bSuccess;
+			CompactJson = SerResult.JsonPayload;
 		}));
 
 	TestTrue(TEXT("Verbose serialization should succeed"), bVerboseOk);
@@ -130,10 +130,10 @@ bool FCortexBPSerializeCompactEventOrFunctionTest::RunTest(const FString& Parame
 	bool bSuccess = false;
 	FString JsonResult;
 	FCortexBPSerializationOps::Serialize(Request,
-		FOnSerializationComplete::CreateLambda([&](bool bOk, const FString& Json)
+		FOnSerializationComplete::CreateLambda([&](const FCortexSerializationResult& SerResult)
 		{
-			bSuccess = bOk;
-			JsonResult = Json;
+			bSuccess = SerResult.bSuccess;
+			JsonResult = SerResult.JsonPayload;
 		}));
 
 	if (!bSuccess)
