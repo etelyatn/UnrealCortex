@@ -41,9 +41,9 @@ struct FCortexAnalysisContext : public FGCObject
     bool bIsInitialGeneration = true;
 
     // Cloned graphs for preview
-    UPackage* TempPackage = nullptr;
-    TMap<FName, UEdGraph*> ClonedGraphs;        // GraphName -> cloned graph
-    UEdGraph* ActiveClonedGraph = nullptr;
+    TObjectPtr<UPackage> TempPackage = nullptr;
+    TMap<FName, TObjectPtr<UEdGraph>> ClonedGraphs;  // GraphName -> cloned graph
+    TObjectPtr<UEdGraph> ActiveClonedGraph = nullptr;
 
     // Node ID mapping (from FCortexSerializationResult)
     TMap<int32, FGuid> NodeIdMapping;            // node_N -> FGuid
@@ -109,7 +109,7 @@ struct FCortexAnalysisContext : public FGCObject
 
     bool SetActiveGraph(FName GraphName)
     {
-        if (UEdGraph** Found = ClonedGraphs.Find(GraphName))
+        if (TObjectPtr<UEdGraph>* Found = ClonedGraphs.Find(GraphName))
         {
             ActiveClonedGraph = *Found;
             return true;
