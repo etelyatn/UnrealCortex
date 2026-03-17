@@ -7,7 +7,7 @@
 
 class SButton;
 class SMultiLineEditableTextBox;
-class SVerticalBox;
+class SCortexScopeSelector;
 
 DECLARE_DELEGATE(FOnConvertClicked);
 
@@ -26,9 +26,6 @@ private:
 	void OnScopeChanged(ECortexConversionScope NewScope);
 	void OnFunctionToggled(const FString& Name, bool bChecked);
 
-	bool IsScopeSelected(ECortexConversionScope Scope) const;
-	bool IsFunctionChecked(const FString& Name) const;
-
 	TSharedRef<SWidget> BuildScopeAndTargetSection(const FCortexConversionPayload& Payload);
 	TSharedRef<SWidget> BuildInstructionsSection();
 
@@ -44,10 +41,9 @@ private:
 
 	TSharedPtr<FCortexConversionContext> Context;
 	TSharedPtr<SMultiLineEditableTextBox> CustomInstructionsBox;
-	TSharedPtr<SVerticalBox> EventFunctionChecklist;
+	TSharedPtr<SCortexScopeSelector> ScopeSelector;
 	FOnConvertClicked OnConvert;
 
-	void UpdateChecklistVisibility();
 	void UpdateCustomInstructionsVisibility();
 	void RequestTokenEstimate();
 	int32 EstimateTokensForScope(ECortexConversionScope Scope) const;

@@ -2,6 +2,7 @@
 
 #include "CortexCoreModule.h"
 #include "CortexFrontendModule.h"
+#include "Widgets/SCortexScopeSelector.h"
 #include "Styling/AppStyle.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
@@ -12,12 +13,6 @@
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/Text/STextBlock.h"
-
-namespace
-{
-	// Unreal Editor accent blue — used for active scope & checklist header
-	const FLinearColor UEAccentBlue(0.0f, 0.47f, 0.84f, 1.0f);
-}
 
 void SCortexConversionConfig::Construct(const FArguments& InArgs)
 {
@@ -217,304 +212,21 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 
 TSharedRef<SWidget> SCortexConversionConfig::BuildScopeAndTargetSection(const FCortexConversionPayload& Payload)
 {
-	const bool bHasSelectedNodes = Payload.SelectedNodeIds.Num() > 0;
-	const bool bHasEventsOrFunctions = Payload.EventNames.Num() > 0 || Payload.FunctionNames.Num() > 0;
-
-	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
-
-	// Section header
-	Box->AddSlot()
-	.AutoHeight()
-	.Padding(0, 0, 0, 6)
-	[
-		SNew(STextBlock)
-		.Text(NSLOCTEXT("CortexConversion", "ScopeLabel", "Conversion Scope"))
-		.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
-	];
-
-	// Entire Blueprint
-	Box->AddSlot()
-	.AutoHeight()
-	.Padding(0, 2)
-	[
-		SNew(SCheckBox)
-		.Style(FAppStyle::Get(), "RadioButton")
-		.IsChecked_Lambda([this]()
+	return SAssignNew(ScopeSelector, SCortexScopeSelector)
+		.InitialScope(Context->SelectedScope)
+		.CurrentGraphName(Payload.CurrentGraphName)
+		.EventNames(Payload.EventNames)
+		.FunctionNames(Payload.FunctionNames)
+		.GraphNames(Payload.GraphNames)
+		.SelectedNodeCount(Payload.SelectedNodeIds.Num())
+		.OnScopeChanged_Lambda([this](ECortexConversionScope NewScope)
 		{
-			return IsScopeSelected(ECortexConversionScope::EntireBlueprint)
-				? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			OnScopeChanged(NewScope);
 		})
-		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+		.OnFunctionToggled_Lambda([this](const FString& Name, bool bChecked)
 		{
-			if (State == ECheckBoxState::Checked) OnScopeChanged(ECortexConversionScope::EntireBlueprint);
-		})
-		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			[
-				SNew(STextBlock)
-				.Text(NSLOCTEXT("CortexConversion", "ScopeEntire", "Entire Blueprint"))
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(6, 0, 0, 0)
-			[
-				SNew(STextBlock)
-				.Text_Lambda([this]() -> FText
-				{
-					if (Context.IsValid() && Context->bTokenEstimateReady)
-					{
-						return FText::FromString(FString::Printf(TEXT("(%s)"),
-							*FormatTokenCount(Context->EstimatedTotalTokens)));
-					}
-					return FText::GetEmpty();
-				})
-				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-				.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
-			]
-		]
-	];
-
-	// Selected Nodes (always visible, disabled when no nodes are selected)
-	Box->AddSlot()
-	.AutoHeight()
-	.Padding(0, 2)
-	[
-		SNew(SCheckBox)
-		.Style(FAppStyle::Get(), "RadioButton")
-		.IsEnabled(bHasSelectedNodes)
-		.IsChecked_Lambda([this]()
-		{
-			return IsScopeSelected(ECortexConversionScope::SelectedNodes)
-				? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-		})
-		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
-		{
-			if (State == ECheckBoxState::Checked) OnScopeChanged(ECortexConversionScope::SelectedNodes);
-		})
-		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			[
-				SNew(STextBlock)
-				.Text(FText::FromString(bHasSelectedNodes
-					? FString::Printf(TEXT("Selected Nodes (%d)"), Payload.SelectedNodeIds.Num())
-					: TEXT("Selected Nodes")))
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(6, 0, 0, 0)
-			[
-				SNew(STextBlock)
-				.Text_Lambda([this, bHasSelectedNodes]() -> FText
-				{
-					if (bHasSelectedNodes && Context.IsValid() && Context->bTokenEstimateReady)
-					{
-						return FText::FromString(FString::Printf(TEXT("(%s)"),
-							*FormatTokenCount(EstimateTokensForScope(ECortexConversionScope::SelectedNodes))));
-					}
-					return FText::GetEmpty();
-				})
-				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-				.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
-			]
-		]
-	];
-
-	// Current Graph
-	Box->AddSlot()
-	.AutoHeight()
-	.Padding(0, 2)
-	[
-		SNew(SCheckBox)
-		.Style(FAppStyle::Get(), "RadioButton")
-		.IsChecked_Lambda([this]()
-		{
-			return IsScopeSelected(ECortexConversionScope::CurrentGraph)
-				? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-		})
-		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
-		{
-			if (State == ECheckBoxState::Checked) OnScopeChanged(ECortexConversionScope::CurrentGraph);
-		})
-		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			[
-				SNew(STextBlock)
-				.Text(FText::FromString(FString::Printf(TEXT("Current Graph (%s)"), *Payload.CurrentGraphName)))
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(6, 0, 0, 0)
-			[
-				SNew(STextBlock)
-				.Text_Lambda([this]() -> FText
-				{
-					if (Context.IsValid() && Context->bTokenEstimateReady)
-					{
-						return FText::FromString(FString::Printf(TEXT("(%s)"),
-							*FormatTokenCount(EstimateTokensForScope(ECortexConversionScope::CurrentGraph))));
-					}
-					return FText::GetEmpty();
-				})
-				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-				.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
-			]
-		]
-	];
-
-	// Events & Functions scope option + expandable checklist
-	if (bHasEventsOrFunctions)
-	{
-		// Scope radio
-		Box->AddSlot()
-		.AutoHeight()
-		.Padding(0, 2)
-		[
-			SNew(SCheckBox)
-			.Style(FAppStyle::Get(), "RadioButton")
-			.IsChecked_Lambda([this]()
-			{
-				return IsScopeSelected(ECortexConversionScope::EventOrFunction)
-					? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-			})
-			.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
-			{
-				if (State == ECheckBoxState::Checked) OnScopeChanged(ECortexConversionScope::EventOrFunction);
-			})
-			[
-				SNew(STextBlock)
-				.Text(NSLOCTEXT("CortexConversion", "ScopeEventsFunc", "Events & Functions"))
-			]
-		];
-
-		// Checklist — visible only when EventOrFunction scope is active
-		EventFunctionChecklist = SNew(SVerticalBox);
-
-		// Checklist header with accent color
-		EventFunctionChecklist->AddSlot()
-		.AutoHeight()
-		.Padding(12, 4, 0, 2)
-		[
-			SNew(STextBlock)
-			.Text(NSLOCTEXT("CortexConversion", "SelectLabel", "Select to convert:"))
-			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
-			.ColorAndOpacity(FSlateColor(UEAccentBlue))
-		];
-
-		for (const FString& EventName : Payload.EventNames)
-		{
-			EventFunctionChecklist->AddSlot()
-			.AutoHeight()
-			.Padding(14, 1)
-			[
-				SNew(SCheckBox)
-				.IsChecked_Lambda([this, EventName]()
-				{
-					return IsFunctionChecked(EventName)
-						? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-				})
-				.OnCheckStateChanged_Lambda([this, EventName](ECheckBoxState State)
-				{
-					OnFunctionToggled(EventName, State == ECheckBoxState::Checked);
-				})
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(STextBlock)
-						.Text(FText::FromString(EventName))
-						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-					]
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.Padding(4, 0, 0, 0)
-					[
-						SNew(STextBlock)
-						.Text_Lambda([this, Name = EventName]() -> FText
-						{
-							if (Context.IsValid())
-							{
-								const int32* Found = Context->PerFunctionTokens.Find(Name);
-								if (Found && *Found > 0)
-								{
-									return FText::FromString(FString::Printf(TEXT("(%s)"), *FormatTokenCount(*Found)));
-								}
-							}
-							return FText::GetEmpty();
-						})
-						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
-						.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
-					]
-				]
-			];
-		}
-
-		for (const FString& FuncName : Payload.FunctionNames)
-		{
-			EventFunctionChecklist->AddSlot()
-			.AutoHeight()
-			.Padding(14, 1)
-			[
-				SNew(SCheckBox)
-				.IsChecked_Lambda([this, FuncName]()
-				{
-					return IsFunctionChecked(FuncName)
-						? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-				})
-				.OnCheckStateChanged_Lambda([this, FuncName](ECheckBoxState State)
-				{
-					OnFunctionToggled(FuncName, State == ECheckBoxState::Checked);
-				})
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(STextBlock)
-						.Text(FText::FromString(FuncName))
-						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-					]
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.Padding(4, 0, 0, 0)
-					[
-						SNew(STextBlock)
-						.Text_Lambda([this, Name = FuncName]() -> FText
-						{
-							if (Context.IsValid())
-							{
-								const int32* Found = Context->PerFunctionTokens.Find(Name);
-								if (Found && *Found > 0)
-								{
-									return FText::FromString(FString::Printf(TEXT("(%s)"), *FormatTokenCount(*Found)));
-								}
-							}
-							return FText::GetEmpty();
-						})
-						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
-						.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
-					]
-				]
-			];
-		}
-
-		Box->AddSlot()
-		.AutoHeight()
-		[
-			EventFunctionChecklist.ToSharedRef()
-		];
-
-		// Set initial visibility (collapsed until EventOrFunction scope is selected)
-		UpdateChecklistVisibility();
-	}
-
-	return Box;
+			OnFunctionToggled(Name, bChecked);
+		});
 }
 
 TSharedRef<SWidget> SCortexConversionConfig::BuildInstructionsSection()
@@ -676,17 +388,6 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildInstructionsSection()
 	return Box;
 }
 
-bool SCortexConversionConfig::IsScopeSelected(ECortexConversionScope Scope) const
-{
-	if (!Context.IsValid()) return false;
-	return Context->SelectedScope == Scope;
-}
-
-bool SCortexConversionConfig::IsFunctionChecked(const FString& Name) const
-{
-	return Context.IsValid() && Context->SelectedFunctions.Contains(Name);
-}
-
 void SCortexConversionConfig::OnScopeChanged(ECortexConversionScope NewScope)
 {
 	if (Context.IsValid())
@@ -695,7 +396,7 @@ void SCortexConversionConfig::OnScopeChanged(ECortexConversionScope NewScope)
 		Context->SelectedFunctions.Empty();
 		Context->SelectedDepth = DefaultDepthForScope(NewScope);
 	}
-	UpdateChecklistVisibility();
+	RequestTokenEstimate();
 }
 
 void SCortexConversionConfig::OnFunctionToggled(const FString& Name, bool bChecked)
@@ -734,15 +435,6 @@ void SCortexConversionConfig::OnDepthChanged(ECortexConversionDepth NewDepth)
 		Context->SelectedDepth = NewDepth;
 	}
 	UpdateCustomInstructionsVisibility();
-}
-
-void SCortexConversionConfig::UpdateChecklistVisibility()
-{
-	if (EventFunctionChecklist.IsValid() && Context.IsValid())
-	{
-		const bool bVisible = Context->SelectedScope == ECortexConversionScope::EventOrFunction;
-		EventFunctionChecklist->SetVisibility(bVisible ? EVisibility::Visible : EVisibility::Collapsed);
-	}
 }
 
 void SCortexConversionConfig::UpdateCustomInstructionsVisibility()
@@ -987,10 +679,11 @@ void SCortexConversionConfig::RequestTokenEstimate()
 
 	FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
 	TWeakPtr<FCortexConversionContext> WeakContext = Context;
+	TWeakPtr<SCortexScopeSelector> WeakSelector = ScopeSelector;
 
 	Core.RequestSerialization(Request,
 		FOnSerializationComplete::CreateLambda(
-			[WeakContext](const FCortexSerializationResult& SerResult)
+			[WeakContext, WeakSelector](const FCortexSerializationResult& SerResult)
 			{
 				if (!SerResult.bSuccess)
 				{
@@ -1008,6 +701,12 @@ void SCortexConversionConfig::RequestTokenEstimate()
 
 				UE_LOG(LogCortexFrontend, Log, TEXT("Token estimate ready: ~%d tokens for EntireBlueprint"),
 					Ctx->EstimatedTotalTokens);
+
+				TSharedPtr<SCortexScopeSelector> Selector = WeakSelector.Pin();
+				if (Selector.IsValid())
+				{
+					Selector->SetTokenEstimates(Ctx->EstimatedTotalTokens, Ctx->PerFunctionTokens);
+				}
 			}));
 
 	// Fire per-function/event serializations for individual token estimates
@@ -1025,7 +724,7 @@ void SCortexConversionConfig::RequestTokenEstimate()
 
 		Core.RequestSerialization(FuncRequest,
 			FOnSerializationComplete::CreateLambda(
-				[WeakContext, FuncName](const FCortexSerializationResult& SerResult)
+				[WeakContext, WeakSelector, FuncName](const FCortexSerializationResult& SerResult)
 				{
 					if (!SerResult.bSuccess)
 					{
@@ -1035,6 +734,12 @@ void SCortexConversionConfig::RequestTokenEstimate()
 					if (Ctx.IsValid())
 					{
 						Ctx->PerFunctionTokens.Add(FuncName, SerResult.JsonPayload.Len() / 4);
+
+						TSharedPtr<SCortexScopeSelector> Selector = WeakSelector.Pin();
+						if (Selector.IsValid())
+						{
+							Selector->SetTokenEstimates(Ctx->EstimatedTotalTokens, Ctx->PerFunctionTokens);
+						}
 					}
 				}));
 	}
