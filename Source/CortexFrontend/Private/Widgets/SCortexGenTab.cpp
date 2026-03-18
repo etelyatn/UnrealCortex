@@ -5,6 +5,7 @@
 #include "Dom/JsonObject.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/STextComboBox.h"
 #include "Widgets/Text/STextBlock.h"
 
 void SCortexGenTab::Construct(const FArguments& InArgs)
@@ -15,6 +16,16 @@ void SCortexGenTab::Construct(const FArguments& InArgs)
 		FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
 		DomainProgressHandle = Core.OnDomainProgress().AddSP(this, &SCortexGenTab::OnDomainProgress);
 	}
+
+	// Generation type options: [0]=Image (cheap), [1]=3D Mesh
+	GenerationTypeOptions.Add(MakeShared<FString>(TEXT("Image (fast/cheap)")));
+	GenerationTypeOptions.Add(MakeShared<FString>(TEXT("3D Mesh")));
+
+	// Quality options
+	QualityOptions.Add(MakeShared<FString>(TEXT("extra-low")));
+	QualityOptions.Add(MakeShared<FString>(TEXT("low")));
+	QualityOptions.Add(MakeShared<FString>(TEXT("medium")));
+	QualityOptions.Add(MakeShared<FString>(TEXT("high")));
 
 	ChildSlot
 	[
@@ -27,6 +38,53 @@ void SCortexGenTab::Construct(const FArguments& InArgs)
 		[
 			SNew(STextBlock)
 			.Text(FText::FromString(TEXT("Generate Asset")))
+		]
+
+		// Generation type selector
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(8.f, 4.f)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0.f, 0.f, 8.f, 0.f)
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(TEXT("Type:")))
+			]
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			[
+				SAssignNew(GenerationTypeCombo, STextComboBox)
+				.OptionsSource(&GenerationTypeOptions)
+				.InitiallySelectedItem(GenerationTypeOptions[1]) // Default: 3D Mesh
+			]
+		]
+
+		// Quality selector
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(8.f, 4.f)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0.f, 0.f, 8.f, 0.f)
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(TEXT("Quality:")))
+			]
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			[
+				SAssignNew(QualityCombo, STextComboBox)
+				.OptionsSource(&QualityOptions)
+				.InitiallySelectedItem(QualityOptions[2]) // Default: medium
+				.OnSelectionChanged(this, &SCortexGenTab::OnQualityChanged)
+			]
 		]
 
 		// Prompt input
@@ -85,9 +143,27 @@ void SCortexGenTab::OnDomainProgress(const FName& DomainName, const TSharedPtr<F
 	FString Status;
 	Data->TryGetStringField(TEXT("status"), Status);
 
-	if (StatusText.IsValid() && !Status.IsEmpty())
+	FString Error;
+	Data->TryGetStringField(TEXT("error"), Error);
+
+	if (StatusText.IsValid())
 	{
-		StatusText->SetText(FText::FromString(Status));
+		if (!Error.IsEmpty())
+		{
+			StatusText->SetText(FText::FromString(FString::Printf(TEXT("%s — %s"), *Status, *Error)));
+		}
+		else if (!Status.IsEmpty())
+		{
+			StatusText->SetText(FText::FromString(Status));
+		}
+	}
+}
+
+void SCortexGenTab::OnQualityChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo)
+{
+	if (NewValue.IsValid())
+	{
+		SelectedQuality = *NewValue;
 	}
 }
 
@@ -106,8 +182,15 @@ FReply SCortexGenTab::OnGenerateClicked()
 
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("prompt"), Prompt);
+	Params->SetStringField(TEXT("quality"), SelectedQuality);
 
-	ExecuteGenCommand(TEXT("start_mesh"), Params);
+	// Generation type options are ordered: [0]=Image, [1]=3D Mesh.
+	// Compare against the known option pointer, not display text.
+	const bool bIsImage = GenerationTypeCombo.IsValid()
+		&& GenerationTypeCombo->GetSelectedItem() == GenerationTypeOptions[0];
+	FString Command = bIsImage ? TEXT("start_image") : TEXT("start_mesh");
+
+	ExecuteGenCommand(Command, Params);
 
 	if (StatusText.IsValid())
 	{
@@ -115,13 +198,6 @@ FReply SCortexGenTab::OnGenerateClicked()
 	}
 
 	return FReply::Handled();
-}
-
-void SCortexGenTab::OnCancelClicked(const FString& JobId)
-{
-	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("job_id"), JobId);
-	ExecuteGenCommand(TEXT("cancel_job"), Params);
 }
 
 void SCortexGenTab::ExecuteGenCommand(const FString& Command, TSharedPtr<FJsonObject> Params)
@@ -135,14 +211,4 @@ void SCortexGenTab::ExecuteGenCommand(const FString& Command, TSharedPtr<FJsonOb
 	Core.GetCommandRouter().Execute(
 		FString::Printf(TEXT("gen.%s"), *Command),
 		Params);
-}
-
-void SCortexGenTab::RefreshProviders()
-{
-	ExecuteGenCommand(TEXT("list_providers"), MakeShared<FJsonObject>());
-}
-
-void SCortexGenTab::RefreshJobs()
-{
-	ExecuteGenCommand(TEXT("list_jobs"), MakeShared<FJsonObject>());
 }

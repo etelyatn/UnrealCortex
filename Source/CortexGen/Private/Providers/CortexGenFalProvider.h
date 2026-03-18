@@ -4,8 +4,9 @@
 
 /**
  * fal.ai Queue API provider.
- * Supports: MeshFromText, MeshFromImage.
- * Default model: fal-ai/hyper3d/rodin (GLB output, PBR materials).
+ * Supports: MeshFromText, MeshFromImage, ImageFromText.
+ * Default mesh model: fal-ai/hyper3d/rodin (GLB output, PBR materials).
+ * Default image model: fal-ai/flux/dev (fast, cheap prompt testing).
  *
  * v1 limitation: SourceImagePath must be an http/https URL.
  * Local file upload is not supported.
@@ -13,7 +14,9 @@
 class FCortexGenFalProvider : public ICortexGenProvider
 {
 public:
-    explicit FCortexGenFalProvider(const FString& InApiKey, const FString& InModelId);
+    explicit FCortexGenFalProvider(const FString& InApiKey, const FString& InModelId,
+        const FString& InImageModelId = TEXT("fal-ai/flux/dev"),
+        const FString& InQuality = TEXT("medium"));
 
     FName GetProviderId() const override;
     FText GetDisplayName() const override;
@@ -26,15 +29,25 @@ public:
 
 protected:
     FString BuildSubmitBody(const FCortexGenJobRequest& Request) const;
-    FCortexGenPollResult ParsePollResponse(const FString& JsonBody) const;
+
+    /** Parse a fal.ai status poll JSON response into a poll result. Pure JSON logic, no state. */
+    static FCortexGenPollResult ParsePollResponse(const FString& JsonBody);
+
+    /** Extract download URL from a fal.ai result response, trying multiple known paths. */
+    static FString ExtractResultUrl(const TSharedPtr<FJsonObject>& Json);
+
+    /** Strip "/status" suffix from a fal.ai URL to derive the base request URL. */
+    static FString StripStatusSuffix(const FString& Url);
 
 private:
     TSharedRef<class IHttpRequest> CreateRequest(const FString& Verb, const FString& Url) const;
-    FString SubmitUrl() const;
-    FString StatusUrl(const FString& RequestId) const;
-    FString FetchResultUrl(const FString& RequestId) const;
-    FString CancelUrl(const FString& RequestId) const;
+    FString SubmitUrlForType(ECortexGenJobType Type) const;
+
+    /** Resolve model ID for the given job type (mesh vs image). */
+    const FString& ModelIdForType(ECortexGenJobType Type) const;
 
     FString ApiKey;
     FString ModelId;
+    FString ImageModelId;
+    FString DefaultQuality;
 };

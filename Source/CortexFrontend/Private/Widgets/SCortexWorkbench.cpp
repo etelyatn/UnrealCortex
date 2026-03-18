@@ -58,7 +58,7 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 			(
 				FTabManager::NewStack()
 				->AddTab(FName(TEXT("CortexChat")), ETabState::OpenedTab)
-				->AddTab(FName(TEXT("CortexGen")), ETabState::ClosedTab)
+				->AddTab(FName(TEXT("CortexGen")), ETabState::OpenedTab)
 				->AddTab(FName(TEXT("CortexQA")), ETabState::ClosedTab)
 			)
 		);

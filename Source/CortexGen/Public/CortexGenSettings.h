@@ -34,6 +34,14 @@ public:
     UPROPERTY(Config, EditAnywhere, Category = "Provider|fal.ai")
     FString FalModelId = TEXT("fal-ai/hyper3d/rodin");
 
+    UPROPERTY(Config, EditAnywhere, Category = "Provider|fal.ai",
+        meta = (ToolTip = "fal.ai model for image generation (cheaper for prompt testing)"))
+    FString FalImageModelId = TEXT("fal-ai/flux/dev");
+
+    UPROPERTY(Config, EditAnywhere, Category = "Provider|fal.ai",
+        meta = (GetOptions = "GetFalQualityOptions"))
+    FString FalQuality = TEXT("medium");
+
     // Import
     UPROPERTY(Config, EditAnywhere, Category = "Import")
     FString DefaultMeshDestination = TEXT("/Game/Generated/Meshes");
@@ -59,6 +67,12 @@ public:
     static TArray<FString> GetDefaultProviderOptions()
     {
         return { TEXT("meshy"), TEXT("tripo3d"), TEXT("fal") };
+    }
+
+    UFUNCTION()
+    static TArray<FString> GetFalQualityOptions()
+    {
+        return { TEXT("extra-low"), TEXT("low"), TEXT("medium"), TEXT("high") };
     }
 
     static const UCortexGenSettings* Get()

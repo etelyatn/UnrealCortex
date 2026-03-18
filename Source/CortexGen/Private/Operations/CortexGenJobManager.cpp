@@ -14,6 +14,24 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "Containers/Ticker.h"
+#include "Async/Async.h"
+#include "HAL/IConsoleManager.h"
+
+namespace
+{
+/** Execute a task on the Game Thread. If already on the Game Thread, runs inline. */
+void RunOnGameThread(TFunction<void()> Task)
+{
+    if (IsInGameThread())
+    {
+        Task();
+    }
+    else
+    {
+        AsyncTask(ENamedThreads::GameThread, MoveTemp(Task));
+    }
+}
+} // anonymous namespace
 
 FCortexGenJobManager::FCortexGenJobManager()
 {
@@ -23,14 +41,27 @@ FCortexGenJobManager::FCortexGenJobManager()
         MaxConcurrentJobs = Settings->MaxConcurrentJobs;
     }
 
-    // Note: LoadJobs() is called explicitly by FCortexGenModule::StartupModule()
-    // so that unit-test instances start with clean state.
+    // Note: Initialize() must be called after construction to start the ticker.
+    // This is separate because TSharedFromThis requires the object to be held
+    // by a TSharedPtr before AsShared() can be called.
+}
 
-    // Set up polling ticker
+void FCortexGenJobManager::Initialize()
+{
+    const UCortexGenSettings* Settings = UCortexGenSettings::Get();
+
+    // Use TWeakPtr to prevent the ticker from preventing destruction.
+    TWeakPtr<FCortexGenJobManager> WeakSelf = AsShared();
+
     TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
-        FTickerDelegate::CreateLambda([this](float /*DeltaTime*/)
+        FTickerDelegate::CreateLambda([WeakSelf](float /*DeltaTime*/)
         {
-            PollActiveJobs();
+            TSharedPtr<FCortexGenJobManager> Self = WeakSelf.Pin();
+            if (!Self.IsValid())
+            {
+                return false; // Stop ticker — manager destroyed
+            }
+            Self->PollActiveJobs();
             return true;
         }),
         Settings ? static_cast<float>(Settings->PollIntervalSeconds) : 5.0f
@@ -83,8 +114,10 @@ ECortexGenCapability FCortexGenJobManager::JobTypeToCapability(ECortexGenJobType
     switch (Type)
     {
     case ECortexGenJobType::MeshFromText:
-    case ECortexGenJobType::MeshFromBoth:
         return ECortexGenCapability::MeshFromText;
+    case ECortexGenJobType::MeshFromBoth:
+        // MeshFromBoth requires both text and image capabilities
+        return ECortexGenCapability::MeshFromText | ECortexGenCapability::MeshFromImage;
     case ECortexGenJobType::MeshFromImage:
         return ECortexGenCapability::MeshFromImage;
     case ECortexGenJobType::ImageFromText:
@@ -131,7 +164,7 @@ bool FCortexGenJobManager::SubmitJob(const FString& ProviderId,
 
     // Validate capability
     ECortexGenCapability RequiredCap = JobTypeToCapability(Request.Type);
-    if (!EnumHasAnyFlags(Provider->GetCapabilities(), RequiredCap))
+    if (!EnumHasAllFlags(Provider->GetCapabilities(), RequiredCap))
     {
         OutError = FString::Printf(
             TEXT("Provider '%s' does not support the requested job type"),
@@ -161,26 +194,34 @@ bool FCortexGenJobManager::SubmitJob(const FString& ProviderId,
 
     OutJobId = JobId;
 
-    // Submit to provider (may be async)
-    Provider->SubmitJob(Request, FOnGenJobSubmitted::CreateLambda(
-        [this, JobId](const FCortexGenSubmitResult& Result)
-        {
-            FCortexGenJobState* JobPtr = Jobs.Find(JobId);
-            if (!JobPtr)
-            {
-                return;
-            }
+    UE_LOG(LogCortexGen, Log, TEXT("Submitting job %s to provider '%s' (type=%d, prompt='%s')"),
+        *JobId, *ProviderId, static_cast<int32>(Request.Type),
+        *Request.Prompt.Left(80));
 
-            if (Result.bSuccess)
+    // Submit to provider (callback fires on HTTP thread — dispatch back to Game Thread)
+    TWeakPtr<FCortexGenJobManager> WeakSelf = AsShared();
+    Provider->SubmitJob(Request, FOnGenJobSubmitted::CreateLambda(
+        [WeakSelf, JobId](const FCortexGenSubmitResult& Result)
+        {
+            RunOnGameThread([WeakSelf, JobId, Result]()
             {
-                JobPtr->ProviderJobId = Result.ProviderJobId;
-                TransitionJob(*JobPtr, ECortexGenJobStatus::Processing);
-            }
-            else
-            {
-                JobPtr->ErrorMessage = Result.ErrorMessage;
-                TransitionJob(*JobPtr, ECortexGenJobStatus::Failed);
-            }
+                TSharedPtr<FCortexGenJobManager> Self = WeakSelf.Pin();
+                if (!Self.IsValid()) return;
+
+                FCortexGenJobState* JobPtr = Self->Jobs.Find(JobId);
+                if (!JobPtr) return;
+
+                if (Result.bSuccess)
+                {
+                    JobPtr->ProviderJobId = Result.ProviderJobId;
+                    Self->TransitionJob(*JobPtr, ECortexGenJobStatus::Processing);
+                }
+                else
+                {
+                    JobPtr->ErrorMessage = Result.ErrorMessage;
+                    Self->TransitionJob(*JobPtr, ECortexGenJobStatus::Failed);
+                }
+            });
         }));
 
     return true;
@@ -327,6 +368,14 @@ void FCortexGenJobManager::TransitionJob(
         *StaticEnum<ECortexGenJobStatus>()->GetNameStringByValue(static_cast<int64>(OldStatus)),
         *StaticEnum<ECortexGenJobStatus>()->GetNameStringByValue(static_cast<int64>(NewStatus)));
 
+    if ((NewStatus == ECortexGenJobStatus::Failed ||
+         NewStatus == ECortexGenJobStatus::DownloadFailed ||
+         NewStatus == ECortexGenJobStatus::ImportFailed) &&
+        !Job.ErrorMessage.IsEmpty())
+    {
+        UE_LOG(LogCortexGen, Warning, TEXT("Job %s error: %s"), *Job.JobId, *Job.ErrorMessage);
+    }
+
     JobStateChangedDelegate.Broadcast(Job);
     BroadcastJobProgress(Job);
     SaveJobs();
@@ -343,6 +392,12 @@ void FCortexGenJobManager::PollActiveJobs()
             continue;
         }
 
+        // Guard: skip if a poll is already in-flight for this job
+        if (PollsInFlight.Contains(Job.JobId))
+        {
+            continue;
+        }
+
         TSharedPtr<ICortexGenProvider> Provider = GetProvider(Job.Provider);
         if (!Provider.IsValid())
         {
@@ -350,42 +405,54 @@ void FCortexGenJobManager::PollActiveJobs()
         }
 
         FString JobId = Job.JobId;
+        PollsInFlight.Add(JobId);
+
+        TWeakPtr<FCortexGenJobManager> WeakSelf = AsShared();
         Provider->PollJobStatus(Job.ProviderJobId,
             FOnGenJobStatusReceived::CreateLambda(
-                [this, JobId](const FCortexGenPollResult& Result)
+                [WeakSelf, JobId](const FCortexGenPollResult& Result)
                 {
-                    FCortexGenJobState* Job = Jobs.Find(JobId);
-                    if (!Job || Job->Status != ECortexGenJobStatus::Processing)
+                    RunOnGameThread([WeakSelf, JobId, Result]()
                     {
-                        return;
-                    }
+                        TSharedPtr<FCortexGenJobManager> Self = WeakSelf.Pin();
+                        if (!Self.IsValid()) return;
 
-                    if (!Result.bSuccess)
-                    {
-                        Job->ErrorMessage = Result.ErrorMessage;
-                        TransitionJob(*Job, ECortexGenJobStatus::Failed);
-                        return;
-                    }
+                        // Clear in-flight guard
+                        Self->PollsInFlight.Remove(JobId);
 
-                    Job->Progress = Result.Progress;
+                        FCortexGenJobState* Job = Self->Jobs.Find(JobId);
+                        if (!Job || Job->Status != ECortexGenJobStatus::Processing)
+                        {
+                            return;
+                        }
 
-                    if (Result.Status == ECortexGenJobStatus::Complete)
-                    {
-                        Job->ResultUrl = Result.ResultUrl;
-                        TransitionJob(*Job, ECortexGenJobStatus::Complete);
-                        StartDownloadPipeline(*Job);
-                    }
-                    else if (Result.Status == ECortexGenJobStatus::Failed)
-                    {
-                        Job->ErrorMessage = Result.ErrorMessage;
-                        TransitionJob(*Job, ECortexGenJobStatus::Failed);
-                    }
-                    else
-                    {
-                        // Still processing — broadcast progress update
-                        JobStateChangedDelegate.Broadcast(*Job);
-                        BroadcastJobProgress(*Job);
-                    }
+                        if (!Result.bSuccess)
+                        {
+                            Job->ErrorMessage = Result.ErrorMessage;
+                            Self->TransitionJob(*Job, ECortexGenJobStatus::Failed);
+                            return;
+                        }
+
+                        Job->Progress = Result.Progress;
+
+                        if (Result.Status == ECortexGenJobStatus::Complete)
+                        {
+                            Job->ResultUrl = Result.ResultUrl;
+                            Self->TransitionJob(*Job, ECortexGenJobStatus::Complete);
+                            Self->StartDownloadPipeline(*Job);
+                        }
+                        else if (Result.Status == ECortexGenJobStatus::Failed)
+                        {
+                            Job->ErrorMessage = Result.ErrorMessage;
+                            Self->TransitionJob(*Job, ECortexGenJobStatus::Failed);
+                        }
+                        else
+                        {
+                            // Still processing — broadcast progress update
+                            Self->JobStateChangedDelegate.Broadcast(*Job);
+                            Self->BroadcastJobProgress(*Job);
+                        }
+                    });
                 }));
     }
 }
@@ -399,12 +466,14 @@ void FCortexGenJobManager::StartDownloadPipeline(FCortexGenJobState& Job)
         return;
     }
 
+    UE_LOG(LogCortexGen, Log, TEXT("Job %s: starting download from %s"), *Job.JobId, *Job.ResultUrl);
     TransitionJob(Job, ECortexGenJobStatus::Downloading);
 
-    // Determine download path
+    // Determine download path — images get .png, meshes get .glb
     FString DownloadDir = FPaths::ProjectSavedDir() / TEXT("CortexGen") / TEXT("downloads");
     IPlatformFile::GetPlatformPhysical().CreateDirectoryTree(*DownloadDir);
-    FString LocalPath = DownloadDir / FString::Printf(TEXT("%s.glb"), *Job.JobId);
+    FString Extension = (Job.Type == ECortexGenJobType::ImageFromText) ? TEXT("png") : TEXT("glb");
+    FString LocalPath = DownloadDir / FString::Printf(TEXT("%s.%s"), *Job.JobId, *Extension);
 
     TSharedPtr<ICortexGenProvider> Provider = GetProvider(Job.Provider);
     if (!Provider.IsValid())
@@ -415,24 +484,31 @@ void FCortexGenJobManager::StartDownloadPipeline(FCortexGenJobState& Job)
     }
 
     FString JobId = Job.JobId;
+    TWeakPtr<FCortexGenJobManager> WeakSelf = AsShared();
     Provider->DownloadResult(Job.ResultUrl, LocalPath,
         FOnGenDownloadComplete::CreateLambda(
-            [this, JobId, LocalPath](bool bSuccess, const FString& ErrorMsg)
+            [WeakSelf, JobId, LocalPath](bool bSuccess, const FString& ErrorMsg)
             {
-                FCortexGenJobState* Job = Jobs.Find(JobId);
-                if (!Job) return;
+                RunOnGameThread([WeakSelf, JobId, LocalPath, bSuccess, ErrorMsg]()
+                {
+                    TSharedPtr<FCortexGenJobManager> Self = WeakSelf.Pin();
+                    if (!Self.IsValid()) return;
 
-                if (bSuccess)
-                {
-                    Job->DownloadPath = LocalPath;
-                    TransitionJob(*Job, ECortexGenJobStatus::Importing);
-                    RunImportPipeline(*Job);
-                }
-                else
-                {
-                    Job->ErrorMessage = ErrorMsg;
-                    TransitionJob(*Job, ECortexGenJobStatus::DownloadFailed);
-                }
+                    FCortexGenJobState* Job = Self->Jobs.Find(JobId);
+                    if (!Job) return;
+
+                    if (bSuccess)
+                    {
+                        Job->DownloadPath = LocalPath;
+                        Self->TransitionJob(*Job, ECortexGenJobStatus::Importing);
+                        Self->RunImportPipeline(*Job);
+                    }
+                    else
+                    {
+                        Job->ErrorMessage = ErrorMsg;
+                        Self->TransitionJob(*Job, ECortexGenJobStatus::DownloadFailed);
+                    }
+                });
             }));
 }
 
@@ -447,12 +523,19 @@ void FCortexGenJobManager::RunImportPipeline(FCortexGenJobState& Job)
 
     // Determine destination path and asset name
     const UCortexGenSettings* Settings = UCortexGenSettings::Get();
-    FString Destination = Job.Destination.IsEmpty()
-        ? Settings->DefaultMeshDestination
-        : Job.Destination;
+    FString Destination = Job.Destination;
+    if (Destination.IsEmpty())
+    {
+        Destination = Settings
+            ? Settings->DefaultMeshDestination
+            : TEXT("/Game/Generated/Meshes");
+    }
 
     // Use job ID as asset name (unique, deterministic)
     FString AssetName = Job.JobId;
+
+    UE_LOG(LogCortexGen, Log, TEXT("Job %s: importing %s -> %s/%s"),
+        *Job.JobId, *Job.DownloadPath, *Destination, *AssetName);
 
     FCortexGenAssetImporter::FImportResult ImportResult =
         FCortexGenAssetImporter::ImportAsset(Job.DownloadPath, Destination, AssetName);

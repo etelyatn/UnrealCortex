@@ -23,7 +23,7 @@ public:
         SubmitCount++;
         FCortexGenSubmitResult Result;
         Result.bSuccess = bSubmitSucceeds;
-        Result.ProviderJobId = bSubmitSucceeds ? TEXT("provider_job_1") : TEXT("");
+        Result.ProviderJobId = bSubmitSucceeds ? TEXT("https://queue.fal.run/test/requests/abc/status") : TEXT("");
         Result.ErrorMessage = bSubmitSucceeds ? TEXT("") : TEXT("Submit failed");
         OnComplete.ExecuteIfBound(Result);
     }
@@ -56,6 +56,14 @@ public:
     int32 DownloadCount = 0;
 };
 
+/** Helper to create a properly initialized JobManager for tests */
+TSharedPtr<FCortexGenJobManager> CreateTestJobManager()
+{
+    auto Manager = MakeShared<FCortexGenJobManager>();
+    Manager->Initialize();
+    return Manager;
+}
+
 } // anonymous namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -67,8 +75,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexGenJobManagerSubmitTest::RunTest(const FString& Parameters)
 {
     auto Provider = MakeShared<FTestGenProvider>();
-    FCortexGenJobManager Manager;
-    Manager.RegisterProvider(Provider);
+    auto Manager = CreateTestJobManager();
+    Manager->RegisterProvider(Provider);
 
     FCortexGenJobRequest Request;
     Request.Type = ECortexGenJobType::MeshFromText;
@@ -76,14 +84,14 @@ bool FCortexGenJobManagerSubmitTest::RunTest(const FString& Parameters)
 
     FString JobId;
     FString Error;
-    bool bSuccess = Manager.SubmitJob(TEXT("test"), Request, JobId, Error);
+    bool bSuccess = Manager->SubmitJob(TEXT("test"), Request, JobId, Error);
 
     TestTrue(TEXT("Submit should succeed"), bSuccess);
     TestTrue(TEXT("JobId should start with gen_"), JobId.StartsWith(TEXT("gen_")));
     TestEqual(TEXT("Provider should have been called once"), Provider->SubmitCount, 1);
 
     // Verify job state
-    const FCortexGenJobState* State = Manager.GetJobState(JobId);
+    const FCortexGenJobState* State = Manager->GetJobState(JobId);
     TestNotNull(TEXT("Job state should exist"), State);
     if (State)
     {
@@ -107,8 +115,8 @@ bool FCortexGenJobManagerSubmitFailTest::RunTest(const FString& Parameters)
 {
     auto Provider = MakeShared<FTestGenProvider>();
     Provider->bSubmitSucceeds = false;
-    FCortexGenJobManager Manager;
-    Manager.RegisterProvider(Provider);
+    auto Manager = CreateTestJobManager();
+    Manager->RegisterProvider(Provider);
 
     FCortexGenJobRequest Request;
     Request.Type = ECortexGenJobType::MeshFromText;
@@ -116,13 +124,13 @@ bool FCortexGenJobManagerSubmitFailTest::RunTest(const FString& Parameters)
 
     FString JobId;
     FString Error;
-    bool bSuccess = Manager.SubmitJob(TEXT("test"), Request, JobId, Error);
+    bool bSuccess = Manager->SubmitJob(TEXT("test"), Request, JobId, Error);
 
     // SubmitJob returns true (job was queued) — provider failure propagates via job state
     TestTrue(TEXT("SubmitJob returns true (job queued)"), bSuccess);
 
     // Mock provider calls callback synchronously, so job is already in Failed state
-    const FCortexGenJobState* State = Manager.GetJobState(JobId);
+    const FCortexGenJobState* State = Manager->GetJobState(JobId);
     TestNotNull(TEXT("Job state should exist"), State);
     if (State)
     {
@@ -142,7 +150,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexGenJobManagerValidationNoApiKeyTest::RunTest(const FString& Parameters)
 {
-    FCortexGenJobManager Manager;
+    auto Manager = CreateTestJobManager();
     // No providers registered
 
     FCortexGenJobRequest Request;
@@ -151,7 +159,7 @@ bool FCortexGenJobManagerValidationNoApiKeyTest::RunTest(const FString& Paramete
 
     FString JobId;
     FString Error;
-    bool bSuccess = Manager.SubmitJob(TEXT("nonexistent"), Request, JobId, Error);
+    bool bSuccess = Manager->SubmitJob(TEXT("nonexistent"), Request, JobId, Error);
 
     TestFalse(TEXT("Submit should fail with no provider"), bSuccess);
     TestTrue(TEXT("Error should mention provider"), Error.Contains(TEXT("provider")));
@@ -168,8 +176,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexGenJobManagerCapabilityCheckTest::RunTest(const FString& Parameters)
 {
     auto Provider = MakeShared<FTestGenProvider>();
-    FCortexGenJobManager Manager;
-    Manager.RegisterProvider(Provider);
+    auto Manager = CreateTestJobManager();
+    Manager->RegisterProvider(Provider);
 
     // ImageFromText is not in test provider's capabilities
     FCortexGenJobRequest Request;
@@ -178,7 +186,7 @@ bool FCortexGenJobManagerCapabilityCheckTest::RunTest(const FString& Parameters)
 
     FString JobId;
     FString Error;
-    bool bSuccess = Manager.SubmitJob(TEXT("test"), Request, JobId, Error);
+    bool bSuccess = Manager->SubmitJob(TEXT("test"), Request, JobId, Error);
 
     TestFalse(TEXT("Submit should fail — capability not supported"), bSuccess);
     TestTrue(TEXT("Error should mention capability"), Error.Contains(TEXT("does not support")));
@@ -196,9 +204,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexGenJobManagerConcurrencyLimitTest::RunTest(const FString& Parameters)
 {
     auto Provider = MakeShared<FTestGenProvider>();
-    FCortexGenJobManager Manager;
-    Manager.RegisterProvider(Provider);
-    Manager.SetMaxConcurrentJobs(1);
+    auto Manager = CreateTestJobManager();
+    Manager->RegisterProvider(Provider);
+    Manager->SetMaxConcurrentJobs(1);
 
     // Submit first job — should succeed
     FCortexGenJobRequest Request;
@@ -206,13 +214,13 @@ bool FCortexGenJobManagerConcurrencyLimitTest::RunTest(const FString& Parameters
     Request.Prompt = TEXT("first");
 
     FString JobId1, Error1;
-    bool bSuccess1 = Manager.SubmitJob(TEXT("test"), Request, JobId1, Error1);
+    bool bSuccess1 = Manager->SubmitJob(TEXT("test"), Request, JobId1, Error1);
     TestTrue(TEXT("First submit should succeed"), bSuccess1);
 
     // Submit second job — should fail (limit = 1)
     Request.Prompt = TEXT("second");
     FString JobId2, Error2;
-    bool bSuccess2 = Manager.SubmitJob(TEXT("test"), Request, JobId2, Error2);
+    bool bSuccess2 = Manager->SubmitJob(TEXT("test"), Request, JobId2, Error2);
     TestFalse(TEXT("Second submit should fail — limit reached"), bSuccess2);
     TestTrue(TEXT("Error should mention concurrent"), Error2.Contains(TEXT("concurrent")));
 
@@ -228,20 +236,20 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexGenJobManagerCancelTest::RunTest(const FString& Parameters)
 {
     auto Provider = MakeShared<FTestGenProvider>();
-    FCortexGenJobManager Manager;
-    Manager.RegisterProvider(Provider);
+    auto Manager = CreateTestJobManager();
+    Manager->RegisterProvider(Provider);
 
     FCortexGenJobRequest Request;
     Request.Type = ECortexGenJobType::MeshFromText;
     Request.Prompt = TEXT("test");
 
     FString JobId, Error;
-    Manager.SubmitJob(TEXT("test"), Request, JobId, Error);
+    Manager->SubmitJob(TEXT("test"), Request, JobId, Error);
 
-    bool bCancelled = Manager.CancelJob(JobId, Error);
+    bool bCancelled = Manager->CancelJob(JobId, Error);
     TestTrue(TEXT("Cancel should succeed"), bCancelled);
 
-    const FCortexGenJobState* State = Manager.GetJobState(JobId);
+    const FCortexGenJobState* State = Manager->GetJobState(JobId);
     TestNotNull(TEXT("Job state should still exist"), State);
     if (State)
     {
@@ -261,8 +269,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexGenJobManagerListJobsTest::RunTest(const FString& Parameters)
 {
     auto Provider = MakeShared<FTestGenProvider>();
-    FCortexGenJobManager Manager;
-    Manager.RegisterProvider(Provider);
+    auto Manager = CreateTestJobManager();
+    Manager->RegisterProvider(Provider);
 
     // Submit two jobs
     FCortexGenJobRequest Request;
@@ -270,12 +278,12 @@ bool FCortexGenJobManagerListJobsTest::RunTest(const FString& Parameters)
     Request.Prompt = TEXT("job1");
 
     FString JobId1, JobId2, Error;
-    Manager.SubmitJob(TEXT("test"), Request, JobId1, Error);
+    Manager->SubmitJob(TEXT("test"), Request, JobId1, Error);
     Request.Prompt = TEXT("job2");
-    Manager.SetMaxConcurrentJobs(5);
-    Manager.SubmitJob(TEXT("test"), Request, JobId2, Error);
+    Manager->SetMaxConcurrentJobs(5);
+    Manager->SubmitJob(TEXT("test"), Request, JobId2, Error);
 
-    TArray<FCortexGenJobState> Jobs = Manager.ListJobs();
+    TArray<FCortexGenJobState> Jobs = Manager->ListJobs();
     TestEqual(TEXT("Should have 2 jobs"), Jobs.Num(), 2);
 
     return true;
@@ -290,10 +298,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexGenJobManagerListProvidersTest::RunTest(const FString& Parameters)
 {
     auto Provider = MakeShared<FTestGenProvider>();
-    FCortexGenJobManager Manager;
-    Manager.RegisterProvider(Provider);
+    auto Manager = CreateTestJobManager();
+    Manager->RegisterProvider(Provider);
 
-    TArray<TSharedPtr<ICortexGenProvider>> Providers = Manager.GetProviders();
+    TArray<TSharedPtr<ICortexGenProvider>> Providers = Manager->GetProviders();
     TestEqual(TEXT("Should have 1 provider"), Providers.Num(), 1);
     if (Providers.Num() > 0)
     {
@@ -312,23 +320,23 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexGenJobManagerDeleteJobTest::RunTest(const FString& Parameters)
 {
     auto Provider = MakeShared<FTestGenProvider>();
-    FCortexGenJobManager Manager;
-    Manager.RegisterProvider(Provider);
+    auto Manager = CreateTestJobManager();
+    Manager->RegisterProvider(Provider);
 
     FCortexGenJobRequest Request;
     Request.Type = ECortexGenJobType::MeshFromText;
     Request.Prompt = TEXT("deleteme");
 
     FString JobId, Error;
-    Manager.SubmitJob(TEXT("test"), Request, JobId, Error);
+    Manager->SubmitJob(TEXT("test"), Request, JobId, Error);
 
     // Cancel first (can't delete active jobs)
-    Manager.CancelJob(JobId, Error);
+    Manager->CancelJob(JobId, Error);
 
-    bool bDeleted = Manager.DeleteJob(JobId, Error);
+    bool bDeleted = Manager->DeleteJob(JobId, Error);
     TestTrue(TEXT("Delete should succeed"), bDeleted);
 
-    const FCortexGenJobState* State = Manager.GetJobState(JobId);
+    const FCortexGenJobState* State = Manager->GetJobState(JobId);
     TestNull(TEXT("Job state should be gone"), State);
 
     return true;

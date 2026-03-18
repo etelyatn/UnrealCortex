@@ -191,6 +191,13 @@ FCortexCommandResult FCortexGenCommandHandler::SubmitGenJob(ECortexGenJobType Ty
         Params->TryGetStringField(TEXT("source_image_path"), Request.SourceImagePath);
         Params->TryGetStringField(TEXT("source_model_path"), Request.SourceModelPath);
         Params->TryGetStringField(TEXT("destination"), Request.Destination);
+
+        // Forward quality as provider param
+        FString Quality;
+        if (Params->TryGetStringField(TEXT("quality"), Quality) && !Quality.IsEmpty())
+        {
+            Request.Params.Add(TEXT("quality"), Quality);
+        }
     }
 
     // Determine provider
@@ -203,6 +210,17 @@ FCortexCommandResult FCortexGenCommandHandler::SubmitGenJob(ECortexGenJobType Ty
     {
         const UCortexGenSettings* Settings = UCortexGenSettings::Get();
         ProviderId = Settings ? Settings->DefaultProvider : TEXT("meshy");
+
+        // Fallback: if configured default has no API key (not registered),
+        // use the first available provider
+        if (!JobManager->GetProvider(ProviderId).IsValid())
+        {
+            TArray<TSharedPtr<ICortexGenProvider>> Available = JobManager->GetProviders();
+            if (Available.Num() > 0)
+            {
+                ProviderId = Available[0]->GetProviderId().ToString();
+            }
+        }
     }
 
     FString JobId;

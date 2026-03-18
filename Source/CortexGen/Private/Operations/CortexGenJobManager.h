@@ -11,8 +11,11 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnGenJobStateChanged, const FCortexGenJobSt
  * Manages the lifecycle of AI generation jobs.
  * Non-UObject — owned as TSharedPtr by FCortexGenModule.
  * Persists across PIE sessions (no world dependency).
+ *
+ * All state mutation must happen on the Game Thread. HTTP callbacks
+ * dispatch back via AsyncTask(ENamedThreads::GameThread).
  */
-class FCortexGenJobManager
+class FCortexGenJobManager : public TSharedFromThis<FCortexGenJobManager>
 {
 public:
     FCortexGenJobManager();
@@ -41,8 +44,12 @@ public:
     // Events
     FOnGenJobStateChanged& OnJobStateChanged() { return JobStateChangedDelegate; }
 
-    // Polling (called by ticker)
+    // Polling (called by ticker on Game Thread)
     void PollActiveJobs();
+
+    /** Must be called after construction to start the polling ticker.
+     *  Separate from constructor so TSharedFromThis is valid. */
+    void Initialize();
 
     // Persistence — must be called explicitly (e.g., from StartupModule) to opt in.
     // Test instances that never call LoadJobs() will never write to disk.
@@ -63,6 +70,9 @@ private:
     FOnGenJobStateChanged JobStateChangedDelegate;
     int32 MaxConcurrentJobs = 2;
     bool bPersistenceEnabled = false;   // enabled only after LoadJobs() is called
+
+    /** Per-job guard: true while an HTTP poll is in-flight, prevents duplicate polls. */
+    TSet<FString> PollsInFlight;
 
     FTSTicker::FDelegateHandle TickerHandle;
 };
