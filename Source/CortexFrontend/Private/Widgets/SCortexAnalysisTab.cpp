@@ -134,6 +134,8 @@ void SCortexAnalysisTab::Construct(const FArguments& InArgs)
                         .Context(Context)
                         .OnNewFinding(FOnNewFinding::CreateSP(
                             this, &SCortexAnalysisTab::OnNewFinding))
+                        .OnAnalysisSummary(FOnAnalysisSummary::CreateSP(
+                            this, &SCortexAnalysisTab::OnAnalysisSummary))
                     ]
                 ]
             ]
@@ -469,6 +471,14 @@ void SCortexAnalysisTab::OnNewFinding(const FCortexAnalysisFinding& Finding)
     if (GraphPreview.IsValid() && Finding.NodeGuid.IsValid())
     {
         GraphPreview->AnnotateNode(Finding.NodeGuid, Finding.Severity, Finding.Title);
+    }
+}
+
+void SCortexAnalysisTab::OnAnalysisSummary(const FCortexAnalysisSummary& Summary)
+{
+    if (FindingsPanel.IsValid())
+    {
+        FindingsPanel->SetSummary(Summary);
     }
 }
 

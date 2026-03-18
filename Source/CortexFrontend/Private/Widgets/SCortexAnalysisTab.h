@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "Analysis/CortexAnalysisContext.h"
 #include "Analysis/CortexFindingTypes.h"
+#include "Rendering/CortexChatEntryBuilder.h"
 #include "Session/CortexSessionTypes.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
@@ -31,6 +32,7 @@ private:
     void OnSessionTurnComplete(const FCortexTurnResult& Result);
     void OnFindingSelected(const FCortexAnalysisFinding& Finding);
     void OnNewFinding(const FCortexAnalysisFinding& Finding);
+    void OnAnalysisSummary(const FCortexAnalysisSummary& Summary);
     void StatusMessage(const FString& Message);
 
     // Re-analysis

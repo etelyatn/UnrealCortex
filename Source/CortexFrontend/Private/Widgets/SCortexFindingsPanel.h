@@ -33,6 +33,9 @@ public:
     /** Refresh the list view. */
     void RequestRefresh();
 
+    /** Update the summary header with suppression info. Called when analysis:summary is parsed. */
+    void SetSummary(const FCortexAnalysisSummary& Summary);
+
 private:
     TSharedRef<ITableRow> GenerateRow(
         TSharedPtr<FCortexAnalysisFinding> Finding,
@@ -43,7 +46,6 @@ private:
     FText GetSummaryText() const;
     FSlateColor GetSeverityColor(ECortexFindingSeverity Severity) const;
     FText GetCategoryLabel(ECortexFindingCategory Category) const;
-    void SetSummary(const FCortexAnalysisSummary& Summary);
     TSharedRef<SWidget> BuildDetailSection(const FCortexAnalysisFinding& Finding) const;
 
     TSharedPtr<FCortexAnalysisContext> Context;

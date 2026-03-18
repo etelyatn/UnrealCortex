@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "Analysis/CortexAnalysisContext.h"
 #include "Process/CortexStreamEvent.h"
+#include "Rendering/CortexChatEntryBuilder.h"
 #include "Session/CortexCliSession.h"
 #include "Session/CortexSessionTypes.h"
 #include "Widgets/CortexDisplayTypes.h"
@@ -17,6 +18,7 @@ template <typename ItemType>
 class SListView;
 
 DECLARE_DELEGATE_OneParam(FOnNewFinding, const FCortexAnalysisFinding&);
+DECLARE_DELEGATE_OneParam(FOnAnalysisSummary, const FCortexAnalysisSummary&);
 
 class SCortexAnalysisChat : public SCompoundWidget
 {
@@ -24,6 +26,7 @@ public:
 	SLATE_BEGIN_ARGS(SCortexAnalysisChat) {}
 		SLATE_ARGUMENT(TSharedPtr<FCortexAnalysisContext>, Context)
 		SLATE_EVENT(FOnNewFinding, OnNewFinding)
+		SLATE_EVENT(FOnAnalysisSummary, OnAnalysisSummary)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
@@ -53,6 +56,7 @@ private:
 
 	TSharedPtr<FCortexAnalysisContext> Context;
 	FOnNewFinding OnNewFindingDelegate;
+	FOnAnalysisSummary OnAnalysisSummaryDelegate;
 	TSharedPtr<SCortexInputArea> InputArea;
 	TSharedPtr<SListView<TSharedPtr<FCortexChatDisplayRow>>> ChatList;
 	TSharedPtr<SBox> ProcessingIndicatorBox;

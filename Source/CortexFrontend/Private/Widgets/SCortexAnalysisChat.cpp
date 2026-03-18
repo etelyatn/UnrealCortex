@@ -16,6 +16,7 @@ void SCortexAnalysisChat::Construct(const FArguments& InArgs)
 {
 	Context = InArgs._Context;
 	OnNewFindingDelegate = InArgs._OnNewFinding;
+	OnAnalysisSummaryDelegate = InArgs._OnAnalysisSummary;
 
 	ChildSlot
 	[
@@ -183,8 +184,14 @@ void SCortexAnalysisChat::ProcessFindings(const FString& FullText)
 		return;
 	}
 
+	FCortexAnalysisSummary Summary;
 	TArray<FCortexAnalysisFinding> NewFindings;
-	FCortexChatEntryBuilder::BuildEntries(FullText, &NewFindings);
+	FCortexChatEntryBuilder::BuildEntries(FullText, &NewFindings, &Summary);
+
+	if (Summary.Reported > 0 || Summary.EstimatedSuppressed > 0)
+	{
+		OnAnalysisSummaryDelegate.ExecuteIfBound(Summary);
+	}
 
 	for (FCortexAnalysisFinding& Finding : NewFindings)
 	{
