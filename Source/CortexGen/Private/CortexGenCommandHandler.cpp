@@ -7,10 +7,28 @@
 #include "Providers/ICortexGenProvider.h"
 #include "Dom/JsonObject.h"
 
-FCortexGenCommandHandler::FCortexGenCommandHandler()
-    : JobManager(MakeShared<FCortexGenJobManager>())
+namespace
 {
+
+static FString JobStatusToString(ECortexGenJobStatus Status)
+{
+    switch (Status)
+    {
+    case ECortexGenJobStatus::Pending:         return TEXT("pending");
+    case ECortexGenJobStatus::Processing:      return TEXT("processing");
+    case ECortexGenJobStatus::Complete:        return TEXT("complete");
+    case ECortexGenJobStatus::Downloading:     return TEXT("downloading");
+    case ECortexGenJobStatus::DownloadFailed:  return TEXT("download_failed");
+    case ECortexGenJobStatus::Importing:       return TEXT("importing");
+    case ECortexGenJobStatus::ImportFailed:    return TEXT("import_failed");
+    case ECortexGenJobStatus::Imported:        return TEXT("imported");
+    case ECortexGenJobStatus::Failed:          return TEXT("failed");
+    case ECortexGenJobStatus::Cancelled:       return TEXT("cancelled");
+    default:                                   return TEXT("unknown");
+    }
 }
+
+} // anonymous namespace
 
 FCortexGenCommandHandler::FCortexGenCommandHandler(TSharedPtr<FCortexGenJobManager> InJobManager)
     : JobManager(InJobManager)
@@ -239,9 +257,7 @@ FCortexCommandResult FCortexGenCommandHandler::HandleJobStatus(const TSharedPtr<
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetStringField(TEXT("job_id"), State->JobId);
-    Data->SetStringField(TEXT("status"),
-        StaticEnum<ECortexGenJobStatus>()->GetNameStringByValue(
-            static_cast<int64>(State->Status)).ToLower());
+    Data->SetStringField(TEXT("status"), JobStatusToString(State->Status));
     Data->SetStringField(TEXT("provider"), State->Provider);
     Data->SetNumberField(TEXT("progress"), State->Progress);
     Data->SetStringField(TEXT("prompt"), State->Prompt);
@@ -287,9 +303,7 @@ FCortexCommandResult FCortexGenCommandHandler::HandleListJobs(const TSharedPtr<F
     {
         TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
         Obj->SetStringField(TEXT("job_id"), Job.JobId);
-        Obj->SetStringField(TEXT("status"),
-            StaticEnum<ECortexGenJobStatus>()->GetNameStringByValue(
-                static_cast<int64>(Job.Status)).ToLower());
+        Obj->SetStringField(TEXT("status"), JobStatusToString(Job.Status));
         Obj->SetStringField(TEXT("provider"), Job.Provider);
         Obj->SetNumberField(TEXT("progress"), Job.Progress);
         Obj->SetStringField(TEXT("prompt"), Job.Prompt);

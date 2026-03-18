@@ -60,18 +60,18 @@ void FCortexGenMeshyProvider::SubmitJob(
         Body->SetStringField(Pair.Key, Pair.Value);
     }
 
-    FString Endpoint;
+    FString SubmitEndpoint;
     switch (Request.Type)
     {
     case ECortexGenJobType::MeshFromText:
     case ECortexGenJobType::MeshFromBoth:
-        Endpoint = TEXT("/text-to-3d");
+        SubmitEndpoint = TEXT("text-to-3d");
         break;
     case ECortexGenJobType::MeshFromImage:
-        Endpoint = TEXT("/image-to-3d");
+        SubmitEndpoint = TEXT("image-to-3d");
         break;
     case ECortexGenJobType::Texturing:
-        Endpoint = TEXT("/text-to-texture");
+        SubmitEndpoint = TEXT("text-to-texture");
         if (!Request.SourceModelPath.IsEmpty())
         {
             Body->SetStringField(TEXT("model_url"), Request.SourceModelPath);
@@ -85,7 +85,7 @@ void FCortexGenMeshyProvider::SubmitJob(
         return;
     }
 
-    TSharedRef<IHttpRequest> HttpRequest = CreateRequest(TEXT("POST"), Endpoint);
+    TSharedRef<IHttpRequest> HttpRequest = CreateRequest(TEXT("POST"), TEXT("/") + SubmitEndpoint);
 
     FString BodyString;
     TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&BodyString);
@@ -93,7 +93,7 @@ void FCortexGenMeshyProvider::SubmitJob(
     HttpRequest->SetContentAsString(BodyString);
 
     HttpRequest->OnProcessRequestComplete().BindLambda(
-        [OnComplete](FHttpRequestPtr, FHttpResponsePtr Response, bool bConnectedSuccessfully)
+        [OnComplete, SubmitEndpoint](FHttpRequestPtr, FHttpResponsePtr Response, bool bConnectedSuccessfully)
         {
             FCortexGenSubmitResult Result;
 
@@ -128,7 +128,8 @@ void FCortexGenMeshyProvider::SubmitJob(
             }
 
             Result.bSuccess = true;
-            Result.ProviderJobId = Json->GetStringField(TEXT("result"));
+            FString ActualJobId = Json->GetStringField(TEXT("result"));
+            Result.ProviderJobId = FString::Printf(TEXT("%s|%s"), *SubmitEndpoint, *ActualJobId);
             OnComplete.ExecuteIfBound(Result);
         });
 
@@ -138,7 +139,16 @@ void FCortexGenMeshyProvider::SubmitJob(
 void FCortexGenMeshyProvider::PollJobStatus(
     const FString& ProviderJobId, FOnGenJobStatusReceived OnComplete)
 {
-    FString Endpoint = FString::Printf(TEXT("/text-to-3d/%s"), *ProviderJobId);
+    FString EndpointPrefix;
+    FString ActualJobId;
+    if (!ProviderJobId.Split(TEXT("|"), &EndpointPrefix, &ActualJobId))
+    {
+        // Backwards compatibility: no prefix encoded, assume text-to-3d
+        EndpointPrefix = TEXT("text-to-3d");
+        ActualJobId = ProviderJobId;
+    }
+
+    FString Endpoint = FString::Printf(TEXT("/%s/%s"), *EndpointPrefix, *ActualJobId);
     TSharedRef<IHttpRequest> HttpRequest = CreateRequest(TEXT("GET"), Endpoint);
 
     HttpRequest->OnProcessRequestComplete().BindLambda(

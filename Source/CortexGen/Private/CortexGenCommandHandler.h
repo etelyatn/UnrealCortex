@@ -9,7 +9,6 @@ class FCortexGenJobManager;
 class CORTEXGEN_API FCortexGenCommandHandler : public ICortexDomainHandler
 {
 public:
-    FCortexGenCommandHandler();
     explicit FCortexGenCommandHandler(TSharedPtr<FCortexGenJobManager> InJobManager);
 
     virtual FCortexCommandResult Execute(
