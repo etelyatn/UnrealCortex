@@ -5,14 +5,15 @@
 #include "CortexGenSettings.generated.h"
 
 UCLASS(Config = EditorPerProjectUserSettings, DefaultConfig,
-    meta = (DisplayName = "Cortex Gen"))
+    meta = (DisplayName = "Cortex Gen", CategoryName = "Unreal Cortex"))
 class CORTEXGEN_API UCortexGenSettings : public UDeveloperSettings
 {
     GENERATED_BODY()
 
 public:
     // Provider
-    UPROPERTY(Config, EditAnywhere, Category = "Provider")
+    UPROPERTY(Config, EditAnywhere, Category = "Provider",
+        meta = (GetOptions = "GetDefaultProviderOptions"))
     FString DefaultProvider = TEXT("meshy");
 
     UPROPERTY(Config, EditAnywhere, Category = "Provider|Meshy",
@@ -22,6 +23,9 @@ public:
     UPROPERTY(Config, EditAnywhere, Category = "Provider|Tripo3D",
         meta = (PasswordField = true))
     FString Tripo3DApiKey;
+
+    UPROPERTY(Config, EditAnywhere, Category = "Provider|Tripo3D")
+    FString Tripo3DModelVersion = TEXT("v2.0-20240919");
 
     UPROPERTY(Config, EditAnywhere, Category = "Provider|fal.ai",
         meta = (PasswordField = true))
@@ -50,6 +54,12 @@ public:
     UPROPERTY(Config, EditAnywhere, Category = "Advanced",
         meta = (ClampMin = 10, ClampMax = 500))
     int32 MaxJobHistory = 50;
+
+    UFUNCTION()
+    static TArray<FString> GetDefaultProviderOptions()
+    {
+        return { TEXT("meshy"), TEXT("tripo3d"), TEXT("fal") };
+    }
 
     static const UCortexGenSettings* Get()
     {

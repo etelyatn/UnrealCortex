@@ -28,3 +28,19 @@ bool FCortexGenSettingsDefaultsTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenSettingsDropdownTest,
+    "Cortex.Gen.Settings.DefaultProviderDropdown",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenSettingsDropdownTest::RunTest(const FString& Parameters)
+{
+    TArray<FString> Options = UCortexGenSettings::GetDefaultProviderOptions();
+    TestTrue(TEXT("Options should not be empty"), Options.Num() > 0);
+    TestTrue(TEXT("Options should include meshy"),   Options.Contains(TEXT("meshy")));
+    TestTrue(TEXT("Options should include tripo3d"), Options.Contains(TEXT("tripo3d")));
+    TestTrue(TEXT("Options should include fal"),     Options.Contains(TEXT("fal")));
+    return true;
+}
