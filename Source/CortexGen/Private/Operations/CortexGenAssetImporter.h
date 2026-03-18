@@ -30,4 +30,18 @@ public:
         const FString& SourceFilePath,
         const FString& DestinationPath,
         const FString& AssetName);
+
+    /**
+     * Import a PNG/JPG image as a UTexture2D asset.
+     * Must be called on the Game Thread.
+     *
+     * @param SourceFilePath   Local file path (.png, .jpg, .jpeg)
+     * @param DestinationPath  UE content path (e.g., /Game/Generated/Textures)
+     * @param AssetName        Desired asset name
+     * @return Import result with paths or error
+     */
+    static FImportResult ImportTexture(
+        const FString& SourceFilePath,
+        const FString& DestinationPath,
+        const FString& AssetName);
 };
