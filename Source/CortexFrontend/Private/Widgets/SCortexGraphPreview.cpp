@@ -221,7 +221,17 @@ void SCortexGraphPreview::SwitchToGraph(FName GraphName)
         return;
     }
 
-    // On-demand cloning: load source Blueprint and clone the requested graph
+    // On-demand cloning is only possible after analysis has started and the transient
+    // Blueprint shell exists. During SCortexGraphPreview::Construct() (before OnAnalyzeClicked)
+    // TempBlueprint is null — bail silently; the graph preview stays empty until analysis runs.
+    // TempBlueprint is required as the clone outer so UK2Node_Event::FixupEventReference can
+    // find a UBlueprint in the outer chain (FindBlueprintForNodeChecked asserts otherwise).
+    if (!Context->TempPackage || !Context->TempBlueprint)
+    {
+        return;
+    }
+
+    // Load source Blueprint and clone the requested graph on demand
     const FString PkgName = FPackageName::ObjectPathToPackageName(Context->Payload.BlueprintPath);
     if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
     {
@@ -238,7 +248,7 @@ void SCortexGraphPreview::SwitchToGraph(FName GraphName)
         if (SourceGraph->GetFName() == GraphName)
         {
             UEdGraph* Clone = DuplicateObject<UEdGraph>(
-                SourceGraph, Context->TempPackage, GraphName);
+                SourceGraph, Context->TempBlueprint, GraphName);
             Clone->SetFlags(RF_Transient);
 
             Context->ClonedGraphs.Add(GraphName, Clone);

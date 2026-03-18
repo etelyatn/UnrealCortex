@@ -143,10 +143,18 @@ void FCortexBPSerializationOps::Serialize(const FCortexSerializationRequest& Req
 			UPackage* TempPackage = CreatePackage(*TempPkgName);
 			TempPackage->SetFlags(RF_Transient);
 
+			// UK2Node_Event::FixupEventReference() runs during DuplicateObject and calls
+			// FBlueprintEditorUtils::FindBlueprintForNodeChecked(), which walks the outer
+			// chain expecting a UBlueprint. Cloning directly into a UPackage asserts.
+			// A transient Blueprint shell (no GeneratedClass, no ParentClass) satisfies
+			// the outer-chain check without needing a compiled Blueprint.
+			UBlueprint* TempBP = NewObject<UBlueprint>(
+				TempPackage, UBlueprint::StaticClass(), NAME_None, RF_Transient);
+
 			for (UEdGraph* SourceGraph : TargetGraphs)
 			{
 				UEdGraph* ClonedGraph = DuplicateObject<UEdGraph>(
-					SourceGraph, TempPackage, SourceGraph->GetFName());
+					SourceGraph, TempBP, SourceGraph->GetFName());
 				ClonedGraph->SetFlags(RF_Transient);
 			}
 

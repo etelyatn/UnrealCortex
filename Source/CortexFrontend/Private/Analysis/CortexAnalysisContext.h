@@ -5,6 +5,7 @@
 #include "CortexAnalysisTypes.h"
 #include "CortexConversionTypes.h"
 #include "Analysis/CortexFindingTypes.h"
+#include "Engine/Blueprint.h"
 #include "UObject/GCObject.h"
 #include "UObject/UObjectHash.h"
 
@@ -45,6 +46,10 @@ struct FCortexAnalysisContext : public FGCObject
     // UK2Node_Event, etc.) back to the source Blueprint package. While the tab is open, this
     // prevents the source Blueprint from being GC'd — intentional, as the user has it open.
     TObjectPtr<UPackage> TempPackage = nullptr;
+    // TempBlueprint is a transient UBlueprint shell inside TempPackage. Graphs are cloned
+    // into TempBlueprint (not directly into TempPackage) because UK2Node_Event::FixupEventReference
+    // walks the outer chain via FindBlueprintForNodeChecked and requires a UBlueprint ancestor.
+    TObjectPtr<UBlueprint> TempBlueprint = nullptr;
     TMap<FName, TObjectPtr<UEdGraph>> ClonedGraphs;  // GraphName -> cloned graph
     TObjectPtr<UEdGraph> ActiveClonedGraph = nullptr;
 
@@ -73,18 +78,34 @@ struct FCortexAnalysisContext : public FGCObject
             TempPackage = SerResult.ClonedGraphPackage;
             TempPackage->RemoveFromRoot();  // FGCObject::AddReferencedObjects protects now
 
-            // Index cloned graphs by name (top-level only)
+            // Find the transient Blueprint shell that owns the cloned graphs.
+            // Graphs are cloned into a UBlueprint (not directly into the package) because
+            // UK2Node_Event::FixupEventReference requires a UBlueprint in the outer chain.
             ForEachObjectWithPackage(TempPackage, [this](UObject* Obj)
             {
-                if (UEdGraph* Graph = Cast<UEdGraph>(Obj))
+                if (UBlueprint* BP = Cast<UBlueprint>(Obj))
                 {
-                    if (Graph->GetOuter() == TempPackage)
-                    {
-                        ClonedGraphs.Add(Graph->GetFName(), Graph);
-                    }
+                    TempBlueprint = BP;
+                    return false;  // Only one TempBlueprint per package
                 }
                 return true;
-            });
+            }, /*bIncludeNestedObjects=*/false);
+
+            // Index cloned graphs — graphs are direct children of TempBlueprint
+            if (TempBlueprint)
+            {
+                ForEachObjectWithPackage(TempPackage, [this](UObject* Obj)
+                {
+                    if (UEdGraph* Graph = Cast<UEdGraph>(Obj))
+                    {
+                        if (Graph->GetOuter() == TempBlueprint)
+                        {
+                            ClonedGraphs.Add(Graph->GetFName(), Graph);
+                        }
+                    }
+                    return true;
+                });
+            }
 
             // Null out the raw pointer so the caller cannot accidentally double-free
             SerResult.ClonedGraphPackage = nullptr;
@@ -181,6 +202,7 @@ struct FCortexAnalysisContext : public FGCObject
     virtual void AddReferencedObjects(FReferenceCollector& Collector) override
     {
         Collector.AddReferencedObject(TempPackage);
+        Collector.AddReferencedObject(TempBlueprint);
         for (auto& Pair : ClonedGraphs)
         {
             Collector.AddReferencedObject(Pair.Value);
