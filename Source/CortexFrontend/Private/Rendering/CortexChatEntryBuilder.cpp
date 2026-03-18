@@ -9,7 +9,8 @@
 
 TArray<TSharedPtr<FCortexChatEntry>> FCortexChatEntryBuilder::BuildEntries(
     const FString& FullText,
-    TArray<FCortexAnalysisFinding>* OutFindings)
+    TArray<FCortexAnalysisFinding>* OutFindings,
+    FCortexAnalysisSummary* OutSummary)
 {
     TArray<TSharedPtr<FCortexChatEntry>> Entries;
     TArray<FCortexMarkdownBlock> Blocks = CortexMarkdownParser::ParseBlocks(FullText);
@@ -20,6 +21,14 @@ TArray<TSharedPtr<FCortexChatEntry>> FCortexChatEntryBuilder::BuildEntries(
 
         if (Block.Type == ECortexMarkdownBlockType::CodeBlock)
         {
+            // Check for analysis:summary tag
+            if (Block.Language.Equals(TEXT("analysis:summary"), ESearchCase::IgnoreCase) && OutSummary)
+            {
+                ParseAnalysisSummary(Block.RawText, *OutSummary);
+                // Don't render summary blocks in chat — they go to findings panel header
+                continue;
+            }
+
             ECortexFindingCategory Category;
             ECortexFindingSeverity Severity;
 
@@ -131,6 +140,40 @@ bool FCortexChatEntryBuilder::ParseFindingJson(
 
     // Store node reference as NodeDisplayName — caller resolves node_N -> FGuid via context
     OutFinding.NodeDisplayName = JsonObj->GetStringField(TEXT("node"));
+
+    // Parse optional confidence field (default 1.0 if missing)
+    if (JsonObj->HasField(TEXT("confidence")))
+    {
+        OutFinding.Confidence = static_cast<float>(JsonObj->GetNumberField(TEXT("confidence")));
+    }
+    else
+    {
+        OutFinding.Confidence = 1.0f;
+    }
+
+    return true;
+}
+
+bool FCortexChatEntryBuilder::ParseAnalysisSummary(const FString& JsonBody, FCortexAnalysisSummary& OutSummary)
+{
+    // Strip trailing commas for lenient parsing
+    FString CleanJson = JsonBody;
+    CleanJson.ReplaceInline(TEXT(",\n}"), TEXT("\n}"));
+    CleanJson.ReplaceInline(TEXT(",}"), TEXT("}"));
+
+    TSharedPtr<FJsonObject> JsonObject;
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(CleanJson);
+    if (!FJsonSerializer::Deserialize(Reader, JsonObject) || !JsonObject.IsValid())
+    {
+        return false;
+    }
+
+    OutSummary.Reported = JsonObject->HasField(TEXT("reported"))
+        ? static_cast<int32>(JsonObject->GetNumberField(TEXT("reported"))) : 0;
+    OutSummary.EstimatedSuppressed = JsonObject->HasField(TEXT("estimated_suppressed"))
+        ? static_cast<int32>(JsonObject->GetNumberField(TEXT("estimated_suppressed"))) : 0;
+    OutSummary.SuppressionNotes = JsonObject->HasField(TEXT("suppression_notes"))
+        ? JsonObject->GetStringField(TEXT("suppression_notes")) : TEXT("");
 
     return true;
 }
