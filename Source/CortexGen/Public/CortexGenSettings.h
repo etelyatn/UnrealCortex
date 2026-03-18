@@ -2,7 +2,37 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
+#include "CortexGenTypes.h"
 #include "CortexGenSettings.generated.h"
+
+USTRUCT()
+struct FCortexGenModelConfig
+{
+    GENERATED_BODY()
+
+    UPROPERTY(Config, EditAnywhere, Category = "Model")
+    FString ModelId;
+
+    UPROPERTY(Config, EditAnywhere, Category = "Model")
+    FString DisplayName;
+
+    UPROPERTY(Config, EditAnywhere, Category = "Model")
+    FString Provider;
+
+    UPROPERTY(Config, EditAnywhere, Category = "Model")
+    FString Category;   // "image" or "mesh"
+
+    UPROPERTY(Config, EditAnywhere, Category = "Model",
+        meta = (Bitmask, BitmaskEnum = "/Script/CortexGen.ECortexGenCapabilityFlags"))
+    uint8 Capabilities = 0;
+
+    UPROPERTY(Config, EditAnywhere, Category = "Model",
+        meta = (ClampMin = 1, ClampMax = 4))
+    int32 MaxBatchSize = 1;
+
+    UPROPERTY(Config, EditAnywhere, Category = "Model")
+    FString PricingNote;
+};
 
 UCLASS(Config = EditorPerProjectUserSettings, DefaultConfig,
     meta = (DisplayName = "Cortex Gen", CategoryName = "Unreal Cortex"))
@@ -63,6 +93,11 @@ public:
         meta = (ClampMin = 10, ClampMax = 500))
     int32 MaxJobHistory = 50;
 
+    // Model Registry
+    UPROPERTY(Config, EditAnywhere, Category = "Models",
+        meta = (TitleProperty = "DisplayName"))
+    TArray<FCortexGenModelConfig> ModelRegistry;
+
     UFUNCTION()
     static TArray<FString> GetDefaultProviderOptions()
     {
@@ -78,5 +113,16 @@ public:
     static const UCortexGenSettings* Get()
     {
         return GetDefault<UCortexGenSettings>();
+    }
+
+    // Helper: get API key for a provider ID (const — called via GetDefault<>())
+    // Normalizes to lowercase to prevent case-mismatch failures
+    FString GetApiKeyForProvider(const FString& ProviderId) const
+    {
+        FString Id = ProviderId.ToLower();
+        if (Id == TEXT("fal")) return FalApiKey;
+        if (Id == TEXT("meshy")) return MeshyApiKey;
+        if (Id == TEXT("tripo3d")) return Tripo3DApiKey;
+        return FString(); // Unknown provider — caller handles empty key
     }
 };
