@@ -266,6 +266,11 @@ SCortexGenMeshSession::~SCortexGenMeshSession()
     {
         UEditorAssetLibrary::DeleteAsset(TempAssetPath);
     }
+
+    if (!DownloadedGlbPath.IsEmpty())
+    {
+        IFileManager::Get().Delete(*DownloadedGlbPath);
+    }
 }
 
 bool SCortexGenMeshSession::IsModelCompatible(const FCortexGenModelConfig& Model,
@@ -523,5 +528,4 @@ void SCortexGenMeshSession::CancelGeneration()
         TEXT("CortexGen")).GetJobManager();
     FString Error;
     JobManager.CancelJob(CurrentJobId, Error);
-    HideOverlay();
 }
