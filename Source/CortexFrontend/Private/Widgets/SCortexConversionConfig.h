@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Conversion/CortexConversionContext.h"
+#include "Utilities/CortexTokenUtils.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
@@ -48,12 +49,8 @@ private:
 	void RequestTokenEstimate();
 	int32 EstimateTokensForScope(ECortexConversionScope Scope) const;
 	FString FormatTokenEstimate(int32 Tokens) const;
-	static FString FormatTokenCount(int32 Tokens);
 
 	TSharedPtr<STextBlock> ConvertButtonText;
 	TSharedPtr<STextBlock> TokenWarningText;
 	TSharedPtr<SButton> ConvertButton;
-
-	static constexpr int32 SoftTokenLimit = 40000;
-	static constexpr int32 HardTokenLimit = 80000;
 };

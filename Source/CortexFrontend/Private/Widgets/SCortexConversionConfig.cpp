@@ -120,11 +120,11 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 					if (Context.IsValid() && Context->bTokenEstimateReady)
 					{
 						const int32 Est = EstimateTokensForScope(Context->SelectedScope);
-						if (Est > HardTokenLimit)
+						if (Est > CortexTokenUtils::HardTokenLimit)
 						{
 							return FSlateColor(FLinearColor(0.9f, 0.2f, 0.2f)); // Red
 						}
-						if (Est > SoftTokenLimit)
+						if (Est > CortexTokenUtils::SoftTokenLimit)
 						{
 							return FSlateColor(FLinearColor(0.9f, 0.7f, 0.2f)); // Yellow
 						}
@@ -149,7 +149,7 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 					if (Context.IsValid() && Context->bTokenEstimateReady)
 					{
 						const int32 Est = EstimateTokensForScope(Context->SelectedScope);
-						if (Est > HardTokenLimit)
+						if (Est > CortexTokenUtils::HardTokenLimit)
 						{
 							return EVisibility::Visible;
 						}
@@ -174,7 +174,7 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 					{
 						if (Context.IsValid() && Context->bTokenEstimateReady)
 						{
-							return EstimateTokensForScope(Context->SelectedScope) <= HardTokenLimit;
+							return EstimateTokensForScope(Context->SelectedScope) <= CortexTokenUtils::HardTokenLimit;
 						}
 						return true; // Allow before estimate arrives
 					})
@@ -821,18 +821,3 @@ FString SCortexConversionConfig::FormatTokenEstimate(int32 Tokens) const
 	return FString::Printf(TEXT("%s \u00B7 est. ~%ds"), *TokenStr, EstSec);
 }
 
-FString SCortexConversionConfig::FormatTokenCount(int32 Tokens)
-{
-	if (Tokens <= 0)
-	{
-		return FString();
-	}
-	if (Tokens >= 1000)
-	{
-		const float K = Tokens / 1000.0f;
-		return (K >= 10.0f)
-			? FString::Printf(TEXT("~%.0fk tokens"), K)
-			: FString::Printf(TEXT("~%.1fk tokens"), K);
-	}
-	return FString::Printf(TEXT("~%d tokens"), Tokens);
-}
