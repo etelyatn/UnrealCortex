@@ -26,11 +26,13 @@ public:
 
 private:
     TSharedRef<SDockTab> SpawnChatTab(const FSpawnTabArgs& Args);
+    TSharedRef<SDockTab> SpawnGenStudioTab(const FSpawnTabArgs& Args);
     void OnConversionRequested(const FCortexConversionPayload& Payload);
     void ReleaseSessions();
     void HandlePreExit();
 
     static const FName CortexChatTabId;
+    static const FName GenStudioTabId;
     FDelegateHandle StartupCallbackHandle;
     FDelegateHandle ConversionDelegateHandle;
     TArray<TSharedPtr<FCortexCliSession>> Sessions;

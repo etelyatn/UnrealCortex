@@ -1,3 +1,5 @@
+#define LOCTEXT_NAMESPACE "CortexFrontend"
+
 #include "CortexFrontendModule.h"
 
 #include "CortexCoreModule.h"
@@ -19,6 +21,7 @@
 DEFINE_LOG_CATEGORY(LogCortexFrontend);
 
 const FName FCortexFrontendModule::CortexChatTabId(TEXT("CortexFrontend"));
+const FName FCortexFrontendModule::GenStudioTabId(TEXT("CortexGenStudio"));
 
 void FCortexFrontendModule::StartupModule()
 {
@@ -32,6 +35,14 @@ void FCortexFrontendModule::StartupModule()
         .SetDisplayName(FText::FromString(TEXT("Cortex Frontend")))
         .SetTooltipText(FText::FromString(TEXT("Open the Cortex Frontend panel")))
         .SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"))
+        .SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory());
+
+    // Register CortexGen Studio Nomad Tab
+    FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
+        GenStudioTabId,
+        FOnSpawnTab::CreateRaw(this, &FCortexFrontendModule::SpawnGenStudioTab))
+        .SetDisplayName(LOCTEXT("CortexGenStudio", "CortexGen Studio"))
+        .SetMenuType(ETabSpawnerMenuType::Enabled)
         .SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory());
 
     StartupCallbackHandle = UToolMenus::RegisterStartupCallback(
@@ -48,6 +59,15 @@ void FCortexFrontendModule::StartupModule()
                 {
                     FGlobalTabmanager::Get()->TryInvokeTab(CortexChatTabId);
                 }))));
+            Section.AddMenuEntry(
+                TEXT("CortexGenStudio"),
+                LOCTEXT("CortexGenStudioMenuLabel", "Asset Generation"),
+                LOCTEXT("CortexGenStudioMenuTooltip", "Open CortexGen Studio for AI-powered asset generation"),
+                FSlateIcon(),
+                FUIAction(FExecuteAction::CreateLambda([]()
+                {
+                    FGlobalTabmanager::Get()->TryInvokeTab(FName("CortexGenStudio"));
+                })));
         }));
 
     FCoreDelegates::OnPreExit.AddRaw(this, &FCortexFrontendModule::HandlePreExit);
@@ -85,6 +105,7 @@ void FCortexFrontendModule::ShutdownModule()
     if (FSlateApplication::IsInitialized())
     {
         FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(CortexChatTabId);
+        FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(GenStudioTabId);
     }
 
     FCortexRichTextStyle::Shutdown();
@@ -124,6 +145,28 @@ TSharedRef<SDockTab> FCortexFrontendModule::SpawnChatTab(const FSpawnTabArgs& /*
     WorkbenchWeak = Workbench;  // Store weak ref for conversion routing
     DockTab->SetContent(Workbench);
     return DockTab;
+}
+
+TSharedRef<SDockTab> FCortexFrontendModule::SpawnGenStudioTab(const FSpawnTabArgs& /*Args*/)
+{
+    // Guard against CortexGen module load failure
+    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
+    {
+        return SNew(SDockTab)
+            .TabRole(NomadTab)
+            [
+                SNew(STextBlock)
+                .Text(FText::FromString(TEXT("CortexGen module is not loaded. Check build output for errors.")))
+                .ColorAndOpacity(FLinearColor(1.f, 0.3f, 0.3f))
+            ];
+    }
+
+    return SNew(SDockTab)
+        .TabRole(NomadTab)
+        [
+            SNew(STextBlock)
+            .Text(FText::FromString(TEXT("CortexGen Studio — Coming Soon")))
+        ];
 }
 
 void FCortexFrontendModule::OnConversionRequested(const FCortexConversionPayload& Payload)
@@ -172,3 +215,5 @@ void FCortexFrontendModule::HandlePreExit()
 }
 
 IMPLEMENT_MODULE(FCortexFrontendModule, CortexFrontend)
+
+#undef LOCTEXT_NAMESPACE

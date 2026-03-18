@@ -26,6 +26,10 @@ public class CortexFrontend : ModuleRules
             "ToolMenus",
             "Projects",
             "CortexCore",
+            "CortexGen",
+            "ImageWrapper",
+            "EditorScriptingUtilities",
+            "DesktopPlatform",
         });
     }
 }
