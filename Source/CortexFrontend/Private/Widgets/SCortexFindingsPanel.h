@@ -23,6 +23,7 @@ public:
     SLATE_END_ARGS()
 
     void Construct(const FArguments& InArgs);
+    virtual ~SCortexFindingsPanel();
 
     /** Add a finding to the panel. Called by analysis chat as findings stream in. */
     void AddFinding(const FCortexAnalysisFinding& Finding);

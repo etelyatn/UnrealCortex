@@ -20,6 +20,14 @@
 #include "Editor.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 
+SCortexFindingsPanel::~SCortexFindingsPanel()
+{
+    if (GEditor)
+    {
+        GEditor->GetTimerManager()->ClearTimer(RefreshTimerHandle);
+    }
+}
+
 void SCortexFindingsPanel::Construct(const FArguments& InArgs)
 {
     Context = InArgs._Context;

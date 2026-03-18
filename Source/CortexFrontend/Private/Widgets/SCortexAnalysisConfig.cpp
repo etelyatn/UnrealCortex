@@ -555,6 +555,11 @@ void SCortexAnalysisConfig::RequestTokenEstimate()
 	TWeakPtr<FCortexAnalysisContext> WeakContext = Context;
 	TWeakPtr<SCortexScopeSelector> WeakSelector = ScopeSelector;
 
+	// Threading: FCortexCoreModule::RequestSerialization calls SerializationHandler.Execute()
+	// synchronously. The handler (FCortexBPSerializationOps::Serialize) is also synchronous
+	// and executes on the calling thread. RequestTokenEstimate() is called from Construct()
+	// and Slate event callbacks — both run on the Game Thread. The callback therefore fires
+	// on the Game Thread and it is safe to touch Slate widget state directly here.
 	Core.RequestSerialization(Request,
 		FOnSerializationComplete::CreateLambda(
 			[WeakContext, WeakSelector](const FCortexSerializationResult& SerResult)

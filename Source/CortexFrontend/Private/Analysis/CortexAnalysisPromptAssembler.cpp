@@ -97,7 +97,7 @@ After your findings, output an analysis:summary block:
 ```
 )delimiter");
 
-    const TCHAR* DepthDeep = TEXT(R"(
+    const TCHAR* DepthDeep = TEXT(R"delimiter(
 
 ## Reporting Threshold: DEEP (Deep Dive)
 
@@ -105,8 +105,13 @@ Report all potential issues. When mitigation exists, still report but set severi
 
 Include a confidence value (0.0-1.0) on each finding. Add "confidence" to the finding JSON alongside title, node, description, and suggestedFix.
 
-Do not output your reasoning process — only emit finding blocks.
-)");
+Do not output your reasoning process — only emit finding blocks and the analysis:summary block.
+
+After your findings, output an analysis:summary block:
+```analysis:summary
+{"reported": N, "estimated_suppressed": 0, "suppression_notes": "Deep mode reports all findings; none suppressed"}
+```
+)delimiter");
 
     const TCHAR* CalibrationExamples = TEXT(R"delimiter(
 
