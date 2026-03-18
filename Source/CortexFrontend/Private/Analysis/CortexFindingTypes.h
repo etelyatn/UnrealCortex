@@ -22,9 +22,9 @@ enum class ECortexFindingCategory : uint8
 
 enum class ECortexAnalysisDepth : uint8
 {
-	Light,
-	Standard,
-	Deep
+    Light,
+    Standard,
+    Deep
 };
 
 struct FCortexAnalysisFinding
