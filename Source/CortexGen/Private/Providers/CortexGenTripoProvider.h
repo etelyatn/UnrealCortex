@@ -9,7 +9,7 @@
 class FCortexGenTripoProvider : public ICortexGenProvider
 {
 public:
-    explicit FCortexGenTripoProvider(const FString& InApiKey);
+    explicit FCortexGenTripoProvider(const FString& InApiKey, const FString& InModelVersion);
 
     FName GetProviderId() const override;
     FText GetDisplayName() const override;
@@ -25,4 +25,5 @@ private:
     static FString BaseUrl();
 
     FString ApiKey;
+    FString ModelVersion;
 };

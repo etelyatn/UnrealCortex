@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "Providers/ICortexGenProvider.h"
+#include "Providers/CortexGenTripoProvider.h"
 
 namespace
 {
@@ -99,5 +100,20 @@ bool FCortexGenProviderInterfaceTest::RunTest(const FString& Parameters)
 
     TestTrue(TEXT("Poll callback should have been called"), bPollCalled);
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenTripoModelVersionTest,
+    "Cortex.Gen.Tripo.ModelVersionConfigurable",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenTripoModelVersionTest::RunTest(const FString& Parameters)
+{
+    // Constructor must accept a model version parameter
+    FCortexGenTripoProvider Provider(TEXT("test_key"), TEXT("v2.5-custom"));
+    TestEqual(TEXT("Provider ID should be tripo3d"),
+        Provider.GetProviderId(), FName(TEXT("tripo3d")));
     return true;
 }

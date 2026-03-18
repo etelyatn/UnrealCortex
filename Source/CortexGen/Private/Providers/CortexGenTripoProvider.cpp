@@ -8,8 +8,10 @@
 #include "Serialization/JsonSerializer.h"
 #include "Dom/JsonObject.h"
 
-FCortexGenTripoProvider::FCortexGenTripoProvider(const FString& InApiKey)
+FCortexGenTripoProvider::FCortexGenTripoProvider(
+    const FString& InApiKey, const FString& InModelVersion)
     : ApiKey(InApiKey)
+    , ModelVersion(InModelVersion)
 {
 }
 
@@ -60,7 +62,7 @@ void FCortexGenTripoProvider::SubmitJob(
     TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
     Body->SetStringField(TEXT("type"), TEXT("text_to_model"));
     Body->SetStringField(TEXT("prompt"), Request.Prompt);
-    Body->SetStringField(TEXT("model_version"), TEXT("v2.0-20240919"));
+    Body->SetStringField(TEXT("model_version"), ModelVersion);
     Body->SetStringField(TEXT("output_format"), TEXT("glb"));
 
     if (Request.Type == ECortexGenJobType::MeshFromImage ||

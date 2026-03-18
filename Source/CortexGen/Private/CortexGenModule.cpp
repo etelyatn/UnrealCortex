@@ -29,7 +29,7 @@ void FCortexGenModule::StartupModule()
         if (!Settings->Tripo3DApiKey.IsEmpty())
         {
             JobManager->RegisterProvider(
-                MakeShared<FCortexGenTripoProvider>(Settings->Tripo3DApiKey));
+                MakeShared<FCortexGenTripoProvider>(Settings->Tripo3DApiKey, TEXT("v2.0-20240919")));
         }
     }
 
