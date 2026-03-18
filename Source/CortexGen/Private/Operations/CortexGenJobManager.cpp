@@ -159,10 +159,11 @@ bool FCortexGenJobManager::SubmitJob(const FString& ProviderId,
     Job.Destination = Request.Destination;
     Job.CreatedAt = FDateTime::UtcNow().ToIso8601();
 
-    // Submit to provider
-    bool bSubmitSucceeded = false;
+    OutJobId = JobId;
+
+    // Submit to provider (may be async)
     Provider->SubmitJob(Request, FOnGenJobSubmitted::CreateLambda(
-        [this, JobId, &bSubmitSucceeded, &OutError](const FCortexGenSubmitResult& Result)
+        [this, JobId](const FCortexGenSubmitResult& Result)
         {
             FCortexGenJobState* JobPtr = Jobs.Find(JobId);
             if (!JobPtr)
@@ -174,21 +175,14 @@ bool FCortexGenJobManager::SubmitJob(const FString& ProviderId,
             {
                 JobPtr->ProviderJobId = Result.ProviderJobId;
                 TransitionJob(*JobPtr, ECortexGenJobStatus::Processing);
-                bSubmitSucceeded = true;
             }
             else
             {
-                OutError = Result.ErrorMessage;
-                Jobs.Remove(JobId);
+                JobPtr->ErrorMessage = Result.ErrorMessage;
+                TransitionJob(*JobPtr, ECortexGenJobStatus::Failed);
             }
         }));
 
-    if (!bSubmitSucceeded)
-    {
-        return false;
-    }
-
-    OutJobId = JobId;
     return true;
 }
 

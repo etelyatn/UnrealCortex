@@ -118,8 +118,18 @@ bool FCortexGenJobManagerSubmitFailTest::RunTest(const FString& Parameters)
     FString Error;
     bool bSuccess = Manager.SubmitJob(TEXT("test"), Request, JobId, Error);
 
-    TestFalse(TEXT("Submit should fail"), bSuccess);
-    TestFalse(TEXT("Error should not be empty"), Error.IsEmpty());
+    // SubmitJob returns true (job was queued) — provider failure propagates via job state
+    TestTrue(TEXT("SubmitJob returns true (job queued)"), bSuccess);
+
+    // Mock provider calls callback synchronously, so job is already in Failed state
+    const FCortexGenJobState* State = Manager.GetJobState(JobId);
+    TestNotNull(TEXT("Job state should exist"), State);
+    if (State)
+    {
+        TestEqual(TEXT("Status should be Failed after provider failure"),
+            State->Status, ECortexGenJobStatus::Failed);
+        TestFalse(TEXT("ErrorMessage should not be empty"), State->ErrorMessage.IsEmpty());
+    }
 
     return true;
 }
