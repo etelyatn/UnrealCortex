@@ -3,16 +3,18 @@
 #include "CortexCoreModule.h"
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
-#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Text/STextBlock.h"
 
 void SCortexGenTab::Construct(const FArguments& InArgs)
 {
 	// Subscribe to domain progress
-	FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
-	DomainProgressHandle = Core.OnDomainProgress().AddSP(this, &SCortexGenTab::OnDomainProgress);
+	if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexCore")))
+	{
+		FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+		DomainProgressHandle = Core.OnDomainProgress().AddSP(this, &SCortexGenTab::OnDomainProgress);
+	}
 
 	ChildSlot
 	[
@@ -32,8 +34,12 @@ void SCortexGenTab::Construct(const FArguments& InArgs)
 		.AutoHeight()
 		.Padding(8.f, 4.f)
 		[
-			SAssignNew(PromptBox, SEditableTextBox)
-			.HintText(FText::FromString(TEXT("Describe the asset to generate...")))
+			SNew(SBox)
+			.HeightOverride(80.0f)
+			[
+				SAssignNew(PromptBox, SMultiLineEditableTextBox)
+				.HintText(FText::FromString(TEXT("Describe the asset to generate...")))
+			]
 		]
 
 		// Generate button
@@ -76,16 +82,8 @@ void SCortexGenTab::OnDomainProgress(const FName& DomainName, const TSharedPtr<F
 		return;
 	}
 
-	FString JobId;
-	Data->TryGetStringField(TEXT("job_id"), JobId);
-
 	FString Status;
 	Data->TryGetStringField(TEXT("status"), Status);
-
-	if (!JobId.IsEmpty())
-	{
-		ActiveJobId = JobId;
-	}
 
 	if (StatusText.IsValid() && !Status.IsEmpty())
 	{
@@ -108,7 +106,6 @@ FReply SCortexGenTab::OnGenerateClicked()
 
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("prompt"), Prompt);
-	Params->SetStringField(TEXT("provider"), TEXT("meshy"));
 
 	ExecuteGenCommand(TEXT("start_mesh"), Params);
 

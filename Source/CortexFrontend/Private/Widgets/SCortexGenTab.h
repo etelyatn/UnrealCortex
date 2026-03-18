@@ -4,7 +4,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
-class SEditableTextBox;
+class SMultiLineEditableTextBox;
 class STextBlock;
 class SButton;
 
@@ -25,9 +25,8 @@ private:
 	void RefreshProviders();
 	void RefreshJobs();
 
-	TSharedPtr<SEditableTextBox> PromptBox;
+	TSharedPtr<SMultiLineEditableTextBox> PromptBox;
 	TSharedPtr<STextBlock> StatusText;
 
 	FDelegateHandle DomainProgressHandle;
-	FString ActiveJobId;
 };
