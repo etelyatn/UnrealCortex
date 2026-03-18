@@ -50,6 +50,14 @@ FString FCortexGenFalProvider::SubmitUrlForType(ECortexGenJobType Type) const
     return FString::Printf(TEXT("%s/%s"), KFalQueueBase, *ModelIdForType(Type));
 }
 
+FString FCortexGenFalProvider::SubmitUrlForRequest(const FCortexGenJobRequest& Request) const
+{
+    const FString& EffectiveModel = Request.ModelId.IsEmpty()
+        ? ModelIdForType(Request.Type)
+        : Request.ModelId;
+    return FString::Printf(TEXT("%s/%s"), KFalQueueBase, *EffectiveModel);
+}
+
 FString FCortexGenFalProvider::StripStatusSuffix(const FString& Url)
 {
     return Url.EndsWith(TEXT("/status"))
@@ -165,7 +173,7 @@ void FCortexGenFalProvider::SubmitJob(
         return;
     }
 
-    FString Url = SubmitUrlForType(Request.Type);
+    FString Url = SubmitUrlForRequest(Request);
     FString Body = BuildSubmitBody(Request);
 
     UE_LOG(LogCortexGen, Log, TEXT("fal.ai submit: POST %s"), *Url);

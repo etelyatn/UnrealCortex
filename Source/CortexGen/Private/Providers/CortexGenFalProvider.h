@@ -30,6 +30,9 @@ public:
 protected:
     FString BuildSubmitBody(const FCortexGenJobRequest& Request) const;
 
+    /** Build the submit URL for a request, using Request.ModelId if non-empty, otherwise falls back to type-based default. */
+    FString SubmitUrlForRequest(const FCortexGenJobRequest& Request) const;
+
     /** Parse a fal.ai status poll JSON response into a poll result. Pure JSON logic, no state. */
     static FCortexGenPollResult ParsePollResponse(const FString& JsonBody);
 

@@ -57,6 +57,8 @@ public:
         return BuildSubmitBody(Request);
     }
 
+    using FCortexGenFalProvider::SubmitUrlForRequest;
+
     static FCortexGenPollResult ParsePollResponseForTest(const FString& JsonBody)
     {
         return ParsePollResponse(JsonBody);
@@ -478,6 +480,65 @@ bool FCortexGenFalCustomParamsTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("image_size should be overridden to square"),
             Json->GetStringField(TEXT("image_size")), FString(TEXT("square")));
     }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Test: SubmitUrlForRequest uses Request.ModelId when non-empty
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenFalSubmitUrlForRequestTest,
+    "Cortex.Gen.Fal.SubmitUrlForRequest.UsesRequestModelId",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenFalSubmitUrlForRequestTest::RunTest(const FString& Parameters)
+{
+    FFalProviderTestable Provider(TEXT("key"), TEXT("fal-ai/hyper3d/rodin"),
+        TEXT("fal-ai/flux/dev"));
+
+    FCortexGenJobRequest Request;
+
+    // When ModelId is set, use it regardless of type
+    Request.ModelId = TEXT("fal-ai/flux-2-pro");
+    Request.Type = ECortexGenJobType::ImageFromText;
+    FString Url = Provider.SubmitUrlForRequest(Request);
+    TestTrue(TEXT("Should use Request.ModelId for image"),
+        Url.Contains(TEXT("fal-ai/flux-2-pro")));
+
+    Request.Type = ECortexGenJobType::MeshFromText;
+    Url = Provider.SubmitUrlForRequest(Request);
+    TestTrue(TEXT("Should use Request.ModelId for mesh"),
+        Url.Contains(TEXT("fal-ai/flux-2-pro")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenFalSubmitUrlForRequestFallbackTest,
+    "Cortex.Gen.Fal.SubmitUrlForRequest.FallsBackToDefault",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenFalSubmitUrlForRequestFallbackTest::RunTest(const FString& Parameters)
+{
+    FFalProviderTestable Provider(TEXT("key"), TEXT("fal-ai/hyper3d/rodin"),
+        TEXT("fal-ai/flux/dev"));
+
+    FCortexGenJobRequest Request;
+
+    // When ModelId is empty, fall back to type-based default
+    Request.ModelId = TEXT("");
+    Request.Type = ECortexGenJobType::ImageFromText;
+    FString Url = Provider.SubmitUrlForRequest(Request);
+    TestTrue(TEXT("Should fall back to ImageModelId"),
+        Url.Contains(TEXT("fal-ai/flux/dev")));
+
+    Request.Type = ECortexGenJobType::MeshFromText;
+    Url = Provider.SubmitUrlForRequest(Request);
+    TestTrue(TEXT("Should fall back to ModelId"),
+        Url.Contains(TEXT("fal-ai/hyper3d/rodin")));
 
     return true;
 }
