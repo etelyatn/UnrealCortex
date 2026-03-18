@@ -16,6 +16,7 @@
 #include "Containers/Ticker.h"
 #include "Async/Async.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/FileManager.h"
 
 namespace
 {
@@ -49,6 +50,8 @@ FCortexGenJobManager::FCortexGenJobManager()
 void FCortexGenJobManager::Initialize()
 {
     const UCortexGenSettings* Settings = UCortexGenSettings::Get();
+
+    LoadTimingData();
 
     // Use TWeakPtr to prevent the ticker from preventing destruction.
     TWeakPtr<FCortexGenJobManager> WeakSelf = AsShared();
@@ -190,6 +193,7 @@ bool FCortexGenJobManager::SubmitJob(const FString& ProviderId,
     Job.Status = ECortexGenJobStatus::Pending;
     Job.Prompt = Request.Prompt;
     Job.Destination = Request.Destination;
+    Job.ModelId = Request.ModelId;
     Job.CreatedAt = FDateTime::UtcNow().ToIso8601();
 
     OutJobId = JobId;
@@ -543,6 +547,18 @@ void FCortexGenJobManager::RunImportPipeline(FCortexGenJobState& Job)
     if (ImportResult.bSuccess)
     {
         Job.ImportedAssetPaths = ImportResult.ImportedAssetPaths;
+
+        // Record timing from job creation to import completion
+        FDateTime CreatedTime;
+        if (FDateTime::ParseIso8601(*Job.CreatedAt, CreatedTime))
+        {
+            float Elapsed = static_cast<float>((FDateTime::UtcNow() - CreatedTime).GetTotalSeconds());
+            if (!Job.ModelId.IsEmpty())
+            {
+                RecordTiming(Job.ModelId, Elapsed);
+            }
+        }
+
         TransitionJob(Job, ECortexGenJobStatus::Imported);
     }
     else
@@ -678,4 +694,112 @@ void FCortexGenJobManager::LoadJobs()
     }
 
     UE_LOG(LogCortexGen, Log, TEXT("Loaded %d jobs from persistence"), Jobs.Num());
+}
+
+void FCortexGenJobManager::RecordTiming(const FString& ModelId, float DurationSeconds)
+{
+    TArray<float>& Samples = TimingData.FindOrAdd(ModelId);
+    if (Samples.Num() >= MaxTimingSamples)
+    {
+        Samples.RemoveAt(0);
+    }
+    Samples.Add(DurationSeconds);
+    SaveTimingData();
+}
+
+float FCortexGenJobManager::GetAverageTime(const FString& ModelId) const
+{
+    const TArray<float>* Samples = TimingData.Find(ModelId);
+    if (!Samples || Samples->Num() < MinTimingSamplesForAverage)
+    {
+        return 0.0f;
+    }
+
+    float Sum = 0.0f;
+    for (float S : *Samples)
+    {
+        Sum += S;
+    }
+    return Sum / Samples->Num();
+}
+
+void FCortexGenJobManager::SaveTimingData() const
+{
+    FString FilePath = FPaths::ProjectSavedDir() / TEXT("CortexGen/timing.json");
+
+    TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+    for (const auto& Pair : TimingData)
+    {
+        TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+        TArray<TSharedPtr<FJsonValue>> SamplesArray;
+        float Sum = 0.0f;
+        for (float S : Pair.Value)
+        {
+            SamplesArray.Add(MakeShared<FJsonValueNumber>(S));
+            Sum += S;
+        }
+        Entry->SetArrayField(TEXT("samples"), SamplesArray);
+        Entry->SetNumberField(TEXT("avg"),
+            Pair.Value.Num() > 0 ? Sum / Pair.Value.Num() : 0.0f);
+        Root->SetObjectField(Pair.Key, Entry);
+    }
+
+    FString JsonString;
+    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
+    FJsonSerializer::Serialize(Root.ToSharedRef(), Writer);
+
+    // Atomic write-then-rename to prevent corruption on crash
+    FString TmpPath = FilePath + TEXT(".tmp");
+    if (FFileHelper::SaveStringToFile(JsonString, *TmpPath))
+    {
+        IFileManager::Get().Move(*FilePath, *TmpPath, true);
+    }
+}
+
+void FCortexGenJobManager::LoadTimingData()
+{
+    FString FilePath = FPaths::ProjectSavedDir() / TEXT("CortexGen/timing.json");
+    FString JsonString;
+    if (!FFileHelper::LoadFileToString(JsonString, *FilePath))
+    {
+        return;
+    }
+
+    TSharedPtr<FJsonObject> Root;
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
+    if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+    {
+        return;
+    }
+
+    for (const auto& Pair : Root->Values)
+    {
+        const TSharedPtr<FJsonObject>* EntryObj;
+        if (!Pair.Value->TryGetObject(EntryObj))
+        {
+            continue;
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>* SamplesArray;
+        if (!(*EntryObj)->TryGetArrayField(TEXT("samples"), SamplesArray))
+        {
+            continue;
+        }
+
+        TArray<float>& Samples = TimingData.FindOrAdd(Pair.Key);
+        for (const auto& Val : *SamplesArray)
+        {
+            double D;
+            if (Val->TryGetNumber(D) && FMath::IsFinite(D) && D > 0.0)
+            {
+                Samples.Add(static_cast<float>(D));
+            }
+        }
+
+        // Enforce max
+        while (Samples.Num() > MaxTimingSamples)
+        {
+            Samples.RemoveAt(0);
+        }
+    }
 }

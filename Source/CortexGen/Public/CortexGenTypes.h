@@ -86,4 +86,5 @@ struct FCortexGenJobState
     UPROPERTY() FString DownloadPath;       // local file after download
     UPROPERTY() TArray<FString> ImportedAssetPaths;  // glb can produce mesh + N textures
     UPROPERTY() FString ErrorMessage;
+    UPROPERTY() FString ModelId;    // for timing data collection
 };

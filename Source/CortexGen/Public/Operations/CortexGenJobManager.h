@@ -56,6 +56,12 @@ public:
     void SaveJobs() const;
     void LoadJobs();
 
+    /** Record a generation timing sample for a model. */
+    void RecordTiming(const FString& ModelId, float DurationSeconds);
+
+    /** Get average generation time for a model. Returns 0 if fewer than 3 samples. */
+    float GetAverageTime(const FString& ModelId) const;
+
 private:
     static FString GenerateJobId();
     void TransitionJob(FCortexGenJobState& Job, ECortexGenJobStatus NewStatus);
@@ -64,6 +70,9 @@ private:
     void StartDownloadPipeline(FCortexGenJobState& Job);
     void RunImportPipeline(FCortexGenJobState& Job);
     void BroadcastJobProgress(const FCortexGenJobState& Job);
+
+    void SaveTimingData() const;
+    void LoadTimingData();
 
     TMap<FString, FCortexGenJobState> Jobs;
     TMap<FString, TSharedPtr<ICortexGenProvider>> Providers;  // keyed by provider ID string
@@ -75,4 +84,9 @@ private:
     TSet<FString> PollsInFlight;
 
     FTSTicker::FDelegateHandle TickerHandle;
+
+    /** ModelId -> array of timing samples (max 20 per model, sliding window). */
+    TMap<FString, TArray<float>> TimingData;
+    static constexpr int32 MaxTimingSamples = 20;
+    static constexpr int32 MinTimingSamplesForAverage = 3;
 };
