@@ -15,7 +15,7 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnGenJobStateChanged, const FCortexGenJobSt
  * All state mutation must happen on the Game Thread. HTTP callbacks
  * dispatch back via AsyncTask(ENamedThreads::GameThread).
  */
-class FCortexGenJobManager : public TSharedFromThis<FCortexGenJobManager>
+class CORTEXGEN_API FCortexGenJobManager : public TSharedFromThis<FCortexGenJobManager>
 {
 public:
     FCortexGenJobManager();
