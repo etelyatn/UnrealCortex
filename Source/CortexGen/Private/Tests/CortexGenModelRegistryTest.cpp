@@ -33,10 +33,9 @@ bool FCortexGenModelRegistrySettingsTest::RunTest(const FString& Parameters)
     const UCortexGenSettings* Settings = UCortexGenSettings::Get();
     TestNotNull(TEXT("Settings should exist"), Settings);
 
-    // ModelRegistry should be accessible (may be empty in test context)
-    // Just verify the property exists and is an array
-    TestTrue(TEXT("ModelRegistry is a valid array"),
-        Settings->ModelRegistry.GetTypeSize() > 0 || Settings->ModelRegistry.Num() >= 0);
+    // Verify the property is accessible (no crash means the property exists)
+    int32 RegistryCount = Settings->ModelRegistry.Num();
+    TestTrue(TEXT("ModelRegistry is accessible"), RegistryCount >= 0);
 
     return true;
 }
@@ -56,11 +55,19 @@ bool FCortexGenGetApiKeyForProviderTest::RunTest(const FString& Parameters)
     FString Key = Settings->GetApiKeyForProvider(TEXT("unknown_provider"));
     TestTrue(TEXT("Unknown provider returns empty"), Key.IsEmpty());
 
-    // Known providers return their configured key (may be empty in test,
-    // but the method should not crash)
-    Settings->GetApiKeyForProvider(TEXT("fal"));
-    Settings->GetApiKeyForProvider(TEXT("meshy"));
-    Settings->GetApiKeyForProvider(TEXT("tripo3d"));
+    // Known providers should not crash (actual key values depend on config, may be empty in test)
+    FString FalKey = Settings->GetApiKeyForProvider(TEXT("fal"));
+    FString MeshyKey = Settings->GetApiKeyForProvider(TEXT("meshy"));
+    FString Tripo3DKey = Settings->GetApiKeyForProvider(TEXT("tripo3d"));
+    // These may be empty in test context — just verify they returned FString (no crash)
+
+    // Verify case-insensitivity
+    FString UpperResult = Settings->GetApiKeyForProvider(TEXT("FAL"));
+    FString LowerResult = Settings->GetApiKeyForProvider(TEXT("fal"));
+    TestEqual(TEXT("FAL and fal should return same key"), UpperResult, LowerResult);
+
+    FString UnknownUpper = Settings->GetApiKeyForProvider(TEXT("UNKNOWN"));
+    TestTrue(TEXT("UNKNOWN provider returns empty"), UnknownUpper.IsEmpty());
 
     return true;
 }
