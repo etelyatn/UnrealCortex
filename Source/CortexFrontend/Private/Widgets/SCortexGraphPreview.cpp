@@ -14,6 +14,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Editor.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 void SCortexGraphPreview::Construct(const FArguments& InArgs)
 {
@@ -134,6 +135,10 @@ void SCortexGraphPreview::RecreateGraphEditor(UEdGraph* Graph)
                 {
                     if (Node && Node->NodeGuid == ClonedNode->NodeGuid)
                     {
+                        // Ensure Blueprint editor is open first (idempotent — returns existing if already open)
+                        GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Blueprint);
+
+                        // Then navigate to node
                         FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(Node);
                         return;
                     }

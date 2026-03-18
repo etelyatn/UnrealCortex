@@ -16,6 +16,7 @@
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
 #include "Editor.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 void SCortexFindingsPanel::Construct(const FArguments& InArgs)
 {
@@ -185,6 +186,10 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
                         {
                             if (Node && Node->NodeGuid == Finding->NodeGuid)
                             {
+                                // Ensure Blueprint editor is open (idempotent — returns existing if already open)
+                                GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Blueprint);
+
+                                // Then navigate to node
                                 FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(Node);
                                 return FReply::Handled();
                             }
