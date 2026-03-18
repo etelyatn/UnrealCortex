@@ -29,7 +29,7 @@ public:
     void ClearAnnotations();
 
     /** Set the active cloned graph for initial display. */
-    void SetInitialGraph(UEdGraph* ClonedGraph);
+    void SetInitialGraph(FName GraphName);
 
 private:
     void OnGraphSelected(TSharedPtr<FString> NewSelection, ESelectInfo::Type SelectionType);

@@ -328,20 +328,31 @@ void SCortexAnalysisTab::OnAnalyzeClicked()
                 FCortexSerializationResult MutableResult = SerResult;
                 Self->Context->TakeOwnershipOfClonedGraphs(MutableResult);
 
-                // Set initial graph in preview
-                if (!Self->Context->Payload.CurrentGraphName.IsEmpty())
+                // Determine which graph to show initially
+                FName InitialGraphName;
+                if (Self->Context->SelectedScope == ECortexConversionScope::EventOrFunction
+                    && Self->Context->SelectedFunctions.Num() > 0)
                 {
-                    Self->Context->SetActiveGraph(FName(*Self->Context->Payload.CurrentGraphName));
+                    // For function scope, use the first selected function — not CurrentGraphName
+                    InitialGraphName = FName(*Self->Context->SelectedFunctions[0]);
                 }
-                else if (Self->Context->ClonedGraphs.Num() > 0)
+                else
                 {
-                    auto It = Self->Context->ClonedGraphs.CreateIterator();
-                    Self->Context->ActiveClonedGraph = It.Value();
+                    InitialGraphName = FName(*Self->Context->Payload.CurrentGraphName);
                 }
 
-                if (Self->GraphPreview.IsValid() && Self->Context->GetActiveClonedGraph())
+                UE_LOG(LogCortexFrontend, Log, TEXT("Analysis: Setting initial graph to '%s' (scope=%d, clone map has %d entries)"),
+                    *InitialGraphName.ToString(), static_cast<int32>(Self->Context->SelectedScope), Self->Context->ClonedGraphs.Num());
+
+                // Log all clone map keys for debugging
+                for (const auto& Pair : Self->Context->ClonedGraphs)
                 {
-                    Self->GraphPreview->SetInitialGraph(Self->Context->GetActiveClonedGraph());
+                    UE_LOG(LogCortexFrontend, Log, TEXT("  Clone map key: '%s'"), *Pair.Key.ToString());
+                }
+
+                if (Self->GraphPreview.IsValid())
+                {
+                    Self->GraphPreview->SetInitialGraph(InitialGraphName);
                 }
 
                 // Token budget check — early return is now safe: package is under context ownership.

@@ -1,15 +1,18 @@
 // SCortexGraphPreview.cpp
 #include "Widgets/SCortexGraphPreview.h"
 
+#include "CortexFrontendModule.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "Engine/Blueprint.h"
 #include "GraphEditor.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
+#include "Styling/CoreStyle.h"
 #include "UObject/UObjectGlobals.h"
 #include "Widgets/Input/STextComboBox.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Text/STextBlock.h"
 #include "Editor.h"
 
 void SCortexGraphPreview::Construct(const FArguments& InArgs)
@@ -61,11 +64,39 @@ void SCortexGraphPreview::Construct(const FArguments& InArgs)
     }
 }
 
-void SCortexGraphPreview::SetInitialGraph(UEdGraph* ClonedGraph)
+void SCortexGraphPreview::SetInitialGraph(FName GraphName)
 {
-    if (ClonedGraph)
+    if (!Context.IsValid())
     {
-        RecreateGraphEditor(ClonedGraph);
+        return;
+    }
+
+    // Set active graph on context (this updates ActiveClonedGraph)
+    Context->SetActiveGraph(GraphName);
+
+    if (Context->ActiveClonedGraph)
+    {
+        RecreateGraphEditor(Context->ActiveClonedGraph);
+    }
+    else
+    {
+        UE_LOG(LogCortexFrontend, Warning,
+            TEXT("Graph '%s' not found in clone map. Available: %d graphs"),
+            *GraphName.ToString(), Context->ClonedGraphs.Num());
+
+        // Show fallback message instead of empty canvas
+        GraphEditorContainer->SetContent(
+            SNew(SBox)
+            .HAlign(HAlign_Center)
+            .VAlign(VAlign_Center)
+            [
+                SNew(STextBlock)
+                .Text(FText::FromString(FString::Printf(
+                    TEXT("Graph preview not available for '%s'"), *GraphName.ToString())))
+                .Font(FCoreStyle::GetDefaultFontStyle("Italic", 10))
+                .ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.55f)))
+            ]
+        );
     }
 }
 
