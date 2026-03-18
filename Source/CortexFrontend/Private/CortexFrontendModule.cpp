@@ -12,6 +12,7 @@
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
 #include "Widgets/SCortexWorkbench.h"
+#include "Widgets/SCortexGenPanel.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 #include "Framework/Application/SlateApplication.h"
@@ -147,9 +148,8 @@ TSharedRef<SDockTab> FCortexFrontendModule::SpawnChatTab(const FSpawnTabArgs& /*
     return DockTab;
 }
 
-TSharedRef<SDockTab> FCortexFrontendModule::SpawnGenStudioTab(const FSpawnTabArgs& /*Args*/)
+TSharedRef<SDockTab> FCortexFrontendModule::SpawnGenStudioTab(const FSpawnTabArgs& Args)
 {
-    // Guard against CortexGen module load failure
     if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
     {
         return SNew(SDockTab)
@@ -161,12 +161,24 @@ TSharedRef<SDockTab> FCortexFrontendModule::SpawnGenStudioTab(const FSpawnTabArg
             ];
     }
 
-    return SNew(SDockTab)
-        .TabRole(NomadTab)
-        [
-            SNew(STextBlock)
-            .Text(FText::FromString(TEXT("CortexGen Studio — Coming Soon")))
-        ];
+    TSharedRef<SDockTab> Tab = SNew(SDockTab)
+        .TabRole(NomadTab);
+
+    TSharedRef<SCortexGenPanel> Panel = SNew(SCortexGenPanel);
+
+    Tab->SetCanCloseTab(SDockTab::FCanCloseTab::CreateLambda(
+        [PanelWeak = TWeakPtr<SCortexGenPanel>(Panel)]()
+    {
+        TSharedPtr<SCortexGenPanel> PanelPin = PanelWeak.Pin();
+        if (PanelPin.IsValid() && PanelPin->HasActiveJobs())
+        {
+            return true; // Allow close for now
+        }
+        return true;
+    }));
+
+    Tab->SetContent(Panel);
+    return Tab;
 }
 
 void FCortexFrontendModule::OnConversionRequested(const FCortexConversionPayload& Payload)
