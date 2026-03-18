@@ -214,10 +214,16 @@ FCortexGenPollResult FCortexGenFalProvider::ParsePollResponse(const FString& Jso
 void FCortexGenFalProvider::PollJobStatus(
     const FString& ProviderJobId, FOnGenJobStatusReceived OnComplete)
 {
-    TSharedRef<IHttpRequest> HttpRequest = CreateRequest(TEXT("GET"), StatusUrl(ProviderJobId));
+    // Pre-build URLs and auth header by value so the lambda does not capture `this`
+    // (the provider may be destroyed before the async callback fires).
+    FString PollStatusUrl = StatusUrl(ProviderJobId);
+    FString PollResultUrl = FetchResultUrl(ProviderJobId);
+    FString AuthHeader = FString::Printf(TEXT("Key %s"), *ApiKey);
+
+    TSharedRef<IHttpRequest> HttpRequest = CreateRequest(TEXT("GET"), PollStatusUrl);
 
     HttpRequest->OnProcessRequestComplete().BindLambda(
-        [this, ProviderJobId, OnComplete](
+        [PollResultUrl, AuthHeader, OnComplete](
             FHttpRequestPtr, FHttpResponsePtr Response, bool bConnectedSuccessfully)
         {
             FCortexGenPollResult Result;
@@ -241,12 +247,49 @@ void FCortexGenFalProvider::PollJobStatus(
                 return;
             }
 
-            Result = ParsePollResponse(Response->GetContentAsString());
+            // Inline the poll response parse — no `this` capture needed (pure JSON logic)
+            {
+                TSharedPtr<FJsonObject> Json;
+                TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(
+                    Response->GetContentAsString());
+                if (!FJsonSerializer::Deserialize(Reader, Json) || !Json.IsValid())
+                {
+                    Result.bSuccess = false;
+                    Result.ErrorMessage = TEXT("Failed to parse poll response");
+                }
+                else
+                {
+                    Result.bSuccess = true;
+                    FString StatusStr = Json->GetStringField(TEXT("status"));
+                    if (StatusStr == TEXT("COMPLETED"))
+                    {
+                        FString ErrorStr;
+                        if (Json->TryGetStringField(TEXT("error"), ErrorStr) && !ErrorStr.IsEmpty())
+                        {
+                            Result.Status = ECortexGenJobStatus::Failed;
+                            Result.ErrorMessage = ErrorStr;
+                        }
+                        else
+                        {
+                            Result.Status = ECortexGenJobStatus::Complete;
+                            Result.Progress = 1.0f;
+                        }
+                    }
+                    else
+                    {
+                        Result.Status = ECortexGenJobStatus::Processing;
+                        Result.Progress = 0.0f;
+                    }
+                }
+            }
 
             if (Result.bSuccess && Result.Status == ECortexGenJobStatus::Complete)
             {
-                TSharedRef<IHttpRequest> ResultRequest =
-                    CreateRequest(TEXT("GET"), FetchResultUrl(ProviderJobId));
+                TSharedRef<IHttpRequest> ResultRequest = FHttpModule::Get().CreateRequest();
+                ResultRequest->SetVerb(TEXT("GET"));
+                ResultRequest->SetURL(PollResultUrl);
+                ResultRequest->SetHeader(TEXT("Authorization"), AuthHeader);
+                ResultRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 
                 ResultRequest->OnProcessRequestComplete().BindLambda(
                     [Result, OnComplete](
