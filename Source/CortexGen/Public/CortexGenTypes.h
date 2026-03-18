@@ -63,6 +63,7 @@ struct FCortexGenJobRequest
     UPROPERTY() FString SourceImagePath;    // local file path for image-to-mesh
     UPROPERTY() FString SourceModelPath;    // UE asset path for texturing
     UPROPERTY() FString Destination;            // UE content path for import (empty = use default)
+    UPROPERTY() FString ModelId;                // e.g., "fal-ai/flux/dev" — provider uses this if non-empty
     UPROPERTY() TMap<FString, FString> Params;  // provider-specific options
 };
 

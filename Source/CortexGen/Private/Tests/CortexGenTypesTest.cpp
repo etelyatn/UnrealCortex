@@ -126,3 +126,24 @@ bool FCortexGenJobStateDefaultsTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenJobRequestModelIdTest,
+    "Cortex.Gen.Types.JobRequestModelIdField",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenJobRequestModelIdTest::RunTest(const FString& Parameters)
+{
+    FCortexGenJobRequest Request;
+
+    // Default should be empty
+    TestTrue(TEXT("ModelId should default to empty"), Request.ModelId.IsEmpty());
+
+    // Should be assignable
+    Request.ModelId = TEXT("fal-ai/flux/dev");
+    TestEqual(TEXT("ModelId should be set"),
+        Request.ModelId, TEXT("fal-ai/flux/dev"));
+
+    return true;
+}
