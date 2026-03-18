@@ -22,6 +22,7 @@ _DOMAINS = (
     "qa",
     "reflect",
     "editor",
+    "gen",
 )
 
 

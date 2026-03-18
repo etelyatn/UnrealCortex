@@ -17,7 +17,7 @@ from cortex_mcp.tcp_client import _discover_all_editors, _is_editor_alive
 
 logger = logging.getLogger(__name__)
 
-DOMAINS = ("core", "data", "blueprint", "graph", "level", "material", "umg", "qa", "reflect", "editor")
+DOMAINS = ("core", "data", "blueprint", "graph", "level", "material", "umg", "qa", "reflect", "editor", "gen")
 _TTL_CATALOG = 600
 
 
