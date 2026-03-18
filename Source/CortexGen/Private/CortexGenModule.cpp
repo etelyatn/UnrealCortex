@@ -6,6 +6,7 @@
 #include "Operations/CortexGenJobManager.h"
 #include "Providers/CortexGenMeshyProvider.h"
 #include "Providers/CortexGenTripoProvider.h"
+#include "Providers/CortexGenFalProvider.h"
 
 DEFINE_LOG_CATEGORY(LogCortexGen);
 
@@ -30,6 +31,11 @@ void FCortexGenModule::StartupModule()
         {
             JobManager->RegisterProvider(
                 MakeShared<FCortexGenTripoProvider>(Settings->Tripo3DApiKey, TEXT("v2.0-20240919")));
+        }
+        if (!Settings->FalApiKey.IsEmpty())
+        {
+            JobManager->RegisterProvider(
+                MakeShared<FCortexGenFalProvider>(Settings->FalApiKey, Settings->FalModelId));
         }
     }
 

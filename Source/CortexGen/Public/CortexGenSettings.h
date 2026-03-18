@@ -23,6 +23,13 @@ public:
         meta = (PasswordField = true))
     FString Tripo3DApiKey;
 
+    UPROPERTY(Config, EditAnywhere, Category = "Provider|fal.ai",
+        meta = (PasswordField = true))
+    FString FalApiKey;
+
+    UPROPERTY(Config, EditAnywhere, Category = "Provider|fal.ai")
+    FString FalModelId = TEXT("fal-ai/hyper3d/rodin");
+
     // Import
     UPROPERTY(Config, EditAnywhere, Category = "Import")
     FString DefaultMeshDestination = TEXT("/Game/Generated/Meshes");
