@@ -14,6 +14,20 @@ enum class ECortexGenCapability : uint8
 };
 ENUM_CLASS_FLAGS(ECortexGenCapability);
 
+/**
+ * Reflected version of ECortexGenCapability for use in UPROPERTY Bitmask fields.
+ * Values MUST match ECortexGenCapability exactly.
+ */
+UENUM(meta = (Bitflags, UseEnumValuesAsMaskValues))
+enum class ECortexGenCapabilityFlags : uint8
+{
+    MeshFromText  = 1 << 0,  // = 0x01
+    MeshFromImage = 1 << 1,  // = 0x02
+    ImageFromText = 1 << 2,  // = 0x04
+    Texturing     = 1 << 3,  // = 0x08
+};
+ENUM_CLASS_FLAGS(ECortexGenCapabilityFlags);
+
 UENUM()
 enum class ECortexGenJobType : uint8
 {

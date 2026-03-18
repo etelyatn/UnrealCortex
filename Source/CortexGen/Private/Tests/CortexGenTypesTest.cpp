@@ -21,6 +21,38 @@ bool FCortexGenCapabilityFlagsTest::RunTest(const FString& Parameters)
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Test: ECortexGenCapabilityFlags reflected enum matches ECortexGenCapability values
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenCapabilityFlagsMatchTest,
+    "Cortex.Gen.Types.CapabilityFlagsMatchCapability",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenCapabilityFlagsMatchTest::RunTest(const FString& Parameters)
+{
+    // Values must match ECortexGenCapability exactly
+    TestEqual(TEXT("MeshFromText matches"),
+        static_cast<uint8>(ECortexGenCapabilityFlags::MeshFromText),
+        static_cast<uint8>(ECortexGenCapability::MeshFromText));
+    TestEqual(TEXT("MeshFromImage matches"),
+        static_cast<uint8>(ECortexGenCapabilityFlags::MeshFromImage),
+        static_cast<uint8>(ECortexGenCapability::MeshFromImage));
+    TestEqual(TEXT("ImageFromText matches"),
+        static_cast<uint8>(ECortexGenCapabilityFlags::ImageFromText),
+        static_cast<uint8>(ECortexGenCapability::ImageFromText));
+    TestEqual(TEXT("Texturing matches"),
+        static_cast<uint8>(ECortexGenCapabilityFlags::Texturing),
+        static_cast<uint8>(ECortexGenCapability::Texturing));
+
+    // Verify reflection exists
+    const UEnum* EnumPtr = StaticEnum<ECortexGenCapabilityFlags>();
+    TestNotNull(TEXT("Enum should be reflected"), EnumPtr);
+
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexGenJobStatusEnumReflectionTest,
     "Cortex.Gen.Types.JobStatusEnumReflection",
