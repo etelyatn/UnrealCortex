@@ -536,7 +536,26 @@ void SCortexAnalysisConfig::OnScopeChanged(ECortexConversionScope NewScope)
 
 void SCortexAnalysisConfig::OnFunctionToggled(const FString& Name, bool bChecked)
 {
-	// Delegated to scope selector — context updated on Analyze click
+	if (!Context.IsValid()) return;
+
+	if (bChecked)
+	{
+		Context->SelectedFunctions.AddUnique(Name);
+	}
+	else
+	{
+		Context->SelectedFunctions.Remove(Name);
+	}
+
+	// Keep scope in sync
+	if (Context->SelectedFunctions.Num() > 0)
+	{
+		Context->SelectedScope = ECortexConversionScope::EventOrFunction;
+	}
+	else if (Context->SelectedScope == ECortexConversionScope::EventOrFunction)
+	{
+		Context->SelectedScope = ECortexConversionScope::EntireBlueprint;
+	}
 }
 
 void SCortexAnalysisConfig::RequestTokenEstimate()
