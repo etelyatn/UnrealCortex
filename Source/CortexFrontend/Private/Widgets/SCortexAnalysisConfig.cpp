@@ -76,14 +76,6 @@ void SCortexAnalysisConfig::Construct(const FArguments& InArgs)
 					this, &SCortexAnalysisConfig::OnFunctionToggled))
 			]
 
-			// Analysis focus checkboxes
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0, 0, 0, 16)
-			[
-				BuildFocusCheckboxes()
-			]
-
 			// Depth selector section
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -100,6 +92,14 @@ void SCortexAnalysisConfig::Construct(const FArguments& InArgs)
 				[
 					BuildDepthSelector()
 				]
+			]
+
+			// Analysis focus checkboxes
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 16)
+			[
+				BuildFocusCheckboxes()
 			]
 
 			// Custom instructions section
@@ -665,9 +665,15 @@ FString SCortexAnalysisConfig::FormatAnalysisTimeEstimate(int32 Tokens) const
 	float DepthMult = 1.0f;
 	switch (CurrentDepth)
 	{
-	case ECortexAnalysisDepth::Light:    DepthMult = 0.7f; break;
-	case ECortexAnalysisDepth::Standard: DepthMult = 1.0f; break;
-	case ECortexAnalysisDepth::Deep:     DepthMult = 1.5f; break;
+	case ECortexAnalysisDepth::Light:
+		DepthMult = 0.7f;
+		break;
+	case ECortexAnalysisDepth::Standard:
+		DepthMult = 1.0f;
+		break;
+	case ECortexAnalysisDepth::Deep:
+		DepthMult = 1.5f;
+		break;
 	}
 
 	const int32 FocusCount = FMath::Max(1, EnabledFocusAreas.Num());
