@@ -8,6 +8,10 @@ namespace CortexTokenUtils
 	/** Format token count as "~Nk tokens" or "~N tokens" */
 	inline FString FormatTokenCount(int32 Tokens)
 	{
+		if (Tokens <= 0)
+		{
+			return FString();
+		}
 		if (Tokens >= 1000)
 		{
 			const float K = static_cast<float>(Tokens) / 1000.0f;

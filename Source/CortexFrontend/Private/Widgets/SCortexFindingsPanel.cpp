@@ -383,6 +383,20 @@ TSharedRef<SWidget> SCortexFindingsPanel::BuildDetailSection(const FCortexAnalys
         ];
     }
 
+    // Confidence indicator (only show if below 0.9)
+    if (Finding.Confidence < 0.9f)
+    {
+        DetailBox->AddSlot()
+        .AutoHeight()
+        .Padding(0, 4, 0, 0)
+        [
+            SNew(STextBlock)
+            .Text(FText::FromString(FString::Printf(TEXT("Confidence: %.0f%%"), Finding.Confidence * 100.0f)))
+            .Font(FCoreStyle::GetDefaultFontStyle("Italic", 8))
+            .ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.55f)))
+        ];
+    }
+
     return DetailBox;
 }
 

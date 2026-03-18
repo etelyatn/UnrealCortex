@@ -71,7 +71,7 @@ void SCortexScopeSelector::Construct(const FArguments& InArgs)
 					if (TotalTokenEstimate > 0)
 					{
 						return FText::FromString(FString::Printf(TEXT("(%s)"),
-							*FormatTokenCount(TotalTokenEstimate)));
+							*CortexTokenUtils::FormatTokenCount(TotalTokenEstimate)));
 					}
 					return FText::GetEmpty();
 				})
@@ -202,7 +202,7 @@ void SCortexScopeSelector::Construct(const FArguments& InArgs)
 							const int32* Found = FunctionTokenEstimates.Find(Name);
 							if (Found && *Found > 0)
 							{
-								return FText::FromString(FString::Printf(TEXT("(%s)"), *FormatTokenCount(*Found)));
+								return FText::FromString(FString::Printf(TEXT("(%s)"), *CortexTokenUtils::FormatTokenCount(*Found)));
 							}
 							return FText::GetEmpty();
 						})
@@ -248,7 +248,7 @@ void SCortexScopeSelector::Construct(const FArguments& InArgs)
 							const int32* Found = FunctionTokenEstimates.Find(Name);
 							if (Found && *Found > 0)
 							{
-								return FText::FromString(FString::Printf(TEXT("(%s)"), *FormatTokenCount(*Found)));
+								return FText::FromString(FString::Printf(TEXT("(%s)"), *CortexTokenUtils::FormatTokenCount(*Found)));
 							}
 							return FText::GetEmpty();
 						})
@@ -336,18 +336,3 @@ void SCortexScopeSelector::UpdateChecklistVisibility()
 	}
 }
 
-FString SCortexScopeSelector::FormatTokenCount(int32 Tokens)
-{
-	if (Tokens <= 0)
-	{
-		return FString();
-	}
-	if (Tokens >= 1000)
-	{
-		const float K = Tokens / 1000.0f;
-		return (K >= 10.0f)
-			? FString::Printf(TEXT("~%.0fk tokens"), K)
-			: FString::Printf(TEXT("~%.1fk tokens"), K);
-	}
-	return FString::Printf(TEXT("~%d tokens"), Tokens);
-}

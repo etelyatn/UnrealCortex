@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "CortexConversionTypes.h"
+#include "Utilities/CortexTokenUtils.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
@@ -36,7 +37,6 @@ private:
 	bool IsScopeSelected(ECortexConversionScope Scope) const;
 	void OnFunctionCheckChanged(const FString& Name, bool bChecked);
 	void UpdateChecklistVisibility();
-	static FString FormatTokenCount(int32 Tokens);
 
 	ECortexConversionScope CurrentScope = ECortexConversionScope::EntireBlueprint;
 	TArray<FString> EventNames;
@@ -53,7 +53,4 @@ private:
 
 	int32 TotalTokenEstimate = 0;
 	TMap<FString, int32> FunctionTokenEstimates;
-
-	static constexpr int32 SoftTokenLimit = 40000;
-	static constexpr int32 HardTokenLimit = 80000;
 };
