@@ -68,6 +68,11 @@
       "LoadingPhase": "PostEngineInit"
     },
     {
+      "Name": "CortexGen",
+      "Type": "Editor",
+      "LoadingPhase": "PostEngineInit"
+    },
+    {
       "Name": "CortexFrontend",
       "Type": "Editor",
       "LoadingPhase": "PostEngineInit"
