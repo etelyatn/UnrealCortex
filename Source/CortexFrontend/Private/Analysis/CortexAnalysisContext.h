@@ -42,6 +42,7 @@ struct FCortexAnalysisContext : public FGCObject
     FString CustomInstructions;
     bool bAnalysisStarted = false;
     bool bIsInitialGeneration = true;
+    double AnalysisStartTime = 0.0;  // Wall-clock start (FPlatformTime::Seconds)
 
     // Cloned graphs for preview
     // NOTE: DuplicateObject retains hard GC references from node internals (UK2Node_FunctionEntry,

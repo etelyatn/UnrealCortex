@@ -113,7 +113,7 @@ void SCortexFindingsPanel::RebuildList()
     for (const TSharedPtr<FCortexAnalysisFinding>& Finding : FindingsData)
     {
         FindingsScrollBox->AddSlot()
-        .Padding(4, 2)
+        .Padding(4, 3)
         [
             BuildFindingCard(Finding)
         ];
@@ -229,8 +229,9 @@ TSharedRef<SWidget> SCortexFindingsPanel::BuildFindingCard(TSharedPtr<FCortexAna
 
     // Wrap in clickable SBorder — no STableRow, so OnMouseButtonDown fires directly
     return SNew(SBorder)
-        .BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
-        .Padding(8)
+        .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+        .BorderBackgroundColor(FLinearColor(0.02f, 0.02f, 0.025f, 1.0f))
+        .Padding(10)
         .OnMouseButtonDown_Lambda([this, Finding](const FGeometry&, const FPointerEvent& MouseEvent) -> FReply
         {
             if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)

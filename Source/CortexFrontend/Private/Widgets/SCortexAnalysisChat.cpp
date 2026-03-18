@@ -2,6 +2,7 @@
 #include "Widgets/SCortexAnalysisChat.h"
 
 #include "Analysis/CortexFindingTypes.h"
+#include "HAL/PlatformTime.h"
 #include "Rendering/CortexChatEntryBuilder.h"
 #include "Widgets/SCortexChatMessage.h"
 #include "Widgets/SCortexInputArea.h"
@@ -242,15 +243,33 @@ void SCortexAnalysisChat::CollapseStatusMessages(const FCortexTurnResult& Result
 	TSharedPtr<FCortexChatEntry> SummaryEntry = MakeShared<FCortexChatEntry>();
 	SummaryEntry->Type = ECortexChatEntryType::AssistantMessage;
 
+	// Use wall-clock time (same as overlay) instead of CLI-reported DurationMs
+	const double WallClockSeconds = (Context.IsValid() && Context->AnalysisStartTime > 0.0)
+		? (FPlatformTime::Seconds() - Context->AnalysisStartTime)
+		: Result.DurationMs / 1000.0;
+
 	if (Result.bIsError)
 	{
-		SummaryEntry->Text = FString::Printf(TEXT("Analysis failed (%dms): %s"),
-			Result.DurationMs, *Result.ResultText);
+		SummaryEntry->Text = FString::Printf(TEXT("Analysis failed (%.1fs): %s"),
+			WallClockSeconds, *Result.ResultText);
 	}
 	else
 	{
-		SummaryEntry->Text = FString::Printf(TEXT("Analysis completed in %.1fs"),
-			(double)Result.DurationMs / 1000.0);
+		// Include token usage from session
+		FString TokenInfo;
+		if (Context.IsValid() && Context->Session.IsValid())
+		{
+			const int64 InTokens = Context->Session->GetTotalInputTokens();
+			const int64 OutTokens = Context->Session->GetTotalOutputTokens();
+			if (InTokens > 0 || OutTokens > 0)
+			{
+				TokenInfo = FString::Printf(TEXT(" \u00B7 %lldK in / %lldK out"),
+					(InTokens + 500) / 1000, (OutTokens + 500) / 1000);
+			}
+		}
+
+		SummaryEntry->Text = FString::Printf(TEXT("Analysis completed in %.1fs%s"),
+			WallClockSeconds, *TokenInfo);
 	}
 
 	TSharedPtr<FCortexChatDisplayRow> SummaryRow = MakeShared<FCortexChatDisplayRow>();

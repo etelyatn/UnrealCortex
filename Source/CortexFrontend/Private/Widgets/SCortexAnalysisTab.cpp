@@ -290,7 +290,8 @@ void SCortexAnalysisTab::OnAnalyzeClicked()
         return;
     }
 
-    const double TotalStart = FPlatformTime::Seconds();
+    Context->AnalysisStartTime = FPlatformTime::Seconds();
+    const double TotalStart = Context->AnalysisStartTime;
     const FString ScopeStr = AnalysisScopeToString(Context->SelectedScope);
 
     // Switch to results view

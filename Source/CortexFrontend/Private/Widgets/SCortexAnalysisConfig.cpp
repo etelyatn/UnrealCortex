@@ -427,7 +427,8 @@ TSharedRef<SWidget> SCortexAnalysisConfig::BuildDepthSelector()
 TSharedRef<SWidget> SCortexAnalysisConfig::BuildCustomInstructions()
 {
 	return SNew(SBox)
-		.MaxDesiredHeight(120.0f)
+		.WidthOverride(420.0f)
+		.MinDesiredHeight(90.0f)
 		[
 			SAssignNew(CustomInstructionsBox, SMultiLineEditableTextBox)
 			.HintText(NSLOCTEXT("CortexAnalysis", "CustomHint",
@@ -665,32 +666,27 @@ int32 SCortexAnalysisConfig::EstimateTokensForScope(ECortexConversionScope Scope
 
 FString SCortexAnalysisConfig::FormatAnalysisTimeEstimate(int32 Tokens) const
 {
-	const float BaseSeconds = static_cast<float>(Tokens) / 1000.0f * 1.5f;
-
-	float DepthMult = 1.0f;
-	switch (CurrentDepth)
+	if (Tokens <= 0)
 	{
-	case ECortexAnalysisDepth::Light:
-		DepthMult = 0.7f;
-		break;
-	case ECortexAnalysisDepth::Standard:
-		DepthMult = 1.0f;
-		break;
-	case ECortexAnalysisDepth::Deep:
-		DepthMult = 1.5f;
-		break;
+		return FString();
 	}
 
-	const int32 FocusCount = FMath::Max(1, EnabledFocusAreas.Num());
-	const float FocusMult = 1.0f + (static_cast<float>(FocusCount) - 1.0f) * 0.15f;
-	const float EstSeconds = BaseSeconds * DepthMult * FocusMult;
+	// Use the same formula as SCortexConversionOverlay::SetTokenCount and
+	// SCortexConversionConfig::FormatTokenEstimate for consistency across all views.
+	//   Connection:  ~10s (session spawn)
+	//   Base rate:   1 000 tokens ~ 10s
+	//   Gap buffer:  <5K=0, 5K-20K=+15s, >20K=+30s
+	static constexpr float ConnectionOverheadSeconds = 10.0f;
+	float GapBuffer = 0.0f;
+	if (Tokens > 20000) GapBuffer = 30.0f;
+	else if (Tokens > 5000) GapBuffer = 15.0f;
+	const int32 EstSec = FMath::RoundToInt(ConnectionOverheadSeconds + (Tokens / 1000.0f) * 10.0f + GapBuffer);
 
-	FString TimeStr;
-	if (EstSeconds < 30.0f)       TimeStr = TEXT("~30s");
-	else if (EstSeconds < 90.0f)  TimeStr = TEXT("~1-2 min");
-	else if (EstSeconds < 180.0f) TimeStr = TEXT("~2-3 min");
-	else if (EstSeconds < 300.0f) TimeStr = TEXT("~3-5 min");
-	else                          TimeStr = TEXT("~5+ min");
+	const FString TokenStr = FString::Printf(TEXT("~%dk tokens"), FMath::RoundToInt(Tokens / 1000.0f));
 
-	return FString::Printf(TEXT("%s · %s"), *CortexTokenUtils::FormatTokenCount(Tokens), *TimeStr);
+	if (EstSec >= 60)
+	{
+		return FString::Printf(TEXT("%s \u00B7 est. ~%dm %ds"), *TokenStr, EstSec / 60, EstSec % 60);
+	}
+	return FString::Printf(TEXT("%s \u00B7 est. ~%ds"), *TokenStr, EstSec);
 }
