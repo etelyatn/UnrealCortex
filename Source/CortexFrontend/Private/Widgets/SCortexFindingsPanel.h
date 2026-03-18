@@ -3,6 +3,7 @@
 
 #include "CoreMinimal.h"
 #include "Analysis/CortexFindingTypes.h"
+#include "Rendering/CortexChatEntryBuilder.h"
 
 struct FCortexAnalysisContext;
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -42,6 +43,8 @@ private:
     FText GetSummaryText() const;
     FSlateColor GetSeverityColor(ECortexFindingSeverity Severity) const;
     FText GetCategoryLabel(ECortexFindingCategory Category) const;
+    void SetSummary(const FCortexAnalysisSummary& Summary);
+    TSharedRef<SWidget> BuildDetailSection(const FCortexAnalysisFinding& Finding) const;
 
     TSharedPtr<FCortexAnalysisContext> Context;
     FOnFindingSelected OnFindingSelectedDelegate;
@@ -51,4 +54,7 @@ private:
 
     FTimerHandle RefreshTimerHandle;
     bool bRefreshPending = false;
+
+    FString ExpandedFindingKey;       // Empty = none expanded. Tracks by dedup key, not index.
+    FString SummarySuppressionText;   // "~7 suppressed"
 };

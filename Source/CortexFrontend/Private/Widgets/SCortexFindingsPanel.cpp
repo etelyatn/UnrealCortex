@@ -12,6 +12,8 @@
 #include "UObject/UObjectGlobals.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
@@ -72,6 +74,8 @@ void SCortexFindingsPanel::AddFinding(const FCortexAnalysisFinding& Finding)
 void SCortexFindingsPanel::ClearFindings()
 {
     FindingsData.Empty();
+    ExpandedFindingKey.Empty();
+    SummarySuppressionText.Empty();
     RequestRefresh();
 }
 
@@ -112,18 +116,18 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
 {
     const FSlateColor SevColor = GetSeverityColor(Finding->Severity);
     const FText CatLabel = GetCategoryLabel(Finding->Category);
+    const bool bIsExpanded = (Finding->GetDeduplicationKey() == ExpandedFindingKey);
 
-    return SNew(STableRow<TSharedPtr<FCortexAnalysisFinding>>, OwnerTable)
-    [
-        SNew(SBorder)
-        .BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
-        .Padding(8)
+    // Build the card content vertical box
+    TSharedRef<SVerticalBox> CardContent = SNew(SVerticalBox)
+
+        // Title row with expand arrow
+        + SVerticalBox::Slot()
+        .AutoHeight()
         [
-            SNew(SVerticalBox)
-
-            // Category + Title header
-            + SVerticalBox::Slot()
-            .AutoHeight()
+            SNew(SHorizontalBox)
+            + SHorizontalBox::Slot()
+            .FillWidth(1.0f)
             [
                 SNew(STextBlock)
                 .Text(FText::FromString(FString::Printf(TEXT("%s \x2014 %s"),
@@ -133,74 +137,253 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
                 .ColorAndOpacity(SevColor)
                 .AutoWrapText(true)
             ]
-
-            // Graph + Node reference
-            + SVerticalBox::Slot()
-            .AutoHeight()
-            .Padding(0, 2, 0, 0)
+            + SHorizontalBox::Slot()
+            .AutoWidth()
+            .VAlign(VAlign_Center)
+            .Padding(4, 0, 0, 0)
             [
                 SNew(STextBlock)
-                .Text(FText::FromString(FString::Printf(TEXT("%s \x2192 %s"),
-                    *Finding->GraphName,
-                    *Finding->NodeDisplayName)))
-                .ColorAndOpacity(FSlateColor(FLinearColor::Gray))
-            ]
-
-            // "Open in BP" button — navigates to the real node in Blueprint editor
-            + SVerticalBox::Slot()
-            .AutoHeight()
-            .HAlign(HAlign_Right)
-            .Padding(0, 4, 0, 0)
-            [
-                SNew(SButton)
-                .Text(NSLOCTEXT("CortexAnalysis", "OpenInBP", "Open in BP"))
-                .ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("SimpleButton"))
-                .IsEnabled_Lambda([this]()
-                {
-                    // Disabled during PIE
-                    return !GEditor || !GEditor->IsPlaySessionInProgress();
-                })
-                .OnClicked_Lambda([this, Finding]()
-                {
-                    if (!Finding.IsValid() || !Finding->NodeGuid.IsValid()) return FReply::Handled();
-                    if (!Context.IsValid()) return FReply::Handled();
-
-                    // Load source Blueprint and find the real node
-                    const FString PkgName = FPackageName::ObjectPathToPackageName(
-                        Context->Payload.BlueprintPath);
-                    if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
-                    {
-                        return FReply::Handled();
-                    }
-
-                    UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr,
-                        *Context->Payload.BlueprintPath);
-                    if (!Blueprint) return FReply::Handled();
-
-                    // Find node by GUID across all graphs
-                    TArray<UEdGraph*> AllGraphs;
-                    Blueprint->GetAllGraphs(AllGraphs);
-                    for (UEdGraph* Graph : AllGraphs)
-                    {
-                        for (UEdGraphNode* Node : Graph->Nodes)
-                        {
-                            if (Node && Node->NodeGuid == Finding->NodeGuid)
-                            {
-                                // Ensure Blueprint editor is open (idempotent — returns existing if already open)
-                                GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Blueprint);
-
-                                // Then navigate to node
-                                FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(Node);
-                                return FReply::Handled();
-                            }
-                        }
-                    }
-
-                    return FReply::Handled();
-                })
+                .Text(FText::FromString(bIsExpanded ? TEXT("\u25BC") : TEXT("\u25B6")))
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                .ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.55f)))
             ]
         ]
+
+        // Graph + Node reference
+        + SVerticalBox::Slot()
+        .AutoHeight()
+        .Padding(0, 2, 0, 0)
+        [
+            SNew(STextBlock)
+            .Text(FText::FromString(FString::Printf(TEXT("%s \x2192 %s"),
+                *Finding->GraphName,
+                *Finding->NodeDisplayName)))
+            .ColorAndOpacity(FSlateColor(FLinearColor::Gray))
+        ]
+
+        // "Open in BP" button
+        + SVerticalBox::Slot()
+        .AutoHeight()
+        .HAlign(HAlign_Right)
+        .Padding(0, 4, 0, 0)
+        [
+            SNew(SButton)
+            .Text(NSLOCTEXT("CortexAnalysis", "OpenInBP", "Open in BP"))
+            .ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("SimpleButton"))
+            .IsEnabled_Lambda([this]()
+            {
+                return !GEditor || !GEditor->IsPlaySessionInProgress();
+            })
+            .OnClicked_Lambda([this, Finding]()
+            {
+                if (!Finding.IsValid() || !Finding->NodeGuid.IsValid())
+                {
+                    return FReply::Handled();
+                }
+                if (!Context.IsValid())
+                {
+                    return FReply::Handled();
+                }
+
+                const FString PkgName = FPackageName::ObjectPathToPackageName(
+                    Context->Payload.BlueprintPath);
+                if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+                {
+                    return FReply::Handled();
+                }
+
+                UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr,
+                    *Context->Payload.BlueprintPath);
+                if (!Blueprint)
+                {
+                    return FReply::Handled();
+                }
+
+                // Ensure editor is open before navigating
+                GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Blueprint);
+
+                TArray<UEdGraph*> AllGraphs;
+                Blueprint->GetAllGraphs(AllGraphs);
+                for (UEdGraph* Graph : AllGraphs)
+                {
+                    for (UEdGraphNode* Node : Graph->Nodes)
+                    {
+                        if (Node && Node->NodeGuid == Finding->NodeGuid)
+                        {
+                            FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(Node);
+                            return FReply::Handled();
+                        }
+                    }
+                }
+                return FReply::Handled();
+            })
+        ];
+
+    // Conditionally add detail section when expanded
+    if (bIsExpanded)
+    {
+        CardContent->AddSlot()
+        .AutoHeight()
+        [
+            BuildDetailSection(*Finding)
+        ];
+    }
+
+    return SNew(STableRow<TSharedPtr<FCortexAnalysisFinding>>, OwnerTable)
+    [
+        SNew(SBorder)
+        .BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+        .Padding(8)
+        .OnMouseButtonDown_Lambda([this, Finding](const FGeometry&, const FPointerEvent& MouseEvent) -> FReply
+        {
+            if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+            {
+                const FString Key = Finding->GetDeduplicationKey();
+                if (ExpandedFindingKey == Key)
+                {
+                    ExpandedFindingKey.Empty();
+                }
+                else
+                {
+                    ExpandedFindingKey = Key;
+                }
+                // Immediate refresh for user-initiated toggle (not debounced)
+                if (FindingsList.IsValid())
+                {
+                    FindingsList->RequestListRefresh();
+                }
+                OnFindingClicked(Finding);
+                return FReply::Handled();
+            }
+            return FReply::Unhandled();
+        })
+        [
+            CardContent
+        ]
     ];
+}
+
+void SCortexFindingsPanel::SetSummary(const FCortexAnalysisSummary& Summary)
+{
+    if (Summary.EstimatedSuppressed > 0)
+    {
+        SummarySuppressionText = FString::Printf(TEXT("~%d suppressed"), Summary.EstimatedSuppressed);
+    }
+    else
+    {
+        SummarySuppressionText.Empty();
+    }
+    RequestRefresh();
+}
+
+TSharedRef<SWidget> SCortexFindingsPanel::BuildDetailSection(const FCortexAnalysisFinding& Finding) const
+{
+    const FLinearColor SeverityColor = GetSeverityColor(Finding.Severity).GetSpecifiedColor();
+    const FLinearColor GreenColor(0.2f, 0.7f, 0.3f);
+
+    TSharedRef<SVerticalBox> DetailBox = SNew(SVerticalBox);
+
+    // Description section (severity-colored border + tint)
+    if (!Finding.Description.IsEmpty())
+    {
+        DetailBox->AddSlot()
+        .AutoHeight()
+        .Padding(0, 6, 0, 0)
+        [
+            SNew(SBorder)
+            .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+            .BorderBackgroundColor(FLinearColor(SeverityColor.R, SeverityColor.G, SeverityColor.B, 0.08f))
+            .Padding(FMargin(10, 6, 8, 6))
+            [
+                SNew(SHorizontalBox)
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .Padding(0, 0, 8, 0)
+                [
+                    SNew(SBorder)
+                    .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+                    .BorderBackgroundColor(SeverityColor)
+                    .Padding(FMargin(1.5f, 0, 0, 0))
+                    [
+                        SNew(SSpacer)
+                        .Size(FVector2D(0, 0))
+                    ]
+                ]
+                + SHorizontalBox::Slot()
+                .FillWidth(1.0f)
+                [
+                    SNew(SVerticalBox)
+                    + SVerticalBox::Slot().AutoHeight()
+                    [
+                        SNew(STextBlock)
+                        .Text(NSLOCTEXT("CortexAnalysis", "DescLabel", "DESCRIPTION"))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
+                        .ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.65f)))
+                    ]
+                    + SVerticalBox::Slot().AutoHeight().Padding(0, 3, 0, 0)
+                    [
+                        SNew(STextBlock)
+                        .Text(FText::FromString(Finding.Description))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                        .AutoWrapText(true)
+                        .ColorAndOpacity(FSlateColor(FLinearColor(0.8f, 0.8f, 0.82f)))
+                    ]
+                ]
+            ]
+        ];
+    }
+
+    // Suggested fix section (green border + tint)
+    if (!Finding.SuggestedFix.IsEmpty())
+    {
+        DetailBox->AddSlot()
+        .AutoHeight()
+        .Padding(0, 4, 0, 0)
+        [
+            SNew(SBorder)
+            .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+            .BorderBackgroundColor(FLinearColor(GreenColor.R, GreenColor.G, GreenColor.B, 0.08f))
+            .Padding(FMargin(10, 6, 8, 6))
+            [
+                SNew(SHorizontalBox)
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .Padding(0, 0, 8, 0)
+                [
+                    SNew(SBorder)
+                    .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+                    .BorderBackgroundColor(GreenColor)
+                    .Padding(FMargin(1.5f, 0, 0, 0))
+                    [
+                        SNew(SSpacer)
+                        .Size(FVector2D(0, 0))
+                    ]
+                ]
+                + SHorizontalBox::Slot()
+                .FillWidth(1.0f)
+                [
+                    SNew(SVerticalBox)
+                    + SVerticalBox::Slot().AutoHeight()
+                    [
+                        SNew(STextBlock)
+                        .Text(NSLOCTEXT("CortexAnalysis", "FixLabel", "SUGGESTED FIX"))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
+                        .ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.65f)))
+                    ]
+                    + SVerticalBox::Slot().AutoHeight().Padding(0, 3, 0, 0)
+                    [
+                        SNew(STextBlock)
+                        .Text(FText::FromString(Finding.SuggestedFix))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                        .AutoWrapText(true)
+                        .ColorAndOpacity(FSlateColor(GreenColor))
+                    ]
+                ]
+            ]
+        ];
+    }
+
+    return DetailBox;
 }
 
 void SCortexFindingsPanel::OnSelectionChanged(
@@ -249,6 +432,11 @@ FText SCortexFindingsPanel::GetSummaryText() const
     if (Quality > 0) Append(FString::Printf(TEXT("%d quality"), Quality));
     if (Cpp > 0)     Append(FString::Printf(TEXT("%d C++"), Cpp));
     if (EngFix > 0)  Append(FString::Printf(TEXT("%d engine"), EngFix));
+
+    if (!SummarySuppressionText.IsEmpty())
+    {
+        Summary += TEXT(" \u00B7 ") + SummarySuppressionText;
+    }
 
     return FText::FromString(Summary);
 }
