@@ -10,6 +10,7 @@
 #include "Widgets/SCompoundWidget.h"
 
 class SCortexAnalysisConfig;
+class SCortexConversionOverlay;
 class SCortexGraphPreview;
 class SCortexFindingsPanel;
 class SCortexAnalysisChat;
@@ -42,8 +43,11 @@ private:
     TSharedPtr<FCortexAnalysisContext> Context;
     TSharedPtr<SWidgetSwitcher> ViewSwitcher;
     TSharedPtr<SCortexGraphPreview> GraphPreview;
+    TSharedPtr<SCortexConversionOverlay> ProcessingOverlay;
     TSharedPtr<SCortexFindingsPanel> FindingsPanel;
     TSharedPtr<SCortexAnalysisChat> AnalysisChat;
     TSharedPtr<SBorder> RecompileBanner;
     FDelegateHandle BlueprintCompiledHandle;
+    FTimerHandle OverlayTimeoutHandle;
+    void DismissOverlay();
 };

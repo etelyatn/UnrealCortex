@@ -6,6 +6,7 @@
 #include "CortexFrontendModule.h"
 #include "Analysis/CortexAnalysisPromptAssembler.h"
 #include "Editor.h"
+#include "TimerManager.h"
 #include "Engine/Blueprint.h"
 #include "Misc/PackageName.h"
 #include "UObject/UObjectGlobals.h"
@@ -18,6 +19,8 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/SCortexConversionOverlay.h"
+#include "Widgets/SOverlay.h"
 
 namespace
 {
@@ -100,12 +103,30 @@ void SCortexAnalysisTab::Construct(const FArguments& InArgs)
                 .Orientation(EOrientation::Orient_Horizontal)
                 .MinimumSlotHeight(200.0f)
 
-                // Left: Graph preview
+                // Left: Graph preview with processing overlay
                 + SSplitter::Slot()
                 .Value(0.5f)
                 [
-                    SAssignNew(GraphPreview, SCortexGraphPreview)
-                    .Context(Context)
+                    SNew(SOverlay)
+
+                    + SOverlay::Slot()
+                    [
+                        SAssignNew(GraphPreview, SCortexGraphPreview)
+                        .Context(Context)
+                    ]
+
+                    + SOverlay::Slot()
+                    [
+                        SAssignNew(ProcessingOverlay, SCortexConversionOverlay)
+                        .Title(NSLOCTEXT("CortexAnalysis", "OverlayTitle", "// Analyzing Blueprint"))
+                        .PhaseLabels({
+                            TEXT("Serializing Blueprint..."),
+                            TEXT("Starting Claude session..."),
+                            TEXT("Sending to LLM..."),
+                            TEXT("Analyzing Blueprint logic...")
+                        })
+                        .Visibility(EVisibility::Collapsed)
+                    ]
                 ]
 
                 // Right: Findings + Chat (vertical split)
@@ -163,6 +184,12 @@ void SCortexAnalysisTab::Construct(const FArguments& InArgs)
 
 SCortexAnalysisTab::~SCortexAnalysisTab()
 {
+    // Clear overlay timeout to avoid unnecessary timer tick after destruction
+    if (GEditor)
+    {
+        GEditor->GetTimerManager()->ClearTimer(OverlayTimeoutHandle);
+    }
+
     if (BlueprintCompiledHandle.IsValid())
     {
         if (Context.IsValid())
@@ -231,10 +258,14 @@ void SCortexAnalysisTab::OnReAnalyzeClicked()
         GraphPreview->ClearAnnotations();
     }
 
-    // Hide recompile banner
+    // Hide recompile banner and processing overlay
     if (RecompileBanner.IsValid())
     {
         RecompileBanner->SetVisibility(EVisibility::Collapsed);
+    }
+    if (ProcessingOverlay.IsValid())
+    {
+        ProcessingOverlay->SetVisibility(EVisibility::Collapsed);
     }
 
     // Switch back to config view
@@ -250,6 +281,15 @@ void SCortexAnalysisTab::OnAnalyzeClicked()
 {
     if (!Context.IsValid()) return;
 
+    // Verify Blueprint is still loaded (may have been GC'd if editor was closed)
+    const FString PkgName = FPackageName::ObjectPathToPackageName(Context->Payload.BlueprintPath);
+    if (!FindObject<UBlueprint>(nullptr, *Context->Payload.BlueprintPath)
+        && (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName)))
+    {
+        StatusMessage(TEXT("[Error] Blueprint not loaded. Reopen in editor and try again."));
+        return;
+    }
+
     const double TotalStart = FPlatformTime::Seconds();
     const FString ScopeStr = AnalysisScopeToString(Context->SelectedScope);
 
@@ -257,6 +297,19 @@ void SCortexAnalysisTab::OnAnalyzeClicked()
     if (ViewSwitcher.IsValid())
     {
         ViewSwitcher->SetActiveWidgetIndex(1);
+    }
+
+    // Show processing overlay with 60s timeout watchdog
+    if (ProcessingOverlay.IsValid())
+    {
+        ProcessingOverlay->ResetTimer();
+        ProcessingOverlay->SetVisibility(EVisibility::SelfHitTestInvisible);
+    }
+    if (GEditor)
+    {
+        GEditor->GetTimerManager()->SetTimer(
+            OverlayTimeoutHandle, FTimerDelegate::CreateSP(this, &SCortexAnalysisTab::DismissOverlay),
+            60.0f, false);
     }
 
     UE_LOG(LogCortexFrontend, Log, TEXT("=== Blueprint Analysis Started ==="));
@@ -323,6 +376,12 @@ void SCortexAnalysisTab::OnAnalyzeClicked()
                 Self->StatusMessage(FString::Printf(TEXT("[Step 1/4] Serialized (%.0fms, ~%d tokens)"),
                     SerializeMs, EstimatedTokens));
 
+                // Feed token count to processing overlay for ETA
+                if (Self->ProcessingOverlay.IsValid())
+                {
+                    Self->ProcessingOverlay->SetTokenCount(EstimatedTokens);
+                }
+
                 // Take ownership of cloned graphs IMMEDIATELY — before any early-return paths.
                 // TakeOwnershipOfClonedGraphs transfers the AddToRoot'd package to FCortexAnalysisContext,
                 // whose destructor calls RemoveFromRoot + MarkAsGarbage. Without this, an early return
@@ -330,13 +389,17 @@ void SCortexAnalysisTab::OnAnalyzeClicked()
                 FCortexSerializationResult MutableResult = SerResult;
                 Self->Context->TakeOwnershipOfClonedGraphs(MutableResult);
 
-                // Determine which graph to show initially
+                // Determine which graph to show initially.
+                // For EventOrFunction scope, the user selects event/function names (e.g. "Event BeginPlay")
+                // but the cloned graph FName is the parent graph (e.g. "EventGraph"). Use the first
+                // cloned graph key instead of the selected function name.
                 FName InitialGraphName;
                 if (Self->Context->SelectedScope == ECortexConversionScope::EventOrFunction
-                    && Self->Context->SelectedFunctions.Num() > 0)
+                    && Self->Context->ClonedGraphs.Num() > 0)
                 {
-                    // For function scope, use the first selected function — not CurrentGraphName
-                    InitialGraphName = FName(*Self->Context->SelectedFunctions[0]);
+                    TArray<FName> Keys;
+                    Self->Context->ClonedGraphs.GetKeys(Keys);
+                    InitialGraphName = Keys[0];
                 }
                 else
                 {
@@ -447,7 +510,19 @@ void SCortexAnalysisTab::StartAnalysis(const FString& AssembledSystemPrompt)
 
 void SCortexAnalysisTab::OnSessionTurnComplete(const FCortexTurnResult& /*Result*/)
 {
-    // Analysis-specific turn complete handling (if needed)
+    DismissOverlay();
+}
+
+void SCortexAnalysisTab::DismissOverlay()
+{
+    if (ProcessingOverlay.IsValid())
+    {
+        ProcessingOverlay->SetVisibility(EVisibility::Collapsed);
+    }
+    if (GEditor)
+    {
+        GEditor->GetTimerManager()->ClearTimer(OverlayTimeoutHandle);
+    }
 }
 
 void SCortexAnalysisTab::OnFindingSelected(const FCortexAnalysisFinding& Finding)
@@ -461,6 +536,9 @@ void SCortexAnalysisTab::OnFindingSelected(const FCortexAnalysisFinding& Finding
 
 void SCortexAnalysisTab::OnNewFinding(const FCortexAnalysisFinding& Finding)
 {
+    // Dismiss processing overlay on first finding
+    DismissOverlay();
+
     // Add to findings panel
     if (FindingsPanel.IsValid())
     {

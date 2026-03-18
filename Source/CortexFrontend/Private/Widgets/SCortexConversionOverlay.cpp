@@ -27,6 +27,7 @@ void SCortexConversionOverlay::Construct(const FArguments& InArgs)
 {
 	StartTime   = FPlatformTime::Seconds();
 	LastDotTime = StartTime;
+	CustomPhaseLabels = InArgs._PhaseLabels;
 	SetCanTick(true);
 
 	ChildSlot
@@ -38,14 +39,14 @@ void SCortexConversionOverlay::Construct(const FArguments& InArgs)
 		[
 			SNew(SVerticalBox)
 
-			// "// Generating C++" title
+			// Title
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			.HAlign(HAlign_Center)
 			.Padding(0.0f, 0.0f, 0.0f, 14.0f)
 			[
 				SNew(STextBlock)
-				.Text(NSLOCTEXT("CortexConversionOverlay", "Title", "// Generating C++"))
+				.Text(InArgs._Title)
 				.Font(FCoreStyle::GetDefaultFontStyle("Mono", 13))
 				.ColorAndOpacity(FSlateColor(CortexConversionOverlayColors::Title))
 			]
@@ -164,10 +165,20 @@ void SCortexConversionOverlay::Tick(const FGeometry& AllottedGeometry, const dou
 	{
 		const double Elapsed = Now - StartTime;
 		FString Phase;
-		if      (Elapsed < 3.0)  Phase = TEXT("Serializing Blueprint...");
-		else if (Elapsed < 6.0)  Phase = TEXT("Starting Claude session...");
-		else if (Elapsed < 12.0) Phase = TEXT("Sending to LLM...");
-		else                     Phase = TEXT("Generating C++ code...");
+		if (CustomPhaseLabels.Num() >= 4)
+		{
+			if      (Elapsed < 3.0)  Phase = CustomPhaseLabels[0];
+			else if (Elapsed < 6.0)  Phase = CustomPhaseLabels[1];
+			else if (Elapsed < 12.0) Phase = CustomPhaseLabels[2];
+			else                     Phase = CustomPhaseLabels[3];
+		}
+		else
+		{
+			if      (Elapsed < 3.0)  Phase = TEXT("Serializing Blueprint...");
+			else if (Elapsed < 6.0)  Phase = TEXT("Starting Claude session...");
+			else if (Elapsed < 12.0) Phase = TEXT("Sending to LLM...");
+			else                     Phase = TEXT("Generating C++ code...");
+		}
 		PhaseLabel->SetText(FText::FromString(Phase));
 	}
 
@@ -224,7 +235,10 @@ void SCortexConversionOverlay::ResetTimer()
 	}
 	if (PhaseLabel.IsValid())
 	{
-		PhaseLabel->SetText(NSLOCTEXT("CortexConversionOverlay", "Phase", "Serializing Blueprint..."));
+		const FText InitialPhase = (CustomPhaseLabels.Num() >= 4)
+			? FText::FromString(CustomPhaseLabels[0])
+			: NSLOCTEXT("CortexConversionOverlay", "Phase", "Serializing Blueprint...");
+		PhaseLabel->SetText(InitialPhase);
 	}
 	if (TokenLabel.IsValid())
 	{

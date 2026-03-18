@@ -60,11 +60,10 @@ void FCortexBPSerializationOps::Serialize(const FCortexSerializationRequest& Req
 		switch (Request.Scope)
 		{
 		case ECortexConversionScope::EntireBlueprint:
-			for (UEdGraph* G : Blueprint->UbergraphPages) TargetGraphs.Add(G);
-			for (UEdGraph* G : Blueprint->FunctionGraphs) TargetGraphs.Add(G);
+			for (UEdGraph* G : Blueprint->UbergraphPages) { if (G) TargetGraphs.Add(G); }
+			for (UEdGraph* G : Blueprint->FunctionGraphs) { if (G) TargetGraphs.Add(G); }
 			break;
 		case ECortexConversionScope::CurrentGraph:
-		case ECortexConversionScope::EventOrFunction:
 		{
 			TArray<UEdGraph*> AllGraphs;
 			Blueprint->GetAllGraphs(AllGraphs);
@@ -75,6 +74,59 @@ void FCortexBPSerializationOps::Serialize(const FCortexSerializationRequest& Req
 					TargetGraphs.Add(G);
 				}
 			}
+			break;
+		}
+		case ECortexConversionScope::EventOrFunction:
+		{
+			// Functions have their own graph (FName matches directly).
+			// Events are nodes INSIDE a UbergraphPage (typically "EventGraph") —
+			// match by event node title and include the parent graph.
+			TSet<UEdGraph*> FoundGraphs;
+			TArray<UEdGraph*> AllGraphs;
+			Blueprint->GetAllGraphs(AllGraphs);
+
+			for (UEdGraph* G : AllGraphs)
+			{
+				// Direct match: function graphs where FName == target name
+				if (Request.TargetGraphNames.Contains(G->GetFName().ToString()))
+				{
+					FoundGraphs.Add(G);
+				}
+			}
+
+			// Event match: search UbergraphPages for event nodes matching target names
+			for (const FString& TargetName : Request.TargetGraphNames)
+			{
+				if (FoundGraphs.Num() > 0)
+				{
+					// Check if already found as a function graph
+					bool bAlreadyFound = false;
+					for (UEdGraph* G : FoundGraphs)
+					{
+						if (G->GetFName().ToString() == TargetName)
+						{
+							bAlreadyFound = true;
+							break;
+						}
+					}
+					if (bAlreadyFound) continue;
+				}
+
+				for (UEdGraph* G : Blueprint->UbergraphPages)
+				{
+					for (UEdGraphNode* Node : G->Nodes)
+					{
+						UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
+						if (EventNode && EventNode->GetNodeTitle(ENodeTitleType::ListView).ToString() == TargetName)
+						{
+							FoundGraphs.Add(G);
+							break;
+						}
+					}
+				}
+			}
+
+			TargetGraphs = FoundGraphs.Array();
 			break;
 		}
 		case ECortexConversionScope::SelectedNodes:

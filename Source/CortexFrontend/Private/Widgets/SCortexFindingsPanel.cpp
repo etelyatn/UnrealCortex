@@ -12,11 +12,10 @@
 #include "UObject/UObjectGlobals.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Widgets/Views/SListView.h"
-#include "Widgets/Views/STableRow.h"
 #include "Editor.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 
@@ -47,27 +46,22 @@ void SCortexFindingsPanel::Construct(const FArguments& InArgs)
             .Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
         ]
 
-        // Findings list (virtualized)
+        // Findings scroll box (replaces SListView to avoid STableRow mouse interception)
         + SVerticalBox::Slot()
         .FillHeight(1.0f)
         [
-            SAssignNew(FindingsList, SListView<TSharedPtr<FCortexAnalysisFinding>>)
-            .ListItemsSource(&FindingsData)
-            .OnGenerateRow(this, &SCortexFindingsPanel::GenerateRow)
-            .OnSelectionChanged(this, &SCortexFindingsPanel::OnSelectionChanged)
-            .SelectionMode(ESelectionMode::Single)
+            SAssignNew(FindingsScrollBox, SScrollBox)
         ]
     ];
 }
 
 void SCortexFindingsPanel::AddFinding(const FCortexAnalysisFinding& Finding)
 {
-    // On the dedup update path, Context->AddFinding updates an existing finding in-place
-    // and fires OnNewFinding with the updated data. Check for an existing panel entry by
-    // FindingIndex and update it rather than appending a duplicate row.
+    // Dedup by dedup key (not FindingIndex which may be -1 before context assignment)
+    const FString NewKey = Finding.GetDeduplicationKey();
     for (const TSharedPtr<FCortexAnalysisFinding>& Existing : FindingsData)
     {
-        if (Existing->FindingIndex == Finding.FindingIndex)
+        if (Existing->GetDeduplicationKey() == NewKey)
         {
             *Existing = Finding;
             RequestRefresh();
@@ -89,47 +83,52 @@ void SCortexFindingsPanel::ClearFindings()
 
 void SCortexFindingsPanel::RequestRefresh()
 {
-    if (bRefreshPending) return;  // Already scheduled
+    if (bRefreshPending) return;
 
     bRefreshPending = true;
 
-    // Debounce: refresh after 150ms to batch streaming findings
     if (GEditor)
     {
         GEditor->GetTimerManager()->SetTimer(
             RefreshTimerHandle, FTimerDelegate::CreateLambda([this]()
             {
                 bRefreshPending = false;
-                if (FindingsList.IsValid())
-                {
-                    FindingsList->RequestListRefresh();
-                }
+                RebuildList();
             }),
             0.15f, false);
     }
     else
     {
-        // Fallback: refresh immediately if GEditor unavailable
         bRefreshPending = false;
-        if (FindingsList.IsValid())
-        {
-            FindingsList->RequestListRefresh();
-        }
+        RebuildList();
     }
 }
 
-TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
-    TSharedPtr<FCortexAnalysisFinding> Finding,
-    const TSharedRef<STableViewBase>& OwnerTable)
+void SCortexFindingsPanel::RebuildList()
+{
+    if (!FindingsScrollBox.IsValid()) return;
+
+    FindingsScrollBox->ClearChildren();
+
+    for (const TSharedPtr<FCortexAnalysisFinding>& Finding : FindingsData)
+    {
+        FindingsScrollBox->AddSlot()
+        .Padding(4, 2)
+        [
+            BuildFindingCard(Finding)
+        ];
+    }
+}
+
+TSharedRef<SWidget> SCortexFindingsPanel::BuildFindingCard(TSharedPtr<FCortexAnalysisFinding> Finding)
 {
     const FSlateColor SevColor = GetSeverityColor(Finding->Severity);
-    const FText CatLabel = GetCategoryLabel(Finding->Category);
+    const FText SevLabel = GetSeverityLabel(Finding->Severity);
     const bool bIsExpanded = (Finding->GetDeduplicationKey() == ExpandedFindingKey);
 
-    // Build the card content vertical box
     TSharedRef<SVerticalBox> CardContent = SNew(SVerticalBox)
 
-        // Title row with expand arrow
+        // Title row with severity label and expand arrow
         + SVerticalBox::Slot()
         .AutoHeight()
         [
@@ -139,7 +138,7 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
             [
                 SNew(STextBlock)
                 .Text(FText::FromString(FString::Printf(TEXT("%s \x2014 %s"),
-                    *CatLabel.ToString(),
+                    *SevLabel.ToString(),
                     *Finding->Title)))
                 .Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
                 .ColorAndOpacity(SevColor)
@@ -169,7 +168,7 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
             .ColorAndOpacity(FSlateColor(FLinearColor::Gray))
         ]
 
-        // "Open in BP" button
+        // "Open in BP" button (only when node has valid GUID)
         + SVerticalBox::Slot()
         .AutoHeight()
         .HAlign(HAlign_Right)
@@ -178,20 +177,15 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
             SNew(SButton)
             .Text(NSLOCTEXT("CortexAnalysis", "OpenInBP", "Open in BP"))
             .ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("SimpleButton"))
+            .Visibility(Finding->NodeGuid.IsValid() ? EVisibility::Visible : EVisibility::Collapsed)
             .IsEnabled_Lambda([this]()
             {
                 return !GEditor || !GEditor->IsPlaySessionInProgress();
             })
             .OnClicked_Lambda([this, Finding]()
             {
-                if (!Finding.IsValid() || !Finding->NodeGuid.IsValid())
-                {
-                    return FReply::Handled();
-                }
-                if (!Context.IsValid())
-                {
-                    return FReply::Handled();
-                }
+                if (!Finding.IsValid() || !Finding->NodeGuid.IsValid()) return FReply::Handled();
+                if (!Context.IsValid()) return FReply::Handled();
 
                 const FString PkgName = FPackageName::ObjectPathToPackageName(
                     Context->Payload.BlueprintPath);
@@ -202,12 +196,8 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
 
                 UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr,
                     *Context->Payload.BlueprintPath);
-                if (!Blueprint)
-                {
-                    return FReply::Handled();
-                }
+                if (!Blueprint) return FReply::Handled();
 
-                // Ensure editor is open before navigating
                 GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Blueprint);
 
                 TArray<UEdGraph*> AllGraphs;
@@ -227,7 +217,7 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
             })
         ];
 
-    // Conditionally add detail section when expanded
+    // Detail section when expanded
     if (bIsExpanded)
     {
         CardContent->AddSlot()
@@ -237,9 +227,8 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
         ];
     }
 
-    return SNew(STableRow<TSharedPtr<FCortexAnalysisFinding>>, OwnerTable)
-    [
-        SNew(SBorder)
+    // Wrap in clickable SBorder — no STableRow, so OnMouseButtonDown fires directly
+    return SNew(SBorder)
         .BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
         .Padding(8)
         .OnMouseButtonDown_Lambda([this, Finding](const FGeometry&, const FPointerEvent& MouseEvent) -> FReply
@@ -255,11 +244,7 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
                 {
                     ExpandedFindingKey = Key;
                 }
-                // Immediate refresh for user-initiated toggle (not debounced)
-                if (FindingsList.IsValid())
-                {
-                    FindingsList->RequestListRefresh();
-                }
+                RebuildList();
                 OnFindingClicked(Finding);
                 return FReply::Handled();
             }
@@ -267,8 +252,7 @@ TSharedRef<ITableRow> SCortexFindingsPanel::GenerateRow(
         })
         [
             CardContent
-        ]
-    ];
+        ];
 }
 
 void SCortexFindingsPanel::SetSummary(const FCortexAnalysisSummary& Summary)
@@ -287,11 +271,10 @@ void SCortexFindingsPanel::SetSummary(const FCortexAnalysisSummary& Summary)
 TSharedRef<SWidget> SCortexFindingsPanel::BuildDetailSection(const FCortexAnalysisFinding& Finding) const
 {
     const FLinearColor SeverityColor = GetSeverityColor(Finding.Severity).GetSpecifiedColor();
-    const FLinearColor GreenColor(0.2f, 0.7f, 0.3f);
+    const FLinearColor GreenColor(0.3f, 0.65f, 0.4f);
 
     TSharedRef<SVerticalBox> DetailBox = SNew(SVerticalBox);
 
-    // Description section (severity-colored border + tint)
     if (!Finding.Description.IsEmpty())
     {
         DetailBox->AddSlot()
@@ -300,7 +283,7 @@ TSharedRef<SWidget> SCortexFindingsPanel::BuildDetailSection(const FCortexAnalys
         [
             SNew(SBorder)
             .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-            .BorderBackgroundColor(FLinearColor(SeverityColor.R, SeverityColor.G, SeverityColor.B, 0.08f))
+            .BorderBackgroundColor(FLinearColor(SeverityColor.R, SeverityColor.G, SeverityColor.B, 0.06f))
             .Padding(FMargin(10, 6, 8, 6))
             [
                 SNew(SHorizontalBox)
@@ -310,7 +293,7 @@ TSharedRef<SWidget> SCortexFindingsPanel::BuildDetailSection(const FCortexAnalys
                 [
                     SNew(SBorder)
                     .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-                    .BorderBackgroundColor(SeverityColor)
+                    .BorderBackgroundColor(FLinearColor(SeverityColor.R, SeverityColor.G, SeverityColor.B, 0.6f))
                     .Padding(FMargin(1.5f, 0, 0, 0))
                     [
                         SNew(SSpacer)
@@ -326,7 +309,7 @@ TSharedRef<SWidget> SCortexFindingsPanel::BuildDetailSection(const FCortexAnalys
                         SNew(STextBlock)
                         .Text(NSLOCTEXT("CortexAnalysis", "DescLabel", "DESCRIPTION"))
                         .Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
-                        .ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.65f)))
+                        .ColorAndOpacity(FSlateColor(FLinearColor(0.55f, 0.55f, 0.6f)))
                     ]
                     + SVerticalBox::Slot().AutoHeight().Padding(0, 3, 0, 0)
                     [
@@ -334,14 +317,13 @@ TSharedRef<SWidget> SCortexFindingsPanel::BuildDetailSection(const FCortexAnalys
                         .Text(FText::FromString(Finding.Description))
                         .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
                         .AutoWrapText(true)
-                        .ColorAndOpacity(FSlateColor(FLinearColor(0.8f, 0.8f, 0.82f)))
+                        .ColorAndOpacity(FSlateColor(FLinearColor(0.75f, 0.75f, 0.78f)))
                     ]
                 ]
             ]
         ];
     }
 
-    // Suggested fix section (green border + tint)
     if (!Finding.SuggestedFix.IsEmpty())
     {
         DetailBox->AddSlot()
@@ -350,7 +332,7 @@ TSharedRef<SWidget> SCortexFindingsPanel::BuildDetailSection(const FCortexAnalys
         [
             SNew(SBorder)
             .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-            .BorderBackgroundColor(FLinearColor(GreenColor.R, GreenColor.G, GreenColor.B, 0.08f))
+            .BorderBackgroundColor(FLinearColor(GreenColor.R, GreenColor.G, GreenColor.B, 0.06f))
             .Padding(FMargin(10, 6, 8, 6))
             [
                 SNew(SHorizontalBox)
@@ -360,7 +342,7 @@ TSharedRef<SWidget> SCortexFindingsPanel::BuildDetailSection(const FCortexAnalys
                 [
                     SNew(SBorder)
                     .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-                    .BorderBackgroundColor(GreenColor)
+                    .BorderBackgroundColor(FLinearColor(GreenColor.R, GreenColor.G, GreenColor.B, 0.6f))
                     .Padding(FMargin(1.5f, 0, 0, 0))
                     [
                         SNew(SSpacer)
@@ -376,7 +358,7 @@ TSharedRef<SWidget> SCortexFindingsPanel::BuildDetailSection(const FCortexAnalys
                         SNew(STextBlock)
                         .Text(NSLOCTEXT("CortexAnalysis", "FixLabel", "SUGGESTED FIX"))
                         .Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
-                        .ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.65f)))
+                        .ColorAndOpacity(FSlateColor(FLinearColor(0.55f, 0.55f, 0.6f)))
                     ]
                     + SVerticalBox::Slot().AutoHeight().Padding(0, 3, 0, 0)
                     [
@@ -391,7 +373,6 @@ TSharedRef<SWidget> SCortexFindingsPanel::BuildDetailSection(const FCortexAnalys
         ];
     }
 
-    // Confidence indicator (only show if below 0.9)
     if (Finding.Confidence < 0.9f)
     {
         DetailBox->AddSlot()
@@ -406,13 +387,6 @@ TSharedRef<SWidget> SCortexFindingsPanel::BuildDetailSection(const FCortexAnalys
     }
 
     return DetailBox;
-}
-
-void SCortexFindingsPanel::OnSelectionChanged(
-    TSharedPtr<FCortexAnalysisFinding> Finding,
-    ESelectInfo::Type SelectionType)
-{
-    OnFindingClicked(Finding);
 }
 
 void SCortexFindingsPanel::OnFindingClicked(TSharedPtr<FCortexAnalysisFinding> Finding)
@@ -430,16 +404,15 @@ FText SCortexFindingsPanel::GetSummaryText() const
         return NSLOCTEXT("CortexAnalysis", "NoFindings", "No findings yet");
     }
 
-    int32 Bugs = 0, Perf = 0, Quality = 0, Cpp = 0, EngFix = 0;
+    int32 High = 0, Medium = 0, Low = 0, Info = 0;
     for (const auto& F : FindingsData)
     {
-        switch (F->Category)
+        switch (F->Severity)
         {
-        case ECortexFindingCategory::Bug:                ++Bugs;    break;
-        case ECortexFindingCategory::Performance:        ++Perf;    break;
-        case ECortexFindingCategory::Quality:            ++Quality; break;
-        case ECortexFindingCategory::CppCandidate:       ++Cpp;     break;
-        case ECortexFindingCategory::EngineFixGuidance:  ++EngFix;  break;
+        case ECortexFindingSeverity::Critical:   ++High;   break;
+        case ECortexFindingSeverity::Warning:    ++Medium; break;
+        case ECortexFindingSeverity::Info:       ++Low;    break;
+        case ECortexFindingSeverity::Suggestion: ++Info;   break;
         }
     }
 
@@ -449,11 +422,10 @@ FText SCortexFindingsPanel::GetSummaryText() const
         if (!Summary.IsEmpty()) Summary += TEXT(" \xB7 ");
         Summary += Part;
     };
-    if (Bugs > 0)    Append(FString::Printf(TEXT("%d bugs"), Bugs));
-    if (Perf > 0)    Append(FString::Printf(TEXT("%d perf"), Perf));
-    if (Quality > 0) Append(FString::Printf(TEXT("%d quality"), Quality));
-    if (Cpp > 0)     Append(FString::Printf(TEXT("%d C++"), Cpp));
-    if (EngFix > 0)  Append(FString::Printf(TEXT("%d engine"), EngFix));
+    if (High > 0)   Append(FString::Printf(TEXT("%d high"), High));
+    if (Medium > 0) Append(FString::Printf(TEXT("%d medium"), Medium));
+    if (Low > 0)    Append(FString::Printf(TEXT("%d low"), Low));
+    if (Info > 0)   Append(FString::Printf(TEXT("%d info"), Info));
 
     if (!SummarySuppressionText.IsEmpty())
     {
@@ -467,23 +439,22 @@ FSlateColor SCortexFindingsPanel::GetSeverityColor(ECortexFindingSeverity Severi
 {
     switch (Severity)
     {
-    case ECortexFindingSeverity::Critical:   return FSlateColor(FLinearColor::Red);
-    case ECortexFindingSeverity::Warning:    return FSlateColor(FLinearColor::Yellow);
-    case ECortexFindingSeverity::Info:       return FSlateColor(FLinearColor(0.0f, 0.7f, 0.7f));
-    case ECortexFindingSeverity::Suggestion: return FSlateColor(FLinearColor(0.5f, 0.3f, 0.8f));
+    case ECortexFindingSeverity::Critical:   return FSlateColor(FLinearColor(0.85f, 0.35f, 0.3f));   // Soft red
+    case ECortexFindingSeverity::Warning:    return FSlateColor(FLinearColor(0.85f, 0.7f, 0.3f));    // Warm amber
+    case ECortexFindingSeverity::Info:       return FSlateColor(FLinearColor(0.3f, 0.65f, 0.7f));    // Soft teal
+    case ECortexFindingSeverity::Suggestion: return FSlateColor(FLinearColor(0.55f, 0.45f, 0.7f));   // Soft purple
     }
     return FSlateColor(FLinearColor::White);
 }
 
-FText SCortexFindingsPanel::GetCategoryLabel(ECortexFindingCategory Category) const
+FText SCortexFindingsPanel::GetSeverityLabel(ECortexFindingSeverity Severity) const
 {
-    switch (Category)
+    switch (Severity)
     {
-    case ECortexFindingCategory::Bug:               return NSLOCTEXT("CortexAnalysis", "CatBug", "Bug");
-    case ECortexFindingCategory::Performance:       return NSLOCTEXT("CortexAnalysis", "CatPerf", "Performance");
-    case ECortexFindingCategory::Quality:           return NSLOCTEXT("CortexAnalysis", "CatQuality", "Quality");
-    case ECortexFindingCategory::CppCandidate:      return NSLOCTEXT("CortexAnalysis", "CatCpp", "C++ Candidate");
-    case ECortexFindingCategory::EngineFixGuidance: return NSLOCTEXT("CortexAnalysis", "CatEngine", "Engine Fix");
+    case ECortexFindingSeverity::Critical:   return NSLOCTEXT("CortexAnalysis", "SevHigh", "High");
+    case ECortexFindingSeverity::Warning:    return NSLOCTEXT("CortexAnalysis", "SevMedium", "Medium");
+    case ECortexFindingSeverity::Info:       return NSLOCTEXT("CortexAnalysis", "SevLow", "Low");
+    case ECortexFindingSeverity::Suggestion: return NSLOCTEXT("CortexAnalysis", "SevInfo", "Info");
     }
     return FText::GetEmpty();
 }

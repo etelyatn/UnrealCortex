@@ -50,4 +50,10 @@ public:
      * Returns true if successfully parsed.
      */
     static bool ParseAnalysisSummary(const FString& JsonBody, FCortexAnalysisSummary& OutSummary);
+
+    /**
+     * Strip finding:* and analysis:summary code blocks from text.
+     * Returns the text with those blocks removed (for display in chat).
+     */
+    static FString StripFindingBlocks(const FString& FullText);
 };

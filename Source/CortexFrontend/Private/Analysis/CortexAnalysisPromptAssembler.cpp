@@ -24,7 +24,7 @@ For each finding, emit a fenced code block tagged with `finding:category:severit
 }
 ```
 
-Categories: bug, performance, quality, cpp_candidate
+Categories: bug, performance, quality, cpp_candidate, engine_fix_guidance
 Severities: critical, warning, info, suggestion
 
 ## Node References
@@ -37,7 +37,8 @@ Use node IDs from the serialized Blueprint data (e.g., "node_47"). Each node has
 - Reference specific nodes by their ID
 - Be precise about what's wrong and how to fix it
 - Don't re-report engine-detected issues (listed in ENGINE DIAGNOSTICS) — instead add fix guidance
-- Regular analysis text outside of finding blocks is fine for context and explanation)");
+- Regular analysis text outside of finding blocks is fine for context and explanation
+- NEVER use triple backticks inside finding JSON field values — use single backticks for inline code references)");
 
     const TCHAR* UESafetyPatterns = TEXT(R"(
 
@@ -167,7 +168,18 @@ Look for: heavy math operations (vector math, matrix operations), large data ite
 
     const TCHAR* EngineFixGuidanceLayer = TEXT(R"(
 ## Engine Error Fix Guidance Focus
-The ENGINE DIAGNOSTICS section lists issues already detected by the engine. For each one, provide specific fix guidance: what went wrong, step-by-step fix instructions, and potential root causes. Do NOT re-report these as new findings — reference them and add remediation context.)");
+The ENGINE DIAGNOSTICS section lists issues already detected by the engine (compilation errors, warnings, orphan pins, deprecated nodes, unhandled cast failures). For each one, emit a structured finding block using `finding:engine_fix_guidance:warning` (or `:info` for minor issues). Include:
+- "title": a short label like "[UNHANDLED_CAST] — node_N Cast To ClassName"
+- "node": the node_N reference from the diagnostic (match the node described in ENGINE DIAGNOSTICS to its node_N ID in the Blueprint data)
+- "description": what went wrong, root cause analysis, and step-by-step fix instructions
+- "suggestedFix": the recommended action
+
+Example:
+```finding:engine_fix_guidance:warning
+{"title": "[UNHANDLED_CAST] — node_5 Cast To BP_Player", "node": "node_5", "description": "CastFailed exec pin is unconnected. If a non-Player actor triggers this path, execution silently stops.", "suggestedFix": "Connect CastFailed to a Return Node or PrintString for explicit handling"}
+```
+
+Do NOT emit the fix guidance as free-form text — always use finding blocks so they appear in the findings panel.)");
 
     FString PreScanFindingsToString(const TArray<FCortexPreScanFinding>& Findings, int32 MaxCount = 50)
     {
@@ -262,14 +274,8 @@ FString FCortexAnalysisPromptAssembler::BuildInitialUserMessage(
 {
     FString Message;
 
-    Message += TEXT("[BLUEPRINT DATA]\n");
-    Message += BlueprintJson;
-    Message += TEXT("\n\n");
-
-    Message += TEXT("[ENGINE DIAGNOSTICS — already detected, do not re-report]\n");
-    Message += PreScanFindingsToString(Context.Payload.PreScanFindings);
-    Message += TEXT("\n\n");
-
+    // Instructions FIRST — if the message is truncated at token limits,
+    // the AI still knows what to do even with partial Blueprint data.
     Message += TEXT("[ANALYSIS REQUEST]\n");
     Message += TEXT("Analyze this Blueprint focusing on: ");
 
@@ -287,12 +293,19 @@ FString FCortexAnalysisPromptAssembler::BuildInitialUserMessage(
     }
     Message += FString::Join(FocusNames, TEXT(", "));
 
-    // Custom instructions (if provided)
+    // Custom instructions (if provided) — before data so they survive truncation
     if (!Context.CustomInstructions.IsEmpty())
     {
         Message += TEXT("\n\n[CUSTOM INSTRUCTIONS]\n");
         Message += Context.CustomInstructions;
     }
+
+    // Data sections AFTER instructions
+    Message += TEXT("\n\n[ENGINE DIAGNOSTICS — already detected, do not re-report]\n");
+    Message += PreScanFindingsToString(Context.Payload.PreScanFindings);
+
+    Message += TEXT("\n\n[BLUEPRINT DATA]\n");
+    Message += BlueprintJson;
 
     return Message;
 }

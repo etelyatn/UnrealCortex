@@ -157,15 +157,60 @@ void SCortexGraphPreview::RecreateGraphEditor(UEdGraph* Graph)
 
 void SCortexGraphPreview::NavigateToNode(const FGuid& NodeGuid)
 {
-    if (!GraphEditorWidget.IsValid() || !Context.IsValid()) return;
+    if (!Context.IsValid()) return;
 
+    // First check active graph
     UEdGraph* ActiveGraph = Context->GetActiveClonedGraph();
-    if (!ActiveGraph) return;
-
-    UEdGraphNode* Node = FindNodeByGuid(ActiveGraph, NodeGuid);
-    if (Node)
+    if (ActiveGraph)
     {
-        GraphEditorWidget->JumpToNode(Node, false);
+        if (UEdGraphNode* Node = FindNodeByGuid(ActiveGraph, NodeGuid))
+        {
+            if (GraphEditorWidget.IsValid())
+            {
+                GraphEditorWidget->JumpToNode(Node, false);
+            }
+            return;
+        }
+    }
+
+    // Node not in active graph — find which graph contains it, switch, then navigate
+    FName TargetGraphName = NAME_None;
+    for (const auto& Pair : Context->ClonedGraphs)
+    {
+        if (FindNodeByGuid(Pair.Value, NodeGuid))
+        {
+            TargetGraphName = Pair.Key;
+            break;
+        }
+    }
+
+    if (TargetGraphName.IsNone())
+    {
+        return;
+    }
+
+    // Switch to the target graph (may recreate SGraphEditor)
+    SwitchToGraph(TargetGraphName);
+
+    // Update dropdown to match (use ESelectInfo::Direct to avoid redundant SwitchToGraph)
+    if (GraphDropdown.IsValid())
+    {
+        for (const TSharedPtr<FString>& Option : GraphNameOptions)
+        {
+            if (*Option == TargetGraphName.ToString())
+            {
+                GraphDropdown->SetSelectedItem(Option);
+                break;
+            }
+        }
+    }
+
+    // Re-fetch node from the now-active graph (SwitchToGraph may have created a new clone)
+    UEdGraph* SwitchedGraph = Context->GetActiveClonedGraph();
+    UEdGraphNode* ActiveNode = SwitchedGraph ? FindNodeByGuid(SwitchedGraph, NodeGuid) : nullptr;
+    if (ActiveNode && GraphEditorWidget.IsValid())
+    {
+        GraphEditorWidget->JumpToNode(ActiveNode, false);
     }
 }
 
@@ -248,6 +293,14 @@ void SCortexGraphPreview::OnGraphSelected(
 void SCortexGraphPreview::SwitchToGraph(FName GraphName)
 {
     if (!Context.IsValid()) return;
+
+    // Skip if already showing this graph (prevents redundant recreation when
+    // SetSelectedItem on dropdown triggers OnGraphSelected back into SwitchToGraph)
+    if (Context->ActiveClonedGraph && Context->GetActiveClonedGraph()
+        && Context->GetActiveClonedGraph()->GetFName() == GraphName)
+    {
+        return;
+    }
 
     // Check if already cloned — reuse cached clone
     if (Context->ClonedGraphs.Contains(GraphName))

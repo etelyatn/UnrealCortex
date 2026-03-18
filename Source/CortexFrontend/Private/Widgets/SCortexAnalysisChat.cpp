@@ -148,9 +148,9 @@ void SCortexAnalysisChat::OnTurnComplete(const FCortexTurnResult& Result)
 		return;
 	}
 
-	if (!Result.bIsError)
+	// Extract findings from the assistant response — even on error,
+	// partial findings streamed before the crash are worth preserving
 	{
-		// Extract findings from the completed assistant response
 		const TArray<TSharedPtr<FCortexChatEntry>>& ChatEntries = Context->Session->GetChatEntries();
 		if (ChatEntries.Num() > 0)
 		{
@@ -278,7 +278,26 @@ void SCortexAnalysisChat::RefreshVisibleEntries()
 			}
 
 			TSharedPtr<FCortexChatDisplayRow> Row = MakeShared<FCortexChatDisplayRow>();
-			Row->PrimaryEntry = Entry;
+
+			// For assistant messages, strip finding/summary code blocks — they go
+			// to the findings panel, not the chat display
+			if (Entry->Type == ECortexChatEntryType::AssistantMessage)
+			{
+				TSharedPtr<FCortexChatEntry> FilteredEntry = MakeShared<FCortexChatEntry>(*Entry);
+				FilteredEntry->Text = FCortexChatEntryBuilder::StripFindingBlocks(Entry->Text);
+
+				// Skip entirely if stripping removed all content
+				if (FilteredEntry->Text.TrimStartAndEnd().IsEmpty())
+				{
+					continue;
+				}
+				Row->PrimaryEntry = FilteredEntry;
+			}
+			else
+			{
+				Row->PrimaryEntry = Entry;
+			}
+
 			Row->RowType = (Entry->Type == ECortexChatEntryType::UserMessage)
 				? ECortexChatRowType::UserMessage
 				: ECortexChatRowType::AssistantTurn;

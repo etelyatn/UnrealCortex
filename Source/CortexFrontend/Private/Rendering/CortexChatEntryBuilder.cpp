@@ -89,20 +89,40 @@ bool FCortexChatEntryBuilder::ParseFindingTag(
         return false;
     }
 
+    // Category matching with fuzzy fallback for LLM hallucinations
     const FString& CatStr = Parts[1];
     if (CatStr == TEXT("bug"))                       OutCategory = ECortexFindingCategory::Bug;
     else if (CatStr == TEXT("performance"))          OutCategory = ECortexFindingCategory::Performance;
     else if (CatStr == TEXT("quality"))              OutCategory = ECortexFindingCategory::Quality;
     else if (CatStr == TEXT("cpp_candidate"))        OutCategory = ECortexFindingCategory::CppCandidate;
     else if (CatStr == TEXT("engine_fix_guidance"))  OutCategory = ECortexFindingCategory::EngineFixGuidance;
-    else return false;
+    // Fuzzy fallback: map common LLM hallucinations to closest category
+    else if (CatStr == TEXT("security") || CatStr == TEXT("error") || CatStr == TEXT("logic"))
+        OutCategory = ECortexFindingCategory::Bug;
+    else if (CatStr == TEXT("optimization") || CatStr == TEXT("perf"))
+        OutCategory = ECortexFindingCategory::Performance;
+    else if (CatStr == TEXT("style") || CatStr == TEXT("naming") || CatStr == TEXT("readability"))
+        OutCategory = ECortexFindingCategory::Quality;
+    else if (CatStr == TEXT("engine") || CatStr == TEXT("fix") || CatStr == TEXT("diagnostic"))
+        OutCategory = ECortexFindingCategory::EngineFixGuidance;
+    else
+        OutCategory = ECortexFindingCategory::Bug;  // Default to bug rather than dropping
 
+    // Severity matching with fuzzy fallback
     const FString& SevStr = Parts[2];
     if (SevStr == TEXT("critical"))          OutSeverity = ECortexFindingSeverity::Critical;
     else if (SevStr == TEXT("warning"))      OutSeverity = ECortexFindingSeverity::Warning;
     else if (SevStr == TEXT("info"))         OutSeverity = ECortexFindingSeverity::Info;
     else if (SevStr == TEXT("suggestion"))   OutSeverity = ECortexFindingSeverity::Suggestion;
-    else return false;
+    // Fuzzy fallback
+    else if (SevStr == TEXT("high") || SevStr == TEXT("error") || SevStr == TEXT("blocker"))
+        OutSeverity = ECortexFindingSeverity::Critical;
+    else if (SevStr == TEXT("medium") || SevStr == TEXT("warn"))
+        OutSeverity = ECortexFindingSeverity::Warning;
+    else if (SevStr == TEXT("low") || SevStr == TEXT("minor") || SevStr == TEXT("note"))
+        OutSeverity = ECortexFindingSeverity::Info;
+    else
+        OutSeverity = ECortexFindingSeverity::Warning;  // Default to warning
 
     return true;
 }
@@ -122,7 +142,23 @@ bool FCortexChatEntryBuilder::ParseFindingJson(
     TSharedPtr<FJsonObject> JsonObj;
     if (!FJsonSerializer::Deserialize(Reader, JsonObj) || !JsonObj.IsValid())
     {
-        return false;
+        // Fallback: nested backticks may have corrupted the block. Try extracting
+        // JSON by finding the first { and last } in the raw text.
+        const int32 FirstBrace = CleanJson.Find(TEXT("{"));
+        const int32 LastBrace = CleanJson.Find(TEXT("}"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+        if (FirstBrace != INDEX_NONE && LastBrace != INDEX_NONE && LastBrace > FirstBrace)
+        {
+            FString Extracted = CleanJson.Mid(FirstBrace, LastBrace - FirstBrace + 1);
+            TSharedRef<TJsonReader<>> FallbackReader = TJsonReaderFactory<>::Create(Extracted);
+            if (!FJsonSerializer::Deserialize(FallbackReader, JsonObj) || !JsonObj.IsValid())
+            {
+                return false;
+            }
+        }
+        else
+        {
+            return false;
+        }
     }
 
     if (!JsonObj->HasField(TEXT("title")) || !JsonObj->HasField(TEXT("node")))
@@ -152,6 +188,33 @@ bool FCortexChatEntryBuilder::ParseFindingJson(
     }
 
     return true;
+}
+
+FString FCortexChatEntryBuilder::StripFindingBlocks(const FString& FullText)
+{
+    TArray<FCortexMarkdownBlock> Blocks = CortexMarkdownParser::ParseBlocks(FullText);
+    FString Result;
+
+    for (const FCortexMarkdownBlock& Block : Blocks)
+    {
+        if (Block.Type == ECortexMarkdownBlockType::CodeBlock)
+        {
+            // Skip finding:* and analysis:summary blocks
+            if (Block.Language.StartsWith(TEXT("finding:"), ESearchCase::IgnoreCase)
+                || Block.Language.Equals(TEXT("analysis:summary"), ESearchCase::IgnoreCase))
+            {
+                continue;
+            }
+        }
+
+        if (!Result.IsEmpty())
+        {
+            Result += TEXT("\n\n");
+        }
+        Result += Block.RawText;
+    }
+
+    return Result;
 }
 
 bool FCortexChatEntryBuilder::ParseAnalysisSummary(const FString& JsonBody, FCortexAnalysisSummary& OutSummary)
