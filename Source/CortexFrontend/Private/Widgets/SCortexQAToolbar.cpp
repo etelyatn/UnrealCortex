@@ -11,6 +11,7 @@ void SCortexQAToolbar::Construct(const FArguments& InArgs)
     OnRecordConfirmed = InArgs._OnRecordConfirmed;
     OnStop = InArgs._OnStop;
     OnStopAndReplay = InArgs._OnStopAndReplay;
+    OnCancelReplay = InArgs._OnCancelReplay;
 
     ChildSlot
     [
@@ -59,6 +60,22 @@ void SCortexQAToolbar::Construct(const FArguments& InArgs)
                 .Padding(4.f, 0.f)
                 [
                     SNew(SButton)
+                    .Text(FText::FromString(TEXT("Start")))
+                    .OnClicked_Lambda([this]()
+                    {
+                        if (NameInput.IsValid() && !NameInput->GetText().IsEmpty())
+                        {
+                            bShowingNameInput = false;
+                            OnRecordConfirmed.ExecuteIfBound(NameInput->GetText().ToString());
+                        }
+                        return FReply::Handled();
+                    })
+                ]
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .Padding(4.f, 0.f)
+                [
+                    SNew(SButton)
                     .Text(FText::FromString(TEXT("Cancel")))
                     .OnClicked_Lambda([this]()
                     {
@@ -96,6 +113,18 @@ void SCortexQAToolbar::Construct(const FArguments& InArgs)
                         return FReply::Handled();
                     })
                 ]
+            ]
+
+            // Index 3: Cancel replay button (replaying state)
+            + SWidgetSwitcher::Slot()
+            [
+                SNew(SButton)
+                .Text(FText::FromString(TEXT("Cancel Replay")))
+                .OnClicked_Lambda([this]()
+                {
+                    OnCancelReplay.ExecuteIfBound();
+                    return FReply::Handled();
+                })
             ]
         ]
 
@@ -183,6 +212,21 @@ void SCortexQAToolbar::SetRecording(bool bRecording)
         {
             TickerText->SetText(FText::GetEmpty());
         }
+    }
+}
+
+void SCortexQAToolbar::SetReplaying(bool bReplaying)
+{
+    bIsReplaying = bReplaying;
+
+    if (ModeSwitcher.IsValid())
+    {
+        ModeSwitcher->SetActiveWidgetIndex(bReplaying ? 3 : 0);
+    }
+
+    if (StatusText.IsValid())
+    {
+        StatusText->SetText(FText::FromString(bReplaying ? TEXT("Replaying...") : TEXT("Idle")));
     }
 }
 

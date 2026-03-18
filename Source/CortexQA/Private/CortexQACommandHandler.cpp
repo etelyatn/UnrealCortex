@@ -1,4 +1,5 @@
 #include "CortexQACommandHandler.h"
+#include "CortexQAModule.h"
 #include "CortexCommandRouter.h"
 #include "CortexTypes.h"
 #include "CortexCoreModule.h"
@@ -264,6 +265,17 @@ FCortexCommandResult FCortexQACommandHandler::ReplaySession(
         OnFailure = EQAReplayOnFailure::Stop;
     }
 
+    // Parse replay mode
+    EQAReplayMode ReplayMode = EQAReplayMode::Smooth;
+    FString ReplayModeStr;
+    if (Params->TryGetStringField(TEXT("replay_mode"), ReplayModeStr) && ReplayModeStr == TEXT("teleport"))
+    {
+        ReplayMode = EQAReplayMode::Teleport;
+    }
+
+    UE_LOG(LogCortexQA, Log, TEXT("Replay: session '%s' loaded — %d steps, map='%s'"),
+        *SessionPath, Session.Steps.Num(), *Session.MapPath);
+
     // Create sequencer and start replay
     SessionState = ECortexQASessionState::Replaying;
 
@@ -288,7 +300,8 @@ FCortexCommandResult FCortexQACommandHandler::ReplaySession(
                 DeferredCb(MoveTemp(FinalResult));
             }
         },
-        OnFailure);
+        OnFailure,
+        ReplayMode);
 
     FCortexCommandResult Deferred;
     Deferred.bIsDeferred = true;

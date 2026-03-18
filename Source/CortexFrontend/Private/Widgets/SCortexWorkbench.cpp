@@ -37,14 +37,14 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnChatTab))
 		.SetDisplayName(FText::FromString(TEXT("Chat")));
 
-	// Register QA tab spawner
+	// Register QA tab spawner (hidden by default — not yet production ready)
 	TabManager->RegisterTabSpawner(
 		FName(TEXT("CortexQA")),
 		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnQATab))
 		.SetDisplayName(FText::FromString(TEXT("QA")));
 
 	// Define layout
-	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("CortexFrontendLayout_v1.1")
+	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("CortexFrontendLayout_v1.3")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
@@ -251,6 +251,18 @@ float SCortexWorkbench::GetSidebarSlotValue() const
 	return bSidebarCollapsed ? 0.02f : CachedSidebarCoefficient;
 }
 
+TSharedRef<SDockTab> SCortexWorkbench::SpawnQATab(const FSpawnTabArgs& /*Args*/)
+{
+	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
+		.TabRole(ETabRole::PanelTab);
+
+	DockTab->SetContent(
+		SNew(SCortexQATab)
+	);
+
+	return DockTab;
+}
+
 TSharedRef<SDockTab> SCortexWorkbench::SpawnChatTab(const FSpawnTabArgs& /*Args*/)
 {
 	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
@@ -264,14 +276,3 @@ TSharedRef<SDockTab> SCortexWorkbench::SpawnChatTab(const FSpawnTabArgs& /*Args*
 	return DockTab;
 }
 
-TSharedRef<SDockTab> SCortexWorkbench::SpawnQATab(const FSpawnTabArgs& /*Args*/)
-{
-	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
-		.TabRole(ETabRole::PanelTab);
-
-	DockTab->SetContent(
-		SNew(SCortexQATab)
-	);
-
-	return DockTab;
-}

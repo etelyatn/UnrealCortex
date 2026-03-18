@@ -23,7 +23,8 @@ public:
         const TArray<FCortexQAStep>& InSteps,
         FCortexCommandRouter& InRouter,
         FDeferredResponseCallback InFinalCallback,
-        EQAReplayOnFailure InOnFailure = EQAReplayOnFailure::Continue);
+        EQAReplayOnFailure InOnFailure = EQAReplayOnFailure::Continue,
+        EQAReplayMode InReplayMode = EQAReplayMode::Smooth);
 
     /** Request cancellation. Current step runs to completion. */
     void Cancel();
@@ -37,16 +38,25 @@ private:
     void Complete(bool bSuccess);
     void OnPIEEnded(bool bIsSimulating);
 
-    /** Map step type to router command name. */
-    FString StepTypeToCommand(const FString& StepType) const;
+    /** Map step type to router command name, considering replay mode. */
+    FString StepTypeToCommand(const FString& StepType);
+
+    /** Adapt params when converting position_snapshot to move_to in smooth mode. */
+    TSharedPtr<FJsonObject> AdaptParamsForCommand(const FCortexQAStep& Step, const FString& Command) const;
+
+    /** Schedule AdvanceStep after a delay (for timing-accurate replay of synchronous steps). */
+    void ScheduleNextStep(double DelaySeconds);
 
     TArray<FCortexQAStep> Steps;
     int32 CurrentStepIndex = 0;
     FThreadSafeBool bCancelled;
     EQAReplayOnFailure OnFailurePolicy = EQAReplayOnFailure::Continue;
+    EQAReplayMode ReplayMode = EQAReplayMode::Smooth;
+    bool bFirstPositionSnapshotSeen = false;
     TArray<FCortexQAStepResult> Results;
     FCortexCommandRouter* Router = nullptr;
     FDeferredResponseCallback FinalCallback;
     FDelegateHandle EndPIEHandle;
     bool bAdvancing = false;
+    bool bCompleted = false;
 };

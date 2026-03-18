@@ -19,6 +19,13 @@ enum class EQAReplayOnFailure : uint8
 	Stop
 };
 
+/** Replay mode for position_snapshot steps */
+enum class EQAReplayMode : uint8
+{
+	Smooth,    // Walk between positions using move_to (realistic, slower)
+	Teleport   // Teleport with timing delays (fast, exact positions)
+};
+
 /** A single raw input event captured during recording */
 struct FCortexQARawInputEvent
 {
