@@ -311,6 +311,7 @@ void SCortexGenMeshSession::PopulateModelOptions()
             ModelOptions.Add(MakeShared<FString>(Label));
         }
     }
+    SelectedModelIndex = 0;
 }
 
 void SCortexGenMeshSession::OnModeChanged(int32 NewMode)
@@ -455,7 +456,12 @@ void SCortexGenMeshSession::OnOpenMesh()
     UObject* Asset = UEditorAssetLibrary::LoadAsset(PathToOpen);
     if (Asset && GEditor)
     {
-        GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Asset);
+        UAssetEditorSubsystem* EditorSubsystem =
+            GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+        if (EditorSubsystem)
+        {
+            EditorSubsystem->OpenEditorForAsset(Asset);
+        }
     }
 }
 
@@ -470,6 +476,7 @@ void SCortexGenMeshSession::OnRemoveMesh()
     if (!DownloadedGlbPath.IsEmpty())
     {
         IFileManager::Get().Delete(*DownloadedGlbPath);
+        DownloadedGlbPath.Empty();
     }
 
     if (ResultArea.IsValid())
@@ -528,4 +535,5 @@ void SCortexGenMeshSession::CancelGeneration()
         TEXT("CortexGen")).GetJobManager();
     FString Error;
     JobManager.CancelJob(CurrentJobId, Error);
+    HideOverlay();
 }
