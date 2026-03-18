@@ -115,6 +115,8 @@ public:
         return GetDefault<UCortexGenSettings>();
     }
 
+    virtual void PostInitProperties() override;
+
     // Helper: get API key for a provider ID (const — called via GetDefault<>())
     // Normalizes to lowercase to prevent case-mismatch failures
     FString GetApiKeyForProvider(const FString& ProviderId) const
@@ -125,4 +127,7 @@ public:
         if (Id == TEXT("tripo3d")) return Tripo3DApiKey;
         return FString(); // Unknown provider — caller handles empty key
     }
+
+private:
+    void PopulateDefaultModelRegistry();
 };
