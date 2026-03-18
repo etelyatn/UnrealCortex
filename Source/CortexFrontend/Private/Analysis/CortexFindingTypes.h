@@ -20,6 +20,13 @@ enum class ECortexFindingCategory : uint8
     EngineFixGuidance  // Auto-checked when pre-scan finds issues
 };
 
+enum class ECortexAnalysisDepth : uint8
+{
+	Light,
+	Standard,
+	Deep
+};
+
 struct FCortexAnalysisFinding
 {
     int32 FindingIndex = -1;
@@ -32,6 +39,7 @@ struct FCortexAnalysisFinding
     FString NodeDisplayName;          // human-readable, from mapping table
     FGuid NodeGuid;
     TArray<FGuid> RelatedNodeGuids;
+    float Confidence = 1.0f;
 
     FString GetDeduplicationKey() const
     {

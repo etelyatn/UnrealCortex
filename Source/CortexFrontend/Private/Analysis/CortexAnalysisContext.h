@@ -38,6 +38,8 @@ struct FCortexAnalysisContext : public FGCObject
     ECortexConversionScope SelectedScope = ECortexConversionScope::EntireBlueprint;
     TArray<FString> SelectedFunctions;          // For EventOrFunction scope
     TArray<ECortexFindingCategory> SelectedFocusAreas;
+    ECortexAnalysisDepth SelectedDepth = ECortexAnalysisDepth::Standard;
+    FString CustomInstructions;
     bool bAnalysisStarted = false;
     bool bIsInitialGeneration = true;
 
