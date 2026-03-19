@@ -8,6 +8,7 @@
 FCortexGenAssetImporter::FImportResult FCortexGenAssetImporter::ImportAsset(
     const FString& SourceFilePath, const FString& DestinationPath, const FString& AssetName)
 {
+    check(IsInGameThread());
     FImportResult Result;
 
     // Verify source file exists

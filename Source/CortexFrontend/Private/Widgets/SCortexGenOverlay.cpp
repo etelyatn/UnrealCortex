@@ -206,6 +206,7 @@ void SCortexGenOverlay::Show()
 	SetVisibility(EVisibility::Visible);
 	SetCanTick(true);
 	ResetElapsed();
+	FSlateApplication::Get().SetKeyboardFocus(SharedThis(this));
 }
 
 void SCortexGenOverlay::Hide()
