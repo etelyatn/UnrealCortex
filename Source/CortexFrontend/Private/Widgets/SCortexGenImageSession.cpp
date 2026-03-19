@@ -30,6 +30,7 @@
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
 #include "AssetImportTask.h"
+#include "ScopedTransaction.h"
 
 // ---------------------------------------------------------------------------
 
@@ -669,6 +670,9 @@ void SCortexGenImageSession::OnSaveImage(int32 ImageIndex)
     }
 
     // Import via AssetTools (mirrors FCortexGenAssetImporter::ImportTexture)
+    FScopedTransaction Transaction(FText::FromString(
+        FString::Printf(TEXT("Cortex: Save Generated Image %s"), *OutAssetName)));
+
     UAssetImportTask* ImportTask = NewObject<UAssetImportTask>();
     ImportTask->Filename = Result.DownloadPath;
     ImportTask->DestinationPath = OutPath;

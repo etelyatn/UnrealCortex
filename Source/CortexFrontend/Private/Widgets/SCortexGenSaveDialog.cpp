@@ -114,10 +114,18 @@ FReply SCortexGenSaveDialog::OnSaveClicked()
         if (WarningLabel.IsValid())
         {
             WarningLabel->SetText(FText::FromString(
-                FString::Printf(TEXT("Asset '%s' already exists. Save will overwrite."), *FullPath)));
+                FString::Printf(TEXT("Asset '%s' already exists. Rename it or choose a different path."),
+                    *AssetName)));
             WarningLabel->SetVisibility(EVisibility::Visible);
         }
-        // Allow save anyway — user saw warning
+        return FReply::Handled();   // stop here, don't save
+    }
+
+    // Clear any previous warning
+    if (WarningLabel.IsValid())
+    {
+        WarningLabel->SetText(FText::GetEmpty());
+        WarningLabel->SetVisibility(EVisibility::Collapsed);
     }
 
     SaveConfirmedDelegate.ExecuteIfBound(AssetName, Path);

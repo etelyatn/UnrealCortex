@@ -479,6 +479,8 @@ void SCortexGenMeshSession::OnRemoveMesh()
         DownloadedGlbPath.Empty();
     }
 
+    SavedAssetPath.Empty();
+
     if (ResultArea.IsValid())
     {
         ResultArea->SetVisibility(EVisibility::Collapsed);
