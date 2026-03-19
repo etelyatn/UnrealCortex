@@ -4,10 +4,10 @@ void UCortexGenSettings::PostInitProperties()
 {
     Super::PostInitProperties();
 
-    // Populate defaults only if not overridden by saved config (FMA 1.1)
-    if (ModelRegistry.Num() == 0 && !HasAnyFlags(RF_ClassDefaultObject))
+    if (!bModelRegistryInitialized && !HasAnyFlags(RF_ClassDefaultObject))
     {
         PopulateDefaultModelRegistry();
+        bModelRegistryInitialized = true;
     }
 }
 

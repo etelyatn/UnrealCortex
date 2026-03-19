@@ -128,6 +128,11 @@ public:
         return FString(); // Unknown provider — caller handles empty key
     }
 
+    /** Sentinel: true after first PopulateDefaultModelRegistry() call.
+     *  Prevents repopulation if user intentionally empties the registry. */
+    UPROPERTY(Config)
+    bool bModelRegistryInitialized = false;
+
 private:
     void PopulateDefaultModelRegistry();
 };

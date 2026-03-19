@@ -47,3 +47,41 @@ bool FCortexGenSettingsDropdownTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Options should include fal"),     Options.Contains(TEXT("fal")));
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenSettingsModelRegistrySentinelTest,
+    "Cortex.Gen.Settings.ModelRegistrySentinel",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenSettingsModelRegistrySentinelTest::RunTest(const FString& Parameters)
+{
+    // Create a non-CDO instance — PostInitProperties runs during NewObject
+    UCortexGenSettings* Settings = NewObject<UCortexGenSettings>();
+
+    // After construction, PostInitProperties should have populated the registry
+    TestTrue(TEXT("bModelRegistryInitialized should be true after init"),
+        Settings->bModelRegistryInitialized);
+    TestTrue(TEXT("ModelRegistry should have entries"),
+        Settings->ModelRegistry.Num() > 0);
+
+    int32 OriginalCount = Settings->ModelRegistry.Num();
+
+    // Clear registry and call PostInitProperties again —
+    // sentinel should prevent repopulation
+    Settings->ModelRegistry.Empty();
+    Settings->PostInitProperties();
+
+    TestEqual(TEXT("Registry should stay empty after clearing (sentinel active)"),
+        Settings->ModelRegistry.Num(), 0);
+
+    // Reset sentinel and call PostInitProperties —
+    // registry should repopulate
+    Settings->bModelRegistryInitialized = false;
+    Settings->PostInitProperties();
+    TestEqual(TEXT("Registry should repopulate when sentinel is reset"),
+        Settings->ModelRegistry.Num(), OriginalCount);
+
+    Settings->MarkAsGarbage();
+    return true;
+}
