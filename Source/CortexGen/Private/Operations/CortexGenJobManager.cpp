@@ -445,6 +445,8 @@ void FCortexGenJobManager::PollActiveJobs()
                         // Clear in-flight guard
                         Self->PollsInFlight.Remove(JobId);
 
+                        // Re-lookup after async callback — the Jobs TMap reference from
+                        // the outer scope is invalid across async boundaries (GEN-TD-07).
                         FCortexGenJobState* Job = Self->Jobs.Find(JobId);
                         if (!Job || Job->Status != ECortexGenJobStatus::Processing)
                         {
@@ -519,6 +521,8 @@ void FCortexGenJobManager::StartDownloadPipeline(FCortexGenJobState& Job)
                     TSharedPtr<FCortexGenJobManager> Self = WeakSelf.Pin();
                     if (!Self.IsValid()) return;
 
+                    // Re-lookup after async callback — the Jobs TMap reference from
+                    // the outer scope is invalid across async boundaries (GEN-TD-07).
                     FCortexGenJobState* Job = Self->Jobs.Find(JobId);
                     if (!Job) return;
 
