@@ -1,6 +1,8 @@
 #include "Misc/AutomationTest.h"
 #include "CortexConversionTypes.h"
 #include "Conversion/CortexConversionPrompts.h"
+#include "Conversion/CortexConversionPromptAssembler.h"
+#include "Conversion/CortexConversionContext.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionPayloadWidgetFlagTest,
     "Cortex.Frontend.Conversion.Widget.PayloadFlag",
@@ -42,6 +44,45 @@ bool FCortexConversionWidgetPromptsExistTest::RunTest(const FString& Parameters)
     FString FullExtract = CortexConversionPrompts::WidgetDepthLayerFullExtraction();
     TestTrue(TEXT("Widget FullExtraction prompt should contain NativeDestruct"),
         FullExtract.Contains(TEXT("NativeDestruct")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetPromptAssemblyTest,
+    "Cortex.Frontend.Conversion.Widget.PromptAssembly",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetPromptAssemblyTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Widget Blueprint payload
+    FCortexConversionPayload WidgetPayload;
+    WidgetPayload.BlueprintPath = TEXT("/Game/UI/WBP_MainMenu");
+    WidgetPayload.BlueprintName = TEXT("WBP_MainMenu");
+    WidgetPayload.ParentClassName = TEXT("UserWidget");
+    WidgetPayload.bIsWidgetBlueprint = true;
+    FCortexConversionContext WidgetCtx(WidgetPayload);
+
+    FString WidgetPrompt = FCortexConversionPromptAssembler::Assemble(
+        WidgetCtx, TEXT("{\"type\":\"WidgetBlueprint\"}"));
+    TestTrue(TEXT("Widget prompt should contain BindWidget"),
+        WidgetPrompt.Contains(TEXT("BindWidget")));
+    TestTrue(TEXT("Widget prompt should contain NativeConstruct"),
+        WidgetPrompt.Contains(TEXT("NativeConstruct")));
+
+    // Actor Blueprint payload (should NOT get widget prompts)
+    FCortexConversionPayload ActorPayload;
+    ActorPayload.BlueprintPath = TEXT("/Game/BP/BP_JumpPad");
+    ActorPayload.BlueprintName = TEXT("BP_JumpPad");
+    ActorPayload.ParentClassName = TEXT("Actor");
+    ActorPayload.bIsWidgetBlueprint = false;
+    FCortexConversionContext ActorCtx(ActorPayload);
+
+    FString ActorPrompt = FCortexConversionPromptAssembler::Assemble(
+        ActorCtx, TEXT("{\"type\":\"Blueprint\"}"));
+    TestFalse(TEXT("Actor prompt should NOT contain BindWidget in depth layer"),
+        ActorPrompt.Contains(TEXT("meta = (BindWidget)")));
 
     return true;
 }

@@ -27,26 +27,40 @@ FString FCortexConversionPromptAssembler::Assemble(
 	}
 	Result += TEXT("\n\n");
 
-	// 3. Depth layer
+	// 3. Depth layer (widget-specific variants when applicable)
+	const bool bWidget = Context.Payload.bIsWidgetBlueprint;
 	switch (Context.SelectedDepth)
 	{
 	case ECortexConversionDepth::PerformanceShell:
-		Result += CortexConversionPrompts::DepthLayerPerformanceShell();
+		Result += bWidget
+			? CortexConversionPrompts::WidgetDepthLayerPerformanceShell()
+			: CortexConversionPrompts::DepthLayerPerformanceShell();
 		break;
 	case ECortexConversionDepth::CppCore:
-		Result += CortexConversionPrompts::DepthLayerCppCore();
+		Result += bWidget
+			? CortexConversionPrompts::WidgetDepthLayerCppCore()
+			: CortexConversionPrompts::DepthLayerCppCore();
 		break;
 	case ECortexConversionDepth::FullExtraction:
-		Result += CortexConversionPrompts::DepthLayerFullExtraction();
+		Result += bWidget
+			? CortexConversionPrompts::WidgetDepthLayerFullExtraction()
+			: CortexConversionPrompts::DepthLayerFullExtraction();
 		break;
 	case ECortexConversionDepth::Custom:
 		if (!Context.CustomInstructions.IsEmpty())
 		{
+			if (bWidget)
+			{
+				Result += TEXT("IMPORTANT: This is a Widget Blueprint. Use BindWidget pattern — "
+					"widget tree stays in UMG designer. Override NativeConstruct/NativeDestruct.\n\n");
+			}
 			Result += FString::Printf(TEXT("Conversion Instructions: CUSTOM\n\n%s"), *Context.CustomInstructions);
 		}
 		else
 		{
-			Result += CortexConversionPrompts::DepthLayerCppCore();
+			Result += bWidget
+				? CortexConversionPrompts::WidgetDepthLayerCppCore()
+				: CortexConversionPrompts::DepthLayerCppCore();
 		}
 		break;
 	}
@@ -81,6 +95,14 @@ FString FCortexConversionPromptAssembler::Assemble(
 
 	// 5. Domain knowledge fragments
 	TArray<FString> Fragments = SelectFragments(BlueprintJson);
+
+	// Force-include UMG patterns for widget BPs (SelectFragments uses JSON keyword matching
+	// which misses custom widget base classes like "MyBaseWidget")
+	if (bWidget && !Fragments.Contains(TEXT("umg-patterns.md")))
+	{
+		Fragments.Add(TEXT("umg-patterns.md"));
+	}
+
 	for (const FString& FragmentFile : Fragments)
 	{
 		FString FragmentContent = LoadFragment(FragmentFile);
