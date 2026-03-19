@@ -1,4 +1,6 @@
 #include "Widgets/SCortexGenPanel.h"
+#include "Widgets/SCortexGenImageSession.h"
+#include "Widgets/SCortexGenMeshSession.h"
 #include "Widgets/SCortexGenTabButton.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "Widgets/Input/SButton.h"
@@ -202,9 +204,11 @@ FText SCortexGenPanel::GenerateSessionName(ECortexGenSessionType Type) const
 
 TSharedRef<SWidget> SCortexGenPanel::CreateSessionWidget(const FCortexGenSessionModel& Session)
 {
-    // Stubs — real session widgets added in Tasks 14-15
-    FString Label = (Session.Type == ECortexGenSessionType::Image)
-        ? TEXT("Image Session")
-        : TEXT("Mesh Session");
-    return SNew(STextBlock).Text(FText::FromString(Label));
+    if (Session.Type == ECortexGenSessionType::Image)
+    {
+        return SNew(SCortexGenImageSession)
+            .SessionId(Session.SessionId);
+    }
+    return SNew(SCortexGenMeshSession)
+        .SessionId(Session.SessionId);
 }
