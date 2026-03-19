@@ -50,6 +50,7 @@ struct CORTEXCORE_API FCortexConversionPayload
 	TArray<FString> EventNames;      // e.g. "ReceiveBeginPlay", "OnOverlap"
 	TArray<FString> FunctionNames;   // e.g. "CalculateDamage", "GetSpeed"
 	TArray<FString> GraphNames;      // all graph names in the BP
+	int32 TotalNodeCount = 0;        // total nodes across all graphs (for scope estimation)
 
 	TArray<FProjectClassInfo> DetectedProjectAncestors; // populated by CortexBlueprint
 };

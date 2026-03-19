@@ -135,6 +135,14 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 		Payload.GraphNames.Add(Graph->GetFName().ToString());
 	}
 
+	// Count total nodes for scope estimation
+	int32 NodeCount = 0;
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		NodeCount += Graph->Nodes.Num();
+	}
+	Payload.TotalNodeCount = NodeCount;
+
 	// Events (from ubergraph pages — find K2Node_Event nodes)
 	for (UEdGraph* Graph : Blueprint->UbergraphPages)
 	{
