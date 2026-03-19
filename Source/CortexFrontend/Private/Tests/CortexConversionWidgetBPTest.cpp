@@ -221,3 +221,32 @@ bool FCortexConversionWidgetVariablePayloadTest::RunTest(const FString& Paramete
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetBindingPromptTest,
+    "Cortex.Frontend.Conversion.Widget.BindingPrompt",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetBindingPromptTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    TArray<FString> SelectedWidgets = { TEXT("TitleText"), TEXT("ActionButton") };
+    FString Message = CortexConversionPrompts::BuildWidgetInitialUserMessage(
+        TEXT("{\"test\":true}"), SelectedWidgets);
+
+    TestTrue(TEXT("Should contain TitleText as BindWidget candidate"),
+        Message.Contains(TEXT("TitleText")));
+    TestTrue(TEXT("Should contain ActionButton as BindWidget candidate"),
+        Message.Contains(TEXT("ActionButton")));
+    TestTrue(TEXT("Should mention BindWidget"),
+        Message.Contains(TEXT("BindWidget")));
+
+    // Empty selection should still work
+    TArray<FString> NoWidgets;
+    FString EmptyMessage = CortexConversionPrompts::BuildWidgetInitialUserMessage(
+        TEXT("{\"test\":true}"), NoWidgets);
+    TestTrue(TEXT("Empty selection message should still be valid"),
+        EmptyMessage.Contains(TEXT("Widget Blueprint")));
+
+    return true;
+}

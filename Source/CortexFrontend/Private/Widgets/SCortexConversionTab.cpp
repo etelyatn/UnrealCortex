@@ -222,7 +222,7 @@ void SCortexConversionTab::OnConvertClicked()
 				StatusMessage(TEXT("[Step 3/4] Sending conversion request to LLM..."));
 
 				FString InitialMessage = Context->Payload.bIsWidgetBlueprint
-					? CortexConversionPrompts::BuildWidgetInitialUserMessage(Json)
+					? CortexConversionPrompts::BuildWidgetInitialUserMessage(Json, Context->SelectedWidgetBindings)
 					: CortexConversionPrompts::BuildInitialUserMessage(Json);
 				Context->Session->AddUserPromptEntry(InitialMessage);
 
