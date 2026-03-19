@@ -648,6 +648,14 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildWarningBars(const FCortexConve
 		];
 	};
 
+	if (Payload.bIsWidgetBlueprint)
+	{
+		AddWarning(NSLOCTEXT("CortexConversion", "WarnWidgetBP",
+			"Widget Blueprint detected. C++ will use BindWidget pattern \u2014 widget tree stays in UMG designer. "
+			"Logic moves to NativeConstruct/NativeDestruct overrides."),
+			FLinearColor(0.4f, 0.7f, 1.0f));
+	}
+
 	if (Payload.EventNames.Num() == 0 && Payload.FunctionNames.Num() == 0
 		&& Payload.GraphNames.Num() <= 1)
 	{

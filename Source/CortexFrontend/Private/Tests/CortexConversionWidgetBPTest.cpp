@@ -71,6 +71,33 @@ bool FCortexConversionWidgetUserMessageTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetContextFlagTest,
+    "Cortex.Frontend.Conversion.Widget.ContextWidgetFlag",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetContextFlagTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Verify context correctly stores widget flag and derives class name
+    FCortexConversionPayload WidgetPayload;
+    WidgetPayload.BlueprintPath = TEXT("/Game/UI/WBP_Inventory");
+    WidgetPayload.BlueprintName = TEXT("WBP_Inventory");
+    WidgetPayload.ParentClassName = TEXT("InventoryWidgetBase");
+    WidgetPayload.bIsWidgetBlueprint = true;
+    WidgetPayload.EventNames.Add(TEXT("Event Construct"));
+    WidgetPayload.FunctionNames.Add(TEXT("UpdateItemList"));
+
+    FCortexConversionContext Context(WidgetPayload);
+
+    TestTrue(TEXT("Context should preserve widget flag"),
+        Context.Payload.bIsWidgetBlueprint);
+    TestEqual(TEXT("Widget class name should have U prefix"),
+        Context.Document->ClassName, FString(TEXT("UInventory")));
+
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetPromptAssemblyTest,
     "Cortex.Frontend.Conversion.Widget.PromptAssembly",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
