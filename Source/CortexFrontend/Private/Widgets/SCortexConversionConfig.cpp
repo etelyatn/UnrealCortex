@@ -97,6 +97,16 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 				BuildWarningBars(Payload)
 			]
 
+			// Widget Binding selection (widget BPs only)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 12)
+			[
+				Payload.bIsWidgetBlueprint
+					? BuildWidgetBindingsSection(Payload)
+					: SNullWidget::NullWidget
+			]
+
 			// Token estimate above the button (prominent, color-coded)
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -671,6 +681,102 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildWarningBars(const FCortexConve
 	}
 
 	return Box;
+}
+
+TSharedRef<SWidget> SCortexConversionConfig::BuildWidgetBindingsSection(
+	const FCortexConversionPayload& Payload)
+{
+	if (Payload.WidgetVariableNames.IsEmpty())
+	{
+		return SNullWidget::NullWidget;
+	}
+
+	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+
+	// Section header
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 0, 0, 6)
+	[
+		SNew(STextBlock)
+		.Text(NSLOCTEXT("CortexConversion", "WidgetBindingsLabel", "Widget Bindings (BindWidget)"))
+		.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+	];
+
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 0, 0, 6)
+	[
+		SNew(STextBlock)
+		.Text(NSLOCTEXT("CortexConversion", "WidgetBindingsDesc",
+			"Select which designer widgets should get BindWidget properties in C++. "
+			"Widgets used in Blueprint logic are auto-selected."))
+		.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+		.AutoWrapText(true)
+	];
+
+	SAssignNew(WidgetBindingsChecklist, SVerticalBox);
+
+	for (const FString& WidgetName : Payload.WidgetVariableNames)
+	{
+		const bool bUsedInLogic = Payload.LogicReferencedWidgets.Contains(WidgetName);
+		const bool bChecked = Context.IsValid() && Context->SelectedWidgetBindings.Contains(WidgetName);
+
+		WidgetBindingsChecklist->AddSlot()
+		.AutoHeight()
+		.Padding(8, 2)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				SNew(SCheckBox)
+				.IsChecked(bChecked ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+				.OnCheckStateChanged_Lambda([this, WidgetName](ECheckBoxState State)
+				{
+					OnWidgetBindingToggled(WidgetName, State == ECheckBoxState::Checked);
+				})
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(WidgetName))
+				]
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(6, 0, 0, 0)
+			[
+				SNew(STextBlock)
+				.Text(bUsedInLogic
+					? NSLOCTEXT("CortexConversion", "UsedInLogic", "(used in logic)")
+					: FText::GetEmpty())
+				.ColorAndOpacity(FSlateColor(FLinearColor(0.3f, 0.8f, 0.3f)))
+				.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
+			]
+		];
+	}
+
+	Box->AddSlot()
+	.AutoHeight()
+	[
+		WidgetBindingsChecklist.ToSharedRef()
+	];
+
+	return Box;
+}
+
+void SCortexConversionConfig::OnWidgetBindingToggled(const FString& Name, bool bChecked)
+{
+	if (!Context.IsValid()) return;
+
+	if (bChecked)
+	{
+		Context->SelectedWidgetBindings.AddUnique(Name);
+	}
+	else
+	{
+		Context->SelectedWidgetBindings.Remove(Name);
+	}
 }
 
 void SCortexConversionConfig::RequestTokenEstimate()

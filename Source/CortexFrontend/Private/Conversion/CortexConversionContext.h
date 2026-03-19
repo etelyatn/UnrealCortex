@@ -103,7 +103,11 @@ struct FCortexConversionContext
         }
         if (!DerivedName.IsEmpty() && DerivedName[0] != TEXT('A') && DerivedName[0] != TEXT('U'))
         {
-            if (InPayload.ParentClassName.Contains(TEXT("Actor"))
+            if (InPayload.bIsWidgetBlueprint)
+            {
+                DerivedName = TEXT("U") + DerivedName;
+            }
+            else if (InPayload.ParentClassName.Contains(TEXT("Actor"))
                 || InPayload.ParentClassName.Contains(TEXT("Pawn"))
                 || InPayload.ParentClassName.Contains(TEXT("Character")))
             {
@@ -114,7 +118,15 @@ struct FCortexConversionContext
                 DerivedName = TEXT("U") + DerivedName;
             }
         }
+        else if (InPayload.bIsWidgetBlueprint && !DerivedName.IsEmpty() && DerivedName[0] == TEXT('A'))
+        {
+            // Widget BPs should always have U prefix, even if name starts with A
+            DerivedName = TEXT("U") + DerivedName;
+        }
         Document->ClassName = DerivedName;
+
+        // Auto-select logic-referenced widgets for BindWidget
+        SelectedWidgetBindings = InPayload.LogicReferencedWidgets;
     }
 
     FGuid TabGuid;
@@ -133,6 +145,9 @@ struct FCortexConversionContext
     FString TargetSourcePath;      // path to existing .cpp file, empty if CreateNewClass
     bool bConversionStarted = false;
     bool bIsInitialGeneration = true;
+
+    // Widget binding selection — auto-populated from LogicReferencedWidgets, user can adjust
+    TArray<FString> SelectedWidgetBindings;
 
     // Token estimation (populated by background serialization on config panel open)
     int32 EstimatedTotalTokens = 0;   // EntireBlueprint scope total

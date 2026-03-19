@@ -162,6 +162,36 @@ bool FCortexConversionWidgetFragmentSelectionTest::RunTest(const FString& Parame
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetBindingSelectionTest,
+    "Cortex.Frontend.Conversion.Widget.BindingSelection",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetBindingSelectionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexConversionPayload Payload;
+    Payload.bIsWidgetBlueprint = true;
+    Payload.BlueprintName = TEXT("WBP_Shop");
+    Payload.ParentClassName = TEXT("UserWidget");
+    Payload.WidgetVariableNames = { TEXT("ItemList"), TEXT("BuyButton"), TEXT("PriceText"), TEXT("BackgroundPanel") };
+    Payload.LogicReferencedWidgets = { TEXT("ItemList"), TEXT("BuyButton"), TEXT("PriceText") };
+
+    FCortexConversionContext Context(Payload);
+
+    // SelectedWidgetBindings should be auto-populated from LogicReferencedWidgets
+    TestEqual(TEXT("Should auto-select logic-referenced widgets"),
+        Context.SelectedWidgetBindings.Num(), 3);
+    TestTrue(TEXT("ItemList should be selected"),
+        Context.SelectedWidgetBindings.Contains(TEXT("ItemList")));
+    TestTrue(TEXT("BuyButton should be selected"),
+        Context.SelectedWidgetBindings.Contains(TEXT("BuyButton")));
+    TestFalse(TEXT("BackgroundPanel should NOT be selected"),
+        Context.SelectedWidgetBindings.Contains(TEXT("BackgroundPanel")));
+
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetVariablePayloadTest,
     "Cortex.Frontend.Conversion.Widget.VariablePayload",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

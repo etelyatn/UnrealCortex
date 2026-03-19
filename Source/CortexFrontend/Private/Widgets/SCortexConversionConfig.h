@@ -29,6 +29,8 @@ private:
 
 	TSharedRef<SWidget> BuildScopeAndTargetSection(const FCortexConversionPayload& Payload);
 	TSharedRef<SWidget> BuildInstructionsSection();
+	TSharedRef<SWidget> BuildWidgetBindingsSection(const FCortexConversionPayload& Payload);
+	void OnWidgetBindingToggled(const FString& Name, bool bChecked);
 
 	void OnDepthChanged(ECortexConversionDepth NewDepth);
 	bool IsDepthSelected(ECortexConversionDepth Depth) const;
@@ -43,6 +45,7 @@ private:
 	TSharedPtr<FCortexConversionContext> Context;
 	TSharedPtr<SMultiLineEditableTextBox> CustomInstructionsBox;
 	TSharedPtr<SCortexScopeSelector> ScopeSelector;
+	TSharedPtr<SVerticalBox> WidgetBindingsChecklist;
 	FOnConvertClicked OnConvert;
 
 	void UpdateCustomInstructionsVisibility();
