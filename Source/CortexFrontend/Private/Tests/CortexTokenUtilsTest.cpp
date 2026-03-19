@@ -74,7 +74,7 @@ bool FCortexTokenUtilsEstimateScopeTest::RunTest(const FString& Parameters)
         CortexTokenUtils::EstimateTokensForScope(
             ECortexConversionScope::SelectedNodes,
             10000, 3, 100, 5, {}, {}),
-        FMath::Max(500, 10000 * 5 / 100));
+        500);
 
     // SelectedNodes with TotalNodeCount=0 falls back to minimum 500
     TestEqual(TEXT("SelectedNodes with 0 total nodes -> minimum 500"),

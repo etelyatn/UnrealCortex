@@ -46,8 +46,14 @@ namespace CortexTokenUtils
 		}
 		static constexpr float ConnectionOverheadSeconds = 10.0f;
 		float GapBuffer = 0.0f;
-		if      (Tokens > 20000) GapBuffer = 30.0f;
-		else if (Tokens >  5000) GapBuffer = 15.0f;
+		if (Tokens > 20000)
+		{
+			GapBuffer = 30.0f;
+		}
+		else if (Tokens > 5000)
+		{
+			GapBuffer = 15.0f;
+		}
 		return ConnectionOverheadSeconds + (Tokens / 1000.0f) * 10.0f + GapBuffer;
 	}
 
@@ -106,7 +112,7 @@ namespace CortexTokenUtils
 			{
 				return 500;
 			}
-			return FMath::Max(500, TotalTokens * SelectedNodeCount / TotalNodeCount);
+			return FMath::Max(500, static_cast<int32>(static_cast<int64>(TotalTokens) * SelectedNodeCount / FMath::Max(1, TotalNodeCount)));
 
 		case ECortexConversionScope::CurrentGraph:
 			return TotalTokens / NumGraphs;
@@ -132,7 +138,7 @@ namespace CortexTokenUtils
 			// Fallback: proportional estimate
 			NumFunctions = FMath::Max(1, NumFunctions);
 			const int32 Selected = FMath::Max(1, SelectedFunctions.Num());
-			return TotalTokens * Selected / NumFunctions;
+			return static_cast<int32>(static_cast<int64>(TotalTokens) * Selected / NumFunctions);
 		}
 		}
 
