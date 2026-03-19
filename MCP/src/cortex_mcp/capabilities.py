@@ -50,7 +50,7 @@ _COMPOSITE_HINTS: dict[str, str] = {
     "blueprint": "For creating or updating a full Blueprint, use blueprint_compose instead of chaining blueprint_cmd calls.\n",
     "umg": "For creating a complete Widget Blueprint screen, use widget_compose instead of chaining umg_cmd calls.\n",
     "level": "For batch actor operations, use level_compose instead of chaining level_cmd calls.\n",
-    "gen": "For AI asset generation. Use gen_cmd(command, params) to start mesh/image/texturing jobs, poll status, and manage job lifecycle.\n",
+    "gen": "AI asset generation. Submit with start_mesh/start_image/start_texturing, then poll with job_status until status is 'imported' or 'failed'. Generation takes 30-180 seconds. On download_failed or import_failed, call retry_import.\n",
 }
 
 
