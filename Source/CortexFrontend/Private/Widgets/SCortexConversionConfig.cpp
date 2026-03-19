@@ -1,5 +1,6 @@
 #include "Widgets/SCortexConversionConfig.h"
 
+#include "Utilities/CortexTokenUtils.h"
 #include "CortexCoreModule.h"
 #include "CortexFrontendModule.h"
 #include "Widgets/SCortexScopeSelector.h"
@@ -751,73 +752,20 @@ int32 SCortexConversionConfig::EstimateTokensForScope(ECortexConversionScope Sco
 	{
 		return 0;
 	}
-
-	const int32 Total = Context->EstimatedTotalTokens;
 	const FCortexConversionPayload& P = Context->Payload;
-	const int32 NumGraphs = FMath::Max(1, P.GraphNames.Num());
-	const int32 NumFuncs = P.EventNames.Num() + P.FunctionNames.Num();
-
-	switch (Scope)
-	{
-	case ECortexConversionScope::EntireBlueprint:
-		return Total;
-
-	case ECortexConversionScope::SelectedNodes:
-		// Rough: proportional estimate based on node selection ratio
-		return FMath::Max(500, Total * FMath::Min(P.SelectedNodeIds.Num(), 20) / FMath::Max(1, NumGraphs * 15));
-
-	case ECortexConversionScope::CurrentGraph:
-		return Total / NumGraphs;
-
-	case ECortexConversionScope::EventOrFunction:
-	{
-		// Sum per-function estimates for selected functions if available
-		if (Context->SelectedFunctions.Num() > 0 && Context->PerFunctionTokens.Num() > 0)
-		{
-			int32 Sum = 0;
-			for (const FString& Func : Context->SelectedFunctions)
-			{
-				const int32* Found = Context->PerFunctionTokens.Find(Func);
-				Sum += Found ? *Found : (Total / FMath::Max(1, NumFuncs));
-			}
-			return Sum;
-		}
-		// Fallback: proportional estimate
-		const int32 Selected = Context->SelectedFunctions.Num();
-		if (Selected == 0 || NumFuncs == 0)
-		{
-			return Total / FMath::Max(1, NumFuncs);
-		}
-		return Total * Selected / NumFuncs;
-	}
-	}
-
-	return Total;
+	return CortexTokenUtils::EstimateTokensForScope(
+		Scope,
+		Context->EstimatedTotalTokens,
+		P.GraphNames.Num(),
+		P.TotalNodeCount,
+		P.SelectedNodeIds.Num(),
+		Context->SelectedFunctions,
+		Context->PerFunctionTokens,
+		P.EventNames.Num() + P.FunctionNames.Num());
 }
 
 FString SCortexConversionConfig::FormatTokenEstimate(int32 Tokens) const
 {
-	if (Tokens <= 0)
-	{
-		return FString();
-	}
-
-	// Use the same formula as SCortexConversionOverlay::SetTokenCount
-	//   Connection:  ~10s
-	//   Base rate:   1 000 tokens ≈ 10s
-	//   Gap buffer:  <5K=0, 5K-20K=+15s, >20K=+30s
-	static constexpr float ConnectionOverheadSeconds = 10.0f;
-	float GapBuffer = 0.0f;
-	if (Tokens > 20000) GapBuffer = 30.0f;
-	else if (Tokens > 5000) GapBuffer = 15.0f;
-	const int32 EstSec = FMath::RoundToInt(ConnectionOverheadSeconds + (Tokens / 1000.0f) * 10.0f + GapBuffer);
-
-	const FString TokenStr = FString::Printf(TEXT("~%dk tokens"), FMath::RoundToInt(Tokens / 1000.0f));
-
-	if (EstSec >= 60)
-	{
-		return FString::Printf(TEXT("%s \u00B7 est. ~%dm %ds"), *TokenStr, EstSec / 60, EstSec % 60);
-	}
-	return FString::Printf(TEXT("%s \u00B7 est. ~%ds"), *TokenStr, EstSec);
+	return CortexTokenUtils::FormatTokenEstimate(Tokens);
 }
 
