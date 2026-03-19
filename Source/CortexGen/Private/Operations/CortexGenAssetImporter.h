@@ -44,4 +44,11 @@ public:
         const FString& SourceFilePath,
         const FString& DestinationPath,
         const FString& AssetName);
+
+private:
+    /** Shared import pipeline — validates file exists, creates import task, runs import. */
+    static FImportResult RunImportTask(
+        const FString& SourceFilePath,
+        const FString& DestinationPath,
+        const FString& AssetName);
 };
