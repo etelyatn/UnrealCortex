@@ -11,6 +11,7 @@ from .tcp_client import UEConnection
 from .tools.composites.blueprint import register_blueprint_compose_tools
 from .tools.composites.level import register_level_compose_tools
 from .tools.composites.material import register_material_compose_tools
+from .tools.composites.gen import register_gen_compose_tools
 from .tools.composites.scenario import register_scenario_compose_tools
 from .tools.composites.widget import register_widget_compose_tools
 from .tools.routers import register_router_tools
@@ -48,6 +49,7 @@ def _register_explicit_tools(mcp_server, connection) -> None:
     register_widget_compose_tools(mcp_server, connection)
     register_level_compose_tools(mcp_server, connection)
     register_scenario_compose_tools(mcp_server, connection)
+    register_gen_compose_tools(mcp_server, connection)
     register_editor_standalone_tools(mcp_server, connection)
     register_schema_standalone_tools(mcp_server, connection)
     register_qa_standalone_tools(mcp_server, connection)
