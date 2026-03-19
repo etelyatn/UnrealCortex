@@ -28,6 +28,24 @@ enum class ECortexGenCapabilityFlags : uint8
 };
 ENUM_CLASS_FLAGS(ECortexGenCapabilityFlags);
 
+// Compile-time assertion: ECortexGenCapability and ECortexGenCapabilityFlags must stay in sync
+static_assert(
+    static_cast<uint8>(ECortexGenCapability::MeshFromText) ==
+    static_cast<uint8>(ECortexGenCapabilityFlags::MeshFromText),
+    "ECortexGenCapability::MeshFromText must match ECortexGenCapabilityFlags::MeshFromText");
+static_assert(
+    static_cast<uint8>(ECortexGenCapability::MeshFromImage) ==
+    static_cast<uint8>(ECortexGenCapabilityFlags::MeshFromImage),
+    "ECortexGenCapability::MeshFromImage must match ECortexGenCapabilityFlags::MeshFromImage");
+static_assert(
+    static_cast<uint8>(ECortexGenCapability::ImageFromText) ==
+    static_cast<uint8>(ECortexGenCapabilityFlags::ImageFromText),
+    "ECortexGenCapability::ImageFromText must match ECortexGenCapabilityFlags::ImageFromText");
+static_assert(
+    static_cast<uint8>(ECortexGenCapability::Texturing) ==
+    static_cast<uint8>(ECortexGenCapabilityFlags::Texturing),
+    "ECortexGenCapability::Texturing must match ECortexGenCapabilityFlags::Texturing");
+
 UENUM()
 enum class ECortexGenJobType : uint8
 {
