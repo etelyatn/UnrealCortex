@@ -48,6 +48,29 @@ bool FCortexConversionWidgetPromptsExistTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetUserMessageTest,
+    "Cortex.Frontend.Conversion.Widget.UserMessage",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetUserMessageTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FString WidgetMsg = CortexConversionPrompts::BuildWidgetInitialUserMessage(TEXT("{\"test\":true}"));
+    TestTrue(TEXT("Widget user message should mention Widget Blueprint"),
+        WidgetMsg.Contains(TEXT("Widget Blueprint")));
+    TestTrue(TEXT("Widget user message should mention BindWidget"),
+        WidgetMsg.Contains(TEXT("BindWidget")));
+    TestTrue(TEXT("Widget user message should mention NativeConstruct"),
+        WidgetMsg.Contains(TEXT("NativeConstruct")));
+
+    FString ActorMsg = CortexConversionPrompts::BuildInitialUserMessage(TEXT("{\"test\":true}"));
+    TestFalse(TEXT("Actor user message should NOT mention Widget Blueprint"),
+        ActorMsg.Contains(TEXT("Widget Blueprint")));
+
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetPromptAssemblyTest,
     "Cortex.Frontend.Conversion.Widget.PromptAssembly",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
