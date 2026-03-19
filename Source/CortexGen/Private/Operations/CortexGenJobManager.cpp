@@ -619,13 +619,53 @@ void FCortexGenJobManager::BroadcastJobProgress(const FCortexGenJobState& Job)
     CoreModule.OnDomainProgress().Broadcast(FName(TEXT("gen")), ProgressData);
 }
 
-void FCortexGenJobManager::SaveJobs() const
+void FCortexGenJobManager::TrimJobHistory(int32 MaxHistory)
+{
+    if (Jobs.Num() <= MaxHistory)
+    {
+        return;
+    }
+
+    // Collect terminal jobs sorted by CreatedAt (oldest first)
+    TArray<TPair<FString, FString>> TerminalJobs; // {JobId, CreatedAt}
+    for (const auto& Pair : Jobs)
+    {
+        ECortexGenJobStatus Status = Pair.Value.Status;
+        if (Status != ECortexGenJobStatus::Pending &&
+            Status != ECortexGenJobStatus::Processing &&
+            Status != ECortexGenJobStatus::Downloading &&
+            Status != ECortexGenJobStatus::Importing)
+        {
+            TerminalJobs.Add({Pair.Key, Pair.Value.CreatedAt});
+        }
+    }
+
+    TerminalJobs.Sort([](const TPair<FString, FString>& A,
+        const TPair<FString, FString>& B)
+    {
+        return A.Value < B.Value;
+    });
+
+    int32 ToRemove = Jobs.Num() - MaxHistory;
+    int32 Removed = FMath::Min(ToRemove, TerminalJobs.Num());
+    for (int32 i = 0; i < Removed; i++)
+    {
+        Jobs.Remove(TerminalJobs[i].Key);
+    }
+}
+
+void FCortexGenJobManager::SaveJobs()
 {
     // Do not write to disk unless LoadJobs() has been called (guards test isolation).
     if (!bPersistenceEnabled)
     {
         return;
     }
+
+    // Enforce MaxJobHistory before writing to disk
+    const UCortexGenSettings* Settings = UCortexGenSettings::Get();
+    const int32 MaxHistory = Settings ? Settings->MaxJobHistory : 50;
+    TrimJobHistory(MaxHistory);
 
     FString SaveDir = FPaths::ProjectSavedDir() / TEXT("CortexGen");
     IPlatformFile::GetPlatformPhysical().CreateDirectoryTree(*SaveDir);

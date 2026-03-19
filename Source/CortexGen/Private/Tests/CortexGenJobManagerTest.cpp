@@ -411,3 +411,47 @@ bool FCortexGenJobManagerTimingSlidingWindowTest::RunTest(const FString& Paramet
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenJobManagerMaxJobHistoryTest,
+    "Cortex.Gen.JobManager.MaxJobHistory",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenJobManagerMaxJobHistoryTest::RunTest(const FString& Parameters)
+{
+    auto Provider = MakeShared<FTestGenProvider>();
+    auto Manager = CreateTestJobManager();
+    Manager->RegisterProvider(Provider);
+    Manager->SetMaxConcurrentJobs(10);
+
+    // Submit 5 jobs and cancel them (making them terminal)
+    TArray<FString> JobIds;
+    for (int32 i = 0; i < 5; i++)
+    {
+        FCortexGenJobRequest Request;
+        Request.Type = ECortexGenJobType::MeshFromText;
+        Request.Prompt = FString::Printf(TEXT("job_%d"), i);
+
+        FString JobId, Error;
+        ECortexGenError ErrorCode;
+        Manager->SubmitJob(TEXT("test"), Request, JobId, Error, ErrorCode);
+        Manager->CancelJob(JobId, Error, ErrorCode);
+        JobIds.Add(JobId);
+    }
+
+    TestEqual(TEXT("Should have 5 jobs before trim"), Manager->ListJobs().Num(), 5);
+
+    // Trim to max 3 — should remove the 2 oldest terminal jobs
+    Manager->TrimJobHistory(3);
+
+    TArray<FCortexGenJobState> Remaining = Manager->ListJobs();
+    TestEqual(TEXT("Should have 3 jobs after trim"), Remaining.Num(), 3);
+
+    // The oldest 2 jobs (job_0, job_1) should have been removed
+    TestNull(TEXT("Oldest job should be gone"), Manager->GetJobState(JobIds[0]));
+    TestNull(TEXT("Second oldest should be gone"), Manager->GetJobState(JobIds[1]));
+    TestNotNull(TEXT("Third job should remain"), Manager->GetJobState(JobIds[2]));
+
+    return true;
+}

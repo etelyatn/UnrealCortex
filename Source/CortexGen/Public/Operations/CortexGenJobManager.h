@@ -53,8 +53,12 @@ public:
 
     // Persistence — must be called explicitly (e.g., from StartupModule) to opt in.
     // Test instances that never call LoadJobs() will never write to disk.
-    void SaveJobs() const;
+    void SaveJobs();
     void LoadJobs();
+
+    /** Remove oldest terminal jobs until job count <= MaxHistory.
+     *  Active jobs are never removed. */
+    void TrimJobHistory(int32 MaxHistory);
 
     /** Record a generation timing sample for a model. */
     void RecordTiming(const FString& ModelId, float DurationSeconds);
