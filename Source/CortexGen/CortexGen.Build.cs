@@ -16,12 +16,19 @@ public class CortexGen : ModuleRules
         {
             "CoreUObject",
             "Engine",
-            "UnrealEd",
-            "AssetTools",
             "HTTP",
             "Json",
             "JsonUtilities",
             "DeveloperSettings",
         });
+
+        if (Target.bBuildEditor)
+        {
+            PrivateDependencyModuleNames.AddRange(new string[]
+            {
+                "UnrealEd",
+                "AssetTools",
+            });
+        }
     }
 }
