@@ -84,10 +84,12 @@ bool FCortexGenJobManagerSubmitTest::RunTest(const FString& Parameters)
 
     FString JobId;
     FString Error;
-    bool bSuccess = Manager->SubmitJob(TEXT("test"), Request, JobId, Error);
+    ECortexGenError ErrorCode = ECortexGenError::None;
+    bool bSuccess = Manager->SubmitJob(TEXT("test"), Request, JobId, Error, ErrorCode);
 
     TestTrue(TEXT("Submit should succeed"), bSuccess);
     TestTrue(TEXT("JobId should start with gen_"), JobId.StartsWith(TEXT("gen_")));
+    TestEqual(TEXT("Error code should be None"), ErrorCode, ECortexGenError::None);
     TestEqual(TEXT("Provider should have been called once"), Provider->SubmitCount, 1);
 
     // Verify job state
@@ -124,7 +126,8 @@ bool FCortexGenJobManagerSubmitFailTest::RunTest(const FString& Parameters)
 
     FString JobId;
     FString Error;
-    bool bSuccess = Manager->SubmitJob(TEXT("test"), Request, JobId, Error);
+    ECortexGenError ErrorCode = ECortexGenError::None;
+    bool bSuccess = Manager->SubmitJob(TEXT("test"), Request, JobId, Error, ErrorCode);
 
     // SubmitJob returns true (job was queued) — provider failure propagates via job state
     TestTrue(TEXT("SubmitJob returns true (job queued)"), bSuccess);
@@ -159,10 +162,12 @@ bool FCortexGenJobManagerValidationNoApiKeyTest::RunTest(const FString& Paramete
 
     FString JobId;
     FString Error;
-    bool bSuccess = Manager->SubmitJob(TEXT("nonexistent"), Request, JobId, Error);
+    ECortexGenError ErrorCode = ECortexGenError::None;
+    bool bSuccess = Manager->SubmitJob(TEXT("nonexistent"), Request, JobId, Error, ErrorCode);
 
     TestFalse(TEXT("Submit should fail with no provider"), bSuccess);
     TestTrue(TEXT("Error should mention provider"), Error.Contains(TEXT("provider")));
+    TestEqual(TEXT("Error code"), ErrorCode, ECortexGenError::ProviderNotFound);
 
     return true;
 }
@@ -186,10 +191,12 @@ bool FCortexGenJobManagerCapabilityCheckTest::RunTest(const FString& Parameters)
 
     FString JobId;
     FString Error;
-    bool bSuccess = Manager->SubmitJob(TEXT("test"), Request, JobId, Error);
+    ECortexGenError ErrorCode = ECortexGenError::None;
+    bool bSuccess = Manager->SubmitJob(TEXT("test"), Request, JobId, Error, ErrorCode);
 
     TestFalse(TEXT("Submit should fail — capability not supported"), bSuccess);
     TestTrue(TEXT("Error should mention capability"), Error.Contains(TEXT("does not support")));
+    TestEqual(TEXT("Error code"), ErrorCode, ECortexGenError::CapabilityNotSupported);
     TestEqual(TEXT("Provider should not have been called"), Provider->SubmitCount, 0);
 
     return true;
@@ -214,15 +221,18 @@ bool FCortexGenJobManagerConcurrencyLimitTest::RunTest(const FString& Parameters
     Request.Prompt = TEXT("first");
 
     FString JobId1, Error1;
-    bool bSuccess1 = Manager->SubmitJob(TEXT("test"), Request, JobId1, Error1);
+    ECortexGenError ErrorCode1 = ECortexGenError::None;
+    bool bSuccess1 = Manager->SubmitJob(TEXT("test"), Request, JobId1, Error1, ErrorCode1);
     TestTrue(TEXT("First submit should succeed"), bSuccess1);
 
     // Submit second job — should fail (limit = 1)
     Request.Prompt = TEXT("second");
     FString JobId2, Error2;
-    bool bSuccess2 = Manager->SubmitJob(TEXT("test"), Request, JobId2, Error2);
+    ECortexGenError ErrorCode2 = ECortexGenError::None;
+    bool bSuccess2 = Manager->SubmitJob(TEXT("test"), Request, JobId2, Error2, ErrorCode2);
     TestFalse(TEXT("Second submit should fail — limit reached"), bSuccess2);
     TestTrue(TEXT("Error should mention concurrent"), Error2.Contains(TEXT("concurrent")));
+    TestEqual(TEXT("Error code"), ErrorCode2, ECortexGenError::JobLimitReached);
 
     return true;
 }
@@ -244,9 +254,10 @@ bool FCortexGenJobManagerCancelTest::RunTest(const FString& Parameters)
     Request.Prompt = TEXT("test");
 
     FString JobId, Error;
-    Manager->SubmitJob(TEXT("test"), Request, JobId, Error);
+    ECortexGenError ErrorCode = ECortexGenError::None;
+    Manager->SubmitJob(TEXT("test"), Request, JobId, Error, ErrorCode);
 
-    bool bCancelled = Manager->CancelJob(JobId, Error);
+    bool bCancelled = Manager->CancelJob(JobId, Error, ErrorCode);
     TestTrue(TEXT("Cancel should succeed"), bCancelled);
 
     const FCortexGenJobState* State = Manager->GetJobState(JobId);
@@ -278,10 +289,11 @@ bool FCortexGenJobManagerListJobsTest::RunTest(const FString& Parameters)
     Request.Prompt = TEXT("job1");
 
     FString JobId1, JobId2, Error;
-    Manager->SubmitJob(TEXT("test"), Request, JobId1, Error);
+    ECortexGenError ErrorCode = ECortexGenError::None;
+    Manager->SubmitJob(TEXT("test"), Request, JobId1, Error, ErrorCode);
     Request.Prompt = TEXT("job2");
     Manager->SetMaxConcurrentJobs(5);
-    Manager->SubmitJob(TEXT("test"), Request, JobId2, Error);
+    Manager->SubmitJob(TEXT("test"), Request, JobId2, Error, ErrorCode);
 
     TArray<FCortexGenJobState> Jobs = Manager->ListJobs();
     TestEqual(TEXT("Should have 2 jobs"), Jobs.Num(), 2);
@@ -328,12 +340,13 @@ bool FCortexGenJobManagerDeleteJobTest::RunTest(const FString& Parameters)
     Request.Prompt = TEXT("deleteme");
 
     FString JobId, Error;
-    Manager->SubmitJob(TEXT("test"), Request, JobId, Error);
+    ECortexGenError ErrorCode = ECortexGenError::None;
+    Manager->SubmitJob(TEXT("test"), Request, JobId, Error, ErrorCode);
 
     // Cancel first (can't delete active jobs)
-    Manager->CancelJob(JobId, Error);
+    Manager->CancelJob(JobId, Error, ErrorCode);
 
-    bool bDeleted = Manager->DeleteJob(JobId, Error);
+    bool bDeleted = Manager->DeleteJob(JobId, Error, ErrorCode);
     TestTrue(TEXT("Delete should succeed"), bDeleted);
 
     const FCortexGenJobState* State = Manager->GetJobState(JobId);

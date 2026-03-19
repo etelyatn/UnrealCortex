@@ -53,6 +53,20 @@ enum class ECortexGenJobStatus : uint8
     Cancelled,          // User-initiated cancellation
 };
 
+/** Typed error codes returned by FCortexGenJobManager operations.
+ *  Maps directly to CortexErrorCodes strings in the command handler. */
+enum class ECortexGenError : uint8
+{
+    None,
+    ProviderNotFound,
+    CapabilityNotSupported,
+    JobLimitReached,
+    JobNotFound,
+    JobInTerminalState,
+    JobNotRetryable,
+    ProviderError,
+};
+
 USTRUCT()
 struct FCortexGenJobRequest
 {

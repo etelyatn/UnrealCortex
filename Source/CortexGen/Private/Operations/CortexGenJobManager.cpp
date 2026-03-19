@@ -150,8 +150,11 @@ int32 FCortexGenJobManager::CountActiveJobs() const
 }
 
 bool FCortexGenJobManager::SubmitJob(const FString& ProviderId,
-    const FCortexGenJobRequest& Request, FString& OutJobId, FString& OutError)
+    const FCortexGenJobRequest& Request, FString& OutJobId, FString& OutError,
+    ECortexGenError& OutErrorCode)
 {
+    OutErrorCode = ECortexGenError::None;
+
     // Validate provider exists
     TSharedPtr<ICortexGenProvider> Provider = GetProvider(ProviderId);
     if (!Provider.IsValid())
@@ -162,6 +165,7 @@ bool FCortexGenJobManager::SubmitJob(const FString& ProviderId,
         {
             OutError += Pair.Key + TEXT(" ");
         }
+        OutErrorCode = ECortexGenError::ProviderNotFound;
         return false;
     }
 
@@ -172,6 +176,7 @@ bool FCortexGenJobManager::SubmitJob(const FString& ProviderId,
         OutError = FString::Printf(
             TEXT("Provider '%s' does not support the requested job type"),
             *ProviderId);
+        OutErrorCode = ECortexGenError::CapabilityNotSupported;
         return false;
     }
 
@@ -181,6 +186,7 @@ bool FCortexGenJobManager::SubmitJob(const FString& ProviderId,
         OutError = FString::Printf(
             TEXT("Maximum concurrent jobs (%d) reached. Wait for a job to complete or increase the limit in settings."),
             MaxConcurrentJobs);
+        OutErrorCode = ECortexGenError::JobLimitReached;
         return false;
     }
 
@@ -231,12 +237,16 @@ bool FCortexGenJobManager::SubmitJob(const FString& ProviderId,
     return true;
 }
 
-bool FCortexGenJobManager::CancelJob(const FString& JobId, FString& OutError)
+bool FCortexGenJobManager::CancelJob(const FString& JobId, FString& OutError,
+    ECortexGenError& OutErrorCode)
 {
+    OutErrorCode = ECortexGenError::None;
+
     FCortexGenJobState* Job = Jobs.Find(JobId);
     if (!Job)
     {
         OutError = FString::Printf(TEXT("Job '%s' not found"), *JobId);
+        OutErrorCode = ECortexGenError::JobNotFound;
         return false;
     }
 
@@ -245,6 +255,7 @@ bool FCortexGenJobManager::CancelJob(const FString& JobId, FString& OutError)
         Job->Status == ECortexGenJobStatus::Failed)
     {
         OutError = FString::Printf(TEXT("Job '%s' is already in terminal state"), *JobId);
+        OutErrorCode = ECortexGenError::JobInTerminalState;
         return false;
     }
 
@@ -260,12 +271,16 @@ bool FCortexGenJobManager::CancelJob(const FString& JobId, FString& OutError)
     return true;
 }
 
-bool FCortexGenJobManager::DeleteJob(const FString& JobId, FString& OutError)
+bool FCortexGenJobManager::DeleteJob(const FString& JobId, FString& OutError,
+    ECortexGenError& OutErrorCode)
 {
+    OutErrorCode = ECortexGenError::None;
+
     const FCortexGenJobState* Job = Jobs.Find(JobId);
     if (!Job)
     {
         OutError = FString::Printf(TEXT("Job '%s' not found"), *JobId);
+        OutErrorCode = ECortexGenError::JobNotFound;
         return false;
     }
 
@@ -276,6 +291,7 @@ bool FCortexGenJobManager::DeleteJob(const FString& JobId, FString& OutError)
         Job->Status == ECortexGenJobStatus::Importing)
     {
         OutError = FString::Printf(TEXT("Cannot delete active job '%s'. Cancel it first."), *JobId);
+        OutErrorCode = ECortexGenError::JobInTerminalState;
         return false;
     }
 
@@ -284,12 +300,16 @@ bool FCortexGenJobManager::DeleteJob(const FString& JobId, FString& OutError)
     return true;
 }
 
-bool FCortexGenJobManager::RetryImport(const FString& JobId, FString& OutError)
+bool FCortexGenJobManager::RetryImport(const FString& JobId, FString& OutError,
+    ECortexGenError& OutErrorCode)
 {
+    OutErrorCode = ECortexGenError::None;
+
     FCortexGenJobState* Job = Jobs.Find(JobId);
     if (!Job)
     {
         OutError = FString::Printf(TEXT("Job '%s' not found"), *JobId);
+        OutErrorCode = ECortexGenError::JobNotFound;
         return false;
     }
 
@@ -308,6 +328,7 @@ bool FCortexGenJobManager::RetryImport(const FString& JobId, FString& OutError)
 
     OutError = FString::Printf(
         TEXT("Job '%s' is not in a retryable state"), *JobId);
+    OutErrorCode = ECortexGenError::JobNotRetryable;
     return false;
 }
 

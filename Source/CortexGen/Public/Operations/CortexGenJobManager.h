@@ -28,10 +28,10 @@ public:
 
     // Job operations
     bool SubmitJob(const FString& ProviderId, const FCortexGenJobRequest& Request,
-        FString& OutJobId, FString& OutError);
-    bool CancelJob(const FString& JobId, FString& OutError);
-    bool DeleteJob(const FString& JobId, FString& OutError);
-    bool RetryImport(const FString& JobId, FString& OutError);
+        FString& OutJobId, FString& OutError, ECortexGenError& OutErrorCode);
+    bool CancelJob(const FString& JobId, FString& OutError, ECortexGenError& OutErrorCode);
+    bool DeleteJob(const FString& JobId, FString& OutError, ECortexGenError& OutErrorCode);
+    bool RetryImport(const FString& JobId, FString& OutError, ECortexGenError& OutErrorCode);
 
     // Job queries
     const FCortexGenJobState* GetJobState(const FString& JobId) const;

@@ -225,25 +225,28 @@ FCortexCommandResult FCortexGenCommandHandler::SubmitGenJob(ECortexGenJobType Ty
 
     FString JobId;
     FString OutError;
-    bool bSuccess = JobManager->SubmitJob(ProviderId, Request, JobId, OutError);
+    ECortexGenError ErrorCode = ECortexGenError::None;
+    bool bSuccess = JobManager->SubmitJob(ProviderId, Request, JobId, OutError, ErrorCode);
 
     if (!bSuccess)
     {
-        // Map error text to error code heuristically
-        FString ErrorCode = CortexErrorCodes::ProviderError;
-        if (OutError.Contains(TEXT("not found")))
+        FString MappedCode;
+        switch (ErrorCode)
         {
-            ErrorCode = CortexErrorCodes::ProviderNotFound;
+        case ECortexGenError::ProviderNotFound:
+            MappedCode = CortexErrorCodes::ProviderNotFound;
+            break;
+        case ECortexGenError::CapabilityNotSupported:
+            MappedCode = CortexErrorCodes::CapabilityNotSupported;
+            break;
+        case ECortexGenError::JobLimitReached:
+            MappedCode = CortexErrorCodes::JobLimitReached;
+            break;
+        default:
+            MappedCode = CortexErrorCodes::ProviderError;
+            break;
         }
-        else if (OutError.Contains(TEXT("does not support")))
-        {
-            ErrorCode = CortexErrorCodes::CapabilityNotSupported;
-        }
-        else if (OutError.Contains(TEXT("concurrent")))
-        {
-            ErrorCode = CortexErrorCodes::JobLimitReached;
-        }
-        return FCortexCommandRouter::Error(ErrorCode, OutError);
+        return FCortexCommandRouter::Error(MappedCode, OutError);
     }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -349,12 +352,13 @@ FCortexCommandResult FCortexGenCommandHandler::HandleCancelJob(const TSharedPtr<
     }
 
     FString OutError;
-    if (!JobManager->CancelJob(JobId, OutError))
+    ECortexGenError ErrorCode = ECortexGenError::None;
+    if (!JobManager->CancelJob(JobId, OutError, ErrorCode))
     {
-        FString ErrorCode = OutError.Contains(TEXT("not found"))
+        FString MappedCode = (ErrorCode == ECortexGenError::JobNotFound)
             ? CortexErrorCodes::JobNotFound
             : CortexErrorCodes::InvalidOperation;
-        return FCortexCommandRouter::Error(ErrorCode, OutError);
+        return FCortexCommandRouter::Error(MappedCode, OutError);
     }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -376,12 +380,13 @@ FCortexCommandResult FCortexGenCommandHandler::HandleRetryImport(const TSharedPt
     }
 
     FString OutError;
-    if (!JobManager->RetryImport(JobId, OutError))
+    ECortexGenError ErrorCode = ECortexGenError::None;
+    if (!JobManager->RetryImport(JobId, OutError, ErrorCode))
     {
-        FString ErrorCode = OutError.Contains(TEXT("not found"))
+        FString MappedCode = (ErrorCode == ECortexGenError::JobNotFound)
             ? CortexErrorCodes::JobNotFound
             : CortexErrorCodes::JobNotRetryable;
-        return FCortexCommandRouter::Error(ErrorCode, OutError);
+        return FCortexCommandRouter::Error(MappedCode, OutError);
     }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -445,12 +450,13 @@ FCortexCommandResult FCortexGenCommandHandler::HandleDeleteJob(const TSharedPtr<
     }
 
     FString OutError;
-    if (!JobManager->DeleteJob(JobId, OutError))
+    ECortexGenError ErrorCode = ECortexGenError::None;
+    if (!JobManager->DeleteJob(JobId, OutError, ErrorCode))
     {
-        FString ErrorCode = OutError.Contains(TEXT("not found"))
+        FString MappedCode = (ErrorCode == ECortexGenError::JobNotFound)
             ? CortexErrorCodes::JobNotFound
             : CortexErrorCodes::InvalidOperation;
-        return FCortexCommandRouter::Error(ErrorCode, OutError);
+        return FCortexCommandRouter::Error(MappedCode, OutError);
     }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();

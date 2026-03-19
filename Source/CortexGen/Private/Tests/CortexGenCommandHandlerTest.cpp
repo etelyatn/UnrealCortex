@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "CortexCommandRouter.h"
+#include "CortexTypes.h"
 #include "CortexGenCommandHandler.h"
 #include "Operations/CortexGenJobManager.h"
 #include "Dom/JsonObject.h"
@@ -168,6 +169,49 @@ bool FCortexGenCommandHandlerSupportedCommandsTest::RunTest(const FString& Param
     TestTrue(TEXT("Should have list_providers"), CommandNames.Contains(TEXT("list_providers")));
     TestTrue(TEXT("Should have delete_job"), CommandNames.Contains(TEXT("delete_job")));
     TestTrue(TEXT("Should have get_config"), CommandNames.Contains(TEXT("get_config")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenCommandHandlerErrorCodeProviderNotFoundTest,
+    "Cortex.Gen.CommandHandler.ErrorCode.ProviderNotFound",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenCommandHandlerErrorCodeProviderNotFoundTest::RunTest(const FString& Parameters)
+{
+    FGenTestContext Ctx;
+
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("prompt"), TEXT("test"));
+    Params->SetStringField(TEXT("provider"), TEXT("nonexistent"));
+    FCortexCommandResult Result = Ctx.Router.Execute(TEXT("gen.start_mesh"), Params);
+
+    TestFalse(TEXT("Should fail"), Result.bSuccess);
+    TestEqual(TEXT("Error code should be PROVIDER_NOT_FOUND"),
+        Result.ErrorCode, CortexErrorCodes::ProviderNotFound);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenCommandHandlerErrorCodeJobNotFoundTest,
+    "Cortex.Gen.CommandHandler.ErrorCode.JobNotFound",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenCommandHandlerErrorCodeJobNotFoundTest::RunTest(const FString& Parameters)
+{
+    FGenTestContext Ctx;
+
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("job_id"), TEXT("nonexistent_job"));
+    FCortexCommandResult Result = Ctx.Router.Execute(TEXT("gen.cancel_job"), Params);
+
+    TestFalse(TEXT("Should fail"), Result.bSuccess);
+    TestEqual(TEXT("Error code should be JOB_NOT_FOUND"),
+        Result.ErrorCode, CortexErrorCodes::JobNotFound);
 
     return true;
 }
