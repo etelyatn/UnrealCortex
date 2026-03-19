@@ -1,5 +1,6 @@
 ﻿#include "Widgets/SCortexConversionOverlay.h"
 
+#include "Utilities/CortexTokenUtils.h"
 #include "HAL/PlatformTime.h"
 #include "Layout/Geometry.h"
 #include "Rendering/DrawElements.h"
@@ -249,26 +250,12 @@ void SCortexConversionOverlay::ResetTimer()
 void SCortexConversionOverlay::SetTokenCount(int32 Tokens)
 {
 	TokenCount = Tokens;
-
-	// Total = connection overhead + base rate + gap buffer for larger contexts
-	//   Connection:  ~10s (session spawn)
-	//   Base rate:   1 000 tokens ≈ 10s
-	//   Gap buffer:  extra pause between code blocks, attention scaling at larger sizes
-	//     < 5k tokens:  no buffer
-	//     5k–20k tokens: +15s
-	//     > 20k tokens:  +30s
-	static constexpr float ConnectionOverheadSeconds = 10.0f;
-	float GapBuffer = 0.0f;
-	if      (Tokens > 20000) GapBuffer = 30.0f;
-	else if (Tokens >  5000) GapBuffer = 15.0f;
-	EstimatedSeconds = ConnectionOverheadSeconds + (Tokens / 1000.0f) * 10.0f + GapBuffer;
+	EstimatedSeconds = CortexTokenUtils::EstimateSecondsForTokens(Tokens);
 
 	if (TokenLabel.IsValid())
 	{
-		const FString Label = FString::Printf(TEXT("~%dk tokens · est. ~%ds"),
-			FMath::RoundToInt(Tokens / 1000.0f),
-			FMath::RoundToInt(EstimatedSeconds));
+		const FString Label = CortexTokenUtils::FormatTokenEstimate(Tokens);
 		TokenLabel->SetText(FText::FromString(Label));
-		TokenLabel->SetVisibility(EVisibility::SelfHitTestInvisible);
+		TokenLabel->SetVisibility(Label.IsEmpty() ? EVisibility::Collapsed : EVisibility::SelfHitTestInvisible);
 	}
 }
