@@ -193,6 +193,7 @@ FCortexAnalysisPayload FCortexBPToolbarExtension::CaptureAnalysisPayload(
 	Blueprint->GetAllGraphs(AllGraphs);
 	for (UEdGraph* Graph : AllGraphs)
 	{
+		if (!Graph) { continue; }
 		Payload.GraphNames.Add(Graph->GetFName().ToString());
 	}
 

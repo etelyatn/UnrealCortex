@@ -112,7 +112,7 @@ namespace CortexTokenUtils
 			{
 				return 500;
 			}
-			return FMath::Max(500, static_cast<int32>(static_cast<int64>(TotalTokens) * SelectedNodeCount / FMath::Max(1, TotalNodeCount)));
+			return FMath::Max(500, static_cast<int32>(static_cast<int64>(TotalTokens) * SelectedNodeCount / TotalNodeCount));
 
 		case ECortexConversionScope::CurrentGraph:
 			return TotalTokens / NumGraphs;
