@@ -363,24 +363,24 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexGenJobManagerTimingTest::RunTest(const FString& Parameters)
 {
-    FCortexGenJobManager Manager;
+    auto Manager = CreateTestJobManager();
 
     // No data yet — returns 0
     TestEqual(TEXT("No timing data returns 0"),
-        Manager.GetAverageTime(TEXT("fal-ai/flux/dev")), 0.0f);
+        Manager->GetAverageTime(TEXT("fal-ai/flux/dev")), 0.0f);
 
     // Record some timing
-    Manager.RecordTiming(TEXT("fal-ai/flux/dev"), 2.3f);
-    Manager.RecordTiming(TEXT("fal-ai/flux/dev"), 2.8f);
-    Manager.RecordTiming(TEXT("fal-ai/flux/dev"), 2.1f);
+    Manager->RecordTiming(TEXT("fal-ai/flux/dev"), 2.3f);
+    Manager->RecordTiming(TEXT("fal-ai/flux/dev"), 2.8f);
+    Manager->RecordTiming(TEXT("fal-ai/flux/dev"), 2.1f);
 
-    float Avg = Manager.GetAverageTime(TEXT("fal-ai/flux/dev"));
+    float Avg = Manager->GetAverageTime(TEXT("fal-ai/flux/dev"));
     TestTrue(TEXT("Average should be ~2.4"),
         FMath::IsNearlyEqual(Avg, 2.4f, 0.1f));
 
     // Different model is independent
     TestEqual(TEXT("Other model has no data"),
-        Manager.GetAverageTime(TEXT("fal-ai/hyper3d/rodin")), 0.0f);
+        Manager->GetAverageTime(TEXT("fal-ai/hyper3d/rodin")), 0.0f);
 
     return true;
 }
@@ -393,19 +393,19 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexGenJobManagerTimingSlidingWindowTest::RunTest(const FString& Parameters)
 {
-    FCortexGenJobManager Manager;
+    auto Manager = CreateTestJobManager();
 
     // Fill beyond 20 samples
     for (int32 i = 0; i < 25; i++)
     {
-        Manager.RecordTiming(TEXT("test-model"), 1.0f);
+        Manager->RecordTiming(TEXT("test-model"), 1.0f);
     }
 
     // Add a new value — should replace oldest
-    Manager.RecordTiming(TEXT("test-model"), 100.0f);
+    Manager->RecordTiming(TEXT("test-model"), 100.0f);
 
     // Average should not be exactly 1.0 (the 100 value is included)
-    float Avg = Manager.GetAverageTime(TEXT("test-model"));
+    float Avg = Manager->GetAverageTime(TEXT("test-model"));
     TestTrue(TEXT("Average should include recent sample"),
         Avg > 1.0f);
 

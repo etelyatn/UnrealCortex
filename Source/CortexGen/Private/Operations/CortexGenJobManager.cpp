@@ -408,32 +408,38 @@ void FCortexGenJobManager::TransitionJob(
 
 void FCortexGenJobManager::PollActiveJobs()
 {
-    for (auto& Pair : Jobs)
+    // Collect pollable job IDs into a separate array to avoid iterating
+    // the Jobs TMap while async callbacks (which may fire synchronously in tests)
+    // can mutate it via TransitionJob -> SaveJobs -> TrimJobHistory -> Jobs.Remove().
+    TArray<FString> JobIdsToPoll;
+    for (const auto& Pair : Jobs)
     {
-        FCortexGenJobState& Job = Pair.Value;
+        if (Pair.Value.Status == ECortexGenJobStatus::Processing &&
+            !PollsInFlight.Contains(Pair.Key))
+        {
+            JobIdsToPoll.Add(Pair.Key);
+        }
+    }
 
-        if (Job.Status != ECortexGenJobStatus::Processing)
+    for (const FString& JobId : JobIdsToPoll)
+    {
+        FCortexGenJobState* JobPtr = Jobs.Find(JobId);
+        if (!JobPtr || JobPtr->Status != ECortexGenJobStatus::Processing)
         {
             continue;
         }
 
-        // Guard: skip if a poll is already in-flight for this job
-        if (PollsInFlight.Contains(Job.JobId))
-        {
-            continue;
-        }
-
-        TSharedPtr<ICortexGenProvider> Provider = GetProvider(Job.Provider);
+        TSharedPtr<ICortexGenProvider> Provider = GetProvider(JobPtr->Provider);
         if (!Provider.IsValid())
         {
             continue;
         }
 
-        FString JobId = Job.JobId;
+        FString ProviderJobId = JobPtr->ProviderJobId;
         PollsInFlight.Add(JobId);
 
         TWeakPtr<FCortexGenJobManager> WeakSelf = AsShared();
-        Provider->PollJobStatus(Job.ProviderJobId,
+        Provider->PollJobStatus(ProviderJobId,
             FOnGenJobStatusReceived::CreateLambda(
                 [WeakSelf, JobId](const FCortexGenPollResult& Result)
                 {
