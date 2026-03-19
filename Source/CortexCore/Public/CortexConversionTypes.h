@@ -50,6 +50,7 @@ struct CORTEXCORE_API FCortexConversionPayload
 	TArray<FString> EventNames;      // e.g. "ReceiveBeginPlay", "OnOverlap"
 	TArray<FString> FunctionNames;   // e.g. "CalculateDamage", "GetSpeed"
 	TArray<FString> GraphNames;      // all graph names in the BP
+	int32 TotalNodeCount = 0;        // total nodes across all graphs (for scope estimation)
 
 	TArray<FProjectClassInfo> DetectedProjectAncestors; // populated by CortexBlueprint
 };
@@ -60,15 +61,35 @@ struct CORTEXCORE_API FCortexSerializationRequest
 	FString BlueprintPath;
 	ECortexConversionScope Scope;
 	TArray<FString> TargetGraphNames;  // for CurrentGraph / EventOrFunction scope
-	TArray<FString> SelectedNodeIds;  // for SelectedNodes scope
+	TArray<FString> SelectedNodeIds;   // for SelectedNodes scope
 
 	// When true, emit compact JSON: sequential int IDs, short type names, no x/y/comment.
 	// Reduces token usage by ~30-40% for LLM conversion requests.
 	bool bConversionMode = false;
+
+	// Analysis extensions
+	bool bIncludePositions = false;     // Include node x/y in JSON (graph preview needs positions)
+	bool bCloneGraphs = false;          // Clone target graphs into transient package (for SGraphEditor preview)
+	bool bBuildNodeIdMapping = false;   // Build sequential ID → FGuid + display name mapping tables
 };
 
-// Result callback type — returns serialized JSON
-DECLARE_DELEGATE_TwoParams(FOnSerializationComplete, bool /*bSuccess*/, const FString& /*JsonPayload*/);
+// ── Serialization result (rich result with optional mapping + cloned graphs) ──
+struct CORTEXCORE_API FCortexSerializationResult
+{
+	bool bSuccess = false;
+	FString JsonPayload;
+	TMap<int32, FGuid> NodeIdMapping;       // Sequential node_N → FGuid
+	TMap<int32, FString> NodeDisplayNames;  // Sequential node_N → human-readable name
+	UPackage* ClonedGraphPackage = nullptr; // Transient package with cloned graphs (analysis only)
+	// ClonedGraphPackage lifecycle:
+	// - Serializer calls AddToRoot() immediately after creation
+	// - Caller calls RemoveFromRoot() when FCortexAnalysisContext takes ownership
+	//   (FGCObject::AddReferencedObjects provides steady-state protection)
+	// - If context creation fails, caller must RemoveFromRoot() + MarkAsGarbage()
+};
+
+// Result callback type — returns serialization result struct
+DECLARE_DELEGATE_OneParam(FOnSerializationComplete, const FCortexSerializationResult&);
 
 // ── Delegates ──
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnCortexConversionRequested, const FCortexConversionPayload&);

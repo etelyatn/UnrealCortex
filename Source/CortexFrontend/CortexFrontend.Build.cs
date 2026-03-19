@@ -30,6 +30,8 @@ public class CortexFrontend : ModuleRules
             "ImageWrapper",
             "EditorScriptingUtilities",
             "DesktopPlatform",
+            "GraphEditor",
+            "BlueprintGraph",
         });
     }
 }

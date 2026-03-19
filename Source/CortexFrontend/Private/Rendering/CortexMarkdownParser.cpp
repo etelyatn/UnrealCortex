@@ -137,18 +137,21 @@ TArray<FCortexMarkdownBlock> CortexMarkdownParser::ParseBlocks(const FString& Ma
 			FString LangTag = Line.Mid(3).TrimStartAndEnd();
 
 			// Parse optional :suffix (e.g., "cpp:header" → language="cpp", target="header")
+			// Unknown suffixes (e.g., "finding:bug:critical") preserve full LangTag as language.
 			int32 ColonPos = INDEX_NONE;
 			if (LangTag.FindChar(TEXT(':'), ColonPos))
 			{
-				CodeLanguage = LangTag.Left(ColonPos);
 				FString Suffix = LangTag.Mid(ColonPos + 1);
-				// Whitelist valid targets — treat unknown suffixes as untagged
+				// Whitelist valid targets — treat unknown suffixes as part of the language tag
 				if (Suffix == TEXT("header") || Suffix == TEXT("implementation") || Suffix == TEXT("snippet"))
 				{
+					CodeLanguage = LangTag.Left(ColonPos);
 					CodeBlockTarget = Suffix;
 				}
 				else
 				{
+					// Preserve full tag (e.g., "finding:bug:critical") for custom tag handlers
+					CodeLanguage = LangTag;
 					CodeBlockTarget.Reset();
 				}
 			}

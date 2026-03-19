@@ -14,6 +14,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseSystemInitModelTest, "Co
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseUsageTest, "Cortex.Frontend.StreamEvent.ParseUsage", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseStreamEventDeltaTest, "Cortex.Frontend.StreamEvent.ParseStreamEventDelta", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseStreamEventNonDeltaTest, "Cortex.Frontend.StreamEvent.ParseStreamEventNonDelta", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseUsageToolOnlyTest, "Cortex.Frontend.StreamEvent.ParseUsageToolOnly", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexStreamEventParseSystemTest::RunTest(const FString& Parameters)
 {
@@ -203,5 +204,31 @@ bool FCortexStreamEventParseUsageTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("CacheReadTokens"), TextEvent->CacheReadTokens, (int64)800);
         TestEqual(TEXT("CacheCreationTokens"), TextEvent->CacheCreationTokens, (int64)100);
     }
+    return true;
+}
+
+bool FCortexStreamEventParseUsageToolOnlyTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    // Assistant message with ONLY tool_use (no text) but with usage data
+    const FString JsonLine = TEXT("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"list_actors\",\"input\":{}}],\"usage\":{\"input_tokens\":2000,\"output_tokens\":150,\"cache_read_input_tokens\":500,\"cache_creation_input_tokens\":50}}}");
+    const TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseNdjsonLine(JsonLine);
+
+    TestTrue(TEXT("Should produce at least 1 event"), Events.Num() >= 1);
+
+    // At least one event must carry the usage data
+    bool bFoundUsage = false;
+    for (const FCortexStreamEvent& E : Events)
+    {
+        if (E.InputTokens > 0 || E.OutputTokens > 0)
+        {
+            bFoundUsage = true;
+            TestEqual(TEXT("InputTokens"), E.InputTokens, (int64)2000);
+            TestEqual(TEXT("OutputTokens"), E.OutputTokens, (int64)150);
+            TestEqual(TEXT("CacheReadTokens"), E.CacheReadTokens, (int64)500);
+            TestEqual(TEXT("CacheCreationTokens"), E.CacheCreationTokens, (int64)50);
+        }
+    }
+    TestTrue(TEXT("Usage data must be propagated even without text content"), bFoundUsage);
     return true;
 }
