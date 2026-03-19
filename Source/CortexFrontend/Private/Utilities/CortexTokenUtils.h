@@ -140,8 +140,9 @@ namespace CortexTokenUtils
 			const int32 Selected = FMath::Max(1, SelectedFunctions.Num());
 			return static_cast<int32>(static_cast<int64>(TotalTokens) * Selected / NumFunctions);
 		}
-		}
 
-		return TotalTokens;
+		default:
+			return TotalTokens;
+		}
 	}
 }
