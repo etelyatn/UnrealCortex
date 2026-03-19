@@ -707,8 +707,19 @@ void SCortexConversionChat::CollapseStatusMessages(const FCortexTurnResult& Resu
 	}
 	else
 	{
-		SummaryEntry->Text = FString::Printf(TEXT("Converted in %.1fs"),
-			Result.DurationMs / 1000.0);
+		FString TokenInfo;
+		if (Context.IsValid() && Context->Session.IsValid())
+		{
+			const int64 InTokens = Context->Session->GetTotalInputTokens();
+			const int64 OutTokens = Context->Session->GetTotalOutputTokens();
+			if (InTokens > 0 || OutTokens > 0)
+			{
+				TokenInfo = FString::Printf(TEXT(" \u00B7 %lldK in / %lldK out"),
+					(InTokens + 500) / 1000, (OutTokens + 500) / 1000);
+			}
+		}
+		SummaryEntry->Text = FString::Printf(TEXT("Converted in %.1fs%s"),
+			Result.DurationMs / 1000.0, *TokenInfo);
 	}
 
 	TSharedPtr<FCortexChatDisplayRow> SummaryRow = MakeShared<FCortexChatDisplayRow>();
