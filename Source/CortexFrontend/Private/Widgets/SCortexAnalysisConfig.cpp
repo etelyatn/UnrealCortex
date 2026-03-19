@@ -571,6 +571,8 @@ void SCortexAnalysisConfig::RequestTokenEstimate()
 	Request.BlueprintPath = Context->Payload.BlueprintPath;
 	Request.Scope = ECortexConversionScope::EntireBlueprint;
 	Request.bConversionMode = true;
+	Request.bIncludePositions = true;
+	Request.bBuildNodeIdMapping = true;
 
 	FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
 	TWeakPtr<FCortexAnalysisContext> WeakContext = Context;
@@ -621,6 +623,8 @@ void SCortexAnalysisConfig::RequestTokenEstimate()
 		FuncRequest.Scope = ECortexConversionScope::EventOrFunction;
 		FuncRequest.TargetGraphNames.Add(FuncName);
 		FuncRequest.bConversionMode = true;
+		FuncRequest.bIncludePositions = true;
+		FuncRequest.bBuildNodeIdMapping = true;
 
 		Core.RequestSerialization(FuncRequest,
 			FOnSerializationComplete::CreateLambda(
