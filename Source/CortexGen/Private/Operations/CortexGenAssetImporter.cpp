@@ -29,6 +29,10 @@ FCortexGenAssetImporter::FImportResult FCortexGenAssetImporter::RunImportTask(
 
     IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(
         "AssetTools").Get();
+    // NOTE (GEN-003): ImportAssetTasks() runs synchronously on the Game Thread.
+    // GLB files with embedded textures can stall the editor for several seconds.
+    // The job status "Importing" communicates this to callers.
+    // Async import via UE::Tasks is a future improvement if stalls become problematic.
     AssetTools.ImportAssetTasks({ ImportTask.Get() });
 
     for (UObject* ImportedObj : ImportTask->GetObjects())
