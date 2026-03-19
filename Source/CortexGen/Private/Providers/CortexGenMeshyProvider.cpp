@@ -210,7 +210,11 @@ void FCortexGenMeshyProvider::PollJobStatus(
 void FCortexGenMeshyProvider::CancelJob(
     const FString& ProviderJobId, FOnGenJobCancelled OnComplete)
 {
-    // Meshy doesn't have a cancel endpoint — mark locally as cancelled
+    // Meshy API does not support job cancellation.
+    // Local job state is transitioned to Cancelled by FCortexGenJobManager.
+    UE_LOG(LogCortexGen, Log,
+        TEXT("CancelJob: provider-side cancellation not supported for Meshy (job %s). Local state will be marked cancelled."),
+        *ProviderJobId);
     OnComplete.ExecuteIfBound(true);
 }
 

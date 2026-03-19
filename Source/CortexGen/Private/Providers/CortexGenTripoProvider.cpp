@@ -209,7 +209,11 @@ void FCortexGenTripoProvider::PollJobStatus(
 void FCortexGenTripoProvider::CancelJob(
     const FString& ProviderJobId, FOnGenJobCancelled OnComplete)
 {
-    // Tripo3D doesn't expose a cancel endpoint — mark locally
+    // Tripo3D API does not support job cancellation.
+    // Local job state is transitioned to Cancelled by FCortexGenJobManager.
+    UE_LOG(LogCortexGen, Log,
+        TEXT("CancelJob: provider-side cancellation not supported for Tripo3D (job %s). Local state will be marked cancelled."),
+        *ProviderJobId);
     OnComplete.ExecuteIfBound(true);
 }
 
