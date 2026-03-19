@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Analysis/CortexAnalysisContext.h"
 #include "Conversion/CortexConversionContext.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
@@ -8,6 +9,7 @@
 #include "Widgets/SCortexSidebar.h"
 
 class FCortexCliSession;
+struct FCortexAnalysisPayload;
 struct FCortexConversionPayload;
 
 class SCortexWorkbench : public SCompoundWidget
@@ -26,10 +28,14 @@ public:
 	/** Spawn a new conversion tab for the given payload. */
 	void SpawnConversionTab(const FCortexConversionPayload& Payload);
 
+	/** Spawn a new analysis tab for the given payload. */
+	void SpawnAnalysisTab(const FCortexAnalysisPayload& Payload);
+
 private:
 	TSharedRef<SDockTab> SpawnChatTab(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnQATab(const FSpawnTabArgs& Args);
 	void CleanupConversionTab(FName TabId);
+	void CleanupAnalysisTab(FName TabId);
 	void OnSidebarToggle();
 	float GetSidebarSlotValue() const;
 
@@ -39,6 +45,7 @@ private:
 	TSharedPtr<SBox> SidebarBox;
 
 	TMap<FName, TSharedPtr<FCortexConversionContext>> ConversionContexts;
+	TMap<FName, TSharedPtr<FCortexAnalysisContext>> AnalysisContexts;
 
 	float CachedSidebarCoefficient = 0.20f;
 	bool bSidebarCollapsed = false;

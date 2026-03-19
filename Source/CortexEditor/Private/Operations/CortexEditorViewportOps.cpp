@@ -13,6 +13,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Misc/EngineVersionComparison.h"
 #include "HAL/FileManager.h"
 #include "GameFramework/Actor.h"
 #include "Engine/Blueprint.h"

@@ -142,16 +142,18 @@ void SCortexConversionTab::OnConvertClicked()
 	FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
 	Core.RequestSerialization(Request,
 		FOnSerializationComplete::CreateLambda(
-			[this, SerializeStart, TotalStart, ScopeStr](bool bSuccess, const FString& Json)
+			[this, SerializeStart, TotalStart, ScopeStr](const FCortexSerializationResult& SerResult)
 			{
 				const double SerializeMs = (FPlatformTime::Seconds() - SerializeStart) * 1000.0;
 
-				if (!bSuccess)
+				if (!SerResult.bSuccess)
 				{
-					UE_LOG(LogCortexFrontend, Error, TEXT("  Serialization FAILED (%.1fms): %s"), SerializeMs, *Json);
-					StatusMessage(FString::Printf(TEXT("[Error] Serialization failed: %s"), *Json));
+					UE_LOG(LogCortexFrontend, Error, TEXT("  Serialization FAILED (%.1fms): %s"), SerializeMs, *SerResult.JsonPayload);
+					StatusMessage(FString::Printf(TEXT("[Error] Serialization failed: %s"), *SerResult.JsonPayload));
 					return;
 				}
+
+				const FString& Json = SerResult.JsonPayload;
 
 				const int32 JsonBytes = Json.Len() * sizeof(TCHAR);
 				const int32 EstimatedTokens = Json.Len() / 4;

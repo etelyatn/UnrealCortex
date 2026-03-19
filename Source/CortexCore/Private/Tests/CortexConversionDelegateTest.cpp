@@ -50,11 +50,11 @@ bool FCortexSerializationUnboundHandlerTest::RunTest(const FString& Parameters)
 
 	Core.RequestSerialization(Request,
 		FOnSerializationComplete::CreateLambda(
-			[&](bool bOk, const FString& Json)
+			[&](const FCortexSerializationResult& SerResult)
 			{
 				bCallbackFired = true;
-				bSuccess = bOk;
-				ResultJson = Json;
+				bSuccess = SerResult.bSuccess;
+				ResultJson = SerResult.JsonPayload;
 			}));
 
 	TestTrue(TEXT("Callback should fire even when unbound"), bCallbackFired);
@@ -78,7 +78,10 @@ bool FCortexSerializationBoundHandlerTest::RunTest(const FString& Parameters)
 	Core.SetSerializationHandler(FOnCortexSerializationRequested::CreateLambda(
 		[](const FCortexSerializationRequest& Req, FOnSerializationComplete Callback)
 		{
-			Callback.Execute(true, TEXT("{\"test\":\"ok\"}"));
+			FCortexSerializationResult HandlerResult;
+			HandlerResult.bSuccess = true;
+			HandlerResult.JsonPayload = TEXT("{\"test\":\"ok\"}");
+			Callback.Execute(HandlerResult);
 		}));
 
 	FCortexSerializationRequest Request;
@@ -90,10 +93,10 @@ bool FCortexSerializationBoundHandlerTest::RunTest(const FString& Parameters)
 
 	Core.RequestSerialization(Request,
 		FOnSerializationComplete::CreateLambda(
-			[&](bool bOk, const FString& Json)
+			[&](const FCortexSerializationResult& SerResult)
 			{
-				bSuccess = bOk;
-				ResultJson = Json;
+				bSuccess = SerResult.bSuccess;
+				ResultJson = SerResult.JsonPayload;
 			}));
 
 	TestTrue(TEXT("Should report success when handler bound"), bSuccess);

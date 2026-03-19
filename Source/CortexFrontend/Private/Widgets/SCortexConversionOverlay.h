@@ -7,14 +7,20 @@
 class STextBlock;
 
 /**
- * Animated full-canvas overlay shown while the LLM is generating C++ code.
+ * Animated full-canvas overlay shown while the LLM is processing.
  * Draws a dark background with a moving scan line and animated status text.
- * Hide by setting visibility to Collapsed once code arrives.
+ * Hide by setting visibility to Collapsed once results arrive.
+ * Reusable across conversion and analysis flows via Title/PhaseLabels args.
  */
 class SCortexConversionOverlay : public SCompoundWidget
 {
 public:
-	SLATE_BEGIN_ARGS(SCortexConversionOverlay) {}
+	SLATE_BEGIN_ARGS(SCortexConversionOverlay)
+		: _Title(NSLOCTEXT("CortexConversionOverlay", "Title", "// Generating C++"))
+	{}
+		SLATE_ARGUMENT(FText, Title)
+		/** Optional phase labels [phase0, phase1, phase2, phase3] — elapsed-time based cycling. */
+		SLATE_ARGUMENT(TArray<FString>, PhaseLabels)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
@@ -43,4 +49,6 @@ private:
 
 	int32 TokenCount = 0;
 	float EstimatedSeconds = 0.0f;
+
+	TArray<FString> CustomPhaseLabels;
 };
