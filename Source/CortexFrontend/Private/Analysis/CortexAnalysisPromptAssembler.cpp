@@ -30,6 +30,7 @@ Severities: critical, warning, info, suggestion
 ## Node References
 
 Use node IDs from the serialized Blueprint data (e.g., "node_47"). Each node has an "id" field in the JSON.
+A NODE LEGEND section maps each node_N to its human-readable display name. Use both in your output: reference nodes as "node_N" in the JSON "node" field, but prefer display names in description and suggestedFix text for clarity (e.g., "the 'Select Float' node" instead of "node_23").
 
 ## Rules
 
@@ -303,6 +304,34 @@ FString FCortexAnalysisPromptAssembler::BuildInitialUserMessage(
     // Data sections AFTER instructions
     Message += TEXT("\n\n[ENGINE DIAGNOSTICS — already detected, do not re-report]\n");
     Message += PreScanFindingsToString(Context.Payload.PreScanFindings);
+
+    // Node legend — compact ID-to-name mapping so AI can reference nodes by name
+    if (Context.NodeDisplayNames.Num() > 0)
+    {
+        Message += TEXT("\n\n[NODE LEGEND]\n");
+
+        // Sort by node ID for readability
+        TArray<int32> SortedIds;
+        Context.NodeDisplayNames.GetKeys(SortedIds);
+        SortedIds.Sort();
+
+        for (const int32 NodeId : SortedIds)
+        {
+            const FString& DisplayName = Context.NodeDisplayNames[NodeId];
+            // Include graph name if available for disambiguation
+            const FString GraphName = Context.GetNodeGraphName(NodeId);
+            if (!GraphName.IsEmpty())
+            {
+                Message += FString::Printf(TEXT("node_%d: %s (%s)\n"),
+                    NodeId, *DisplayName, *GraphName);
+            }
+            else
+            {
+                Message += FString::Printf(TEXT("node_%d: %s\n"),
+                    NodeId, *DisplayName);
+            }
+        }
+    }
 
     Message += TEXT("\n\n[BLUEPRINT DATA]\n");
     Message += BlueprintJson;

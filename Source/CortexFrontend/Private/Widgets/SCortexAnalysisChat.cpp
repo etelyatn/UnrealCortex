@@ -3,6 +3,7 @@
 
 #include "Analysis/CortexFindingTypes.h"
 #include "HAL/PlatformTime.h"
+#include "Internationalization/Regex.h"
 #include "Rendering/CortexChatEntryBuilder.h"
 #include "Widgets/SCortexChatMessage.h"
 #include "Widgets/SCortexInputArea.h"
@@ -178,6 +179,66 @@ void SCortexAnalysisChat::OnTurnComplete(const FCortexTurnResult& Result)
 	}
 }
 
+/**
+ * Replace all "node_N" references in text with "'DisplayName' (node_N)" using
+ * the node display name mapping from the analysis context.
+ * E.g., "node_8" → "'Select Float' (node_8)"
+ */
+static FString ResolveNodeReferencesInText(
+	const FString& Text,
+	const FCortexAnalysisContext& Context)
+{
+	if (Text.IsEmpty() || Context.NodeDisplayNames.Num() == 0)
+	{
+		return Text;
+	}
+
+	// Match standalone "node_N" tokens (word boundary prevents node_1 matching inside node_12)
+	static const FRegexPattern Pattern(TEXT("\\bnode_(\\d+)\\b"));
+	FRegexMatcher Matcher(Pattern, Text);
+
+	FString Result;
+	int32 LastPos = 0;
+
+	while (Matcher.FindNext())
+	{
+		const int32 MatchBegin = Matcher.GetMatchBeginning();
+		const int32 MatchEnd = Matcher.GetMatchEnding();
+
+		// Append text before this match
+		Result += Text.Mid(LastPos, MatchBegin - LastPos);
+
+		// Extract and resolve the node ID
+		const FString IdStr = Matcher.GetCaptureGroup(1);
+		if (IdStr.IsNumeric())
+		{
+			const int32 NodeId = FCString::Atoi(*IdStr);
+			const FString DisplayName = Context.GetNodeDisplayName(NodeId);
+
+			// If resolved to an actual name (not fallback "node_N"), show both
+			if (!DisplayName.StartsWith(TEXT("node_")))
+			{
+				Result += FString::Printf(TEXT("'%s' (node_%d)"), *DisplayName, NodeId);
+			}
+			else
+			{
+				// No mapping — keep original
+				Result += Text.Mid(MatchBegin, MatchEnd - MatchBegin);
+			}
+		}
+		else
+		{
+			Result += Text.Mid(MatchBegin, MatchEnd - MatchBegin);
+		}
+
+		LastPos = MatchEnd;
+	}
+
+	// Append remainder
+	Result += Text.Mid(LastPos);
+	return Result;
+}
+
 void SCortexAnalysisChat::ProcessFindings(const FString& FullText)
 {
 	if (!Context.IsValid())
@@ -216,6 +277,11 @@ void SCortexAnalysisChat::ProcessFindings(const FString& FullText)
 				Finding.GraphName = Context->GetNodeGraphName(NodeId);
 			}
 		}
+
+		// Safety net: the AI prompt includes a NODE LEGEND to encourage natural names,
+		// but LLMs may still emit raw node_N references in free text
+		Finding.Description = ResolveNodeReferencesInText(Finding.Description, *Context);
+		Finding.SuggestedFix = ResolveNodeReferencesInText(Finding.SuggestedFix, *Context);
 
 		const int32 Idx = Context->AddFinding(Finding);
 		OnNewFindingDelegate.ExecuteIfBound(Context->Findings[Idx]);

@@ -3,16 +3,16 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Unreal%20Engine-5.6%2B-blue?style=flat-square&logo=unrealengine" alt="UE 5.6+">
   <img src="https://img.shields.io/badge/Type-Editor%20Only-green?style=flat-square" alt="Editor Only">
-  <img src="https://img.shields.io/badge/Modules-10-lightgrey?style=flat-square" alt="10 Modules">
+  <img src="https://img.shields.io/badge/Modules-12-lightgrey?style=flat-square" alt="12 Modules">
   <img src="https://img.shields.io/badge/Python-3.10%2B-yellow?style=flat-square&logo=python" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/License-MIT-lightgrey?style=flat-square" alt="MIT">
 </p>
 
 **Give your AI hands inside Unreal Engine.**
 
-Your AI assistant can already write code. UnrealCortex lets it work *inside* the editor — querying DataTables, editing Blueprint graphs, building UMG hierarchies, placing actors, converting Blueprints to C++, and even playing and testing your game autonomously. No copy-pasting, no file exports. Changes appear live with full undo support.
+Your AI assistant can already write code. UnrealCortex lets it work *inside* the editor — querying DataTables, editing Blueprint graphs, building UMG hierarchies, placing actors, converting Blueprints to C++, analyzing Blueprints for bugs and performance issues, generating 3D assets, and even playing and testing your game autonomously. No copy-pasting, no file exports. Changes appear live with full undo support.
 
-> **Status:** v0.1.0 Beta — All 10 domain modules shipped and tested.
+> **Status:** v0.1.0 Beta — All 12 modules shipped and tested.
 
 ---
 
@@ -165,6 +165,38 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 </details>
 
+<details>
+<summary><strong>Asset Generation — CortexGen</strong> &nbsp;·&nbsp; AI-powered 3D asset creation via Meshy and Tripo3D</summary>
+
+<br>
+
+**Text-to-3D:** Generate meshes from text descriptions using Meshy or Tripo3D APIs.
+
+**Image-to-3D:** Convert reference images into 3D meshes with automatic UV mapping.
+
+**Async pipeline:** Submit generation jobs, poll status, auto-import completed assets into the project with proper naming and folder structure.
+
+**Example tasks:** *"Generate a low-poly treasure chest from text description and import it as SM_TreasureChest"* · *"Convert this concept art into a 3D mesh using Tripo3D"*
+
+</details>
+
+<details>
+<summary><strong>In-Editor AI UI — CortexFrontend</strong> &nbsp;·&nbsp; Blueprint analysis, BP-to-C++ conversion, QA recording</summary>
+
+<br>
+
+**AI Chat:** Dockable panel with persistent Claude CLI session, streaming responses, tool activity display, and three access modes (ReadOnly, Guided, FullAccess).
+
+**Blueprint Analysis:** AI-powered Blueprint review triggered from the editor toolbar. Configurable analysis depth (Quick Overview, Standard, Deep Dive) with UE safety pattern awareness that prevents false positives (validated casts, IsValid macros, multi-hop exec flow). Findings appear with severity-colored expandable detail sections, suggested fixes, and direct "Open in BP" navigation. Token budget management with per-function estimates.
+
+**Blueprint-to-C++ Conversion:** Dual-pane workspace with chat panel and code canvas. AI generates C++ header + implementation from Blueprint structure. Follow-up modifications use search/replace diffs with visual diff rendering and one-click apply.
+
+**QA Recording:** Session recording and replay for gameplay test automation.
+
+**Example tasks:** *"Analyze BP_EnemyBase for bugs and performance issues"* · *"Convert BP_InventoryManager to C++"* · *"Record a playthrough of the tutorial level"*
+
+</details>
+
 ---
 
 ## Architecture
@@ -185,6 +217,11 @@ flowchart TB
         Editor["CortexEditor<br/>PIE · Viewport<br/>Input · Console"]
         QA["CortexQA<br/>Game Actions<br/>Assertions · Scenarios"]
         Reflect["CortexReflect<br/>Class Hierarchy<br/>Cross-references"]
+        Gen["CortexGen<br/>AI Asset Generation<br/>Meshy · Tripo3D"]
+    end
+
+    subgraph UI["In-Editor UI (C++ Plugin)"]
+        Frontend["CortexFrontend<br/>AI Chat · BP Analysis<br/>BP→C++ · QA Recording"]
     end
 
     UE["Unreal Editor"]
@@ -246,7 +283,7 @@ Add the plugin to your `.uproject`:
 }
 ```
 
-Rebuild your project. All 10 modules load automatically at `PostEngineInit` — after `IAssetRegistry` and the Blueprint compilation system are ready. All modules are `Type: Editor` and are stripped from shipping builds.
+Rebuild your project. All 12 modules load automatically at `PostEngineInit` — after `IAssetRegistry` and the Blueprint compilation system are ready. All modules are `Type: Editor` and are stripped from shipping builds.
 
 ### Step 2 — Install Python Dependencies
 
@@ -402,12 +439,14 @@ void FMyDomainModule::StartupModule()
 | **CortexLevel** | CortexCore | `LevelEditor` · `DataLayerEditor` |
 | **CortexUMG** | CortexCore | `UMG` · `UMGEditor` · `Slate` · `SlateCore` · `MovieScene` |
 | **CortexReflect** | CortexCore | `AssetRegistry` · `BlueprintGraph` · `Kismet` |
+| **CortexGen** | CortexCore | `HTTP` · `Json` · `ImageWrapper` · `AssetRegistry` |
+| **CortexFrontend** | CortexCore | `Slate` · `SlateCore` · `GraphEditor` · `BlueprintGraph` · `Kismet` |
 
-Domain modules depend only on CortexCore (and shared infrastructure: CortexGraph, CortexEditor). Never on each other.
+Domain modules depend only on CortexCore (and shared infrastructure: CortexGraph, CortexEditor). Never on each other. CortexFrontend is a UI leaf module with no MCP command surface.
 
 ### Cook and Packaging Safety
 
-All 10 modules declare `"Type": "Editor"` in `UnrealCortex.uplugin`. Because `Type: Editor` modules are not loaded in non-editor targets (cook, server, game), the `PostEngineInit` load phase is only relevant in the editor. The plugin is never included in cooked or packaged builds.
+All 12 modules declare `"Type": "Editor"` in `UnrealCortex.uplugin`. Because `Type: Editor` modules are not loaded in non-editor targets (cook, server, game), the `PostEngineInit` load phase is only relevant in the editor. The plugin is never included in cooked or packaged builds.
 
 ### Generic Serialization
 
@@ -426,7 +465,7 @@ After a Live Coding recompile, the TCP server restarts automatically with the ne
 These are the current boundaries of the beta. They're on the roadmap but not yet resolved:
 
 - **Widget animation tracks:** Named animations can be created and listed, but property track binding and keyframe creation are not yet implemented
-- **Blueprint compile diagnostics:** `bp.compile` returns success/failure but error locations are unstructured text, not node-level diagnostics
+- **Blueprint compile diagnostics:** `bp.compile` returns success/failure with structured diagnostics, but error-to-node mapping depends on compiler message format consistency
 - **Concurrent input sequences:** `run_input_sequence` works correctly for single-agent use; concurrent sequences from multiple agents may route callbacks incorrectly
 - **Reflect coverage:** `query_class_hierarchy` and `find_usages` only see Blueprint classes loaded in memory; unloaded Blueprints are silently skipped
 - **Batch pipeline:** No transactional rollback; if a batch step fails, completed steps are not undone
@@ -439,7 +478,6 @@ These are the current boundaries of the beta. They're on the roadmap but not yet
 |--------|---------------------------|
 | **CortexAnimation** | Work with animation montages, state machines, blend spaces |
 | **CortexNiagara** | Modify particle system parameters, emitter configuration |
-| **Enhanced migration tooling** | Multi-Blueprint orchestrated Blueprint-to-C++ migration workflows |
 
 ---
 
