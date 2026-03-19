@@ -113,6 +113,20 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 	Payload.BlueprintName = Blueprint->GetName();
 	Payload.ParentClassName = Blueprint->ParentClass ? Blueprint->ParentClass->GetName() : TEXT("None");
 
+	// Detect Widget Blueprint via dynamic UMG class resolution (no compile-time UMG dependency)
+	if (Blueprint->ParentClass)
+	{
+		static UClass* UserWidgetClass = nullptr;
+		if (!UserWidgetClass)
+		{
+			UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
+		}
+		if (UserWidgetClass && Blueprint->ParentClass->IsChildOf(UserWidgetClass))
+		{
+			Payload.bIsWidgetBlueprint = true;
+		}
+	}
+
 	// Current graph
 	UEdGraph* FocusedGraph = Editor->GetFocusedGraph();
 	Payload.CurrentGraphName = FocusedGraph ? FocusedGraph->GetFName().ToString() : TEXT("");

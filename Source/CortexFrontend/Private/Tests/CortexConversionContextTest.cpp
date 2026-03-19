@@ -160,6 +160,30 @@ bool FCortexPayloadDetectedAncestorsFieldTest::RunTest(const FString& Parameters
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexBPToolbarWidgetDetectionTest,
+    "Cortex.Blueprint.Toolbar.WidgetBPDetection",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPToolbarWidgetDetectionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Verify widget flag propagation + class name derivation for WBP_ prefix
+    FCortexConversionPayload Payload;
+    Payload.ParentClassName = TEXT("UserWidget");
+    Payload.BlueprintName = TEXT("WBP_MainMenu");
+    Payload.bIsWidgetBlueprint = true;
+
+    FCortexConversionContext Context(Payload);
+    // WBP_MainMenu → strip WBP_ → MainMenu → add U prefix → UMainMenu
+    TestEqual(TEXT("Widget class name should have U prefix"),
+        Context.Document->ClassName, FString(TEXT("UMainMenu")));
+    TestTrue(TEXT("Widget flag should propagate to context"),
+        Context.Payload.bIsWidgetBlueprint);
+
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionContextDepthDefaultTest,
     "Cortex.Frontend.Conversion.Context.DepthDefault",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
