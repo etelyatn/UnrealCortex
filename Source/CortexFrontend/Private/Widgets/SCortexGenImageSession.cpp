@@ -394,7 +394,8 @@ void SCortexGenImageSession::SubmitNextJob()
 
     FString JobId;
     FString ErrorMsg;
-    bool bOk = Manager.SubmitJob(CachedModelConfig.Provider, Request, JobId, ErrorMsg);
+    ECortexGenError ErrorCode;
+    bool bOk = Manager.SubmitJob(CachedModelConfig.Provider, Request, JobId, ErrorMsg, ErrorCode);
 
     if (!bOk)
     {
@@ -847,7 +848,8 @@ void SCortexGenImageSession::OnRegenerateImage(int32 ImageIndex)
 
     FString NewJobId;
     FString ErrorMsg;
-    bool bOk = Manager.SubmitJob(CachedModelConfig.Provider, Request, NewJobId, ErrorMsg);
+    ECortexGenError ErrorCode;
+    bool bOk = Manager.SubmitJob(CachedModelConfig.Provider, Request, NewJobId, ErrorMsg, ErrorCode);
 
     if (bOk)
     {
@@ -910,7 +912,8 @@ void SCortexGenImageSession::CancelGeneration()
             State->Status == ECortexGenJobStatus::Processing)
         {
             FString ErrorMsg;
-            Manager.CancelJob(JobId, ErrorMsg);
+            ECortexGenError ErrorCode;
+            Manager.CancelJob(JobId, ErrorMsg, ErrorCode);
         }
     }
 }

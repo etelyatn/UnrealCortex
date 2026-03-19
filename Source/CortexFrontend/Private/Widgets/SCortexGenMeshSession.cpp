@@ -360,7 +360,8 @@ FReply SCortexGenMeshSession::OnGenerateClicked()
         TEXT("CortexGen")).GetJobManager();
 
     FString Error;
-    if (JobManager.SubmitJob(Model.Provider, Request, CurrentJobId, Error))
+    ECortexGenError ErrorCode;
+    if (JobManager.SubmitJob(Model.Provider, Request, CurrentJobId, Error, ErrorCode))
     {
         ShowOverlay();
     }
@@ -536,6 +537,7 @@ void SCortexGenMeshSession::CancelGeneration()
     auto& JobManager = FModuleManager::GetModuleChecked<FCortexGenModule>(
         TEXT("CortexGen")).GetJobManager();
     FString Error;
-    JobManager.CancelJob(CurrentJobId, Error);
+    ECortexGenError ErrorCode;
+    JobManager.CancelJob(CurrentJobId, Error, ErrorCode);
     HideOverlay();
 }
