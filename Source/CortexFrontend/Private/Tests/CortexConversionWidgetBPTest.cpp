@@ -136,3 +136,28 @@ bool FCortexConversionWidgetPromptAssemblyTest::RunTest(const FString& Parameter
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetFragmentSelectionTest,
+    "Cortex.Frontend.Conversion.Widget.FragmentSelection",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetFragmentSelectionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Widget Blueprint JSON should trigger UMG fragment
+    TArray<FString> Fragments = FCortexConversionPromptAssembler::SelectFragments(
+        TEXT("{\"type\":\"WidgetBlueprint\",\"parent_class\":\"UserWidget\"}"));
+
+    bool bHasUmg = false;
+    for (const FString& F : Fragments)
+    {
+        if (F == TEXT("umg-patterns.md"))
+        {
+            bHasUmg = true;
+        }
+    }
+    TestTrue(TEXT("Widget BP JSON should select umg-patterns.md fragment"), bHasUmg);
+
+    return true;
+}
