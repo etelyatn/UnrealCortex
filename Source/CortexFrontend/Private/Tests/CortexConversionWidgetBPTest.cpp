@@ -161,3 +161,33 @@ bool FCortexConversionWidgetFragmentSelectionTest::RunTest(const FString& Parame
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetVariablePayloadTest,
+    "Cortex.Frontend.Conversion.Widget.VariablePayload",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetVariablePayloadTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexConversionPayload Payload;
+    Payload.bIsWidgetBlueprint = true;
+
+    // Simulate widget variables detected by CapturePayload
+    Payload.WidgetVariableNames.Add(TEXT("TitleText"));
+    Payload.WidgetVariableNames.Add(TEXT("ActionButton"));
+    Payload.WidgetVariableNames.Add(TEXT("BackgroundImage"));
+
+    // Only some are used in logic
+    Payload.LogicReferencedWidgets.Add(TEXT("TitleText"));
+    Payload.LogicReferencedWidgets.Add(TEXT("ActionButton"));
+
+    TestEqual(TEXT("Should have 3 widget variables"), Payload.WidgetVariableNames.Num(), 3);
+    TestEqual(TEXT("Should have 2 logic-referenced widgets"), Payload.LogicReferencedWidgets.Num(), 2);
+    TestTrue(TEXT("TitleText should be logic-referenced"),
+        Payload.LogicReferencedWidgets.Contains(TEXT("TitleText")));
+    TestFalse(TEXT("BackgroundImage should NOT be logic-referenced"),
+        Payload.LogicReferencedWidgets.Contains(TEXT("BackgroundImage")));
+
+    return true;
+}

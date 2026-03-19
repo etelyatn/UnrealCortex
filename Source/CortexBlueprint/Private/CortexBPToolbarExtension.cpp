@@ -7,6 +7,7 @@
 #include "CortexBlueprintModule.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_Event.h"
+#include "K2Node_Variable.h"
 #include "Operations/CortexBPAnalysisOps.h"
 #include "Operations/CortexProjectClassDetector.h"
 #include "Styling/AppStyle.h"
@@ -124,6 +125,73 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 		if (UserWidgetClass && Blueprint->ParentClass->IsChildOf(UserWidgetClass))
 		{
 			Payload.bIsWidgetBlueprint = true;
+		}
+	}
+
+	// Extract widget-type variables for BindWidget selection UI
+	if (Payload.bIsWidgetBlueprint)
+	{
+		static UClass* WidgetClass = nullptr;
+		if (!WidgetClass)
+		{
+			WidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.Widget"));
+		}
+
+		if (WidgetClass)
+		{
+			// Collect widget-type variable names
+			for (const FBPVariableDescription& Var : Blueprint->NewVariables)
+			{
+				if (Var.VarType.PinCategory == UEdGraphSchema_K2::PC_Object
+					&& Var.VarType.PinSubCategoryObject.IsValid())
+				{
+					UClass* VarClass = Cast<UClass>(Var.VarType.PinSubCategoryObject.Get());
+					if (VarClass && VarClass->IsChildOf(WidgetClass))
+					{
+						Payload.WidgetVariableNames.Add(Var.VarName.ToString());
+					}
+				}
+			}
+
+			// Detect which widget variables are used in graph logic
+			TSet<FName> ReferencedVarNames;
+			TArray<UEdGraph*> AllWidgetGraphs;
+			Blueprint->GetAllGraphs(AllWidgetGraphs);
+			for (UEdGraph* Graph : AllWidgetGraphs)
+			{
+				if (!Graph) { continue; }
+				for (UEdGraphNode* Node : Graph->Nodes)
+				{
+					if (!Node) { continue; }
+					if (UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(Node))
+					{
+						ReferencedVarNames.Add(VarNode->GetVarName());
+					}
+				}
+			}
+
+			for (const FString& WidgetVarName : Payload.WidgetVariableNames)
+			{
+				if (ReferencedVarNames.Contains(FName(*WidgetVarName)))
+				{
+					Payload.LogicReferencedWidgets.Add(WidgetVarName);
+				}
+			}
+
+			// Cap to prevent prompt bloat for massive widget trees
+			constexpr int32 MaxWidgetVars = 50;
+			if (Payload.WidgetVariableNames.Num() > MaxWidgetVars)
+			{
+				UE_LOG(LogCortexBlueprint, Warning,
+					TEXT("Widget BP has %d widget variables, capping to %d for conversion UI"),
+					Payload.WidgetVariableNames.Num(), MaxWidgetVars);
+				Payload.WidgetVariableNames.SetNum(MaxWidgetVars);
+			}
+		}
+		else
+		{
+			UE_LOG(LogCortexBlueprint, Warning,
+				TEXT("Failed to resolve /Script/UMG.Widget — widget variable detection skipped"));
 		}
 	}
 

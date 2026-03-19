@@ -53,6 +53,10 @@ struct CORTEXCORE_API FCortexConversionPayload
 	int32 TotalNodeCount = 0;        // total nodes across all graphs (for scope estimation)
 	bool bIsWidgetBlueprint = false;   // true when Blueprint derives from UUserWidget
 
+	// Widget BP only — designer widget variables (type is UWidget subclass, marked "Is Variable")
+	TArray<FString> WidgetVariableNames;      // all widget-type variables (e.g., "TitleText", "ActionButton")
+	TArray<FString> LogicReferencedWidgets;    // subset used in graph logic (auto-detected via K2Node_VariableGet/Set)
+
 	TArray<FProjectClassInfo> DetectedProjectAncestors; // populated by CortexBlueprint
 };
 
