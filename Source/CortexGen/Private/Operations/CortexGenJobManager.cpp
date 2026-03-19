@@ -40,6 +40,7 @@ FCortexGenJobManager::FCortexGenJobManager()
     if (Settings)
     {
         MaxConcurrentJobs = Settings->MaxConcurrentJobs;
+        MaxJobHistory = Settings->MaxJobHistory;
     }
 
     // Note: Initialize() must be called after construction to start the ticker.
@@ -77,7 +78,11 @@ FCortexGenJobManager::~FCortexGenJobManager()
     {
         FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
     }
-    SaveJobs();
+    // Do NOT call SaveJobs() here. Persistence is the module's responsibility:
+    // FCortexGenModule::ShutdownModule() calls SaveJobs() while UObject reflection
+    // is still live. Calling it from the destructor risks crashing because the
+    // destructor may run after UStructToJsonObject's FProperty chains are freed
+    // (when CortexCore releases FCortexGenCommandHandler during its own shutdown).
 }
 
 void FCortexGenJobManager::RegisterProvider(TSharedPtr<ICortexGenProvider> Provider)
@@ -673,9 +678,8 @@ void FCortexGenJobManager::SaveJobs()
     }
 
     // Enforce MaxJobHistory before writing to disk
-    const UCortexGenSettings* Settings = UCortexGenSettings::Get();
-    const int32 MaxHistory = Settings ? Settings->MaxJobHistory : 50;
-    TrimJobHistory(MaxHistory);
+    // Use cached value — GetDefault<> is unsafe during module shutdown
+    TrimJobHistory(MaxJobHistory);
 
     FString SaveDir = FPaths::ProjectSavedDir() / TEXT("CortexGen");
     IPlatformFile::GetPlatformPhysical().CreateDirectoryTree(*SaveDir);

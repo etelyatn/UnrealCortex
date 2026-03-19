@@ -82,6 +82,7 @@ private:
     TMap<FString, TSharedPtr<ICortexGenProvider>> Providers;  // keyed by provider ID string
     FOnGenJobStateChanged JobStateChangedDelegate;
     int32 MaxConcurrentJobs = 2;
+    int32 MaxJobHistory = 50;           // cached from settings at construction; safe to use during shutdown
     bool bPersistenceEnabled = false;   // enabled only after LoadJobs() is called
 
     /** Per-job guard: true while an HTTP poll is in-flight, prevents duplicate polls. */

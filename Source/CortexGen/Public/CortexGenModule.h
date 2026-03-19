@@ -15,5 +15,7 @@ public:
     FCortexGenJobManager& GetJobManager() const;
 
 private:
+    void HandleEnginePreExit();
+
     TSharedPtr<FCortexGenJobManager> JobManager;
 };

@@ -7,12 +7,17 @@
 #include "Providers/CortexGenMeshyProvider.h"
 #include "Providers/CortexGenTripoProvider.h"
 #include "Providers/CortexGenFalProvider.h"
+#include "Misc/CoreDelegates.h"
 
 DEFINE_LOG_CATEGORY(LogCortexGen);
 
 void FCortexGenModule::StartupModule()
 {
     UE_LOG(LogCortexGen, Log, TEXT("CortexGen module starting up"));
+
+    // Save jobs before UObject reflection is torn down.
+    // ShutdownModule() runs after UObject teardown, so FJsonObjectConverter would crash there.
+    FCoreDelegates::OnEnginePreExit.AddRaw(this, &FCortexGenModule::HandleEnginePreExit);
 
     // Create job manager (Initialize starts the polling ticker after TSharedFromThis is valid)
     JobManager = MakeShared<FCortexGenJobManager>();
@@ -78,7 +83,17 @@ void FCortexGenModule::StartupModule()
 void FCortexGenModule::ShutdownModule()
 {
     UE_LOG(LogCortexGen, Log, TEXT("CortexGen module shutting down"));
+    FCoreDelegates::OnEnginePreExit.RemoveAll(this);
     JobManager.Reset();
+}
+
+void FCortexGenModule::HandleEnginePreExit()
+{
+    // Called before UObject reflection is torn down — safe to use FJsonObjectConverter here.
+    if (JobManager.IsValid())
+    {
+        JobManager->SaveJobs();
+    }
 }
 
 FCortexGenJobManager& FCortexGenModule::GetJobManager() const
