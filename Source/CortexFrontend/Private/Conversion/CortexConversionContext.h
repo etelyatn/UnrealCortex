@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Conversion/CortexDiffParser.h"
 #include "CortexConversionTypes.h"
+#include "Misc/App.h"
 
 class FCortexCliSession;
 
@@ -115,9 +116,7 @@ struct FCortexConversionContext
             {
                 DerivedName = TEXT("U") + DerivedName;
             }
-            else if (InPayload.ParentClassName.Contains(TEXT("Actor"))
-                || InPayload.ParentClassName.Contains(TEXT("Pawn"))
-                || InPayload.ParentClassName.Contains(TEXT("Character")))
+            else if (InPayload.bIsActorDescendant)
             {
                 DerivedName = TEXT("A") + DerivedName;
             }
@@ -135,6 +134,9 @@ struct FCortexConversionContext
         // Name already starts with U — no prefix change needed for widget BPs
         Document->ClassName = DerivedName;
 
+        // Auto-detect target module name from project
+        TargetModuleName = FApp::GetProjectName();
+
         // Auto-select logic-referenced widgets for BindWidget
         SelectedWidgetBindings = InPayload.LogicReferencedWidgets;
     }
@@ -150,6 +152,8 @@ struct FCortexConversionContext
     ECortexConversionDepth SelectedDepth = ECortexConversionDepth::CppCore;
     FString CustomInstructions;        // Used when SelectedDepth == Custom
     ECortexConversionDestination SelectedDestination = ECortexConversionDestination::CreateNewClass;
+    FString TargetModuleName;      // auto-detected game module name from project
+    bool bClassNameUserModified = false; // true if user changed the derived class name
     FString TargetClassName;       // selected ancestor class name, empty if CreateNewClass
     FString TargetHeaderPath;      // path to existing .h file, empty if CreateNewClass
     FString TargetSourcePath;      // path to existing .cpp file, empty if CreateNewClass

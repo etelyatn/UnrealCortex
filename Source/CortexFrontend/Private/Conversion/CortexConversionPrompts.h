@@ -20,7 +20,7 @@ namespace CortexConversionPrompts
             "- Always call Super:: for overridden virtuals\n"
             "- No raw pointers to UObjects — use TObjectPtr<> for UPROPERTY members\n"
             "- Use forward declarations in headers, #include in .cpp\n"
-            "- Class name should match Blueprint name (strip BP_ prefix if present, add A/U prefix as appropriate)\n\n"
+            "- Class name: use the target class name provided in the class name injection section below. If no injection is present, derive from Blueprint name (strip BP_ prefix, add A/U prefix as appropriate)\n\n"
             "Node Naming Rule:\n"
             "When referencing Blueprint nodes in your explanations, recommendations, or analysis, "
             "ALWAYS use the node's 'title' field (e.g., 'Set Actor Location', 'Branch', 'Cast To ACharacter'). "

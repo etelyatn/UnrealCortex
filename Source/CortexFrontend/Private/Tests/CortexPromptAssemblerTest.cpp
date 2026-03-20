@@ -263,3 +263,92 @@ bool FCortexAssemblerAssembleInjectModeTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexAssemblerClassNameInjectionTest,
+    "Cortex.Frontend.Conversion.Assembler.ClassNameInjection",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexAssemblerClassNameInjectionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Actor descendant — class name injection should include A-prefixed parent
+    {
+        FCortexConversionPayload Payload;
+        Payload.BlueprintPath = TEXT("/Game/Test/BP_JumpPad");
+        Payload.BlueprintName = TEXT("BP_JumpPad");
+        Payload.ParentClassName = TEXT("Actor");
+        Payload.bIsActorDescendant = true;
+
+        auto Context = MakeShared<FCortexConversionContext>(Payload);
+        Context->SelectedScope = ECortexConversionScope::EntireBlueprint;
+        Context->SelectedDepth = ECortexConversionDepth::CppCore;
+
+        FString Prompt = FCortexConversionPromptAssembler::Assemble(*Context, TEXT("{}"));
+
+        TestTrue(TEXT("Should contain target class name"),
+            Prompt.Contains(TEXT("Target class name: AJumpPad")));
+        TestTrue(TEXT("Should contain parent class with A prefix"),
+            Prompt.Contains(TEXT("Parent class: AActor")));
+    }
+
+    // Non-actor descendant — parent should get U prefix
+    {
+        FCortexConversionPayload Payload;
+        Payload.BlueprintPath = TEXT("/Game/Test/BP_DataProcessor");
+        Payload.BlueprintName = TEXT("BP_DataProcessor");
+        Payload.ParentClassName = TEXT("MyDataObject");
+        Payload.bIsActorDescendant = false;
+
+        auto Context = MakeShared<FCortexConversionContext>(Payload);
+        Context->SelectedScope = ECortexConversionScope::EntireBlueprint;
+        Context->SelectedDepth = ECortexConversionDepth::CppCore;
+
+        FString Prompt = FCortexConversionPromptAssembler::Assemble(*Context, TEXT("{}"));
+
+        TestTrue(TEXT("Should contain target class name with U prefix"),
+            Prompt.Contains(TEXT("Target class name: UDataProcessor")));
+        TestTrue(TEXT("Should contain parent class with U prefix"),
+            Prompt.Contains(TEXT("Parent class: UMyDataObject")));
+    }
+
+    // Target module name should appear in injection
+    {
+        FCortexConversionPayload Payload;
+        Payload.BlueprintPath = TEXT("/Game/Test/BP_Test");
+        Payload.BlueprintName = TEXT("BP_Test");
+        Payload.ParentClassName = TEXT("Actor");
+        Payload.bIsActorDescendant = true;
+
+        auto Context = MakeShared<FCortexConversionContext>(Payload);
+        Context->SelectedScope = ECortexConversionScope::EntireBlueprint;
+        Context->SelectedDepth = ECortexConversionDepth::CppCore;
+
+        FString Prompt = FCortexConversionPromptAssembler::Assemble(*Context, TEXT("{}"));
+
+        TestTrue(TEXT("Should contain target module"),
+            Prompt.Contains(TEXT("Target module:")));
+    }
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexAssemblerBasePromptClassNameRuleTest,
+    "Cortex.Frontend.Conversion.Assembler.BasePromptClassNameRule",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexAssemblerBasePromptClassNameRuleTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const TCHAR* Base = CortexConversionPrompts::BaseSystemPrompt();
+    FString BaseStr(Base);
+
+    // Updated rule should defer to injection section
+    TestTrue(TEXT("Should reference class name injection section"),
+        BaseStr.Contains(TEXT("class name injection")));
+    TestFalse(TEXT("Should NOT contain old standalone rule"),
+        BaseStr.Contains(TEXT("Class name should match Blueprint name")));
+
+    return true;
+}

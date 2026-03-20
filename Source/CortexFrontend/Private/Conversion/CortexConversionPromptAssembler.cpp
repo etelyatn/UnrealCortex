@@ -16,6 +16,22 @@ FString FCortexConversionPromptAssembler::Assemble(
 	Result += CortexConversionPrompts::BaseSystemPrompt();
 	Result += TEXT("\n\n");
 
+	// 1b. Class name injection (~15-20 tokens)
+	if (Context.Document.IsValid() && !Context.Document->ClassName.IsEmpty())
+	{
+		// Parent class name with proper C++ prefix: A for actor descendants, U otherwise
+		const TCHAR* ParentPrefix = Context.Payload.bIsActorDescendant ? TEXT("A") : TEXT("U");
+		FString PrefixedParentName = FString::Printf(TEXT("%s%s"), ParentPrefix, *Context.Payload.ParentClassName);
+
+		Result += FString::Printf(TEXT(
+			"Target class name: %s (confirmed by user). Use this EXACT name in generated code.\n"
+			"Parent class: %s. Inherit from this class.\n"
+			"Target module: %s.\n\n"),
+			*Context.Document->ClassName,
+			*PrefixedParentName,
+			*Context.TargetModuleName);
+	}
+
 	// 2. Scope layer
 	if (ShouldUseSnippetMode(Context.SelectedScope, Context.SelectedDepth))
 	{

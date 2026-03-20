@@ -7,6 +7,7 @@
 #include "Widgets/SCompoundWidget.h"
 
 class SButton;
+class SEditableTextBox;
 class SMultiLineEditableTextBox;
 class SCortexScopeSelector;
 
@@ -27,6 +28,10 @@ private:
 	void OnScopeChanged(ECortexConversionScope NewScope);
 	void OnFunctionToggled(const FString& Name, bool bChecked);
 
+	TSharedRef<SWidget> BuildTargetClassSection(const FCortexConversionPayload& Payload);
+	void OnClassNameChanged(const FText& NewText);
+	FText GetClassNameWarningText() const;
+
 	TSharedRef<SWidget> BuildScopeAndTargetSection(const FCortexConversionPayload& Payload);
 	TSharedRef<SWidget> BuildInstructionsSection();
 	TSharedRef<SWidget> BuildWidgetBindingsSection(const FCortexConversionPayload& Payload);
@@ -43,6 +48,7 @@ private:
 	TSharedRef<SWidget> BuildWarningBars(const FCortexConversionPayload& Payload);
 
 	TSharedPtr<FCortexConversionContext> Context;
+	TSharedPtr<SEditableTextBox> ClassNameTextBox;
 	TSharedPtr<SMultiLineEditableTextBox> CustomInstructionsBox;
 	TSharedPtr<SCortexScopeSelector> ScopeSelector;
 	TSharedPtr<SVerticalBox> WidgetBindingsChecklist;

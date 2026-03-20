@@ -52,6 +52,7 @@ struct CORTEXCORE_API FCortexConversionPayload
 	TArray<FString> GraphNames;      // all graph names in the BP
 	int32 TotalNodeCount = 0;        // total nodes across all graphs (for scope estimation)
 	bool bIsWidgetBlueprint = false;   // true when Blueprint derives from UUserWidget
+	bool bIsActorDescendant = false;   // true when Blueprint->ParentClass->IsChildOf(AActor)
 
 	// Widget BP only — designer widget variables (type is UWidget subclass, marked "Is Variable")
 	TArray<FString> WidgetVariableNames;      // all widget-type variables (e.g., "TitleText", "ActionButton")

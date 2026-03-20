@@ -3,6 +3,7 @@
 #include "BlueprintEditor.h"
 #include "CortexAnalysisTypes.h"
 #include "CortexConversionTypes.h"
+#include "GameFramework/Actor.h"
 #include "CortexCoreModule.h"
 #include "CortexBlueprintModule.h"
 #include "EdGraphSchema_K2.h"
@@ -116,6 +117,12 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 	Payload.BlueprintPath = Blueprint->GetPathName();
 	Payload.BlueprintName = Blueprint->GetName();
 	Payload.ParentClassName = Blueprint->ParentClass ? Blueprint->ParentClass->GetName() : TEXT("None");
+
+	// Detect actor descendant via class hierarchy check (not string matching)
+	if (Blueprint->ParentClass)
+	{
+		Payload.bIsActorDescendant = Blueprint->ParentClass->IsChildOf(AActor::StaticClass());
+	}
 
 	// Detect Widget Blueprint via dynamic UMG class resolution (no compile-time UMG dependency)
 	if (Blueprint->ParentClass)
