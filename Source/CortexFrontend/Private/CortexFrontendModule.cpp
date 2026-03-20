@@ -178,7 +178,7 @@ TSharedRef<SDockTab> FCortexFrontendModule::SpawnChatTab(const FSpawnTabArgs& /*
 
 TSharedRef<SDockTab> FCortexFrontendModule::SpawnGenStudioTab(const FSpawnTabArgs& Args)
 {
-    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) || !FCortexGenModule::IsEnabled())
+    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
     {
         return SNew(SDockTab)
             .TabRole(NomadTab)
@@ -186,6 +186,17 @@ TSharedRef<SDockTab> FCortexFrontendModule::SpawnGenStudioTab(const FSpawnTabArg
                 SNew(STextBlock)
                 .Text(FText::FromString(TEXT("CortexGen module is not loaded. Check build output for errors.")))
                 .ColorAndOpacity(FLinearColor(1.f, 0.3f, 0.3f))
+            ];
+    }
+
+    if (!FCortexGenModule::IsEnabled())
+    {
+        return SNew(SDockTab)
+            .TabRole(NomadTab)
+            [
+                SNew(STextBlock)
+                .Text(FText::FromString(TEXT("CortexGen is disabled. Enable it in Project Settings → Unreal Cortex → Cortex Gen, then restart the editor.")))
+                .ColorAndOpacity(FLinearColor(1.f, 0.7f, 0.2f))
             ];
     }
 
