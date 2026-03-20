@@ -20,19 +20,22 @@ void FCortexBPToolbarExtension::Register()
 	UToolMenus::RegisterStartupCallback(
 		FSimpleMulticastDelegate::FDelegate::CreateLambda([]()
 		{
-			UToolMenu* ToolbarMenu = UToolMenus::Get()->ExtendMenu(
-				TEXT("AssetEditor.BlueprintEditor.ToolBar"));
+			auto AddCortexButton = [](const TCHAR* MenuName)
+			{
+				UToolMenu* ToolbarMenu = UToolMenus::Get()->ExtendMenu(MenuName);
+				FToolMenuSection& Section = ToolbarMenu->FindOrAddSection(TEXT("Cortex"));
+				Section.AddEntry(FToolMenuEntry::InitComboButton(
+					TEXT("CortexBPTools"),
+					FUIAction(),
+					FNewToolMenuDelegate::CreateStatic(&FCortexBPToolbarExtension::BuildMenu),
+					NSLOCTEXT("CortexBlueprint", "CortexToolbar", "Cortex"),
+					NSLOCTEXT("CortexBlueprint", "CortexToolbarTooltip", "Cortex AI tools for this Blueprint"),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details")
+				));
+			};
 
-			FToolMenuSection& Section = ToolbarMenu->FindOrAddSection(TEXT("Cortex"));
-
-			Section.AddEntry(FToolMenuEntry::InitComboButton(
-				TEXT("CortexBPTools"),
-				FUIAction(),
-				FNewToolMenuDelegate::CreateStatic(&FCortexBPToolbarExtension::BuildMenu),
-				NSLOCTEXT("CortexBlueprint", "CortexToolbar", "Cortex"),
-				NSLOCTEXT("CortexBlueprint", "CortexToolbarTooltip", "Cortex AI tools for this Blueprint"),
-				FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details")
-			));
+			AddCortexButton(TEXT("AssetEditor.BlueprintEditor.ToolBar"));
+			AddCortexButton(TEXT("AssetEditor.WidgetBlueprintEditor.ToolBar"));
 		}));
 }
 
