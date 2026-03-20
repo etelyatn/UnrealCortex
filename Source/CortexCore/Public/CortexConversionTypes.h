@@ -59,6 +59,16 @@ struct CORTEXCORE_API FCortexConversionPayload
 	TArray<FString> LogicReferencedWidgets;    // subset used in graph logic (auto-detected via K2Node_VariableGet/Set)
 
 	TArray<FProjectClassInfo> DetectedProjectAncestors; // populated by CortexBlueprint
+
+	// Dependency info for conversion config (populated by CortexBlueprint)
+	FString ParentClassPath;                          // e.g. "/Script/Engine.Actor" or "/Game/Blueprints/BP_Base"
+
+	struct FPayloadInterfaceInfo
+	{
+		FString InterfaceName;
+		bool bIsBlueprint = false;  // true if Blueprint Interface (not native UInterface)
+	};
+	TArray<FPayloadInterfaceInfo> ImplementedInterfaces;
 };
 
 // ── Serialization request (frontend → blueprint, via core) ──

@@ -5,6 +5,7 @@
 #include "Utilities/CortexTokenUtils.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/SCortexDependencyPanel.h"
 
 class SButton;
 class SEditableTextBox;

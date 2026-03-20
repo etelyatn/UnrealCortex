@@ -33,6 +33,7 @@ public class CortexFrontend : ModuleRules
             "GraphEditor",
             "BlueprintGraph",
             "LiveCoding",
+            "AssetRegistry",
         });
     }
 }

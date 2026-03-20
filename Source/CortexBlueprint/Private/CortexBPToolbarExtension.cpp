@@ -286,6 +286,26 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 	// Detect project-owned ancestor classes for destination selection
 	Payload.DetectedProjectAncestors = FCortexProjectClassDetector::FindProjectAncestors(Blueprint);
 
+	// Parent class path for dependency analysis
+	if (Blueprint->ParentClass)
+	{
+		Payload.ParentClassPath = Blueprint->ParentClass->GetPathName();
+	}
+
+	// Implemented interfaces for dependency analysis
+	for (const FBPInterfaceDescription& IfaceDesc : Blueprint->ImplementedInterfaces)
+	{
+		if (!IfaceDesc.Interface)
+		{
+			continue;
+		}
+		FCortexConversionPayload::FPayloadInterfaceInfo Info;
+		Info.InterfaceName = IfaceDesc.Interface->GetName();
+		// Blueprint interfaces live under /Game/, native ones under /Script/
+		Info.bIsBlueprint = IfaceDesc.Interface->GetPathName().StartsWith(TEXT("/Game/"));
+		Payload.ImplementedInterfaces.Add(MoveTemp(Info));
+	}
+
 	return Payload;
 }
 

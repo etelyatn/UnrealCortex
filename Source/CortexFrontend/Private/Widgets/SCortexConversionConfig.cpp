@@ -131,6 +131,15 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 				BuildWarningBars(Payload)
 			]
 
+			// Dependency panel (conditional -- visible only when dependencies exist)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 12)
+			[
+				SNew(SCortexDependencyPanel)
+				.DependencyInfo(&Context->DependencyInfo)
+			]
+
 			// Widget Binding selection (widget BPs only)
 			+ SVerticalBox::Slot()
 			.AutoHeight()
