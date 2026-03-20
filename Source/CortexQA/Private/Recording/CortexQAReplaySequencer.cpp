@@ -89,7 +89,7 @@ void FCortexQAReplaySequencer::AdvanceStep()
 
         if (Command.IsEmpty())
         {
-            UE_LOG(LogCortexQA, Warning, TEXT("Unknown step type: %s at index %d"), *Step.Type, CurrentStepIndex);
+            UE_LOG(LogCortexQA, Log, TEXT("Unknown step type: %s at index %d"), *Step.Type, CurrentStepIndex);
             // Record as failure, continue loop
             FCortexQAStepResult StepResult;
             StepResult.StepIndex = CurrentStepIndex;
