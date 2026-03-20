@@ -28,6 +28,14 @@ enum class ECortexGenCapabilityFlags : uint8
 };
 ENUM_CLASS_FLAGS(ECortexGenCapabilityFlags);
 
+UENUM()
+enum class ECortexGenAssetCategory : uint8
+{
+    Image,
+    Mesh,
+    Video
+};
+
 // Compile-time assertion: ECortexGenCapability and ECortexGenCapabilityFlags must stay in sync
 static_assert(
     static_cast<uint8>(ECortexGenCapability::MeshFromText) ==
