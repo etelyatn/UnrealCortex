@@ -183,6 +183,11 @@ void SCortexConversionChat::OnTurnComplete(const FCortexTurnResult& Result)
 	// Clear initial generation flag after first complete response
 	if (Context->bIsInitialGeneration)
 	{
+		// Clear snapshot stack on fresh generation (new conversation start)
+		if (Context->Document.IsValid())
+		{
+			Context->Document->ClearSnapshots();
+		}
 		Context->bIsInitialGeneration = false;
 	}
 
