@@ -128,71 +128,106 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 		}
 	}
 
-	// Extract widget-type variables for BindWidget selection UI
+	// Extract designer widget variables (marked "Is Variable" in widget tree) for BindWidget selection UI
 	if (Payload.bIsWidgetBlueprint)
 	{
-		static UClass* WidgetClass = nullptr;
-		if (!WidgetClass)
+		// Build set of designer widget names from the widget tree via reflection
+		TSet<FString> DesignerWidgetNames;
+		const FObjectProperty* WidgetTreeProp = CastField<FObjectProperty>(
+			Blueprint->GetClass()->FindPropertyByName(TEXT("WidgetTree")));
+		UObject* WidgetTreeObj = WidgetTreeProp
+			? WidgetTreeProp->GetObjectPropertyValue_InContainer(Blueprint)
+			: nullptr;
+		if (WidgetTreeObj)
 		{
-			WidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.Widget"));
-		}
-
-		if (WidgetClass)
-		{
-			// Collect widget-type variable names
-			for (const FBPVariableDescription& Var : Blueprint->NewVariables)
+			const FArrayProperty* AllWidgetsProp = CastField<FArrayProperty>(
+				WidgetTreeObj->GetClass()->FindPropertyByName(TEXT("AllWidgets")));
+			const FObjectProperty* WidgetObjProp = AllWidgetsProp
+				? CastField<FObjectProperty>(AllWidgetsProp->Inner)
+				: nullptr;
+			if (AllWidgetsProp && WidgetObjProp)
 			{
-				if (Var.VarType.PinCategory == UEdGraphSchema_K2::PC_Object
-					&& Var.VarType.PinSubCategoryObject.IsValid())
+				FScriptArrayHelper WidgetsArray(AllWidgetsProp,
+					AllWidgetsProp->ContainerPtrToValuePtr<void>(WidgetTreeObj));
+				for (int32 Index = 0; Index < WidgetsArray.Num(); ++Index)
 				{
-					UClass* VarClass = Cast<UClass>(Var.VarType.PinSubCategoryObject.Get());
-					if (VarClass && VarClass->IsChildOf(WidgetClass))
+					UObject* WidgetObject = WidgetObjProp->GetObjectPropertyValue(
+						WidgetsArray.GetRawPtr(Index));
+					if (!WidgetObject) { continue; }
+
+					const FBoolProperty* IsVarProp = CastField<FBoolProperty>(
+						WidgetObject->GetClass()->FindPropertyByName(TEXT("bIsVariable")));
+					if (IsVarProp && IsVarProp->GetPropertyValue_InContainer(WidgetObject))
 					{
-						Payload.WidgetVariableNames.Add(Var.VarName.ToString());
+						DesignerWidgetNames.Add(WidgetObject->GetName());
 					}
 				}
 			}
+		}
 
-			// Cap to prevent prompt bloat for massive widget trees — must happen before
-			// graph-walking so LogicReferencedWidgets only references capped variable names
-			constexpr int32 MaxWidgetVars = 50;
-			if (Payload.WidgetVariableNames.Num() > MaxWidgetVars)
+		// Collect widget-type variable names, filtering to only designer widgets
+		for (const FBPVariableDescription& Var : Blueprint->NewVariables)
+		{
+			if (Var.VarType.PinCategory == UEdGraphSchema_K2::PC_Object
+				&& Var.VarType.PinSubCategoryObject.IsValid())
 			{
-				UE_LOG(LogCortexBlueprint, Warning,
-					TEXT("Widget BP has %d widget variables, capping to %d for conversion UI"),
-					Payload.WidgetVariableNames.Num(), MaxWidgetVars);
-				Payload.WidgetVariableNames.SetNum(MaxWidgetVars);
-			}
-
-			// Detect which widget variables are used in graph logic
-			TSet<FName> ReferencedVarNames;
-			TArray<UEdGraph*> AllWidgetGraphs;
-			Blueprint->GetAllGraphs(AllWidgetGraphs);
-			for (UEdGraph* Graph : AllWidgetGraphs)
-			{
-				if (!Graph) { continue; }
-				for (UEdGraphNode* Node : Graph->Nodes)
+				static UClass* WidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.Widget"));
+				UClass* VarClass = Cast<UClass>(Var.VarType.PinSubCategoryObject.Get());
+				if (VarClass && WidgetClass && VarClass->IsChildOf(WidgetClass))
 				{
-					if (!Node) { continue; }
-					if (UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(Node))
+					const FString VarName = Var.VarName.ToString();
+					// Only include if it matches a designer widget marked "Is Variable"
+					if (DesignerWidgetNames.Contains(VarName))
 					{
-						ReferencedVarNames.Add(VarNode->GetVarName());
+						Payload.WidgetVariableNames.Add(VarName);
 					}
 				}
 			}
+		}
 
-			for (const FString& WidgetVarName : Payload.WidgetVariableNames)
+		// Detect which widget variables are used in graph logic (before capping)
+		TSet<FName> ReferencedVarNames;
+		TArray<UEdGraph*> AllWidgetGraphs;
+		Blueprint->GetAllGraphs(AllWidgetGraphs);
+		for (UEdGraph* Graph : AllWidgetGraphs)
+		{
+			if (!Graph) { continue; }
+			for (UEdGraphNode* Node : Graph->Nodes)
 			{
-				if (ReferencedVarNames.Contains(FName(*WidgetVarName)))
+				if (!Node) { continue; }
+				if (UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(Node))
 				{
-					Payload.LogicReferencedWidgets.Add(WidgetVarName);
+					ReferencedVarNames.Add(VarNode->GetVarName());
 				}
 			}
 		}
-		else
+
+		for (const FString& WidgetVarName : Payload.WidgetVariableNames)
+		{
+			if (ReferencedVarNames.Contains(FName(*WidgetVarName)))
+			{
+				Payload.LogicReferencedWidgets.Add(WidgetVarName);
+			}
+		}
+
+		// Cap after logic-reference walk — prioritize logic-referenced widgets
+		constexpr int32 MaxWidgetVars = 50;
+		if (Payload.WidgetVariableNames.Num() > MaxWidgetVars)
 		{
 			UE_LOG(LogCortexBlueprint, Warning,
-				TEXT("Failed to resolve /Script/UMG.Widget — widget variable detection skipped"));
+				TEXT("Widget BP has %d widget variables, capping to %d for conversion UI"),
+				Payload.WidgetVariableNames.Num(), MaxWidgetVars);
+
+			// Sort: logic-referenced first, then alphabetical within each group
+			TSet<FString> LogicRefSet(Payload.LogicReferencedWidgets);
+			Payload.WidgetVariableNames.Sort([&LogicRefSet](const FString& A, const FString& B)
+			{
+				const bool bARef = LogicRefSet.Contains(A);
+				const bool bBRef = LogicRefSet.Contains(B);
+				if (bARef != bBRef) { return bARef; }
+				return A < B;
+			});
+			Payload.WidgetVariableNames.SetNum(MaxWidgetVars);
 		}
 	}
 

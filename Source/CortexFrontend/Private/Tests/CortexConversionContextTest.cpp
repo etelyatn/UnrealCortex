@@ -181,6 +181,24 @@ bool FCortexBPToolbarWidgetDetectionTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Widget flag should propagate to context"),
         Context.Payload.bIsWidgetBlueprint);
 
+    // WBP_UInventory → strip WBP_ → UInventory → should NOT become UUInventory
+    FCortexConversionPayload PayloadU;
+    PayloadU.ParentClassName = TEXT("UserWidget");
+    PayloadU.BlueprintName = TEXT("WBP_UInventory");
+    PayloadU.bIsWidgetBlueprint = true;
+    FCortexConversionContext ContextU(PayloadU);
+    TestEqual(TEXT("Widget name starting with U should not get double U prefix"),
+        ContextU.Document->ClassName, FString(TEXT("UInventory")));
+
+    // WBP_AWeirdWidget → strip WBP_ → AWeirdWidget → should become UWeirdWidget (A→U)
+    FCortexConversionPayload PayloadA;
+    PayloadA.ParentClassName = TEXT("UserWidget");
+    PayloadA.BlueprintName = TEXT("WBP_AWeirdWidget");
+    PayloadA.bIsWidgetBlueprint = true;
+    FCortexConversionContext ContextA(PayloadA);
+    TestEqual(TEXT("Widget name starting with A should have A replaced with U"),
+        ContextA.Document->ClassName, FString(TEXT("UWeirdWidget")));
+
     return true;
 }
 

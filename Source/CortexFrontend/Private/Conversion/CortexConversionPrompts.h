@@ -259,7 +259,8 @@ namespace CortexConversionPrompts
 
     inline FString BuildWidgetInitialUserMessage(
         const FString& SerializedJson,
-        const TArray<FString>& SelectedWidgetBindings = TArray<FString>())
+        const TArray<FString>& SelectedWidgetBindings = TArray<FString>(),
+        bool bHasWidgetBindingSelection = false)
     {
         FString BindWidgetSection;
         if (SelectedWidgetBindings.Num() > 0)
@@ -271,6 +272,18 @@ namespace CortexConversionPrompts
             }
             BindWidgetSection += TEXT("Other widgets in the designer do NOT need BindWidget properties.\n");
         }
+        else if (bHasWidgetBindingSelection)
+        {
+            // User explicitly deselected all widgets — suppress BindWidget generation
+            BindWidgetSection = TEXT("\nDo NOT generate any meta = (BindWidget) properties. "
+                "The user has deselected all widget bindings. Access widgets via "
+                "WidgetTree->FindWidget() or GetWidgetFromName() if needed.\n");
+        }
+
+        // Adapt BindWidget instruction based on whether bindings were selected
+        const FString BindWidgetInstruction = (bHasWidgetBindingSelection && SelectedWidgetBindings.Num() == 0)
+            ? TEXT("- Do NOT use meta = (BindWidget) — no widgets were selected for binding\n")
+            : TEXT("- Use meta = (BindWidget) for designer widget references\n");
 
         return FString::Printf(TEXT(
             "The following is a machine-generated JSON serialization of a Widget Blueprint.\n"
@@ -279,11 +292,11 @@ namespace CortexConversionPrompts
             "Convert this Widget Blueprint to C++.\n\n"
             "CRITICAL: This is a Widget Blueprint (UUserWidget). Use the BindWidget pattern.\n"
             "- Do NOT recreate the widget tree in C++\n"
-            "- Use meta = (BindWidget) for designer widget references\n"
+            "%s"
             "- Override NativeConstruct/NativeDestruct, NOT Event Construct/Destruct\n"
             "%s\n"
             "REMINDER: You MUST output BOTH a ```cpp:header block (.h) AND a ```cpp:implementation block (.cpp). "
             "Do NOT skip the header file."
-        ), *SerializedJson, *BindWidgetSection);
+        ), *SerializedJson, *BindWidgetInstruction, *BindWidgetSection);
     }
 }

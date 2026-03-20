@@ -127,11 +127,12 @@ struct FCortexConversionContext
             }
         }
         else if (InPayload.bIsWidgetBlueprint && !DerivedName.IsEmpty()
-            && (DerivedName[0] == TEXT('A') || DerivedName[0] == TEXT('U')))
+            && DerivedName[0] == TEXT('A'))
         {
-            // Widget BPs should always have U prefix, even if name starts with A or U
-            DerivedName = TEXT("U") + DerivedName;
+            // Widget BPs should have U prefix — correct A to U (e.g., WBP_AWidget → UWidget)
+            DerivedName[0] = TEXT('U');
         }
+        // Name already starts with U — no prefix change needed for widget BPs
         Document->ClassName = DerivedName;
 
         // Auto-select logic-referenced widgets for BindWidget

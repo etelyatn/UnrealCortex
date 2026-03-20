@@ -232,7 +232,7 @@ bool FCortexConversionWidgetBindingPromptTest::RunTest(const FString& Parameters
 
     TArray<FString> SelectedWidgets = { TEXT("TitleText"), TEXT("ActionButton") };
     FString Message = CortexConversionPrompts::BuildWidgetInitialUserMessage(
-        TEXT("{\"test\":true}"), SelectedWidgets);
+        TEXT("{\"test\":true}"), SelectedWidgets, true);
 
     TestTrue(TEXT("Should contain TitleText as BindWidget candidate"),
         Message.Contains(TEXT("TitleText")));
@@ -241,12 +241,22 @@ bool FCortexConversionWidgetBindingPromptTest::RunTest(const FString& Parameters
     TestTrue(TEXT("Should mention BindWidget"),
         Message.Contains(TEXT("BindWidget")));
 
-    // Empty selection should still work
+    // Empty selection with bHasWidgetBindingSelection=true means user deselected all
     TArray<FString> NoWidgets;
     FString EmptyMessage = CortexConversionPrompts::BuildWidgetInitialUserMessage(
-        TEXT("{\"test\":true}"), NoWidgets);
+        TEXT("{\"test\":true}"), NoWidgets, true);
     TestTrue(TEXT("Empty selection message should still be valid"),
         EmptyMessage.Contains(TEXT("Widget Blueprint")));
+    TestTrue(TEXT("Empty selection should suppress BindWidget"),
+        EmptyMessage.Contains(TEXT("Do NOT generate any meta = (BindWidget)")));
+    TestFalse(TEXT("Empty selection should not instruct to use BindWidget for references"),
+        EmptyMessage.Contains(TEXT("Use meta = (BindWidget) for designer widget references")));
+
+    // No selection info (widget BP with no designer widgets) — default BindWidget behavior
+    FString DefaultMessage = CortexConversionPrompts::BuildWidgetInitialUserMessage(
+        TEXT("{\"test\":true}"), NoWidgets, false);
+    TestTrue(TEXT("Default should instruct BindWidget usage"),
+        DefaultMessage.Contains(TEXT("Use meta = (BindWidget) for designer widget references")));
 
     return true;
 }
