@@ -68,6 +68,7 @@ void SCortexConversionTab::Construct(const FArguments& InArgs)
 			[
 				SAssignNew(CodeCanvas, SCortexCodeCanvas)
 				.Document(Context->Document)
+				.ConversionContext(Context)
 				.OnCreateFiles(FOnCreateFilesClicked::CreateSP(this, &SCortexConversionTab::OnCreateFilesRequested))
 			]
 			+ SSplitter::Slot()

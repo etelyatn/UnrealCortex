@@ -7,6 +7,7 @@
 
 class SCortexCodeBlock;
 class SCortexConversionOverlay;
+class SCortexInheritedDiffView;
 class STextBlock;
 class SWidgetSwitcher;
 
@@ -17,6 +18,7 @@ class SCortexCodeCanvas : public SCompoundWidget
 public:
 	SLATE_BEGIN_ARGS(SCortexCodeCanvas) {}
 		SLATE_ARGUMENT(TSharedPtr<FCortexCodeDocument>, Document)
+		SLATE_ARGUMENT(TSharedPtr<FCortexConversionContext>, ConversionContext)
 		SLATE_EVENT(FOnCreateFilesClicked, OnCreateFiles)
 	SLATE_END_ARGS()
 
@@ -38,6 +40,9 @@ private:
 	static int32 CountLines(const FString& Code);
 
 	TSharedPtr<FCortexCodeDocument> Document;
+	TSharedPtr<FCortexConversionContext> ConversionContext;
+	TSharedPtr<SCortexInheritedDiffView> HeaderDiffView;
+	TSharedPtr<SCortexInheritedDiffView> ImplDiffView;
 	TSharedPtr<SCortexCodeBlock> HeaderBlock;
 	TSharedPtr<SCortexCodeBlock> ImplementationBlock;
 	TSharedPtr<SCortexCodeBlock> SnippetBlock;
