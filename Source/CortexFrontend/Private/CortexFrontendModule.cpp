@@ -20,6 +20,8 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Text/STextBlock.h"
+#include "CortexGenModule.h"
+#include "CortexGenSettings.h"
 
 DEFINE_LOG_CATEGORY(LogCortexFrontend);
 
@@ -40,13 +42,18 @@ void FCortexFrontendModule::StartupModule()
         .SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"))
         .SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory());
 
-    // Register CortexGen Studio Nomad Tab
-    FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
-        GenStudioTabId,
-        FOnSpawnTab::CreateRaw(this, &FCortexFrontendModule::SpawnGenStudioTab))
-        .SetDisplayName(LOCTEXT("CortexGenStudio", "CortexGen Studio"))
-        .SetMenuType(ETabSpawnerMenuType::Enabled)
-        .SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory());
+    // Register CortexGen Studio Nomad Tab (only if gen module enabled)
+    const UCortexGenSettings* GenSettings = UCortexGenSettings::Get();
+    if (!GenSettings || GenSettings->bEnabled)
+    {
+        FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
+            GenStudioTabId,
+            FOnSpawnTab::CreateRaw(this, &FCortexFrontendModule::SpawnGenStudioTab))
+            .SetDisplayName(LOCTEXT("CortexGenStudio", "CortexGen Studio"))
+            .SetMenuType(ETabSpawnerMenuType::Enabled)
+            .SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory());
+        bGenStudioTabRegistered = true;
+    }
 
     StartupCallbackHandle = UToolMenus::RegisterStartupCallback(
         FSimpleMulticastDelegate::FDelegate::CreateLambda([this]()
@@ -62,15 +69,20 @@ void FCortexFrontendModule::StartupModule()
                 {
                     FGlobalTabmanager::Get()->TryInvokeTab(CortexChatTabId);
                 }))));
-            Section.AddMenuEntry(
-                TEXT("CortexGenStudio"),
-                LOCTEXT("CortexGenStudioMenuLabel", "Asset Generation"),
-                LOCTEXT("CortexGenStudioMenuTooltip", "Open CortexGen Studio for AI-powered asset generation"),
-                FSlateIcon(),
-                FUIAction(FExecuteAction::CreateLambda([]()
-                {
-                    FGlobalTabmanager::Get()->TryInvokeTab(FName("CortexGenStudio"));
-                })));
+            // Only show Asset Generation menu if gen module is enabled
+            const UCortexGenSettings* GenCfg = UCortexGenSettings::Get();
+            if (!GenCfg || GenCfg->bEnabled)
+            {
+                Section.AddMenuEntry(
+                    TEXT("CortexGenStudio"),
+                    LOCTEXT("CortexGenStudioMenuLabel", "Asset Generation"),
+                    LOCTEXT("CortexGenStudioMenuTooltip", "Open CortexGen Studio for AI-powered asset generation"),
+                    FSlateIcon(),
+                    FUIAction(FExecuteAction::CreateLambda([]()
+                    {
+                        FGlobalTabmanager::Get()->TryInvokeTab(FName("CortexGenStudio"));
+                    })));
+            }
         }));
 
     FCoreDelegates::OnPreExit.AddRaw(this, &FCortexFrontendModule::HandlePreExit);
@@ -119,7 +131,10 @@ void FCortexFrontendModule::ShutdownModule()
     if (FSlateApplication::IsInitialized())
     {
         FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(CortexChatTabId);
-        FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(GenStudioTabId);
+        if (bGenStudioTabRegistered)
+        {
+            FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(GenStudioTabId);
+        }
     }
 
     FCortexRichTextStyle::Shutdown();
@@ -163,7 +178,7 @@ TSharedRef<SDockTab> FCortexFrontendModule::SpawnChatTab(const FSpawnTabArgs& /*
 
 TSharedRef<SDockTab> FCortexFrontendModule::SpawnGenStudioTab(const FSpawnTabArgs& Args)
 {
-    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
+    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) || !FCortexGenModule::IsEnabled())
     {
         return SNew(SDockTab)
             .TabRole(NomadTab)

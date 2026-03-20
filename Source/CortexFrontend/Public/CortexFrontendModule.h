@@ -48,4 +48,5 @@ private:
     TArray<TSharedPtr<FCortexCliSession>> Sessions;
     TArray<TSharedPtr<FMonitoredProcess>> BuildProcesses;
     TWeakPtr<SCortexWorkbench> WorkbenchWeak;
+    bool bGenStudioTabRegistered = false;
 };
