@@ -45,7 +45,10 @@ FString FCortexCredentialStore::GetApiKey(const FString& ProviderId)
 
 	if (!bLoaded)
 	{
-		Load();
+		if (!Load())
+		{
+			return FString();
+		}
 	}
 
 	if (const FString* StoredKey = ApiKeys.Find(NormalizedProviderId))
@@ -62,7 +65,10 @@ void FCortexCredentialStore::SetApiKey(const FString& ProviderId, const FString&
 
 	if (!bLoaded)
 	{
-		Load();
+		if (!Load())
+		{
+			return;
+		}
 	}
 
 	const FString NormalizedProviderId = NormalizeProviderId(ProviderId);
@@ -113,11 +119,11 @@ void FCortexCredentialStore::ClearFilePathOverrideForTests()
 }
 #endif
 
-void FCortexCredentialStore::Load()
+bool FCortexCredentialStore::Load()
 {
 	if (bLoaded)
 	{
-		return;
+		return true;
 	}
 
 	ApiKeys.Reset();
@@ -127,14 +133,14 @@ void FCortexCredentialStore::Load()
 	{
 		MigrateFromOldIni();
 		bLoaded = true;
-		return;
+		return true;
 	}
 
 	FString JsonString;
 	if (!FFileHelper::LoadFileToString(JsonString, *FilePath))
 	{
 		UE_LOG(LogCortex, Warning, TEXT("Failed to read credential store file: %s"), *FilePath);
-		return;
+		return false;
 	}
 
 	TSharedPtr<FJsonObject> RootObject;
@@ -142,7 +148,7 @@ void FCortexCredentialStore::Load()
 	if (!FJsonSerializer::Deserialize(Reader, RootObject) || !RootObject.IsValid())
 	{
 		UE_LOG(LogCortex, Warning, TEXT("Failed to parse credential store file: %s"), *FilePath);
-		return;
+		return false;
 	}
 
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Entry : RootObject->Values)
@@ -155,6 +161,7 @@ void FCortexCredentialStore::Load()
 	}
 
 	bLoaded = true;
+	return true;
 }
 
 void FCortexCredentialStore::Save() const

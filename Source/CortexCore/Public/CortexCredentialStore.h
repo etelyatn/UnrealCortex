@@ -17,7 +17,7 @@ public:
 #endif
 
 private:
-	void Load();
+	bool Load();
 	void Save() const;
 	void MigrateFromOldIni();
 
