@@ -69,9 +69,8 @@ void FCortexFrontendModule::StartupModule()
                 {
                     FGlobalTabmanager::Get()->TryInvokeTab(CortexChatTabId);
                 }))));
-            // Only show Asset Generation menu if gen module is enabled
-            const UCortexGenSettings* GenCfg = UCortexGenSettings::Get();
-            if (!GenCfg || GenCfg->bEnabled)
+            // Only show Asset Generation menu if gen Studio tab was registered
+            if (bGenStudioTabRegistered)
             {
                 Section.AddMenuEntry(
                     TEXT("CortexGenStudio"),

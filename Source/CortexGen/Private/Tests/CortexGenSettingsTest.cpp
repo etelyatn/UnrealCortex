@@ -103,6 +103,9 @@ bool FCortexGenSettingsEnabledDefaultTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("Settings should be accessible"), Settings);
     if (!Settings) return true;
 
+    // NOTE: This reads the CDO (live config value from DefaultEditorPerProjectUserSettings.ini).
+    // It verifies the sandbox ships with CortexGen disabled. If a developer enables CortexGen
+    // in the sandbox INI, this test will fail by design — re-disable before committing.
     TestFalse(TEXT("bEnabled should default to false"), Settings->bEnabled);
 
     return true;
