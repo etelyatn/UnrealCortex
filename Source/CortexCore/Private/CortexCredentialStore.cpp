@@ -120,33 +120,41 @@ void FCortexCredentialStore::Load()
 		return;
 	}
 
-	bLoaded = true;
 	ApiKeys.Reset();
 
 	const FString FilePath = GetFilePath();
 	if (!IFileManager::Get().FileExists(*FilePath))
 	{
 		MigrateFromOldIni();
+		bLoaded = true;
 		return;
 	}
 
 	FString JsonString;
-	if (FFileHelper::LoadFileToString(JsonString, *FilePath))
+	if (!FFileHelper::LoadFileToString(JsonString, *FilePath))
 	{
-		TSharedPtr<FJsonObject> RootObject;
-		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
-		if (FJsonSerializer::Deserialize(Reader, RootObject) && RootObject.IsValid())
+		UE_LOG(LogCortex, Warning, TEXT("Failed to read credential store file: %s"), *FilePath);
+		return;
+	}
+
+	TSharedPtr<FJsonObject> RootObject;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
+	if (!FJsonSerializer::Deserialize(Reader, RootObject) || !RootObject.IsValid())
+	{
+		UE_LOG(LogCortex, Warning, TEXT("Failed to parse credential store file: %s"), *FilePath);
+		return;
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Entry : RootObject->Values)
+	{
+		FString LoadedKey;
+		if (Entry.Value.IsValid() && Entry.Value->TryGetString(LoadedKey) && !LoadedKey.IsEmpty())
 		{
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Entry : RootObject->Values)
-			{
-				FString LoadedKey;
-				if (Entry.Value.IsValid() && Entry.Value->TryGetString(LoadedKey) && !LoadedKey.IsEmpty())
-				{
-					ApiKeys.Add(NormalizeProviderId(Entry.Key), LoadedKey);
-				}
-			}
+			ApiKeys.Add(NormalizeProviderId(Entry.Key), LoadedKey);
 		}
 	}
+
+	bLoaded = true;
 }
 
 void FCortexCredentialStore::Save() const

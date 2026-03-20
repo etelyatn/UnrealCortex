@@ -150,6 +150,12 @@ bool LoadJsonObjectFromFile(const FString& FilePath, TSharedPtr<FJsonObject>& Ou
 	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
 	return FJsonSerializer::Deserialize(Reader, OutObject) && OutObject.IsValid();
 }
+
+bool WriteStringToFile(const FString& FilePath, const FString& Contents)
+{
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(FilePath), true);
+	return FFileHelper::SaveStringToFile(Contents, *FilePath);
+}
 } // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -251,8 +257,23 @@ bool FCortexCredentialStoreEmptyKeyRemovesEntryTest::RunTest(const FString& Para
 	Store.SetApiKey(ProviderId, TEXT("temporary_key"));
 	TestEqual(TEXT("Precondition key should be readable"), Store.GetApiKey(ProviderId), FString(TEXT("temporary_key")));
 
+	TSharedPtr<FJsonObject> RootObject;
+	const FString CredentialsFilePath = TestContext.GetCredentialsFilePath();
+	TestTrue(TEXT("Precondition credential JSON should be readable"), LoadJsonObjectFromFile(CredentialsFilePath, RootObject));
+	if (RootObject.IsValid())
+	{
+		TestTrue(TEXT("Precondition credential JSON should contain provider"), RootObject->HasField(TEXT("cortex_test_cleanup_provider")));
+	}
+
 	Store.SetApiKey(ProviderId, TEXT(""));
 	TestTrue(TEXT("Empty SetApiKey removes provider entry"), Store.GetApiKey(ProviderId).IsEmpty());
+
+	RootObject.Reset();
+	TestTrue(TEXT("Credential JSON should still be readable after key removal"), LoadJsonObjectFromFile(CredentialsFilePath, RootObject));
+	if (RootObject.IsValid())
+	{
+		TestFalse(TEXT("Removed key should not remain in persisted JSON"), RootObject->HasField(TEXT("cortex_test_cleanup_provider")));
+	}
 
 	return true;
 }
@@ -271,10 +292,15 @@ bool FCortexCredentialStorePersistenceTest::RunTest(const FString& Parameters)
 	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
 	const FString ProviderId = TEXT("cortex_test_persistence_provider");
 	const FString ExpectedKey = TEXT("persisted_test_key");
+	const FString RetryProviderId = TEXT("cortex_test_retry_provider");
 
 	const FString EnvironmentVariableName = BuildEnvironmentVariableName(ProviderId);
 	FCortexEnvironmentVariableGuard EnvGuard(EnvironmentVariableName);
 	FPlatformMisc::SetEnvironmentVar(*EnvironmentVariableName, TEXT(""));
+
+	const FString RetryEnvironmentVariableName = BuildEnvironmentVariableName(RetryProviderId);
+	FCortexEnvironmentVariableGuard RetryEnvGuard(RetryEnvironmentVariableName);
+	FPlatformMisc::SetEnvironmentVar(*RetryEnvironmentVariableName, TEXT(""));
 
 	Store.SetApiKey(ProviderId, ExpectedKey);
 
@@ -298,6 +324,18 @@ bool FCortexCredentialStorePersistenceTest::RunTest(const FString& Parameters)
 
 	ResetCredentialStoreForTests();
 	TestEqual(TEXT("Key should load from persisted JSON after reset"), Store.GetApiKey(ProviderId), ExpectedKey);
+
+	TestTrue(TEXT("Malformed credential file should be written"), WriteStringToFile(CredentialsFilePath, TEXT("{invalid_json}")));
+	TestTrue(TEXT("Malformed file should return empty key on first read"), Store.GetApiKey(RetryProviderId).IsEmpty());
+
+	TestTrue(
+		TEXT("Valid credential file should overwrite malformed file"),
+		WriteStringToFile(CredentialsFilePath, TEXT("{\"cortex_test_retry_provider\":\"recovered_key\"}")));
+
+	TestEqual(
+		TEXT("Store should retry load and recover after malformed file is fixed"),
+		Store.GetApiKey(RetryProviderId),
+		FString(TEXT("recovered_key")));
 
 	return true;
 }
@@ -382,6 +420,39 @@ bool FCortexCredentialStoreMigrationOnMissingFileTest::RunTest(const FString& Pa
 
 	ResetCredentialStoreForTests();
 	TestEqual(TEXT("Existing credential file should prevent repeat migration"), Store.GetApiKey(TEXT("fal")), MigratedKey);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCredentialStoreRetryLoadAfterMalformedFileTest,
+	"Cortex.Core.CredentialStore.RetryLoadAfterMalformedFile",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexCredentialStoreRetryLoadAfterMalformedFileTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexCredentialStoreTestContextGuard TestContext;
+	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
+	const FString ProviderId = TEXT("cortex_test_retry_provider");
+	const FString CredentialsFilePath = TestContext.GetCredentialsFilePath();
+	const FString EnvironmentVariableName = BuildEnvironmentVariableName(ProviderId);
+	FCortexEnvironmentVariableGuard EnvGuard(EnvironmentVariableName);
+	FPlatformMisc::SetEnvironmentVar(*EnvironmentVariableName, TEXT(""));
+
+	TestTrue(TEXT("Malformed credential file should be written"), WriteStringToFile(CredentialsFilePath, TEXT("{invalid_json")));
+	TestTrue(TEXT("Malformed file should return empty key on first read"), Store.GetApiKey(ProviderId).IsEmpty());
+
+	TestTrue(
+		TEXT("Valid credential file should overwrite malformed file"),
+		WriteStringToFile(CredentialsFilePath, TEXT("{\"cortex_test_retry_provider\":\"recovered_key\"}")));
+
+	TestEqual(
+		TEXT("Store should retry load and recover after malformed file is fixed"),
+		Store.GetApiKey(ProviderId),
+		FString(TEXT("recovered_key")));
 
 	return true;
 }
