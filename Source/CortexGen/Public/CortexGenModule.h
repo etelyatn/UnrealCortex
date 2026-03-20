@@ -12,7 +12,8 @@ public:
     virtual void StartupModule() override;
     virtual void ShutdownModule() override;
 
-    /** Returns the job manager. Only valid when IsEnabled() returns true. */
+    /** Returns the job manager. Only valid when the module initialized with bEnabled=true.
+     *  Calling this when CortexGen was disabled at startup will trigger a checkf. */
     FCortexGenJobManager& GetJobManager() const;
 
     /** Returns true if CortexGen is enabled in settings. Safe to call anytime. */
