@@ -27,7 +27,12 @@ public class CortexCore : ModuleRules
             // Not used in production CortexCore code.
             "EnhancedInput",
             "InputCore",
-            "StructUtils",
         });
+
+        // StructUtils was deprecated in 5.5 — FInstancedStruct moved to CoreUObject
+        if (Target.Version.MajorVersion == 5 && Target.Version.MinorVersion < 5)
+        {
+            PrivateDependencyModuleNames.Add("StructUtils");
+        }
     }
 }
