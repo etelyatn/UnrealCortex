@@ -1,5 +1,26 @@
 # Core UE C++ Patterns
 
+## Logic vs Cosmetic — What to Convert
+
+The deciding factor is NOT the function name or node count. It is: **does game logic depend on this value?**
+
+### Moves to C++ (logic-driven)
+Any operation where the value affects game state or other logic depends on it:
+- `SetVisibility(false)` to hide an object during a game state change (dead, inactive) — logic controls it
+- `SetLocation` to move an actor based on player input or game rules — logic depends on position
+- `SetColor` where the color encodes game state (team color, damage flash) — logic depends on color
+- Even a single node, if it's logic-driven, belongs in C++
+
+### Stays in Blueprint (purely cosmetic)
+Operations where NO other logic reads or reacts to the value:
+- `SetColor` for decorative appearance nothing else checks — artist-owned
+- `SetLocation/SetScale3D` to arrange mesh pieces for a door frame or wall — decorative geometry
+- `SetMaterial`, `SetStaticMesh`, `SetLightColor` for visual appearance — artist-owned
+- `CreateDynamicMaterialInstance` + parameter setters — visual tuning
+- Procedural geometry (door frames, wall segments) where no gameplay depends on positions
+
+**Key:** Same function, different intent. `SetVisibility` that hides a game object as part of state → C++. `SetVisibility` for a cosmetic fade nobody reads → Blueprint.
+
 ## UPROPERTY Specifiers
 - `EditAnywhere` — editable in both defaults and instances
 - `BlueprintReadWrite` — read+write from Blueprint

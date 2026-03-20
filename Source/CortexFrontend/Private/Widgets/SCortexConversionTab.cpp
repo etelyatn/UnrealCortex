@@ -8,6 +8,7 @@
 #include "Conversion/CortexConversionPromptAssembler.h"
 #include "Conversion/CortexConversionPrompts.h"
 #include "Framework/Application/SlateApplication.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/App.h"
 #include "Misc/FileHelper.h"
@@ -332,7 +333,7 @@ void SCortexConversionTab::StartConversion(const FString& AssembledSystemPrompt)
 	Context->Session->OnTurnComplete.AddSP(this, &SCortexConversionTab::OnSessionTurnComplete);
 }
 
-void SCortexConversionTab::OnSessionTurnComplete(const FCortexTurnResult& /*Result*/)
+void SCortexConversionTab::OnSessionTurnComplete(const FCortexTurnResult& Result)
 {
 	if (CodeCanvas.IsValid())
 	{
@@ -342,6 +343,78 @@ void SCortexConversionTab::OnSessionTurnComplete(const FCortexTurnResult& /*Resu
 	if (CodeCanvas.IsValid())
 	{
 		CodeCanvas->SetProcessing(false);
+	}
+
+	// Save conversion notes to file so they persist across editor restarts
+	if (!Result.bIsError && !Result.ResultText.IsEmpty())
+	{
+		SaveConversionNotes(Result.ResultText);
+	}
+}
+
+void SCortexConversionTab::SaveConversionNotes(const FString& ResponseText)
+{
+	if (!Context.IsValid())
+	{
+		return;
+	}
+
+	const FString BpName = Context->Payload.BlueprintName;
+	if (BpName.IsEmpty())
+	{
+		return;
+	}
+
+	// Build output path: docs/migration/blueprint-to-cpp/{BP_Name}/conversion-notes.md
+	const FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+	const FString NotesDir = FPaths::Combine(ProjectDir, TEXT("docs"), TEXT("migration"),
+		TEXT("blueprint-to-cpp"), BpName);
+	const FString NotesPath = FPaths::Combine(NotesDir, TEXT("conversion-notes.md"));
+
+	// Ensure directory exists
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	PlatformFile.CreateDirectoryTree(*NotesDir);
+
+	// Build content with metadata header
+	FString Content;
+	Content += TEXT("---\n");
+	Content += FString::Printf(TEXT("blueprint: %s\n"), *Context->Payload.BlueprintPath);
+	Content += FString::Printf(TEXT("blueprint_name: %s\n"), *BpName);
+	Content += FString::Printf(TEXT("parent_class: %s\n"), *Context->Payload.ParentClassName);
+	Content += FString::Printf(TEXT("target_class: %s\n"),
+		Context->Document.IsValid() ? *Context->Document->ClassName : TEXT(""));
+	Content += FString::Printf(TEXT("timestamp: %s\n"), *FDateTime::UtcNow().ToIso8601());
+	Content += TEXT("---\n\n");
+	Content += FString::Printf(TEXT("# %s Conversion Notes\n\n"), *BpName);
+	Content += ResponseText;
+
+	// Append code summary if available
+	if (Context->Document.IsValid())
+	{
+		if (!Context->Document->HeaderCode.IsEmpty())
+		{
+			Content += TEXT("\n\n## Generated Header\n\n```cpp\n");
+			Content += Context->Document->HeaderCode;
+			Content += TEXT("\n```\n");
+		}
+		if (!Context->Document->ImplementationCode.IsEmpty())
+		{
+			Content += TEXT("\n\n## Generated Implementation\n\n```cpp\n");
+			Content += Context->Document->ImplementationCode;
+			Content += TEXT("\n```\n");
+		}
+	}
+
+	if (FFileHelper::SaveStringToFile(Content, *NotesPath,
+		FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+	{
+		UE_LOG(LogCortexFrontend, Log, TEXT("Conversion notes saved: %s"), *NotesPath);
+		StatusMessage(FString::Printf(TEXT("Notes saved to docs/migration/blueprint-to-cpp/%s/conversion-notes.md"),
+			*BpName));
+	}
+	else
+	{
+		UE_LOG(LogCortexFrontend, Warning, TEXT("Failed to save conversion notes: %s"), *NotesPath);
 	}
 }
 
