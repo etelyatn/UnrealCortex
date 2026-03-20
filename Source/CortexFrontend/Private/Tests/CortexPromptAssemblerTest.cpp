@@ -416,26 +416,25 @@ bool FCortexDependencyContextOverflowTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
 
+    // Simulate what the gatherer produces: 15 in array, TotalReferencerCount = 20
     FCortexDependencyInfo DepInfo;
-    for (int32 i = 0; i < 20; ++i)
+    for (int32 i = 0; i < 15; ++i)
     {
         FCortexDependencyInfo::FReferencerEntry Ref;
         Ref.AssetName = FString::Printf(TEXT("BP_Ref_%d"), i);
         Ref.AssetClass = TEXT("Blueprint");
         DepInfo.Referencers.Add(Ref);
     }
+    DepInfo.TotalReferencerCount = 20;  // 5 more than what's in the array
 
     FString Context = FCortexConversionPromptAssembler::BuildDependencyContext(DepInfo);
 
-    // First 15 should be listed
+    // All 15 should be listed
     TestTrue(TEXT("Should list first referencer"),
         Context.Contains(TEXT("BP_Ref_0 (Blueprint)")));
     TestTrue(TEXT("Should list 15th referencer"),
         Context.Contains(TEXT("BP_Ref_14 (Blueprint)")));
-    // 16th should NOT be listed
-    TestFalse(TEXT("Should NOT list 16th referencer"),
-        Context.Contains(TEXT("BP_Ref_15")));
-    // Should have overflow message
+    // Should have overflow message for the remaining 5
     TestTrue(TEXT("Should have overflow message"),
         Context.Contains(TEXT("and 5 more")));
 
