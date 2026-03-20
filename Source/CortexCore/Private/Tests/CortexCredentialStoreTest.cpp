@@ -105,3 +105,26 @@ bool FCortexCredentialStoreUnknownProviderTest::RunTest(const FString& Parameter
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCredentialStoreEmptyKeyRemovesEntryTest,
+	"Cortex.Core.CredentialStore.EmptyKeyRemovesEntry",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexCredentialStoreEmptyKeyRemovesEntryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FString ProviderId = TEXT("cortex_test_cleanup_provider");
+	FCortexCredentialStoreKeyGuard RestoreGuard(ProviderId);
+	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
+
+	Store.SetApiKey(ProviderId, TEXT("temporary_key"));
+	TestEqual(TEXT("Precondition key should be readable"), Store.GetApiKey(ProviderId), FString(TEXT("temporary_key")));
+
+	Store.SetApiKey(ProviderId, TEXT(""));
+	TestTrue(TEXT("Empty SetApiKey removes provider entry"), Store.GetApiKey(ProviderId).IsEmpty());
+
+	return true;
+}
