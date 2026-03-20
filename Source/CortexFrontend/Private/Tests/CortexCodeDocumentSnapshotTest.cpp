@@ -1,11 +1,11 @@
 #include "Misc/AutomationTest.h"
 #include "Conversion/CortexConversionContext.h"
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodeDocumentSaveSnapshotTest,
-    "Cortex.Frontend.Conversion.CodeDocument.SaveSnapshot",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodeDocumentPushSnapshotTest,
+    "Cortex.Frontend.Conversion.CodeDocument.PushSnapshot",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FCortexCodeDocumentSaveSnapshotTest::RunTest(const FString& Parameters)
+bool FCortexCodeDocumentPushSnapshotTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
 
@@ -13,72 +13,120 @@ bool FCortexCodeDocumentSaveSnapshotTest::RunTest(const FString& Parameters)
     Document->UpdateHeader(TEXT("original header"));
     Document->UpdateImplementation(TEXT("original impl"));
 
-    TestFalse(TEXT("bHasSnapshot should be false initially"), Document->bHasSnapshot);
+    TestTrue(TEXT("Stack should be empty initially"), Document->SnapshotStack.IsEmpty());
 
-    Document->SaveSnapshot();
+    Document->PushSnapshot();
 
-    TestTrue(TEXT("bHasSnapshot should be true"), Document->bHasSnapshot);
-    TestEqual(TEXT("PreviousHeaderCode"), Document->PreviousHeaderCode,
+    TestEqual(TEXT("Stack should have one entry"), Document->SnapshotStack.Num(), 1);
+    TestEqual(TEXT("Snapshot HeaderCode"), Document->SnapshotStack[0].HeaderCode,
         FString(TEXT("original header")));
-    TestEqual(TEXT("PreviousImplementationCode"), Document->PreviousImplementationCode,
+    TestEqual(TEXT("Snapshot ImplementationCode"), Document->SnapshotStack[0].ImplementationCode,
         FString(TEXT("original impl")));
 
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodeDocumentRevertTest,
-    "Cortex.Frontend.Conversion.CodeDocument.Revert",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodeDocumentPopSnapshotTest,
+    "Cortex.Frontend.Conversion.CodeDocument.PopSnapshot",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FCortexCodeDocumentRevertTest::RunTest(const FString& Parameters)
+bool FCortexCodeDocumentPopSnapshotTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
 
     auto Document = MakeShared<FCortexCodeDocument>();
     Document->UpdateHeader(TEXT("original header"));
     Document->UpdateImplementation(TEXT("original impl"));
-    Document->SaveSnapshot();
+    Document->PushSnapshot();
 
-    // Modify after snapshot
     Document->UpdateHeader(TEXT("modified header"));
     Document->UpdateImplementation(TEXT("modified impl"));
 
-    // Track delegate
     int32 BroadcastCount = 0;
     Document->OnDocumentChanged.AddLambda([&](ECortexCodeTab) { ++BroadcastCount; });
 
-    Document->RevertToSnapshot();
+    Document->PopSnapshot();
 
     TestEqual(TEXT("HeaderCode should revert"), Document->HeaderCode,
         FString(TEXT("original header")));
     TestEqual(TEXT("ImplementationCode should revert"), Document->ImplementationCode,
         FString(TEXT("original impl")));
-    TestFalse(TEXT("bHasSnapshot should be false after revert"), Document->bHasSnapshot);
+    TestTrue(TEXT("Stack should be empty"), Document->SnapshotStack.IsEmpty());
     TestTrue(TEXT("Should have broadcast changes"), BroadcastCount > 0);
 
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodeDocumentSnapshotGuardTest,
-    "Cortex.Frontend.Conversion.CodeDocument.SnapshotGuard",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodeDocumentMultiLevelUndoTest,
+    "Cortex.Frontend.Conversion.CodeDocument.MultiLevelUndo",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FCortexCodeDocumentSnapshotGuardTest::RunTest(const FString& Parameters)
+bool FCortexCodeDocumentMultiLevelUndoTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
 
     auto Document = MakeShared<FCortexCodeDocument>();
-    Document->UpdateHeader(TEXT("version1"));
-    Document->SaveSnapshot();
+    Document->UpdateHeader(TEXT("v1"));
+    Document->PushSnapshot();
 
-    // Modify and try to save again — should be guarded
-    Document->UpdateHeader(TEXT("version2"));
-    Document->SaveSnapshot();
+    Document->UpdateHeader(TEXT("v2"));
+    Document->PushSnapshot();
 
-    // Snapshot should still hold version1 (guarded by bHasSnapshot)
-    Document->RevertToSnapshot();
-    TestEqual(TEXT("Should revert to original snapshot"), Document->HeaderCode,
-        FString(TEXT("version1")));
+    Document->UpdateHeader(TEXT("v3"));
+
+    Document->PopSnapshot();
+    TestEqual(TEXT("After first pop should be v2"), Document->HeaderCode, FString(TEXT("v2")));
+    TestEqual(TEXT("Stack should have one entry after first pop"), Document->SnapshotStack.Num(), 1);
+
+    Document->PopSnapshot();
+    TestEqual(TEXT("After second pop should be v1"), Document->HeaderCode, FString(TEXT("v1")));
+    TestTrue(TEXT("Stack should be empty after second pop"), Document->SnapshotStack.IsEmpty());
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodeDocumentPopEmptyStackTest,
+    "Cortex.Frontend.Conversion.CodeDocument.PopEmptyStack",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCodeDocumentPopEmptyStackTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    auto Document = MakeShared<FCortexCodeDocument>();
+    Document->UpdateHeader(TEXT("some code"));
+
+    int32 BroadcastCount = 0;
+    Document->OnDocumentChanged.AddLambda([&](ECortexCodeTab) { ++BroadcastCount; });
+
+    Document->PopSnapshot();
+
+    TestEqual(TEXT("HeaderCode should be unchanged"), Document->HeaderCode,
+        FString(TEXT("some code")));
+    TestEqual(TEXT("No broadcasts on empty pop"), BroadcastCount, 0);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodeDocumentClearStackOnGenerationTest,
+    "Cortex.Frontend.Conversion.CodeDocument.ClearStackOnGeneration",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCodeDocumentClearStackOnGenerationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    auto Document = MakeShared<FCortexCodeDocument>();
+    Document->UpdateHeader(TEXT("v1"));
+    Document->PushSnapshot();
+    Document->UpdateHeader(TEXT("v2"));
+    Document->PushSnapshot();
+
+    TestEqual(TEXT("Stack should have two entries"), Document->SnapshotStack.Num(), 2);
+
+    Document->ClearSnapshots();
+
+    TestTrue(TEXT("Stack should be empty after ClearSnapshots"), Document->SnapshotStack.IsEmpty());
 
     return true;
 }
@@ -102,23 +150,24 @@ bool FCortexCodeDocumentCRLFCanonTest::RunTest(const FString& Parameters)
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodeDocumentSnippetSnapshotTest,
-    "Cortex.Frontend.Conversion.CodeDocument.SnippetSnapshot",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodeDocumentSnippetSnapshotStackTest,
+    "Cortex.Frontend.Conversion.CodeDocument.SnippetSnapshotStack",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FCortexCodeDocumentSnippetSnapshotTest::RunTest(const FString& Parameters)
+bool FCortexCodeDocumentSnippetSnapshotStackTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
 
     auto Document = MakeShared<FCortexCodeDocument>();
     Document->UpdateSnippet(TEXT("original snippet"));
-    Document->SaveSnapshot();
+    Document->PushSnapshot();
 
     Document->UpdateSnippet(TEXT("modified snippet"));
-    Document->RevertToSnapshot();
+    Document->PopSnapshot();
 
     TestEqual(TEXT("SnippetCode should revert"), Document->SnippetCode,
         FString(TEXT("original snippet")));
+    TestTrue(TEXT("Stack should be empty"), Document->SnapshotStack.IsEmpty());
 
     return true;
 }

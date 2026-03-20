@@ -183,6 +183,11 @@ void SCortexConversionChat::OnTurnComplete(const FCortexTurnResult& Result)
 	// Clear initial generation flag after first complete response
 	if (Context->bIsInitialGeneration)
 	{
+		// Clear snapshot stack on fresh generation (new conversation start)
+		if (Context->Document.IsValid())
+		{
+			Context->Document->ClearSnapshots();
+		}
 		Context->bIsInitialGeneration = false;
 	}
 
@@ -527,7 +532,7 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 						if (bAnyApplied)
 						{
 							// Save snapshot only when we actually apply something
-							Doc->SaveSnapshot();
+							Doc->PushSnapshot();
 							if (Target == TEXT("header"))
 							{
 								Doc->UpdateHeader(WorkingText);
@@ -548,14 +553,14 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 					{
 						if (CtxCopy.IsValid() && CtxCopy->Document.IsValid())
 						{
-							CtxCopy->Document->RevertToSnapshot();
+							CtxCopy->Document->PopSnapshot();
 						}
 						return FReply::Handled();
 					})
 					.IsRevertVisible_Lambda([CtxCopy]()
 					{
 						return CtxCopy.IsValid() && CtxCopy->Document.IsValid()
-							&& CtxCopy->Document->bHasSnapshot;
+							&& !CtxCopy->Document->SnapshotStack.IsEmpty();
 					});
 				break;
 			}

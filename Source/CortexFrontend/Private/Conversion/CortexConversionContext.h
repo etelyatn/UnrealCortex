@@ -12,6 +12,13 @@ enum class ECortexCodeTab : uint8 { Header, Implementation, Snippet };
 // ── Code document — shared data object observed by canvas and chat ──
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnCodeDocumentChanged, ECortexCodeTab /*ChangedTab*/);
 
+struct FCortexCodeSnapshot
+{
+    FString HeaderCode;
+    FString ImplementationCode;
+    FString SnippetCode;
+};
+
 struct FCortexCodeDocument
 {
     FString HeaderCode;
@@ -21,11 +28,8 @@ struct FCortexCodeDocument
     FString TargetPath;
     bool bIsSnippetMode = false;
 
-    // Snapshot for revert (stored before diff apply)
-    FString PreviousHeaderCode;
-    FString PreviousImplementationCode;
-    FString PreviousSnippetCode;
-    bool bHasSnapshot = false;
+    // Multi-level snapshot stack for undo
+    TArray<FCortexCodeSnapshot> SnapshotStack;
 
     FOnCodeDocumentChanged OnDocumentChanged;
 
@@ -47,29 +51,33 @@ struct FCortexCodeDocument
         OnDocumentChanged.Broadcast(ECortexCodeTab::Snippet);
     }
 
-    void SaveSnapshot()
+    void PushSnapshot()
     {
-        if (!bHasSnapshot)
-        {
-            PreviousHeaderCode = HeaderCode;
-            PreviousImplementationCode = ImplementationCode;
-            PreviousSnippetCode = SnippetCode;
-            bHasSnapshot = true;
-        }
+        FCortexCodeSnapshot Snapshot;
+        Snapshot.HeaderCode = HeaderCode;
+        Snapshot.ImplementationCode = ImplementationCode;
+        Snapshot.SnippetCode = SnippetCode;
+        SnapshotStack.Add(MoveTemp(Snapshot));
     }
 
-    void RevertToSnapshot()
+    void PopSnapshot()
     {
-        if (bHasSnapshot)
+        if (SnapshotStack.IsEmpty())
         {
-            HeaderCode = PreviousHeaderCode;
-            ImplementationCode = PreviousImplementationCode;
-            SnippetCode = PreviousSnippetCode;
-            bHasSnapshot = false;
-            OnDocumentChanged.Broadcast(ECortexCodeTab::Header);
-            OnDocumentChanged.Broadcast(ECortexCodeTab::Implementation);
-            OnDocumentChanged.Broadcast(ECortexCodeTab::Snippet);
+            return;
         }
+        FCortexCodeSnapshot Snapshot = SnapshotStack.Pop();
+        HeaderCode = MoveTemp(Snapshot.HeaderCode);
+        ImplementationCode = MoveTemp(Snapshot.ImplementationCode);
+        SnippetCode = MoveTemp(Snapshot.SnippetCode);
+        OnDocumentChanged.Broadcast(ECortexCodeTab::Header);
+        OnDocumentChanged.Broadcast(ECortexCodeTab::Implementation);
+        OnDocumentChanged.Broadcast(ECortexCodeTab::Snippet);
+    }
+
+    void ClearSnapshots()
+    {
+        SnapshotStack.Empty();
     }
 };
 
@@ -144,6 +152,14 @@ struct FCortexConversionContext
     FString TargetClassName;       // selected ancestor class name, empty if CreateNewClass
     FString TargetHeaderPath;      // path to existing .h file, empty if CreateNewClass
     FString TargetSourcePath;      // path to existing .cpp file, empty if CreateNewClass
+
+    // Original file content — read once at conversion start for diff view and prompt assembly
+    FString OriginalHeaderText;
+    FString OriginalSourceText;  // empty if header-only class
+
+    // Build verification checkbox state
+    bool bVerifyAfterSave = false;
+
     bool bConversionStarted = false;
     bool bIsInitialGeneration = true;
 

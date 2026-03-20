@@ -8,6 +8,7 @@
 #include "Framework/Docking/TabManager.h"
 #include "IToolMenusModule.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/MonitoredProcess.h"
 #include "Rendering/CortexRichTextStyle.h"
 #include "Session/CortexCliSession.h"
 #include "Styling/AppStyle.h"
@@ -230,8 +231,31 @@ void FCortexFrontendModule::UnregisterSession(TSharedPtr<FCortexCliSession> Sess
     Sessions.Remove(Session);
 }
 
+void FCortexFrontendModule::RegisterBuildProcess(TSharedPtr<FMonitoredProcess> Process)
+{
+    if (Process.IsValid())
+    {
+        BuildProcesses.AddUnique(Process);
+    }
+}
+
+void FCortexFrontendModule::UnregisterBuildProcess(TSharedPtr<FMonitoredProcess> Process)
+{
+    BuildProcesses.Remove(Process);
+}
+
 void FCortexFrontendModule::ReleaseSessions()
 {
+    // Cancel all build processes before releasing sessions
+    for (const TSharedPtr<FMonitoredProcess>& Process : BuildProcesses)
+    {
+        if (Process.IsValid())
+        {
+            Process->Cancel(true);
+        }
+    }
+    BuildProcesses.Reset();
+
     for (const TSharedPtr<FCortexCliSession>& Session : Sessions)
     {
         if (Session.IsValid())
