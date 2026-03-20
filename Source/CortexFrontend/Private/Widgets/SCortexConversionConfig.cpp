@@ -303,20 +303,16 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildTargetClassSection(const FCort
 		]
 	];
 
-	// Warning text (prefix mismatch or collision)
+	// Warning text (prefix mismatch, collision, or invalid chars)
 	Box->AddSlot()
 	.AutoHeight()
 	.Padding(0, 0, 0, 2)
 	[
-		SNew(STextBlock)
-		.Text_Lambda([this]() -> FText { return GetClassNameWarningText(); })
+		SAssignNew(ClassNameWarningText, STextBlock)
 		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
 		.ColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.7f, 0.2f)))
 		.AutoWrapText(true)
-		.Visibility_Lambda([this]() -> EVisibility
-		{
-			return GetClassNameWarningText().IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible;
-		})
+		.Visibility(EVisibility::Collapsed)
 	];
 
 	// Read-only module name
@@ -331,17 +327,24 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildTargetClassSection(const FCort
 		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
 	];
 
-	// Read-only parent class name
-	Box->AddSlot()
-	.AutoHeight()
-	.Padding(0, 2, 0, 0)
-	[
-		SNew(STextBlock)
-		.Text(FText::FromString(FString::Printf(TEXT("Parent: %s"),
-			Context.IsValid() ? *Context->Payload.ParentClassName : TEXT("Unknown"))))
-		.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
-		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-	];
+	// Read-only parent class name (with C++ prefix for consistency with prompt)
+	{
+		FString ParentDisplay = TEXT("Unknown");
+		if (Context.IsValid())
+		{
+			const TCHAR* Prefix = Context->Payload.bIsActorDescendant ? TEXT("A") : TEXT("U");
+			ParentDisplay = FString::Printf(TEXT("%s%s"), Prefix, *Context->Payload.ParentClassName);
+		}
+		Box->AddSlot()
+		.AutoHeight()
+		.Padding(0, 2, 0, 0)
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString(FString::Printf(TEXT("Parent: %s"), *ParentDisplay)))
+			.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+		];
+	}
 
 	return Box;
 }
@@ -355,6 +358,14 @@ void SCortexConversionConfig::OnClassNameChanged(const FText& NewText)
 
 	Context->Document->ClassName = NewText.ToString();
 	Context->bClassNameUserModified = true;
+
+	// Update cached warning text
+	if (ClassNameWarningText.IsValid())
+	{
+		FText Warning = GetClassNameWarningText();
+		ClassNameWarningText->SetText(Warning);
+		ClassNameWarningText->SetVisibility(Warning.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible);
+	}
 }
 
 FText SCortexConversionConfig::GetClassNameWarningText() const
@@ -368,6 +379,17 @@ FText SCortexConversionConfig::GetClassNameWarningText() const
 	if (Name.IsEmpty())
 	{
 		return FText::GetEmpty();
+	}
+
+	// Validate C++ identifier (letters, digits, underscores only)
+	for (int32 i = 0; i < Name.Len(); ++i)
+	{
+		TCHAR Ch = Name[i];
+		if (!FChar::IsAlnum(Ch) && Ch != TEXT('_'))
+		{
+			return FText::FromString(
+				TEXT("Warning: Class name contains invalid characters. Use only letters, digits, and underscores."));
+		}
 	}
 
 	// Validate UHT prefix

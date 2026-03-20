@@ -59,6 +59,7 @@ private:
 	int32 EstimateTokensForScope(ECortexConversionScope Scope) const;
 	FString FormatTokenEstimate(int32 Tokens) const;
 
+	TSharedPtr<STextBlock> ClassNameWarningText;
 	TSharedPtr<STextBlock> ConvertButtonText;
 	TSharedPtr<STextBlock> TokenWarningText;
 	TSharedPtr<SButton> ConvertButton;
