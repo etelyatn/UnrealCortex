@@ -84,7 +84,8 @@ struct FCortexDependencyInfo
 		}
 		for (const FReferencerEntry& Ref : Referencers)
 		{
-			if (Ref.AssetClass.Contains(TEXT("AnimBlueprint")) || Ref.AssetClass.Contains(TEXT("Blueprint")))
+			// Exact match to avoid "WidgetBlueprint" matching "Blueprint"
+			if (Ref.AssetClass == TEXT("Blueprint") || Ref.AssetClass == TEXT("AnimBlueprint"))
 			{
 				return true;
 			}

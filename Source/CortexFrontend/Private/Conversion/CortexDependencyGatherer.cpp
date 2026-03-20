@@ -122,7 +122,12 @@ FCortexDependencyInfo FCortexDependencyGatherer::GatherDependencies(
 	}
 
 	// Child BP discovery -- filter referencers that have this BP as parent class
+	// Build the generated class name to match against (e.g., "BP_Enemy.BP_Enemy_C")
 	{
+		const FString GeneratedClassSuffix = FString::Printf(TEXT("%s.%s_C"),
+			*Payload.BlueprintName, *Payload.BlueprintName);
+
+		// Reuse the same referencers we already queried above (avoid second GetReferencers call)
 		TArray<FName> AllReferencerPackages;
 		AssetRegistry.GetReferencers(PackageFName, AllReferencerPackages,
 			UE::AssetRegistry::EDependencyCategory::Package);
@@ -140,7 +145,6 @@ FCortexDependencyInfo FCortexDependencyGatherer::GatherDependencies(
 
 			for (const FAssetData& AssetData : AssetsInPackage)
 			{
-				// Check if this is a Blueprint with our BP as parent
 				const FString AssetClassName = AssetData.AssetClassPath.GetAssetName().ToString();
 				if (AssetClassName != TEXT("Blueprint") && AssetClassName != TEXT("WidgetBlueprint"))
 				{
@@ -151,9 +155,9 @@ FCortexDependencyInfo FCortexDependencyGatherer::GatherDependencies(
 				if (ParentTag.IsSet())
 				{
 					const FString ParentValue = ParentTag.AsString();
-					// The tag value contains the full object path of the parent class
-					// For BP parents it looks like: /Game/Path/BP_Name.BP_Name_C
-					if (ParentValue.Contains(Payload.BlueprintName))
+					// Match against the full generated class suffix to avoid false positives
+					// (e.g., "BP_Enemy" matching "BP_EnemyBoss")
+					if (ParentValue.Contains(GeneratedClassSuffix))
 					{
 						Info.ChildBlueprints.Add(AssetData.AssetName.ToString());
 					}
