@@ -1,5 +1,6 @@
 #include "Widgets/SCortexConversionTab.h"
 
+#include "Async/TaskGraphInterfaces.h"
 #include "CortexConversionTypes.h"
 #include "CortexCoreModule.h"
 #include "CortexFrontendModule.h"
@@ -8,7 +9,9 @@
 #include "Conversion/CortexConversionPrompts.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/PlatformTime.h"
+#include "Misc/App.h"
 #include "Misc/FileHelper.h"
+#include "Misc/MonitoredProcess.h"
 #include "Misc/Paths.h"
 #include "Session/CortexCliSession.h"
 #include "Widgets/SCortexCodeCanvas.h"
@@ -71,6 +74,7 @@ void SCortexConversionTab::Construct(const FArguments& InArgs)
 				.Document(Context->Document)
 				.ConversionContext(Context)
 				.OnCreateFiles(FOnCreateFilesClicked::CreateSP(this, &SCortexConversionTab::OnCreateFilesRequested))
+				.OnCancelBuild(FOnCancelBuild::CreateSP(this, &SCortexConversionTab::CancelBuild))
 			]
 			+ SSplitter::Slot()
 			.Value(0.4f)
@@ -80,6 +84,11 @@ void SCortexConversionTab::Construct(const FArguments& InArgs)
 			]
 		]
 	];
+}
+
+SCortexConversionTab::~SCortexConversionTab()
+{
+	CancelBuild();
 }
 
 void SCortexConversionTab::OnConvertClicked()
@@ -415,6 +424,168 @@ void SCortexConversionTab::OnCreateFilesRequested()
 
 void SCortexConversionTab::RunBuildVerification()
 {
-	// Placeholder — implemented in Task 7
-	UE_LOG(LogCortexFrontend, Log, TEXT("Build verification requested (not yet implemented)"));
+	// Cancel any existing build
+	CancelBuild();
+
+	// Derive UBT path
+	const FString EngineDir = FPaths::EngineDir();
+	const FString UBTPath = FPaths::ConvertRelativePathToFull(
+		EngineDir / TEXT("Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe"));
+
+	if (!FPaths::FileExists(UBTPath))
+	{
+		StatusMessage(FString::Printf(TEXT("Error: UnrealBuildTool not found at %s"), *UBTPath));
+		return;
+	}
+
+	const FString ProjectName = FApp::GetProjectName();
+	const FString BuildTarget = FString::Printf(TEXT("%sEditor"), *ProjectName);
+	const FString ProjectPath = FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath());
+	const FString BuildArgs = FString::Printf(
+		TEXT("%s Win64 Development -Project=\"%s\" -WaitMutex -FromMsBuild"),
+		*BuildTarget, *ProjectPath);
+
+	// Wrap in cmd.exe to merge stderr into stdout
+	const FString CmdExe = TEXT("cmd.exe");
+	const FString CmdArgs = FString::Printf(TEXT("/c \"\"%s\" %s\" 2>&1"), *UBTPath, *BuildArgs);
+
+	UE_LOG(LogCortexFrontend, Log, TEXT("Build verification: %s %s"), *UBTPath, *BuildArgs);
+	StatusMessage(TEXT("Building project..."));
+
+	BuildProcess = MakeShared<FMonitoredProcess>(CmdExe, CmdArgs, true);
+
+	// CRITICAL: FMonitoredProcess fires delegates on a background thread.
+	// All Slate mutations must happen on the Game Thread.
+	TWeakPtr<SCortexConversionTab> WeakSelf = StaticCastWeakPtr<SCortexConversionTab>(AsWeak());
+
+	BuildProcess->OnOutput().BindLambda([WeakSelf](FString Output)
+	{
+		AsyncTask(ENamedThreads::GameThread, [WeakSelf, Output = MoveTemp(Output)]()
+		{
+			TSharedPtr<SCortexConversionTab> Self = WeakSelf.Pin();
+			if (Self.IsValid())
+			{
+				Self->OnBuildOutputInternal(Output);
+			}
+		});
+	});
+
+	BuildProcess->OnCompleted().BindLambda([WeakSelf](int32 ReturnCode)
+	{
+		AsyncTask(ENamedThreads::GameThread, [WeakSelf, ReturnCode]()
+		{
+			TSharedPtr<SCortexConversionTab> Self = WeakSelf.Pin();
+			if (Self.IsValid())
+			{
+				Self->OnBuildCompletedInternal(ReturnCode);
+			}
+		});
+	});
+
+	if (!BuildProcess->Launch())
+	{
+		UE_LOG(LogCortexFrontend, Error, TEXT("Build verification: failed to launch process"));
+		StatusMessage(TEXT("Error: Failed to launch build process."));
+		BuildProcess.Reset();
+		return;
+	}
+
+	// Register with module for PreExit cleanup
+	FCortexFrontendModule& FrontendModule =
+		FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+	FrontendModule.RegisterBuildProcess(BuildProcess);
+
+	if (CodeCanvas.IsValid())
+	{
+		CodeCanvas->SetBuildStatus(ECortexBuildStatus::Building);
+	}
+}
+
+void SCortexConversionTab::CancelBuild()
+{
+	if (!BuildProcess.IsValid())
+	{
+		return;
+	}
+
+	// Unbind delegates BEFORE cancel to prevent race conditions
+	BuildProcess->OnOutput().Unbind();
+	BuildProcess->OnCompleted().Unbind();
+	BuildProcess->OnCanceled().Unbind();
+	BuildProcess->Cancel(true);
+
+	// Unregister from module
+	if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexFrontend")))
+	{
+		FCortexFrontendModule& FrontendModule =
+			FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+		FrontendModule.UnregisterBuildProcess(BuildProcess);
+	}
+
+	BuildProcess.Reset();
+	BuildOutputAccumulator.Empty();
+
+	if (CodeCanvas.IsValid())
+	{
+		CodeCanvas->SetBuildStatus(ECortexBuildStatus::Hidden);
+	}
+}
+
+void SCortexConversionTab::OnBuildOutputInternal(const FString& Output)
+{
+	BuildOutputAccumulator.Append(Output);
+	BuildOutputAccumulator.Append(TEXT("\n"));
+}
+
+void SCortexConversionTab::OnBuildCompletedInternal(int32 ReturnCode)
+{
+	UE_LOG(LogCortexFrontend, Log, TEXT("Build verification completed with return code %d"), ReturnCode);
+
+	const bool bBuildSucceeded = (ReturnCode == 0);
+
+	if (bBuildSucceeded)
+	{
+		StatusMessage(TEXT("Build succeeded."));
+		if (CodeCanvas.IsValid())
+		{
+			CodeCanvas->SetBuildStatus(ECortexBuildStatus::Succeeded);
+		}
+
+		// Send convention review prompt if session is available
+		if (Context.IsValid() && Context->Session.IsValid())
+		{
+			FCortexPromptRequest ReviewRequest;
+			ReviewRequest.Prompt = TEXT("The build succeeded. Please review the generated code for Unreal Engine coding convention compliance. Check naming, UPROPERTY/UFUNCTION macros, include order, and any potential issues.");
+			ReviewRequest.AccessMode = ECortexAccessMode::ReadOnly;
+			Context->Session->SendPrompt(ReviewRequest);
+			StatusMessage(TEXT("Requesting convention review..."));
+		}
+	}
+	else
+	{
+		StatusMessage(TEXT("Build failed. Check errors below."));
+		if (CodeCanvas.IsValid())
+		{
+			CodeCanvas->SetBuildStatus(ECortexBuildStatus::Failed, BuildOutputAccumulator);
+		}
+	}
+
+	// Re-enable Live Coding
+#if WITH_LIVE_CODING
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding)
+	{
+		LiveCoding->EnableForSession(true);
+	}
+#endif
+
+	// Unregister and release process
+	if (BuildProcess.IsValid() && FModuleManager::Get().IsModuleLoaded(TEXT("CortexFrontend")))
+	{
+		FCortexFrontendModule& FrontendModule =
+			FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+		FrontendModule.UnregisterBuildProcess(BuildProcess);
+	}
+	BuildProcess.Reset();
+	BuildOutputAccumulator.Empty();
 }

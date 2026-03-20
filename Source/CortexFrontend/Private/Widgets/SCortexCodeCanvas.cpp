@@ -4,6 +4,7 @@
 #include "Widgets/SCortexConversionOverlay.h"
 #include "Widgets/SCortexInheritedDiffView.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "Widgets/SOverlay.h"
@@ -21,6 +22,7 @@ void SCortexCodeCanvas::Construct(const FArguments& InArgs)
 	Document = InArgs._Document;
 	ConversionContext = InArgs._ConversionContext;
 	OnCreateFilesDelegate = InArgs._OnCreateFiles;
+	OnCancelBuildDelegate = InArgs._OnCancelBuild;
 
 	const bool bInheritedMode = ConversionContext.IsValid()
 		&& ConversionContext->SelectedDestination == ECortexConversionDestination::InjectIntoExisting;
@@ -236,22 +238,11 @@ void SCortexCodeCanvas::Construct(const FArguments& InArgs)
 			]
 		]
 
-		// Footer
+		// Status bar (dynamic — updated by SetBuildStatus)
 		+ SVerticalBox::Slot()
 		.AutoHeight()
-		.Padding(8, 4)
 		[
-			SNew(STextBlock)
-			.Text_Lambda([this]() -> FText
-			{
-				const bool bInherited = ConversionContext.IsValid()
-					&& ConversionContext->SelectedDestination == ECortexConversionDestination::InjectIntoExisting;
-				return bInherited
-					? NSLOCTEXT("CortexCodeCanvas", "InheritedFooter", "Inherited class mode \u2014 showing diff against original")
-					: NSLOCTEXT("CortexCodeCanvas", "Footer", "Read-only \u2014 modify via chat");
-			})
-			.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
-			.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
+			SAssignNew(StatusBar, SVerticalBox)
 		]
 	];
 
@@ -270,6 +261,9 @@ void SCortexCodeCanvas::Construct(const FArguments& InArgs)
 
 	// Set initial label state (shows "not generated" until code arrives)
 	UpdateLabels();
+
+	// Show default footer
+	SetBuildStatus(ECortexBuildStatus::Hidden);
 }
 
 SCortexCodeCanvas::~SCortexCodeCanvas()
@@ -431,4 +425,158 @@ int32 SCortexCodeCanvas::CountLines(const FString& Code)
 		}
 	}
 	return Lines;
+}
+
+void SCortexCodeCanvas::SetBuildStatus(ECortexBuildStatus Status, const FString& ErrorLog)
+{
+	BuildStatus = Status;
+	BuildErrorLog = ErrorLog;
+	bErrorLogExpanded = false;
+
+	if (!StatusBar.IsValid())
+	{
+		return;
+	}
+
+	StatusBar->ClearChildren();
+
+	switch (Status)
+	{
+	case ECortexBuildStatus::Hidden:
+	{
+		StatusBar->AddSlot()
+			.AutoHeight()
+			.Padding(8, 4)
+			[
+				SNew(STextBlock)
+				.Text_Lambda([this]() -> FText
+				{
+					const bool bInherited = ConversionContext.IsValid()
+						&& ConversionContext->SelectedDestination == ECortexConversionDestination::InjectIntoExisting;
+					return bInherited
+						? NSLOCTEXT("CortexCodeCanvas", "InheritedFooter", "Inherited class mode \u2014 showing diff against original")
+						: NSLOCTEXT("CortexCodeCanvas", "Footer", "Read-only \u2014 modify via chat");
+				})
+				.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+				.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
+			];
+		break;
+	}
+
+	case ECortexBuildStatus::Building:
+	{
+		StatusBar->AddSlot()
+			.AutoHeight()
+			.Padding(8, 4)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(NSLOCTEXT("CortexCodeCanvas", "Building", "Building..."))
+					.ColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.85f, 0.0f)))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				[
+					SNullWidget::NullWidget
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(4, 0)
+				[
+					SNew(SButton)
+					.Text(NSLOCTEXT("CortexCodeCanvas", "CancelBuild", "Cancel"))
+					.OnClicked_Lambda([this]() -> FReply
+					{
+						OnCancelBuildDelegate.ExecuteIfBound();
+						return FReply::Handled();
+					})
+				]
+			];
+		break;
+	}
+
+	case ECortexBuildStatus::Succeeded:
+	{
+		StatusBar->AddSlot()
+			.AutoHeight()
+			.Padding(8, 4)
+			[
+				SNew(STextBlock)
+				.Text(NSLOCTEXT("CortexCodeCanvas", "BuildSucceeded", "Build succeeded"))
+				.ColorAndOpacity(FSlateColor(FLinearColor(0.2f, 0.9f, 0.3f)))
+				.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+			];
+		break;
+	}
+
+	case ECortexBuildStatus::Failed:
+	{
+		StatusBar->AddSlot()
+			.AutoHeight()
+			.Padding(8, 4)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(NSLOCTEXT("CortexCodeCanvas", "BuildFailed", "Build failed"))
+					.ColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.3f, 0.3f)))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				[
+					SNullWidget::NullWidget
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(4, 0)
+				[
+					SNew(SButton)
+					.Text_Lambda([this]() -> FText
+					{
+						return bErrorLogExpanded
+							? NSLOCTEXT("CortexCodeCanvas", "HideErrors", "Hide errors")
+							: NSLOCTEXT("CortexCodeCanvas", "ShowErrors", "Show errors");
+					})
+					.OnClicked_Lambda([this]() -> FReply
+					{
+						bErrorLogExpanded = !bErrorLogExpanded;
+						// Rebuild to show/hide error log
+						SetBuildStatus(ECortexBuildStatus::Failed, BuildErrorLog);
+						return FReply::Handled();
+					})
+				]
+			];
+
+		if (bErrorLogExpanded && !BuildErrorLog.IsEmpty())
+		{
+			StatusBar->AddSlot()
+				.AutoHeight()
+				.MaxHeight(200.0f)
+				.Padding(8, 0, 8, 4)
+				[
+					SNew(SScrollBox)
+					+ SScrollBox::Slot()
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(BuildErrorLog))
+						.ColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.5f, 0.5f)))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+						.AutoWrapText(true)
+					]
+				];
+		}
+		break;
+	}
+	}
 }

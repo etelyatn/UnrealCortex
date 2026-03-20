@@ -2,6 +2,7 @@
 
 #include "Modules/ModuleInterface.h"
 
+class FMonitoredProcess;
 class SDockTab;
 class FSpawnTabArgs;
 class FCortexCliSession;
@@ -25,6 +26,12 @@ public:
     /** Unregister a conversion session. */
     void UnregisterSession(TSharedPtr<FCortexCliSession> Session);
 
+    /** Register a build process for PreExit cleanup. */
+    void RegisterBuildProcess(TSharedPtr<FMonitoredProcess> Process);
+
+    /** Unregister a build process. */
+    void UnregisterBuildProcess(TSharedPtr<FMonitoredProcess> Process);
+
 private:
     TSharedRef<SDockTab> SpawnChatTab(const FSpawnTabArgs& Args);
     TSharedRef<SDockTab> SpawnGenStudioTab(const FSpawnTabArgs& Args);
@@ -39,5 +46,6 @@ private:
     FDelegateHandle ConversionDelegateHandle;
     FDelegateHandle AnalysisDelegateHandle;
     TArray<TSharedPtr<FCortexCliSession>> Sessions;
+    TArray<TSharedPtr<FMonitoredProcess>> BuildProcesses;
     TWeakPtr<SCortexWorkbench> WorkbenchWeak;
 };
