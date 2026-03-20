@@ -331,6 +331,18 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildTargetClassSection(const FCort
 		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
 	];
 
+	// Read-only parent class name
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 2, 0, 0)
+	[
+		SNew(STextBlock)
+		.Text(FText::FromString(FString::Printf(TEXT("Parent: %s"),
+			Context.IsValid() ? *Context->Payload.ParentClassName : TEXT("Unknown"))))
+		.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+	];
+
 	return Box;
 }
 
