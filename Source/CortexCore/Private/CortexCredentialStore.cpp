@@ -16,7 +16,6 @@
 namespace
 {
 const TCHAR* CredentialsSection = TEXT("/Script/CortexGen.CortexGenSettings");
-const TCHAR* CredentialsField = TEXT("api_keys");
 } // namespace
 
 FCortexCredentialStore& FCortexCredentialStore::Get()
@@ -102,6 +101,12 @@ void FCortexCredentialStore::Load()
 	ApiKeys.Reset();
 
 	const FString FilePath = GetFilePath();
+	if (!IFileManager::Get().FileExists(*FilePath))
+	{
+		MigrateFromOldIni();
+		return;
+	}
+
 	FString JsonString;
 	if (FFileHelper::LoadFileToString(JsonString, *FilePath))
 	{
@@ -109,24 +114,16 @@ void FCortexCredentialStore::Load()
 		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
 		if (FJsonSerializer::Deserialize(Reader, RootObject) && RootObject.IsValid())
 		{
-			const TSharedPtr<FJsonObject>* CredentialsObject = nullptr;
-			if (RootObject->TryGetObjectField(CredentialsField, CredentialsObject) &&
-				CredentialsObject != nullptr &&
-				CredentialsObject->IsValid())
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& Entry : RootObject->Values)
 			{
-				for (const TPair<FString, TSharedPtr<FJsonValue>>& Entry : (*CredentialsObject)->Values)
+				FString LoadedKey;
+				if (Entry.Value.IsValid() && Entry.Value->TryGetString(LoadedKey) && !LoadedKey.IsEmpty())
 				{
-					FString LoadedKey;
-					if (Entry.Value.IsValid() && Entry.Value->TryGetString(LoadedKey) && !LoadedKey.IsEmpty())
-					{
-						ApiKeys.Add(NormalizeProviderId(Entry.Key), LoadedKey);
-					}
+					ApiKeys.Add(NormalizeProviderId(Entry.Key), LoadedKey);
 				}
 			}
 		}
 	}
-
-	MigrateFromOldIni();
 }
 
 void FCortexCredentialStore::Save() const
@@ -134,17 +131,14 @@ void FCortexCredentialStore::Save() const
 	const FString FilePath = GetFilePath();
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(FilePath), true);
 
-	const TSharedPtr<FJsonObject> CredentialsObject = MakeShared<FJsonObject>();
+	const TSharedPtr<FJsonObject> RootObject = MakeShared<FJsonObject>();
 	for (const TPair<FString, FString>& Entry : ApiKeys)
 	{
 		if (!Entry.Key.IsEmpty() && !Entry.Value.IsEmpty())
 		{
-			CredentialsObject->SetStringField(Entry.Key, Entry.Value);
+			RootObject->SetStringField(Entry.Key, Entry.Value);
 		}
 	}
-
-	const TSharedPtr<FJsonObject> RootObject = MakeShared<FJsonObject>();
-	RootObject->SetObjectField(CredentialsField, CredentialsObject);
 
 	FString JsonString;
 	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
