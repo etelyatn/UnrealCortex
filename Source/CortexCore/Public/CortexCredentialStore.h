@@ -10,6 +10,12 @@ public:
 	FString GetApiKey(const FString& ProviderId);
 	void SetApiKey(const FString& ProviderId, const FString& Key);
 
+#if WITH_DEV_AUTOMATION_TESTS
+	void ResetForTests();
+	void SetFilePathOverrideForTests(const FString& InFilePath);
+	void ClearFilePathOverrideForTests();
+#endif
+
 private:
 	void Load();
 	void Save() const;
@@ -21,4 +27,8 @@ private:
 
 	TMap<FString, FString> ApiKeys;
 	bool bLoaded = false;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	FString FilePathOverride;
+#endif
 };

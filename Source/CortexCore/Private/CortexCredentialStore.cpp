@@ -90,6 +90,29 @@ void FCortexCredentialStore::SetApiKey(const FString& ProviderId, const FString&
 	Save();
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+void FCortexCredentialStore::ResetForTests()
+{
+	check(IsInGameThread());
+	ApiKeys.Reset();
+	bLoaded = false;
+}
+
+void FCortexCredentialStore::SetFilePathOverrideForTests(const FString& InFilePath)
+{
+	check(IsInGameThread());
+	FilePathOverride = InFilePath;
+	ResetForTests();
+}
+
+void FCortexCredentialStore::ClearFilePathOverrideForTests()
+{
+	check(IsInGameThread());
+	FilePathOverride.Reset();
+	ResetForTests();
+}
+#endif
+
 void FCortexCredentialStore::Load()
 {
 	if (bLoaded)
@@ -225,5 +248,12 @@ FString FCortexCredentialStore::GetEnvironmentVariableName(const FString& Normal
 
 FString FCortexCredentialStore::GetFilePath() const
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	if (!FilePathOverride.IsEmpty())
+	{
+		return FilePathOverride;
+	}
+#endif
+
 	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexCredentials.json"));
 }

@@ -1,33 +1,155 @@
 #include "Misc/AutomationTest.h"
 #include "CortexCredentialStore.h"
+#include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformMisc.h"
+#include "Misc/Char.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Guid.h"
 #include "Misc/Paths.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 namespace
 {
-class FCortexCredentialStoreKeyGuard
-{
-public:
-	explicit FCortexCredentialStoreKeyGuard(const FString& InProviderId)
-		: ProviderId(InProviderId)
-	{
-		Store = &FCortexCredentialStore::Get();
-		PreviousValue = Store->GetApiKey(ProviderId);
-	}
+const TCHAR* CredentialStoreTestSettingsSection = TEXT("/Script/CortexGen.CortexGenSettings");
 
-	~FCortexCredentialStoreKeyGuard()
+FString BuildEnvironmentVariableName(const FString& ProviderId)
+{
+	FString UpperProviderId = ProviderId;
+	UpperProviderId.ToUpperInline();
+
+	for (TCHAR& Character : UpperProviderId)
 	{
-		if (Store != nullptr)
+		if (!FChar::IsAlnum(Character))
 		{
-			Store->SetApiKey(ProviderId, PreviousValue);
+			Character = TEXT('_');
 		}
 	}
 
+	return FString::Printf(TEXT("CORTEX_%s_API_KEY"), *UpperProviderId);
+}
+
+FString BuildIsolatedCredentialFilePath()
+{
+	const FString FileName = FString::Printf(
+		TEXT("CredentialStore_%s.json"),
+		*FGuid::NewGuid().ToString(EGuidFormats::Digits));
+
+	return FPaths::Combine(
+		FPaths::ProjectSavedDir(),
+		TEXT("Automation"),
+		TEXT("CortexCredentialStoreTests"),
+		FileName);
+}
+
+class FCortexEnvironmentVariableGuard
+{
+public:
+	explicit FCortexEnvironmentVariableGuard(const FString& InVariableName)
+		: VariableName(InVariableName)
+	{
+		PreviousValue = FPlatformMisc::GetEnvironmentVariable(*VariableName);
+	}
+
+	~FCortexEnvironmentVariableGuard()
+	{
+		FPlatformMisc::SetEnvironmentVar(*VariableName, *PreviousValue);
+	}
+
 private:
-	FCortexCredentialStore* Store = nullptr;
-	FString ProviderId;
+	FString VariableName;
 	FString PreviousValue;
 };
+
+class FCortexIniKeyGuard
+{
+public:
+	explicit FCortexIniKeyGuard(const FString& InKeyName)
+		: KeyName(InKeyName)
+	{
+		bHadPreviousValue = GConfig->GetString(CredentialStoreTestSettingsSection, *KeyName, PreviousValue, GEditorPerProjectIni);
+	}
+
+	~FCortexIniKeyGuard()
+	{
+		if (bHadPreviousValue)
+		{
+			GConfig->SetString(CredentialStoreTestSettingsSection, *KeyName, *PreviousValue, GEditorPerProjectIni);
+		}
+		else
+		{
+			GConfig->RemoveKey(CredentialStoreTestSettingsSection, *KeyName, GEditorPerProjectIni);
+		}
+		GConfig->Flush(false, GEditorPerProjectIni);
+	}
+
+private:
+	bool bHadPreviousValue = false;
+	FString KeyName;
+	FString PreviousValue;
+};
+
+class FCortexCredentialStoreTestContextGuard
+{
+public:
+	FCortexCredentialStoreTestContextGuard()
+	{
+		CredentialsFilePath = BuildIsolatedCredentialFilePath();
+
+#if WITH_DEV_AUTOMATION_TESTS
+		Store = &FCortexCredentialStore::Get();
+		Store->SetFilePathOverrideForTests(CredentialsFilePath);
+		Store->ResetForTests();
+#endif
+	}
+
+	~FCortexCredentialStoreTestContextGuard()
+	{
+#if WITH_DEV_AUTOMATION_TESTS
+		if (Store != nullptr)
+		{
+			Store->ClearFilePathOverrideForTests();
+		}
+#endif
+
+		if (!CredentialsFilePath.IsEmpty())
+		{
+			IFileManager::Get().Delete(*CredentialsFilePath, false, true, true);
+		}
+	}
+
+	const FString& GetCredentialsFilePath() const
+	{
+		return CredentialsFilePath;
+	}
+
+private:
+#if WITH_DEV_AUTOMATION_TESTS
+	FCortexCredentialStore* Store = nullptr;
+#endif
+	FString CredentialsFilePath;
+};
+
+void ResetCredentialStoreForTests()
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	FCortexCredentialStore::Get().ResetForTests();
+#endif
+}
+
+bool LoadJsonObjectFromFile(const FString& FilePath, TSharedPtr<FJsonObject>& OutObject)
+{
+	FString JsonString;
+	if (!FFileHelper::LoadFileToString(JsonString, *FilePath))
+	{
+		return false;
+	}
+
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
+	return FJsonSerializer::Deserialize(Reader, OutObject) && OutObject.IsValid();
+}
 } // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -40,8 +162,8 @@ bool FCortexCredentialStoreRoundTripTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 
+	FCortexCredentialStoreTestContextGuard TestContext;
 	const FString ProviderId = TEXT("cortex_test_roundtrip_provider");
-	FCortexCredentialStoreKeyGuard RestoreGuard(ProviderId);
 	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
 
 	// Set a key
@@ -69,8 +191,8 @@ bool FCortexCredentialStoreNormalizationTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 
+	FCortexCredentialStoreTestContextGuard TestContext;
 	const FString ProviderId = TEXT("cortex_test_FaL_provider");
-	FCortexCredentialStoreKeyGuard RestoreGuard(ProviderId);
 	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
 
 	// Set with mixed case
@@ -98,9 +220,15 @@ bool FCortexCredentialStoreUnknownProviderTest::RunTest(const FString& Parameter
 {
 	(void)Parameters;
 
+	FCortexCredentialStoreTestContextGuard TestContext;
 	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
 
-	FString Key = Store.GetApiKey(TEXT("nonexistent_provider_xyz"));
+	const FString ProviderId = TEXT("cortex_test_unknown_provider");
+	const FString EnvironmentVariableName = BuildEnvironmentVariableName(ProviderId);
+	FCortexEnvironmentVariableGuard EnvGuard(EnvironmentVariableName);
+	FPlatformMisc::SetEnvironmentVar(*EnvironmentVariableName, TEXT(""));
+
+	FString Key = Store.GetApiKey(ProviderId);
 	TestTrue(TEXT("Unknown provider returns empty string"), Key.IsEmpty());
 
 	return true;
@@ -116,8 +244,8 @@ bool FCortexCredentialStoreEmptyKeyRemovesEntryTest::RunTest(const FString& Para
 {
 	(void)Parameters;
 
+	FCortexCredentialStoreTestContextGuard TestContext;
 	const FString ProviderId = TEXT("cortex_test_cleanup_provider");
-	FCortexCredentialStoreKeyGuard RestoreGuard(ProviderId);
 	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
 
 	Store.SetApiKey(ProviderId, TEXT("temporary_key"));
@@ -125,6 +253,135 @@ bool FCortexCredentialStoreEmptyKeyRemovesEntryTest::RunTest(const FString& Para
 
 	Store.SetApiKey(ProviderId, TEXT(""));
 	TestTrue(TEXT("Empty SetApiKey removes provider entry"), Store.GetApiKey(ProviderId).IsEmpty());
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCredentialStorePersistenceTest,
+	"Cortex.Core.CredentialStore.FilePersistence",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexCredentialStorePersistenceTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexCredentialStoreTestContextGuard TestContext;
+	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
+	const FString ProviderId = TEXT("cortex_test_persistence_provider");
+	const FString ExpectedKey = TEXT("persisted_test_key");
+
+	const FString EnvironmentVariableName = BuildEnvironmentVariableName(ProviderId);
+	FCortexEnvironmentVariableGuard EnvGuard(EnvironmentVariableName);
+	FPlatformMisc::SetEnvironmentVar(*EnvironmentVariableName, TEXT(""));
+
+	Store.SetApiKey(ProviderId, ExpectedKey);
+
+	const FString CredentialsFilePath = TestContext.GetCredentialsFilePath();
+	TestTrue(TEXT("Credential file should be created"), IFileManager::Get().FileExists(*CredentialsFilePath));
+
+	TSharedPtr<FJsonObject> RootObject;
+	const bool bLoadedJson = LoadJsonObjectFromFile(CredentialsFilePath, RootObject);
+	TestTrue(TEXT("Credential JSON should be readable"), bLoadedJson);
+
+	if (bLoadedJson)
+	{
+		FString JsonValue;
+		const bool bHasProviderField = RootObject->TryGetStringField(TEXT("cortex_test_persistence_provider"), JsonValue);
+		TestTrue(TEXT("Credential JSON should store provider at root"), bHasProviderField);
+		if (bHasProviderField)
+		{
+			TestEqual(TEXT("Stored JSON value should match"), JsonValue, ExpectedKey);
+		}
+	}
+
+	ResetCredentialStoreForTests();
+	TestEqual(TEXT("Key should load from persisted JSON after reset"), Store.GetApiKey(ProviderId), ExpectedKey);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCredentialStoreEnvironmentOverrideTest,
+	"Cortex.Core.CredentialStore.EnvironmentOverride",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexCredentialStoreEnvironmentOverrideTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexCredentialStoreTestContextGuard TestContext;
+	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
+	const FString ProviderId = TEXT("cortex_test_env_provider");
+	const FString StoredKey = TEXT("stored_key_value");
+	const FString EnvKey = TEXT("env_override_key_value");
+
+	Store.SetApiKey(ProviderId, StoredKey);
+
+	const FString EnvironmentVariableName = BuildEnvironmentVariableName(ProviderId);
+	FCortexEnvironmentVariableGuard EnvGuard(EnvironmentVariableName);
+
+	FPlatformMisc::SetEnvironmentVar(*EnvironmentVariableName, *EnvKey);
+	TestEqual(TEXT("Environment variable should override stored key"), Store.GetApiKey(ProviderId), EnvKey);
+
+	FPlatformMisc::SetEnvironmentVar(*EnvironmentVariableName, TEXT(""));
+	ResetCredentialStoreForTests();
+	TestEqual(TEXT("Stored JSON value should be used when env var is unset"), Store.GetApiKey(ProviderId), StoredKey);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCredentialStoreMigrationOnMissingFileTest,
+	"Cortex.Core.CredentialStore.MigrationOnMissingFile",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexCredentialStoreMigrationOnMissingFileTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexCredentialStoreTestContextGuard TestContext;
+	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
+	const FString MigratedKey = TEXT("test_migrated_fal_key");
+	const FString UpdatedIniKey = TEXT("test_updated_fal_key");
+
+	const FString FalEnvironmentVariable = BuildEnvironmentVariableName(TEXT("fal"));
+	FCortexEnvironmentVariableGuard EnvGuard(FalEnvironmentVariable);
+	FPlatformMisc::SetEnvironmentVar(*FalEnvironmentVariable, TEXT(""));
+
+	FCortexIniKeyGuard IniGuard(TEXT("FalApiKey"));
+	GConfig->SetString(CredentialStoreTestSettingsSection, TEXT("FalApiKey"), *MigratedKey, GEditorPerProjectIni);
+	GConfig->Flush(false, GEditorPerProjectIni);
+
+	ResetCredentialStoreForTests();
+	TestEqual(TEXT("Missing credential file should trigger old ini migration"), Store.GetApiKey(TEXT("fal")), MigratedKey);
+
+	const FString CredentialsFilePath = TestContext.GetCredentialsFilePath();
+	TestTrue(TEXT("Migration should create credential file"), IFileManager::Get().FileExists(*CredentialsFilePath));
+
+	TSharedPtr<FJsonObject> RootObject;
+	const bool bLoadedJson = LoadJsonObjectFromFile(CredentialsFilePath, RootObject);
+	TestTrue(TEXT("Migrated credential JSON should be readable"), bLoadedJson);
+	if (bLoadedJson)
+	{
+		FString JsonValue;
+		const bool bHasFalField = RootObject->TryGetStringField(TEXT("fal"), JsonValue);
+		TestTrue(TEXT("Migrated key should be written at flat JSON root"), bHasFalField);
+		if (bHasFalField)
+		{
+			TestEqual(TEXT("Migrated JSON value should match old ini value"), JsonValue, MigratedKey);
+		}
+	}
+
+	// Once the credentials file exists, load should use file contents and skip re-migration from old ini.
+	GConfig->SetString(CredentialStoreTestSettingsSection, TEXT("FalApiKey"), *UpdatedIniKey, GEditorPerProjectIni);
+	GConfig->Flush(false, GEditorPerProjectIni);
+
+	ResetCredentialStoreForTests();
+	TestEqual(TEXT("Existing credential file should prevent repeat migration"), Store.GetApiKey(TEXT("fal")), MigratedKey);
 
 	return true;
 }
