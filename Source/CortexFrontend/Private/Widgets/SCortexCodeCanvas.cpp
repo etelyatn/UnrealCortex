@@ -304,16 +304,6 @@ void SCortexCodeCanvas::OnDocumentChanged(ECortexCodeTab ChangedTab)
 		SnippetBlock->SetCode(Document->SnippetCode);
 	}
 
-	// Route to diff views in inherited mode
-	if (ChangedTab == ECortexCodeTab::Header && HeaderDiffView.IsValid())
-	{
-		HeaderDiffView->SetCurrentText(Document->HeaderCode);
-	}
-	else if (ChangedTab == ECortexCodeTab::Implementation && ImplDiffView.IsValid())
-	{
-		ImplDiffView->SetCurrentText(Document->ImplementationCode);
-	}
-
 	// Dismiss the processing overlay as soon as any code arrives
 	if (bIsProcessing && (!Document->HeaderCode.IsEmpty() || !Document->ImplementationCode.IsEmpty() || !Document->SnippetCode.IsEmpty()))
 	{
@@ -425,6 +415,22 @@ int32 SCortexCodeCanvas::CountLines(const FString& Code)
 		}
 	}
 	return Lines;
+}
+
+void SCortexCodeCanvas::FlushDiffView()
+{
+	if (!Document.IsValid())
+	{
+		return;
+	}
+	if (HeaderDiffView.IsValid())
+	{
+		HeaderDiffView->SetCurrentText(Document->HeaderCode);
+	}
+	if (ImplDiffView.IsValid())
+	{
+		ImplDiffView->SetCurrentText(Document->ImplementationCode);
+	}
 }
 
 void SCortexCodeCanvas::SetBuildStatus(ECortexBuildStatus Status, const FString& ErrorLog)

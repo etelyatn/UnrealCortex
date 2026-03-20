@@ -182,6 +182,7 @@ void SCortexInheritedDiffView::RebuildDiffView()
 	}
 
 	ScrollBox->ClearChildren();
+	ExpandedHunkIndices.Empty();
 
 	if (OriginalText.IsEmpty() && CurrentText.IsEmpty())
 	{

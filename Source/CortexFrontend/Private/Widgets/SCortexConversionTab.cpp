@@ -334,6 +334,11 @@ void SCortexConversionTab::OnSessionTurnComplete(const FCortexTurnResult& /*Resu
 {
 	if (CodeCanvas.IsValid())
 	{
+		CodeCanvas->FlushDiffView();
+	}
+
+	if (CodeCanvas.IsValid())
+	{
 		CodeCanvas->SetProcessing(false);
 	}
 }
@@ -376,7 +381,13 @@ void SCortexConversionTab::OnCreateFilesRequested()
 
 		if (!Context->TargetSourcePath.IsEmpty() && !Context->Document->ImplementationCode.IsEmpty())
 		{
-			if (!FFileHelper::SaveStringToFile(Context->Document->ImplementationCode, *Context->TargetSourcePath,
+			if (!FPaths::IsUnderDirectory(Context->TargetSourcePath, FPaths::ProjectDir()))
+			{
+				StatusMessage(FString::Printf(TEXT("Error: Source path is outside project directory: %s"),
+					*Context->TargetSourcePath));
+				bSuccess = false;
+			}
+			else if (!FFileHelper::SaveStringToFile(Context->Document->ImplementationCode, *Context->TargetSourcePath,
 				FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 			{
 				StatusMessage(FString::Printf(TEXT("Error: Failed to save source: %s"), *Context->TargetSourcePath));
@@ -509,10 +520,6 @@ void SCortexConversionTab::CancelBuild()
 		return;
 	}
 
-	// Unbind delegates BEFORE cancel to prevent race conditions
-	BuildProcess->OnOutput().Unbind();
-	BuildProcess->OnCompleted().Unbind();
-	BuildProcess->OnCanceled().Unbind();
 	BuildProcess->Cancel(true);
 
 	// Unregister from module
@@ -550,6 +557,12 @@ void SCortexConversionTab::OnBuildOutputInternal(const FString& Output)
 
 void SCortexConversionTab::OnBuildCompletedInternal(int32 ReturnCode)
 {
+	// Guard against late-arriving completion after CancelBuild() was called
+	if (!BuildProcess.IsValid())
+	{
+		return;
+	}
+
 	UE_LOG(LogCortexFrontend, Log, TEXT("Build verification completed with return code %d"), ReturnCode);
 
 	const bool bBuildSucceeded = (ReturnCode == 0);

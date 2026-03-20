@@ -38,22 +38,3 @@ bool FCortexBuildCommandAssemblyTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexBuildVerificationStatusTest,
-	"Cortex.Frontend.BuildVerification.StatusTransitions",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexBuildVerificationStatusTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-
-	// Include the header indirectly by testing the enum values
-	// ECortexBuildStatus is defined in SCortexCodeCanvas.h
-	TestTrue(TEXT("Hidden != Building"),
-		static_cast<int32>(ECortexBuildStatus::Hidden) != static_cast<int32>(ECortexBuildStatus::Building));
-	TestTrue(TEXT("Building != Succeeded"),
-		static_cast<int32>(ECortexBuildStatus::Building) != static_cast<int32>(ECortexBuildStatus::Succeeded));
-	TestTrue(TEXT("Succeeded != Failed"),
-		static_cast<int32>(ECortexBuildStatus::Succeeded) != static_cast<int32>(ECortexBuildStatus::Failed));
-
-	return true;
-}

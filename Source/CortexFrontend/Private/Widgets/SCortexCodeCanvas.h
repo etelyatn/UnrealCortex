@@ -46,6 +46,9 @@ public:
 	/** Update the build status bar at the bottom of the canvas. */
 	void SetBuildStatus(ECortexBuildStatus Status, const FString& ErrorLog = FString());
 
+	/** Recomputes diff view from current document state. Called on turn completion, not per streaming token. */
+	void FlushDiffView();
+
 private:
 	void OnDocumentChanged(ECortexCodeTab ChangedTab);
 	FReply OnCopyClicked();

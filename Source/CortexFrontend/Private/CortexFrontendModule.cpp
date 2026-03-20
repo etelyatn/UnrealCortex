@@ -251,9 +251,6 @@ void FCortexFrontendModule::ReleaseSessions()
     {
         if (Process.IsValid())
         {
-            Process->OnOutput().Unbind();
-            Process->OnCompleted().Unbind();
-            Process->OnCanceled().Unbind();
             Process->Cancel(true);
         }
     }
