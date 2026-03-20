@@ -118,9 +118,10 @@ struct FCortexConversionContext
                 DerivedName = TEXT("U") + DerivedName;
             }
         }
-        else if (InPayload.bIsWidgetBlueprint && !DerivedName.IsEmpty() && DerivedName[0] == TEXT('A'))
+        else if (InPayload.bIsWidgetBlueprint && !DerivedName.IsEmpty()
+            && (DerivedName[0] == TEXT('A') || DerivedName[0] == TEXT('U')))
         {
-            // Widget BPs should always have U prefix, even if name starts with A
+            // Widget BPs should always have U prefix, even if name starts with A or U
             DerivedName = TEXT("U") + DerivedName;
         }
         Document->ClassName = DerivedName;

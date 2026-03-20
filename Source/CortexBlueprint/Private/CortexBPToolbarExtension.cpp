@@ -153,6 +153,17 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 				}
 			}
 
+			// Cap to prevent prompt bloat for massive widget trees — must happen before
+			// graph-walking so LogicReferencedWidgets only references capped variable names
+			constexpr int32 MaxWidgetVars = 50;
+			if (Payload.WidgetVariableNames.Num() > MaxWidgetVars)
+			{
+				UE_LOG(LogCortexBlueprint, Warning,
+					TEXT("Widget BP has %d widget variables, capping to %d for conversion UI"),
+					Payload.WidgetVariableNames.Num(), MaxWidgetVars);
+				Payload.WidgetVariableNames.SetNum(MaxWidgetVars);
+			}
+
 			// Detect which widget variables are used in graph logic
 			TSet<FName> ReferencedVarNames;
 			TArray<UEdGraph*> AllWidgetGraphs;
@@ -176,16 +187,6 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 				{
 					Payload.LogicReferencedWidgets.Add(WidgetVarName);
 				}
-			}
-
-			// Cap to prevent prompt bloat for massive widget trees
-			constexpr int32 MaxWidgetVars = 50;
-			if (Payload.WidgetVariableNames.Num() > MaxWidgetVars)
-			{
-				UE_LOG(LogCortexBlueprint, Warning,
-					TEXT("Widget BP has %d widget variables, capping to %d for conversion UI"),
-					Payload.WidgetVariableNames.Num(), MaxWidgetVars);
-				Payload.WidgetVariableNames.SetNum(MaxWidgetVars);
 			}
 		}
 		else

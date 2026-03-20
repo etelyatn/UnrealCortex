@@ -150,6 +150,7 @@ namespace CortexConversionPrompts
             "- State transitions and visibility toggling\n"
             "- Animation playback and cosmetic effects\n\n"
             "Use meta = (BindWidget) to reference designer widgets from C++.\n"
+            "Override NativeConstruct() for initialization and NativeDestruct() for cleanup \u2014 never BeginPlay() or EndPlay().\n"
             "The widget hierarchy is NEVER recreated in C++ — it stays in the UMG designer."
         );
     }
