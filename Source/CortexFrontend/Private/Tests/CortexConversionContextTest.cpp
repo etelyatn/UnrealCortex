@@ -247,3 +247,21 @@ bool FCortexConversionContextOriginalTextFieldsTest::RunTest(const FString& Para
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionVerifyCheckboxDefaultTest,
+    "Cortex.Frontend.Conversion.Context.VerifyCheckboxDefault",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionVerifyCheckboxDefaultTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexConversionPayload Payload;
+    Payload.BlueprintName = TEXT("BP_Test");
+    Payload.ParentClassName = TEXT("AActor");
+    FCortexConversionContext Context(Payload);
+
+    TestFalse(TEXT("bVerifyAfterSave should default to false"), Context.bVerifyAfterSave);
+
+    return true;
+}

@@ -89,6 +89,31 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 				BuildDestinationSection(Payload)
 			]
 
+			// Verify after save checkbox
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 12)
+			[
+				SNew(SCheckBox)
+				.IsChecked_Lambda([this]()
+				{
+					return (Context.IsValid() && Context->bVerifyAfterSave)
+						? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+				})
+				.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+				{
+					if (Context.IsValid())
+					{
+						Context->bVerifyAfterSave = (State == ECheckBoxState::Checked);
+					}
+				})
+				[
+					SNew(STextBlock)
+					.Text(NSLOCTEXT("CortexConversion", "VerifyAfterSave", "Verify after save (build + convention check)"))
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+				]
+			]
+
 			// Warning bars (conditional)
 			+ SVerticalBox::Slot()
 			.AutoHeight()
