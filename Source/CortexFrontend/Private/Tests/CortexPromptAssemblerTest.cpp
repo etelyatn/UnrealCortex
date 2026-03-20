@@ -481,7 +481,8 @@ bool FCortexAssemblerDependencyContextInPromptTest::RunTest(const FString& Param
     Ref.AssetClass = TEXT("Blueprint");
     DepInfo.Referencers.Add(Ref);
 
-    FString Msg = CortexConversionPrompts::BuildInitialUserMessage(TEXT("{}"), DepInfo);
+    FString DepContext = FCortexConversionPromptAssembler::BuildDependencyContext(DepInfo);
+    FString Msg = CortexConversionPrompts::BuildInitialUserMessage(TEXT("{}"), DepContext);
     TestTrue(TEXT("User message should contain dependency_context tag"),
         Msg.Contains(TEXT("<dependency_context>")));
     TestTrue(TEXT("User message should contain reinforcement"),

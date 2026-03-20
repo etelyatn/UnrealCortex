@@ -130,7 +130,7 @@ FString FCortexConversionPromptAssembler::Assemble(
 	if (Context.EstimatedTotalTokens > 12000)
 	{
 		Result += TEXT("NOTE: This is a large Blueprint. Focus on structural accuracy over detailed explanations. "
-			"Keep the integration guide to 5 items max.\n\n");
+			"Keep the integration guide to 5 items max. Prioritize Blueprints and AnimBlueprints over Levels.\n\n");
 	}
 
 	return Result;
@@ -175,7 +175,7 @@ FString FCortexConversionPromptAssembler::BuildDependencyContext(const FCortexDe
 		}
 	}
 
-	Result += TEXT("</dependency_context>");
+	Result += TEXT("</dependency_context>\n");
 	return Result;
 }
 
