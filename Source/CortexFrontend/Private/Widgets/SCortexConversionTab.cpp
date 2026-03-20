@@ -7,6 +7,8 @@
 #include "Conversion/CortexConversionPrompts.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/PlatformTime.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "Session/CortexCliSession.h"
 #include "Widgets/SCortexCodeCanvas.h"
 #include "Widgets/SCortexConversionChat.h"
@@ -113,6 +115,34 @@ void SCortexConversionTab::OnConvertClicked()
 	{
 		UE_LOG(LogCortexFrontend, Log, TEXT("  Target events/functions: %s"),
 			*FString::Join(Context->SelectedFunctions, TEXT(", ")));
+	}
+
+	// Read target class files for diff view and prompt assembly (consolidate reads)
+	if (Context->SelectedDestination == ECortexConversionDestination::InjectIntoExisting)
+	{
+		if (!Context->TargetHeaderPath.IsEmpty())
+		{
+			if (!FPaths::IsUnderDirectory(Context->TargetHeaderPath, FPaths::ProjectDir()))
+			{
+				StatusMessage(FString::Printf(TEXT("Error: Header path is outside project directory: %s"),
+					*Context->TargetHeaderPath));
+				return;
+			}
+			if (!FFileHelper::LoadFileToString(Context->OriginalHeaderText, *Context->TargetHeaderPath))
+			{
+				StatusMessage(FString::Printf(TEXT("Error: Cannot read header file: %s"),
+					*Context->TargetHeaderPath));
+				return;
+			}
+		}
+		if (!Context->TargetSourcePath.IsEmpty())
+		{
+			if (FPaths::IsUnderDirectory(Context->TargetSourcePath, FPaths::ProjectDir()))
+			{
+				// Missing .cpp is OK — header-only mode
+				FFileHelper::LoadFileToString(Context->OriginalSourceText, *Context->TargetSourcePath);
+			}
+		}
 	}
 
 	StatusMessage(FString::Printf(TEXT("[Step 1/4] Serializing Blueprint (%s: %s)..."),

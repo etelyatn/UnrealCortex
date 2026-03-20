@@ -216,3 +216,34 @@ bool FCortexConversionContextDepthDefaultTest::RunTest(const FString& Parameters
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionContextOriginalTextFieldsTest,
+    "Cortex.Frontend.Conversion.Context.OriginalTextFields",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionContextOriginalTextFieldsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexConversionPayload Payload;
+    Payload.BlueprintName = TEXT("BP_TestActor");
+    Payload.ParentClassName = TEXT("AActor");
+
+    FCortexConversionContext Context(Payload);
+
+    // New fields should exist and be empty by default
+    TestTrue(TEXT("OriginalHeaderText should be empty"), Context.OriginalHeaderText.IsEmpty());
+    TestTrue(TEXT("OriginalSourceText should be empty"), Context.OriginalSourceText.IsEmpty());
+    TestFalse(TEXT("bVerifyAfterSave should default to false"), Context.bVerifyAfterSave);
+
+    // Set values
+    Context.OriginalHeaderText = TEXT("#pragma once\nclass ATestActor {};");
+    Context.OriginalSourceText = TEXT("#include \"TestActor.h\"");
+    Context.bVerifyAfterSave = true;
+
+    TestEqual(TEXT("OriginalHeaderText stored"), Context.OriginalHeaderText,
+        FString(TEXT("#pragma once\nclass ATestActor {};")));
+    TestTrue(TEXT("bVerifyAfterSave stored"), Context.bVerifyAfterSave);
+
+    return true;
+}

@@ -152,6 +152,14 @@ struct FCortexConversionContext
     FString TargetClassName;       // selected ancestor class name, empty if CreateNewClass
     FString TargetHeaderPath;      // path to existing .h file, empty if CreateNewClass
     FString TargetSourcePath;      // path to existing .cpp file, empty if CreateNewClass
+
+    // Original file content — read once at conversion start for diff view and prompt assembly
+    FString OriginalHeaderText;
+    FString OriginalSourceText;  // empty if header-only class
+
+    // Build verification checkbox state
+    bool bVerifyAfterSave = false;
+
     bool bConversionStarted = false;
     bool bIsInitialGeneration = true;
 

@@ -72,25 +72,21 @@ FString FCortexConversionPromptAssembler::Assemble(
 		Result += CortexConversionPrompts::InjectModeLayer();
 		Result += TEXT("\n\n");
 
-		// Include existing source files in context
-		if (!Context.TargetHeaderPath.IsEmpty())
+		// Use pre-read text from context (read once at conversion start, avoids TOCTOU)
+		if (!Context.OriginalHeaderText.IsEmpty())
 		{
-			FString HeaderContent;
-			if (FFileHelper::LoadFileToString(HeaderContent, *Context.TargetHeaderPath))
-			{
-				Result += FString::Printf(TEXT("<existing-header path=\"%s\">\n%s\n</existing-header>\n\n"),
-					*Context.TargetHeaderPath, *HeaderContent);
-			}
+			Result += FString::Printf(TEXT("<existing-header path=\"%s\">\n%s\n</existing-header>\n\n"),
+				*Context.TargetHeaderPath, *Context.OriginalHeaderText);
 		}
-		if (!Context.TargetSourcePath.IsEmpty())
+		if (!Context.OriginalSourceText.IsEmpty())
 		{
-			FString SourceContent;
-			if (FFileHelper::LoadFileToString(SourceContent, *Context.TargetSourcePath))
-			{
-				Result += FString::Printf(TEXT("<existing-implementation path=\"%s\">\n%s\n</existing-implementation>\n\n"),
-					*Context.TargetSourcePath, *SourceContent);
-			}
+			Result += FString::Printf(TEXT("<existing-implementation path=\"%s\">\n%s\n</existing-implementation>\n\n"),
+				*Context.TargetSourcePath, *Context.OriginalSourceText);
 		}
+
+		// Instruct Claude to output complete modified file and include summaries
+		Result += TEXT("IMPORTANT: For the initial generation, output the COMPLETE modified file (not a diff). "
+			"For each subsequent code change, include a one-line summary of what was added or removed.\n\n");
 	}
 
 	// 5. Domain knowledge fragments
