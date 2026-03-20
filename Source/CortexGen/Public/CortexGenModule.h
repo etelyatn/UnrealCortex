@@ -12,7 +12,11 @@ public:
     virtual void StartupModule() override;
     virtual void ShutdownModule() override;
 
+    /** Returns the job manager. Only valid when IsEnabled() returns true. */
     FCortexGenJobManager& GetJobManager() const;
+
+    /** Returns true if CortexGen is enabled in settings. Safe to call anytime. */
+    static bool IsEnabled();
 
 private:
     void HandleEnginePreExit();

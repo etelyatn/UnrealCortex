@@ -11,9 +11,26 @@
 
 DEFINE_LOG_CATEGORY(LogCortexGen);
 
+bool FCortexGenModule::IsEnabled()
+{
+    const UCortexGenSettings* Settings = UCortexGenSettings::Get();
+    if (!Settings)
+    {
+        UE_LOG(LogCortexGen, Warning, TEXT("CortexGenSettings CDO unavailable — defaulting to enabled"));
+        return true;
+    }
+    return Settings->bEnabled;
+}
+
 void FCortexGenModule::StartupModule()
 {
     UE_LOG(LogCortexGen, Log, TEXT("CortexGen module starting up"));
+
+    if (!IsEnabled())
+    {
+        UE_LOG(LogCortexGen, Log, TEXT("CortexGen is disabled in settings. Skipping initialization."));
+        return;
+    }
 
     // Save jobs before UObject reflection is torn down.
     // ShutdownModule() runs after UObject teardown, so FJsonObjectConverter would crash there.
@@ -83,6 +100,8 @@ void FCortexGenModule::StartupModule()
 void FCortexGenModule::ShutdownModule()
 {
     UE_LOG(LogCortexGen, Log, TEXT("CortexGen module shutting down"));
+    // Safe when disabled: RemoveAll is a no-op if delegate was never bound,
+    // and Reset on a null TSharedPtr is a no-op.
     FCoreDelegates::OnEnginePreExit.RemoveAll(this);
     JobManager.Reset();
 }
@@ -98,7 +117,8 @@ void FCortexGenModule::HandleEnginePreExit()
 
 FCortexGenJobManager& FCortexGenModule::GetJobManager() const
 {
-    check(JobManager.IsValid());
+    checkf(JobManager.IsValid(),
+        TEXT("GetJobManager() called but JobManager is null. Is CortexGen disabled in settings?"));
     return *JobManager;
 }
 
