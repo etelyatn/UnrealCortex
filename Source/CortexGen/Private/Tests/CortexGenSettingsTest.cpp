@@ -90,3 +90,20 @@ bool FCortexGenSettingsModelRegistrySentinelTest::RunTest(const FString& Paramet
     Settings2->MarkAsGarbage();
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenSettingsEnabledDefaultTest,
+    "Cortex.Gen.Settings.EnabledDefault",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenSettingsEnabledDefaultTest::RunTest(const FString& Parameters)
+{
+    const UCortexGenSettings* Settings = UCortexGenSettings::Get();
+    TestNotNull(TEXT("Settings should be accessible"), Settings);
+    if (!Settings) return true;
+
+    TestFalse(TEXT("bEnabled should default to false"), Settings->bEnabled);
+
+    return true;
+}

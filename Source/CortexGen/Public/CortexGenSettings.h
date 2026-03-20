@@ -41,6 +41,12 @@ class CORTEXGEN_API UCortexGenSettings : public UDeveloperSettings
     GENERATED_BODY()
 
 public:
+    // Module Toggle
+    UPROPERTY(Config, EditAnywhere, Category = "General",
+        meta = (ConfigRestartRequired = true,
+            ToolTip = "Enable CortexGen module. When disabled, Gen Studio tab and menu are hidden, and no generation commands are registered."))
+    bool bEnabled = false;
+
     // Provider
     UPROPERTY(Config, EditAnywhere, Category = "Provider",
         meta = (GetOptions = "GetDefaultProviderOptions"))
