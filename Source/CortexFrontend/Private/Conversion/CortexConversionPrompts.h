@@ -2,9 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Conversion/CortexDependencyTypes.h"
-
-// Forward declaration
-class FCortexConversionPromptAssembler;
+#include "Conversion/CortexConversionPromptAssembler.h"
 
 namespace CortexConversionPrompts
 {
