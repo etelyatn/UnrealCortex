@@ -16,8 +16,7 @@ bool FCortexGenModule::IsEnabled()
     const UCortexGenSettings* Settings = UCortexGenSettings::Get();
     if (!Settings)
     {
-        UE_LOG(LogCortexGen, Warning, TEXT("CortexGenSettings CDO unavailable — defaulting to enabled"));
-        return true;
+        return false;
     }
     return Settings->bEnabled;
 }

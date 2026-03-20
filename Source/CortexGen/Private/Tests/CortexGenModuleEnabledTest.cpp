@@ -21,8 +21,8 @@ bool FCortexGenModuleIsEnabledTest::RunTest(const FString& Parameters)
     }
     else
     {
-        // If settings unavailable, IsEnabled should default to true (fail-safe)
-        TestTrue(TEXT("IsEnabled should be true when settings unavailable"), bResult);
+        // If settings unavailable, IsEnabled returns false (opt-in default — no CDO means disabled)
+        TestFalse(TEXT("IsEnabled should be false when settings unavailable"), bResult);
     }
 
     return true;

@@ -224,7 +224,7 @@ void SCortexGenImageSession::Construct(const FArguments& InArgs)
 SCortexGenImageSession::~SCortexGenImageSession()
 {
     // Unsubscribe from delegate
-    if (JobStateHandle.IsValid() && FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) && FCortexGenModule::IsEnabled())
+    if (JobStateHandle.IsValid() && FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
     {
         FCortexGenModule& GenModule = FModuleManager::GetModuleChecked<FCortexGenModule>(TEXT("CortexGen"));
         GenModule.GetJobManager().OnJobStateChanged().Remove(JobStateHandle);

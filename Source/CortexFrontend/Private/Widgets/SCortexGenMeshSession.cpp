@@ -254,7 +254,7 @@ void SCortexGenMeshSession::Construct(const FArguments& InArgs)
 
 SCortexGenMeshSession::~SCortexGenMeshSession()
 {
-    if (JobStateHandle.IsValid() && FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) && FCortexGenModule::IsEnabled())
+    if (JobStateHandle.IsValid() && FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
     {
         auto& JobManager = FModuleManager::GetModuleChecked<FCortexGenModule>(
             TEXT("CortexGen")).GetJobManager();
