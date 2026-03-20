@@ -21,6 +21,8 @@ const TCHAR* CredentialsField = TEXT("api_keys");
 
 FCortexCredentialStore& FCortexCredentialStore::Get()
 {
+	check(IsInGameThread());
+
 	static FCortexCredentialStore Instance;
 	return Instance;
 }
