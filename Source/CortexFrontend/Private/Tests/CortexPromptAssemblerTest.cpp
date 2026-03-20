@@ -2,6 +2,7 @@
 #include "Conversion/CortexConversionPrompts.h"
 #include "Conversion/CortexConversionPromptAssembler.h"
 #include "Conversion/CortexConversionContext.h"
+#include "Conversion/CortexDependencyTypes.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPromptBaseSystemTest,
     "Cortex.Frontend.Conversion.Prompts.BaseSystem",
@@ -349,6 +350,214 @@ bool FCortexAssemblerBasePromptClassNameRuleTest::RunTest(const FString& Paramet
         BaseStr.Contains(TEXT("class name injection")));
     TestFalse(TEXT("Should NOT contain old standalone rule"),
         BaseStr.Contains(TEXT("Class name should match Blueprint name")));
+
+    return true;
+}
+
+// ── BuildDependencyContext tests ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDependencyContextEmptyTest,
+    "Cortex.Frontend.Conversion.Assembler.DependencyContext.Empty",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexDependencyContextEmptyTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexDependencyInfo DepInfo;
+    FString Context = FCortexConversionPromptAssembler::BuildDependencyContext(DepInfo);
+
+    TestTrue(TEXT("Should contain dependency_context tag"),
+        Context.Contains(TEXT("<dependency_context>")));
+    TestTrue(TEXT("Should contain closing tag"),
+        Context.Contains(TEXT("</dependency_context>")));
+    TestTrue(TEXT("Should contain no-references message"),
+        Context.Contains(TEXT("No external assets reference this Blueprint")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDependencyContextReferencersTest,
+    "Cortex.Frontend.Conversion.Assembler.DependencyContext.Referencers",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexDependencyContextReferencersTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexDependencyInfo DepInfo;
+    FCortexDependencyInfo::FReferencerEntry Ref1;
+    Ref1.AssetName = TEXT("BP_Spawner");
+    Ref1.AssetClass = TEXT("Blueprint");
+    DepInfo.Referencers.Add(Ref1);
+
+    FCortexDependencyInfo::FReferencerEntry Ref2;
+    Ref2.AssetName = TEXT("TestMap");
+    Ref2.AssetClass = TEXT("Level");
+    DepInfo.Referencers.Add(Ref2);
+
+    FString Context = FCortexConversionPromptAssembler::BuildDependencyContext(DepInfo);
+
+    TestTrue(TEXT("Should list BP_Spawner"),
+        Context.Contains(TEXT("BP_Spawner (Blueprint)")));
+    TestTrue(TEXT("Should list TestMap"),
+        Context.Contains(TEXT("TestMap (Level)")));
+    TestFalse(TEXT("Should NOT contain no-references message"),
+        Context.Contains(TEXT("No external assets reference this Blueprint")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDependencyContextOverflowTest,
+    "Cortex.Frontend.Conversion.Assembler.DependencyContext.Overflow",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexDependencyContextOverflowTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexDependencyInfo DepInfo;
+    for (int32 i = 0; i < 20; ++i)
+    {
+        FCortexDependencyInfo::FReferencerEntry Ref;
+        Ref.AssetName = FString::Printf(TEXT("BP_Ref_%d"), i);
+        Ref.AssetClass = TEXT("Blueprint");
+        DepInfo.Referencers.Add(Ref);
+    }
+
+    FString Context = FCortexConversionPromptAssembler::BuildDependencyContext(DepInfo);
+
+    // First 15 should be listed
+    TestTrue(TEXT("Should list first referencer"),
+        Context.Contains(TEXT("BP_Ref_0 (Blueprint)")));
+    TestTrue(TEXT("Should list 15th referencer"),
+        Context.Contains(TEXT("BP_Ref_14 (Blueprint)")));
+    // 16th should NOT be listed
+    TestFalse(TEXT("Should NOT list 16th referencer"),
+        Context.Contains(TEXT("BP_Ref_15")));
+    // Should have overflow message
+    TestTrue(TEXT("Should have overflow message"),
+        Context.Contains(TEXT("and 5 more")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDependencyContextChildBPsTest,
+    "Cortex.Frontend.Conversion.Assembler.DependencyContext.ChildBPs",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexDependencyContextChildBPsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexDependencyInfo DepInfo;
+    DepInfo.ChildBlueprints.Add(TEXT("BP_EnemyMelee"));
+    DepInfo.ChildBlueprints.Add(TEXT("BP_EnemyRanged"));
+
+    FString Context = FCortexConversionPromptAssembler::BuildDependencyContext(DepInfo);
+
+    TestTrue(TEXT("Should list child BP_EnemyMelee"),
+        Context.Contains(TEXT("BP_EnemyMelee")));
+    TestTrue(TEXT("Should list child BP_EnemyRanged"),
+        Context.Contains(TEXT("BP_EnemyRanged")));
+    TestTrue(TEXT("Should have child blueprints section"),
+        Context.Contains(TEXT("Child Blueprints")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexAssemblerDependencyContextInPromptTest,
+    "Cortex.Frontend.Conversion.Assembler.DependencyContextInPrompt",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexAssemblerDependencyContextInPromptTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // BuildInitialUserMessage should include dependency_context
+    FCortexDependencyInfo DepInfo;
+    FCortexDependencyInfo::FReferencerEntry Ref;
+    Ref.AssetName = TEXT("BP_Spawner");
+    Ref.AssetClass = TEXT("Blueprint");
+    DepInfo.Referencers.Add(Ref);
+
+    FString Msg = CortexConversionPrompts::BuildInitialUserMessage(TEXT("{}"), DepInfo);
+    TestTrue(TEXT("User message should contain dependency_context tag"),
+        Msg.Contains(TEXT("<dependency_context>")));
+    TestTrue(TEXT("User message should contain reinforcement"),
+        Msg.Contains(TEXT("BLUEPRINT INTEGRATION")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPromptScopeLayerFullClassIntegrationGuideTest,
+    "Cortex.Frontend.Conversion.Prompts.ScopeLayerFullClass.IntegrationGuide",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexPromptScopeLayerFullClassIntegrationGuideTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const TCHAR* Layer = CortexConversionPrompts::ScopeLayerFullClass();
+    FString LayerStr(Layer);
+
+    TestTrue(TEXT("Should contain What to Check After Conversion"),
+        LayerStr.Contains(TEXT("What to Check After Conversion")));
+    TestTrue(TEXT("Should contain What to Remove from Blueprint"),
+        LayerStr.Contains(TEXT("What to Remove from Blueprint")));
+    TestTrue(TEXT("Should contain What to Keep in Blueprint"),
+        LayerStr.Contains(TEXT("What to Keep in Blueprint")));
+    TestTrue(TEXT("Should contain Integration Steps"),
+        LayerStr.Contains(TEXT("Integration Steps")));
+    TestTrue(TEXT("Should reference dependency_context"),
+        LayerStr.Contains(TEXT("dependency_context")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexAssemblerLargeBPAdaptationTest,
+    "Cortex.Frontend.Conversion.Assembler.LargeBPAdaptation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexAssemblerLargeBPAdaptationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Large BP (>12000 tokens) should add "5 items max" note
+    {
+        FCortexConversionPayload Payload;
+        Payload.BlueprintPath = TEXT("/Game/Test/BP_Large");
+        Payload.BlueprintName = TEXT("BP_Large");
+        Payload.ParentClassName = TEXT("Actor");
+
+        auto Context = MakeShared<FCortexConversionContext>(Payload);
+        Context->SelectedScope = ECortexConversionScope::EntireBlueprint;
+        Context->SelectedDepth = ECortexConversionDepth::CppCore;
+        Context->EstimatedTotalTokens = 15000;
+
+        FString Prompt = FCortexConversionPromptAssembler::Assemble(*Context, TEXT("{}"));
+
+        TestTrue(TEXT("Large BP should contain 5 items max note"),
+            Prompt.Contains(TEXT("5 items max")));
+    }
+
+    // Small BP (<= 12000 tokens) should NOT add the note
+    {
+        FCortexConversionPayload Payload;
+        Payload.BlueprintPath = TEXT("/Game/Test/BP_Small");
+        Payload.BlueprintName = TEXT("BP_Small");
+        Payload.ParentClassName = TEXT("Actor");
+
+        auto Context = MakeShared<FCortexConversionContext>(Payload);
+        Context->SelectedScope = ECortexConversionScope::EntireBlueprint;
+        Context->SelectedDepth = ECortexConversionDepth::CppCore;
+        Context->EstimatedTotalTokens = 5000;
+
+        FString Prompt = FCortexConversionPromptAssembler::Assemble(*Context, TEXT("{}"));
+
+        TestFalse(TEXT("Small BP should NOT contain 5 items max note"),
+            Prompt.Contains(TEXT("5 items max")));
+    }
 
     return true;
 }

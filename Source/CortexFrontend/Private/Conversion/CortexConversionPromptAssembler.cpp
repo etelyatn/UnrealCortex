@@ -3,6 +3,7 @@
 #include "CortexFrontendModule.h"
 #include "Conversion/CortexConversionContext.h"
 #include "Conversion/CortexConversionPrompts.h"
+#include "Conversion/CortexDependencyGatherer.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -125,6 +126,56 @@ FString FCortexConversionPromptAssembler::Assemble(
 		}
 	}
 
+	// 6. Large BP adaptation
+	if (Context.EstimatedTotalTokens > 12000)
+	{
+		Result += TEXT("NOTE: This is a large Blueprint. Focus on structural accuracy over detailed explanations. "
+			"Keep the integration guide to 5 items max.\n\n");
+	}
+
+	return Result;
+}
+
+FString FCortexConversionPromptAssembler::BuildDependencyContext(const FCortexDependencyInfo& DepInfo)
+{
+	FString Result = TEXT("<dependency_context>\n");
+
+	const bool bHasReferencers = !DepInfo.Referencers.IsEmpty();
+	const bool bHasChildren = !DepInfo.ChildBlueprints.IsEmpty();
+
+	if (!bHasReferencers && !bHasChildren)
+	{
+		Result += TEXT("No external assets reference this Blueprint.\n");
+	}
+	else
+	{
+		if (bHasReferencers)
+		{
+			Result += TEXT("Assets that reference this Blueprint:\n");
+			const int32 Cap = FCortexDependencyGatherer::MaxReferencers;
+			const int32 ShowCount = FMath::Min(DepInfo.Referencers.Num(), Cap);
+			for (int32 i = 0; i < ShowCount; ++i)
+			{
+				const FCortexDependencyInfo::FReferencerEntry& Ref = DepInfo.Referencers[i];
+				Result += FString::Printf(TEXT("- %s (%s)\n"), *Ref.AssetName, *Ref.AssetClass);
+			}
+			if (DepInfo.Referencers.Num() > Cap)
+			{
+				Result += FString::Printf(TEXT("...and %d more\n"), DepInfo.Referencers.Num() - Cap);
+			}
+		}
+
+		if (bHasChildren)
+		{
+			Result += TEXT("Child Blueprints that inherit from this Blueprint:\n");
+			for (const FString& Child : DepInfo.ChildBlueprints)
+			{
+				Result += FString::Printf(TEXT("- %s\n"), *Child);
+			}
+		}
+	}
+
+	Result += TEXT("</dependency_context>");
 	return Result;
 }
 

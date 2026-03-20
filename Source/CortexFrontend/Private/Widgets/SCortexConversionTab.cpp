@@ -266,8 +266,9 @@ void SCortexConversionTab::OnConvertClicked()
 				FString InitialMessage = Context->Payload.bIsWidgetBlueprint
 					? CortexConversionPrompts::BuildWidgetInitialUserMessage(
 						Json, Context->SelectedWidgetBindings,
-						Context->Payload.WidgetVariableNames.Num() > 0)
-					: CortexConversionPrompts::BuildInitialUserMessage(Json);
+						Context->Payload.WidgetVariableNames.Num() > 0,
+						Context->DependencyInfo)
+					: CortexConversionPrompts::BuildInitialUserMessage(Json, Context->DependencyInfo);
 				Context->Session->AddUserPromptEntry(InitialMessage);
 
 				FCortexPromptRequest PromptRequest;
