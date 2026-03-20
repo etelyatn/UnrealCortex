@@ -156,3 +156,59 @@ bool FCortexDiffHunkContextTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexDiffMultiHunkGapTest,
+	"Cortex.Frontend.DiffView.Hunk.MultiHunkGaps",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexDiffMultiHunkGapTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// Build two changes far apart so they produce separate hunks.
+	// 10 unchanged, 1 changed, 10 unchanged, 1 changed, 10 unchanged
+	FString Original;
+	FString Current;
+	for (int32 i = 0; i < 10; ++i)
+	{
+		Original += FString::Printf(TEXT("line%d\n"), i);
+		Current  += FString::Printf(TEXT("line%d\n"), i);
+	}
+	Original += TEXT("old-a\n");
+	Current  += TEXT("new-a\n");
+	for (int32 i = 11; i < 21; ++i)
+	{
+		Original += FString::Printf(TEXT("line%d\n"), i);
+		Current  += FString::Printf(TEXT("line%d\n"), i);
+	}
+	Original += TEXT("old-b\n");
+	Current  += TEXT("new-b\n");
+	for (int32 i = 22; i < 32; ++i)
+	{
+		Original += FString::Printf(TEXT("line%d\n"), i);
+		Current  += FString::Printf(TEXT("line%d\n"), i);
+	}
+
+	TArray<FCortexDiffLine> DiffLines = CortexDiffUtils::ComputeLineDiff(Original, Current);
+	TArray<FCortexDiffHunk> Hunks = CortexDiffUtils::BuildHunks(DiffLines, 3);
+
+	TestEqual(TEXT("Should produce 2 separate hunks"), Hunks.Num(), 2);
+
+	// First hunk: context [7..10] change [10..12] context [12..14] = 7 lines
+	// (indices 7,8,9 context before + removed + added + 10,11,12 context after)
+	TestEqual(TEXT("First hunk visible lines"), Hunks[0].Lines.Num(), 7);
+
+	// CollapsedLinesBefore for hunk 0 = 7 (lines 0..6 hidden before it)
+	TestEqual(TEXT("First hunk CollapsedLinesBefore"), Hunks[0].CollapsedLinesBefore, 7);
+
+	// CollapsedLinesBefore for hunk 1 must be > first hunk's end (not reset to 0)
+	const int32 Hunk0End = Hunks[0].CollapsedLinesBefore + Hunks[0].Lines.Num();
+	TestTrue(TEXT("Second hunk starts after first hunk ends"),
+		Hunks[1].CollapsedLinesBefore > Hunk0End);
+
+	// The gap between hunks is [Hunk0End, Hunk1.CollapsedLinesBefore)
+	const int32 InterHunkGap = Hunks[1].CollapsedLinesBefore - Hunk0End;
+	TestTrue(TEXT("Inter-hunk gap should be > 0"), InterHunkGap > 0);
+
+	return true;
+}

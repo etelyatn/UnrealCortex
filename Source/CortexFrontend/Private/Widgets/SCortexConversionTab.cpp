@@ -360,16 +360,6 @@ void SCortexConversionTab::OnCreateFilesRequested()
 		// Direct save to original file paths (no dialog)
 		bool bSuccess = true;
 
-		// Disable Live Coding auto-compile to prevent racing with our build verification
-#if WITH_LIVE_CODING
-		ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
-		const bool bLiveCodingWasEnabled = LiveCoding && LiveCoding->IsEnabledForSession();
-		if (bLiveCodingWasEnabled)
-		{
-			LiveCoding->EnableForSession(false);
-		}
-#endif
-
 		if (!Context->TargetHeaderPath.IsEmpty() && !Context->Document->HeaderCode.IsEmpty())
 		{
 			if (!FFileHelper::SaveStringToFile(Context->Document->HeaderCode, *Context->TargetHeaderPath,
@@ -426,6 +416,17 @@ void SCortexConversionTab::RunBuildVerification()
 {
 	// Cancel any existing build
 	CancelBuild();
+
+	// Disable Live Coding to prevent racing with the build we're about to launch.
+	// Save the prior state so we can restore it exactly on completion or cancel.
+#if WITH_LIVE_CODING
+	ILiveCodingModule* LiveCodingForDisable = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	bLiveCodingWasEnabled = LiveCodingForDisable && LiveCodingForDisable->IsEnabledForSession();
+	if (bLiveCodingWasEnabled)
+	{
+		LiveCodingForDisable->EnableForSession(false);
+	}
+#endif
 
 	// Derive UBT path
 	const FString EngineDir = FPaths::EngineDir();
@@ -525,6 +526,16 @@ void SCortexConversionTab::CancelBuild()
 	BuildProcess.Reset();
 	BuildOutputAccumulator.Empty();
 
+	// Restore Live Coding to its original state
+#if WITH_LIVE_CODING
+	ILiveCodingModule* LiveCodingForRestore = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCodingForRestore && bLiveCodingWasEnabled)
+	{
+		LiveCodingForRestore->EnableForSession(true);
+	}
+#endif
+	bLiveCodingWasEnabled = false;
+
 	if (CodeCanvas.IsValid())
 	{
 		CodeCanvas->SetBuildStatus(ECortexBuildStatus::Hidden);
@@ -570,13 +581,14 @@ void SCortexConversionTab::OnBuildCompletedInternal(int32 ReturnCode)
 		}
 	}
 
-	// Re-enable Live Coding
+	// Restore Live Coding to its original state (do not force-enable if user had it off)
 #if WITH_LIVE_CODING
 	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
-	if (LiveCoding)
+	if (LiveCoding && bLiveCodingWasEnabled)
 	{
 		LiveCoding->EnableForSession(true);
 	}
+	bLiveCodingWasEnabled = false;
 #endif
 
 	// Unregister and release process

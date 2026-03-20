@@ -429,9 +429,14 @@ int32 SCortexCodeCanvas::CountLines(const FString& Code)
 
 void SCortexCodeCanvas::SetBuildStatus(ECortexBuildStatus Status, const FString& ErrorLog)
 {
+	// Only reset the expansion flag when transitioning away from Failed.
+	// Rebuilding within Failed (for toggle) must preserve the flag set by the caller.
+	if (Status != ECortexBuildStatus::Failed)
+	{
+		bErrorLogExpanded = false;
+	}
 	BuildStatus = Status;
 	BuildErrorLog = ErrorLog;
-	bErrorLogExpanded = false;
 
 	if (!StatusBar.IsValid())
 	{

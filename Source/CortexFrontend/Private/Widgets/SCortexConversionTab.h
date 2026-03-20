@@ -38,4 +38,5 @@ private:
 	TSharedPtr<SCortexConversionChat> ConversionChat;
 	TSharedPtr<FMonitoredProcess> BuildProcess;
 	FString BuildOutputAccumulator;
+	bool bLiveCodingWasEnabled = false;
 };

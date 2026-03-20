@@ -191,27 +191,38 @@ void SCortexInheritedDiffView::RebuildDiffView()
 	TArray<FCortexDiffLine> DiffLines = CortexDiffUtils::ComputeLineDiff(OriginalText, CurrentText);
 	TArray<FCortexDiffHunk> Hunks = CortexDiffUtils::BuildHunks(DiffLines, 3);
 
+	// PrevHunkEnd tracks the absolute DiffLines index immediately after the last emitted hunk.
+	// CollapsedLinesBefore is the absolute start index of each hunk, so the gap for hunk N is
+	// [PrevHunkEnd, CollapsedLinesBefore) — not [0, CollapsedLinesBefore).
+	int32 PrevHunkEnd = 0;
+
 	for (int32 HunkIdx = 0; HunkIdx < Hunks.Num(); ++HunkIdx)
 	{
 		const FCortexDiffHunk& HunkRef = Hunks[HunkIdx];
+		const int32 GapStart = PrevHunkEnd;
+		const int32 GapEnd   = HunkRef.CollapsedLinesBefore;  // absolute index in DiffLines
+		const int32 GapSize  = GapEnd - GapStart;
 
-		// Collapsed section before this hunk
-		if (HunkRef.CollapsedLinesBefore > 0 && !ExpandedHunkIndices.Contains(HunkIdx * 2))
+		// Collapsed/expanded section before this hunk
+		if (GapSize > 0)
 		{
-			ScrollBox->AddSlot()
-			[
-				MakeCollapsedSection(HunkIdx * 2, HunkRef.CollapsedLinesBefore)
-			];
-		}
-		else if (HunkRef.CollapsedLinesBefore > 0)
-		{
-			// Expanded — show all lines from start to hunk start
-			for (int32 ii = 0; ii < HunkRef.CollapsedLinesBefore && ii < DiffLines.Num(); ++ii)
+			if (!ExpandedHunkIndices.Contains(HunkIdx * 2))
 			{
 				ScrollBox->AddSlot()
 				[
-					MakeDiffLineWidget(DiffLines[ii])
+					MakeCollapsedSection(HunkIdx * 2, GapSize)
 				];
+			}
+			else
+			{
+				// Expanded — show only the gap lines for this hunk, not from file start
+				for (int32 ii = GapStart; ii < GapEnd; ++ii)
+				{
+					ScrollBox->AddSlot()
+					[
+						MakeDiffLineWidget(DiffLines[ii])
+					];
+				}
 			}
 		}
 
@@ -224,17 +235,33 @@ void SCortexInheritedDiffView::RebuildDiffView()
 			];
 		}
 
-		// Collapsed section after last hunk
-		if (HunkIdx == Hunks.Num() - 1)
+		PrevHunkEnd = GapEnd + HunkRef.Lines.Num();
+	}
+
+	// Trailing collapsed section (after last hunk)
+	if (!Hunks.IsEmpty())
+	{
+		const int32 TrailingStart = PrevHunkEnd;
+		const int32 TrailingSize  = DiffLines.Num() - TrailingStart;
+		if (TrailingSize > 0)
 		{
-			const int32 LastHunkEnd = HunkRef.CollapsedLinesBefore + HunkRef.Lines.Num();
-			const int32 RemainingLines = DiffLines.Num() - LastHunkEnd;
-			if (RemainingLines > 0 && !ExpandedHunkIndices.Contains(HunkIdx * 2 + 1))
+			const int32 TrailingKey = (Hunks.Num() - 1) * 2 + 1;
+			if (!ExpandedHunkIndices.Contains(TrailingKey))
 			{
 				ScrollBox->AddSlot()
 				[
-					MakeCollapsedSection(HunkIdx * 2 + 1, RemainingLines)
+					MakeCollapsedSection(TrailingKey, TrailingSize)
 				];
+			}
+			else
+			{
+				for (int32 ii = TrailingStart; ii < DiffLines.Num(); ++ii)
+				{
+					ScrollBox->AddSlot()
+					[
+						MakeDiffLineWidget(DiffLines[ii])
+					];
+				}
 			}
 		}
 	}
