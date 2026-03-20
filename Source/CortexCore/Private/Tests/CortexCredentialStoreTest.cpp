@@ -491,3 +491,75 @@ bool FCortexCredentialStoreMalformedFileBlocksWriteTest::RunTest(const FString& 
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCredentialStoreSaveFailureDoesNotMutateStateTest,
+	"Cortex.Core.CredentialStore.SaveFailureDoesNotMutateState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexCredentialStoreSaveFailureDoesNotMutateStateTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
+	Store.SetForceSaveFailureForTests(true);
+
+	const FString ProviderId = TEXT("cortex_test_save_failure_provider");
+	Store.SetApiKey(ProviderId, TEXT("should_not_persist"));
+
+	TestTrue(
+		TEXT("Failed save should not leave key visible in memory"),
+		Store.GetApiKey(ProviderId).IsEmpty());
+
+	Store.SetForceSaveFailureForTests(false);
+#endif
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCredentialStoreLazyLoadCachesUntilResetTest,
+	"Cortex.Core.CredentialStore.LazyLoadCachesUntilReset",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexCredentialStoreLazyLoadCachesUntilResetTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexCredentialStoreTestContextGuard TestContext;
+	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
+	const FString ProviderId = TEXT("cortex_test_lazy_load_provider");
+	const FString CredentialsFilePath = TestContext.GetCredentialsFilePath();
+	const FString EnvironmentVariableName = BuildEnvironmentVariableName(ProviderId);
+	FCortexEnvironmentVariableGuard EnvGuard(EnvironmentVariableName);
+	FPlatformMisc::SetEnvironmentVar(*EnvironmentVariableName, TEXT(""));
+
+	TestTrue(
+		TEXT("Initial credential file should be written"),
+		WriteStringToFile(CredentialsFilePath, TEXT("{\"cortex_test_lazy_load_provider\":\"initial_value\"}")));
+
+	TestEqual(
+		TEXT("First access should load initial value from disk"),
+		Store.GetApiKey(ProviderId),
+		FString(TEXT("initial_value")));
+
+	TestTrue(
+		TEXT("Credential file should be updated externally"),
+		WriteStringToFile(CredentialsFilePath, TEXT("{\"cortex_test_lazy_load_provider\":\"updated_value\"}")));
+
+	TestEqual(
+		TEXT("Store should cache loaded value until reset"),
+		Store.GetApiKey(ProviderId),
+		FString(TEXT("initial_value")));
+
+	ResetCredentialStoreForTests();
+	TestEqual(
+		TEXT("Reset should allow store to observe updated file contents"),
+		Store.GetApiKey(ProviderId),
+		FString(TEXT("updated_value")));
+
+	return true;
+}

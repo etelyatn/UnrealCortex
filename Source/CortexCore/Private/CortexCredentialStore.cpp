@@ -79,9 +79,13 @@ void FCortexCredentialStore::SetApiKey(const FString& ProviderId, const FString&
 
 	if (Key.IsEmpty())
 	{
-		if (ApiKeys.Remove(NormalizedProviderId) > 0)
+		FString RemovedValue;
+		if (ApiKeys.RemoveAndCopyValue(NormalizedProviderId, RemovedValue))
 		{
-			Save();
+			if (!Save())
+			{
+				ApiKeys.Add(NormalizedProviderId, RemovedValue);
+			}
 		}
 		return;
 	}
@@ -92,8 +96,21 @@ void FCortexCredentialStore::SetApiKey(const FString& ProviderId, const FString&
 		return;
 	}
 
+	const bool bHadExistingKey = ExistingKey != nullptr;
+	const FString PreviousValue = bHadExistingKey ? *ExistingKey : FString();
+
 	ApiKeys.Add(NormalizedProviderId, Key);
-	Save();
+	if (!Save())
+	{
+		if (bHadExistingKey)
+		{
+			ApiKeys.Add(NormalizedProviderId, PreviousValue);
+		}
+		else
+		{
+			ApiKeys.Remove(NormalizedProviderId);
+		}
+	}
 }
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -116,6 +133,12 @@ void FCortexCredentialStore::ClearFilePathOverrideForTests()
 	check(IsInGameThread());
 	FilePathOverride.Reset();
 	ResetForTests();
+}
+
+void FCortexCredentialStore::SetForceSaveFailureForTests(bool bInForceSaveFailure)
+{
+	check(IsInGameThread());
+	bForceSaveFailure = bInForceSaveFailure;
 }
 #endif
 
@@ -164,8 +187,15 @@ bool FCortexCredentialStore::Load()
 	return true;
 }
 
-void FCortexCredentialStore::Save() const
+bool FCortexCredentialStore::Save() const
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	if (bForceSaveFailure)
+	{
+		return false;
+	}
+#endif
+
 	const FString FilePath = GetFilePath();
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(FilePath), true);
 
@@ -186,7 +216,10 @@ void FCortexCredentialStore::Save() const
 	if (!FFileHelper::SaveStringToFile(JsonString, *FilePath))
 	{
 		UE_LOG(LogCortex, Warning, TEXT("Failed to write credential store file: %s"), *FilePath);
+		return false;
 	}
+
+	return true;
 }
 
 void FCortexCredentialStore::MigrateFromOldIni()

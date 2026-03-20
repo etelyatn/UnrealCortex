@@ -14,11 +14,12 @@ public:
 	void ResetForTests();
 	void SetFilePathOverrideForTests(const FString& InFilePath);
 	void ClearFilePathOverrideForTests();
+	void SetForceSaveFailureForTests(bool bInForceSaveFailure);
 #endif
 
 private:
 	bool Load();
-	void Save() const;
+	bool Save() const;
 	void MigrateFromOldIni();
 
 	FString NormalizeProviderId(const FString& ProviderId) const;
@@ -30,5 +31,6 @@ private:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	FString FilePathOverride;
+	bool bForceSaveFailure = false;
 #endif
 };
