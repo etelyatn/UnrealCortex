@@ -32,6 +32,7 @@ public class CortexFrontend : ModuleRules
             "DesktopPlatform",
             "GraphEditor",
             "BlueprintGraph",
+            "LiveCoding",
         });
     }
 }

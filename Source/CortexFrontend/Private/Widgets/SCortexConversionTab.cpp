@@ -3,6 +3,7 @@
 #include "CortexConversionTypes.h"
 #include "CortexCoreModule.h"
 #include "CortexFrontendModule.h"
+#include "ILiveCodingModule.h"
 #include "Conversion/CortexConversionPromptAssembler.h"
 #include "Conversion/CortexConversionPrompts.h"
 #include "Framework/Application/SlateApplication.h"
@@ -345,8 +346,75 @@ void SCortexConversionTab::OnCreateFilesRequested()
 		return;
 	}
 
-	// Find the parent window for the modal dialog
-	TSharedPtr<SWindow> ParentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
+	if (Context->SelectedDestination == ECortexConversionDestination::InjectIntoExisting)
+	{
+		// Direct save to original file paths (no dialog)
+		bool bSuccess = true;
 
-	SCortexCreateFilesDialog::ShowModal(Context->Document, ParentWindow);
+		// Disable Live Coding auto-compile to prevent racing with our build verification
+#if WITH_LIVE_CODING
+		ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+		const bool bLiveCodingWasEnabled = LiveCoding && LiveCoding->IsEnabledForSession();
+		if (bLiveCodingWasEnabled)
+		{
+			LiveCoding->EnableForSession(false);
+		}
+#endif
+
+		if (!Context->TargetHeaderPath.IsEmpty() && !Context->Document->HeaderCode.IsEmpty())
+		{
+			if (!FFileHelper::SaveStringToFile(Context->Document->HeaderCode, *Context->TargetHeaderPath,
+				FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+			{
+				StatusMessage(FString::Printf(TEXT("Error: Failed to save header: %s"), *Context->TargetHeaderPath));
+				bSuccess = false;
+			}
+			else
+			{
+				UE_LOG(LogCortexFrontend, Log, TEXT("Saved header: %s"), *Context->TargetHeaderPath);
+			}
+		}
+
+		if (!Context->TargetSourcePath.IsEmpty() && !Context->Document->ImplementationCode.IsEmpty())
+		{
+			if (!FFileHelper::SaveStringToFile(Context->Document->ImplementationCode, *Context->TargetSourcePath,
+				FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+			{
+				StatusMessage(FString::Printf(TEXT("Error: Failed to save source: %s"), *Context->TargetSourcePath));
+				bSuccess = false;
+			}
+			else
+			{
+				UE_LOG(LogCortexFrontend, Log, TEXT("Saved source: %s"), *Context->TargetSourcePath);
+			}
+		}
+
+		if (bSuccess)
+		{
+			StatusMessage(TEXT("Files saved successfully."));
+		}
+
+		// Run build verification if enabled
+		if (bSuccess && Context->bVerifyAfterSave)
+		{
+			RunBuildVerification();
+		}
+
+		return;
+	}
+
+	// CreateNewClass mode — show dialog as before
+	TSharedPtr<SWindow> ParentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
+	const bool bCreated = SCortexCreateFilesDialog::ShowModal(Context->Document, ParentWindow);
+
+	if (bCreated && Context->bVerifyAfterSave)
+	{
+		RunBuildVerification();
+	}
+}
+
+void SCortexConversionTab::RunBuildVerification()
+{
+	// Placeholder — implemented in Task 7
+	UE_LOG(LogCortexFrontend, Log, TEXT("Build verification requested (not yet implemented)"));
 }

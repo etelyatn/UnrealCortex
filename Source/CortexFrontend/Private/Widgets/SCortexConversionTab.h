@@ -24,6 +24,7 @@ private:
 	void StartConversion(const FString& AssembledSystemPrompt);
 	void StatusMessage(const FString& Message);
 	void OnCreateFilesRequested();
+	void RunBuildVerification();
 	void OnSessionTurnComplete(const FCortexTurnResult& Result);
 
 	TSharedPtr<FCortexConversionContext> Context;
