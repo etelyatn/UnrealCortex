@@ -122,8 +122,12 @@ TArray<FCortexDiffHunk> CortexDiffUtils::BuildHunks(const TArray<FCortexDiffLine
 
 		if (NextStart <= HunkEnd + 1)
 		{
-			// Merge into current hunk
-			HunkEnd = NextEnd;
+			// Merge into current hunk; only extend HunkEnd if this change reaches
+			// beyond the existing context window (changes already inside don't expand it)
+			if (ChangedIndices[c] > HunkEnd)
+			{
+				HunkEnd = NextEnd;
+			}
 		}
 		else
 		{

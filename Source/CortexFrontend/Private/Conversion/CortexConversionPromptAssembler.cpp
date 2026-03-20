@@ -201,10 +201,8 @@ FString FCortexConversionPromptAssembler::LoadFragment(const FString& Filename)
 bool FCortexConversionPromptAssembler::ShouldUseSnippetMode(
 	ECortexConversionScope Scope, ECortexConversionDepth Depth)
 {
-	// Snippet mode only for PerformanceShell with a narrow scope —
-	// extracting one hot function as a code fragment.
-	// All other depths (CppCore, FullExtraction, Custom) always produce
-	// a complete class with header + implementation (full-class mode).
-	return Depth == ECortexConversionDepth::PerformanceShell
-		&& Scope != ECortexConversionScope::EntireBlueprint;
+	// Snippet mode for any narrow scope (not EntireBlueprint) unless FullExtraction
+	// is requested — FullExtraction always needs a complete class output.
+	return Scope != ECortexConversionScope::EntireBlueprint
+		&& Depth != ECortexConversionDepth::FullExtraction;
 }

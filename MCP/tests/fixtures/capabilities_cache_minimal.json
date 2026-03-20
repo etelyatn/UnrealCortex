@@ -8,5 +8,6 @@
   "umg": "For creating a complete Widget Blueprint screen, use widget_compose instead of chaining umg_cmd calls.\nRoute UnrealCortex umg commands through `umg_cmd(command, params)`.",
   "qa": "Route UnrealCortex qa commands through `qa_cmd(command, params)`.",
   "reflect": "Route UnrealCortex reflect commands through `reflect_cmd(command, params)`.",
-  "editor": "Route UnrealCortex editor commands through `editor_cmd(command, params)`."
+  "editor": "Route UnrealCortex editor commands through `editor_cmd(command, params)`.",
+  "gen": "AI asset generation. Submit with start_mesh/start_image/start_texturing, then poll with job_status until status is 'imported' or 'failed'. Generation takes 30-180 seconds. On download_failed or import_failed, call retry_import.\nRoute UnrealCortex gen commands through `gen_cmd(command, params)`."
 }
