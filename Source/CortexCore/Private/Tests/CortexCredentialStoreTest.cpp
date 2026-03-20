@@ -3,6 +3,33 @@
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 
+namespace
+{
+class FCortexCredentialStoreKeyGuard
+{
+public:
+	explicit FCortexCredentialStoreKeyGuard(const FString& InProviderId)
+		: ProviderId(InProviderId)
+	{
+		Store = &FCortexCredentialStore::Get();
+		PreviousValue = Store->GetApiKey(ProviderId);
+	}
+
+	~FCortexCredentialStoreKeyGuard()
+	{
+		if (Store != nullptr)
+		{
+			Store->SetApiKey(ProviderId, PreviousValue);
+		}
+	}
+
+private:
+	FCortexCredentialStore* Store = nullptr;
+	FString ProviderId;
+	FString PreviousValue;
+};
+} // namespace
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexCredentialStoreRoundTripTest,
 	"Cortex.Core.CredentialStore.RoundTrip",
@@ -11,22 +38,23 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexCredentialStoreRoundTripTest::RunTest(const FString& Parameters)
 {
+	(void)Parameters;
+
+	const FString ProviderId = TEXT("cortex_test_roundtrip_provider");
+	FCortexCredentialStoreKeyGuard RestoreGuard(ProviderId);
 	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
 
 	// Set a key
-	Store.SetApiKey(TEXT("test_provider"), TEXT("test_key_12345"));
+	Store.SetApiKey(ProviderId, TEXT("test_key_12345"));
 
 	// Read it back
-	FString Key = Store.GetApiKey(TEXT("test_provider"));
+	FString Key = Store.GetApiKey(ProviderId);
 	TestEqual(TEXT("Round-trip key should match"), Key, FString(TEXT("test_key_12345")));
 
 	// Overwrite
-	Store.SetApiKey(TEXT("test_provider"), TEXT("updated_key"));
-	Key = Store.GetApiKey(TEXT("test_provider"));
+	Store.SetApiKey(ProviderId, TEXT("updated_key"));
+	Key = Store.GetApiKey(ProviderId);
 	TestEqual(TEXT("Overwritten key should match"), Key, FString(TEXT("updated_key")));
-
-	// Clean up test key
-	Store.SetApiKey(TEXT("test_provider"), TEXT(""));
 
 	return true;
 }
@@ -39,22 +67,23 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexCredentialStoreNormalizationTest::RunTest(const FString& Parameters)
 {
+	(void)Parameters;
+
+	const FString ProviderId = TEXT("cortex_test_FaL_provider");
+	FCortexCredentialStoreKeyGuard RestoreGuard(ProviderId);
 	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
 
 	// Set with mixed case
-	Store.SetApiKey(TEXT("FaL"), TEXT("norm_test_key"));
+	Store.SetApiKey(ProviderId, TEXT("norm_test_key"));
 
 	// Retrieve with different casing
-	FString Key1 = Store.GetApiKey(TEXT("fal"));
-	FString Key2 = Store.GetApiKey(TEXT("FAL"));
-	FString Key3 = Store.GetApiKey(TEXT("Fal"));
+	FString Key1 = Store.GetApiKey(TEXT("cortex_test_fal_provider"));
+	FString Key2 = Store.GetApiKey(TEXT("CORTEX_TEST_FAL_PROVIDER"));
+	FString Key3 = Store.GetApiKey(TEXT("Cortex_Test_Fal_Provider"));
 
 	TestEqual(TEXT("Lowercase lookup"), Key1, FString(TEXT("norm_test_key")));
 	TestEqual(TEXT("Uppercase lookup"), Key2, FString(TEXT("norm_test_key")));
 	TestEqual(TEXT("Mixed case lookup"), Key3, FString(TEXT("norm_test_key")));
-
-	// Clean up
-	Store.SetApiKey(TEXT("fal"), TEXT(""));
 
 	return true;
 }
@@ -67,6 +96,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexCredentialStoreUnknownProviderTest::RunTest(const FString& Parameters)
 {
+	(void)Parameters;
+
 	FCortexCredentialStore& Store = FCortexCredentialStore::Get();
 
 	FString Key = Store.GetApiKey(TEXT("nonexistent_provider_xyz"));
