@@ -9,6 +9,7 @@
 #include "Editor.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
+#include "Misc/EngineVersionComparison.h"
 #include "InputKeyEventArgs.h"
 #include "GameFramework/PlayerInput.h"
 #include "NavigationSystem.h"
@@ -131,7 +132,11 @@ FCortexCommandResult FCortexQAActionOps::Interact(const TSharedPtr<FJsonObject>&
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Invalid key name"));
     }
 
+#if UE_VERSION_OLDER_THAN(5, 5, 0)
+    PC->InputKey(FInputKeyParams(InteractionKey, EInputEvent::IE_Pressed, 1.0));
+#else
     PC->InputKey(FInputKeyEventArgs::CreateSimulated(InteractionKey, EInputEvent::IE_Pressed, 1.0f));
+#endif
 
     TWeakObjectPtr<APlayerController> WeakPC = PC;
     const double StartGameTime = PIEWorld->GetTimeSeconds();
@@ -155,7 +160,11 @@ FCortexCommandResult FCortexQAActionOps::Interact(const TSharedPtr<FJsonObject>&
             {
                 if (APlayerController* ReleasedPC = WeakPC.Get())
                 {
+#if UE_VERSION_OLDER_THAN(5, 5, 0)
+                    ReleasedPC->InputKey(FInputKeyParams(InteractionKey, EInputEvent::IE_Released, 0.0));
+#else
                     ReleasedPC->InputKey(FInputKeyEventArgs::CreateSimulated(InteractionKey, EInputEvent::IE_Released, 0.0f));
+#endif
                 }
 
                 TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
