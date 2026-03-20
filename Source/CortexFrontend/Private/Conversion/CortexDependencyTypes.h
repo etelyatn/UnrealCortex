@@ -46,6 +46,9 @@ struct FCortexDependencyInfo
 	};
 	TArray<FInterfaceEntry> ImplementedInterfaces;
 
+	// Total referencer count (before capping for UI display)
+	int32 TotalReferencerCount = 0;
+
 	// Registry state
 	bool bRegistryIncomplete = false;  // true if Asset Registry was still loading
 

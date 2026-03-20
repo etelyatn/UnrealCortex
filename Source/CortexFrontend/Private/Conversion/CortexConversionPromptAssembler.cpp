@@ -152,16 +152,14 @@ FString FCortexConversionPromptAssembler::BuildDependencyContext(const FCortexDe
 		if (bHasReferencers)
 		{
 			Result += TEXT("Assets that reference this Blueprint:\n");
-			const int32 Cap = FCortexDependencyGatherer::MaxReferencers;
-			const int32 ShowCount = FMath::Min(DepInfo.Referencers.Num(), Cap);
-			for (int32 i = 0; i < ShowCount; ++i)
+			for (const FCortexDependencyInfo::FReferencerEntry& Ref : DepInfo.Referencers)
 			{
-				const FCortexDependencyInfo::FReferencerEntry& Ref = DepInfo.Referencers[i];
 				Result += FString::Printf(TEXT("- %s (%s)\n"), *Ref.AssetName, *Ref.AssetClass);
 			}
-			if (DepInfo.Referencers.Num() > Cap)
+			if (DepInfo.TotalReferencerCount > DepInfo.Referencers.Num())
 			{
-				Result += FString::Printf(TEXT("...and %d more\n"), DepInfo.Referencers.Num() - Cap);
+				Result += FString::Printf(TEXT("...and %d more\n"),
+					DepInfo.TotalReferencerCount - DepInfo.Referencers.Num());
 			}
 		}
 

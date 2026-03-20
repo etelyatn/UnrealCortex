@@ -211,7 +211,7 @@ TSharedRef<SWidget> SCortexDependencyPanel::BuildReferencesSection(
 	int32 WarningRefCount = 0;
 	for (const FCortexDependencyInfo::FReferencerEntry& Ref : Info.Referencers)
 	{
-		if (Ref.AssetClass.Contains(TEXT("Blueprint")) && Ref.AssetClass != TEXT("WidgetBlueprint"))
+		if (Ref.AssetClass == TEXT("Blueprint") || Ref.AssetClass == TEXT("AnimBlueprint"))
 		{
 			Content->AddSlot()
 			.AutoHeight()

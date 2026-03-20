@@ -79,60 +79,19 @@ FCortexDependencyInfo FCortexDependencyGatherer::GatherDependencies(
 		}
 	}
 
-	// Reverse dependencies (referencers)
+	// Reverse dependencies (referencers) + child BP discovery — single GetReferencers call
 	{
 		TArray<FName> ReferencerPackages;
 		AssetRegistry.GetReferencers(PackageFName, ReferencerPackages,
 			UE::AssetRegistry::EDependencyCategory::Package);
 
-		int32 TotalReferencers = 0;
-		for (const FName& RefPkg : ReferencerPackages)
-		{
-			const FString RefPath = RefPkg.ToString();
-
-			// Filter to /Game/ only
-			if (!RefPath.StartsWith(TEXT("/Game/")))
-			{
-				continue;
-			}
-
-			TArray<FAssetData> AssetsInPackage;
-			AssetRegistry.GetAssetsByPackageName(RefPkg, AssetsInPackage, true);
-
-			for (const FAssetData& AssetData : AssetsInPackage)
-			{
-				if (TotalReferencers >= MaxReferencers)
-				{
-					break;
-				}
-
-				FCortexDependencyInfo::FReferencerEntry Entry;
-				Entry.AssetPath = AssetData.GetObjectPathString();
-				Entry.AssetName = AssetData.AssetName.ToString();
-				Entry.AssetClass = AssetData.AssetClassPath.GetAssetName().ToString();
-				Info.Referencers.Add(MoveTemp(Entry));
-				++TotalReferencers;
-			}
-
-			if (TotalReferencers >= MaxReferencers)
-			{
-				break;
-			}
-		}
-	}
-
-	// Child BP discovery -- filter referencers that have this BP as parent class
-	// Build the generated class name to match against (e.g., "BP_Enemy.BP_Enemy_C")
-	{
+		// Build the generated class suffix for child discovery (e.g., "BP_Enemy.BP_Enemy_C")
 		const FString GeneratedClassSuffix = FString::Printf(TEXT("%s.%s_C"),
 			*Payload.BlueprintName, *Payload.BlueprintName);
 
-		// Reuse the same referencers we already queried above (avoid second GetReferencers call)
-		TArray<FName> AllReferencerPackages;
-		AssetRegistry.GetReferencers(PackageFName, AllReferencerPackages,
-			UE::AssetRegistry::EDependencyCategory::Package);
+		int32 GameReferencerCount = 0;
 
-		for (const FName& RefPkg : AllReferencerPackages)
+		for (const FName& RefPkg : ReferencerPackages)
 		{
 			const FString RefPath = RefPkg.ToString();
 			if (!RefPath.StartsWith(TEXT("/Game/")))
@@ -146,24 +105,36 @@ FCortexDependencyInfo FCortexDependencyGatherer::GatherDependencies(
 			for (const FAssetData& AssetData : AssetsInPackage)
 			{
 				const FString AssetClassName = AssetData.AssetClassPath.GetAssetName().ToString();
-				if (AssetClassName != TEXT("Blueprint") && AssetClassName != TEXT("WidgetBlueprint"))
-				{
-					continue;
-				}
 
-				FAssetTagValueRef ParentTag = AssetData.TagsAndValues.FindTag(FBlueprintTags::ParentClassPath);
-				if (ParentTag.IsSet())
+				// Add to referencers list (capped at MaxReferencers for UI)
+				if (GameReferencerCount < MaxReferencers)
 				{
-					const FString ParentValue = ParentTag.AsString();
-					// Match against the full generated class suffix to avoid false positives
-					// (e.g., "BP_Enemy" matching "BP_EnemyBoss")
-					if (ParentValue.Contains(GeneratedClassSuffix))
+					FCortexDependencyInfo::FReferencerEntry Entry;
+					Entry.AssetPath = AssetData.GetObjectPathString();
+					Entry.AssetName = AssetData.AssetName.ToString();
+					Entry.AssetClass = AssetClassName;
+					Info.Referencers.Add(MoveTemp(Entry));
+				}
+				++GameReferencerCount;
+
+				// Child BP discovery — check if this referencer is a BP with us as parent
+				if (AssetClassName == TEXT("Blueprint") || AssetClassName == TEXT("WidgetBlueprint"))
+				{
+					FAssetTagValueRef ParentTag = AssetData.TagsAndValues.FindTag(FBlueprintTags::ParentClassPath);
+					if (ParentTag.IsSet())
 					{
-						Info.ChildBlueprints.Add(AssetData.AssetName.ToString());
+						const FString ParentValue = ParentTag.AsString();
+						if (ParentValue.Contains(GeneratedClassSuffix))
+						{
+							Info.ChildBlueprints.Add(AssetData.AssetName.ToString());
+						}
 					}
 				}
 			}
 		}
+
+		// Track total for overflow message in BuildDependencyContext
+		Info.TotalReferencerCount = GameReferencerCount;
 	}
 
 	UE_LOG(LogCortexFrontend, Log,
