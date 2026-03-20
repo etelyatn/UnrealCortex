@@ -49,7 +49,7 @@ void SCortexGenImageSession::Construct(const FArguments& InArgs)
     SelectedSizeIndex = 0;
 
     // Subscribe to job state changes
-    if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
+    if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) && FCortexGenModule::IsEnabled())
     {
         FCortexGenModule& GenModule = FModuleManager::GetModuleChecked<FCortexGenModule>(TEXT("CortexGen"));
         FCortexGenJobManager& Manager = GenModule.GetJobManager();
@@ -224,7 +224,7 @@ void SCortexGenImageSession::Construct(const FArguments& InArgs)
 SCortexGenImageSession::~SCortexGenImageSession()
 {
     // Unsubscribe from delegate
-    if (JobStateHandle.IsValid() && FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
+    if (JobStateHandle.IsValid() && FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) && FCortexGenModule::IsEnabled())
     {
         FCortexGenModule& GenModule = FModuleManager::GetModuleChecked<FCortexGenModule>(TEXT("CortexGen"));
         GenModule.GetJobManager().OnJobStateChanged().Remove(JobStateHandle);
@@ -307,7 +307,7 @@ FReply SCortexGenImageSession::OnGenerateClicked()
         return FReply::Handled();
     }
 
-    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
+    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) || !FCortexGenModule::IsEnabled())
     {
         UE_LOG(LogCortexFrontend, Warning, TEXT("SCortexGenImageSession: CortexGen module not loaded"));
         return FReply::Handled();
@@ -372,7 +372,7 @@ void SCortexGenImageSession::SubmitNextJob()
         return;
     }
 
-    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
+    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) || !FCortexGenModule::IsEnabled())
     {
         HideOverlay();
         return;
@@ -828,7 +828,7 @@ void SCortexGenImageSession::OnRegenerateImage(int32 ImageIndex)
     Result.DownloadPath.Empty();
     Result.bSaved = false;
 
-    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
+    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) || !FCortexGenModule::IsEnabled())
     {
         return;
     }
@@ -889,7 +889,7 @@ void SCortexGenImageSession::HideOverlay()
 
 void SCortexGenImageSession::CancelGeneration()
 {
-    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
+    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) || !FCortexGenModule::IsEnabled())
     {
         return;
     }

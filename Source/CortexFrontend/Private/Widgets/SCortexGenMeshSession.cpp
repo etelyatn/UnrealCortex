@@ -30,7 +30,7 @@ void SCortexGenMeshSession::Construct(const FArguments& InArgs)
     PopulateModelOptions();
 
     // Subscribe to job state changes
-    if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
+    if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) && FCortexGenModule::IsEnabled())
     {
         auto& JobManager = FModuleManager::GetModuleChecked<FCortexGenModule>(
             TEXT("CortexGen")).GetJobManager();
@@ -254,7 +254,7 @@ void SCortexGenMeshSession::Construct(const FArguments& InArgs)
 
 SCortexGenMeshSession::~SCortexGenMeshSession()
 {
-    if (JobStateHandle.IsValid() && FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")))
+    if (JobStateHandle.IsValid() && FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) && FCortexGenModule::IsEnabled())
     {
         auto& JobManager = FModuleManager::GetModuleChecked<FCortexGenModule>(
             TEXT("CortexGen")).GetJobManager();
@@ -330,7 +330,7 @@ void SCortexGenMeshSession::OnModeChanged(int32 NewMode)
 
 FReply SCortexGenMeshSession::OnGenerateClicked()
 {
-    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen"))) return FReply::Handled();
+    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) || !FCortexGenModule::IsEnabled()) return FReply::Handled();
     if (!FilteredModels.IsValidIndex(SelectedModelIndex)) return FReply::Handled();
 
     const FCortexGenModelConfig& Model = FilteredModels[SelectedModelIndex];
@@ -501,7 +501,7 @@ void SCortexGenMeshSession::ShowOverlay()
         Overlay->Show();
         Overlay->SetStatusText(TEXT("Generating 3D mesh..."));
 
-        if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) &&
+        if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) && FCortexGenModule::IsEnabled() &&
             FilteredModels.IsValidIndex(SelectedModelIndex))
         {
             auto& JobManager = FModuleManager::GetModuleChecked<FCortexGenModule>(
@@ -532,7 +532,7 @@ void SCortexGenMeshSession::HideOverlay()
 void SCortexGenMeshSession::CancelGeneration()
 {
     if (CurrentJobId.IsEmpty()) return;
-    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen"))) return;
+    if (!FModuleManager::Get().IsModuleLoaded(TEXT("CortexGen")) || !FCortexGenModule::IsEnabled()) return;
 
     auto& JobManager = FModuleManager::GetModuleChecked<FCortexGenModule>(
         TEXT("CortexGen")).GetJobManager();
