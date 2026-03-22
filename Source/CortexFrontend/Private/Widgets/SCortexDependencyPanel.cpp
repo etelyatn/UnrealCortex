@@ -247,6 +247,21 @@ TSharedRef<SWidget> SCortexDependencyPanel::BuildReferencesSection(
 		}
 	}
 
+	// Overflow message when referencers were capped
+	if (Info.TotalReferencerCount > Info.Referencers.Num())
+	{
+		Content->AddSlot()
+		.AutoHeight()
+		.Padding(0, 2)
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString(FormatReferencerOverflow(
+				Info.TotalReferencerCount, Info.Referencers.Num())))
+			.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
+			.ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.6f)))
+		];
+	}
+
 	return BuildTierBox(
 		NSLOCTEXT("CortexConversion", "ReferencesTier", "REFERENCES"),
 		FLinearColor(0.9f, 0.7f, 0.2f),

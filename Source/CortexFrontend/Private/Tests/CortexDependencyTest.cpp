@@ -284,6 +284,7 @@ bool FCortexDepGatherParentInfoFromPayloadTest::RunTest(const FString& Parameter
         Payload.BlueprintName = TEXT("BP_TestChild");
         Payload.ParentClassName = TEXT("BP_Base");
         Payload.ParentClassPath = TEXT("/Game/Blueprints/BP_Base.BP_Base_C");
+        Payload.bParentIsBlueprint = true;
 
         FCortexDependencyInfo Info = FCortexDependencyGatherer::GatherDependencies(Payload);
         TestTrue(TEXT("BP parent should be detected"), Info.bParentIsBlueprint);

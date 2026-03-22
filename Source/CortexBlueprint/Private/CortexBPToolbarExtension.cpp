@@ -125,13 +125,10 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 	}
 
 	// Detect Widget Blueprint via dynamic UMG class resolution (no compile-time UMG dependency)
+	// Resolve each time rather than caching static UClass* — static pointers become stale after hot reload
 	if (Blueprint->ParentClass)
 	{
-		static UClass* UserWidgetClass = nullptr;
-		if (!UserWidgetClass)
-		{
-			UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
-		}
+		UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
 		if (UserWidgetClass && Blueprint->ParentClass->IsChildOf(UserWidgetClass))
 		{
 			Payload.bIsWidgetBlueprint = true;
@@ -181,7 +178,7 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 			if (Var.VarType.PinCategory == UEdGraphSchema_K2::PC_Object
 				&& Var.VarType.PinSubCategoryObject.IsValid())
 			{
-				static UClass* WidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.Widget"));
+				UClass* WidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.Widget"));
 				UClass* VarClass = Cast<UClass>(Var.VarType.PinSubCategoryObject.Get());
 				if (VarClass && WidgetClass && VarClass->IsChildOf(WidgetClass))
 				{
@@ -286,10 +283,11 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 	// Detect project-owned ancestor classes for destination selection
 	Payload.DetectedProjectAncestors = FCortexProjectClassDetector::FindProjectAncestors(Blueprint);
 
-	// Parent class path for dependency analysis
+	// Parent class path and Blueprint-parent detection for dependency analysis
 	if (Blueprint->ParentClass)
 	{
 		Payload.ParentClassPath = Blueprint->ParentClass->GetPathName();
+		Payload.bParentIsBlueprint = (Blueprint->ParentClass->ClassGeneratedBy != nullptr);
 	}
 
 	// Implemented interfaces for dependency analysis

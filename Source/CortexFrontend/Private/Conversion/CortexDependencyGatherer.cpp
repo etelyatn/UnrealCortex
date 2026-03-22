@@ -14,7 +14,7 @@ FCortexDependencyInfo FCortexDependencyGatherer::GatherDependencies(
 	// Parent class info from payload
 	Info.ParentClassName = Payload.ParentClassName;
 	Info.ParentClassPath = Payload.ParentClassPath;
-	Info.bParentIsBlueprint = Payload.ParentClassPath.StartsWith(TEXT("/Game/"));
+	Info.bParentIsBlueprint = Payload.bParentIsBlueprint;
 
 	// Interfaces from payload
 	for (const FCortexConversionPayload::FPayloadInterfaceInfo& PayloadIface : Payload.ImplementedInterfaces)

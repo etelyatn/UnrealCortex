@@ -66,6 +66,23 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 				]
 			]
 
+			// Warning bars (conditional — placed early for visibility)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 6)
+			[
+				BuildWarningBars(Payload)
+			]
+
+			// Dependency panel (between warnings and scope per design doc)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 12)
+			[
+				SNew(SCortexDependencyPanel)
+				.DependencyInfo(&Context->DependencyInfo)
+			]
+
 			// Target Class section
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -121,23 +138,6 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 					.Text(NSLOCTEXT("CortexConversion", "VerifyAfterSave", "Verify after save (build + convention check)"))
 					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
 				]
-			]
-
-			// Warning bars (conditional)
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0, 0, 0, 6)
-			[
-				BuildWarningBars(Payload)
-			]
-
-			// Dependency panel (conditional -- visible only when dependencies exist)
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0, 0, 0, 12)
-			[
-				SNew(SCortexDependencyPanel)
-				.DependencyInfo(&Context->DependencyInfo)
 			]
 
 			// Widget Binding selection (widget BPs only)
@@ -262,6 +262,14 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 
 	// Fire background token estimation
 	RequestTokenEstimate();
+
+	// Validate auto-derived class name on initial construction (I-5: don't wait for user edit)
+	if (ClassNameWarningText.IsValid())
+	{
+		FText Warning = GetClassNameWarningText();
+		ClassNameWarningText->SetText(Warning);
+		ClassNameWarningText->SetVisibility(Warning.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible);
+	}
 }
 
 TSharedRef<SWidget> SCortexConversionConfig::BuildTargetClassSection(const FCortexConversionPayload& Payload)

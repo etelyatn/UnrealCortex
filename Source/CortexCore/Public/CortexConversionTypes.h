@@ -62,6 +62,7 @@ struct CORTEXCORE_API FCortexConversionPayload
 
 	// Dependency info for conversion config (populated by CortexBlueprint)
 	FString ParentClassPath;                          // e.g. "/Script/Engine.Actor" or "/Game/Blueprints/BP_Base"
+	bool bParentIsBlueprint = false;                  // true when ParentClass->ClassGeneratedBy is non-null
 
 	struct FPayloadInterfaceInfo
 	{
