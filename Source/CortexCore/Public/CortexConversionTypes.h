@@ -52,12 +52,24 @@ struct CORTEXCORE_API FCortexConversionPayload
 	TArray<FString> GraphNames;      // all graph names in the BP
 	int32 TotalNodeCount = 0;        // total nodes across all graphs (for scope estimation)
 	bool bIsWidgetBlueprint = false;   // true when Blueprint derives from UUserWidget
+	bool bIsActorDescendant = false;   // true when Blueprint->ParentClass->IsChildOf(AActor)
 
 	// Widget BP only — designer widget variables (type is UWidget subclass, marked "Is Variable")
 	TArray<FString> WidgetVariableNames;      // all widget-type variables (e.g., "TitleText", "ActionButton")
 	TArray<FString> LogicReferencedWidgets;    // subset used in graph logic (auto-detected via K2Node_VariableGet/Set)
 
 	TArray<FProjectClassInfo> DetectedProjectAncestors; // populated by CortexBlueprint
+
+	// Dependency info for conversion config (populated by CortexBlueprint)
+	FString ParentClassPath;                          // e.g. "/Script/Engine.Actor" or "/Game/Blueprints/BP_Base"
+	bool bParentIsBlueprint = false;                  // true when ParentClass->ClassGeneratedBy is non-null
+
+	struct FPayloadInterfaceInfo
+	{
+		FString InterfaceName;
+		bool bIsBlueprint = false;  // true if Blueprint Interface (not native UInterface)
+	};
+	TArray<FPayloadInterfaceInfo> ImplementedInterfaces;
 };
 
 // ── Serialization request (frontend → blueprint, via core) ──

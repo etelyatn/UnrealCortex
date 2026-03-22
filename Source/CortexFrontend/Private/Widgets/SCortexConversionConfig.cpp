@@ -7,6 +7,7 @@
 #include "Styling/AppStyle.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SScrollBox.h"
@@ -65,6 +66,31 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 				]
 			]
 
+			// Warning bars (conditional — placed early for visibility)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 6)
+			[
+				BuildWarningBars(Payload)
+			]
+
+			// Dependency panel (between warnings and scope per design doc)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 12)
+			[
+				SNew(SCortexDependencyPanel)
+				.DependencyInfo(&Context->DependencyInfo)
+			]
+
+			// Target Class section
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 12)
+			[
+				BuildTargetClassSection(Payload)
+			]
+
 			// Conversion Scope section
 			+ SVerticalBox::Slot()
 			.AutoHeight()
@@ -112,14 +138,6 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 					.Text(NSLOCTEXT("CortexConversion", "VerifyAfterSave", "Verify after save (build + convention check)"))
 					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
 				]
-			]
-
-			// Warning bars (conditional)
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0, 0, 0, 6)
-			[
-				BuildWarningBars(Payload)
 			]
 
 			// Widget Binding selection (widget BPs only)
@@ -244,6 +262,173 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 
 	// Fire background token estimation
 	RequestTokenEstimate();
+
+	// Validate auto-derived class name on initial construction (I-5: don't wait for user edit)
+	if (ClassNameWarningText.IsValid())
+	{
+		FText Warning = GetClassNameWarningText();
+		ClassNameWarningText->SetText(Warning);
+		ClassNameWarningText->SetVisibility(Warning.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible);
+	}
+}
+
+TSharedRef<SWidget> SCortexConversionConfig::BuildTargetClassSection(const FCortexConversionPayload& Payload)
+{
+	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+
+	// Section header
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 0, 0, 6)
+	[
+		SNew(STextBlock)
+		.Text(NSLOCTEXT("CortexConversion", "TargetClassLabel", "Target Class"))
+		.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+	];
+
+	// Editable class name
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 2, 0, 2)
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(0, 0, 8, 0)
+		[
+			SNew(STextBlock)
+			.Text(NSLOCTEXT("CortexConversion", "ClassNameLabel", "Class Name:"))
+			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+		]
+		+ SHorizontalBox::Slot()
+		.FillWidth(1.0f)
+		[
+			SAssignNew(ClassNameTextBox, SEditableTextBox)
+			.Text_Lambda([this]() -> FText
+			{
+				return Context.IsValid() && Context->Document.IsValid()
+					? FText::FromString(Context->Document->ClassName)
+					: FText::GetEmpty();
+			})
+			.OnTextChanged(this, &SCortexConversionConfig::OnClassNameChanged)
+			.IsEnabled_Lambda([this]() -> bool
+			{
+				return Context.IsValid() && !Context->bConversionStarted;
+			})
+			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+		]
+	];
+
+	// Warning text (prefix mismatch, collision, or invalid chars)
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 0, 0, 2)
+	[
+		SAssignNew(ClassNameWarningText, STextBlock)
+		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+		.ColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.7f, 0.2f)))
+		.AutoWrapText(true)
+		.Visibility(EVisibility::Collapsed)
+	];
+
+	// Read-only module name
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 2, 0, 0)
+	[
+		SNew(STextBlock)
+		.Text(FText::FromString(FString::Printf(TEXT("Module: %s"),
+			Context.IsValid() ? *Context->TargetModuleName : TEXT("Unknown"))))
+		.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+	];
+
+	// Read-only parent class name (with C++ prefix for consistency with prompt)
+	{
+		FString ParentDisplay = TEXT("Unknown");
+		if (Context.IsValid())
+		{
+			const TCHAR* Prefix = Context->Payload.bIsActorDescendant ? TEXT("A") : TEXT("U");
+			ParentDisplay = FString::Printf(TEXT("%s%s"), Prefix, *Context->Payload.ParentClassName);
+		}
+		Box->AddSlot()
+		.AutoHeight()
+		.Padding(0, 2, 0, 0)
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString(FString::Printf(TEXT("Parent: %s"), *ParentDisplay)))
+			.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+		];
+	}
+
+	return Box;
+}
+
+void SCortexConversionConfig::OnClassNameChanged(const FText& NewText)
+{
+	if (!Context.IsValid() || !Context->Document.IsValid())
+	{
+		return;
+	}
+
+	Context->Document->ClassName = NewText.ToString();
+	Context->bClassNameUserModified = true;
+
+	// Update cached warning text
+	if (ClassNameWarningText.IsValid())
+	{
+		FText Warning = GetClassNameWarningText();
+		ClassNameWarningText->SetText(Warning);
+		ClassNameWarningText->SetVisibility(Warning.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible);
+	}
+}
+
+FText SCortexConversionConfig::GetClassNameWarningText() const
+{
+	if (!Context.IsValid() || !Context->Document.IsValid())
+	{
+		return FText::GetEmpty();
+	}
+
+	const FString& Name = Context->Document->ClassName;
+	if (Name.IsEmpty())
+	{
+		return FText::GetEmpty();
+	}
+
+	// Validate C++ identifier (letters, digits, underscores only)
+	for (int32 i = 0; i < Name.Len(); ++i)
+	{
+		TCHAR Ch = Name[i];
+		if (!FChar::IsAlnum(Ch) && Ch != TEXT('_'))
+		{
+			return FText::FromString(
+				TEXT("Warning: Class name contains invalid characters. Use only letters, digits, and underscores."));
+		}
+	}
+
+	// Validate UHT prefix
+	const bool bExpectA = Context->Payload.bIsActorDescendant && !Context->Payload.bIsWidgetBlueprint;
+	const TCHAR ExpectedPrefix = bExpectA ? TEXT('A') : TEXT('U');
+	if (Name[0] != ExpectedPrefix)
+	{
+		return FText::FromString(FString::Printf(
+			TEXT("Warning: Expected %c prefix for %s descendant. Current prefix '%c' may cause UHT issues."),
+			ExpectedPrefix,
+			bExpectA ? TEXT("Actor") : TEXT("UObject"),
+			Name[0]));
+	}
+
+	// Class name collision check
+	if (UClass::TryFindTypeSlow<UStruct>(*Name))
+	{
+		return FText::FromString(FString::Printf(
+			TEXT("Warning: A class named '%s' already exists. Consider a different name."), *Name));
+	}
+
+	return FText::GetEmpty();
 }
 
 TSharedRef<SWidget> SCortexConversionConfig::BuildScopeAndTargetSection(const FCortexConversionPayload& Payload)

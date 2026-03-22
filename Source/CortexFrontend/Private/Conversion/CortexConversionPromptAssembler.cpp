@@ -3,6 +3,7 @@
 #include "CortexFrontendModule.h"
 #include "Conversion/CortexConversionContext.h"
 #include "Conversion/CortexConversionPrompts.h"
+#include "Conversion/CortexDependencyGatherer.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -15,6 +16,22 @@ FString FCortexConversionPromptAssembler::Assemble(
 	// 1. Base system prompt
 	Result += CortexConversionPrompts::BaseSystemPrompt();
 	Result += TEXT("\n\n");
+
+	// 1b. Class name injection (~15-20 tokens)
+	if (Context.Document.IsValid() && !Context.Document->ClassName.IsEmpty())
+	{
+		// Parent class name with proper C++ prefix: A for actor descendants, U otherwise
+		const TCHAR* ParentPrefix = Context.Payload.bIsActorDescendant ? TEXT("A") : TEXT("U");
+		FString PrefixedParentName = FString::Printf(TEXT("%s%s"), ParentPrefix, *Context.Payload.ParentClassName);
+
+		Result += FString::Printf(TEXT(
+			"Target class name: %s (confirmed by user). Use this EXACT name in generated code.\n"
+			"Parent class: %s. Inherit from this class.\n"
+			"Target module: %s.\n\n"),
+			*Context.Document->ClassName,
+			*PrefixedParentName,
+			*Context.TargetModuleName);
+	}
 
 	// 2. Scope layer
 	if (ShouldUseSnippetMode(Context.SelectedScope, Context.SelectedDepth))
@@ -109,6 +126,54 @@ FString FCortexConversionPromptAssembler::Assemble(
 		}
 	}
 
+	// 6. Large BP adaptation
+	if (Context.EstimatedTotalTokens > 12000)
+	{
+		Result += TEXT("NOTE: This is a large Blueprint. Focus on structural accuracy over detailed explanations. "
+			"Keep the integration guide to 5 items max. Prioritize Blueprints and AnimBlueprints over Levels.\n\n");
+	}
+
+	return Result;
+}
+
+FString FCortexConversionPromptAssembler::BuildDependencyContext(const FCortexDependencyInfo& DepInfo)
+{
+	FString Result = TEXT("<dependency_context>\n");
+
+	const bool bHasReferencers = !DepInfo.Referencers.IsEmpty();
+	const bool bHasChildren = !DepInfo.ChildBlueprints.IsEmpty();
+
+	if (!bHasReferencers && !bHasChildren)
+	{
+		Result += TEXT("No external assets reference this Blueprint.\n");
+	}
+	else
+	{
+		if (bHasReferencers)
+		{
+			Result += TEXT("Assets that reference this Blueprint:\n");
+			for (const FCortexDependencyInfo::FReferencerEntry& Ref : DepInfo.Referencers)
+			{
+				Result += FString::Printf(TEXT("- %s (%s)\n"), *Ref.AssetName, *Ref.AssetClass);
+			}
+			if (DepInfo.TotalReferencerCount > DepInfo.Referencers.Num())
+			{
+				Result += FString::Printf(TEXT("...and %d more\n"),
+					DepInfo.TotalReferencerCount - DepInfo.Referencers.Num());
+			}
+		}
+
+		if (bHasChildren)
+		{
+			Result += TEXT("Child Blueprints that inherit from this Blueprint:\n");
+			for (const FString& Child : DepInfo.ChildBlueprints)
+			{
+				Result += FString::Printf(TEXT("- %s\n"), *Child);
+			}
+		}
+	}
+
+	Result += TEXT("</dependency_context>\n");
 	return Result;
 }
 

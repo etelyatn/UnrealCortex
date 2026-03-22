@@ -19,6 +19,7 @@ class FCortexCliSession : public TSharedFromThis<FCortexCliSession>
 {
 public:
 	explicit FCortexCliSession(const FCortexSessionConfig& InConfig);
+	~FCortexCliSession();
 
 	bool Connect();
 	bool SendPrompt(const FCortexPromptRequest& Request);

@@ -21,6 +21,8 @@ FCortexCliSession::FCortexCliSession(const FCortexSessionConfig& InConfig)
 {
 }
 
+FCortexCliSession::~FCortexCliSession() = default;
+
 bool FCortexCliSession::Connect()
 {
 	UE_LOG(LogCortexFrontend, Log, TEXT("Connect() called, current state: %d"), static_cast<int32>(State.load()));

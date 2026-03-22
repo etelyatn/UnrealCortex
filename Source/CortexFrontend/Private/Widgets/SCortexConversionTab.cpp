@@ -263,11 +263,14 @@ void SCortexConversionTab::OnConvertClicked()
 				// === Step 5: Send prompt ===
 				StatusMessage(TEXT("[Step 3/4] Sending conversion request to LLM..."));
 
+				const FString DepContext = FCortexConversionPromptAssembler::BuildDependencyContext(
+					Context->DependencyInfo);
 				FString InitialMessage = Context->Payload.bIsWidgetBlueprint
 					? CortexConversionPrompts::BuildWidgetInitialUserMessage(
 						Json, Context->SelectedWidgetBindings,
-						Context->Payload.WidgetVariableNames.Num() > 0)
-					: CortexConversionPrompts::BuildInitialUserMessage(Json);
+						Context->Payload.WidgetVariableNames.Num() > 0,
+						DepContext)
+					: CortexConversionPrompts::BuildInitialUserMessage(Json, DepContext);
 				Context->Session->AddUserPromptEntry(InitialMessage);
 
 				FCortexPromptRequest PromptRequest;

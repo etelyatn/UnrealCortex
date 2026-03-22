@@ -283,3 +283,111 @@ bool FCortexConversionVerifyCheckboxDefaultTest::RunTest(const FString& Paramete
 
     return true;
 }
+
+// ── bIsActorDescendant class name derivation tests ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexContextActorDescendantPrefixTest,
+    "Cortex.Frontend.Conversion.Context.ActorDescendantPrefix",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexContextActorDescendantPrefixTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Actor descendant should get A prefix via bIsActorDescendant flag
+    FCortexConversionPayload Payload;
+    Payload.BlueprintName = TEXT("BP_JumpPad");
+    Payload.ParentClassName = TEXT("MyCustomBase"); // No "Actor" in the name
+    Payload.bIsActorDescendant = true;
+
+    FCortexConversionContext Context(Payload);
+    TestEqual(TEXT("Actor descendant should get A prefix"),
+        Context.Document->ClassName, FString(TEXT("AJumpPad")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexContextNonActorDescendantPrefixTest,
+    "Cortex.Frontend.Conversion.Context.NonActorDescendantPrefix",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexContextNonActorDescendantPrefixTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Non-actor descendant should get U prefix
+    FCortexConversionPayload Payload;
+    Payload.BlueprintName = TEXT("BP_DataProcessor");
+    Payload.ParentClassName = TEXT("MyDataObject");
+    Payload.bIsActorDescendant = false;
+
+    FCortexConversionContext Context(Payload);
+    TestEqual(TEXT("Non-actor descendant should get U prefix"),
+        Context.Document->ClassName, FString(TEXT("UDataProcessor")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexContextWidgetOverridesActorDescendantTest,
+    "Cortex.Frontend.Conversion.Context.WidgetOverridesActorDescendant",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexContextWidgetOverridesActorDescendantTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Widget BP should always get U prefix even if bIsActorDescendant is somehow true
+    FCortexConversionPayload Payload;
+    Payload.BlueprintName = TEXT("WBP_HealthBar");
+    Payload.ParentClassName = TEXT("UserWidget");
+    Payload.bIsWidgetBlueprint = true;
+    Payload.bIsActorDescendant = true; // should be ignored for widgets
+
+    FCortexConversionContext Context(Payload);
+    TestEqual(TEXT("Widget BP should always get U prefix"),
+        Context.Document->ClassName, FString(TEXT("UHealthBar")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexContextTargetModuleNameTest,
+    "Cortex.Frontend.Conversion.Context.TargetModuleName",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexContextTargetModuleNameTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexConversionPayload Payload;
+    Payload.BlueprintName = TEXT("BP_Test");
+    Payload.ParentClassName = TEXT("Actor");
+    Payload.bIsActorDescendant = true;
+
+    FCortexConversionContext Context(Payload);
+
+    // TargetModuleName should be populated (from project name)
+    TestFalse(TEXT("TargetModuleName should not be empty"),
+        Context.TargetModuleName.IsEmpty());
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexContextClassNameUserModifiedDefaultTest,
+    "Cortex.Frontend.Conversion.Context.ClassNameUserModifiedDefault",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexContextClassNameUserModifiedDefaultTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexConversionPayload Payload;
+    Payload.BlueprintName = TEXT("BP_Test");
+    Payload.ParentClassName = TEXT("Actor");
+    Payload.bIsActorDescendant = true;
+
+    FCortexConversionContext Context(Payload);
+    TestFalse(TEXT("bClassNameUserModified should default to false"),
+        Context.bClassNameUserModified);
+
+    return true;
+}

@@ -3,6 +3,7 @@
 #include "BlueprintEditor.h"
 #include "CortexAnalysisTypes.h"
 #include "CortexConversionTypes.h"
+#include "GameFramework/Actor.h"
 #include "CortexCoreModule.h"
 #include "CortexBlueprintModule.h"
 #include "EdGraphSchema_K2.h"
@@ -117,14 +118,17 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 	Payload.BlueprintName = Blueprint->GetName();
 	Payload.ParentClassName = Blueprint->ParentClass ? Blueprint->ParentClass->GetName() : TEXT("None");
 
-	// Detect Widget Blueprint via dynamic UMG class resolution (no compile-time UMG dependency)
+	// Detect actor descendant via class hierarchy check (not string matching)
 	if (Blueprint->ParentClass)
 	{
-		static UClass* UserWidgetClass = nullptr;
-		if (!UserWidgetClass)
-		{
-			UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
-		}
+		Payload.bIsActorDescendant = Blueprint->ParentClass->IsChildOf(AActor::StaticClass());
+	}
+
+	// Detect Widget Blueprint via dynamic UMG class resolution (no compile-time UMG dependency)
+	// Resolve each time rather than caching static UClass* — static pointers become stale after hot reload
+	if (Blueprint->ParentClass)
+	{
+		UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
 		if (UserWidgetClass && Blueprint->ParentClass->IsChildOf(UserWidgetClass))
 		{
 			Payload.bIsWidgetBlueprint = true;
@@ -174,7 +178,7 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 			if (Var.VarType.PinCategory == UEdGraphSchema_K2::PC_Object
 				&& Var.VarType.PinSubCategoryObject.IsValid())
 			{
-				static UClass* WidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.Widget"));
+				UClass* WidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.Widget"));
 				UClass* VarClass = Cast<UClass>(Var.VarType.PinSubCategoryObject.Get());
 				if (VarClass && WidgetClass && VarClass->IsChildOf(WidgetClass))
 				{
@@ -278,6 +282,27 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 
 	// Detect project-owned ancestor classes for destination selection
 	Payload.DetectedProjectAncestors = FCortexProjectClassDetector::FindProjectAncestors(Blueprint);
+
+	// Parent class path and Blueprint-parent detection for dependency analysis
+	if (Blueprint->ParentClass)
+	{
+		Payload.ParentClassPath = Blueprint->ParentClass->GetPathName();
+		Payload.bParentIsBlueprint = (Blueprint->ParentClass->ClassGeneratedBy != nullptr);
+	}
+
+	// Implemented interfaces for dependency analysis
+	for (const FBPInterfaceDescription& IfaceDesc : Blueprint->ImplementedInterfaces)
+	{
+		if (!IfaceDesc.Interface)
+		{
+			continue;
+		}
+		FCortexConversionPayload::FPayloadInterfaceInfo Info;
+		Info.InterfaceName = IfaceDesc.Interface->GetName();
+		// Blueprint interfaces live under /Game/, native ones under /Script/
+		Info.bIsBlueprint = IfaceDesc.Interface->GetPathName().StartsWith(TEXT("/Game/"));
+		Payload.ImplementedInterfaces.Add(MoveTemp(Info));
+	}
 
 	return Payload;
 }
