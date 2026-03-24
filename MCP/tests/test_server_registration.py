@@ -2,8 +2,8 @@
 
 from unittest.mock import MagicMock
 
-from cortex_mcp.capabilities import minimal_router_docstrings
-from cortex_mcp.tools.routers import DOMAINS, register_router_tools
+from cortex_mcp.capabilities import CORE_DOMAINS, minimal_router_docstrings
+from cortex_mcp.tools.routers import register_router_tools
 from cortex_mcp.tools.composites.blueprint import register_blueprint_compose_tools
 from cortex_mcp.tools.composites.material import register_material_compose_tools
 from cortex_mcp.tools.composites.widget import register_widget_compose_tools
@@ -40,7 +40,7 @@ def test_explicit_registration_adds_router_composite_and_standalone_tools():
     register_schema_standalone_tools(mcp, connection)
     register_qa_standalone_tools(mcp, connection)
 
-    for domain in DOMAINS:
+    for domain in CORE_DOMAINS:
         assert f"{domain}_cmd" in mcp.tools
 
     assert "blueprint_compose" in mcp.tools
