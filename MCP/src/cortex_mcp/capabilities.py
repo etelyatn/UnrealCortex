@@ -11,7 +11,7 @@ from .tcp_client import _find_saved_dir
 
 logger = logging.getLogger(__name__)
 
-_DOMAINS = (
+CORE_DOMAINS = (
     "core",
     "data",
     "blueprint",
@@ -22,8 +22,26 @@ _DOMAINS = (
     "qa",
     "reflect",
     "editor",
-    "gen",
 )
+
+_OPTIONAL_DOMAINS = ("gen",)
+
+
+def get_registered_domains(capabilities: dict | None = None) -> tuple[str, ...]:
+    """Return core domains + any optional domains found in capabilities cache.
+
+    Optional domains (e.g., gen) are only included when the editor has them
+    registered.  No cache = core domains only (safe default).
+    """
+    if capabilities is None:
+        return CORE_DOMAINS
+
+    domains_data = capabilities.get("domains")
+    if not isinstance(domains_data, dict):
+        return CORE_DOMAINS
+
+    extra = tuple(d for d in _OPTIONAL_DOMAINS if d in domains_data)
+    return CORE_DOMAINS + extra
 
 
 def load_capabilities_cache() -> dict | None:
@@ -54,10 +72,12 @@ _COMPOSITE_HINTS: dict[str, str] = {
 }
 
 
-def minimal_router_docstrings() -> dict[str, str]:
+def minimal_router_docstrings(domains: tuple[str, ...] | None = None) -> dict[str, str]:
     """Return minimal router docstrings when no capabilities cache is available."""
+    if domains is None:
+        domains = CORE_DOMAINS
     docstrings: dict[str, str] = {}
-    for domain in _DOMAINS:
+    for domain in domains:
         tool_name = f"{domain}_cmd"
         hint = _COMPOSITE_HINTS.get(domain, "")
         base = f"Route UnrealCortex {domain} commands through `{tool_name}(command, params)`."
@@ -70,15 +90,17 @@ def minimal_router_docstrings() -> dict[str, str]:
 
 def build_router_docstrings(capabilities: dict | None) -> dict[str, str]:
     """Build per-domain router docstrings from cached capabilities."""
+    registered = get_registered_domains(capabilities)
+
     if capabilities is None:
-        return minimal_router_docstrings()
+        return minimal_router_docstrings(registered)
 
     domains = capabilities.get("domains")
     if not isinstance(domains, dict):
         logger.warning("Capabilities cache has unexpected shape; using minimal router docstrings")
-        return minimal_router_docstrings()
+        return minimal_router_docstrings(registered)
 
-    docstrings = minimal_router_docstrings()
+    docstrings = minimal_router_docstrings(registered)
     for domain_name, domain_info in domains.items():
         if domain_name not in docstrings:
             continue

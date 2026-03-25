@@ -13,6 +13,7 @@
 #include "Widgets/SCortexGenTab.h"
 #include "Widgets/SCortexSidebar.h"
 #include "Session/CortexCliSession.h"
+#include "CortexGenModule.h"
 
 void SCortexWorkbench::Construct(const FArguments& InArgs)
 {
@@ -44,24 +45,30 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnQATab))
 		.SetDisplayName(FText::FromString(TEXT("QA")));
 
-	// Register Gen tab spawner
-	TabManager->RegisterTabSpawner(
-		FName(TEXT("CortexGen")),
-		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnGenTab))
-		.SetDisplayName(FText::FromString(TEXT("Generate")));
+	// Register Gen tab spawner (only if gen module enabled)
+	if (FCortexGenModule::IsEnabled())
+	{
+		TabManager->RegisterTabSpawner(
+			FName(TEXT("CortexGen")),
+			FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnGenTab))
+			.SetDisplayName(FText::FromString(TEXT("Generate")));
+		bGenTabRegistered = true;
+	}
 
 	// Define layout
-	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("CortexFrontendLayout_v1.4")
+	TSharedRef<FTabManager::FStack> Stack = FTabManager::NewStack();
+	Stack->AddTab(FName(TEXT("CortexChat")), ETabState::OpenedTab);
+	if (bGenTabRegistered)
+	{
+		Stack->AddTab(FName(TEXT("CortexGen")), ETabState::OpenedTab);
+	}
+	Stack->AddTab(FName(TEXT("CortexQA")), ETabState::ClosedTab);
+
+	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("CortexFrontendLayout_v1.5")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
-			->Split
-			(
-				FTabManager::NewStack()
-				->AddTab(FName(TEXT("CortexChat")), ETabState::OpenedTab)
-				->AddTab(FName(TEXT("CortexGen")), ETabState::OpenedTab)
-				->AddTab(FName(TEXT("CortexQA")), ETabState::ClosedTab)
-			)
+			->Split(Stack)
 		);
 
 	TSharedPtr<SWidget> TabContents = TabManager->RestoreFrom(Layout, TSharedPtr<SWindow>());
@@ -118,7 +125,10 @@ SCortexWorkbench::~SCortexWorkbench()
 		TabManager->CloseAllAreas();
 		TabManager->UnregisterTabSpawner(TEXT("CortexChat"));
 		TabManager->UnregisterTabSpawner(TEXT("CortexQA"));
-		TabManager->UnregisterTabSpawner(TEXT("CortexGen"));
+		if (bGenTabRegistered)
+		{
+			TabManager->UnregisterTabSpawner(TEXT("CortexGen"));
+		}
 	}
 }
 
