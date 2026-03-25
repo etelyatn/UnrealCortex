@@ -356,3 +356,10 @@ FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonOb
 
 	return FCortexCommandRouter::Success(Data);
 }
+
+FCortexCommandResult FCortexBPStructureOps::RemoveGraph(const TSharedPtr<FJsonObject>& Params)
+{
+	return FCortexCommandRouter::Error(
+		CortexErrorCodes::InvalidOperation,
+		TEXT("Not yet implemented"));
+}

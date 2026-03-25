@@ -75,6 +75,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPStructureOps::AddFunction(Params);
 	}
 
+	if (Command == TEXT("remove_graph"))
+	{
+		return FCortexBPStructureOps::RemoveGraph(Params);
+	}
+
 	if (Command == TEXT("get_class_defaults"))
 	{
 		return FCortexBPClassDefaultsOps::GetClassDefaults(Params);
@@ -192,6 +197,12 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("access"), TEXT("string"), TEXT("Function access level"))
 		.Optional(TEXT("inputs"), TEXT("array"), TEXT("Input parameter definitions"))
 		.Optional(TEXT("outputs"), TEXT("array"), TEXT("Output parameter definitions")));
+	Commands.Add(FCortexCommandInfo{TEXT("remove_graph"), TEXT("Remove a graph (function, macro, event graph) or custom event from a Blueprint")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("name"), TEXT("string"), TEXT("Name of graph or custom event to remove"))
+		.Optional(TEXT("cascade"), TEXT("boolean"), TEXT("Remove connected execution chain for custom events (default: true)"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after removal (default: true)"))
+		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview what would be removed without modifying anything")));
 	Commands.Add(FCortexCommandInfo{TEXT("get_class_defaults"), TEXT("Read default property values from a Blueprint CDO")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("properties"), TEXT("array"), TEXT("Specific properties to read"))
