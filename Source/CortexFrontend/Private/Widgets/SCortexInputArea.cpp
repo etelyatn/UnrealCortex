@@ -1,16 +1,20 @@
 #include "Widgets/SCortexInputArea.h"
 
+#include "CortexFrontendSettings.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Input/Events.h"
 #include "InputCoreTypes.h"
 #include "Misc/Paths.h"
 #include "Rendering/CortexFrontendColors.h"
+#include "Session/CortexSessionTypes.h"
 #include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SMenuAnchor.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
@@ -23,7 +27,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
     ChildSlot
     [
         SNew(SVerticalBox)
-        // Chip row
+        // Section 1: Chip row
         + SVerticalBox::Slot()
         .AutoHeight()
         [
@@ -31,51 +35,204 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
             .UseAllottedWidth(true)
             .Visibility(EVisibility::Collapsed)
         ]
-        // Input row (existing layout)
+        // Section 2: Textarea
         + SVerticalBox::Slot()
         .AutoHeight()
+        .Padding(4.0f)
+        [
+            SAssignNew(InputTextBox, SMultiLineEditableTextBox)
+            .HintText(FText::FromString(TEXT("Ask Cortex anything...")))
+            .AutoWrapText(true)
+            .OnKeyDownHandler_Lambda([this](const FGeometry&, const FKeyEvent& KeyEvent)
+            {
+                if (KeyEvent.GetKey() == EKeys::Enter && !KeyEvent.IsShiftDown())
+                {
+                    HandleSendOrNewline();
+                    return FReply::Handled();
+                }
+                return FReply::Unhandled();
+            })
+        ]
+        // Section 3: Controls row
+        + SVerticalBox::Slot()
+        .AutoHeight()
+        .Padding(4.0f, 2.0f)
         [
             SNew(SHorizontalBox)
-            + SHorizontalBox::Slot()
-            .FillWidth(1.0f)
-            .Padding(4.0f)
-            [
-                SAssignNew(InputTextBox, SMultiLineEditableTextBox)
-                .HintText(FText::FromString(TEXT("Ask Cortex anything...")))
-                .AutoWrapText(true)
-                .OnKeyDownHandler_Lambda([this](const FGeometry&, const FKeyEvent& KeyEvent)
-                {
-                    if (KeyEvent.GetKey() == EKeys::Enter && !KeyEvent.IsShiftDown())
-                    {
-                        HandleSendOrNewline();
-                        return FReply::Handled();
-                    }
-                    return FReply::Unhandled();
-                })
-            ]
+            // "+" button
             + SHorizontalBox::Slot()
             .AutoWidth()
-            .Padding(4.0f)
-            .VAlign(VAlign_Bottom)
+            .VAlign(VAlign_Center)
+            .Padding(0.0f, 0.0f, 4.0f, 0.0f)
             [
-                SAssignNew(SendButton, SButton)
-                .OnClicked(this, &SCortexInputArea::OnSendClicked)
+                SNew(SButton)
+                .ButtonStyle(FCoreStyle::Get(), "NoBorder")
                 [
                     SNew(STextBlock)
-                    .Text(FText::FromString(TEXT("Send")))
+                    .Text(FText::FromString(TEXT("+")))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 14))
+                    .ColorAndOpacity(FSlateColor(CortexColors::MutedTextColor))
                 ]
             ]
+            // Mode selector
             + SHorizontalBox::Slot()
             .AutoWidth()
-            .Padding(4.0f)
-            .VAlign(VAlign_Bottom)
+            .VAlign(VAlign_Center)
+            .Padding(0.0f, 0.0f, 4.0f, 0.0f)
             [
-                SAssignNew(CancelButton, SButton)
-                .OnClicked(this, &SCortexInputArea::OnCancelClicked)
-                .Visibility(EVisibility::Collapsed)
+                SAssignNew(ModeDropdown, SMenuAnchor)
+                .Placement(MenuPlacement_AboveAnchor)
+                .OnGetMenuContent_Lambda([this]() -> TSharedRef<SWidget>
+                {
+                    TSharedRef<SVerticalBox> Menu = SNew(SVerticalBox);
+                    for (ECortexAccessMode Mode : { ECortexAccessMode::ReadOnly, ECortexAccessMode::Guided, ECortexAccessMode::FullAccess })
+                    {
+                        FString ModeStr;
+                        switch (Mode)
+                        {
+                        case ECortexAccessMode::ReadOnly:   ModeStr = TEXT("Read-Only"); break;
+                        case ECortexAccessMode::Guided:     ModeStr = TEXT("Guided"); break;
+                        case ECortexAccessMode::FullAccess: ModeStr = TEXT("Full Access"); break;
+                        }
+                        Menu->AddSlot()
+                        .AutoHeight()
+                        [
+                            SNew(SButton)
+                            .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                            .OnClicked_Lambda([this, Mode]()
+                            {
+                                FCortexFrontendSettings::Get().SetAccessMode(Mode);
+                                if (ModeLabel.IsValid())
+                                {
+                                    ModeLabel->SetText(FText::FromString(FCortexFrontendSettings::Get().GetAccessModeString()));
+                                }
+                                ModeDropdown->SetIsOpen(false);
+                                return FReply::Handled();
+                            })
+                            [
+                                SNew(STextBlock)
+                                .Text(FText::FromString(ModeStr))
+                                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                            ]
+                        ];
+                    }
+                    return Menu;
+                })
+                [
+                    SNew(SButton)
+                    .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                    .OnClicked_Lambda([this]()
+                    {
+                        ModeDropdown->SetIsOpen(true);
+                        return FReply::Handled();
+                    })
+                    [
+                        SNew(SBorder)
+                        .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                        .BorderBackgroundColor(CortexColors::ModeButtonBackground)
+                        .Padding(FMargin(8.0f, 2.0f))
+                        [
+                            SAssignNew(ModeLabel, STextBlock)
+                            .Text(FText::FromString(FCortexFrontendSettings::Get().GetAccessModeString()))
+                            .Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+                            .ColorAndOpacity(FSlateColor(CortexColors::ModeButtonText))
+                        ]
+                    ]
+                ]
+            ]
+            // Model selector
+            + SHorizontalBox::Slot()
+            .AutoWidth()
+            .VAlign(VAlign_Center)
+            .Padding(0.0f, 0.0f, 4.0f, 0.0f)
+            [
+                SAssignNew(ModelDropdown, SMenuAnchor)
+                .Placement(MenuPlacement_AboveAnchor)
+                .OnGetMenuContent_Lambda([this]() -> TSharedRef<SWidget>
+                {
+                    TSharedRef<SVerticalBox> Menu = SNew(SVerticalBox);
+                    for (const FString& ModelId : FCortexFrontendSettings::Get().GetAvailableModels())
+                    {
+                        Menu->AddSlot()
+                        .AutoHeight()
+                        [
+                            SNew(SButton)
+                            .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                            .OnClicked_Lambda([this, ModelId]()
+                            {
+                                FCortexFrontendSettings::Get().SetSelectedModel(ModelId);
+                                if (ModelLabel.IsValid())
+                                {
+                                    ModelLabel->SetText(FText::FromString(FCortexFrontendSettings::Get().GetSelectedModel()));
+                                }
+                                ModelDropdown->SetIsOpen(false);
+                                return FReply::Handled();
+                            })
+                            [
+                                SNew(STextBlock)
+                                .Text(FText::FromString(ModelId))
+                                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                            ]
+                        ];
+                    }
+                    return Menu;
+                })
+                [
+                    SNew(SButton)
+                    .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                    .OnClicked_Lambda([this]()
+                    {
+                        ModelDropdown->SetIsOpen(true);
+                        return FReply::Handled();
+                    })
+                    [
+                        SAssignNew(ModelLabel, STextBlock)
+                        .Text(FText::FromString(FCortexFrontendSettings::Get().GetSelectedModel()))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                        .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
+                    ]
+                ]
+            ]
+            // Spacer
+            + SHorizontalBox::Slot()
+            .FillWidth(1.0f)
+            [
+                SNew(SSpacer)
+            ]
+            // Settings button
+            + SHorizontalBox::Slot()
+            .AutoWidth()
+            .VAlign(VAlign_Center)
+            .Padding(4.0f, 0.0f, 0.0f, 0.0f)
+            [
+                SNew(SButton)
+                .ButtonStyle(FCoreStyle::Get(), "NoBorder")
                 [
                     SNew(STextBlock)
-                    .Text(FText::FromString(TEXT("Cancel")))
+                    .Text(FText::FromString(TEXT("\u2699")))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+                    .ColorAndOpacity(FSlateColor(CortexColors::MutedTextColor))
+                ]
+            ]
+            // ActionButton (send/cancel)
+            + SHorizontalBox::Slot()
+            .AutoWidth()
+            .VAlign(VAlign_Center)
+            .Padding(4.0f, 0.0f, 0.0f, 0.0f)
+            [
+                SAssignNew(ActionButton, SButton)
+                .OnClicked(this, &SCortexInputArea::OnSendClicked)
+                [
+                    SNew(SBorder)
+                    .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                    .BorderBackgroundColor(CortexColors::SendButtonColor)
+                    .Padding(FMargin(8.0f, 4.0f))
+                    [
+                        SNew(STextBlock)
+                        .Text(FText::FromString(TEXT("\u2191")))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+                        .ColorAndOpacity(FSlateColor(FLinearColor::White))
+                    ]
                 ]
             ]
         ]
@@ -88,23 +245,15 @@ void SCortexInputArea::SetInputEnabled(bool bEnabled)
     {
         InputTextBox->SetEnabled(bEnabled);
     }
-    if (SendButton.IsValid())
+    if (ActionButton.IsValid())
     {
-        SendButton->SetEnabled(bEnabled);
+        ActionButton->SetEnabled(bEnabled);
     }
 }
 
 void SCortexInputArea::SetStreaming(bool bStreaming)
 {
     bIsStreaming = bStreaming;
-    if (SendButton.IsValid())
-    {
-        SendButton->SetVisibility(bStreaming ? EVisibility::Collapsed : EVisibility::Visible);
-    }
-    if (CancelButton.IsValid())
-    {
-        CancelButton->SetVisibility(bStreaming ? EVisibility::Visible : EVisibility::Collapsed);
-    }
 }
 
 void SCortexInputArea::ClearInput()
@@ -149,13 +298,14 @@ void SCortexInputArea::HandleSendOrNewline()
 
 FReply SCortexInputArea::OnSendClicked()
 {
-    HandleSendOrNewline();
-    return FReply::Handled();
-}
-
-FReply SCortexInputArea::OnCancelClicked()
-{
-    OnCancel.ExecuteIfBound();
+    if (bIsStreaming)
+    {
+        OnCancel.ExecuteIfBound();
+    }
+    else
+    {
+        HandleSendOrNewline();
+    }
     return FReply::Handled();
 }
 

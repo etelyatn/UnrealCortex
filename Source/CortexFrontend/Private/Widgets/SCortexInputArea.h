@@ -3,11 +3,13 @@
 #include "CoreMinimal.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/Input/SMenuAnchor.h"
 #include "Widgets/Layout/SWrapBox.h"
 #include "Rendering/CortexFrontendColors.h"
 
 class SButton;
 class SMultiLineEditableTextBox;
+class STextBlock;
 
 DECLARE_DELEGATE_OneParam(FOnCortexSendMessage, const FString&);
 DECLARE_DELEGATE(FOnCortexCancel);
@@ -34,14 +36,16 @@ public:
 
 private:
     FReply OnSendClicked();
-    FReply OnCancelClicked();
     void HandleSendOrNewline();
     void RebuildChips();
 
     TSharedPtr<SMultiLineEditableTextBox> InputTextBox;
-    TSharedPtr<SButton> SendButton;
-    TSharedPtr<SButton> CancelButton;
+    TSharedPtr<SButton> ActionButton;
     TSharedPtr<SWrapBox> ChipRow;
+    TSharedPtr<SMenuAnchor> ModeDropdown;
+    TSharedPtr<SMenuAnchor> ModelDropdown;
+    TSharedPtr<STextBlock> ModeLabel;
+    TSharedPtr<STextBlock> ModelLabel;
 
     TArray<FString> ContextItems;
 
