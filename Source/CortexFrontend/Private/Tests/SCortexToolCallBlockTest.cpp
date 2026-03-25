@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "Session/CortexSessionTypes.h"
+#include "Widgets/SCortexToolCallBlock.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexToolCallGroupingTest,
     "Cortex.Frontend.ToolCallBlock.Grouping",
@@ -35,6 +36,33 @@ bool FCortexToolCallGroupingTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Should have 2 turn groups"), Groups.Num(), 2);
     TestEqual(TEXT("Turn 1 should have 3 calls"), Groups[1].Num(), 3);
     TestEqual(TEXT("Turn 2 should have 1 call"), Groups[2].Num(), 1);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexToolCallCategorizeTest,
+    "Cortex.Frontend.ToolCallBlock.CategorizeToolCall",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexToolCallCategorizeTest::RunTest(const FString& Parameters)
+{
+    auto Cat = SCortexToolCallBlock::CategorizeToolCall(TEXT("Read"));
+    TestEqual(TEXT("Read label"), Cat.Label, TEXT("Read"));
+
+    Cat = SCortexToolCallBlock::CategorizeToolCall(TEXT("Glob"));
+    TestEqual(TEXT("Glob label"), Cat.Label, TEXT("Search"));
+
+    Cat = SCortexToolCallBlock::CategorizeToolCall(TEXT("Edit"));
+    TestEqual(TEXT("Edit label"), Cat.Label, TEXT("Edit"));
+
+    Cat = SCortexToolCallBlock::CategorizeToolCall(TEXT("Bash"));
+    TestEqual(TEXT("Bash label"), Cat.Label, TEXT("Shell"));
+
+    Cat = SCortexToolCallBlock::CategorizeToolCall(TEXT("mcp__cortex_mcp__blueprint_cmd"));
+    TestEqual(TEXT("MCP label"), Cat.Label, TEXT("MCP"));
+
+    Cat = SCortexToolCallBlock::CategorizeToolCall(TEXT("UnknownTool"));
+    TestEqual(TEXT("Default label"), Cat.Label, TEXT("Tool"));
 
     return true;
 }

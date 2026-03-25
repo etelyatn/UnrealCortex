@@ -1,9 +1,18 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Rendering/CortexFrontendColors.h"
 #include "Session/CortexSessionTypes.h"
+#include "Styling/SlateRoundedBoxBrush.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
+
+struct FCortexFrontendToolCategory
+{
+    FString Icon;
+    FLinearColor Color;
+    FString Label;
+};
 
 class SCortexToolCallBlock : public SCompoundWidget
 {
@@ -15,6 +24,8 @@ public:
 
     void Construct(const FArguments& InArgs);
 
+    static FCortexFrontendToolCategory CategorizeToolCall(const FString& ToolName);
+
 private:
     FReply OnToggleExpand();
     void RebuildContent();
@@ -23,4 +34,5 @@ private:
     TArray<TSharedPtr<FCortexChatEntry>> ToolCallList;
     bool bIsExpanded = false;
     TSharedPtr<SVerticalBox> ContentBox;
+    TUniquePtr<FSlateRoundedBoxBrush> ToolCallBrush;
 };
