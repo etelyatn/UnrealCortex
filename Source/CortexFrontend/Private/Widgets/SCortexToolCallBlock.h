@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Rendering/CortexFrontendColors.h"
 #include "Session/CortexSessionTypes.h"
-#include "Styling/SlateRoundedBoxBrush.h"
+#include "Brushes/SlateRoundedBoxBrush.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 

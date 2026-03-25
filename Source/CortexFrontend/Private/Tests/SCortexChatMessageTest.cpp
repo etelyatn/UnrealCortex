@@ -45,6 +45,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatMessagePrefixTest,
 
 bool FCortexChatMessagePrefixTest::RunTest(const FString& Parameters)
 {
+    FCortexRichTextStyle::Initialize();
+
     TSharedRef<SCortexChatMessage> UserMsg = SNew(SCortexChatMessage)
         .Message(TEXT("Hello"))
         .IsUser(true);

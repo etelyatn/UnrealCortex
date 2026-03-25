@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
-#include "Styling/SlateRoundedBoxBrush.h"
+#include "Brushes/SlateRoundedBoxBrush.h"
 
 using FCortexFrontendTableRowData = TArray<FString>;
 

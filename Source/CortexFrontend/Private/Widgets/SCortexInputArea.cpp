@@ -32,7 +32,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
         .AutoHeight()
         [
             SAssignNew(ChipRow, SWrapBox)
-            .UseAllottedWidth(true)
+            .UseAllottedSize(true)
             .Visibility(EVisibility::Collapsed)
         ]
         // Section 2: Textarea
