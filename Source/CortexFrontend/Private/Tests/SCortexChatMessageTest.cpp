@@ -39,6 +39,29 @@ bool FCortexChatMessageMarkdownWidgetTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatMessagePrefixTest,
+    "Cortex.Frontend.ChatMessage.PrefixStyle",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexChatMessagePrefixTest::RunTest(const FString& Parameters)
+{
+    TSharedRef<SCortexChatMessage> UserMsg = SNew(SCortexChatMessage)
+        .Message(TEXT("Hello"))
+        .IsUser(true);
+
+    // User message should have ">" prefix (not "You")
+    TestEqual(TEXT("User prefix"), UserMsg->GetPrefixChar(), TEXT(">"));
+
+    TSharedRef<SCortexChatMessage> AssistantMsg = SNew(SCortexChatMessage)
+        .Message(TEXT("Hi"))
+        .IsUser(false);
+
+    // Assistant message should have "●" dot prefix (not "Claude")
+    TestEqual(TEXT("Assistant prefix"), AssistantMsg->GetPrefixChar(), FString(TEXT("\u25CF")));
+
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FSCortexChatMessageWrapWidthDefaultTest,
     "Cortex.Frontend.ChatMessage.WrapWidthDefault",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

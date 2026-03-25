@@ -26,6 +26,7 @@ public:
 
     // Exposed for smoke testing — do not use from Slate layout code
     float GetWrapWidth() const { return WrapWidth; }
+    FString GetPrefixChar() const { return PrefixChar; }
 
 private:
     TSharedRef<SWidget> BuildContentForText(const FString& Text);
@@ -33,6 +34,7 @@ private:
     TSharedPtr<SVerticalBox> ContentBox;
     bool bIsUser = true;
     bool bIsStreaming = false;
+    FString PrefixChar;
 
     // Updated each tick from allotted geometry. Default 600 gives SListView
     // a reasonable first-frame height estimate before tick runs.
