@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/Layout/SWrapBox.h"
+#include "Rendering/CortexFrontendColors.h"
 
 class SButton;
 class SMultiLineEditableTextBox;
@@ -25,14 +27,23 @@ public:
     void ClearInput();
     void FocusInput();
 
+    void AddContextItem(const FString& Path);
+    void RemoveContextItem(int32 Index);
+    void ClearContextItems();
+    const TArray<FString>& GetContextItems() const;
+
 private:
     FReply OnSendClicked();
     FReply OnCancelClicked();
     void HandleSendOrNewline();
+    void RebuildChips();
 
     TSharedPtr<SMultiLineEditableTextBox> InputTextBox;
     TSharedPtr<SButton> SendButton;
     TSharedPtr<SButton> CancelButton;
+    TSharedPtr<SWrapBox> ChipRow;
+
+    TArray<FString> ContextItems;
 
     FOnCortexSendMessage OnSendMessage;
     FOnCortexCancel OnCancel;
