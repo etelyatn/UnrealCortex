@@ -365,7 +365,81 @@ void FCortexBPStructureOps::GatherCascadeExecNodes(
 	UEdGraphNode* StartNode,
 	TSet<UEdGraphNode*>& OutRemovalSet)
 {
-	// Implemented in Task 6
+	if (!StartNode)
+	{
+		return;
+	}
+
+	OutRemovalSet.Add(StartNode);
+	TArray<UEdGraphNode*> Queue;
+	Queue.Add(StartNode);
+	int32 QueueIndex = 0;
+
+	while (QueueIndex < Queue.Num())
+	{
+		UEdGraphNode* Current = Queue[QueueIndex++];
+		if (!Current)
+		{
+			continue;
+		}
+
+		for (UEdGraphPin* Pin : Current->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Output ||
+				Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+			{
+				continue;
+			}
+
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				if (!LinkedPin)
+				{
+					continue;
+				}
+
+				UEdGraphNode* LinkedNode = LinkedPin->GetOwningNode();
+				if (!LinkedNode || OutRemovalSet.Contains(LinkedNode))
+				{
+					continue;
+				}
+
+				// Check if this node has incoming exec from outside the removal set
+				bool bHasExternalExecInput = false;
+				for (UEdGraphPin* NodePin : LinkedNode->Pins)
+				{
+					if (!NodePin || NodePin->Direction != EGPD_Input ||
+						NodePin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+					{
+						continue;
+					}
+
+					for (UEdGraphPin* IncomingPin : NodePin->LinkedTo)
+					{
+						if (IncomingPin)
+						{
+							UEdGraphNode* IncomingNode = IncomingPin->GetOwningNode();
+							if (IncomingNode && !OutRemovalSet.Contains(IncomingNode))
+							{
+								bHasExternalExecInput = true;
+								break;
+							}
+						}
+					}
+					if (bHasExternalExecInput)
+					{
+						break;
+					}
+				}
+
+				if (!bHasExternalExecInput)
+				{
+					OutRemovalSet.Add(LinkedNode);
+					Queue.Add(LinkedNode);
+				}
+			}
+		}
+	}
 }
 
 FCortexCommandResult FCortexBPStructureOps::RemoveGraph(const TSharedPtr<FJsonObject>& Params)
@@ -528,8 +602,66 @@ FCortexCommandResult FCortexBPStructureOps::RemoveGraph(const TSharedPtr<FJsonOb
 		return FinalizeResponse(ResponseData);
 	}
 
-	// --- 4. Custom event nodes in EventGraph ---
-	// (Task 6 will implement this path)
+	// --- 4. Custom event nodes in primary EventGraph ---
+	if (BP->UbergraphPages.Num() > 0 && BP->UbergraphPages[0])
+	{
+		UEdGraph* PrimaryEventGraph = BP->UbergraphPages[0];
+		UK2Node_CustomEvent* FoundEvent = nullptr;
+
+		for (UEdGraphNode* Node : PrimaryEventGraph->Nodes)
+		{
+			UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node);
+			if (CustomEvent && CustomEvent->CustomFunctionName.ToString() == Name)
+			{
+				FoundEvent = CustomEvent;
+				break;
+			}
+		}
+
+		if (FoundEvent)
+		{
+			TSet<UEdGraphNode*> RemovalSet;
+			if (bCascade)
+			{
+				GatherCascadeExecNodes(FoundEvent, RemovalSet);
+			}
+			else
+			{
+				RemovalSet.Add(FoundEvent);
+			}
+
+			const int32 NodeCount = RemovalSet.Num();
+
+			if (!bDryRun)
+			{
+				FScopedTransaction Transaction(FText::FromString(
+					FString::Printf(TEXT("Cortex: Remove custom event %s"), *Name)));
+
+				for (UEdGraphNode* NodeToRemove : RemovalSet)
+				{
+					FBlueprintEditorUtils::RemoveNode(BP, NodeToRemove, /*bDontRecompile=*/true);
+				}
+
+				FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+			}
+
+			TSharedPtr<FJsonObject> ResponseData = MakeShared<FJsonObject>();
+			ResponseData->SetStringField(TEXT("asset_path"), AssetPath);
+
+			TSharedPtr<FJsonObject> RemovedObj = MakeShared<FJsonObject>();
+			RemovedObj->SetStringField(TEXT("name"), Name);
+			RemovedObj->SetStringField(TEXT("type"), TEXT("CustomEvent"));
+			RemovedObj->SetNumberField(TEXT("node_count"), NodeCount);
+			RemovedObj->SetBoolField(TEXT("cascade"), bCascade);
+			ResponseData->SetObjectField(TEXT("removed"), RemovedObj);
+
+			UE_LOG(LogCortexBlueprint, Log,
+				TEXT("Removed custom event '%s' from %s (%d nodes, cascade=%d)%s"),
+				*Name, *BP->GetName(), NodeCount, bCascade, bDryRun ? TEXT(" [dry_run]") : TEXT(""));
+
+			return FinalizeResponse(ResponseData);
+		}
+	}
 
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::GraphNotFound,
