@@ -343,3 +343,161 @@ bool FCortexBPRemoveGraphCascadeTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphSharedNodeTest,
+	"Cortex.Blueprint.RemoveGraph.SharedNode",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPRemoveGraphSharedNodeTest::RunTest(const FString& Parameters)
+{
+	FCortexBPCommandHandler Handler;
+	const FString TestBPPath = TEXT("/Game/Temp/CortexBPTest_RGShared/BP_SharedNodeTest");
+
+	// Setup: create Blueprint
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("name"), TEXT("BP_SharedNodeTest"));
+		Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_RGShared"));
+		Params->SetStringField(TEXT("type"), TEXT("Actor"));
+		FCortexCommandResult R = Handler.Execute(TEXT("create"), Params);
+		TestTrue(TEXT("Setup: create BP"), R.bSuccess);
+	}
+
+	FString PkgName = FPackageName::ObjectPathToPackageName(TestBPPath);
+	UBlueprint* BP = nullptr;
+	if (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName))
+	{
+		BP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
+	}
+	if (!TestNotNull(TEXT("BP should load"), BP))
+	{
+		return true;
+	}
+
+	UEdGraph* EventGraph = (BP->UbergraphPages.Num() > 0) ? BP->UbergraphPages[0] : nullptr;
+	if (!TestNotNull(TEXT("EventGraph should exist"), EventGraph))
+	{
+		BP->GetOutermost()->MarkAsGarbage();
+		return true;
+	}
+
+	// Create EventA -> SharedPrintNode
+	UK2Node_CustomEvent* EventA = NewObject<UK2Node_CustomEvent>(EventGraph);
+	EventA->CreateNewGuid();
+	EventA->CustomFunctionName = FName("EventA");
+	EventGraph->AddNode(EventA, false, false);
+	EventA->AllocateDefaultPins();
+
+	// Create EventB -> SharedPrintNode
+	UK2Node_CustomEvent* EventB = NewObject<UK2Node_CustomEvent>(EventGraph);
+	EventB->CreateNewGuid();
+	EventB->CustomFunctionName = FName("EventB");
+	EventGraph->AddNode(EventB, false, false);
+	EventB->AllocateDefaultPins();
+
+	// Create shared PrintString node
+	UK2Node_CallFunction* SharedPrint = NewObject<UK2Node_CallFunction>(EventGraph);
+	SharedPrint->CreateNewGuid();
+	SharedPrint->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("PrintString")));
+	EventGraph->AddNode(SharedPrint, false, false);
+	SharedPrint->AllocateDefaultPins();
+
+	// Connect both events to the shared node
+	auto FindExecOut = [](UEdGraphNode* Node) -> UEdGraphPin* {
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin && Pin->Direction == EGPD_Output && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+			{
+				return Pin;
+			}
+		}
+		return nullptr;
+	};
+	auto FindExecIn = [](UEdGraphNode* Node) -> UEdGraphPin* {
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin && Pin->Direction == EGPD_Input && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+			{
+				return Pin;
+			}
+		}
+		return nullptr;
+	};
+
+	UEdGraphPin* ExecInPin = FindExecIn(SharedPrint);
+	if (UEdGraphPin* AOut = FindExecOut(EventA))
+	{
+		AOut->MakeLinkTo(ExecInPin);
+	}
+	if (UEdGraphPin* BOut = FindExecOut(EventB))
+	{
+		BOut->MakeLinkTo(ExecInPin);
+	}
+
+	const int32 NodeCountBefore = EventGraph->Nodes.Num();
+
+	// Test: remove EventA with cascade — shared node should be preserved
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TestBPPath);
+		Params->SetStringField(TEXT("name"), TEXT("EventA"));
+		Params->SetBoolField(TEXT("cascade"), true);
+		Params->SetBoolField(TEXT("compile"), false);
+
+		FCortexCommandResult Result = Handler.Execute(TEXT("remove_graph"), Params);
+		TestTrue(TEXT("remove EventA should succeed"), Result.bSuccess);
+
+		if (Result.Data.IsValid())
+		{
+			const TSharedPtr<FJsonObject>* RemovedObj = nullptr;
+			if (Result.Data->TryGetObjectField(TEXT("removed"), RemovedObj))
+			{
+				double NodeCount = 0;
+				(*RemovedObj)->TryGetNumberField(TEXT("node_count"), NodeCount);
+				TestEqual(TEXT("Should only remove 1 node (EventA only, shared node preserved)"), NodeCount, 1.0);
+			}
+		}
+	}
+
+	// Verify: only EventA removed, SharedPrint and EventB remain
+	TestEqual(TEXT("Should have 1 fewer node"), EventGraph->Nodes.Num(), NodeCountBefore - 1);
+	TestTrue(TEXT("SharedPrint should still exist"), EventGraph->Nodes.Contains(SharedPrint));
+	TestTrue(TEXT("EventB should still exist"), EventGraph->Nodes.Contains(EventB));
+
+	// Test: remove EventB with cascade=false — only event node removed
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TestBPPath);
+		Params->SetStringField(TEXT("name"), TEXT("EventB"));
+		Params->SetBoolField(TEXT("cascade"), false);
+		Params->SetBoolField(TEXT("compile"), false);
+
+		FCortexCommandResult Result = Handler.Execute(TEXT("remove_graph"), Params);
+		TestTrue(TEXT("remove EventB (no cascade) should succeed"), Result.bSuccess);
+
+		if (Result.Data.IsValid())
+		{
+			const TSharedPtr<FJsonObject>* RemovedObj = nullptr;
+			if (Result.Data->TryGetObjectField(TEXT("removed"), RemovedObj))
+			{
+				double NodeCount = 0;
+				(*RemovedObj)->TryGetNumberField(TEXT("node_count"), NodeCount);
+				TestEqual(TEXT("Should remove only 1 node (EventB)"), NodeCount, 1.0);
+
+				bool bCascadeUsed = true;
+				(*RemovedObj)->TryGetBoolField(TEXT("cascade"), bCascadeUsed);
+				TestFalse(TEXT("cascade should be false"), bCascadeUsed);
+			}
+		}
+	}
+
+	// Verify: SharedPrint still exists (orphaned now, but not removed)
+	TestTrue(TEXT("SharedPrint should still exist (orphaned)"), EventGraph->Nodes.Contains(SharedPrint));
+
+	// Cleanup
+	BP->GetOutermost()->MarkAsGarbage();
+
+	return true;
+}
