@@ -448,9 +448,12 @@ TSharedRef<ITableRow> SCortexAnalysisChat::GenerateRow(
 
 		case ECortexChatRowType::CodeBlock:
 		case ECortexChatRowType::ProcessingRow:
+		case ECortexChatRowType::TableBlock:  // TODO: SCortexTableBlock rendering not yet supported in analysis view
 		{
 			break;
 		}
+		default:
+			break;
 		}
 	}
 

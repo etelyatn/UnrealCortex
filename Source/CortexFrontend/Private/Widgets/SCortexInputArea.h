@@ -7,6 +7,7 @@
 #include "Widgets/Layout/SWrapBox.h"
 #include "Rendering/CortexFrontendColors.h"
 
+class SBorder;
 class SButton;
 class SMultiLineEditableTextBox;
 class STextBlock;
@@ -41,6 +42,8 @@ private:
 
     TSharedPtr<SMultiLineEditableTextBox> InputTextBox;
     TSharedPtr<SButton> ActionButton;
+    TSharedPtr<STextBlock> ActionIcon;
+    TSharedPtr<SBorder> ActionBorder;
     TSharedPtr<SWrapBox> ChipRow;
     TSharedPtr<SMenuAnchor> ModeDropdown;
     TSharedPtr<SMenuAnchor> ModelDropdown;

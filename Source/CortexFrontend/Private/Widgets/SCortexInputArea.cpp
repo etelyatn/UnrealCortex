@@ -59,21 +59,6 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
         .Padding(4.0f, 2.0f)
         [
             SNew(SHorizontalBox)
-            // "+" button
-            + SHorizontalBox::Slot()
-            .AutoWidth()
-            .VAlign(VAlign_Center)
-            .Padding(0.0f, 0.0f, 4.0f, 0.0f)
-            [
-                SNew(SButton)
-                .ButtonStyle(FCoreStyle::Get(), "NoBorder")
-                [
-                    SNew(STextBlock)
-                    .Text(FText::FromString(TEXT("+")))
-                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 14))
-                    .ColorAndOpacity(FSlateColor(CortexColors::MutedTextColor))
-                ]
-            ]
             // Mode selector
             + SHorizontalBox::Slot()
             .AutoWidth()
@@ -221,14 +206,15 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
             .Padding(4.0f, 0.0f, 0.0f, 0.0f)
             [
                 SAssignNew(ActionButton, SButton)
+                .ButtonStyle(FCoreStyle::Get(), "NoBorder")
                 .OnClicked(this, &SCortexInputArea::OnSendClicked)
                 [
-                    SNew(SBorder)
+                    SAssignNew(ActionBorder, SBorder)
                     .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
                     .BorderBackgroundColor(CortexColors::SendButtonColor)
                     .Padding(FMargin(8.0f, 4.0f))
                     [
-                        SNew(STextBlock)
+                        SAssignNew(ActionIcon, STextBlock)
                         .Text(FText::FromString(TEXT("\u2191")))
                         .Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
                         .ColorAndOpacity(FSlateColor(FLinearColor::White))
@@ -254,6 +240,16 @@ void SCortexInputArea::SetInputEnabled(bool bEnabled)
 void SCortexInputArea::SetStreaming(bool bStreaming)
 {
     bIsStreaming = bStreaming;
+    if (ActionIcon.IsValid())
+    {
+        ActionIcon->SetText(FText::FromString(bStreaming ? TEXT("\u25A0") : TEXT("\u2191")));
+    }
+    if (ActionBorder.IsValid())
+    {
+        ActionBorder->SetBorderBackgroundColor(bStreaming
+            ? FLinearColor(0.94f, 0.27f, 0.27f, 0.8f)  // Red tint for cancel
+            : CortexColors::SendButtonColor);
+    }
 }
 
 void SCortexInputArea::ClearInput()

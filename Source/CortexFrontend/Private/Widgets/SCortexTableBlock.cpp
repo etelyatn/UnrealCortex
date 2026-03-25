@@ -1,6 +1,7 @@
 #include "Widgets/SCortexTableBlock.h"
 
 #include "Rendering/CortexFrontendColors.h"
+#include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SBoxPanel.h"
@@ -151,7 +152,7 @@ TSharedRef<SWidget> SCortexTableBlock::BuildCellWidget(const FString& Value) con
         const float BarWidth = ClampedPercent / 100.0f * MaxBarWidth;
 
         FLinearColor BarColor;
-        if (ClampedPercent >= 80.0f)
+        if (ClampedPercent >= 75.0f)
         {
             BarColor = CortexColors::BadgeOkText;
         }
