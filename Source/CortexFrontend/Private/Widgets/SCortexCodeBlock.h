@@ -1,6 +1,6 @@
 #pragma once
 #include "CoreMinimal.h"
-#include "Styling/SlateRoundedBoxBrush.h"
+#include "Brushes/SlateRoundedBoxBrush.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
