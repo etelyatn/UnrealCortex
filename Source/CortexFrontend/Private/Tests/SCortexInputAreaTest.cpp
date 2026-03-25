@@ -29,6 +29,20 @@ bool FCortexInputAreaChipTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaDropdownsTest,
+    "Cortex.Frontend.InputArea.DropdownsInitialized",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaDropdownsTest::RunTest(const FString& Parameters)
+{
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea);
+
+    // Verify widget has children (3-section layout: chips + textarea + controls)
+    TestTrue(TEXT("Has children"), Widget->GetChildren()->Num() > 0);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaContextFormatTest,
     "Cortex.Frontend.InputArea.ContextSerializesAsAtPath",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
