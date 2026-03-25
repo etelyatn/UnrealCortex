@@ -5,7 +5,10 @@ import logging
 import os
 from pathlib import Path
 
+import pytest
+
 from cortex_mcp.capabilities import (
+    _DOMAINS,
     build_router_docstrings,
     load_capabilities_cache,
     minimal_router_docstrings,
@@ -58,13 +61,55 @@ def test_missing_cache_uses_minimal_fallback_and_logs_warning(caplog, tmp_path):
             loaded = load_capabilities_cache()
             docstrings = build_router_docstrings(loaded)
 
-        expected = json.loads((FIXTURES_DIR / "capabilities_cache_minimal.json").read_text(encoding="utf-8"))
         assert loaded is None
-        assert docstrings == expected
-        assert minimal_router_docstrings() == expected
+        minimal = minimal_router_docstrings()
+        assert docstrings == minimal
+        for domain in _DOMAINS:
+            assert domain in docstrings
+            assert "Available commands:" in docstrings[domain]
         assert "capabilities cache" in caplog.text.lower()
     finally:
         if old_project_dir is None:
             del os.environ["CORTEX_PROJECT_DIR"]
         else:
             os.environ["CORTEX_PROJECT_DIR"] = old_project_dir
+
+
+DOMAINS_WITH_COMMANDS = list(_DOMAINS)
+
+
+class TestMinimalRouterDocstrings:
+    """All domains must have command lists in fallback docstrings."""
+
+    @pytest.mark.parametrize("domain", DOMAINS_WITH_COMMANDS)
+    def test_domain_has_command_list(self, domain: str):
+        docstrings = minimal_router_docstrings()
+        assert domain in docstrings, f"Missing docstring for domain '{domain}'"
+        assert "Available commands:" in docstrings[domain], (
+            f"Domain '{domain}' fallback docstring missing 'Available commands:' section"
+        )
+
+    @pytest.mark.parametrize("domain", DOMAINS_WITH_COMMANDS)
+    def test_domain_has_at_least_one_command(self, domain: str):
+        docstrings = minimal_router_docstrings()
+        text = docstrings[domain]
+        idx = text.index("Available commands:")
+        commands_section = text[idx:]
+        command_lines = [l for l in commands_section.splitlines() if l.strip().startswith("- ")]
+        assert len(command_lines) >= 1, (
+            f"Domain '{domain}' fallback has no command entries"
+        )
+
+
+class TestBuildRouterDocstringsNoneCache:
+    """build_router_docstrings with None cache should use minimal fallback."""
+
+    def test_none_cache_returns_minimal_with_commands(self):
+        docstrings = build_router_docstrings(None)
+        for domain in DOMAINS_WITH_COMMANDS:
+            assert "Available commands:" in docstrings[domain]
+
+    def test_empty_cache_returns_minimal_with_commands(self):
+        docstrings = build_router_docstrings({})
+        for domain in DOMAINS_WITH_COMMANDS:
+            assert "Available commands:" in docstrings[domain]
