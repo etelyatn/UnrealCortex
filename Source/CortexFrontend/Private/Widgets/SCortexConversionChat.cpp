@@ -686,6 +686,9 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 		}
 
 		case ECortexChatRowType::ProcessingRow:
+		case ECortexChatRowType::TableBlock:  // TODO: SCortexTableBlock rendering not yet supported in conversion view
+			break;
+		default:
 			break;
 		}
 	}
