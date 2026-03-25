@@ -8,8 +8,9 @@ from pathlib import Path
 import pytest
 
 from cortex_mcp.capabilities import (
-    _DOMAINS,
+    CORE_DOMAINS,
     build_router_docstrings,
+    get_registered_domains,
     load_capabilities_cache,
     minimal_router_docstrings,
 )
@@ -64,7 +65,7 @@ def test_missing_cache_uses_minimal_fallback_and_logs_warning(caplog, tmp_path):
         assert loaded is None
         minimal = minimal_router_docstrings()
         assert docstrings == minimal
-        for domain in _DOMAINS:
+        for domain in CORE_DOMAINS:
             assert domain in docstrings
             assert "Available commands:" in docstrings[domain]
         assert "capabilities cache" in caplog.text.lower()
@@ -75,7 +76,36 @@ def test_missing_cache_uses_minimal_fallback_and_logs_warning(caplog, tmp_path):
             os.environ["CORTEX_PROJECT_DIR"] = old_project_dir
 
 
-DOMAINS_WITH_COMMANDS = list(_DOMAINS)
+# --- get_registered_domains tests ---
+
+
+def test_get_registered_domains_returns_core_when_no_cache():
+    """No capabilities cache should return only core domains."""
+    assert get_registered_domains(None) == CORE_DOMAINS
+
+
+def test_get_registered_domains_returns_core_when_empty_domains():
+    """Cache with empty domains dict should return only core domains."""
+    assert get_registered_domains({"domains": {}}) == CORE_DOMAINS
+
+
+def test_get_registered_domains_includes_gen_when_in_cache():
+    """Cache with gen domain should include gen in registered domains."""
+    capabilities = {"domains": {"gen": {"commands": []}}}
+    registered = get_registered_domains(capabilities)
+    assert registered == CORE_DOMAINS + ("gen",)
+
+
+def test_get_registered_domains_returns_core_when_malformed():
+    """Malformed cache (no domains key) should return only core domains."""
+    assert get_registered_domains({"unexpected_key": True}) == CORE_DOMAINS
+    assert get_registered_domains({"domains": "not_a_dict"}) == CORE_DOMAINS
+
+
+# --- Minimal router docstrings tests ---
+
+
+DOMAINS_WITH_COMMANDS = list(CORE_DOMAINS)
 
 
 class TestMinimalRouterDocstrings:
@@ -113,3 +143,20 @@ class TestBuildRouterDocstringsNoneCache:
         docstrings = build_router_docstrings({})
         for domain in DOMAINS_WITH_COMMANDS:
             assert "Available commands:" in docstrings[domain]
+
+
+# --- gen-enabled registration path tests ---
+
+
+def test_gen_docstrings_included_when_cache_has_gen():
+    """When capabilities cache includes gen, build_router_docstrings should include gen."""
+    capabilities = {"domains": {"gen": {"commands": [{"name": "start_mesh", "params": []}]}}}
+    docstrings = build_router_docstrings(capabilities)
+    assert "gen" in docstrings
+    assert "gen_cmd" in docstrings["gen"]
+
+
+def test_gen_docstrings_excluded_when_cache_missing():
+    """When no capabilities cache, gen should not appear in docstrings."""
+    docstrings = build_router_docstrings(None)
+    assert "gen" not in docstrings

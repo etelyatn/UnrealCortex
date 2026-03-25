@@ -50,4 +50,5 @@ private:
 
 	float CachedSidebarCoefficient = 0.20f;
 	bool bSidebarCollapsed = false;
+	bool bGenTabRegistered = false;
 };

@@ -4,14 +4,13 @@ import logging
 import os
 import sys
 from mcp.server.fastmcp import FastMCP
-from .capabilities import build_router_docstrings, load_capabilities_cache
+from .capabilities import build_router_docstrings, get_registered_domains, load_capabilities_cache
 from .response import format_response
 from .schema_generator import _decode_data
 from .tcp_client import UEConnection
 from .tools.composites.blueprint import register_blueprint_compose_tools
 from .tools.composites.level import register_level_compose_tools
 from .tools.composites.material import register_material_compose_tools
-from .tools.composites.gen import register_gen_compose_tools
 from .tools.composites.scenario import register_scenario_compose_tools
 from .tools.composites.widget import register_widget_compose_tools
 from .tools.routers import register_router_tools
@@ -41,15 +40,19 @@ _TTL_CATALOG = 600  # 10 min
 
 
 def _register_explicit_tools(mcp_server, connection) -> None:
-    """Register the consolidated 19-tool MCP surface."""
-    docstrings = build_router_docstrings(load_capabilities_cache())
-    register_router_tools(mcp_server, connection, docstrings)
+    """Register the consolidated MCP tool surface."""
+    capabilities = load_capabilities_cache()
+    registered = get_registered_domains(capabilities)
+    docstrings = build_router_docstrings(capabilities)
+    register_router_tools(mcp_server, connection, docstrings, registered)
     register_blueprint_compose_tools(mcp_server, connection)
     register_material_compose_tools(mcp_server, connection)
     register_widget_compose_tools(mcp_server, connection)
     register_level_compose_tools(mcp_server, connection)
     register_scenario_compose_tools(mcp_server, connection)
-    register_gen_compose_tools(mcp_server, connection)
+    if "gen" in registered:
+        from .tools.composites.gen import register_gen_compose_tools
+        register_gen_compose_tools(mcp_server, connection)
     register_editor_standalone_tools(mcp_server, connection)
     register_schema_standalone_tools(mcp_server, connection)
     register_qa_standalone_tools(mcp_server, connection)
