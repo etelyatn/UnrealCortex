@@ -135,6 +135,7 @@ _FALLBACK_COMMANDS: dict[str, str] = {
         "\n- fixup_redirectors(path: string)"
         "\n- compare_blueprints(asset_path: string, cpp_class: string)"
         "\n- delete_orphaned_nodes(asset_path: string, graph_name: string = optional)"
+        "\n- remove_graph(asset_path: string, name: string, cascade: boolean = optional, dry_run: boolean = optional, compile: boolean = optional)"
         "\n- search(query: string, path: string = optional)"
         "\n- reparent(asset_path: string, new_parent: string)"
     ),
