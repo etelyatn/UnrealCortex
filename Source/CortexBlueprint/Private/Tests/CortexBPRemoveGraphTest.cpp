@@ -407,7 +407,7 @@ bool FCortexBPRemoveGraphCascadeTest::RunTest(const FString& Parameters)
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"), TestBPPath);
 		Params->SetStringField(TEXT("name"), TEXT("TestCascadeEvent"));
-		Params->SetBoolField(TEXT("cascade"), true);
+		Params->SetBoolField(TEXT("cascade_exec_chain"), true);
 		Params->SetBoolField(TEXT("compile"), false);
 
 		FCortexCommandResult Result = Handler.Execute(TEXT("remove_graph"), Params);
@@ -428,7 +428,7 @@ bool FCortexBPRemoveGraphCascadeTest::RunTest(const FString& Parameters)
 				TestEqual(TEXT("Should have removed 2 nodes (event + print)"), NodeCount, 2.0);
 
 				bool bCascadeUsed = false;
-				(*RemovedObj)->TryGetBoolField(TEXT("cascade"), bCascadeUsed);
+				(*RemovedObj)->TryGetBoolField(TEXT("cascade_exec_chain"), bCascadeUsed);
 				TestTrue(TEXT("cascade should be true"), bCascadeUsed);
 			}
 		}
@@ -542,7 +542,7 @@ bool FCortexBPRemoveGraphSharedNodeTest::RunTest(const FString& Parameters)
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"), TestBPPath);
 		Params->SetStringField(TEXT("name"), TEXT("EventA"));
-		Params->SetBoolField(TEXT("cascade"), true);
+		Params->SetBoolField(TEXT("cascade_exec_chain"), true);
 		Params->SetBoolField(TEXT("compile"), false);
 
 		FCortexCommandResult Result = Handler.Execute(TEXT("remove_graph"), Params);
@@ -570,7 +570,7 @@ bool FCortexBPRemoveGraphSharedNodeTest::RunTest(const FString& Parameters)
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"), TestBPPath);
 		Params->SetStringField(TEXT("name"), TEXT("EventB"));
-		Params->SetBoolField(TEXT("cascade"), false);
+		Params->SetBoolField(TEXT("cascade_exec_chain"), false);
 		Params->SetBoolField(TEXT("compile"), false);
 
 		FCortexCommandResult Result = Handler.Execute(TEXT("remove_graph"), Params);
@@ -586,7 +586,7 @@ bool FCortexBPRemoveGraphSharedNodeTest::RunTest(const FString& Parameters)
 				TestEqual(TEXT("Should remove only 1 node (EventB)"), NodeCount, 1.0);
 
 				bool bCascadeUsed = true;
-				(*RemovedObj)->TryGetBoolField(TEXT("cascade"), bCascadeUsed);
+				(*RemovedObj)->TryGetBoolField(TEXT("cascade_exec_chain"), bCascadeUsed);
 				TestFalse(TEXT("cascade should be false"), bCascadeUsed);
 			}
 		}
@@ -689,7 +689,7 @@ bool FCortexBPRemoveGraphRerouteTest::RunTest(const FString& Parameters)
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"), TestBPPath);
 		Params->SetStringField(TEXT("name"), TEXT("RerouteTestEvent"));
-		Params->SetBoolField(TEXT("cascade"), true);
+		Params->SetBoolField(TEXT("cascade_exec_chain"), true);
 		Params->SetBoolField(TEXT("compile"), false);
 
 		FCortexCommandResult Result = Handler.Execute(TEXT("remove_graph"), Params);

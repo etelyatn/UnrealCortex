@@ -200,7 +200,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add(FCortexCommandInfo{TEXT("remove_graph"), TEXT("Remove a graph (function, macro, event graph) or custom event from a Blueprint")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("name"), TEXT("string"), TEXT("Name of graph or custom event to remove"))
-		.Optional(TEXT("cascade"), TEXT("boolean"), TEXT("Remove connected execution chain for custom events (default: true)"))
+		.Optional(TEXT("cascade_exec_chain"), TEXT("boolean"), TEXT("Remove connected execution chain for custom events (default: false)"))
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after removal (default: true)"))
 		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview what would be removed without modifying anything")));
 	Commands.Add(FCortexCommandInfo{TEXT("get_class_defaults"), TEXT("Read default property values from a Blueprint CDO")}
