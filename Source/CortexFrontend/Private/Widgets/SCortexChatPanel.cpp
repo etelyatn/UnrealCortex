@@ -8,6 +8,7 @@
 #include "Widgets/SCortexCodeBlock.h"
 #include "Widgets/SCortexInputArea.h"
 #include "Widgets/SCortexProcessingIndicator.h"
+#include "Widgets/SCortexTableBlock.h"
 #include "Widgets/SCortexToolCallBlock.h"
 #include "Widgets/SCortexChatToolbar.h"
 #include "Widgets/Layout/SSeparator.h"
@@ -381,6 +382,15 @@ void SCortexChatPanel::RebuildStableRows()
 
         case ECortexChatEntryType::ToolCall:
             break;  // Consumed via ToolCallsByTurn
+
+        case ECortexChatEntryType::Table:
+        {
+            TSharedPtr<FCortexChatDisplayRow> TableRow = MakeShared<FCortexChatDisplayRow>();
+            TableRow->RowType = ECortexChatRowType::TableBlock;
+            TableRow->PrimaryEntry = E;
+            StableRows.Add(TableRow);
+            break;
+        }
         }
     }
 }
@@ -498,6 +508,15 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatDispla
 
         case ECortexChatRowType::ProcessingRow:
             break;  // Handled by SCortexProcessingIndicator widget
+
+        case ECortexChatRowType::TableBlock:
+            Content = SNew(SCortexTableBlock)
+                .Headers(Row->PrimaryEntry->TableHeaders)
+                .Rows(Row->PrimaryEntry->TableRows);
+            break;
+
+        default:
+            break;
         }
     }
 
