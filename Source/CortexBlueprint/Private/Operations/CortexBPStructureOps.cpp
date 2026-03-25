@@ -8,6 +8,7 @@
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
 #include "K2Node_CustomEvent.h"
+#include "K2Node_Knot.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Dom/JsonObject.h"
@@ -385,8 +386,16 @@ void FCortexBPStructureOps::GatherCascadeExecNodes(
 
 		for (UEdGraphPin* Pin : Current->Pins)
 		{
-			if (!Pin || Pin->Direction != EGPD_Output ||
-				Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+			if (!Pin || Pin->Direction != EGPD_Output)
+			{
+				continue;
+			}
+
+			// Only follow exec pins, unless the current node is a reroute (Knot),
+			// which may have wildcard pins before type propagation
+			const bool bIsExecPin = (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+			const bool bIsKnot = (Cast<UK2Node_Knot>(Current) != nullptr);
+			if (!bIsExecPin && !bIsKnot)
 			{
 				continue;
 			}
@@ -404,12 +413,19 @@ void FCortexBPStructureOps::GatherCascadeExecNodes(
 					continue;
 				}
 
-				// Check if this node has incoming exec from outside the removal set
+				// Check if this node has incoming exec (or wildcard for knots) from outside the removal set
 				bool bHasExternalExecInput = false;
 				for (UEdGraphPin* NodePin : LinkedNode->Pins)
 				{
-					if (!NodePin || NodePin->Direction != EGPD_Input ||
-						NodePin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+					if (!NodePin || NodePin->Direction != EGPD_Input)
+					{
+						continue;
+					}
+
+					// For reroute nodes, any input pin may propagate exec even if still wildcard
+					const bool bNodePinIsExec = (NodePin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+					const bool bLinkedIsKnot = (Cast<UK2Node_Knot>(LinkedNode) != nullptr);
+					if (!bNodePinIsExec && !bLinkedIsKnot)
 					{
 						continue;
 					}
