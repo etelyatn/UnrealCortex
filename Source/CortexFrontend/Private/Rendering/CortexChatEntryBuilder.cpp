@@ -60,6 +60,12 @@ TArray<TSharedPtr<FCortexChatEntry>> FCortexChatEntryBuilder::BuildEntries(
                 Entry->Text = Block.RawText;
             }
         }
+        else if (Block.Type == ECortexMarkdownBlockType::Table)
+        {
+            Entry->Type = ECortexChatEntryType::Table;
+            Entry->TableHeaders = Block.TableHeaders;
+            Entry->TableRows = Block.TableRows;
+        }
         else
         {
             Entry->Type = ECortexChatEntryType::AssistantMessage;
