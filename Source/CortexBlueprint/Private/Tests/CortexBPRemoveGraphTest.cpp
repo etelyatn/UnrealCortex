@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "Misc/PackageName.h"
 #include "CortexBPCommandHandler.h"
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
@@ -146,7 +147,8 @@ bool FCortexBPRemoveGraphTest::RunTest(const FString& Parameters)
 			TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
 			AddParams->SetStringField(TEXT("asset_path"), TestBPPath);
 			AddParams->SetStringField(TEXT("name"), TEXT("DryRunFunc"));
-			Handler.Execute(TEXT("add_function"), AddParams);
+			FCortexCommandResult AddR = Handler.Execute(TEXT("add_function"), AddParams);
+			TestTrue(TEXT("Setup: add DryRunFunc"), AddR.bSuccess);
 		}
 
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -201,10 +203,16 @@ bool FCortexBPRemoveGraphTest::RunTest(const FString& Parameters)
 	}
 
 	// Cleanup
-	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
-	if (CreatedBP)
 	{
-		CreatedBP->GetOutermost()->MarkAsGarbage();
+		FString PkgName = FPackageName::ObjectPathToPackageName(TestBPPath);
+		if (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName))
+		{
+			UBlueprint* CreatedBP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
+			if (CreatedBP)
+			{
+				CreatedBP->GetOutermost()->MarkAsGarbage();
+			}
+		}
 	}
 
 	return true;
@@ -232,7 +240,14 @@ bool FCortexBPRemoveGraphCascadeTest::RunTest(const FString& Parameters)
 	}
 
 	// Setup: programmatically add a custom event with downstream nodes
-	UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
+	UBlueprint* BP = nullptr;
+	{
+		FString PkgName = FPackageName::ObjectPathToPackageName(TestBPPath);
+		if (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName))
+		{
+			BP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
+		}
+	}
 	if (!TestNotNull(TEXT("BP should load"), BP))
 	{
 		return true;

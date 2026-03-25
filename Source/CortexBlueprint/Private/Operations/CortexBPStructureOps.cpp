@@ -466,12 +466,16 @@ FCortexCommandResult FCortexBPStructureOps::RemoveGraph(const TSharedPtr<FJsonOb
 	const bool bCascade = Params->HasField(TEXT("cascade")) ? Params->GetBoolField(TEXT("cascade")) : true;
 	const bool bDryRun = Params->HasField(TEXT("dry_run")) ? Params->GetBoolField(TEXT("dry_run")) : false;
 
+	// Normalize ConstructionScript friendly name to internal name
+	const FString ResolvedName = (Name == TEXT("ConstructionScript"))
+		? TEXT("UserConstructionScript") : Name;
+
 	// --- Protected graph check ---
 	// Primary EventGraph
 	if (BP->UbergraphPages.Num() > 0 && BP->UbergraphPages[0])
 	{
 		const FString EventGraphName = BP->UbergraphPages[0]->GetName();
-		if (Name == EventGraphName)
+		if (ResolvedName == EventGraphName)
 		{
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidOperation,
@@ -479,12 +483,12 @@ FCortexCommandResult FCortexBPStructureOps::RemoveGraph(const TSharedPtr<FJsonOb
 		}
 	}
 	// ConstructionScript
-	if (Name == TEXT("UserConstructionScript") || Name == TEXT("ConstructionScript"))
+	if (ResolvedName == TEXT("UserConstructionScript"))
 	{
 		// Verify it actually exists before rejecting
 		for (UEdGraph* Graph : BP->FunctionGraphs)
 		{
-			if (Graph && (Graph->GetName() == TEXT("UserConstructionScript")))
+			if (Graph && (Graph->GetName() == ResolvedName))
 			{
 				return FCortexCommandRouter::Error(
 					CortexErrorCodes::InvalidOperation,
@@ -500,7 +504,7 @@ FCortexCommandResult FCortexBPStructureOps::RemoveGraph(const TSharedPtr<FJsonOb
 	// 1. FunctionGraphs
 	for (UEdGraph* Graph : BP->FunctionGraphs)
 	{
-		if (Graph && Graph->GetName() == Name)
+		if (Graph && Graph->GetName() == ResolvedName)
 		{
 			FoundGraph = Graph;
 			FoundType = TEXT("Function");
@@ -513,7 +517,7 @@ FCortexCommandResult FCortexBPStructureOps::RemoveGraph(const TSharedPtr<FJsonOb
 	{
 		for (UEdGraph* Graph : BP->MacroGraphs)
 		{
-			if (Graph && Graph->GetName() == Name)
+			if (Graph && Graph->GetName() == ResolvedName)
 			{
 				FoundGraph = Graph;
 				FoundType = TEXT("Macro");
@@ -527,7 +531,7 @@ FCortexCommandResult FCortexBPStructureOps::RemoveGraph(const TSharedPtr<FJsonOb
 	{
 		for (int32 i = 1; i < BP->UbergraphPages.Num(); ++i)
 		{
-			if (BP->UbergraphPages[i] && BP->UbergraphPages[i]->GetName() == Name)
+			if (BP->UbergraphPages[i] && BP->UbergraphPages[i]->GetName() == ResolvedName)
 			{
 				FoundGraph = BP->UbergraphPages[i];
 				FoundType = TEXT("EventGraph");
@@ -570,6 +574,7 @@ FCortexCommandResult FCortexBPStructureOps::RemoveGraph(const TSharedPtr<FJsonOb
 		else
 		{
 			ResponseData->SetBoolField(TEXT("compiled"), false);
+			ResponseData->SetBoolField(TEXT("dry_run"), true);
 		}
 		return FCortexCommandRouter::Success(ResponseData);
 	};
@@ -611,7 +616,7 @@ FCortexCommandResult FCortexBPStructureOps::RemoveGraph(const TSharedPtr<FJsonOb
 		for (UEdGraphNode* Node : PrimaryEventGraph->Nodes)
 		{
 			UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node);
-			if (CustomEvent && CustomEvent->CustomFunctionName.ToString() == Name)
+			if (CustomEvent && CustomEvent->CustomFunctionName.ToString() == ResolvedName)
 			{
 				FoundEvent = CustomEvent;
 				break;
