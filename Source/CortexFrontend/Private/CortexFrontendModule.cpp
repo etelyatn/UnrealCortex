@@ -252,6 +252,8 @@ void FCortexFrontendModule::OnConversionRequested(const FCortexConversionPayload
         RegisterSession(Context->Session);
     }
 
+    // CreateRaw is safe here: HandlePreExit calls ReleaseSessions() which unbinds
+    // this delegate before the module is torn down, preventing dangling pointer access.
     Window->SetOnWindowClosed(FOnWindowClosed::CreateRaw(
         this, &FCortexFrontendModule::OnConversionWindowClosed, Context));
 
@@ -298,6 +300,8 @@ void FCortexFrontendModule::OnAnalysisRequested(const FCortexAnalysisPayload& Pa
         RegisterSession(Context->Session);
     }
 
+    // CreateRaw is safe here: HandlePreExit calls ReleaseSessions() which unbinds
+    // this delegate before the module is torn down, preventing dangling pointer access.
     Window->SetOnWindowClosed(FOnWindowClosed::CreateRaw(
         this, &FCortexFrontendModule::OnAnalysisWindowClosed, Context));
 

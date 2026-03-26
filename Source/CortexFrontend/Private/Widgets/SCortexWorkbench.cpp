@@ -52,8 +52,11 @@ SCortexWorkbench::~SCortexWorkbench()
 
 	if (TabManager.IsValid())
 	{
-		TabManager->CloseAllAreas();
+		// Unregister spawner BEFORE closing — CloseAllAreas can fire the spawner callback
+		// which holds a TSharedRef<SCortexWorkbench> via CreateSP. Unregistering first
+		// prevents the callback from accessing a widget that's being destructed.
 		TabManager->UnregisterTabSpawner(TEXT("CortexChat"));
+		TabManager->CloseAllAreas();
 	}
 }
 

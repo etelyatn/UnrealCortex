@@ -12,6 +12,7 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SMenuAnchor.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
@@ -101,8 +102,11 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                 SAssignNew(ModeDropdown, SMenuAnchor)
                 .Placement(MenuPlacement_AboveAnchor)
                 .UseApplicationMenuStack(true)
-                .OnGetMenuContent_Lambda([this]() -> TSharedRef<SWidget>
+                .OnGetMenuContent_Lambda([weakThis = TWeakPtr<SCortexInputArea>(SharedThis(this))]() -> TSharedRef<SWidget>
                 {
+                    TSharedPtr<SCortexInputArea> Self = weakThis.Pin();
+                    if (!Self.IsValid()) { return SNullWidget::NullWidget; }
+
                     TSharedRef<SVerticalBox> Menu = SNew(SVerticalBox);
                     for (ECortexAccessMode Mode : { ECortexAccessMode::ReadOnly, ECortexAccessMode::Guided, ECortexAccessMode::FullAccess })
                     {
@@ -119,14 +123,14 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                             SNew(SButton)
                             .ButtonStyle(&GetHoverButtonStyle())
                             .ContentPadding(FMargin(12.0f, 6.0f))
-                            .OnClicked_Lambda([this, Mode]()
+                            .OnClicked_Lambda([Self, Mode]()
                             {
                                 FCortexFrontendSettings::Get().SetAccessMode(Mode);
-                                if (ModeLabel.IsValid())
+                                if (Self->ModeLabel.IsValid())
                                 {
-                                    ModeLabel->SetText(FText::FromString(FCortexFrontendSettings::Get().GetAccessModeString()));
+                                    Self->ModeLabel->SetText(FText::FromString(FCortexFrontendSettings::Get().GetAccessModeString()));
                                 }
-                                ModeDropdown->SetIsOpen(false);
+                                Self->ModeDropdown->SetIsOpen(false);
                                 return FReply::Handled();
                             })
                             [
@@ -138,7 +142,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                         ];
                     }
                     return SNew(SBorder)
-                        .BorderImage(DropdownBrush.Get())
+                        .BorderImage(Self->DropdownBrush.Get())
                         .Padding(FMargin(0.0f, 4.0f))
                         [ Menu ];
                 })
@@ -189,8 +193,11 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                 SAssignNew(ModelDropdown, SMenuAnchor)
                 .Placement(MenuPlacement_AboveAnchor)
                 .UseApplicationMenuStack(true)
-                .OnGetMenuContent_Lambda([this]() -> TSharedRef<SWidget>
+                .OnGetMenuContent_Lambda([weakThis = TWeakPtr<SCortexInputArea>(SharedThis(this))]() -> TSharedRef<SWidget>
                 {
+                    TSharedPtr<SCortexInputArea> Self = weakThis.Pin();
+                    if (!Self.IsValid()) { return SNullWidget::NullWidget; }
+
                     TSharedRef<SVerticalBox> Menu = SNew(SVerticalBox);
 
                     // === Model section ===
@@ -214,15 +221,15 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                             SNew(SButton)
                             .ButtonStyle(&GetHoverButtonStyle())
                             .ContentPadding(FMargin(12.0f, 6.0f))
-                            .OnClicked_Lambda([this, ModelId]()
+                            .OnClicked_Lambda([Self, ModelId]()
                             {
                                 FCortexFrontendSettings::Get().SetSelectedModel(ModelId);
-                                if (ModelLabel.IsValid())
+                                if (Self->ModelLabel.IsValid())
                                 {
-                                    ModelLabel->SetText(FText::FromString(
+                                    Self->ModelLabel->SetText(FText::FromString(
                                         FCortexFrontendSettings::Get().GetSelectedModel()));
                                 }
-                                ModelDropdown->SetIsOpen(false);
+                                Self->ModelDropdown->SetIsOpen(false);
                                 return FReply::Handled();
                             })
                             [
@@ -298,16 +305,16 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                             SNew(SButton)
                             .ButtonStyle(&GetHoverButtonStyle())
                             .ContentPadding(FMargin(12.0f, 6.0f))
-                            .OnClicked_Lambda([this, Level, LevelStr]()
+                            .OnClicked_Lambda([Self, Level, LevelStr]()
                             {
                                 FCortexFrontendSettings::Get().SetEffortLevel(Level);
-                                if (EffortLabel.IsValid())
+                                if (Self->EffortLabel.IsValid())
                                 {
                                     const bool bShowEffort = (Level != ECortexEffortLevel::Default);
-                                    EffortLabel->SetText(FText::FromString(bShowEffort ? LevelStr : TEXT("")));
-                                    EffortLabel->SetVisibility(bShowEffort ? EVisibility::Visible : EVisibility::Collapsed);
+                                    Self->EffortLabel->SetText(FText::FromString(bShowEffort ? LevelStr : TEXT("")));
+                                    Self->EffortLabel->SetVisibility(bShowEffort ? EVisibility::Visible : EVisibility::Collapsed);
                                 }
-                                ModelDropdown->SetIsOpen(false);
+                                Self->ModelDropdown->SetIsOpen(false);
                                 return FReply::Handled();
                             })
                             [
@@ -336,7 +343,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                     }
 
                     return SNew(SBorder)
-                        .BorderImage(DropdownBrush.Get())
+                        .BorderImage(Self->DropdownBrush.Get())
                         .Padding(FMargin(0.0f, 4.0f))
                         [ Menu ];
                 })
@@ -402,10 +409,28 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                 SAssignNew(SettingsPopup, SMenuAnchor)
                 .Placement(MenuPlacement_AboveAnchor)
                 .UseApplicationMenuStack(true)
-                .OnGetMenuContent_Lambda([this]() -> TSharedRef<SWidget>
+                .OnGetMenuContent_Lambda([weakThis = TWeakPtr<SCortexInputArea>(SharedThis(this))]() -> TSharedRef<SWidget>
                 {
+                    TSharedPtr<SCortexInputArea> Self = weakThis.Pin();
+                    if (!Self.IsValid()) { return SNullWidget::NullWidget; }
+
+                    // Pre-build radio indicator widgets so they can be captured by value in
+                    // OnClicked lambdas below. Avoids stale member handles between popup opens.
+                    const bool bIsDirect = FCortexFrontendSettings::Get().GetWorkflowMode() == ECortexWorkflowMode::Direct;
+                    TSharedPtr<STextBlock> LocalDirectRadio =
+                        SNew(STextBlock)
+                        .Text(FText::FromString(bIsDirect ? TEXT("\u25CF") : TEXT("\u25CB")))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                        .ColorAndOpacity(FSlateColor(CortexColors::ModeButtonText));
+
+                    TSharedPtr<STextBlock> LocalThoroughRadio =
+                        SNew(STextBlock)
+                        .Text(FText::FromString(bIsDirect ? TEXT("\u25CB") : TEXT("\u25CF")))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                        .ColorAndOpacity(FSlateColor(CortexColors::ModeButtonText));
+
                     return SNew(SBorder)
-                        .BorderImage(DropdownBrush.Get())
+                        .BorderImage(Self->DropdownBrush.Get())
                         .Padding(FMargin(12.0f, 8.0f))
                         [
                             SNew(SVerticalBox)
@@ -430,12 +455,12 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                     SNew(SButton)
                                     .ButtonStyle(&GetHoverButtonStyle())
                                     .ContentPadding(FMargin(10.0f, 4.0f))
-                                    .OnClicked_Lambda([this]()
+                                    .OnClicked_Lambda([LocalDirectRadio, LocalThoroughRadio]()
                                     {
                                         FCortexFrontendSettings::Get().SetWorkflowMode(ECortexWorkflowMode::Direct);
                                         // Update radio indicators without closing popup (user may also want to edit directive)
-                                        if (DirectRadioIndicator.IsValid()) DirectRadioIndicator->SetText(FText::FromString(TEXT("\u25CF")));
-                                        if (ThoroughRadioIndicator.IsValid()) ThoroughRadioIndicator->SetText(FText::FromString(TEXT("\u25CB")));
+                                        if (LocalDirectRadio.IsValid()) LocalDirectRadio->SetText(FText::FromString(TEXT("\u25CF")));
+                                        if (LocalThoroughRadio.IsValid()) LocalThoroughRadio->SetText(FText::FromString(TEXT("\u25CB")));
                                         return FReply::Handled();
                                     })
                                     [
@@ -445,12 +470,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                         .VAlign(VAlign_Center)
                                         .Padding(0.0f, 0.0f, 4.0f, 0.0f)
                                         [
-                                            SAssignNew(DirectRadioIndicator, STextBlock)
-                                            .Text(FText::FromString(
-                                                FCortexFrontendSettings::Get().GetWorkflowMode() == ECortexWorkflowMode::Direct
-                                                    ? TEXT("\u25CF") : TEXT("\u25CB")))
-                                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
-                                            .ColorAndOpacity(FSlateColor(CortexColors::ModeButtonText))
+                                            LocalDirectRadio.ToSharedRef()
                                         ]
                                         + SHorizontalBox::Slot()
                                         .AutoWidth()
@@ -470,11 +490,11 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                     SNew(SButton)
                                     .ButtonStyle(&GetHoverButtonStyle())
                                     .ContentPadding(FMargin(10.0f, 4.0f))
-                                    .OnClicked_Lambda([this]()
+                                    .OnClicked_Lambda([LocalDirectRadio, LocalThoroughRadio]()
                                     {
                                         FCortexFrontendSettings::Get().SetWorkflowMode(ECortexWorkflowMode::Thorough);
-                                        if (DirectRadioIndicator.IsValid()) DirectRadioIndicator->SetText(FText::FromString(TEXT("\u25CB")));
-                                        if (ThoroughRadioIndicator.IsValid()) ThoroughRadioIndicator->SetText(FText::FromString(TEXT("\u25CF")));
+                                        if (LocalDirectRadio.IsValid()) LocalDirectRadio->SetText(FText::FromString(TEXT("\u25CB")));
+                                        if (LocalThoroughRadio.IsValid()) LocalThoroughRadio->SetText(FText::FromString(TEXT("\u25CF")));
                                         return FReply::Handled();
                                     })
                                     [
@@ -484,12 +504,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                         .VAlign(VAlign_Center)
                                         .Padding(0.0f, 0.0f, 4.0f, 0.0f)
                                         [
-                                            SAssignNew(ThoroughRadioIndicator, STextBlock)
-                                            .Text(FText::FromString(
-                                                FCortexFrontendSettings::Get().GetWorkflowMode() == ECortexWorkflowMode::Thorough
-                                                    ? TEXT("\u25CF") : TEXT("\u25CB")))
-                                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
-                                            .ColorAndOpacity(FSlateColor(CortexColors::ModeButtonText))
+                                            LocalThoroughRadio.ToSharedRef()
                                         ]
                                         + SHorizontalBox::Slot()
                                         .AutoWidth()
@@ -531,7 +546,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                 SNew(SBox)
                                 .MinDesiredWidth(250.0f)
                                 [
-                                    SAssignNew(DirectiveTextBox, SEditableTextBox)
+                                    SNew(SEditableTextBox)
                                     .Text(FText::FromString(FCortexFrontendSettings::Get().GetCustomDirective()))
                                     .HintText(FText::FromString(TEXT("Extra instructions for the AI...")))
                                     .OnTextCommitted_Lambda([](const FText& Text, ETextCommit::Type)
