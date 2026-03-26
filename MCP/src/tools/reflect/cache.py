@@ -5,6 +5,7 @@ import logging
 import os
 import pathlib
 import time
+from cortex_mcp.project import resolve_saved_dir
 from cortex_mcp.tcp_client import UEConnection
 from cortex_mcp.response import format_response
 
@@ -16,20 +17,12 @@ _CACHE_DIR_NAME = "Cortex"
 def _get_cache_dir() -> pathlib.Path:
     """Get the cache directory path (Saved/Cortex/).
 
-    Uses CORTEX_PROJECT_DIR env var if set, otherwise walks up to find .uproject.
+    Delegates to :func:`cortex_mcp.project.resolve_saved_dir` for consistent
+    project directory resolution across all MCP components.
     """
-    project_dir = os.environ.get("CORTEX_PROJECT_DIR")
-    if project_dir:
-        return pathlib.Path(project_dir) / "Saved" / _CACHE_DIR_NAME
-
-    current = pathlib.Path(__file__).resolve().parent
-    for _ in range(20):
-        if list(current.glob("*.uproject")):
-            return current / "Saved" / _CACHE_DIR_NAME
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
+    saved = resolve_saved_dir()
+    if saved is not None:
+        return saved / _CACHE_DIR_NAME
 
     # Fallback: 6 levels up from MCP/tools/reflect/cache.py -> project root
     return (

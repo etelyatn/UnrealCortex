@@ -10,6 +10,7 @@ import time
 
 import psutil
 
+from cortex_mcp.project import resolve_project_dir
 from cortex_mcp.response import format_response
 from cortex_mcp.tcp_client import UEConnection
 
@@ -48,11 +49,11 @@ def do_restart_editor(
     """
     start_time = time.monotonic()
 
-    project_dir = os.environ.get("CORTEX_PROJECT_DIR", "")
-    if not project_dir:
-        return {"error": "CORTEX_PROJECT_DIR not set"}
+    resolved_dir = resolve_project_dir()
+    if resolved_dir is None:
+        return {"error": "Cannot determine project directory. Set CORTEX_PROJECT_DIR or CLAUDE_PROJECT_DIR."}
 
-    saved_dir = pathlib.Path(project_dir) / "Saved"
+    saved_dir = resolved_dir / "Saved"
     lock_file = saved_dir / "CortexRestarting.lock"
 
     current_pid = connection._pid

@@ -14,6 +14,7 @@ import time
 import uuid
 
 from .cache import ResponseCache
+from .project import resolve_project_dir, resolve_saved_dir
 
 if platform.system() == "Windows":
     from ctypes import wintypes
@@ -125,23 +126,18 @@ def _parse_port_file(
         return None
 
 
-@functools.lru_cache(maxsize=1)
 def _find_project_root() -> pathlib.Path | None:
-    """Walk up from this file to find the directory containing *.uproject."""
-    current = pathlib.Path(__file__).resolve().parent
-    for _ in range(20):
-        if list(current.glob("*.uproject")):
-            return current
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
-    return None
+    """Walk up from this package to find the directory containing *.uproject.
+
+    Delegates to :func:`project.resolve_project_dir` for the full resolution
+    chain (CORTEX_PROJECT_DIR -> CLAUDE_PROJECT_DIR -> .uproject walk-up).
+    """
+    return resolve_project_dir()
 
 
 def _get_expected_project() -> str:
     """Get expected project name from the .uproject filename."""
-    root = _find_project_root()
+    root = resolve_project_dir()
     if root is None:
         return ""
     uprojects = list(root.glob("*.uproject"))
@@ -153,30 +149,10 @@ def _get_expected_project() -> str:
 def _find_saved_dir() -> pathlib.Path | None:
     """Find the Saved/ directory for the current project.
 
-    Resolves CORTEX_PROJECT_DIR against the project root (not CWD)
-    when the path is relative, to avoid issues with uv --directory
-    changing the working directory.
+    Delegates to :func:`project.resolve_saved_dir` which handles relative
+    CORTEX_PROJECT_DIR, CLAUDE_PROJECT_DIR fallback, and .uproject walk-up.
     """
-    project_root = _find_project_root()
-
-    project_dir_env = os.environ.get("CORTEX_PROJECT_DIR")
-    if project_dir_env:
-        project_dir = pathlib.Path(project_dir_env)
-        if not project_dir.is_absolute():
-            if project_root is None:
-                logger.warning(
-                    "CORTEX_PROJECT_DIR='%s' is relative but no .uproject found to resolve against",
-                    project_dir_env,
-                )
-                return None
-            project_dir = project_root / project_dir
-        saved = project_dir.resolve() / "Saved"
-        return saved if saved.is_dir() else None
-
-    if project_root:
-        saved = project_root / "Saved"
-        return saved if saved.is_dir() else None
-    return None
+    return resolve_saved_dir()
 
 
 def _discover_all_editors() -> list[EditorConnection]:

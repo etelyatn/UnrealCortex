@@ -8,35 +8,25 @@ import pathlib
 import tempfile
 from typing import Any
 
+from .project import resolve_project_dir
+
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 2
 
 
-def _get_caller_path() -> pathlib.Path:
-    """Get the path of this file (used for .uproject walk-up)."""
-    return pathlib.Path(__file__).resolve().parent
-
-
 def find_project_root() -> pathlib.Path:
     """Find the Unreal project root directory.
 
-    Uses CORTEX_PROJECT_DIR env var if set, otherwise walks up to find .uproject.
+    Delegates to :func:`project.resolve_project_dir` for consistent resolution
+    across all MCP components.
     """
-    project_dir = os.environ.get("CORTEX_PROJECT_DIR")
-    if project_dir:
-        return pathlib.Path(project_dir)
-
-    current = _get_caller_path()
-    for _ in range(20):
-        if list(current.glob("*.uproject")):
-            return current
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
-
-    raise FileNotFoundError("Cannot find .uproject file. Set CORTEX_PROJECT_DIR env var.")
+    result = resolve_project_dir()
+    if result is not None:
+        return result
+    raise FileNotFoundError(
+        "Cannot find .uproject file. Set CORTEX_PROJECT_DIR or CLAUDE_PROJECT_DIR env var."
+    )
 
 
 def get_schema_dir() -> pathlib.Path:
