@@ -1,8 +1,10 @@
 #include "Widgets/SCortexChatMessage.h"
 
 #include "Rendering/CortexChatMarshaller.h"
+#include "Rendering/CortexFrontendColors.h"
 #include "Rendering/CortexMarkdownParser.h"
 #include "Rendering/CortexRichTextStyle.h"
+#include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
@@ -20,51 +22,77 @@ void SCortexChatMessage::Construct(const FArguments& InArgs)
     bIsUser = InArgs._IsUser;
     bIsStreaming = InArgs._IsStreaming;
 
-    const FLinearColor AccentColor = bIsUser
-        ? FLinearColor(0.055f, 0.647f, 0.914f)  // #0ea5e9 user blue
-        : FLinearColor(0.231f, 0.549f, 0.231f);  // #3b8c3b assistant green
+    PrefixChar = bIsUser ? TEXT(">") : TEXT("\u25CF");  // ● dot
+    const FLinearColor PrefixColor = bIsUser
+        ? CortexColors::UserPrefixColor
+        : CortexColors::AssistantDotColor;
 
-    ChildSlot
-    [
-        SNew(SVerticalBox)
-        // Role label
-        + SVerticalBox::Slot()
-        .AutoHeight()
-        .Padding(0.0f, 0.0f, 0.0f, 2.0f)
+    TSharedRef<SHorizontalBox> MessageRow = SNew(SHorizontalBox)
+        // Prefix (> or ●)
+        + SHorizontalBox::Slot()
+        .AutoWidth()
+        .VAlign(VAlign_Top)
+        .Padding(FMargin(0.0f, 3.0f, 6.0f, 0.0f))
         [
             SNew(STextBlock)
-            .Text(FText::FromString(bIsUser ? TEXT("You") : TEXT("Claude")))
-            .Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
-            .ColorAndOpacity(FSlateColor(AccentColor))
+            .Text(FText::FromString(PrefixChar))
+            .Font(FCoreStyle::GetDefaultFontStyle("Bold", 11))
+            .ColorAndOpacity(FSlateColor(PrefixColor))
         ]
-        // Left border accent + content
-        + SVerticalBox::Slot()
-        .AutoHeight()
+        // Content
+        + SHorizontalBox::Slot()
+        .FillWidth(1.0f)
         [
-            SNew(SHorizontalBox)
-            // Left color accent border
-            + SHorizontalBox::Slot()
-            .AutoWidth()
+            SAssignNew(ContentBox, SVerticalBox)
+        ];
+
+    if (bIsUser)
+    {
+        // User messages: background highlight + left border
+        ChildSlot
+        [
+            SNew(SBorder)
+            .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+            .BorderBackgroundColor(CortexColors::UserRowBackground)
+            .Padding(FMargin(8.0f, 5.0f))
             [
-                SNew(SBox)
-                .WidthOverride(3.0f)
+                SNew(SHorizontalBox)
+                // Left accent border (2px)
+                + SHorizontalBox::Slot()
+                .AutoWidth()
                 [
-                    SNew(SBorder)
-                    .BorderBackgroundColor(AccentColor)
+                    SNew(SBox)
+                    .WidthOverride(2.0f)
                     [
-                        SNullWidget::NullWidget
+                        SNew(SBorder)
+                        .BorderBackgroundColor(CortexColors::UserRowBorderLeft)
+                        [
+                            SNullWidget::NullWidget
+                        ]
                     ]
                 ]
+                // Content with prefix
+                + SHorizontalBox::Slot()
+                .FillWidth(1.0f)
+                .Padding(FMargin(8.0f, 0.0f, 0.0f, 0.0f))
+                [
+                    MessageRow
+                ]
             ]
-            // Message content
-            + SHorizontalBox::Slot()
-            .FillWidth(1.0f)
-            .Padding(FMargin(8.0f, 4.0f))
+        ];
+    }
+    else
+    {
+        // Assistant messages: no background, just prefix + content
+        ChildSlot
+        [
+            SNew(SBox)
+            .Padding(FMargin(12.0f, 10.0f, 12.0f, 6.0f))
             [
-                SAssignNew(ContentBox, SVerticalBox)
+                MessageRow
             ]
-        ]
-    ];
+        ];
+    }
 
     if (!InArgs._Message.IsEmpty())
     {
@@ -87,7 +115,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
             const FString HeaderText = bIsUser ? Block.RawText : CortexMarkdownParser::ToRichText(Block.RawText);
             Box->AddSlot()
             .AutoHeight()
-            .Padding(0.0f, 4.0f, 0.0f, 2.0f)
+            .Padding(0.0f, 8.0f, 0.0f, 4.0f)
             [
                 bIsUser
                 ? static_cast<TSharedRef<SWidget>>(
@@ -108,7 +136,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
         {
             Box->AddSlot()
             .AutoHeight()
-            .Padding(0.0f, 4.0f)
+            .Padding(0.0f, 6.0f)
             [
                 SNew(SCortexCodeBlock)
                 .Code(Block.RawText)
@@ -130,6 +158,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                 {
                     ItemWidget = SNew(STextBlock)
                         .Text(FText::FromString(DisplayText))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
                         .AutoWrapText(true);
                 }
                 else
@@ -143,7 +172,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
 
                 ListBox->AddSlot()
                 .AutoHeight()
-                .Padding(0.0f, 1.0f)
+                .Padding(0.0f, 2.0f)
                 [
                     ItemWidget
                 ];
@@ -168,6 +197,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                 {
                     ItemWidget = SNew(STextBlock)
                         .Text(FText::FromString(DisplayText))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
                         .AutoWrapText(true);
                 }
                 else
@@ -181,7 +211,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
 
                 ListBox->AddSlot()
                 .AutoHeight()
-                .Padding(0.0f, 1.0f)
+                .Padding(0.0f, 2.0f)
                 [
                     ItemWidget
                 ];
@@ -205,6 +235,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
             {
                 TextWidget = SNew(STextBlock)
                     .Text(FText::FromString(DisplayText))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
                     .AutoWrapText(true);
             }
             else
@@ -218,7 +249,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
 
             Box->AddSlot()
             .AutoHeight()
-            .Padding(0.0f, 2.0f)
+            .Padding(0.0f, 5.0f)
             [
                 TextWidget
             ];
@@ -260,8 +291,9 @@ void SCortexChatMessage::SetText(const FString& NewText)
         [
             SNew(STextBlock)
             .Text(FText::FromString(NewText))
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
             .AutoWrapText(true)
-            .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("cccccc")))))
+            .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
         ];
         return;
     }

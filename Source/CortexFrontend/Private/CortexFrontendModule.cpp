@@ -2,6 +2,8 @@
 
 #include "CortexFrontendModule.h"
 
+#include "Analysis/CortexAnalysisContext.h"
+#include "Conversion/CortexConversionContext.h"
 #include "CortexCoreModule.h"
 #include "CortexAnalysisTypes.h"
 #include "CortexConversionTypes.h"
@@ -15,6 +17,8 @@
 #include "ToolMenus.h"
 #include "Widgets/SCortexWorkbench.h"
 #include "Widgets/SCortexGenPanel.h"
+#include "Widgets/SCortexConversionTab.h"
+#include "Widgets/SCortexAnalysisTab.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 #include "Framework/Application/SlateApplication.h"
@@ -37,8 +41,8 @@ void FCortexFrontendModule::StartupModule()
     FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
         CortexChatTabId,
         FOnSpawnTab::CreateRaw(this, &FCortexFrontendModule::SpawnChatTab))
-        .SetDisplayName(FText::FromString(TEXT("Cortex Frontend")))
-        .SetTooltipText(FText::FromString(TEXT("Open the Cortex Frontend panel")))
+        .SetDisplayName(FText::FromString(TEXT("Cortex Chat")))
+        .SetTooltipText(FText::FromString(TEXT("Open the Cortex Chat panel")))
         .SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"))
         .SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory());
 
@@ -62,8 +66,8 @@ void FCortexFrontendModule::StartupModule()
             FToolMenuSection& Section = Menu->FindOrAddSection(TEXT("Cortex"));
             Section.AddEntry(FToolMenuEntry::InitMenuEntry(
                 TEXT("CortexChat"),
-                FText::FromString(TEXT("Cortex Frontend")),
-                FText::FromString(TEXT("Open Cortex Frontend panel")),
+                FText::FromString(TEXT("Cortex Chat")),
+                FText::FromString(TEXT("Open Cortex Chat panel")),
                 FSlateIcon(),
                 FUIAction(FExecuteAction::CreateLambda([]()
                 {
@@ -139,13 +143,8 @@ void FCortexFrontendModule::ShutdownModule()
     FCortexRichTextStyle::Shutdown();
 }
 
-TWeakPtr<FCortexCliSession> FCortexFrontendModule::GetOrCreateSession()
+FCortexSessionConfig FCortexFrontendModule::CreateDefaultSessionConfig()
 {
-    if (Sessions.Num() > 0 && Sessions[0].IsValid())
-    {
-        return Sessions[0];
-    }
-
     FCortexSessionConfig Config;
     Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
     Config.WorkingDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
@@ -156,7 +155,17 @@ TWeakPtr<FCortexCliSession> FCortexFrontendModule::GetOrCreateSession()
         Config.McpConfigPath = FPaths::ConvertRelativePathToFull(McpPath);
     }
 
-    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(Config);
+    return Config;
+}
+
+TWeakPtr<FCortexCliSession> FCortexFrontendModule::GetOrCreateSession()
+{
+    if (Sessions.Num() > 0 && Sessions[0].IsValid())
+    {
+        return Sessions[0];
+    }
+
+    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(CreateDefaultSessionConfig());
     Sessions.Reset();
     Sessions.Add(Session);
     return Session;
@@ -170,7 +179,6 @@ TSharedRef<SDockTab> FCortexFrontendModule::SpawnChatTab(const FSpawnTabArgs& /*
         .OwnerTab(DockTab)
         .Session(GetOrCreateSession());
 
-    WorkbenchWeak = Workbench;  // Store weak ref for conversion routing
     DockTab->SetContent(Workbench);
     return DockTab;
 }
@@ -221,26 +229,98 @@ TSharedRef<SDockTab> FCortexFrontendModule::SpawnGenStudioTab(const FSpawnTabArg
 
 void FCortexFrontendModule::OnConversionRequested(const FCortexConversionPayload& Payload)
 {
-    // Auto-open the CortexFrontend panel
-    FGlobalTabmanager::Get()->TryInvokeTab(CortexChatTabId);
+    TSharedPtr<FCortexConversionContext> Context = MakeShared<FCortexConversionContext>(Payload);
 
-    // Route to workbench via stored weak reference (safe — no static_cast)
-    TSharedPtr<SCortexWorkbench> Workbench = WorkbenchWeak.Pin();
-    if (Workbench.IsValid())
+    TSharedRef<SWindow> Window = SNew(SWindow)
+        .Title(FText::FromString(
+            FString::Printf(TEXT("%s \u2014 Convert"), *Payload.BlueprintName)))
+        .ClientSize(FVector2D(900.0f, 700.0f))
+        .SupportsMinimize(true)
+        .SupportsMaximize(true)
+        [
+            SNew(SCortexConversionTab)
+            .Context(Context)
+        ];
+
+    FConversionWindowEntry Entry;
+    Entry.Context = Context;
+    Entry.Window = Window;
+    ConversionWindows.Add(Entry);
+
+    if (Context->Session.IsValid())
     {
-        Workbench->SpawnConversionTab(Payload);
+        RegisterSession(Context->Session);
     }
+
+    // CreateRaw is safe here: HandlePreExit calls ReleaseSessions() which unbinds
+    // this delegate before the module is torn down, preventing dangling pointer access.
+    Window->SetOnWindowClosed(FOnWindowClosed::CreateRaw(
+        this, &FCortexFrontendModule::OnConversionWindowClosed, Context));
+
+    FSlateApplication::Get().AddWindow(Window);
+}
+
+void FCortexFrontendModule::OnConversionWindowClosed(
+    const TSharedRef<SWindow>&,
+    TSharedPtr<FCortexConversionContext> Context)
+{
+    if (Context.IsValid() && Context->Session.IsValid())
+    {
+        Context->Session->Shutdown();
+        UnregisterSession(Context->Session);
+    }
+    ConversionWindows.RemoveAll([&Context](const FConversionWindowEntry& E)
+    {
+        return E.Context == Context;
+    });
 }
 
 void FCortexFrontendModule::OnAnalysisRequested(const FCortexAnalysisPayload& Payload)
 {
-    FGlobalTabmanager::Get()->TryInvokeTab(CortexChatTabId);
+    TSharedPtr<FCortexAnalysisContext> Context = MakeShared<FCortexAnalysisContext>(Payload);
 
-    TSharedPtr<SCortexWorkbench> Workbench = WorkbenchWeak.Pin();
-    if (Workbench.IsValid())
+    TSharedRef<SWindow> Window = SNew(SWindow)
+        .Title(FText::FromString(
+            FString::Printf(TEXT("%s \u2014 Analyze"), *Payload.BlueprintName)))
+        .ClientSize(FVector2D(900.0f, 700.0f))
+        .SupportsMinimize(true)
+        .SupportsMaximize(true)
+        [
+            SNew(SCortexAnalysisTab)
+            .Context(Context)
+        ];
+
+    FAnalysisWindowEntry Entry;
+    Entry.Context = Context;
+    Entry.Window = Window;
+    AnalysisWindows.Add(Entry);
+
+    if (Context->Session.IsValid())
     {
-        Workbench->SpawnAnalysisTab(Payload);
+        RegisterSession(Context->Session);
     }
+
+    // CreateRaw is safe here: HandlePreExit calls ReleaseSessions() which unbinds
+    // this delegate before the module is torn down, preventing dangling pointer access.
+    Window->SetOnWindowClosed(FOnWindowClosed::CreateRaw(
+        this, &FCortexFrontendModule::OnAnalysisWindowClosed, Context));
+
+    FSlateApplication::Get().AddWindow(Window);
+}
+
+void FCortexFrontendModule::OnAnalysisWindowClosed(
+    const TSharedRef<SWindow>&,
+    TSharedPtr<FCortexAnalysisContext> Context)
+{
+    if (Context.IsValid() && Context->Session.IsValid())
+    {
+        Context->Session->Shutdown();
+        UnregisterSession(Context->Session);
+    }
+    AnalysisWindows.RemoveAll([&Context](const FAnalysisWindowEntry& E)
+    {
+        return E.Context == Context;
+    });
 }
 
 void FCortexFrontendModule::RegisterSession(TSharedPtr<FCortexCliSession> Session)
@@ -271,6 +351,39 @@ void FCortexFrontendModule::UnregisterBuildProcess(TSharedPtr<FMonitoredProcess>
 
 void FCortexFrontendModule::ReleaseSessions()
 {
+    // Close conversion windows — unbind OnWindowClosed BEFORE RequestDestroyWindow
+    // to prevent re-entrancy (RequestDestroyWindow fires the delegate synchronously,
+    // which would mutate ConversionWindows while we iterate it)
+    for (const FConversionWindowEntry& Entry : ConversionWindows)
+    {
+        if (TSharedPtr<SWindow> Window = Entry.Window.Pin())
+        {
+            Window->SetOnWindowClosed(FOnWindowClosed());  // Unbind to prevent re-entrancy
+            Window->RequestDestroyWindow();
+        }
+        // Shut down session directly (since we unbound the close handler)
+        if (Entry.Context.IsValid() && Entry.Context->Session.IsValid())
+        {
+            Entry.Context->Session->Shutdown();
+        }
+    }
+    ConversionWindows.Empty();
+
+    // Close analysis windows — same re-entrancy guard
+    for (const FAnalysisWindowEntry& Entry : AnalysisWindows)
+    {
+        if (TSharedPtr<SWindow> Window = Entry.Window.Pin())
+        {
+            Window->SetOnWindowClosed(FOnWindowClosed());
+            Window->RequestDestroyWindow();
+        }
+        if (Entry.Context.IsValid() && Entry.Context->Session.IsValid())
+        {
+            Entry.Context->Session->Shutdown();
+        }
+    }
+    AnalysisWindows.Empty();
+
     // Cancel all build processes before releasing sessions
     for (const TSharedPtr<FMonitoredProcess>& Process : BuildProcesses)
     {

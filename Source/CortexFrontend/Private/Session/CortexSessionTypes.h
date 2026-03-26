@@ -74,7 +74,8 @@ enum class ECortexChatEntryType : uint8
     UserMessage,
     AssistantMessage,
     ToolCall,
-    CodeBlock
+    CodeBlock,
+    Table
 };
 
 struct FCortexChatEntry
@@ -91,4 +92,6 @@ struct FCortexChatEntry
     int32 DurationMs = 0;
     double ToolStartTime = 0.0;
     bool bIsToolComplete = false;
+    TArray<FString> TableHeaders;
+    TArray<TArray<FString>> TableRows;
 };

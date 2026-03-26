@@ -7,6 +7,7 @@
 #include "Framework/Text/SlateTextRun.h"
 #include "Framework/Text/TextLayout.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "Rendering/CortexFrontendColors.h"
 #include "Rendering/CortexSyntaxHighlighter.h"
 #include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
@@ -171,11 +172,14 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
     TSharedRef<SScrollBar> HScrollBar = SNew(SScrollBar).Orientation(Orient_Horizontal);
     TSharedRef<SScrollBar> VScrollBar = SNew(SScrollBar).Orientation(Orient_Vertical);
 
+    CodeBlockBrush = MakeUnique<FSlateRoundedBoxBrush>(
+        CortexColors::CodeBackground, 6.0f,
+        CortexColors::CodeBorder, 1.0f);
+
     ChildSlot
     [
         SNew(SBorder)
-        .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
-        .BorderBackgroundColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("0f0f0f"))))
+        .BorderImage(CodeBlockBrush.Get())
         .Padding(0.0f)
         [
             SNew(SVerticalBox)
@@ -183,25 +187,43 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
             + SVerticalBox::Slot()
             .AutoHeight()
             [
-                SNew(SHorizontalBox)
-                + SHorizontalBox::Slot()
-                .FillWidth(1.0f)
-                .Padding(8.0f, 4.0f)
-                .VAlign(VAlign_Center)
+                SNew(SBorder)
+                .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                .BorderBackgroundColor(CortexColors::CodeHeaderBackground)
+                .Padding(0.0f)
                 [
-                    SNew(STextBlock)
-                    .Text(FText::FromString(InArgs._Language))
-                    .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
-                ]
-                + SHorizontalBox::Slot()
-                .AutoWidth()
-                .Padding(4.0f, 2.0f)
-                [
-                    SNew(SButton)
-                    .OnClicked(this, &SCortexCodeBlock::OnCopyClicked)
+                    SNew(SHorizontalBox)
+                    + SHorizontalBox::Slot()
+                    .FillWidth(1.0f)
+                    .Padding(8.0f, 4.0f)
+                    .VAlign(VAlign_Center)
                     [
                         SNew(STextBlock)
-                        .Text(FText::FromString(TEXT("Copy")))
+                        .Text(FText::FromString(InArgs._Language.ToUpper()))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Mono", 10))
+                        .ColorAndOpacity(FSlateColor(CortexColors::CodeLangColor))
+                    ]
+                    + SHorizontalBox::Slot()
+                    .AutoWidth()
+                    .Padding(4.0f, 2.0f)
+                    .VAlign(VAlign_Center)
+                    [
+                        SNew(SButton)
+                        .ButtonStyle(FAppStyle::Get(), TEXT("NoBorder"))
+                        .OnClicked(this, &SCortexCodeBlock::OnCopyClicked)
+                        .ContentPadding(FMargin(6.0f, 2.0f))
+                        [
+                            SNew(SBorder)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                            .BorderBackgroundColor(CortexColors::CodeButtonBorder)
+                            .Padding(FMargin(6.0f, 2.0f))
+                            [
+                                SNew(STextBlock)
+                                .Text(FText::FromString(TEXT("Copy")))
+                                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                                .ColorAndOpacity(FSlateColor(CortexColors::CodeLangColor))
+                            ]
+                        ]
                     ]
                 ]
             ]
@@ -210,8 +232,8 @@ void SCortexCodeBlock::Construct(const FArguments& InArgs)
             .FillHeight(1.0f)
             [
                 SNew(SBorder)
-                .BorderBackgroundColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("0f0f0f"))))
                 .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                .BorderBackgroundColor(CortexColors::CodeBackground)
                 .Padding(0.0f)
                 [
                     SNew(SVerticalBox)

@@ -21,27 +21,31 @@ void FCortexRichTextStyle::Initialize()
     // Bold
     {
         FTextBlockStyle BoldStyle = NormalStyle;
-        BoldStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Bold", 10));
+        BoldStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Bold", 11));
         StyleSet->Set(TEXT("Bold"), BoldStyle);
     }
 
     // Italic
     {
         FTextBlockStyle ItalicStyle = NormalStyle;
-        ItalicStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Italic", 10));
+        ItalicStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Italic", 11));
         StyleSet->Set(TEXT("Italic"), ItalicStyle);
     }
 
     // Code -- amber #ce9178, no background (FTextBlockStyle has no background field)
     {
         FTextBlockStyle CodeStyle = NormalStyle;
-        CodeStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Mono", 10));
+        CodeStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Mono", 11));
         CodeStyle.SetColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("ce9178")))));
         StyleSet->Set(TEXT("Code"), CodeStyle);
     }
 
-    // Default style for plain text segments
-    StyleSet->Set(TEXT("Default"), NormalStyle);
+    // Default style for plain text segments — bump font size to match Rich variants
+    {
+        FTextBlockStyle DefaultStyle = NormalStyle;
+        DefaultStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Regular", 11));
+        StyleSet->Set(TEXT("Default"), DefaultStyle);
+    }
 
     FSlateStyleRegistry::RegisterSlateStyle(*StyleSet);
 }

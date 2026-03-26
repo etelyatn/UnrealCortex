@@ -134,6 +134,7 @@ private:
 	std::atomic<ECortexSessionState> State;
 	TOptional<FString> PendingPrompt;
 	TOptional<ECortexAccessMode> PendingAccessMode;
+	TOptional<ECortexAccessMode> LastSpawnedAccessMode;
 	TUniquePtr<FCortexCliWorker> Worker;
 	FProcHandle ProcessHandle;
 	void* StdoutReadPipe = nullptr;
