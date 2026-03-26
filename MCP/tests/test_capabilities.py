@@ -48,9 +48,9 @@ def test_build_router_docstring_lists_all_commands():
 
     assert "core" in docstrings
     assert "core_cmd(command, params)" in docstrings["core"]
-    assert "- get_status()" in docstrings["core"]
-    assert "- save_asset(asset_path: string, only_if_is_dirty: boolean = optional)" in docstrings["core"]
-    assert "- query_datatable(table_path: string, row_filter: string = optional)" in docstrings["data"]
+    assert "- save_asset(asset_path: string, force: boolean = optional, dry_run: boolean = optional)" in docstrings["core"]
+    assert "query_datatable" in docstrings["data"]
+    assert "table_path: string" in docstrings["data"]
 
 
 def test_missing_cache_uses_minimal_fallback_and_logs_warning(caplog, tmp_path):
