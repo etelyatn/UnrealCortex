@@ -35,7 +35,7 @@ _BP_CLASS_MAP = {
     "ClearDelegate": "UK2Node_ClearDelegate",
     "UnbindAllEvents": "UK2Node_ClearDelegate",
     "CreateDelegate": "UK2Node_CreateDelegate",
-    "CreateEvent": "UK2Node_CreateDelegate",
+    "CreateEvent": "UK2Node_CreateDelegate",  # Create Delegate object, NOT CustomEvent
 }
 
 _VALID_BP_TYPES = {"Actor", "Component", "Interface", "FunctionLibrary"}
@@ -348,9 +348,12 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                     Sequence: inputs "execute", outputs "then 0", "then 1", ...
                     VariableGet: output is variable name
                     VariableSet: inputs "execute" + variable name, outputs "then"
-                    AddDelegate: inputs "execute", "self" (Target), "Delegate" (Event); outputs "then"
+                    AddDelegate/RemoveDelegate: inputs "execute", "self" (Target), "Delegate" (Event); outputs "then"
                     ClearDelegate: inputs "execute", "self" (Target); outputs "then"
                     CreateDelegate: inputs "self" (Object); outputs "OutputDelegate" (Event)
+                    Note: Self-context delegates (no delegate_class) require a pre-compiled
+                    Blueprint. If adding an event dispatcher variable and binding to it,
+                    use two calls: first create_blueprint_graph (compiles), then update mode.
 
         Returns:
             JSON with asset_path, node_count, variable_count, function_count, timing.

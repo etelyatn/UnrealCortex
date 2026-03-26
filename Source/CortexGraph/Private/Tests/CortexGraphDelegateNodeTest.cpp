@@ -40,10 +40,10 @@ bool FCortexGraphDelegateNodeTest::RunTest(const FString& Parameters)
 		MakeShared<FCortexGraphCommandHandler>());
 
 	// ---- Test 1: AddDelegate with external class delegate ----
-	// Use OnTakeAnyDamage (inline multicast delegate, not sparse).
-	// Avoid OnDestroyed — it is a sparse delegate (DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE)
-	// whose FMulticastSparseDelegateProperty may not match FindFField<FMulticastDelegateProperty>
-	// depending on UE cast flag inheritance behavior.
+	// OnTakeAnyDamage is a sparse delegate (DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_FiveParams).
+	// CastField<FMulticastDelegateProperty> correctly matches both inline and sparse delegates
+	// because FMulticastSparseDelegateProperty inherits CASTCLASS_FMulticastDelegateProperty
+	// via the cast flag accumulation chain.
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"), AssetPath);

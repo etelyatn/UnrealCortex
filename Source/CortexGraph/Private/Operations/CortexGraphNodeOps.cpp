@@ -879,7 +879,7 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 						);
 					}
 
-					DelegateNode->SetFromProperty(DelegateProp, true, nullptr);
+					DelegateNode->SetFromProperty(DelegateProp, true, SelfClass);
 				}
 			}
 		}
@@ -902,8 +902,11 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	// Force GUID resolution for CreateDelegate nodes — SetFunction alone leaves
 	// SelectedFunctionGuid invalid, which is only resolved lazily via
 	// PinConnectionListChanged/NodeConnectionListChanged in the editor.
+	// Only call HandleAnyChange when no function name was pre-set, because
+	// HandleAnyChange clears SelectedFunctionName when the function cannot be
+	// resolved (common for programmatic creation before wiring).
 	UK2Node_CreateDelegate* CreateDelegatePost = Cast<UK2Node_CreateDelegate>(NewNode);
-	if (CreateDelegatePost)
+	if (CreateDelegatePost && CreateDelegatePost->GetFunctionName() == NAME_None)
 	{
 		CreateDelegatePost->HandleAnyChange(true);
 	}
