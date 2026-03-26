@@ -76,6 +76,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
             [
                 SAssignNew(InputTextBox, SMultiLineEditableTextBox)
                 .HintText(FText::FromString(TEXT("@ for context or ask anything...")))
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
                 .AutoWrapText(true)
             .OnKeyDownHandler_Lambda([this](const FGeometry&, const FKeyEvent& KeyEvent)
             {
@@ -151,9 +152,10 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                     SNew(SButton)
                     .ButtonStyle(&GetHoverButtonStyle())
                     .ContentPadding(0.0f)
+                    .ToolTipText(FText::FromString(TEXT("Permission level for file access and tool use")))
                     .OnClicked_Lambda([this]()
                     {
-                        ModeDropdown->SetIsOpen(true);
+                        ModeDropdown->SetIsOpen(!ModeDropdown->IsOpen());
                         return FReply::Handled();
                     })
                     [
@@ -352,9 +354,10 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                     SNew(SButton)
                     .ButtonStyle(&GetHoverButtonStyle())
                     .ContentPadding(FMargin(6.0f, 3.0f))
+                    .ToolTipText(FText::FromString(TEXT("Select AI model and effort level")))
                     .OnClicked_Lambda([this]()
                     {
-                        ModelDropdown->SetIsOpen(true);
+                        ModelDropdown->SetIsOpen(!ModelDropdown->IsOpen());
                         return FReply::Handled();
                     })
                     [
@@ -401,40 +404,6 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
             [
                 SNew(SSpacer)
             ]
-            // Project Context toggle (right-aligned)
-            + SHorizontalBox::Slot()
-            .AutoWidth()
-            .VAlign(VAlign_Center)
-            .Padding(0.0f, 0.0f, 8.0f, 0.0f)
-            [
-                SNew(SHorizontalBox)
-                + SHorizontalBox::Slot()
-                .AutoWidth()
-                .VAlign(VAlign_Center)
-                [
-                    SNew(SCheckBox)
-                    .IsChecked_Lambda([]()
-                    {
-                        return FCortexFrontendSettings::Get().GetProjectContext()
-                            ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-                    })
-                    .OnCheckStateChanged_Lambda([](ECheckBoxState NewState)
-                    {
-                        FCortexFrontendSettings::Get().SetProjectContext(
-                            NewState == ECheckBoxState::Checked);
-                    })
-                ]
-                + SHorizontalBox::Slot()
-                .AutoWidth()
-                .VAlign(VAlign_Center)
-                .Padding(4.0f, 0.0f, 0.0f, 0.0f)
-                [
-                    SNew(STextBlock)
-                    .Text(FText::FromString(TEXT("Project Context")))
-                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-                    .ColorAndOpacity(FSlateColor(CortexColors::MutedTextColor))
-                ]
-            ]
             // Settings popup
             + SHorizontalBox::Slot()
             .AutoWidth()
@@ -478,6 +447,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                 .Text(FText::FromString(TEXT("WORKFLOW")))
                                 .Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
                                 .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
+                                .ToolTipText(FText::FromString(TEXT("Controls how the AI approaches tasks")))
                             ]
                             + SVerticalBox::Slot()
                             .AutoHeight()
@@ -490,10 +460,10 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                     SNew(SButton)
                                     .ButtonStyle(&GetHoverButtonStyle())
                                     .ContentPadding(FMargin(10.0f, 4.0f))
+                                    .ToolTipText(FText::FromString(TEXT("Execute tasks immediately without extra planning")))
                                     .OnClicked_Lambda([LocalDirectRadio, LocalThoroughRadio]()
                                     {
                                         FCortexFrontendSettings::Get().SetWorkflowMode(ECortexWorkflowMode::Direct);
-                                        // Update radio indicators without closing popup (user may also want to edit directive)
                                         if (LocalDirectRadio.IsValid()) LocalDirectRadio->SetText(FText::FromString(TEXT("\u25CF")));
                                         if (LocalThoroughRadio.IsValid()) LocalThoroughRadio->SetText(FText::FromString(TEXT("\u25CB")));
                                         return FReply::Handled();
@@ -525,6 +495,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                     SNew(SButton)
                                     .ButtonStyle(&GetHoverButtonStyle())
                                     .ContentPadding(FMargin(10.0f, 4.0f))
+                                    .ToolTipText(FText::FromString(TEXT("Plan and review before executing — better for complex tasks")))
                                     .OnClicked_Lambda([LocalDirectRadio, LocalThoroughRadio]()
                                     {
                                         FCortexFrontendSettings::Get().SetWorkflowMode(ECortexWorkflowMode::Thorough);
@@ -565,6 +536,53 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                     SNew(SBox).HeightOverride(1.0f)
                                 ]
                             ]
+                            // Project Context
+                            + SVerticalBox::Slot()
+                            .AutoHeight()
+                            .Padding(0.0f, 0.0f, 0.0f, 8.0f)
+                            [
+                                SNew(SHorizontalBox)
+                                + SHorizontalBox::Slot()
+                                .AutoWidth()
+                                .VAlign(VAlign_Center)
+                                [
+                                    SNew(SCheckBox)
+                                    .ToolTipText(FText::FromString(TEXT("Include CLAUDE.md and project context in every message")))
+                                    .IsChecked_Lambda([]()
+                                    {
+                                        return FCortexFrontendSettings::Get().GetProjectContext()
+                                            ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+                                    })
+                                    .OnCheckStateChanged_Lambda([](ECheckBoxState NewState)
+                                    {
+                                        FCortexFrontendSettings::Get().SetProjectContext(
+                                            NewState == ECheckBoxState::Checked);
+                                    })
+                                ]
+                                + SHorizontalBox::Slot()
+                                .AutoWidth()
+                                .VAlign(VAlign_Center)
+                                .Padding(4.0f, 0.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text(FText::FromString(TEXT("Project Context")))
+                                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                                    .ColorAndOpacity(FSlateColor(CortexColors::TextPrimary))
+                                    .ToolTipText(FText::FromString(TEXT("Include CLAUDE.md and project context in every message")))
+                                ]
+                            ]
+                            // Separator
+                            + SVerticalBox::Slot()
+                            .AutoHeight()
+                            .Padding(0.0f, 0.0f, 0.0f, 8.0f)
+                            [
+                                SNew(SBorder)
+                                .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                                .BorderBackgroundColor(CortexColors::ToolBlockBorder)
+                                [
+                                    SNew(SBox).HeightOverride(1.0f)
+                                ]
+                            ]
                             // Custom Directive
                             + SVerticalBox::Slot()
                             .AutoHeight()
@@ -574,6 +592,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                 .Text(FText::FromString(TEXT("CUSTOM DIRECTIVE")))
                                 .Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
                                 .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
+                                .ToolTipText(FText::FromString(TEXT("Extra instructions appended to every message")))
                             ]
                             + SVerticalBox::Slot()
                             .AutoHeight()
@@ -584,6 +603,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                     SNew(SEditableTextBox)
                                     .Text(FText::FromString(FCortexFrontendSettings::Get().GetCustomDirective()))
                                     .HintText(FText::FromString(TEXT("Extra instructions for the AI...")))
+                                    .ToolTipText(FText::FromString(TEXT("Text here is appended to every message you send")))
                                     .OnTextCommitted_Lambda([](const FText& Text, ETextCommit::Type)
                                     {
                                         FCortexFrontendSettings::Get().SetCustomDirective(Text.ToString());
@@ -595,9 +615,10 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                 [
                     SNew(SButton)
                     .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                    .ToolTipText(FText::FromString(TEXT("Workflow, project context, and custom directive settings")))
                     .OnClicked_Lambda([this]()
                     {
-                        SettingsPopup->SetIsOpen(true);
+                        SettingsPopup->SetIsOpen(!SettingsPopup->IsOpen());
                         return FReply::Handled();
                     })
                     [

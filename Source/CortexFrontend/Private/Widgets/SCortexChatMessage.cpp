@@ -158,6 +158,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                 {
                     ItemWidget = SNew(STextBlock)
                         .Text(FText::FromString(DisplayText))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
                         .AutoWrapText(true);
                 }
                 else
@@ -196,6 +197,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
                 {
                     ItemWidget = SNew(STextBlock)
                         .Text(FText::FromString(DisplayText))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
                         .AutoWrapText(true);
                 }
                 else
@@ -233,6 +235,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
             {
                 TextWidget = SNew(STextBlock)
                     .Text(FText::FromString(DisplayText))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
                     .AutoWrapText(true);
             }
             else
@@ -288,6 +291,7 @@ void SCortexChatMessage::SetText(const FString& NewText)
         [
             SNew(STextBlock)
             .Text(FText::FromString(NewText))
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
             .AutoWrapText(true)
             .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
         ];
