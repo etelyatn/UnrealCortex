@@ -398,6 +398,137 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetTickSettings(const TSharedPtr
 
 FCortexCommandResult FCortexBPClassSettingsOps::SetReplicationSettings(const TSharedPtr<FJsonObject>& Params)
 {
-	// Stub — implemented in Task 5
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not yet implemented"));
+	if (!Params.IsValid())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params object"));
+	}
+
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing or empty 'asset_path' field"));
+	}
+
+	bool bCompile = true;
+	Params->TryGetBoolField(TEXT("compile"), bCompile);
+	bool bSave = false;
+	Params->TryGetBoolField(TEXT("save"), bSave);
+
+	FString DormancyString;
+	const bool bHasDormancy = Params->TryGetStringField(TEXT("net_dormancy"), DormancyString);
+	ENetDormancy DormancyValue = ENetDormancy::DORM_Never;
+	if (bHasDormancy)
+	{
+		if (DormancyString == TEXT("DORM_Never")) { DormancyValue = ENetDormancy::DORM_Never; }
+		else if (DormancyString == TEXT("DORM_Awake")) { DormancyValue = ENetDormancy::DORM_Awake; }
+		else if (DormancyString == TEXT("DORM_DormantAll")) { DormancyValue = ENetDormancy::DORM_DormantAll; }
+		else if (DormancyString == TEXT("DORM_DormantPartial")) { DormancyValue = ENetDormancy::DORM_DormantPartial; }
+		else if (DormancyString == TEXT("DORM_Initial")) { DormancyValue = ENetDormancy::DORM_Initial; }
+		else
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidValue,
+				FString::Printf(TEXT("Invalid net_dormancy value '%s'. Valid: DORM_Never, DORM_Awake, DORM_DormantAll, DORM_DormantPartial, DORM_Initial"),
+					*DormancyString));
+		}
+	}
+
+	FString LoadError;
+	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
+	if (!Blueprint)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+	}
+
+	if (!Blueprint->GeneratedClass)
+	{
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	}
+	UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
+	if (!GeneratedClass)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::CompileFailed, TEXT("Blueprint has no GeneratedClass"));
+	}
+
+	AActor* ActorCDO = Cast<AActor>(GeneratedClass->GetDefaultObject(false));
+	if (!ActorCDO)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidBlueprintType,
+			TEXT("Blueprint CDO is not an AActor — replication settings only apply to Actor Blueprints"));
+	}
+
+	{
+		FScopedTransaction Transaction(FText::FromString(
+			FString::Printf(TEXT("Cortex: Set Replication Settings on %s"), *Blueprint->GetName())));
+		ActorCDO->Modify();
+
+		bool bTempBool = false;
+		if (Params->TryGetBoolField(TEXT("replicates"), bTempBool))
+		{
+			ActorCDO->bReplicates = bTempBool;
+		}
+
+		if (Params->TryGetBoolField(TEXT("replicate_movement"), bTempBool))
+		{
+			ActorCDO->bReplicateMovement = bTempBool;
+		}
+
+		if (bHasDormancy)
+		{
+			ActorCDO->NetDormancy = DormancyValue;
+		}
+
+		if (Params->TryGetBoolField(TEXT("net_use_owner_relevancy"), bTempBool))
+		{
+			ActorCDO->bNetUseOwnerRelevancy = bTempBool;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	}
+
+	bool bDidCompile = false;
+	if (bCompile)
+	{
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		bDidCompile = (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings);
+	}
+
+	bool bDidSave = false;
+	if (bSave)
+	{
+		UPackage* Package = Blueprint->GetOutermost();
+		const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+			Package->GetName(), FPackageName::GetAssetPackageExtension());
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Standalone;
+		bDidSave = UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs);
+	}
+
+	auto DormancyToString = [](ENetDormancy D) -> FString
+	{
+		switch (D)
+		{
+		case ENetDormancy::DORM_Never: return TEXT("DORM_Never");
+		case ENetDormancy::DORM_Awake: return TEXT("DORM_Awake");
+		case ENetDormancy::DORM_DormantAll: return TEXT("DORM_DormantAll");
+		case ENetDormancy::DORM_DormantPartial: return TEXT("DORM_DormantPartial");
+		case ENetDormancy::DORM_Initial: return TEXT("DORM_Initial");
+		default: return TEXT("Unknown");
+		}
+	};
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetBoolField(TEXT("replicates"), ActorCDO->bReplicates);
+	Data->SetBoolField(TEXT("replicate_movement"), ActorCDO->bReplicateMovement);
+	Data->SetStringField(TEXT("net_dormancy"), DormancyToString(ActorCDO->NetDormancy));
+	Data->SetBoolField(TEXT("net_use_owner_relevancy"), ActorCDO->bNetUseOwnerRelevancy);
+	Data->SetBoolField(TEXT("compiled"), bCompile && bDidCompile);
+	Data->SetBoolField(TEXT("saved"), bSave && bDidSave);
+
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Set replication settings on %s"), *AssetPath);
+	return FCortexCommandRouter::Success(Data);
 }
