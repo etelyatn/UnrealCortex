@@ -31,8 +31,6 @@ public:
 
 private:
 	TSharedRef<SDockTab> SpawnChatTab(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnQATab(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnGenTab(const FSpawnTabArgs& Args);
 	void CleanupConversionTab(FName TabId);
 	void CleanupAnalysisTab(FName TabId);
 
@@ -41,6 +39,4 @@ private:
 
 	TMap<FName, TSharedPtr<FCortexConversionContext>> ConversionContexts;
 	TMap<FName, TSharedPtr<FCortexAnalysisContext>> AnalysisContexts;
-
-	bool bGenTabRegistered = false;
 };

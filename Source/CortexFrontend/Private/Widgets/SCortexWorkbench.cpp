@@ -7,10 +7,7 @@
 #include "Widgets/SCortexAnalysisTab.h"
 #include "Widgets/SCortexChatPanel.h"
 #include "Widgets/SCortexConversionTab.h"
-#include "Widgets/SCortexQATab.h"
-#include "Widgets/SCortexGenTab.h"
 #include "Session/CortexCliSession.h"
-#include "CortexGenModule.h"
 
 void SCortexWorkbench::Construct(const FArguments& InArgs)
 {
@@ -26,30 +23,9 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnChatTab))
 		.SetDisplayName(FText::FromString(TEXT("Chat")));
 
-	// Register QA tab spawner (hidden by default — not yet production ready)
-	TabManager->RegisterTabSpawner(
-		FName(TEXT("CortexQA")),
-		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnQATab))
-		.SetDisplayName(FText::FromString(TEXT("QA")));
-
-	// Register Gen tab spawner (only if gen module enabled)
-	if (FCortexGenModule::IsEnabled())
-	{
-		TabManager->RegisterTabSpawner(
-			FName(TEXT("CortexGen")),
-			FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnGenTab))
-			.SetDisplayName(FText::FromString(TEXT("Generate")));
-		bGenTabRegistered = true;
-	}
-
 	// Define layout
 	TSharedRef<FTabManager::FStack> Stack = FTabManager::NewStack();
 	Stack->AddTab(FName(TEXT("CortexChat")), ETabState::OpenedTab);
-	if (bGenTabRegistered)
-	{
-		Stack->AddTab(FName(TEXT("CortexGen")), ETabState::OpenedTab);
-	}
-	Stack->AddTab(FName(TEXT("CortexQA")), ETabState::ClosedTab);
 
 	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("CortexFrontendLayout_v1.5")
 		->AddArea
@@ -88,11 +64,6 @@ SCortexWorkbench::~SCortexWorkbench()
 	{
 		TabManager->CloseAllAreas();
 		TabManager->UnregisterTabSpawner(TEXT("CortexChat"));
-		TabManager->UnregisterTabSpawner(TEXT("CortexQA"));
-		if (bGenTabRegistered)
-		{
-			TabManager->UnregisterTabSpawner(TEXT("CortexGen"));
-		}
 	}
 }
 
@@ -213,30 +184,6 @@ void SCortexWorkbench::CleanupAnalysisTab(FName TabId)
 	}
 
 	AnalysisContexts.Remove(TabId);
-}
-
-TSharedRef<SDockTab> SCortexWorkbench::SpawnGenTab(const FSpawnTabArgs& /*Args*/)
-{
-	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
-		.TabRole(ETabRole::PanelTab);
-
-	DockTab->SetContent(
-		SNew(SCortexGenTab)
-	);
-
-	return DockTab;
-}
-
-TSharedRef<SDockTab> SCortexWorkbench::SpawnQATab(const FSpawnTabArgs& /*Args*/)
-{
-	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
-		.TabRole(ETabRole::PanelTab);
-
-	DockTab->SetContent(
-		SNew(SCortexQATab)
-	);
-
-	return DockTab;
 }
 
 TSharedRef<SDockTab> SCortexWorkbench::SpawnChatTab(const FSpawnTabArgs& /*Args*/)
