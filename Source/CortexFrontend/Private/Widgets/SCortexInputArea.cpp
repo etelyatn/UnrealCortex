@@ -99,6 +99,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
             [
                 SAssignNew(ModeDropdown, SMenuAnchor)
                 .Placement(MenuPlacement_AboveAnchor)
+                .UseApplicationMenuStack(true)
                 .OnGetMenuContent_Lambda([this]() -> TSharedRef<SWidget>
                 {
                     TSharedRef<SVerticalBox> Menu = SNew(SVerticalBox);
@@ -186,11 +187,26 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
             [
                 SAssignNew(ModelDropdown, SMenuAnchor)
                 .Placement(MenuPlacement_AboveAnchor)
+                .UseApplicationMenuStack(true)
                 .OnGetMenuContent_Lambda([this]() -> TSharedRef<SWidget>
                 {
                     TSharedRef<SVerticalBox> Menu = SNew(SVerticalBox);
+
+                    // === Model section ===
+                    Menu->AddSlot()
+                    .AutoHeight()
+                    .Padding(FMargin(12.0f, 6.0f, 12.0f, 2.0f))
+                    [
+                        SNew(STextBlock)
+                        .Text(FText::FromString(TEXT("MODEL")))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
+                        .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
+                    ];
+
+                    const FString CurrentModel = FCortexFrontendSettings::Get().GetSelectedModel();
                     for (const FString& ModelId : FCortexFrontendSettings::Get().GetAvailableModels())
                     {
+                        const bool bIsSelected = (ModelId == CurrentModel);
                         Menu->AddSlot()
                         .AutoHeight()
                         [
@@ -202,19 +218,122 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                 FCortexFrontendSettings::Get().SetSelectedModel(ModelId);
                                 if (ModelLabel.IsValid())
                                 {
-                                    ModelLabel->SetText(FText::FromString(FCortexFrontendSettings::Get().GetSelectedModel()));
+                                    ModelLabel->SetText(FText::FromString(
+                                        FCortexFrontendSettings::Get().GetSelectedModel()));
                                 }
                                 ModelDropdown->SetIsOpen(false);
                                 return FReply::Handled();
                             })
                             [
-                                SNew(STextBlock)
-                                .Text(FText::FromString(ModelId))
-                                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
-                                .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
+                                SNew(SHorizontalBox)
+                                + SHorizontalBox::Slot()
+                                .AutoWidth()
+                                .VAlign(VAlign_Center)
+                                .Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text(FText::FromString(bIsSelected ? TEXT("\u2713") : TEXT(" ")))
+                                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                                    .ColorAndOpacity(FSlateColor(CortexColors::ModeButtonText))
+                                ]
+                                + SHorizontalBox::Slot()
+                                .AutoWidth()
+                                .VAlign(VAlign_Center)
+                                [
+                                    SNew(STextBlock)
+                                    .Text(FText::FromString(ModelId))
+                                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                                    .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
+                                ]
                             ]
                         ];
                     }
+
+                    // === Separator ===
+                    Menu->AddSlot()
+                    .AutoHeight()
+                    .Padding(FMargin(8.0f, 4.0f))
+                    [
+                        SNew(SBorder)
+                        .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                        .BorderBackgroundColor(CortexColors::ToolBlockBorder)
+                        [
+                            SNew(SBox).HeightOverride(1.0f)
+                        ]
+                    ];
+
+                    // === Effort section ===
+                    Menu->AddSlot()
+                    .AutoHeight()
+                    .Padding(FMargin(12.0f, 2.0f, 12.0f, 2.0f))
+                    [
+                        SNew(STextBlock)
+                        .Text(FText::FromString(TEXT("EFFORT")))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
+                        .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
+                    ];
+
+                    const ECortexEffortLevel CurrentEffort = FCortexFrontendSettings::Get().GetEffortLevel();
+                    for (ECortexEffortLevel Level : {
+                        ECortexEffortLevel::Default,
+                        ECortexEffortLevel::Low,
+                        ECortexEffortLevel::Medium,
+                        ECortexEffortLevel::High,
+                        ECortexEffortLevel::Maximum })
+                    {
+                        FString LevelStr;
+                        switch (Level)
+                        {
+                        case ECortexEffortLevel::Default: LevelStr = TEXT("Default"); break;
+                        case ECortexEffortLevel::Low:     LevelStr = TEXT("Low"); break;
+                        case ECortexEffortLevel::Medium:  LevelStr = TEXT("Medium"); break;
+                        case ECortexEffortLevel::High:    LevelStr = TEXT("High"); break;
+                        case ECortexEffortLevel::Maximum: LevelStr = TEXT("Max"); break;
+                        }
+                        const bool bIsSelected = (Level == CurrentEffort);
+                        Menu->AddSlot()
+                        .AutoHeight()
+                        [
+                            SNew(SButton)
+                            .ButtonStyle(&GetHoverButtonStyle())
+                            .ContentPadding(FMargin(12.0f, 6.0f))
+                            .OnClicked_Lambda([this, Level, LevelStr]()
+                            {
+                                FCortexFrontendSettings::Get().SetEffortLevel(Level);
+                                if (EffortLabel.IsValid())
+                                {
+                                    const bool bShowEffort = (Level != ECortexEffortLevel::Default);
+                                    EffortLabel->SetText(FText::FromString(bShowEffort ? LevelStr : TEXT("")));
+                                    EffortLabel->SetVisibility(bShowEffort ? EVisibility::Visible : EVisibility::Collapsed);
+                                }
+                                ModelDropdown->SetIsOpen(false);
+                                return FReply::Handled();
+                            })
+                            [
+                                SNew(SHorizontalBox)
+                                + SHorizontalBox::Slot()
+                                .AutoWidth()
+                                .VAlign(VAlign_Center)
+                                .Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text(FText::FromString(bIsSelected ? TEXT("\u2713") : TEXT(" ")))
+                                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                                    .ColorAndOpacity(FSlateColor(CortexColors::ModeButtonText))
+                                ]
+                                + SHorizontalBox::Slot()
+                                .AutoWidth()
+                                .VAlign(VAlign_Center)
+                                [
+                                    SNew(STextBlock)
+                                    .Text(FText::FromString(LevelStr))
+                                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                                    .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
+                                ]
+                            ]
+                        ];
+                    }
+
                     return SNew(SBorder)
                         .BorderImage(DropdownBrush.Get())
                         .Padding(FMargin(0.0f, 4.0f))
@@ -239,6 +358,20 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                             .Text(FText::FromString(FCortexFrontendSettings::Get().GetSelectedModel()))
                             .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
                             .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
+                        ]
+                        + SHorizontalBox::Slot()
+                        .AutoWidth()
+                        .VAlign(VAlign_Center)
+                        .Padding(4.0f, 0.0f, 0.0f, 0.0f)
+                        [
+                            SAssignNew(EffortLabel, STextBlock)
+                            .Text(FText::FromString(
+                                FCortexFrontendSettings::Get().GetEffortLevel() == ECortexEffortLevel::Default
+                                    ? TEXT("") : FCortexFrontendSettings::Get().GetEffortLevelString()))
+                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                            .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
+                            .Visibility(FCortexFrontendSettings::Get().GetEffortLevel() == ECortexEffortLevel::Default
+                                ? EVisibility::Collapsed : EVisibility::Visible)
                         ]
                         + SHorizontalBox::Slot()
                         .AutoWidth()

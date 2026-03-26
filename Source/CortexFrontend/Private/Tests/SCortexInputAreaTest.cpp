@@ -1,6 +1,26 @@
 #include "Misc/AutomationTest.h"
 #include "Widgets/SCortexInputArea.h"
+#include "CortexFrontendSettings.h"
 #include "Framework/Application/SlateApplication.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaEffortSettingTest,
+    "Cortex.Frontend.InputArea.EffortSettingPersists",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaEffortSettingTest::RunTest(const FString& Parameters)
+{
+    // Save original effort to restore later
+    const ECortexEffortLevel OriginalEffort = FCortexFrontendSettings::Get().GetEffortLevel();
+
+    FCortexFrontendSettings::Get().SetEffortLevel(ECortexEffortLevel::High);
+    TestEqual(TEXT("Effort set to High"),
+        static_cast<int32>(FCortexFrontendSettings::Get().GetEffortLevel()),
+        static_cast<int32>(ECortexEffortLevel::High));
+
+    // Restore
+    FCortexFrontendSettings::Get().SetEffortLevel(OriginalEffort);
+    return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaChipTest,
     "Cortex.Frontend.InputArea.ContextChips",

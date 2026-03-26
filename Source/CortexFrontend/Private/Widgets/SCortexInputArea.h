@@ -50,6 +50,7 @@ private:
     TSharedPtr<SMenuAnchor> ModelDropdown;
     TSharedPtr<STextBlock> ModeLabel;
     TSharedPtr<STextBlock> ModelLabel;
+    TSharedPtr<STextBlock> EffortLabel;
 
     TArray<FString> ContextItems;
 
