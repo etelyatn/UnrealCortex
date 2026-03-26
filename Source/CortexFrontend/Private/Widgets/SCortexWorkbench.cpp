@@ -3,6 +3,7 @@
 #include "CortexFrontendModule.h"
 #include "Framework/Docking/TabManager.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/SCortexChatPanel.h"
 #include "Session/CortexCliSession.h"
@@ -10,33 +11,18 @@
 void SCortexWorkbench::Construct(const FArguments& InArgs)
 {
 	SessionWeak = InArgs._Session;
+	OwnerTabWeak = InArgs._OwnerTab;
 
-	// Create local tab manager
-	check(InArgs._OwnerTab.IsValid());
-	TabManager = FGlobalTabmanager::Get()->NewTabManager(InArgs._OwnerTab.ToSharedRef());
-
-	// Register chat tab spawner
-	TabManager->RegisterTabSpawner(
-		FName(TEXT("CortexChat")),
-		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnChatTab))
-		.SetDisplayName(FText::FromString(TEXT("Chat")));
-
-	// Define layout
-	TSharedRef<FTabManager::FStack> Stack = FTabManager::NewStack();
-	Stack->AddTab(FName(TEXT("CortexChat")), ETabState::OpenedTab);
-
-	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("CortexChatLayout_v2.0")
-		->AddArea
-		(
-			FTabManager::NewPrimaryArea()
-			->Split(Stack)
-		);
-
-	TSharedPtr<SWidget> TabContents = TabManager->RestoreFrom(Layout, TSharedPtr<SWindow>());
-
+	// Start in single-chat mode: no tab bar, just the chat panel directly
 	ChildSlot
 	[
-		TabContents.IsValid() ? TabContents.ToSharedRef() : SNullWidget::NullWidget
+		SAssignNew(ContentContainer, SBox)
+		[
+			SNew(SCortexChatPanel)
+			.Session(SessionWeak)
+			.OnNewChatTab(FSimpleDelegate::CreateSP(
+				this, &SCortexWorkbench::SpawnNewChatTab))
+		]
 	];
 }
 
@@ -57,6 +43,42 @@ SCortexWorkbench::~SCortexWorkbench()
 		// prevents the callback from accessing a widget that's being destructed.
 		TabManager->UnregisterTabSpawner(TEXT("CortexChat"));
 		TabManager->CloseAllAreas();
+	}
+}
+
+void SCortexWorkbench::SwitchToMultiTabMode()
+{
+	TSharedPtr<SDockTab> OwnerTab = OwnerTabWeak.Pin();
+	if (!OwnerTab.IsValid())
+	{
+		return;
+	}
+
+	// Create tab manager
+	TabManager = FGlobalTabmanager::Get()->NewTabManager(OwnerTab.ToSharedRef());
+
+	TabManager->RegisterTabSpawner(
+		FName(TEXT("CortexChat")),
+		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnChatTab))
+		.SetDisplayName(FText::FromString(TEXT("Chat")));
+
+	// Define layout — the spawner creates the initial "Chat" tab
+	TSharedRef<FTabManager::FStack> Stack = FTabManager::NewStack();
+	Stack->AddTab(FName(TEXT("CortexChat")), ETabState::OpenedTab);
+
+	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("CortexChatLayout_v2.0")
+		->AddArea
+		(
+			FTabManager::NewPrimaryArea()
+			->Split(Stack)
+		);
+
+	TSharedPtr<SWidget> TabContents = TabManager->RestoreFrom(Layout, TSharedPtr<SWindow>());
+
+	// Swap the content container from single-chat to tabbed mode
+	if (ContentContainer.IsValid() && TabContents.IsValid())
+	{
+		ContentContainer->SetContent(TabContents.ToSharedRef());
 	}
 }
 
@@ -98,6 +120,12 @@ TSharedRef<SDockTab> SCortexWorkbench::BuildChatTab(
 
 void SCortexWorkbench::SpawnNewChatTab()
 {
+	// First new chat: switch from single-chat to multi-tab mode
+	if (!TabManager.IsValid())
+	{
+		SwitchToMultiTabMode();
+	}
+
 	if (!TabManager.IsValid())
 	{
 		return;
@@ -138,4 +166,3 @@ void SCortexWorkbench::CleanupChatTab(FName TabId)
 	}
 	ChatSessions.Remove(TabId);
 }
-
