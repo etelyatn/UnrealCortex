@@ -27,7 +27,7 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 	TSharedRef<FTabManager::FStack> Stack = FTabManager::NewStack();
 	Stack->AddTab(FName(TEXT("CortexChat")), ETabState::OpenedTab);
 
-	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("CortexFrontendLayout_v1.5")
+	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("CortexChatLayout_v2.0")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
@@ -44,6 +44,14 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 
 SCortexWorkbench::~SCortexWorkbench()
 {
+	// Clean up additional chat tab sessions
+	TArray<FName> ChatTabIds;
+	ChatSessions.GetKeys(ChatTabIds);
+	for (const FName& TabId : ChatTabIds)
+	{
+		CleanupChatTab(TabId);
+	}
+
 	// Clean up all conversion tab contexts (sessions)
 	TArray<FName> TabIds;
 	ConversionContexts.GetKeys(TabIds);
@@ -189,13 +197,79 @@ void SCortexWorkbench::CleanupAnalysisTab(FName TabId)
 TSharedRef<SDockTab> SCortexWorkbench::SpawnChatTab(const FSpawnTabArgs& /*Args*/)
 {
 	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
-		.TabRole(ETabRole::PanelTab);
+		.TabRole(ETabRole::DocumentTab);
 
 	DockTab->SetContent(
 		SNew(SCortexChatPanel)
 		.Session(SessionWeak)
+		.OnNewChatTab(FSimpleDelegate::CreateSP(
+			this, &SCortexWorkbench::SpawnNewChatTab))
 	);
 
 	return DockTab;
+}
+
+TSharedRef<SDockTab> SCortexWorkbench::BuildChatTab(
+	TSharedPtr<FCortexCliSession> Session,
+	const FString& Label,
+	FName TabId)
+{
+	TSharedRef<SDockTab> Tab = SNew(SDockTab)
+		.TabRole(ETabRole::DocumentTab)
+		.Label(FText::FromString(Label))
+		.OnTabClosed_Lambda([this, TabId](TSharedRef<SDockTab>)
+		{
+			CleanupChatTab(TabId);
+		})
+		[
+			SNew(SCortexChatPanel)
+			.Session(Session)
+			.OnNewChatTab(FSimpleDelegate::CreateSP(
+				this, &SCortexWorkbench::SpawnNewChatTab))
+		];
+	return Tab;
+}
+
+void SCortexWorkbench::SpawnNewChatTab()
+{
+	if (!TabManager.IsValid())
+	{
+		return;
+	}
+
+	ChatTabCounter++;
+	const FName TabId = FName(*FString::Printf(TEXT("CortexChat_%d"), ChatTabCounter));
+	const FString Label = FString::Printf(TEXT("Chat %d"), ChatTabCounter);
+
+	// Create new session using shared config factory
+	TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(
+		FCortexFrontendModule::CreateDefaultSessionConfig());
+	ChatSessions.Add(TabId, Session);
+
+	// Register with module for PreExit cleanup
+	FCortexFrontendModule& FrontendModule =
+		FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+	FrontendModule.RegisterSession(Session);
+
+	TSharedRef<SDockTab> Tab = BuildChatTab(Session, Label, TabId);
+
+	TabManager->InsertNewDocumentTab(
+		FName(TEXT("CortexChat")),
+		FTabManager::ESearchPreference::PreferLiveTab,
+		Tab);
+}
+
+void SCortexWorkbench::CleanupChatTab(FName TabId)
+{
+	TSharedPtr<FCortexCliSession>* FoundSession = ChatSessions.Find(TabId);
+	if (FoundSession && FoundSession->IsValid())
+	{
+		(*FoundSession)->Shutdown();
+
+		FCortexFrontendModule& FrontendModule =
+			FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+		FrontendModule.UnregisterSession(*FoundSession);
+	}
+	ChatSessions.Remove(TabId);
 }
 

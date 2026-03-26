@@ -9,6 +9,7 @@ class FCortexCliSession;
 class SCortexWorkbench;
 struct FCortexConversionPayload;
 struct FCortexAnalysisPayload;
+struct FCortexSessionConfig;
 
 CORTEXFRONTEND_API DECLARE_LOG_CATEGORY_EXTERN(LogCortexFrontend, Log, All);
 
@@ -19,6 +20,9 @@ public:
     virtual void ShutdownModule() override;
 
     TWeakPtr<FCortexCliSession> GetOrCreateSession();
+
+    /** Create a default session config using project paths. */
+    static FCortexSessionConfig CreateDefaultSessionConfig();
 
     /** Register a conversion session for PreExit cleanup. */
     void RegisterSession(TSharedPtr<FCortexCliSession> Session);

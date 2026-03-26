@@ -37,8 +37,8 @@ void FCortexFrontendModule::StartupModule()
     FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
         CortexChatTabId,
         FOnSpawnTab::CreateRaw(this, &FCortexFrontendModule::SpawnChatTab))
-        .SetDisplayName(FText::FromString(TEXT("Cortex Frontend")))
-        .SetTooltipText(FText::FromString(TEXT("Open the Cortex Frontend panel")))
+        .SetDisplayName(FText::FromString(TEXT("Cortex Chat")))
+        .SetTooltipText(FText::FromString(TEXT("Open the Cortex Chat panel")))
         .SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"))
         .SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory());
 
@@ -62,8 +62,8 @@ void FCortexFrontendModule::StartupModule()
             FToolMenuSection& Section = Menu->FindOrAddSection(TEXT("Cortex"));
             Section.AddEntry(FToolMenuEntry::InitMenuEntry(
                 TEXT("CortexChat"),
-                FText::FromString(TEXT("Cortex Frontend")),
-                FText::FromString(TEXT("Open Cortex Frontend panel")),
+                FText::FromString(TEXT("Cortex Chat")),
+                FText::FromString(TEXT("Open Cortex Chat panel")),
                 FSlateIcon(),
                 FUIAction(FExecuteAction::CreateLambda([]()
                 {
@@ -139,13 +139,8 @@ void FCortexFrontendModule::ShutdownModule()
     FCortexRichTextStyle::Shutdown();
 }
 
-TWeakPtr<FCortexCliSession> FCortexFrontendModule::GetOrCreateSession()
+FCortexSessionConfig FCortexFrontendModule::CreateDefaultSessionConfig()
 {
-    if (Sessions.Num() > 0 && Sessions[0].IsValid())
-    {
-        return Sessions[0];
-    }
-
     FCortexSessionConfig Config;
     Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
     Config.WorkingDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
@@ -156,7 +151,17 @@ TWeakPtr<FCortexCliSession> FCortexFrontendModule::GetOrCreateSession()
         Config.McpConfigPath = FPaths::ConvertRelativePathToFull(McpPath);
     }
 
-    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(Config);
+    return Config;
+}
+
+TWeakPtr<FCortexCliSession> FCortexFrontendModule::GetOrCreateSession()
+{
+    if (Sessions.Num() > 0 && Sessions[0].IsValid())
+    {
+        return Sessions[0];
+    }
+
+    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(CreateDefaultSessionConfig());
     Sessions.Reset();
     Sessions.Add(Session);
     return Session;

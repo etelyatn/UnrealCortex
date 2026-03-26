@@ -29,6 +29,8 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
         SessionWeak = Module.GetOrCreateSession();
     }
 
+    OnNewChatTab = InArgs._OnNewChatTab;
+
     ChildSlot
     [
         SNew(SVerticalBox)
@@ -36,8 +38,18 @@ void SCortexChatPanel::Construct(const FArguments& InArgs)
         .AutoHeight()
         [
             SAssignNew(ChatToolbar, SCortexChatToolbar)
-            .OnNewChat(FOnCortexNewChat::CreateSP(this, &SCortexChatPanel::NewChat))
             .Session(SessionWeak)
+            .OnNewChat(FOnCortexNewChat::CreateLambda([this]()
+            {
+                if (OnNewChatTab.IsBound())
+                {
+                    OnNewChatTab.Execute();
+                }
+                else
+                {
+                    NewChat();
+                }
+            }))
         ]
         + SVerticalBox::Slot()
         .AutoHeight()
