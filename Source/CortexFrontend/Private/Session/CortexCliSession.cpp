@@ -90,6 +90,20 @@ bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
 		return false;
 	}
 
+	// Access mode changed since last spawn — reconnect to apply new --allowedTools
+	if (LastSpawnedAccessMode.IsSet() && LastSpawnedAccessMode.GetValue() != Request.AccessMode)
+	{
+		UE_LOG(LogCortexFrontend, Log, TEXT("Access mode changed (%d -> %d), reconnecting to apply new permissions"),
+			static_cast<int32>(LastSpawnedAccessMode.GetValue()), static_cast<int32>(Request.AccessMode));
+		if (!Reconnect())
+		{
+			UE_LOG(LogCortexFrontend, Warning, TEXT("SendPrompt: reconnect for mode change failed"));
+			return false;
+		}
+		// After reconnect, state is Idle again — prompt is still pending, will be drained by worker
+		return true;
+	}
+
 	if (!TransitionState(ECortexSessionState::Idle, ECortexSessionState::Processing, TEXT("Prompt dispatched")))
 	{
 		UE_LOG(LogCortexFrontend, Warning, TEXT("SendPrompt: failed to transition Idle -> Processing (state race)"));
@@ -611,6 +625,7 @@ bool FCortexCliSession::SpawnProcess(ECortexAccessMode AccessMode, bool bResumeS
 		CleanupProcess();
 		return false;
 	}
+	LastSpawnedAccessMode = AccessMode;
 	BroadcastStateChange(ExpectedState, ECortexSessionState::Idle, TEXT("Claude CLI session ready"));
 	UE_LOG(LogCortexFrontend, Log, TEXT("Claude CLI session ready (resume=%s)"), bResumeSession ? TEXT("true") : TEXT("false"));
 
