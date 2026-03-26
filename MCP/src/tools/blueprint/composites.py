@@ -28,6 +28,14 @@ _BP_CLASS_MAP = {
     "SwitchEnum": "UK2Node_SwitchEnum",
     "SwitchString": "UK2Node_SwitchString",
     "SwitchInteger": "UK2Node_SwitchInteger",
+    "AddDelegate": "UK2Node_AddDelegate",
+    "BindEvent": "UK2Node_AddDelegate",
+    "RemoveDelegate": "UK2Node_RemoveDelegate",
+    "UnbindEvent": "UK2Node_RemoveDelegate",
+    "ClearDelegate": "UK2Node_ClearDelegate",
+    "UnbindAllEvents": "UK2Node_ClearDelegate",
+    "CreateDelegate": "UK2Node_CreateDelegate",
+    "CreateEvent": "UK2Node_CreateDelegate",
 }
 
 _VALID_BP_TYPES = {"Actor", "Component", "Interface", "FunctionLibrary"}
@@ -316,7 +324,12 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                     Event, CustomEvent, CallFunction, Branch, Sequence,
                     VariableGet, VariableSet, SpawnActor, CastTo,
                     Timeline (requires params.timeline_name),
-                    MacroInstance (requires params.macro_path).
+                    MacroInstance (requires params.macro_path),
+                    AddDelegate/BindEvent (requires params.delegate_name + optional params.delegate_class),
+                    RemoveDelegate/UnbindEvent (same params as AddDelegate),
+                    ClearDelegate/UnbindAllEvents (same params as AddDelegate),
+                    CreateDelegate/CreateEvent (optional params.function_name — bare name only,
+                        NOT ClassName.FunctionName format).
                     Note: ForEach loops use CallFunction with
                     function_name: "KismetArrayLibrary.Array_ForEach"
                 - params: Optional dict of node-specific params (e.g., {"function_name": "KismetSystemLibrary.PrintString"})
@@ -335,6 +348,9 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                     Sequence: inputs "execute", outputs "then 0", "then 1", ...
                     VariableGet: output is variable name
                     VariableSet: inputs "execute" + variable name, outputs "then"
+                    AddDelegate: inputs "execute", "self" (Target), "Delegate" (Event); outputs "then"
+                    ClearDelegate: inputs "execute", "self" (Target); outputs "then"
+                    CreateDelegate: inputs "self" (Object); outputs "OutputDelegate" (Event)
 
         Returns:
             JSON with asset_path, node_count, variable_count, function_count, timing.
