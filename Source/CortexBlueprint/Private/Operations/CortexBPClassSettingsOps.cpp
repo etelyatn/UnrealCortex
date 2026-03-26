@@ -186,8 +186,110 @@ FCortexCommandResult FCortexBPClassSettingsOps::AddInterface(const TSharedPtr<FJ
 
 FCortexCommandResult FCortexBPClassSettingsOps::RemoveInterface(const TSharedPtr<FJsonObject>& Params)
 {
-	// Stub — implemented in Task 3
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not yet implemented"));
+	if (!Params.IsValid())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params object"));
+	}
+
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing or empty 'asset_path' field"));
+	}
+
+	FString InterfacePath;
+	if (!Params->TryGetStringField(TEXT("interface_path"), InterfacePath) || InterfacePath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing or empty 'interface_path' field"));
+	}
+
+	bool bCompile = true;
+	Params->TryGetBoolField(TEXT("compile"), bCompile);
+
+	FString LoadError;
+	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
+	if (!Blueprint)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+	}
+
+	FString ResolveError;
+	UClass* InterfaceClass = ResolveInterfaceClass(InterfacePath, ResolveError);
+	if (!InterfaceClass)
+	{
+		const int32 ErrorCode = ResolveError.StartsWith(TEXT("NOT_INTERFACE:"))
+			? CortexErrorCodes::InvalidOperation
+			: CortexErrorCodes::ClassNotFound;
+		const FString CleanError = ResolveError.StartsWith(TEXT("NOT_INTERFACE:"))
+			? ResolveError.Mid(14)
+			: ResolveError;
+		return FCortexCommandRouter::Error(ErrorCode, CleanError);
+	}
+
+	// Check if actually implemented
+	const FString InterfaceClassPath = InterfaceClass->GetPathName();
+	bool bFound = false;
+	TArray<FString> RemovedGraphNames;
+	for (const FBPInterfaceDescription& Desc : Blueprint->ImplementedInterfaces)
+	{
+		if (Desc.Interface && Desc.Interface->GetPathName() == InterfaceClassPath)
+		{
+			bFound = true;
+			for (const UEdGraph* Graph : Desc.Graphs)
+			{
+				if (Graph)
+				{
+					RemovedGraphNames.Add(Graph->GetName());
+				}
+			}
+			break;
+		}
+	}
+
+	if (!bFound)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Blueprint does not implement interface '%s'"),
+				*InterfaceClass->GetName()));
+	}
+
+	{
+		FScopedTransaction Transaction(FText::FromString(
+			FString::Printf(TEXT("Cortex: Remove Interface %s from %s"),
+				*InterfaceClass->GetName(), *Blueprint->GetName())));
+
+		FBlueprintEditorUtils::RemoveInterface(Blueprint, FTopLevelAssetPath(InterfaceClass));
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	}
+
+	bool bDidCompile = false;
+	if (bCompile)
+	{
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		bDidCompile = (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> RemovedGraphsArray;
+	for (const FString& GraphName : RemovedGraphNames)
+	{
+		RemovedGraphsArray.Add(MakeShared<FJsonValueString>(GraphName));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetStringField(TEXT("interface_name"), InterfaceClass->GetName());
+	Data->SetStringField(TEXT("interface_path"), InterfaceClassPath);
+	Data->SetBoolField(TEXT("compiled"), bCompile && bDidCompile);
+	Data->SetArrayField(TEXT("removed_graphs"), RemovedGraphsArray);
+
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Removed interface %s from %s"),
+		*InterfaceClass->GetName(), *AssetPath);
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexBPClassSettingsOps::SetTickSettings(const TSharedPtr<FJsonObject>& Params)

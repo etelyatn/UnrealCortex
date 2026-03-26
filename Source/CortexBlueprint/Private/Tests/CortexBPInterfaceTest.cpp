@@ -150,3 +150,89 @@ bool FCortexBPAddInterfaceNotInterfaceTest::RunTest(const FString& Parameters)
 	TestBP->MarkAsGarbage();
 	return true;
 }
+
+// ============================================================================
+// RemoveInterface Tests
+// ============================================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveInterfaceBasicTest,
+	"Cortex.Blueprint.ClassSettings.RemoveInterface.Basic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRemoveInterfaceBasicTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_RemoveInterfaceBasicTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Test Blueprint created"), TestBP);
+	if (!TestBP) { return false; }
+
+	// First add an interface
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	AddParams->SetStringField(TEXT("interface_path"), TEXT("ActorTickableInterface"));
+	AddParams->SetBoolField(TEXT("compile"), false);
+
+	FCortexCommandResult AddResult = FCortexBPClassSettingsOps::AddInterface(AddParams);
+	TestTrue(TEXT("Add succeeded"), AddResult.bSuccess);
+	TestEqual(TEXT("Interface count is 1"), TestBP->ImplementedInterfaces.Num(), 1);
+
+	// Now remove it
+	TSharedPtr<FJsonObject> RemoveParams = MakeShared<FJsonObject>();
+	RemoveParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	RemoveParams->SetStringField(TEXT("interface_path"), TEXT("ActorTickableInterface"));
+	RemoveParams->SetBoolField(TEXT("compile"), true);
+
+	FCortexCommandResult RemoveResult = FCortexBPClassSettingsOps::RemoveInterface(RemoveParams);
+	TestTrue(TEXT("RemoveInterface succeeded"), RemoveResult.bSuccess);
+	TestEqual(TEXT("Interface count is 0"), TestBP->ImplementedInterfaces.Num(), 0);
+
+	if (RemoveResult.Data.IsValid())
+	{
+		FString InterfaceName;
+		TestTrue(TEXT("Response has interface_name"),
+			RemoveResult.Data->TryGetStringField(TEXT("interface_name"), InterfaceName));
+
+		bool bCompiled = false;
+		TestTrue(TEXT("Response has compiled"),
+			RemoveResult.Data->TryGetBoolField(TEXT("compiled"), bCompiled));
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveInterfaceNotImplementedTest,
+	"Cortex.Blueprint.ClassSettings.RemoveInterface.NotImplemented",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRemoveInterfaceNotImplementedTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_RemoveInterfaceNotImplTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Test Blueprint created"), TestBP);
+	if (!TestBP) { return false; }
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	Params->SetStringField(TEXT("interface_path"), TEXT("ActorTickableInterface"));
+	Params->SetBoolField(TEXT("compile"), false);
+
+	FCortexCommandResult Result = FCortexBPClassSettingsOps::RemoveInterface(Params);
+	TestFalse(TEXT("Returns failure when interface not implemented"), Result.bSuccess);
+	TestEqual(TEXT("Error code is InvalidOperation"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
