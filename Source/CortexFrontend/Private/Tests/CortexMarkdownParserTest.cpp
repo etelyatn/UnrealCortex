@@ -112,6 +112,42 @@ bool FCortexMarkdownParserUnderscoreIdentifierTest::RunTest(const FString& Param
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexMarkdownParserTableTest,
+	"Cortex.Frontend.MarkdownParser.ParseTable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexMarkdownParserTableTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FString Input = TEXT("| Name | Status |\n|---|---|\n| Alpha | Pass |\n| Beta | Fail |");
+	TArray<FCortexMarkdownBlock> Blocks = CortexMarkdownParser::ParseBlocks(Input);
+
+	TestEqual(TEXT("Block count"), Blocks.Num(), 1);
+	TestEqual(TEXT("Block type"), static_cast<int32>(Blocks[0].Type), static_cast<int32>(ECortexMarkdownBlockType::Table));
+	TestEqual(TEXT("Header count"), Blocks[0].TableHeaders.Num(), 2);
+	TestEqual(TEXT("Header 0"), Blocks[0].TableHeaders[0], TEXT("Name"));
+	TestEqual(TEXT("Header 1"), Blocks[0].TableHeaders[1], TEXT("Status"));
+	TestEqual(TEXT("Row count"), Blocks[0].TableRows.Num(), 2);
+	TestEqual(TEXT("Row 0 Col 0"), Blocks[0].TableRows[0][0], TEXT("Alpha"));
+	TestEqual(TEXT("Row 0 Col 1"), Blocks[0].TableRows[0][1], TEXT("Pass"));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexMarkdownParserMalformedTableTest,
+	"Cortex.Frontend.MarkdownParser.MalformedTableFallsBackToParagraph",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexMarkdownParserMalformedTableTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	// Missing separator row — should be a paragraph, not a table
+	const FString Input = TEXT("| Name | Status |\n| Alpha | Pass |");
+	TArray<FCortexMarkdownBlock> Blocks = CortexMarkdownParser::ParseBlocks(Input);
+	TestTrue(TEXT("Not parsed as table"), Blocks.Num() > 0 && Blocks[0].Type != ECortexMarkdownBlockType::Table);
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatMarshallerCreateTest,
 	"Cortex.Frontend.ChatMarshaller.Create",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

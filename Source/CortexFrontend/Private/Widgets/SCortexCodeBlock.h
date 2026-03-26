@@ -1,6 +1,6 @@
 #pragma once
-
 #include "CoreMinimal.h"
+#include "Brushes/SlateRoundedBoxBrush.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
@@ -25,4 +25,5 @@ private:
     FString CodeContent;
 
     TSharedPtr<SMultiLineEditableText> CodeTextWidget;
+    TUniquePtr<FSlateRoundedBoxBrush> CodeBlockBrush;
 };

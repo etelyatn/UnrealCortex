@@ -75,6 +75,40 @@ namespace
 			return Block;
 		}
 
+		// Table
+		if (Lines.Num() >= 2 && Lines[0].StartsWith(TEXT("|")) && Lines[1].Contains(TEXT("---")))
+		{
+			Block.Type = ECortexMarkdownBlockType::Table;
+
+			auto ParsePipeCells = [](const FString& Line) -> TArray<FString>
+			{
+				TArray<FString> Cells;
+				FString Trimmed = Line;
+				if (Trimmed.StartsWith(TEXT("|"))) Trimmed.RemoveFromStart(TEXT("|"));
+				if (Trimmed.EndsWith(TEXT("|"))) Trimmed.RemoveFromEnd(TEXT("|"));
+				TArray<FString> Parts;
+				Trimmed.ParseIntoArray(Parts, TEXT("|"));
+				for (FString& Part : Parts)
+				{
+					Part.TrimStartAndEndInline();
+					Cells.Add(MoveTemp(Part));
+				}
+				return Cells;
+			};
+
+			Block.TableHeaders = ParsePipeCells(Lines[0]);
+
+			// Skip separator row (index 1), parse data rows
+			for (int32 i = 2; i < Lines.Num(); ++i)
+			{
+				if (Lines[i].TrimStartAndEnd().StartsWith(TEXT("|")))
+				{
+					Block.TableRows.Add(ParsePipeCells(Lines[i]));
+				}
+			}
+			return Block;
+		}
+
 		// Paragraph
 		Block.Type = ECortexMarkdownBlockType::Paragraph;
 		Block.RawText = FString::Join(Lines, TEXT("\n"));
