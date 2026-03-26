@@ -3,17 +3,20 @@
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 import pytest
 
 from cortex_mcp.capabilities import (
     CORE_DOMAINS,
+    _COMPOSITE_HINTS,
     build_router_docstrings,
     get_registered_domains,
     load_capabilities_cache,
     minimal_router_docstrings,
 )
+from cortex_mcp._fallback_generated import FALLBACK_COMMANDS as _FALLBACK_STRUCTURED
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -160,3 +163,102 @@ def test_gen_docstrings_excluded_when_cache_missing():
     """When no capabilities cache, gen should not appear in docstrings."""
     docstrings = build_router_docstrings(None)
     assert "gen" not in docstrings
+
+
+class TestFallbackDrift:
+    """Detect drift between generated fallback and capabilities cache fixture.
+
+    If these tests fail, run: cd MCP && uv run python scripts/sync_fallback.py --from-fixture
+    """
+
+    @pytest.fixture()
+    def cache_domains(self) -> dict:
+        data = json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
+        return data["domains"]
+
+    def test_command_names_match(self, cache_domains):
+        """Every command in the cache fixture must appear in the fallback, and vice versa."""
+        for domain_name, domain_info in cache_domains.items():
+            if domain_name not in _FALLBACK_STRUCTURED:
+                continue
+            cache_cmds = {cmd["name"] for cmd in domain_info.get("commands", [])}
+            fallback_cmds = {cmd["name"] for cmd in _FALLBACK_STRUCTURED[domain_name]}
+
+            missing = cache_cmds - fallback_cmds
+            extra = fallback_cmds - cache_cmds
+            assert not missing and not extra, (
+                f"Domain '{domain_name}' command mismatch.\n"
+                f"  Missing from fallback: {missing}\n"
+                f"  Extra in fallback: {extra}\n"
+                f"  Fix: cd MCP && uv run python scripts/sync_fallback.py --from-fixture"
+            )
+
+    def test_parameter_signatures_match(self, cache_domains):
+        """Parameter names, types, and required/optional must match between cache and fallback."""
+        mismatches = []
+        for domain_name, domain_info in cache_domains.items():
+            if domain_name not in _FALLBACK_STRUCTURED:
+                continue
+            fallback_by_name = {cmd["name"]: cmd for cmd in _FALLBACK_STRUCTURED[domain_name]}
+            for cmd in domain_info.get("commands", []):
+                cmd_name = cmd["name"]
+                if cmd_name not in fallback_by_name:
+                    continue  # caught by test_command_names_match
+                cache_params = [
+                    (p["name"], p.get("type", "any"), p.get("required", False))
+                    for p in cmd.get("params", [])
+                ]
+                fallback_params = [
+                    (p["name"], p.get("type", "any"), p.get("required", False))
+                    for p in fallback_by_name[cmd_name].get("params", [])
+                ]
+                if cache_params != fallback_params:
+                    mismatches.append(
+                        f"  {domain_name}.{cmd_name}:\n"
+                        f"    cache:    {cache_params}\n"
+                        f"    fallback: {fallback_params}"
+                    )
+        assert not mismatches, (
+            f"Parameter drift detected in {len(mismatches)} commands:\n"
+            + "\n".join(mismatches)
+            + "\n\nFix: cd MCP && uv run python scripts/sync_fallback.py --from-fixture"
+        )
+
+    def test_fallback_domains_subset_of_cache(self, cache_domains):
+        """Generated fallback should not contain domains absent from cache."""
+        extra = set(_FALLBACK_STRUCTURED) - set(cache_domains)
+        assert not extra, (
+            f"Fallback has domains not in cache: {extra}. "
+            f"Regenerate from current cache."
+        )
+
+
+class TestCompositeHints:
+    """Validate that _COMPOSITE_HINTS reference real composite tools."""
+
+    def test_hints_reference_existing_domains(self):
+        """Every domain in _COMPOSITE_HINTS must be a known domain."""
+        all_domains = set(CORE_DOMAINS) | {"gen"}
+        for domain in _COMPOSITE_HINTS:
+            assert domain in all_domains, (
+                f"_COMPOSITE_HINTS references unknown domain '{domain}'"
+            )
+
+    def test_hints_reference_compose_tools(self):
+        """Hints mentioning _compose tools should reference real MCP tool names."""
+        known_compose_tools = {
+            "material_compose",
+            "material_instance_compose",
+            "blueprint_compose",
+            "widget_compose",
+            "level_compose",
+            "gen_compose",
+            "scenario_compose",
+        }
+        for domain, hint in _COMPOSITE_HINTS.items():
+            matches = re.findall(r"(\w+_compose)", hint)
+            for tool_name in matches:
+                assert tool_name in known_compose_tools, (
+                    f"_COMPOSITE_HINTS['{domain}'] references '{tool_name}' "
+                    f"which is not a known compose tool"
+                )
