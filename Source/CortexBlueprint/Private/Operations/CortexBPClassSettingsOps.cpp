@@ -294,8 +294,106 @@ FCortexCommandResult FCortexBPClassSettingsOps::RemoveInterface(const TSharedPtr
 
 FCortexCommandResult FCortexBPClassSettingsOps::SetTickSettings(const TSharedPtr<FJsonObject>& Params)
 {
-	// Stub — implemented in Task 4
-	return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Not yet implemented"));
+	if (!Params.IsValid())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params object"));
+	}
+
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing or empty 'asset_path' field"));
+	}
+
+	bool bCompile = true;
+	Params->TryGetBoolField(TEXT("compile"), bCompile);
+	bool bSave = false;
+	Params->TryGetBoolField(TEXT("save"), bSave);
+
+	FString LoadError;
+	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
+	if (!Blueprint)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+	}
+
+	if (!Blueprint->GeneratedClass)
+	{
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	}
+	UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
+	if (!GeneratedClass)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::CompileFailed, TEXT("Blueprint has no GeneratedClass"));
+	}
+
+	AActor* ActorCDO = Cast<AActor>(GeneratedClass->GetDefaultObject(false));
+	if (!ActorCDO)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidBlueprintType,
+			TEXT("Blueprint CDO is not an AActor — tick settings only apply to Actor Blueprints"));
+	}
+
+	{
+		FScopedTransaction Transaction(FText::FromString(
+			FString::Printf(TEXT("Cortex: Set Tick Settings on %s"), *Blueprint->GetName())));
+		ActorCDO->Modify();
+
+		bool bTempBool = false;
+		if (Params->TryGetBoolField(TEXT("can_ever_tick"), bTempBool))
+		{
+			ActorCDO->PrimaryActorTick.bCanEverTick = bTempBool;
+		}
+
+		if (Params->TryGetBoolField(TEXT("start_with_tick_enabled"), bTempBool))
+		{
+			ActorCDO->PrimaryActorTick.bStartWithTickEnabled = bTempBool;
+			if (bTempBool)
+			{
+				ActorCDO->PrimaryActorTick.bCanEverTick = true;
+			}
+		}
+
+		double TempDouble = 0.0;
+		if (Params->TryGetNumberField(TEXT("tick_interval"), TempDouble))
+		{
+			ActorCDO->PrimaryActorTick.TickInterval = static_cast<float>(TempDouble);
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	}
+
+	bool bDidCompile = false;
+	if (bCompile)
+	{
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		bDidCompile = (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings);
+	}
+
+	bool bDidSave = false;
+	if (bSave)
+	{
+		UPackage* Package = Blueprint->GetOutermost();
+		const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+			Package->GetName(), FPackageName::GetAssetPackageExtension());
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Standalone;
+		bDidSave = UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs);
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetBoolField(TEXT("start_with_tick_enabled"), ActorCDO->PrimaryActorTick.bStartWithTickEnabled);
+	Data->SetBoolField(TEXT("can_ever_tick"), ActorCDO->PrimaryActorTick.bCanEverTick);
+	Data->SetNumberField(TEXT("tick_interval"), ActorCDO->PrimaryActorTick.TickInterval);
+	Data->SetBoolField(TEXT("compiled"), bCompile && bDidCompile);
+	Data->SetBoolField(TEXT("saved"), bSave && bDidSave);
+
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Set tick settings on %s"), *AssetPath);
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexBPClassSettingsOps::SetReplicationSettings(const TSharedPtr<FJsonObject>& Params)
