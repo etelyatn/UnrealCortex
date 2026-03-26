@@ -4,9 +4,11 @@
 
 class FMonitoredProcess;
 class SDockTab;
+class SWindow;
 class FSpawnTabArgs;
 class FCortexCliSession;
-class SCortexWorkbench;
+struct FCortexConversionContext;
+struct FCortexAnalysisContext;
 struct FCortexConversionPayload;
 struct FCortexAnalysisPayload;
 struct FCortexSessionConfig;
@@ -37,10 +39,24 @@ public:
     void UnregisterBuildProcess(TSharedPtr<FMonitoredProcess> Process);
 
 private:
+    struct FConversionWindowEntry
+    {
+        TSharedPtr<FCortexConversionContext> Context;
+        TWeakPtr<SWindow> Window;
+    };
+
+    struct FAnalysisWindowEntry
+    {
+        TSharedPtr<FCortexAnalysisContext> Context;
+        TWeakPtr<SWindow> Window;
+    };
+
     TSharedRef<SDockTab> SpawnChatTab(const FSpawnTabArgs& Args);
     TSharedRef<SDockTab> SpawnGenStudioTab(const FSpawnTabArgs& Args);
     void OnConversionRequested(const FCortexConversionPayload& Payload);
     void OnAnalysisRequested(const FCortexAnalysisPayload& Payload);
+    void OnConversionWindowClosed(const TSharedRef<SWindow>&, TSharedPtr<FCortexConversionContext> Context);
+    void OnAnalysisWindowClosed(const TSharedRef<SWindow>&, TSharedPtr<FCortexAnalysisContext> Context);
     void ReleaseSessions();
     void HandlePreExit();
 
@@ -51,6 +67,7 @@ private:
     FDelegateHandle AnalysisDelegateHandle;
     TArray<TSharedPtr<FCortexCliSession>> Sessions;
     TArray<TSharedPtr<FMonitoredProcess>> BuildProcesses;
-    TWeakPtr<SCortexWorkbench> WorkbenchWeak;
+    TArray<FConversionWindowEntry> ConversionWindows;
+    TArray<FAnalysisWindowEntry> AnalysisWindows;
     bool bGenStudioTabRegistered = false;
 };
