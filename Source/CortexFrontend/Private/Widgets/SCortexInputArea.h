@@ -10,6 +10,7 @@
 
 class SBorder;
 class SButton;
+class SEditableTextBox;
 class SMultiLineEditableTextBox;
 class STextBlock;
 
@@ -48,6 +49,10 @@ private:
     TSharedPtr<SWrapBox> ChipRow;
     TSharedPtr<SMenuAnchor> ModeDropdown;
     TSharedPtr<SMenuAnchor> ModelDropdown;
+    TSharedPtr<SMenuAnchor> SettingsPopup;
+    TSharedPtr<SEditableTextBox> DirectiveTextBox;
+    TSharedPtr<STextBlock> DirectRadioIndicator;
+    TSharedPtr<STextBlock> ThoroughRadioIndicator;
     TSharedPtr<STextBlock> ModeLabel;
     TSharedPtr<STextBlock> ModelLabel;
     TSharedPtr<STextBlock> EffortLabel;

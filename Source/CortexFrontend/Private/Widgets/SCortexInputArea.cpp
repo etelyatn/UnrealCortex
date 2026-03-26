@@ -10,6 +10,7 @@
 #include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SMenuAnchor.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
@@ -392,19 +393,169 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
             [
                 SNew(SSpacer)
             ]
-            // Settings button
+            // Settings popup
             + SHorizontalBox::Slot()
             .AutoWidth()
             .VAlign(VAlign_Center)
             .Padding(4.0f, 0.0f, 0.0f, 0.0f)
             [
-                SNew(SButton)
-                .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                SAssignNew(SettingsPopup, SMenuAnchor)
+                .Placement(MenuPlacement_AboveAnchor)
+                .UseApplicationMenuStack(true)
+                .OnGetMenuContent_Lambda([this]() -> TSharedRef<SWidget>
+                {
+                    return SNew(SBorder)
+                        .BorderImage(DropdownBrush.Get())
+                        .Padding(FMargin(12.0f, 8.0f))
+                        [
+                            SNew(SVerticalBox)
+                            // Workflow Mode
+                            + SVerticalBox::Slot()
+                            .AutoHeight()
+                            .Padding(0.0f, 0.0f, 0.0f, 6.0f)
+                            [
+                                SNew(STextBlock)
+                                .Text(FText::FromString(TEXT("WORKFLOW")))
+                                .Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
+                                .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
+                            ]
+                            + SVerticalBox::Slot()
+                            .AutoHeight()
+                            .Padding(0.0f, 0.0f, 0.0f, 8.0f)
+                            [
+                                SNew(SHorizontalBox)
+                                + SHorizontalBox::Slot()
+                                .AutoWidth()
+                                [
+                                    SNew(SButton)
+                                    .ButtonStyle(&GetHoverButtonStyle())
+                                    .ContentPadding(FMargin(10.0f, 4.0f))
+                                    .OnClicked_Lambda([this]()
+                                    {
+                                        FCortexFrontendSettings::Get().SetWorkflowMode(ECortexWorkflowMode::Direct);
+                                        // Update radio indicators without closing popup (user may also want to edit directive)
+                                        if (DirectRadioIndicator.IsValid()) DirectRadioIndicator->SetText(FText::FromString(TEXT("\u25CF")));
+                                        if (ThoroughRadioIndicator.IsValid()) ThoroughRadioIndicator->SetText(FText::FromString(TEXT("\u25CB")));
+                                        return FReply::Handled();
+                                    })
+                                    [
+                                        SNew(SHorizontalBox)
+                                        + SHorizontalBox::Slot()
+                                        .AutoWidth()
+                                        .VAlign(VAlign_Center)
+                                        .Padding(0.0f, 0.0f, 4.0f, 0.0f)
+                                        [
+                                            SAssignNew(DirectRadioIndicator, STextBlock)
+                                            .Text(FText::FromString(
+                                                FCortexFrontendSettings::Get().GetWorkflowMode() == ECortexWorkflowMode::Direct
+                                                    ? TEXT("\u25CF") : TEXT("\u25CB")))
+                                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                                            .ColorAndOpacity(FSlateColor(CortexColors::ModeButtonText))
+                                        ]
+                                        + SHorizontalBox::Slot()
+                                        .AutoWidth()
+                                        .VAlign(VAlign_Center)
+                                        [
+                                            SNew(STextBlock)
+                                            .Text(FText::FromString(TEXT("Direct")))
+                                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                                            .ColorAndOpacity(FSlateColor(CortexColors::TextPrimary))
+                                        ]
+                                    ]
+                                ]
+                                + SHorizontalBox::Slot()
+                                .AutoWidth()
+                                .Padding(4.0f, 0.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .ButtonStyle(&GetHoverButtonStyle())
+                                    .ContentPadding(FMargin(10.0f, 4.0f))
+                                    .OnClicked_Lambda([this]()
+                                    {
+                                        FCortexFrontendSettings::Get().SetWorkflowMode(ECortexWorkflowMode::Thorough);
+                                        if (DirectRadioIndicator.IsValid()) DirectRadioIndicator->SetText(FText::FromString(TEXT("\u25CB")));
+                                        if (ThoroughRadioIndicator.IsValid()) ThoroughRadioIndicator->SetText(FText::FromString(TEXT("\u25CF")));
+                                        return FReply::Handled();
+                                    })
+                                    [
+                                        SNew(SHorizontalBox)
+                                        + SHorizontalBox::Slot()
+                                        .AutoWidth()
+                                        .VAlign(VAlign_Center)
+                                        .Padding(0.0f, 0.0f, 4.0f, 0.0f)
+                                        [
+                                            SAssignNew(ThoroughRadioIndicator, STextBlock)
+                                            .Text(FText::FromString(
+                                                FCortexFrontendSettings::Get().GetWorkflowMode() == ECortexWorkflowMode::Thorough
+                                                    ? TEXT("\u25CF") : TEXT("\u25CB")))
+                                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                                            .ColorAndOpacity(FSlateColor(CortexColors::ModeButtonText))
+                                        ]
+                                        + SHorizontalBox::Slot()
+                                        .AutoWidth()
+                                        .VAlign(VAlign_Center)
+                                        [
+                                            SNew(STextBlock)
+                                            .Text(FText::FromString(TEXT("Thorough")))
+                                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                                            .ColorAndOpacity(FSlateColor(CortexColors::TextPrimary))
+                                        ]
+                                    ]
+                                ]
+                            ]
+                            // Separator
+                            + SVerticalBox::Slot()
+                            .AutoHeight()
+                            .Padding(0.0f, 0.0f, 0.0f, 8.0f)
+                            [
+                                SNew(SBorder)
+                                .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                                .BorderBackgroundColor(CortexColors::ToolBlockBorder)
+                                [
+                                    SNew(SBox).HeightOverride(1.0f)
+                                ]
+                            ]
+                            // Custom Directive
+                            + SVerticalBox::Slot()
+                            .AutoHeight()
+                            .Padding(0.0f, 0.0f, 0.0f, 4.0f)
+                            [
+                                SNew(STextBlock)
+                                .Text(FText::FromString(TEXT("CUSTOM DIRECTIVE")))
+                                .Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
+                                .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
+                            ]
+                            + SVerticalBox::Slot()
+                            .AutoHeight()
+                            [
+                                SNew(SBox)
+                                .MinDesiredWidth(250.0f)
+                                [
+                                    SAssignNew(DirectiveTextBox, SEditableTextBox)
+                                    .Text(FText::FromString(FCortexFrontendSettings::Get().GetCustomDirective()))
+                                    .HintText(FText::FromString(TEXT("Extra instructions for the AI...")))
+                                    .OnTextCommitted_Lambda([](const FText& Text, ETextCommit::Type)
+                                    {
+                                        FCortexFrontendSettings::Get().SetCustomDirective(Text.ToString());
+                                    })
+                                ]
+                            ]
+                        ];
+                })
                 [
-                    SNew(STextBlock)
-                    .Text(FText::FromString(TEXT("\u2699")))
-                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
-                    .ColorAndOpacity(FSlateColor(CortexColors::MutedTextColor))
+                    SNew(SButton)
+                    .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                    .OnClicked_Lambda([this]()
+                    {
+                        SettingsPopup->SetIsOpen(true);
+                        return FReply::Handled();
+                    })
+                    [
+                        SNew(STextBlock)
+                        .Text(FText::FromString(TEXT("\u2699")))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+                        .ColorAndOpacity(FSlateColor(CortexColors::MutedTextColor))
+                    ]
                 ]
             ]
             // ActionButton (send/cancel) — circular blue button
