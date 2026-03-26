@@ -33,7 +33,7 @@ bool FCortexBPSetTickSettingsBasicTest::RunTest(const FString& Parameters)
 	FCortexCommandResult Result = FCortexBPClassSettingsOps::SetTickSettings(Params);
 	TestTrue(TEXT("SetTickSettings succeeded"), Result.bSuccess);
 
-	FKismetEditorUtilities::CompileBlueprint(TestBP);
+	// Command already compiled — get the CDO from the current GeneratedClass
 	UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(TestBP->GeneratedClass);
 	TestNotNull(TEXT("GeneratedClass exists"), GeneratedClass);
 	if (GeneratedClass)
@@ -120,7 +120,7 @@ bool FCortexBPSetTickSettingsPartialTest::RunTest(const FString& Parameters)
 	FCortexCommandResult Result = FCortexBPClassSettingsOps::SetTickSettings(Params);
 	TestTrue(TEXT("SetTickSettings with partial params succeeded"), Result.bSuccess);
 
-	FKismetEditorUtilities::CompileBlueprint(TestBP);
+	// Command already compiled — get CDO from current GeneratedClass
 	UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(TestBP->GeneratedClass);
 	if (GeneratedClass)
 	{
@@ -170,7 +170,7 @@ bool FCortexBPSetTickSettingsDisableTest::RunTest(const FString& Parameters)
 	FCortexCommandResult DisableResult = FCortexBPClassSettingsOps::SetTickSettings(DisableParams);
 	TestTrue(TEXT("Disable tick succeeded"), DisableResult.bSuccess);
 
-	FKismetEditorUtilities::CompileBlueprint(TestBP);
+	// Command already compiled — get CDO from current GeneratedClass
 	UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(TestBP->GeneratedClass);
 	if (GeneratedClass)
 	{

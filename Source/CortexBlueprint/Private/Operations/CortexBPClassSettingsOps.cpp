@@ -45,25 +45,21 @@ UClass* FCortexBPClassSettingsOps::ResolveInterfaceClass(const FString& Interfac
 		}
 	}
 
-	// Try as C++ class name
-	UClass* FoundClass = UClass::TryFindTypeSlow<UClass>(InterfacePath);
+	// Try as C++ class name using FindFirstObject (searches all packages by short name)
+	UClass* FoundClass = FindFirstObject<UClass>(*InterfacePath, EFindFirstObjectOptions::NativeFirst);
 
-	// If user passed I-prefixed name (e.g., "IInteractable"), strip I and try U prefix
+	// If user passed I-prefixed name (e.g., "IInteractable"), strip I and try bare name
 	if (!FoundClass && InterfacePath.Len() > 1
 		&& InterfacePath[0] == TEXT('I') && FChar::IsUpper(InterfacePath[1]))
 	{
 		const FString BareName = InterfacePath.Mid(1);
-		FoundClass = UClass::TryFindTypeSlow<UClass>(FString::Printf(TEXT("U%s"), *BareName));
-		if (!FoundClass)
-		{
-			FoundClass = UClass::TryFindTypeSlow<UClass>(BareName);
-		}
+		FoundClass = FindFirstObject<UClass>(*BareName, EFindFirstObjectOptions::NativeFirst);
 	}
 
-	// Try with U prefix if bare name was given
-	if (!FoundClass)
+	// Try with U prefix stripped (UBlendableInterface -> BlendableInterface)
+	if (!FoundClass && InterfacePath.StartsWith(TEXT("U")))
 	{
-		FoundClass = UClass::TryFindTypeSlow<UClass>(FString::Printf(TEXT("U%s"), *InterfacePath));
+		FoundClass = FindFirstObject<UClass>(*InterfacePath.Mid(1), EFindFirstObjectOptions::NativeFirst);
 	}
 
 	if (FoundClass)
@@ -366,11 +362,30 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetTickSettings(const TSharedPtr
 		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 	}
 
+	// Capture tick values before compile — PrimaryActorTick is not a UPROPERTY
+	// on AActor, so CPFUO won't preserve its members across recompile.
+	const bool bSavedCanEverTick = ActorCDO->PrimaryActorTick.bCanEverTick;
+	const bool bSavedStartWithTickEnabled = ActorCDO->PrimaryActorTick.bStartWithTickEnabled;
+	const float SavedTickInterval = ActorCDO->PrimaryActorTick.TickInterval;
+
 	bool bDidCompile = false;
 	if (bCompile)
 	{
 		FKismetEditorUtilities::CompileBlueprint(Blueprint);
 		bDidCompile = (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings);
+
+		// Re-apply tick values to the new CDO created by compilation
+		GeneratedClass = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
+		if (GeneratedClass)
+		{
+			ActorCDO = Cast<AActor>(GeneratedClass->GetDefaultObject(false));
+			if (ActorCDO)
+			{
+				ActorCDO->PrimaryActorTick.bCanEverTick = bSavedCanEverTick;
+				ActorCDO->PrimaryActorTick.bStartWithTickEnabled = bSavedStartWithTickEnabled;
+				ActorCDO->PrimaryActorTick.TickInterval = SavedTickInterval;
+			}
+		}
 	}
 
 	bool bDidSave = false;

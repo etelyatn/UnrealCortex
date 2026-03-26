@@ -31,7 +31,7 @@ bool FCortexBPAddInterfaceBasicTest::RunTest(const FString& Parameters)
 
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
-	Params->SetStringField(TEXT("interface_path"), TEXT("ActorTickableInterface"));
+	Params->SetStringField(TEXT("interface_path"), TEXT("BlendableInterface"));
 	Params->SetBoolField(TEXT("compile"), true);
 
 	FCortexCommandResult Result = FCortexBPClassSettingsOps::AddInterface(Params);
@@ -77,7 +77,7 @@ bool FCortexBPAddInterfaceDuplicateTest::RunTest(const FString& Parameters)
 
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
-	Params->SetStringField(TEXT("interface_path"), TEXT("ActorTickableInterface"));
+	Params->SetStringField(TEXT("interface_path"), TEXT("BlendableInterface"));
 	Params->SetBoolField(TEXT("compile"), false);
 
 	FCortexCommandResult Result1 = FCortexBPClassSettingsOps::AddInterface(Params);
@@ -175,7 +175,7 @@ bool FCortexBPRemoveInterfaceBasicTest::RunTest(const FString& Parameters)
 	// First add an interface
 	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
 	AddParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
-	AddParams->SetStringField(TEXT("interface_path"), TEXT("ActorTickableInterface"));
+	AddParams->SetStringField(TEXT("interface_path"), TEXT("BlendableInterface"));
 	AddParams->SetBoolField(TEXT("compile"), false);
 
 	FCortexCommandResult AddResult = FCortexBPClassSettingsOps::AddInterface(AddParams);
@@ -185,7 +185,7 @@ bool FCortexBPRemoveInterfaceBasicTest::RunTest(const FString& Parameters)
 	// Now remove it
 	TSharedPtr<FJsonObject> RemoveParams = MakeShared<FJsonObject>();
 	RemoveParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
-	RemoveParams->SetStringField(TEXT("interface_path"), TEXT("ActorTickableInterface"));
+	RemoveParams->SetStringField(TEXT("interface_path"), TEXT("BlendableInterface"));
 	RemoveParams->SetBoolField(TEXT("compile"), true);
 
 	FCortexCommandResult RemoveResult = FCortexBPClassSettingsOps::RemoveInterface(RemoveParams);
@@ -226,7 +226,7 @@ bool FCortexBPRemoveInterfaceNotImplementedTest::RunTest(const FString& Paramete
 
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
-	Params->SetStringField(TEXT("interface_path"), TEXT("ActorTickableInterface"));
+	Params->SetStringField(TEXT("interface_path"), TEXT("BlendableInterface"));
 	Params->SetBoolField(TEXT("compile"), false);
 
 	FCortexCommandResult Result = FCortexBPClassSettingsOps::RemoveInterface(Params);
