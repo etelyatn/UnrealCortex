@@ -5,9 +5,9 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "CoreGlobals.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
-#include "CoreGlobals.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Blueprint/BlueprintSupport.h"
 #include "UObject/SavePackage.h"
@@ -1309,8 +1309,11 @@ FCortexCommandResult FCortexBPAssetOps::Rename(const TSharedPtr<FJsonObject>& Pa
 	FScopedTransaction Transaction(FText::FromString(
 		FString::Printf(TEXT("Cortex: Rename Blueprint %s"), *SourceBlueprint->GetName())
 	));
-	// Suppress editor modal rename dialogs while running MCP operations unattended.
-	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
+	// Suppress interactive dialogs (e.g., CDO soft-reference warning) in live editor MCP sessions.
+	// GIsRunningUnattendedScript is checked by FMessageDialog::Open() — when true it returns
+	// the caller's default value instead of showing a blocking dialog.
+	// Tests are unaffected: NullRHI causes CanAddModalWindow() to return false before this check.
+	TGuardValue<bool> SuppressDialogs(GIsRunningUnattendedScript, true);
 	const bool bRenamed = AssetToolsModule.Get().RenameAssets(RenameAssets);
 	if (!bRenamed)
 	{
