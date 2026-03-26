@@ -6,6 +6,7 @@ import json
 import logging
 from pathlib import Path
 
+from ._fallback_generated import FALLBACK_COMMANDS as _FALLBACK_STRUCTURED
 from .tcp_client import _find_saved_dir
 
 
@@ -62,10 +63,6 @@ def load_capabilities_cache() -> dict | None:
         logger.warning("Failed to load capabilities cache from %s: %s", cache_path, exc)
         return None
 
-
-from ._fallback_generated import FALLBACK_COMMANDS as _FALLBACK_STRUCTURED
-
-_ALL_DOMAINS = CORE_DOMAINS + _OPTIONAL_DOMAINS
 
 _missing = set(CORE_DOMAINS) - set(_FALLBACK_STRUCTURED)
 if _missing:

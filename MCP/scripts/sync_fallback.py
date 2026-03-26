@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import pprint
 import sys
 from pathlib import Path
 
@@ -61,10 +62,8 @@ def generate(cache_path: Path) -> str:
         commands = domain_info.get("commands", [])
         fallback[domain_name] = [_normalize_command(cmd) for cmd in commands]
 
-    # Format as Python source
-    formatted = json.dumps(fallback, indent=4)
-    # Convert JSON booleans to Python booleans
-    formatted = formatted.replace(": true", ": True").replace(": false", ": False")
+    # Format as Python source using pprint (handles booleans natively)
+    formatted = pprint.pformat(fallback, indent=4, width=100)
 
     lines = [
         '"""Auto-generated fallback commands \u2014 DO NOT EDIT.',

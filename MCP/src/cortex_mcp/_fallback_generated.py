@@ -8,3779 +8,863 @@ Commands: 221
 
 from __future__ import annotations
 
-FALLBACK_COMMANDS: dict[str, list[dict]] = {
-    "blueprint": [
-        {
-            "name": "create",
-            "params": [
-                {
-                    "name": "name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "type",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parent_class",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list",
-            "params": [
-                {
-                    "name": "path",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "type",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_info",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "delete",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "force",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "duplicate",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "new_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "new_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "compile",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "save",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "rename",
-            "params": [
-                {
-                    "name": "source_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "dest_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "add_variable",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "type",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "default_value",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "is_exposed",
-                    "type": "boolean",
-                    "required": False
-                },
-                {
-                    "name": "category",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "remove_variable",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "name",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "add_function",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "is_pure",
-                    "type": "boolean",
-                    "required": False
-                },
-                {
-                    "name": "access",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "inputs",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "outputs",
-                    "type": "array",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_class_defaults",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "properties",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "blueprint_path",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_class_defaults",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "properties",
-                    "type": "object",
-                    "required": True
-                },
-                {
-                    "name": "compile",
-                    "type": "boolean",
-                    "required": False
-                },
-                {
-                    "name": "save",
-                    "type": "boolean",
-                    "required": False
-                },
-                {
-                    "name": "blueprint_path",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "configure_timeline",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "timeline_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "length",
-                    "type": "number",
-                    "required": True
-                },
-                {
-                    "name": "loop",
-                    "type": "boolean",
-                    "required": False
-                },
-                {
-                    "name": "tracks",
-                    "type": "array",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_component_defaults",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "component_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "properties",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "analyze_for_migration",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "cleanup_migration",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "new_parent_class",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "remove_variables",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "remove_functions",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "migrated_overrides",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "compile",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "remove_scs_component",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "component_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "compile",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "recompile_dependents",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "fixup_redirectors",
-            "params": [
-                {
-                    "name": "path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "recursive",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "compare_blueprints",
-            "params": [
-                {
-                    "name": "source_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "target_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "sections",
-                    "type": "array",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "delete_orphaned_nodes",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "graph_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "compile",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "search",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "query",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "search_in",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "case_sensitive",
-                    "type": "boolean",
-                    "required": False
-                },
-                {
-                    "name": "max_results",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "reparent",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "new_parent",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        }
-    ],
-    "core": [
-        {
-            "name": "save_asset",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "force",
-                    "type": "boolean",
-                    "required": False
-                },
-                {
-                    "name": "dry_run",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "open_asset",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "dry_run",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "close_asset",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "save",
-                    "type": "boolean",
-                    "required": False
-                },
-                {
-                    "name": "dry_run",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "reload_asset",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "dry_run",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "delete_asset",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "delete_folder",
-            "params": [
-                {
-                    "name": "folder_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "recursive",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "shutdown",
-            "params": [
-                {
-                    "name": "force",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        }
-    ],
-    "data": [
-        {
-            "name": "create_datatable",
-            "params": [
-                {
-                    "name": "table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "row_struct",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_datatables",
-            "params": [
-                {
-                    "name": "path_filter",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_datatable_schema",
-            "params": [
-                {
-                    "name": "table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "include_inherited",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "query_datatable",
-            "params": [
-                {
-                    "name": "table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "row_name_pattern",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "row_names",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "fields",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "limit",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "offset",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_datatable_row",
-            "params": [
-                {
-                    "name": "table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "row_name",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_struct_schema",
-            "params": [
-                {
-                    "name": "struct_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "include_subtypes",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "add_datatable_row",
-            "params": [
-                {
-                    "name": "table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "row_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "row_data",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "update_datatable_row",
-            "params": [
-                {
-                    "name": "table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "row_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "row_data",
-                    "type": "object",
-                    "required": True
-                },
-                {
-                    "name": "dry_run",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "delete_datatable_row",
-            "params": [
-                {
-                    "name": "table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "row_name",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "import_datatable_json",
-            "params": [
-                {
-                    "name": "table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "rows",
-                    "type": "array",
-                    "required": True
-                },
-                {
-                    "name": "mode",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "dry_run",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "search_datatable_content",
-            "params": [
-                {
-                    "name": "table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "search_text",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "fields",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "preview_fields",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "limit",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_data_catalog"
-        },
-        {
-            "name": "resolve_tags",
-            "params": [
-                {
-                    "name": "table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "tag_field",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "tags",
-                    "type": "array",
-                    "required": True
-                },
-                {
-                    "name": "fields",
-                    "type": "array",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "list_gameplay_tags",
-            "params": [
-                {
-                    "name": "prefix",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "include_source_file",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "validate_gameplay_tag",
-            "params": [
-                {
-                    "name": "tag",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "register_gameplay_tag",
-            "params": [
-                {
-                    "name": "tag",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "dev_comment",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "source",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "register_gameplay_tags",
-            "params": [
-                {
-                    "name": "tags",
-                    "type": "array",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_data_assets",
-            "params": [
-                {
-                    "name": "class_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "path_filter",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_data_asset",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "update_data_asset",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "properties",
-                    "type": "object",
-                    "required": True
-                },
-                {
-                    "name": "dry_run",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "create_data_asset",
-            "params": [
-                {
-                    "name": "class_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "properties",
-                    "type": "object",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "delete_data_asset",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_string_tables",
-            "params": [
-                {
-                    "name": "path_filter",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_translations",
-            "params": [
-                {
-                    "name": "string_table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "key_pattern",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_translation",
-            "params": [
-                {
-                    "name": "string_table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "key",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "text",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "search_assets",
-            "params": [
-                {
-                    "name": "query",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "class_names",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "path_prefixes",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "limit",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "list_curve_tables",
-            "params": [
-                {
-                    "name": "path_filter",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_curve_table",
-            "params": [
-                {
-                    "name": "table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "row_name",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "update_curve_table_row",
-            "params": [
-                {
-                    "name": "table_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "row_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "keyframes",
-                    "type": "array",
-                    "required": True
-                }
-            ]
-        }
-    ],
-    "editor": [
-        {
-            "name": "start_pie",
-            "params": [
-                {
-                    "name": "mode",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "map_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "spawn_player",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "stop_pie"
-        },
-        {
-            "name": "pause_pie"
-        },
-        {
-            "name": "resume_pie"
-        },
-        {
-            "name": "get_pie_state"
-        },
-        {
-            "name": "restart_pie",
-            "params": [
-                {
-                    "name": "mode",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "inject_key",
-            "params": [
-                {
-                    "name": "key",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "action",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "duration_ms",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "inject_mouse",
-            "params": [
-                {
-                    "name": "button",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "action",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "duration_ms",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "delta",
-                    "type": "object",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "inject_input_action",
-            "params": [
-                {
-                    "name": "action",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "value",
-                    "type": "object",
-                    "required": False
-                },
-                {
-                    "name": "trigger_event",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "inject_input_sequence",
-            "params": [
-                {
-                    "name": "steps",
-                    "type": "array",
-                    "required": True
-                },
-                {
-                    "name": "timeout",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "capture_screenshot",
-            "params": [
-                {
-                    "name": "output_path",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_viewport_info"
-        },
-        {
-            "name": "set_viewport_camera",
-            "params": [
-                {
-                    "name": "location",
-                    "type": "array",
-                    "required": True
-                },
-                {
-                    "name": "rotation",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "speed",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "focus_actor",
-            "params": [
-                {
-                    "name": "actor_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "focus_node",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "node_id",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "graph_name",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_viewport_mode",
-            "params": [
-                {
-                    "name": "mode",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "execute_console_command",
-            "params": [
-                {
-                    "name": "command",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_recent_logs",
-            "params": [
-                {
-                    "name": "severity",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "since_seconds",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "since_cursor",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "category",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_time_dilation",
-            "params": [
-                {
-                    "name": "factor",
-                    "type": "number",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_editor_state"
-        },
-        {
-            "name": "get_world_info"
-        }
-    ],
-    "gen": [
-        {
-            "name": "start_mesh",
-            "params": [
-                {
-                    "name": "prompt",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "source_image_path",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "provider",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "destination",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "start_image",
-            "params": [
-                {
-                    "name": "prompt",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "provider",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "start_texturing",
-            "params": [
-                {
-                    "name": "source_model_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "prompt",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "provider",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "destination",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "job_status",
-            "params": [
-                {
-                    "name": "job_id",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_jobs",
-            "params": [
-                {
-                    "name": "status",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "limit",
-                    "type": "integer",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "cancel_job",
-            "params": [
-                {
-                    "name": "job_id",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "retry_import",
-            "params": [
-                {
-                    "name": "job_id",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_providers"
-        },
-        {
-            "name": "delete_job",
-            "params": [
-                {
-                    "name": "job_id",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_config"
-        }
-    ],
-    "graph": [
-        {
-            "name": "list_graphs",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_nodes",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "graph_name",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_node",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "node_id",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "graph_name",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "search_nodes",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "node_class",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "function_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "display_name",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "add_node",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "node_class",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "position",
-                    "type": "object",
-                    "required": False
-                },
-                {
-                    "name": "params",
-                    "type": "object",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "remove_node",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "node_id",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "graph_name",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "connect",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "source_node",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "source_pin",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "target_node",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "target_pin",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "graph_name",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "disconnect",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "node_id",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "pin_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "graph_name",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_pin_value",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "node_id",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "pin_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "value",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "graph_name",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "auto_layout",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "graph_name",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        }
-    ],
-    "level": [
-        {
-            "name": "spawn_actor",
-            "params": [
-                {
-                    "name": "class_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "location",
-                    "type": "array",
-                    "required": True
-                },
-                {
-                    "name": "rotation",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "scale",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "label",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "folder",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "mesh",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "material",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "delete_actor",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "confirm_class",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "duplicate_actor",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "offset",
-                    "type": "array",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "rename_actor",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "label",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_actor",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_transform",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "location",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "rotation",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "scale",
-                    "type": "array",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_actor_property",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "property",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "value",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_actor_property",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "property",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_components",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "add_component",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "class",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "name",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "remove_component",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "component",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_component_property",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "component",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "property",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_component_property",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "component",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "property",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "value",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_actor_classes",
-            "params": [
-                {
-                    "name": "category",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "list_component_classes",
-            "params": [
-                {
-                    "name": "category",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "describe_class",
-            "params": [
-                {
-                    "name": "class",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_actors",
-            "params": [
-                {
-                    "name": "class",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "tags",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "folder",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "region",
-                    "type": "object",
-                    "required": False
-                },
-                {
-                    "name": "limit",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "offset",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "find_actors",
-            "params": [
-                {
-                    "name": "pattern",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_bounds",
-            "params": [
-                {
-                    "name": "class",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "tags",
-                    "type": "array",
-                    "required": False
-                },
-                {
-                    "name": "folder",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "region",
-                    "type": "object",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "select_actors",
-            "params": [
-                {
-                    "name": "actors",
-                    "type": "array",
-                    "required": True
-                },
-                {
-                    "name": "add",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_selection"
-        },
-        {
-            "name": "attach_actor",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parent",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "socket",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "detach_actor",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_tags",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "tags",
-                    "type": "array",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_folder",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "folder",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "group_actors",
-            "params": [
-                {
-                    "name": "actors",
-                    "type": "array",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "ungroup_actors",
-            "params": [
-                {
-                    "name": "group",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_info"
-        },
-        {
-            "name": "list_sublevels"
-        },
-        {
-            "name": "load_sublevel",
-            "params": [
-                {
-                    "name": "sublevel",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "unload_sublevel",
-            "params": [
-                {
-                    "name": "sublevel",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_sublevel_visibility",
-            "params": [
-                {
-                    "name": "sublevel",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "visible",
-                    "type": "boolean",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_data_layers"
-        },
-        {
-            "name": "set_data_layer",
-            "params": [
-                {
-                    "name": "actors",
-                    "type": "array",
-                    "required": True
-                },
-                {
-                    "name": "data_layer",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "save_level"
-        },
-        {
-            "name": "save_all"
-        }
-    ],
-    "material": [
-        {
-            "name": "list_materials",
-            "params": [
-                {
-                    "name": "path",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "recursive",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_material",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "create_material",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "name",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "delete_material",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_material_property",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "property_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "value",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_instances",
-            "params": [
-                {
-                    "name": "path",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "parent_material",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_instance",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "create_instance",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parent_material",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "delete_instance",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_parameters",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_parameter",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parameter_name",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_parameter",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parameter_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parameter_type",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "value",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_parameters",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parameters",
-                    "type": "array",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "reset_parameter",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parameter_name",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_nodes",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_node",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "node_id",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "add_node",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "expression_class",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "position",
-                    "type": "object",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "remove_node",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "node_id",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_connections",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "connect",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "source_node",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "source_output",
-                    "type": "number",
-                    "required": True
-                },
-                {
-                    "name": "target_node",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "target_input",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "disconnect",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "target_node",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "target_input",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "auto_layout",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_node_property",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "node_id",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "property_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "value",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_node_pins",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "node_id",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_collections",
-            "params": [
-                {
-                    "name": "path",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "recursive",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_collection",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "create_collection",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "name",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "delete_collection",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "add_collection_parameter",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parameter_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parameter_type",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "default_value",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "remove_collection_parameter",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parameter_name",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_collection_parameter",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parameter_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "value",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_dynamic_instances",
-            "params": [
-                {
-                    "name": "actor_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_dynamic_instance",
-            "params": [
-                {
-                    "name": "actor_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "component_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "slot_index",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "create_dynamic_instance",
-            "params": [
-                {
-                    "name": "actor_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "component_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "slot_index",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "source_material",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "parameters",
-                    "type": "array",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "destroy_dynamic_instance",
-            "params": [
-                {
-                    "name": "actor_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "component_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "slot_index",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_dynamic_parameter",
-            "params": [
-                {
-                    "name": "actor_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "type",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "value",
-                    "type": "object",
-                    "required": True
-                },
-                {
-                    "name": "component_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "slot_index",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_dynamic_parameter",
-            "params": [
-                {
-                    "name": "actor_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "component_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "slot_index",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "list_dynamic_parameters",
-            "params": [
-                {
-                    "name": "actor_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "component_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "slot_index",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_dynamic_parameters",
-            "params": [
-                {
-                    "name": "actor_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parameters",
-                    "type": "array",
-                    "required": True
-                },
-                {
-                    "name": "component_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "slot_index",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "reset_dynamic_parameter",
-            "params": [
-                {
-                    "name": "actor_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "component_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "slot_index",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        }
-    ],
-    "qa": [
-        {
-            "name": "observe_state",
-            "params": [
-                {
-                    "name": "radius",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "max_actors",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "include_los",
-                    "type": "boolean",
-                    "required": False
-                },
-                {
-                    "name": "interaction_range",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_actor_state",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_player_state"
-        },
-        {
-            "name": "look_at",
-            "params": [
-                {
-                    "name": "target",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "interact",
-            "params": [
-                {
-                    "name": "target",
-                    "type": "object",
-                    "required": True
-                },
-                {
-                    "name": "key",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "duration",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "move_to",
-            "params": [
-                {
-                    "name": "target",
-                    "type": "object",
-                    "required": True
-                },
-                {
-                    "name": "timeout",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "acceptance_radius",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "wait_for",
-            "params": [
-                {
-                    "name": "type",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "timeout",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "property",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "value",
-                    "type": "object",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "teleport_player",
-            "params": [
-                {
-                    "name": "location",
-                    "type": "array",
-                    "required": True
-                },
-                {
-                    "name": "rotation",
-                    "type": "array",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_actor_property",
-            "params": [
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "property",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "value",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_random_seed",
-            "params": [
-                {
-                    "name": "seed",
-                    "type": "number",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "assert_state",
-            "params": [
-                {
-                    "name": "type",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "actor",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "property",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "value",
-                    "type": "object",
-                    "required": False
-                },
-                {
-                    "name": "expected",
-                    "type": "object",
-                    "required": False
-                },
-                {
-                    "name": "message",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "start_recording",
-            "params": [
-                {
-                    "name": "name",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "stop_recording"
-        },
-        {
-            "name": "replay_session",
-            "params": [
-                {
-                    "name": "path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "on_failure",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "cancel_replay"
-        }
-    ],
-    "reflect": [
-        {
-            "name": "class_hierarchy",
-            "params": [
-                {
-                    "name": "root",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "depth",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "include_blueprint",
-                    "type": "boolean",
-                    "required": False
-                },
-                {
-                    "name": "include_engine",
-                    "type": "boolean",
-                    "required": False
-                },
-                {
-                    "name": "max_results",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "class_detail",
-            "params": [
-                {
-                    "name": "class_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "include_inherited",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "find_overrides",
-            "params": [
-                {
-                    "name": "class_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "depth",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "limit",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "find_usages",
-            "params": [
-                {
-                    "name": "symbol",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "class_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "scope",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "deep_scan",
-                    "type": "boolean",
-                    "required": False
-                },
-                {
-                    "name": "path_filter",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "limit",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "max_blueprints",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "search",
-            "params": [
-                {
-                    "name": "pattern",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "limit",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "include_engine",
-                    "type": "boolean",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_dependencies",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "category",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "limit",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_referencers",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "category",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "limit",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        }
-    ],
-    "umg": [
-        {
-            "name": "add_widget",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_class",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "parent_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "slot_index",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "remove_widget",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "reparent",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "new_parent",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "slot_index",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "get_tree",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_widget",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_widget_classes",
-            "params": [
-                {
-                    "name": "category",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "duplicate_widget",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "new_name",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "name_prefix",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_color",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "color",
-                    "type": "object",
-                    "required": True
-                },
-                {
-                    "name": "target",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_text",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "text",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_font",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "size",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "typeface",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "letter_spacing",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "family",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_brush",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "target",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "color",
-                    "type": "object",
-                    "required": False
-                },
-                {
-                    "name": "draw_as",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "corner_radius",
-                    "type": "object",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_padding",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "padding",
-                    "type": "object",
-                    "required": True
-                },
-                {
-                    "name": "target",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_anchor",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "preset",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_alignment",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "horizontal",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "vertical",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_size",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "width",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "height",
-                    "type": "number",
-                    "required": False
-                },
-                {
-                    "name": "size_rule",
-                    "type": "string",
-                    "required": False
-                },
-                {
-                    "name": "fill_ratio",
-                    "type": "number",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "set_visibility",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "visibility",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "set_property",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "property_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "value",
-                    "type": "object",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_property",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "property_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "get_schema",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "widget_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "category",
-                    "type": "string",
-                    "required": False
-                }
-            ]
-        },
-        {
-            "name": "create_animation",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "animation_name",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "length",
-                    "type": "number",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "list_animations",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        },
-        {
-            "name": "remove_animation",
-            "params": [
-                {
-                    "name": "asset_path",
-                    "type": "string",
-                    "required": True
-                },
-                {
-                    "name": "animation_name",
-                    "type": "string",
-                    "required": True
-                }
-            ]
-        }
-    ]
-}
+FALLBACK_COMMANDS: dict[str, list[dict]] = {   'blueprint': [   {   'name': 'create',
+                         'params': [   {'name': 'name', 'required': True, 'type': 'string'},
+                                       {'name': 'path', 'required': True, 'type': 'string'},
+                                       {'name': 'type', 'required': True, 'type': 'string'},
+                                       {   'name': 'parent_class',
+                                           'required': True,
+                                           'type': 'string'}]},
+                     {   'name': 'list',
+                         'params': [   {'name': 'path', 'required': False, 'type': 'string'},
+                                       {'name': 'type', 'required': False, 'type': 'string'}]},
+                     {   'name': 'get_info',
+                         'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                     {   'name': 'delete',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {'name': 'force', 'required': False, 'type': 'boolean'}]},
+                     {   'name': 'duplicate',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {'name': 'new_name', 'required': True, 'type': 'string'},
+                                       {'name': 'new_path', 'required': True, 'type': 'string'}]},
+                     {   'name': 'compile',
+                         'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                     {   'name': 'save',
+                         'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                     {   'name': 'rename',
+                         'params': [   {'name': 'source_path', 'required': True, 'type': 'string'},
+                                       {'name': 'dest_path', 'required': True, 'type': 'string'}]},
+                     {   'name': 'add_variable',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {'name': 'name', 'required': True, 'type': 'string'},
+                                       {'name': 'type', 'required': True, 'type': 'string'},
+                                       {   'name': 'default_value',
+                                           'required': False,
+                                           'type': 'string'},
+                                       {'name': 'is_exposed', 'required': False, 'type': 'boolean'},
+                                       {'name': 'category', 'required': False, 'type': 'string'}]},
+                     {   'name': 'remove_variable',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {'name': 'name', 'required': True, 'type': 'string'}]},
+                     {   'name': 'add_function',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {'name': 'name', 'required': True, 'type': 'string'},
+                                       {'name': 'is_pure', 'required': False, 'type': 'boolean'},
+                                       {'name': 'access', 'required': False, 'type': 'string'},
+                                       {'name': 'inputs', 'required': False, 'type': 'array'},
+                                       {'name': 'outputs', 'required': False, 'type': 'array'}]},
+                     {   'name': 'get_class_defaults',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {'name': 'properties', 'required': False, 'type': 'array'},
+                                       {   'name': 'blueprint_path',
+                                           'required': False,
+                                           'type': 'string'}]},
+                     {   'name': 'set_class_defaults',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {'name': 'properties', 'required': True, 'type': 'object'},
+                                       {'name': 'compile', 'required': False, 'type': 'boolean'},
+                                       {'name': 'save', 'required': False, 'type': 'boolean'},
+                                       {   'name': 'blueprint_path',
+                                           'required': False,
+                                           'type': 'string'}]},
+                     {   'name': 'configure_timeline',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {   'name': 'timeline_name',
+                                           'required': True,
+                                           'type': 'string'},
+                                       {'name': 'length', 'required': True, 'type': 'number'},
+                                       {'name': 'loop', 'required': False, 'type': 'boolean'},
+                                       {'name': 'tracks', 'required': False, 'type': 'array'}]},
+                     {   'name': 'set_component_defaults',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {   'name': 'component_name',
+                                           'required': True,
+                                           'type': 'string'},
+                                       {'name': 'properties', 'required': True, 'type': 'object'}]},
+                     {   'name': 'analyze_for_migration',
+                         'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                     {   'name': 'cleanup_migration',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {   'name': 'new_parent_class',
+                                           'required': False,
+                                           'type': 'string'},
+                                       {   'name': 'remove_variables',
+                                           'required': False,
+                                           'type': 'array'},
+                                       {   'name': 'remove_functions',
+                                           'required': False,
+                                           'type': 'array'},
+                                       {   'name': 'migrated_overrides',
+                                           'required': False,
+                                           'type': 'array'},
+                                       {'name': 'compile', 'required': False, 'type': 'boolean'}]},
+                     {   'name': 'remove_scs_component',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {   'name': 'component_name',
+                                           'required': True,
+                                           'type': 'string'},
+                                       {'name': 'compile', 'required': False, 'type': 'boolean'}]},
+                     {   'name': 'recompile_dependents',
+                         'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                     {   'name': 'fixup_redirectors',
+                         'params': [   {'name': 'path', 'required': True, 'type': 'string'},
+                                       {   'name': 'recursive',
+                                           'required': False,
+                                           'type': 'boolean'}]},
+                     {   'name': 'compare_blueprints',
+                         'params': [   {'name': 'source_path', 'required': True, 'type': 'string'},
+                                       {'name': 'target_path', 'required': True, 'type': 'string'},
+                                       {'name': 'sections', 'required': False, 'type': 'array'}]},
+                     {   'name': 'delete_orphaned_nodes',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {'name': 'graph_name', 'required': False, 'type': 'string'},
+                                       {'name': 'compile', 'required': False, 'type': 'boolean'}]},
+                     {   'name': 'search',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {'name': 'query', 'required': True, 'type': 'string'},
+                                       {'name': 'search_in', 'required': False, 'type': 'array'},
+                                       {   'name': 'case_sensitive',
+                                           'required': False,
+                                           'type': 'boolean'},
+                                       {   'name': 'max_results',
+                                           'required': False,
+                                           'type': 'number'}]},
+                     {   'name': 'reparent',
+                         'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                       {   'name': 'new_parent',
+                                           'required': True,
+                                           'type': 'string'}]}],
+    'core': [   {   'name': 'save_asset',
+                    'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                  {'name': 'force', 'required': False, 'type': 'boolean'},
+                                  {'name': 'dry_run', 'required': False, 'type': 'boolean'}]},
+                {   'name': 'open_asset',
+                    'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                  {'name': 'dry_run', 'required': False, 'type': 'boolean'}]},
+                {   'name': 'close_asset',
+                    'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                  {'name': 'save', 'required': False, 'type': 'boolean'},
+                                  {'name': 'dry_run', 'required': False, 'type': 'boolean'}]},
+                {   'name': 'reload_asset',
+                    'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                  {'name': 'dry_run', 'required': False, 'type': 'boolean'}]},
+                {   'name': 'delete_asset',
+                    'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                {   'name': 'delete_folder',
+                    'params': [   {'name': 'folder_path', 'required': True, 'type': 'string'},
+                                  {'name': 'recursive', 'required': False, 'type': 'boolean'}]},
+                {   'name': 'shutdown',
+                    'params': [{'name': 'force', 'required': False, 'type': 'boolean'}]}],
+    'data': [   {   'name': 'create_datatable',
+                    'params': [   {'name': 'table_path', 'required': True, 'type': 'string'},
+                                  {'name': 'row_struct', 'required': True, 'type': 'string'}]},
+                {   'name': 'list_datatables',
+                    'params': [{'name': 'path_filter', 'required': False, 'type': 'string'}]},
+                {   'name': 'get_datatable_schema',
+                    'params': [   {'name': 'table_path', 'required': True, 'type': 'string'},
+                                  {   'name': 'include_inherited',
+                                      'required': False,
+                                      'type': 'boolean'}]},
+                {   'name': 'query_datatable',
+                    'params': [   {'name': 'table_path', 'required': True, 'type': 'string'},
+                                  {'name': 'row_name_pattern', 'required': False, 'type': 'string'},
+                                  {'name': 'row_names', 'required': False, 'type': 'array'},
+                                  {'name': 'fields', 'required': False, 'type': 'array'},
+                                  {'name': 'limit', 'required': False, 'type': 'number'},
+                                  {'name': 'offset', 'required': False, 'type': 'number'}]},
+                {   'name': 'get_datatable_row',
+                    'params': [   {'name': 'table_path', 'required': True, 'type': 'string'},
+                                  {'name': 'row_name', 'required': True, 'type': 'string'}]},
+                {   'name': 'get_struct_schema',
+                    'params': [   {'name': 'struct_name', 'required': True, 'type': 'string'},
+                                  {   'name': 'include_subtypes',
+                                      'required': False,
+                                      'type': 'boolean'}]},
+                {   'name': 'add_datatable_row',
+                    'params': [   {'name': 'table_path', 'required': True, 'type': 'string'},
+                                  {'name': 'row_name', 'required': True, 'type': 'string'},
+                                  {'name': 'row_data', 'required': True, 'type': 'object'}]},
+                {   'name': 'update_datatable_row',
+                    'params': [   {'name': 'table_path', 'required': True, 'type': 'string'},
+                                  {'name': 'row_name', 'required': True, 'type': 'string'},
+                                  {'name': 'row_data', 'required': True, 'type': 'object'},
+                                  {'name': 'dry_run', 'required': False, 'type': 'boolean'}]},
+                {   'name': 'delete_datatable_row',
+                    'params': [   {'name': 'table_path', 'required': True, 'type': 'string'},
+                                  {'name': 'row_name', 'required': True, 'type': 'string'}]},
+                {   'name': 'import_datatable_json',
+                    'params': [   {'name': 'table_path', 'required': True, 'type': 'string'},
+                                  {'name': 'rows', 'required': True, 'type': 'array'},
+                                  {'name': 'mode', 'required': False, 'type': 'string'},
+                                  {'name': 'dry_run', 'required': False, 'type': 'boolean'}]},
+                {   'name': 'search_datatable_content',
+                    'params': [   {'name': 'table_path', 'required': True, 'type': 'string'},
+                                  {'name': 'search_text', 'required': True, 'type': 'string'},
+                                  {'name': 'fields', 'required': False, 'type': 'array'},
+                                  {'name': 'preview_fields', 'required': False, 'type': 'array'},
+                                  {'name': 'limit', 'required': False, 'type': 'number'}]},
+                {'name': 'get_data_catalog'},
+                {   'name': 'resolve_tags',
+                    'params': [   {'name': 'table_path', 'required': True, 'type': 'string'},
+                                  {'name': 'tag_field', 'required': True, 'type': 'string'},
+                                  {'name': 'tags', 'required': True, 'type': 'array'},
+                                  {'name': 'fields', 'required': False, 'type': 'array'}]},
+                {   'name': 'list_gameplay_tags',
+                    'params': [   {'name': 'prefix', 'required': False, 'type': 'string'},
+                                  {   'name': 'include_source_file',
+                                      'required': False,
+                                      'type': 'boolean'}]},
+                {   'name': 'validate_gameplay_tag',
+                    'params': [{'name': 'tag', 'required': True, 'type': 'string'}]},
+                {   'name': 'register_gameplay_tag',
+                    'params': [   {'name': 'tag', 'required': True, 'type': 'string'},
+                                  {'name': 'dev_comment', 'required': False, 'type': 'string'},
+                                  {'name': 'source', 'required': False, 'type': 'string'}]},
+                {   'name': 'register_gameplay_tags',
+                    'params': [{'name': 'tags', 'required': True, 'type': 'array'}]},
+                {   'name': 'list_data_assets',
+                    'params': [   {'name': 'class_name', 'required': False, 'type': 'string'},
+                                  {'name': 'path_filter', 'required': False, 'type': 'string'}]},
+                {   'name': 'get_data_asset',
+                    'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                {   'name': 'update_data_asset',
+                    'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                  {'name': 'properties', 'required': True, 'type': 'object'},
+                                  {'name': 'dry_run', 'required': False, 'type': 'boolean'}]},
+                {   'name': 'create_data_asset',
+                    'params': [   {'name': 'class_name', 'required': True, 'type': 'string'},
+                                  {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                  {'name': 'properties', 'required': False, 'type': 'object'}]},
+                {   'name': 'delete_data_asset',
+                    'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                {   'name': 'list_string_tables',
+                    'params': [{'name': 'path_filter', 'required': False, 'type': 'string'}]},
+                {   'name': 'get_translations',
+                    'params': [   {'name': 'string_table_path', 'required': True, 'type': 'string'},
+                                  {'name': 'key_pattern', 'required': False, 'type': 'string'}]},
+                {   'name': 'set_translation',
+                    'params': [   {'name': 'string_table_path', 'required': True, 'type': 'string'},
+                                  {'name': 'key', 'required': True, 'type': 'string'},
+                                  {'name': 'text', 'required': True, 'type': 'string'}]},
+                {   'name': 'search_assets',
+                    'params': [   {'name': 'query', 'required': False, 'type': 'string'},
+                                  {'name': 'class_names', 'required': False, 'type': 'array'},
+                                  {'name': 'path_prefixes', 'required': False, 'type': 'array'},
+                                  {'name': 'limit', 'required': False, 'type': 'number'}]},
+                {   'name': 'list_curve_tables',
+                    'params': [{'name': 'path_filter', 'required': False, 'type': 'string'}]},
+                {   'name': 'get_curve_table',
+                    'params': [   {'name': 'table_path', 'required': True, 'type': 'string'},
+                                  {'name': 'row_name', 'required': False, 'type': 'string'}]},
+                {   'name': 'update_curve_table_row',
+                    'params': [   {'name': 'table_path', 'required': True, 'type': 'string'},
+                                  {'name': 'row_name', 'required': True, 'type': 'string'},
+                                  {'name': 'keyframes', 'required': True, 'type': 'array'}]}],
+    'editor': [   {   'name': 'start_pie',
+                      'params': [   {'name': 'mode', 'required': False, 'type': 'string'},
+                                    {'name': 'map_name', 'required': False, 'type': 'string'},
+                                    {   'name': 'spawn_player',
+                                        'required': False,
+                                        'type': 'boolean'}]},
+                  {'name': 'stop_pie'},
+                  {'name': 'pause_pie'},
+                  {'name': 'resume_pie'},
+                  {'name': 'get_pie_state'},
+                  {   'name': 'restart_pie',
+                      'params': [{'name': 'mode', 'required': False, 'type': 'string'}]},
+                  {   'name': 'inject_key',
+                      'params': [   {'name': 'key', 'required': True, 'type': 'string'},
+                                    {'name': 'action', 'required': False, 'type': 'string'},
+                                    {'name': 'duration_ms', 'required': False, 'type': 'number'}]},
+                  {   'name': 'inject_mouse',
+                      'params': [   {'name': 'button', 'required': True, 'type': 'string'},
+                                    {'name': 'action', 'required': False, 'type': 'string'},
+                                    {'name': 'duration_ms', 'required': False, 'type': 'number'},
+                                    {'name': 'delta', 'required': False, 'type': 'object'}]},
+                  {   'name': 'inject_input_action',
+                      'params': [   {'name': 'action', 'required': True, 'type': 'string'},
+                                    {'name': 'value', 'required': False, 'type': 'object'},
+                                    {   'name': 'trigger_event',
+                                        'required': False,
+                                        'type': 'string'}]},
+                  {   'name': 'inject_input_sequence',
+                      'params': [   {'name': 'steps', 'required': True, 'type': 'array'},
+                                    {'name': 'timeout', 'required': False, 'type': 'number'}]},
+                  {   'name': 'capture_screenshot',
+                      'params': [{'name': 'output_path', 'required': False, 'type': 'string'}]},
+                  {'name': 'get_viewport_info'},
+                  {   'name': 'set_viewport_camera',
+                      'params': [   {'name': 'location', 'required': True, 'type': 'array'},
+                                    {'name': 'rotation', 'required': False, 'type': 'array'},
+                                    {'name': 'speed', 'required': False, 'type': 'number'}]},
+                  {   'name': 'focus_actor',
+                      'params': [{'name': 'actor_path', 'required': True, 'type': 'string'}]},
+                  {   'name': 'focus_node',
+                      'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                    {'name': 'node_id', 'required': True, 'type': 'string'},
+                                    {'name': 'graph_name', 'required': False, 'type': 'string'}]},
+                  {   'name': 'set_viewport_mode',
+                      'params': [{'name': 'mode', 'required': True, 'type': 'string'}]},
+                  {   'name': 'execute_console_command',
+                      'params': [{'name': 'command', 'required': True, 'type': 'string'}]},
+                  {   'name': 'get_recent_logs',
+                      'params': [   {'name': 'severity', 'required': False, 'type': 'string'},
+                                    {'name': 'since_seconds', 'required': False, 'type': 'number'},
+                                    {'name': 'since_cursor', 'required': False, 'type': 'string'},
+                                    {'name': 'category', 'required': False, 'type': 'string'}]},
+                  {   'name': 'set_time_dilation',
+                      'params': [{'name': 'factor', 'required': True, 'type': 'number'}]},
+                  {'name': 'get_editor_state'},
+                  {'name': 'get_world_info'}],
+    'gen': [   {   'name': 'start_mesh',
+                   'params': [   {'name': 'prompt', 'required': False, 'type': 'string'},
+                                 {'name': 'source_image_path', 'required': False, 'type': 'string'},
+                                 {'name': 'provider', 'required': False, 'type': 'string'},
+                                 {'name': 'destination', 'required': False, 'type': 'string'}]},
+               {   'name': 'start_image',
+                   'params': [   {'name': 'prompt', 'required': True, 'type': 'string'},
+                                 {'name': 'provider', 'required': False, 'type': 'string'}]},
+               {   'name': 'start_texturing',
+                   'params': [   {'name': 'source_model_path', 'required': True, 'type': 'string'},
+                                 {'name': 'prompt', 'required': False, 'type': 'string'},
+                                 {'name': 'provider', 'required': False, 'type': 'string'},
+                                 {'name': 'destination', 'required': False, 'type': 'string'}]},
+               {   'name': 'job_status',
+                   'params': [{'name': 'job_id', 'required': True, 'type': 'string'}]},
+               {   'name': 'list_jobs',
+                   'params': [   {'name': 'status', 'required': False, 'type': 'string'},
+                                 {'name': 'limit', 'required': False, 'type': 'integer'}]},
+               {   'name': 'cancel_job',
+                   'params': [{'name': 'job_id', 'required': True, 'type': 'string'}]},
+               {   'name': 'retry_import',
+                   'params': [{'name': 'job_id', 'required': True, 'type': 'string'}]},
+               {'name': 'list_providers'},
+               {   'name': 'delete_job',
+                   'params': [{'name': 'job_id', 'required': True, 'type': 'string'}]},
+               {'name': 'get_config'}],
+    'graph': [   {   'name': 'list_graphs',
+                     'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                 {   'name': 'list_nodes',
+                     'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                   {'name': 'graph_name', 'required': False, 'type': 'string'}]},
+                 {   'name': 'get_node',
+                     'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                   {'name': 'node_id', 'required': True, 'type': 'string'},
+                                   {'name': 'graph_name', 'required': False, 'type': 'string'}]},
+                 {   'name': 'search_nodes',
+                     'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                   {'name': 'node_class', 'required': False, 'type': 'string'},
+                                   {'name': 'function_name', 'required': False, 'type': 'string'},
+                                   {'name': 'display_name', 'required': False, 'type': 'string'}]},
+                 {   'name': 'add_node',
+                     'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                   {'name': 'node_class', 'required': True, 'type': 'string'},
+                                   {'name': 'position', 'required': False, 'type': 'object'},
+                                   {'name': 'params', 'required': False, 'type': 'object'}]},
+                 {   'name': 'remove_node',
+                     'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                   {'name': 'node_id', 'required': True, 'type': 'string'},
+                                   {'name': 'graph_name', 'required': False, 'type': 'string'}]},
+                 {   'name': 'connect',
+                     'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                   {'name': 'source_node', 'required': True, 'type': 'string'},
+                                   {'name': 'source_pin', 'required': True, 'type': 'string'},
+                                   {'name': 'target_node', 'required': True, 'type': 'string'},
+                                   {'name': 'target_pin', 'required': True, 'type': 'string'},
+                                   {'name': 'graph_name', 'required': False, 'type': 'string'}]},
+                 {   'name': 'disconnect',
+                     'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                   {'name': 'node_id', 'required': True, 'type': 'string'},
+                                   {'name': 'pin_name', 'required': True, 'type': 'string'},
+                                   {'name': 'graph_name', 'required': False, 'type': 'string'}]},
+                 {   'name': 'set_pin_value',
+                     'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                   {'name': 'node_id', 'required': True, 'type': 'string'},
+                                   {'name': 'pin_name', 'required': True, 'type': 'string'},
+                                   {'name': 'value', 'required': True, 'type': 'string'},
+                                   {'name': 'graph_name', 'required': False, 'type': 'string'}]},
+                 {   'name': 'auto_layout',
+                     'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                   {'name': 'graph_name', 'required': False, 'type': 'string'}]}],
+    'level': [   {   'name': 'spawn_actor',
+                     'params': [   {'name': 'class_name', 'required': True, 'type': 'string'},
+                                   {'name': 'location', 'required': True, 'type': 'array'},
+                                   {'name': 'rotation', 'required': False, 'type': 'array'},
+                                   {'name': 'scale', 'required': False, 'type': 'array'},
+                                   {'name': 'label', 'required': False, 'type': 'string'},
+                                   {'name': 'folder', 'required': False, 'type': 'string'},
+                                   {'name': 'mesh', 'required': False, 'type': 'string'},
+                                   {'name': 'material', 'required': False, 'type': 'string'}]},
+                 {   'name': 'delete_actor',
+                     'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                   {'name': 'confirm_class', 'required': False, 'type': 'string'}]},
+                 {   'name': 'duplicate_actor',
+                     'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                   {'name': 'offset', 'required': False, 'type': 'array'}]},
+                 {   'name': 'rename_actor',
+                     'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                   {'name': 'label', 'required': True, 'type': 'string'}]},
+                 {   'name': 'get_actor',
+                     'params': [{'name': 'actor', 'required': True, 'type': 'string'}]},
+                 {   'name': 'set_transform',
+                     'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                   {'name': 'location', 'required': False, 'type': 'array'},
+                                   {'name': 'rotation', 'required': False, 'type': 'array'},
+                                   {'name': 'scale', 'required': False, 'type': 'array'}]},
+                 {   'name': 'set_actor_property',
+                     'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                   {'name': 'property', 'required': True, 'type': 'string'},
+                                   {'name': 'value', 'required': True, 'type': 'object'}]},
+                 {   'name': 'get_actor_property',
+                     'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                   {'name': 'property', 'required': True, 'type': 'string'}]},
+                 {   'name': 'list_components',
+                     'params': [{'name': 'actor', 'required': True, 'type': 'string'}]},
+                 {   'name': 'add_component',
+                     'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                   {'name': 'class', 'required': True, 'type': 'string'},
+                                   {'name': 'name', 'required': False, 'type': 'string'}]},
+                 {   'name': 'remove_component',
+                     'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                   {'name': 'component', 'required': True, 'type': 'string'}]},
+                 {   'name': 'get_component_property',
+                     'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                   {'name': 'component', 'required': True, 'type': 'string'},
+                                   {'name': 'property', 'required': True, 'type': 'string'}]},
+                 {   'name': 'set_component_property',
+                     'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                   {'name': 'component', 'required': True, 'type': 'string'},
+                                   {'name': 'property', 'required': True, 'type': 'string'},
+                                   {'name': 'value', 'required': True, 'type': 'object'}]},
+                 {   'name': 'list_actor_classes',
+                     'params': [{'name': 'category', 'required': False, 'type': 'string'}]},
+                 {   'name': 'list_component_classes',
+                     'params': [{'name': 'category', 'required': False, 'type': 'string'}]},
+                 {   'name': 'describe_class',
+                     'params': [{'name': 'class', 'required': True, 'type': 'string'}]},
+                 {   'name': 'list_actors',
+                     'params': [   {'name': 'class', 'required': False, 'type': 'string'},
+                                   {'name': 'tags', 'required': False, 'type': 'array'},
+                                   {'name': 'folder', 'required': False, 'type': 'string'},
+                                   {'name': 'region', 'required': False, 'type': 'object'},
+                                   {'name': 'limit', 'required': False, 'type': 'number'},
+                                   {'name': 'offset', 'required': False, 'type': 'number'}]},
+                 {   'name': 'find_actors',
+                     'params': [{'name': 'pattern', 'required': True, 'type': 'string'}]},
+                 {   'name': 'get_bounds',
+                     'params': [   {'name': 'class', 'required': False, 'type': 'string'},
+                                   {'name': 'tags', 'required': False, 'type': 'array'},
+                                   {'name': 'folder', 'required': False, 'type': 'string'},
+                                   {'name': 'region', 'required': False, 'type': 'object'}]},
+                 {   'name': 'select_actors',
+                     'params': [   {'name': 'actors', 'required': True, 'type': 'array'},
+                                   {'name': 'add', 'required': False, 'type': 'boolean'}]},
+                 {'name': 'get_selection'},
+                 {   'name': 'attach_actor',
+                     'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                   {'name': 'parent', 'required': True, 'type': 'string'},
+                                   {'name': 'socket', 'required': False, 'type': 'string'}]},
+                 {   'name': 'detach_actor',
+                     'params': [{'name': 'actor', 'required': True, 'type': 'string'}]},
+                 {   'name': 'set_tags',
+                     'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                   {'name': 'tags', 'required': True, 'type': 'array'}]},
+                 {   'name': 'set_folder',
+                     'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                   {'name': 'folder', 'required': False, 'type': 'string'}]},
+                 {   'name': 'group_actors',
+                     'params': [{'name': 'actors', 'required': True, 'type': 'array'}]},
+                 {   'name': 'ungroup_actors',
+                     'params': [{'name': 'group', 'required': True, 'type': 'string'}]},
+                 {'name': 'get_info'},
+                 {'name': 'list_sublevels'},
+                 {   'name': 'load_sublevel',
+                     'params': [{'name': 'sublevel', 'required': True, 'type': 'string'}]},
+                 {   'name': 'unload_sublevel',
+                     'params': [{'name': 'sublevel', 'required': True, 'type': 'string'}]},
+                 {   'name': 'set_sublevel_visibility',
+                     'params': [   {'name': 'sublevel', 'required': True, 'type': 'string'},
+                                   {'name': 'visible', 'required': True, 'type': 'boolean'}]},
+                 {'name': 'list_data_layers'},
+                 {   'name': 'set_data_layer',
+                     'params': [   {'name': 'actors', 'required': True, 'type': 'array'},
+                                   {'name': 'data_layer', 'required': True, 'type': 'string'}]},
+                 {'name': 'save_level'},
+                 {'name': 'save_all'}],
+    'material': [   {   'name': 'list_materials',
+                        'params': [   {'name': 'path', 'required': False, 'type': 'string'},
+                                      {'name': 'recursive', 'required': False, 'type': 'boolean'}]},
+                    {   'name': 'get_material',
+                        'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                    {   'name': 'create_material',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {'name': 'name', 'required': True, 'type': 'string'}]},
+                    {   'name': 'delete_material',
+                        'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                    {   'name': 'set_material_property',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {'name': 'property_name', 'required': True, 'type': 'string'},
+                                      {'name': 'value', 'required': True, 'type': 'object'}]},
+                    {   'name': 'list_instances',
+                        'params': [   {'name': 'path', 'required': False, 'type': 'string'},
+                                      {   'name': 'parent_material',
+                                          'required': False,
+                                          'type': 'string'}]},
+                    {   'name': 'get_instance',
+                        'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                    {   'name': 'create_instance',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {'name': 'name', 'required': True, 'type': 'string'},
+                                      {   'name': 'parent_material',
+                                          'required': True,
+                                          'type': 'string'}]},
+                    {   'name': 'delete_instance',
+                        'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                    {   'name': 'list_parameters',
+                        'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                    {   'name': 'get_parameter',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {   'name': 'parameter_name',
+                                          'required': True,
+                                          'type': 'string'}]},
+                    {   'name': 'set_parameter',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {   'name': 'parameter_name',
+                                          'required': True,
+                                          'type': 'string'},
+                                      {   'name': 'parameter_type',
+                                          'required': True,
+                                          'type': 'string'},
+                                      {'name': 'value', 'required': True, 'type': 'object'}]},
+                    {   'name': 'set_parameters',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {'name': 'parameters', 'required': True, 'type': 'array'}]},
+                    {   'name': 'reset_parameter',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {   'name': 'parameter_name',
+                                          'required': True,
+                                          'type': 'string'}]},
+                    {   'name': 'list_nodes',
+                        'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                    {   'name': 'get_node',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {'name': 'node_id', 'required': True, 'type': 'string'}]},
+                    {   'name': 'add_node',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {   'name': 'expression_class',
+                                          'required': True,
+                                          'type': 'string'},
+                                      {'name': 'position', 'required': False, 'type': 'object'}]},
+                    {   'name': 'remove_node',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {'name': 'node_id', 'required': True, 'type': 'string'}]},
+                    {   'name': 'list_connections',
+                        'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                    {   'name': 'connect',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {'name': 'source_node', 'required': True, 'type': 'string'},
+                                      {'name': 'source_output', 'required': True, 'type': 'number'},
+                                      {'name': 'target_node', 'required': True, 'type': 'string'},
+                                      {   'name': 'target_input',
+                                          'required': True,
+                                          'type': 'object'}]},
+                    {   'name': 'disconnect',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {'name': 'target_node', 'required': True, 'type': 'string'},
+                                      {   'name': 'target_input',
+                                          'required': True,
+                                          'type': 'object'}]},
+                    {   'name': 'auto_layout',
+                        'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                    {   'name': 'set_node_property',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {'name': 'node_id', 'required': True, 'type': 'string'},
+                                      {'name': 'property_name', 'required': True, 'type': 'string'},
+                                      {'name': 'value', 'required': True, 'type': 'object'}]},
+                    {   'name': 'get_node_pins',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {'name': 'node_id', 'required': True, 'type': 'string'}]},
+                    {   'name': 'list_collections',
+                        'params': [   {'name': 'path', 'required': False, 'type': 'string'},
+                                      {'name': 'recursive', 'required': False, 'type': 'boolean'}]},
+                    {   'name': 'get_collection',
+                        'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                    {   'name': 'create_collection',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {'name': 'name', 'required': True, 'type': 'string'}]},
+                    {   'name': 'delete_collection',
+                        'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+                    {   'name': 'add_collection_parameter',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {   'name': 'parameter_name',
+                                          'required': True,
+                                          'type': 'string'},
+                                      {   'name': 'parameter_type',
+                                          'required': True,
+                                          'type': 'string'},
+                                      {   'name': 'default_value',
+                                          'required': True,
+                                          'type': 'object'}]},
+                    {   'name': 'remove_collection_parameter',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {   'name': 'parameter_name',
+                                          'required': True,
+                                          'type': 'string'}]},
+                    {   'name': 'set_collection_parameter',
+                        'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                      {   'name': 'parameter_name',
+                                          'required': True,
+                                          'type': 'string'},
+                                      {'name': 'value', 'required': True, 'type': 'object'}]},
+                    {   'name': 'list_dynamic_instances',
+                        'params': [{'name': 'actor_path', 'required': True, 'type': 'string'}]},
+                    {   'name': 'get_dynamic_instance',
+                        'params': [   {'name': 'actor_path', 'required': True, 'type': 'string'},
+                                      {   'name': 'component_name',
+                                          'required': False,
+                                          'type': 'string'},
+                                      {'name': 'slot_index', 'required': False, 'type': 'number'}]},
+                    {   'name': 'create_dynamic_instance',
+                        'params': [   {'name': 'actor_path', 'required': True, 'type': 'string'},
+                                      {   'name': 'component_name',
+                                          'required': False,
+                                          'type': 'string'},
+                                      {'name': 'slot_index', 'required': False, 'type': 'number'},
+                                      {   'name': 'source_material',
+                                          'required': False,
+                                          'type': 'string'},
+                                      {'name': 'parameters', 'required': False, 'type': 'array'}]},
+                    {   'name': 'destroy_dynamic_instance',
+                        'params': [   {'name': 'actor_path', 'required': True, 'type': 'string'},
+                                      {   'name': 'component_name',
+                                          'required': False,
+                                          'type': 'string'},
+                                      {'name': 'slot_index', 'required': False, 'type': 'number'}]},
+                    {   'name': 'set_dynamic_parameter',
+                        'params': [   {'name': 'actor_path', 'required': True, 'type': 'string'},
+                                      {'name': 'name', 'required': True, 'type': 'string'},
+                                      {'name': 'type', 'required': True, 'type': 'string'},
+                                      {'name': 'value', 'required': True, 'type': 'object'},
+                                      {   'name': 'component_name',
+                                          'required': False,
+                                          'type': 'string'},
+                                      {'name': 'slot_index', 'required': False, 'type': 'number'}]},
+                    {   'name': 'get_dynamic_parameter',
+                        'params': [   {'name': 'actor_path', 'required': True, 'type': 'string'},
+                                      {'name': 'name', 'required': True, 'type': 'string'},
+                                      {   'name': 'component_name',
+                                          'required': False,
+                                          'type': 'string'},
+                                      {'name': 'slot_index', 'required': False, 'type': 'number'}]},
+                    {   'name': 'list_dynamic_parameters',
+                        'params': [   {'name': 'actor_path', 'required': True, 'type': 'string'},
+                                      {   'name': 'component_name',
+                                          'required': False,
+                                          'type': 'string'},
+                                      {'name': 'slot_index', 'required': False, 'type': 'number'}]},
+                    {   'name': 'set_dynamic_parameters',
+                        'params': [   {'name': 'actor_path', 'required': True, 'type': 'string'},
+                                      {'name': 'parameters', 'required': True, 'type': 'array'},
+                                      {   'name': 'component_name',
+                                          'required': False,
+                                          'type': 'string'},
+                                      {'name': 'slot_index', 'required': False, 'type': 'number'}]},
+                    {   'name': 'reset_dynamic_parameter',
+                        'params': [   {'name': 'actor_path', 'required': True, 'type': 'string'},
+                                      {'name': 'name', 'required': True, 'type': 'string'},
+                                      {   'name': 'component_name',
+                                          'required': False,
+                                          'type': 'string'},
+                                      {   'name': 'slot_index',
+                                          'required': False,
+                                          'type': 'number'}]}],
+    'qa': [   {   'name': 'observe_state',
+                  'params': [   {'name': 'radius', 'required': False, 'type': 'number'},
+                                {'name': 'max_actors', 'required': False, 'type': 'number'},
+                                {'name': 'include_los', 'required': False, 'type': 'boolean'},
+                                {   'name': 'interaction_range',
+                                    'required': False,
+                                    'type': 'number'}]},
+              {   'name': 'get_actor_state',
+                  'params': [{'name': 'actor', 'required': True, 'type': 'string'}]},
+              {'name': 'get_player_state'},
+              {   'name': 'look_at',
+                  'params': [{'name': 'target', 'required': True, 'type': 'object'}]},
+              {   'name': 'interact',
+                  'params': [   {'name': 'target', 'required': True, 'type': 'object'},
+                                {'name': 'key', 'required': False, 'type': 'string'},
+                                {'name': 'duration', 'required': False, 'type': 'number'}]},
+              {   'name': 'move_to',
+                  'params': [   {'name': 'target', 'required': True, 'type': 'object'},
+                                {'name': 'timeout', 'required': False, 'type': 'number'},
+                                {   'name': 'acceptance_radius',
+                                    'required': False,
+                                    'type': 'number'}]},
+              {   'name': 'wait_for',
+                  'params': [   {'name': 'type', 'required': True, 'type': 'string'},
+                                {'name': 'timeout', 'required': False, 'type': 'number'},
+                                {'name': 'actor', 'required': False, 'type': 'string'},
+                                {'name': 'property', 'required': False, 'type': 'string'},
+                                {'name': 'value', 'required': False, 'type': 'object'}]},
+              {   'name': 'teleport_player',
+                  'params': [   {'name': 'location', 'required': True, 'type': 'array'},
+                                {'name': 'rotation', 'required': False, 'type': 'array'}]},
+              {   'name': 'set_actor_property',
+                  'params': [   {'name': 'actor', 'required': True, 'type': 'string'},
+                                {'name': 'property', 'required': True, 'type': 'string'},
+                                {'name': 'value', 'required': True, 'type': 'object'}]},
+              {   'name': 'set_random_seed',
+                  'params': [{'name': 'seed', 'required': True, 'type': 'number'}]},
+              {   'name': 'assert_state',
+                  'params': [   {'name': 'type', 'required': True, 'type': 'string'},
+                                {'name': 'actor', 'required': False, 'type': 'string'},
+                                {'name': 'property', 'required': False, 'type': 'string'},
+                                {'name': 'value', 'required': False, 'type': 'object'},
+                                {'name': 'expected', 'required': False, 'type': 'object'},
+                                {'name': 'message', 'required': False, 'type': 'string'}]},
+              {   'name': 'start_recording',
+                  'params': [{'name': 'name', 'required': False, 'type': 'string'}]},
+              {'name': 'stop_recording'},
+              {   'name': 'replay_session',
+                  'params': [   {'name': 'path', 'required': True, 'type': 'string'},
+                                {'name': 'on_failure', 'required': False, 'type': 'string'}]},
+              {'name': 'cancel_replay'}],
+    'reflect': [   {   'name': 'class_hierarchy',
+                       'params': [   {'name': 'root', 'required': True, 'type': 'string'},
+                                     {'name': 'depth', 'required': False, 'type': 'number'},
+                                     {   'name': 'include_blueprint',
+                                         'required': False,
+                                         'type': 'boolean'},
+                                     {   'name': 'include_engine',
+                                         'required': False,
+                                         'type': 'boolean'},
+                                     {'name': 'max_results', 'required': False, 'type': 'number'}]},
+                   {   'name': 'class_detail',
+                       'params': [   {'name': 'class_name', 'required': True, 'type': 'string'},
+                                     {   'name': 'include_inherited',
+                                         'required': False,
+                                         'type': 'boolean'}]},
+                   {   'name': 'find_overrides',
+                       'params': [   {'name': 'class_name', 'required': True, 'type': 'string'},
+                                     {'name': 'depth', 'required': False, 'type': 'number'},
+                                     {'name': 'limit', 'required': False, 'type': 'number'}]},
+                   {   'name': 'find_usages',
+                       'params': [   {'name': 'symbol', 'required': True, 'type': 'string'},
+                                     {'name': 'class_name', 'required': False, 'type': 'string'},
+                                     {'name': 'scope', 'required': False, 'type': 'string'},
+                                     {'name': 'deep_scan', 'required': False, 'type': 'boolean'},
+                                     {'name': 'path_filter', 'required': False, 'type': 'string'},
+                                     {'name': 'limit', 'required': False, 'type': 'number'},
+                                     {   'name': 'max_blueprints',
+                                         'required': False,
+                                         'type': 'number'}]},
+                   {   'name': 'search',
+                       'params': [   {'name': 'pattern', 'required': True, 'type': 'string'},
+                                     {'name': 'limit', 'required': False, 'type': 'number'},
+                                     {   'name': 'include_engine',
+                                         'required': False,
+                                         'type': 'boolean'}]},
+                   {   'name': 'get_dependencies',
+                       'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                     {'name': 'category', 'required': False, 'type': 'string'},
+                                     {'name': 'limit', 'required': False, 'type': 'number'}]},
+                   {   'name': 'get_referencers',
+                       'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                     {'name': 'category', 'required': False, 'type': 'string'},
+                                     {'name': 'limit', 'required': False, 'type': 'number'}]}],
+    'umg': [   {   'name': 'add_widget',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_class', 'required': True, 'type': 'string'},
+                                 {'name': 'name', 'required': True, 'type': 'string'},
+                                 {'name': 'parent_name', 'required': False, 'type': 'string'},
+                                 {'name': 'slot_index', 'required': False, 'type': 'number'}]},
+               {   'name': 'remove_widget',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'}]},
+               {   'name': 'reparent',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'new_parent', 'required': True, 'type': 'string'},
+                                 {'name': 'slot_index', 'required': False, 'type': 'number'}]},
+               {   'name': 'get_tree',
+                   'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+               {   'name': 'get_widget',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'}]},
+               {   'name': 'list_widget_classes',
+                   'params': [{'name': 'category', 'required': False, 'type': 'string'}]},
+               {   'name': 'duplicate_widget',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'new_name', 'required': False, 'type': 'string'},
+                                 {'name': 'name_prefix', 'required': False, 'type': 'string'}]},
+               {   'name': 'set_color',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'color', 'required': True, 'type': 'object'},
+                                 {'name': 'target', 'required': False, 'type': 'string'}]},
+               {   'name': 'set_text',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'text', 'required': True, 'type': 'string'}]},
+               {   'name': 'set_font',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'size', 'required': False, 'type': 'number'},
+                                 {'name': 'typeface', 'required': False, 'type': 'string'},
+                                 {'name': 'letter_spacing', 'required': False, 'type': 'number'},
+                                 {'name': 'family', 'required': False, 'type': 'string'}]},
+               {   'name': 'set_brush',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'target', 'required': False, 'type': 'string'},
+                                 {'name': 'color', 'required': False, 'type': 'object'},
+                                 {'name': 'draw_as', 'required': False, 'type': 'string'},
+                                 {'name': 'corner_radius', 'required': False, 'type': 'object'}]},
+               {   'name': 'set_padding',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'padding', 'required': True, 'type': 'object'},
+                                 {'name': 'target', 'required': False, 'type': 'string'}]},
+               {   'name': 'set_anchor',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'preset', 'required': True, 'type': 'string'}]},
+               {   'name': 'set_alignment',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'horizontal', 'required': False, 'type': 'string'},
+                                 {'name': 'vertical', 'required': False, 'type': 'string'}]},
+               {   'name': 'set_size',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'width', 'required': False, 'type': 'number'},
+                                 {'name': 'height', 'required': False, 'type': 'number'},
+                                 {'name': 'size_rule', 'required': False, 'type': 'string'},
+                                 {'name': 'fill_ratio', 'required': False, 'type': 'number'}]},
+               {   'name': 'set_visibility',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'visibility', 'required': True, 'type': 'string'}]},
+               {   'name': 'set_property',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'property_path', 'required': True, 'type': 'string'},
+                                 {'name': 'value', 'required': True, 'type': 'object'}]},
+               {   'name': 'get_property',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'property_path', 'required': True, 'type': 'string'}]},
+               {   'name': 'get_schema',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'widget_name', 'required': True, 'type': 'string'},
+                                 {'name': 'category', 'required': False, 'type': 'string'}]},
+               {   'name': 'create_animation',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'animation_name', 'required': True, 'type': 'string'},
+                                 {'name': 'length', 'required': True, 'type': 'number'}]},
+               {   'name': 'list_animations',
+                   'params': [{'name': 'asset_path', 'required': True, 'type': 'string'}]},
+               {   'name': 'remove_animation',
+                   'params': [   {'name': 'asset_path', 'required': True, 'type': 'string'},
+                                 {'name': 'animation_name', 'required': True, 'type': 'string'}]}]}
