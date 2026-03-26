@@ -11,6 +11,7 @@
 #include "Operations/CortexBPSearchOps.h"
 #include "Operations/CortexBPStructureOps.h"
 #include "Operations/CortexBPTimelineOps.h"
+#include "Operations/CortexBPClassSettingsOps.h"
 
 FCortexCommandResult FCortexBPCommandHandler::Execute(
 	const FString& Command,
@@ -150,6 +151,26 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPAssetOps::Reparent(Params);
 	}
 
+	if (Command == TEXT("add_interface"))
+	{
+		return FCortexBPClassSettingsOps::AddInterface(Params);
+	}
+
+	if (Command == TEXT("remove_interface"))
+	{
+		return FCortexBPClassSettingsOps::RemoveInterface(Params);
+	}
+
+	if (Command == TEXT("set_tick_settings"))
+	{
+		return FCortexBPClassSettingsOps::SetTickSettings(Params);
+	}
+
+	if (Command == TEXT("set_replication_settings"))
+	{
+		return FCortexBPClassSettingsOps::SetReplicationSettings(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown bp command: %s"), *Command)
@@ -269,6 +290,29 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add(FCortexCommandInfo{TEXT("reparent"), TEXT("Reparent a Blueprint to a new parent class")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("new_parent"), TEXT("string"), TEXT("New parent class (Blueprint path or C++ class name)")));
+	Commands.Add(FCortexCommandInfo{TEXT("add_interface"), TEXT("Add an interface implementation to a Blueprint")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("interface_path"), TEXT("string"), TEXT("Interface class name or path"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after adding (default: true)")));
+	Commands.Add(FCortexCommandInfo{TEXT("remove_interface"), TEXT("Remove an interface implementation from a Blueprint")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("interface_path"), TEXT("string"), TEXT("Interface class name or path"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after removing (default: true)")));
+	Commands.Add(FCortexCommandInfo{TEXT("set_tick_settings"), TEXT("Set Actor tick settings on a Blueprint CDO")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Optional(TEXT("start_with_tick_enabled"), TEXT("boolean"), TEXT("Enable tick at start (also forces bCanEverTick=true when enabling)"))
+		.Optional(TEXT("can_ever_tick"), TEXT("boolean"), TEXT("Whether actor can ever tick (independent of start_with_tick_enabled)"))
+		.Optional(TEXT("tick_interval"), TEXT("number"), TEXT("Tick interval in seconds (0 = every frame)"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after setting (default: true)"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save after setting (default: false)")));
+	Commands.Add(FCortexCommandInfo{TEXT("set_replication_settings"), TEXT("Set replication settings on a Blueprint CDO")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Optional(TEXT("replicates"), TEXT("boolean"), TEXT("Enable replication"))
+		.Optional(TEXT("replicate_movement"), TEXT("boolean"), TEXT("Replicate movement"))
+		.Optional(TEXT("net_dormancy"), TEXT("string"), TEXT("Net dormancy: DORM_Never|DORM_Awake|DORM_DormantAll|DORM_DormantPartial|DORM_Initial"))
+		.Optional(TEXT("net_use_owner_relevancy"), TEXT("boolean"), TEXT("Use owner relevancy"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after setting (default: true)"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save after setting (default: false)")));
 
 	return Commands;
 }
