@@ -43,8 +43,8 @@ bool FCortexBPSetReplicationBasicTest::RunTest(const FString& Parameters)
 		TestNotNull(TEXT("CDO is AActor"), CDO);
 		if (CDO)
 		{
-			TestTrue(TEXT("bReplicates is true"), CDO->bReplicates);
-			TestTrue(TEXT("bReplicateMovement is true"), CDO->bReplicateMovement);
+			TestTrue(TEXT("bReplicates is true"), CDO->GetIsReplicated());
+			TestTrue(TEXT("bReplicateMovement is true"), CDO->IsReplicatingMovement());
 			TestEqual(TEXT("NetDormancy is DORM_Awake"),
 				CDO->NetDormancy, ENetDormancy::DORM_Awake);
 		}

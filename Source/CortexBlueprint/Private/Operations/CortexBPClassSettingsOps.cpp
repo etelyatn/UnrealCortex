@@ -117,7 +117,7 @@ FCortexCommandResult FCortexBPClassSettingsOps::AddInterface(const TSharedPtr<FJ
 	UClass* InterfaceClass = ResolveInterfaceClass(InterfacePath, ResolveError);
 	if (!InterfaceClass)
 	{
-		const int32 ErrorCode = ResolveError.StartsWith(TEXT("NOT_INTERFACE:"))
+		const FString ErrorCode = ResolveError.StartsWith(TEXT("NOT_INTERFACE:"))
 			? CortexErrorCodes::InvalidOperation
 			: CortexErrorCodes::ClassNotFound;
 		const FString CleanError = ResolveError.StartsWith(TEXT("NOT_INTERFACE:"))
@@ -221,7 +221,7 @@ FCortexCommandResult FCortexBPClassSettingsOps::RemoveInterface(const TSharedPtr
 	UClass* InterfaceClass = ResolveInterfaceClass(InterfacePath, ResolveError);
 	if (!InterfaceClass)
 	{
-		const int32 ErrorCode = ResolveError.StartsWith(TEXT("NOT_INTERFACE:"))
+		const FString ErrorCode = ResolveError.StartsWith(TEXT("NOT_INTERFACE:"))
 			? CortexErrorCodes::InvalidOperation
 			: CortexErrorCodes::ClassNotFound;
 		const FString CleanError = ResolveError.StartsWith(TEXT("NOT_INTERFACE:"))
@@ -468,12 +468,12 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetReplicationSettings(const TSh
 		bool bTempBool = false;
 		if (Params->TryGetBoolField(TEXT("replicates"), bTempBool))
 		{
-			ActorCDO->bReplicates = bTempBool;
+			ActorCDO->SetReplicates(bTempBool);
 		}
 
 		if (Params->TryGetBoolField(TEXT("replicate_movement"), bTempBool))
 		{
-			ActorCDO->bReplicateMovement = bTempBool;
+			ActorCDO->SetReplicateMovement(bTempBool);
 		}
 
 		if (bHasDormancy)
@@ -522,8 +522,8 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetReplicationSettings(const TSh
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
-	Data->SetBoolField(TEXT("replicates"), ActorCDO->bReplicates);
-	Data->SetBoolField(TEXT("replicate_movement"), ActorCDO->bReplicateMovement);
+	Data->SetBoolField(TEXT("replicates"), ActorCDO->GetIsReplicated());
+	Data->SetBoolField(TEXT("replicate_movement"), ActorCDO->IsReplicatingMovement());
 	Data->SetStringField(TEXT("net_dormancy"), DormancyToString(ActorCDO->NetDormancy));
 	Data->SetBoolField(TEXT("net_use_owner_relevancy"), ActorCDO->bNetUseOwnerRelevancy);
 	Data->SetBoolField(TEXT("compiled"), bCompile && bDidCompile);
