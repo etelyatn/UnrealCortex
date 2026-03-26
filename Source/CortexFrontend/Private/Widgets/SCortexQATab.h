@@ -5,6 +5,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
+struct FCortexSessionStateChange;
 class FCortexCliSession;
 class FCortexQASessionManager;
 class SCortexQAToolbar;
