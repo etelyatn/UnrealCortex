@@ -2,6 +2,7 @@
 
 import ctypes
 import dataclasses
+import functools
 import os
 import pathlib
 import platform
@@ -22,7 +23,6 @@ logger = logging.getLogger(__name__)
 _CONNECT_TIMEOUT = 5.0
 _RECV_TIMEOUT = 60.0
 _RECONNECT_DELAY = 0.5
-_DEFAULT_PORT = 8742
 
 
 @dataclasses.dataclass(frozen=True)
@@ -125,22 +125,57 @@ def _parse_port_file(
         return None
 
 
-def _find_saved_dir() -> pathlib.Path | None:
-    """Find the Saved/ directory for the current project."""
-    project_dir = os.environ.get("CORTEX_PROJECT_DIR")
-    if project_dir:
-        saved = pathlib.Path(project_dir) / "Saved"
-        return saved if saved.is_dir() else None
-
+@functools.lru_cache(maxsize=1)
+def _find_project_root() -> pathlib.Path | None:
+    """Walk up from this file to find the directory containing *.uproject."""
     current = pathlib.Path(__file__).resolve().parent
     for _ in range(20):
         if list(current.glob("*.uproject")):
-            saved = current / "Saved"
-            return saved if saved.is_dir() else None
+            return current
         parent = current.parent
         if parent == current:
             break
         current = parent
+    return None
+
+
+def _get_expected_project() -> str:
+    """Get expected project name from the .uproject filename."""
+    root = _find_project_root()
+    if root is None:
+        return ""
+    uprojects = list(root.glob("*.uproject"))
+    if uprojects:
+        return uprojects[0].stem
+    return ""
+
+
+def _find_saved_dir() -> pathlib.Path | None:
+    """Find the Saved/ directory for the current project.
+
+    Resolves CORTEX_PROJECT_DIR against the project root (not CWD)
+    when the path is relative, to avoid issues with uv --directory
+    changing the working directory.
+    """
+    project_root = _find_project_root()
+
+    project_dir_env = os.environ.get("CORTEX_PROJECT_DIR")
+    if project_dir_env:
+        project_dir = pathlib.Path(project_dir_env)
+        if not project_dir.is_absolute():
+            if project_root is None:
+                logger.warning(
+                    "CORTEX_PROJECT_DIR='%s' is relative but no .uproject found to resolve against",
+                    project_dir_env,
+                )
+                return None
+            project_dir = project_root / project_dir
+        saved = project_dir.resolve() / "Saved"
+        return saved if saved.is_dir() else None
+
+    if project_root:
+        saved = project_root / "Saved"
+        return saved if saved.is_dir() else None
     return None
 
 
@@ -233,14 +268,18 @@ class UEConnection:
         self._project_path: str | None = None
         self._expected_project: str = ""
         if port is not None:
+            # Explicit port — caller knows what they're connecting to
             self.port = port
         else:
-            # Try port file discovery, then fallback to default
+            # Auto-discovery — validate project to prevent cross-project connections
+            self._expected_project = _get_expected_project()
             discovered = _discover_port()
             if discovered is not None:
-                self.port, self._pid, self._project_path, self._expected_project = discovered
+                self.port, self._pid, self._project_path, discovered_project = discovered
+                if discovered_project:
+                    self._expected_project = discovered_project
             else:
-                self.port = _DEFAULT_PORT
+                self.port = 0  # No editor found — connect() will raise
         self._socket: socket.socket | None = None
         self._cache = ResponseCache()
         self._recv_buffer = b""
@@ -255,6 +294,16 @@ class UEConnection:
         """Connect to the UE plugin TCP server. Raises ConnectionError if unavailable."""
         if self._socket is not None:
             return
+
+        if self.port == 0:
+            saved_dir = _find_saved_dir()
+            project_dir_env = os.environ.get("CORTEX_PROJECT_DIR", "(not set)")
+            raise ConnectionError(
+                f"No running Unreal Editor found.\n"
+                f"  CORTEX_PROJECT_DIR: {project_dir_env}\n"
+                f"  Searched for port files in: {saved_dir or '(directory not found)'}\n"
+                f"  Is the editor running with UnrealCortex plugin enabled?"
+            )
 
         logger.debug("Connecting to Unreal Editor at %s:%d", self.host, self.port)
         try:
@@ -372,21 +421,11 @@ class UEConnection:
 
     def _find_cache_dir(self) -> pathlib.Path | None:
         """Find Saved/Cortex/ directory."""
-        project_dir = os.environ.get("CORTEX_PROJECT_DIR")
-        if project_dir:
-            found = pathlib.Path(project_dir) / "Saved" / "Cortex"
-            return found if found.exists() else None
-
-        current = pathlib.Path(__file__).resolve().parent
-        for _ in range(20):
-            if list(current.glob("*.uproject")):
-                found = current / "Saved" / "Cortex"
-                return found if found.exists() else None
-            parent = current.parent
-            if parent == current:
-                break
-            current = parent
-        return None
+        saved = _find_saved_dir()
+        if saved is None:
+            return None
+        cortex_dir = saved / "Cortex"
+        return cortex_dir if cortex_dir.exists() else None
 
     def load_file_caches(self) -> None:
         """Load cached responses from Saved/Cortex/ files if fresh."""
@@ -505,10 +544,15 @@ class UEConnection:
             raise ConnectionError(f"Lost connection to Unreal Editor: {e}") from e
 
     def _validate_project(self) -> None:
-        """Warn if the connected editor project name differs from expected."""
+        """Verify connected editor matches expected project.
+
+        Raises ConnectionError on project mismatch to prevent operating
+        on the wrong editor instance.
+        """
         if self._socket is None or not self._expected_project:
             return
 
+        mismatch_error: str | None = None
         try:
             request = json.dumps({"command": "get_status", "params": {}}) + "\n"
             self._socket.sendall(request.encode("utf-8"))
@@ -528,17 +572,20 @@ class UEConnection:
                 response = json.loads(first_line.decode("utf-8"))
                 actual_project = response.get("data", {}).get("project_name", "")
                 if actual_project and actual_project != self._expected_project:
-                    logger.warning(
-                        "Connected to '%s' but expected '%s' — wrong editor on port %d. "
-                        "Check for stale port files in Saved/.",
-                        actual_project,
-                        self._expected_project,
-                        self.port,
+                    mismatch_error = (
+                        f"Connected to editor for '{actual_project}' but expected "
+                        f"'{self._expected_project}' on port {self.port}. "
+                        f"Wrong editor instance — check for stale port files in Saved/."
                     )
         except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
             logger.debug("Project validation skipped: %s", e)
         finally:
             try:
-                self._socket.settimeout(_RECV_TIMEOUT)
+                if self._socket:
+                    self._socket.settimeout(_RECV_TIMEOUT)
             except OSError:
                 pass
+
+        if mismatch_error:
+            self.disconnect()
+            raise ConnectionError(mismatch_error)
