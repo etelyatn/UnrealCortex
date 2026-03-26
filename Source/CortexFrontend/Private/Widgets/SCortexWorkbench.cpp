@@ -2,32 +2,19 @@
 
 #include "CortexFrontendModule.h"
 #include "Framework/Docking/TabManager.h"
-#include "Misc/ConfigCacheIni.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/SCortexAnalysisTab.h"
 #include "Widgets/SCortexChatPanel.h"
 #include "Widgets/SCortexConversionTab.h"
 #include "Widgets/SCortexQATab.h"
 #include "Widgets/SCortexGenTab.h"
-#include "Widgets/SCortexSidebar.h"
 #include "Session/CortexCliSession.h"
 #include "CortexGenModule.h"
 
 void SCortexWorkbench::Construct(const FArguments& InArgs)
 {
 	SessionWeak = InArgs._Session;
-
-	// Read sidebar coefficient from config
-	float SidebarCoeff = 0.20f;
-	GConfig->GetFloat(TEXT("CortexFrontend"), TEXT("SidebarSizeCoefficient"), SidebarCoeff, GEditorPerProjectIni);
-	CachedSidebarCoefficient = FMath::Clamp(SidebarCoeff, 0.10f, 0.50f);
-
-	// Read collapsed state from config
-	bool bStoredCollapsed = false;
-	GConfig->GetBool(TEXT("CortexFrontend"), TEXT("SidebarCollapsed"), bStoredCollapsed, GEditorPerProjectIni);
-	bSidebarCollapsed = bStoredCollapsed;
 
 	// Create local tab manager
 	check(InArgs._OwnerTab.IsValid());
@@ -75,31 +62,8 @@ void SCortexWorkbench::Construct(const FArguments& InArgs)
 
 	ChildSlot
 	[
-		SNew(SSplitter)
-		.Orientation(EOrientation::Orient_Horizontal)
-		+ SSplitter::Slot()
-		.Value(TAttribute<float>(this, &SCortexWorkbench::GetSidebarSlotValue))
-		.MinSize(0.0f)
-		[
-			SAssignNew(SidebarBox, SBox)
-			[
-				SAssignNew(Sidebar, SCortexSidebar)
-				.Session(SessionWeak)
-				.OnCollapse(FOnCortexSidebarToggle::CreateSP(this, &SCortexWorkbench::OnSidebarToggle))
-			]
-		]
-		+ SSplitter::Slot()
-		.Value(1.0f - CachedSidebarCoefficient)
-		[
-			TabContents.IsValid() ? TabContents.ToSharedRef() : SNullWidget::NullWidget
-		]
+		TabContents.IsValid() ? TabContents.ToSharedRef() : SNullWidget::NullWidget
 	];
-
-	// Apply initial collapsed icon state now that Sidebar widget is constructed
-	if (bSidebarCollapsed && Sidebar.IsValid())
-	{
-		Sidebar->SetCollapsed(true);
-	}
 }
 
 SCortexWorkbench::~SCortexWorkbench()
@@ -249,25 +213,6 @@ void SCortexWorkbench::CleanupAnalysisTab(FName TabId)
 	}
 
 	AnalysisContexts.Remove(TabId);
-}
-
-void SCortexWorkbench::OnSidebarToggle()
-{
-	bSidebarCollapsed = !bSidebarCollapsed;
-
-	if (Sidebar.IsValid())
-	{
-		Sidebar->SetCollapsed(bSidebarCollapsed);
-	}
-
-	GConfig->SetBool(TEXT("CortexFrontend"), TEXT("SidebarCollapsed"), bSidebarCollapsed, GEditorPerProjectIni);
-	GConfig->SetFloat(TEXT("CortexFrontend"), TEXT("SidebarSizeCoefficient"), CachedSidebarCoefficient, GEditorPerProjectIni);
-	GConfig->Flush(false, GEditorPerProjectIni);
-}
-
-float SCortexWorkbench::GetSidebarSlotValue() const
-{
-	return bSidebarCollapsed ? 0.02f : CachedSidebarCoefficient;
 }
 
 TSharedRef<SDockTab> SCortexWorkbench::SpawnGenTab(const FSpawnTabArgs& /*Args*/)

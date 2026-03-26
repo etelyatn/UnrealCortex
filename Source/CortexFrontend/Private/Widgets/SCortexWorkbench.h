@@ -5,8 +5,6 @@
 #include "Conversion/CortexConversionContext.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/SCortexSidebar.h"
 
 class FCortexCliSession;
 struct FCortexAnalysisPayload;
@@ -37,18 +35,12 @@ private:
 	TSharedRef<SDockTab> SpawnGenTab(const FSpawnTabArgs& Args);
 	void CleanupConversionTab(FName TabId);
 	void CleanupAnalysisTab(FName TabId);
-	void OnSidebarToggle();
-	float GetSidebarSlotValue() const;
 
 	TSharedPtr<FTabManager> TabManager;
 	TWeakPtr<FCortexCliSession> SessionWeak;
-	TSharedPtr<SCortexSidebar> Sidebar;
-	TSharedPtr<SBox> SidebarBox;
 
 	TMap<FName, TSharedPtr<FCortexConversionContext>> ConversionContexts;
 	TMap<FName, TSharedPtr<FCortexAnalysisContext>> AnalysisContexts;
 
-	float CachedSidebarCoefficient = 0.20f;
-	bool bSidebarCollapsed = false;
 	bool bGenTabRegistered = false;
 };
