@@ -5,6 +5,7 @@
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
 #include "Misc/PackageName.h"
+#include "CoreGlobals.h"
 #include "UObject/ObjectRedirector.h"
 #include "ScopedTransaction.h"
 
@@ -64,6 +65,8 @@ FCortexCommandResult FCortexBPRedirectorOps::FixupRedirectors(const TSharedPtr<F
 		FScopedTransaction Transaction(FText::FromString(
 			FString::Printf(TEXT("Cortex: Fixup Redirectors in %s"), *Path)
 		));
+		// Suppress editor modal fixup dialogs while running MCP operations unattended.
+		TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
 		FAssetToolsModule& AssetToolsModule =
 			FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
 		AssetToolsModule.Get().FixupReferencers(Redirectors);
