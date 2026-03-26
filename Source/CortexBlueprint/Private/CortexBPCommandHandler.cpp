@@ -100,6 +100,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPComponentOps::SetComponentDefaults(Params);
 	}
 
+	if (Command == TEXT("add_scs_component"))
+	{
+		return FCortexBPComponentOps::AddSCSComponent(Params);
+	}
+
 	if (Command == TEXT("analyze_for_migration"))
 	{
 		return FCortexBPAnalysisOps::AnalyzeForMigration(Params);
@@ -223,6 +228,12 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("component_name"), TEXT("string"), TEXT("Component template name"))
 		.Required(TEXT("properties"), TEXT("object"), TEXT("Properties to apply")));
+	Commands.Add(FCortexCommandInfo{TEXT("add_scs_component"), TEXT("Add an SCS component to a Blueprint")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("component_class"), TEXT("string"), TEXT("Component class name (e.g. StaticMeshComponent)"))
+		.Optional(TEXT("component_name"), TEXT("string"), TEXT("Variable name (auto-generated if omitted)"))
+		.Optional(TEXT("parent_component"), TEXT("string"), TEXT("Parent SCS component variable name"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after adding")));
 	Commands.Add(FCortexCommandInfo{TEXT("analyze_for_migration"), TEXT("Analyze a Blueprint for C++ migration")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path")));
 	Commands.Add(FCortexCommandInfo{TEXT("cleanup_migration"), TEXT("Clean up a Blueprint after C++ migration")}
