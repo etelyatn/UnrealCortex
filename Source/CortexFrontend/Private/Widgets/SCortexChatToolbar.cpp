@@ -58,6 +58,40 @@ void SCortexChatToolbar::Construct(const FArguments& InArgs)
             .Text(FText::FromString(TEXT("")))
             .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
         ]
+        // Project Context toggle
+        + SHorizontalBox::Slot()
+        .AutoWidth()
+        .VAlign(VAlign_Center)
+        .Padding(0.0f, 4.0f, 8.0f, 4.0f)
+        [
+            SNew(SHorizontalBox)
+            + SHorizontalBox::Slot()
+            .AutoWidth()
+            .VAlign(VAlign_Center)
+            [
+                SAssignNew(ProjectContextCheckbox, SCheckBox)
+                .IsChecked_Lambda([]()
+                {
+                    return FCortexFrontendSettings::Get().GetProjectContext()
+                        ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+                })
+                .OnCheckStateChanged_Lambda([](ECheckBoxState NewState)
+                {
+                    FCortexFrontendSettings::Get().SetProjectContext(
+                        NewState == ECheckBoxState::Checked);
+                })
+            ]
+            + SHorizontalBox::Slot()
+            .AutoWidth()
+            .VAlign(VAlign_Center)
+            .Padding(4.0f, 0.0f, 0.0f, 0.0f)
+            [
+                SNew(STextBlock)
+                .Text(FText::FromString(TEXT("Project Context")))
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
+            ]
+        ]
         // Active model label
         + SHorizontalBox::Slot()
         .AutoWidth()
