@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Brushes/SlateRoundedBoxBrush.h"
 #include "CoreMinimal.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
@@ -51,6 +52,10 @@ private:
     TSharedPtr<STextBlock> ModelLabel;
 
     TArray<FString> ContextItems;
+
+    TUniquePtr<FSlateRoundedBoxBrush> ModeBrush;
+    TUniquePtr<FSlateRoundedBoxBrush> SendBrush;
+    TUniquePtr<FSlateRoundedBoxBrush> DropdownBrush;
 
     FOnCortexSendMessage OnSendMessage;
     FOnCortexCancel OnCancel;

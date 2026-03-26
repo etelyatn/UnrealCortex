@@ -19,10 +19,38 @@
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
+namespace
+{
+    const FButtonStyle& GetHoverButtonStyle()
+    {
+        static FButtonStyle Style = []()
+        {
+            FButtonStyle S = FCoreStyle::Get().GetWidgetStyle<FButtonStyle>("NoBorder");
+
+            FSlateBrush HoveredBrush = *FAppStyle::GetBrush("WhiteBrush");
+            HoveredBrush.TintColor = FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("2a2a2a"))));
+            S.SetHovered(HoveredBrush);
+
+            FSlateBrush PressedBrush = *FAppStyle::GetBrush("WhiteBrush");
+            PressedBrush.TintColor = FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("333333"))));
+            S.SetPressed(PressedBrush);
+
+            return S;
+        }();
+        return Style;
+    }
+}
+
 void SCortexInputArea::Construct(const FArguments& InArgs)
 {
     OnSendMessage = InArgs._OnSendMessage;
     OnCancel = InArgs._OnCancel;
+
+    ModeBrush    = MakeUnique<FSlateRoundedBoxBrush>(CortexColors::ModeButtonBackground, 4.0f);
+    SendBrush    = MakeUnique<FSlateRoundedBoxBrush>(FLinearColor::White, 14.0f);
+    DropdownBrush = MakeUnique<FSlateRoundedBoxBrush>(
+        CortexColors::ChipBackground, 6.0f,
+        CortexColors::CodeBorder, 1.0f);
 
     ChildSlot
     [
@@ -38,11 +66,14 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
         // Section 2: Textarea
         + SVerticalBox::Slot()
         .AutoHeight()
-        .Padding(4.0f)
+        .Padding(FMargin(12.0f, 8.0f, 12.0f, 4.0f))
         [
-            SAssignNew(InputTextBox, SMultiLineEditableTextBox)
-            .HintText(FText::FromString(TEXT("Ask Cortex anything...")))
-            .AutoWrapText(true)
+            SNew(SBox)
+            .MinDesiredHeight(44.0f)
+            [
+                SAssignNew(InputTextBox, SMultiLineEditableTextBox)
+                .HintText(FText::FromString(TEXT("@ for context or ask anything...")))
+                .AutoWrapText(true)
             .OnKeyDownHandler_Lambda([this](const FGeometry&, const FKeyEvent& KeyEvent)
             {
                 if (KeyEvent.GetKey() == EKeys::Enter && !KeyEvent.IsShiftDown())
@@ -52,11 +83,12 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                 }
                 return FReply::Unhandled();
             })
+            ]
         ]
         // Section 3: Controls row
         + SVerticalBox::Slot()
         .AutoHeight()
-        .Padding(4.0f, 2.0f)
+        .Padding(FMargin(12.0f, 4.0f, 12.0f, 6.0f))
         [
             SNew(SHorizontalBox)
             // Mode selector
@@ -83,7 +115,8 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                         .AutoHeight()
                         [
                             SNew(SButton)
-                            .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                            .ButtonStyle(&GetHoverButtonStyle())
+                            .ContentPadding(FMargin(12.0f, 6.0f))
                             .OnClicked_Lambda([this, Mode]()
                             {
                                 FCortexFrontendSettings::Get().SetAccessMode(Mode);
@@ -97,15 +130,20 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                             [
                                 SNew(STextBlock)
                                 .Text(FText::FromString(ModeStr))
-                                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                                .ColorAndOpacity(FSlateColor(CortexColors::TextPrimary))
                             ]
                         ];
                     }
-                    return Menu;
+                    return SNew(SBorder)
+                        .BorderImage(DropdownBrush.Get())
+                        .Padding(FMargin(0.0f, 4.0f))
+                        [ Menu ];
                 })
                 [
                     SNew(SButton)
-                    .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                    .ButtonStyle(&GetHoverButtonStyle())
+                    .ContentPadding(0.0f)
                     .OnClicked_Lambda([this]()
                     {
                         ModeDropdown->SetIsOpen(true);
@@ -113,14 +151,29 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                     })
                     [
                         SNew(SBorder)
-                        .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
-                        .BorderBackgroundColor(CortexColors::ModeButtonBackground)
-                        .Padding(FMargin(8.0f, 2.0f))
+                        .BorderImage(ModeBrush.Get())
+                        .Padding(FMargin(10.0f, 3.0f))
                         [
-                            SAssignNew(ModeLabel, STextBlock)
-                            .Text(FText::FromString(FCortexFrontendSettings::Get().GetAccessModeString()))
-                            .Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
-                            .ColorAndOpacity(FSlateColor(CortexColors::ModeButtonText))
+                            SNew(SHorizontalBox)
+                            + SHorizontalBox::Slot()
+                            .AutoWidth()
+                            .VAlign(VAlign_Center)
+                            [
+                                SAssignNew(ModeLabel, STextBlock)
+                                .Text(FText::FromString(FCortexFrontendSettings::Get().GetAccessModeString()))
+                                .Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+                                .ColorAndOpacity(FSlateColor(CortexColors::ModeButtonText))
+                            ]
+                            + SHorizontalBox::Slot()
+                            .AutoWidth()
+                            .VAlign(VAlign_Center)
+                            .Padding(4.0f, 0.0f, 0.0f, 0.0f)
+                            [
+                                SNew(STextBlock)
+                                .Text(FText::FromString(TEXT("\u25B2")))
+                                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+                                .ColorAndOpacity(FSlateColor(FLinearColor(0.29f, 0.87f, 0.50f, 0.6f)))
+                            ]
                         ]
                     ]
                 ]
@@ -142,7 +195,8 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                         .AutoHeight()
                         [
                             SNew(SButton)
-                            .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                            .ButtonStyle(&GetHoverButtonStyle())
+                            .ContentPadding(FMargin(12.0f, 6.0f))
                             .OnClicked_Lambda([this, ModelId]()
                             {
                                 FCortexFrontendSettings::Get().SetSelectedModel(ModelId);
@@ -156,25 +210,46 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                             [
                                 SNew(STextBlock)
                                 .Text(FText::FromString(ModelId))
-                                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                                .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
                             ]
                         ];
                     }
-                    return Menu;
+                    return SNew(SBorder)
+                        .BorderImage(DropdownBrush.Get())
+                        .Padding(FMargin(0.0f, 4.0f))
+                        [ Menu ];
                 })
                 [
                     SNew(SButton)
-                    .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                    .ButtonStyle(&GetHoverButtonStyle())
+                    .ContentPadding(FMargin(6.0f, 3.0f))
                     .OnClicked_Lambda([this]()
                     {
                         ModelDropdown->SetIsOpen(true);
                         return FReply::Handled();
                     })
                     [
-                        SAssignNew(ModelLabel, STextBlock)
-                        .Text(FText::FromString(FCortexFrontendSettings::Get().GetSelectedModel()))
-                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-                        .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
+                        SNew(SHorizontalBox)
+                        + SHorizontalBox::Slot()
+                        .AutoWidth()
+                        .VAlign(VAlign_Center)
+                        [
+                            SAssignNew(ModelLabel, STextBlock)
+                            .Text(FText::FromString(FCortexFrontendSettings::Get().GetSelectedModel()))
+                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                            .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
+                        ]
+                        + SHorizontalBox::Slot()
+                        .AutoWidth()
+                        .VAlign(VAlign_Center)
+                        .Padding(4.0f, 0.0f, 0.0f, 0.0f)
+                        [
+                            SNew(STextBlock)
+                            .Text(FText::FromString(TEXT("\u25BC")))
+                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 6))
+                            .ColorAndOpacity(FSlateColor(CortexColors::MutedTextColor))
+                        ]
                     ]
                 ]
             ]
@@ -199,25 +274,51 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                     .ColorAndOpacity(FSlateColor(CortexColors::MutedTextColor))
                 ]
             ]
-            // ActionButton (send/cancel)
+            // ActionButton (send/cancel) — circular blue button
             + SHorizontalBox::Slot()
             .AutoWidth()
             .VAlign(VAlign_Center)
-            .Padding(4.0f, 0.0f, 0.0f, 0.0f)
+            .Padding(8.0f, 0.0f, 0.0f, 0.0f)
             [
                 SAssignNew(ActionButton, SButton)
                 .ButtonStyle(FCoreStyle::Get(), "NoBorder")
+                .ContentPadding(0.0f)
                 .OnClicked(this, &SCortexInputArea::OnSendClicked)
+                .OnHovered_Lambda([this]()
+                {
+                    if (ActionBorder.IsValid())
+                    {
+                        ActionBorder->SetBorderBackgroundColor(bIsStreaming
+                            ? FLinearColor(1.0f, 0.35f, 0.35f, 0.9f)
+                            : FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("2b96ff"))));
+                    }
+                })
+                .OnUnhovered_Lambda([this]()
+                {
+                    if (ActionBorder.IsValid())
+                    {
+                        ActionBorder->SetBorderBackgroundColor(bIsStreaming
+                            ? FLinearColor(0.94f, 0.27f, 0.27f, 0.8f)
+                            : CortexColors::SendButtonColor);
+                    }
+                })
                 [
-                    SAssignNew(ActionBorder, SBorder)
-                    .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
-                    .BorderBackgroundColor(CortexColors::SendButtonColor)
-                    .Padding(FMargin(8.0f, 4.0f))
+                    SNew(SBox)
+                    .WidthOverride(28.0f)
+                    .HeightOverride(28.0f)
                     [
-                        SAssignNew(ActionIcon, STextBlock)
-                        .Text(FText::FromString(TEXT("\u2191")))
-                        .Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
-                        .ColorAndOpacity(FSlateColor(FLinearColor::White))
+                        SAssignNew(ActionBorder, SBorder)
+                        .HAlign(HAlign_Center)
+                        .VAlign(VAlign_Center)
+                        .BorderImage(SendBrush.Get())
+                        .BorderBackgroundColor(CortexColors::SendButtonColor)
+                        .Padding(0.0f)
+                        [
+                            SAssignNew(ActionIcon, STextBlock)
+                            .Text(FText::FromString(TEXT("\u2191")))
+                            .Font(FCoreStyle::GetDefaultFontStyle("Bold", 11))
+                            .ColorAndOpacity(FSlateColor(FLinearColor::White))
+                        ]
                     ]
                 ]
             ]
