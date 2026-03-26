@@ -10,6 +10,7 @@
 #include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SMenuAnchor.h"
 #include "Widgets/SNullWidget.h"
@@ -90,7 +91,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
         // Section 3: Controls row
         + SVerticalBox::Slot()
         .AutoHeight()
-        .Padding(FMargin(12.0f, 4.0f, 12.0f, 6.0f))
+        .Padding(FMargin(12.0f, 4.0f, 12.0f, 10.0f))
         [
             SNew(SHorizontalBox)
             // Mode selector
@@ -399,6 +400,40 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
             .FillWidth(1.0f)
             [
                 SNew(SSpacer)
+            ]
+            // Project Context toggle (right-aligned)
+            + SHorizontalBox::Slot()
+            .AutoWidth()
+            .VAlign(VAlign_Center)
+            .Padding(0.0f, 0.0f, 8.0f, 0.0f)
+            [
+                SNew(SHorizontalBox)
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .VAlign(VAlign_Center)
+                [
+                    SNew(SCheckBox)
+                    .IsChecked_Lambda([]()
+                    {
+                        return FCortexFrontendSettings::Get().GetProjectContext()
+                            ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+                    })
+                    .OnCheckStateChanged_Lambda([](ECheckBoxState NewState)
+                    {
+                        FCortexFrontendSettings::Get().SetProjectContext(
+                            NewState == ECheckBoxState::Checked);
+                    })
+                ]
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .VAlign(VAlign_Center)
+                .Padding(4.0f, 0.0f, 0.0f, 0.0f)
+                [
+                    SNew(STextBlock)
+                    .Text(FText::FromString(TEXT("Project Context")))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                    .ColorAndOpacity(FSlateColor(CortexColors::MutedTextColor))
+                ]
             ]
             // Settings popup
             + SHorizontalBox::Slot()

@@ -4,7 +4,6 @@
 #include "Session/CortexCliSession.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/SCompoundWidget.h"
 
 DECLARE_DELEGATE(FOnCortexNewChat);
@@ -31,7 +30,6 @@ private:
 
     TWeakPtr<FCortexCliSession> SessionWeak;
     TSharedPtr<STextBlock> SessionIdText;
-    TSharedPtr<SCheckBox> ProjectContextCheckbox;
     TSharedPtr<STextBlock> ModelLabel;
     TSharedPtr<SBorder> ContextColorBox;
     TSharedPtr<STextBlock> ContextLabel;

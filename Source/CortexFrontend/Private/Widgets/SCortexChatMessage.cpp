@@ -31,7 +31,8 @@ void SCortexChatMessage::Construct(const FArguments& InArgs)
         // Prefix (> or ●)
         + SHorizontalBox::Slot()
         .AutoWidth()
-        .Padding(FMargin(0.0f, 2.0f, 8.0f, 0.0f))
+        .VAlign(VAlign_Top)
+        .Padding(FMargin(0.0f, 3.0f, 6.0f, 0.0f))
         [
             SNew(STextBlock)
             .Text(FText::FromString(PrefixChar))
@@ -86,7 +87,7 @@ void SCortexChatMessage::Construct(const FArguments& InArgs)
         ChildSlot
         [
             SNew(SBox)
-            .Padding(FMargin(8.0f, 8.0f))
+            .Padding(FMargin(12.0f, 10.0f, 12.0f, 6.0f))
             [
                 MessageRow
             ]
@@ -114,7 +115,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
             const FString HeaderText = bIsUser ? Block.RawText : CortexMarkdownParser::ToRichText(Block.RawText);
             Box->AddSlot()
             .AutoHeight()
-            .Padding(0.0f, 4.0f, 0.0f, 2.0f)
+            .Padding(0.0f, 8.0f, 0.0f, 4.0f)
             [
                 bIsUser
                 ? static_cast<TSharedRef<SWidget>>(
@@ -135,7 +136,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
         {
             Box->AddSlot()
             .AutoHeight()
-            .Padding(0.0f, 4.0f)
+            .Padding(0.0f, 6.0f)
             [
                 SNew(SCortexCodeBlock)
                 .Code(Block.RawText)
@@ -170,7 +171,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
 
                 ListBox->AddSlot()
                 .AutoHeight()
-                .Padding(0.0f, 1.0f)
+                .Padding(0.0f, 2.0f)
                 [
                     ItemWidget
                 ];
@@ -208,7 +209,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
 
                 ListBox->AddSlot()
                 .AutoHeight()
-                .Padding(0.0f, 1.0f)
+                .Padding(0.0f, 2.0f)
                 [
                     ItemWidget
                 ];
@@ -245,7 +246,7 @@ TSharedRef<SWidget> SCortexChatMessage::BuildContentForText(const FString& Text)
 
             Box->AddSlot()
             .AutoHeight()
-            .Padding(0.0f, 2.0f)
+            .Padding(0.0f, 5.0f)
             [
                 TextWidget
             ];

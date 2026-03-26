@@ -6,8 +6,8 @@
 namespace CortexColors
 {
     // Message layout
-    inline const FLinearColor UserRowBackground    = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("1e2a1e")));
-    inline const FLinearColor UserRowBorderLeft     = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("3a5a3a")));
+    inline const FLinearColor UserRowBackground    = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("2a2d30")));
+    inline const FLinearColor UserRowBorderLeft     = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("4a4d52")));
     inline const FLinearColor UserPrefixColor       = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("6a9955")));
     inline const FLinearColor AssistantDotColor     = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("444444")));
     inline const FLinearColor TextPrimary           = FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("e0e0e0")));
