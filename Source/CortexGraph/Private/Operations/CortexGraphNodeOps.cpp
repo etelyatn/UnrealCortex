@@ -25,6 +25,8 @@
 #include "K2Node_SpawnActorFromClass.h"
 #include "K2Node_DynamicCast.h"
 #include "K2Node_MacroInstance.h"
+#include "K2Node_Composite.h"
+#include "K2Node_Tunnel.h"
 #include "K2Node_SwitchEnum.h"
 #include "K2Node_SwitchString.h"
 #include "K2Node_SwitchInteger.h"
@@ -174,6 +176,60 @@ UEdGraphPin* FCortexGraphNodeOps::FindPin(UEdGraphNode* Node, const FString& Pin
 		FString::Printf(TEXT("Pin not found: %s on node %s"), *PinName, *Node->GetName())
 	);
 	return nullptr;
+}
+
+UEdGraph* FCortexGraphNodeOps::ResolveSubgraph(UEdGraph* RootGraph, const FString& SubgraphPath, FCortexCommandResult& OutError)
+{
+	static constexpr int32 MaxSubgraphDepth = 5;
+
+	if (SubgraphPath.IsEmpty())
+	{
+		return RootGraph;
+	}
+
+	TArray<FString> Segments;
+	SubgraphPath.ParseIntoArray(Segments, TEXT("."), true);
+
+	if (Segments.Num() > MaxSubgraphDepth)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::SubgraphDepthExceeded,
+			FString::Printf(TEXT("Subgraph path exceeds max depth of %d: %s"), MaxSubgraphDepth, *SubgraphPath)
+		);
+		return nullptr;
+	}
+
+	UEdGraph* CurrentGraph = RootGraph;
+
+	for (const FString& Segment : Segments)
+	{
+		bool bFound = false;
+		for (UEdGraphNode* Node : CurrentGraph->Nodes)
+		{
+			if (!IsValid(Node))
+			{
+				continue;
+			}
+			UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node);
+			if (CompositeNode && CompositeNode->BoundGraph && CompositeNode->BoundGraph->GetName() == Segment)
+			{
+				CurrentGraph = CompositeNode->BoundGraph;
+				bFound = true;
+				break;
+			}
+		}
+
+		if (!bFound)
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::SubgraphNotFound,
+				FString::Printf(TEXT("Subgraph not found: '%s' (in path '%s')"), *Segment, *SubgraphPath)
+			);
+			return nullptr;
+		}
+	}
+
+	return CurrentGraph;
 }
 
 FCortexCommandResult FCortexGraphNodeOps::ListGraphs(const TSharedPtr<FJsonObject>& Params)
