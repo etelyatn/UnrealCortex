@@ -9,6 +9,7 @@
 void SCortexQADetailPanel::Construct(const FArguments& InArgs)
 {
     OnReplay = InArgs._OnReplay;
+    OnFastReplay = InArgs._OnFastReplay;
     OnDelete = InArgs._OnDelete;
 
     ChildSlot
@@ -36,9 +37,23 @@ void SCortexQADetailPanel::Construct(const FArguments& InArgs)
             [
                 SNew(SButton)
                 .Text(FText::FromString(TEXT("Replay")))
+                .ToolTipText(FText::FromString(TEXT("Smooth replay — walks between recorded positions")))
                 .OnClicked_Lambda([this]()
                 {
                     OnReplay.ExecuteIfBound();
+                    return FReply::Handled();
+                })
+            ]
+            + SHorizontalBox::Slot()
+            .AutoWidth()
+            .Padding(0.f, 0.f, 4.f, 0.f)
+            [
+                SNew(SButton)
+                .Text(FText::FromString(TEXT("Fast Replay")))
+                .ToolTipText(FText::FromString(TEXT("Teleport replay — jumps between positions with timing")))
+                .OnClicked_Lambda([this]()
+                {
+                    OnFastReplay.ExecuteIfBound();
                     return FReply::Handled();
                 })
             ]

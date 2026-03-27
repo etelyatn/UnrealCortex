@@ -16,8 +16,8 @@ public:
 
     void Construct(const FArguments& InArgs);
 
-    /** Show/hide the generating spinner. */
     void SetGenerating(bool bGenerating);
+    void SetStatus(const FString& Message);
 
 private:
     void OnSubmit();
@@ -26,5 +26,6 @@ private:
     FOnQAGenerateClicked OnGenerate;
     TSharedPtr<SEditableTextBox> InputBox;
     TSharedPtr<SWidget> ExamplePrompts;
+    TSharedPtr<STextBlock> StatusLabel;
     bool bIsGenerating = false;
 };

@@ -75,6 +75,40 @@ namespace
 			return Block;
 		}
 
+		// Table
+		if (Lines.Num() >= 2 && Lines[0].StartsWith(TEXT("|")) && Lines[1].Contains(TEXT("---")))
+		{
+			Block.Type = ECortexMarkdownBlockType::Table;
+
+			auto ParsePipeCells = [](const FString& Line) -> TArray<FString>
+			{
+				TArray<FString> Cells;
+				FString Trimmed = Line;
+				if (Trimmed.StartsWith(TEXT("|"))) Trimmed.RemoveFromStart(TEXT("|"));
+				if (Trimmed.EndsWith(TEXT("|"))) Trimmed.RemoveFromEnd(TEXT("|"));
+				TArray<FString> Parts;
+				Trimmed.ParseIntoArray(Parts, TEXT("|"));
+				for (FString& Part : Parts)
+				{
+					Part.TrimStartAndEndInline();
+					Cells.Add(MoveTemp(Part));
+				}
+				return Cells;
+			};
+
+			Block.TableHeaders = ParsePipeCells(Lines[0]);
+
+			// Skip separator row (index 1), parse data rows
+			for (int32 i = 2; i < Lines.Num(); ++i)
+			{
+				if (Lines[i].TrimStartAndEnd().StartsWith(TEXT("|")))
+				{
+					Block.TableRows.Add(ParsePipeCells(Lines[i]));
+				}
+			}
+			return Block;
+		}
+
 		// Paragraph
 		Block.Type = ECortexMarkdownBlockType::Paragraph;
 		Block.RawText = FString::Join(Lines, TEXT("\n"));
@@ -137,18 +171,21 @@ TArray<FCortexMarkdownBlock> CortexMarkdownParser::ParseBlocks(const FString& Ma
 			FString LangTag = Line.Mid(3).TrimStartAndEnd();
 
 			// Parse optional :suffix (e.g., "cpp:header" → language="cpp", target="header")
+			// Unknown suffixes (e.g., "finding:bug:critical") preserve full LangTag as language.
 			int32 ColonPos = INDEX_NONE;
 			if (LangTag.FindChar(TEXT(':'), ColonPos))
 			{
-				CodeLanguage = LangTag.Left(ColonPos);
 				FString Suffix = LangTag.Mid(ColonPos + 1);
-				// Whitelist valid targets — treat unknown suffixes as untagged
+				// Whitelist valid targets — treat unknown suffixes as part of the language tag
 				if (Suffix == TEXT("header") || Suffix == TEXT("implementation") || Suffix == TEXT("snippet"))
 				{
+					CodeLanguage = LangTag.Left(ColonPos);
 					CodeBlockTarget = Suffix;
 				}
 				else
 				{
+					// Preserve full tag (e.g., "finding:bug:critical") for custom tag handlers
+					CodeLanguage = LangTag;
 					CodeBlockTarget.Reset();
 				}
 			}

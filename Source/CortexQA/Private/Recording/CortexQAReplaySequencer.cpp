@@ -14,16 +14,25 @@ void FCortexQAReplaySequencer::Start(
     const TArray<FCortexQAStep>& InSteps,
     FCortexCommandRouter& InRouter,
     FDeferredResponseCallback InFinalCallback,
-    EQAReplayOnFailure InOnFailure)
+    EQAReplayOnFailure InOnFailure,
+    EQAReplayMode InReplayMode)
 {
     Steps = InSteps;
     Router = &InRouter;
     FinalCallback = MoveTemp(InFinalCallback);
     OnFailurePolicy = InOnFailure;
+    ReplayMode = InReplayMode;
     CurrentStepIndex = 0;
     bCancelled = false;
     bAdvancing = false;
+    bCompleted = false;
+    bFirstPositionSnapshotSeen = false;
     Results.Empty();
+
+    UE_LOG(LogCortexQA, Log, TEXT("Replay: starting with %d steps, mode=%s, on_failure=%s"),
+        Steps.Num(),
+        ReplayMode == EQAReplayMode::Smooth ? TEXT("smooth") : TEXT("teleport"),
+        OnFailurePolicy == EQAReplayOnFailure::Continue ? TEXT("continue") : TEXT("stop"));
 
     // Bind PIE lifecycle (only valid in editor)
     if (GEditor != nullptr)
@@ -80,7 +89,7 @@ void FCortexQAReplaySequencer::AdvanceStep()
 
         if (Command.IsEmpty())
         {
-            UE_LOG(LogCortexQA, Warning, TEXT("Unknown step type: %s at index %d"), *Step.Type, CurrentStepIndex);
+            UE_LOG(LogCortexQA, Log, TEXT("Unknown step type: %s at index %d"), *Step.Type, CurrentStepIndex);
             // Record as failure, continue loop
             FCortexQAStepResult StepResult;
             StepResult.StepIndex = CurrentStepIndex;
@@ -104,8 +113,11 @@ void FCortexQAReplaySequencer::AdvanceStep()
             Core.OnDomainProgress().Broadcast(FName(TEXT("qa")), Progress);
         }
 
-        // Execute step
-        TSharedPtr<FJsonObject> Params = Step.Params.IsValid() ? Step.Params : MakeShared<FJsonObject>();
+        UE_LOG(LogCortexQA, Log, TEXT("Replay: step %d/%d — type='%s' command='%s'"),
+            CurrentStepIndex, Steps.Num(), *Step.Type, *Command);
+
+        // Adapt params if command was remapped (e.g., position_snapshot → move_to in smooth mode)
+        TSharedPtr<FJsonObject> Params = AdaptParamsForCommand(Step, Command);
 
         TWeakPtr<FCortexQAReplaySequencer> WeakSelf = AsShared();
 
@@ -126,11 +138,27 @@ void FCortexQAReplaySequencer::AdvanceStep()
         // Handle synchronous completion
         if (!Result.bIsDeferred)
         {
+            // Check for logical failures (e.g., move_to arrived=false on timeout)
+            bool bStepPassed = Result.bSuccess;
+            if (bStepPassed && Result.Data.IsValid() && Result.Data->HasField(TEXT("arrived")))
+            {
+                if (!Result.Data->GetBoolField(TEXT("arrived")))
+                {
+                    bStepPassed = false;
+                    Result.ErrorMessage = TEXT("Movement timed out before reaching target");
+                }
+            }
+
             // Process synchronously: record result and loop
+            UE_LOG(LogCortexQA, Log, TEXT("Replay: step %d sync complete — %s%s"),
+                CurrentStepIndex,
+                bStepPassed ? TEXT("PASSED") : TEXT("FAILED"),
+                Result.ErrorMessage.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (%s)"), *Result.ErrorMessage));
+
             FCortexQAStepResult StepResult;
             StepResult.StepIndex = CurrentStepIndex;
             StepResult.StepType = Step.Type;
-            StepResult.bPassed = Result.bSuccess;
+            StepResult.bPassed = bStepPassed;
             StepResult.ErrorMessage = Result.ErrorMessage;
             Results.Add(StepResult);
 
@@ -146,14 +174,29 @@ void FCortexQAReplaySequencer::AdvanceStep()
                 Core.OnDomainProgress().Broadcast(FName(TEXT("qa")), Progress);
             }
 
-            if (!Result.bSuccess && OnFailurePolicy == EQAReplayOnFailure::Stop)
+            if (!bStepPassed && OnFailurePolicy == EQAReplayOnFailure::Stop)
             {
                 Complete(false);
                 return;
             }
 
             CurrentStepIndex++;
-            continue; // loop to next step
+
+            // For synchronous steps, use timestamp-based delay to match recording timing
+            if (CurrentStepIndex < Steps.Num())
+            {
+                const double PrevTimestamp = Step.TimestampMs;
+                const double NextTimestamp = Steps[CurrentStepIndex].TimestampMs;
+                const double DeltaSeconds = (NextTimestamp - PrevTimestamp) / 1000.0;
+
+                if (DeltaSeconds > 0.05) // More than one frame? Schedule delayed advance
+                {
+                    ScheduleNextStep(DeltaSeconds);
+                    return;
+                }
+            }
+
+            continue; // very small delta or last step — advance immediately
         }
 
         // Deferred: wait for callback to call OnStepCompleted -> AdvanceStep
@@ -163,10 +206,52 @@ void FCortexQAReplaySequencer::AdvanceStep()
 
 void FCortexQAReplaySequencer::OnStepCompleted(FCortexCommandResult Result)
 {
+    // Check for logical failures (e.g., move_to arrived=false on timeout)
+    bool bStepPassed = Result.bSuccess;
+    if (bStepPassed && Result.Data.IsValid() && Result.Data->HasField(TEXT("arrived")))
+    {
+        if (!Result.Data->GetBoolField(TEXT("arrived")))
+        {
+            bStepPassed = false;
+            Result.ErrorMessage = TEXT("Movement timed out before reaching target");
+        }
+    }
+
+    const FString StepType = Steps.IsValidIndex(CurrentStepIndex) ? Steps[CurrentStepIndex].Type : TEXT("unknown");
+    UE_LOG(LogCortexQA, Log, TEXT("Replay: step %d deferred complete — %s%s"),
+        CurrentStepIndex,
+        bStepPassed ? TEXT("PASSED") : TEXT("FAILED"),
+        Result.ErrorMessage.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (%s)"), *Result.ErrorMessage));
+
+    // In smooth mode, set camera rotation after move_to completes for position_snapshot steps
+    if (bStepPassed && ReplayMode == EQAReplayMode::Smooth && StepType == TEXT("position_snapshot"))
+    {
+        if (Steps.IsValidIndex(CurrentStepIndex) && Steps[CurrentStepIndex].Params.IsValid())
+        {
+            const TArray<TSharedPtr<FJsonValue>>* RotArray = nullptr;
+            if (Steps[CurrentStepIndex].Params->TryGetArrayField(TEXT("rotation"), RotArray) && RotArray != nullptr && RotArray->Num() == 3)
+            {
+                UWorld* PIEWorld = (GEditor != nullptr) ? GEditor->PlayWorld : nullptr;
+                if (PIEWorld != nullptr)
+                {
+                    APlayerController* PC = PIEWorld->GetFirstPlayerController();
+                    if (PC != nullptr)
+                    {
+                        const FRotator Rot(
+                            static_cast<float>((*RotArray)[0]->AsNumber()),
+                            static_cast<float>((*RotArray)[1]->AsNumber()),
+                            static_cast<float>((*RotArray)[2]->AsNumber()));
+                        PC->SetControlRotation(Rot);
+                    }
+                }
+            }
+        }
+    }
+
     FCortexQAStepResult StepResult;
     StepResult.StepIndex = CurrentStepIndex;
-    StepResult.StepType = Steps.IsValidIndex(CurrentStepIndex) ? Steps[CurrentStepIndex].Type : TEXT("unknown");
-    StepResult.bPassed = Result.bSuccess;
+    StepResult.StepType = StepType;
+    StepResult.bPassed = bStepPassed;
     StepResult.ErrorMessage = Result.ErrorMessage;
     Results.Add(StepResult);
 
@@ -183,7 +268,7 @@ void FCortexQAReplaySequencer::OnStepCompleted(FCortexCommandResult Result)
     }
 
     // Check failure policy
-    if (!Result.bSuccess && OnFailurePolicy == EQAReplayOnFailure::Stop)
+    if (!bStepPassed && OnFailurePolicy == EQAReplayOnFailure::Stop)
     {
         Complete(false);
         return;
@@ -195,12 +280,22 @@ void FCortexQAReplaySequencer::OnStepCompleted(FCortexCommandResult Result)
 
 void FCortexQAReplaySequencer::Complete(bool bSuccess)
 {
+    // Guard against double completion (PIE end + cancel race)
+    if (bCompleted)
+    {
+        return;
+    }
+    bCompleted = true;
+
     // Unbind PIE delegate
     if (EndPIEHandle.IsValid())
     {
         FEditorDelegates::EndPIE.Remove(EndPIEHandle);
         EndPIEHandle.Reset();
     }
+
+    UE_LOG(LogCortexQA, Log, TEXT("Replay: completed — overall %s, cancelled=%s"),
+        bSuccess ? TEXT("SUCCESS") : TEXT("FAILED"), (bool)bCancelled ? TEXT("true") : TEXT("false"));
 
     // Count results
     int32 Passed = 0;
@@ -255,10 +350,20 @@ void FCortexQAReplaySequencer::OnPIEEnded(bool bIsSimulating)
     Complete(false);
 }
 
-FString FCortexQAReplaySequencer::StepTypeToCommand(const FString& StepType) const
+FString FCortexQAReplaySequencer::StepTypeToCommand(const FString& StepType)
 {
     if (StepType == TEXT("position_snapshot"))
     {
+        if (ReplayMode == EQAReplayMode::Smooth)
+        {
+            // First position_snapshot teleports to start; subsequent ones walk
+            if (!bFirstPositionSnapshotSeen)
+            {
+                bFirstPositionSnapshotSeen = true;
+                return TEXT("qa.teleport_player");
+            }
+            return TEXT("qa.move_to");
+        }
         return TEXT("qa.teleport_player");
     }
     if (StepType == TEXT("move_to"))
@@ -286,4 +391,53 @@ FString FCortexQAReplaySequencer::StepTypeToCommand(const FString& StepType) con
         return TEXT("editor.inject_key");
     }
     return FString();
+}
+
+TSharedPtr<FJsonObject> FCortexQAReplaySequencer::AdaptParamsForCommand(
+    const FCortexQAStep& Step,
+    const FString& Command) const
+{
+    TSharedPtr<FJsonObject> Params = Step.Params.IsValid() ? Step.Params : MakeShared<FJsonObject>();
+
+    // position_snapshot stores {location: [x,y,z], rotation: [p,y,r]}
+    // move_to expects {target: [x,y,z]}
+    if (Step.Type == TEXT("position_snapshot") && Command == TEXT("qa.move_to"))
+    {
+        TSharedPtr<FJsonObject> Adapted = MakeShared<FJsonObject>();
+        if (Params->HasField(TEXT("location")))
+        {
+            Adapted->SetField(TEXT("target"), Params->TryGetField(TEXT("location")));
+        }
+        Adapted->SetNumberField(TEXT("acceptance_radius"), 50.0);
+        Adapted->SetNumberField(TEXT("timeout"), 5.0);
+        return Adapted;
+    }
+
+    return Params;
+}
+
+void FCortexQAReplaySequencer::ScheduleNextStep(double DelaySeconds)
+{
+    // Clamp delay to reasonable range (match recording pace but don't stall)
+    DelaySeconds = FMath::Clamp(DelaySeconds, 0.05, 5.0);
+
+    if (GEditor == nullptr || GEditor->PlayWorld == nullptr)
+    {
+        Complete(false);
+        return;
+    }
+
+    TWeakPtr<FCortexQAReplaySequencer> WeakSelf = AsShared();
+    TSharedPtr<FTimerHandle> Handle = MakeShared<FTimerHandle>();
+    GEditor->PlayWorld->GetTimerManager().SetTimer(
+        *Handle,
+        [Handle, WeakSelf]()
+        {
+            if (TSharedPtr<FCortexQAReplaySequencer> Self = WeakSelf.Pin())
+            {
+                Self->AdvanceStep();
+            }
+        },
+        static_cast<float>(DelaySeconds),
+        false);
 }

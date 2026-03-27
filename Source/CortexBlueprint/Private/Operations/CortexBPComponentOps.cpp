@@ -359,3 +359,168 @@ FCortexCommandResult FCortexBPComponentOps::SetComponentDefaults(const TSharedPt
 
 	return FCortexCommandRouter::Success(Data);
 }
+
+FCortexCommandResult FCortexBPComponentOps::AddSCSComponent(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	FString ComponentClassName;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty()
+		|| !Params->TryGetStringField(TEXT("component_class"), ComponentClassName) || ComponentClassName.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, component_class"));
+	}
+
+	FString LoadError;
+	UBlueprint* BP = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
+	if (!BP)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+	}
+
+	USimpleConstructionScript* SCS = BP->SimpleConstructionScript;
+	if (!SCS)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Blueprint has no SimpleConstructionScript"));
+	}
+
+	// Resolve component class — try direct path first, then /Script/Engine. prefix
+	UClass* ComponentClass = FindObject<UClass>(nullptr, *ComponentClassName);
+	if (!ComponentClass && !ComponentClassName.StartsWith(TEXT("/")))
+	{
+		const FString EnginePath = FString::Printf(TEXT("/Script/Engine.%s"), *ComponentClassName);
+		ComponentClass = FindObject<UClass>(nullptr, *EnginePath);
+	}
+	if (!ComponentClass || !ComponentClass->IsChildOf(UActorComponent::StaticClass()))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Invalid component class: %s (must be a UActorComponent subclass)"), *ComponentClassName));
+	}
+
+	const bool bIsSceneComponent = ComponentClass->IsChildOf(USceneComponent::StaticClass());
+
+	// Determine component variable name
+	FString ComponentName;
+	if (!Params->TryGetStringField(TEXT("component_name"), ComponentName) || ComponentName.IsEmpty())
+	{
+		ComponentName = ComponentClass->GetName();
+	}
+
+	// Resolve optional parent node
+	FString ParentComponentName;
+	USCS_Node* ParentNode = nullptr;
+	if (Params->TryGetStringField(TEXT("parent_component"), ParentComponentName) && !ParentComponentName.IsEmpty())
+	{
+		// Only scene components can be attached to a parent
+		if (!bIsSceneComponent)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("Only SceneComponent subclasses can be attached to a parent. %s is not a SceneComponent."),
+					*ComponentClassName));
+		}
+
+		for (USCS_Node* Node : SCS->GetAllNodes())
+		{
+			if (Node && Node->GetVariableName() == FName(*ParentComponentName))
+			{
+				ParentNode = Node;
+				break;
+			}
+		}
+
+		if (!ParentNode)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::ComponentNotFound,
+				FString::Printf(TEXT("Parent SCS component not found: %s"), *ParentComponentName));
+		}
+	}
+
+	const bool bCompile = Params->HasField(TEXT("compile")) ? Params->GetBoolField(TEXT("compile")) : true;
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Add SCS Component %s to %s"), *ComponentName, *BP->GetName())));
+
+	BP->Modify();
+	SCS->Modify();
+
+	USCS_Node* NewNode = SCS->CreateNode(ComponentClass, FName(*ComponentName));
+	if (!NewNode)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Failed to create SCS node for class: %s"), *ComponentClassName));
+	}
+
+	if (ParentNode)
+	{
+		ParentNode->AddChildNode(NewNode);
+	}
+	else
+	{
+		SCS->AddNode(NewNode);
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+
+	TSharedPtr<FJsonObject> ResponseData = MakeShared<FJsonObject>();
+	ResponseData->SetStringField(TEXT("variable_name"), NewNode->GetVariableName().ToString());
+	ResponseData->SetStringField(TEXT("component_class"), ComponentClass->GetName());
+	ResponseData->SetBoolField(TEXT("is_scene_component"), bIsSceneComponent);
+
+	if (ParentNode)
+	{
+		ResponseData->SetStringField(TEXT("parent_component"), ParentNode->GetVariableName().ToString());
+	}
+
+	if (bCompile)
+	{
+		FKismetEditorUtilities::CompileBlueprint(BP);
+		ResponseData->SetBoolField(TEXT("compiled"), true);
+		ResponseData->SetStringField(TEXT("compile_status"),
+			(BP->Status == BS_UpToDate || BP->Status == BS_UpToDateWithWarnings)
+				? TEXT("UpToDate") : TEXT("Error"));
+	}
+	else
+	{
+		ResponseData->SetBoolField(TEXT("compiled"), false);
+	}
+
+	// Persist to disk (skip transient packages used by tests)
+	if (!BP->GetPackage()->GetName().StartsWith(TEXT("/Engine/Transient")))
+	{
+		FString PackageFilename;
+		if (FPackageName::TryConvertLongPackageNameToFilename(
+				BP->GetPackage()->GetName(), PackageFilename, TEXT(".uasset")))
+		{
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+			const bool bSaved = UPackage::SavePackage(BP->GetPackage(), BP, *PackageFilename, SaveArgs);
+			if (!bSaved)
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::SaveFailed,
+					FString::Printf(TEXT("Failed to save Blueprint after adding SCS component: %s"),
+						*BP->GetPackage()->GetName()));
+			}
+		}
+		else
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::SaveFailed,
+				FString::Printf(TEXT("Failed to resolve package filename for: %s"),
+					*BP->GetPackage()->GetName()));
+		}
+	}
+
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Added SCS component '%s' (%s) to %s"),
+		*NewNode->GetVariableName().ToString(), *ComponentClass->GetName(), *BP->GetName());
+
+	return FCortexCommandRouter::Success(ResponseData);
+}

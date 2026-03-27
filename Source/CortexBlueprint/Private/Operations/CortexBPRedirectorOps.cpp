@@ -4,6 +4,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
+#include "CoreGlobals.h"
 #include "Misc/PackageName.h"
 #include "UObject/ObjectRedirector.h"
 #include "ScopedTransaction.h"
@@ -64,6 +65,11 @@ FCortexCommandResult FCortexBPRedirectorOps::FixupRedirectors(const TSharedPtr<F
 		FScopedTransaction Transaction(FText::FromString(
 			FString::Printf(TEXT("Cortex: Fixup Redirectors in %s"), *Path)
 		));
+		// Suppress SFixupRedirectorsReport modal dialog in live editor MCP sessions.
+		// GIsRunningUnattendedScript is checked by FSlateApplication::AddModalWindow() — when true
+		// it logs a LogSlate Warning and returns without showing the window.
+		// Tests are unaffected: NullRHI causes CanAddModalWindow() to return false before this check.
+		TGuardValue<bool> SuppressDialogs(GIsRunningUnattendedScript, true);
 		FAssetToolsModule& AssetToolsModule =
 			FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
 		AssetToolsModule.Get().FixupReferencers(Redirectors);

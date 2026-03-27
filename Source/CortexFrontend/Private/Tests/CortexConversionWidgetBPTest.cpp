@@ -1,0 +1,262 @@
+#include "Misc/AutomationTest.h"
+#include "CortexConversionTypes.h"
+#include "Conversion/CortexConversionPrompts.h"
+#include "Conversion/CortexConversionPromptAssembler.h"
+#include "Conversion/CortexConversionContext.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionPayloadWidgetFlagTest,
+    "Cortex.Frontend.Conversion.Widget.PayloadFlag",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionPayloadWidgetFlagTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexConversionPayload Payload;
+    TestFalse(TEXT("Default payload should not be widget BP"), Payload.bIsWidgetBlueprint);
+
+    Payload.bIsWidgetBlueprint = true;
+    TestTrue(TEXT("Should be widget BP after setting flag"), Payload.bIsWidgetBlueprint);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetPromptsExistTest,
+    "Cortex.Frontend.Conversion.Widget.PromptsExist",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetPromptsExistTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FString PerfShell = CortexConversionPrompts::WidgetDepthLayerPerformanceShell();
+    TestTrue(TEXT("Widget perf shell prompt should contain BindWidget"),
+        PerfShell.Contains(TEXT("BindWidget")));
+
+    FString CppCore = CortexConversionPrompts::WidgetDepthLayerCppCore();
+    TestTrue(TEXT("Widget CppCore prompt should contain NativeConstruct"),
+        CppCore.Contains(TEXT("NativeConstruct")));
+    TestTrue(TEXT("Widget CppCore prompt should contain NativeOnInitialized"),
+        CppCore.Contains(TEXT("NativeOnInitialized")));
+    TestTrue(TEXT("Widget CppCore prompt should contain BindWidget"),
+        CppCore.Contains(TEXT("BindWidget")));
+
+    FString FullExtract = CortexConversionPrompts::WidgetDepthLayerFullExtraction();
+    TestTrue(TEXT("Widget FullExtraction prompt should contain NativeDestruct"),
+        FullExtract.Contains(TEXT("NativeDestruct")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetUserMessageTest,
+    "Cortex.Frontend.Conversion.Widget.UserMessage",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetUserMessageTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FString WidgetMsg = CortexConversionPrompts::BuildWidgetInitialUserMessage(TEXT("{\"test\":true}"));
+    TestTrue(TEXT("Widget user message should mention Widget Blueprint"),
+        WidgetMsg.Contains(TEXT("Widget Blueprint")));
+    TestTrue(TEXT("Widget user message should mention BindWidget"),
+        WidgetMsg.Contains(TEXT("BindWidget")));
+    TestTrue(TEXT("Widget user message should mention NativeConstruct"),
+        WidgetMsg.Contains(TEXT("NativeConstruct")));
+
+    FString ActorMsg = CortexConversionPrompts::BuildInitialUserMessage(TEXT("{\"test\":true}"));
+    TestFalse(TEXT("Actor user message should NOT mention Widget Blueprint"),
+        ActorMsg.Contains(TEXT("Widget Blueprint")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetContextFlagTest,
+    "Cortex.Frontend.Conversion.Widget.ContextWidgetFlag",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetContextFlagTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Verify context correctly stores widget flag and derives class name
+    FCortexConversionPayload WidgetPayload;
+    WidgetPayload.BlueprintPath = TEXT("/Game/UI/WBP_Inventory");
+    WidgetPayload.BlueprintName = TEXT("WBP_Inventory");
+    WidgetPayload.ParentClassName = TEXT("InventoryWidgetBase");
+    WidgetPayload.bIsWidgetBlueprint = true;
+    WidgetPayload.EventNames.Add(TEXT("Event Construct"));
+    WidgetPayload.FunctionNames.Add(TEXT("UpdateItemList"));
+
+    FCortexConversionContext Context(WidgetPayload);
+
+    TestTrue(TEXT("Context should preserve widget flag"),
+        Context.Payload.bIsWidgetBlueprint);
+    TestEqual(TEXT("Widget class name should have U prefix"),
+        Context.Document->ClassName, FString(TEXT("UInventory")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetPromptAssemblyTest,
+    "Cortex.Frontend.Conversion.Widget.PromptAssembly",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetPromptAssemblyTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Widget Blueprint payload
+    FCortexConversionPayload WidgetPayload;
+    WidgetPayload.BlueprintPath = TEXT("/Game/UI/WBP_MainMenu");
+    WidgetPayload.BlueprintName = TEXT("WBP_MainMenu");
+    WidgetPayload.ParentClassName = TEXT("UserWidget");
+    WidgetPayload.bIsWidgetBlueprint = true;
+    FCortexConversionContext WidgetCtx(WidgetPayload);
+
+    FString WidgetPrompt = FCortexConversionPromptAssembler::Assemble(
+        WidgetCtx, TEXT("{\"type\":\"WidgetBlueprint\"}"));
+    TestTrue(TEXT("Widget prompt should contain BindWidget"),
+        WidgetPrompt.Contains(TEXT("BindWidget")));
+    TestTrue(TEXT("Widget prompt should contain NativeConstruct"),
+        WidgetPrompt.Contains(TEXT("NativeConstruct")));
+
+    // Actor Blueprint payload (should NOT get widget prompts)
+    FCortexConversionPayload ActorPayload;
+    ActorPayload.BlueprintPath = TEXT("/Game/BP/BP_JumpPad");
+    ActorPayload.BlueprintName = TEXT("BP_JumpPad");
+    ActorPayload.ParentClassName = TEXT("Actor");
+    ActorPayload.bIsWidgetBlueprint = false;
+    FCortexConversionContext ActorCtx(ActorPayload);
+
+    FString ActorPrompt = FCortexConversionPromptAssembler::Assemble(
+        ActorCtx, TEXT("{\"type\":\"Blueprint\"}"));
+    TestFalse(TEXT("Actor prompt should NOT contain BindWidget in depth layer"),
+        ActorPrompt.Contains(TEXT("meta = (BindWidget)")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetFragmentSelectionTest,
+    "Cortex.Frontend.Conversion.Widget.FragmentSelection",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetFragmentSelectionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    // Widget Blueprint JSON should trigger UMG fragment
+    TArray<FString> Fragments = FCortexConversionPromptAssembler::SelectFragments(
+        TEXT("{\"type\":\"WidgetBlueprint\",\"parent_class\":\"UserWidget\"}"));
+
+    bool bHasUmg = false;
+    for (const FString& F : Fragments)
+    {
+        if (F == TEXT("umg-patterns.md"))
+        {
+            bHasUmg = true;
+        }
+    }
+    TestTrue(TEXT("Widget BP JSON should select umg-patterns.md fragment"), bHasUmg);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetBindingSelectionTest,
+    "Cortex.Frontend.Conversion.Widget.BindingSelection",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetBindingSelectionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexConversionPayload Payload;
+    Payload.bIsWidgetBlueprint = true;
+    Payload.BlueprintName = TEXT("WBP_Shop");
+    Payload.ParentClassName = TEXT("UserWidget");
+    Payload.WidgetVariableNames = { TEXT("ItemList"), TEXT("BuyButton"), TEXT("PriceText"), TEXT("BackgroundPanel") };
+    Payload.LogicReferencedWidgets = { TEXT("ItemList"), TEXT("BuyButton"), TEXT("PriceText") };
+
+    FCortexConversionContext Context(Payload);
+
+    // SelectedWidgetBindings should be auto-populated from LogicReferencedWidgets
+    TestEqual(TEXT("Should auto-select logic-referenced widgets"),
+        Context.SelectedWidgetBindings.Num(), 3);
+    TestTrue(TEXT("ItemList should be selected"),
+        Context.SelectedWidgetBindings.Contains(TEXT("ItemList")));
+    TestTrue(TEXT("BuyButton should be selected"),
+        Context.SelectedWidgetBindings.Contains(TEXT("BuyButton")));
+    TestFalse(TEXT("BackgroundPanel should NOT be selected"),
+        Context.SelectedWidgetBindings.Contains(TEXT("BackgroundPanel")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetVariablePayloadTest,
+    "Cortex.Frontend.Conversion.Widget.VariablePayload",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetVariablePayloadTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexConversionPayload Payload;
+    Payload.bIsWidgetBlueprint = true;
+
+    // Simulate widget variables detected by CapturePayload
+    Payload.WidgetVariableNames.Add(TEXT("TitleText"));
+    Payload.WidgetVariableNames.Add(TEXT("ActionButton"));
+    Payload.WidgetVariableNames.Add(TEXT("BackgroundImage"));
+
+    // Only some are used in logic
+    Payload.LogicReferencedWidgets.Add(TEXT("TitleText"));
+    Payload.LogicReferencedWidgets.Add(TEXT("ActionButton"));
+
+    TestEqual(TEXT("Should have 3 widget variables"), Payload.WidgetVariableNames.Num(), 3);
+    TestEqual(TEXT("Should have 2 logic-referenced widgets"), Payload.LogicReferencedWidgets.Num(), 2);
+    TestTrue(TEXT("TitleText should be logic-referenced"),
+        Payload.LogicReferencedWidgets.Contains(TEXT("TitleText")));
+    TestFalse(TEXT("BackgroundImage should NOT be logic-referenced"),
+        Payload.LogicReferencedWidgets.Contains(TEXT("BackgroundImage")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexConversionWidgetBindingPromptTest,
+    "Cortex.Frontend.Conversion.Widget.BindingPrompt",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexConversionWidgetBindingPromptTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    TArray<FString> SelectedWidgets = { TEXT("TitleText"), TEXT("ActionButton") };
+    FString Message = CortexConversionPrompts::BuildWidgetInitialUserMessage(
+        TEXT("{\"test\":true}"), SelectedWidgets, true);
+
+    TestTrue(TEXT("Should contain TitleText as BindWidget candidate"),
+        Message.Contains(TEXT("TitleText")));
+    TestTrue(TEXT("Should contain ActionButton as BindWidget candidate"),
+        Message.Contains(TEXT("ActionButton")));
+    TestTrue(TEXT("Should mention BindWidget"),
+        Message.Contains(TEXT("BindWidget")));
+
+    // Empty selection with bHasWidgetBindingSelection=true means user deselected all
+    TArray<FString> NoWidgets;
+    FString EmptyMessage = CortexConversionPrompts::BuildWidgetInitialUserMessage(
+        TEXT("{\"test\":true}"), NoWidgets, true);
+    TestTrue(TEXT("Empty selection message should still be valid"),
+        EmptyMessage.Contains(TEXT("Widget Blueprint")));
+    TestTrue(TEXT("Empty selection should suppress BindWidget"),
+        EmptyMessage.Contains(TEXT("Do NOT generate any meta = (BindWidget)")));
+    TestFalse(TEXT("Empty selection should not instruct to use BindWidget for references"),
+        EmptyMessage.Contains(TEXT("Use meta = (BindWidget) for designer widget references")));
+
+    // No selection info (widget BP with no designer widgets) — default BindWidget behavior
+    FString DefaultMessage = CortexConversionPrompts::BuildWidgetInitialUserMessage(
+        TEXT("{\"test\":true}"), NoWidgets, false);
+    TestTrue(TEXT("Default should instruct BindWidget usage"),
+        DefaultMessage.Contains(TEXT("Use meta = (BindWidget) for designer widget references")));
+
+    return true;
+}

@@ -5,6 +5,7 @@
 #include "ICortexCommandRegistry.h"
 #include "CortexTcpServer.h"
 #include "CortexConversionTypes.h"
+#include "CortexAnalysisTypes.h"
 #include "CortexCoreDelegates.h"
 
 CORTEXCORE_API DECLARE_LOG_CATEGORY_EXTERN(LogCortex, Log, All);
@@ -29,6 +30,9 @@ public:
 	// Conversion UI delegates
 	FOnCortexConversionRequested& OnConversionRequested() { return ConversionRequestedDelegate; }
 
+	// Analysis UI delegates
+	FOnCortexAnalysisRequested& OnAnalysisRequested() { return AnalysisRequestedDelegate; }
+
 	// Generic domain progress delegate
 	FOnCortexDomainProgress& OnDomainProgress() { return DomainProgressDelegate; }
 
@@ -46,6 +50,7 @@ private:
 	TUniquePtr<FCortexTcpServer> TcpServer;
 
 	FOnCortexConversionRequested ConversionRequestedDelegate;
+	FOnCortexAnalysisRequested AnalysisRequestedDelegate;
 	FOnCortexDomainProgress DomainProgressDelegate;
 	FOnCortexSerializationRequested SerializationHandler;
 };

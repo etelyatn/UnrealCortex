@@ -1,19 +1,58 @@
 #include "Widgets/SCortexToolCallBlock.h"
 
+#include "Rendering/CortexFrontendColors.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
+FCortexFrontendToolCategory SCortexToolCallBlock::CategorizeToolCall(const FString& ToolName)
+{
+    if (ToolName == TEXT("Read") || ToolName == TEXT("read_file"))
+    {
+        return { TEXT("\u25CF"), CortexColors::IconRead, TEXT("Read") };
+    }
+    if (ToolName == TEXT("Glob") || ToolName == TEXT("Grep")
+        || ToolName == TEXT("search") || ToolName == TEXT("find"))
+    {
+        return { TEXT("\u25C6"), CortexColors::IconSearch, TEXT("Search") };
+    }
+    if (ToolName == TEXT("Edit") || ToolName == TEXT("Write")
+        || ToolName == TEXT("write_file") || ToolName == TEXT("edit"))
+    {
+        return { TEXT("\u25A0"), CortexColors::IconEdit, TEXT("Edit") };
+    }
+    if (ToolName == TEXT("Bash") || ToolName == TEXT("bash"))
+    {
+        return { TEXT("$"), CortexColors::IconShell, TEXT("Shell") };
+    }
+    if (ToolName.StartsWith(TEXT("mcp__cortex"))
+        || ToolName.Contains(TEXT("blueprint."))
+        || ToolName.Contains(TEXT("data.")))
+    {
+        return { TEXT("\u25B2"), CortexColors::IconMcp, TEXT("MCP") };
+    }
+    return { TEXT("\u25CB"), CortexColors::IconDefault, TEXT("Tool") };
+}
+
 void SCortexToolCallBlock::Construct(const FArguments& InArgs)
 {
     ToolCallList = InArgs._ToolCalls;
     OnToggled = InArgs._OnToggled;
 
+    ToolCallBrush = MakeUnique<FSlateRoundedBoxBrush>(
+        CortexColors::ToolBlockBackground, 6.0f,
+        CortexColors::ToolBlockBorder, 1.0f);
+
     ChildSlot
     [
-        SAssignNew(ContentBox, SVerticalBox)
+        SNew(SBorder)
+        .BorderImage(ToolCallBrush.Get())
+        .Padding(0.0f)
+        [
+            SAssignNew(ContentBox, SVerticalBox)
+        ]
     ];
 
     RebuildContent();
@@ -42,6 +81,37 @@ static FString FormatDuration(int32 Ms)
     return FString::Printf(TEXT("%dm %.0fs"), Minutes, Seconds);
 }
 
+static FString ExtractFilePath(const FString& ToolInput)
+{
+    static const TArray<FString> Keys = {
+        TEXT("\"file_path\":\""),
+        TEXT("\"path\":\""),
+        TEXT("\"pattern\":\"")
+    };
+
+    for (const FString& Key : Keys)
+    {
+        int32 KeyIdx = ToolInput.Find(Key, ESearchCase::CaseSensitive);
+        if (KeyIdx == INDEX_NONE)
+        {
+            continue;
+        }
+        const int32 ValueStart = KeyIdx + Key.Len();
+        int32 ValueEnd = ValueStart;
+        while (ValueEnd < ToolInput.Len()
+            && ToolInput[ValueEnd] != TEXT('"')
+            && ToolInput[ValueEnd] != TEXT('\n'))
+        {
+            ++ValueEnd;
+        }
+        if (ValueEnd > ValueStart)
+        {
+            return ToolInput.Mid(ValueStart, ValueEnd - ValueStart);
+        }
+    }
+    return FString();
+}
+
 void SCortexToolCallBlock::RebuildContent()
 {
     ContentBox->ClearChildren();
@@ -53,11 +123,10 @@ void SCortexToolCallBlock::RebuildContent()
     }
 
     const FString Arrow = bIsExpanded ? TEXT("\u25bc") : TEXT("\u25b6");
-    const FString HeaderText = FString::Printf(TEXT("%s %d tool call%s  %s"),
-        *Arrow,
+    const FString CountText = FString::Printf(TEXT("%d tool call%s"),
         ToolCallList.Num(),
-        ToolCallList.Num() == 1 ? TEXT("") : TEXT("s"),
-        *FormatDuration(TotalMs));
+        ToolCallList.Num() == 1 ? TEXT("") : TEXT("s"));
+    const FString DurationText = FormatDuration(TotalMs);
 
     // Header row — clickable toggle
     ContentBox->AddSlot()
@@ -67,9 +136,33 @@ void SCortexToolCallBlock::RebuildContent()
         .ButtonStyle(FCoreStyle::Get(), "NoBorder")
         .OnClicked(this, &SCortexToolCallBlock::OnToggleExpand)
         [
-            SNew(STextBlock)
-            .Text(FText::FromString(HeaderText))
-            .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("cccccc")))))
+            SNew(SHorizontalBox)
+            + SHorizontalBox::Slot()
+            .AutoWidth()
+            .VAlign(VAlign_Center)
+            .Padding(0.0f, 0.0f, 4.0f, 0.0f)
+            [
+                SNew(STextBlock)
+                .Text(FText::FromString(Arrow))
+                .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
+            ]
+            + SHorizontalBox::Slot()
+            .AutoWidth()
+            .VAlign(VAlign_Center)
+            .Padding(0.0f, 0.0f, 6.0f, 0.0f)
+            [
+                SNew(STextBlock)
+                .Text(FText::FromString(CountText))
+                .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
+            ]
+            + SHorizontalBox::Slot()
+            .AutoWidth()
+            .VAlign(VAlign_Center)
+            [
+                SNew(STextBlock)
+                .Text(FText::FromString(DurationText))
+                .ColorAndOpacity(FSlateColor(CortexColors::ToolDurationColor))
+            ]
         ]
     ];
 
@@ -77,45 +170,66 @@ void SCortexToolCallBlock::RebuildContent()
     {
         for (const TSharedPtr<FCortexChatEntry>& Call : ToolCallList)
         {
-            const FString StatusIcon = Call->bIsToolComplete ? TEXT("\u2713") : TEXT("\u2026");
-            const FString RowText = FString::Printf(TEXT("  %s %s  %s"),
-                *StatusIcon,
-                *Call->ToolName,
-                *FormatDuration(Call->DurationMs));
+            const FCortexFrontendToolCategory Cat = CategorizeToolCall(Call->ToolName);
 
-            FString ResultSummary;
-            if (!Call->ToolResult.IsEmpty())
+            FString Detail = ExtractFilePath(Call->ToolInput);
+            if (Detail.IsEmpty())
             {
-                ResultSummary = Call->ToolResult.Left(80);
-                if (Call->ToolResult.Len() > 80)
-                {
-                    ResultSummary += TEXT("...");
-                }
+                Detail = Call->ToolName;
             }
+
+            const FString DurText = FormatDuration(Call->DurationMs);
 
             ContentBox->AddSlot()
             .AutoHeight()
-            .Padding(8.0f, 1.0f, 0.0f, 1.0f)
+            .Padding(8.0f, 1.0f, 8.0f, 1.0f)
             [
-                SNew(STextBlock)
-                .Text(FText::FromString(RowText))
-                .Font(FCoreStyle::GetDefaultFontStyle("Mono", 9))
-                .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("cccccc")))))
-            ];
-
-            if (!ResultSummary.IsEmpty())
-            {
-                ContentBox->AddSlot()
-                .AutoHeight()
-                .Padding(24.0f, 0.0f, 0.0f, 2.0f)
+                SNew(SHorizontalBox)
+                // Icon
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .VAlign(VAlign_Center)
+                .Padding(0.0f, 0.0f, 5.0f, 0.0f)
                 [
                     SNew(STextBlock)
-                    .Text(FText::FromString(ResultSummary))
-                    .Font(FCoreStyle::GetDefaultFontStyle("Mono", 8))
-                    .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("888888")))))
-                    .AutoWrapText(true)
-                ];
-            }
+                    .Text(FText::FromString(Cat.Icon))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                    .ColorAndOpacity(FSlateColor(Cat.Color))
+                ]
+                // Label
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .VAlign(VAlign_Center)
+                .Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                [
+                    SNew(STextBlock)
+                    .Text(FText::FromString(Cat.Label))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                    .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
+                ]
+                // File / Detail
+                + SHorizontalBox::Slot()
+                .FillWidth(1.0f)
+                .VAlign(VAlign_Center)
+                .Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                [
+                    SNew(STextBlock)
+                    .Text(FText::FromString(Detail))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Mono", 9))
+                    .ColorAndOpacity(FSlateColor(CortexColors::ToolFileColor))
+                    .OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+                ]
+                // Duration
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .VAlign(VAlign_Center)
+                [
+                    SNew(STextBlock)
+                    .Text(FText::FromString(DurText))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                    .ColorAndOpacity(FSlateColor(CortexColors::ToolDurationColor))
+                ]
+            ];
         }
     }
 }

@@ -7,10 +7,15 @@
 #include "EdGraphSchema_K2.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
+#include "K2Node_CustomEvent.h"
+#include "K2Node_Knot.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "ScopedTransaction.h"
+#include "UObject/SavePackage.h"
+#include "Misc/PackageName.h"
 
 using CortexBPTypeUtils::ResolveVariableType;
 using CortexBPTypeUtils::FriendlyTypeName;
@@ -355,4 +360,440 @@ FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonOb
 	UE_LOG(LogCortexBlueprint, Log, TEXT("Added function '%s' to %s"), *FuncName, *AssetPath);
 
 	return FCortexCommandRouter::Success(Data);
+}
+
+void FCortexBPStructureOps::GatherCascadeExecNodes(
+	UEdGraphNode* StartNode,
+	TSet<UEdGraphNode*>& OutRemovalSet)
+{
+	if (!StartNode)
+	{
+		return;
+	}
+
+	OutRemovalSet.Add(StartNode);
+	TArray<UEdGraphNode*> Queue;
+	Queue.Add(StartNode);
+	int32 QueueIndex = 0;
+
+	while (QueueIndex < Queue.Num())
+	{
+		UEdGraphNode* Current = Queue[QueueIndex++];
+		if (!Current)
+		{
+			continue;
+		}
+
+		for (UEdGraphPin* Pin : Current->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Output)
+			{
+				continue;
+			}
+
+			const bool bCurrentIsKnot = Cast<UK2Node_Knot>(Current) != nullptr;
+			const bool bPinIsExec = Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec;
+
+			// Follow exec pins, or knot outputs where the receiving pin is also exec/knot
+			if (!bPinIsExec && !bCurrentIsKnot)
+			{
+				continue;
+			}
+
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				if (!LinkedPin)
+				{
+					continue;
+				}
+
+				UEdGraphNode* LinkedNode = LinkedPin->GetOwningNode();
+				if (!LinkedNode || OutRemovalSet.Contains(LinkedNode))
+				{
+					continue;
+				}
+
+				// For knot nodes: only follow the wire if the destination is exec-typed or another knot
+				if (bCurrentIsKnot && !bPinIsExec)
+				{
+					bool bDestIsExecOrKnot = false;
+					if (Cast<UK2Node_Knot>(LinkedNode))
+					{
+						bDestIsExecOrKnot = true;
+					}
+					else if (LinkedPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+					{
+						bDestIsExecOrKnot = true;
+					}
+					if (!bDestIsExecOrKnot)
+					{
+						continue;
+					}
+				}
+
+				// Check if this node has incoming exec (or wildcard for knots) from outside the removal set
+				bool bHasExternalExecInput = false;
+				for (UEdGraphPin* NodePin : LinkedNode->Pins)
+				{
+					if (!NodePin || NodePin->Direction != EGPD_Input)
+					{
+						continue;
+					}
+
+					// For reroute nodes, any input pin may propagate exec even if still wildcard
+					const bool bNodePinIsExec = (NodePin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+					const bool bLinkedIsKnot = (Cast<UK2Node_Knot>(LinkedNode) != nullptr);
+					if (!bNodePinIsExec && !bLinkedIsKnot)
+					{
+						continue;
+					}
+
+					for (UEdGraphPin* IncomingPin : NodePin->LinkedTo)
+					{
+						if (IncomingPin)
+						{
+							UEdGraphNode* IncomingNode = IncomingPin->GetOwningNode();
+							if (IncomingNode && !OutRemovalSet.Contains(IncomingNode))
+							{
+								bHasExternalExecInput = true;
+								break;
+							}
+						}
+					}
+					if (bHasExternalExecInput)
+					{
+						break;
+					}
+				}
+
+				if (!bHasExternalExecInput)
+				{
+					OutRemovalSet.Add(LinkedNode);
+					Queue.Add(LinkedNode);
+				}
+			}
+		}
+	}
+}
+
+FCortexCommandResult FCortexBPStructureOps::RemoveGraph(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	FString Name;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty()
+		|| !Params->TryGetStringField(TEXT("name"), Name) || Name.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, name"));
+	}
+
+	FString LoadError;
+	UBlueprint* BP = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
+	if (!BP)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+	}
+
+	const bool bCompile = Params->HasField(TEXT("compile")) ? Params->GetBoolField(TEXT("compile")) : true;
+	const bool bCascade = Params->HasField(TEXT("cascade_exec_chain")) ? Params->GetBoolField(TEXT("cascade_exec_chain")) : false;
+	const bool bDryRun = Params->HasField(TEXT("dry_run")) ? Params->GetBoolField(TEXT("dry_run")) : false;
+
+	// Normalize ConstructionScript friendly name to internal name
+	const FString ResolvedName = (Name == TEXT("ConstructionScript"))
+		? TEXT("UserConstructionScript") : Name;
+
+	// --- Protected graph check ---
+	// Primary EventGraph
+	if (BP->UbergraphPages.Num() > 0 && BP->UbergraphPages[0])
+	{
+		const FString EventGraphName = BP->UbergraphPages[0]->GetName();
+		if (ResolvedName == EventGraphName)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidOperation,
+				TEXT("Cannot remove primary EventGraph — it is a protected structural graph"));
+		}
+	}
+	// ConstructionScript
+	if (ResolvedName == TEXT("UserConstructionScript"))
+	{
+		// Verify it actually exists before rejecting
+		for (UEdGraph* Graph : BP->FunctionGraphs)
+		{
+			if (Graph && (Graph->GetName() == ResolvedName))
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidOperation,
+					TEXT("Cannot remove ConstructionScript — it is a protected structural graph"));
+			}
+		}
+	}
+
+	// --- Name resolution: search graphs ---
+	UEdGraph* FoundGraph = nullptr;
+	FString FoundType;
+
+	// 1. FunctionGraphs
+	for (UEdGraph* Graph : BP->FunctionGraphs)
+	{
+		if (Graph && Graph->GetName() == ResolvedName)
+		{
+			FoundGraph = Graph;
+			FoundType = TEXT("Function");
+			break;
+		}
+	}
+
+	// 2. MacroGraphs
+	if (!FoundGraph)
+	{
+		for (UEdGraph* Graph : BP->MacroGraphs)
+		{
+			if (Graph && Graph->GetName() == ResolvedName)
+			{
+				FoundGraph = Graph;
+				FoundType = TEXT("Macro");
+				break;
+			}
+		}
+	}
+
+	// 3. UbergraphPages (skip index 0 = primary EventGraph)
+	if (!FoundGraph)
+	{
+		for (int32 i = 1; i < BP->UbergraphPages.Num(); ++i)
+		{
+			if (BP->UbergraphPages[i] && BP->UbergraphPages[i]->GetName() == ResolvedName)
+			{
+				FoundGraph = BP->UbergraphPages[i];
+				FoundType = TEXT("EventGraph");
+				break;
+			}
+		}
+	}
+
+	// --- Shared helper: compile, save, and build response ---
+	auto FinalizeResponse = [&](TSharedPtr<FJsonObject>& ResponseData) -> FCortexCommandResult
+	{
+		if (!bDryRun)
+		{
+			if (bCompile)
+			{
+				FKismetEditorUtilities::CompileBlueprint(BP);
+				ResponseData->SetBoolField(TEXT("compiled"), true);
+				ResponseData->SetStringField(TEXT("compile_status"),
+					(BP->Status == BS_UpToDate || BP->Status == BS_UpToDateWithWarnings)
+						? TEXT("UpToDate") : TEXT("Error"));
+				ResponseData->SetBoolField(TEXT("compile_has_warnings"),
+					BP->Status == EBlueprintStatus::BS_UpToDateWithWarnings);
+			}
+			else
+			{
+				ResponseData->SetBoolField(TEXT("compiled"), false);
+			}
+
+			// Persist to disk (skip transient packages used by tests)
+			if (!BP->GetPackage()->GetName().StartsWith(TEXT("/Engine/Transient")))
+			{
+				FString PackageFilename;
+				if (FPackageName::TryConvertLongPackageNameToFilename(
+						BP->GetPackage()->GetName(), PackageFilename, TEXT(".uasset")))
+				{
+					FSavePackageArgs SaveArgs;
+					SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+					UPackage::SavePackage(BP->GetPackage(), BP, *PackageFilename, SaveArgs);
+				}
+			}
+		}
+		else
+		{
+			ResponseData->SetBoolField(TEXT("compiled"), false);
+			ResponseData->SetBoolField(TEXT("dry_run"), true);
+		}
+		return FCortexCommandRouter::Success(ResponseData);
+	};
+
+	// --- If found a graph, remove it ---
+	if (FoundGraph)
+	{
+		const int32 NodeCount = FoundGraph->Nodes.Num();
+
+		// Build node list for response (always, not just dry_run)
+		TArray<TSharedPtr<FJsonValue>> RemovedNodesArray;
+		for (UEdGraphNode* Node : FoundGraph->Nodes)
+		{
+			if (!Node)
+			{
+				continue;
+			}
+			TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+			NodeObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
+			NodeObj->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
+			FText NodeTitle = Node->GetNodeTitle(ENodeTitleType::ListView);
+			if (!NodeTitle.IsEmpty())
+			{
+				NodeObj->SetStringField(TEXT("title"), NodeTitle.ToString());
+			}
+			RemovedNodesArray.Add(MakeShared<FJsonValueObject>(NodeObj));
+		}
+
+		if (!bDryRun)
+		{
+			FScopedTransaction Transaction(FText::FromString(
+				FString::Printf(TEXT("Cortex: Remove %s graph %s"), *FoundType, *Name)));
+
+			FBlueprintEditorUtils::RemoveGraph(BP, FoundGraph);
+		}
+
+		TSharedPtr<FJsonObject> ResponseData = MakeShared<FJsonObject>();
+		ResponseData->SetStringField(TEXT("asset_path"), AssetPath);
+
+		TSharedPtr<FJsonObject> RemovedObj = MakeShared<FJsonObject>();
+		RemovedObj->SetStringField(TEXT("name"), Name);
+		RemovedObj->SetStringField(TEXT("type"), FoundType);
+		RemovedObj->SetNumberField(TEXT("node_count"), NodeCount);
+		ResponseData->SetObjectField(TEXT("removed"), RemovedObj);
+		ResponseData->SetArrayField(TEXT("removed_nodes"), RemovedNodesArray);
+
+		UE_LOG(LogCortexBlueprint, Log, TEXT("Removed %s graph '%s' from %s (%d nodes)%s"),
+			*FoundType, *Name, *BP->GetName(), NodeCount, bDryRun ? TEXT(" [dry_run]") : TEXT(""));
+
+		return FinalizeResponse(ResponseData);
+	}
+
+	// --- 4. Custom event nodes in all EventGraph pages ---
+	UK2Node_CustomEvent* FoundEvent = nullptr;
+	for (UEdGraph* EventGraphPage : BP->UbergraphPages)
+	{
+		if (!EventGraphPage)
+		{
+			continue;
+		}
+		for (UEdGraphNode* Node : EventGraphPage->Nodes)
+		{
+			UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node);
+			if (CustomEvent && CustomEvent->CustomFunctionName.ToString() == ResolvedName)
+			{
+				FoundEvent = CustomEvent;
+				break;
+			}
+		}
+		if (FoundEvent)
+		{
+			break;
+		}
+	}
+
+	if (FoundEvent)
+	{
+		TSet<UEdGraphNode*> RemovalSet;
+		if (bCascade)
+		{
+			GatherCascadeExecNodes(FoundEvent, RemovalSet);
+		}
+		else
+		{
+			RemovalSet.Add(FoundEvent);
+		}
+
+		const int32 NodeCount = RemovalSet.Num();
+
+		// Build node list for response (useful for dry_run preview and logging)
+		TArray<TSharedPtr<FJsonValue>> RemovedNodesArray;
+		for (UEdGraphNode* Node : RemovalSet)
+		{
+			if (!Node)
+			{
+				continue;
+			}
+			TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+			NodeObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
+			NodeObj->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
+			FText NodeTitle = Node->GetNodeTitle(ENodeTitleType::ListView);
+			if (!NodeTitle.IsEmpty())
+			{
+				NodeObj->SetStringField(TEXT("title"), NodeTitle.ToString());
+			}
+			RemovedNodesArray.Add(MakeShared<FJsonValueObject>(NodeObj));
+		}
+
+		if (!bDryRun)
+		{
+			FScopedTransaction Transaction(FText::FromString(
+				FString::Printf(TEXT("Cortex: Remove custom event %s"), *Name)));
+
+			for (UEdGraphNode* NodeToRemove : RemovalSet)
+			{
+				FBlueprintEditorUtils::RemoveNode(BP, NodeToRemove, /*bDontRecompile=*/true);
+			}
+
+			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+		}
+
+		TSharedPtr<FJsonObject> ResponseData = MakeShared<FJsonObject>();
+		ResponseData->SetStringField(TEXT("asset_path"), AssetPath);
+
+		TSharedPtr<FJsonObject> RemovedObj = MakeShared<FJsonObject>();
+		RemovedObj->SetStringField(TEXT("name"), Name);
+		RemovedObj->SetStringField(TEXT("type"), TEXT("CustomEvent"));
+		RemovedObj->SetNumberField(TEXT("node_count"), NodeCount);
+		RemovedObj->SetBoolField(TEXT("cascade_exec_chain"), bCascade);
+		ResponseData->SetObjectField(TEXT("removed"), RemovedObj);
+		ResponseData->SetArrayField(TEXT("removed_nodes"), RemovedNodesArray);
+
+		UE_LOG(LogCortexBlueprint, Log,
+			TEXT("Removed custom event '%s' from %s (%d nodes, cascade=%d)%s"),
+			*Name, *BP->GetName(), NodeCount, bCascade, bDryRun ? TEXT(" [dry_run]") : TEXT(""));
+
+		return FinalizeResponse(ResponseData);
+	}
+
+	// Build list of available names for hint
+	TArray<FString> AvailableNames;
+	for (UEdGraph* Graph : BP->FunctionGraphs)
+	{
+		if (Graph)
+		{
+			AvailableNames.Add(Graph->GetName());
+		}
+	}
+	for (UEdGraph* Graph : BP->MacroGraphs)
+	{
+		if (Graph)
+		{
+			AvailableNames.Add(Graph->GetName());
+		}
+	}
+	for (int32 i = 1; i < BP->UbergraphPages.Num(); ++i)
+	{
+		if (BP->UbergraphPages[i])
+		{
+			AvailableNames.Add(BP->UbergraphPages[i]->GetName());
+		}
+	}
+	for (UEdGraph* EventGraph : BP->UbergraphPages)
+	{
+		if (!EventGraph)
+		{
+			continue;
+		}
+		for (UEdGraphNode* Node : EventGraph->Nodes)
+		{
+			UK2Node_CustomEvent* CE = Cast<UK2Node_CustomEvent>(Node);
+			if (CE)
+			{
+				AvailableNames.Add(CE->CustomFunctionName.ToString());
+			}
+		}
+	}
+	const FString AvailableHint = AvailableNames.Num() > 0
+		? FString::Printf(TEXT(" Available: [%s]"), *FString::Join(AvailableNames, TEXT(", ")))
+		: TEXT("");
+
+	return FCortexCommandRouter::Error(
+		CortexErrorCodes::GraphNotFound,
+		FString::Printf(TEXT("Graph or custom event '%s' not found in %s.%s"),
+			*Name, *BP->GetName(), *AvailableHint));
 }

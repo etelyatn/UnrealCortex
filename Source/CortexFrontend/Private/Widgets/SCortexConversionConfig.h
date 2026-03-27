@@ -2,8 +2,15 @@
 
 #include "CoreMinimal.h"
 #include "Conversion/CortexConversionContext.h"
+#include "Utilities/CortexTokenUtils.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/SCortexDependencyPanel.h"
+
+class SButton;
+class SEditableTextBox;
+class SMultiLineEditableTextBox;
+class SCortexScopeSelector;
 
 DECLARE_DELEGATE(FOnConvertClicked);
 
@@ -20,14 +27,16 @@ public:
 private:
 	FReply OnConvertButtonClicked();
 	void OnScopeChanged(ECortexConversionScope NewScope);
-	void OnEventSelected(const FString& Name);
 	void OnFunctionToggled(const FString& Name, bool bChecked);
 
-	bool IsScopeSelected(ECortexConversionScope Scope) const;
-	bool IsEventSelected(const FString& Name) const;
-	bool IsFunctionChecked(const FString& Name) const;
+	TSharedRef<SWidget> BuildTargetClassSection(const FCortexConversionPayload& Payload);
+	void OnClassNameChanged(const FText& NewText);
+	FText GetClassNameWarningText() const;
 
 	TSharedRef<SWidget> BuildScopeAndTargetSection(const FCortexConversionPayload& Payload);
+	TSharedRef<SWidget> BuildInstructionsSection();
+	TSharedRef<SWidget> BuildWidgetBindingsSection(const FCortexConversionPayload& Payload);
+	void OnWidgetBindingToggled(const FString& Name, bool bChecked);
 
 	void OnDepthChanged(ECortexConversionDepth NewDepth);
 	bool IsDepthSelected(ECortexConversionDepth Depth) const;
@@ -40,5 +49,19 @@ private:
 	TSharedRef<SWidget> BuildWarningBars(const FCortexConversionPayload& Payload);
 
 	TSharedPtr<FCortexConversionContext> Context;
+	TSharedPtr<SEditableTextBox> ClassNameTextBox;
+	TSharedPtr<SMultiLineEditableTextBox> CustomInstructionsBox;
+	TSharedPtr<SCortexScopeSelector> ScopeSelector;
+	TSharedPtr<SVerticalBox> WidgetBindingsChecklist;
 	FOnConvertClicked OnConvert;
+
+	void UpdateCustomInstructionsVisibility();
+	void RequestTokenEstimate();
+	int32 EstimateTokensForScope(ECortexConversionScope Scope) const;
+	FString FormatTokenEstimate(int32 Tokens) const;
+
+	TSharedPtr<STextBlock> ClassNameWarningText;
+	TSharedPtr<STextBlock> ConvertButtonText;
+	TSharedPtr<STextBlock> TokenWarningText;
+	TSharedPtr<SButton> ConvertButton;
 };

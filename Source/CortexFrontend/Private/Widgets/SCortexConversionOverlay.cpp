@@ -1,5 +1,6 @@
 ﻿#include "Widgets/SCortexConversionOverlay.h"
 
+#include "Utilities/CortexTokenUtils.h"
 #include "HAL/PlatformTime.h"
 #include "Layout/Geometry.h"
 #include "Rendering/DrawElements.h"
@@ -27,6 +28,7 @@ void SCortexConversionOverlay::Construct(const FArguments& InArgs)
 {
 	StartTime   = FPlatformTime::Seconds();
 	LastDotTime = StartTime;
+	CustomPhaseLabels = InArgs._PhaseLabels;
 	SetCanTick(true);
 
 	ChildSlot
@@ -38,14 +40,14 @@ void SCortexConversionOverlay::Construct(const FArguments& InArgs)
 		[
 			SNew(SVerticalBox)
 
-			// "// Generating C++" title
+			// Title
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			.HAlign(HAlign_Center)
 			.Padding(0.0f, 0.0f, 0.0f, 14.0f)
 			[
 				SNew(STextBlock)
-				.Text(NSLOCTEXT("CortexConversionOverlay", "Title", "// Generating C++"))
+				.Text(InArgs._Title)
 				.Font(FCoreStyle::GetDefaultFontStyle("Mono", 13))
 				.ColorAndOpacity(FSlateColor(CortexConversionOverlayColors::Title))
 			]
@@ -164,10 +166,20 @@ void SCortexConversionOverlay::Tick(const FGeometry& AllottedGeometry, const dou
 	{
 		const double Elapsed = Now - StartTime;
 		FString Phase;
-		if      (Elapsed < 3.0)  Phase = TEXT("Serializing Blueprint...");
-		else if (Elapsed < 6.0)  Phase = TEXT("Starting Claude session...");
-		else if (Elapsed < 12.0) Phase = TEXT("Sending to LLM...");
-		else                     Phase = TEXT("Generating C++ code...");
+		if (CustomPhaseLabels.Num() >= 4)
+		{
+			if      (Elapsed < 3.0)  Phase = CustomPhaseLabels[0];
+			else if (Elapsed < 6.0)  Phase = CustomPhaseLabels[1];
+			else if (Elapsed < 12.0) Phase = CustomPhaseLabels[2];
+			else                     Phase = CustomPhaseLabels[3];
+		}
+		else
+		{
+			if      (Elapsed < 3.0)  Phase = TEXT("Serializing Blueprint...");
+			else if (Elapsed < 6.0)  Phase = TEXT("Starting Claude session...");
+			else if (Elapsed < 12.0) Phase = TEXT("Sending to LLM...");
+			else                     Phase = TEXT("Generating C++ code...");
+		}
 		PhaseLabel->SetText(FText::FromString(Phase));
 	}
 
@@ -209,29 +221,41 @@ int32 SCortexConversionOverlay::OnPaint(const FPaintArgs& Args, const FGeometry&
 		OutDrawElements, LayerId + 2, InWidgetStyle, bParentEnabled);
 }
 
+void SCortexConversionOverlay::ResetTimer()
+{
+	StartTime = FPlatformTime::Seconds();
+	LastDotTime = StartTime;
+	AnimTime = 0.0f;
+	DotPhase = 0;
+	TokenCount = 0;
+	EstimatedSeconds = 0.0f;
+
+	if (ElapsedLabel.IsValid())
+	{
+		ElapsedLabel->SetText(FText::FromString(TEXT("0s")));
+	}
+	if (PhaseLabel.IsValid())
+	{
+		const FText InitialPhase = (CustomPhaseLabels.Num() >= 4)
+			? FText::FromString(CustomPhaseLabels[0])
+			: NSLOCTEXT("CortexConversionOverlay", "Phase", "Serializing Blueprint...");
+		PhaseLabel->SetText(InitialPhase);
+	}
+	if (TokenLabel.IsValid())
+	{
+		TokenLabel->SetVisibility(EVisibility::Collapsed);
+	}
+}
+
 void SCortexConversionOverlay::SetTokenCount(int32 Tokens)
 {
 	TokenCount = Tokens;
-
-	// Total = connection overhead + base rate + gap buffer for larger contexts
-	//   Connection:  ~10s (session spawn)
-	//   Base rate:   1 000 tokens ≈ 10s
-	//   Gap buffer:  extra pause between code blocks, attention scaling at larger sizes
-	//     < 5k tokens:  no buffer
-	//     5k–20k tokens: +15s
-	//     > 20k tokens:  +30s
-	static constexpr float ConnectionOverheadSeconds = 10.0f;
-	float GapBuffer = 0.0f;
-	if      (Tokens > 20000) GapBuffer = 30.0f;
-	else if (Tokens >  5000) GapBuffer = 15.0f;
-	EstimatedSeconds = ConnectionOverheadSeconds + (Tokens / 1000.0f) * 10.0f + GapBuffer;
+	EstimatedSeconds = CortexTokenUtils::EstimateSecondsForTokens(Tokens);
 
 	if (TokenLabel.IsValid())
 	{
-		const FString Label = FString::Printf(TEXT("~%dk tokens · est. ~%ds"),
-			FMath::RoundToInt(Tokens / 1000.0f),
-			FMath::RoundToInt(EstimatedSeconds));
+		const FString Label = CortexTokenUtils::FormatTokenEstimate(Tokens);
 		TokenLabel->SetText(FText::FromString(Label));
-		TokenLabel->SetVisibility(EVisibility::SelfHitTestInvisible);
+		TokenLabel->SetVisibility(Label.IsEmpty() ? EVisibility::Collapsed : EVisibility::SelfHitTestInvisible);
 	}
 }

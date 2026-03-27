@@ -30,6 +30,7 @@
 #include "K2Node_Knot.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_SpawnActor.h"
+#include "K2Node_DynamicCast.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -2050,4 +2051,153 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 	Data->SetObjectField(TEXT("complexity_metrics"), BuildComplexityMetrics(BP));
 
 	return FCortexCommandRouter::Success(Data);
+}
+
+// ── Pre-scan and metadata helpers ────────────────────────────────────────────
+
+TArray<FCortexPreScanFinding> FCortexBPAnalysisOps::RunPreScan(UBlueprint* Blueprint)
+{
+	TArray<FCortexPreScanFinding> Findings;
+
+	if (!Blueprint || Blueprint->bBeingCompiled)
+	{
+		return Findings;
+	}
+
+	// If the Blueprint is dirty (modified since last compile), node-level compiler
+	// message fields (bHasCompilerMessage, ErrorType, ErrorMsg) reflect the previous
+	// compile — not the current source. Surface this as a warning so the AI prompt
+	// can note that diagnostics may be stale.
+	if (Blueprint->Status == EBlueprintStatus::BS_Dirty ||
+		Blueprint->Status == EBlueprintStatus::BS_Unknown)
+	{
+		FCortexPreScanFinding DirtyWarning;
+		DirtyWarning.Type = ECortexPreScanType::CompilationWarning;
+		DirtyWarning.Description = TEXT("Blueprint has unsaved changes and may need recompilation — compiler diagnostics below reflect the previous compile state and may be stale.");
+		DirtyWarning.GraphName = TEXT("");
+		Findings.Add(MoveTemp(DirtyWarning));
+	}
+
+	TArray<UEdGraph*> AllGraphs;
+	Blueprint->GetAllGraphs(AllGraphs);
+
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		if (!Graph) continue;
+		const FString GraphName = Graph->GetFName().ToString();
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) continue;
+
+			// Compilation errors and warnings
+			if (Node->bHasCompilerMessage)
+			{
+				FCortexPreScanFinding Finding;
+				// EMessageSeverity: CriticalError=0, Error=1, Warning=3 — lower value = higher severity
+				Finding.Type = (Node->ErrorType <= EMessageSeverity::Error)
+					? ECortexPreScanType::CompilationError
+					: ECortexPreScanType::CompilationWarning;
+				Finding.Description = Node->ErrorMsg;
+				Finding.GraphName = GraphName;
+				Finding.NodeGuid = Node->NodeGuid;
+				Findings.Add(MoveTemp(Finding));
+			}
+
+			// Orphan/broken pins
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (Pin && Pin->bOrphanedPin)
+				{
+					FCortexPreScanFinding Finding;
+					Finding.Type = ECortexPreScanType::OrphanPin;
+					Finding.Description = FString::Printf(
+						TEXT("Orphaned pin '%s' on node '%s'"),
+						*Pin->PinName.ToString(),
+						*Node->GetNodeTitle(ENodeTitleType::ListView).ToString());
+					Finding.GraphName = GraphName;
+					Finding.NodeGuid = Node->NodeGuid;
+					Findings.Add(MoveTemp(Finding));
+				}
+			}
+
+			// Deprecated nodes
+			if (Node->IsDeprecated())
+			{
+				FEdGraphNodeDeprecationResponse Response =
+					Node->GetDeprecationResponse(EEdGraphNodeDeprecationType::NodeTypeIsDeprecated);
+				if (Response.MessageType != EEdGraphNodeDeprecationMessageType::None)
+				{
+					FCortexPreScanFinding Finding;
+					Finding.Type = ECortexPreScanType::DeprecatedNode;
+					Finding.Description = FString::Printf(
+						TEXT("Deprecated node '%s': %s"),
+						*Node->GetNodeTitle(ENodeTitleType::ListView).ToString(),
+						*Response.MessageText.ToString());
+					Finding.GraphName = GraphName;
+					Finding.NodeGuid = Node->NodeGuid;
+					Findings.Add(MoveTemp(Finding));
+				}
+			}
+
+			// Unhandled cast failures — UK2Node_DynamicCast with unconnected "Cast Failed" exec pin
+			if (UK2Node_DynamicCast* CastNode = Cast<UK2Node_DynamicCast>(Node))
+			{
+				for (UEdGraphPin* Pin : CastNode->Pins)
+				{
+					if (Pin && Pin->Direction == EGPD_Output
+						&& Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec
+						&& Pin->PinName == UEdGraphSchema_K2::PN_CastFailed)
+					{
+						if (Pin->LinkedTo.Num() == 0)
+						{
+							FCortexPreScanFinding Finding;
+							Finding.Type = ECortexPreScanType::UnhandledCastFailure;
+							Finding.Description = FString::Printf(
+								TEXT("Unhandled cast failure on '%s' — 'Cast Failed' exec pin not connected"),
+								*Node->GetNodeTitle(ENodeTitleType::ListView).ToString());
+							Finding.GraphName = GraphName;
+							Finding.NodeGuid = Node->NodeGuid;
+							Findings.Add(MoveTemp(Finding));
+						}
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	return Findings;
+}
+
+int32 FCortexBPAnalysisOps::CountTotalNodes(UBlueprint* Blueprint)
+{
+	if (!Blueprint) return 0;
+
+	int32 TotalCount = 0;
+	TArray<UEdGraph*> AllGraphs;
+	Blueprint->GetAllGraphs(AllGraphs);
+	for (const UEdGraph* Graph : AllGraphs)
+	{
+		if (Graph)
+		{
+			TotalCount += Graph->Nodes.Num();
+		}
+	}
+	return TotalCount;
+}
+
+bool FCortexBPAnalysisOps::IsTickEnabled(UBlueprint* Blueprint)
+{
+	if (!Blueprint || !Blueprint->GeneratedClass)
+	{
+		return false;
+	}
+
+	UObject* CDO = Blueprint->GeneratedClass->GetDefaultObject(false);
+	if (AActor* ActorCDO = Cast<AActor>(CDO))
+	{
+		return ActorCDO->PrimaryActorTick.bCanEverTick;
+	}
+	return false;
 }

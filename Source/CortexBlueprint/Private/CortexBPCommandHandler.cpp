@@ -11,6 +11,7 @@
 #include "Operations/CortexBPSearchOps.h"
 #include "Operations/CortexBPStructureOps.h"
 #include "Operations/CortexBPTimelineOps.h"
+#include "Operations/CortexBPClassSettingsOps.h"
 
 FCortexCommandResult FCortexBPCommandHandler::Execute(
 	const FString& Command,
@@ -75,6 +76,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPStructureOps::AddFunction(Params);
 	}
 
+	if (Command == TEXT("remove_graph"))
+	{
+		return FCortexBPStructureOps::RemoveGraph(Params);
+	}
+
 	if (Command == TEXT("get_class_defaults"))
 	{
 		return FCortexBPClassDefaultsOps::GetClassDefaults(Params);
@@ -93,6 +99,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 	if (Command == TEXT("set_component_defaults"))
 	{
 		return FCortexBPComponentOps::SetComponentDefaults(Params);
+	}
+
+	if (Command == TEXT("add_scs_component"))
+	{
+		return FCortexBPComponentOps::AddSCSComponent(Params);
 	}
 
 	if (Command == TEXT("analyze_for_migration"))
@@ -138,6 +149,26 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 	if (Command == TEXT("reparent"))
 	{
 		return FCortexBPAssetOps::Reparent(Params);
+	}
+
+	if (Command == TEXT("add_interface"))
+	{
+		return FCortexBPClassSettingsOps::AddInterface(Params);
+	}
+
+	if (Command == TEXT("remove_interface"))
+	{
+		return FCortexBPClassSettingsOps::RemoveInterface(Params);
+	}
+
+	if (Command == TEXT("set_tick_settings"))
+	{
+		return FCortexBPClassSettingsOps::SetTickSettings(Params);
+	}
+
+	if (Command == TEXT("set_replication_settings"))
+	{
+		return FCortexBPClassSettingsOps::SetReplicationSettings(Params);
 	}
 
 	return FCortexCommandRouter::Error(
@@ -192,6 +223,12 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("access"), TEXT("string"), TEXT("Function access level"))
 		.Optional(TEXT("inputs"), TEXT("array"), TEXT("Input parameter definitions"))
 		.Optional(TEXT("outputs"), TEXT("array"), TEXT("Output parameter definitions")));
+	Commands.Add(FCortexCommandInfo{TEXT("remove_graph"), TEXT("Remove a graph (function, macro, event graph) or custom event from a Blueprint")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("name"), TEXT("string"), TEXT("Name of graph or custom event to remove"))
+		.Optional(TEXT("cascade_exec_chain"), TEXT("boolean"), TEXT("Remove connected execution chain for custom events (default: false)"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after removal (default: true)"))
+		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview what would be removed without modifying anything")));
 	Commands.Add(FCortexCommandInfo{TEXT("get_class_defaults"), TEXT("Read default property values from a Blueprint CDO")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("properties"), TEXT("array"), TEXT("Specific properties to read"))
@@ -212,6 +249,12 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("component_name"), TEXT("string"), TEXT("Component template name"))
 		.Required(TEXT("properties"), TEXT("object"), TEXT("Properties to apply")));
+	Commands.Add(FCortexCommandInfo{TEXT("add_scs_component"), TEXT("Add an SCS component to a Blueprint")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("component_class"), TEXT("string"), TEXT("Component class name (e.g. StaticMeshComponent)"))
+		.Optional(TEXT("component_name"), TEXT("string"), TEXT("Variable name (auto-generated if omitted)"))
+		.Optional(TEXT("parent_component"), TEXT("string"), TEXT("Parent SCS component variable name"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after adding")));
 	Commands.Add(FCortexCommandInfo{TEXT("analyze_for_migration"), TEXT("Analyze a Blueprint for C++ migration")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path")));
 	Commands.Add(FCortexCommandInfo{TEXT("cleanup_migration"), TEXT("Clean up a Blueprint after C++ migration")}
@@ -247,6 +290,29 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add(FCortexCommandInfo{TEXT("reparent"), TEXT("Reparent a Blueprint to a new parent class")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("new_parent"), TEXT("string"), TEXT("New parent class (Blueprint path or C++ class name)")));
+	Commands.Add(FCortexCommandInfo{TEXT("add_interface"), TEXT("Add an interface implementation to a Blueprint")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("interface_path"), TEXT("string"), TEXT("Interface class name or path"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after adding (default: true)")));
+	Commands.Add(FCortexCommandInfo{TEXT("remove_interface"), TEXT("Remove an interface implementation from a Blueprint")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("interface_path"), TEXT("string"), TEXT("Interface class name or path"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after removing (default: true)")));
+	Commands.Add(FCortexCommandInfo{TEXT("set_tick_settings"), TEXT("Set Actor tick settings on a Blueprint CDO")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Optional(TEXT("start_with_tick_enabled"), TEXT("boolean"), TEXT("Enable tick at start (also forces bCanEverTick=true when enabling)"))
+		.Optional(TEXT("can_ever_tick"), TEXT("boolean"), TEXT("Whether actor can ever tick (independent of start_with_tick_enabled)"))
+		.Optional(TEXT("tick_interval"), TEXT("number"), TEXT("Tick interval in seconds (0 = every frame)"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after setting (default: true)"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save after setting (default: false)")));
+	Commands.Add(FCortexCommandInfo{TEXT("set_replication_settings"), TEXT("Set replication settings on a Blueprint CDO")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Optional(TEXT("replicates"), TEXT("boolean"), TEXT("Enable replication"))
+		.Optional(TEXT("replicate_movement"), TEXT("boolean"), TEXT("Replicate movement"))
+		.Optional(TEXT("net_dormancy"), TEXT("string"), TEXT("Net dormancy: DORM_Never|DORM_Awake|DORM_DormantAll|DORM_DormantPartial|DORM_Initial"))
+		.Optional(TEXT("net_use_owner_relevancy"), TEXT("boolean"), TEXT("Use owner relevancy"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after setting (default: true)"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save after setting (default: false)")));
 
 	return Commands;
 }

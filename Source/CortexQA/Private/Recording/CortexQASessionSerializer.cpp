@@ -190,7 +190,7 @@ bool FCortexQASessionSerializer::LoadSession(
     TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonStr);
     if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
     {
-        UE_LOG(LogCortexQA, Warning, TEXT("Failed to parse session JSON: %s"), *FilePath);
+        UE_LOG(LogCortexQA, Log, TEXT("Failed to parse session JSON: %s"), *FilePath);
         return false;
     }
 

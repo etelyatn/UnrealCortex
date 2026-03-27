@@ -6,7 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cortex_mcp.tools.routers import DOMAINS, make_router, register_router_tools
+from cortex_mcp.capabilities import CORE_DOMAINS
+from cortex_mcp.tools.routers import make_router, register_router_tools
 from cortex_mcp.tcp_client import EditorConnection
 
 
@@ -145,9 +146,33 @@ def test_core_router_dispatches_normal_commands_via_tcp():
 def test_register_router_tools_registers_all_domains():
     mcp = MockMCP()
     connection = MagicMock()
-    docstrings = {domain: f"{domain} docs" for domain in DOMAINS}
+    docstrings = {domain: f"{domain} docs" for domain in CORE_DOMAINS}
 
     register_router_tools(mcp, connection, docstrings)
 
-    assert set(mcp.tools) == {f"{domain}_cmd" for domain in DOMAINS}
+    assert set(mcp.tools) == {f"{domain}_cmd" for domain in CORE_DOMAINS}
     assert mcp.tools["core_cmd"]["description"] == "core docs"
+
+
+def test_register_router_tools_includes_gen_when_passed():
+    """When gen is in the domains tuple, gen_cmd should be registered."""
+    mcp = MockMCP()
+    connection = MagicMock()
+    domains = CORE_DOMAINS + ("gen",)
+    docstrings = {domain: f"{domain} docs" for domain in domains}
+
+    register_router_tools(mcp, connection, docstrings, domains)
+
+    assert "gen_cmd" in mcp.tools
+    assert set(mcp.tools) == {f"{domain}_cmd" for domain in domains}
+
+
+def test_register_router_tools_excludes_gen_by_default():
+    """Default registration should not include gen_cmd."""
+    mcp = MockMCP()
+    connection = MagicMock()
+    docstrings = {domain: f"{domain} docs" for domain in CORE_DOMAINS}
+
+    register_router_tools(mcp, connection, docstrings)
+
+    assert "gen_cmd" not in mcp.tools

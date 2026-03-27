@@ -3,6 +3,7 @@
 #include "CortexFrontendModule.h"
 #include "Conversion/CortexConversionContext.h"
 #include "Conversion/CortexConversionPrompts.h"
+#include "Conversion/CortexDependencyGatherer.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -16,6 +17,22 @@ FString FCortexConversionPromptAssembler::Assemble(
 	Result += CortexConversionPrompts::BaseSystemPrompt();
 	Result += TEXT("\n\n");
 
+	// 1b. Class name injection (~15-20 tokens)
+	if (Context.Document.IsValid() && !Context.Document->ClassName.IsEmpty())
+	{
+		// Parent class name with proper C++ prefix: A for actor descendants, U otherwise
+		const TCHAR* ParentPrefix = Context.Payload.bIsActorDescendant ? TEXT("A") : TEXT("U");
+		FString PrefixedParentName = FString::Printf(TEXT("%s%s"), ParentPrefix, *Context.Payload.ParentClassName);
+
+		Result += FString::Printf(TEXT(
+			"Target class name: %s (confirmed by user). Use this EXACT name in generated code.\n"
+			"Parent class: %s. Inherit from this class.\n"
+			"Target module: %s.\n\n"),
+			*Context.Document->ClassName,
+			*PrefixedParentName,
+			*Context.TargetModuleName);
+	}
+
 	// 2. Scope layer
 	if (ShouldUseSnippetMode(Context.SelectedScope, Context.SelectedDepth))
 	{
@@ -27,17 +44,41 @@ FString FCortexConversionPromptAssembler::Assemble(
 	}
 	Result += TEXT("\n\n");
 
-	// 3. Depth layer
+	// 3. Depth layer (widget-specific variants when applicable)
+	const bool bWidget = Context.Payload.bIsWidgetBlueprint;
 	switch (Context.SelectedDepth)
 	{
 	case ECortexConversionDepth::PerformanceShell:
-		Result += CortexConversionPrompts::DepthLayerPerformanceShell();
+		Result += bWidget
+			? CortexConversionPrompts::WidgetDepthLayerPerformanceShell()
+			: CortexConversionPrompts::DepthLayerPerformanceShell();
 		break;
 	case ECortexConversionDepth::CppCore:
-		Result += CortexConversionPrompts::DepthLayerCppCore();
+		Result += bWidget
+			? CortexConversionPrompts::WidgetDepthLayerCppCore()
+			: CortexConversionPrompts::DepthLayerCppCore();
 		break;
 	case ECortexConversionDepth::FullExtraction:
-		Result += CortexConversionPrompts::DepthLayerFullExtraction();
+		Result += bWidget
+			? CortexConversionPrompts::WidgetDepthLayerFullExtraction()
+			: CortexConversionPrompts::DepthLayerFullExtraction();
+		break;
+	case ECortexConversionDepth::Custom:
+		if (!Context.CustomInstructions.IsEmpty())
+		{
+			if (bWidget)
+			{
+				Result += TEXT("IMPORTANT: This is a Widget Blueprint. Use BindWidget pattern — "
+					"widget tree stays in UMG designer. Override NativeConstruct/NativeDestruct.\n\n");
+			}
+			Result += FString::Printf(TEXT("Conversion Instructions: CUSTOM\n\n%s"), *Context.CustomInstructions);
+		}
+		else
+		{
+			Result += bWidget
+				? CortexConversionPrompts::WidgetDepthLayerCppCore()
+				: CortexConversionPrompts::DepthLayerCppCore();
+		}
 		break;
 	}
 	Result += TEXT("\n\n");
@@ -48,29 +89,33 @@ FString FCortexConversionPromptAssembler::Assemble(
 		Result += CortexConversionPrompts::InjectModeLayer();
 		Result += TEXT("\n\n");
 
-		// Include existing source files in context
-		if (!Context.TargetHeaderPath.IsEmpty())
+		// Use pre-read text from context (read once at conversion start, avoids TOCTOU)
+		if (!Context.OriginalHeaderText.IsEmpty())
 		{
-			FString HeaderContent;
-			if (FFileHelper::LoadFileToString(HeaderContent, *Context.TargetHeaderPath))
-			{
-				Result += FString::Printf(TEXT("<existing-header path=\"%s\">\n%s\n</existing-header>\n\n"),
-					*Context.TargetHeaderPath, *HeaderContent);
-			}
+			Result += FString::Printf(TEXT("<existing-header path=\"%s\">\n%s\n</existing-header>\n\n"),
+				*Context.TargetHeaderPath, *Context.OriginalHeaderText);
 		}
-		if (!Context.TargetSourcePath.IsEmpty())
+		if (!Context.OriginalSourceText.IsEmpty())
 		{
-			FString SourceContent;
-			if (FFileHelper::LoadFileToString(SourceContent, *Context.TargetSourcePath))
-			{
-				Result += FString::Printf(TEXT("<existing-implementation path=\"%s\">\n%s\n</existing-implementation>\n\n"),
-					*Context.TargetSourcePath, *SourceContent);
-			}
+			Result += FString::Printf(TEXT("<existing-implementation path=\"%s\">\n%s\n</existing-implementation>\n\n"),
+				*Context.TargetSourcePath, *Context.OriginalSourceText);
 		}
+
+		// Instruct Claude to output complete modified file and include summaries
+		Result += TEXT("IMPORTANT: For the initial generation, output the COMPLETE modified file (not a diff). "
+			"For each subsequent code change, include a one-line summary of what was added or removed.\n\n");
 	}
 
 	// 5. Domain knowledge fragments
 	TArray<FString> Fragments = SelectFragments(BlueprintJson);
+
+	// Force-include UMG patterns for widget BPs (SelectFragments uses JSON keyword matching
+	// which misses custom widget base classes like "MyBaseWidget")
+	if (bWidget && !Fragments.Contains(TEXT("umg-patterns.md")))
+	{
+		Fragments.Add(TEXT("umg-patterns.md"));
+	}
+
 	for (const FString& FragmentFile : Fragments)
 	{
 		FString FragmentContent = LoadFragment(FragmentFile);
@@ -81,6 +126,54 @@ FString FCortexConversionPromptAssembler::Assemble(
 		}
 	}
 
+	// 6. Large BP adaptation
+	if (Context.EstimatedTotalTokens > 12000)
+	{
+		Result += TEXT("NOTE: This is a large Blueprint. Focus on structural accuracy over detailed explanations. "
+			"Keep the integration guide to 5 items max. Prioritize Blueprints and AnimBlueprints over Levels.\n\n");
+	}
+
+	return Result;
+}
+
+FString FCortexConversionPromptAssembler::BuildDependencyContext(const FCortexDependencyInfo& DepInfo)
+{
+	FString Result = TEXT("<dependency_context>\n");
+
+	const bool bHasReferencers = !DepInfo.Referencers.IsEmpty();
+	const bool bHasChildren = !DepInfo.ChildBlueprints.IsEmpty();
+
+	if (!bHasReferencers && !bHasChildren)
+	{
+		Result += TEXT("No external assets reference this Blueprint.\n");
+	}
+	else
+	{
+		if (bHasReferencers)
+		{
+			Result += TEXT("Assets that reference this Blueprint:\n");
+			for (const FCortexDependencyInfo::FReferencerEntry& Ref : DepInfo.Referencers)
+			{
+				Result += FString::Printf(TEXT("- %s (%s)\n"), *Ref.AssetName, *Ref.AssetClass);
+			}
+			if (DepInfo.TotalReferencerCount > DepInfo.Referencers.Num())
+			{
+				Result += FString::Printf(TEXT("...and %d more\n"),
+					DepInfo.TotalReferencerCount - DepInfo.Referencers.Num());
+			}
+		}
+
+		if (bHasChildren)
+		{
+			Result += TEXT("Child Blueprints that inherit from this Blueprint:\n");
+			for (const FString& Child : DepInfo.ChildBlueprints)
+			{
+				Result += FString::Printf(TEXT("- %s\n"), *Child);
+			}
+		}
+	}
+
+	Result += TEXT("</dependency_context>\n");
 	return Result;
 }
 
@@ -173,19 +266,8 @@ FString FCortexConversionPromptAssembler::LoadFragment(const FString& Filename)
 bool FCortexConversionPromptAssembler::ShouldUseSnippetMode(
 	ECortexConversionScope Scope, ECortexConversionDepth Depth)
 {
-	// EntireBlueprint always uses FullClass
-	if (Scope == ECortexConversionScope::EntireBlueprint)
-	{
-		return false;
-	}
-
-	// FullExtraction always uses FullClass (generates complete standalone class)
-	if (Depth == ECortexConversionDepth::FullExtraction)
-	{
-		return false;
-	}
-
-	// All other combinations: SelectedNodes/CurrentGraph/EventOrFunction
-	// with PerformanceShell or CppCore use Snippet
-	return true;
+	// Snippet mode for any narrow scope (not EntireBlueprint) unless FullExtraction
+	// is requested — FullExtraction always needs a complete class output.
+	return Scope != ECortexConversionScope::EntireBlueprint
+		&& Depth != ECortexConversionDepth::FullExtraction;
 }

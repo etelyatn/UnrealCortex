@@ -220,6 +220,14 @@ TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FStrin
             TextEvent.RawJson = JsonLine;
             Events.Add(MoveTemp(TextEvent));
         }
+        else if ((MsgInputTokens > 0 || MsgOutputTokens > 0) && NonTextEvents.Num() > 0)
+        {
+            // No text content but usage data present — attach to first non-text event
+            NonTextEvents[0].InputTokens = MsgInputTokens;
+            NonTextEvents[0].OutputTokens = MsgOutputTokens;
+            NonTextEvents[0].CacheReadTokens = MsgCacheReadTokens;
+            NonTextEvents[0].CacheCreationTokens = MsgCacheCreationTokens;
+        }
         Events.Append(MoveTemp(NonTextEvents));
 
         return Events;

@@ -28,6 +28,11 @@
 #include "K2Node_SwitchEnum.h"
 #include "K2Node_SwitchString.h"
 #include "K2Node_SwitchInteger.h"
+#include "K2Node_AddDelegate.h"
+#include "K2Node_RemoveDelegate.h"
+#include "K2Node_ClearDelegate.h"
+#include "K2Node_CreateDelegate.h"
+#include "UObject/UnrealType.h"
 #include "ScopedTransaction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/PackageName.h"
@@ -612,6 +617,55 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	{
 		NodeClass = UK2Node_SwitchInteger::StaticClass();
 	}
+	else if (NodeClassName == TEXT("UK2Node_AddDelegate"))
+	{
+		const TSharedPtr<FJsonObject>* NodeParams = nullptr;
+		FString DelegateName;
+		if (!Params->TryGetObjectField(TEXT("params"), NodeParams) ||
+			!(*NodeParams)->TryGetStringField(TEXT("delegate_name"), DelegateName) ||
+			DelegateName.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("DelegateNameRequired: delegate_name param is required for AddDelegate nodes")
+			);
+		}
+		NodeClass = UK2Node_AddDelegate::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_RemoveDelegate"))
+	{
+		const TSharedPtr<FJsonObject>* NodeParams = nullptr;
+		FString DelegateName;
+		if (!Params->TryGetObjectField(TEXT("params"), NodeParams) ||
+			!(*NodeParams)->TryGetStringField(TEXT("delegate_name"), DelegateName) ||
+			DelegateName.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("DelegateNameRequired: delegate_name param is required for RemoveDelegate nodes")
+			);
+		}
+		NodeClass = UK2Node_RemoveDelegate::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_ClearDelegate"))
+	{
+		const TSharedPtr<FJsonObject>* NodeParams = nullptr;
+		FString DelegateName;
+		if (!Params->TryGetObjectField(TEXT("params"), NodeParams) ||
+			!(*NodeParams)->TryGetStringField(TEXT("delegate_name"), DelegateName) ||
+			DelegateName.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("DelegateNameRequired: delegate_name param is required for ClearDelegate nodes")
+			);
+		}
+		NodeClass = UK2Node_ClearDelegate::StaticClass();
+	}
+	else if (NodeClassName == TEXT("UK2Node_CreateDelegate"))
+	{
+		NodeClass = UK2Node_CreateDelegate::StaticClass();
+	}
 
 	if (NodeClass == nullptr)
 	{
@@ -764,11 +818,98 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 				}
 			}
 		}
+
+		UK2Node_BaseMCDelegate* DelegateNode = Cast<UK2Node_BaseMCDelegate>(NewNode);
+		if (DelegateNode)
+		{
+			FString DelegateName;
+			if ((*NodeParams)->TryGetStringField(TEXT("delegate_name"), DelegateName))
+			{
+				FString DelegateClass;
+				if ((*NodeParams)->TryGetStringField(TEXT("delegate_class"), DelegateClass))
+				{
+					// External class delegate
+					UClass* OwnerClass = FindFirstObject<UClass>(*DelegateClass);
+					if (OwnerClass == nullptr)
+					{
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Delegate owner class not found: %s"), *DelegateClass)
+						);
+					}
+
+					FMulticastDelegateProperty* DelegateProp = CastField<FMulticastDelegateProperty>(
+						OwnerClass->FindPropertyByName(FName(*DelegateName)));
+					if (DelegateProp == nullptr)
+					{
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Multicast delegate property not found: %s on class %s"),
+								*DelegateName, *DelegateClass)
+						);
+					}
+
+					DelegateNode->SetFromProperty(DelegateProp, false, OwnerClass);
+				}
+				else
+				{
+					// Self-context delegate (Blueprint's own event dispatcher)
+					UClass* SelfClass = Blueprint->SkeletonGeneratedClass
+						? Blueprint->SkeletonGeneratedClass
+						: Blueprint->GeneratedClass;
+					if (SelfClass == nullptr)
+					{
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							TEXT("Blueprint has no generated class for self-context delegate lookup")
+						);
+					}
+
+					FMulticastDelegateProperty* DelegateProp = CastField<FMulticastDelegateProperty>(
+						SelfClass->FindPropertyByName(FName(*DelegateName)));
+					if (DelegateProp == nullptr)
+					{
+						Graph->RemoveNode(NewNode);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Self delegate property not found: %s"), *DelegateName)
+						);
+					}
+
+					DelegateNode->SetFromProperty(DelegateProp, true, SelfClass);
+				}
+			}
+		}
+
+		UK2Node_CreateDelegate* CreateDelegateNode = Cast<UK2Node_CreateDelegate>(NewNode);
+		if (CreateDelegateNode)
+		{
+			FString FunctionName;
+			if ((*NodeParams)->TryGetStringField(TEXT("function_name"), FunctionName))
+			{
+				CreateDelegateNode->SetFunction(FName(*FunctionName));
+			}
+		}
 	}
 
 	NewNode->AllocateDefaultPins();
 	Graph->NotifyGraphChanged();
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	// Force GUID resolution for CreateDelegate nodes — SetFunction alone leaves
+	// SelectedFunctionGuid invalid, which is only resolved lazily via
+	// PinConnectionListChanged/NodeConnectionListChanged in the editor.
+	// Only call HandleAnyChange when no function name was pre-set, because
+	// HandleAnyChange clears SelectedFunctionName when the function cannot be
+	// resolved (common for programmatic creation before wiring).
+	UK2Node_CreateDelegate* CreateDelegatePost = Cast<UK2Node_CreateDelegate>(NewNode);
+	if (CreateDelegatePost && CreateDelegatePost->GetFunctionName() == NAME_None)
+	{
+		CreateDelegatePost->HandleAnyChange(true);
+	}
 
 	// Build response
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();

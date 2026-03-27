@@ -6,12 +6,13 @@ import json
 import logging
 from pathlib import Path
 
+from ._fallback_generated import FALLBACK_COMMANDS as _FALLBACK_STRUCTURED
 from .tcp_client import _find_saved_dir
 
 
 logger = logging.getLogger(__name__)
 
-_DOMAINS = (
+CORE_DOMAINS = (
     "core",
     "data",
     "blueprint",
@@ -23,6 +24,25 @@ _DOMAINS = (
     "reflect",
     "editor",
 )
+
+_OPTIONAL_DOMAINS = ("gen",)
+
+
+def get_registered_domains(capabilities: dict | None = None) -> tuple[str, ...]:
+    """Return core domains + any optional domains found in capabilities cache.
+
+    Optional domains (e.g., gen) are only included when the editor has them
+    registered.  No cache = core domains only (safe default).
+    """
+    if capabilities is None:
+        return CORE_DOMAINS
+
+    domains_data = capabilities.get("domains")
+    if not isinstance(domains_data, dict):
+        return CORE_DOMAINS
+
+    extra = tuple(d for d in _OPTIONAL_DOMAINS if d in domains_data)
+    return CORE_DOMAINS + extra
 
 
 def load_capabilities_cache() -> dict | None:
@@ -44,39 +64,56 @@ def load_capabilities_cache() -> dict | None:
         return None
 
 
+_missing = set(CORE_DOMAINS) - set(_FALLBACK_STRUCTURED)
+if _missing:
+    raise ImportError(
+        f"Generated fallback missing core domains: {_missing}. "
+        f"Run: cd MCP && uv run python scripts/sync_fallback.py"
+    )
+
+
 _COMPOSITE_HINTS: dict[str, str] = {
     "material": "For creating a full material graph from scratch, use material_compose instead of chaining material_cmd calls.\n",
     "blueprint": "For creating or updating a full Blueprint, use blueprint_compose instead of chaining blueprint_cmd calls.\n",
     "umg": "For creating a complete Widget Blueprint screen, use widget_compose instead of chaining umg_cmd calls.\n",
     "level": "For batch actor operations, use level_compose instead of chaining level_cmd calls.\n",
+    "gen": "AI asset generation. Submit with start_mesh/start_image/start_texturing, then poll with job_status until status is 'imported' or 'failed'. Generation takes 30-180 seconds. On download_failed or import_failed, call retry_import.\n",
 }
 
 
-def minimal_router_docstrings() -> dict[str, str]:
-    """Return minimal router docstrings when no capabilities cache is available."""
+def minimal_router_docstrings(domains: tuple[str, ...] | None = None) -> dict[str, str]:
+    """Return minimal router docstrings when no capabilities cache is available.
+
+    Every domain gets a hardcoded command list so LLMs know valid command
+    names even when the live capabilities cache is unavailable.
+    """
+    if domains is None:
+        domains = CORE_DOMAINS
     docstrings: dict[str, str] = {}
-    for domain in _DOMAINS:
+    for domain in domains:
         tool_name = f"{domain}_cmd"
         hint = _COMPOSITE_HINTS.get(domain, "")
         base = f"Route UnrealCortex {domain} commands through `{tool_name}(command, params)`."
-        docstrings[domain] = (hint + base) if hint else base
+        commands = _FALLBACK_COMMANDS.get(domain, "")
+        body = base + commands
+        docstrings[domain] = (hint + body) if hint else body
 
-    docstrings["core"] += "\nAvailable commands:\n- get_status()\n- save_asset(asset_path: string, only_if_is_dirty: boolean = optional)"
-    docstrings["data"] += "\nAvailable commands:\n- query_datatable(table_path: string, row_filter: string = optional)"
     return docstrings
 
 
 def build_router_docstrings(capabilities: dict | None) -> dict[str, str]:
     """Build per-domain router docstrings from cached capabilities."""
+    registered = get_registered_domains(capabilities)
+
     if capabilities is None:
-        return minimal_router_docstrings()
+        return minimal_router_docstrings(registered)
 
     domains = capabilities.get("domains")
     if not isinstance(domains, dict):
         logger.warning("Capabilities cache has unexpected shape; using minimal router docstrings")
-        return minimal_router_docstrings()
+        return minimal_router_docstrings(registered)
 
-    docstrings = minimal_router_docstrings()
+    docstrings = minimal_router_docstrings(registered)
     for domain_name, domain_info in domains.items():
         if domain_name not in docstrings:
             continue
@@ -111,3 +148,17 @@ def _format_command_signature(command: dict) -> str:
         else:
             parts.append(f"{param_name}: {param_type} = optional")
     return f"{name}({', '.join(parts)})"
+
+
+def _build_fallback_strings() -> dict[str, str]:
+    """Format structured fallback data into docstring-ready command lists."""
+    result: dict[str, str] = {}
+    for domain, commands in _FALLBACK_STRUCTURED.items():
+        lines = ["\nAvailable commands:"]
+        for cmd in commands:
+            lines.append(f"\n- {_format_command_signature(cmd)}")
+        result[domain] = "".join(lines)
+    return result
+
+
+_FALLBACK_COMMANDS = _build_fallback_strings()

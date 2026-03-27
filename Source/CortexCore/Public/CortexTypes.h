@@ -108,6 +108,15 @@ namespace CortexErrorCodes
 	static const FString ReplayCancelled = TEXT("REPLAY_CANCELLED");
 	// Reflect errors
 	static const FString SymbolNotFound = TEXT("SYMBOL_NOT_FOUND");
+	// Gen errors
+	static const FString ProviderNotFound = TEXT("PROVIDER_NOT_FOUND");
+	static const FString CapabilityNotSupported = TEXT("CAPABILITY_NOT_SUPPORTED");
+	static const FString JobNotFound = TEXT("JOB_NOT_FOUND");
+	static const FString JobNotRetryable = TEXT("JOB_NOT_RETRYABLE");
+	static const FString JobLimitReached = TEXT("JOB_LIMIT_REACHED");
+	static const FString ProviderError = TEXT("PROVIDER_ERROR");
+	static const FString DownloadFailed = TEXT("DOWNLOAD_FAILED");
+	static const FString ImportFailed = TEXT("IMPORT_FAILED");
 }
 
 /** Result of a command execution */

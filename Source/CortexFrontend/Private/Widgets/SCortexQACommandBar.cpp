@@ -64,7 +64,7 @@ void SCortexQACommandBar::Construct(const FArguments& InArgs)
             .Padding(4.f, 0.f)
             [
                 SNew(SButton)
-                .Text(FText::FromString(TEXT("Generate")))
+                .Text_Lambda([this]() { return FText::FromString(bIsGenerating ? TEXT("Generating...") : TEXT("Generate")); })
                 .IsEnabled_Lambda([this]() { return !bIsGenerating; })
                 .OnClicked_Lambda([this]()
                 {
@@ -72,6 +72,15 @@ void SCortexQACommandBar::Construct(const FArguments& InArgs)
                     return FReply::Handled();
                 })
             ]
+        ]
+
+        // Status line
+        + SVerticalBox::Slot()
+        .AutoHeight()
+        .Padding(4.f, 0.f, 4.f, 2.f)
+        [
+            SAssignNew(StatusLabel, STextBlock)
+            .Visibility(EVisibility::Collapsed)
         ]
     ];
 
@@ -120,4 +129,21 @@ void SCortexQACommandBar::OnExampleClicked(const FString& ExampleText)
 void SCortexQACommandBar::SetGenerating(bool bGenerating)
 {
     bIsGenerating = bGenerating;
+}
+
+void SCortexQACommandBar::SetStatus(const FString& Message)
+{
+    if (!StatusLabel.IsValid())
+    {
+        return;
+    }
+    if (Message.IsEmpty())
+    {
+        StatusLabel->SetVisibility(EVisibility::Collapsed);
+    }
+    else
+    {
+        StatusLabel->SetText(FText::FromString(Message));
+        StatusLabel->SetVisibility(EVisibility::Visible);
+    }
 }

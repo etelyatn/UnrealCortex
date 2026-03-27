@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Callable
 
+from cortex_mcp.capabilities import CORE_DOMAINS
 from cortex_mcp.response import format_response
 from cortex_mcp.schema_generator import (
     SCHEMA_VERSION,
@@ -16,15 +17,11 @@ from cortex_mcp.tcp_client import _discover_all_editors, _is_editor_alive
 
 
 logger = logging.getLogger(__name__)
-
-DOMAINS = ("core", "data", "blueprint", "graph", "level", "material", "umg", "qa", "reflect", "editor")
 _TTL_CATALOG = 600
 
 
 def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict | None], str]:
     """Create a single router tool function for a domain."""
-    if domain not in DOMAINS:
-        raise ValueError(f"Unsupported domain '{domain}'")
 
     def router(command: str, params: dict | None = None) -> str:
         route_params = params or {}
@@ -64,9 +61,9 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
     return router
 
 
-def register_router_tools(mcp, connection, docstrings: dict[str, str]) -> None:
+def register_router_tools(mcp, connection, docstrings: dict[str, str], domains: tuple[str, ...] = CORE_DOMAINS) -> None:
     """Register one explicit router tool per domain."""
-    for domain in DOMAINS:
+    for domain in domains:
         router = make_router(domain, connection, docstrings.get(domain, ""))
         mcp.tool(name=f"{domain}_cmd", description=router.__doc__)(router)
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Conversion/CortexDiffParser.h"
 #include "Session/CortexSessionTypes.h"
 
 /**
@@ -14,6 +15,7 @@ enum class ECortexChatRowType : uint8
 	CodeBlock,
 	ProcessingRow,   // Transient row shown while session is Spawning or Processing
 	StatusRow,       // Step-by-step status message (e.g., "Serializing Blueprint...")
+	TableBlock
 };
 
 struct FCortexChatDisplayRow
@@ -23,4 +25,8 @@ struct FCortexChatDisplayRow
 	// Code that iterates DisplayRows must check RowType before accessing PrimaryEntry.
 	TSharedPtr<FCortexChatEntry> PrimaryEntry;
 	TArray<TSharedPtr<FCortexChatEntry>> ToolCalls;  // Empty for non-assistant turns
+
+	// Diff support (populated during row construction for diff-type code blocks)
+	bool bIsDiffBlock = false;
+	TArray<FCortexFrontendSearchReplacePair> SearchReplacePairs;
 };

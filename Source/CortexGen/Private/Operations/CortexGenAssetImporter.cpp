@@ -1,0 +1,88 @@
+#include "Operations/CortexGenAssetImporter.h"
+#include "CortexGenModule.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
+#include "AssetImportTask.h"
+#include "Misc/Paths.h"
+#include "UObject/StrongObjectPtr.h"
+
+FCortexGenAssetImporter::FImportResult FCortexGenAssetImporter::RunImportTask(
+    const FString& SourceFilePath, const FString& DestinationPath, const FString& AssetName)
+{
+    check(IsInGameThread());
+    FImportResult Result;
+
+    if (!FPaths::FileExists(SourceFilePath))
+    {
+        Result.ErrorMessage = FString::Printf(
+            TEXT("Source file not found: %s"), *SourceFilePath);
+        return Result;
+    }
+
+    TStrongObjectPtr<UAssetImportTask> ImportTask(NewObject<UAssetImportTask>());
+    ImportTask->Filename = SourceFilePath;
+    ImportTask->DestinationPath = DestinationPath;
+    ImportTask->DestinationName = AssetName;
+    ImportTask->bAutomated = true;
+    ImportTask->bSave = true;
+    ImportTask->bReplaceExisting = true;
+
+    IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(
+        "AssetTools").Get();
+    // NOTE (GEN-003): ImportAssetTasks() runs synchronously on the Game Thread.
+    // GLB files with embedded textures can stall the editor for several seconds.
+    // The job status "Importing" communicates this to callers.
+    // Async import via UE::Tasks is a future improvement if stalls become problematic.
+    AssetTools.ImportAssetTasks({ ImportTask.Get() });
+
+    for (UObject* ImportedObj : ImportTask->GetObjects())
+    {
+        if (ImportedObj)
+        {
+            Result.ImportedAssetPaths.Add(ImportedObj->GetPathName());
+        }
+    }
+
+    if (Result.ImportedAssetPaths.Num() > 0)
+    {
+        Result.bSuccess = true;
+        UE_LOG(LogCortexGen, Log, TEXT("Imported %d assets from %s"),
+            Result.ImportedAssetPaths.Num(), *SourceFilePath);
+    }
+    else
+    {
+        Result.ErrorMessage = FString::Printf(
+            TEXT("Import produced no assets from %s"), *SourceFilePath);
+    }
+
+    return Result;
+}
+
+FCortexGenAssetImporter::FImportResult FCortexGenAssetImporter::ImportAsset(
+    const FString& SourceFilePath, const FString& DestinationPath, const FString& AssetName)
+{
+    FString Extension = FPaths::GetExtension(SourceFilePath).ToLower();
+    if (Extension == TEXT("obj"))
+    {
+        FImportResult Result;
+        Result.ErrorMessage = TEXT("OBJ format rejected — no embedded materials. Use GLB or FBX.");
+        return Result;
+    }
+
+    return RunImportTask(SourceFilePath, DestinationPath, AssetName);
+}
+
+FCortexGenAssetImporter::FImportResult FCortexGenAssetImporter::ImportTexture(
+    const FString& SourceFilePath, const FString& DestinationPath, const FString& AssetName)
+{
+    FString Extension = FPaths::GetExtension(SourceFilePath).ToLower();
+    if (Extension != TEXT("png") && Extension != TEXT("jpg") && Extension != TEXT("jpeg"))
+    {
+        FImportResult Result;
+        Result.ErrorMessage = FString::Printf(
+            TEXT("Unsupported texture format: .%s. Use PNG or JPG."), *Extension);
+        return Result;
+    }
+
+    return RunImportTask(SourceFilePath, DestinationPath, AssetName);
+}

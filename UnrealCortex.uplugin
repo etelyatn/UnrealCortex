@@ -1,7 +1,7 @@
 {
   "FileVersion": 3,
-  "Version": 1,
-  "VersionName": "0.1.0",
+  "Version": 2,
+  "VersionName": "0.1.5",
   "FriendlyName": "Unreal Cortex",
   "Description": "Modular MCP plugin for AI-powered Unreal Engine development",
   "Category": "Developer Tools",
@@ -16,8 +16,13 @@
       "Enabled": true
     },
     {
-      "Name": "StructUtils",
+      "Name": "EditorScriptingUtilities",
       "Enabled": true
+    },
+    {
+      "Name": "StructUtils",
+      "Enabled": true,
+      "Optional": true
     }
   ],
   "Modules": [
@@ -68,6 +73,11 @@
     },
     {
       "Name": "CortexReflect",
+      "Type": "Editor",
+      "LoadingPhase": "PostEngineInit"
+    },
+    {
+      "Name": "CortexGen",
       "Type": "Editor",
       "LoadingPhase": "PostEngineInit"
     },

@@ -6,6 +6,7 @@
 #include "CortexSerializer.h"
 #include "CortexTypes.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 
 namespace
 {
@@ -62,6 +63,13 @@ FCortexCommandResult FCortexQASetupOps::TeleportPlayer(const TSharedPtr<FJsonObj
     }
 
     Pawn->SetActorLocationAndRotation(Location, Rotation, false, nullptr, ETeleportType::TeleportPhysics);
+
+    // Also set control rotation so the camera matches the recorded direction
+    APlayerController* PC = FCortexQAUtils::GetPlayerController(PIEWorld);
+    if (PC != nullptr)
+    {
+        PC->SetControlRotation(Rotation);
+    }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetBoolField(TEXT("success"), true);

@@ -1,14 +1,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Conversion/CortexConversionContext.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/SCortexSidebar.h"
 
 class FCortexCliSession;
-struct FCortexConversionPayload;
+class SBox;
 
 class SCortexWorkbench : public SCompoundWidget
 {
@@ -23,23 +20,20 @@ public:
 
 	TSharedPtr<FTabManager> GetTabManager() const { return TabManager; }
 
-	/** Spawn a new conversion tab for the given payload. */
-	void SpawnConversionTab(const FCortexConversionPayload& Payload);
+	/** Spawn a new chat tab with a fresh session. */
+	void SpawnNewChatTab();
 
 private:
+	void SwitchToMultiTabMode();
 	TSharedRef<SDockTab> SpawnChatTab(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> SpawnQATab(const FSpawnTabArgs& Args);
-	void CleanupConversionTab(FName TabId);
-	void OnSidebarToggle();
-	float GetSidebarSlotValue() const;
+	void CleanupChatTab(FName TabId);
+	TSharedRef<SDockTab> BuildChatTab(TSharedPtr<FCortexCliSession> Session, const FString& Label, FName TabId);
 
 	TSharedPtr<FTabManager> TabManager;
 	TWeakPtr<FCortexCliSession> SessionWeak;
-	TSharedPtr<SCortexSidebar> Sidebar;
-	TSharedPtr<SBox> SidebarBox;
+	TWeakPtr<SDockTab> OwnerTabWeak;
+	TSharedPtr<SBox> ContentContainer;
 
-	TMap<FName, TSharedPtr<FCortexConversionContext>> ConversionContexts;
-
-	float CachedSidebarCoefficient = 0.20f;
-	bool bSidebarCollapsed = false;
+	TMap<FName, TSharedPtr<FCortexCliSession>> ChatSessions;
+	int32 ChatTabCounter = 0;
 };

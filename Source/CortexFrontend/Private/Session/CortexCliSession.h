@@ -19,6 +19,7 @@ class FCortexCliSession : public TSharedFromThis<FCortexCliSession>
 {
 public:
 	explicit FCortexCliSession(const FCortexSessionConfig& InConfig);
+	~FCortexCliSession();
 
 	bool Connect();
 	bool SendPrompt(const FCortexPromptRequest& Request);
@@ -133,6 +134,7 @@ private:
 	std::atomic<ECortexSessionState> State;
 	TOptional<FString> PendingPrompt;
 	TOptional<ECortexAccessMode> PendingAccessMode;
+	TOptional<ECortexAccessMode> LastSpawnedAccessMode;
 	TUniquePtr<FCortexCliWorker> Worker;
 	FProcHandle ProcessHandle;
 	void* StdoutReadPipe = nullptr;

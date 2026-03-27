@@ -46,6 +46,20 @@ private:
 	static TSharedRef<FJsonObject> GraphToJsonCompact(class UEdGraph* Graph);
 	static TSharedRef<FJsonObject> NodeToJsonCompact(class UEdGraphNode* Node, const TMap<class UEdGraphNode*, int32>& IndexMap);
 
+	// ── Extended compact variants (analysis mode) ──
+	// Running counter for globally monotonic IDs across graphs.
+	static TSharedRef<FJsonObject> GraphToJsonCompact(
+		class UEdGraph* Graph,
+		int32& RunningCounter,
+		bool bIncludePositions,
+		TMap<int32, FGuid>* OutNodeIdMapping,
+		TMap<int32, FString>* OutNodeDisplayNames);
+
+	static TSharedRef<FJsonObject> NodeToJsonCompact(
+		class UEdGraphNode* Node,
+		const TMap<class UEdGraphNode*, int32>& IndexMap,
+		bool bIncludePositions);
+
 	/** Helper: serialize Blueprint variables to JSON array. */
 	static TArray<TSharedPtr<FJsonValue>> VariablesToJson(class UBlueprint* Blueprint);
 

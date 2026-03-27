@@ -5,7 +5,8 @@
 #include "Engine/DeveloperSettings.h"
 #include "CortexSettings.generated.h"
 
-UCLASS(Config = EditorPerProjectUserSettings, DefaultConfig, meta = (DisplayName = "Unreal Cortex"))
+UCLASS(Config = Editor, DefaultConfig,
+	meta = (DisplayName = "Core", CategoryName = "Unreal Cortex"))
 class CORTEXCORE_API UCortexSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()

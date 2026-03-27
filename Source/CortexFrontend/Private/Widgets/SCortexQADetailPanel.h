@@ -7,6 +7,7 @@
 #include "Widgets/SCompoundWidget.h"
 
 DECLARE_DELEGATE(FOnQAReplayClicked);
+DECLARE_DELEGATE(FOnQAFastReplayClicked);
 DECLARE_DELEGATE(FOnQADeleteClicked);
 
 struct FCortexQADetailStep
@@ -23,6 +24,7 @@ class SCortexQADetailPanel : public SCompoundWidget
 public:
     SLATE_BEGIN_ARGS(SCortexQADetailPanel) {}
         SLATE_EVENT(FOnQAReplayClicked, OnReplay)
+        SLATE_EVENT(FOnQAFastReplayClicked, OnFastReplay)
         SLATE_EVENT(FOnQADeleteClicked, OnDelete)
     SLATE_END_ARGS()
 
@@ -43,6 +45,7 @@ private:
         const TSharedRef<STableViewBase>& OwnerTable);
 
     FOnQAReplayClicked OnReplay;
+    FOnQAFastReplayClicked OnFastReplay;
     FOnQADeleteClicked OnDelete;
 
     TSharedPtr<STextBlock> HeaderText;

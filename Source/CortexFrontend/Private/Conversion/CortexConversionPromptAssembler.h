@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "CortexConversionTypes.h"
+#include "Conversion/CortexDependencyTypes.h"
 
 struct FCortexConversionContext;
 
@@ -10,6 +11,9 @@ class FCortexConversionPromptAssembler
 public:
 	/** Assemble the full system prompt from layered components + domain fragments. */
 	static FString Assemble(const FCortexConversionContext& Context, const FString& BlueprintJson);
+
+	/** Build dependency context block for injection into user message. */
+	static FString BuildDependencyContext(const FCortexDependencyInfo& DepInfo);
 
 	/** Select which knowledge fragment files to include based on Blueprint JSON content. */
 	static TArray<FString> SelectFragments(const FString& BlueprintJson);

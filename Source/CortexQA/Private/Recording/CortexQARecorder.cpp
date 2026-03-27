@@ -54,7 +54,7 @@ bool FCortexQARecorder::StartRecording(UWorld* PIEWorld, const FString& SessionN
 
     if (PIEWorld == nullptr)
     {
-        UE_LOG(LogCortexQA, Warning, TEXT("Cannot start recording: PIE world is null"));
+        UE_LOG(LogCortexQA, Log, TEXT("Cannot start recording: PIE world is null"));
         return false;
     }
 

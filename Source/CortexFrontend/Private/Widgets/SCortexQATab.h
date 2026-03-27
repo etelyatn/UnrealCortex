@@ -5,6 +5,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
+struct FCortexSessionStateChange;
 class FCortexCliSession;
 class FCortexQASessionManager;
 class SCortexQAToolbar;
@@ -29,9 +30,13 @@ private:
     void OnStopClicked();
     void OnStopAndReplayClicked();
     void OnReplayClicked();
+    void OnFastReplayClicked();
+    void OnCancelReplayClicked();
+    void StartReplay(const FString& ReplayMode);
     void OnDeleteClicked();
     void OnGenerateClicked(const FString& Prompt);
     void OnAIGenerationComplete(const FCortexTurnResult& Result);
+    void OnQASessionStateChanged(const FCortexSessionStateChange& StateChange);
     void RefreshSessions();
 
     TSharedPtr<FCortexQASessionManager> SessionManager;
@@ -41,6 +46,12 @@ private:
     TSharedPtr<SCortexQACommandBar> CommandBar;
 
     TSharedPtr<FCortexCliSession> QACliSession;
+    void CancelPendingPIEReplay();
+
     FDelegateHandle DomainProgressHandle;
+    FDelegateHandle PostPIEStartedHandle;
+    FTimerHandle PIEStartTimeoutHandle;
     int32 SelectedSessionIndex = INDEX_NONE;
+    bool bReplayPendingPIE = false;
+    FString PendingReplayMode = TEXT("smooth");
 };

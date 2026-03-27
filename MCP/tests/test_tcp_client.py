@@ -18,6 +18,9 @@ from cortex_mcp.tcp_client import (
     _discover_all_editors,
     _is_editor_alive,
     _parse_port_file,
+    _find_project_root,
+    _find_saved_dir,
+    _get_expected_project,
     EditorConnection,
     logger as tcp_logger,
 )
@@ -273,8 +276,8 @@ class TestProjectValidation:
             port, pid, project_path, project_name = result
             assert project_name == "CortexSandbox"
 
-    def test_validate_project_logs_warning_on_mismatch(self):
-        """_validate_project should log warning when project doesn't match."""
+    def test_validate_project_raises_on_mismatch(self):
+        """_validate_project should raise ConnectionError and disconnect on mismatch."""
         conn = UEConnection(port=99999)
         conn._expected_project = "CortexSandbox"
 
@@ -284,11 +287,9 @@ class TestProjectValidation:
         )
         conn._socket = mock_socket
 
-        with patch.object(tcp_logger, "warning") as mock_warn:
+        with pytest.raises(ConnectionError, match="Ripper.*CortexSandbox"):
             conn._validate_project()
-            mock_warn.assert_called_once()
-            assert "Ripper" in mock_warn.call_args[0][1]
-            assert "CortexSandbox" in mock_warn.call_args[0][2]
+        assert conn._socket is None  # disconnected
 
     def test_validate_project_no_warning_on_match(self):
         """_validate_project should not warn when projects match."""
@@ -314,14 +315,15 @@ class TestProjectValidation:
         conn._validate_project()
         conn._socket.sendall.assert_not_called()
 
-    def test_validate_project_handles_connection_error_without_disconnecting(self):
-        """_validate_project should not crash or disconnect on network error."""
+    def test_validate_project_handles_network_error_gracefully(self):
+        """_validate_project should not crash on network error (validation skipped)."""
         conn = UEConnection(port=99999)
         conn._expected_project = "CortexSandbox"
         mock_socket = MagicMock()
         mock_socket.sendall.side_effect = BrokenPipeError("broken")
         conn._socket = mock_socket
 
+        # Should not raise — network errors are logged and skipped
         conn._validate_project()
         assert conn._socket is not None
 
@@ -372,3 +374,78 @@ class TestProjectValidation:
         assert conn.connected is True
         mock_load.assert_called_once()
         mock_warn.assert_called_once()
+
+
+class TestProjectRootDiscovery:
+    """Tests for _find_project_root() and _find_saved_dir() path resolution."""
+
+    def test_find_project_root_from_file_walk(self):
+        """_find_project_root should find the project root by walking up from __file__."""
+        root = _find_project_root()
+        # tcp_client.py lives inside the project tree, so root should be found
+        assert root is not None
+        assert list(root.glob("*.uproject"))
+
+    def test_find_saved_dir_with_absolute_env(self, tmp_path):
+        """Absolute CORTEX_PROJECT_DIR should be used directly."""
+        saved = tmp_path / "Saved"
+        saved.mkdir()
+        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}):
+            result = _find_saved_dir()
+            assert result is not None
+            assert result == saved
+
+    def test_find_saved_dir_with_relative_env_resolves_against_project_root(self):
+        """Relative CORTEX_PROJECT_DIR='.' should resolve against project root, not CWD."""
+        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": "."}):
+            result = _find_saved_dir()
+            assert result is not None, "Expected to find Saved/ in project root"
+            assert "Saved" in str(result)
+            # Must NOT be under MCP directory
+            assert "MCP\\Saved" not in str(result) and "MCP/Saved" not in str(result)
+
+    def test_find_saved_dir_without_env_uses_file_walk(self):
+        """Without CORTEX_PROJECT_DIR, should walk up from __file__."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("CORTEX_PROJECT_DIR", None)
+            result = _find_saved_dir()
+            assert result is not None, "Expected to find Saved/ via __file__ walk-up"
+            assert result.name == "Saved"
+
+    def test_get_expected_project_from_uproject(self):
+        """_get_expected_project should return project name from .uproject filename."""
+        project = _get_expected_project()
+        # We're running inside CortexSandboxMirror which has CortexSandbox.uproject
+        assert project == "CortexSandbox"
+
+
+class TestNoEditorFallback:
+    """Tests for port=0 sentinel when no editor is found."""
+
+    def test_no_discovery_sets_port_zero(self):
+        """When no port file is found, port should be 0 (not default 8742)."""
+        with patch("cortex_mcp.tcp_client._discover_port", return_value=None), \
+             patch("cortex_mcp.tcp_client._get_expected_project", return_value="Test"):
+            conn = UEConnection()
+            assert conn.port == 0
+
+    def test_connect_raises_when_port_zero(self):
+        """connect() should raise ConnectionError with diagnostic info when port is 0."""
+        with patch("cortex_mcp.tcp_client._discover_port", return_value=None), \
+             patch("cortex_mcp.tcp_client._get_expected_project", return_value="Test"):
+            conn = UEConnection()
+            with pytest.raises(ConnectionError, match="No running Unreal Editor found"):
+                conn.connect()
+
+    def test_connect_error_includes_searched_path(self):
+        """ConnectionError should include the path that was searched."""
+        with patch("cortex_mcp.tcp_client._discover_port", return_value=None), \
+             patch("cortex_mcp.tcp_client._get_expected_project", return_value="Test"):
+            conn = UEConnection()
+            with pytest.raises(ConnectionError, match="CORTEX_PROJECT_DIR"):
+                conn.connect()
+
+    def test_explicit_port_bypasses_discovery(self):
+        """Passing port= explicitly should skip discovery entirely."""
+        conn = UEConnection(port=9999)
+        assert conn.port == 9999

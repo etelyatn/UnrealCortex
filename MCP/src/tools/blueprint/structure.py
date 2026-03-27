@@ -194,3 +194,54 @@ def register_blueprint_structure_tools(mcp, connection: UEConnection):
             return format_response(response.get("data", {}), "set_component_defaults")
         except ConnectionError as e:
             return f"Error: {e}"
+
+    @mcp.tool()
+    def add_scs_component(
+        asset_path: str,
+        component_class: str,
+        component_name: str = "",
+        parent_component: str = "",
+        compile: bool = True,
+    ) -> str:
+        """Add an SCS component to a Blueprint's component hierarchy.
+
+        Creates a new component node in the Blueprint's Simple Construction
+        Script. The component appears in the Components panel in the editor.
+
+        Adding a SceneComponent to root may displace DefaultSceneRoot.
+        The returned variable_name may differ from component_name if the
+        engine deduplicates — always use the returned name for subsequent calls.
+
+        Args:
+            asset_path: Blueprint object path (e.g. /Game/Blueprints/BP_Foo).
+            component_class: Component class name (e.g. StaticMeshComponent,
+                PointLightComponent, BoxComponent).
+            component_name: Variable name for the component. Auto-generated
+                from class name if omitted.
+            parent_component: Variable name of parent SCS node to attach under.
+                Only valid for SceneComponent subclasses. Adds to root if omitted.
+            compile: Recompile the Blueprint after adding (default True).
+
+        Returns:
+            JSON with:
+            - variable_name: Actual variable name (may differ from requested)
+            - component_class: Resolved component class name
+            - is_scene_component: Whether the component is a SceneComponent
+            - parent_component: Parent node name (if attached to parent)
+            - compiled: Whether compilation was performed
+            - compile_status: Compilation result (if compiled)
+        """
+        try:
+            params = {
+                "asset_path": asset_path,
+                "component_class": component_class,
+                "compile": compile,
+            }
+            if component_name:
+                params["component_name"] = component_name
+            if parent_component:
+                params["parent_component"] = parent_component
+            response = connection.send_command("blueprint.add_scs_component", params)
+            return format_response(response.get("data", {}), "add_scs_component")
+        except ConnectionError as e:
+            return f"Error: {e}"

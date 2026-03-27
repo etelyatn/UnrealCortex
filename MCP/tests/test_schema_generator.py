@@ -18,28 +18,30 @@ from cortex_mcp.schema_generator import _decode_data
 class TestProjectRootDiscovery(unittest.TestCase):
 
     def test_env_var_override(self):
-        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": "/fake/project"}):
-            result = find_project_root()
-            self.assertEqual(result, Path("/fake/project"))
+        with patch("cortex_mcp.project._walk_up_for_uproject", return_value=None):
+            with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(Path(tempfile.gettempdir()))}, clear=False):
+                os.environ.pop("CLAUDE_PROJECT_DIR", None)
+                result = find_project_root()
+                self.assertEqual(result, Path(tempfile.gettempdir()))
 
     def test_uproject_walk_up(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create a fake .uproject file
             (Path(tmpdir) / "Test.uproject").touch()
-            # Simulate being called from a nested path
-            nested = Path(tmpdir) / "Plugins" / "MCP" / "src"
-            nested.mkdir(parents=True)
 
-            with patch("cortex_mcp.schema_generator._get_caller_path", return_value=nested), \
-                 patch.dict(os.environ, {}, clear=False) as env:
-                env.pop("CORTEX_PROJECT_DIR", None)
+            with patch("cortex_mcp.project._walk_up_for_uproject", return_value=Path(tmpdir)), \
+                 patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("CORTEX_PROJECT_DIR", None)
+                os.environ.pop("CLAUDE_PROJECT_DIR", None)
                 result = find_project_root()
                 self.assertEqual(result, Path(tmpdir))
 
     def test_schema_dir_path(self):
-        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": "/fake/project"}):
-            result = get_schema_dir()
-            self.assertEqual(result, Path("/fake/project/.cortex/schema"))
+        with patch("cortex_mcp.project._walk_up_for_uproject", return_value=None):
+            with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(Path(tempfile.gettempdir()))}, clear=False):
+                os.environ.pop("CLAUDE_PROJECT_DIR", None)
+                result = get_schema_dir()
+                self.assertEqual(result, Path(tempfile.gettempdir()) / ".cortex" / "schema")
 
 
 class TestAtomicWrite(unittest.TestCase):

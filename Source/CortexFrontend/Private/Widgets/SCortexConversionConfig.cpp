@@ -1,8 +1,14 @@
 #include "Widgets/SCortexConversionConfig.h"
 
+#include "Utilities/CortexTokenUtils.h"
+#include "CortexCoreModule.h"
+#include "CortexFrontendModule.h"
+#include "Widgets/SCortexScopeSelector.h"
 #include "Styling/AppStyle.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSeparator.h"
@@ -26,14 +32,14 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 	[
 		SNew(SScrollBox)
 		+ SScrollBox::Slot()
-		.Padding(16.0f)
+		.Padding(12.0f)
 		[
 			SNew(SVerticalBox)
 
 			// Blueprint info header
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(0, 0, 0, 16)
+			.Padding(0, 0, 0, 12)
 			[
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot()
@@ -53,425 +59,554 @@ void SCortexConversionConfig::Construct(const FArguments& InArgs)
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
-				.Padding(0, 4, 0, 0)
+				.Padding(0, 2, 0, 0)
 				[
 					SNew(STextBlock)
 					.Text(FText::FromString(FString::Printf(TEXT("Parent Class: %s"), *Payload.ParentClassName)))
 				]
 			]
 
-			// Scope + Events/Functions grouped section
+			// Warning bars (conditional — placed early for visibility)
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(0, 0, 0, 16)
+			.Padding(0, 0, 0, 6)
+			[
+				BuildWarningBars(Payload)
+			]
+
+			// Dependency panel (between warnings and scope per design doc)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 12)
+			[
+				SNew(SCortexDependencyPanel)
+				.DependencyInfo(&Context->DependencyInfo)
+			]
+
+			// Target Class section
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 12)
+			[
+				BuildTargetClassSection(Payload)
+			]
+
+			// Conversion Scope section
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 12)
 			[
 				BuildScopeAndTargetSection(Payload)
 			]
 
-			// Conversion Depth section
+			// Conversion Instructions section (formerly "Depth")
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(0, 0, 0, 16)
+			.Padding(0, 0, 0, 12)
 			[
-				SNew(SVerticalBox)
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0, 0, 0, 8)
-				[
-					SNew(STextBlock)
-					.Text(NSLOCTEXT("CortexConversion", "DepthLabel", "Conversion Depth"))
-					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
-				]
-
-				// Performance Shell
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0, 2)
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(SCheckBox)
-						.Style(FAppStyle::Get(), "RadioButton")
-						.IsChecked_Lambda([this]()
-						{
-							return IsDepthSelected(ECortexConversionDepth::PerformanceShell)
-								? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-						})
-						.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
-						{
-							if (State == ECheckBoxState::Checked)
-							{
-								OnDepthChanged(ECortexConversionDepth::PerformanceShell);
-							}
-						})
-						[
-							SNew(STextBlock)
-							.Text(NSLOCTEXT("CortexConversion", "DepthPerfShell", "Performance Shell"))
-						]
-					]
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(20, 0, 0, 4)
-				[
-					SNew(STextBlock)
-					.Text(NSLOCTEXT("CortexConversion", "DepthPerfShellDesc",
-						"Hot paths only \u2014 Tick, loops, heavy math"))
-					.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
-					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-				]
-
-				// C++ Core (default)
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0, 2)
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(SCheckBox)
-						.Style(FAppStyle::Get(), "RadioButton")
-						.IsChecked_Lambda([this]()
-						{
-							return IsDepthSelected(ECortexConversionDepth::CppCore)
-								? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-						})
-						.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
-						{
-							if (State == ECheckBoxState::Checked)
-							{
-								OnDepthChanged(ECortexConversionDepth::CppCore);
-							}
-						})
-						[
-							SNew(STextBlock)
-							.Text(NSLOCTEXT("CortexConversion", "DepthCppCore", "C++ Core (recommended)"))
-						]
-					]
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(20, 0, 0, 4)
-				[
-					SNew(STextBlock)
-					.Text(NSLOCTEXT("CortexConversion", "DepthCppCoreDesc",
-						"All logic \u2014 thin Blueprint shell for cosmetics/tuning"))
-					.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
-					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-				]
-
-				// Full Extraction
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0, 2)
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(SCheckBox)
-						.Style(FAppStyle::Get(), "RadioButton")
-						.IsChecked_Lambda([this]()
-						{
-							return IsDepthSelected(ECortexConversionDepth::FullExtraction)
-								? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-						})
-						.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
-						{
-							if (State == ECheckBoxState::Checked)
-							{
-								OnDepthChanged(ECortexConversionDepth::FullExtraction);
-							}
-						})
-						[
-							SNew(STextBlock)
-							.Text(NSLOCTEXT("CortexConversion", "DepthFullExtract", "Full Extraction"))
-						]
-					]
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(20, 0, 0, 4)
-				[
-					SNew(STextBlock)
-					.Text(NSLOCTEXT("CortexConversion", "DepthFullExtractDesc",
-						"Everything \u2014 self-contained C++ class, no BP hooks"))
-					.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
-					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-				]
+				BuildInstructionsSection()
 			]
 
 			// Destination section (conditional)
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(0, 0, 0, 16)
+			.Padding(0, 0, 0, 12)
 			[
 				BuildDestinationSection(Payload)
 			]
 
-			// Warning bars (conditional)
+			// Verify after save checkbox
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(0, 0, 0, 8)
-			[
-				BuildWarningBars(Payload)
-			]
-
-			// Convert button — accent styled
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0, 16, 0, 0)
-			[
-				SNew(SButton)
-				.OnClicked(this, &SCortexConversionConfig::OnConvertButtonClicked)
-				.HAlign(HAlign_Center)
-				.ContentPadding(FMargin(24, 8))
-				.ButtonColorAndOpacity(FLinearColor(0.15f, 0.45f, 0.75f, 1.0f))
-				[
-					SNew(STextBlock)
-					.Text(NSLOCTEXT("CortexConversion", "Convert", "Convert to C++"))
-					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
-					.ColorAndOpacity(FSlateColor(FLinearColor::White))
-				]
-			]
-		]
-	];
-}
-
-TSharedRef<SWidget> SCortexConversionConfig::BuildScopeAndTargetSection(const FCortexConversionPayload& Payload)
-{
-	const bool bHasSelectedNodes = Payload.SelectedNodeIds.Num() > 0;
-	const bool bHasEvents = Payload.EventNames.Num() > 0;
-	const bool bHasFunctions = Payload.FunctionNames.Num() > 0;
-
-	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
-
-	// ── Conversion Scope sub-header ──
-	Box->AddSlot()
-	.AutoHeight()
-	.Padding(0, 0, 0, 8)
-	[
-		SNew(STextBlock)
-		.Text(NSLOCTEXT("CortexConversion", "ScopeLabel", "Conversion Scope"))
-		.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
-	];
-
-	// Entire Blueprint
-	Box->AddSlot()
-	.AutoHeight()
-	.Padding(0, 2)
-	[
-		SNew(SCheckBox)
-		.Style(FAppStyle::Get(), "RadioButton")
-		.IsChecked_Lambda([this]()
-		{
-			return IsScopeSelected(ECortexConversionScope::EntireBlueprint)
-				? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-		})
-		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
-		{
-			if (State == ECheckBoxState::Checked)
-			{
-				OnScopeChanged(ECortexConversionScope::EntireBlueprint);
-			}
-		})
-		[
-			SNew(STextBlock)
-			.Text(NSLOCTEXT("CortexConversion", "ScopeEntire", "Entire Blueprint"))
-		]
-	];
-
-	// Selected Nodes
-	Box->AddSlot()
-	.AutoHeight()
-	.Padding(0, 2)
-	[
-		SNew(SCheckBox)
-		.Style(FAppStyle::Get(), "RadioButton")
-		.IsEnabled(bHasSelectedNodes)
-		.IsChecked_Lambda([this]()
-		{
-			return IsScopeSelected(ECortexConversionScope::SelectedNodes)
-				? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-		})
-		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
-		{
-			if (State == ECheckBoxState::Checked)
-			{
-				OnScopeChanged(ECortexConversionScope::SelectedNodes);
-			}
-		})
-		[
-			SNew(STextBlock)
-			.Text(FText::FromString(FString::Printf(TEXT("Selected Nodes (%d selected)"),
-				Payload.SelectedNodeIds.Num())))
-			.IsEnabled(bHasSelectedNodes)
-		]
-	];
-
-	// Current Graph
-	Box->AddSlot()
-	.AutoHeight()
-	.Padding(0, 2)
-	[
-		SNew(SCheckBox)
-		.Style(FAppStyle::Get(), "RadioButton")
-		.IsChecked_Lambda([this]()
-		{
-			return IsScopeSelected(ECortexConversionScope::CurrentGraph)
-				? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-		})
-		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
-		{
-			if (State == ECheckBoxState::Checked)
-			{
-				OnScopeChanged(ECortexConversionScope::CurrentGraph);
-			}
-		})
-		[
-			SNew(STextBlock)
-			.Text(FText::FromString(FString::Printf(TEXT("Current Graph (%s)"),
-				*Payload.CurrentGraphName)))
-		]
-	];
-
-	// ── Events sub-section (radio buttons — single select) ──
-	if (bHasEvents)
-	{
-		// Visual separator
-		Box->AddSlot()
-		.AutoHeight()
-		.Padding(0, 8)
-		[
-			SNew(SSeparator)
-			.Thickness(1.0f)
-			.ColorAndOpacity(FLinearColor(0.3f, 0.3f, 0.3f, 0.5f))
-		];
-
-		Box->AddSlot()
-		.AutoHeight()
-		.Padding(0, 0, 0, 4)
-		[
-			SNew(STextBlock)
-			.Text(NSLOCTEXT("CortexConversion", "EventsLabel", "Events"))
-			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
-			.ColorAndOpacity(FSlateColor(FLinearColor(0.7f, 0.7f, 0.7f)))
-		];
-
-		for (const FString& EventName : Payload.EventNames)
-		{
-			Box->AddSlot()
-			.AutoHeight()
-			.Padding(8, 2)
+			.Padding(0, 0, 0, 12)
 			[
 				SNew(SCheckBox)
-				.Style(FAppStyle::Get(), "RadioButton")
-				.IsChecked_Lambda([this, EventName]()
+				.IsChecked_Lambda([this]()
 				{
-					return IsEventSelected(EventName)
+					return (Context.IsValid() && Context->bVerifyAfterSave)
 						? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 				})
-				.OnCheckStateChanged_Lambda([this, EventName](ECheckBoxState State)
+				.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
 				{
-					if (State == ECheckBoxState::Checked)
+					if (Context.IsValid())
 					{
-						OnEventSelected(EventName);
+						Context->bVerifyAfterSave = (State == ECheckBoxState::Checked);
 					}
 				})
 				[
 					SNew(STextBlock)
-					.Text(FText::FromString(EventName))
+					.Text(NSLOCTEXT("CortexConversion", "VerifyAfterSave", "Verify after save (build + convention check)"))
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
 				]
-			];
-		}
-	}
+			]
 
-	// ── Functions sub-section (checkboxes — multi select) ──
-	if (bHasFunctions)
+			// Widget Binding selection (widget BPs only)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 12)
+			[
+				Payload.bIsWidgetBlueprint
+					? BuildWidgetBindingsSection(Payload)
+					: SNullWidget::NullWidget
+			]
+
+			// Token estimate above the button (prominent, color-coded)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 10, 0, 2)
+			[
+				SAssignNew(ConvertButtonText, STextBlock)
+				.Text_Lambda([this]() -> FText
+				{
+					if (Context.IsValid() && Context->bTokenEstimateReady)
+					{
+						const int32 Est = EstimateTokensForScope(Context->SelectedScope);
+						if (Est > 0)
+						{
+							return FText::FromString(FormatTokenEstimate(Est));
+						}
+					}
+					return FText::GetEmpty();
+				})
+				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+				.ColorAndOpacity_Lambda([this]() -> FSlateColor
+				{
+					if (Context.IsValid() && Context->bTokenEstimateReady)
+					{
+						const int32 Est = EstimateTokensForScope(Context->SelectedScope);
+						if (Est > CortexTokenUtils::HardTokenLimit)
+						{
+							return FSlateColor(FLinearColor(0.9f, 0.2f, 0.2f)); // Red
+						}
+						if (Est > CortexTokenUtils::SoftTokenLimit)
+						{
+							return FSlateColor(FLinearColor(0.9f, 0.7f, 0.2f)); // Yellow
+						}
+					}
+					return FSlateColor(FLinearColor(0.5f, 0.5f, 0.55f)); // Gray
+				})
+			]
+
+			// Token budget warning message (visible only when over hard limit)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 4)
+			[
+				SAssignNew(TokenWarningText, STextBlock)
+				.Text(NSLOCTEXT("CortexConversion", "TokenHardLimit",
+					"Blueprint too large. Select a narrower scope or fewer functions."))
+				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+				.ColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.2f, 0.2f)))
+				.AutoWrapText(true)
+				.Visibility_Lambda([this]() -> EVisibility
+				{
+					if (Context.IsValid() && Context->bTokenEstimateReady)
+					{
+						const int32 Est = EstimateTokensForScope(Context->SelectedScope);
+						if (Est > CortexTokenUtils::HardTokenLimit)
+						{
+							return EVisibility::Visible;
+						}
+					}
+					return EVisibility::Collapsed;
+				})
+			]
+
+			// Convert button (disabled when over hard limit)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 0, 0, 0)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SAssignNew(ConvertButton, SButton)
+					.OnClicked(this, &SCortexConversionConfig::OnConvertButtonClicked)
+					.ContentPadding(FMargin(16.0f, 6.0f))
+					.IsEnabled_Lambda([this]() -> bool
+					{
+						if (Context.IsValid() && Context->bTokenEstimateReady)
+						{
+							return EstimateTokensForScope(Context->SelectedScope) <= CortexTokenUtils::HardTokenLimit;
+						}
+						return true; // Allow before estimate arrives
+					})
+					[
+						SNew(STextBlock)
+						.Text(NSLOCTEXT("CortexConversion", "Convert", "Convert to C++"))
+						.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+					]
+				]
+			]
+
+			// Info: token limits explanation
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0, 16, 0, 0)
+			[
+				SNew(STextBlock)
+				.Text(NSLOCTEXT("CortexConversion", "InfoBody",
+					"Token Limits\n"
+					"< 40k tokens \u2014 optimal range, best code quality\n"
+					"40k\u201380k tokens \u2014 may reduce output quality; consider narrower scope\n"
+					"> 80k tokens \u2014 exceeds usable context; conversion disabled\n\n"
+					"Token counts are estimated from the compact serialization. "
+					"Select specific events/functions or a single graph to reduce usage."))
+				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+				.ColorAndOpacity(FSlateColor(FLinearColor(0.4f, 0.4f, 0.45f)))
+				.AutoWrapText(true)
+			]
+		]
+	];
+
+	// Fire background token estimation
+	RequestTokenEstimate();
+
+	// Validate auto-derived class name on initial construction (I-5: don't wait for user edit)
+	if (ClassNameWarningText.IsValid())
 	{
-		// Visual separator
-		Box->AddSlot()
-		.AutoHeight()
-		.Padding(0, 8)
-		[
-			SNew(SSeparator)
-			.Thickness(1.0f)
-			.ColorAndOpacity(FLinearColor(0.3f, 0.3f, 0.3f, 0.5f))
-		];
+		FText Warning = GetClassNameWarningText();
+		ClassNameWarningText->SetText(Warning);
+		ClassNameWarningText->SetVisibility(Warning.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible);
+	}
+}
 
-		Box->AddSlot()
-		.AutoHeight()
-		.Padding(0, 0, 0, 4)
+TSharedRef<SWidget> SCortexConversionConfig::BuildTargetClassSection(const FCortexConversionPayload& Payload)
+{
+	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+
+	// Section header
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 0, 0, 6)
+	[
+		SNew(STextBlock)
+		.Text(NSLOCTEXT("CortexConversion", "TargetClassLabel", "Target Class"))
+		.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+	];
+
+	// Editable class name
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 2, 0, 2)
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(0, 0, 8, 0)
 		[
 			SNew(STextBlock)
-			.Text(NSLOCTEXT("CortexConversion", "FunctionsLabel", "Functions"))
-			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
-			.ColorAndOpacity(FSlateColor(FLinearColor(0.7f, 0.7f, 0.7f)))
-		];
+			.Text(NSLOCTEXT("CortexConversion", "ClassNameLabel", "Class Name:"))
+			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+		]
+		+ SHorizontalBox::Slot()
+		.FillWidth(1.0f)
+		[
+			SAssignNew(ClassNameTextBox, SEditableTextBox)
+			.Text_Lambda([this]() -> FText
+			{
+				return Context.IsValid() && Context->Document.IsValid()
+					? FText::FromString(Context->Document->ClassName)
+					: FText::GetEmpty();
+			})
+			.OnTextChanged(this, &SCortexConversionConfig::OnClassNameChanged)
+			.IsEnabled_Lambda([this]() -> bool
+			{
+				return Context.IsValid() && !Context->bConversionStarted;
+			})
+			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+		]
+	];
 
-		for (const FString& FuncName : Payload.FunctionNames)
+	// Warning text (prefix mismatch, collision, or invalid chars)
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 0, 0, 2)
+	[
+		SAssignNew(ClassNameWarningText, STextBlock)
+		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+		.ColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.7f, 0.2f)))
+		.AutoWrapText(true)
+		.Visibility(EVisibility::Collapsed)
+	];
+
+	// Read-only module name
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 2, 0, 0)
+	[
+		SNew(STextBlock)
+		.Text(FText::FromString(FString::Printf(TEXT("Module: %s"),
+			Context.IsValid() ? *Context->TargetModuleName : TEXT("Unknown"))))
+		.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+	];
+
+	// Read-only parent class name (with C++ prefix for consistency with prompt)
+	{
+		FString ParentDisplay = TEXT("Unknown");
+		if (Context.IsValid())
 		{
-			Box->AddSlot()
-			.AutoHeight()
-			.Padding(8, 2)
-			[
-				SNew(SCheckBox)
-				.IsChecked_Lambda([this, FuncName]()
-				{
-					return IsFunctionChecked(FuncName)
-						? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-				})
-				.OnCheckStateChanged_Lambda([this, FuncName](ECheckBoxState State)
-				{
-					OnFunctionToggled(FuncName, State == ECheckBoxState::Checked);
-				})
-				[
-					SNew(STextBlock)
-					.Text(FText::FromString(FuncName))
-				]
-			];
+			const TCHAR* Prefix = Context->Payload.bIsActorDescendant ? TEXT("A") : TEXT("U");
+			ParentDisplay = FString::Printf(TEXT("%s%s"), Prefix, *Context->Payload.ParentClassName);
+		}
+		Box->AddSlot()
+		.AutoHeight()
+		.Padding(0, 2, 0, 0)
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString(FString::Printf(TEXT("Parent: %s"), *ParentDisplay)))
+			.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+		];
+	}
+
+	return Box;
+}
+
+void SCortexConversionConfig::OnClassNameChanged(const FText& NewText)
+{
+	if (!Context.IsValid() || !Context->Document.IsValid())
+	{
+		return;
+	}
+
+	Context->Document->ClassName = NewText.ToString();
+	Context->bClassNameUserModified = true;
+
+	// Update cached warning text
+	if (ClassNameWarningText.IsValid())
+	{
+		FText Warning = GetClassNameWarningText();
+		ClassNameWarningText->SetText(Warning);
+		ClassNameWarningText->SetVisibility(Warning.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible);
+	}
+}
+
+FText SCortexConversionConfig::GetClassNameWarningText() const
+{
+	if (!Context.IsValid() || !Context->Document.IsValid())
+	{
+		return FText::GetEmpty();
+	}
+
+	const FString& Name = Context->Document->ClassName;
+	if (Name.IsEmpty())
+	{
+		return FText::GetEmpty();
+	}
+
+	// Validate C++ identifier (letters, digits, underscores only)
+	for (int32 i = 0; i < Name.Len(); ++i)
+	{
+		TCHAR Ch = Name[i];
+		if (!FChar::IsAlnum(Ch) && Ch != TEXT('_'))
+		{
+			return FText::FromString(
+				TEXT("Warning: Class name contains invalid characters. Use only letters, digits, and underscores."));
 		}
 	}
 
-	// Wrap in bordered section
-	return SNew(SBorder)
-		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
-		.BorderBackgroundColor(FLinearColor(0.12f, 0.12f, 0.14f, 1.0f))
-		.Padding(10.0f)
-		[
-			Box
-		];
-}
-
-bool SCortexConversionConfig::IsScopeSelected(ECortexConversionScope Scope) const
-{
-	if (!Context.IsValid()) return false;
-
-	// EventOrFunction scope: no scope radio is checked when only function checkboxes
-	// are ticked — the checked checkboxes themselves are the visual indicator.
-	// Only show the scope radio as selected when a single event radio is picked.
-	if (Scope == ECortexConversionScope::EventOrFunction)
+	// Validate UHT prefix
+	const bool bExpectA = Context->Payload.bIsActorDescendant && !Context->Payload.bIsWidgetBlueprint;
+	const TCHAR ExpectedPrefix = bExpectA ? TEXT('A') : TEXT('U');
+	if (Name[0] != ExpectedPrefix)
 	{
-		return Context->SelectedScope == ECortexConversionScope::EventOrFunction
-			&& !Context->TargetEventOrFunction.IsEmpty();
+		return FText::FromString(FString::Printf(
+			TEXT("Warning: Expected %c prefix for %s descendant. Current prefix '%c' may cause UHT issues."),
+			ExpectedPrefix,
+			bExpectA ? TEXT("Actor") : TEXT("UObject"),
+			Name[0]));
 	}
 
-	return Context->SelectedScope == Scope;
+	// Class name collision check
+	if (UClass::TryFindTypeSlow<UStruct>(*Name))
+	{
+		return FText::FromString(FString::Printf(
+			TEXT("Warning: A class named '%s' already exists. Consider a different name."), *Name));
+	}
+
+	return FText::GetEmpty();
 }
 
-bool SCortexConversionConfig::IsEventSelected(const FString& Name) const
+TSharedRef<SWidget> SCortexConversionConfig::BuildScopeAndTargetSection(const FCortexConversionPayload& Payload)
 {
-	return Context.IsValid()
-		&& Context->SelectedScope == ECortexConversionScope::EventOrFunction
-		&& Context->TargetEventOrFunction == Name;
+	return SAssignNew(ScopeSelector, SCortexScopeSelector)
+		.InitialScope(Context->SelectedScope)
+		.CurrentGraphName(Payload.CurrentGraphName)
+		.EventNames(Payload.EventNames)
+		.FunctionNames(Payload.FunctionNames)
+		.GraphNames(Payload.GraphNames)
+		.SelectedNodeCount(Payload.SelectedNodeIds.Num())
+		.OnScopeChanged_Lambda([this](ECortexConversionScope NewScope)
+		{
+			OnScopeChanged(NewScope);
+		})
+		.OnFunctionToggled_Lambda([this](const FString& Name, bool bChecked)
+		{
+			OnFunctionToggled(Name, bChecked);
+		});
 }
 
-bool SCortexConversionConfig::IsFunctionChecked(const FString& Name) const
+TSharedRef<SWidget> SCortexConversionConfig::BuildInstructionsSection()
 {
-	return Context.IsValid() && Context->SelectedFunctions.Contains(Name);
+	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+
+	// Section header
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 0, 0, 6)
+	[
+		SNew(STextBlock)
+		.Text(NSLOCTEXT("CortexConversion", "InstructionsLabel", "Conversion Instructions"))
+		.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+	];
+
+	// Performance Shell
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 2)
+	[
+		SNew(SCheckBox)
+		.Style(FAppStyle::Get(), "RadioButton")
+		.IsChecked_Lambda([this]()
+		{
+			return IsDepthSelected(ECortexConversionDepth::PerformanceShell)
+				? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		})
+		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+		{
+			if (State == ECheckBoxState::Checked) OnDepthChanged(ECortexConversionDepth::PerformanceShell);
+		})
+		[
+			SNew(STextBlock)
+			.Text(NSLOCTEXT("CortexConversion", "DepthPerfShell", "Performance Shell"))
+		]
+	];
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(18, 0, 0, 3)
+	[
+		SNew(STextBlock)
+		.Text(NSLOCTEXT("CortexConversion", "DepthPerfShellDesc", "Hot paths only \u2014 Tick, loops, heavy math"))
+		.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+	];
+
+	// C++ Core (default)
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 2)
+	[
+		SNew(SCheckBox)
+		.Style(FAppStyle::Get(), "RadioButton")
+		.IsChecked_Lambda([this]()
+		{
+			return IsDepthSelected(ECortexConversionDepth::CppCore)
+				? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		})
+		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+		{
+			if (State == ECheckBoxState::Checked) OnDepthChanged(ECortexConversionDepth::CppCore);
+		})
+		[
+			SNew(STextBlock)
+			.Text(NSLOCTEXT("CortexConversion", "DepthCppCore", "C++ Core (recommended)"))
+		]
+	];
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(18, 0, 0, 3)
+	[
+		SNew(STextBlock)
+		.Text(NSLOCTEXT("CortexConversion", "DepthCppCoreDesc", "All logic \u2014 thin Blueprint shell for cosmetics/tuning"))
+		.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+	];
+
+	// Full Extraction
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 2)
+	[
+		SNew(SCheckBox)
+		.Style(FAppStyle::Get(), "RadioButton")
+		.IsChecked_Lambda([this]()
+		{
+			return IsDepthSelected(ECortexConversionDepth::FullExtraction)
+				? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		})
+		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+		{
+			if (State == ECheckBoxState::Checked) OnDepthChanged(ECortexConversionDepth::FullExtraction);
+		})
+		[
+			SNew(STextBlock)
+			.Text(NSLOCTEXT("CortexConversion", "DepthFullExtract", "Full Extraction"))
+		]
+	];
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(18, 0, 0, 3)
+	[
+		SNew(STextBlock)
+		.Text(NSLOCTEXT("CortexConversion", "DepthFullExtractDesc", "Everything \u2014 self-contained C++ class, no BP hooks"))
+		.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+	];
+
+	// Custom Instructions
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 2)
+	[
+		SNew(SCheckBox)
+		.Style(FAppStyle::Get(), "RadioButton")
+		.IsChecked_Lambda([this]()
+		{
+			return IsDepthSelected(ECortexConversionDepth::Custom)
+				? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		})
+		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+		{
+			if (State == ECheckBoxState::Checked) OnDepthChanged(ECortexConversionDepth::Custom);
+		})
+		[
+			SNew(STextBlock)
+			.Text(NSLOCTEXT("CortexConversion", "DepthCustom", "Custom Instructions"))
+		]
+	];
+
+	// Text field — visible only when Custom is selected
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(18, 2, 0, 3)
+	.HAlign(HAlign_Left)
+	[
+		SNew(SBox)
+		.WidthOverride(420.0f)
+		.MinDesiredHeight(90.0f)
+		[
+			SAssignNew(CustomInstructionsBox, SMultiLineEditableTextBox)
+			.Text_Lambda([this]() -> FText
+			{
+				return Context.IsValid() ? FText::FromString(Context->CustomInstructions) : FText::GetEmpty();
+			})
+			.OnTextChanged_Lambda([this](const FText& NewText)
+			{
+				if (Context.IsValid()) Context->CustomInstructions = NewText.ToString();
+			})
+			.HintText(NSLOCTEXT("CortexConversion", "CustomHint", "Describe how to convert this Blueprint..."))
+			.AutoWrapText(true)
+		]
+	];
+
+	// Set initial visibility (collapsed until Custom depth is selected)
+	UpdateCustomInstructionsVisibility();
+
+	return Box;
 }
 
 void SCortexConversionConfig::OnScopeChanged(ECortexConversionScope NewScope)
@@ -479,20 +614,10 @@ void SCortexConversionConfig::OnScopeChanged(ECortexConversionScope NewScope)
 	if (Context.IsValid())
 	{
 		Context->SelectedScope = NewScope;
-		Context->TargetEventOrFunction.Empty();
 		Context->SelectedFunctions.Empty();
 		Context->SelectedDepth = DefaultDepthForScope(NewScope);
 	}
-}
-
-void SCortexConversionConfig::OnEventSelected(const FString& Name)
-{
-	if (Context.IsValid())
-	{
-		Context->SelectedScope = ECortexConversionScope::EventOrFunction;
-		Context->TargetEventOrFunction = Name;
-		Context->SelectedFunctions.Empty();
-	}
+	RequestTokenEstimate();
 }
 
 void SCortexConversionConfig::OnFunctionToggled(const FString& Name, bool bChecked)
@@ -508,16 +633,13 @@ void SCortexConversionConfig::OnFunctionToggled(const FString& Name, bool bCheck
 		Context->SelectedFunctions.Remove(Name);
 	}
 
-	// If any functions are checked, switch to EventOrFunction scope and clear event selection
+	// Keep scope in sync
 	if (Context->SelectedFunctions.Num() > 0)
 	{
 		Context->SelectedScope = ECortexConversionScope::EventOrFunction;
-		Context->TargetEventOrFunction.Empty();
 	}
-	else if (Context->SelectedScope == ECortexConversionScope::EventOrFunction
-		&& Context->TargetEventOrFunction.IsEmpty())
+	else if (Context->SelectedScope == ECortexConversionScope::EventOrFunction)
 	{
-		// No functions and no event selected — fall back to EntireBlueprint
 		Context->SelectedScope = ECortexConversionScope::EntireBlueprint;
 	}
 }
@@ -533,12 +655,20 @@ void SCortexConversionConfig::OnDepthChanged(ECortexConversionDepth NewDepth)
 	{
 		Context->SelectedDepth = NewDepth;
 	}
+	UpdateCustomInstructionsVisibility();
+}
+
+void SCortexConversionConfig::UpdateCustomInstructionsVisibility()
+{
+	if (CustomInstructionsBox.IsValid() && Context.IsValid())
+	{
+		const bool bVisible = Context->SelectedDepth == ECortexConversionDepth::Custom;
+		CustomInstructionsBox->SetVisibility(bVisible ? EVisibility::Visible : EVisibility::Collapsed);
+	}
 }
 
 ECortexConversionDepth SCortexConversionConfig::DefaultDepthForScope(ECortexConversionScope Scope) const
 {
-	// All scopes use CppCore as default per spec. Scope parameter reserved for future
-	// differentiation (e.g., SelectedNodes could default to PerformanceShell).
 	(void)Scope;
 	return ECortexConversionDepth::CppCore;
 }
@@ -552,10 +682,9 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildDestinationSection(const FCort
 
 	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
 
-	// Section header
 	Box->AddSlot()
 	.AutoHeight()
-	.Padding(0, 0, 0, 8)
+	.Padding(0, 0, 0, 6)
 	[
 		SNew(STextBlock)
 		.Text(NSLOCTEXT("CortexConversion", "DestLabel", "Destination"))
@@ -570,7 +699,7 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildDestinationSection(const FCort
 			Payload.DetectedProjectAncestors.Num());
 	Box->AddSlot()
 	.AutoHeight()
-	.Padding(0, 0, 0, 8)
+	.Padding(0, 0, 0, 6)
 	[
 		SNew(STextBlock)
 		.Text(FText::FromString(InfoText))
@@ -596,10 +725,7 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildDestinationSection(const FCort
 				})
 				.OnCheckStateChanged_Lambda([this, i](ECheckBoxState State)
 				{
-					if (State == ECheckBoxState::Checked)
-					{
-						OnTargetAncestorSelected(i);
-					}
+					if (State == ECheckBoxState::Checked) OnTargetAncestorSelected(i);
 				})
 				[
 					SNew(STextBlock)
@@ -610,7 +736,6 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildDestinationSection(const FCort
 		}
 	}
 
-	// Create new class option
 	Box->AddSlot()
 	.AutoHeight()
 	.Padding(0, 4)
@@ -624,10 +749,7 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildDestinationSection(const FCort
 		})
 		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
 		{
-			if (State == ECheckBoxState::Checked)
-			{
-				OnDestinationChanged(ECortexConversionDestination::CreateNewClass);
-			}
+			if (State == ECheckBoxState::Checked) OnDestinationChanged(ECortexConversionDestination::CreateNewClass);
 		})
 		[
 			SNew(STextBlock)
@@ -635,7 +757,6 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildDestinationSection(const FCort
 		]
 	];
 
-	// Inject into existing option
 	FString DefaultAncestorName = FirstAncestor.ClassName;
 	Box->AddSlot()
 	.AutoHeight()
@@ -650,10 +771,7 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildDestinationSection(const FCort
 		})
 		.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
 		{
-			if (State == ECheckBoxState::Checked)
-			{
-				OnDestinationChanged(ECortexConversionDestination::InjectIntoExisting);
-			}
+			if (State == ECheckBoxState::Checked) OnDestinationChanged(ECortexConversionDestination::InjectIntoExisting);
 		})
 		[
 			SNew(STextBlock)
@@ -680,13 +798,7 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildDestinationSection(const FCort
 		];
 	}
 
-	return SNew(SBorder)
-		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
-		.BorderBackgroundColor(FLinearColor(0.15f, 0.25f, 0.15f, 1.0f))
-		.Padding(8.0f)
-		[
-			Box
-		];
+	return Box;
 }
 
 bool SCortexConversionConfig::IsDestinationSelected(ECortexConversionDestination Dest) const
@@ -756,6 +868,14 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildWarningBars(const FCortexConve
 		];
 	};
 
+	if (Payload.bIsWidgetBlueprint)
+	{
+		AddWarning(NSLOCTEXT("CortexConversion", "WarnWidgetBP",
+			"Widget Blueprint detected. C++ will use BindWidget pattern \u2014 widget tree stays in UMG designer. "
+			"Logic moves to NativeConstruct/NativeDestruct overrides."),
+			FLinearColor(0.4f, 0.7f, 1.0f));
+	}
+
 	if (Payload.EventNames.Num() == 0 && Payload.FunctionNames.Num() == 0
 		&& Payload.GraphNames.Num() <= 1)
 	{
@@ -772,3 +892,204 @@ TSharedRef<SWidget> SCortexConversionConfig::BuildWarningBars(const FCortexConve
 
 	return Box;
 }
+
+TSharedRef<SWidget> SCortexConversionConfig::BuildWidgetBindingsSection(
+	const FCortexConversionPayload& Payload)
+{
+	if (Payload.WidgetVariableNames.IsEmpty())
+	{
+		return SNullWidget::NullWidget;
+	}
+
+	TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+
+	// Section header
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 0, 0, 6)
+	[
+		SNew(STextBlock)
+		.Text(NSLOCTEXT("CortexConversion", "WidgetBindingsLabel", "Widget Bindings (BindWidget)"))
+		.Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+	];
+
+	Box->AddSlot()
+	.AutoHeight()
+	.Padding(0, 0, 0, 6)
+	[
+		SNew(STextBlock)
+		.Text(NSLOCTEXT("CortexConversion", "WidgetBindingsDesc",
+			"Select which designer widgets should get BindWidget properties in C++. "
+			"Widgets used in Blueprint logic are auto-selected."))
+		.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+		.AutoWrapText(true)
+	];
+
+	SAssignNew(WidgetBindingsChecklist, SVerticalBox);
+
+	for (const FString& WidgetName : Payload.WidgetVariableNames)
+	{
+		const bool bUsedInLogic = Payload.LogicReferencedWidgets.Contains(WidgetName);
+		const bool bChecked = Context.IsValid() && Context->SelectedWidgetBindings.Contains(WidgetName);
+
+		WidgetBindingsChecklist->AddSlot()
+		.AutoHeight()
+		.Padding(8, 2)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				SNew(SCheckBox)
+				.IsChecked(bChecked ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+				.OnCheckStateChanged_Lambda([this, WidgetName](ECheckBoxState State)
+				{
+					OnWidgetBindingToggled(WidgetName, State == ECheckBoxState::Checked);
+				})
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(WidgetName))
+				]
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(6, 0, 0, 0)
+			[
+				SNew(STextBlock)
+				.Text(bUsedInLogic
+					? NSLOCTEXT("CortexConversion", "UsedInLogic", "(used in logic)")
+					: FText::GetEmpty())
+				.ColorAndOpacity(FSlateColor(FLinearColor(0.3f, 0.8f, 0.3f)))
+				.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
+			]
+		];
+	}
+
+	Box->AddSlot()
+	.AutoHeight()
+	[
+		WidgetBindingsChecklist.ToSharedRef()
+	];
+
+	return Box;
+}
+
+void SCortexConversionConfig::OnWidgetBindingToggled(const FString& Name, bool bChecked)
+{
+	if (!Context.IsValid()) return;
+
+	if (bChecked)
+	{
+		Context->SelectedWidgetBindings.AddUnique(Name);
+	}
+	else
+	{
+		Context->SelectedWidgetBindings.Remove(Name);
+	}
+}
+
+void SCortexConversionConfig::RequestTokenEstimate()
+{
+	if (!Context.IsValid())
+	{
+		return;
+	}
+
+	// Fire a background EntireBlueprint serialization just to measure token count
+	FCortexSerializationRequest Request;
+	Request.BlueprintPath = Context->Payload.BlueprintPath;
+	Request.Scope = ECortexConversionScope::EntireBlueprint;
+	Request.bConversionMode = true;
+
+	FCortexCoreModule& Core = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	TWeakPtr<FCortexConversionContext> WeakContext = Context;
+	TWeakPtr<SCortexScopeSelector> WeakSelector = ScopeSelector;
+
+	Core.RequestSerialization(Request,
+		FOnSerializationComplete::CreateLambda(
+			[WeakContext, WeakSelector](const FCortexSerializationResult& SerResult)
+			{
+				if (!SerResult.bSuccess)
+				{
+					return;
+				}
+
+				TSharedPtr<FCortexConversionContext> Ctx = WeakContext.Pin();
+				if (!Ctx.IsValid())
+				{
+					return;
+				}
+
+				Ctx->EstimatedTotalTokens = SerResult.JsonPayload.Len() / 4;
+				Ctx->bTokenEstimateReady = true;
+
+				UE_LOG(LogCortexFrontend, Log, TEXT("Token estimate ready: ~%d tokens for EntireBlueprint"),
+					Ctx->EstimatedTotalTokens);
+
+				TSharedPtr<SCortexScopeSelector> Selector = WeakSelector.Pin();
+				if (Selector.IsValid())
+				{
+					Selector->SetTokenEstimates(Ctx->EstimatedTotalTokens, Ctx->PerFunctionTokens);
+				}
+			}));
+
+	// Fire per-function/event serializations for individual token estimates
+	TArray<FString> AllFunctions;
+	AllFunctions.Append(Context->Payload.EventNames);
+	AllFunctions.Append(Context->Payload.FunctionNames);
+
+	for (const FString& FuncName : AllFunctions)
+	{
+		FCortexSerializationRequest FuncRequest;
+		FuncRequest.BlueprintPath = Context->Payload.BlueprintPath;
+		FuncRequest.Scope = ECortexConversionScope::EventOrFunction;
+		FuncRequest.TargetGraphNames.Add(FuncName);
+		FuncRequest.bConversionMode = true;
+
+		Core.RequestSerialization(FuncRequest,
+			FOnSerializationComplete::CreateLambda(
+				[WeakContext, WeakSelector, FuncName](const FCortexSerializationResult& SerResult)
+				{
+					if (!SerResult.bSuccess)
+					{
+						return;
+					}
+					TSharedPtr<FCortexConversionContext> Ctx = WeakContext.Pin();
+					if (Ctx.IsValid())
+					{
+						Ctx->PerFunctionTokens.Add(FuncName, SerResult.JsonPayload.Len() / 4);
+
+						TSharedPtr<SCortexScopeSelector> Selector = WeakSelector.Pin();
+						if (Selector.IsValid())
+						{
+							Selector->SetTokenEstimates(Ctx->EstimatedTotalTokens, Ctx->PerFunctionTokens);
+						}
+					}
+				}));
+	}
+}
+
+int32 SCortexConversionConfig::EstimateTokensForScope(ECortexConversionScope Scope) const
+{
+	if (!Context.IsValid() || !Context->bTokenEstimateReady || Context->EstimatedTotalTokens == 0)
+	{
+		return 0;
+	}
+	const FCortexConversionPayload& P = Context->Payload;
+	return CortexTokenUtils::EstimateTokensForScope(
+		Scope,
+		Context->EstimatedTotalTokens,
+		P.GraphNames.Num(),
+		P.TotalNodeCount,
+		P.SelectedNodeIds.Num(),
+		Context->SelectedFunctions,
+		Context->PerFunctionTokens,
+		P.EventNames.Num() + P.FunctionNames.Num());
+}
+
+FString SCortexConversionConfig::FormatTokenEstimate(int32 Tokens) const
+{
+	return CortexTokenUtils::FormatTokenEstimate(Tokens);
+}
+

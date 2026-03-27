@@ -2,207 +2,167 @@
 
 #include "CortexFrontendModule.h"
 #include "Framework/Docking/TabManager.h"
-#include "Misc/ConfigCacheIni.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "Widgets/Layout/SSplitter.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/SCortexChatPanel.h"
-#include "Widgets/SCortexConversionTab.h"
-#include "Widgets/SCortexQATab.h"
-#include "Widgets/SCortexSidebar.h"
 #include "Session/CortexCliSession.h"
 
 void SCortexWorkbench::Construct(const FArguments& InArgs)
 {
 	SessionWeak = InArgs._Session;
+	OwnerTabWeak = InArgs._OwnerTab;
 
-	// Read sidebar coefficient from config
-	float SidebarCoeff = 0.20f;
-	GConfig->GetFloat(TEXT("CortexFrontend"), TEXT("SidebarSizeCoefficient"), SidebarCoeff, GEditorPerProjectIni);
-	CachedSidebarCoefficient = FMath::Clamp(SidebarCoeff, 0.10f, 0.50f);
+	// Start in single-chat mode: no tab bar, just the chat panel directly
+	ChildSlot
+	[
+		SAssignNew(ContentContainer, SBox)
+		[
+			SNew(SCortexChatPanel)
+			.Session(SessionWeak)
+			.OnNewChatTab(FSimpleDelegate::CreateSP(
+				this, &SCortexWorkbench::SpawnNewChatTab))
+		]
+	];
+}
 
-	// Read collapsed state from config
-	bool bStoredCollapsed = false;
-	GConfig->GetBool(TEXT("CortexFrontend"), TEXT("SidebarCollapsed"), bStoredCollapsed, GEditorPerProjectIni);
-	bSidebarCollapsed = bStoredCollapsed;
+SCortexWorkbench::~SCortexWorkbench()
+{
+	// Clean up additional chat tab sessions
+	TArray<FName> ChatTabIds;
+	ChatSessions.GetKeys(ChatTabIds);
+	for (const FName& TabId : ChatTabIds)
+	{
+		CleanupChatTab(TabId);
+	}
 
-	// Create local tab manager
-	check(InArgs._OwnerTab.IsValid());
-	TabManager = FGlobalTabmanager::Get()->NewTabManager(InArgs._OwnerTab.ToSharedRef());
+	if (TabManager.IsValid())
+	{
+		// Unregister spawner BEFORE closing — CloseAllAreas can fire the spawner callback
+		// which holds a TSharedRef<SCortexWorkbench> via CreateSP. Unregistering first
+		// prevents the callback from accessing a widget that's being destructed.
+		TabManager->UnregisterTabSpawner(TEXT("CortexChat"));
+		TabManager->CloseAllAreas();
+	}
+}
 
-	// Register chat tab spawner
+void SCortexWorkbench::SwitchToMultiTabMode()
+{
+	TSharedPtr<SDockTab> OwnerTab = OwnerTabWeak.Pin();
+	if (!OwnerTab.IsValid())
+	{
+		return;
+	}
+
+	// Create tab manager
+	TabManager = FGlobalTabmanager::Get()->NewTabManager(OwnerTab.ToSharedRef());
+
 	TabManager->RegisterTabSpawner(
 		FName(TEXT("CortexChat")),
 		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnChatTab))
 		.SetDisplayName(FText::FromString(TEXT("Chat")));
 
-	// Register QA tab spawner
-	TabManager->RegisterTabSpawner(
-		FName(TEXT("CortexQA")),
-		FOnSpawnTab::CreateSP(this, &SCortexWorkbench::SpawnQATab))
-		.SetDisplayName(FText::FromString(TEXT("QA")));
+	// Define layout — the spawner creates the initial "Chat" tab
+	TSharedRef<FTabManager::FStack> Stack = FTabManager::NewStack();
+	Stack->AddTab(FName(TEXT("CortexChat")), ETabState::OpenedTab);
 
-	// Define layout
-	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("CortexFrontendLayout_v1.1")
+	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("CortexChatLayout_v2.0")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
-			->Split
-			(
-				FTabManager::NewStack()
-				->AddTab(FName(TEXT("CortexChat")), ETabState::OpenedTab)
-				->AddTab(FName(TEXT("CortexQA")), ETabState::ClosedTab)
-			)
+			->Split(Stack)
 		);
 
 	TSharedPtr<SWidget> TabContents = TabManager->RestoreFrom(Layout, TSharedPtr<SWindow>());
 
-	ChildSlot
-	[
-		SNew(SSplitter)
-		.Orientation(EOrientation::Orient_Horizontal)
-		+ SSplitter::Slot()
-		.Value(TAttribute<float>(this, &SCortexWorkbench::GetSidebarSlotValue))
-		.MinSize(0.0f)
-		[
-			SAssignNew(SidebarBox, SBox)
-			[
-				SAssignNew(Sidebar, SCortexSidebar)
-				.Session(SessionWeak)
-				.OnCollapse(FOnCortexSidebarToggle::CreateSP(this, &SCortexWorkbench::OnSidebarToggle))
-			]
-		]
-		+ SSplitter::Slot()
-		.Value(1.0f - CachedSidebarCoefficient)
-		[
-			TabContents.IsValid() ? TabContents.ToSharedRef() : SNullWidget::NullWidget
-		]
-	];
-
-	// Apply initial collapsed icon state now that Sidebar widget is constructed
-	if (bSidebarCollapsed && Sidebar.IsValid())
+	// Swap the content container from single-chat to tabbed mode
+	if (ContentContainer.IsValid() && TabContents.IsValid())
 	{
-		Sidebar->SetCollapsed(true);
+		ContentContainer->SetContent(TabContents.ToSharedRef());
 	}
 }
 
-SCortexWorkbench::~SCortexWorkbench()
+TSharedRef<SDockTab> SCortexWorkbench::SpawnChatTab(const FSpawnTabArgs& /*Args*/)
 {
-	// Clean up all conversion tab contexts (sessions)
-	TArray<FName> TabIds;
-	ConversionContexts.GetKeys(TabIds);
-	for (const FName& TabId : TabIds)
-	{
-		CleanupConversionTab(TabId);
-	}
+	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
+		.TabRole(ETabRole::DocumentTab);
 
-	if (TabManager.IsValid())
-	{
-		TabManager->CloseAllAreas();
-		TabManager->UnregisterTabSpawner(TEXT("CortexChat"));
-		TabManager->UnregisterTabSpawner(TEXT("CortexQA"));
-	}
+	DockTab->SetContent(
+		SNew(SCortexChatPanel)
+		.Session(SessionWeak)
+		.OnNewChatTab(FSimpleDelegate::CreateSP(
+			this, &SCortexWorkbench::SpawnNewChatTab))
+	);
+
+	return DockTab;
 }
 
-void SCortexWorkbench::SpawnConversionTab(const FCortexConversionPayload& Payload)
+TSharedRef<SDockTab> SCortexWorkbench::BuildChatTab(
+	TSharedPtr<FCortexCliSession> Session,
+	const FString& Label,
+	FName TabId)
 {
+	TSharedRef<SDockTab> Tab = SNew(SDockTab)
+		.TabRole(ETabRole::DocumentTab)
+		.Label(FText::FromString(Label))
+		.OnTabClosed_Lambda([this, TabId](TSharedRef<SDockTab>)
+		{
+			CleanupChatTab(TabId);
+		})
+		[
+			SNew(SCortexChatPanel)
+			.Session(Session)
+			.OnNewChatTab(FSimpleDelegate::CreateSP(
+				this, &SCortexWorkbench::SpawnNewChatTab))
+		];
+	return Tab;
+}
+
+void SCortexWorkbench::SpawnNewChatTab()
+{
+	// First new chat: switch from single-chat to multi-tab mode
+	if (!TabManager.IsValid())
+	{
+		SwitchToMultiTabMode();
+	}
+
 	if (!TabManager.IsValid())
 	{
 		return;
 	}
 
-	TSharedPtr<FCortexConversionContext> Context = MakeShared<FCortexConversionContext>(Payload);
-	ConversionContexts.Add(Context->TabId, Context);
+	ChatTabCounter++;
+	const FName TabId = FName(*FString::Printf(TEXT("CortexChat_%d"), ChatTabCounter));
+	const FString Label = FString::Printf(TEXT("Chat %d"), ChatTabCounter);
 
-	// Warn at 10+ tabs
-	if (ConversionContexts.Num() >= 10)
-	{
-		UE_LOG(LogCortexFrontend, Warning,
-			TEXT("10+ conversion tabs open — consider closing unused tabs"));
-	}
+	// Create new session using shared config factory
+	TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(
+		FCortexFrontendModule::CreateDefaultSessionConfig());
+	ChatSessions.Add(TabId, Session);
 
-	FName TabId = Context->TabId;
+	// Register with module for PreExit cleanup
+	FCortexFrontendModule& FrontendModule =
+		FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+	FrontendModule.RegisterSession(Session);
 
-	// Create the tab directly (unmanaged) and dock it next to the chat tab
-	TSharedRef<SDockTab> Tab = SNew(SDockTab)
-		.TabRole(ETabRole::DocumentTab)
-		.Label(FText::FromString(
-			FString::Printf(TEXT("%s — Convert"), *Payload.BlueprintName)))
-		.OnTabClosed_Lambda([this, TabId](TSharedRef<SDockTab>)
-		{
-			CleanupConversionTab(TabId);
-		})
-		[
-			SNew(SCortexConversionTab)
-			.Context(Context)
-		];
+	TSharedRef<SDockTab> Tab = BuildChatTab(Session, Label, TabId);
 
-	// Insert as document tab next to the CortexChat tab
 	TabManager->InsertNewDocumentTab(
 		FName(TEXT("CortexChat")),
 		FTabManager::ESearchPreference::PreferLiveTab,
 		Tab);
 }
 
-void SCortexWorkbench::CleanupConversionTab(FName TabId)
+void SCortexWorkbench::CleanupChatTab(FName TabId)
 {
-	TSharedPtr<FCortexConversionContext>* FoundContext = ConversionContexts.Find(TabId);
-	if (FoundContext && FoundContext->IsValid())
+	TSharedPtr<FCortexCliSession>* FoundSession = ChatSessions.Find(TabId);
+	if (FoundSession && FoundSession->IsValid())
 	{
-		// Shut down the tab's CLI session
-		if ((*FoundContext)->Session.IsValid())
-		{
-			(*FoundContext)->Session->Shutdown();
+		(*FoundSession)->Shutdown();
 
-			FCortexFrontendModule& FrontendModule =
-				FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
-			FrontendModule.UnregisterSession((*FoundContext)->Session);
-		}
+		FCortexFrontendModule& FrontendModule =
+			FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+		FrontendModule.UnregisterSession(*FoundSession);
 	}
-
-	ConversionContexts.Remove(TabId);
-}
-
-void SCortexWorkbench::OnSidebarToggle()
-{
-	bSidebarCollapsed = !bSidebarCollapsed;
-
-	if (Sidebar.IsValid())
-	{
-		Sidebar->SetCollapsed(bSidebarCollapsed);
-	}
-
-	GConfig->SetBool(TEXT("CortexFrontend"), TEXT("SidebarCollapsed"), bSidebarCollapsed, GEditorPerProjectIni);
-	GConfig->SetFloat(TEXT("CortexFrontend"), TEXT("SidebarSizeCoefficient"), CachedSidebarCoefficient, GEditorPerProjectIni);
-	GConfig->Flush(false, GEditorPerProjectIni);
-}
-
-float SCortexWorkbench::GetSidebarSlotValue() const
-{
-	return bSidebarCollapsed ? 0.02f : CachedSidebarCoefficient;
-}
-
-TSharedRef<SDockTab> SCortexWorkbench::SpawnChatTab(const FSpawnTabArgs& /*Args*/)
-{
-	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
-		.TabRole(ETabRole::PanelTab);
-
-	DockTab->SetContent(
-		SNew(SCortexChatPanel)
-		.Session(SessionWeak)
-	);
-
-	return DockTab;
-}
-
-TSharedRef<SDockTab> SCortexWorkbench::SpawnQATab(const FSpawnTabArgs& /*Args*/)
-{
-	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
-		.TabRole(ETabRole::PanelTab);
-
-	DockTab->SetContent(
-		SNew(SCortexQATab)
-	);
-
-	return DockTab;
+	ChatSessions.Remove(TabId);
 }
