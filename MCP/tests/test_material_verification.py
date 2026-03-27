@@ -27,7 +27,7 @@ def test_verification_inconclusive_when_nodes_empty_but_spec_has_nodes():
     result = verify_material(spec, readback)
     # Should NOT be verified=False when readback is empty (timing race)
     # Should be verified=None (inconclusive)
-    assert result.verified is not False, (
+    assert result.verified is None, (
         f"Verification should be inconclusive (None) when readback is empty, "
         f"got verified={result.verified}"
     )

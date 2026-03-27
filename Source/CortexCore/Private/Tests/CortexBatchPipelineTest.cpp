@@ -1194,8 +1194,6 @@ bool FCortexBatchQueryRecursionGuardTest::RunTest(const FString& Parameters)
 	// The simplest check: result either fails OR the inner sub-command reports an error.
 	// Since stop_on_error defaults vary, just verify the system doesn't crash and
 	// the router handles it gracefully (no infinite recursion).
-	TestTrue(TEXT("Router should handle nested batch_query without crashing"), true /* system didn't crash */);
-
 	// More precise check: if the result has data, the sub-result for batch_query should be an error
 	if (Result.Data.IsValid())
 	{
