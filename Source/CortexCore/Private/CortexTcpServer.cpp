@@ -95,7 +95,7 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 		if (Listener->IsActive())
 		{
 			bRunning = true;
-			int32 BoundPort = Port;
+			BoundPort = Port;
 			if (FSocket* ListenSocket = Listener->GetSocket())
 			{
 				TSharedRef<FInternetAddr> LocalAddress =
@@ -174,6 +174,7 @@ void FCortexTcpServer::Stop()
 	}
 
 	bRunning = false;
+	BoundPort = 0;
 
 	if (!PortFilePath.IsEmpty())
 	{
@@ -210,6 +211,16 @@ void FCortexTcpServer::Stop()
 void FCortexTcpServer::SetClientDisconnectCallback(FClientDisconnectCallback Callback)
 {
 	ClientDisconnectCallback = MoveTemp(Callback);
+}
+
+int32 FCortexTcpServer::GetBoundPort() const
+{
+	return BoundPort;
+}
+
+int32 FCortexTcpServer::GetClientCount() const
+{
+	return ClientSockets.Num();
 }
 
 bool FCortexTcpServer::IsRunning() const
