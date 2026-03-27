@@ -109,5 +109,9 @@ TArray<FCortexCommandInfo> FCortexCoreCommandHandler::GetSupportedCommands() con
 			.Optional(TEXT("recursive"), TEXT("boolean"), TEXT("Delete assets in subfolders as well")),
 		FCortexCommandInfo{ TEXT("shutdown"), TEXT("Gracefully shut down the editor") }
 			.Optional(TEXT("force"), TEXT("boolean"), TEXT("Discard dirty packages before exit")),
+		FCortexCommandInfo{ TEXT("batch_query"), TEXT("Alias for batch — execute multiple commands in a single transaction") }
+			.Required(TEXT("commands"), TEXT("array"), TEXT("Array of command objects (or use 'steps' key)"))
+			.Optional(TEXT("steps"), TEXT("array"), TEXT("Alias for commands array"))
+			.Optional(TEXT("stop_on_error"), TEXT("boolean"), TEXT("Stop processing on first failure")),
 	};
 }
