@@ -237,13 +237,13 @@ class TestDoRestartEditor:
     def test_returns_error_dict_when_project_dir_not_set(self):
         conn = MagicMock(spec=UEConnection)
 
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("CORTEX_PROJECT_DIR", None)
+        # resolve_project_dir() has multiple fallbacks (CLAUDE_PROJECT_DIR, walk-up).
+        # Mock it to return None to simulate a fully unresolvable project directory.
+        with patch("composites.resolve_project_dir", return_value=None):
             result = do_restart_editor(conn, timeout=10)
 
         assert isinstance(result, dict)
         assert "error" in result
-        assert "CORTEX_PROJECT_DIR" in result["error"]
 
     def test_returns_error_dict_when_project_path_unknown(self, tmp_path):
         conn = MagicMock(spec=UEConnection)

@@ -715,6 +715,63 @@ bool FCortexMaterialConnectExprToExprTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// ── connect and disconnect: target_input must be type "string" not "object" ──
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialConnectSchemaTest,
+	"Cortex.Material.Graph.ConnectTargetInputIsString",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialConnectSchemaTest::RunTest(const FString& Parameters)
+{
+	FCortexMaterialCommandHandler Handler;
+	TArray<FCortexCommandInfo> Commands = Handler.GetSupportedCommands();
+
+	const FCortexCommandInfo* ConnectCmd = nullptr;
+	const FCortexCommandInfo* DisconnectCmd = nullptr;
+	for (const FCortexCommandInfo& Cmd : Commands)
+	{
+		if (Cmd.Name == TEXT("connect")) ConnectCmd = &Cmd;
+		if (Cmd.Name == TEXT("disconnect")) DisconnectCmd = &Cmd;
+	}
+
+	TestNotNull(TEXT("connect command should exist"), ConnectCmd);
+	TestNotNull(TEXT("disconnect command should exist"), DisconnectCmd);
+
+	if (ConnectCmd)
+	{
+		const FCortexParamInfo* TargetInput = nullptr;
+		for (const FCortexParamInfo& P : ConnectCmd->Params)
+		{
+			if (P.Name == TEXT("target_input")) { TargetInput = &P; break; }
+		}
+		TestNotNull(TEXT("connect.target_input param should exist"), TargetInput);
+		if (TargetInput)
+		{
+			TestEqual(TEXT("connect.target_input should be string type"),
+				TargetInput->Type, FString(TEXT("string")));
+		}
+	}
+
+	if (DisconnectCmd)
+	{
+		const FCortexParamInfo* TargetInput = nullptr;
+		for (const FCortexParamInfo& P : DisconnectCmd->Params)
+		{
+			if (P.Name == TEXT("target_input")) { TargetInput = &P; break; }
+		}
+		TestNotNull(TEXT("disconnect.target_input param should exist"), TargetInput);
+		if (TargetInput)
+		{
+			TestEqual(TEXT("disconnect.target_input should be string type"),
+				TargetInput->Type, FString(TEXT("string")));
+		}
+	}
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexMaterialConnectStringOutputTest,
 	"Cortex.Material.Graph.Connect.StringSourceOutput",

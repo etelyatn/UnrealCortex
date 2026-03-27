@@ -161,7 +161,7 @@ FCortexCommandResult FCortexCommandRouter::Execute(
 	{
 		return HandleGetCapabilities(Params);
 	}
-	if (Command == TEXT("batch"))
+	if (Command == TEXT("batch") || Command == TEXT("batch_query"))
 	{
 		return HandleBatch(Params);
 	}
@@ -647,9 +647,18 @@ bool FCortexCommandRouter::ParseAndResolveRef(
 FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObject>& Params)
 {
 	const TArray<TSharedPtr<FJsonValue>>* CommandsArray = nullptr;
-	if (!Params.IsValid() || !Params->TryGetArrayField(TEXT("commands"), CommandsArray) || CommandsArray == nullptr)
+	// Accept both "commands" and "steps" as the array key
+	if (Params.IsValid())
 	{
-		return Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: commands (array)"));
+		Params->TryGetArrayField(TEXT("commands"), CommandsArray);
+		if (CommandsArray == nullptr)
+		{
+			Params->TryGetArrayField(TEXT("steps"), CommandsArray);
+		}
+	}
+	if (!Params.IsValid() || CommandsArray == nullptr)
+	{
+		return Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: commands or steps (array)"));
 	}
 
 	if (CommandsArray->Num() > MaxBatchSize)
@@ -704,7 +713,7 @@ FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObj
 		EntryResult->SetStringField(TEXT("command"), SubCommand);
 
 		// Block nested batch
-		if (SubCommand == TEXT("batch"))
+		if (SubCommand == TEXT("batch") || SubCommand == TEXT("batch_query"))
 		{
 			EntryResult->SetBoolField(TEXT("success"), false);
 			EntryResult->SetStringField(TEXT("error_code"), CortexErrorCodes::BatchRecursionBlocked);

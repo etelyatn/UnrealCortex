@@ -3,6 +3,7 @@
 #include "CortexCommandRouter.h"
 #include "Framework/Application/SlateApplication.h"
 #include "LevelEditor.h"
+#include "Editor.h"
 #include "IAssetViewport.h"
 #include "EditorViewportClient.h"
 #include "RenderingThread.h"
@@ -16,6 +17,7 @@
 #include "Misc/EngineVersionComparison.h"
 #include "HAL/FileManager.h"
 #include "GameFramework/Actor.h"
+#include "EngineUtils.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
@@ -264,12 +266,28 @@ FCortexCommandResult FCortexEditorViewportOps::FocusActor(const TSharedPtr<FJson
 		return FCortexCommandRouter::Error(CortexErrorCodes::ViewportNotFound, TEXT("No active editor viewport found"));
 	}
 
+	// Try full object path first, then fall back to actor label search
 	AActor* Actor = FindObject<AActor>(nullptr, *ActorPath);
+	if (Actor == nullptr)
+	{
+		UWorld* EditorWorld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (EditorWorld)
+		{
+			for (TActorIterator<AActor> It(EditorWorld); It; ++It)
+			{
+				if (*It && (*It)->GetActorLabel() == ActorPath)
+				{
+					Actor = *It;
+					break;
+				}
+			}
+		}
+	}
 	if (Actor == nullptr)
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			FString::Printf(TEXT("Actor not found: %s"), *ActorPath));
+			FString::Printf(TEXT("Actor not found: %s (tried object path and actor label)"), *ActorPath));
 	}
 
 	FEditorViewportClient& Client = Viewport->GetAssetViewportClient();

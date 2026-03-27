@@ -329,19 +329,27 @@ After that, `/cortex-start` verifies the connection and walks you through your f
 
 #### Option B — Manual Setup *(Cursor, Windsurf, or any MCP client)*
 
-Create `.mcp.json` at your project root:
+Create `.mcp.json` at your project root. Both paths must be **absolute** — relative paths fail when the MCP client's working directory doesn't match your project root, which is the default for most clients.
 
 ```json
 {
   "mcpServers": {
     "cortex_mcp": {
       "command": "uv",
-      "args": ["run", "--directory", "Plugins/Developer/UnrealCortex/MCP", "cortex-mcp"],
-      "env": { "CORTEX_PROJECT_DIR": "." }
+      "args": ["run", "--directory", "D:/UnrealProjects/YourProject/Plugins/Developer/UnrealCortex/MCP", "cortex-mcp"],
+      "env": { "CORTEX_PROJECT_DIR": "D:/UnrealProjects/YourProject" }
     }
   }
 }
 ```
+
+To get the correct absolute path, run this from your project root:
+
+```bash
+uv run python -c "import os; print(os.path.abspath('.').replace(chr(92), '/'))"
+```
+
+That prints your project root. Append `/Plugins/Developer/UnrealCortex/MCP` (adjust the subfolder if your install path differs) for the `--directory` value.
 
 Open your project in the Unreal Editor. CortexCore writes `Saved/CortexPort-{PID}.txt` on startup (one per editor instance) — the MCP server discovers it automatically. If the editor is not open, MCP tool calls will return an `EDITOR_NOT_RUNNING` error. If you restart the editor, the MCP server picks up the new port file automatically. Multiple editors can run simultaneously — each gets its own port.
 

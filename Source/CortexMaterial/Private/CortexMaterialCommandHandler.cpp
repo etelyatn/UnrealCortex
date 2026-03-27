@@ -172,11 +172,11 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 			.Required(TEXT("source_node"), TEXT("string"), TEXT("Source node identifier"))
 			.Required(TEXT("source_output"), TEXT("number"), TEXT("Source output index"))
 			.Required(TEXT("target_node"), TEXT("string"), TEXT("Target node identifier"))
-			.Required(TEXT("target_input"), TEXT("object"), TEXT("Target input pin identifier")),
+			.Required(TEXT("target_input"), TEXT("string"), TEXT("Target input pin name (e.g. 'BaseColor', 'A', 'Input')")),
 		FCortexCommandInfo{ TEXT("disconnect"), TEXT("Disconnect nodes in material graph") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
 			.Required(TEXT("target_node"), TEXT("string"), TEXT("Target node identifier"))
-			.Required(TEXT("target_input"), TEXT("object"), TEXT("Target input pin identifier")),
+			.Required(TEXT("target_input"), TEXT("string"), TEXT("Target input pin name (e.g. 'BaseColor', 'A', 'Input')")),
 		FCortexCommandInfo{ TEXT("auto_layout"), TEXT("Auto-layout material graph nodes by connection topology") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path")),
 		FCortexCommandInfo{ TEXT("set_node_property"), TEXT("Set property value on material expression node") }

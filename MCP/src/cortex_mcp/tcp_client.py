@@ -489,6 +489,18 @@ class UEConnection:
             self._socket.sendall(request.encode("utf-8"))
             response = json.loads(self._read_response_line(deadline))
 
+            # Validate response ID for non-deferred responses to catch TCP stream desyncs.
+            # If the IDs don't match, the stream is one response ahead — read one more line.
+            if response.get("status") != "deferred":
+                resp_id = response.get("id")
+                if resp_id and resp_id != request_id:
+                    logger.warning(
+                        "TCP stream desync detected: sent '%s' (id=%s) but received response for id=%s. "
+                        "Reading next line to recover.",
+                        command, request_id, resp_id,
+                    )
+                    response = json.loads(self._read_response_line(deadline))
+
             # Deferred protocol: first line is ack; final line contains command result.
             if response.get("status") == "deferred":
                 while True:

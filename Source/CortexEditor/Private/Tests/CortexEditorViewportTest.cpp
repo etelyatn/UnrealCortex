@@ -1,5 +1,8 @@
 #include "Misc/AutomationTest.h"
 #include "CortexEditorCommandHandler.h"
+#include "Editor.h"
+#include "EngineUtils.h"
+#include "GameFramework/Actor.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexEditorGetViewportInfoTest,
@@ -79,5 +82,52 @@ bool FCortexEditorFocusActorMissingPathTest::RunTest(const FString& Parameters)
 	const FCortexCommandResult Result = Handler.Execute(TEXT("focus_actor"), Params);
 	TestFalse(TEXT("focus_actor should fail when actor_path missing"), Result.bSuccess);
 	TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, TEXT("INVALID_FIELD"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorFocusActorByLabelTest,
+	"Cortex.Editor.Viewport.FocusActorByLabel",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorFocusActorByLabelTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	UWorld* EditorWorld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!EditorWorld)
+	{
+		AddInfo(TEXT("No editor world available — skipping focus_actor label test"));
+		return true;
+	}
+
+	FString ActorLabel;
+	for (TActorIterator<AActor> It(EditorWorld); It; ++It)
+	{
+		FString Label = (*It)->GetActorLabel();
+		if (!Label.IsEmpty())
+		{
+			ActorLabel = Label;
+			break;
+		}
+	}
+
+	if (ActorLabel.IsEmpty())
+	{
+		AddInfo(TEXT("No actors with labels in editor world — skipping"));
+		return true;
+	}
+
+	FCortexEditorCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("actor_path"), ActorLabel);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("focus_actor"), Params);
+	TestTrue(
+		FString::Printf(TEXT("focus_actor by label '%s' should succeed"), *ActorLabel),
+		Result.bSuccess
+	);
+
 	return true;
 }

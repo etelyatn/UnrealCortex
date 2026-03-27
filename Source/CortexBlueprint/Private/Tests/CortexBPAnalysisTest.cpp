@@ -9,6 +9,10 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
 #include "GameFramework/Actor.h"
+#include "Misc/Guid.h"
+#include "Misc/PackageName.h"
+#include "UObject/SavePackage.h"
+#include "HAL/FileManager.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPAnalyzeForMigrationBasicTest,
@@ -938,5 +942,167 @@ bool FCortexBPAnalysisPerGraphElementsTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("EventGraph variables_read contains Health"), bFoundHealthRead);
 
 	TestBP->MarkAsGarbage();
+	return true;
+}
+
+// Regression test for Issue 2: FBlueprintEditorUtils::PreloadMembers must be called before
+// iterating BP->Timelines in AnalyzeForMigration. Without it, LoadObject only loads the outer
+// Blueprint and inner UTimelineTemplate sub-objects remain unresident, making BP->Timelines
+// appear empty even when timeline nodes exist on disk.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisTimelinesPreloadMembersTest,
+	"Cortex.Blueprint.Analysis.TimelinesPreloadMembers",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisTimelinesPreloadMembersTest::RunTest(const FString& Parameters)
+{
+	FCortexBPCommandHandler Handler;
+	const FString UniqueSuffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString BlueprintName = FString::Printf(TEXT("BP_TimelinePreload_%s"), *UniqueSuffix);
+	const FString TestPath = FString::Printf(TEXT("/Game/Temp/CortexBPTest_TimelinePreload_%s"), *UniqueSuffix);
+	const FString TestBPPath = FString::Printf(TEXT("%s/%s"), *TestPath, *BlueprintName);
+
+	// Step 1: Create a Blueprint at a real /Game/ path (saved to disk by the create command).
+	{
+		TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+		CreateParams->SetStringField(TEXT("name"), BlueprintName);
+		CreateParams->SetStringField(TEXT("path"), TestPath);
+		CreateParams->SetStringField(TEXT("type"), TEXT("Actor"));
+		const FCortexCommandResult CreateResult = Handler.Execute(TEXT("create"), CreateParams);
+		if (!CreateResult.bSuccess)
+		{
+			AddError(TEXT("create command failed — cannot proceed"));
+			return false;
+		}
+	}
+
+	// Step 2: Add a Timeline via configure_timeline (modifies in-memory BP, compiles but does not save).
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TestBPPath);
+		Params->SetStringField(TEXT("timeline_name"), TEXT("TestTimeline"));
+		Params->SetNumberField(TEXT("length"), 1.0);
+		Params->SetBoolField(TEXT("loop"), false);
+
+		TArray<TSharedPtr<FJsonValue>> TracksArray;
+		TSharedPtr<FJsonObject> Track = MakeShared<FJsonObject>();
+		Track->SetStringField(TEXT("type"), TEXT("float"));
+		Track->SetStringField(TEXT("name"), TEXT("Alpha"));
+		TArray<TSharedPtr<FJsonValue>> Keys;
+		auto MakeKey = [](float Time, float Value) -> TSharedPtr<FJsonValue>
+		{
+			TSharedPtr<FJsonObject> K = MakeShared<FJsonObject>();
+			K->SetNumberField(TEXT("time"), Time);
+			K->SetNumberField(TEXT("value"), Value);
+			return MakeShared<FJsonValueObject>(K);
+		};
+		Keys.Add(MakeKey(0.0f, 0.0f));
+		Keys.Add(MakeKey(1.0f, 1.0f));
+		Track->SetArrayField(TEXT("keys"), Keys);
+		TracksArray.Add(MakeShared<FJsonValueObject>(Track));
+		Params->SetArrayField(TEXT("tracks"), TracksArray);
+
+		const FCortexCommandResult TimelineResult = Handler.Execute(TEXT("configure_timeline"), Params);
+		if (!TimelineResult.bSuccess)
+		{
+			AddError(TEXT("configure_timeline failed — cannot proceed"));
+			// Clean up the created asset
+			if (UObject* Obj = FindObject<UBlueprint>(nullptr, *TestBPPath))
+			{
+				Obj->GetOutermost()->MarkAsGarbage();
+			}
+			return false;
+		}
+	}
+
+	// Step 3: Save the package to disk so the timeline is persisted as a sub-object.
+	{
+		const FString PkgName = FPackageName::ObjectPathToPackageName(TestBPPath);
+		UPackage* Pkg = FindPackage(nullptr, *PkgName);
+		if (!Pkg)
+		{
+			AddError(TEXT("Package not found after configure_timeline"));
+			return false;
+		}
+
+		FString PackageFilename;
+		if (!FPackageName::TryConvertLongPackageNameToFilename(PkgName, PackageFilename, FPackageName::GetAssetPackageExtension()))
+		{
+			AddError(TEXT("Failed to resolve package filename for save"));
+			Pkg->MarkAsGarbage();
+			return false;
+		}
+
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		UBlueprint* BP = FindObject<UBlueprint>(nullptr, *TestBPPath);
+		if (!UPackage::SavePackage(Pkg, BP, *PackageFilename, SaveArgs))
+		{
+			AddError(TEXT("SavePackage failed"));
+			Pkg->MarkAsGarbage();
+			return false;
+		}
+	}
+
+	// Step 4: Flush the package from memory so AnalyzeForMigration is forced through LoadObject.
+	// This is the critical step — without PreloadMembers, BP->Timelines will be empty after reload.
+	{
+		const FString PkgName = FPackageName::ObjectPathToPackageName(TestBPPath);
+		UPackage* Pkg = FindPackage(nullptr, *PkgName);
+		if (Pkg)
+		{
+			ResetLoaders(Pkg);
+			Pkg->MarkAsGarbage();
+		}
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+	}
+
+	// Step 5: analyze_for_migration now calls LoadObject (in-memory check misses since we purged).
+	// Without PreloadMembers, BP->Timelines is empty → timelines array count == 0 → test fails.
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TestBPPath);
+		const FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+		TestTrue(TEXT("analyze_for_migration should succeed after reload"), Result.bSuccess);
+
+		if (!Result.Data.IsValid())
+		{
+			AddError(TEXT("Result data is null"));
+			return false;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* TimelinesArray = nullptr;
+		TestTrue(TEXT("timelines field should exist"),
+			Result.Data->TryGetArrayField(TEXT("timelines"), TimelinesArray));
+
+		// This is the regression assertion: without PreloadMembers, the timeline sub-object is
+		// not loaded and BP->Timelines is empty, making this count 0 instead of 1.
+		if (TimelinesArray)
+		{
+			TestEqual(TEXT("timelines should contain exactly 1 entry (requires PreloadMembers)"),
+				TimelinesArray->Num(), 1);
+		}
+	}
+
+	// Cleanup
+	{
+		const FString PkgName = FPackageName::ObjectPathToPackageName(TestBPPath);
+		if (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName))
+		{
+			if (UObject* Obj = FindObject<UBlueprint>(nullptr, *TestBPPath))
+			{
+				Obj->GetOutermost()->MarkAsGarbage();
+			}
+
+			// Delete the on-disk file to avoid polluting Content/Temp between runs
+			FString PackageFilename;
+			if (FPackageName::TryConvertLongPackageNameToFilename(
+				PkgName, PackageFilename, FPackageName::GetAssetPackageExtension()))
+			{
+				IFileManager::Get().Delete(*PackageFilename);
+			}
+		}
+	}
+
 	return true;
 }
