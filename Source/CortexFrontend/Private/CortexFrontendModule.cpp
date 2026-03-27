@@ -19,6 +19,7 @@
 #include "Widgets/SCortexGenPanel.h"
 #include "Widgets/SCortexConversionTab.h"
 #include "Widgets/SCortexAnalysisTab.h"
+#include "SCortexStatusBarWidget.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 #include "Framework/Application/SlateApplication.h"
@@ -88,6 +89,23 @@ void FCortexFrontendModule::StartupModule()
             }
         }));
 
+    StatusBarCallbackHandle = UToolMenus::RegisterStartupCallback(
+        FSimpleMulticastDelegate::FDelegate::CreateLambda([this]()
+        {
+            UToolMenu* StatusBar = UToolMenus::Get()->ExtendMenu(TEXT("LevelEditor.StatusBar.ToolBar"));
+            FToolMenuSection& Section = StatusBar->FindOrAddSection(TEXT("Cortex"),
+                FText::GetEmpty(),
+                FToolMenuInsert(TEXT("SourceControl"), EToolMenuInsertType::Before));
+            Section.AddEntry(
+                FToolMenuEntry::InitWidget(
+                    TEXT("CortexStatus"),
+                    SNew(SCortexStatusBarWidget),
+                    FText::GetEmpty(),
+                    true,   // bNoIndent
+                    false   // bSearchable
+                ));
+        }));
+
     FCoreDelegates::OnPreExit.AddRaw(this, &FCortexFrontendModule::HandlePreExit);
 
     // Subscribe to conversion events from CortexBlueprint (via CortexCore)
@@ -129,6 +147,12 @@ void FCortexFrontendModule::ShutdownModule()
     if (IToolMenusModule::IsAvailable())
     {
         UToolMenus::UnRegisterStartupCallback(StartupCallbackHandle);
+        UToolMenus::UnRegisterStartupCallback(StatusBarCallbackHandle);
+        UToolMenu* StatusBar = UToolMenus::Get()->FindMenu(TEXT("LevelEditor.StatusBar.ToolBar"));
+        if (StatusBar)
+        {
+            StatusBar->RemoveSection(TEXT("Cortex"));
+        }
     }
 
     if (FSlateApplication::IsInitialized())
