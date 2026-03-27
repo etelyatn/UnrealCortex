@@ -103,6 +103,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
         [
             SAssignNew(AutoCompleteAnchor, SMenuAnchor)
             .Placement(MenuPlacement_AboveAnchor)
+            .UseApplicationMenuStack(false) // Popup never steals focus; dismiss handled by OnFocusLost
             .OnGetMenuContent_Lambda([PopupWidget = AutoCompletePopup]() -> TSharedRef<SWidget>
             {
                 return PopupWidget.IsValid() ? PopupWidget.ToSharedRef() : SNullWidget::NullWidget;
@@ -932,6 +933,14 @@ SCortexInputArea::~SCortexInputArea()
     {
         FTSTicker::GetCoreTicker().RemoveTicker(DiscoveryTickerHandle);
     }
+    if (AssetLoadedDelegateHandle.IsValid())
+    {
+        if (FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")))
+        {
+            IAssetRegistry& AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+            AssetRegistry.OnFilesLoaded().Remove(AssetLoadedDelegateHandle);
+        }
+    }
 }
 
 void SCortexInputArea::HandleTextChanged(const FText& NewText)
@@ -1158,7 +1167,7 @@ void SCortexInputArea::LoadAssetCache()
     if (AssetRegistry.IsLoadingAssets())
     {
         bAssetCacheLoading = true;
-        AssetRegistry.OnFilesLoaded().AddLambda([WeakThis = TWeakPtr<SCortexInputArea>(SharedThis(this))]()
+        AssetLoadedDelegateHandle = AssetRegistry.OnFilesLoaded().AddLambda([WeakThis = TWeakPtr<SCortexInputArea>(SharedThis(this))]()
         {
             if (TSharedPtr<SCortexInputArea> Self = WeakThis.Pin())
             {
@@ -1186,12 +1195,9 @@ void SCortexInputArea::LoadAssetCache()
         return TEXT(""); // Unknown — fall back to raw @path
     };
 
-    TArray<FAssetData> AllAssets;
-    AssetRegistry.GetAllAssets(AllAssets, true);
-
-    for (const FAssetData& AssetData : AllAssets)
+    AssetRegistry.EnumerateAllAssets([this, &GetRouterCommand](const FAssetData& AssetData)
     {
-        if (!AssetData.PackagePath.ToString().StartsWith(TEXT("/Game"))) continue;
+        if (!AssetData.PackagePath.ToString().StartsWith(TEXT("/Game"))) return true;
 
         const FString ClassName = AssetData.AssetClassPath.GetAssetName().ToString();
         const FString PackagePath = AssetData.PackagePath.ToString();
@@ -1205,7 +1211,8 @@ void SCortexInputArea::LoadAssetCache()
         Item->AssetClass = ClassName;
         Item->Kind = ECortexAutoCompleteKind::Asset;
         AssetCache.Add(Item);
-    }
+        return true; // Continue enumeration
+    }, UE::AssetRegistry::EEnumerateAssetsFlags::OnlyOnDiskAssets);
 }
 
 void SCortexInputArea::PopulateCoreCommands()
@@ -1399,6 +1406,9 @@ FString SCortexInputArea::ResolveAssetChip(const FCortexContextChip& Chip, bool&
 
 FReply SCortexInputArea::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
+    // Autocomplete navigation duplicated here because:
+    // 1. OnKeyDownHandler_Lambda handles keys when the inner SMultiLineEditableTextBox has focus (normal usage)
+    // 2. This override handles keys when tests call OnKeyDown directly on the compound widget
     if (bAutoCompleteOpen)
     {
         if (InKeyEvent.GetKey() == EKeys::Up)

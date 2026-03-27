@@ -105,6 +105,7 @@ private:
     TArray<TSharedPtr<FCortexAutoCompleteItem>> CommandCache;
     bool bAssetCacheLoading = false;
     FTSTicker::FDelegateHandle DiscoveryTickerHandle;
+    FDelegateHandle AssetLoadedDelegateHandle;
 
     // Brushes
     TUniquePtr<FSlateRoundedBoxBrush> ModeBrush;
