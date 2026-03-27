@@ -1,5 +1,7 @@
 #include "Widgets/SCortexInputArea.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Containers/Ticker.h"
 #include "CortexFrontendSettings.h"
 #include "Framework/Application/SlateApplication.h"
@@ -979,11 +981,158 @@ void SCortexInputArea::ClosePopup()
         AutoCompletePopup->Refresh({}, INDEX_NONE, INDEX_NONE);
     }
 }
-void SCortexInputArea::FilterItems(const FString& /*Query*/) {}
+void SCortexInputArea::PopulateProviders()
+{
+    auto MakeProvider = [](const FString& Name, const FString& Desc) -> TSharedPtr<FCortexAutoCompleteItem>
+    {
+        auto Item = MakeShared<FCortexAutoCompleteItem>();
+        Item->Name = Name;
+        Item->Description = Desc;
+        Item->Kind = ECortexAutoCompleteKind::ContextProvider;
+        return Item;
+    };
+
+    ProviderItems.Reset();
+    ProviderItems.Add(MakeProvider(TEXT("thisAsset"), TEXT("Refer to currently open asset")));
+    ProviderItems.Add(MakeProvider(TEXT("selection"), TEXT("Refer to selected actors")));
+    ProviderItems.Add(MakeProvider(TEXT("problems"), TEXT("Refer to current problems")));
+}
+
+void SCortexInputArea::FilterItems(const FString& Query)
+{
+    FilteredItems.Reset();
+    AutoCompleteSelectedIndex = 0;
+    int32 DividerAfterIndex = INDEX_NONE;
+
+    if (ActiveTrigger == TEXT('@'))
+    {
+        // Filter providers by query
+        for (const TSharedPtr<FCortexAutoCompleteItem>& Item : ProviderItems)
+        {
+            if (Query.IsEmpty() || CortexAutoComplete::FilterAndScore(Query, Item->Name) > 0)
+            {
+                FilteredItems.Add(Item);
+            }
+        }
+        const int32 NumProviders = FilteredItems.Num();
+        if (NumProviders > 0) DividerAfterIndex = NumProviders - 1;
+
+        // Add fuzzy-matched assets (up to 10 total)
+        if (!Query.IsEmpty())
+        {
+            TArray<TPair<int32, TSharedPtr<FCortexAutoCompleteItem>>> Scored;
+            for (const TSharedPtr<FCortexAutoCompleteItem>& Asset : AssetCache)
+            {
+                const int32 Score = CortexAutoComplete::FilterAndScore(Query, Asset->Name);
+                if (Score > 0) Scored.Add({Score, Asset});
+            }
+            Scored.Sort([](const TPair<int32, TSharedPtr<FCortexAutoCompleteItem>>& A,
+                          const TPair<int32, TSharedPtr<FCortexAutoCompleteItem>>& B)
+            {
+                return A.Key > B.Key;
+            });
+            const int32 MaxTotal = 10;
+            for (int32 i = 0; i < Scored.Num() && FilteredItems.Num() < MaxTotal; ++i)
+            {
+                FilteredItems.Add(Scored[i].Value);
+            }
+        }
+        else if (bAssetCacheLoading)
+        {
+            auto Loading = MakeShared<FCortexAutoCompleteItem>();
+            Loading->Name = TEXT("Scanning assets...");
+            Loading->Description = TEXT("");
+            Loading->Kind = ECortexAutoCompleteKind::Asset;
+            FilteredItems.Add(Loading);
+        }
+    }
+    else if (ActiveTrigger == TEXT('/'))
+    {
+        TArray<TPair<int32, TSharedPtr<FCortexAutoCompleteItem>>> Scored;
+        for (const TSharedPtr<FCortexAutoCompleteItem>& Cmd : CommandCache)
+        {
+            const int32 Score = CortexAutoComplete::FilterAndScore(Query, Cmd->Name);
+            if (Score > 0) Scored.Add({Score, Cmd});
+        }
+        Scored.Sort([](const TPair<int32, TSharedPtr<FCortexAutoCompleteItem>>& A,
+                      const TPair<int32, TSharedPtr<FCortexAutoCompleteItem>>& B)
+        {
+            return A.Key > B.Key;
+        });
+        for (int32 i = 0; i < FMath::Min(Scored.Num(), 10); ++i)
+        {
+            FilteredItems.Add(Scored[i].Value);
+        }
+    }
+
+    if (AutoCompletePopup.IsValid())
+    {
+        AutoCompletePopup->Refresh(FilteredItems, AutoCompleteSelectedIndex, DividerAfterIndex);
+    }
+}
+
 void SCortexInputArea::CommitSelection() {}
-void SCortexInputArea::LoadAssetCache() {}
+
+void SCortexInputArea::LoadAssetCache()
+{
+    if (!AssetCache.IsEmpty()) return; // Already loaded
+
+    IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+
+    if (AssetRegistry.IsLoadingAssets())
+    {
+        bAssetCacheLoading = true;
+        AssetRegistry.OnFilesLoaded().AddLambda([WeakThis = TWeakPtr<SCortexInputArea>(SharedThis(this))]()
+        {
+            if (TSharedPtr<SCortexInputArea> Self = WeakThis.Pin())
+            {
+                Self->bAssetCacheLoading = false;
+                Self->LoadAssetCache();
+                if (Self->bAutoCompleteOpen && Self->ActiveTrigger == TEXT('@'))
+                {
+                    const FString Query = Self->PreviousText.ToString().Mid(Self->TriggerOffset + 1);
+                    Self->FilterItems(Query);
+                }
+            }
+        });
+        return;
+    }
+
+    // Router command mapping by Asset Registry class name
+    auto GetRouterCommand = [](const FString& ClassName) -> FString
+    {
+        if (ClassName == TEXT("Blueprint"))                 return TEXT("blueprint.get_blueprint");
+        if (ClassName == TEXT("WidgetBlueprint"))           return TEXT("umg.get_widget");
+        if (ClassName == TEXT("DataTable"))                 return TEXT("data.get_datatable");
+        if (ClassName == TEXT("Material"))                  return TEXT("material.get_material");
+        if (ClassName == TEXT("MaterialInstanceConstant"))  return TEXT("material.get_material");
+        if (ClassName == TEXT("MaterialInterface"))         return TEXT("material.get_material");
+        return TEXT(""); // Unknown — fall back to raw @path
+    };
+
+    TArray<FAssetData> AllAssets;
+    AssetRegistry.GetAllAssets(AllAssets, true);
+
+    for (const FAssetData& AssetData : AllAssets)
+    {
+        if (!AssetData.PackagePath.ToString().StartsWith(TEXT("/Game"))) continue;
+
+        const FString ClassName = AssetData.AssetClassPath.GetAssetName().ToString();
+        const FString PackagePath = AssetData.PackagePath.ToString();
+        const FString RelFolder = PackagePath.Mid(6); // strip "/Game/"
+
+        auto Item = MakeShared<FCortexAutoCompleteItem>();
+        Item->Name = AssetData.AssetName.ToString();
+        Item->Description = FString::Printf(TEXT("%s · %s"), *ClassName, *RelFolder);
+        Item->FullPath = AssetData.GetObjectPathString();
+        Item->RouterCommand = GetRouterCommand(ClassName);
+        Item->AssetClass = ClassName;
+        Item->Kind = ECortexAutoCompleteKind::Asset;
+        AssetCache.Add(Item);
+    }
+}
+
 void SCortexInputArea::DiscoverSkillsAndAgents() {}
-void SCortexInputArea::PopulateProviders() {}
 void SCortexInputArea::PopulateCoreCommands() {}
 void SCortexInputArea::ResolveAndSend(const TArray<FCortexContextChip>& /*Chips*/, const FString& /*Message*/) {}
 FString SCortexInputArea::ResolveProviderChip(const FString& /*Label*/) { return TEXT(""); }

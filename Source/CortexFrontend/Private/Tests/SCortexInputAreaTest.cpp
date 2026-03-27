@@ -191,3 +191,59 @@ bool FCortexInputAreaBackspaceClosesTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaProvidersTest,
+    "Cortex.Frontend.InputArea.AutoComplete.ProvidersAlwaysPresent",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaProvidersTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea);
+
+    Widget->HandleTextChanged(FText::FromString(TEXT("@")));
+    TestTrue(TEXT("Popup open"), Widget->IsAutoCompleteOpen());
+
+    const auto& Items = Widget->GetFilteredItems();
+    TestTrue(TEXT("At least 3 items (providers)"), Items.Num() >= 3);
+
+    // Verify provider names
+    bool bFoundThisAsset = false, bFoundSelection = false, bFoundProblems = false;
+    for (const TSharedPtr<FCortexAutoCompleteItem>& Item : Items)
+    {
+        if (Item->Name == TEXT("thisAsset")) bFoundThisAsset = true;
+        if (Item->Name == TEXT("selection")) bFoundSelection = true;
+        if (Item->Name == TEXT("problems")) bFoundProblems = true;
+    }
+    TestTrue(TEXT("@thisAsset present"), bFoundThisAsset);
+    TestTrue(TEXT("@selection present"), bFoundSelection);
+    TestTrue(TEXT("@problems present"), bFoundProblems);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaFuzzyFilterTest,
+    "Cortex.Frontend.InputArea.AutoComplete.FuzzyFilterNarrows",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaFuzzyFilterTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea);
+
+    // Open popup and type a query that matches no providers and no assets (empty cache)
+    Widget->HandleTextChanged(FText::FromString(TEXT("@")));
+    Widget->HandleTextChanged(FText::FromString(TEXT("@thisA")));
+
+    const auto& Items = Widget->GetFilteredItems();
+    bool bFoundThisAsset = false;
+    for (const TSharedPtr<FCortexAutoCompleteItem>& Item : Items)
+    {
+        if (Item->Name.Contains(TEXT("thisAsset"))) bFoundThisAsset = true;
+    }
+    TestTrue(TEXT("thisAsset matches @thisA query"), bFoundThisAsset);
+
+    return true;
+}
