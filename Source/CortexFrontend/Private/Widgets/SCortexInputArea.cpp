@@ -17,6 +17,9 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Rendering/CortexFrontendColors.h"
+#include "BlueprintEditor.h"
+#include "BlueprintEditorModule.h"
+#include "EdGraph/EdGraphNode.h"
 #include "Selection.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Session/CortexSessionTypes.h"
@@ -1052,7 +1055,7 @@ void SCortexInputArea::PopulateProviders()
 
     ProviderItems.Reset();
     ProviderItems.Add(MakeProvider(TEXT("thisAsset"), TEXT("Refer to currently open asset")));
-    ProviderItems.Add(MakeProvider(TEXT("selection"), TEXT("Refer to selected actors")));
+    ProviderItems.Add(MakeProvider(TEXT("selection"), TEXT("Refer to selected graph nodes or actors")));
     ProviderItems.Add(MakeProvider(TEXT("problems"), TEXT("Refer to current problems")));
 }
 
@@ -1421,15 +1424,58 @@ FString SCortexInputArea::ResolveProviderChip(const FString& Label)
     else if (Label == TEXT("selection"))
     {
         if (!GEditor) return TEXT("");
-        USelection* Selection = GEditor->GetSelectedActors();
-        if (!Selection || Selection->Num() == 0) return TEXT("");
 
-        FString Result;
-        for (FSelectionIterator It(*Selection); It; ++It)
+        // 1. Check open Blueprint editors for selected graph nodes
+        FBlueprintEditorModule* BPModule =
+            FModuleManager::GetModulePtr<FBlueprintEditorModule>(TEXT("Kismet"));
+        if (BPModule)
+        {
+            for (TSharedRef<IBlueprintEditor>& EditorRef : BPModule->GetBlueprintEditors())
+            {
+                TSharedPtr<FBlueprintEditor> BPEditor =
+                    StaticCastSharedPtr<FBlueprintEditor>(EditorRef.ToSharedPtr());
+                if (!BPEditor.IsValid()) continue;
+
+                const FGraphPanelSelectionSet SelectedNodes = BPEditor->GetSelectedNodes();
+                if (SelectedNodes.IsEmpty()) continue;
+
+                UBlueprint* BP = BPEditor->GetBlueprintObj();
+                FString GraphName;
+                if (UEdGraph* FocusedGraph = BPEditor->GetFocusedGraph())
+                {
+                    GraphName = FocusedGraph->GetFName().ToString();
+                }
+
+                FString Result = FString::Printf(
+                    TEXT("Blueprint context:\n  Blueprint: %s (%s)\n  Graph: %s\n  Selected nodes (%d):\n"),
+                    BP ? *BP->GetName() : TEXT("Unknown"),
+                    BP ? *BP->GetPathName() : TEXT(""),
+                    *GraphName,
+                    SelectedNodes.Num());
+
+                for (UObject* Node : SelectedNodes)
+                {
+                    if (UEdGraphNode* GraphNode = Cast<UEdGraphNode>(Node))
+                    {
+                        Result += FString::Printf(TEXT("    - %s [%s]\n"),
+                            *GraphNode->GetNodeTitle(ENodeTitleType::ListView).ToString(),
+                            *GraphNode->GetClass()->GetName());
+                    }
+                }
+                return Result;
+            }
+        }
+
+        // 2. Fall back to level viewport selected actors
+        USelection* ActorSelection = GEditor->GetSelectedActors();
+        if (!ActorSelection || ActorSelection->Num() == 0) return TEXT("");
+
+        FString Result = FString::Printf(TEXT("Level viewport selection (%d actors):\n"), ActorSelection->Num());
+        for (FSelectionIterator It(*ActorSelection); It; ++It)
         {
             if (AActor* Actor = Cast<AActor>(*It))
             {
-                Result += FString::Printf(TEXT("- %s (%s) at %s\n"),
+                Result += FString::Printf(TEXT("  - %s (%s) at %s\n"),
                     *Actor->GetActorLabel(),
                     *Actor->GetClass()->GetName(),
                     *Actor->GetActorLocation().ToString());

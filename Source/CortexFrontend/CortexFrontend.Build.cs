@@ -35,6 +35,7 @@ public class CortexFrontend : ModuleRules
             "LiveCoding",
             "AssetRegistry",
             "MessageLog",
+            "Kismet",
         });
     }
 }

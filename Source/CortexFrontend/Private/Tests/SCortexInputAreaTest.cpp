@@ -455,3 +455,35 @@ bool FCortexInputAreaAssetFallbackTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaSelectionDescriptionTest,
+    "Cortex.Frontend.InputArea.Selection.DescriptionMentionsNodesAndActors",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaSelectionDescriptionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea);
+
+    Widget->HandleTextChanged(FText::FromString(TEXT("@")));
+    Widget->HandleTextChanged(FText::FromString(TEXT("@sel")));
+
+    const auto& Items = Widget->GetFilteredItems();
+    FString SelectionDesc;
+    for (const TSharedPtr<FCortexAutoCompleteItem>& Item : Items)
+    {
+        if (Item->Name == TEXT("selection"))
+        {
+            SelectionDesc = Item->Description;
+            break;
+        }
+    }
+
+    TestFalse(TEXT("Selection description is not empty"), SelectionDesc.IsEmpty());
+    TestTrue(TEXT("Description mentions nodes"),
+        SelectionDesc.Contains(TEXT("node"), ESearchCase::IgnoreCase) ||
+        SelectionDesc.Contains(TEXT("graph"), ESearchCase::IgnoreCase));
+
+    return true;
+}
