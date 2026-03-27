@@ -52,6 +52,7 @@ public:
         ClearContextChips();
         ResolveAndSend(Chips, Message);
     }
+    static FString ParseFrontmatterField(const FString& FileContent, const FString& FieldName);
 
     virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
     virtual void OnFocusLost(const FFocusEvent& InFocusEvent) override;
@@ -73,7 +74,6 @@ private:
     void DiscoverSkillsAndAgents();
     void PopulateProviders();
     void PopulateCoreCommands();
-    static FString ParseFrontmatterField(const FString& FileContent, const FString& FieldName);
 
     // Widgets
     TSharedPtr<SMultiLineEditableTextBox> InputTextBox;

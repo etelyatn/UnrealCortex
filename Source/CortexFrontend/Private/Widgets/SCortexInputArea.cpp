@@ -7,6 +7,8 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Input/Events.h"
 #include "InputCoreTypes.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Rendering/CortexFrontendColors.h"
 #include "Session/CortexSessionTypes.h"
@@ -62,6 +64,18 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
     AutoCompletePopup = SNew(SCortexAutoCompletePopup);
     PopulateProviders();
     PopulateCoreCommands();
+
+    // Defer skill/agent discovery one frame to avoid Game Thread I/O during construction
+    DiscoveryTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateLambda([WeakThis = TWeakPtr<SCortexInputArea>(SharedThis(this))](float) -> bool
+        {
+            if (TSharedPtr<SCortexInputArea> Self = WeakThis.Pin())
+            {
+                Self->DiscoverSkillsAndAgents();
+            }
+            return false; // Fire once only
+        }),
+        0.0f);
 
     ChildSlot
     [
@@ -1132,12 +1146,85 @@ void SCortexInputArea::LoadAssetCache()
     }
 }
 
-void SCortexInputArea::DiscoverSkillsAndAgents() {}
-void SCortexInputArea::PopulateCoreCommands() {}
+void SCortexInputArea::PopulateCoreCommands()
+{
+    auto MakeCmd = [](const FString& Name, const FString& Desc, ECortexAutoCompleteKind Kind) -> TSharedPtr<FCortexAutoCompleteItem>
+    {
+        auto Item = MakeShared<FCortexAutoCompleteItem>();
+        Item->Name = Name;
+        Item->Description = Desc;
+        Item->Kind = Kind;
+        return Item;
+    };
+
+    CommandCache.Reset();
+    CommandCache.Add(MakeCmd(TEXT("help"),    TEXT("Get help with Claude Code"),    ECortexAutoCompleteKind::CoreCommand));
+    CommandCache.Add(MakeCmd(TEXT("clear"),   TEXT("Clear conversation history"),  ECortexAutoCompleteKind::CoreCommand));
+    CommandCache.Add(MakeCmd(TEXT("compact"), TEXT("Compact conversation context"), ECortexAutoCompleteKind::CoreCommand));
+}
+
+FString SCortexInputArea::ParseFrontmatterField(const FString& FileContent, const FString& FieldName)
+{
+    // Find text between first and second --- delimiters
+    const int32 FirstDelim = FileContent.Find(TEXT("---"));
+    if (FirstDelim == INDEX_NONE) return TEXT("");
+    const int32 ContentStart = FirstDelim + 3;
+    const int32 SecondDelim = FileContent.Find(TEXT("---"), ESearchCase::CaseSensitive, ESearchDir::FromStart, ContentStart);
+    if (SecondDelim == INDEX_NONE) return TEXT("");
+    const FString Frontmatter = FileContent.Mid(ContentStart, SecondDelim - ContentStart);
+
+    // Line-by-line parse: find "FieldName: value"
+    TArray<FString> Lines;
+    Frontmatter.ParseIntoArrayLines(Lines);
+    const FString Prefix = FieldName + TEXT(":");
+    for (const FString& Line : Lines)
+    {
+        if (Line.StartsWith(Prefix))
+        {
+            FString Value = Line.Mid(Prefix.Len());
+            Value.TrimStartAndEndInline();
+            return Value;
+        }
+    }
+    return TEXT("");
+}
+
+void SCortexInputArea::DiscoverSkillsAndAgents()
+{
+    const FString ToolkitRoot = FPaths::ConvertRelativePathToFull(
+        FPaths::ProjectDir() / TEXT("cortex-toolkit"));
+
+    auto ScanDir = [this](const FString& DirPath, ECortexAutoCompleteKind Kind)
+    {
+        if (!FPaths::DirectoryExists(DirPath)) return;
+
+        TArray<FString> Files;
+        IFileManager::Get().FindFilesRecursive(Files, *DirPath, TEXT("*.md"), true, false);
+
+        for (const FString& FilePath : Files)
+        {
+            FString Content;
+            if (!FFileHelper::LoadFileToString(Content, *FilePath)) continue;
+
+            FString Name = ParseFrontmatterField(Content, TEXT("name"));
+            FString Desc = ParseFrontmatterField(Content, TEXT("description"));
+            if (Name.IsEmpty()) continue;
+
+            auto Item = MakeShared<FCortexAutoCompleteItem>();
+            Item->Name = Name;
+            Item->Description = Desc.IsEmpty() ? FilePath : Desc;
+            Item->Kind = Kind;
+            CommandCache.Add(Item);
+        }
+    };
+
+    ScanDir(ToolkitRoot / TEXT("skills"), ECortexAutoCompleteKind::Skill);
+    ScanDir(ToolkitRoot / TEXT("agents"), ECortexAutoCompleteKind::Agent);
+}
+
 void SCortexInputArea::ResolveAndSend(const TArray<FCortexContextChip>& /*Chips*/, const FString& /*Message*/) {}
 FString SCortexInputArea::ResolveProviderChip(const FString& /*Label*/) { return TEXT(""); }
 FString SCortexInputArea::ResolveAssetChip(const FCortexContextChip& /*Chip*/, bool& bOutSuccess) { bOutSuccess = false; return TEXT(""); }
-FString SCortexInputArea::ParseFrontmatterField(const FString& /*FileContent*/, const FString& /*FieldName*/) { return TEXT(""); }
 
 FReply SCortexInputArea::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {

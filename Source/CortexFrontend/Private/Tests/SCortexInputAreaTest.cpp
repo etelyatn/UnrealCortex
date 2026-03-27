@@ -247,3 +247,51 @@ bool FCortexInputAreaFuzzyFilterTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaCoreCommandsTest,
+    "Cortex.Frontend.InputArea.AutoComplete.CoreCommandsPresent",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaCoreCommandsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea);
+
+    Widget->HandleTextChanged(FText::FromString(TEXT("/")));
+    TestTrue(TEXT("Popup open"), Widget->IsAutoCompleteOpen());
+
+    const auto& Items = Widget->GetFilteredItems();
+    bool bFoundHelp = false, bFoundClear = false, bFoundCompact = false;
+    for (const TSharedPtr<FCortexAutoCompleteItem>& Item : Items)
+    {
+        if (Item->Name == TEXT("help")) bFoundHelp = true;
+        if (Item->Name == TEXT("clear")) bFoundClear = true;
+        if (Item->Name == TEXT("compact")) bFoundCompact = true;
+    }
+    TestTrue(TEXT("/help present"), bFoundHelp);
+    TestTrue(TEXT("/clear present"), bFoundClear);
+    TestTrue(TEXT("/compact present"), bFoundCompact);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaFrontmatterParseTest,
+    "Cortex.Frontend.InputArea.AutoComplete.FrontmatterParse",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaFrontmatterParseTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    const FString Content = TEXT("---\nname: cortex-blueprint\ndescription: Create and edit Blueprints\n---\n\n# Body text");
+    TestEqual(TEXT("Parses name"),
+        SCortexInputArea::ParseFrontmatterField(Content, TEXT("name")),
+        TEXT("cortex-blueprint"));
+    TestEqual(TEXT("Parses description"),
+        SCortexInputArea::ParseFrontmatterField(Content, TEXT("description")),
+        TEXT("Create and edit Blueprints"));
+    TestEqual(TEXT("Returns empty for missing field"),
+        SCortexInputArea::ParseFrontmatterField(Content, TEXT("nonexistent")),
+        TEXT(""));
+    return true;
+}
