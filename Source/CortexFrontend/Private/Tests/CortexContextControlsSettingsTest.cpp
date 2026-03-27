@@ -52,9 +52,15 @@ bool FCortexSettingsWorkflowDefaultTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
     FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    const ECortexWorkflowMode Original = Settings.GetWorkflowMode();
+
+    Settings.SetWorkflowMode(ECortexWorkflowMode::Direct);
     TestEqual(TEXT("Default workflow is Direct"),
         static_cast<uint8>(Settings.GetWorkflowMode()),
         static_cast<uint8>(ECortexWorkflowMode::Direct));
+
+    Settings.SetWorkflowMode(Original);
+    Settings.ClearPendingChanges();
     return true;
 }
 
