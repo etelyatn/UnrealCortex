@@ -36,4 +36,14 @@ public:
 	 * Max depth: 5 levels.
 	 */
 	static UEdGraph* ResolveSubgraph(UEdGraph* RootGraph, const FString& SubgraphPath, FCortexCommandResult& OutError);
+
+private:
+	/** Recursively collect composite subgraph entries for ListGraphs. */
+	static void CollectSubgraphsRecursive(
+		UEdGraph* Graph,
+		const FString& ParentGraphName,
+		const FString& CurrentSubgraphPath,
+		TArray<TSharedPtr<FJsonValue>>& OutArray,
+		int32 Depth
+	);
 };

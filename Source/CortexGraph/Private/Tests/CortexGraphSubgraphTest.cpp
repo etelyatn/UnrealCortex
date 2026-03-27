@@ -548,3 +548,87 @@ bool FCortexGraphSubgraphConnectTest::RunTest(const FString& Parameters)
 	TestBP->MarkAsGarbage();
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphSubgraphListGraphsTest,
+	"Cortex.Graph.Subgraph.ListGraphsWithSubgraphs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphSubgraphListGraphsTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexSubgraphTestUtils;
+
+	UEdGraph* EventGraph = nullptr;
+	UBlueprint* TestBP = CreateTestBP(TEXT("BP_SubgraphListGraphsTest"), EventGraph);
+	TestNotNull(TEXT("TestBP created"), TestBP);
+	TestNotNull(TEXT("EventGraph found"), EventGraph);
+
+	CreateComposite(TestBP, EventGraph, TEXT("MyCollapsed"));
+
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(
+		TEXT("graph"), TEXT("Graph"), TEXT("1.0.0"),
+		MakeShared<FCortexGraphCommandHandler>()
+	);
+
+	// Without include_subgraphs: only top-level graphs
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+
+	FCortexCommandResult BasicResult = Router.Execute(TEXT("graph.list_graphs"), Params);
+	TestTrue(TEXT("list_graphs succeeds"), BasicResult.bSuccess);
+
+	const TArray<TSharedPtr<FJsonValue>>* BasicGraphs;
+	bool bFoundSubgraphInBasic = false;
+	if (BasicResult.Data->TryGetArrayField(TEXT("graphs"), BasicGraphs))
+	{
+		for (const auto& GVal : *BasicGraphs)
+		{
+			FString Name;
+			GVal->AsObject()->TryGetStringField(TEXT("name"), Name);
+			if (Name == TEXT("MyCollapsed"))
+			{
+				bFoundSubgraphInBasic = true;
+			}
+		}
+	}
+	TestFalse(TEXT("Basic list_graphs does NOT include subgraphs"), bFoundSubgraphInBasic);
+
+	// With include_subgraphs: should include the composite subgraph
+	TSharedPtr<FJsonObject> SubParams = MakeShared<FJsonObject>();
+	SubParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	SubParams->SetBoolField(TEXT("include_subgraphs"), true);
+
+	FCortexCommandResult SubResult = Router.Execute(TEXT("graph.list_graphs"), SubParams);
+	TestTrue(TEXT("list_graphs with include_subgraphs succeeds"), SubResult.bSuccess);
+
+	const TArray<TSharedPtr<FJsonValue>>* SubGraphs;
+	bool bFoundSubgraph = false;
+	if (SubResult.Data->TryGetArrayField(TEXT("graphs"), SubGraphs))
+	{
+		for (const auto& GVal : *SubGraphs)
+		{
+			const TSharedPtr<FJsonObject>& GObj = GVal->AsObject();
+			FString Name;
+			GObj->TryGetStringField(TEXT("name"), Name);
+			if (Name == TEXT("MyCollapsed"))
+			{
+				bFoundSubgraph = true;
+				FString ParentGraph;
+				TestTrue(TEXT("Subgraph entry has parent_graph"),
+					GObj->TryGetStringField(TEXT("parent_graph"), ParentGraph));
+				TestEqual(TEXT("parent_graph is EventGraph"), ParentGraph, FString(TEXT("EventGraph")));
+
+				FString SubPath;
+				TestTrue(TEXT("Subgraph entry has subgraph_path"),
+					GObj->TryGetStringField(TEXT("subgraph_path"), SubPath));
+				TestEqual(TEXT("subgraph_path is MyCollapsed"), SubPath, FString(TEXT("MyCollapsed")));
+			}
+		}
+	}
+	TestTrue(TEXT("list_graphs with include_subgraphs found MyCollapsed"), bFoundSubgraph);
+
+	TestBP->MarkAsGarbage();
+	return true;
+}

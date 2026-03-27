@@ -232,6 +232,49 @@ UEdGraph* FCortexGraphNodeOps::ResolveSubgraph(UEdGraph* RootGraph, const FStrin
 	return CurrentGraph;
 }
 
+void FCortexGraphNodeOps::CollectSubgraphsRecursive(
+	UEdGraph* Graph,
+	const FString& ParentGraphName,
+	const FString& CurrentSubgraphPath,
+	TArray<TSharedPtr<FJsonValue>>& OutArray,
+	int32 Depth)
+{
+	static constexpr int32 MaxDepth = 5;
+	if (!Graph || Depth > MaxDepth)
+	{
+		return;
+	}
+
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (!IsValid(Node))
+		{
+			continue;
+		}
+		UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node);
+		if (!CompositeNode || !CompositeNode->BoundGraph)
+		{
+			continue;
+		}
+
+		UEdGraph* Sub = CompositeNode->BoundGraph;
+		FString SubPath = CurrentSubgraphPath.IsEmpty()
+			? Sub->GetName()
+			: FString::Printf(TEXT("%s.%s"), *CurrentSubgraphPath, *Sub->GetName());
+
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("name"), Sub->GetName());
+		Entry->SetStringField(TEXT("class"), Sub->GetClass()->GetName());
+		Entry->SetNumberField(TEXT("node_count"), Sub->Nodes.Num());
+		Entry->SetStringField(TEXT("parent_graph"), ParentGraphName);
+		Entry->SetStringField(TEXT("subgraph_path"), SubPath);
+		OutArray.Add(MakeShared<FJsonValueObject>(Entry));
+
+		// Recurse
+		CollectSubgraphsRecursive(Sub, Sub->GetName(), SubPath, OutArray, Depth + 1);
+	}
+}
+
 FCortexCommandResult FCortexGraphNodeOps::ListGraphs(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
@@ -276,6 +319,27 @@ FCortexCommandResult FCortexGraphNodeOps::ListGraphs(const TSharedPtr<FJsonObjec
 		Entry->SetStringField(TEXT("class"), Graph->GetClass()->GetName());
 		Entry->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
 		GraphsArray.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	// Optionally include composite subgraphs
+	bool bIncludeSubgraphs = false;
+	Params->TryGetBoolField(TEXT("include_subgraphs"), bIncludeSubgraphs);
+	if (bIncludeSubgraphs)
+	{
+		for (UEdGraph* Graph : Blueprint->UbergraphPages)
+		{
+			if (Graph)
+			{
+				CollectSubgraphsRecursive(Graph, Graph->GetName(), TEXT(""), GraphsArray, 0);
+			}
+		}
+		for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+		{
+			if (Graph)
+			{
+				CollectSubgraphsRecursive(Graph, Graph->GetName(), TEXT(""), GraphsArray, 0);
+			}
+		}
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
