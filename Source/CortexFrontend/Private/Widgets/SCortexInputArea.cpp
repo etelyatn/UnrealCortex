@@ -20,6 +20,7 @@
 #include "BlueprintEditor.h"
 #include "BlueprintEditorModule.h"
 #include "EdGraph/EdGraphNode.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Selection.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Session/CortexSessionTypes.h"
@@ -1425,25 +1426,32 @@ FString SCortexInputArea::ResolveProviderChip(const FString& Label)
     {
         if (!GEditor) return TEXT("");
 
-        // 1. Check open Blueprint editors for selected graph nodes
-        FBlueprintEditorModule* BPModule =
-            FModuleManager::GetModulePtr<FBlueprintEditorModule>(TEXT("Kismet"));
-        if (BPModule)
+        // 1. Check open Blueprint editors for selected graph nodes.
+        // GetIBlueprintEditorForObject covers all Blueprint types (regular, Anim BP, Widget BP)
+        // because it queries FToolkitManager, not FBlueprintEditorModule.
+        UAssetEditorSubsystem* AssetEdSub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+        if (AssetEdSub)
         {
-            // Capture array to avoid iterating a temporary (GetBlueprintEditors returns by value)
-            const TArray<TSharedRef<IBlueprintEditor>> Editors = BPModule->GetBlueprintEditors();
-            for (const TSharedRef<IBlueprintEditor>& EditorRef : Editors)
+            for (UObject* Asset : AssetEdSub->GetAllEditedAssets())
             {
-                // Static cast is safe: FBlueprintEditorModule stores FBlueprintEditor instances.
-                // AnimBP and WidgetBP editors opened via their own modules are NOT in this list
-                // and will fall through to the actor fallback (known limitation).
-                const TSharedPtr<FBlueprintEditor> BPEditor =
-                    StaticCastSharedRef<FBlueprintEditor>(EditorRef);
+                UBlueprint* BP = Cast<UBlueprint>(Asset);
+                if (!BP) continue;
+
+                TSharedPtr<IBlueprintEditor> IBPEditor =
+                    FKismetEditorUtilities::GetIBlueprintEditorForObject(BP, false);
+                if (!IBPEditor.IsValid()) continue;
+
+                // Cast once and read both selection set and blueprint obj from FBlueprintEditor.
+                // Safe in UE 5.6: all IBlueprintEditor implementations (FBlueprintEditor,
+                // FAnimationBlueprintEditor via IAnimationBlueprintEditor, FWidgetBlueprintEditor)
+                // are subclasses of FBlueprintEditor. GetIBlueprintEditorForObject also verifies
+                // IsBlueprintEditor() before returning, so the downcast is guarded.
+                TSharedPtr<FBlueprintEditor> BPEditor =
+                    StaticCastSharedPtr<FBlueprintEditor>(IBPEditor);
 
                 const FGraphPanelSelectionSet SelectedNodes = BPEditor->GetSelectedNodes();
                 if (SelectedNodes.IsEmpty()) continue;
 
-                UBlueprint* BP = BPEditor->GetBlueprintObj();
                 FString GraphName;
                 if (UEdGraph* FocusedGraph = BPEditor->GetFocusedGraph())
                 {
@@ -1452,8 +1460,7 @@ FString SCortexInputArea::ResolveProviderChip(const FString& Label)
 
                 FString Result = FString::Printf(
                     TEXT("Blueprint context:\n  Blueprint: %s (%s)\n  Graph: %s\n  Selected nodes (%d):\n"),
-                    BP ? *BP->GetName() : TEXT("Unknown"),
-                    BP ? *BP->GetPathName() : TEXT(""),
+                    *BP->GetName(), *BP->GetPathName(),
                     *GraphName,
                     SelectedNodes.Num());
 
