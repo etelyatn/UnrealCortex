@@ -407,6 +407,18 @@ FCortexCommandResult FCortexGraphNodeOps::GetNode(const TSharedPtr<FJsonObject>&
 		return LoadError;
 	}
 
+	// Resolve subgraph path if provided
+	FString SubgraphPath;
+	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
+	if (!SubgraphPath.IsEmpty())
+	{
+		Graph = ResolveSubgraph(Graph, SubgraphPath, LoadError);
+		if (Graph == nullptr)
+		{
+			return LoadError;
+		}
+	}
+
 	UEdGraphNode* Node = FindNode(Graph, NodeId, LoadError);
 	if (Node == nullptr)
 	{
@@ -455,6 +467,12 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 	Params->TryGetStringField(TEXT("function_name"), FunctionName);
 	Params->TryGetStringField(TEXT("display_name"), DisplayName);
 
+	FString GraphName;
+	Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+	FString SubgraphPath;
+	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
+
 	if (NodeClass.IsEmpty() && FunctionName.IsEmpty() && DisplayName.IsEmpty())
 	{
 		return FCortexCommandRouter::Error(
@@ -472,20 +490,35 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 
 	TArray<TSharedPtr<FJsonValue>> ResultsArray;
 
-	auto SearchGraph = [&](UEdGraph* Graph)
+	static constexpr int32 MaxSubgraphDepth = 5;
+
+	// Lambda: search a single graph, optionally recursing into composites
+	TFunction<void(UEdGraph*, const FString&, int32)> SearchGraphRecursive;
+	SearchGraphRecursive = [&](UEdGraph* Graph, const FString& CurrentSubgraphPath, int32 Depth)
 	{
-		if (Graph == nullptr)
+		if (Graph == nullptr || Depth > MaxSubgraphDepth)
 		{
 			return;
 		}
 
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
-			if (Node == nullptr)
+			if (!IsValid(Node))
 			{
 				continue;
 			}
 
+			// Recurse into composites
+			UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node);
+			if (CompositeNode && CompositeNode->BoundGraph)
+			{
+				FString ChildPath = CurrentSubgraphPath.IsEmpty()
+					? CompositeNode->BoundGraph->GetName()
+					: FString::Printf(TEXT("%s.%s"), *CurrentSubgraphPath, *CompositeNode->BoundGraph->GetName());
+				SearchGraphRecursive(CompositeNode->BoundGraph, ChildPath, Depth + 1);
+			}
+
+			// Apply filters
 			if (!NodeClass.IsEmpty())
 			{
 				const FString RuntimeClassName = Node->GetClass()->GetName();
@@ -534,21 +567,44 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 			Entry->SetStringField(TEXT("class"), Node->GetClass()->GetName());
 			Entry->SetStringField(TEXT("display_name"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
 			Entry->SetStringField(TEXT("graph_name"), Graph->GetName());
+			if (!CurrentSubgraphPath.IsEmpty())
+			{
+				Entry->SetStringField(TEXT("subgraph_path"), CurrentSubgraphPath);
+			}
 			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
 		}
 	};
 
-	for (UEdGraph* Graph : Blueprint->UbergraphPages)
+	if (!SubgraphPath.IsEmpty())
 	{
-		SearchGraph(Graph);
+		// Search within a specific subgraph only
+		UEdGraph* RootGraph = FindGraph(Blueprint, GraphName, LoadError);
+		if (RootGraph == nullptr)
+		{
+			return LoadError;
+		}
+		UEdGraph* TargetGraph = ResolveSubgraph(RootGraph, SubgraphPath, LoadError);
+		if (TargetGraph == nullptr)
+		{
+			return LoadError;
+		}
+		SearchGraphRecursive(TargetGraph, SubgraphPath, 0);
 	}
-	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+	else
 	{
-		SearchGraph(Graph);
-	}
-	for (UEdGraph* Graph : Blueprint->MacroGraphs)
-	{
-		SearchGraph(Graph);
+		// Search all top-level graphs, recursively descending into composites
+		for (UEdGraph* Graph : Blueprint->UbergraphPages)
+		{
+			SearchGraphRecursive(Graph, TEXT(""), 0);
+		}
+		for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+		{
+			SearchGraphRecursive(Graph, TEXT(""), 0);
+		}
+		for (UEdGraph* Graph : Blueprint->MacroGraphs)
+		{
+			SearchGraphRecursive(Graph, TEXT(""), 0);
+		}
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();

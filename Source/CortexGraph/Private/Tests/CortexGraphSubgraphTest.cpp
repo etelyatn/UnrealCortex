@@ -280,3 +280,134 @@ bool FCortexGraphSubgraphDiscoveryTest::RunTest(const FString& Parameters)
 	TestBP->MarkAsGarbage();
 	return true;
 }
+
+// ── Test 5: ListNodes with subgraph_path ────────────────────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphSubgraphListNodesTest,
+	"Cortex.Graph.Subgraph.ListNodesInSubgraph",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphSubgraphListNodesTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexSubgraphTestUtils;
+
+	UEdGraph* EventGraph = nullptr;
+	UBlueprint* TestBP = CreateTestBP(TEXT("BP_SubgraphListNodesTest"), EventGraph);
+	TestNotNull(TEXT("TestBP created"), TestBP);
+	TestNotNull(TEXT("EventGraph found"), EventGraph);
+
+	UK2Node_Composite* Composite = CreateComposite(TestBP, EventGraph, TEXT("InnerGraph"));
+	UEdGraph* SubGraph = Composite->BoundGraph;
+
+	// Add a node inside the subgraph
+	UK2Node_CallFunction* InnerNode = NewObject<UK2Node_CallFunction>(SubGraph);
+	InnerNode->CreateNewGuid();
+	InnerNode->FunctionReference.SetExternalMember(
+		FName(TEXT("PrintString")),
+		UKismetSystemLibrary::StaticClass()
+	);
+	SubGraph->AddNode(InnerNode, true, false);
+	InnerNode->AllocateDefaultPins();
+
+	// Call list_nodes with subgraph_path
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(
+		TEXT("graph"), TEXT("Graph"), TEXT("1.0.0"),
+		MakeShared<FCortexGraphCommandHandler>()
+	);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	Params->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+	Params->SetStringField(TEXT("subgraph_path"), TEXT("InnerGraph"));
+
+	FCortexCommandResult Result = Router.Execute(TEXT("graph.list_nodes"), Params);
+	TestTrue(TEXT("list_nodes with subgraph_path succeeds"), Result.bSuccess);
+
+	const TArray<TSharedPtr<FJsonValue>>* Nodes;
+	if (Result.Data->TryGetArrayField(TEXT("nodes"), Nodes))
+	{
+		TestTrue(TEXT("Subgraph has at least 1 node"), Nodes->Num() >= 1);
+		bool bFoundCallFunction = false;
+		for (const auto& NodeVal : *Nodes)
+		{
+			FString ClassName;
+			NodeVal->AsObject()->TryGetStringField(TEXT("class"), ClassName);
+			if (ClassName == TEXT("K2Node_CallFunction"))
+			{
+				bFoundCallFunction = true;
+			}
+		}
+		TestTrue(TEXT("Found CallFunction node inside subgraph"), bFoundCallFunction);
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+// ── Test 6: SearchNodes recursive descent ──────────────────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphSubgraphSearchRecursiveTest,
+	"Cortex.Graph.Subgraph.SearchRecursive",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphSubgraphSearchRecursiveTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexSubgraphTestUtils;
+
+	UEdGraph* EventGraph = nullptr;
+	UBlueprint* TestBP = CreateTestBP(TEXT("BP_SubgraphSearchTest"), EventGraph);
+	TestNotNull(TEXT("TestBP created"), TestBP);
+	TestNotNull(TEXT("EventGraph found"), EventGraph);
+
+	// Create composite with a CallFunction node inside
+	UK2Node_Composite* Composite = CreateComposite(TestBP, EventGraph, TEXT("SearchTarget"));
+	UEdGraph* SubGraph = Composite->BoundGraph;
+
+	UK2Node_CallFunction* InnerNode = NewObject<UK2Node_CallFunction>(SubGraph);
+	InnerNode->CreateNewGuid();
+	InnerNode->FunctionReference.SetExternalMember(
+		FName(TEXT("PrintString")),
+		UKismetSystemLibrary::StaticClass()
+	);
+	SubGraph->AddNode(InnerNode, true, false);
+	InnerNode->AllocateDefaultPins();
+
+	// search_nodes WITHOUT subgraph_path should still find the inner node
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(
+		TEXT("graph"), TEXT("Graph"), TEXT("1.0.0"),
+		MakeShared<FCortexGraphCommandHandler>()
+	);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	Params->SetStringField(TEXT("function_name"), TEXT("PrintString"));
+
+	FCortexCommandResult Result = Router.Execute(TEXT("graph.search_nodes"), Params);
+	TestTrue(TEXT("search_nodes succeeds"), Result.bSuccess);
+
+	const TArray<TSharedPtr<FJsonValue>>* Results;
+	bool bFoundInSubgraph = false;
+	if (Result.Data->TryGetArrayField(TEXT("results"), Results))
+	{
+		for (const auto& ResVal : *Results)
+		{
+			const TSharedPtr<FJsonObject>& ResObj = ResVal->AsObject();
+			FString SubPath;
+			ResObj->TryGetStringField(TEXT("subgraph_path"), SubPath);
+			if (SubPath == TEXT("SearchTarget"))
+			{
+				bFoundInSubgraph = true;
+			}
+		}
+	}
+	TestTrue(TEXT("search_nodes found node inside composite (recursive)"), bFoundInSubgraph);
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
