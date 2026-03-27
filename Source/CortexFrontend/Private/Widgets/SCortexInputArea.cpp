@@ -1430,11 +1430,15 @@ FString SCortexInputArea::ResolveProviderChip(const FString& Label)
             FModuleManager::GetModulePtr<FBlueprintEditorModule>(TEXT("Kismet"));
         if (BPModule)
         {
-            for (TSharedRef<IBlueprintEditor>& EditorRef : BPModule->GetBlueprintEditors())
+            // Capture array to avoid iterating a temporary (GetBlueprintEditors returns by value)
+            const TArray<TSharedRef<IBlueprintEditor>> Editors = BPModule->GetBlueprintEditors();
+            for (const TSharedRef<IBlueprintEditor>& EditorRef : Editors)
             {
-                TSharedPtr<FBlueprintEditor> BPEditor =
-                    StaticCastSharedPtr<FBlueprintEditor>(EditorRef.ToSharedPtr());
-                if (!BPEditor.IsValid()) continue;
+                // Static cast is safe: FBlueprintEditorModule stores FBlueprintEditor instances.
+                // AnimBP and WidgetBP editors opened via their own modules are NOT in this list
+                // and will fall through to the actor fallback (known limitation).
+                const TSharedPtr<FBlueprintEditor> BPEditor =
+                    StaticCastSharedRef<FBlueprintEditor>(EditorRef);
 
                 const FGraphPanelSelectionSet SelectedNodes = BPEditor->GetSelectedNodes();
                 if (SelectedNodes.IsEmpty()) continue;
