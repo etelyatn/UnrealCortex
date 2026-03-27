@@ -411,3 +411,63 @@ bool FCortexGraphSubgraphSearchRecursiveTest::RunTest(const FString& Parameters)
 	TestBP->MarkAsGarbage();
 	return true;
 }
+
+// ── Test 7: Write operations with subgraph_path ──────────────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphSubgraphWriteTest,
+	"Cortex.Graph.Subgraph.WriteOperations",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphSubgraphWriteTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexSubgraphTestUtils;
+
+	UEdGraph* EventGraph = nullptr;
+	UBlueprint* TestBP = CreateTestBP(TEXT("BP_SubgraphWriteTest"), EventGraph);
+	TestNotNull(TEXT("TestBP created"), TestBP);
+	TestNotNull(TEXT("EventGraph found"), EventGraph);
+
+	UK2Node_Composite* Composite = CreateComposite(TestBP, EventGraph, TEXT("WriteTarget"));
+	UEdGraph* SubGraph = Composite->BoundGraph;
+	int32 InitialNodeCount = SubGraph->Nodes.Num();
+
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(
+		TEXT("graph"), TEXT("Graph"), TEXT("1.0.0"),
+		MakeShared<FCortexGraphCommandHandler>()
+	);
+
+	// add_node into subgraph
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	AddParams->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+	AddParams->SetStringField(TEXT("subgraph_path"), TEXT("WriteTarget"));
+	AddParams->SetStringField(TEXT("node_class"), TEXT("UK2Node_IfThenElse"));
+
+	FCortexCommandResult AddResult = Router.Execute(TEXT("graph.add_node"), AddParams);
+	TestTrue(TEXT("add_node in subgraph succeeds"), AddResult.bSuccess);
+	TestEqual(TEXT("SubGraph has one more node"), SubGraph->Nodes.Num(), InitialNodeCount + 1);
+
+	FString AddedNodeId;
+	if (AddResult.Data)
+	{
+		AddResult.Data->TryGetStringField(TEXT("node_id"), AddedNodeId);
+	}
+	TestFalse(TEXT("Added node has an ID"), AddedNodeId.IsEmpty());
+
+	// remove_node from subgraph
+	TSharedPtr<FJsonObject> RemoveParams = MakeShared<FJsonObject>();
+	RemoveParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	RemoveParams->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+	RemoveParams->SetStringField(TEXT("subgraph_path"), TEXT("WriteTarget"));
+	RemoveParams->SetStringField(TEXT("node_id"), AddedNodeId);
+
+	FCortexCommandResult RemoveResult = Router.Execute(TEXT("graph.remove_node"), RemoveParams);
+	TestTrue(TEXT("remove_node from subgraph succeeds"), RemoveResult.bSuccess);
+	TestEqual(TEXT("SubGraph back to initial count"), SubGraph->Nodes.Num(), InitialNodeCount);
+
+	TestBP->MarkAsGarbage();
+	return true;
+}

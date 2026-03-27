@@ -658,6 +658,18 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 		return LoadError;
 	}
 
+	// Resolve subgraph path if provided
+	FString SubgraphPath;
+	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
+	if (!SubgraphPath.IsEmpty())
+	{
+		Graph = ResolveSubgraph(Graph, SubgraphPath, LoadError);
+		if (Graph == nullptr)
+		{
+			return LoadError;
+		}
+	}
+
 	// Resolve node class
 	// For well-known classes, use StaticClass (faster, no dynamic loading)
 	// Other classes use dynamic loading from /Script/BlueprintGraph or /Script/Engine
@@ -1139,6 +1151,18 @@ FCortexCommandResult FCortexGraphNodeOps::RemoveNode(const TSharedPtr<FJsonObjec
 		return LoadError;
 	}
 
+	// Resolve subgraph path if provided
+	FString SubgraphPath;
+	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
+	if (!SubgraphPath.IsEmpty())
+	{
+		Graph = ResolveSubgraph(Graph, SubgraphPath, LoadError);
+		if (Graph == nullptr)
+		{
+			return LoadError;
+		}
+	}
+
 	// Find the node
 	UEdGraphNode* FoundNode = FindNode(Graph, NodeId, LoadError);
 	if (FoundNode == nullptr)
@@ -1213,6 +1237,18 @@ FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObje
 	if (Graph == nullptr)
 	{
 		return LoadError;
+	}
+
+	// Resolve subgraph path if provided
+	FString SubgraphPath;
+	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
+	if (!SubgraphPath.IsEmpty())
+	{
+		Graph = ResolveSubgraph(Graph, SubgraphPath, LoadError);
+		if (Graph == nullptr)
+		{
+			return LoadError;
+		}
 	}
 
 	UEdGraphNode* Node = FindNode(Graph, NodeId, LoadError);
@@ -1324,12 +1360,26 @@ FCortexCommandResult FCortexGraphNodeOps::AutoLayout(const TSharedPtr<FJsonObjec
 		Config.VerticalSpacing = static_cast<int32>(VSpacingVal);
 	}
 
+	FString SubgraphPath;
+	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
+
 	// Collect graphs to process
 	TArray<UEdGraph*> Graphs;
 	if (!GraphFilter.IsEmpty())
 	{
 		UEdGraph* Graph = FindGraph(Blueprint, GraphFilter, LoadError);
 		if (!Graph) return LoadError;
+
+		// Resolve subgraph path if provided
+		if (!SubgraphPath.IsEmpty())
+		{
+			Graph = ResolveSubgraph(Graph, SubgraphPath, LoadError);
+			if (Graph == nullptr)
+			{
+				return LoadError;
+			}
+		}
+
 		Graphs.Add(Graph);
 	}
 	else
