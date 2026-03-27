@@ -77,6 +77,26 @@ void FCortexCoreModule::RequestSerialization(const FCortexSerializationRequest& 
 	}
 }
 
+bool FCortexCoreModule::IsServerRunning() const
+{
+    return TcpServer.IsValid() && TcpServer->IsRunning();
+}
+
+int32 FCortexCoreModule::GetServerPort() const
+{
+    return TcpServer.IsValid() ? TcpServer->GetBoundPort() : 0;
+}
+
+int32 FCortexCoreModule::GetClientCount() const
+{
+    return TcpServer.IsValid() ? TcpServer->GetClientCount() : 0;
+}
+
+int32 FCortexCoreModule::GetDomainCount() const
+{
+    return CommandRouter.IsValid() ? CommandRouter->GetRegisteredDomains().Num() : 0;
+}
+
 void FCortexCoreModule::SetClientDisconnectCallback(FCortexTcpServer::FClientDisconnectCallback Callback)
 {
     if (TcpServer.IsValid())

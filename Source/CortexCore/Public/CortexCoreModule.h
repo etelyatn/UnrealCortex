@@ -36,6 +36,19 @@ public:
 	// Generic domain progress delegate
 	FOnCortexDomainProgress& OnDomainProgress() { return DomainProgressDelegate; }
 
+	// Status bar accessors — null-safe, game-thread-only
+	/** Returns true if the TCP server is running. */
+	bool IsServerRunning() const;
+
+	/** Returns the port the TCP server is bound to, or 0 if not running. */
+	int32 GetServerPort() const;
+
+	/** Returns the number of connected TCP clients, or 0 if server is not running. */
+	int32 GetClientCount() const;
+
+	/** Returns the number of registered command domains. */
+	int32 GetDomainCount() const;
+
 	// Serialization callback — CortexBlueprint binds at startup, unbinds at shutdown
 	void SetSerializationHandler(FOnCortexSerializationRequested Handler)
 	{
