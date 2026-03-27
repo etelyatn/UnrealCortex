@@ -164,6 +164,7 @@ def _build_batch_commands(
     parent_class: str = "",
     mode: str = "create",
     asset_path: str = "",
+    subgraph_path: str = "",
 ) -> list[dict]:
     """Translate Blueprint spec into batch commands with $ref wiring."""
     path = path.rstrip("/")
@@ -226,6 +227,8 @@ def _build_batch_commands(
         }
         if node.get("params"):
             add_params["params"] = node["params"]
+        if subgraph_path:
+            add_params["subgraph_path"] = subgraph_path
         commands.append({"command": "graph.add_node", "params": add_params})
 
     # Steps: set pin values
@@ -236,15 +239,18 @@ def _build_batch_commands(
             continue
         step_index = node_name_to_step[node_name]
         for pin_name, value in pin_values.items():
+            pin_params: dict[str, Any] = {
+                "asset_path": asset_path_ref,
+                "node_id": f"$steps[{step_index}].data.node_id",
+                "graph_name": graph_name,
+                "pin_name": pin_name,
+                "value": value,
+            }
+            if subgraph_path:
+                pin_params["subgraph_path"] = subgraph_path
             commands.append({
                 "command": "graph.set_pin_value",
-                "params": {
-                    "asset_path": asset_path_ref,
-                    "node_id": f"$steps[{step_index}].data.node_id",
-                    "graph_name": graph_name,
-                    "pin_name": pin_name,
-                    "value": value,
-                },
+                "params": pin_params,
             })
 
     # Steps: connections
@@ -260,16 +266,19 @@ def _build_batch_commands(
         else:
             tgt_ref = tgt_parts[0]
 
+        connect_params: dict[str, Any] = {
+            "asset_path": asset_path_ref,
+            "source_node": src_ref,
+            "source_pin": src_parts[1],
+            "target_node": tgt_ref,
+            "target_pin": tgt_parts[1],
+            "graph_name": graph_name,
+        }
+        if subgraph_path:
+            connect_params["subgraph_path"] = subgraph_path
         commands.append({
             "command": "graph.connect",
-            "params": {
-                "asset_path": asset_path_ref,
-                "source_node": src_ref,
-                "source_pin": src_parts[1],
-                "target_node": tgt_ref,
-                "target_pin": tgt_parts[1],
-                "graph_name": graph_name,
-            },
+            "params": connect_params,
         })
 
     return commands
@@ -291,6 +300,7 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         connections: list[dict] = None,
         mode: str = "create",
         asset_path: str = "",
+        subgraph_path: str = "",
     ) -> str:
         """Create a Blueprint with variables, functions, and graph logic in a single operation.
 
@@ -340,6 +350,9 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
             mode: Operation mode. "create" (default) creates a new Blueprint.
                   "update" appends to an existing Blueprint (requires asset_path).
             asset_path: Required in update mode. Path to existing Blueprint asset.
+            subgraph_path: Dot-separated path into nested composite subgraphs.
+                When set, all graph operations target the resolved subgraph instead
+                of the top-level graph.
 
                 Common pin names by node type:
                     Event: outputs "then"
@@ -388,7 +401,8 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         # 2. Build batch commands
         commands = _build_batch_commands(
             name, path, type, variables, functions, nodes, connections,
-            graph_name, parent_class, mode=mode, asset_path=asset_path
+            graph_name, parent_class, mode=mode, asset_path=asset_path,
+            subgraph_path=subgraph_path,
         )
         total_steps = len(commands)
 
@@ -458,10 +472,13 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         warnings = []
         if asset_path and nodes:
             try:
-                connection.send_command("graph.auto_layout", {
+                auto_layout_params: dict[str, Any] = {
                     "asset_path": asset_path,
                     "graph_name": graph_name,
-                })
+                }
+                if subgraph_path:
+                    auto_layout_params["subgraph_path"] = subgraph_path
+                connection.send_command("graph.auto_layout", auto_layout_params)
             except Exception as e:
                 logger.warning(f"auto_layout failed for {asset_path}: {e}", exc_info=True)
                 warnings.append({
