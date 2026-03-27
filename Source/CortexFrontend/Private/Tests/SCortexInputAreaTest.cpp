@@ -111,3 +111,83 @@ bool FCortexInputAreaPopupClosedInitiallyTest::RunTest(const FString& Parameters
     TestFalse(TEXT("Popup closed on construction"), Widget->IsAutoCompleteOpen());
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaAtTriggerTest,
+    "Cortex.Frontend.InputArea.AutoComplete.AtTriggerOpensPopup",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaAtTriggerTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea);
+
+    // Simulate typing "@" (single char insertion from empty)
+    Widget->HandleTextChanged(FText::FromString(TEXT("@")));
+    TestTrue(TEXT("Popup opens on @"), Widget->IsAutoCompleteOpen());
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaSlashTriggerTest,
+    "Cortex.Frontend.InputArea.AutoComplete.SlashAtPos0OpensPopup",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaSlashTriggerTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+
+    {
+        // / at position 0 opens popup
+        TSharedRef<SCortexInputArea> W = SNew(SCortexInputArea);
+        W->HandleTextChanged(FText::FromString(TEXT("/")));
+        TestTrue(TEXT("Popup opens on / at pos 0"), W->IsAutoCompleteOpen());
+    }
+    {
+        // / mid-sentence: must be preceded by text — simulate "hello /" (len 7 from len 6)
+        TSharedRef<SCortexInputArea> W = SNew(SCortexInputArea);
+        W->HandleTextChanged(FText::FromString(TEXT("hello "))); // set previous text
+        W->HandleTextChanged(FText::FromString(TEXT("hello /"))); // type /
+        TestFalse(TEXT("Popup stays closed on / mid-sentence"), W->IsAutoCompleteOpen());
+    }
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaPasteGuardTest,
+    "Cortex.Frontend.InputArea.AutoComplete.PasteDoesNotTrigger",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaPasteGuardTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea);
+
+    // Multi-char insertion (paste) — should NOT open popup
+    Widget->HandleTextChanged(FText::FromString(TEXT("@pasted text")));
+    TestFalse(TEXT("Popup stays closed on paste"), Widget->IsAutoCompleteOpen());
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaBackspaceClosesTest,
+    "Cortex.Frontend.InputArea.AutoComplete.BackspaceCloses",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaBackspaceClosesTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea);
+
+    Widget->HandleTextChanged(FText::FromString(TEXT("@")));
+    TestTrue(TEXT("Open after @"), Widget->IsAutoCompleteOpen());
+
+    // Simulate backspace: text goes from "@" to ""
+    Widget->HandleTextChanged(FText::FromString(TEXT("")));
+    TestFalse(TEXT("Closed after backspace"), Widget->IsAutoCompleteOpen());
+
+    return true;
+}

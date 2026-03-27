@@ -899,7 +899,55 @@ SCortexInputArea::~SCortexInputArea()
     }
 }
 
-void SCortexInputArea::HandleTextChanged(const FText& /*NewText*/) {}
+void SCortexInputArea::HandleTextChanged(const FText& NewText)
+{
+    const FString NewStr = NewText.ToString();
+    const FString OldStr = PreviousText.ToString();
+    PreviousText = NewText;
+
+    // Only process single-character insertions (guards against paste, IME, select-all+type)
+    const int32 LenDiff = NewStr.Len() - OldStr.Len();
+
+    if (bAutoCompleteOpen)
+    {
+        // Check if trigger character still present at TriggerOffset
+        if (!NewStr.IsValidIndex(TriggerOffset) || NewStr[TriggerOffset] != ActiveTrigger)
+        {
+            ClosePopup();
+            return;
+        }
+        // Re-filter with updated query (everything after trigger char)
+        FilterItems(NewStr.Mid(TriggerOffset + 1));
+        return;
+    }
+
+    // Must be a single-char insertion to trigger
+    if (LenDiff != 1) return;
+
+    // Find insertion position: first character that differs
+    int32 InsertPos = 0;
+    while (InsertPos < OldStr.Len() && OldStr[InsertPos] == NewStr[InsertPos])
+    {
+        ++InsertPos;
+    }
+    const TCHAR InsertedChar = NewStr[InsertPos];
+
+    if (InsertedChar == TEXT('@'))
+    {
+        TriggerOffset = InsertPos;
+        ActiveTrigger = TEXT('@');
+        LoadAssetCache(); // lazy load — no-op if already populated
+        OpenPopup();
+        FilterItems(TEXT(""));
+    }
+    else if (InsertedChar == TEXT('/') && InsertPos == 0)
+    {
+        TriggerOffset = 0;
+        ActiveTrigger = TEXT('/');
+        OpenPopup();
+        FilterItems(TEXT(""));
+    }
+}
 
 bool SCortexInputArea::IsAutoCompleteOpen() const
 {
