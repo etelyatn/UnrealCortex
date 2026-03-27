@@ -23,6 +23,8 @@ namespace CortexErrorCodes
 	static const FString BatchRecursionBlocked = TEXT("BATCH_RECURSION_BLOCKED");
 	static const FString BatchRefResolutionFailed = TEXT("BATCH_REF_RESOLUTION_FAILED");
 	static const FString GraphNotFound = TEXT("GRAPH_NOT_FOUND");
+	static const FString SubgraphNotFound = TEXT("SUBGRAPH_NOT_FOUND");
+	static const FString SubgraphDepthExceeded = TEXT("SUBGRAPH_DEPTH_EXCEEDED");
 	static const FString NodeNotFound = TEXT("NODE_NOT_FOUND");
 	static const FString PinNotFound = TEXT("PIN_NOT_FOUND");
 	static const FString PinTypeMismatch = TEXT("PIN_TYPE_MISMATCH");
