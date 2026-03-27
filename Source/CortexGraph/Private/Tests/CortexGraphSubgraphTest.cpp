@@ -471,3 +471,80 @@ bool FCortexGraphSubgraphWriteTest::RunTest(const FString& Parameters)
 	TestBP->MarkAsGarbage();
 	return true;
 }
+
+// ── Test 8: Connect and Disconnect with subgraph_path ───────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphSubgraphConnectTest,
+	"Cortex.Graph.Subgraph.Connect",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphSubgraphConnectTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexSubgraphTestUtils;
+
+	UEdGraph* EventGraph = nullptr;
+	UBlueprint* TestBP = CreateTestBP(TEXT("BP_SubgraphConnectTest"), EventGraph);
+	TestNotNull(TEXT("TestBP created"), TestBP);
+	TestNotNull(TEXT("EventGraph found"), EventGraph);
+
+	UK2Node_Composite* Composite = CreateComposite(TestBP, EventGraph, TEXT("ConnectTarget"));
+	UEdGraph* SubGraph = Composite->BoundGraph;
+
+	// Add two Branch nodes inside to connect exec pins
+	UK2Node_IfThenElse* BranchA = NewObject<UK2Node_IfThenElse>(SubGraph);
+	BranchA->CreateNewGuid();
+	SubGraph->AddNode(BranchA, true, false);
+	BranchA->AllocateDefaultPins();
+
+	UK2Node_IfThenElse* BranchB = NewObject<UK2Node_IfThenElse>(SubGraph);
+	BranchB->CreateNewGuid();
+	SubGraph->AddNode(BranchB, true, false);
+	BranchB->AllocateDefaultPins();
+
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(
+		TEXT("graph"), TEXT("Graph"), TEXT("1.0.0"),
+		MakeShared<FCortexGraphCommandHandler>()
+	);
+
+	// Connect BranchA "Then" -> BranchB "Execute"
+	TSharedPtr<FJsonObject> ConnectParams = MakeShared<FJsonObject>();
+	ConnectParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	ConnectParams->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+	ConnectParams->SetStringField(TEXT("subgraph_path"), TEXT("ConnectTarget"));
+	ConnectParams->SetStringField(TEXT("source_node"), BranchA->GetName());
+	ConnectParams->SetStringField(TEXT("source_pin"), TEXT("Then"));
+	ConnectParams->SetStringField(TEXT("target_node"), BranchB->GetName());
+	ConnectParams->SetStringField(TEXT("target_pin"), TEXT("execute"));
+
+	FCortexCommandResult ConnectResult = Router.Execute(TEXT("graph.connect"), ConnectParams);
+	TestTrue(TEXT("connect in subgraph succeeds"), ConnectResult.bSuccess);
+
+	UEdGraphPin* ThenPin = BranchA->FindPin(TEXT("Then"));
+	TestNotNull(TEXT("Then pin exists"), ThenPin);
+	if (ThenPin)
+	{
+		TestTrue(TEXT("Then pin is connected"), ThenPin->LinkedTo.Num() > 0);
+	}
+
+	// Disconnect
+	TSharedPtr<FJsonObject> DisconnectParams = MakeShared<FJsonObject>();
+	DisconnectParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	DisconnectParams->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+	DisconnectParams->SetStringField(TEXT("subgraph_path"), TEXT("ConnectTarget"));
+	DisconnectParams->SetStringField(TEXT("node_id"), BranchA->GetName());
+	DisconnectParams->SetStringField(TEXT("pin_name"), TEXT("Then"));
+
+	FCortexCommandResult DisconnectResult = Router.Execute(TEXT("graph.disconnect"), DisconnectParams);
+	TestTrue(TEXT("disconnect in subgraph succeeds"), DisconnectResult.bSuccess);
+
+	if (ThenPin)
+	{
+		TestEqual(TEXT("Then pin is disconnected"), ThenPin->LinkedTo.Num(), 0);
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
