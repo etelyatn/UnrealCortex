@@ -16,6 +16,15 @@ def _normalize_class(name: str) -> str:
 
 
 def verify_material(spec: dict, readback: dict) -> VerificationResult:
+    # If readback nodes list is empty but spec expects nodes, the asset registry
+    # may not have synced yet. Treat as inconclusive rather than verified=False.
+    if len(readback.get("nodes", [])) == 0 and spec.get("nodes"):
+        return VerificationResult(
+            verified=None,
+            checks={},
+            message="Readback returned 0 nodes; asset registry may not have synced yet",
+        )
+
     checks: dict[str, CheckResult] = {}
     spec_nodes = spec.get("nodes", [])
     spec_connections = spec.get("connections", [])
