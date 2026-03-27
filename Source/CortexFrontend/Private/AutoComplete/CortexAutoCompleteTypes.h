@@ -34,7 +34,8 @@ enum class ECortexContextChipKind : uint8
 struct FCortexContextChip
 {
     ECortexContextChipKind Kind = ECortexContextChipKind::RawText;
-    FString Label;          // Display text + resolution key
+    FString Label;          // Display text + resolution key (assets: full object path)
+    FString DisplayName;    // Short name for display only (assets: just the asset name; empty for providers/raw)
     FString AssetClass;     // "Blueprint", "DataTable" — copied from FCortexAutoCompleteItem
     FString RouterCommand;  // "blueprint.get_blueprint" — copied from FCortexAutoCompleteItem
 };

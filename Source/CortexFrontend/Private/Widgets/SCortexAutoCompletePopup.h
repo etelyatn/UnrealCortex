@@ -32,6 +32,9 @@ public:
 
     int32 GetItemCount() const { return ItemCount; }
 
+    /** Called with the 0-based item index when a row is clicked. Set before the first Refresh. */
+    TFunction<void(int32)> OnItemSelected;
+
 private:
     TSharedPtr<SVerticalBox> RowContainer;
     TUniquePtr<FSlateRoundedBoxBrush> PopupBrush;
