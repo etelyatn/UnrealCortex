@@ -98,3 +98,98 @@ bool FCortexGraphSubgraphResolveTest::RunTest(const FString& Parameters)
 	TestBP->MarkAsGarbage();
 	return true;
 }
+
+// ── Test 2: Depth limit ─────────────────────────────────────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphSubgraphDepthTest,
+	"Cortex.Graph.Subgraph.DepthLimit",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphSubgraphDepthTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexSubgraphTestUtils;
+
+	UEdGraph* EventGraph = nullptr;
+	UBlueprint* TestBP = CreateTestBP(TEXT("BP_SubgraphDepthTest"), EventGraph);
+	TestNotNull(TEXT("TestBP created"), TestBP);
+	TestNotNull(TEXT("EventGraph found"), EventGraph);
+
+	// Create a chain of 6 nested composites (exceeds limit of 5)
+	UEdGraph* CurrentGraph = EventGraph;
+	for (int32 i = 0; i < 6; ++i)
+	{
+		FString SubName = FString::Printf(TEXT("Level%d"), i);
+		UK2Node_Composite* Composite = CreateComposite(TestBP, CurrentGraph, *SubName);
+		CurrentGraph = Composite->BoundGraph;
+	}
+
+	// 5-deep path should succeed
+	FCortexCommandResult Error;
+	UEdGraph* FiveDeep = FCortexGraphNodeOps::ResolveSubgraph(
+		EventGraph, TEXT("Level0.Level1.Level2.Level3.Level4"), Error);
+	TestNotNull(TEXT("5-deep path resolves"), FiveDeep);
+
+	// 6-deep path should fail with depth exceeded
+	UEdGraph* SixDeep = FCortexGraphNodeOps::ResolveSubgraph(
+		EventGraph, TEXT("Level0.Level1.Level2.Level3.Level4.Level5"), Error);
+	TestNull(TEXT("6-deep path returns null"), SixDeep);
+	TestEqual(TEXT("Error code is SUBGRAPH_DEPTH_EXCEEDED"), Error.ErrorCode, CortexErrorCodes::SubgraphDepthExceeded);
+
+	// 2-deep nested path works
+	UEdGraph* TwoDeep = FCortexGraphNodeOps::ResolveSubgraph(
+		EventGraph, TEXT("Level0.Level1"), Error);
+	TestNotNull(TEXT("2-deep nested path resolves"), TwoDeep);
+	if (TwoDeep)
+	{
+		TestEqual(TEXT("Resolved graph is Level1"), TwoDeep->GetName(), FString(TEXT("Level1")));
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+// ── Test 3: Function graph composite ───────────────────────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphSubgraphFunctionGraphTest,
+	"Cortex.Graph.Subgraph.FunctionGraphComposite",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphSubgraphFunctionGraphTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexSubgraphTestUtils;
+
+	UEdGraph* EventGraph = nullptr;
+	UBlueprint* TestBP = CreateTestBP(TEXT("BP_SubgraphFuncGraphTest"), EventGraph);
+	TestNotNull(TEXT("TestBP created"), TestBP);
+
+	// Add a function graph
+	UEdGraph* FuncGraph = FBlueprintEditorUtils::CreateNewGraph(
+		TestBP,
+		FName(TEXT("MyFunction")),
+		UEdGraph::StaticClass(),
+		UEdGraphSchema_K2::StaticClass()
+	);
+	TestBP->FunctionGraphs.Add(FuncGraph);
+
+	// Create a composite inside the function graph
+	CreateComposite(TestBP, FuncGraph, TEXT("FuncComposite"));
+
+	// Resolve via FindGraph + ResolveSubgraph (mimics how commands work)
+	FCortexCommandResult Error;
+	UEdGraph* FoundFunc = FCortexGraphNodeOps::FindGraph(TestBP, TEXT("MyFunction"), Error);
+	TestNotNull(TEXT("FindGraph finds MyFunction"), FoundFunc);
+
+	UEdGraph* Resolved = FCortexGraphNodeOps::ResolveSubgraph(FoundFunc, TEXT("FuncComposite"), Error);
+	TestNotNull(TEXT("Composite inside function graph resolves"), Resolved);
+	if (Resolved)
+	{
+		TestEqual(TEXT("Resolved graph name"), Resolved->GetName(), FString(TEXT("FuncComposite")));
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
