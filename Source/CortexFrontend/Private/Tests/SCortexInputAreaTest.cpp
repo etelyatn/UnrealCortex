@@ -397,3 +397,61 @@ bool FCortexInputAreaCommitSlashTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaEmptyProviderDropTest,
+    "Cortex.Frontend.InputArea.Resolution.EmptyProviderSilentDrop",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaEmptyProviderDropTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+
+    FString CapturedPrompt;
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea)
+        .OnSendMessage_Lambda([&CapturedPrompt](const FString& Prompt) { CapturedPrompt = Prompt; });
+
+    // Add a provider chip (thisAsset — will return empty since no editor context in test)
+    FCortexContextChip ProviderChip;
+    ProviderChip.Kind = ECortexContextChipKind::Provider;
+    ProviderChip.Label = TEXT("thisAsset");
+    Widget->AddContextChip(ProviderChip);
+
+    // Directly call ResolveAndSend to bypass async (test helper)
+    Widget->TestResolveAndSend(TEXT("Hello"));
+
+    // Provider returned empty → section silently dropped
+    TestFalse(TEXT("No ## Context header for empty provider"),
+        CapturedPrompt.Contains(TEXT("## Context:")));
+    TestTrue(TEXT("User message preserved"), CapturedPrompt.Contains(TEXT("Hello")));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaAssetFallbackTest,
+    "Cortex.Frontend.InputArea.Resolution.AssetRouterErrorFallback",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaAssetFallbackTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+
+    FString CapturedPrompt;
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea)
+        .OnSendMessage_Lambda([&CapturedPrompt](const FString& Prompt) { CapturedPrompt = Prompt; });
+
+    // Add asset chip with empty RouterCommand (unmapped type)
+    FCortexContextChip AssetChip;
+    AssetChip.Kind = ECortexContextChipKind::Asset;
+    AssetChip.Label = TEXT("/Game/SomeUnknownAsset");
+    AssetChip.RouterCommand = TEXT(""); // Unmapped — should fall back to @path
+    Widget->AddContextChip(AssetChip);
+
+    Widget->TestResolveAndSend(TEXT("Hello"));
+
+    TestTrue(TEXT("Falls back to @path for unmapped asset"),
+        CapturedPrompt.Contains(TEXT("@/Game/SomeUnknownAsset")));
+
+    return true;
+}

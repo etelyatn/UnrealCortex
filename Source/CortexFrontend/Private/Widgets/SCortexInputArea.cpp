@@ -3,15 +3,22 @@
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "Async/Async.h"
 #include "Containers/Ticker.h"
 #include "CortexFrontendSettings.h"
+#include "Editor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Input/Events.h"
 #include "InputCoreTypes.h"
 #include "HAL/FileManager.h"
+#include "Logging/TokenizedMessage.h"
+#include "MessageLogModule.h"
+#include "IMessageLogListing.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Rendering/CortexFrontendColors.h"
+#include "Selection.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #include "Session/CortexSessionTypes.h"
 #include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
@@ -800,16 +807,27 @@ void SCortexInputArea::HandleSendOrNewline()
     Text.TrimStartAndEndInline();
     if (Text.IsEmpty()) return;
 
-    // Temporary: prepend chips as @path text (Task 9 replaces with resolution)
-    FString FullPrompt;
-    for (const FCortexContextChip& Chip : ContextItems)
-    {
-        FullPrompt += FString::Printf(TEXT("@%s\n"), *Chip.Label);
-    }
-    FullPrompt += Text;
+    // Lock input immediately — prevents double-send
+    bIsStreaming = true;
+    SetInputEnabled(false);
 
-    OnSendMessage.ExecuteIfBound(FullPrompt);
+    // Capture state before clearing
+    TArray<FCortexContextChip> ChipsToResolve = ContextItems;
+    const FString RawMessage = Text;
     ClearContextChips();
+    InputTextBox->SetText(FText::GetEmpty());
+    PreviousText = FText::GetEmpty();
+
+    // Defer resolution to next Game Thread tick so we don't block inside the key-down event handler
+    AsyncTask(ENamedThreads::GameThread,
+        [WeakThis = TWeakPtr<SCortexInputArea>(SharedThis(this)),
+         ChipsToResolve,
+         RawMessage]()
+    {
+        TSharedPtr<SCortexInputArea> Self = WeakThis.Pin();
+        if (!Self.IsValid()) return;
+        Self->ResolveAndSend(ChipsToResolve, RawMessage);
+    });
 }
 
 FReply SCortexInputArea::OnSendClicked()
@@ -1266,9 +1284,118 @@ void SCortexInputArea::DiscoverSkillsAndAgents()
     ScanDir(ToolkitRoot / TEXT("agents"), ECortexAutoCompleteKind::Agent);
 }
 
-void SCortexInputArea::ResolveAndSend(const TArray<FCortexContextChip>& /*Chips*/, const FString& /*Message*/) {}
-FString SCortexInputArea::ResolveProviderChip(const FString& /*Label*/) { return TEXT(""); }
-FString SCortexInputArea::ResolveAssetChip(const FCortexContextChip& /*Chip*/, bool& bOutSuccess) { bOutSuccess = false; return TEXT(""); }
+void SCortexInputArea::ResolveAndSend(const TArray<FCortexContextChip>& Chips, const FString& Message)
+{
+    FString Preamble;
+
+    for (const FCortexContextChip& Chip : Chips)
+    {
+        if (Chip.Kind == ECortexContextChipKind::Provider)
+        {
+            const FString Resolved = ResolveProviderChip(Chip.Label);
+            if (!Resolved.IsEmpty())
+            {
+                Preamble += FString::Printf(TEXT("## Context: %s\n%s\n\n"), *Chip.Label, *Resolved);
+            }
+            // Empty resolution: silent drop — no section header emitted
+        }
+        else if (Chip.Kind == ECortexContextChipKind::Asset)
+        {
+            bool bSuccess = false;
+            const FString Resolved = ResolveAssetChip(Chip, bSuccess);
+            if (bSuccess)
+            {
+                Preamble += FString::Printf(TEXT("## Context: %s\n%s\n\n"), *Chip.Label, *Resolved);
+            }
+            else
+            {
+                // Fall back: prepend raw @path text
+                Preamble += FString::Printf(TEXT("@%s\n"), *Chip.Label);
+            }
+        }
+        else // RawText
+        {
+            Preamble += FString::Printf(TEXT("@%s\n"), *Chip.Label);
+        }
+    }
+
+    OnSendMessage.ExecuteIfBound(Preamble + Message);
+}
+
+FString SCortexInputArea::ResolveProviderChip(const FString& Label)
+{
+    if (Label == TEXT("thisAsset"))
+    {
+        if (!GEditor) return TEXT("");
+        UAssetEditorSubsystem* Subsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+        if (!Subsystem) return TEXT("");
+        TArray<UObject*> EditedAssets = Subsystem->GetAllEditedAssets();
+        if (EditedAssets.IsEmpty()) return TEXT("");
+
+        FString Result;
+        for (UObject* Asset : EditedAssets)
+        {
+            if (Asset)
+            {
+                Result += FString::Printf(TEXT("- %s (%s)\n"),
+                    *Asset->GetName(), *Asset->GetClass()->GetName());
+            }
+        }
+        return Result;
+    }
+    else if (Label == TEXT("selection"))
+    {
+        if (!GEditor) return TEXT("");
+        USelection* Selection = GEditor->GetSelectedActors();
+        if (!Selection || Selection->Num() == 0) return TEXT("");
+
+        FString Result;
+        for (FSelectionIterator It(*Selection); It; ++It)
+        {
+            if (AActor* Actor = Cast<AActor>(*It))
+            {
+                Result += FString::Printf(TEXT("- %s (%s) at %s\n"),
+                    *Actor->GetActorLabel(),
+                    *Actor->GetClass()->GetName(),
+                    *Actor->GetActorLocation().ToString());
+            }
+        }
+        return Result;
+    }
+    else if (Label == TEXT("problems"))
+    {
+        FMessageLogModule* LogModule = FModuleManager::GetModulePtr<FMessageLogModule>(TEXT("MessageLog"));
+        if (!LogModule) return TEXT("");
+
+        TSharedRef<IMessageLogListing> Listing = LogModule->GetLogListing(TEXT("BlueprintLog"));
+        const TArray<TSharedRef<FTokenizedMessage>>& AllMessages = Listing->GetFilteredMessages();
+        if (AllMessages.IsEmpty()) return TEXT("");
+
+        FString Result;
+        for (const TSharedRef<FTokenizedMessage>& Msg : AllMessages)
+        {
+            const EMessageSeverity::Type Severity = Msg->GetSeverity();
+            if (Severity == EMessageSeverity::Error)
+            {
+                Result += FString::Printf(TEXT("ERROR: %s\n"), *Msg->ToText().ToString());
+            }
+            else if (Severity == EMessageSeverity::Warning)
+            {
+                Result += FString::Printf(TEXT("WARNING: %s\n"), *Msg->ToText().ToString());
+            }
+        }
+        return Result;
+    }
+    return TEXT("");
+}
+
+FString SCortexInputArea::ResolveAssetChip(const FCortexContextChip& Chip, bool& bOutSuccess)
+{
+    bOutSuccess = false;
+    if (Chip.RouterCommand.IsEmpty()) return TEXT("");
+    // Router integration deferred — see tech-debt
+    return TEXT("");
+}
 
 FReply SCortexInputArea::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
