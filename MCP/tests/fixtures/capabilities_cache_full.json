@@ -2529,9 +2529,9 @@
             },
             {
               "name": "target_input",
-              "type": "object",
+              "type": "string",
               "required": true,
-              "description": "Target input pin identifier"
+              "description": "Target input pin name (e.g. 'BaseColor', 'A', 'Input')"
             }
           ]
         },
@@ -2553,9 +2553,9 @@
             },
             {
               "name": "target_input",
-              "type": "object",
+              "type": "string",
               "required": true,
-              "description": "Target input pin identifier"
+              "description": "Target input pin name (e.g. 'BaseColor', 'A', 'Input')"
             }
           ]
         },
