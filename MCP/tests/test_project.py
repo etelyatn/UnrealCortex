@@ -70,14 +70,27 @@ class TestResolveProjectDir:
                 assert result is None
 
     def test_claude_project_dir_fallback(self, tmp_path):
-        """CLAUDE_PROJECT_DIR used when CORTEX_PROJECT_DIR not set."""
+        """CLAUDE_PROJECT_DIR used when CORTEX_PROJECT_DIR not set and .uproject present."""
         project = tmp_path / "GameProject"
         project.mkdir()
+        (project / "MyGame.uproject").touch()
         with patch("cortex_mcp.project._walk_up_for_uproject", return_value=None):
             with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(project)}, clear=False):
                 os.environ.pop("CORTEX_PROJECT_DIR", None)
                 result = resolve_project_dir()
                 assert result == project
+
+    def test_claude_project_dir_without_uproject_falls_through(self, tmp_path):
+        """CLAUDE_PROJECT_DIR without *.uproject is skipped; walk-up is used instead."""
+        project = tmp_path / "NotUnreal"
+        project.mkdir()
+        walk_up_result = tmp_path / "FallbackProject"
+        walk_up_result.mkdir()
+        with patch("cortex_mcp.project._walk_up_for_uproject", return_value=walk_up_result):
+            with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(project)}, clear=False):
+                os.environ.pop("CORTEX_PROJECT_DIR", None)
+                result = resolve_project_dir()
+                assert result == walk_up_result
 
     def test_walk_up_fallback(self, tmp_path):
         """Walk-up is used when no env vars set."""

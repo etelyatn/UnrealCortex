@@ -5,6 +5,7 @@ import os
 import sys
 from mcp.server.fastmcp import FastMCP
 from .capabilities import build_router_docstrings, get_registered_domains, load_capabilities_cache
+from .project import resolve_project_dir as _resolve_project_dir
 from .response import format_response
 from .schema_generator import _decode_data
 from .tcp_client import UEConnection
@@ -94,6 +95,16 @@ def refresh_cache() -> str:
     return '{"cleared": true}'
 # Register explicit consolidated tools only.
 _register_explicit_tools(mcp, _connection)
+
+_project_root = _resolve_project_dir()
+if _project_root:
+    logger.info("Project root resolved to: %s", _project_root)
+else:
+    logger.warning(
+        "Project root not resolved. CORTEX_PROJECT_DIR=%s, CLAUDE_PROJECT_DIR=%s",
+        os.environ.get("CORTEX_PROJECT_DIR", "(not set)"),
+        os.environ.get("CLAUDE_PROJECT_DIR", "(not set)"),
+    )
 
 
 def main():

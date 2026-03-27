@@ -62,8 +62,13 @@ def resolve_project_dir() -> pathlib.Path | None:
     claude_dir = os.environ.get("CLAUDE_PROJECT_DIR")
     if claude_dir:
         claude_path = pathlib.Path(claude_dir)
-        if claude_path.is_dir():
+        if claude_path.is_dir() and list(claude_path.glob("*.uproject")):
             return claude_path.resolve()
+        elif claude_path.is_dir():
+            logger.debug(
+                "CLAUDE_PROJECT_DIR='%s' has no *.uproject, skipping",
+                claude_dir,
+            )
 
     # 3. Walk up from package location
     return _walk_up_for_uproject()
