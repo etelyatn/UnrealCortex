@@ -18,7 +18,6 @@
 #include "Misc/Paths.h"
 #include "Rendering/CortexFrontendColors.h"
 #include "BlueprintEditor.h"
-#include "BlueprintEditorModule.h"
 #include "EdGraph/EdGraphNode.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Selection.h"
@@ -1319,7 +1318,14 @@ void SCortexInputArea::ResolveAndSend(const TArray<FCortexContextChip>& Chips, c
 
         if (End > AtPos + 1)
         {
-            const FString MentionName = Message.Mid(AtPos + 1, End - AtPos - 1);
+            // Strip trailing punctuation so "@selection," and "@selection." both resolve correctly
+            FString MentionName = Message.Mid(AtPos + 1, End - AtPos - 1);
+            while (!MentionName.IsEmpty() && !FChar::IsAlnum(MentionName[MentionName.Len() - 1])
+                   && MentionName[MentionName.Len() - 1] != TEXT('_'))
+            {
+                MentionName.RemoveAt(MentionName.Len() - 1);
+            }
+            if (MentionName.IsEmpty()) { ScanPos = End; continue; }
             if (!ProcessedMentions.Contains(MentionName))
             {
                 ProcessedMentions.Add(MentionName);
@@ -1452,7 +1458,7 @@ FString SCortexInputArea::ResolveProviderChip(const FString& Label)
                 const FGraphPanelSelectionSet SelectedNodes = BPEditor->GetSelectedNodes();
                 if (SelectedNodes.IsEmpty()) continue;
 
-                FString GraphName;
+                FString GraphName = TEXT("(unknown)");
                 if (UEdGraph* FocusedGraph = BPEditor->GetFocusedGraph())
                 {
                     GraphName = FocusedGraph->GetFName().ToString();
