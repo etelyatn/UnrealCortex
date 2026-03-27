@@ -1,11 +1,27 @@
 #include "Widgets/SCortexInputArea.h"
 
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "Async/Async.h"
+#include "Containers/Ticker.h"
 #include "CortexFrontendSettings.h"
+#include "Editor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Input/Events.h"
 #include "InputCoreTypes.h"
+#include "HAL/FileManager.h"
+#include "Logging/TokenizedMessage.h"
+#include "MessageLogModule.h"
+#include "IMessageLogListing.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Rendering/CortexFrontendColors.h"
+#include "BlueprintEditor.h"
+#include "EdGraph/EdGraphNode.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Selection.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #include "Session/CortexSessionTypes.h"
 #include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
@@ -13,6 +29,8 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SMenuAnchor.h"
+#include "Widgets/SCortexAutoCompletePopup.h"
+#include "Widgets/CortexMentionMarshaller.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
@@ -55,6 +73,29 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
         CortexColors::ChipBackground, 6.0f,
         CortexColors::CodeBorder, 1.0f);
 
+    AutoCompletePopup = SNew(SCortexAutoCompletePopup);
+    AutoCompletePopup->OnItemSelected = [this](int32 Index)
+    {
+        AutoCompleteSelectedIndex = Index;
+        CommitSelection();
+    };
+    PopulateProviders();
+    PopulateCoreCommands();
+
+    MentionMarshaller = FCortexMentionMarshaller::Create(FCoreStyle::GetDefaultFontStyle("Regular", 11));
+
+    // Defer skill/agent discovery one frame to avoid Game Thread I/O during construction
+    DiscoveryTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateLambda([WeakThis = TWeakPtr<SCortexInputArea>(SharedThis(this))](float) -> bool
+        {
+            if (TSharedPtr<SCortexInputArea> Self = WeakThis.Pin())
+            {
+                Self->DiscoverSkillsAndAgents();
+            }
+            return false; // Fire once only
+        }),
+        0.0f);
+
     ChildSlot
     [
         SNew(SVerticalBox)
@@ -66,27 +107,74 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
             .UseAllottedSize(true)
             .Visibility(EVisibility::Collapsed)
         ]
-        // Section 2: Textarea
+        // Section 2: Textarea (wrapped in SMenuAnchor for autocomplete popup)
         + SVerticalBox::Slot()
         .AutoHeight()
         .Padding(FMargin(12.0f, 8.0f, 12.0f, 4.0f))
         [
-            SNew(SBox)
-            .MinDesiredHeight(44.0f)
-            [
-                SAssignNew(InputTextBox, SMultiLineEditableTextBox)
-                .HintText(FText::FromString(TEXT("@ for context or ask anything...")))
-                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
-                .AutoWrapText(true)
-            .OnKeyDownHandler_Lambda([this](const FGeometry&, const FKeyEvent& KeyEvent)
+            SAssignNew(AutoCompleteAnchor, SMenuAnchor)
+            .Placement(MenuPlacement_AboveAnchor)
+            .UseApplicationMenuStack(false) // Popup never steals focus; dismiss handled by OnFocusLost
+            .OnGetMenuContent_Lambda([PopupWidget = AutoCompletePopup]() -> TSharedRef<SWidget>
             {
-                if (KeyEvent.GetKey() == EKeys::Enter && !KeyEvent.IsShiftDown())
-                {
-                    HandleSendOrNewline();
-                    return FReply::Handled();
-                }
-                return FReply::Unhandled();
+                return PopupWidget.IsValid() ? PopupWidget.ToSharedRef() : SNullWidget::NullWidget;
             })
+            [
+                SNew(SBox)
+                .MinDesiredHeight(72.0f)
+                [
+                    SAssignNew(InputTextBox, SMultiLineEditableTextBox)
+                    .HintText(FText::FromString(TEXT("@ for context or ask anything...")))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
+                    .Marshaller(MentionMarshaller)
+                    .AutoWrapText(true)
+                    .OnTextChanged_Lambda([this](const FText& NewText)
+                    {
+                        HandleTextChanged(NewText);
+                    })
+                    .OnKeyDownHandler_Lambda([this](const FGeometry&, const FKeyEvent& KeyEvent) -> FReply
+                    {
+                        if (bAutoCompleteOpen)
+                        {
+                            if (KeyEvent.GetKey() == EKeys::Up)
+                            {
+                                AutoCompleteSelectedIndex = FMath::Max(0, AutoCompleteSelectedIndex - 1);
+                                if (AutoCompletePopup.IsValid())
+                                {
+                                    AutoCompletePopup->Refresh(FilteredItems, AutoCompleteSelectedIndex,
+                                        ActiveTrigger == TEXT('@') ? ProviderItems.Num() - 1 : INDEX_NONE);
+                                }
+                                return FReply::Handled();
+                            }
+                            if (KeyEvent.GetKey() == EKeys::Down)
+                            {
+                                AutoCompleteSelectedIndex = FMath::Min(FilteredItems.Num() - 1, AutoCompleteSelectedIndex + 1);
+                                if (AutoCompletePopup.IsValid())
+                                {
+                                    AutoCompletePopup->Refresh(FilteredItems, AutoCompleteSelectedIndex,
+                                        ActiveTrigger == TEXT('@') ? ProviderItems.Num() - 1 : INDEX_NONE);
+                                }
+                                return FReply::Handled();
+                            }
+                            if (KeyEvent.GetKey() == EKeys::Enter || KeyEvent.GetKey() == EKeys::Tab)
+                            {
+                                CommitSelection();
+                                return FReply::Handled();
+                            }
+                            if (KeyEvent.GetKey() == EKeys::Escape)
+                            {
+                                ClosePopup();
+                                return FReply::Handled();
+                            }
+                        }
+                        if (KeyEvent.GetKey() == EKeys::Enter && !KeyEvent.IsShiftDown() && !bAutoCompleteOpen)
+                        {
+                            HandleSendOrNewline();
+                            return FReply::Handled();
+                        }
+                        return FReply::Unhandled();
+                    })
+                ]
             ]
         ]
         // Section 3: Controls row
@@ -726,26 +814,33 @@ void SCortexInputArea::FocusInput()
 
 void SCortexInputArea::HandleSendOrNewline()
 {
-    if (bIsStreaming || !InputTextBox.IsValid())
-    {
-        return;
-    }
+    if (bIsStreaming || !InputTextBox.IsValid()) return;
 
     FString Text = InputTextBox->GetText().ToString();
     Text.TrimStartAndEndInline();
-    if (!Text.IsEmpty())
-    {
-        // Prepend context chips as @path references
-        FString FullPrompt;
-        for (const FString& Item : ContextItems)
-        {
-            FullPrompt += FString::Printf(TEXT("@%s\n"), *Item);
-        }
-        FullPrompt += Text;
+    if (Text.IsEmpty()) return;
 
-        OnSendMessage.ExecuteIfBound(FullPrompt);
-        ClearContextItems();
-    }
+    // Lock input immediately — prevents double-send
+    bIsStreaming = true;
+    SetInputEnabled(false);
+
+    // Capture state before clearing
+    TArray<FCortexContextChip> ChipsToResolve = ContextItems;
+    const FString RawMessage = Text;
+    ClearContextChips();
+    InputTextBox->SetText(FText::GetEmpty());
+    PreviousText = FText::GetEmpty();
+
+    // Defer resolution to next Game Thread tick so we don't block inside the key-down event handler
+    AsyncTask(ENamedThreads::GameThread,
+        [WeakThis = TWeakPtr<SCortexInputArea>(SharedThis(this)),
+         ChipsToResolve,
+         RawMessage]()
+    {
+        TSharedPtr<SCortexInputArea> Self = WeakThis.Pin();
+        if (!Self.IsValid()) return;
+        Self->ResolveAndSend(ChipsToResolve, RawMessage);
+    });
 }
 
 FReply SCortexInputArea::OnSendClicked()
@@ -761,13 +856,13 @@ FReply SCortexInputArea::OnSendClicked()
     return FReply::Handled();
 }
 
-void SCortexInputArea::AddContextItem(const FString& Path)
+void SCortexInputArea::AddContextChip(const FCortexContextChip& Chip)
 {
-    ContextItems.Add(Path);
+    ContextItems.Add(Chip);
     RebuildChips();
 }
 
-void SCortexInputArea::RemoveContextItem(int32 Index)
+void SCortexInputArea::RemoveContextChip(int32 Index)
 {
     if (ContextItems.IsValidIndex(Index))
     {
@@ -776,30 +871,28 @@ void SCortexInputArea::RemoveContextItem(int32 Index)
     }
 }
 
-void SCortexInputArea::ClearContextItems()
+void SCortexInputArea::ClearContextChips()
 {
     ContextItems.Empty();
     RebuildChips();
 }
 
-const TArray<FString>& SCortexInputArea::GetContextItems() const
+const TArray<FCortexContextChip>& SCortexInputArea::GetContextChips() const
 {
     return ContextItems;
 }
 
 void SCortexInputArea::RebuildChips()
 {
-    if (!ChipRow.IsValid())
-    {
-        return;
-    }
-
+    if (!ChipRow.IsValid()) return;
     ChipRow->ClearChildren();
 
     for (int32 i = 0; i < ContextItems.Num(); ++i)
     {
-        const FString& Item = ContextItems[i];
-        FString Filename = FPaths::GetCleanFilename(Item);
+        const FCortexContextChip& Chip = ContextItems[i];
+        const FString DisplayLabel = Chip.Kind == ECortexContextChipKind::Provider
+            ? FString::Printf(TEXT("@%s"), *Chip.Label)
+            : (Chip.DisplayName.IsEmpty() ? Chip.Label : Chip.DisplayName);
 
         const int32 ChipIndex = i;
         ChipRow->AddSlot()
@@ -816,7 +909,7 @@ void SCortexInputArea::RebuildChips()
                 .VAlign(VAlign_Center)
                 [
                     SNew(STextBlock)
-                    .Text(FText::FromString(Filename))
+                    .Text(FText::FromString(DisplayLabel))
                     .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
                     .ColorAndOpacity(FSlateColor(CortexColors::ChipNameColor))
                 ]
@@ -829,7 +922,7 @@ void SCortexInputArea::RebuildChips()
                     .ButtonStyle(FCoreStyle::Get(), "NoBorder")
                     .OnClicked_Lambda([this, ChipIndex]()
                     {
-                        RemoveContextItem(ChipIndex);
+                        RemoveContextChip(ChipIndex);
                         return FReply::Handled();
                     })
                     [
@@ -844,4 +937,654 @@ void SCortexInputArea::RebuildChips()
     }
 
     ChipRow->SetVisibility(ContextItems.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed);
+}
+
+SCortexInputArea::~SCortexInputArea()
+{
+    if (DiscoveryTickerHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(DiscoveryTickerHandle);
+    }
+    if (AssetLoadedDelegateHandle.IsValid())
+    {
+        if (FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")))
+        {
+            IAssetRegistry& AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+            AssetRegistry.OnFilesLoaded().Remove(AssetLoadedDelegateHandle);
+        }
+    }
+}
+
+void SCortexInputArea::HandleTextChanged(const FText& NewText)
+{
+    const FString NewStr = NewText.ToString();
+    const FString OldStr = PreviousText.ToString();
+    PreviousText = NewText;
+
+    // Only process single-character insertions (guards against paste, IME, select-all+type)
+    const int32 LenDiff = NewStr.Len() - OldStr.Len();
+
+    if (bAutoCompleteOpen)
+    {
+        // Check if trigger character still present at TriggerOffset
+        if (!NewStr.IsValidIndex(TriggerOffset) || NewStr[TriggerOffset] != ActiveTrigger)
+        {
+            ClosePopup();
+            return;
+        }
+        // Re-filter with updated query (everything after trigger char)
+        FilterItems(NewStr.Mid(TriggerOffset + 1));
+        return;
+    }
+
+    // Must be a single-char insertion to trigger
+    if (LenDiff != 1) return;
+
+    // Find insertion position: first character that differs
+    int32 InsertPos = 0;
+    while (InsertPos < OldStr.Len() && OldStr[InsertPos] == NewStr[InsertPos])
+    {
+        ++InsertPos;
+    }
+    const TCHAR InsertedChar = NewStr[InsertPos];
+
+    if (InsertedChar == TEXT('@'))
+    {
+        TriggerOffset = InsertPos;
+        ActiveTrigger = TEXT('@');
+        LoadAssetCache(); // lazy load — no-op if already populated
+        OpenPopup();
+        FilterItems(TEXT(""));
+    }
+    else if (InsertedChar == TEXT('/') && InsertPos == 0)
+    {
+        TriggerOffset = 0;
+        ActiveTrigger = TEXT('/');
+        OpenPopup();
+        FilterItems(TEXT(""));
+    }
+}
+
+bool SCortexInputArea::IsAutoCompleteOpen() const
+{
+    return bAutoCompleteOpen;
+}
+
+FText SCortexInputArea::GetInputText() const
+{
+    return InputTextBox.IsValid() ? InputTextBox->GetText() : FText::GetEmpty();
+}
+
+void SCortexInputArea::OpenPopup()
+{
+    bAutoCompleteOpen = true;
+    if (AutoCompleteAnchor.IsValid())
+    {
+        AutoCompleteAnchor->SetIsOpen(true);
+    }
+    // Restore keyboard focus — SMenuAnchor::SetIsOpen may shift focus away from the text box
+    FocusInput();
+}
+
+void SCortexInputArea::ClosePopup()
+{
+    bAutoCompleteOpen = false;
+    TriggerOffset = INDEX_NONE;
+    ActiveTrigger = TEXT('\0');
+    FilteredItems.Reset();
+    AutoCompleteSelectedIndex = 0;
+    if (AutoCompleteAnchor.IsValid())
+    {
+        AutoCompleteAnchor->SetIsOpen(false);
+    }
+    if (AutoCompletePopup.IsValid())
+    {
+        AutoCompletePopup->Refresh({}, INDEX_NONE, INDEX_NONE);
+    }
+}
+void SCortexInputArea::PopulateProviders()
+{
+    auto MakeProvider = [](const FString& Name, const FString& Desc) -> TSharedPtr<FCortexAutoCompleteItem>
+    {
+        auto Item = MakeShared<FCortexAutoCompleteItem>();
+        Item->Name = Name;
+        Item->Description = Desc;
+        Item->Kind = ECortexAutoCompleteKind::ContextProvider;
+        return Item;
+    };
+
+    ProviderItems.Reset();
+    ProviderItems.Add(MakeProvider(TEXT("thisAsset"), TEXT("Refer to currently open asset")));
+    ProviderItems.Add(MakeProvider(TEXT("selection"), TEXT("Refer to selected graph nodes or actors")));
+    ProviderItems.Add(MakeProvider(TEXT("problems"), TEXT("Refer to current problems")));
+}
+
+void SCortexInputArea::FilterItems(const FString& Query)
+{
+    FilteredItems.Reset();
+    AutoCompleteSelectedIndex = 0;
+    int32 DividerAfterIndex = INDEX_NONE;
+
+    if (ActiveTrigger == TEXT('@'))
+    {
+        // Filter providers by query
+        for (const TSharedPtr<FCortexAutoCompleteItem>& Item : ProviderItems)
+        {
+            if (Query.IsEmpty() || CortexAutoComplete::FilterAndScore(Query, Item->Name) > 0)
+            {
+                FilteredItems.Add(Item);
+            }
+        }
+        const int32 NumProviders = FilteredItems.Num();
+        if (NumProviders > 0) DividerAfterIndex = NumProviders - 1;
+
+        // Add fuzzy-matched assets (up to 10 total)
+        if (!Query.IsEmpty())
+        {
+            TArray<TPair<int32, TSharedPtr<FCortexAutoCompleteItem>>> Scored;
+            for (const TSharedPtr<FCortexAutoCompleteItem>& Asset : AssetCache)
+            {
+                const int32 Score = CortexAutoComplete::FilterAndScore(Query, Asset->Name);
+                if (Score > 0) Scored.Add({Score, Asset});
+            }
+            Scored.Sort([](const TPair<int32, TSharedPtr<FCortexAutoCompleteItem>>& A,
+                          const TPair<int32, TSharedPtr<FCortexAutoCompleteItem>>& B)
+            {
+                return A.Key > B.Key;
+            });
+            const int32 MaxTotal = 10;
+            for (int32 i = 0; i < Scored.Num() && FilteredItems.Num() < MaxTotal; ++i)
+            {
+                FilteredItems.Add(Scored[i].Value);
+            }
+        }
+        else if (bAssetCacheLoading)
+        {
+            auto Loading = MakeShared<FCortexAutoCompleteItem>();
+            Loading->Name = TEXT("Scanning assets...");
+            Loading->Description = TEXT("");
+            Loading->Kind = ECortexAutoCompleteKind::Asset;
+            FilteredItems.Add(Loading);
+        }
+    }
+    else if (ActiveTrigger == TEXT('/'))
+    {
+        TArray<TPair<int32, TSharedPtr<FCortexAutoCompleteItem>>> Scored;
+        for (const TSharedPtr<FCortexAutoCompleteItem>& Cmd : CommandCache)
+        {
+            const int32 Score = CortexAutoComplete::FilterAndScore(Query, Cmd->Name);
+            if (Score > 0) Scored.Add({Score, Cmd});
+        }
+        Scored.Sort([](const TPair<int32, TSharedPtr<FCortexAutoCompleteItem>>& A,
+                      const TPair<int32, TSharedPtr<FCortexAutoCompleteItem>>& B)
+        {
+            return A.Key > B.Key;
+        });
+        for (int32 i = 0; i < FMath::Min(Scored.Num(), 10); ++i)
+        {
+            FilteredItems.Add(Scored[i].Value);
+        }
+    }
+
+    if (AutoCompletePopup.IsValid())
+    {
+        AutoCompletePopup->Refresh(FilteredItems, AutoCompleteSelectedIndex, DividerAfterIndex);
+    }
+}
+
+void SCortexInputArea::CommitSelection()
+{
+    if (!FilteredItems.IsValidIndex(AutoCompleteSelectedIndex)) return;
+    const TSharedPtr<FCortexAutoCompleteItem>& Selected = FilteredItems[AutoCompleteSelectedIndex];
+
+    if (ActiveTrigger == TEXT('@'))
+    {
+        // Insert @Name inline — no chip; marshaller colors it blue
+        if (InputTextBox.IsValid())
+        {
+            const FString Current = InputTextBox->GetText().ToString();
+            const FString Before = Current.Left(TriggerOffset);
+            const FString Mention = TEXT("@") + Selected->Name + TEXT(" ");
+            const FString NewText = Before + Mention;
+            InputTextBox->SetText(FText::FromString(NewText));
+            PreviousText = FText::FromString(NewText);
+        }
+    }
+    else if (ActiveTrigger == TEXT('/'))
+    {
+        // Replace input with "/CommandName " ready for user's prompt
+        if (InputTextBox.IsValid())
+        {
+            const FString NewText = TEXT("/") + Selected->Name + TEXT(" ");
+            InputTextBox->SetText(FText::FromString(NewText));
+            PreviousText = FText::FromString(NewText);
+        }
+    }
+
+    ClosePopup();
+    FocusInput();
+}
+
+void SCortexInputArea::LoadAssetCache()
+{
+    if (!AssetCache.IsEmpty()) return; // Already loaded
+
+    IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+
+    if (AssetRegistry.IsLoadingAssets())
+    {
+        bAssetCacheLoading = true;
+        AssetLoadedDelegateHandle = AssetRegistry.OnFilesLoaded().AddLambda([WeakThis = TWeakPtr<SCortexInputArea>(SharedThis(this))]()
+        {
+            if (TSharedPtr<SCortexInputArea> Self = WeakThis.Pin())
+            {
+                Self->bAssetCacheLoading = false;
+                Self->LoadAssetCache();
+                if (Self->bAutoCompleteOpen && Self->ActiveTrigger == TEXT('@'))
+                {
+                    const FString Query = Self->PreviousText.ToString().Mid(Self->TriggerOffset + 1);
+                    Self->FilterItems(Query);
+                }
+            }
+        });
+        return;
+    }
+
+    // Router command mapping by Asset Registry class name
+    auto GetRouterCommand = [](const FString& ClassName) -> FString
+    {
+        if (ClassName == TEXT("Blueprint"))                 return TEXT("blueprint.get_blueprint");
+        if (ClassName == TEXT("WidgetBlueprint"))           return TEXT("umg.get_widget");
+        if (ClassName == TEXT("DataTable"))                 return TEXT("data.get_datatable");
+        if (ClassName == TEXT("Material"))                  return TEXT("material.get_material");
+        if (ClassName == TEXT("MaterialInstanceConstant"))  return TEXT("material.get_material");
+        if (ClassName == TEXT("MaterialInterface"))         return TEXT("material.get_material");
+        return TEXT(""); // Unknown — fall back to raw @path
+    };
+
+    AssetRegistry.EnumerateAllAssets([this, &GetRouterCommand](const FAssetData& AssetData)
+    {
+        if (!AssetData.PackagePath.ToString().StartsWith(TEXT("/Game"))) return true;
+
+        const FString ClassName = AssetData.AssetClassPath.GetAssetName().ToString();
+        const FString PackagePath = AssetData.PackagePath.ToString();
+        const FString RelFolder = PackagePath.Mid(6); // strip "/Game/"
+
+        auto Item = MakeShared<FCortexAutoCompleteItem>();
+        Item->Name = AssetData.AssetName.ToString();
+        Item->Description = FString::Printf(TEXT("%s · %s"), *ClassName, *RelFolder);
+        Item->FullPath = AssetData.GetObjectPathString();
+        Item->RouterCommand = GetRouterCommand(ClassName);
+        Item->AssetClass = ClassName;
+        Item->Kind = ECortexAutoCompleteKind::Asset;
+        AssetCache.Add(Item);
+        return true; // Continue enumeration
+    }, UE::AssetRegistry::EEnumerateAssetsFlags::OnlyOnDiskAssets);
+}
+
+void SCortexInputArea::PopulateCoreCommands()
+{
+    auto MakeCmd = [](const FString& Name, const FString& Desc, ECortexAutoCompleteKind Kind) -> TSharedPtr<FCortexAutoCompleteItem>
+    {
+        auto Item = MakeShared<FCortexAutoCompleteItem>();
+        Item->Name = Name;
+        Item->Description = Desc;
+        Item->Kind = Kind;
+        return Item;
+    };
+
+    CommandCache.Reset();
+    CommandCache.Add(MakeCmd(TEXT("help"),    TEXT("Get help with Claude Code"),    ECortexAutoCompleteKind::CoreCommand));
+    CommandCache.Add(MakeCmd(TEXT("clear"),   TEXT("Clear conversation history"),  ECortexAutoCompleteKind::CoreCommand));
+    CommandCache.Add(MakeCmd(TEXT("compact"), TEXT("Compact conversation context"), ECortexAutoCompleteKind::CoreCommand));
+}
+
+FString SCortexInputArea::ParseFrontmatterField(const FString& FileContent, const FString& FieldName)
+{
+    // Find text between first and second --- delimiters
+    const int32 FirstDelim = FileContent.Find(TEXT("---"));
+    if (FirstDelim == INDEX_NONE) return TEXT("");
+    const int32 ContentStart = FirstDelim + 3;
+    const int32 SecondDelim = FileContent.Find(TEXT("---"), ESearchCase::CaseSensitive, ESearchDir::FromStart, ContentStart);
+    if (SecondDelim == INDEX_NONE) return TEXT("");
+    const FString Frontmatter = FileContent.Mid(ContentStart, SecondDelim - ContentStart);
+
+    // Line-by-line parse: find "FieldName: value"
+    TArray<FString> Lines;
+    Frontmatter.ParseIntoArrayLines(Lines);
+    const FString Prefix = FieldName + TEXT(":");
+    for (const FString& Line : Lines)
+    {
+        if (Line.StartsWith(Prefix))
+        {
+            FString Value = Line.Mid(Prefix.Len());
+            Value.TrimStartAndEndInline();
+            return Value;
+        }
+    }
+    return TEXT("");
+}
+
+void SCortexInputArea::DiscoverSkillsAndAgents()
+{
+    const FString ToolkitRoot = FPaths::ConvertRelativePathToFull(
+        FPaths::ProjectDir() / TEXT("cortex-toolkit"));
+
+    auto ScanDir = [this](const FString& DirPath, ECortexAutoCompleteKind Kind)
+    {
+        if (!FPaths::DirectoryExists(DirPath)) return;
+
+        TArray<FString> Files;
+        IFileManager::Get().FindFilesRecursive(Files, *DirPath, TEXT("*.md"), true, false);
+
+        for (const FString& FilePath : Files)
+        {
+            FString Content;
+            if (!FFileHelper::LoadFileToString(Content, *FilePath)) continue;
+
+            FString Name = ParseFrontmatterField(Content, TEXT("name"));
+            FString Desc = ParseFrontmatterField(Content, TEXT("description"));
+            if (Name.IsEmpty()) continue;
+
+            auto Item = MakeShared<FCortexAutoCompleteItem>();
+            Item->Name = Name;
+            Item->Description = Desc.IsEmpty() ? FilePath : Desc;
+            Item->Kind = Kind;
+            CommandCache.Add(Item);
+        }
+    };
+
+    ScanDir(ToolkitRoot / TEXT("skills"), ECortexAutoCompleteKind::Skill);
+    ScanDir(ToolkitRoot / TEXT("agents"), ECortexAutoCompleteKind::Agent);
+}
+
+void SCortexInputArea::ResolveAndSend(const TArray<FCortexContextChip>& Chips, const FString& Message)
+{
+    FString Preamble;
+
+    // Resolve inline @mentions embedded in the message text (deduped)
+    TArray<FString> ProcessedMentions;
+    int32 ScanPos = 0;
+    while (ScanPos < Message.Len())
+    {
+        int32 AtPos = Message.Find(TEXT("@"), ESearchCase::CaseSensitive, ESearchDir::FromStart, ScanPos);
+        if (AtPos == INDEX_NONE) break;
+
+        int32 End = AtPos + 1;
+        while (End < Message.Len() && !FChar::IsWhitespace(Message[End]))
+        {
+            ++End;
+        }
+
+        if (End > AtPos + 1)
+        {
+            // Strip trailing punctuation so "@selection," and "@selection." both resolve correctly
+            FString MentionName = Message.Mid(AtPos + 1, End - AtPos - 1);
+            while (!MentionName.IsEmpty() && !FChar::IsAlnum(MentionName[MentionName.Len() - 1])
+                   && MentionName[MentionName.Len() - 1] != TEXT('_'))
+            {
+                MentionName.RemoveAt(MentionName.Len() - 1);
+            }
+            if (MentionName.IsEmpty()) { ScanPos = End; continue; }
+            if (!ProcessedMentions.Contains(MentionName))
+            {
+                ProcessedMentions.Add(MentionName);
+
+                const bool bIsProvider =
+                    MentionName == TEXT("thisAsset") ||
+                    MentionName == TEXT("selection") ||
+                    MentionName == TEXT("problems");
+
+                if (bIsProvider)
+                {
+                    const FString Resolved = ResolveProviderChip(MentionName);
+                    if (!Resolved.IsEmpty())
+                    {
+                        Preamble += FString::Printf(TEXT("## Context: %s\n%s\n\n"), *MentionName, *Resolved);
+                    }
+                    // Empty: silent drop
+                }
+                else
+                {
+                    // Look up in asset cache by display name
+                    for (const TSharedPtr<FCortexAutoCompleteItem>& Item : AssetCache)
+                    {
+                        if (Item->Name == MentionName)
+                        {
+                            FCortexContextChip AssetChip;
+                            AssetChip.Kind = ECortexContextChipKind::Asset;
+                            AssetChip.Label = Item->FullPath;
+                            AssetChip.DisplayName = Item->Name;
+                            AssetChip.AssetClass = Item->AssetClass;
+                            AssetChip.RouterCommand = Item->RouterCommand;
+                            bool bSuccess = false;
+                            const FString Resolved = ResolveAssetChip(AssetChip, bSuccess);
+                            if (bSuccess)
+                            {
+                                Preamble += FString::Printf(TEXT("## Context: %s\n%s\n\n"), *Item->FullPath, *Resolved);
+                            }
+                            // On failure: @mention stays in text — no extra preamble needed
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        ScanPos = End;
+    }
+
+    // Also resolve any attached chips (e.g., future "Attach File" UI)
+    for (const FCortexContextChip& Chip : Chips)
+    {
+        if (Chip.Kind == ECortexContextChipKind::Provider)
+        {
+            const FString Resolved = ResolveProviderChip(Chip.Label);
+            if (!Resolved.IsEmpty())
+            {
+                Preamble += FString::Printf(TEXT("## Context: %s\n%s\n\n"), *Chip.Label, *Resolved);
+            }
+        }
+        else if (Chip.Kind == ECortexContextChipKind::Asset)
+        {
+            bool bSuccess = false;
+            const FString Resolved = ResolveAssetChip(Chip, bSuccess);
+            if (bSuccess)
+            {
+                Preamble += FString::Printf(TEXT("## Context: %s\n%s\n\n"), *Chip.Label, *Resolved);
+            }
+            else
+            {
+                const FString& FallbackName = Chip.DisplayName.IsEmpty() ? Chip.Label : Chip.DisplayName;
+                Preamble += FString::Printf(TEXT("@%s\n"), *FallbackName);
+            }
+        }
+        else // RawText
+        {
+            Preamble += FString::Printf(TEXT("@%s\n"), *Chip.Label);
+        }
+    }
+
+    OnSendMessage.ExecuteIfBound(Preamble + Message);
+}
+
+FString SCortexInputArea::ResolveProviderChip(const FString& Label)
+{
+    if (Label == TEXT("thisAsset"))
+    {
+        if (!GEditor) return TEXT("");
+        UAssetEditorSubsystem* Subsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+        if (!Subsystem) return TEXT("");
+        TArray<UObject*> EditedAssets = Subsystem->GetAllEditedAssets();
+        if (EditedAssets.IsEmpty()) return TEXT("");
+
+        FString Result;
+        for (UObject* Asset : EditedAssets)
+        {
+            if (Asset)
+            {
+                Result += FString::Printf(TEXT("- %s (%s)\n"),
+                    *Asset->GetName(), *Asset->GetClass()->GetName());
+            }
+        }
+        return Result;
+    }
+    else if (Label == TEXT("selection"))
+    {
+        if (!GEditor) return TEXT("");
+
+        // 1. Check open Blueprint editors for selected graph nodes.
+        // GetIBlueprintEditorForObject covers all Blueprint types (regular, Anim BP, Widget BP)
+        // because it queries FToolkitManager, not FBlueprintEditorModule.
+        UAssetEditorSubsystem* AssetEdSub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+        if (AssetEdSub)
+        {
+            for (UObject* Asset : AssetEdSub->GetAllEditedAssets())
+            {
+                UBlueprint* BP = Cast<UBlueprint>(Asset);
+                if (!BP) continue;
+
+                TSharedPtr<IBlueprintEditor> IBPEditor =
+                    FKismetEditorUtilities::GetIBlueprintEditorForObject(BP, false);
+                if (!IBPEditor.IsValid()) continue;
+
+                // Cast once and read both selection set and blueprint obj from FBlueprintEditor.
+                // Safe in UE 5.6: all IBlueprintEditor implementations (FBlueprintEditor,
+                // FAnimationBlueprintEditor via IAnimationBlueprintEditor, FWidgetBlueprintEditor)
+                // are subclasses of FBlueprintEditor. GetIBlueprintEditorForObject also verifies
+                // IsBlueprintEditor() before returning, so the downcast is guarded.
+                TSharedPtr<FBlueprintEditor> BPEditor =
+                    StaticCastSharedPtr<FBlueprintEditor>(IBPEditor);
+
+                const FGraphPanelSelectionSet SelectedNodes = BPEditor->GetSelectedNodes();
+                if (SelectedNodes.IsEmpty()) continue;
+
+                FString GraphName = TEXT("(unknown)");
+                if (UEdGraph* FocusedGraph = BPEditor->GetFocusedGraph())
+                {
+                    GraphName = FocusedGraph->GetFName().ToString();
+                }
+
+                FString Result = FString::Printf(
+                    TEXT("Blueprint context:\n  Blueprint: %s (%s)\n  Graph: %s\n  Selected nodes (%d):\n"),
+                    *BP->GetName(), *BP->GetPathName(),
+                    *GraphName,
+                    SelectedNodes.Num());
+
+                for (UObject* Node : SelectedNodes)
+                {
+                    if (UEdGraphNode* GraphNode = Cast<UEdGraphNode>(Node))
+                    {
+                        Result += FString::Printf(TEXT("    - %s [%s]\n"),
+                            *GraphNode->GetNodeTitle(ENodeTitleType::ListView).ToString(),
+                            *GraphNode->GetClass()->GetName());
+                    }
+                }
+                return Result;
+            }
+        }
+
+        // 2. Fall back to level viewport selected actors
+        USelection* ActorSelection = GEditor->GetSelectedActors();
+        if (!ActorSelection || ActorSelection->Num() == 0) return TEXT("");
+
+        FString Result = FString::Printf(TEXT("Level viewport selection (%d actors):\n"), ActorSelection->Num());
+        for (FSelectionIterator It(*ActorSelection); It; ++It)
+        {
+            if (AActor* Actor = Cast<AActor>(*It))
+            {
+                Result += FString::Printf(TEXT("  - %s (%s) at %s\n"),
+                    *Actor->GetActorLabel(),
+                    *Actor->GetClass()->GetName(),
+                    *Actor->GetActorLocation().ToString());
+            }
+        }
+        return Result;
+    }
+    else if (Label == TEXT("problems"))
+    {
+        FMessageLogModule* LogModule = FModuleManager::GetModulePtr<FMessageLogModule>(TEXT("MessageLog"));
+        if (!LogModule) return TEXT("");
+
+        TSharedRef<IMessageLogListing> Listing = LogModule->GetLogListing(TEXT("BlueprintLog"));
+        const TArray<TSharedRef<FTokenizedMessage>>& AllMessages = Listing->GetFilteredMessages();
+        if (AllMessages.IsEmpty()) return TEXT("");
+
+        FString Result;
+        for (const TSharedRef<FTokenizedMessage>& Msg : AllMessages)
+        {
+            const EMessageSeverity::Type Severity = Msg->GetSeverity();
+            if (Severity == EMessageSeverity::Error)
+            {
+                Result += FString::Printf(TEXT("ERROR: %s\n"), *Msg->ToText().ToString());
+            }
+            else if (Severity == EMessageSeverity::Warning)
+            {
+                Result += FString::Printf(TEXT("WARNING: %s\n"), *Msg->ToText().ToString());
+            }
+        }
+        return Result;
+    }
+    return TEXT("");
+}
+
+FString SCortexInputArea::ResolveAssetChip(const FCortexContextChip& Chip, bool& bOutSuccess)
+{
+    bOutSuccess = false;
+    if (Chip.RouterCommand.IsEmpty()) return TEXT("");
+    // Router integration deferred — see tech-debt
+    return TEXT("");
+}
+
+FReply SCortexInputArea::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+    // Autocomplete navigation duplicated here because:
+    // 1. OnKeyDownHandler_Lambda handles keys when the inner SMultiLineEditableTextBox has focus (normal usage)
+    // 2. This override handles keys when tests call OnKeyDown directly on the compound widget
+    if (bAutoCompleteOpen)
+    {
+        if (InKeyEvent.GetKey() == EKeys::Up)
+        {
+            AutoCompleteSelectedIndex = FMath::Max(0, AutoCompleteSelectedIndex - 1);
+            if (AutoCompletePopup.IsValid())
+            {
+                AutoCompletePopup->Refresh(FilteredItems, AutoCompleteSelectedIndex,
+                    ActiveTrigger == TEXT('@') ? ProviderItems.Num() - 1 : INDEX_NONE);
+            }
+            return FReply::Handled();
+        }
+        if (InKeyEvent.GetKey() == EKeys::Down)
+        {
+            AutoCompleteSelectedIndex = FMath::Min(FilteredItems.Num() - 1, AutoCompleteSelectedIndex + 1);
+            if (AutoCompletePopup.IsValid())
+            {
+                AutoCompletePopup->Refresh(FilteredItems, AutoCompleteSelectedIndex,
+                    ActiveTrigger == TEXT('@') ? ProviderItems.Num() - 1 : INDEX_NONE);
+            }
+            return FReply::Handled();
+        }
+        if (InKeyEvent.GetKey() == EKeys::Enter || InKeyEvent.GetKey() == EKeys::Tab)
+        {
+            CommitSelection();
+            return FReply::Handled();
+        }
+        if (InKeyEvent.GetKey() == EKeys::Escape)
+        {
+            ClosePopup();
+            return FReply::Handled();
+        }
+    }
+    if (InputTextBox.IsValid())
+    {
+        return InputTextBox->OnKeyDown(MyGeometry, InKeyEvent);
+    }
+    return SCompoundWidget::OnKeyDown(MyGeometry, InKeyEvent);
+}
+
+void SCortexInputArea::OnFocusLost(const FFocusEvent& InFocusEvent)
+{
+    SCompoundWidget::OnFocusLost(InFocusEvent);
+    if (bAutoCompleteOpen)
+    {
+        ClosePopup();
+    }
 }

@@ -34,6 +34,8 @@ public class CortexFrontend : ModuleRules
             "BlueprintGraph",
             "LiveCoding",
             "AssetRegistry",
+            "MessageLog",
+            "Kismet",
         });
     }
 }
