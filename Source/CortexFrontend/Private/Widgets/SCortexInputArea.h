@@ -2,6 +2,7 @@
 
 #include "AutoComplete/CortexAutoCompleteTypes.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
+#include "Containers/Ticker.h"
 #include "CoreMinimal.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
