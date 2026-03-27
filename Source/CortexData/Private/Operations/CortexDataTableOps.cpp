@@ -1409,6 +1409,18 @@ FCortexCommandResult FCortexDataTableOps::SearchDatatableContent(const TSharedPt
 		}
 
 		TArray<TSharedPtr<FJsonValue>> Matches;
+
+		// Check row name against search text before scanning field values
+		const FString RowNameStr = RowName.ToString();
+		if (RowNameStr.Contains(SearchText, ESearchCase::IgnoreCase))
+		{
+			TSharedPtr<FJsonObject> NameMatch = MakeShared<FJsonObject>();
+			NameMatch->SetStringField(TEXT("field"), TEXT("row_name"));
+			NameMatch->SetStringField(TEXT("value"), RowNameStr);
+			Matches.Add(MakeShared<FJsonValueObject>(NameMatch));
+		}
+
+		// Also search field values
 		SearchRowFields(RowStruct, RowData, SearchText, FieldFilter, FString(), Matches);
 
 		if (Matches.Num() == 0)
