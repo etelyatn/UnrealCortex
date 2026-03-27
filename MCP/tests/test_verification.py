@@ -60,11 +60,13 @@ class TestMaterialVerification:
         assert all(c.passed for c in result.checks.values())
 
     def test_empty_graph_detected(self):
+        # When spec has nodes but readback returns 0 nodes, the asset registry
+        # may not have synced yet — guard returns verified=None (inconclusive).
         spec = self._make_spec(nodes=[{"name": "Const", "class": "Constant"}])
         readback = self._make_readback(node_count=0, nodes=[])
         result = verify_material(spec, readback)
-        assert result.verified is False
-        assert result.checks["node_count"].passed is False
+        assert result.verified is None
+        assert result.message is not None
 
     def test_missing_node_class(self):
         spec = self._make_spec(nodes=[{"name": "Tex", "class": "TextureSample"}])

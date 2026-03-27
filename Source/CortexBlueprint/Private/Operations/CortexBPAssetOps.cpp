@@ -853,6 +853,16 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 			{
 				continue;
 			}
+			// Skip static functions — they are library utilities, not instance methods
+			if (Func->HasAnyFunctionFlags(FUNC_Static))
+			{
+				continue;
+			}
+			// Skip functions defined on UObject base class (engine internals)
+			if (Func->GetOuterUClass() == UObject::StaticClass())
+			{
+				continue;
+			}
 			if (BlueprintFunctionNames.Contains(Func->GetFName()))
 			{
 				continue; // Blueprint override already included
@@ -870,7 +880,17 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 				FProperty* Param = *ParamIt;
 				TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
 				P->SetStringField(TEXT("name"), Param->GetName());
-				P->SetStringField(TEXT("type"), Param->GetCPPType());
+				FString TypeStr;
+				FEdGraphPinType PinType;
+				if (UEdGraphSchema_K2::StaticClass()->GetDefaultObject<UEdGraphSchema_K2>()->ConvertPropertyToPinType(Param, PinType))
+				{
+					TypeStr = CortexBPTypeUtils::FriendlyTypeName(PinType);
+				}
+				else
+				{
+					TypeStr = Param->GetCPPType();
+				}
+				P->SetStringField(TEXT("type"), TypeStr);
 
 				if (Param->HasAnyPropertyFlags(CPF_ReturnParm | CPF_OutParm))
 				{
