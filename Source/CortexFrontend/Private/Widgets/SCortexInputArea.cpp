@@ -1,5 +1,6 @@
 #include "Widgets/SCortexInputArea.h"
 
+#include "Containers/Ticker.h"
 #include "CortexFrontendSettings.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Input/Events.h"
@@ -726,26 +727,22 @@ void SCortexInputArea::FocusInput()
 
 void SCortexInputArea::HandleSendOrNewline()
 {
-    if (bIsStreaming || !InputTextBox.IsValid())
-    {
-        return;
-    }
+    if (bIsStreaming || !InputTextBox.IsValid()) return;
 
     FString Text = InputTextBox->GetText().ToString();
     Text.TrimStartAndEndInline();
-    if (!Text.IsEmpty())
-    {
-        // Prepend context chips as @path references
-        FString FullPrompt;
-        for (const FString& Item : ContextItems)
-        {
-            FullPrompt += FString::Printf(TEXT("@%s\n"), *Item);
-        }
-        FullPrompt += Text;
+    if (Text.IsEmpty()) return;
 
-        OnSendMessage.ExecuteIfBound(FullPrompt);
-        ClearContextItems();
+    // Temporary: prepend chips as @path text (Task 9 replaces with resolution)
+    FString FullPrompt;
+    for (const FCortexContextChip& Chip : ContextItems)
+    {
+        FullPrompt += FString::Printf(TEXT("@%s\n"), *Chip.Label);
     }
+    FullPrompt += Text;
+
+    OnSendMessage.ExecuteIfBound(FullPrompt);
+    ClearContextChips();
 }
 
 FReply SCortexInputArea::OnSendClicked()
@@ -761,13 +758,13 @@ FReply SCortexInputArea::OnSendClicked()
     return FReply::Handled();
 }
 
-void SCortexInputArea::AddContextItem(const FString& Path)
+void SCortexInputArea::AddContextChip(const FCortexContextChip& Chip)
 {
-    ContextItems.Add(Path);
+    ContextItems.Add(Chip);
     RebuildChips();
 }
 
-void SCortexInputArea::RemoveContextItem(int32 Index)
+void SCortexInputArea::RemoveContextChip(int32 Index)
 {
     if (ContextItems.IsValidIndex(Index))
     {
@@ -776,30 +773,28 @@ void SCortexInputArea::RemoveContextItem(int32 Index)
     }
 }
 
-void SCortexInputArea::ClearContextItems()
+void SCortexInputArea::ClearContextChips()
 {
     ContextItems.Empty();
     RebuildChips();
 }
 
-const TArray<FString>& SCortexInputArea::GetContextItems() const
+const TArray<FCortexContextChip>& SCortexInputArea::GetContextChips() const
 {
     return ContextItems;
 }
 
 void SCortexInputArea::RebuildChips()
 {
-    if (!ChipRow.IsValid())
-    {
-        return;
-    }
-
+    if (!ChipRow.IsValid()) return;
     ChipRow->ClearChildren();
 
     for (int32 i = 0; i < ContextItems.Num(); ++i)
     {
-        const FString& Item = ContextItems[i];
-        FString Filename = FPaths::GetCleanFilename(Item);
+        const FCortexContextChip& Chip = ContextItems[i];
+        const FString DisplayLabel = Chip.Kind == ECortexContextChipKind::Provider
+            ? FString::Printf(TEXT("@%s"), *Chip.Label)
+            : FPaths::GetCleanFilename(Chip.Label);
 
         const int32 ChipIndex = i;
         ChipRow->AddSlot()
@@ -816,7 +811,7 @@ void SCortexInputArea::RebuildChips()
                 .VAlign(VAlign_Center)
                 [
                     SNew(STextBlock)
-                    .Text(FText::FromString(Filename))
+                    .Text(FText::FromString(DisplayLabel))
                     .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
                     .ColorAndOpacity(FSlateColor(CortexColors::ChipNameColor))
                 ]
@@ -829,7 +824,7 @@ void SCortexInputArea::RebuildChips()
                     .ButtonStyle(FCoreStyle::Get(), "NoBorder")
                     .OnClicked_Lambda([this, ChipIndex]()
                     {
-                        RemoveContextItem(ChipIndex);
+                        RemoveContextChip(ChipIndex);
                         return FReply::Handled();
                     })
                     [
@@ -844,4 +839,45 @@ void SCortexInputArea::RebuildChips()
     }
 
     ChipRow->SetVisibility(ContextItems.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed);
+}
+
+SCortexInputArea::~SCortexInputArea()
+{
+    if (DiscoveryTickerHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(DiscoveryTickerHandle);
+    }
+}
+
+void SCortexInputArea::HandleTextChanged(const FText& /*NewText*/) {}
+bool SCortexInputArea::IsAutoCompleteOpen() const { return bAutoCompleteOpen; }
+void SCortexInputArea::OpenPopup() {}
+void SCortexInputArea::ClosePopup() {}
+void SCortexInputArea::FilterItems(const FString& /*Query*/) {}
+void SCortexInputArea::CommitSelection() {}
+void SCortexInputArea::LoadAssetCache() {}
+void SCortexInputArea::DiscoverSkillsAndAgents() {}
+void SCortexInputArea::PopulateProviders() {}
+void SCortexInputArea::PopulateCoreCommands() {}
+void SCortexInputArea::ResolveAndSend(const TArray<FCortexContextChip>& /*Chips*/, const FString& /*Message*/) {}
+FString SCortexInputArea::ResolveProviderChip(const FString& /*Label*/) { return TEXT(""); }
+FString SCortexInputArea::ResolveAssetChip(const FCortexContextChip& /*Chip*/, bool& bOutSuccess) { bOutSuccess = false; return TEXT(""); }
+FString SCortexInputArea::ParseFrontmatterField(const FString& /*FileContent*/, const FString& /*FieldName*/) { return TEXT(""); }
+
+FReply SCortexInputArea::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+    if (InputTextBox.IsValid())
+    {
+        return InputTextBox->OnKeyDown(MyGeometry, InKeyEvent);
+    }
+    return SCompoundWidget::OnKeyDown(MyGeometry, InKeyEvent);
+}
+
+void SCortexInputArea::OnFocusLost(const FFocusEvent& InFocusEvent)
+{
+    SCompoundWidget::OnFocusLost(InFocusEvent);
+    if (bAutoCompleteOpen)
+    {
+        ClosePopup();
+    }
 }
