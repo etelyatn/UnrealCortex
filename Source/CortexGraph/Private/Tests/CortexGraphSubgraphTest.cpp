@@ -193,3 +193,90 @@ bool FCortexGraphSubgraphFunctionGraphTest::RunTest(const FString& Parameters)
 	TestBP->MarkAsGarbage();
 	return true;
 }
+
+// ── Test 4: Discovery ───────────────────────────────────────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphSubgraphDiscoveryTest,
+	"Cortex.Graph.Subgraph.Discovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphSubgraphDiscoveryTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexSubgraphTestUtils;
+
+	UEdGraph* EventGraph = nullptr;
+	UBlueprint* TestBP = CreateTestBP(TEXT("BP_SubgraphDiscoveryTest"), EventGraph);
+	TestNotNull(TEXT("TestBP created"), TestBP);
+	TestNotNull(TEXT("EventGraph found"), EventGraph);
+
+	CreateComposite(TestBP, EventGraph, TEXT("BeginPlay"));
+
+	// Use command router to call list_nodes
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(
+		TEXT("graph"), TEXT("Graph"), TEXT("1.0.0"),
+		MakeShared<FCortexGraphCommandHandler>()
+	);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	Params->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+
+	FCortexCommandResult Result = Router.Execute(TEXT("graph.list_nodes"), Params);
+	TestTrue(TEXT("list_nodes succeeds"), Result.bSuccess);
+
+	// Find the composite node entry and check subgraph_name
+	const TArray<TSharedPtr<FJsonValue>>* Nodes;
+	if (Result.Data->TryGetArrayField(TEXT("nodes"), Nodes))
+	{
+		bool bFoundComposite = false;
+		for (const auto& NodeVal : *Nodes)
+		{
+			const TSharedPtr<FJsonObject>& NodeObj = NodeVal->AsObject();
+			FString ClassName;
+			NodeObj->TryGetStringField(TEXT("class"), ClassName);
+			if (ClassName == TEXT("K2Node_Composite"))
+			{
+				bFoundComposite = true;
+				FString SubgraphName;
+				TestTrue(TEXT("Composite node has subgraph_name field"),
+					NodeObj->TryGetStringField(TEXT("subgraph_name"), SubgraphName));
+				TestEqual(TEXT("subgraph_name is BeginPlay"), SubgraphName, FString(TEXT("BeginPlay")));
+			}
+		}
+		TestTrue(TEXT("Found composite node in list"), bFoundComposite);
+	}
+
+	// Now list nodes INSIDE the subgraph and verify tunnel boundaries are annotated
+	TSharedPtr<FJsonObject> SubParams = MakeShared<FJsonObject>();
+	SubParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	SubParams->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+	SubParams->SetStringField(TEXT("subgraph_path"), TEXT("BeginPlay"));
+
+	FCortexCommandResult SubResult = Router.Execute(TEXT("graph.list_nodes"), SubParams);
+	TestTrue(TEXT("list_nodes in subgraph succeeds"), SubResult.bSuccess);
+
+	// The BoundGraph may contain tunnel entry/exit nodes from AllocateDefaultPins
+	// Verify they are annotated with is_tunnel_boundary
+	const TArray<TSharedPtr<FJsonValue>>* SubNodes;
+	if (SubResult.Data->TryGetArrayField(TEXT("nodes"), SubNodes))
+	{
+		for (const auto& NodeVal : *SubNodes)
+		{
+			const TSharedPtr<FJsonObject>& NodeObj = NodeVal->AsObject();
+			FString ClassName;
+			NodeObj->TryGetStringField(TEXT("class"), ClassName);
+			if (ClassName.Contains(TEXT("Tunnel")))
+			{
+				bool bIsTunnelBoundary = false;
+				NodeObj->TryGetBoolField(TEXT("is_tunnel_boundary"), bIsTunnelBoundary);
+				TestTrue(TEXT("Tunnel node has is_tunnel_boundary=true"), bIsTunnelBoundary);
+			}
+		}
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}

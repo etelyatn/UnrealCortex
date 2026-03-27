@@ -310,6 +310,18 @@ FCortexCommandResult FCortexGraphNodeOps::ListNodes(const TSharedPtr<FJsonObject
 		return LoadError;
 	}
 
+	// Resolve subgraph path if provided
+	FString SubgraphPath;
+	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
+	if (!SubgraphPath.IsEmpty())
+	{
+		Graph = ResolveSubgraph(Graph, SubgraphPath, LoadError);
+		if (Graph == nullptr)
+		{
+			return LoadError;
+		}
+	}
+
 	TArray<TSharedPtr<FJsonValue>> NodesArray;
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
@@ -336,6 +348,20 @@ FCortexCommandResult FCortexGraphNodeOps::ListNodes(const TSharedPtr<FJsonObject
 			}
 		}
 		Entry->SetNumberField(TEXT("connected_pin_count"), ConnectedPinCount);
+
+		// Annotate composite nodes with their subgraph name
+		UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node);
+		if (CompositeNode && CompositeNode->BoundGraph)
+		{
+			Entry->SetStringField(TEXT("subgraph_name"), CompositeNode->BoundGraph->GetName());
+		}
+
+		// Annotate tunnel boundary nodes (entry/exit inside composites)
+		// UK2Node_Composite IS-A UK2Node_Tunnel, so guard with !CompositeNode
+		if (Cast<UK2Node_Tunnel>(Node) && !CompositeNode)
+		{
+			Entry->SetBoolField(TEXT("is_tunnel_boundary"), true);
+		}
 
 		NodesArray.Add(MakeShared<FJsonValueObject>(Entry));
 	}
