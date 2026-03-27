@@ -825,9 +825,69 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 
 		FuncObj->SetArrayField(TEXT("inputs"), InputsArr);
 		FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
+		FuncObj->SetStringField(TEXT("source"), TEXT("blueprint"));
 
 		FunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
 	}
+
+	// Inherited functions — only when include_inherited=true
+	bool bIncludeInherited = false;
+	Params->TryGetBoolField(TEXT("include_inherited"), bIncludeInherited);
+
+	if (bIncludeInherited && BP->ParentClass)
+	{
+		// Collect names of Blueprint-defined functions to avoid duplicates
+		TSet<FName> BlueprintFunctionNames;
+		for (UEdGraph* Graph : BP->FunctionGraphs)
+		{
+			if (Graph)
+			{
+				BlueprintFunctionNames.Add(Graph->GetFName());
+			}
+		}
+
+		for (TFieldIterator<UFunction> It(BP->ParentClass, EFieldIteratorFlags::IncludeSuper); It; ++It)
+		{
+			UFunction* Func = *It;
+			if (!Func->HasAnyFunctionFlags(FUNC_BlueprintCallable | FUNC_BlueprintEvent | FUNC_BlueprintPure))
+			{
+				continue;
+			}
+			if (BlueprintFunctionNames.Contains(Func->GetFName()))
+			{
+				continue; // Blueprint override already included
+			}
+
+			TSharedPtr<FJsonObject> FuncObj = MakeShared<FJsonObject>();
+			FuncObj->SetStringField(TEXT("name"), Func->GetName());
+			FuncObj->SetStringField(TEXT("source"), TEXT("inherited"));
+
+			TArray<TSharedPtr<FJsonValue>> InputsArr;
+			TArray<TSharedPtr<FJsonValue>> OutputsArr;
+
+			for (TFieldIterator<FProperty> ParamIt(Func); ParamIt && (ParamIt->PropertyFlags & CPF_Parm); ++ParamIt)
+			{
+				FProperty* Param = *ParamIt;
+				TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+				P->SetStringField(TEXT("name"), Param->GetName());
+				P->SetStringField(TEXT("type"), Param->GetCPPType());
+
+				if (Param->HasAnyPropertyFlags(CPF_ReturnParm | CPF_OutParm))
+				{
+					OutputsArr.Add(MakeShared<FJsonValueObject>(P));
+				}
+				else
+				{
+					InputsArr.Add(MakeShared<FJsonValueObject>(P));
+				}
+			}
+
+			FuncObj->SetArrayField(TEXT("inputs"), InputsArr);
+			FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
+			FunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
+		}
+	}
+
 	InfoObj->SetArrayField(TEXT("functions"), FunctionsArray);
 
 	// Graphs (all graphs with node counts)

@@ -244,3 +244,54 @@ bool FCortexBPGetInfoMissingAssetTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPInfoInheritedFunctionsTest,
+	"Cortex.Blueprint.Info.InheritedCppFunctions",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPInfoInheritedFunctionsTest::RunTest(const FString& Parameters)
+{
+	// BP_ComplexActor inherits from AActor, which has many BlueprintCallable C++ functions
+	const FString TestBPPath = TEXT("/Game/Blueprints/BP_ComplexActor");
+
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBPPath);
+	Params->SetBoolField(TEXT("include_inherited"), true);
+
+	FCortexCommandResult Result = Handler.Execute(TEXT("get_info"), Params);
+	TestTrue(TEXT("get_info should succeed"), Result.bSuccess);
+
+	if (!Result.Data.IsValid())
+	{
+		AddError(TEXT("Result data is null"));
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* FunctionsArray;
+	TestTrue(TEXT("functions array should exist"), Result.Data->TryGetArrayField(TEXT("functions"), FunctionsArray));
+
+	if (FunctionsArray)
+	{
+		bool bFoundInherited = false;
+		for (const TSharedPtr<FJsonValue>& FuncVal : *FunctionsArray)
+		{
+			const TSharedPtr<FJsonObject>& FuncObj = FuncVal->AsObject();
+			if (!FuncObj.IsValid())
+			{
+				continue;
+			}
+			FString Source;
+			if (FuncObj->TryGetStringField(TEXT("source"), Source) && Source == TEXT("inherited"))
+			{
+				bFoundInherited = true;
+				break;
+			}
+		}
+		TestTrue(TEXT("At least one inherited function should appear with include_inherited=true"), bFoundInherited);
+	}
+
+	return true;
+}
