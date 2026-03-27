@@ -27,6 +27,7 @@
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SMenuAnchor.h"
 #include "Widgets/SCortexAutoCompletePopup.h"
+#include "Widgets/CortexMentionMarshaller.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
@@ -70,8 +71,15 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
         CortexColors::CodeBorder, 1.0f);
 
     AutoCompletePopup = SNew(SCortexAutoCompletePopup);
+    AutoCompletePopup->OnItemSelected = [this](int32 Index)
+    {
+        AutoCompleteSelectedIndex = Index;
+        CommitSelection();
+    };
     PopulateProviders();
     PopulateCoreCommands();
+
+    MentionMarshaller = FCortexMentionMarshaller::Create(FCoreStyle::GetDefaultFontStyle("Regular", 11));
 
     // Defer skill/agent discovery one frame to avoid Game Thread I/O during construction
     DiscoveryTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
@@ -110,11 +118,12 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
             })
             [
                 SNew(SBox)
-                .MinDesiredHeight(44.0f)
+                .MinDesiredHeight(72.0f)
                 [
                     SAssignNew(InputTextBox, SMultiLineEditableTextBox)
                     .HintText(FText::FromString(TEXT("@ for context or ask anything...")))
                     .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
+                    .Marshaller(MentionMarshaller)
                     .AutoWrapText(true)
                     .OnTextChanged_Lambda([this](const FText& NewText)
                     {
@@ -880,7 +889,7 @@ void SCortexInputArea::RebuildChips()
         const FCortexContextChip& Chip = ContextItems[i];
         const FString DisplayLabel = Chip.Kind == ECortexContextChipKind::Provider
             ? FString::Printf(TEXT("@%s"), *Chip.Label)
-            : FPaths::GetCleanFilename(Chip.Label);
+            : (Chip.DisplayName.IsEmpty() ? Chip.Label : Chip.DisplayName);
 
         const int32 ChipIndex = i;
         ChipRow->AddSlot()
@@ -998,6 +1007,11 @@ bool SCortexInputArea::IsAutoCompleteOpen() const
     return bAutoCompleteOpen;
 }
 
+FText SCortexInputArea::GetInputText() const
+{
+    return InputTextBox.IsValid() ? InputTextBox->GetText() : FText::GetEmpty();
+}
+
 void SCortexInputArea::OpenPopup()
 {
     bAutoCompleteOpen = true;
@@ -1005,6 +1019,8 @@ void SCortexInputArea::OpenPopup()
     {
         AutoCompleteAnchor->SetIsOpen(true);
     }
+    // Restore keyboard focus — SMenuAnchor::SetIsOpen may shift focus away from the text box
+    FocusInput();
 }
 
 void SCortexInputArea::ClosePopup()
@@ -1120,28 +1136,15 @@ void SCortexInputArea::CommitSelection()
 
     if (ActiveTrigger == TEXT('@'))
     {
-        FCortexContextChip Chip;
-        Chip.Label = Selected->Name;
-        if (Selected->Kind == ECortexAutoCompleteKind::ContextProvider)
-        {
-            Chip.Kind = ECortexContextChipKind::Provider;
-        }
-        else
-        {
-            Chip.Kind = ECortexContextChipKind::Asset;
-            Chip.AssetClass = Selected->AssetClass;
-            Chip.RouterCommand = Selected->RouterCommand;
-            Chip.Label = Selected->FullPath;
-        }
-        AddContextChip(Chip);
-
-        // Remove @query from input text
+        // Insert @Name inline — no chip; marshaller colors it blue
         if (InputTextBox.IsValid())
         {
             const FString Current = InputTextBox->GetText().ToString();
-            const FString Cleared = Current.Left(TriggerOffset);
-            InputTextBox->SetText(FText::FromString(Cleared));
-            PreviousText = FText::FromString(Cleared);
+            const FString Before = Current.Left(TriggerOffset);
+            const FString Mention = TEXT("@") + Selected->Name + TEXT(" ");
+            const FString NewText = Before + Mention;
+            InputTextBox->SetText(FText::FromString(NewText));
+            PreviousText = FText::FromString(NewText);
         }
     }
     else if (ActiveTrigger == TEXT('/'))
@@ -1156,6 +1159,7 @@ void SCortexInputArea::CommitSelection()
     }
 
     ClosePopup();
+    FocusInput();
 }
 
 void SCortexInputArea::LoadAssetCache()
@@ -1295,6 +1299,71 @@ void SCortexInputArea::ResolveAndSend(const TArray<FCortexContextChip>& Chips, c
 {
     FString Preamble;
 
+    // Resolve inline @mentions embedded in the message text (deduped)
+    TArray<FString> ProcessedMentions;
+    int32 ScanPos = 0;
+    while (ScanPos < Message.Len())
+    {
+        int32 AtPos = Message.Find(TEXT("@"), ESearchCase::CaseSensitive, ESearchDir::FromStart, ScanPos);
+        if (AtPos == INDEX_NONE) break;
+
+        int32 End = AtPos + 1;
+        while (End < Message.Len() && !FChar::IsWhitespace(Message[End]))
+        {
+            ++End;
+        }
+
+        if (End > AtPos + 1)
+        {
+            const FString MentionName = Message.Mid(AtPos + 1, End - AtPos - 1);
+            if (!ProcessedMentions.Contains(MentionName))
+            {
+                ProcessedMentions.Add(MentionName);
+
+                const bool bIsProvider =
+                    MentionName == TEXT("thisAsset") ||
+                    MentionName == TEXT("selection") ||
+                    MentionName == TEXT("problems");
+
+                if (bIsProvider)
+                {
+                    const FString Resolved = ResolveProviderChip(MentionName);
+                    if (!Resolved.IsEmpty())
+                    {
+                        Preamble += FString::Printf(TEXT("## Context: %s\n%s\n\n"), *MentionName, *Resolved);
+                    }
+                    // Empty: silent drop
+                }
+                else
+                {
+                    // Look up in asset cache by display name
+                    for (const TSharedPtr<FCortexAutoCompleteItem>& Item : AssetCache)
+                    {
+                        if (Item->Name == MentionName)
+                        {
+                            FCortexContextChip AssetChip;
+                            AssetChip.Kind = ECortexContextChipKind::Asset;
+                            AssetChip.Label = Item->FullPath;
+                            AssetChip.DisplayName = Item->Name;
+                            AssetChip.AssetClass = Item->AssetClass;
+                            AssetChip.RouterCommand = Item->RouterCommand;
+                            bool bSuccess = false;
+                            const FString Resolved = ResolveAssetChip(AssetChip, bSuccess);
+                            if (bSuccess)
+                            {
+                                Preamble += FString::Printf(TEXT("## Context: %s\n%s\n\n"), *Item->FullPath, *Resolved);
+                            }
+                            // On failure: @mention stays in text — no extra preamble needed
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        ScanPos = End;
+    }
+
+    // Also resolve any attached chips (e.g., future "Attach File" UI)
     for (const FCortexContextChip& Chip : Chips)
     {
         if (Chip.Kind == ECortexContextChipKind::Provider)
@@ -1304,7 +1373,6 @@ void SCortexInputArea::ResolveAndSend(const TArray<FCortexContextChip>& Chips, c
             {
                 Preamble += FString::Printf(TEXT("## Context: %s\n%s\n\n"), *Chip.Label, *Resolved);
             }
-            // Empty resolution: silent drop — no section header emitted
         }
         else if (Chip.Kind == ECortexContextChipKind::Asset)
         {
@@ -1316,8 +1384,8 @@ void SCortexInputArea::ResolveAndSend(const TArray<FCortexContextChip>& Chips, c
             }
             else
             {
-                // Fall back: prepend raw @path text
-                Preamble += FString::Printf(TEXT("@%s\n"), *Chip.Label);
+                const FString& FallbackName = Chip.DisplayName.IsEmpty() ? Chip.Label : Chip.DisplayName;
+                Preamble += FString::Printf(TEXT("@%s\n"), *FallbackName);
             }
         }
         else // RawText

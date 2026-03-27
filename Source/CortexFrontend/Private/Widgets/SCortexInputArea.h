@@ -15,6 +15,7 @@ class SButton;
 class SMultiLineEditableTextBox;
 class STextBlock;
 class SCortexAutoCompletePopup;
+class FCortexMentionMarshaller;
 
 DECLARE_DELEGATE_OneParam(FOnCortexSendMessage, const FString&);
 DECLARE_DELEGATE(FOnCortexCancel);
@@ -46,6 +47,7 @@ public:
     bool IsAutoCompleteOpen() const;
     int32 GetAutoCompleteSelectedIndex() const { return AutoCompleteSelectedIndex; }
     const TArray<TSharedPtr<FCortexAutoCompleteItem>>& GetFilteredItems() const { return FilteredItems; }
+    FText GetInputText() const;
     void TestResolveAndSend(const FString& Message)
     {
         TArray<FCortexContextChip> Chips = ContextItems;
@@ -106,6 +108,7 @@ private:
     bool bAssetCacheLoading = false;
     FTSTicker::FDelegateHandle DiscoveryTickerHandle;
     FDelegateHandle AssetLoadedDelegateHandle;
+    TSharedPtr<FCortexMentionMarshaller> MentionMarshaller;
 
     // Brushes
     TUniquePtr<FSlateRoundedBoxBrush> ModeBrush;

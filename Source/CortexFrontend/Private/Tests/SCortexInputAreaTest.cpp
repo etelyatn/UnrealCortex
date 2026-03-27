@@ -348,7 +348,7 @@ bool FCortexInputAreaEscDismissTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaCommitAtTest,
-    "Cortex.Frontend.InputArea.AutoComplete.CommitAtAddsChip",
+    "Cortex.Frontend.InputArea.AutoComplete.CommitAtInline",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexInputAreaCommitAtTest::RunTest(const FString& Parameters)
@@ -368,9 +368,9 @@ bool FCortexInputAreaCommitAtTest::RunTest(const FString& Parameters)
     Widget->OnKeyDown(FGeometry(), EnterKey);
 
     TestFalse(TEXT("Popup closed after commit"), Widget->IsAutoCompleteOpen());
-    TestEqual(TEXT("Chip added"), Widget->GetContextChips().Num(), 1);
-    TestEqual(TEXT("Chip label"), Widget->GetContextChips()[0].Label, TEXT("thisAsset"));
-    TestTrue(TEXT("Chip kind is Provider"), Widget->GetContextChips()[0].Kind == ECortexContextChipKind::Provider);
+    // No chip — @mention is inline in the text box instead
+    TestEqual(TEXT("No chip created"), Widget->GetContextChips().Num(), 0);
+    TestTrue(TEXT("@mention inline in text"), Widget->GetInputText().ToString().Contains(TEXT("@thisAsset")));
 
     return true;
 }
