@@ -295,3 +295,105 @@ bool FCortexInputAreaFrontmatterParseTest::RunTest(const FString& Parameters)
         TEXT(""));
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaNavigationTest,
+    "Cortex.Frontend.InputArea.AutoComplete.NavigationChangesIndex",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaNavigationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea);
+
+    Widget->HandleTextChanged(FText::FromString(TEXT("/")));
+    TestTrue(TEXT("Open"), Widget->IsAutoCompleteOpen());
+    TestEqual(TEXT("Index starts at 0"), Widget->GetAutoCompleteSelectedIndex(), 0);
+
+    // Simulate Down arrow
+    FKeyEvent DownKey(EKeys::Down, FModifierKeysState(), 0, false, 0, 0);
+    Widget->OnKeyDown(FGeometry(), DownKey);
+    TestEqual(TEXT("Index moves to 1 on Down"), Widget->GetAutoCompleteSelectedIndex(), 1);
+
+    // Simulate Up arrow back
+    FKeyEvent UpKey(EKeys::Up, FModifierKeysState(), 0, false, 0, 0);
+    Widget->OnKeyDown(FGeometry(), UpKey);
+    TestEqual(TEXT("Index returns to 0 on Up"), Widget->GetAutoCompleteSelectedIndex(), 0);
+
+    // Up at 0 does not wrap below 0
+    Widget->OnKeyDown(FGeometry(), UpKey);
+    TestEqual(TEXT("Index clamps at 0"), Widget->GetAutoCompleteSelectedIndex(), 0);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaEscDismissTest,
+    "Cortex.Frontend.InputArea.AutoComplete.EscCloses",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaEscDismissTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea);
+
+    Widget->HandleTextChanged(FText::FromString(TEXT("/")));
+    TestTrue(TEXT("Open"), Widget->IsAutoCompleteOpen());
+
+    FKeyEvent EscKey(EKeys::Escape, FModifierKeysState(), 0, false, 0, 0);
+    Widget->OnKeyDown(FGeometry(), EscKey);
+    TestFalse(TEXT("Closed after Esc"), Widget->IsAutoCompleteOpen());
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaCommitAtTest,
+    "Cortex.Frontend.InputArea.AutoComplete.CommitAtAddsChip",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaCommitAtTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea);
+
+    // Open @ popup — providers should be in FilteredItems at index 0
+    Widget->HandleTextChanged(FText::FromString(TEXT("@")));
+    TestTrue(TEXT("Open"), Widget->IsAutoCompleteOpen());
+    TestTrue(TEXT("Has items"), Widget->GetFilteredItems().Num() > 0);
+    TestEqual(TEXT("First item is thisAsset"), Widget->GetFilteredItems()[0]->Name, TEXT("thisAsset"));
+
+    // Commit with Enter
+    FKeyEvent EnterKey(EKeys::Enter, FModifierKeysState(), 0, false, 0, 0);
+    Widget->OnKeyDown(FGeometry(), EnterKey);
+
+    TestFalse(TEXT("Popup closed after commit"), Widget->IsAutoCompleteOpen());
+    TestEqual(TEXT("Chip added"), Widget->GetContextChips().Num(), 1);
+    TestEqual(TEXT("Chip label"), Widget->GetContextChips()[0].Label, TEXT("thisAsset"));
+    TestTrue(TEXT("Chip kind is Provider"), Widget->GetContextChips()[0].Kind == ECortexContextChipKind::Provider);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaCommitSlashTest,
+    "Cortex.Frontend.InputArea.AutoComplete.CommitSlashReplacesText",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaCommitSlashTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea);
+
+    Widget->HandleTextChanged(FText::FromString(TEXT("/")));
+    TestTrue(TEXT("Open"), Widget->IsAutoCompleteOpen());
+
+    // Commit first item (should be /help)
+    FKeyEvent EnterKey(EKeys::Enter, FModifierKeysState(), 0, false, 0, 0);
+    Widget->OnKeyDown(FGeometry(), EnterKey);
+
+    TestFalse(TEXT("Popup closed"), Widget->IsAutoCompleteOpen());
+    TestEqual(TEXT("No chips added for slash"), Widget->GetContextChips().Num(), 0);
+
+    return true;
+}

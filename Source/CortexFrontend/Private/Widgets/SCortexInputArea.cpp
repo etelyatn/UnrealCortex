@@ -1086,7 +1086,50 @@ void SCortexInputArea::FilterItems(const FString& Query)
     }
 }
 
-void SCortexInputArea::CommitSelection() {}
+void SCortexInputArea::CommitSelection()
+{
+    if (!FilteredItems.IsValidIndex(AutoCompleteSelectedIndex)) return;
+    const TSharedPtr<FCortexAutoCompleteItem>& Selected = FilteredItems[AutoCompleteSelectedIndex];
+
+    if (ActiveTrigger == TEXT('@'))
+    {
+        FCortexContextChip Chip;
+        Chip.Label = Selected->Name;
+        if (Selected->Kind == ECortexAutoCompleteKind::ContextProvider)
+        {
+            Chip.Kind = ECortexContextChipKind::Provider;
+        }
+        else
+        {
+            Chip.Kind = ECortexContextChipKind::Asset;
+            Chip.AssetClass = Selected->AssetClass;
+            Chip.RouterCommand = Selected->RouterCommand;
+            Chip.Label = Selected->FullPath;
+        }
+        AddContextChip(Chip);
+
+        // Remove @query from input text
+        if (InputTextBox.IsValid())
+        {
+            const FString Current = InputTextBox->GetText().ToString();
+            const FString Cleared = Current.Left(TriggerOffset);
+            InputTextBox->SetText(FText::FromString(Cleared));
+            PreviousText = FText::FromString(Cleared);
+        }
+    }
+    else if (ActiveTrigger == TEXT('/'))
+    {
+        // Replace input with "/CommandName " ready for user's prompt
+        if (InputTextBox.IsValid())
+        {
+            const FString NewText = TEXT("/") + Selected->Name + TEXT(" ");
+            InputTextBox->SetText(FText::FromString(NewText));
+            PreviousText = FText::FromString(NewText);
+        }
+    }
+
+    ClosePopup();
+}
 
 void SCortexInputArea::LoadAssetCache()
 {
@@ -1229,6 +1272,39 @@ FString SCortexInputArea::ResolveAssetChip(const FCortexContextChip& /*Chip*/, b
 
 FReply SCortexInputArea::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
+    if (bAutoCompleteOpen)
+    {
+        if (InKeyEvent.GetKey() == EKeys::Up)
+        {
+            AutoCompleteSelectedIndex = FMath::Max(0, AutoCompleteSelectedIndex - 1);
+            if (AutoCompletePopup.IsValid())
+            {
+                AutoCompletePopup->Refresh(FilteredItems, AutoCompleteSelectedIndex,
+                    ActiveTrigger == TEXT('@') ? ProviderItems.Num() - 1 : INDEX_NONE);
+            }
+            return FReply::Handled();
+        }
+        if (InKeyEvent.GetKey() == EKeys::Down)
+        {
+            AutoCompleteSelectedIndex = FMath::Min(FilteredItems.Num() - 1, AutoCompleteSelectedIndex + 1);
+            if (AutoCompletePopup.IsValid())
+            {
+                AutoCompletePopup->Refresh(FilteredItems, AutoCompleteSelectedIndex,
+                    ActiveTrigger == TEXT('@') ? ProviderItems.Num() - 1 : INDEX_NONE);
+            }
+            return FReply::Handled();
+        }
+        if (InKeyEvent.GetKey() == EKeys::Enter || InKeyEvent.GetKey() == EKeys::Tab)
+        {
+            CommitSelection();
+            return FReply::Handled();
+        }
+        if (InKeyEvent.GetKey() == EKeys::Escape)
+        {
+            ClosePopup();
+            return FReply::Handled();
+        }
+    }
     if (InputTextBox.IsValid())
     {
         return InputTextBox->OnKeyDown(MyGeometry, InKeyEvent);
