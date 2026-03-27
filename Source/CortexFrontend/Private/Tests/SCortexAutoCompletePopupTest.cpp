@@ -7,10 +7,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFilterAndScoreExactTest,
 
 bool FCortexFilterAndScoreExactTest::RunTest(const FString& Parameters)
 {
+    (void)Parameters;
     TestTrue(TEXT("Exact match scores > 0"),
         CortexAutoComplete::FilterAndScore(TEXT("jump"), TEXT("BP_JumpPad")) > 0);
     TestEqual(TEXT("No match scores 0"),
         CortexAutoComplete::FilterAndScore(TEXT("xyz"), TEXT("BP_JumpPad")), 0);
+    TestEqual(TEXT("Empty candidate scores 0"),
+        CortexAutoComplete::FilterAndScore(TEXT("jump"), TEXT("")), 0);
     return true;
 }
 
@@ -20,6 +23,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFilterAndScoreSubseqTest,
 
 bool FCortexFilterAndScoreSubseqTest::RunTest(const FString& Parameters)
 {
+    (void)Parameters;
     // Consecutive chars score higher than scattered
     const int32 ConsecScore = CortexAutoComplete::FilterAndScore(TEXT("Jump"), TEXT("BP_JumpPad"));
     const int32 ScatterScore = CortexAutoComplete::FilterAndScore(TEXT("BJP"), TEXT("BP_JumpPad"));
@@ -33,9 +37,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFilterAndScoreCaseTest,
 
 bool FCortexFilterAndScoreCaseTest::RunTest(const FString& Parameters)
 {
+    (void)Parameters;
     const int32 LowerScore = CortexAutoComplete::FilterAndScore(TEXT("jump"), TEXT("BP_JumpPad"));
     const int32 UpperScore = CortexAutoComplete::FilterAndScore(TEXT("JUMP"), TEXT("BP_JumpPad"));
     TestTrue(TEXT("Lower matches"), LowerScore > 0);
     TestTrue(TEXT("Upper matches"), UpperScore > 0);
+    TestEqual(TEXT("Lower and Upper scores match"), LowerScore, UpperScore);
     return true;
 }
