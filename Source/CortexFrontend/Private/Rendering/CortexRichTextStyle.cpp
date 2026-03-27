@@ -40,6 +40,14 @@ void FCortexRichTextStyle::Initialize()
         StyleSet->Set(TEXT("Code"), CodeStyle);
     }
 
+    // Mention — blue #2b96ff for @name tokens in chat and input
+    {
+        FTextBlockStyle MentionStyle = NormalStyle;
+        MentionStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Regular", 11));
+        MentionStyle.SetColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("2b96ff")))));
+        StyleSet->Set(TEXT("Mention"), MentionStyle);
+    }
+
     // Default style for plain text segments — bump font size to match Rich variants
     {
         FTextBlockStyle DefaultStyle = NormalStyle;

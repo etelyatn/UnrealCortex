@@ -1,5 +1,7 @@
 #include "Widgets/SCortexAutoCompletePopup.h"
 
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
 #include "Rendering/CortexFrontendColors.h"
 #include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
@@ -71,6 +73,15 @@ void SCortexAutoCompletePopup::Refresh(
             .BorderImage(FAppStyle::GetBrush("WhiteBrush"))
             .BorderBackgroundColor(bSelected ? CortexColors::ToolBlockBorder : FLinearColor::Transparent)
             .Padding(FMargin(12.0f, 5.0f))
+            .OnMouseButtonDown_Lambda([this, i](const FGeometry&, const FPointerEvent& Event) -> FReply
+            {
+                if (Event.GetEffectingButton() == EKeys::LeftMouseButton && OnItemSelected)
+                {
+                    OnItemSelected(i);
+                    return FReply::Handled();
+                }
+                return FReply::Unhandled();
+            })
             [
                 SNew(SHorizontalBox)
                 + SHorizontalBox::Slot()
@@ -88,7 +99,7 @@ void SCortexAutoCompletePopup::Refresh(
                 .Padding(FMargin(12.0f, 0.0f, 0.0f, 0.0f))
                 [
                     SNew(STextBlock)
-                    .Text(FText::FromString(Item->Description))
+                    .Text(FText::FromString(Item->Description.Left(60) + (Item->Description.Len() > 60 ? TEXT("...") : TEXT(""))))
                     .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
                     .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
                 ]

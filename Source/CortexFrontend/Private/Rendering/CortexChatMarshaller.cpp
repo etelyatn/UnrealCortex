@@ -15,9 +15,46 @@ namespace
 	};
 
 	/**
+	 * Split a plain-text segment on @word patterns, emitting Mention-styled runs for each token.
+	 * Must be defined before ParseLineIntoRuns which calls it.
+	 */
+	void SplitForMentions(const FString& Text, TArray<FChatTextRun>& Out)
+	{
+		int32 Pos = 0;
+		while (Pos < Text.Len())
+		{
+			const int32 AtPos = Text.Find(TEXT("@"), ESearchCase::CaseSensitive, ESearchDir::FromStart, Pos);
+			if (AtPos == INDEX_NONE)
+			{
+				if (Pos < Text.Len()) Out.Add({Text.Mid(Pos), FName()});
+				break;
+			}
+			if (AtPos > Pos)
+			{
+				Out.Add({Text.Mid(Pos, AtPos - Pos), FName()});
+			}
+			int32 End = AtPos + 1;
+			while (End < Text.Len() && !FChar::IsWhitespace(Text[End]))
+			{
+				++End;
+			}
+			if (End > AtPos + 1)
+			{
+				Out.Add({Text.Mid(AtPos, End - AtPos), FName(TEXT("Mention"))});
+			}
+			else
+			{
+				Out.Add({TEXT("@"), FName()}); // Lone '@' - plain text
+			}
+			Pos = End;
+		}
+	}
+
+	/**
 	 * Parse a single line into runs by splitting on <Tag>content</> patterns.
 	 * Supports: <Bold>, <Italic>, <Code>. Unknown tags are rendered as-is.
-	 * Nested tags are not supported — ToRichText() never generates them.
+	 * Nested tags are not supported - ToRichText() never generates them.
+	 * Plain-text segments are further split on @word patterns for mention highlighting.
 	 */
 	TArray<FChatTextRun> ParseLineIntoRuns(const FString& Line)
 	{
@@ -31,25 +68,25 @@ namespace
 			const int32 TagOpen = Line.Find(TEXT("<"), ESearchCase::CaseSensitive, ESearchDir::FromStart, Pos);
 			if (TagOpen == INDEX_NONE)
 			{
-				// No more tags — rest is plain text
+				// No more tags - rest is plain text (split on @mentions)
 				if (Pos < Len)
 				{
-					Runs.Add({Line.Mid(Pos), FName()});
+					SplitForMentions(Line.Mid(Pos), Runs);
 				}
 				break;
 			}
 
-			// Plain text before this tag
+			// Plain text before this tag (split on @mentions)
 			if (TagOpen > Pos)
 			{
-				Runs.Add({Line.Mid(Pos, TagOpen - Pos), FName()});
+				SplitForMentions(Line.Mid(Pos, TagOpen - Pos), Runs);
 			}
 
 			// Try to parse <TagName>content</>
 			const int32 TagClose = Line.Find(TEXT(">"), ESearchCase::CaseSensitive, ESearchDir::FromStart, TagOpen + 1);
 			if (TagClose == INDEX_NONE)
 			{
-				// Malformed — treat rest as plain text
+				// Malformed - treat rest as plain text
 				Runs.Add({Line.Mid(TagOpen), FName()});
 				break;
 			}
@@ -70,7 +107,7 @@ namespace
 				}
 			}
 
-			// Unknown tag or no closing </> — emit '<' as plain text and continue
+			// Unknown tag or no closing </> - emit '<' as plain text and continue
 			Runs.Add({TEXT("<"), FName()});
 			Pos = TagOpen + 1;
 		}
@@ -133,7 +170,7 @@ void FCortexChatMarshaller::SetText(const FString& SourceString, FTextLayout& Ta
 				FRunInfo(), ModelString, *RunStyle, FTextRange(RunStart, RunEnd)));
 		}
 
-		// Empty line — add a default run so the layout still inserts a line break
+		// Empty line - add a default run so the layout still inserts a line break
 		if (SlateRuns.IsEmpty())
 		{
 			SlateRuns.Add(FSlateTextRun::Create(FRunInfo(), ModelString, DefaultStyle));
