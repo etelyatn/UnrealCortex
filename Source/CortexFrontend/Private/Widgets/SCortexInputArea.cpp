@@ -14,6 +14,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SMenuAnchor.h"
+#include "Widgets/SCortexAutoCompletePopup.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
@@ -56,6 +57,10 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
         CortexColors::ChipBackground, 6.0f,
         CortexColors::CodeBorder, 1.0f);
 
+    AutoCompletePopup = SNew(SCortexAutoCompletePopup);
+    PopulateProviders();
+    PopulateCoreCommands();
+
     ChildSlot
     [
         SNew(SVerticalBox)
@@ -67,27 +72,72 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
             .UseAllottedSize(true)
             .Visibility(EVisibility::Collapsed)
         ]
-        // Section 2: Textarea
+        // Section 2: Textarea (wrapped in SMenuAnchor for autocomplete popup)
         + SVerticalBox::Slot()
         .AutoHeight()
         .Padding(FMargin(12.0f, 8.0f, 12.0f, 4.0f))
         [
-            SNew(SBox)
-            .MinDesiredHeight(44.0f)
-            [
-                SAssignNew(InputTextBox, SMultiLineEditableTextBox)
-                .HintText(FText::FromString(TEXT("@ for context or ask anything...")))
-                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
-                .AutoWrapText(true)
-            .OnKeyDownHandler_Lambda([this](const FGeometry&, const FKeyEvent& KeyEvent)
+            SAssignNew(AutoCompleteAnchor, SMenuAnchor)
+            .Placement(MenuPlacement_AboveAnchor)
+            .OnGetMenuContent_Lambda([PopupWidget = AutoCompletePopup]() -> TSharedRef<SWidget>
             {
-                if (KeyEvent.GetKey() == EKeys::Enter && !KeyEvent.IsShiftDown())
-                {
-                    HandleSendOrNewline();
-                    return FReply::Handled();
-                }
-                return FReply::Unhandled();
+                return PopupWidget.IsValid() ? PopupWidget.ToSharedRef() : SNullWidget::NullWidget;
             })
+            [
+                SNew(SBox)
+                .MinDesiredHeight(44.0f)
+                [
+                    SAssignNew(InputTextBox, SMultiLineEditableTextBox)
+                    .HintText(FText::FromString(TEXT("@ for context or ask anything...")))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
+                    .AutoWrapText(true)
+                    .OnTextChanged_Lambda([this](const FText& NewText)
+                    {
+                        HandleTextChanged(NewText);
+                    })
+                    .OnKeyDownHandler_Lambda([this](const FGeometry&, const FKeyEvent& KeyEvent) -> FReply
+                    {
+                        if (bAutoCompleteOpen)
+                        {
+                            if (KeyEvent.GetKey() == EKeys::Up)
+                            {
+                                AutoCompleteSelectedIndex = FMath::Max(0, AutoCompleteSelectedIndex - 1);
+                                if (AutoCompletePopup.IsValid())
+                                {
+                                    AutoCompletePopup->Refresh(FilteredItems, AutoCompleteSelectedIndex,
+                                        ActiveTrigger == TEXT('@') ? ProviderItems.Num() - 1 : INDEX_NONE);
+                                }
+                                return FReply::Handled();
+                            }
+                            if (KeyEvent.GetKey() == EKeys::Down)
+                            {
+                                AutoCompleteSelectedIndex = FMath::Min(FilteredItems.Num() - 1, AutoCompleteSelectedIndex + 1);
+                                if (AutoCompletePopup.IsValid())
+                                {
+                                    AutoCompletePopup->Refresh(FilteredItems, AutoCompleteSelectedIndex,
+                                        ActiveTrigger == TEXT('@') ? ProviderItems.Num() - 1 : INDEX_NONE);
+                                }
+                                return FReply::Handled();
+                            }
+                            if (KeyEvent.GetKey() == EKeys::Enter || KeyEvent.GetKey() == EKeys::Tab)
+                            {
+                                CommitSelection();
+                                return FReply::Handled();
+                            }
+                            if (KeyEvent.GetKey() == EKeys::Escape)
+                            {
+                                ClosePopup();
+                                return FReply::Handled();
+                            }
+                        }
+                        if (KeyEvent.GetKey() == EKeys::Enter && !KeyEvent.IsShiftDown() && !bAutoCompleteOpen)
+                        {
+                            HandleSendOrNewline();
+                            return FReply::Handled();
+                        }
+                        return FReply::Unhandled();
+                    })
+                ]
             ]
         ]
         // Section 3: Controls row
@@ -850,9 +900,37 @@ SCortexInputArea::~SCortexInputArea()
 }
 
 void SCortexInputArea::HandleTextChanged(const FText& /*NewText*/) {}
-bool SCortexInputArea::IsAutoCompleteOpen() const { return bAutoCompleteOpen; }
-void SCortexInputArea::OpenPopup() {}
-void SCortexInputArea::ClosePopup() {}
+
+bool SCortexInputArea::IsAutoCompleteOpen() const
+{
+    return bAutoCompleteOpen;
+}
+
+void SCortexInputArea::OpenPopup()
+{
+    bAutoCompleteOpen = true;
+    if (AutoCompleteAnchor.IsValid())
+    {
+        AutoCompleteAnchor->SetIsOpen(true);
+    }
+}
+
+void SCortexInputArea::ClosePopup()
+{
+    bAutoCompleteOpen = false;
+    TriggerOffset = INDEX_NONE;
+    ActiveTrigger = TEXT('\0');
+    FilteredItems.Reset();
+    AutoCompleteSelectedIndex = 0;
+    if (AutoCompleteAnchor.IsValid())
+    {
+        AutoCompleteAnchor->SetIsOpen(false);
+    }
+    if (AutoCompletePopup.IsValid())
+    {
+        AutoCompletePopup->Refresh({}, INDEX_NONE, INDEX_NONE);
+    }
+}
 void SCortexInputArea::FilterItems(const FString& /*Query*/) {}
 void SCortexInputArea::CommitSelection() {}
 void SCortexInputArea::LoadAssetCache() {}

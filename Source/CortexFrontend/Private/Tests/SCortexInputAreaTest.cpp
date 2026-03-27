@@ -98,3 +98,16 @@ bool FCortexInputAreaContextStorageTest::RunTest(const FString& Parameters)
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaPopupClosedInitiallyTest,
+    "Cortex.Frontend.InputArea.AutoComplete.ClosedInitially",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaPopupClosedInitiallyTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea);
+    TestFalse(TEXT("Popup closed on construction"), Widget->IsAutoCompleteOpen());
+    return true;
+}
