@@ -40,6 +40,6 @@ private:
 	/** Copy connection JSON to clipboard. */
 	void CopyConnectionInfo() const;
 
-	/** Plugin version string, read once at construction. */
+	/** Plugin version string, read once at construction. Safe: widget is reconstructed on hot-reload. */
 	FString PluginVersion;
 };

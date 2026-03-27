@@ -39,7 +39,7 @@ public:
 	/** Get the port the server is currently bound to. Returns 0 if not running. Game-thread-only. */
 	int32 GetBoundPort() const;
 
-	/** Get number of currently connected clients. Game-thread-only (ClientSockets only mutated on GT). */
+	/** Get number of active clients. Excludes sockets accepted since the last tick (pending promotion). Game-thread-only. */
 	int32 GetClientCount() const;
 
 	static constexpr int32 MaxMessageSize = 2 * 1024 * 1024;  // 2MB
@@ -67,6 +67,7 @@ private:
 	FCriticalSection PendingSocketsCS;
 	TMap<FSocket*, FString> ReceiveBuffers;
 	void CheckDeferredTimeouts();
+	/** Thread-safe flag for running state. Overall server state queries (GetBoundPort, GetClientCount) remain game-thread-only. */
 	FThreadSafeBool bRunning = false;
 	FTSTicker::FDelegateHandle TickDelegateHandle;
 	FCommandDispatcher CommandDispatcher;

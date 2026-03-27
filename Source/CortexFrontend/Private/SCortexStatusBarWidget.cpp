@@ -86,7 +86,7 @@ FText SCortexStatusBarWidget::GetLabelText() const
 	{
 		return FText::FromString(FString::Printf(TEXT("Cortex :%d"), Core->GetServerPort()));
 	}
-	return LOCTEXT("CortexDown", "Cortex");
+	return LOCTEXT("LabelDown", "Cortex");
 }
 
 FText SCortexStatusBarWidget::GetTooltipText() const
@@ -199,6 +199,7 @@ void SCortexStatusBarWidget::CopyConnectionInfo() const
 		return;
 	}
 
+	// Server binds to FIPv4Address::InternalLoopback (127.0.0.1) — safe to hardcode here.
 	const FString Json = FString::Printf(
 		TEXT("{\"host\": \"127.0.0.1\", \"port\": %d}"),
 		Core->GetServerPort());
