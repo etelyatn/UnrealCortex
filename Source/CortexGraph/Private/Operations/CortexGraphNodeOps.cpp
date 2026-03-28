@@ -180,8 +180,6 @@ UEdGraphPin* FCortexGraphNodeOps::FindPin(UEdGraphNode* Node, const FString& Pin
 
 UEdGraph* FCortexGraphNodeOps::ResolveSubgraph(UEdGraph* RootGraph, const FString& SubgraphPath, FCortexCommandResult& OutError)
 {
-	static constexpr int32 MaxSubgraphDepth = 5;
-
 	if (SubgraphPath.IsEmpty())
 	{
 		return RootGraph;
@@ -239,8 +237,7 @@ void FCortexGraphNodeOps::CollectSubgraphsRecursive(
 	TArray<TSharedPtr<FJsonValue>>& OutArray,
 	int32 Depth)
 {
-	static constexpr int32 MaxDepth = 5;
-	if (!Graph || Depth > MaxDepth)
+	if (!Graph || Depth > MaxSubgraphDepth)
 	{
 		return;
 	}
@@ -258,6 +255,10 @@ void FCortexGraphNodeOps::CollectSubgraphsRecursive(
 		}
 
 		UEdGraph* Sub = CompositeNode->BoundGraph;
+		if (!IsValid(Sub))
+		{
+			continue;
+		}
 		FString SubPath = CurrentSubgraphPath.IsEmpty()
 			? Sub->GetName()
 			: FString::Printf(TEXT("%s.%s"), *CurrentSubgraphPath, *Sub->GetName());
@@ -421,8 +422,9 @@ FCortexCommandResult FCortexGraphNodeOps::ListNodes(const TSharedPtr<FJsonObject
 		}
 
 		// Annotate tunnel boundary nodes (entry/exit inside composites)
-		// UK2Node_Composite IS-A UK2Node_Tunnel, so guard with !CompositeNode
-		if (Cast<UK2Node_Tunnel>(Node) && !CompositeNode)
+		// UK2Node_Composite IS-A UK2Node_Tunnel; use exact class check to identify
+		// pure tunnel entry/exit nodes only (matching Epic's own convention)
+		if (Node->GetClass() == UK2Node_Tunnel::StaticClass())
 		{
 			Entry->SetBoolField(TEXT("is_tunnel_boundary"), true);
 		}
@@ -553,8 +555,6 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 	}
 
 	TArray<TSharedPtr<FJsonValue>> ResultsArray;
-
-	static constexpr int32 MaxSubgraphDepth = 5;
 
 	// Lambda: search a single graph, optionally recursing into composites
 	TFunction<void(UEdGraph*, const FString&, int32)> SearchGraphRecursive;

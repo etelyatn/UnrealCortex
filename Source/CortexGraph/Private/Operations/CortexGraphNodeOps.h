@@ -38,6 +38,7 @@ public:
 	static UEdGraph* ResolveSubgraph(UEdGraph* RootGraph, const FString& SubgraphPath, FCortexCommandResult& OutError);
 
 private:
+	static constexpr int32 MaxSubgraphDepth = 5;
 	/** Recursively collect composite subgraph entries for ListGraphs. */
 	static void CollectSubgraphsRecursive(
 		UEdGraph* Graph,
