@@ -67,6 +67,11 @@ def register_graph_tools(mcp, connection: UEConnection):
             graph_name: Name of the graph to query (default: 'EventGraph').
             subgraph_path: Dot-separated path into nested composite subgraphs
                 (e.g., 'BeginPlay.Inner'). Resolves from graph_name downward.
+                To navigate into a composite, take the 'subgraph_name' value from a
+                list_nodes result and pass it as subgraph_path on the next call.
+                For deeper nesting, append further subgraph_name values with a dot:
+                e.g. 'OuterComposite.InnerComposite'.
+                Note: composite names must not contain dots.
 
         Returns:
             JSON with 'nodes' array, each containing:
@@ -111,7 +116,10 @@ def register_graph_tools(mcp, connection: UEConnection):
                 (e.g., 'BeginPlay.Inner'). Resolves from graph_name downward.
 
         Returns:
-            JSON with node details and all pins with connection info.
+            JSON with node details, position, and all pins with connection info.
+            If the node is a tunnel boundary (is_tunnel_boundary: true), its pins
+            represent the composite's entry/exit execution and data pins. Inspect
+            these before connecting nodes inside a composite to the execution flow.
         """
         try:
             params = {
@@ -196,6 +204,8 @@ def register_graph_tools(mcp, connection: UEConnection):
             node_class: Class name of the node to create.
             graph_name: Name of the graph to add to (default: 'EventGraph').
             subgraph_path: Dot-separated path into nested composite subgraphs.
+                Discover valid paths via graph_list_graphs(include_subgraphs=True)
+                or by reading subgraph_name fields from graph_list_nodes output.
             position: Optional JSON string with {x, y} coordinates.
             params: Optional JSON string with node-specific parameters.
 
@@ -208,6 +218,7 @@ def register_graph_tools(mcp, connection: UEConnection):
                 "node_class": node_class,
                 "graph_name": graph_name,
             }
+            subgraph_path = subgraph_path.strip()
             if subgraph_path:
                 request["subgraph_path"] = subgraph_path
             if position:
@@ -239,6 +250,8 @@ def register_graph_tools(mcp, connection: UEConnection):
             node_id: Unique identifier of the node to remove.
             graph_name: Name of the graph containing the node (default: 'EventGraph').
             subgraph_path: Dot-separated path into nested composite subgraphs.
+                Discover valid paths via graph_list_graphs(include_subgraphs=True)
+                or by reading subgraph_name fields from graph_list_nodes output.
 
         Returns:
             JSON with success status and the removed node_id.
@@ -249,6 +262,7 @@ def register_graph_tools(mcp, connection: UEConnection):
                 "node_id": node_id,
                 "graph_name": graph_name,
             }
+            subgraph_path = subgraph_path.strip()
             if subgraph_path:
                 request["subgraph_path"] = subgraph_path
 
@@ -280,6 +294,8 @@ def register_graph_tools(mcp, connection: UEConnection):
             target_pin: Name of the input pin on the target node.
             graph_name: Name of the graph containing the nodes (default: 'EventGraph').
             subgraph_path: Dot-separated path into nested composite subgraphs.
+                Discover valid paths via graph_list_graphs(include_subgraphs=True)
+                or by reading subgraph_name fields from graph_list_nodes output.
 
         Returns:
             JSON with success status and connection details.
@@ -293,6 +309,7 @@ def register_graph_tools(mcp, connection: UEConnection):
                 "target_pin": target_pin,
                 "graph_name": graph_name,
             }
+            subgraph_path = subgraph_path.strip()
             if subgraph_path:
                 request["subgraph_path"] = subgraph_path
 
@@ -320,6 +337,8 @@ def register_graph_tools(mcp, connection: UEConnection):
             pin_name: Name of the pin to disconnect.
             graph_name: Name of the graph containing the node (default: 'EventGraph').
             subgraph_path: Dot-separated path into nested composite subgraphs.
+                Discover valid paths via graph_list_graphs(include_subgraphs=True)
+                or by reading subgraph_name fields from graph_list_nodes output.
 
         Returns:
             JSON with success status and number of connections removed.
@@ -331,6 +350,7 @@ def register_graph_tools(mcp, connection: UEConnection):
                 "pin_name": pin_name,
                 "graph_name": graph_name,
             }
+            subgraph_path = subgraph_path.strip()
             if subgraph_path:
                 request["subgraph_path"] = subgraph_path
 
@@ -360,6 +380,8 @@ def register_graph_tools(mcp, connection: UEConnection):
             value: The value to set (as a string - will be converted to the appropriate type).
             graph_name: Name of the graph containing the node (default: 'EventGraph').
             subgraph_path: Dot-separated path into nested composite subgraphs.
+                Discover valid paths via graph_list_graphs(include_subgraphs=True)
+                or by reading subgraph_name fields from graph_list_nodes output.
 
         Returns:
             JSON with success status and the set value.
@@ -372,6 +394,7 @@ def register_graph_tools(mcp, connection: UEConnection):
                 "value": value,
                 "graph_name": graph_name,
             }
+            subgraph_path = subgraph_path.strip()
             if subgraph_path:
                 request["subgraph_path"] = subgraph_path
 

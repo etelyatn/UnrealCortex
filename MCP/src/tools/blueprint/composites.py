@@ -168,6 +168,7 @@ def _build_batch_commands(
 ) -> list[dict]:
     """Translate Blueprint spec into batch commands with $ref wiring."""
     path = path.rstrip("/")
+    subgraph_path = subgraph_path.strip()
     commands: list[dict] = []
 
     if mode == "create":
@@ -353,6 +354,12 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
             subgraph_path: Dot-separated path into nested composite subgraphs.
                 When set, all graph operations target the resolved subgraph instead
                 of the top-level graph.
+                Note: all graph operations in one call target the same subgraph.
+                To add nodes to both the top-level graph and a composite, call this
+                tool twice: once without subgraph_path (top-level), then again with
+                mode='update' and subgraph_path (composite nodes).
+                subgraph_path is not valid with mode='create'.
+                Composite names must not contain dots (the path separator).
 
                 Common pin names by node type:
                     Event: outputs "then"
@@ -389,6 +396,17 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         functions = functions or []
         nodes = nodes or []
         connections = connections or []
+
+        # Guard: subgraph_path is meaningless in create mode (Blueprint doesn't exist yet)
+        if subgraph_path and mode == "create":
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "subgraph_path cannot be used with mode='create': the Blueprint does not "
+                    "exist yet, so composite subgraphs cannot be pre-targeted. Use mode='update' "
+                    "after the Blueprint is created."
+                ),
+            }, indent=2)
 
         # 1. Validate spec
         try:
@@ -534,9 +552,15 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                 {"asset_path": asset_path},
                 timeout=VERIFICATION_TIMEOUT,
             )
+            verify_params: dict[str, Any] = {
+                "asset_path": asset_path,
+                "graph_name": graph_name,
+            }
+            if subgraph_path:
+                verify_params["subgraph_path"] = subgraph_path
             nodes_data = connection.send_command(
                 "graph.list_nodes",
-                {"asset_path": asset_path, "graph_name": graph_name},
+                verify_params,
                 timeout=VERIFICATION_TIMEOUT,
             )
             readback = {
