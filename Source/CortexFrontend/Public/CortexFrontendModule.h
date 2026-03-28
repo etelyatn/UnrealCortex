@@ -70,4 +70,5 @@ private:
     TArray<FConversionWindowEntry> ConversionWindows;
     TArray<FAnalysisWindowEntry> AnalysisWindows;
     bool bGenStudioTabRegistered = false;
+    FDelegateHandle StatusBarCallbackHandle;
 };
