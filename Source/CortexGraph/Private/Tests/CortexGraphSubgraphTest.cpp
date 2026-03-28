@@ -685,7 +685,7 @@ bool FCortexGraphSubgraphCreateCompositeTest::RunTest(const FString& Parameters)
 	TestNotNull(TEXT("Composite node found in EventGraph"), CompositeNode);
 	if (CompositeNode)
 	{
-		TestNotNull(TEXT("Composite has a BoundGraph"), CompositeNode->BoundGraph.Get());
+		TestNotNull(TEXT("Composite has a BoundGraph"), CompositeNode->BoundGraph);
 	}
 
 	// Verify list_nodes sees the composite with subgraph_name
