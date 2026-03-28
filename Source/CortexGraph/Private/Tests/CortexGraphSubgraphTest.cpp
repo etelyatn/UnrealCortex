@@ -632,3 +632,100 @@ bool FCortexGraphSubgraphListGraphsTest::RunTest(const FString& Parameters)
 	TestBP->MarkAsGarbage();
 	return true;
 }
+
+// ── Test 10: Create composite node via AddNode ───────────────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphSubgraphCreateCompositeTest,
+	"Cortex.Graph.Subgraph.CreateCompositeViaAddNode",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphSubgraphCreateCompositeTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexSubgraphTestUtils;
+
+	UEdGraph* EventGraph = nullptr;
+	UBlueprint* TestBP = CreateTestBP(TEXT("BP_SubgraphCreateCompositeTest"), EventGraph);
+	TestNotNull(TEXT("TestBP created"), TestBP);
+	TestNotNull(TEXT("EventGraph found"), EventGraph);
+
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(
+		TEXT("graph"), TEXT("Graph"), TEXT("1.0.0"),
+		MakeShared<FCortexGraphCommandHandler>()
+	);
+
+	// Create a composite node via add_node
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	AddParams->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+	AddParams->SetStringField(TEXT("node_class"), TEXT("UK2Node_Composite"));
+
+	FCortexCommandResult AddResult = Router.Execute(TEXT("graph.add_node"), AddParams);
+	TestTrue(TEXT("add_node UK2Node_Composite succeeds"), AddResult.bSuccess);
+
+	FString CompositeNodeId;
+	if (AddResult.Data)
+	{
+		AddResult.Data->TryGetStringField(TEXT("node_id"), CompositeNodeId);
+	}
+	TestFalse(TEXT("Composite node has an ID"), CompositeNodeId.IsEmpty());
+
+	// Find the created composite and verify it has a BoundGraph
+	UK2Node_Composite* CompositeNode = nullptr;
+	for (UEdGraphNode* Node : EventGraph->Nodes)
+	{
+		if (Node && Node->GetName() == CompositeNodeId)
+		{
+			CompositeNode = Cast<UK2Node_Composite>(Node);
+			break;
+		}
+	}
+	TestNotNull(TEXT("Composite node found in EventGraph"), CompositeNode);
+	if (CompositeNode)
+	{
+		TestNotNull(TEXT("Composite has a BoundGraph"), CompositeNode->BoundGraph.Get());
+	}
+
+	// Verify list_nodes sees the composite with subgraph_name
+	TSharedPtr<FJsonObject> ListParams = MakeShared<FJsonObject>();
+	ListParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	ListParams->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+
+	FCortexCommandResult ListResult = Router.Execute(TEXT("graph.list_nodes"), ListParams);
+	TestTrue(TEXT("list_nodes succeeds"), ListResult.bSuccess);
+
+	const TArray<TSharedPtr<FJsonValue>>* Nodes;
+	bool bFoundCompositeWithSubgraphName = false;
+	if (ListResult.Data->TryGetArrayField(TEXT("nodes"), Nodes))
+	{
+		for (const auto& NodeVal : *Nodes)
+		{
+			const TSharedPtr<FJsonObject>& NodeObj = NodeVal->AsObject();
+			FString ClassName;
+			NodeObj->TryGetStringField(TEXT("class"), ClassName);
+			if (ClassName == TEXT("K2Node_Composite"))
+			{
+				FString SubgraphName;
+				if (NodeObj->TryGetStringField(TEXT("subgraph_name"), SubgraphName) && !SubgraphName.IsEmpty())
+				{
+					bFoundCompositeWithSubgraphName = true;
+
+					// Verify we can navigate into the newly created subgraph
+					TSharedPtr<FJsonObject> SubParams = MakeShared<FJsonObject>();
+					SubParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+					SubParams->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+					SubParams->SetStringField(TEXT("subgraph_path"), SubgraphName);
+
+					FCortexCommandResult SubResult = Router.Execute(TEXT("graph.list_nodes"), SubParams);
+					TestTrue(TEXT("list_nodes inside new composite succeeds"), SubResult.bSuccess);
+				}
+			}
+		}
+	}
+	TestTrue(TEXT("Composite node has subgraph_name (BoundGraph was created)"), bFoundCompositeWithSubgraphName);
+
+	TestBP->MarkAsGarbage();
+	return true;
+}

@@ -36,6 +36,7 @@ _BP_CLASS_MAP = {
     "UnbindAllEvents": "UK2Node_ClearDelegate",
     "CreateDelegate": "UK2Node_CreateDelegate",
     "CreateEvent": "UK2Node_CreateDelegate",  # Create Delegate object, NOT CustomEvent
+    "Composite": "UK2Node_Composite",
 }
 
 _VALID_BP_TYPES = {"Actor", "Component", "Interface", "FunctionLibrary"}

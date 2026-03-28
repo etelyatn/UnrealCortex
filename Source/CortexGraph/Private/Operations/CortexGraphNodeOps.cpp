@@ -880,6 +880,10 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	{
 		NodeClass = UK2Node_CreateDelegate::StaticClass();
 	}
+	else if (NodeClassName == TEXT("UK2Node_Composite") || NodeClassName == TEXT("Composite"))
+	{
+		NodeClass = UK2Node_Composite::StaticClass();
+	}
 
 	if (NodeClass == nullptr)
 	{
@@ -1110,6 +1114,18 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	}
 
 	NewNode->AllocateDefaultPins();
+
+	// Special setup for composite nodes: PostPlacedNewNode creates the BoundGraph
+	// and its tunnel entry/exit nodes. Without this call BoundGraph remains null and
+	// ResolveSubgraph cannot traverse into the composite.
+	UK2Node_Composite* CompositeNewNode = Cast<UK2Node_Composite>(NewNode);
+	if (CompositeNewNode)
+	{
+		CompositeNewNode->PostPlacedNewNode();
+		// Re-allocate pins after PostPlacedNewNode so the entry/exit tunnel pins are present
+		CompositeNewNode->AllocateDefaultPins();
+	}
+
 	Graph->NotifyGraphChanged();
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
