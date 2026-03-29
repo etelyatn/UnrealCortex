@@ -1333,7 +1333,13 @@ FCortexCommandResult FCortexBPAssetOps::Rename(const TSharedPtr<FJsonObject>& Pa
 		);
 	}
 
-	if (FindPackage(nullptr, *DestPackagePath) || FPackageName::DoesPackageExist(DestPackagePath))
+	// Allow rename when the destination package only contains an in-memory redirector
+	// (created by a prior rename in the same session). Block only on real assets.
+	UPackage* ExistingDestPkg = FindPackage(nullptr, *DestPackagePath);
+	const bool bDestHasRealAsset = ExistingDestPkg
+		? (FindObject<UObjectRedirector>(ExistingDestPkg, *DestAssetName) == nullptr)
+		: FPackageName::DoesPackageExist(DestPackagePath);
+	if (bDestHasRealAsset)
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::BlueprintAlreadyExists,
