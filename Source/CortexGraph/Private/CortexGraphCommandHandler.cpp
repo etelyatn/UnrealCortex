@@ -61,48 +61,60 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 {
 	return {
 		FCortexCommandInfo{ TEXT("list_graphs"), TEXT("List all graphs in an asset") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset")),
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
+			.Optional(TEXT("include_subgraphs"), TEXT("boolean"), TEXT("Include composite subgraphs with parent_graph and subgraph_path fields")),
 		FCortexCommandInfo{ TEXT("list_nodes"), TEXT("List nodes in a graph") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
-			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph to inspect, defaults to EventGraph")),
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph to inspect, defaults to EventGraph"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
 		FCortexCommandInfo{ TEXT("get_node"), TEXT("Get node details with all pins") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Identifier of the node to inspect"))
-			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node")),
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
 		FCortexCommandInfo{ TEXT("search_nodes"), TEXT("Search nodes across graphs by class, function name, or display name") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("node_class"), TEXT("string"), TEXT("Runtime node class filter"))
 			.Optional(TEXT("function_name"), TEXT("string"), TEXT("Function-name filter for call nodes"))
-			.Optional(TEXT("display_name"), TEXT("string"), TEXT("Node display-name filter")),
+			.Optional(TEXT("display_name"), TEXT("string"), TEXT("Node display-name filter"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Restrict search to a specific graph"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path to restrict search")),
 		FCortexCommandInfo{ TEXT("add_node"), TEXT("Add a node to a graph") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("node_class"), TEXT("string"), TEXT("Node class to create"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Target graph, defaults to EventGraph"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')"))
 			.Optional(TEXT("position"), TEXT("object"), TEXT("Optional node placement coordinates"))
 			.Optional(TEXT("params"), TEXT("object"), TEXT("Node-specific creation parameters")),
 		FCortexCommandInfo{ TEXT("remove_node"), TEXT("Remove a node and clean up connections") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Identifier of the node to remove"))
-			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node")),
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
 		FCortexCommandInfo{ TEXT("connect"), TEXT("Connect two pins") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("source_node"), TEXT("string"), TEXT("Node ID of the output node"))
 			.Required(TEXT("source_pin"), TEXT("string"), TEXT("Output pin name"))
 			.Required(TEXT("target_node"), TEXT("string"), TEXT("Node ID of the input node"))
 			.Required(TEXT("target_pin"), TEXT("string"), TEXT("Input pin name"))
-			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing both nodes")),
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing both nodes"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
 		FCortexCommandInfo{ TEXT("disconnect"), TEXT("Disconnect a pin") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node containing the pin"))
 			.Required(TEXT("pin_name"), TEXT("string"), TEXT("Pin to disconnect"))
-			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node")),
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
 		FCortexCommandInfo{ TEXT("set_pin_value"), TEXT("Set the default value of an input pin") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node containing the pin"))
 			.Required(TEXT("pin_name"), TEXT("string"), TEXT("Input pin to modify"))
 			.Required(TEXT("value"), TEXT("string"), TEXT("Serialized pin value"))
-			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node")),
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
 		FCortexCommandInfo{ TEXT("auto_layout"), TEXT("Auto-arrange nodes in Blueprint graphs for readability") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
-			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Specific graph to layout")),
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Specific graph to layout"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
 	};
 }

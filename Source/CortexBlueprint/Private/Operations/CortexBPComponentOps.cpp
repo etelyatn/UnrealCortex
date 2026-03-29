@@ -458,6 +458,13 @@ FCortexCommandResult FCortexBPComponentOps::AddSCSComponent(const TSharedPtr<FJs
 			FString::Printf(TEXT("Failed to create SCS node for class: %s"), *ComponentClassName));
 	}
 
+	// Scene components without an explicit parent are attached to DefaultSceneRoot,
+	// matching UE editor drag-and-drop behavior. Non-scene components are added as roots.
+	if (!ParentNode && bIsSceneComponent)
+	{
+		ParentNode = SCS->GetDefaultSceneRootNode();
+	}
+
 	if (ParentNode)
 	{
 		ParentNode->AddChildNode(NewNode);

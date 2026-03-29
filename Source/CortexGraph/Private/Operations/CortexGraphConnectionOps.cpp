@@ -6,6 +6,7 @@
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
+#include "K2Node_Composite.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Dom/JsonObject.h"
 #include "ScopedTransaction.h"
@@ -49,6 +50,18 @@ FCortexCommandResult FCortexGraphConnectionOps::Connect(const TSharedPtr<FJsonOb
 	if (Graph == nullptr)
 	{
 		return LoadError;
+	}
+
+	// Resolve subgraph path if provided
+	FString SubgraphPath;
+	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
+	if (!SubgraphPath.IsEmpty())
+	{
+		Graph = FCortexGraphNodeOps::ResolveSubgraph(Graph, SubgraphPath, LoadError);
+		if (Graph == nullptr)
+		{
+			return LoadError;
+		}
 	}
 
 	// Find source node and pin
@@ -161,6 +174,18 @@ FCortexCommandResult FCortexGraphConnectionOps::Disconnect(const TSharedPtr<FJso
 	if (Graph == nullptr)
 	{
 		return LoadError;
+	}
+
+	// Resolve subgraph path if provided
+	FString SubgraphPath;
+	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
+	if (!SubgraphPath.IsEmpty())
+	{
+		Graph = FCortexGraphNodeOps::ResolveSubgraph(Graph, SubgraphPath, LoadError);
+		if (Graph == nullptr)
+		{
+			return LoadError;
+		}
 	}
 
 	// Find node and pin
