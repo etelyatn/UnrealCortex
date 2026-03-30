@@ -31,6 +31,7 @@ private:
 	void OnBuildOutputInternal(const FString& Output);
 	void OnBuildCompletedInternal(int32 ReturnCode);
 	void OnSessionTurnComplete(const FCortexTurnResult& Result);
+	void OnSessionStateChanged(const FCortexSessionStateChange& Change);
 	void SaveConversionNotes(const FString& ResponseText);
 
 	TSharedPtr<FCortexConversionContext> Context;
