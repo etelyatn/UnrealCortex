@@ -42,7 +42,7 @@ def register_graph_layout_tools(mcp, connection: UEConnection):
         params = {"asset_path": asset_path, "mode": mode}
         if graph_name:
             params["graph_name"] = graph_name
-        if subgraph_path.strip():
+        if subgraph_path and subgraph_path.strip():
             params["subgraph_path"] = subgraph_path.strip()
         if horizontal_spacing is not None:
             params["horizontal_spacing"] = horizontal_spacing

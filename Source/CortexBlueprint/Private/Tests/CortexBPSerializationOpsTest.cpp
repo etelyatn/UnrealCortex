@@ -208,7 +208,7 @@ bool FCortexBPSerializeEntireBlueprintCompositeTest::RunTest(const FString& Para
 		if (G && G->GetName() == TEXT("EventGraph")) { EventGraph = G; break; }
 	}
 	TestNotNull(TEXT("EventGraph found"), EventGraph);
-	if (!EventGraph) { TestBP->MarkAsGarbage(); return false; }
+	if (!EventGraph) { TestBP->MarkAsGarbage(); Pkg->MarkAsGarbage(); return false; }
 
 	// Build composite: EventGraph -> composite node -> BoundGraph with IfThenElse inside
 	UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(EventGraph);
@@ -263,8 +263,9 @@ bool FCortexBPSerializeEntireBlueprintCompositeTest::RunTest(const FString& Para
 	TestTrue(TEXT("Compact output must include IfThenElse node from composite subgraph"),
 		CompactJson.Contains(TEXT("IfThenElse")));
 
-	// Cleanup: remove saved file and mark garbage
+	// Cleanup: remove saved file and mark all created assets as garbage
 	IFileManager::Get().Delete(*PkgFile);
 	TestBP->MarkAsGarbage();
+	Pkg->MarkAsGarbage();
 	return true;
 }

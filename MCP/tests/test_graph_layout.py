@@ -36,7 +36,7 @@ def test_graph_auto_layout_calls_correct_command():
 
 
 def test_graph_auto_layout_optional_params_excluded_when_none():
-    """Optional params (graph_name, spacing) are not sent when not provided."""
+    """Optional params (graph_name, subgraph_path, spacing) are not sent when not provided."""
     from graph.layout import register_graph_layout_tools
 
     mcp = MagicMock()
@@ -50,6 +50,7 @@ def test_graph_auto_layout_optional_params_excluded_when_none():
     call_args = connection.send_command.call_args
     params = call_args[0][1]
     assert "graph_name" not in params
+    assert "subgraph_path" not in params
     assert "horizontal_spacing" not in params
     assert "vertical_spacing" not in params
 
@@ -165,3 +166,35 @@ def test_graph_auto_layout_subgraph_path_strips_whitespace():
 
     params = connection.send_command.call_args[0][1]
     assert params.get("subgraph_path") == "InnerGraph"
+
+
+def test_graph_auto_layout_subgraph_path_excluded_when_whitespace_only():
+    """A whitespace-only subgraph_path is treated as not provided."""
+    from graph.layout import register_graph_layout_tools
+
+    mcp = MagicMock()
+    connection = MagicMock()
+    connection.send_command.return_value = {"data": {}}
+
+    register_graph_layout_tools(mcp, connection)
+    tool_func = mcp.tool.return_value.call_args[0][0]
+    tool_func(asset_path="/Game/BP_Test", subgraph_path="   ")
+
+    params = connection.send_command.call_args[0][1]
+    assert "subgraph_path" not in params
+
+
+def test_graph_auto_layout_subgraph_path_excluded_when_none():
+    """Passing None for subgraph_path does not crash and is excluded from params."""
+    from graph.layout import register_graph_layout_tools
+
+    mcp = MagicMock()
+    connection = MagicMock()
+    connection.send_command.return_value = {"data": {}}
+
+    register_graph_layout_tools(mcp, connection)
+    tool_func = mcp.tool.return_value.call_args[0][0]
+    tool_func(asset_path="/Game/BP_Test", subgraph_path=None)
+
+    params = connection.send_command.call_args[0][1]
+    assert "subgraph_path" not in params

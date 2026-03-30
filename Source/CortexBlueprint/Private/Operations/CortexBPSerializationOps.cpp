@@ -820,9 +820,9 @@ FString FCortexBPSerializationOps::SerializeEntireBlueprintCompact(UBlueprint* B
 
 	// Graphs — all pages, functions, and composite subgraphs
 	TArray<TSharedPtr<FJsonValue>> GraphsJson;
-	TArray<UEdGraph*> AllGraphsCompact;
-	Blueprint->GetAllGraphs(AllGraphsCompact);
-	for (UEdGraph* Graph : AllGraphsCompact)
+	TArray<UEdGraph*> AllGraphs;
+	Blueprint->GetAllGraphs(AllGraphs);
+	for (UEdGraph* Graph : AllGraphs)
 	{
 		if (Graph) { GraphsJson.Add(MakeShared<FJsonValueObject>(GraphToJsonCompact(Graph))); }
 	}
