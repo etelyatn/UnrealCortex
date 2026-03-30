@@ -60,9 +60,12 @@ void FCortexBPSerializationOps::Serialize(const FCortexSerializationRequest& Req
 		switch (Request.Scope)
 		{
 		case ECortexConversionScope::EntireBlueprint:
-			for (UEdGraph* G : Blueprint->UbergraphPages) { if (G) TargetGraphs.Add(G); }
-			for (UEdGraph* G : Blueprint->FunctionGraphs) { if (G) TargetGraphs.Add(G); }
+		{
+			TArray<UEdGraph*> AllGraphs;
+			Blueprint->GetAllGraphs(AllGraphs);
+			for (UEdGraph* G : AllGraphs) { if (G) TargetGraphs.Add(G); }
 			break;
+		}
 		case ECortexConversionScope::CurrentGraph:
 		{
 			TArray<UEdGraph*> AllGraphs;
@@ -468,15 +471,13 @@ FString FCortexBPSerializationOps::SerializeEntireBlueprint(UBlueprint* Blueprin
 	// Components
 	Root->SetField(TEXT("components"), MakeShared<FJsonValueArray>(ComponentsToJson(Blueprint)));
 
-	// Graphs (ubergraph pages + function graphs)
+	// Graphs — all pages, functions, and composite subgraphs
 	TArray<TSharedPtr<FJsonValue>> GraphsJson;
-	for (UEdGraph* Graph : Blueprint->UbergraphPages)
+	TArray<UEdGraph*> AllGraphs;
+	Blueprint->GetAllGraphs(AllGraphs);
+	for (UEdGraph* Graph : AllGraphs)
 	{
-		GraphsJson.Add(MakeShared<FJsonValueObject>(GraphToJson(Graph)));
-	}
-	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
-	{
-		GraphsJson.Add(MakeShared<FJsonValueObject>(GraphToJson(Graph)));
+		if (Graph) { GraphsJson.Add(MakeShared<FJsonValueObject>(GraphToJson(Graph))); }
 	}
 	Root->SetField(TEXT("graphs"), MakeShared<FJsonValueArray>(GraphsJson));
 
@@ -817,14 +818,13 @@ FString FCortexBPSerializationOps::SerializeEntireBlueprintCompact(UBlueprint* B
 	Root->SetField(TEXT("variables"), MakeShared<FJsonValueArray>(VariablesToJson(Blueprint)));
 	Root->SetField(TEXT("components"), MakeShared<FJsonValueArray>(ComponentsToJson(Blueprint)));
 
+	// Graphs — all pages, functions, and composite subgraphs
 	TArray<TSharedPtr<FJsonValue>> GraphsJson;
-	for (UEdGraph* Graph : Blueprint->UbergraphPages)
+	TArray<UEdGraph*> AllGraphsCompact;
+	Blueprint->GetAllGraphs(AllGraphsCompact);
+	for (UEdGraph* Graph : AllGraphsCompact)
 	{
-		GraphsJson.Add(MakeShared<FJsonValueObject>(GraphToJsonCompact(Graph)));
-	}
-	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
-	{
-		GraphsJson.Add(MakeShared<FJsonValueObject>(GraphToJsonCompact(Graph)));
+		if (Graph) { GraphsJson.Add(MakeShared<FJsonValueObject>(GraphToJsonCompact(Graph))); }
 	}
 	Root->SetField(TEXT("graphs"), MakeShared<FJsonValueArray>(GraphsJson));
 

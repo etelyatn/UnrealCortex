@@ -117,3 +117,51 @@ def test_graph_auto_layout_invalidates_both_caches():
     invalidate_calls = [c[0][0] for c in connection.invalidate_cache.call_args_list]
     assert "graph." in invalidate_calls
     assert "blueprint." in invalidate_calls
+
+
+def test_graph_auto_layout_subgraph_path_included_when_provided():
+    """subgraph_path is forwarded to the command when non-empty."""
+    from graph.layout import register_graph_layout_tools
+
+    mcp = MagicMock()
+    connection = MagicMock()
+    connection.send_command.return_value = {"data": {}}
+
+    register_graph_layout_tools(mcp, connection)
+    tool_func = mcp.tool.return_value.call_args[0][0]
+    tool_func(asset_path="/Game/BP_Test", subgraph_path="InnerGraph")
+
+    params = connection.send_command.call_args[0][1]
+    assert params.get("subgraph_path") == "InnerGraph"
+
+
+def test_graph_auto_layout_subgraph_path_excluded_when_empty():
+    """subgraph_path is not sent when empty or whitespace-only."""
+    from graph.layout import register_graph_layout_tools
+
+    mcp = MagicMock()
+    connection = MagicMock()
+    connection.send_command.return_value = {"data": {}}
+
+    register_graph_layout_tools(mcp, connection)
+    tool_func = mcp.tool.return_value.call_args[0][0]
+    tool_func(asset_path="/Game/BP_Test", subgraph_path="")
+
+    params = connection.send_command.call_args[0][1]
+    assert "subgraph_path" not in params
+
+
+def test_graph_auto_layout_subgraph_path_strips_whitespace():
+    """Leading/trailing whitespace is stripped from subgraph_path."""
+    from graph.layout import register_graph_layout_tools
+
+    mcp = MagicMock()
+    connection = MagicMock()
+    connection.send_command.return_value = {"data": {}}
+
+    register_graph_layout_tools(mcp, connection)
+    tool_func = mcp.tool.return_value.call_args[0][0]
+    tool_func(asset_path="/Game/BP_Test", subgraph_path="  InnerGraph  ")
+
+    params = connection.send_command.call_args[0][1]
+    assert params.get("subgraph_path") == "InnerGraph"

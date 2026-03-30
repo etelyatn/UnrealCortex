@@ -3,6 +3,16 @@
 #include "Operations/CortexBPSerializationOps.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "Engine/Blueprint.h"
+#include "EdGraph/EdGraph.h"
+#include "K2Node_Composite.h"
+#include "K2Node_IfThenElse.h"
+#include "EdGraphSchema_K2.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "GameFramework/Actor.h"
+#include "UObject/SavePackage.h"
+#include "HAL/FileManager.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexBPSerializeEntireBlueprintTest,
 	"Cortex.Blueprint.Serialization.EntireBlueprint",
@@ -156,5 +166,105 @@ bool FCortexBPSerializeCompactEventOrFunctionTest::RunTest(const FString& Parame
 	// No full type paths
 	TestFalse(TEXT("Compact EventOrFunction must not contain full engine type paths"), JsonResult.Contains(TEXT("/Script/")));
 
+	return true;
+}
+
+// ── Composite subgraph serialization ──────────────────────────────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexBPSerializeEntireBlueprintCompositeTest,
+	"Cortex.Blueprint.Serialization.EntireBlueprintIncludesCompositeSubgraphs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPSerializeEntireBlueprintCompositeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// Asset path — must be a real package so LoadBlueprintSafe can find it.
+	// Use /Game/Blueprints/ which is guaranteed to exist in the Sandbox.
+	const FString AssetPath = TEXT("/Game/Blueprints/BP_SerialCompositeTest");
+	const FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
+	const FString PkgFile = FPackageName::LongPackageNameToFilename(PkgName, TEXT(".uasset"));
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(PkgFile), true);
+
+	// Create a real package so DoesPackageExist() returns true after save
+	UPackage* Pkg = CreatePackage(*PkgName);
+	TestNotNull(TEXT("Package created"), Pkg);
+	if (!Pkg) { return false; }
+
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		Pkg,
+		FName(TEXT("BP_SerialCompositeTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass()
+	);
+	TestNotNull(TEXT("TestBP created"), TestBP);
+	if (!TestBP) { Pkg->MarkAsGarbage(); return false; }
+
+	UEdGraph* EventGraph = nullptr;
+	for (UEdGraph* G : TestBP->UbergraphPages)
+	{
+		if (G && G->GetName() == TEXT("EventGraph")) { EventGraph = G; break; }
+	}
+	TestNotNull(TEXT("EventGraph found"), EventGraph);
+	if (!EventGraph) { TestBP->MarkAsGarbage(); return false; }
+
+	// Build composite: EventGraph -> composite node -> BoundGraph with IfThenElse inside
+	UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(EventGraph);
+	Composite->CreateNewGuid();
+	EventGraph->AddNode(Composite, true, false);
+
+	UEdGraph* Sub = FBlueprintEditorUtils::CreateNewGraph(
+		TestBP, FName(TEXT("InnerGraph")), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass()
+	);
+	Composite->BoundGraph = Sub;
+	Composite->AllocateDefaultPins();
+	// Register Sub in EventGraph->SubGraphs so GetAllChildrenGraphs() finds it.
+	// In a real editor flow, UK2Node_Composite::PostPlacedNewNode() does this.
+	EventGraph->SubGraphs.Add(Sub);
+
+	// Add an IfThenElse node inside the composite's BoundGraph
+	UK2Node_IfThenElse* Branch = NewObject<UK2Node_IfThenElse>(Sub);
+	Branch->CreateNewGuid();
+	Sub->AddNode(Branch, true, false);
+
+	// Save the package so LoadBlueprintSafe can find it via DoesPackageExist()
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	UPackage::SavePackage(Pkg, TestBP, *PkgFile, SaveArgs);
+
+	// Serialize with EntireBlueprint scope (both verbose and compact)
+	auto RunSerial = [&](bool bCompact) -> FString
+	{
+		FCortexSerializationRequest Req;
+		Req.BlueprintPath = AssetPath;
+		Req.Scope = ECortexConversionScope::EntireBlueprint;
+		Req.bConversionMode = bCompact;
+		FString Out;
+		FCortexBPSerializationOps::Serialize(Req,
+			FOnSerializationComplete::CreateLambda([&](const FCortexSerializationResult& R)
+			{
+				if (R.bSuccess) { Out = R.JsonPayload; }
+			}));
+		return Out;
+	};
+
+	FString VerboseJson = RunSerial(false);
+	FString CompactJson = RunSerial(true);
+
+	TestFalse(TEXT("Verbose JSON must not be empty"), VerboseJson.IsEmpty());
+	TestFalse(TEXT("Compact JSON must not be empty"), CompactJson.IsEmpty());
+
+	// The IfThenElse node lives only inside the composite's BoundGraph.
+	// GetAllGraphs() must find it; the old UbergraphPages+FunctionGraphs iteration misses it.
+	TestTrue(TEXT("Verbose output must include IfThenElse node from composite subgraph"),
+		VerboseJson.Contains(TEXT("IfThenElse")));
+	TestTrue(TEXT("Compact output must include IfThenElse node from composite subgraph"),
+		CompactJson.Contains(TEXT("IfThenElse")));
+
+	// Cleanup: remove saved file and mark garbage
+	IFileManager::Get().Delete(*PkgFile);
+	TestBP->MarkAsGarbage();
 	return true;
 }
