@@ -187,19 +187,6 @@ void SCortexChatToolbar::OnTokenUsageUpdated()
         const FString Label = UsedStr + TEXT(" / ") + MaxStr;
         ContextLabel->SetText(FText::FromString(Label));
     }
-
-    const ECortexSessionState CurrentState = Session->GetState();
-    const bool bIsDisconnected = CurrentState == ECortexSessionState::Inactive
-        || CurrentState == ECortexSessionState::Terminated;
-    if (ModelLabel.IsValid() && !bIsDisconnected)
-    {
-        const FString& Model = Session->GetModelId();
-        if (!Model.IsEmpty())
-        {
-            ModelLabel->SetText(FText::FromString(
-                FCortexFrontendSettings::GetModelLabelWithEffort(Model)));
-        }
-    }
 }
 
 void SCortexChatToolbar::OnSessionStateChanged(const FCortexSessionStateChange& Change)
@@ -207,9 +194,25 @@ void SCortexChatToolbar::OnSessionStateChanged(const FCortexSessionStateChange& 
     const bool bDisconnected = Change.NewState == ECortexSessionState::Inactive
         || Change.NewState == ECortexSessionState::Terminated;
 
-    // Hide model label when disconnected — it shows stale data from the previous session
     if (bDisconnected && ModelLabel.IsValid())
     {
+        // Hide model label when disconnected — it shows stale data from the previous session
         ModelLabel->SetText(FText::FromString(TEXT("")));
+        return;
+    }
+
+    // Update model label when session becomes active (FE-TD-003: decouple from token events)
+    if (ModelLabel.IsValid())
+    {
+        TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
+        if (Session.IsValid())
+        {
+            const FString& Model = Session->GetModelId();
+            if (!Model.IsEmpty())
+            {
+                ModelLabel->SetText(FText::FromString(
+                    FCortexFrontendSettings::GetModelLabelWithEffort(Model)));
+            }
+        }
     }
 }
