@@ -269,3 +269,168 @@ bool FCortexBPSerializeEntireBlueprintCompositeTest::RunTest(const FString& Para
 	Pkg->MarkAsGarbage();
 	return true;
 }
+
+// ── Nested composite serialization (TD-BP-SERIAL-003) ───────────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexBPSerializeNestedCompositeTest,
+	"Cortex.Blueprint.Serialization.NestedCompositeSubgraphs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPSerializeNestedCompositeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FString AssetPath = TEXT("/Game/Blueprints/BP_SerialNestedCompositeTest");
+	const FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
+	const FString PkgFile = FPackageName::LongPackageNameToFilename(PkgName, TEXT(".uasset"));
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(PkgFile), true);
+
+	UPackage* Pkg = CreatePackage(*PkgName);
+	TestNotNull(TEXT("Package created"), Pkg);
+	if (!Pkg) { return false; }
+
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(), Pkg,
+		FName(TEXT("BP_SerialNestedCompositeTest")),
+		BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass()
+	);
+	TestNotNull(TEXT("TestBP created"), TestBP);
+	if (!TestBP) { Pkg->MarkAsGarbage(); return false; }
+
+	UEdGraph* EventGraph = nullptr;
+	for (UEdGraph* G : TestBP->UbergraphPages)
+	{
+		if (G && G->GetName() == TEXT("EventGraph")) { EventGraph = G; break; }
+	}
+	TestNotNull(TEXT("EventGraph found"), EventGraph);
+	if (!EventGraph) { TestBP->MarkAsGarbage(); Pkg->MarkAsGarbage(); return false; }
+
+	// Build: EventGraph -> OuterComposite -> InnerComposite -> IfThenElse
+	UK2Node_Composite* Outer = NewObject<UK2Node_Composite>(EventGraph);
+	Outer->CreateNewGuid();
+	EventGraph->AddNode(Outer, true, false);
+	UEdGraph* OuterSub = FBlueprintEditorUtils::CreateNewGraph(
+		TestBP, FName(TEXT("OuterComposite")), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass()
+	);
+	Outer->BoundGraph = OuterSub;
+	Outer->AllocateDefaultPins();
+	EventGraph->SubGraphs.Add(OuterSub);
+
+	UK2Node_Composite* Inner = NewObject<UK2Node_Composite>(OuterSub);
+	Inner->CreateNewGuid();
+	OuterSub->AddNode(Inner, true, false);
+	UEdGraph* InnerSub = FBlueprintEditorUtils::CreateNewGraph(
+		TestBP, FName(TEXT("InnerComposite")), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass()
+	);
+	Inner->BoundGraph = InnerSub;
+	Inner->AllocateDefaultPins();
+	OuterSub->SubGraphs.Add(InnerSub);
+
+	// Add IfThenElse inside the innermost composite
+	UK2Node_IfThenElse* Branch = NewObject<UK2Node_IfThenElse>(InnerSub);
+	Branch->CreateNewGuid();
+	InnerSub->AddNode(Branch, true, false);
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	UPackage::SavePackage(Pkg, TestBP, *PkgFile, SaveArgs);
+
+	// Serialize — GetAllGraphs() must recurse 2 levels to find the IfThenElse
+	FCortexSerializationRequest Req;
+	Req.BlueprintPath = AssetPath;
+	Req.Scope = ECortexConversionScope::EntireBlueprint;
+
+	FString JsonResult;
+	FCortexBPSerializationOps::Serialize(Req,
+		FOnSerializationComplete::CreateLambda([&](const FCortexSerializationResult& R)
+		{
+			if (R.bSuccess) { JsonResult = R.JsonPayload; }
+		}));
+
+	TestFalse(TEXT("JSON must not be empty"), JsonResult.IsEmpty());
+	TestTrue(TEXT("Output must include IfThenElse from nested composite"),
+		JsonResult.Contains(TEXT("IfThenElse")));
+
+	IFileManager::Get().Delete(*PkgFile);
+	TestBP->MarkAsGarbage();
+	Pkg->MarkAsGarbage();
+	return true;
+}
+
+// ── Function graph composite serialization (TD-BP-SERIAL-003) ───────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexBPSerializeFuncGraphCompositeTest,
+	"Cortex.Blueprint.Serialization.FunctionGraphCompositeSubgraph",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPSerializeFuncGraphCompositeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FString AssetPath = TEXT("/Game/Blueprints/BP_SerialFuncCompositeTest");
+	const FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
+	const FString PkgFile = FPackageName::LongPackageNameToFilename(PkgName, TEXT(".uasset"));
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(PkgFile), true);
+
+	UPackage* Pkg = CreatePackage(*PkgName);
+	TestNotNull(TEXT("Package created"), Pkg);
+	if (!Pkg) { return false; }
+
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(), Pkg,
+		FName(TEXT("BP_SerialFuncCompositeTest")),
+		BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass()
+	);
+	TestNotNull(TEXT("TestBP created"), TestBP);
+	if (!TestBP) { Pkg->MarkAsGarbage(); return false; }
+
+	// Create a function graph
+	UEdGraph* FuncGraph = FBlueprintEditorUtils::CreateNewGraph(
+		TestBP, FName(TEXT("MyTestFunction")),
+		UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass()
+	);
+	TestBP->FunctionGraphs.Add(FuncGraph);
+
+	// Build composite inside the function graph with a CallFunction node
+	UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(FuncGraph);
+	Composite->CreateNewGuid();
+	FuncGraph->AddNode(Composite, true, false);
+	UEdGraph* Sub = FBlueprintEditorUtils::CreateNewGraph(
+		TestBP, FName(TEXT("FuncComposite")), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass()
+	);
+	Composite->BoundGraph = Sub;
+	Composite->AllocateDefaultPins();
+	FuncGraph->SubGraphs.Add(Sub);
+
+	// Use IfThenElse (same as nested test) — its class name "IfThenElse" is
+	// reliably present in serialized JSON, unlike CallFunction where the
+	// function name appears only in the display title with spaces.
+	UK2Node_IfThenElse* BranchNode = NewObject<UK2Node_IfThenElse>(Sub);
+	BranchNode->CreateNewGuid();
+	Sub->AddNode(BranchNode, true, false);
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	UPackage::SavePackage(Pkg, TestBP, *PkgFile, SaveArgs);
+
+	// Serialize — must find the IfThenElse inside the function graph's composite
+	FCortexSerializationRequest Req;
+	Req.BlueprintPath = AssetPath;
+	Req.Scope = ECortexConversionScope::EntireBlueprint;
+
+	FString JsonResult;
+	FCortexBPSerializationOps::Serialize(Req,
+		FOnSerializationComplete::CreateLambda([&](const FCortexSerializationResult& R)
+		{
+			if (R.bSuccess) { JsonResult = R.JsonPayload; }
+		}));
+
+	TestFalse(TEXT("JSON must not be empty"), JsonResult.IsEmpty());
+	TestTrue(TEXT("Output must include IfThenElse from function graph composite"),
+		JsonResult.Contains(TEXT("IfThenElse")));
+
+	IFileManager::Get().Delete(*PkgFile);
+	TestBP->MarkAsGarbage();
+	Pkg->MarkAsGarbage();
+	return true;
+}

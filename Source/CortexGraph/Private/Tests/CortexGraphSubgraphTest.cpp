@@ -42,18 +42,27 @@ namespace CortexSubgraphTestUtils
 		return BP;
 	}
 
-	/** Create a composite node with a named BoundGraph inside ParentGraph. */
+	/** Create a composite node with a named BoundGraph inside ParentGraph.
+	 *  Calls PostPlacedNewNode() to create tunnel entry/exit nodes and register
+	 *  BoundGraph in ParentGraph->SubGraphs — matching the production AddNode flow. */
 	inline UK2Node_Composite* CreateComposite(UBlueprint* BP, UEdGraph* ParentGraph, const TCHAR* SubgraphName)
 	{
 		UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(ParentGraph);
 		Composite->CreateNewGuid();
 		ParentGraph->AddNode(Composite, true, false);
 
-		UEdGraph* Sub = FBlueprintEditorUtils::CreateNewGraph(
-			BP, FName(SubgraphName), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass()
-		);
-		Composite->BoundGraph = Sub;
+		// PostPlacedNewNode creates BoundGraph with tunnel entry/exit nodes
+		// and registers it in ParentGraph->SubGraphs
+		Composite->PostPlacedNewNode();
+		// AllocateDefaultPins after PostPlacedNewNode so tunnel pins are present
 		Composite->AllocateDefaultPins();
+
+		// Rename BoundGraph to caller's desired name for test addressing
+		if (Composite->BoundGraph)
+		{
+			Composite->BoundGraph->Rename(SubgraphName);
+		}
+
 		return Composite;
 	}
 }
@@ -258,11 +267,12 @@ bool FCortexGraphSubgraphDiscoveryTest::RunTest(const FString& Parameters)
 	FCortexCommandResult SubResult = Router.Execute(TEXT("graph.list_nodes"), SubParams);
 	TestTrue(TEXT("list_nodes in subgraph succeeds"), SubResult.bSuccess);
 
-	// The BoundGraph may contain tunnel entry/exit nodes from AllocateDefaultPins
-	// Verify they are annotated with is_tunnel_boundary
+	// PostPlacedNewNode creates tunnel entry/exit nodes inside the BoundGraph.
+	// Verify they are present and annotated with is_tunnel_boundary=true.
 	const TArray<TSharedPtr<FJsonValue>>* SubNodes;
 	if (SubResult.Data->TryGetArrayField(TEXT("nodes"), SubNodes))
 	{
+		int32 TunnelCount = 0;
 		for (const auto& NodeVal : *SubNodes)
 		{
 			const TSharedPtr<FJsonObject>& NodeObj = NodeVal->AsObject();
@@ -270,11 +280,13 @@ bool FCortexGraphSubgraphDiscoveryTest::RunTest(const FString& Parameters)
 			NodeObj->TryGetStringField(TEXT("class"), ClassName);
 			if (ClassName.Contains(TEXT("Tunnel")))
 			{
+				++TunnelCount;
 				bool bIsTunnelBoundary = false;
 				NodeObj->TryGetBoolField(TEXT("is_tunnel_boundary"), bIsTunnelBoundary);
 				TestTrue(TEXT("Tunnel node has is_tunnel_boundary=true"), bIsTunnelBoundary);
 			}
 		}
+		TestTrue(TEXT("Subgraph contains at least one tunnel boundary node"), TunnelCount > 0);
 	}
 
 	TestBP->MarkAsGarbage();
