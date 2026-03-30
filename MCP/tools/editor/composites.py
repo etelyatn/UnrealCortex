@@ -17,6 +17,24 @@ from cortex_mcp.tcp_client import UEConnection
 logger = logging.getLogger(__name__)
 
 
+def _inject_fps_throttle(connection: UEConnection) -> None:
+    """Disable FPS throttling for AI-driven PIE sessions.
+
+    UE throttles PIE to ~8 FPS when the editor loses focus. Since AI-driven
+    control never focuses the window, this is always needed.
+    """
+    try:
+        connection.send_command(
+            "editor.execute_console_command", {"command": "t.MaxFPS 0"},
+        )
+        connection.send_command(
+            "editor.execute_console_command",
+            {"command": "t.UnfocusedFrameRateLimit 0"},
+        )
+    except (ConnectionError, RuntimeError):
+        logger.warning("Failed to disable FPS throttle — PIE may run at reduced FPS")
+
+
 def do_shutdown_editor(connection: UEConnection, force: bool = True) -> dict:
     """Shut down the Unreal Editor and return a result dict."""
     try:
@@ -232,6 +250,7 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
             params["game_mode"] = game_mode
         try:
             connection.send_command("editor.start_pie", params, timeout=60.0)
+            _inject_fps_throttle(connection)
             state = connection.send_command("editor.get_pie_state")
             return format_response(state.get("data", {}), "start_pie_session")
         except (ConnectionError, RuntimeError) as e:
