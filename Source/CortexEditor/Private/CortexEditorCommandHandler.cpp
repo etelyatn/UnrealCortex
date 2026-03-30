@@ -159,7 +159,7 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Optional(TEXT("rotation"), TEXT("array"), TEXT("Camera rotation"))
 			.Optional(TEXT("speed"), TEXT("number"), TEXT("Viewport camera speed")),
 		FCortexCommandInfo{ TEXT("focus_actor"), TEXT("Frame actor in viewport") }
-			.Required(TEXT("actor_path"), TEXT("string"), TEXT("Actor path to frame")),
+			.Required(TEXT("actor_path"), TEXT("string"), TEXT("Actor path to frame (alias: actor_name, actor)")),
 		FCortexCommandInfo{ TEXT("focus_node"), TEXT("Open Blueprint editor and focus a specific graph node") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Graph node identifier"))

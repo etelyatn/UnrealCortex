@@ -212,7 +212,7 @@ def register_material_graph_tools(mcp, connection: UEConnection):
             JSON with:
             - node_id: Node identifier
             - expression_class: Type of expression
-            - inputs: Array of input pins with index, name, and connected_to (if wired)
+            - inputs: Array of input pins with index, name, and connections (if wired)
             - outputs: Array of output pins with index and name
             - input_count: Number of input pins
             - output_count: Number of output pins

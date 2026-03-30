@@ -830,8 +830,8 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 		FunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
 	}
 
-	// Inherited functions — only when include_inherited=true
-	bool bIncludeInherited = false;
+	// Inherited functions — included by default for AI agent discoverability
+	bool bIncludeInherited = true;
 	Params->TryGetBoolField(TEXT("include_inherited"), bIncludeInherited);
 
 	if (bIncludeInherited && BP->ParentClass)

@@ -20,17 +20,29 @@ FCortexCommandResult FCortexGraphConnectionOps::Connect(const TSharedPtr<FJsonOb
 	FString TargetPinName;
 
 	bool bHasParams = Params.IsValid()
-		&& Params->TryGetStringField(TEXT("asset_path"), AssetPath)
-		&& Params->TryGetStringField(TEXT("source_node"), SourceNodeId)
-		&& Params->TryGetStringField(TEXT("source_pin"), SourcePinName)
-		&& Params->TryGetStringField(TEXT("target_node"), TargetNodeId)
-		&& Params->TryGetStringField(TEXT("target_pin"), TargetPinName);
+		&& Params->TryGetStringField(TEXT("asset_path"), AssetPath);
+
+	if (bHasParams)
+	{
+		// Accept from_node/from_pin/to_node/to_pin as aliases for source_node/source_pin/target_node/target_pin
+		if (!Params->TryGetStringField(TEXT("source_node"), SourceNodeId))
+			Params->TryGetStringField(TEXT("from_node"), SourceNodeId);
+		if (!Params->TryGetStringField(TEXT("source_pin"), SourcePinName))
+			Params->TryGetStringField(TEXT("from_pin"), SourcePinName);
+		if (!Params->TryGetStringField(TEXT("target_node"), TargetNodeId))
+			Params->TryGetStringField(TEXT("to_node"), TargetNodeId);
+		if (!Params->TryGetStringField(TEXT("target_pin"), TargetPinName))
+			Params->TryGetStringField(TEXT("to_pin"), TargetPinName);
+
+		bHasParams = !SourceNodeId.IsEmpty() && !SourcePinName.IsEmpty()
+			&& !TargetNodeId.IsEmpty() && !TargetPinName.IsEmpty();
+	}
 
 	if (!bHasParams)
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			TEXT("Missing required params: asset_path, source_node, source_pin, target_node, target_pin")
+			TEXT("Missing required params: asset_path, source_node (or from_node), source_pin (or from_pin), target_node (or to_node), target_pin (or to_pin)")
 		);
 	}
 

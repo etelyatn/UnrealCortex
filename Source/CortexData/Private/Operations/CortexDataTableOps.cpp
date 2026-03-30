@@ -210,10 +210,8 @@ FCortexCommandResult FCortexDataTableOps::ListDatatables(const TSharedPtr<FJsonO
 		// row_struct from AssetRegistry tag (no synchronous load required)
 		EntryJson->SetStringField(TEXT("row_struct"), GetRowStructNameFromTag(AssetData));
 
-		// Rich data only for already-loaded assets (avoids Game Thread stall)
-		UDataTable* DataTable = AssetData.IsAssetLoaded()
-			? Cast<UDataTable>(AssetData.GetAsset())
-			: nullptr;
+		// Load asset to get accurate row count (DataTables are small; catalog is cached)
+		UDataTable* DataTable = Cast<UDataTable>(AssetData.GetAsset());
 
 		if (DataTable != nullptr)
 		{
@@ -228,7 +226,6 @@ FCortexCommandResult FCortexDataTableOps::ListDatatables(const TSharedPtr<FJsonO
 		}
 		else
 		{
-			EntryJson->SetNumberField(TEXT("row_count"), -1);
 			EntryJson->SetBoolField(TEXT("is_composite"), false);
 		}
 
@@ -1343,10 +1340,14 @@ FCortexCommandResult FCortexDataTableOps::SearchDatatableContent(const TSharedPt
 	FString SearchText;
 	if (!Params->TryGetStringField(TEXT("search_text"), SearchText) || SearchText.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidValue,
-			TEXT("Missing or empty required param: search_text")
-		);
+		// Accept "query" as alias for "search_text"
+		if (!Params->TryGetStringField(TEXT("query"), SearchText) || SearchText.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidValue,
+				TEXT("Missing or empty required param: search_text (or query)")
+			);
+		}
 	}
 
 	FCortexCommandResult LoadError;
@@ -1507,10 +1508,8 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 				// row_struct from AssetRegistry tag (no synchronous load required)
 				EntryJson->SetStringField(TEXT("row_struct"), GetRowStructNameFromTag(AssetData));
 
-				// Rich data only for already-loaded assets (avoids Game Thread stall)
-				UDataTable* DataTable = AssetData.IsAssetLoaded()
-					? Cast<UDataTable>(AssetData.GetAsset())
-					: nullptr;
+				// Load asset to get accurate row count (DataTables are small; catalog is cached)
+				UDataTable* DataTable = Cast<UDataTable>(AssetData.GetAsset());
 
 				if (DataTable != nullptr)
 				{
@@ -1538,7 +1537,6 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 				}
 				else
 				{
-					EntryJson->SetNumberField(TEXT("row_count"), -1);
 					EntryJson->SetBoolField(TEXT("is_composite"), false);
 				}
 

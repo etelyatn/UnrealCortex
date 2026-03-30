@@ -51,7 +51,7 @@ Before reporting any null/cast safety finding, check for these patterns:
 
 1. **IsValid Macro (K2Node_MacroInstance titled "IsValid")** — This is an exec-flow null guard with "Is Valid" / "Is Not Valid" exec output pins. It is NOT a pure data query. Any object access on the "Is Valid" exec path is null-safe. This is the most common false positive — recognize it.
 
-2. **Cast with handled failure (K2Node_DynamicCast)** — If the "CastFailed" exec pin has a non-empty connected_to array, the failure path IS handled. Do not flag.
+2. **Cast with handled failure (K2Node_DynamicCast)** — If the "CastFailed" exec pin has a non-empty connections array, the failure path IS handled. Do not flag.
 
 3. **Multi-hop exec flow tracing** — A guard at node A protects ALL nodes reachable from the guarded exec path, not just the immediate successor. Trace through K2Node_Knot (Reroute) nodes transparently.
 

@@ -191,7 +191,8 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("path"), TEXT("string"), TEXT("Optional content path filter"))
 		.Optional(TEXT("type"), TEXT("string"), TEXT("Optional Blueprint type filter")));
 	Commands.Add(FCortexCommandInfo{TEXT("get_info"), TEXT("Get Blueprint info")}
-		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path")));
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Optional(TEXT("include_inherited"), TEXT("boolean"), TEXT("Include inherited C++ functions (default: true)")));
 	Commands.Add(FCortexCommandInfo{TEXT("delete"), TEXT("Delete a Blueprint asset")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("force"), TEXT("boolean"), TEXT("Delete without additional confirmation")));

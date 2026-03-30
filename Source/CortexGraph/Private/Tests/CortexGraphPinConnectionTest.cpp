@@ -131,7 +131,7 @@ bool FCortexGraphPinConnectionTest::RunTest(const FString& Parameters)
 					const TArray<TSharedPtr<FJsonValue>>* ConnArray = nullptr;
 					TestTrue(
 						TEXT("'then' pin should have connected_to array"),
-						(*PinObj)->TryGetArrayField(TEXT("connected_to"), ConnArray)
+						(*PinObj)->TryGetArrayField(TEXT("connections"), ConnArray)
 					);
 
 					if (ConnArray)
@@ -195,7 +195,7 @@ bool FCortexGraphPinConnectionTest::RunTest(const FString& Parameters)
 					const TArray<TSharedPtr<FJsonValue>>* ConnArray = nullptr;
 					TestTrue(
 						TEXT("'execute' pin should have connected_to array"),
-						(*PinObj)->TryGetArrayField(TEXT("connected_to"), ConnArray)
+						(*PinObj)->TryGetArrayField(TEXT("connections"), ConnArray)
 					);
 
 					if (ConnArray && ConnArray->Num() > 0)

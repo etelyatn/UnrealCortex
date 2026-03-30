@@ -1192,7 +1192,7 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializePin(const UEdGraphPin* Pin
 				ConnArray.Add(MakeShared<FJsonValueObject>(Conn));
 			}
 
-			PinEntry->SetArrayField(TEXT("connected_to"), ConnArray);
+			PinEntry->SetArrayField(TEXT("connections"), ConnArray);
 		}
 	}
 	return PinEntry;

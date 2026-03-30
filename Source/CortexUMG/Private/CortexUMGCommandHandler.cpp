@@ -114,7 +114,7 @@ TArray<FCortexCommandInfo> FCortexUMGCommandHandler::GetSupportedCommands() cons
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_class"), TEXT("string"), TEXT("Widget class to create"))
             .Required(TEXT("name"), TEXT("string"), TEXT("Widget name"))
-            .Optional(TEXT("parent_name"), TEXT("string"), TEXT("Parent widget name"))
+            .Optional(TEXT("parent_name"), TEXT("string"), TEXT("Parent widget name (alias: parent)"))
             .Optional(TEXT("slot_index"), TEXT("number"), TEXT("Insertion index within the parent")),
         FCortexCommandInfo{ TEXT("remove_widget"), TEXT("Remove a widget and subtree") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))

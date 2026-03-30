@@ -253,11 +253,24 @@ FCortexCommandResult FCortexEditorViewportOps::SetViewportCamera(const TSharedPt
 FCortexCommandResult FCortexEditorViewportOps::FocusActor(const TSharedPtr<FJsonObject>& Params)
 {
 	FString ActorPath;
-	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("actor_path"), ActorPath) || ActorPath.IsEmpty())
+	if (!Params.IsValid())
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: actor_path"));
+	}
+	// Accept "actor_name" or "actor" as aliases for "actor_path"
+	if (!Params->TryGetStringField(TEXT("actor_path"), ActorPath) || ActorPath.IsEmpty())
+	{
+		if (!Params->TryGetStringField(TEXT("actor_name"), ActorPath) || ActorPath.IsEmpty())
+		{
+			if (!Params->TryGetStringField(TEXT("actor"), ActorPath) || ActorPath.IsEmpty())
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					TEXT("Missing required param: actor_path (or actor_name, actor)"));
+			}
+		}
 	}
 
 	const TSharedPtr<IAssetViewport> Viewport = GetActiveAssetViewport();

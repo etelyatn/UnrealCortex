@@ -179,7 +179,10 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::AddWidget(const TSharedPtr<FJsonOb
     const FString WidgetClassName = Params->GetStringField(TEXT("widget_class"));
     const FString Name = Params->GetStringField(TEXT("name"));
     FString ParentName;
-    Params->TryGetStringField(TEXT("parent_name"), ParentName);
+    if (!Params->TryGetStringField(TEXT("parent_name"), ParentName))
+    {
+        Params->TryGetStringField(TEXT("parent"), ParentName);
+    }
 
     FCortexCommandResult LoadError;
     UWidgetBlueprint* WBP = CortexUMGUtils::LoadWidgetBlueprint(AssetPath, LoadError);

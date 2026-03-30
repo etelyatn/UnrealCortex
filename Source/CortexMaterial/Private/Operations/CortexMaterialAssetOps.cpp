@@ -547,14 +547,22 @@ FCortexCommandResult FCortexMaterialAssetOps::CreateInstance(const TSharedPtr<FJ
 	FString ParentMaterialPath;
 	bool bHasParams = Params.IsValid()
 		&& Params->TryGetStringField(TEXT("asset_path"), AssetPath)
-		&& Params->TryGetStringField(TEXT("name"), Name)
-		&& Params->TryGetStringField(TEXT("parent_material"), ParentMaterialPath);
+		&& Params->TryGetStringField(TEXT("name"), Name);
+
+	if (bHasParams)
+	{
+		// Accept "parent" as alias for "parent_material"
+		if (!Params->TryGetStringField(TEXT("parent_material"), ParentMaterialPath))
+		{
+			bHasParams = Params->TryGetStringField(TEXT("parent"), ParentMaterialPath);
+		}
+	}
 
 	if (!bHasParams)
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			TEXT("Missing required params: asset_path, name, and parent_material")
+			TEXT("Missing required params: asset_path, name, and parent_material (or parent)")
 		);
 	}
 

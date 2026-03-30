@@ -374,6 +374,7 @@ FCortexCommandResult FCortexLevelQueryOps::SelectActors(const TSharedPtr<FJsonOb
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetArrayField(TEXT("selection"), Selected);
     Data->SetNumberField(TEXT("count"), Selected.Num());
+    Data->SetNumberField(TEXT("selected_count"), Selected.Num());
     return FCortexCommandRouter::Success(Data);
 }
 

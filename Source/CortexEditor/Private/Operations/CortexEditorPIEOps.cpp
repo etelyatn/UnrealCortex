@@ -35,9 +35,13 @@ FCortexCommandResult FCortexEditorPIEOps::StartPIE(
 	}
 	if (PIEState.IsActive())
 	{
+		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+		Data->SetStringField(TEXT("current_state"), FCortexEditorPIEState::StateToString(PIEState.GetState()));
+		Data->SetBoolField(TEXT("is_active"), true);
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::PIEAlreadyActive,
-			TEXT("PIE is already running. Call stop_pie or restart_pie."));
+			TEXT("PIE is already running. Call stop_pie or restart_pie."),
+			Data);
 	}
 
 	if (DeferredCallback)

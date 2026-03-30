@@ -363,7 +363,7 @@ TSharedRef<FJsonObject> FCortexBPSerializationOps::NodeToJson(UEdGraphNode* Node
 				LinkObj->SetStringField(TEXT("pin"), LinkedPin->PinName.ToString());
 				LinksJson.Add(MakeShared<FJsonValueObject>(LinkObj));
 			}
-			PinObj->SetField(TEXT("connected_to"), MakeShared<FJsonValueArray>(LinksJson));
+			PinObj->SetField(TEXT("connections"), MakeShared<FJsonValueArray>(LinksJson));
 		}
 
 		PinsJson.Add(MakeShared<FJsonValueObject>(PinObj));
@@ -773,7 +773,7 @@ TSharedRef<FJsonObject> FCortexBPSerializationOps::NodeToJsonCompact(
 			}
 			if (LinksJson.Num() > 0)
 			{
-				PinObj->SetField(TEXT("connected_to"), MakeShared<FJsonValueArray>(LinksJson));
+				PinObj->SetField(TEXT("connections"), MakeShared<FJsonValueArray>(LinksJson));
 			}
 		}
 

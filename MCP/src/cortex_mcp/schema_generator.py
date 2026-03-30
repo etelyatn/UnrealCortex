@@ -6,6 +6,7 @@ import logging
 import os
 import pathlib
 import tempfile
+import time
 from typing import Any
 
 from .project import resolve_project_dir
@@ -796,6 +797,8 @@ def generate_schema(
     Returns:
         Dict with generated domain names and file paths.
     """
+    _start_time = time.perf_counter()
+
     # Fetch engine/plugin version from editor if not provided
     if not engine_version or not plugin_version:
         try:
@@ -886,4 +889,5 @@ def generate_schema(
     atomic_write(schema_dir / "_catalog.md", catalog_md)
     result["generated"]["_catalog"] = str(schema_dir / "_catalog.md")
 
+    result["elapsed_seconds"] = round(time.perf_counter() - _start_time, 2)
     return result

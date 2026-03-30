@@ -134,7 +134,7 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 		FCortexCommandInfo{ TEXT("create_instance"), TEXT("Create a UMaterialInstanceConstant") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Destination content path"))
 			.Required(TEXT("name"), TEXT("string"), TEXT("Material instance asset name"))
-			.Required(TEXT("parent_material"), TEXT("string"), TEXT("Parent material asset path")),
+			.Required(TEXT("parent_material"), TEXT("string"), TEXT("Parent material asset path (alias: parent)")),
 		FCortexCommandInfo{ TEXT("delete_instance"), TEXT("Delete a material instance") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material instance asset path")),
 		FCortexCommandInfo{ TEXT("list_parameters"), TEXT("List all parameters on a material or instance") }
@@ -144,8 +144,8 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 			.Required(TEXT("parameter_name"), TEXT("string"), TEXT("Parameter name")),
 		FCortexCommandInfo{ TEXT("set_parameter"), TEXT("Set parameter value on an instance") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material instance asset path"))
-			.Required(TEXT("parameter_name"), TEXT("string"), TEXT("Parameter name"))
-			.Required(TEXT("parameter_type"), TEXT("string"), TEXT("Parameter type"))
+			.Required(TEXT("parameter_name"), TEXT("string"), TEXT("Parameter name (alias: name)"))
+			.Optional(TEXT("parameter_type"), TEXT("string"), TEXT("Parameter type (auto-detected if omitted)"))
 			.Required(TEXT("value"), TEXT("object"), TEXT("Parameter value")),
 		FCortexCommandInfo{ TEXT("set_parameters"), TEXT("Batch set multiple parameters") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material instance asset path"))
@@ -160,7 +160,7 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node identifier")),
 		FCortexCommandInfo{ TEXT("add_node"), TEXT("Add expression node to material graph") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
-			.Required(TEXT("expression_class"), TEXT("string"), TEXT("Expression class name"))
+			.Required(TEXT("expression_class"), TEXT("string"), TEXT("Expression class name (short names like VectorParameter accepted)"))
 			.Optional(TEXT("position"), TEXT("object"), TEXT("Optional node position")),
 		FCortexCommandInfo{ TEXT("remove_node"), TEXT("Remove expression node from material") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
@@ -182,7 +182,7 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 		FCortexCommandInfo{ TEXT("set_node_property"), TEXT("Set property value on material expression node") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node identifier"))
-			.Required(TEXT("property_name"), TEXT("string"), TEXT("Expression property name"))
+			.Required(TEXT("property_name"), TEXT("string"), TEXT("Expression property name (alias: property)"))
 			.Required(TEXT("value"), TEXT("object"), TEXT("Property value")),
 		FCortexCommandInfo{ TEXT("get_node_pins"), TEXT("Get input and output pin names for a material expression node") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))

@@ -617,6 +617,29 @@ FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObj
 	TreeNode->SetNumberField(TEXT("project_cpp_count"), ProjectCppCount);
 	TreeNode->SetNumberField(TEXT("engine_cpp_count"), FMath::Max(0, CppCount - ProjectCppCount));
 	TreeNode->SetNumberField(TEXT("project_blueprint_count"), ProjectBPCount);
+
+	// Build flat classes list for simple access
+	TArray<TSharedPtr<FJsonValue>> FlatClassesArray;
+	TFunction<void(const TSharedPtr<FJsonObject>&)> FlattenTree = [&](const TSharedPtr<FJsonObject>& Node)
+	{
+		if (!Node.IsValid()) return;
+		FString Name;
+		if (Node->TryGetStringField(TEXT("name"), Name))
+		{
+			FlatClassesArray.Add(MakeShared<FJsonValueString>(Name));
+		}
+		const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
+		if (Node->TryGetArrayField(TEXT("children"), Children))
+		{
+			for (const TSharedPtr<FJsonValue>& Child : *Children)
+			{
+				FlattenTree(Child->AsObject());
+			}
+		}
+	};
+	FlattenTree(TreeNode);
+	TreeNode->SetArrayField(TEXT("classes"), FlatClassesArray);
+
 	TSharedPtr<FJsonObject> CacheParams = MakeShared<FJsonObject>();
 	CacheParams->SetStringField(TEXT("root"), RootName);
 	CacheParams->SetNumberField(TEXT("depth"), Depth);
@@ -692,10 +715,13 @@ FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject
 	}
 
 	bool bIncludeInherited = false;
+	FString DetailLevel = TEXT("full");
 	if (Params.IsValid())
 	{
 		Params->TryGetBoolField(TEXT("include_inherited"), bIncludeInherited);
+		Params->TryGetStringField(TEXT("detail"), DetailLevel);
 	}
+	const bool bSummaryOnly = DetailLevel.Equals(TEXT("summary"), ESearchCase::IgnoreCase);
 
 	FCortexCommandResult FindError;
 	UClass* Class = FindClassByName(ClassName, FindError);
@@ -752,83 +778,86 @@ FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject
 	}
 	Result->SetArrayField(TEXT("interfaces"), InterfacesArray);
 
-	// CDO for default values and component discovery
-	UObject* CDO = Class->GetDefaultObject(false);
-
-	// Properties
-	TArray<TSharedPtr<FJsonValue>> PropertiesArray;
-	for (TFieldIterator<FProperty> It(Class); It; ++It)
+	if (!bSummaryOnly)
 	{
-		if (It->HasAnyPropertyFlags(CPF_Parm))
-		{
-			continue;
-		}
-		if (!bIncludeInherited && It->GetOwnerClass() != Class)
-		{
-			continue;
-		}
-		PropertiesArray.Add(MakeShared<FJsonValueObject>(SerializeProperty(*It, CDO)));
-	}
-	Result->SetArrayField(TEXT("properties"), PropertiesArray);
+		// CDO for default values and component discovery
+		UObject* CDO = Class->GetDefaultObject(false);
 
-	// Functions
-	TArray<TSharedPtr<FJsonValue>> FunctionsArray;
-	for (TFieldIterator<UFunction> It(Class); It; ++It)
-	{
-		if (It->HasAnyFunctionFlags(FUNC_Delegate))
+		// Properties
+		TArray<TSharedPtr<FJsonValue>> PropertiesArray;
+		for (TFieldIterator<FProperty> It(Class); It; ++It)
 		{
-			continue;
-		}
-		if (!bIncludeInherited && It->GetOwnerClass() != Class)
-		{
-			continue;
-		}
-		FunctionsArray.Add(MakeShared<FJsonValueObject>(SerializeFunction(*It, Class)));
-	}
-	Result->SetArrayField(TEXT("functions"), FunctionsArray);
-
-	// Components (from CDO default subobjects)
-	TArray<TSharedPtr<FJsonValue>> ComponentsArray;
-	if (CDO)
-	{
-		TArray<UObject*> DefaultSubobjects;
-		CDO->GetDefaultSubobjects(DefaultSubobjects);
-		for (UObject* Subobj : DefaultSubobjects)
-		{
-			if (UActorComponent* Comp = Cast<UActorComponent>(Subobj))
+			if (It->HasAnyPropertyFlags(CPF_Parm))
 			{
-				TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
-				CompObj->SetStringField(TEXT("name"), Comp->GetName());
-				CompObj->SetStringField(TEXT("type"), GetCppClassName(Comp->GetClass()));
-				ComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
+				continue;
 			}
-		}
-	}
-	else
-	{
-		Result->SetBoolField(TEXT("cdo_unavailable"), true);
-	}
-
-	// For BPs, also walk SCS nodes for BP-added components
-	if (BPGC)
-	{
-		UBlueprint* BP = Cast<UBlueprint>(BPGC->ClassGeneratedBy);
-		if (BP && BP->SimpleConstructionScript)
-		{
-			const TArray<USCS_Node*>& AllNodes = BP->SimpleConstructionScript->GetAllNodes();
-			for (const USCS_Node* Node : AllNodes)
+			if (!bIncludeInherited && It->GetOwnerClass() != Class)
 			{
-				if (Node && Node->ComponentClass)
+				continue;
+			}
+			PropertiesArray.Add(MakeShared<FJsonValueObject>(SerializeProperty(*It, CDO)));
+		}
+		Result->SetArrayField(TEXT("properties"), PropertiesArray);
+
+		// Functions
+		TArray<TSharedPtr<FJsonValue>> FunctionsArray;
+		for (TFieldIterator<UFunction> It(Class); It; ++It)
+		{
+			if (It->HasAnyFunctionFlags(FUNC_Delegate))
+			{
+				continue;
+			}
+			if (!bIncludeInherited && It->GetOwnerClass() != Class)
+			{
+				continue;
+			}
+			FunctionsArray.Add(MakeShared<FJsonValueObject>(SerializeFunction(*It, Class)));
+		}
+		Result->SetArrayField(TEXT("functions"), FunctionsArray);
+
+		// Components (from CDO default subobjects)
+		TArray<TSharedPtr<FJsonValue>> ComponentsArray;
+		if (CDO)
+		{
+			TArray<UObject*> DefaultSubobjects;
+			CDO->GetDefaultSubobjects(DefaultSubobjects);
+			for (UObject* Subobj : DefaultSubobjects)
+			{
+				if (UActorComponent* Comp = Cast<UActorComponent>(Subobj))
 				{
 					TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
-					CompObj->SetStringField(TEXT("name"), Node->GetVariableName().ToString());
-					CompObj->SetStringField(TEXT("type"), GetCppClassName(Node->ComponentClass));
+					CompObj->SetStringField(TEXT("name"), Comp->GetName());
+					CompObj->SetStringField(TEXT("type"), GetCppClassName(Comp->GetClass()));
 					ComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
 				}
 			}
 		}
+		else
+		{
+			Result->SetBoolField(TEXT("cdo_unavailable"), true);
+		}
+
+		// For BPs, also walk SCS nodes for BP-added components
+		if (BPGC)
+		{
+			UBlueprint* BP = Cast<UBlueprint>(BPGC->ClassGeneratedBy);
+			if (BP && BP->SimpleConstructionScript)
+			{
+				const TArray<USCS_Node*>& AllNodes = BP->SimpleConstructionScript->GetAllNodes();
+				for (const USCS_Node* Node : AllNodes)
+				{
+					if (Node && Node->ComponentClass)
+					{
+						TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
+						CompObj->SetStringField(TEXT("name"), Node->GetVariableName().ToString());
+						CompObj->SetStringField(TEXT("type"), GetCppClassName(Node->ComponentClass));
+						ComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
+					}
+				}
+			}
+		}
+		Result->SetArrayField(TEXT("components"), ComponentsArray);
 	}
-	Result->SetArrayField(TEXT("components"), ComponentsArray);
 
 	// Blueprint children count
 	TArray<UClass*> DerivedClasses;
@@ -893,6 +922,12 @@ FCortexCommandResult FCortexReflectOps::FindOverrides(const TSharedPtr<FJsonObje
 
 		UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(DerivedClass);
 		if (!BPGC)
+		{
+			continue;
+		}
+
+		// Filter out skeleton classes (SKEL_ prefix) — only compiled Blueprint classes
+		if (DerivedClass->GetName().StartsWith(TEXT("SKEL_")))
 		{
 			continue;
 		}

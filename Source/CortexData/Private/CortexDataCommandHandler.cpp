@@ -192,7 +192,7 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Validate without writing")),
         FCortexCommandInfo{ TEXT("search_datatable_content"), TEXT("Full-text search in tables") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable asset path"))
-            .Required(TEXT("search_text"), TEXT("string"), TEXT("Case-insensitive search text"))
+            .Required(TEXT("search_text"), TEXT("string"), TEXT("Case-insensitive search text (alias: query)"))
             .Optional(TEXT("fields"), TEXT("array"), TEXT("Fields to search"))
             .Optional(TEXT("preview_fields"), TEXT("array"), TEXT("Fields to include in match previews"))
             .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum matches to return")),

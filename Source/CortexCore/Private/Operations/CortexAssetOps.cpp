@@ -9,6 +9,31 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/SavePackage.h"
 
+namespace
+{
+// When a batch result has exactly one entry, copy its fields to the top-level
+// Data object for convenient single-asset access (e.g. data.saved instead of data.results[0].saved).
+void PromoteSingleResult(TSharedPtr<FJsonObject>& Data, const TArray<TSharedPtr<FJsonValue>>& ResultsArray)
+{
+	if (ResultsArray.Num() == 1)
+	{
+		const TSharedPtr<FJsonObject>& Entry = ResultsArray[0]->AsObject();
+		if (Entry.IsValid())
+		{
+			for (const auto& Pair : Entry->Values)
+			{
+				// Don't overwrite the batch-level fields
+				if (Pair.Key == TEXT("results") || Pair.Key == TEXT("count"))
+				{
+					continue;
+				}
+				Data->SetField(Pair.Key, Pair.Value);
+			}
+		}
+	}
+}
+}
+
 UObject* FCortexAssetOps::LoadAssetWithFallbacks(const FAssetData& AssetData, const FString& AssetPath)
 {
 	UObject* Asset = AssetData.GetAsset();
@@ -274,6 +299,7 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("results"), ResultsArray);
 	Data->SetNumberField(TEXT("count"), ResultsArray.Num());
+	PromoteSingleResult(Data, ResultsArray);
 	if (bDryRun)
 	{
 		Data->SetBoolField(TEXT("dry_run"), true);
@@ -434,6 +460,7 @@ FCortexCommandResult FCortexAssetOps::OpenAsset(const TSharedPtr<FJsonObject>& P
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("results"), ResultsArray);
 	Data->SetNumberField(TEXT("count"), ResultsArray.Num());
+	PromoteSingleResult(Data, ResultsArray);
 	if (bDryRun)
 	{
 		Data->SetBoolField(TEXT("dry_run"), true);
@@ -541,6 +568,7 @@ FCortexCommandResult FCortexAssetOps::CloseAsset(const TSharedPtr<FJsonObject>& 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("results"), ResultsArray);
 	Data->SetNumberField(TEXT("count"), ResultsArray.Num());
+	PromoteSingleResult(Data, ResultsArray);
 	if (bDryRun)
 	{
 		Data->SetBoolField(TEXT("dry_run"), true);
@@ -705,6 +733,7 @@ FCortexCommandResult FCortexAssetOps::ReloadAsset(const TSharedPtr<FJsonObject>&
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("results"), ResultsArray);
 	Data->SetNumberField(TEXT("count"), ResultsArray.Num());
+	PromoteSingleResult(Data, ResultsArray);
 	if (bDryRun)
 	{
 		Data->SetBoolField(TEXT("dry_run"), true);

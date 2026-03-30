@@ -300,13 +300,21 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJso
 	FString ParameterName;
 	FString ParameterType;
 	if (!Params.IsValid()
-		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
-		|| !Params->TryGetStringField(TEXT("parameter_name"), ParameterName)
-		|| !Params->TryGetStringField(TEXT("parameter_type"), ParameterType))
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			TEXT("Missing required params: asset_path, parameter_name, and parameter_type"));
+			TEXT("Missing required param: asset_path"));
+	}
+	// Accept "name" as alias for "parameter_name"
+	if (!Params->TryGetStringField(TEXT("parameter_name"), ParameterName))
+	{
+		if (!Params->TryGetStringField(TEXT("name"), ParameterName))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("Missing required param: parameter_name (or name)"));
+		}
 	}
 
 	// Only instances can have parameters set
@@ -318,6 +326,36 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJso
 	}
 
 	FName ParamName(*ParameterName);
+
+	// Auto-detect parameter_type from parent material when not provided
+	if (!Params->TryGetStringField(TEXT("parameter_type"), ParameterType))
+	{
+		UMaterialInterface* Parent = Instance->Parent;
+		if (Parent)
+		{
+			float ScalarValue;
+			FLinearColor VectorValue;
+			UTexture* TextureValue = nullptr;
+			if (Parent->GetScalarParameterValue(ParamName, ScalarValue))
+			{
+				ParameterType = TEXT("scalar");
+			}
+			else if (Parent->GetVectorParameterValue(ParamName, VectorValue))
+			{
+				ParameterType = TEXT("vector");
+			}
+			else if (Parent->GetTextureParameterValue(ParamName, TextureValue))
+			{
+				ParameterType = TEXT("texture");
+			}
+		}
+		if (ParameterType.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("Missing required param: parameter_type (could not auto-detect)"));
+		}
+	}
 
 	if (ParameterType == TEXT("scalar"))
 	{

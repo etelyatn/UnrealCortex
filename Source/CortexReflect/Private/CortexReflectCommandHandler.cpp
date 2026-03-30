@@ -61,7 +61,8 @@ TArray<FCortexCommandInfo> FCortexReflectCommandHandler::GetSupportedCommands() 
 			.Optional(TEXT("max_results"), TEXT("number"), TEXT("Maximum classes to return")),
 		FCortexCommandInfo{ TEXT("class_detail"), TEXT("Get detailed info for a single class") }
 			.Required(TEXT("class_name"), TEXT("string"), TEXT("Class name or Blueprint asset path"))
-			.Optional(TEXT("include_inherited"), TEXT("boolean"), TEXT("Include inherited members in the response")),
+			.Optional(TEXT("include_inherited"), TEXT("boolean"), TEXT("Include inherited members in the response"))
+			.Optional(TEXT("detail"), TEXT("string"), TEXT("Detail level: full (default) or summary (name/type/parent/module only)")),
 		FCortexCommandInfo{ TEXT("find_overrides"), TEXT("Find Blueprint overrides of a class") }
 			.Required(TEXT("class_name"), TEXT("string"), TEXT("Base class to inspect for overrides"))
 			.Optional(TEXT("depth"), TEXT("number"), TEXT("Inheritance depth to search"))

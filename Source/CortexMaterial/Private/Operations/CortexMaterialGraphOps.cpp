@@ -272,8 +272,13 @@ FCortexCommandResult FCortexMaterialGraphOps::AddNode(const TSharedPtr<FJsonObje
 			TEXT("Material has no editor data"));
 	}
 
-	// Find expression class
+	// Find expression class — accept short names (e.g. "VectorParameter" → "MaterialExpressionVectorParameter")
 	UClass* ExpClass = FindFirstObject<UClass>(*ExpressionClass, EFindFirstObjectOptions::NativeFirst);
+	if (ExpClass == nullptr || !ExpClass->IsChildOf(UMaterialExpression::StaticClass()))
+	{
+		const FString PrefixedName = TEXT("MaterialExpression") + ExpressionClass;
+		ExpClass = FindFirstObject<UClass>(*PrefixedName, EFindFirstObjectOptions::NativeFirst);
+	}
 	if (ExpClass == nullptr || !ExpClass->IsChildOf(UMaterialExpression::StaticClass()))
 	{
 		return FCortexCommandRouter::Error(
@@ -923,12 +928,21 @@ FCortexCommandResult FCortexMaterialGraphOps::SetNodeProperty(const TSharedPtr<F
 	FString AssetPath, NodeId, PropertyName;
 	if (!Params.IsValid()
 		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
-		|| !Params->TryGetStringField(TEXT("node_id"), NodeId)
-		|| !Params->TryGetStringField(TEXT("property_name"), PropertyName))
+		|| !Params->TryGetStringField(TEXT("node_id"), NodeId))
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
 			TEXT("Missing required params: asset_path, node_id, property_name"));
+	}
+	// Accept "property" as alias for "property_name"
+	if (!Params->TryGetStringField(TEXT("property_name"), PropertyName))
+	{
+		if (!Params->TryGetStringField(TEXT("property"), PropertyName))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("Missing required param: property_name (or property)"));
+		}
 	}
 
 	FCortexCommandResult LoadError;
