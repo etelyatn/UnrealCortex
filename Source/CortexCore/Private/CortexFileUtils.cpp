@@ -9,7 +9,7 @@ bool FCortexFileUtils::AtomicWriteFile(const FString& FilePath, const FString& C
 	const FString TempPath = FilePath + TEXT(".tmp");
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(FilePath), true);
 
-	if (!FFileHelper::SaveStringToFile(Content, *TempPath))
+	if (!FFileHelper::SaveStringToFile(Content, *TempPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 	{
 		return false;
 	}

@@ -15,6 +15,7 @@ def register_graph_layout_tools(mcp, connection: UEConnection):
         asset_path: str,
         mode: str = "full",
         graph_name: str | None = None,
+        subgraph_path: str = "",
         horizontal_spacing: int | None = None,
         vertical_spacing: int | None = None,
     ) -> str:
@@ -31,12 +32,18 @@ def register_graph_layout_tools(mcp, connection: UEConnection):
             asset_path: Blueprint asset path (e.g., /Game/Blueprints/BP_Example)
             mode: "full" (reposition all nodes) or "incremental" (only new nodes at 0,0)
             graph_name: Specific graph to layout (default: all graphs)
+            subgraph_path: Dot-separated path into composite subgraphs
+                (e.g. "Outer.Inner"). Discover names via list_graphs with
+                include_subgraphs=true. Empty string (default) targets the top-level graph.
+                Composite names must not contain dots.
             horizontal_spacing: Override horizontal gap between columns (default: 80)
             vertical_spacing: Override vertical gap between nodes (default: 40)
         """
         params = {"asset_path": asset_path, "mode": mode}
         if graph_name:
             params["graph_name"] = graph_name
+        if subgraph_path and subgraph_path.strip():
+            params["subgraph_path"] = subgraph_path.strip()
         if horizontal_spacing is not None:
             params["horizontal_spacing"] = horizontal_spacing
         if vertical_spacing is not None:
