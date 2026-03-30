@@ -118,6 +118,23 @@ TArray<TSharedPtr<FJsonValue>> FCortexDataTableOps::GetParentTablesJsonArray(con
 	return JsonArray;
 }
 
+static const FName RowStructureTagName(TEXT("RowStructure"));
+
+FString FCortexDataTableOps::GetRowStructNameFromTag(const FAssetData& AssetData)
+{
+	FString RowStructPath;
+	if (AssetData.GetTagValue(RowStructureTagName, RowStructPath))
+	{
+		FString ShortName;
+		if (RowStructPath.Split(TEXT("."), nullptr, &ShortName, ESearchCase::IgnoreCase, ESearchDir::FromEnd))
+		{
+			return ShortName;
+		}
+		return RowStructPath;
+	}
+	return TEXT("None");
+}
+
 UDataTable* FCortexDataTableOps::FindSourceTableForRow(const UCompositeDataTable* CompositeTable, FName RowName)
 {
 	TArray<UDataTable*> Parents = GetParentTables(CompositeTable);
@@ -190,19 +207,16 @@ FCortexCommandResult FCortexDataTableOps::ListDatatables(const TSharedPtr<FJsonO
 		EntryJson->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
 		EntryJson->SetStringField(TEXT("path"), AssetPath);
 
-		// Load the table to get row struct and count
-		UDataTable* DataTable = Cast<UDataTable>(AssetData.GetAsset());
+		// row_struct from AssetRegistry tag (no synchronous load required)
+		EntryJson->SetStringField(TEXT("row_struct"), GetRowStructNameFromTag(AssetData));
+
+		// Rich data only for already-loaded assets (avoids Game Thread stall)
+		UDataTable* DataTable = AssetData.IsAssetLoaded()
+			? Cast<UDataTable>(AssetData.GetAsset())
+			: nullptr;
+
 		if (DataTable != nullptr)
 		{
-			if (const UScriptStruct* RowStruct = DataTable->GetRowStruct())
-			{
-				EntryJson->SetStringField(TEXT("row_struct"), RowStruct->GetName());
-			}
-			else
-			{
-				EntryJson->SetStringField(TEXT("row_struct"), TEXT("None"));
-			}
-
 			EntryJson->SetNumberField(TEXT("row_count"), DataTable->GetRowMap().Num());
 
 			const UCompositeDataTable* CompositeTable = Cast<UCompositeDataTable>(DataTable);
@@ -214,8 +228,7 @@ FCortexCommandResult FCortexDataTableOps::ListDatatables(const TSharedPtr<FJsonO
 		}
 		else
 		{
-			EntryJson->SetStringField(TEXT("row_struct"), TEXT("None"));
-			EntryJson->SetNumberField(TEXT("row_count"), 0);
+			EntryJson->SetNumberField(TEXT("row_count"), -1);
 			EntryJson->SetBoolField(TEXT("is_composite"), false);
 		}
 
@@ -1487,37 +1500,46 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 					continue;
 				}
 
-				UDataTable* DataTable = Cast<UDataTable>(AssetData.GetAsset());
-				if (DataTable == nullptr)
-				{
-					continue;
-				}
-
 				TSharedRef<FJsonObject> EntryJson = MakeShared<FJsonObject>();
-				EntryJson->SetStringField(TEXT("name"), DataTable->GetName());
-				EntryJson->SetStringField(TEXT("path"), DataTable->GetPathName());
+				EntryJson->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
+				EntryJson->SetStringField(TEXT("path"), AssetData.GetObjectPathString());
 
-				const UScriptStruct* RowStruct = DataTable->GetRowStruct();
-				EntryJson->SetStringField(TEXT("row_struct"), RowStruct ? RowStruct->GetName() : TEXT("None"));
-				EntryJson->SetNumberField(TEXT("row_count"), DataTable->GetRowMap().Num());
+				// row_struct from AssetRegistry tag (no synchronous load required)
+				EntryJson->SetStringField(TEXT("row_struct"), GetRowStructNameFromTag(AssetData));
 
-				const UCompositeDataTable* CompositeTable = Cast<UCompositeDataTable>(DataTable);
-				EntryJson->SetBoolField(TEXT("is_composite"), CompositeTable != nullptr);
-				if (CompositeTable != nullptr)
+				// Rich data only for already-loaded assets (avoids Game Thread stall)
+				UDataTable* DataTable = AssetData.IsAssetLoaded()
+					? Cast<UDataTable>(AssetData.GetAsset())
+					: nullptr;
+
+				if (DataTable != nullptr)
 				{
-					EntryJson->SetArrayField(TEXT("parent_tables"), GetParentTablesJsonArray(CompositeTable));
-				}
+					EntryJson->SetNumberField(TEXT("row_count"), DataTable->GetRowMap().Num());
 
-				// top_fields: first 8 field names from the row struct
-				if (RowStruct != nullptr)
-				{
-					TArray<TSharedPtr<FJsonValue>> FieldNamesArray;
-					int32 FieldCount = 0;
-					for (TFieldIterator<FProperty> PropIt(RowStruct); PropIt && FieldCount < 8; ++PropIt, ++FieldCount)
+					const UCompositeDataTable* CompositeTable = Cast<UCompositeDataTable>(DataTable);
+					EntryJson->SetBoolField(TEXT("is_composite"), CompositeTable != nullptr);
+					if (CompositeTable != nullptr)
 					{
-						FieldNamesArray.Add(MakeShared<FJsonValueString>(PropIt->GetName()));
+						EntryJson->SetArrayField(TEXT("parent_tables"), GetParentTablesJsonArray(CompositeTable));
 					}
-					EntryJson->SetArrayField(TEXT("top_fields"), FieldNamesArray);
+
+					// top_fields: first 8 field names from the row struct
+					const UScriptStruct* RowStruct = DataTable->GetRowStruct();
+					if (RowStruct != nullptr)
+					{
+						TArray<TSharedPtr<FJsonValue>> FieldNamesArray;
+						int32 FieldCount = 0;
+						for (TFieldIterator<FProperty> PropIt(RowStruct); PropIt && FieldCount < 8; ++PropIt, ++FieldCount)
+						{
+							FieldNamesArray.Add(MakeShared<FJsonValueString>(PropIt->GetName()));
+						}
+						EntryJson->SetArrayField(TEXT("top_fields"), FieldNamesArray);
+					}
+				}
+				else
+				{
+					EntryJson->SetNumberField(TEXT("row_count"), -1);
+					EntryJson->SetBoolField(TEXT("is_composite"), false);
 				}
 
 				DatatablesArray.Add(MakeShared<FJsonValueObject>(EntryJson));

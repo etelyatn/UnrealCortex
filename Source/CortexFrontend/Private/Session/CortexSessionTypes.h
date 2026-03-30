@@ -75,7 +75,8 @@ enum class ECortexChatEntryType : uint8
     AssistantMessage,
     ToolCall,
     CodeBlock,
-    Table
+    Table,
+    AuthError
 };
 
 struct FCortexChatEntry

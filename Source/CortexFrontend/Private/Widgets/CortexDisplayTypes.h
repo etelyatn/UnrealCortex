@@ -15,7 +15,8 @@ enum class ECortexChatRowType : uint8
 	CodeBlock,
 	ProcessingRow,   // Transient row shown while session is Spawning or Processing
 	StatusRow,       // Step-by-step status message (e.g., "Serializing Blueprint...")
-	TableBlock
+	TableBlock,
+	AuthError        // Auth failure with login/retry buttons
 };
 
 struct FCortexChatDisplayRow

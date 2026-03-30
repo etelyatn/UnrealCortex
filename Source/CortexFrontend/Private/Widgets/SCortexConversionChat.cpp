@@ -4,6 +4,7 @@
 #include "Rendering/CortexMarkdownParser.h"
 #include "Session/CortexCliSession.h"
 #include "Widgets/SCortexChatMessage.h"
+#include "Widgets/SCortexChatPanel.h"
 #include "Widgets/SCortexCodeBlock.h"
 #include "Widgets/SCortexDiffBlock.h"
 #include "Widgets/SCortexInputArea.h"
@@ -163,8 +164,18 @@ void SCortexConversionChat::OnTurnComplete(const FCortexTurnResult& Result)
 	{
 		TArray<TSharedPtr<FCortexChatEntry>> ErrorEntries;
 		TSharedPtr<FCortexChatEntry> ErrorEntry = MakeShared<FCortexChatEntry>();
-		ErrorEntry->Type = ECortexChatEntryType::AssistantMessage;
-		ErrorEntry->Text = FString::Printf(TEXT("Error: %s"), *Result.ResultText);
+
+		if (SCortexChatPanel::IsAuthError(Result.ResultText))
+		{
+			ErrorEntry->Type = ECortexChatEntryType::AuthError;
+			ErrorEntry->Text = Result.ResultText;
+		}
+		else
+		{
+			ErrorEntry->Type = ECortexChatEntryType::AssistantMessage;
+			ErrorEntry->Text = FString::Printf(TEXT("Error: %s"), *Result.ResultText);
+		}
+
 		ErrorEntries.Add(ErrorEntry);
 		Context->Session->ReplaceStreamingEntry(ErrorEntries);
 	}
@@ -685,6 +696,15 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 			break;
 		}
 
+		case ECortexChatRowType::AuthError:
+		{
+			Content = SNew(SCortexChatMessage)
+				.Message(FString::Printf(TEXT("Authentication error: %s\n\nRun `claude login` in your terminal to authenticate."),
+					*Row->PrimaryEntry->Text))
+				.IsUser(false);
+			break;
+		}
+
 		case ECortexChatRowType::ProcessingRow:
 		case ECortexChatRowType::TableBlock:  // TODO: SCortexTableBlock rendering not yet supported in conversion view
 			break;
@@ -767,6 +787,10 @@ void SCortexConversionChat::RefreshVisibleEntries()
 			if (Entry->Type == ECortexChatEntryType::UserMessage)
 			{
 				Row->RowType = ECortexChatRowType::UserMessage;
+			}
+			else if (Entry->Type == ECortexChatEntryType::AuthError)
+			{
+				Row->RowType = ECortexChatRowType::AuthError;
 			}
 			else if (Entry->Type == ECortexChatEntryType::CodeBlock)
 			{

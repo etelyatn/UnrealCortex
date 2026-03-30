@@ -6,6 +6,7 @@
 #include "Internationalization/Regex.h"
 #include "Rendering/CortexChatEntryBuilder.h"
 #include "Widgets/SCortexChatMessage.h"
+#include "Widgets/SCortexChatPanel.h"
 #include "Widgets/SCortexInputArea.h"
 #include "Widgets/SCortexProcessingIndicator.h"
 #include "Widgets/Layout/SBox.h"
@@ -314,7 +315,12 @@ void SCortexAnalysisChat::CollapseStatusMessages(const FCortexTurnResult& Result
 		? (FPlatformTime::Seconds() - Context->AnalysisStartTime)
 		: Result.DurationMs / 1000.0;
 
-	if (Result.bIsError)
+	if (Result.bIsError && SCortexChatPanel::IsAuthError(Result.ResultText))
+	{
+		SummaryEntry->Type = ECortexChatEntryType::AuthError;
+		SummaryEntry->Text = Result.ResultText;
+	}
+	else if (Result.bIsError)
 	{
 		SummaryEntry->Text = FString::Printf(TEXT("Analysis failed (%.1fs): %s"),
 			WallClockSeconds, *Result.ResultText);
@@ -383,9 +389,16 @@ void SCortexAnalysisChat::RefreshVisibleEntries()
 				Row->PrimaryEntry = Entry;
 			}
 
-			Row->RowType = (Entry->Type == ECortexChatEntryType::UserMessage)
-				? ECortexChatRowType::UserMessage
-				: ECortexChatRowType::AssistantTurn;
+			if (Entry->Type == ECortexChatEntryType::AuthError)
+			{
+				Row->RowType = ECortexChatRowType::AuthError;
+			}
+			else
+			{
+				Row->RowType = (Entry->Type == ECortexChatEntryType::UserMessage)
+					? ECortexChatRowType::UserMessage
+					: ECortexChatRowType::AssistantTurn;
+			}
 			DisplayRows.Add(Row);
 		}
 	}
@@ -442,6 +455,15 @@ TSharedRef<ITableRow> SCortexAnalysisChat::GenerateRow(
 		{
 			Content = SNew(SCortexChatMessage)
 				.Message(Row->PrimaryEntry->Text)
+				.IsUser(false);
+			break;
+		}
+
+		case ECortexChatRowType::AuthError:
+		{
+			Content = SNew(SCortexChatMessage)
+				.Message(FString::Printf(TEXT("Authentication error: %s\n\nRun `claude login` in your terminal to authenticate."),
+					*Row->PrimaryEntry->Text))
 				.IsUser(false);
 			break;
 		}

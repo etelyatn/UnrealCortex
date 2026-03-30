@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "CortexCommandRouter.h"
 
+struct FAssetData;
 class UDataTable;
 class UCompositeDataTable;
 
@@ -39,4 +40,7 @@ private:
 
 	/** Find which source table actually owns a row (searches back-to-front for override semantics) */
 	static UDataTable* FindSourceTableForRow(const UCompositeDataTable* CompositeTable, FName RowName);
+
+	/** Extract row struct short name from AssetRegistry tag (no asset load required) */
+	static FString GetRowStructNameFromTag(const FAssetData& AssetData);
 };

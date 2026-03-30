@@ -11,10 +11,16 @@
 #include "Widgets/SCortexTableBlock.h"
 #include "Widgets/SCortexToolCallBlock.h"
 #include "Widgets/SCortexChatToolbar.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSeparator.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
+#include "Process/CortexCliDiscovery.h"
+#include "Rendering/CortexFrontendColors.h"
 
 void SCortexChatPanel::Construct(const FArguments& InArgs)
 {
@@ -131,6 +137,8 @@ void SCortexChatPanel::SendMessage(const FString& Message)
         return;
     }
 
+    LastUserPrompt = Message;
+
     FCortexPromptRequest Request;
     Request.Prompt = Message;
     Request.AccessMode = FCortexFrontendSettings::Get().GetAccessMode();
@@ -222,8 +230,18 @@ void SCortexChatPanel::OnTurnComplete(const FCortexTurnResult& Result)
     {
         TArray<TSharedPtr<FCortexChatEntry>> ErrorEntries;
         TSharedPtr<FCortexChatEntry> ErrorEntry = MakeShared<FCortexChatEntry>();
-        ErrorEntry->Type = ECortexChatEntryType::AssistantMessage;
-        ErrorEntry->Text = FString::Printf(TEXT("Error: %s"), *Result.ResultText);
+
+        if (IsAuthError(Result.ResultText))
+        {
+            ErrorEntry->Type = ECortexChatEntryType::AuthError;
+            ErrorEntry->Text = Result.ResultText;
+        }
+        else
+        {
+            ErrorEntry->Type = ECortexChatEntryType::AssistantMessage;
+            ErrorEntry->Text = FString::Printf(TEXT("Error: %s"), *Result.ResultText);
+        }
+
         ErrorEntries.Add(ErrorEntry);
         Session->ReplaceStreamingEntry(ErrorEntries);
     }
@@ -403,6 +421,15 @@ void SCortexChatPanel::RebuildStableRows()
             StableRows.Add(TableRow);
             break;
         }
+
+        case ECortexChatEntryType::AuthError:
+        {
+            TSharedPtr<FCortexChatDisplayRow> Row = MakeShared<FCortexChatDisplayRow>();
+            Row->RowType = ECortexChatRowType::AuthError;
+            Row->PrimaryEntry = E;
+            StableRows.Add(Row);
+            break;
+        }
         }
     }
 }
@@ -527,6 +554,76 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatDispla
                 .Rows(Row->PrimaryEntry->TableRows);
             break;
 
+        case ECortexChatRowType::AuthError:
+        {
+            const FString ErrorText = Row->PrimaryEntry.IsValid() ? Row->PrimaryEntry->Text : TEXT("Authentication failed");
+
+            Content = SNew(SBox)
+                .Padding(FMargin(12.0f, 10.0f))
+                [
+                    SNew(SBorder)
+                    .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                    .BorderBackgroundColor(FLinearColor(0.3f, 0.1f, 0.1f, 0.4f))
+                    .Padding(FMargin(12.0f, 10.0f))
+                    [
+                        SNew(SVerticalBox)
+
+                        // Error message
+                        + SVerticalBox::Slot()
+                        .AutoHeight()
+                        .Padding(0.0f, 0.0f, 0.0f, 8.0f)
+                        [
+                            SNew(STextBlock)
+                            .Text(FText::FromString(TEXT("Authentication Required")))
+                            .Font(FCoreStyle::GetDefaultFontStyle("Bold", 12))
+                            .ColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.4f, 0.4f)))
+                        ]
+
+                        + SVerticalBox::Slot()
+                        .AutoHeight()
+                        .Padding(0.0f, 0.0f, 0.0f, 12.0f)
+                        [
+                            SNew(STextBlock)
+                            .Text(FText::FromString(ErrorText))
+                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                            .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
+                            .AutoWrapText(true)
+                        ]
+
+                        // Buttons
+                        + SVerticalBox::Slot()
+                        .AutoHeight()
+                        [
+                            SNew(SHorizontalBox)
+                            + SHorizontalBox::Slot()
+                            .AutoWidth()
+                            .Padding(0.0f, 0.0f, 8.0f, 0.0f)
+                            [
+                                SNew(SButton)
+                                .Text(FText::FromString(TEXT("Login with Browser")))
+                                .OnClicked_Lambda([this]()
+                                {
+                                    HandleLoginClicked();
+                                    return FReply::Handled();
+                                })
+                            ]
+                            + SHorizontalBox::Slot()
+                            .AutoWidth()
+                            [
+                                SNew(SButton)
+                                .Text(FText::FromString(TEXT("Retry")))
+                                .OnClicked_Lambda([this]()
+                                {
+                                    HandleRetryClicked();
+                                    return FReply::Handled();
+                                })
+                            ]
+                        ]
+                    ]
+                ];
+            break;
+        }
+
         default:
             break;
         }
@@ -544,5 +641,53 @@ void SCortexChatPanel::ScrollToBottom()
     if (ChatList.IsValid() && DisplayRows.Num() > 0)
     {
         ChatList->RequestScrollIntoView(DisplayRows.Last());
+    }
+}
+
+bool SCortexChatPanel::IsAuthError(const FString& ErrorText)
+{
+    return ErrorText.Contains(TEXT("not logged in"), ESearchCase::IgnoreCase)
+        || ErrorText.Contains(TEXT("unauthenticated"), ESearchCase::IgnoreCase)
+        || ErrorText.Contains(TEXT("invalid api key"), ESearchCase::IgnoreCase)
+        || ErrorText.Contains(TEXT("invalid x-api-key"), ESearchCase::IgnoreCase)
+        || ErrorText.Contains(TEXT("401 unauthorized"), ESearchCase::IgnoreCase)
+        || ErrorText.Contains(TEXT("authentication required"), ESearchCase::IgnoreCase)
+        || ErrorText.Contains(TEXT("authentication failed"), ESearchCase::IgnoreCase)
+        || ErrorText.Contains(TEXT("could not authenticate"), ESearchCase::IgnoreCase)
+        || ErrorText.Contains(TEXT("token expired"), ESearchCase::IgnoreCase);
+}
+
+void SCortexChatPanel::HandleLoginClicked()
+{
+    const FCortexCliInfo CliInfo = FCortexCliDiscovery::FindClaude();
+    if (!CliInfo.bIsValid)
+    {
+        UE_LOG(LogCortexFrontend, Warning, TEXT("Cannot launch login — Claude CLI not found"));
+        return;
+    }
+
+    FProcHandle Handle = FPlatformProcess::CreateProc(
+        *CliInfo.Path,
+        TEXT("login"),
+        true,    // bLaunchDetached
+        false,   // bLaunchHidden
+        false,   // bLaunchReallyHidden
+        nullptr, // OutProcessID
+        0,       // PriorityModifier
+        nullptr, // OptionalWorkingDirectory
+        nullptr, // PipeWriteChild
+        nullptr  // PipeReadChild
+    );
+    if (!Handle.IsValid())
+    {
+        UE_LOG(LogCortexFrontend, Warning, TEXT("Failed to launch 'claude login'"));
+    }
+}
+
+void SCortexChatPanel::HandleRetryClicked()
+{
+    if (!LastUserPrompt.IsEmpty())
+    {
+        SendMessage(LastUserPrompt);
     }
 }
