@@ -163,7 +163,12 @@ bool FCortexDataCatalogTest::RunTest(const FString& Parameters)
 						TestTrue(TEXT("Datatable entry should have 'row_struct'"), (*EntryObject)->HasField(TEXT("row_struct")));
 						TestTrue(TEXT("Datatable entry should have 'row_count'"), (*EntryObject)->HasField(TEXT("row_count")));
 						TestTrue(TEXT("Datatable entry should have 'is_composite'"), (*EntryObject)->HasField(TEXT("is_composite")));
-						TestTrue(TEXT("Datatable entry should have 'top_fields'"), (*EntryObject)->HasField(TEXT("top_fields")));
+						// top_fields is only present for loaded assets (row_count >= 0)
+						const double RowCount = (*EntryObject)->GetNumberField(TEXT("row_count"));
+						if (RowCount >= 0)
+						{
+							TestTrue(TEXT("Loaded datatable entry should have 'top_fields'"), (*EntryObject)->HasField(TEXT("top_fields")));
+						}
 					}
 				}
 
