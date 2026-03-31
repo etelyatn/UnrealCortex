@@ -1079,7 +1079,7 @@ FCortexCommandResult FCortexMaterialGraphOps::GetNodePins(const TSharedPtr<FJson
 	{
 		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 		Entry->SetNumberField(TEXT("index"), i);
-		FString OutputName = Outputs[i].OutputName.ToString();
+		FString OutputName = Outputs[i].OutputName.IsNone() ? FString() : Outputs[i].OutputName.ToString();
 		Entry->SetStringField(TEXT("name"), OutputName.IsEmpty() ? FString::Printf(TEXT("%d"), i) : OutputName);
 		OutputsArray.Add(MakeShared<FJsonValueObject>(Entry));
 	}

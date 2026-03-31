@@ -470,7 +470,8 @@ void FCortexReflectOps::BuildHierarchyTree(
 	int32& OutCppCount,
 	int32& OutBPCount,
 	int32& OutProjectCppCount,
-	int32& OutProjectBPCount)
+	int32& OutProjectBPCount,
+	const TSet<UClass*>& EngineAncestorsOfProject)
 {
 	OutNode = MakeShared<FJsonObject>();
 	OutNode->SetStringField(TEXT("name"), GetCppClassName(Root));
@@ -532,6 +533,41 @@ void FCortexReflectOps::BuildHierarchyTree(
 
 			if (!bIncludeEngine && !IsProjectClass(Child))
 			{
+				// Skip engine classes with no project descendants (O(1) lookup)
+				if (!EngineAncestorsOfProject.Contains(Child))
+				{
+					continue;
+				}
+				// Engine class has project descendants — recurse to find them.
+				// Use CurrentDepth (not +1) since skipped node doesn't consume a depth level.
+				TSharedPtr<FJsonObject> SkippedNode;
+				BuildHierarchyTree(
+					Child, SkippedNode,
+					CurrentDepth, MaxDepth,
+					bIncludeBlueprint, bIncludeEngine,
+					MaxResults,
+					OutTotalCount, OutCppCount, OutBPCount,
+					OutProjectCppCount, OutProjectBPCount,
+					EngineAncestorsOfProject
+				);
+				// Undo the count for the skipped engine class itself.
+				// Note: ProjectCppCount/ProjectBPCount don't need adjustment — the skipped
+				// class failed IsProjectClass() above, so it was never counted as project.
+				OutTotalCount--;
+				if (Cast<UBlueprintGeneratedClass>(Child))
+				{
+					OutBPCount--;
+				}
+				else
+				{
+					OutCppCount--;
+				}
+				// Promote project children directly to parent level
+				const TArray<TSharedPtr<FJsonValue>>* PromotedChildren = nullptr;
+				if (SkippedNode.IsValid() && SkippedNode->TryGetArrayField(TEXT("children"), PromotedChildren))
+				{
+					ChildrenArray.Append(*PromotedChildren);
+				}
 				continue;
 			}
 
@@ -542,7 +578,8 @@ void FCortexReflectOps::BuildHierarchyTree(
 				bIncludeBlueprint, bIncludeEngine,
 				MaxResults,
 				OutTotalCount, OutCppCount, OutBPCount,
-				OutProjectCppCount, OutProjectBPCount
+				OutProjectCppCount, OutProjectBPCount,
+				EngineAncestorsOfProject
 			);
 			ChildrenArray.Add(MakeShared<FJsonValueObject>(ChildNode));
 		}
@@ -583,6 +620,40 @@ FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObj
 	bool bIncludeEngine = false;
 	Params->TryGetBoolField(TEXT("include_engine"), bIncludeEngine);
 
+	// Precompute which engine classes are ancestors of project classes.
+	// This allows BuildHierarchyTree to skip dead-end engine subtrees in O(1)
+	// instead of recursively visiting thousands of engine classes.
+	TSet<UClass*> EngineAncestorsOfProject;
+	if (!bIncludeEngine)
+	{
+		TArray<UClass*> AllDescendants;
+		GetDerivedClasses(RootClass, AllDescendants, true);
+		for (UClass* Desc : AllDescendants)
+		{
+			if (!IsProjectClass(Desc))
+			{
+				continue;
+			}
+			if (!bIncludeBlueprint && Cast<UBlueprintGeneratedClass>(Desc))
+			{
+				continue;
+			}
+			// Walk parent chain, marking engine intermediaries
+			for (UClass* Anc = Desc->GetSuperClass(); Anc && Anc != RootClass; Anc = Anc->GetSuperClass())
+			{
+				if (!IsProjectClass(Anc))
+				{
+					bool bAlreadyInSet = false;
+					EngineAncestorsOfProject.Add(Anc, &bAlreadyInSet);
+					if (bAlreadyInSet)
+					{
+						break; // Rest of chain already marked
+					}
+				}
+			}
+		}
+	}
+
 	int32 TotalCount = 0;
 	int32 CppCount = 0;
 	int32 BPCount = 0;
@@ -595,7 +666,8 @@ FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObj
 		bIncludeBlueprint, bIncludeEngine,
 		MaxResults,
 		TotalCount, CppCount, BPCount,
-		ProjectCppCount, ProjectBPCount
+		ProjectCppCount, ProjectBPCount,
+		EngineAncestorsOfProject
 	);
 
 	// Keep the root node in the hierarchy for context, but in project-only mode

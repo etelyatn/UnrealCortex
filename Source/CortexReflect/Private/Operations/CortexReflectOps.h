@@ -46,7 +46,8 @@ private:
 		int32& OutCppCount,
 		int32& OutBPCount,
 		int32& OutProjectCppCount,
-		int32& OutProjectBPCount
+		int32& OutProjectBPCount,
+		const TSet<UClass*>& EngineAncestorsOfProject
 	);
 	static TSharedPtr<FJsonObject> SerializeProperty(const FProperty* Property, const UObject* CDO);
 	static TSharedPtr<FJsonObject> SerializeFunction(const UFunction* Function, const UClass* QueryClass);
