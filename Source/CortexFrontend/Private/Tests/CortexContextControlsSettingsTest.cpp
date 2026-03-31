@@ -149,6 +149,41 @@ bool FCortexSettingsDirectiveRoundTripTest::RunTest(const FString& Parameters)
 
 // --- Task 3 tests: Dirty state tracking ---
 
+// --- Auto-context setting tests ---
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexSettingsAutoContextDefaultTest,
+    "Cortex.Frontend.ContextControls.Settings.AutoContextDefault",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexSettingsAutoContextDefaultTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    TestTrue(TEXT("Auto-context on by default"), Settings.GetAutoContext());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexSettingsAutoContextRoundTripTest,
+    "Cortex.Frontend.ContextControls.Settings.AutoContextRoundTrip",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexSettingsAutoContextRoundTripTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    const bool bOriginal = Settings.GetAutoContext();
+
+    Settings.SetAutoContext(false);
+    Settings.Load();
+    TestFalse(TEXT("False persists"), Settings.GetAutoContext());
+
+    Settings.SetAutoContext(bOriginal);
+    Settings.ClearPendingChanges();
+    return true;
+}
+
+// --- Dirty state tracking tests ---
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexSettingsDirtyTrackingTest,
     "Cortex.Frontend.ContextControls.Settings.DirtyTracking",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
