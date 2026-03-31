@@ -396,7 +396,9 @@ FCortexCommandResult FCortexGraphNodeOps::ListNodes(const TSharedPtr<FJsonObject
 		}
 		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 		Entry->SetStringField(TEXT("node_id"), Node->GetName());
-		Entry->SetStringField(TEXT("class"), Node->GetClass()->GetName());
+		const FString ClassName = Node->GetClass()->GetName();
+		Entry->SetStringField(TEXT("class"), ClassName);
+		Entry->SetStringField(TEXT("node_class"), ClassName);
 		Entry->SetStringField(TEXT("display_name"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
 		TSharedRef<FJsonObject> Pos = MakeShared<FJsonObject>();
 		Pos->SetNumberField(TEXT("x"), Node->NodePosX);
@@ -405,14 +407,17 @@ FCortexCommandResult FCortexGraphNodeOps::ListNodes(const TSharedPtr<FJsonObject
 		Entry->SetNumberField(TEXT("pin_count"), Node->Pins.Num());
 
 		int32 ConnectedPinCount = 0;
+		int32 ConnectionCount = 0;
 		for (const UEdGraphPin* Pin : Node->Pins)
 		{
 			if (Pin != nullptr && Pin->LinkedTo.Num() > 0)
 			{
 				++ConnectedPinCount;
+				ConnectionCount += Pin->LinkedTo.Num();
 			}
 		}
 		Entry->SetNumberField(TEXT("connected_pin_count"), ConnectedPinCount);
+		Entry->SetNumberField(TEXT("connections"), ConnectionCount);
 
 		// Annotate composite nodes with their subgraph name
 		UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node);
@@ -434,6 +439,7 @@ FCortexCommandResult FCortexGraphNodeOps::ListNodes(const TSharedPtr<FJsonObject
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("nodes"), NodesArray);
+	Data->SetNumberField(TEXT("node_count"), NodesArray.Num());
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -493,7 +499,9 @@ FCortexCommandResult FCortexGraphNodeOps::GetNode(const TSharedPtr<FJsonObject>&
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("node_id"), Node->GetName());
-	Data->SetStringField(TEXT("class"), Node->GetClass()->GetName());
+	const FString ClassName = Node->GetClass()->GetName();
+	Data->SetStringField(TEXT("class"), ClassName);
+	Data->SetStringField(TEXT("node_class"), ClassName);
 	Data->SetStringField(TEXT("display_name"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
 
 	TSharedRef<FJsonObject> Pos = MakeShared<FJsonObject>();
@@ -628,7 +636,9 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 
 			TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 			Entry->SetStringField(TEXT("node_id"), Node->GetName());
-			Entry->SetStringField(TEXT("class"), Node->GetClass()->GetName());
+			const FString SearchNodeClass = Node->GetClass()->GetName();
+			Entry->SetStringField(TEXT("class"), SearchNodeClass);
+			Entry->SetStringField(TEXT("node_class"), SearchNodeClass);
 			Entry->SetStringField(TEXT("display_name"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
 			Entry->SetStringField(TEXT("graph_name"), Graph->GetName());
 			if (!CurrentSubgraphPath.IsEmpty())
@@ -1144,7 +1154,9 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	// Build response
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("node_id"), NewNode->GetName());
-	Data->SetStringField(TEXT("class"), NewNode->GetClass()->GetName());
+	const FString AddedNodeClass = NewNode->GetClass()->GetName();
+	Data->SetStringField(TEXT("class"), AddedNodeClass);
+	Data->SetStringField(TEXT("node_class"), AddedNodeClass);
 	Data->SetStringField(TEXT("display_name"), NewNode->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
 
 	TArray<TSharedPtr<FJsonValue>> PinsArray;

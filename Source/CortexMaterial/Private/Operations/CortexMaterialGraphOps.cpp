@@ -249,13 +249,21 @@ FCortexCommandResult FCortexMaterialGraphOps::GetNode(const TSharedPtr<FJsonObje
 FCortexCommandResult FCortexMaterialGraphOps::AddNode(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath, ExpressionClass;
-	if (!Params.IsValid()
-		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
-		|| !Params->TryGetStringField(TEXT("expression_class"), ExpressionClass))
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
 			TEXT("Missing required params: asset_path and expression_class"));
+	}
+	// Accept node_class as alias for expression_class
+	if (!Params->TryGetStringField(TEXT("expression_class"), ExpressionClass))
+	{
+		if (!Params->TryGetStringField(TEXT("node_class"), ExpressionClass))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("Missing required params: asset_path and expression_class (alias: node_class)"));
+		}
 	}
 
 	FCortexCommandResult LoadError;
@@ -466,11 +474,21 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 {
 	FString AssetPath, SourceNode, TargetNode, TargetInput;
 
-	if (!Params.IsValid()
-		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
-		|| !Params->TryGetStringField(TEXT("source_node"), SourceNode)
-		|| !Params->TryGetStringField(TEXT("target_node"), TargetNode)
-		|| !Params->TryGetStringField(TEXT("target_input"), TargetInput))
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, source_node, source_output, target_node, target_input"));
+	}
+	// Accept from_node/to_node as aliases
+	if (!Params->TryGetStringField(TEXT("source_node"), SourceNode))
+		Params->TryGetStringField(TEXT("from_node"), SourceNode);
+	if (!Params->TryGetStringField(TEXT("target_node"), TargetNode))
+		Params->TryGetStringField(TEXT("to_node"), TargetNode);
+	if (!Params->TryGetStringField(TEXT("target_input"), TargetInput))
+		Params->TryGetStringField(TEXT("to_input"), TargetInput);
+
+	if (SourceNode.IsEmpty() || TargetNode.IsEmpty() || TargetInput.IsEmpty())
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
@@ -551,8 +569,8 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 		Material->PreEditChange(nullptr);
 	}
 
-	// Connect to MaterialResult or expression
-	if (TargetNode == TEXT("MaterialResult"))
+	// Connect to MaterialResult or expression — accept "Material" as alias
+	if (TargetNode == TEXT("MaterialResult") || TargetNode == TEXT("Material"))
 	{
 		EMaterialProperty Property = MP_MAX;
 		if (!ResolveMaterialPropertyByInputName(TargetInput, Property))

@@ -36,6 +36,8 @@ public:
 		double Timestamp,
 		int32 ForcedCursor = INDEX_NONE);
 
+	void EnsureCapturing();
+
 	FCortexEditorLogResult GetRecentLogs(
 		ELogVerbosity::Type MinSeverity,
 		double SinceSeconds,

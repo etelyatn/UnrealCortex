@@ -73,6 +73,8 @@ FCortexCommandResult FCortexEditorUtilityOps::GetRecentLogs(
 		EntriesArray.Add(MakeShared<FJsonValueObject>(Item));
 	}
 	Data->SetArrayField(TEXT("entries"), EntriesArray);
+	Data->SetArrayField(TEXT("logs"), EntriesArray);
+	Data->SetNumberField(TEXT("count"), EntriesArray.Num());
 	Data->SetNumberField(TEXT("cursor"), Logs.Cursor);
 
 	return FCortexCommandRouter::Success(Data);

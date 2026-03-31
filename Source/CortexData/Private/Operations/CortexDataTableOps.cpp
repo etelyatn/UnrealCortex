@@ -4,6 +4,7 @@
 #include "CortexSerializer.h"
 #include "Engine/DataTable.h"
 #include "Engine/CompositeDataTable.h"
+#include "Engine/CurveTable.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/TextProperty.h"
 #include "UObject/SavePackage.h"
@@ -1711,6 +1712,44 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 		else
 		{
 			Data->SetArrayField(TEXT("string_tables"), TArray<TSharedPtr<FJsonValue>>());
+		}
+	}
+
+	// --- CurveTables section ---
+	{
+		IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+		if (AssetRegistry != nullptr)
+		{
+			FARFilter Filter;
+			Filter.ClassPaths.Add(UCurveTable::StaticClass()->GetClassPathName());
+			Filter.bRecursiveClasses = true;
+			Filter.PackagePaths.Add(FName(TEXT("/Game")));
+			Filter.bRecursivePaths = true;
+
+			TArray<FAssetData> AssetDataList;
+			AssetRegistry->GetAssets(Filter, AssetDataList);
+
+			TArray<TSharedPtr<FJsonValue>> CurveTableArray;
+			for (const FAssetData& AssetData : AssetDataList)
+			{
+				const FString PackagePath = AssetData.PackagePath.ToString();
+				if (PackagePath.Contains(TEXT("__ExternalActors__"))
+					|| PackagePath.Contains(TEXT("__ExternalObjects__")))
+				{
+					continue;
+				}
+
+				TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+				Entry->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
+				Entry->SetStringField(TEXT("path"), AssetData.GetObjectPathString());
+				CurveTableArray.Add(MakeShared<FJsonValueObject>(Entry));
+			}
+
+			Data->SetArrayField(TEXT("curve_tables"), CurveTableArray);
+		}
+		else
+		{
+			Data->SetArrayField(TEXT("curve_tables"), TArray<TSharedPtr<FJsonValue>>());
 		}
 	}
 

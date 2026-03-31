@@ -21,6 +21,16 @@ void FCortexEditorLogCapture::StartCapture()
 	}
 }
 
+void FCortexEditorLogCapture::EnsureCapturing()
+{
+	FScopeLock Lock(&BufferCS);
+	if (!bCapturing && GLog != nullptr)
+	{
+		GLog->AddOutputDevice(this);
+		bCapturing = true;
+	}
+}
+
 void FCortexEditorLogCapture::StopCapture()
 {
 	// Set bCapturing = false inside the lock, then release before calling GLog.

@@ -1415,6 +1415,10 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
+	// Force inner sub-objects (UTimelineTemplate, delegates, etc.) to load.
+	// LoadObject<UBlueprint> loads the outer but leaves inner sub-objects unresident.
+	FBlueprintEditorUtils::PreloadMembers(BP);
+
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	const bool bIsWidgetBP = IsWidgetBlueprint(BP);
 	const FString BlueprintType = bIsWidgetBP ? TEXT("WidgetBlueprint") : FCortexBPAssetOps::DetermineBlueprintType(BP);
@@ -1842,12 +1846,6 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 	Data->SetArrayField(TEXT("graphs"), GraphsArray);
 	Data->SetArrayField(TEXT("per_graph_elements"), PerGraphElementsArray);
 	Data->SetArrayField(TEXT("latent_nodes"), LatentNodesArray);
-
-	// Force inner objects (UTimelineTemplate sub-objects) to load from the package.
-	// LoadObject<UBlueprint> loads the outer Blueprint asset but leaves inner sub-objects
-	// unresident. Without this call, BP->Timelines is always empty for on-disk Blueprints
-	// that have timeline nodes, even though the data exists in the serialized package.
-	FBlueprintEditorUtils::PreloadMembers(BP);
 
 	TArray<TSharedPtr<FJsonValue>> TimelinesArray;
 	for (UTimelineTemplate* Timeline : BP->Timelines)

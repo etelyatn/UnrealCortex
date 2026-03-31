@@ -1187,9 +1187,9 @@ FCortexCommandResult FCortexBPAssetOps::Compile(const TSharedPtr<FJsonObject>& P
 	{
 		TSharedPtr<FJsonObject> Payload = MakeShared<FJsonObject>();
 		Payload->SetStringField(TEXT("asset_path"), AssetPath);
-		Payload->SetStringField(
-			TEXT("compile_status"),
-			ErrorCount > 0 ? TEXT("error") : (WarningCount > 0 ? TEXT("warning") : TEXT("success")));
+		const FString StatusStr = ErrorCount > 0 ? TEXT("error") : (WarningCount > 0 ? TEXT("warning") : TEXT("success"));
+		Payload->SetStringField(TEXT("compile_status"), StatusStr);
+		Payload->SetStringField(TEXT("status"), StatusStr);
 		Payload->SetNumberField(TEXT("error_count"), ErrorCount);
 		Payload->SetNumberField(TEXT("warning_count"), WarningCount);
 		Payload->SetArrayField(TEXT("diagnostics"), DiagnosticsArray);

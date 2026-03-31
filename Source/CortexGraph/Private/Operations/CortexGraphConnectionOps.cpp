@@ -24,13 +24,15 @@ FCortexCommandResult FCortexGraphConnectionOps::Connect(const TSharedPtr<FJsonOb
 
 	if (bHasParams)
 	{
-		// Accept from_node/from_pin/to_node/to_pin as aliases for source_node/source_pin/target_node/target_pin
+		// Accept aliases: from_node/to_node, source_node_id/target_node_id
 		if (!Params->TryGetStringField(TEXT("source_node"), SourceNodeId))
-			Params->TryGetStringField(TEXT("from_node"), SourceNodeId);
+			if (!Params->TryGetStringField(TEXT("from_node"), SourceNodeId))
+				Params->TryGetStringField(TEXT("source_node_id"), SourceNodeId);
 		if (!Params->TryGetStringField(TEXT("source_pin"), SourcePinName))
 			Params->TryGetStringField(TEXT("from_pin"), SourcePinName);
 		if (!Params->TryGetStringField(TEXT("target_node"), TargetNodeId))
-			Params->TryGetStringField(TEXT("to_node"), TargetNodeId);
+			if (!Params->TryGetStringField(TEXT("to_node"), TargetNodeId))
+				Params->TryGetStringField(TEXT("target_node_id"), TargetNodeId);
 		if (!Params->TryGetStringField(TEXT("target_pin"), TargetPinName))
 			Params->TryGetStringField(TEXT("to_pin"), TargetPinName);
 

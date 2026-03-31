@@ -90,6 +90,7 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	}
 	if (LogCapture.IsValid() && Command == TEXT("get_recent_logs"))
 	{
+		LogCapture->EnsureCapturing();
 		return FCortexEditorUtilityOps::GetRecentLogs(*LogCapture, Params);
 	}
 	if (Command == TEXT("get_viewport_info"))

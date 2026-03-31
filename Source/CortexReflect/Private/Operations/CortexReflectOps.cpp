@@ -553,11 +553,13 @@ void FCortexReflectOps::BuildHierarchyTree(
 FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObject>& Params)
 {
 	FString RootName;
-	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("root"), RootName))
+	if (!Params.IsValid()
+		|| (!Params->TryGetStringField(TEXT("root"), RootName)
+			&& !Params->TryGetStringField(TEXT("class_name"), RootName)))
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			TEXT("root parameter is required")
+			TEXT("root parameter is required (alias: class_name)")
 		);
 	}
 
@@ -706,11 +708,13 @@ bool FCortexReflectOps::WriteReflectCache(
 FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject>& Params)
 {
 	FString ClassName;
-	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("class_name"), ClassName))
+	if (!Params.IsValid()
+		|| (!Params->TryGetStringField(TEXT("class_name"), ClassName)
+			&& !Params->TryGetStringField(TEXT("root"), ClassName)))
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			TEXT("class_name parameter is required")
+			TEXT("class_name parameter is required (alias: root)")
 		);
 	}
 
@@ -878,11 +882,13 @@ FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject
 FCortexCommandResult FCortexReflectOps::FindOverrides(const TSharedPtr<FJsonObject>& Params)
 {
 	FString ClassName;
-	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("class_name"), ClassName))
+	if (!Params.IsValid()
+		|| (!Params->TryGetStringField(TEXT("class_name"), ClassName)
+			&& !Params->TryGetStringField(TEXT("root"), ClassName)))
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			TEXT("class_name parameter is required")
+			TEXT("class_name parameter is required (alias: root)")
 		);
 	}
 
@@ -1676,11 +1682,13 @@ FCortexCommandResult FCortexReflectOps::GetReferencers(const TSharedPtr<FJsonObj
 FCortexCommandResult FCortexReflectOps::Search(const TSharedPtr<FJsonObject>& Params)
 {
 	FString Pattern;
-	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("pattern"), Pattern))
+	if (!Params.IsValid()
+		|| (!Params->TryGetStringField(TEXT("pattern"), Pattern)
+			&& !Params->TryGetStringField(TEXT("query"), Pattern)))
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			TEXT("pattern parameter is required")
+			TEXT("pattern parameter is required (alias: query)")
 		);
 	}
 

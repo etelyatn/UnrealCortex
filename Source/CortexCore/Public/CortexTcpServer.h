@@ -82,6 +82,12 @@ private:
 	/** Full path to this editor's port file (CortexPort-{PID}.txt) */
 	FString PortFilePath;
 
+	/** Timestamp of last successful tick (game thread heartbeat). Updated atomically for cross-thread reads. */
+	TAtomic<double> LastTickTime{0.0};
+
+	/** Threshold in seconds after which a tick gap is considered a stall */
+	static constexpr double StallWarningThresholdSeconds = 5.0;
+
 	/** Remove port files whose PIDs are no longer running */
 	static void CleanupStalePortFiles();
 };

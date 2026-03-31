@@ -291,13 +291,36 @@ class UEConnection:
             self._validate_project()
             try:
                 self._send_and_receive("get_capabilities", {})
+            except ConnectionError as e:
+                # Socket connected but no response — game thread is likely stalled
+                # (e.g., modal dialog, shader compilation). Distinguish from hard fail.
+                raise ConnectionError(
+                    f"Connected to Unreal Editor at {self.host}:{self.port} but it is not "
+                    f"responding (game thread may be stalled by a modal dialog or heavy "
+                    f"operation). The editor process is running but cannot process commands. "
+                    f"Dismiss any dialogs and retry."
+                ) from e
             except Exception as e:
                 logger.warning("Failed to fetch capabilities during handshake: %s", e)
             if not self._loaded_file_cache:
                 self.load_file_caches()
                 self._loaded_file_cache = True
             logger.info("Connected to Unreal Editor at %s:%d", self.host, self.port)
-        except (ConnectionRefusedError, TimeoutError, OSError) as e:
+        except ConnectionRefusedError as e:
+            self._socket = None
+            raise ConnectionError(
+                f"Connection refused at {self.host}:{self.port}. "
+                f"The editor process may have exited or the TCP server is not running. "
+                f"Error: {e}"
+            ) from e
+        except TimeoutError as e:
+            self._socket = None
+            raise ConnectionError(
+                f"Connection timed out to {self.host}:{self.port}. "
+                f"The editor may be starting up or the game thread is stalled. "
+                f"Error: {e}"
+            ) from e
+        except OSError as e:
             self._socket = None
             raise ConnectionError(
                 f"Cannot connect to Unreal Editor at {self.host}:{self.port}. "

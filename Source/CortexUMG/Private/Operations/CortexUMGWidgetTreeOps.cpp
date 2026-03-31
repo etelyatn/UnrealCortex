@@ -274,9 +274,13 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::AddWidget(const TSharedPtr<FJsonOb
 
     FBlueprintEditorUtils::MarkBlueprintAsModified(WBP);
 
+    // Retrieve the actual name UE assigned (may differ from the requested name)
+    const FString ActualName = NewWidget->GetName();
+
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetBoolField(TEXT("added"), true);
     Data->SetStringField(TEXT("name"), Name);
+    Data->SetStringField(TEXT("actual_name"), ActualName);
     Data->SetStringField(TEXT("class"), WidgetClassName);
     Data->SetStringField(TEXT("parent"), ActualParent);
     Data->SetNumberField(TEXT("slot_index"), SlotIndex);

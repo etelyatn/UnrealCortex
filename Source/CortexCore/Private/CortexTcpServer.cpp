@@ -131,11 +131,26 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 					CurrentPID);
 			}
 
+			LastTickTime.Store(FPlatformTime::Seconds());
+
 			TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(
 				FTickerDelegate::CreateLambda([this](float DeltaTime) -> bool
 				{
 					if (bRunning)
 					{
+						const double Now = FPlatformTime::Seconds();
+						const double PrevTick = LastTickTime.Load();
+						const double Gap = Now - PrevTick;
+						LastTickTime.Store(Now);
+
+						if (Gap > StallWarningThresholdSeconds && PrevTick > 0.0)
+						{
+							UE_LOG(LogCortex, Warning,
+								TEXT("Game thread stall detected: %.1fs since last tick. "
+									 "Commands were queued but not processed during this period."),
+								Gap);
+						}
+
 						{
 							FScopeLock Lock(&PendingSocketsCS);
 							for (FSocket* PendingSocket : PendingClientSockets)
@@ -446,7 +461,11 @@ bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 				AckJson->SetStringField(TEXT("id"), RequestId);
 			}
 			AckJson->SetStringField(TEXT("status"), TEXT("deferred"));
-			AckJson->SetNumberField(TEXT("timeout_seconds"), Pending.TimeoutSeconds);
+			AckJson->SetBoolField(TEXT("success"), true);
+			TSharedPtr<FJsonObject> AckData = MakeShared<FJsonObject>();
+			AckData->SetStringField(TEXT("status"), TEXT("deferred"));
+			AckData->SetNumberField(TEXT("timeout_seconds"), Pending.TimeoutSeconds);
+			AckJson->SetObjectField(TEXT("data"), AckData);
 
 			FString AckString;
 			TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> AckWriter =
