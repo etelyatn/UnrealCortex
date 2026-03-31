@@ -62,6 +62,28 @@ bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("add bool variable should succeed"), Result.bSuccess);
 	}
 
+	// Test: add a dispatcher (multicast delegate) variable
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TestBPPath);
+		Params->SetStringField(TEXT("name"), TEXT("OnHealthChanged"));
+		Params->SetStringField(TEXT("type"), TEXT("dispatcher"));
+
+		FCortexCommandResult Result = Handler.Execute(TEXT("add_variable"), Params);
+		TestTrue(TEXT("add dispatcher variable should succeed"), Result.bSuccess);
+
+		if (Result.Data.IsValid())
+		{
+			bool bAdded = false;
+			Result.Data->TryGetBoolField(TEXT("added"), bAdded);
+			TestTrue(TEXT("dispatcher added should be true"), bAdded);
+
+			FString VarType;
+			Result.Data->TryGetStringField(TEXT("type"), VarType);
+			TestEqual(TEXT("dispatcher type should round-trip as dispatcher"), VarType, TEXT("dispatcher"));
+		}
+	}
+
 	// Verify via get_info
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -77,6 +99,7 @@ bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 			{
 				bool bFoundHealth = false;
 				bool bFoundIsAlive = false;
+				bool bFoundDispatcher = false;
 
 				for (const TSharedPtr<FJsonValue>& VarVal : *VarsArray)
 				{
@@ -97,10 +120,15 @@ bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 					{
 						bFoundIsAlive = true;
 					}
+					if (VarName == TEXT("OnHealthChanged"))
+					{
+						bFoundDispatcher = true;
+					}
 				}
 
 				TestTrue(TEXT("Health variable should exist"), bFoundHealth);
 				TestTrue(TEXT("bIsAlive variable should exist"), bFoundIsAlive);
+				TestTrue(TEXT("OnHealthChanged dispatcher should exist"), bFoundDispatcher);
 			}
 		}
 	}

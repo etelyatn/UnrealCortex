@@ -35,6 +35,10 @@ FEdGraphPinType CortexBPTypeUtils::ResolveVariableType(const FString& TypeStr)
 	{
 		PinType.PinCategory = UEdGraphSchema_K2::PC_Text;
 	}
+	else if (TypeStr == TEXT("dispatcher") || TypeStr == TEXT("delegate"))
+	{
+		PinType.PinCategory = UEdGraphSchema_K2::PC_MCDelegate;
+	}
 	else if (TypeStr == TEXT("FVector") || TypeStr == TEXT("vector"))
 	{
 		PinType.PinCategory = UEdGraphSchema_K2::PC_Struct;
@@ -130,6 +134,10 @@ FString CortexBPTypeUtils::FriendlyTypeName(const FEdGraphPinType& PinType)
 			return C->GetName();
 		}
 		return TEXT("object");
+	}
+	if (Cat == UEdGraphSchema_K2::PC_MCDelegate)
+	{
+		return TEXT("dispatcher");
 	}
 
 	return Cat.ToString();
