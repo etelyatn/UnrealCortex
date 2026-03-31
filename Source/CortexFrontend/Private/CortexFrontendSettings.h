@@ -40,6 +40,9 @@ public:
     bool GetProjectContext() const { return bProjectContext; }
     void SetProjectContext(bool bEnabled);
 
+    bool GetAutoContext() const { return bAutoContext; }
+    void SetAutoContext(bool bEnabled);
+
     FString GetCustomDirective() const { return CustomDirective; }
     void SetCustomDirective(const FString& Directive);
 
@@ -88,6 +91,7 @@ private:
     ECortexEffortLevel EffortLevel = ECortexEffortLevel::Default;
     ECortexWorkflowMode WorkflowMode = ECortexWorkflowMode::Direct;
     bool bProjectContext = true;
+    bool bAutoContext = true;
     FString CustomDirective;
     bool bHasPendingChanges = false;
 };

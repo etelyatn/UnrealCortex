@@ -22,6 +22,7 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Selection.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "Context/CortexEditorContextGatherer.h"
 #include "Session/CortexSessionTypes.h"
 #include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
@@ -166,6 +167,16 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                 ClosePopup();
                                 return FReply::Handled();
                             }
+                        }
+                        // Ctrl+Alt+K: attach editor context snapshot as context chip
+                        if (KeyEvent.GetKey() == EKeys::K && KeyEvent.IsControlDown() && KeyEvent.IsAltDown())
+                        {
+                            FCortexContextChip Chip;
+                            Chip.Kind = ECortexContextChipKind::Provider;
+                            Chip.Label = TEXT("editorContext");
+                            Chip.DisplayName = TEXT("Editor Context");
+                            AddContextChip(Chip);
+                            return FReply::Handled();
                         }
                         if (KeyEvent.GetKey() == EKeys::Enter && !KeyEvent.IsShiftDown() && !bAutoCompleteOpen)
                         {
@@ -1057,6 +1068,7 @@ void SCortexInputArea::PopulateProviders()
     ProviderItems.Add(MakeProvider(TEXT("thisAsset"), TEXT("Refer to currently open asset")));
     ProviderItems.Add(MakeProvider(TEXT("selection"), TEXT("Refer to selected graph nodes or actors")));
     ProviderItems.Add(MakeProvider(TEXT("problems"), TEXT("Refer to current problems")));
+    ProviderItems.Add(MakeProvider(TEXT("editorContext"), TEXT("Attach full editor context snapshot")));
 }
 
 void SCortexInputArea::FilterItems(const FString& Query)
@@ -1333,7 +1345,8 @@ void SCortexInputArea::ResolveAndSend(const TArray<FCortexContextChip>& Chips, c
                 const bool bIsProvider =
                     MentionName == TEXT("thisAsset") ||
                     MentionName == TEXT("selection") ||
-                    MentionName == TEXT("problems");
+                    MentionName == TEXT("problems") ||
+                    MentionName == TEXT("editorContext");
 
                 if (bIsProvider)
                 {
@@ -1404,6 +1417,17 @@ void SCortexInputArea::ResolveAndSend(const TArray<FCortexContextChip>& Chips, c
         }
     }
 
+    // Auto-context injection: gather live editor state and prepend
+    if (FCortexFrontendSettings::Get().GetAutoContext())
+    {
+        const FCortexEditorContextSnapshot Snapshot = FCortexEditorContextGatherer::GatherAll();
+        const FString AutoContext = FCortexEditorContextGatherer::FormatAsContextPreamble(Snapshot);
+        if (!AutoContext.IsEmpty())
+        {
+            Preamble = AutoContext + TEXT("\n") + Preamble;
+        }
+    }
+
     OnSendMessage.ExecuteIfBound(Preamble + Message);
 }
 
@@ -1411,22 +1435,7 @@ FString SCortexInputArea::ResolveProviderChip(const FString& Label)
 {
     if (Label == TEXT("thisAsset"))
     {
-        if (!GEditor) return TEXT("");
-        UAssetEditorSubsystem* Subsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
-        if (!Subsystem) return TEXT("");
-        TArray<UObject*> EditedAssets = Subsystem->GetAllEditedAssets();
-        if (EditedAssets.IsEmpty()) return TEXT("");
-
-        FString Result;
-        for (UObject* Asset : EditedAssets)
-        {
-            if (Asset)
-            {
-                Result += FString::Printf(TEXT("- %s (%s)\n"),
-                    *Asset->GetName(), *Asset->GetClass()->GetName());
-            }
-        }
-        return Result;
+        return FCortexEditorContextGatherer::GatherOpenAssetEditors();
     }
     else if (Label == TEXT("selection"))
     {
@@ -1484,21 +1493,12 @@ FString SCortexInputArea::ResolveProviderChip(const FString& Label)
         }
 
         // 2. Fall back to level viewport selected actors
-        USelection* ActorSelection = GEditor->GetSelectedActors();
-        if (!ActorSelection || ActorSelection->Num() == 0) return TEXT("");
-
-        FString Result = FString::Printf(TEXT("Level viewport selection (%d actors):\n"), ActorSelection->Num());
-        for (FSelectionIterator It(*ActorSelection); It; ++It)
-        {
-            if (AActor* Actor = Cast<AActor>(*It))
-            {
-                Result += FString::Printf(TEXT("  - %s (%s) at %s\n"),
-                    *Actor->GetActorLabel(),
-                    *Actor->GetClass()->GetName(),
-                    *Actor->GetActorLocation().ToString());
-            }
-        }
-        return Result;
+        return FCortexEditorContextGatherer::GatherSelectedActors();
+    }
+    else if (Label == TEXT("editorContext"))
+    {
+        const FCortexEditorContextSnapshot Snapshot = FCortexEditorContextGatherer::GatherAll();
+        return FCortexEditorContextGatherer::FormatAsContextPreamble(Snapshot);
     }
     else if (Label == TEXT("problems"))
     {
@@ -1572,6 +1572,16 @@ FReply SCortexInputArea::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent&
             ClosePopup();
             return FReply::Handled();
         }
+    }
+    // Ctrl+Alt+K: attach editor context snapshot as context chip
+    if (InKeyEvent.GetKey() == EKeys::K && InKeyEvent.IsControlDown() && InKeyEvent.IsAltDown())
+    {
+        FCortexContextChip Chip;
+        Chip.Kind = ECortexContextChipKind::Provider;
+        Chip.Label = TEXT("editorContext");
+        Chip.DisplayName = TEXT("Editor Context");
+        AddContextChip(Chip);
+        return FReply::Handled();
     }
     if (InputTextBox.IsValid())
     {

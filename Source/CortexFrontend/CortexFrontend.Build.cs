@@ -36,6 +36,7 @@ public class CortexFrontend : ModuleRules
             "AssetRegistry",
             "MessageLog",
             "Kismet",
+            "ContentBrowser",
         });
     }
 }

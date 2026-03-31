@@ -82,6 +82,15 @@ void FCortexFrontendSettings::SetProjectContext(bool bEnabled)
     Save();
 }
 
+void FCortexFrontendSettings::SetAutoContext(bool bEnabled)
+{
+    check(IsInGameThread());
+    if (bAutoContext == bEnabled) return;
+    bAutoContext = bEnabled;
+    MarkDirty();
+    Save();
+}
+
 void FCortexFrontendSettings::SetCustomDirective(const FString& Directive)
 {
     check(IsInGameThread());
@@ -214,6 +223,12 @@ void FCortexFrontendSettings::Load()
         bProjectContext = bStoredProjectContext;
     }
 
+    bool bStoredAutoContext = true;
+    if (JsonObject->TryGetBoolField(TEXT("auto_context"), bStoredAutoContext))
+    {
+        bAutoContext = bStoredAutoContext;
+    }
+
     FString StoredDirective;
     if (JsonObject->TryGetStringField(TEXT("custom_directive"), StoredDirective))
     {
@@ -248,6 +263,7 @@ void FCortexFrontendSettings::Save()
     JsonObject->SetStringField(TEXT("workflow_mode"),
         WorkflowMode == ECortexWorkflowMode::Thorough ? TEXT("thorough") : TEXT("direct"));
     JsonObject->SetBoolField(TEXT("project_context"), bProjectContext);
+    JsonObject->SetBoolField(TEXT("auto_context"), bAutoContext);
     JsonObject->SetStringField(TEXT("custom_directive"), CustomDirective);
 
     if (bHasCustomModels)
