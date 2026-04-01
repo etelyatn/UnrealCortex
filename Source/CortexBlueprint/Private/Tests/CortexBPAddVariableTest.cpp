@@ -123,6 +123,11 @@ bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 					if (VarName == TEXT("OnHealthChanged"))
 					{
 						bFoundDispatcher = true;
+
+						// Verify FriendlyTypeName round-trip: get_info must report "dispatcher", not raw "PC_MCDelegate"
+						FString DispatcherType;
+						VarObj->TryGetStringField(TEXT("type"), DispatcherType);
+						TestEqual(TEXT("OnHealthChanged type should be dispatcher in get_info"), DispatcherType, TEXT("dispatcher"));
 					}
 				}
 
@@ -130,6 +135,21 @@ bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 				TestTrue(TEXT("bIsAlive variable should exist"), bFoundIsAlive);
 				TestTrue(TEXT("OnHealthChanged dispatcher should exist"), bFoundDispatcher);
 			}
+		}
+	}
+
+	// Verify: DelegateSignatureGraph was created for the dispatcher variable
+	{
+		UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
+		if (BP != nullptr)
+		{
+			const bool bHasSignatureGraph = BP->DelegateSignatureGraphs.ContainsByPredicate(
+				[](const UEdGraph* Graph)
+				{
+					return Graph && Graph->GetFName() == FName(TEXT("OnHealthChanged"));
+				}
+			);
+			TestTrue(TEXT("OnHealthChanged should have a DelegateSignatureGraph"), bHasSignatureGraph);
 		}
 	}
 

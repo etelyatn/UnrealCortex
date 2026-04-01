@@ -103,12 +103,39 @@ FCortexCommandResult FCortexBPStructureOps::AddVariable(const TSharedPtr<FJsonOb
 		}
 	}
 
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	// For event dispatchers, create the signature graph so parameters can be added later
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_MCDelegate)
+	{
+		const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
+		UEdGraph* SignatureGraph = FBlueprintEditorUtils::CreateNewGraph(
+			Blueprint, FName(*VarName), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+
+		if (SignatureGraph == nullptr)
+		{
+			FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, FName(*VarName));
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidValue,
+				FString::Printf(TEXT("Failed to create delegate signature graph for '%s'"), *VarName)
+			);
+		}
+
+		SignatureGraph->bEditable = false;
+		K2Schema->CreateDefaultNodesForGraph(*SignatureGraph);
+		K2Schema->CreateFunctionGraphTerminators(*SignatureGraph, (UClass*)nullptr);
+		K2Schema->AddExtraFunctionFlags(SignatureGraph, FUNC_BlueprintCallable | FUNC_BlueprintEvent | FUNC_Public);
+		K2Schema->MarkFunctionEntryAsEditable(SignatureGraph, true);
+		Blueprint->DelegateSignatureGraphs.Add(SignatureGraph);
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+	}
+	else
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetBoolField(TEXT("added"), true);
 	Data->SetStringField(TEXT("name"), VarName);
-	Data->SetStringField(TEXT("type"), VarType);
+	Data->SetStringField(TEXT("type"), FriendlyTypeName(PinType));
 	if (!DefaultValue.IsEmpty())
 	{
 		Data->SetStringField(TEXT("default_value"), DefaultValue);

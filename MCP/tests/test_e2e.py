@@ -1220,6 +1220,21 @@ _BPI_MIGRATION_TEST = f"{_MIGRATION_PATH}/BPI_MigrationTest"
 class TestMigrationAssets:
     """Tests for analyze_for_migration against purpose-built migration fixture BPs."""
 
+    def test_aaa_migration_assets_all_exist(self, tcp_connection):
+        """Smoke guard — runs first so missing fixtures produce a clear error, not cryptic assertion failures."""
+        paths = [
+            _BPI_MIGRATION_TEST,
+            _BP_TIMELINE_TEST,
+            _BP_DISPATCHER_TEST,
+            _BP_LATENT_TEST,
+            _BP_INTERFACE_TEST,
+            _BP_COMPONENT_MIGRATE,
+            _BP_FUNC_LIB_MIGRATE,
+        ]
+        for path in paths:
+            # send_command raises RuntimeError on failure — no need for success assertion
+            tcp_connection.send_command("blueprint.get_info", {"asset_path": path})
+
     def test_timeline_bp_detects_timeline(self, tcp_connection):
         resp = tcp_connection.send_command(
             "blueprint.analyze_for_migration",
@@ -1238,10 +1253,30 @@ class TestMigrationAssets:
             {"asset_path": _BP_DISPATCHER_TEST},
         )
         data = resp["data"]
-        assert len(data["event_dispatchers"]) >= 1, "BP_DispatcherTest should have OnHealthChanged dispatcher"
-        dispatcher = data["event_dispatchers"][0]
-        assert dispatcher["name"] == "OnHealthChanged"
-        assert "params" in dispatcher
+        dispatchers = data["event_dispatchers"]
+        assert len(dispatchers) >= 1, "BP_DispatcherTest should have OnHealthChanged dispatcher"
+
+        # Name-based lookup — robust to ordering changes or future additional dispatchers
+        dispatcher = next((d for d in dispatchers if d.get("name") == "OnHealthChanged"), None)
+        assert dispatcher is not None, f"OnHealthChanged not found in: {[d.get('name') for d in dispatchers]}"
+        assert isinstance(dispatcher["params"], list)
+
+    def test_dispatcher_variables_consistent_with_event_dispatchers(self, tcp_connection):
+        """Dispatcher names in event_dispatchers must also appear in variables with type='dispatcher'."""
+        resp = tcp_connection.send_command(
+            "blueprint.analyze_for_migration",
+            {"asset_path": _BP_DISPATCHER_TEST},
+        )
+        data = resp["data"]
+        dispatcher_names = {d["name"] for d in data["event_dispatchers"] if "name" in d}
+        variable_dispatcher_names = {
+            v["name"] for v in data["variables"]
+            if v.get("type") == "dispatcher"
+        }
+        assert dispatcher_names == variable_dispatcher_names, (
+            f"event_dispatchers names {dispatcher_names} should match "
+            f"variables with type='dispatcher' {variable_dispatcher_names}"
+        )
 
     def test_latent_bp_detects_latent_nodes(self, tcp_connection):
         resp = tcp_connection.send_command(
@@ -1251,9 +1286,10 @@ class TestMigrationAssets:
         data = resp["data"]
         assert len(data["latent_nodes"]) >= 1, "BP_LatentTest should have at least one latent node (Delay)"
         latent = data["latent_nodes"][0]
-        assert "duration_pin_value" in latent
         assert "is_sequential" in latent
         assert "sequence_length" in latent
+        # duration_pin_value is only emitted when non-empty; BP_LatentTest sets Duration=2.0
+        assert "duration_pin_value" in latent, "BP_LatentTest Delay node should have a duration default value"
 
     def test_interface_bp_detects_implemented_interfaces(self, tcp_connection):
         resp = tcp_connection.send_command(
@@ -1282,10 +1318,11 @@ class TestMigrationAssets:
         for var in variables:
             assert "is_replicated" in var
             assert "container_type" in var
+            assert "usage_count" in var
 
     def test_function_library_bp_functions(self, tcp_connection):
         resp = tcp_connection.send_command(
-            "blueprint.get_info",
+            "blueprint.analyze_for_migration",
             {"asset_path": _BP_FUNC_LIB_MIGRATE},
         )
         data = resp["data"]
@@ -1293,17 +1330,6 @@ class TestMigrationAssets:
         assert "CalculateValue" in func_names
         assert "IsValidTarget" in func_names
         assert "FormatLabel" in func_names
-
-    def test_migration_assets_all_exist(self, tcp_connection):
-        paths = [
-            _BPI_MIGRATION_TEST,
-            _BP_TIMELINE_TEST,
-            _BP_DISPATCHER_TEST,
-            _BP_LATENT_TEST,
-            _BP_INTERFACE_TEST,
-            _BP_COMPONENT_MIGRATE,
-            _BP_FUNC_LIB_MIGRATE,
-        ]
-        for path in paths:
-            resp = tcp_connection.send_command("blueprint.get_info", {"asset_path": path})
-            assert resp.get("success", False), f"Asset not found: {path}"
+        metrics = data["complexity_metrics"]
+        assert metrics["total_nodes"] >= 0
+        assert metrics["migration_confidence"] in {"high", "medium", "low"}
