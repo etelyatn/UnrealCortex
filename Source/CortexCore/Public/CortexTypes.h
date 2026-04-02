@@ -79,6 +79,10 @@ namespace CortexErrorCodes
 	static const FString PropertyNotEditable = TEXT("PROPERTY_NOT_EDITABLE");
 	static const FString TypeMismatch = TEXT("TYPE_MISMATCH");
 	static const FString SublevelNotFound = TEXT("SUBLEVEL_NOT_FOUND");
+	static const FString LevelInUse = TEXT("LEVEL_IN_USE");
+	static const FString UnsavedChanges = TEXT("UNSAVED_CHANGES");
+	static const FString EditorBusy = TEXT("EDITOR_BUSY");
+	static const FString SourceControlError = TEXT("SOURCE_CONTROL_ERROR");
 	static const FString DataLayerNotFound = TEXT("DATA_LAYER_NOT_FOUND");
 	static const FString SpawnFailed = TEXT("SPAWN_FAILED");
 	// Editor / PIE errors

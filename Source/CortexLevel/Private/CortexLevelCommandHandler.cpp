@@ -6,6 +6,7 @@
 #include "Operations/CortexLevelDiscoveryOps.h"
 #include "Operations/CortexLevelOrganizationOps.h"
 #include "Operations/CortexLevelQueryOps.h"
+#include "Operations/CortexLevelLifecycleOps.h"
 #include "Operations/CortexLevelStreamingOps.h"
 #include "Operations/CortexLevelTransformOps.h"
 
@@ -160,6 +161,30 @@ FCortexCommandResult FCortexLevelCommandHandler::Execute(
     {
         return FCortexLevelStreamingOps::SaveAll(Params);
     }
+    if (Command == TEXT("list_templates"))
+    {
+        return FCortexLevelLifecycleOps::ListTemplates(Params);
+    }
+    if (Command == TEXT("create_level"))
+    {
+        return FCortexLevelLifecycleOps::CreateLevel(Params);
+    }
+    if (Command == TEXT("open_level"))
+    {
+        return FCortexLevelLifecycleOps::OpenLevel(Params);
+    }
+    if (Command == TEXT("duplicate_level"))
+    {
+        return FCortexLevelLifecycleOps::DuplicateLevel(Params);
+    }
+    if (Command == TEXT("rename_level"))
+    {
+        return FCortexLevelLifecycleOps::RenameLevel(Params);
+    }
+    if (Command == TEXT("delete_level"))
+    {
+        return FCortexLevelLifecycleOps::DeleteLevel(Params);
+    }
 
     return FCortexCommandRouter::Error(
         CortexErrorCodes::UnknownCommand,
@@ -275,5 +300,23 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
             .Required(TEXT("data_layer"), TEXT("string"), TEXT("Target data layer")),
         FCortexCommandInfo{ TEXT("save_level"), TEXT("Save current level without prompt") },
         FCortexCommandInfo{ TEXT("save_all"), TEXT("Save all dirty map/content packages without prompt") },
+        FCortexCommandInfo{ TEXT("list_templates"), TEXT("List available level templates") },
+        FCortexCommandInfo{ TEXT("create_level"), TEXT("Create a new level asset") }
+            .Required(TEXT("path"), TEXT("string"), TEXT("Content path for the new level"))
+            .Optional(TEXT("template"), TEXT("string"), TEXT("Template name or path"))
+            .Optional(TEXT("open"), TEXT("boolean"), TEXT("Open the level after creation")),
+        FCortexCommandInfo{ TEXT("open_level"), TEXT("Open an existing level in the editor") }
+            .Required(TEXT("path"), TEXT("string"), TEXT("Content path of the level"))
+            .Optional(TEXT("save_current"), TEXT("boolean"), TEXT("Save current level before switching"))
+            .Optional(TEXT("force"), TEXT("boolean"), TEXT("Discard unsaved changes and open")),
+        FCortexCommandInfo{ TEXT("duplicate_level"), TEXT("Duplicate an existing level asset") }
+            .Required(TEXT("source_path"), TEXT("string"), TEXT("Source level content path"))
+            .Required(TEXT("dest_path"), TEXT("string"), TEXT("Destination content path")),
+        FCortexCommandInfo{ TEXT("rename_level"), TEXT("Rename or move a level asset") }
+            .Required(TEXT("path"), TEXT("string"), TEXT("Current content path"))
+            .Required(TEXT("new_path"), TEXT("string"), TEXT("New content path")),
+        FCortexCommandInfo{ TEXT("delete_level"), TEXT("Delete a level asset") }
+            .Required(TEXT("path"), TEXT("string"), TEXT("Content path of the level"))
+            .Optional(TEXT("force"), TEXT("boolean"), TEXT("Delete even if referenced by other assets")),
     };
 }
