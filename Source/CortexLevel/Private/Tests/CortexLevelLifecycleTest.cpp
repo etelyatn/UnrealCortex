@@ -35,3 +35,45 @@ bool FCortexLevelCreateLevelInvalidPathTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelListTemplatesTest,
+	"Cortex.Level.Lifecycle.ListTemplates",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelListTemplatesTest::RunTest(const FString& Parameters)
+{
+	if (!GEditor)
+	{
+		AddInfo(TEXT("No editor - skipping"));
+		return true;
+	}
+
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+	FCortexCommandResult Result = Router.Execute(TEXT("level.list_templates"), MakeShared<FJsonObject>());
+	TestTrue(TEXT("list_templates should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Templates = nullptr;
+		TestTrue(TEXT("Should have templates array"), Result.Data->TryGetArrayField(TEXT("templates"), Templates));
+
+		if (Templates)
+		{
+			TestTrue(TEXT("Should have at least one template"), Templates->Num() > 0);
+
+			for (const TSharedPtr<FJsonValue>& Value : *Templates)
+			{
+				const TSharedPtr<FJsonObject>* TemplateObj = nullptr;
+				if (Value->TryGetObject(TemplateObj) && TemplateObj && TemplateObj->IsValid())
+				{
+					TestTrue(TEXT("Template should have name"), (*TemplateObj)->HasField(TEXT("name")));
+					TestTrue(TEXT("Template should have path"), (*TemplateObj)->HasField(TEXT("path")));
+				}
+			}
+		}
+	}
+
+	return true;
+}

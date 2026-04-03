@@ -3,13 +3,75 @@
 #include "CortexTypes.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Editor.h"
+#include "Editor/TemplateMapInfo.h"
+#include "Editor/UnrealEdEngine.h"
 #include "Engine/LevelStreaming.h"
 #include "FileHelpers.h"
 #include "Misc/PackageName.h"
+#include "UnrealEdGlobals.h"
 
 FCortexCommandResult FCortexLevelLifecycleOps::ListTemplates(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Not implemented"));
+	TArray<TSharedPtr<FJsonValue>> TemplateArray;
+
+	// Always include the built-in empty level option first
+	{
+		TSharedPtr<FJsonObject> EmptyTemplate = MakeShared<FJsonObject>();
+		EmptyTemplate->SetStringField(TEXT("name"), TEXT("Empty Level"));
+		EmptyTemplate->SetStringField(TEXT("path"), TEXT(""));
+		TemplateArray.Add(MakeShared<FJsonValueObject>(EmptyTemplate));
+	}
+
+	if (GUnrealEd)
+	{
+		const TArray<FTemplateMapInfo>& TemplateMapInfos = GUnrealEd->GetTemplateMapInfos();
+		for (const FTemplateMapInfo& Info : TemplateMapInfos)
+		{
+			TSharedPtr<FJsonObject> TemplateJson = MakeShared<FJsonObject>();
+
+			const FString MapPath = Info.Map.GetAssetPathString();
+			const FString DisplayName = Info.DisplayName.IsEmpty()
+				? FPackageName::GetShortName(MapPath)
+				: Info.DisplayName.ToString();
+
+			TemplateJson->SetStringField(TEXT("name"), DisplayName);
+			TemplateJson->SetStringField(TEXT("path"), MapPath);
+
+			if (!Info.Category.IsEmpty())
+			{
+				TemplateJson->SetStringField(TEXT("category"), Info.Category);
+			}
+
+			TemplateArray.Add(MakeShared<FJsonValueObject>(TemplateJson));
+		}
+	}
+	else
+	{
+		// Fallback: scan engine templates via AssetRegistry
+		const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		const IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+		FARFilter Filter;
+		Filter.PackagePaths.Add(TEXT("/Engine/Maps/Templates"));
+		Filter.bRecursivePaths = true;
+		Filter.ClassPaths.Add(UWorld::StaticClass()->GetClassPathName());
+
+		TArray<FAssetData> Assets;
+		AssetRegistry.GetAssets(Filter, Assets);
+
+		for (const FAssetData& Asset : Assets)
+		{
+			TSharedPtr<FJsonObject> TemplateJson = MakeShared<FJsonObject>();
+			TemplateJson->SetStringField(TEXT("name"), Asset.AssetName.ToString());
+			TemplateJson->SetStringField(TEXT("path"), Asset.PackageName.ToString());
+			TemplateArray.Add(MakeShared<FJsonValueObject>(TemplateJson));
+		}
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetArrayField(TEXT("templates"), TemplateArray);
+	Data->SetNumberField(TEXT("count"), TemplateArray.Num());
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexLevelLifecycleOps::CreateLevel(const TSharedPtr<FJsonObject>& Params)
