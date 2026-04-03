@@ -9,7 +9,9 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "FileHelpers.h"
+#include "ISourceControlModule.h"
 #include "Misc/PackageName.h"
+#include "Subsystems/EditorAssetSubsystem.h"
 #include "UObject/SavePackage.h"
 #include "UnrealEdGlobals.h"
 
@@ -428,7 +430,75 @@ FCortexCommandResult FCortexLevelLifecycleOps::DuplicateLevel(const TSharedPtr<F
 
 FCortexCommandResult FCortexLevelLifecycleOps::RenameLevel(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Not implemented"));
+	if (!Params.IsValid())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing params"));
+	}
+
+	FString Path;
+	if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: path"));
+	}
+
+	FString NewPath;
+	if (!Params->TryGetStringField(TEXT("new_path"), NewPath) || NewPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: new_path"));
+	}
+
+	if (!IsValidContentPath(Path) || !IsValidContentPath(NewPath))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Invalid content path"));
+	}
+
+	if (!DoesLevelExist(Path))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Level not found: %s"), *Path));
+	}
+
+	if (DoesLevelExist(NewPath))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::AssetAlreadyExists,
+			FString::Printf(TEXT("Destination already exists: %s"), *NewPath));
+	}
+
+	if (IsLevelCurrentlyOpen(Path))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::LevelInUse,
+			FString::Printf(TEXT("Cannot rename currently open or loaded level: %s"), *Path));
+	}
+
+	if (!GEditor)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotReady, TEXT("GEditor unavailable"));
+	}
+
+	UEditorAssetSubsystem* AssetSubsystem = GEditor->GetEditorSubsystem<UEditorAssetSubsystem>();
+	if (!AssetSubsystem)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotReady, TEXT("EditorAssetSubsystem unavailable"));
+	}
+
+	const bool bRenamed = AssetSubsystem->RenameAsset(Path, NewPath);
+	if (!bRenamed)
+	{
+		ISourceControlModule& SCCModule = ISourceControlModule::Get();
+		if (SCCModule.IsEnabled())
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::SourceControlError,
+				FString::Printf(TEXT("Failed to rename level. Source control may be blocking: %s"), *Path));
+		}
+
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Failed to rename level: %s"), *Path));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("old_path"), Path);
+	Data->SetStringField(TEXT("new_path"), NewPath);
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexLevelLifecycleOps::DeleteLevel(const TSharedPtr<FJsonObject>& Params)

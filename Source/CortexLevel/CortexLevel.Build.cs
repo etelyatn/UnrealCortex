@@ -21,6 +21,7 @@ public class CortexLevel : ModuleRules
             "UnrealEd",
             "LevelEditor",
             "DataLayerEditor",
+            "SourceControl",
         });
     }
 }

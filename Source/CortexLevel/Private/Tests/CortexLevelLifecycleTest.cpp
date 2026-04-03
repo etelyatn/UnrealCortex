@@ -289,3 +289,94 @@ bool FCortexLevelDuplicateLevelTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelRenameLevelTest,
+	"Cortex.Level.Lifecycle.RenameLevel",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelRenameLevelTest::RunTest(const FString& Parameters)
+{
+	if (!GEditor)
+	{
+		AddInfo(TEXT("No editor - skipping"));
+		return true;
+	}
+
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+
+	const FString OriginalPath = TEXT("/Game/Maps/_CortexTest/TestRenameOriginal");
+	const FString NewPath = TEXT("/Game/Maps/_CortexTest/TestRenameNew");
+
+	// Create level to rename
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("path"), OriginalPath);
+	FCortexCommandResult CreateResult = Router.Execute(TEXT("level.create_level"), CreateParams);
+	if (!CreateResult.bSuccess)
+	{
+		AddInfo(TEXT("Could not create test level - skipping"));
+		return true;
+	}
+
+	// Rename it
+	TSharedPtr<FJsonObject> RenameParams = MakeShared<FJsonObject>();
+	RenameParams->SetStringField(TEXT("path"), OriginalPath);
+	RenameParams->SetStringField(TEXT("new_path"), NewPath);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("level.rename_level"), RenameParams);
+	TestTrue(TEXT("rename_level should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		TestEqual(TEXT("old_path should match"), Result.Data->GetStringField(TEXT("old_path")), OriginalPath);
+		TestEqual(TEXT("new_path should match"), Result.Data->GetStringField(TEXT("new_path")), NewPath);
+	}
+
+	// Cleanup
+	const FString NewFile = FPackageName::LongPackageNameToFilename(NewPath, FPackageName::GetMapPackageExtension());
+	const FString OrigFile = FPackageName::LongPackageNameToFilename(OriginalPath, FPackageName::GetMapPackageExtension());
+	IFileManager::Get().Delete(*NewFile, false, true);
+	IFileManager::Get().Delete(*OrigFile, false, true);
+	const FString TestDir = FPackageName::LongPackageNameToFilename(TEXT("/Game/Maps/_CortexTest/"));
+	IFileManager::Get().DeleteDirectory(*TestDir, false, true);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelRenameLevelInUseTest,
+	"Cortex.Level.Lifecycle.RenameLevel.InUse",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelRenameLevelInUseTest::RunTest(const FString& Parameters)
+{
+	if (!GEditor)
+	{
+		AddInfo(TEXT("No editor - skipping"));
+		return true;
+	}
+
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+
+	// Try to rename the currently open level
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	if (!World)
+	{
+		AddInfo(TEXT("No editor world - skipping"));
+		return true;
+	}
+
+	const FString CurrentPath = World->GetOutermost()->GetName();
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("path"), CurrentPath);
+	Params->SetStringField(TEXT("new_path"), CurrentPath + TEXT("_Renamed"));
+
+	FCortexCommandResult Result = Router.Execute(TEXT("level.rename_level"), Params);
+	TestFalse(TEXT("Should fail for currently open level"), Result.bSuccess);
+	TestEqual(TEXT("Error should be LEVEL_IN_USE"), Result.ErrorCode, TEXT("LEVEL_IN_USE"));
+
+	return true;
+}
