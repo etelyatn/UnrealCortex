@@ -11,6 +11,7 @@
 #include "FileHelpers.h"
 #include "ISourceControlModule.h"
 #include "Misc/PackageName.h"
+#include "ObjectTools.h"
 #include "Subsystems/EditorAssetSubsystem.h"
 #include "UObject/SavePackage.h"
 #include "UnrealEdGlobals.h"
@@ -503,7 +504,119 @@ FCortexCommandResult FCortexLevelLifecycleOps::RenameLevel(const TSharedPtr<FJso
 
 FCortexCommandResult FCortexLevelLifecycleOps::DeleteLevel(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Not implemented"));
+	if (!Params.IsValid())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing params"));
+	}
+
+	FString Path;
+	if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: path"));
+	}
+
+	if (!IsValidContentPath(Path))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
+			FString::Printf(TEXT("Invalid content path: %s"), *Path));
+	}
+
+	if (!DoesLevelExist(Path))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Level not found: %s"), *Path));
+	}
+
+	if (IsLevelCurrentlyOpen(Path))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::LevelInUse,
+			FString::Printf(TEXT("Cannot delete currently open or loaded level: %s"), *Path));
+	}
+
+	bool bForce = false;
+	Params->TryGetBoolField(TEXT("force"), bForce);
+
+	if (!GEditor)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotReady, TEXT("GEditor unavailable"));
+	}
+
+	// Check referencers unless force=true
+	if (!bForce)
+	{
+		const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		const IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+		TArray<FAssetIdentifier> Referencers;
+		AssetRegistry.GetReferencers(FAssetIdentifier(FName(*Path)), Referencers);
+
+		if (Referencers.Num() > 0)
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::HasReferences,
+				FString::Printf(TEXT("Level has %d referencers. Use force=true to delete anyway."), Referencers.Num()));
+		}
+	}
+
+	// Guard LoadPackage with existence check to prevent SkipPackage warnings
+	const FString PkgName = FPackageName::ObjectPathToPackageName(Path);
+	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Package not found on disk: %s"), *Path));
+	}
+
+	UPackage* Package = FindPackage(nullptr, *PkgName);
+	if (!Package)
+	{
+		Package = LoadPackage(nullptr, *PkgName, LOAD_None);
+	}
+
+	if (!Package)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Failed to load package for deletion: %s"), *Path));
+	}
+
+	UObject* LevelAsset = FindObjectFast<UWorld>(Package, FName(*FPackageName::GetShortName(Path)));
+	if (!LevelAsset)
+	{
+		// Try finding any UWorld in the package
+		ForEachObjectWithPackage(Package, [&LevelAsset](UObject* Obj)
+		{
+			if (!LevelAsset && Obj && Obj->IsA<UWorld>())
+			{
+				LevelAsset = Obj;
+			}
+			return true;
+		}, false);
+	}
+
+	if (!LevelAsset)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Failed to find UWorld object in package: %s"), *Path));
+	}
+
+	TArray<UObject*> ObjectsToDelete;
+	ObjectsToDelete.Add(LevelAsset);
+	const int32 DeletedCount = ObjectTools::ForceDeleteObjects(ObjectsToDelete, false);
+
+	if (DeletedCount == 0)
+	{
+		ISourceControlModule& SCCModule = ISourceControlModule::Get();
+		if (SCCModule.IsEnabled())
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::SourceControlError,
+				FString::Printf(TEXT("Failed to delete level. Source control may be blocking: %s"), *Path));
+		}
+
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Failed to delete level: %s"), *Path));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("deleted_path"), Path);
+	return FCortexCommandRouter::Success(Data);
 }
 
 bool FCortexLevelLifecycleOps::IsLevelCurrentlyOpen(const FString& ContentPath)

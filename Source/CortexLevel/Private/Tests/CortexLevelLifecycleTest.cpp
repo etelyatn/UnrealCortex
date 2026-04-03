@@ -380,3 +380,90 @@ bool FCortexLevelRenameLevelInUseTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelDeleteLevelTest,
+	"Cortex.Level.Lifecycle.DeleteLevel",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelDeleteLevelTest::RunTest(const FString& Parameters)
+{
+	if (!GEditor)
+	{
+		AddInfo(TEXT("No editor - skipping"));
+		return true;
+	}
+
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+
+	// Create a level to delete
+	const FString TestPath = TEXT("/Game/Maps/_CortexTest/TestDeleteLevel");
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("path"), TestPath);
+	FCortexCommandResult CreateResult = Router.Execute(TEXT("level.create_level"), CreateParams);
+	if (!CreateResult.bSuccess)
+	{
+		AddInfo(TEXT("Could not create test level - skipping"));
+		return true;
+	}
+
+	// Delete it
+	TSharedPtr<FJsonObject> DeleteParams = MakeShared<FJsonObject>();
+	DeleteParams->SetStringField(TEXT("path"), TestPath);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("level.delete_level"), DeleteParams);
+	TestTrue(TEXT("delete_level should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		TestEqual(TEXT("deleted_path should match"), Result.Data->GetStringField(TEXT("deleted_path")), TestPath);
+	}
+
+	// Verify it's actually gone
+	const FString FilePath = FPackageName::LongPackageNameToFilename(TestPath, FPackageName::GetMapPackageExtension());
+	TestFalse(TEXT("File should be deleted"), IFileManager::Get().FileExists(*FilePath));
+
+	// Cleanup directory
+	const FString TestDir = FPackageName::LongPackageNameToFilename(TEXT("/Game/Maps/_CortexTest/"));
+	IFileManager::Get().DeleteDirectory(*TestDir, false, true);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelDeleteLevelInUseTest,
+	"Cortex.Level.Lifecycle.DeleteLevel.InUse",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelDeleteLevelInUseTest::RunTest(const FString& Parameters)
+{
+	if (!GEditor)
+	{
+		AddInfo(TEXT("No editor - skipping"));
+		return true;
+	}
+
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+
+	// Try to delete the currently open level
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	if (!World)
+	{
+		AddInfo(TEXT("No editor world - skipping"));
+		return true;
+	}
+
+	const FString CurrentPath = World->GetOutermost()->GetName();
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("path"), CurrentPath);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("level.delete_level"), Params);
+	TestFalse(TEXT("Should fail for currently open level"), Result.bSuccess);
+	TestEqual(TEXT("Error should be LEVEL_IN_USE"), Result.ErrorCode, TEXT("LEVEL_IN_USE"));
+
+	return true;
+}
