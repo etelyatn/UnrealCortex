@@ -6,8 +6,10 @@
 #include "Editor/TemplateMapInfo.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Engine/LevelStreaming.h"
+#include "Engine/World.h"
 #include "FileHelpers.h"
 #include "Misc/PackageName.h"
+#include "UObject/SavePackage.h"
 #include "UnrealEdGlobals.h"
 
 FCortexCommandResult FCortexLevelLifecycleOps::ListTemplates(const TSharedPtr<FJsonObject>& Params)
@@ -93,7 +95,168 @@ FCortexCommandResult FCortexLevelLifecycleOps::CreateLevel(const TSharedPtr<FJso
 			FString::Printf(TEXT("Invalid content path: %s. Must start with /Game/ or /Plugins/"), *Path));
 	}
 
-	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Not implemented"));
+	if (DoesLevelExist(Path))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::AssetAlreadyExists,
+			FString::Printf(TEXT("Level already exists at: %s"), *Path));
+	}
+
+	FString TemplateName;
+	Params->TryGetStringField(TEXT("template"), TemplateName);
+
+	bool bOpen = false;
+	Params->TryGetBoolField(TEXT("open"), bOpen);
+
+	if (!GEditor)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotReady, TEXT("GEditor unavailable"));
+	}
+
+	if (bOpen && GEditor->IsPlaySessionInProgress())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorBusy, TEXT("Cannot open level while PIE is active"));
+	}
+
+	// Resolve template path if provided
+	FString TemplatePath;
+	if (!TemplateName.IsEmpty())
+	{
+		if (TemplateName.StartsWith(TEXT("/")))
+		{
+			TemplatePath = TemplateName;
+		}
+		else if (GUnrealEd)
+		{
+			const TArray<FTemplateMapInfo>& TemplateInfos = GUnrealEd->GetTemplateMapInfos();
+			for (const FTemplateMapInfo& Info : TemplateInfos)
+			{
+				const FString MapPath = Info.Map.GetAssetPathString();
+				const FString ShortName = FPackageName::GetShortName(MapPath);
+				if (ShortName.Equals(TemplateName, ESearchCase::IgnoreCase) ||
+					MapPath.Equals(TemplateName, ESearchCase::IgnoreCase) ||
+					Info.DisplayName.ToString().Equals(TemplateName, ESearchCase::IgnoreCase))
+				{
+					TemplatePath = MapPath;
+					break;
+				}
+			}
+
+			if (TemplatePath.IsEmpty())
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
+					FString::Printf(TEXT("Template not found: %s. Use list_templates to see available templates."), *TemplateName));
+			}
+		}
+	}
+
+	bool bIsWorldPartition = false;
+
+	if (bOpen)
+	{
+		if (IsCurrentLevelDirty())
+		{
+			UEditorLoadingAndSavingUtils::SaveDirtyPackages(true, true);
+		}
+
+		UWorld* NewWorld = nullptr;
+		if (TemplatePath.IsEmpty())
+		{
+			NewWorld = UEditorLoadingAndSavingUtils::NewBlankMap(false);
+		}
+		else
+		{
+			NewWorld = UEditorLoadingAndSavingUtils::NewMapFromTemplate(TemplatePath, false);
+		}
+
+		if (!NewWorld)
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Failed to create level"));
+		}
+
+		const bool bSaved = UEditorLoadingAndSavingUtils::SaveMap(NewWorld, Path);
+		if (!bSaved)
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::SerializationError,
+				FString::Printf(TEXT("Created level but failed to save to: %s"), *Path));
+		}
+
+		bIsWorldPartition = NewWorld->IsPartitionedWorld();
+	}
+	else
+	{
+		if (!TemplatePath.IsEmpty())
+		{
+			// Template + open=false: load template, save to dest, restore original
+			UWorld* CurrentWorld = GEditor->GetEditorWorldContext().World();
+			const FString CurrentLevelPath = CurrentWorld ? CurrentWorld->GetOutermost()->GetName() : TEXT("");
+
+			UWorld* TemplateWorld = UEditorLoadingAndSavingUtils::NewMapFromTemplate(TemplatePath, false);
+			if (!TemplateWorld)
+			{
+				// Restore original level if template load failed
+				if (!CurrentLevelPath.IsEmpty())
+				{
+					const FString CurrentFilePath = FPackageName::LongPackageNameToFilename(CurrentLevelPath, FPackageName::GetMapPackageExtension());
+					UEditorLoadingAndSavingUtils::LoadMap(CurrentFilePath);
+				}
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Failed to create level from template"));
+			}
+
+			bIsWorldPartition = TemplateWorld->IsPartitionedWorld();
+			const bool bSaved = UEditorLoadingAndSavingUtils::SaveMap(TemplateWorld, Path);
+
+			if (!CurrentLevelPath.IsEmpty())
+			{
+				const FString CurrentFilePath = FPackageName::LongPackageNameToFilename(CurrentLevelPath, FPackageName::GetMapPackageExtension());
+				UEditorLoadingAndSavingUtils::LoadMap(CurrentFilePath);
+			}
+
+			if (!bSaved)
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::SerializationError,
+					FString::Printf(TEXT("Failed to save level to: %s"), *Path));
+			}
+		}
+		else
+		{
+			// Create blank world without opening it
+			const FString PackageName = Path;
+			UPackage* Package = CreatePackage(*PackageName);
+			if (!Package)
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Failed to create package"));
+			}
+
+			UWorld* NewWorld = UWorld::CreateWorld(EWorldType::Inactive, false, FName(*FPackageName::GetShortName(Path)), Package);
+			if (!NewWorld)
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Failed to create world"));
+			}
+
+			bIsWorldPartition = NewWorld->IsPartitionedWorld();
+
+			// RF_Standalone must be set on the asset object itself before saving
+			NewWorld->SetFlags(RF_Standalone);
+
+			const FString FilePath = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetMapPackageExtension());
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Standalone;
+			const bool bSaved = UPackage::SavePackage(Package, NewWorld, *FilePath, SaveArgs);
+
+			NewWorld->DestroyWorld(false);
+
+			if (!bSaved)
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::SerializationError,
+					FString::Printf(TEXT("Failed to save level to: %s"), *Path));
+			}
+		}
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("path"), Path);
+	Data->SetBoolField(TEXT("world_partition"), bIsWorldPartition);
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexLevelLifecycleOps::OpenLevel(const TSharedPtr<FJsonObject>& Params)
