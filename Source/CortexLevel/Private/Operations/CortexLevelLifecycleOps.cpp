@@ -343,7 +343,87 @@ FCortexCommandResult FCortexLevelLifecycleOps::OpenLevel(const TSharedPtr<FJsonO
 
 FCortexCommandResult FCortexLevelLifecycleOps::DuplicateLevel(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Not implemented"));
+	if (!Params.IsValid())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing params"));
+	}
+
+	FString SourcePath;
+	if (!Params->TryGetStringField(TEXT("source_path"), SourcePath) || SourcePath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: source_path"));
+	}
+
+	FString DestPath;
+	if (!Params->TryGetStringField(TEXT("dest_path"), DestPath) || DestPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: dest_path"));
+	}
+
+	if (!IsValidContentPath(SourcePath))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
+			FString::Printf(TEXT("Invalid source path: %s"), *SourcePath));
+	}
+
+	if (!IsValidContentPath(DestPath))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
+			FString::Printf(TEXT("Invalid dest path: %s"), *DestPath));
+	}
+
+	if (!DoesLevelExist(SourcePath))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Source level not found: %s"), *SourcePath));
+	}
+
+	if (DoesLevelExist(DestPath))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::AssetAlreadyExists,
+			FString::Printf(TEXT("Destination already exists: %s"), *DestPath));
+	}
+
+	if (!GEditor)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotReady, TEXT("GEditor unavailable"));
+	}
+
+	// Use template+save approach — UEditorAssetSubsystem::DuplicateAsset does not handle World assets reliably
+	UWorld* CurrentWorld = GEditor->GetEditorWorldContext().World();
+	const FString CurrentLevelPath = CurrentWorld ? CurrentWorld->GetOutermost()->GetName() : TEXT("");
+
+	const FString SourceFile = FPackageName::LongPackageNameToFilename(SourcePath, FPackageName::GetMapPackageExtension());
+	UWorld* TemplateWorld = UEditorLoadingAndSavingUtils::NewMapFromTemplate(SourceFile, false);
+	if (!TemplateWorld)
+	{
+		if (!CurrentLevelPath.IsEmpty())
+		{
+			const FString CurrentFile = FPackageName::LongPackageNameToFilename(CurrentLevelPath, FPackageName::GetMapPackageExtension());
+			UEditorLoadingAndSavingUtils::LoadMap(CurrentFile);
+		}
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Failed to duplicate level: %s"), *SourcePath));
+	}
+
+	const bool bSaved = UEditorLoadingAndSavingUtils::SaveMap(TemplateWorld, DestPath);
+
+	// Restore original level
+	if (!CurrentLevelPath.IsEmpty())
+	{
+		const FString CurrentFile = FPackageName::LongPackageNameToFilename(CurrentLevelPath, FPackageName::GetMapPackageExtension());
+		UEditorLoadingAndSavingUtils::LoadMap(CurrentFile);
+	}
+
+	if (!bSaved)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("Failed to save duplicated level to: %s"), *DestPath));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("path"), DestPath);
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexLevelLifecycleOps::RenameLevel(const TSharedPtr<FJsonObject>& Params)

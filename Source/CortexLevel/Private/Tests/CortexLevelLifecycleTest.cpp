@@ -236,3 +236,56 @@ bool FCortexLevelOpenLevelNotFoundTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelDuplicateLevelTest,
+	"Cortex.Level.Lifecycle.DuplicateLevel",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelDuplicateLevelTest::RunTest(const FString& Parameters)
+{
+	if (!GEditor)
+	{
+		AddInfo(TEXT("No editor - skipping"));
+		return true;
+	}
+
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+
+	// Create a source level
+	const FString SourcePath = TEXT("/Game/Maps/_CortexTest/TestDuplicateSource");
+	const FString DestPath = TEXT("/Game/Maps/_CortexTest/TestDuplicateDest");
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("path"), SourcePath);
+	FCortexCommandResult CreateResult = Router.Execute(TEXT("level.create_level"), CreateParams);
+	if (!CreateResult.bSuccess)
+	{
+		AddInfo(TEXT("Could not create source level - skipping"));
+		return true;
+	}
+
+	// Duplicate it
+	TSharedPtr<FJsonObject> DupParams = MakeShared<FJsonObject>();
+	DupParams->SetStringField(TEXT("source_path"), SourcePath);
+	DupParams->SetStringField(TEXT("dest_path"), DestPath);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("level.duplicate_level"), DupParams);
+	TestTrue(TEXT("duplicate_level should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		TestEqual(TEXT("Path should match dest"), Result.Data->GetStringField(TEXT("path")), DestPath);
+	}
+
+	// Cleanup
+	const FString SourceFile = FPackageName::LongPackageNameToFilename(SourcePath, FPackageName::GetMapPackageExtension());
+	const FString DestFile = FPackageName::LongPackageNameToFilename(DestPath, FPackageName::GetMapPackageExtension());
+	IFileManager::Get().Delete(*SourceFile, false, true);
+	IFileManager::Get().Delete(*DestFile, false, true);
+	const FString TestDir = FPackageName::LongPackageNameToFilename(TEXT("/Game/Maps/_CortexTest/"));
+	IFileManager::Get().DeleteDirectory(*TestDir, false, true);
+
+	return true;
+}
