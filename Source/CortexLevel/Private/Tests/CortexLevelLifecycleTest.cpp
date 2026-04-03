@@ -163,3 +163,76 @@ bool FCortexLevelCreateLevelExistsTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelOpenLevelTest,
+	"Cortex.Level.Lifecycle.OpenLevel.Success",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelOpenLevelTest::RunTest(const FString& Parameters)
+{
+	if (!GEditor)
+	{
+		AddInfo(TEXT("No editor - skipping"));
+		return true;
+	}
+
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+
+	// First, create a test level to open
+	const FString TestPath = TEXT("/Game/Maps/_CortexTest/TestOpenLevel");
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("path"), TestPath);
+	FCortexCommandResult CreateResult = Router.Execute(TEXT("level.create_level"), CreateParams);
+	if (!CreateResult.bSuccess)
+	{
+		AddInfo(TEXT("Could not create test level - skipping"));
+		return true;
+	}
+
+	// Now open it
+	TSharedPtr<FJsonObject> OpenParams = MakeShared<FJsonObject>();
+	OpenParams->SetStringField(TEXT("path"), TestPath);
+	OpenParams->SetBoolField(TEXT("force"), true);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("level.open_level"), OpenParams);
+	TestTrue(TEXT("open_level should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		TestTrue(TEXT("Should have name field"), Result.Data->HasField(TEXT("name")));
+		TestTrue(TEXT("Should have path field"), Result.Data->HasField(TEXT("path")));
+		TestTrue(TEXT("Should have actor_count field"), Result.Data->HasField(TEXT("actor_count")));
+		TestTrue(TEXT("Should have world_partition field"), Result.Data->HasField(TEXT("world_partition")));
+	}
+
+	// Cleanup: delete the test level file (quiet=true to suppress locked-file errors in NullRHI mode)
+	const FString FilePath = FPackageName::LongPackageNameToFilename(TestPath, FPackageName::GetMapPackageExtension());
+	IFileManager::Get().Delete(*FilePath, false, true, true);
+	const FString TestDir = FPackageName::LongPackageNameToFilename(TEXT("/Game/Maps/_CortexTest/"));
+	IFileManager::Get().DeleteDirectory(*TestDir, false, true);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelOpenLevelNotFoundTest,
+	"Cortex.Level.Lifecycle.OpenLevel.NotFound",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelOpenLevelNotFoundTest::RunTest(const FString& Parameters)
+{
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("path"), TEXT("/Game/Maps/NonExistentLevel_XYZ"));
+
+	FCortexCommandResult Result = Router.Execute(TEXT("level.open_level"), Params);
+	TestFalse(TEXT("Should fail for non-existent level"), Result.bSuccess);
+	TestEqual(TEXT("Error should be ASSET_NOT_FOUND"), Result.ErrorCode, TEXT("ASSET_NOT_FOUND"));
+
+	return true;
+}

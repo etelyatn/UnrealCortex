@@ -7,6 +7,7 @@
 #include "Editor/UnrealEdEngine.h"
 #include "Engine/LevelStreaming.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "FileHelpers.h"
 #include "Misc/PackageName.h"
 #include "UObject/SavePackage.h"
@@ -261,7 +262,83 @@ FCortexCommandResult FCortexLevelLifecycleOps::CreateLevel(const TSharedPtr<FJso
 
 FCortexCommandResult FCortexLevelLifecycleOps::OpenLevel(const TSharedPtr<FJsonObject>& Params)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Not implemented"));
+	if (!Params.IsValid())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing params"));
+	}
+
+	FString Path;
+	if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: path"));
+	}
+
+	if (!IsValidContentPath(Path))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
+			FString::Printf(TEXT("Invalid content path: %s"), *Path));
+	}
+
+	if (!DoesLevelExist(Path))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Level not found: %s"), *Path));
+	}
+
+	if (!GEditor)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotReady, TEXT("GEditor unavailable"));
+	}
+
+	if (GEditor->IsPlaySessionInProgress())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorBusy, TEXT("Cannot open level while PIE is active"));
+	}
+
+	bool bSaveCurrent = false;
+	Params->TryGetBoolField(TEXT("save_current"), bSaveCurrent);
+
+	bool bForce = false;
+	Params->TryGetBoolField(TEXT("force"), bForce);
+
+	if (!bSaveCurrent && !bForce && IsCurrentLevelDirty())
+	{
+		TSharedPtr<FJsonObject> ErrorDetails = MakeShared<FJsonObject>();
+		ErrorDetails->SetBoolField(TEXT("is_dirty"), true);
+		return FCortexCommandRouter::Error(CortexErrorCodes::UnsavedChanges,
+			TEXT("Current level has unsaved changes. Use save_current=true to save first, or force=true to discard."),
+			ErrorDetails);
+	}
+
+	if (bSaveCurrent)
+	{
+		FEditorFileUtils::SaveDirtyPackages(false, true, true, true);
+	}
+
+	const FString FilePath = FPackageName::LongPackageNameToFilename(Path, FPackageName::GetMapPackageExtension());
+	UWorld* NewWorld = UEditorLoadingAndSavingUtils::LoadMap(FilePath);
+
+	if (!NewWorld)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Failed to open level: %s"), *Path));
+	}
+
+	int32 ActorCount = 0;
+	for (TActorIterator<AActor> It(NewWorld); It; ++It)
+	{
+		if (IsValid(*It))
+		{
+			++ActorCount;
+		}
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("name"), NewWorld->GetMapName());
+	Data->SetStringField(TEXT("path"), NewWorld->GetOutermost()->GetName());
+	Data->SetNumberField(TEXT("actor_count"), ActorCount);
+	Data->SetBoolField(TEXT("world_partition"), NewWorld->GetWorldPartition() != nullptr);
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexLevelLifecycleOps::DuplicateLevel(const TSharedPtr<FJsonObject>& Params)
