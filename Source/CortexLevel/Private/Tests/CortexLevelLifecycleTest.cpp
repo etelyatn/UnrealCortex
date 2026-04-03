@@ -4,8 +4,10 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Editor.h"
+#include "FileHelpers.h"
 #include "HAL/FileManager.h"
 #include "Misc/PackageName.h"
+#include "UObject/Package.h"
 
 namespace
 {
@@ -122,6 +124,12 @@ bool FCortexLevelCreateLevelTest::RunTest(const FString& Parameters)
 	// Cleanup: delete the created asset
 	const FString FilePath = FPackageName::LongPackageNameToFilename(TestPath, FPackageName::GetMapPackageExtension());
 	IFileManager::Get().Delete(*FilePath, false, true);
+	// Clean in-memory package
+	UPackage* Pkg = FindPackage(nullptr, *TestPath);
+	if (Pkg)
+	{
+		Pkg->MarkAsGarbage();
+	}
 	const FString TestDir = FPackageName::LongPackageNameToFilename(TEXT("/Game/Maps/_CortexTest/"));
 	IFileManager::Get().DeleteDirectory(*TestDir, false, true);
 
@@ -180,6 +188,12 @@ bool FCortexLevelOpenLevelTest::RunTest(const FString& Parameters)
 
 	FCortexCommandRouter Router = CreateLifecycleRouter();
 
+	// Save original level for restore after test
+	UWorld* WorldBefore = GEditor->GetEditorWorldContext().World();
+	const FString OriginalLevelPath = WorldBefore ? WorldBefore->GetOutermost()->GetName() : TEXT("");
+	const FString OriginalLevelFile = OriginalLevelPath.IsEmpty() ? TEXT("") :
+		FPackageName::LongPackageNameToFilename(OriginalLevelPath, FPackageName::GetMapPackageExtension());
+
 	// First, create a test level to open
 	const FString TestPath = TEXT("/Game/Maps/_CortexTest/TestOpenLevel");
 
@@ -211,8 +225,20 @@ bool FCortexLevelOpenLevelTest::RunTest(const FString& Parameters)
 	// Cleanup: delete the test level file (quiet=true to suppress locked-file errors in NullRHI mode)
 	const FString FilePath = FPackageName::LongPackageNameToFilename(TestPath, FPackageName::GetMapPackageExtension());
 	IFileManager::Get().Delete(*FilePath, false, true, true);
+	// Clean in-memory package
+	UPackage* Pkg = FindPackage(nullptr, *TestPath);
+	if (Pkg)
+	{
+		Pkg->MarkAsGarbage();
+	}
 	const FString TestDir = FPackageName::LongPackageNameToFilename(TEXT("/Game/Maps/_CortexTest/"));
 	IFileManager::Get().DeleteDirectory(*TestDir, false, true);
+
+	// Restore original level so subsequent tests run in the correct world context
+	if (!OriginalLevelFile.IsEmpty() && IFileManager::Get().FileExists(*OriginalLevelFile))
+	{
+		UEditorLoadingAndSavingUtils::LoadMap(OriginalLevelFile);
+	}
 
 	return true;
 }
@@ -284,6 +310,17 @@ bool FCortexLevelDuplicateLevelTest::RunTest(const FString& Parameters)
 	const FString DestFile = FPackageName::LongPackageNameToFilename(DestPath, FPackageName::GetMapPackageExtension());
 	IFileManager::Get().Delete(*SourceFile, false, true);
 	IFileManager::Get().Delete(*DestFile, false, true);
+	// Clean in-memory packages
+	UPackage* SrcPkg = FindPackage(nullptr, *SourcePath);
+	if (SrcPkg)
+	{
+		SrcPkg->MarkAsGarbage();
+	}
+	UPackage* DstPkg = FindPackage(nullptr, *DestPath);
+	if (DstPkg)
+	{
+		DstPkg->MarkAsGarbage();
+	}
 	const FString TestDir = FPackageName::LongPackageNameToFilename(TEXT("/Game/Maps/_CortexTest/"));
 	IFileManager::Get().DeleteDirectory(*TestDir, false, true);
 
@@ -338,6 +375,17 @@ bool FCortexLevelRenameLevelTest::RunTest(const FString& Parameters)
 	const FString OrigFile = FPackageName::LongPackageNameToFilename(OriginalPath, FPackageName::GetMapPackageExtension());
 	IFileManager::Get().Delete(*NewFile, false, true);
 	IFileManager::Get().Delete(*OrigFile, false, true);
+	// Clean in-memory packages (rename moves from OriginalPath to NewPath)
+	UPackage* NewPkg = FindPackage(nullptr, *NewPath);
+	if (NewPkg)
+	{
+		NewPkg->MarkAsGarbage();
+	}
+	UPackage* OrigPkg = FindPackage(nullptr, *OriginalPath);
+	if (OrigPkg)
+	{
+		OrigPkg->MarkAsGarbage();
+	}
 	const FString TestDir = FPackageName::LongPackageNameToFilename(TEXT("/Game/Maps/_CortexTest/"));
 	IFileManager::Get().DeleteDirectory(*TestDir, false, true);
 
@@ -425,6 +473,13 @@ bool FCortexLevelDeleteLevelTest::RunTest(const FString& Parameters)
 	const FString FilePath = FPackageName::LongPackageNameToFilename(TestPath, FPackageName::GetMapPackageExtension());
 	TestFalse(TEXT("File should be deleted"), IFileManager::Get().FileExists(*FilePath));
 
+	// Clean in-memory package if still present (ForceDeleteObjects may have already removed it)
+	UPackage* Pkg = FindPackage(nullptr, *TestPath);
+	if (Pkg)
+	{
+		Pkg->MarkAsGarbage();
+	}
+
 	// Cleanup directory
 	const FString TestDir = FPackageName::LongPackageNameToFilename(TEXT("/Game/Maps/_CortexTest/"));
 	IFileManager::Get().DeleteDirectory(*TestDir, false, true);
@@ -464,6 +519,65 @@ bool FCortexLevelDeleteLevelInUseTest::RunTest(const FString& Parameters)
 	FCortexCommandResult Result = Router.Execute(TEXT("level.delete_level"), Params);
 	TestFalse(TEXT("Should fail for currently open level"), Result.bSuccess);
 	TestEqual(TEXT("Error should be LEVEL_IN_USE"), Result.ErrorCode, TEXT("LEVEL_IN_USE"));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelOpenLevelDirtyTest,
+	"Cortex.Level.Lifecycle.OpenLevel.UnsavedChanges",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelOpenLevelDirtyTest::RunTest(const FString& Parameters)
+{
+	if (!GEditor)
+	{
+		AddInfo(TEXT("No editor - skipping"));
+		return true;
+	}
+
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	if (!World)
+	{
+		AddInfo(TEXT("No editor world - skipping"));
+		return true;
+	}
+
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+
+	// Create a target level to try to open
+	const FString TargetPath = TEXT("/Game/Maps/_CortexTest/TestDirtyTarget");
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("path"), TargetPath);
+	FCortexCommandResult CreateResult = Router.Execute(TEXT("level.create_level"), CreateParams);
+	if (!CreateResult.bSuccess)
+	{
+		AddInfo(TEXT("Could not create target level - skipping"));
+		return true;
+	}
+
+	// Mark current world as dirty
+	World->GetOutermost()->MarkPackageDirty();
+
+	// Try to open without save_current or force — should fail with UnsavedChanges
+	TSharedPtr<FJsonObject> OpenParams = MakeShared<FJsonObject>();
+	OpenParams->SetStringField(TEXT("path"), TargetPath);
+
+	FCortexCommandResult OpenResult = Router.Execute(TEXT("level.open_level"), OpenParams);
+	TestFalse(TEXT("Should fail when current level is dirty"), OpenResult.bSuccess);
+	TestEqual(TEXT("Error should be UNSAVED_CHANGES"), OpenResult.ErrorCode, TEXT("UNSAVED_CHANGES"));
+
+	// Cleanup
+	const FString TargetFile = FPackageName::LongPackageNameToFilename(TargetPath, FPackageName::GetMapPackageExtension());
+	IFileManager::Get().Delete(*TargetFile, false, true);
+	UPackage* Pkg = FindPackage(nullptr, *TargetPath);
+	if (Pkg)
+	{
+		Pkg->MarkAsGarbage();
+	}
+	const FString TestDir = FPackageName::LongPackageNameToFilename(TEXT("/Game/Maps/_CortexTest/"));
+	IFileManager::Get().DeleteDirectory(*TestDir, false, true);
 
 	return true;
 }

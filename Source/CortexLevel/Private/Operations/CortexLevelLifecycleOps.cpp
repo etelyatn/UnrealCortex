@@ -190,30 +190,57 @@ FCortexCommandResult FCortexLevelLifecycleOps::CreateLevel(const TSharedPtr<FJso
 	{
 		if (!TemplatePath.IsEmpty())
 		{
-			// Template + open=false: load template, save to dest, restore original
-			UWorld* CurrentWorld = GEditor->GetEditorWorldContext().World();
-			const FString CurrentLevelPath = CurrentWorld ? CurrentWorld->GetOutermost()->GetName() : TEXT("");
+			// Template + open=false: load template package without world transition, then duplicate and save.
+			// This keeps GEditor->GetEditorWorldContext().World() unchanged throughout.
+			UPackage* TemplatePackage = LoadPackage(nullptr, *TemplatePath, LOAD_None);
+			if (!TemplatePackage)
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("Failed to load template: %s"), *TemplatePath));
+			}
 
-			UWorld* TemplateWorld = UEditorLoadingAndSavingUtils::NewMapFromTemplate(TemplatePath, false);
+			UWorld* TemplateWorld = FindObjectFast<UWorld>(TemplatePackage,
+				FName(*FPackageName::GetShortName(TemplatePath)));
 			if (!TemplateWorld)
 			{
-				// Restore original level if template load failed
-				if (!CurrentLevelPath.IsEmpty())
+				// Fallback: scan the package for any UWorld
+				ForEachObjectWithPackage(TemplatePackage, [&TemplateWorld](UObject* Obj)
 				{
-					const FString CurrentFilePath = FPackageName::LongPackageNameToFilename(CurrentLevelPath, FPackageName::GetMapPackageExtension());
-					UEditorLoadingAndSavingUtils::LoadMap(CurrentFilePath);
-				}
-				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Failed to create level from template"));
+					if (!TemplateWorld && Obj && Obj->IsA<UWorld>())
+					{
+						TemplateWorld = Cast<UWorld>(Obj);
+					}
+					return true;
+				}, false);
 			}
 
-			bIsWorldPartition = TemplateWorld->IsPartitionedWorld();
-			const bool bSaved = UEditorLoadingAndSavingUtils::SaveMap(TemplateWorld, Path);
-
-			if (!CurrentLevelPath.IsEmpty())
+			if (!TemplateWorld)
 			{
-				const FString CurrentFilePath = FPackageName::LongPackageNameToFilename(CurrentLevelPath, FPackageName::GetMapPackageExtension());
-				UEditorLoadingAndSavingUtils::LoadMap(CurrentFilePath);
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					TEXT("Template package does not contain a world"));
 			}
+
+			// Duplicate the template world into the destination package
+			UPackage* DestPackage = CreatePackage(*Path);
+			FObjectDuplicationParameters DupParams(TemplateWorld, DestPackage);
+			DupParams.DestName = FName(*FPackageName::GetShortName(Path));
+			DupParams.DuplicateMode = EDuplicateMode::Normal;
+			UWorld* NewWorld = Cast<UWorld>(StaticDuplicateObjectEx(DupParams));
+			if (!NewWorld)
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					TEXT("Failed to duplicate template world"));
+			}
+
+			NewWorld->SetFlags(RF_Standalone);
+			bIsWorldPartition = NewWorld->IsPartitionedWorld();
+
+			const FString FilePath = FPackageName::LongPackageNameToFilename(Path, FPackageName::GetMapPackageExtension());
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Standalone;
+			const bool bSaved = UPackage::SavePackage(DestPackage, NewWorld, *FilePath, SaveArgs);
+
+			NewWorld->DestroyWorld(false);
 
 			if (!bSaved)
 			{
@@ -392,6 +419,11 @@ FCortexCommandResult FCortexLevelLifecycleOps::DuplicateLevel(const TSharedPtr<F
 		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotReady, TEXT("GEditor unavailable"));
 	}
 
+	if (GEditor->IsPlaySessionInProgress())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorBusy, TEXT("Cannot duplicate level while PIE is active"));
+	}
+
 	// Use template+save approach — UEditorAssetSubsystem::DuplicateAsset does not handle World assets reliably
 	UWorld* CurrentWorld = GEditor->GetEditorWorldContext().World();
 	const FString CurrentLevelPath = CurrentWorld ? CurrentWorld->GetOutermost()->GetName() : TEXT("");
@@ -552,8 +584,18 @@ FCortexCommandResult FCortexLevelLifecycleOps::DeleteLevel(const TSharedPtr<FJso
 
 		if (Referencers.Num() > 0)
 		{
+			TSharedPtr<FJsonObject> RefDetails = MakeShared<FJsonObject>();
+			TArray<TSharedPtr<FJsonValue>> ReferencerArray;
+			for (const FAssetIdentifier& Ref : Referencers)
+			{
+				ReferencerArray.Add(MakeShared<FJsonValueString>(Ref.PackageName.ToString()));
+			}
+			RefDetails->SetArrayField(TEXT("referencers"), ReferencerArray);
+			RefDetails->SetNumberField(TEXT("count"), Referencers.Num());
+
 			return FCortexCommandRouter::Error(CortexErrorCodes::HasReferences,
-				FString::Printf(TEXT("Level has %d referencers. Use force=true to delete anyway."), Referencers.Num()));
+				FString::Printf(TEXT("Level has %d referencers. Use force=true to delete anyway."), Referencers.Num()),
+				RefDetails);
 		}
 	}
 
