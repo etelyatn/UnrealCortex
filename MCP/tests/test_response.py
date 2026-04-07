@@ -3,11 +3,21 @@
 import base64
 import json
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
-from cortex_mcp.response import format_response, _MAX_RESPONSE_CHARS
 from cortex_mcp.pagination import PaginationCache, encode_cursor, decode_cursor
+from cortex_mcp.response import format_response, _MAX_RESPONSE_CHARS
+from cortex_mcp.tools.routers import make_router
+
+
+def _router_with_mock(domain: str = "data", response_data: dict | None = None):
+    """Create a router with a mock connection for testing."""
+    connection = MagicMock()
+    if response_data is not None:
+        connection.send_command.return_value = {"success": True, "data": response_data}
+    return make_router(domain, connection, "test docs"), connection
 
 
 def _make_large_list(key: str, count: int = 500) -> dict:
@@ -211,25 +221,13 @@ class TestPaginationCache:
         assert response["_pagination"] == meta
 
 
-from unittest.mock import MagicMock
-
-from cortex_mcp.tools.routers import make_router
-
-
 class TestRouterPagination:
     """Phase 2B: routers extract limit/cursor and route through pagination."""
-
-    def _make_router(self, domain: str = "data", response_data: dict | None = None):
-        """Create a router with a mock connection."""
-        connection = MagicMock()
-        if response_data is not None:
-            connection.send_command.return_value = {"success": True, "data": response_data}
-        return make_router(domain, connection, "test docs"), connection
 
     def test_limit_returns_paginated_first_page(self):
         """Passing limit returns a paginated first page."""
         items = [{"id": i} for i in range(100)]
-        router, conn = self._make_router(response_data={"rows": items, "count": 100})
+        router, conn = _router_with_mock(response_data={"rows": items, "count": 100})
 
         result = json.loads(router("list_datatables", {"limit": 20}))
 
@@ -246,7 +244,7 @@ class TestRouterPagination:
     def test_cursor_returns_next_page(self):
         """Passing cursor from first page returns the second page."""
         items = [{"id": i} for i in range(100)]
-        router, conn = self._make_router(response_data={"rows": items, "count": 100})
+        router, conn = _router_with_mock(response_data={"rows": items, "count": 100})
 
         # First page
         page1 = json.loads(router("list_datatables", {"limit": 30}))
@@ -263,7 +261,7 @@ class TestRouterPagination:
     def test_last_page_has_no_cursor(self):
         """Last page has has_more=false and next_cursor=null."""
         items = [{"id": i} for i in range(25)]
-        router, conn = self._make_router(response_data={"rows": items})
+        router, conn = _router_with_mock(response_data={"rows": items})
 
         page1 = json.loads(router("list", {"limit": 20}))
         cursor = page1["_pagination"]["next_cursor"]
@@ -275,7 +273,7 @@ class TestRouterPagination:
 
     def test_expired_cursor_returns_error(self):
         """Expired or invalid cache key returns CURSOR_EXPIRED."""
-        router, _ = self._make_router()
+        router, _ = _router_with_mock()
 
         fake_cursor = encode_cursor("nonexistent_key", 0, 10)
         result = json.loads(router("list", {"cursor": fake_cursor}))
@@ -284,7 +282,7 @@ class TestRouterPagination:
 
     def test_malformed_cursor_returns_error(self):
         """Bad base64 cursor returns INVALID_CURSOR."""
-        router, _ = self._make_router()
+        router, _ = _router_with_mock()
 
         result = json.loads(router("list", {"cursor": "!!!bad!!!"}))
 
@@ -292,7 +290,7 @@ class TestRouterPagination:
 
     def test_limit_zero_returns_error(self):
         """limit=0 is rejected."""
-        router, _ = self._make_router()
+        router, _ = _router_with_mock()
 
         result = json.loads(router("list", {"limit": 0}))
 
@@ -300,7 +298,7 @@ class TestRouterPagination:
 
     def test_limit_negative_returns_error(self):
         """limit=-1 is rejected."""
-        router, _ = self._make_router()
+        router, _ = _router_with_mock()
 
         result = json.loads(router("list", {"limit": -1}))
 
@@ -308,7 +306,7 @@ class TestRouterPagination:
 
     def test_limit_over_200_returns_error(self):
         """limit=999 is rejected."""
-        router, _ = self._make_router()
+        router, _ = _router_with_mock()
 
         result = json.loads(router("list", {"limit": 999}))
 
@@ -317,7 +315,7 @@ class TestRouterPagination:
     def test_no_limit_no_pagination(self):
         """Without limit, response is returned normally (no pagination metadata)."""
         items = [{"id": i} for i in range(10)]
-        router, _ = self._make_router(response_data={"rows": items})
+        router, _ = _router_with_mock(response_data={"rows": items})
 
         result = json.loads(router("list", {}))
 
@@ -326,7 +324,7 @@ class TestRouterPagination:
 
     def test_limit_on_non_list_response_ignored(self):
         """limit on a command with no qualifying array is a no-op."""
-        router, _ = self._make_router(response_data={"saved": True, "path": "/Game/Test"})
+        router, _ = _router_with_mock(response_data={"saved": True, "path": "/Game/Test"})
 
         result = json.loads(router("save", {"asset_path": "/Game/Test", "limit": 50}))
 
@@ -337,17 +335,11 @@ class TestRouterPagination:
 class TestPaginationEdgeCases:
     """Edge cases and interaction between Phase 1 and Phase 2."""
 
-    def _make_router(self, domain: str = "data", response_data: dict | None = None):
-        connection = MagicMock()
-        if response_data is not None:
-            connection.send_command.return_value = {"success": True, "data": response_data}
-        return make_router(domain, connection, "test docs"), connection
-
     def test_large_limit_triggers_truncation_safety_net(self):
         """A huge page that exceeds 40KB still gets truncated as safety net."""
         # Create items large enough that 200 items exceed 40KB
         items = [{"id": i, "data": "x" * 300} for i in range(500)]
-        router, _ = self._make_router(response_data={"rows": items})
+        router, _ = _router_with_mock(response_data={"rows": items})
 
         result = json.loads(router("list", {"limit": 200}))
 
@@ -355,11 +347,13 @@ class TestPaginationEdgeCases:
         # If the page exceeds 40KB, truncation also kicks in
         result_text = json.dumps(result, indent=2)
         assert len(result_text) <= _MAX_RESPONSE_CHARS
+        # Safety net actually triggered — page was truncated below the requested limit
+        assert len(result["rows"]) < 200
 
     def test_cursor_without_limit_uses_embedded_limit(self):
         """cursor without limit in the request still works — limit is in the cursor."""
         items = [{"id": i} for i in range(100)]
-        router, conn = self._make_router(response_data={"rows": items})
+        router, conn = _router_with_mock(response_data={"rows": items})
 
         page1 = json.loads(router("list", {"limit": 25}))
         cursor = page1["_pagination"]["next_cursor"]
@@ -373,7 +367,7 @@ class TestPaginationEdgeCases:
     def test_limit_string_coerced_to_int(self):
         """limit passed as string '50' should work."""
         items = [{"id": i} for i in range(100)]
-        router, _ = self._make_router(response_data={"rows": items})
+        router, _ = _router_with_mock(response_data={"rows": items})
 
         result = json.loads(router("list", {"limit": "50"}))
 
@@ -383,11 +377,12 @@ class TestPaginationEdgeCases:
     def test_pagination_metadata_no_count_field(self):
         """Paginated responses use _pagination.total, not a top-level count field."""
         items = [{"id": i} for i in range(100)]
-        router, _ = self._make_router(response_data={"rows": items, "count": 100})
+        router, _ = _router_with_mock(response_data={"rows": items, "count": 100})
 
         result = json.loads(router("list", {"limit": 10}))
 
         # count from template is preserved, _pagination.total is canonical
+        assert result.get("count") == 100
         assert result["_pagination"]["total"] == 100
 
     def test_lru_promotion_protects_accessed_entry(self):
