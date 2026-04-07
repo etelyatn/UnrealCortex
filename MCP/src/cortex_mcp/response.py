@@ -11,10 +11,9 @@ _MAX_RESPONSE_CHARS = 40_000
 def format_response(data: dict, tool_name: str) -> str:
     """Serialize data to JSON, truncating array results if over size limit.
 
-    If the response exceeds _MAX_RESPONSE_CHARS and contains a truncatable
-    array ('rows', 'results', 'tags', 'datatables', 'data_assets',
-    'string_tables', 'assets', 'entries'), binary-searches for the max
-    array length that fits and appends _truncated metadata.
+    If the response exceeds _MAX_RESPONSE_CHARS and contains a list with
+    10+ items, binary-searches for the max item count that fits and
+    appends _truncated metadata.
 
     Args:
         data: The response data dict.
@@ -27,19 +26,14 @@ def format_response(data: dict, tool_name: str) -> str:
     if len(text) <= _MAX_RESPONSE_CHARS:
         return text
 
-    # Find a truncatable array key
-    truncatable_keys = [
-        "rows", "results", "tags", "datatables", "data_assets",
-        "string_tables", "assets", "entries", "resolved",
-        "actors", "components", "classes", "sublevels", "data_layers",
-        "selection", "matches", "children", "usages",
-        "affected", "dependencies", "referencers",
-    ]
+    # Auto-detect: find the largest list with 10+ items
+    _MIN_TRUNCATABLE_SIZE = 10
     array_key = None
-    for key in truncatable_keys:
-        if key in data and isinstance(data[key], list) and len(data[key]) > 0:
+    max_len = 0
+    for key, value in data.items():
+        if isinstance(value, list) and len(value) >= _MIN_TRUNCATABLE_SIZE and len(value) > max_len:
+            max_len = len(value)
             array_key = key
-            break
 
     if array_key is None:
         logger.warning(
@@ -65,8 +59,7 @@ def format_response(data: dict, tool_name: str) -> str:
         trial["_truncated"] = {
             "original_count": original_count,
             "returned_count": mid,
-            "suggestion": "Use 'fields' parameter to select only needed fields, "
-                          "or reduce 'limit' to get fewer rows.",
+            "suggestion": "Pass 'limit' parameter to paginate through results.",
         }
         trial_text = json.dumps(trial, indent=2)
         if len(trial_text) <= _MAX_RESPONSE_CHARS:
@@ -80,8 +73,7 @@ def format_response(data: dict, tool_name: str) -> str:
     truncated["_truncated"] = {
         "original_count": original_count,
         "returned_count": best,
-        "suggestion": "Use 'fields' parameter to select only needed fields, "
-                      "or reduce 'limit' to get fewer rows.",
+        "suggestion": "Pass 'limit' parameter to paginate through results.",
     }
 
     logger.info(
