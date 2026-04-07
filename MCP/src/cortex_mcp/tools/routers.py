@@ -7,7 +7,7 @@ import logging
 from typing import Callable
 
 from cortex_mcp.capabilities import CORE_DOMAINS
-from cortex_mcp.pagination import PaginationCache, decode_cursor, encode_cursor
+from cortex_mcp.pagination import PaginationCache, decode_cursor
 from cortex_mcp.response import format_response
 from cortex_mcp.schema_generator import (
     SCHEMA_VERSION,
@@ -64,9 +64,7 @@ def _handle_cursor_request(cursor_token: str) -> str:
     except KeyError:
         return json.dumps({"_error": "CURSOR_EXPIRED", "_message": "Cached results have expired. Re-send the original command with 'limit' to start a new pagination sequence."})
 
-    entry = _pagination_cache._entries.get(key)
-    array_key = entry[1]  # (timestamp, array_key, full_list, template)
-    response = _pagination_cache.rebuild_response(key, array_key, page, meta)
+    response = _pagination_cache.rebuild_response(key, page, meta)
     return format_response(response, "paginated")
 
 
@@ -90,10 +88,7 @@ def _handle_limit_request(domain: str, command: str, params: dict, limit: int, c
     cache_key = _pagination_cache.store(qualified, params, array_key, full_list, template)
 
     page, meta = _pagination_cache.get_page(cache_key, offset=0, limit=limit)
-
-    result = dict(template)
-    result[array_key] = page
-    result["_pagination"] = meta
+    result = _pagination_cache.rebuild_response(cache_key, page, meta)
     return format_response(result, f"{domain}_cmd")
 
 

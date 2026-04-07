@@ -98,13 +98,13 @@ class PaginationCache:
 
         return page, meta
 
-    def rebuild_response(self, key: str, array_key: str, page: list, meta: dict) -> dict:
+    def rebuild_response(self, key: str, page: list, meta: dict) -> dict:
         """Rebuild a full response dict from template + page + pagination metadata."""
         entry = self._entries.get(key)
         if entry is None:
             raise KeyError("CURSOR_EXPIRED")
 
-        _, _, _, template = entry
+        _, array_key, _, template = entry
         response = dict(template)
         response[array_key] = page
         response["_pagination"] = meta

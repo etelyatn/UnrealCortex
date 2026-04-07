@@ -204,7 +204,7 @@ class TestPaginationCache:
         key = cache.store("data.list", {}, "rows", full_list, template)
         page, meta = cache.get_page(key, offset=0, limit=10)
 
-        response = cache.rebuild_response(key, "rows", page, meta)
+        response = cache.rebuild_response(key, page, meta)
         assert response["domain"] == "data"
         assert response["command"] == "list"
         assert len(response["rows"]) == 10
