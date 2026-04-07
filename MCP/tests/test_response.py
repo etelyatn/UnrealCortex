@@ -7,6 +7,7 @@ import time
 import pytest
 
 from cortex_mcp.response import format_response, _MAX_RESPONSE_CHARS
+from cortex_mcp.pagination import PaginationCache, encode_cursor, decode_cursor
 
 
 def _make_large_list(key: str, count: int = 500) -> dict:
@@ -87,12 +88,6 @@ class TestAutoDetectTruncation:
         result = json.loads(format_response(data, "test"))
 
         assert "limit" in result["_suggestion"].lower()
-
-
-import base64
-import time
-
-from cortex_mcp.pagination import PaginationCache, encode_cursor, decode_cursor
 
 
 class TestCursorEncoding:
