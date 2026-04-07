@@ -7,6 +7,7 @@ import logging
 from typing import Callable
 
 from cortex_mcp.capabilities import CORE_DOMAINS
+from cortex_mcp.pagination import PaginationCache, decode_cursor, encode_cursor
 from cortex_mcp.response import format_response
 from cortex_mcp.schema_generator import (
     SCHEMA_VERSION,
@@ -19,6 +20,82 @@ from cortex_mcp.tcp_client import _discover_all_editors, _is_editor_alive
 logger = logging.getLogger(__name__)
 _TTL_CATALOG = 600
 
+_pagination_cache = PaginationCache(max_entries=5, ttl_seconds=60.0)
+
+_MIN_PAGINATABLE_SIZE = 10
+_MAX_LIMIT = 200
+
+
+def _find_paginatable_array(data: dict) -> str | None:
+    """Find the largest list with 10+ items in the response."""
+    best_key = None
+    best_len = 0
+    for key, value in data.items():
+        if isinstance(value, list) and len(value) >= _MIN_PAGINATABLE_SIZE and len(value) > best_len:
+            best_len = len(value)
+            best_key = key
+    return best_key
+
+
+def _validate_limit(limit) -> tuple[int | None, str | None]:
+    """Validate and coerce the limit parameter. Returns (limit, error_json) — one is always None."""
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        return None, json.dumps({"_error": "INVALID_LIMIT", "_message": "limit must be an integer between 1 and 200."})
+    if limit < 1 or limit > _MAX_LIMIT:
+        return None, json.dumps({"_error": "INVALID_LIMIT", "_message": f"limit must be between 1 and {_MAX_LIMIT}."})
+    return limit, None
+
+
+def _handle_cursor_request(cursor_token: str) -> str:
+    """Handle a request that carries a cursor (subsequent page)."""
+    try:
+        decoded = decode_cursor(cursor_token)
+    except ValueError:
+        return json.dumps({"_error": "INVALID_CURSOR", "_message": "Cursor is malformed. Pass a cursor value returned from a previous response."})
+
+    key = decoded["key"]
+    offset = decoded["offset"]
+    limit = decoded["limit"]  # embedded in cursor
+
+    try:
+        page, meta = _pagination_cache.get_page(key, offset, limit)
+    except KeyError:
+        return json.dumps({"_error": "CURSOR_EXPIRED", "_message": "Cached results have expired. Re-send the original command with 'limit' to start a new pagination sequence."})
+
+    entry = _pagination_cache._entries.get(key)
+    array_key = entry[1]  # (timestamp, array_key, full_list, template)
+    response = _pagination_cache.rebuild_response(key, array_key, page, meta)
+    return format_response(response, "paginated")
+
+
+def _handle_limit_request(domain: str, command: str, params: dict, limit: int, connection) -> str:
+    """Handle a request with limit (first page or re-request)."""
+    # Strip limit/cursor from params sent to C++
+    clean_params = {k: v for k, v in params.items() if k not in ("limit", "cursor")}
+    qualified = _qualify_command(domain, command)
+
+    response = connection.send_command(qualified, clean_params)
+    data = response.get("data", {})
+
+    array_key = _find_paginatable_array(data)
+    if array_key is None:
+        # No qualifying array — return as-is, limit is a no-op
+        return format_response(data, f"{domain}_cmd")
+
+    full_list = data[array_key]
+    template = {k: v for k, v in data.items() if k != array_key}
+
+    cache_key = _pagination_cache.store(qualified, params, array_key, full_list, template)
+
+    page, meta = _pagination_cache.get_page(cache_key, offset=0, limit=limit)
+
+    result = dict(template)
+    result[array_key] = page
+    result["_pagination"] = meta
+    return format_response(result, f"{domain}_cmd")
+
 
 def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict | None], str]:
     """Create a single router tool function for a domain."""
@@ -27,6 +104,7 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
         route_params = params or {}
 
         try:
+            # Handle core special commands first (no pagination for these)
             if domain == "core":
                 if command == "switch_editor":
                     return _switch_editor(connection, route_params)
@@ -49,6 +127,20 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                     response = connection.send_command("batch", {"commands": commands})
                     return format_response(response.get("data", {}), "batch_query")
 
+            # Check for cursor (subsequent page — no C++ call needed)
+            cursor_token = route_params.get("cursor")
+            if cursor_token is not None:
+                return _handle_cursor_request(cursor_token)
+
+            # Check for limit (first page)
+            limit_param = route_params.get("limit")
+            if limit_param is not None:
+                limit, error = _validate_limit(limit_param)
+                if error:
+                    return error
+                return _handle_limit_request(domain, command, route_params, limit, connection)
+
+            # No pagination — normal dispatch
             response = connection.send_command(_qualify_command(domain, command), route_params)
             return format_response(response.get("data", {}), f"{domain}_cmd")
         except ConnectionError as exc:

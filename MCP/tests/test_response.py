@@ -209,3 +209,126 @@ class TestPaginationCache:
         assert response["command"] == "list"
         assert len(response["rows"]) == 10
         assert response["_pagination"] == meta
+
+
+from unittest.mock import MagicMock
+
+from cortex_mcp.tools.routers import make_router
+
+
+class TestRouterPagination:
+    """Phase 2B: routers extract limit/cursor and route through pagination."""
+
+    def _make_router(self, domain: str = "data", response_data: dict | None = None):
+        """Create a router with a mock connection."""
+        connection = MagicMock()
+        if response_data is not None:
+            connection.send_command.return_value = {"success": True, "data": response_data}
+        return make_router(domain, connection, "test docs"), connection
+
+    def test_limit_returns_paginated_first_page(self):
+        """Passing limit returns a paginated first page."""
+        items = [{"id": i} for i in range(100)]
+        router, conn = self._make_router(response_data={"rows": items, "count": 100})
+
+        result = json.loads(router("list_datatables", {"limit": 20}))
+
+        assert "_pagination" in result
+        assert result["_pagination"]["total"] == 100
+        assert result["_pagination"]["returned"] == 20
+        assert result["_pagination"]["has_more"] is True
+        assert len(result["rows"]) == 20
+        # limit/cursor should NOT be passed to C++
+        call_params = conn.send_command.call_args[0][1]
+        assert "limit" not in call_params
+        assert "cursor" not in call_params
+
+    def test_cursor_returns_next_page(self):
+        """Passing cursor from first page returns the second page."""
+        items = [{"id": i} for i in range(100)]
+        router, conn = self._make_router(response_data={"rows": items, "count": 100})
+
+        # First page
+        page1 = json.loads(router("list_datatables", {"limit": 30}))
+        cursor = page1["_pagination"]["next_cursor"]
+
+        # Second page — uses cursor, C++ is NOT called again
+        conn.send_command.reset_mock()
+        page2 = json.loads(router("list_datatables", {"cursor": cursor}))
+
+        conn.send_command.assert_not_called()
+        assert page2["_pagination"]["returned"] == 30
+        assert page2["rows"][0]["id"] == 30
+
+    def test_last_page_has_no_cursor(self):
+        """Last page has has_more=false and next_cursor=null."""
+        items = [{"id": i} for i in range(25)]
+        router, conn = self._make_router(response_data={"rows": items})
+
+        page1 = json.loads(router("list", {"limit": 20}))
+        cursor = page1["_pagination"]["next_cursor"]
+        page2 = json.loads(router("list", {"cursor": cursor}))
+
+        assert page2["_pagination"]["has_more"] is False
+        assert page2["_pagination"]["next_cursor"] is None
+        assert len(page2["rows"]) == 5
+
+    def test_expired_cursor_returns_error(self):
+        """Expired or invalid cache key returns CURSOR_EXPIRED."""
+        router, _ = self._make_router()
+
+        fake_cursor = encode_cursor("nonexistent_key", 0, 10)
+        result = json.loads(router("list", {"cursor": fake_cursor}))
+
+        assert result["_error"] == "CURSOR_EXPIRED"
+
+    def test_malformed_cursor_returns_error(self):
+        """Bad base64 cursor returns INVALID_CURSOR."""
+        router, _ = self._make_router()
+
+        result = json.loads(router("list", {"cursor": "!!!bad!!!"}))
+
+        assert result["_error"] == "INVALID_CURSOR"
+
+    def test_limit_zero_returns_error(self):
+        """limit=0 is rejected."""
+        router, _ = self._make_router()
+
+        result = json.loads(router("list", {"limit": 0}))
+
+        assert result["_error"] == "INVALID_LIMIT"
+
+    def test_limit_negative_returns_error(self):
+        """limit=-1 is rejected."""
+        router, _ = self._make_router()
+
+        result = json.loads(router("list", {"limit": -1}))
+
+        assert result["_error"] == "INVALID_LIMIT"
+
+    def test_limit_over_200_returns_error(self):
+        """limit=999 is rejected."""
+        router, _ = self._make_router()
+
+        result = json.loads(router("list", {"limit": 999}))
+
+        assert result["_error"] == "INVALID_LIMIT"
+
+    def test_no_limit_no_pagination(self):
+        """Without limit, response is returned normally (no pagination metadata)."""
+        items = [{"id": i} for i in range(10)]
+        router, _ = self._make_router(response_data={"rows": items})
+
+        result = json.loads(router("list", {}))
+
+        assert "_pagination" not in result
+        assert result["rows"] == items
+
+    def test_limit_on_non_list_response_ignored(self):
+        """limit on a command with no qualifying array is a no-op."""
+        router, _ = self._make_router(response_data={"saved": True, "path": "/Game/Test"})
+
+        result = json.loads(router("save", {"asset_path": "/Game/Test", "limit": 50}))
+
+        assert result["saved"] is True
+        assert "_pagination" not in result
