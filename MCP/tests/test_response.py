@@ -2,8 +2,6 @@
 
 import json
 
-import pytest
-
 from cortex_mcp.response import format_response, _MAX_RESPONSE_CHARS
 
 
@@ -78,3 +76,10 @@ class TestAutoDetectTruncation:
         result = json.loads(format_response(data, "test"))
 
         assert "limit" in result["_truncated"]["suggestion"].lower()
+
+    def test_no_truncatable_list_error_suggestion_mentions_limit(self):
+        """response_too_large error suggestion should also mention 'limit'."""
+        data = {"huge_string": "x" * 50_000}
+        result = json.loads(format_response(data, "test"))
+
+        assert "limit" in result["_suggestion"].lower()

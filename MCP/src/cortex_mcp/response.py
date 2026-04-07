@@ -6,6 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 _MAX_RESPONSE_CHARS = 40_000
+_MIN_TRUNCATABLE_SIZE = 10
 
 
 def format_response(data: dict, tool_name: str) -> str:
@@ -27,7 +28,6 @@ def format_response(data: dict, tool_name: str) -> str:
         return text
 
     # Auto-detect: find the largest list with 10+ items
-    _MIN_TRUNCATABLE_SIZE = 10
     array_key = None
     max_len = 0
     for key, value in data.items():
@@ -43,8 +43,7 @@ def format_response(data: dict, tool_name: str) -> str:
         return json.dumps({
             "_error": "response_too_large",
             "_size": len(text),
-            "_suggestion": f"Use 'fields' parameter to select only needed fields, "
-                           f"or reduce 'limit' to get fewer rows.",
+            "_suggestion": "Pass 'limit' parameter to paginate through results.",
         }, indent=2)
 
     original_count = len(data[array_key])
