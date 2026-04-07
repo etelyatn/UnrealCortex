@@ -332,3 +332,81 @@ class TestRouterPagination:
 
         assert result["saved"] is True
         assert "_pagination" not in result
+
+
+class TestPaginationEdgeCases:
+    """Edge cases and interaction between Phase 1 and Phase 2."""
+
+    def _make_router(self, domain: str = "data", response_data: dict | None = None):
+        connection = MagicMock()
+        if response_data is not None:
+            connection.send_command.return_value = {"success": True, "data": response_data}
+        return make_router(domain, connection, "test docs"), connection
+
+    def test_large_limit_triggers_truncation_safety_net(self):
+        """A huge page that exceeds 40KB still gets truncated as safety net."""
+        # Create items large enough that 200 items exceed 40KB
+        items = [{"id": i, "data": "x" * 300} for i in range(500)]
+        router, _ = self._make_router(response_data={"rows": items})
+
+        result = json.loads(router("list", {"limit": 200}))
+
+        assert "_pagination" in result
+        # If the page exceeds 40KB, truncation also kicks in
+        result_text = json.dumps(result, indent=2)
+        assert len(result_text) <= _MAX_RESPONSE_CHARS
+
+    def test_cursor_without_limit_uses_embedded_limit(self):
+        """cursor without limit in the request still works — limit is in the cursor."""
+        items = [{"id": i} for i in range(100)]
+        router, conn = self._make_router(response_data={"rows": items})
+
+        page1 = json.loads(router("list", {"limit": 25}))
+        cursor = page1["_pagination"]["next_cursor"]
+
+        conn.send_command.reset_mock()
+        page2 = json.loads(router("list", {"cursor": cursor}))
+
+        assert page2["_pagination"]["returned"] == 25
+        assert page2["rows"][0]["id"] == 25
+
+    def test_limit_string_coerced_to_int(self):
+        """limit passed as string '50' should work."""
+        items = [{"id": i} for i in range(100)]
+        router, _ = self._make_router(response_data={"rows": items})
+
+        result = json.loads(router("list", {"limit": "50"}))
+
+        assert "_pagination" in result
+        assert result["_pagination"]["returned"] == 50
+
+    def test_pagination_metadata_no_count_field(self):
+        """Paginated responses use _pagination.total, not a top-level count field."""
+        items = [{"id": i} for i in range(100)]
+        router, _ = self._make_router(response_data={"rows": items, "count": 100})
+
+        result = json.loads(router("list", {"limit": 10}))
+
+        # count from template is preserved, _pagination.total is canonical
+        assert result["_pagination"]["total"] == 100
+
+    def test_lru_promotion_protects_accessed_entry(self):
+        """Reading an entry promotes it — the least recently ACCESSED is evicted, not oldest inserted."""
+        cache = PaginationCache(max_entries=2, ttl_seconds=60)
+
+        key1 = cache.store("cmd1", {}, "a", [1, 2, 3], {})
+        key2 = cache.store("cmd2", {}, "b", [4, 5, 6], {})
+
+        # Access key1 — this promotes it to most recently used
+        cache.get_page(key1, offset=0, limit=2)
+
+        # Insert key3 — key2 (least recently accessed) should be evicted
+        key3 = cache.store("cmd3", {}, "c", [7, 8, 9], {})
+
+        # key2 was evicted
+        with pytest.raises(KeyError, match="CURSOR_EXPIRED"):
+            cache.get_page(key2, offset=0, limit=2)
+
+        # key1 and key3 are still available
+        page1, _ = cache.get_page(key1, offset=0, limit=2)
+        assert page1 == [1, 2]
