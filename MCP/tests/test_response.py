@@ -55,8 +55,8 @@ class TestAutoDetectTruncation:
         }
         result = json.loads(format_response(data, "test"))
 
-        # Should hit the response_too_large error since the small list isn't truncatable
-        assert result.get("_error") == "response_too_large"
+        # Should hit the RESPONSE_TOO_LARGE error since the small list isn't truncatable
+        assert result.get("_error") == "RESPONSE_TOO_LARGE"
 
     def test_multiple_large_lists_truncates_largest(self):
         """When multiple lists qualify, the largest one is truncated."""
@@ -72,11 +72,11 @@ class TestAutoDetectTruncation:
         assert len(result["small_list"]) == 15
 
     def test_no_lists_returns_error(self):
-        """Response with no lists returns response_too_large error."""
+        """Response with no lists returns RESPONSE_TOO_LARGE error."""
         data = {"huge_string": "x" * 50_000}
         result = json.loads(format_response(data, "test"))
 
-        assert result["_error"] == "response_too_large"
+        assert result["_error"] == "RESPONSE_TOO_LARGE"
 
     def test_small_response_passes_through(self):
         """Responses under 40KB are returned unchanged."""
@@ -93,7 +93,7 @@ class TestAutoDetectTruncation:
         assert "limit" in result["_truncated"]["suggestion"].lower()
 
     def test_no_truncatable_list_error_suggestion_mentions_limit(self):
-        """response_too_large error suggestion should also mention 'limit'."""
+        """RESPONSE_TOO_LARGE error suggestion should also mention 'limit'."""
         data = {"huge_string": "x" * 50_000}
         result = json.loads(format_response(data, "test"))
 
@@ -219,6 +219,15 @@ class TestPaginationCache:
         assert response["command"] == "list"
         assert len(response["rows"]) == 10
         assert response["_pagination"] == meta
+
+
+@pytest.fixture(autouse=True)
+def _clear_pagination_cache():
+    """Clear the module-level pagination cache before each test."""
+    from cortex_mcp.tools import routers
+    routers._pagination_cache.clear()
+    yield
+    routers._pagination_cache.clear()
 
 
 class TestRouterPagination:

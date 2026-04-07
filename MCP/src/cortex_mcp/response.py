@@ -6,7 +6,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 _MAX_RESPONSE_CHARS = 40_000
-_MIN_TRUNCATABLE_SIZE = 10
+_MIN_LIST_SIZE = 10
+
+
+def _find_largest_list(data: dict) -> str | None:
+    """Find the key of the largest list with _MIN_LIST_SIZE+ items in data."""
+    best_key = None
+    best_len = 0
+    for key, value in data.items():
+        if isinstance(value, list) and len(value) >= _MIN_LIST_SIZE and len(value) > best_len:
+            best_len = len(value)
+            best_key = key
+    return best_key
 
 
 def format_response(data: dict, tool_name: str) -> str:
@@ -28,12 +39,7 @@ def format_response(data: dict, tool_name: str) -> str:
         return text
 
     # Auto-detect: find the largest list with 10+ items
-    array_key = None
-    max_len = 0
-    for key, value in data.items():
-        if isinstance(value, list) and len(value) >= _MIN_TRUNCATABLE_SIZE and len(value) > max_len:
-            max_len = len(value)
-            array_key = key
+    array_key = _find_largest_list(data)
 
     if array_key is None:
         logger.warning(
@@ -41,7 +47,7 @@ def format_response(data: dict, tool_name: str) -> str:
             tool_name, len(text),
         )
         return json.dumps({
-            "_error": "response_too_large",
+            "_error": "RESPONSE_TOO_LARGE",
             "_size": len(text),
             "_suggestion": "Pass 'limit' parameter to paginate through results.",
         }, indent=2)

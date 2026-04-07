@@ -98,6 +98,10 @@ class PaginationCache:
 
         return page, meta
 
+    def clear(self) -> None:
+        """Clear all cache entries. Intended for testing."""
+        self._entries.clear()
+
     def rebuild_response(self, key: str, page: list, meta: dict) -> dict:
         """Rebuild a full response dict from template + page + pagination metadata."""
         entry = self._entries.get(key)

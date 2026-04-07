@@ -8,7 +8,7 @@ from typing import Callable
 
 from cortex_mcp.capabilities import CORE_DOMAINS
 from cortex_mcp.pagination import PaginationCache, decode_cursor
-from cortex_mcp.response import format_response
+from cortex_mcp.response import format_response, _find_largest_list
 from cortex_mcp.schema_generator import (
     SCHEMA_VERSION,
     get_schema_dir,
@@ -22,19 +22,7 @@ _TTL_CATALOG = 600
 
 _pagination_cache = PaginationCache(max_entries=5, ttl_seconds=60.0)
 
-_MIN_PAGINATABLE_SIZE = 10
 _MAX_LIMIT = 200
-
-
-def _find_paginatable_array(data: dict) -> str | None:
-    """Find the largest list with 10+ items in the response."""
-    best_key = None
-    best_len = 0
-    for key, value in data.items():
-        if isinstance(value, list) and len(value) >= _MIN_PAGINATABLE_SIZE and len(value) > best_len:
-            best_len = len(value)
-            best_key = key
-    return best_key
 
 
 def _validate_limit(limit) -> tuple[int | None, str | None]:
@@ -42,7 +30,7 @@ def _validate_limit(limit) -> tuple[int | None, str | None]:
     try:
         limit = int(limit)
     except (TypeError, ValueError):
-        return None, json.dumps({"_error": "INVALID_LIMIT", "_message": "limit must be an integer between 1 and 200."})
+        return None, json.dumps({"_error": "INVALID_LIMIT", "_message": f"limit must be an integer between 1 and {_MAX_LIMIT}."})
     if limit < 1 or limit > _MAX_LIMIT:
         return None, json.dumps({"_error": "INVALID_LIMIT", "_message": f"limit must be between 1 and {_MAX_LIMIT}."})
     return limit, None
@@ -61,10 +49,10 @@ def _handle_cursor_request(cursor_token: str) -> str:
 
     try:
         page, meta = _pagination_cache.get_page(key, offset, limit)
+        response = _pagination_cache.rebuild_response(key, page, meta)
     except KeyError:
         return json.dumps({"_error": "CURSOR_EXPIRED", "_message": "Cached results have expired. Re-send the original command with 'limit' to start a new pagination sequence."})
 
-    response = _pagination_cache.rebuild_response(key, page, meta)
     return format_response(response, "paginated")
 
 
@@ -77,7 +65,7 @@ def _handle_limit_request(domain: str, command: str, params: dict, limit: int, c
     response = connection.send_command(qualified, clean_params)
     data = response.get("data", {})
 
-    array_key = _find_paginatable_array(data)
+    array_key = _find_largest_list(data)
     if array_key is None:
         # No qualifying array — return as-is, limit is a no-op
         return format_response(data, f"{domain}_cmd")
@@ -85,10 +73,13 @@ def _handle_limit_request(domain: str, command: str, params: dict, limit: int, c
     full_list = data[array_key]
     template = {k: v for k, v in data.items() if k != array_key}
 
-    cache_key = _pagination_cache.store(qualified, params, array_key, full_list, template)
+    cache_key = _pagination_cache.store(qualified, clean_params, array_key, full_list, template)
 
-    page, meta = _pagination_cache.get_page(cache_key, offset=0, limit=limit)
-    result = _pagination_cache.rebuild_response(cache_key, page, meta)
+    try:
+        page, meta = _pagination_cache.get_page(cache_key, offset=0, limit=limit)
+        result = _pagination_cache.rebuild_response(cache_key, page, meta)
+    except KeyError:
+        return json.dumps({"_error": "CURSOR_EXPIRED", "_message": "Cached results have expired. Re-send the original command with 'limit' to start a new pagination sequence."})
     return format_response(result, f"{domain}_cmd")
 
 
