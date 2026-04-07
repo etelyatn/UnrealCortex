@@ -1,6 +1,7 @@
 """Cursor-based pagination cache for large MCP responses."""
 
 import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -21,7 +22,7 @@ def decode_cursor(cursor: str) -> dict:
     try:
         raw = base64.b64decode(cursor)
         data = json.loads(raw)
-    except Exception:
+    except (ValueError, binascii.Error):
         raise ValueError("INVALID_CURSOR")
 
     if not all(k in data for k in ("key", "offset", "limit")):

@@ -356,7 +356,8 @@ class TestPaginationEdgeCases:
         # If the page exceeds 40KB, truncation also kicks in
         result_text = json.dumps(result, indent=2)
         assert len(result_text) <= _MAX_RESPONSE_CHARS
-        # Safety net actually triggered — page was truncated below the requested limit
+        # Safety net actually triggered — rows is checked directly because
+        # _pagination.returned reflects the pre-truncation count (see TD-001).
         assert len(result["rows"]) < 200
 
     def test_cursor_without_limit_uses_embedded_limit(self):
@@ -414,3 +415,18 @@ class TestPaginationEdgeCases:
         # key1 and key3 are still available
         page1, _ = cache.get_page(key1, offset=0, limit=2)
         assert page1 == [1, 2]
+
+    def test_cursor_past_end_of_list_returns_empty_page(self):
+        """A cursor pointing past the end returns an empty page with has_more=False."""
+        cache = PaginationCache(max_entries=5, ttl_seconds=60)
+        full_list = [{"id": i} for i in range(10)]
+
+        key = cache.store("data.list", {}, "rows", full_list, {})
+        # offset >= total → empty slice
+        page, meta = cache.get_page(key, offset=10, limit=5)
+
+        assert page == []
+        assert meta["returned"] == 0
+        assert meta["total"] == 10
+        assert meta["has_more"] is False
+        assert meta["next_cursor"] is None
