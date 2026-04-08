@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "Conversion/CortexDependencyTypes.h"
 #include "Conversion/CortexDependencyGatherer.h"
+#include "Conversion/CortexConversionContext.h"
 #include "Widgets/SCortexDependencyPanel.h"
 #include "CortexConversionTypes.h"
 
