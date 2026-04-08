@@ -66,19 +66,22 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 		FCortexCommandInfo{ TEXT("list_nodes"), TEXT("List nodes in a graph") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph to inspect, defaults to EventGraph"))
-			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')"))
+			.Optional(TEXT("compact"), TEXT("boolean"), TEXT("Omit position, node_class, pin_count to reduce token usage (default: true)")),
 		FCortexCommandInfo{ TEXT("get_node"), TEXT("Get node details with all pins") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Identifier of the node to inspect"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node"))
-			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')"))
+			.Optional(TEXT("compact"), TEXT("boolean"), TEXT("Omit position, node_class; filter hidden unconnected pins (default: true)")),
 		FCortexCommandInfo{ TEXT("search_nodes"), TEXT("Search nodes across graphs by class, function name, or display name") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("node_class"), TEXT("string"), TEXT("Runtime node class filter"))
 			.Optional(TEXT("function_name"), TEXT("string"), TEXT("Function-name filter for call nodes"))
 			.Optional(TEXT("display_name"), TEXT("string"), TEXT("Node display-name filter"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Restrict search to a specific graph"))
-			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path to restrict search")),
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path to restrict search"))
+			.Optional(TEXT("compact"), TEXT("boolean"), TEXT("Omit node_class from results (default: true)")),
 		FCortexCommandInfo{ TEXT("add_node"), TEXT("Add a node to a graph") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("node_class"), TEXT("string"), TEXT("Node class to create"))
