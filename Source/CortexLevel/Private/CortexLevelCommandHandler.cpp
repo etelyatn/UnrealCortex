@@ -258,8 +258,9 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
             .Optional(TEXT("region"), TEXT("object"), TEXT("World-space region filter"))
             .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum actors to return"))
             .Optional(TEXT("offset"), TEXT("number"), TEXT("Pagination offset")),
-        FCortexCommandInfo{ TEXT("find_actors"), TEXT("Find actors by wildcard pattern") }
-            .Required(TEXT("pattern"), TEXT("string"), TEXT("Wildcard actor search pattern")),
+        FCortexCommandInfo{ TEXT("find_actors"), TEXT("Find actors by pattern (auto-wildcards plain keywords)") }
+            .Required(TEXT("pattern"), TEXT("string"), TEXT("Search pattern — plain keywords auto-wrapped as *keyword*"))
+            .Optional(TEXT("include_components"), TEXT("boolean"), TEXT("Include component list per match")),
         FCortexCommandInfo{ TEXT("get_bounds"), TEXT("Compute bounds for filtered actors") }
             .Optional(TEXT("class"), TEXT("string"), TEXT("Actor class filter"))
             .Optional(TEXT("tags"), TEXT("array"), TEXT("Required actor tags"))
