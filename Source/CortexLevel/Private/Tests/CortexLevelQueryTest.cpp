@@ -265,6 +265,126 @@ bool FCortexLevelFindActorsTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexLevelFindActorsAutoWildcardTest,
+    "Cortex.Level.Query.FindActorsAutoWildcard",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelFindActorsAutoWildcardTest::RunTest(const FString& Parameters)
+{
+    if (!GEditor)
+    {
+        AddInfo(TEXT("No editor - skipping"));
+        return true;
+    }
+
+    FCortexCommandRouter Router = CreateLevelRouterQuery();
+    TArray<FString> Spawned = {
+        SpawnPointLightQuery(Router, TEXT("FindWild_Alpha"), FVector(0, 0, 0)),
+        SpawnPointLightQuery(Router, TEXT("FindWild_Beta"), FVector(100, 0, 0))
+    };
+
+    // Search without wildcards — should auto-wrap as *Wild*
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("pattern"), TEXT("Wild"));
+
+    FCortexCommandResult Result = Router.Execute(TEXT("level.find_actors"), Params);
+    TestTrue(TEXT("find_actors auto-wildcard should succeed"), Result.bSuccess);
+
+    if (Result.bSuccess && Result.Data.IsValid())
+    {
+        int32 Count = 0;
+        Result.Data->TryGetNumberField(TEXT("count"), Count);
+        TestTrue(TEXT("Should match at least 2 actors with substring"), Count >= 2);
+    }
+
+    DeleteActorsQuery(Router, Spawned);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexLevelFindActorsExplicitWildcardTest,
+    "Cortex.Level.Query.FindActorsExplicitWildcard",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelFindActorsExplicitWildcardTest::RunTest(const FString& Parameters)
+{
+    if (!GEditor)
+    {
+        AddInfo(TEXT("No editor - skipping"));
+        return true;
+    }
+
+    FCortexCommandRouter Router = CreateLevelRouterQuery();
+    TArray<FString> Spawned = {
+        SpawnPointLightQuery(Router, TEXT("FindWild_Alpha"), FVector(0, 0, 0)),
+        SpawnPointLightQuery(Router, TEXT("FindWild_Beta"), FVector(100, 0, 0))
+    };
+
+    // Explicit wildcard — should still work unchanged
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("pattern"), TEXT("FindWild_*"));
+
+    FCortexCommandResult Result = Router.Execute(TEXT("level.find_actors"), Params);
+    TestTrue(TEXT("find_actors explicit wildcard should succeed"), Result.bSuccess);
+
+    if (Result.bSuccess && Result.Data.IsValid())
+    {
+        int32 Count = 0;
+        Result.Data->TryGetNumberField(TEXT("count"), Count);
+        TestTrue(TEXT("Explicit wildcard should match at least 2"), Count >= 2);
+    }
+
+    DeleteActorsQuery(Router, Spawned);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexLevelFindActorsIncludeComponentsTest,
+    "Cortex.Level.Query.FindActorsIncludeComponents",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelFindActorsIncludeComponentsTest::RunTest(const FString& Parameters)
+{
+    if (!GEditor)
+    {
+        AddInfo(TEXT("No editor - skipping"));
+        return true;
+    }
+
+    FCortexCommandRouter Router = CreateLevelRouterQuery();
+    TArray<FString> Spawned = {
+        SpawnPointLightQuery(Router, TEXT("CompIncl_Light"), FVector(0, 0, 0))
+    };
+
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("pattern"), TEXT("CompIncl_Light"));
+    Params->SetBoolField(TEXT("include_components"), true);
+
+    FCortexCommandResult Result = Router.Execute(TEXT("level.find_actors"), Params);
+    TestTrue(TEXT("find_actors with include_components should succeed"), Result.bSuccess);
+
+    if (Result.bSuccess && Result.Data.IsValid())
+    {
+        const TArray<TSharedPtr<FJsonValue>>* Matches = nullptr;
+        if (Result.Data->TryGetArrayField(TEXT("matches"), Matches) && Matches && Matches->Num() > 0)
+        {
+            const TSharedPtr<FJsonObject>& First = (*Matches)[0]->AsObject();
+            TestTrue(TEXT("Match should include components array"), First.IsValid() && First->HasField(TEXT("components")));
+        }
+        else
+        {
+            AddError(TEXT("Expected at least one match"));
+        }
+    }
+
+    DeleteActorsQuery(Router, Spawned);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexLevelGetBoundsTest,
     "Cortex.Level.Query.GetBounds",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter

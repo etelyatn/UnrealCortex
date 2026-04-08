@@ -277,7 +277,8 @@ FCortexCommandResult FCortexLevelComponentOps::RemoveComponent(const TSharedPtr<
     {
         return FCortexCommandRouter::Error(
             CortexErrorCodes::ComponentNotFound,
-            FString::Printf(TEXT("Component not found: %s"), *ComponentName)
+            FString::Printf(TEXT("Component not found: %s"), *ComponentName),
+            FCortexLevelUtils::CollectComponentSuggestions(Actor)
         );
     }
 
@@ -344,7 +345,9 @@ FCortexCommandResult FCortexLevelComponentOps::GetComponentProperty(const TShare
     UActorComponent* Component = FindComponentByName(Actor, ComponentName);
     if (!Component)
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ComponentNotFound, FString::Printf(TEXT("Component not found: %s"), *ComponentName));
+        return FCortexCommandRouter::Error(CortexErrorCodes::ComponentNotFound,
+            FString::Printf(TEXT("Component not found: %s"), *ComponentName),
+            FCortexLevelUtils::CollectComponentSuggestions(Actor));
     }
 
     FProperty* Property = Component->GetClass()->FindPropertyByName(FName(*PropertyName));
@@ -410,7 +413,8 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
     if (!Component)
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::ComponentNotFound,
-            FString::Printf(TEXT("Component not found: %s"), *ComponentName));
+            FString::Printf(TEXT("Component not found: %s"), *ComponentName),
+            FCortexLevelUtils::CollectComponentSuggestions(Actor));
     }
 
     // Check handler registry for custom write logic

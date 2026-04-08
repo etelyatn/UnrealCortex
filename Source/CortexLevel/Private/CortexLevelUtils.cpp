@@ -1,5 +1,6 @@
 #include "CortexLevelUtils.h"
 
+#include "Components/ActorComponent.h"
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Blueprint.h"
@@ -115,9 +116,11 @@ AActor* FCortexLevelUtils::FindActorByLabelOrPath(UWorld* World, const FString& 
         return PathMatch;
     }
 
+    TSharedPtr<FJsonObject> SuggestionDetails = CollectActorSuggestions(World, ActorIdentifier);
     OutError = FCortexCommandRouter::Error(
         CortexErrorCodes::ActorNotFound,
-        FString::Printf(TEXT("Actor not found: %s"), *ActorIdentifier)
+        FString::Printf(TEXT("Actor not found: %s"), *ActorIdentifier),
+        SuggestionDetails
     );
     return nullptr;
 }
@@ -208,6 +211,111 @@ TSharedPtr<FJsonObject> FCortexLevelUtils::SerializeActorSummary(AActor* Actor)
     Json->SetArrayField(TEXT("tags"), Tags);
 
     return Json;
+}
+
+void FCortexLevelUtils::AppendComponentSummary(AActor* Actor, TSharedPtr<FJsonObject> Json)
+{
+    if (!Actor || !Json.IsValid())
+    {
+        return;
+    }
+
+    TArray<UActorComponent*> Components;
+    Actor->GetComponents(Components);
+
+    TArray<TSharedPtr<FJsonValue>> ComponentArray;
+    for (UActorComponent* Component : Components)
+    {
+        if (!IsValid(Component))
+        {
+            continue;
+        }
+
+        TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
+        CompObj->SetStringField(TEXT("name"), Component->GetName());
+        CompObj->SetStringField(TEXT("class"), Component->GetClass()->GetName());
+        ComponentArray.Add(MakeShared<FJsonValueObject>(CompObj));
+    }
+
+    Json->SetArrayField(TEXT("components"), ComponentArray);
+    Json->SetNumberField(TEXT("component_count"), ComponentArray.Num());
+}
+
+TSharedPtr<FJsonObject> FCortexLevelUtils::CollectActorSuggestions(UWorld* World, const FString& Query, int32 MaxSuggestions)
+{
+    TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+    TArray<TSharedPtr<FJsonValue>> Suggestions;
+
+    if (!World || Query.IsEmpty())
+    {
+        Details->SetArrayField(TEXT("suggestions"), Suggestions);
+        return Details;
+    }
+
+    const FString QueryLower = Query.ToLower();
+
+    for (TActorIterator<AActor> It(World); It; ++It)
+    {
+        AActor* Actor = *It;
+        if (!IsValid(Actor))
+        {
+            continue;
+        }
+
+        const FString Label = Actor->GetActorLabel();
+        const FString Name = Actor->GetName();
+
+        if (Label.ToLower().Contains(QueryLower))
+        {
+            Suggestions.Add(MakeShared<FJsonValueString>(
+                FString::Printf(TEXT("%s (label)"), *Label)));
+        }
+        else if (Name.ToLower().Contains(QueryLower))
+        {
+            Suggestions.Add(MakeShared<FJsonValueString>(
+                FString::Printf(TEXT("%s (name)"), *Name)));
+        }
+
+        if (Suggestions.Num() >= MaxSuggestions)
+        {
+            break;
+        }
+    }
+
+    Details->SetArrayField(TEXT("suggestions"), Suggestions);
+    return Details;
+}
+
+TSharedPtr<FJsonObject> FCortexLevelUtils::CollectComponentSuggestions(AActor* Actor, int32 MaxSuggestions)
+{
+    TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+    TArray<TSharedPtr<FJsonValue>> Suggestions;
+
+    if (Actor)
+    {
+        TArray<UActorComponent*> Components;
+        Actor->GetComponents(Components);
+
+        int32 Count = 0;
+        for (UActorComponent* Comp : Components)
+        {
+            if (!IsValid(Comp))
+            {
+                continue;
+            }
+
+            Suggestions.Add(MakeShared<FJsonValueString>(
+                FString::Printf(TEXT("%s (%s)"), *Comp->GetName(), *Comp->GetClass()->GetName())));
+
+            if (++Count >= MaxSuggestions)
+            {
+                break;
+            }
+        }
+    }
+
+    Details->SetArrayField(TEXT("suggestions"), Suggestions);
+    return Details;
 }
 
 bool FCortexLevelUtils::TryParseVector(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldName, const FVector& DefaultValue, FVector& OutVector)
