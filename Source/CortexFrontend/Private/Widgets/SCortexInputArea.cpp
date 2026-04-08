@@ -1231,7 +1231,11 @@ void SCortexInputArea::LoadAssetCache()
         Item->Kind = ECortexAutoCompleteKind::Asset;
         AssetCache.Add(Item);
         return true; // Continue enumeration
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION < 5
+    }, true);  // bOnlyOnDiskAssets — UE 5.4 uses bool, 5.5+ uses EEnumerateAssetsFlags
+#else
     }, UE::AssetRegistry::EEnumerateAssetsFlags::OnlyOnDiskAssets);
+#endif
 }
 
 void SCortexInputArea::PopulateCoreCommands()

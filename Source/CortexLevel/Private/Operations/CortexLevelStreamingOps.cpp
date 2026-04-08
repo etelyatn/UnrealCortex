@@ -1,5 +1,6 @@
 #include "Operations/CortexLevelStreamingOps.h"
 
+#include "EngineUtils.h"
 #include "CortexLevelUtils.h"
 #include "CortexTypes.h"
 #include "DataLayer/DataLayerEditorSubsystem.h"

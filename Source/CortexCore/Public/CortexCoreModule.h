@@ -10,7 +10,7 @@
 
 CORTEXCORE_API DECLARE_LOG_CATEGORY_EXTERN(LogCortex, Log, All);
 
-class FCortexCommandRouter;
+#include "CortexCommandRouter.h"
 
 class CORTEXCORE_API FCortexCoreModule : public IModuleInterface
 {
