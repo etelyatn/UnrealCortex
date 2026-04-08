@@ -217,3 +217,41 @@ bool FCortexSerializerSoftObjectInvalidPathTest::RunTest(const FString& Paramete
 	TestObj->MarkAsGarbage();
 	return true;
 }
+
+// ============================================================================
+// Test: PropertyToJson returns a valid value for unhandled property types
+// ============================================================================
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerUnhandledPropertyTest,
+	"Cortex.Core.Serializer.UnhandledPropertyReturnsValidValue",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerUnhandledPropertyTest::RunTest(const FString& Parameters)
+{
+	// UActorComponent::OnComponentActivated is a FMulticastInlineDelegateProperty,
+	// which is not handled by PropertyToJson. Before the fix, PropertyToJson returned
+	// nullptr for this type. Callers in the Level domain pass the result directly to
+	// FJsonObject::SetField without null-checking, so nullptr causes a crash in
+	// FJsonSerializer::Serialize (null TSharedPtr dereference at JsonSerializer.h:420).
+	UStaticMeshComponent* TestComp = NewObject<UStaticMeshComponent>();
+
+	FProperty* DelegateProp = TestComp->GetClass()->FindPropertyByName(TEXT("OnComponentActivated"));
+	TestNotNull(TEXT("Should find OnComponentActivated property"), DelegateProp);
+	if (DelegateProp == nullptr)
+	{
+		TestComp->MarkAsGarbage();
+		return true;
+	}
+
+	void* ValuePtr = DelegateProp->ContainerPtrToValuePtr<void>(TestComp);
+	TSharedPtr<FJsonValue> Result = FCortexSerializer::PropertyToJson(DelegateProp, ValuePtr);
+
+	// Must return a valid (non-null) JSON value — callers pass this directly to
+	// FJsonObject::SetField without null-checking. A null result crashes later
+	// when FJsonSerializer iterates all values and dereferences the null entry.
+	TestTrue(TEXT("PropertyToJson must return valid value for unhandled types"), Result.IsValid());
+
+	TestComp->MarkAsGarbage();
+	return true;
+}

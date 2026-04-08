@@ -340,7 +340,7 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 
 	UE_LOG(LogCortex, Warning, TEXT("Unhandled property type: %s (%s)"),
 		*Property->GetName(), *Property->GetClass()->GetName());
-	return nullptr;
+	return MakeShared<FJsonValueNull>();
 }
 
 bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, const UStruct* StructType, void* StructData, UObject* Outer, TArray<FString>& OutWarnings)
