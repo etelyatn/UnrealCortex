@@ -260,6 +260,7 @@ bool FCortexBPInfoInheritedFunctionsTest::RunTest(const FString& Parameters)
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("asset_path"), TestBPPath);
 	Params->SetBoolField(TEXT("include_inherited"), true);
+	Params->SetBoolField(TEXT("compact"), false);
 
 	FCortexCommandResult Result = Handler.Execute(TEXT("get_info"), Params);
 	TestTrue(TEXT("get_info should succeed"), Result.bSuccess);
