@@ -120,7 +120,9 @@ def register_graph_tools(mcp, connection: UEConnection):
             subgraph_path: Dot-separated path into nested composite subgraphs
                 (e.g., 'BeginPlay.Inner'). Resolves from graph_name downward.
             compact: Omit position, node_class, and hidden unconnected pins (default: true).
-                Set false to see all pins and positional data.
+                Hidden pins are omitted only when they have no connections, no default
+                value, and no default object. Use compact=false to reveal all pins
+                (e.g., before set_pin_value on a hidden pin).
 
         Returns:
             JSON with node details and pins with connection info.

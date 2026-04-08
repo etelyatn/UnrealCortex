@@ -42,6 +42,10 @@ public:
 	 *   - DefaultValue is empty
 	 *   - DefaultTextValue is empty
 	 *   - DefaultObject is nullptr
+	 *
+	 * Note: SubPins (e.g., split Vector X/Y/Z) are separate UEdGraphPin* entries and are
+	 * evaluated independently — a hidden parent pin may be skipped even if its sub-pins
+	 * have connections, since those sub-pins will be serialized on their own.
 	 */
 	static bool ShouldSkipPinCompact(const UEdGraphPin* Pin);
 
