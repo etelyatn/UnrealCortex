@@ -1,6 +1,7 @@
 #include "CortexBPAssetOps.h"
 #include "Operations/CortexBPTypeUtils.h"
 #include "CortexBlueprintModule.h"
+#include "CortexEditorUtils.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -91,16 +92,7 @@ UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FString& 
 		}
 	}
 
-	// Normalize path (ensure it starts with /Game/)
-	FString NormalizedPath = AssetPath;
-	if (!NormalizedPath.StartsWith(TEXT("/")))
-	{
-		NormalizedPath = TEXT("/Game/") + NormalizedPath;
-	}
-	else if (!NormalizedPath.StartsWith(TEXT("/Game/")))
-	{
-		NormalizedPath = TEXT("/Game") + NormalizedPath;
-	}
+	FString NormalizedPath = FCortexEditorUtils::NormalizeMountedPath(AssetPath);
 
 	// Check if package exists before LoadObject to avoid SkipPackage warnings
 	FString PkgName = FPackageName::ObjectPathToPackageName(NormalizedPath);
@@ -507,15 +499,7 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 	}
 	FString PackagePath = FString::Printf(TEXT("%s/%s"), *NormalizedPath, *Name);
 
-	// Normalize path (ensure it starts with /Game/)
-	if (!PackagePath.StartsWith(TEXT("/")))
-	{
-		PackagePath = TEXT("/Game/") + PackagePath;
-	}
-	else if (!PackagePath.StartsWith(TEXT("/Game/")))
-	{
-		PackagePath = TEXT("/Game") + PackagePath;
-	}
+	PackagePath = FCortexEditorUtils::NormalizeMountedPath(PackagePath);
 
 	// Check if asset already exists (guard with FindPackage/DoesPackageExist to avoid warnings)
 	FString ExistingPkgName = FPackageName::ObjectPathToPackageName(PackagePath);
@@ -643,15 +627,7 @@ FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Para
 	// Apply path filter if provided
 	if (!PathFilter.IsEmpty())
 	{
-		// Normalize path (ensure it starts with /Game/)
-		if (!PathFilter.StartsWith(TEXT("/")))
-		{
-			PathFilter = TEXT("/Game/") + PathFilter;
-		}
-		else if (!PathFilter.StartsWith(TEXT("/Game/")))
-		{
-			PathFilter = TEXT("/Game") + PathFilter;
-		}
+		PathFilter = FCortexEditorUtils::NormalizeMountedPath(PathFilter);
 
 		Filter.PackagePaths.Add(FName(*PathFilter));
 		Filter.bRecursivePaths = true;
@@ -1295,16 +1271,7 @@ FCortexCommandResult FCortexBPAssetOps::Rename(const TSharedPtr<FJsonObject>& Pa
 		);
 	}
 
-	// Normalize destination to object path form (/Game/Path/AssetName)
-	FString NormalizedDestPath = DestPath;
-	if (!NormalizedDestPath.StartsWith(TEXT("/")))
-	{
-		NormalizedDestPath = TEXT("/Game/") + NormalizedDestPath;
-	}
-	else if (!NormalizedDestPath.StartsWith(TEXT("/Game/")))
-	{
-		NormalizedDestPath = TEXT("/Game") + NormalizedDestPath;
-	}
+	FString NormalizedDestPath = FCortexEditorUtils::NormalizeMountedPath(DestPath);
 
 	if (SourcePath == NormalizedDestPath)
 	{

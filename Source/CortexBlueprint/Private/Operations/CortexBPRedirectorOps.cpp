@@ -1,5 +1,6 @@
 #include "Operations/CortexBPRedirectorOps.h"
 #include "CortexCommandRouter.h"
+#include "CortexEditorUtils.h"
 #include "Dom/JsonObject.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
@@ -29,14 +30,7 @@ FCortexCommandResult FCortexBPRedirectorOps::FixupRedirectors(const TSharedPtr<F
 	bool bRecursive = true;
 	Params->TryGetBoolField(TEXT("recursive"), bRecursive);
 
-	if (!Path.StartsWith(TEXT("/")))
-	{
-		Path = TEXT("/Game/") + Path;
-	}
-	else if (!Path.StartsWith(TEXT("/Game/")))
-	{
-		Path = TEXT("/Game") + Path;
-	}
+	Path = FCortexEditorUtils::NormalizeMountedPath(Path);
 
 	FAssetRegistryModule& AssetRegistryModule =
 		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");

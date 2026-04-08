@@ -299,8 +299,8 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 		}
 		FCortexConversionPayload::FPayloadInterfaceInfo Info;
 		Info.InterfaceName = IfaceDesc.Interface->GetName();
-		// Blueprint interfaces live under /Game/, native ones under /Script/
-		Info.bIsBlueprint = IfaceDesc.Interface->GetPathName().StartsWith(TEXT("/Game/"));
+		// Native C++ interfaces live under /Script/, everything else is a Blueprint interface
+		Info.bIsBlueprint = !IfaceDesc.Interface->GetPathName().StartsWith(TEXT("/Script/"));
 		Payload.ImplementedInterfaces.Add(MoveTemp(Info));
 	}
 

@@ -114,11 +114,6 @@ void FCortexBlueprintModule::OnAssetChanged(const FAssetData& AssetData)
 		return;
 	}
 
-	if (!AssetData.PackageName.ToString().StartsWith(TEXT("/Game/")))
-	{
-		return;
-	}
-
 	if (GEditor != nullptr)
 	{
 		GEditor->GetTimerManager()->ClearTimer(CacheWriteTimerHandle);
@@ -149,7 +144,6 @@ void FCortexBlueprintModule::WriteBlueprintCache()
 
 	FARFilter Filter;
 	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
-	Filter.PackagePaths.Add(FName(TEXT("/Game")));
 	Filter.bRecursivePaths = true;
 	Filter.bRecursiveClasses = true;
 
