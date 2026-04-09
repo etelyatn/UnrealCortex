@@ -50,6 +50,7 @@ def register_graph_tools(mcp, connection: UEConnection):
         asset_path: str,
         graph_name: str = "EventGraph",
         subgraph_path: str = "",
+        compact: bool = True,
     ) -> str:
         """List all nodes in a specific graph.
 
@@ -72,22 +73,25 @@ def register_graph_tools(mcp, connection: UEConnection):
                 For deeper nesting, append further subgraph_name values with a dot:
                 e.g. 'OuterComposite.InnerComposite'.
                 Note: composite names must not contain dots.
+            compact: Omit position, node_class, and pin_count fields (default: true).
+                Set false to include positional data and redundant fields.
 
         Returns:
             JSON with 'nodes' array, each containing:
             - node_id: Unique identifier for the node
             - class: Node class name (e.g., 'UK2Node_Event')
             - display_name: Display name of the node
-            - position: {x, y} coordinates
-            - pin_count: Number of pins on the node
             - connected_pin_count: Number of pins with at least one connection
             - subgraph_name: (composite nodes only) Name of the embedded subgraph
             - is_tunnel_boundary: (tunnel nodes only) True for structural entry/exit nodes
+            - position: {x, y} coordinates (compact=false only)
+            - pin_count: Total number of pins (compact=false only)
         """
         try:
             params = {
                 "asset_path": asset_path,
                 "graph_name": graph_name,
+                "compact": compact,
             }
             if subgraph_path:
                 params["subgraph_path"] = subgraph_path
@@ -103,6 +107,7 @@ def register_graph_tools(mcp, connection: UEConnection):
         node_id: str,
         graph_name: str = "EventGraph",
         subgraph_path: str = "",
+        compact: bool = True,
     ) -> str:
         """Get detailed information about a specific node.
 
@@ -114,9 +119,13 @@ def register_graph_tools(mcp, connection: UEConnection):
             graph_name: Name of the graph containing the node (default: 'EventGraph').
             subgraph_path: Dot-separated path into nested composite subgraphs
                 (e.g., 'BeginPlay.Inner'). Resolves from graph_name downward.
+            compact: Omit position, node_class, and hidden unconnected pins (default: true).
+                Hidden pins are omitted only when they have no connections, no default
+                value, and no default object. Use compact=false to reveal all pins
+                (e.g., before set_pin_value on a hidden pin).
 
         Returns:
-            JSON with node details, position, and all pins with connection info.
+            JSON with node details and pins with connection info.
             If the node is a tunnel boundary (is_tunnel_boundary: true), its pins
             represent the composite's entry/exit execution and data pins. Inspect
             these before connecting nodes inside a composite to the execution flow.
@@ -126,6 +135,7 @@ def register_graph_tools(mcp, connection: UEConnection):
                 "asset_path": asset_path,
                 "node_id": node_id,
                 "graph_name": graph_name,
+                "compact": compact,
             }
             if subgraph_path:
                 params["subgraph_path"] = subgraph_path
@@ -143,6 +153,7 @@ def register_graph_tools(mcp, connection: UEConnection):
         display_name: str = "",
         graph_name: str = "",
         subgraph_path: str = "",
+        compact: bool = True,
     ) -> str:
         """Search nodes across all Blueprint graphs.
 
@@ -158,6 +169,7 @@ def register_graph_tools(mcp, connection: UEConnection):
             graph_name: Optional graph to restrict search to.
             subgraph_path: Dot-separated path to restrict search to a specific subgraph.
                 Requires graph_name to be set.
+            compact: Omit redundant node_class field from results (default: true).
 
         Returns:
             JSON with results array. Each entry includes graph_name and
@@ -169,7 +181,7 @@ def register_graph_tools(mcp, connection: UEConnection):
             return "Error: subgraph_path requires graph_name to be set"
 
         try:
-            params = {"asset_path": asset_path}
+            params = {"asset_path": asset_path, "compact": compact}
             if node_class:
                 params["node_class"] = node_class
             if function_name:

@@ -726,6 +726,10 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 		return Result;
 	}
 
+	// Parse compact flag (default true — omit empty arrays and source field)
+	bool bCompact = true;
+	Params->TryGetBoolField(TEXT("compact"), bCompact);
+
 	// Load Blueprint
 	FString LoadError;
 	UBlueprint* BP = LoadBlueprint(AssetPath, LoadError);
@@ -823,9 +827,18 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 			}
 		}
 
-		FuncObj->SetArrayField(TEXT("inputs"), InputsArr);
-		FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
-		FuncObj->SetStringField(TEXT("source"), TEXT("blueprint"));
+		if (!bCompact || InputsArr.Num() > 0)
+		{
+			FuncObj->SetArrayField(TEXT("inputs"), InputsArr);
+		}
+		if (!bCompact || OutputsArr.Num() > 0)
+		{
+			FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
+		}
+		if (!bCompact)
+		{
+			FuncObj->SetStringField(TEXT("source"), TEXT("blueprint"));
+		}
 
 		FunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
 	}
@@ -870,7 +883,6 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 
 			TSharedPtr<FJsonObject> FuncObj = MakeShared<FJsonObject>();
 			FuncObj->SetStringField(TEXT("name"), Func->GetName());
-			FuncObj->SetStringField(TEXT("source"), TEXT("inherited"));
 
 			TArray<TSharedPtr<FJsonValue>> InputsArr;
 			TArray<TSharedPtr<FJsonValue>> OutputsArr;
@@ -902,8 +914,18 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 				}
 			}
 
-			FuncObj->SetArrayField(TEXT("inputs"), InputsArr);
-			FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
+			if (!bCompact || InputsArr.Num() > 0)
+			{
+				FuncObj->SetArrayField(TEXT("inputs"), InputsArr);
+			}
+			if (!bCompact || OutputsArr.Num() > 0)
+			{
+				FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
+			}
+			if (!bCompact)
+			{
+				FuncObj->SetStringField(TEXT("source"), TEXT("inherited"));
+			}
 			FunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
 		}
 	}

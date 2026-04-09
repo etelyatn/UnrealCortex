@@ -80,11 +80,13 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
             return f"Error: {e}"
 
     @mcp.tool()
-    def get_blueprint_info(asset_path: str) -> str:
+    def get_blueprint_info(asset_path: str, compact: bool = True) -> str:
         """Get detailed information about a Blueprint.
 
         Args:
             asset_path: Full path to the Blueprint (e.g., '/Game/Blueprints/BP_Character')
+            compact: Omit empty inputs/outputs arrays and source field on functions
+                (default: true). Set false for full verbose output.
 
         Returns:
             JSON with:
@@ -93,11 +95,11 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
             - type: Blueprint type
             - parent_class: Parent class name
             - variables: Array of variables, each with name and type
-            - functions: Array of functions, each with name
+            - functions: Array of functions, each with name (and inputs/outputs when non-empty)
             - graphs: Array of all graphs
         """
         try:
-            params = {"asset_path": asset_path}
+            params = {"asset_path": asset_path, "compact": compact}
             response = connection.send_command("blueprint.get_info", params)
             return format_response(response.get("data", {}), "get_blueprint_info")
         except ConnectionError as e:

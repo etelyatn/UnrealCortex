@@ -387,6 +387,10 @@ FCortexCommandResult FCortexGraphNodeOps::ListNodes(const TSharedPtr<FJsonObject
 		}
 	}
 
+	// compact=true by default: omit position, node_class, pin_count
+	bool bCompact = true;
+	Params->TryGetBoolField(TEXT("compact"), bCompact);
+
 	TArray<TSharedPtr<FJsonValue>> NodesArray;
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
@@ -398,13 +402,19 @@ FCortexCommandResult FCortexGraphNodeOps::ListNodes(const TSharedPtr<FJsonObject
 		Entry->SetStringField(TEXT("node_id"), Node->GetName());
 		const FString ClassName = Node->GetClass()->GetName();
 		Entry->SetStringField(TEXT("class"), ClassName);
-		Entry->SetStringField(TEXT("node_class"), ClassName);
+		if (!bCompact)
+		{
+			Entry->SetStringField(TEXT("node_class"), ClassName);
+		}
 		Entry->SetStringField(TEXT("display_name"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
-		TSharedRef<FJsonObject> Pos = MakeShared<FJsonObject>();
-		Pos->SetNumberField(TEXT("x"), Node->NodePosX);
-		Pos->SetNumberField(TEXT("y"), Node->NodePosY);
-		Entry->SetObjectField(TEXT("position"), Pos);
-		Entry->SetNumberField(TEXT("pin_count"), Node->Pins.Num());
+		if (!bCompact)
+		{
+			TSharedRef<FJsonObject> Pos = MakeShared<FJsonObject>();
+			Pos->SetNumberField(TEXT("x"), Node->NodePosX);
+			Pos->SetNumberField(TEXT("y"), Node->NodePosY);
+			Entry->SetObjectField(TEXT("position"), Pos);
+			Entry->SetNumberField(TEXT("pin_count"), Node->Pins.Num());
+		}
 
 		int32 ConnectedPinCount = 0;
 		int32 ConnectionCount = 0;
@@ -497,17 +507,27 @@ FCortexCommandResult FCortexGraphNodeOps::GetNode(const TSharedPtr<FJsonObject>&
 		return LoadError;
 	}
 
+	// compact=true by default: omit position, node_class; filter hidden unconnected pins
+	bool bCompact = true;
+	Params->TryGetBoolField(TEXT("compact"), bCompact);
+
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("node_id"), Node->GetName());
 	const FString ClassName = Node->GetClass()->GetName();
 	Data->SetStringField(TEXT("class"), ClassName);
-	Data->SetStringField(TEXT("node_class"), ClassName);
+	if (!bCompact)
+	{
+		Data->SetStringField(TEXT("node_class"), ClassName);
+	}
 	Data->SetStringField(TEXT("display_name"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
 
-	TSharedRef<FJsonObject> Pos = MakeShared<FJsonObject>();
-	Pos->SetNumberField(TEXT("x"), Node->NodePosX);
-	Pos->SetNumberField(TEXT("y"), Node->NodePosY);
-	Data->SetObjectField(TEXT("position"), Pos);
+	if (!bCompact)
+	{
+		TSharedRef<FJsonObject> Pos = MakeShared<FJsonObject>();
+		Pos->SetNumberField(TEXT("x"), Node->NodePosX);
+		Pos->SetNumberField(TEXT("y"), Node->NodePosY);
+		Data->SetObjectField(TEXT("position"), Pos);
+	}
 
 	TArray<TSharedPtr<FJsonValue>> PinsArray;
 	for (UEdGraphPin* Pin : Node->Pins)
@@ -516,7 +536,11 @@ FCortexCommandResult FCortexGraphNodeOps::GetNode(const TSharedPtr<FJsonObject>&
 		{
 			continue;
 		}
-		PinsArray.Add(MakeShared<FJsonValueObject>(SerializePin(Pin, true)));
+		if (bCompact && ShouldSkipPinCompact(Pin))
+		{
+			continue;
+		}
+		PinsArray.Add(MakeShared<FJsonValueObject>(SerializePin(Pin, true, bCompact)));
 	}
 	Data->SetArrayField(TEXT("pins"), PinsArray);
 
@@ -561,6 +585,10 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 	{
 		return LoadError;
 	}
+
+	// compact=true by default: omit node_class from results
+	bool bCompact = true;
+	Params->TryGetBoolField(TEXT("compact"), bCompact);
 
 	TArray<TSharedPtr<FJsonValue>> ResultsArray;
 
@@ -638,7 +666,10 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 			Entry->SetStringField(TEXT("node_id"), Node->GetName());
 			const FString SearchNodeClass = Node->GetClass()->GetName();
 			Entry->SetStringField(TEXT("class"), SearchNodeClass);
-			Entry->SetStringField(TEXT("node_class"), SearchNodeClass);
+			if (!bCompact)
+			{
+				Entry->SetStringField(TEXT("node_class"), SearchNodeClass);
+			}
 			Entry->SetStringField(TEXT("display_name"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
 			Entry->SetStringField(TEXT("graph_name"), Graph->GetName());
 			if (!CurrentSubgraphPath.IsEmpty())
@@ -1173,7 +1204,20 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	return FCortexCommandRouter::Success(Data);
 }
 
-TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializePin(const UEdGraphPin* Pin, bool bDetailed)
+bool FCortexGraphNodeOps::ShouldSkipPinCompact(const UEdGraphPin* Pin)
+{
+	if (Pin == nullptr)
+	{
+		return true;
+	}
+	return Pin->bHidden
+		&& Pin->LinkedTo.Num() == 0
+		&& Pin->DefaultValue.IsEmpty()
+		&& Pin->DefaultTextValue.IsEmpty()
+		&& Pin->DefaultObject == nullptr;
+}
+
+TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializePin(const UEdGraphPin* Pin, bool bDetailed, bool bCompact)
 {
 	TSharedRef<FJsonObject> PinEntry = MakeShared<FJsonObject>();
 	PinEntry->SetStringField(TEXT("name"), Pin->PinName.ToString());
@@ -1181,14 +1225,23 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializePin(const UEdGraphPin* Pin
 	PinEntry->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
 	if (bDetailed)
 	{
-		PinEntry->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+		const bool bIsConnected = Pin->LinkedTo.Num() > 0;
+
+		// In compact mode, omit false is_connected and empty default_value
+		if (!bCompact || !Pin->DefaultValue.IsEmpty())
+		{
+			PinEntry->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+		}
 		if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Text && !Pin->DefaultTextValue.IsEmpty())
 		{
 			PinEntry->SetObjectField(TEXT("default_text_value"), FCortexSerializer::TextToJson(Pin->DefaultTextValue));
 		}
-		PinEntry->SetBoolField(TEXT("is_connected"), Pin->LinkedTo.Num() > 0);
+		if (!bCompact || bIsConnected)
+		{
+			PinEntry->SetBoolField(TEXT("is_connected"), bIsConnected);
+		}
 
-		if (Pin->LinkedTo.Num() > 0)
+		if (bIsConnected)
 		{
 			TArray<TSharedPtr<FJsonValue>> ConnArray;
 			for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)

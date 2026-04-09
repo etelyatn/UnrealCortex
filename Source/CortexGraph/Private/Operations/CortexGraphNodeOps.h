@@ -25,8 +25,29 @@ public:
 	static UEdGraph* FindGraph(UBlueprint* Blueprint, const FString& GraphName, FCortexCommandResult& OutError);
 	static UEdGraphNode* FindNode(UEdGraph* Graph, const FString& NodeId, FCortexCommandResult& OutError);
 	static UEdGraphPin* FindPin(UEdGraphNode* Node, const FString& PinName, FCortexCommandResult& OutError);
-	// Serialize pin to JSON. bDetailed: if true, includes is_connected and default_value fields
-	static TSharedRef<FJsonObject> SerializePin(const UEdGraphPin* Pin, bool bDetailed = true);
+	/**
+	 * Serialize pin to JSON.
+	 * bDetailed: if true, includes is_connected and default_value fields.
+	 * bCompact: if true (and bDetailed is true), omits false is_connected and empty default_value/default_text_value.
+	 *   Default is false to preserve existing call sites (e.g. AddNode, pin text tests).
+	 *   MCP commands (GetNode) pass bCompact explicitly based on the user-supplied compact param (default true).
+	 */
+	static TSharedRef<FJsonObject> SerializePin(const UEdGraphPin* Pin, bool bDetailed = true, bool bCompact = false);
+
+	/**
+	 * Returns true when a pin should be omitted in compact mode.
+	 * A pin is skipped when ALL of the following hold:
+	 *   - bHidden is true
+	 *   - LinkedTo.Num() == 0 (not connected)
+	 *   - DefaultValue is empty
+	 *   - DefaultTextValue is empty
+	 *   - DefaultObject is nullptr
+	 *
+	 * Note: SubPins (e.g., split Vector X/Y/Z) are separate UEdGraphPin* entries and are
+	 * evaluated independently — a hidden parent pin may be skipped even if its sub-pins
+	 * have connections, since those sub-pins will be serialized on their own.
+	 */
+	static bool ShouldSkipPinCompact(const UEdGraphPin* Pin);
 
 	/**
 	 * Resolve a dot-separated subgraph path from a root graph.
