@@ -1,14 +1,19 @@
 #include "Operations/CortexBPClassDefaultsOps.h"
 
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPSCSDiagnostics.h"
 #include "CortexBlueprintModule.h"
 #include "CortexPropertyUtils.h"
 #include "CortexSerializer.h"
+#include "Components/ActorComponent.h"
 #include "Dom/JsonValue.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/SCS_Node.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "GameFramework/Actor.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
@@ -17,6 +22,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/TextProperty.h"
+#include "UObject/UnrealType.h"
 #include "UObject/SavePackage.h"
 
 namespace
@@ -62,6 +68,202 @@ namespace
 			CortexErrorCodes::PropertyNotFound,
 			FString::Printf(TEXT("Property '%s' not found on %s"), *PropertyName, *Context),
 			Details);
+	}
+
+	static bool IsBareComponentReference(const FString& Value)
+	{
+		return !Value.IsEmpty()
+			&& !Value.Contains(TEXT("/"))
+			&& !Value.Contains(TEXT("."))
+			&& !Value.Contains(TEXT(":"));
+	}
+
+	static void AddUniqueString(TArray<FString>& Values, const FString& Value)
+	{
+		if (!Value.IsEmpty() && !Values.Contains(Value))
+		{
+			Values.Add(Value);
+		}
+	}
+
+	static FString StripGenVariableSuffix(const FString& Name)
+	{
+		static const FString GenVariableSuffix(TEXT("_GEN_VARIABLE"));
+		return Name.EndsWith(GenVariableSuffix)
+			? Name.LeftChop(GenVariableSuffix.Len())
+			: Name;
+	}
+
+	static int32 ComputeLevenshteinDistance(const FString& A, const FString& B)
+	{
+		const int32 LenA = A.Len();
+		const int32 LenB = B.Len();
+		TArray<int32> Prev;
+		TArray<int32> Curr;
+		Prev.SetNumUninitialized(LenB + 1);
+		Curr.SetNumUninitialized(LenB + 1);
+
+		for (int32 J = 0; J <= LenB; ++J)
+		{
+			Prev[J] = J;
+		}
+
+		for (int32 I = 1; I <= LenA; ++I)
+		{
+			Curr[0] = I;
+			for (int32 J = 1; J <= LenB; ++J)
+			{
+				const int32 Cost = (FChar::ToLower(A[I - 1]) == FChar::ToLower(B[J - 1])) ? 0 : 1;
+				Curr[J] = FMath::Min3(
+					Prev[J] + 1,
+					Curr[J - 1] + 1,
+					Prev[J - 1] + Cost);
+			}
+			Swap(Prev, Curr);
+		}
+
+		return Prev[LenB];
+	}
+
+	static FString FindClosestCandidate(const FString& Input, const TArray<FString>& Candidates, int32 MaxDistance)
+	{
+		FString Closest;
+		int32 BestDistance = TNumericLimits<int32>::Max();
+		for (const FString& Candidate : Candidates)
+		{
+			const int32 Distance = ComputeLevenshteinDistance(Input, Candidate);
+			if (Distance < BestDistance)
+			{
+				BestDistance = Distance;
+				Closest = Candidate;
+			}
+		}
+
+		return BestDistance <= MaxDistance ? Closest : FString();
+	}
+
+	static void CollectResolverContext(
+		UBlueprint* Blueprint,
+		TArray<FString>& OutSCSNodesInBlueprint,
+		TArray<FString>& OutNativeDefaultSubobjects,
+		TArray<FString>& OutCandidatePool)
+	{
+		if (!Blueprint)
+		{
+			return;
+		}
+
+		if (USimpleConstructionScript* SCS = Blueprint->SimpleConstructionScript)
+		{
+			for (USCS_Node* Node : SCS->GetAllNodes())
+			{
+				if (!Node)
+				{
+					continue;
+				}
+
+				const FString NodeName = Node->GetVariableName().ToString();
+				AddUniqueString(OutSCSNodesInBlueprint, NodeName);
+				AddUniqueString(OutCandidatePool, NodeName);
+			}
+		}
+
+		for (UClass* ClassCursor = Blueprint->ParentClass.Get(); ClassCursor; ClassCursor = ClassCursor->GetSuperClass())
+		{
+			UBlueprintGeneratedClass* ParentBPGC = Cast<UBlueprintGeneratedClass>(ClassCursor);
+			if (!ParentBPGC || !ParentBPGC->SimpleConstructionScript)
+			{
+				continue;
+			}
+
+			for (USCS_Node* ParentNode : ParentBPGC->SimpleConstructionScript->GetAllNodes())
+			{
+				if (ParentNode)
+				{
+					AddUniqueString(OutCandidatePool, ParentNode->GetVariableName().ToString());
+				}
+			}
+		}
+
+		UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
+		AActor* ActorCDO = BPGC ? Cast<AActor>(BPGC->GetDefaultObject(false)) : nullptr;
+		if (ActorCDO)
+		{
+			TInlineComponentArray<UActorComponent*> Components;
+			ActorCDO->GetComponents(Components);
+			for (UActorComponent* Component : Components)
+			{
+				if (!Component)
+				{
+					continue;
+				}
+
+				const FString RawName = Component->GetName();
+				const FString StrippedName = StripGenVariableSuffix(RawName);
+				if (RawName == StrippedName)
+				{
+					AddUniqueString(OutNativeDefaultSubobjects, RawName);
+				}
+
+				AddUniqueString(OutCandidatePool, RawName);
+				AddUniqueString(OutCandidatePool, StrippedName);
+			}
+		}
+
+		OutSCSNodesInBlueprint.Sort();
+		OutNativeDefaultSubobjects.Sort();
+		OutCandidatePool.Sort();
+	}
+
+	static TArray<TSharedPtr<FJsonValue>> ToJsonStringArray(const TArray<FString>& Values)
+	{
+		TArray<TSharedPtr<FJsonValue>> Out;
+		for (const FString& Value : Values)
+		{
+			Out.Add(MakeShared<FJsonValueString>(Value));
+		}
+		return Out;
+	}
+
+	static TSharedPtr<FJsonObject> BuildBareNameTypeMismatchDetails(
+		UBlueprint* Blueprint,
+		const FString& PropertyName,
+		const FString& InputValue,
+		const FString& ExpectedType,
+		const FString& FailureReason)
+	{
+		TArray<FString> SCSNodesInBlueprint;
+		TArray<FString> NativeDefaultSubobjects;
+		TArray<FString> CandidatePool;
+		CollectResolverContext(Blueprint, SCSNodesInBlueprint, NativeDefaultSubobjects, CandidatePool);
+
+		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+		Details->SetStringField(TEXT("expected_type"), ExpectedType);
+		Details->SetStringField(TEXT("received_value"), JsonValueToString(MakeShared<FJsonValueString>(InputValue)));
+		Details->SetArrayField(TEXT("accepted_formats"), ToJsonStringArray({
+			TEXT("Bare component name (e.g. OpenSeq)"),
+			TEXT("Full object path (e.g. /Game/.../BP.BP_C:Name_GEN_VARIABLE)")
+		}));
+		Details->SetArrayField(TEXT("scs_nodes_in_blueprint"), ToJsonStringArray(SCSNodesInBlueprint));
+		Details->SetArrayField(TEXT("native_default_subobjects"), ToJsonStringArray(NativeDefaultSubobjects));
+		if (!FailureReason.IsEmpty())
+		{
+			Details->SetStringField(TEXT("resolver_failure"), FailureReason);
+		}
+
+		const FString ClosestMatch = FindClosestCandidate(InputValue, CandidatePool, 2);
+		if (!ClosestMatch.IsEmpty())
+		{
+			Details->SetStringField(TEXT("closest_match"), ClosestMatch);
+			TSharedPtr<FJsonObject> RetryWith = MakeShared<FJsonObject>();
+			RetryWith->SetStringField(TEXT("asset_path"), Blueprint ? Blueprint->GetPathName() : FString());
+			TSharedPtr<FJsonObject> RetryProps = MakeShared<FJsonObject>();
+			RetryProps->SetStringField(PropertyName, ClosestMatch);
+			RetryWith->SetObjectField(TEXT("properties"), RetryProps);
+			Details->SetObjectField(TEXT("retry_with"), RetryWith);
+		}
+
+		return Details;
 	}
 }
 
@@ -559,9 +761,74 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 			}
 
 			const TSharedPtr<FJsonValue> PreviousValue = FCortexSerializer::PropertyToJson(Property, ValuePtr);
+			TSharedPtr<FJsonValue> ValueForSet = JsonValue;
+
+			const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property);
+			const bool bIsComponentProperty = ObjectProperty
+				&& ObjectProperty->PropertyClass
+				&& ObjectProperty->PropertyClass->IsChildOf(UActorComponent::StaticClass());
+			if (bIsComponentProperty && JsonValue.IsValid() && JsonValue->Type == EJson::String)
+			{
+				const FString RawInput = JsonValue->AsString();
+				if (IsBareComponentReference(RawInput))
+				{
+					const FCortexBPSCSDiagnostics::FResolveResult ResolveResult =
+						FCortexBPSCSDiagnostics::ResolveComponentTemplateByName(Blueprint, RawInput);
+					if (ResolveResult.bIsAmbiguous)
+					{
+						RollbackAppliedChanges();
+						TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+						Details->SetArrayField(TEXT("candidates"), ToJsonStringArray(ResolveResult.AmbiguousCandidates));
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::AmbiguousComponentReference,
+							FString::Printf(TEXT("Bare component reference '%s' is ambiguous"), *RawInput),
+							Details);
+					}
+
+					if (!ResolveResult.Component)
+					{
+						RollbackAppliedChanges();
+						TSharedPtr<FJsonObject> Details = BuildBareNameTypeMismatchDetails(
+							Blueprint,
+							PropertyName,
+							RawInput,
+							Property->GetCPPType(),
+							ResolveResult.FailureReason);
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::TypeMismatch,
+							FString::Printf(
+								TEXT("Failed to set property '%s': bare-name component '%s' did not resolve"),
+								*PropertyName,
+								*RawInput),
+							Details);
+					}
+
+					if (!ResolveResult.Component->IsA(ObjectProperty->PropertyClass))
+					{
+						RollbackAppliedChanges();
+						TSharedPtr<FJsonObject> Details = BuildBareNameTypeMismatchDetails(
+							Blueprint,
+							PropertyName,
+							RawInput,
+							Property->GetCPPType(),
+							TEXT("Resolved component type is incompatible with target property"));
+						Details->SetStringField(TEXT("resolved_component_class"), ResolveResult.Component->GetClass()->GetName());
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::TypeMismatch,
+							FString::Printf(
+								TEXT("Failed to set property '%s': resolved component '%s' has incompatible type"),
+								*PropertyName,
+								*RawInput),
+							Details);
+					}
+
+					// Keep serializer behavior for object properties by converting the bare name to object path.
+					ValueForSet = MakeShared<FJsonValueString>(ResolveResult.Component->GetPathName());
+				}
+			}
 
 			TArray<FString> SetWarnings;
-			if (!FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, CDO, SetWarnings))
+			if (!FCortexSerializer::JsonToProperty(ValueForSet, Property, ValuePtr, CDO, SetWarnings))
 			{
 				RollbackAppliedChanges();
 				TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
@@ -576,6 +843,8 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 
 			ResponseWarnings.Append(SetWarnings);
 			AppliedChanges.Add({Property, ValuePtr, PreviousValue});
+			FPropertyChangedEvent ChangedEvent(Property, EPropertyChangeType::ValueSet);
+			CDO->PostEditChangeProperty(ChangedEvent);
 
 			const TSharedPtr<FJsonValue> NewValue = FCortexSerializer::PropertyToJson(Property, ValuePtr);
 

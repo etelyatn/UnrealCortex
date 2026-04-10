@@ -18,6 +18,8 @@ public:
 
     static FString GatherSelectedActors();
     static FString GatherOpenAssetEditors();
+
+private:
     static FString GatherContentBrowserSelection();
     static FString GatherViewportCamera();
 };

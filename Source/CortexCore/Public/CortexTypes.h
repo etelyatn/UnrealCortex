@@ -69,6 +69,9 @@ namespace CortexErrorCodes
 	static const FString NotDynamicInstance = TEXT("NOT_DYNAMIC_INSTANCE");
 	static const FString AlreadyDynamicInstance = TEXT("ALREADY_DYNAMIC_INSTANCE");
 	static const FString AmbiguousComponent = TEXT("AMBIGUOUS_COMPONENT");
+	// Blueprint SCS migration safety
+	static const FString PotentialDataLoss = TEXT("POTENTIAL_DATA_LOSS");
+	static const FString AmbiguousComponentReference = TEXT("AMBIGUOUS_COMPONENT_REFERENCE");
 	// Level errors
 	static const FString ActorNotFound = TEXT("ACTOR_NOT_FOUND");
 	static const FString AmbiguousActor = TEXT("AMBIGUOUS_ACTOR");
