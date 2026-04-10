@@ -206,19 +206,21 @@ bool FCortexInputAreaProvidersTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Popup open"), Widget->IsAutoCompleteOpen());
 
     const auto& Items = Widget->GetFilteredItems();
-    TestTrue(TEXT("At least 3 items (providers)"), Items.Num() >= 3);
+    TestTrue(TEXT("At least 4 items (providers)"), Items.Num() >= 4);
 
     // Verify provider names
-    bool bFoundThisAsset = false, bFoundSelection = false, bFoundProblems = false;
+    bool bFoundThisAsset = false, bFoundSelection = false, bFoundProblems = false, bFoundEditorContext = false;
     for (const TSharedPtr<FCortexAutoCompleteItem>& Item : Items)
     {
         if (Item->Name == TEXT("thisAsset")) bFoundThisAsset = true;
         if (Item->Name == TEXT("selection")) bFoundSelection = true;
         if (Item->Name == TEXT("problems")) bFoundProblems = true;
+        if (Item->Name == TEXT("editorContext")) bFoundEditorContext = true;
     }
     TestTrue(TEXT("@thisAsset present"), bFoundThisAsset);
     TestTrue(TEXT("@selection present"), bFoundSelection);
     TestTrue(TEXT("@problems present"), bFoundProblems);
+    TestTrue(TEXT("@editorContext present"), bFoundEditorContext);
 
     return true;
 }
@@ -425,6 +427,37 @@ bool FCortexInputAreaEmptyProviderDropTest::RunTest(const FString& Parameters)
         CapturedPrompt.Contains(TEXT("## Context:")));
     TestTrue(TEXT("User message preserved"), CapturedPrompt.Contains(TEXT("Hello")));
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaAutoContextSuppressedTest,
+    "Cortex.Frontend.InputArea.Resolution.AutoContextSuppressedWhenDisabled",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaAutoContextSuppressedTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    const bool bOriginal = Settings.GetAutoContext();
+
+    // Disable auto-context
+    Settings.SetAutoContext(false);
+
+    FString CapturedPrompt;
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea)
+        .OnSendMessage_Lambda([&CapturedPrompt](const FString& Prompt) { CapturedPrompt = Prompt; });
+
+    Widget->TestResolveAndSend(TEXT("Hello"));
+
+    // Auto-context disabled → header must not appear
+    TestFalse(TEXT("No auto-context header when disabled"),
+        CapturedPrompt.Contains(TEXT("## Editor Context (auto)")));
+    TestTrue(TEXT("User message preserved"), CapturedPrompt.Contains(TEXT("Hello")));
+
+    // Restore
+    Settings.SetAutoContext(bOriginal);
     return true;
 }
 

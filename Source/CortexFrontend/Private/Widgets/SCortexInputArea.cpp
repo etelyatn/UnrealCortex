@@ -171,11 +171,7 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                         // Ctrl+Alt+K: attach editor context snapshot as context chip
                         if (KeyEvent.GetKey() == EKeys::K && KeyEvent.IsControlDown() && KeyEvent.IsAltDown())
                         {
-                            FCortexContextChip Chip;
-                            Chip.Kind = ECortexContextChipKind::Provider;
-                            Chip.Label = TEXT("editorContext");
-                            Chip.DisplayName = TEXT("Editor Context");
-                            AddContextChip(Chip);
+                            HandleAttachEditorContextShortcut();
                             return FReply::Handled();
                         }
                         if (KeyEvent.GetKey() == EKeys::Enter && !KeyEvent.IsShiftDown() && !bAutoCompleteOpen)
@@ -1535,6 +1531,15 @@ FString SCortexInputArea::ResolveAssetChip(const FCortexContextChip& Chip, bool&
     return TEXT("");
 }
 
+void SCortexInputArea::HandleAttachEditorContextShortcut()
+{
+    FCortexContextChip Chip;
+    Chip.Kind = ECortexContextChipKind::Provider;
+    Chip.Label = TEXT("editorContext");
+    Chip.DisplayName = TEXT("Editor Context");
+    AddContextChip(Chip);
+}
+
 FReply SCortexInputArea::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
     // Autocomplete navigation duplicated here because:
@@ -1576,11 +1581,7 @@ FReply SCortexInputArea::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent&
     // Ctrl+Alt+K: attach editor context snapshot as context chip
     if (InKeyEvent.GetKey() == EKeys::K && InKeyEvent.IsControlDown() && InKeyEvent.IsAltDown())
     {
-        FCortexContextChip Chip;
-        Chip.Kind = ECortexContextChipKind::Provider;
-        Chip.Label = TEXT("editorContext");
-        Chip.DisplayName = TEXT("Editor Context");
-        AddContextChip(Chip);
+        HandleAttachEditorContextShortcut();
         return FReply::Handled();
     }
     if (InputTextBox.IsValid())

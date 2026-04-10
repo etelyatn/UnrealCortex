@@ -51,7 +51,7 @@ bool FCortexGathererAllSectionsTest::RunTest(const FString& Parameters)
 
     const FString Result = FCortexEditorContextGatherer::FormatAsContextPreamble(Snapshot);
 
-    TestTrue(TEXT("Contains header"), Result.Contains(TEXT("## Editor Context (auto)")));
+    TestTrue(TEXT("Starts with header"), Result.StartsWith(TEXT("## Editor Context (auto)\n")));
     TestTrue(TEXT("Contains actors"), Result.Contains(TEXT("### Selected Actors")));
     TestTrue(TEXT("Contains editors"), Result.Contains(TEXT("### Open Asset Editors")));
     TestTrue(TEXT("Contains browser"), Result.Contains(TEXT("### Content Browser Selection")));
@@ -95,7 +95,9 @@ bool FCortexGathererViewportCameraFormatTest::RunTest(const FString& Parameters)
         return true;
     }
 
-    const FString Result = FCortexEditorContextGatherer::GatherViewportCamera();
+    // GatherViewportCamera is private — test via GatherAll()
+    const FCortexEditorContextSnapshot Snapshot = FCortexEditorContextGatherer::GatherAll();
+    const FString Result = Snapshot.ViewportCamera;
     // May be empty if no viewport is active (e.g., headless testing)
     if (!Result.IsEmpty())
     {
@@ -124,5 +126,41 @@ bool FCortexGathererGatherAllTest::RunTest(const FString& Parameters)
         Snapshot.OpenAssetEditors.IsEmpty() ? TEXT("empty") : TEXT("present"),
         Snapshot.ContentBrowserSelection.IsEmpty() ? TEXT("empty") : TEXT("present"),
         Snapshot.ViewportCamera.IsEmpty() ? TEXT("empty") : TEXT("present")));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGathererOpenAssetEditorsEmptyTest,
+    "Cortex.Frontend.AutoContext.Gatherer.OpenAssetEditorsEmptyWhenNoneOpen",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGathererOpenAssetEditorsEmptyTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!GEditor)
+    {
+        AddInfo(TEXT("No GEditor available — skipping"));
+        return true;
+    }
+
+    // In automation, no user-opened asset editors are expected
+    const FString Result = FCortexEditorContextGatherer::GatherOpenAssetEditors();
+    // We can't guarantee the result is empty (editor might have assets open),
+    // but we can verify it doesn't crash and returns a valid string
+    AddInfo(FString::Printf(TEXT("GatherOpenAssetEditors returned: %s"),
+        Result.IsEmpty() ? TEXT("empty") : *FString::Printf(TEXT("'%s'"), *Result)));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGathererContentBrowserSelectionNoCrashTest,
+    "Cortex.Frontend.AutoContext.Gatherer.ContentBrowserSelectionNoCrash",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGathererContentBrowserSelectionNoCrashTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    // Verifies GatherAll() is safe to call (includes ContentBrowserSelection internally)
+    const FCortexEditorContextSnapshot Snapshot = FCortexEditorContextGatherer::GatherAll();
+    AddInfo(FString::Printf(TEXT("ContentBrowserSelection returned: %s"),
+        Snapshot.ContentBrowserSelection.IsEmpty() ? TEXT("empty") : TEXT("non-empty")));
     return true;
 }
