@@ -58,14 +58,13 @@ FString FCortexEditorContextGatherer::GatherSelectedActors()
     int32 Count = 0;
     for (FSelectionIterator It(*ActorSelection); It; ++It)
     {
-        if (AActor* Actor = Cast<AActor>(*It))
-        {
-            Result += FString::Printf(TEXT("- %s (%s) at %s\n"),
-                *Actor->GetActorLabel(),
-                *Actor->GetClass()->GetName(),
-                *Actor->GetActorLocation().ToString());
-            if (++Count >= 20) break;
-        }
+        AActor* Actor = Cast<AActor>(*It);
+        if (!IsValid(Actor)) continue;
+        Result += FString::Printf(TEXT("- %s (%s) at %s\n"),
+            *Actor->GetActorLabel(),
+            *Actor->GetClass()->GetName(),
+            *Actor->GetActorLocation().ToString());
+        if (++Count >= 20) break;
     }
     return Result;
 }
@@ -81,15 +80,15 @@ FString FCortexEditorContextGatherer::GatherOpenAssetEditors()
     if (EditedAssets.IsEmpty()) return TEXT("");
 
     FString Result;
+    int32 Count = 0;
     for (UObject* Asset : EditedAssets)
     {
-        if (Asset)
-        {
-            Result += FString::Printf(TEXT("- %s (%s) %s\n"),
-                *Asset->GetName(),
-                *Asset->GetClass()->GetName(),
-                *Asset->GetPathName());
-        }
+        if (!IsValid(Asset)) continue;
+        Result += FString::Printf(TEXT("- %s (%s) %s\n"),
+            *Asset->GetName(),
+            *Asset->GetClass()->GetName(),
+            *Asset->GetPathName());
+        if (++Count >= 20) break;
     }
     return Result;
 }
