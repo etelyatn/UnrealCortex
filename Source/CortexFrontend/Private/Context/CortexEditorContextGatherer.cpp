@@ -122,14 +122,10 @@ FString FCortexEditorContextGatherer::GatherViewportCamera()
 {
     if (!GEditor) return TEXT("");
 
-    FViewport* Viewport = GEditor->GetActiveViewport();
-    if (!Viewport) return TEXT("");
+    if (!GCurrentLevelEditingViewportClient) return TEXT("");
 
-    FEditorViewportClient* ViewportClient = static_cast<FEditorViewportClient*>(Viewport->GetClient());
-    if (!ViewportClient) return TEXT("");
-
-    const FVector Location = ViewportClient->GetViewLocation();
-    const FRotator Rotation = ViewportClient->GetViewRotation();
+    const FVector Location = GCurrentLevelEditingViewportClient->GetViewLocation();
+    const FRotator Rotation = GCurrentLevelEditingViewportClient->GetViewRotation();
 
     return FString::Printf(TEXT("Position: X=%.0f Y=%.0f Z=%.0f, Rotation: P=%.0f Y=%.0f R=%.0f\n"),
         Location.X, Location.Y, Location.Z,
