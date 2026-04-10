@@ -35,7 +35,8 @@ TSharedPtr<FJsonObject> FCortexMutationDiff::SnapshotObject(const UObject* Objec
 
 TSharedPtr<FJsonObject> FCortexMutationDiff::CompareSnapshots(
 	const UObject* Object,
-	const TSharedPtr<FJsonObject>& PreSnapshot) const
+	const TSharedPtr<FJsonObject>& PreSnapshot,
+	int32 MaxPropertyDepth) const
 {
 	TSharedPtr<FJsonObject> Diff = MakeShared<FJsonObject>();
 	if (PreSnapshot.IsValid())
@@ -43,7 +44,7 @@ TSharedPtr<FJsonObject> FCortexMutationDiff::CompareSnapshots(
 		Diff->SetObjectField(TEXT("previous"), PreSnapshot);
 	}
 
-	if (const TSharedPtr<FJsonObject> CurrentSnapshot = SnapshotObject(Object))
+	if (const TSharedPtr<FJsonObject> CurrentSnapshot = SnapshotObject(Object, MaxPropertyDepth))
 	{
 		Diff->SetObjectField(TEXT("current"), CurrentSnapshot);
 	}
@@ -82,6 +83,7 @@ FScopedMutationCapture::FScopedMutationCapture(
 	int32 InMaxPropertyDepth)
 	: MutationDiff(InMutationDiff)
 	, Object(const_cast<UObject*>(InObject))
+	, MaxPropertyDepth(InMaxPropertyDepth)
 	, PreSnapshot(InMutationDiff.SnapshotObject(InObject, InMaxPropertyDepth))
 {
 }
@@ -103,5 +105,7 @@ void FScopedMutationCapture::ApplyDiff(const TSharedPtr<FJsonObject>& TargetJson
 		return;
 	}
 
-	TargetJson->SetObjectField(TEXT("changes"), MutationDiff.CompareSnapshots(Object.Get(), PreSnapshot));
+	TargetJson->SetObjectField(
+		TEXT("changes"),
+		MutationDiff.CompareSnapshots(Object.Get(), PreSnapshot, MaxPropertyDepth));
 }

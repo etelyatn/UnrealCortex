@@ -9,7 +9,10 @@ class CORTEXCORE_API FCortexMutationDiff
 {
 public:
 	TSharedPtr<FJsonObject> SnapshotObject(const UObject* Object, int32 MaxPropertyDepth = 1) const;
-	TSharedPtr<FJsonObject> CompareSnapshots(const UObject* Object, const TSharedPtr<FJsonObject>& PreSnapshot) const;
+	TSharedPtr<FJsonObject> CompareSnapshots(
+		const UObject* Object,
+		const TSharedPtr<FJsonObject>& PreSnapshot,
+		int32 MaxPropertyDepth = 1) const;
 	TArray<FString> CollectSubObjectNames(const UObject* Outer) const;
 };
 
@@ -24,5 +27,6 @@ public:
 private:
 	const FCortexMutationDiff& MutationDiff;
 	TWeakObjectPtr<UObject> Object;
+	int32 MaxPropertyDepth;
 	TSharedPtr<FJsonObject> PreSnapshot;
 };
