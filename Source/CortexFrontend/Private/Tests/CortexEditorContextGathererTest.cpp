@@ -95,7 +95,9 @@ bool FCortexGathererViewportCameraFormatTest::RunTest(const FString& Parameters)
         return true;
     }
 
-    const FString Result = FCortexEditorContextGatherer::GatherViewportCamera();
+    // GatherViewportCamera is private — test via GatherAll()
+    const FCortexEditorContextSnapshot Snapshot = FCortexEditorContextGatherer::GatherAll();
+    const FString Result = Snapshot.ViewportCamera;
     // May be empty if no viewport is active (e.g., headless testing)
     if (!Result.IsEmpty())
     {
@@ -156,9 +158,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGathererContentBrowserSelectionNoCrashTe
 bool FCortexGathererContentBrowserSelectionNoCrashTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
-    // Verifies the function is safe to call regardless of module availability
-    const FString Result = FCortexEditorContextGatherer::GatherContentBrowserSelection();
-    AddInfo(FString::Printf(TEXT("GatherContentBrowserSelection returned: %s"),
-        Result.IsEmpty() ? TEXT("empty") : TEXT("non-empty")));
+    // Verifies GatherAll() is safe to call (includes ContentBrowserSelection internally)
+    const FCortexEditorContextSnapshot Snapshot = FCortexEditorContextGatherer::GatherAll();
+    AddInfo(FString::Printf(TEXT("ContentBrowserSelection returned: %s"),
+        Snapshot.ContentBrowserSelection.IsEmpty() ? TEXT("empty") : TEXT("non-empty")));
     return true;
 }
