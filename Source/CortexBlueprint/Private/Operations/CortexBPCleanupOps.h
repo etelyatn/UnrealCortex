@@ -28,6 +28,13 @@ public:
 	 */
 	static FCortexCommandResult RemoveSCSComponent(const TSharedPtr<FJsonObject>& Params);
 
+	/**
+	 * Rename an SCS (Simple Construction Script) component node on a Blueprint.
+	 * Params: asset_path (string), old_name (string), new_name (string),
+	 *         compile (bool, optional, default true)
+	 */
+	static FCortexCommandResult RenameSCSComponent(const TSharedPtr<FJsonObject>& Params);
+
 #if WITH_DEV_AUTOMATION_TESTS
 	static void SetRemoveSCSComponentMidflightTestHook(TFunction<void(class USCS_Node*, class UBlueprint*)> InHook);
 #endif

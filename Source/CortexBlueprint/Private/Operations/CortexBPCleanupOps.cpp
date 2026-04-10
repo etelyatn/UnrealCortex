@@ -14,9 +14,11 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
+#include "Components/TimelineComponent.h"
 #include "GameFramework/Actor.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+#include "UObject/UnrealType.h"
 #include "Misc/PackageName.h"
 #include "ScopedTransaction.h"
 
@@ -29,6 +31,24 @@ namespace
 
 namespace
 {
+	USCS_Node* FindOwnedSCSNodeByName(USimpleConstructionScript* SCS, const FName Name)
+	{
+		if (!SCS)
+		{
+			return nullptr;
+		}
+
+		for (USCS_Node* Node : SCS->GetAllNodes())
+		{
+			if (Node && Node->GetVariableName() == Name)
+			{
+				return Node;
+			}
+		}
+
+		return nullptr;
+	}
+
 	USCS_Node* FindInheritedSCSNodeByName(UBlueprint* Blueprint, const FName ComponentFName, UClass*& OutOwnerClass)
 	{
 		OutOwnerClass = nullptr;
@@ -53,6 +73,51 @@ namespace
 		}
 
 		return nullptr;
+	}
+
+	bool SaveBlueprintIfPersistent(UBlueprint* Blueprint, FString& OutError)
+	{
+		OutError.Reset();
+		if (!Blueprint)
+		{
+			OutError = TEXT("Blueprint is null");
+			return false;
+		}
+
+		if (Blueprint->GetPackage()->GetName().StartsWith(TEXT("/Engine/Transient")))
+		{
+			return true;
+		}
+
+		FString PackageFilename;
+		if (!FPackageName::TryConvertLongPackageNameToFilename(
+				Blueprint->GetPackage()->GetName(),
+				PackageFilename,
+				TEXT(".uasset")))
+		{
+			OutError = FString::Printf(
+				TEXT("Failed to resolve package filename for: %s"),
+				*Blueprint->GetPackage()->GetName());
+			return false;
+		}
+
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		if (!UPackage::SavePackage(Blueprint->GetPackage(), Blueprint, *PackageFilename, SaveArgs))
+		{
+			OutError = FString::Printf(
+				TEXT("Failed to save Blueprint package: %s"),
+				*Blueprint->GetPackage()->GetName());
+			return false;
+		}
+
+		return true;
+	}
+
+	bool IsBlueprintUpToDate(const UBlueprint* Blueprint)
+	{
+		return Blueprint
+			&& (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings);
 	}
 }
 
@@ -326,6 +391,231 @@ FCortexCommandResult FCortexBPCleanupOps::RecompileDependents(const TSharedPtr<F
 	Data->SetNumberField(TEXT("dependent_count"), DependentBlueprints.Num());
 	Data->SetNumberField(TEXT("recompiled_count"), SuccessCount);
 	Data->SetArrayField(TEXT("results"), ResultsArray);
+
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	FString OldName;
+	FString NewName;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty()
+		|| !Params->TryGetStringField(TEXT("old_name"), OldName) || OldName.IsEmpty()
+		|| !Params->TryGetStringField(TEXT("new_name"), NewName) || NewName.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path, old_name, new_name"));
+	}
+
+	bool bCompile = true;
+	Params->TryGetBoolField(TEXT("compile"), bCompile);
+
+	FString LoadError;
+	UBlueprint* BP = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
+	if (!BP)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+	}
+
+	USimpleConstructionScript* SCS = BP->SimpleConstructionScript;
+	if (!SCS)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Blueprint has no SimpleConstructionScript"));
+	}
+
+	const FName OldFName(*OldName);
+	const FName NewFName(*NewName);
+
+	USCS_Node* TargetNode = FindOwnedSCSNodeByName(SCS, OldFName);
+	if (!TargetNode)
+	{
+		UClass* InheritedOwnerClass = nullptr;
+		if (FindInheritedSCSNodeByName(BP, OldFName, InheritedOwnerClass))
+		{
+			const FString OwnerName = InheritedOwnerClass ? InheritedOwnerClass->GetName() : TEXT("parent class");
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(
+					TEXT("SCS component '%s' is inherited from %s; rename on the parent Blueprint"),
+					*OldName,
+					*OwnerName));
+		}
+
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::ComponentNotFound,
+			FString::Printf(TEXT("SCS component not found: %s"), *OldName));
+	}
+
+	if (TargetNode->ComponentClass && TargetNode->ComponentClass->IsChildOf(UTimelineComponent::StaticClass()))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Component '%s' is a UTimelineComponent. Use rename_timeline."), *OldName));
+	}
+
+	if (USCS_Node* ExistingNode = FindOwnedSCSNodeByName(SCS, NewFName))
+	{
+		if (ExistingNode != TargetNode)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("new_name '%s' collides with an existing SCS node"), *NewName));
+		}
+	}
+
+	const bool bVariableCollision = BP->NewVariables.ContainsByPredicate(
+		[&NewFName](const FBPVariableDescription& Variable)
+		{
+			return Variable.VarName == NewFName;
+		});
+	if (bVariableCollision)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("new_name '%s' collides with an existing Blueprint variable"), *NewName));
+	}
+
+	if (BP->ParentClass && FindFProperty<FProperty>(BP->ParentClass, NewFName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("new_name '%s' collides with an inherited UPROPERTY"), *NewName));
+	}
+
+	UClass* InheritedCollisionOwner = nullptr;
+	if (FindInheritedSCSNodeByName(BP, NewFName, InheritedCollisionOwner))
+	{
+		const FString OwnerName = InheritedCollisionOwner ? InheritedCollisionOwner->GetName() : TEXT("parent class");
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(
+				TEXT("new_name '%s' collides with inherited SCS node on %s"),
+				*NewName,
+				*OwnerName));
+	}
+
+	TArray<UBlueprint*> DependentBlueprints;
+	FBlueprintEditorUtils::GetDependentBlueprints(BP, DependentBlueprints);
+	for (UBlueprint* DependentBP : DependentBlueprints)
+	{
+		if (!DependentBP || DependentBP == BP)
+		{
+			continue;
+		}
+
+		const bool bDependentVariableCollision = DependentBP->NewVariables.ContainsByPredicate(
+			[&NewFName](const FBPVariableDescription& Variable)
+			{
+				return Variable.VarName == NewFName;
+			});
+		if (bDependentVariableCollision)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(
+					TEXT("new_name '%s' would shadow a variable on dependent Blueprint %s"),
+					*NewName,
+					*DependentBP->GetPathName()));
+		}
+
+		if (DependentBP->SimpleConstructionScript
+			&& FindOwnedSCSNodeByName(DependentBP->SimpleConstructionScript, NewFName))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(
+					TEXT("new_name '%s' would shadow an SCS node on dependent Blueprint %s"),
+					*NewName,
+					*DependentBP->GetPathName()));
+		}
+	}
+
+	BP->Modify();
+	SCS->Modify();
+	TargetNode->Modify();
+	FBlueprintEditorUtils::RenameMemberVariable(BP, OldFName, NewFName);
+
+	USCS_Node* RenamedNode = FindOwnedSCSNodeByName(SCS, NewFName);
+	if (!RenamedNode)
+	{
+		// Some engine paths do not remap SCS member variables through RenameMemberVariable.
+		FBlueprintEditorUtils::RenameComponentMemberVariable(BP, TargetNode, NewFName);
+		RenamedNode = FindOwnedSCSNodeByName(SCS, NewFName);
+	}
+
+	if (!RenamedNode)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Failed to rename SCS component '%s' to '%s'"), *OldName, *NewName));
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+
+	FString CompileStatus = TEXT("Skipped");
+	bool bCompiled = false;
+	if (bCompile)
+	{
+		FKismetEditorUtilities::CompileBlueprint(BP);
+		bCompiled = IsBlueprintUpToDate(BP);
+		CompileStatus = bCompiled ? TEXT("UpToDate") : TEXT("Error");
+		if (!bCompiled)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::CompileFailed,
+				FString::Printf(TEXT("Blueprint compile failed after SCS rename: %s"), *BP->GetPathName()));
+		}
+
+		for (UBlueprint* DependentBP : DependentBlueprints)
+		{
+			if (!DependentBP || DependentBP == BP)
+			{
+				continue;
+			}
+
+			DependentBP->Modify();
+			FKismetEditorUtilities::CompileBlueprint(DependentBP);
+			if (!IsBlueprintUpToDate(DependentBP))
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::CompileFailed,
+					FString::Printf(
+						TEXT("Dependent Blueprint compile failed after SCS rename: %s"),
+						*DependentBP->GetPathName()));
+			}
+		}
+	}
+
+	FString SaveError;
+	if (!SaveBlueprintIfPersistent(BP, SaveError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, SaveError);
+	}
+
+	for (UBlueprint* DependentBP : DependentBlueprints)
+	{
+		if (!DependentBP || DependentBP == BP)
+		{
+			continue;
+		}
+
+		if (!SaveBlueprintIfPersistent(DependentBP, SaveError))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, SaveError);
+		}
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetStringField(TEXT("old_name"), OldName);
+	Data->SetStringField(TEXT("new_name"), NewName);
+	Data->SetBoolField(TEXT("compiled"), bCompiled);
+	Data->SetStringField(TEXT("compile_status"), CompileStatus);
 
 	return FCortexCommandRouter::Success(Data);
 }
