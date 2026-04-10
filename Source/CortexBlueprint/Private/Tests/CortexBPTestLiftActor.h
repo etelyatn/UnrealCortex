@@ -26,6 +26,10 @@ public:
 
 	UPROPERTY(Instanced)
 	TObjectPtr<UCortexBPTestSubobjPayload> Payload;
+
+	// Non-instanced pointer used to verify scope limits in archetype deep-diff detection.
+	UPROPERTY()
+	TObjectPtr<UCortexBPTestSubobjPayload> PlainPayload;
 };
 
 UCLASS()

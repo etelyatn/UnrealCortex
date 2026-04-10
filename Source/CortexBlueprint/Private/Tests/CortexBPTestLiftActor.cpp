@@ -3,6 +3,7 @@
 UCortexBPTestSubobjComponent::UCortexBPTestSubobjComponent()
 {
 	Payload = CreateDefaultSubobject<UCortexBPTestSubobjPayload>(TEXT("Payload"));
+	PlainPayload = nullptr;
 }
 
 ACortexBPTestLiftActor::ACortexBPTestLiftActor()
