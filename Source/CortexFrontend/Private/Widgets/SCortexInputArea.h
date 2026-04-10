@@ -62,6 +62,7 @@ public:
 private:
     FReply OnSendClicked();
     void HandleSendOrNewline();
+    void HandleAttachEditorContextShortcut();
     void ResolveAndSend(const TArray<FCortexContextChip>& Chips, const FString& Message);
     FString ResolveProviderChip(const FString& Label);
     FString ResolveAssetChip(const FCortexContextChip& Chip, bool& bOutSuccess);
