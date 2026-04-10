@@ -19,13 +19,13 @@ public:
 class CORTEXCORE_API FScopedMutationCapture
 {
 public:
-	FScopedMutationCapture(const FCortexMutationDiff& InMutationDiff, const UObject* InObject, int32 InMaxPropertyDepth = 1);
+	FScopedMutationCapture(const UObject* InObject, int32 InMaxPropertyDepth = 1);
 
 	void ApplyRemoved(const TSharedPtr<FJsonObject>& TargetJson) const;
 	void ApplyDiff(const TSharedPtr<FJsonObject>& TargetJson) const;
 
 private:
-	const FCortexMutationDiff& MutationDiff;
+	FCortexMutationDiff MutationDiff;
 	TWeakObjectPtr<UObject> Object;
 	int32 MaxPropertyDepth;
 	TSharedPtr<FJsonObject> PreSnapshot;

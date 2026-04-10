@@ -28,6 +28,117 @@ namespace
 		const UStruct* StructType,
 		const void* StructData,
 		const void* DefaultData,
+		int32 MaxDepth);
+
+	TSharedPtr<FJsonObject> ObjectNonDefaultPropertiesToJson(
+		const UObject* Object,
+		int32 MaxDepth)
+	{
+		if (Object == nullptr)
+		{
+			return MakeShared<FJsonObject>();
+		}
+
+		const UObject* DefaultObject = Object->GetClass()->GetDefaultObject();
+		if (DefaultObject == nullptr)
+		{
+			return MakeShared<FJsonObject>();
+		}
+
+		return StructNonDefaultPropertiesToJson(Object->GetClass(), Object, DefaultObject, MaxDepth);
+	}
+
+	TSharedPtr<FJsonValue> NonDefaultPropertyToJson(
+		const FProperty* Property,
+		const void* ValuePtr,
+		const void* DefaultValuePtr,
+		int32 MaxDepth)
+	{
+		if (Property == nullptr || ValuePtr == nullptr || DefaultValuePtr == nullptr)
+		{
+			return nullptr;
+		}
+
+		if (const FStructProperty* StructProp = CastField<FStructProperty>(Property))
+		{
+			if (MaxDepth <= 0)
+			{
+				if (!StructProp->Identical(ValuePtr, DefaultValuePtr, PPF_None))
+				{
+					return MakeShared<FJsonValueString>(ChangedMarker);
+				}
+				return nullptr;
+			}
+
+			const TSharedPtr<FJsonObject> NestedJson = StructNonDefaultPropertiesToJson(
+				StructProp->Struct,
+				ValuePtr,
+				DefaultValuePtr,
+				MaxDepth - 1);
+
+			if (NestedJson->Values.Num() > 0)
+			{
+				return MakeShared<FJsonValueObject>(NestedJson);
+			}
+
+			return nullptr;
+		}
+
+		if (const FObjectProperty* ObjectProp = CastField<FObjectProperty>(Property))
+		{
+			if (Property->HasAllPropertyFlags(CPF_InstancedReference))
+			{
+				const UObject* CurrentObject = ObjectProp->GetObjectPropertyValue(ValuePtr);
+				const UObject* DefaultObject = ObjectProp->GetObjectPropertyValue(DefaultValuePtr);
+
+				if (CurrentObject == nullptr && DefaultObject == nullptr)
+				{
+					return nullptr;
+				}
+
+				if (CurrentObject == nullptr)
+				{
+					return MakeShared<FJsonValueNull>();
+				}
+
+				if (MaxDepth <= 0)
+				{
+					return MakeShared<FJsonValueString>(ChangedMarker);
+				}
+
+				TSharedPtr<FJsonObject> NestedJson = ObjectNonDefaultPropertiesToJson(CurrentObject, MaxDepth - 1);
+				const bool bClassChanged = DefaultObject == nullptr || CurrentObject->GetClass() != DefaultObject->GetClass();
+				if (bClassChanged)
+				{
+					NestedJson->SetStringField(TEXT("class"), CurrentObject->GetClass()->GetName());
+				}
+
+				if (NestedJson->Values.Num() > 0)
+				{
+					return MakeShared<FJsonValueObject>(NestedJson);
+				}
+
+				return nullptr;
+			}
+		}
+
+		if (Property->Identical(ValuePtr, DefaultValuePtr))
+		{
+			return nullptr;
+		}
+
+		if (MaxDepth <= 0)
+		{
+			return MakeShared<FJsonValueString>(ChangedMarker);
+		}
+
+		return FCortexSerializer::PropertyToJson(Property, ValuePtr);
+	}
+
+	TSharedPtr<FJsonObject> StructNonDefaultPropertiesToJson(
+		const UStruct* StructType,
+		const void* StructData,
+		const void* DefaultData,
 		int32 MaxDepth)
 	{
 		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -46,43 +157,11 @@ namespace
 
 			const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(StructData);
 			const void* DefaultValuePtr = Property->ContainerPtrToValuePtr<void>(DefaultData);
-
-			if (const FStructProperty* StructProp = CastField<FStructProperty>(Property))
-			{
-				if (MaxDepth <= 0)
-				{
-					if (!StructProp->Identical(ValuePtr, DefaultValuePtr, PPF_None))
-					{
-						Result->SetStringField(Property->GetName(), ChangedMarker);
-					}
-					continue;
-				}
-
-				const TSharedPtr<FJsonObject> NestedJson = StructNonDefaultPropertiesToJson(
-					StructProp->Struct,
-					ValuePtr,
-					DefaultValuePtr,
-					MaxDepth - 1);
-
-				if (NestedJson->Values.Num() > 0)
-				{
-					Result->SetObjectField(Property->GetName(), NestedJson);
-				}
-				continue;
-			}
-
-			if (Property->Identical(ValuePtr, DefaultValuePtr))
-			{
-				continue;
-			}
-
-			if (MaxDepth <= 0)
-			{
-				Result->SetStringField(Property->GetName(), ChangedMarker);
-				continue;
-			}
-
-			if (const TSharedPtr<FJsonValue> JsonValue = FCortexSerializer::PropertyToJson(Property, ValuePtr))
+			if (const TSharedPtr<FJsonValue> JsonValue = NonDefaultPropertyToJson(
+				Property,
+				ValuePtr,
+				DefaultValuePtr,
+				MaxDepth))
 			{
 				Result->SetField(Property->GetName(), JsonValue);
 			}
@@ -195,7 +274,7 @@ TSharedPtr<FJsonObject> FCortexSerializer::NonDefaultPropertiesToJson(const UObj
 		return MakeShared<FJsonObject>();
 	}
 
-	return StructNonDefaultPropertiesToJson(Object->GetClass(), Object, DefaultObject, MaxDepth);
+	return ObjectNonDefaultPropertiesToJson(Object, MaxDepth);
 }
 
 TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Property, const void* ValuePtr)

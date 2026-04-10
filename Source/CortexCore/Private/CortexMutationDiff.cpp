@@ -61,7 +61,7 @@ TArray<FString> FCortexMutationDiff::CollectSubObjectNames(const UObject* Outer)
 	}
 
 	TArray<UObject*> SubObjects;
-	GetObjectsWithOuter(const_cast<UObject*>(Outer), SubObjects, false);
+	GetObjectsWithOuter(const_cast<UObject*>(Outer), SubObjects, true);
 
 	for (const UObject* SubObject : SubObjects)
 	{
@@ -77,14 +77,10 @@ TArray<FString> FCortexMutationDiff::CollectSubObjectNames(const UObject* Outer)
 	return Result;
 }
 
-FScopedMutationCapture::FScopedMutationCapture(
-	const FCortexMutationDiff& InMutationDiff,
-	const UObject* InObject,
-	int32 InMaxPropertyDepth)
-	: MutationDiff(InMutationDiff)
-	, Object(const_cast<UObject*>(InObject))
+FScopedMutationCapture::FScopedMutationCapture(const UObject* InObject, int32 InMaxPropertyDepth)
+	: Object(const_cast<UObject*>(InObject))
 	, MaxPropertyDepth(InMaxPropertyDepth)
-	, PreSnapshot(InMutationDiff.SnapshotObject(InObject, InMaxPropertyDepth))
+	, PreSnapshot(MutationDiff.SnapshotObject(InObject, InMaxPropertyDepth))
 {
 }
 
