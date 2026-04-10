@@ -6,6 +6,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
+#include "GameFramework/Actor.h"
 #include "UObject/FieldIterator.h"
 #include "UObject/UnrealType.h"
 
@@ -56,6 +57,55 @@ namespace
 		{
 			Collisions.Add(Candidate);
 		}
+	}
+
+	USCS_Node* DiagnosticsFindOwnedSCSNodeByName(USimpleConstructionScript* SCS, const FName NodeName)
+	{
+		if (!SCS)
+		{
+			return nullptr;
+		}
+
+		for (USCS_Node* Node : SCS->GetAllNodes())
+		{
+			if (Node && Node->GetVariableName() == NodeName)
+			{
+				return Node;
+			}
+		}
+
+		return nullptr;
+	}
+
+	UActorComponent* ResolveNodeTemplate(USCS_Node* Node, UBlueprintGeneratedClass* OwnerClass)
+	{
+		if (!Node)
+		{
+			return nullptr;
+		}
+
+		if (OwnerClass)
+		{
+			if (UActorComponent* Template = Node->GetActualComponentTemplate(OwnerClass))
+			{
+				return Template;
+			}
+		}
+
+		return Cast<UActorComponent>(Node->ComponentTemplate);
+	}
+
+	bool StripGenVariableSuffix(const FString& InName, FString& OutName)
+	{
+		static const FString GenVariableSuffix(TEXT("_GEN_VARIABLE"));
+		if (InName.EndsWith(GenVariableSuffix))
+		{
+			OutName = InName.LeftChop(GenVariableSuffix.Len());
+			return true;
+		}
+
+		OutName = InName;
+		return false;
 	}
 }
 
@@ -344,8 +394,115 @@ TArray<FCortexBPSCSDiagnostics::FCollision> FCortexBPSCSDiagnostics::DetectSCSIn
 }
 
 FCortexBPSCSDiagnostics::FResolveResult FCortexBPSCSDiagnostics::ResolveComponentTemplateByName(
-	UBlueprint* /*BP*/,
-	const FString& /*Name*/)
+	UBlueprint* BP,
+	const FString& Name)
 {
-	return FResolveResult{};
+	FResolveResult Result;
+	if (!BP || Name.IsEmpty())
+	{
+		Result.FailureReason = TEXT("Blueprint or component name is empty");
+		return Result;
+	}
+
+	const FName TargetName(*Name);
+	UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(BP->GeneratedClass);
+
+	// Layer 1: own SCS node (non-walking lookup only).
+	if (USCS_Node* OwnNode = DiagnosticsFindOwnedSCSNodeByName(BP->SimpleConstructionScript, TargetName))
+	{
+		const TArray<FCollision> Collisions = DetectSCSInheritedCollisions(BP);
+		TArray<FString> AmbiguousCandidates;
+		for (const FCollision& Collision : Collisions)
+		{
+			if (Collision.SCSNodeName != TargetName)
+			{
+				continue;
+			}
+
+			if (!AmbiguousCandidates.Contains(FString::Printf(TEXT("%s@self"), *Name)))
+			{
+				AmbiguousCandidates.Add(FString::Printf(TEXT("%s@self"), *Name));
+			}
+
+			const FString OwnerName = Collision.InheritedFromClass
+				? Collision.InheritedFromClass->GetName()
+				: TEXT("parent");
+			const FString Candidate = FString::Printf(TEXT("%s@%s"), *Name, *OwnerName);
+			if (!AmbiguousCandidates.Contains(Candidate))
+			{
+				AmbiguousCandidates.Add(Candidate);
+			}
+		}
+
+		if (!AmbiguousCandidates.IsEmpty())
+		{
+			AmbiguousCandidates.Sort();
+			Result.bIsAmbiguous = true;
+			Result.AmbiguousCandidates = MoveTemp(AmbiguousCandidates);
+			Result.FailureReason = TEXT("Bare-name component reference is ambiguous");
+			return Result;
+		}
+
+		Result.Component = ResolveNodeTemplate(OwnNode, BPGC);
+		if (Result.Component)
+		{
+			return Result;
+		}
+	}
+
+	// Layer 2: parent Blueprint SCS chain.
+	for (UClass* ClassCursor = BP->ParentClass.Get(); ClassCursor; ClassCursor = ClassCursor->GetSuperClass())
+	{
+		UBlueprintGeneratedClass* ParentBPGC = Cast<UBlueprintGeneratedClass>(ClassCursor);
+		if (!ParentBPGC || !ParentBPGC->SimpleConstructionScript)
+		{
+			continue;
+		}
+
+		if (USCS_Node* ParentNode = ParentBPGC->SimpleConstructionScript->FindSCSNode(TargetName))
+		{
+			Result.Component = ResolveNodeTemplate(ParentNode, ParentBPGC);
+			if (Result.Component)
+			{
+				return Result;
+			}
+		}
+	}
+
+	// Layer 3: actor CDO component templates.
+	AActor* ActorCDO = BPGC ? Cast<AActor>(BPGC->GetDefaultObject(false)) : nullptr;
+	if (ActorCDO)
+	{
+		TInlineComponentArray<UActorComponent*> Components;
+		ActorCDO->GetComponents(Components);
+
+		// Layer 3a: native default subobjects (no suffix stripping).
+		for (UActorComponent* Component : Components)
+		{
+			if (Component && Component->GetName() == Name)
+			{
+				Result.Component = Component;
+				return Result;
+			}
+		}
+
+		// Layer 3b: SCS-owned CDO components (strip _GEN_VARIABLE suffix).
+		for (UActorComponent* Component : Components)
+		{
+			if (!Component)
+			{
+				continue;
+			}
+
+			FString StrippedName;
+			if (StripGenVariableSuffix(Component->GetName(), StrippedName) && StrippedName == Name)
+			{
+				Result.Component = Component;
+				return Result;
+			}
+		}
+	}
+
+	Result.FailureReason = TEXT("No matching component found in own SCS, parent SCS, native default subobjects, or SCS-owned CDO components");
+	return Result;
 }
