@@ -17,6 +17,9 @@ public:
 	/** Serialize a single FProperty value to a JSON value */
 	static TSharedPtr<FJsonValue> PropertyToJson(const FProperty* Property, const void* ValuePtr);
 
+	/** Serialize only UObject properties that differ from the class default object. */
+	static TSharedPtr<FJsonObject> NonDefaultPropertiesToJson(const UObject* Object, int32 MaxDepth = 1);
+
 	/** Serialize FText to JSON with optional string table source metadata. */
 	static TSharedPtr<FJsonObject> TextToJson(const FText& Text);
 
