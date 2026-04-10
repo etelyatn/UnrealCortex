@@ -51,7 +51,7 @@ bool FCortexGathererAllSectionsTest::RunTest(const FString& Parameters)
 
     const FString Result = FCortexEditorContextGatherer::FormatAsContextPreamble(Snapshot);
 
-    TestTrue(TEXT("Contains header"), Result.Contains(TEXT("## Editor Context (auto)")));
+    TestTrue(TEXT("Starts with header"), Result.StartsWith(TEXT("## Editor Context (auto)\n")));
     TestTrue(TEXT("Contains actors"), Result.Contains(TEXT("### Selected Actors")));
     TestTrue(TEXT("Contains editors"), Result.Contains(TEXT("### Open Asset Editors")));
     TestTrue(TEXT("Contains browser"), Result.Contains(TEXT("### Content Browser Selection")));
