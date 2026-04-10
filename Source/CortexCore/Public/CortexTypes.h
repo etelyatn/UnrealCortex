@@ -157,6 +157,12 @@ struct CORTEXCORE_API FCortexCommandResult
 
 		const int32 MaxEntries = 20;
 		const int32 Count = FMath::Min(Values.Num(), MaxEntries);
+		const FString TruncatedKey = Key + TEXT("_truncated");
+		const FString TotalKey = Key + TEXT("_total");
+
+		ErrorDetails->RemoveField(TruncatedKey);
+		ErrorDetails->RemoveField(TotalKey);
+
 		TArray<TSharedPtr<FJsonValue>> JsonValues;
 		JsonValues.Reserve(Count);
 
@@ -169,8 +175,8 @@ struct CORTEXCORE_API FCortexCommandResult
 
 		if (Values.Num() > MaxEntries)
 		{
-			ErrorDetails->SetBoolField(Key + TEXT("_truncated"), true);
-			ErrorDetails->SetNumberField(Key + TEXT("_total"), Values.Num());
+			ErrorDetails->SetBoolField(TruncatedKey, true);
+			ErrorDetails->SetNumberField(TotalKey, Values.Num());
 		}
 	}
 
