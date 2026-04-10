@@ -216,7 +216,7 @@ bool FCortexScopedMutationCaptureRemovedShapeTest::RunTest(const FString& Parame
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexSerializerNonDefaultPropsTest,
-	"Cortex.Core.Serializer.NonDefaultPropertiesToJson",
+	"Cortex.Core.Serializer.NonDefaultPropertiesToJson.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
