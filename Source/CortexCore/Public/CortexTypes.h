@@ -138,6 +138,66 @@ struct CORTEXCORE_API FCortexCommandResult
 	FString ErrorMessage;
 	TSharedPtr<FJsonObject> ErrorDetails;
 	TArray<FString> Warnings;
+
+	void AddContext(const FString& Key, const FString& Value)
+	{
+		if (!ErrorDetails.IsValid())
+		{
+			ErrorDetails = MakeShared<FJsonObject>();
+		}
+		ErrorDetails->SetStringField(Key, Value);
+	}
+
+	void AddContext(const FString& Key, const TArray<FString>& Values)
+	{
+		if (!ErrorDetails.IsValid())
+		{
+			ErrorDetails = MakeShared<FJsonObject>();
+		}
+
+		const int32 MaxEntries = 20;
+		const int32 Count = FMath::Min(Values.Num(), MaxEntries);
+		TArray<TSharedPtr<FJsonValue>> JsonValues;
+		JsonValues.Reserve(Count);
+
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			JsonValues.Add(MakeShared<FJsonValueString>(Values[Index]));
+		}
+
+		ErrorDetails->SetArrayField(Key, JsonValues);
+
+		if (Values.Num() > MaxEntries)
+		{
+			ErrorDetails->SetBoolField(Key + TEXT("_truncated"), true);
+			ErrorDetails->SetNumberField(Key + TEXT("_total"), Values.Num());
+		}
+	}
+
+	void AddContext(const FString& Key, TSharedPtr<FJsonObject> Value)
+	{
+		if (!ErrorDetails.IsValid())
+		{
+			ErrorDetails = MakeShared<FJsonObject>();
+		}
+
+		ErrorDetails->SetObjectField(Key, Value);
+	}
+
+	void AddContext(const FString& Key, double Value)
+	{
+		if (!ErrorDetails.IsValid())
+		{
+			ErrorDetails = MakeShared<FJsonObject>();
+		}
+
+		ErrorDetails->SetNumberField(Key, Value);
+	}
+
+	void AddContext(const FString& Key, int32 Value)
+	{
+		AddContext(Key, static_cast<double>(Value));
+	}
 };
 
 using FDeferredResponseCallback = TFunction<void(FCortexCommandResult)>;
