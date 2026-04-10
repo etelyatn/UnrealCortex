@@ -1,5 +1,6 @@
 #include "Operations/CortexBPAnalysisOps.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPSCSDiagnostics.h"
 #include "Operations/CortexBPTypeUtils.h"
 #include "CortexBlueprintModule.h"
 #include "CortexCommandRouter.h"
@@ -1396,6 +1397,49 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 	Metrics->SetArrayField(TEXT("unsupported_node_types"), UnsupportedArray);
 	return Metrics;
 }
+
+FString ToCollisionKindString(FCortexBPSCSDiagnostics::ECollisionInheritedKind Kind)
+{
+	switch (Kind)
+	{
+	case FCortexBPSCSDiagnostics::ECollisionInheritedKind::UProperty:
+		return TEXT("uproperty");
+	case FCortexBPSCSDiagnostics::ECollisionInheritedKind::SCS:
+		return TEXT("scs");
+	case FCortexBPSCSDiagnostics::ECollisionInheritedKind::Delegate:
+		return TEXT("delegate");
+	case FCortexBPSCSDiagnostics::ECollisionInheritedKind::Interface:
+		return TEXT("interface");
+	case FCortexBPSCSDiagnostics::ECollisionInheritedKind::SparseClassData:
+		return TEXT("sparse_class_data");
+	default:
+		return TEXT("uproperty");
+	}
+}
+
+FString ToCollisionSeverityString(FCortexBPSCSDiagnostics::ECollisionSeverity Severity)
+{
+	return Severity == FCortexBPSCSDiagnostics::ECollisionSeverity::Adoptable
+		? TEXT("adoptable")
+		: TEXT("blocking");
+}
+
+FString BuildRenameSuggestion(UBlueprint* Blueprint, const FString& Name)
+{
+	FString Suggested = FString::Printf(TEXT("Legacy%s"), *Name);
+	if (!Blueprint || !Blueprint->SimpleConstructionScript)
+	{
+		return Suggested;
+	}
+
+	int32 Suffix = 1;
+	while (Blueprint->SimpleConstructionScript->FindSCSNode(FName(*Suggested)) != nullptr)
+	{
+		Suggested = FString::Printf(TEXT("Legacy%s%d"), *Name, Suffix++);
+	}
+
+	return Suggested;
+}
 } // namespace
 
 FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<FJsonObject>& Params)
@@ -1648,6 +1692,64 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		}
 	}
 	Data->SetArrayField(TEXT("scs_components"), SCSComponentsArray);
+
+	TArray<TSharedPtr<FJsonValue>> SCSCollisionsArray;
+	const TArray<FCortexBPSCSDiagnostics::FCollision> SCSCollisions =
+		FCortexBPSCSDiagnostics::DetectSCSInheritedCollisions(BP);
+	for (const FCortexBPSCSDiagnostics::FCollision& Collision : SCSCollisions)
+	{
+		TSharedPtr<FJsonObject> CollisionObj = MakeShared<FJsonObject>();
+		const FString NodeName = Collision.SCSNodeName.ToString();
+		const bool bAdoptable = Collision.Severity == FCortexBPSCSDiagnostics::ECollisionSeverity::Adoptable;
+		const FString RecommendedAction = bAdoptable ? TEXT("adopt_into_parent") : TEXT("rename");
+
+		CollisionObj->SetStringField(TEXT("name"), NodeName);
+		CollisionObj->SetStringField(
+			TEXT("scs_component_class"),
+			Collision.SCSComponentClass ? Collision.SCSComponentClass->GetName() : TEXT(""));
+		CollisionObj->SetStringField(
+			TEXT("inherited_from"),
+			Collision.InheritedFromClass ? Collision.InheritedFromClass->GetName() : TEXT(""));
+		CollisionObj->SetStringField(TEXT("inherited_kind"), ToCollisionKindString(Collision.Kind));
+		CollisionObj->SetStringField(TEXT("severity"), ToCollisionSeverityString(Collision.Severity));
+		CollisionObj->SetStringField(TEXT("recommended_action"), RecommendedAction);
+
+		FString InheritedType;
+		if (Collision.InheritedProperty)
+		{
+			InheritedType = Collision.InheritedProperty->GetCPPType();
+		}
+		else if (Collision.InheritedSCSClass)
+		{
+			InheritedType = Collision.InheritedSCSClass->GetName();
+		}
+		CollisionObj->SetStringField(TEXT("inherited_type"), InheritedType);
+
+		if (bAdoptable)
+		{
+			CollisionObj->SetStringField(TEXT("recommended_tool"), TEXT("blueprint.set_class_defaults"));
+
+			TSharedPtr<FJsonObject> ParamsObj = MakeShared<FJsonObject>();
+			ParamsObj->SetStringField(TEXT("asset_path"), AssetPath);
+			TSharedPtr<FJsonObject> PropertiesObj = MakeShared<FJsonObject>();
+			PropertiesObj->SetStringField(NodeName, NodeName);
+			ParamsObj->SetObjectField(TEXT("properties"), PropertiesObj);
+			CollisionObj->SetObjectField(TEXT("recommended_params"), ParamsObj);
+		}
+		else
+		{
+			CollisionObj->SetStringField(TEXT("recommended_tool"), TEXT("blueprint.rename_scs_component"));
+
+			TSharedPtr<FJsonObject> ParamsObj = MakeShared<FJsonObject>();
+			ParamsObj->SetStringField(TEXT("asset_path"), AssetPath);
+			ParamsObj->SetStringField(TEXT("old_name"), NodeName);
+			ParamsObj->SetStringField(TEXT("new_name"), BuildRenameSuggestion(BP, NodeName));
+			CollisionObj->SetObjectField(TEXT("recommended_params"), ParamsObj);
+		}
+
+		SCSCollisionsArray.Add(MakeShared<FJsonValueObject>(CollisionObj));
+	}
+	Data->SetArrayField(TEXT("scs_collisions"), SCSCollisionsArray);
 
 	TArray<TSharedPtr<FJsonValue>> DynamicComponentsArray;
 	for (UActorComponent* TemplateComponent : BP->ComponentTemplates)

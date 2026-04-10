@@ -5,6 +5,8 @@
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SCS_Node.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "UObject/FieldIterator.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -14,6 +16,45 @@ namespace
 		if (!Keys.Contains(Key))
 		{
 			Keys.Add(Key);
+		}
+	}
+
+	FCortexBPSCSDiagnostics::ECollisionSeverity ResolvePropertyCollisionSeverity(
+		UClass* SCSComponentClass,
+		FProperty* Property)
+	{
+		const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property);
+		if (!ObjectProperty || !SCSComponentClass)
+		{
+			return FCortexBPSCSDiagnostics::ECollisionSeverity::Blocking;
+		}
+
+		UClass* PropertyClass = ObjectProperty->PropertyClass;
+		if (!PropertyClass || !PropertyClass->IsChildOf(UActorComponent::StaticClass()))
+		{
+			return FCortexBPSCSDiagnostics::ECollisionSeverity::Blocking;
+		}
+
+		return SCSComponentClass->IsChildOf(PropertyClass)
+			? FCortexBPSCSDiagnostics::ECollisionSeverity::Adoptable
+			: FCortexBPSCSDiagnostics::ECollisionSeverity::Blocking;
+	}
+
+	void AddCollisionIfMissing(
+		TArray<FCortexBPSCSDiagnostics::FCollision>& Collisions,
+		const FCortexBPSCSDiagnostics::FCollision& Candidate)
+	{
+		const bool bAlreadyExists = Collisions.ContainsByPredicate(
+			[&Candidate](const FCortexBPSCSDiagnostics::FCollision& Existing)
+			{
+				return Existing.SCSNodeName == Candidate.SCSNodeName
+					&& Existing.Kind == Candidate.Kind
+					&& Existing.InheritedFromClass == Candidate.InheritedFromClass;
+			});
+
+		if (!bAlreadyExists)
+		{
+			Collisions.Add(Candidate);
 		}
 	}
 }
@@ -161,9 +202,145 @@ FCortexBPSCSDiagnostics::FDirtyReport FCortexBPSCSDiagnostics::DetectSCSNodeDirt
 }
 
 TArray<FCortexBPSCSDiagnostics::FCollision> FCortexBPSCSDiagnostics::DetectSCSInheritedCollisions(
-	UBlueprint* /*BP*/)
+	UBlueprint* BP)
 {
-	return {};
+	TArray<FCollision> Collisions;
+
+	if (!BP || !BP->ParentClass || !BP->SimpleConstructionScript)
+	{
+		return Collisions;
+	}
+
+	const TArray<USCS_Node*>& OwnNodes = BP->SimpleConstructionScript->GetAllNodes();
+	for (USCS_Node* SCSNode : OwnNodes)
+	{
+		if (!SCSNode)
+		{
+			continue;
+		}
+
+		const FName NodeName = SCSNode->GetVariableName();
+		UClass* SCSComponentClass = SCSNode->ComponentClass;
+		if (!SCSComponentClass && SCSNode->ComponentTemplate)
+		{
+			SCSComponentClass = SCSNode->ComponentTemplate->GetClass();
+		}
+
+		// Pass A: inherited class properties/delegates.
+		for (TFieldIterator<FProperty> PropIt(BP->ParentClass, EFieldIterationFlags::IncludeSuper); PropIt; ++PropIt)
+		{
+			FProperty* Property = *PropIt;
+			if (!Property || Property->GetFName() != NodeName)
+			{
+				continue;
+			}
+
+			FCollision Collision;
+			Collision.SCSNodeName = NodeName;
+			Collision.SCSComponentClass = SCSComponentClass;
+			Collision.InheritedProperty = Property;
+			Collision.InheritedFromClass = Cast<UClass>(Property->GetOwnerStruct());
+
+			if (CastField<FMulticastDelegateProperty>(Property) || CastField<FDelegateProperty>(Property))
+			{
+				Collision.Kind = ECollisionInheritedKind::Delegate;
+				Collision.Severity = ECollisionSeverity::Blocking;
+			}
+			else
+			{
+				Collision.Kind = ECollisionInheritedKind::UProperty;
+				Collision.Severity = ResolvePropertyCollisionSeverity(SCSComponentClass, Property);
+			}
+
+			AddCollisionIfMissing(Collisions, Collision);
+		}
+
+		// Pass B: properties on implemented interfaces.
+		for (const FImplementedInterface& InterfaceDesc : BP->ParentClass->Interfaces)
+		{
+			UClass* InterfaceClass = InterfaceDesc.Class;
+			if (!InterfaceClass)
+			{
+				continue;
+			}
+
+			for (TFieldIterator<FProperty> PropIt(InterfaceClass); PropIt; ++PropIt)
+			{
+				FProperty* Property = *PropIt;
+				if (!Property || Property->GetFName() != NodeName)
+				{
+					continue;
+				}
+
+				FCollision Collision;
+				Collision.SCSNodeName = NodeName;
+				Collision.SCSComponentClass = SCSComponentClass;
+				Collision.InheritedProperty = Property;
+				Collision.InheritedFromClass = InterfaceClass;
+				Collision.Kind = ECollisionInheritedKind::Interface;
+				Collision.Severity = ECollisionSeverity::Blocking;
+				AddCollisionIfMissing(Collisions, Collision);
+			}
+		}
+
+		// Pass C: sparse class data fields.
+		if (UScriptStruct* SparseStruct = BP->ParentClass->GetSparseClassDataStruct())
+		{
+			for (TFieldIterator<FProperty> PropIt(SparseStruct); PropIt; ++PropIt)
+			{
+				FProperty* Property = *PropIt;
+				if (!Property || Property->GetFName() != NodeName)
+				{
+					continue;
+				}
+
+				FCollision Collision;
+				Collision.SCSNodeName = NodeName;
+				Collision.SCSComponentClass = SCSComponentClass;
+				Collision.InheritedProperty = Property;
+				Collision.InheritedFromClass = BP->ParentClass;
+				Collision.Kind = ECollisionInheritedKind::SparseClassData;
+				Collision.Severity = ECollisionSeverity::Blocking;
+				AddCollisionIfMissing(Collisions, Collision);
+			}
+		}
+
+		// Pass D: inherited SCS nodes from parent Blueprint classes.
+		for (UClass* ClassCursor = BP->ParentClass; ClassCursor; ClassCursor = ClassCursor->GetSuperClass())
+		{
+			UBlueprintGeneratedClass* ParentBPGC = Cast<UBlueprintGeneratedClass>(ClassCursor);
+			if (!ParentBPGC || !ParentBPGC->SimpleConstructionScript)
+			{
+				continue;
+			}
+
+			USCS_Node* InheritedNode = ParentBPGC->SimpleConstructionScript->FindSCSNode(NodeName);
+			if (!InheritedNode)
+			{
+				continue;
+			}
+
+			UClass* InheritedSCSClass = InheritedNode->ComponentClass;
+			if (!InheritedSCSClass && InheritedNode->ComponentTemplate)
+			{
+				InheritedSCSClass = InheritedNode->ComponentTemplate->GetClass();
+			}
+
+			FCollision Collision;
+			Collision.SCSNodeName = NodeName;
+			Collision.SCSComponentClass = SCSComponentClass;
+			Collision.InheritedSCSClass = InheritedSCSClass;
+			Collision.InheritedFromClass = ClassCursor;
+			Collision.Kind = ECollisionInheritedKind::SCS;
+			Collision.Severity = (SCSComponentClass && InheritedSCSClass && SCSComponentClass == InheritedSCSClass)
+				? ECollisionSeverity::Adoptable
+				: ECollisionSeverity::Blocking;
+			AddCollisionIfMissing(Collisions, Collision);
+			break;
+		}
+	}
+
+	return Collisions;
 }
 
 FCortexBPSCSDiagnostics::FResolveResult FCortexBPSCSDiagnostics::ResolveComponentTemplateByName(
