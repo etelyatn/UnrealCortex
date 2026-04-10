@@ -7,6 +7,7 @@
 #include "InputModifiers.h"
 #include "InputAction.h"
 #include "PlayerMappableKeySettings.h"
+#include "UObject/GarbageCollection.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 
@@ -111,8 +112,7 @@ bool FCortexMutationDiffSubObjectWalkTest::RunTest(const FString& Parameters)
 	UInputModifierNegate* TransientModifier = NewObject<UInputModifierNegate>(
 		MappingContext, TEXT("TransientModifier"), RF_Transient);
 
-	FCortexMutationDiff MutationDiff;
-	const TSharedPtr<FJsonObject> Snapshot = MutationDiff.SnapshotObject(MappingContext);
+	const TSharedPtr<FJsonObject> Snapshot = FCortexMutationDiff::SnapshotObject(MappingContext);
 
 	TestTrue(TEXT("Snapshot should be valid"), Snapshot.IsValid());
 	if (!Snapshot.IsValid())
@@ -175,8 +175,7 @@ bool FCortexMutationDiffSubObjectCountTest::RunTest(const FString& Parameters)
 	UInputModifierNegate* TransientModifier = NewObject<UInputModifierNegate>(
 		MappingContext, TEXT("TransientModifier"), RF_Transient);
 
-	FCortexMutationDiff MutationDiff;
-	const TSharedPtr<FJsonObject> Snapshot = MutationDiff.SnapshotObject(MappingContext);
+	const TSharedPtr<FJsonObject> Snapshot = FCortexMutationDiff::SnapshotObject(MappingContext);
 
 	TestTrue(TEXT("Snapshot should be valid"), Snapshot.IsValid());
 	if (Snapshot.IsValid())
@@ -432,5 +431,97 @@ bool FCortexSerializerInstancedObjectUsesOwningTemplateTest::RunTest(const FStri
 	}
 
 	DuplicatedOwner->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMutationDiffSnapshotNullObjectTest,
+	"Cortex.Core.MutationDiff.SnapshotNullObject",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMutationDiffSnapshotNullObjectTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const TSharedPtr<FJsonObject> Snapshot = FCortexMutationDiff::SnapshotObject(nullptr);
+	TestFalse(TEXT("Snapshot of null object should return invalid pointer"), Snapshot.IsValid());
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMutationDiffCompareNullPreSnapshotTest,
+	"Cortex.Core.MutationDiff.CompareNullPreSnapshot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMutationDiffCompareNullPreSnapshotTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	UInputModifierNegate* Modifier = NewObject<UInputModifierNegate>(GetTransientPackage(), NAME_None, RF_Transient);
+	const TSharedPtr<FJsonObject> Diff = FCortexMutationDiff::CompareSnapshots(Modifier, nullptr, 1);
+
+	TestTrue(TEXT("Diff should be valid"), Diff.IsValid());
+	if (Diff.IsValid())
+	{
+		TestTrue(TEXT("Diff should have previous key"), Diff->HasField(TEXT("previous")));
+		TestTrue(TEXT("previous should be null JSON value"),
+			Diff->GetField<EJson::None>(TEXT("previous"))->Type == EJson::Null);
+
+		const TSharedPtr<FJsonObject>* CurrentJson = nullptr;
+		TestTrue(TEXT("Diff should have current key as object"),
+			Diff->TryGetObjectField(TEXT("current"), CurrentJson));
+	}
+
+	Modifier->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexScopedMutationCaptureGarbageCollectedTest,
+	"Cortex.Core.MutationDiff.ScopedCaptureGarbageCollected",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexScopedMutationCaptureGarbageCollectedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	UInputModifierNegate* Modifier = NewObject<UInputModifierNegate>(GetTransientPackage(), NAME_None, RF_Transient);
+	FScopedMutationCapture Capture(Modifier, 1);
+
+	Modifier->MarkAsGarbage();
+	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+	const TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Capture.ApplyDiff(Result);
+
+	TestFalse(TEXT("Should not have changes key when object is GC'd"),
+		Result->HasField(TEXT("changes")));
+	TestTrue(TEXT("Should have changes_error key"),
+		Result->HasField(TEXT("changes_error")));
+	TestEqual(TEXT("changes_error should indicate destruction"),
+		Result->GetStringField(TEXT("changes_error")),
+		TEXT("object_destroyed_before_diff"));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerNonDefaultNullObjectTest,
+	"Cortex.Core.Serializer.NonDefaultPropertiesToJson.NullObject",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerNonDefaultNullObjectTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const TSharedPtr<FJsonObject> Json = FCortexSerializer::NonDefaultPropertiesToJson(nullptr, 1);
+	TestTrue(TEXT("Null object should return valid empty JSON"), Json.IsValid());
+	TestEqual(TEXT("Null object should return empty JSON"), Json->Values.Num(), 0);
+
 	return true;
 }

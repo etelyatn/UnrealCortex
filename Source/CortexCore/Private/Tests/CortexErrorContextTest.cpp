@@ -273,3 +273,83 @@ bool FCortexErrorContextPreservesExistingTest::RunTest(const FString& Parameters
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexErrorContextLazyInitTest,
+	"Cortex.Core.ErrorContext.LazyInitFromDefault",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexErrorContextLazyInitTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexCommandResult Result;
+	TestFalse(TEXT("ErrorDetails should be null initially"), Result.ErrorDetails.IsValid());
+
+	Result.AddContext(TEXT("key"), TEXT("value"));
+
+	TestTrue(TEXT("ErrorDetails should be auto-created"), Result.ErrorDetails.IsValid());
+	TestEqual(TEXT("key should have correct value"),
+		Result.ErrorDetails->GetStringField(TEXT("key")),
+		TEXT("value"));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexErrorContextAddArrayBoundaryTest,
+	"Cortex.Core.ErrorContext.AddArrayBoundary",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexErrorContextAddArrayBoundaryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexCommandResult Result = FCortexCommandRouter::Error(
+		TEXT("TEST"), TEXT("boundary test"));
+
+	TArray<FString> Formats;
+	for (int32 Index = 0; Index < FCortexCommandResult::MaxContextArrayEntries; ++Index)
+	{
+		Formats.Add(FString::Printf(TEXT("format_%d"), Index));
+	}
+	Result.AddContext(TEXT("accepted_formats"), Formats);
+
+	const TArray<TSharedPtr<FJsonValue>>* FormatsArr = nullptr;
+	TestTrue(TEXT("accepted_formats array should exist"),
+		Result.ErrorDetails->TryGetArrayField(TEXT("accepted_formats"), FormatsArr));
+	if (FormatsArr)
+	{
+		TestEqual(TEXT("Should have exactly MaxContextArrayEntries"),
+			FormatsArr->Num(), FCortexCommandResult::MaxContextArrayEntries);
+	}
+
+	TestFalse(TEXT("Exactly at limit should not be truncated"),
+		Result.ErrorDetails->HasField(TEXT("accepted_formats_truncated")));
+	TestFalse(TEXT("Exactly at limit should not have total"),
+		Result.ErrorDetails->HasField(TEXT("accepted_formats_total")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexErrorContextAddNullJsonTest,
+	"Cortex.Core.ErrorContext.AddNullJsonIgnored",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexErrorContextAddNullJsonTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexCommandResult Result;
+	TSharedPtr<FJsonObject> NullJson;
+	Result.AddContext(TEXT("should_not_exist"), NullJson);
+
+	TestFalse(TEXT("ErrorDetails should remain null when adding null JSON"),
+		Result.ErrorDetails.IsValid());
+
+	return true;
+}

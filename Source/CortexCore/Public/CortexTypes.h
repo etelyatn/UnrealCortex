@@ -139,6 +139,8 @@ struct CORTEXCORE_API FCortexCommandResult
 	TSharedPtr<FJsonObject> ErrorDetails;
 	TArray<FString> Warnings;
 
+	static constexpr int32 MaxContextArrayEntries = 20;
+
 	void AddContext(const FString& Key, const FString& Value)
 	{
 		if (!ErrorDetails.IsValid())
@@ -155,8 +157,7 @@ struct CORTEXCORE_API FCortexCommandResult
 			ErrorDetails = MakeShared<FJsonObject>();
 		}
 
-		const int32 MaxEntries = 20;
-		const int32 Count = FMath::Min(Values.Num(), MaxEntries);
+		const int32 Count = FMath::Min(Values.Num(), MaxContextArrayEntries);
 		const FString TruncatedKey = Key + TEXT("_truncated");
 		const FString TotalKey = Key + TEXT("_total");
 
@@ -173,15 +174,20 @@ struct CORTEXCORE_API FCortexCommandResult
 
 		ErrorDetails->SetArrayField(Key, JsonValues);
 
-		if (Values.Num() > MaxEntries)
+		if (Values.Num() > MaxContextArrayEntries)
 		{
 			ErrorDetails->SetBoolField(TruncatedKey, true);
 			ErrorDetails->SetNumberField(TotalKey, Values.Num());
 		}
 	}
 
-	void AddContext(const FString& Key, TSharedPtr<FJsonObject> Value)
+	void AddContext(const FString& Key, const TSharedPtr<FJsonObject>& Value)
 	{
+		if (!Value.IsValid())
+		{
+			return;
+		}
+
 		if (!ErrorDetails.IsValid())
 		{
 			ErrorDetails = MakeShared<FJsonObject>();

@@ -49,6 +49,18 @@ private:
 	/** Build schema for a single property */
 	static TSharedPtr<FJsonObject> GetPropertySchema(const FProperty* Property);
 
+	/** Serialize non-default properties of a UObject, comparing against a provided default. */
+	static TSharedPtr<FJsonObject> ObjectNonDefaultPropertiesToJson(const UObject* Object, const UObject* DefaultObject, int32 MaxDepth);
+
+	/** Serialize non-default properties of a UStruct, comparing against provided defaults. */
+	static TSharedPtr<FJsonObject> StructNonDefaultPropertiesToJson(const UStruct* StructType, const void* StructData, const void* DefaultData, int32 MaxDepth);
+
+	/** Serialize a single property if it differs from its default value. */
+	static TSharedPtr<FJsonValue> NonDefaultPropertyToJson(const FProperty* Property, const void* ValuePtr, const void* DefaultValuePtr, int32 MaxDepth);
+
+	/** Sentinel string emitted when MaxDepth prevents full serialization. */
+	static const FString ChangedMarker;
+
 	/** Cache for TInstancedStruct subtype discovery */
 	static TMap<const UScriptStruct*, TArray<UScriptStruct*>> SubtypeCache;
 
