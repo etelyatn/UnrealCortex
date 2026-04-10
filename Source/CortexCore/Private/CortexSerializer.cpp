@@ -32,6 +32,7 @@ namespace
 
 	TSharedPtr<FJsonObject> ObjectNonDefaultPropertiesToJson(
 		const UObject* Object,
+		const UObject* DefaultObject,
 		int32 MaxDepth)
 	{
 		if (Object == nullptr)
@@ -39,13 +40,18 @@ namespace
 			return MakeShared<FJsonObject>();
 		}
 
-		const UObject* DefaultObject = Object->GetClass()->GetDefaultObject();
-		if (DefaultObject == nullptr)
+		const UObject* EffectiveDefaultObject = DefaultObject;
+		if (EffectiveDefaultObject == nullptr || EffectiveDefaultObject->GetClass() != Object->GetClass())
+		{
+			EffectiveDefaultObject = Object->GetClass()->GetDefaultObject();
+		}
+
+		if (EffectiveDefaultObject == nullptr)
 		{
 			return MakeShared<FJsonObject>();
 		}
 
-		return StructNonDefaultPropertiesToJson(Object->GetClass(), Object, DefaultObject, MaxDepth);
+		return StructNonDefaultPropertiesToJson(Object->GetClass(), Object, EffectiveDefaultObject, MaxDepth);
 	}
 
 	TSharedPtr<FJsonValue> NonDefaultPropertyToJson(
@@ -106,7 +112,10 @@ namespace
 					return MakeShared<FJsonValueString>(ChangedMarker);
 				}
 
-				TSharedPtr<FJsonObject> NestedJson = ObjectNonDefaultPropertiesToJson(CurrentObject, MaxDepth - 1);
+				TSharedPtr<FJsonObject> NestedJson = ObjectNonDefaultPropertiesToJson(
+					CurrentObject,
+					DefaultObject,
+					MaxDepth - 1);
 				const bool bClassChanged = DefaultObject == nullptr || CurrentObject->GetClass() != DefaultObject->GetClass();
 				if (bClassChanged)
 				{
@@ -274,7 +283,7 @@ TSharedPtr<FJsonObject> FCortexSerializer::NonDefaultPropertiesToJson(const UObj
 		return MakeShared<FJsonObject>();
 	}
 
-	return ObjectNonDefaultPropertiesToJson(Object, MaxDepth);
+	return ObjectNonDefaultPropertiesToJson(Object, nullptr, MaxDepth);
 }
 
 TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Property, const void* ValuePtr)

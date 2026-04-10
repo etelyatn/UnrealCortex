@@ -7,6 +7,7 @@
 #include "InputModifiers.h"
 #include "InputAction.h"
 #include "PlayerMappableKeySettings.h"
+#include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -27,6 +28,69 @@ namespace
 		{
 			MappingContext->MarkAsGarbage();
 		}
+	}
+
+	bool FindInstancedTemplateMismatchCandidate(UClass*& OutOwnerClass, FObjectProperty*& OutProperty, FString& OutDescription)
+	{
+		OutOwnerClass = nullptr;
+		OutProperty = nullptr;
+		OutDescription.Reset();
+
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			UClass* OwnerClass = *It;
+			if (OwnerClass == nullptr || !OwnerClass->IsNative())
+			{
+				continue;
+			}
+
+			if (OwnerClass->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+			{
+				continue;
+			}
+
+			if (OwnerClass->IsChildOf<AActor>())
+			{
+				continue;
+			}
+
+			const UObject* OwnerCDO = OwnerClass->GetDefaultObject(false);
+			if (OwnerCDO == nullptr)
+			{
+				continue;
+			}
+
+			for (TFieldIterator<FObjectProperty> PropIt(OwnerClass, EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt)
+			{
+				FObjectProperty* Property = *PropIt;
+				if (Property == nullptr ||
+					!Property->HasAllPropertyFlags(CPF_InstancedReference) ||
+					Property->HasAnyPropertyFlags(CPF_Transient))
+				{
+					continue;
+				}
+
+				const UObject* TemplateObject = Property->GetObjectPropertyValue_InContainer(OwnerCDO);
+				if (TemplateObject == nullptr)
+				{
+					continue;
+				}
+
+				const TSharedPtr<FJsonObject> TemplateDiff =
+					FCortexSerializer::NonDefaultPropertiesToJson(TemplateObject, 2);
+				if (!TemplateDiff.IsValid() || TemplateDiff->Values.Num() == 0)
+				{
+					continue;
+				}
+
+				OutOwnerClass = OwnerClass;
+				OutProperty = Property;
+				OutDescription = FString::Printf(TEXT("%s.%s"), *OwnerClass->GetName(), *Property->GetName());
+				return true;
+			}
+		}
+
+		return false;
 	}
 }
 
@@ -328,5 +392,45 @@ bool FCortexSerializerNonDefaultInstancedObjectPropsTest::RunTest(const FString&
 
 	Settings->MarkAsGarbage();
 	Action->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerInstancedObjectUsesOwningTemplateTest,
+	"Cortex.Core.Serializer.NonDefaultPropertiesToJson.InstancedObjectUsesOwningTemplate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerInstancedObjectUsesOwningTemplateTest::RunTest(const FString& Parameters)
+{
+	UClass* OwnerClass = nullptr;
+	FObjectProperty* Property = nullptr;
+	FString CandidateDescription;
+	TestTrue(TEXT("Should find an instanced object template that differs from its nested class CDO"),
+		FindInstancedTemplateMismatchCandidate(OwnerClass, Property, CandidateDescription));
+	if (OwnerClass == nullptr || Property == nullptr)
+	{
+		return true;
+	}
+
+	UObject* DuplicatedOwner = DuplicateObject<UObject>(OwnerClass->GetDefaultObject(), GetTransientPackage());
+	TestNotNull(TEXT("Should duplicate owner CDO for serializer comparison"), DuplicatedOwner);
+	if (DuplicatedOwner == nullptr)
+	{
+		return true;
+	}
+
+	TestNotNull(TEXT("Duplicated owner should preserve the instanced object property"),
+		Property->GetObjectPropertyValue_InContainer(DuplicatedOwner));
+
+	const TSharedPtr<FJsonObject> Json = FCortexSerializer::NonDefaultPropertiesToJson(DuplicatedOwner, 2);
+	TestTrue(TEXT("Serializer output should be valid"), Json.IsValid());
+	if (Json.IsValid())
+	{
+		TestFalse(*FString::Printf(TEXT("Matching owning template should not produce a false positive for %s"), *CandidateDescription),
+			Json->HasField(Property->GetName()));
+	}
+
+	DuplicatedOwner->MarkAsGarbage();
 	return true;
 }
