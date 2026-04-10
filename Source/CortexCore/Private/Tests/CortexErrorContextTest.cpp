@@ -55,6 +55,18 @@ bool FCortexErrorContextAddArrayTest::RunTest(const FString& Parameters)
 	if (FormatsArr)
 	{
 		TestEqual(TEXT("Should have 3 formats"), FormatsArr->Num(), 3);
+		if (FormatsArr->Num() == 3)
+		{
+			TestEqual(TEXT("Format 0 should match"),
+				(*FormatsArr)[0]->AsString(),
+				Formats[0]);
+			TestEqual(TEXT("Format 1 should match"),
+				(*FormatsArr)[1]->AsString(),
+				Formats[1]);
+			TestEqual(TEXT("Format 2 should match"),
+				(*FormatsArr)[2]->AsString(),
+				Formats[2]);
+		}
 	}
 	TestFalse(TEXT("Should not be truncated"),
 		Result.ErrorDetails->HasField(TEXT("accepted_formats_truncated")));
