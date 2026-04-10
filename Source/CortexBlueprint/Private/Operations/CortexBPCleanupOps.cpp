@@ -1,5 +1,6 @@
 #include "Operations/CortexBPCleanupOps.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPSCSDiagnostics.h"
 #include "CortexBlueprintModule.h"
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
@@ -18,6 +19,42 @@
 #include "UObject/SavePackage.h"
 #include "Misc/PackageName.h"
 #include "ScopedTransaction.h"
+
+#if WITH_DEV_AUTOMATION_TESTS
+namespace
+{
+	TFunction<void(USCS_Node*, UBlueprint*)> GRemoveSCSComponentMidflightTestHook;
+}
+#endif
+
+namespace
+{
+	USCS_Node* FindInheritedSCSNodeByName(UBlueprint* Blueprint, const FName ComponentFName, UClass*& OutOwnerClass)
+	{
+		OutOwnerClass = nullptr;
+		if (!Blueprint)
+		{
+			return nullptr;
+		}
+
+		for (UClass* ClassCursor = Blueprint->ParentClass.Get(); ClassCursor; ClassCursor = ClassCursor->GetSuperClass())
+		{
+			UBlueprintGeneratedClass* ParentBPGC = Cast<UBlueprintGeneratedClass>(ClassCursor);
+			if (!ParentBPGC || !ParentBPGC->SimpleConstructionScript)
+			{
+				continue;
+			}
+
+			if (USCS_Node* ParentNode = ParentBPGC->SimpleConstructionScript->FindSCSNode(ComponentFName))
+			{
+				OutOwnerClass = ClassCursor;
+				return ParentNode;
+			}
+		}
+
+		return nullptr;
+	}
+}
 
 FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJsonObject>& Params)
 {
@@ -321,25 +358,67 @@ FCortexCommandResult FCortexBPCleanupOps::RemoveSCSComponent(const TSharedPtr<FJ
 			TEXT("Blueprint has no SimpleConstructionScript"));
 	}
 
-	// Find the SCS node by variable name
-	USCS_Node* TargetNode = nullptr;
-	for (USCS_Node* Node : SCS->GetAllNodes())
-	{
-		if (Node && Node->GetVariableName() == FName(*ComponentName))
-		{
-			TargetNode = Node;
-			break;
-		}
-	}
+	const FName ComponentFName(*ComponentName);
+	USCS_Node* TargetNode = SCS->FindSCSNode(ComponentFName);
 
 	if (!TargetNode)
 	{
+		UClass* InheritedOwnerClass = nullptr;
+		if (FindInheritedSCSNodeByName(BP, ComponentFName, InheritedOwnerClass))
+		{
+			const FString OwnerName = InheritedOwnerClass ? InheritedOwnerClass->GetName() : TEXT("parent class");
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("SCS component '%s' is inherited from %s; rename/remove it on the parent Blueprint"),
+					*ComponentName,
+					*OwnerName));
+		}
+
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::ComponentNotFound,
 			FString::Printf(TEXT("SCS component not found: %s"), *ComponentName));
 	}
 
+	if (TargetNode == SCS->GetDefaultSceneRootNode())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("DefaultSceneRoot cannot be removed"));
+	}
+
 	const bool bCompile = Params->HasField(TEXT("compile")) ? Params->GetBoolField(TEXT("compile")) : true;
+	const bool bForce = Params->HasField(TEXT("force")) ? Params->GetBoolField(TEXT("force")) : false;
+
+	TArray<FString> AcknowledgedLosses;
+	const TArray<TSharedPtr<FJsonValue>>* AcknowledgedLossesArray = nullptr;
+	if (Params->TryGetArrayField(TEXT("acknowledged_losses"), AcknowledgedLossesArray) && AcknowledgedLossesArray)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *AcknowledgedLossesArray)
+		{
+			if (!Value.IsValid() || Value->Type != EJson::String)
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					TEXT("'acknowledged_losses' must be an array of strings"));
+			}
+			AcknowledgedLosses.Add(Value->AsString());
+		}
+		AcknowledgedLosses.Sort();
+	}
+
+	const FCortexBPSCSDiagnostics::FDirtyReport PreReport =
+		FCortexBPSCSDiagnostics::DetectSCSNodeDirtyState(TargetNode, BP);
+	const bool bHasSubObjectLoss = PreReport.HasSubObjectLoss();
+	const bool bAcknowledgmentMatches = (AcknowledgedLosses == PreReport.AcknowledgmentKeys);
+	if (bHasSubObjectLoss && !bForce && !bAcknowledgmentMatches)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::PotentialDataLoss,
+			FString::Printf(
+				TEXT("Component '%s' has dirty sub-objects that would be lost. Echo required_acknowledgment as acknowledged_losses to proceed."),
+				*ComponentName),
+			PreReport.ToRefusalJson());
+	}
 
 	FScopedTransaction Transaction(FText::FromString(
 		FString::Printf(TEXT("Cortex: Remove SCS Component %s from %s"), *ComponentName, *BP->GetName())));
@@ -348,14 +427,54 @@ FCortexCommandResult FCortexBPCleanupOps::RemoveSCSComponent(const TSharedPtr<FJ
 	SCS->Modify();
 	TargetNode->Modify();
 
+#if WITH_DEV_AUTOMATION_TESTS
+	if (GRemoveSCSComponentMidflightTestHook)
+	{
+		GRemoveSCSComponentMidflightTestHook(TargetNode, BP);
+	}
+#endif
+
+	const FCortexBPSCSDiagnostics::FDirtyReport InsideReport =
+		FCortexBPSCSDiagnostics::DetectSCSNodeDirtyState(TargetNode, BP);
+	if (InsideReport.AcknowledgmentKeys != PreReport.AcknowledgmentKeys)
+	{
+		Transaction.Cancel();
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::PotentialDataLoss,
+			TEXT("Dirty state changed between pre-flight and transaction; re-run and re-acknowledge."),
+			InsideReport.ToRefusalJson());
+	}
+
+	if (InsideReport.HasSubObjectLoss() && !bForce && AcknowledgedLosses != InsideReport.AcknowledgmentKeys)
+	{
+		Transaction.Cancel();
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::PotentialDataLoss,
+			TEXT("Acknowledged losses do not match current dirty state; re-run and retry with required_acknowledgment."),
+			InsideReport.ToRefusalJson());
+	}
+
 	// RemoveNodeAndPromoteChildren re-parents children to the removed node's parent
 	// and removes the node from all SCS arrays — it is the canonical API for this operation.
 	SCS->RemoveNodeAndPromoteChildren(TargetNode);
 
-	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
 
 	TSharedPtr<FJsonObject> ResponseData = MakeShared<FJsonObject>();
 	ResponseData->SetStringField(TEXT("removed_component"), ComponentName);
+	ResponseData->SetObjectField(TEXT("diff"), InsideReport.ToDiffJson());
+
+	FString GuardResult = TEXT("clean");
+	if (InsideReport.HasSubObjectLoss())
+	{
+		GuardResult = bForce ? TEXT("force_override") : TEXT("acknowledged");
+		ResponseData->SetStringField(TEXT("override_used"), bForce ? TEXT("force") : TEXT("acknowledged_losses"));
+	}
+	else if (!InsideReport.TopLevelKeys.IsEmpty())
+	{
+		GuardResult = TEXT("top_level_dirty");
+	}
+	ResponseData->SetStringField(TEXT("guard_result"), GuardResult);
 
 	if (bCompile)
 	{
@@ -397,5 +516,19 @@ FCortexCommandResult FCortexBPCleanupOps::RemoveSCSComponent(const TSharedPtr<FJ
 
 	UE_LOG(LogCortexBlueprint, Log, TEXT("Removed SCS component '%s' from %s"), *ComponentName, *BP->GetName());
 
-	return FCortexCommandRouter::Success(ResponseData);
+	FCortexCommandResult Result = FCortexCommandRouter::Success(ResponseData);
+	if (bForce && InsideReport.HasSubObjectLoss())
+	{
+		Result.Warnings.Add(TEXT("Data loss override used via force - verify downstream assets."));
+	}
+
+	return Result;
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+void FCortexBPCleanupOps::SetRemoveSCSComponentMidflightTestHook(
+	TFunction<void(USCS_Node*, UBlueprint*)> InHook)
+{
+	GRemoveSCSComponentMidflightTestHook = MoveTemp(InHook);
+}
+#endif

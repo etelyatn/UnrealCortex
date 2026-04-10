@@ -27,4 +27,8 @@ public:
 	 *         compile (bool, optional, default true)
 	 */
 	static FCortexCommandResult RemoveSCSComponent(const TSharedPtr<FJsonObject>& Params);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	static void SetRemoveSCSComponentMidflightTestHook(TFunction<void(class USCS_Node*, class UBlueprint*)> InHook);
+#endif
 };
