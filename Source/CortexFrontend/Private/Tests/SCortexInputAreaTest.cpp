@@ -206,19 +206,21 @@ bool FCortexInputAreaProvidersTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Popup open"), Widget->IsAutoCompleteOpen());
 
     const auto& Items = Widget->GetFilteredItems();
-    TestTrue(TEXT("At least 3 items (providers)"), Items.Num() >= 3);
+    TestTrue(TEXT("At least 4 items (providers)"), Items.Num() >= 4);
 
     // Verify provider names
-    bool bFoundThisAsset = false, bFoundSelection = false, bFoundProblems = false;
+    bool bFoundThisAsset = false, bFoundSelection = false, bFoundProblems = false, bFoundEditorContext = false;
     for (const TSharedPtr<FCortexAutoCompleteItem>& Item : Items)
     {
         if (Item->Name == TEXT("thisAsset")) bFoundThisAsset = true;
         if (Item->Name == TEXT("selection")) bFoundSelection = true;
         if (Item->Name == TEXT("problems")) bFoundProblems = true;
+        if (Item->Name == TEXT("editorContext")) bFoundEditorContext = true;
     }
     TestTrue(TEXT("@thisAsset present"), bFoundThisAsset);
     TestTrue(TEXT("@selection present"), bFoundSelection);
     TestTrue(TEXT("@problems present"), bFoundProblems);
+    TestTrue(TEXT("@editorContext present"), bFoundEditorContext);
 
     return true;
 }
