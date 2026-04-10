@@ -90,24 +90,71 @@ def register_blueprint_migration_tools(mcp, connection: UEConnection):
         asset_path: str,
         component_name: str,
         compile: bool = True,
+        acknowledged_losses: list[str] | None = None,
+        force: bool = False,
     ) -> str:
         """Remove an SCS component node from a Blueprint.
 
         Use after migrating a component to a C++ UPROPERTY. Children of the
         removed node are re-parented to its parent automatically.
+        Safety is tiered: clean templates proceed, top-level property drift
+        returns a diff, and instanced sub-object drift requires explicit loss
+        acknowledgment or force override.
 
         Args:
             asset_path: Blueprint object path (e.g. /Game/Blueprints/BP_Foo).
             component_name: SCS variable name of the component to remove.
             compile: Recompile the Blueprint after removal (default True).
+            acknowledged_losses: Exact keys echoed from required_acknowledgment.
+            force: Override dirty-state protection and remove anyway.
         """
         try:
-            response = connection.send_command("blueprint.remove_scs_component", {
+            params: dict[str, object] = {
                 "asset_path": asset_path,
                 "component_name": component_name,
                 "compile": compile,
-            })
+            }
+            if acknowledged_losses is not None:
+                params["acknowledged_losses"] = acknowledged_losses
+            if force:
+                params["force"] = force
+
+            response = connection.send_command("blueprint.remove_scs_component", params)
             return format_response(response.get("data", {}), "remove_scs_component")
+        except ConnectionError as e:
+            return json.dumps({"error": f"Connection error: {e}"})
+        except (RuntimeError, TimeoutError, OSError) as e:
+            return json.dumps({"error": str(e)})
+
+    @mcp.tool()
+    def rename_scs_component(
+        asset_path: str,
+        old_name: str,
+        new_name: str,
+        compile: bool = True,
+    ) -> str:
+        """Rename an SCS component node on a Blueprint.
+
+        Escape hatch for SCS/inherited-name collisions during migration. Refuses
+        inherited targets, timeline components, components that reference local
+        timelines, and collisions against existing SCS nodes, Blueprint
+        variables, inherited UPROPERTY members, or dependent Blueprints that
+        would be silently shadowed.
+
+        Args:
+            asset_path: Blueprint object path (e.g. /Game/Blueprints/BP_Foo).
+            old_name: Current SCS variable name to rename.
+            new_name: New SCS variable name to apply.
+            compile: Recompile the Blueprint after rename (default True).
+        """
+        try:
+            response = connection.send_command("blueprint.rename_scs_component", {
+                "asset_path": asset_path,
+                "old_name": old_name,
+                "new_name": new_name,
+                "compile": compile,
+            })
+            return format_response(response.get("data", {}), "rename_scs_component")
         except ConnectionError as e:
             return json.dumps({"error": f"Connection error: {e}"})
         except (RuntimeError, TimeoutError, OSError) as e:

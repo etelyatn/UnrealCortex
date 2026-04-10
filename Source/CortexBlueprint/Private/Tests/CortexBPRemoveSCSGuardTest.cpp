@@ -349,6 +349,8 @@ bool FCortexBPRemoveSCSGuardForceOverrideTest::RunTest(const FString& Parameters
 		TestTrue(TEXT("override_used exists"), Result.Data->TryGetStringField(TEXT("override_used"), OverrideUsed));
 		TestEqual(TEXT("guard_result is force_override"), GuardResult, FString(TEXT("force_override")));
 		TestEqual(TEXT("override_used is force"), OverrideUsed, FString(TEXT("force")));
+		const TArray<FString> Warnings = RemoveGuardGetStringArrayField(Result.Data, TEXT("warnings"));
+		TestTrue(TEXT("warnings echoed in data"), Warnings.Num() > 0);
 	}
 	TestTrue(TEXT("Warning emitted for force override"), Result.Warnings.Num() > 0);
 
@@ -494,6 +496,66 @@ bool FCortexBPRemoveSCSGuardTOCTOUTest::RunTest(const FString& Parameters)
 	return true;
 #else
 	AddInfo(TEXT("WITH_DEV_AUTOMATION_TESTS disabled; skipping TOCTOU hook test."));
+	return true;
+#endif
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveSCSGuardTOCTOUForceOverrideTest,
+	"Cortex.Blueprint.Cleanup.RemoveSCSGuard.TOCTOUForceOverride",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRemoveSCSGuardTOCTOUForceOverrideTest::RunTest(const FString& Parameters)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	UBlueprint* BP = RemoveGuardCreateLiftBP(TEXT("BP_RemoveGuardTOCTOUForce"));
+	TestNotNull(TEXT("BP created"), BP);
+	if (!BP)
+	{
+		return false;
+	}
+
+	USCS_Node* Node = RemoveGuardAddSCSNode(BP, UCortexBPTestSubobjComponent::StaticClass(), TEXT("GuardComp"));
+	TestNotNull(TEXT("Node created"), Node);
+	if (!Node)
+	{
+		BP->MarkAsGarbage();
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> Params = RemoveGuardMakeRemoveParams(BP, TEXT("GuardComp"));
+	Params->SetBoolField(TEXT("force"), true);
+
+	FCortexBPCleanupOps::SetRemoveSCSComponentMidflightTestHook(
+		[](USCS_Node* HookNode, UBlueprint* HookBP)
+		{
+			if (!HookNode || !HookBP || !HookBP->GeneratedClass)
+			{
+				return;
+			}
+			UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(HookBP->GeneratedClass);
+			if (!BPGC)
+			{
+				return;
+			}
+			UCortexBPTestSubobjComponent* Template =
+				Cast<UCortexBPTestSubobjComponent>(HookNode->GetActualComponentTemplate(BPGC));
+			if (Template && Template->Payload)
+			{
+				Template->Payload->Tracks.Add(1001);
+			}
+		});
+
+	const FCortexCommandResult Result = FCortexBPCleanupOps::RemoveSCSComponent(Params);
+	FCortexBPCleanupOps::SetRemoveSCSComponentMidflightTestHook(nullptr);
+
+	TestTrue(TEXT("Force override survives TOCTOU recheck"), Result.bSuccess);
+	TestNull(TEXT("Node removed after force override"), BP->SimpleConstructionScript->FindSCSNode(FName(TEXT("GuardComp"))));
+
+	BP->MarkAsGarbage();
+	return true;
+#else
+	AddInfo(TEXT("WITH_DEV_AUTOMATION_TESTS disabled; skipping TOCTOU force hook test."));
 	return true;
 #endif
 }

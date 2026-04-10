@@ -4,6 +4,7 @@
 
 #include "Components/ActorComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/TimelineComponent.h"
 #include "GameFramework/Actor.h"
 #include "UObject/Object.h"
 #include "CortexBPTestLiftActor.generated.h"
@@ -30,6 +31,10 @@ public:
 	// Non-instanced pointer used to verify scope limits in archetype deep-diff detection.
 	UPROPERTY()
 	TObjectPtr<UCortexBPTestSubobjPayload> PlainPayload;
+
+	// Used by rename tests to detect local timeline-template references.
+	UPROPERTY(EditAnywhere)
+	TObjectPtr<UTimelineComponent> TimelineDependency;
 };
 
 UCLASS()

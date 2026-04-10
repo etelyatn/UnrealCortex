@@ -119,6 +119,82 @@ namespace
 		return Blueprint
 			&& (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings);
 	}
+
+	TArray<UTimelineComponent*> CollectOwnedTimelineTemplates(UBlueprint* BP)
+	{
+		TArray<UTimelineComponent*> TimelineTemplates;
+		if (!BP || !BP->GeneratedClass || !BP->SimpleConstructionScript)
+		{
+			return TimelineTemplates;
+		}
+
+		UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(BP->GeneratedClass);
+		if (!BPGC)
+		{
+			return TimelineTemplates;
+		}
+
+		for (USCS_Node* Node : BP->SimpleConstructionScript->GetAllNodes())
+		{
+			if (!Node || !Node->ComponentClass || !Node->ComponentClass->IsChildOf(UTimelineComponent::StaticClass()))
+			{
+				continue;
+			}
+
+			if (UTimelineComponent* TimelineTemplate = Cast<UTimelineComponent>(Node->GetActualComponentTemplate(BPGC)))
+			{
+				TimelineTemplates.Add(TimelineTemplate);
+			}
+		}
+
+		return TimelineTemplates;
+	}
+
+	bool ReferencesOwnedTimelineTemplate(UBlueprint* BP, USCS_Node* Node)
+	{
+		if (!BP || !Node || !BP->GeneratedClass)
+		{
+			return false;
+		}
+
+		UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(BP->GeneratedClass);
+		UActorComponent* Template = BPGC ? Node->GetActualComponentTemplate(BPGC) : nullptr;
+		if (!Template)
+		{
+			return false;
+		}
+
+		const TArray<UTimelineComponent*> TimelineTemplates = CollectOwnedTimelineTemplates(BP);
+		if (TimelineTemplates.IsEmpty())
+		{
+			return false;
+		}
+
+		for (TFieldIterator<FObjectPropertyBase> It(Template->GetClass()); It; ++It)
+		{
+			const FObjectPropertyBase* ObjectProperty = *It;
+			if (!ObjectProperty)
+			{
+				continue;
+			}
+
+			UObject* ReferencedObject = ObjectProperty->GetObjectPropertyValue_InContainer(Template);
+			if (!ReferencedObject)
+			{
+				continue;
+			}
+
+			for (UTimelineComponent* TimelineTemplate : TimelineTemplates)
+			{
+				if (ReferencedObject == TimelineTemplate)
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
 }
 
 FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJsonObject>& Params)
@@ -458,6 +534,15 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 			FString::Printf(TEXT("Component '%s' is a UTimelineComponent. Use rename_timeline."), *OldName));
 	}
 
+	if (ReferencesOwnedTimelineTemplate(BP, TargetNode))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(
+				TEXT("Component '%s' references a local timeline template. Rename the timeline or remove the reference first."),
+				*OldName));
+	}
+
 	if (USCS_Node* ExistingNode = FindOwnedSCSNodeByName(SCS, NewFName))
 	{
 		if (ExistingNode != TargetNode)
@@ -559,6 +644,7 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 
 	FString CompileStatus = TEXT("Skipped");
 	bool bCompiled = false;
+	TArray<TSharedPtr<FJsonValue>> DependentBlueprintEntries;
 	if (bCompile)
 	{
 		FKismetEditorUtilities::CompileBlueprint(BP);
@@ -580,7 +666,13 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 
 			DependentBP->Modify();
 			FKismetEditorUtilities::CompileBlueprint(DependentBP);
-			if (!IsBlueprintUpToDate(DependentBP))
+			const bool bDependentCompiled = IsBlueprintUpToDate(DependentBP);
+			TSharedPtr<FJsonObject> DependentEntry = MakeShared<FJsonObject>();
+			DependentEntry->SetStringField(TEXT("path"), DependentBP->GetPathName());
+			DependentEntry->SetStringField(TEXT("compile_status"), bDependentCompiled ? TEXT("UpToDate") : TEXT("Error"));
+			DependentEntry->SetBoolField(TEXT("saved"), false);
+			DependentBlueprintEntries.Add(MakeShared<FJsonValueObject>(DependentEntry));
+			if (!bDependentCompiled)
 			{
 				return FCortexCommandRouter::Error(
 					CortexErrorCodes::CompileFailed,
@@ -608,6 +700,22 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 		{
 			return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, SaveError);
 		}
+
+		for (const TSharedPtr<FJsonValue>& DependentValue : DependentBlueprintEntries)
+		{
+			const TSharedPtr<FJsonObject>* DependentObject = nullptr;
+			if (!DependentValue.IsValid() || !DependentValue->TryGetObject(DependentObject) || !DependentObject || !DependentObject->IsValid())
+			{
+				continue;
+			}
+
+			FString Path;
+			if ((*DependentObject)->TryGetStringField(TEXT("path"), Path) && Path == DependentBP->GetPathName())
+			{
+				(*DependentObject)->SetBoolField(TEXT("saved"), true);
+				break;
+			}
+		}
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -616,6 +724,23 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 	Data->SetStringField(TEXT("new_name"), NewName);
 	Data->SetBoolField(TEXT("compiled"), bCompiled);
 	Data->SetStringField(TEXT("compile_status"), CompileStatus);
+	if (!bCompile)
+	{
+		for (UBlueprint* DependentBP : DependentBlueprints)
+		{
+			if (!DependentBP || DependentBP == BP)
+			{
+				continue;
+			}
+
+			TSharedPtr<FJsonObject> DependentEntry = MakeShared<FJsonObject>();
+			DependentEntry->SetStringField(TEXT("path"), DependentBP->GetPathName());
+			DependentEntry->SetStringField(TEXT("compile_status"), TEXT("Skipped"));
+			DependentEntry->SetBoolField(TEXT("saved"), true);
+			DependentBlueprintEntries.Add(MakeShared<FJsonValueObject>(DependentEntry));
+		}
+	}
+	Data->SetArrayField(TEXT("dependent_blueprints"), DependentBlueprintEntries);
 
 	return FCortexCommandRouter::Success(Data);
 }
@@ -726,7 +851,7 @@ FCortexCommandResult FCortexBPCleanupOps::RemoveSCSComponent(const TSharedPtr<FJ
 
 	const FCortexBPSCSDiagnostics::FDirtyReport InsideReport =
 		FCortexBPSCSDiagnostics::DetectSCSNodeDirtyState(TargetNode, BP);
-	if (InsideReport.AcknowledgmentKeys != PreReport.AcknowledgmentKeys)
+	if (InsideReport.AcknowledgmentKeys != PreReport.AcknowledgmentKeys && !bForce)
 	{
 		Transaction.Cancel();
 		return FCortexCommandRouter::Error(
@@ -765,6 +890,14 @@ FCortexCommandResult FCortexBPCleanupOps::RemoveSCSComponent(const TSharedPtr<FJ
 		GuardResult = TEXT("top_level_dirty");
 	}
 	ResponseData->SetStringField(TEXT("guard_result"), GuardResult);
+
+	TArray<TSharedPtr<FJsonValue>> ResponseWarnings;
+	if (bForce && InsideReport.HasSubObjectLoss())
+	{
+		ResponseWarnings.Add(MakeShared<FJsonValueString>(
+			TEXT("Data loss override used via force - verify downstream assets.")));
+		ResponseData->SetArrayField(TEXT("warnings"), ResponseWarnings);
+	}
 
 	if (bCompile)
 	{

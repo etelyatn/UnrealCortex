@@ -274,6 +274,8 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add(FCortexCommandInfo{TEXT("remove_scs_component"), TEXT("Remove an SCS component node from a Blueprint (use after migrating to C++ UPROPERTY)")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("component_name"), TEXT("string"), TEXT("SCS component node name"))
+		.Optional(TEXT("acknowledged_losses"), TEXT("array"), TEXT("Keys from required_acknowledgment to confirm sub-object loss"))
+		.Optional(TEXT("force"), TEXT("boolean"), TEXT("Override dirty-state protection and remove anyway"))
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after removal")));
 	Commands.Add(FCortexCommandInfo{TEXT("rename_scs_component"), TEXT("Rename an SCS component node on a Blueprint")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))

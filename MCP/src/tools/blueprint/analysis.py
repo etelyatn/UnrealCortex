@@ -37,7 +37,10 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
         Returns migration-ready analysis including Blueprint metadata, variables with usage
         counts, functions with purity/latent flags, components, graph/event breakdown,
         timelines, event dispatchers, implemented interfaces, latent node summary,
-        and complexity metrics.
+        `scs_collisions` diagnostics, and complexity metrics. Each collision entry carries
+        `name`, `scs_component_class`, `inherited_from`, `inherited_kind`,
+        `inherited_type`, `severity`, `recommended_action`, `recommended_tool`,
+        and `recommended_params`.
 
         Args:
             asset_path: Full Blueprint asset path (e.g. "/Game/Blueprints/BP_Player")

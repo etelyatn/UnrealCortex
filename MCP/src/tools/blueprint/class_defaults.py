@@ -70,7 +70,9 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
         """Set default property values on a Blueprint's Class Default Object (CDO).
 
         Configures inherited C++ UPROPERTY defaults and Blueprint variable defaults.
-        Object reference properties accept asset path strings (e.g., '/Game/Sim/Input/IA_Move').
+        Component object-reference properties accept bare names (e.g., 'OpenSeq')
+        as well as historical full object paths (e.g., '/Game/.../BP.BP_C:Name_GEN_VARIABLE').
+        Bare-name ambiguity is refused with AmbiguousComponentReference and a candidate list.
         Supports batch setting of multiple properties in one call.
         For setting properties on placed actor instances in a level, use set_actor_property instead.
 

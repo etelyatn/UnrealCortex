@@ -149,6 +149,40 @@ namespace
 
 		return Names;
 	}
+
+	UTimelineComponent* RenameGetTimelineTemplate(UBlueprint* BP, const FString& Name)
+	{
+		if (!BP || !BP->GeneratedClass || !BP->SimpleConstructionScript)
+		{
+			return nullptr;
+		}
+
+		USCS_Node* Node = BP->SimpleConstructionScript->FindSCSNode(FName(*Name));
+		if (!Node)
+		{
+			return nullptr;
+		}
+
+		UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(BP->GeneratedClass);
+		return BPGC ? Cast<UTimelineComponent>(Node->GetActualComponentTemplate(BPGC)) : nullptr;
+	}
+
+	UCortexBPTestSubobjComponent* RenameGetSubobjTemplate(UBlueprint* BP, const FString& Name)
+	{
+		if (!BP || !BP->GeneratedClass || !BP->SimpleConstructionScript)
+		{
+			return nullptr;
+		}
+
+		USCS_Node* Node = BP->SimpleConstructionScript->FindSCSNode(FName(*Name));
+		if (!Node)
+		{
+			return nullptr;
+		}
+
+		UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(BP->GeneratedClass);
+		return BPGC ? Cast<UCortexBPTestSubobjComponent>(Node->GetActualComponentTemplate(BPGC)) : nullptr;
+	}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -477,6 +511,26 @@ bool FCortexBPRenameSCSComponentDependentRecompileAndPatchTest::RunTest(const FS
 	const FCortexCommandResult Result = FCortexBPCleanupOps::RenameSCSComponent(
 		RenameMakeParams(ParentBP, TEXT("OldComp"), TEXT("NewComp"), true));
 	TestTrue(TEXT("Rename succeeds"), Result.bSuccess);
+	if (Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Dependents = nullptr;
+		TestTrue(TEXT("dependent_blueprints returned"), Result.Data->TryGetArrayField(TEXT("dependent_blueprints"), Dependents));
+		TestNotNull(TEXT("dependent_blueprints array valid"), Dependents);
+		if (Dependents && Dependents->Num() > 0 && (*Dependents)[0].IsValid())
+		{
+			const TSharedPtr<FJsonObject>* FirstDependent = nullptr;
+			TestTrue(TEXT("first dependent object"), (*Dependents)[0]->TryGetObject(FirstDependent));
+			if (FirstDependent && FirstDependent->IsValid())
+			{
+				FString Path;
+				FString Status;
+				TestTrue(TEXT("dependent path exists"), (*FirstDependent)->TryGetStringField(TEXT("path"), Path));
+				TestTrue(TEXT("dependent compile_status exists"), (*FirstDependent)->TryGetStringField(TEXT("compile_status"), Status));
+				TestEqual(TEXT("dependent path matches child"), Path, ChildBP->GetPathName());
+				TestEqual(TEXT("dependent compile_status"), Status, FString(TEXT("UpToDate")));
+			}
+		}
+	}
 	TestTrue(
 		TEXT("Child blueprint compiled after parent rename"),
 		ChildBP->Status == BS_UpToDate || ChildBP->Status == BS_UpToDateWithWarnings);
@@ -516,6 +570,51 @@ bool FCortexBPRenameSCSComponentTimelineRefusalTest::RunTest(const FString& Para
 		RenameMakeParams(BP, TEXT("TimelineComp"), TEXT("RenamedTimelineComp"), false));
 	TestFalse(TEXT("Timeline rename refused"), Result.bSuccess);
 	TestEqual(TEXT("Error code"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+
+	BP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRenameSCSComponentTimelineReferenceRefusalTest,
+	"Cortex.Blueprint.Cleanup.RenameSCSComponent.TimelineReferenceRefusal",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRenameSCSComponentTimelineReferenceRefusalTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* BP = RenameCreateLiftBP(TEXT("BP_RenameSCS_TimelineReference"), AActor::StaticClass());
+	TestNotNull(TEXT("BP created"), BP);
+	if (!BP)
+	{
+		return false;
+	}
+
+	USCS_Node* TimelineNode = RenameAddSCSNode(BP, UTimelineComponent::StaticClass(), TEXT("TimelineComp"));
+	USCS_Node* HolderNode = RenameAddSCSNode(BP, UCortexBPTestSubobjComponent::StaticClass(), TEXT("HolderComp"));
+	if (!TimelineNode || !HolderNode)
+	{
+		AddInfo(TEXT("Timeline-reference refusal fixture could not be created in this runtime; skipping."));
+		BP->MarkAsGarbage();
+		return true;
+	}
+
+	UTimelineComponent* TimelineTemplate = RenameGetTimelineTemplate(BP, TEXT("TimelineComp"));
+	UCortexBPTestSubobjComponent* HolderTemplate = RenameGetSubobjTemplate(BP, TEXT("HolderComp"));
+	TestNotNull(TEXT("Timeline template exists"), TimelineTemplate);
+	TestNotNull(TEXT("Holder template exists"), HolderTemplate);
+	if (!TimelineTemplate || !HolderTemplate)
+	{
+		BP->MarkAsGarbage();
+		return false;
+	}
+
+	HolderTemplate->TimelineDependency = TimelineTemplate;
+
+	const FCortexCommandResult Result = FCortexBPCleanupOps::RenameSCSComponent(
+		RenameMakeParams(BP, TEXT("HolderComp"), TEXT("RenamedHolder"), false));
+	TestFalse(TEXT("Rename refused when component references local timeline"), Result.bSuccess);
+	TestEqual(TEXT("Error code"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	TestTrue(TEXT("Error mentions timeline"), Result.ErrorMessage.Contains(TEXT("timeline")));
 
 	BP->MarkAsGarbage();
 	return true;
