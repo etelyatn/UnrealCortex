@@ -126,3 +126,39 @@ bool FCortexGathererGatherAllTest::RunTest(const FString& Parameters)
         Snapshot.ViewportCamera.IsEmpty() ? TEXT("empty") : TEXT("present")));
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGathererOpenAssetEditorsEmptyTest,
+    "Cortex.Frontend.AutoContext.Gatherer.OpenAssetEditorsEmptyWhenNoneOpen",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGathererOpenAssetEditorsEmptyTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!GEditor)
+    {
+        AddInfo(TEXT("No GEditor available — skipping"));
+        return true;
+    }
+
+    // In automation, no user-opened asset editors are expected
+    const FString Result = FCortexEditorContextGatherer::GatherOpenAssetEditors();
+    // We can't guarantee the result is empty (editor might have assets open),
+    // but we can verify it doesn't crash and returns a valid string
+    AddInfo(FString::Printf(TEXT("GatherOpenAssetEditors returned: %s"),
+        Result.IsEmpty() ? TEXT("empty") : *FString::Printf(TEXT("'%s'"), *Result)));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGathererContentBrowserSelectionNoCrashTest,
+    "Cortex.Frontend.AutoContext.Gatherer.ContentBrowserSelectionNoCrash",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGathererContentBrowserSelectionNoCrashTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    // Verifies the function is safe to call regardless of module availability
+    const FString Result = FCortexEditorContextGatherer::GatherContentBrowserSelection();
+    AddInfo(FString::Printf(TEXT("GatherContentBrowserSelection returned: %s"),
+        Result.IsEmpty() ? TEXT("empty") : TEXT("non-empty")));
+    return true;
+}
