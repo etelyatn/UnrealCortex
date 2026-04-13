@@ -17,6 +17,9 @@ public:
 	/** Serialize a single FProperty value to a JSON value */
 	static TSharedPtr<FJsonValue> PropertyToJson(const FProperty* Property, const void* ValuePtr);
 
+	/** Serialize only UObject properties that differ from the class default object. */
+	static TSharedPtr<FJsonObject> NonDefaultPropertiesToJson(const UObject* Object, int32 MaxDepth = 1);
+
 	/** Serialize FText to JSON with optional string table source metadata. */
 	static TSharedPtr<FJsonObject> TextToJson(const FText& Text);
 
@@ -45,6 +48,18 @@ private:
 
 	/** Build schema for a single property */
 	static TSharedPtr<FJsonObject> GetPropertySchema(const FProperty* Property);
+
+	/** Serialize non-default properties of a UObject, comparing against a provided default. */
+	static TSharedPtr<FJsonObject> ObjectNonDefaultPropertiesToJson(const UObject* Object, const UObject* DefaultObject, int32 MaxDepth);
+
+	/** Serialize non-default properties of a UStruct, comparing against provided defaults. */
+	static TSharedPtr<FJsonObject> StructNonDefaultPropertiesToJson(const UStruct* StructType, const void* StructData, const void* DefaultData, int32 MaxDepth);
+
+	/** Serialize a single property if it differs from its default value. */
+	static TSharedPtr<FJsonValue> NonDefaultPropertyToJson(const FProperty* Property, const void* ValuePtr, const void* DefaultValuePtr, int32 MaxDepth);
+
+	/** Sentinel string emitted when MaxDepth prevents full serialization. */
+	static const FString ChangedMarker;
 
 	/** Cache for TInstancedStruct subtype discovery */
 	static TMap<const UScriptStruct*, TArray<UScriptStruct*>> SubtypeCache;
