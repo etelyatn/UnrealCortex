@@ -1,6 +1,7 @@
 #include "Widgets/SCortexChatToolbar.h"
 
 #include "CortexFrontendSettings.h"
+#include "Providers/CortexProviderRegistry.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
@@ -12,18 +13,17 @@
 // Context calculation helpers (moved from SCortexContextBar)
 namespace
 {
-    constexpr int64 DefaultContextLimit = 200000;
-
-    int64 GetContextLimit()
-    {
-        // All Claude models currently have 200K context (constant for now)
-        return DefaultContextLimit;
-    }
-
     float CalculatePercentage(int64 Used, int64 Max)
     {
         if (Max <= 0) return 0.0f;
         return static_cast<float>(Used) / static_cast<float>(Max) * 100.0f;
+    }
+
+    FString FormatTokenCount(int64 Tokens)
+    {
+        return (Tokens < 1000)
+            ? FString::Printf(TEXT("%lld"), Tokens)
+            : FString::Printf(TEXT("%lldk"), Tokens / 1000);
     }
 
     FLinearColor GetContextColor(float Percentage)
@@ -134,6 +134,9 @@ void SCortexChatToolbar::Construct(const FArguments& InArgs)
                 Self->OnSessionStateChanged(Change);
             }
         });
+
+        RefreshModelLabel();
+        RefreshContextIndicator();
     }
 }
 
@@ -162,13 +165,34 @@ void SCortexChatToolbar::SetModelLabel(const FString& ModelId)
     }
 }
 
-void SCortexChatToolbar::OnTokenUsageUpdated()
+void SCortexChatToolbar::RefreshModelLabel()
 {
     TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
-    if (!Session.IsValid()) return;
+    if (!Session.IsValid() || !ModelLabel.IsValid())
+    {
+        return;
+    }
+
+    const FCortexProviderDefinition& ProviderDefinition =
+        FCortexProviderRegistry::ResolveDefinition(Session->GetProviderId().ToString());
+    const FString Label = FCortexFrontendSettings::FormatModelLabel(
+        Session->GetResolvedOptions().ProviderDisplayName,
+        Session->GetModelId(),
+        Session->GetResolvedOptions().EffortLevel,
+        ProviderDefinition.DefaultEffortLevel);
+    ModelLabel->SetText(FText::FromString(Label));
+}
+
+void SCortexChatToolbar::RefreshContextIndicator()
+{
+    TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
+    if (!Session.IsValid())
+    {
+        return;
+    }
 
     const int64 Used = Session->GetConversationContextTokens();
-    const int64 Max = GetContextLimit();
+    const int64 Max = Session->GetContextLimitTokens();
     const float Percentage = CalculatePercentage(Used, Max);
 
     if (ContextColorBox.IsValid())
@@ -178,15 +202,14 @@ void SCortexChatToolbar::OnTokenUsageUpdated()
 
     if (ContextLabel.IsValid())
     {
-        const FString UsedStr = (Used < 1000)
-            ? FString::Printf(TEXT("%lld"), Used)
-            : FString::Printf(TEXT("%lldk"), Used / 1000);
-        const FString MaxStr = (Max < 1000)
-            ? FString::Printf(TEXT("%lld"), Max)
-            : FString::Printf(TEXT("%lldk"), Max / 1000);
-        const FString Label = UsedStr + TEXT(" / ") + MaxStr;
-        ContextLabel->SetText(FText::FromString(Label));
+        ContextLabel->SetText(FText::FromString(
+            FormatTokenCount(Used) + TEXT(" / ") + FormatTokenCount(Max)));
     }
+}
+
+void SCortexChatToolbar::OnTokenUsageUpdated()
+{
+    RefreshContextIndicator();
 }
 
 void SCortexChatToolbar::OnSessionStateChanged(const FCortexSessionStateChange& Change)
@@ -201,18 +224,5 @@ void SCortexChatToolbar::OnSessionStateChanged(const FCortexSessionStateChange& 
         return;
     }
 
-    // Update model label when session becomes active (FE-TD-003: decouple from token events)
-    if (ModelLabel.IsValid())
-    {
-        TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
-        if (Session.IsValid())
-        {
-            const FString& Model = Session->GetModelId();
-            if (!Model.IsEmpty())
-            {
-                ModelLabel->SetText(FText::FromString(
-                    FCortexFrontendSettings::GetModelLabelWithEffort(Model)));
-            }
-        }
-    }
+    RefreshModelLabel();
 }

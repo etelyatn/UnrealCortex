@@ -121,7 +121,7 @@ void SCortexAnalysisTab::Construct(const FArguments& InArgs)
                         .Title(NSLOCTEXT("CortexAnalysis", "OverlayTitle", "// Analyzing Blueprint"))
                         .PhaseLabels({
                             TEXT("Serializing Blueprint..."),
-                            TEXT("Starting Claude session..."),
+                            TEXT("Starting AI session..."),
                             TEXT("Sending to LLM..."),
                             TEXT("Analyzing Blueprint logic...")
                         })
@@ -440,7 +440,7 @@ void SCortexAnalysisTab::OnAnalyzeClicked()
                 FString SystemPrompt = FCortexAnalysisPromptAssembler::Assemble(*Self->Context);
 
                 // Start CLI session
-                Self->StatusMessage(TEXT("[Step 2/4] Starting CLI session..."));
+                Self->StatusMessage(TEXT("[Step 2/4] Starting AI session..."));
                 Self->StartAnalysis(SystemPrompt);
 
                 if (!Self->Context.IsValid() || !Self->Context->Session.IsValid())

@@ -27,6 +27,8 @@ public:
 private:
     void OnTokenUsageUpdated();
     void OnSessionStateChanged(const FCortexSessionStateChange& Change);
+    void RefreshModelLabel();
+    void RefreshContextIndicator();
 
     TWeakPtr<FCortexCliSession> SessionWeak;
     TSharedPtr<STextBlock> SessionIdText;

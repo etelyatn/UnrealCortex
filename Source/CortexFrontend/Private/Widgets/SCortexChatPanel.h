@@ -32,6 +32,7 @@ public:
     friend class FCortexChatPanelFailureCleanupTest;
     friend class FCortexChatPanelCodeBlockTest;
     friend class FCortexChatPanelRejectedSendDoesNotAppendEntriesTest;
+    friend class FCortexChatPanelProviderAuthCommandTest;
     friend class FCortexDisplayRowGroupingTest;
 
 private:

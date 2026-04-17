@@ -1,6 +1,5 @@
 #include "Misc/AutomationTest.h"
 #include "CortexFrontendSettings.h"
-#include "Session/CortexCliSession.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexToolbarEffortBadgeDefaultTest,
     "Cortex.Frontend.ContextControls.Toolbar.EffortBadgeDefault",
@@ -9,16 +8,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexToolbarEffortBadgeDefaultTest,
 bool FCortexToolbarEffortBadgeDefaultTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
-    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
-    const ECortexEffortLevel Orig = Settings.GetEffortLevel();
-
-    Settings.SetEffortLevel(ECortexEffortLevel::Default);
-
-    const FString Label = FCortexFrontendSettings::GetModelLabelWithEffort(TEXT("claude-sonnet-4-6"));
-    TestEqual(TEXT("No badge for default"), Label, TEXT("claude-sonnet-4-6"));
-
-    Settings.SetEffortLevel(Orig);
-    Settings.ClearPendingChanges();
+    const FString Label = FCortexFrontendSettings::FormatModelLabel(
+        TEXT("Claude Code"),
+        TEXT("claude-sonnet-4-6"),
+        ECortexEffortLevel::Default,
+        ECortexEffortLevel::Default);
+    TestEqual(TEXT("Provider-aware default label omits effort badge"),
+        Label,
+        FString(TEXT("Claude Code · claude-sonnet-4-6")));
     return true;
 }
 
@@ -29,15 +26,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexToolbarEffortBadgeMediumTest,
 bool FCortexToolbarEffortBadgeMediumTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
-    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
-    const ECortexEffortLevel Orig = Settings.GetEffortLevel();
-
-    Settings.SetEffortLevel(ECortexEffortLevel::Medium);
-
-    const FString Label = FCortexFrontendSettings::GetModelLabelWithEffort(TEXT("claude-sonnet-4-6"));
-    TestEqual(TEXT("Badge for medium"), Label, TEXT("claude-sonnet-4-6 [medium]"));
-
-    Settings.SetEffortLevel(Orig);
-    Settings.ClearPendingChanges();
+    const FString Label = FCortexFrontendSettings::FormatModelLabel(
+        TEXT("Codex"),
+        TEXT("gpt-5.4"),
+        ECortexEffortLevel::Maximum,
+        ECortexEffortLevel::Medium);
+    TestEqual(TEXT("Provider-aware label includes non-default effort badge"),
+        Label,
+        FString(TEXT("Codex · gpt-5.4 [max]")));
     return true;
 }
