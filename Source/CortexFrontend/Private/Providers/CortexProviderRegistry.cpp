@@ -2,6 +2,8 @@
 
 namespace
 {
+    const FName DefaultProviderId(TEXT("claude_code"));
+
     const TArray<FCortexProviderDefinition>& GetBuiltInDefinitions()
     {
         static const TArray<FCortexProviderDefinition> Definitions = []()
@@ -9,7 +11,7 @@ namespace
             TArray<FCortexProviderDefinition> Result;
 
             FCortexProviderDefinition Claude;
-            Claude.ProviderId = FName(TEXT("claude_code"));
+            Claude.ProviderId = DefaultProviderId;
             Claude.DisplayName = TEXT("Claude Code");
             Claude.RecommendedModelId = TEXT("claude-sonnet-4-6");
             Claude.DefaultEffortLevel = ECortexEffortLevel::Default;
@@ -106,6 +108,5 @@ TArray<FString> FCortexProviderRegistry::GetProviderOptions()
 
 FString FCortexProviderRegistry::GetDefaultProviderId()
 {
-    const TArray<FCortexProviderDefinition>& Definitions = GetBuiltInDefinitions();
-    return Definitions.Num() > 0 ? Definitions[0].ProviderId.ToString() : FString();
+    return DefaultProviderId.ToString();
 }
