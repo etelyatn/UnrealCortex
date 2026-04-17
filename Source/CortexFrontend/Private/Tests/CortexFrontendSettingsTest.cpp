@@ -29,7 +29,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendSettingsDeprecatedAvailableModel
 bool FCortexFrontendSettingsDefaultTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    const FString SettingsFilePath = MakeIsolatedMigrationSettingsFilePath(TEXT("DefaultIsReadOnly"));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(SettingsFilePath), true);
+    FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(SettingsFilePath);
     FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    Settings.Load();
+    ON_SCOPE_EXIT
+    {
+        FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
+        IFileManager::Get().Delete(*SettingsFilePath, false, true, true);
+        Settings.Load();
+    };
     TestEqual(TEXT("Default mode should be ReadOnly"), static_cast<uint8>(Settings.GetAccessMode()), static_cast<uint8>(ECortexAccessMode::ReadOnly));
     return true;
 }
@@ -37,8 +47,18 @@ bool FCortexFrontendSettingsDefaultTest::RunTest(const FString& Parameters)
 bool FCortexFrontendSettingsRoundTripTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
+    const FString SettingsFilePath = MakeIsolatedMigrationSettingsFilePath(TEXT("RoundTripPersistence"));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(SettingsFilePath), true);
+    FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(SettingsFilePath);
     FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    Settings.Load();
     const ECortexAccessMode OriginalMode = Settings.GetAccessMode();
+    ON_SCOPE_EXIT
+    {
+        FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
+        IFileManager::Get().Delete(*SettingsFilePath, false, true, true);
+        Settings.Load();
+    };
 
     Settings.SetAccessMode(ECortexAccessMode::Guided);
     Settings.Load();
