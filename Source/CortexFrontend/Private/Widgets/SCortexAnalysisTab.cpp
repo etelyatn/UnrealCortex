@@ -479,9 +479,8 @@ void SCortexAnalysisTab::StartAnalysis(const FString& AssembledSystemPrompt)
 
     Context->bAnalysisStarted = true;
 
-    FCortexSessionConfig SessionConfig = FCortexFrontendModule::CreateDefaultSessionConfig();
+    FCortexSessionConfig SessionConfig = FCortexFrontendModule::CreateLightweightSessionConfig();
     SessionConfig.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
-    SessionConfig.bConversionMode = true;  // Lightweight: no MCP, no project context
     SessionConfig.SystemPrompt = AssembledSystemPrompt;
 
     Context->Session = MakeShared<FCortexCliSession>(SessionConfig);

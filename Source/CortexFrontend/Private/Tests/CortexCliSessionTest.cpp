@@ -309,6 +309,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionLaunchOptionsPinnedAcrossSetti
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionDefaultLaunchPinsLiveSkipPermissionsTest, "Cortex.Frontend.CliSession.DefaultLaunchPinsLiveSkipPermissions", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexTurnExitPreservesResumableIdleStateTest, "Cortex.Frontend.CliSession.CodexTurnExitPreservesResumableIdleState", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexOverridePathRecomputesResolvedOptionsTest, "Cortex.Frontend.CliSession.CodexOverridePathRecomputesResolvedOptions", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionLightweightConfigStaysMcpFreeTest, "Cortex.Frontend.CliSession.LightweightConfigStaysMcpFree", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexCliSessionToolCallTurnIndexTest::RunTest(const FString& Parameters)
 {
@@ -791,5 +792,78 @@ bool FCortexCliSessionCodexOverridePathRecomputesResolvedOptionsTest::RunTest(co
     const FString LaunchCommand = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
     TestTrue(TEXT("Override path should use the overridden model in the launch command"), LaunchCommand.Contains(TEXT("-m \"gpt-5.3-codex-spark\"")));
     TestTrue(TEXT("Override path should use the recomputed effort in the launch command"), LaunchCommand.Contains(TEXT("-c model_reasoning_effort=medium")));
+    return true;
+}
+
+bool FCortexCliSessionLightweightConfigStaysMcpFreeTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const FString TempSettingsPath = FPaths::Combine(
+        FPaths::ProjectSavedDir(),
+        TEXT("CortexFrontend"),
+        FString::Printf(TEXT("Task5LightweightConfig_%s.json"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(TempSettingsPath), true);
+    FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(TempSettingsPath);
+    ON_SCOPE_EXIT
+    {
+        FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
+        IFileManager::Get().Delete(*TempSettingsPath);
+    };
+
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    UCortexFrontendProviderSettings* ProviderSettings = GetMutableDefault<UCortexFrontendProviderSettings>();
+    TestNotNull(TEXT("Provider settings should exist"), ProviderSettings);
+    if (!ProviderSettings)
+    {
+        return false;
+    }
+
+    const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
+    const ECortexAccessMode OriginalAccessMode = Settings.GetAccessMode();
+    const bool OriginalSkipPermissions = Settings.GetSkipPermissions();
+    const ECortexWorkflowMode OriginalWorkflow = Settings.GetWorkflowMode();
+    const bool OriginalProjectContext = Settings.GetProjectContext();
+    const bool OriginalAutoContext = Settings.GetAutoContext();
+    const FString OriginalDirective = Settings.GetCustomDirective();
+    const ECortexEffortLevel OriginalEffort = Settings.GetEffortLevel();
+    const FString OriginalModel = Settings.GetSelectedModel();
+    ON_SCOPE_EXIT
+    {
+        ProviderSettings->ActiveProviderId = OriginalProviderId;
+        Settings.SetAccessMode(OriginalAccessMode);
+        Settings.SetSkipPermissions(OriginalSkipPermissions);
+        Settings.SetWorkflowMode(OriginalWorkflow);
+        Settings.SetProjectContext(OriginalProjectContext);
+        Settings.SetAutoContext(OriginalAutoContext);
+        Settings.SetCustomDirective(OriginalDirective);
+        Settings.SetEffortLevel(OriginalEffort);
+        Settings.SetSelectedModel(OriginalModel);
+        Settings.ClearPendingChanges();
+    };
+
+    ProviderSettings->ActiveProviderId = TEXT("codex");
+    Settings.SetAccessMode(ECortexAccessMode::Guided);
+    Settings.SetSkipPermissions(true);
+    Settings.SetWorkflowMode(ECortexWorkflowMode::Thorough);
+    Settings.SetProjectContext(true);
+    Settings.SetAutoContext(true);
+    Settings.SetCustomDirective(TEXT("Should not leak into lightweight session"));
+    Settings.SetEffortLevel(ECortexEffortLevel::Medium);
+    Settings.SetSelectedModel(TEXT("gpt-5.4"));
+
+    FCortexSessionConfig LightweightConfig = FCortexFrontendModule::CreateLightweightSessionConfig();
+    LightweightConfig.SessionId = TEXT("lightweight-session");
+    LightweightConfig.SystemPrompt = TEXT("Conversion system prompt");
+
+    FCortexCliSession Session(LightweightConfig);
+    const FString CommandLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
+
+    TestEqual(TEXT("Lightweight config should keep the active provider"), Session.GetProviderId(), FName(TEXT("codex")));
+    TestTrue(TEXT("Lightweight config should keep the active model"), CommandLine.Contains(TEXT("-m \"gpt-5.4\"")));
+    TestTrue(TEXT("Lightweight config should disable project context"), !LightweightConfig.LaunchOptions.bProjectContext);
+    TestTrue(TEXT("Lightweight config should disable auto context"), !LightweightConfig.LaunchOptions.bAutoContext);
+    TestFalse(TEXT("Lightweight config should not include MCP server overrides"), CommandLine.Contains(TEXT("mcp_servers.cortex_mcp")));
+    TestFalse(TEXT("Lightweight config should not include an MCP config path"), CommandLine.Contains(TEXT(".mcp.json")));
     return true;
 }

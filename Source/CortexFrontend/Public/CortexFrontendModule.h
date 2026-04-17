@@ -26,6 +26,9 @@ public:
     /** Create a default session config using project paths. */
     static FCortexSessionConfig CreateDefaultSessionConfig();
 
+    /** Create a lightweight session config that preserves provider selection without MCP/project context. */
+    static FCortexSessionConfig CreateLightweightSessionConfig();
+
     /** Register a conversion session for PreExit cleanup. */
     void RegisterSession(TSharedPtr<FCortexCliSession> Session);
 
@@ -65,6 +68,7 @@ private:
     FDelegateHandle StartupCallbackHandle;
     FDelegateHandle ConversionDelegateHandle;
     FDelegateHandle AnalysisDelegateHandle;
+    TSharedPtr<FCortexCliSession> MainChatSession;
     TArray<TSharedPtr<FCortexCliSession>> Sessions;
     TArray<TSharedPtr<FMonitoredProcess>> BuildProcesses;
     TArray<FConversionWindowEntry> ConversionWindows;

@@ -80,6 +80,7 @@ private:
 	friend class FCortexCliSessionDefaultLaunchPinsLiveSkipPermissionsTest;
 	friend class FCortexCliSessionCodexTurnExitPreservesResumableIdleStateTest;
 	friend class FCortexCliSessionCodexOverridePathRecomputesResolvedOptionsTest;
+	friend class FCortexCliSessionLightweightConfigStaysMcpFreeTest;
 	friend class FCortexCliSessionQueuePromptWhileSpawningTest;
 	friend class FCortexCliSessionTurnCompleteReturnsIdleTest;
 	friend class FCortexCliSessionCancelTransitionsTest;

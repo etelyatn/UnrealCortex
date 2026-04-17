@@ -199,24 +199,38 @@ FCortexSessionConfig FCortexFrontendModule::CreateDefaultSessionConfig()
     return Config;
 }
 
+FCortexSessionConfig FCortexFrontendModule::CreateLightweightSessionConfig()
+{
+    FCortexSessionConfig Config = CreateDefaultSessionConfig();
+    Config.McpConfigPath.Empty();
+    Config.LaunchOptions.bProjectContext = false;
+    Config.LaunchOptions.bAutoContext = false;
+    Config.LaunchOptions.CustomDirective.Empty();
+    Config.bConversionMode = true;
+    return Config;
+}
+
 TWeakPtr<FCortexCliSession> FCortexFrontendModule::GetOrCreateSession()
 {
     const FCortexSessionConfig DesiredConfig = CreateDefaultSessionConfig();
 
-    if (Sessions.Num() > 0 && Sessions[0].IsValid())
+    if (MainChatSession.IsValid())
     {
-        const TSharedPtr<FCortexCliSession>& ExistingSession = Sessions[0];
+        const TSharedPtr<FCortexCliSession>& ExistingSession = MainChatSession;
         if (ExistingSession->GetProviderId() == DesiredConfig.ProviderId)
         {
+            RegisterSession(ExistingSession);
             return ExistingSession;
         }
 
-        Sessions.Reset();
+        ExistingSession->Shutdown();
+        Sessions.Remove(ExistingSession);
+        MainChatSession.Reset();
     }
 
     TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(DesiredConfig);
-    Sessions.Reset();
-    Sessions.Add(Session);
+    MainChatSession = Session;
+    RegisterSession(Session);
     return Session;
 }
 
@@ -383,6 +397,10 @@ void FCortexFrontendModule::RegisterSession(TSharedPtr<FCortexCliSession> Sessio
 void FCortexFrontendModule::UnregisterSession(TSharedPtr<FCortexCliSession> Session)
 {
     Sessions.Remove(Session);
+    if (MainChatSession == Session)
+    {
+        MainChatSession.Reset();
+    }
 }
 
 void FCortexFrontendModule::RegisterBuildProcess(TSharedPtr<FMonitoredProcess> Process)
@@ -452,6 +470,7 @@ void FCortexFrontendModule::ReleaseSessions()
     }
 
     Sessions.Reset();
+    MainChatSession.Reset();
 }
 
 void FCortexFrontendModule::HandlePreExit()

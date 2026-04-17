@@ -18,6 +18,13 @@ namespace
 			TEXT("CortexFrontend"),
 			FString::Printf(TEXT("%s_%s.json"), Prefix, *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
 	}
+
+	void RestartFrontendModuleForWorkbenchTest()
+	{
+		FCortexFrontendModule& Module = FModuleManager::LoadModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+		Module.ShutdownModule();
+		Module.StartupModule();
+	}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexWorkbenchModuleTest,
@@ -122,6 +129,12 @@ bool FCortexWorkbenchDefaultSessionUsesActiveProviderTest::RunTest(const FString
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexWorkbenchCachedSessionReplacedWhenActiveProviderChangesTest,
 	"Cortex.Frontend.Workbench.CachedSessionReplacedWhenActiveProviderChanges",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexWorkbenchRegisteredSessionDoesNotReplaceMainChatTest,
+	"Cortex.Frontend.Workbench.RegisteredSessionDoesNotReplaceMainChat",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexWorkbenchProviderChangeKeepsRegisteredSessionsTrackedTest,
+	"Cortex.Frontend.Workbench.ProviderChangeKeepsRegisteredSessionsTracked",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexWorkbenchCachedSessionReplacedWhenActiveProviderChangesTest::RunTest(const FString& Parameters)
 {
@@ -172,5 +185,140 @@ bool FCortexWorkbenchCachedSessionReplacedWhenActiveProviderChangesTest::RunTest
 
 	TestNotEqual(TEXT("Cached session should be replaced when active provider changes"), SecondSession.Get(), FirstSession.Get());
 	TestEqual(TEXT("Replacement session should use the active provider"), SecondSession->GetProviderId(), FName(*DesiredProviderId));
+	return true;
+}
+
+bool FCortexWorkbenchRegisteredSessionDoesNotReplaceMainChatTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FString TempSettingsPath = MakeWorkbenchTempFrontendSettingsPath(TEXT("Task5WorkbenchDedicatedMain"));
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(TempSettingsPath), true);
+	FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(TempSettingsPath);
+	ON_SCOPE_EXIT
+	{
+		RestartFrontendModuleForWorkbenchTest();
+		FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
+		IFileManager::Get().Delete(*TempSettingsPath);
+	};
+
+	RestartFrontendModuleForWorkbenchTest();
+
+	FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+	UCortexFrontendProviderSettings* ProviderSettings = GetMutableDefault<UCortexFrontendProviderSettings>();
+	TestTrue(TEXT("Provider settings should exist"), ProviderSettings != nullptr);
+	if (!ProviderSettings)
+	{
+		return false;
+	}
+
+	const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
+	ON_SCOPE_EXIT
+	{
+		ProviderSettings->ActiveProviderId = OriginalProviderId;
+		Settings.ClearPendingChanges();
+	};
+
+	ProviderSettings->ActiveProviderId = TEXT("codex");
+
+	FCortexSessionConfig UnrelatedConfig = FCortexFrontendModule::CreateDefaultSessionConfig();
+	UnrelatedConfig.SessionId = TEXT("unrelated-session");
+	TSharedPtr<FCortexCliSession> UnrelatedSession = MakeShared<FCortexCliSession>(UnrelatedConfig);
+
+	FCortexFrontendModule& Module = FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+	Module.RegisterSession(UnrelatedSession);
+
+	const TSharedPtr<FCortexCliSession> MainChatSession = Module.GetOrCreateSession().Pin();
+	TestTrue(TEXT("Workbench should create a main chat session"), MainChatSession.IsValid());
+	if (!MainChatSession.IsValid())
+	{
+		Module.UnregisterSession(UnrelatedSession);
+		return false;
+	}
+
+	TestNotEqual(TEXT("Workbench main chat should not reuse an unrelated registered session"),
+		MainChatSession.Get(), UnrelatedSession.Get());
+
+	Module.UnregisterSession(UnrelatedSession);
+	if (MainChatSession != UnrelatedSession)
+	{
+		MainChatSession->Shutdown();
+	}
+	UnrelatedSession->Shutdown();
+	return true;
+}
+
+bool FCortexWorkbenchProviderChangeKeepsRegisteredSessionsTrackedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FString TempSettingsPath = MakeWorkbenchTempFrontendSettingsPath(TEXT("Task5WorkbenchPreserveTracked"));
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(TempSettingsPath), true);
+	FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(TempSettingsPath);
+	ON_SCOPE_EXIT
+	{
+		RestartFrontendModuleForWorkbenchTest();
+		FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
+		IFileManager::Get().Delete(*TempSettingsPath);
+	};
+
+	RestartFrontendModuleForWorkbenchTest();
+
+	FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+	UCortexFrontendProviderSettings* ProviderSettings = GetMutableDefault<UCortexFrontendProviderSettings>();
+	TestTrue(TEXT("Provider settings should exist"), ProviderSettings != nullptr);
+	if (!ProviderSettings)
+	{
+		return false;
+	}
+
+	const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
+	ON_SCOPE_EXIT
+	{
+		ProviderSettings->ActiveProviderId = OriginalProviderId;
+		Settings.ClearPendingChanges();
+	};
+
+	ProviderSettings->ActiveProviderId = TEXT("codex");
+
+	FCortexFrontendModule& Module = FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+	const TSharedPtr<FCortexCliSession> MainChatSession = Module.GetOrCreateSession().Pin();
+	TestTrue(TEXT("Initial main chat session should exist"), MainChatSession.IsValid());
+	if (!MainChatSession.IsValid())
+	{
+		return false;
+	}
+
+	FCortexSessionConfig UnrelatedConfig = FCortexFrontendModule::CreateDefaultSessionConfig();
+	UnrelatedConfig.SessionId = TEXT("tracked-session");
+	TSharedPtr<FCortexCliSession> UnrelatedSession = MakeShared<FCortexCliSession>(UnrelatedConfig);
+	bool bUnrelatedSessionTerminated = false;
+	UnrelatedSession->OnStateChanged.AddLambda([&bUnrelatedSessionTerminated](const FCortexSessionStateChange& Change)
+	{
+		if (Change.NewState == ECortexSessionState::Terminated)
+		{
+			bUnrelatedSessionTerminated = true;
+		}
+	});
+	Module.RegisterSession(UnrelatedSession);
+
+	ProviderSettings->ActiveProviderId = TEXT("claude_code");
+	const TSharedPtr<FCortexCliSession> ReplacementMainChat = Module.GetOrCreateSession().Pin();
+	TestTrue(TEXT("Replacement main chat session should exist after provider change"), ReplacementMainChat.IsValid());
+	if (!ReplacementMainChat.IsValid())
+	{
+		Module.UnregisterSession(UnrelatedSession);
+		return false;
+	}
+
+	TestNotEqual(TEXT("Provider change should create a replacement main chat session"),
+		ReplacementMainChat.Get(), MainChatSession.Get());
+
+	Module.ShutdownModule();
+
+	TestTrue(TEXT("Provider change should keep unrelated registered sessions tracked for shutdown"),
+		bUnrelatedSessionTerminated);
+
+	Module.StartupModule();
 	return true;
 }
