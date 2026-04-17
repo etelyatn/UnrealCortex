@@ -193,6 +193,7 @@ bool FCortexCliDiscoveryCodexLaunchCommandTest::RunTest(const FString& Parameter
     TestFalse(
         TEXT("Codex resume should not include the working directory"),
         CommandLine.Contains(FString::Printf(TEXT("-C \"%s\""), *SessionConfig.WorkingDirectory)));
+    TestTrue(TEXT("Codex launch should quote the MCP args override as one token"), CommandLine.Contains(TEXT("\"-c mcp_servers.cortex_mcp.args=[")));
     TestTrue(TEXT("Codex launch should include model flag"), CommandLine.Contains(TEXT("-m \"gpt-5.4\"")));
     TestTrue(TEXT("Codex launch should include reasoning effort"), CommandLine.Contains(TEXT("-c model_reasoning_effort=maximum")));
     TestTrue(TEXT("Codex launch should include MCP command override"), CommandLine.Contains(TEXT("mcp_servers.cortex_mcp.command")));
@@ -261,7 +262,11 @@ bool FCortexCliDiscoveryCodexFailureNormalizationTest::RunTest(const FString& Pa
 
     TestTrue(TEXT("Codex failure normalization should emit a system error for turn.failed"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
     {
-        return Event.Type == ECortexStreamEventType::SystemError && Event.bIsError && Event.Text == TEXT("codex stopped unexpectedly");
+        return Event.Type == ECortexStreamEventType::SystemError &&
+            Event.bIsError &&
+            Event.Text == TEXT("codex stopped unexpectedly") &&
+            Event.InputTokens == 5 &&
+            Event.OutputTokens == 1;
     }));
     TestTrue(TEXT("Codex failure normalization should emit a system error for error events"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
     {

@@ -55,7 +55,9 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
         {
             TestTrue(FString::Printf(TEXT("Should translate command for %s"), *ServerName), Overrides.ContainsByPredicate([&Prefix](const FString& Override)
             {
-                return Override.Contains(Prefix + TEXT("command="));
+                return Override.StartsWith(TEXT("\"-c ")) &&
+                    Override.EndsWith(TEXT("\"")) &&
+                    Override.Contains(Prefix + TEXT("command="));
             }));
         }
 
@@ -64,7 +66,9 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
         {
             TestTrue(FString::Printf(TEXT("Should translate args for %s"), *ServerName), Overrides.ContainsByPredicate([&Prefix](const FString& Override)
             {
-                return Override.Contains(Prefix + TEXT("args="));
+                return Override.StartsWith(TEXT("\"-c ")) &&
+                    Override.EndsWith(TEXT("\"")) &&
+                    Override.Contains(Prefix + TEXT("args="));
             }));
         }
 
@@ -73,7 +77,9 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
         {
             TestTrue(FString::Printf(TEXT("Should translate env for %s"), *ServerName), Overrides.ContainsByPredicate([&Prefix](const FString& Override)
             {
-                return Override.Contains(Prefix + TEXT("env."));
+                return Override.StartsWith(TEXT("\"-c ")) &&
+                    Override.EndsWith(TEXT("\"")) &&
+                    Override.Contains(Prefix + TEXT("env."));
             }));
         }
     }

@@ -30,6 +30,14 @@ namespace
         return Result;
     }
 
+    FString QuoteCodexConfigArgument(const FString& Value)
+    {
+        FString Escaped = Value;
+        Escaped.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
+        Escaped.ReplaceInline(TEXT("\""), TEXT("\\\""));
+        return FString::Printf(TEXT("\"%s\""), *Escaped);
+    }
+
     void AppendCodexEnvOverrides(
         const FString& ServerName,
         const TSharedPtr<FJsonObject>& ServerObject,
@@ -71,11 +79,11 @@ namespace
                 continue;
             }
 
-            OutOverrides.Add(FString::Printf(
+            OutOverrides.Add(QuoteCodexConfigArgument(FString::Printf(
                 TEXT("-c mcp_servers.%s.env.%s=%s"),
                 *ServerName,
                 *EnvKey,
-                *QuoteTomlString(EnvText)));
+                *QuoteTomlString(EnvText))));
         }
     }
 
@@ -118,7 +126,7 @@ namespace
         FString Command;
         if (ServerObject->TryGetStringField(TEXT("command"), Command))
         {
-            OutOverrides.Add(FString::Printf(TEXT("-c mcp_servers.%s.command=%s"), *ServerName, *QuoteTomlString(Command)));
+            OutOverrides.Add(QuoteCodexConfigArgument(FString::Printf(TEXT("-c mcp_servers.%s.command=%s"), *ServerName, *QuoteTomlString(Command))));
         }
 
         const TArray<TSharedPtr<FJsonValue>>* ArgsArray = nullptr;
@@ -137,7 +145,7 @@ namespace
 
             if (Args.Num() > 0)
             {
-                OutOverrides.Add(FString::Printf(TEXT("-c mcp_servers.%s.args=%s"), *ServerName, *BuildTomlArray(Args)));
+                OutOverrides.Add(QuoteCodexConfigArgument(FString::Printf(TEXT("-c mcp_servers.%s.args=%s"), *ServerName, *BuildTomlArray(Args))));
             }
         }
 

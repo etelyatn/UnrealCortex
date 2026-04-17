@@ -198,6 +198,12 @@ namespace
             Event.bIsError = true;
             Event.RawJson = JsonLine;
 
+            const TSharedPtr<FJsonObject>* UsageObject = nullptr;
+            if (Type == TEXT("turn.failed") && JsonObj->TryGetObjectField(TEXT("usage"), UsageObject) && UsageObject != nullptr)
+            {
+                CopyUsageFields(*UsageObject, Event);
+            }
+
             if (!JsonObj->TryGetStringField(TEXT("message"), Event.Text))
             {
                 JsonObj->TryGetStringField(TEXT("error"), Event.Text);
