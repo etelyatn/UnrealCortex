@@ -75,20 +75,11 @@ FCortexCliSession::FCortexCliSession(const FCortexSessionConfig& InConfig)
 			? ProviderSettings->GetEffectiveProviderId()
 			: FCortexProviderRegistry::GetDefaultProviderId();
 		Config.ProviderId = FName(*ProviderIdString);
-		Config.ResolvedOptions = FCortexFrontendSettings::Get().ResolveForActiveProvider();
 		if (!Config.bHasLaunchOptions)
 		{
 			Config.LaunchOptions = SnapshotLaunchOptions();
 		}
-
-		if (!Config.ModelId.IsEmpty())
-		{
-			Config.ResolvedOptions.ModelId = Config.ModelId;
-		}
-		if (Config.EffortLevel != ECortexEffortLevel::Default)
-		{
-			Config.ResolvedOptions.EffortLevel = Config.EffortLevel;
-		}
+		Config.ResolvedOptions = SnapshotResolvedOptions(Config.ProviderId, Config);
 	}
 	else
 	{
@@ -185,6 +176,25 @@ bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
 	{
 		UE_LOG(LogCortexFrontend, Log, TEXT("SendPrompt rejected: session in state %d"), static_cast<int32>(CurrentState));
 		return false;
+	}
+
+	if (PinnedProvider != nullptr &&
+		PinnedProvider->GetTransportMode() == ECortexCliTransportMode::PerTurnExec &&
+		(!ProcessHandle.IsValid() || !FPlatformProcess::IsProcRunning(ProcessHandle)))
+	{
+		UE_LOG(LogCortexFrontend, Log, TEXT("Per-turn exec provider idle without a running process, resuming session"));
+		if (!TransitionState(ECortexSessionState::Idle, ECortexSessionState::Spawning, TEXT("Resuming per-turn exec conversation")))
+		{
+			UE_LOG(LogCortexFrontend, Warning, TEXT("SendPrompt: failed to transition Idle -> Spawning for per-turn exec resume"));
+			return false;
+		}
+		if (!SpawnProcess(Request.AccessMode, true))
+		{
+			TransitionState(ECortexSessionState::Spawning, ECortexSessionState::Inactive, TEXT("Failed to resume provider"));
+			return false;
+		}
+
+		return true;
 	}
 
 	// Access mode changed since last spawn — reconnect to apply new --allowedTools
@@ -333,6 +343,10 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 	if (Event.Type == ECortexStreamEventType::SessionInit && !Event.Model.IsEmpty())
 	{
 		ModelId = Event.Model;
+		if (!Event.SessionId.IsEmpty())
+		{
+			Config.SessionId = Event.SessionId;
+		}
 		if (Provider.IsEmpty())
 		{
 			Provider = Config.ResolvedOptions.ProviderDisplayName;
@@ -397,6 +411,12 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 		Result.NumTurns = Event.NumTurns;
 		Result.TotalCostUsd = Event.TotalCostUsd;
 		Result.SessionId = Event.SessionId;
+
+		if (PinnedProvider != nullptr &&
+			PinnedProvider->GetTransportMode() == ECortexCliTransportMode::PerTurnExec)
+		{
+			bHasResumableProviderConversation = true;
+		}
 
 		ConsecutiveSpawnFailures = 0;
 
@@ -476,7 +496,16 @@ void FCortexCliSession::HandleProcessExited(const FString& Reason)
 	}
 
 	// Non-cancel process exit (unexpected crash)
+	const bool bKeepResumableConversation =
+		PinnedProvider != nullptr &&
+		PinnedProvider->GetTransportMode() == ECortexCliTransportMode::PerTurnExec &&
+		bHasResumableProviderConversation;
 	CleanupProcess();
+	if (bKeepResumableConversation)
+	{
+		UE_LOG(LogCortexFrontend, Log, TEXT("Provider CLI exited after a resumable turn; preserving idle state"));
+		return;
+	}
 	BroadcastStateChange(CurrentState, ECortexSessionState::Inactive, Reason);
 	State.store(ECortexSessionState::Inactive);
 }
@@ -565,6 +594,7 @@ bool FCortexCliSession::SpawnProcess(ECortexAccessMode AccessMode, bool bResumeS
 		? Config.WorkingDirectory
 		: FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
 	Config.LaunchOptions.AccessMode = AccessMode;
+	bHasResumableProviderConversation = false;
 	const FString CommandLine = BuildLaunchCommandLine(bResumeSession, AccessMode);
 
 	UE_LOG(LogCortexFrontend, Log, TEXT("Launching %s: %s %s"),

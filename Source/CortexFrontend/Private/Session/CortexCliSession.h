@@ -78,6 +78,8 @@ private:
 	friend class FCortexCliSessionBuildCodexExecArgsTest;
 	friend class FCortexCliSessionLaunchOptionsPinnedAcrossSettingChangeTest;
 	friend class FCortexCliSessionDefaultLaunchPinsLiveSkipPermissionsTest;
+	friend class FCortexCliSessionCodexTurnExitPreservesResumableIdleStateTest;
+	friend class FCortexCliSessionCodexOverridePathRecomputesResolvedOptionsTest;
 	friend class FCortexCliSessionQueuePromptWhileSpawningTest;
 	friend class FCortexCliSessionTurnCompleteReturnsIdleTest;
 	friend class FCortexCliSessionCancelTransitionsTest;
@@ -141,6 +143,7 @@ private:
 	FCortexSessionConfig Config;
 	const ICortexCliProvider* PinnedProvider = nullptr;
 	FCortexCliInfo CachedCliInfo;
+	bool bHasResumableProviderConversation = false;
 	std::atomic<ECortexSessionState> State;
 	TOptional<FString> PendingPrompt;
 	TOptional<ECortexAccessMode> PendingAccessMode;

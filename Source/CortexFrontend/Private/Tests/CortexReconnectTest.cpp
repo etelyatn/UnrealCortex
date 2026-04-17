@@ -173,6 +173,13 @@ bool FCortexReconnectPinsLaunchMetadataAcrossSettingsChangeTest::RunTest(const F
     Config.McpConfigPath = FPaths::Combine(FPaths::ProjectDir(), TEXT(".mcp.json"));
 
     TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(Config);
+    FCortexStreamEvent InitEvent;
+    InitEvent.Type = ECortexStreamEventType::SessionInit;
+    InitEvent.SessionId = TEXT("thread-reconnect-123");
+    InitEvent.Model = TEXT("gpt-5.4");
+    Session->HandleWorkerEvent(InitEvent);
+    TestEqual(TEXT("Reconnect session should persist the real thread id"), Session->GetSessionId(), FString(TEXT("thread-reconnect-123")));
+
     TestTrue(TEXT("Session should pin codex provider"), Session->GetProviderId() == FName(TEXT("codex")));
     TestTrue(TEXT("Session should pin codex model"), Session->GetResolvedOptions().ModelId == TEXT("gpt-5.4"));
     TestTrue(TEXT("Session should pin codex effort"), Session->GetResolvedOptions().EffortLevel == ECortexEffortLevel::Medium);
@@ -192,6 +199,7 @@ bool FCortexReconnectPinsLaunchMetadataAcrossSettingsChangeTest::RunTest(const F
 
     const FString LaunchAfterSettingsChange = Session->BuildLaunchCommandLine(true, ECortexAccessMode::Guided);
     TestEqual(TEXT("Reconnect launch should remain pinned across settings changes"), LaunchAfterSettingsChange, LaunchBeforeSettingsChange);
+    TestTrue(TEXT("Reconnect launch should use the real thread id"), LaunchAfterSettingsChange.Contains(TEXT("thread-reconnect-123")));
     TestTrue(TEXT("Pinned provider id should remain codex"), Session->GetProviderId() == FName(TEXT("codex")));
     TestTrue(TEXT("Pinned resolved model should remain gpt-5.4"), Session->GetResolvedOptions().ModelId == TEXT("gpt-5.4"));
     TestTrue(TEXT("Pinned resolved effort should remain medium"), Session->GetResolvedOptions().EffortLevel == ECortexEffortLevel::Medium);
