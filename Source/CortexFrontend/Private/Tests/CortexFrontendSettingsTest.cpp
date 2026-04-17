@@ -77,7 +77,6 @@ bool FCortexFrontendSettingsDeprecatedAvailableModelsTest::RunTest(const FString
 {
     (void)Parameters;
 
-    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
     UCortexFrontendProviderSettings* ProviderSettings = GetMutableDefault<UCortexFrontendProviderSettings>();
     TestNotNull(TEXT("Provider settings should exist"), ProviderSettings);
     if (!ProviderSettings)
@@ -89,6 +88,8 @@ bool FCortexFrontendSettingsDeprecatedAvailableModelsTest::RunTest(const FString
     const FString SettingsFilePath = MakeIsolatedMigrationSettingsFilePath(TEXT("DeprecatedAvailableModels"));
     IFileManager::Get().MakeDirectory(*FPaths::GetPath(SettingsFilePath), true);
     FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(SettingsFilePath);
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    Settings.Load();
     ON_SCOPE_EXIT
     {
         ProviderSettings->ActiveProviderId = OriginalProviderId;
