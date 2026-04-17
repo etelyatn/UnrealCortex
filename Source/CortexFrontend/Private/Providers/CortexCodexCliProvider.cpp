@@ -158,46 +158,33 @@ FCortexCliInfo FCortexCodexCliProvider::FindCli() const
 }
 
 FString FCortexCodexCliProvider::BuildLaunchCommandLine(
-    const FString& McpConfigPath,
-    const FString& WorkingDirectory,
-    const FString& SessionId,
-    const FString& ModelId,
-    ECortexEffortLevel EffortLevel,
-    bool bBypassApprovals,
-    bool bSkipPermissions,
-    bool bResumeSession) const
+    bool bResumeSession,
+    ECortexAccessMode AccessMode,
+    const FCortexSessionConfig& SessionConfig) const
 {
-    (void)SessionId;
+    (void)AccessMode;
     (void)bResumeSession;
-    (void)bSkipPermissions;
 
     FString CommandLine = TEXT("exec --json ");
 
-    if (!ModelId.IsEmpty() && ModelId != TEXT("Default"))
-    {
-        CommandLine += FString::Printf(TEXT("-m \"%s\" "), *ModelId);
-    }
-
+    const FString WorkingDirectory = !SessionConfig.WorkingDirectory.IsEmpty()
+        ? SessionConfig.WorkingDirectory
+        : FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
     if (!WorkingDirectory.IsEmpty())
     {
         CommandLine += FString::Printf(TEXT("-C \"%s\" "), *WorkingDirectory.Replace(TEXT("\\"), TEXT("/")));
     }
 
-    if (EffortLevel != ECortexEffortLevel::Default)
+    if (!SessionConfig.McpConfigPath.IsEmpty())
     {
-        CommandLine += FString::Printf(TEXT("-c model_reasoning_effort=%s "), *GetCodexEffortString(EffortLevel));
-    }
-
-    if (!McpConfigPath.IsEmpty())
-    {
-        const TArray<FString> Overrides = FCortexMcpConfigTranslator::BuildCodexConfigOverrides(McpConfigPath);
+        const TArray<FString> Overrides = FCortexMcpConfigTranslator::BuildCodexConfigOverrides(SessionConfig.McpConfigPath);
         for (const FString& Override : Overrides)
         {
             CommandLine += Override + TEXT(" ");
         }
     }
 
-    if (bBypassApprovals)
+    if (SessionConfig.bSkipPermissions)
     {
         CommandLine += TEXT("--dangerously-bypass-approvals-and-sandbox ");
     }

@@ -139,61 +139,35 @@ FCortexCliInfo FCortexClaudeCliProvider::FindCli() const
 }
 
 FString FCortexClaudeCliProvider::BuildLaunchCommandLine(
-    const FString& McpConfigPath,
-    const FString& WorkingDirectory,
-    const FString& SessionId,
-    const FString& ModelId,
-    ECortexEffortLevel EffortLevel,
-    bool bBypassApprovals,
-    bool bSkipPermissions,
-    bool bResumeSession) const
+    bool bResumeSession,
+    ECortexAccessMode AccessMode,
+    const FCortexSessionConfig& SessionConfig) const
 {
     FString CommandLine = TEXT("-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages ");
-    (void)WorkingDirectory;
+    (void)AccessMode;
 
-    if (bSkipPermissions)
+    if (SessionConfig.bSkipPermissions)
     {
         CommandLine += TEXT("--dangerously-skip-permissions ");
     }
 
     if (bResumeSession)
     {
-        CommandLine += FString::Printf(TEXT("--resume \"%s\" "), *SessionId);
+        CommandLine += FString::Printf(TEXT("--resume \"%s\" "), *SessionConfig.SessionId);
     }
     else
     {
-        CommandLine += FString::Printf(TEXT("--session-id \"%s\" "), *SessionId);
+        CommandLine += FString::Printf(TEXT("--session-id \"%s\" "), *SessionConfig.SessionId);
     }
 
-    if (!ModelId.IsEmpty() && ModelId != TEXT("Default"))
+    if (!SessionConfig.McpConfigPath.IsEmpty())
     {
-        CommandLine += FString::Printf(TEXT("--model \"%s\" "), *ModelId);
-    }
-
-    if (EffortLevel != ECortexEffortLevel::Default)
-    {
-        static const TCHAR* EffortStrings[] =
-        {
-            TEXT("default"),
-            TEXT("low"),
-            TEXT("medium"),
-            TEXT("high"),
-            TEXT("maximum"),
-        };
-        const int32 EffortIndex = static_cast<int32>(EffortLevel);
-        CommandLine += FString::Printf(TEXT("--effort \"%s\" "), EffortStrings[FMath::Clamp(EffortIndex, 0, UE_ARRAY_COUNT(EffortStrings) - 1)]);
-    }
-
-    if (!McpConfigPath.IsEmpty())
-    {
-        const TArray<FString> Args = FCortexMcpConfigTranslator::BuildClaudeArgs(McpConfigPath);
+        const TArray<FString> Args = FCortexMcpConfigTranslator::BuildClaudeArgs(SessionConfig.McpConfigPath);
         for (const FString& Arg : Args)
         {
             CommandLine += Arg + TEXT(" ");
         }
     }
-
-    (void)bBypassApprovals;
 
     return CommandLine.TrimStartAndEnd();
 }

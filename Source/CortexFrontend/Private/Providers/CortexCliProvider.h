@@ -31,14 +31,9 @@ public:
     virtual bool SupportsResume() const = 0;
     virtual FCortexCliInfo FindCli() const = 0;
     virtual FString BuildLaunchCommandLine(
-        const FString& McpConfigPath,
-        const FString& WorkingDirectory,
-        const FString& SessionId,
-        const FString& ModelId,
-        ECortexEffortLevel EffortLevel,
-        bool bBypassApprovals,
-        bool bSkipPermissions,
-        bool bResumeSession) const = 0;
+        bool bResumeSession,
+        ECortexAccessMode AccessMode,
+        const FCortexSessionConfig& SessionConfig) const = 0;
     virtual FString BuildAuthCommand() const = 0;
     virtual void ConsumeStreamChunk(
         const FString& RawChunk,

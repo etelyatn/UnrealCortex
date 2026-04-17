@@ -46,24 +46,16 @@ public:
     }
 
     virtual FString BuildLaunchCommandLine(
-        const FString& WorkingDirectory,
-        const FString& SessionId,
-        const FString& McpConfigPath,
-        const FString& ModelId,
-        ECortexEffortLevel EffortLevel,
-        bool bBypassApprovals,
-        bool bSkipPermissions,
-        bool bResumeSession) const override
+        bool bResumeSession,
+        ECortexAccessMode AccessMode,
+        const FCortexSessionConfig& SessionConfig) const override
     {
         return FString::Printf(
-            TEXT("%s|%s|%s|%s|%d|%d|%d|%d"),
-            *WorkingDirectory,
-            *SessionId,
-            *McpConfigPath,
-            *ModelId,
-            static_cast<int32>(EffortLevel),
-            bBypassApprovals ? 1 : 0,
-            bSkipPermissions ? 1 : 0,
+            TEXT("%s|%s|%s|%d|%d"),
+            *SessionConfig.WorkingDirectory,
+            *SessionConfig.SessionId,
+            *SessionConfig.McpConfigPath,
+            static_cast<int32>(AccessMode),
             bResumeSession ? 1 : 0);
     }
 
