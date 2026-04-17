@@ -1,0 +1,33 @@
+#include "Misc/AutomationTest.h"
+#include "CortexFrontendProviderSettings.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendProviderSettingsDefaultProviderTest, "Cortex.Frontend.ProviderSettings.DefaultProviderIsClaude", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendProviderSettingsOptionsTest, "Cortex.Frontend.ProviderSettings.ProviderOptionsExposeClaudeAndCodex", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexFrontendProviderSettingsDefaultProviderTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const UCortexFrontendProviderSettings* Settings = GetDefault<UCortexFrontendProviderSettings>();
+    TestNotNull(TEXT("Settings object should exist"), Settings);
+    if (!Settings)
+    {
+        return false;
+    }
+
+    TestEqual(TEXT("Default active provider should be Claude"), Settings->ActiveProviderId, FString(TEXT("claude_code")));
+    TestTrue(TEXT("Help text should mention newly created sessions"), Settings->ProviderSelectionHelpText.Contains(TEXT("newly created")));
+
+    return true;
+}
+
+bool FCortexFrontendProviderSettingsOptionsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const TArray<FString> Options = UCortexFrontendProviderSettings::GetProviderOptions();
+    TestTrue(TEXT("Provider options should include Claude"), Options.Contains(TEXT("claude_code")));
+    TestTrue(TEXT("Provider options should include Codex"), Options.Contains(TEXT("codex")));
+
+    return true;
+}

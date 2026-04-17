@@ -9,6 +9,8 @@ public class CortexFrontend : ModuleRules
         PublicDependencyModuleNames.AddRange(new string[]
         {
             "Core",
+            "Engine",
+            "DeveloperSettings",
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]
