@@ -193,10 +193,17 @@ bool FCortexCliDiscoveryCodexLaunchCommandTest::RunTest(const FString& Parameter
     TestFalse(
         TEXT("Codex resume should not include the working directory"),
         CommandLine.Contains(FString::Printf(TEXT("-C \"%s\""), *SessionConfig.WorkingDirectory)));
-    TestTrue(TEXT("Codex launch should quote the MCP args override as one token"), CommandLine.Contains(TEXT("\"-c mcp_servers.cortex_mcp.args=[")));
+    TestTrue(
+        TEXT("Codex launch should include the exact quoted MCP args override token"),
+        CommandLine.Contains(TEXT("\"-c mcp_servers.cortex_mcp.args=['run','--directory','Plugins/UnrealCortex/MCP','cortex-mcp']\"")));
     TestTrue(TEXT("Codex launch should include model flag"), CommandLine.Contains(TEXT("-m \"gpt-5.4\"")));
     TestTrue(TEXT("Codex launch should include reasoning effort"), CommandLine.Contains(TEXT("-c model_reasoning_effort=maximum")));
-    TestTrue(TEXT("Codex launch should include MCP command override"), CommandLine.Contains(TEXT("mcp_servers.cortex_mcp.command")));
+    TestTrue(
+        TEXT("Codex launch should include the exact quoted MCP command override token"),
+        CommandLine.Contains(TEXT("\"-c mcp_servers.cortex_mcp.command='uv'\"")));
+    TestTrue(
+        TEXT("Codex launch should include the exact quoted MCP env override token"),
+        CommandLine.Contains(TEXT("\"-c mcp_servers.cortex_mcp.env.CORTEX_PROJECT_DIR='.'\"")));
     TestTrue(TEXT("Codex launch should include bypass approvals flag when skip permissions is set"), CommandLine.Contains(TEXT("--dangerously-bypass-approvals-and-sandbox")));
     return true;
 }
@@ -239,7 +246,10 @@ bool FCortexCliDiscoveryCodexNormalizationTest::RunTest(const FString& Parameter
     }));
     TestTrue(TEXT("Codex normalization should emit turn result"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
     {
-        return Event.Type == ECortexStreamEventType::Result && Event.InputTokens == 12 && Event.OutputTokens == 34;
+        return Event.Type == ECortexStreamEventType::Result &&
+            Event.InputTokens == 12 &&
+            Event.OutputTokens == 34 &&
+            Event.ResultText == TEXT("OK");
     }));
     return true;
 }
@@ -260,17 +270,21 @@ bool FCortexCliDiscoveryCodexFailureNormalizationTest::RunTest(const FString& Pa
 
     Provider.ConsumeStreamChunk(RawJsonl, ChunkBuffer, Events);
 
-    TestTrue(TEXT("Codex failure normalization should emit a system error for turn.failed"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    TestTrue(TEXT("Codex failure normalization should emit a terminal result for turn.failed"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
     {
-        return Event.Type == ECortexStreamEventType::SystemError &&
+        return Event.Type == ECortexStreamEventType::Result &&
             Event.bIsError &&
             Event.Text == TEXT("codex stopped unexpectedly") &&
+            Event.ResultText == TEXT("codex stopped unexpectedly") &&
             Event.InputTokens == 5 &&
             Event.OutputTokens == 1;
     }));
-    TestTrue(TEXT("Codex failure normalization should emit a system error for error events"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    TestTrue(TEXT("Codex failure normalization should emit a terminal result for error events"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
     {
-        return Event.Type == ECortexStreamEventType::SystemError && Event.bIsError && Event.Text == TEXT("connection reset");
+        return Event.Type == ECortexStreamEventType::Result &&
+            Event.bIsError &&
+            Event.Text == TEXT("connection reset") &&
+            Event.ResultText == TEXT("connection reset");
     }));
     return true;
 }

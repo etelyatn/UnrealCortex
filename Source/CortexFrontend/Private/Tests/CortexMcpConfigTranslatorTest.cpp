@@ -53,34 +53,40 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
         FString Command;
         if ((*ServerObject)->TryGetStringField(TEXT("command"), Command))
         {
-            TestTrue(FString::Printf(TEXT("Should translate command for %s"), *ServerName), Overrides.ContainsByPredicate([&Prefix](const FString& Override)
-            {
-                return Override.StartsWith(TEXT("\"-c ")) &&
-                    Override.EndsWith(TEXT("\"")) &&
-                    Override.Contains(Prefix + TEXT("command="));
-            }));
+            const FString ExpectedOverride = FString::Printf(
+                TEXT("\"-c %scommand='%s'\""),
+                *Prefix,
+                *Command);
+            TestTrue(FString::Printf(TEXT("Should translate command for %s"), *ServerName), Overrides.Contains(ExpectedOverride));
         }
 
         const TArray<TSharedPtr<FJsonValue>>* ArgsArray = nullptr;
         if ((*ServerObject)->TryGetArrayField(TEXT("args"), ArgsArray) && ArgsArray != nullptr && ArgsArray->Num() > 0)
         {
-            TestTrue(FString::Printf(TEXT("Should translate args for %s"), *ServerName), Overrides.ContainsByPredicate([&Prefix](const FString& Override)
+            TArray<FString> Args;
+            for (const TSharedPtr<FJsonValue>& ArgValue : *ArgsArray)
             {
-                return Override.StartsWith(TEXT("\"-c ")) &&
-                    Override.EndsWith(TEXT("\"")) &&
-                    Override.Contains(Prefix + TEXT("args="));
-            }));
+                FString Arg;
+                if (ArgValue.IsValid() && ArgValue->TryGetString(Arg))
+                {
+                    Args.Add(Arg);
+                }
+            }
+
+            const FString ExpectedOverride = FString::Printf(
+                TEXT("\"-c %sargs=['%s']\""),
+                *Prefix,
+                *FString::Join(Args, TEXT("','")));
+            TestTrue(FString::Printf(TEXT("Should translate args for %s"), *ServerName), Overrides.Contains(ExpectedOverride));
         }
 
         const TSharedPtr<FJsonObject>* EnvObject = nullptr;
         if ((*ServerObject)->TryGetObjectField(TEXT("env"), EnvObject) && EnvObject != nullptr && (*EnvObject)->Values.Num() > 0)
         {
-            TestTrue(FString::Printf(TEXT("Should translate env for %s"), *ServerName), Overrides.ContainsByPredicate([&Prefix](const FString& Override)
-            {
-                return Override.StartsWith(TEXT("\"-c ")) &&
-                    Override.EndsWith(TEXT("\"")) &&
-                    Override.Contains(Prefix + TEXT("env."));
-            }));
+            const FString ExpectedOverride = FString::Printf(
+                TEXT("\"-c %senv.CORTEX_PROJECT_DIR='.'\""),
+                *Prefix);
+            TestTrue(FString::Printf(TEXT("Should translate env for %s"), *ServerName), Overrides.Contains(ExpectedOverride));
         }
     }
     return true;
