@@ -37,5 +37,9 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
     {
         return Override.Contains(TEXT("mcp_servers.cortex_mcp.args"));
     }));
+    TestTrue(TEXT("Should include env override"), Overrides.ContainsByPredicate([](const FString& Override)
+    {
+        return Override.Contains(TEXT("mcp_servers.cortex_mcp.env.CORTEX_PROJECT_DIR"));
+    }));
     return true;
 }

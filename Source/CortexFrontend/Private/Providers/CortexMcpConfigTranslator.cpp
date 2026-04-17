@@ -30,6 +30,53 @@ namespace
         return Result;
     }
 
+    void AppendCodexEnvOverrides(
+        const TSharedPtr<FJsonObject>& CortexServerObject,
+        TArray<FString>& OutOverrides)
+    {
+        const TSharedPtr<FJsonObject>* EnvObject = nullptr;
+        if (!CortexServerObject->TryGetObjectField(TEXT("env"), EnvObject) || EnvObject == nullptr)
+        {
+            return;
+        }
+
+        TArray<FString> EnvKeys;
+        (*EnvObject)->Values.GetKeys(EnvKeys);
+        EnvKeys.Sort();
+
+        for (const FString& EnvKey : EnvKeys)
+        {
+            const TSharedPtr<FJsonValue>* EnvValue = (*EnvObject)->Values.Find(EnvKey);
+            if (EnvValue == nullptr || !EnvValue->IsValid())
+            {
+                continue;
+            }
+
+            FString EnvText;
+            const TSharedPtr<FJsonValue>& ValueRef = *EnvValue;
+            if (ValueRef->TryGetString(EnvText))
+            {
+            }
+            else if (double NumberValue = 0.0; ValueRef->TryGetNumber(NumberValue))
+            {
+                EnvText = FString::SanitizeFloat(NumberValue);
+            }
+            else if (bool BoolValue = false; ValueRef->TryGetBool(BoolValue))
+            {
+                EnvText = BoolValue ? TEXT("true") : TEXT("false");
+            }
+            else
+            {
+                continue;
+            }
+
+            OutOverrides.Add(FString::Printf(
+                TEXT("-c mcp_servers.cortex_mcp.env.%s=%s"),
+                *EnvKey,
+                *QuoteTomlString(EnvText)));
+        }
+    }
+
     bool LoadJsonFile(const FString& FilePath, TSharedPtr<FJsonObject>& OutJsonObject)
     {
         FString JsonText;
@@ -108,6 +155,8 @@ TArray<FString> FCortexMcpConfigTranslator::BuildCodexConfigOverrides(const FStr
             Overrides.Add(FString::Printf(TEXT("-c mcp_servers.cortex_mcp.args=%s"), *BuildTomlArray(Args)));
         }
     }
+
+    AppendCodexEnvOverrides(*CortexServerObject, Overrides);
 
     return Overrides;
 }
