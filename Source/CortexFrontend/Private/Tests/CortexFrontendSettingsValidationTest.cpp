@@ -28,6 +28,14 @@ bool FCortexFrontendSettingsInvalidModelFallbackTest::RunTest(const FString& Par
         Settings.SetEffortLevel(OriginalEffortLevel);
     };
 
+    ProviderSettings->ActiveProviderId = TEXT("codex");
+    Settings.SetSelectedModel(TEXT("claude-opus-4-6"));
+    Settings.SetEffortLevel(ECortexEffortLevel::Low);
+
+    const FCortexResolvedSessionOptions DirectCodexResolved = Settings.ResolveForActiveProvider();
+    TestEqual(TEXT("Codex invalid Claude model should normalize to provider default"), DirectCodexResolved.ModelId, FString(TEXT("gpt-5.4")));
+    TestEqual(TEXT("Codex display name should stay Codex"), DirectCodexResolved.ProviderDisplayName, FString(TEXT("Codex")));
+
     ProviderSettings->ActiveProviderId = TEXT("claude_code");
     Settings.SetSelectedModel(TEXT("claude-sonnet-4-6"));
     Settings.SetEffortLevel(ECortexEffortLevel::Maximum);
