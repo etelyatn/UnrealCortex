@@ -1,7 +1,25 @@
 // Source/CortexFrontend/Private/Tests/SCortexQATabTest.cpp
 #include "Misc/AutomationTest.h"
+#include "CortexFrontendModule.h"
+#include "CortexFrontendProviderSettings.h"
+#include "CortexFrontendSettings.h"
+#include "HAL/FileManager.h"
+#include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Modules/ModuleManager.h"
 #include "Framework/Docking/TabManager.h"
+#include "Session/CortexCliSession.h"
+
+namespace
+{
+	FString MakeQATempFrontendSettingsPath(const TCHAR* Prefix)
+	{
+		return FPaths::Combine(
+			FPaths::ProjectSavedDir(),
+			TEXT("CortexFrontend"),
+			FString::Printf(TEXT("%s_%s.json"), Prefix, *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+	}
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexQATabRegisteredTest,
@@ -15,5 +33,80 @@ bool FCortexQATabRegisteredTest::RunTest(const FString& Parameters)
     // but we can verify the module loaded which sets up tab spawners.
     TestTrue(TEXT("CortexFrontend module should be loaded"),
         FModuleManager::Get().IsModuleLoaded(TEXT("CortexFrontend")));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexQADefaultSessionUsesActiveProviderTest,
+    "Cortex.Frontend.QATab.DefaultSessionUsesActiveProvider",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexQADefaultSessionUsesActiveProviderTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const FString TempSettingsPath = MakeQATempFrontendSettingsPath(TEXT("Task5QADefault"));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(TempSettingsPath), true);
+    FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(TempSettingsPath);
+    ON_SCOPE_EXIT
+    {
+        FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
+        IFileManager::Get().Delete(*TempSettingsPath);
+    };
+
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    UCortexFrontendProviderSettings* ProviderSettings = GetMutableDefault<UCortexFrontendProviderSettings>();
+    TestTrue(TEXT("Provider settings should exist"), ProviderSettings != nullptr);
+    if (!ProviderSettings)
+    {
+        return false;
+    }
+
+    const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
+    const ECortexAccessMode OriginalAccessMode = Settings.GetAccessMode();
+    const bool OriginalSkipPermissions = Settings.GetSkipPermissions();
+    const ECortexWorkflowMode OriginalWorkflow = Settings.GetWorkflowMode();
+    const bool OriginalProjectContext = Settings.GetProjectContext();
+    const bool OriginalAutoContext = Settings.GetAutoContext();
+    const FString OriginalDirective = Settings.GetCustomDirective();
+    const ECortexEffortLevel OriginalEffort = Settings.GetEffortLevel();
+    const FString OriginalModel = Settings.GetSelectedModel();
+    ON_SCOPE_EXIT
+    {
+        ProviderSettings->ActiveProviderId = OriginalProviderId;
+        Settings.SetAccessMode(OriginalAccessMode);
+        Settings.SetSkipPermissions(OriginalSkipPermissions);
+        Settings.SetWorkflowMode(OriginalWorkflow);
+        Settings.SetProjectContext(OriginalProjectContext);
+        Settings.SetAutoContext(OriginalAutoContext);
+        Settings.SetCustomDirective(OriginalDirective);
+        Settings.SetEffortLevel(OriginalEffort);
+        Settings.SetSelectedModel(OriginalModel);
+        Settings.ClearPendingChanges();
+    };
+
+    ProviderSettings->ActiveProviderId = TEXT("codex");
+    Settings.SetAccessMode(ECortexAccessMode::Guided);
+    Settings.SetSkipPermissions(true);
+    Settings.SetWorkflowMode(ECortexWorkflowMode::Thorough);
+    Settings.SetProjectContext(true);
+    Settings.SetAutoContext(true);
+    Settings.SetCustomDirective(TEXT("QA snapshot"));
+    Settings.SetEffortLevel(ECortexEffortLevel::Medium);
+    Settings.SetSelectedModel(TEXT("gpt-5.4"));
+
+    const FCortexSessionConfig Config = FCortexFrontendModule::CreateDefaultSessionConfig();
+    TestEqual(TEXT("QA default session config should pin the active provider"), Config.ProviderId, FName(TEXT("codex")));
+    TestEqual(TEXT("QA default session config should resolve active provider metadata"), Config.ResolvedOptions.ProviderId, FName(TEXT("codex")));
+    TestEqual(TEXT("QA default session config should resolve codex model"), Config.ResolvedOptions.ModelId, FString(TEXT("gpt-5.4")));
+
+    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(Config);
+    TestTrue(TEXT("QA session should exist"), Session.IsValid());
+    if (!Session.IsValid())
+    {
+        return false;
+    }
+
+    TestEqual(TEXT("QA session should use the active provider"), Session->GetProviderId(), FName(TEXT("codex")));
     return true;
 }

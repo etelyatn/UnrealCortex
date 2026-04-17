@@ -438,16 +438,14 @@ void SCortexQATab::OnGenerateClicked(const FString& Prompt)
     // Lazy-create CLI session on first use
     if (!QACliSession.IsValid())
     {
-        FCortexSessionConfig Config;
+        FCortexSessionConfig Config = FCortexFrontendModule::CreateDefaultSessionConfig();
         Config.SessionId = TEXT("cortex-qa-session");
-        Config.McpConfigPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()) / TEXT(".mcp.json");
         Config.SystemPrompt = TEXT(
             "You are a QA test engineer agent. Generate test scenarios as JSON step arrays.\n"
             "Available step types: position_snapshot, move_to, interact, look_at, wait, assert, key_press.\n"
             "Use MCP tools to inspect the level and determine actor paths.\n"
             "Save the generated scenario to Saved/CortexQA/Recordings/ using the session JSON format."
         );
-        Config.bSkipPermissions = true;
         Config.bConversionMode = false;
 
         QACliSession = MakeShared<FCortexCliSession>(Config);

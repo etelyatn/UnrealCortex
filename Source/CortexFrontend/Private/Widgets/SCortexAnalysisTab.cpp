@@ -479,9 +479,8 @@ void SCortexAnalysisTab::StartAnalysis(const FString& AssembledSystemPrompt)
 
     Context->bAnalysisStarted = true;
 
-    FCortexSessionConfig SessionConfig;
+    FCortexSessionConfig SessionConfig = FCortexFrontendModule::CreateDefaultSessionConfig();
     SessionConfig.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
-    SessionConfig.WorkingDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
     SessionConfig.bConversionMode = true;  // Lightweight: no MCP, no project context
     SessionConfig.SystemPrompt = AssembledSystemPrompt;
 

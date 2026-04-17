@@ -173,7 +173,22 @@ FCortexSessionConfig FCortexFrontendModule::CreateDefaultSessionConfig()
     FCortexSessionConfig Config;
     Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
     Config.WorkingDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-    Config.bSkipPermissions = FCortexFrontendSettings::Get().GetSkipPermissions();
+
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    const FCortexResolvedSessionOptions ResolvedOptions = Settings.ResolveForActiveProvider();
+    Config.ProviderId = ResolvedOptions.ProviderId;
+    Config.ResolvedOptions = ResolvedOptions;
+    Config.ModelId = Config.ResolvedOptions.ModelId;
+    Config.EffortLevel = Config.ResolvedOptions.EffortLevel;
+
+    Config.LaunchOptions.AccessMode = Settings.GetAccessMode();
+    Config.LaunchOptions.bSkipPermissions = Settings.GetSkipPermissions();
+    Config.LaunchOptions.WorkflowMode = Settings.GetWorkflowMode();
+    Config.LaunchOptions.bProjectContext = Settings.GetProjectContext();
+    Config.LaunchOptions.bAutoContext = Settings.GetAutoContext();
+    Config.LaunchOptions.CustomDirective = Settings.GetCustomDirective();
+    Config.bHasLaunchOptions = true;
+    Config.bSkipPermissions = Config.LaunchOptions.bSkipPermissions;
 
     const FString McpPath = FPaths::Combine(FPaths::ProjectDir(), TEXT(".mcp.json"));
     if (FPaths::FileExists(McpPath))
@@ -186,12 +201,20 @@ FCortexSessionConfig FCortexFrontendModule::CreateDefaultSessionConfig()
 
 TWeakPtr<FCortexCliSession> FCortexFrontendModule::GetOrCreateSession()
 {
+    const FCortexSessionConfig DesiredConfig = CreateDefaultSessionConfig();
+
     if (Sessions.Num() > 0 && Sessions[0].IsValid())
     {
-        return Sessions[0];
+        const TSharedPtr<FCortexCliSession>& ExistingSession = Sessions[0];
+        if (ExistingSession->GetProviderId() == DesiredConfig.ProviderId)
+        {
+            return ExistingSession;
+        }
+
+        Sessions.Reset();
     }
 
-    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(CreateDefaultSessionConfig());
+    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(DesiredConfig);
     Sessions.Reset();
     Sessions.Add(Session);
     return Session;
