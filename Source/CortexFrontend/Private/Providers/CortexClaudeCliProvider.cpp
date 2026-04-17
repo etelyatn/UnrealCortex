@@ -29,6 +29,32 @@ namespace
         return TEXT("default");
     }
 
+    FString BuildAllowedToolsArg(ECortexAccessMode AccessMode)
+    {
+        static const TCHAR* ReadOnlyBuiltins = TEXT("Read,Glob,Grep,Agent,WebFetch,WebSearch,AskUserQuestion,TodoRead,TodoWrite");
+        static const TCHAR* GuidedBuiltins = TEXT("Read,Edit,Write,Bash,Glob,Grep,Agent,WebFetch,WebSearch,NotebookEdit,AskUserQuestion,TodoRead,TodoWrite");
+
+        switch (AccessMode)
+        {
+        case ECortexAccessMode::ReadOnly:
+            return FString::Printf(TEXT("%s,"
+                "mcp__cortex_mcp__get_*,mcp__cortex_mcp__list_*,mcp__cortex_mcp__search_*,mcp__cortex_mcp__query_*,mcp__cortex_mcp__describe_*,mcp__cortex_mcp__find_*,mcp__cortex_mcp__schema_*,mcp__cortex_mcp__reflect_*"),
+                ReadOnlyBuiltins);
+        case ECortexAccessMode::Guided:
+            return FString::Printf(TEXT("%s,"
+                "mcp__cortex_mcp__get_*,mcp__cortex_mcp__list_*,mcp__cortex_mcp__search_*,mcp__cortex_mcp__query_*,mcp__cortex_mcp__describe_*,mcp__cortex_mcp__find_*,mcp__cortex_mcp__schema_*,mcp__cortex_mcp__reflect_*,"
+                "mcp__cortex_mcp__spawn_*,mcp__cortex_mcp__create_*,mcp__cortex_mcp__add_*,mcp__cortex_mcp__set_*,mcp__cortex_mcp__compile_*,mcp__cortex_mcp__connect_*,"
+                "mcp__cortex_mcp__graph_add_*,mcp__cortex_mcp__graph_connect,mcp__cortex_mcp__graph_list_*,mcp__cortex_mcp__graph_get_*,mcp__cortex_mcp__graph_set_*,mcp__cortex_mcp__graph_search_*,mcp__cortex_mcp__graph_auto_layout,"
+                "mcp__cortex_mcp__open_*,mcp__cortex_mcp__close_*,mcp__cortex_mcp__focus_*,mcp__cortex_mcp__select_*,"
+                "mcp__cortex_mcp__rename_*,mcp__cortex_mcp__configure_*,mcp__cortex_mcp__import_*,mcp__cortex_mcp__update_*,mcp__cortex_mcp__duplicate_*,mcp__cortex_mcp__reparent*,mcp__cortex_mcp__attach_*,mcp__cortex_mcp__detach_*,mcp__cortex_mcp__register_*,mcp__cortex_mcp__reload_*"),
+                GuidedBuiltins);
+        case ECortexAccessMode::FullAccess:
+            return FString();
+        }
+
+        return FString();
+    }
+
     FString FindClaudeBinaryFromEnvironment()
     {
 #if PLATFORM_WINDOWS
@@ -162,10 +188,12 @@ FString FCortexClaudeCliProvider::BuildLaunchCommandLine(
     ECortexAccessMode AccessMode,
     const FCortexSessionConfig& SessionConfig) const
 {
-    FString CommandLine = TEXT("-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages ");
-    (void)AccessMode;
+    const FCortexResolvedLaunchOptions& LaunchOptions = SessionConfig.LaunchOptions;
+    const FCortexResolvedSessionOptions& ResolvedOptions = SessionConfig.ResolvedOptions;
 
-    if (SessionConfig.bSkipPermissions)
+    FString CommandLine = TEXT("-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages ");
+
+    if (LaunchOptions.bSkipPermissions)
     {
         CommandLine += TEXT("--dangerously-skip-permissions ");
     }
@@ -188,15 +216,100 @@ FString FCortexClaudeCliProvider::BuildLaunchCommandLine(
         }
     }
 
-    if (!SessionConfig.ModelId.IsEmpty() && SessionConfig.ModelId != TEXT("Default"))
+    if (!ResolvedOptions.ModelId.IsEmpty() && ResolvedOptions.ModelId != TEXT("Default"))
     {
-        CommandLine += FString::Printf(TEXT("--model \"%s\" "), *SessionConfig.ModelId);
+        CommandLine += FString::Printf(TEXT("--model \"%s\" "), *ResolvedOptions.ModelId);
     }
 
-    if (SessionConfig.EffortLevel != ECortexEffortLevel::Default)
+    if (SessionConfig.bConversionMode)
     {
-        CommandLine += FString::Printf(TEXT("--effort \"%s\" "), *GetClaudeEffortString(SessionConfig.EffortLevel));
+        CommandLine += TEXT("--strict-mcp-config ");
+        CommandLine += TEXT("--setting-sources \"user,local\" ");
+        CommandLine += TEXT("--effort \"low\" ");
     }
+    else
+    {
+        if (ResolvedOptions.EffortLevel != ECortexEffortLevel::Default)
+        {
+            CommandLine += FString::Printf(TEXT("--effort \"%s\" "), *GetClaudeEffortString(ResolvedOptions.EffortLevel));
+        }
+
+        if (LaunchOptions.WorkflowMode == ECortexWorkflowMode::Direct)
+        {
+            CommandLine += TEXT("--disable-slash-commands ");
+        }
+
+        if (!LaunchOptions.bProjectContext)
+        {
+            CommandLine += TEXT("--setting-sources \"user,local\" ");
+        }
+
+        const FString AllowedTools = BuildAllowedToolsArg(AccessMode);
+        if (!AllowedTools.IsEmpty())
+        {
+            CommandLine += FString::Printf(TEXT("--allowedTools \"%s\" "), *AllowedTools);
+        }
+
+    }
+
+    if (!SessionConfig.McpConfigPath.IsEmpty())
+    {
+        CommandLine += FString::Printf(TEXT("--mcp-config \"%s\" "), *SessionConfig.McpConfigPath.Replace(TEXT("\\"), TEXT("/")));
+    }
+
+    FString SystemPrompt;
+    if (!SessionConfig.SystemPrompt.IsEmpty())
+    {
+        SystemPrompt = SessionConfig.SystemPrompt;
+    }
+    else
+    {
+        FString ModeString;
+        switch (AccessMode)
+        {
+        case ECortexAccessMode::ReadOnly:
+            ModeString = TEXT("Read-Only");
+            break;
+        case ECortexAccessMode::Guided:
+            ModeString = TEXT("Guided");
+            break;
+        case ECortexAccessMode::FullAccess:
+            ModeString = TEXT("Full Access");
+            break;
+        }
+
+        SystemPrompt = FString::Printf(
+            TEXT("You are running inside the Unreal Editor's Cortex AI Chat panel. "
+                 "You have access to Cortex MCP tools for querying and manipulating the editor. "
+                 "Current access mode: %s."), *ModeString);
+
+        if (LaunchOptions.WorkflowMode == ECortexWorkflowMode::Direct)
+        {
+            SystemPrompt += TEXT(" Workflow mode: Direct. Act immediately on requests using MCP tools. "
+                "Do not create planning documents, design docs, spec files, or brainstorming files. "
+                "Do not follow documentation-first workflows. Be concise. Prefer action over ceremony.");
+        }
+
+        if (!LaunchOptions.CustomDirective.IsEmpty())
+        {
+            FString Sanitized = LaunchOptions.CustomDirective;
+            Sanitized.ReplaceInline(TEXT("\n"), TEXT(" "));
+            Sanitized.ReplaceInline(TEXT("\r"), TEXT(" "));
+            Sanitized.ReplaceInline(TEXT("\t"), TEXT(" "));
+            Sanitized.ReplaceInline(TEXT("$("), TEXT(""));
+            Sanitized.ReplaceInline(TEXT("`"), TEXT(""));
+            Sanitized.ReplaceInline(TEXT("%"), TEXT(""));
+            Sanitized.ReplaceInline(TEXT("^"), TEXT(""));
+            Sanitized.ReplaceInline(TEXT("|"), TEXT(""));
+            Sanitized.ReplaceInline(TEXT("&"), TEXT(""));
+            Sanitized.ReplaceInline(TEXT(">"), TEXT(""));
+            Sanitized.ReplaceInline(TEXT("<"), TEXT(""));
+            SystemPrompt += TEXT(" ") + Sanitized;
+        }
+    }
+
+    CommandLine += FString::Printf(TEXT("--append-system-prompt \"%s\" "),
+        *SystemPrompt.Replace(TEXT("\""), TEXT("\\\"")));
 
     return CommandLine.TrimStartAndEnd();
 }

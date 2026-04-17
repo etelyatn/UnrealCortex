@@ -14,6 +14,7 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnCortexSessionTurnComplete, const FCortexT
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnCortexSessionStateChanged, const FCortexSessionStateChange&);
 
 class FCortexCliWorker;
+class ICortexCliProvider;
 
 class FCortexCliSession : public TSharedFromThis<FCortexCliSession>
 {
@@ -56,6 +57,10 @@ public:
 	int64 GetTotalCacheReadTokens() const { return TotalCacheReadTokens.load(); }
 	int64 GetTotalCacheCreationTokens() const { return TotalCacheCreationTokens.load(); }
 	int64 GetConversationContextTokens() const { return ConversationContextTokens.load(); }
+	FName GetProviderId() const;
+	const FCortexResolvedSessionOptions& GetResolvedOptions() const;
+	FString GetAuthCommandText() const;
+	int64 GetContextLimitTokens() const;
 	FString GetModelId() const { return ModelId; }
 	FString GetProvider() const { return Provider; }
 
@@ -70,6 +75,8 @@ private:
 	friend class FCortexCliSessionBuildInitialLaunchArgsTest;
 	friend class FCortexCliSessionBuildResumeLaunchArgsTest;
 	friend class FCortexCliSessionBuildPromptEnvelopeTest;
+	friend class FCortexCliSessionBuildCodexExecArgsTest;
+	friend class FCortexCliSessionLaunchOptionsPinnedAcrossSettingChangeTest;
 	friend class FCortexCliSessionQueuePromptWhileSpawningTest;
 	friend class FCortexCliSessionTurnCompleteReturnsIdleTest;
 	friend class FCortexCliSessionCancelTransitionsTest;
@@ -130,6 +137,7 @@ private:
 	int32 CurrentTurnIndex = 0;
 
 	FCortexSessionConfig Config;
+	const ICortexCliProvider* PinnedProvider = nullptr;
 	FCortexCliInfo CachedCliInfo;
 	std::atomic<ECortexSessionState> State;
 	TOptional<FString> PendingPrompt;

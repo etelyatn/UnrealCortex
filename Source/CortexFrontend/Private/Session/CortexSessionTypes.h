@@ -36,12 +36,34 @@ enum class ECortexSessionState : uint8
     Terminated
 };
 
+struct FCortexResolvedLaunchOptions
+{
+    ECortexAccessMode AccessMode = ECortexAccessMode::ReadOnly;
+    bool bSkipPermissions = true;
+    ECortexWorkflowMode WorkflowMode = ECortexWorkflowMode::Direct;
+    bool bProjectContext = true;
+    bool bAutoContext = true;
+    FString CustomDirective;
+};
+
+struct FCortexResolvedSessionOptions
+{
+    FName ProviderId = NAME_None;
+    FString ProviderDisplayName;
+    FString ModelId;
+    ECortexEffortLevel EffortLevel = ECortexEffortLevel::Default;
+    int64 ContextLimitTokens = 0;
+};
+
 struct FCortexSessionConfig
 {
     FString SessionId;
     FString WorkingDirectory;
     FString McpConfigPath;
     FString SystemPrompt;  // Optional system prompt override (used by conversion tabs)
+    FName ProviderId = NAME_None;
+    FCortexResolvedSessionOptions ResolvedOptions;
+    FCortexResolvedLaunchOptions LaunchOptions;
     FString ModelId;
     ECortexEffortLevel EffortLevel = ECortexEffortLevel::Default;
     bool bSkipPermissions = true;

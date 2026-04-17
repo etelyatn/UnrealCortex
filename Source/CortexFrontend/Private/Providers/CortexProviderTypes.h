@@ -37,12 +37,3 @@ struct FCortexProviderDefinition
     FString InstallationHintText;
     FString AuthCommandDisplayText;
 };
-
-struct FCortexResolvedSessionOptions
-{
-    FName ProviderId = NAME_None;
-    FString ProviderDisplayName;
-    FString ModelId;
-    ECortexEffortLevel EffortLevel = ECortexEffortLevel::Default;
-    int64 ContextLimitTokens = 0;
-};

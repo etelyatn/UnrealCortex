@@ -41,5 +41,7 @@ struct FCortexStreamEvent
 
 namespace CortexStreamEventParser
 {
+    TArray<FCortexStreamEvent> ParseClaudeNdjsonLine(const FString& JsonLine);
+    TArray<FCortexStreamEvent> ParseCodexJsonObject(const TSharedPtr<FJsonObject>& JsonObject, FString& InOutPendingAssistantText);
     TArray<FCortexStreamEvent> ParseNdjsonLine(const FString& JsonLine);
 }

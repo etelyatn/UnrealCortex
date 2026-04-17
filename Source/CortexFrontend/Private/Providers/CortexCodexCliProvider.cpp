@@ -135,158 +135,19 @@ namespace
 
     TArray<FCortexStreamEvent> ParseCodexJsonLine(const FString& JsonLine, FString& InOutPendingAssistantText)
     {
-        TArray<FCortexStreamEvent> Events;
-
         TSharedPtr<FJsonObject> JsonObj;
         const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonLine);
         if (!FJsonSerializer::Deserialize(Reader, JsonObj) || !JsonObj.IsValid())
         {
-            return Events;
+            return {};
         }
 
-        FString Type;
-        if (!JsonObj->TryGetStringField(TEXT("type"), Type))
+        TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseCodexJsonObject(JsonObj, InOutPendingAssistantText);
+        for (FCortexStreamEvent& Event : Events)
         {
-            return Events;
-        }
-
-        if (Type == TEXT("thread.started"))
-        {
-            FCortexStreamEvent Event;
-            Event.Type = ECortexStreamEventType::SessionInit;
             Event.RawJson = JsonLine;
-
-            if (!JsonObj->TryGetStringField(TEXT("session_id"), Event.SessionId))
-            {
-                JsonObj->TryGetStringField(TEXT("thread_id"), Event.SessionId);
-            }
-
-            if (Event.SessionId.IsEmpty())
-            {
-                const TSharedPtr<FJsonObject>* ThreadObject = nullptr;
-                if (JsonObj->TryGetObjectField(TEXT("thread"), ThreadObject) && ThreadObject != nullptr)
-                {
-                    (*ThreadObject)->TryGetStringField(TEXT("id"), Event.SessionId);
-                }
-            }
-
-            Events.Add(MoveTemp(Event));
-            return Events;
         }
-
-        if (Type == TEXT("turn.completed"))
-        {
-            FCortexStreamEvent Event;
-            Event.Type = ECortexStreamEventType::Result;
-            Event.RawJson = JsonLine;
-
-            const TSharedPtr<FJsonObject>* UsageObject = nullptr;
-            if (JsonObj->TryGetObjectField(TEXT("usage"), UsageObject) && UsageObject != nullptr)
-            {
-                CopyUsageFields(*UsageObject, Event);
-            }
-
-            JsonObj->TryGetStringField(TEXT("session_id"), Event.SessionId);
-            Event.ResultText = InOutPendingAssistantText;
-            if (Event.ResultText.IsEmpty())
-            {
-                JsonObj->TryGetStringField(TEXT("result"), Event.ResultText);
-            }
-            Event.Text = Event.ResultText;
-            InOutPendingAssistantText.Reset();
-            Events.Add(MoveTemp(Event));
-            return Events;
-        }
-
-        if (Type == TEXT("turn.failed") || Type == TEXT("error"))
-        {
-            FCortexStreamEvent Event;
-            Event.Type = ECortexStreamEventType::Result;
-            Event.bIsError = true;
-            Event.RawJson = JsonLine;
-
-            const TSharedPtr<FJsonObject>* UsageObject = nullptr;
-            if (Type == TEXT("turn.failed") && JsonObj->TryGetObjectField(TEXT("usage"), UsageObject) && UsageObject != nullptr)
-            {
-                CopyUsageFields(*UsageObject, Event);
-            }
-
-            if (!JsonObj->TryGetStringField(TEXT("message"), Event.Text))
-            {
-                JsonObj->TryGetStringField(TEXT("error"), Event.Text);
-            }
-
-            const TSharedPtr<FJsonObject>* ErrorObject = nullptr;
-            if (JsonObj->TryGetObjectField(TEXT("error"), ErrorObject) && ErrorObject != nullptr)
-            {
-                (*ErrorObject)->TryGetStringField(TEXT("message"), Event.Text);
-                if (Event.Text.IsEmpty())
-                {
-                    (*ErrorObject)->TryGetStringField(TEXT("type"), Event.Text);
-                }
-            }
-
-            if (Event.Text.IsEmpty())
-            {
-                Event.Text = JsonLine;
-            }
-
-            Event.ResultText = Event.Text;
-            Event.Text = Event.ResultText;
-            InOutPendingAssistantText.Reset();
-
-            Events.Add(MoveTemp(Event));
-            return Events;
-        }
-
-        const TSharedPtr<FJsonObject>* ItemObject = nullptr;
-        if ((Type == TEXT("item.started") || Type == TEXT("item.completed")) &&
-            JsonObj->TryGetObjectField(TEXT("item"), ItemObject) && ItemObject != nullptr)
-        {
-            FString ItemType;
-            if ((*ItemObject)->TryGetStringField(TEXT("type"), ItemType))
-            {
-                if (ItemType == TEXT("command_execution"))
-                {
-                    FCortexStreamEvent Event;
-                    Event.RawJson = JsonLine;
-                    (*ItemObject)->TryGetStringField(TEXT("id"), Event.ToolCallId);
-                    Event.ToolName = TEXT("command_execution");
-
-                    if (Type == TEXT("item.started"))
-                    {
-                        Event.Type = ECortexStreamEventType::ToolUse;
-                        Event.ToolInput = SerializeJsonObject(*ItemObject);
-                    }
-                    else
-                    {
-                        Event.Type = ECortexStreamEventType::ToolResult;
-                        if (!(*ItemObject)->TryGetStringField(TEXT("output"), Event.ToolResultContent))
-                        {
-                            (*ItemObject)->TryGetStringField(TEXT("result"), Event.ToolResultContent);
-                        }
-                    }
-
-                    Events.Add(MoveTemp(Event));
-                    return Events;
-                }
-
-                if (ItemType == TEXT("agent_message") && Type == TEXT("item.completed"))
-                {
-                    FCortexStreamEvent Event;
-                    Event.Type = ECortexStreamEventType::TextContent;
-                    Event.RawJson = JsonLine;
-                    (*ItemObject)->TryGetStringField(TEXT("text"), Event.Text);
-                    InOutPendingAssistantText += Event.Text;
-                    Events.Add(MoveTemp(Event));
-                    return Events;
-                }
-
-                return Events;
-            }
-        }
-
-        return CortexStreamEventParser::ParseNdjsonLine(JsonLine);
+        return Events;
     }
 }
 
@@ -358,6 +219,8 @@ FString FCortexCodexCliProvider::BuildLaunchCommandLine(
     const FCortexSessionConfig& SessionConfig) const
 {
     (void)AccessMode;
+    const FCortexResolvedLaunchOptions& LaunchOptions = SessionConfig.LaunchOptions;
+    const FCortexResolvedSessionOptions& ResolvedOptions = SessionConfig.ResolvedOptions;
 
     FString CommandLine = bResumeSession ? TEXT("exec resume --json ") : TEXT("exec --json ");
 
@@ -392,17 +255,17 @@ FString FCortexCodexCliProvider::BuildLaunchCommandLine(
         }
     }
 
-    if (!SessionConfig.ModelId.IsEmpty() && SessionConfig.ModelId != TEXT("Default"))
+    if (!ResolvedOptions.ModelId.IsEmpty() && ResolvedOptions.ModelId != TEXT("Default"))
     {
-        CommandLine += FString::Printf(TEXT("-m \"%s\" "), *SessionConfig.ModelId);
+        CommandLine += FString::Printf(TEXT("-m \"%s\" "), *ResolvedOptions.ModelId);
     }
 
-    if (SessionConfig.EffortLevel != ECortexEffortLevel::Default)
+    if (ResolvedOptions.EffortLevel != ECortexEffortLevel::Default)
     {
-        CommandLine += FString::Printf(TEXT("-c model_reasoning_effort=%s "), *GetCodexEffortString(SessionConfig.EffortLevel));
+        CommandLine += FString::Printf(TEXT("-c model_reasoning_effort=%s "), *GetCodexEffortString(ResolvedOptions.EffortLevel));
     }
 
-    if (SessionConfig.bSkipPermissions)
+    if (LaunchOptions.bSkipPermissions)
     {
         CommandLine += TEXT("--dangerously-bypass-approvals-and-sandbox ");
     }

@@ -6,12 +6,14 @@
 #include <atomic>
 
 class FCortexCliSession;
+class ICortexCliProvider;
 
 class FCortexCliWorker : public FRunnable
 {
 public:
 	FCortexCliWorker(
 		TWeakPtr<FCortexCliSession> InSession,
+		const ICortexCliProvider* InProvider,
 		void* InStdoutReadPipe,
 		void* InStdinWritePipe,
 		FProcHandle InProcessHandle,
@@ -26,11 +28,13 @@ private:
 	bool ParseAndDispatch(const FString& Chunk);
 
 	TWeakPtr<FCortexCliSession> WeakSession;
+	const ICortexCliProvider* Provider;
 	void* StdoutReadPipe;
 	void* StdinWritePipe;
 	FProcHandle ProcessHandle;
 	FEvent* PromptReadyEvent;
 	FRunnableThread* Thread = nullptr;
 	std::atomic<bool> bStopRequested{false};
-	FString NdjsonLineBuffer;
+	FString StreamBuffer;
+	FString AssistantTextBuffer;
 };
