@@ -4,7 +4,7 @@
 #include "Engine/DeveloperSettings.h"
 #include "CortexFrontendProviderSettings.generated.h"
 
-UCLASS(Config = EditorPerProjectUserSettings, DefaultConfig, meta = (DisplayName = "Cortex Frontend Providers", CategoryName = "Unreal Cortex"))
+UCLASS(Config = EditorPerProjectUserSettings, DefaultConfig, meta = (DisplayName = "Frontend", CategoryName = "Unreal Cortex"))
 class CORTEXFRONTEND_API UCortexFrontendProviderSettings : public UDeveloperSettings
 {
     GENERATED_BODY()

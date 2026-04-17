@@ -10,6 +10,7 @@ bool FCortexFrontendProviderSettingsDefaultProviderTest::RunTest(const FString& 
 
     const UCortexFrontendProviderSettings* Settings = GetDefault<UCortexFrontendProviderSettings>();
     TestNotNull(TEXT("Settings object should exist"), Settings);
+    TestEqual(TEXT("Settings class display name"), UCortexFrontendProviderSettings::StaticClass()->GetMetaData(TEXT("DisplayName")), FString(TEXT("Frontend")));
     if (!Settings)
     {
         return false;
@@ -17,6 +18,7 @@ bool FCortexFrontendProviderSettingsDefaultProviderTest::RunTest(const FString& 
 
     TestEqual(TEXT("Default active provider should be Claude"), Settings->ActiveProviderId, FString(TEXT("claude_code")));
     TestTrue(TEXT("Help text should mention newly created sessions"), Settings->ProviderSelectionHelpText.Contains(TEXT("newly created")));
+    TestTrue(TEXT("Help text should mention current sessions do not restart"), Settings->ProviderSelectionHelpText.Contains(TEXT("current sessions do not restart")));
 
     return true;
 }
