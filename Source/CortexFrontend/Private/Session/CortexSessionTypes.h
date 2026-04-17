@@ -39,7 +39,7 @@ enum class ECortexSessionState : uint8
 struct FCortexResolvedLaunchOptions
 {
     ECortexAccessMode AccessMode = ECortexAccessMode::ReadOnly;
-    bool bSkipPermissions = true;
+    bool bSkipPermissions = false;
     ECortexWorkflowMode WorkflowMode = ECortexWorkflowMode::Direct;
     bool bProjectContext = true;
     bool bAutoContext = true;
@@ -64,9 +64,10 @@ struct FCortexSessionConfig
     FName ProviderId = NAME_None;
     FCortexResolvedSessionOptions ResolvedOptions;
     FCortexResolvedLaunchOptions LaunchOptions;
+    bool bHasLaunchOptions = false;
     FString ModelId;
     ECortexEffortLevel EffortLevel = ECortexEffortLevel::Default;
-    bool bSkipPermissions = true;
+    bool bSkipPermissions = false;
     bool bConversionMode = false;  // Lightweight mode: no MCP, no project context, no tools
 };
 

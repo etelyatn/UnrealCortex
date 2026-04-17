@@ -306,6 +306,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionToolCallTurnIndexTest,
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildCodexExecArgsTest, "Cortex.Frontend.CliSession.BuildCodexExecArgs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionLaunchOptionsPinnedAcrossSettingChangeTest, "Cortex.Frontend.CliSession.LaunchOptionsPinnedAcrossSettingChange", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionDefaultLaunchPinsLiveSkipPermissionsTest, "Cortex.Frontend.CliSession.DefaultLaunchPinsLiveSkipPermissions", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexCliSessionToolCallTurnIndexTest::RunTest(const FString& Parameters)
 {
@@ -442,6 +443,7 @@ bool FCortexCliSessionBuildCodexExecArgsTest::RunTest(const FString& Parameters)
     Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
     Config.ResolvedOptions.EffortLevel = ECortexEffortLevel::Maximum;
     Config.ResolvedOptions.ContextLimitTokens = 272000;
+    Config.bHasLaunchOptions = true;
     Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
     Config.LaunchOptions.bSkipPermissions = true;
     Config.LaunchOptions.WorkflowMode = ECortexWorkflowMode::Thorough;
@@ -533,6 +535,7 @@ bool FCortexCliSessionLaunchOptionsPinnedAcrossSettingChangeTest::RunTest(const 
     Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
     Config.ResolvedOptions.EffortLevel = ECortexEffortLevel::Medium;
     Config.ResolvedOptions.ContextLimitTokens = 272000;
+    Config.bHasLaunchOptions = true;
     Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
     Config.LaunchOptions.bSkipPermissions = true;
     Config.LaunchOptions.WorkflowMode = ECortexWorkflowMode::Thorough;
@@ -550,5 +553,84 @@ bool FCortexCliSessionLaunchOptionsPinnedAcrossSettingChangeTest::RunTest(const 
     const FString CommandLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
     TestTrue(TEXT("Pinned Codex launch should still use codex model"), CommandLine.Contains(TEXT("-m \"gpt-5.4\"")));
     TestTrue(TEXT("Pinned Codex launch should still use codex login command text"), Session.GetAuthCommandText() == TEXT("codex login"));
+    return true;
+}
+
+bool FCortexCliSessionDefaultLaunchPinsLiveSkipPermissionsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const FString TempSettingsPath = FPaths::Combine(
+        FPaths::ProjectSavedDir(),
+        TEXT("CortexFrontend"),
+        FString::Printf(TEXT("Task4DefaultLaunchTest_%s.json"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(TempSettingsPath), true);
+    FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(TempSettingsPath);
+    ON_SCOPE_EXIT
+    {
+        FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
+        IFileManager::Get().Delete(*TempSettingsPath);
+    };
+
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    UCortexFrontendProviderSettings* ProviderSettings = GetMutableDefault<UCortexFrontendProviderSettings>();
+    TestNotNull(TEXT("Provider settings should exist"), ProviderSettings);
+    if (!ProviderSettings)
+    {
+        return false;
+    }
+
+    const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
+    const ECortexAccessMode OriginalAccessMode = Settings.GetAccessMode();
+    const bool OriginalSkipPermissions = Settings.GetSkipPermissions();
+    const ECortexWorkflowMode OriginalWorkflow = Settings.GetWorkflowMode();
+    const bool OriginalProjectContext = Settings.GetProjectContext();
+    const bool OriginalAutoContext = Settings.GetAutoContext();
+    const FString OriginalDirective = Settings.GetCustomDirective();
+    const ECortexEffortLevel OriginalEffort = Settings.GetEffortLevel();
+    const FString OriginalModel = Settings.GetSelectedModel();
+    ON_SCOPE_EXIT
+    {
+        ProviderSettings->ActiveProviderId = OriginalProviderId;
+        Settings.SetAccessMode(OriginalAccessMode);
+        Settings.SetSkipPermissions(OriginalSkipPermissions);
+        Settings.SetWorkflowMode(OriginalWorkflow);
+        Settings.SetProjectContext(OriginalProjectContext);
+        Settings.SetAutoContext(OriginalAutoContext);
+        Settings.SetCustomDirective(OriginalDirective);
+        Settings.SetEffortLevel(OriginalEffort);
+        Settings.SetSelectedModel(OriginalModel);
+        Settings.ClearPendingChanges();
+    };
+
+    ProviderSettings->ActiveProviderId = TEXT("codex");
+    Settings.SetAccessMode(ECortexAccessMode::Guided);
+    Settings.SetSkipPermissions(false);
+    Settings.SetWorkflowMode(ECortexWorkflowMode::Thorough);
+    Settings.SetProjectContext(true);
+    Settings.SetAutoContext(true);
+    Settings.SetCustomDirective(TEXT("Live settings should not leak"));
+    Settings.SetEffortLevel(ECortexEffortLevel::Medium);
+    Settings.SetSelectedModel(TEXT("gpt-5.4"));
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("default-launch-pinned");
+    Config.McpConfigPath = FPaths::Combine(FPaths::ProjectDir(), TEXT(".mcp.json"));
+
+    FCortexCliSession Session(Config);
+
+    const FString LaunchBeforeSettingsChange = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
+    TestFalse(TEXT("Default session should snapshot live skip permissions"), LaunchBeforeSettingsChange.Contains(TEXT("--dangerously-bypass-approvals-and-sandbox")));
+    TestTrue(TEXT("Default session should pin codex model from live settings"), LaunchBeforeSettingsChange.Contains(TEXT("-m \"gpt-5.4\"")));
+
+    Settings.SetSkipPermissions(true);
+    Settings.SetEffortLevel(ECortexEffortLevel::High);
+    Settings.SetSelectedModel(TEXT("claude-opus-4-6"));
+    ProviderSettings->ActiveProviderId = TEXT("claude_code");
+
+    const FString LaunchAfterSettingsChange = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
+    TestEqual(TEXT("Launch should remain pinned across live setting changes"), LaunchAfterSettingsChange, LaunchBeforeSettingsChange);
+    TestFalse(TEXT("Launch should still not include bypass approvals"), LaunchAfterSettingsChange.Contains(TEXT("--dangerously-bypass-approvals-and-sandbox")));
+    TestTrue(TEXT("Launch should still be codex"), LaunchAfterSettingsChange.Contains(TEXT("-m \"gpt-5.4\"")));
     return true;
 }

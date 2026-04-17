@@ -77,6 +77,7 @@ private:
 	friend class FCortexCliSessionBuildPromptEnvelopeTest;
 	friend class FCortexCliSessionBuildCodexExecArgsTest;
 	friend class FCortexCliSessionLaunchOptionsPinnedAcrossSettingChangeTest;
+	friend class FCortexCliSessionDefaultLaunchPinsLiveSkipPermissionsTest;
 	friend class FCortexCliSessionQueuePromptWhileSpawningTest;
 	friend class FCortexCliSessionTurnCompleteReturnsIdleTest;
 	friend class FCortexCliSessionCancelTransitionsTest;
@@ -98,6 +99,7 @@ private:
 	friend class FCortexReconnectRejectsNonIdleTest;
 	friend class FCortexReconnectFromIdleTransitionsTest;
 	friend class FCortexReconnectDirtyStatePreservedOnFailureTest;
+	friend class FCortexReconnectPinsLaunchMetadataAcrossSettingsChangeTest;
 
 	FString BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const;
 	FString BuildAllowedToolsArg(ECortexAccessMode AccessMode) const;

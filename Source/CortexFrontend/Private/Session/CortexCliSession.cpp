@@ -76,8 +76,10 @@ FCortexCliSession::FCortexCliSession(const FCortexSessionConfig& InConfig)
 			: FCortexProviderRegistry::GetDefaultProviderId();
 		Config.ProviderId = FName(*ProviderIdString);
 		Config.ResolvedOptions = FCortexFrontendSettings::Get().ResolveForActiveProvider();
-		Config.LaunchOptions = SnapshotLaunchOptions();
-		Config.LaunchOptions.bSkipPermissions = Config.bSkipPermissions;
+		if (!Config.bHasLaunchOptions)
+		{
+			Config.LaunchOptions = SnapshotLaunchOptions();
+		}
 
 		if (!Config.ModelId.IsEmpty())
 		{
@@ -100,6 +102,15 @@ FCortexCliSession::FCortexCliSession(const FCortexSessionConfig& InConfig)
 	if (Config.ResolvedOptions.ProviderId.IsNone())
 	{
 		Config.ResolvedOptions = SnapshotResolvedOptions(Config.ProviderId, Config);
+	}
+
+	if (!Config.bHasLaunchOptions)
+	{
+		Config.LaunchOptions = SnapshotLaunchOptions();
+		if (Config.bSkipPermissions)
+		{
+			Config.LaunchOptions.bSkipPermissions = true;
+		}
 	}
 
 	PinnedProvider = &GetPinnedProvider(Config.ProviderId);

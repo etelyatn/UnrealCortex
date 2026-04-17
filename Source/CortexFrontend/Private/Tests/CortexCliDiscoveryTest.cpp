@@ -180,9 +180,12 @@ bool FCortexCliDiscoveryCodexLaunchCommandTest::RunTest(const FString& Parameter
     SessionConfig.SessionId = TEXT("session-123");
     SessionConfig.WorkingDirectory = TEXT("D:/UnrealProjects/CortexSandbox");
     SessionConfig.McpConfigPath = FPaths::Combine(FPaths::ProjectDir(), TEXT(".mcp.json"));
-    SessionConfig.ModelId = TEXT("gpt-5.4");
-    SessionConfig.EffortLevel = ECortexEffortLevel::Maximum;
-    SessionConfig.bSkipPermissions = true;
+    SessionConfig.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    SessionConfig.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    SessionConfig.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+    SessionConfig.ResolvedOptions.EffortLevel = ECortexEffortLevel::Maximum;
+    SessionConfig.ResolvedOptions.ContextLimitTokens = 272000;
+    SessionConfig.LaunchOptions.bSkipPermissions = true;
 
     const FCortexCodexCliProvider Provider;
     TestTrue(TEXT("Codex provider should report resume support"), Provider.SupportsResume());
