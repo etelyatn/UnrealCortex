@@ -42,6 +42,8 @@ struct FCortexSessionConfig
     FString WorkingDirectory;
     FString McpConfigPath;
     FString SystemPrompt;  // Optional system prompt override (used by conversion tabs)
+    FString ModelId;
+    ECortexEffortLevel EffortLevel = ECortexEffortLevel::Default;
     bool bSkipPermissions = true;
     bool bConversionMode = false;  // Lightweight mode: no MCP, no project context, no tools
 };

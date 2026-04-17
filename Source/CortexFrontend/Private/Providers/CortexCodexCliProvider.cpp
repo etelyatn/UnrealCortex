@@ -184,6 +184,16 @@ FString FCortexCodexCliProvider::BuildLaunchCommandLine(
         }
     }
 
+    if (!SessionConfig.ModelId.IsEmpty() && SessionConfig.ModelId != TEXT("Default"))
+    {
+        CommandLine += FString::Printf(TEXT("-m \"%s\" "), *SessionConfig.ModelId);
+    }
+
+    if (SessionConfig.EffortLevel != ECortexEffortLevel::Default)
+    {
+        CommandLine += FString::Printf(TEXT("-c model_reasoning_effort=%s "), *GetCodexEffortString(SessionConfig.EffortLevel));
+    }
+
     if (SessionConfig.bSkipPermissions)
     {
         CommandLine += TEXT("--dangerously-bypass-approvals-and-sandbox ");

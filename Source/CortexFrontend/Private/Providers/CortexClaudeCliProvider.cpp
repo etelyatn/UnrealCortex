@@ -10,6 +10,25 @@
 
 namespace
 {
+    FString GetClaudeEffortString(ECortexEffortLevel EffortLevel)
+    {
+        switch (EffortLevel)
+        {
+        case ECortexEffortLevel::Default:
+            return TEXT("default");
+        case ECortexEffortLevel::Low:
+            return TEXT("low");
+        case ECortexEffortLevel::Medium:
+            return TEXT("medium");
+        case ECortexEffortLevel::High:
+            return TEXT("high");
+        case ECortexEffortLevel::Maximum:
+            return TEXT("maximum");
+        }
+
+        return TEXT("default");
+    }
+
     FString FindClaudeBinaryFromEnvironment()
     {
 #if PLATFORM_WINDOWS
@@ -167,6 +186,16 @@ FString FCortexClaudeCliProvider::BuildLaunchCommandLine(
         {
             CommandLine += Arg + TEXT(" ");
         }
+    }
+
+    if (!SessionConfig.ModelId.IsEmpty() && SessionConfig.ModelId != TEXT("Default"))
+    {
+        CommandLine += FString::Printf(TEXT("--model \"%s\" "), *SessionConfig.ModelId);
+    }
+
+    if (SessionConfig.EffortLevel != ECortexEffortLevel::Default)
+    {
+        CommandLine += FString::Printf(TEXT("--effort \"%s\" "), *GetClaudeEffortString(SessionConfig.EffortLevel));
     }
 
     return CommandLine.TrimStartAndEnd();

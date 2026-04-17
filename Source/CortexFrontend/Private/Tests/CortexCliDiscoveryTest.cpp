@@ -1,5 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
+#include "Misc/Paths.h"
+#include "Providers/CortexCodexCliProvider.h"
 #include "Providers/CortexCliProvider.h"
 #include "Process/CortexCliDiscovery.h"
 
@@ -163,5 +165,31 @@ bool FCortexCliDiscoveryProviderScopedCacheTest::RunTest(const FString& Paramete
     const FCortexCliInfo CachedCodexInfo = FCortexCliDiscovery::Find(FName(TEXT("codex")));
     TestEqual(TEXT("Codex cache should be provider-scoped"), CachedCodexInfo.Path, FString(TEXT("C:/Temp/codex-a.exe")));
     TestTrue(TEXT("Claude and Codex cached results should differ"), ClaudeInfo.Path != CachedCodexInfo.Path);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliDiscoveryCodexLaunchCommandTest, "Cortex.Frontend.CliDiscovery.CodexLaunchCommandIncludesResolvedOptions", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliDiscoveryCodexLaunchCommandTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig SessionConfig;
+    SessionConfig.SessionId = TEXT("session-123");
+    SessionConfig.WorkingDirectory = TEXT("D:/UnrealProjects/CortexSandbox");
+    SessionConfig.McpConfigPath = FPaths::Combine(FPaths::ProjectDir(), TEXT(".mcp.json"));
+    SessionConfig.ModelId = TEXT("gpt-5.4");
+    SessionConfig.EffortLevel = ECortexEffortLevel::Maximum;
+    SessionConfig.bSkipPermissions = true;
+
+    const FCortexCodexCliProvider Provider;
+    const FString CommandLine = Provider.BuildLaunchCommandLine(false, ECortexAccessMode::Guided, SessionConfig);
+
+    TestTrue(TEXT("Codex launch should use exec json"), CommandLine.Contains(TEXT("exec --json")));
+    TestTrue(TEXT("Codex launch should include model flag"), CommandLine.Contains(TEXT("-m \"gpt-5.4\"")));
+    TestTrue(TEXT("Codex launch should include reasoning effort"), CommandLine.Contains(TEXT("-c model_reasoning_effort=maximum")));
+    TestTrue(TEXT("Codex launch should include working directory"), CommandLine.Contains(TEXT("-C \"D:/UnrealProjects/CortexSandbox\"")));
+    TestTrue(TEXT("Codex launch should include MCP command override"), CommandLine.Contains(TEXT("mcp_servers.cortex_mcp.command")));
+    TestTrue(TEXT("Codex launch should include bypass approvals flag when skip permissions is set"), CommandLine.Contains(TEXT("--dangerously-bypass-approvals-and-sandbox")));
     return true;
 }
