@@ -27,13 +27,29 @@ bool FCortexFrontendSettingsInvalidModelFallbackTest::RunTest(const FString& Par
     }
 
     const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
-    const FString OriginalSelectedModel = Settings.GetSelectedModel();
-    const ECortexEffortLevel OriginalEffortLevel = Settings.GetEffortLevel();
+    const FString SettingsFilePath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("settings.json"));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(SettingsFilePath), true);
+    const bool bHadOriginalSettingsFile = FPaths::FileExists(SettingsFilePath);
+    FString OriginalSettingsJson;
+    bool bCapturedOriginalSettings = !bHadOriginalSettingsFile || FFileHelper::LoadFileToString(OriginalSettingsJson, *SettingsFilePath);
+    if (bHadOriginalSettingsFile && !bCapturedOriginalSettings)
+    {
+        AddInfo(TEXT("Skipping invalid-model fallback test because the existing settings file could not be captured safely."));
+        return true;
+    }
     ON_SCOPE_EXIT
     {
+        if (bHadOriginalSettingsFile)
+        {
+            FFileHelper::SaveStringToFile(OriginalSettingsJson, *SettingsFilePath);
+        }
+        else
+        {
+            IFileManager::Get().Delete(*SettingsFilePath, false, true, true);
+        }
+
         ProviderSettings->ActiveProviderId = OriginalProviderId;
-        Settings.SetSelectedModel(OriginalSelectedModel);
-        Settings.SetEffortLevel(OriginalEffortLevel);
+        Settings.Load();
     };
 
     ProviderSettings->ActiveProviderId = TEXT("codex");
@@ -74,13 +90,29 @@ bool FCortexFrontendSettingsInvalidEffortFallbackTest::RunTest(const FString& Pa
     }
 
     const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
-    const FString OriginalSelectedModel = Settings.GetSelectedModel();
-    const ECortexEffortLevel OriginalEffortLevel = Settings.GetEffortLevel();
+    const FString SettingsFilePath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("settings.json"));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(SettingsFilePath), true);
+    const bool bHadOriginalSettingsFile = FPaths::FileExists(SettingsFilePath);
+    FString OriginalSettingsJson;
+    bool bCapturedOriginalSettings = !bHadOriginalSettingsFile || FFileHelper::LoadFileToString(OriginalSettingsJson, *SettingsFilePath);
+    if (bHadOriginalSettingsFile && !bCapturedOriginalSettings)
+    {
+        AddInfo(TEXT("Skipping invalid-effort fallback test because the existing settings file could not be captured safely."));
+        return true;
+    }
     ON_SCOPE_EXIT
     {
+        if (bHadOriginalSettingsFile)
+        {
+            FFileHelper::SaveStringToFile(OriginalSettingsJson, *SettingsFilePath);
+        }
+        else
+        {
+            IFileManager::Get().Delete(*SettingsFilePath, false, true, true);
+        }
+
         ProviderSettings->ActiveProviderId = OriginalProviderId;
-        Settings.SetSelectedModel(OriginalSelectedModel);
-        Settings.SetEffortLevel(OriginalEffortLevel);
+        Settings.Load();
     };
 
     ProviderSettings->ActiveProviderId = TEXT("codex");
