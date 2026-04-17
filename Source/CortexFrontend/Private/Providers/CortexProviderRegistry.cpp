@@ -103,3 +103,9 @@ TArray<FString> FCortexProviderRegistry::GetProviderOptions()
 
     return Options;
 }
+
+FString FCortexProviderRegistry::GetDefaultProviderId()
+{
+    const TArray<FCortexProviderDefinition>& Definitions = GetBuiltInDefinitions();
+    return Definitions.Num() > 0 ? Definitions[0].ProviderId.ToString() : FString();
+}

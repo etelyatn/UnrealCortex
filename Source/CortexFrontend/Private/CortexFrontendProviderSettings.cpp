@@ -4,6 +4,7 @@
 
 UCortexFrontendProviderSettings::UCortexFrontendProviderSettings()
 {
+    ActiveProviderId = FCortexProviderRegistry::GetDefaultProviderId();
     ProviderSelectionHelpText = TEXT("Active AI Provider used by newly created Cortex frontend sessions. Current sessions do not restart when this setting changes.");
 }
 
@@ -14,7 +15,7 @@ TArray<FString> UCortexFrontendProviderSettings::GetProviderOptions()
 
 FString UCortexFrontendProviderSettings::GetDefaultProviderId()
 {
-    return TEXT("claude_code");
+    return FCortexProviderRegistry::GetDefaultProviderId();
 }
 
 const UCortexFrontendProviderSettings* UCortexFrontendProviderSettings::Get()

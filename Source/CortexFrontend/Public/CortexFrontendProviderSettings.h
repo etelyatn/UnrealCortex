@@ -13,7 +13,7 @@ public:
     UCortexFrontendProviderSettings();
 
     UPROPERTY(Config, EditAnywhere, Category = "Provider", meta = (GetOptions = "GetProviderOptions"))
-    FString ActiveProviderId = TEXT("claude_code");
+    FString ActiveProviderId;
 
     UPROPERTY(VisibleAnywhere, Category = "Provider", meta = (MultiLine = true))
     FString ProviderSelectionHelpText;

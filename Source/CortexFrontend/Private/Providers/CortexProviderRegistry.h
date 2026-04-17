@@ -8,4 +8,5 @@ class FCortexProviderRegistry
 public:
     static const FCortexProviderDefinition* FindDefinition(const FString& ProviderId);
     static TArray<FString> GetProviderOptions();
+    static FString GetDefaultProviderId();
 };
