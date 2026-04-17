@@ -175,7 +175,8 @@ ECortexEffortLevel FCortexProviderRegistry::ValidateOrGetDefaultEffort(
         }
     }
 
-    return ProviderDefinition.DefaultEffortLevel;
+    check(ModelDefinition.SupportedEffortLevels.Num() > 0);
+    return ModelDefinition.SupportedEffortLevels[0];
 }
 
 int64 FCortexProviderRegistry::GetContextLimit(

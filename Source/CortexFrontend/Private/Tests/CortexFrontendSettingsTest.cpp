@@ -104,5 +104,17 @@ bool FCortexFrontendSettingsDeprecatedAvailableModelsTest::RunTest(const FString
     TestFalse(TEXT("Codex models should ignore deprecated JSON payload"), Models.Contains(TEXT("legacy-fake-model")));
     TestTrue(TEXT("Deprecated JSON model list should still load for compatibility"), Settings.GetAvailableModels().Contains(TEXT("legacy-fake-model")));
 
+    Settings.Save();
+    FString SavedJson;
+    TestTrue(TEXT("Should reload saved settings file"), FFileHelper::LoadFileToString(SavedJson, *SettingsFilePath));
+    TSharedPtr<FJsonObject> SavedJsonObject;
+    TSharedRef<TJsonReader<>> SavedReader = TJsonReaderFactory<>::Create(SavedJson);
+    TestTrue(TEXT("Should parse saved settings file"), FJsonSerializer::Deserialize(SavedReader, SavedJsonObject));
+    TestNotNull(TEXT("Saved settings JSON should be valid"), SavedJsonObject.Get());
+    if (SavedJsonObject.IsValid())
+    {
+        TestFalse(TEXT("Deprecated available_models field should not be persisted"), SavedJsonObject->HasField(TEXT("available_models")));
+    }
+
     return true;
 }

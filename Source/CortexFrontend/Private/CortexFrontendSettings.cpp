@@ -294,16 +294,6 @@ void FCortexFrontendSettings::Save()
     JsonObject->SetBoolField(TEXT("auto_context"), bAutoContext);
     JsonObject->SetStringField(TEXT("custom_directive"), CustomDirective);
 
-    if (bHasCustomModels)
-    {
-        TArray<TSharedPtr<FJsonValue>> ModelsArray;
-        for (const FString& Model : CustomModels)
-        {
-            ModelsArray.Add(MakeShareable(new FJsonValueString(Model)));
-        }
-        JsonObject->SetArrayField(TEXT("available_models"), ModelsArray);
-    }
-
     FString JsonString;
     TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
     FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
