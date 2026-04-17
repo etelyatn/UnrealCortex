@@ -242,3 +242,55 @@ bool FCortexCliDiscoveryCodexNormalizationTest::RunTest(const FString& Parameter
     }));
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliDiscoveryCodexFailureNormalizationTest, "Cortex.Frontend.CliDiscovery.CodexNormalizesFailureEvents", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliDiscoveryCodexFailureNormalizationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const FCortexCodexCliProvider Provider;
+    FString ChunkBuffer;
+    TArray<FCortexStreamEvent> Events;
+
+    const FString RawJsonl = TEXT(R"({"type":"turn.failed","message":"codex stopped unexpectedly","usage":{"input_tokens":5,"output_tokens":1}}
+{"type":"error","error":{"type":"transport_error","message":"connection reset"}}
+)");
+
+    Provider.ConsumeStreamChunk(RawJsonl, ChunkBuffer, Events);
+
+    TestTrue(TEXT("Codex failure normalization should emit a system error for turn.failed"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::SystemError && Event.bIsError && Event.Text == TEXT("codex stopped unexpectedly");
+    }));
+    TestTrue(TEXT("Codex failure normalization should emit a system error for error events"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::SystemError && Event.bIsError && Event.Text == TEXT("connection reset");
+    }));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliDiscoveryCodexUnknownItemTest, "Cortex.Frontend.CliDiscovery.CodexIgnoresUnknownItemTypesCleanly", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliDiscoveryCodexUnknownItemTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const FCortexCodexCliProvider Provider;
+    FString ChunkBuffer;
+    TArray<FCortexStreamEvent> Events;
+
+    const FString RawJsonl = TEXT(R"({"type":"item.started","item":{"id":"item-999","type":"mcp_tool_use","name":"cortex_mcp","input":{"query":"status"}}}
+{"type":"item.completed","item":{"id":"item-999","type":"mcp_tool_use","output":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":2}}
+)");
+
+    Provider.ConsumeStreamChunk(RawJsonl, ChunkBuffer, Events);
+
+    TestEqual(TEXT("Unknown Codex item types should not create extra events"), Events.Num(), 1);
+    TestTrue(TEXT("Turn.completed should still produce a result event"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::Result && Event.InputTokens == 7 && Event.OutputTokens == 2;
+    }));
+    return true;
+}

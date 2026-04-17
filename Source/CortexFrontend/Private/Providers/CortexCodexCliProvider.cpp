@@ -191,6 +191,37 @@ namespace
             return Events;
         }
 
+        if (Type == TEXT("turn.failed") || Type == TEXT("error"))
+        {
+            FCortexStreamEvent Event;
+            Event.Type = ECortexStreamEventType::SystemError;
+            Event.bIsError = true;
+            Event.RawJson = JsonLine;
+
+            if (!JsonObj->TryGetStringField(TEXT("message"), Event.Text))
+            {
+                JsonObj->TryGetStringField(TEXT("error"), Event.Text);
+            }
+
+            const TSharedPtr<FJsonObject>* ErrorObject = nullptr;
+            if (JsonObj->TryGetObjectField(TEXT("error"), ErrorObject) && ErrorObject != nullptr)
+            {
+                (*ErrorObject)->TryGetStringField(TEXT("message"), Event.Text);
+                if (Event.Text.IsEmpty())
+                {
+                    (*ErrorObject)->TryGetStringField(TEXT("type"), Event.Text);
+                }
+            }
+
+            if (Event.Text.IsEmpty())
+            {
+                Event.Text = JsonLine;
+            }
+
+            Events.Add(MoveTemp(Event));
+            return Events;
+        }
+
         const TSharedPtr<FJsonObject>* ItemObject = nullptr;
         if ((Type == TEXT("item.started") || Type == TEXT("item.completed")) &&
             JsonObj->TryGetObjectField(TEXT("item"), ItemObject) && ItemObject != nullptr)
@@ -232,6 +263,8 @@ namespace
                     Events.Add(MoveTemp(Event));
                     return Events;
                 }
+
+                return Events;
             }
         }
 
