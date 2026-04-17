@@ -1,21 +1,23 @@
 #pragma once
 
 #include "CoreMinimal.h"
-
-struct FCortexCliInfo
-{
-    FString Path;
-    bool bIsCmd = false;
-    bool bIsValid = false;
-};
+#include "Providers/CortexCliProvider.h"
 
 class FCortexCliDiscovery
 {
 public:
     static FCortexCliInfo FindClaude();
+    static FCortexCliInfo Find(FName ProviderId);
     static void ClearCache();
+#if WITH_DEV_AUTOMATION_TESTS
+    static void SetProviderOverrideForTest(FName ProviderId, TSharedPtr<ICortexCliProvider> Provider);
+    static void ClearProviderOverridesForTest();
+#endif
 
 private:
-    static FCortexCliInfo CachedInfo;
-    static bool bHasSearched;
+    static const ICortexCliProvider* GetProvider(const FName& ProviderId);
+    static TMap<FName, FCortexCliInfo> CachedInfoByProvider;
+#if WITH_DEV_AUTOMATION_TESTS
+    static TMap<FName, TSharedPtr<ICortexCliProvider>> ProviderOverridesForTests;
+#endif
 };
