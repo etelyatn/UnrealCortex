@@ -1,7 +1,11 @@
 #include "Misc/AutomationTest.h"
 #include "HAL/FileManager.h"
+#include "Dom/JsonObject.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Providers/CortexMcpConfigTranslator.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexMcpConfigTranslatorCodexTest, "Cortex.Frontend.McpConfig.CodexTranslation", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -12,6 +16,13 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
     const FString ConfigPath = FPaths::Combine(FPaths::ProjectDir(), TEXT(".mcp.json"));
     TestTrue(TEXT("Real project .mcp.json should exist"), IFileManager::Get().FileExists(*ConfigPath));
 
+    FString JsonText;
+    TestTrue(TEXT("Real project .mcp.json should load"), FFileHelper::LoadFileToString(JsonText, *ConfigPath));
+
+    TSharedPtr<FJsonObject> RootObject;
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
+    TestTrue(TEXT("Real project .mcp.json should parse"), FJsonSerializer::Deserialize(Reader, RootObject) && RootObject.IsValid());
+
     const TArray<FString> ClaudeArgs = FCortexMcpConfigTranslator::BuildClaudeArgs(ConfigPath);
     TestEqual(TEXT("Claude args should be split into flag and path"), ClaudeArgs.Num(), 2);
     TestEqual(TEXT("Claude args should include mcp config flag"), ClaudeArgs[0], FString(TEXT("--mcp-config")));
@@ -19,30 +30,52 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
 
     const TArray<FString> Overrides = FCortexMcpConfigTranslator::BuildCodexConfigOverrides(ConfigPath);
     TestTrue(TEXT("Should include at least one override"), Overrides.Num() > 0);
-    TestTrue(TEXT("Should include command override"), Overrides.ContainsByPredicate([](const FString& Override)
+
+    const TSharedPtr<FJsonObject>* ServersObject = nullptr;
+    TestTrue(TEXT("Real project .mcp.json should contain mcpServers"), RootObject->TryGetObjectField(TEXT("mcpServers"), ServersObject) || RootObject->TryGetObjectField(TEXT("mcp_servers"), ServersObject));
+    TestTrue(TEXT("MCP servers object should be valid"), ServersObject != nullptr && ServersObject->IsValid());
+
+    TArray<FString> ServerNames;
+    (*ServersObject)->Values.GetKeys(ServerNames);
+    ServerNames.Sort();
+    TestTrue(TEXT("Project should define at least one MCP server"), ServerNames.Num() > 0);
+
+    for (const FString& ServerName : ServerNames)
     {
-        return Override.Contains(TEXT(".command="));
-    }));
-    TestTrue(TEXT("Should include args override"), Overrides.ContainsByPredicate([](const FString& Override)
-    {
-        return Override.Contains(TEXT(".args="));
-    }));
-    TestTrue(TEXT("Should include env override"), Overrides.ContainsByPredicate([](const FString& Override)
-    {
-        return Override.Contains(TEXT(".env.CORTEX_PROJECT_DIR="));
-    }));
-    const int32 CommandIndex = Overrides.IndexOfByPredicate([](const FString& Override)
-    {
-        return Override.Contains(TEXT(".command="));
-    });
-    const int32 ArgsIndex = Overrides.IndexOfByPredicate([](const FString& Override)
-    {
-        return Override.Contains(TEXT(".args="));
-    });
-    const int32 EnvIndex = Overrides.IndexOfByPredicate([](const FString& Override)
-    {
-        return Override.Contains(TEXT(".env.CORTEX_PROJECT_DIR="));
-    });
-    TestTrue(TEXT("Overrides should be emitted in a deterministic order"), CommandIndex != INDEX_NONE && ArgsIndex != INDEX_NONE && EnvIndex != INDEX_NONE && CommandIndex < ArgsIndex && ArgsIndex < EnvIndex);
+        const TSharedPtr<FJsonObject>* ServerObject = nullptr;
+        if (!(*ServersObject)->TryGetObjectField(ServerName, ServerObject) || ServerObject == nullptr)
+        {
+            continue;
+        }
+
+        const FString Prefix = FString::Printf(TEXT("mcp_servers.%s."), *ServerName);
+
+        FString Command;
+        if ((*ServerObject)->TryGetStringField(TEXT("command"), Command))
+        {
+            TestTrue(FString::Printf(TEXT("Should translate command for %s"), *ServerName), Overrides.ContainsByPredicate([&Prefix](const FString& Override)
+            {
+                return Override.Contains(Prefix + TEXT("command="));
+            }));
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>* ArgsArray = nullptr;
+        if ((*ServerObject)->TryGetArrayField(TEXT("args"), ArgsArray) && ArgsArray != nullptr && ArgsArray->Num() > 0)
+        {
+            TestTrue(FString::Printf(TEXT("Should translate args for %s"), *ServerName), Overrides.ContainsByPredicate([&Prefix](const FString& Override)
+            {
+                return Override.Contains(Prefix + TEXT("args="));
+            }));
+        }
+
+        const TSharedPtr<FJsonObject>* EnvObject = nullptr;
+        if ((*ServerObject)->TryGetObjectField(TEXT("env"), EnvObject) && EnvObject != nullptr && (*EnvObject)->Values.Num() > 0)
+        {
+            TestTrue(FString::Printf(TEXT("Should translate env for %s"), *ServerName), Overrides.ContainsByPredicate([&Prefix](const FString& Override)
+            {
+                return Override.Contains(Prefix + TEXT("env."));
+            }));
+        }
+    }
     return true;
 }

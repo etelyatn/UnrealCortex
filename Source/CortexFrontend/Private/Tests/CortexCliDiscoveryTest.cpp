@@ -186,12 +186,59 @@ bool FCortexCliDiscoveryCodexLaunchCommandTest::RunTest(const FString& Parameter
     TestTrue(TEXT("Codex provider should report resume support"), Provider.SupportsResume());
 
     const FString CommandLine = Provider.BuildLaunchCommandLine(true, ECortexAccessMode::Guided, SessionConfig);
+    AddInfo(FString::Printf(TEXT("Codex resume command: %s"), *CommandLine));
 
     TestTrue(TEXT("Codex launch should use exec resume json when resuming"), CommandLine.Contains(TEXT("exec resume --json")));
+    TestTrue(TEXT("Codex resume should include the session id"), CommandLine.Contains(TEXT("session-123")));
+    TestFalse(
+        TEXT("Codex resume should not include the working directory"),
+        CommandLine.Contains(FString::Printf(TEXT("-C \"%s\""), *SessionConfig.WorkingDirectory)));
     TestTrue(TEXT("Codex launch should include model flag"), CommandLine.Contains(TEXT("-m \"gpt-5.4\"")));
     TestTrue(TEXT("Codex launch should include reasoning effort"), CommandLine.Contains(TEXT("-c model_reasoning_effort=maximum")));
-    TestTrue(TEXT("Codex launch should include working directory"), CommandLine.Contains(TEXT("-C \"D:/UnrealProjects/CortexSandbox\"")));
     TestTrue(TEXT("Codex launch should include MCP command override"), CommandLine.Contains(TEXT("mcp_servers.cortex_mcp.command")));
     TestTrue(TEXT("Codex launch should include bypass approvals flag when skip permissions is set"), CommandLine.Contains(TEXT("--dangerously-bypass-approvals-and-sandbox")));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliDiscoveryCodexNormalizationTest, "Cortex.Frontend.CliDiscovery.CodexNormalizesObservedJsonlEvents", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliDiscoveryCodexNormalizationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const FCortexCodexCliProvider Provider;
+    FString ChunkBuffer;
+    TArray<FCortexStreamEvent> Events;
+
+    const FString RawJsonl = TEXT(R"({"type":"thread.started","thread":{"id":"thread-123"}}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item-123","type":"command_execution","command":"ls","args":["-la"]}}
+{"type":"item.completed","item":{"id":"item-123","type":"command_execution","output":"done"}}
+{"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"OK"}}
+{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":34}}
+)");
+
+    Provider.ConsumeStreamChunk(RawJsonl, ChunkBuffer, Events);
+
+    TestTrue(TEXT("Codex normalization should emit session init"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::SessionInit && Event.SessionId == TEXT("thread-123");
+    }));
+    TestTrue(TEXT("Codex normalization should emit command execution tool use"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::ToolUse && Event.ToolName == TEXT("command_execution") && Event.ToolCallId == TEXT("item-123");
+    }));
+    TestTrue(TEXT("Codex normalization should emit command execution result"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::ToolResult && Event.ToolCallId == TEXT("item-123") && Event.ToolResultContent == TEXT("done");
+    }));
+    TestTrue(TEXT("Codex normalization should emit agent text"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::TextContent && Event.Text == TEXT("OK");
+    }));
+    TestTrue(TEXT("Codex normalization should emit turn result"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::Result && Event.InputTokens == 12 && Event.OutputTokens == 34;
+    }));
     return true;
 }

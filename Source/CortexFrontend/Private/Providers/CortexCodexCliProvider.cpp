@@ -1,12 +1,17 @@
 #include "Providers/CortexCodexCliProvider.h"
 
 #include "CortexFrontendModule.h"
+#include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/Paths.h"
 #include "Providers/CortexMcpConfigTranslator.h"
 #include "Providers/CortexProviderRegistry.h"
+#include "Process/CortexStreamEvent.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 
 namespace
 {
@@ -93,6 +98,145 @@ namespace
 
         return TEXT("default");
     }
+
+    FString SerializeJsonObject(const TSharedPtr<FJsonObject>& Object)
+    {
+        FString Json;
+        const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Json);
+        FJsonSerializer::Serialize(Object.ToSharedRef(), Writer);
+        return Json;
+    }
+
+    void CopyUsageFields(const TSharedPtr<FJsonObject>& UsageObject, FCortexStreamEvent& OutEvent)
+    {
+        if (!UsageObject.IsValid())
+        {
+            return;
+        }
+
+        double Value = 0.0;
+        if (UsageObject->TryGetNumberField(TEXT("input_tokens"), Value))
+        {
+            OutEvent.InputTokens = static_cast<int64>(Value);
+        }
+        if (UsageObject->TryGetNumberField(TEXT("output_tokens"), Value))
+        {
+            OutEvent.OutputTokens = static_cast<int64>(Value);
+        }
+        if (UsageObject->TryGetNumberField(TEXT("cache_read_input_tokens"), Value))
+        {
+            OutEvent.CacheReadTokens = static_cast<int64>(Value);
+        }
+        if (UsageObject->TryGetNumberField(TEXT("cache_creation_input_tokens"), Value))
+        {
+            OutEvent.CacheCreationTokens = static_cast<int64>(Value);
+        }
+    }
+
+    TArray<FCortexStreamEvent> ParseCodexJsonLine(const FString& JsonLine)
+    {
+        TArray<FCortexStreamEvent> Events;
+
+        TSharedPtr<FJsonObject> JsonObj;
+        const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonLine);
+        if (!FJsonSerializer::Deserialize(Reader, JsonObj) || !JsonObj.IsValid())
+        {
+            return Events;
+        }
+
+        FString Type;
+        if (!JsonObj->TryGetStringField(TEXT("type"), Type))
+        {
+            return Events;
+        }
+
+        if (Type == TEXT("thread.started"))
+        {
+            FCortexStreamEvent Event;
+            Event.Type = ECortexStreamEventType::SessionInit;
+            Event.RawJson = JsonLine;
+
+            if (!JsonObj->TryGetStringField(TEXT("session_id"), Event.SessionId))
+            {
+                JsonObj->TryGetStringField(TEXT("thread_id"), Event.SessionId);
+            }
+
+            if (Event.SessionId.IsEmpty())
+            {
+                const TSharedPtr<FJsonObject>* ThreadObject = nullptr;
+                if (JsonObj->TryGetObjectField(TEXT("thread"), ThreadObject) && ThreadObject != nullptr)
+                {
+                    (*ThreadObject)->TryGetStringField(TEXT("id"), Event.SessionId);
+                }
+            }
+
+            Events.Add(MoveTemp(Event));
+            return Events;
+        }
+
+        if (Type == TEXT("turn.completed"))
+        {
+            FCortexStreamEvent Event;
+            Event.Type = ECortexStreamEventType::Result;
+            Event.RawJson = JsonLine;
+
+            const TSharedPtr<FJsonObject>* UsageObject = nullptr;
+            if (JsonObj->TryGetObjectField(TEXT("usage"), UsageObject) && UsageObject != nullptr)
+            {
+                CopyUsageFields(*UsageObject, Event);
+            }
+
+            JsonObj->TryGetStringField(TEXT("session_id"), Event.SessionId);
+            Events.Add(MoveTemp(Event));
+            return Events;
+        }
+
+        const TSharedPtr<FJsonObject>* ItemObject = nullptr;
+        if ((Type == TEXT("item.started") || Type == TEXT("item.completed")) &&
+            JsonObj->TryGetObjectField(TEXT("item"), ItemObject) && ItemObject != nullptr)
+        {
+            FString ItemType;
+            if ((*ItemObject)->TryGetStringField(TEXT("type"), ItemType))
+            {
+                if (ItemType == TEXT("command_execution"))
+                {
+                    FCortexStreamEvent Event;
+                    Event.RawJson = JsonLine;
+                    (*ItemObject)->TryGetStringField(TEXT("id"), Event.ToolCallId);
+                    Event.ToolName = TEXT("command_execution");
+
+                    if (Type == TEXT("item.started"))
+                    {
+                        Event.Type = ECortexStreamEventType::ToolUse;
+                        Event.ToolInput = SerializeJsonObject(*ItemObject);
+                    }
+                    else
+                    {
+                        Event.Type = ECortexStreamEventType::ToolResult;
+                        if (!(*ItemObject)->TryGetStringField(TEXT("output"), Event.ToolResultContent))
+                        {
+                            (*ItemObject)->TryGetStringField(TEXT("result"), Event.ToolResultContent);
+                        }
+                    }
+
+                    Events.Add(MoveTemp(Event));
+                    return Events;
+                }
+
+                if (ItemType == TEXT("agent_message") && Type == TEXT("item.completed"))
+                {
+                    FCortexStreamEvent Event;
+                    Event.Type = ECortexStreamEventType::TextContent;
+                    Event.RawJson = JsonLine;
+                    (*ItemObject)->TryGetStringField(TEXT("text"), Event.Text);
+                    Events.Add(MoveTemp(Event));
+                    return Events;
+                }
+            }
+        }
+
+        return CortexStreamEventParser::ParseNdjsonLine(JsonLine);
+    }
 }
 
 FName FCortexCodexCliProvider::GetProviderId() const
@@ -166,12 +310,26 @@ FString FCortexCodexCliProvider::BuildLaunchCommandLine(
 
     FString CommandLine = bResumeSession ? TEXT("exec resume --json ") : TEXT("exec --json ");
 
-    const FString WorkingDirectory = !SessionConfig.WorkingDirectory.IsEmpty()
-        ? SessionConfig.WorkingDirectory
-        : FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-    if (!WorkingDirectory.IsEmpty())
+    if (bResumeSession)
     {
-        CommandLine += FString::Printf(TEXT("-C \"%s\" "), *WorkingDirectory.Replace(TEXT("\\"), TEXT("/")));
+        if (!SessionConfig.SessionId.IsEmpty())
+        {
+            CommandLine += FString::Printf(TEXT("\"%s\" "), *SessionConfig.SessionId);
+        }
+        else
+        {
+            CommandLine += TEXT("--last ");
+        }
+    }
+    else
+    {
+        const FString WorkingDirectory = !SessionConfig.WorkingDirectory.IsEmpty()
+            ? SessionConfig.WorkingDirectory
+            : FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+        if (!WorkingDirectory.IsEmpty())
+        {
+            CommandLine += FString::Printf(TEXT("-C \"%s\" "), *WorkingDirectory.Replace(TEXT("\\"), TEXT("/")));
+        }
     }
 
     if (!SessionConfig.McpConfigPath.IsEmpty())
@@ -210,11 +368,11 @@ void FCortexCodexCliProvider::ConsumeStreamChunk(
     const FString& RawChunk,
     FString& InOutChunkBuffer,
     TArray<FCortexStreamEvent>& OutEvents) const
-{
-    InOutChunkBuffer += RawChunk;
+    {
+        InOutChunkBuffer += RawChunk;
 
-    int32 NewLineIndex = INDEX_NONE;
-    while (InOutChunkBuffer.FindChar(TEXT('\n'), NewLineIndex))
+        int32 NewLineIndex = INDEX_NONE;
+        while (InOutChunkBuffer.FindChar(TEXT('\n'), NewLineIndex))
     {
         const FString Line = InOutChunkBuffer.Left(NewLineIndex).TrimStartAndEnd();
         InOutChunkBuffer = InOutChunkBuffer.Mid(NewLineIndex + 1);
@@ -223,6 +381,6 @@ void FCortexCodexCliProvider::ConsumeStreamChunk(
             continue;
         }
 
-        OutEvents.Append(CortexStreamEventParser::ParseNdjsonLine(Line));
+        OutEvents.Append(ParseCodexJsonLine(Line));
     }
 }
