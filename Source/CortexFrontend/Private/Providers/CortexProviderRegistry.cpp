@@ -95,6 +95,23 @@ const FCortexProviderDefinition* FCortexProviderRegistry::FindDefinition(const F
     return nullptr;
 }
 
+const FCortexProviderDefinition& FCortexProviderRegistry::GetDefaultDefinition()
+{
+    const FCortexProviderDefinition* Definition = FindDefinition(DefaultProviderId.ToString());
+    check(Definition != nullptr);
+    return *Definition;
+}
+
+const FCortexProviderDefinition& FCortexProviderRegistry::ResolveDefinition(const FString& ProviderId)
+{
+    if (const FCortexProviderDefinition* Definition = FindDefinition(ProviderId))
+    {
+        return *Definition;
+    }
+
+    return GetDefaultDefinition();
+}
+
 TArray<FString> FCortexProviderRegistry::GetProviderOptions()
 {
     TArray<FString> Options;
@@ -108,5 +125,5 @@ TArray<FString> FCortexProviderRegistry::GetProviderOptions()
 
 FString FCortexProviderRegistry::GetDefaultProviderId()
 {
-    return DefaultProviderId.ToString();
+    return GetDefaultDefinition().ProviderId.ToString();
 }
