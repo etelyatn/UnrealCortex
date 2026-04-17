@@ -10,6 +10,18 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 
+namespace
+{
+    FString MakeIsolatedMigrationSettingsFilePath(const TCHAR* TestName)
+    {
+        return FPaths::Combine(
+            FPaths::ProjectSavedDir(),
+            TEXT("CortexFrontend"),
+            TEXT("Test"),
+            FString::Printf(TEXT("%s-%s.json"), TestName, *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+    }
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendSettingsDefaultTest, "Cortex.Frontend.Settings.DefaultIsReadOnly", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendSettingsRoundTripTest, "Cortex.Frontend.Settings.RoundTripPersistence", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendSettingsDeprecatedAvailableModelsTest, "Cortex.Frontend.Settings.DeprecatedAvailableModelsIgnored", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -54,33 +66,15 @@ bool FCortexFrontendSettingsDeprecatedAvailableModelsTest::RunTest(const FString
     }
 
     const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
-    const FString SettingsFilePath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("settings.json"));
+    const FString SettingsFilePath = MakeIsolatedMigrationSettingsFilePath(TEXT("DeprecatedAvailableModels"));
     IFileManager::Get().MakeDirectory(*FPaths::GetPath(SettingsFilePath), true);
-    const bool bHadOriginalSettingsFile = FPaths::FileExists(SettingsFilePath);
-    FString OriginalSettingsJson;
-    bool bCapturedOriginalSettings = false;
-    if (bHadOriginalSettingsFile)
-    {
-        bCapturedOriginalSettings = FFileHelper::LoadFileToString(OriginalSettingsJson, *SettingsFilePath);
-        if (!bCapturedOriginalSettings)
-        {
-            AddInfo(TEXT("Skipping deprecated available_models migration test because the existing settings file could not be captured safely."));
-            return true;
-        }
-    }
+    FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(SettingsFilePath);
     ON_SCOPE_EXIT
     {
-        if (bHadOriginalSettingsFile && bCapturedOriginalSettings)
-        {
-            FFileHelper::SaveStringToFile(OriginalSettingsJson, *SettingsFilePath);
-        }
-        else
-        {
-            IFileManager::Get().Delete(*SettingsFilePath, false, true, true);
-        }
-
-        Settings.Load();
         ProviderSettings->ActiveProviderId = OriginalProviderId;
+        FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
+        Settings.Load();
+        IFileManager::Get().Delete(*SettingsFilePath, false, true, true);
     };
 
     TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();

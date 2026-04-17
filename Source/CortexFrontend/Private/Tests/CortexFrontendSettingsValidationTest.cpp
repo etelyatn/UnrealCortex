@@ -14,42 +14,42 @@
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendSettingsInvalidModelFallbackTest, "Cortex.Frontend.Settings.InvalidModelFallsBackToProviderDefault", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendSettingsInvalidEffortFallbackTest, "Cortex.Frontend.Settings.InvalidEffortFallsBackToProviderDefault", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
+namespace
+{
+    FString MakeIsolatedValidationSettingsFilePath(const TCHAR* TestName)
+    {
+        return FPaths::Combine(
+            FPaths::ProjectSavedDir(),
+            TEXT("CortexFrontend"),
+            TEXT("Test"),
+            FString::Printf(TEXT("%s-%s.json"), TestName, *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+    }
+}
+
 bool FCortexFrontendSettingsInvalidModelFallbackTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
 
+    const FString SettingsFilePath = MakeIsolatedValidationSettingsFilePath(TEXT("InvalidModel"));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(SettingsFilePath), true);
+    FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(SettingsFilePath);
     FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    Settings.Load();
     UCortexFrontendProviderSettings* ProviderSettings = GetMutableDefault<UCortexFrontendProviderSettings>();
     TestNotNull(TEXT("Provider settings should exist"), ProviderSettings);
     if (!ProviderSettings)
     {
+        FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
         return false;
     }
 
     const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
-    const FString SettingsFilePath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("settings.json"));
-    IFileManager::Get().MakeDirectory(*FPaths::GetPath(SettingsFilePath), true);
-    const bool bHadOriginalSettingsFile = FPaths::FileExists(SettingsFilePath);
-    FString OriginalSettingsJson;
-    bool bCapturedOriginalSettings = !bHadOriginalSettingsFile || FFileHelper::LoadFileToString(OriginalSettingsJson, *SettingsFilePath);
-    if (bHadOriginalSettingsFile && !bCapturedOriginalSettings)
-    {
-        AddInfo(TEXT("Skipping invalid-model fallback test because the existing settings file could not be captured safely."));
-        return true;
-    }
     ON_SCOPE_EXIT
     {
-        if (bHadOriginalSettingsFile)
-        {
-            FFileHelper::SaveStringToFile(OriginalSettingsJson, *SettingsFilePath);
-        }
-        else
-        {
-            IFileManager::Get().Delete(*SettingsFilePath, false, true, true);
-        }
-
         ProviderSettings->ActiveProviderId = OriginalProviderId;
+        FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
         Settings.Load();
+        IFileManager::Get().Delete(*SettingsFilePath, false, true, true);
     };
 
     ProviderSettings->ActiveProviderId = TEXT("codex");
@@ -81,38 +81,26 @@ bool FCortexFrontendSettingsInvalidEffortFallbackTest::RunTest(const FString& Pa
 {
     (void)Parameters;
 
+    const FString SettingsFilePath = MakeIsolatedValidationSettingsFilePath(TEXT("InvalidEffort"));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(SettingsFilePath), true);
+    FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(SettingsFilePath);
     FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    Settings.Load();
     UCortexFrontendProviderSettings* ProviderSettings = GetMutableDefault<UCortexFrontendProviderSettings>();
     TestNotNull(TEXT("Provider settings should exist"), ProviderSettings);
     if (!ProviderSettings)
     {
+        FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
         return false;
     }
 
     const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
-    const FString SettingsFilePath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("settings.json"));
-    IFileManager::Get().MakeDirectory(*FPaths::GetPath(SettingsFilePath), true);
-    const bool bHadOriginalSettingsFile = FPaths::FileExists(SettingsFilePath);
-    FString OriginalSettingsJson;
-    bool bCapturedOriginalSettings = !bHadOriginalSettingsFile || FFileHelper::LoadFileToString(OriginalSettingsJson, *SettingsFilePath);
-    if (bHadOriginalSettingsFile && !bCapturedOriginalSettings)
-    {
-        AddInfo(TEXT("Skipping invalid-effort fallback test because the existing settings file could not be captured safely."));
-        return true;
-    }
     ON_SCOPE_EXIT
     {
-        if (bHadOriginalSettingsFile)
-        {
-            FFileHelper::SaveStringToFile(OriginalSettingsJson, *SettingsFilePath);
-        }
-        else
-        {
-            IFileManager::Get().Delete(*SettingsFilePath, false, true, true);
-        }
-
         ProviderSettings->ActiveProviderId = OriginalProviderId;
+        FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
         Settings.Load();
+        IFileManager::Get().Delete(*SettingsFilePath, false, true, true);
     };
 
     ProviderSettings->ActiveProviderId = TEXT("codex");

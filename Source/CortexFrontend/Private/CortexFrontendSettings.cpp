@@ -9,10 +9,30 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 
+namespace
+{
+    FString GSettingsFilePathOverride;
+    bool bHasSettingsFilePathOverride = false;
+}
+
 FCortexFrontendSettings& FCortexFrontendSettings::Get()
 {
     static FCortexFrontendSettings Instance;
     return Instance;
+}
+
+void FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(const FString& InSettingsFilePath)
+{
+    check(IsInGameThread());
+    GSettingsFilePathOverride = InSettingsFilePath;
+    bHasSettingsFilePathOverride = true;
+}
+
+void FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests()
+{
+    check(IsInGameThread());
+    GSettingsFilePathOverride.Reset();
+    bHasSettingsFilePathOverride = false;
 }
 
 FCortexFrontendSettings::FCortexFrontendSettings()
@@ -305,6 +325,11 @@ void FCortexFrontendSettings::Save()
 
 FString FCortexFrontendSettings::GetSettingsFilePath() const
 {
+    if (bHasSettingsFilePathOverride)
+    {
+        return GSettingsFilePathOverride;
+    }
+
     return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("settings.json"));
 }
 

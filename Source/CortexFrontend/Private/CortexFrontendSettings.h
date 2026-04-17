@@ -10,6 +10,8 @@ class FCortexFrontendSettings
 {
 public:
     static FCortexFrontendSettings& Get();
+    static void SetSettingsFilePathOverrideForTests(const FString& InSettingsFilePath);
+    static void ClearSettingsFilePathOverrideForTests();
 
     ECortexAccessMode GetAccessMode() const { return AccessMode; }
     void SetAccessMode(ECortexAccessMode Mode);
