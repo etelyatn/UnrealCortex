@@ -59,6 +59,7 @@ TArray<FString> FCortexFrontendSettings::GetAvailableModels() const
 
 TArray<FString> FCortexFrontendSettings::GetAvailableModelsForActiveProvider() const
 {
+    check(IsInGameThread());
     const UCortexFrontendProviderSettings* ProviderSettings = UCortexFrontendProviderSettings::Get();
     const FCortexProviderDefinition& ProviderDefinition = FCortexProviderRegistry::ResolveDefinition(
         ProviderSettings != nullptr ? ProviderSettings->GetEffectiveProviderId() : FCortexProviderRegistry::GetDefaultProviderId());
@@ -328,8 +329,14 @@ namespace
     }
 }
 
+FString FCortexFrontendSettings::GetEffortLevelString() const
+{
+    return EffortLevelToConfigString(EffortLevel);
+}
+
 FCortexResolvedSessionOptions FCortexFrontendSettings::ResolveForActiveProvider() const
 {
+    check(IsInGameThread());
     const UCortexFrontendProviderSettings* ProviderSettings = UCortexFrontendProviderSettings::Get();
     const FString ActiveProviderId = ProviderSettings != nullptr
         ? ProviderSettings->GetEffectiveProviderId()

@@ -48,18 +48,7 @@ public:
     FString GetCustomDirective() const { return CustomDirective; }
     void SetCustomDirective(const FString& Directive);
 
-    FString GetEffortLevelString() const
-    {
-        switch (EffortLevel)
-        {
-        case ECortexEffortLevel::Default:  return TEXT("default");
-        case ECortexEffortLevel::Low:      return TEXT("low");
-        case ECortexEffortLevel::Medium:   return TEXT("medium");
-        case ECortexEffortLevel::High:     return TEXT("high");
-        case ECortexEffortLevel::Maximum:  return TEXT("max");
-        default:                           return TEXT("default");
-        }
-    }
+    FString GetEffortLevelString() const;
 
     static FString GetModelLabelWithEffort(const FString& ModelId)
     {

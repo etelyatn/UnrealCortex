@@ -4,6 +4,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "CortexFrontendSettings.h"
 #include "CortexFrontendProviderSettings.h"
 #include "Serialization/JsonSerializer.h"
@@ -54,15 +55,18 @@ bool FCortexFrontendSettingsDeprecatedAvailableModelsTest::RunTest(const FString
 
     const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
     const FString SettingsFilePath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("settings.json"));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(SettingsFilePath), true);
     const bool bHadOriginalSettingsFile = FPaths::FileExists(SettingsFilePath);
     FString OriginalSettingsJson;
+    bool bCapturedOriginalSettings = false;
     if (bHadOriginalSettingsFile)
     {
-        TestTrue(TEXT("Should capture existing settings file"), FFileHelper::LoadFileToString(OriginalSettingsJson, *SettingsFilePath));
+        bCapturedOriginalSettings = FFileHelper::LoadFileToString(OriginalSettingsJson, *SettingsFilePath);
+        TestTrue(TEXT("Should capture existing settings file"), bCapturedOriginalSettings);
     }
     ON_SCOPE_EXIT
     {
-        if (bHadOriginalSettingsFile)
+        if (bHadOriginalSettingsFile && bCapturedOriginalSettings)
         {
             FFileHelper::SaveStringToFile(OriginalSettingsJson, *SettingsFilePath);
         }
