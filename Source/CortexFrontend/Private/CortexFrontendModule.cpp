@@ -7,6 +7,7 @@
 #include "CortexCoreModule.h"
 #include "CortexAnalysisTypes.h"
 #include "CortexConversionTypes.h"
+#include "CortexFrontendSettings.h"
 #include "Framework/Docking/TabManager.h"
 #include "IToolMenusModule.h"
 #include "Misc/CoreDelegates.h"
@@ -172,6 +173,7 @@ FCortexSessionConfig FCortexFrontendModule::CreateDefaultSessionConfig()
     FCortexSessionConfig Config;
     Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
     Config.WorkingDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+    Config.bSkipPermissions = FCortexFrontendSettings::Get().GetSkipPermissions();
 
     const FString McpPath = FPaths::Combine(FPaths::ProjectDir(), TEXT(".mcp.json"));
     if (FPaths::FileExists(McpPath))

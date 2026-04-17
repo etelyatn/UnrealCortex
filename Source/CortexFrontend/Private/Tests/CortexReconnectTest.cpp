@@ -176,7 +176,6 @@ bool FCortexReconnectPinsLaunchMetadataAcrossSettingsChangeTest::RunTest(const F
     FCortexStreamEvent InitEvent;
     InitEvent.Type = ECortexStreamEventType::SessionInit;
     InitEvent.SessionId = TEXT("thread-reconnect-123");
-    InitEvent.Model = TEXT("gpt-5.4");
     Session->HandleWorkerEvent(InitEvent);
     TestEqual(TEXT("Reconnect session should persist the real thread id"), Session->GetSessionId(), FString(TEXT("thread-reconnect-123")));
 

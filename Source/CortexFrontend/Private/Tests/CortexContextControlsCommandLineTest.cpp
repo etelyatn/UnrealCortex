@@ -2,6 +2,22 @@
 #include "CortexFrontendSettings.h"
 #include "Session/CortexCliSession.h"
 
+namespace
+{
+	FCortexSessionConfig MakePinnedClaudeSessionConfig(const FString& SessionId, ECortexEffortLevel EffortLevel = ECortexEffortLevel::Default)
+	{
+		FCortexSessionConfig Config;
+		Config.SessionId = SessionId;
+		Config.ProviderId = FName(TEXT("claude_code"));
+		Config.ResolvedOptions.ProviderId = FName(TEXT("claude_code"));
+		Config.ResolvedOptions.ProviderDisplayName = TEXT("Claude Code");
+		Config.ResolvedOptions.ModelId = TEXT("claude-sonnet-4-6");
+		Config.ResolvedOptions.EffortLevel = EffortLevel;
+		Config.ResolvedOptions.ContextLimitTokens = 200000;
+		return Config;
+	}
+}
+
 // -- Effort flag tests --
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCmdLineEffortDefaultTest,
@@ -15,8 +31,7 @@ bool FCortexCmdLineEffortDefaultTest::RunTest(const FString& Parameters)
     const ECortexEffortLevel Orig = Settings.GetEffortLevel();
     Settings.SetEffortLevel(ECortexEffortLevel::Default);
 
-    FCortexSessionConfig Config;
-    Config.SessionId = TEXT("test-effort");
+    FCortexSessionConfig Config = MakePinnedClaudeSessionConfig(TEXT("test-effort"));
     FCortexCliSession Session(Config);
     const FString CmdLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
 
@@ -38,8 +53,7 @@ bool FCortexCmdLineEffortMediumTest::RunTest(const FString& Parameters)
     const ECortexEffortLevel Orig = Settings.GetEffortLevel();
     Settings.SetEffortLevel(ECortexEffortLevel::Medium);
 
-    FCortexSessionConfig Config;
-    Config.SessionId = TEXT("test-effort-med");
+    FCortexSessionConfig Config = MakePinnedClaudeSessionConfig(TEXT("test-effort-med"), ECortexEffortLevel::Medium);
     FCortexCliSession Session(Config);
     const FString CmdLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
 
@@ -61,8 +75,7 @@ bool FCortexCmdLineWorkflowDirectTest::RunTest(const FString& Parameters)
     const ECortexWorkflowMode Orig = Settings.GetWorkflowMode();
     Settings.SetWorkflowMode(ECortexWorkflowMode::Direct);
 
-    FCortexSessionConfig Config;
-    Config.SessionId = TEXT("test-workflow");
+    FCortexSessionConfig Config = MakePinnedClaudeSessionConfig(TEXT("test-workflow"));
     FCortexCliSession Session(Config);
     const FString CmdLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
 
@@ -85,8 +98,7 @@ bool FCortexCmdLineWorkflowThoroughTest::RunTest(const FString& Parameters)
     const ECortexWorkflowMode Orig = Settings.GetWorkflowMode();
     Settings.SetWorkflowMode(ECortexWorkflowMode::Thorough);
 
-    FCortexSessionConfig Config;
-    Config.SessionId = TEXT("test-workflow-thorough");
+    FCortexSessionConfig Config = MakePinnedClaudeSessionConfig(TEXT("test-workflow-thorough"));
     FCortexCliSession Session(Config);
     const FString CmdLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
 
@@ -109,8 +121,7 @@ bool FCortexCmdLineProjectContextOffTest::RunTest(const FString& Parameters)
     const bool bOrig = Settings.GetProjectContext();
     Settings.SetProjectContext(false);
 
-    FCortexSessionConfig Config;
-    Config.SessionId = TEXT("test-context-off");
+    FCortexSessionConfig Config = MakePinnedClaudeSessionConfig(TEXT("test-context-off"));
     FCortexCliSession Session(Config);
     const FString CmdLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
 
@@ -132,8 +143,7 @@ bool FCortexCmdLineProjectContextOnTest::RunTest(const FString& Parameters)
     const bool bOrig = Settings.GetProjectContext();
     Settings.SetProjectContext(true);
 
-    FCortexSessionConfig Config;
-    Config.SessionId = TEXT("test-context-on");
+    FCortexSessionConfig Config = MakePinnedClaudeSessionConfig(TEXT("test-context-on"));
     FCortexCliSession Session(Config);
     const FString CmdLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
 
@@ -155,8 +165,7 @@ bool FCortexCmdLineDirectiveTest::RunTest(const FString& Parameters)
     const FString Orig = Settings.GetCustomDirective();
     Settings.SetCustomDirective(TEXT("Focus on Blueprints"));
 
-    FCortexSessionConfig Config;
-    Config.SessionId = TEXT("test-directive");
+    FCortexSessionConfig Config = MakePinnedClaudeSessionConfig(TEXT("test-directive"));
     FCortexCliSession Session(Config);
     const FString CmdLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
 
@@ -178,8 +187,7 @@ bool FCortexCmdLineDirectiveEmptyTest::RunTest(const FString& Parameters)
     const FString Orig = Settings.GetCustomDirective();
     Settings.SetCustomDirective(TEXT(""));
 
-    FCortexSessionConfig Config;
-    Config.SessionId = TEXT("test-no-directive");
+    FCortexSessionConfig Config = MakePinnedClaudeSessionConfig(TEXT("test-no-directive"));
     FCortexCliSession Session(Config);
     const FString CmdLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
 
@@ -201,8 +209,7 @@ bool FCortexCmdLineDirectiveSanitizationTest::RunTest(const FString& Parameters)
     const FString Orig = Settings.GetCustomDirective();
     Settings.SetCustomDirective(TEXT("Focus\non$(rm -rf)\tBlueprints`echo`%PATH%|cat&>out<in^x"));
 
-    FCortexSessionConfig Config;
-    Config.SessionId = TEXT("test-sanitize");
+    FCortexSessionConfig Config = MakePinnedClaudeSessionConfig(TEXT("test-sanitize"));
     FCortexCliSession Session(Config);
     const FString CmdLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
 

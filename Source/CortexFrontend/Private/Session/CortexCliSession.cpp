@@ -339,14 +339,19 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 		OnTokenUsageUpdated.Broadcast();
 	}
 
-	// Extract model info from init event
-	if (Event.Type == ECortexStreamEventType::SessionInit && !Event.Model.IsEmpty())
+	// Extract model / session info from init event.
+	if (Event.Type == ECortexStreamEventType::SessionInit)
 	{
-		ModelId = Event.Model;
 		if (!Event.SessionId.IsEmpty())
 		{
 			Config.SessionId = Event.SessionId;
 		}
+
+		if (!Event.Model.IsEmpty())
+		{
+			ModelId = Event.Model;
+		}
+
 		if (Provider.IsEmpty())
 		{
 			Provider = Config.ResolvedOptions.ProviderDisplayName;
