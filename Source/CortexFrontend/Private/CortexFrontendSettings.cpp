@@ -1,6 +1,8 @@
 #include "CortexFrontendSettings.h"
 
 #include "HAL/FileManager.h"
+#include "CortexFrontendProviderSettings.h"
+#include "Providers/CortexProviderRegistry.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Serialization/JsonReader.h"
@@ -53,6 +55,21 @@ TArray<FString> FCortexFrontendSettings::GetAvailableModels() const
     }
     // Default list — updating the plugin binary updates these
     return {TEXT("Default"), TEXT("claude-sonnet-4-6"), TEXT("claude-opus-4-6"), TEXT("claude-haiku-4-5-20251001")};
+}
+
+TArray<FString> FCortexFrontendSettings::GetAvailableModelsForActiveProvider() const
+{
+    const UCortexFrontendProviderSettings* ProviderSettings = UCortexFrontendProviderSettings::Get();
+    const FCortexProviderDefinition& ProviderDefinition = FCortexProviderRegistry::ResolveDefinition(
+        ProviderSettings != nullptr ? ProviderSettings->GetEffectiveProviderId() : FCortexProviderRegistry::GetDefaultProviderId());
+
+    TArray<FString> ModelIds;
+    for (const FCortexProviderModelDefinition& Model : ProviderDefinition.Models)
+    {
+        ModelIds.Add(Model.ModelId);
+    }
+
+    return ModelIds;
 }
 
 void FCortexFrontendSettings::SetEffortLevel(ECortexEffortLevel Level)
@@ -287,4 +304,103 @@ void FCortexFrontendSettings::Save()
 FString FCortexFrontendSettings::GetSettingsFilePath() const
 {
     return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("settings.json"));
+}
+
+namespace
+{
+    const FCortexProviderModelDefinition* FindModelDefinition(
+        const FCortexProviderDefinition& ProviderDefinition,
+        const FString& ModelId)
+    {
+        return ProviderDefinition.Models.FindByPredicate(
+            [&ModelId](const FCortexProviderModelDefinition& Model)
+            {
+                return Model.ModelId == ModelId;
+            });
+    }
+
+    FString EffortLevelToConfigString(ECortexEffortLevel Level)
+    {
+        switch (Level)
+        {
+        case ECortexEffortLevel::Low:
+            return TEXT("low");
+        case ECortexEffortLevel::Medium:
+            return TEXT("medium");
+        case ECortexEffortLevel::High:
+            return TEXT("high");
+        case ECortexEffortLevel::Maximum:
+            return TEXT("max");
+        case ECortexEffortLevel::Default:
+        default:
+            return TEXT("default");
+        }
+    }
+}
+
+FCortexResolvedSessionOptions FCortexFrontendSettings::ResolveForActiveProvider() const
+{
+    const UCortexFrontendProviderSettings* ProviderSettings = UCortexFrontendProviderSettings::Get();
+    const FString ActiveProviderId = ProviderSettings != nullptr
+        ? ProviderSettings->GetEffectiveProviderId()
+        : FCortexProviderRegistry::GetDefaultProviderId();
+
+    const FCortexProviderDefinition& ProviderDefinition = FCortexProviderRegistry::ResolveDefinition(ActiveProviderId);
+
+    FCortexResolvedSessionOptions Resolved;
+    Resolved.ProviderId = ProviderDefinition.ProviderId;
+    Resolved.ProviderDisplayName = ProviderDefinition.DisplayName;
+
+    const FCortexProviderModelDefinition* EffectiveModelDefinition = FindModelDefinition(ProviderDefinition, SelectedModel);
+    if (EffectiveModelDefinition == nullptr)
+    {
+        EffectiveModelDefinition = FindModelDefinition(ProviderDefinition, ProviderDefinition.RecommendedModelId);
+    }
+    if (EffectiveModelDefinition == nullptr && ProviderDefinition.Models.Num() > 0)
+    {
+        EffectiveModelDefinition = &ProviderDefinition.Models[0];
+    }
+
+    if (EffectiveModelDefinition != nullptr)
+    {
+        Resolved.ModelId = EffectiveModelDefinition->ModelId;
+        Resolved.ContextLimitTokens = EffectiveModelDefinition->ContextLimitTokens;
+
+        if (ProviderDefinition.SupportedEffortLevels.Contains(EffortLevel) &&
+            EffectiveModelDefinition->SupportedEffortLevels.Contains(EffortLevel))
+        {
+            Resolved.EffortLevel = EffortLevel;
+        }
+        else if (ProviderDefinition.SupportedEffortLevels.Contains(ProviderDefinition.DefaultEffortLevel) &&
+                 EffectiveModelDefinition->SupportedEffortLevels.Contains(ProviderDefinition.DefaultEffortLevel))
+        {
+            Resolved.EffortLevel = ProviderDefinition.DefaultEffortLevel;
+        }
+        else
+        {
+            Resolved.EffortLevel = ProviderDefinition.DefaultEffortLevel;
+        }
+    }
+    else
+    {
+        Resolved.ModelId = ProviderDefinition.RecommendedModelId;
+        Resolved.EffortLevel = ProviderDefinition.DefaultEffortLevel;
+    }
+
+    return Resolved;
+}
+
+FString FCortexFrontendSettings::FormatModelLabel(
+    const FString& ProviderDisplayName,
+    const FString& ModelId,
+    ECortexEffortLevel EffortLevel,
+    ECortexEffortLevel DefaultEffortLevel)
+{
+    FString Label = FString::Printf(TEXT("%s · %s"), *ProviderDisplayName, *ModelId);
+    if (EffortLevel != DefaultEffortLevel)
+    {
+        Label += FString::Printf(TEXT(" [%s]"), *EffortLevelToConfigString(EffortLevel));
+    }
+
+    return Label;
 }

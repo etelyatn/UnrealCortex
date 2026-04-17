@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Session/CortexSessionTypes.h"
+#include "Providers/CortexProviderTypes.h"
 
 DECLARE_MULTICAST_DELEGATE(FOnCortexPendingChangesUpdated);
 
@@ -30,6 +31,7 @@ public:
     FString GetSelectedModel() const { return SelectedModel; }
     void SetSelectedModel(const FString& Model);
     TArray<FString> GetAvailableModels() const;
+    TArray<FString> GetAvailableModelsForActiveProvider() const;
 
     ECortexEffortLevel GetEffortLevel() const { return EffortLevel; }
     void SetEffortLevel(ECortexEffortLevel Level);
@@ -68,6 +70,13 @@ public:
         }
         return FString::Printf(TEXT("%s [%s]"), *ModelId, *Get().GetEffortLevelString());
     }
+
+    FCortexResolvedSessionOptions ResolveForActiveProvider() const;
+    static FString FormatModelLabel(
+        const FString& ProviderDisplayName,
+        const FString& ModelId,
+        ECortexEffortLevel EffortLevel,
+        ECortexEffortLevel DefaultEffortLevel);
 
     bool HasPendingChanges() const;
     void ClearPendingChanges();
