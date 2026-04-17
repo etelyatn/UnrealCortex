@@ -69,9 +69,11 @@ public:
     virtual void ConsumeStreamChunk(
         const FString& RawChunk,
         FString& InOutChunkBuffer,
+        FString& InOutAssistantText,
         TArray<FCortexStreamEvent>& OutEvents) const override
     {
         InOutChunkBuffer += RawChunk;
+        (void)InOutAssistantText;
         FCortexStreamEvent Event;
         Event.RawJson = RawChunk;
         Event.SessionId = ProviderId.ToString();
@@ -216,6 +218,7 @@ bool FCortexCliDiscoveryCodexNormalizationTest::RunTest(const FString& Parameter
 
     const FCortexCodexCliProvider Provider;
     FString ChunkBuffer;
+    FString AssistantTextBuffer;
     TArray<FCortexStreamEvent> Events;
 
     const FString RawJsonl = TEXT(R"({"type":"thread.started","thread":{"id":"thread-123"}}
@@ -226,7 +229,7 @@ bool FCortexCliDiscoveryCodexNormalizationTest::RunTest(const FString& Parameter
 {"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":34}}
 )");
 
-    Provider.ConsumeStreamChunk(RawJsonl, ChunkBuffer, Events);
+    Provider.ConsumeStreamChunk(RawJsonl, ChunkBuffer, AssistantTextBuffer, Events);
 
     TestTrue(TEXT("Codex normalization should emit session init"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
     {
@@ -254,6 +257,71 @@ bool FCortexCliDiscoveryCodexNormalizationTest::RunTest(const FString& Parameter
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliDiscoveryCodexMultiMessageTest, "Cortex.Frontend.CliDiscovery.CodexAggregatesAssistantMessages", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliDiscoveryCodexMultiMessageTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const FCortexCodexCliProvider Provider;
+    FString ChunkBuffer;
+    FString AssistantTextBuffer;
+    TArray<FCortexStreamEvent> Events;
+
+    const FString RawJsonl = TEXT(R"({"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"Hello "}}
+{"type":"item.completed","item":{"id":"msg-2","type":"agent_message","text":"world"}}
+{"type":"turn.completed","usage":{"input_tokens":9,"output_tokens":11}}
+)");
+
+    Provider.ConsumeStreamChunk(RawJsonl, ChunkBuffer, AssistantTextBuffer, Events);
+
+    TestTrue(TEXT("Codex should aggregate assistant text across multiple messages"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::Result &&
+            Event.ResultText == TEXT("Hello world") &&
+            Event.Text == TEXT("Hello world") &&
+            Event.InputTokens == 9 &&
+            Event.OutputTokens == 11;
+    }));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliDiscoveryCodexSplitChunkTest, "Cortex.Frontend.CliDiscovery.CodexPreservesAssistantTextAcrossChunks", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliDiscoveryCodexSplitChunkTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const FCortexCodexCliProvider Provider;
+    FString ChunkBuffer;
+    FString AssistantTextBuffer;
+    TArray<FCortexStreamEvent> Events;
+
+    Provider.ConsumeStreamChunk(
+        TEXT(R"({"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"Split "}}
+)"),
+        ChunkBuffer,
+        AssistantTextBuffer,
+        Events);
+    Provider.ConsumeStreamChunk(
+        TEXT(R"({"type":"item.completed","item":{"id":"msg-2","type":"agent_message","text":"chunk"}}
+{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":6}}
+)"),
+        ChunkBuffer,
+        AssistantTextBuffer,
+        Events);
+
+    TestTrue(TEXT("Codex should preserve assistant text across chunks"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::Result &&
+            Event.ResultText == TEXT("Split chunk") &&
+            Event.Text == TEXT("Split chunk") &&
+            Event.InputTokens == 4 &&
+            Event.OutputTokens == 6;
+    }));
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliDiscoveryCodexFailureNormalizationTest, "Cortex.Frontend.CliDiscovery.CodexNormalizesFailureEvents", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexCliDiscoveryCodexFailureNormalizationTest::RunTest(const FString& Parameters)
@@ -262,14 +330,26 @@ bool FCortexCliDiscoveryCodexFailureNormalizationTest::RunTest(const FString& Pa
 
     const FCortexCodexCliProvider Provider;
     FString ChunkBuffer;
+    FString AssistantTextBuffer;
     TArray<FCortexStreamEvent> Events;
+
+    Provider.ConsumeStreamChunk(
+        TEXT(R"({"type":"item.completed","item":{"id":"msg-0","type":"agent_message","text":"Drafting "}}
+)"),
+        ChunkBuffer,
+        AssistantTextBuffer,
+        Events);
 
     const FString RawJsonl = TEXT(R"({"type":"turn.failed","message":"codex stopped unexpectedly","usage":{"input_tokens":5,"output_tokens":1}}
 {"type":"error","error":{"type":"transport_error","message":"connection reset"}}
 )");
 
-    Provider.ConsumeStreamChunk(RawJsonl, ChunkBuffer, Events);
+    Provider.ConsumeStreamChunk(RawJsonl, ChunkBuffer, AssistantTextBuffer, Events);
 
+    TestTrue(TEXT("Codex failure normalization should preserve partial assistant text as a text event"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::TextContent && Event.Text == TEXT("Drafting ");
+    }));
     TestTrue(TEXT("Codex failure normalization should emit a terminal result for turn.failed"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
     {
         return Event.Type == ECortexStreamEventType::Result &&
@@ -297,6 +377,7 @@ bool FCortexCliDiscoveryCodexUnknownItemTest::RunTest(const FString& Parameters)
 
     const FCortexCodexCliProvider Provider;
     FString ChunkBuffer;
+    FString AssistantTextBuffer;
     TArray<FCortexStreamEvent> Events;
 
     const FString RawJsonl = TEXT(R"({"type":"item.started","item":{"id":"item-999","type":"mcp_tool_use","name":"cortex_mcp","input":{"query":"status"}}}
@@ -304,7 +385,7 @@ bool FCortexCliDiscoveryCodexUnknownItemTest::RunTest(const FString& Parameters)
 {"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":2}}
 )");
 
-    Provider.ConsumeStreamChunk(RawJsonl, ChunkBuffer, Events);
+    Provider.ConsumeStreamChunk(RawJsonl, ChunkBuffer, AssistantTextBuffer, Events);
 
     TestEqual(TEXT("Unknown Codex item types should not create extra events"), Events.Num(), 1);
     TestTrue(TEXT("Turn.completed should still produce a result event"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)

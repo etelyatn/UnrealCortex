@@ -31,7 +31,6 @@ namespace
     FString QuoteCodexConfigArgument(const FString& Value)
     {
         FString Escaped = Value;
-        Escaped.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
         Escaped.ReplaceInline(TEXT("\""), TEXT("\\\""));
         return FString::Printf(TEXT("\"%s\""), *Escaped);
     }

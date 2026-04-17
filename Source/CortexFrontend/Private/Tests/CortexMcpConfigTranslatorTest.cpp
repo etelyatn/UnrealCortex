@@ -2,6 +2,7 @@
 #include "HAL/FileManager.h"
 #include "Dom/JsonObject.h"
 #include "Misc/FileHelper.h"
+#include "Misc/ScopeExit.h"
 #include "Misc/Paths.h"
 #include "Providers/CortexMcpConfigTranslator.h"
 #include "Serialization/JsonReader.h"
@@ -89,5 +90,38 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
             TestTrue(FString::Printf(TEXT("Should translate env for %s"), *ServerName), Overrides.Contains(ExpectedOverride));
         }
     }
+
+    const FString WindowsFixtureDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("CodexTranslatorTest"));
+    TestTrue(TEXT("Windows fixture directory should be created"), IFileManager::Get().MakeDirectory(*WindowsFixtureDir, true));
+
+    const FString WindowsFixturePath = FPaths::Combine(WindowsFixtureDir, TEXT("windows-paths.mcp.json"));
+    const FString WindowsFixtureJson = TEXT(R"({
+  "mcpServers": {
+    "windows_path_server": {
+      "command": "C:\\Program Files\\OpenAI\\codex.cmd",
+      "args": [
+        "run",
+        "--directory",
+        "D:\\UnrealProjects\\Cortex Sandbox\\Plugins\\UnrealCortex\\MCP"
+      ],
+      "env": {
+        "CORTEX_PROJECT_DIR": "D:\\UnrealProjects\\Cortex Sandbox"
+      }
+    }
+  }
+})");
+
+    TestTrue(TEXT("Windows fixture should save"), FFileHelper::SaveStringToFile(WindowsFixtureJson, *WindowsFixturePath));
+    ON_SCOPE_EXIT
+    {
+        IFileManager::Get().Delete(*WindowsFixturePath, false, true);
+        IFileManager::Get().DeleteDirectory(*WindowsFixtureDir, false, true);
+    };
+
+    const TArray<FString> WindowsOverrides = FCortexMcpConfigTranslator::BuildCodexConfigOverrides(WindowsFixturePath);
+    TestTrue(TEXT("Windows fixture should produce overrides"), WindowsOverrides.Num() > 0);
+    TestTrue(TEXT("Windows command should keep single backslashes"), WindowsOverrides.Contains(TEXT("\"-c mcp_servers.windows_path_server.command='C:\\Program Files\\OpenAI\\codex.cmd'\"")));
+    TestTrue(TEXT("Windows args should keep single backslashes"), WindowsOverrides.Contains(TEXT("\"-c mcp_servers.windows_path_server.args=['run','--directory','D:\\UnrealProjects\\Cortex Sandbox\\Plugins\\UnrealCortex\\MCP']\"")));
+    TestTrue(TEXT("Windows env should keep single backslashes"), WindowsOverrides.Contains(TEXT("\"-c mcp_servers.windows_path_server.env.CORTEX_PROJECT_DIR='D:\\UnrealProjects\\Cortex Sandbox'\"")));
     return true;
 }

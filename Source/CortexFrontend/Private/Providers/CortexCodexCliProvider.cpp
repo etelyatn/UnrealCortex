@@ -179,7 +179,6 @@ namespace
             FCortexStreamEvent Event;
             Event.Type = ECortexStreamEventType::Result;
             Event.RawJson = JsonLine;
-            Event.ResultText = InOutPendingAssistantText;
 
             const TSharedPtr<FJsonObject>* UsageObject = nullptr;
             if (JsonObj->TryGetObjectField(TEXT("usage"), UsageObject) && UsageObject != nullptr)
@@ -188,11 +187,13 @@ namespace
             }
 
             JsonObj->TryGetStringField(TEXT("session_id"), Event.SessionId);
+            Event.ResultText = InOutPendingAssistantText;
             if (Event.ResultText.IsEmpty())
             {
                 JsonObj->TryGetStringField(TEXT("result"), Event.ResultText);
             }
             Event.Text = Event.ResultText;
+            InOutPendingAssistantText.Reset();
             Events.Add(MoveTemp(Event));
             return Events;
         }
@@ -203,7 +204,6 @@ namespace
             Event.Type = ECortexStreamEventType::Result;
             Event.bIsError = true;
             Event.RawJson = JsonLine;
-            Event.ResultText = InOutPendingAssistantText;
 
             const TSharedPtr<FJsonObject>* UsageObject = nullptr;
             if (Type == TEXT("turn.failed") && JsonObj->TryGetObjectField(TEXT("usage"), UsageObject) && UsageObject != nullptr)
@@ -231,11 +231,9 @@ namespace
                 Event.Text = JsonLine;
             }
 
-            if (Event.ResultText.IsEmpty())
-            {
-                Event.ResultText = Event.Text;
-            }
+            Event.ResultText = Event.Text;
             Event.Text = Event.ResultText;
+            InOutPendingAssistantText.Reset();
 
             Events.Add(MoveTemp(Event));
             return Events;
@@ -279,7 +277,7 @@ namespace
                     Event.Type = ECortexStreamEventType::TextContent;
                     Event.RawJson = JsonLine;
                     (*ItemObject)->TryGetStringField(TEXT("text"), Event.Text);
-                    InOutPendingAssistantText = Event.Text;
+                    InOutPendingAssistantText += Event.Text;
                     Events.Add(MoveTemp(Event));
                     return Events;
                 }
@@ -418,12 +416,12 @@ FString FCortexCodexCliProvider::BuildAuthCommand() const
 }
 
 void FCortexCodexCliProvider::ConsumeStreamChunk(
-    const FString& RawChunk,
-    FString& InOutChunkBuffer,
-    TArray<FCortexStreamEvent>& OutEvents) const
+        const FString& RawChunk,
+        FString& InOutChunkBuffer,
+        FString& InOutAssistantText,
+        TArray<FCortexStreamEvent>& OutEvents) const
 {
     InOutChunkBuffer += RawChunk;
-    FString PendingAssistantText;
 
     int32 NewLineIndex = INDEX_NONE;
     while (InOutChunkBuffer.FindChar(TEXT('\n'), NewLineIndex))
@@ -435,6 +433,6 @@ void FCortexCodexCliProvider::ConsumeStreamChunk(
             continue;
         }
 
-        OutEvents.Append(ParseCodexJsonLine(Line, PendingAssistantText));
+        OutEvents.Append(ParseCodexJsonLine(Line, InOutAssistantText));
     }
 }

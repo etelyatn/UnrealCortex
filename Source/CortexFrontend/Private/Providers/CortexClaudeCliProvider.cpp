@@ -209,8 +209,10 @@ FString FCortexClaudeCliProvider::BuildAuthCommand() const
 void FCortexClaudeCliProvider::ConsumeStreamChunk(
     const FString& RawChunk,
     FString& InOutChunkBuffer,
+    FString& InOutAssistantText,
     TArray<FCortexStreamEvent>& OutEvents) const
 {
+    (void)InOutAssistantText;
     InOutChunkBuffer += RawChunk;
 
     int32 NewLineIndex = INDEX_NONE;

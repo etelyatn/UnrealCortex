@@ -19,5 +19,6 @@ public:
     virtual void ConsumeStreamChunk(
         const FString& RawChunk,
         FString& InOutChunkBuffer,
+        FString& InOutAssistantText,
         TArray<FCortexStreamEvent>& OutEvents) const override;
 };
