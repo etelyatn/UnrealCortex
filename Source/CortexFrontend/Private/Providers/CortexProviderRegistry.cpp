@@ -92,3 +92,14 @@ const FCortexProviderDefinition* FCortexProviderRegistry::FindDefinition(const F
 
     return nullptr;
 }
+
+TArray<FString> FCortexProviderRegistry::GetProviderOptions()
+{
+    TArray<FString> Options;
+    for (const FCortexProviderDefinition& Definition : GetBuiltInDefinitions())
+    {
+        Options.Add(Definition.ProviderId.ToString());
+    }
+
+    return Options;
+}

@@ -21,5 +21,7 @@ public:
     UFUNCTION()
     static TArray<FString> GetProviderOptions();
 
+    static FString GetDefaultProviderId();
+
     static const UCortexFrontendProviderSettings* Get();
 };
