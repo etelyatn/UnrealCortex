@@ -40,5 +40,8 @@ public:
         bool bSkipPermissions,
         bool bResumeSession) const = 0;
     virtual FString BuildAuthCommand() const = 0;
-    virtual bool TryConsumeStreamChunk(const FString& RawLine, FCortexStreamEvent& OutEvent) const = 0;
+    virtual void ConsumeStreamChunk(
+        const FString& RawChunk,
+        FString& InOutChunkBuffer,
+        TArray<FCortexStreamEvent>& OutEvents) const = 0;
 };

@@ -23,6 +23,11 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
         IFileManager::Get().Delete(*ConfigPath);
     };
 
+    const TArray<FString> ClaudeArgs = FCortexMcpConfigTranslator::BuildClaudeArgs(ConfigPath);
+    TestEqual(TEXT("Claude args should be split into flag and path"), ClaudeArgs.Num(), 2);
+    TestEqual(TEXT("Claude args should include mcp config flag"), ClaudeArgs[0], FString(TEXT("--mcp-config")));
+    TestTrue(TEXT("Claude args should include quoted config path"), ClaudeArgs[1].Contains(TEXT("mcp.json")));
+
     const TArray<FString> Overrides = FCortexMcpConfigTranslator::BuildCodexConfigOverrides(ConfigPath);
     TestTrue(TEXT("Should include command override"), Overrides.ContainsByPredicate([](const FString& Override)
     {

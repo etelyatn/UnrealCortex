@@ -5,6 +5,6 @@
 class FCortexMcpConfigTranslator
 {
 public:
-    static FString BuildClaudeArgs(const FString& McpConfigPath);
+    static TArray<FString> BuildClaudeArgs(const FString& McpConfigPath);
     static TArray<FString> BuildCodexConfigOverrides(const FString& McpConfigPath);
 };

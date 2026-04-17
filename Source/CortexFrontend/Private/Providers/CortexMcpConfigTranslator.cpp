@@ -43,14 +43,17 @@ namespace
     }
 }
 
-FString FCortexMcpConfigTranslator::BuildClaudeArgs(const FString& McpConfigPath)
+TArray<FString> FCortexMcpConfigTranslator::BuildClaudeArgs(const FString& McpConfigPath)
 {
+    TArray<FString> Args;
     if (McpConfigPath.IsEmpty())
     {
-        return FString();
+        return Args;
     }
 
-    return FString::Printf(TEXT("--mcp-config \"%s\""), *McpConfigPath.Replace(TEXT("\\"), TEXT("/")));
+    Args.Add(TEXT("--mcp-config"));
+    Args.Add(FString::Printf(TEXT("\"%s\""), *McpConfigPath.Replace(TEXT("\\"), TEXT("/"))));
+    return Args;
 }
 
 TArray<FString> FCortexMcpConfigTranslator::BuildCodexConfigOverrides(const FString& McpConfigPath)

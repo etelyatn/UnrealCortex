@@ -21,5 +21,8 @@ public:
         bool bSkipPermissions,
         bool bResumeSession) const override;
     virtual FString BuildAuthCommand() const override;
-    virtual bool TryConsumeStreamChunk(const FString& RawLine, FCortexStreamEvent& OutEvent) const override;
+    virtual void ConsumeStreamChunk(
+        const FString& RawChunk,
+        FString& InOutChunkBuffer,
+        TArray<FCortexStreamEvent>& OutEvents) const override;
 };

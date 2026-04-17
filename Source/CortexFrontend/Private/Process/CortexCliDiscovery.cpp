@@ -36,7 +36,7 @@ void FCortexCliDiscovery::ClearCache()
 
 FCortexCliInfo FCortexCliDiscovery::FindClaude()
 {
-    return Find(FName(*FCortexProviderRegistry::GetDefaultProviderId()));
+    return Find(FName(TEXT("claude_code")));
 }
 
 FCortexCliInfo FCortexCliDiscovery::Find(FName ProviderId)
@@ -72,11 +72,6 @@ const ICortexCliProvider* FCortexCliDiscovery::GetProvider(const FName& Provider
     if (ProviderId == FName(TEXT("codex")))
     {
         return &GetCodexProvider();
-    }
-
-    if (ProviderId == FName(*FCortexProviderRegistry::GetDefaultProviderId()))
-    {
-        return &GetClaudeProvider();
     }
 
     if (ProviderId == FName(TEXT("claude_code")))

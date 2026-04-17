@@ -169,6 +169,7 @@ FString FCortexCodexCliProvider::BuildLaunchCommandLine(
 {
     (void)SessionId;
     (void)bResumeSession;
+    (void)bSkipPermissions;
 
     FString CommandLine = TEXT("exec --json ");
 
@@ -196,7 +197,7 @@ FString FCortexCodexCliProvider::BuildLaunchCommandLine(
         }
     }
 
-    if (bBypassApprovals || bSkipPermissions)
+    if (bBypassApprovals)
     {
         CommandLine += TEXT("--dangerously-bypass-approvals-and-sandbox ");
     }
@@ -209,14 +210,23 @@ FString FCortexCodexCliProvider::BuildAuthCommand() const
     return TEXT("codex login");
 }
 
-bool FCortexCodexCliProvider::TryConsumeStreamChunk(const FString& RawLine, FCortexStreamEvent& OutEvent) const
+void FCortexCodexCliProvider::ConsumeStreamChunk(
+    const FString& RawChunk,
+    FString& InOutChunkBuffer,
+    TArray<FCortexStreamEvent>& OutEvents) const
 {
-    const TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseNdjsonLine(RawLine);
-    if (Events.Num() != 1)
-    {
-        return false;
-    }
+    InOutChunkBuffer += RawChunk;
 
-    OutEvent = Events[0];
-    return true;
+    int32 NewLineIndex = INDEX_NONE;
+    while (InOutChunkBuffer.FindChar(TEXT('\n'), NewLineIndex))
+    {
+        const FString Line = InOutChunkBuffer.Left(NewLineIndex).TrimStartAndEnd();
+        InOutChunkBuffer = InOutChunkBuffer.Mid(NewLineIndex + 1);
+        if (Line.IsEmpty())
+        {
+            continue;
+        }
+
+        OutEvents.Append(CortexStreamEventParser::ParseNdjsonLine(Line));
+    }
 }

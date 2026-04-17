@@ -10,25 +10,6 @@
 
 namespace
 {
-    FString GetClaudeEffortString(ECortexEffortLevel EffortLevel)
-    {
-        switch (EffortLevel)
-        {
-        case ECortexEffortLevel::Default:
-            return TEXT("default");
-        case ECortexEffortLevel::Low:
-            return TEXT("low");
-        case ECortexEffortLevel::Medium:
-            return TEXT("medium");
-        case ECortexEffortLevel::High:
-            return TEXT("high");
-        case ECortexEffortLevel::Maximum:
-            return TEXT("maximum");
-        }
-
-        return TEXT("default");
-    }
-
     FString FindClaudeBinaryFromEnvironment()
     {
 #if PLATFORM_WINDOWS
@@ -191,12 +172,25 @@ FString FCortexClaudeCliProvider::BuildLaunchCommandLine(
 
     if (EffortLevel != ECortexEffortLevel::Default)
     {
-        CommandLine += FString::Printf(TEXT("--effort \"%s\" "), *GetClaudeEffortString(EffortLevel));
+        static const TCHAR* EffortStrings[] =
+        {
+            TEXT("default"),
+            TEXT("low"),
+            TEXT("medium"),
+            TEXT("high"),
+            TEXT("maximum"),
+        };
+        const int32 EffortIndex = static_cast<int32>(EffortLevel);
+        CommandLine += FString::Printf(TEXT("--effort \"%s\" "), EffortStrings[FMath::Clamp(EffortIndex, 0, UE_ARRAY_COUNT(EffortStrings) - 1)]);
     }
 
     if (!McpConfigPath.IsEmpty())
     {
-        CommandLine += FCortexMcpConfigTranslator::BuildClaudeArgs(McpConfigPath) + TEXT(" ");
+        const TArray<FString> Args = FCortexMcpConfigTranslator::BuildClaudeArgs(McpConfigPath);
+        for (const FString& Arg : Args)
+        {
+            CommandLine += Arg + TEXT(" ");
+        }
     }
 
     (void)bBypassApprovals;
@@ -209,14 +203,23 @@ FString FCortexClaudeCliProvider::BuildAuthCommand() const
     return TEXT("claude login");
 }
 
-bool FCortexClaudeCliProvider::TryConsumeStreamChunk(const FString& RawLine, FCortexStreamEvent& OutEvent) const
+void FCortexClaudeCliProvider::ConsumeStreamChunk(
+    const FString& RawChunk,
+    FString& InOutChunkBuffer,
+    TArray<FCortexStreamEvent>& OutEvents) const
 {
-    const TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseNdjsonLine(RawLine);
-    if (Events.Num() != 1)
-    {
-        return false;
-    }
+    InOutChunkBuffer += RawChunk;
 
-    OutEvent = Events[0];
-    return true;
+    int32 NewLineIndex = INDEX_NONE;
+    while (InOutChunkBuffer.FindChar(TEXT('\n'), NewLineIndex))
+    {
+        const FString Line = InOutChunkBuffer.Left(NewLineIndex).TrimStartAndEnd();
+        InOutChunkBuffer = InOutChunkBuffer.Mid(NewLineIndex + 1);
+        if (Line.IsEmpty())
+        {
+            continue;
+        }
+
+        OutEvents.Append(CortexStreamEventParser::ParseNdjsonLine(Line));
+    }
 }
