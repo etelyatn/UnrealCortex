@@ -35,11 +35,11 @@ bool FCortexFrontendProviderSettingsDefaultProviderTest::RunTest(const FString& 
 
     Settings->ActiveProviderId = TEXT("not-a-real-provider");
     TestEqual(TEXT("Effective provider helper should fall back to registry default"), Settings->GetEffectiveProviderId(), RegistryDefaultProviderId);
-    TestEqual(TEXT("Effective provider definition should fall back to Claude"), Settings->GetEffectiveProviderDefinition().DisplayName, FString(TEXT("Claude Code")));
+    TestEqual(TEXT("Effective provider definition should fall back to Claude"), FCortexProviderRegistry::ResolveDefinition(Settings->GetEffectiveProviderId()).DisplayName, FString(TEXT("Claude Code")));
 
     Settings->ActiveProviderId = TEXT("codex");
     TestEqual(TEXT("Effective provider helper should resolve a valid provider directly"), Settings->GetEffectiveProviderId(), FString(TEXT("codex")));
-    TestEqual(TEXT("Effective provider definition should resolve Codex"), Settings->GetEffectiveProviderDefinition().DisplayName, FString(TEXT("Codex")));
+    TestEqual(TEXT("Effective provider definition should resolve Codex"), FCortexProviderRegistry::ResolveDefinition(Settings->GetEffectiveProviderId()).DisplayName, FString(TEXT("Codex")));
 
     return true;
 }

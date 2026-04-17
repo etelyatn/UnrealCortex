@@ -4,8 +4,6 @@
 #include "Engine/DeveloperSettings.h"
 #include "CortexFrontendProviderSettings.generated.h"
 
-struct FCortexProviderDefinition;
-
 UCLASS(Config = EditorPerProjectUserSettings, DefaultConfig, meta = (DisplayName = "Frontend", CategoryName = "Unreal Cortex"))
 class CORTEXFRONTEND_API UCortexFrontendProviderSettings : public UDeveloperSettings
 {
@@ -25,7 +23,6 @@ public:
 
     static FString GetDefaultProviderId();
     FString GetEffectiveProviderId() const;
-    const FCortexProviderDefinition& GetEffectiveProviderDefinition() const;
 
     static const UCortexFrontendProviderSettings* Get();
 };
