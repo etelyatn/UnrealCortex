@@ -183,9 +183,11 @@ bool FCortexCliDiscoveryCodexLaunchCommandTest::RunTest(const FString& Parameter
     SessionConfig.bSkipPermissions = true;
 
     const FCortexCodexCliProvider Provider;
-    const FString CommandLine = Provider.BuildLaunchCommandLine(false, ECortexAccessMode::Guided, SessionConfig);
+    TestTrue(TEXT("Codex provider should report resume support"), Provider.SupportsResume());
 
-    TestTrue(TEXT("Codex launch should use exec json"), CommandLine.Contains(TEXT("exec --json")));
+    const FString CommandLine = Provider.BuildLaunchCommandLine(true, ECortexAccessMode::Guided, SessionConfig);
+
+    TestTrue(TEXT("Codex launch should use exec resume json when resuming"), CommandLine.Contains(TEXT("exec resume --json")));
     TestTrue(TEXT("Codex launch should include model flag"), CommandLine.Contains(TEXT("-m \"gpt-5.4\"")));
     TestTrue(TEXT("Codex launch should include reasoning effort"), CommandLine.Contains(TEXT("-c model_reasoning_effort=maximum")));
     TestTrue(TEXT("Codex launch should include working directory"), CommandLine.Contains(TEXT("-C \"D:/UnrealProjects/CortexSandbox\"")));

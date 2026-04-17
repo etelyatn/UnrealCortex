@@ -31,11 +31,12 @@ namespace
     }
 
     void AppendCodexEnvOverrides(
-        const TSharedPtr<FJsonObject>& CortexServerObject,
+        const FString& ServerName,
+        const TSharedPtr<FJsonObject>& ServerObject,
         TArray<FString>& OutOverrides)
     {
         const TSharedPtr<FJsonObject>* EnvObject = nullptr;
-        if (!CortexServerObject->TryGetObjectField(TEXT("env"), EnvObject) || EnvObject == nullptr)
+        if (!ServerObject->TryGetObjectField(TEXT("env"), EnvObject) || EnvObject == nullptr)
         {
             return;
         }
@@ -71,7 +72,8 @@ namespace
             }
 
             OutOverrides.Add(FString::Printf(
-                TEXT("-c mcp_servers.cortex_mcp.env.%s=%s"),
+                TEXT("-c mcp_servers.%s.env.%s=%s"),
+                *ServerName,
                 *EnvKey,
                 *QuoteTomlString(EnvText)));
         }
@@ -87,6 +89,59 @@ namespace
 
         const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
         return FJsonSerializer::Deserialize(Reader, OutJsonObject) && OutJsonObject.IsValid();
+    }
+
+    bool LoadMcpServersObject(const TSharedPtr<FJsonObject>& RootObject, const TSharedPtr<FJsonObject>*& OutMcpServersObject)
+    {
+        OutMcpServersObject = nullptr;
+        if (RootObject.IsValid())
+        {
+            if (RootObject->TryGetObjectField(TEXT("mcpServers"), OutMcpServersObject) && OutMcpServersObject != nullptr)
+            {
+                return true;
+            }
+
+            if (RootObject->TryGetObjectField(TEXT("mcp_servers"), OutMcpServersObject) && OutMcpServersObject != nullptr)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    void AppendServerOverrides(
+        const FString& ServerName,
+        const TSharedPtr<FJsonObject>& ServerObject,
+        TArray<FString>& OutOverrides)
+    {
+        FString Command;
+        if (ServerObject->TryGetStringField(TEXT("command"), Command))
+        {
+            OutOverrides.Add(FString::Printf(TEXT("-c mcp_servers.%s.command=%s"), *ServerName, *QuoteTomlString(Command)));
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>* ArgsArray = nullptr;
+        if (ServerObject->TryGetArrayField(TEXT("args"), ArgsArray) && ArgsArray != nullptr)
+        {
+            TArray<FString> Args;
+            Args.Reserve(ArgsArray->Num());
+            for (const TSharedPtr<FJsonValue>& ArgValue : *ArgsArray)
+            {
+                FString Arg;
+                if (ArgValue.IsValid() && ArgValue->TryGetString(Arg))
+                {
+                    Args.Add(Arg);
+                }
+            }
+
+            if (Args.Num() > 0)
+            {
+                OutOverrides.Add(FString::Printf(TEXT("-c mcp_servers.%s.args=%s"), *ServerName, *BuildTomlArray(Args)));
+            }
+        }
+
+        AppendCodexEnvOverrides(ServerName, ServerObject, OutOverrides);
     }
 }
 
@@ -114,49 +169,23 @@ TArray<FString> FCortexMcpConfigTranslator::BuildCodexConfigOverrides(const FStr
     }
 
     const TSharedPtr<FJsonObject>* McpServersObject = nullptr;
-    if (!RootObject->TryGetObjectField(TEXT("mcpServers"), McpServersObject) || McpServersObject == nullptr)
-    {
-        RootObject->TryGetObjectField(TEXT("mcp_servers"), McpServersObject);
-    }
-
-    if (McpServersObject == nullptr)
+    if (!LoadMcpServersObject(RootObject, McpServersObject) || McpServersObject == nullptr)
     {
         return Overrides;
     }
 
-    const TSharedPtr<FJsonObject>* CortexServerObject = nullptr;
-    if (!(*McpServersObject)->TryGetObjectField(TEXT("cortex_mcp"), CortexServerObject) || CortexServerObject == nullptr)
-    {
-        return Overrides;
-    }
+    TArray<FString> ServerNames;
+    (*McpServersObject)->Values.GetKeys(ServerNames);
+    ServerNames.Sort();
 
-    FString Command;
-    if ((*CortexServerObject)->TryGetStringField(TEXT("command"), Command))
+    for (const FString& ServerName : ServerNames)
     {
-        Overrides.Add(FString::Printf(TEXT("-c mcp_servers.cortex_mcp.command=%s"), *QuoteTomlString(Command)));
-    }
-
-    const TArray<TSharedPtr<FJsonValue>>* ArgsArray = nullptr;
-    if ((*CortexServerObject)->TryGetArrayField(TEXT("args"), ArgsArray) && ArgsArray != nullptr)
-    {
-        TArray<FString> Args;
-        Args.Reserve(ArgsArray->Num());
-        for (const TSharedPtr<FJsonValue>& ArgValue : *ArgsArray)
+        const TSharedPtr<FJsonObject>* ServerObject = nullptr;
+        if ((*McpServersObject)->TryGetObjectField(ServerName, ServerObject) && ServerObject != nullptr)
         {
-            FString Arg;
-            if (ArgValue.IsValid() && ArgValue->TryGetString(Arg))
-            {
-                Args.Add(Arg);
-            }
-        }
-
-        if (Args.Num() > 0)
-        {
-            Overrides.Add(FString::Printf(TEXT("-c mcp_servers.cortex_mcp.args=%s"), *BuildTomlArray(Args)));
+            AppendServerOverrides(ServerName, *ServerObject, Overrides);
         }
     }
-
-    AppendCodexEnvOverrides(*CortexServerObject, Overrides);
 
     return Overrides;
 }

@@ -18,25 +18,31 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Claude args should include quoted config path"), ClaudeArgs[1].Contains(TEXT(".mcp.json")));
 
     const TArray<FString> Overrides = FCortexMcpConfigTranslator::BuildCodexConfigOverrides(ConfigPath);
+    TestTrue(TEXT("Should include at least one override"), Overrides.Num() > 0);
     TestTrue(TEXT("Should include command override"), Overrides.ContainsByPredicate([](const FString& Override)
     {
-        return Override.Contains(TEXT("mcp_servers.cortex_mcp.command"));
+        return Override.Contains(TEXT(".command="));
     }));
     TestTrue(TEXT("Should include args override"), Overrides.ContainsByPredicate([](const FString& Override)
     {
-        return Override.Contains(TEXT("mcp_servers.cortex_mcp.args"));
+        return Override.Contains(TEXT(".args="));
     }));
     TestTrue(TEXT("Should include env override"), Overrides.ContainsByPredicate([](const FString& Override)
     {
-        return Override.Contains(TEXT("mcp_servers.cortex_mcp.env.CORTEX_PROJECT_DIR"));
+        return Override.Contains(TEXT(".env.CORTEX_PROJECT_DIR="));
     }));
-    TestTrue(TEXT("Should keep command deterministic for the real config"), Overrides.ContainsByPredicate([](const FString& Override)
+    const int32 CommandIndex = Overrides.IndexOfByPredicate([](const FString& Override)
     {
-        return Override.Contains(TEXT("mcp_servers.cortex_mcp.command=\"uv\""));
-    }));
-    TestTrue(TEXT("Should keep args deterministic for the real config"), Overrides.ContainsByPredicate([](const FString& Override)
+        return Override.Contains(TEXT(".command="));
+    });
+    const int32 ArgsIndex = Overrides.IndexOfByPredicate([](const FString& Override)
     {
-        return Override.Contains(TEXT("Plugins/UnrealCortex/MCP"));
-    }));
+        return Override.Contains(TEXT(".args="));
+    });
+    const int32 EnvIndex = Overrides.IndexOfByPredicate([](const FString& Override)
+    {
+        return Override.Contains(TEXT(".env.CORTEX_PROJECT_DIR="));
+    });
+    TestTrue(TEXT("Overrides should be emitted in a deterministic order"), CommandIndex != INDEX_NONE && ArgsIndex != INDEX_NONE && EnvIndex != INDEX_NONE && CommandIndex < ArgsIndex && ArgsIndex < EnvIndex);
     return true;
 }

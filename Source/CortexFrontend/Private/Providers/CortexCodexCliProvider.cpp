@@ -112,7 +112,7 @@ ECortexCliTransportMode FCortexCodexCliProvider::GetTransportMode() const
 
 bool FCortexCodexCliProvider::SupportsResume() const
 {
-    return false;
+    return true;
 }
 
 FCortexCliInfo FCortexCodexCliProvider::FindCli() const
@@ -163,9 +163,8 @@ FString FCortexCodexCliProvider::BuildLaunchCommandLine(
     const FCortexSessionConfig& SessionConfig) const
 {
     (void)AccessMode;
-    (void)bResumeSession;
 
-    FString CommandLine = TEXT("exec --json ");
+    FString CommandLine = bResumeSession ? TEXT("exec resume --json ") : TEXT("exec --json ");
 
     const FString WorkingDirectory = !SessionConfig.WorkingDirectory.IsEmpty()
         ? SessionConfig.WorkingDirectory
