@@ -18,6 +18,16 @@ FString UCortexFrontendProviderSettings::GetDefaultProviderId()
     return FCortexProviderRegistry::GetDefaultProviderId();
 }
 
+FString UCortexFrontendProviderSettings::GetEffectiveProviderId() const
+{
+    return FCortexProviderRegistry::ResolveDefinition(ActiveProviderId).ProviderId.ToString();
+}
+
+const FCortexProviderDefinition& UCortexFrontendProviderSettings::GetEffectiveProviderDefinition() const
+{
+    return FCortexProviderRegistry::ResolveDefinition(ActiveProviderId);
+}
+
 const UCortexFrontendProviderSettings* UCortexFrontendProviderSettings::Get()
 {
     return GetDefault<UCortexFrontendProviderSettings>();

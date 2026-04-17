@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "Misc/ScopeExit.h"
 #include "CortexFrontendProviderSettings.h"
 #include "Providers/CortexProviderRegistry.h"
 
@@ -19,15 +20,26 @@ bool FCortexFrontendProviderSettingsDefaultProviderTest::RunTest(const FString& 
     TestEqual(TEXT("Registry resolves the explicit default id"), FCortexProviderRegistry::ResolveDefinition(RegistryDefaultProviderId).DisplayName, FString(TEXT("Claude Code")));
     TestEqual(TEXT("Registry resolves unknown ids to the default"), FCortexProviderRegistry::ResolveDefinition(TEXT("not-a-real-provider")).ProviderId.ToString(), RegistryDefaultProviderId);
 
-    const UCortexFrontendProviderSettings* SettingsCDO = GetDefault<UCortexFrontendProviderSettings>();
-    TestNotNull(TEXT("Settings CDO should exist"), SettingsCDO);
-    if (!SettingsCDO)
+    UCortexFrontendProviderSettings* Settings = GetMutableDefault<UCortexFrontendProviderSettings>();
+    TestNotNull(TEXT("Settings mutable default should exist"), Settings);
+    if (!Settings)
     {
         return false;
     }
 
-    TestTrue(TEXT("Help text should mention newly created sessions"), SettingsCDO->ProviderSelectionHelpText.Contains(TEXT("newly created")));
-    TestTrue(TEXT("Help text should mention current sessions do not restart"), SettingsCDO->ProviderSelectionHelpText.Contains(TEXT("current sessions do not restart")));
+    const FString OriginalProviderId = Settings->ActiveProviderId;
+    ON_SCOPE_EXIT
+    {
+        Settings->ActiveProviderId = OriginalProviderId;
+    };
+
+    Settings->ActiveProviderId = TEXT("not-a-real-provider");
+    TestEqual(TEXT("Effective provider helper should fall back to registry default"), Settings->GetEffectiveProviderId(), RegistryDefaultProviderId);
+    TestEqual(TEXT("Effective provider definition should fall back to Claude"), Settings->GetEffectiveProviderDefinition().DisplayName, FString(TEXT("Claude Code")));
+
+    Settings->ActiveProviderId = TEXT("codex");
+    TestEqual(TEXT("Effective provider helper should resolve a valid provider directly"), Settings->GetEffectiveProviderId(), FString(TEXT("codex")));
+    TestEqual(TEXT("Effective provider definition should resolve Codex"), Settings->GetEffectiveProviderDefinition().DisplayName, FString(TEXT("Codex")));
 
     return true;
 }
