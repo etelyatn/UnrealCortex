@@ -1,6 +1,13 @@
 #include "Misc/AutomationTest.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "CortexFrontendSettings.h"
 #include "CortexFrontendProviderSettings.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendSettingsDefaultTest, "Cortex.Frontend.Settings.DefaultIsReadOnly", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendSettingsRoundTripTest, "Cortex.Frontend.Settings.RoundTripPersistence", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -46,15 +53,56 @@ bool FCortexFrontendSettingsDeprecatedAvailableModelsTest::RunTest(const FString
     }
 
     const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
+    const FString SettingsFilePath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("settings.json"));
+    const bool bHadOriginalSettingsFile = FPaths::FileExists(SettingsFilePath);
+    FString OriginalSettingsJson;
+    if (bHadOriginalSettingsFile)
+    {
+        TestTrue(TEXT("Should capture existing settings file"), FFileHelper::LoadFileToString(OriginalSettingsJson, *SettingsFilePath));
+    }
     ON_SCOPE_EXIT
     {
+        if (bHadOriginalSettingsFile)
+        {
+            FFileHelper::SaveStringToFile(OriginalSettingsJson, *SettingsFilePath);
+        }
+        else
+        {
+            IFileManager::Get().Delete(*SettingsFilePath, false, true, true);
+        }
+
+        Settings.Load();
         ProviderSettings->ActiveProviderId = OriginalProviderId;
     };
 
+    TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
+    JsonObject->SetStringField(TEXT("access_mode"), TEXT("readonly"));
+    JsonObject->SetBoolField(TEXT("skip_permissions"), true);
+    JsonObject->SetStringField(TEXT("selected_model"), TEXT("legacy-fake-model"));
+    JsonObject->SetStringField(TEXT("effort_level"), TEXT("default"));
+    JsonObject->SetStringField(TEXT("workflow_mode"), TEXT("direct"));
+    JsonObject->SetBoolField(TEXT("project_context"), true);
+    JsonObject->SetBoolField(TEXT("auto_context"), true);
+    JsonObject->SetStringField(TEXT("custom_directive"), TEXT(""));
+
+    TArray<TSharedPtr<FJsonValue>> ModelsArray;
+    ModelsArray.Add(MakeShared<FJsonValueString>(TEXT("legacy-fake-model")));
+    ModelsArray.Add(MakeShared<FJsonValueString>(TEXT("legacy-secondary-model")));
+    JsonObject->SetArrayField(TEXT("available_models"), ModelsArray);
+
+    FString JsonString;
+    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
+    TestTrue(TEXT("Should serialize temp settings payload"), FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer));
+    Writer->Close();
+    TestTrue(TEXT("Should write temp settings payload"), FFileHelper::SaveStringToFile(JsonString, *SettingsFilePath));
+
     ProviderSettings->ActiveProviderId = TEXT("codex");
+    Settings.Load();
     const TArray<FString> Models = Settings.GetAvailableModelsForActiveProvider();
     TestTrue(TEXT("Codex models should come from registry"), Models.Contains(TEXT("gpt-5.4")));
     TestFalse(TEXT("Codex models should not contain Claude-only models"), Models.Contains(TEXT("claude-opus-4-6")));
+    TestFalse(TEXT("Codex models should ignore deprecated JSON payload"), Models.Contains(TEXT("legacy-fake-model")));
+    TestTrue(TEXT("Deprecated JSON model list should still load for compatibility"), Settings.GetAvailableModels().Contains(TEXT("legacy-fake-model")));
 
     return true;
 }

@@ -1,7 +1,15 @@
 #include "Misc/AutomationTest.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "CortexFrontendSettings.h"
 #include "CortexFrontendProviderSettings.h"
+#include "Providers/CortexProviderRegistry.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendSettingsInvalidModelFallbackTest, "Cortex.Frontend.Settings.InvalidModelFallsBackToProviderDefault", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendSettingsInvalidEffortFallbackTest, "Cortex.Frontend.Settings.InvalidEffortFallsBackToProviderDefault", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -32,8 +40,12 @@ bool FCortexFrontendSettingsInvalidModelFallbackTest::RunTest(const FString& Par
     Settings.SetSelectedModel(TEXT("claude-opus-4-6"));
     Settings.SetEffortLevel(ECortexEffortLevel::Low);
 
+    const FCortexProviderDefinition& CodexDefinition = FCortexProviderRegistry::ResolveDefinition(TEXT("codex"));
+    const FCortexProviderModelDefinition& DirectCodexModel = FCortexProviderRegistry::ValidateOrGetDefaultModel(
+        CodexDefinition,
+        TEXT("claude-opus-4-6"));
     const FCortexResolvedSessionOptions DirectCodexResolved = Settings.ResolveForActiveProvider();
-    TestEqual(TEXT("Codex invalid Claude model should normalize to provider default"), DirectCodexResolved.ModelId, FString(TEXT("gpt-5.4")));
+    TestEqual(TEXT("Codex invalid Claude model should normalize to provider default"), DirectCodexResolved.ModelId, DirectCodexModel.ModelId);
     TestEqual(TEXT("Codex display name should stay Codex"), DirectCodexResolved.ProviderDisplayName, FString(TEXT("Codex")));
 
     ProviderSettings->ActiveProviderId = TEXT("claude_code");
@@ -45,10 +57,10 @@ bool FCortexFrontendSettingsInvalidModelFallbackTest::RunTest(const FString& Par
     TestEqual(TEXT("Claude effort should be kept"), static_cast<uint8>(ClaudeResolved.EffortLevel), static_cast<uint8>(ECortexEffortLevel::Maximum));
 
     ProviderSettings->ActiveProviderId = TEXT("codex");
-    const FCortexResolvedSessionOptions CodexResolved = Settings.ResolveForActiveProvider();
-    TestEqual(TEXT("Codex invalid Claude model should normalize to provider default"), CodexResolved.ModelId, FString(TEXT("gpt-5.4")));
-    TestEqual(TEXT("Codex display name should stay Codex"), CodexResolved.ProviderDisplayName, FString(TEXT("Codex")));
-    TestEqual(TEXT("Codex invalid Claude model should keep Maximum effort"), static_cast<uint8>(CodexResolved.EffortLevel), static_cast<uint8>(ECortexEffortLevel::Maximum));
+    const FCortexResolvedSessionOptions CodexSwitchedResolved = Settings.ResolveForActiveProvider();
+    TestEqual(TEXT("Codex invalid Claude model should normalize to provider default"), CodexSwitchedResolved.ModelId, DirectCodexModel.ModelId);
+    TestEqual(TEXT("Codex display name should stay Codex"), CodexSwitchedResolved.ProviderDisplayName, FString(TEXT("Codex")));
+    TestEqual(TEXT("Codex invalid Claude model should keep Maximum effort"), static_cast<uint8>(CodexSwitchedResolved.EffortLevel), static_cast<uint8>(ECortexEffortLevel::Maximum));
 
     return true;
 }
@@ -75,6 +87,17 @@ bool FCortexFrontendSettingsInvalidEffortFallbackTest::RunTest(const FString& Pa
         Settings.SetEffortLevel(OriginalEffortLevel);
     };
 
+    ProviderSettings->ActiveProviderId = TEXT("codex");
+    Settings.SetSelectedModel(TEXT("gpt-5.4"));
+    Settings.SetEffortLevel(ECortexEffortLevel::Default);
+
+    const FCortexProviderDefinition& CodexDefinition = FCortexProviderRegistry::ResolveDefinition(TEXT("codex"));
+    const FCortexProviderModelDefinition& CodexModel = FCortexProviderRegistry::ValidateOrGetDefaultModel(CodexDefinition, TEXT("gpt-5.4"));
+    const FCortexResolvedSessionOptions CodexResolved = Settings.ResolveForActiveProvider();
+    TestEqual(TEXT("Codex model should stay gpt-5.4"), CodexResolved.ModelId, CodexModel.ModelId);
+    TestEqual(TEXT("Codex Default effort should fall back to Medium"), static_cast<uint8>(CodexResolved.EffortLevel), static_cast<uint8>(ECortexEffortLevel::Medium));
+    TestEqual(TEXT("Registry effort normalization should match settings"), static_cast<uint8>(FCortexProviderRegistry::ValidateOrGetDefaultEffort(CodexDefinition, CodexModel, ECortexEffortLevel::Default)), static_cast<uint8>(ECortexEffortLevel::Medium));
+
     ProviderSettings->ActiveProviderId = TEXT("claude_code");
     Settings.SetSelectedModel(TEXT("claude-sonnet-4-6"));
     Settings.SetEffortLevel(ECortexEffortLevel::Maximum);
@@ -83,9 +106,9 @@ bool FCortexFrontendSettingsInvalidEffortFallbackTest::RunTest(const FString& Pa
     TestEqual(TEXT("Claude keeps maximum effort"), static_cast<uint8>(ClaudeResolved.EffortLevel), static_cast<uint8>(ECortexEffortLevel::Maximum));
 
     ProviderSettings->ActiveProviderId = TEXT("codex");
-    const FCortexResolvedSessionOptions CodexResolved = Settings.ResolveForActiveProvider();
-    TestEqual(TEXT("Codex mapped max/xhigh should stay Maximum"), static_cast<uint8>(CodexResolved.EffortLevel), static_cast<uint8>(ECortexEffortLevel::Maximum));
-    TestEqual(TEXT("Codex model should normalize to provider default"), CodexResolved.ModelId, FString(TEXT("gpt-5.4")));
+    const FCortexResolvedSessionOptions SwitchedCodexResolved = Settings.ResolveForActiveProvider();
+    TestEqual(TEXT("Codex mapped max/xhigh should stay Maximum"), static_cast<uint8>(SwitchedCodexResolved.EffortLevel), static_cast<uint8>(ECortexEffortLevel::Maximum));
+    TestEqual(TEXT("Codex model should normalize to provider default"), SwitchedCodexResolved.ModelId, FString(TEXT("gpt-5.4")));
 
     return true;
 }

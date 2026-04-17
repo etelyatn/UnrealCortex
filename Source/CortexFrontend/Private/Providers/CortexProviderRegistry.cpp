@@ -4,6 +4,32 @@ namespace
 {
     const FName DefaultProviderId(TEXT("claude_code"));
 
+    const FCortexProviderModelDefinition* FindModelDefinition(
+        const FCortexProviderDefinition& ProviderDefinition,
+        const FString& ModelId)
+    {
+        return ProviderDefinition.Models.FindByPredicate(
+            [&ModelId](const FCortexProviderModelDefinition& Model)
+            {
+                return Model.ModelId == ModelId;
+            });
+    }
+
+    const FCortexProviderModelDefinition& GetFallbackModelDefinition(
+        const FCortexProviderDefinition& ProviderDefinition)
+    {
+        const FCortexProviderModelDefinition* RecommendedModel = FindModelDefinition(
+            ProviderDefinition,
+            ProviderDefinition.RecommendedModelId);
+        if (RecommendedModel != nullptr)
+        {
+            return *RecommendedModel;
+        }
+
+        check(ProviderDefinition.Models.Num() > 0);
+        return ProviderDefinition.Models[0];
+    }
+
     const TArray<FCortexProviderDefinition>& GetBuiltInDefinitions()
     {
         static const TArray<FCortexProviderDefinition> Definitions = []()
@@ -110,6 +136,58 @@ const FCortexProviderDefinition& FCortexProviderRegistry::ResolveDefinition(cons
     }
 
     return GetDefaultDefinition();
+}
+
+const FCortexProviderModelDefinition& FCortexProviderRegistry::ValidateOrGetDefaultModel(
+    const FCortexProviderDefinition& ProviderDefinition,
+    const FString& ModelId)
+{
+    if (const FCortexProviderModelDefinition* ModelDefinition = FindModelDefinition(ProviderDefinition, ModelId))
+    {
+        return *ModelDefinition;
+    }
+
+    return GetFallbackModelDefinition(ProviderDefinition);
+}
+
+ECortexEffortLevel FCortexProviderRegistry::ValidateOrGetDefaultEffort(
+    const FCortexProviderDefinition& ProviderDefinition,
+    const FCortexProviderModelDefinition& ModelDefinition,
+    ECortexEffortLevel EffortLevel)
+{
+    if (ProviderDefinition.SupportedEffortLevels.Contains(EffortLevel) &&
+        ModelDefinition.SupportedEffortLevels.Contains(EffortLevel))
+    {
+        return EffortLevel;
+    }
+
+    if (ProviderDefinition.SupportedEffortLevels.Contains(ProviderDefinition.DefaultEffortLevel) &&
+        ModelDefinition.SupportedEffortLevels.Contains(ProviderDefinition.DefaultEffortLevel))
+    {
+        return ProviderDefinition.DefaultEffortLevel;
+    }
+
+    for (const ECortexEffortLevel SupportedEffort : ModelDefinition.SupportedEffortLevels)
+    {
+        if (ProviderDefinition.SupportedEffortLevels.Contains(SupportedEffort))
+        {
+            return SupportedEffort;
+        }
+    }
+
+    return ProviderDefinition.DefaultEffortLevel;
+}
+
+int64 FCortexProviderRegistry::GetContextLimit(
+    const FCortexProviderDefinition& ProviderDefinition,
+    const FString& ModelId)
+{
+    if (const FCortexProviderModelDefinition* ModelDefinition = FindModelDefinition(ProviderDefinition, ModelId))
+    {
+        return ModelDefinition->ContextLimitTokens;
+    }
+
+    return GetFallbackModelDefinition(ProviderDefinition).ContextLimitTokens;
 }
 
 TArray<FString> FCortexProviderRegistry::GetProviderOptions()

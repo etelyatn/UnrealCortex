@@ -143,6 +143,17 @@ void FCortexFrontendSettings::MarkDirty()
 
 void FCortexFrontendSettings::Load()
 {
+    AccessMode = ECortexAccessMode::ReadOnly;
+    bSkipPermissions = true;
+    SelectedModel = TEXT("Default");
+    bHasCustomModels = false;
+    CustomModels.Reset();
+    EffortLevel = ECortexEffortLevel::Default;
+    WorkflowMode = ECortexWorkflowMode::Direct;
+    bProjectContext = true;
+    bAutoContext = true;
+    CustomDirective.Reset();
+
     const FString FilePath = GetSettingsFilePath();
     FString JsonString;
     if (!FFileHelper::LoadFileToString(JsonString, *FilePath))
@@ -308,17 +319,6 @@ FString FCortexFrontendSettings::GetSettingsFilePath() const
 
 namespace
 {
-    const FCortexProviderModelDefinition* FindModelDefinition(
-        const FCortexProviderDefinition& ProviderDefinition,
-        const FString& ModelId)
-    {
-        return ProviderDefinition.Models.FindByPredicate(
-            [&ModelId](const FCortexProviderModelDefinition& Model)
-            {
-                return Model.ModelId == ModelId;
-            });
-    }
-
     FString EffortLevelToConfigString(ECortexEffortLevel Level)
     {
         switch (Level)
@@ -346,46 +346,16 @@ FCortexResolvedSessionOptions FCortexFrontendSettings::ResolveForActiveProvider(
         : FCortexProviderRegistry::GetDefaultProviderId();
 
     const FCortexProviderDefinition& ProviderDefinition = FCortexProviderRegistry::ResolveDefinition(ActiveProviderId);
+    const FCortexProviderModelDefinition& ModelDefinition = FCortexProviderRegistry::ValidateOrGetDefaultModel(
+        ProviderDefinition,
+        SelectedModel);
 
     FCortexResolvedSessionOptions Resolved;
     Resolved.ProviderId = ProviderDefinition.ProviderId;
     Resolved.ProviderDisplayName = ProviderDefinition.DisplayName;
-
-    const FCortexProviderModelDefinition* EffectiveModelDefinition = FindModelDefinition(ProviderDefinition, SelectedModel);
-    if (EffectiveModelDefinition == nullptr)
-    {
-        EffectiveModelDefinition = FindModelDefinition(ProviderDefinition, ProviderDefinition.RecommendedModelId);
-    }
-    if (EffectiveModelDefinition == nullptr && ProviderDefinition.Models.Num() > 0)
-    {
-        EffectiveModelDefinition = &ProviderDefinition.Models[0];
-    }
-
-    if (EffectiveModelDefinition != nullptr)
-    {
-        Resolved.ModelId = EffectiveModelDefinition->ModelId;
-        Resolved.ContextLimitTokens = EffectiveModelDefinition->ContextLimitTokens;
-
-        if (ProviderDefinition.SupportedEffortLevels.Contains(EffortLevel) &&
-            EffectiveModelDefinition->SupportedEffortLevels.Contains(EffortLevel))
-        {
-            Resolved.EffortLevel = EffortLevel;
-        }
-        else if (ProviderDefinition.SupportedEffortLevels.Contains(ProviderDefinition.DefaultEffortLevel) &&
-                 EffectiveModelDefinition->SupportedEffortLevels.Contains(ProviderDefinition.DefaultEffortLevel))
-        {
-            Resolved.EffortLevel = ProviderDefinition.DefaultEffortLevel;
-        }
-        else
-        {
-            Resolved.EffortLevel = ProviderDefinition.DefaultEffortLevel;
-        }
-    }
-    else
-    {
-        Resolved.ModelId = ProviderDefinition.RecommendedModelId;
-        Resolved.EffortLevel = ProviderDefinition.DefaultEffortLevel;
-    }
+    Resolved.ModelId = ModelDefinition.ModelId;
+    Resolved.ContextLimitTokens = FCortexProviderRegistry::GetContextLimit(ProviderDefinition, Resolved.ModelId);
+    Resolved.EffortLevel = FCortexProviderRegistry::ValidateOrGetDefaultEffort(ProviderDefinition, ModelDefinition, EffortLevel);
 
     return Resolved;
 }
