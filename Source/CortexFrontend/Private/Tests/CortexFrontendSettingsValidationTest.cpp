@@ -28,14 +28,6 @@ bool FCortexFrontendSettingsInvalidModelFallbackTest::RunTest(const FString& Par
         Settings.SetEffortLevel(OriginalEffortLevel);
     };
 
-    ProviderSettings->ActiveProviderId = TEXT("codex");
-    Settings.SetSelectedModel(TEXT("claude-opus-4-6"));
-    Settings.SetEffortLevel(ECortexEffortLevel::Low);
-
-    const FCortexResolvedSessionOptions Resolved = Settings.ResolveForActiveProvider();
-    TestEqual(TEXT("Codex fallback model should use provider default"), Resolved.ModelId, FString(TEXT("gpt-5.4")));
-    TestEqual(TEXT("Codex fallback provider display name"), Resolved.ProviderDisplayName, FString(TEXT("Codex")));
-
     ProviderSettings->ActiveProviderId = TEXT("claude_code");
     Settings.SetSelectedModel(TEXT("claude-sonnet-4-6"));
     Settings.SetEffortLevel(ECortexEffortLevel::Maximum);
@@ -45,12 +37,10 @@ bool FCortexFrontendSettingsInvalidModelFallbackTest::RunTest(const FString& Par
     TestEqual(TEXT("Claude effort should be kept"), static_cast<uint8>(ClaudeResolved.EffortLevel), static_cast<uint8>(ECortexEffortLevel::Maximum));
 
     ProviderSettings->ActiveProviderId = TEXT("codex");
-    Settings.SetSelectedModel(TEXT("claude-sonnet-4-6"));
-    Settings.SetEffortLevel(ECortexEffortLevel::Maximum);
-
     const FCortexResolvedSessionOptions CodexResolved = Settings.ResolveForActiveProvider();
     TestEqual(TEXT("Codex invalid Claude model should normalize to provider default"), CodexResolved.ModelId, FString(TEXT("gpt-5.4")));
     TestEqual(TEXT("Codex display name should stay Codex"), CodexResolved.ProviderDisplayName, FString(TEXT("Codex")));
+    TestEqual(TEXT("Codex invalid Claude model should keep Maximum effort"), static_cast<uint8>(CodexResolved.EffortLevel), static_cast<uint8>(ECortexEffortLevel::Maximum));
 
     return true;
 }
@@ -85,9 +75,6 @@ bool FCortexFrontendSettingsInvalidEffortFallbackTest::RunTest(const FString& Pa
     TestEqual(TEXT("Claude keeps maximum effort"), static_cast<uint8>(ClaudeResolved.EffortLevel), static_cast<uint8>(ECortexEffortLevel::Maximum));
 
     ProviderSettings->ActiveProviderId = TEXT("codex");
-    Settings.SetSelectedModel(TEXT("gpt-5.4"));
-    Settings.SetEffortLevel(ECortexEffortLevel::Maximum);
-
     const FCortexResolvedSessionOptions CodexResolved = Settings.ResolveForActiveProvider();
     TestEqual(TEXT("Codex mapped max/xhigh should stay Maximum"), static_cast<uint8>(CodexResolved.EffortLevel), static_cast<uint8>(ECortexEffortLevel::Maximum));
     TestEqual(TEXT("Codex model should normalize to provider default"), CodexResolved.ModelId, FString(TEXT("gpt-5.4")));
