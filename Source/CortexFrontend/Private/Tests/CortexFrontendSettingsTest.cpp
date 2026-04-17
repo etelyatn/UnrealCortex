@@ -138,6 +138,7 @@ bool FCortexFrontendSettingsDeprecatedAvailableModelsTest::RunTest(const FString
     {
         TestFalse(TEXT("Deprecated available_models field should not be persisted"), SavedJsonObject->HasField(TEXT("available_models")));
     }
+    TestFalse(TEXT("Deprecated JSON model list should be cleared from memory after save"), Settings.GetAvailableModels().Contains(TEXT("legacy-fake-model")));
 
     return true;
 }

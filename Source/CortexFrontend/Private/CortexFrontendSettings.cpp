@@ -220,17 +220,25 @@ void FCortexFrontendSettings::Load()
     const TArray<TSharedPtr<FJsonValue>>* ModelsArray = nullptr;
     if (JsonObject->TryGetArrayField(TEXT("available_models"), ModelsArray))
     {
-        CustomModels.Reset();
+        TArray<FString> LoadedCustomModels;
         for (const TSharedPtr<FJsonValue>& Value : *ModelsArray)
         {
             FString ModelStr;
             if (Value->TryGetString(ModelStr))
             {
-                CustomModels.Add(ModelStr);
+                LoadedCustomModels.Add(ModelStr);
             }
         }
-        // Only use custom list if it's non-empty; empty array falls back to defaults
-        bHasCustomModels = CustomModels.Num() > 0;
+
+        // Legacy compatibility only: keep the loaded values for this read, but do not
+        // retain them in-memory once the migration has been observed by the caller.
+        bHasCustomModels = LoadedCustomModels.Num() > 0;
+        CustomModels = MoveTemp(LoadedCustomModels);
+    }
+    else
+    {
+        bHasCustomModels = false;
+        CustomModels.Reset();
     }
 
     FString EffortString;
@@ -321,6 +329,8 @@ void FCortexFrontendSettings::Save()
     Writer->Close();
 
     FFileHelper::SaveStringToFile(JsonString, *FilePath);
+    bHasCustomModels = false;
+    CustomModels.Reset();
 }
 
 FString FCortexFrontendSettings::GetSettingsFilePath() const
