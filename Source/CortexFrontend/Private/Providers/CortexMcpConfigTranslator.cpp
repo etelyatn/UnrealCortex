@@ -9,8 +9,10 @@ namespace
 {
     FString QuoteTomlString(const FString& Value)
     {
-        checkf(!Value.Contains(TEXT("'")), TEXT("Codex MCP TOML literal strings currently require values without apostrophes"));
-        return FString::Printf(TEXT("'%s'"), *Value);
+        FString Escaped = Value;
+        Escaped.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
+        Escaped.ReplaceInline(TEXT("\""), TEXT("\\\""));
+        return FString::Printf(TEXT("\"%s\""), *Escaped);
     }
 
     FString BuildTomlArray(const TArray<FString>& Values)
