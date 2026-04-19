@@ -9,6 +9,7 @@
 #include "CortexCoreDelegates.h"
 #include "CortexFrontendModule.h"
 #include "Dom/JsonObject.h"
+#include "Providers/CortexProviderRegistry.h"
 #include "QA/CortexQASessionManager.h"
 #include "QA/CortexQATabTypes.h"
 #include "Session/CortexCliSession.h"
@@ -17,6 +18,16 @@
 #include "Editor.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SBox.h"
+
+FString SCortexQATab::BuildGenerationStartupFailureStatus(const FCortexSessionConfig& Config)
+{
+    const FCortexProviderDefinition& ProviderDefinition =
+        FCortexProviderRegistry::ResolveDefinition(Config.ProviderId.ToString());
+    const FString ExecutableDisplayName = ProviderDefinition.ExecutableDisplayName.IsEmpty()
+        ? ProviderDefinition.DisplayName
+        : ProviderDefinition.ExecutableDisplayName;
+    return FString::Printf(TEXT("Failed to start %s"), *ExecutableDisplayName);
+}
 
 void SCortexQATab::Construct(const FArguments& InArgs)
 {
@@ -455,7 +466,7 @@ void SCortexQATab::OnGenerateClicked(const FString& Prompt)
             UE_LOG(LogCortexFrontend, Warning, TEXT("QA: Failed to connect CLI session for AI generation"));
             if (CommandBar.IsValid())
             {
-                CommandBar->SetStatus(TEXT("Failed to start Claude CLI"));
+                CommandBar->SetStatus(BuildGenerationStartupFailureStatus(Config));
             }
             QACliSession.Reset();
             return;

@@ -9,6 +9,7 @@
 #include "Modules/ModuleManager.h"
 #include "Framework/Docking/TabManager.h"
 #include "Session/CortexCliSession.h"
+#include "Widgets/SCortexQATab.h"
 
 namespace
 {
@@ -39,6 +40,11 @@ bool FCortexQATabRegisteredTest::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexQADefaultSessionUsesActiveProviderTest,
     "Cortex.Frontend.QATab.DefaultSessionUsesActiveProvider",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexQAGenerationFailureStatusUsesProviderDisplayNameTest,
+    "Cortex.Frontend.QATab.GenerationFailureStatusUsesProviderDisplayName",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexQADefaultSessionUsesActiveProviderTest::RunTest(const FString& Parameters)
@@ -108,5 +114,21 @@ bool FCortexQADefaultSessionUsesActiveProviderTest::RunTest(const FString& Param
     }
 
     TestEqual(TEXT("QA session should use the active provider"), Session->GetProviderId(), FName(TEXT("codex")));
+    return true;
+}
+
+bool FCortexQAGenerationFailureStatusUsesProviderDisplayNameTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+
+    TestEqual(
+        TEXT("QA generation startup failure should reference the selected provider"),
+        SCortexQATab::BuildGenerationStartupFailureStatus(Config),
+        FString(TEXT("Failed to start Codex CLI")));
     return true;
 }

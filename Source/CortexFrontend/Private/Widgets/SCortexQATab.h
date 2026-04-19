@@ -6,6 +6,7 @@
 #include "Widgets/SCompoundWidget.h"
 
 struct FCortexSessionStateChange;
+struct FCortexSessionConfig;
 class FCortexCliSession;
 class FCortexQASessionManager;
 class SCortexQAToolbar;
@@ -19,6 +20,8 @@ class SCortexQATab : public SCompoundWidget
 public:
     SLATE_BEGIN_ARGS(SCortexQATab) {}
     SLATE_END_ARGS()
+
+    static FString BuildGenerationStartupFailureStatus(const FCortexSessionConfig& Config);
 
     void Construct(const FArguments& InArgs);
     virtual ~SCortexQATab();
