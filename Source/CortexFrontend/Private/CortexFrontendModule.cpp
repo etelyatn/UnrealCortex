@@ -7,6 +7,7 @@
 #include "CortexCoreModule.h"
 #include "CortexAnalysisTypes.h"
 #include "CortexConversionTypes.h"
+#include "CortexFrontendSettings.h"
 #include "Framework/Docking/TabManager.h"
 #include "IToolMenusModule.h"
 #include "Misc/CoreDelegates.h"
@@ -173,6 +174,22 @@ FCortexSessionConfig FCortexFrontendModule::CreateDefaultSessionConfig()
     Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
     Config.WorkingDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
 
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    const FCortexResolvedSessionOptions ResolvedOptions = Settings.ResolveForActiveProvider();
+    Config.ProviderId = ResolvedOptions.ProviderId;
+    Config.ResolvedOptions = ResolvedOptions;
+    Config.ModelId = Config.ResolvedOptions.ModelId;
+    Config.EffortLevel = Config.ResolvedOptions.EffortLevel;
+
+    Config.LaunchOptions.AccessMode = Settings.GetAccessMode();
+    Config.LaunchOptions.bSkipPermissions = Settings.GetSkipPermissions();
+    Config.LaunchOptions.WorkflowMode = Settings.GetWorkflowMode();
+    Config.LaunchOptions.bProjectContext = Settings.GetProjectContext();
+    Config.LaunchOptions.bAutoContext = Settings.GetAutoContext();
+    Config.LaunchOptions.CustomDirective = Settings.GetCustomDirective();
+    Config.bHasLaunchOptions = true;
+    Config.bSkipPermissions = Config.LaunchOptions.bSkipPermissions;
+
     const FString McpPath = FPaths::Combine(FPaths::ProjectDir(), TEXT(".mcp.json"));
     if (FPaths::FileExists(McpPath))
     {
@@ -182,16 +199,38 @@ FCortexSessionConfig FCortexFrontendModule::CreateDefaultSessionConfig()
     return Config;
 }
 
+FCortexSessionConfig FCortexFrontendModule::CreateLightweightSessionConfig()
+{
+    FCortexSessionConfig Config = CreateDefaultSessionConfig();
+    Config.McpConfigPath.Empty();
+    Config.LaunchOptions.bProjectContext = false;
+    Config.LaunchOptions.bAutoContext = false;
+    Config.LaunchOptions.CustomDirective.Empty();
+    Config.bConversionMode = true;
+    return Config;
+}
+
 TWeakPtr<FCortexCliSession> FCortexFrontendModule::GetOrCreateSession()
 {
-    if (Sessions.Num() > 0 && Sessions[0].IsValid())
+    const FCortexSessionConfig DesiredConfig = CreateDefaultSessionConfig();
+
+    if (MainChatSession.IsValid())
     {
-        return Sessions[0];
+        const TSharedPtr<FCortexCliSession>& ExistingSession = MainChatSession;
+        if (ExistingSession->GetProviderId() == DesiredConfig.ProviderId)
+        {
+            RegisterSession(ExistingSession);
+            return ExistingSession;
+        }
+
+        ExistingSession->Shutdown();
+        Sessions.Remove(ExistingSession);
+        MainChatSession.Reset();
     }
 
-    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(CreateDefaultSessionConfig());
-    Sessions.Reset();
-    Sessions.Add(Session);
+    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(DesiredConfig);
+    MainChatSession = Session;
+    RegisterSession(Session);
     return Session;
 }
 
@@ -358,6 +397,10 @@ void FCortexFrontendModule::RegisterSession(TSharedPtr<FCortexCliSession> Sessio
 void FCortexFrontendModule::UnregisterSession(TSharedPtr<FCortexCliSession> Session)
 {
     Sessions.Remove(Session);
+    if (MainChatSession == Session)
+    {
+        MainChatSession.Reset();
+    }
 }
 
 void FCortexFrontendModule::RegisterBuildProcess(TSharedPtr<FMonitoredProcess> Process)
@@ -427,6 +470,7 @@ void FCortexFrontendModule::ReleaseSessions()
     }
 
     Sessions.Reset();
+    MainChatSession.Reset();
 }
 
 void FCortexFrontendModule::HandlePreExit()

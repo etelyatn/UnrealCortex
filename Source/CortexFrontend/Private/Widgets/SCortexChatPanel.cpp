@@ -557,6 +557,11 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatDispla
         case ECortexChatRowType::AuthError:
         {
             const FString ErrorText = Row->PrimaryEntry.IsValid() ? Row->PrimaryEntry->Text : TEXT("Authentication failed");
+            const TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
+            const FString AuthCommand = Session.IsValid() ? Session->GetAuthCommandText() : TEXT("login");
+            const FString DisplayText = AuthCommand.IsEmpty()
+                ? ErrorText
+                : FString::Printf(TEXT("%s\n\nRun `%s` in your terminal to authenticate."), *ErrorText, *AuthCommand);
 
             Content = SNew(SBox)
                 .Padding(FMargin(12.0f, 10.0f))
@@ -584,7 +589,7 @@ TSharedRef<ITableRow> SCortexChatPanel::GenerateRow(TSharedPtr<FCortexChatDispla
                         .Padding(0.0f, 0.0f, 0.0f, 12.0f)
                         [
                             SNew(STextBlock)
-                            .Text(FText::FromString(ErrorText))
+                            .Text(FText::FromString(DisplayText))
                             .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
                             .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
                             .AutoWrapText(true)
@@ -659,16 +664,33 @@ bool SCortexChatPanel::IsAuthError(const FString& ErrorText)
 
 void SCortexChatPanel::HandleLoginClicked()
 {
-    const FCortexCliInfo CliInfo = FCortexCliDiscovery::FindClaude();
+    TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
+    if (!Session.IsValid())
+    {
+        UE_LOG(LogCortexFrontend, Warning, TEXT("Cannot launch login - session is no longer valid"));
+        return;
+    }
+
+    const FCortexCliInfo CliInfo = FCortexCliDiscovery::Find(Session->GetProviderId());
     if (!CliInfo.bIsValid)
     {
-        UE_LOG(LogCortexFrontend, Warning, TEXT("Cannot launch login — Claude CLI not found"));
+        UE_LOG(LogCortexFrontend, Warning,
+            TEXT("Cannot launch auth command '%s' - provider CLI not found"),
+            *Session->GetAuthCommandText());
         return;
+    }
+
+    const FString AuthCommandText = Session->GetAuthCommandText();
+    FString AuthArguments = TEXT("login");
+    int32 FirstSpaceIndex = INDEX_NONE;
+    if (AuthCommandText.FindChar(TEXT(' '), FirstSpaceIndex))
+    {
+        AuthArguments = AuthCommandText.Mid(FirstSpaceIndex + 1);
     }
 
     FProcHandle Handle = FPlatformProcess::CreateProc(
         *CliInfo.Path,
-        TEXT("login"),
+        *AuthArguments,
         true,    // bLaunchDetached
         false,   // bLaunchHidden
         false,   // bLaunchReallyHidden
@@ -680,7 +702,7 @@ void SCortexChatPanel::HandleLoginClicked()
     );
     if (!Handle.IsValid())
     {
-        UE_LOG(LogCortexFrontend, Warning, TEXT("Failed to launch 'claude login'"));
+        UE_LOG(LogCortexFrontend, Warning, TEXT("Failed to launch '%s'"), *AuthCommandText);
     }
 }
 

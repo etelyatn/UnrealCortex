@@ -1,17 +1,43 @@
 #include "CortexFrontendSettings.h"
 
 #include "HAL/FileManager.h"
+#include "CortexFrontendProviderSettings.h"
+#include "Providers/CortexProviderRegistry.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 
+namespace
+{
+#if WITH_DEV_AUTOMATION_TESTS
+    FString GSettingsFilePathOverride;
+    bool bHasSettingsFilePathOverride = false;
+#endif
+}
+
 FCortexFrontendSettings& FCortexFrontendSettings::Get()
 {
     static FCortexFrontendSettings Instance;
     return Instance;
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+void FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(const FString& InSettingsFilePath)
+{
+    check(IsInGameThread());
+    GSettingsFilePathOverride = InSettingsFilePath;
+    bHasSettingsFilePathOverride = true;
+}
+
+void FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests()
+{
+    check(IsInGameThread());
+    GSettingsFilePathOverride.Reset();
+    bHasSettingsFilePathOverride = false;
+}
+#endif
 
 FCortexFrontendSettings::FCortexFrontendSettings()
 {
@@ -45,7 +71,7 @@ void FCortexFrontendSettings::SetSelectedModel(const FString& Model)
     Save();
 }
 
-TArray<FString> FCortexFrontendSettings::GetAvailableModels() const
+TArray<FString> FCortexFrontendSettings::GetLegacyAvailableModelsForCompatibility() const
 {
     if (bHasCustomModels)
     {
@@ -53,6 +79,22 @@ TArray<FString> FCortexFrontendSettings::GetAvailableModels() const
     }
     // Default list — updating the plugin binary updates these
     return {TEXT("Default"), TEXT("claude-sonnet-4-6"), TEXT("claude-opus-4-6"), TEXT("claude-haiku-4-5-20251001")};
+}
+
+TArray<FString> FCortexFrontendSettings::GetAvailableModelsForActiveProvider() const
+{
+    check(IsInGameThread());
+    const UCortexFrontendProviderSettings* ProviderSettings = UCortexFrontendProviderSettings::Get();
+    const FCortexProviderDefinition& ProviderDefinition = FCortexProviderRegistry::ResolveDefinition(
+        ProviderSettings != nullptr ? ProviderSettings->GetEffectiveProviderId() : FCortexProviderRegistry::GetDefaultProviderId());
+
+    TArray<FString> ModelIds;
+    for (const FCortexProviderModelDefinition& Model : ProviderDefinition.Models)
+    {
+        ModelIds.Add(Model.ModelId);
+    }
+
+    return ModelIds;
 }
 
 void FCortexFrontendSettings::SetEffortLevel(ECortexEffortLevel Level)
@@ -126,6 +168,17 @@ void FCortexFrontendSettings::MarkDirty()
 
 void FCortexFrontendSettings::Load()
 {
+    AccessMode = ECortexAccessMode::ReadOnly;
+    bSkipPermissions = true;
+    SelectedModel = TEXT("Default");
+    bHasCustomModels = false;
+    CustomModels.Reset();
+    EffortLevel = ECortexEffortLevel::Default;
+    WorkflowMode = ECortexWorkflowMode::Direct;
+    bProjectContext = true;
+    bAutoContext = true;
+    CustomDirective.Reset();
+
     const FString FilePath = GetSettingsFilePath();
     FString JsonString;
     if (!FFileHelper::LoadFileToString(JsonString, *FilePath))
@@ -171,17 +224,25 @@ void FCortexFrontendSettings::Load()
     const TArray<TSharedPtr<FJsonValue>>* ModelsArray = nullptr;
     if (JsonObject->TryGetArrayField(TEXT("available_models"), ModelsArray))
     {
-        CustomModels.Reset();
+        TArray<FString> LoadedCustomModels;
         for (const TSharedPtr<FJsonValue>& Value : *ModelsArray)
         {
             FString ModelStr;
             if (Value->TryGetString(ModelStr))
             {
-                CustomModels.Add(ModelStr);
+                LoadedCustomModels.Add(ModelStr);
             }
         }
-        // Only use custom list if it's non-empty; empty array falls back to defaults
-        bHasCustomModels = CustomModels.Num() > 0;
+
+        // Legacy compatibility only: keep the loaded values for this read, but do not
+        // retain them in-memory once the migration has been observed by the caller.
+        bHasCustomModels = LoadedCustomModels.Num() > 0;
+        CustomModels = MoveTemp(LoadedCustomModels);
+    }
+    else
+    {
+        bHasCustomModels = false;
+        CustomModels.Reset();
     }
 
     FString EffortString;
@@ -266,25 +327,88 @@ void FCortexFrontendSettings::Save()
     JsonObject->SetBoolField(TEXT("auto_context"), bAutoContext);
     JsonObject->SetStringField(TEXT("custom_directive"), CustomDirective);
 
-    if (bHasCustomModels)
-    {
-        TArray<TSharedPtr<FJsonValue>> ModelsArray;
-        for (const FString& Model : CustomModels)
-        {
-            ModelsArray.Add(MakeShareable(new FJsonValueString(Model)));
-        }
-        JsonObject->SetArrayField(TEXT("available_models"), ModelsArray);
-    }
-
     FString JsonString;
     TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
     FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
     Writer->Close();
 
     FFileHelper::SaveStringToFile(JsonString, *FilePath);
+    bHasCustomModels = false;
+    CustomModels.Reset();
 }
 
 FString FCortexFrontendSettings::GetSettingsFilePath() const
 {
+#if WITH_DEV_AUTOMATION_TESTS
+    if (bHasSettingsFilePathOverride)
+    {
+        return GSettingsFilePathOverride;
+    }
+#endif
+
     return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("settings.json"));
+}
+
+namespace
+{
+    FString EffortLevelToConfigString(ECortexEffortLevel Level)
+    {
+        switch (Level)
+        {
+        case ECortexEffortLevel::Low:
+            return TEXT("low");
+        case ECortexEffortLevel::Medium:
+            return TEXT("medium");
+        case ECortexEffortLevel::High:
+            return TEXT("high");
+        case ECortexEffortLevel::Maximum:
+            return TEXT("max");
+        case ECortexEffortLevel::Default:
+        default:
+            return TEXT("default");
+        }
+    }
+}
+
+FString FCortexFrontendSettings::GetEffortLevelString() const
+{
+    return EffortLevelToConfigString(EffortLevel);
+}
+
+FCortexResolvedSessionOptions FCortexFrontendSettings::ResolveForActiveProvider() const
+{
+    check(IsInGameThread());
+    const UCortexFrontendProviderSettings* ProviderSettings = UCortexFrontendProviderSettings::Get();
+    const FString ActiveProviderId = ProviderSettings != nullptr
+        ? ProviderSettings->GetEffectiveProviderId()
+        : FCortexProviderRegistry::GetDefaultProviderId();
+
+    const FCortexProviderDefinition& ProviderDefinition = FCortexProviderRegistry::ResolveDefinition(ActiveProviderId);
+    const FCortexProviderModelDefinition& ModelDefinition = FCortexProviderRegistry::ValidateOrGetDefaultModel(
+        ProviderDefinition,
+        SelectedModel);
+
+    FCortexResolvedSessionOptions Resolved;
+    Resolved.ProviderId = ProviderDefinition.ProviderId;
+    Resolved.ProviderDisplayName = ProviderDefinition.DisplayName;
+    Resolved.ModelId = ModelDefinition.ModelId;
+    Resolved.ContextLimitTokens = FCortexProviderRegistry::GetContextLimit(ProviderDefinition, Resolved.ModelId);
+    Resolved.EffortLevel = FCortexProviderRegistry::ValidateOrGetDefaultEffort(ProviderDefinition, ModelDefinition, EffortLevel);
+
+    return Resolved;
+}
+
+FString FCortexFrontendSettings::FormatModelLabel(
+    const FString& ProviderDisplayName,
+    const FString& ModelId,
+    ECortexEffortLevel EffortLevel,
+    ECortexEffortLevel DefaultEffortLevel)
+{
+    FString Label = FString::Printf(TEXT("%s · %s"), *ProviderDisplayName, *ModelId);
+    if (EffortLevel != DefaultEffortLevel)
+    {
+        Label += FString::Printf(TEXT(" [%s]"), *EffortLevelToConfigString(EffortLevel));
+    }
+
+    return Label;
 }

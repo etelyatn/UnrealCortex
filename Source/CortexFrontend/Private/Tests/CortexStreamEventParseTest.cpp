@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "Providers/CortexCodexCliProvider.h"
 #include "Process/CortexStreamEvent.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseSystemTest, "Cortex.Frontend.StreamEvent.ParseSystem", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -15,6 +16,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseUsageTest, "Cortex.Front
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseStreamEventDeltaTest, "Cortex.Frontend.StreamEvent.ParseStreamEventDelta", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseStreamEventNonDeltaTest, "Cortex.Frontend.StreamEvent.ParseStreamEventNonDelta", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventParseUsageToolOnlyTest, "Cortex.Frontend.StreamEvent.ParseUsageToolOnly", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexStreamEventConsumeCodexChunkTest, "Cortex.Frontend.StreamEvent.ConsumeCodexChunk", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexStreamEventParseSystemTest::RunTest(const FString& Parameters)
 {
@@ -230,5 +232,36 @@ bool FCortexStreamEventParseUsageToolOnlyTest::RunTest(const FString& Parameters
         }
     }
     TestTrue(TEXT("Usage data must be propagated even without text content"), bFoundUsage);
+    return true;
+}
+
+bool FCortexStreamEventConsumeCodexChunkTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexCodexCliProvider Provider;
+    FString ChunkBuffer;
+    FString AssistantTextBuffer;
+    TArray<FCortexStreamEvent> Events;
+
+    const FString FirstChunk = TEXT(R"({"type":"thread.started","thread":{"id":"thread-1"}}
+{"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"Hel)");
+    const FString SecondChunk = TEXT(R"(lo"}}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}
+)");
+
+    Provider.ConsumeStreamChunk(FirstChunk, ChunkBuffer, AssistantTextBuffer, Events);
+    TestEqual(TEXT("Codex chunk consumer should buffer partial JSON without emitting terminal events"), Events.Num(), 1);
+
+    Provider.ConsumeStreamChunk(SecondChunk, ChunkBuffer, AssistantTextBuffer, Events);
+    TestEqual(TEXT("Codex chunk consumer should emit session init, text, and result events once the JSON completes"), Events.Num(), 3);
+    TestTrue(TEXT("Codex chunk consumer should emit the assistant text once the JSON completes"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::TextContent && Event.Text == TEXT("Hello");
+    }));
+    TestTrue(TEXT("Codex chunk consumer should emit a terminal result once the JSON completes"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::Result && Event.ResultText == TEXT("Hello") && Event.InputTokens == 1 && Event.OutputTokens == 2;
+    }));
     return true;
 }

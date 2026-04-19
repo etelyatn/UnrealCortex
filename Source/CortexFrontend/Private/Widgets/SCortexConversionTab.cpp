@@ -304,10 +304,8 @@ void SCortexConversionTab::StartConversion(const FString& AssembledSystemPrompt)
 
 	Context->bConversionStarted = true;
 
-	FCortexSessionConfig SessionConfig;
+	FCortexSessionConfig SessionConfig = FCortexFrontendModule::CreateLightweightSessionConfig();
 	SessionConfig.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
-	SessionConfig.WorkingDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-	SessionConfig.bConversionMode = true;
 
 	// Use the fully assembled layered prompt (Base + Scope + Depth + Mode + Fragments)
 	SessionConfig.SystemPrompt = AssembledSystemPrompt;

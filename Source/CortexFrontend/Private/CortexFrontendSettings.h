@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Session/CortexSessionTypes.h"
+#include "Providers/CortexProviderTypes.h"
 
 DECLARE_MULTICAST_DELEGATE(FOnCortexPendingChangesUpdated);
 
@@ -9,6 +10,10 @@ class FCortexFrontendSettings
 {
 public:
     static FCortexFrontendSettings& Get();
+#if WITH_DEV_AUTOMATION_TESTS
+    static void SetSettingsFilePathOverrideForTests(const FString& InSettingsFilePath);
+    static void ClearSettingsFilePathOverrideForTests();
+#endif
 
     ECortexAccessMode GetAccessMode() const { return AccessMode; }
     void SetAccessMode(ECortexAccessMode Mode);
@@ -29,7 +34,8 @@ public:
 
     FString GetSelectedModel() const { return SelectedModel; }
     void SetSelectedModel(const FString& Model);
-    TArray<FString> GetAvailableModels() const;
+    TArray<FString> GetLegacyAvailableModelsForCompatibility() const;
+    TArray<FString> GetAvailableModelsForActiveProvider() const;
 
     ECortexEffortLevel GetEffortLevel() const { return EffortLevel; }
     void SetEffortLevel(ECortexEffortLevel Level);
@@ -46,18 +52,7 @@ public:
     FString GetCustomDirective() const { return CustomDirective; }
     void SetCustomDirective(const FString& Directive);
 
-    FString GetEffortLevelString() const
-    {
-        switch (EffortLevel)
-        {
-        case ECortexEffortLevel::Default:  return TEXT("default");
-        case ECortexEffortLevel::Low:      return TEXT("low");
-        case ECortexEffortLevel::Medium:   return TEXT("medium");
-        case ECortexEffortLevel::High:     return TEXT("high");
-        case ECortexEffortLevel::Maximum:  return TEXT("max");
-        default:                           return TEXT("default");
-        }
-    }
+    FString GetEffortLevelString() const;
 
     static FString GetModelLabelWithEffort(const FString& ModelId)
     {
@@ -68,6 +63,13 @@ public:
         }
         return FString::Printf(TEXT("%s [%s]"), *ModelId, *Get().GetEffortLevelString());
     }
+
+    FCortexResolvedSessionOptions ResolveForActiveProvider() const;
+    static FString FormatModelLabel(
+        const FString& ProviderDisplayName,
+        const FString& ModelId,
+        ECortexEffortLevel EffortLevel,
+        ECortexEffortLevel DefaultEffortLevel);
 
     bool HasPendingChanges() const;
     void ClearPendingChanges();

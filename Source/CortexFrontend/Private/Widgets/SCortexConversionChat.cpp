@@ -698,9 +698,13 @@ TSharedRef<ITableRow> SCortexConversionChat::GenerateRow(
 
 		case ECortexChatRowType::AuthError:
 		{
+			const FString AuthCommand = (Context.IsValid() && Context->Session.IsValid())
+				? Context->Session->GetAuthCommandText()
+				: TEXT("login");
 			Content = SNew(SCortexChatMessage)
-				.Message(FString::Printf(TEXT("Authentication error: %s\n\nRun `claude login` in your terminal to authenticate."),
-					*Row->PrimaryEntry->Text))
+				.Message(FString::Printf(TEXT("Authentication error: %s\n\nRun `%s` in your terminal to authenticate."),
+					*Row->PrimaryEntry->Text,
+					*AuthCommand))
 				.IsUser(false);
 			break;
 		}

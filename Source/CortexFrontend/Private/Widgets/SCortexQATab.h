@@ -6,6 +6,7 @@
 #include "Widgets/SCompoundWidget.h"
 
 struct FCortexSessionStateChange;
+struct FCortexSessionConfig;
 class FCortexCliSession;
 class FCortexQASessionManager;
 class SCortexQAToolbar;
@@ -13,6 +14,20 @@ class SCortexQASessionList;
 class SCortexQADetailPanel;
 class SCortexQACommandBar;
 struct FCortexTurnResult;
+
+#if WITH_DEV_AUTOMATION_TESTS
+struct FCortexQATabSessionCreateResult
+{
+    TSharedPtr<FCortexCliSession> Session;
+    bool bConnected = false;
+};
+
+struct FCortexQATabTestHooks
+{
+    static void SetSessionCreationOverrideForTests(TFunction<FCortexQATabSessionCreateResult(const FCortexSessionConfig&)> InOverride);
+    static void ClearSessionCreationOverrideForTests();
+};
+#endif
 
 class SCortexQATab : public SCompoundWidget
 {
@@ -22,6 +37,10 @@ public:
 
     void Construct(const FArguments& InArgs);
     virtual ~SCortexQATab();
+
+#if WITH_DEV_AUTOMATION_TESTS
+    void InvokeGenerateForTests(const FString& Prompt) { OnGenerateClicked(Prompt); }
+#endif
 
 private:
     void OnDomainProgress(const FName& DomainName, const TSharedPtr<FJsonObject>& Data);

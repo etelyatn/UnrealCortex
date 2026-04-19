@@ -4,7 +4,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 
-TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FString& JsonLine)
+TArray<FCortexStreamEvent> CortexStreamEventParser::ParseClaudeNdjsonLine(const FString& JsonLine)
 {
     TArray<FCortexStreamEvent> Events;
 
@@ -255,6 +255,228 @@ TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FStrin
         JsonObj->TryGetStringField(TEXT("session_id"), Event.SessionId);
         Event.RawJson = JsonLine;
         Events.Add(MoveTemp(Event));
+    }
+
+    return Events;
+}
+
+TArray<FCortexStreamEvent> CortexStreamEventParser::ParseNdjsonLine(const FString& JsonLine)
+{
+    return ParseClaudeNdjsonLine(JsonLine);
+}
+
+namespace
+{
+    void CopyCodexUsageFields(const TSharedPtr<FJsonObject>& UsageObject, FCortexStreamEvent& OutEvent)
+    {
+        if (!UsageObject.IsValid())
+        {
+            return;
+        }
+
+        double Value = 0.0;
+        if (UsageObject->TryGetNumberField(TEXT("input_tokens"), Value))
+        {
+            OutEvent.InputTokens = static_cast<int64>(Value);
+        }
+        if (UsageObject->TryGetNumberField(TEXT("output_tokens"), Value))
+        {
+            OutEvent.OutputTokens = static_cast<int64>(Value);
+        }
+        if (UsageObject->TryGetNumberField(TEXT("cache_read_input_tokens"), Value))
+        {
+            OutEvent.CacheReadTokens = static_cast<int64>(Value);
+        }
+        if (UsageObject->TryGetNumberField(TEXT("cache_creation_input_tokens"), Value))
+        {
+            OutEvent.CacheCreationTokens = static_cast<int64>(Value);
+        }
+    }
+
+    FString SerializeJsonObject(const TSharedPtr<FJsonObject>& JsonObject)
+    {
+        FString JsonText;
+        if (!JsonObject.IsValid())
+        {
+            return JsonText;
+        }
+
+        const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+            TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&JsonText);
+        FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
+        Writer->Close();
+        return JsonText;
+    }
+}
+
+TArray<FCortexStreamEvent> CortexStreamEventParser::ParseCodexJsonObject(
+    const TSharedPtr<FJsonObject>& JsonObject,
+    FString& InOutPendingAssistantText)
+{
+    TArray<FCortexStreamEvent> Events;
+
+    if (!JsonObject.IsValid())
+    {
+        return Events;
+    }
+
+    FString Type;
+    if (!JsonObject->TryGetStringField(TEXT("type"), Type))
+    {
+        return Events;
+    }
+
+    if (Type == TEXT("thread.started"))
+    {
+        FCortexStreamEvent Event;
+        Event.Type = ECortexStreamEventType::SessionInit;
+        JsonObject->TryGetStringField(TEXT("session_id"), Event.SessionId);
+        JsonObject->TryGetStringField(TEXT("thread_id"), Event.SessionId);
+        if (Event.SessionId.IsEmpty())
+        {
+            const TSharedPtr<FJsonObject>* ThreadObject = nullptr;
+            if (JsonObject->TryGetObjectField(TEXT("thread"), ThreadObject) && ThreadObject != nullptr)
+            {
+                (*ThreadObject)->TryGetStringField(TEXT("id"), Event.SessionId);
+            }
+        }
+        Event.RawJson = TEXT("");
+        Events.Add(MoveTemp(Event));
+        return Events;
+    }
+
+    if (Type == TEXT("turn.completed"))
+    {
+        FCortexStreamEvent Event;
+        Event.Type = ECortexStreamEventType::Result;
+        const TSharedPtr<FJsonObject>* UsageObject = nullptr;
+        if (JsonObject->TryGetObjectField(TEXT("usage"), UsageObject) && UsageObject != nullptr)
+        {
+            CopyCodexUsageFields(*UsageObject, Event);
+        }
+
+        JsonObject->TryGetStringField(TEXT("session_id"), Event.SessionId);
+        Event.ResultText = InOutPendingAssistantText;
+        if (Event.ResultText.IsEmpty())
+        {
+            JsonObject->TryGetStringField(TEXT("result"), Event.ResultText);
+        }
+        Event.Text = Event.ResultText;
+        Event.RawJson = TEXT("");
+        InOutPendingAssistantText.Reset();
+        Events.Add(MoveTemp(Event));
+        return Events;
+    }
+
+    if (Type == TEXT("turn.failed") || Type == TEXT("error"))
+    {
+        FCortexStreamEvent Event;
+        Event.Type = ECortexStreamEventType::Result;
+        Event.bIsError = true;
+
+        const TSharedPtr<FJsonObject>* UsageObject = nullptr;
+        if (Type == TEXT("turn.failed") && JsonObject->TryGetObjectField(TEXT("usage"), UsageObject) && UsageObject != nullptr)
+        {
+            CopyCodexUsageFields(*UsageObject, Event);
+        }
+
+        if (!JsonObject->TryGetStringField(TEXT("message"), Event.Text))
+        {
+            JsonObject->TryGetStringField(TEXT("error"), Event.Text);
+        }
+
+        const TSharedPtr<FJsonObject>* ErrorObject = nullptr;
+        if (JsonObject->TryGetObjectField(TEXT("error"), ErrorObject) && ErrorObject != nullptr)
+        {
+            (*ErrorObject)->TryGetStringField(TEXT("message"), Event.Text);
+            if (Event.Text.IsEmpty())
+            {
+                (*ErrorObject)->TryGetStringField(TEXT("type"), Event.Text);
+            }
+        }
+
+        if (Event.Text.IsEmpty())
+        {
+            Event.Text = TEXT("Codex turn failed");
+        }
+
+        Event.ResultText = Event.Text;
+        Event.RawJson = TEXT("");
+        InOutPendingAssistantText.Reset();
+        Events.Add(MoveTemp(Event));
+        return Events;
+    }
+
+    const TSharedPtr<FJsonObject>* ItemObject = nullptr;
+    if ((Type == TEXT("item.started") || Type == TEXT("item.completed")) &&
+        JsonObject->TryGetObjectField(TEXT("item"), ItemObject) && ItemObject != nullptr)
+    {
+        FString ItemType;
+        if ((*ItemObject)->TryGetStringField(TEXT("type"), ItemType))
+        {
+            if (ItemType == TEXT("command_execution") || ItemType == TEXT("mcp_tool_use"))
+            {
+                FCortexStreamEvent Event;
+                Event.ToolCallId = TEXT("");
+                (*ItemObject)->TryGetStringField(TEXT("id"), Event.ToolCallId);
+                if (ItemType == TEXT("command_execution"))
+                {
+                    Event.ToolName = TEXT("command_execution");
+                }
+                else if (!(*ItemObject)->TryGetStringField(TEXT("name"), Event.ToolName))
+                {
+                    Event.ToolName = TEXT("mcp_tool_use");
+                }
+
+                if (Type == TEXT("item.started"))
+                {
+                    Event.Type = ECortexStreamEventType::ToolUse;
+                    if (ItemType == TEXT("mcp_tool_use"))
+                    {
+                        const TSharedPtr<FJsonObject>* InputObject = nullptr;
+                        if ((*ItemObject)->TryGetObjectField(TEXT("input"), InputObject) && InputObject != nullptr)
+                        {
+                            Event.ToolInput = SerializeJsonObject(*InputObject);
+                        }
+                    }
+
+                    if (Event.ToolInput.IsEmpty())
+                    {
+                        Event.ToolInput = SerializeJsonObject(*ItemObject);
+                    }
+                }
+                else
+                {
+                    Event.Type = ECortexStreamEventType::ToolResult;
+                    (*ItemObject)->TryGetStringField(TEXT("output"), Event.ToolResultContent);
+                    if (Event.ToolResultContent.IsEmpty())
+                    {
+                        (*ItemObject)->TryGetStringField(TEXT("result"), Event.ToolResultContent);
+                    }
+                    if (Event.ToolResultContent.IsEmpty())
+                    {
+                        const TSharedPtr<FJsonObject>* OutputObject = nullptr;
+                        if ((*ItemObject)->TryGetObjectField(TEXT("output"), OutputObject) && OutputObject != nullptr)
+                        {
+                            Event.ToolResultContent = SerializeJsonObject(*OutputObject);
+                        }
+                    }
+                }
+
+                Events.Add(MoveTemp(Event));
+                return Events;
+            }
+
+            if (ItemType == TEXT("agent_message") && Type == TEXT("item.completed"))
+            {
+                FCortexStreamEvent Event;
+                Event.Type = ECortexStreamEventType::TextContent;
+                (*ItemObject)->TryGetStringField(TEXT("text"), Event.Text);
+                InOutPendingAssistantText += Event.Text;
+                Events.Add(MoveTemp(Event));
+                return Events;
+            }
+        }
     }
 
     return Events;

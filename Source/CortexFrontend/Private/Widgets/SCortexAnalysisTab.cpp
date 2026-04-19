@@ -121,7 +121,7 @@ void SCortexAnalysisTab::Construct(const FArguments& InArgs)
                         .Title(NSLOCTEXT("CortexAnalysis", "OverlayTitle", "// Analyzing Blueprint"))
                         .PhaseLabels({
                             TEXT("Serializing Blueprint..."),
-                            TEXT("Starting Claude session..."),
+                            TEXT("Starting AI session..."),
                             TEXT("Sending to LLM..."),
                             TEXT("Analyzing Blueprint logic...")
                         })
@@ -440,7 +440,7 @@ void SCortexAnalysisTab::OnAnalyzeClicked()
                 FString SystemPrompt = FCortexAnalysisPromptAssembler::Assemble(*Self->Context);
 
                 // Start CLI session
-                Self->StatusMessage(TEXT("[Step 2/4] Starting CLI session..."));
+                Self->StatusMessage(TEXT("[Step 2/4] Starting AI session..."));
                 Self->StartAnalysis(SystemPrompt);
 
                 if (!Self->Context.IsValid() || !Self->Context->Session.IsValid())
@@ -479,10 +479,8 @@ void SCortexAnalysisTab::StartAnalysis(const FString& AssembledSystemPrompt)
 
     Context->bAnalysisStarted = true;
 
-    FCortexSessionConfig SessionConfig;
+    FCortexSessionConfig SessionConfig = FCortexFrontendModule::CreateLightweightSessionConfig();
     SessionConfig.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
-    SessionConfig.WorkingDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-    SessionConfig.bConversionMode = true;  // Lightweight: no MCP, no project context
     SessionConfig.SystemPrompt = AssembledSystemPrompt;
 
     Context->Session = MakeShared<FCortexCliSession>(SessionConfig);

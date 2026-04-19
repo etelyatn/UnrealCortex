@@ -4,6 +4,7 @@
 #include "CortexFrontendModule.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
+#include "Providers/CortexCliProvider.h"
 #include "Session/CortexCliSession.h"
 
 namespace
@@ -13,11 +14,13 @@ namespace
 
 FCortexCliWorker::FCortexCliWorker(
 	TWeakPtr<FCortexCliSession> InSession,
+	const ICortexCliProvider* InProvider,
 	void* InStdoutReadPipe,
 	void* InStdinWritePipe,
 	FProcHandle InProcessHandle,
 	FEvent* InPromptReadyEvent)
 	: WeakSession(InSession)
+	, Provider(InProvider)
 	, StdoutReadPipe(InStdoutReadPipe)
 	, StdinWritePipe(InStdinWritePipe)
 	, ProcessHandle(InProcessHandle)
@@ -136,7 +139,7 @@ uint32 FCortexCliWorker::Run()
 							{
 								if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
 								{
-									Pinned->HandleProcessExited(TEXT("Failed to write prompt to Claude CLI"));
+									Pinned->HandleProcessExited(TEXT("Failed to write prompt to provider CLI"));
 								}
 							});
 						}
@@ -152,7 +155,7 @@ uint32 FCortexCliWorker::Run()
 			{
 				if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
 				{
-					Pinned->HandleProcessExited(TEXT("Claude CLI process exited"));
+					Pinned->HandleProcessExited(TEXT("Provider CLI process exited"));
 				}
 			});
 			break;
@@ -166,7 +169,7 @@ uint32 FCortexCliWorker::Run()
 			{
 				if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
 				{
-					Pinned->HandleProcessExited(TEXT("Claude CLI timed out"));
+					Pinned->HandleProcessExited(TEXT("Provider CLI timed out"));
 				}
 			});
 			break;
@@ -206,40 +209,32 @@ bool FCortexCliWorker::ParseAndDispatch(const FString& Chunk)
 {
 	bool bSawResult = false;
 
-	NdjsonLineBuffer += Chunk;
-
-	int32 NewlineIndex = INDEX_NONE;
-	while (NdjsonLineBuffer.FindChar(TEXT('\n'), NewlineIndex))
+	if (Provider == nullptr)
 	{
-		const FString Line = NdjsonLineBuffer.Left(NewlineIndex).TrimEnd();
-		NdjsonLineBuffer.RightChopInline(NewlineIndex + 1, EAllowShrinking::No);
+		return false;
+	}
 
-		if (Line.IsEmpty())
+	TArray<FCortexStreamEvent> Events;
+	Provider->ConsumeStreamChunk(Chunk, StreamBuffer, AssistantTextBuffer, Events);
+	for (const FCortexStreamEvent& Event : Events)
+	{
+		if (Event.Type == ECortexStreamEventType::Result)
 		{
-			continue;
+			bSawResult = true;
 		}
 
-		TArray<FCortexStreamEvent> Events = CortexStreamEventParser::ParseNdjsonLine(Line);
-		for (const FCortexStreamEvent& Event : Events)
+		if (Event.Type == ECortexStreamEventType::SessionInit)
 		{
-			if (Event.Type == ECortexStreamEventType::Result)
-			{
-				bSawResult = true;
-			}
-
-			if (Event.Type == ECortexStreamEventType::SessionInit)
-			{
-				UE_LOG(LogCortexFrontend, Log, TEXT("CLI init event received"));
-			}
-
-			AsyncTask(ENamedThreads::GameThread, [WeakCopy = WeakSession, Event]()
-			{
-				if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
-				{
-					Pinned->HandleWorkerEvent(Event);
-				}
-			});
+			UE_LOG(LogCortexFrontend, Log, TEXT("CLI init event received"));
 		}
+
+		AsyncTask(ENamedThreads::GameThread, [WeakCopy = WeakSession, Event]()
+		{
+			if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
+			{
+				Pinned->HandleWorkerEvent(Event);
+			}
+		});
 	}
 
 	return bSawResult;

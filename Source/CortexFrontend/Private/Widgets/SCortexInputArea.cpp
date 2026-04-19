@@ -309,8 +309,10 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                         .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
                     ];
 
-                    const FString CurrentModel = FCortexFrontendSettings::Get().GetSelectedModel();
-                    for (const FString& ModelId : FCortexFrontendSettings::Get().GetAvailableModels())
+                    const FCortexResolvedSessionOptions ResolvedOptions =
+                        FCortexFrontendSettings::Get().ResolveForActiveProvider();
+                    const FString CurrentModel = ResolvedOptions.ModelId;
+                    for (const FString& ModelId : FCortexFrontendSettings::Get().GetAvailableModelsForActiveProvider())
                     {
                         const bool bIsSelected = (ModelId == CurrentModel);
                         Menu->AddSlot()
@@ -324,8 +326,9 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                 FCortexFrontendSettings::Get().SetSelectedModel(ModelId);
                                 if (Self->ModelLabel.IsValid())
                                 {
-                                    Self->ModelLabel->SetText(FText::FromString(
-                                        FCortexFrontendSettings::Get().GetSelectedModel()));
+                                    const FCortexResolvedSessionOptions UpdatedResolvedOptions =
+                                        FCortexFrontendSettings::Get().ResolveForActiveProvider();
+                                    Self->ModelLabel->SetText(FText::FromString(UpdatedResolvedOptions.ModelId));
                                 }
                                 Self->ModelDropdown->SetIsOpen(false);
                                 return FReply::Handled();
@@ -460,12 +463,16 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                         + SHorizontalBox::Slot()
                         .AutoWidth()
                         .VAlign(VAlign_Center)
-                        [
-                            SAssignNew(ModelLabel, STextBlock)
-                            .Text(FText::FromString(FCortexFrontendSettings::Get().GetSelectedModel()))
-                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
-                            .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
-                        ]
+                            [
+                                SAssignNew(ModelLabel, STextBlock)
+                                .Text_Lambda([]()
+                                {
+                                    return FText::FromString(
+                                        FCortexFrontendSettings::Get().ResolveForActiveProvider().ModelId);
+                                })
+                                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                                .ColorAndOpacity(FSlateColor(CortexColors::TextSecondary))
+                            ]
                         + SHorizontalBox::Slot()
                         .AutoWidth()
                         .VAlign(VAlign_Center)
@@ -1242,7 +1249,7 @@ void SCortexInputArea::PopulateCoreCommands()
     };
 
     CommandCache.Reset();
-    CommandCache.Add(MakeCmd(TEXT("help"),    TEXT("Get help with Claude Code"),    ECortexAutoCompleteKind::CoreCommand));
+    CommandCache.Add(MakeCmd(TEXT("help"),    TEXT("Get help with the active AI provider"), ECortexAutoCompleteKind::CoreCommand));
     CommandCache.Add(MakeCmd(TEXT("clear"),   TEXT("Clear conversation history"),  ECortexAutoCompleteKind::CoreCommand));
     CommandCache.Add(MakeCmd(TEXT("compact"), TEXT("Compact conversation context"), ECortexAutoCompleteKind::CoreCommand));
 }

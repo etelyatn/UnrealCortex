@@ -176,7 +176,7 @@ void SCortexConversionOverlay::Tick(const FGeometry& AllottedGeometry, const dou
 		else
 		{
 			if      (Elapsed < 3.0)  Phase = TEXT("Serializing Blueprint...");
-			else if (Elapsed < 6.0)  Phase = TEXT("Starting Claude session...");
+			else if (Elapsed < 6.0)  Phase = TEXT("Starting AI session...");
 			else if (Elapsed < 12.0) Phase = TEXT("Sending to LLM...");
 			else                     Phase = TEXT("Generating C++ code...");
 		}

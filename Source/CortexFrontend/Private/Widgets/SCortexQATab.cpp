@@ -9,6 +9,7 @@
 #include "CortexCoreDelegates.h"
 #include "CortexFrontendModule.h"
 #include "Dom/JsonObject.h"
+#include "Providers/CortexProviderRegistry.h"
 #include "QA/CortexQASessionManager.h"
 #include "QA/CortexQATabTypes.h"
 #include "Session/CortexCliSession.h"
@@ -17,6 +18,62 @@
 #include "Editor.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SBox.h"
+
+namespace
+{
+    FString GetGenerationStartupFailureStatus(const FCortexSessionConfig& Config)
+    {
+        const FName EffectiveProviderId = Config.ResolvedOptions.ProviderId.IsNone()
+            ? Config.ProviderId
+            : Config.ResolvedOptions.ProviderId;
+        const FCortexProviderDefinition& ProviderDefinition =
+            FCortexProviderRegistry::ResolveDefinition(EffectiveProviderId.ToString());
+        const FString DisplayName = !ProviderDefinition.ExecutableDisplayName.IsEmpty()
+            ? ProviderDefinition.ExecutableDisplayName
+            : (!Config.ResolvedOptions.ProviderDisplayName.IsEmpty()
+                ? Config.ResolvedOptions.ProviderDisplayName
+                : ProviderDefinition.DisplayName);
+        return FString::Printf(TEXT("Failed to start %s"), *DisplayName);
+    }
+
+#if WITH_DEV_AUTOMATION_TESTS
+    TFunction<FCortexQATabSessionCreateResult(const FCortexSessionConfig&)> GQATabSessionCreationOverrideForTests;
+#endif
+
+    bool CreateAndConnectQASession(
+        const FCortexSessionConfig& Config,
+        TSharedPtr<FCortexCliSession>& OutSession,
+        bool& bOutUsedTestOverride)
+    {
+        bOutUsedTestOverride = false;
+
+#if WITH_DEV_AUTOMATION_TESTS
+        if (GQATabSessionCreationOverrideForTests)
+        {
+            bOutUsedTestOverride = true;
+            const FCortexQATabSessionCreateResult Result = GQATabSessionCreationOverrideForTests(Config);
+            OutSession = Result.Session;
+            return Result.bConnected;
+        }
+#endif
+
+        OutSession = MakeShared<FCortexCliSession>(Config);
+        return OutSession.IsValid() && OutSession->Connect();
+    }
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void FCortexQATabTestHooks::SetSessionCreationOverrideForTests(
+    TFunction<FCortexQATabSessionCreateResult(const FCortexSessionConfig&)> InOverride)
+{
+    GQATabSessionCreationOverrideForTests = MoveTemp(InOverride);
+}
+
+void FCortexQATabTestHooks::ClearSessionCreationOverrideForTests()
+{
+    GQATabSessionCreationOverrideForTests.Reset();
+}
+#endif
 
 void SCortexQATab::Construct(const FArguments& InArgs)
 {
@@ -438,26 +495,23 @@ void SCortexQATab::OnGenerateClicked(const FString& Prompt)
     // Lazy-create CLI session on first use
     if (!QACliSession.IsValid())
     {
-        FCortexSessionConfig Config;
+        FCortexSessionConfig Config = FCortexFrontendModule::CreateDefaultSessionConfig();
         Config.SessionId = TEXT("cortex-qa-session");
-        Config.McpConfigPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()) / TEXT(".mcp.json");
         Config.SystemPrompt = TEXT(
             "You are a QA test engineer agent. Generate test scenarios as JSON step arrays.\n"
             "Available step types: position_snapshot, move_to, interact, look_at, wait, assert, key_press.\n"
             "Use MCP tools to inspect the level and determine actor paths.\n"
             "Save the generated scenario to Saved/CortexQA/Recordings/ using the session JSON format."
         );
-        Config.bSkipPermissions = true;
         Config.bConversionMode = false;
 
-        QACliSession = MakeShared<FCortexCliSession>(Config);
-
-        if (!QACliSession->Connect())
+        bool bUsedTestOverride = false;
+        if (!CreateAndConnectQASession(Config, QACliSession, bUsedTestOverride))
         {
-            UE_LOG(LogCortexFrontend, Warning, TEXT("QA: Failed to connect CLI session for AI generation"));
+            UE_LOG(LogCortexFrontend, Log, TEXT("QA: Failed to connect CLI session for AI generation"));
             if (CommandBar.IsValid())
             {
-                CommandBar->SetStatus(TEXT("Failed to start Claude CLI"));
+                CommandBar->SetStatus(GetGenerationStartupFailureStatus(Config));
             }
             QACliSession.Reset();
             return;

@@ -1,5 +1,10 @@
 #include "Misc/AutomationTest.h"
+#include "CortexFrontendProviderSettings.h"
 #include "CortexFrontendSettings.h"
+#include "HAL/FileManager.h"
+#include "Misc/Guid.h"
+#include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Session/CortexCliSession.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReconnectRejectsNonIdleTest,
@@ -98,5 +103,104 @@ bool FCortexReconnectDirtyStatePreservedOnFailureTest::RunTest(const FString& Pa
 
     Settings.SetEffortLevel(Orig);
     Settings.ClearPendingChanges();
+    return true;
+}
+
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReconnectPinsLaunchMetadataAcrossSettingsChangeTest,
+    "Cortex.Frontend.ContextControls.Reconnect.PinsLaunchMetadataAcrossSettingsChange",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReconnectPinsLaunchMetadataAcrossSettingsChangeTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const FString TempSettingsPath = FPaths::Combine(
+        FPaths::ProjectSavedDir(),
+        TEXT("CortexFrontend"),
+        FString::Printf(TEXT("Task4ReconnectTest_%s.json"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(TempSettingsPath), true);
+    FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(TempSettingsPath);
+    ON_SCOPE_EXIT
+    {
+        FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
+        IFileManager::Get().Delete(*TempSettingsPath);
+    };
+
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    UCortexFrontendProviderSettings* ProviderSettings = GetMutableDefault<UCortexFrontendProviderSettings>();
+    TestNotNull(TEXT("Provider settings should exist"), ProviderSettings);
+    if (!ProviderSettings)
+    {
+        return false;
+    }
+
+    const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
+    const ECortexAccessMode OriginalAccessMode = Settings.GetAccessMode();
+    const bool OriginalSkipPermissions = Settings.GetSkipPermissions();
+    const ECortexWorkflowMode OriginalWorkflow = Settings.GetWorkflowMode();
+    const bool OriginalProjectContext = Settings.GetProjectContext();
+    const bool OriginalAutoContext = Settings.GetAutoContext();
+    const FString OriginalDirective = Settings.GetCustomDirective();
+    const ECortexEffortLevel OriginalEffort = Settings.GetEffortLevel();
+    const FString OriginalModel = Settings.GetSelectedModel();
+    ON_SCOPE_EXIT
+    {
+        ProviderSettings->ActiveProviderId = OriginalProviderId;
+        Settings.SetAccessMode(OriginalAccessMode);
+        Settings.SetSkipPermissions(OriginalSkipPermissions);
+        Settings.SetWorkflowMode(OriginalWorkflow);
+        Settings.SetProjectContext(OriginalProjectContext);
+        Settings.SetAutoContext(OriginalAutoContext);
+        Settings.SetCustomDirective(OriginalDirective);
+        Settings.SetEffortLevel(OriginalEffort);
+        Settings.SetSelectedModel(OriginalModel);
+        Settings.ClearPendingChanges();
+    };
+
+    ProviderSettings->ActiveProviderId = TEXT("codex");
+    Settings.SetAccessMode(ECortexAccessMode::Guided);
+    Settings.SetSkipPermissions(false);
+    Settings.SetWorkflowMode(ECortexWorkflowMode::Thorough);
+    Settings.SetProjectContext(true);
+    Settings.SetAutoContext(true);
+    Settings.SetCustomDirective(TEXT("Reconnect snapshot"));
+    Settings.SetEffortLevel(ECortexEffortLevel::Medium);
+    Settings.SetSelectedModel(TEXT("gpt-5.4"));
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("test-reconnect-pinned");
+    Config.McpConfigPath = FPaths::Combine(FPaths::ProjectDir(), TEXT(".mcp.json"));
+
+    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(Config);
+    FCortexStreamEvent InitEvent;
+    InitEvent.Type = ECortexStreamEventType::SessionInit;
+    InitEvent.SessionId = TEXT("thread-reconnect-123");
+    Session->HandleWorkerEvent(InitEvent);
+    TestEqual(TEXT("Reconnect session should persist the real thread id"), Session->GetSessionId(), FString(TEXT("thread-reconnect-123")));
+
+    TestTrue(TEXT("Session should pin codex provider"), Session->GetProviderId() == FName(TEXT("codex")));
+    TestTrue(TEXT("Session should pin codex model"), Session->GetResolvedOptions().ModelId == TEXT("gpt-5.4"));
+    TestTrue(TEXT("Session should pin codex effort"), Session->GetResolvedOptions().EffortLevel == ECortexEffortLevel::Medium);
+    TestTrue(TEXT("Session should pin context limit"), Session->GetContextLimitTokens() == static_cast<int64>(272000));
+
+    const FString LaunchBeforeSettingsChange = Session->BuildLaunchCommandLine(true, ECortexAccessMode::Guided);
+    TestFalse(TEXT("Pinned reconnect launch should snapshot live skip permissions"), LaunchBeforeSettingsChange.Contains(TEXT("--dangerously-bypass-approvals-and-sandbox")));
+    TestTrue(TEXT("Pinned reconnect launch should keep codex model"), LaunchBeforeSettingsChange.Contains(TEXT("-m \"gpt-5.4\"")));
+
+    ProviderSettings->ActiveProviderId = TEXT("claude_code");
+    Settings.SetSkipPermissions(true);
+    Settings.SetEffortLevel(ECortexEffortLevel::High);
+    Settings.SetSelectedModel(TEXT("claude-opus-4-6"));
+
+    Session->SetStateForTest(ECortexSessionState::Idle);
+    (void)Session->Reconnect();
+
+    const FString LaunchAfterSettingsChange = Session->BuildLaunchCommandLine(true, ECortexAccessMode::Guided);
+    TestEqual(TEXT("Reconnect launch should remain pinned across settings changes"), LaunchAfterSettingsChange, LaunchBeforeSettingsChange);
+    TestTrue(TEXT("Reconnect launch should use the real thread id"), LaunchAfterSettingsChange.Contains(TEXT("thread-reconnect-123")));
+    TestTrue(TEXT("Pinned provider id should remain codex"), Session->GetProviderId() == FName(TEXT("codex")));
+    TestTrue(TEXT("Pinned resolved model should remain gpt-5.4"), Session->GetResolvedOptions().ModelId == TEXT("gpt-5.4"));
+    TestTrue(TEXT("Pinned resolved effort should remain medium"), Session->GetResolvedOptions().EffortLevel == ECortexEffortLevel::Medium);
     return true;
 }
