@@ -11,8 +11,10 @@
 
 namespace
 {
+#if WITH_DEV_AUTOMATION_TESTS
     FString GSettingsFilePathOverride;
     bool bHasSettingsFilePathOverride = false;
+#endif
 }
 
 FCortexFrontendSettings& FCortexFrontendSettings::Get()
@@ -21,6 +23,7 @@ FCortexFrontendSettings& FCortexFrontendSettings::Get()
     return Instance;
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
 void FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(const FString& InSettingsFilePath)
 {
     check(IsInGameThread());
@@ -34,6 +37,7 @@ void FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests()
     GSettingsFilePathOverride.Reset();
     bHasSettingsFilePathOverride = false;
 }
+#endif
 
 FCortexFrontendSettings::FCortexFrontendSettings()
 {
@@ -67,7 +71,7 @@ void FCortexFrontendSettings::SetSelectedModel(const FString& Model)
     Save();
 }
 
-TArray<FString> FCortexFrontendSettings::GetAvailableModels() const
+TArray<FString> FCortexFrontendSettings::GetLegacyAvailableModelsForCompatibility() const
 {
     if (bHasCustomModels)
     {
@@ -335,10 +339,12 @@ void FCortexFrontendSettings::Save()
 
 FString FCortexFrontendSettings::GetSettingsFilePath() const
 {
+#if WITH_DEV_AUTOMATION_TESTS
     if (bHasSettingsFilePathOverride)
     {
         return GSettingsFilePathOverride;
     }
+#endif
 
     return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("settings.json"));
 }

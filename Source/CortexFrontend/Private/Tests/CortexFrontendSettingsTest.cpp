@@ -125,7 +125,7 @@ bool FCortexFrontendSettingsDeprecatedAvailableModelsTest::RunTest(const FString
     TestTrue(TEXT("Codex models should come from registry"), Models.Contains(TEXT("gpt-5.4")));
     TestFalse(TEXT("Codex models should not contain Claude-only models"), Models.Contains(TEXT("claude-opus-4-6")));
     TestFalse(TEXT("Codex models should ignore deprecated JSON payload"), Models.Contains(TEXT("legacy-fake-model")));
-    TestTrue(TEXT("Deprecated JSON model list should still load for compatibility"), Settings.GetAvailableModels().Contains(TEXT("legacy-fake-model")));
+    TestTrue(TEXT("Deprecated JSON model list should still load for compatibility"), Settings.GetLegacyAvailableModelsForCompatibility().Contains(TEXT("legacy-fake-model")));
 
     Settings.Save();
     FString SavedJson;
@@ -138,7 +138,7 @@ bool FCortexFrontendSettingsDeprecatedAvailableModelsTest::RunTest(const FString
     {
         TestFalse(TEXT("Deprecated available_models field should not be persisted"), SavedJsonObject->HasField(TEXT("available_models")));
     }
-    TestFalse(TEXT("Deprecated JSON model list should be cleared from memory after save"), Settings.GetAvailableModels().Contains(TEXT("legacy-fake-model")));
+    TestFalse(TEXT("Deprecated JSON model list should be cleared from memory after save"), Settings.GetLegacyAvailableModelsForCompatibility().Contains(TEXT("legacy-fake-model")));
 
     return true;
 }

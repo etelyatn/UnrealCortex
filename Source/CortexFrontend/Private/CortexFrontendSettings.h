@@ -10,8 +10,10 @@ class FCortexFrontendSettings
 {
 public:
     static FCortexFrontendSettings& Get();
+#if WITH_DEV_AUTOMATION_TESTS
     static void SetSettingsFilePathOverrideForTests(const FString& InSettingsFilePath);
     static void ClearSettingsFilePathOverrideForTests();
+#endif
 
     ECortexAccessMode GetAccessMode() const { return AccessMode; }
     void SetAccessMode(ECortexAccessMode Mode);
@@ -32,7 +34,7 @@ public:
 
     FString GetSelectedModel() const { return SelectedModel; }
     void SetSelectedModel(const FString& Model);
-    TArray<FString> GetAvailableModels() const;
+    TArray<FString> GetLegacyAvailableModelsForCompatibility() const;
     TArray<FString> GetAvailableModelsForActiveProvider() const;
 
     ECortexEffortLevel GetEffortLevel() const { return EffortLevel; }

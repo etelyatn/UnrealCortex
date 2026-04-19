@@ -19,15 +19,61 @@
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SBox.h"
 
-FString SCortexQATab::BuildGenerationStartupFailureStatus(const FCortexSessionConfig& Config)
+namespace
 {
-    const FCortexProviderDefinition& ProviderDefinition =
-        FCortexProviderRegistry::ResolveDefinition(Config.ProviderId.ToString());
-    const FString ExecutableDisplayName = ProviderDefinition.ExecutableDisplayName.IsEmpty()
-        ? ProviderDefinition.DisplayName
-        : ProviderDefinition.ExecutableDisplayName;
-    return FString::Printf(TEXT("Failed to start %s"), *ExecutableDisplayName);
+    FString GetGenerationStartupFailureStatus(const FCortexSessionConfig& Config)
+    {
+        const FName EffectiveProviderId = Config.ResolvedOptions.ProviderId.IsNone()
+            ? Config.ProviderId
+            : Config.ResolvedOptions.ProviderId;
+        const FCortexProviderDefinition& ProviderDefinition =
+            FCortexProviderRegistry::ResolveDefinition(EffectiveProviderId.ToString());
+        const FString DisplayName = !ProviderDefinition.ExecutableDisplayName.IsEmpty()
+            ? ProviderDefinition.ExecutableDisplayName
+            : (!Config.ResolvedOptions.ProviderDisplayName.IsEmpty()
+                ? Config.ResolvedOptions.ProviderDisplayName
+                : ProviderDefinition.DisplayName);
+        return FString::Printf(TEXT("Failed to start %s"), *DisplayName);
+    }
+
+#if WITH_DEV_AUTOMATION_TESTS
+    TFunction<FCortexQATabSessionCreateResult(const FCortexSessionConfig&)> GQATabSessionCreationOverrideForTests;
+#endif
+
+    bool CreateAndConnectQASession(
+        const FCortexSessionConfig& Config,
+        TSharedPtr<FCortexCliSession>& OutSession,
+        bool& bOutUsedTestOverride)
+    {
+        bOutUsedTestOverride = false;
+
+#if WITH_DEV_AUTOMATION_TESTS
+        if (GQATabSessionCreationOverrideForTests)
+        {
+            bOutUsedTestOverride = true;
+            const FCortexQATabSessionCreateResult Result = GQATabSessionCreationOverrideForTests(Config);
+            OutSession = Result.Session;
+            return Result.bConnected;
+        }
+#endif
+
+        OutSession = MakeShared<FCortexCliSession>(Config);
+        return OutSession.IsValid() && OutSession->Connect();
+    }
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+void FCortexQATabTestHooks::SetSessionCreationOverrideForTests(
+    TFunction<FCortexQATabSessionCreateResult(const FCortexSessionConfig&)> InOverride)
+{
+    GQATabSessionCreationOverrideForTests = MoveTemp(InOverride);
+}
+
+void FCortexQATabTestHooks::ClearSessionCreationOverrideForTests()
+{
+    GQATabSessionCreationOverrideForTests.Reset();
+}
+#endif
 
 void SCortexQATab::Construct(const FArguments& InArgs)
 {
@@ -459,14 +505,13 @@ void SCortexQATab::OnGenerateClicked(const FString& Prompt)
         );
         Config.bConversionMode = false;
 
-        QACliSession = MakeShared<FCortexCliSession>(Config);
-
-        if (!QACliSession->Connect())
+        bool bUsedTestOverride = false;
+        if (!CreateAndConnectQASession(Config, QACliSession, bUsedTestOverride))
         {
-            UE_LOG(LogCortexFrontend, Warning, TEXT("QA: Failed to connect CLI session for AI generation"));
+            UE_LOG(LogCortexFrontend, Log, TEXT("QA: Failed to connect CLI session for AI generation"));
             if (CommandBar.IsValid())
             {
-                CommandBar->SetStatus(BuildGenerationStartupFailureStatus(Config));
+                CommandBar->SetStatus(GetGenerationStartupFailureStatus(Config));
             }
             QACliSession.Reset();
             return;

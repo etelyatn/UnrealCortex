@@ -8,8 +8,10 @@
 #include "Misc/ScopeExit.h"
 #include "Modules/ModuleManager.h"
 #include "Framework/Docking/TabManager.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Session/CortexCliSession.h"
 #include "Widgets/SCortexQATab.h"
+#include "Widgets/Text/STextBlock.h"
 
 namespace
 {
@@ -20,6 +22,46 @@ namespace
 			TEXT("CortexFrontend"),
 			FString::Printf(TEXT("%s_%s.json"), Prefix, *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
 	}
+
+	void CollectQATabWidgets(const TSharedRef<SWidget>& Widget, TArray<TSharedRef<SWidget>>& OutWidgets)
+	{
+		OutWidgets.Add(Widget);
+
+		FChildren* Children = Widget->GetChildren();
+		if (Children == nullptr)
+		{
+			return;
+		}
+
+		for (int32 ChildIndex = 0; ChildIndex < Children->Num(); ++ChildIndex)
+		{
+			CollectQATabWidgets(Children->GetChildAt(ChildIndex), OutWidgets);
+		}
+	}
+
+	bool QATabWidgetTreeContainsText(const TSharedRef<SWidget>& RootWidget, const FString& ExpectedText)
+	{
+		TArray<TSharedRef<SWidget>> Widgets;
+		CollectQATabWidgets(RootWidget, Widgets);
+
+		for (const TSharedRef<SWidget>& Widget : Widgets)
+		{
+			if (Widget->GetType() == FName(TEXT("STextBlock")))
+			{
+				const TSharedRef<STextBlock> TextBlock = StaticCastSharedRef<STextBlock>(Widget);
+				if (TextBlock->GetText().ToString() == ExpectedText)
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	class STestCortexQATab : public SCortexQATab
+	{
+	};
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -43,8 +85,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FCortexQAGenerationFailureStatusUsesProviderDisplayNameTest,
-    "Cortex.Frontend.QATab.GenerationFailureStatusUsesProviderDisplayName",
+    FCortexQAGenerationConnectFailureShowsProviderStatusTest,
+    "Cortex.Frontend.QATab.GenerationConnectFailureShowsProviderStatus",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexQADefaultSessionUsesActiveProviderTest::RunTest(const FString& Parameters)
@@ -117,18 +159,60 @@ bool FCortexQADefaultSessionUsesActiveProviderTest::RunTest(const FString& Param
     return true;
 }
 
-bool FCortexQAGenerationFailureStatusUsesProviderDisplayNameTest::RunTest(const FString& Parameters)
+bool FCortexQAGenerationConnectFailureShowsProviderStatusTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
 
-    FCortexSessionConfig Config;
-    Config.ProviderId = FName(TEXT("codex"));
-    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
-    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    if (!FSlateApplication::IsInitialized())
+    {
+        AddInfo(TEXT("Slate not initialized, skipping"));
+        return true;
+    }
 
-    TestEqual(
-        TEXT("QA generation startup failure should reference the selected provider"),
-        SCortexQATab::BuildGenerationStartupFailureStatus(Config),
-        FString(TEXT("Failed to start Codex CLI")));
+    const FString TempSettingsPath = MakeQATempFrontendSettingsPath(TEXT("Task5QAConnectFailure"));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(TempSettingsPath), true);
+    FCortexFrontendSettings::SetSettingsFilePathOverrideForTests(TempSettingsPath);
+    ON_SCOPE_EXIT
+    {
+        FCortexFrontendSettings::ClearSettingsFilePathOverrideForTests();
+        IFileManager::Get().Delete(*TempSettingsPath);
+    };
+
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    UCortexFrontendProviderSettings* ProviderSettings = GetMutableDefault<UCortexFrontendProviderSettings>();
+    TestTrue(TEXT("Provider settings should exist"), ProviderSettings != nullptr);
+    if (!ProviderSettings)
+    {
+        return false;
+    }
+
+    const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
+    const FString OriginalModel = Settings.GetSelectedModel();
+    ON_SCOPE_EXIT
+    {
+        ProviderSettings->ActiveProviderId = OriginalProviderId;
+        Settings.SetSelectedModel(OriginalModel);
+        Settings.ClearPendingChanges();
+        FCortexQATabTestHooks::ClearSessionCreationOverrideForTests();
+    };
+
+    ProviderSettings->ActiveProviderId = TEXT("codex");
+    Settings.SetSelectedModel(TEXT("gpt-5.4"));
+
+    FCortexQATabTestHooks::SetSessionCreationOverrideForTests(
+        [](const FCortexSessionConfig& Config)
+        {
+            FCortexQATabSessionCreateResult Result;
+            Result.Session = MakeShared<FCortexCliSession>(Config);
+            Result.bConnected = false;
+            return Result;
+        });
+
+    TSharedRef<STestCortexQATab> Tab = SNew(STestCortexQATab);
+    Tab->InvokeGenerateForTests(TEXT("Generate a QA scenario"));
+
+    TestTrue(
+        TEXT("QA connect failure should surface provider-aware startup status in the command bar"),
+        QATabWidgetTreeContainsText(Tab, TEXT("Failed to start Codex CLI")));
     return true;
 }

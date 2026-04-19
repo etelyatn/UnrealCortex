@@ -15,16 +15,32 @@ class SCortexQADetailPanel;
 class SCortexQACommandBar;
 struct FCortexTurnResult;
 
+#if WITH_DEV_AUTOMATION_TESTS
+struct FCortexQATabSessionCreateResult
+{
+    TSharedPtr<FCortexCliSession> Session;
+    bool bConnected = false;
+};
+
+struct FCortexQATabTestHooks
+{
+    static void SetSessionCreationOverrideForTests(TFunction<FCortexQATabSessionCreateResult(const FCortexSessionConfig&)> InOverride);
+    static void ClearSessionCreationOverrideForTests();
+};
+#endif
+
 class SCortexQATab : public SCompoundWidget
 {
 public:
     SLATE_BEGIN_ARGS(SCortexQATab) {}
     SLATE_END_ARGS()
 
-    static FString BuildGenerationStartupFailureStatus(const FCortexSessionConfig& Config);
-
     void Construct(const FArguments& InArgs);
     virtual ~SCortexQATab();
+
+#if WITH_DEV_AUTOMATION_TESTS
+    void InvokeGenerateForTests(const FString& Prompt) { OnGenerateClicked(Prompt); }
+#endif
 
 private:
     void OnDomainProgress(const FName& DomainName, const TSharedPtr<FJsonObject>& Data);
