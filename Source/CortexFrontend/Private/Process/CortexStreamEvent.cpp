@@ -292,6 +292,21 @@ namespace
             OutEvent.CacheCreationTokens = static_cast<int64>(Value);
         }
     }
+
+    FString SerializeJsonObject(const TSharedPtr<FJsonObject>& JsonObject)
+    {
+        FString JsonText;
+        if (!JsonObject.IsValid())
+        {
+            return JsonText;
+        }
+
+        const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+            TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&JsonText);
+        FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
+        Writer->Close();
+        return JsonText;
+    }
 }
 
 TArray<FCortexStreamEvent> CortexStreamEventParser::ParseCodexJsonObject(
@@ -399,18 +414,36 @@ TArray<FCortexStreamEvent> CortexStreamEventParser::ParseCodexJsonObject(
         FString ItemType;
         if ((*ItemObject)->TryGetStringField(TEXT("type"), ItemType))
         {
-            if (ItemType == TEXT("command_execution"))
+            if (ItemType == TEXT("command_execution") || ItemType == TEXT("mcp_tool_use"))
             {
                 FCortexStreamEvent Event;
                 Event.ToolCallId = TEXT("");
                 (*ItemObject)->TryGetStringField(TEXT("id"), Event.ToolCallId);
-                Event.ToolName = TEXT("command_execution");
+                if (ItemType == TEXT("command_execution"))
+                {
+                    Event.ToolName = TEXT("command_execution");
+                }
+                else if (!(*ItemObject)->TryGetStringField(TEXT("name"), Event.ToolName))
+                {
+                    Event.ToolName = TEXT("mcp_tool_use");
+                }
+
                 if (Type == TEXT("item.started"))
                 {
                     Event.Type = ECortexStreamEventType::ToolUse;
-                    TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Event.ToolInput);
-                    FJsonSerializer::Serialize((*ItemObject).ToSharedRef(), Writer);
-                    Writer->Close();
+                    if (ItemType == TEXT("mcp_tool_use"))
+                    {
+                        const TSharedPtr<FJsonObject>* InputObject = nullptr;
+                        if ((*ItemObject)->TryGetObjectField(TEXT("input"), InputObject) && InputObject != nullptr)
+                        {
+                            Event.ToolInput = SerializeJsonObject(*InputObject);
+                        }
+                    }
+
+                    if (Event.ToolInput.IsEmpty())
+                    {
+                        Event.ToolInput = SerializeJsonObject(*ItemObject);
+                    }
                 }
                 else
                 {
@@ -419,6 +452,14 @@ TArray<FCortexStreamEvent> CortexStreamEventParser::ParseCodexJsonObject(
                     if (Event.ToolResultContent.IsEmpty())
                     {
                         (*ItemObject)->TryGetStringField(TEXT("result"), Event.ToolResultContent);
+                    }
+                    if (Event.ToolResultContent.IsEmpty())
+                    {
+                        const TSharedPtr<FJsonObject>* OutputObject = nullptr;
+                        if ((*ItemObject)->TryGetObjectField(TEXT("output"), OutputObject) && OutputObject != nullptr)
+                        {
+                            Event.ToolResultContent = SerializeJsonObject(*OutputObject);
+                        }
                     }
                 }
 

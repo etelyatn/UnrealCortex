@@ -15,6 +15,98 @@
 
 namespace
 {
+    FString GetAccessModeDisplayName(ECortexAccessMode AccessMode)
+    {
+        switch (AccessMode)
+        {
+        case ECortexAccessMode::ReadOnly:
+            return TEXT("Read-Only");
+        case ECortexAccessMode::Guided:
+            return TEXT("Guided");
+        case ECortexAccessMode::FullAccess:
+            return TEXT("Full Access");
+        }
+
+        return TEXT("Read-Only");
+    }
+
+    FString GetCodexSandboxMode(ECortexAccessMode AccessMode)
+    {
+        switch (AccessMode)
+        {
+        case ECortexAccessMode::ReadOnly:
+            return TEXT("read-only");
+        case ECortexAccessMode::Guided:
+            return TEXT("workspace-write");
+        case ECortexAccessMode::FullAccess:
+            return TEXT("danger-full-access");
+        }
+
+        return TEXT("read-only");
+    }
+
+    FString GetWorkflowModeDisplayName(ECortexWorkflowMode WorkflowMode)
+    {
+        return WorkflowMode == ECortexWorkflowMode::Direct ? TEXT("Direct") : TEXT("Thorough");
+    }
+
+    FString GetEnabledDisabledLabel(bool bEnabled)
+    {
+        return bEnabled ? TEXT("Enabled") : TEXT("Disabled");
+    }
+
+    FString SanitizeCodexDirective(const FString& Directive)
+    {
+        FString Sanitized = Directive;
+        Sanitized.ReplaceInline(TEXT("\n"), TEXT(" "));
+        Sanitized.ReplaceInline(TEXT("\r"), TEXT(" "));
+        Sanitized.ReplaceInline(TEXT("\t"), TEXT(" "));
+        Sanitized.ReplaceInline(TEXT("$("), TEXT(""));
+        Sanitized.ReplaceInline(TEXT("`"), TEXT(""));
+        Sanitized.ReplaceInline(TEXT("%"), TEXT(""));
+        Sanitized.ReplaceInline(TEXT("^"), TEXT(""));
+        Sanitized.ReplaceInline(TEXT("|"), TEXT(""));
+        Sanitized.ReplaceInline(TEXT("&"), TEXT(""));
+        Sanitized.ReplaceInline(TEXT(">"), TEXT(""));
+        Sanitized.ReplaceInline(TEXT("<"), TEXT(""));
+        return Sanitized;
+    }
+
+    FString BuildCodexInstructionBlock(const FCortexSessionConfig& SessionConfig, ECortexAccessMode AccessMode)
+    {
+        const FCortexResolvedLaunchOptions& LaunchOptions = SessionConfig.LaunchOptions;
+
+        FString Instructions = !SessionConfig.SystemPrompt.IsEmpty()
+            ? SessionConfig.SystemPrompt
+            : FString::Printf(
+                TEXT("You are running inside the Unreal Editor's Cortex AI frontend. ")
+                TEXT("You can inspect and modify the local workspace and use Cortex MCP tools when available. ")
+                TEXT("Current access mode: %s."),
+                *GetAccessModeDisplayName(AccessMode));
+
+        Instructions += FString::Printf(
+            TEXT("\nCurrent access mode: %s")
+            TEXT("\nWorkflow mode: %s")
+            TEXT("\nProject context: %s")
+            TEXT("\nAuto-context: %s"),
+            *GetAccessModeDisplayName(AccessMode),
+            *GetWorkflowModeDisplayName(LaunchOptions.WorkflowMode),
+            *GetEnabledDisabledLabel(LaunchOptions.bProjectContext),
+            *GetEnabledDisabledLabel(LaunchOptions.bAutoContext));
+
+        if (LaunchOptions.WorkflowMode == ECortexWorkflowMode::Direct)
+        {
+            Instructions += TEXT("\nAct directly on the user's request. Do not detour into planning-only workflows or documentation-first ceremonies.");
+        }
+
+        if (!LaunchOptions.CustomDirective.IsEmpty())
+        {
+            Instructions += TEXT("\nCustom directive: ") + SanitizeCodexDirective(LaunchOptions.CustomDirective);
+        }
+
+        return Instructions;
+    }
+
     FString FindCodexBinaryFromEnvironment()
     {
 #if PLATFORM_WINDOWS
@@ -99,7 +191,7 @@ namespace
         return TEXT("default");
     }
 
-    FString SerializeJsonObject(const TSharedPtr<FJsonObject>& Object)
+    FString SerializeCodexJsonObject(const TSharedPtr<FJsonObject>& Object)
     {
         FString Json;
         const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Json);
@@ -218,7 +310,6 @@ FString FCortexCodexCliProvider::BuildLaunchCommandLine(
     ECortexAccessMode AccessMode,
     const FCortexSessionConfig& SessionConfig) const
 {
-    (void)AccessMode;
     const FCortexResolvedLaunchOptions& LaunchOptions = SessionConfig.LaunchOptions;
     const FCortexResolvedSessionOptions& ResolvedOptions = SessionConfig.ResolvedOptions;
 
@@ -269,8 +360,25 @@ FString FCortexCodexCliProvider::BuildLaunchCommandLine(
     {
         CommandLine += TEXT("--dangerously-bypass-approvals-and-sandbox ");
     }
+    else
+    {
+        CommandLine += FString::Printf(TEXT("--sandbox %s "), *GetCodexSandboxMode(AccessMode));
+    }
 
     return CommandLine.TrimStartAndEnd();
+}
+
+FString FCortexCodexCliProvider::BuildPromptEnvelope(
+    const FString& Prompt,
+    ECortexAccessMode AccessMode,
+    const FCortexSessionConfig& SessionConfig) const
+{
+    FString Envelope = TEXT("<system>\n");
+    Envelope += BuildCodexInstructionBlock(SessionConfig, AccessMode);
+    Envelope += TEXT("\n</system>\n\n<user>\n");
+    Envelope += Prompt;
+    Envelope += TEXT("\n</user>\n");
+    return Envelope;
 }
 
 FString FCortexCodexCliProvider::BuildAuthCommand() const

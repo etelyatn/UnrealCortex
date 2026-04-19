@@ -18,6 +18,10 @@ namespace
 	constexpr uint8 MaxRespawnAttempts = 2;
 	constexpr float GracePeriodSeconds = 2.0f;
 
+#if WITH_DEV_AUTOMATION_TESTS
+	TFunction<bool(FCortexCliSession&, ECortexAccessMode, bool)> GSpawnProcessOverrideForTests;
+#endif
+
 	const ICortexCliProvider& GetPinnedProvider(const FName& ProviderId)
 	{
 		static FCortexClaudeCliProvider ClaudeProvider;
@@ -178,17 +182,23 @@ bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
 		return false;
 	}
 
+	const bool bIsPerTurnExec =
+		PinnedProvider != nullptr &&
+		PinnedProvider->GetTransportMode() == ECortexCliTransportMode::PerTurnExec;
+
 	if (PinnedProvider != nullptr &&
-		PinnedProvider->GetTransportMode() == ECortexCliTransportMode::PerTurnExec &&
+		bIsPerTurnExec &&
 		(!ProcessHandle.IsValid() || !FPlatformProcess::IsProcRunning(ProcessHandle)))
 	{
-		UE_LOG(LogCortexFrontend, Log, TEXT("Per-turn exec provider idle without a running process, resuming session"));
+		const bool bResumeProviderConversation = bHasProviderConversationId || bHasResumableProviderConversation;
+		UE_LOG(LogCortexFrontend, Log, TEXT("Per-turn exec provider idle without a running process, launching session (resume=%s)"),
+			bResumeProviderConversation ? TEXT("true") : TEXT("false"));
 		if (!TransitionState(ECortexSessionState::Idle, ECortexSessionState::Spawning, TEXT("Resuming per-turn exec conversation")))
 		{
 			UE_LOG(LogCortexFrontend, Warning, TEXT("SendPrompt: failed to transition Idle -> Spawning for per-turn exec resume"));
 			return false;
 		}
-		if (!SpawnProcess(Request.AccessMode, true))
+		if (!SpawnProcess(Request.AccessMode, bResumeProviderConversation))
 		{
 			TransitionState(ECortexSessionState::Spawning, ECortexSessionState::Inactive, TEXT("Failed to resume provider"));
 			return false;
@@ -198,7 +208,7 @@ bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
 	}
 
 	// Access mode changed since last spawn — reconnect to apply new --allowedTools
-	if (LastSpawnedAccessMode.IsSet() && LastSpawnedAccessMode.GetValue() != Request.AccessMode)
+	if (!bIsPerTurnExec && LastSpawnedAccessMode.IsSet() && LastSpawnedAccessMode.GetValue() != Request.AccessMode)
 	{
 		UE_LOG(LogCortexFrontend, Log, TEXT("Access mode changed (%d -> %d), reconnecting to apply new permissions"),
 			static_cast<int32>(LastSpawnedAccessMode.GetValue()), static_cast<int32>(Request.AccessMode));
@@ -308,6 +318,8 @@ void FCortexCliSession::NewChat()
 	CleanupProcess();
 	ClearConversation();
 	Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
+	bHasProviderConversationId = false;
+	bHasResumableProviderConversation = false;
 	ConsecutiveSpawnFailures = 0;
 	CurrentTurnIndex = 0;
 	ConversationContextTokens.store(0);
@@ -345,6 +357,7 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 		if (!Event.SessionId.IsEmpty())
 		{
 			Config.SessionId = Event.SessionId;
+			bHasProviderConversationId = true;
 		}
 
 		if (!Event.Model.IsEmpty())
@@ -472,6 +485,8 @@ void FCortexCliSession::HandleProcessExited(const FString& Reason)
 		{
 			ConsecutiveSpawnFailures = 0;
 			Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
+			bHasProviderConversationId = false;
+			bHasResumableProviderConversation = false;
 			UE_LOG(LogCortexFrontend, Warning, TEXT("Max respawn attempts exceeded, starting fresh session %s"), *Config.SessionId);
 			State.store(ECortexSessionState::Inactive);
 			BroadcastStateChange(CurrentState, ECortexSessionState::Inactive, TEXT("Session could not be resumed. Started fresh."));
@@ -552,19 +567,23 @@ FString FCortexCliSession::BuildAllowedToolsArg(ECortexAccessMode AccessMode) co
 	return FString();
 }
 
-FString FCortexCliSession::BuildPromptEnvelope(const FString& Prompt) const
+FString FCortexCliSession::BuildPromptEnvelope(const FString& Prompt, ECortexAccessMode AccessMode) const
 {
-	FString EscapedPrompt = Prompt;
-	EscapedPrompt.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
-	EscapedPrompt.ReplaceInline(TEXT("\""), TEXT("\\\""));
-	EscapedPrompt.ReplaceInline(TEXT("\n"), TEXT("\\n"));
-	EscapedPrompt.ReplaceInline(TEXT("\r"), TEXT("\\r"));
-	EscapedPrompt.ReplaceInline(TEXT("\t"), TEXT("\\t"));
-	return FString::Printf(TEXT("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"%s\"}}\n"), *EscapedPrompt);
+	const ICortexCliProvider* PinnedProviderToUse = PinnedProvider != nullptr ? PinnedProvider : &GetPinnedProvider(Config.ProviderId);
+	return PinnedProviderToUse != nullptr
+		? PinnedProviderToUse->BuildPromptEnvelope(Prompt, AccessMode, Config)
+		: FString();
 }
 
 bool FCortexCliSession::SpawnProcess(ECortexAccessMode AccessMode, bool bResumeSession)
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	if (GSpawnProcessOverrideForTests)
+	{
+		return GSpawnProcessOverrideForTests(*this, AccessMode, bResumeSession);
+	}
+#endif
+
 	CleanupProcess();
 
 	if (bResumeSession && PinnedProvider != nullptr && !PinnedProvider->SupportsResume())
@@ -764,8 +783,10 @@ FString FCortexCliSession::ConsumePendingPromptEnvelope()
 		return FString();
 	}
 
-	const FString Envelope = BuildPromptEnvelope(PendingPrompt.GetValue());
+	const ECortexAccessMode AccessMode = PendingAccessMode.Get(Config.LaunchOptions.AccessMode);
+	const FString Envelope = BuildPromptEnvelope(PendingPrompt.GetValue(), AccessMode);
 	PendingPrompt.Reset();
+	PendingAccessMode.Reset();
 	return Envelope;
 }
 
@@ -955,6 +976,25 @@ void FCortexCliSession::SetStateForTest(ECortexSessionState NewState)
 {
 	State.store(NewState);
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+void FCortexCliSession::SetSpawnProcessOverrideForTests(TFunction<bool(FCortexCliSession&, ECortexAccessMode, bool)> InOverride)
+{
+	GSpawnProcessOverrideForTests = MoveTemp(InOverride);
+}
+
+void FCortexCliSession::ClearSpawnProcessOverrideForTests()
+{
+	GSpawnProcessOverrideForTests.Reset();
+}
+
+void FCortexCliSession::CompleteSpawnForTests(ECortexAccessMode AccessMode)
+{
+	Config.LaunchOptions.AccessMode = AccessMode;
+	LastSpawnedAccessMode = AccessMode;
+	State.store(ECortexSessionState::Idle);
+}
+#endif
 
 FString FCortexCliSession::GetPendingPromptForTest() const
 {

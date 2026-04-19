@@ -10,6 +10,23 @@
 
 namespace
 {
+    FString SanitizeClaudeDirective(const FString& Directive)
+    {
+        FString Sanitized = Directive;
+        Sanitized.ReplaceInline(TEXT("\n"), TEXT(" "));
+        Sanitized.ReplaceInline(TEXT("\r"), TEXT(" "));
+        Sanitized.ReplaceInline(TEXT("\t"), TEXT(" "));
+        Sanitized.ReplaceInline(TEXT("$("), TEXT(""));
+        Sanitized.ReplaceInline(TEXT("`"), TEXT(""));
+        Sanitized.ReplaceInline(TEXT("%"), TEXT(""));
+        Sanitized.ReplaceInline(TEXT("^"), TEXT(""));
+        Sanitized.ReplaceInline(TEXT("|"), TEXT(""));
+        Sanitized.ReplaceInline(TEXT("&"), TEXT(""));
+        Sanitized.ReplaceInline(TEXT(">"), TEXT(""));
+        Sanitized.ReplaceInline(TEXT("<"), TEXT(""));
+        return Sanitized;
+    }
+
     FString GetClaudeEffortString(ECortexEffortLevel EffortLevel)
     {
         switch (EffortLevel)
@@ -252,11 +269,6 @@ FString FCortexClaudeCliProvider::BuildLaunchCommandLine(
 
     }
 
-    if (!SessionConfig.McpConfigPath.IsEmpty())
-    {
-        CommandLine += FString::Printf(TEXT("--mcp-config \"%s\" "), *SessionConfig.McpConfigPath.Replace(TEXT("\\"), TEXT("/")));
-    }
-
     FString SystemPrompt;
     if (!SessionConfig.SystemPrompt.IsEmpty())
     {
@@ -292,18 +304,7 @@ FString FCortexClaudeCliProvider::BuildLaunchCommandLine(
 
         if (!LaunchOptions.CustomDirective.IsEmpty())
         {
-            FString Sanitized = LaunchOptions.CustomDirective;
-            Sanitized.ReplaceInline(TEXT("\n"), TEXT(" "));
-            Sanitized.ReplaceInline(TEXT("\r"), TEXT(" "));
-            Sanitized.ReplaceInline(TEXT("\t"), TEXT(" "));
-            Sanitized.ReplaceInline(TEXT("$("), TEXT(""));
-            Sanitized.ReplaceInline(TEXT("`"), TEXT(""));
-            Sanitized.ReplaceInline(TEXT("%"), TEXT(""));
-            Sanitized.ReplaceInline(TEXT("^"), TEXT(""));
-            Sanitized.ReplaceInline(TEXT("|"), TEXT(""));
-            Sanitized.ReplaceInline(TEXT("&"), TEXT(""));
-            Sanitized.ReplaceInline(TEXT(">"), TEXT(""));
-            Sanitized.ReplaceInline(TEXT("<"), TEXT(""));
+            const FString Sanitized = SanitizeClaudeDirective(LaunchOptions.CustomDirective);
             SystemPrompt += TEXT(" ") + Sanitized;
         }
     }
@@ -312,6 +313,23 @@ FString FCortexClaudeCliProvider::BuildLaunchCommandLine(
         *SystemPrompt.Replace(TEXT("\""), TEXT("\\\"")));
 
     return CommandLine.TrimStartAndEnd();
+}
+
+FString FCortexClaudeCliProvider::BuildPromptEnvelope(
+    const FString& Prompt,
+    ECortexAccessMode AccessMode,
+    const FCortexSessionConfig& SessionConfig) const
+{
+    (void)AccessMode;
+    (void)SessionConfig;
+
+    FString EscapedPrompt = Prompt;
+    EscapedPrompt.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
+    EscapedPrompt.ReplaceInline(TEXT("\""), TEXT("\\\""));
+    EscapedPrompt.ReplaceInline(TEXT("\n"), TEXT("\\n"));
+    EscapedPrompt.ReplaceInline(TEXT("\r"), TEXT("\\r"));
+    EscapedPrompt.ReplaceInline(TEXT("\t"), TEXT("\\t"));
+    return FString::Printf(TEXT("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"%s\"}}\n"), *EscapedPrompt);
 }
 
 FString FCortexClaudeCliProvider::BuildAuthCommand() const

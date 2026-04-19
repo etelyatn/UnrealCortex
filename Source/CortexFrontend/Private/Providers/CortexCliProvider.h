@@ -34,6 +34,10 @@ public:
         bool bResumeSession,
         ECortexAccessMode AccessMode,
         const FCortexSessionConfig& SessionConfig) const = 0;
+    virtual FString BuildPromptEnvelope(
+        const FString& Prompt,
+        ECortexAccessMode AccessMode,
+        const FCortexSessionConfig& SessionConfig) const = 0;
     virtual FString BuildAuthCommand() const = 0;
     virtual void ConsumeStreamChunk(
         const FString& RawChunk,

@@ -61,6 +61,16 @@ public:
             bResumeSession ? 1 : 0);
     }
 
+    virtual FString BuildPromptEnvelope(
+        const FString& Prompt,
+        ECortexAccessMode AccessMode,
+        const FCortexSessionConfig& SessionConfig) const override
+    {
+        (void)AccessMode;
+        (void)SessionConfig;
+        return Prompt + TEXT("\n");
+    }
+
     virtual FString BuildAuthCommand() const override
     {
         return FString::Printf(TEXT("%s login"), *ProviderId.ToString());
@@ -390,7 +400,19 @@ bool FCortexCliDiscoveryCodexUnknownItemTest::RunTest(const FString& Parameters)
 
     Provider.ConsumeStreamChunk(RawJsonl, ChunkBuffer, AssistantTextBuffer, Events);
 
-    TestEqual(TEXT("Unknown Codex item types should not create extra events"), Events.Num(), 1);
+    TestTrue(TEXT("Codex MCP tool events should surface as tool-use entries"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::ToolUse &&
+            Event.ToolName == TEXT("cortex_mcp") &&
+            Event.ToolCallId == TEXT("item-999") &&
+            Event.ToolInput.Contains(TEXT("\"query\":\"status\""));
+    }));
+    TestTrue(TEXT("Codex MCP tool completion should surface as a tool result"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
+    {
+        return Event.Type == ECortexStreamEventType::ToolResult &&
+            Event.ToolCallId == TEXT("item-999") &&
+            Event.ToolResultContent == TEXT("done");
+    }));
     TestTrue(TEXT("Turn.completed should still produce a result event"), Events.ContainsByPredicate([](const FCortexStreamEvent& Event)
     {
         return Event.Type == ECortexStreamEventType::Result && Event.InputTokens == 7 && Event.OutputTokens == 2;

@@ -70,17 +70,25 @@ public:
 		return (Total > 0) ? static_cast<float>(CacheRead) / static_cast<float>(Total) * 100.0f : 0.0f;
 	}
 
+#if WITH_DEV_AUTOMATION_TESTS
+	static void SetSpawnProcessOverrideForTests(TFunction<bool(FCortexCliSession&, ECortexAccessMode, bool)> InOverride);
+	static void ClearSpawnProcessOverrideForTests();
+	void CompleteSpawnForTests(ECortexAccessMode AccessMode);
+#endif
+
 private:
 	friend class FCortexCliWorker;
 	friend class FCortexCliSessionBuildInitialLaunchArgsTest;
 	friend class FCortexCliSessionBuildResumeLaunchArgsTest;
-	friend class FCortexCliSessionBuildPromptEnvelopeTest;
+	friend class FCortexCliSessionBuildClaudePromptEnvelopeTest;
+	friend class FCortexCliSessionBuildCodexPromptEnvelopeTest;
 	friend class FCortexCliSessionBuildCodexExecArgsTest;
 	friend class FCortexCliSessionLaunchOptionsPinnedAcrossSettingChangeTest;
 	friend class FCortexCliSessionDefaultLaunchPinsLiveSkipPermissionsTest;
 	friend class FCortexCliSessionCodexTurnExitPreservesResumableIdleStateTest;
 	friend class FCortexCliSessionCodexOverridePathRecomputesResolvedOptionsTest;
 	friend class FCortexCliSessionLightweightConfigStaysMcpFreeTest;
+	friend class FCortexCliSessionPerTurnExecFirstTurnDoesNotResumeWithoutConversationTest;
 	friend class FCortexCliSessionQueuePromptWhileSpawningTest;
 	friend class FCortexCliSessionTurnCompleteReturnsIdleTest;
 	friend class FCortexCliSessionCancelTransitionsTest;
@@ -106,7 +114,7 @@ private:
 
 	FString BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const;
 	FString BuildAllowedToolsArg(ECortexAccessMode AccessMode) const;
-	FString BuildPromptEnvelope(const FString& Prompt) const;
+	FString BuildPromptEnvelope(const FString& Prompt, ECortexAccessMode AccessMode) const;
 	bool SpawnProcess(ECortexAccessMode AccessMode, bool bResumeSession);
 	void CleanupProcess();
 	void WakeWorker();
@@ -144,6 +152,7 @@ private:
 	FCortexSessionConfig Config;
 	const ICortexCliProvider* PinnedProvider = nullptr;
 	FCortexCliInfo CachedCliInfo;
+	bool bHasProviderConversationId = false;
 	bool bHasResumableProviderConversation = false;
 	std::atomic<ECortexSessionState> State;
 	TOptional<FString> PendingPrompt;

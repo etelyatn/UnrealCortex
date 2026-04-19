@@ -15,6 +15,10 @@ public:
         bool bResumeSession,
         ECortexAccessMode AccessMode,
         const FCortexSessionConfig& SessionConfig) const override;
+    virtual FString BuildPromptEnvelope(
+        const FString& Prompt,
+        ECortexAccessMode AccessMode,
+        const FCortexSessionConfig& SessionConfig) const override;
     virtual FString BuildAuthCommand() const override;
     virtual void ConsumeStreamChunk(
         const FString& RawChunk,

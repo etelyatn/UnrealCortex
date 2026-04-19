@@ -71,6 +71,16 @@ public:
         return FString();
     }
 
+    virtual FString BuildPromptEnvelope(
+        const FString& Prompt,
+        ECortexAccessMode AccessMode,
+        const FCortexSessionConfig& SessionConfig) const override
+    {
+        (void)AccessMode;
+        (void)SessionConfig;
+        return Prompt + TEXT("\n");
+    }
+
     virtual FString BuildAuthCommand() const override
     {
         return FString::Printf(TEXT("%s login"), *ProviderId.ToString());

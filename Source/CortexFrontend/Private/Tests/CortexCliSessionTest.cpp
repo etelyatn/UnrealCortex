@@ -8,6 +8,26 @@
 #include "Modules/ModuleManager.h"
 #include "Session/CortexCliSession.h"
 
+namespace
+{
+    int32 CountOccurrences(const FString& Haystack, const FString& Needle)
+    {
+        int32 Count = 0;
+        int32 SearchIndex = 0;
+        while (SearchIndex != INDEX_NONE)
+        {
+            SearchIndex = Haystack.Find(Needle, ESearchCase::CaseSensitive, ESearchDir::FromStart, SearchIndex);
+            if (SearchIndex != INDEX_NONE)
+            {
+                ++Count;
+                SearchIndex += Needle.Len();
+            }
+        }
+
+        return Count;
+    }
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionConnectTest,
     "Cortex.Frontend.Session.Connect",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -47,12 +67,14 @@ bool FCortexCliSessionConnectTest::RunTest(const FString& Parameters)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildInitialLaunchArgsTest, "Cortex.Frontend.CliSession.BuildInitialLaunchArgs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildResumeLaunchArgsTest, "Cortex.Frontend.CliSession.BuildResumeLaunchArgs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildPromptEnvelopeTest, "Cortex.Frontend.CliSession.BuildPromptEnvelope", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildClaudePromptEnvelopeTest, "Cortex.Frontend.CliSession.BuildClaudePromptEnvelope", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildCodexPromptEnvelopeTest, "Cortex.Frontend.CliSession.BuildCodexPromptEnvelope", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionQueuePromptWhileSpawningTest, "Cortex.Frontend.CliSession.QueuePromptWhileSpawning", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionTurnCompleteReturnsIdleTest, "Cortex.Frontend.CliSession.TurnCompleteReturnsIdle", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCancelTransitionsTest, "Cortex.Frontend.CliSession.CancelTransitions", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionNewChatGeneratesFreshSessionIdTest, "Cortex.Frontend.CliSession.NewChatGeneratesFreshSessionId", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendModuleGetOrCreateSessionTest, "Cortex.Frontend.Module.GetOrCreateSession", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionPerTurnExecFirstTurnDoesNotResumeWithoutConversationTest, "Cortex.Frontend.CliSession.PerTurnExecFirstTurnDoesNotResumeWithoutConversation", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexCliSessionBuildInitialLaunchArgsTest::RunTest(const FString& Parameters)
 {
@@ -71,6 +93,7 @@ bool FCortexCliSessionBuildInitialLaunchArgsTest::RunTest(const FString& Paramet
     TestTrue(TEXT("Initial launch should include session id"), CommandLine.Contains(TEXT("--session-id \"session-123\"")));
     TestFalse(TEXT("Initial launch should not include resume"), CommandLine.Contains(TEXT("--resume")));
     TestTrue(TEXT("Initial launch should include MCP config"), CommandLine.Contains(TEXT("--mcp-config \"D:/UnrealProjects/CortexSandbox/.mcp.json\"")));
+    TestEqual(TEXT("Initial launch should include MCP config only once"), CountOccurrences(CommandLine, TEXT("--mcp-config")), 1);
     TestTrue(TEXT("Initial launch should include allowed tools"), CommandLine.Contains(TEXT("--allowedTools")));
     TestTrue(TEXT("Guided should include Edit built-in tool"), CommandLine.Contains(TEXT("Edit")));
     TestTrue(TEXT("Guided should include Write built-in tool"), CommandLine.Contains(TEXT("Write")));
@@ -102,20 +125,56 @@ bool FCortexCliSessionBuildResumeLaunchArgsTest::RunTest(const FString& Paramete
     return true;
 }
 
-bool FCortexCliSessionBuildPromptEnvelopeTest::RunTest(const FString& Parameters)
+bool FCortexCliSessionBuildClaudePromptEnvelopeTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
 
     FCortexSessionConfig Config;
     Config.SessionId = TEXT("session-789");
+    Config.ProviderId = FName(TEXT("claude_code"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("claude_code"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Claude Code");
 
     FCortexCliSession Session(Config);
-    const FString Envelope = Session.BuildPromptEnvelope(TEXT("Inspect the selected actor"));
+    const FString Envelope = Session.BuildPromptEnvelope(TEXT("Inspect the selected actor"), ECortexAccessMode::Guided);
 
     TestTrue(TEXT("Envelope should encode user message type"), Envelope.Contains(TEXT("\"type\":\"user\"")));
     TestTrue(TEXT("Envelope should encode user role"), Envelope.Contains(TEXT("\"role\":\"user\"")));
     TestTrue(TEXT("Envelope should encode prompt content"), Envelope.Contains(TEXT("\"content\":\"Inspect the selected actor\"")));
     TestTrue(TEXT("Envelope should terminate with newline"), Envelope.EndsWith(TEXT("\n")));
+    return true;
+}
+
+bool FCortexCliSessionBuildCodexPromptEnvelopeTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("session-codex-envelope");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.SystemPrompt = TEXT("You are a QA test engineer agent.");
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+    Config.bHasLaunchOptions = true;
+    Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
+    Config.LaunchOptions.WorkflowMode = ECortexWorkflowMode::Direct;
+    Config.LaunchOptions.bProjectContext = false;
+    Config.LaunchOptions.bAutoContext = false;
+    Config.LaunchOptions.CustomDirective = TEXT("Focus on MCP-backed QA scenario generation.");
+
+    FCortexCliSession Session(Config);
+    const FString Envelope = Session.BuildPromptEnvelope(TEXT("Generate a smoke test for the current map."), ECortexAccessMode::Guided);
+
+    TestFalse(TEXT("Codex prompt should not use the Claude stream-json envelope"), Envelope.Contains(TEXT("\"type\":\"user\"")));
+    TestTrue(TEXT("Codex prompt should include the snapped system prompt"), Envelope.Contains(TEXT("You are a QA test engineer agent.")));
+    TestTrue(TEXT("Codex prompt should include the current access mode"), Envelope.Contains(TEXT("Current access mode: Guided")));
+    TestTrue(TEXT("Codex prompt should include workflow guidance"), Envelope.Contains(TEXT("Workflow mode: Direct")));
+    TestTrue(TEXT("Codex prompt should include project-context guidance"), Envelope.Contains(TEXT("Project context: Disabled")));
+    TestTrue(TEXT("Codex prompt should include auto-context guidance"), Envelope.Contains(TEXT("Auto-context: Disabled")));
+    TestTrue(TEXT("Codex prompt should include the custom directive"), Envelope.Contains(TEXT("Focus on MCP-backed QA scenario generation.")));
+    TestTrue(TEXT("Codex prompt should include the user prompt"), Envelope.Contains(TEXT("Generate a smoke test for the current map.")));
+    TestTrue(TEXT("Codex prompt should terminate with newline"), Envelope.EndsWith(TEXT("\n")));
     return true;
 }
 
@@ -218,6 +277,45 @@ bool FCortexFrontendModuleGetOrCreateSessionTest::RunTest(const FString& Paramet
 
     TestTrue(TEXT("Module should create a session"), FirstSession.IsValid());
     TestTrue(TEXT("Module should return the same session instance"), FirstSession == SecondSession);
+    return true;
+}
+
+bool FCortexCliSessionPerTurnExecFirstTurnDoesNotResumeWithoutConversationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("codex-first-turn");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Idle);
+
+    bool bObservedResumeSession = true;
+    ECortexAccessMode ObservedAccessMode = ECortexAccessMode::ReadOnly;
+    FCortexCliSession::SetSpawnProcessOverrideForTests(
+        [&bObservedResumeSession, &ObservedAccessMode](FCortexCliSession& InSession, ECortexAccessMode AccessMode, bool bResumeSession)
+        {
+            bObservedResumeSession = bResumeSession;
+            ObservedAccessMode = AccessMode;
+            InSession.CompleteSpawnForTests(AccessMode);
+            return true;
+        });
+    ON_SCOPE_EXIT
+    {
+        FCortexCliSession::ClearSpawnProcessOverrideForTests();
+    };
+
+    FCortexPromptRequest Request;
+    Request.Prompt = TEXT("Generate a QA scenario");
+    Request.AccessMode = ECortexAccessMode::FullAccess;
+
+    TestTrue(TEXT("First codex turn should be accepted"), Session.SendPrompt(Request));
+    TestEqual(TEXT("First codex turn should launch with the requested access mode"), ObservedAccessMode, ECortexAccessMode::FullAccess);
+    TestFalse(TEXT("First codex turn should start a fresh exec instead of resuming a missing conversation"), bObservedResumeSession);
     return true;
 }
 
@@ -448,7 +546,7 @@ bool FCortexCliSessionBuildCodexExecArgsTest::RunTest(const FString& Parameters)
     Config.ResolvedOptions.ContextLimitTokens = 272000;
     Config.bHasLaunchOptions = true;
     Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
-    Config.LaunchOptions.bSkipPermissions = true;
+    Config.LaunchOptions.bSkipPermissions = false;
     Config.LaunchOptions.WorkflowMode = ECortexWorkflowMode::Thorough;
     Config.LaunchOptions.bProjectContext = true;
     Config.LaunchOptions.bAutoContext = true;
@@ -469,6 +567,8 @@ bool FCortexCliSessionBuildCodexExecArgsTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Codex launch should include reasoning effort"), CommandLine.Contains(TEXT("-c model_reasoning_effort=maximum")));
     TestTrue(TEXT("Codex launch should include MCP overrides"), CommandLine.Contains(TEXT("mcp_servers.cortex_mcp.command")));
     TestTrue(TEXT("Codex launch should include working directory"), CommandLine.Contains(TEXT("-C \"D:/UnrealProjects/CortexSandbox\"")));
+    TestTrue(TEXT("Codex launch should map guided access to workspace-write sandbox"), CommandLine.Contains(TEXT("--sandbox workspace-write")));
+    TestFalse(TEXT("Codex launch should not bypass sandbox when skip permissions is false"), CommandLine.Contains(TEXT("--dangerously-bypass-approvals-and-sandbox")));
 
     return true;
 }
