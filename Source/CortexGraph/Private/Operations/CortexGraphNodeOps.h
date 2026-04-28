@@ -8,6 +8,32 @@ class UEdGraph;
 class UEdGraphNode;
 class UEdGraphPin;
 
+/**
+ * Categories of user-visible graphs in a Blueprint, in the order
+ * EnumerateUserGraphs walks them. Compiler-generated graphs
+ * (IntermediateGeneratedGraphs) are deliberately excluded.
+ */
+enum class ECortexGraphKind : uint8
+{
+	Ubergraph,
+	Function,
+	Macro,
+	Delegate,
+	InterfaceImpl,
+};
+
+/**
+ * One entry from EnumerateUserGraphs.
+ * OwningInterface is NAME_None except when Kind == InterfaceImpl,
+ * in which case it holds the FName of the implemented interface class.
+ */
+struct FCortexGraphEntry
+{
+	UEdGraph* Graph = nullptr;
+	ECortexGraphKind Kind = ECortexGraphKind::Function;
+	FName OwningInterface = NAME_None;
+};
+
 class FCortexGraphNodeOps
 {
 public:
@@ -22,6 +48,30 @@ public:
 
 	// Shared helpers for reuse across CortexGraph operations
 	static UBlueprint* LoadBlueprint(const FString& AssetPath, FCortexCommandResult& OutError);
+
+	/**
+	 * Enumerate user-visible top-level graphs in a Blueprint.
+	 *
+	 * Walk order (also defines first-match-wins resolution priority):
+	 *   1. UbergraphPages              -> Ubergraph
+	 *   2. FunctionGraphs              -> Function
+	 *   3. MacroGraphs                 -> Macro
+	 *   4. DelegateSignatureGraphs     -> Delegate
+	 *   5. ImplementedInterfaces[i].Graphs -> InterfaceImpl
+	 *      (within step 5, iteration order matches Blueprint->ImplementedInterfaces[])
+	 *
+	 * Compiler-generated graphs (IntermediateGeneratedGraphs) are intentionally
+	 * skipped — they are not user-editable and exposing them through
+	 * graph_cmd would be a footgun.
+	 *
+	 * Composite/state-machine inner graphs are NOT included here. They are
+	 * reached via ResolveSubgraph after the top-level graph is found.
+	 */
+	static void EnumerateUserGraphs(UBlueprint* Blueprint, TArray<FCortexGraphEntry>& OutEntries);
+
+	/** JSON-friendly tag for ECortexGraphKind ("ubergraph", "function", "macro", "delegate", "interface_impl"). */
+	static FString GraphKindToString(ECortexGraphKind Kind);
+
 	static UEdGraph* FindGraph(UBlueprint* Blueprint, const FString& GraphName, FCortexCommandResult& OutError);
 	static UEdGraphNode* FindNode(UEdGraph* Graph, const FString& NodeId, FCortexCommandResult& OutError);
 	static UEdGraphPin* FindPin(UEdGraphNode* Node, const FString& PinName, FCortexCommandResult& OutError);

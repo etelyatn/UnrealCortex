@@ -118,22 +118,65 @@ UBlueprint* FCortexGraphNodeOps::LoadBlueprint(const FString& AssetPath, FCortex
 	return Blueprint;
 }
 
+void FCortexGraphNodeOps::EnumerateUserGraphs(UBlueprint* Blueprint, TArray<FCortexGraphEntry>& OutEntries)
+{
+	OutEntries.Reset();
+	if (Blueprint == nullptr)
+	{
+		return;
+	}
+
+	auto AppendGraphs = [&OutEntries](const TArray<TObjectPtr<UEdGraph>>& Graphs, ECortexGraphKind Kind, FName OwningInterface)
+	{
+		for (const TObjectPtr<UEdGraph>& GraphPtr : Graphs)
+		{
+			if (UEdGraph* Graph = GraphPtr.Get())
+			{
+				FCortexGraphEntry Entry;
+				Entry.Graph = Graph;
+				Entry.Kind = Kind;
+				Entry.OwningInterface = OwningInterface;
+				OutEntries.Add(Entry);
+			}
+		}
+	};
+
+	AppendGraphs(Blueprint->UbergraphPages,          ECortexGraphKind::Ubergraph, NAME_None);
+	AppendGraphs(Blueprint->FunctionGraphs,          ECortexGraphKind::Function,  NAME_None);
+	AppendGraphs(Blueprint->MacroGraphs,             ECortexGraphKind::Macro,     NAME_None);
+	AppendGraphs(Blueprint->DelegateSignatureGraphs, ECortexGraphKind::Delegate,  NAME_None);
+
+	for (const FBPInterfaceDescription& InterfaceDesc : Blueprint->ImplementedInterfaces)
+	{
+		const FName OwningInterfaceName = InterfaceDesc.Interface ? InterfaceDesc.Interface->GetFName() : NAME_None;
+		AppendGraphs(InterfaceDesc.Graphs, ECortexGraphKind::InterfaceImpl, OwningInterfaceName);
+	}
+}
+
+FString FCortexGraphNodeOps::GraphKindToString(ECortexGraphKind Kind)
+{
+	switch (Kind)
+	{
+		case ECortexGraphKind::Ubergraph:     return TEXT("ubergraph");
+		case ECortexGraphKind::Function:      return TEXT("function");
+		case ECortexGraphKind::Macro:         return TEXT("macro");
+		case ECortexGraphKind::Delegate:      return TEXT("delegate");
+		case ECortexGraphKind::InterfaceImpl: return TEXT("interface_impl");
+	}
+	return TEXT("function");
+}
+
 UEdGraph* FCortexGraphNodeOps::FindGraph(UBlueprint* Blueprint, const FString& GraphName, FCortexCommandResult& OutError)
 {
-	FString TargetName = GraphName.IsEmpty() ? TEXT("EventGraph") : GraphName;
+	const FString TargetName = GraphName.IsEmpty() ? TEXT("EventGraph") : GraphName;
 
-	for (UEdGraph* Graph : Blueprint->UbergraphPages)
+	TArray<FCortexGraphEntry> Entries;
+	EnumerateUserGraphs(Blueprint, Entries);
+	for (const FCortexGraphEntry& Entry : Entries)
 	{
-		if (Graph && Graph->GetName() == TargetName)
+		if (Entry.Graph && Entry.Graph->GetName() == TargetName)
 		{
-			return Graph;
-		}
-	}
-	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
-	{
-		if (Graph && Graph->GetName() == TargetName)
-		{
-			return Graph;
+			return Entry.Graph;
 		}
 	}
 
@@ -296,49 +339,38 @@ FCortexCommandResult FCortexGraphNodeOps::ListGraphs(const TSharedPtr<FJsonObjec
 
 	TArray<TSharedPtr<FJsonValue>> GraphsArray;
 
-	for (UEdGraph* Graph : Blueprint->UbergraphPages)
+	TArray<FCortexGraphEntry> Entries;
+	EnumerateUserGraphs(Blueprint, Entries);
+	for (const FCortexGraphEntry& Entry : Entries)
 	{
+		UEdGraph* Graph = Entry.Graph;
 		if (Graph == nullptr)
 		{
 			continue;
 		}
-		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
-		Entry->SetStringField(TEXT("name"), Graph->GetName());
-		Entry->SetStringField(TEXT("class"), Graph->GetClass()->GetName());
-		Entry->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
-		GraphsArray.Add(MakeShared<FJsonValueObject>(Entry));
-	}
-
-	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
-	{
-		if (Graph == nullptr)
+		TSharedRef<FJsonObject> JsonEntry = MakeShared<FJsonObject>();
+		JsonEntry->SetStringField(TEXT("name"), Graph->GetName());
+		JsonEntry->SetStringField(TEXT("class"), Graph->GetClass()->GetName());
+		JsonEntry->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
+		JsonEntry->SetStringField(TEXT("kind"), GraphKindToString(Entry.Kind));
+		if (Entry.Kind == ECortexGraphKind::InterfaceImpl && Entry.OwningInterface != NAME_None)
 		{
-			continue;
+			JsonEntry->SetStringField(TEXT("owning_interface"), Entry.OwningInterface.ToString());
 		}
-		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
-		Entry->SetStringField(TEXT("name"), Graph->GetName());
-		Entry->SetStringField(TEXT("class"), Graph->GetClass()->GetName());
-		Entry->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
-		GraphsArray.Add(MakeShared<FJsonValueObject>(Entry));
+		GraphsArray.Add(MakeShared<FJsonValueObject>(JsonEntry));
 	}
 
-	// Optionally include composite subgraphs
+	// Optionally include composite subgraphs (recursing into every top-level entry, not just
+	// ubergraph/function — composites can live in interface impl graphs too).
 	bool bIncludeSubgraphs = false;
 	Params->TryGetBoolField(TEXT("include_subgraphs"), bIncludeSubgraphs);
 	if (bIncludeSubgraphs)
 	{
-		for (UEdGraph* Graph : Blueprint->UbergraphPages)
+		for (const FCortexGraphEntry& Entry : Entries)
 		{
-			if (Graph)
+			if (Entry.Graph)
 			{
-				CollectSubgraphsRecursive(Graph, Graph->GetName(), TEXT(""), GraphsArray, 0);
-			}
-		}
-		for (UEdGraph* Graph : Blueprint->FunctionGraphs)
-		{
-			if (Graph)
-			{
-				CollectSubgraphsRecursive(Graph, Graph->GetName(), TEXT(""), GraphsArray, 0);
+				CollectSubgraphsRecursive(Entry.Graph, Entry.Graph->GetName(), TEXT(""), GraphsArray, 0);
 			}
 		}
 	}
@@ -697,18 +729,14 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 	}
 	else
 	{
-		// Search all top-level graphs, recursively descending into composites
-		for (UEdGraph* Graph : Blueprint->UbergraphPages)
+		// Search all user-visible top-level graphs (ubergraph / function / macro / delegate /
+		// interface_impl), recursively descending into composites. Reach matches FindGraph and
+		// list_graphs so a name found via search can always be opened by FindGraph.
+		TArray<FCortexGraphEntry> Entries;
+		EnumerateUserGraphs(Blueprint, Entries);
+		for (const FCortexGraphEntry& Entry : Entries)
 		{
-			SearchGraphRecursive(Graph, TEXT(""), 0);
-		}
-		for (UEdGraph* Graph : Blueprint->FunctionGraphs)
-		{
-			SearchGraphRecursive(Graph, TEXT(""), 0);
-		}
-		for (UEdGraph* Graph : Blueprint->MacroGraphs)
-		{
-			SearchGraphRecursive(Graph, TEXT(""), 0);
+			SearchGraphRecursive(Entry.Graph, TEXT(""), 0);
 		}
 	}
 
