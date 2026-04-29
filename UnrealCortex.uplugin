@@ -21,8 +21,11 @@
     },
     {
       "Name": "StructUtils",
-      "Enabled": true,
-      "Optional": true
+      "Enabled": true
+    },
+    {
+      "Name": "StateTree",
+      "Enabled": true
     }
   ],
   "Modules": [
@@ -83,6 +86,11 @@
     },
     {
       "Name": "CortexFrontend",
+      "Type": "Editor",
+      "LoadingPhase": "PostEngineInit"
+    },
+    {
+      "Name": "CortexStateTree",
       "Type": "Editor",
       "LoadingPhase": "PostEngineInit"
     }

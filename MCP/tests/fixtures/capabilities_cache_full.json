@@ -4576,6 +4576,17 @@
           "description": "Get the current CortexGen configuration from settings"
         }
       ]
+    },
+    "statetree": {
+      "name": "Cortex StateTree",
+      "version": "1.0.0",
+      "commands": [
+        {
+          "name": "get_status",
+          "description": "Domain registration diagnostic. Returns version, command count, and registered status.",
+          "params": []
+        }
+      ]
     }
   }
 }

@@ -23,6 +23,7 @@ CORE_DOMAINS = (
     "qa",
     "reflect",
     "editor",
+    "statetree",
 )
 
 _OPTIONAL_DOMAINS = ("gen",)
