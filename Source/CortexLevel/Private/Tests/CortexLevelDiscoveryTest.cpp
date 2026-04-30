@@ -47,6 +47,11 @@ bool FCortexLevelListActorClassesTest::RunTest(const FString& Parameters)
                     FString Name;
                     if ((*Obj)->TryGetStringField(TEXT("name"), Name) && Name == TEXT("PointLight"))
                     {
+                        FString SpawnActorValue;
+                        TestTrue(
+                            TEXT("PointLight includes spawn_actor_value"),
+                            (*Obj)->TryGetStringField(TEXT("spawn_actor_value"), SpawnActorValue));
+                        TestEqual(TEXT("spawn_actor_value uses class token"), SpawnActorValue, FString(TEXT("PointLight")));
                         bFoundPointLight = true;
                         break;
                     }

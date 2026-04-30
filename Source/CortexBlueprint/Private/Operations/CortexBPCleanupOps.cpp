@@ -620,6 +620,9 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 		}
 	}
 
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Rename SCS Component %s to %s in %s"), *OldName, *NewName, *BP->GetName())));
+
 	BP->Modify();
 	SCS->Modify();
 	TargetNode->Modify();

@@ -398,53 +398,7 @@ FCortexCommandResult FCortexGraphNodeOps::ListNodes(const TSharedPtr<FJsonObject
 		{
 			continue;
 		}
-		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
-		Entry->SetStringField(TEXT("node_id"), Node->GetName());
-		const FString ClassName = Node->GetClass()->GetName();
-		Entry->SetStringField(TEXT("class"), ClassName);
-		if (!bCompact)
-		{
-			Entry->SetStringField(TEXT("node_class"), ClassName);
-		}
-		Entry->SetStringField(TEXT("display_name"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
-		if (!bCompact)
-		{
-			TSharedRef<FJsonObject> Pos = MakeShared<FJsonObject>();
-			Pos->SetNumberField(TEXT("x"), Node->NodePosX);
-			Pos->SetNumberField(TEXT("y"), Node->NodePosY);
-			Entry->SetObjectField(TEXT("position"), Pos);
-			Entry->SetNumberField(TEXT("pin_count"), Node->Pins.Num());
-		}
-
-		int32 ConnectedPinCount = 0;
-		int32 ConnectionCount = 0;
-		for (const UEdGraphPin* Pin : Node->Pins)
-		{
-			if (Pin != nullptr && Pin->LinkedTo.Num() > 0)
-			{
-				++ConnectedPinCount;
-				ConnectionCount += Pin->LinkedTo.Num();
-			}
-		}
-		Entry->SetNumberField(TEXT("connected_pin_count"), ConnectedPinCount);
-		Entry->SetNumberField(TEXT("connections"), ConnectionCount);
-
-		// Annotate composite nodes with their subgraph name
-		UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node);
-		if (CompositeNode && CompositeNode->BoundGraph)
-		{
-			Entry->SetStringField(TEXT("subgraph_name"), CompositeNode->BoundGraph->GetName());
-		}
-
-		// Annotate tunnel boundary nodes (entry/exit inside composites)
-		// UK2Node_Composite IS-A UK2Node_Tunnel; use exact class check to identify
-		// pure tunnel entry/exit nodes only (matching Epic's own convention)
-		if (Node->GetClass() == UK2Node_Tunnel::StaticClass())
-		{
-			Entry->SetBoolField(TEXT("is_tunnel_boundary"), true);
-		}
-
-		NodesArray.Add(MakeShared<FJsonValueObject>(Entry));
+		NodesArray.Add(MakeShared<FJsonValueObject>(SerializeNode(Node, false, bCompact)));
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -511,40 +465,7 @@ FCortexCommandResult FCortexGraphNodeOps::GetNode(const TSharedPtr<FJsonObject>&
 	bool bCompact = true;
 	Params->TryGetBoolField(TEXT("compact"), bCompact);
 
-	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-	Data->SetStringField(TEXT("node_id"), Node->GetName());
-	const FString ClassName = Node->GetClass()->GetName();
-	Data->SetStringField(TEXT("class"), ClassName);
-	if (!bCompact)
-	{
-		Data->SetStringField(TEXT("node_class"), ClassName);
-	}
-	Data->SetStringField(TEXT("display_name"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
-
-	if (!bCompact)
-	{
-		TSharedRef<FJsonObject> Pos = MakeShared<FJsonObject>();
-		Pos->SetNumberField(TEXT("x"), Node->NodePosX);
-		Pos->SetNumberField(TEXT("y"), Node->NodePosY);
-		Data->SetObjectField(TEXT("position"), Pos);
-	}
-
-	TArray<TSharedPtr<FJsonValue>> PinsArray;
-	for (UEdGraphPin* Pin : Node->Pins)
-	{
-		if (Pin == nullptr)
-		{
-			continue;
-		}
-		if (bCompact && ShouldSkipPinCompact(Pin))
-		{
-			continue;
-		}
-		PinsArray.Add(MakeShared<FJsonValueObject>(SerializePin(Pin, true, bCompact)));
-	}
-	Data->SetArrayField(TEXT("pins"), PinsArray);
-
-	return FCortexCommandRouter::Success(Data);
+	return FCortexCommandRouter::Success(SerializeNode(Node, true, bCompact));
 }
 
 FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObject>& Params)
@@ -1261,6 +1182,76 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializePin(const UEdGraphPin* Pin
 		}
 	}
 	return PinEntry;
+}
+
+TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializeNode(const UEdGraphNode* Node, bool bIncludePins, bool bCompact)
+{
+	TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("node_id"), Node->GetName());
+
+	const FString ClassName = Node->GetClass()->GetName();
+	Entry->SetStringField(TEXT("class"), ClassName);
+	if (!bCompact)
+	{
+		Entry->SetStringField(TEXT("node_class"), ClassName);
+	}
+
+	Entry->SetStringField(TEXT("display_name"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+
+	if (!bCompact)
+	{
+		TSharedRef<FJsonObject> Pos = MakeShared<FJsonObject>();
+		Pos->SetNumberField(TEXT("x"), Node->NodePosX);
+		Pos->SetNumberField(TEXT("y"), Node->NodePosY);
+		Entry->SetObjectField(TEXT("position"), Pos);
+		Entry->SetNumberField(TEXT("pin_count"), Node->Pins.Num());
+	}
+
+	int32 ConnectedPinCount = 0;
+	int32 ConnectionCount = 0;
+	for (const UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin != nullptr && Pin->LinkedTo.Num() > 0)
+		{
+			++ConnectedPinCount;
+			ConnectionCount += Pin->LinkedTo.Num();
+		}
+	}
+	Entry->SetNumberField(TEXT("connected_pin_count"), ConnectedPinCount);
+	Entry->SetNumberField(TEXT("connections"), ConnectionCount);
+
+	if (const UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node))
+	{
+		if (CompositeNode->BoundGraph)
+		{
+			Entry->SetStringField(TEXT("subgraph_name"), CompositeNode->BoundGraph->GetName());
+		}
+	}
+
+	if (Node->GetClass() == UK2Node_Tunnel::StaticClass())
+	{
+		Entry->SetBoolField(TEXT("is_tunnel_boundary"), true);
+	}
+
+	if (bIncludePins)
+	{
+		TArray<TSharedPtr<FJsonValue>> PinsArray;
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin == nullptr)
+			{
+				continue;
+			}
+			if (bCompact && ShouldSkipPinCompact(Pin))
+			{
+				continue;
+			}
+			PinsArray.Add(MakeShared<FJsonValueObject>(SerializePin(Pin, true, bCompact)));
+		}
+		Entry->SetArrayField(TEXT("pins"), PinsArray);
+	}
+
+	return Entry;
 }
 
 FCortexCommandResult FCortexGraphNodeOps::RemoveNode(const TSharedPtr<FJsonObject>& Params)

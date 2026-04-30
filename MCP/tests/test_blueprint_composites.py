@@ -622,7 +622,7 @@ class TestBlueprintVerificationIntegration:
         #   Call 2: bp.compile
         #   Call 3: bp.save
         #   Call 4: bp.get_info  (verification readback)
-        #   Call 5: graph.list_nodes  (verification readback)
+        #   Call 5: graph.get_subgraph  (verification readback)
         mock_connection.send_command.side_effect = [
             {
                 "data": {
@@ -650,3 +650,4 @@ class TestBlueprintVerificationIntegration:
 
         assert result["success"] is True
         assert result["verification"]["verified"] is True
+

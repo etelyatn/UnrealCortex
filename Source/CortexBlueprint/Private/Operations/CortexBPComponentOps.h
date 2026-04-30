@@ -6,6 +6,7 @@
 class FCortexBPComponentOps
 {
 public:
+	static FCortexCommandResult ListSCSComponents(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult SetComponentDefaults(const TSharedPtr<FJsonObject>& Params);
 
 	/**

@@ -261,6 +261,17 @@ class UEConnection:
         self._recv_buffer = b""
         self._socket_lock = threading.Lock()
         self._loaded_file_cache = False
+        self._telemetry = {
+            "logical_tool_calls": 0,
+            "tcp_calls": 0,
+            "python_cache_hits": 0,
+            "parallel_tool_calls": 0,
+            "sequential_tool_calls": 0,
+            "repeat_reads": 0,
+            "observed_reads": 0,
+        }
+        self._metric_events: list[dict] = []
+        self._seen_read_keys: set[str] = set()
 
     @property
     def connected(self) -> bool:
@@ -361,6 +372,8 @@ class UEConnection:
             try:
                 with self._socket_lock:
                     self.connect()
+                    self._telemetry["tcp_calls"] += 1
+                    self._record_metric("tcp_call", {"command": command, "attempt": attempt + 1})
                     return self._send_and_receive(command, params, timeout=timeout)
             except ConnectionError as e:
                 last_error = e
@@ -405,9 +418,16 @@ class UEConnection:
         Returns cached response if available and not expired.
         Otherwise sends the command and caches the successful response.
         """
+        self._record_repeat_read_metric(command, params)
+        if self._should_bypass_cache_for_fingerprint(params):
+            self._record_metric("cache_bypass", {"command": command, "reason": "expected_fingerprint"})
+            return self.send_command(command, params, timeout=timeout)
+
         key = ResponseCache.make_key(command, params)
         cached = self._cache.get(key)
         if cached is not None:
+            self._telemetry["python_cache_hits"] += 1
+            self._record_metric("cache_hit", {"command": command, "layer": "python"})
             return cached
 
         response = self.send_command(command, params, timeout=timeout)
@@ -417,6 +437,81 @@ class UEConnection:
     def invalidate_cache(self, pattern: str | None) -> int:
         """Invalidate cache entries. None clears all."""
         return self._cache.invalidate(pattern)
+
+    def record_tool_invocation(
+        self,
+        tool_name: str,
+        command: str,
+        *,
+        parallel: bool = False,
+    ) -> None:
+        """Record one logical MCP tool invocation."""
+        self._telemetry["logical_tool_calls"] += 1
+        key = "parallel_tool_calls" if parallel else "sequential_tool_calls"
+        self._telemetry[key] += 1
+        self._record_metric(
+            "tool_invocation",
+            {"tool": tool_name, "command": command, "parallel": parallel},
+        )
+
+    def get_call_metrics(self) -> dict:
+        """Return aggregated session call-count telemetry."""
+        parallel_total = (
+            self._telemetry["parallel_tool_calls"] + self._telemetry["sequential_tool_calls"]
+        )
+        observed_reads = self._telemetry["observed_reads"]
+        return {
+            "logical_tool_calls": self._telemetry["logical_tool_calls"],
+            "tcp_calls": self._telemetry["tcp_calls"],
+            "python_cache_hits": self._telemetry["python_cache_hits"],
+            "parallel_sequential_ratio": (
+                self._telemetry["parallel_tool_calls"] / parallel_total
+                if parallel_total > 0
+                else 0.0
+            ),
+            "repeat_read_ratio": (
+                self._telemetry["repeat_reads"] / observed_reads
+                if observed_reads > 0
+                else 0.0
+            ),
+        }
+
+    def _record_metric(self, name: str, payload: dict) -> None:
+        """Capture a small in-memory metric event stream for debugging/tests."""
+        self._metric_events.append({"name": name, "payload": payload, "timestamp": time.time()})
+        if len(self._metric_events) > 200:
+            self._metric_events.pop(0)
+
+    def _record_repeat_read_metric(self, command: str, params: dict | None) -> None:
+        """Track repeated reads before the cache short-circuit returns."""
+        key = ResponseCache.make_key(command, params)
+        self._telemetry["observed_reads"] += 1
+        if key in self._seen_read_keys:
+            self._telemetry["repeat_reads"] += 1
+        else:
+            self._seen_read_keys.add(key)
+
+        self._record_metric(
+            "repeat_read_ratio",
+            {
+                "command": command,
+                "ratio": self.get_call_metrics()["repeat_read_ratio"],
+            },
+        )
+
+    def _should_bypass_cache_for_fingerprint(self, params: dict | None) -> bool:
+        """Fingerprint-guarded requests should not be satisfied from Python cache."""
+        if not params:
+            return False
+        if "expected_fingerprint" in params:
+            return True
+
+        items = params.get("items")
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict) and "expected_fingerprint" in item:
+                    return True
+        return False
 
     def _find_cache_dir(self) -> pathlib.Path | None:
         """Find Saved/Cortex/ directory."""

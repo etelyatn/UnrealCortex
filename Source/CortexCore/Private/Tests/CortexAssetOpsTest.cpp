@@ -2,8 +2,47 @@
 #include "Modules/ModuleManager.h"
 #include "CortexCommandRouter.h"
 #include "CortexCoreModule.h"
+#include "Engine/DataTable.h"
 #include "Editor.h"
 #include "FileHelpers.h"
+#include "UObject/Package.h"
+
+namespace
+{
+TSharedPtr<FJsonObject> ExecuteSingleFingerprintRequest(FCortexCommandRouter& Router, const FString& AssetPath)
+{
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> Paths;
+	Paths.Add(MakeShared<FJsonValueString>(AssetPath));
+	RequestParams->SetArrayField(TEXT("paths"), Paths);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("core.asset_fingerprint"), RequestParams);
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		return nullptr;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Fingerprints = nullptr;
+	if (!Result.Data->TryGetArrayField(TEXT("fingerprints"), Fingerprints) || Fingerprints == nullptr || Fingerprints->Num() != 1)
+	{
+		return nullptr;
+	}
+
+	const TSharedPtr<FJsonObject>* Entry = nullptr;
+	if (!(*Fingerprints)[0]->TryGetObject(Entry) || Entry == nullptr)
+	{
+		return nullptr;
+	}
+
+	const TSharedPtr<FJsonObject>* Fingerprint = nullptr;
+	if (!(*Entry)->TryGetObjectField(TEXT("fingerprint"), Fingerprint) || Fingerprint == nullptr)
+	{
+		return nullptr;
+	}
+
+	return *Fingerprint;
+}
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexAssetSaveSingleTest,
@@ -49,6 +88,73 @@ bool FCortexAssetSaveSingleTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetSaveBatchExpectedFingerprintDirtyDataTableTest,
+	"Cortex.Core.Asset.SaveAsset.BatchExpectedFingerprint.DirtyDataTable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetSaveBatchExpectedFingerprintDirtyDataTableTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	UDataTable* DataTable = LoadObject<UDataTable>(nullptr, TEXT("/Game/Data/DT_TestSimple.DT_TestSimple"));
+	TestNotNull(TEXT("Test data table loads"), DataTable);
+	if (!DataTable)
+	{
+		return false;
+	}
+
+	UPackage* Package = DataTable->GetPackage();
+	TestNotNull(TEXT("Test data table package exists"), Package);
+	if (!Package)
+	{
+		return false;
+	}
+
+	const FString OriginalImportKeyField = DataTable->ImportKeyField;
+	Package->SetDirtyFlag(false);
+
+	DataTable->Modify();
+	DataTable->ImportKeyField = TEXT("BatchFingerprintOriginal");
+	Package->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> ExpectedFingerprint = ExecuteSingleFingerprintRequest(Router, TEXT("/Game/Data/DT_TestSimple"));
+	TestTrue(TEXT("Expected fingerprint captured"), ExpectedFingerprint.IsValid());
+	if (!ExpectedFingerprint.IsValid())
+	{
+		DataTable->ImportKeyField = OriginalImportKeyField;
+		Package->SetDirtyFlag(false);
+		return false;
+	}
+
+	DataTable->ImportKeyField = TEXT("BatchFingerprintChanged");
+	Package->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Item = MakeShared<FJsonObject>();
+	Item->SetStringField(TEXT("target"), TEXT("/Game/Data/DT_TestSimple"));
+	Item->SetBoolField(TEXT("dry_run"), true);
+	Item->SetObjectField(TEXT("expected_fingerprint"), ExpectedFingerprint);
+
+	TArray<TSharedPtr<FJsonValue>> Items;
+	Items.Add(MakeShared<FJsonValueObject>(Item));
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetArrayField(TEXT("items"), Items);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("core.save_asset"), RequestParams);
+	TestFalse(TEXT("stale dirty data table batch save is rejected"), Result.bSuccess);
+	TestEqual(TEXT("stale error code"), Result.ErrorCode, TEXT("STALE_PRECONDITION"));
+
+	DataTable->ImportKeyField = OriginalImportKeyField;
+	Package->SetDirtyFlag(false);
 	return true;
 }
 

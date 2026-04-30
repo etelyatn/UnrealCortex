@@ -33,6 +33,7 @@ public:
 	 *   MCP commands (GetNode) pass bCompact explicitly based on the user-supplied compact param (default true).
 	 */
 	static TSharedRef<FJsonObject> SerializePin(const UEdGraphPin* Pin, bool bDetailed = true, bool bCompact = false);
+	static TSharedRef<FJsonObject> SerializeNode(const UEdGraphNode* Node, bool bIncludePins, bool bCompact);
 
 	/**
 	 * Returns true when a pin should be omitted in compact mode.

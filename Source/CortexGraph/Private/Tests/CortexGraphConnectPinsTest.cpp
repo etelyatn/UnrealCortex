@@ -116,7 +116,7 @@ bool FCortexGraphConnectPinsTest::RunTest(const FString& Parameters)
 		Params->SetStringField(TEXT("asset_path"), AssetPath);
 		Params->SetStringField(TEXT("node_id"), Node1Id);
 
-		FCortexCommandResult Result = Router.Execute(TEXT("graph.get_node"), Params);
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.get_subgraph"), Params);
 		TestTrue(TEXT("get_node should succeed"), Result.bSuccess);
 
 		if (Result.Data.IsValid())
@@ -171,7 +171,7 @@ bool FCortexGraphConnectPinsTest::RunTest(const FString& Parameters)
 		Params->SetStringField(TEXT("asset_path"), AssetPath);
 		Params->SetStringField(TEXT("node_id"), Node1Id);
 
-		FCortexCommandResult Result = Router.Execute(TEXT("graph.get_node"), Params);
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.get_subgraph"), Params);
 		TestTrue(TEXT("get_node should succeed after disconnect"), Result.bSuccess);
 		if (Result.Data.IsValid())
 		{

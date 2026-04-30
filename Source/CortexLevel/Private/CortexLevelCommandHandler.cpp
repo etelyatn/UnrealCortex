@@ -205,12 +205,18 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
             .Optional(TEXT("mesh"), TEXT("string"), TEXT("Optional mesh asset"))
             .Optional(TEXT("material"), TEXT("string"), TEXT("Optional material override")),
         FCortexCommandInfo{ TEXT("delete_actor"), TEXT("Delete actor by name/label") }
+            .OptionalBatchItems(TEXT("Batch items with target, confirm_class, expected_fingerprint"))
+            .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
             .Optional(TEXT("confirm_class"), TEXT("string"), TEXT("Expected actor class guard")),
         FCortexCommandInfo{ TEXT("duplicate_actor"), TEXT("Duplicate an existing actor") }
+            .OptionalBatchItems(TEXT("Batch items with target, offset, expected_fingerprint"))
+            .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
             .Optional(TEXT("offset"), TEXT("array"), TEXT("Optional world offset")),
         FCortexCommandInfo{ TEXT("rename_actor"), TEXT("Change actor label") }
+            .OptionalBatchItems(TEXT("Batch items with target, label, expected_fingerprint"))
+            .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
             .Required(TEXT("label"), TEXT("string"), TEXT("New actor label")),
         FCortexCommandInfo{ TEXT("get_actor"), TEXT("Get full actor details") }
@@ -241,6 +247,8 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
             .Required(TEXT("component"), TEXT("string"), TEXT("Component instance name"))
             .Required(TEXT("property"), TEXT("string"), TEXT("Property path")),
         FCortexCommandInfo{ TEXT("set_component_property"), TEXT("Set component property value") }
+            .OptionalBatchItems(TEXT("Batch items with target, component, property, value, expected_fingerprint"))
+            .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
             .Required(TEXT("component"), TEXT("string"), TEXT("Component instance name"))
             .Required(TEXT("property"), TEXT("string"), TEXT("Property path"))
@@ -271,15 +279,23 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
             .Optional(TEXT("add"), TEXT("boolean"), TEXT("Add to current selection")),
         FCortexCommandInfo{ TEXT("get_selection"), TEXT("Get current actor selection") },
         FCortexCommandInfo{ TEXT("attach_actor"), TEXT("Attach actor to parent actor") }
+            .OptionalBatchItems(TEXT("Batch items with target, parent, socket, expected_fingerprint"))
+            .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Child actor"))
             .Required(TEXT("parent"), TEXT("string"), TEXT("Parent actor"))
             .Optional(TEXT("socket"), TEXT("string"), TEXT("Optional parent socket")),
         FCortexCommandInfo{ TEXT("detach_actor"), TEXT("Detach actor from parent") }
+            .OptionalBatchItems(TEXT("Batch items with target, expected_fingerprint"))
+            .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor to detach")),
         FCortexCommandInfo{ TEXT("set_tags"), TEXT("Replace actor tags") }
+            .OptionalBatchItems(TEXT("Batch items with target, tags, expected_fingerprint"))
+            .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
             .Required(TEXT("tags"), TEXT("array"), TEXT("Replacement actor tags")),
         FCortexCommandInfo{ TEXT("set_folder"), TEXT("Set actor outliner folder") }
+            .OptionalBatchItems(TEXT("Batch items with target, folder, expected_fingerprint"))
+            .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
             .Optional(TEXT("folder"), TEXT("string"), TEXT("Destination folder path")),
         FCortexCommandInfo{ TEXT("group_actors"), TEXT("Group multiple actors") }

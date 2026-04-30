@@ -1,6 +1,8 @@
 #include "Operations/CortexLevelOrganizationOps.h"
 
 #include "ActorGroupingUtils.h"
+#include "CortexAssetFingerprint.h"
+#include "CortexBatchMutation.h"
 #include "CortexLevelUtils.h"
 #include "CortexTypes.h"
 #include "Editor/GroupActor.h"
@@ -9,6 +11,109 @@
 
 namespace
 {
+    TSharedPtr<FJsonObject> CopyLevelOrganizationBatchJsonObject(const TSharedPtr<FJsonObject>& Source)
+    {
+        TSharedPtr<FJsonObject> Copy = MakeShared<FJsonObject>();
+        if (!Source.IsValid())
+        {
+            return Copy;
+        }
+
+        for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Source->Values)
+        {
+            Copy->SetField(Pair.Key, Pair.Value);
+        }
+
+        return Copy;
+    }
+
+    TArray<TSharedPtr<FJsonValue>> ToLevelOrganizationBatchJsonStringArray(const TArray<FString>& Values)
+    {
+        TArray<TSharedPtr<FJsonValue>> Out;
+        Out.Reserve(Values.Num());
+        for (const FString& Value : Values)
+        {
+            Out.Add(MakeShared<FJsonValueString>(Value));
+        }
+        return Out;
+    }
+
+    FCortexAssetFingerprint MakeLevelOrganizationActorFingerprint(const AActor* Actor)
+    {
+        if (!IsValid(Actor))
+        {
+            return MakeObjectAssetFingerprint(nullptr);
+        }
+
+        FString Signature = Actor->GetPathName();
+        Signature += TEXT("|");
+        Signature += Actor->GetFolderPath().ToString();
+        if (const AActor* Parent = Actor->GetAttachParentActor())
+        {
+            Signature += TEXT("|");
+            Signature += Parent->GetPathName();
+        }
+        for (const FName& Tag : Actor->Tags)
+        {
+            Signature += TEXT("|");
+            Signature += Tag.ToString();
+        }
+
+        return MakeObjectAssetFingerprint(Actor, GetTypeHash(Signature));
+    }
+
+    TSharedPtr<FJsonObject> BuildLevelOrganizationBatchResponseData(const FCortexBatchMutationResult& BatchResult)
+    {
+        TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+        Data->SetStringField(TEXT("status"), BatchResult.Status);
+        Data->SetArrayField(TEXT("written_targets"), ToLevelOrganizationBatchJsonStringArray(BatchResult.WrittenTargets));
+        Data->SetArrayField(TEXT("unwritten_targets"), ToLevelOrganizationBatchJsonStringArray(BatchResult.UnwrittenTargets));
+
+        TArray<TSharedPtr<FJsonValue>> PerItem;
+        PerItem.Reserve(BatchResult.PerItem.Num());
+        for (const FCortexBatchMutationItemResult& ItemResult : BatchResult.PerItem)
+        {
+            TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+            Entry->SetStringField(TEXT("target"), ItemResult.Target);
+            Entry->SetBoolField(TEXT("success"), ItemResult.Result.bSuccess);
+            if (ItemResult.Result.Data.IsValid())
+            {
+                Entry->SetObjectField(TEXT("data"), ItemResult.Result.Data);
+            }
+            if (!ItemResult.Result.ErrorCode.IsEmpty())
+            {
+                Entry->SetStringField(TEXT("error_code"), ItemResult.Result.ErrorCode);
+            }
+            if (!ItemResult.Result.ErrorMessage.IsEmpty())
+            {
+                Entry->SetStringField(TEXT("error_message"), ItemResult.Result.ErrorMessage);
+            }
+            if (ItemResult.Result.ErrorDetails.IsValid())
+            {
+                Entry->SetObjectField(TEXT("error_details"), ItemResult.Result.ErrorDetails);
+            }
+            if (ItemResult.Result.Warnings.Num() > 0)
+            {
+                Entry->SetArrayField(TEXT("warnings"), ToLevelOrganizationBatchJsonStringArray(ItemResult.Result.Warnings));
+            }
+            PerItem.Add(MakeShared<FJsonValueObject>(Entry));
+        }
+
+        Data->SetArrayField(TEXT("per_item"), PerItem);
+        return Data;
+    }
+
+    FCortexCommandResult MakeLevelOrganizationBatchCommandResult(const FCortexBatchMutationResult& BatchResult)
+    {
+        TSharedPtr<FJsonObject> Data = BuildLevelOrganizationBatchResponseData(BatchResult);
+        if (BatchResult.Status == TEXT("committed"))
+        {
+            return FCortexCommandRouter::Success(Data);
+        }
+
+        return FCortexCommandRouter::Error(BatchResult.ErrorCode, BatchResult.ErrorMessage, Data);
+    }
+
     bool ResolveActorList(UWorld* World, const TArray<TSharedPtr<FJsonValue>>& ActorValues, TArray<AActor*>& OutActors)
     {
         for (const TSharedPtr<FJsonValue>& Value : ActorValues)
@@ -23,10 +128,71 @@ namespace
 
         return OutActors.Num() > 0;
     }
+
+    FCortexBatchPreflightResult PreflightLevelOrganizationActor(const FCortexBatchMutationItem& Item)
+    {
+        FCortexCommandResult Error;
+        UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+        if (!World)
+        {
+            return FCortexBatchPreflightResult::Error(Error.ErrorCode, Error.ErrorMessage, Error.ErrorDetails);
+        }
+
+        AActor* Actor = FCortexLevelUtils::FindActorByLabelOrPath(World, Item.Target, Error);
+        if (!Actor)
+        {
+            return FCortexBatchPreflightResult::Error(Error.ErrorCode, Error.ErrorMessage, Error.ErrorDetails);
+        }
+
+        return FCortexBatchPreflightResult::Success(MakeLevelOrganizationActorFingerprint(Actor).ToJson());
+    }
+
+    FCortexCommandResult CommitAttachActor(const FCortexBatchMutationItem& Item)
+    {
+        TSharedPtr<FJsonObject> ItemParams = CopyLevelOrganizationBatchJsonObject(Item.Params);
+        ItemParams->SetStringField(TEXT("actor"), Item.Target);
+        return FCortexLevelOrganizationOps::AttachActor(ItemParams);
+    }
+
+    FCortexCommandResult CommitDetachActor(const FCortexBatchMutationItem& Item)
+    {
+        TSharedPtr<FJsonObject> ItemParams = CopyLevelOrganizationBatchJsonObject(Item.Params);
+        ItemParams->SetStringField(TEXT("actor"), Item.Target);
+        return FCortexLevelOrganizationOps::DetachActor(ItemParams);
+    }
+
+    FCortexCommandResult CommitSetTags(const FCortexBatchMutationItem& Item)
+    {
+        TSharedPtr<FJsonObject> ItemParams = CopyLevelOrganizationBatchJsonObject(Item.Params);
+        ItemParams->SetStringField(TEXT("actor"), Item.Target);
+        return FCortexLevelOrganizationOps::SetTags(ItemParams);
+    }
+
+    FCortexCommandResult CommitSetFolder(const FCortexBatchMutationItem& Item)
+    {
+        TSharedPtr<FJsonObject> ItemParams = CopyLevelOrganizationBatchJsonObject(Item.Params);
+        ItemParams->SetStringField(TEXT("actor"), Item.Target);
+        return FCortexLevelOrganizationOps::SetFolder(ItemParams);
+    }
 }
 
 FCortexCommandResult FCortexLevelOrganizationOps::AttachActor(const TSharedPtr<FJsonObject>& Params)
 {
+    if (Params.IsValid() && Params->HasField(TEXT("items")))
+    {
+        FCortexBatchMutationRequest Request;
+        FCortexCommandResult ParseError;
+        if (!FCortexBatchMutation::ParseRequest(Params, TEXT("actor"), Request, ParseError))
+        {
+            return ParseError;
+        }
+
+        return MakeLevelOrganizationBatchCommandResult(FCortexBatchMutation::Run(
+            Request,
+            PreflightLevelOrganizationActor,
+            CommitAttachActor));
+    }
+
     if (!Params.IsValid())
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
@@ -78,6 +244,21 @@ FCortexCommandResult FCortexLevelOrganizationOps::AttachActor(const TSharedPtr<F
 
 FCortexCommandResult FCortexLevelOrganizationOps::DetachActor(const TSharedPtr<FJsonObject>& Params)
 {
+    if (Params.IsValid() && Params->HasField(TEXT("items")))
+    {
+        FCortexBatchMutationRequest Request;
+        FCortexCommandResult ParseError;
+        if (!FCortexBatchMutation::ParseRequest(Params, TEXT("actor"), Request, ParseError))
+        {
+            return ParseError;
+        }
+
+        return MakeLevelOrganizationBatchCommandResult(FCortexBatchMutation::Run(
+            Request,
+            PreflightLevelOrganizationActor,
+            CommitDetachActor));
+    }
+
     if (!Params.IsValid())
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
@@ -114,6 +295,21 @@ FCortexCommandResult FCortexLevelOrganizationOps::DetachActor(const TSharedPtr<F
 
 FCortexCommandResult FCortexLevelOrganizationOps::SetTags(const TSharedPtr<FJsonObject>& Params)
 {
+    if (Params.IsValid() && Params->HasField(TEXT("items")))
+    {
+        FCortexBatchMutationRequest Request;
+        FCortexCommandResult ParseError;
+        if (!FCortexBatchMutation::ParseRequest(Params, TEXT("actor"), Request, ParseError))
+        {
+            return ParseError;
+        }
+
+        return MakeLevelOrganizationBatchCommandResult(FCortexBatchMutation::Run(
+            Request,
+            PreflightLevelOrganizationActor,
+            CommitSetTags));
+    }
+
     if (!Params.IsValid())
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
@@ -168,6 +364,21 @@ FCortexCommandResult FCortexLevelOrganizationOps::SetTags(const TSharedPtr<FJson
 
 FCortexCommandResult FCortexLevelOrganizationOps::SetFolder(const TSharedPtr<FJsonObject>& Params)
 {
+    if (Params.IsValid() && Params->HasField(TEXT("items")))
+    {
+        FCortexBatchMutationRequest Request;
+        FCortexCommandResult ParseError;
+        if (!FCortexBatchMutation::ParseRequest(Params, TEXT("actor"), Request, ParseError))
+        {
+            return ParseError;
+        }
+
+        return MakeLevelOrganizationBatchCommandResult(FCortexBatchMutation::Run(
+            Request,
+            PreflightLevelOrganizationActor,
+            CommitSetFolder));
+    }
+
     if (!Params.IsValid())
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));

@@ -2,6 +2,7 @@
 #include "CortexCommandRouter.h"
 #include "CortexBatchScope.h"
 #include "CortexTypes.h"
+#include "ICortexDomainHandler.h"
 #include "CortexTcpServer.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -687,6 +688,33 @@ bool FCortexBatchBackwardCompatTest::RunTest(const FString& Parameters)
 			(*Step0Result)->TryGetBoolField(TEXT("success"), bSuccess);
 			TestTrue(TEXT("Step 0 should succeed"), bSuccess);
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBatchCapabilityParamHelpersTest,
+	"Cortex.Core.Batch.CapabilityParamHelpers",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBatchCapabilityParamHelpersTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexCommandInfo CommandInfo{ TEXT("set_class_defaults"), TEXT("Set default property values on a Blueprint CDO") };
+	CommandInfo
+		.OptionalBatchItems(TEXT("Batch items with target, properties, expected_fingerprint"))
+		.OptionalExpectedFingerprint();
+
+	TestEqual(TEXT("Capability helper adds two params"), CommandInfo.Params.Num(), 2);
+	if (CommandInfo.Params.Num() == 2)
+	{
+		TestEqual(TEXT("First helper param is items"), CommandInfo.Params[0].Name, TEXT("items"));
+		TestEqual(TEXT("First helper param type is array"), CommandInfo.Params[0].Type, TEXT("array"));
+		TestEqual(TEXT("Second helper param is expected_fingerprint"), CommandInfo.Params[1].Name, TEXT("expected_fingerprint"));
+		TestEqual(TEXT("Second helper param type is object"), CommandInfo.Params[1].Type, TEXT("object"));
 	}
 
 	return true;

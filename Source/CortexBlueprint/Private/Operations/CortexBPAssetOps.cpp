@@ -1,5 +1,7 @@
 #include "CortexBPAssetOps.h"
 #include "Operations/CortexBPTypeUtils.h"
+#include "CortexAssetFingerprint.h"
+#include "CortexBatchMutation.h"
 #include "CortexBlueprintModule.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -403,6 +405,124 @@ namespace
 		Diagnostic->SetStringField(TEXT("message"), Node ? Node->ErrorMsg : TEXT(""));
 		AddReferencedMetadata(Node, Diagnostic);
 		return Diagnostic;
+	}
+
+	TSharedPtr<FJsonObject> CopyBlueprintAssetBatchJsonObject(const TSharedPtr<FJsonObject>& Source)
+	{
+		TSharedPtr<FJsonObject> Copy = MakeShared<FJsonObject>();
+		if (!Source.IsValid())
+		{
+			return Copy;
+		}
+
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Source->Values)
+		{
+			Copy->SetField(Pair.Key, Pair.Value);
+		}
+
+		return Copy;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ToBlueprintAssetBatchJsonStringArray(const TArray<FString>& Values)
+	{
+		TArray<TSharedPtr<FJsonValue>> Out;
+		Out.Reserve(Values.Num());
+		for (const FString& Value : Values)
+		{
+			Out.Add(MakeShared<FJsonValueString>(Value));
+		}
+		return Out;
+	}
+
+	FCortexAssetFingerprint MakeBlueprintAssetFingerprint(const UBlueprint* Blueprint)
+	{
+		if (!Blueprint)
+		{
+			return MakeObjectAssetFingerprint(nullptr);
+		}
+
+		return MakeObjectAssetFingerprint(Blueprint, GetTypeHash(static_cast<uint32>(Blueprint->Status)));
+	}
+
+	TSharedPtr<FJsonObject> BuildBlueprintAssetBatchResponseData(const FCortexBatchMutationResult& BatchResult)
+	{
+		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+		Data->SetStringField(TEXT("status"), BatchResult.Status);
+		Data->SetArrayField(TEXT("written_targets"), ToBlueprintAssetBatchJsonStringArray(BatchResult.WrittenTargets));
+		Data->SetArrayField(TEXT("unwritten_targets"), ToBlueprintAssetBatchJsonStringArray(BatchResult.UnwrittenTargets));
+
+		TArray<TSharedPtr<FJsonValue>> PerItem;
+		PerItem.Reserve(BatchResult.PerItem.Num());
+		for (const FCortexBatchMutationItemResult& ItemResult : BatchResult.PerItem)
+		{
+			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("target"), ItemResult.Target);
+			Entry->SetBoolField(TEXT("success"), ItemResult.Result.bSuccess);
+			if (ItemResult.Result.Data.IsValid())
+			{
+				Entry->SetObjectField(TEXT("data"), ItemResult.Result.Data);
+			}
+			if (!ItemResult.Result.ErrorCode.IsEmpty())
+			{
+				Entry->SetStringField(TEXT("error_code"), ItemResult.Result.ErrorCode);
+			}
+			if (!ItemResult.Result.ErrorMessage.IsEmpty())
+			{
+				Entry->SetStringField(TEXT("error_message"), ItemResult.Result.ErrorMessage);
+			}
+			PerItem.Add(MakeShared<FJsonValueObject>(Entry));
+		}
+		Data->SetArrayField(TEXT("per_item"), PerItem);
+		return Data;
+	}
+
+	FCortexCommandResult MakeBlueprintAssetBatchCommandResult(const FCortexBatchMutationResult& BatchResult)
+	{
+		TSharedPtr<FJsonObject> Data = BuildBlueprintAssetBatchResponseData(BatchResult);
+		if (BatchResult.Status == TEXT("committed"))
+		{
+			return FCortexCommandRouter::Success(Data);
+		}
+
+		return FCortexCommandRouter::Error(BatchResult.ErrorCode, BatchResult.ErrorMessage, Data);
+	}
+
+	FCortexBatchPreflightResult PreflightBatchCompileBlueprint(const FCortexBatchMutationItem& Item)
+	{
+		FString LoadError;
+		UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(Item.Target, LoadError);
+		if (!Blueprint)
+		{
+			return FCortexBatchPreflightResult::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+		}
+
+		return FCortexBatchPreflightResult::Success(MakeBlueprintAssetFingerprint(Blueprint).ToJson());
+	}
+
+	FCortexCommandResult CommitBatchCompileBlueprint(const FCortexBatchMutationItem& Item)
+	{
+		TSharedPtr<FJsonObject> ItemParams = CopyBlueprintAssetBatchJsonObject(Item.Params);
+		ItemParams->SetStringField(TEXT("asset_path"), Item.Target);
+		return FCortexBPAssetOps::Compile(ItemParams);
+	}
+
+	FCortexBatchPreflightResult PreflightBatchSaveBlueprint(const FCortexBatchMutationItem& Item)
+	{
+		FString LoadError;
+		UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(Item.Target, LoadError);
+		if (!Blueprint)
+		{
+			return FCortexBatchPreflightResult::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+		}
+
+		return FCortexBatchPreflightResult::Success(MakeBlueprintAssetFingerprint(Blueprint).ToJson());
+	}
+
+	FCortexCommandResult CommitBatchSaveBlueprint(const FCortexBatchMutationItem& Item)
+	{
+		TSharedPtr<FJsonObject> ItemParams = CopyBlueprintAssetBatchJsonObject(Item.Params);
+		ItemParams->SetStringField(TEXT("asset_path"), Item.Target);
+		return FCortexBPAssetOps::Save(ItemParams);
 	}
 }
 
@@ -1164,6 +1284,21 @@ FCortexCommandResult FCortexBPAssetOps::Duplicate(const TSharedPtr<FJsonObject>&
 
 FCortexCommandResult FCortexBPAssetOps::Compile(const TSharedPtr<FJsonObject>& Params)
 {
+	if (Params.IsValid() && Params->HasField(TEXT("items")))
+	{
+		FCortexBatchMutationRequest Request;
+		FCortexCommandResult ParseError;
+		if (!FCortexBatchMutation::ParseRequest(Params, TEXT("asset_path"), Request, ParseError))
+		{
+			return ParseError;
+		}
+
+		return MakeBlueprintAssetBatchCommandResult(FCortexBatchMutation::Run(
+			Request,
+			PreflightBatchCompileBlueprint,
+			CommitBatchCompileBlueprint));
+	}
+
 	FString AssetPath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
 	{
@@ -1233,6 +1368,21 @@ FCortexCommandResult FCortexBPAssetOps::Compile(const TSharedPtr<FJsonObject>& P
 
 FCortexCommandResult FCortexBPAssetOps::Save(const TSharedPtr<FJsonObject>& Params)
 {
+	if (Params.IsValid() && Params->HasField(TEXT("items")))
+	{
+		FCortexBatchMutationRequest Request;
+		FCortexCommandResult ParseError;
+		if (!FCortexBatchMutation::ParseRequest(Params, TEXT("asset_path"), Request, ParseError))
+		{
+			return ParseError;
+		}
+
+		return MakeBlueprintAssetBatchCommandResult(FCortexBatchMutation::Run(
+			Request,
+			PreflightBatchSaveBlueprint,
+			CommitBatchSaveBlueprint));
+	}
+
 	FString AssetPath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
 	{

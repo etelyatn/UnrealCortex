@@ -3,6 +3,7 @@
 
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 
 /** Error codes matching the PRD specification */
 namespace CortexErrorCodes
@@ -22,6 +23,7 @@ namespace CortexErrorCodes
 	static const FString BatchLimitExceeded = TEXT("BATCH_LIMIT_EXCEEDED");
 	static const FString BatchRecursionBlocked = TEXT("BATCH_RECURSION_BLOCKED");
 	static const FString BatchRefResolutionFailed = TEXT("BATCH_REF_RESOLUTION_FAILED");
+	static const FString StalePrecondition = TEXT("STALE_PRECONDITION");
 	static const FString GraphNotFound = TEXT("GRAPH_NOT_FOUND");
 	static const FString SubgraphNotFound = TEXT("SUBGRAPH_NOT_FOUND");
 	static const FString SubgraphDepthExceeded = TEXT("SUBGRAPH_DEPTH_EXCEEDED");
@@ -213,3 +215,82 @@ struct CORTEXCORE_API FCortexCommandResult
 };
 
 using FDeferredResponseCallback = TFunction<void(FCortexCommandResult)>;
+
+struct CORTEXCORE_API FCortexBatchMutationItem
+{
+	FString Target;
+	TSharedPtr<FJsonObject> Params;
+	TSharedPtr<FJsonObject> ExpectedFingerprint;
+};
+
+struct CORTEXCORE_API FCortexBatchMutationRequest
+{
+	TArray<FCortexBatchMutationItem> Items;
+};
+
+struct CORTEXCORE_API FCortexBatchPreflightResult
+{
+	bool bSuccess = true;
+	FString ErrorCode;
+	FString ErrorMessage;
+	TSharedPtr<FJsonObject> ErrorDetails;
+	TSharedPtr<FJsonObject> CurrentFingerprint;
+
+	static FCortexBatchPreflightResult Success()
+	{
+		return FCortexBatchPreflightResult{};
+	}
+
+	static FCortexBatchPreflightResult Success(const TSharedPtr<FJsonObject>& InCurrentFingerprint)
+	{
+		FCortexBatchPreflightResult Result;
+		Result.CurrentFingerprint = InCurrentFingerprint;
+		return Result;
+	}
+
+	static FCortexBatchPreflightResult Error(
+		const FString& InErrorCode,
+		const FString& InErrorMessage,
+		TSharedPtr<FJsonObject> InErrorDetails = nullptr)
+	{
+		FCortexBatchPreflightResult Result;
+		Result.bSuccess = false;
+		Result.ErrorCode = InErrorCode;
+		Result.ErrorMessage = InErrorMessage;
+		Result.ErrorDetails = MoveTemp(InErrorDetails);
+		return Result;
+	}
+
+	static FCortexBatchPreflightResult Stale(const TSharedPtr<FJsonObject>& CurrentFingerprint)
+	{
+		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+		if (CurrentFingerprint.IsValid())
+		{
+			Details->SetObjectField(TEXT("current_fingerprint"), CurrentFingerprint);
+		}
+
+		FCortexBatchPreflightResult Result = Error(
+			CortexErrorCodes::StalePrecondition,
+			TEXT("Expected fingerprint does not match current asset fingerprint"),
+			Details);
+		Result.CurrentFingerprint = CurrentFingerprint;
+		return Result;
+	}
+};
+
+struct CORTEXCORE_API FCortexBatchMutationItemResult
+{
+	FString Target;
+	bool bOk = false;
+	FCortexCommandResult Result;
+};
+
+struct CORTEXCORE_API FCortexBatchMutationResult
+{
+	FString Status;
+	TArray<FCortexBatchMutationItemResult> PerItem;
+	TArray<FString> WrittenTargets;
+	TArray<FString> UnwrittenTargets;
+	FString ErrorCode;
+	FString ErrorMessage;
+};
