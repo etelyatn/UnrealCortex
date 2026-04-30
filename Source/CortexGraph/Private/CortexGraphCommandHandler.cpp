@@ -2,6 +2,7 @@
 #include "CortexCommandRouter.h"
 #include "Operations/CortexGraphNodeOps.h"
 #include "Operations/CortexGraphConnectionOps.h"
+#include "Operations/CortexGraphTraceOps.h"
 
 FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	const FString& Command,
@@ -14,17 +15,33 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	{
 		return FCortexGraphNodeOps::ListGraphs(Params);
 	}
-	if (Command == TEXT("list_nodes"))
-	{
-		return FCortexGraphNodeOps::ListNodes(Params);
-	}
-	if (Command == TEXT("get_node"))
-	{
-		return FCortexGraphNodeOps::GetNode(Params);
-	}
 	if (Command == TEXT("search_nodes"))
 	{
 		return FCortexGraphNodeOps::SearchNodes(Params);
+	}
+	if (Command == TEXT("trace_exec"))
+	{
+		return FCortexGraphTraceOps::TraceExec(Params);
+	}
+	if (Command == TEXT("trace_dataflow"))
+	{
+		return FCortexGraphTraceOps::TraceDataflow(Params);
+	}
+	if (Command == TEXT("get_subgraph"))
+	{
+		return FCortexGraphTraceOps::GetSubgraph(Params);
+	}
+	if (Command == TEXT("list_event_handlers"))
+	{
+		return FCortexGraphTraceOps::ListEventHandlers(Params);
+	}
+	if (Command == TEXT("find_event_handler"))
+	{
+		return FCortexGraphTraceOps::FindEventHandler(Params);
+	}
+	if (Command == TEXT("find_function_calls"))
+	{
+		return FCortexGraphTraceOps::FindFunctionCalls(Params);
 	}
 	if (Command == TEXT("add_node"))
 	{
@@ -63,17 +80,6 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 		FCortexCommandInfo{ TEXT("list_graphs"), TEXT("List all graphs in an asset") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("include_subgraphs"), TEXT("boolean"), TEXT("Include composite subgraphs with parent_graph and subgraph_path fields")),
-		FCortexCommandInfo{ TEXT("list_nodes"), TEXT("List nodes in a graph") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
-			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph to inspect, defaults to EventGraph"))
-			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')"))
-			.Optional(TEXT("compact"), TEXT("boolean"), TEXT("Omit position, node_class, pin_count to reduce token usage (default: true)")),
-		FCortexCommandInfo{ TEXT("get_node"), TEXT("Get node details with all pins") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
-			.Required(TEXT("node_id"), TEXT("string"), TEXT("Identifier of the node to inspect"))
-			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node"))
-			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')"))
-			.Optional(TEXT("compact"), TEXT("boolean"), TEXT("Omit position, node_class; filter hidden unconnected pins (default: true)")),
 		FCortexCommandInfo{ TEXT("search_nodes"), TEXT("Search nodes across graphs by class, function name, or display name") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("node_class"), TEXT("string"), TEXT("Runtime node class filter"))
@@ -82,6 +88,36 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Restrict search to a specific graph"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path to restrict search"))
 			.Optional(TEXT("compact"), TEXT("boolean"), TEXT("Omit node_class from results (default: true)")),
+		FCortexCommandInfo{ TEXT("trace_exec"), TEXT("Trace execution flow from a starting node") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
+			.Required(TEXT("start_node_id"), TEXT("string"), TEXT("Identifier of the starting node"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path"))
+			.Optional(TEXT("max_depth"), TEXT("number"), TEXT("Maximum traversal depth"))
+			.Optional(TEXT("traverse_policy"), TEXT("string"), TEXT("Traversal policy hint"))
+			.Optional(TEXT("include_edges"), TEXT("boolean"), TEXT("Include traced edge list")),
+		FCortexCommandInfo{ TEXT("trace_dataflow"), TEXT("Trace data-flow from a starting node") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
+			.Required(TEXT("start_node_id"), TEXT("string"), TEXT("Identifier of the starting node"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path"))
+			.Optional(TEXT("max_depth"), TEXT("number"), TEXT("Maximum traversal depth"))
+			.Optional(TEXT("traverse_policy"), TEXT("string"), TEXT("Traversal policy hint"))
+			.Optional(TEXT("include_edges"), TEXT("boolean"), TEXT("Include traced edge list")),
+		FCortexCommandInfo{ TEXT("get_subgraph"), TEXT("Read a graph or selected node subset with optional edges") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph to inspect, defaults to EventGraph"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path"))
+			.Optional(TEXT("node_ids"), TEXT("array"), TEXT("Optional subset of node identifiers"))
+			.Optional(TEXT("include_edges"), TEXT("boolean"), TEXT("Include edges between returned nodes")),
+		FCortexCommandInfo{ TEXT("list_event_handlers"), TEXT("List event entry nodes across Blueprint graphs") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset")),
+		FCortexCommandInfo{ TEXT("find_event_handler"), TEXT("Find matching event entry nodes across graphs") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
+			.Required(TEXT("event_name"), TEXT("string"), TEXT("Event display name or identifier to match")),
+		FCortexCommandInfo{ TEXT("find_function_calls"), TEXT("Find call-function nodes by function name") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
+			.Required(TEXT("function_name"), TEXT("string"), TEXT("Function-name filter")),
 		FCortexCommandInfo{ TEXT("add_node"), TEXT("Add a node to a graph") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("node_class"), TEXT("string"), TEXT("Node class to create"))

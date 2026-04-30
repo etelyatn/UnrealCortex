@@ -71,11 +71,11 @@ bool FCortexBlueprintLayoutE2ETest::RunTest(const FString& Parameters)
 	FCortexCommandResult LR = Router.Execute(TEXT("graph.auto_layout"), LP);
 	TestTrue(TEXT("auto_layout succeeded"), LR.bSuccess);
 
-	// Verify positions were set via list_nodes
+	// Verify positions were set via get_subgraph
 	TSharedPtr<FJsonObject> ListP = MakeShared<FJsonObject>();
 	ListP->SetStringField(TEXT("asset_path"), AssetPath);
-	FCortexCommandResult ListR = Router.Execute(TEXT("graph.list_nodes"), ListP);
-	TestTrue(TEXT("list_nodes succeeded"), ListR.bSuccess);
+	FCortexCommandResult ListR = Router.Execute(TEXT("graph.get_subgraph"), ListP);
+	TestTrue(TEXT("get_subgraph succeeded"), ListR.bSuccess);
 
 	if (ListR.bSuccess && ListR.Data.IsValid())
 	{

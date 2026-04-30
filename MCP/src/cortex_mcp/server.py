@@ -3,6 +3,7 @@
 import logging
 import os
 import sys
+import json
 from mcp.server.fastmcp import FastMCP
 from .capabilities import build_router_docstrings, get_registered_domains, load_capabilities_cache
 from .project import resolve_project_dir as _resolve_project_dir
@@ -93,6 +94,13 @@ def refresh_cache() -> str:
     """Compatibility helper for tests; not MCP-registered."""
     _connection.invalidate_cache(None)
     return '{"cleared": true}'
+
+
+def get_call_count_metrics() -> str:
+    """Compatibility helper for tests; not MCP-registered."""
+    return json.dumps(_connection.get_call_metrics())
+
+
 # Register explicit consolidated tools only.
 _register_explicit_tools(mcp, _connection)
 

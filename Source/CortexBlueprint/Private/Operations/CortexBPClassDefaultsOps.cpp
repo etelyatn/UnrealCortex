@@ -2,6 +2,8 @@
 
 #include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPSCSDiagnostics.h"
+#include "CortexAssetFingerprint.h"
+#include "CortexBatchMutation.h"
 #include "CortexBlueprintModule.h"
 #include "CortexPropertyUtils.h"
 #include "CortexSerializer.h"
@@ -265,6 +267,178 @@ namespace
 
 		return Details;
 	}
+
+	static TSharedPtr<FJsonObject> CopyClassDefaultsBatchJsonObject(const TSharedPtr<FJsonObject>& Source)
+	{
+		TSharedPtr<FJsonObject> Copy = MakeShared<FJsonObject>();
+		if (!Source.IsValid())
+		{
+			return Copy;
+		}
+
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Source->Values)
+		{
+			Copy->SetField(Pair.Key, Pair.Value);
+		}
+
+		return Copy;
+	}
+
+	static FCortexAssetFingerprint MakeClassDefaultsBlueprintFingerprint(const UBlueprint* Blueprint)
+	{
+		if (!Blueprint)
+		{
+			return MakeObjectAssetFingerprint(nullptr);
+		}
+
+		return MakeObjectAssetFingerprint(Blueprint, GetTypeHash(static_cast<uint32>(Blueprint->Status)));
+	}
+
+	static TSharedPtr<FJsonObject> BuildClassDefaultsBatchResponseData(const FCortexBatchMutationResult& BatchResult)
+	{
+		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+		Data->SetStringField(TEXT("status"), BatchResult.Status);
+		Data->SetArrayField(TEXT("written_targets"), ToJsonStringArray(BatchResult.WrittenTargets));
+		Data->SetArrayField(TEXT("unwritten_targets"), ToJsonStringArray(BatchResult.UnwrittenTargets));
+
+		TArray<TSharedPtr<FJsonValue>> PerItem;
+		PerItem.Reserve(BatchResult.PerItem.Num());
+		for (const FCortexBatchMutationItemResult& ItemResult : BatchResult.PerItem)
+		{
+			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("target"), ItemResult.Target);
+			Entry->SetBoolField(TEXT("success"), ItemResult.Result.bSuccess);
+			if (ItemResult.Result.Data.IsValid())
+			{
+				Entry->SetObjectField(TEXT("data"), ItemResult.Result.Data);
+			}
+			if (!ItemResult.Result.ErrorCode.IsEmpty())
+			{
+				Entry->SetStringField(TEXT("error_code"), ItemResult.Result.ErrorCode);
+			}
+			if (!ItemResult.Result.ErrorMessage.IsEmpty())
+			{
+				Entry->SetStringField(TEXT("error_message"), ItemResult.Result.ErrorMessage);
+			}
+			if (ItemResult.Result.ErrorDetails.IsValid())
+			{
+				Entry->SetObjectField(TEXT("error_details"), ItemResult.Result.ErrorDetails);
+			}
+			if (ItemResult.Result.Warnings.Num() > 0)
+			{
+				Entry->SetArrayField(TEXT("warnings"), ToJsonStringArray(ItemResult.Result.Warnings));
+			}
+			PerItem.Add(MakeShared<FJsonValueObject>(Entry));
+		}
+		Data->SetArrayField(TEXT("per_item"), PerItem);
+		return Data;
+	}
+
+	static FCortexCommandResult MakeClassDefaultsBatchCommandResult(const FCortexBatchMutationResult& BatchResult)
+	{
+		TSharedPtr<FJsonObject> Data = BuildClassDefaultsBatchResponseData(BatchResult);
+		if (BatchResult.Status == TEXT("committed"))
+		{
+			return FCortexCommandRouter::Success(Data);
+		}
+
+		return FCortexCommandRouter::Error(BatchResult.ErrorCode, BatchResult.ErrorMessage, Data);
+	}
+
+	static bool ShouldExposePropertyForDiscovery(const FProperty* Property)
+	{
+		return Property != nullptr
+			&& !Property->HasAnyPropertyFlags(CPF_Deprecated | CPF_DisableEditOnTemplate)
+			&& Property->HasAnyPropertyFlags(CPF_Edit | CPF_BlueprintVisible);
+	}
+
+	static bool IsSupportedDiscoveryProperty(const FProperty* Property)
+	{
+		return Property != nullptr
+			&& !Property->IsA(FDelegateProperty::StaticClass())
+			&& !Property->IsA(FMulticastDelegateProperty::StaticClass())
+			&& !Property->IsA(FMulticastInlineDelegateProperty::StaticClass())
+			&& !Property->IsA(FMulticastSparseDelegateProperty::StaticClass())
+			&& !Property->IsA(FWeakObjectProperty::StaticClass())
+			&& !Property->IsA(FInt8Property::StaticClass());
+	}
+
+	static TArray<TSharedPtr<FJsonValue>> BuildAcceptedFormats(const FProperty* Property)
+	{
+		TArray<TSharedPtr<FJsonValue>> Formats;
+
+		if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+		{
+			if (ObjectProperty->PropertyClass && ObjectProperty->PropertyClass->IsChildOf(UActorComponent::StaticClass()))
+			{
+				Formats.Add(MakeShared<FJsonValueString>(TEXT("Bare component name")));
+				Formats.Add(MakeShared<FJsonValueString>(TEXT("Full object path")));
+				return Formats;
+			}
+
+			Formats.Add(MakeShared<FJsonValueString>(TEXT("Full object path")));
+			return Formats;
+		}
+
+		Formats.Add(MakeShared<FJsonValueString>(TEXT("Direct property value")));
+		return Formats;
+	}
+
+	static TSharedPtr<FJsonObject> BuildDiscoveryPropertyInfo(FProperty* Property, void* ValuePtr)
+	{
+		TSharedPtr<FJsonObject> PropertyInfo = MakeShared<FJsonObject>();
+		PropertyInfo->SetStringField(TEXT("type"), Property->GetCPPType());
+
+		TSharedPtr<FJsonValue> SerializedValue;
+		if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+		{
+			UObject* ObjectValue = ObjectProperty->GetObjectPropertyValue(ValuePtr);
+			SerializedValue = ObjectValue
+				? TSharedPtr<FJsonValue>(MakeShared<FJsonValueString>(ObjectValue->GetPathName()))
+				: TSharedPtr<FJsonValue>(MakeShared<FJsonValueNull>());
+		}
+		else
+		{
+			SerializedValue = FCortexSerializer::PropertyToJson(Property, ValuePtr);
+		}
+		PropertyInfo->SetField(
+			TEXT("value"),
+			SerializedValue.IsValid() ? SerializedValue : MakeShared<FJsonValueNull>());
+
+		const FString Category = Property->GetMetaData(TEXT("Category"));
+		if (!Category.IsEmpty())
+		{
+			PropertyInfo->SetStringField(TEXT("category"), Category);
+		}
+
+		if (UStruct* OwnerStruct = Property->GetOwnerStruct())
+		{
+			PropertyInfo->SetStringField(TEXT("defined_in"), OwnerStruct->GetName());
+		}
+
+		PropertyInfo->SetArrayField(TEXT("accepted_formats"), BuildAcceptedFormats(Property));
+		return PropertyInfo;
+	}
+
+	static FCortexBatchPreflightResult PreflightBatchSetClassDefaults(const FCortexBatchMutationItem& Item)
+	{
+		FString LoadError;
+		UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(Item.Target, LoadError);
+		if (!Blueprint)
+		{
+			return FCortexBatchPreflightResult::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+		}
+
+		return FCortexBatchPreflightResult::Success(MakeClassDefaultsBlueprintFingerprint(Blueprint).ToJson());
+	}
+
+	static FCortexCommandResult CommitBatchSetClassDefaults(const FCortexBatchMutationItem& Item)
+	{
+		TSharedPtr<FJsonObject> ItemParams = CopyClassDefaultsBatchJsonObject(Item.Params);
+		ItemParams->SetStringField(TEXT("asset_path"), Item.Target);
+		ItemParams->SetStringField(TEXT("blueprint_path"), Item.Target);
+		return FCortexBPClassDefaultsOps::SetClassDefaults(ItemParams);
+	}
 }
 
 UObject* FCortexBPClassDefaultsOps::GetBlueprintCDO(UBlueprint* Blueprint, FString& OutError)
@@ -405,6 +579,132 @@ TArray<FString> FCortexBPClassDefaultsOps::FindSimilarPropertyNames(
 	}
 
 	return Result;
+}
+
+FCortexCommandResult FCortexBPClassDefaultsOps::ListSettableDefaults(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintPath;
+	if (!Params.IsValid()
+		|| (!Params->TryGetStringField(TEXT("asset_path"), BlueprintPath)
+			&& !Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+		|| BlueprintPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing or empty 'asset_path' field"));
+	}
+
+	FString LoadError;
+	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(BlueprintPath, LoadError);
+	if (!Blueprint)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+	}
+
+	FString CDOError;
+	UObject* CDO = GetBlueprintCDO(Blueprint, CDOError);
+	if (!CDO)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::CompileFailed, CDOError);
+	}
+
+	UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
+	if (!GeneratedClass)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::CompileFailed,
+			TEXT("Blueprint generated class is missing"));
+	}
+
+	TSharedPtr<FJsonObject> PropertiesObj = MakeShared<FJsonObject>();
+	int32 Count = 0;
+	for (TFieldIterator<FProperty> It(GeneratedClass); It; ++It)
+	{
+		FProperty* Property = *It;
+		if (!ShouldExposePropertyForDiscovery(Property) || !IsSupportedDiscoveryProperty(Property))
+		{
+			continue;
+		}
+
+		void* ValuePtr = Property->ContainerPtrToValuePtr<void>(CDO);
+		PropertiesObj->SetObjectField(Property->GetName(), BuildDiscoveryPropertyInfo(Property, ValuePtr));
+		++Count;
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("blueprint_path"), BlueprintPath);
+	Data->SetStringField(TEXT("class"), GeneratedClass->GetName());
+	Data->SetStringField(TEXT("parent_class"),
+		Blueprint->ParentClass ? Blueprint->ParentClass->GetName() : TEXT(""));
+	Data->SetObjectField(TEXT("properties"), PropertiesObj);
+	Data->SetNumberField(TEXT("count"), Count);
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexBPClassDefaultsOps::ListInheritedProperties(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintPath;
+	if (!Params.IsValid()
+		|| (!Params->TryGetStringField(TEXT("asset_path"), BlueprintPath)
+			&& !Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+		|| BlueprintPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing or empty 'asset_path' field"));
+	}
+
+	FString LoadError;
+	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(BlueprintPath, LoadError);
+	if (!Blueprint)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+	}
+
+	FString CDOError;
+	UObject* CDO = GetBlueprintCDO(Blueprint, CDOError);
+	if (!CDO)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::CompileFailed, CDOError);
+	}
+
+	UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
+	if (!GeneratedClass)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::CompileFailed,
+			TEXT("Blueprint generated class is missing"));
+	}
+
+	TSharedPtr<FJsonObject> PropertiesObj = MakeShared<FJsonObject>();
+	int32 Count = 0;
+	for (TFieldIterator<FProperty> It(GeneratedClass); It; ++It)
+	{
+		FProperty* Property = *It;
+		if (!ShouldExposePropertyForDiscovery(Property) || !IsSupportedDiscoveryProperty(Property))
+		{
+			continue;
+		}
+
+		UStruct* OwnerStruct = Property->GetOwnerStruct();
+		if (OwnerStruct == GeneratedClass)
+		{
+			continue;
+		}
+
+		void* ValuePtr = Property->ContainerPtrToValuePtr<void>(CDO);
+		PropertiesObj->SetObjectField(Property->GetName(), BuildDiscoveryPropertyInfo(Property, ValuePtr));
+		++Count;
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("blueprint_path"), BlueprintPath);
+	Data->SetStringField(TEXT("class"), GeneratedClass->GetName());
+	Data->SetStringField(TEXT("parent_class"),
+		Blueprint->ParentClass ? Blueprint->ParentClass->GetName() : TEXT(""));
+	Data->SetObjectField(TEXT("properties"), PropertiesObj);
+	Data->SetNumberField(TEXT("count"), Count);
+	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexBPClassDefaultsOps::GetClassDefaults(const TSharedPtr<FJsonObject>& Params)
@@ -624,6 +924,21 @@ FCortexCommandResult FCortexBPClassDefaultsOps::GetClassDefaults(const TSharedPt
 
 FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPtr<FJsonObject>& Params)
 {
+	if (Params.IsValid() && Params->HasField(TEXT("items")))
+	{
+		FCortexBatchMutationRequest Request;
+		FCortexCommandResult ParseError;
+		if (!FCortexBatchMutation::ParseRequest(Params, TEXT("asset_path"), Request, ParseError))
+		{
+			return ParseError;
+		}
+
+		return MakeClassDefaultsBatchCommandResult(FCortexBatchMutation::Run(
+			Request,
+			PreflightBatchSetClassDefaults,
+			CommitBatchSetClassDefaults));
+	}
+
 	if (!Params.IsValid())
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params object"));

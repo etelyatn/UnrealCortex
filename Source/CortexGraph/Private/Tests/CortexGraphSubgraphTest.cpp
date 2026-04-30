@@ -222,7 +222,7 @@ bool FCortexGraphSubgraphDiscoveryTest::RunTest(const FString& Parameters)
 
 	CreateComposite(TestBP, EventGraph, TEXT("BeginPlay"));
 
-	// Use command router to call list_nodes
+	// Use command router to call get_subgraph
 	FCortexCommandRouter Router;
 	Router.RegisterDomain(
 		TEXT("graph"), TEXT("Graph"), TEXT("1.0.0"),
@@ -233,8 +233,8 @@ bool FCortexGraphSubgraphDiscoveryTest::RunTest(const FString& Parameters)
 	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
 	Params->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
 
-	FCortexCommandResult Result = Router.Execute(TEXT("graph.list_nodes"), Params);
-	TestTrue(TEXT("list_nodes succeeds"), Result.bSuccess);
+	FCortexCommandResult Result = Router.Execute(TEXT("graph.get_subgraph"), Params);
+	TestTrue(TEXT("get_subgraph succeeds"), Result.bSuccess);
 
 	// Find the composite node entry and check subgraph_name
 	const TArray<TSharedPtr<FJsonValue>>* Nodes;
@@ -255,7 +255,7 @@ bool FCortexGraphSubgraphDiscoveryTest::RunTest(const FString& Parameters)
 				TestEqual(TEXT("subgraph_name is BeginPlay"), SubgraphName, FString(TEXT("BeginPlay")));
 			}
 		}
-		TestTrue(TEXT("Found composite node in list"), bFoundComposite);
+		TestTrue(TEXT("Found composite node in result"), bFoundComposite);
 	}
 
 	// Now list nodes INSIDE the subgraph and verify tunnel boundaries are annotated
@@ -264,7 +264,7 @@ bool FCortexGraphSubgraphDiscoveryTest::RunTest(const FString& Parameters)
 	SubParams->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
 	SubParams->SetStringField(TEXT("subgraph_path"), TEXT("BeginPlay"));
 
-	FCortexCommandResult SubResult = Router.Execute(TEXT("graph.list_nodes"), SubParams);
+	FCortexCommandResult SubResult = Router.Execute(TEXT("graph.get_subgraph"), SubParams);
 	TestTrue(TEXT("list_nodes in subgraph succeeds"), SubResult.bSuccess);
 
 	// PostPlacedNewNode creates tunnel entry/exit nodes inside the BoundGraph.
@@ -335,7 +335,7 @@ bool FCortexGraphSubgraphListNodesTest::RunTest(const FString& Parameters)
 	Params->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
 	Params->SetStringField(TEXT("subgraph_path"), TEXT("InnerGraph"));
 
-	FCortexCommandResult Result = Router.Execute(TEXT("graph.list_nodes"), Params);
+	FCortexCommandResult Result = Router.Execute(TEXT("graph.get_subgraph"), Params);
 	TestTrue(TEXT("list_nodes with subgraph_path succeeds"), Result.bSuccess);
 
 	const TArray<TSharedPtr<FJsonValue>>* Nodes;
@@ -705,7 +705,7 @@ bool FCortexGraphSubgraphCreateCompositeTest::RunTest(const FString& Parameters)
 	ListParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
 	ListParams->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
 
-	FCortexCommandResult ListResult = Router.Execute(TEXT("graph.list_nodes"), ListParams);
+	FCortexCommandResult ListResult = Router.Execute(TEXT("graph.get_subgraph"), ListParams);
 	TestTrue(TEXT("list_nodes succeeds"), ListResult.bSuccess);
 
 	const TArray<TSharedPtr<FJsonValue>>* Nodes;
@@ -730,7 +730,7 @@ bool FCortexGraphSubgraphCreateCompositeTest::RunTest(const FString& Parameters)
 					SubParams->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
 					SubParams->SetStringField(TEXT("subgraph_path"), SubgraphName);
 
-					FCortexCommandResult SubResult = Router.Execute(TEXT("graph.list_nodes"), SubParams);
+					FCortexCommandResult SubResult = Router.Execute(TEXT("graph.get_subgraph"), SubParams);
 					TestTrue(TEXT("list_nodes inside new composite succeeds"), SubResult.bSuccess);
 				}
 			}

@@ -69,7 +69,7 @@ void FCortexCoreModule::RequestSerialization(const FCortexSerializationRequest& 
 	}
 	else
 	{
-		UE_LOG(LogCortex, Warning, TEXT("RequestSerialization called but no handler bound"));
+		UE_LOG(LogCortex, Log, TEXT("RequestSerialization called but no handler bound"));
 		FCortexSerializationResult ErrorResult;
 		ErrorResult.bSuccess = false;
 		ErrorResult.JsonPayload = TEXT("{\"error\":\"No serialization handler bound\"}");

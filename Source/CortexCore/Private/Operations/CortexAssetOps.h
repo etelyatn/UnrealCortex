@@ -11,6 +11,8 @@ public:
 	static FCortexCommandResult OpenAsset(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult CloseAsset(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult ReloadAsset(const TSharedPtr<FJsonObject>& Params);
+	static FAssetData ResolveLiteralAssetPath(const FString& AssetPath);
+	static UObject* LoadAssetWithFallbacks(const FAssetData& AssetData, const FString& AssetPath);
 
 private:
 	static bool ResolveAssetPaths(
@@ -23,7 +25,5 @@ private:
 		TArray<FAssetData>& OutAssets,
 		FCortexCommandResult& OutError);
 
-	static FAssetData ResolveLiteralAssetPath(const FString& AssetPath);
-	static UObject* LoadAssetWithFallbacks(const FAssetData& AssetData, const FString& AssetPath);
 	static FString GetAssetTypeName(const UObject* Asset);
 };

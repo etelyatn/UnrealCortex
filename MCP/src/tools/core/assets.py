@@ -12,9 +12,10 @@ def register_core_asset_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def save_asset(
-        asset_path: str | list[str],
+        asset_path: str | list[str] | None = None,
         force: bool = False,
         dry_run: bool = False,
+        items: list[dict] | None = None,
     ) -> str:
         """Save asset(s) to disk.
 
@@ -27,6 +28,8 @@ def register_core_asset_tools(mcp, connection: UEConnection):
                         with '*' wildcard (e.g., '/Game/Data/DT_*').
             force: Save even if the asset is not dirty. Defaults to False.
             dry_run: Preview which assets would be saved without writing to disk.
+            items: Optional batch item list. Each item must include target and may
+                include force, dry_run, and expected_fingerprint.
 
         Returns:
             JSON with 'results' array, each containing:
@@ -37,7 +40,14 @@ def register_core_asset_tools(mcp, connection: UEConnection):
             - can_save: (dry_run only) Whether the asset would be saved
         """
         try:
-            params = {"asset_path": asset_path, "force": force, "dry_run": dry_run}
+            if items is not None:
+                if len(items) == 0:
+                    return "Error: Missing or empty required parameter: items"
+                params = {"items": items}
+            else:
+                if asset_path is None or asset_path == "":
+                    return "Error: Missing required parameter: asset_path"
+                params = {"asset_path": asset_path, "force": force, "dry_run": dry_run}
             response = connection.send_command("core.save_asset", params)
             return format_response(response.get("data", {}), "save_asset")
         except (RuntimeError, ConnectionError) as e:

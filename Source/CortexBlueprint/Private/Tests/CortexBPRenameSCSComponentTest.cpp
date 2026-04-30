@@ -6,6 +6,7 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
 #include "Editor.h"
+#include "Editor/Transactor.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SCS_Node.h"
@@ -636,28 +637,36 @@ bool FCortexBPRenameSCSComponentUndoTest::RunTest(const FString& Parameters)
 
 	TestNotNull(TEXT("OldComp added"), RenameAddSCSNode(BP, UCortexBPTestSubobjComponent::StaticClass(), TEXT("OldComp")));
 
+	if (!GEditor || !GEditor->Trans || !GEditor->CanTransact())
+	{
+		AddInfo(TEXT("Editor undo system unavailable; skipping undo verification."));
+		BP->MarkAsGarbage();
+		return true;
+	}
+
+	GEditor->ResetTransaction(FText::FromString(TEXT("Cortex RenameSCS Undo Test Setup")));
+	const int32 InitialQueueLength = GEditor->Trans->GetQueueLength();
+
 	const FCortexCommandResult Result = FCortexBPCleanupOps::RenameSCSComponent(
 		RenameMakeParams(BP, TEXT("OldComp"), TEXT("NewComp"), false));
 	TestTrue(TEXT("Rename succeeds"), Result.bSuccess);
 
-	if (!GEditor)
+	const int32 FinalQueueLength = GEditor->Trans->GetQueueLength();
+	TestTrue(TEXT("Rename creates a new undo transaction"), FinalQueueLength > InitialQueueLength);
+	TestTrue(TEXT("Undo is available after rename"), GEditor->Trans->CanUndo());
+	if (FinalQueueLength <= InitialQueueLength || !GEditor->Trans->CanUndo())
 	{
-		AddInfo(TEXT("GEditor unavailable; skipping undo verification."));
+		GEditor->ResetTransaction(FText::FromString(TEXT("Cortex RenameSCS Undo Test Cleanup")));
 		BP->MarkAsGarbage();
-		return true;
+		return false;
 	}
 
 	const bool bUndid = GEditor->UndoTransaction();
-	if (!bUndid)
-	{
-		AddInfo(TEXT("UndoTransaction returned false in this test environment; skipping undo verification."));
-		BP->MarkAsGarbage();
-		return true;
-	}
-
+	TestTrue(TEXT("UndoTransaction succeeds"), bUndid);
 	TestTrue(TEXT("OldComp restored after undo"), RenameHasSCSNode(BP, TEXT("OldComp")));
 	TestFalse(TEXT("NewComp removed after undo"), RenameHasSCSNode(BP, TEXT("NewComp")));
 
+	GEditor->ResetTransaction(FText::FromString(TEXT("Cortex RenameSCS Undo Test Cleanup")));
 	BP->MarkAsGarbage();
 	return true;
 }

@@ -1,6 +1,14 @@
 #include "Misc/AutomationTest.h"
 #include "CortexLogCapture.h"
 
+namespace
+{
+void EmitWarningForCapture(FCortexLogCapture& Capture, const TCHAR* Message)
+{
+	Capture.Serialize(Message, ELogVerbosity::Warning, FName(TEXT("LogCore")));
+}
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexLogCaptureMatchTest,
 	"Cortex.Core.LogCapture.CapturesInstancedStructWarning",
@@ -13,7 +21,8 @@ bool FCortexLogCaptureMatchTest::RunTest(const FString& Parameters)
 
 	FCortexLogCapture Capture;
 
-	UE_LOG(LogCore, Warning,
+	EmitWarningForCapture(
+		Capture,
 		TEXT("Unable to find serialized UScriptStruct -> Advance 37 bytes in the archive and reset to empty FInstancedStruct. SerializedProperty:/Script/TestModule.FTestStruct:Items.Items LinkerRoot:/Game/Test/DA_Test"));
 
 	TestEqual(TEXT("Should capture one warning"), Capture.GetWarnings().Num(), 1);
@@ -36,8 +45,8 @@ bool FCortexLogCaptureIgnoreUnrelatedTest::RunTest(const FString& Parameters)
 
 	FCortexLogCapture Capture;
 
-	UE_LOG(LogCore, Warning, TEXT("Some other warning that should not be captured"));
-	UE_LOG(LogCore, Warning, TEXT("A second unrelated warning"));
+	EmitWarningForCapture(Capture, TEXT("Some other warning that should not be captured"));
+	EmitWarningForCapture(Capture, TEXT("A second unrelated warning"));
 
 	TestEqual(TEXT("Should capture zero warnings"), Capture.GetWarnings().Num(), 0);
 
@@ -56,9 +65,11 @@ bool FCortexLogCaptureFilterTest::RunTest(const FString& Parameters)
 
 	FCortexLogCapture Capture;
 
-	UE_LOG(LogCore, Warning,
+	EmitWarningForCapture(
+		Capture,
 		TEXT("Unable to find serialized UScriptStruct -> Advance 37 bytes in the archive and reset to empty FInstancedStruct. SerializedProperty:/Script/M.S:F.F LinkerRoot:/Game/Test/DA_Target"));
-	UE_LOG(LogCore, Warning,
+	EmitWarningForCapture(
+		Capture,
 		TEXT("Unable to find serialized UScriptStruct -> Advance 98 bytes in the archive and reset to empty FInstancedStruct. SerializedProperty:/Script/M.S:F.F LinkerRoot:/Game/Test/DA_Other"));
 
 	TestEqual(TEXT("Total warnings should be 2"), Capture.GetWarnings().Num(), 2);
@@ -83,7 +94,8 @@ bool FCortexLogCaptureScopeTest::RunTest(const FString& Parameters)
 	TArray<FString> CapturedDuringScope;
 	{
 		FCortexLogCapture Capture;
-		UE_LOG(LogCore, Warning,
+		EmitWarningForCapture(
+			Capture,
 			TEXT("Unable to find serialized UScriptStruct -> Advance 37 bytes in the archive and reset to empty FInstancedStruct. SerializedProperty:/Script/M.S:F LinkerRoot:/Game/Test/X"));
 		CapturedDuringScope = Capture.GetWarnings();
 	}

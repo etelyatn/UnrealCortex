@@ -11,6 +11,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAddVariableInheritedPropertyCollisionTest,
+	"Cortex.Blueprint.AddVariable.InheritedPropertyCollision",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
 bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 {
 	FCortexBPCommandHandler Handler;
@@ -181,6 +187,55 @@ bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 	// GeneratedClass, and CDO are all collected together.  Marking only the
 	// UBlueprint object leaves the (dirty, uncompiled) GeneratedClass live,
 	// which causes a background GC worker crash on the next test.
+	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
+	if (CreatedBP)
+	{
+		CreatedBP->GetOutermost()->MarkAsGarbage();
+	}
+
+	return true;
+}
+
+bool FCortexBPAddVariableInheritedPropertyCollisionTest::RunTest(const FString& Parameters)
+{
+	FCortexBPCommandHandler Handler;
+
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("name"), TEXT("BP_AddVarComponentTest"));
+		Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_AddVarComponent"));
+		Params->SetStringField(TEXT("type"), TEXT("Component"));
+
+		const FCortexCommandResult CreateResult = Handler.Execute(TEXT("create"), Params);
+		TestTrue(TEXT("Component Blueprint create should succeed"), CreateResult.bSuccess);
+	}
+
+	const FString TestBPPath = TEXT("/Game/Temp/CortexBPTest_AddVarComponent/BP_AddVarComponentTest");
+
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TestBPPath);
+		Params->SetStringField(TEXT("name"), TEXT("TickCount"));
+		Params->SetStringField(TEXT("type"), TEXT("int"));
+
+		const FCortexCommandResult Result = Handler.Execute(TEXT("add_variable"), Params);
+		TestTrue(TEXT("Non-colliding component variable should succeed"), Result.bSuccess);
+	}
+
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TestBPPath);
+		Params->SetStringField(TEXT("name"), TEXT("bIsActive"));
+		Params->SetStringField(TEXT("type"), TEXT("bool"));
+
+		const FCortexCommandResult Result = Handler.Execute(TEXT("add_variable"), Params);
+		TestFalse(TEXT("Inherited property collision should be rejected"), Result.bSuccess);
+		TestEqual(TEXT("Inherited property collision should use INVALID_VALUE"),
+			Result.ErrorCode, CortexErrorCodes::InvalidValue);
+		TestTrue(TEXT("Error should explain inherited UPROPERTY collision"),
+			Result.ErrorMessage.Contains(TEXT("inherited UPROPERTY")));
+	}
+
 	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
 	if (CreatedBP)
 	{

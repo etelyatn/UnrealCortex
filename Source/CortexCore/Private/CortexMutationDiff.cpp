@@ -113,7 +113,7 @@ void FScopedMutationCapture::ApplyRemoved(const TSharedPtr<FJsonObject>& TargetJ
 
 	if (!PreSnapshot.IsValid())
 	{
-		UE_LOG(LogCortex, Warning, TEXT("ApplyRemoved: PreSnapshot is invalid, skipping"));
+		UE_LOG(LogCortex, Log, TEXT("ApplyRemoved: PreSnapshot is invalid, skipping"));
 		return;
 	}
 
@@ -131,13 +131,13 @@ void FScopedMutationCapture::ApplyDiff(const TSharedPtr<FJsonObject>& TargetJson
 
 	if (!PreSnapshot.IsValid())
 	{
-		UE_LOG(LogCortex, Warning, TEXT("ApplyDiff: PreSnapshot is invalid, skipping diff"));
+		UE_LOG(LogCortex, Log, TEXT("ApplyDiff: PreSnapshot is invalid, skipping diff"));
 		return;
 	}
 
 	if (!Object.IsValid())
 	{
-		UE_LOG(LogCortex, Warning, TEXT("ApplyDiff: Object was garbage collected before diff could be computed"));
+		UE_LOG(LogCortex, Log, TEXT("ApplyDiff: Object was garbage collected before diff could be computed"));
 		TargetJson->SetStringField(TEXT("changes_error"), TEXT("object_destroyed_before_diff"));
 		return;
 	}

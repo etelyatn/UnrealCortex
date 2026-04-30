@@ -143,6 +143,25 @@ def test_core_router_dispatches_normal_commands_via_tcp():
     )
 
 
+def test_blueprint_router_uses_cached_send_for_discovery_reads():
+    connection = MagicMock()
+    connection.send_command_cached.return_value = {
+        "success": True,
+        "data": {"properties": {"OpenSeq": {"accepted_formats": ["Bare component name"]}}},
+    }
+
+    router = make_router("blueprint", connection, "blueprint docs")
+    payload = json.loads(router("list_settable_defaults", {"asset_path": "/Game/Test/BP_Discovery"}))
+
+    assert "OpenSeq" in payload["properties"]
+    connection.send_command_cached.assert_called_once_with(
+        "blueprint.list_settable_defaults",
+        {"asset_path": "/Game/Test/BP_Discovery"},
+        ttl=300,
+    )
+    connection.send_command.assert_not_called()
+
+
 def test_register_router_tools_registers_all_domains():
     mcp = MockMCP()
     connection = MagicMock()

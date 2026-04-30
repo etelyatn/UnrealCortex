@@ -1,5 +1,6 @@
 #include "CortexCoreCommandHandler.h"
 #include "CortexCommandRouter.h"
+#include "Operations/CortexAssetFingerprintOps.h"
 #include "Operations/CortexAssetDeletionOps.h"
 #include "Operations/CortexAssetOps.h"
 #include "Containers/Ticker.h"
@@ -28,6 +29,10 @@ FCortexCommandResult FCortexCoreCommandHandler::Execute(
 	if (Command == TEXT("reload_asset"))
 	{
 		return FCortexAssetOps::ReloadAsset(Params);
+	}
+	if (Command == TEXT("asset_fingerprint"))
+	{
+		return FCortexAssetFingerprintOps::AssetFingerprint(Params);
 	}
 	if (Command == TEXT("delete_asset"))
 	{
@@ -89,6 +94,8 @@ TArray<FCortexCommandInfo> FCortexCoreCommandHandler::GetSupportedCommands() con
 {
 	return {
 		FCortexCommandInfo{ TEXT("save_asset"), TEXT("Save asset(s) to disk") }
+			.OptionalBatchItems(TEXT("Batch items with target, force, dry_run, expected_fingerprint"))
+			.OptionalExpectedFingerprint()
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path, paths, or glob to save"))
 			.Optional(TEXT("force"), TEXT("boolean"), TEXT("Save even when the asset is not dirty"))
 			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview which assets would be saved")),
@@ -102,6 +109,8 @@ TArray<FCortexCommandInfo> FCortexCoreCommandHandler::GetSupportedCommands() con
 		FCortexCommandInfo{ TEXT("reload_asset"), TEXT("Discard changes and reload asset(s) from disk") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path, paths, or glob to reload"))
 			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview which assets would be reloaded")),
+		FCortexCommandInfo{ TEXT("asset_fingerprint"), TEXT("Read fingerprint metadata for asset path(s)") }
+			.Required(TEXT("paths"), TEXT("array"), TEXT("Asset paths to fingerprint")),
 		FCortexCommandInfo{ TEXT("delete_asset"), TEXT("Delete a single asset by path") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to delete")),
 		FCortexCommandInfo{ TEXT("delete_folder"), TEXT("Delete all assets in a folder") }

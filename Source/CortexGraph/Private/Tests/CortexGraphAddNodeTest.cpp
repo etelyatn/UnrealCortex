@@ -39,11 +39,11 @@ bool FCortexGraphAddNodeTest::RunTest(const FString& Parameters)
 	Router.RegisterDomain(TEXT("graph"), TEXT("Cortex Graph"), TEXT("1.0.0"),
 		MakeShared<FCortexGraphCommandHandler>());
 
-	// Get initial node count via list_nodes
+	// Get initial node count via get_subgraph
 	TSharedPtr<FJsonObject> ListParams = MakeShared<FJsonObject>();
 	ListParams->SetStringField(TEXT("asset_path"), AssetPath);
-	FCortexCommandResult ListResult = Router.Execute(TEXT("graph.list_nodes"), ListParams);
-	TestTrue(TEXT("list_nodes should succeed"), ListResult.bSuccess);
+	FCortexCommandResult ListResult = Router.Execute(TEXT("graph.get_subgraph"), ListParams);
+	TestTrue(TEXT("get_subgraph should succeed"), ListResult.bSuccess);
 
 	int32 InitialNodeCount = 0;
 	if (ListResult.bSuccess && ListResult.Data.IsValid())
@@ -72,9 +72,9 @@ bool FCortexGraphAddNodeTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Result should have class"), AddResult.Data->HasField(TEXT("class")));
 	}
 
-	// Verify: list_nodes should show one more node
-	FCortexCommandResult ListResult2 = Router.Execute(TEXT("graph.list_nodes"), ListParams);
-	TestTrue(TEXT("list_nodes after add should succeed"), ListResult2.bSuccess);
+	// Verify: get_subgraph should show one more node
+	FCortexCommandResult ListResult2 = Router.Execute(TEXT("graph.get_subgraph"), ListParams);
+	TestTrue(TEXT("get_subgraph after add should succeed"), ListResult2.bSuccess);
 
 	if (ListResult2.bSuccess && ListResult2.Data.IsValid())
 	{
@@ -95,8 +95,8 @@ bool FCortexGraphAddNodeTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("add_node IfThenElse should succeed"), Result.bSuccess);
 
 		// Verify node count increased by 1 more
-		FCortexCommandResult ListResult3 = Router.Execute(TEXT("graph.list_nodes"), ListParams);
-		TestTrue(TEXT("list_nodes after IfThenElse should succeed"), ListResult3.bSuccess);
+		FCortexCommandResult ListResult3 = Router.Execute(TEXT("graph.get_subgraph"), ListParams);
+		TestTrue(TEXT("get_subgraph after IfThenElse should succeed"), ListResult3.bSuccess);
 		if (ListResult3.bSuccess && ListResult3.Data.IsValid())
 		{
 			const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;

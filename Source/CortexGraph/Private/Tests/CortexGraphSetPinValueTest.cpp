@@ -80,8 +80,8 @@ bool FCortexGraphSetPinValueTest::RunTest(const FString& Parameters)
 		Params->SetStringField(TEXT("asset_path"), AssetPath);
 		Params->SetStringField(TEXT("node_id"), NodeId);
 
-		FCortexCommandResult Result = Router.Execute(TEXT("graph.get_node"), Params);
-		TestTrue(TEXT("get_node should succeed"), Result.bSuccess);
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.get_subgraph"), Params);
+		TestTrue(TEXT("get_subgraph with node_id should succeed"), Result.bSuccess);
 
 		if (Result.bSuccess && Result.Data.IsValid())
 		{
