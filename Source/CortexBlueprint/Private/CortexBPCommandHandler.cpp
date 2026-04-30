@@ -252,7 +252,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("length"), TEXT("number"), TEXT("Timeline length in seconds"))
 		.Optional(TEXT("loop"), TEXT("boolean"), TEXT("Loop the timeline"))
 		.Optional(TEXT("tracks"), TEXT("array"), TEXT("Track and keyframe definitions")));
-	Commands.Add(FCortexCommandInfo{TEXT("set_component_defaults"), TEXT("Set object-reference properties on a Blueprint component template")}
+	Commands.Add(FCortexCommandInfo{TEXT("set_component_defaults"), TEXT("Set properties on a Blueprint component template (supports all types: float, FVector, bool, object refs, etc.)")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("component_name"), TEXT("string"), TEXT("Component template name"))
 		.Required(TEXT("properties"), TEXT("object"), TEXT("Properties to apply")));

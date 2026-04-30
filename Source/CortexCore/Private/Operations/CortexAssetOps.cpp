@@ -102,16 +102,26 @@ bool FCortexAssetOps::ResolveGlob(
 	Pattern.FindChar(TEXT('*'), FirstWildcard);
 	const FString Prefix = Pattern.Left(FirstWildcard);
 	const int32 LastSlash = Prefix.Find(TEXT("/"), ESearchCase::CaseSensitive, ESearchDir::FromEnd);
-	FString RootPath = LastSlash != INDEX_NONE ? Prefix.Left(LastSlash) : TEXT("/Game");
-	if (RootPath.IsEmpty())
-	{
-		RootPath = TEXT("/Game");
-	}
+	const FString RootPath = LastSlash != INDEX_NONE ? Prefix.Left(LastSlash) : FString();
 
 	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
 	FARFilter Filter;
 	Filter.bRecursivePaths = true;
-	Filter.PackagePaths.Add(FName(*RootPath));
+
+	if (RootPath.IsEmpty())
+	{
+		// No path prefix in glob — scan all registered content roots
+		TArray<FString> ContentRoots;
+		FPackageName::QueryRootContentPaths(ContentRoots);
+		for (const FString& Root : ContentRoots)
+		{
+			Filter.PackagePaths.Add(FName(*Root));
+		}
+	}
+	else
+	{
+		Filter.PackagePaths.Add(FName(*RootPath));
+	}
 
 	TArray<FAssetData> Candidates;
 	AssetRegistry.GetAssets(Filter, Candidates);
