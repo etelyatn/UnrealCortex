@@ -1042,6 +1042,27 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 			}
 		}
 
+		UK2Node_DynamicCast* CastNode = Cast<UK2Node_DynamicCast>(NewNode);
+		if (CastNode)
+		{
+			FString TargetClassName;
+			if ((*NodeParams)->TryGetStringField(TEXT("target_class"), TargetClassName))
+			{
+				UClass* TargetClass = FindFirstObject<UClass>(*TargetClassName);
+				if (TargetClass == nullptr)
+				{
+					Graph->RemoveNode(NewNode);
+					return FCortexCommandRouter::Error(
+						CortexErrorCodes::InvalidField,
+						FString::Printf(TEXT("Cast target class not found: %s"), *TargetClassName)
+					);
+				}
+
+				CastNode->TargetType = TargetClass;
+				CastNode->ReconstructNode();
+			}
+		}
+
 		UK2Node_Event* EventNode = Cast<UK2Node_Event>(NewNode);
 		if (EventNode)
 		{
