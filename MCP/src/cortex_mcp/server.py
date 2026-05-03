@@ -69,7 +69,11 @@ def get_status() -> str:
         response = _connection.send_command("get_status")
         data = _decode_data(response)
         editors = _discover_all_editors()
-        data["connected_editor"] = {"pid": _connection._pid, "port": _connection.port}
+        connected = next((editor for editor in editors if editor.port == _connection.port), None)
+        if connected is not None:
+            data["connected_editor"] = {"pid": connected.pid, "port": connected.port}
+        else:
+            data["connected_editor"] = {"pid": _connection._pid, "port": _connection.port}
         data["available_editors"] = [
             {"pid": editor.pid, "port": editor.port, "started_at": editor.started_at}
             for editor in editors

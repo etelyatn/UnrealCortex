@@ -107,6 +107,25 @@ bool FCortexGraphAddNodeTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	// Test: documented short alias "Event" should create a BeginPlay event node
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("Event"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("function_name"), TEXT("Actor.ReceiveBeginPlay"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node Event alias should succeed"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			FString NodeClass;
+			TestTrue(TEXT("Event alias result should include class"), Result.Data->TryGetStringField(TEXT("class"), NodeClass));
+			TestEqual(TEXT("Event alias should resolve to UK2Node_Event"), NodeClass, FString(TEXT("K2Node_Event")));
+		}
+	}
+
 	// Test: invalid function owner class should return error
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();

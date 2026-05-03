@@ -52,6 +52,55 @@ bool FCortexUMGWidgetPropertyOps::ParseColor(const FString& ColorString, FLinear
     return Hex.Len() == 6 || Hex.Len() == 8;
 }
 
+bool FCortexUMGWidgetPropertyOps::ParseColorField(
+    const TSharedPtr<FJsonObject>& Params,
+    const FString& FieldName,
+    FLinearColor& OutColor)
+{
+    FString ColorString;
+    if (Params->TryGetStringField(FieldName, ColorString))
+    {
+        return ParseColor(ColorString, OutColor);
+    }
+
+    const TSharedPtr<FJsonObject>* ColorObject = nullptr;
+    if (!Params->TryGetObjectField(FieldName, ColorObject) || !ColorObject || !ColorObject->IsValid())
+    {
+        return false;
+    }
+
+    auto TryGetChannel = [ColorObject](const TCHAR* LowerName, const TCHAR* UpperName, double& OutValue)
+    {
+        return (*ColorObject)->TryGetNumberField(LowerName, OutValue)
+            || (*ColorObject)->TryGetNumberField(UpperName, OutValue);
+    };
+
+    double R = 0.0;
+    double G = 0.0;
+    double B = 0.0;
+    double A = 1.0;
+    if (!TryGetChannel(TEXT("r"), TEXT("R"), R)
+        || !TryGetChannel(TEXT("g"), TEXT("G"), G)
+        || !TryGetChannel(TEXT("b"), TEXT("B"), B))
+    {
+        return false;
+    }
+    TryGetChannel(TEXT("a"), TEXT("A"), A);
+
+    auto Normalize = [](double Channel) -> float
+    {
+        return static_cast<float>(Channel > 1.0 ? Channel / 255.0 : Channel);
+    };
+
+    if (R < 0.0 || R > 255.0 || G < 0.0 || G > 255.0 || B < 0.0 || B > 255.0 || A < 0.0 || A > 255.0)
+    {
+        return false;
+    }
+
+    OutColor = FLinearColor(Normalize(R), Normalize(G), Normalize(B), Normalize(A));
+    return true;
+}
+
 FCortexCommandResult FCortexUMGWidgetPropertyOps::SetText(const TSharedPtr<FJsonObject>& Params)
 {
     const FString AssetPath = Params->GetStringField(TEXT("asset_path"));
@@ -110,7 +159,6 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetColor(const TSharedPtr<FJso
 {
     const FString AssetPath = Params->GetStringField(TEXT("asset_path"));
     const FString WidgetName = Params->GetStringField(TEXT("widget_name"));
-    const FString ColorStr = Params->GetStringField(TEXT("color"));
     FString Target;
     if (!Params->TryGetStringField(TEXT("target"), Target))
     {
@@ -118,11 +166,11 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetColor(const TSharedPtr<FJso
     }
 
     FLinearColor Color;
-    if (!ParseColor(ColorStr, Color))
+    if (!ParseColorField(Params, TEXT("color"), Color))
     {
         return FCortexCommandRouter::Error(
             CortexErrorCodes::InvalidPropertyValue,
-            FString::Printf(TEXT("Invalid color value: %s"), *ColorStr));
+            TEXT("Invalid color value. Expected a color string (#RRGGBB, #RRGGBBAA, or named color) or an object with numeric r, g, b, and optional a fields."));
     }
 
     FCortexCommandResult LoadError;

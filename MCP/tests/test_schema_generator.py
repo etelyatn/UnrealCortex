@@ -43,6 +43,49 @@ class TestProjectRootDiscovery(unittest.TestCase):
                 result = get_schema_dir()
                 self.assertEqual(result, Path(tempfile.gettempdir()) / ".cortex" / "schema")
 
+    def test_collect_blueprint_domain_uses_explicit_project_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir) / "CortexSandboxMirror"
+            project_root.mkdir(parents=True)
+            blueprints_dir = project_root / ".cortex" / "domains"
+            blueprints_dir.mkdir(parents=True)
+            domain_file = blueprints_dir / "blueprints.md"
+            domain_file.write_text(
+                "# Blueprints\n\n<!-- auto:blueprint-stats:start -->\nold\n<!-- auto:blueprint-stats:end -->\n",
+                encoding="utf-8",
+            )
+            connection = unittest.mock.Mock()
+
+            with patch("cortex_mcp.schema_generator.find_project_root", return_value=Path("D:/UnrealProjects/RipperMirror")), \
+                 patch(
+                     "cortex_mcp.schema_generator.collect_blueprint_domain",
+                     return_value={
+                         "blueprint_count": 1,
+                         "project_cpp_count": 0,
+                         "engine_cpp_count": 0,
+                         "rows": [],
+                     },
+                 ):
+                schema_dir = project_root / ".cortex" / "schema"
+                result = generate_schema(
+                    connection=connection,
+                    schema_dir=schema_dir,
+                    domain="blueprints",
+                    project_name="CortexSandboxMirror",
+                    project_root=project_root,
+                    engine_version="5.6",
+                    plugin_version="0.1.0",
+                )
+
+            self.assertEqual(
+                result["generated"]["blueprints"],
+                str(schema_dir / "blueprints.md"),
+            )
+            self.assertEqual(
+                result["generated"]["blueprint_domain"],
+                str(domain_file),
+            )
+
 
 class TestAtomicWrite(unittest.TestCase):
 

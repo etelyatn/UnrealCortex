@@ -109,12 +109,32 @@ class TestMaterialVerification:
     def test_no_property_check_when_not_in_spec(self):
         spec = self._make_spec(nodes=[{"name": "C", "class": "Constant"}])
         readback = self._make_readback(
-            node_count=2,
+            node_count=1,
             nodes=[{"expression_class": "MaterialExpressionConstant"}],
             blend_mode="Masked",
         )
         result = verify_material(spec, readback)
+        assert result.verified is True
         assert "blend_mode" not in result.checks
+
+    def test_node_count_allows_expression_only_readback(self):
+        spec = self._make_spec(
+            nodes=[
+                {"name": "BaseColor", "class": "Constant3Vector"},
+                {"name": "Roughness", "class": "ScalarParameter"},
+            ]
+        )
+        readback = self._make_readback(
+            node_count=2,
+            nodes=[
+                {"expression_class": "MaterialExpressionConstant3Vector"},
+                {"expression_class": "MaterialExpressionScalarParameter"},
+                {"expression_class": "MaterialResult"},
+            ],
+        )
+        result = verify_material(spec, readback)
+        assert result.verified is True
+        assert result.checks["node_count"].passed is True
 
     def test_to_dict_format(self):
         spec = self._make_spec(nodes=[{"name": "C", "class": "Constant"}])

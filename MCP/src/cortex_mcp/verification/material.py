@@ -30,7 +30,9 @@ def verify_material(spec: dict, readback: dict) -> VerificationResult:
     spec_connections = spec.get("connections", [])
     spec_props = spec.get("material_properties", {})
 
-    expected_node_count = len(spec_nodes) + 1
+    # get_material/list_parameters report expression counts only; the virtual
+    # MaterialResult sink used by list_nodes is not included in node_count.
+    expected_node_count = len(spec_nodes)
     actual_node_count = readback.get("node_count", 0)
     name, check = check_gte("node_count", expected_node_count, actual_node_count)
     checks[name] = check

@@ -716,7 +716,7 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	{
 		NodeClass = UK2Node_VariableGet::StaticClass();
 	}
-	else if (NodeClassName == TEXT("UK2Node_Event"))
+	else if (NodeClassName == TEXT("UK2Node_Event") || NodeClassName == TEXT("Event"))
 	{
 		NodeClass = UK2Node_Event::StaticClass();
 	}

@@ -66,6 +66,24 @@ bool FCortexUMGSetColorTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Color G should match"), FMath::IsNearlyEqual(ActualColor.G, ExpectedColor.G, 0.01f));
     TestTrue(TEXT("Color B should match"), FMath::IsNearlyEqual(ActualColor.B, ExpectedColor.B, 0.01f));
 
+    TSharedPtr<FJsonObject> StructuredColor = MakeShared<FJsonObject>();
+    StructuredColor->SetNumberField(TEXT("r"), 0.25);
+    StructuredColor->SetNumberField(TEXT("g"), 0.5);
+    StructuredColor->SetNumberField(TEXT("b"), 0.75);
+    StructuredColor->SetNumberField(TEXT("a"), 1.0);
+
+    TSharedPtr<FJsonObject> StructuredParams = MakeShared<FJsonObject>();
+    StructuredParams->SetStringField(TEXT("asset_path"), AssetPath);
+    StructuredParams->SetStringField(TEXT("widget_name"), TEXT("TitleLabel"));
+    StructuredParams->SetObjectField(TEXT("color"), StructuredColor);
+    FCortexCommandResult StructuredResult = Router.Execute(TEXT("umg.set_color"), StructuredParams);
+    TestTrue(TEXT("set_color should accept structured RGBA payload"), StructuredResult.bSuccess);
+
+    const FLinearColor StructuredActual = Label->GetColorAndOpacity().GetSpecifiedColor();
+    TestTrue(TEXT("Structured color R should match"), FMath::IsNearlyEqual(StructuredActual.R, 0.25f, 0.01f));
+    TestTrue(TEXT("Structured color G should match"), FMath::IsNearlyEqual(StructuredActual.G, 0.5f, 0.01f));
+    TestTrue(TEXT("Structured color B should match"), FMath::IsNearlyEqual(StructuredActual.B, 0.75f, 0.01f));
+
     WBP->MarkAsGarbage();
     return true;
 }
