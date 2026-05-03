@@ -1,5 +1,7 @@
 #include "Operations/CortexLevelComponentOps.h"
 
+#include "CortexAssetFingerprint.h"
+#include "CortexBatchMutation.h"
 #include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
 #include "CortexLevelUtils.h"
@@ -13,6 +15,97 @@
 
 namespace
 {
+    TSharedPtr<FJsonObject> CopyLevelComponentBatchJsonObject(const TSharedPtr<FJsonObject>& Source)
+    {
+        TSharedPtr<FJsonObject> Copy = MakeShared<FJsonObject>();
+        if (!Source.IsValid())
+        {
+            return Copy;
+        }
+
+        for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Source->Values)
+        {
+            Copy->SetField(Pair.Key, Pair.Value);
+        }
+
+        return Copy;
+    }
+
+    TArray<TSharedPtr<FJsonValue>> ToLevelComponentBatchJsonStringArray(const TArray<FString>& Values)
+    {
+        TArray<TSharedPtr<FJsonValue>> Out;
+        Out.Reserve(Values.Num());
+        for (const FString& Value : Values)
+        {
+            Out.Add(MakeShared<FJsonValueString>(Value));
+        }
+        return Out;
+    }
+
+    FCortexAssetFingerprint MakeLevelComponentActorFingerprint(const AActor* Actor)
+    {
+        if (!IsValid(Actor))
+        {
+            return MakeObjectAssetFingerprint(nullptr);
+        }
+
+        return MakeObjectAssetFingerprint(
+            Actor,
+            GetTypeHash(Actor->GetPathName() + TEXT("|") + Actor->GetActorLabel() + TEXT("|") + Actor->GetClass()->GetPathName()));
+    }
+
+    TSharedPtr<FJsonObject> BuildLevelComponentBatchResponseData(const FCortexBatchMutationResult& BatchResult)
+    {
+        TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+        Data->SetStringField(TEXT("status"), BatchResult.Status);
+        Data->SetArrayField(TEXT("written_targets"), ToLevelComponentBatchJsonStringArray(BatchResult.WrittenTargets));
+        Data->SetArrayField(TEXT("unwritten_targets"), ToLevelComponentBatchJsonStringArray(BatchResult.UnwrittenTargets));
+
+        TArray<TSharedPtr<FJsonValue>> PerItem;
+        PerItem.Reserve(BatchResult.PerItem.Num());
+        for (const FCortexBatchMutationItemResult& ItemResult : BatchResult.PerItem)
+        {
+            TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+            Entry->SetStringField(TEXT("target"), ItemResult.Target);
+            Entry->SetBoolField(TEXT("success"), ItemResult.Result.bSuccess);
+            if (ItemResult.Result.Data.IsValid())
+            {
+                Entry->SetObjectField(TEXT("data"), ItemResult.Result.Data);
+            }
+            if (!ItemResult.Result.ErrorCode.IsEmpty())
+            {
+                Entry->SetStringField(TEXT("error_code"), ItemResult.Result.ErrorCode);
+            }
+            if (!ItemResult.Result.ErrorMessage.IsEmpty())
+            {
+                Entry->SetStringField(TEXT("error_message"), ItemResult.Result.ErrorMessage);
+            }
+            if (ItemResult.Result.ErrorDetails.IsValid())
+            {
+                Entry->SetObjectField(TEXT("error_details"), ItemResult.Result.ErrorDetails);
+            }
+            if (ItemResult.Result.Warnings.Num() > 0)
+            {
+                Entry->SetArrayField(TEXT("warnings"), ToLevelComponentBatchJsonStringArray(ItemResult.Result.Warnings));
+            }
+            PerItem.Add(MakeShared<FJsonValueObject>(Entry));
+        }
+
+        Data->SetArrayField(TEXT("per_item"), PerItem);
+        return Data;
+    }
+
+    FCortexCommandResult MakeLevelComponentBatchCommandResult(const FCortexBatchMutationResult& BatchResult)
+    {
+        TSharedPtr<FJsonObject> Data = BuildLevelComponentBatchResponseData(BatchResult);
+        if (BatchResult.Status == TEXT("committed"))
+        {
+            return FCortexCommandRouter::Success(Data);
+        }
+
+        return FCortexCommandRouter::Error(BatchResult.ErrorCode, BatchResult.ErrorMessage, Data);
+    }
+
     UActorComponent* FindComponentByName(AActor* Actor, const FString& ComponentName)
     {
         if (!Actor || ComponentName.IsEmpty())
@@ -115,6 +208,68 @@ namespace
 
         ComponentJson->SetObjectField(TEXT("properties"), PropertiesJson);
         return ComponentJson;
+    }
+
+    FCortexBatchPreflightResult PreflightSetComponentProperty(const FCortexBatchMutationItem& Item)
+    {
+        FCortexCommandResult Error;
+        UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+        if (!World)
+        {
+            return FCortexBatchPreflightResult::Error(Error.ErrorCode, Error.ErrorMessage, Error.ErrorDetails);
+        }
+
+        AActor* Actor = FCortexLevelUtils::FindActorByLabelOrPath(World, Item.Target, Error);
+        if (!Actor)
+        {
+            return FCortexBatchPreflightResult::Error(Error.ErrorCode, Error.ErrorMessage, Error.ErrorDetails);
+        }
+
+        FString ComponentName;
+        FString PropertyName;
+        if (!Item.Params.IsValid()
+            || !Item.Params->TryGetStringField(TEXT("component"), ComponentName)
+            || ComponentName.IsEmpty()
+            || !Item.Params->TryGetStringField(TEXT("property"), PropertyName)
+            || PropertyName.IsEmpty())
+        {
+            return FCortexBatchPreflightResult::Error(
+                CortexErrorCodes::InvalidValue,
+                TEXT("Missing required parameter: component or property"));
+        }
+
+        if (!Item.Params->HasField(TEXT("value")))
+        {
+            return FCortexBatchPreflightResult::Error(
+                CortexErrorCodes::InvalidValue,
+                TEXT("Missing required parameter: value"));
+        }
+
+        UActorComponent* Component = FindComponentByName(Actor, ComponentName);
+        if (!Component)
+        {
+            return FCortexBatchPreflightResult::Error(
+                CortexErrorCodes::ComponentNotFound,
+                FString::Printf(TEXT("Component not found: %s"), *ComponentName),
+                FCortexLevelUtils::CollectComponentSuggestions(Actor));
+        }
+
+        FProperty* Property = Component->GetClass()->FindPropertyByName(FName(*PropertyName));
+        if (!Property)
+        {
+            return FCortexBatchPreflightResult::Error(
+                CortexErrorCodes::PropertyNotFound,
+                FString::Printf(TEXT("Property not found: %s"), *PropertyName));
+        }
+
+        return FCortexBatchPreflightResult::Success(MakeLevelComponentActorFingerprint(Actor).ToJson());
+    }
+
+    FCortexCommandResult CommitSetComponentProperty(const FCortexBatchMutationItem& Item)
+    {
+        TSharedPtr<FJsonObject> ItemParams = CopyLevelComponentBatchJsonObject(Item.Params);
+        ItemParams->SetStringField(TEXT("actor"), Item.Target);
+        return FCortexLevelComponentOps::SetComponentProperty(ItemParams);
     }
 }
 
@@ -369,6 +524,21 @@ FCortexCommandResult FCortexLevelComponentOps::GetComponentProperty(const TShare
 
 FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TSharedPtr<FJsonObject>& Params)
 {
+    if (Params.IsValid() && Params->HasField(TEXT("items")))
+    {
+        FCortexBatchMutationRequest Request;
+        FCortexCommandResult ParseError;
+        if (!FCortexBatchMutation::ParseRequest(Params, TEXT("actor"), Request, ParseError))
+        {
+            return ParseError;
+        }
+
+        return MakeLevelComponentBatchCommandResult(FCortexBatchMutation::Run(
+            Request,
+            PreflightSetComponentProperty,
+            CommitSetComponentProperty));
+    }
+
     if (!Params.IsValid())
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));

@@ -22,4 +22,5 @@ public:
 
 private:
     static bool ParseColor(const FString& ColorString, FLinearColor& OutColor);
+    static bool ParseColorField(const TSharedPtr<FJsonObject>& Params, const FString& FieldName, FLinearColor& OutColor);
 };

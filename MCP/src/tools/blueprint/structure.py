@@ -167,9 +167,10 @@ def register_blueprint_structure_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def set_component_defaults(
-        asset_path: str,
-        component_name: str,
-        properties: dict[str, str],
+        asset_path: str = "",
+        component_name: str = "",
+        properties: dict[str, str] | None = None,
+        items: list[dict] | None = None,
     ) -> str:
         """Set object-reference defaults on a Blueprint component template.
 
@@ -177,6 +178,8 @@ def register_blueprint_structure_tools(mcp, connection: UEConnection):
             asset_path: Full path to the Blueprint
             component_name: Component name in the Blueprint Components panel
             properties: Map of property name to asset object path
+            items: Optional batch item list. Each item must include target,
+                component_name, and properties, and may include expected_fingerprint.
 
         Returns:
             JSON with:
@@ -185,11 +188,22 @@ def register_blueprint_structure_tools(mcp, connection: UEConnection):
             - errors: Optional list of per-property failures
         """
         try:
-            params = {
-                "asset_path": asset_path,
-                "component_name": component_name,
-                "properties": properties,
-            }
+            if items is not None:
+                if len(items) == 0:
+                    return "Error: Missing or empty required parameter: items"
+                params = {"items": items}
+            else:
+                if not asset_path:
+                    return "Error: Missing required parameter: asset_path"
+                if not component_name:
+                    return "Error: Missing required parameter: component_name"
+                if not properties:
+                    return "Error: Missing or empty required parameter: properties"
+                params = {
+                    "asset_path": asset_path,
+                    "component_name": component_name,
+                    "properties": properties,
+                }
             response = connection.send_command("blueprint.set_component_defaults", params)
             return format_response(response.get("data", {}), "set_component_defaults")
         except ConnectionError as e:

@@ -5,12 +5,12 @@ import logging
 import time
 
 from cortex_mcp.schema_generator import (
-    find_project_root,
     generate_schema,
     get_schema_dir,
     read_meta_from_file,
     SCHEMA_VERSION,
 )
+from cortex_mcp.project import resolve_project_dir
 from cortex_mcp.tcp_client import UEConnection
 
 logger = logging.getLogger(__name__)
@@ -37,8 +37,13 @@ def register_schema_tools(mcp, connection: UEConnection):
             JSON with generated file paths and any errors.
         """
         try:
-            schema_dir = get_schema_dir()
-            project_name = find_project_root().stem
+            project_root = resolve_project_dir()
+            if project_root is None:
+                raise FileNotFoundError(
+                    "Cannot find .uproject file. Set CORTEX_PROJECT_DIR or CLAUDE_PROJECT_DIR env var."
+                )
+            schema_dir = project_root / ".cortex" / "schema"
+            project_name = project_root.stem
             start = time.time()
 
             result = generate_schema(
@@ -46,6 +51,7 @@ def register_schema_tools(mcp, connection: UEConnection):
                 schema_dir=schema_dir,
                 domain=domain,
                 project_name=project_name,
+                project_root=project_root,
             )
 
             result["schema_dir"] = str(schema_dir)

@@ -1,8 +1,12 @@
 #include "Operations/CortexBPComponentOps.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPSCSDiagnostics.h"
+#include "CortexAssetFingerprint.h"
+#include "CortexBatchMutation.h"
 #include "CortexBlueprintModule.h"
 #include "Components/ActorComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SCS_Node.h"
@@ -19,6 +23,163 @@
 
 namespace CortexBPComponentOpsPrivate
 {
+	UObject* FindComponentTemplate(UBlueprint* Blueprint, const FString& ComponentName);
+
+	TSharedPtr<FJsonObject> CopyJsonObject(const TSharedPtr<FJsonObject>& Source)
+	{
+		TSharedPtr<FJsonObject> Copy = MakeShared<FJsonObject>();
+		if (!Source.IsValid())
+		{
+			return Copy;
+		}
+
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Source->Values)
+		{
+			Copy->SetField(Pair.Key, Pair.Value);
+		}
+
+		return Copy;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ToJsonStringArray(const TArray<FString>& Values)
+	{
+		TArray<TSharedPtr<FJsonValue>> Out;
+		Out.Reserve(Values.Num());
+		for (const FString& Value : Values)
+		{
+			Out.Add(MakeShared<FJsonValueString>(Value));
+		}
+		return Out;
+	}
+
+	FCortexAssetFingerprint MakeBlueprintFingerprint(const UBlueprint* Blueprint)
+	{
+		if (!Blueprint)
+		{
+			return MakeObjectAssetFingerprint(nullptr);
+		}
+
+		return MakeObjectAssetFingerprint(Blueprint, GetTypeHash(static_cast<uint32>(Blueprint->Status)));
+	}
+
+	FString ResolveReferenceForm(UBlueprint* Blueprint, const FString& ComponentName)
+	{
+		const FCortexBPSCSDiagnostics::FResolveResult ResolveResult =
+			FCortexBPSCSDiagnostics::ResolveComponentTemplateByName(Blueprint, ComponentName);
+		if (ResolveResult.Component)
+		{
+			return ResolveResult.Component->GetPathName();
+		}
+
+		if (Blueprint && Blueprint->GeneratedClass)
+		{
+			return FString::Printf(
+				TEXT("%s:%s_GEN_VARIABLE"),
+				*Blueprint->GeneratedClass->GetPathName(),
+				*ComponentName);
+		}
+
+		return ComponentName;
+	}
+
+	TSharedPtr<FJsonObject> BuildBatchResponseData(const FCortexBatchMutationResult& BatchResult)
+	{
+		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+		Data->SetStringField(TEXT("status"), BatchResult.Status);
+		Data->SetArrayField(TEXT("written_targets"), ToJsonStringArray(BatchResult.WrittenTargets));
+		Data->SetArrayField(TEXT("unwritten_targets"), ToJsonStringArray(BatchResult.UnwrittenTargets));
+
+		TArray<TSharedPtr<FJsonValue>> PerItem;
+		PerItem.Reserve(BatchResult.PerItem.Num());
+		for (const FCortexBatchMutationItemResult& ItemResult : BatchResult.PerItem)
+		{
+			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("target"), ItemResult.Target);
+			Entry->SetBoolField(TEXT("success"), ItemResult.Result.bSuccess);
+			if (ItemResult.Result.Data.IsValid())
+			{
+				Entry->SetObjectField(TEXT("data"), ItemResult.Result.Data);
+			}
+			if (!ItemResult.Result.ErrorCode.IsEmpty())
+			{
+				Entry->SetStringField(TEXT("error_code"), ItemResult.Result.ErrorCode);
+			}
+			if (!ItemResult.Result.ErrorMessage.IsEmpty())
+			{
+				Entry->SetStringField(TEXT("error_message"), ItemResult.Result.ErrorMessage);
+			}
+			if (ItemResult.Result.ErrorDetails.IsValid())
+			{
+				Entry->SetObjectField(TEXT("error_details"), ItemResult.Result.ErrorDetails);
+			}
+			if (ItemResult.Result.Warnings.Num() > 0)
+			{
+				Entry->SetArrayField(TEXT("warnings"), ToJsonStringArray(ItemResult.Result.Warnings));
+			}
+			PerItem.Add(MakeShared<FJsonValueObject>(Entry));
+		}
+
+		Data->SetArrayField(TEXT("per_item"), PerItem);
+		return Data;
+	}
+
+	FCortexCommandResult MakeBatchCommandResult(const FCortexBatchMutationResult& BatchResult)
+	{
+		TSharedPtr<FJsonObject> Data = BuildBatchResponseData(BatchResult);
+		if (BatchResult.Status == TEXT("committed"))
+		{
+			return FCortexCommandRouter::Success(Data);
+		}
+
+		return FCortexCommandRouter::Error(BatchResult.ErrorCode, BatchResult.ErrorMessage, Data);
+	}
+
+	FCortexBatchPreflightResult PreflightSetComponentDefaults(const FCortexBatchMutationItem& Item)
+	{
+		FString LoadError;
+		UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(Item.Target, LoadError);
+		if (!Blueprint)
+		{
+			return FCortexBatchPreflightResult::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+		}
+
+		FString ComponentName;
+		if (!Item.Params.IsValid()
+			|| !Item.Params->TryGetStringField(TEXT("component_name"), ComponentName)
+			|| ComponentName.IsEmpty())
+		{
+			return FCortexBatchPreflightResult::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("Missing required params: component_name"));
+		}
+
+		if (!CortexBPComponentOpsPrivate::FindComponentTemplate(Blueprint, ComponentName))
+		{
+			return FCortexBatchPreflightResult::Error(
+				CortexErrorCodes::ComponentNotFound,
+				FString::Printf(TEXT("Component not found: %s"), *ComponentName));
+		}
+
+		const TSharedPtr<FJsonObject>* PropertiesObj = nullptr;
+		if (!Item.Params->TryGetObjectField(TEXT("properties"), PropertiesObj)
+			|| PropertiesObj == nullptr
+			|| !(*PropertiesObj).IsValid())
+		{
+			return FCortexBatchPreflightResult::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("Missing required param: properties"));
+		}
+
+		return FCortexBatchPreflightResult::Success(MakeBlueprintFingerprint(Blueprint).ToJson());
+	}
+
+	FCortexCommandResult CommitSetComponentDefaults(const FCortexBatchMutationItem& Item)
+	{
+		TSharedPtr<FJsonObject> ItemParams = CopyJsonObject(Item.Params);
+		ItemParams->SetStringField(TEXT("asset_path"), Item.Target);
+		return FCortexBPComponentOps::SetComponentDefaults(ItemParams);
+	}
+
 	struct FResolvedPropertyPath
 	{
 		FString BasePropertyName;
@@ -178,8 +339,81 @@ namespace CortexBPComponentOpsPrivate
 	}
 }
 
+FCortexCommandResult FCortexBPComponentOps::ListSCSComponents(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params.IsValid())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params object"));
+	}
+
+	FString BlueprintPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), BlueprintPath) || BlueprintPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing or empty 'asset_path' field"));
+	}
+
+	FString LoadError;
+	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(BlueprintPath, LoadError);
+	if (!Blueprint)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+	}
+
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	TArray<TSharedPtr<FJsonValue>> ComponentsArray;
+	if (USimpleConstructionScript* SCS = Blueprint->SimpleConstructionScript)
+	{
+		for (USCS_Node* Node : SCS->GetAllNodes())
+		{
+			if (!Node)
+			{
+				continue;
+			}
+
+			TSharedPtr<FJsonObject> ComponentJson = MakeShared<FJsonObject>();
+			const FString ComponentName = Node->GetVariableName().ToString();
+			ComponentJson->SetStringField(TEXT("name"), ComponentName);
+
+			UClass* ComponentClass = Node->ComponentClass;
+			if (!ComponentClass && Node->ComponentTemplate)
+			{
+				ComponentClass = Node->ComponentTemplate->GetClass();
+			}
+			ComponentJson->SetStringField(TEXT("class"), ComponentClass ? ComponentClass->GetName() : TEXT(""));
+			ComponentJson->SetStringField(
+				TEXT("reference_form"),
+				CortexBPComponentOpsPrivate::ResolveReferenceForm(Blueprint, ComponentName));
+			ComponentsArray.Add(MakeShared<FJsonValueObject>(ComponentJson));
+		}
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), BlueprintPath);
+	Data->SetArrayField(TEXT("components"), ComponentsArray);
+	Data->SetNumberField(TEXT("count"), ComponentsArray.Num());
+	return FCortexCommandRouter::Success(Data);
+}
+
 FCortexCommandResult FCortexBPComponentOps::SetComponentDefaults(const TSharedPtr<FJsonObject>& Params)
 {
+	if (Params.IsValid() && Params->HasField(TEXT("items")))
+	{
+		FCortexBatchMutationRequest Request;
+		FCortexCommandResult ParseError;
+		if (!FCortexBatchMutation::ParseRequest(Params, TEXT("asset_path"), Request, ParseError))
+		{
+			return ParseError;
+		}
+
+		return CortexBPComponentOpsPrivate::MakeBatchCommandResult(FCortexBatchMutation::Run(
+			Request,
+			CortexBPComponentOpsPrivate::PreflightSetComponentDefaults,
+			CortexBPComponentOpsPrivate::CommitSetComponentDefaults));
+	}
+
 	FString AssetPath;
 	FString ComponentName;
 	if (!Params.IsValid()

@@ -49,6 +49,17 @@ struct CORTEXCORE_API FCortexCommandInfo
 	{
 		return Param(ParamName, ParamType, false, ParamDescription);
 	}
+
+	FCortexCommandInfo& OptionalBatchItems(const FString& ParamDescription)
+	{
+		return Optional(TEXT("items"), TEXT("array"), ParamDescription);
+	}
+
+	FCortexCommandInfo& OptionalExpectedFingerprint(
+		const FString& ParamDescription = TEXT("Optional stale-write guard for single-target mode"))
+	{
+		return Optional(TEXT("expected_fingerprint"), TEXT("object"), ParamDescription);
+	}
 };
 
 /**

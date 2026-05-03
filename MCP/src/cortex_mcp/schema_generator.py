@@ -781,6 +781,7 @@ def generate_schema(
     schema_dir: pathlib.Path,
     domain: str = "all",
     project_name: str = "Unknown",
+    project_root: pathlib.Path | None = None,
     engine_version: str = "",
     plugin_version: str = "",
 ) -> dict:
@@ -791,6 +792,8 @@ def generate_schema(
         schema_dir: Target directory (e.g., .cortex/schema/).
         domain: "all" or specific domain name ("data", "blueprints").
         project_name: Project name for catalog header.
+        project_root: Resolved project root. When provided, reuse it for all
+            internal path calculations instead of re-resolving from env/fs.
         engine_version: Unreal Engine version (e.g., "5.6").
         plugin_version: UnrealCortex plugin version (e.g., "1.0.0").
 
@@ -814,10 +817,12 @@ def generate_schema(
     result = {"generated": {}, "errors": []}
     data_summary = None
     blueprint_summary = None
+    if project_root is None:
+        project_root = find_project_root()
 
     if domain in ("all", "data"):
         try:
-            collected = collect_data_domain(connection, project_root=find_project_root())
+            collected = collect_data_domain(connection, project_root=project_root)
 
             # Write data/_index.md
             index_md = render_data_index(collected["catalog"])
@@ -856,7 +861,6 @@ def generate_schema(
             atomic_write(schema_dir / "blueprints.md", blueprints_md)
             result["generated"]["blueprints"] = str(schema_dir / "blueprints.md")
 
-            project_root = find_project_root()
             domain_file = project_root / ".cortex" / "domains" / "blueprints.md"
             if domain_file.exists():
                 original = domain_file.read_text(encoding="utf-8")

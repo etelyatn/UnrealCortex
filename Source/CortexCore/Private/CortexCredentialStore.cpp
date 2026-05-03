@@ -170,7 +170,7 @@ bool FCortexCredentialStore::Load()
 	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
 	if (!FJsonSerializer::Deserialize(Reader, RootObject) || !RootObject.IsValid())
 	{
-		UE_LOG(LogCortex, Warning, TEXT("Failed to parse credential store file: %s"), *FilePath);
+		UE_LOG(LogCortex, Log, TEXT("Failed to parse credential store file: %s"), *FilePath);
 		return false;
 	}
 

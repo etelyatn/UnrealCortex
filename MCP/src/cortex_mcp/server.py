@@ -3,6 +3,7 @@
 import logging
 import os
 import sys
+import json
 from mcp.server.fastmcp import FastMCP
 from .capabilities import build_router_docstrings, get_registered_domains, load_capabilities_cache
 from .project import resolve_project_dir as _resolve_project_dir
@@ -68,7 +69,11 @@ def get_status() -> str:
         response = _connection.send_command("get_status")
         data = _decode_data(response)
         editors = _discover_all_editors()
-        data["connected_editor"] = {"pid": _connection._pid, "port": _connection.port}
+        connected = next((editor for editor in editors if editor.port == _connection.port), None)
+        if connected is not None:
+            data["connected_editor"] = {"pid": connected.pid, "port": connected.port}
+        else:
+            data["connected_editor"] = {"pid": _connection._pid, "port": _connection.port}
         data["available_editors"] = [
             {"pid": editor.pid, "port": editor.port, "started_at": editor.started_at}
             for editor in editors
@@ -93,6 +98,13 @@ def refresh_cache() -> str:
     """Compatibility helper for tests; not MCP-registered."""
     _connection.invalidate_cache(None)
     return '{"cleared": true}'
+
+
+def get_call_count_metrics() -> str:
+    """Compatibility helper for tests; not MCP-registered."""
+    return json.dumps(_connection.get_call_metrics())
+
+
 # Register explicit consolidated tools only.
 _register_explicit_tools(mcp, _connection)
 

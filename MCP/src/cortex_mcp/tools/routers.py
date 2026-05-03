@@ -19,8 +19,16 @@ from cortex_mcp.tcp_client import _discover_all_editors, _is_editor_alive
 
 logger = logging.getLogger(__name__)
 _TTL_CATALOG = 600
+_CACHED_READ_TTL = 300
 
 _pagination_cache = PaginationCache(max_entries=5, ttl_seconds=60.0)
+_CACHED_READ_COMMANDS = {
+    ("blueprint", "list_scs_components"),
+    ("blueprint", "list_inherited_properties"),
+    ("blueprint", "list_settable_defaults"),
+    ("graph", "list_event_handlers"),
+    ("level", "list_actor_classes"),
+}
 
 _MAX_LIMIT = 200
 
@@ -88,6 +96,14 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
 
     def router(command: str, params: dict | None = None) -> str:
         route_params = params or {}
+        qualified = _qualify_command(domain, command)
+        record_tool = getattr(connection, "record_tool_invocation", None)
+        if callable(record_tool):
+            record_tool(
+                f"{domain}_cmd",
+                qualified,
+                parallel=bool(route_params.get("_telemetry_parallel")),
+            )
 
         try:
             # Handle core special commands first (no pagination for these)
@@ -127,7 +143,15 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                 return _handle_limit_request(domain, command, route_params, limit, connection)
 
             # No pagination — normal dispatch
-            response = connection.send_command(_qualify_command(domain, command), route_params)
+            if (domain, command) in _CACHED_READ_COMMANDS:
+                response = connection.send_command_cached(
+                    qualified,
+                    route_params,
+                    ttl=_CACHED_READ_TTL,
+                )
+                return format_response(response.get("data", {}), f"{domain}_cmd")
+
+            response = connection.send_command(qualified, route_params)
             return format_response(response.get("data", {}), f"{domain}_cmd")
         except ConnectionError as exc:
             return f"Error: {exc}"
@@ -202,7 +226,11 @@ def _get_status(connection) -> str:
     data = _decode_data(response)
 
     editors = _discover_all_editors()
-    data["connected_editor"] = {"pid": connection._pid, "port": connection.port}
+    connected = next((editor for editor in editors if editor.port == connection.port), None)
+    if connected is not None:
+        data["connected_editor"] = {"pid": connected.pid, "port": connected.port}
+    else:
+        data["connected_editor"] = {"pid": connection._pid, "port": connection.port}
     data["available_editors"] = [
         {"pid": editor.pid, "port": editor.port, "started_at": editor.started_at}
         for editor in editors

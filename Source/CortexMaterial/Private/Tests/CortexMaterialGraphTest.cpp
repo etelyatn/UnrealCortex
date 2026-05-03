@@ -504,6 +504,112 @@ bool FCortexMaterialListConnectionsTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialListMultipleResultConnectionsTest,
+	"Cortex.Material.Graph.ListConnections.MultipleMaterialResultInputs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialListMultipleResultConnectionsTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString MatName = FString::Printf(TEXT("M_TestListMultiConn_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_ListMultiConn_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	FCortexCommandResult CreateResult = Handler.Execute(TEXT("create_material"), CreateParams);
+	TestTrue(TEXT("Material creation should succeed"), CreateResult.bSuccess);
+
+	auto AddNode = [&](const FString& ExpressionClass) -> FString
+	{
+		TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+		AddParams->SetStringField(TEXT("asset_path"), MatPath);
+		AddParams->SetStringField(TEXT("expression_class"), ExpressionClass);
+		FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+		TestTrue(FString::Printf(TEXT("add_node %s should succeed"), *ExpressionClass), AddResult.bSuccess);
+
+		FString NodeId;
+		if (AddResult.Data.IsValid())
+		{
+			AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+		}
+		return NodeId;
+	};
+
+	const FString ColorNodeId = AddNode(TEXT("MaterialExpressionVectorParameter"));
+	const FString RoughnessNodeId = AddNode(TEXT("MaterialExpressionScalarParameter"));
+
+	auto ConnectResultInput = [&](const FString& SourceNode, const FString& SourceOutput, const FString& TargetInput)
+	{
+		TSharedPtr<FJsonObject> ConnectParams = MakeShared<FJsonObject>();
+		ConnectParams->SetStringField(TEXT("asset_path"), MatPath);
+		ConnectParams->SetStringField(TEXT("source_node"), SourceNode);
+		ConnectParams->SetStringField(TEXT("source_output"), SourceOutput);
+		ConnectParams->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+		ConnectParams->SetStringField(TEXT("target_input"), TargetInput);
+		FCortexCommandResult ConnectResult = Handler.Execute(TEXT("connect"), ConnectParams);
+		TestTrue(FString::Printf(TEXT("connect %s should succeed"), *TargetInput), ConnectResult.bSuccess);
+	};
+
+	ConnectResultInput(ColorNodeId, TEXT("0"), TEXT("BaseColor"));
+	ConnectResultInput(RoughnessNodeId, TEXT("0"), TEXT("Roughness"));
+
+	TSharedPtr<FJsonObject> ListParams = MakeShared<FJsonObject>();
+	ListParams->SetStringField(TEXT("asset_path"), MatPath);
+	FCortexCommandResult ListResult = Handler.Execute(TEXT("list_connections"), ListParams);
+	TestTrue(TEXT("list_connections should succeed"), ListResult.bSuccess);
+
+	bool bFoundBaseColor = false;
+	bool bFoundRoughness = false;
+	if (ListResult.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ConnectionsArray = nullptr;
+		TestTrue(TEXT("Should have connections array"),
+			ListResult.Data->TryGetArrayField(TEXT("connections"), ConnectionsArray));
+
+		if (ConnectionsArray)
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *ConnectionsArray)
+			{
+				const TSharedPtr<FJsonObject> Connection = Value.IsValid() ? Value->AsObject() : nullptr;
+				if (!Connection.IsValid())
+				{
+					continue;
+				}
+
+				FString TargetNode;
+				FString TargetInput;
+				Connection->TryGetStringField(TEXT("target_node"), TargetNode);
+				Connection->TryGetStringField(TEXT("target_input"), TargetInput);
+				if (TargetNode == TEXT("MaterialResult") && TargetInput == TEXT("BaseColor"))
+				{
+					bFoundBaseColor = true;
+				}
+				if (TargetNode == TEXT("MaterialResult") && TargetInput == TEXT("Roughness"))
+				{
+					bFoundRoughness = true;
+				}
+			}
+		}
+	}
+
+	TestTrue(TEXT("BaseColor connection should be listed"), bFoundBaseColor);
+	TestTrue(TEXT("Roughness connection should be listed"), bFoundRoughness);
+
+	UObject* LoadedAsset = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedAsset)
+	{
+		LoadedAsset->MarkAsGarbage();
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexMaterialDisconnectTest,
 	"Cortex.Material.Graph.Disconnect",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter

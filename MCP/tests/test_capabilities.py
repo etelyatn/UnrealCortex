@@ -51,7 +51,10 @@ def test_build_router_docstring_lists_all_commands():
 
     assert "core" in docstrings
     assert "core_cmd(command, params)" in docstrings["core"]
-    assert "- save_asset(asset_path: string, force: boolean = optional, dry_run: boolean = optional)" in docstrings["core"]
+    assert (
+        "- save_asset(items: array = optional, expected_fingerprint: object = optional, "
+        "asset_path: string, force: boolean = optional, dry_run: boolean = optional)"
+    ) in docstrings["core"]
     assert "query_datatable" in docstrings["data"]
     assert "table_path: string" in docstrings["data"]
 

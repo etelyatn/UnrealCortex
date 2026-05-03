@@ -119,7 +119,7 @@ bool FCortexGraphRemoveNodeTest::RunTest(const FString& Parameters)
         Params->SetStringField(TEXT("asset_path"), AssetPath);
         Params->SetStringField(TEXT("node_id"), Node2Id);
 
-        FCortexCommandResult Result = Router.Execute(TEXT("graph.get_node"), Params);
+        FCortexCommandResult Result = Router.Execute(TEXT("graph.get_subgraph"), Params);
         TestTrue(TEXT("get_node on Node2 should succeed"), Result.bSuccess);
 
         if (Result.Data.IsValid())

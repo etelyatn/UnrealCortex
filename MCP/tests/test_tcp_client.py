@@ -24,6 +24,7 @@ from cortex_mcp.tcp_client import (
     EditorConnection,
     logger as tcp_logger,
 )
+from cortex_mcp.cache import ResponseCache
 
 
 class TestSendCommandTimeout:
@@ -67,6 +68,48 @@ class TestSendCommandTimeout:
         # Last settimeout call should be a positive deadline-based value.
         last_call = mock_socket.settimeout.call_args_list[-1]
         assert 0 < last_call[0][0] <= 120.0
+
+    def test_repeat_read_ratio_measured_before_cache_hit(self, monkeypatch):
+        """Repeat-read telemetry should still be recorded on Python cache hits."""
+        conn = UEConnection(port=99999)
+        conn.send_command = MagicMock(return_value={"success": True, "data": {"ok": True}})
+        metrics = []
+        monkeypatch.setattr(conn, "_record_metric", lambda name, payload: metrics.append((name, payload)))
+
+        params = {"asset_path": "/Game/A"}
+        key = ResponseCache.make_key("graph.trace_exec", params)
+        conn._cache.set(key, {"success": True, "data": {"ok": True}}, ttl=300)
+        conn._seen_read_keys.add(key)
+
+        conn.send_command_cached("graph.trace_exec", params, ttl=300)
+
+        assert any(name == "repeat_read_ratio" for name, _payload in metrics)
+        conn.send_command.assert_not_called()
+
+    def test_call_count_metrics_distinguish_tool_calls_tcp_calls_and_cache_hits(self, monkeypatch):
+        """Logical tool calls, TCP calls, and cache hits should be tracked separately."""
+        conn = UEConnection(port=99999)
+        monkeypatch.setattr(conn, "connect", lambda: None)
+        monkeypatch.setattr(
+            conn,
+            "_send_and_receive",
+            lambda command, params, timeout=None: {"success": True, "data": {"command": command, "params": params or {}}},
+        )
+
+        params = {"asset_path": "/Game/A"}
+
+        conn.record_tool_invocation("graph_cmd", "graph.trace_exec", parallel=False)
+        conn.send_command_cached("graph.trace_exec", params, ttl=300)
+
+        conn.record_tool_invocation("graph_cmd", "graph.trace_exec", parallel=True)
+        conn.send_command_cached("graph.trace_exec", params, ttl=300)
+
+        metrics = conn.get_call_metrics()
+        assert metrics["logical_tool_calls"] == 2
+        assert metrics["tcp_calls"] == 1
+        assert metrics["python_cache_hits"] == 1
+        assert metrics["parallel_sequential_ratio"] == pytest.approx(0.5)
+        assert metrics["repeat_read_ratio"] == pytest.approx(0.5)
 
 
 class TestPortFileParsing:

@@ -506,7 +506,7 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 		return MakeShared<FJsonValueString>(SoftPtr.ToSoftObjectPath().ToString());
 	}
 
-	UE_LOG(LogCortex, Warning, TEXT("Unhandled property type: %s (%s)"),
+	UE_LOG(LogCortex, Verbose, TEXT("Unhandled property type: %s (%s)"),
 		*Property->GetName(), *Property->GetClass()->GetName());
 	return MakeShared<FJsonValueNull>();
 }
@@ -992,7 +992,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		return true;
 	}
 
-	UE_LOG(LogCortex, Warning, TEXT("Unhandled property type for deserialization: %s (%s)"),
+	UE_LOG(LogCortex, Verbose, TEXT("Unhandled property type for deserialization: %s (%s)"),
 		*Property->GetName(), *Property->GetClass()->GetName());
 	return false;
 }

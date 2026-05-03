@@ -645,8 +645,8 @@ class TestGraphCRUD:
         graph_names = [g["name"] for g in data["graphs"]]
         assert "EventGraph" in graph_names
 
-    def test_list_nodes(self, tcp_connection, blueprint_for_test):
-        resp = tcp_connection.send_command("graph.list_nodes", {
+    def test_get_subgraph(self, tcp_connection, blueprint_for_test):
+        resp = tcp_connection.send_command("graph.get_subgraph", {
             "asset_path": blueprint_for_test,
             "graph_name": "EventGraph",
         })
@@ -656,18 +656,18 @@ class TestGraphCRUD:
         node_id = _add_print_string_node(tcp_connection, blueprint_for_test)
         assert node_id
 
-    def test_get_node(self, tcp_connection, blueprint_for_test):
+    def test_trace_exec(self, tcp_connection, blueprint_for_test):
         node_id = _add_print_string_node(tcp_connection, blueprint_for_test)
-        resp = tcp_connection.send_command("graph.get_node", {
+        resp = tcp_connection.send_command("graph.trace_exec", {
             "asset_path": blueprint_for_test,
-            "node_id": node_id,
-            "graph_name": "EventGraph",
+            "start_node_id": node_id,
+            "include_edges": True,
         })
-        assert "pins" in resp["data"]
+        assert "nodes" in resp["data"]
 
     def test_connect_pins(self, tcp_connection, blueprint_for_test):
         _add_print_string_node(tcp_connection, blueprint_for_test)
-        nodes_resp = tcp_connection.send_command("graph.list_nodes", {
+        nodes_resp = tcp_connection.send_command("graph.get_subgraph", {
             "asset_path": blueprint_for_test,
             "graph_name": "EventGraph",
         })
@@ -748,9 +748,9 @@ class TestGraphErrors:
                 "graph_name": "EventGraph",
             })
 
-    def test_list_nodes_invalid_graph(self, tcp_connection, blueprint_for_test):
+    def test_get_subgraph_invalid_graph(self, tcp_connection, blueprint_for_test):
         with pytest.raises(RuntimeError):
-            tcp_connection.send_command("graph.list_nodes", {
+            tcp_connection.send_command("graph.get_subgraph", {
                 "asset_path": blueprint_for_test,
                 "graph_name": "NonExistentGraph_12345",
             })
@@ -1311,10 +1311,10 @@ class TestMigrationAssets:
         )
         data = resp["data"]
         variables = data["variables"]
-        assert len(variables) >= 2, "BP_ComponentMigrate should have TickCount and bIsActive"
+        assert len(variables) >= 2, "BP_ComponentMigrate should have TickCount and bCustomIsActive"
         var_names = {v["name"] for v in variables}
         assert "TickCount" in var_names
-        assert "bIsActive" in var_names
+        assert "bCustomIsActive" in var_names
         for var in variables:
             assert "is_replicated" in var
             assert "container_type" in var

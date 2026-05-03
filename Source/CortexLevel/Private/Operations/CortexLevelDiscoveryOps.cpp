@@ -52,10 +52,11 @@ namespace
 
     TSharedPtr<FJsonObject> ClassEntryToJson(const FClassEntry& Entry)
     {
-        TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
-        Json->SetStringField(TEXT("name"), Entry.Name);
-        Json->SetStringField(TEXT("category"), Entry.Category);
-        Json->SetStringField(TEXT("description"), Entry.Description);
+    TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
+    Json->SetStringField(TEXT("name"), Entry.Name);
+    Json->SetStringField(TEXT("category"), Entry.Category);
+    Json->SetStringField(TEXT("description"), Entry.Description);
+    Json->SetStringField(TEXT("spawn_actor_value"), Entry.Name);
 
         TArray<TSharedPtr<FJsonValue>> Components;
         TArray<FString> ComponentTokens;

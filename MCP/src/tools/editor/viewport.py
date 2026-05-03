@@ -69,13 +69,13 @@ def register_editor_viewport_tools(mcp, connection: UEConnection):
         """Open a Blueprint in the editor and focus a specific graph node.
 
         Opens the Blueprint asset editor, navigates to the graph containing the node,
-        and centers the viewport on it with selection. Use after graph_list_nodes or
-        graph_get_node when you need to direct the user's attention to a specific node
+        and centers the viewport on it with selection. Use after graph_get_subgraph or
+        graph_get_subgraph when you need to direct the user's attention to a specific node
         -- for example, a node with incorrect pin values, a broken connection, or a
         compilation error source.
 
         This is a UI navigation tool, not a data tool:
-        - To READ node data without opening the editor, use graph_get_node.
+        - To READ node data without opening the editor, use graph_get_subgraph.
         - To OPEN a Blueprint without focusing a specific node, use open_asset.
         - To FOCUS a level actor in the 3D viewport, use focus_actor.
 
@@ -83,7 +83,7 @@ def register_editor_viewport_tools(mcp, connection: UEConnection):
             asset_path: Full asset path to the Blueprint
                         (e.g., '/Game/UI/WBP_UpgradeItem.WBP_UpgradeItem').
             node_id: The node ID to focus (e.g., 'K2Node_FormatText_0').
-                     Get IDs from graph_list_nodes.
+                     Get IDs from graph_get_subgraph.
             graph_name: Optional graph name (e.g., 'UpdateLocked').
                         If omitted, searches all graphs for the node.
 
@@ -112,3 +112,4 @@ def register_editor_viewport_tools(mcp, connection: UEConnection):
             return format_response(response.get("data", {}), "set_viewport_mode")
         except (ConnectionError, RuntimeError) as e:
             return f"Error: {e}"
+

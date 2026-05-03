@@ -44,16 +44,26 @@ FCortexCommandResult FCortexBPStructureOps::AddVariable(const TSharedPtr<FJsonOb
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
+	const FName VarFName(*VarName);
+
 	// Check if variable already exists
 	for (const FBPVariableDescription& Var : Blueprint->NewVariables)
 	{
-		if (Var.VarName == FName(*VarName))
+		if (Var.VarName == VarFName)
 		{
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::VariableExists,
 				FString::Printf(TEXT("Variable '%s' already exists"), *VarName)
 			);
 		}
+	}
+
+	if (Blueprint->ParentClass && Blueprint->ParentClass->FindPropertyByName(VarFName) != nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidValue,
+			FString::Printf(TEXT("Variable '%s' collides with an inherited UPROPERTY"), *VarName)
+		);
 	}
 
 	FEdGraphPinType PinType = ResolveVariableType(VarType);
@@ -63,7 +73,7 @@ FCortexCommandResult FCortexBPStructureOps::AddVariable(const TSharedPtr<FJsonOb
 	));
 
 	bool bSuccess = FBlueprintEditorUtils::AddMemberVariable(
-		Blueprint, FName(*VarName), PinType);
+		Blueprint, VarFName, PinType);
 
 	if (!bSuccess)
 	{
@@ -85,7 +95,7 @@ FCortexCommandResult FCortexBPStructureOps::AddVariable(const TSharedPtr<FJsonOb
 
 	for (FBPVariableDescription& Var : Blueprint->NewVariables)
 	{
-		if (Var.VarName == FName(*VarName))
+		if (Var.VarName == VarFName)
 		{
 			if (!DefaultValue.IsEmpty())
 			{
@@ -108,11 +118,11 @@ FCortexCommandResult FCortexBPStructureOps::AddVariable(const TSharedPtr<FJsonOb
 	{
 		const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 		UEdGraph* SignatureGraph = FBlueprintEditorUtils::CreateNewGraph(
-			Blueprint, FName(*VarName), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+			Blueprint, VarFName, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
 
 		if (SignatureGraph == nullptr)
 		{
-			FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, FName(*VarName));
+			FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, VarFName);
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidValue,
 				FString::Printf(TEXT("Failed to create delegate signature graph for '%s'"), *VarName)

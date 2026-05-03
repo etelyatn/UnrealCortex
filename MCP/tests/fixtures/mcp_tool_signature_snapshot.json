@@ -255,7 +255,8 @@
       "params": [
         "asset_path",
         "force",
-        "dry_run"
+        "dry_run",
+        "items"
       ]
     },
     "schema_status": {
@@ -635,6 +636,7 @@
         "asset_path",
         "node_class",
         "graph_name",
+        "subgraph_path",
         "position",
         "params"
       ]
@@ -657,7 +659,8 @@
         "source_pin",
         "target_node",
         "target_pin",
-        "graph_name"
+        "graph_name",
+        "subgraph_path"
       ]
     },
     "graph_disconnect": {
@@ -666,28 +669,39 @@
         "asset_path",
         "node_id",
         "pin_name",
-        "graph_name"
+        "graph_name",
+        "subgraph_path"
       ]
     },
-    "graph_get_node": {
-      "file": "tools/graph/graph.py",
+    "graph_find_event_handler": {
+      "file": "tools/graph/trace.py",
       "params": [
         "asset_path",
-        "node_id",
-        "graph_name"
+        "event_name"
+      ]
+    },
+    "graph_find_function_calls": {
+      "file": "tools/graph/trace.py",
+      "params": [
+        "asset_path",
+        "function_name"
+      ]
+    },
+    "graph_get_subgraph": {
+      "file": "tools/graph/trace.py",
+      "params": [
+        "asset_path",
+        "graph_name",
+        "node_ids",
+        "include_edges",
+        "subgraph_path"
       ]
     },
     "graph_list_graphs": {
       "file": "tools/graph/graph.py",
       "params": [
-        "asset_path"
-      ]
-    },
-    "graph_list_nodes": {
-      "file": "tools/graph/graph.py",
-      "params": [
         "asset_path",
-        "graph_name"
+        "include_subgraphs"
       ]
     },
     "graph_remove_node": {
@@ -695,7 +709,8 @@
       "params": [
         "asset_path",
         "node_id",
-        "graph_name"
+        "graph_name",
+        "subgraph_path"
       ]
     },
     "graph_search_nodes": {
@@ -704,7 +719,10 @@
         "asset_path",
         "node_class",
         "function_name",
-        "display_name"
+        "display_name",
+        "graph_name",
+        "subgraph_path",
+        "compact"
       ]
     },
     "graph_set_pin_value": {
@@ -714,7 +732,32 @@
         "node_id",
         "pin_name",
         "value",
-        "graph_name"
+        "graph_name",
+        "subgraph_path"
+      ]
+    },
+    "graph_trace_dataflow": {
+      "file": "tools/graph/trace.py",
+      "params": [
+        "asset_path",
+        "start_node_id",
+        "max_depth",
+        "traverse_policy",
+        "include_edges",
+        "graph_name",
+        "subgraph_path"
+      ]
+    },
+    "graph_trace_exec": {
+      "file": "tools/graph/trace.py",
+      "params": [
+        "asset_path",
+        "start_node_id",
+        "max_depth",
+        "traverse_policy",
+        "include_edges",
+        "graph_name",
+        "subgraph_path"
       ]
     }
   },

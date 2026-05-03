@@ -7,8 +7,8 @@ from cortex_mcp.response import format_response
 
 logger = logging.getLogger(__name__)
 
-# Maps C++ override function name → Blueprint event node display_name as returned by
-# graph.list_nodes. Display names are derived from the UE UFUNCTION(meta=(DisplayName=...))
+# Maps C++ override function name → Blueprint event node display_name as matched by
+# graph.find_event_handler. Display names are derived from the UE UFUNCTION(meta=(DisplayName=...))
 # metadata on the corresponding Receive* function in Actor.h.
 #
 # Note: OnConstruction is intentionally absent — its entry node is UK2Node_FunctionEntry
@@ -131,24 +131,34 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
 
             pruned_names: list[str] = []
             if target_display_names:
-                list_resp = connection.send_command("graph.list_nodes", {
-                    "asset_path": asset_path,
-                    "graph_name": "EventGraph",
-                })
-                nodes = list_resp.get("data", {}).get("nodes", [])
-                for node in nodes:
-                    node_id = node.get("node_id")
-                    if (
-                        node_id
-                        and node.get("class") == "UK2Node_Event"
-                        and node.get("display_name") in target_display_names
-                    ):
-                        connection.send_command("graph.remove_node", {
-                            "asset_path": asset_path,
-                            "node_id": node_id,
-                            "graph_name": "EventGraph",
-                        })
-                        pruned_names.append(node["display_name"])
+                for display_name in target_display_names:
+                    list_resp = connection.send_command("graph.find_event_handler", {
+                        "asset_path": asset_path,
+                        "event_name": display_name,
+                    })
+                    nodes = list_resp.get("data", {}).get("nodes", [])
+                    for node in nodes:
+                        node_id = node.get("node_id")
+                        node_class = node.get("class", "")
+                        if (
+                            node_id
+                            and (
+                                node_class in {
+                                    "UK2Node_Event",
+                                    "UK2Node_CustomEvent",
+                                    "UK2Node_ActorBoundEvent",
+                                    "UK2Node_ComponentBoundEvent",
+                                }
+                                or node_class.endswith("BoundEvent")
+                            )
+                            and node.get("display_name") == display_name
+                        ):
+                            connection.send_command("graph.remove_node", {
+                                "asset_path": asset_path,
+                                "node_id": node_id,
+                                "graph_name": "EventGraph",
+                            })
+                            pruned_names.append(node["display_name"])
 
             if pruned_names:
                 # Clean up orphaned downstream chains and compile.

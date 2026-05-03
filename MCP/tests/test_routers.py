@@ -113,6 +113,31 @@ def test_core_router_enriches_get_status_with_editor_discovery():
     connection.send_command.assert_called_once_with("get_status")
 
 
+def test_core_router_prefers_live_discovered_editor_for_connected_editor():
+    connection = MagicMock()
+    connection.port = 8742
+    connection._pid = 99180
+    connection.send_command.return_value = {
+        "data": {
+            "plugin_version": "1.0.0",
+            "engine_version": "5.6",
+            "project_name": "CortexSandbox",
+        }
+    }
+    router = make_router("core", connection, "core docs")
+    editors = [
+        _editor(8742, 93488, "2026-04-30T16:00:35Z"),
+    ]
+
+    with patch("cortex_mcp.tools.routers._discover_all_editors", return_value=editors):
+        payload = json.loads(router("get_status"))
+
+    assert payload["connected_editor"] == {"pid": 93488, "port": 8742}
+    assert payload["available_editors"] == [
+        {"pid": 93488, "port": 8742, "started_at": "2026-04-30T16:00:35Z"}
+    ]
+
+
 def test_core_router_uses_cached_send_for_get_data_catalog():
     connection = MagicMock()
     connection.send_command_cached.return_value = {"success": True, "data": {"datatables": []}}
@@ -141,6 +166,25 @@ def test_core_router_dispatches_normal_commands_via_tcp():
         "core.save_asset",
         {"asset_path": "/Game/Test"},
     )
+
+
+def test_blueprint_router_uses_cached_send_for_discovery_reads():
+    connection = MagicMock()
+    connection.send_command_cached.return_value = {
+        "success": True,
+        "data": {"properties": {"OpenSeq": {"accepted_formats": ["Bare component name"]}}},
+    }
+
+    router = make_router("blueprint", connection, "blueprint docs")
+    payload = json.loads(router("list_settable_defaults", {"asset_path": "/Game/Test/BP_Discovery"}))
+
+    assert "OpenSeq" in payload["properties"]
+    connection.send_command_cached.assert_called_once_with(
+        "blueprint.list_settable_defaults",
+        {"asset_path": "/Game/Test/BP_Discovery"},
+        ttl=300,
+    )
+    connection.send_command.assert_not_called()
 
 
 def test_register_router_tools_registers_all_domains():

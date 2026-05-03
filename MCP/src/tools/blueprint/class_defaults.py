@@ -65,6 +65,7 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
         properties: dict | None = None,
         compile: bool = True,
         save: bool = True,
+        items: list[dict] | None = None,
         blueprint_path: str = "",
     ) -> str:
         """Set default property values on a Blueprint's Class Default Object (CDO).
@@ -82,6 +83,8 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
             properties: Dictionary mapping property names to their new values.
             compile: Auto-compile the Blueprint after setting properties (default: true)
             save: Auto-save the Blueprint to disk after setting properties (default: true)
+            items: Optional batch item list. Each item must include target and properties,
+                and may include compile, save, and expected_fingerprint.
 
         Returns:
             JSON with:
@@ -94,21 +97,26 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
 
             Note: response currently returns key "blueprint_path" (not "asset_path").
         """
-        if not asset_path:
-            asset_path = blueprint_path
-        if not asset_path:
-            return "Error: Missing required parameter: asset_path (or blueprint_path alias)"
-        if not properties:
-            return "Error: Missing or empty required parameter: properties"
-
         try:
-            params = {
-                "asset_path": asset_path,
-                "blueprint_path": asset_path,
-                "properties": properties,
-                "compile": compile,
-                "save": save,
-            }
+            if items is not None:
+                if len(items) == 0:
+                    return "Error: Missing or empty required parameter: items"
+                params = {"items": items}
+            else:
+                if not asset_path:
+                    asset_path = blueprint_path
+                if not asset_path:
+                    return "Error: Missing required parameter: asset_path (or blueprint_path alias)"
+                if not properties:
+                    return "Error: Missing or empty required parameter: properties"
+
+                params = {
+                    "asset_path": asset_path,
+                    "blueprint_path": asset_path,
+                    "properties": properties,
+                    "compile": compile,
+                    "save": save,
+                }
             response = connection.send_command("blueprint.set_class_defaults", params)
             return format_response(response.get("data", {}), "set_class_defaults")
         except ConnectionError as exc:

@@ -13,6 +13,9 @@ class UBlueprint;
 class FCortexBPClassDefaultsOps
 {
 public:
+	static FCortexCommandResult ListInheritedProperties(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult ListSettableDefaults(const TSharedPtr<FJsonObject>& Params);
+
 	/**
 	 * Get class default property values from a Blueprint CDO.
 	 * Params: blueprint_path (string), properties (string[] optional; empty = discover all)

@@ -46,106 +46,6 @@ def register_graph_tools(mcp, connection: UEConnection):
             return f"Error: {e}"
 
     @mcp.tool()
-    def graph_list_nodes(
-        asset_path: str,
-        graph_name: str = "EventGraph",
-        subgraph_path: str = "",
-        compact: bool = True,
-    ) -> str:
-        """List all nodes in a specific graph.
-
-        Returns summary information for each node including its ID, class, and position.
-        Composite nodes (UK2Node_Composite) include a 'subgraph_name' field with the
-        name of the embedded subgraph, usable as a segment in subgraph_path.
-        Tunnel boundary nodes inside composites have 'is_tunnel_boundary: true' --
-        these are structural and must not be deleted or rewired.
-
-        Composite nodes without 'subgraph_name' have no traversable subgraph
-        (empty or pending compilation).
-
-        Args:
-            asset_path: Full asset path to the Blueprint.
-            graph_name: Name of the graph to query (default: 'EventGraph').
-            subgraph_path: Dot-separated path into nested composite subgraphs
-                (e.g., 'BeginPlay.Inner'). Resolves from graph_name downward.
-                To navigate into a composite, take the 'subgraph_name' value from a
-                list_nodes result and pass it as subgraph_path on the next call.
-                For deeper nesting, append further subgraph_name values with a dot:
-                e.g. 'OuterComposite.InnerComposite'.
-                Note: composite names must not contain dots.
-            compact: Omit position, node_class, and pin_count fields (default: true).
-                Set false to include positional data and redundant fields.
-
-        Returns:
-            JSON with 'nodes' array, each containing:
-            - node_id: Unique identifier for the node
-            - class: Node class name (e.g., 'UK2Node_Event')
-            - display_name: Display name of the node
-            - connected_pin_count: Number of pins with at least one connection
-            - subgraph_name: (composite nodes only) Name of the embedded subgraph
-            - is_tunnel_boundary: (tunnel nodes only) True for structural entry/exit nodes
-            - position: {x, y} coordinates (compact=false only)
-            - pin_count: Total number of pins (compact=false only)
-        """
-        try:
-            params = {
-                "asset_path": asset_path,
-                "graph_name": graph_name,
-                "compact": compact,
-            }
-            if subgraph_path:
-                params["subgraph_path"] = subgraph_path
-
-            response = connection.send_command_cached("graph.list_nodes", params, ttl=_TTL_GRAPHS)
-            return format_response(response.get("data", {}), "list_nodes")
-        except ConnectionError as e:
-            return f"Error: {e}"
-
-    @mcp.tool()
-    def graph_get_node(
-        asset_path: str,
-        node_id: str,
-        graph_name: str = "EventGraph",
-        subgraph_path: str = "",
-        compact: bool = True,
-    ) -> str:
-        """Get detailed information about a specific node.
-
-        Returns full node data including all pins and connections.
-
-        Args:
-            asset_path: Full asset path to the Blueprint.
-            node_id: Unique identifier of the node (from list_nodes).
-            graph_name: Name of the graph containing the node (default: 'EventGraph').
-            subgraph_path: Dot-separated path into nested composite subgraphs
-                (e.g., 'BeginPlay.Inner'). Resolves from graph_name downward.
-            compact: Omit position, node_class, and hidden unconnected pins (default: true).
-                Hidden pins are omitted only when they have no connections, no default
-                value, and no default object. Use compact=false to reveal all pins
-                (e.g., before set_pin_value on a hidden pin).
-
-        Returns:
-            JSON with node details and pins with connection info.
-            If the node is a tunnel boundary (is_tunnel_boundary: true), its pins
-            represent the composite's entry/exit execution and data pins. Inspect
-            these before connecting nodes inside a composite to the execution flow.
-        """
-        try:
-            params = {
-                "asset_path": asset_path,
-                "node_id": node_id,
-                "graph_name": graph_name,
-                "compact": compact,
-            }
-            if subgraph_path:
-                params["subgraph_path"] = subgraph_path
-
-            response = connection.send_command_cached("graph.get_node", params, ttl=_TTL_GRAPHS)
-            return format_response(response.get("data", {}), "get_node")
-        except ConnectionError as e:
-            return f"Error: {e}"
-
-    @mcp.tool()
     def graph_search_nodes(
         asset_path: str,
         node_class: str = "",
@@ -217,7 +117,7 @@ def register_graph_tools(mcp, connection: UEConnection):
             graph_name: Name of the graph to add to (default: 'EventGraph').
             subgraph_path: Dot-separated path into nested composite subgraphs.
                 Discover valid paths via graph_list_graphs(include_subgraphs=True)
-                or by reading subgraph_name fields from graph_list_nodes output.
+                or by reading subgraph_name fields from graph_get_subgraph output.
             position: Optional JSON string with {x, y} coordinates.
             params: Optional JSON string with node-specific parameters.
 
@@ -263,7 +163,7 @@ def register_graph_tools(mcp, connection: UEConnection):
             graph_name: Name of the graph containing the node (default: 'EventGraph').
             subgraph_path: Dot-separated path into nested composite subgraphs.
                 Discover valid paths via graph_list_graphs(include_subgraphs=True)
-                or by reading subgraph_name fields from graph_list_nodes output.
+                or by reading subgraph_name fields from graph_get_subgraph output.
 
         Returns:
             JSON with success status and the removed node_id.
@@ -307,7 +207,7 @@ def register_graph_tools(mcp, connection: UEConnection):
             graph_name: Name of the graph containing the nodes (default: 'EventGraph').
             subgraph_path: Dot-separated path into nested composite subgraphs.
                 Discover valid paths via graph_list_graphs(include_subgraphs=True)
-                or by reading subgraph_name fields from graph_list_nodes output.
+                or by reading subgraph_name fields from graph_get_subgraph output.
 
         Returns:
             JSON with success status and connection details.
@@ -350,7 +250,7 @@ def register_graph_tools(mcp, connection: UEConnection):
             graph_name: Name of the graph containing the node (default: 'EventGraph').
             subgraph_path: Dot-separated path into nested composite subgraphs.
                 Discover valid paths via graph_list_graphs(include_subgraphs=True)
-                or by reading subgraph_name fields from graph_list_nodes output.
+                or by reading subgraph_name fields from graph_get_subgraph output.
 
         Returns:
             JSON with success status and number of connections removed.
@@ -393,7 +293,7 @@ def register_graph_tools(mcp, connection: UEConnection):
             graph_name: Name of the graph containing the node (default: 'EventGraph').
             subgraph_path: Dot-separated path into nested composite subgraphs.
                 Discover valid paths via graph_list_graphs(include_subgraphs=True)
-                or by reading subgraph_name fields from graph_list_nodes output.
+                or by reading subgraph_name fields from graph_get_subgraph output.
 
         Returns:
             JSON with success status and the set value.

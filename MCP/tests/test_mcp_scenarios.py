@@ -95,14 +95,14 @@ async def test_scenario_blueprint_lifecycle(mcp_client):
         assert "node_id" in data
         print_node_id = data["node_id"]
 
-        # Step 6: List nodes to find BeginPlay event
-        data = await call_tool(mcp_client, "graph_list_nodes", {
+        # Step 6: Find BeginPlay event handlers
+        data = await call_tool(mcp_client, "graph_find_event_handler", {
             "asset_path": asset_path,
-            "graph_name": "EventGraph",
+            "event_name": "Event BeginPlay",
         })
         event_node = None
         for n in data["nodes"]:
-            if "BeginPlay" in n.get("title", "") or "BeginPlay" in n.get("class", ""):
+            if "BeginPlay" in n.get("display_name", ""):
                 event_node = n
                 break
 
@@ -427,20 +427,21 @@ async def test_scenario_graph_wiring(mcp_client):
         })
         second_print_id = data["node_id"]
 
-        # List nodes
-        data = await call_tool(mcp_client, "graph_list_nodes", {
+        # Read graph
+        data = await call_tool(mcp_client, "graph_get_subgraph", {
             "asset_path": asset_path,
             "graph_name": "EventGraph",
         })
         assert len(data["nodes"]) >= 2
 
-        # Get second node details
-        data = await call_tool(mcp_client, "graph_get_node", {
+        # Get second node details via focused subgraph read
+        data = await call_tool(mcp_client, "graph_get_subgraph", {
             "asset_path": asset_path,
-            "node_id": second_print_id,
             "graph_name": "EventGraph",
+            "node_ids": [second_print_id],
         })
-        assert "pins" in data
+        assert len(data["nodes"]) == 1
+        assert "pins" in data["nodes"][0]
 
         # Try connect
         try:
@@ -895,7 +896,7 @@ async def test_stress_many_graph_nodes(mcp_client):
             except Exception:
                 break
 
-        data = await call_tool(mcp_client, "graph_list_nodes", {
+        data = await call_tool(mcp_client, "graph_get_subgraph", {
             "asset_path": asset_path,
             "graph_name": "EventGraph",
         })

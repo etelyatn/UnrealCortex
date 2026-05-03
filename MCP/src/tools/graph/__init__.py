@@ -2,9 +2,11 @@
 
 from .graph import register_graph_tools
 from .layout import register_graph_layout_tools
+from .trace import register_graph_trace_tools
 
 
 def register_graph_domain_tools(mcp, connection):
     """Register all graph domain tools."""
     register_graph_tools(mcp, connection)
+    register_graph_trace_tools(mcp, connection)
     register_graph_layout_tools(mcp, connection)

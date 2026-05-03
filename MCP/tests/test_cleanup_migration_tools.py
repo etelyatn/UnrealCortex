@@ -54,14 +54,14 @@ def test_no_overrides_passes_compile_flag_directly():
 
 
 def test_no_overrides_does_not_call_list_nodes():
-    """Without migrated_overrides, graph.list_nodes is never called."""
+    """Without migrated_overrides, graph.find_event_handler is never called."""
     mcp, connection = _setup()
     connection.send_command.return_value = {"data": {}}
 
     mcp.tools["cleanup_blueprint_migration"](asset_path="/Game/BP_Test")
 
     calls = [c.args[0] for c in connection.send_command.call_args_list]
-    assert "graph.list_nodes" not in calls
+    assert "graph.find_event_handler" not in calls
 
 
 # --- Known override: full prune flow ---
@@ -84,7 +84,7 @@ def test_known_override_defers_compile_in_cleanup_migration():
 
 
 def test_known_override_calls_list_nodes():
-    """With migrated_overrides, graph.list_nodes is called on EventGraph."""
+    """With migrated_overrides, graph.find_event_handler is called on EventGraph."""
     mcp, connection = _setup()
     connection.send_command.return_value = {"data": {"nodes": []}}
 
@@ -94,8 +94,8 @@ def test_known_override_calls_list_nodes():
     )
 
     connection.send_command.assert_any_call(
-        "graph.list_nodes",
-        {"asset_path": "/Game/BP_Test", "graph_name": "EventGraph"},
+        "graph.find_event_handler",
+        {"asset_path": "/Game/BP_Test", "event_name": "Event BeginPlay"},
     )
 
 
@@ -104,7 +104,7 @@ def test_known_override_removes_matching_event_node():
     mcp, connection = _setup()
 
     def side_effect(command, params, **kwargs):
-        if command == "graph.list_nodes":
+        if command == "graph.find_event_handler":
             return _list_nodes_response(
                 _node("node-aaa", "UK2Node_Event", "Event BeginPlay"),
                 _node("node-bbb", "UK2Node_CallFunction", "Print String"),
@@ -129,7 +129,7 @@ def test_known_override_does_not_remove_non_event_node():
     mcp, connection = _setup()
 
     def side_effect(command, params, **kwargs):
-        if command == "graph.list_nodes":
+        if command == "graph.find_event_handler":
             return _list_nodes_response(
                 _node("node-aaa", "UK2Node_CallFunction", "Event BeginPlay"),
             )
@@ -151,7 +151,7 @@ def test_known_override_calls_delete_orphaned_nodes():
     mcp, connection = _setup()
 
     def side_effect(command, params, **kwargs):
-        if command == "graph.list_nodes":
+        if command == "graph.find_event_handler":
             return _list_nodes_response(
                 _node("node-aaa", "UK2Node_Event", "Event BeginPlay"),
             )
@@ -175,7 +175,7 @@ def test_delete_orphaned_nodes_respects_compile_false():
     mcp, connection = _setup()
 
     def side_effect(command, params, **kwargs):
-        if command == "graph.list_nodes":
+        if command == "graph.find_event_handler":
             return _list_nodes_response(
                 _node("node-aaa", "UK2Node_Event", "Event BeginPlay"),
             )
@@ -200,7 +200,7 @@ def test_known_override_result_includes_pruned_count():
     mcp, connection = _setup()
 
     def side_effect(command, params, **kwargs):
-        if command == "graph.list_nodes":
+        if command == "graph.find_event_handler":
             return _list_nodes_response(
                 _node("node-aaa", "UK2Node_Event", "Event BeginPlay"),
             )
@@ -249,7 +249,7 @@ def test_unknown_override_no_remove_node_called():
     )
 
     calls = [c.args[0] for c in connection.send_command.call_args_list]
-    assert "graph.list_nodes" not in calls
+    assert "graph.find_event_handler" not in calls
     assert "graph.remove_node" not in calls
     assert "blueprint.delete_orphaned_nodes" not in calls
 
@@ -276,7 +276,7 @@ def test_no_matching_node_still_compiles():
     mcp, connection = _setup()
 
     def side_effect(command, params, **kwargs):
-        if command == "graph.list_nodes":
+        if command == "graph.find_event_handler":
             return _list_nodes_response(
                 _node("node-bbb", "UK2Node_CallFunction", "Print String"),
             )
@@ -303,7 +303,7 @@ def test_no_matching_event_node_returns_zero_pruned():
     mcp, connection = _setup()
 
     def side_effect(command, params, **kwargs):
-        if command == "graph.list_nodes":
+        if command == "graph.find_event_handler":
             return _list_nodes_response(
                 _node("node-bbb", "UK2Node_CallFunction", "Print String"),
             )
@@ -328,7 +328,7 @@ def test_multiple_overrides_remove_all_matching_nodes():
     mcp, connection = _setup()
 
     def side_effect(command, params, **kwargs):
-        if command == "graph.list_nodes":
+        if command == "graph.find_event_handler":
             return _list_nodes_response(
                 _node("node-aaa", "UK2Node_Event", "Event BeginPlay"),
                 _node("node-bbb", "UK2Node_Event", "Event Tick"),
@@ -361,7 +361,7 @@ def test_notify_actor_begin_overlap_maps_to_event_actor_begin_overlap():
     mcp, connection = _setup()
 
     def side_effect(command, params, **kwargs):
-        if command == "graph.list_nodes":
+        if command == "graph.find_event_handler":
             return _list_nodes_response(
                 _node("node-aaa", "UK2Node_Event", "Event ActorBeginOverlap"),
             )
@@ -405,7 +405,7 @@ def test_end_play_maps_to_event_end_play_with_space():
     mcp, connection = _setup()
 
     def side_effect(command, params, **kwargs):
-        if command == "graph.list_nodes":
+        if command == "graph.find_event_handler":
             return _list_nodes_response(
                 _node("node-aaa", "UK2Node_Event", "Event End Play"),
             )
@@ -443,7 +443,7 @@ def test_mixed_known_and_unknown_overrides():
     mcp, connection = _setup()
 
     def side_effect(command, params, **kwargs):
-        if command == "graph.list_nodes":
+        if command == "graph.find_event_handler":
             return _list_nodes_response(
                 _node("node-aaa", "UK2Node_Event", "Event BeginPlay"),
             )
@@ -482,7 +482,7 @@ def test_no_matching_node_compile_false_does_not_compile():
     mcp, connection = _setup()
 
     def side_effect(command, params, **kwargs):
-        if command == "graph.list_nodes":
+        if command == "graph.find_event_handler":
             return _list_nodes_response(
                 _node("node-bbb", "UK2Node_CallFunction", "Print String"),
             )
@@ -507,7 +507,7 @@ def test_malformed_node_missing_node_id_is_skipped():
     mcp, connection = _setup()
 
     def side_effect(command, params, **kwargs):
-        if command == "graph.list_nodes":
+        if command == "graph.find_event_handler":
             return {"data": {"nodes": [
                 {"class": "UK2Node_Event", "display_name": "Event BeginPlay"},  # no node_id
             ]}}
@@ -526,3 +526,4 @@ def test_malformed_node_missing_node_id_is_skipped():
 
     calls = [c.args[0] for c in connection.send_command.call_args_list]
     assert "graph.remove_node" not in calls
+

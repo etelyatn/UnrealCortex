@@ -560,7 +560,7 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
             if subgraph_path:
                 verify_params["subgraph_path"] = subgraph_path
             nodes_data = connection.send_command(
-                "graph.list_nodes",
+                "graph.get_subgraph",
                 verify_params,
                 timeout=VERIFICATION_TIMEOUT,
             )

@@ -422,7 +422,7 @@ FText SCortexConversionConfig::GetClassNameWarningText() const
 	}
 
 	// Class name collision check
-	if (UClass::TryFindTypeSlow<UStruct>(*Name))
+	if (FindFirstObjectSafe<UStruct>(*Name, EFindFirstObjectOptions::NativeFirst) != nullptr)
 	{
 		return FText::FromString(FString::Printf(
 			TEXT("Warning: A class named '%s' already exists. Consider a different name."), *Name));
