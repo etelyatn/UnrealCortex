@@ -93,7 +93,8 @@ UBlueprint* FCortexGraphNodeOps::LoadBlueprint(const FString& AssetPath, FCortex
 	static const FString LevelBPPrefix = TEXT("__level_bp__:");
 	if (AssetPath.StartsWith(LevelBPPrefix))
 	{
-		const FString MapPath = AssetPath.Mid(LevelBPPrefix.Len());
+		const FString MapPath = FPackageName::ObjectPathToPackageName(
+			NormalizeGraphBlueprintAssetPath(AssetPath.Mid(LevelBPPrefix.Len())));
 
 		UWorld* World = nullptr;
 		if (GEditor)

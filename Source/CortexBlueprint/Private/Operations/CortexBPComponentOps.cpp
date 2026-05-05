@@ -414,12 +414,221 @@ namespace CortexBPComponentOpsPrivate
 		return true;
 	}
 
+	bool IsIntegralJsonNumber(double Number)
+	{
+		return FMath::IsFinite(Number) && FMath::IsNearlyEqual(Number, FMath::RoundToDouble(Number));
+	}
+
+	bool ValidateIntegerJsonValue(
+		const FNumericProperty* NumericProperty,
+		const TSharedPtr<FJsonValue>& JsonValue,
+		const FString& PropertyPath,
+		TArray<FString>& OutWarnings)
+	{
+		if (!JsonValue.IsValid() || JsonValue->Type != EJson::Number)
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s expected a numeric JSON value"), *PropertyPath));
+			return false;
+		}
+
+		const double Number = JsonValue->AsNumber();
+		if (!IsIntegralJsonNumber(Number))
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s expected an integer JSON value"), *PropertyPath));
+			return false;
+		}
+
+		bool bInRange = true;
+		if (CastField<FInt8Property>(NumericProperty))
+		{
+			bInRange = Number >= TNumericLimits<int8>::Min() && Number <= TNumericLimits<int8>::Max();
+		}
+		else if (CastField<FInt16Property>(NumericProperty))
+		{
+			bInRange = Number >= TNumericLimits<int16>::Min() && Number <= TNumericLimits<int16>::Max();
+		}
+		else if (CastField<FIntProperty>(NumericProperty))
+		{
+			bInRange = Number >= TNumericLimits<int32>::Min() && Number <= TNumericLimits<int32>::Max();
+		}
+		else if (CastField<FInt64Property>(NumericProperty))
+		{
+			bInRange = Number >= static_cast<double>(TNumericLimits<int64>::Min())
+				&& Number <= static_cast<double>(TNumericLimits<int64>::Max());
+		}
+		else if (CastField<FByteProperty>(NumericProperty))
+		{
+			bInRange = Number >= 0.0 && Number <= static_cast<double>(TNumericLimits<uint8>::Max());
+		}
+		else if (CastField<FUInt16Property>(NumericProperty))
+		{
+			bInRange = Number >= 0.0 && Number <= static_cast<double>(TNumericLimits<uint16>::Max());
+		}
+		else if (CastField<FUInt32Property>(NumericProperty))
+		{
+			bInRange = Number >= 0.0 && Number <= static_cast<double>(TNumericLimits<uint32>::Max());
+		}
+		else if (CastField<FUInt64Property>(NumericProperty))
+		{
+			bInRange = Number >= 0.0 && Number <= static_cast<double>(TNumericLimits<uint64>::Max());
+		}
+
+		if (!bInRange)
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s numeric value is out of range"), *PropertyPath));
+			return false;
+		}
+
+		return true;
+	}
+
+	bool ValidateEnumJsonValue(
+		const UEnum* Enum,
+		const TSharedPtr<FJsonValue>& JsonValue,
+		const FString& PropertyPath,
+		TArray<FString>& OutWarnings)
+	{
+		if (Enum == nullptr || !JsonValue.IsValid())
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s has no enum definition"), *PropertyPath));
+			return false;
+		}
+
+		int64 EnumValue = INDEX_NONE;
+		FString InputValue;
+		if (JsonValue->Type == EJson::Number)
+		{
+			const double Number = JsonValue->AsNumber();
+			if (!IsIntegralJsonNumber(Number))
+			{
+				OutWarnings.Add(FString::Printf(TEXT("%s expected an integer enum value"), *PropertyPath));
+				return false;
+			}
+			EnumValue = static_cast<int64>(Number);
+			InputValue = FString::Printf(TEXT("%lld"), static_cast<long long>(EnumValue));
+		}
+		else if (JsonValue->Type == EJson::String)
+		{
+			InputValue = JsonValue->AsString();
+			EnumValue = Enum->GetValueByNameString(InputValue);
+		}
+		else
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s expected an enum string or numeric value"), *PropertyPath));
+			return false;
+		}
+
+		const int32 EnumIndex = Enum->GetIndexByValue(EnumValue);
+		if (EnumValue == INDEX_NONE
+			|| EnumIndex == INDEX_NONE
+			|| Enum->HasMetaData(TEXT("Hidden"), EnumIndex))
+		{
+			OutWarnings.Add(FString::Printf(
+				TEXT("%s unknown enum value '%s' for %s"),
+				*PropertyPath,
+				*InputValue,
+				*Enum->GetName()));
+			return false;
+		}
+
+		return true;
+	}
+
+	bool ValidateStrictComponentJsonValue(
+		const FProperty* Property,
+		const TSharedPtr<FJsonValue>& JsonValue,
+		const FString& PropertyPath,
+		TArray<FString>& OutWarnings)
+	{
+		if (const FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property))
+		{
+			if (!JsonValue.IsValid() || JsonValue->Type != EJson::Boolean)
+			{
+				OutWarnings.Add(FString::Printf(TEXT("%s expected a boolean JSON value"), *PropertyPath));
+				return false;
+			}
+			return true;
+		}
+
+		if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+		{
+			return ValidateEnumJsonValue(EnumProperty->GetEnum(), JsonValue, PropertyPath, OutWarnings);
+		}
+
+		if (const FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
+		{
+			if (const UEnum* Enum = ByteProperty->GetIntPropertyEnum())
+			{
+				return ValidateEnumJsonValue(Enum, JsonValue, PropertyPath, OutWarnings);
+			}
+		}
+
+		if (const FNumericProperty* NumericProperty = CastField<FNumericProperty>(Property))
+		{
+			if (NumericProperty->IsInteger())
+			{
+				return ValidateIntegerJsonValue(NumericProperty, JsonValue, PropertyPath, OutWarnings);
+			}
+
+			if (!JsonValue.IsValid() || JsonValue->Type != EJson::Number || !FMath::IsFinite(JsonValue->AsNumber()))
+			{
+				OutWarnings.Add(FString::Printf(TEXT("%s expected a finite numeric JSON value"), *PropertyPath));
+				return false;
+			}
+			return true;
+		}
+
+		if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			const TSharedPtr<FJsonObject>* ObjectValue = nullptr;
+			if (!JsonValue.IsValid() || !JsonValue->TryGetObject(ObjectValue) || ObjectValue == nullptr || !(*ObjectValue).IsValid())
+			{
+				OutWarnings.Add(FString::Printf(TEXT("%s expected a JSON object"), *PropertyPath));
+				return false;
+			}
+
+			bool bValid = true;
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& FieldPair : (*ObjectValue)->Values)
+			{
+				FProperty* StructField = StructProperty->Struct
+					? StructProperty->Struct->FindPropertyByName(FName(*FieldPair.Key))
+					: nullptr;
+				if (StructField == nullptr)
+				{
+					OutWarnings.Add(FString::Printf(
+						TEXT("%s.%s is not a field on %s"),
+						*PropertyPath,
+						*FieldPair.Key,
+						StructProperty->Struct ? *StructProperty->Struct->GetName() : TEXT("struct")));
+					bValid = false;
+					continue;
+				}
+
+				bValid &= ValidateStrictComponentJsonValue(
+					StructField,
+					FieldPair.Value,
+					FString::Printf(TEXT("%s.%s"), *PropertyPath, *FieldPair.Key),
+					OutWarnings);
+			}
+
+			return bValid;
+		}
+
+		return true;
+	}
+
 	bool ValidateGenericPropertyJson(
 		UObject* ComponentTemplate,
 		FProperty* Property,
+		const FString& PropertyName,
 		const TSharedPtr<FJsonValue>& JsonValue,
 		TArray<FString>& OutWarnings)
 	{
+		if (!ValidateStrictComponentJsonValue(Property, JsonValue, PropertyName, OutWarnings))
+		{
+			return false;
+		}
+
 		void* ValuePtr = Property->ContainerPtrToValuePtr<void>(ComponentTemplate);
 		void* TempValuePtr = FMemory::Malloc(Property->GetSize(), Property->GetMinAlignment());
 		Property->InitializeValue(TempValuePtr);
@@ -778,6 +987,7 @@ FCortexCommandResult FCortexBPComponentOps::SetComponentDefaults(const TSharedPt
 			if (!CortexBPComponentOpsPrivate::ValidateGenericPropertyJson(
 					ComponentTemplate,
 					Prop,
+					PropName,
 					PropValueJson,
 					SetWarnings))
 			{

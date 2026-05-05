@@ -945,6 +945,29 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 			CommitBatchSetClassDefaults));
 	}
 
+	if (Params.IsValid() && Params->HasField(TEXT("expected_fingerprint")))
+	{
+		FCortexBatchMutationRequest Request;
+		FCortexCommandResult ParseError;
+		if (!FCortexBatchMutation::ParseRequest(Params, TEXT("asset_path"), Request, ParseError))
+		{
+			return ParseError;
+		}
+
+		const FCortexBatchMutationResult BatchResult = FCortexBatchMutation::Run(
+			Request,
+			PreflightBatchSetClassDefaults,
+			CommitBatchSetClassDefaults);
+		if (BatchResult.PerItem.Num() > 0)
+		{
+			return BatchResult.PerItem[0].Result;
+		}
+
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("No set_class_defaults target was parsed"));
+	}
+
 	if (!Params.IsValid())
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params object"));

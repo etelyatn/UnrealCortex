@@ -272,7 +272,8 @@ UBlueprint* FCortexBPAssetOps::LoadBlueprint(const FString& AssetPath, FString& 
 	static const FString LevelBPPrefix = TEXT("__level_bp__:");
 	if (AssetPath.StartsWith(LevelBPPrefix))
 	{
-		const FString MapPath = AssetPath.Mid(LevelBPPrefix.Len());
+		const FString MapPath = FPackageName::ObjectPathToPackageName(
+			CortexBPAssetOpsPrivate::NormalizeBlueprintContentPath(AssetPath.Mid(LevelBPPrefix.Len())));
 
 		// Use current editor world if it matches — avoids double-load
 		UWorld* World = nullptr;

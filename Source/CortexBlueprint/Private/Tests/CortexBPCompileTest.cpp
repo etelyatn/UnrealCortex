@@ -105,6 +105,21 @@ bool FCortexBPCompileTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	// Test: relative Level Script Blueprint synthetic paths default to /Game
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TEXT("__level_bp__:Maps/TestMap"));
+		FCortexCommandResult Result = Handler.Execute(TEXT("compile"), Params);
+		if (!Result.bSuccess)
+		{
+			AddInfo(FString::Printf(
+				TEXT("Relative Level BP compile failed with %s: %s"),
+				*Result.ErrorCode,
+				*Result.ErrorMessage));
+		}
+		TestTrue(TEXT("compile relative level script Blueprint should succeed"), Result.bSuccess);
+	}
+
 	// Test: compile Level Script Blueprint synthetic path still rejects read-only roots
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();

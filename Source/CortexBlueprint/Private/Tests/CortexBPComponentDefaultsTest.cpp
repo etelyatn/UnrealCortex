@@ -291,6 +291,54 @@ bool FCortexBPComponentDefaultsJsonValuesTest::RunTest(const FString& Parameters
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPComponentDefaultsRejectsInvalidScalarJsonTest,
+	"Cortex.Blueprint.SetComponentDefaults.RejectsInvalidScalarJson",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPComponentDefaultsRejectsInvalidScalarJsonTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexBPComponentDefaultsTest;
+
+	FFixture Fixture;
+	if (!ValidateFixture(*this, Fixture))
+	{
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> RelativeLocation = MakeShared<FJsonObject>();
+	RelativeLocation->SetStringField(TEXT("X"), TEXT("not a number"));
+	RelativeLocation->SetNumberField(TEXT("Y"), 0.0);
+	RelativeLocation->SetNumberField(TEXT("Z"), 50.0);
+
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetField(TEXT("bVisible"), MakeShared<FJsonValueString>(TEXT("not a bool")));
+	Properties->SetObjectField(TEXT("RelativeLocation"), RelativeLocation);
+	Properties->SetNumberField(TEXT("Mobility"), 999.0);
+
+	FCortexCommandResult Result = Fixture.SetComponentDefaults(Properties, false, false);
+	TestTrue(TEXT("invalid scalar JSON is reported as partial failure"), Result.bSuccess);
+	TestEqual(TEXT("invalid scalar JSON sets no properties"), GetPropertiesSet(Result), 0);
+
+	bool bPartialFailure = false;
+	TestTrue(TEXT("partial_failure present"), Result.Data.IsValid() && Result.Data->TryGetBoolField(TEXT("partial_failure"), bPartialFailure));
+	TestTrue(TEXT("partial_failure true"), bPartialFailure);
+
+	const FString JoinedErrors = JoinErrorStrings(Result);
+	TestTrue(TEXT("bVisible error is reported"), JoinedErrors.Contains(TEXT("bVisible")));
+	TestTrue(TEXT("RelativeLocation error is reported"), JoinedErrors.Contains(TEXT("RelativeLocation")));
+	TestTrue(TEXT("Mobility error is reported"), JoinedErrors.Contains(TEXT("Mobility")));
+
+	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *Fixture.AssetPath);
+	UStaticMeshComponent* Template = FindStaticMeshTemplate(Blueprint, Fixture.ComponentName);
+	TestNotNull(TEXT("template exists"), Template);
+	TestTrue(TEXT("invalid bool write does not mutate visibility"), Template ? Template->GetVisibleFlag() : false);
+	TestEqual(TEXT("invalid struct write does not mutate location"), Template ? Template->GetRelativeLocation() : FVector::ZeroVector, FVector::ZeroVector);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPComponentDefaultsSingleStaleFingerprintTest,
 	"Cortex.Blueprint.SetComponentDefaults.SingleStaleFingerprint",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter

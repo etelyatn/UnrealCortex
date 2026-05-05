@@ -196,6 +196,7 @@
         "properties",
         "compile",
         "save",
+        "expected_fingerprint",
         "blueprint_path"
       ]
     },
