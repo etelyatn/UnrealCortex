@@ -947,9 +947,17 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 
 	if (Params.IsValid() && Params->HasField(TEXT("expected_fingerprint")))
 	{
+		TSharedPtr<FJsonObject> RequestParams = Params;
+		FString BlueprintPathAlias;
+		if (!Params->HasField(TEXT("asset_path")) && Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPathAlias))
+		{
+			RequestParams = MakeShared<FJsonObject>(*Params);
+			RequestParams->SetStringField(TEXT("asset_path"), BlueprintPathAlias);
+		}
+
 		FCortexBatchMutationRequest Request;
 		FCortexCommandResult ParseError;
-		if (!FCortexBatchMutation::ParseRequest(Params, TEXT("asset_path"), Request, ParseError))
+		if (!FCortexBatchMutation::ParseRequest(RequestParams, TEXT("asset_path"), Request, ParseError))
 		{
 			return ParseError;
 		}

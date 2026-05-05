@@ -227,6 +227,18 @@ class TestFallbackDrift:
             + "\n\nFix: cd MCP && uv run python scripts/sync_fallback.py --from-fixture"
         )
 
+    def test_blueprint_set_class_defaults_exposes_batch_items(self, cache_domains):
+        """The AI-facing fallback must advertise set_class_defaults batch mode."""
+        blueprint_commands = cache_domains["blueprint"]["commands"]
+        cache_command = next(cmd for cmd in blueprint_commands if cmd["name"] == "set_class_defaults")
+        fallback_command = next(cmd for cmd in _FALLBACK_STRUCTURED["blueprint"] if cmd["name"] == "set_class_defaults")
+
+        cache_params = {param["name"] for param in cache_command["params"]}
+        fallback_params = {param["name"] for param in fallback_command["params"]}
+
+        assert "items" in cache_params
+        assert "items" in fallback_params
+
     def test_fallback_domains_subset_of_cache(self, cache_domains):
         """Generated fallback should not contain domains absent from cache."""
         extra = set(_FALLBACK_STRUCTURED) - set(cache_domains)

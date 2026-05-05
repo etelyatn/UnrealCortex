@@ -578,6 +578,14 @@ namespace CortexBPComponentOpsPrivate
 			return true;
 		}
 
+		if (CastField<FArrayProperty>(Property) || CastField<FSetProperty>(Property) || CastField<FMapProperty>(Property))
+		{
+			OutWarnings.Add(FString::Printf(
+				TEXT("%s container properties are not supported by set_component_defaults; use supported indexed object-reference paths instead"),
+				*PropertyPath));
+			return false;
+		}
+
 		if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
 		{
 			const TSharedPtr<FJsonObject>* ObjectValue = nullptr;

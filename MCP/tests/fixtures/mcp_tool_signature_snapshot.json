@@ -197,6 +197,7 @@
         "compile",
         "save",
         "expected_fingerprint",
+        "items",
         "blueprint_path"
       ]
     },

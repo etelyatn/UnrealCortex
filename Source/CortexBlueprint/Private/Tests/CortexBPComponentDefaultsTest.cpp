@@ -339,6 +339,48 @@ bool FCortexBPComponentDefaultsRejectsInvalidScalarJsonTest::RunTest(const FStri
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPComponentDefaultsRejectsGenericContainersTest,
+	"Cortex.Blueprint.SetComponentDefaults.RejectsGenericContainers",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPComponentDefaultsRejectsGenericContainersTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexBPComponentDefaultsTest;
+
+	FFixture Fixture;
+	if (!ValidateFixture(*this, Fixture))
+	{
+		return false;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> Tags;
+	Tags.Add(MakeShared<FJsonValueString>(TEXT("ReviewTag")));
+
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetArrayField(TEXT("ComponentTags"), Tags);
+
+	FCortexCommandResult Result = Fixture.SetComponentDefaults(Properties, false, false);
+	TestTrue(TEXT("generic container JSON is reported as partial failure"), Result.bSuccess);
+	TestEqual(TEXT("generic container JSON sets no properties"), GetPropertiesSet(Result), 0);
+
+	bool bPartialFailure = false;
+	TestTrue(TEXT("partial_failure present"), Result.Data.IsValid() && Result.Data->TryGetBoolField(TEXT("partial_failure"), bPartialFailure));
+	TestTrue(TEXT("partial_failure true"), bPartialFailure);
+
+	const FString JoinedErrors = JoinErrorStrings(Result);
+	TestTrue(TEXT("ComponentTags error is reported"), JoinedErrors.Contains(TEXT("ComponentTags")));
+	TestTrue(TEXT("container rejection is reported"), JoinedErrors.Contains(TEXT("container")));
+
+	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *Fixture.AssetPath);
+	UStaticMeshComponent* Template = FindStaticMeshTemplate(Blueprint, Fixture.ComponentName);
+	TestNotNull(TEXT("template exists"), Template);
+	TestEqual(TEXT("generic container write does not mutate tags"), Template ? Template->ComponentTags.Num() : 1, 0);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPComponentDefaultsSingleStaleFingerprintTest,
 	"Cortex.Blueprint.SetComponentDefaults.SingleStaleFingerprint",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
