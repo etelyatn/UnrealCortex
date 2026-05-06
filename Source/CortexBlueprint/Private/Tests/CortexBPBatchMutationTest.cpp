@@ -5,6 +5,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
+#include "Misc/Guid.h"
 
 namespace
 {
@@ -12,7 +13,10 @@ UBlueprint* CreateBatchMutationBlueprint(const TCHAR* Name)
 {
 	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreatePackage(*FString::Printf(
+			TEXT("/Game/Temp/%s_%s"),
+			Name,
+			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8))),
 		FName(Name),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),

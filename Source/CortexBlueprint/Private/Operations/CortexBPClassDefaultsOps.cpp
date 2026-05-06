@@ -422,6 +422,12 @@ namespace
 
 	static FCortexBatchPreflightResult PreflightBatchSetClassDefaults(const FCortexBatchMutationItem& Item)
 	{
+		FString ValidationError;
+		if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(Item.Target, ValidationError))
+		{
+			return FCortexBatchPreflightResult::Error(CortexErrorCodes::InvalidField, ValidationError);
+		}
+
 		FString LoadError;
 		UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(Item.Target, LoadError);
 		if (!Blueprint)
@@ -939,6 +945,37 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 			CommitBatchSetClassDefaults));
 	}
 
+	if (Params.IsValid() && Params->HasField(TEXT("expected_fingerprint")))
+	{
+		TSharedPtr<FJsonObject> RequestParams = Params;
+		FString BlueprintPathAlias;
+		if (!Params->HasField(TEXT("asset_path")) && Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPathAlias))
+		{
+			RequestParams = MakeShared<FJsonObject>(*Params);
+			RequestParams->SetStringField(TEXT("asset_path"), BlueprintPathAlias);
+		}
+
+		FCortexBatchMutationRequest Request;
+		FCortexCommandResult ParseError;
+		if (!FCortexBatchMutation::ParseRequest(RequestParams, TEXT("asset_path"), Request, ParseError))
+		{
+			return ParseError;
+		}
+
+		const FCortexBatchMutationResult BatchResult = FCortexBatchMutation::Run(
+			Request,
+			PreflightBatchSetClassDefaults,
+			CommitBatchSetClassDefaults);
+		if (BatchResult.PerItem.Num() > 0)
+		{
+			return BatchResult.PerItem[0].Result;
+		}
+
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("No set_class_defaults target was parsed"));
+	}
+
 	if (!Params.IsValid())
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params object"));
@@ -972,6 +1009,12 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 
 	bool bSave = true;
 	Params->TryGetBoolField(TEXT("save"), bSave);
+
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(BlueprintPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+	}
 
 	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(BlueprintPath, LoadError);

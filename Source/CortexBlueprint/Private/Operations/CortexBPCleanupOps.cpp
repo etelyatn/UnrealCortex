@@ -207,6 +207,12 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 			TEXT("Missing required param: asset_path"));
 	}
 
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+	}
+
 	FString LoadError;
 	UBlueprint* BP = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (!BP)
@@ -416,6 +422,12 @@ FCortexCommandResult FCortexBPCleanupOps::RecompileDependents(const TSharedPtr<F
 			TEXT("Missing required param: asset_path"));
 	}
 
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+	}
+
 	FString LoadError;
 	UBlueprint* TargetBlueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (!TargetBlueprint)
@@ -423,12 +435,25 @@ FCortexCommandResult FCortexBPCleanupOps::RecompileDependents(const TSharedPtr<F
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
+	TArray<UBlueprint*> DependentBlueprints;
+	FBlueprintEditorUtils::GetDependentBlueprints(TargetBlueprint, DependentBlueprints);
+
+	for (UBlueprint* DependentBlueprint : DependentBlueprints)
+	{
+		if (!IsValid(DependentBlueprint))
+		{
+			continue;
+		}
+
+		if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(DependentBlueprint->GetPathName(), ValidationError))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+		}
+	}
+
 	FScopedTransaction Transaction(FText::FromString(
 		FString::Printf(TEXT("Cortex: Recompile Dependents of %s"), *TargetBlueprint->GetName())
 	));
-
-	TArray<UBlueprint*> DependentBlueprints;
-	FBlueprintEditorUtils::GetDependentBlueprints(TargetBlueprint, DependentBlueprints);
 
 	TArray<TSharedPtr<FJsonValue>> ResultsArray;
 	ResultsArray.Reserve(DependentBlueprints.Num());
@@ -436,7 +461,7 @@ FCortexCommandResult FCortexBPCleanupOps::RecompileDependents(const TSharedPtr<F
 
 	for (UBlueprint* DependentBlueprint : DependentBlueprints)
 	{
-		if (!DependentBlueprint)
+		if (!IsValid(DependentBlueprint))
 		{
 			continue;
 		}
@@ -488,6 +513,12 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 
 	bool bCompile = true;
 	Params->TryGetBoolField(TEXT("compile"), bCompile);
+
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+	}
 
 	FString LoadError;
 	UBlueprint* BP = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
@@ -588,7 +619,7 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 	FBlueprintEditorUtils::GetDependentBlueprints(BP, DependentBlueprints);
 	for (UBlueprint* DependentBP : DependentBlueprints)
 	{
-		if (!DependentBP || DependentBP == BP)
+		if (!IsValid(DependentBP) || DependentBP == BP)
 		{
 			continue;
 		}
@@ -616,7 +647,20 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 				FString::Printf(
 					TEXT("new_name '%s' would shadow an SCS node on dependent Blueprint %s"),
 					*NewName,
-					*DependentBP->GetPathName()));
+				*DependentBP->GetPathName()));
+		}
+	}
+
+	for (UBlueprint* DependentBP : DependentBlueprints)
+	{
+		if (!IsValid(DependentBP) || DependentBP == BP)
+		{
+			continue;
+		}
+
+		if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(DependentBP->GetPathName(), ValidationError))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
 		}
 	}
 
@@ -662,7 +706,7 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 
 		for (UBlueprint* DependentBP : DependentBlueprints)
 		{
-			if (!DependentBP || DependentBP == BP)
+			if (!IsValid(DependentBP) || DependentBP == BP)
 			{
 				continue;
 			}
@@ -694,7 +738,7 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 
 	for (UBlueprint* DependentBP : DependentBlueprints)
 	{
-		if (!DependentBP || DependentBP == BP)
+		if (!IsValid(DependentBP) || DependentBP == BP)
 		{
 			continue;
 		}
@@ -731,7 +775,7 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 	{
 		for (UBlueprint* DependentBP : DependentBlueprints)
 		{
-			if (!DependentBP || DependentBP == BP)
+			if (!IsValid(DependentBP) || DependentBP == BP)
 			{
 				continue;
 			}
@@ -759,6 +803,12 @@ FCortexCommandResult FCortexBPCleanupOps::RemoveSCSComponent(const TSharedPtr<FJ
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
 			TEXT("Missing required params: asset_path, component_name"));
+	}
+
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
 	}
 
 	FString LoadError;

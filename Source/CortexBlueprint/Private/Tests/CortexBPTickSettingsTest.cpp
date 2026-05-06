@@ -5,6 +5,18 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Misc/Guid.h"
+
+namespace
+{
+	UPackage* CreateWritableTickSettingsTestPackage(const TCHAR* Name)
+	{
+		return CreatePackage(*FString::Printf(
+			TEXT("/Game/Temp/%s_%s"),
+			Name,
+			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8)));
+	}
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPSetTickSettingsBasicTest,
@@ -15,7 +27,7 @@ bool FCortexBPSetTickSettingsBasicTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableTickSettingsTestPackage(TEXT("BP_SetTickBasicTest")),
 		FName(TEXT("BP_SetTickBasicTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -74,7 +86,7 @@ bool FCortexBPSetTickSettingsNonActorTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		UActorComponent::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableTickSettingsTestPackage(TEXT("BP_SetTickNonActorTest")),
 		FName(TEXT("BP_SetTickNonActorTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -103,7 +115,7 @@ bool FCortexBPSetTickSettingsPartialTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableTickSettingsTestPackage(TEXT("BP_SetTickPartialTest")),
 		FName(TEXT("BP_SetTickPartialTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -144,7 +156,7 @@ bool FCortexBPSetTickSettingsDisableTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableTickSettingsTestPackage(TEXT("BP_SetTickDisableTest")),
 		FName(TEXT("BP_SetTickDisableTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),

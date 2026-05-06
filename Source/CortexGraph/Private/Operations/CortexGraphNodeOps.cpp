@@ -1,6 +1,7 @@
 #include "Operations/CortexGraphNodeOps.h"
 #include "CortexGraphModule.h"
 #include "CortexSerializer.h"
+#include "CortexEditorUtils.h"
 #include "CortexGraphLayoutOps.h"
 #include "CortexBatchScope.h"
 #include "Engine/Blueprint.h"
@@ -42,13 +43,58 @@
 #include "Engine/World.h"
 #include "Engine/LevelScriptBlueprint.h"
 
+namespace
+{
+FString NormalizeGraphBlueprintAssetPath(const FString& AssetPath)
+{
+	return FCortexEditorUtils::NormalizeMountedContentPath(AssetPath);
+}
+
+FString GetGraphNodeWritableValidationPath(const FString& AssetPath)
+{
+	static const FString LevelBPPrefix = TEXT("__level_bp__:");
+	const FString BlueprintPath = AssetPath.StartsWith(LevelBPPrefix)
+		? AssetPath.Mid(LevelBPPrefix.Len())
+		: AssetPath;
+	return FPackageName::ObjectPathToPackageName(NormalizeGraphBlueprintAssetPath(BlueprintPath));
+}
+
+bool DoesGraphBlueprintPackageExist(const FString& PackagePath)
+{
+	if (FindPackage(nullptr, *PackagePath) != nullptr)
+	{
+		return true;
+	}
+
+	FString PackageFilename;
+	return FPackageName::TryConvertLongPackageNameToFilename(
+			PackagePath,
+			PackageFilename,
+			FPackageName::GetAssetPackageExtension())
+		&& FPackageName::DoesPackageExist(PackagePath);
+}
+
+bool ValidateWritableGraphNodeBlueprintAssetPath(const FString& AssetPath, FCortexCommandResult& OutError)
+{
+	FString ValidationError;
+	if (!FCortexEditorUtils::IsWritableMountedContentPath(GetGraphNodeWritableValidationPath(AssetPath), ValidationError))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+		return false;
+	}
+
+	return true;
+}
+}
+
 UBlueprint* FCortexGraphNodeOps::LoadBlueprint(const FString& AssetPath, FCortexCommandResult& OutError)
 {
 	// Level Script Blueprint: synthetic path __level_bp__:/Game/Maps/MapName
 	static const FString LevelBPPrefix = TEXT("__level_bp__:");
 	if (AssetPath.StartsWith(LevelBPPrefix))
 	{
-		const FString MapPath = AssetPath.Mid(LevelBPPrefix.Len());
+		const FString MapPath = FPackageName::ObjectPathToPackageName(
+			NormalizeGraphBlueprintAssetPath(AssetPath.Mid(LevelBPPrefix.Len())));
 
 		UWorld* World = nullptr;
 		if (GEditor)
@@ -96,23 +142,25 @@ UBlueprint* FCortexGraphNodeOps::LoadBlueprint(const FString& AssetPath, FCortex
 		return LSB;
 	}
 
+	const FString NormalizedPath = NormalizeGraphBlueprintAssetPath(AssetPath);
+
 	// Check if package exists before LoadObject to avoid SkipPackage warnings
-	FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
-	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+	const FString PkgName = FPackageName::ObjectPathToPackageName(NormalizedPath);
+	if (!DoesGraphBlueprintPackageExist(PkgName))
 	{
 		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::AssetNotFound,
-			FString::Printf(TEXT("Blueprint not found: %s"), *AssetPath)
+			FString::Printf(TEXT("Blueprint not found: %s"), *NormalizedPath)
 		);
 		return nullptr;
 	}
 
-	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
+	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *NormalizedPath);
 	if (Blueprint == nullptr)
 	{
 		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::AssetNotFound,
-			FString::Printf(TEXT("Blueprint not found: %s"), *AssetPath)
+			FString::Printf(TEXT("Blueprint not found: %s"), *NormalizedPath)
 		);
 	}
 	return Blueprint;
@@ -672,6 +720,11 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	}
 
 	FCortexCommandResult LoadError;
+	if (!ValidateWritableGraphNodeBlueprintAssetPath(AssetPath, LoadError))
+	{
+		return LoadError;
+	}
+
 	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
 	{
@@ -1272,6 +1325,11 @@ FCortexCommandResult FCortexGraphNodeOps::RemoveNode(const TSharedPtr<FJsonObjec
 	}
 
 	FCortexCommandResult LoadError;
+	if (!ValidateWritableGraphNodeBlueprintAssetPath(AssetPath, LoadError))
+	{
+		return LoadError;
+	}
+
 	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
 	{
@@ -1360,6 +1418,11 @@ FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObje
 	}
 
 	FCortexCommandResult LoadError;
+	if (!ValidateWritableGraphNodeBlueprintAssetPath(AssetPath, LoadError))
+	{
+		return LoadError;
+	}
+
 	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
 	{
@@ -1471,6 +1534,11 @@ FCortexCommandResult FCortexGraphNodeOps::AutoLayout(const TSharedPtr<FJsonObjec
 	}
 
 	FCortexCommandResult LoadError;
+	if (!ValidateWritableGraphNodeBlueprintAssetPath(AssetPath, LoadError))
+	{
+		return LoadError;
+	}
+
 	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
 	if (!Blueprint) return LoadError;
 

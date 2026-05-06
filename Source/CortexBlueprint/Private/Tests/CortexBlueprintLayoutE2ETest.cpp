@@ -7,6 +7,7 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Engine/Blueprint.h"
 #include "GameFramework/Actor.h"
+#include "Misc/Guid.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBlueprintLayoutE2ETest,
@@ -16,7 +17,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexBlueprintLayoutE2ETest::RunTest(const FString& Parameters)
 {
-	UPackage* TestPackage = NewObject<UPackage>(nullptr, TEXT("/Temp/CortexGraphLayoutE2E"), RF_Transient);
+	UPackage* TestPackage = CreatePackage(*FString::Printf(
+		TEXT("/Game/Temp/CortexGraphLayoutE2E_%s"),
+		*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8)));
 	TestPackage->SetPackageFlags(PKG_PlayInEditor);
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(), TestPackage, TEXT("BP_LayoutE2E"),

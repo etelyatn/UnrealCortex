@@ -2,6 +2,7 @@
 
 import json
 import logging
+from typing import Any
 from cortex_mcp.tcp_client import UEConnection
 from cortex_mcp.response import format_response
 
@@ -169,23 +170,37 @@ def register_blueprint_structure_tools(mcp, connection: UEConnection):
     def set_component_defaults(
         asset_path: str = "",
         component_name: str = "",
-        properties: dict[str, str] | None = None,
-        items: list[dict] | None = None,
+        properties: dict[str, Any] | None = None,
+        compile: bool = True,
+        save: bool = False,
+        expected_fingerprint: dict[str, Any] | None = None,
+        items: list[dict[str, Any]] | None = None,
     ) -> str:
-        """Set object-reference defaults on a Blueprint component template.
+        """Set JSON-valued defaults on an owned Blueprint component template.
 
         Args:
-            asset_path: Full path to the Blueprint
-            component_name: Component name in the Blueprint Components panel
-            properties: Map of property name to asset object path
+            asset_path: Full path to the Blueprint. Relative paths default to /Game in C++.
+            component_name: Owned SCS component name in the Blueprint Components panel.
+            properties: Map of property name to JSON value. Examples:
+                {"StaticMesh": "/Engine/BasicShapes/Cube.Cube"}
+                {"OverrideMaterials[0]": "/Engine/EngineMaterials/DefaultMaterial.DefaultMaterial"}
+                {"RelativeLocation": {"X": 100, "Y": 0, "Z": 50}}
+                {"bVisible": False}
+            compile: Compile the Blueprint after successful property writes. Default True.
+            save: Save the Blueprint package after successful writes. Default False.
+            expected_fingerprint: Optional stale-write guard for single-target mode.
             items: Optional batch item list. Each item must include target,
-                component_name, and properties, and may include expected_fingerprint.
+                component_name, and properties, and may include compile, save,
+                and expected_fingerprint.
 
         Returns:
             JSON with:
             - component_name: Target component
             - properties_set: Number of properties successfully applied
-            - errors: Optional list of per-property failures
+            - partial_failure: True when one or more properties failed
+            - errors: Per-property failures; inspect these even when command succeeds
+            - compiled: True when compile was requested and succeeded
+            - saved: True when save was requested and succeeded
         """
         try:
             if items is not None:
@@ -203,7 +218,11 @@ def register_blueprint_structure_tools(mcp, connection: UEConnection):
                     "asset_path": asset_path,
                     "component_name": component_name,
                     "properties": properties,
+                    "compile": compile,
+                    "save": save,
                 }
+                if expected_fingerprint is not None:
+                    params["expected_fingerprint"] = expected_fingerprint
             response = connection.send_command("blueprint.set_component_defaults", params)
             return format_response(response.get("data", {}), "set_component_defaults")
         except ConnectionError as e:

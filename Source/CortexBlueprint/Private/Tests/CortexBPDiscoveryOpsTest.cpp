@@ -10,9 +10,51 @@
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Misc/Guid.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+#include "UObject/GarbageCollection.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectIterator.h"
 
 namespace
 {
+	bool IsDiscoveryPackageUnderRoot(const FString& PackageName, const FString& Root)
+	{
+		return PackageName == Root || PackageName.StartsWith(Root + TEXT("/"));
+	}
+
+	struct FScopedDiscoveryReadOnlyMountedRoot
+	{
+		FString Root;
+		FString PhysicalDir;
+
+		FScopedDiscoveryReadOnlyMountedRoot()
+		{
+			Root = FString::Printf(
+				TEXT("/CortexReadOnlyDiscovery%s"),
+				*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8));
+			PhysicalDir = FPaths::ProjectSavedDir() / TEXT("CortexReadOnlyBlueprintTests") / Root.RightChop(1);
+			IFileManager::Get().MakeDirectory(*PhysicalDir, true);
+			FPackageName::RegisterMountPoint(Root + TEXT("/"), PhysicalDir / TEXT(""));
+		}
+
+		~FScopedDiscoveryReadOnlyMountedRoot()
+		{
+			for (TObjectIterator<UPackage> It; It; ++It)
+			{
+				UPackage* Package = *It;
+				if (Package && IsDiscoveryPackageUnderRoot(Package->GetName(), Root))
+				{
+					Package->MarkAsGarbage();
+				}
+			}
+			CollectGarbage(RF_NoFlags);
+			FPackageName::UnRegisterMountPoint(Root + TEXT("/"), PhysicalDir / TEXT(""));
+			IFileManager::Get().DeleteDirectory(*PhysicalDir, false, true);
+		}
+	};
+
 	UBlueprint* CreateDiscoveryBlueprint(const TCHAR* Name)
 	{
 		return FKismetEditorUtilities::CreateBlueprint(
@@ -89,6 +131,7 @@ bool FCortexBPListSCSComponentsTest::RunTest(const FString& Parameters)
 	TestNotNull(
 		TEXT("Discovery component added"),
 		AddDiscoveryComponent(BP, UCortexBPTestSubobjComponent::StaticClass(), TEXT("ExtraComp")));
+	BP->Status = BS_Dirty;
 
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("asset_path"), BP->GetPathName());
@@ -114,6 +157,54 @@ bool FCortexBPListSCSComponentsTest::RunTest(const FString& Parameters)
 				TEXT("reference_form uses generated variable path"),
 				ReferenceForm.Contains(TEXT("ExtraComp_GEN_VARIABLE")));
 		}
+	}
+
+	TestEqual(TEXT("list_scs_components does not compile"), BP->Status, EBlueprintStatus::BS_Dirty);
+
+	BP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPListSCSComponentsReadOnlyNoCompileTest,
+	"Cortex.Blueprint.Discovery.ListSCSComponents.ReadOnlyNoCompile",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPListSCSComponentsReadOnlyNoCompileTest::RunTest(const FString& Parameters)
+{
+	FScopedDiscoveryReadOnlyMountedRoot ReadOnlyRoot;
+
+	UBlueprint* BP = FKismetEditorUtilities::CreateBlueprint(
+		ACortexBPTestLiftActor::StaticClass(),
+		CreatePackage(*(ReadOnlyRoot.Root / TEXT("BP_DiscoveryReadOnlyListSCS"))),
+		FName(TEXT("BP_DiscoveryReadOnlyListSCS")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Read-only mounted Blueprint created"), BP);
+	if (!BP)
+	{
+		return false;
+	}
+
+	TestNotNull(
+		TEXT("Discovery component added"),
+		AddDiscoveryComponent(BP, UCortexBPTestSubobjComponent::StaticClass(), TEXT("ReadOnlyComp")));
+	BP->Status = BS_Dirty;
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), BP->GetPathName());
+	const FCortexCommandResult Result = FCortexBPComponentOps::ListSCSComponents(Params);
+
+	TestTrue(TEXT("list_scs_components reads non-writable mounted Blueprint"), Result.bSuccess);
+	TestEqual(TEXT("Read-only Blueprint was not compiled"), BP->Status, EBlueprintStatus::BS_Dirty);
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Components = nullptr;
+		TestTrue(TEXT("components array exists"), Result.Data->TryGetArrayField(TEXT("components"), Components));
+		TestNotNull(
+			TEXT("ReadOnlyComp is returned"),
+			FindObjectInArrayByStringField(Components, TEXT("name"), TEXT("ReadOnlyComp")));
 	}
 
 	BP->MarkAsGarbage();

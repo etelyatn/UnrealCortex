@@ -130,6 +130,12 @@ FCortexCommandResult FCortexBPTimelineOps::ConfigureTimeline(const TSharedPtr<FJ
 		);
 	}
 
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+	}
+
 	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)

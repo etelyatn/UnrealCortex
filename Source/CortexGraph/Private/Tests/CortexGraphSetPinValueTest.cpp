@@ -16,7 +16,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexGraphSetPinValueTest::RunTest(const FString& Parameters)
 {
 	// Setup: Create a transient Blueprint for testing
-	UPackage* TestPackage = NewObject<UPackage>(nullptr, TEXT("/Temp/CortexGraphSetPinValueTest"), RF_Transient);
+	UPackage* TestPackage = CreatePackage(TEXT("/Game/Temp/CortexGraphSetPinValueTest"));
 	TestPackage->SetPackageFlags(PKG_PlayInEditor);
 
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(

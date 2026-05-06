@@ -18,7 +18,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexGraphAddNodeTest::RunTest(const FString& Parameters)
 {
 	// Setup: Create a transient Blueprint for testing
-	UPackage* TestPackage = NewObject<UPackage>(nullptr, TEXT("/Temp/CortexGraphAddNodeTest"), RF_Transient);
+	UPackage* TestPackage = CreatePackage(TEXT("/Game/Temp/CortexGraphAddNodeTest"));
 	TestPackage->SetPackageFlags(PKG_PlayInEditor);
 
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(

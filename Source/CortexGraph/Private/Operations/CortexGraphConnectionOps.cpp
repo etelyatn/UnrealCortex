@@ -1,5 +1,6 @@
 #include "Operations/CortexGraphConnectionOps.h"
 #include "Operations/CortexGraphNodeOps.h"
+#include "CortexEditorUtils.h"
 #include "CortexGraphModule.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
@@ -9,7 +10,33 @@
 #include "K2Node_Composite.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Dom/JsonObject.h"
+#include "Misc/PackageName.h"
 #include "ScopedTransaction.h"
+
+namespace
+{
+FString GetGraphConnectionWritableValidationPath(const FString& AssetPath)
+{
+	static const FString LevelBPPrefix = TEXT("__level_bp__:");
+	const FString BlueprintPath = AssetPath.StartsWith(LevelBPPrefix)
+		? AssetPath.Mid(LevelBPPrefix.Len())
+		: AssetPath;
+	const FString NormalizedPath = FCortexEditorUtils::NormalizeMountedContentPath(BlueprintPath);
+	return FPackageName::ObjectPathToPackageName(NormalizedPath);
+}
+
+bool ValidateWritableGraphConnectionBlueprintAssetPath(const FString& AssetPath, FCortexCommandResult& OutError)
+{
+	FString ValidationError;
+	if (!FCortexEditorUtils::IsWritableMountedContentPath(GetGraphConnectionWritableValidationPath(AssetPath), ValidationError))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+		return false;
+	}
+
+	return true;
+}
+}
 
 FCortexCommandResult FCortexGraphConnectionOps::Connect(const TSharedPtr<FJsonObject>& Params)
 {
@@ -53,6 +80,11 @@ FCortexCommandResult FCortexGraphConnectionOps::Connect(const TSharedPtr<FJsonOb
 
 	// Load blueprint using helper
 	FCortexCommandResult LoadError;
+	if (!ValidateWritableGraphConnectionBlueprintAssetPath(AssetPath, LoadError))
+	{
+		return LoadError;
+	}
+
 	UBlueprint* Blueprint = FCortexGraphNodeOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
 	{
@@ -177,6 +209,11 @@ FCortexCommandResult FCortexGraphConnectionOps::Disconnect(const TSharedPtr<FJso
 
 	// Load blueprint using helper
 	FCortexCommandResult LoadError;
+	if (!ValidateWritableGraphConnectionBlueprintAssetPath(AssetPath, LoadError))
+	{
+		return LoadError;
+	}
+
 	UBlueprint* Blueprint = FCortexGraphNodeOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
 	{

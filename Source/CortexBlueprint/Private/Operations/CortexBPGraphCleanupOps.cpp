@@ -130,6 +130,12 @@ FCortexCommandResult FCortexBPGraphCleanupOps::DeleteOrphanedNodes(const TShared
 			TEXT("Missing required params: asset_path, graph_name"));
 	}
 
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+	}
+
 	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (!Blueprint)

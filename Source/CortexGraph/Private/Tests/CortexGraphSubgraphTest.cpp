@@ -19,9 +19,12 @@ namespace CortexSubgraphTestUtils
 	/** Create a transient Blueprint and return it + its EventGraph. */
 	inline UBlueprint* CreateTestBP(const TCHAR* Name, UEdGraph*& OutEventGraph)
 	{
+		const FString PackagePath = FString::Printf(TEXT("/Game/Temp/%s"), Name);
+		UPackage* Package = CreatePackage(*PackagePath);
+		Package->SetPackageFlags(PKG_PlayInEditor);
 		UBlueprint* BP = FKismetEditorUtilities::CreateBlueprint(
 			AActor::StaticClass(),
-			GetTransientPackage(),
+			Package,
 			FName(Name),
 			BPTYPE_Normal,
 			UBlueprint::StaticClass(),

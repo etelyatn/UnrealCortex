@@ -277,12 +277,14 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("length"), TEXT("number"), TEXT("Timeline length in seconds"))
 		.Optional(TEXT("loop"), TEXT("boolean"), TEXT("Loop the timeline"))
 		.Optional(TEXT("tracks"), TEXT("array"), TEXT("Track and keyframe definitions")));
-	Commands.Add(FCortexCommandInfo{TEXT("set_component_defaults"), TEXT("Set object-reference properties on a Blueprint component template")}
-		.OptionalBatchItems(TEXT("Batch items with target, component_name, properties, expected_fingerprint"))
+	Commands.Add(FCortexCommandInfo{TEXT("set_component_defaults"), TEXT("Set JSON-valued properties on an owned Blueprint SCS component template")}
+		.OptionalBatchItems(TEXT("Batch items with target, component_name, properties, compile, save, expected_fingerprint"))
 		.OptionalExpectedFingerprint()
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
-		.Required(TEXT("component_name"), TEXT("string"), TEXT("Component template name"))
-		.Required(TEXT("properties"), TEXT("object"), TEXT("Properties to apply")));
+		.Required(TEXT("component_name"), TEXT("string"), TEXT("Owned SCS component template name from this Blueprint"))
+		.Required(TEXT("properties"), TEXT("object"), TEXT("JSON property values. Supports StaticMesh object paths, OverrideMaterials[N], bools, numbers, enums, and structs such as RelativeLocation"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after applying successful property writes, default true"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save after successful writes only when there are no partial failures, default false")));
 	Commands.Add(FCortexCommandInfo{TEXT("list_scs_components"), TEXT("List Blueprint SCS components in writer-ready reference form")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path")));
 	Commands.Add(FCortexCommandInfo{TEXT("add_scs_component"), TEXT("Add an SCS component to a Blueprint")}

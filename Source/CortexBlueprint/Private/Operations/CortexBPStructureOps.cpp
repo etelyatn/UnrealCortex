@@ -37,6 +37,12 @@ FCortexCommandResult FCortexBPStructureOps::AddVariable(const TSharedPtr<FJsonOb
 		);
 	}
 
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+	}
+
 	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
@@ -172,6 +178,12 @@ FCortexCommandResult FCortexBPStructureOps::RemoveVariable(const TSharedPtr<FJso
 		);
 	}
 
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+	}
+
 	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
@@ -227,6 +239,12 @@ FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonOb
 			CortexErrorCodes::InvalidField,
 			TEXT("Missing required params: asset_path, name")
 		);
+	}
+
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
 	}
 
 	FString LoadError;
@@ -298,11 +316,11 @@ FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonOb
 		return true;
 	};
 
-	FString ValidationError;
-	if (!ParsePinArray(InputsArray, InputSpecs, ValidationError) ||
-		!ParsePinArray(OutputsArray, OutputSpecs, ValidationError))
+	FString PinValidationError;
+	if (!ParsePinArray(InputsArray, InputSpecs, PinValidationError) ||
+		!ParsePinArray(OutputsArray, OutputSpecs, PinValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, ValidationError);
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, PinValidationError);
 	}
 
 	FScopedTransaction Transaction(FText::FromString(
@@ -524,6 +542,12 @@ FCortexCommandResult FCortexBPStructureOps::RemoveGraph(const TSharedPtr<FJsonOb
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
 			TEXT("Missing required params: asset_path, name"));
+	}
+
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
 	}
 
 	FString LoadError;

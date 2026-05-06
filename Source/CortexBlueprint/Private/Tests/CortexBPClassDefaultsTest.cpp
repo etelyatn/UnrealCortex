@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/Guid.h"
 #include "Engine/Blueprint.h"
+#include "GameFramework/Actor.h"
 #include "CortexBPCommandHandler.h"
 #include "CortexTypes.h"
 
@@ -387,6 +388,90 @@ bool FCortexBPSetClassDefaultsSuccessTest::RunTest(const FString& Parameters)
 
 	const FCortexCommandResult GetResult = Handler.Execute(TEXT("get_class_defaults"), GetParams);
 	TestTrue(TEXT("Get after set should succeed"), GetResult.bSuccess);
+
+	CleanupTestBlueprint(AssetPath);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPSetClassDefaultsSingleStaleFingerprintTest,
+	"Cortex.Blueprint.ClassDefaults.Set.SingleStaleFingerprint",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPSetClassDefaultsSingleStaleFingerprintTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	FCortexBPCommandHandler Handler;
+	const FString AssetPath = CreateTestBlueprint(Handler, Suffix);
+	TestFalse(TEXT("Test Blueprint should be created"), AssetPath.IsEmpty());
+	if (AssetPath.IsEmpty())
+	{
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), AssetPath);
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetBoolField(TEXT("bReplicates"), true);
+	Params->SetObjectField(TEXT("properties"), Properties);
+	Params->SetObjectField(TEXT("expected_fingerprint"), MakeShared<FJsonObject>());
+	Params->SetBoolField(TEXT("compile"), false);
+	Params->SetBoolField(TEXT("save"), false);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("set_class_defaults"), Params);
+	TestFalse(TEXT("single stale fingerprint rejects class defaults write"), Result.bSuccess);
+	TestEqual(TEXT("single stale fingerprint error code"),
+		Result.ErrorCode, CortexErrorCodes::StalePrecondition);
+
+	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
+	AActor* CDO = Blueprint && Blueprint->GeneratedClass
+		? Cast<AActor>(Blueprint->GeneratedClass->GetDefaultObject())
+		: nullptr;
+	TestNotNull(TEXT("Actor CDO exists"), CDO);
+	TestFalse(TEXT("stale class-default write does not mutate CDO"), CDO ? CDO->GetIsReplicated() : true);
+
+	CleanupTestBlueprint(AssetPath);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPSetClassDefaultsSingleStaleFingerprintBlueprintPathAliasTest,
+	"Cortex.Blueprint.ClassDefaults.Set.SingleStaleFingerprintBlueprintPathAlias",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPSetClassDefaultsSingleStaleFingerprintBlueprintPathAliasTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	FCortexBPCommandHandler Handler;
+	const FString AssetPath = CreateTestBlueprint(Handler, Suffix);
+	TestFalse(TEXT("Test Blueprint should be created"), AssetPath.IsEmpty());
+	if (AssetPath.IsEmpty())
+	{
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("blueprint_path"), AssetPath);
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetBoolField(TEXT("bReplicates"), true);
+	Params->SetObjectField(TEXT("properties"), Properties);
+	Params->SetObjectField(TEXT("expected_fingerprint"), MakeShared<FJsonObject>());
+	Params->SetBoolField(TEXT("compile"), false);
+	Params->SetBoolField(TEXT("save"), false);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("set_class_defaults"), Params);
+	TestFalse(TEXT("blueprint_path alias stale guard rejects class defaults write"), Result.bSuccess);
+	TestEqual(TEXT("blueprint_path alias stale guard error code"),
+		Result.ErrorCode, CortexErrorCodes::StalePrecondition);
+
+	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
+	AActor* CDO = Blueprint && Blueprint->GeneratedClass
+		? Cast<AActor>(Blueprint->GeneratedClass->GetDefaultObject())
+		: nullptr;
+	TestNotNull(TEXT("Actor CDO exists"), CDO);
+	TestFalse(TEXT("stale alias class-default write does not mutate CDO"), CDO ? CDO->GetIsReplicated() : true);
 
 	CleanupTestBlueprint(AssetPath);
 	return true;

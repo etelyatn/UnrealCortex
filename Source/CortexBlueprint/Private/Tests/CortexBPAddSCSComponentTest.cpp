@@ -11,6 +11,18 @@
 #include "Engine/SimpleConstructionScript.h"
 #include "GameFramework/Actor.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Misc/Guid.h"
+
+namespace
+{
+	UPackage* CreateWritableAddSCSTestPackage(const TCHAR* Name)
+	{
+		return CreatePackage(*FString::Printf(
+			TEXT("/Game/Temp/%s_%s"),
+			Name,
+			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8)));
+	}
+}
 
 // ============================================================================
 // AddSCSComponent Tests
@@ -25,7 +37,7 @@ bool FCortexBPAddSCSComponentBasicTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableAddSCSTestPackage(TEXT("BP_AddSCSBasicTest")),
 		FName(TEXT("BP_AddSCSBasicTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -111,7 +123,7 @@ bool FCortexBPAddSCSComponentAsChildTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableAddSCSTestPackage(TEXT("BP_AddSCSAsChildTest")),
 		FName(TEXT("BP_AddSCSAsChildTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -167,7 +179,7 @@ bool FCortexBPAddSCSComponentAutoNameTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableAddSCSTestPackage(TEXT("BP_AddSCSAutoNameTest")),
 		FName(TEXT("BP_AddSCSAutoNameTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -216,7 +228,7 @@ bool FCortexBPAddSCSComponentInvalidClassTest::RunTest(const FString& Parameters
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableAddSCSTestPackage(TEXT("BP_AddSCSInvalidClassTest")),
 		FName(TEXT("BP_AddSCSInvalidClassTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -248,7 +260,7 @@ bool FCortexBPAddSCSComponentNoSCSTest::RunTest(const FString& Parameters)
 	// UActorComponent parent produces a Blueprint with no SimpleConstructionScript
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		UActorComponent::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableAddSCSTestPackage(TEXT("BP_AddSCSNoSCSTest")),
 		FName(TEXT("BP_AddSCSNoSCSTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -281,7 +293,7 @@ bool FCortexBPAddSCSComponentParentNotFoundTest::RunTest(const FString& Paramete
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableAddSCSTestPackage(TEXT("BP_AddSCSParentNotFoundTest")),
 		FName(TEXT("BP_AddSCSParentNotFoundTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -313,7 +325,7 @@ bool FCortexBPAddSCSComponentNonSceneWithParentTest::RunTest(const FString& Para
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableAddSCSTestPackage(TEXT("BP_AddSCSNonSceneParentTest")),
 		FName(TEXT("BP_AddSCSNonSceneParentTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),

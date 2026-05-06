@@ -6,6 +6,7 @@
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Misc/Guid.h"
 
 namespace
 {
@@ -13,7 +14,10 @@ namespace
 	{
 		return FKismetEditorUtilities::CreateBlueprint(
 			ParentClass ? ParentClass : ACortexBPTestLiftActor::StaticClass(),
-			GetTransientPackage(),
+			CreatePackage(*FString::Printf(
+				TEXT("/Game/Temp/%s_%s"),
+				Name,
+				*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8))),
 			FName(Name),
 			BPTYPE_Normal,
 			UBlueprint::StaticClass(),

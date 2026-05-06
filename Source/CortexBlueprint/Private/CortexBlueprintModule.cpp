@@ -1,6 +1,7 @@
 #include "CortexBlueprintModule.h"
 #include "CortexBPToolbarExtension.h"
 #include "CortexCoreModule.h"
+#include "CortexEditorUtils.h"
 #include "Operations/CortexBPSerializationOps.h"
 #include "ICortexCommandRegistry.h"
 #include "CortexBPCommandHandler.h"
@@ -114,7 +115,18 @@ void FCortexBlueprintModule::OnAssetChanged(const FAssetData& AssetData)
 		return;
 	}
 
-	if (!AssetData.PackageName.ToString().StartsWith(TEXT("/Game/")))
+	const FString PackageName = AssetData.PackageName.ToString();
+	bool bWritablePackage = false;
+	for (const FString& Root : FCortexEditorUtils::GetWritableMountedContentRoots())
+	{
+		if (PackageName == Root || PackageName.StartsWith(Root + TEXT("/")))
+		{
+			bWritablePackage = true;
+			break;
+		}
+	}
+
+	if (!bWritablePackage)
 	{
 		return;
 	}
@@ -149,7 +161,10 @@ void FCortexBlueprintModule::WriteBlueprintCache()
 
 	FARFilter Filter;
 	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
-	Filter.PackagePaths.Add(FName(TEXT("/Game")));
+	for (const FString& Root : FCortexEditorUtils::GetWritableMountedContentRoots())
+	{
+		Filter.PackagePaths.Add(FName(*Root));
+	}
 	Filter.bRecursivePaths = true;
 	Filter.bRecursiveClasses = true;
 

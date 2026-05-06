@@ -12,6 +12,18 @@
 #include "GameFramework/Actor.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/KismetStringLibrary.h"
+#include "Misc/Guid.h"
+
+namespace
+{
+	UPackage* CreateWritableGraphCleanupTestPackage(const TCHAR* Name)
+	{
+		return CreatePackage(*FString::Printf(
+			TEXT("/Game/Temp/%s_%s"),
+			Name,
+			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8)));
+	}
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPDeleteOrphanedNodesTest,
@@ -23,7 +35,7 @@ bool FCortexBPDeleteOrphanedNodesTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* BP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableGraphCleanupTestPackage(TEXT("BP_OrphanTest")),
 		FName(TEXT("BP_OrphanTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -102,7 +114,7 @@ bool FCortexBPDeleteOrphanedNodesConnectedTest::RunTest(const FString& Parameter
 {
 	UBlueprint* BP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableGraphCleanupTestPackage(TEXT("BP_OrphanConnectedTest")),
 		FName(TEXT("BP_OrphanConnectedTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -163,7 +175,7 @@ bool FCortexBPDeleteOrphanedNodesPreservesDataDepsTest::RunTest(const FString& P
 {
 	UBlueprint* BP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableGraphCleanupTestPackage(TEXT("BP_OrphanDataDepsTest")),
 		FName(TEXT("BP_OrphanDataDepsTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -295,7 +307,7 @@ bool FCortexBPDeleteOrphanedNodesRejectsFunctionGraphTest::RunTest(const FString
 {
 	UBlueprint* BP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableGraphCleanupTestPackage(TEXT("BP_OrphanRejectFunctionGraphTest")),
 		FName(TEXT("BP_OrphanRejectFunctionGraphTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),

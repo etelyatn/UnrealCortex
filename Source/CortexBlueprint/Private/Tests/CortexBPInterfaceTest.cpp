@@ -5,6 +5,18 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Misc/Guid.h"
+
+namespace
+{
+	UPackage* CreateWritableInterfaceTestPackage(const TCHAR* Name)
+	{
+		return CreatePackage(*FString::Printf(
+			TEXT("/Game/Temp/%s_%s"),
+			Name,
+			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8)));
+	}
+}
 
 // ============================================================================
 // AddInterface Tests
@@ -19,7 +31,7 @@ bool FCortexBPAddInterfaceBasicTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableInterfaceTestPackage(TEXT("BP_AddInterfaceBasicTest")),
 		FName(TEXT("BP_AddInterfaceBasicTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -67,7 +79,7 @@ bool FCortexBPAddInterfaceDuplicateTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableInterfaceTestPackage(TEXT("BP_AddInterfaceDupTest")),
 		FName(TEXT("BP_AddInterfaceDupTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -100,7 +112,7 @@ bool FCortexBPAddInterfaceInvalidClassTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableInterfaceTestPackage(TEXT("BP_AddInterfaceInvalidTest")),
 		FName(TEXT("BP_AddInterfaceInvalidTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -130,7 +142,7 @@ bool FCortexBPAddInterfaceNotInterfaceTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableInterfaceTestPackage(TEXT("BP_AddInterfaceNotIfaceTest")),
 		FName(TEXT("BP_AddInterfaceNotIfaceTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -164,7 +176,7 @@ bool FCortexBPRemoveInterfaceBasicTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableInterfaceTestPackage(TEXT("BP_RemoveInterfaceBasicTest")),
 		FName(TEXT("BP_RemoveInterfaceBasicTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -216,7 +228,7 @@ bool FCortexBPRemoveInterfaceNotImplementedTest::RunTest(const FString& Paramete
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableInterfaceTestPackage(TEXT("BP_RemoveInterfaceNotImplTest")),
 		FName(TEXT("BP_RemoveInterfaceNotImplTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),

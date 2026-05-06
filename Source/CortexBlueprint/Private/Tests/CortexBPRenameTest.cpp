@@ -5,8 +5,24 @@
 #include "Dom/JsonObject.h"
 #include "Engine/Blueprint.h"
 #include "Engine/Engine.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "HAL/PlatformProcess.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
+
+namespace
+{
+	void FlushRenameTestAssetRegistryEvents()
+	{
+		IAssetRegistry& AssetRegistry =
+			FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+		for (int32 Index = 0; Index < 5; ++Index)
+		{
+			FPlatformProcess::Sleep(0.1f);
+			AssetRegistry.Tick(0.0f);
+		}
+	}
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPRenameBasicTest,
@@ -20,6 +36,7 @@ bool FCortexBPRenameBasicTest::RunTest(const FString& Parameters)
 	{
 		GEngine->Exec(nullptr, TEXT("log LogAssetRegistry Error"));
 	}
+	AddExpectedError(TEXT("package was marked as deleted in editor"), EAutomationExpectedErrorFlags::Contains, 1);
 
 	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
 	const FString FolderPath = FString::Printf(TEXT("/Game/Temp/BPRenameFlow_%s"), *Suffix);
@@ -66,6 +83,7 @@ bool FCortexBPRenameBasicTest::RunTest(const FString& Parameters)
 	FixupParams->SetStringField(TEXT("path"), FolderPath);
 	FixupParams->SetBoolField(TEXT("recursive"), true);
 	FCortexBPRedirectorOps::FixupRedirectors(FixupParams);
+	FlushRenameTestAssetRegistryEvents();
 
 	if (GEngine)
 	{
@@ -87,6 +105,7 @@ bool FCortexBPRenameBatchSwapTest::RunTest(const FString& Parameters)
 	{
 		GEngine->Exec(nullptr, TEXT("log LogAssetRegistry Error"));
 	}
+	AddExpectedError(TEXT("package was marked as deleted in editor"), EAutomationExpectedErrorFlags::Contains, 1);
 
 	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
 	const FString FolderPath = FString::Printf(TEXT("/Game/Temp/BPRenameSwap_%s"), *Suffix);
@@ -138,6 +157,7 @@ bool FCortexBPRenameBatchSwapTest::RunTest(const FString& Parameters)
 	FixupParams->SetStringField(TEXT("path"), FolderPath);
 	FixupParams->SetBoolField(TEXT("recursive"), true);
 	FCortexBPRedirectorOps::FixupRedirectors(FixupParams);
+	FlushRenameTestAssetRegistryEvents();
 
 	if (GEngine)
 	{

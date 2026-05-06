@@ -18,7 +18,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexGraphDelegateNodeTest::RunTest(const FString& Parameters)
 {
 	// Setup: Create a transient Blueprint for testing
-	UPackage* TestPackage = NewObject<UPackage>(nullptr, TEXT("/Temp/CortexGraphDelegateNodeTest"), RF_Transient);
+	UPackage* TestPackage = CreatePackage(TEXT("/Game/Temp/CortexGraphDelegateNodeTest"));
 	TestPackage->SetPackageFlags(PKG_PlayInEditor);
 
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
@@ -252,13 +252,12 @@ bool FCortexGraphDelegateNodeTest::RunTest(const FString& Parameters)
 	}
 
 	// ---- Test 12: Self-context delegate (Blueprint's own event dispatcher) ----
-	// Add a multicast delegate variable to the Blueprint, compile, then bind to it
+	// Add a multicast delegate variable to the Blueprint, then bind to it
 	{
 		// Add event dispatcher (multicast delegate) to BP
 		FEdGraphPinType DelegatePinType;
 		DelegatePinType.PinCategory = UEdGraphSchema_K2::PC_MCDelegate;
 		FBlueprintEditorUtils::AddMemberVariable(TestBP, TEXT("OnCustomEvent"), DelegatePinType);
-		FKismetEditorUtilities::CompileBlueprint(TestBP);
 
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"), AssetPath);

@@ -14,7 +14,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexGraphTraceExecTest::RunTest(const FString& Parameters)
 {
-	UPackage* TestPackage = NewObject<UPackage>(nullptr, TEXT("/Temp/CortexGraphTraceExecTest"), RF_Transient);
+	UPackage* TestPackage = CreatePackage(TEXT("/Game/Temp/CortexGraphTraceExecTest"));
 	TestPackage->SetPackageFlags(PKG_PlayInEditor);
 
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(

@@ -14,14 +14,70 @@
 #include "K2Node_VariableGet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Misc/Guid.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+#include "UObject/GarbageCollection.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectIterator.h"
 
 namespace
 {
+	bool RenameIsPackageUnderRoot(const FString& PackageName, const FString& Root)
+	{
+		return PackageName == Root || PackageName.StartsWith(Root + TEXT("/"));
+	}
+
+	struct FScopedRenameReadOnlyMountedRoot
+	{
+		FString Root;
+		FString PhysicalDir;
+
+		FScopedRenameReadOnlyMountedRoot()
+		{
+			Root = FString::Printf(
+				TEXT("/CortexReadOnlyRename%s"),
+				*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8));
+			PhysicalDir = FPaths::ProjectSavedDir() / TEXT("CortexReadOnlyBlueprintTests") / Root.RightChop(1);
+			IFileManager::Get().MakeDirectory(*PhysicalDir, true);
+			FPackageName::RegisterMountPoint(Root + TEXT("/"), PhysicalDir / TEXT(""));
+		}
+
+		~FScopedRenameReadOnlyMountedRoot()
+		{
+			for (TObjectIterator<UPackage> It; It; ++It)
+			{
+				UPackage* Package = *It;
+				if (Package && RenameIsPackageUnderRoot(Package->GetName(), Root))
+				{
+					Package->MarkAsGarbage();
+				}
+			}
+			CollectGarbage(RF_NoFlags);
+			FPackageName::UnRegisterMountPoint(Root + TEXT("/"), PhysicalDir / TEXT(""));
+			IFileManager::Get().DeleteDirectory(*PhysicalDir, false, true);
+		}
+	};
+
 	UBlueprint* RenameCreateLiftBP(const TCHAR* Name, UClass* ParentClass = nullptr)
 	{
 		return FKismetEditorUtilities::CreateBlueprint(
 			ParentClass ? ParentClass : ACortexBPTestLiftActor::StaticClass(),
-			GetTransientPackage(),
+			CreatePackage(*FString::Printf(
+				TEXT("/Game/Temp/%s_%s"),
+				Name,
+				*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8))),
+			FName(Name),
+			BPTYPE_Normal,
+			UBlueprint::StaticClass(),
+			UBlueprintGeneratedClass::StaticClass());
+	}
+
+	UBlueprint* RenameCreateLiftBPInPackage(const TCHAR* Name, const FString& PackagePath, UClass* ParentClass = nullptr)
+	{
+		return FKismetEditorUtilities::CreateBlueprint(
+			ParentClass ? ParentClass : ACortexBPTestLiftActor::StaticClass(),
+			CreatePackage(*PackagePath),
 			FName(Name),
 			BPTYPE_Normal,
 			UBlueprint::StaticClass(),
@@ -539,6 +595,60 @@ bool FCortexBPRenameSCSComponentDependentRecompileAndPatchTest::RunTest(const FS
 	const TArray<FString> VariableGetNames = RenameCollectVariableGetNames(ChildBP);
 	TestTrue(TEXT("Child VariableGet references new name"), VariableGetNames.Contains(TEXT("NewComp")));
 	TestFalse(TEXT("Child VariableGet no longer references old name"), VariableGetNames.Contains(TEXT("OldComp")));
+
+	ChildBP->MarkAsGarbage();
+	ParentBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRenameSCSComponentRejectsNonWritableDependentTest,
+	"Cortex.Blueprint.Cleanup.RenameSCSComponent.RejectsNonWritableDependent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRenameSCSComponentRejectsNonWritableDependentTest::RunTest(const FString& Parameters)
+{
+	FScopedRenameReadOnlyMountedRoot ReadOnlyRoot;
+
+	UBlueprint* ParentBP = RenameCreateLiftBP(TEXT("BP_RenameSCS_ReadOnlyDepParent"));
+	TestNotNull(TEXT("Parent BP created"), ParentBP);
+	if (!ParentBP)
+	{
+		return false;
+	}
+
+	TestNotNull(TEXT("OldComp added"), RenameAddSCSNode(ParentBP, UCortexBPTestSubobjComponent::StaticClass(), TEXT("OldComp")));
+	UBlueprintGeneratedClass* ParentClass = Cast<UBlueprintGeneratedClass>(ParentBP->GeneratedClass);
+	TestNotNull(TEXT("Parent generated class"), ParentClass);
+	if (!ParentClass)
+	{
+		ParentBP->MarkAsGarbage();
+		return false;
+	}
+
+	UBlueprint* ChildBP = RenameCreateLiftBPInPackage(
+		TEXT("BP_RenameSCS_ReadOnlyDepChild"),
+		ReadOnlyRoot.Root / TEXT("BP_RenameSCS_ReadOnlyDepChild"),
+		ParentClass);
+	TestNotNull(TEXT("Read-only child BP created"), ChildBP);
+	if (!ChildBP)
+	{
+		ParentBP->MarkAsGarbage();
+		return false;
+	}
+
+	TestTrue(TEXT("Child VariableGet added"), RenameAddVariableGetNode(ChildBP, TEXT("OldComp")));
+	FKismetEditorUtilities::CompileBlueprint(ChildBP);
+	ChildBP->Status = BS_Dirty;
+
+	const FCortexCommandResult Result = FCortexBPCleanupOps::RenameSCSComponent(
+		RenameMakeParams(ParentBP, TEXT("OldComp"), TEXT("NewComp"), true));
+
+	TestFalse(TEXT("Rename rejects non-writable dependent"), Result.bSuccess);
+	TestEqual(TEXT("Error code is InvalidField"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	TestTrue(TEXT("Parent still has OldComp"), RenameHasSCSNode(ParentBP, TEXT("OldComp")));
+	TestFalse(TEXT("Parent was not renamed"), RenameHasSCSNode(ParentBP, TEXT("NewComp")));
+	TestEqual(TEXT("Child was not compiled"), ChildBP->Status, EBlueprintStatus::BS_Dirty);
 
 	ChildBP->MarkAsGarbage();
 	ParentBP->MarkAsGarbage();

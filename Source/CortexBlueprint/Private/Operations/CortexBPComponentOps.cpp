@@ -4,6 +4,7 @@
 #include "CortexAssetFingerprint.h"
 #include "CortexBatchMutation.h"
 #include "CortexBlueprintModule.h"
+#include "CortexSerializer.h"
 #include "Components/ActorComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Dom/JsonValue.h"
@@ -19,11 +20,12 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
 #include "ScopedTransaction.h"
+#include "UObject/SavePackage.h"
 #include "UObject/UnrealType.h"
 
 namespace CortexBPComponentOpsPrivate
 {
-	UObject* FindComponentTemplate(UBlueprint* Blueprint, const FString& ComponentName);
+	UObject* FindOwnedSCSComponentTemplate(UBlueprint* Blueprint, const FString& ComponentName);
 
 	TSharedPtr<FJsonObject> CopyJsonObject(const TSharedPtr<FJsonObject>& Source)
 	{
@@ -136,6 +138,12 @@ namespace CortexBPComponentOpsPrivate
 
 	FCortexBatchPreflightResult PreflightSetComponentDefaults(const FCortexBatchMutationItem& Item)
 	{
+		FString ValidationError;
+		if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(Item.Target, ValidationError))
+		{
+			return FCortexBatchPreflightResult::Error(CortexErrorCodes::InvalidField, ValidationError);
+		}
+
 		FString LoadError;
 		UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(Item.Target, LoadError);
 		if (!Blueprint)
@@ -153,11 +161,13 @@ namespace CortexBPComponentOpsPrivate
 				TEXT("Missing required params: component_name"));
 		}
 
-		if (!CortexBPComponentOpsPrivate::FindComponentTemplate(Blueprint, ComponentName))
+		if (!CortexBPComponentOpsPrivate::FindOwnedSCSComponentTemplate(Blueprint, ComponentName))
 		{
 			return FCortexBatchPreflightResult::Error(
 				CortexErrorCodes::ComponentNotFound,
-				FString::Printf(TEXT("Component not found: %s"), *ComponentName));
+				FString::Printf(
+					TEXT("Owned SCS component template not found: %s. set_component_defaults only mutates components owned by this Blueprint's SimpleConstructionScript."),
+					*ComponentName));
 		}
 
 		const TSharedPtr<FJsonObject>* PropertiesObj = nullptr;
@@ -279,7 +289,7 @@ namespace CortexBPComponentOpsPrivate
 		return Details;
 	}
 
-	UObject* FindComponentTemplate(UBlueprint* Blueprint, const FString& ComponentName)
+	UObject* FindOwnedSCSComponentTemplate(UBlueprint* Blueprint, const FString& ComponentName)
 	{
 		if (Blueprint == nullptr || ComponentName.IsEmpty())
 		{
@@ -303,39 +313,381 @@ namespace CortexBPComponentOpsPrivate
 			}
 		}
 
-		for (UActorComponent* Template : Blueprint->ComponentTemplates)
-		{
-			if (Template != nullptr && Template->GetName() == ComponentName)
-			{
-				return Template;
-			}
-		}
-
-		if (UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass))
-		{
-			for (UActorComponent* Template : BPGC->ComponentTemplates)
-			{
-				if (Template != nullptr && Template->GetName() == ComponentName)
-				{
-					return Template;
-				}
-			}
-
-			if (AActor* CDO = Cast<AActor>(BPGC->GetDefaultObject()))
-			{
-				TInlineComponentArray<UActorComponent*> Components;
-				CDO->GetComponents(Components);
-				for (UActorComponent* Component : Components)
-				{
-					if (Component != nullptr && Component->GetName() == ComponentName)
-					{
-						return Component;
-					}
-				}
-			}
-		}
-
 		return nullptr;
+	}
+
+	bool IsEditableComponentTemplateProperty(const FProperty* Property)
+	{
+		return Property != nullptr
+			&& Property->HasAnyPropertyFlags(CPF_Edit)
+			&& !Property->HasAnyPropertyFlags(CPF_Deprecated | CPF_DisableEditOnTemplate | CPF_EditConst);
+	}
+
+	bool ContainsInstancedReferenceProperty(const FProperty* Property)
+	{
+		if (Property == nullptr)
+		{
+			return false;
+		}
+
+		if (Property->HasAnyPropertyFlags(CPF_InstancedReference | CPF_ContainsInstancedReference))
+		{
+			return true;
+		}
+
+		if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+		{
+			return ContainsInstancedReferenceProperty(ArrayProperty->Inner);
+		}
+
+		if (const FSetProperty* SetProperty = CastField<FSetProperty>(Property))
+		{
+			return ContainsInstancedReferenceProperty(SetProperty->ElementProp);
+		}
+
+		if (const FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+		{
+			return ContainsInstancedReferenceProperty(MapProperty->KeyProp)
+				|| ContainsInstancedReferenceProperty(MapProperty->ValueProp);
+		}
+
+		return false;
+	}
+
+	void AddPropertyError(
+		TArray<TSharedPtr<FJsonValue>>& ErrorsArray,
+		const FString& PropertyName,
+		const FString& Message)
+	{
+		ErrorsArray.Add(MakeShared<FJsonValueString>(
+			FString::Printf(TEXT("%s: %s"), *PropertyName, *Message)));
+	}
+
+	bool LoadObjectPathForProperty(
+		const FString& PropertyName,
+		const TSharedPtr<FJsonValue>& JsonValue,
+		UClass* ExpectedClass,
+		UObject*& OutObject,
+		FString& OutError)
+	{
+		OutObject = nullptr;
+		if (!JsonValue.IsValid() || JsonValue->Type != EJson::String)
+		{
+			OutError = TEXT("Expected object path string");
+			return false;
+		}
+
+		const FString ObjectPath = JsonValue->AsString();
+		if (ObjectPath.IsEmpty())
+		{
+			return true;
+		}
+
+		FText PathReason;
+		if (!FPackageName::IsValidObjectPath(ObjectPath, &PathReason))
+		{
+			OutError = FString::Printf(
+				TEXT("Invalid object path '%s': %s"),
+				*ObjectPath,
+				*PathReason.ToString());
+			return false;
+		}
+
+		const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
+		if (!FPackageName::IsValidLongPackageName(PackageName)
+			|| (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName)))
+		{
+			OutError = FString::Printf(TEXT("Asset package not found for '%s'"), *ObjectPath);
+			return false;
+		}
+
+		OutObject = StaticLoadObject(ExpectedClass ? ExpectedClass : UObject::StaticClass(), nullptr, *ObjectPath);
+		if (OutObject == nullptr)
+		{
+			OutError = FString::Printf(
+				TEXT("Failed to load '%s' as %s"),
+				*ObjectPath,
+				ExpectedClass ? *ExpectedClass->GetName() : TEXT("UObject"));
+			return false;
+		}
+
+		return true;
+	}
+
+	bool IsIntegralJsonNumber(double Number)
+	{
+		return FMath::IsFinite(Number) && FMath::IsNearlyEqual(Number, FMath::RoundToDouble(Number));
+	}
+
+	bool ValidateIntegerJsonValue(
+		const FNumericProperty* NumericProperty,
+		const TSharedPtr<FJsonValue>& JsonValue,
+		const FString& PropertyPath,
+		TArray<FString>& OutWarnings)
+	{
+		if (!JsonValue.IsValid() || JsonValue->Type != EJson::Number)
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s expected a numeric JSON value"), *PropertyPath));
+			return false;
+		}
+
+		const double Number = JsonValue->AsNumber();
+		if (!IsIntegralJsonNumber(Number))
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s expected an integer JSON value"), *PropertyPath));
+			return false;
+		}
+
+		bool bInRange = true;
+		if (CastField<FInt8Property>(NumericProperty))
+		{
+			bInRange = Number >= TNumericLimits<int8>::Min() && Number <= TNumericLimits<int8>::Max();
+		}
+		else if (CastField<FInt16Property>(NumericProperty))
+		{
+			bInRange = Number >= TNumericLimits<int16>::Min() && Number <= TNumericLimits<int16>::Max();
+		}
+		else if (CastField<FIntProperty>(NumericProperty))
+		{
+			bInRange = Number >= TNumericLimits<int32>::Min() && Number <= TNumericLimits<int32>::Max();
+		}
+		else if (CastField<FInt64Property>(NumericProperty))
+		{
+			bInRange = Number >= static_cast<double>(TNumericLimits<int64>::Min())
+				&& Number <= static_cast<double>(TNumericLimits<int64>::Max());
+		}
+		else if (CastField<FByteProperty>(NumericProperty))
+		{
+			bInRange = Number >= 0.0 && Number <= static_cast<double>(TNumericLimits<uint8>::Max());
+		}
+		else if (CastField<FUInt16Property>(NumericProperty))
+		{
+			bInRange = Number >= 0.0 && Number <= static_cast<double>(TNumericLimits<uint16>::Max());
+		}
+		else if (CastField<FUInt32Property>(NumericProperty))
+		{
+			bInRange = Number >= 0.0 && Number <= static_cast<double>(TNumericLimits<uint32>::Max());
+		}
+		else if (CastField<FUInt64Property>(NumericProperty))
+		{
+			bInRange = Number >= 0.0 && Number <= static_cast<double>(TNumericLimits<uint64>::Max());
+		}
+
+		if (!bInRange)
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s numeric value is out of range"), *PropertyPath));
+			return false;
+		}
+
+		return true;
+	}
+
+	bool ValidateEnumJsonValue(
+		const UEnum* Enum,
+		const TSharedPtr<FJsonValue>& JsonValue,
+		const FString& PropertyPath,
+		TArray<FString>& OutWarnings)
+	{
+		if (Enum == nullptr || !JsonValue.IsValid())
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s has no enum definition"), *PropertyPath));
+			return false;
+		}
+
+		int64 EnumValue = INDEX_NONE;
+		FString InputValue;
+		if (JsonValue->Type == EJson::Number)
+		{
+			const double Number = JsonValue->AsNumber();
+			if (!IsIntegralJsonNumber(Number))
+			{
+				OutWarnings.Add(FString::Printf(TEXT("%s expected an integer enum value"), *PropertyPath));
+				return false;
+			}
+			EnumValue = static_cast<int64>(Number);
+			InputValue = FString::Printf(TEXT("%lld"), static_cast<long long>(EnumValue));
+		}
+		else if (JsonValue->Type == EJson::String)
+		{
+			InputValue = JsonValue->AsString();
+			EnumValue = Enum->GetValueByNameString(InputValue);
+		}
+		else
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s expected an enum string or numeric value"), *PropertyPath));
+			return false;
+		}
+
+		const int32 EnumIndex = Enum->GetIndexByValue(EnumValue);
+		if (EnumValue == INDEX_NONE
+			|| EnumIndex == INDEX_NONE
+			|| Enum->HasMetaData(TEXT("Hidden"), EnumIndex))
+		{
+			OutWarnings.Add(FString::Printf(
+				TEXT("%s unknown enum value '%s' for %s"),
+				*PropertyPath,
+				*InputValue,
+				*Enum->GetName()));
+			return false;
+		}
+
+		return true;
+	}
+
+	bool ValidateStrictComponentJsonValue(
+		const FProperty* Property,
+		const TSharedPtr<FJsonValue>& JsonValue,
+		const FString& PropertyPath,
+		TArray<FString>& OutWarnings)
+	{
+		if (const FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property))
+		{
+			if (!JsonValue.IsValid() || JsonValue->Type != EJson::Boolean)
+			{
+				OutWarnings.Add(FString::Printf(TEXT("%s expected a boolean JSON value"), *PropertyPath));
+				return false;
+			}
+			return true;
+		}
+
+		if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+		{
+			return ValidateEnumJsonValue(EnumProperty->GetEnum(), JsonValue, PropertyPath, OutWarnings);
+		}
+
+		if (const FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
+		{
+			if (const UEnum* Enum = ByteProperty->GetIntPropertyEnum())
+			{
+				return ValidateEnumJsonValue(Enum, JsonValue, PropertyPath, OutWarnings);
+			}
+		}
+
+		if (const FNumericProperty* NumericProperty = CastField<FNumericProperty>(Property))
+		{
+			if (NumericProperty->IsInteger())
+			{
+				return ValidateIntegerJsonValue(NumericProperty, JsonValue, PropertyPath, OutWarnings);
+			}
+
+			if (!JsonValue.IsValid() || JsonValue->Type != EJson::Number || !FMath::IsFinite(JsonValue->AsNumber()))
+			{
+				OutWarnings.Add(FString::Printf(TEXT("%s expected a finite numeric JSON value"), *PropertyPath));
+				return false;
+			}
+			return true;
+		}
+
+		if (CastField<FArrayProperty>(Property) || CastField<FSetProperty>(Property) || CastField<FMapProperty>(Property))
+		{
+			OutWarnings.Add(FString::Printf(
+				TEXT("%s container properties are not supported by set_component_defaults; use supported indexed object-reference paths instead"),
+				*PropertyPath));
+			return false;
+		}
+
+		if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			const TSharedPtr<FJsonObject>* ObjectValue = nullptr;
+			if (!JsonValue.IsValid() || !JsonValue->TryGetObject(ObjectValue) || ObjectValue == nullptr || !(*ObjectValue).IsValid())
+			{
+				OutWarnings.Add(FString::Printf(TEXT("%s expected a JSON object"), *PropertyPath));
+				return false;
+			}
+
+			bool bValid = true;
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& FieldPair : (*ObjectValue)->Values)
+			{
+				FProperty* StructField = StructProperty->Struct
+					? StructProperty->Struct->FindPropertyByName(FName(*FieldPair.Key))
+					: nullptr;
+				if (StructField == nullptr)
+				{
+					OutWarnings.Add(FString::Printf(
+						TEXT("%s.%s is not a field on %s"),
+						*PropertyPath,
+						*FieldPair.Key,
+						StructProperty->Struct ? *StructProperty->Struct->GetName() : TEXT("struct")));
+					bValid = false;
+					continue;
+				}
+
+				bValid &= ValidateStrictComponentJsonValue(
+					StructField,
+					FieldPair.Value,
+					FString::Printf(TEXT("%s.%s"), *PropertyPath, *FieldPair.Key),
+					OutWarnings);
+			}
+
+			return bValid;
+		}
+
+		return true;
+	}
+
+	bool ValidateGenericPropertyJson(
+		UObject* ComponentTemplate,
+		FProperty* Property,
+		const FString& PropertyName,
+		const TSharedPtr<FJsonValue>& JsonValue,
+		TArray<FString>& OutWarnings)
+	{
+		if (!ValidateStrictComponentJsonValue(Property, JsonValue, PropertyName, OutWarnings))
+		{
+			return false;
+		}
+
+		void* ValuePtr = Property->ContainerPtrToValuePtr<void>(ComponentTemplate);
+		void* TempValuePtr = FMemory::Malloc(Property->GetSize(), Property->GetMinAlignment());
+		Property->InitializeValue(TempValuePtr);
+		Property->CopyCompleteValue(TempValuePtr, ValuePtr);
+
+		const bool bSuccess = FCortexSerializer::JsonToProperty(
+			JsonValue,
+			Property,
+			TempValuePtr,
+			ComponentTemplate,
+			OutWarnings);
+
+		Property->DestroyValue(TempValuePtr);
+		FMemory::Free(TempValuePtr);
+		return bSuccess && OutWarnings.Num() == 0;
+	}
+
+	bool SaveBlueprintPackage(UBlueprint* Blueprint, FString& OutError)
+	{
+		if (Blueprint == nullptr)
+		{
+			OutError = TEXT("Blueprint is null");
+			return false;
+		}
+
+		UPackage* Package = Blueprint->GetOutermost();
+		if (Package == nullptr)
+		{
+			OutError = TEXT("Blueprint package is null");
+			return false;
+		}
+
+		FString PackageFilename;
+		if (!FPackageName::TryConvertLongPackageNameToFilename(
+				Package->GetName(),
+				PackageFilename,
+				FPackageName::GetAssetPackageExtension()))
+		{
+			OutError = FString::Printf(TEXT("Failed to resolve package filename for: %s"), *Package->GetName());
+			return false;
+		}
+
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		if (!UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs))
+		{
+			OutError = FString::Printf(TEXT("Failed to save Blueprint package: %s"), *Package->GetName());
+			return false;
+		}
+
+		return true;
 	}
 }
 
@@ -360,8 +712,6 @@ FCortexCommandResult FCortexBPComponentOps::ListSCSComponents(const TSharedPtr<F
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
-
-	FKismetEditorUtilities::CompileBlueprint(Blueprint);
 
 	TArray<TSharedPtr<FJsonValue>> ComponentsArray;
 	if (USimpleConstructionScript* SCS = Blueprint->SimpleConstructionScript)
@@ -414,6 +764,29 @@ FCortexCommandResult FCortexBPComponentOps::SetComponentDefaults(const TSharedPt
 			CortexBPComponentOpsPrivate::CommitSetComponentDefaults));
 	}
 
+	if (Params.IsValid() && Params->HasField(TEXT("expected_fingerprint")))
+	{
+		FCortexBatchMutationRequest Request;
+		FCortexCommandResult ParseError;
+		if (!FCortexBatchMutation::ParseRequest(Params, TEXT("asset_path"), Request, ParseError))
+		{
+			return ParseError;
+		}
+
+		const FCortexBatchMutationResult BatchResult = FCortexBatchMutation::Run(
+			Request,
+			CortexBPComponentOpsPrivate::PreflightSetComponentDefaults,
+			CortexBPComponentOpsPrivate::CommitSetComponentDefaults);
+		if (BatchResult.PerItem.Num() > 0)
+		{
+			return BatchResult.PerItem[0].Result;
+		}
+
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("No set_component_defaults target was parsed"));
+	}
+
 	FString AssetPath;
 	FString ComponentName;
 	if (!Params.IsValid()
@@ -437,6 +810,12 @@ FCortexCommandResult FCortexBPComponentOps::SetComponentDefaults(const TSharedPt
 		);
 	}
 
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+	}
+
 	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
@@ -444,19 +823,36 @@ FCortexCommandResult FCortexBPComponentOps::SetComponentDefaults(const TSharedPt
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
-	UObject* ComponentTemplate = CortexBPComponentOpsPrivate::FindComponentTemplate(Blueprint, ComponentName);
+	UObject* ComponentTemplate = CortexBPComponentOpsPrivate::FindOwnedSCSComponentTemplate(Blueprint, ComponentName);
 	if (ComponentTemplate == nullptr)
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::ComponentNotFound,
-			FString::Printf(TEXT("Component not found: %s"), *ComponentName)
+			FString::Printf(
+				TEXT("Owned SCS component template not found: %s. set_component_defaults only mutates components owned by this Blueprint's SimpleConstructionScript."),
+				*ComponentName)
 		);
 	}
 
-	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex: Set Component Defaults %s"), *ComponentName)));
-	ComponentTemplate->Modify();
-	Blueprint->Modify();
+	bool bCompile = true;
+	Params->TryGetBoolField(TEXT("compile"), bCompile);
+
+	bool bSave = false;
+	Params->TryGetBoolField(TEXT("save"), bSave);
+
+	TUniquePtr<FScopedTransaction> Transaction;
+	const auto EnsureMutationStarted = [&Transaction, ComponentTemplate, Blueprint, &ComponentName]()
+	{
+		if (Transaction.IsValid())
+		{
+			return;
+		}
+
+		Transaction = MakeUnique<FScopedTransaction>(FText::FromString(
+			FString::Printf(TEXT("Cortex: Set Component Defaults %s"), *ComponentName)));
+		ComponentTemplate->Modify();
+		Blueprint->Modify();
+	};
 
 	int32 PropertiesSet = 0;
 	TArray<TSharedPtr<FJsonValue>> ErrorsArray;
@@ -465,7 +861,6 @@ FCortexCommandResult FCortexBPComponentOps::SetComponentDefaults(const TSharedPt
 	{
 		const FString& PropName = Pair.Key;
 		const TSharedPtr<FJsonValue>& PropValueJson = Pair.Value;
-		const FString PropValue = PropValueJson.IsValid() ? PropValueJson->AsString() : FString();
 		CortexBPComponentOpsPrivate::FResolvedPropertyPath PropertyPath;
 		if (!CortexBPComponentOpsPrivate::ParsePropertyPath(PropName, PropertyPath))
 		{
@@ -477,116 +872,223 @@ FCortexCommandResult FCortexBPComponentOps::SetComponentDefaults(const TSharedPt
 		FProperty* Prop = FindFProperty<FProperty>(ComponentTemplate->GetClass(), *PropertyPath.BasePropertyName);
 		if (Prop == nullptr)
 		{
-			ErrorsArray.Add(MakeShared<FJsonValueString>(
-				FString::Printf(TEXT("Property not found: %s"), *PropertyPath.BasePropertyName)));
+			CortexBPComponentOpsPrivate::AddPropertyError(
+				ErrorsArray,
+				PropName,
+				FString::Printf(TEXT("Property not found: %s"), *PropertyPath.BasePropertyName));
 			continue;
 		}
 
-		const FString PackageName = FPackageName::ObjectPathToPackageName(PropValue);
-		if (PackageName.IsEmpty() || (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName)))
+		if (!CortexBPComponentOpsPrivate::IsEditableComponentTemplateProperty(Prop))
 		{
-			ErrorsArray.Add(MakeShared<FJsonValueString>(
-				FString::Printf(TEXT("Asset not found: %s"), *PropValue)));
+			CortexBPComponentOpsPrivate::AddPropertyError(
+				ErrorsArray,
+				PropName,
+				TEXT("Property is not editable on component templates"));
 			continue;
 		}
 
-		UClass* AssetClass = nullptr;
+		if (CortexBPComponentOpsPrivate::ContainsInstancedReferenceProperty(Prop))
+		{
+			CortexBPComponentOpsPrivate::AddPropertyError(
+				ErrorsArray,
+				PropName,
+				TEXT("instanced reference properties are not supported by set_component_defaults"));
+			continue;
+		}
+
+		bool bApplied = false;
+		FString ApplyError;
 		if (PropertyPath.bHasArrayIndex)
 		{
 			FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop);
 			if (ArrayProp == nullptr)
 			{
-				ErrorsArray.Add(MakeShared<FJsonValueString>(
-					FString::Printf(TEXT("Property '%s' is not an array"), *PropertyPath.BasePropertyName)));
+				CortexBPComponentOpsPrivate::AddPropertyError(
+					ErrorsArray,
+					PropName,
+					FString::Printf(TEXT("Property '%s' is not an array"), *PropertyPath.BasePropertyName));
 				continue;
 			}
 
-			FObjectProperty* InnerObjectProp = CastField<FObjectProperty>(ArrayProp->Inner);
+			FObjectPropertyBase* InnerObjectProp = CastField<FObjectPropertyBase>(ArrayProp->Inner);
 			if (InnerObjectProp == nullptr)
 			{
-				ErrorsArray.Add(MakeShared<FJsonValueString>(
-					FString::Printf(TEXT("Array property '%s' does not store object references"), *PropertyPath.BasePropertyName)));
+				CortexBPComponentOpsPrivate::AddPropertyError(
+					ErrorsArray,
+					PropName,
+					FString::Printf(TEXT("Array property '%s' does not store object references"), *PropertyPath.BasePropertyName));
 				continue;
 			}
 
-			AssetClass = InnerObjectProp->PropertyClass;
-		}
-		else
-		{
-			FObjectProperty* ObjectProp = CastField<FObjectProperty>(Prop);
-			if (ObjectProp == nullptr)
+			UObject* LoadedObject = nullptr;
+			if (!CortexBPComponentOpsPrivate::LoadObjectPathForProperty(
+					PropName,
+					PropValueJson,
+					InnerObjectProp->PropertyClass,
+					LoadedObject,
+					ApplyError))
 			{
-				ErrorsArray.Add(MakeShared<FJsonValueString>(
-					FString::Printf(TEXT("Property '%s' is not an object reference"), *PropertyPath.BasePropertyName)));
+				CortexBPComponentOpsPrivate::AddPropertyError(
+					ErrorsArray,
+					PropName,
+					ApplyError.IsEmpty() ? TEXT("Failed to load object reference") : ApplyError);
 				continue;
 			}
 
-			AssetClass = ObjectProp->PropertyClass;
-		}
-
-		UObject* Asset = StaticLoadObject(AssetClass, nullptr, *PropValue);
-		if (Asset == nullptr)
-		{
-			ErrorsArray.Add(MakeShared<FJsonValueString>(
-				FString::Printf(TEXT("Failed to load asset: %s"), *PropValue)));
-			continue;
-		}
-
-		// Some component properties require setter side-effects to stay engine-consistent.
-		if (!PropertyPath.bHasArrayIndex && PropertyPath.BasePropertyName == TEXT("StaticMesh"))
-		{
-			if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(ComponentTemplate))
-			{
-				UStaticMesh* StaticMesh = Cast<UStaticMesh>(Asset);
-				if (StaticMesh == nullptr)
-				{
-					ErrorsArray.Add(MakeShared<FJsonValueString>(
-						FString::Printf(TEXT("Asset is not a StaticMesh: %s"), *PropValue)));
-					continue;
-				}
-
-				StaticMeshComponent->SetStaticMesh(StaticMesh);
-				++PropertiesSet;
-				continue;
-			}
-		}
-
-		if (PropertyPath.bHasArrayIndex)
-		{
-			FArrayProperty* ArrayProp = CastFieldChecked<FArrayProperty>(Prop);
-			FObjectProperty* InnerObjectProp = CastFieldChecked<FObjectProperty>(ArrayProp->Inner);
+			EnsureMutationStarted();
+			ComponentTemplate->PreEditChange(Prop);
 			FScriptArrayHelper ArrayHelper(ArrayProp, ArrayProp->ContainerPtrToValuePtr<void>(ComponentTemplate));
 			while (ArrayHelper.Num() <= PropertyPath.ArrayIndex)
 			{
 				ArrayHelper.AddValue();
 			}
-			InnerObjectProp->SetObjectPropertyValue(ArrayHelper.GetRawPtr(PropertyPath.ArrayIndex), Asset);
+			InnerObjectProp->SetObjectPropertyValue(ArrayHelper.GetRawPtr(PropertyPath.ArrayIndex), LoadedObject);
+			bApplied = true;
+		}
+		else if (PropertyPath.BasePropertyName == TEXT("StaticMesh"))
+		{
+			UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(ComponentTemplate);
+			if (StaticMeshComponent == nullptr)
+			{
+				CortexBPComponentOpsPrivate::AddPropertyError(
+					ErrorsArray,
+					PropName,
+					TEXT("StaticMesh can only be set on UStaticMeshComponent templates"));
+				continue;
+			}
+
+			UObject* LoadedObject = nullptr;
+			if (!CortexBPComponentOpsPrivate::LoadObjectPathForProperty(
+					PropName,
+					PropValueJson,
+					UStaticMesh::StaticClass(),
+					LoadedObject,
+					ApplyError))
+			{
+				CortexBPComponentOpsPrivate::AddPropertyError(
+					ErrorsArray,
+					PropName,
+					ApplyError.IsEmpty() ? TEXT("Failed to load StaticMesh") : ApplyError);
+				continue;
+			}
+
+			UStaticMesh* StaticMesh = Cast<UStaticMesh>(LoadedObject);
+			if (LoadedObject != nullptr && StaticMesh == nullptr)
+			{
+				CortexBPComponentOpsPrivate::AddPropertyError(
+					ErrorsArray,
+					PropName,
+					TEXT("Loaded asset is not a UStaticMesh"));
+				continue;
+			}
+
+			EnsureMutationStarted();
+			ComponentTemplate->PreEditChange(Prop);
+			StaticMeshComponent->SetStaticMesh(StaticMesh);
+			bApplied = true;
 		}
 		else
 		{
-			FObjectProperty* ObjectProp = CastFieldChecked<FObjectProperty>(Prop);
-			ObjectProp->SetObjectPropertyValue_InContainer(ComponentTemplate, Asset);
+			void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(ComponentTemplate);
+			TArray<FString> SetWarnings;
+			if (!CortexBPComponentOpsPrivate::ValidateGenericPropertyJson(
+					ComponentTemplate,
+					Prop,
+					PropName,
+					PropValueJson,
+					SetWarnings))
+			{
+				ApplyError = SetWarnings.Num() > 0
+					? FString::Join(SetWarnings, TEXT("; "))
+					: FString::Printf(TEXT("Failed to deserialize JSON value as %s"), *Prop->GetCPPType());
+				CortexBPComponentOpsPrivate::AddPropertyError(ErrorsArray, PropName, ApplyError);
+				continue;
+			}
+
+			const TSharedPtr<FJsonValue> PreviousValue = FCortexSerializer::PropertyToJson(Prop, ValuePtr);
+			EnsureMutationStarted();
+			ComponentTemplate->PreEditChange(Prop);
+			SetWarnings.Reset();
+			const bool bSerializerSucceeded = FCortexSerializer::JsonToProperty(
+				PropValueJson,
+				Prop,
+				ValuePtr,
+				ComponentTemplate,
+				SetWarnings);
+			bApplied = bSerializerSucceeded && SetWarnings.Num() == 0;
+			if (!bApplied)
+			{
+				ApplyError = SetWarnings.Num() > 0
+					? FString::Join(SetWarnings, TEXT("; "))
+					: FString::Printf(TEXT("Failed to deserialize JSON value as %s"), *Prop->GetCPPType());
+				if (PreviousValue.IsValid())
+				{
+					TArray<FString> RestoreWarnings;
+					FCortexSerializer::JsonToProperty(
+						PreviousValue,
+						Prop,
+						ValuePtr,
+						ComponentTemplate,
+						RestoreWarnings);
+				}
+			}
 		}
+
+		if (!bApplied)
+		{
+			CortexBPComponentOpsPrivate::AddPropertyError(
+				ErrorsArray,
+				PropName,
+				ApplyError.IsEmpty() ? TEXT("Failed to apply property") : ApplyError);
+			continue;
+		}
+
+		FPropertyChangedEvent ChangedEvent(Prop, EPropertyChangeType::ValueSet);
+		ComponentTemplate->PostEditChangeProperty(ChangedEvent);
+
 		++PropertiesSet;
 	}
 
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-	FKismetEditorUtilities::CompileBlueprint(Blueprint);
-	if (!CortexBPComponentOpsPrivate::IsBlueprintCompiled(Blueprint))
+	const bool bPartialFailure = ErrorsArray.Num() > 0;
+	bool bDidCompile = false;
+	bool bDidSave = false;
+
+	if (PropertiesSet > 0)
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::CompileFailed,
-			FString::Printf(TEXT("Blueprint compilation failed after setting component defaults: %s"), *AssetPath),
-			CortexBPComponentOpsPrivate::BuildBlueprintCompileDetails(Blueprint));
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+		if (bCompile)
+		{
+			FKismetEditorUtilities::CompileBlueprint(Blueprint);
+			bDidCompile = CortexBPComponentOpsPrivate::IsBlueprintCompiled(Blueprint);
+			if (!bDidCompile)
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::CompileFailed,
+					FString::Printf(TEXT("Blueprint compilation failed after setting component defaults: %s"), *AssetPath),
+					CortexBPComponentOpsPrivate::BuildBlueprintCompileDetails(Blueprint));
+			}
+		}
+
+		if (bSave && !bPartialFailure)
+		{
+			FString SaveError;
+			if (!CortexBPComponentOpsPrivate::SaveBlueprintPackage(Blueprint, SaveError))
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, SaveError);
+			}
+			bDidSave = true;
+		}
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("component_name"), ComponentName);
 	Data->SetNumberField(TEXT("properties_set"), PropertiesSet);
-	if (ErrorsArray.Num() > 0)
-	{
-		Data->SetArrayField(TEXT("errors"), ErrorsArray);
-	}
+	Data->SetBoolField(TEXT("partial_failure"), bPartialFailure);
+	Data->SetArrayField(TEXT("errors"), ErrorsArray);
+	Data->SetBoolField(TEXT("compiled"), bCompile && bDidCompile);
+	Data->SetBoolField(TEXT("saved"), bSave && bDidSave);
 
 	UE_LOG(LogCortexBlueprint, Log, TEXT("Set %d component default properties on '%s' in %s"),
 		PropertiesSet, *ComponentName, *AssetPath);
@@ -605,6 +1107,12 @@ FCortexCommandResult FCortexBPComponentOps::AddSCSComponent(const TSharedPtr<FJs
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
 			TEXT("Missing required params: asset_path, component_class"));
+	}
+
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
 	}
 
 	FString LoadError;

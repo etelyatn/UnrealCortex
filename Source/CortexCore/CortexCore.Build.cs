@@ -16,6 +16,7 @@ public class CortexCore : ModuleRules
             "CoreUObject",
             "Engine",
             "DeveloperSettings",
+            "Projects",
             "Sockets",
             "Networking",
             "Json",

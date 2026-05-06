@@ -38,7 +38,7 @@ public:
 
 	/**
 	 * Duplicate Blueprint asset
-	 * Params: source_path (string), dest_path (string), force (bool, optional)
+	 * Params: asset_path (string), new_name (string), new_path (string, optional)
 	 */
 	static FCortexCommandResult Duplicate(const TSharedPtr<FJsonObject>& Params);
 
@@ -68,6 +68,9 @@ public:
 
 	/** Load a Blueprint by asset path (with path normalization), returns nullptr and sets OutError if not found */
 	static UBlueprint* LoadBlueprint(const FString& AssetPath, FString& OutError);
+
+	/** Validate that a Blueprint asset path targets project-owned writable content for mutation commands. */
+	static bool ValidateWritableBlueprintAssetPath(const FString& AssetPath, FString& OutError);
 
 	/** Determine Blueprint type string (Actor, Component, Widget, Interface, FunctionLibrary) from a loaded UBlueprint */
 	static FString DetermineBlueprintType(const UBlueprint* BP);

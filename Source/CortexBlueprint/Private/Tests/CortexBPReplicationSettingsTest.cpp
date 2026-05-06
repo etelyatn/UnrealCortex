@@ -5,6 +5,18 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Misc/Guid.h"
+
+namespace
+{
+	UPackage* CreateWritableReplicationSettingsTestPackage(const TCHAR* Name)
+	{
+		return CreatePackage(*FString::Printf(
+			TEXT("/Game/Temp/%s_%s"),
+			Name,
+			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8)));
+	}
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPSetReplicationBasicTest,
@@ -15,7 +27,7 @@ bool FCortexBPSetReplicationBasicTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableReplicationSettingsTestPackage(TEXT("BP_SetReplicationBasicTest")),
 		FName(TEXT("BP_SetReplicationBasicTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -76,7 +88,7 @@ bool FCortexBPSetReplicationNonActorTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		UActorComponent::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableReplicationSettingsTestPackage(TEXT("BP_SetReplicationNonActorTest")),
 		FName(TEXT("BP_SetReplicationNonActorTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -105,7 +117,7 @@ bool FCortexBPSetReplicationInvalidDormancyTest::RunTest(const FString& Paramete
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableReplicationSettingsTestPackage(TEXT("BP_SetReplicationBadDormancyTest")),
 		FName(TEXT("BP_SetReplicationBadDormancyTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),

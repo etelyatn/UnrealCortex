@@ -25,7 +25,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexGraphCompactPinSkippingTest::RunTest(const FString& Parameters)
 {
-	UPackage* TestPackage = NewObject<UPackage>(nullptr, TEXT("/Temp/CortexCompactPinSkipTest"), RF_Transient);
+	UPackage* TestPackage = CreatePackage(TEXT("/Game/Temp/CortexCompactPinSkipTest"));
 	TestPackage->SetPackageFlags(PKG_PlayInEditor);
 
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
@@ -152,7 +152,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexGraphListNodesCompactTest::RunTest(const FString& Parameters)
 {
-	UPackage* TestPackage = NewObject<UPackage>(nullptr, TEXT("/Temp/CortexListNodesCompactTest"), RF_Transient);
+	UPackage* TestPackage = CreatePackage(TEXT("/Game/Temp/CortexListNodesCompactTest"));
 	TestPackage->SetPackageFlags(PKG_PlayInEditor);
 
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
@@ -265,7 +265,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexGraphGetNodeCompactTest::RunTest(const FString& Parameters)
 {
-	UPackage* TestPackage = NewObject<UPackage>(nullptr, TEXT("/Temp/CortexGetNodeCompactTest"), RF_Transient);
+	UPackage* TestPackage = CreatePackage(TEXT("/Game/Temp/CortexGetNodeCompactTest"));
 	TestPackage->SetPackageFlags(PKG_PlayInEditor);
 
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
@@ -457,7 +457,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexGraphSearchNodesCompactTest::RunTest(const FString& Parameters)
 {
-	UPackage* TestPackage = NewObject<UPackage>(nullptr, TEXT("/Temp/CortexSearchNodesCompactTest"), RF_Transient);
+	UPackage* TestPackage = CreatePackage(TEXT("/Game/Temp/CortexSearchNodesCompactTest"));
 	TestPackage->SetPackageFlags(PKG_PlayInEditor);
 
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(

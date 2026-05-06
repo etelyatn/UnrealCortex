@@ -15,7 +15,19 @@
 #include "Components/SceneComponent.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Misc/Guid.h"
 #include "UObject/UnrealType.h"
+
+namespace
+{
+	UPackage* CreateWritableCleanupTestPackage(const TCHAR* Name)
+	{
+		return CreatePackage(*FString::Printf(
+			TEXT("/Game/Temp/%s_%s"),
+			Name,
+			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8)));
+	}
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPCleanupRemoveVariableTest,
@@ -27,7 +39,7 @@ bool FCortexBPCleanupRemoveVariableTest::RunTest(const FString& Parameters)
 	// Create Blueprint with a variable
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableCleanupTestPackage(TEXT("BP_CleanupVarTest")),
 		FName(TEXT("BP_CleanupVarTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -77,7 +89,7 @@ bool FCortexBPCleanupRemoveFunctionTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableCleanupTestPackage(TEXT("BP_CleanupFuncTest")),
 		FName(TEXT("BP_CleanupFuncTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -123,7 +135,7 @@ bool FCortexBPCleanupRejectsInvalidReparentTest::RunTest(const FString& Paramete
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		UActorComponent::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableCleanupTestPackage(TEXT("BP_CleanupInvalidReparentTest")),
 		FName(TEXT("BP_CleanupInvalidReparentTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -165,7 +177,7 @@ bool FCortexBPCleanupWidgetReparentTypeFamilyTest::RunTest(const FString& Parame
 
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		UserWidgetClass,
-		GetTransientPackage(),
+		CreateWritableCleanupTestPackage(TEXT("WBP_CleanupWidgetReparentTest")),
 		FName(TEXT("WBP_CleanupWidgetReparentTest")),
 		BPTYPE_Normal,
 		WidgetBlueprintClass,
@@ -208,7 +220,7 @@ bool FCortexBPCleanupWidgetPreservationTest::RunTest(const FString& Parameters)
 
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		UserWidgetClass,
-		GetTransientPackage(),
+		CreateWritableCleanupTestPackage(TEXT("WBP_CleanupPreservationTest")),
 		FName(TEXT("WBP_CleanupPreservationTest")),
 		BPTYPE_Normal,
 		WidgetBlueprintClass,
@@ -265,7 +277,7 @@ bool FCortexBPRemoveSCSComponentLeafTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableCleanupTestPackage(TEXT("BP_RemoveSCSLeafTest")),
 		FName(TEXT("BP_RemoveSCSLeafTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -318,7 +330,7 @@ bool FCortexBPRemoveSCSComponentChildrenPromotedTest::RunTest(const FString& Par
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableCleanupTestPackage(TEXT("BP_RemoveSCSChildPromoteTest")),
 		FName(TEXT("BP_RemoveSCSChildPromoteTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -376,7 +388,7 @@ bool FCortexBPRemoveSCSComponentNotFoundTest::RunTest(const FString& Parameters)
 {
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableCleanupTestPackage(TEXT("BP_RemoveSCSNotFoundTest")),
 		FName(TEXT("BP_RemoveSCSNotFoundTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
@@ -407,7 +419,7 @@ bool FCortexBPRemoveSCSComponentNoSCSTest::RunTest(const FString& Parameters)
 	// UActorComponent parent produces a Blueprint with no SimpleConstructionScript
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		UActorComponent::StaticClass(),
-		GetTransientPackage(),
+		CreateWritableCleanupTestPackage(TEXT("BP_RemoveSCSNoSCSTest")),
 		FName(TEXT("BP_RemoveSCSNoSCSTest")),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),

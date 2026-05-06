@@ -11,6 +11,27 @@
 #include "ScopedTransaction.h"
 #include "UObject/SavePackage.h"
 #include "UObject/TopLevelAssetPath.h"
+#include "UObject/UnrealType.h"
+
+namespace
+{
+	void SetActorDefaultReplicates(AActor* ActorCDO, const bool bReplicates)
+	{
+		if (FBoolProperty* ReplicatesProperty =
+			FindFProperty<FBoolProperty>(AActor::StaticClass(), TEXT("bReplicates")))
+		{
+			ReplicatesProperty->SetPropertyValue_InContainer(ActorCDO, bReplicates);
+		}
+
+		if (FByteProperty* RemoteRoleProperty =
+			FindFProperty<FByteProperty>(AActor::StaticClass(), TEXT("RemoteRole")))
+		{
+			RemoteRoleProperty->SetPropertyValue_InContainer(
+				ActorCDO,
+				static_cast<uint8>(bReplicates ? ROLE_SimulatedProxy : ROLE_None));
+		}
+	}
+}
 
 UClass* FCortexBPClassSettingsOps::ResolveInterfaceClass(const FString& InterfacePath, FString& OutError)
 {
@@ -101,6 +122,12 @@ FCortexCommandResult FCortexBPClassSettingsOps::AddInterface(const TSharedPtr<FJ
 
 	bool bCompile = true;
 	Params->TryGetBoolField(TEXT("compile"), bCompile);
+
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+	}
 
 	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
@@ -206,6 +233,12 @@ FCortexCommandResult FCortexBPClassSettingsOps::RemoveInterface(const TSharedPtr
 	bool bCompile = true;
 	Params->TryGetBoolField(TEXT("compile"), bCompile);
 
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+	}
+
 	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (!Blueprint)
@@ -308,6 +341,12 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetTickSettings(const TSharedPtr
 	bool bSave = false;
 	Params->TryGetBoolField(TEXT("save"), bSave);
 
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+	}
+
 	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (!Blueprint)
@@ -392,8 +431,16 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetTickSettings(const TSharedPtr
 	if (bSave)
 	{
 		UPackage* Package = Blueprint->GetOutermost();
-		const FString PackageFilename = FPackageName::LongPackageNameToFilename(
-			Package->GetName(), FPackageName::GetAssetPackageExtension());
+		FString PackageFilename;
+		if (!FPackageName::TryConvertLongPackageNameToFilename(
+				Package->GetName(),
+				PackageFilename,
+				FPackageName::GetAssetPackageExtension()))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::SaveFailed,
+				FString::Printf(TEXT("Failed to resolve package filename for: %s"), *Package->GetName()));
+		}
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Standalone;
 		bDidSave = UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs);
@@ -450,6 +497,12 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetReplicationSettings(const TSh
 		}
 	}
 
+	FString ValidationError;
+	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
+	}
+
 	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (!Blueprint)
@@ -483,7 +536,7 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetReplicationSettings(const TSh
 		bool bTempBool = false;
 		if (Params->TryGetBoolField(TEXT("replicates"), bTempBool))
 		{
-			ActorCDO->SetReplicates(bTempBool);
+			SetActorDefaultReplicates(ActorCDO, bTempBool);
 		}
 
 		if (Params->TryGetBoolField(TEXT("replicate_movement"), bTempBool))
@@ -515,8 +568,16 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetReplicationSettings(const TSh
 	if (bSave)
 	{
 		UPackage* Package = Blueprint->GetOutermost();
-		const FString PackageFilename = FPackageName::LongPackageNameToFilename(
-			Package->GetName(), FPackageName::GetAssetPackageExtension());
+		FString PackageFilename;
+		if (!FPackageName::TryConvertLongPackageNameToFilename(
+				Package->GetName(),
+				PackageFilename,
+				FPackageName::GetAssetPackageExtension()))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::SaveFailed,
+				FString::Printf(TEXT("Failed to resolve package filename for: %s"), *Package->GetName()));
+		}
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Standalone;
 		bDidSave = UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs);

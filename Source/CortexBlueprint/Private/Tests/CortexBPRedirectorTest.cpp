@@ -4,6 +4,22 @@
 #include "Engine/Engine.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "HAL/PlatformProcess.h"
+
+namespace
+{
+	void FlushRedirectorTestAssetRegistryEvents()
+	{
+		IAssetRegistry& AssetRegistry =
+			FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+		for (int32 Index = 0; Index < 5; ++Index)
+		{
+			FPlatformProcess::Sleep(0.1f);
+			AssetRegistry.Tick(0.0f);
+		}
+	}
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPFixupRedirectorsTest,
@@ -17,6 +33,7 @@ bool FCortexBPFixupRedirectorsTest::RunTest(const FString& Parameters)
 	{
 		GEngine->Exec(nullptr, TEXT("log LogAssetRegistry Error"));
 	}
+	AddExpectedError(TEXT("package was marked as deleted in editor"), EAutomationExpectedErrorFlags::Contains, 1);
 
 	FCortexBPCommandHandler Handler;
 	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
@@ -56,6 +73,7 @@ bool FCortexBPFixupRedirectorsTest::RunTest(const FString& Parameters)
 
 	// Run fixup once more after cleanup delete so redirector package state is fully flushed.
 	Handler.Execute(TEXT("fixup_redirectors"), FixupParams);
+	FlushRedirectorTestAssetRegistryEvents();
 
 	if (GEngine)
 	{

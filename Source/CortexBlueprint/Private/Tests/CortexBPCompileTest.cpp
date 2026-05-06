@@ -3,6 +3,7 @@
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Containers/Ticker.h"
 #include "Engine/Blueprint.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "EdGraph/EdGraph.h"
@@ -68,6 +69,106 @@ bool FCortexBPCompileTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("compile non-existent should fail"), Result.bSuccess);
 		TestEqual(TEXT("Error should be BLUEPRINT_NOT_FOUND"),
 			Result.ErrorCode, CortexErrorCodes::BlueprintNotFound);
+	}
+
+	// Test: compile read-only mounted root rejects before loading
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TEXT("/Engine/BasicShapes/Cube"));
+		FCortexCommandResult Result = Handler.Execute(TEXT("compile"), Params);
+		TestFalse(TEXT("compile read-only mounted root should fail"), Result.bSuccess);
+		TestEqual(TEXT("Error should be INVALID_FIELD"),
+			Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Test: compile supported Level Script Blueprint synthetic path
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TEXT("__level_bp__:/Game/Maps/TestMap"));
+		FCortexCommandResult Result = Handler.Execute(TEXT("compile"), Params);
+		if (!Result.bSuccess)
+		{
+			AddInfo(FString::Printf(
+				TEXT("Level BP compile failed with %s: %s"),
+				*Result.ErrorCode,
+				*Result.ErrorMessage));
+		}
+		TestTrue(TEXT("compile level script Blueprint should succeed"), Result.bSuccess);
+		TestTrue(TEXT("level BP compile data should exist"), Result.Data.IsValid());
+		if (Result.Data.IsValid())
+		{
+			FString CompileStatus;
+			TestTrue(TEXT("level BP compile_status exists"),
+				Result.Data->TryGetStringField(TEXT("compile_status"), CompileStatus));
+			TestTrue(TEXT("level BP compile status should be non-error"),
+				CompileStatus == TEXT("success") || CompileStatus == TEXT("warning"));
+		}
+	}
+
+	// Test: relative Level Script Blueprint synthetic paths default to /Game
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TEXT("__level_bp__:Maps/TestMap"));
+		FCortexCommandResult Result = Handler.Execute(TEXT("compile"), Params);
+		if (!Result.bSuccess)
+		{
+			AddInfo(FString::Printf(
+				TEXT("Relative Level BP compile failed with %s: %s"),
+				*Result.ErrorCode,
+				*Result.ErrorMessage));
+		}
+		TestTrue(TEXT("compile relative level script Blueprint should succeed"), Result.bSuccess);
+	}
+
+	// Test: compile Level Script Blueprint synthetic path still rejects read-only roots
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TEXT("__level_bp__:/Engine/Maps/Entry"));
+		FCortexCommandResult Result = Handler.Execute(TEXT("compile"), Params);
+		TestFalse(TEXT("compile read-only level script Blueprint should fail"), Result.bSuccess);
+		TestEqual(TEXT("read-only level BP compile error should be INVALID_FIELD"),
+			Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Test: batch compile preflight supports Level Script Blueprint synthetic path
+	{
+		TSharedPtr<FJsonObject> Item = MakeShared<FJsonObject>();
+		Item->SetStringField(TEXT("target"), TEXT("__level_bp__:/Game/Maps/TestMap"));
+		Item->SetObjectField(TEXT("expected_fingerprint"), MakeShared<FJsonObject>());
+
+		TArray<TSharedPtr<FJsonValue>> Items;
+		Items.Add(MakeShared<FJsonValueObject>(Item));
+
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetArrayField(TEXT("items"), Items);
+
+		FCortexCommandResult Result = Handler.Execute(TEXT("compile"), Params);
+		TestFalse(TEXT("batch compile level script Blueprint stale preflight should fail"), Result.bSuccess);
+		TestEqual(TEXT("batch compile level BP stale preflight error"),
+			Result.ErrorCode, CortexErrorCodes::StalePrecondition);
+		TestTrue(TEXT("batch compile level BP error details should exist"), Result.ErrorDetails.IsValid());
+		if (Result.ErrorDetails.IsValid())
+		{
+			TestEqual(TEXT("batch compile level BP status"),
+				Result.ErrorDetails->GetStringField(TEXT("status")), TEXT("preflight_failed"));
+		}
+	}
+
+	// Test: batch compile preflight rejects read-only mounted root before loading
+	{
+		TSharedPtr<FJsonObject> Item = MakeShared<FJsonObject>();
+		Item->SetStringField(TEXT("target"), TEXT("/Engine/BasicShapes/Cube"));
+
+		TArray<TSharedPtr<FJsonValue>> Items;
+		Items.Add(MakeShared<FJsonValueObject>(Item));
+
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetArrayField(TEXT("items"), Items);
+
+		FCortexCommandResult Result = Handler.Execute(TEXT("compile"), Params);
+		TestFalse(TEXT("batch compile read-only mounted root should fail"), Result.bSuccess);
+		TestEqual(TEXT("Batch error should be INVALID_FIELD"),
+			Result.ErrorCode, CortexErrorCodes::InvalidField);
 	}
 
 	return true;
@@ -196,6 +297,7 @@ bool FCortexBPCompileWarningContractTest::RunTest(const FString& Parameters)
 
 		EventGraph->RemoveNode(Node);
 		FBlueprintEditorUtils::MarkBlueprintAsModified(TestBP);
+		FTSTicker::GetCoreTicker().Tick(0.0f);
 	}
 
 	if (!bFoundWarningCase)

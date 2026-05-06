@@ -15,7 +15,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexGraphPinConnectionTest::RunTest(const FString& Parameters)
 {
-	UPackage* TestPackage = NewObject<UPackage>(nullptr, TEXT("/Temp/CortexGraphPinConnectionTest"), RF_Transient);
+	UPackage* TestPackage = CreatePackage(TEXT("/Game/Temp/CortexGraphPinConnectionTest"));
 	TestPackage->SetPackageFlags(PKG_PlayInEditor);
 
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(

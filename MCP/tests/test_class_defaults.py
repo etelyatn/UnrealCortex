@@ -139,6 +139,31 @@ class TestSetClassDefaults:
             },
         )
 
+    def test_expected_fingerprint_is_forwarded_for_single_target(self):
+        connection = MagicMock()
+        connection.send_command.return_value = _fake_success_data()
+
+        tools = _register_tools(connection)
+        tools["set_class_defaults"](
+            "/Game/Test/BP_Test",
+            {"bReplicates": True},
+            compile=False,
+            save=False,
+            expected_fingerprint={"dirty_epoch": 42},
+        )
+
+        connection.send_command.assert_called_once_with(
+            "blueprint.set_class_defaults",
+            {
+                "asset_path": "/Game/Test/BP_Test",
+                "blueprint_path": "/Game/Test/BP_Test",
+                "properties": {"bReplicates": True},
+                "compile": False,
+                "save": False,
+                "expected_fingerprint": {"dirty_epoch": 42},
+            },
+        )
+
     def test_object_reference_values_are_passed_as_strings(self):
         connection = MagicMock()
         connection.send_command.return_value = _fake_success_data()

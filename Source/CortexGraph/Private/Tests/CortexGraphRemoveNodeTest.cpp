@@ -16,9 +16,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexGraphRemoveNodeTest::RunTest(const FString& Parameters)
 {
+    UPackage* TestPackage = CreatePackage(TEXT("/Game/Temp/CortexGraphRemoveNodeTest"));
+    TestPackage->SetPackageFlags(PKG_PlayInEditor);
     UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
         AActor::StaticClass(),
-        GetTransientPackage(),
+        TestPackage,
         FName(TEXT("BP_CortexGraphTest_RemoveNode")),
         BPTYPE_Normal,
         UBlueprint::StaticClass(),
@@ -28,6 +30,7 @@ bool FCortexGraphRemoveNodeTest::RunTest(const FString& Parameters)
 
     if (TestBP == nullptr)
     {
+        TestPackage->MarkAsGarbage();
         return true;
     }
 
@@ -161,6 +164,7 @@ bool FCortexGraphRemoveNodeTest::RunTest(const FString& Parameters)
 
     // Cleanup
     TestBP->MarkAsGarbage();
+    TestPackage->MarkAsGarbage();
 
     return true;
 }

@@ -65,6 +65,7 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
         properties: dict | None = None,
         compile: bool = True,
         save: bool = True,
+        expected_fingerprint: dict | None = None,
         items: list[dict] | None = None,
         blueprint_path: str = "",
     ) -> str:
@@ -83,6 +84,7 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
             properties: Dictionary mapping property names to their new values.
             compile: Auto-compile the Blueprint after setting properties (default: true)
             save: Auto-save the Blueprint to disk after setting properties (default: true)
+            expected_fingerprint: Optional stale-write guard for single-target mode.
             items: Optional batch item list. Each item must include target and properties,
                 and may include compile, save, and expected_fingerprint.
 
@@ -117,6 +119,8 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
                     "compile": compile,
                     "save": save,
                 }
+                if expected_fingerprint is not None:
+                    params["expected_fingerprint"] = expected_fingerprint
             response = connection.send_command("blueprint.set_class_defaults", params)
             return format_response(response.get("data", {}), "set_class_defaults")
         except ConnectionError as exc:

@@ -9,6 +9,35 @@
 #include "GameFramework/Actor.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphRelativeLevelBPPathTest,
+	"Cortex.Graph.RelativeLevelBPPath",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphRelativeLevelBPPathTest::RunTest(const FString& Parameters)
+{
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("graph"), TEXT("Cortex Graph"), TEXT("1.0.0"),
+		MakeShared<FCortexGraphCommandHandler>());
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TEXT("__level_bp__:Maps/TestMap"));
+	Params->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+
+	FCortexCommandResult Result = Router.Execute(TEXT("graph.get_subgraph"), Params);
+	if (!Result.bSuccess)
+	{
+		AddInfo(FString::Printf(
+			TEXT("Relative Level BP graph read failed with %s: %s"),
+			*Result.ErrorCode,
+			*Result.ErrorMessage));
+	}
+	TestTrue(TEXT("graph read supports relative level script Blueprint path"), Result.bSuccess);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexGraphListNodesTest,
     "Cortex.Graph.ListNodes",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
@@ -17,7 +46,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexGraphListNodesTest::RunTest(const FString& Parameters)
 {
     // Setup: Create a transient Blueprint for testing
-    UPackage* TestPackage = NewObject<UPackage>(nullptr, TEXT("/Temp/CortexGraphListNodesTest"), RF_Transient);
+    UPackage* TestPackage = CreatePackage(TEXT("/Game/Temp/CortexGraphListNodesTest"));
     TestPackage->SetPackageFlags(PKG_PlayInEditor);
 
     UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
