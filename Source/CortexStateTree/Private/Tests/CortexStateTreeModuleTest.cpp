@@ -252,8 +252,8 @@ bool FCortexStateTreeModuleRegistrationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("add_transition exposes save"),
 		HasParam(*AddTransitionParams, TEXT("save"), TEXT("boolean"), false));
 
-	TestFalse(TEXT("remove_transition does not expose source_state_id"),
-		HasParam(*RemoveTransitionParams, TEXT("source_state_id"), TEXT("string"), true));
+	TestFalse(TEXT("remove_transition does not expose source_state_id at all"),
+		HasParamNamed(*RemoveTransitionParams, TEXT("source_state_id")));
 	TestTrue(TEXT("remove_transition exposes state_id"),
 		HasParam(*RemoveTransitionParams, TEXT("state_id"), TEXT("string"), false));
 	TestTrue(TEXT("remove_transition exposes state_path"),
@@ -263,8 +263,8 @@ bool FCortexStateTreeModuleRegistrationTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("remove_transition exposes save"),
 		HasParam(*RemoveTransitionParams, TEXT("save"), TEXT("boolean"), false));
 
-	TestFalse(TEXT("set_transition_properties does not expose source_state_id"),
-		HasParam(*SetTransitionPropertiesParams, TEXT("source_state_id"), TEXT("string"), true));
+	TestFalse(TEXT("set_transition_properties does not expose source_state_id at all"),
+		HasParamNamed(*SetTransitionPropertiesParams, TEXT("source_state_id")));
 	TestTrue(TEXT("set_transition_properties exposes state_id"),
 		HasParam(*SetTransitionPropertiesParams, TEXT("state_id"), TEXT("string"), false));
 	TestTrue(TEXT("set_transition_properties exposes state_path"),
