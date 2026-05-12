@@ -360,10 +360,12 @@ FString FCortexCodexCliProvider::BuildLaunchCommandLine(
     {
         CommandLine += TEXT("--dangerously-bypass-approvals-and-sandbox ");
     }
-    else
+    else if (!bResumeSession)
     {
         CommandLine += FString::Printf(TEXT("--sandbox %s "), *GetCodexSandboxMode(AccessMode));
     }
+
+    CommandLine += TEXT("- ");
 
     return CommandLine.TrimStartAndEnd();
 }

@@ -83,6 +83,7 @@ private:
 	friend class FCortexCliSessionBuildClaudePromptEnvelopeTest;
 	friend class FCortexCliSessionBuildCodexPromptEnvelopeTest;
 	friend class FCortexCliSessionBuildCodexExecArgsTest;
+	friend class FCortexCliSessionBuildCodexResumeArgsTest;
 	friend class FCortexCliSessionLaunchOptionsPinnedAcrossSettingChangeTest;
 	friend class FCortexCliSessionDefaultLaunchPinsLiveSkipPermissionsTest;
 	friend class FCortexCliSessionCodexTurnExitPreservesResumableIdleStateTest;

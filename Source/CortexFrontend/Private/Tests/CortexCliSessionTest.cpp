@@ -403,6 +403,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionToolCallTurnIndexTest,
     "Cortex.Frontend.Session.ToolCallTurnIndex",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildCodexExecArgsTest, "Cortex.Frontend.CliSession.BuildCodexExecArgs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildCodexResumeArgsTest, "Cortex.Frontend.CliSession.BuildCodexResumeArgs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionLaunchOptionsPinnedAcrossSettingChangeTest, "Cortex.Frontend.CliSession.LaunchOptionsPinnedAcrossSettingChange", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionDefaultLaunchPinsLiveSkipPermissionsTest, "Cortex.Frontend.CliSession.DefaultLaunchPinsLiveSkipPermissions", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexTurnExitPreservesResumableIdleStateTest, "Cortex.Frontend.CliSession.CodexTurnExitPreservesResumableIdleState", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -563,6 +564,7 @@ bool FCortexCliSessionBuildCodexExecArgsTest::RunTest(const FString& Parameters)
 
     const FString CommandLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
     TestTrue(TEXT("Codex launch should include exec json"), CommandLine.Contains(TEXT("exec --json")));
+    TestTrue(TEXT("Codex launch should read prompt from stdin explicitly"), CommandLine.EndsWith(TEXT(" -")));
     TestTrue(TEXT("Codex launch should include model flag"), CommandLine.Contains(TEXT("-m \"gpt-5.4\"")));
     TestTrue(TEXT("Codex launch should include reasoning effort"), CommandLine.Contains(TEXT("-c model_reasoning_effort=maximum")));
     TestTrue(TEXT("Codex launch should include MCP overrides"), CommandLine.Contains(TEXT("mcp_servers.cortex_mcp.command")));
@@ -570,6 +572,32 @@ bool FCortexCliSessionBuildCodexExecArgsTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Codex launch should map guided access to workspace-write sandbox"), CommandLine.Contains(TEXT("--sandbox workspace-write")));
     TestFalse(TEXT("Codex launch should not bypass sandbox when skip permissions is false"), CommandLine.Contains(TEXT("--dangerously-bypass-approvals-and-sandbox")));
 
+    return true;
+}
+
+bool FCortexCliSessionBuildCodexResumeArgsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("codex-resume-session");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+    Config.ResolvedOptions.EffortLevel = ECortexEffortLevel::Medium;
+    Config.bHasLaunchOptions = true;
+    Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
+    Config.LaunchOptions.bSkipPermissions = false;
+
+    FCortexCliSession Session(Config);
+    const FString CommandLine = Session.BuildLaunchCommandLine(true, ECortexAccessMode::Guided);
+
+    TestTrue(TEXT("Codex resume should use exec resume json"), CommandLine.Contains(TEXT("exec resume --json")));
+    TestTrue(TEXT("Codex resume should include session id"), CommandLine.Contains(TEXT("\"codex-resume-session\"")));
+    TestTrue(TEXT("Codex resume should read prompt from stdin explicitly"), CommandLine.EndsWith(TEXT(" -")));
+    TestFalse(TEXT("Codex resume should not include unsupported sandbox flag"), CommandLine.Contains(TEXT("--sandbox")));
+    TestFalse(TEXT("Codex resume should not include initial working directory flag"), CommandLine.Contains(TEXT(" -C "), ESearchCase::CaseSensitive));
     return true;
 }
 
