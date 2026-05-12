@@ -24,6 +24,7 @@ def register_graph_tools(mcp, connection: UEConnection):
 
         Workflow for composites: call with include_subgraphs=True to discover
         composite subgraphs, then use the returned subgraph_path with other tools.
+        Delegate graphs are readable but not mutable through generic write tools.
 
         Args:
             asset_path: Full asset path to the Blueprint (e.g., '/Game/Blueprints/BP_Player.BP_Player').
@@ -116,6 +117,7 @@ def register_graph_tools(mcp, connection: UEConnection):
         """Add a new node to a Blueprint graph.
 
         Creates a new node of the specified class at the given position with optional parameters.
+        Delegate graphs are readable but not mutable; use graph_list_graphs to check kind.
 
         Args:
             asset_path: Full asset path to the Blueprint.
@@ -162,6 +164,7 @@ def register_graph_tools(mcp, connection: UEConnection):
         """Remove a node from a Blueprint graph.
 
         Deletes the specified node and all its connections.
+        Delegate graphs are readable but not mutable; use graph_list_graphs to check kind.
 
         Args:
             asset_path: Full asset path to the Blueprint.
@@ -203,6 +206,7 @@ def register_graph_tools(mcp, connection: UEConnection):
         """Connect two nodes in a Blueprint graph.
 
         Creates a connection from a source pin to a target pin.
+        Delegate graphs are readable but not mutable; use graph_list_graphs to check kind.
 
         Args:
             asset_path: Full asset path to the Blueprint.
@@ -248,6 +252,7 @@ def register_graph_tools(mcp, connection: UEConnection):
         """Disconnect a pin in a Blueprint graph.
 
         Removes all connections from the specified pin.
+        Delegate graphs are readable but not mutable; use graph_list_graphs to check kind.
 
         Args:
             asset_path: Full asset path to the Blueprint.
@@ -290,6 +295,7 @@ def register_graph_tools(mcp, connection: UEConnection):
         """Set the default value of an input pin in a Blueprint graph.
 
         Sets the default value for an input pin. The pin must not be connected.
+        Delegate graphs are readable but not mutable; use graph_list_graphs to check kind.
 
         Args:
             asset_path: Full asset path to the Blueprint.

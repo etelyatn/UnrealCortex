@@ -35,6 +35,19 @@ def test_graph_auto_layout_calls_correct_command():
     connection.invalidate_cache.assert_any_call("blueprint.")
 
 
+def test_graph_auto_layout_docstring_documents_delegate_read_only_policy():
+    """Tool docs should tell agents that delegate graphs are discovery-only."""
+    from graph.layout import register_graph_layout_tools
+
+    mcp = MagicMock()
+    connection = MagicMock()
+
+    register_graph_layout_tools(mcp, connection)
+    tool_func = mcp.tool.return_value.call_args[0][0]
+
+    assert "delegate graphs are readable but not mutable" in (tool_func.__doc__ or "").lower()
+
+
 def test_graph_auto_layout_optional_params_excluded_when_none():
     """Optional params (graph_name, subgraph_path, spacing) are not sent when not provided."""
     from graph.layout import register_graph_layout_tools

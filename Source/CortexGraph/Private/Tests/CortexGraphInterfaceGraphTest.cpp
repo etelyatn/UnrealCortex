@@ -192,6 +192,64 @@ bool FCortexGraphInterfaceGraphListGraphsKindTest::RunTest(const FString& Parame
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphInterfaceGraphCapabilitiesDocTest,
+	"Cortex.Graph.InterfaceGraph.Capabilities_DocumentGraphKindsAndDelegatePolicy",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphInterfaceGraphCapabilitiesDocTest::RunTest(const FString& Parameters)
+{
+	FCortexGraphCommandHandler Handler;
+	const TArray<FCortexCommandInfo> Commands = Handler.GetSupportedCommands();
+
+	const auto FindCommand = [&Commands](const FString& CommandName) -> const FCortexCommandInfo*
+	{
+		for (const FCortexCommandInfo& Command : Commands)
+		{
+			if (Command.Name == CommandName)
+			{
+				return &Command;
+			}
+		}
+		return nullptr;
+	};
+
+	const FCortexCommandInfo* ListGraphs = FindCommand(TEXT("list_graphs"));
+	TestNotNull(TEXT("list_graphs capability exists"), ListGraphs);
+	if (ListGraphs)
+	{
+		TestTrue(
+			TEXT("list_graphs capability documents graph kind metadata"),
+			ListGraphs->Description.Contains(TEXT("kind")));
+		TestTrue(
+			TEXT("list_graphs capability documents owning interface metadata"),
+			ListGraphs->Description.Contains(TEXT("owning_interface")));
+	}
+
+	const TArray<FString> MutableCommands = {
+		TEXT("add_node"),
+		TEXT("remove_node"),
+		TEXT("connect"),
+		TEXT("disconnect"),
+		TEXT("set_pin_value"),
+		TEXT("auto_layout")
+	};
+
+	for (const FString& CommandName : MutableCommands)
+	{
+		const FCortexCommandInfo* Command = FindCommand(CommandName);
+		TestNotNull(FString::Printf(TEXT("%s capability exists"), *CommandName), Command);
+		if (Command)
+		{
+			TestTrue(
+				FString::Printf(TEXT("%s capability documents delegate read-only policy"), *CommandName),
+				Command->Description.Contains(TEXT("Delegate graphs are readable but not mutable")));
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexGraphInterfaceGraphFindDirectTest,
 	"Cortex.Graph.InterfaceGraph.FindGraph_ResolvesMacroAndInterfaceImpl",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

@@ -87,6 +87,22 @@ def test_graph_trace_exec_sends_cached_trace_command():
     )
 
 
+def test_graph_write_tool_docstrings_document_delegate_read_only_policy():
+    connection = MagicMock()
+    tools = _register_tools(connection)
+    write_tool_names = [
+        "graph_add_node",
+        "graph_remove_node",
+        "graph_connect",
+        "graph_disconnect",
+        "graph_set_pin_value",
+    ]
+
+    for tool_name in write_tool_names:
+        doc = tools[tool_name].__doc__ or ""
+        assert "delegate graphs are readable but not mutable" in doc.lower()
+
+
 def test_repo_has_no_active_legacy_graph_read_refs():
     repo_root = Path(__file__).resolve().parents[3]
     targets = [

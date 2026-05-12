@@ -22,7 +22,9 @@ def register_graph_layout_tools(mcp, connection: UEConnection):
         """Auto-arrange nodes in Blueprint graphs for readability.
 
         Repositions nodes using execution-first left-to-right layout.
-        Works on all graph types: EventGraph, function graphs, Widget BP graphs.
+        Works on mutable graph types: EventGraph/ubergraph, function, macro,
+        and interface implementation graphs. Delegate graphs are readable but not mutable;
+        use graph_list_graphs to check kind before targeting one.
 
         Note: Nodes at position (0,0) in incremental mode are treated as unpositioned
         and will be repositioned. If a node was intentionally placed at origin, use
