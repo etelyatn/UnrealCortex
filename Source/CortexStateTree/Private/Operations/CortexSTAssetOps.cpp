@@ -3,6 +3,7 @@
 #include "CortexCommandRouter.h"
 #include "CortexSTTypes.h"
 #include "CortexStateTreeModule.h"
+#include "CortexEditorUtils.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "StateTreeFactory.h"
@@ -62,12 +63,26 @@ UClass* ResolveSchemaClass(const FString& SchemaClassPath)
 		return FoundClass;
 	}
 
-	if (UClass* LoadedClass = LoadObject<UClass>(nullptr, *SchemaClassPath))
+	if (UClass* LooseMatch = FindFirstObject<UClass>(*SchemaClassPath, EFindFirstObjectOptions::NativeFirst))
 	{
-		return LoadedClass;
+		return LooseMatch;
 	}
 
-	return FindFirstObject<UClass>(*SchemaClassPath, EFindFirstObjectOptions::NativeFirst);
+	const FString ObjectPath = FPackageName::ExportTextPathToObjectPath(SchemaClassPath);
+	if (!ObjectPath.Contains(TEXT(".")))
+	{
+		return nullptr;
+	}
+
+	const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
+	if (PackageName.IsEmpty()
+		|| !FPackageName::IsValidLongPackageName(PackageName, true)
+		|| (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName)))
+	{
+		return nullptr;
+	}
+
+	return LoadObject<UClass>(nullptr, *ObjectPath);
 }
 
 FCortexCommandResult MakeInvalidSchemaError(
@@ -158,6 +173,8 @@ FCortexCommandResult FCortexSTAssetOps::ListAssets(const TSharedPtr<FJsonObject>
 		Params->TryGetStringField(TEXT("path_filter"), PathFilter);
 		Params->TryGetNumberField(TEXT("limit"), Limit);
 	}
+
+	PathFilter = FCortexEditorUtils::NormalizeMountedContentPath(PathFilter);
 
 	Limit = FMath::Max(Limit, 0);
 

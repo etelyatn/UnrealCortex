@@ -4,6 +4,8 @@
 #include "CortexStateTreeTestSchema.h"
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
+#include "Misc/OutputDevice.h"
+#include "Misc/PackageName.h"
 #include "StateTree.h"
 #include "UObject/Class.h"
 
@@ -35,6 +37,28 @@ private:
 	UClass* Class = nullptr;
 	EClassFlags Flags = CLASS_None;
 	bool bHadFlags = false;
+};
+
+class FCortexSkipPackageWarningCapture final : public FOutputDevice
+{
+public:
+	int32 SkipPackageWarnings = 0;
+
+	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category) override
+	{
+		(void)Category;
+
+		if (Verbosity != ELogVerbosity::Warning || V == nullptr)
+		{
+			return;
+		}
+
+		const FString Message(V);
+		if (Message.Contains(TEXT("SkipPackage")))
+		{
+			++SkipPackageWarnings;
+		}
+	}
 };
 }
 
@@ -92,6 +116,25 @@ bool FCortexStateTreeCreateRejectsInvalidSchemaClassesTest::RunTest(const FStrin
 		ExpectInvalidSchema(CortexStateTreeTest::GetTestSchemaClassPath(), TEXT("ST_NewerVersionSchema"), TEXT("newer version schema"));
 	}
 
+	{
+		FCortexSkipPackageWarningCapture Capture;
+		GLog->AddOutputDevice(&Capture);
+
+		const FString AssetPath = CortexStateTreeTest::MakeAssetPath(TEXT("ST_MissingSchema"));
+		TSharedPtr<FJsonObject> Params = CortexStateTreeTest::Params();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("schema_class"), TEXT("/Script/NoSuchModule.NoSuchSchema"));
+
+		const FCortexCommandResult Result = Handler.Execute(TEXT("create_asset"), Params);
+
+		GLog->RemoveOutputDevice(&Capture);
+
+		TestFalse(TEXT("missing schema should fail"), Result.bSuccess);
+		TestEqual(TEXT("missing schema error code"), Result.ErrorCode, CortexErrorCodes::StateTreeSchemaInvalid);
+		TestEqual(TEXT("missing schema should not emit SkipPackage warnings"), Capture.SkipPackageWarnings, 0);
+		CortexStateTreeTest::DeleteIfLoaded(AssetPath);
+	}
+
 	return true;
 }
 
@@ -117,10 +160,16 @@ bool FCortexStateTreeAssetCrudTest::RunTest(const FString& Parameters)
 	TestNotNull(TEXT("created StateTree loads"), LoadObject<UStateTree>(nullptr, *AssetPath));
 
 	TSharedPtr<FJsonObject> ListParams = CortexStateTreeTest::Params();
-	ListParams->SetStringField(TEXT("path_filter"), TEXT("/Game/Temp"));
+	ListParams->SetStringField(TEXT("path_filter"), TEXT("Temp"));
 	FCortexCommandResult List = Handler.Execute(TEXT("list_assets"), ListParams);
 	TestTrue(TEXT("list succeeds"), List.bSuccess);
 	TestTrue(TEXT("list has assets"), List.Data.IsValid() && List.Data->HasTypedField<EJson::Array>(TEXT("assets")));
+	if (List.Data.IsValid())
+	{
+		FString ReturnedFilter;
+		List.Data->TryGetStringField(TEXT("path_filter"), ReturnedFilter);
+		TestEqual(TEXT("relative list path filter normalizes to /Game"), ReturnedFilter, FString(TEXT("/Game/Temp")));
+	}
 
 	TSharedPtr<FJsonObject> DuplicateParams = CortexStateTreeTest::Params();
 	DuplicateParams->SetStringField(TEXT("asset_path"), AssetPath);
@@ -130,16 +179,41 @@ bool FCortexStateTreeAssetCrudTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("duplicate succeeds"), Duplicate.bSuccess);
 	TestNotNull(TEXT("copy loads"), LoadObject<UStateTree>(nullptr, *CopyPath));
 
-	TSharedPtr<FJsonObject> DeleteParams = CortexStateTreeTest::Params();
-	DeleteParams->SetStringField(TEXT("asset_path"), CopyPath);
-	DeleteParams->SetBoolField(TEXT("dry_run"), true);
-	FCortexCommandResult DryRun = Handler.Execute(TEXT("delete_asset"), DeleteParams);
+	TSharedPtr<FJsonObject> DryRunParams = CortexStateTreeTest::Params();
+	DryRunParams->SetStringField(TEXT("asset_path"), CopyPath);
+	DryRunParams->SetBoolField(TEXT("dry_run"), true);
+	FCortexCommandResult DryRun = Handler.Execute(TEXT("delete_asset"), DryRunParams);
 	TestTrue(TEXT("dry run succeeds"), DryRun.bSuccess);
 	bool bWouldDelete = false;
 	DryRun.Data->TryGetBoolField(TEXT("would_delete"), bWouldDelete);
 	TestTrue(TEXT("dry run reports would_delete"), bWouldDelete);
 
-	CortexStateTreeTest::DeleteIfLoaded(CopyPath);
+	TSharedPtr<FJsonObject> DeleteMissingFingerprintParams = CortexStateTreeTest::Params();
+	DeleteMissingFingerprintParams->SetStringField(TEXT("asset_path"), CopyPath);
+	FCortexCommandResult MissingFingerprintDelete = Handler.Execute(TEXT("delete_asset"), DeleteMissingFingerprintParams);
+	TestFalse(TEXT("delete without expected fingerprint fails"), MissingFingerprintDelete.bSuccess);
+	TestEqual(TEXT("delete without expected fingerprint returns stale precondition"),
+		MissingFingerprintDelete.ErrorCode,
+		CortexErrorCodes::StalePrecondition);
+
+	TSharedPtr<FJsonObject> DeleteParams = CortexStateTreeTest::Params();
+	DeleteParams->SetStringField(TEXT("asset_path"), CopyPath);
+	if (Duplicate.Data.IsValid() && Duplicate.Data->HasTypedField<EJson::Object>(TEXT("fingerprint")))
+	{
+		const TSharedPtr<FJsonObject>* Fingerprint = nullptr;
+		Duplicate.Data->TryGetObjectField(TEXT("fingerprint"), Fingerprint);
+		if (Fingerprint != nullptr && Fingerprint->IsValid())
+		{
+			DeleteParams->SetObjectField(TEXT("expected_fingerprint"), *Fingerprint);
+		}
+	}
+
+	FCortexCommandResult Delete = Handler.Execute(TEXT("delete_asset"), DeleteParams);
+	TestTrue(TEXT("delete succeeds"), Delete.bSuccess);
+	const FString CopyPackageName = FPackageName::ObjectPathToPackageName(CopyPath);
+	TestFalse(TEXT("copy package no longer exists"),
+		FindPackage(nullptr, *CopyPackageName) != nullptr || FPackageName::DoesPackageExist(CopyPackageName));
+
 	CortexStateTreeTest::DeleteIfLoaded(AssetPath);
 	return true;
 }
