@@ -60,6 +60,54 @@ public:
 		}
 	}
 };
+
+class FCortexTransactionWarningCapture final : public FOutputDevice
+{
+public:
+	int32 TransactionWarnings = 0;
+
+	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category) override
+	{
+		(void)Category;
+
+		const ELogVerbosity::Type VerbosityLevel =
+			static_cast<ELogVerbosity::Type>(Verbosity & ELogVerbosity::VerbosityMask);
+		if (VerbosityLevel != ELogVerbosity::Warning || V == nullptr)
+		{
+			return;
+		}
+
+		const FString Message(V);
+		if (Message.Contains(TEXT("Non zero active count in UTransBuffer::Reset")))
+		{
+			++TransactionWarnings;
+		}
+	}
+
+	virtual bool CanBeUsedOnAnyThread() const override
+	{
+		return true;
+	}
+
+	virtual bool CanBeUsedOnMultipleThreads() const override
+	{
+		return true;
+	}
+};
+
+FString GetAssetPackageFilename(const FString& AssetPath)
+{
+	return FPackageName::LongPackageNameToFilename(
+		FPackageName::ObjectPathToPackageName(AssetPath),
+		FPackageName::GetAssetPackageExtension());
+}
+
+FString GetAssetObjectPath(const FString& AssetPath)
+{
+	const FString PackageName = FPackageName::ObjectPathToPackageName(AssetPath);
+	const FString AssetName = FPackageName::GetShortName(PackageName);
+	return FString::Printf(TEXT("%s.%s"), *PackageName, *AssetName);
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -149,6 +197,13 @@ bool FCortexStateTreeAssetCrudTest::RunTest(const FString& Parameters)
 	FCortexStateTreeCommandHandler Handler;
 	const FString AssetPath = CortexStateTreeTest::MakeAssetPath(TEXT("ST_CRUD"));
 	const FString CopyPath = AssetPath + TEXT("_Copy");
+	const FString OutsideAssetPath = FString::Printf(
+		TEXT("/Game/TempSibling/ST_CRUD_Outside_%s"),
+		*CortexStateTreeTest::MakeSuffix());
+	const FString AssetObjectPath = GetAssetObjectPath(AssetPath);
+	const FString OutsideAssetObjectPath = GetAssetObjectPath(OutsideAssetPath);
+	FCortexTransactionWarningCapture TransactionCapture;
+	GLog->AddOutputDevice(&TransactionCapture);
 
 	TSharedPtr<FJsonObject> CreateParams = CortexStateTreeTest::Params();
 	CreateParams->SetStringField(TEXT("asset_path"), AssetPath);
@@ -158,6 +213,14 @@ bool FCortexStateTreeAssetCrudTest::RunTest(const FString& Parameters)
 	FCortexCommandResult Create = Handler.Execute(TEXT("create_asset"), CreateParams);
 	TestTrue(TEXT("create succeeds"), Create.bSuccess);
 	TestNotNull(TEXT("created StateTree loads"), LoadObject<UStateTree>(nullptr, *AssetPath));
+
+	TSharedPtr<FJsonObject> OutsideCreateParams = CortexStateTreeTest::Params();
+	OutsideCreateParams->SetStringField(TEXT("asset_path"), OutsideAssetPath);
+	OutsideCreateParams->SetStringField(TEXT("schema_class"), CortexStateTreeTest::GetTestSchemaClassPath());
+	OutsideCreateParams->SetBoolField(TEXT("save"), false);
+	FCortexCommandResult OutsideCreate = Handler.Execute(TEXT("create_asset"), OutsideCreateParams);
+	TestTrue(TEXT("outside-filter create succeeds"), OutsideCreate.bSuccess);
+	TestNotNull(TEXT("outside-filter StateTree loads"), LoadObject<UStateTree>(nullptr, *OutsideAssetPath));
 
 	TSharedPtr<FJsonObject> ListParams = CortexStateTreeTest::Params();
 	ListParams->SetStringField(TEXT("path_filter"), TEXT("Temp"));
@@ -169,15 +232,55 @@ bool FCortexStateTreeAssetCrudTest::RunTest(const FString& Parameters)
 		FString ReturnedFilter;
 		List.Data->TryGetStringField(TEXT("path_filter"), ReturnedFilter);
 		TestEqual(TEXT("relative list path filter normalizes to /Game"), ReturnedFilter, FString(TEXT("/Game/Temp")));
+
+		const TArray<TSharedPtr<FJsonValue>>* AssetValues = nullptr;
+		if (List.Data->TryGetArrayField(TEXT("assets"), AssetValues) && AssetValues != nullptr)
+		{
+			bool bFoundTempAsset = false;
+			bool bFoundOutsideAsset = false;
+			for (const TSharedPtr<FJsonValue>& AssetValue : *AssetValues)
+			{
+				if (!AssetValue.IsValid() || AssetValue->Type != EJson::Object)
+				{
+					continue;
+				}
+
+				const TSharedPtr<FJsonObject> AssetObject = AssetValue->AsObject();
+				if (!AssetObject.IsValid())
+				{
+					continue;
+				}
+
+				FString ListedAssetPath;
+				if (AssetObject->TryGetStringField(TEXT("asset_path"), ListedAssetPath))
+				{
+					if (ListedAssetPath == AssetObjectPath)
+					{
+						bFoundTempAsset = true;
+					}
+					if (ListedAssetPath == OutsideAssetObjectPath)
+					{
+						bFoundOutsideAsset = true;
+					}
+				}
+			}
+
+			TestTrue(TEXT("list includes asset under normalized /Game/Temp filter"), bFoundTempAsset);
+			TestFalse(TEXT("list excludes sibling path outside normalized /Game/Temp filter"), bFoundOutsideAsset);
+		}
 	}
 
 	TSharedPtr<FJsonObject> DuplicateParams = CortexStateTreeTest::Params();
 	DuplicateParams->SetStringField(TEXT("asset_path"), AssetPath);
 	DuplicateParams->SetStringField(TEXT("new_asset_path"), CopyPath);
-	DuplicateParams->SetBoolField(TEXT("save"), false);
+	DuplicateParams->SetBoolField(TEXT("save"), true);
 	FCortexCommandResult Duplicate = Handler.Execute(TEXT("duplicate_asset"), DuplicateParams);
 	TestTrue(TEXT("duplicate succeeds"), Duplicate.bSuccess);
 	TestNotNull(TEXT("copy loads"), LoadObject<UStateTree>(nullptr, *CopyPath));
+
+	const FString CopyPackageFilename = GetAssetPackageFilename(CopyPath);
+	TestTrue(TEXT("saved duplicate package exists on disk before delete"),
+		FPlatformFileManager::Get().GetPlatformFile().FileExists(*CopyPackageFilename));
 
 	TSharedPtr<FJsonObject> DryRunParams = CortexStateTreeTest::Params();
 	DryRunParams->SetStringField(TEXT("asset_path"), CopyPath);
@@ -213,7 +316,13 @@ bool FCortexStateTreeAssetCrudTest::RunTest(const FString& Parameters)
 	const FString CopyPackageName = FPackageName::ObjectPathToPackageName(CopyPath);
 	TestFalse(TEXT("copy package no longer exists"),
 		FindPackage(nullptr, *CopyPackageName) != nullptr || FPackageName::DoesPackageExist(CopyPackageName));
+	TestFalse(TEXT("saved duplicate package file is removed from disk after delete"),
+		FPlatformFileManager::Get().GetPlatformFile().FileExists(*CopyPackageFilename));
 
+	CortexStateTreeTest::DeleteIfLoaded(CopyPath);
 	CortexStateTreeTest::DeleteIfLoaded(AssetPath);
+	CortexStateTreeTest::DeleteIfLoaded(OutsideAssetPath);
+	GLog->RemoveOutputDevice(&TransactionCapture);
+	TestEqual(TEXT("delete should not emit transaction reset warnings"), TransactionCapture.TransactionWarnings, 0);
 	return true;
 }

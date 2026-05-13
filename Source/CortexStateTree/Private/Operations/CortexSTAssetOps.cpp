@@ -439,9 +439,6 @@ FCortexCommandResult FCortexSTAssetOps::DeleteAsset(const TSharedPtr<FJsonObject
 			ReferencerDetails);
 	}
 
-	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex: Delete StateTree %s"), *Context.StateTree->GetName())));
-
 	UPackage* Package = Context.StateTree->GetOutermost();
 	FString PackageFilename = FPackageName::LongPackageNameToFilename(
 		Package->GetName(),
@@ -460,6 +457,8 @@ FCortexCommandResult FCortexSTAssetOps::DeleteAsset(const TSharedPtr<FJsonObject
 
 	TArray<UObject*> ObjectsToDelete;
 	ObjectsToDelete.Add(Context.StateTree);
+	// ForceDeleteObjects resets the transaction buffer internally when undo references exist.
+	// Wrapping it in another FScopedTransaction leaves ActiveCount > 0 during Reset and emits a warning.
 	const int32 DeletedCount = ObjectTools::ForceDeleteObjects(ObjectsToDelete, false);
 
 	if (DeleteGuard != nullptr)
