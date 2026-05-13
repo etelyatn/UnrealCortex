@@ -69,12 +69,68 @@ bool FCortexStateTreeDumpTreeTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("dump includes data"), DumpResult.Data.IsValid());
 	if (DumpResult.Data.IsValid())
 	{
+		FString ReturnedAssetPath;
+		TestTrue(TEXT("dump includes top-level asset_path"),
+			DumpResult.Data->TryGetStringField(TEXT("asset_path"), ReturnedAssetPath));
+		TestEqual(TEXT("dump asset_path matches object path"), ReturnedAssetPath, AssetPath);
 		TestTrue(TEXT("dump includes states array"),
 			DumpResult.Data->HasTypedField<EJson::Array>(TEXT("states")));
 		TestTrue(TEXT("dump includes validation object"),
 			DumpResult.Data->HasTypedField<EJson::Object>(TEXT("validation")));
 		TestTrue(TEXT("dump includes fingerprint object"),
 			DumpResult.Data->HasTypedField<EJson::Object>(TEXT("fingerprint")));
+	}
+
+	CortexStateTreeTest::DeleteIfLoaded(AssetPath);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexStateTreeGetStateByIdTest,
+	"Cortex.StateTree.Inspect.GetState.ById",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexStateTreeGetStateByIdTest::RunTest(const FString& Parameters)
+{
+	FCortexStateTreeCommandHandler Handler;
+	const FString AssetPath = CortexStateTreeTest::MakeAssetPath(TEXT("ST_GetStateById"));
+
+	if (!CreateTestStateTree(*this, Handler, AssetPath))
+	{
+		CortexStateTreeTest::DeleteIfLoaded(AssetPath);
+		return false;
+	}
+
+	UStateTreeState* RootState = GetRootState(AssetPath);
+	TestNotNull(TEXT("root state loads"), RootState);
+	if (RootState == nullptr)
+	{
+		CortexStateTreeTest::DeleteIfLoaded(AssetPath);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> GetParams = CortexStateTreeTest::Params();
+	GetParams->SetStringField(TEXT("asset_path"), AssetPath);
+	GetParams->SetStringField(TEXT("state_id"), RootState->ID.ToString(EGuidFormats::DigitsWithHyphens));
+
+	const FCortexCommandResult GetResult = Handler.Execute(TEXT("get_state"), GetParams);
+	TestTrue(TEXT("get_state by id succeeds"), GetResult.bSuccess);
+	TestTrue(TEXT("get_state by id includes data"), GetResult.Data.IsValid());
+	if (GetResult.Data.IsValid())
+	{
+		FString ReturnedId;
+		FString ReturnedPath;
+		FString ReturnedAssetPath;
+		TestTrue(TEXT("state id is returned"),
+			GetResult.Data->TryGetStringField(TEXT("id"), ReturnedId));
+		TestEqual(TEXT("returned id matches root"), ReturnedId, RootState->ID.ToString(EGuidFormats::DigitsWithHyphens));
+		TestTrue(TEXT("state path is returned"),
+			GetResult.Data->TryGetStringField(TEXT("path"), ReturnedPath));
+		TestEqual(TEXT("returned path matches root"), ReturnedPath, FString(TEXT("Root")));
+		TestTrue(TEXT("get_state by id includes top-level asset_path"),
+			GetResult.Data->TryGetStringField(TEXT("asset_path"), ReturnedAssetPath));
+		TestEqual(TEXT("get_state by id asset_path matches object path"), ReturnedAssetPath, AssetPath);
 	}
 
 	CortexStateTreeTest::DeleteIfLoaded(AssetPath);
@@ -108,11 +164,50 @@ bool FCortexStateTreeGetStateByPathTest::RunTest(const FString& Parameters)
 	if (GetResult.Data.IsValid())
 	{
 		FString StatePath;
+		FString ReturnedAssetPath;
 		TestTrue(TEXT("state path is returned"),
 			GetResult.Data->TryGetStringField(TEXT("path"), StatePath));
 		TestEqual(TEXT("state_path resolves root"), StatePath, FString(TEXT("Root")));
+		TestTrue(TEXT("get_state includes top-level asset_path"),
+			GetResult.Data->TryGetStringField(TEXT("asset_path"), ReturnedAssetPath));
+		TestEqual(TEXT("get_state asset_path matches object path"), ReturnedAssetPath, AssetPath);
 		TestTrue(TEXT("get_state includes fingerprint object"),
 			GetResult.Data->HasTypedField<EJson::Object>(TEXT("fingerprint")));
+	}
+
+	CortexStateTreeTest::DeleteIfLoaded(AssetPath);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexStateTreeGetStateDefaultsToRootTest,
+	"Cortex.StateTree.Inspect.GetState.DefaultsToRoot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexStateTreeGetStateDefaultsToRootTest::RunTest(const FString& Parameters)
+{
+	FCortexStateTreeCommandHandler Handler;
+	const FString AssetPath = CortexStateTreeTest::MakeAssetPath(TEXT("ST_GetStateDefaultRoot"));
+
+	if (!CreateTestStateTree(*this, Handler, AssetPath))
+	{
+		CortexStateTreeTest::DeleteIfLoaded(AssetPath);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> GetParams = CortexStateTreeTest::Params();
+	GetParams->SetStringField(TEXT("asset_path"), AssetPath);
+
+	const FCortexCommandResult GetResult = Handler.Execute(TEXT("get_state"), GetParams);
+	TestTrue(TEXT("get_state without selector succeeds"), GetResult.bSuccess);
+	TestTrue(TEXT("get_state without selector includes data"), GetResult.Data.IsValid());
+	if (GetResult.Data.IsValid())
+	{
+		FString ReturnedPath;
+		TestTrue(TEXT("default root path is returned"),
+			GetResult.Data->TryGetStringField(TEXT("path"), ReturnedPath));
+		TestEqual(TEXT("missing selector resolves root"), ReturnedPath, FString(TEXT("Root")));
 	}
 
 	CortexStateTreeTest::DeleteIfLoaded(AssetPath);
