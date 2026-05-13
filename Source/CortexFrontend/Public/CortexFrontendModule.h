@@ -65,6 +65,7 @@ private:
 
     static const FName CortexChatTabId;
     static const FName GenStudioTabId;
+    static const FName ToolMenuOwnerName;
     FDelegateHandle StartupCallbackHandle;
     FDelegateHandle ConversionDelegateHandle;
     FDelegateHandle AnalysisDelegateHandle;
