@@ -4,6 +4,7 @@
 #include "CortexTypes.h"
 #include "Operations/CortexSTAssetOps.h"
 #include "Operations/CortexSTInspectOps.h"
+#include "Operations/CortexSTValidationOps.h"
 
 FCortexCommandResult FCortexStateTreeCommandHandler::Execute(
 	const FString& Command,
@@ -35,6 +36,18 @@ FCortexCommandResult FCortexStateTreeCommandHandler::Execute(
 	if (Command == TEXT("get_state"))
 	{
 		return FCortexSTInspectOps::GetState(Params);
+	}
+	if (Command == TEXT("check_structure"))
+	{
+		return FCortexSTValidationOps::CheckStructure(Params);
+	}
+	if (Command == TEXT("validate_asset"))
+	{
+		return FCortexSTValidationOps::ValidateAsset(Params);
+	}
+	if (Command == TEXT("compile"))
+	{
+		return FCortexSTValidationOps::Compile(Params);
 	}
 
 	return FCortexCommandRouter::Error(
