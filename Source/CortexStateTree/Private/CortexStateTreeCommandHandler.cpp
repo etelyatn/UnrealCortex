@@ -4,6 +4,7 @@
 #include "CortexTypes.h"
 #include "Operations/CortexSTAssetOps.h"
 #include "Operations/CortexSTInspectOps.h"
+#include "Operations/CortexSTStateOps.h"
 #include "Operations/CortexSTValidationOps.h"
 
 FCortexCommandResult FCortexStateTreeCommandHandler::Execute(
@@ -48,6 +49,26 @@ FCortexCommandResult FCortexStateTreeCommandHandler::Execute(
 	if (Command == TEXT("compile"))
 	{
 		return FCortexSTValidationOps::Compile(Params);
+	}
+	if (Command == TEXT("add_state"))
+	{
+		return FCortexSTStateOps::AddState(Params);
+	}
+	if (Command == TEXT("remove_state"))
+	{
+		return FCortexSTStateOps::RemoveState(Params);
+	}
+	if (Command == TEXT("rename_state"))
+	{
+		return FCortexSTStateOps::RenameState(Params);
+	}
+	if (Command == TEXT("move_state"))
+	{
+		return FCortexSTStateOps::MoveState(Params);
+	}
+	if (Command == TEXT("set_state_properties"))
+	{
+		return FCortexSTStateOps::SetStateProperties(Params);
 	}
 
 	return FCortexCommandRouter::Error(
