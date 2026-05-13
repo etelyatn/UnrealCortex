@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
 #include "Misc/Guid.h"
+#include "Misc/PackageName.h"
 #include "ObjectTools.h"
 
 namespace CortexStateTreeTest
@@ -29,11 +30,17 @@ inline FString GetTestSchemaClassPath()
 
 inline void DeleteIfLoaded(const FString& AssetPath)
 {
-	if (UObject* Asset = LoadObject<UObject>(nullptr, *AssetPath))
+	const FString PackageName = FPackageName::ObjectPathToPackageName(AssetPath);
+	const FString LookupPackageName = PackageName.IsEmpty() ? AssetPath : PackageName;
+	if (!LookupPackageName.IsEmpty()
+		&& (FindPackage(nullptr, *LookupPackageName) || FPackageName::DoesPackageExist(LookupPackageName)))
 	{
-		TArray<UObject*> Objects;
-		Objects.Add(Asset);
-		ObjectTools::ForceDeleteObjects(Objects, false);
+		if (UObject* Asset = LoadObject<UObject>(nullptr, *AssetPath))
+		{
+			TArray<UObject*> Objects;
+			Objects.Add(Asset);
+			ObjectTools::ForceDeleteObjects(Objects, false);
+		}
 	}
 }
 }

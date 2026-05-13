@@ -3,6 +3,7 @@
 #include "CortexAssetFingerprint.h"
 #include "CortexBatchMutation.h"
 #include "CortexCommandRouter.h"
+#include "CortexEditorUtils.h"
 #include "GameplayTagsManager.h"
 #include "Misc/PackageName.h"
 #include "StateTree.h"
@@ -36,7 +37,8 @@ bool GetOptionalBool(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldNa
 
 FString NormalizeAssetPath(const FString& AssetPath)
 {
-	return FPackageName::ExportTextPathToObjectPath(AssetPath);
+	return FPackageName::ExportTextPathToObjectPath(
+		FCortexEditorUtils::NormalizeMountedContentPath(AssetPath));
 }
 
 bool ValidateReadablePackage(const FString& AssetPath, FString& OutPackageName, FCortexCommandResult& OutError)
@@ -63,6 +65,15 @@ bool ValidateWritablePackage(const FString& AssetPath, FString& OutPackageName, 
 		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
 			FString::Printf(TEXT("Invalid StateTree package path: %s"), *AssetPath));
+		return false;
+	}
+
+	FString WritableError;
+	if (!FCortexEditorUtils::IsWritableMountedContentPath(OutPackageName, WritableError))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			WritableError);
 		return false;
 	}
 
