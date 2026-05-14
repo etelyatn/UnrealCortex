@@ -108,6 +108,13 @@ def test_get_registered_domains_returns_core_when_malformed():
     assert get_registered_domains({"domains": "not_a_dict"}) == CORE_DOMAINS
 
 
+def test_statetree_is_core_domain():
+    """StateTree should be exposed as a core router domain with a compose hint."""
+    assert "statetree" in CORE_DOMAINS
+    assert "statetree" in _COMPOSITE_HINTS
+    assert "statetree_compose" in _COMPOSITE_HINTS["statetree"]
+
+
 # --- Minimal router docstrings tests ---
 
 
@@ -267,6 +274,7 @@ class TestCompositeHints:
             "blueprint_compose",
             "widget_compose",
             "level_compose",
+            "statetree_compose",
             "gen_compose",
             "scenario_compose",
         }
