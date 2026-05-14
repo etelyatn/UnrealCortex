@@ -9,6 +9,7 @@ from cortex_mcp.tools.composites.material import register_material_compose_tools
 from cortex_mcp.tools.composites.widget import register_widget_compose_tools
 from cortex_mcp.tools.composites.level import register_level_compose_tools
 from cortex_mcp.tools.composites.scenario import register_scenario_compose_tools
+from cortex_mcp.tools.composites.statetree import register_statetree_compose_tools
 from cortex_mcp.tools.standalone.editor import register_editor_standalone_tools
 from cortex_mcp.tools.standalone.schema import register_schema_standalone_tools
 from cortex_mcp.tools.standalone.qa import register_qa_standalone_tools
@@ -36,6 +37,7 @@ def test_explicit_registration_adds_router_composite_and_standalone_tools():
     register_widget_compose_tools(mcp, connection)
     register_level_compose_tools(mcp, connection)
     register_scenario_compose_tools(mcp, connection)
+    register_statetree_compose_tools(mcp, connection)
     register_editor_standalone_tools(mcp, connection)
     register_schema_standalone_tools(mcp, connection)
     register_qa_standalone_tools(mcp, connection)
@@ -49,6 +51,7 @@ def test_explicit_registration_adds_router_composite_and_standalone_tools():
     assert "widget_compose" in mcp.tools
     assert "level_compose" in mcp.tools
     assert "scenario_compose" in mcp.tools
+    assert "statetree_compose" in mcp.tools
     assert "qa_test_step" in mcp.tools
     assert "editor_restart" in mcp.tools
     assert "schema_generate" in mcp.tools

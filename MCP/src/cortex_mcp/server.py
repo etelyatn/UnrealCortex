@@ -14,6 +14,7 @@ from .tools.composites.blueprint import register_blueprint_compose_tools
 from .tools.composites.level import register_level_compose_tools
 from .tools.composites.material import register_material_compose_tools
 from .tools.composites.scenario import register_scenario_compose_tools
+from .tools.composites.statetree import register_statetree_compose_tools
 from .tools.composites.widget import register_widget_compose_tools
 from .tools.routers import register_router_tools
 from .tools.standalone.editor import register_editor_standalone_tools
@@ -52,6 +53,7 @@ def _register_explicit_tools(mcp_server, connection) -> None:
     register_widget_compose_tools(mcp_server, connection)
     register_level_compose_tools(mcp_server, connection)
     register_scenario_compose_tools(mcp_server, connection)
+    register_statetree_compose_tools(mcp_server, connection)
     if "gen" in registered:
         from .tools.composites.gen import register_gen_compose_tools
         register_gen_compose_tools(mcp_server, connection)
