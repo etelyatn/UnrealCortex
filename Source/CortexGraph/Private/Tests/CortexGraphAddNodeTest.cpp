@@ -312,6 +312,152 @@ bool FCortexGraphAddNodeTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Error should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
 	}
 
+	// Test: DynamicCast with documented params.class binds the cast target
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_DynamicCast"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("class"), TEXT("Pawn"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node DynamicCast with params.class should succeed"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			FString DisplayName;
+			Result.Data->TryGetStringField(TEXT("display_name"), DisplayName);
+			TestFalse(TEXT("Display name should not be 'Bad cast node' when class is set"),
+				DisplayName.Equals(TEXT("Bad cast node"), ESearchCase::IgnoreCase));
+
+			const TArray<TSharedPtr<FJsonValue>>* Pins = nullptr;
+			TestTrue(TEXT("DynamicCast with params.class should have pins"), Result.Data->TryGetArrayField(TEXT("pins"), Pins));
+			if (Pins)
+			{
+				bool bFoundTypedOutput = false;
+				for (const TSharedPtr<FJsonValue>& PinValue : *Pins)
+				{
+					const TSharedPtr<FJsonObject>* PinObj = nullptr;
+					if (PinValue.IsValid() && PinValue->TryGetObject(PinObj) && PinObj && (*PinObj).IsValid())
+					{
+						FString PinName;
+						(*PinObj)->TryGetStringField(TEXT("name"), PinName);
+						if (PinName.StartsWith(TEXT("As")))
+						{
+							bFoundTypedOutput = true;
+							break;
+						}
+					}
+				}
+				TestTrue(TEXT("DynamicCast with params.class should have typed As<Class> output pin"), bFoundTypedOutput);
+			}
+		}
+	}
+
+	// Test: DynamicCast with params.target_class alias also binds the cast target
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_DynamicCast"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("target_class"), TEXT("Pawn"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node DynamicCast with params.target_class should succeed"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			FString DisplayName;
+			Result.Data->TryGetStringField(TEXT("display_name"), DisplayName);
+			TestFalse(TEXT("Display name should not be 'Bad cast node' when target_class is set"),
+				DisplayName.Equals(TEXT("Bad cast node"), ESearchCase::IgnoreCase));
+		}
+	}
+
+	// Test: DynamicCast with Blueprint asset path binds the cast target
+	{
+		FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_DynamicCast"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("class"), AssetPath);
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node DynamicCast with Blueprint asset path should succeed"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			FString DisplayName;
+			Result.Data->TryGetStringField(TEXT("display_name"), DisplayName);
+			TestFalse(TEXT("Display name should not be 'Bad cast node' when Blueprint asset path is set"),
+				DisplayName.Equals(TEXT("Bad cast node"), ESearchCase::IgnoreCase));
+		}
+	}
+
+	// Test: DynamicCast with generated class object path binds the cast target
+	{
+		FKismetEditorUtilities::CompileBlueprint(TestBP);
+		const FString GeneratedClassPath = TestBP->GeneratedClass ? TestBP->GeneratedClass->GetPathName() : FString();
+		TestFalse(TEXT("Generated class path should be available"), GeneratedClassPath.IsEmpty());
+
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_DynamicCast"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("class"), GeneratedClassPath);
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node DynamicCast with generated class path should succeed"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			FString DisplayName;
+			Result.Data->TryGetStringField(TEXT("display_name"), DisplayName);
+			TestFalse(TEXT("Display name should not be 'Bad cast node' when generated class path is set"),
+				DisplayName.Equals(TEXT("Bad cast node"), ESearchCase::IgnoreCase));
+		}
+	}
+
+	// Test: DynamicCast without class still succeeds for backward compatibility
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_DynamicCast"));
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestTrue(TEXT("add_node DynamicCast without class should still succeed"), Result.bSuccess);
+	}
+
+	// Test: DynamicCast with invalid class returns INVALID_FIELD
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_DynamicCast"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("class"), TEXT("DoesNotExistClass"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestFalse(TEXT("add_node DynamicCast with invalid class should fail"), Result.bSuccess);
+		TestEqual(TEXT("DynamicCast invalid class should return INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Test: DynamicCast with invalid mounted path returns INVALID_FIELD without warnings
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_DynamicCast"));
+		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
+		NParams->SetStringField(TEXT("class"), TEXT("/Game/Missing/BP_DoesNotExist.BP_DoesNotExist_C"));
+		Params->SetObjectField(TEXT("params"), NParams);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.add_node"), Params);
+		TestFalse(TEXT("add_node DynamicCast with invalid mounted path should fail"), Result.bSuccess);
+		TestEqual(TEXT("DynamicCast invalid mounted path should return INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
 	TestBP->MarkAsGarbage();
 
 	return true;
