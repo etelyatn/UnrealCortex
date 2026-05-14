@@ -1,7 +1,9 @@
 #include "Widgets/SCortexChatToolbar.h"
 
+#include "CortexFrontendProviderSettings.h"
 #include "CortexFrontendSettings.h"
 #include "Providers/CortexProviderRegistry.h"
+#include "UObject/UObjectGlobals.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
@@ -68,6 +70,17 @@ void SCortexChatToolbar::Construct(const FArguments& InArgs)
             .Text(FText::FromString(TEXT("")))
             .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
             .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("6a9955")))))
+        ]
+        // Provider mismatch hint
+        + SHorizontalBox::Slot()
+        .AutoWidth()
+        .VAlign(VAlign_Center)
+        .Padding(4.0f, 4.0f)
+        [
+            SAssignNew(ProviderMismatchLabel, STextBlock)
+            .Text(FText::GetEmpty())
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+            .ColorAndOpacity(FSlateColor(FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("d7ba7d")))))
         ]
         // Context indicator (right side)
         + SHorizontalBox::Slot()
@@ -136,8 +149,13 @@ void SCortexChatToolbar::Construct(const FArguments& InArgs)
         });
 
         RefreshModelLabel();
+        RefreshProviderDecorations();
         RefreshContextIndicator();
     }
+
+    ProviderSettingsChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP(
+        this,
+        &SCortexChatToolbar::HandleProviderSettingsChanged);
 }
 
 SCortexChatToolbar::~SCortexChatToolbar()
@@ -146,6 +164,11 @@ SCortexChatToolbar::~SCortexChatToolbar()
     {
         Session->OnTokenUsageUpdated.Remove(TokenUsageHandle);
         Session->OnStateChanged.Remove(StateChangedHandle);
+    }
+
+    if (ProviderSettingsChangedHandle.IsValid())
+    {
+        FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(ProviderSettingsChangedHandle);
     }
 }
 
@@ -181,6 +204,52 @@ void SCortexChatToolbar::RefreshModelLabel()
         Session->GetResolvedOptions().EffortLevel,
         ProviderDefinition.DefaultEffortLevel);
     ModelLabel->SetText(FText::FromString(Label));
+}
+
+FText SCortexChatToolbar::GetProviderMismatchText() const
+{
+    TSharedPtr<FCortexCliSession> Session = SessionWeak.Pin();
+    if (!Session.IsValid())
+    {
+        return FText::GetEmpty();
+    }
+
+    const UCortexFrontendProviderSettings* ProviderSettings = UCortexFrontendProviderSettings::Get();
+    const FString ActiveProviderId = ProviderSettings != nullptr
+        ? ProviderSettings->GetEffectiveProviderId()
+        : FCortexProviderRegistry::GetDefaultProviderId();
+    const FCortexProviderDefinition& ActiveProvider = FCortexProviderRegistry::ResolveDefinition(ActiveProviderId);
+
+    if (ActiveProvider.ProviderId == Session->GetProviderId())
+    {
+        return FText::GetEmpty();
+    }
+
+    return FText::FromString(FString::Printf(
+        TEXT("Current session: %s | New sessions: %s"),
+        *Session->GetResolvedOptions().ProviderDisplayName,
+        *ActiveProvider.DisplayName));
+}
+
+void SCortexChatToolbar::RefreshProviderDecorations()
+{
+    RefreshModelLabel();
+
+    if (ProviderMismatchLabel.IsValid())
+    {
+        const FText MismatchText = GetProviderMismatchText();
+        ProviderMismatchLabel->SetText(MismatchText);
+        ProviderMismatchLabel->SetVisibility(MismatchText.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible);
+    }
+}
+
+void SCortexChatToolbar::HandleProviderSettingsChanged(UObject* Object, FPropertyChangedEvent& Event)
+{
+    if (Object == GetMutableDefault<UCortexFrontendProviderSettings>() &&
+        Event.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UCortexFrontendProviderSettings, ActiveProviderId))
+    {
+        RefreshProviderDecorations();
+    }
 }
 
 void SCortexChatToolbar::RefreshContextIndicator()
@@ -224,5 +293,5 @@ void SCortexChatToolbar::OnSessionStateChanged(const FCortexSessionStateChange& 
         return;
     }
 
-    RefreshModelLabel();
+    RefreshProviderDecorations();
 }

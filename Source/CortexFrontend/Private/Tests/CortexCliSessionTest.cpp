@@ -403,9 +403,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionToolCallTurnIndexTest,
     "Cortex.Frontend.Session.ToolCallTurnIndex",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildCodexExecArgsTest, "Cortex.Frontend.CliSession.BuildCodexExecArgs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionBuildCodexResumeArgsTest, "Cortex.Frontend.CliSession.BuildCodexResumeArgs", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionLaunchOptionsPinnedAcrossSettingChangeTest, "Cortex.Frontend.CliSession.LaunchOptionsPinnedAcrossSettingChange", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionDefaultLaunchPinsLiveSkipPermissionsTest, "Cortex.Frontend.CliSession.DefaultLaunchPinsLiveSkipPermissions", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexTurnExitPreservesResumableIdleStateTest, "Cortex.Frontend.CliSession.CodexTurnExitPreservesResumableIdleState", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexErrorWithoutThreadDoesNotResumeTest, "Cortex.Frontend.CliSession.CodexErrorWithoutThreadDoesNotResume", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionProcessExitCompletesErrorTurnTest, "Cortex.Frontend.CliSession.ProcessExitCompletesErrorTurn", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionSendPromptDoesNotMutatePinnedAccessModeTest, "Cortex.Frontend.CliSession.SendPromptDoesNotMutatePinnedAccessMode", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexOverridePathRecomputesResolvedOptionsTest, "Cortex.Frontend.CliSession.CodexOverridePathRecomputesResolvedOptions", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionLightweightConfigStaysMcpFreeTest, "Cortex.Frontend.CliSession.LightweightConfigStaysMcpFree", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -543,7 +547,7 @@ bool FCortexCliSessionBuildCodexExecArgsTest::RunTest(const FString& Parameters)
     Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
     Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
     Config.ResolvedOptions.EffortLevel = ECortexEffortLevel::Maximum;
-    Config.ResolvedOptions.ContextLimitTokens = 272000;
+    Config.ResolvedOptions.ContextLimitTokens = 1050000;
     Config.bHasLaunchOptions = true;
     Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
     Config.LaunchOptions.bSkipPermissions = false;
@@ -558,18 +562,47 @@ bool FCortexCliSessionBuildCodexExecArgsTest::RunTest(const FString& Parameters)
 
     TestTrue(TEXT("Session should pin provider id"), Session.GetProviderId() == FName(TEXT("codex")));
     TestTrue(TEXT("Session should pin resolved provider display name"), Session.GetProvider() == TEXT("Codex"));
-    TestTrue(TEXT("Session should pin resolved context limit"), Session.GetContextLimitTokens() == static_cast<int64>(272000));
+    TestTrue(TEXT("Session should pin resolved context limit"), Session.GetContextLimitTokens() == static_cast<int64>(1050000));
     TestTrue(TEXT("Session should expose auth command text"), Session.GetAuthCommandText() == TEXT("codex login"));
 
     const FString CommandLine = Session.BuildLaunchCommandLine(false, ECortexAccessMode::Guided);
     TestTrue(TEXT("Codex launch should include exec json"), CommandLine.Contains(TEXT("exec --json")));
     TestTrue(TEXT("Codex launch should include model flag"), CommandLine.Contains(TEXT("-m \"gpt-5.4\"")));
-    TestTrue(TEXT("Codex launch should include reasoning effort"), CommandLine.Contains(TEXT("-c model_reasoning_effort=maximum")));
+    TestTrue(TEXT("Codex launch should include xhigh reasoning effort"), CommandLine.Contains(TEXT("-c model_reasoning_effort=xhigh")));
     TestTrue(TEXT("Codex launch should include MCP overrides"), CommandLine.Contains(TEXT("mcp_servers.cortex_mcp.command")));
+    TestFalse(TEXT("Codex MCP overrides should not quote the -c flag and value as one argv token"), CommandLine.Contains(TEXT("\"-c mcp_servers.")));
     TestTrue(TEXT("Codex launch should include working directory"), CommandLine.Contains(TEXT("-C \"D:/UnrealProjects/CortexSandbox\"")));
     TestTrue(TEXT("Codex launch should map guided access to workspace-write sandbox"), CommandLine.Contains(TEXT("--sandbox workspace-write")));
     TestFalse(TEXT("Codex launch should not bypass sandbox when skip permissions is false"), CommandLine.Contains(TEXT("--dangerously-bypass-approvals-and-sandbox")));
 
+    return true;
+}
+
+bool FCortexCliSessionBuildCodexResumeArgsTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("thread-codex-123");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+    Config.ResolvedOptions.EffortLevel = ECortexEffortLevel::High;
+    Config.bHasLaunchOptions = true;
+    Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
+    Config.LaunchOptions.bSkipPermissions = false;
+    Config.McpConfigPath = FPaths::Combine(FPaths::ProjectDir(), TEXT(".mcp.json"));
+
+    FCortexCliSession Session(Config);
+    const FString CommandLine = Session.BuildLaunchCommandLine(true, ECortexAccessMode::Guided);
+
+    TestTrue(TEXT("Codex resume should use exec resume with JSON output"), CommandLine.Contains(TEXT("exec resume --json")));
+    TestTrue(TEXT("Codex resume should include provider thread id"), CommandLine.Contains(TEXT("thread-codex-123")));
+    TestFalse(TEXT("Codex resume must not pass unsupported --sandbox flag"), CommandLine.Contains(TEXT("--sandbox")));
+    TestTrue(TEXT("Codex resume should preserve sandbox mode through config override"), CommandLine.Contains(TEXT("-c sandbox_mode=\\\"workspace-write\\\"")));
+    TestFalse(TEXT("Codex resume should not pass working directory flag unsupported by resume"),
+        CommandLine.Contains(TEXT(" -C \""), ESearchCase::CaseSensitive));
     return true;
 }
 
@@ -637,7 +670,7 @@ bool FCortexCliSessionLaunchOptionsPinnedAcrossSettingChangeTest::RunTest(const 
     Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
     Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
     Config.ResolvedOptions.EffortLevel = ECortexEffortLevel::Medium;
-    Config.ResolvedOptions.ContextLimitTokens = 272000;
+    Config.ResolvedOptions.ContextLimitTokens = 1050000;
     Config.bHasLaunchOptions = true;
     Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
     Config.LaunchOptions.bSkipPermissions = true;
@@ -823,6 +856,124 @@ bool FCortexCliSessionCodexTurnExitPreservesResumableIdleStateTest::RunTest(cons
     const FString ResumeCommand = Session.BuildLaunchCommandLine(true, ECortexAccessMode::Guided);
     TestTrue(TEXT("Codex resume command should use the real thread id"), ResumeCommand.Contains(TEXT("thread-codex-123")));
     TestFalse(TEXT("Codex resume command should not keep the placeholder session id"), ResumeCommand.Contains(TEXT("placeholder-session")));
+    return true;
+}
+
+bool FCortexCliSessionCodexErrorWithoutThreadDoesNotResumeTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("placeholder-session");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+    Config.bHasLaunchOptions = true;
+    Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
+    Config.LaunchOptions.bSkipPermissions = false;
+
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Processing);
+
+    FCortexStreamEvent ResultEvent;
+    ResultEvent.Type = ECortexStreamEventType::Result;
+    ResultEvent.ResultText = TEXT("Authentication failed");
+    ResultEvent.bIsError = true;
+    Session.HandleWorkerEvent(ResultEvent);
+
+    Session.HandleProcessExited(TEXT("Provider CLI process exited"));
+    TestEqual(TEXT("Failed first Codex turn without a provider thread should become inactive"), Session.GetState(), ECortexSessionState::Inactive);
+
+    bool bObservedResumeSession = true;
+    FCortexCliSession::SetSpawnProcessOverrideForTests(
+        [&bObservedResumeSession](FCortexCliSession& InSession, ECortexAccessMode AccessMode, bool bResumeSession)
+        {
+            bObservedResumeSession = bResumeSession;
+            InSession.CompleteSpawnForTests(AccessMode);
+            return true;
+        });
+    ON_SCOPE_EXIT
+    {
+        FCortexCliSession::ClearSpawnProcessOverrideForTests();
+    };
+
+    FCortexPromptRequest Request;
+    Request.Prompt = TEXT("Retry after auth");
+    Request.AccessMode = ECortexAccessMode::FullAccess;
+    TestTrue(TEXT("Retry should be accepted"), Session.SendPrompt(Request));
+    TestFalse(TEXT("Retry after first-turn failure should launch fresh Codex exec"), bObservedResumeSession);
+    return true;
+}
+
+bool FCortexCliSessionProcessExitCompletesErrorTurnTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("exit-error-session");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Processing);
+
+    bool bTurnCompleteCalled = false;
+    FCortexTurnResult CapturedResult;
+    Session.OnTurnComplete.AddLambda([&bTurnCompleteCalled, &CapturedResult](const FCortexTurnResult& Result)
+    {
+        bTurnCompleteCalled = true;
+        CapturedResult = Result;
+    });
+
+    Session.HandleProcessExited(TEXT("Provider CLI exited before JSON result"));
+
+    TestTrue(TEXT("Unexpected process exit during a turn should complete with an error"), bTurnCompleteCalled);
+    TestTrue(TEXT("Synthetic exit result should be marked as error"), CapturedResult.bIsError);
+    TestTrue(TEXT("Synthetic exit result should include exit reason"), CapturedResult.ResultText.Contains(TEXT("Provider CLI exited before JSON result")));
+    TestEqual(TEXT("Process exit error should leave session inactive"), Session.GetState(), ECortexSessionState::Inactive);
+    return true;
+}
+
+bool FCortexCliSessionSendPromptDoesNotMutatePinnedAccessModeTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("pinned-access-session");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+    Config.bHasLaunchOptions = true;
+    Config.LaunchOptions.AccessMode = ECortexAccessMode::ReadOnly;
+    Config.LaunchOptions.bSkipPermissions = false;
+
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Idle);
+
+    ECortexAccessMode ObservedAccessMode = ECortexAccessMode::FullAccess;
+    FCortexCliSession::SetSpawnProcessOverrideForTests(
+        [&ObservedAccessMode](FCortexCliSession& InSession, ECortexAccessMode AccessMode, bool bResumeSession)
+        {
+            (void)bResumeSession;
+            ObservedAccessMode = AccessMode;
+            InSession.CompleteSpawnForTests(AccessMode);
+            return true;
+        });
+    ON_SCOPE_EXIT
+    {
+        FCortexCliSession::ClearSpawnProcessOverrideForTests();
+    };
+
+    FCortexPromptRequest Request;
+    Request.Prompt = TEXT("Use pinned access");
+    Request.AccessMode = ECortexAccessMode::FullAccess;
+    TestTrue(TEXT("Prompt should be accepted"), Session.SendPrompt(Request));
+    TestEqual(TEXT("Explicit request access should still drive this prompt launch"), ObservedAccessMode, ECortexAccessMode::FullAccess);
+    TestEqual(TEXT("Prompt launch should not mutate the session's pinned access mode"), Session.GetPinnedAccessMode(), ECortexAccessMode::ReadOnly);
     return true;
 }
 

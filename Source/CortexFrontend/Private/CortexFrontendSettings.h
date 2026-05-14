@@ -85,7 +85,7 @@ private:
     void MarkDirty();
 
     ECortexAccessMode AccessMode = ECortexAccessMode::ReadOnly;
-    bool bSkipPermissions = true;
+    bool bSkipPermissions = false;
     FString SelectedModel = TEXT("Default");
     bool bHasCustomModels = false;
     TArray<FString> CustomModels;

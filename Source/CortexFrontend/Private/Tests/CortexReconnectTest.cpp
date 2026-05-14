@@ -182,7 +182,7 @@ bool FCortexReconnectPinsLaunchMetadataAcrossSettingsChangeTest::RunTest(const F
     TestTrue(TEXT("Session should pin codex provider"), Session->GetProviderId() == FName(TEXT("codex")));
     TestTrue(TEXT("Session should pin codex model"), Session->GetResolvedOptions().ModelId == TEXT("gpt-5.4"));
     TestTrue(TEXT("Session should pin codex effort"), Session->GetResolvedOptions().EffortLevel == ECortexEffortLevel::Medium);
-    TestTrue(TEXT("Session should pin context limit"), Session->GetContextLimitTokens() == static_cast<int64>(272000));
+    TestTrue(TEXT("Session should pin context limit"), Session->GetContextLimitTokens() == static_cast<int64>(1050000));
 
     const FString LaunchBeforeSettingsChange = Session->BuildLaunchCommandLine(true, ECortexAccessMode::Guided);
     TestFalse(TEXT("Pinned reconnect launch should snapshot live skip permissions"), LaunchBeforeSettingsChange.Contains(TEXT("--dangerously-bypass-approvals-and-sandbox")));

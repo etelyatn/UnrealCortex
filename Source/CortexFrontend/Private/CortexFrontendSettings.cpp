@@ -169,7 +169,7 @@ void FCortexFrontendSettings::MarkDirty()
 void FCortexFrontendSettings::Load()
 {
     AccessMode = ECortexAccessMode::ReadOnly;
-    bSkipPermissions = true;
+    bSkipPermissions = false;
     SelectedModel = TEXT("Default");
     bHasCustomModels = false;
     CustomModels.Reset();
@@ -210,7 +210,7 @@ void FCortexFrontendSettings::Load()
         }
     }
 
-    bool bStoredSkipPermissions = true;
+    bool bStoredSkipPermissions = false;
     if (JsonObject->TryGetBoolField(TEXT("skip_permissions"), bStoredSkipPermissions))
     {
         bSkipPermissions = bStoredSkipPermissions;

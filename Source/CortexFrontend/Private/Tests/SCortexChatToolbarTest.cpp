@@ -3,6 +3,7 @@
 #include "Session/CortexSessionTypes.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Misc/ScopeExit.h"
+#include "CortexFrontendProviderSettings.h"
 #include "Widgets/Text/STextBlock.h"
 
 namespace
@@ -82,6 +83,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatToolbarProviderLabelTest,
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatToolbarSessionContextLimitTest,
     "Cortex.Frontend.ChatToolbar.SessionContextLimit",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexChatToolbarProviderMismatchMessageTest,
+    "Cortex.Frontend.ChatToolbar.ProviderMismatchMessage",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexChatToolbarContextIndicatorTest::RunTest(const FString& Parameters)
@@ -185,5 +190,59 @@ bool FCortexChatToolbarSessionContextLimitTest::RunTest(const FString& Parameter
     TestTrue(TEXT("Toolbar context label should use the session's pinned context limit"),
         ToolbarWidgetTreeContainsText(Toolbar, TEXT("64k / 128k")));
 
+    return true;
+}
+
+bool FCortexChatToolbarProviderMismatchMessageTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized())
+    {
+        AddInfo(TEXT("Slate not initialized, skipping"));
+        return true;
+    }
+
+    UCortexFrontendProviderSettings* ProviderSettings = GetMutableDefault<UCortexFrontendProviderSettings>();
+    TestNotNull(TEXT("Provider settings should exist"), ProviderSettings);
+    if (!ProviderSettings)
+    {
+        return false;
+    }
+
+    const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
+    ON_SCOPE_EXIT
+    {
+        ProviderSettings->ActiveProviderId = OriginalProviderId;
+    };
+
+    ProviderSettings->ActiveProviderId = TEXT("codex");
+
+    TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(FCortexSessionConfig{
+        TEXT("toolbar-mismatch"),
+        TEXT(""),
+        TEXT(""),
+        TEXT(""),
+        FName(TEXT("claude_code")),
+        FCortexResolvedSessionOptions{
+            FName(TEXT("claude_code")),
+            TEXT("Claude Code"),
+            TEXT("claude-sonnet-4-6"),
+            ECortexEffortLevel::Default,
+            200000},
+        FCortexResolvedLaunchOptions{},
+        true,
+        TEXT(""),
+        ECortexEffortLevel::Default,
+        false,
+        false});
+
+    TSharedRef<SCortexChatToolbar> Toolbar = SNew(SCortexChatToolbar)
+        .Session(Session);
+
+    const FString MismatchText = Toolbar->GetProviderMismatchText().ToString();
+    TestTrue(TEXT("Mismatch text should name the current session provider"), MismatchText.Contains(TEXT("Claude Code")));
+    TestTrue(TEXT("Mismatch text should name the provider for new sessions"), MismatchText.Contains(TEXT("Codex")));
+    TestTrue(TEXT("Mismatch label should be visible in the toolbar tree"),
+        ToolbarWidgetTreeContainsText(Toolbar, MismatchText));
     return true;
 }

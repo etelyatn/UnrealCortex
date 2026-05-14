@@ -21,20 +21,25 @@ public:
 
     void SetSessionId(const FString& SessionId);
     void SetModelLabel(const FString& ModelId);
+    FText GetProviderMismatchText() const;
 
     FOnCortexNewChat OnNewChat;
 
 private:
     void OnTokenUsageUpdated();
     void OnSessionStateChanged(const FCortexSessionStateChange& Change);
+    void RefreshProviderDecorations();
     void RefreshModelLabel();
     void RefreshContextIndicator();
+    void HandleProviderSettingsChanged(UObject* Object, FPropertyChangedEvent& Event);
 
     TWeakPtr<FCortexCliSession> SessionWeak;
     TSharedPtr<STextBlock> SessionIdText;
     TSharedPtr<STextBlock> ModelLabel;
+    TSharedPtr<STextBlock> ProviderMismatchLabel;
     TSharedPtr<SBorder> ContextColorBox;
     TSharedPtr<STextBlock> ContextLabel;
     FDelegateHandle TokenUsageHandle;
     FDelegateHandle StateChangedHandle;
+    FDelegateHandle ProviderSettingsChangedHandle;
 };

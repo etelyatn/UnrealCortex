@@ -4,13 +4,17 @@
 #include "Engine/DeveloperSettings.h"
 #include "CortexFrontendProviderSettings.generated.h"
 
-UCLASS(Config = EditorPerProjectUserSettings, DefaultConfig, meta = (DisplayName = "Frontend", CategoryName = "Unreal Cortex"))
+UCLASS(Config = EditorPerProjectUserSettings, meta = (DisplayName = "Frontend", CategoryName = "Unreal Cortex"))
 class CORTEXFRONTEND_API UCortexFrontendProviderSettings : public UDeveloperSettings
 {
     GENERATED_BODY()
 
 public:
     UCortexFrontendProviderSettings();
+
+    virtual FName GetContainerName() const override;
+    virtual FName GetCategoryName() const override;
+    virtual FName GetSectionName() const override;
 
     UPROPERTY(Config, EditAnywhere, Category = "Provider", meta = (GetOptions = "GetProviderOptions"))
     FString ActiveProviderId;

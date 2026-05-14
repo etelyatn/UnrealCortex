@@ -141,7 +141,7 @@ void SCortexChatPanel::SendMessage(const FString& Message)
 
     FCortexPromptRequest Request;
     Request.Prompt = Message;
-    Request.AccessMode = FCortexFrontendSettings::Get().GetAccessMode();
+    Request.AccessMode = Session->GetPinnedAccessMode();
 
     Session->AddUserPromptEntry(Message);
     if (!Session->SendPrompt(Request))

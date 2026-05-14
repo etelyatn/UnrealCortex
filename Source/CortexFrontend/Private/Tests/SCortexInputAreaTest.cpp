@@ -542,6 +542,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaProviderHelpCopyTest,
     "Cortex.Frontend.InputArea.ProviderHelpCopy",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaEffortOptionsUseActiveProviderTest,
+    "Cortex.Frontend.InputArea.EffortOptionsUseActiveProvider",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
 bool FCortexInputAreaSelectionDescriptionTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
@@ -623,5 +627,29 @@ bool FCortexInputAreaProviderHelpCopyTest::RunTest(const FString& Parameters)
             FString(TEXT("Get help with the active AI provider")));
     }
 
+    return true;
+}
+
+bool FCortexInputAreaEffortOptionsUseActiveProviderTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    UCortexFrontendProviderSettings* ProviderSettings = GetMutableDefault<UCortexFrontendProviderSettings>();
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    const FString OriginalProviderId = ProviderSettings->ActiveProviderId;
+    const FString OriginalModel = Settings.GetSelectedModel();
+    ON_SCOPE_EXIT
+    {
+        ProviderSettings->ActiveProviderId = OriginalProviderId;
+        Settings.SetSelectedModel(OriginalModel);
+        Settings.ClearPendingChanges();
+    };
+
+    ProviderSettings->ActiveProviderId = TEXT("codex");
+    Settings.SetSelectedModel(TEXT("gpt-5.4"));
+
+    const TArray<ECortexEffortLevel> Options = SCortexInputArea::GetEffortOptionsForActiveProvider();
+    TestFalse(TEXT("Codex effort menu should not expose unsupported Default effort"), Options.Contains(ECortexEffortLevel::Default));
+    TestTrue(TEXT("Codex effort menu should expose Maximum/xhigh effort"), Options.Contains(ECortexEffortLevel::Maximum));
     return true;
 }

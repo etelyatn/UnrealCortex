@@ -306,7 +306,7 @@ bool FCortexChatPanelProviderAuthCommandTest::RunTest(const FString& Parameters)
     Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
     Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
     Config.ResolvedOptions.EffortLevel = ECortexEffortLevel::Medium;
-    Config.ResolvedOptions.ContextLimitTokens = 272000;
+    Config.ResolvedOptions.ContextLimitTokens = 1050000;
 
     TSharedPtr<FCortexCliSession> Session = MakeShared<FCortexCliSession>(Config);
     TSharedRef<SCortexChatPanel> Panel = SNew(SCortexChatPanel)

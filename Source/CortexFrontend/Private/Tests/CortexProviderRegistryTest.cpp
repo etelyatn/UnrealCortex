@@ -48,7 +48,7 @@ bool FCortexProviderRegistryBuiltInProvidersTest::RunTest(const FString& Paramet
     TestNotNull(TEXT("Codex primary model exists"), CodexPrimaryModel);
     if (CodexPrimaryModel)
     {
-        TestEqual(TEXT("Codex primary model context limit"), CodexPrimaryModel->ContextLimitTokens, 272000LL);
+        TestEqual(TEXT("Codex primary model context limit"), CodexPrimaryModel->ContextLimitTokens, 1050000LL);
     }
     TestTrue(TEXT("Codex gpt-5.4 model exists"), CodexPrimaryModel != nullptr);
     TestTrue(TEXT("Codex gpt-5.4-mini model exists"), Codex->Models.ContainsByPredicate([](const FCortexProviderModelDefinition& Model) { return Model.ModelId == TEXT("gpt-5.4-mini"); }));

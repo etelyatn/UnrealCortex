@@ -6,6 +6,7 @@
 #include "Async/Async.h"
 #include "Containers/Ticker.h"
 #include "CortexFrontendSettings.h"
+#include "CortexFrontendProviderSettings.h"
 #include "Editor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Input/Events.h"
@@ -24,6 +25,7 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Context/CortexEditorContextGatherer.h"
 #include "Session/CortexSessionTypes.h"
+#include "Providers/CortexProviderRegistry.h"
 #include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Input/SButton.h"
@@ -61,6 +63,50 @@ namespace
         }();
         return Style;
     }
+
+    FString GetEffortDisplayName(ECortexEffortLevel Level)
+    {
+        switch (Level)
+        {
+        case ECortexEffortLevel::Default:
+            return TEXT("Default");
+        case ECortexEffortLevel::Low:
+            return TEXT("Low");
+        case ECortexEffortLevel::Medium:
+            return TEXT("Medium");
+        case ECortexEffortLevel::High:
+            return TEXT("High");
+        case ECortexEffortLevel::Maximum:
+            return TEXT("Max");
+        }
+
+        return TEXT("Default");
+    }
+}
+
+TArray<ECortexEffortLevel> SCortexInputArea::GetEffortOptionsForActiveProvider()
+{
+    check(IsInGameThread());
+
+    const UCortexFrontendProviderSettings* ProviderSettings = UCortexFrontendProviderSettings::Get();
+    const FString ProviderId = ProviderSettings != nullptr
+        ? ProviderSettings->GetEffectiveProviderId()
+        : FCortexProviderRegistry::GetDefaultProviderId();
+    const FCortexProviderDefinition& ProviderDefinition = FCortexProviderRegistry::ResolveDefinition(ProviderId);
+    const FCortexResolvedSessionOptions Resolved = FCortexFrontendSettings::Get().ResolveForActiveProvider();
+    const FCortexProviderModelDefinition& ModelDefinition =
+        FCortexProviderRegistry::ValidateOrGetDefaultModel(ProviderDefinition, Resolved.ModelId);
+
+    TArray<ECortexEffortLevel> Options;
+    for (const ECortexEffortLevel Level : ModelDefinition.SupportedEffortLevels)
+    {
+        if (ProviderDefinition.SupportedEffortLevels.Contains(Level))
+        {
+            Options.Add(Level);
+        }
+    }
+
+    return Options;
 }
 
 void SCortexInputArea::Construct(const FArguments& InArgs)
@@ -382,23 +428,11 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                         .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
                     ];
 
-                    const ECortexEffortLevel CurrentEffort = FCortexFrontendSettings::Get().GetEffortLevel();
-                    for (ECortexEffortLevel Level : {
-                        ECortexEffortLevel::Default,
-                        ECortexEffortLevel::Low,
-                        ECortexEffortLevel::Medium,
-                        ECortexEffortLevel::High,
-                        ECortexEffortLevel::Maximum })
+                    const FCortexResolvedSessionOptions EffortResolvedOptions = FCortexFrontendSettings::Get().ResolveForActiveProvider();
+                    const ECortexEffortLevel CurrentEffort = EffortResolvedOptions.EffortLevel;
+                    for (ECortexEffortLevel Level : SCortexInputArea::GetEffortOptionsForActiveProvider())
                     {
-                        FString LevelStr;
-                        switch (Level)
-                        {
-                        case ECortexEffortLevel::Default: LevelStr = TEXT("Default"); break;
-                        case ECortexEffortLevel::Low:     LevelStr = TEXT("Low"); break;
-                        case ECortexEffortLevel::Medium:  LevelStr = TEXT("Medium"); break;
-                        case ECortexEffortLevel::High:    LevelStr = TEXT("High"); break;
-                        case ECortexEffortLevel::Maximum: LevelStr = TEXT("Max"); break;
-                        }
+                        const FString LevelStr = GetEffortDisplayName(Level);
                         const bool bIsSelected = (Level == CurrentEffort);
                         Menu->AddSlot()
                         .AutoHeight()
@@ -411,8 +445,9 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                                 FCortexFrontendSettings::Get().SetEffortLevel(Level);
                                 if (Self->EffortLabel.IsValid())
                                 {
-                                    const bool bShowEffort = (Level != ECortexEffortLevel::Default);
-                                    Self->EffortLabel->SetText(FText::FromString(bShowEffort ? LevelStr : TEXT("")));
+                                    const FCortexResolvedSessionOptions UpdatedOptions = FCortexFrontendSettings::Get().ResolveForActiveProvider();
+                                    const bool bShowEffort = (UpdatedOptions.EffortLevel != ECortexEffortLevel::Default);
+                                    Self->EffortLabel->SetText(FText::FromString(bShowEffort ? GetEffortDisplayName(UpdatedOptions.EffortLevel) : TEXT("")));
                                     Self->EffortLabel->SetVisibility(bShowEffort ? EVisibility::Visible : EVisibility::Collapsed);
                                 }
                                 Self->ModelDropdown->SetIsOpen(false);
@@ -479,13 +514,21 @@ void SCortexInputArea::Construct(const FArguments& InArgs)
                         .Padding(4.0f, 0.0f, 0.0f, 0.0f)
                         [
                             SAssignNew(EffortLabel, STextBlock)
-                            .Text(FText::FromString(
-                                FCortexFrontendSettings::Get().GetEffortLevel() == ECortexEffortLevel::Default
-                                    ? TEXT("") : FCortexFrontendSettings::Get().GetEffortLevelString()))
+                            .Text_Lambda([]()
+                            {
+                                const FCortexResolvedSessionOptions ResolvedOptions = FCortexFrontendSettings::Get().ResolveForActiveProvider();
+                                return FText::FromString(ResolvedOptions.EffortLevel == ECortexEffortLevel::Default
+                                    ? TEXT("")
+                                    : GetEffortDisplayName(ResolvedOptions.EffortLevel));
+                            })
                             .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
                             .ColorAndOpacity(FSlateColor(CortexColors::ToolLabelColor))
-                            .Visibility(FCortexFrontendSettings::Get().GetEffortLevel() == ECortexEffortLevel::Default
-                                ? EVisibility::Collapsed : EVisibility::Visible)
+                            .Visibility_Lambda([]()
+                            {
+                                return FCortexFrontendSettings::Get().ResolveForActiveProvider().EffortLevel == ECortexEffortLevel::Default
+                                    ? EVisibility::Collapsed
+                                    : EVisibility::Visible;
+                            })
                         ]
                         + SHorizontalBox::Slot()
                         .AutoWidth()

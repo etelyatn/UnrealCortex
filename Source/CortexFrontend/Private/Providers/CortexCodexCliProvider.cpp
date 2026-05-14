@@ -185,7 +185,7 @@ namespace
         case ECortexEffortLevel::High:
             return TEXT("high");
         case ECortexEffortLevel::Maximum:
-            return TEXT("maximum");
+            return TEXT("xhigh");
         }
 
         return TEXT("default");
@@ -359,6 +359,10 @@ FString FCortexCodexCliProvider::BuildLaunchCommandLine(
     if (LaunchOptions.bSkipPermissions)
     {
         CommandLine += TEXT("--dangerously-bypass-approvals-and-sandbox ");
+    }
+    else if (bResumeSession)
+    {
+        CommandLine += FString::Printf(TEXT("-c sandbox_mode=\\\"%s\\\" "), *GetCodexSandboxMode(AccessMode));
     }
     else
     {

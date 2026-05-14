@@ -207,21 +207,6 @@ bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
 		return true;
 	}
 
-	// Access mode changed since last spawn — reconnect to apply new --allowedTools
-	if (!bIsPerTurnExec && LastSpawnedAccessMode.IsSet() && LastSpawnedAccessMode.GetValue() != Request.AccessMode)
-	{
-		UE_LOG(LogCortexFrontend, Log, TEXT("Access mode changed (%d -> %d), reconnecting to apply new permissions"),
-			static_cast<int32>(LastSpawnedAccessMode.GetValue()), static_cast<int32>(Request.AccessMode));
-		Config.LaunchOptions.AccessMode = Request.AccessMode;
-		if (!Reconnect())
-		{
-			UE_LOG(LogCortexFrontend, Warning, TEXT("SendPrompt: reconnect for mode change failed"));
-			return false;
-		}
-		// After reconnect, state is Idle again — prompt is still pending, will be drained by worker
-		return true;
-	}
-
 	if (!TransitionState(ECortexSessionState::Idle, ECortexSessionState::Processing, TEXT("Prompt dispatched")))
 	{
 		UE_LOG(LogCortexFrontend, Warning, TEXT("SendPrompt: failed to transition Idle -> Processing (state race)"));
@@ -429,9 +414,15 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 		Result.NumTurns = Event.NumTurns;
 		Result.TotalCostUsd = Event.TotalCostUsd;
 		Result.SessionId = Event.SessionId;
+		if (!Event.SessionId.IsEmpty())
+		{
+			Config.SessionId = Event.SessionId;
+			bHasProviderConversationId = true;
+		}
 
 		if (PinnedProvider != nullptr &&
-			PinnedProvider->GetTransportMode() == ECortexCliTransportMode::PerTurnExec)
+			PinnedProvider->GetTransportMode() == ECortexCliTransportMode::PerTurnExec &&
+			bHasProviderConversationId)
 		{
 			bHasResumableProviderConversation = true;
 		}
@@ -520,6 +511,17 @@ void FCortexCliSession::HandleProcessExited(const FString& Reason)
 		PinnedProvider != nullptr &&
 		PinnedProvider->GetTransportMode() == ECortexCliTransportMode::PerTurnExec &&
 		bHasResumableProviderConversation;
+
+	if (!bKeepResumableConversation &&
+		(CurrentState == ECortexSessionState::Spawning || CurrentState == ECortexSessionState::Processing))
+	{
+		FCortexTurnResult Result;
+		Result.bIsError = true;
+		Result.ResultText = FString::Printf(TEXT("%s before the provider returned a result."), *Reason);
+		Result.SessionId = Config.SessionId;
+		OnTurnComplete.Broadcast(Result);
+	}
+
 	CleanupProcess();
 	if (bKeepResumableConversation)
 	{
@@ -617,7 +619,6 @@ bool FCortexCliSession::SpawnProcess(ECortexAccessMode AccessMode, bool bResumeS
 	const FString WorkingDirectory = !Config.WorkingDirectory.IsEmpty()
 		? Config.WorkingDirectory
 		: FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-	Config.LaunchOptions.AccessMode = AccessMode;
 	bHasResumableProviderConversation = false;
 	const FString CommandLine = BuildLaunchCommandLine(bResumeSession, AccessMode);
 
@@ -990,7 +991,6 @@ void FCortexCliSession::ClearSpawnProcessOverrideForTests()
 
 void FCortexCliSession::CompleteSpawnForTests(ECortexAccessMode AccessMode)
 {
-	Config.LaunchOptions.AccessMode = AccessMode;
 	LastSpawnedAccessMode = AccessMode;
 	State.store(ECortexSessionState::Idle);
 }

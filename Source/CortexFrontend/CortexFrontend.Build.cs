@@ -26,6 +26,7 @@ public class CortexFrontend : ModuleRules
             "Json",
             "JsonUtilities",
             "ToolMenus",
+            "Settings",
             "Projects",
             "CortexCore",
             "CortexGen",

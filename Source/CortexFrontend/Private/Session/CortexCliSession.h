@@ -61,6 +61,7 @@ public:
 	const FCortexResolvedSessionOptions& GetResolvedOptions() const;
 	FString GetAuthCommandText() const;
 	int64 GetContextLimitTokens() const;
+	ECortexAccessMode GetPinnedAccessMode() const { return Config.LaunchOptions.AccessMode; }
 	FString GetModelId() const { return ModelId; }
 	FString GetProvider() const { return Provider; }
 
@@ -83,9 +84,13 @@ private:
 	friend class FCortexCliSessionBuildClaudePromptEnvelopeTest;
 	friend class FCortexCliSessionBuildCodexPromptEnvelopeTest;
 	friend class FCortexCliSessionBuildCodexExecArgsTest;
+	friend class FCortexCliSessionBuildCodexResumeArgsTest;
 	friend class FCortexCliSessionLaunchOptionsPinnedAcrossSettingChangeTest;
 	friend class FCortexCliSessionDefaultLaunchPinsLiveSkipPermissionsTest;
 	friend class FCortexCliSessionCodexTurnExitPreservesResumableIdleStateTest;
+	friend class FCortexCliSessionCodexErrorWithoutThreadDoesNotResumeTest;
+	friend class FCortexCliSessionProcessExitCompletesErrorTurnTest;
+	friend class FCortexCliSessionSendPromptDoesNotMutatePinnedAccessModeTest;
 	friend class FCortexCliSessionCodexOverridePathRecomputesResolvedOptionsTest;
 	friend class FCortexCliSessionLightweightConfigStaysMcpFreeTest;
 	friend class FCortexCliSessionPerTurnExecFirstTurnDoesNotResumeWithoutConversationTest;

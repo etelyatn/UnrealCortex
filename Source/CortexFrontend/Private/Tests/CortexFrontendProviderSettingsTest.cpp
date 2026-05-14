@@ -11,6 +11,11 @@ bool FCortexFrontendProviderSettingsDefaultProviderTest::RunTest(const FString& 
     (void)Parameters;
 
     TestEqual(TEXT("Settings class display name"), UCortexFrontendProviderSettings::StaticClass()->GetMetaData(TEXT("DisplayName")), FString(TEXT("Frontend")));
+    TestEqual(TEXT("Settings should live in the Editor container"), UCortexFrontendProviderSettings::Get()->GetContainerName(), FName(TEXT("Editor")));
+    TestEqual(TEXT("Settings should use the Unreal Cortex category"), UCortexFrontendProviderSettings::Get()->GetCategoryName(), FName(TEXT("Unreal Cortex")));
+    TestEqual(TEXT("Settings should use a stable Frontend section name"), UCortexFrontendProviderSettings::Get()->GetSectionName(), FName(TEXT("Frontend")));
+    TestFalse(TEXT("Provider settings are per-user and must not write project default config"),
+        UCortexFrontendProviderSettings::StaticClass()->HasAnyClassFlags(CLASS_DefaultConfig));
     const FString RegistryDefaultProviderId = FCortexProviderRegistry::GetDefaultProviderId();
     TestEqual(TEXT("Registry default provider id"), RegistryDefaultProviderId, FString(TEXT("claude_code")));
 

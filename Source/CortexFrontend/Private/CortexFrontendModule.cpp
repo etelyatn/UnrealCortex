@@ -5,13 +5,16 @@
 #include "Analysis/CortexAnalysisContext.h"
 #include "Conversion/CortexConversionContext.h"
 #include "CortexCoreModule.h"
+#include "CortexFrontendProviderSettings.h"
 #include "CortexAnalysisTypes.h"
 #include "CortexConversionTypes.h"
 #include "CortexFrontendSettings.h"
 #include "Framework/Docking/TabManager.h"
 #include "IToolMenusModule.h"
+#include "ISettingsModule.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/MonitoredProcess.h"
+#include "Modules/ModuleManager.h"
 #include "Rendering/CortexRichTextStyle.h"
 #include "Session/CortexCliSession.h"
 #include "Styling/AppStyle.h"
@@ -37,6 +40,8 @@ const FName FCortexFrontendModule::GenStudioTabId(TEXT("CortexGenStudio"));
 void FCortexFrontendModule::StartupModule()
 {
     UE_LOG(LogCortexFrontend, Log, TEXT("CortexFrontend module starting up"));
+
+    RegisterFrontendSettings();
 
     FCortexRichTextStyle::Initialize();
 
@@ -126,6 +131,8 @@ void FCortexFrontendModule::ShutdownModule()
 {
     UE_LOG(LogCortexFrontend, Log, TEXT("CortexFrontend module shutting down"));
 
+    UnregisterFrontendSettings();
+
     FCoreDelegates::OnPreExit.RemoveAll(this);
 
     if (FModuleManager::Get().IsModuleLoaded(TEXT("CortexCore")))
@@ -166,6 +173,35 @@ void FCortexFrontendModule::ShutdownModule()
     }
 
     FCortexRichTextStyle::Shutdown();
+}
+
+void FCortexFrontendModule::RegisterFrontendSettings()
+{
+    ISettingsModule* SettingsModule = FModuleManager::LoadModulePtr<ISettingsModule>(TEXT("Settings"));
+    if (SettingsModule == nullptr)
+    {
+        UE_LOG(LogCortexFrontend, Warning, TEXT("Settings module unavailable; Cortex frontend provider settings were not registered"));
+        return;
+    }
+
+    SettingsModule->RegisterSettings(
+        TEXT("Editor"),
+        TEXT("Unreal Cortex"),
+        TEXT("Frontend"),
+        FText::FromString(TEXT("Frontend")),
+        FText::FromString(TEXT("Configure the active AI provider used by newly created Cortex frontend sessions.")),
+        GetMutableDefault<UCortexFrontendProviderSettings>());
+}
+
+void FCortexFrontendModule::UnregisterFrontendSettings()
+{
+    ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>(TEXT("Settings"));
+    if (SettingsModule == nullptr)
+    {
+        return;
+    }
+
+    SettingsModule->UnregisterSettings(TEXT("Editor"), TEXT("Unreal Cortex"), TEXT("Frontend"));
 }
 
 FCortexSessionConfig FCortexFrontendModule::CreateDefaultSessionConfig()

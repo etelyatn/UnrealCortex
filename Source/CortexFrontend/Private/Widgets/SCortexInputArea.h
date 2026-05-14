@@ -55,6 +55,7 @@ public:
         ResolveAndSend(Chips, Message);
     }
     static FString ParseFrontmatterField(const FString& FileContent, const FString& FieldName);
+    static TArray<ECortexEffortLevel> GetEffortOptionsForActiveProvider();
 
     virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
     virtual void OnFocusLost(const FFocusEvent& InFocusEvent) override;

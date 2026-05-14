@@ -93,9 +93,9 @@ namespace
             Codex.Capabilities.bSupportsContextLimitDisplay = true;
             Codex.Models =
             {
-                { TEXT("gpt-5.4"), TEXT("gpt-5.4"), true, 272000, Codex.SupportedEffortLevels },
-                { TEXT("gpt-5.4-mini"), TEXT("GPT-5.4-Mini"), false, 272000, Codex.SupportedEffortLevels },
-                { TEXT("gpt-5.3-codex"), TEXT("gpt-5.3-codex"), false, 272000, Codex.SupportedEffortLevels },
+                { TEXT("gpt-5.4"), TEXT("gpt-5.4"), true, 1050000, Codex.SupportedEffortLevels },
+                { TEXT("gpt-5.4-mini"), TEXT("GPT-5.4-Mini"), false, 400000, Codex.SupportedEffortLevels },
+                { TEXT("gpt-5.3-codex"), TEXT("gpt-5.3-codex"), false, 400000, Codex.SupportedEffortLevels },
                 { TEXT("gpt-5.3-codex-spark"), TEXT("GPT-5.3-Codex-Spark"), false, 128000, Codex.SupportedEffortLevels },
             };
             Result.Add(MoveTemp(Codex));

@@ -60,6 +60,8 @@ private:
     void OnAnalysisRequested(const FCortexAnalysisPayload& Payload);
     void OnConversionWindowClosed(const TSharedRef<SWindow>&, TSharedPtr<FCortexConversionContext> Context);
     void OnAnalysisWindowClosed(const TSharedRef<SWindow>&, TSharedPtr<FCortexAnalysisContext> Context);
+    void RegisterFrontendSettings();
+    void UnregisterFrontendSettings();
     void ReleaseSessions();
     void HandlePreExit();
 

@@ -31,6 +31,12 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
 
     const TArray<FString> Overrides = FCortexMcpConfigTranslator::BuildCodexConfigOverrides(ConfigPath);
     TestTrue(TEXT("Should include at least one override"), Overrides.Num() > 0);
+    TestEqual(TEXT("Codex overrides should be flag/value pairs"), Overrides.Num() % 2, 0);
+    for (int32 Index = 0; Index < Overrides.Num(); Index += 2)
+    {
+        TestEqual(TEXT("Codex override flag should be a separate argv token"), Overrides[Index], FString(TEXT("-c")));
+        TestFalse(TEXT("Codex override value should not include the -c flag"), Overrides[Index + 1].StartsWith(TEXT("\"-c ")));
+    }
 
     const TSharedPtr<FJsonObject>* ServersObject = nullptr;
     TestTrue(TEXT("Real project .mcp.json should contain mcpServers"), RootObject->TryGetObjectField(TEXT("mcpServers"), ServersObject) || RootObject->TryGetObjectField(TEXT("mcp_servers"), ServersObject));
@@ -55,7 +61,7 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
         if ((*ServerObject)->TryGetStringField(TEXT("command"), Command))
         {
             const FString ExpectedOverride = FString::Printf(
-                TEXT("\"-c %scommand=\\\"%s\\\"\""),
+                TEXT("\"%scommand=\\\"%s\\\"\""),
                 *Prefix,
                 *Command);
             TestTrue(FString::Printf(TEXT("Should translate command for %s"), *ServerName), Overrides.Contains(ExpectedOverride));
@@ -75,7 +81,7 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
             }
 
             const FString ExpectedOverride = FString::Printf(
-                TEXT("\"-c %sargs=[\\\"%s\\\"]\""),
+                TEXT("\"%sargs=[\\\"%s\\\"]\""),
                 *Prefix,
                 *FString::Join(Args, TEXT("\\\",\\\"")));
             TestTrue(FString::Printf(TEXT("Should translate args for %s"), *ServerName), Overrides.Contains(ExpectedOverride));
@@ -85,7 +91,7 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
         if ((*ServerObject)->TryGetObjectField(TEXT("env"), EnvObject) && EnvObject != nullptr && (*EnvObject)->Values.Num() > 0)
         {
             const FString ExpectedOverride = FString::Printf(
-                TEXT("\"-c %senv.CORTEX_PROJECT_DIR=\\\".\\\"\""),
+                TEXT("\"%senv.CORTEX_PROJECT_DIR=\\\".\\\"\""),
                 *Prefix);
             TestTrue(FString::Printf(TEXT("Should translate env for %s"), *ServerName), Overrides.Contains(ExpectedOverride));
         }
@@ -120,9 +126,9 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
 
     const TArray<FString> WindowsOverrides = FCortexMcpConfigTranslator::BuildCodexConfigOverrides(WindowsFixturePath);
     TestTrue(TEXT("Windows fixture should produce overrides"), WindowsOverrides.Num() > 0);
-    TestTrue(TEXT("Windows command should keep apostrophes and backslashes"), WindowsOverrides.Contains(TEXT("\"-c mcp_servers.windows_path_server.command=\\\"C:\\\\Program Files\\\\OpenAI\\\\codex.cmd\\\"\"")));
-    TestTrue(TEXT("Windows args should keep apostrophes and backslashes"), WindowsOverrides.Contains(TEXT("\"-c mcp_servers.windows_path_server.args=[\\\"run\\\",\\\"--directory\\\",\\\"D:\\\\UnrealProjects\\\\Cortex Sandbox\\\\Plugins\\\\UnrealCortex\\\\MCP\\\"]\"")));
-    TestTrue(TEXT("Windows env should keep apostrophes and backslashes"), WindowsOverrides.Contains(TEXT("\"-c mcp_servers.windows_path_server.env.CORTEX_PROJECT_DIR=\\\"D:\\\\UnrealProjects\\\\Cortex Sandbox\\\"\"")));
+    TestTrue(TEXT("Windows command should keep apostrophes and backslashes"), WindowsOverrides.Contains(TEXT("\"mcp_servers.windows_path_server.command=\\\"C:\\\\Program Files\\\\OpenAI\\\\codex.cmd\\\"\"")));
+    TestTrue(TEXT("Windows args should keep apostrophes and backslashes"), WindowsOverrides.Contains(TEXT("\"mcp_servers.windows_path_server.args=[\\\"run\\\",\\\"--directory\\\",\\\"D:\\\\UnrealProjects\\\\Cortex Sandbox\\\\Plugins\\\\UnrealCortex\\\\MCP\\\"]\"")));
+    TestTrue(TEXT("Windows env should keep apostrophes and backslashes"), WindowsOverrides.Contains(TEXT("\"mcp_servers.windows_path_server.env.CORTEX_PROJECT_DIR=\\\"D:\\\\UnrealProjects\\\\Cortex Sandbox\\\"\"")));
 
     const FString ApostropheFixtureDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("CodexTranslatorTestApostrophe"));
     TestTrue(TEXT("Apostrophe fixture directory should be created"), IFileManager::Get().MakeDirectory(*ApostropheFixtureDir, true));
@@ -153,8 +159,8 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
 
     const TArray<FString> ApostropheOverrides = FCortexMcpConfigTranslator::BuildCodexConfigOverrides(ApostropheFixturePath);
     TestTrue(TEXT("Apostrophe fixture should produce overrides"), ApostropheOverrides.Num() > 0);
-    TestTrue(TEXT("Apostrophe command should preserve the apostrophe"), ApostropheOverrides.Contains(TEXT("\"-c mcp_servers.apostrophe_server.command=\\\"C:\\\\Users\\\\O'Connor\\\\AppData\\\\Local\\\\Programs\\\\OpenAI\\\\codex.cmd\\\"\"")));
-    TestTrue(TEXT("Apostrophe args should preserve the apostrophe"), ApostropheOverrides.Contains(TEXT("\"-c mcp_servers.apostrophe_server.args=[\\\"run\\\",\\\"--directory\\\",\\\"C:\\\\Users\\\\O'Connor\\\\Unreal Projects\\\\Cortex Sandbox\\\"]\"")));
-    TestTrue(TEXT("Apostrophe env should preserve the apostrophe"), ApostropheOverrides.Contains(TEXT("\"-c mcp_servers.apostrophe_server.env.CORTEX_PROJECT_DIR=\\\"C:\\\\Users\\\\O'Connor\\\\Unreal Projects\\\\Cortex Sandbox\\\"\"")));
+    TestTrue(TEXT("Apostrophe command should preserve the apostrophe"), ApostropheOverrides.Contains(TEXT("\"mcp_servers.apostrophe_server.command=\\\"C:\\\\Users\\\\O'Connor\\\\AppData\\\\Local\\\\Programs\\\\OpenAI\\\\codex.cmd\\\"\"")));
+    TestTrue(TEXT("Apostrophe args should preserve the apostrophe"), ApostropheOverrides.Contains(TEXT("\"mcp_servers.apostrophe_server.args=[\\\"run\\\",\\\"--directory\\\",\\\"C:\\\\Users\\\\O'Connor\\\\Unreal Projects\\\\Cortex Sandbox\\\"]\"")));
+    TestTrue(TEXT("Apostrophe env should preserve the apostrophe"), ApostropheOverrides.Contains(TEXT("\"mcp_servers.apostrophe_server.env.CORTEX_PROJECT_DIR=\\\"C:\\\\Users\\\\O'Connor\\\\Unreal Projects\\\\Cortex Sandbox\\\"\"")));
     return true;
 }
