@@ -791,6 +791,21 @@ FString FCortexCliSession::ConsumePendingPromptEnvelope()
 	return Envelope;
 }
 
+void FCortexCliSession::HandlePromptWriteCompleted()
+{
+	if (ShouldCloseStdinAfterPromptWrite())
+	{
+		UE_LOG(LogCortexFrontend, Log, TEXT("Prompt write completed; closing stdin for per-turn provider"));
+		CloseStdinPipe();
+	}
+}
+
+bool FCortexCliSession::ShouldCloseStdinAfterPromptWrite() const
+{
+	return PinnedProvider != nullptr &&
+		PinnedProvider->GetTransportMode() == ECortexCliTransportMode::PerTurnExec;
+}
+
 ECortexAccessMode FCortexCliSession::GetPendingAccessMode() const
 {
 	FScopeLock Lock(&PromptMutex);

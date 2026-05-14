@@ -94,6 +94,7 @@ private:
 	friend class FCortexCliSessionCodexOverridePathRecomputesResolvedOptionsTest;
 	friend class FCortexCliSessionLightweightConfigStaysMcpFreeTest;
 	friend class FCortexCliSessionPerTurnExecFirstTurnDoesNotResumeWithoutConversationTest;
+	friend class FCortexCliSessionCodexClosesStdinAfterPromptWriteTest;
 	friend class FCortexCliSessionQueuePromptWhileSpawningTest;
 	friend class FCortexCliSessionTurnCompleteReturnsIdleTest;
 	friend class FCortexCliSessionCancelTransitionsTest;
@@ -124,6 +125,8 @@ private:
 	void CleanupProcess();
 	void WakeWorker();
 	FString ConsumePendingPromptEnvelope();
+	void HandlePromptWriteCompleted();
+	bool ShouldCloseStdinAfterPromptWrite() const;
 	ECortexAccessMode GetPendingAccessMode() const;
 	bool TransitionState(ECortexSessionState ExpectedState, ECortexSessionState NewState, const FString& Reason = FString());
 	void BroadcastStateChange(ECortexSessionState PreviousState, ECortexSessionState NewState, const FString& Reason);
@@ -132,6 +135,7 @@ private:
 	void CloseStdinPipe();
 	ECortexSessionState GetStateForTest() const;
 	void SetStateForTest(ECortexSessionState NewState);
+	bool ShouldCloseStdinAfterPromptWriteForTest() const { return ShouldCloseStdinAfterPromptWrite(); }
 	FString GetPendingPromptForTest() const;
 	void SetPendingPromptForTest(const FString& Prompt);  // mutex-safe
 	void DrainPendingPromptForTest();

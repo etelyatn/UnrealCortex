@@ -131,6 +131,13 @@ uint32 FCortexCliWorker::Run()
 						if (bSuccess)
 						{
 							UE_LOG(LogCortexFrontend, Log, TEXT("Stdin write: completed successfully"));
+							AsyncTask(ENamedThreads::GameThread, [WeakCopy]()
+							{
+								if (const TSharedPtr<FCortexCliSession> Pinned = WeakCopy.Pin())
+								{
+									Pinned->HandlePromptWriteCompleted();
+								}
+							});
 						}
 						else
 						{

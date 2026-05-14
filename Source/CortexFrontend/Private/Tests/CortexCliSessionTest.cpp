@@ -75,6 +75,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCancelTransitionsTest, "Cortex
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionNewChatGeneratesFreshSessionIdTest, "Cortex.Frontend.CliSession.NewChatGeneratesFreshSessionId", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendModuleGetOrCreateSessionTest, "Cortex.Frontend.Module.GetOrCreateSession", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionPerTurnExecFirstTurnDoesNotResumeWithoutConversationTest, "Cortex.Frontend.CliSession.PerTurnExecFirstTurnDoesNotResumeWithoutConversation", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexClosesStdinAfterPromptWriteTest, "Cortex.Frontend.CliSession.CodexClosesStdinAfterPromptWrite", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexCliSessionBuildInitialLaunchArgsTest::RunTest(const FString& Parameters)
 {
@@ -82,6 +83,9 @@ bool FCortexCliSessionBuildInitialLaunchArgsTest::RunTest(const FString& Paramet
 
     FCortexSessionConfig Config;
     Config.SessionId = TEXT("session-123");
+    Config.ProviderId = FName(TEXT("claude_code"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("claude_code"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Claude Code");
     Config.McpConfigPath = TEXT("D:/UnrealProjects/CortexSandbox/.mcp.json");
     Config.bSkipPermissions = true;
 
@@ -108,6 +112,9 @@ bool FCortexCliSessionBuildResumeLaunchArgsTest::RunTest(const FString& Paramete
 
     FCortexSessionConfig Config;
     Config.SessionId = TEXT("session-456");
+    Config.ProviderId = FName(TEXT("claude_code"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("claude_code"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Claude Code");
     Config.bSkipPermissions = true;
 
     FCortexCliSession Session(Config);
@@ -316,6 +323,33 @@ bool FCortexCliSessionPerTurnExecFirstTurnDoesNotResumeWithoutConversationTest::
     TestTrue(TEXT("First codex turn should be accepted"), Session.SendPrompt(Request));
     TestEqual(TEXT("First codex turn should launch with the requested access mode"), ObservedAccessMode, ECortexAccessMode::FullAccess);
     TestFalse(TEXT("First codex turn should start a fresh exec instead of resuming a missing conversation"), bObservedResumeSession);
+    return true;
+}
+
+bool FCortexCliSessionCodexClosesStdinAfterPromptWriteTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig CodexConfig;
+    CodexConfig.SessionId = TEXT("codex-stdin-eof");
+    CodexConfig.ProviderId = FName(TEXT("codex"));
+    CodexConfig.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    CodexConfig.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    CodexConfig.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+
+    FCortexCliSession CodexSession(CodexConfig);
+    TestTrue(TEXT("Codex per-turn exec should close stdin after writing the prompt so exec receives EOF"),
+        CodexSession.ShouldCloseStdinAfterPromptWriteForTest());
+
+    FCortexSessionConfig ClaudeConfig;
+    ClaudeConfig.SessionId = TEXT("claude-persistent-stdin");
+    ClaudeConfig.ProviderId = FName(TEXT("claude_code"));
+    ClaudeConfig.ResolvedOptions.ProviderId = FName(TEXT("claude_code"));
+    ClaudeConfig.ResolvedOptions.ProviderDisplayName = TEXT("Claude Code");
+
+    FCortexCliSession ClaudeSession(ClaudeConfig);
+    TestFalse(TEXT("Persistent providers should keep stdin open for later prompts"),
+        ClaudeSession.ShouldCloseStdinAfterPromptWriteForTest());
     return true;
 }
 
