@@ -128,6 +128,10 @@ def register_graph_tools(mcp, connection: UEConnection):
                 or by reading subgraph_name fields from graph_get_subgraph output.
             position: Optional JSON string with {x, y} coordinates.
             params: Optional JSON string with node-specific parameters.
+                Examples:
+                - CallFunction: {"function_name": "KismetSystemLibrary.PrintString"}
+                - VariableGet/VariableSet: {"variable_name": "bHidden", "variable_class": "Actor"}
+                - DynamicCast/CastTo: {"class": "Pawn"} (preferred) or {"target_class": "Pawn"} (compatibility alias)
 
         Returns:
             JSON with node_id, class, display_name, and pins.

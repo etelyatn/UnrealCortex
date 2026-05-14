@@ -42,6 +42,7 @@
 #include "Editor.h"
 #include "Engine/World.h"
 #include "Engine/LevelScriptBlueprint.h"
+#include "UObject/UObjectIterator.h"
 
 namespace
 {
@@ -116,6 +117,73 @@ bool ResolveMutableNodeGraph(
 
 	OutGraph = Entry.Graph;
 	return true;
+}
+
+UClass* ResolveGraphNodeClassIdentifier(const FString& ClassIdentifier)
+{
+	if (ClassIdentifier.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	if (UClass* FoundClass = FindObject<UClass>(nullptr, *ClassIdentifier))
+	{
+		return FoundClass;
+	}
+
+	if (!ClassIdentifier.StartsWith(TEXT("/")))
+	{
+		if (UClass* FoundClass = FindFirstObject<UClass>(*ClassIdentifier, EFindFirstObjectOptions::NativeFirst))
+		{
+			return FoundClass;
+		}
+
+		const FString EnginePath = FString::Printf(TEXT("/Script/Engine.%s"), *ClassIdentifier);
+		if (UClass* EngineClass = FindObject<UClass>(nullptr, *EnginePath))
+		{
+			return EngineClass;
+		}
+	}
+
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* Candidate = *It;
+		if (!IsValid(Candidate))
+		{
+			continue;
+		}
+
+		if (Candidate->GetName() == ClassIdentifier || Candidate->GetPathName() == ClassIdentifier)
+		{
+			return Candidate;
+		}
+	}
+
+	if (!ClassIdentifier.StartsWith(TEXT("/")))
+	{
+		return nullptr;
+	}
+
+	const FString PackageName = FPackageName::ObjectPathToPackageName(ClassIdentifier);
+	const bool bPackageExists =
+		PackageName.StartsWith(TEXT("/"))
+		&& (FindPackage(nullptr, *PackageName) || FPackageName::DoesPackageExist(PackageName));
+	if (!bPackageExists)
+	{
+		return nullptr;
+	}
+
+	if (UClass* LoadedClass = LoadObject<UClass>(nullptr, *ClassIdentifier))
+	{
+		return LoadedClass;
+	}
+
+	if (UBlueprint* BlueprintAsset = LoadObject<UBlueprint>(nullptr, *ClassIdentifier))
+	{
+		return BlueprintAsset->GeneratedClass;
+	}
+
+	return nullptr;
 }
 }
 
@@ -1105,6 +1173,30 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 					}
 					VarNode->VariableReference.SetSelfMember(FName(*VariableName));
 				}
+			}
+		}
+
+		UK2Node_DynamicCast* CastNode = Cast<UK2Node_DynamicCast>(NewNode);
+		if (CastNode)
+		{
+			FString TargetClassIdentifier;
+			const bool bHasClass =
+				(*NodeParams)->TryGetStringField(TEXT("class"), TargetClassIdentifier)
+				|| (*NodeParams)->TryGetStringField(TEXT("target_class"), TargetClassIdentifier);
+			if (bHasClass)
+			{
+				UClass* TargetClass = ResolveGraphNodeClassIdentifier(TargetClassIdentifier);
+				if (TargetClass == nullptr)
+				{
+					Graph->RemoveNode(NewNode);
+					return FCortexCommandRouter::Error(
+						CortexErrorCodes::InvalidField,
+						FString::Printf(TEXT("Cast target class not found: %s"), *TargetClassIdentifier)
+					);
+				}
+
+				CastNode->TargetType = TargetClass;
+				CastNode->ReconstructNode();
 			}
 		}
 
