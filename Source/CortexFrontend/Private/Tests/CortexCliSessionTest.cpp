@@ -683,6 +683,7 @@ bool FCortexCliSessionModelInfoTest::RunTest(const FString& Parameters)
     (void)Parameters;
     FCortexSessionConfig Config;
     Config.SessionId = TEXT("test-model");
+    Config.ProviderId = FName(TEXT("claude"));
     FCortexCliSession Session(Config);
 
     FCortexStreamEvent InitEvent;
