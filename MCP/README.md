@@ -77,6 +77,15 @@ def register_mymodule_feature_tools(mcp, connection):
 
 > **Silent failure:** If the file is named `_my_feature.py` or the function is not named `register_*_tools`, it will never be discovered. No error is raised.
 
+### Command Surface Discipline
+
+Keep domain command surfaces focused on real workflows. Do not add per-domain diagnostic commands when the global built-ins already cover the need:
+
+- `get_status` reports editor/server health.
+- `get_capabilities` reports registered domains and command metadata.
+
+Domain commands should do domain work, and composite tools should exist only when they reduce real multi-step workflows. Future placeholder commands or empty wrapper modules should wait until the underlying behavior is implemented and tested.
+
 ## TCP Protocol
 
 Commands are line-delimited JSON sent to `127.0.0.1:{port}`:
