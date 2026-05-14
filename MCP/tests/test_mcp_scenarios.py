@@ -40,8 +40,22 @@ async def cleanup_blueprint(client, asset_path: str) -> None:
         pass
 
 
+async def cleanup_statetree(client, asset_path: str, fingerprint: dict | None = None) -> None:
+    """Best-effort delete of a test StateTree."""
+    params = {"command": "delete_asset", "params": {"asset_path": asset_path, "force": True}}
+    if fingerprint is not None:
+        params["params"]["expected_fingerprint"] = fingerprint
+    try:
+        await call_tool(client, "statetree_cmd", params)
+    except Exception:
+        pass
+
+
 def _uniq(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
+
+
+TEST_STATETREE_SCHEMA = "/Script/GameplayStateTreeModule.StateTreeComponentSchema"
 
 
 # ================================================================
@@ -941,6 +955,119 @@ async def test_stress_rapid_data_operations(mcp_client):
             except Exception:
                 pass
     assert failures < 5, f"Too many failures: {failures}/100"
+
+
+# ================================================================
+# Scenario 5b: StateTree Structure Workflow (StateTree Domain)
+# ================================================================
+
+
+@pytest.mark.anyio
+@pytest.mark.scenario
+async def test_scenario_statetree_structure_workflow(mcp_client):
+    """Create StateTree -> add states/transition -> inspect -> validate -> compile -> delete."""
+    asset_path = f"/Game/Temp/CortexMCPTest/{_uniq('ST_MCPTest')}"
+    fingerprint = None
+
+    try:
+        data = await call_tool(mcp_client, "statetree_cmd", {
+            "command": "create_asset",
+            "params": {
+                "asset_path": asset_path,
+                "schema_class": TEST_STATETREE_SCHEMA,
+                "save": False,
+            },
+        })
+        assert data["asset_path"] == asset_path
+        fingerprint = data["fingerprint"]
+
+        data = await call_tool(mcp_client, "statetree_cmd", {
+            "command": "add_state",
+            "params": {
+                "asset_path": asset_path,
+                "parent_state_path": "Root",
+                "name": "Idle",
+                "compile": False,
+                "save": False,
+                "expected_fingerprint": fingerprint,
+            },
+        })
+        assert data.get("state_id")
+        fingerprint = data["fingerprint"]
+
+        data = await call_tool(mcp_client, "statetree_cmd", {
+            "command": "add_state",
+            "params": {
+                "asset_path": asset_path,
+                "parent_state_path": "Root",
+                "name": "Chase",
+                "compile": False,
+                "save": False,
+                "expected_fingerprint": fingerprint,
+            },
+        })
+        assert data.get("state_id")
+        fingerprint = data["fingerprint"]
+
+        data = await call_tool(mcp_client, "statetree_cmd", {
+            "command": "add_transition",
+            "params": {
+                "asset_path": asset_path,
+                "source_state_path": "Root/Idle",
+                "target_state_path": "Root/Chase",
+                "trigger": "OnCompleted",
+                "compile": False,
+                "save": False,
+                "expected_fingerprint": fingerprint,
+            },
+        })
+        assert data.get("transition_id")
+        fingerprint = data["fingerprint"]
+
+        data = await call_tool(mcp_client, "statetree_cmd", {
+            "command": "dump_tree",
+            "params": {
+                "asset_path": asset_path,
+                "include_transitions": True,
+                "include_nodes": False,
+            },
+        })
+        state_paths = {state.get("path") for state in data.get("states", [])}
+        assert "Root/Idle" in state_paths
+        assert "Root/Chase" in state_paths
+        fingerprint = data["fingerprint"]
+
+        data = await call_tool(mcp_client, "statetree_cmd", {
+            "command": "check_structure",
+            "params": {"asset_path": asset_path},
+        })
+        assert "fingerprint" in data
+        fingerprint = data["fingerprint"]
+
+        data = await call_tool(mcp_client, "statetree_cmd", {
+            "command": "validate_asset",
+            "params": {
+                "asset_path": asset_path,
+                "save": False,
+                "expected_fingerprint": fingerprint,
+            },
+        })
+        assert data.get("fingerprint")
+        fingerprint = data["fingerprint"]
+
+        data = await call_tool(mcp_client, "statetree_cmd", {
+            "command": "compile",
+            "params": {
+                "asset_path": asset_path,
+                "save": False,
+                "expected_fingerprint": fingerprint,
+            },
+        })
+        assert data.get("fingerprint")
+        fingerprint = data["fingerprint"]
+
+    finally:
+        await cleanup_statetree(mcp_client, asset_path, fingerprint)
 
 
 @pytest.mark.anyio

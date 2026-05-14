@@ -119,6 +119,13 @@ namespace CortexErrorCodes
 	static const FString ReplayCancelled = TEXT("REPLAY_CANCELLED");
 	// Reflect errors
 	static const FString SymbolNotFound = TEXT("SYMBOL_NOT_FOUND");
+	// StateTree errors
+	static const FString StateTreeNotFound = TEXT("STATETREE_NOT_FOUND");
+	static const FString StateTreeAlreadyExists = TEXT("STATETREE_ALREADY_EXISTS");
+	static const FString StateTreeStateNotFound = TEXT("STATETREE_STATE_NOT_FOUND");
+	static const FString StateTreeTransitionNotFound = TEXT("STATETREE_TRANSITION_NOT_FOUND");
+	static const FString AmbiguousStatePath = TEXT("AMBIGUOUS_STATE_PATH");
+	static const FString StateTreeSchemaInvalid = TEXT("STATETREE_SCHEMA_INVALID");
 	// Gen errors
 	static const FString ProviderNotFound = TEXT("PROVIDER_NOT_FOUND");
 	static const FString CapabilityNotSupported = TEXT("CAPABILITY_NOT_SUPPORTED");

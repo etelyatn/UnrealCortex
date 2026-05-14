@@ -220,3 +220,14 @@ def test_register_router_tools_excludes_gen_by_default():
     register_router_tools(mcp, connection, docstrings)
 
     assert "gen_cmd" not in mcp.tools
+
+
+def test_register_router_tools_includes_statetree_cmd():
+    """Default registration should include the StateTree router."""
+    mcp = MockMCP()
+    connection = MagicMock()
+    docstrings = {domain: f"{domain} docs" for domain in CORE_DOMAINS}
+
+    register_router_tools(mcp, connection, docstrings)
+
+    assert "statetree_cmd" in mcp.tools

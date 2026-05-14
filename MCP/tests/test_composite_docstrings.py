@@ -142,6 +142,29 @@ class TestLevelComposeDocstring:
         assert len(doc) > 200
 
 
+# --- statetree_compose ---
+
+class TestStateTreeComposeDocstring:
+    @pytest.fixture(scope="class")
+    def tools(self):
+        return _register(
+            "cortex_mcp.tools.composites.statetree",
+            "register_statetree_compose_tools",
+        )
+
+    def test_has_disambiguation_header(self, tools):
+        doc = tools.get("statetree_compose", "")
+        assert "COMPOSITE" in doc
+
+    def test_references_statetree_cmd(self, tools):
+        doc = tools.get("statetree_compose", "")
+        assert "statetree_cmd" in doc
+
+    def test_not_one_liner(self, tools):
+        doc = tools.get("statetree_compose", "")
+        assert len(doc) > 200
+
+
 # --- router disambiguation hints ---
 
 # Minimal fake capabilities that mirrors the real schema structure.

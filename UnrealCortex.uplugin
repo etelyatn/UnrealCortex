@@ -23,6 +23,14 @@
       "Name": "StructUtils",
       "Enabled": true,
       "Optional": true
+    },
+    {
+      "Name": "StateTree",
+      "Enabled": true
+    },
+    {
+      "Name": "GameplayStateTree",
+      "Enabled": true
     }
   ],
   "Modules": [
@@ -73,6 +81,11 @@
     },
     {
       "Name": "CortexReflect",
+      "Type": "Editor",
+      "LoadingPhase": "PostEngineInit"
+    },
+    {
+      "Name": "CortexStateTree",
       "Type": "Editor",
       "LoadingPhase": "PostEngineInit"
     },
