@@ -3,7 +3,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Unreal%20Engine-5.6%2B-blue?style=flat-square&logo=unrealengine" alt="UE 5.6+">
   <img src="https://img.shields.io/badge/Type-Editor%20Only-green?style=flat-square" alt="Editor Only">
-  <img src="https://img.shields.io/badge/Modules-12-lightgrey?style=flat-square" alt="12 Modules">
+  <img src="https://img.shields.io/badge/Modules-13-lightgrey?style=flat-square" alt="13 Modules">
   <img src="https://img.shields.io/badge/Python-3.10%2B-yellow?style=flat-square&logo=python" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/License-MIT-lightgrey?style=flat-square" alt="MIT">
 </p>
@@ -392,6 +392,7 @@ The session-start hook injects `context.md` automatically. Domain agents read th
     ├── data.md          ← table schemas, balance rules
     ├── blueprints.md    ← class hierarchy, conventions
     ├── material.md      ← material conventions, instance hierarchies
+    ├── statetree.md     ← state hierarchy, transitions, validation rules
     ├── umg.md           ← screen inventory, style guide
     ├── level.md         ← actor conventions, level structure
     ├── qa.md            ← test scenarios, assertion patterns
