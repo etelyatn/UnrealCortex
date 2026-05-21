@@ -333,12 +333,22 @@ Choose one of the two installation paths below.
 
 **Install the toolkit:**
 
+Claude Code:
+
 ```bash
 claude plugin marketplace add etelyatn/cortex-toolkit
 claude plugin install cortex-toolkit
 ```
 
-For Codex or Cursor setup, see the [Cortex Toolkit README](https://github.com/etelyatn/cortex-toolkit).
+Codex:
+
+```bash
+codex plugin marketplace add etelyatn/cortex-toolkit
+codex plugin add cortex-toolkit@cortex-toolkit
+```
+
+Then restart Codex if it was already running.
+For Cursor setup, see the [Cortex Toolkit README](https://github.com/etelyatn/cortex-toolkit).
 
 **Initialize your project** — run `/cortex-init` inside Claude Code. It will:
 
@@ -347,7 +357,7 @@ For Codex or Cursor setup, see the [Cortex Toolkit README](https://github.com/et
 3. Create `.mcp.json` with the correct MCP server configuration
 4. Set up `.cortex/` project memory directory with domain knowledge templates
 
-After that, `/cortex-start` verifies the connection and walks you through your first task. Use `/cortex-help` anytime for contextual suggestions.
+After that, `/cortex-start` verifies the connection and walks you through your first task. Use `/cortex-help` anytime for contextual suggestions. Codex users can also configure `.mcp.json` manually using Option B below; the Codex plugin supplies skills and setup guidance while the project-local MCP config supplies the live UnrealCortex connection.
 
 #### Option B — Manual Setup *(Cursor, Windsurf, or any MCP client)*
 
