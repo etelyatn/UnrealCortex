@@ -148,10 +148,10 @@ void FCortexFrontendModule::ShutdownModule()
     {
         UToolMenus::UnRegisterStartupCallback(StartupCallbackHandle);
         UToolMenus::UnRegisterStartupCallback(StatusBarCallbackHandle);
-        UToolMenu* StatusBar = UToolMenus::Get()->FindMenu(TEXT("LevelEditor.StatusBar.ToolBar"));
-        if (StatusBar)
+
+        if (UToolMenus* ToolMenus = UToolMenus::TryGet())
         {
-            StatusBar->RemoveSection(TEXT("Cortex"));
+            ToolMenus->RemoveSection(TEXT("LevelEditor.StatusBar.ToolBar"), TEXT("Cortex"));
         }
     }
 
