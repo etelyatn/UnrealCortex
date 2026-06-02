@@ -451,7 +451,11 @@
         "search_text",
         "fields",
         "preview_fields",
-        "limit"
+        "limit",
+        "search_mode",
+        "string_table_path",
+        "key_pattern",
+        "keys"
       ]
     },
     "set_translation": {
@@ -460,6 +464,16 @@
         "string_table_path",
         "key",
         "text"
+      ]
+    },
+    "update_string_table": {
+      "file": "tools/data/localization.py",
+      "params": [
+        "string_table_path",
+        "operations_json",
+        "dry_run",
+        "save",
+        "verbose"
       ]
     },
     "update_curve_table_row": {

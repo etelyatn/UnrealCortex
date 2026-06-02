@@ -358,3 +358,122 @@ bool FCortexUpdateStringTableMissingKeyReportingTest::RunTest(const FString& Par
 	Table->MarkAsGarbage();
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUpdateStringTableAllowPartialIssueResultsAreNonBlockingTest,
+	"Cortex.Data.Localization.UpdateStringTable.AllowPartialIssueResultsAreNonBlocking",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexUpdateStringTableAllowPartialIssueResultsAreNonBlockingTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	UStringTable* Table = CreateTestStringTable(TEXT("ST_CortexUpdateStringTable_AllowPartial"));
+	TestNotNull(TEXT("Test StringTable should be created"), Table);
+	if (Table == nullptr)
+	{
+		return true;
+	}
+
+	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"));
+
+	const FCortexCommandResult Result = ExecuteUpdateStringTable(
+		Table,
+		{
+			MakeCopyOperation(TEXT("missing.key"), TEXT("copy.target")),
+			MakeSetOperation(TEXT("fireball.title"), TEXT("Fireball")),
+		},
+		false,
+		false,
+		true);
+
+	TestTrue(TEXT("allow_partial response should include structured data"), Result.bSuccess);
+	TestTrue(TEXT("allow_partial response should include data"), Result.Data.IsValid());
+
+	FString Value;
+	TestTrue(TEXT("valid operation after missing key should apply"), GetSourceString(Table, TEXT("fireball.title"), Value));
+	TestEqual(TEXT("valid operation value should apply"), Value, TEXT("Fireball"));
+
+	if (Result.Data.IsValid())
+	{
+		bool bHasBlockingIssues = true;
+		Result.Data->TryGetBoolField(TEXT("has_blocking_issues"), bHasBlockingIssues);
+		TestFalse(TEXT("allow_partial should clear aggregate blockers"), bHasBlockingIssues);
+
+		const TArray<TSharedPtr<FJsonValue>>* OperationResults = nullptr;
+		TestTrue(TEXT("operation_results should exist"), Result.Data->TryGetArrayField(TEXT("operation_results"), OperationResults));
+		if (OperationResults != nullptr && OperationResults->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject>* FirstResult = nullptr;
+			TestTrue(TEXT("first operation result should be an object"), (*OperationResults)[0]->TryGetObject(FirstResult));
+			if (FirstResult != nullptr)
+			{
+				TestFalse(TEXT("allow_partial issue operation should not be marked blocking"),
+					(*FirstResult)->GetBoolField(TEXT("blocking")));
+			}
+		}
+	}
+
+	Table->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUpdateStringTableStrictBlockedBatchDoesNotReportAppliedOpsTest,
+	"Cortex.Data.Localization.UpdateStringTable.StrictBlockedBatchDoesNotReportAppliedOps",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexUpdateStringTableStrictBlockedBatchDoesNotReportAppliedOpsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	UStringTable* Table = CreateTestStringTable(TEXT("ST_CortexUpdateStringTable_StrictBlocked"));
+	TestNotNull(TEXT("Test StringTable should be created"), Table);
+	if (Table == nullptr)
+	{
+		return true;
+	}
+
+	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"));
+
+	const FCortexCommandResult Result = ExecuteUpdateStringTable(
+		Table,
+		{
+			MakeSetOperation(TEXT("fireball.title"), TEXT("Fireball")),
+			MakeCopyOperation(TEXT("missing.key"), TEXT("copy.target")),
+		},
+		false);
+
+	TestTrue(TEXT("strict blocked response should include structured data"), Result.bSuccess);
+	TestTrue(TEXT("strict blocked response should include data"), Result.Data.IsValid());
+
+	FString Value;
+	TestFalse(TEXT("valid operation before blocker should not mutate in strict batch"),
+		GetSourceString(Table, TEXT("fireball.title"), Value));
+
+	if (Result.Data.IsValid())
+	{
+		TestEqual(TEXT("set_count should be cleared for blocked strict batch"),
+			static_cast<int32>(Result.Data->GetNumberField(TEXT("set_count"))), 0);
+
+		const TArray<TSharedPtr<FJsonValue>>* OperationResults = nullptr;
+		TestTrue(TEXT("operation_results should exist"), Result.Data->TryGetArrayField(TEXT("operation_results"), OperationResults));
+		if (OperationResults != nullptr && OperationResults->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject>* FirstResult = nullptr;
+			TestTrue(TEXT("first operation result should be an object"), (*OperationResults)[0]->TryGetObject(FirstResult));
+			if (FirstResult != nullptr)
+			{
+				TestFalse(TEXT("valid operation before blocker should not be reported applied"),
+					(*FirstResult)->GetBoolField(TEXT("applied")));
+				TestEqual(TEXT("valid operation status should explain strict batch block"),
+					(*FirstResult)->GetStringField(TEXT("status")), TEXT("not_applied_blocked_batch"));
+			}
+		}
+	}
+
+	Table->MarkAsGarbage();
+	return true;
+}

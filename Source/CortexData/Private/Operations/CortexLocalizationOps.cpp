@@ -189,11 +189,35 @@ namespace
 		FCortexStringTableMutationSummary& Summary,
 		const FCortexStringTableMutationRecord& Record,
 		const FString& Status,
-		TArray<FCortexStringTableMutationRecord>& IssueArray)
+		TArray<FCortexStringTableMutationRecord>& IssueArray,
+		const bool bBlocking)
 	{
 		IssueArray.Add(Record);
 		Summary.OperationResults.Add(MakeShared<FJsonValueObject>(
-			MakeOperationResult(Record.OperationIndex, Record.Type, false, true, Status, Record.Reason)));
+			MakeOperationResult(Record.OperationIndex, Record.Type, false, bBlocking, Status, Record.Reason)));
+	}
+
+	void ResetAppliedSummaryForBlockedBatch(FCortexStringTableMutationSummary& Summary)
+	{
+		Summary.Set.Reset();
+		Summary.Renamed.Reset();
+		Summary.Copied.Reset();
+		Summary.Deleted.Reset();
+		Summary.Replaced.Reset();
+
+		for (const TSharedPtr<FJsonValue>& ResultValue : Summary.OperationResults)
+		{
+			const TSharedPtr<FJsonObject>* ResultObject = nullptr;
+			if (ResultValue.IsValid()
+				&& ResultValue->TryGetObject(ResultObject)
+				&& ResultObject != nullptr
+				&& (*ResultObject).IsValid()
+				&& (*ResultObject)->GetBoolField(TEXT("applied")))
+			{
+				(*ResultObject)->SetBoolField(TEXT("applied"), false);
+				(*ResultObject)->SetStringField(TEXT("status"), TEXT("not_applied_blocked_batch"));
+			}
+		}
 	}
 
 	bool WouldCollide(
@@ -224,11 +248,12 @@ namespace
 				Record.OperationIndex = OperationIndex;
 				Record.Type = TEXT("invalid");
 				Record.Reason = TEXT("Operation must be an object");
-				AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations);
+				AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations, !bAllowPartial);
 				bOutHasBlockingIssues = true;
 				bCompleted = false;
 				if (!bAllowPartial)
 				{
+					ResetAppliedSummaryForBlockedBatch(Summary);
 					break;
 				}
 				continue;
@@ -243,11 +268,12 @@ namespace
 				Record.OperationIndex = OperationIndex;
 				Record.Type = TEXT("invalid");
 				Record.Reason = Reason;
-				AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations);
+				AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations, !bAllowPartial);
 				bOutHasBlockingIssues = true;
 				bCompleted = false;
 				if (!bAllowPartial)
 				{
+					ResetAppliedSummaryForBlockedBatch(Summary);
 					break;
 				}
 				continue;
@@ -265,11 +291,12 @@ namespace
 					Record.Type = Type;
 					Record.Key = Key;
 					Record.Reason = Reason;
-					AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations);
+					AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations, !bAllowPartial);
 					bOutHasBlockingIssues = true;
 					bCompleted = false;
 					if (!bAllowPartial)
 					{
+						ResetAppliedSummaryForBlockedBatch(Summary);
 						break;
 					}
 					continue;
@@ -301,11 +328,12 @@ namespace
 					Record.OldKey = OldKey;
 					Record.NewKey = NewKey;
 					Record.Reason = Reason;
-					AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations);
+					AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations, !bAllowPartial);
 					bOutHasBlockingIssues = true;
 					bCompleted = false;
 					if (!bAllowPartial)
 					{
+						ResetAppliedSummaryForBlockedBatch(Summary);
 						break;
 					}
 					continue;
@@ -320,11 +348,12 @@ namespace
 					Record.OldKey = OldKey;
 					Record.NewKey = NewKey;
 					Record.Reason = FString::Printf(TEXT("Missing source key: %s"), *OldKey);
-					AddIssue(Summary, Record, TEXT("missing_key"), Summary.MissingKeys);
+					AddIssue(Summary, Record, TEXT("missing_key"), Summary.MissingKeys, !bAllowPartial);
 					bOutHasBlockingIssues = true;
 					bCompleted = false;
 					if (!bAllowPartial)
 					{
+						ResetAppliedSummaryForBlockedBatch(Summary);
 						break;
 					}
 					continue;
@@ -338,11 +367,12 @@ namespace
 					Record.OldKey = OldKey;
 					Record.NewKey = NewKey;
 					Record.Reason = FString::Printf(TEXT("Target key already exists: %s"), *NewKey);
-					AddIssue(Summary, Record, TEXT("collision"), Summary.Collisions);
+					AddIssue(Summary, Record, TEXT("collision"), Summary.Collisions, !bAllowPartial);
 					bOutHasBlockingIssues = true;
 					bCompleted = false;
 					if (!bAllowPartial)
 					{
+						ResetAppliedSummaryForBlockedBatch(Summary);
 						break;
 					}
 					continue;
@@ -384,11 +414,12 @@ namespace
 					Record.Type = Type;
 					Record.Key = Key;
 					Record.Reason = Reason;
-					AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations);
+					AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations, !bAllowPartial);
 					bOutHasBlockingIssues = true;
 					bCompleted = false;
 					if (!bAllowPartial)
 					{
+						ResetAppliedSummaryForBlockedBatch(Summary);
 						break;
 					}
 					continue;
@@ -401,11 +432,12 @@ namespace
 					Record.Type = Type;
 					Record.Key = Key;
 					Record.Reason = FString::Printf(TEXT("Missing key: %s"), *Key);
-					AddIssue(Summary, Record, TEXT("missing_key"), Summary.MissingKeys);
+					AddIssue(Summary, Record, TEXT("missing_key"), Summary.MissingKeys, !bAllowPartial);
 					bOutHasBlockingIssues = true;
 					bCompleted = false;
 					if (!bAllowPartial)
 					{
+						ResetAppliedSummaryForBlockedBatch(Summary);
 						break;
 					}
 					continue;
@@ -436,11 +468,12 @@ namespace
 					Record.OldPrefix = OldPrefix;
 					Record.NewPrefix = NewPrefix;
 					Record.Reason = Reason;
-					AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations);
+					AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations, !bAllowPartial);
 					bOutHasBlockingIssues = true;
 					bCompleted = false;
 					if (!bAllowPartial)
 					{
+						ResetAppliedSummaryForBlockedBatch(Summary);
 						break;
 					}
 					continue;
@@ -470,7 +503,7 @@ namespace
 						Record.OldPrefix = OldPrefix;
 						Record.NewPrefix = NewPrefix;
 						Record.Reason = TEXT("Replacement key would be empty");
-						AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations);
+						AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations, !bAllowPartial);
 						bOutHasBlockingIssues = true;
 						bCompleted = false;
 						bReplaceAllBlocked = true;
@@ -487,7 +520,7 @@ namespace
 						Record.OldPrefix = OldPrefix;
 						Record.NewPrefix = NewPrefix;
 						Record.Reason = FString::Printf(TEXT("Target key already exists: %s"), *NewKey);
-						AddIssue(Summary, Record, TEXT("collision"), Summary.Collisions);
+						AddIssue(Summary, Record, TEXT("collision"), Summary.Collisions, !bAllowPartial);
 						bOutHasBlockingIssues = true;
 						bCompleted = false;
 						bReplaceAllBlocked = true;
@@ -504,7 +537,7 @@ namespace
 						Record.OldPrefix = OldPrefix;
 						Record.NewPrefix = NewPrefix;
 						Record.Reason = FString::Printf(TEXT("Multiple keys would map to target key: %s"), *NewKey);
-						AddIssue(Summary, Record, TEXT("collision"), Summary.Collisions);
+						AddIssue(Summary, Record, TEXT("collision"), Summary.Collisions, !bAllowPartial);
 						bOutHasBlockingIssues = true;
 						bCompleted = false;
 						bReplaceAllBlocked = true;
@@ -519,6 +552,7 @@ namespace
 
 				if (bReplaceAllBlocked && !bAllowPartial)
 				{
+					ResetAppliedSummaryForBlockedBatch(Summary);
 					break;
 				}
 
@@ -564,11 +598,12 @@ namespace
 			Record.OperationIndex = OperationIndex;
 			Record.Type = Type;
 			Record.Reason = FString::Printf(TEXT("Unsupported operation type: %s"), *Type);
-			AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations);
+			AddIssue(Summary, Record, TEXT("invalid"), Summary.InvalidOperations, !bAllowPartial);
 			bOutHasBlockingIssues = true;
 			bCompleted = false;
 			if (!bAllowPartial)
 			{
+				ResetAppliedSummaryForBlockedBatch(Summary);
 				break;
 			}
 		}
