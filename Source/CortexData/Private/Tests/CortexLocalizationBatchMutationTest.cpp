@@ -185,6 +185,30 @@ bool FCortexUpdateStringTableDryRunSafetyTest::RunTest(const FString& Parameters
 		TestTrue(TEXT("dry-run without blockers should complete"), bCompleted);
 		TestEqual(TEXT("before count should reflect current table"), static_cast<int32>(BeforeCount), 1);
 		TestEqual(TEXT("after count should reflect simulated result"), static_cast<int32>(AfterCount), 1);
+
+		const TArray<TSharedPtr<FJsonValue>>* OperationResults = nullptr;
+		TestTrue(TEXT("dry-run should include operation results"), Result.Data->TryGetArrayField(TEXT("operation_results"), OperationResults));
+		if (OperationResults != nullptr)
+		{
+			TestEqual(TEXT("dry-run should report both operations"), OperationResults->Num(), 2);
+			for (const TSharedPtr<FJsonValue>& OperationResultValue : *OperationResults)
+			{
+				const TSharedPtr<FJsonObject> OperationResult = OperationResultValue.IsValid() ? OperationResultValue->AsObject() : nullptr;
+				TestTrue(TEXT("operation result should be an object"), OperationResult.IsValid());
+				if (OperationResult.IsValid())
+				{
+					bool bApplied = true;
+					bool bWouldApply = false;
+					FString Status;
+					OperationResult->TryGetBoolField(TEXT("applied"), bApplied);
+					OperationResult->TryGetBoolField(TEXT("would_apply"), bWouldApply);
+					OperationResult->TryGetStringField(TEXT("status"), Status);
+					TestFalse(TEXT("dry-run operation should not be marked applied"), bApplied);
+					TestTrue(TEXT("dry-run operation should be marked would_apply"), bWouldApply);
+					TestEqual(TEXT("dry-run operation status should be would_apply"), Status, TEXT("would_apply"));
+				}
+			}
+		}
 	}
 
 	Table->MarkAsGarbage();

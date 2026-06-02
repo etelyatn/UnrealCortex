@@ -91,6 +91,15 @@ def _handle_limit_request(domain: str, command: str, params: dict, limit: int, c
     return format_response(result, f"{domain}_cmd")
 
 
+def _should_forward_limit_to_cpp(domain: str, command: str, params: dict) -> bool:
+    """Some C++ commands implement domain-specific limit semantics and must receive it."""
+    return (
+        domain == "data"
+        and command == "search_datatable_content"
+        and params.get("search_mode") == "string_table_refs"
+    )
+
+
 def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict | None], str]:
     """Create a single router tool function for a domain."""
 
@@ -140,6 +149,9 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                 limit, error = _validate_limit(limit_param)
                 if error:
                     return error
+                if _should_forward_limit_to_cpp(domain, command, route_params):
+                    response = connection.send_command(qualified, route_params)
+                    return format_response(response.get("data", {}), f"{domain}_cmd")
                 return _handle_limit_request(domain, command, route_params, limit, connection)
 
             # No pagination — normal dispatch

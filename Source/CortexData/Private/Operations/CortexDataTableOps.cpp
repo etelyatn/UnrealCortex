@@ -1004,6 +1004,7 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 	TArray<FString> Warnings;
 	TArray<FCortexValidatedImportRow> ValidatedRows;
 	TMap<FName, int32> ValidatedRowIndexByName;
+	TSet<FName> PendingRowNames;
 
 	for (int32 Index = 0; Index < RowsArray->Num(); ++Index)
 	{
@@ -1032,7 +1033,8 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 		const FName EntryRowFName(*EntryRowName);
 		uint8* ExistingRow = DataTable->FindRowUnchecked(EntryRowFName);
 		const int32* PendingRowIndex = ValidatedRowIndexByName.Find(EntryRowFName);
-		const bool bHasPendingRow = PendingRowIndex != nullptr;
+		const bool bHasPendingRow = PendingRowNames.Contains(EntryRowFName);
+		const bool bHasPendingMemory = PendingRowIndex != nullptr;
 		bool bRowExists = (ExistingRow != nullptr) || bHasPendingRow;
 
 		if (bRowExists && Mode == TEXT("create"))
@@ -1043,7 +1045,7 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 
 		uint8* TempMemory = static_cast<uint8*>(FMemory::Malloc(RowStruct->GetStructureSize(), RowStruct->GetMinAlignment()));
 		RowStruct->InitializeStruct(TempMemory);
-		if (bHasPendingRow && Mode == TEXT("upsert"))
+		if (bHasPendingMemory && Mode == TEXT("upsert"))
 		{
 			RowStruct->CopyScriptStruct(TempMemory, ValidatedRows[*PendingRowIndex].RowMemory);
 		}
@@ -1078,7 +1080,7 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 
 		if (!bDryRun)
 		{
-			if (bHasPendingRow && Mode == TEXT("upsert"))
+			if (bHasPendingMemory && Mode == TEXT("upsert"))
 			{
 				FCortexValidatedImportRow& ValidatedRow = ValidatedRows[*PendingRowIndex];
 				RowStruct->DestroyStruct(ValidatedRow.RowMemory);
@@ -1094,10 +1096,12 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 				ValidatedRow.RowMemory = TempMemory;
 				ValidatedRow.bRowExists = bRowExists;
 				ValidatedRowIndexByName.Add(EntryRowFName, NewValidatedIndex);
+				PendingRowNames.Add(EntryRowFName);
 			}
 		}
 		else
 		{
+			PendingRowNames.Add(EntryRowFName);
 			RowStruct->DestroyStruct(TempMemory);
 			FMemory::Free(TempMemory);
 		}
@@ -1515,6 +1519,13 @@ FCortexCommandResult FCortexDataTableOps::SearchDatatableContent(const TSharedPt
 	FString SearchMode;
 	Params->TryGetStringField(TEXT("search_mode"), SearchMode);
 	const bool bSearchStringTableRefs = SearchMode == TEXT("string_table_refs");
+	if (!SearchMode.IsEmpty() && !bSearchStringTableRefs)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidValue,
+			FString::Printf(TEXT("Unsupported search_mode: %s"), *SearchMode)
+		);
+	}
 
 	FString SearchText;
 	if (!bSearchStringTableRefs

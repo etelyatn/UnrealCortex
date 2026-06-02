@@ -22,12 +22,12 @@ namespace
 		return RowEntry;
 	}
 
-	TSharedPtr<FJsonObject> MakeImportParams(UDataTable* DataTable, const FString& Mode, const TArray<TSharedPtr<FJsonValue>>& Rows)
+	TSharedPtr<FJsonObject> MakeImportParams(UDataTable* DataTable, const FString& Mode, const TArray<TSharedPtr<FJsonValue>>& Rows, bool bDryRun = false)
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("table_path"), DataTable->GetPathName());
 		Params->SetStringField(TEXT("mode"), Mode);
-		Params->SetBoolField(TEXT("dry_run"), false);
+		Params->SetBoolField(TEXT("dry_run"), bDryRun);
 		Params->SetArrayField(TEXT("rows"), Rows);
 		return Params;
 	}
@@ -101,6 +101,70 @@ bool FCortexDataTableStringTableReferenceScanNestedArrayTest::RunTest(const FStr
 	TestTrue(TEXT("Nested array FText path should be reported"), bFoundNestedStep);
 
 	TestStringTable->MarkAsGarbage();
+	DataTable->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataTableImportDryRunCreateSkipsDuplicateIncomingRowsTest,
+	"Cortex.Data.Datatable.StringTableReferenceScan.ImportDryRunCreateSkipsDuplicateIncomingRows",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataTableImportDryRunCreateSkipsDuplicateIncomingRowsTest::RunTest(const FString& Parameters)
+{
+	UDataTable* DataTable = NewObject<UDataTable>(
+		GetTransientPackage(),
+		FName(TEXT("DT_CortexDataImportDryRunCreateDuplicateTest")));
+	DataTable->RowStruct = FCortexDataLocalizationTestRow::StaticStruct();
+
+	TArray<TSharedPtr<FJsonValue>> Rows;
+	Rows.Add(MakeShared<FJsonValueObject>(MakeImportRowEntry(TEXT("fireball"), TEXT("First"))));
+	Rows.Add(MakeShared<FJsonValueObject>(MakeImportRowEntry(TEXT("fireball"), TEXT("Second"))));
+
+	const FCortexCommandResult Result = FCortexDataTableOps::ImportDatatableJson(
+		MakeImportParams(DataTable, TEXT("create"), Rows, true));
+	TestTrue(TEXT("Duplicate dry-run create import should succeed"), Result.bSuccess);
+	TestTrue(TEXT("Duplicate dry-run create import should include data"), Result.Data.IsValid());
+	if (Result.Data.IsValid())
+	{
+		TestEqual(TEXT("Dry-run should count first duplicate as create"), static_cast<int32>(Result.Data->GetNumberField(TEXT("created"))), 1);
+		TestEqual(TEXT("Dry-run should count second duplicate as skipped"), static_cast<int32>(Result.Data->GetNumberField(TEXT("skipped"))), 1);
+	}
+	TestNull(TEXT("Dry-run create should not mutate table"), DataTable->FindRowUnchecked(TEXT("fireball")));
+
+	DataTable->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataTableImportDryRunUpsertCountsDuplicateIncomingRowsTest,
+	"Cortex.Data.Datatable.StringTableReferenceScan.ImportDryRunUpsertCountsDuplicateIncomingRows",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataTableImportDryRunUpsertCountsDuplicateIncomingRowsTest::RunTest(const FString& Parameters)
+{
+	UDataTable* DataTable = NewObject<UDataTable>(
+		GetTransientPackage(),
+		FName(TEXT("DT_CortexDataImportDryRunUpsertDuplicateTest")));
+	DataTable->RowStruct = FCortexDataLocalizationTestRow::StaticStruct();
+
+	TArray<TSharedPtr<FJsonValue>> Rows;
+	Rows.Add(MakeShared<FJsonValueObject>(MakeImportRowEntry(TEXT("fireball"), TEXT("First"))));
+	Rows.Add(MakeShared<FJsonValueObject>(MakeImportRowEntry(TEXT("fireball"), TEXT("Second"))));
+
+	const FCortexCommandResult Result = FCortexDataTableOps::ImportDatatableJson(
+		MakeImportParams(DataTable, TEXT("upsert"), Rows, true));
+	TestTrue(TEXT("Duplicate dry-run upsert import should succeed"), Result.bSuccess);
+	TestTrue(TEXT("Duplicate dry-run upsert import should include data"), Result.Data.IsValid());
+	if (Result.Data.IsValid())
+	{
+		TestEqual(TEXT("Dry-run should count first duplicate as create"), static_cast<int32>(Result.Data->GetNumberField(TEXT("created"))), 1);
+		TestEqual(TEXT("Dry-run should count second duplicate as update"), static_cast<int32>(Result.Data->GetNumberField(TEXT("updated"))), 1);
+	}
+	TestNull(TEXT("Dry-run upsert should not mutate table"), DataTable->FindRowUnchecked(TEXT("fireball")));
+
 	DataTable->MarkAsGarbage();
 	return true;
 }

@@ -100,12 +100,14 @@ namespace
 		const bool bApplied,
 		const bool bBlocking,
 		const FString& Status,
-		const FString& Reason = TEXT(""))
+		const FString& Reason = TEXT(""),
+		const bool bWouldApply = false)
 	{
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 		Result->SetNumberField(TEXT("operation_index"), OperationIndex);
 		Result->SetStringField(TEXT("type"), Type);
 		Result->SetBoolField(TEXT("applied"), bApplied);
+		Result->SetBoolField(TEXT("would_apply"), bWouldApply);
 		Result->SetBoolField(TEXT("blocking"), bBlocking);
 		Result->SetStringField(TEXT("status"), Status);
 		if (!Reason.IsEmpty())
@@ -231,6 +233,7 @@ namespace
 	bool SimulateStringTableOperations(
 		const TArray<TSharedPtr<FJsonValue>>& Operations,
 		const bool bAllowPartial,
+		const bool bDryRun,
 		TMap<FString, FString>& WorkingEntries,
 		FCortexStringTableMutationSummary& Summary,
 		bool& bOutHasBlockingIssues)
@@ -311,7 +314,7 @@ namespace
 				Record.SourceString = SourceString;
 				Summary.Set.Add(Record);
 				Summary.OperationResults.Add(MakeShared<FJsonValueObject>(
-					MakeOperationResult(OperationIndex, Type, true, false, TEXT("applied"))));
+					MakeOperationResult(OperationIndex, Type, !bDryRun, false, bDryRun ? TEXT("would_apply") : TEXT("applied"), TEXT(""), bDryRun)));
 				continue;
 			}
 
@@ -400,7 +403,7 @@ namespace
 					Summary.Copied.Add(Record);
 				}
 				Summary.OperationResults.Add(MakeShared<FJsonValueObject>(
-					MakeOperationResult(OperationIndex, Type, true, false, TEXT("applied"))));
+					MakeOperationResult(OperationIndex, Type, !bDryRun, false, bDryRun ? TEXT("would_apply") : TEXT("applied"), TEXT(""), bDryRun)));
 				continue;
 			}
 
@@ -451,7 +454,7 @@ namespace
 				Record.Key = Key;
 				Summary.Deleted.Add(Record);
 				Summary.OperationResults.Add(MakeShared<FJsonValueObject>(
-					MakeOperationResult(OperationIndex, Type, true, false, TEXT("applied"))));
+					MakeOperationResult(OperationIndex, Type, !bDryRun, false, bDryRun ? TEXT("would_apply") : TEXT("applied"), TEXT(""), bDryRun)));
 				continue;
 			}
 
@@ -590,7 +593,7 @@ namespace
 				}
 
 				Summary.OperationResults.Add(MakeShared<FJsonValueObject>(
-					MakeOperationResult(OperationIndex, Type, true, false, TEXT("applied"))));
+					MakeOperationResult(OperationIndex, Type, !bDryRun, false, bDryRun ? TEXT("would_apply") : TEXT("applied"), TEXT(""), bDryRun)));
 				continue;
 			}
 
@@ -909,6 +912,7 @@ FCortexCommandResult FCortexDataLocalizationOps::UpdateStringTable(const TShared
 	const bool bSimulationCompleted = SimulateStringTableOperations(
 		*Operations,
 		bAllowPartial,
+		bDryRun,
 		WorkingEntries,
 		Summary,
 		bHasBlockingIssues);
@@ -942,6 +946,11 @@ FCortexCommandResult FCortexDataLocalizationOps::UpdateStringTable(const TShared
 				bRequiresUserAction = true;
 				SaveFailure = MakeShared<FJsonObject>();
 				SaveFailure->SetStringField(TEXT("error_code"), CortexErrorCodes::SaveFailed);
+				SaveFailure->SetStringField(TEXT("asset_path"), TablePath);
+				SaveFailure->SetStringField(TEXT("reason"), TEXT("missing_package"));
+				SaveFailure->SetBoolField(TEXT("is_open_in_editor"), false);
+				SaveFailure->SetBoolField(TEXT("safe_close_save_retry_available"), false);
+				SaveFailure->SetStringField(TEXT("mutation_state"), MutationState);
 				SaveFailure->SetStringField(TEXT("message"), TEXT("StringTable has no package to save"));
 			}
 			else
@@ -965,6 +974,11 @@ FCortexCommandResult FCortexDataLocalizationOps::UpdateStringTable(const TShared
 					bRequiresUserAction = true;
 					SaveFailure = MakeShared<FJsonObject>();
 					SaveFailure->SetStringField(TEXT("error_code"), CortexErrorCodes::SaveFailed);
+					SaveFailure->SetStringField(TEXT("asset_path"), TablePath);
+					SaveFailure->SetStringField(TEXT("reason"), TEXT("save_package_failed"));
+					SaveFailure->SetBoolField(TEXT("is_open_in_editor"), false);
+					SaveFailure->SetBoolField(TEXT("safe_close_save_retry_available"), true);
+					SaveFailure->SetStringField(TEXT("mutation_state"), MutationState);
 					SaveFailure->SetStringField(TEXT("package"), Package->GetName());
 					SaveFailure->SetStringField(TEXT("file_path"), PackageFilename);
 					SaveFailure->SetStringField(TEXT("message"), FString::Printf(TEXT("Failed to save StringTable: %s"), *TablePath));

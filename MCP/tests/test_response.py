@@ -340,6 +340,28 @@ class TestRouterPagination:
         assert result["saved"] is True
         assert "_pagination" not in result
 
+    def test_string_table_reference_search_forwards_limit_to_cpp(self):
+        """StringTable reference scans use the C++ limit instead of router pagination."""
+        router, conn = _router_with_mock(response_data={"results": [{"id": i} for i in range(50)], "total_matches": 50})
+
+        result = json.loads(
+            router(
+                "search_datatable_content",
+                {
+                    "table_path": "/Game/Data/DT_Test",
+                    "search_mode": "string_table_refs",
+                    "limit": 100,
+                },
+            )
+        )
+
+        assert "_pagination" not in result
+        assert len(result["results"]) == 50
+        conn.send_command.assert_called_once()
+        command, call_params = conn.send_command.call_args[0]
+        assert command == "data.search_datatable_content"
+        assert call_params["limit"] == 100
+
 
 class TestPaginationEdgeCases:
     """Edge cases and interaction between Phase 1 and Phase 2."""
