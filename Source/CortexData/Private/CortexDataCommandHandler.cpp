@@ -122,6 +122,10 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
     {
         return FCortexDataLocalizationOps::SetTranslation(Params);
     }
+    if (Command == TEXT("update_string_table"))
+    {
+        return FCortexDataLocalizationOps::UpdateStringTable(Params);
+    }
 
     // Asset search
     if (Command == TEXT("search_assets"))
@@ -237,6 +241,13 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Required(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable asset path"))
             .Required(TEXT("key"), TEXT("string"), TEXT("StringTable key"))
             .Required(TEXT("text"), TEXT("string"), TEXT("Localized text value")),
+        FCortexCommandInfo{ TEXT("update_string_table"), TEXT("Apply ordered StringTable batch mutations") }
+            .Required(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable asset path"))
+            .Required(TEXT("operations"), TEXT("array"), TEXT("Ordered mutation operations"))
+            .Required(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview without mutating; must be explicit"))
+            .Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the asset after applying mutations"))
+            .Optional(TEXT("verbose"), TEXT("boolean"), TEXT("Include full mutation arrays"))
+            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Skip invalid operations and apply valid ones")),
         FCortexCommandInfo{ TEXT("search_assets"), TEXT("Asset Registry search") }
             .Optional(TEXT("query"), TEXT("string"), TEXT("Search text"))
             .Optional(TEXT("class_names"), TEXT("array"), TEXT("Allowed asset classes"))
