@@ -231,3 +231,38 @@ def test_register_router_tools_includes_statetree_cmd():
     register_router_tools(mcp, connection, docstrings)
 
     assert "statetree_cmd" in mcp.tools
+
+
+def test_data_router_forwards_update_string_table_payload():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "success": True,
+        "data": {
+            "string_table_path": "/Game/Data/ST_CodexEntries",
+            "dry_run": True,
+            "before": {"key_count": 2},
+            "after": {"key_count": 2},
+            "renamed": [],
+            "collisions": [],
+            "missing_keys": [],
+            "invalid_operations": [],
+            "operation_results": [],
+        },
+    }
+
+    router = make_router("data", connection, "data docs")
+    payload = json.loads(router("update_string_table", {
+        "string_table_path": "/Game/Data/ST_CodexEntries",
+        "operations": [{"type": "replace_all", "old_prefix": "entry.", "new_prefix": ""}],
+        "dry_run": True,
+    }))
+
+    assert payload["dry_run"] is True
+    connection.send_command.assert_called_once_with(
+        "data.update_string_table",
+        {
+            "string_table_path": "/Game/Data/ST_CodexEntries",
+            "operations": [{"type": "replace_all", "old_prefix": "entry.", "new_prefix": ""}],
+            "dry_run": True,
+        },
+    )

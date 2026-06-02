@@ -94,3 +94,55 @@ def register_localization_tools(mcp, connection: UEConnection):
             return format_response(response.get("data", {}), "set_translation")
         except ConnectionError as e:
             return f"Error: {e}"
+
+    @mcp.tool()
+    def update_string_table(
+        string_table_path: str,
+        operations_json: str,
+        dry_run: bool,
+        save: bool = False,
+        verbose: bool = False,
+    ) -> str:
+        """Batch mutate StringTable entries with an ordered operation list.
+
+        Supported operation objects:
+        - {"type":"set","key":"fireball.title","source_string":"Fireball"}
+        - {"type":"rename","old_key":"entry.fireball.title","new_key":"fireball.title"}
+        - {"type":"copy","old_key":"entry.fireball.body","new_key":"fireball.body_copy"}
+        - {"type":"delete","key":"entry.fireball.title"}
+        - {"type":"replace_all","old_prefix":"entry.","new_prefix":""}
+
+        Use dry_run=True first for migrations. Compact responses include renamed,
+        collisions, missing_keys, invalid_operations, operation_results, and summary counts.
+        Pass verbose=True to include copied/set/deleted/replaced arrays.
+        For structured object params, prefer data_cmd with command="update_string_table"
+        and params.operations as an array.
+
+        Args:
+            string_table_path: Full path to the StringTable asset.
+            operations_json: JSON array string of ordered operation objects.
+            dry_run: Preview without writing. Required; pass false to apply.
+            save: Save the package after mutation. Ignored for dry runs.
+            verbose: Include full per-key mutation arrays.
+
+        Returns:
+            JSON mutation report with before/after key counts and audit arrays.
+        """
+        try:
+            operation_data = json.loads(operations_json)
+            params = {
+                "string_table_path": string_table_path,
+                "operations": operation_data,
+                "dry_run": dry_run,
+                "save": save,
+                "verbose": verbose,
+            }
+            response = connection.send_command("data.update_string_table", params)
+            if not dry_run:
+                connection.invalidate_cache("data.list_string_tables:")
+                connection.invalidate_cache("data.get_data_catalog:")
+            return format_response(response.get("data", {}), "update_string_table")
+        except json.JSONDecodeError as e:
+            return json.dumps({"_error": "INVALID_JSON", "_message": f"Invalid operations_json: {e}"})
+        except ConnectionError as e:
+            return f"Error: {e}"
