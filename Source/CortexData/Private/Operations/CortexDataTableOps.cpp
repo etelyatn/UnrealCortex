@@ -30,6 +30,26 @@ namespace
 		DataTable->AddRow(RowName, RowMemory, RowStruct);
 #endif
 	}
+
+	struct FCortexValidatedImportRow
+	{
+		FString RowName;
+		FName RowFName;
+		uint8* RowMemory = nullptr;
+		bool bRowExists = false;
+	};
+
+	void FreeValidatedImportRows(const TArray<FCortexValidatedImportRow>& Rows, const UScriptStruct* RowStruct)
+	{
+		for (const FCortexValidatedImportRow& Row : Rows)
+		{
+			if (Row.RowMemory != nullptr)
+			{
+				RowStruct->DestroyStruct(Row.RowMemory);
+				FMemory::Free(Row.RowMemory);
+			}
+		}
+	}
 }
 #include "Internationalization/Text.h"
 #include "Internationalization/StringTable.h"
@@ -977,26 +997,13 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 		);
 	}
 
-	// Wrap entire import in a single undo transaction (skip for dry_run)
-	TOptional<FScopedTransaction> Transaction;
-	if (!bDryRun)
-	{
-		Transaction.Emplace(FText::FromString(
-			FString::Printf(TEXT("Cortex:Import %d rows into '%s' (mode: %s)"), RowsArray->Num(), *DataTable->GetName(), *Mode)
-		));
-		DataTable->Modify();
-	}
-
-	if (Mode == TEXT("replace") && !bDryRun)
-	{
-		DataTable->EmptyTable();
-	}
-
 	int32 CreatedCount = 0;
 	int32 UpdatedCount = 0;
 	int32 SkippedCount = 0;
 	TArray<FString> Errors;
 	TArray<FString> Warnings;
+	TArray<FCortexValidatedImportRow> ValidatedRows;
+	TMap<FName, int32> ValidatedRowIndexByName;
 
 	for (int32 Index = 0; Index < RowsArray->Num(); ++Index)
 	{
@@ -1024,116 +1031,127 @@ FCortexCommandResult FCortexDataTableOps::ImportDatatableJson(const TSharedPtr<F
 
 		const FName EntryRowFName(*EntryRowName);
 		uint8* ExistingRow = DataTable->FindRowUnchecked(EntryRowFName);
-		bool bRowExists = (ExistingRow != nullptr);
+		const int32* PendingRowIndex = ValidatedRowIndexByName.Find(EntryRowFName);
+		const bool bHasPendingRow = PendingRowIndex != nullptr;
+		bool bRowExists = (ExistingRow != nullptr) || bHasPendingRow;
 
-		if (bDryRun)
-		{
-			// Validate by attempting deserialization into temp memory
-			uint8* TempMemory = static_cast<uint8*>(FMemory::Malloc(RowStruct->GetStructureSize()));
-			RowStruct->InitializeStruct(TempMemory);
-
-			TArray<FString> RowWarnings;
-			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, TempMemory, DataTable, RowWarnings);
-
-			RowStruct->DestroyStruct(TempMemory);
-			FMemory::Free(TempMemory);
-
-			if (!bSuccess)
-			{
-				Errors.Add(FString::Printf(TEXT("Row %d (%s): deserialization failed"), Index, *EntryRowName));
-			}
-			else
-			{
-				for (const FString& W : RowWarnings)
-				{
-					Warnings.Add(FString::Printf(TEXT("Row %d (%s): %s"), Index, *EntryRowName, *W));
-				}
-
-				if (bRowExists && Mode == TEXT("create"))
-				{
-					++SkippedCount;
-				}
-				else if (bRowExists)
-				{
-					++UpdatedCount;
-				}
-				else
-				{
-					++CreatedCount;
-				}
-			}
-			continue;
-		}
-
-		// Non-dry-run execution
 		if (bRowExists && Mode == TEXT("create"))
 		{
 			++SkippedCount;
 			continue;
 		}
 
+		uint8* TempMemory = static_cast<uint8*>(FMemory::Malloc(RowStruct->GetStructureSize(), RowStruct->GetMinAlignment()));
+		RowStruct->InitializeStruct(TempMemory);
+		if (bHasPendingRow && Mode == TEXT("upsert"))
+		{
+			RowStruct->CopyScriptStruct(TempMemory, ValidatedRows[*PendingRowIndex].RowMemory);
+		}
+		else if (ExistingRow != nullptr && Mode == TEXT("upsert"))
+		{
+			RowStruct->CopyScriptStruct(TempMemory, ExistingRow);
+		}
+
+		TArray<FString> RowWarnings;
+		bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, TempMemory, DataTable, RowWarnings);
+		if (!bSuccess)
+		{
+			RowStruct->DestroyStruct(TempMemory);
+			FMemory::Free(TempMemory);
+			Errors.Add(FString::Printf(TEXT("Row %d (%s): deserialization failed"), Index, *EntryRowName));
+			continue;
+		}
+
+		for (const FString& W : RowWarnings)
+		{
+			Warnings.Add(FString::Printf(TEXT("Row %d (%s): %s"), Index, *EntryRowName, *W));
+		}
+
 		if (bRowExists && Mode == TEXT("upsert"))
 		{
-			// Validate existing-row updates on a copy to avoid partial nested writes.
-			uint8* TempRow = static_cast<uint8*>(FMemory::Malloc(RowStruct->GetStructureSize(), RowStruct->GetMinAlignment()));
-			RowStruct->InitializeStruct(TempRow);
-			RowStruct->CopyScriptStruct(TempRow, ExistingRow);
-
-			TArray<FString> RowWarnings;
-			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, TempRow, DataTable, RowWarnings);
-			if (!bSuccess)
-			{
-				RowStruct->DestroyStruct(TempRow);
-				FMemory::Free(TempRow);
-				Errors.Add(FString::Printf(TEXT("Row %d (%s): deserialization failed"), Index, *EntryRowName));
-				continue;
-			}
-			RowStruct->CopyScriptStruct(ExistingRow, TempRow);
-			RowStruct->DestroyStruct(TempRow);
-			FMemory::Free(TempRow);
-
-			for (const FString& W : RowWarnings)
-			{
-				Warnings.Add(FString::Printf(TEXT("Row %d (%s): %s"), Index, *EntryRowName, *W));
-			}
-			DataTable->HandleDataTableChanged(EntryRowFName);
 			++UpdatedCount;
 		}
 		else
 		{
-			// Create new row
-			uint8* RowMemory = static_cast<uint8*>(FMemory::Malloc(RowStruct->GetStructureSize()));
-			RowStruct->InitializeStruct(RowMemory);
-
-			TArray<FString> RowWarnings;
-			bool bSuccess = FCortexSerializer::JsonToStruct(*EntryRowData, RowStruct, RowMemory, DataTable, RowWarnings);
-
-			if (!bSuccess)
-			{
-				RowStruct->DestroyStruct(RowMemory);
-				FMemory::Free(RowMemory);
-				Errors.Add(FString::Printf(TEXT("Row %d (%s): deserialization failed"), Index, *EntryRowName));
-				continue;
-			}
-
-			for (const FString& W : RowWarnings)
-			{
-				Warnings.Add(FString::Printf(TEXT("Row %d (%s): %s"), Index, *EntryRowName, *W));
-			}
-
-			AddDataTableRowCompat(DataTable, EntryRowFName, RowMemory, RowStruct);
-
-			RowStruct->DestroyStruct(RowMemory);
-			FMemory::Free(RowMemory);
 			++CreatedCount;
+		}
+
+		if (!bDryRun)
+		{
+			if (bHasPendingRow && Mode == TEXT("upsert"))
+			{
+				FCortexValidatedImportRow& ValidatedRow = ValidatedRows[*PendingRowIndex];
+				RowStruct->DestroyStruct(ValidatedRow.RowMemory);
+				FMemory::Free(ValidatedRow.RowMemory);
+				ValidatedRow.RowMemory = TempMemory;
+			}
+			else
+			{
+				const int32 NewValidatedIndex = ValidatedRows.Num();
+				FCortexValidatedImportRow& ValidatedRow = ValidatedRows.AddDefaulted_GetRef();
+				ValidatedRow.RowName = EntryRowName;
+				ValidatedRow.RowFName = EntryRowFName;
+				ValidatedRow.RowMemory = TempMemory;
+				ValidatedRow.bRowExists = bRowExists;
+				ValidatedRowIndexByName.Add(EntryRowFName, NewValidatedIndex);
+			}
+		}
+		else
+		{
+			RowStruct->DestroyStruct(TempMemory);
+			FMemory::Free(TempMemory);
+		}
+	}
+
+	if (Errors.Num() > 0)
+	{
+		FreeValidatedImportRows(ValidatedRows, RowStruct);
+		TSharedPtr<FJsonObject> ErrorDetails = MakeShared<FJsonObject>();
+		TArray<TSharedPtr<FJsonValue>> ErrorsArray;
+		for (const FString& Err : Errors)
+		{
+			ErrorsArray.Add(MakeShared<FJsonValueString>(Err));
+		}
+		ErrorDetails->SetArrayField(TEXT("errors"), ErrorsArray);
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			TEXT("Failed to deserialize one or more rows"),
+			ErrorDetails);
+	}
+
+	if (!bDryRun)
+	{
+		FScopedTransaction Transaction(FText::FromString(
+			FString::Printf(TEXT("Cortex:Import %d rows into '%s' (mode: %s)"), RowsArray->Num(), *DataTable->GetName(), *Mode)
+		));
+		DataTable->Modify();
+
+		if (Mode == TEXT("replace"))
+		{
+			DataTable->EmptyTable();
+		}
+
+		for (const FCortexValidatedImportRow& Row : ValidatedRows)
+		{
+			uint8* ExistingRow = DataTable->FindRowUnchecked(Row.RowFName);
+			if (ExistingRow != nullptr && Mode == TEXT("upsert"))
+			{
+				RowStruct->CopyScriptStruct(ExistingRow, Row.RowMemory);
+				DataTable->HandleDataTableChanged(Row.RowFName);
+			}
+			else
+			{
+				AddDataTableRowCompat(DataTable, Row.RowFName, Row.RowMemory, RowStruct);
+			}
 		}
 	}
 
 	if (!bDryRun)
 	{
 		DataTable->MarkPackageDirty();
-	FCortexEditorUtils::NotifyAssetModified(DataTable);
+		FCortexEditorUtils::NotifyAssetModified(DataTable);
 	}
+	FreeValidatedImportRows(ValidatedRows, RowStruct);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetNumberField(TEXT("created"), CreatedCount);

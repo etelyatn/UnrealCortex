@@ -268,8 +268,8 @@ def register_datatable_tools(mcp, connection: UEConnection):
         include a '_struct_type' key specifying the concrete type name
         (e.g., '_struct_type': 'FRipRewardItem').
 
-        For table-backed FText fields, writes may pass this object shape. Current query/get
-        responses may still return display strings unless DataTable serialization is changed separately:
+        For table-backed FText fields, writes may pass this object shape. Query/get responses
+        return the same object shape for FText fields:
         {"Title":{"value":"Fireball","string_table":{"table_id":"/Game/Data/ST_CodexEntries.ST_CodexEntries","key":"fireball.title"}}}
 
         For TArray<UStruct> fields, pass an array of objects matching the element struct:
