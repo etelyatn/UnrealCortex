@@ -473,7 +473,8 @@
         "operations_json",
         "dry_run",
         "save",
-        "verbose"
+        "verbose",
+        "allow_partial"
       ]
     },
     "update_curve_table_row": {

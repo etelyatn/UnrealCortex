@@ -383,7 +383,7 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 	if (const FTextProperty* TextProp = CastField<FTextProperty>(Property))
 	{
 		const FText& TextValue = TextProp->GetPropertyValue(ValuePtr);
-		return MakeShared<FJsonValueString>(TextValue.ToString());
+		return MakeShared<FJsonValueObject>(TextToJson(TextValue));
 	}
 
 	// Enum property (enum class)

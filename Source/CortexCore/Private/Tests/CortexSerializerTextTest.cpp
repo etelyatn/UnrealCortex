@@ -169,3 +169,52 @@ bool FCortexSerializerJsonToTextStringTableTest::RunTest(const FString& Paramete
 	TestTable->MarkAsGarbage();
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerStructToJsonStringTableTextTest,
+	"Cortex.Core.Serializer.JsonToText.StructToJsonStringTable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerStructToJsonStringTableTextTest::RunTest(const FString& Parameters)
+{
+	UStringTable* TestTable = NewObject<UStringTable>(
+		GetTransientPackage(),
+		FName(TEXT("TestStringTable_StructToJsonText")));
+	TestTable->GetMutableStringTable()->SetNamespace(TEXT("TestNS"));
+	TestTable->GetMutableStringTable()->SetSourceString(TEXT("TestKey"), TEXT("Test Value"));
+
+	UCortexSerializerTextTestObject* TestObject = NewObject<UCortexSerializerTextTestObject>();
+	TestObject->Title = FText::FromStringTable(TestTable->GetStringTableId(), TEXT("TestKey"));
+
+	const TSharedPtr<FJsonObject> Result = FCortexSerializer::StructToJson(
+		UCortexSerializerTextTestObject::StaticClass(),
+		TestObject);
+
+	TestTrue(TEXT("Struct JSON should be valid"), Result.IsValid());
+	const TSharedPtr<FJsonObject>* TitleObject = nullptr;
+	TestTrue(TEXT("FText property should serialize as object"),
+		Result.IsValid() && Result->TryGetObjectField(TEXT("Title"), TitleObject));
+	if (TitleObject != nullptr && (*TitleObject).IsValid())
+	{
+		TestEqual(TEXT("FText object should include value"),
+			(*TitleObject)->GetStringField(TEXT("value")), TEXT("Test Value"));
+		TestTrue(TEXT("FText object should include string_table"),
+			(*TitleObject)->HasField(TEXT("string_table")));
+
+		const TSharedPtr<FJsonObject>* StringTableObject = nullptr;
+		if ((*TitleObject)->TryGetObjectField(TEXT("string_table"), StringTableObject) && StringTableObject != nullptr)
+		{
+			TestEqual(TEXT("Serialized table id matches"),
+				(*StringTableObject)->GetStringField(TEXT("table_id")),
+				TestTable->GetStringTableId().ToString());
+			TestEqual(TEXT("Serialized key matches"),
+				(*StringTableObject)->GetStringField(TEXT("key")),
+				TEXT("TestKey"));
+		}
+	}
+
+	TestObject->MarkAsGarbage();
+	TestTable->MarkAsGarbage();
+	return true;
+}

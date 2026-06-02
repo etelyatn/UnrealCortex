@@ -102,6 +102,7 @@ def register_localization_tools(mcp, connection: UEConnection):
         dry_run: bool,
         save: bool = False,
         verbose: bool = False,
+        allow_partial: bool = False,
     ) -> str:
         """Batch mutate StringTable entries with an ordered operation list.
 
@@ -124,6 +125,7 @@ def register_localization_tools(mcp, connection: UEConnection):
             dry_run: Preview without writing. Required; pass false to apply.
             save: Save the package after mutation. Ignored for dry runs.
             verbose: Include full per-key mutation arrays.
+            allow_partial: Skip invalid operations and apply valid ones.
 
         Returns:
             JSON mutation report with before/after key counts and audit arrays.
@@ -136,6 +138,7 @@ def register_localization_tools(mcp, connection: UEConnection):
                 "dry_run": dry_run,
                 "save": save,
                 "verbose": verbose,
+                "allow_partial": allow_partial,
             }
             response = connection.send_command("data.update_string_table", params)
             if not dry_run:
