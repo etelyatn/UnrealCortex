@@ -24,6 +24,16 @@ public:
 	static FCortexCommandResult SearchDatatableContent(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult GetDataCatalog(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult ResolveTags(const TSharedPtr<FJsonObject>& Params);
+	static void ScanStringTableReferences(
+		const UStruct* StructType,
+		const void* StructData,
+		const FString& TablePath,
+		const FString& RowName,
+		const FString& StringTablePath,
+		const FString& KeyPattern,
+		const TSet<FString>& Keys,
+		const FString& FieldPrefix,
+		TArray<TSharedPtr<FJsonValue>>& OutReferences);
 
 private:
 	/** Resolve a row struct by short name, searching all UScriptStruct objects */

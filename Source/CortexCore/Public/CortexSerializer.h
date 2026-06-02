@@ -3,6 +3,7 @@
 
 #include "CoreMinimal.h"
 #include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 
 class CORTEXCORE_API FCortexSerializer
 {
@@ -22,6 +23,9 @@ public:
 
 	/** Serialize FText to JSON with optional string table source metadata. */
 	static TSharedPtr<FJsonObject> TextToJson(const FText& Text);
+
+	/** Deserialize FText from a string or {value, string_table:{table_id,key}} object. */
+	static bool TextFromJson(const TSharedPtr<FJsonValue>& JsonValue, FText& OutText, TArray<FString>& OutWarnings);
 
 	/** Deserialize JSON into a UStruct instance. Returns true on success.
 	 *  Outer is the owning UObject for instanced sub-object creation. */

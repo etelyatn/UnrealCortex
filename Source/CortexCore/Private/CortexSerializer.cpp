@@ -188,6 +188,60 @@ TSharedPtr<FJsonObject> FCortexSerializer::TextToJson(const FText& Text)
 	return Result;
 }
 
+bool FCortexSerializer::TextFromJson(const TSharedPtr<FJsonValue>& JsonValue, FText& OutText, TArray<FString>& OutWarnings)
+{
+	if (!JsonValue.IsValid())
+	{
+		OutWarnings.Add(TEXT("Invalid JSON value for FText"));
+		return false;
+	}
+
+	FString LiteralValue;
+	if (JsonValue->TryGetString(LiteralValue))
+	{
+		OutText = FText::FromString(LiteralValue);
+		return true;
+	}
+
+	const TSharedPtr<FJsonObject>* TextObject = nullptr;
+	if (!JsonValue->TryGetObject(TextObject) || TextObject == nullptr || !(*TextObject).IsValid())
+	{
+		OutWarnings.Add(TEXT("Expected string or object for FText"));
+		return false;
+	}
+
+	if (!(*TextObject)->TryGetStringField(TEXT("value"), LiteralValue))
+	{
+		OutWarnings.Add(TEXT("FText object missing required 'value' string"));
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* StringTableObject = nullptr;
+	if (!(*TextObject)->TryGetObjectField(TEXT("string_table"), StringTableObject)
+		|| StringTableObject == nullptr
+		|| !(*StringTableObject).IsValid())
+	{
+		OutText = FText::FromString(LiteralValue);
+		return true;
+	}
+
+	FString TableId;
+	FString Key;
+	if (!(*StringTableObject)->TryGetStringField(TEXT("table_id"), TableId) || TableId.IsEmpty())
+	{
+		OutWarnings.Add(TEXT("FText string_table object missing required 'table_id' string"));
+		return false;
+	}
+	if (!(*StringTableObject)->TryGetStringField(TEXT("key"), Key) || Key.IsEmpty())
+	{
+		OutWarnings.Add(TEXT("FText string_table object missing required 'key' string"));
+		return false;
+	}
+
+	OutText = FText::FromStringTable(FName(*TableId), Key);
+	return true;
+}
+
 TSharedPtr<FJsonObject> FCortexSerializer::StructToJson(const UStruct* StructType, const void* StructData)
 {
 	TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
@@ -518,6 +572,7 @@ bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, 
 		return false;
 	}
 
+	bool bSuccess = true;
 	for (const auto& Pair : JsonObject->Values)
 	{
 		const FString& FieldName = Pair.Key;
@@ -541,10 +596,11 @@ bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, 
 		if (!JsonToProperty(JsonValue, Property, ValuePtr, Outer, OutWarnings))
 		{
 			OutWarnings.Add(FString::Printf(TEXT("Failed to deserialize field '%s'"), *FieldName));
+			bSuccess = false;
 		}
 	}
 
-	return true;
+	return bSuccess;
 }
 
 bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, const FProperty* Property, void* ValuePtr, UObject* Outer, TArray<FString>& OutWarnings)
@@ -627,7 +683,12 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	// FText
 	if (const FTextProperty* TextProp = CastField<FTextProperty>(Property))
 	{
-		TextProp->SetPropertyValue(ValuePtr, FText::FromString(JsonValue->AsString()));
+		FText TextValue;
+		if (!TextFromJson(JsonValue, TextValue, OutWarnings))
+		{
+			return false;
+		}
+		TextProp->SetPropertyValue(ValuePtr, TextValue);
 		return true;
 	}
 
@@ -862,12 +923,25 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 			}
 		}
 
+		const int32 OriginalNum = ArrayHelper.Num();
 		ArrayHelper.Resize(JsonArray->Num());
+		bool bSuccess = true;
 		for (int32 Index = 0; Index < JsonArray->Num(); ++Index)
 		{
-			JsonToProperty((*JsonArray)[Index], ArrayProp->Inner, ArrayHelper.GetRawPtr(Index), Outer, OutWarnings);
+			if (!JsonToProperty((*JsonArray)[Index], ArrayProp->Inner, ArrayHelper.GetRawPtr(Index), Outer, OutWarnings))
+			{
+				OutWarnings.Add(FString::Printf(
+					TEXT("Failed to deserialize element %d of array property '%s'"),
+					Index,
+					*Property->GetName()));
+				bSuccess = false;
+			}
 		}
-		return true;
+		if (!bSuccess)
+		{
+			ArrayHelper.Resize(OriginalNum);
+		}
+		return bSuccess;
 	}
 
 	// Map property

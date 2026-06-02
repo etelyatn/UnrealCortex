@@ -196,10 +196,14 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Validate without writing")),
         FCortexCommandInfo{ TEXT("search_datatable_content"), TEXT("Full-text search in tables") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable asset path"))
-            .Required(TEXT("search_text"), TEXT("string"), TEXT("Case-insensitive search text (alias: query)"))
+            .Optional(TEXT("search_text"), TEXT("string"), TEXT("Case-insensitive search text (alias: query)"))
             .Optional(TEXT("fields"), TEXT("array"), TEXT("Fields to search"))
             .Optional(TEXT("preview_fields"), TEXT("array"), TEXT("Fields to include in match previews"))
-            .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum matches to return")),
+            .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum matches to return"))
+            .Optional(TEXT("search_mode"), TEXT("string"), TEXT("Use string_table_refs to scan recursive FText StringTable references"))
+            .Optional(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable path/id filter for string_table_refs mode"))
+            .Optional(TEXT("key_pattern"), TEXT("string"), TEXT("Wildcard StringTable key filter for string_table_refs mode"))
+            .Optional(TEXT("keys"), TEXT("array"), TEXT("Exact StringTable keys for string_table_refs mode")),
         FCortexCommandInfo{ TEXT("get_data_catalog"), TEXT("Discovery catalog of all data") },
         FCortexCommandInfo{ TEXT("resolve_tags"), TEXT("Look up rows by GameplayTag") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))

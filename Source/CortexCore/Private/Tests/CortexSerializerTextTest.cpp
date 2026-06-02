@@ -1,5 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "CortexSerializer.h"
+#include "CortexSerializerTextTestTypes.h"
+#include "Dom/JsonValue.h"
 #include "Internationalization/StringTable.h"
 #include "Internationalization/StringTableCore.h"
 
@@ -118,5 +120,52 @@ bool FCortexSerializerFTextEnrichmentPatternTest::RunTest(const FString& Paramet
 		PropertyObject->HasField(TEXT("string_table")));
 	TestEqual(TEXT("value should stay plain string"),
 		PropertyObject->GetStringField(TEXT("value")), TEXT("Enriched Text"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerJsonToTextStringTableTest,
+	"Cortex.Core.Serializer.JsonToText.StringTable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerJsonToTextStringTableTest::RunTest(const FString& Parameters)
+{
+	UStringTable* TestTable = NewObject<UStringTable>(
+		GetTransientPackage(),
+		FName(TEXT("TestStringTable_JsonToText")));
+	TestTable->GetMutableStringTable()->SetNamespace(TEXT("TestNS"));
+	TestTable->GetMutableStringTable()->SetSourceString(TEXT("TestKey"), TEXT("Test Value"));
+
+	TSharedPtr<FJsonObject> StringTableObject = MakeShared<FJsonObject>();
+	StringTableObject->SetStringField(TEXT("table_id"), TestTable->GetStringTableId().ToString());
+	StringTableObject->SetStringField(TEXT("key"), TEXT("TestKey"));
+
+	TSharedPtr<FJsonObject> TextObject = MakeShared<FJsonObject>();
+	TextObject->SetStringField(TEXT("value"), TEXT("Test Value"));
+	TextObject->SetObjectField(TEXT("string_table"), StringTableObject);
+
+	UCortexSerializerTextTestObject* TestObject = NewObject<UCortexSerializerTextTestObject>();
+	TArray<FString> Warnings;
+	const bool bSuccess = FCortexSerializer::JsonToProperty(
+		MakeShared<FJsonValueObject>(TextObject),
+		UCortexSerializerTextTestObject::StaticClass()->FindPropertyByName(TEXT("Title")),
+		UCortexSerializerTextTestObject::StaticClass()->FindPropertyByName(TEXT("Title"))->ContainerPtrToValuePtr<void>(TestObject),
+		TestObject,
+		Warnings);
+
+	TestTrue(TEXT("Table-backed FText should deserialize"), bSuccess);
+	TestEqual(TEXT("No warnings should be reported"), Warnings.Num(), 0);
+	TestEqual(TEXT("Text resolves through table"), TestObject->Title.ToString(), TEXT("Test Value"));
+
+	FName TableId;
+	FString Key;
+	TestTrue(TEXT("Deserialized text keeps string table metadata"),
+		FTextInspector::GetTableIdAndKey(TestObject->Title, TableId, Key));
+	TestEqual(TEXT("Table id matches"), TableId, TestTable->GetStringTableId());
+	TestEqual(TEXT("Key matches"), Key, TEXT("TestKey"));
+
+	TestObject->MarkAsGarbage();
+	TestTable->MarkAsGarbage();
 	return true;
 }
