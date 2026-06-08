@@ -15,6 +15,7 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
+#include "Misc/OutputDevice.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
@@ -110,6 +111,28 @@ namespace
 		DeletePackageFile(PackageName);
 	}
 
+	class FCortexExportSkipPackageWarningCapture final : public FOutputDevice
+	{
+	public:
+		int32 SkipPackageWarnings = 0;
+
+		virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category) override
+		{
+			(void)Category;
+
+			if (Verbosity != ELogVerbosity::Warning || V == nullptr)
+			{
+				return;
+			}
+
+			const FString Message(V);
+			if (Message.Contains(TEXT("SkipPackage")))
+			{
+				++SkipPackageWarnings;
+			}
+		}
+	};
+
 	class FCortexDataExportTestFixture
 	{
 	public:
@@ -194,9 +217,9 @@ namespace
 			return Table;
 		}
 
-		UCortexTestDataAsset* CreateDataAsset()
+		UCortexTestDataAsset* CreateDataAsset(const FString& AssetName = TEXT("DA_CortexExportFixture"))
 		{
-			UCortexTestDataAsset* Asset = CreateAsset<UCortexTestDataAsset>(TEXT("DA_CortexExportFixture"));
+			UCortexTestDataAsset* Asset = CreateAsset<UCortexTestDataAsset>(AssetName);
 			if (Asset == nullptr)
 			{
 				return nullptr;
@@ -205,10 +228,12 @@ namespace
 			Asset->TestProperty = TEXT("Editable export value");
 			Asset->TestNumber = 42;
 			Asset->ExportTransientProperty = TEXT("Transient value");
+			Asset->TransientExportBlocked = TEXT("Non-editable transient value");
 #if WITH_EDITORONLY_DATA
 			Asset->ExportEditorOnlyProperty = TEXT("Editor-only value");
 #endif
 			Asset->ExportInternalProperty = TEXT("Internal value");
+			Asset->EditableExportAllowed = TEXT("Editable export allowed value");
 			return Asset;
 		}
 
@@ -353,6 +378,39 @@ namespace
 		(*TextObject)->TryGetStringField(TEXT("value"), Value);
 		return Value;
 	}
+
+	TArray<TSharedPtr<FJsonObject>> GetDataAssetEntries(const TSharedPtr<FJsonObject>& FileJson)
+	{
+		TArray<TSharedPtr<FJsonObject>> Entries;
+		if (!FileJson.IsValid())
+		{
+			return Entries;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* DataAssets = nullptr;
+		if (!FileJson->TryGetArrayField(TEXT("data_assets"), DataAssets) || DataAssets == nullptr)
+		{
+			return Entries;
+		}
+
+		for (const TSharedPtr<FJsonValue>& EntryValue : *DataAssets)
+		{
+			const TSharedPtr<FJsonObject>* EntryObject = nullptr;
+			if (EntryValue.IsValid() && EntryValue->TryGetObject(EntryObject) && EntryObject != nullptr && EntryObject->IsValid())
+			{
+				Entries.Add(*EntryObject);
+			}
+		}
+
+		return Entries;
+	}
+
+	FString MakeMissingDataAssetObjectPath(const UDataAsset* Asset)
+	{
+		const FString MissingAssetName = TEXT("DA_CortexExportMissing");
+		const FString MissingPackageName = FPaths::Combine(FPaths::GetPath(Asset->GetOutermost()->GetName()), MissingAssetName);
+		return FString::Printf(TEXT("%s.%s"), *MissingPackageName, *MissingAssetName);
+	}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -402,10 +460,12 @@ bool FCortexDataExportFixtureSmokeTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("DataAsset editable string is populated"), DataAsset->TestProperty, TEXT("Editable export value"));
 		TestEqual(TEXT("DataAsset editable number is populated"), DataAsset->TestNumber, 42);
 		TestEqual(TEXT("DataAsset transient blocked field is populated"), DataAsset->ExportTransientProperty, TEXT("Transient value"));
+		TestEqual(TEXT("DataAsset non-editable transient blocked field is populated"), DataAsset->TransientExportBlocked, TEXT("Non-editable transient value"));
 #if WITH_EDITORONLY_DATA
 		TestEqual(TEXT("DataAsset editor-only blocked field is populated"), DataAsset->ExportEditorOnlyProperty, TEXT("Editor-only value"));
 #endif
 		TestEqual(TEXT("DataAsset internal blocked field is populated"), DataAsset->ExportInternalProperty, TEXT("Internal value"));
+		TestEqual(TEXT("DataAsset editable export field is populated"), DataAsset->EditableExportAllowed, TEXT("Editable export allowed value"));
 	}
 
 	const FString ProbePath = Fixture.MakeSavedOutputPath(TEXT("probe.json"));
@@ -958,6 +1018,259 @@ bool FCortexDataExportDatatableDeterministicBytesTest::RunTest(const FString& Pa
 		{
 			TestEqual(TEXT("deterministic export writes expected row count"), Rows->Num(), 3);
 			TestTrue(TEXT("export preserves sorted rows array order"), GetRowNamesFromExport(*Rows) == TArray<FString>{ TEXT("alpha"), TEXT("middle"), TEXT("zeta") });
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataExportDataAssetsCatalogAndPropertiesTest,
+	"Cortex.Data.Export.DataAssets.CatalogAndEditableProperties",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataExportDataAssetsCatalogAndPropertiesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexDataExportTestFixture Fixture;
+	UCortexTestDataAsset* DataAsset = Fixture.CreateDataAsset();
+	TestNotNull(TEXT("DataAsset fixture is created"), DataAsset);
+	if (DataAsset == nullptr)
+	{
+		return true;
+	}
+
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+	const FString CatalogOutPath = Fixture.MakeSavedOutputPath(TEXT("data-assets-catalog.json"));
+
+	TSharedRef<FJsonObject> CatalogParams = MakeShared<FJsonObject>();
+	CatalogParams->SetStringField(TEXT("out_path"), CatalogOutPath);
+	CatalogParams->SetStringField(TEXT("class_name"), TEXT("CortexTestDataAsset"));
+	CatalogParams->SetStringField(TEXT("path_filter"), FPaths::GetPath(DataAsset->GetPathName()));
+	CatalogParams->SetBoolField(TEXT("include_properties"), false);
+
+	const FCortexCommandResult CatalogResult = Router.Execute(TEXT("data.export_data_assets_json"), CatalogParams);
+	TestTrue(TEXT("DataAsset catalog export succeeds"), CatalogResult.bSuccess);
+	TestTrue(TEXT("DataAsset catalog export returns data"), CatalogResult.Data.IsValid());
+	if (CatalogResult.Data.IsValid())
+	{
+		TestTrue(TEXT("summary omits data_assets payload"), !CatalogResult.Data->HasField(TEXT("data_assets")));
+		TestEqual(TEXT("exported count is one"), static_cast<int32>(CatalogResult.Data->GetNumberField(TEXT("exported_count"))), 1);
+	}
+
+	TSharedPtr<FJsonObject> CatalogFileJson;
+	FString CatalogParseError;
+	TestTrue(TEXT("DataAsset catalog export file parses"), Fixture.TryReadJsonFile(CatalogOutPath, CatalogFileJson, CatalogParseError));
+	if (!CatalogParseError.IsEmpty())
+	{
+		AddError(CatalogParseError);
+	}
+	if (CatalogFileJson.IsValid())
+	{
+		TestTrue(TEXT("file contains data_assets array"), CatalogFileJson->HasTypedField<EJson::Array>(TEXT("data_assets")));
+		TestEqual(TEXT("file exported count is one"), static_cast<int32>(CatalogFileJson->GetNumberField(TEXT("exported_count"))), 1);
+
+		const TArray<TSharedPtr<FJsonObject>> Entries = GetDataAssetEntries(CatalogFileJson);
+		TestEqual(TEXT("catalog export writes one entry"), Entries.Num(), 1);
+		if (Entries.Num() == 1)
+		{
+			TestEqual(TEXT("catalog entry path matches fixture"), Entries[0]->GetStringField(TEXT("path")), DataAsset->GetPathName());
+			TestEqual(TEXT("catalog entry name matches fixture"), Entries[0]->GetStringField(TEXT("name")), DataAsset->GetName());
+			TestEqual(TEXT("catalog entry class matches fixture"), Entries[0]->GetStringField(TEXT("asset_class")), DataAsset->GetClass()->GetName());
+			TestFalse(TEXT("catalog entry omits properties when include_properties is false"), Entries[0]->HasField(TEXT("properties")));
+		}
+	}
+
+	const FString PropertiesOutPath = Fixture.MakeSavedOutputPath(TEXT("data-assets-properties.json"));
+	TSharedRef<FJsonObject> PropertiesParams = MakeShared<FJsonObject>();
+	PropertiesParams->SetStringField(TEXT("out_path"), PropertiesOutPath);
+	PropertiesParams->SetStringField(TEXT("class_name"), TEXT("CortexTestDataAsset"));
+	PropertiesParams->SetStringField(TEXT("path_filter"), FPaths::GetPath(DataAsset->GetPathName()));
+	PropertiesParams->SetBoolField(TEXT("include_properties"), true);
+
+	const FCortexCommandResult PropertiesResult = Router.Execute(TEXT("data.export_data_assets_json"), PropertiesParams);
+	TestTrue(TEXT("DataAsset properties export succeeds"), PropertiesResult.bSuccess);
+	TestTrue(TEXT("DataAsset properties export returns data"), PropertiesResult.Data.IsValid());
+	if (PropertiesResult.Data.IsValid())
+	{
+		TestTrue(TEXT("summary omits data_assets payload"), !PropertiesResult.Data->HasField(TEXT("data_assets")));
+		TestEqual(TEXT("exported count is one"), static_cast<int32>(PropertiesResult.Data->GetNumberField(TEXT("exported_count"))), 1);
+	}
+
+	TSharedPtr<FJsonObject> PropertiesFileJson;
+	FString PropertiesParseError;
+	TestTrue(TEXT("DataAsset properties export file parses"), Fixture.TryReadJsonFile(PropertiesOutPath, PropertiesFileJson, PropertiesParseError));
+	if (!PropertiesParseError.IsEmpty())
+	{
+		AddError(PropertiesParseError);
+	}
+	if (PropertiesFileJson.IsValid())
+	{
+		TestTrue(TEXT("file contains data_assets array"), PropertiesFileJson->HasTypedField<EJson::Array>(TEXT("data_assets")));
+		TestEqual(TEXT("file exported count is one"), static_cast<int32>(PropertiesFileJson->GetNumberField(TEXT("exported_count"))), 1);
+
+		const TArray<TSharedPtr<FJsonObject>> Entries = GetDataAssetEntries(PropertiesFileJson);
+		TestEqual(TEXT("properties export writes one entry"), Entries.Num(), 1);
+		if (Entries.Num() == 1)
+		{
+			const TSharedPtr<FJsonObject>* PropertiesObject = nullptr;
+			TestTrue(TEXT("properties entry includes properties object"),
+				Entries[0]->TryGetObjectField(TEXT("properties"), PropertiesObject) && PropertiesObject != nullptr && PropertiesObject->IsValid());
+			if (PropertiesObject != nullptr && PropertiesObject->IsValid())
+			{
+				TestEqual(TEXT("editable string property is exported"), (*PropertiesObject)->GetStringField(TEXT("TestProperty")), TEXT("Editable export value"));
+				TestEqual(TEXT("editable number property is exported"), static_cast<int32>((*PropertiesObject)->GetNumberField(TEXT("TestNumber"))), 42);
+				TestEqual(TEXT("editable allowed property is exported"), (*PropertiesObject)->GetStringField(TEXT("EditableExportAllowed")), TEXT("Editable export allowed value"));
+				TestFalse(TEXT("transient editable property is blocked"), (*PropertiesObject)->HasField(TEXT("ExportTransientProperty")));
+				TestFalse(TEXT("transient non-editable property is blocked"), (*PropertiesObject)->HasField(TEXT("TransientExportBlocked")));
+#if WITH_EDITORONLY_DATA
+				TestFalse(TEXT("editor-only property is blocked"), (*PropertiesObject)->HasField(TEXT("ExportEditorOnlyProperty")));
+#endif
+				TestFalse(TEXT("internal non-editable property is blocked"), (*PropertiesObject)->HasField(TEXT("ExportInternalProperty")));
+			}
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataExportDataAssetsExplicitPathsTest,
+	"Cortex.Data.Export.DataAssets.ExplicitPathsPartial",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataExportDataAssetsExplicitPathsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexDataExportTestFixture Fixture;
+	UCortexTestDataAsset* DataAsset = Fixture.CreateDataAsset();
+	TestNotNull(TEXT("DataAsset fixture is created"), DataAsset);
+	UCortexTestDataAsset* EarlierSortDataAsset = Fixture.CreateDataAsset(TEXT("DA_CortexExportAlpha"));
+	TestNotNull(TEXT("second DataAsset fixture is created"), EarlierSortDataAsset);
+	if (DataAsset == nullptr || EarlierSortDataAsset == nullptr)
+	{
+		return true;
+	}
+
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+	const FString AssetPath = DataAsset->GetPathName();
+	const FString EarlierSortAssetPath = EarlierSortDataAsset->GetPathName();
+	const FString MissingAssetPath = MakeMissingDataAssetObjectPath(DataAsset);
+
+	TSharedRef<FJsonObject> NonStringPathParams = MakeShared<FJsonObject>();
+	NonStringPathParams->SetStringField(TEXT("out_path"), Fixture.MakeSavedOutputPath(TEXT("data-assets-non-string-path.json")));
+	NonStringPathParams->SetArrayField(TEXT("asset_paths"), TArray<TSharedPtr<FJsonValue>>{ MakeShared<FJsonValueNumber>(123.0) });
+	const FCortexCommandResult NonStringPathResult = Router.Execute(TEXT("data.export_data_assets_json"), NonStringPathParams);
+	TestFalse(TEXT("non-string explicit asset path is rejected"), NonStringPathResult.bSuccess);
+	TestEqual(TEXT("non-string explicit asset path uses InvalidField"), NonStringPathResult.ErrorCode, CortexErrorCodes::InvalidField);
+
+	TSharedRef<FJsonObject> EmptyArrayParams = MakeShared<FJsonObject>();
+	EmptyArrayParams->SetStringField(TEXT("out_path"), Fixture.MakeSavedOutputPath(TEXT("data-assets-empty-array.json")));
+	EmptyArrayParams->SetArrayField(TEXT("asset_paths"), TArray<TSharedPtr<FJsonValue>>());
+	const FCortexCommandResult EmptyArrayResult = Router.Execute(TEXT("data.export_data_assets_json"), EmptyArrayParams);
+	TestFalse(TEXT("empty explicit asset_paths array is rejected"), EmptyArrayResult.bSuccess);
+	TestEqual(TEXT("empty explicit asset_paths array uses InvalidField"), EmptyArrayResult.ErrorCode, CortexErrorCodes::InvalidField);
+
+	TSharedRef<FJsonObject> InvalidPathParams = MakeShared<FJsonObject>();
+	InvalidPathParams->SetStringField(TEXT("out_path"), Fixture.MakeSavedOutputPath(TEXT("data-assets-invalid-path.json")));
+	AddStringArrayField(InvalidPathParams, TEXT("asset_paths"), TArray<FString>{ TEXT("") });
+	const FCortexCommandResult InvalidPathResult = Router.Execute(TEXT("data.export_data_assets_json"), InvalidPathParams);
+	TestFalse(TEXT("empty explicit asset path is rejected"), InvalidPathResult.bSuccess);
+	TestEqual(TEXT("empty explicit asset path uses InvalidField"), InvalidPathResult.ErrorCode, CortexErrorCodes::InvalidField);
+
+	TSharedRef<FJsonObject> ClassMismatchParams = MakeShared<FJsonObject>();
+	ClassMismatchParams->SetStringField(TEXT("out_path"), Fixture.MakeSavedOutputPath(TEXT("data-assets-class-mismatch.json")));
+	ClassMismatchParams->SetStringField(TEXT("class_name"), TEXT("CortexDerivedTestDataAsset"));
+	ClassMismatchParams->SetBoolField(TEXT("allow_partial"), false);
+	AddStringArrayField(ClassMismatchParams, TEXT("asset_paths"), TArray<FString>{ AssetPath });
+	const FCortexCommandResult ClassMismatchResult = Router.Execute(TEXT("data.export_data_assets_json"), ClassMismatchParams);
+	TestFalse(TEXT("explicit DataAsset class mismatch fails"), ClassMismatchResult.bSuccess);
+	TestEqual(TEXT("explicit DataAsset class mismatch uses InvalidField"), ClassMismatchResult.ErrorCode, CortexErrorCodes::InvalidField);
+
+	UCortexTestDataAsset* SiblingPrefixDataAsset = Fixture.CreateDataAsset(TEXT("AB_CortexExportSibling"));
+	TestNotNull(TEXT("sibling-prefix DataAsset fixture is created"), SiblingPrefixDataAsset);
+	if (SiblingPrefixDataAsset == nullptr)
+	{
+		return true;
+	}
+
+	const FString RunPackagePath = FPaths::GetPath(AssetPath);
+	const FString SiblingPrefixFilter = FPaths::Combine(RunPackagePath, TEXT("A"));
+	TSharedRef<FJsonObject> SiblingPrefixParams = MakeShared<FJsonObject>();
+	SiblingPrefixParams->SetStringField(TEXT("out_path"), Fixture.MakeSavedOutputPath(TEXT("data-assets-sibling-prefix.json")));
+	SiblingPrefixParams->SetStringField(TEXT("path_filter"), SiblingPrefixFilter);
+	SiblingPrefixParams->SetBoolField(TEXT("allow_partial"), false);
+	AddStringArrayField(SiblingPrefixParams, TEXT("asset_paths"), TArray<FString>{ SiblingPrefixDataAsset->GetPathName() });
+	const FCortexCommandResult SiblingPrefixResult = Router.Execute(TEXT("data.export_data_assets_json"), SiblingPrefixParams);
+	TestFalse(TEXT("explicit DataAsset path_filter rejects sibling prefix"), SiblingPrefixResult.bSuccess);
+	TestEqual(TEXT("explicit DataAsset path_filter sibling prefix uses InvalidField"), SiblingPrefixResult.ErrorCode, CortexErrorCodes::InvalidField);
+
+	const FString FailOutPath = Fixture.MakeSavedOutputPath(TEXT("data-assets-missing-fails.json"));
+	TSharedRef<FJsonObject> FailParams = MakeShared<FJsonObject>();
+	FailParams->SetStringField(TEXT("out_path"), FailOutPath);
+	FailParams->SetStringField(TEXT("class_filter"), TEXT("CortexTestDataAsset"));
+	FailParams->SetStringField(TEXT("path_filter"), FPaths::GetPath(AssetPath));
+	FailParams->SetBoolField(TEXT("include_properties"), true);
+	FailParams->SetBoolField(TEXT("allow_partial"), false);
+	AddStringArrayField(FailParams, TEXT("asset_paths"), TArray<FString>{ AssetPath, AssetPath, MissingAssetPath, EarlierSortAssetPath });
+
+	FCortexExportSkipPackageWarningCapture Capture;
+	GLog->AddOutputDevice(&Capture);
+	const FCortexCommandResult FailResult = Router.Execute(TEXT("data.export_data_assets_json"), FailParams);
+	GLog->RemoveOutputDevice(&Capture);
+
+	TestFalse(TEXT("missing explicit DataAsset fails when allow_partial is false"), FailResult.bSuccess);
+	TestEqual(TEXT("missing explicit DataAsset uses AssetNotFound"), FailResult.ErrorCode, CortexErrorCodes::AssetNotFound);
+	TestEqual(TEXT("missing explicit DataAsset emits no SkipPackage warnings"), Capture.SkipPackageWarnings, 0);
+	TestFalse(TEXT("missing explicit DataAsset does not write partial file"), IFileManager::Get().FileExists(*FailOutPath));
+
+	const FString PartialOutPath = Fixture.MakeSavedOutputPath(TEXT("data-assets-partial.json"));
+	TSharedRef<FJsonObject> PartialParams = MakeShared<FJsonObject>();
+	PartialParams->SetStringField(TEXT("out_path"), PartialOutPath);
+	PartialParams->SetStringField(TEXT("class_name"), TEXT("CortexTestDataAsset"));
+	PartialParams->SetStringField(TEXT("path_filter"), FPaths::GetPath(AssetPath));
+	PartialParams->SetBoolField(TEXT("include_properties"), true);
+	PartialParams->SetBoolField(TEXT("allow_partial"), true);
+	AddStringArrayField(PartialParams, TEXT("asset_paths"), TArray<FString>{ MissingAssetPath, AssetPath, AssetPath, EarlierSortAssetPath });
+
+	const FCortexCommandResult PartialResult = Router.Execute(TEXT("data.export_data_assets_json"), PartialParams);
+	TestTrue(TEXT("explicit DataAsset export succeeds partially when allow_partial is true"), PartialResult.bSuccess);
+	TestTrue(TEXT("partial explicit export returns data"), PartialResult.Data.IsValid());
+	if (PartialResult.Data.IsValid())
+	{
+		TestTrue(TEXT("summary omits data_assets payload"), !PartialResult.Data->HasField(TEXT("data_assets")));
+		TestTrue(TEXT("summary marks partial export"), PartialResult.Data->GetBoolField(TEXT("partial")));
+		TestEqual(TEXT("exported count excludes duplicate and missing paths"), static_cast<int32>(PartialResult.Data->GetNumberField(TEXT("exported_count"))), 2);
+
+		const TArray<TSharedPtr<FJsonValue>>* Errors = nullptr;
+		TestTrue(TEXT("partial export reports missing asset error"),
+			PartialResult.Data->TryGetArrayField(TEXT("errors"), Errors) && Errors != nullptr && Errors->Num() == 1);
+	}
+
+	TSharedPtr<FJsonObject> PartialFileJson;
+	FString PartialParseError;
+	TestTrue(TEXT("partial DataAsset export file parses"), Fixture.TryReadJsonFile(PartialOutPath, PartialFileJson, PartialParseError));
+	if (!PartialParseError.IsEmpty())
+	{
+		AddError(PartialParseError);
+	}
+	if (PartialFileJson.IsValid())
+	{
+		TestTrue(TEXT("file contains data_assets array"), PartialFileJson->HasTypedField<EJson::Array>(TEXT("data_assets")));
+		TestEqual(TEXT("file exported count excludes duplicate and missing paths"), static_cast<int32>(PartialFileJson->GetNumberField(TEXT("exported_count"))), 2);
+
+		const TArray<TSharedPtr<FJsonObject>> Entries = GetDataAssetEntries(PartialFileJson);
+		TestEqual(TEXT("duplicate explicit DataAsset paths are deduplicated"), Entries.Num(), 2);
+		if (Entries.Num() == 2)
+		{
+			TestEqual(TEXT("explicit DataAsset paths are sorted"), Entries[0]->GetStringField(TEXT("path")), EarlierSortAssetPath);
+			TestEqual(TEXT("second sorted explicit DataAsset path is written"), Entries[1]->GetStringField(TEXT("path")), AssetPath);
+			TestTrue(TEXT("first valid explicit DataAsset output includes properties"), Entries[0]->HasTypedField<EJson::Object>(TEXT("properties")));
+			TestTrue(TEXT("second valid explicit DataAsset output includes properties"), Entries[1]->HasTypedField<EJson::Object>(TEXT("properties")));
 		}
 	}
 

@@ -2,6 +2,8 @@
 
 #include "CortexFileUtils.h"
 #include "CortexSerializer.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "HAL/FileManager.h"
@@ -15,6 +17,7 @@
 #include "Engine/DataTable.h"
 #include "Internationalization/StringTable.h"
 #include "Internationalization/StringTableCore.h"
+#include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -129,6 +132,167 @@ namespace
 	FCortexCommandResult InvalidFieldError(const FString& Message)
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, Message);
+	}
+
+	struct FDataAssetExportCandidate
+	{
+		FString ObjectPath;
+		FString Name;
+		FString AssetClass;
+		UDataAsset* LoadedAsset = nullptr;
+	};
+
+	struct FDataAssetExportFailure
+	{
+		FString ObjectPath;
+		FString ErrorCode;
+		FString Message;
+	};
+
+	FString MakeDataAssetExportFailureMessage(const FString& ObjectPath, const FString& Message)
+	{
+		return FString::Printf(TEXT("%s: %s"), *ObjectPath, *Message);
+	}
+
+	bool TryNormalizeDataAssetObjectPath(const FString& InPath, FString& OutObjectPath, FString& OutError)
+	{
+		FString ObjectPath = FPackageName::ExportTextPathToObjectPath(InPath);
+		ObjectPath.TrimStartAndEndInline();
+		FPaths::NormalizeFilename(ObjectPath);
+
+		if (ObjectPath.IsEmpty())
+		{
+			OutError = TEXT("asset_paths entries cannot be empty");
+			return false;
+		}
+
+		FText PathReason;
+		if (!FPackageName::IsValidObjectPath(ObjectPath, &PathReason))
+		{
+			OutError = FString::Printf(TEXT("Invalid asset object path '%s': %s"), *InPath, *PathReason.ToString());
+			return false;
+		}
+
+		OutObjectPath = ObjectPath;
+		return true;
+	}
+
+	FString ResolveDataAssetPackagePathFilter(const FString& PathFilter)
+	{
+		if (PathFilter.IsEmpty())
+		{
+			return TEXT("");
+		}
+
+		FString NormalizedPathFilter = FPackageName::ExportTextPathToObjectPath(PathFilter);
+		NormalizedPathFilter.TrimStartAndEndInline();
+		FPaths::NormalizeFilename(NormalizedPathFilter);
+
+		FText PathReason;
+		if (NormalizedPathFilter.Contains(TEXT("."))
+			&& FPackageName::IsValidObjectPath(NormalizedPathFilter, &PathReason))
+		{
+			return FPaths::GetPath(FPackageName::ObjectPathToPackageName(NormalizedPathFilter));
+		}
+
+		return NormalizedPathFilter;
+	}
+
+	bool IsPackagePathUnderFilter(const FString& PackagePath, const FString& PackagePathFilter)
+	{
+		if (PackagePathFilter.IsEmpty())
+		{
+			return true;
+		}
+
+		if (PackagePath == PackagePathFilter)
+		{
+			return true;
+		}
+
+		const FString FilterWithBoundary = PackagePathFilter.EndsWith(TEXT("/"))
+			? PackagePathFilter
+			: PackagePathFilter + TEXT("/");
+		return PackagePath.StartsWith(FilterWithBoundary);
+	}
+
+	bool DoesDataAssetPathMatchFilter(const FString& ObjectPath, const FString& PackagePathFilter)
+	{
+		if (PackagePathFilter.IsEmpty())
+		{
+			return true;
+		}
+
+		const FString PackagePath = FPackageName::ObjectPathToPackageName(ObjectPath);
+		return IsPackagePathUnderFilter(PackagePath, PackagePathFilter);
+	}
+
+	bool TryParseExplicitDataAssetPaths(
+		const TSharedPtr<FJsonObject>& Params,
+		TArray<FString>& OutAssetPaths,
+		bool& bOutHasAssetPaths,
+		FString& OutError)
+	{
+		bOutHasAssetPaths = false;
+		OutAssetPaths.Reset();
+
+		if (!Params.IsValid() || !Params->HasField(TEXT("asset_paths")))
+		{
+			return true;
+		}
+
+		bOutHasAssetPaths = true;
+
+		const TArray<TSharedPtr<FJsonValue>>* AssetPathValues = nullptr;
+		if (!Params->TryGetArrayField(TEXT("asset_paths"), AssetPathValues) || AssetPathValues == nullptr)
+		{
+			OutError = TEXT("Parameter 'asset_paths' must be an array");
+			return false;
+		}
+
+		if (AssetPathValues->Num() == 0)
+		{
+			OutError = TEXT("Parameter 'asset_paths' cannot be empty");
+			return false;
+		}
+
+		OutAssetPaths.Reserve(AssetPathValues->Num());
+		for (int32 Index = 0; Index < AssetPathValues->Num(); ++Index)
+		{
+			const TSharedPtr<FJsonValue>& Value = (*AssetPathValues)[Index];
+			FString AssetPath;
+			if (!Value.IsValid() || !Value->TryGetString(AssetPath))
+			{
+				OutError = FString::Printf(TEXT("Parameter 'asset_paths[%d]' must be a non-empty string"), Index);
+				return false;
+			}
+
+			AssetPath.TrimStartAndEndInline();
+			if (AssetPath.IsEmpty())
+			{
+				OutError = FString::Printf(TEXT("Parameter 'asset_paths[%d]' must be a non-empty string"), Index);
+				return false;
+			}
+
+			OutAssetPaths.Add(AssetPath);
+		}
+
+		return true;
+	}
+
+	TSharedRef<FJsonObject> MakeDataAssetExportEntry(
+		const FDataAssetExportCandidate& Candidate,
+		const TSharedPtr<FJsonObject>& Properties)
+	{
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("name"), Candidate.Name);
+		Entry->SetStringField(TEXT("path"), Candidate.ObjectPath);
+		Entry->SetStringField(TEXT("asset_class"), Candidate.AssetClass);
+		if (Properties.IsValid())
+		{
+			Entry->SetObjectField(TEXT("properties"), Properties);
+		}
+		return Entry;
 	}
 
 	void SetStringArrayOrNull(TSharedRef<FJsonObject> Object, const FString& FieldName, const TArray<FString>& Values)
@@ -576,6 +740,30 @@ UClass* FCortexDataExportOps::ResolveDataAssetExportClass(const FString& ClassNa
 		return Class;
 	}
 
+	if (!ClassName.StartsWith(TEXT("/")))
+	{
+		const FString EnginePath = FString::Printf(TEXT("/Script/Engine.%s"), *ClassName);
+		Class = FindObject<UClass>(nullptr, *EnginePath);
+		if (Class != nullptr && Class->IsChildOf(UDataAsset::StaticClass()))
+		{
+			return Class;
+		}
+	}
+
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* Candidate = *It;
+		if (Candidate == nullptr || !IsValid(Candidate) || !Candidate->IsChildOf(UDataAsset::StaticClass()))
+		{
+			continue;
+		}
+
+		if (Candidate->GetName() == ClassName || Candidate->GetPathName() == ClassName)
+		{
+			return Candidate;
+		}
+	}
+
 	return nullptr;
 }
 
@@ -603,8 +791,25 @@ bool FCortexDataExportOps::ShouldExportDataAssetProperty(const FProperty* Proper
 
 TSharedPtr<FJsonObject> FCortexDataExportOps::ExportEditableProperties(const UDataAsset* DataAsset)
 {
-	(void)DataAsset;
-	return MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> Properties = MakeShared<FJsonObject>();
+	if (DataAsset == nullptr)
+	{
+		return Properties;
+	}
+
+	for (TFieldIterator<FProperty> It(DataAsset->GetClass()); It; ++It)
+	{
+		const FProperty* Property = *It;
+		if (!ShouldExportDataAssetProperty(Property))
+		{
+			continue;
+		}
+
+		const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(DataAsset);
+		Properties->SetField(Property->GetName(), FCortexSerializer::PropertyToJson(Property, ValuePtr));
+	}
+
+	return Properties;
 }
 
 FCortexCommandResult FCortexDataExportOps::ExportDatatableJson(const TSharedPtr<FJsonObject>& Params)
@@ -836,27 +1041,225 @@ FCortexCommandResult FCortexDataExportOps::ExportDataAssetsJson(const TSharedPtr
 		Params->TryGetStringField(TEXT("class_filter"), ClassName);
 	}
 
+	UClass* FilterClass = UDataAsset::StaticClass();
+	if (!ClassName.IsEmpty())
+	{
+		FilterClass = ResolveDataAssetExportClass(ClassName);
+		if (FilterClass == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::ClassNotFound,
+				FString::Printf(TEXT("DataAsset class not found: %s"), *ClassName));
+		}
+	}
+
 	FString PathFilter;
 	Params->TryGetStringField(TEXT("path_filter"), PathFilter);
-	ParseStringArrayParam(Params, TEXT("asset_paths"));
+	const FString PackagePathFilter = ResolveDataAssetPackagePathFilter(PathFilter);
+	TArray<FString> RequestedAssetPaths;
+	bool bHasExplicitAssetPaths = false;
+	FString AssetPathsError;
+	if (!TryParseExplicitDataAssetPaths(Params, RequestedAssetPaths, bHasExplicitAssetPaths, AssetPathsError))
+	{
+		return InvalidFieldError(AssetPathsError);
+	}
 
 	bool bIncludeProperties = false;
 	bool bAllowPartial = false;
 	Params->TryGetBoolField(TEXT("include_properties"), bIncludeProperties);
 	Params->TryGetBoolField(TEXT("allow_partial"), bAllowPartial);
-	(void)ClassName;
-	(void)PathFilter;
-	(void)bIncludeProperties;
-	(void)bAllowPartial;
+
+	IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+	if (AssetRegistry == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::EditorNotReady,
+			TEXT("AssetRegistry is not available"));
+	}
+
+	TArray<FDataAssetExportCandidate> Candidates;
+	TArray<FDataAssetExportFailure> Failures;
+
+	if (!bHasExplicitAssetPaths)
+	{
+		FARFilter Filter;
+		Filter.ClassPaths.Add(FilterClass->GetClassPathName());
+		Filter.bRecursiveClasses = true;
+		if (!PackagePathFilter.IsEmpty())
+		{
+			Filter.PackagePaths.Add(FName(*PackagePathFilter));
+			Filter.bRecursivePaths = true;
+		}
+
+		TArray<FAssetData> AssetDataList;
+		AssetRegistry->GetAssets(Filter, AssetDataList);
+		AssetDataList.Sort([](const FAssetData& Left, const FAssetData& Right)
+		{
+			return Left.GetObjectPathString() < Right.GetObjectPathString();
+		});
+
+		for (const FAssetData& AssetData : AssetDataList)
+		{
+			const FString AssetPath = AssetData.GetObjectPathString();
+			if (!DoesDataAssetPathMatchFilter(AssetPath, PackagePathFilter))
+			{
+				continue;
+			}
+
+			FDataAssetExportCandidate Candidate;
+			Candidate.ObjectPath = AssetPath;
+			Candidate.Name = AssetData.AssetName.ToString();
+			Candidate.AssetClass = AssetData.AssetClassPath.GetAssetName().ToString();
+			Candidates.Add(Candidate);
+		}
+	}
+	else
+	{
+		TSet<FString> SeenObjectPaths;
+		for (const FString& RequestedPath : RequestedAssetPaths)
+		{
+			FString ObjectPath;
+			FString ObjectPathError;
+			if (!TryNormalizeDataAssetObjectPath(RequestedPath, ObjectPath, ObjectPathError))
+			{
+				return InvalidFieldError(ObjectPathError);
+			}
+
+			SeenObjectPaths.Add(ObjectPath);
+		}
+
+		TArray<FString> SortedObjectPaths = SeenObjectPaths.Array();
+		SortedObjectPaths.Sort();
+
+		for (const FString& ObjectPath : SortedObjectPaths)
+		{
+			if (!DoesDataAssetPathMatchFilter(ObjectPath, PackagePathFilter))
+			{
+				Failures.Add(FDataAssetExportFailure{
+					ObjectPath,
+					CortexErrorCodes::InvalidField,
+					MakeDataAssetExportFailureMessage(ObjectPath, TEXT("DataAsset does not match path_filter")) });
+				continue;
+			}
+
+			const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
+			if (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName))
+			{
+				Failures.Add(FDataAssetExportFailure{
+					ObjectPath,
+					CortexErrorCodes::AssetNotFound,
+					MakeDataAssetExportFailureMessage(ObjectPath, TEXT("DataAsset not found")) });
+				continue;
+			}
+
+			UDataAsset* LoadedAsset = LoadObject<UDataAsset>(nullptr, *ObjectPath);
+			if (LoadedAsset == nullptr)
+			{
+				Failures.Add(FDataAssetExportFailure{
+					ObjectPath,
+					CortexErrorCodes::AssetNotFound,
+					MakeDataAssetExportFailureMessage(ObjectPath, TEXT("DataAsset not found")) });
+				continue;
+			}
+
+			if (!LoadedAsset->IsA(FilterClass))
+			{
+				Failures.Add(FDataAssetExportFailure{
+					ObjectPath,
+					CortexErrorCodes::InvalidField,
+					MakeDataAssetExportFailureMessage(ObjectPath, TEXT("DataAsset does not match class_name")) });
+				continue;
+			}
+
+			FDataAssetExportCandidate Candidate;
+			Candidate.ObjectPath = ObjectPath;
+			Candidate.Name = LoadedAsset->GetName();
+			Candidate.AssetClass = LoadedAsset->GetClass()->GetName();
+			Candidate.LoadedAsset = LoadedAsset;
+			Candidates.Add(Candidate);
+		}
+	}
+
+	if (!bAllowPartial && Failures.Num() > 0)
+	{
+		return FCortexCommandRouter::Error(Failures[0].ErrorCode, Failures[0].Message);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> DataAssetsArray;
+	DataAssetsArray.Reserve(Candidates.Num());
+	for (FDataAssetExportCandidate& Candidate : Candidates)
+	{
+		if (bIncludeProperties && Candidate.LoadedAsset == nullptr)
+		{
+			const FString PackageName = FPackageName::ObjectPathToPackageName(Candidate.ObjectPath);
+			if (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName))
+			{
+				Failures.Add(FDataAssetExportFailure{
+					Candidate.ObjectPath,
+					CortexErrorCodes::AssetNotFound,
+					MakeDataAssetExportFailureMessage(Candidate.ObjectPath, TEXT("DataAsset not found")) });
+				continue;
+			}
+
+			Candidate.LoadedAsset = LoadObject<UDataAsset>(nullptr, *Candidate.ObjectPath);
+			if (Candidate.LoadedAsset == nullptr)
+			{
+				Failures.Add(FDataAssetExportFailure{
+					Candidate.ObjectPath,
+					CortexErrorCodes::AssetNotFound,
+					MakeDataAssetExportFailureMessage(Candidate.ObjectPath, TEXT("DataAsset not found")) });
+				continue;
+			}
+		}
+
+		if (!Candidate.LoadedAsset && bIncludeProperties)
+		{
+			Failures.Add(FDataAssetExportFailure{
+				Candidate.ObjectPath,
+				CortexErrorCodes::SerializationError,
+				MakeDataAssetExportFailureMessage(Candidate.ObjectPath, TEXT("Failed to load DataAsset for property export")) });
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> Properties = bIncludeProperties
+			? ExportEditableProperties(Candidate.LoadedAsset)
+			: nullptr;
+		DataAssetsArray.Add(MakeShared<FJsonValueObject>(MakeDataAssetExportEntry(Candidate, Properties)));
+	}
+
+	if (!bAllowPartial && Failures.Num() > 0)
+	{
+		return FCortexCommandRouter::Error(Failures[0].ErrorCode, Failures[0].Message);
+	}
+
+	TArray<FString> ErrorMessages;
+	ErrorMessages.Reserve(Failures.Num());
+	for (const FDataAssetExportFailure& Failure : Failures)
+	{
+		ErrorMessages.Add(Failure.Message);
+	}
+
+	TSharedRef<FJsonObject> Payload = MakeShared<FJsonObject>();
+	Payload->SetNumberField(TEXT("count"), DataAssetsArray.Num());
+	Payload->SetNumberField(TEXT("exported_count"), DataAssetsArray.Num());
+	Payload->SetNumberField(TEXT("failed_count"), Failures.Num());
+	Payload->SetNumberField(TEXT("total_count"), Candidates.Num() + Failures.Num());
+	Payload->SetArrayField(TEXT("data_assets"), DataAssetsArray);
+
+	const FExportWriteResult WriteResult = WriteJsonFile(ResolvedOutPath.AbsolutePath, Payload);
+	if (!WriteResult.bWritten)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, WriteResult.Error);
+	}
 
 	return FCortexCommandRouter::Success(MakeSingleSummary(
-		false,
-		false,
+		Failures.Num() == 0,
+		Failures.Num() > 0,
 		ResolvedOutPath.AbsolutePath,
-		0,
-		0,
+		WriteResult.BytesWritten,
+		DataAssetsArray.Num(),
 		TArray<FString>(),
-		TArray<FString>{ TEXT("DataAsset export payload is not implemented yet") }));
+		ErrorMessages));
 }
 
 FCortexCommandResult FCortexDataExportOps::ExportBulkJson(const TSharedPtr<FJsonObject>& Params)

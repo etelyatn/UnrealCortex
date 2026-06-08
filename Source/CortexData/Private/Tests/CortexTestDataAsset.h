@@ -20,6 +20,9 @@ public:
 	UPROPERTY(EditAnywhere, Transient)
 	FString ExportTransientProperty;
 
+	UPROPERTY(Transient)
+	FString TransientExportBlocked;
+
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(EditAnywhere)
 	FString ExportEditorOnlyProperty;
@@ -27,6 +30,9 @@ public:
 
 	UPROPERTY()
 	FString ExportInternalProperty;
+
+	UPROPERTY(EditAnywhere, meta=(DisplayName="Editor Only Label"))
+	FString EditableExportAllowed;
 };
 
 /** Derived concrete DataAsset subclass for hierarchy filtering tests. */
