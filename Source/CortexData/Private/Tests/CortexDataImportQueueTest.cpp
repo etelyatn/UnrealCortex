@@ -34,6 +34,19 @@ namespace
 		return Router;
 	}
 
+	bool ImportQueueSupportedCommandNamesContain(const TArray<FCortexCommandInfo>& Commands, const FString& CommandName)
+	{
+		for (const FCortexCommandInfo& Command : Commands)
+		{
+			if (Command.Name == CommandName)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	FCortexDataLocalizationTestRow MakeImportQueueRow(const FString& Title, const FString& StepText)
 	{
 		FCortexDataLocalizationTestRow Row;
@@ -173,6 +186,35 @@ namespace
 		FString RunId;
 		TArray<FString> CreatedPackageNames;
 	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataImportQueueCommandsRegisteredTest,
+	"Cortex.Data.ImportQueue.CommandsRegistered",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataImportQueueCommandsRegisteredTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FCortexDataCommandHandler Handler;
+	TestTrue(
+		TEXT("apply_import_ops_json is advertised"),
+		ImportQueueSupportedCommandNamesContain(Handler.GetSupportedCommands(), TEXT("apply_import_ops_json")));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("ops_path"), TEXT("Saved/CortexImports/missing.json"));
+	Params->SetStringField(TEXT("report_path"), TEXT("Saved/CortexImports/report.json"));
+
+	FCortexCommandRouter Router = CreateDataImportQueueTestRouter();
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.apply_import_ops_json"), Params);
+
+	TestFalse(TEXT("missing ops file fails"), Result.bSuccess);
+	TestEqual(TEXT("missing ops file returns FileNotFound"), Result.ErrorCode, CortexErrorCodes::FileNotFound);
+	TestNotEqual(TEXT("missing ops file is not UnknownCommand"), Result.ErrorCode, CortexErrorCodes::UnknownCommand);
+
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
