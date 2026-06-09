@@ -57,6 +57,9 @@ def test_build_router_docstring_lists_all_commands():
     ) in docstrings["core"]
     assert "query_datatable" in docstrings["data"]
     assert "table_path: string" in docstrings["data"]
+    assert "For large raw DataTable, StringTable, or DataAsset reads" in docstrings["data"]
+    assert "export_bulk_json" in docstrings["data"]
+    assert "compact summaries" in docstrings["data"]
 
 
 def test_missing_cache_uses_minimal_fallback_and_logs_warning(caplog, tmp_path):
@@ -202,6 +205,18 @@ class TestFallbackDrift:
                 f"  Extra in fallback: {extra}\n"
                 f"  Fix: cd MCP && uv run python scripts/sync_fallback.py --from-fixture"
             )
+
+        expected_data_exports = {
+            "export_datatable_json",
+            "export_string_table_json",
+            "export_data_assets_json",
+            "export_bulk_json",
+        }
+        cache_data_cmds = {cmd["name"] for cmd in cache_domains["data"].get("commands", [])}
+        fallback_data_cmds = {cmd["name"] for cmd in _FALLBACK_STRUCTURED["data"]}
+
+        assert expected_data_exports <= cache_data_cmds
+        assert expected_data_exports <= fallback_data_cmds
 
     def test_parameter_signatures_match(self, cache_domains):
         """Parameter names, types, and required/optional must match between cache and fallback."""

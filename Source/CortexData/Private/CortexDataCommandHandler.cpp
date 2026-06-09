@@ -6,6 +6,7 @@
 #include "Operations/CortexLocalizationOps.h"
 #include "Operations/CortexAssetSearchOps.h"
 #include "Operations/CortexCurveTableOps.h"
+#include "Operations/CortexDataExportOps.h"
 
 FCortexCommandResult FCortexDataCommandHandler::Execute(
     const FString& Command,
@@ -147,6 +148,24 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
         return FCortexDataCurveTableOps::UpdateCurveTableRow(Params);
     }
 
+    // Raw JSON export operations
+    if (Command == TEXT("export_datatable_json"))
+    {
+        return FCortexDataExportOps::ExportDatatableJson(Params);
+    }
+    if (Command == TEXT("export_string_table_json"))
+    {
+        return FCortexDataExportOps::ExportStringTableJson(Params);
+    }
+    if (Command == TEXT("export_data_assets_json"))
+    {
+        return FCortexDataExportOps::ExportDataAssetsJson(Params);
+    }
+    if (Command == TEXT("export_bulk_json"))
+    {
+        return FCortexDataExportOps::ExportBulkJson(Params);
+    }
+
     return FCortexCommandRouter::Error(
         CortexErrorCodes::UnknownCommand,
         FString::Printf(TEXT("Unknown data command: %s"), *Command)
@@ -266,5 +285,30 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Required(TEXT("table_path"), TEXT("string"), TEXT("CurveTable asset path"))
             .Required(TEXT("row_name"), TEXT("string"), TEXT("Curve row identifier"))
             .Required(TEXT("keyframes"), TEXT("array"), TEXT("Curve keyframes to apply")),
+        FCortexCommandInfo{ TEXT("export_datatable_json"), TEXT("Export DataTable rows to a JSON file and return a compact summary") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable or CompositeDataTable asset path"))
+            .Required(TEXT("out_path"), TEXT("string"), TEXT("Output JSON file path"))
+            .Optional(TEXT("fields"), TEXT("array"), TEXT("Subset of row fields to serialize"))
+            .Optional(TEXT("row_names"), TEXT("array"), TEXT("Exact row names to export"))
+            .Optional(TEXT("row_name_pattern"), TEXT("string"), TEXT("Wildcard row-name filter"))
+            .Optional(TEXT("include_schema"), TEXT("boolean"), TEXT("Include row struct schema metadata in the file"))
+            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Permit serialization warnings without failing")),
+        FCortexCommandInfo{ TEXT("export_string_table_json"), TEXT("Export StringTable entries to a JSON file and return a compact summary") }
+            .Required(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable asset path"))
+            .Required(TEXT("out_path"), TEXT("string"), TEXT("Output JSON file path"))
+            .Optional(TEXT("key_pattern"), TEXT("string"), TEXT("Wildcard key filter"))
+            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Permit serialization warnings without failing")),
+        FCortexCommandInfo{ TEXT("export_data_assets_json"), TEXT("Export DataAsset catalog entries or properties to a JSON file and return a compact summary") }
+            .Required(TEXT("out_path"), TEXT("string"), TEXT("Output JSON file path"))
+            .Optional(TEXT("class_name"), TEXT("string"), TEXT("DataAsset class filter"))
+            .Optional(TEXT("class_filter"), TEXT("string"), TEXT("Compatibility alias for class_name"))
+            .Optional(TEXT("path_filter"), TEXT("string"), TEXT("Asset path prefix filter"))
+            .Optional(TEXT("asset_paths"), TEXT("array"), TEXT("Explicit asset paths"))
+            .Optional(TEXT("include_properties"), TEXT("boolean"), TEXT("Load assets and serialize editable/exportable properties"))
+            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Permit per-asset serialization warnings without failing")),
+        FCortexCommandInfo{ TEXT("export_bulk_json"), TEXT("Export multiple typed data resources to JSON files under one output directory") }
+            .Required(TEXT("out_dir"), TEXT("string"), TEXT("Base output directory"))
+            .Required(TEXT("items"), TEXT("array"), TEXT("Typed export specs. Each item requires type=datatable|string_table|data_assets, optional name, and optional relative out_path. datatable items use table_path plus optional fields/row_names/row_name_pattern/include_schema. string_table items use string_table_path plus optional key_pattern. data_assets items use class_name/path_filter/asset_paths/include_properties. Item out_path values are always relative to out_dir."))
+            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Continue independent item exports after failures")),
     };
 }

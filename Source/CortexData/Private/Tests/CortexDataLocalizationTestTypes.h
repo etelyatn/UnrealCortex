@@ -23,4 +23,7 @@ struct FCortexDataLocalizationTestRow : public FTableRowBase
 
 	UPROPERTY()
 	TArray<FCortexDataLocalizationStepTestRow> Steps;
+
+	UPROPERTY()
+	FString row_name;
 };

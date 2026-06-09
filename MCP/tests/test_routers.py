@@ -266,3 +266,56 @@ def test_data_router_forwards_update_string_table_payload():
             "dry_run": True,
         },
     )
+
+
+def test_data_router_forwards_export_bulk_payload():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "success": True,
+        "data": {
+            "completed": True,
+            "partial": False,
+            "out_dir": "D:/Project/Saved/CortexExports",
+            "item_count": 1,
+            "succeeded": 1,
+            "failed": 0,
+            "skipped": 0,
+            "items": [{"name": "quests", "type": "datatable", "status": "written"}],
+            "warnings": [],
+            "errors": [],
+        },
+    }
+
+    router = make_router("data", connection, "data docs")
+    payload = json.loads(
+        router(
+            "export_bulk_json",
+            {
+                "out_dir": "Saved/CortexExports",
+                "items": [
+                    {
+                        "type": "datatable",
+                        "name": "quests",
+                        "table_path": "/Game/Data/DT_Quests",
+                        "out_path": "quests.json",
+                    }
+                ],
+            },
+        )
+    )
+
+    assert payload["succeeded"] == 1
+    connection.send_command.assert_called_once_with(
+        "data.export_bulk_json",
+        {
+            "out_dir": "Saved/CortexExports",
+            "items": [
+                {
+                    "type": "datatable",
+                    "name": "quests",
+                    "table_path": "/Game/Data/DT_Quests",
+                    "out_path": "quests.json",
+                }
+            ],
+        },
+    )

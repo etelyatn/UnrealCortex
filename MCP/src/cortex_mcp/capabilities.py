@@ -74,6 +74,12 @@ if _missing:
 
 
 _COMPOSITE_HINTS: dict[str, str] = {
+    "data": (
+        "For large raw DataTable, StringTable, or DataAsset reads, use "
+        "export_datatable_json, export_string_table_json, export_data_assets_json, "
+        "or export_bulk_json through data_cmd. These commands write JSON files and "
+        "return compact summaries; do not read exported files back into MCP responses.\n"
+    ),
     "material": "For creating a full material graph from scratch, use material_compose instead of chaining material_cmd calls.\n",
     "blueprint": "For creating or updating a full Blueprint, use blueprint_compose instead of chaining blueprint_cmd calls.\n",
     "umg": "For creating a complete Widget Blueprint screen, use widget_compose instead of chaining umg_cmd calls.\n",
