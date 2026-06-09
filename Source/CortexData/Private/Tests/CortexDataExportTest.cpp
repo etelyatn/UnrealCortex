@@ -411,6 +411,99 @@ namespace
 		const FString MissingPackageName = FPaths::Combine(FPaths::GetPath(Asset->GetOutermost()->GetName()), MissingAssetName);
 		return FString::Printf(TEXT("%s.%s"), *MissingPackageName, *MissingAssetName);
 	}
+
+	TSharedRef<FJsonObject> MakeBulkDataTableItem(
+		const FString& Name,
+		const FString& TablePath,
+		const FString& OutPath)
+	{
+		TSharedRef<FJsonObject> Item = MakeShared<FJsonObject>();
+		Item->SetStringField(TEXT("type"), TEXT("datatable"));
+		if (!Name.IsEmpty())
+		{
+			Item->SetStringField(TEXT("name"), Name);
+		}
+		Item->SetStringField(TEXT("table_path"), TablePath);
+		if (!OutPath.IsEmpty())
+		{
+			Item->SetStringField(TEXT("out_path"), OutPath);
+		}
+		return Item;
+	}
+
+	TSharedRef<FJsonObject> MakeBulkStringTableItem(
+		const FString& Name,
+		const FString& StringTablePath,
+		const FString& OutPath)
+	{
+		TSharedRef<FJsonObject> Item = MakeShared<FJsonObject>();
+		Item->SetStringField(TEXT("type"), TEXT("string_table"));
+		if (!Name.IsEmpty())
+		{
+			Item->SetStringField(TEXT("name"), Name);
+		}
+		Item->SetStringField(TEXT("string_table_path"), StringTablePath);
+		if (!OutPath.IsEmpty())
+		{
+			Item->SetStringField(TEXT("out_path"), OutPath);
+		}
+		return Item;
+	}
+
+	TSharedRef<FJsonObject> MakeBulkDataAssetsItem(
+		const FString& Name,
+		const FString& OutPath,
+		const TArray<FString>& AssetPaths,
+		bool bIncludeProperties,
+		bool bAllowPartial)
+	{
+		TSharedRef<FJsonObject> Item = MakeShared<FJsonObject>();
+		Item->SetStringField(TEXT("type"), TEXT("data_assets"));
+		if (!Name.IsEmpty())
+		{
+			Item->SetStringField(TEXT("name"), Name);
+		}
+		if (!OutPath.IsEmpty())
+		{
+			Item->SetStringField(TEXT("out_path"), OutPath);
+		}
+		Item->SetStringField(TEXT("class_name"), TEXT("CortexTestDataAsset"));
+		AddStringArrayField(Item, TEXT("asset_paths"), AssetPaths);
+		Item->SetBoolField(TEXT("include_properties"), bIncludeProperties);
+		Item->SetBoolField(TEXT("allow_partial"), bAllowPartial);
+		return Item;
+	}
+
+	void AddBulkItem(TArray<TSharedPtr<FJsonValue>>& Items, const TSharedRef<FJsonObject>& Item)
+	{
+		Items.Add(MakeShared<FJsonValueObject>(Item));
+	}
+
+	TArray<TSharedPtr<FJsonObject>> GetBulkItemSummaries(const TSharedPtr<FJsonObject>& Data)
+	{
+		TArray<TSharedPtr<FJsonObject>> Summaries;
+		if (!Data.IsValid())
+		{
+			return Summaries;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+		if (!Data->TryGetArrayField(TEXT("items"), Items) || Items == nullptr)
+		{
+			return Summaries;
+		}
+
+		for (const TSharedPtr<FJsonValue>& ItemValue : *Items)
+		{
+			const TSharedPtr<FJsonObject>* ItemObject = nullptr;
+			if (ItemValue.IsValid() && ItemValue->TryGetObject(ItemObject) && ItemObject != nullptr && ItemObject->IsValid())
+			{
+				Summaries.Add(*ItemObject);
+			}
+		}
+
+		return Summaries;
+	}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -1381,6 +1474,455 @@ bool FCortexDataExportBulkPathSafetyTest::RunTest(const FString& Parameters)
 	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_bulk_json"), Params);
 	TestFalse(TEXT("Bulk item absolute output paths are rejected"), Result.bSuccess);
 	TestEqual(TEXT("Bulk item absolute path rejection uses InvalidField"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataExportBulkRejectsCollidingOutputPathsTest,
+	"Cortex.Data.Export.Bulk.RejectsCollidingOutputPaths",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataExportBulkRejectsCollidingOutputPathsTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	UDataTable* DataTable = Fixture.CreateRegularDataTable();
+	UStringTable* StringTable = Fixture.CreateStringTable();
+	TestNotNull(TEXT("DataTable fixture is created"), DataTable);
+	TestNotNull(TEXT("StringTable fixture is created"), StringTable);
+	if (DataTable == nullptr || StringTable == nullptr)
+	{
+		return false;
+	}
+
+	const FString CollidingOutPath = Fixture.MakeSavedOutputPath(TEXT("BulkOut/shared.json"));
+
+	TArray<TSharedPtr<FJsonValue>> Items;
+	AddBulkItem(Items, MakeBulkDataTableItem(TEXT("table"), DataTable->GetPathName(), TEXT("shared.json")));
+	AddBulkItem(Items, MakeBulkStringTableItem(TEXT("string_table"), StringTable->GetPathName(), TEXT("./shared.json")));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_dir"), Fixture.MakeSavedOutputDir(TEXT("BulkOut")));
+	Params->SetBoolField(TEXT("allow_partial"), true);
+	Params->SetArrayField(TEXT("items"), Items);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_bulk_json"), Params);
+	TestFalse(TEXT("bulk output path collisions are rejected"), Result.bSuccess);
+	TestEqual(TEXT("bulk output path collision uses InvalidField"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	TestFalse(TEXT("colliding bulk preflight writes no file"), IFileManager::Get().FileExists(*CollidingOutPath));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataExportBulkDefaultOutputNamesTest,
+	"Cortex.Data.Export.Bulk.DefaultOutputNames",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataExportBulkDefaultOutputNamesTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	UDataTable* DataTable = Fixture.CreateRegularDataTable();
+	UStringTable* StringTable = Fixture.CreateStringTable();
+	TestNotNull(TEXT("DataTable fixture is created"), DataTable);
+	TestNotNull(TEXT("StringTable fixture is created"), StringTable);
+	if (DataTable == nullptr || StringTable == nullptr)
+	{
+		return false;
+	}
+
+	const FString NamedDefaultOutPath = Fixture.MakeSavedOutputPath(TEXT("BulkOut/Named_Table_01.json"));
+	const FString IndexDefaultOutPath = Fixture.MakeSavedOutputPath(TEXT("BulkOut/item_1.json"));
+
+	TArray<TSharedPtr<FJsonValue>> Items;
+	AddBulkItem(Items, MakeBulkDataTableItem(TEXT("Named Table 01"), DataTable->GetPathName(), TEXT("")));
+	AddBulkItem(Items, MakeBulkStringTableItem(TEXT(""), StringTable->GetPathName(), TEXT("")));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_dir"), Fixture.MakeSavedOutputDir(TEXT("BulkOut")));
+	Params->SetBoolField(TEXT("allow_partial"), true);
+	Params->SetArrayField(TEXT("items"), Items);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_bulk_json"), Params);
+	TestTrue(TEXT("bulk export with default output names succeeds"), Result.bSuccess);
+	TestTrue(TEXT("bulk export returns data"), Result.Data.IsValid());
+	if (!Result.Data.IsValid())
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("bulk succeeds both default-named items"), static_cast<int32>(Result.Data->GetNumberField(TEXT("succeeded"))), 2);
+	TestEqual(TEXT("bulk fails no default-named items"), static_cast<int32>(Result.Data->GetNumberField(TEXT("failed"))), 0);
+	TestEqual(TEXT("bulk skips no default-named items"), static_cast<int32>(Result.Data->GetNumberField(TEXT("skipped"))), 0);
+	TestTrue(TEXT("named item uses sanitized default file name"), IFileManager::Get().FileExists(*NamedDefaultOutPath));
+	TestTrue(TEXT("unnamed item uses index default file name"), IFileManager::Get().FileExists(*IndexDefaultOutPath));
+
+	const TArray<TSharedPtr<FJsonObject>> ItemSummaries = GetBulkItemSummaries(Result.Data);
+	TestEqual(TEXT("bulk returns default name item summaries"), ItemSummaries.Num(), 2);
+	if (ItemSummaries.Num() == 2)
+	{
+		TestEqual(TEXT("named default item is written"), ItemSummaries[0]->GetStringField(TEXT("status")), TEXT("written"));
+		TestEqual(TEXT("index default item is written"), ItemSummaries[1]->GetStringField(TEXT("status")), TEXT("written"));
+		TestEqual(TEXT("named default summary out_path"), ItemSummaries[0]->GetStringField(TEXT("out_path")), NamedDefaultOutPath);
+		TestEqual(TEXT("index default summary out_path"), ItemSummaries[1]->GetStringField(TEXT("out_path")), IndexDefaultOutPath);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataExportBulkUnsupportedTypeTest,
+	"Cortex.Data.Export.Bulk.UnsupportedType",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataExportBulkUnsupportedTypeTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	TSharedRef<FJsonObject> UnsupportedItem = MakeShared<FJsonObject>();
+	UnsupportedItem->SetStringField(TEXT("type"), TEXT("curve_table"));
+	UnsupportedItem->SetStringField(TEXT("name"), TEXT("unsupported"));
+	UnsupportedItem->SetStringField(TEXT("out_path"), TEXT("unsupported.json"));
+
+	TArray<TSharedPtr<FJsonValue>> Items;
+	AddBulkItem(Items, UnsupportedItem);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_dir"), Fixture.MakeSavedOutputDir(TEXT("BulkOut")));
+	Params->SetBoolField(TEXT("allow_partial"), true);
+	Params->SetArrayField(TEXT("items"), Items);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_bulk_json"), Params);
+	TestTrue(TEXT("unsupported bulk item returns structured summary"), Result.bSuccess);
+	TestTrue(TEXT("unsupported bulk item returns data"), Result.Data.IsValid());
+	if (!Result.Data.IsValid())
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("unsupported bulk item increments failed count"), static_cast<int32>(Result.Data->GetNumberField(TEXT("failed"))), 1);
+	TestEqual(TEXT("unsupported bulk item increments no succeeded count"), static_cast<int32>(Result.Data->GetNumberField(TEXT("succeeded"))), 0);
+
+	const TArray<TSharedPtr<FJsonObject>> ItemSummaries = GetBulkItemSummaries(Result.Data);
+	TestEqual(TEXT("unsupported bulk item returns one summary"), ItemSummaries.Num(), 1);
+	if (ItemSummaries.Num() == 1)
+	{
+		TestEqual(TEXT("unsupported item status is failed"), ItemSummaries[0]->GetStringField(TEXT("status")), TEXT("failed"));
+		TestEqual(TEXT("unsupported item uses InvalidOperation"), ItemSummaries[0]->GetStringField(TEXT("error_code")), CortexErrorCodes::InvalidOperation);
+		TestTrue(TEXT("unsupported item reports error"), ItemSummaries[0]->HasTypedField<EJson::String>(TEXT("error")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataExportBulkDataAssetsPassthroughTest,
+	"Cortex.Data.Export.Bulk.DataAssetsPassthrough",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataExportBulkDataAssetsPassthroughTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	UCortexTestDataAsset* DataAsset = Fixture.CreateDataAsset();
+	TestNotNull(TEXT("DataAsset fixture is created"), DataAsset);
+	if (DataAsset == nullptr)
+	{
+		return false;
+	}
+
+	const FString OutPath = Fixture.MakeSavedOutputPath(TEXT("BulkOut/data-asset.json"));
+	TSharedRef<FJsonObject> DataAssetsItem = MakeBulkDataAssetsItem(
+		TEXT("data_asset"),
+		TEXT("data-asset.json"),
+		TArray<FString>{ DataAsset->GetPathName() },
+		true,
+		false);
+	DataAssetsItem->SetStringField(TEXT("type"), TEXT("data_asset"));
+
+	TArray<TSharedPtr<FJsonValue>> Items;
+	AddBulkItem(Items, DataAssetsItem);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_dir"), Fixture.MakeSavedOutputDir(TEXT("BulkOut")));
+	Params->SetBoolField(TEXT("allow_partial"), true);
+	Params->SetArrayField(TEXT("items"), Items);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_bulk_json"), Params);
+	TestTrue(TEXT("bulk data_asset item succeeds"), Result.bSuccess);
+	TestTrue(TEXT("bulk data_asset item returns data"), Result.Data.IsValid());
+	if (!Result.Data.IsValid())
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("bulk data_asset item increments succeeded count"), static_cast<int32>(Result.Data->GetNumberField(TEXT("succeeded"))), 1);
+	TestEqual(TEXT("bulk data_asset item increments no failed count"), static_cast<int32>(Result.Data->GetNumberField(TEXT("failed"))), 0);
+	TestTrue(TEXT("bulk data_asset item writes file"), IFileManager::Get().FileExists(*OutPath));
+
+	TSharedPtr<FJsonObject> FileJson;
+	FString ParseError;
+	TestTrue(TEXT("bulk data_asset output parses"), Fixture.TryReadJsonFile(OutPath, FileJson, ParseError));
+	if (!ParseError.IsEmpty())
+	{
+		AddError(ParseError);
+	}
+
+	const TArray<TSharedPtr<FJsonObject>> Entries = GetDataAssetEntries(FileJson);
+	TestEqual(TEXT("bulk data_asset asset_paths filters to one entry"), Entries.Num(), 1);
+	if (Entries.Num() == 1)
+	{
+		TestEqual(TEXT("bulk data_asset entry path matches fixture"), Entries[0]->GetStringField(TEXT("path")), DataAsset->GetPathName());
+		TestTrue(TEXT("bulk data_asset include_properties is passed through"), Entries[0]->HasTypedField<EJson::Object>(TEXT("properties")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataExportBulkStrictPartialChildSkipsRemainingTest,
+	"Cortex.Data.Export.Bulk.StrictPartialChildSkipsRemaining",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataExportBulkStrictPartialChildSkipsRemainingTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	UCortexTestDataAsset* DataAsset = Fixture.CreateDataAsset();
+	UStringTable* StringTable = Fixture.CreateStringTable();
+	TestNotNull(TEXT("DataAsset fixture is created"), DataAsset);
+	TestNotNull(TEXT("StringTable fixture is created"), StringTable);
+	if (DataAsset == nullptr || StringTable == nullptr)
+	{
+		return false;
+	}
+
+	const FString PartialOutPath = Fixture.MakeSavedOutputPath(TEXT("BulkOut/partial-data-assets.json"));
+	const FString SkippedOutPath = Fixture.MakeSavedOutputPath(TEXT("BulkOut/skipped-string-table.json"));
+	const FString MissingAssetPath = MakeMissingDataAssetObjectPath(DataAsset);
+
+	TArray<TSharedPtr<FJsonValue>> Items;
+	AddBulkItem(Items, MakeBulkDataAssetsItem(
+		TEXT("partial_data_assets"),
+		TEXT("partial-data-assets.json"),
+		TArray<FString>{ DataAsset->GetPathName(), MissingAssetPath },
+		true,
+		true));
+	AddBulkItem(Items, MakeBulkStringTableItem(TEXT("skipped_string_table"), StringTable->GetPathName(), TEXT("skipped-string-table.json")));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_dir"), Fixture.MakeSavedOutputDir(TEXT("BulkOut")));
+	Params->SetBoolField(TEXT("allow_partial"), false);
+	Params->SetArrayField(TEXT("items"), Items);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_bulk_json"), Params);
+	TestTrue(TEXT("strict bulk partial child returns structured summary"), Result.bSuccess);
+	TestTrue(TEXT("strict bulk partial child returns data"), Result.Data.IsValid());
+	if (!Result.Data.IsValid())
+	{
+		return false;
+	}
+
+	TestFalse(TEXT("strict bulk partial child does not complete"), Result.Data->GetBoolField(TEXT("completed")));
+	TestTrue(TEXT("strict bulk partial child marks partial"), Result.Data->GetBoolField(TEXT("partial")));
+	TestEqual(TEXT("strict bulk partial child counts no succeeded items"), static_cast<int32>(Result.Data->GetNumberField(TEXT("succeeded"))), 0);
+	TestEqual(TEXT("strict bulk partial child counts failed item"), static_cast<int32>(Result.Data->GetNumberField(TEXT("failed"))), 1);
+	TestEqual(TEXT("strict bulk partial child skips remaining item"), static_cast<int32>(Result.Data->GetNumberField(TEXT("skipped"))), 1);
+
+	const TArray<TSharedPtr<FJsonObject>> ItemSummaries = GetBulkItemSummaries(Result.Data);
+	TestEqual(TEXT("strict bulk partial child returns two summaries"), ItemSummaries.Num(), 2);
+	if (ItemSummaries.Num() == 2)
+	{
+		TestEqual(TEXT("partial child item is failed for strict bulk"), ItemSummaries[0]->GetStringField(TEXT("status")), TEXT("failed"));
+		TestTrue(TEXT("partial child preserves exported count"), ItemSummaries[0]->GetNumberField(TEXT("exported_count")) > 0.0);
+		TestTrue(TEXT("partial child preserves bytes written"), ItemSummaries[0]->GetNumberField(TEXT("bytes_written")) > 0.0);
+		TestTrue(TEXT("partial child reports error code"), ItemSummaries[0]->HasTypedField<EJson::String>(TEXT("error_code")));
+		TestTrue(TEXT("partial child reports error"), ItemSummaries[0]->HasTypedField<EJson::String>(TEXT("error")));
+		TestEqual(TEXT("remaining item is skipped"), ItemSummaries[1]->GetStringField(TEXT("status")), TEXT("skipped"));
+		TestTrue(TEXT("skipped item reports error code"), ItemSummaries[1]->HasTypedField<EJson::String>(TEXT("error_code")));
+		TestTrue(TEXT("skipped item reports error"), ItemSummaries[1]->HasTypedField<EJson::String>(TEXT("error")));
+	}
+
+	TestTrue(TEXT("partial child file remains written"), IFileManager::Get().FileExists(*PartialOutPath));
+	TestFalse(TEXT("strict bulk skipped remaining item does not write file"), IFileManager::Get().FileExists(*SkippedOutPath));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataExportBulkStopsAndSkipsAfterFirstFailureTest,
+	"Cortex.Data.Export.Bulk.StopsAndSkipsAfterFirstFailure",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataExportBulkStopsAndSkipsAfterFirstFailureTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	UDataTable* DataTable = Fixture.CreateRegularDataTable();
+	UStringTable* StringTable = Fixture.CreateStringTable();
+	TestNotNull(TEXT("DataTable fixture is created"), DataTable);
+	TestNotNull(TEXT("StringTable fixture is created"), StringTable);
+	if (DataTable == nullptr || StringTable == nullptr)
+	{
+		return false;
+	}
+
+	const FString FirstOutPath = Fixture.MakeSavedOutputPath(TEXT("BulkOut/first-table.json"));
+	const FString SkippedOutPath = Fixture.MakeSavedOutputPath(TEXT("BulkOut/skipped-string-table.json"));
+
+	TArray<TSharedPtr<FJsonValue>> Items;
+	AddBulkItem(Items, MakeBulkDataTableItem(TEXT("first_table"), DataTable->GetPathName(), TEXT("first-table.json")));
+	AddBulkItem(Items, MakeBulkDataTableItem(TEXT("missing_table"), TEXT("/Game/CortexExportTests/Missing.Missing"), TEXT("missing-table.json")));
+	AddBulkItem(Items, MakeBulkStringTableItem(TEXT("skipped_string_table"), StringTable->GetPathName(), TEXT("skipped-string-table.json")));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_dir"), Fixture.MakeSavedOutputDir(TEXT("BulkOut")));
+	Params->SetBoolField(TEXT("allow_partial"), false);
+	Params->SetArrayField(TEXT("items"), Items);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_bulk_json"), Params);
+	TestTrue(TEXT("bulk export returns structured summary"), Result.bSuccess);
+	TestTrue(TEXT("bulk export returns data"), Result.Data.IsValid());
+	if (!Result.Data.IsValid())
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("bulk summary omits raw payloads"), !Result.Data->HasField(TEXT("rows")) && !Result.Data->HasField(TEXT("entries")) && !Result.Data->HasField(TEXT("data_assets")));
+	TestTrue(TEXT("bulk has item summaries"), Result.Data->HasTypedField<EJson::Array>(TEXT("items")));
+	TestTrue(TEXT("bulk has succeeded count"), Result.Data->HasTypedField<EJson::Number>(TEXT("succeeded")));
+	TestTrue(TEXT("bulk has failed count"), Result.Data->HasTypedField<EJson::Number>(TEXT("failed")));
+	TestTrue(TEXT("bulk has skipped count"), Result.Data->HasTypedField<EJson::Number>(TEXT("skipped")));
+	TestFalse(TEXT("bulk does not complete after failure"), Result.Data->GetBoolField(TEXT("completed")));
+	TestTrue(TEXT("bulk marks partial after failure"), Result.Data->GetBoolField(TEXT("partial")));
+	TestEqual(TEXT("bulk succeeds one item"), static_cast<int32>(Result.Data->GetNumberField(TEXT("succeeded"))), 1);
+	TestEqual(TEXT("bulk fails one item"), static_cast<int32>(Result.Data->GetNumberField(TEXT("failed"))), 1);
+	TestEqual(TEXT("bulk skips remaining item"), static_cast<int32>(Result.Data->GetNumberField(TEXT("skipped"))), 1);
+
+	const TArray<TSharedPtr<FJsonObject>> ItemSummaries = GetBulkItemSummaries(Result.Data);
+	TestEqual(TEXT("bulk returns three item summaries"), ItemSummaries.Num(), 3);
+	if (ItemSummaries.Num() == 3)
+	{
+		TestEqual(TEXT("first item is written"), ItemSummaries[0]->GetStringField(TEXT("status")), TEXT("written"));
+		TestEqual(TEXT("second item fails"), ItemSummaries[1]->GetStringField(TEXT("status")), TEXT("failed"));
+		TestEqual(TEXT("third item is skipped"), ItemSummaries[2]->GetStringField(TEXT("status")), TEXT("skipped"));
+		TestEqual(TEXT("failed item reports error code"), ItemSummaries[1]->GetStringField(TEXT("error_code")), CortexErrorCodes::TableNotFound);
+		TestTrue(TEXT("failed item reports error"), ItemSummaries[1]->HasTypedField<EJson::String>(TEXT("error")));
+		TestTrue(TEXT("skipped item reports error"), ItemSummaries[2]->HasTypedField<EJson::String>(TEXT("error")));
+	}
+
+	TestTrue(TEXT("first bulk item writes file"), IFileManager::Get().FileExists(*FirstOutPath));
+	TestFalse(TEXT("skipped bulk item does not write file"), IFileManager::Get().FileExists(*SkippedOutPath));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataExportBulkAllowsPartialFailuresTest,
+	"Cortex.Data.Export.Bulk.AllowsPartialFailures",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataExportBulkAllowsPartialFailuresTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	UDataTable* DataTable = Fixture.CreateRegularDataTable();
+	UStringTable* StringTable = Fixture.CreateStringTable();
+	TestNotNull(TEXT("DataTable fixture is created"), DataTable);
+	TestNotNull(TEXT("StringTable fixture is created"), StringTable);
+	if (DataTable == nullptr || StringTable == nullptr)
+	{
+		return false;
+	}
+
+	const FString TableOutPath = Fixture.MakeSavedOutputPath(TEXT("BulkOut/table.json"));
+	const FString StringTableOutPath = Fixture.MakeSavedOutputPath(TEXT("BulkOut/string-table.json"));
+
+	TArray<TSharedPtr<FJsonValue>> Items;
+	AddBulkItem(Items, MakeBulkDataTableItem(TEXT("table"), DataTable->GetPathName(), TEXT("table.json")));
+	AddBulkItem(Items, MakeBulkDataTableItem(TEXT("missing_table"), TEXT("/Game/CortexExportTests/Missing.Missing"), TEXT("missing-table.json")));
+	AddBulkItem(Items, MakeBulkStringTableItem(TEXT("string_table"), StringTable->GetPathName(), TEXT("string-table.json")));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_dir"), Fixture.MakeSavedOutputDir(TEXT("BulkOut")));
+	Params->SetBoolField(TEXT("allow_partial"), true);
+	Params->SetArrayField(TEXT("items"), Items);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_bulk_json"), Params);
+	TestTrue(TEXT("bulk export with allow_partial returns success"), Result.bSuccess);
+	TestTrue(TEXT("bulk export returns data"), Result.Data.IsValid());
+	if (!Result.Data.IsValid())
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("bulk summary omits raw payloads"), !Result.Data->HasField(TEXT("rows")) && !Result.Data->HasField(TEXT("entries")) && !Result.Data->HasField(TEXT("data_assets")));
+	TestTrue(TEXT("bulk has item summaries"), Result.Data->HasTypedField<EJson::Array>(TEXT("items")));
+	TestTrue(TEXT("bulk has succeeded count"), Result.Data->HasTypedField<EJson::Number>(TEXT("succeeded")));
+	TestTrue(TEXT("bulk has failed count"), Result.Data->HasTypedField<EJson::Number>(TEXT("failed")));
+	TestTrue(TEXT("bulk has skipped count"), Result.Data->HasTypedField<EJson::Number>(TEXT("skipped")));
+	TestFalse(TEXT("bulk is not complete with partial failure"), Result.Data->GetBoolField(TEXT("completed")));
+	TestTrue(TEXT("bulk marks partial failure"), Result.Data->GetBoolField(TEXT("partial")));
+	TestEqual(TEXT("bulk succeeds valid items"), static_cast<int32>(Result.Data->GetNumberField(TEXT("succeeded"))), 2);
+	TestEqual(TEXT("bulk fails invalid item"), static_cast<int32>(Result.Data->GetNumberField(TEXT("failed"))), 1);
+	TestEqual(TEXT("bulk skips no items with allow_partial"), static_cast<int32>(Result.Data->GetNumberField(TEXT("skipped"))), 0);
+
+	const TArray<TSharedPtr<FJsonObject>> ItemSummaries = GetBulkItemSummaries(Result.Data);
+	TestEqual(TEXT("bulk returns three item summaries"), ItemSummaries.Num(), 3);
+	if (ItemSummaries.Num() == 3)
+	{
+		TestEqual(TEXT("first item is written"), ItemSummaries[0]->GetStringField(TEXT("status")), TEXT("written"));
+		TestEqual(TEXT("second item fails"), ItemSummaries[1]->GetStringField(TEXT("status")), TEXT("failed"));
+		TestEqual(TEXT("third item is written"), ItemSummaries[2]->GetStringField(TEXT("status")), TEXT("written"));
+		TestTrue(TEXT("written item reports bytes"), ItemSummaries[0]->GetNumberField(TEXT("bytes_written")) > 0.0);
+		TestTrue(TEXT("written string table reports bytes"), ItemSummaries[2]->GetNumberField(TEXT("bytes_written")) > 0.0);
+		TestEqual(TEXT("failed item reports error code"), ItemSummaries[1]->GetStringField(TEXT("error_code")), CortexErrorCodes::TableNotFound);
+		TestTrue(TEXT("failed item reports error"), ItemSummaries[1]->HasTypedField<EJson::String>(TEXT("error")));
+	}
+
+	TestTrue(TEXT("valid DataTable item writes file"), IFileManager::Get().FileExists(*TableOutPath));
+	TestTrue(TEXT("valid StringTable item writes file"), IFileManager::Get().FileExists(*StringTableOutPath));
+
+	TSharedPtr<FJsonObject> TableFileJson;
+	FString TableParseError;
+	TestTrue(TEXT("bulk DataTable output remains valid JSON"), Fixture.TryReadJsonFile(TableOutPath, TableFileJson, TableParseError));
+	if (!TableParseError.IsEmpty())
+	{
+		AddError(TableParseError);
+	}
+
+	TSharedPtr<FJsonObject> StringTableFileJson;
+	FString StringTableParseError;
+	TestTrue(TEXT("bulk StringTable output remains valid JSON"), Fixture.TryReadJsonFile(StringTableOutPath, StringTableFileJson, StringTableParseError));
+	if (!StringTableParseError.IsEmpty())
+	{
+		AddError(StringTableParseError);
+	}
+
+	if (TableFileJson.IsValid())
+	{
+		TestTrue(TEXT("bulk DataTable output contains rows"), TableFileJson->HasTypedField<EJson::Array>(TEXT("rows")));
+	}
+	if (StringTableFileJson.IsValid())
+	{
+		TestTrue(TEXT("bulk StringTable output contains entries"), StringTableFileJson->HasTypedField<EJson::Array>(TEXT("entries")));
+	}
 
 	return true;
 }

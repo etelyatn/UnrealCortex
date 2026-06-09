@@ -134,6 +134,124 @@ namespace
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, Message);
 	}
 
+	bool IsReservedWindowsFileStem(const FString& Stem)
+	{
+		const FString UpperStem = Stem.ToUpper();
+		static const TSet<FString> ReservedStems = {
+			TEXT("CON"),
+			TEXT("PRN"),
+			TEXT("AUX"),
+			TEXT("NUL"),
+			TEXT("COM1"),
+			TEXT("COM2"),
+			TEXT("COM3"),
+			TEXT("COM4"),
+			TEXT("COM5"),
+			TEXT("COM6"),
+			TEXT("COM7"),
+			TEXT("COM8"),
+			TEXT("COM9"),
+			TEXT("LPT1"),
+			TEXT("LPT2"),
+			TEXT("LPT3"),
+			TEXT("LPT4"),
+			TEXT("LPT5"),
+			TEXT("LPT6"),
+			TEXT("LPT7"),
+			TEXT("LPT8"),
+			TEXT("LPT9")
+		};
+
+		return ReservedStems.Contains(UpperStem);
+	}
+
+	FString SanitizeExportFileStem(const FString& InName)
+	{
+		FString Sanitized;
+		Sanitized.Reserve(InName.Len());
+		for (const TCHAR Character : InName)
+		{
+			if (FChar::IsAlnum(Character) || Character == TEXT('-') || Character == TEXT('_'))
+			{
+				Sanitized.AppendChar(Character);
+			}
+			else
+			{
+				Sanitized.AppendChar(TEXT('_'));
+			}
+		}
+
+		Sanitized.TrimStartAndEndInline();
+		while (Sanitized.StartsWith(TEXT(".")) || Sanitized.StartsWith(TEXT("_")))
+		{
+			Sanitized.RightChopInline(1);
+		}
+		while (Sanitized.EndsWith(TEXT(".")) || Sanitized.EndsWith(TEXT("_")))
+		{
+			Sanitized.LeftChopInline(1);
+		}
+
+		if (Sanitized.IsEmpty())
+		{
+			Sanitized = TEXT("item");
+		}
+		if (IsReservedWindowsFileStem(Sanitized))
+		{
+			Sanitized = TEXT("item_") + Sanitized;
+		}
+
+		return Sanitized;
+	}
+
+	void CopyJsonFieldIfPresent(const TSharedPtr<FJsonObject>& Source, const TSharedRef<FJsonObject>& Target, const FString& FieldName)
+	{
+		if (!Source.IsValid())
+		{
+			return;
+		}
+
+		const TSharedPtr<FJsonValue> Value = Source->TryGetField(FieldName);
+		if (Value.IsValid())
+		{
+			Target->SetField(FieldName, Value);
+		}
+	}
+
+	void AppendStringArrayField(const TSharedPtr<FJsonObject>& Source, const FString& FieldName, TArray<FString>& OutValues)
+	{
+		if (!Source.IsValid())
+		{
+			return;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+		if (!Source->TryGetArrayField(FieldName, Values) || Values == nullptr)
+		{
+			return;
+		}
+
+		for (const TSharedPtr<FJsonValue>& Value : *Values)
+		{
+			FString StringValue;
+			if (Value.IsValid() && Value->TryGetString(StringValue))
+			{
+				OutValues.Add(StringValue);
+			}
+		}
+	}
+
+	TArray<TSharedPtr<FJsonValue>> MakeStringJsonArray(const TArray<FString>& Values)
+	{
+		TArray<TSharedPtr<FJsonValue>> JsonValues;
+		JsonValues.Reserve(Values.Num());
+		for (const FString& Value : Values)
+		{
+			JsonValues.Add(MakeShared<FJsonValueString>(Value));
+		}
+
+		return JsonValues;
+	}
+
 	struct FDataAssetExportCandidate
 	{
 		FString ObjectPath;
@@ -473,23 +591,31 @@ bool FCortexDataExportOps::TryResolveOutputPath(const FString& InPath, FResolved
 	return true;
 }
 
-bool FCortexDataExportOps::TryResolveBulkItemPath(const FString& OutDir, const FString& ItemOutPath, FResolvedOutputPath& OutPath, FString& OutError)
+bool FCortexDataExportOps::TryResolveBulkItemPath(
+	const FString& OutDir,
+	const FString& ItemOutPath,
+	const FString& ItemName,
+	int32 ItemIndex,
+	FResolvedOutputPath& OutPath,
+	FString& OutError)
 {
-	if (ItemOutPath.IsEmpty())
+	FString RelativePath = ItemOutPath;
+	if (RelativePath.IsEmpty())
 	{
-		OutError = TEXT("Bulk item output path cannot be empty");
+		const FString BaseName = !ItemName.IsEmpty()
+			? SanitizeExportFileStem(ItemName)
+			: FString::Printf(TEXT("item_%d"), ItemIndex);
+		RelativePath = BaseName + TEXT(".json");
+	}
+
+	FPaths::NormalizeFilename(RelativePath);
+	if (!FPaths::IsRelative(RelativePath) || IsDriveRelativePath(RelativePath))
+	{
+		OutError = TEXT("Bulk item out_path must be relative to out_dir");
 		return false;
 	}
 
-	FString ItemPath = ItemOutPath;
-	FPaths::NormalizeFilename(ItemPath);
-	if (!FPaths::IsRelative(ItemPath))
-	{
-		OutError = FString::Printf(TEXT("Bulk item output path must be relative under out_dir: %s"), *ItemOutPath);
-		return false;
-	}
-
-	return TryResolveOutputPath(FPaths::Combine(OutDir, ItemPath), OutPath, OutError);
+	return TryResolveOutputPath(FPaths::Combine(OutDir, RelativePath), OutPath, OutError);
 }
 
 FCortexDataExportOps::FExportWriteResult FCortexDataExportOps::WriteJsonFile(const FString& AbsolutePath, const TSharedRef<FJsonObject>& Payload)
@@ -1283,6 +1409,16 @@ FCortexCommandResult FCortexDataExportOps::ExportBulkJson(const TSharedPtr<FJson
 		return InvalidFieldError(PathError);
 	}
 
+	TArray<TSharedPtr<FJsonObject>> ItemObjects;
+	TArray<FString> ItemNames;
+	TArray<FString> ItemTypes;
+	TArray<FResolvedOutputPath> ResolvedItemPaths;
+	TSet<FString> SeenOutputPathKeys;
+	ItemObjects.Reserve(Items->Num());
+	ItemNames.Reserve(Items->Num());
+	ItemTypes.Reserve(Items->Num());
+	ResolvedItemPaths.Reserve(Items->Num());
+
 	for (int32 ItemIndex = 0; ItemIndex < Items->Num(); ++ItemIndex)
 	{
 		const TSharedPtr<FJsonValue>& ItemValue = (*Items)[ItemIndex];
@@ -1292,28 +1428,210 @@ FCortexCommandResult FCortexDataExportOps::ExportBulkJson(const TSharedPtr<FJson
 			return InvalidFieldError(FString::Printf(TEXT("Bulk item at index %d must be an object"), ItemIndex));
 		}
 
+		FString ItemName;
+		(*ItemObject)->TryGetStringField(TEXT("name"), ItemName);
+
+		FString ItemType;
+		(*ItemObject)->TryGetStringField(TEXT("type"), ItemType);
+
 		FString ItemOutPath;
-		if ((*ItemObject)->TryGetStringField(TEXT("out_path"), ItemOutPath))
+		(*ItemObject)->TryGetStringField(TEXT("out_path"), ItemOutPath);
+
+		FResolvedOutputPath ResolvedItemPath;
+		FString ItemPathError;
+		if (!TryResolveBulkItemPath(OutDir, ItemOutPath, ItemName, ItemIndex, ResolvedItemPath, ItemPathError))
 		{
-			FResolvedOutputPath ResolvedItemPath;
-			FString ItemPathError;
-			if (!TryResolveBulkItemPath(OutDir, ItemOutPath, ResolvedItemPath, ItemPathError))
-			{
-				return InvalidFieldError(ItemPathError);
-			}
+			return InvalidFieldError(ItemPathError);
 		}
+
+		const FString OutputPathKey = NormalizeForComparison(ResolvedItemPath.AbsolutePath).ToLower();
+		if (SeenOutputPathKeys.Contains(OutputPathKey))
+		{
+			return InvalidFieldError(FString::Printf(
+				TEXT("Bulk item output path collides with another item: %s"),
+				*ResolvedItemPath.AbsolutePath));
+		}
+		SeenOutputPathKeys.Add(OutputPathKey);
+
+		ItemObjects.Add(*ItemObject);
+		ItemNames.Add(ItemName);
+		ItemTypes.Add(ItemType);
+		ResolvedItemPaths.Add(ResolvedItemPath);
 	}
 
 	bool bAllowPartial = false;
 	Params->TryGetBoolField(TEXT("allow_partial"), bAllowPartial);
-	(void)bAllowPartial;
+
+	TArray<TSharedPtr<FJsonValue>> ItemSummaries;
+	TArray<FString> Warnings;
+	TArray<FString> Errors;
+	ItemSummaries.Reserve(Items->Num());
+
+	int32 SucceededCount = 0;
+	int32 FailedCount = 0;
+	int32 SkippedCount = 0;
+	bool bStopAfterFailure = false;
+	bool bHasPartialChild = false;
+
+	for (int32 ItemIndex = 0; ItemIndex < ItemObjects.Num(); ++ItemIndex)
+	{
+		const TSharedPtr<FJsonObject>& ItemObject = ItemObjects[ItemIndex];
+		const FString& ItemName = ItemNames[ItemIndex];
+		const FString& Type = ItemTypes[ItemIndex];
+		const FString& ChildOutPath = ResolvedItemPaths[ItemIndex].AbsolutePath;
+
+		TSharedRef<FJsonObject> ItemSummary = MakeShared<FJsonObject>();
+		ItemSummary->SetStringField(TEXT("name"), ItemName);
+		ItemSummary->SetStringField(TEXT("type"), Type);
+		ItemSummary->SetStringField(TEXT("out_path"), ChildOutPath);
+		ItemSummary->SetNumberField(TEXT("exported_count"), 0);
+		ItemSummary->SetNumberField(TEXT("bytes_written"), 0.0);
+
+		if (bStopAfterFailure)
+		{
+			const FString SkippedError = TEXT("Skipped because a previous bulk item failed and allow_partial is false");
+			ItemSummary->SetStringField(TEXT("status"), TEXT("skipped"));
+			ItemSummary->SetStringField(TEXT("error_code"), CortexErrorCodes::InvalidOperation);
+			ItemSummary->SetStringField(TEXT("error"), SkippedError);
+			Errors.Add(SkippedError);
+			++SkippedCount;
+			ItemSummaries.Add(MakeShared<FJsonValueObject>(ItemSummary));
+			continue;
+		}
+
+		FCortexCommandResult ChildResult;
+		bool bHasChildResult = true;
+		if (Type.Equals(TEXT("datatable"), ESearchCase::IgnoreCase))
+		{
+			TSharedRef<FJsonObject> ChildParams = MakeShared<FJsonObject>();
+			ChildParams->SetStringField(TEXT("out_path"), ChildOutPath);
+			CopyJsonFieldIfPresent(ItemObject, ChildParams, TEXT("table_path"));
+			CopyJsonFieldIfPresent(ItemObject, ChildParams, TEXT("fields"));
+			CopyJsonFieldIfPresent(ItemObject, ChildParams, TEXT("row_names"));
+			CopyJsonFieldIfPresent(ItemObject, ChildParams, TEXT("row_name_pattern"));
+			CopyJsonFieldIfPresent(ItemObject, ChildParams, TEXT("include_schema"));
+			ChildResult = ExportDatatableJson(ChildParams);
+		}
+		else if (Type.Equals(TEXT("string_table"), ESearchCase::IgnoreCase))
+		{
+			TSharedRef<FJsonObject> ChildParams = MakeShared<FJsonObject>();
+			ChildParams->SetStringField(TEXT("out_path"), ChildOutPath);
+			CopyJsonFieldIfPresent(ItemObject, ChildParams, TEXT("string_table_path"));
+			CopyJsonFieldIfPresent(ItemObject, ChildParams, TEXT("key_pattern"));
+			ChildResult = ExportStringTableJson(ChildParams);
+		}
+		else if (Type.Equals(TEXT("data_assets"), ESearchCase::IgnoreCase) || Type.Equals(TEXT("data_asset"), ESearchCase::IgnoreCase))
+		{
+			TSharedRef<FJsonObject> ChildParams = MakeShared<FJsonObject>();
+			ChildParams->SetStringField(TEXT("out_path"), ChildOutPath);
+			CopyJsonFieldIfPresent(ItemObject, ChildParams, TEXT("class_name"));
+			CopyJsonFieldIfPresent(ItemObject, ChildParams, TEXT("class_filter"));
+			CopyJsonFieldIfPresent(ItemObject, ChildParams, TEXT("path_filter"));
+			CopyJsonFieldIfPresent(ItemObject, ChildParams, TEXT("asset_paths"));
+			CopyJsonFieldIfPresent(ItemObject, ChildParams, TEXT("include_properties"));
+			CopyJsonFieldIfPresent(ItemObject, ChildParams, TEXT("allow_partial"));
+			ChildResult = ExportDataAssetsJson(ChildParams);
+		}
+		else
+		{
+			bHasChildResult = false;
+			const FString ErrorCode = Type.IsEmpty()
+				? CortexErrorCodes::InvalidField
+				: CortexErrorCodes::InvalidOperation;
+			const FString ErrorMessage = Type.IsEmpty()
+				? FString::Printf(TEXT("Bulk item at index %d is missing required field: type"), ItemIndex)
+				: FString::Printf(TEXT("Unsupported bulk export item type: %s"), *Type);
+			ItemSummary->SetStringField(TEXT("status"), TEXT("failed"));
+			ItemSummary->SetStringField(TEXT("error_code"), ErrorCode);
+			ItemSummary->SetStringField(TEXT("error"), ErrorMessage);
+			Errors.Add(ErrorMessage);
+			++FailedCount;
+		}
+
+		if (bHasChildResult)
+		{
+			if (ChildResult.bSuccess && ChildResult.Data.IsValid())
+			{
+				double ExportedCount = 0.0;
+				double BytesWritten = 0.0;
+				ChildResult.Data->TryGetNumberField(TEXT("exported_count"), ExportedCount);
+				ChildResult.Data->TryGetNumberField(TEXT("bytes_written"), BytesWritten);
+
+				FString WrittenOutPath = ChildOutPath;
+				ChildResult.Data->TryGetStringField(TEXT("out_path"), WrittenOutPath);
+
+				bool bChildPartial = false;
+				ChildResult.Data->TryGetBoolField(TEXT("partial"), bChildPartial);
+				bHasPartialChild = bHasPartialChild || bChildPartial;
+
+				ItemSummary->SetStringField(TEXT("out_path"), WrittenOutPath);
+				ItemSummary->SetNumberField(TEXT("exported_count"), ExportedCount);
+				ItemSummary->SetNumberField(TEXT("bytes_written"), BytesWritten);
+
+				TArray<FString> ChildWarnings;
+				TArray<FString> ChildErrors;
+				AppendStringArrayField(ChildResult.Data, TEXT("warnings"), ChildWarnings);
+				AppendStringArrayField(ChildResult.Data, TEXT("errors"), ChildErrors);
+				Warnings.Append(ChildWarnings);
+				Errors.Append(ChildErrors);
+
+				if (bChildPartial && !bAllowPartial)
+				{
+					const FString ErrorMessage = ChildErrors.Num() > 0
+						? ChildErrors[0]
+						: FString::Printf(TEXT("Bulk item at index %d completed partially"), ItemIndex);
+					ItemSummary->SetStringField(TEXT("status"), TEXT("failed"));
+					ItemSummary->SetStringField(TEXT("error_code"), CortexErrorCodes::InvalidOperation);
+					ItemSummary->SetStringField(TEXT("error"), ErrorMessage);
+					if (ChildErrors.Num() == 0)
+					{
+						Errors.Add(ErrorMessage);
+					}
+					++FailedCount;
+				}
+				else
+				{
+					ItemSummary->SetStringField(TEXT("status"), TEXT("written"));
+					++SucceededCount;
+				}
+			}
+			else
+			{
+				const FString ErrorCode = ChildResult.ErrorCode.IsEmpty()
+					? CortexErrorCodes::InvalidOperation
+					: ChildResult.ErrorCode;
+				const FString ErrorMessage = ChildResult.ErrorMessage.IsEmpty()
+					? FString::Printf(TEXT("Bulk item at index %d failed"), ItemIndex)
+					: ChildResult.ErrorMessage;
+
+				ItemSummary->SetStringField(TEXT("status"), TEXT("failed"));
+				ItemSummary->SetStringField(TEXT("error_code"), ErrorCode);
+				ItemSummary->SetStringField(TEXT("error"), ErrorMessage);
+				Errors.Add(ErrorMessage);
+				++FailedCount;
+			}
+		}
+
+		ItemSummaries.Add(MakeShared<FJsonValueObject>(ItemSummary));
+		if (FailedCount > 0 && !bAllowPartial)
+		{
+			bStopAfterFailure = true;
+		}
+	}
+
+	const bool bCompleted = FailedCount == 0 && SkippedCount == 0 && !bHasPartialChild;
+	const bool bPartial = FailedCount > 0 || SkippedCount > 0 || bHasPartialChild;
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-	Data->SetBoolField(TEXT("completed"), false);
-	Data->SetBoolField(TEXT("partial"), false);
+	Data->SetBoolField(TEXT("completed"), bCompleted);
+	Data->SetBoolField(TEXT("partial"), bPartial);
 	Data->SetStringField(TEXT("out_dir"), FPaths::GetPath(ProbePath.AbsolutePath));
 	Data->SetNumberField(TEXT("item_count"), Items->Num());
-	Data->SetArrayField(TEXT("items"), TArray<TSharedPtr<FJsonValue>>());
-	Data->SetStringField(TEXT("status"), TEXT("bulk export orchestration is not implemented yet"));
+	Data->SetNumberField(TEXT("succeeded"), SucceededCount);
+	Data->SetNumberField(TEXT("failed"), FailedCount);
+	Data->SetNumberField(TEXT("skipped"), SkippedCount);
+	Data->SetArrayField(TEXT("items"), ItemSummaries);
+	Data->SetArrayField(TEXT("warnings"), MakeStringJsonArray(Warnings));
+	Data->SetArrayField(TEXT("errors"), MakeStringJsonArray(Errors));
 	return FCortexCommandRouter::Success(Data);
 }

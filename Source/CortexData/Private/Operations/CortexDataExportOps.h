@@ -30,7 +30,7 @@ private:
 	};
 
 	static bool TryResolveOutputPath(const FString& InPath, FResolvedOutputPath& OutPath, FString& OutError);
-	static bool TryResolveBulkItemPath(const FString& OutDir, const FString& ItemOutPath, FResolvedOutputPath& OutPath, FString& OutError);
+	static bool TryResolveBulkItemPath(const FString& OutDir, const FString& ItemOutPath, const FString& ItemName, int32 ItemIndex, FResolvedOutputPath& OutPath, FString& OutError);
 	static FExportWriteResult WriteJsonFile(const FString& AbsolutePath, const TSharedRef<FJsonObject>& Payload);
 	static FString SerializeCanonicalJson(const TSharedRef<FJsonObject>& Payload);
 	static void WriteCanonicalValue(const TSharedPtr<FJsonValue>& Value, TJsonWriter<>& Writer);
