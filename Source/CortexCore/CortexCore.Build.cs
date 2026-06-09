@@ -9,6 +9,7 @@ public class CortexCore : ModuleRules
         PublicDependencyModuleNames.AddRange(new string[]
         {
             "Core",
+            "Json",
         });
 
         PrivateDependencyModuleNames.AddRange(new string[]
@@ -19,7 +20,6 @@ public class CortexCore : ModuleRules
             "Projects",
             "Sockets",
             "Networking",
-            "Json",
             "JsonUtilities",
             "GameplayTags",
             "UnrealEd",
@@ -35,6 +35,11 @@ public class CortexCore : ModuleRules
         if (Target.Version.MajorVersion == 5 && Target.Version.MinorVersion < 5)
         {
             PrivateDependencyModuleNames.Add("StructUtils");
+        }
+
+        if (Target.Platform == UnrealTargetPlatform.Win64)
+        {
+            PublicSystemLibraries.Add("bcrypt.lib");
         }
     }
 }

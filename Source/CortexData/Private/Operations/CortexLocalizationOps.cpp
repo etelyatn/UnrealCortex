@@ -1,5 +1,6 @@
 
 #include "Operations/CortexLocalizationOps.h"
+#include "Operations/CortexDataMutationHelpers.h"
 #include "CortexDataModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/AssetData.h"
@@ -808,234 +809,59 @@ FCortexCommandResult FCortexDataLocalizationOps::GetTranslations(const TSharedPt
 
 FCortexCommandResult FCortexDataLocalizationOps::SetTranslation(const TSharedPtr<FJsonObject>& Params)
 {
-	FString TablePath;
-	FString Key;
-	FString Text;
+	check(IsInGameThread());
 
-	bool bHasParams = Params.IsValid()
-		&& Params->TryGetStringField(TEXT("string_table_path"), TablePath)
-		&& Params->TryGetStringField(TEXT("key"), Key)
-		&& Params->TryGetStringField(TEXT("text"), Text);
-
-	if (!bHasParams)
+	FCortexSetTranslationMutationRequest Request;
+	FCortexDataMutationResult Result = FCortexDataMutationHelpers::ParseSetTranslationParams(Params, Request);
+	if (!Result.bSuccess)
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing required params: string_table_path, key, and text")
-		);
+		return Result.ToCommandResult();
 	}
 
-	if (Key.IsEmpty())
+	FCortexSetTranslationMutationPlan Plan;
+	Result = FCortexDataMutationHelpers::BuildSetTranslationPlan(Request, Plan);
+	if (!Result.bSuccess)
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Parameter 'key' cannot be empty")
-		);
+		return Result.ToCommandResult();
 	}
 
-	FCortexCommandResult LoadError;
-	UStringTable* StringTable = LoadStringTable(TablePath, LoadError);
-	if (StringTable == nullptr)
+	Result = FCortexDataMutationHelpers::ApplyUpdateStringTable(Plan.UpdatePlan);
+	if (!Result.bSuccess)
 	{
-		return LoadError;
+		return Result.ToCommandResult();
 	}
 
-	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex:Set Translation '%s' in '%s'"), *Key, *StringTable->GetName())
-	));
-	StringTable->Modify();
-
-	StringTable->GetMutableStringTable()->SetSourceString(Key, Text);
-	StringTable->MarkPackageDirty();
-	FCortexEditorUtils::NotifyAssetModified(StringTable);
-
-	UE_LOG(LogCortexData, Log, TEXT("Set translation key '%s' in '%s'"), *Key, *TablePath);
+	UE_LOG(LogCortexData, Log, TEXT("Set translation key '%s' in '%s'"), *Request.Key, *Request.StringTablePath);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetBoolField(TEXT("success"), true);
-	Data->SetStringField(TEXT("string_table_path"), TablePath);
-	Data->SetStringField(TEXT("key"), Key);
-	Data->SetStringField(TEXT("text"), Text);
-
-	return FCortexCommandRouter::Success(Data);
+	Data->SetStringField(TEXT("string_table_path"), Request.StringTablePath);
+	Data->SetStringField(TEXT("key"), Request.Key);
+	Data->SetStringField(TEXT("text"), Request.Text);
+	Result.PublicData = Data;
+	return Result.ToCommandResult();
 }
 
 FCortexCommandResult FCortexDataLocalizationOps::UpdateStringTable(const TSharedPtr<FJsonObject>& Params)
 {
-	FString TablePath;
-	const TArray<TSharedPtr<FJsonValue>>* Operations = nullptr;
-	bool bDryRun = false;
+	check(IsInGameThread());
 
-	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("string_table_path"), TablePath))
+	FCortexUpdateStringTableMutationRequest Request;
+	FCortexDataMutationResult Result = FCortexDataMutationHelpers::ParseUpdateStringTableParams(Params, Request);
+	if (!Result.bSuccess)
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing required param: string_table_path")
-		);
+		return Result.ToCommandResult();
 	}
 
-	if (!Params->TryGetArrayField(TEXT("operations"), Operations) || Operations == nullptr)
+	FCortexUpdateStringTableMutationPlan Plan;
+	Result = FCortexDataMutationHelpers::BuildUpdateStringTablePlan(Request, Plan);
+	if (!Result.bSuccess)
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing required param: operations")
-		);
+		return Result.ToCommandResult();
 	}
 
-	if (!Params->TryGetBoolField(TEXT("dry_run"), bDryRun))
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing required explicit bool param: dry_run")
-		);
-	}
-
-	bool bSave = false;
-	bool bVerbose = false;
-	bool bAllowPartial = false;
-	Params->TryGetBoolField(TEXT("save"), bSave);
-	Params->TryGetBoolField(TEXT("verbose"), bVerbose);
-	Params->TryGetBoolField(TEXT("allow_partial"), bAllowPartial);
-
-	FCortexCommandResult LoadError;
-	UStringTable* StringTable = LoadStringTable(TablePath, LoadError);
-	if (StringTable == nullptr)
-	{
-		return LoadError;
-	}
-
-	const TMap<FString, FString> BeforeEntries = SnapshotStringTable(StringTable);
-	TMap<FString, FString> WorkingEntries = BeforeEntries;
-
-	FCortexStringTableMutationSummary Summary;
-	bool bHasBlockingIssues = false;
-	const bool bSimulationCompleted = SimulateStringTableOperations(
-		*Operations,
-		bAllowPartial,
-		bDryRun,
-		WorkingEntries,
-		Summary,
-		bHasBlockingIssues);
-
-	const bool bCanApply = bSimulationCompleted || bAllowPartial;
-	const bool bWouldMutate = !AreEntriesEqual(BeforeEntries, WorkingEntries);
-	bool bSaved = false;
-	bool bCompleted = bSimulationCompleted || (bAllowPartial && !Summary.OperationResults.IsEmpty());
-	bool bRequiresUserAction = false;
-	FString MutationState = bDryRun ? TEXT("dry_run") : TEXT("not_applied");
-	TSharedPtr<FJsonObject> SaveFailure;
-
-	if (!bDryRun && bCanApply && bWouldMutate)
-	{
-		FScopedTransaction Transaction(FText::FromString(
-			FString::Printf(TEXT("Cortex:Update StringTable '%s'"), *StringTable->GetName())
-		));
-		StringTable->Modify();
-
-		ApplyEntriesToStringTable(StringTable, BeforeEntries, WorkingEntries);
-		StringTable->MarkPackageDirty();
-		FCortexEditorUtils::NotifyAssetModified(StringTable);
-		MutationState = TEXT("applied_dirty_unsaved");
-
-		if (bSave)
-		{
-			UPackage* Package = StringTable->GetOutermost();
-			if (Package == nullptr)
-			{
-				bCompleted = false;
-				bRequiresUserAction = true;
-				SaveFailure = MakeShared<FJsonObject>();
-				SaveFailure->SetStringField(TEXT("error_code"), CortexErrorCodes::SaveFailed);
-				SaveFailure->SetStringField(TEXT("asset_path"), TablePath);
-				SaveFailure->SetStringField(TEXT("reason"), TEXT("missing_package"));
-				SaveFailure->SetBoolField(TEXT("is_open_in_editor"), false);
-				SaveFailure->SetBoolField(TEXT("safe_close_save_retry_available"), false);
-				SaveFailure->SetStringField(TEXT("mutation_state"), MutationState);
-				SaveFailure->SetStringField(TEXT("message"), TEXT("StringTable has no package to save"));
-			}
-			else
-			{
-				const FString PackageFilename = FPackageName::LongPackageNameToFilename(
-					Package->GetName(),
-					FPackageName::GetAssetPackageExtension());
-
-				FSavePackageArgs SaveArgs;
-				SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-				SaveArgs.SaveFlags = SAVE_NoError;
-
-				bSaved = UPackage::SavePackage(Package, StringTable, *PackageFilename, SaveArgs);
-				if (bSaved)
-				{
-					MutationState = TEXT("applied_saved");
-				}
-				else
-				{
-					bCompleted = false;
-					bRequiresUserAction = true;
-					SaveFailure = MakeShared<FJsonObject>();
-					SaveFailure->SetStringField(TEXT("error_code"), CortexErrorCodes::SaveFailed);
-					SaveFailure->SetStringField(TEXT("asset_path"), TablePath);
-					SaveFailure->SetStringField(TEXT("reason"), TEXT("save_package_failed"));
-					SaveFailure->SetBoolField(TEXT("is_open_in_editor"), false);
-					SaveFailure->SetBoolField(TEXT("safe_close_save_retry_available"), true);
-					SaveFailure->SetStringField(TEXT("mutation_state"), MutationState);
-					SaveFailure->SetStringField(TEXT("package"), Package->GetName());
-					SaveFailure->SetStringField(TEXT("file_path"), PackageFilename);
-					SaveFailure->SetStringField(TEXT("message"), FString::Printf(TEXT("Failed to save StringTable: %s"), *TablePath));
-				}
-			}
-		}
-	}
-	else if (!bDryRun && bCanApply)
-	{
-		MutationState = TEXT("no_changes");
-	}
-
-	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-	Data->SetStringField(TEXT("string_table_path"), TablePath);
-	Data->SetBoolField(TEXT("dry_run"), bDryRun);
-	Data->SetNumberField(TEXT("before_key_count"), CountKeys(BeforeEntries));
-	Data->SetNumberField(TEXT("after_key_count"), bCanApply ? CountKeys(WorkingEntries) : CountKeys(BeforeEntries));
-	TSharedPtr<FJsonObject> Before = MakeShared<FJsonObject>();
-	Before->SetNumberField(TEXT("key_count"), CountKeys(BeforeEntries));
-	Data->SetObjectField(TEXT("before"), Before);
-	TSharedPtr<FJsonObject> After = MakeShared<FJsonObject>();
-	After->SetNumberField(TEXT("key_count"), bCanApply ? CountKeys(WorkingEntries) : CountKeys(BeforeEntries));
-	Data->SetObjectField(TEXT("after"), After);
-	Data->SetArrayField(TEXT("renamed"), RecordsToJsonValues(Summary.Renamed));
-	Data->SetArrayField(TEXT("collisions"), RecordsToJsonValues(Summary.Collisions));
-	Data->SetArrayField(TEXT("missing_keys"), RecordsToJsonValues(Summary.MissingKeys));
-	Data->SetArrayField(TEXT("invalid_operations"), RecordsToJsonValues(Summary.InvalidOperations));
-	Data->SetArrayField(TEXT("operation_results"), Summary.OperationResults);
-	Data->SetBoolField(TEXT("has_blocking_issues"), bHasBlockingIssues);
-	Data->SetBoolField(TEXT("completed"), bCompleted && !bHasBlockingIssues);
-	Data->SetBoolField(TEXT("save_requested"), bSave);
-	Data->SetBoolField(TEXT("saved"), bSaved);
-	Data->SetBoolField(TEXT("requires_user_action"), bRequiresUserAction);
-	Data->SetStringField(TEXT("mutation_state"), MutationState);
-	PopulateSummaryCounts(Data, Summary);
-
-	if (bVerbose)
-	{
-		Data->SetArrayField(TEXT("set"), RecordsToJsonValues(Summary.Set));
-		Data->SetArrayField(TEXT("copied"), RecordsToJsonValues(Summary.Copied));
-		Data->SetArrayField(TEXT("deleted"), RecordsToJsonValues(Summary.Deleted));
-		Data->SetArrayField(TEXT("replaced"), RecordsToJsonValues(Summary.Replaced));
-	}
-
-	if (SaveFailure.IsValid())
-	{
-		Data->SetObjectField(TEXT("save_failure"), SaveFailure);
-	}
-
-	UE_LOG(
-		LogCortexData,
-		Log,
-		TEXT("Updated StringTable '%s': dry_run=%s completed=%s blockers=%d"),
-		*TablePath,
-		bDryRun ? TEXT("true") : TEXT("false"),
-		(Data->GetBoolField(TEXT("completed")) ? TEXT("true") : TEXT("false")),
-		bHasBlockingIssues ? 1 : 0);
-
-	return FCortexCommandRouter::Success(Data);
+	Result = Request.bDryRun
+		? FCortexDataMutationHelpers::PreviewUpdateStringTable(Plan)
+		: FCortexDataMutationHelpers::ApplyUpdateStringTable(Plan);
+	return Result.ToCommandResult();
 }

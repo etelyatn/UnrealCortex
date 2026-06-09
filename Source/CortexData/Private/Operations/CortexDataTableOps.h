@@ -7,6 +7,7 @@
 struct FAssetData;
 class UDataTable;
 class UCompositeDataTable;
+class FCortexDataMutationHelpers;
 
 class FCortexDataTableOps
 {
@@ -36,6 +37,8 @@ public:
 		TArray<TSharedPtr<FJsonValue>>& OutReferences);
 
 private:
+	friend class FCortexDataMutationHelpers;
+
 	/** Resolve a row struct by short name, searching all UScriptStruct objects */
 	static UScriptStruct* ResolveRowStruct(const FString& StructName, FCortexCommandResult& OutError);
 

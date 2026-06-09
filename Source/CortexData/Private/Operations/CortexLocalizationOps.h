@@ -5,6 +5,7 @@
 #include "CortexCommandRouter.h"
 
 class UStringTable;
+class FCortexDataMutationHelpers;
 
 class FCortexDataLocalizationOps
 {
@@ -15,6 +16,8 @@ public:
 	static FCortexCommandResult UpdateStringTable(const TSharedPtr<FJsonObject>& Params);
 
 private:
+	friend class FCortexDataMutationHelpers;
+
 	/** Load a StringTable by asset path, returns nullptr and sets OutError if not found */
 	static UStringTable* LoadStringTable(const FString& TablePath, FCortexCommandResult& OutError);
 };

@@ -7,6 +7,7 @@
 #include "Operations/CortexAssetSearchOps.h"
 #include "Operations/CortexCurveTableOps.h"
 #include "Operations/CortexDataExportOps.h"
+#include "Operations/CortexDataImportQueueOps.h"
 
 FCortexCommandResult FCortexDataCommandHandler::Execute(
     const FString& Command,
@@ -166,6 +167,12 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
         return FCortexDataExportOps::ExportBulkJson(Params);
     }
 
+    // Import queue operations
+    if (Command == TEXT("apply_import_ops_json"))
+    {
+        return FCortexDataImportQueueOps::ApplyImportOpsJson(Params);
+    }
+
     return FCortexCommandRouter::Error(
         CortexErrorCodes::UnknownCommand,
         FString::Printf(TEXT("Unknown data command: %s"), *Command)
@@ -310,5 +317,13 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Required(TEXT("out_dir"), TEXT("string"), TEXT("Base output directory"))
             .Required(TEXT("items"), TEXT("array"), TEXT("Typed export specs. Each item requires type=datatable|string_table|data_assets, optional name, and optional relative out_path. datatable items use table_path plus optional fields/row_names/row_name_pattern/include_schema. string_table items use string_table_path plus optional key_pattern. data_assets items use class_name/path_filter/asset_paths/include_properties. Item out_path values are always relative to out_dir."))
             .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Continue independent item exports after failures")),
+        FCortexCommandInfo{ TEXT("apply_import_ops_json"), TEXT("Apply a validated CortexData import operation queue from a JSON file and write a detailed report") }
+            .Required(TEXT("ops_path"), TEXT("string"), TEXT("Input operation queue JSON file path"))
+            .Required(TEXT("report_path"), TEXT("string"), TEXT("Output execution report JSON file path"))
+            .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview without mutating; defaults to true"))
+            .Optional(TEXT("apply"), TEXT("boolean"), TEXT("Must be true with dry_run=false for mutation"))
+            .Optional(TEXT("stop_on_error"), TEXT("boolean"), TEXT("Stop after first failed operation; defaults to true"))
+            .Optional(TEXT("query_back"), TEXT("boolean"), TEXT("Verify affected targets after real apply; defaults to true"))
+            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Permit partial execution summary; defaults to false")),
     };
 }

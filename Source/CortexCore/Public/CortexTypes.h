@@ -16,6 +16,12 @@ namespace CortexErrorCodes
 	static const FString InvalidValue = TEXT("INVALID_VALUE");
 	static const FString InvalidStructType = TEXT("INVALID_STRUCT_TYPE");
 	static const FString InvalidTag = TEXT("INVALID_TAG");
+	static const FString InvalidFilePath = TEXT("INVALID_FILE_PATH");
+	static const FString FileNotFound = TEXT("FILE_NOT_FOUND");
+	static const FString MalformedJson = TEXT("MALFORMED_JSON");
+	static const FString InvalidQueueShape = TEXT("INVALID_QUEUE_SHAPE");
+	static const FString UnsupportedCommand = TEXT("UNSUPPORTED_COMMAND");
+	static const FString QueryBackMismatch = TEXT("QUERY_BACK_MISMATCH");
 	static const FString SerializationError = TEXT("SERIALIZATION_ERROR");
 	static const FString EditorNotReady = TEXT("EDITOR_NOT_READY");
 	static const FString UnknownCommand = TEXT("UNKNOWN_COMMAND");

@@ -1,17 +1,12 @@
 #include "Operations/CortexDataExportOps.h"
 
-#include "CortexFileUtils.h"
 #include "CortexSerializer.h"
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
-#include "HAL/FileManager.h"
-#include "HAL/PlatformFileManager.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
-#include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonWriter.h"
 
 #include "Engine/DataAsset.h"
 #include "Engine/DataTable.h"
@@ -22,112 +17,6 @@
 
 namespace
 {
-	bool IsWindowsDeviceOrUncPath(const FString& Path)
-	{
-		return Path.StartsWith(TEXT("\\\\?\\"))
-			|| Path.StartsWith(TEXT("\\\\.\\"))
-			|| (Path.StartsWith(TEXT("\\\\")) && !Path.StartsWith(TEXT("\\\\?\\")) && !Path.StartsWith(TEXT("\\\\.\\")));
-	}
-
-	bool ContainsTraversalSegment(const FString& Path)
-	{
-		TArray<FString> Segments;
-		Path.ParseIntoArray(Segments, TEXT("/"), true);
-		for (const FString& Segment : Segments)
-		{
-			if (Segment == TEXT(".."))
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	bool IsDriveRelativePath(const FString& Path)
-	{
-		return Path.Len() >= 2
-			&& FChar::IsAlpha(Path[0])
-			&& Path[1] == TEXT(':')
-			&& (Path.Len() == 2 || (Path[2] != TEXT('/') && Path[2] != TEXT('\\')));
-	}
-
-	FString NormalizeForComparison(const FString& InPath)
-	{
-		FString Path = InPath;
-		FPaths::NormalizeFilename(Path);
-		FPaths::CollapseRelativeDirectories(Path);
-		FPaths::RemoveDuplicateSlashes(Path);
-		FPaths::NormalizeDirectoryName(Path);
-		return Path;
-	}
-
-	bool IsUnderDirectory(const FString& Candidate, const FString& Root)
-	{
-		const FString NormalizedCandidate = NormalizeForComparison(Candidate);
-		const FString NormalizedRoot = NormalizeForComparison(Root);
-
-		if (NormalizedCandidate.Equals(NormalizedRoot, ESearchCase::IgnoreCase))
-		{
-			return true;
-		}
-
-		const FString RootWithSeparator = NormalizedRoot.EndsWith(TEXT("/"))
-			? NormalizedRoot
-			: NormalizedRoot + TEXT("/");
-
-		return NormalizedCandidate.StartsWith(RootWithSeparator, ESearchCase::IgnoreCase);
-	}
-
-	FString ResolveExistingParentPath(const FString& ParentPath)
-	{
-		FString Current = ParentPath;
-		FPaths::NormalizeFilename(Current);
-		FPaths::CollapseRelativeDirectories(Current);
-
-		while (!Current.IsEmpty())
-		{
-			if (IFileManager::Get().DirectoryExists(*Current))
-			{
-				return FPaths::ConvertRelativePathToFull(IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*Current));
-			}
-
-			const FString Next = FPaths::GetPath(Current);
-			if (Next == Current)
-			{
-				break;
-			}
-			Current = Next;
-		}
-
-		return TEXT("");
-	}
-
-	bool ContainsSymlinkOrJunctionSegment(const FString& ParentPath)
-	{
-		FString Current = ParentPath;
-		FPaths::NormalizeFilename(Current);
-		FPaths::CollapseRelativeDirectories(Current);
-
-		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
-		while (!Current.IsEmpty())
-		{
-			if (IFileManager::Get().DirectoryExists(*Current)
-				&& PlatformFile.IsSymlink(*Current) == ESymlinkResult::Symlink)
-			{
-				return true;
-			}
-
-			const FString Next = FPaths::GetPath(Current);
-			if (Next == Current)
-			{
-				break;
-			}
-			Current = Next;
-		}
-
-		return false;
-	}
 
 	FCortexCommandResult InvalidFieldError(const FString& Message)
 	{
@@ -505,104 +394,14 @@ namespace
 
 bool FCortexDataExportOps::TryResolveOutputPath(const FString& InPath, FResolvedOutputPath& OutPath, FString& OutError)
 {
-	FString TrimmedPath = InPath;
-	TrimmedPath.TrimStartAndEndInline();
-
-	if (TrimmedPath.IsEmpty())
+	FString ErrorCode;
+	FString ErrorMessage;
+	if (!FCortexSafeFileContract::ResolveWritePath(InPath, OutPath, ErrorCode, ErrorMessage))
 	{
-		OutError = TEXT("Output path cannot be empty");
+		OutError = ErrorMessage;
 		return false;
 	}
 
-	if (TrimmedPath.EndsWith(TEXT("/")) || TrimmedPath.EndsWith(TEXT("\\")))
-	{
-		OutError = FString::Printf(TEXT("Output path must include a file name: %s"), *InPath);
-		return false;
-	}
-
-	FString SlashPath = TrimmedPath;
-	FPaths::NormalizeFilename(SlashPath);
-
-	if (IsWindowsDeviceOrUncPath(TrimmedPath) || IsWindowsDeviceOrUncPath(SlashPath))
-	{
-		OutError = FString::Printf(TEXT("Output path is not allowed: %s"), *InPath);
-		return false;
-	}
-
-	if (IsDriveRelativePath(SlashPath))
-	{
-		OutError = FString::Printf(TEXT("Drive-relative output path is not allowed: %s"), *InPath);
-		return false;
-	}
-
-	if (ContainsTraversalSegment(SlashPath))
-	{
-		OutError = FString::Printf(TEXT("Output path cannot contain traversal segments: %s"), *InPath);
-		return false;
-	}
-
-	if (FPaths::GetCleanFilename(SlashPath).IsEmpty())
-	{
-		OutError = FString::Printf(TEXT("Output path must include a file name: %s"), *InPath);
-		return false;
-	}
-
-	const FString ProjectRoot = NormalizeForComparison(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()));
-	const FString ProjectSaved = NormalizeForComparison(FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir()));
-
-	FString Candidate = SlashPath;
-	if (FPaths::IsRelative(Candidate))
-	{
-		Candidate = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), Candidate);
-	}
-	else
-	{
-		Candidate = FPaths::ConvertRelativePathToFull(Candidate);
-	}
-
-	FPaths::NormalizeFilename(Candidate);
-	if (!FPaths::CollapseRelativeDirectories(Candidate))
-	{
-		OutError = FString::Printf(TEXT("Output path could not be normalized: %s"), *InPath);
-		return false;
-	}
-	FPaths::RemoveDuplicateSlashes(Candidate);
-
-	if (IFileManager::Get().DirectoryExists(*Candidate))
-	{
-		OutError = FString::Printf(TEXT("Output path is an existing directory: %s"), *InPath);
-		return false;
-	}
-
-	if (!IsUnderDirectory(Candidate, ProjectRoot) && !IsUnderDirectory(Candidate, ProjectSaved))
-	{
-		OutError = FString::Printf(TEXT("Output path must be under the project root or Saved directory: %s"), *InPath);
-		return false;
-	}
-
-	const FString ParentPath = FPaths::GetPath(Candidate);
-	if (ParentPath.IsEmpty() || ParentPath == Candidate)
-	{
-		OutError = FString::Printf(TEXT("Output path must include a parent directory and file name: %s"), *InPath);
-		return false;
-	}
-
-	const FString ExistingParentPath = ResolveExistingParentPath(ParentPath);
-	if (!ExistingParentPath.IsEmpty() && ContainsSymlinkOrJunctionSegment(ParentPath))
-	{
-		OutError = FString::Printf(TEXT("Output path parent contains a symlink or junction: %s"), *InPath);
-		return false;
-	}
-
-	if (!ExistingParentPath.IsEmpty()
-		&& !IsUnderDirectory(ExistingParentPath, ProjectRoot)
-		&& !IsUnderDirectory(ExistingParentPath, ProjectSaved))
-	{
-		OutError = FString::Printf(TEXT("Output path parent resolves outside allowed roots: %s"), *InPath);
-		return false;
-	}
-
-	OutPath.AbsolutePath = NormalizeForComparison(Candidate);
 	return true;
 }
 
@@ -624,122 +423,25 @@ bool FCortexDataExportOps::TryResolveBulkItemPath(
 	}
 
 	FPaths::NormalizeFilename(RelativePath);
-	if (!FPaths::IsRelative(RelativePath) || IsDriveRelativePath(RelativePath))
+	FString ErrorCode;
+	FString ErrorMessage;
+	if (!FCortexSafeFileContract::ResolveRelativeChildWritePath(OutDir, RelativePath, OutPath, ErrorCode, ErrorMessage))
 	{
-		OutError = TEXT("Bulk item out_path must be relative to out_dir");
+		OutError = ErrorMessage;
 		return false;
 	}
 
-	return TryResolveOutputPath(FPaths::Combine(OutDir, RelativePath), OutPath, OutError);
+	return true;
 }
 
-FCortexDataExportOps::FExportWriteResult FCortexDataExportOps::WriteJsonFile(const FString& AbsolutePath, const TSharedRef<FJsonObject>& Payload)
+FCortexDataExportOps::FExportWriteResult FCortexDataExportOps::WriteJsonFile(const FResolvedOutputPath& Path, const TSharedRef<FJsonObject>& Payload)
 {
 	FExportWriteResult Result;
-	const FString Contents = SerializeCanonicalJson(Payload);
-	if (!FCortexFileUtils::AtomicWriteFile(AbsolutePath, Contents))
-	{
-		Result.Error = FString::Printf(TEXT("Failed to write JSON file: %s"), *AbsolutePath);
-		return Result;
-	}
-
-	Result.bWritten = true;
-	FTCHARToUTF8 Utf8Contents(*Contents);
-	Result.BytesWritten = Utf8Contents.Length();
+	const FCortexJsonFileWriteResult WriteResult = FCortexSafeFileContract::WriteJsonReportAtomic(Path, Payload);
+	Result.bWritten = WriteResult.bWritten;
+	Result.BytesWritten = WriteResult.BytesWritten;
+	Result.Error = WriteResult.ErrorMessage;
 	return Result;
-}
-
-FString FCortexDataExportOps::SerializeCanonicalJson(const TSharedRef<FJsonObject>& Payload)
-{
-	FString Output;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output);
-	WriteCanonicalObject(Payload, *Writer);
-	Writer->Close();
-	return Output;
-}
-
-void FCortexDataExportOps::WriteCanonicalValue(const TSharedPtr<FJsonValue>& Value, TJsonWriter<>& Writer)
-{
-	if (!Value.IsValid() || Value->Type == EJson::Null)
-	{
-		Writer.WriteNull();
-		return;
-	}
-
-	switch (Value->Type)
-	{
-	case EJson::Object:
-	{
-		const TSharedPtr<FJsonObject>* Object = nullptr;
-		if (Value->TryGetObject(Object) && Object != nullptr)
-		{
-			WriteCanonicalObject(*Object, Writer);
-		}
-		else
-		{
-			Writer.WriteNull();
-		}
-		break;
-	}
-	case EJson::Array:
-	{
-		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
-		if (Value->TryGetArray(Array) && Array != nullptr)
-		{
-			Writer.WriteArrayStart();
-			for (const TSharedPtr<FJsonValue>& Entry : *Array)
-			{
-				WriteCanonicalValue(Entry, Writer);
-			}
-			Writer.WriteArrayEnd();
-		}
-		else
-		{
-			Writer.WriteNull();
-		}
-		break;
-	}
-	case EJson::String:
-	{
-		FString StringValue;
-		Value->TryGetString(StringValue);
-		Writer.WriteValue(StringValue);
-		break;
-	}
-	case EJson::Number:
-		Writer.WriteValue(Value->AsNumber());
-		break;
-	case EJson::Boolean:
-		Writer.WriteValue(Value->AsBool());
-		break;
-	default:
-		Writer.WriteNull();
-		break;
-	}
-}
-
-void FCortexDataExportOps::WriteCanonicalObject(const TSharedPtr<FJsonObject>& Object, TJsonWriter<>& Writer)
-{
-	Writer.WriteObjectStart();
-	if (Object.IsValid())
-	{
-		TArray<FString> Keys;
-		Object->Values.GetKeys(Keys);
-		Keys.Sort();
-
-		for (const FString& Key : Keys)
-		{
-			const TSharedPtr<FJsonValue>* Value = Object->Values.Find(Key);
-			if (Value == nullptr)
-			{
-				continue;
-			}
-
-			Writer.WriteIdentifierPrefix(Key);
-			WriteCanonicalValue(*Value, Writer);
-		}
-	}
-	Writer.WriteObjectEnd();
 }
 
 TSet<FString> FCortexDataExportOps::ParseStringSetParam(const TSharedPtr<FJsonObject>& Params, const FString& FieldName)
@@ -1062,7 +764,7 @@ FCortexCommandResult FCortexDataExportOps::ExportDatatableJson(const TSharedPtr<
 	}
 	Payload->SetArrayField(TEXT("rows"), RowsArray);
 
-	const FExportWriteResult WriteResult = WriteJsonFile(ResolvedOutPath.AbsolutePath, Payload);
+	const FExportWriteResult WriteResult = WriteJsonFile(ResolvedOutPath, Payload);
 	if (!WriteResult.bWritten)
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, WriteResult.Error);
@@ -1145,7 +847,7 @@ FCortexCommandResult FCortexDataExportOps::ExportStringTableJson(const TSharedPt
 	Payload->SetNumberField(TEXT("count"), EntriesArray.Num());
 	Payload->SetArrayField(TEXT("entries"), EntriesArray);
 
-	const FExportWriteResult WriteResult = WriteJsonFile(ResolvedOutPath.AbsolutePath, Payload);
+	const FExportWriteResult WriteResult = WriteJsonFile(ResolvedOutPath, Payload);
 	if (!WriteResult.bWritten)
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, WriteResult.Error);
@@ -1412,7 +1114,7 @@ FCortexCommandResult FCortexDataExportOps::ExportDataAssetsJson(const TSharedPtr
 	Payload->SetNumberField(TEXT("total_count"), Candidates.Num() + Failures.Num());
 	Payload->SetArrayField(TEXT("data_assets"), DataAssetsArray);
 
-	const FExportWriteResult WriteResult = WriteJsonFile(ResolvedOutPath.AbsolutePath, Payload);
+	const FExportWriteResult WriteResult = WriteJsonFile(ResolvedOutPath, Payload);
 	if (!WriteResult.bWritten)
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, WriteResult.Error);
@@ -1484,7 +1186,7 @@ FCortexCommandResult FCortexDataExportOps::ExportBulkJson(const TSharedPtr<FJson
 			return InvalidFieldError(ItemPathError);
 		}
 
-		const FString OutputPathKey = NormalizeForComparison(ResolvedItemPath.AbsolutePath).ToLower();
+		const FString OutputPathKey = ResolvedItemPath.AbsolutePath.ToLower();
 		if (SeenOutputPathKeys.Contains(OutputPathKey))
 		{
 			return InvalidFieldError(FString::Printf(

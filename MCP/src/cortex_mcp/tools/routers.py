@@ -15,6 +15,7 @@ from cortex_mcp.schema_generator import (
     read_meta_from_file,
 )
 from cortex_mcp.tcp_client import _discover_all_editors, _is_editor_alive
+from cortex_mcp.tcp_client import UECommandError
 
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ _CACHED_READ_COMMANDS = {
 }
 
 _MAX_LIMIT = 200
+_UE_ERROR_RESERVED_FIELDS = {"success", "_error", "_message", "_command"}
 
 
 def _validate_limit(limit) -> tuple[int | None, str | None]:
@@ -100,6 +102,19 @@ def _should_forward_limit_to_cpp(domain: str, command: str, params: dict) -> boo
     )
 
 
+def _format_ue_command_error(exc: UECommandError) -> str:
+    payload = {
+        "success": False,
+        "_error": exc.code,
+        "_message": exc.message,
+        "_command": exc.command,
+    }
+    for key, value in exc.details.items():
+        if key not in _UE_ERROR_RESERVED_FIELDS:
+            payload[key] = value
+    return format_response(payload, "ue_command_error")
+
+
 def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict | None], str]:
     """Create a single router tool function for a domain."""
 
@@ -167,6 +182,8 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
             return format_response(response.get("data", {}), f"{domain}_cmd")
         except ConnectionError as exc:
             return f"Error: {exc}"
+        except UECommandError as exc:
+            return _format_ue_command_error(exc)
         except (RuntimeError, ValueError, KeyError) as exc:
             return f"Error: {exc}"
 

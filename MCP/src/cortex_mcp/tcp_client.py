@@ -26,6 +26,17 @@ _RECV_TIMEOUT = 60.0
 _RECONNECT_DELAY = 0.5
 
 
+class UECommandError(RuntimeError):
+    """Structured Unreal command failure with preserved error details."""
+
+    def __init__(self, command: str, code: str, message: str, details: dict | None = None):
+        super().__init__(f"UE command '{command}' failed: {message} (code: {code})")
+        self.command = command
+        self.code = code
+        self.message = message
+        self.details = details or {}
+
+
 @dataclasses.dataclass(frozen=True)
 class EditorConnection:
     """Metadata for a discovered Unreal Editor instance."""
@@ -638,9 +649,11 @@ class UEConnection:
 
             if not response.get("success"):
                 error = response.get("error", {})
-                raise RuntimeError(
-                    f"UE command '{command}' failed: {error.get('message', 'Unknown error')} "
-                    f"(code: {error.get('code', 'UNKNOWN')})"
+                raise UECommandError(
+                    command,
+                    error.get("code", "UNKNOWN"),
+                    error.get("message", "Unknown error"),
+                    error.get("details", {}),
                 )
 
             return response
