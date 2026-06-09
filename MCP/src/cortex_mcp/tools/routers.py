@@ -15,6 +15,7 @@ from cortex_mcp.schema_generator import (
     read_meta_from_file,
 )
 from cortex_mcp.tcp_client import _discover_all_editors, _is_editor_alive
+from cortex_mcp.tcp_client import UECommandError
 
 
 logger = logging.getLogger(__name__)
@@ -167,6 +168,15 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
             return format_response(response.get("data", {}), f"{domain}_cmd")
         except ConnectionError as exc:
             return f"Error: {exc}"
+        except UECommandError as exc:
+            payload = {
+                "success": False,
+                "_error": exc.code,
+                "_message": exc.message,
+                "_command": exc.command,
+            }
+            payload.update(exc.details)
+            return format_response(payload, f"{domain}_cmd")
         except (RuntimeError, ValueError, KeyError) as exc:
             return f"Error: {exc}"
 

@@ -8,7 +8,7 @@ import pytest
 
 from cortex_mcp.capabilities import CORE_DOMAINS
 from cortex_mcp.tools.routers import make_router, register_router_tools
-from cortex_mcp.tcp_client import EditorConnection
+from cortex_mcp.tcp_client import EditorConnection, UECommandError
 
 
 class MockMCP:
@@ -266,6 +266,80 @@ def test_data_router_forwards_update_string_table_payload():
             "dry_run": True,
         },
     )
+
+
+def test_data_router_forwards_apply_import_ops_json_payload():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "success": True,
+        "data": {
+            "status": "dry_run_ok",
+            "success": True,
+            "partial": False,
+            "dry_run": True,
+            "applied": False,
+            "schema_version": 1,
+            "queue_id": "quest-import",
+            "ops_sha256": "0123456789abcdef",
+            "operation_count": 1,
+            "validated_count": 1,
+            "previewed_count": 1,
+            "attempted_count": 0,
+            "applied_count": 0,
+            "changed_count": 0,
+            "no_op_count": 0,
+            "failed_count": 0,
+            "skipped_count": 0,
+            "warning_count": 0,
+            "error_count": 0,
+            "report_path": "Saved/CortexImports/report.json",
+            "canonical_report_path": "D:/Project/Saved/CortexImports/report.json",
+            "save_failed_count": 0,
+        },
+    }
+
+    router = make_router("data", connection, "data docs")
+    payload = json.loads(router("apply_import_ops_json", {
+        "ops_path": "Saved/CortexImports/ops.json",
+        "report_path": "Saved/CortexImports/report.json",
+    }))
+
+    assert payload["status"] == "dry_run_ok"
+    assert "operations" not in payload
+    connection.send_command.assert_called_once_with(
+        "data.apply_import_ops_json",
+        {
+            "ops_path": "Saved/CortexImports/ops.json",
+            "report_path": "Saved/CortexImports/report.json",
+        },
+    )
+
+
+def test_data_router_preserves_structured_unreal_error_details():
+    connection = MagicMock()
+    connection.send_command.side_effect = UECommandError(
+        "data.apply_import_ops_json",
+        "REPORT_WRITE_FAILED",
+        "Failed to write report",
+        {
+            "status": "report_write_failed",
+            "applied_count": 1,
+            "first_error": "Failed to write report",
+        },
+    )
+
+    router = make_router("data", connection, "data docs")
+    payload = json.loads(router("apply_import_ops_json", {
+        "ops_path": "Saved/CortexImports/ops.json",
+        "report_path": "Saved/CortexImports/report.json",
+    }))
+
+    assert payload["success"] is False
+    assert payload["_error"] == "REPORT_WRITE_FAILED"
+    assert payload["_message"] == "Failed to write report"
+    assert payload["_command"] == "data.apply_import_ops_json"
+    assert payload["status"] == "report_write_failed"
+    assert payload["applied_count"] == 1
 
 
 def test_data_router_forwards_export_bulk_payload():

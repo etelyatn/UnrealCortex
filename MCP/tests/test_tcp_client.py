@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from cortex_mcp.tcp_client import (
     UEConnection,
+    UECommandError,
     _RECV_TIMEOUT,
     _discover_port,
     _discover_all_editors,
@@ -110,6 +111,23 @@ class TestSendCommandTimeout:
         assert metrics["python_cache_hits"] == 1
         assert metrics["parallel_sequential_ratio"] == pytest.approx(0.5)
         assert metrics["repeat_read_ratio"] == pytest.approx(0.5)
+
+    def test_send_command_preserves_unreal_error_details(self):
+        """Structured Unreal error details should survive into UECommandError."""
+        conn = UEConnection(port=99999)
+        mock_socket = MagicMock()
+        mock_socket.recv.return_value = (
+            b'{"success":false,"error":{"code":"REPORT_WRITE_FAILED","message":"Failed to write report","details":{"applied_count":1}}}\n'
+        )
+        conn._socket = mock_socket
+
+        with pytest.raises(UECommandError) as exc_info:
+            conn.send_command("data.apply_import_ops_json", {})
+
+        assert exc_info.value.command == "data.apply_import_ops_json"
+        assert exc_info.value.code == "REPORT_WRITE_FAILED"
+        assert exc_info.value.message == "Failed to write report"
+        assert exc_info.value.details == {"applied_count": 1}
 
 
 class TestPortFileParsing:

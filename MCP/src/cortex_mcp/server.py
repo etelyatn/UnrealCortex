@@ -20,6 +20,7 @@ from .tools.routers import register_router_tools
 from .tools.standalone.editor import register_editor_standalone_tools
 from .tools.standalone.qa import register_qa_standalone_tools
 from .tools.standalone.schema import register_schema_standalone_tools
+from tools.data.import_queues import register_import_queue_tools
 from tools.reflect import register_reflect_tools
 
 _log_level = getattr(logging, os.environ.get("CORTEX_LOG_LEVEL", "INFO").upper(), logging.INFO)
@@ -60,6 +61,7 @@ def _register_explicit_tools(mcp_server, connection) -> None:
     register_editor_standalone_tools(mcp_server, connection)
     register_schema_standalone_tools(mcp_server, connection)
     register_qa_standalone_tools(mcp_server, connection)
+    register_import_queue_tools(mcp_server, connection)
     register_reflect_tools(mcp_server, connection)
 
 
