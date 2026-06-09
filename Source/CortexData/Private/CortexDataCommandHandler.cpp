@@ -308,7 +308,7 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Permit per-asset serialization warnings without failing")),
         FCortexCommandInfo{ TEXT("export_bulk_json"), TEXT("Export multiple typed data resources to JSON files under one output directory") }
             .Required(TEXT("out_dir"), TEXT("string"), TEXT("Base output directory"))
-            .Required(TEXT("items"), TEXT("array"), TEXT("Typed export specs"))
+            .Required(TEXT("items"), TEXT("array"), TEXT("Typed export specs. Each item requires type=datatable|string_table|data_assets, optional name, and optional relative out_path. datatable items use table_path plus optional fields/row_names/row_name_pattern/include_schema. string_table items use string_table_path plus optional key_pattern. data_assets items use class_name/path_filter/asset_paths/include_properties. Item out_path values are always relative to out_dir."))
             .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Continue independent item exports after failures")),
     };
 }

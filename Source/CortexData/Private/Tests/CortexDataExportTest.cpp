@@ -1206,6 +1206,11 @@ bool FCortexDataExportDataAssetsCatalogAndPropertiesTest::RunTest(const FString&
 	{
 		TestTrue(TEXT("file contains data_assets array"), CatalogFileJson->HasTypedField<EJson::Array>(TEXT("data_assets")));
 		TestEqual(TEXT("file exported count is one"), static_cast<int32>(CatalogFileJson->GetNumberField(TEXT("exported_count"))), 1);
+		TestEqual(TEXT("file includes class_name provenance"), CatalogFileJson->GetStringField(TEXT("class_name")), TEXT("CortexTestDataAsset"));
+		TestEqual(TEXT("file includes path_filter provenance"), CatalogFileJson->GetStringField(TEXT("path_filter")), FPaths::GetPath(DataAsset->GetPathName()));
+		TestFalse(TEXT("file records include_properties provenance"), CatalogFileJson->GetBoolField(TEXT("include_properties")));
+		TestFalse(TEXT("file records explicit path mode"), CatalogFileJson->GetBoolField(TEXT("explicit_asset_paths")));
+		TestTrue(TEXT("file records null asset_paths for registry exports"), CatalogFileJson->HasTypedField<EJson::Null>(TEXT("asset_paths")));
 
 		const TArray<TSharedPtr<FJsonObject>> Entries = GetDataAssetEntries(CatalogFileJson);
 		TestEqual(TEXT("catalog export writes one entry"), Entries.Num(), 1);
@@ -1245,6 +1250,7 @@ bool FCortexDataExportDataAssetsCatalogAndPropertiesTest::RunTest(const FString&
 	{
 		TestTrue(TEXT("file contains data_assets array"), PropertiesFileJson->HasTypedField<EJson::Array>(TEXT("data_assets")));
 		TestEqual(TEXT("file exported count is one"), static_cast<int32>(PropertiesFileJson->GetNumberField(TEXT("exported_count"))), 1);
+		TestTrue(TEXT("properties file records include_properties provenance"), PropertiesFileJson->GetBoolField(TEXT("include_properties")));
 
 		const TArray<TSharedPtr<FJsonObject>> Entries = GetDataAssetEntries(PropertiesFileJson);
 		TestEqual(TEXT("properties export writes one entry"), Entries.Num(), 1);
@@ -1267,6 +1273,36 @@ bool FCortexDataExportDataAssetsCatalogAndPropertiesTest::RunTest(const FString&
 			}
 		}
 	}
+
+	const FString TrailingSlashOutPath = Fixture.MakeSavedOutputPath(TEXT("data-assets-trailing-slash-filter.json"));
+	TSharedRef<FJsonObject> TrailingSlashParams = MakeShared<FJsonObject>();
+	TrailingSlashParams->SetStringField(TEXT("out_path"), TrailingSlashOutPath);
+	TrailingSlashParams->SetStringField(TEXT("class_name"), TEXT("CortexTestDataAsset"));
+	TrailingSlashParams->SetStringField(TEXT("path_filter"), FPaths::GetPath(DataAsset->GetPathName()) + TEXT("/"));
+	TrailingSlashParams->SetBoolField(TEXT("include_properties"), false);
+
+	const FCortexCommandResult TrailingSlashResult = Router.Execute(TEXT("data.export_data_assets_json"), TrailingSlashParams);
+	TestTrue(TEXT("DataAsset path_filter accepts trailing slash"), TrailingSlashResult.bSuccess);
+	TSharedPtr<FJsonObject> TrailingSlashFileJson;
+	FString TrailingSlashParseError;
+	TestTrue(TEXT("trailing slash DataAsset export file parses"), Fixture.TryReadJsonFile(TrailingSlashOutPath, TrailingSlashFileJson, TrailingSlashParseError));
+	if (!TrailingSlashParseError.IsEmpty())
+	{
+		AddError(TrailingSlashParseError);
+	}
+	if (TrailingSlashFileJson.IsValid())
+	{
+		TestEqual(TEXT("trailing slash path_filter is canonicalized in file"), TrailingSlashFileJson->GetStringField(TEXT("path_filter")), FPaths::GetPath(DataAsset->GetPathName()));
+		TestEqual(TEXT("trailing slash path_filter preserves matching assets"), static_cast<int32>(TrailingSlashFileJson->GetNumberField(TEXT("exported_count"))), 1);
+	}
+
+	TSharedRef<FJsonObject> InvalidPathFilterParams = MakeShared<FJsonObject>();
+	InvalidPathFilterParams->SetStringField(TEXT("out_path"), Fixture.MakeSavedOutputPath(TEXT("data-assets-invalid-filter.json")));
+	InvalidPathFilterParams->SetStringField(TEXT("class_name"), TEXT("CortexTestDataAsset"));
+	InvalidPathFilterParams->SetStringField(TEXT("path_filter"), TEXT("Not/A/LongPackagePath"));
+	const FCortexCommandResult InvalidPathFilterResult = Router.Execute(TEXT("data.export_data_assets_json"), InvalidPathFilterParams);
+	TestFalse(TEXT("DataAsset path_filter rejects invalid long package paths"), InvalidPathFilterResult.bSuccess);
+	TestEqual(TEXT("invalid DataAsset path_filter uses InvalidField"), InvalidPathFilterResult.ErrorCode, CortexErrorCodes::InvalidField);
 
 	return true;
 }
@@ -1397,6 +1433,8 @@ bool FCortexDataExportDataAssetsExplicitPathsTest::RunTest(const FString& Parame
 	{
 		TestTrue(TEXT("file contains data_assets array"), PartialFileJson->HasTypedField<EJson::Array>(TEXT("data_assets")));
 		TestEqual(TEXT("file exported count excludes duplicate and missing paths"), static_cast<int32>(PartialFileJson->GetNumberField(TEXT("exported_count"))), 2);
+		TestTrue(TEXT("partial explicit file records explicit path mode"), PartialFileJson->GetBoolField(TEXT("explicit_asset_paths")));
+		TestTrue(TEXT("partial explicit file records asset_paths provenance"), PartialFileJson->HasTypedField<EJson::Array>(TEXT("asset_paths")));
 
 		const TArray<TSharedPtr<FJsonObject>> Entries = GetDataAssetEntries(PartialFileJson);
 		TestEqual(TEXT("duplicate explicit DataAsset paths are deduplicated"), Entries.Num(), 2);

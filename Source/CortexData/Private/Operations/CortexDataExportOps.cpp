@@ -295,25 +295,40 @@ namespace
 		return true;
 	}
 
-	FString ResolveDataAssetPackagePathFilter(const FString& PathFilter)
+	bool TryResolveDataAssetPackagePathFilter(const FString& PathFilter, FString& OutPackagePathFilter, FString& OutError)
 	{
+		OutPackagePathFilter.Reset();
+		OutError.Reset();
+
 		if (PathFilter.IsEmpty())
 		{
-			return TEXT("");
+			return true;
 		}
 
 		FString NormalizedPathFilter = FPackageName::ExportTextPathToObjectPath(PathFilter);
 		NormalizedPathFilter.TrimStartAndEndInline();
 		FPaths::NormalizeFilename(NormalizedPathFilter);
+		while (NormalizedPathFilter.Len() > 1 && NormalizedPathFilter.EndsWith(TEXT("/")))
+		{
+			NormalizedPathFilter.LeftChopInline(1);
+		}
 
 		FText PathReason;
 		if (NormalizedPathFilter.Contains(TEXT("."))
 			&& FPackageName::IsValidObjectPath(NormalizedPathFilter, &PathReason))
 		{
-			return FPaths::GetPath(FPackageName::ObjectPathToPackageName(NormalizedPathFilter));
+			OutPackagePathFilter = FPaths::GetPath(FPackageName::ObjectPathToPackageName(NormalizedPathFilter));
+			return true;
 		}
 
-		return NormalizedPathFilter;
+		if (!FPackageName::IsValidLongPackageName(NormalizedPathFilter, true, &PathReason))
+		{
+			OutError = FString::Printf(TEXT("Invalid path_filter '%s': %s"), *PathFilter, *PathReason.ToString());
+			return false;
+		}
+
+		OutPackagePathFilter = NormalizedPathFilter;
+		return true;
 	}
 
 	bool IsPackagePathUnderFilter(const FString& PackagePath, const FString& PackagePathFilter)
@@ -1181,7 +1196,12 @@ FCortexCommandResult FCortexDataExportOps::ExportDataAssetsJson(const TSharedPtr
 
 	FString PathFilter;
 	Params->TryGetStringField(TEXT("path_filter"), PathFilter);
-	const FString PackagePathFilter = ResolveDataAssetPackagePathFilter(PathFilter);
+	FString PackagePathFilter;
+	FString PathFilterError;
+	if (!TryResolveDataAssetPackagePathFilter(PathFilter, PackagePathFilter, PathFilterError))
+	{
+		return InvalidFieldError(PathFilterError);
+	}
 	TArray<FString> RequestedAssetPaths;
 	bool bHasExplicitAssetPaths = false;
 	FString AssetPathsError;
@@ -1205,6 +1225,7 @@ FCortexCommandResult FCortexDataExportOps::ExportDataAssetsJson(const TSharedPtr
 
 	TArray<FDataAssetExportCandidate> Candidates;
 	TArray<FDataAssetExportFailure> Failures;
+	TArray<FString> NormalizedExplicitAssetPaths;
 
 	if (!bHasExplicitAssetPaths)
 	{
@@ -1254,10 +1275,10 @@ FCortexCommandResult FCortexDataExportOps::ExportDataAssetsJson(const TSharedPtr
 			SeenObjectPaths.Add(ObjectPath);
 		}
 
-		TArray<FString> SortedObjectPaths = SeenObjectPaths.Array();
-		SortedObjectPaths.Sort();
+		NormalizedExplicitAssetPaths = SeenObjectPaths.Array();
+		NormalizedExplicitAssetPaths.Sort();
 
-		for (const FString& ObjectPath : SortedObjectPaths)
+		for (const FString& ObjectPath : NormalizedExplicitAssetPaths)
 		{
 			if (!DoesDataAssetPathMatchFilter(ObjectPath, PackagePathFilter))
 			{
@@ -1366,6 +1387,25 @@ FCortexCommandResult FCortexDataExportOps::ExportDataAssetsJson(const TSharedPtr
 	}
 
 	TSharedRef<FJsonObject> Payload = MakeShared<FJsonObject>();
+	if (ClassName.IsEmpty())
+	{
+		Payload->SetField(TEXT("class_name"), MakeShared<FJsonValueNull>());
+	}
+	else
+	{
+		Payload->SetStringField(TEXT("class_name"), ClassName);
+	}
+	if (PackagePathFilter.IsEmpty())
+	{
+		Payload->SetField(TEXT("path_filter"), MakeShared<FJsonValueNull>());
+	}
+	else
+	{
+		Payload->SetStringField(TEXT("path_filter"), PackagePathFilter);
+	}
+	Payload->SetBoolField(TEXT("include_properties"), bIncludeProperties);
+	Payload->SetBoolField(TEXT("explicit_asset_paths"), bHasExplicitAssetPaths);
+	SetStringArrayOrNull(Payload, TEXT("asset_paths"), NormalizedExplicitAssetPaths);
 	Payload->SetNumberField(TEXT("count"), DataAssetsArray.Num());
 	Payload->SetNumberField(TEXT("exported_count"), DataAssetsArray.Num());
 	Payload->SetNumberField(TEXT("failed_count"), Failures.Num());
