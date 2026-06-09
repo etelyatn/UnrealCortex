@@ -342,6 +342,34 @@ def test_data_router_preserves_structured_unreal_error_details():
     assert payload["applied_count"] == 1
 
 
+def test_data_router_does_not_let_error_details_override_reserved_fields():
+    connection = MagicMock()
+    connection.send_command.side_effect = UECommandError(
+        "data.apply_import_ops_json",
+        "REPORT_WRITE_FAILED",
+        "Failed to write report",
+        {
+            "success": True,
+            "_error": "OVERRIDE",
+            "_message": "override",
+            "_command": "override.command",
+            "status": "report_write_failed",
+        },
+    )
+
+    router = make_router("data", connection, "data docs")
+    payload = json.loads(router("apply_import_ops_json", {
+        "ops_path": "Saved/CortexImports/ops.json",
+        "report_path": "Saved/CortexImports/report.json",
+    }))
+
+    assert payload["success"] is False
+    assert payload["_error"] == "REPORT_WRITE_FAILED"
+    assert payload["_message"] == "Failed to write report"
+    assert payload["_command"] == "data.apply_import_ops_json"
+    assert payload["status"] == "report_write_failed"
+
+
 def test_data_router_forwards_export_bulk_payload():
     connection = MagicMock()
     connection.send_command.return_value = {

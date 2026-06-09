@@ -32,6 +32,7 @@ _CACHED_READ_COMMANDS = {
 }
 
 _MAX_LIMIT = 200
+_UE_ERROR_RESERVED_FIELDS = {"success", "_error", "_message", "_command"}
 
 
 def _validate_limit(limit) -> tuple[int | None, str | None]:
@@ -99,6 +100,19 @@ def _should_forward_limit_to_cpp(domain: str, command: str, params: dict) -> boo
         and command == "search_datatable_content"
         and params.get("search_mode") == "string_table_refs"
     )
+
+
+def _format_ue_command_error(exc: UECommandError) -> str:
+    payload = {
+        "success": False,
+        "_error": exc.code,
+        "_message": exc.message,
+        "_command": exc.command,
+    }
+    for key, value in exc.details.items():
+        if key not in _UE_ERROR_RESERVED_FIELDS:
+            payload[key] = value
+    return format_response(payload, "ue_command_error")
 
 
 def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict | None], str]:
@@ -169,14 +183,7 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
         except ConnectionError as exc:
             return f"Error: {exc}"
         except UECommandError as exc:
-            payload = {
-                "success": False,
-                "_error": exc.code,
-                "_message": exc.message,
-                "_command": exc.command,
-            }
-            payload.update(exc.details)
-            return format_response(payload, f"{domain}_cmd")
+            return _format_ue_command_error(exc)
         except (RuntimeError, ValueError, KeyError) as exc:
             return f"Error: {exc}"
 

@@ -84,3 +84,34 @@ def test_apply_import_ops_json_returns_structured_failure_details():
     assert result["_command"] == "data.apply_import_ops_json"
     assert result["status"] == "report_write_failed"
     assert result["applied_count"] == 1
+
+
+def test_apply_import_ops_json_preserves_reserved_failure_fields():
+    mcp = MockMCP()
+    connection = MagicMock()
+    connection.send_command.side_effect = UECommandError(
+        "data.apply_import_ops_json",
+        "REPORT_WRITE_FAILED",
+        "Failed to write report",
+        {
+            "success": True,
+            "_error": "OVERRIDE",
+            "_message": "override",
+            "_command": "override.command",
+            "status": "report_write_failed",
+        },
+    )
+
+    register_import_queue_tools(mcp, connection)
+    result = json.loads(mcp.tools["apply_import_ops_json"](
+        "Saved/CortexImports/ops.json",
+        "Saved/CortexImports/report.json",
+        dry_run=False,
+        apply=True,
+    ))
+
+    assert result["success"] is False
+    assert result["_error"] == "REPORT_WRITE_FAILED"
+    assert result["_message"] == "Failed to write report"
+    assert result["_command"] == "data.apply_import_ops_json"
+    assert result["status"] == "report_write_failed"
