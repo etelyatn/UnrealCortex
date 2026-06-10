@@ -1,6 +1,15 @@
 #include "Operations/CortexDataSchemaExportOps.h"
 
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "CortexSerializer.h"
 #include "Dom/JsonObject.h"
+#include "Engine/DataTable.h"
+#include "Internationalization/StringTable.h"
+#include "Internationalization/StringTableCore.h"
+#include "Misc/PackageName.h"
+#include "StructUtils/InstancedStruct.h"
+#include "UObject/UObjectHash.h"
 
 namespace
 {
@@ -17,6 +26,334 @@ namespace
 			Result.Add(MakeShared<FJsonValueString>(Value));
 		}
 		return Result;
+	}
+
+	FString GetExportStructName(const UScriptStruct* Struct)
+	{
+		if (Struct == nullptr)
+		{
+			return TEXT("");
+		}
+
+		const FString Name = Struct->GetName();
+		return Name.StartsWith(TEXT("F")) ? Name : FString::Printf(TEXT("F%s"), *Name);
+	}
+
+	bool NormalizeObjectPathSelector(const FString& RawPath, FString& OutObjectPath, FString& OutError)
+	{
+		OutObjectPath = FPackageName::ExportTextPathToObjectPath(RawPath);
+		if (OutObjectPath.IsEmpty())
+		{
+			OutObjectPath = RawPath;
+		}
+
+		FPaths::NormalizeFilename(OutObjectPath);
+		if (!OutObjectPath.Contains(TEXT(".")) || !FPackageName::IsValidObjectPath(OutObjectPath))
+		{
+			OutError = FString::Printf(TEXT("Selector requires a full object path: %s"), *RawPath);
+			return false;
+		}
+
+		return true;
+	}
+
+	bool TryParseStrictStringArray(
+		const TSharedPtr<FJsonObject>& Params,
+		const FString& FieldName,
+		TArray<FString>& OutValues,
+		FString& OutError)
+	{
+		OutValues.Reset();
+		if (!Params.IsValid() || !Params->HasField(FieldName))
+		{
+			return true;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+		if (!Params->TryGetArrayField(FieldName, Array) || Array == nullptr)
+		{
+			OutError = FString::Printf(TEXT("Field '%s' must be an array of strings"), *FieldName);
+			return false;
+		}
+
+		for (const TSharedPtr<FJsonValue>& Value : *Array)
+		{
+			if (!Value.IsValid() || Value->Type != EJson::String)
+			{
+				OutError = FString::Printf(TEXT("Field '%s' must contain only strings"), *FieldName);
+				return false;
+			}
+
+			OutValues.Add(Value->AsString());
+		}
+
+		return true;
+	}
+
+	bool TryLoadDataTable(const FString& TablePath, UDataTable*& OutTable, FString& OutError)
+	{
+		FString ObjectPath;
+		if (!NormalizeObjectPathSelector(TablePath, ObjectPath, OutError))
+		{
+			return false;
+		}
+
+		const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
+		if (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName))
+		{
+			OutError = FString::Printf(TEXT("DataTable not found: %s"), *ObjectPath);
+			return false;
+		}
+
+		UDataTable* LoadedTable = LoadObject<UDataTable>(nullptr, *ObjectPath);
+		if (LoadedTable == nullptr)
+		{
+			OutError = FString::Printf(TEXT("DataTable not found: %s"), *ObjectPath);
+			return false;
+		}
+
+		OutTable = LoadedTable;
+		return true;
+	}
+
+	bool TryLoadStringTable(const FString& TablePath, UStringTable*& OutTable, FString& OutError)
+	{
+		FString ObjectPath;
+		if (!NormalizeObjectPathSelector(TablePath, ObjectPath, OutError))
+		{
+			return false;
+		}
+
+		const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
+		if (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName))
+		{
+			OutError = FString::Printf(TEXT("StringTable not found: %s"), *ObjectPath);
+			return false;
+		}
+
+		UStringTable* LoadedTable = LoadObject<UStringTable>(nullptr, *ObjectPath);
+		if (LoadedTable == nullptr)
+		{
+			OutError = FString::Printf(TEXT("StringTable not found: %s"), *ObjectPath);
+			return false;
+		}
+
+		OutTable = LoadedTable;
+		return true;
+	}
+
+	bool ResolveStructByName(const FString& StructName, UScriptStruct*& OutStruct, FString& OutError)
+	{
+		const FString LookupName = StructName.StartsWith(TEXT("F")) ? StructName.RightChop(1) : StructName;
+		OutStruct = FindObject<UScriptStruct>(nullptr, *StructName);
+		if (OutStruct == nullptr)
+		{
+			OutStruct = FindObject<UScriptStruct>(nullptr, *LookupName);
+		}
+		if (OutStruct == nullptr)
+		{
+			OutStruct = FindFirstObjectSafe<UScriptStruct>(*StructName, EFindFirstObjectOptions::NativeFirst);
+		}
+		if (OutStruct == nullptr)
+		{
+			OutStruct = FindFirstObjectSafe<UScriptStruct>(*LookupName, EFindFirstObjectOptions::NativeFirst);
+		}
+
+		if (OutStruct == nullptr)
+		{
+			for (TObjectIterator<UScriptStruct> It; It; ++It)
+			{
+				if ((*It)->GetName() == StructName || (*It)->GetName() == LookupName || (*It)->GetPathName() == StructName)
+				{
+					OutStruct = *It;
+					break;
+				}
+			}
+		}
+
+		if (OutStruct == nullptr)
+		{
+			OutError = FString::Printf(TEXT("Struct not found: %s"), *StructName);
+			return false;
+		}
+
+		return true;
+	}
+
+	void DiscoverAllDatatables(TArray<FAssetData>& OutAssets)
+	{
+		IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+		if (AssetRegistry == nullptr)
+		{
+			return;
+		}
+
+		FARFilter Filter;
+		Filter.ClassPaths.Add(UDataTable::StaticClass()->GetClassPathName());
+		Filter.bRecursiveClasses = true;
+		AssetRegistry->GetAssets(Filter, OutAssets);
+	}
+
+	void DiscoverAllStringTables(TArray<FAssetData>& OutAssets)
+	{
+		IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+		if (AssetRegistry == nullptr)
+		{
+			return;
+		}
+
+		FARFilter Filter;
+		Filter.ClassPaths.Add(UStringTable::StaticClass()->GetClassPathName());
+		Filter.bRecursiveClasses = true;
+		AssetRegistry->GetAssets(Filter, OutAssets);
+	}
+
+	void CollectInstancedStructClosure(
+		const TSharedPtr<FJsonObject>& FieldObject,
+		bool bIncludeInherited,
+		FCortexDataSchemaExportOps::FSchemaExportState& State)
+	{
+		(void)FieldObject;
+		(void)bIncludeInherited;
+		(void)State;
+	}
+
+	void CollectChildSchemaObject(
+		const TSharedPtr<FJsonObject>& ParentObject,
+		const FString& FieldName,
+		bool bIncludeInherited,
+		FCortexDataSchemaExportOps::FSchemaExportState& State);
+
+	void CollectChildSchemaFields(
+		const TSharedPtr<FJsonObject>& ParentObject,
+		const FString& FieldName,
+		bool bIncludeInherited,
+		FCortexDataSchemaExportOps::FSchemaExportState& State);
+
+	void AddStructSchemaToCatalog(
+		const UScriptStruct* Struct,
+		bool bIncludeInherited,
+		FCortexDataSchemaExportOps::FSchemaExportState& State);
+
+	void CollectStructClosureFromFieldObject(
+		const TSharedPtr<FJsonObject>& FieldObject,
+		bool bIncludeInherited,
+		FCortexDataSchemaExportOps::FSchemaExportState& State)
+	{
+		if (!FieldObject.IsValid())
+		{
+			return;
+		}
+
+		FString FieldType;
+		FieldObject->TryGetStringField(TEXT("type"), FieldType);
+
+		UScriptStruct* NestedStruct = FindFirstObjectSafe<UScriptStruct>(*FieldType, EFindFirstObjectOptions::NativeFirst);
+		if (NestedStruct != nullptr && NestedStruct != FInstancedStruct::StaticStruct())
+		{
+			AddStructSchemaToCatalog(NestedStruct, bIncludeInherited, State);
+		}
+
+		if (FieldType == TEXT("FInstancedStruct"))
+		{
+			CollectInstancedStructClosure(FieldObject, bIncludeInherited, State);
+		}
+
+		CollectChildSchemaObject(FieldObject, TEXT("element_type"), bIncludeInherited, State);
+		CollectChildSchemaObject(FieldObject, TEXT("key_type"), bIncludeInherited, State);
+		CollectChildSchemaObject(FieldObject, TEXT("value_type"), bIncludeInherited, State);
+		CollectChildSchemaFields(FieldObject, TEXT("fields"), bIncludeInherited, State);
+	}
+
+	void CollectStructClosureFromFields(
+		const TArray<TSharedPtr<FJsonValue>>& Fields,
+		bool bIncludeInherited,
+		FCortexDataSchemaExportOps::FSchemaExportState& State)
+	{
+		for (const TSharedPtr<FJsonValue>& FieldValue : Fields)
+		{
+			const TSharedPtr<FJsonObject>* FieldObject = nullptr;
+			if (!FieldValue.IsValid() || !FieldValue->TryGetObject(FieldObject) || FieldObject == nullptr || !FieldObject->IsValid())
+			{
+				continue;
+			}
+
+			CollectStructClosureFromFieldObject(*FieldObject, bIncludeInherited, State);
+		}
+	}
+
+	void CollectChildSchemaObject(
+		const TSharedPtr<FJsonObject>& ParentObject,
+		const FString& FieldName,
+		bool bIncludeInherited,
+		FCortexDataSchemaExportOps::FSchemaExportState& State)
+	{
+		if (!ParentObject.IsValid())
+		{
+			return;
+		}
+
+		const TSharedPtr<FJsonObject>* ChildObject = nullptr;
+		if (!ParentObject->TryGetObjectField(FieldName, ChildObject) || ChildObject == nullptr || !ChildObject->IsValid())
+		{
+			return;
+		}
+
+		CollectStructClosureFromFieldObject(*ChildObject, bIncludeInherited, State);
+	}
+
+	void CollectChildSchemaFields(
+		const TSharedPtr<FJsonObject>& ParentObject,
+		const FString& FieldName,
+		bool bIncludeInherited,
+		FCortexDataSchemaExportOps::FSchemaExportState& State)
+	{
+		if (!ParentObject.IsValid())
+		{
+			return;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* ChildFields = nullptr;
+		if (!ParentObject->TryGetArrayField(FieldName, ChildFields) || ChildFields == nullptr)
+		{
+			return;
+		}
+
+		CollectStructClosureFromFields(*ChildFields, bIncludeInherited, State);
+	}
+
+	void AddStructSchemaToCatalog(
+		const UScriptStruct* Struct,
+		bool bIncludeInherited,
+		FCortexDataSchemaExportOps::FSchemaExportState& State)
+	{
+		if (Struct == nullptr)
+		{
+			return;
+		}
+
+		const FString StructName = GetExportStructName(Struct);
+		if (State.StructCatalog.Contains(StructName))
+		{
+			return;
+		}
+
+		TSharedPtr<FJsonObject> Schema = FCortexSerializer::GetStructSchema(Struct, bIncludeInherited);
+		if (!Schema.IsValid())
+		{
+			State.bPartial = true;
+			State.Errors.Add(FString::Printf(TEXT("Failed to build struct schema: %s"), *StructName));
+			return;
+		}
+
+		Schema->SetStringField(TEXT("struct_name"), StructName);
+		State.StructCatalog.Add(StructName, Schema);
+
+		const TArray<TSharedPtr<FJsonValue>>* Fields = nullptr;
+		if (Schema->TryGetArrayField(TEXT("fields"), Fields) && Fields != nullptr)
+		{
+			CollectStructClosureFromFields(*Fields, bIncludeInherited, State);
+		}
 	}
 }
 
@@ -36,29 +373,11 @@ bool FCortexDataSchemaExportOps::TryResolveOutPath(const FString& InPath, FCorte
 TArray<FString> FCortexDataSchemaExportOps::ParseStringArray(const TSharedPtr<FJsonObject>& Params, const FString& FieldName)
 {
 	TArray<FString> Values;
-	if (!Params.IsValid())
+	FString Error;
+	if (!TryParseStrictStringArray(Params, FieldName, Values, Error))
 	{
-		return Values;
+		Values.Reset();
 	}
-
-	const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
-	if (!Params->TryGetArrayField(FieldName, Array) || Array == nullptr)
-	{
-		return Values;
-	}
-
-	for (const TSharedPtr<FJsonValue>& Value : *Array)
-	{
-		FString StringValue;
-		if (!Value.IsValid() || !Value->TryGetString(StringValue))
-		{
-			Values.Empty();
-			return Values;
-		}
-
-		Values.Add(StringValue);
-	}
-
 	return Values;
 }
 
@@ -107,19 +426,24 @@ FCortexCommandResult FCortexDataSchemaExportOps::ExportSchemaJson(const TSharedP
 		return SchemaInvalidFieldError(PathError);
 	}
 
-	const TArray<FString> DatatablePaths = ParseStringArray(Params, TEXT("datatable_paths"));
-	const TArray<FString> StructNames = ParseStringArray(Params, TEXT("struct_names"));
-	const TArray<FString> DataAssetClasses = ParseStringArray(Params, TEXT("data_asset_classes"));
-	const TArray<FString> StringTablePaths = ParseStringArray(Params, TEXT("string_table_paths"));
-	const bool bHasMalformedSelectors =
-		(Params->HasField(TEXT("datatable_paths")) && DatatablePaths.Num() == 0 && Params->HasTypedField<EJson::Array>(TEXT("datatable_paths")))
-		|| (Params->HasField(TEXT("struct_names")) && StructNames.Num() == 0 && Params->HasTypedField<EJson::Array>(TEXT("struct_names")))
-		|| (Params->HasField(TEXT("data_asset_classes")) && DataAssetClasses.Num() == 0 && Params->HasTypedField<EJson::Array>(TEXT("data_asset_classes")))
-		|| (Params->HasField(TEXT("string_table_paths")) && StringTablePaths.Num() == 0 && Params->HasTypedField<EJson::Array>(TEXT("string_table_paths")));
-	if (bHasMalformedSelectors)
+	TArray<FString> RequestedDatatables;
+	TArray<FString> RequestedStructs;
+	TArray<FString> RequestedDataAssetClasses;
+	TArray<FString> RequestedStringTables;
+	FString SelectorError;
+	if (!TryParseStrictStringArray(Params, TEXT("datatable_paths"), RequestedDatatables, SelectorError)
+		|| !TryParseStrictStringArray(Params, TEXT("struct_names"), RequestedStructs, SelectorError)
+		|| !TryParseStrictStringArray(Params, TEXT("data_asset_classes"), RequestedDataAssetClasses, SelectorError)
+		|| !TryParseStrictStringArray(Params, TEXT("string_table_paths"), RequestedStringTables, SelectorError))
 	{
-		return SchemaInvalidFieldError(TEXT("Schema selector arrays must contain only strings"));
+		return SchemaInvalidFieldError(SelectorError);
 	}
+
+	const bool bExplicitScope =
+		RequestedDatatables.Num() > 0
+		|| RequestedStructs.Num() > 0
+		|| RequestedStringTables.Num() > 0
+		|| RequestedDataAssetClasses.Num() > 0;
 
 	FSchemaExportCounts Counts;
 	FSchemaExportState State;
@@ -128,19 +452,181 @@ FCortexCommandResult FCortexDataSchemaExportOps::ExportSchemaJson(const TSharedP
 		Params->TryGetBoolField(TEXT("include_inherited"), State.bIncludeInherited);
 	}
 
+	TArray<UDataTable*> SelectedTables;
+	if (RequestedDatatables.Num() > 0)
+	{
+		for (const FString& RequestedPath : RequestedDatatables)
+		{
+			UDataTable* DataTable = nullptr;
+			FString LoadError;
+			if (!TryLoadDataTable(RequestedPath, DataTable, LoadError))
+			{
+				return SchemaInvalidFieldError(LoadError);
+			}
+
+			SelectedTables.Add(DataTable);
+			State.TargetsTouched.Add(DataTable->GetPathName());
+		}
+	}
+	else if (!bExplicitScope)
+	{
+		TArray<FAssetData> DatatableAssets;
+		DiscoverAllDatatables(DatatableAssets);
+		DatatableAssets.Sort([](const FAssetData& Left, const FAssetData& Right)
+		{
+			return Left.GetObjectPathString() < Right.GetObjectPathString();
+		});
+
+		for (const FAssetData& AssetData : DatatableAssets)
+		{
+			UDataTable* DataTable = nullptr;
+			FString LoadError;
+			if (TryLoadDataTable(AssetData.GetObjectPathString(), DataTable, LoadError))
+			{
+				SelectedTables.Add(DataTable);
+			}
+		}
+	}
+
+	TArray<UStringTable*> SelectedStringTables;
+	if (RequestedStringTables.Num() > 0)
+	{
+		for (const FString& RequestedPath : RequestedStringTables)
+		{
+			UStringTable* StringTable = nullptr;
+			FString LoadError;
+			if (!TryLoadStringTable(RequestedPath, StringTable, LoadError))
+			{
+				return SchemaInvalidFieldError(LoadError);
+			}
+
+			SelectedStringTables.Add(StringTable);
+			State.TargetsTouched.Add(StringTable->GetPathName());
+		}
+	}
+	else if (!bExplicitScope)
+	{
+		TArray<FAssetData> StringTableAssets;
+		DiscoverAllStringTables(StringTableAssets);
+		StringTableAssets.Sort([](const FAssetData& Left, const FAssetData& Right)
+		{
+			return Left.GetObjectPathString() < Right.GetObjectPathString();
+		});
+
+		for (const FAssetData& AssetData : StringTableAssets)
+		{
+			UStringTable* StringTable = nullptr;
+			FString LoadError;
+			if (TryLoadStringTable(AssetData.GetObjectPathString(), StringTable, LoadError))
+			{
+				SelectedStringTables.Add(StringTable);
+			}
+		}
+	}
+
+	for (const FString& StructName : RequestedStructs)
+	{
+		UScriptStruct* Struct = nullptr;
+		FString ResolveError;
+		if (!ResolveStructByName(StructName, Struct, ResolveError))
+		{
+			return SchemaInvalidFieldError(ResolveError);
+		}
+
+		AddStructSchemaToCatalog(Struct, State.bIncludeInherited, State);
+		State.TargetsTouched.Add(Struct->GetName());
+	}
+
+	TArray<TSharedPtr<FJsonValue>> DatatableEntries;
+	for (UDataTable* DataTable : SelectedTables)
+	{
+		const UScriptStruct* RowStruct = DataTable != nullptr ? DataTable->GetRowStruct() : nullptr;
+		if (DataTable == nullptr || RowStruct == nullptr)
+		{
+			continue;
+		}
+
+		AddStructSchemaToCatalog(RowStruct, State.bIncludeInherited, State);
+
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("table_path"), DataTable->GetPathName());
+		Entry->SetStringField(TEXT("row_struct"), GetExportStructName(RowStruct));
+		Entry->SetArrayField(TEXT("fields"), State.StructCatalog[GetExportStructName(RowStruct)]->GetArrayField(TEXT("fields")));
+		DatatableEntries.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	DatatableEntries.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		return Left->AsObject()->GetStringField(TEXT("table_path")) < Right->AsObject()->GetStringField(TEXT("table_path"));
+	});
+
+	TArray<TSharedPtr<FJsonValue>> StringTableEntries;
+	for (UStringTable* StringTable : SelectedStringTables)
+	{
+		if (StringTable == nullptr)
+		{
+			continue;
+		}
+
+		int32 EntryCount = 0;
+		StringTable->GetStringTable()->EnumerateSourceStrings(
+			[&EntryCount](const FString& Key, const FString& SourceString)
+			{
+				(void)Key;
+				(void)SourceString;
+				++EntryCount;
+				return true;
+			});
+
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("string_table_path"), StringTable->GetPathName());
+		Entry->SetNumberField(TEXT("entry_count"), EntryCount);
+		StringTableEntries.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	StringTableEntries.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		return Left->AsObject()->GetStringField(TEXT("string_table_path")) < Right->AsObject()->GetStringField(TEXT("string_table_path"));
+	});
+
+	TArray<TSharedPtr<FJsonValue>> StructEntries;
+	for (const TPair<FString, TSharedPtr<FJsonObject>>& Pair : State.StructCatalog)
+	{
+		StructEntries.Add(MakeShared<FJsonValueObject>(Pair.Value.ToSharedRef()));
+	}
+
+	StructEntries.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		return Left->AsObject()->GetStringField(TEXT("struct_name")) < Right->AsObject()->GetStringField(TEXT("struct_name"));
+	});
+
+	State.TargetsTouched.Sort();
+	for (int32 Index = State.TargetsTouched.Num() - 1; Index > 0; --Index)
+	{
+		if (State.TargetsTouched[Index] == State.TargetsTouched[Index - 1])
+		{
+			State.TargetsTouched.RemoveAt(Index);
+		}
+	}
+	State.Warnings.Sort();
+	State.Errors.Sort();
+
+	Counts.Datatables = DatatableEntries.Num();
+	Counts.Structs = StructEntries.Num();
+	Counts.DataAssetClasses = 0;
+	Counts.StringTables = StringTableEntries.Num();
+
 	TSharedRef<FJsonObject> Payload = MakeShared<FJsonObject>();
 	Payload->SetNumberField(TEXT("schema_version"), 1);
-	Payload->SetBoolField(TEXT("success"), true);
-	Payload->SetBoolField(TEXT("partial"), false);
+	Payload->SetBoolField(TEXT("success"), State.Errors.Num() == 0);
+	Payload->SetBoolField(TEXT("partial"), State.bPartial);
 	Payload->SetArrayField(TEXT("warnings"), MakeSchemaStringArray(State.Warnings));
 	Payload->SetArrayField(TEXT("errors"), MakeSchemaStringArray(State.Errors));
 	Payload->SetObjectField(TEXT("counts"), MakeCountsObject(Counts));
-	Payload->SetArrayField(TEXT("files_written"), MakeSchemaStringArray(TArray<FString>{ ResolvedOutPath.RequestedPath }));
-	Payload->SetArrayField(TEXT("targets_touched"), TArray<TSharedPtr<FJsonValue>>());
-	Payload->SetArrayField(TEXT("datatables"), TArray<TSharedPtr<FJsonValue>>());
-	Payload->SetArrayField(TEXT("structs"), TArray<TSharedPtr<FJsonValue>>());
+	Payload->SetArrayField(TEXT("datatables"), DatatableEntries);
+	Payload->SetArrayField(TEXT("structs"), StructEntries);
 	Payload->SetArrayField(TEXT("data_asset_classes"), TArray<TSharedPtr<FJsonValue>>());
-	Payload->SetArrayField(TEXT("string_tables"), TArray<TSharedPtr<FJsonValue>>());
+	Payload->SetArrayField(TEXT("string_tables"), StringTableEntries);
 
 	const FCortexJsonFileWriteResult WriteResult = FCortexSafeFileContract::WriteJsonReportAtomic(ResolvedOutPath, Payload);
 	if (!WriteResult.bWritten)

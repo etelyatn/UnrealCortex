@@ -12,8 +12,6 @@ class FCortexDataSchemaExportOps
 {
 public:
 	static FCortexCommandResult ExportSchemaJson(const TSharedPtr<FJsonObject>& Params);
-
-private:
 	struct FSchemaExportCounts
 	{
 		int32 Datatables = 0;
@@ -32,6 +30,7 @@ private:
 		TMap<FString, TSharedPtr<FJsonObject>> StructCatalog;
 	};
 
+private:
 	static bool TryResolveOutPath(const FString& InPath, FCortexResolvedFilePath& OutPath, FString& OutError);
 	static TArray<FString> ParseStringArray(const TSharedPtr<FJsonObject>& Params, const FString& FieldName);
 	static TSharedRef<FJsonObject> MakeCountsObject(const FSchemaExportCounts& Counts);
