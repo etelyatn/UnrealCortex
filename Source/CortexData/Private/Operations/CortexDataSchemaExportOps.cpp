@@ -180,6 +180,42 @@ namespace
 		return true;
 	}
 
+	UClass* ResolveDataAssetClass(const FString& ClassName)
+	{
+		if (ClassName.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		if (UClass* ExactClass = FindObject<UClass>(nullptr, *ClassName))
+		{
+			return ExactClass->IsChildOf(UDataAsset::StaticClass()) ? ExactClass : nullptr;
+		}
+
+		if (!ClassName.StartsWith(TEXT("/")))
+		{
+			const FString EnginePath = FString::Printf(TEXT("/Script/Engine.%s"), *ClassName);
+			if (UClass* EngineClass = FindObject<UClass>(nullptr, *EnginePath))
+			{
+				return EngineClass->IsChildOf(UDataAsset::StaticClass()) ? EngineClass : nullptr;
+			}
+		}
+
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			UClass* Candidate = *It;
+			if (Candidate != nullptr
+				&& IsValid(Candidate)
+				&& Candidate->IsChildOf(UDataAsset::StaticClass())
+				&& (Candidate->GetName() == ClassName || Candidate->GetPathName() == ClassName))
+			{
+				return Candidate;
+			}
+		}
+
+		return nullptr;
+	}
+
 	void DiscoverAllDatatables(TArray<FAssetData>& OutAssets)
 	{
 		IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
@@ -206,6 +242,125 @@ namespace
 		Filter.ClassPaths.Add(UStringTable::StaticClass()->GetClassPathName());
 		Filter.bRecursiveClasses = true;
 		AssetRegistry->GetAssets(Filter, OutAssets);
+	}
+
+	bool DiscoverDataAssetClassesFromAssets(
+		TSet<UClass*>& OutClasses,
+		FCortexDataSchemaExportOps::FSchemaExportState& State)
+	{
+		IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+		if (AssetRegistry == nullptr)
+		{
+			State.Errors.Add(TEXT("AssetRegistry is not available"));
+			return false;
+		}
+
+		FARFilter Filter;
+		Filter.ClassPaths.Add(UDataAsset::StaticClass()->GetClassPathName());
+		Filter.PackagePaths.Add(TEXT("/Game"));
+		Filter.bRecursiveClasses = true;
+		Filter.bRecursivePaths = true;
+
+		TArray<FAssetData> AssetDataList;
+		AssetRegistry->GetAssets(Filter, AssetDataList);
+		AssetDataList.Sort([](const FAssetData& Left, const FAssetData& Right)
+		{
+			return Left.GetObjectPathString() < Right.GetObjectPathString();
+		});
+
+		for (const FAssetData& AssetData : AssetDataList)
+		{
+			const FString ObjectPath = AssetData.GetObjectPathString();
+			const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
+			if (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName))
+			{
+				State.Warnings.Add(FString::Printf(TEXT("DataAsset package does not exist during schema discovery: %s"), *ObjectPath));
+				State.bPartial = true;
+				continue;
+			}
+
+			UDataAsset* DataAsset = LoadObject<UDataAsset>(nullptr, *ObjectPath);
+			if (DataAsset == nullptr)
+			{
+				State.Warnings.Add(FString::Printf(TEXT("Failed to load DataAsset during schema discovery: %s"), *ObjectPath));
+				State.bPartial = true;
+				continue;
+			}
+
+			UClass* AssetClass = DataAsset->GetClass();
+			if (AssetClass != nullptr && AssetClass->IsChildOf(UDataAsset::StaticClass()))
+			{
+				OutClasses.Add(AssetClass);
+			}
+		}
+
+		return true;
+	}
+
+	bool ShouldExportDataAssetProperty(const FProperty* Property)
+	{
+		if (Property == nullptr)
+		{
+			return false;
+		}
+
+		const EPropertyFlags BlockedFlags =
+			CPF_Transient |
+			CPF_DuplicateTransient |
+			CPF_NonPIEDuplicateTransient |
+			CPF_Deprecated |
+			CPF_EditorOnly;
+
+		if (Property->HasAnyPropertyFlags(BlockedFlags))
+		{
+			return false;
+		}
+
+		return Property->HasAnyPropertyFlags(CPF_Edit);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> FilterExportableDataAssetSchemaFields(
+		const UClass* AssetClass,
+		const TArray<TSharedPtr<FJsonValue>>& Fields,
+		bool bIncludeInherited)
+	{
+		TArray<TSharedPtr<FJsonValue>> FilteredFields;
+		if (AssetClass == nullptr)
+		{
+			return FilteredFields;
+		}
+
+		TMap<FString, const FProperty*> ExportableProperties;
+		for (TFieldIterator<FProperty> It(AssetClass); It; ++It)
+		{
+			const FProperty* Property = *It;
+			if (!bIncludeInherited && Property->GetOwnerStruct() != AssetClass)
+			{
+				continue;
+			}
+
+			if (ShouldExportDataAssetProperty(Property))
+			{
+				ExportableProperties.Add(Property->GetName(), Property);
+			}
+		}
+
+		for (const TSharedPtr<FJsonValue>& FieldValue : Fields)
+		{
+			const TSharedPtr<FJsonObject>* FieldObject = nullptr;
+			if (!FieldValue.IsValid() || !FieldValue->TryGetObject(FieldObject) || FieldObject == nullptr || !FieldObject->IsValid())
+			{
+				continue;
+			}
+
+			FString Name;
+			if ((*FieldObject)->TryGetStringField(TEXT("name"), Name) && ExportableProperties.Contains(Name))
+			{
+				FilteredFields.Add(FieldValue);
+			}
+		}
+
+		return FilteredFields;
 	}
 
 	void CollectInstancedStructClosure(
@@ -504,6 +659,29 @@ FCortexCommandResult FCortexDataSchemaExportOps::ExportSchemaJson(const TSharedP
 			State.TargetsTouched.Add(StringTable->GetPathName());
 		}
 	}
+
+	TSet<UClass*> SelectedAssetClassSet;
+	if (RequestedDataAssetClasses.Num() > 0)
+	{
+		for (const FString& RequestedClass : RequestedDataAssetClasses)
+		{
+			UClass* AssetClass = ResolveDataAssetClass(RequestedClass);
+			if (AssetClass == nullptr)
+			{
+				return SchemaInvalidFieldError(FString::Printf(TEXT("DataAsset class not found: %s"), *RequestedClass));
+			}
+
+			SelectedAssetClassSet.Add(AssetClass);
+			State.TargetsTouched.Add(AssetClass->GetPathName());
+		}
+	}
+	else if (!bExplicitScope)
+	{
+		if (!DiscoverDataAssetClassesFromAssets(SelectedAssetClassSet, State))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotReady, TEXT("AssetRegistry is not available"));
+		}
+	}
 	else if (!bExplicitScope)
 	{
 		TArray<FAssetData> StringTableAssets;
@@ -600,6 +778,42 @@ FCortexCommandResult FCortexDataSchemaExportOps::ExportSchemaJson(const TSharedP
 		return Left->AsObject()->GetStringField(TEXT("struct_name")) < Right->AsObject()->GetStringField(TEXT("struct_name"));
 	});
 
+	TArray<UClass*> SelectedAssetClasses = SelectedAssetClassSet.Array();
+	SelectedAssetClasses.Sort([](const UClass& Left, const UClass& Right)
+	{
+		return Left.GetName() < Right.GetName();
+	});
+
+	TArray<TSharedPtr<FJsonValue>> DataAssetEntries;
+	for (UClass* AssetClass : SelectedAssetClasses)
+	{
+		TSharedPtr<FJsonObject> ClassSchema = FCortexSerializer::GetStructSchema(AssetClass, State.bIncludeInherited);
+		if (!ClassSchema.IsValid())
+		{
+			State.bPartial = true;
+			State.Errors.Add(FString::Printf(TEXT("Failed to build DataAsset class schema: %s"), *AssetClass->GetName()));
+			continue;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* PropertyFields = nullptr;
+		ClassSchema->TryGetArrayField(TEXT("fields"), PropertyFields);
+		TArray<TSharedPtr<FJsonValue>> ExportablePropertyFields = FilterExportableDataAssetSchemaFields(
+			AssetClass,
+			PropertyFields != nullptr ? *PropertyFields : TArray<TSharedPtr<FJsonValue>>(),
+			State.bIncludeInherited);
+
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("class_name"), AssetClass->GetName());
+		Entry->SetStringField(TEXT("class_path"), AssetClass->GetPathName());
+		Entry->SetArrayField(TEXT("properties"), ExportablePropertyFields);
+		DataAssetEntries.Add(MakeShared<FJsonValueObject>(Entry));
+
+		if (ExportablePropertyFields.Num() > 0)
+		{
+			CollectStructClosureFromFields(ExportablePropertyFields, State.bIncludeInherited, State);
+		}
+	}
+
 	State.TargetsTouched.Sort();
 	for (int32 Index = State.TargetsTouched.Num() - 1; Index > 0; --Index)
 	{
@@ -613,7 +827,7 @@ FCortexCommandResult FCortexDataSchemaExportOps::ExportSchemaJson(const TSharedP
 
 	Counts.Datatables = DatatableEntries.Num();
 	Counts.Structs = StructEntries.Num();
-	Counts.DataAssetClasses = 0;
+	Counts.DataAssetClasses = DataAssetEntries.Num();
 	Counts.StringTables = StringTableEntries.Num();
 
 	TSharedRef<FJsonObject> Payload = MakeShared<FJsonObject>();
@@ -625,7 +839,7 @@ FCortexCommandResult FCortexDataSchemaExportOps::ExportSchemaJson(const TSharedP
 	Payload->SetObjectField(TEXT("counts"), MakeCountsObject(Counts));
 	Payload->SetArrayField(TEXT("datatables"), DatatableEntries);
 	Payload->SetArrayField(TEXT("structs"), StructEntries);
-	Payload->SetArrayField(TEXT("data_asset_classes"), TArray<TSharedPtr<FJsonValue>>());
+	Payload->SetArrayField(TEXT("data_asset_classes"), DataAssetEntries);
 	Payload->SetArrayField(TEXT("string_tables"), StringTableEntries);
 
 	const FCortexJsonFileWriteResult WriteResult = FCortexSafeFileContract::WriteJsonReportAtomic(ResolvedOutPath, Payload);

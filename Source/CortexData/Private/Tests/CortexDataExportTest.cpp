@@ -1059,6 +1059,24 @@ bool FCortexDataSchemaExportSelectorDataAssetClassesTest::RunTest(const FString&
 			SchemaEntryHasProperty(FileJson, TEXT("CortexDerivedTestDataAsset"), TEXT("DerivedOnlyProperty")));
 	}
 
+	const FString NoInheritedOutPath = Fixture.MakeSavedOutputPath(TEXT("schema-dataasset-selector-no-inherited.json"));
+	Params->SetStringField(TEXT("out_path"), NoInheritedOutPath);
+	Params->SetBoolField(TEXT("include_inherited"), false);
+
+	const FCortexCommandResult NoInheritedResult = Router.Execute(TEXT("data.export_schema_json"), Params);
+	TestTrue(TEXT("include_inherited=false succeeds"), NoInheritedResult.bSuccess);
+
+	TSharedPtr<FJsonObject> NoInheritedFileJson;
+	ParseError.Reset();
+	TestTrue(TEXT("include_inherited=false schema file parses"), Fixture.TryReadJsonFile(NoInheritedOutPath, NoInheritedFileJson, ParseError));
+	if (NoInheritedFileJson.IsValid())
+	{
+		TestFalse(TEXT("include_inherited=false omits base property"),
+			SchemaEntryHasProperty(NoInheritedFileJson, TEXT("CortexDerivedTestDataAsset"), TEXT("TestProperty")));
+		TestTrue(TEXT("include_inherited=false keeps derived property"),
+			SchemaEntryHasProperty(NoInheritedFileJson, TEXT("CortexDerivedTestDataAsset"), TEXT("DerivedOnlyProperty")));
+	}
+
 	return true;
 }
 
