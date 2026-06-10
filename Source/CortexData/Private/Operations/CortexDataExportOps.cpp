@@ -141,6 +141,119 @@ namespace
 		return JsonValues;
 	}
 
+	TSharedRef<FJsonObject> MakeCountsObject(std::initializer_list<TPair<const TCHAR*, double>> Fields)
+	{
+		TSharedRef<FJsonObject> Counts = MakeShared<FJsonObject>();
+		for (const TPair<const TCHAR*, double>& Field : Fields)
+		{
+			Counts->SetNumberField(Field.Key, Field.Value);
+		}
+
+		return Counts;
+	}
+
+	bool TryNormalizeDataAssetObjectPath(const FString& InPath, FString& OutObjectPath, FString& OutError);
+
+	TArray<FString> BuildRequestedAssetTargetsInOrder(const TArray<FString>& RequestedAssetPaths)
+	{
+		TArray<FString> Targets;
+		Targets.Reserve(RequestedAssetPaths.Num());
+		for (const FString& RequestedPath : RequestedAssetPaths)
+		{
+			FString ObjectPath;
+			FString ObjectPathError;
+			if (TryNormalizeDataAssetObjectPath(RequestedPath, ObjectPath, ObjectPathError))
+			{
+				Targets.Add(ObjectPath);
+			}
+		}
+
+		return Targets;
+	}
+
+	FString GetBulkTargetMarker(const TSharedPtr<FJsonObject>& ItemObject, const FString& Type)
+	{
+		if (!ItemObject.IsValid())
+		{
+			return FString();
+		}
+
+		FString Value;
+		if (Type.Equals(TEXT("datatable"), ESearchCase::IgnoreCase) && ItemObject->TryGetStringField(TEXT("table_path"), Value))
+		{
+			return Value;
+		}
+
+		if (Type.Equals(TEXT("string_table"), ESearchCase::IgnoreCase) && ItemObject->TryGetStringField(TEXT("string_table_path"), Value))
+		{
+			return Value;
+		}
+
+		if ((Type.Equals(TEXT("data_assets"), ESearchCase::IgnoreCase) || Type.Equals(TEXT("data_asset"), ESearchCase::IgnoreCase))
+			&& ItemObject->TryGetStringField(TEXT("class_name"), Value))
+		{
+			return Value;
+		}
+
+		if ((Type.Equals(TEXT("data_assets"), ESearchCase::IgnoreCase) || Type.Equals(TEXT("data_asset"), ESearchCase::IgnoreCase))
+			&& ItemObject->TryGetStringField(TEXT("path_filter"), Value))
+		{
+			return Value;
+		}
+
+		if ((Type.Equals(TEXT("data_assets"), ESearchCase::IgnoreCase) || Type.Equals(TEXT("data_asset"), ESearchCase::IgnoreCase))
+			&& ItemObject->HasField(TEXT("asset_paths")))
+		{
+			const TArray<TSharedPtr<FJsonValue>>* AssetPaths = nullptr;
+			if (ItemObject->TryGetArrayField(TEXT("asset_paths"), AssetPaths) && AssetPaths != nullptr && AssetPaths->Num() > 0)
+			{
+				FString FirstAssetPath;
+				if ((*AssetPaths)[0].IsValid() && (*AssetPaths)[0]->TryGetString(FirstAssetPath))
+				{
+					return FirstAssetPath;
+				}
+			}
+		}
+
+		return FString();
+	}
+
+	int32 GetSummaryCount(const TSharedPtr<FJsonObject>& Summary, const TCHAR* PrimaryField, const TCHAR* FallbackField = nullptr)
+	{
+		if (!Summary.IsValid())
+		{
+			return 0;
+		}
+
+		const TSharedPtr<FJsonObject>* Counts = nullptr;
+		if (Summary->TryGetObjectField(TEXT("counts"), Counts) && Counts != nullptr && Counts->IsValid())
+		{
+			double Value = 0.0;
+			if ((*Counts)->TryGetNumberField(PrimaryField, Value))
+			{
+				return static_cast<int32>(Value);
+			}
+
+			if (FallbackField != nullptr && (*Counts)->TryGetNumberField(FallbackField, Value))
+			{
+				return static_cast<int32>(Value);
+			}
+		}
+
+		double LegacyValue = 0.0;
+		if (Summary->TryGetNumberField(PrimaryField, LegacyValue))
+		{
+			return static_cast<int32>(LegacyValue);
+		}
+
+		if (FallbackField != nullptr && Summary->TryGetNumberField(FallbackField, LegacyValue))
+		{
+			return static_cast<int32>(LegacyValue);
+		}
+
+		return 0;
+	}
+
 	struct FDataAssetExportCandidate
 	{
 		FString ObjectPath;
@@ -547,35 +660,27 @@ TArray<FString> FCortexDataExportOps::ParseStringArrayParam(const TSharedPtr<FJs
 	return Values;
 }
 
-TSharedRef<FJsonObject> FCortexDataExportOps::MakeSingleSummary(
-	bool bCompleted,
-	bool bPartial,
-	const FString& OutPath,
-	int64 BytesWritten,
-	int32 ExportedCount,
-	const TArray<FString>& Warnings,
-	const TArray<FString>& Errors)
+TSharedRef<FJsonObject> FCortexDataExportOps::MakeCompactExportSummary(const FCompactExportSummary& Summary)
 {
 	TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
-	Data->SetBoolField(TEXT("completed"), bCompleted);
-	Data->SetBoolField(TEXT("partial"), bPartial);
-	Data->SetStringField(TEXT("out_path"), OutPath);
-	Data->SetNumberField(TEXT("bytes_written"), static_cast<double>(BytesWritten));
-	Data->SetNumberField(TEXT("exported_count"), ExportedCount);
+	Data->SetBoolField(TEXT("success"), Summary.bSuccess);
+	Data->SetBoolField(TEXT("partial"), Summary.bPartial);
+	Data->SetArrayField(TEXT("warnings"), MakeStringJsonArray(Summary.Warnings));
+	Data->SetArrayField(TEXT("errors"), MakeStringJsonArray(Summary.Errors));
+	Data->SetArrayField(TEXT("files_written"), MakeStringJsonArray(Summary.FilesWritten));
+	Data->SetArrayField(TEXT("targets_touched"), MakeStringJsonArray(Summary.TargetsTouched));
+	Data->SetObjectField(TEXT("counts"), Summary.Counts.IsValid() ? Summary.Counts.ToSharedRef() : MakeShared<FJsonObject>());
 
-	TArray<TSharedPtr<FJsonValue>> WarningValues;
-	for (const FString& Warning : Warnings)
+	if (!Summary.RequestPath.IsEmpty())
 	{
-		WarningValues.Add(MakeShared<FJsonValueString>(Warning));
+		Data->SetStringField(TEXT("out_path"), Summary.RequestPath);
 	}
-	Data->SetArrayField(TEXT("warnings"), WarningValues);
 
-	TArray<TSharedPtr<FJsonValue>> ErrorValues;
-	for (const FString& Error : Errors)
+	if (Summary.BytesWritten > 0 || Summary.FilesWritten.Num() > 0)
 	{
-		ErrorValues.Add(MakeShared<FJsonValueString>(Error));
+		Data->SetNumberField(TEXT("bytes_written"), static_cast<double>(Summary.BytesWritten));
 	}
-	Data->SetArrayField(TEXT("errors"), ErrorValues);
+
 	return Data;
 }
 
@@ -798,14 +903,20 @@ FCortexCommandResult FCortexDataExportOps::ExportDatatableJson(const TSharedPtr<
 		return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, WriteResult.Error);
 	}
 
-	return FCortexCommandRouter::Success(MakeSingleSummary(
+	return FCortexCommandRouter::Success(MakeCompactExportSummary({
 		true,
 		false,
 		ResolvedOutPath.AbsolutePath,
 		WriteResult.BytesWritten,
-		RowsArray.Num(),
-		TArray<FString>(),
-		TArray<FString>()));
+		{ ResolvedOutPath.AbsolutePath },
+		{ TablePath },
+		MakeCountsObject({
+			TPair<const TCHAR*, double>(TEXT("exported"), static_cast<double>(RowsArray.Num())),
+			TPair<const TCHAR*, double>(TEXT("total"), static_cast<double>(FilteredRowNames.Num()))
+		}),
+		{},
+		{}
+	}));
 }
 
 FCortexCommandResult FCortexDataExportOps::ExportStringTableJson(const TSharedPtr<FJsonObject>& Params)
@@ -881,14 +992,20 @@ FCortexCommandResult FCortexDataExportOps::ExportStringTableJson(const TSharedPt
 		return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, WriteResult.Error);
 	}
 
-	return FCortexCommandRouter::Success(MakeSingleSummary(
+	return FCortexCommandRouter::Success(MakeCompactExportSummary({
 		true,
 		false,
 		ResolvedOutPath.AbsolutePath,
 		WriteResult.BytesWritten,
-		EntriesArray.Num(),
-		TArray<FString>(),
-		TArray<FString>()));
+		{ ResolvedOutPath.AbsolutePath },
+		{ StringTablePath },
+		MakeCountsObject({
+			TPair<const TCHAR*, double>(TEXT("exported"), static_cast<double>(EntriesArray.Num())),
+			TPair<const TCHAR*, double>(TEXT("total"), static_cast<double>(EntriesArray.Num()))
+		}),
+		{},
+		{}
+	}));
 }
 
 FCortexCommandResult FCortexDataExportOps::ExportDataAssetsJson(const TSharedPtr<FJsonObject>& Params)
@@ -1186,14 +1303,37 @@ FCortexCommandResult FCortexDataExportOps::ExportDataAssetsJson(const TSharedPtr
 		return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, WriteResult.Error);
 	}
 
-	return FCortexCommandRouter::Success(MakeSingleSummary(
-		Failures.Num() == 0 && OmittedCount == 0 && IssueCount == 0,
+	TArray<FString> TargetsTouched;
+	if (bHasExplicitAssetPaths)
+	{
+		TargetsTouched = BuildRequestedAssetTargetsInOrder(RequestedAssetPaths);
+	}
+	else
+	{
+		TargetsTouched.Add(FilterClass->GetName());
+		if (!PackagePathFilter.IsEmpty())
+		{
+			TargetsTouched.Add(PackagePathFilter);
+		}
+	}
+
+	return FCortexCommandRouter::Success(MakeCompactExportSummary({
+		true,
 		Failures.Num() > 0 || OmittedCount > 0 || IssueCount > 0,
 		ResolvedOutPath.AbsolutePath,
 		WriteResult.BytesWritten,
-		DataAssetsArray.Num(),
-		TArray<FString>(),
-		ErrorMessages));
+		{ ResolvedOutPath.AbsolutePath },
+		TargetsTouched,
+		MakeCountsObject({
+			TPair<const TCHAR*, double>(TEXT("exported"), static_cast<double>(ExportedCount)),
+			TPair<const TCHAR*, double>(TEXT("omitted"), static_cast<double>(OmittedCount)),
+			TPair<const TCHAR*, double>(TEXT("failed"), static_cast<double>(FailedCount)),
+			TPair<const TCHAR*, double>(TEXT("issues"), static_cast<double>(IssueCount)),
+			TPair<const TCHAR*, double>(TEXT("total"), static_cast<double>(TotalCount))
+		}),
+		{},
+		ErrorMessages
+	}));
 }
 
 FCortexCommandResult FCortexDataExportOps::ExportBulkJson(const TSharedPtr<FJsonObject>& Params)
@@ -1360,9 +1500,7 @@ FCortexCommandResult FCortexDataExportOps::ExportBulkJson(const TSharedPtr<FJson
 		{
 			if (ChildResult.bSuccess && ChildResult.Data.IsValid())
 			{
-				double ExportedCount = 0.0;
 				double BytesWritten = 0.0;
-				ChildResult.Data->TryGetNumberField(TEXT("exported_count"), ExportedCount);
 				ChildResult.Data->TryGetNumberField(TEXT("bytes_written"), BytesWritten);
 
 				FString WrittenOutPath = ChildOutPath;
@@ -1373,7 +1511,9 @@ FCortexCommandResult FCortexDataExportOps::ExportBulkJson(const TSharedPtr<FJson
 				bHasPartialChild = bHasPartialChild || bChildPartial;
 
 				ItemSummary->SetStringField(TEXT("out_path"), WrittenOutPath);
-				ItemSummary->SetNumberField(TEXT("exported_count"), ExportedCount);
+				ItemSummary->SetNumberField(
+					TEXT("exported_count"),
+					static_cast<double>(GetSummaryCount(ChildResult.Data, TEXT("exported"), TEXT("items"))));
 				ItemSummary->SetNumberField(TEXT("bytes_written"), BytesWritten);
 
 				TArray<FString> ChildWarnings;
@@ -1429,15 +1569,38 @@ FCortexCommandResult FCortexDataExportOps::ExportBulkJson(const TSharedPtr<FJson
 
 	const bool bCompleted = FailedCount == 0 && SkippedCount == 0 && !bHasPartialChild;
 	const bool bPartial = FailedCount > 0 || SkippedCount > 0 || bHasPartialChild;
+	TArray<FString> FilesWritten;
+	TArray<FString> TargetsTouched;
+	FilesWritten.Reserve(Items->Num());
+	TargetsTouched.Reserve(Items->Num());
+
+	for (int32 ItemIndex = 0; ItemIndex < ItemSummaries.Num(); ++ItemIndex)
+	{
+		const TSharedPtr<FJsonObject> ItemSummary = ItemSummaries[ItemIndex]->AsObject();
+		if (ItemSummary.IsValid() && ItemSummary->GetStringField(TEXT("status")) == TEXT("written"))
+		{
+			FilesWritten.Add(ItemSummary->GetStringField(TEXT("out_path")));
+		}
+
+		const FString TargetMarker = GetBulkTargetMarker(ItemObjects[ItemIndex], ItemTypes[ItemIndex]);
+		if (!TargetMarker.IsEmpty())
+		{
+			TargetsTouched.Add(TargetMarker);
+		}
+	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-	Data->SetBoolField(TEXT("completed"), bCompleted);
+	Data->SetBoolField(TEXT("success"), bCompleted);
 	Data->SetBoolField(TEXT("partial"), bPartial);
 	Data->SetStringField(TEXT("out_dir"), FPaths::GetPath(ProbePath.AbsolutePath));
-	Data->SetNumberField(TEXT("item_count"), Items->Num());
-	Data->SetNumberField(TEXT("succeeded"), SucceededCount);
-	Data->SetNumberField(TEXT("failed"), FailedCount);
-	Data->SetNumberField(TEXT("skipped"), SkippedCount);
+	Data->SetArrayField(TEXT("files_written"), MakeStringJsonArray(FilesWritten));
+	Data->SetArrayField(TEXT("targets_touched"), MakeStringJsonArray(TargetsTouched));
+	Data->SetObjectField(TEXT("counts"), MakeCountsObject({
+		TPair<const TCHAR*, double>(TEXT("items"), static_cast<double>(Items->Num())),
+		TPair<const TCHAR*, double>(TEXT("succeeded"), static_cast<double>(SucceededCount)),
+		TPair<const TCHAR*, double>(TEXT("failed"), static_cast<double>(FailedCount)),
+		TPair<const TCHAR*, double>(TEXT("skipped"), static_cast<double>(SkippedCount))
+	}));
 	Data->SetArrayField(TEXT("items"), ItemSummaries);
 	Data->SetArrayField(TEXT("warnings"), MakeStringJsonArray(Warnings));
 	Data->SetArrayField(TEXT("errors"), MakeStringJsonArray(Errors));

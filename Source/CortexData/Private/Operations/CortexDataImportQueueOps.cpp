@@ -157,6 +157,38 @@ namespace
 		return Values;
 	}
 
+	TArray<FString> CollectErrorMessages(const TArray<FCortexDataMutationError>& Errors)
+	{
+		TArray<FString> Messages;
+		Messages.Reserve(Errors.Num());
+		for (const FCortexDataMutationError& Error : Errors)
+		{
+			Messages.Add(Error.Message);
+		}
+		return Messages;
+	}
+
+	TSharedRef<FJsonObject> MakeCompactCountObject(const FImportQueueCounts& Counts, const int32 DirtyPackageCount)
+	{
+		TSharedRef<FJsonObject> CountObject = MakeShared<FJsonObject>();
+		CountObject->SetNumberField(TEXT("operations"), Counts.OperationCount);
+		CountObject->SetNumberField(TEXT("validated"), Counts.ValidatedCount);
+		CountObject->SetNumberField(TEXT("previewed"), Counts.PreviewedCount);
+		CountObject->SetNumberField(TEXT("attempted"), Counts.AttemptedCount);
+		CountObject->SetNumberField(TEXT("applied"), Counts.AppliedCount);
+		CountObject->SetNumberField(TEXT("changed"), Counts.ChangedCount);
+		CountObject->SetNumberField(TEXT("no_op"), Counts.NoOpCount);
+		CountObject->SetNumberField(TEXT("failed"), Counts.FailedCount);
+		CountObject->SetNumberField(TEXT("skipped"), Counts.SkippedCount);
+		CountObject->SetNumberField(TEXT("warnings"), Counts.WarningCount);
+		CountObject->SetNumberField(TEXT("errors"), Counts.ErrorCount);
+		CountObject->SetNumberField(TEXT("save_requested"), Counts.SaveRequestedCount);
+		CountObject->SetNumberField(TEXT("saved"), Counts.SavedCount);
+		CountObject->SetNumberField(TEXT("save_failed"), Counts.SaveFailedCount);
+		CountObject->SetNumberField(TEXT("dirty_packages"), DirtyPackageCount);
+		return CountObject;
+	}
+
 	void AppendUniqueStrings(TArray<FString>& InOutValues, const TArray<FString>& NewValues)
 	{
 		for (const FString& Value : NewValues)
@@ -1071,7 +1103,11 @@ namespace
 		Summary->SetBoolField(TEXT("applied"), bApplied);
 		Summary->SetStringField(TEXT("report_path"), RequestedReportPath);
 		Summary->SetStringField(TEXT("canonical_report_path"), CanonicalReportPath);
-		SetCountFields(Summary, Counts);
+		Summary->SetArrayField(TEXT("warnings"), StringsToJsonValues(Aggregates.Warnings));
+		Summary->SetArrayField(TEXT("errors"), StringsToJsonValues(CollectErrorMessages(Aggregates.Errors)));
+		Summary->SetArrayField(TEXT("files_written"), StringsToJsonValues(TArray<FString>{ RequestedReportPath }));
+		Summary->SetArrayField(TEXT("targets_touched"), StringsToJsonValues(Aggregates.TargetsTouched));
+		Summary->SetObjectField(TEXT("counts"), MakeCompactCountObject(Counts, Aggregates.DirtyPackages.Num()));
 		Summary->SetNumberField(TEXT("dirty_package_count"), Aggregates.DirtyPackages.Num());
 		Summary->SetBoolField(TEXT("requires_user_action"), Aggregates.bRequiresUserAction);
 		Summary->SetNumberField(TEXT("report_bytes"), ReportBytes);

@@ -26,12 +26,25 @@ private:
 		FString Error;
 	};
 
+	struct FCompactExportSummary
+	{
+		bool bSuccess = true;
+		bool bPartial = false;
+		FString RequestPath;
+		int64 BytesWritten = 0;
+		TArray<FString> FilesWritten;
+		TArray<FString> TargetsTouched;
+		TSharedPtr<FJsonObject> Counts;
+		TArray<FString> Warnings;
+		TArray<FString> Errors;
+	};
+
 	static bool TryResolveOutputPath(const FString& InPath, FResolvedOutputPath& OutPath, FString& OutError);
 	static bool TryResolveBulkItemPath(const FString& OutDir, const FString& ItemOutPath, const FString& ItemName, int32 ItemIndex, FResolvedOutputPath& OutPath, FString& OutError);
 	static FExportWriteResult WriteJsonFile(const FResolvedOutputPath& Path, const TSharedRef<FJsonObject>& Payload);
 	static TSet<FString> ParseStringSetParam(const TSharedPtr<FJsonObject>& Params, const FString& FieldName);
 	static TArray<FString> ParseStringArrayParam(const TSharedPtr<FJsonObject>& Params, const FString& FieldName);
-	static TSharedRef<FJsonObject> MakeSingleSummary(bool bCompleted, bool bPartial, const FString& OutPath, int64 BytesWritten, int32 ExportedCount, const TArray<FString>& Warnings, const TArray<FString>& Errors);
+	static TSharedRef<FJsonObject> MakeCompactExportSummary(const FCompactExportSummary& Summary);
 	static UDataTable* LoadDataTableForExport(const FString& TablePath, FCortexCommandResult& OutError);
 	static UStringTable* LoadStringTableForExport(const FString& TablePath, FCortexCommandResult& OutError);
 	static UClass* ResolveDataAssetExportClass(const FString& ClassName);

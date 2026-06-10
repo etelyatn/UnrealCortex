@@ -281,20 +281,29 @@ def test_data_router_forwards_apply_import_ops_json_payload():
             "schema_version": 1,
             "queue_id": "quest-import",
             "ops_sha256": "0123456789abcdef",
-            "operation_count": 1,
-            "validated_count": 1,
-            "previewed_count": 1,
-            "attempted_count": 0,
-            "applied_count": 0,
-            "changed_count": 0,
-            "no_op_count": 0,
-            "failed_count": 0,
-            "skipped_count": 0,
-            "warning_count": 0,
-            "error_count": 0,
+            "warnings": [],
+            "errors": [],
+            "files_written": ["Saved/CortexImports/report.json"],
+            "targets_touched": [],
+            "counts": {
+                "operations": 1,
+                "validated": 1,
+                "previewed": 1,
+                "attempted": 0,
+                "applied": 0,
+                "changed": 0,
+                "no_op": 0,
+                "failed": 0,
+                "skipped": 0,
+                "warnings": 0,
+                "errors": 0,
+                "save_requested": 0,
+                "saved": 0,
+                "save_failed": 0,
+                "dirty_packages": 0,
+            },
             "report_path": "Saved/CortexImports/report.json",
             "canonical_report_path": "D:/Project/Saved/CortexImports/report.json",
-            "save_failed_count": 0,
         },
     }
 
@@ -306,6 +315,8 @@ def test_data_router_forwards_apply_import_ops_json_payload():
 
     assert payload["status"] == "dry_run_ok"
     assert "operations" not in payload
+    assert payload["counts"]["operations"] == 1
+    assert payload["files_written"] == ["Saved/CortexImports/report.json"]
     connection.send_command.assert_called_once_with(
         "data.apply_import_ops_json",
         {
@@ -375,13 +386,17 @@ def test_data_router_forwards_export_bulk_payload():
     connection.send_command.return_value = {
         "success": True,
         "data": {
-            "completed": True,
+            "success": True,
             "partial": False,
             "out_dir": "D:/Project/Saved/CortexExports",
-            "item_count": 1,
-            "succeeded": 1,
-            "failed": 0,
-            "skipped": 0,
+            "files_written": ["Saved/CortexExports/quests.json"],
+            "targets_touched": ["/Game/Data/DT_Quests"],
+            "counts": {
+                "items": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "skipped": 0,
+            },
             "items": [{"name": "quests", "type": "datatable", "status": "written"}],
             "warnings": [],
             "errors": [],
@@ -406,7 +421,8 @@ def test_data_router_forwards_export_bulk_payload():
         )
     )
 
-    assert payload["succeeded"] == 1
+    assert payload["counts"]["succeeded"] == 1
+    assert payload["files_written"] == ["Saved/CortexExports/quests.json"]
     connection.send_command.assert_called_once_with(
         "data.export_bulk_json",
         {

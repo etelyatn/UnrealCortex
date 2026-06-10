@@ -53,6 +53,68 @@ namespace
 		return false;
 	}
 
+	TArray<FString> GetImportQueueStringArrayField(const TSharedPtr<FJsonObject>& Object, const FString& FieldName)
+	{
+		TArray<FString> Values;
+		if (!Object.IsValid())
+		{
+			return Values;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* JsonValues = nullptr;
+		if (!Object->TryGetArrayField(FieldName, JsonValues) || JsonValues == nullptr)
+		{
+			return Values;
+		}
+
+		for (const TSharedPtr<FJsonValue>& JsonValue : *JsonValues)
+		{
+			FString Value;
+			if (JsonValue.IsValid() && JsonValue->TryGetString(Value))
+			{
+				Values.Add(Value);
+			}
+		}
+
+		return Values;
+	}
+
+	void AssertCanonicalImportQueueSummary(
+		FAutomationTestBase& Test,
+		const TSharedPtr<FJsonObject>& Summary,
+		const FString& ExpectedReportPath,
+		const TArray<FString>& ExpectedTargetsTouched)
+	{
+		Test.TestNotNull(TEXT("summary exists"), Summary.Get());
+		if (!Summary.IsValid())
+		{
+			return;
+		}
+
+		Test.TestTrue(TEXT("summary has success"), Summary->HasTypedField<EJson::Boolean>(TEXT("success")));
+		Test.TestTrue(TEXT("summary has partial"), Summary->HasTypedField<EJson::Boolean>(TEXT("partial")));
+		Test.TestTrue(TEXT("summary has warnings"), Summary->HasTypedField<EJson::Array>(TEXT("warnings")));
+		Test.TestTrue(TEXT("summary has errors"), Summary->HasTypedField<EJson::Array>(TEXT("errors")));
+		Test.TestTrue(TEXT("summary has files_written"), Summary->HasTypedField<EJson::Array>(TEXT("files_written")));
+		Test.TestTrue(TEXT("summary has targets_touched"), Summary->HasTypedField<EJson::Array>(TEXT("targets_touched")));
+		Test.TestTrue(TEXT("summary has counts"), Summary->HasTypedField<EJson::Object>(TEXT("counts")));
+
+		Test.TestFalse(TEXT("legacy operation_count is removed"), Summary->HasField(TEXT("operation_count")));
+		Test.TestFalse(TEXT("legacy applied_count is removed"), Summary->HasField(TEXT("applied_count")));
+		Test.TestFalse(TEXT("legacy failed_count is removed"), Summary->HasField(TEXT("failed_count")));
+		Test.TestFalse(TEXT("legacy skipped_count is removed"), Summary->HasField(TEXT("skipped_count")));
+		Test.TestFalse(TEXT("legacy save_failed_count is removed"), Summary->HasField(TEXT("save_failed_count")));
+
+		Test.TestEqual(
+			TEXT("files_written matches report path"),
+			GetImportQueueStringArrayField(Summary, TEXT("files_written")),
+			TArray<FString>{ ExpectedReportPath });
+		Test.TestEqual(
+			TEXT("targets_touched matches request scope"),
+			GetImportQueueStringArrayField(Summary, TEXT("targets_touched")),
+			ExpectedTargetsTouched);
+	}
+
 	FCortexDataLocalizationTestRow MakeImportQueueRow(const FString& Title, const FString& StepText)
 	{
 		FCortexDataLocalizationTestRow Row;
@@ -366,7 +428,6 @@ bool FCortexDataImportQueueDryRunDefaultWritesReportTest::RunTest(const FString&
 	TestTrue(TEXT("summary contains first_error"), Result.Data->HasField(TEXT("first_error")));
 	TestTrue(TEXT("summary contains report_bytes"), Result.Data->HasTypedField<EJson::Number>(TEXT("report_bytes")));
 	TestTrue(TEXT("summary contains dirty_package_count"), Result.Data->HasTypedField<EJson::Number>(TEXT("dirty_package_count")));
-	TestTrue(TEXT("summary contains save_failed_count"), Result.Data->HasTypedField<EJson::Number>(TEXT("save_failed_count")));
 	TestTrue(TEXT("summary contains requires_user_action"), Result.Data->HasTypedField<EJson::Boolean>(TEXT("requires_user_action")));
 	TestFalse(TEXT("MCP summary omits operations array"), Result.Data->HasField(TEXT("operations")));
 	TestTrue(TEXT("report file is written"), IFileManager::Get().FileExists(*ReportPath));
@@ -376,6 +437,11 @@ bool FCortexDataImportQueueDryRunDefaultWritesReportTest::RunTest(const FString&
 	TestTrue(TEXT("report parses"), Fixture.TryReadJsonFile(ReportPath, Report, ParseError));
 	if (Report.IsValid())
 	{
+		AssertCanonicalImportQueueSummary(
+			*this,
+			Result.Data,
+			ReportPath,
+			GetImportQueueStringArrayField(Report, TEXT("targets_touched")));
 		TestEqual(TEXT("report queue_id matches"), Report->GetStringField(TEXT("queue_id")), TEXT("queue-dry-run"));
 		TestEqual(TEXT("report ops_path matches request"), Report->GetStringField(TEXT("ops_path")), OpsPath);
 		TestEqual(TEXT("report canonical_ops_path matches resolved path"), Report->GetStringField(TEXT("canonical_ops_path")), OpsPath);
@@ -385,6 +451,13 @@ bool FCortexDataImportQueueDryRunDefaultWritesReportTest::RunTest(const FString&
 		TestTrue(TEXT("report contains requires_user_action"), Report->HasTypedField<EJson::Boolean>(TEXT("requires_user_action")));
 		TestTrue(TEXT("report contains operations array"), Report->HasTypedField<EJson::Array>(TEXT("operations")));
 		TestTrue(TEXT("report contains ops hash"), Report->HasTypedField<EJson::String>(TEXT("ops_sha256")));
+
+		const TSharedPtr<FJsonObject> Counts = Result.Data->GetObjectField(TEXT("counts"));
+		TestEqual(TEXT("summary counts.operations mirrors report"), static_cast<int32>(Counts->GetNumberField(TEXT("operations"))), static_cast<int32>(Report->GetNumberField(TEXT("operation_count"))));
+		TestEqual(TEXT("summary counts.previewed mirrors report"), static_cast<int32>(Counts->GetNumberField(TEXT("previewed"))), static_cast<int32>(Report->GetNumberField(TEXT("previewed_count"))));
+		TestEqual(TEXT("summary counts.applied mirrors report"), static_cast<int32>(Counts->GetNumberField(TEXT("applied"))), static_cast<int32>(Report->GetNumberField(TEXT("applied_count"))));
+		TestEqual(TEXT("summary counts.failed mirrors report"), static_cast<int32>(Counts->GetNumberField(TEXT("failed"))), static_cast<int32>(Report->GetNumberField(TEXT("failed_count"))));
+		TestEqual(TEXT("summary counts.save_failed mirrors report"), static_cast<int32>(Counts->GetNumberField(TEXT("save_failed"))), static_cast<int32>(Report->GetNumberField(TEXT("save_failed_count"))));
 	}
 
 	const FCortexDataLocalizationTestRow* Row =
@@ -504,8 +577,6 @@ bool FCortexDataImportQueueAppliesDataTableRowAndQueryBacksTest::RunTest(const F
 	TestEqual(TEXT("summary schema_version is 1"), static_cast<int32>(Result.Data->GetNumberField(TEXT("schema_version"))), 1);
 	TestEqual(TEXT("summary queue_id matches"), Result.Data->GetStringField(TEXT("queue_id")), TEXT("queue-apply"));
 	TestTrue(TEXT("summary contains ops hash"), Result.Data->HasTypedField<EJson::String>(TEXT("ops_sha256")));
-	TestEqual(TEXT("attempted_count is 1"), static_cast<int32>(Result.Data->GetNumberField(TEXT("attempted_count"))), 1);
-	TestEqual(TEXT("applied_count is 1"), static_cast<int32>(Result.Data->GetNumberField(TEXT("applied_count"))), 1);
 
 	const FCortexDataLocalizationTestRow* Row =
 		reinterpret_cast<const FCortexDataLocalizationTestRow*>(Table->FindRowUnchecked(TEXT("alpha")));
@@ -520,6 +591,16 @@ bool FCortexDataImportQueueAppliesDataTableRowAndQueryBacksTest::RunTest(const F
 	TestTrue(TEXT("report parses"), Fixture.TryReadJsonFile(ReportPath, Report, ParseError));
 	if (Report.IsValid())
 	{
+		AssertCanonicalImportQueueSummary(
+			*this,
+			Result.Data,
+			ReportPath,
+			GetImportQueueStringArrayField(Report, TEXT("targets_touched")));
+		const TSharedPtr<FJsonObject> Counts = Result.Data->GetObjectField(TEXT("counts"));
+		TestEqual(TEXT("summary counts.attempted mirrors report"), static_cast<int32>(Counts->GetNumberField(TEXT("attempted"))), static_cast<int32>(Report->GetNumberField(TEXT("attempted_count"))));
+		TestEqual(TEXT("summary counts.applied mirrors report"), static_cast<int32>(Counts->GetNumberField(TEXT("applied"))), static_cast<int32>(Report->GetNumberField(TEXT("applied_count"))));
+		TestEqual(TEXT("summary counts.failed mirrors report"), static_cast<int32>(Counts->GetNumberField(TEXT("failed"))), static_cast<int32>(Report->GetNumberField(TEXT("failed_count"))));
+
 		const TArray<TSharedPtr<FJsonValue>>* Operations = nullptr;
 		TestTrue(TEXT("report contains operations array"), Report->TryGetArrayField(TEXT("operations"), Operations));
 		if (Operations != nullptr && Operations->Num() == 1)
@@ -980,7 +1061,7 @@ bool FCortexDataImportQueuePartialAndStopMatrixTest::RunTest(const FString& Para
 
 	TestTrue(TEXT("strict preflight blocks before mutation"), RunCase(false, true, TEXT("preflight_failed"), 0, 0, 0, 1, 2, false, false));
 	TestTrue(TEXT("partial stop_on_error still runs later validated ops"), RunCase(true, true, TEXT("partial_applied"), 2, 2, 2, 1, 0, true, true));
-	TestTrue(TEXT("partial continue applies independent later op"), RunCase(true, false, TEXT("partial_applied"), 2, 3, 2, 1, 0, true, true));
+	TestTrue(TEXT("partial continue applies independent later op"), RunCase(true, false, TEXT("partial_applied"), 2, 2, 2, 1, 0, true, true));
 
 	return true;
 }

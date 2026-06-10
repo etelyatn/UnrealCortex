@@ -492,6 +492,63 @@ namespace
 		return Entries;
 	}
 
+	TArray<FString> GetStringArrayField(const TSharedPtr<FJsonObject>& Object, const TCHAR* FieldName)
+	{
+		TArray<FString> Values;
+		if (!Object.IsValid())
+		{
+			return Values;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* JsonValues = nullptr;
+		if (!Object->TryGetArrayField(FieldName, JsonValues) || JsonValues == nullptr)
+		{
+			return Values;
+		}
+
+		for (const TSharedPtr<FJsonValue>& JsonValue : *JsonValues)
+		{
+			FString Value;
+			if (JsonValue.IsValid() && JsonValue->TryGetString(Value))
+			{
+				Values.Add(Value);
+			}
+		}
+
+		return Values;
+	}
+
+	void AssertCanonicalSummaryFields(
+		FAutomationTestBase& Test,
+		const TSharedPtr<FJsonObject>& Summary,
+		const TArray<FString>& ExpectedFilesWritten,
+		const TArray<FString>& ExpectedTargetsTouched)
+	{
+		Test.TestNotNull(TEXT("summary exists"), Summary.Get());
+		if (!Summary.IsValid())
+		{
+			return;
+		}
+
+		Test.TestTrue(TEXT("summary has success"), Summary->HasTypedField<EJson::Boolean>(TEXT("success")));
+		Test.TestTrue(TEXT("summary has partial"), Summary->HasTypedField<EJson::Boolean>(TEXT("partial")));
+		Test.TestTrue(TEXT("summary has warnings"), Summary->HasTypedField<EJson::Array>(TEXT("warnings")));
+		Test.TestTrue(TEXT("summary has errors"), Summary->HasTypedField<EJson::Array>(TEXT("errors")));
+		Test.TestTrue(TEXT("summary has files_written"), Summary->HasTypedField<EJson::Array>(TEXT("files_written")));
+		Test.TestTrue(TEXT("summary has targets_touched"), Summary->HasTypedField<EJson::Array>(TEXT("targets_touched")));
+		Test.TestTrue(TEXT("summary has counts"), Summary->HasTypedField<EJson::Object>(TEXT("counts")));
+
+		Test.TestFalse(TEXT("legacy completed is removed"), Summary->HasField(TEXT("completed")));
+		Test.TestFalse(TEXT("legacy exported_count is removed"), Summary->HasField(TEXT("exported_count")));
+		Test.TestFalse(TEXT("legacy item_count is removed"), Summary->HasField(TEXT("item_count")));
+		Test.TestFalse(TEXT("legacy succeeded is removed"), Summary->HasField(TEXT("succeeded")));
+		Test.TestFalse(TEXT("legacy failed is removed"), Summary->HasField(TEXT("failed")));
+		Test.TestFalse(TEXT("legacy skipped is removed"), Summary->HasField(TEXT("skipped")));
+
+		Test.TestEqual(TEXT("files_written matches request-facing paths"), GetStringArrayField(Summary, TEXT("files_written")), ExpectedFilesWritten);
+		Test.TestEqual(TEXT("targets_touched matches request scope"), GetStringArrayField(Summary, TEXT("targets_touched")), ExpectedTargetsTouched);
+	}
+
 	TArray<TSharedPtr<FJsonObject>> GetObjectArrayEntries(const TSharedPtr<FJsonObject>& FileJson, const FString& FieldName)
 	{
 		TArray<TSharedPtr<FJsonObject>> Entries;
@@ -1378,10 +1435,13 @@ bool FCortexDataExportDatatableProjectionSchemaTest::RunTest(const FString& Para
 
 	if (Result.Data.IsValid())
 	{
+		AssertCanonicalSummaryFields(*this, Result.Data, { OutPath }, { RegularTable->GetPathName() });
 		TestTrue(TEXT("summary omits raw rows"), !Result.Data->HasField(TEXT("rows")));
 		TestTrue(TEXT("summary remains compact"), !Result.Data->HasField(TEXT("schema")));
 		TestTrue(TEXT("summary reports byte count"), Result.Data->GetNumberField(TEXT("bytes_written")) > 0.0);
-		TestEqual(TEXT("summary reports exported count"), static_cast<int32>(Result.Data->GetNumberField(TEXT("exported_count"))), 2);
+		const TSharedPtr<FJsonObject> Counts = Result.Data->GetObjectField(TEXT("counts"));
+		TestEqual(TEXT("counts.exported is two"), static_cast<int32>(Counts->GetNumberField(TEXT("exported"))), 2);
+		TestEqual(TEXT("counts.total is two"), static_cast<int32>(Counts->GetNumberField(TEXT("total"))), 2);
 	}
 
 	TSharedPtr<FJsonObject> FileJson;
@@ -1837,8 +1897,15 @@ bool FCortexDataExportDataAssetsCatalogAndPropertiesTest::RunTest(const FString&
 	TestTrue(TEXT("DataAsset catalog export returns data"), CatalogResult.Data.IsValid());
 	if (CatalogResult.Data.IsValid())
 	{
+		AssertCanonicalSummaryFields(
+			*this,
+			CatalogResult.Data,
+			{ CatalogOutPath },
+			{ TEXT("CortexTestDataAsset"), FPaths::GetPath(DataAsset->GetPathName()) });
 		TestTrue(TEXT("summary omits data_assets payload"), !CatalogResult.Data->HasField(TEXT("data_assets")));
-		TestEqual(TEXT("exported count is one"), static_cast<int32>(CatalogResult.Data->GetNumberField(TEXT("exported_count"))), 1);
+		const TSharedPtr<FJsonObject> Counts = CatalogResult.Data->GetObjectField(TEXT("counts"));
+		TestEqual(TEXT("counts.exported is one"), static_cast<int32>(Counts->GetNumberField(TEXT("exported"))), 1);
+		TestEqual(TEXT("counts.total is one"), static_cast<int32>(Counts->GetNumberField(TEXT("total"))), 1);
 	}
 
 	TSharedPtr<FJsonObject> CatalogFileJson;
@@ -1882,8 +1949,15 @@ bool FCortexDataExportDataAssetsCatalogAndPropertiesTest::RunTest(const FString&
 	TestTrue(TEXT("DataAsset properties export returns data"), PropertiesResult.Data.IsValid());
 	if (PropertiesResult.Data.IsValid())
 	{
+		AssertCanonicalSummaryFields(
+			*this,
+			PropertiesResult.Data,
+			{ PropertiesOutPath },
+			{ TEXT("CortexTestDataAsset"), FPaths::GetPath(DataAsset->GetPathName()) });
 		TestTrue(TEXT("summary omits data_assets payload"), !PropertiesResult.Data->HasField(TEXT("data_assets")));
-		TestEqual(TEXT("exported count is one"), static_cast<int32>(PropertiesResult.Data->GetNumberField(TEXT("exported_count"))), 1);
+		const TSharedPtr<FJsonObject> Counts = PropertiesResult.Data->GetObjectField(TEXT("counts"));
+		TestEqual(TEXT("counts.exported is one"), static_cast<int32>(Counts->GetNumberField(TEXT("exported"))), 1);
+		TestEqual(TEXT("counts.total is one"), static_cast<int32>(Counts->GetNumberField(TEXT("total"))), 1);
 	}
 
 	TSharedPtr<FJsonObject> PropertiesFileJson;
@@ -2130,9 +2204,16 @@ bool FCortexDataExportDataAssetsExplicitPathsTest::RunTest(const FString& Parame
 	TestTrue(TEXT("partial explicit export returns data"), PartialResult.Data.IsValid());
 	if (PartialResult.Data.IsValid())
 	{
+		AssertCanonicalSummaryFields(
+			*this,
+			PartialResult.Data,
+			{ PartialOutPath },
+			{ MissingAssetPath, AssetPath, AssetPath, EarlierSortAssetPath });
 		TestTrue(TEXT("summary omits data_assets payload"), !PartialResult.Data->HasField(TEXT("data_assets")));
 		TestTrue(TEXT("summary marks partial export"), PartialResult.Data->GetBoolField(TEXT("partial")));
-		TestEqual(TEXT("exported count excludes duplicate and missing paths"), static_cast<int32>(PartialResult.Data->GetNumberField(TEXT("exported_count"))), 2);
+		const TSharedPtr<FJsonObject> Counts = PartialResult.Data->GetObjectField(TEXT("counts"));
+		TestEqual(TEXT("counts.exported excludes duplicate and missing paths"), static_cast<int32>(Counts->GetNumberField(TEXT("exported"))), 2);
+		TestEqual(TEXT("counts.failed includes missing path"), static_cast<int32>(Counts->GetNumberField(TEXT("failed"))), 1);
 
 		const TArray<TSharedPtr<FJsonValue>>* Errors = nullptr;
 		TestTrue(TEXT("partial export reports missing asset error"),
@@ -2196,9 +2277,12 @@ bool FCortexDataExportStringTableJsonTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("StringTable export returns data"), Result.Data.IsValid());
 	if (Result.Data.IsValid())
 	{
+		AssertCanonicalSummaryFields(*this, Result.Data, { OutPath }, { StringTable->GetPathName() });
 		TestTrue(TEXT("summary omits raw entries"), !Result.Data->HasField(TEXT("entries")));
 		TestTrue(TEXT("summary reports byte count"), Result.Data->GetNumberField(TEXT("bytes_written")) > 0.0);
-		TestEqual(TEXT("summary reports exported entry count"), static_cast<int32>(Result.Data->GetNumberField(TEXT("exported_count"))), 3);
+		const TSharedPtr<FJsonObject> Counts = Result.Data->GetObjectField(TEXT("counts"));
+		TestEqual(TEXT("counts.exported is three"), static_cast<int32>(Counts->GetNumberField(TEXT("exported"))), 3);
+		TestEqual(TEXT("counts.total is three"), static_cast<int32>(Counts->GetNumberField(TEXT("total"))), 3);
 	}
 
 	TSharedPtr<FJsonObject> FileJson;
@@ -2354,9 +2438,17 @@ bool FCortexDataExportBulkDefaultOutputNamesTest::RunTest(const FString& Paramet
 		return false;
 	}
 
-	TestEqual(TEXT("bulk succeeds both default-named items"), static_cast<int32>(Result.Data->GetNumberField(TEXT("succeeded"))), 2);
-	TestEqual(TEXT("bulk fails no default-named items"), static_cast<int32>(Result.Data->GetNumberField(TEXT("failed"))), 0);
-	TestEqual(TEXT("bulk skips no default-named items"), static_cast<int32>(Result.Data->GetNumberField(TEXT("skipped"))), 0);
+	AssertCanonicalSummaryFields(
+		*this,
+		Result.Data,
+		{ NamedDefaultOutPath, IndexDefaultOutPath },
+		{ DataTable->GetPathName(), StringTable->GetPathName() });
+	TestTrue(TEXT("bulk default output names reports success"), Result.Data->GetBoolField(TEXT("success")));
+	TestFalse(TEXT("bulk default output names is not partial"), Result.Data->GetBoolField(TEXT("partial")));
+	const TSharedPtr<FJsonObject> Counts = Result.Data->GetObjectField(TEXT("counts"));
+	TestEqual(TEXT("bulk succeeds both default-named items"), static_cast<int32>(Counts->GetNumberField(TEXT("succeeded"))), 2);
+	TestEqual(TEXT("bulk fails no default-named items"), static_cast<int32>(Counts->GetNumberField(TEXT("failed"))), 0);
+	TestEqual(TEXT("bulk skips no default-named items"), static_cast<int32>(Counts->GetNumberField(TEXT("skipped"))), 0);
 	TestTrue(TEXT("named item uses sanitized default file name"), IFileManager::Get().FileExists(*NamedDefaultOutPath));
 	TestTrue(TEXT("unnamed item uses index default file name"), IFileManager::Get().FileExists(*IndexDefaultOutPath));
 
@@ -2405,8 +2497,17 @@ bool FCortexDataExportBulkUnsupportedTypeTest::RunTest(const FString& Parameters
 		return false;
 	}
 
-	TestEqual(TEXT("unsupported bulk item increments failed count"), static_cast<int32>(Result.Data->GetNumberField(TEXT("failed"))), 1);
-	TestEqual(TEXT("unsupported bulk item increments no succeeded count"), static_cast<int32>(Result.Data->GetNumberField(TEXT("succeeded"))), 0);
+	AssertCanonicalSummaryFields(
+		*this,
+		Result.Data,
+		{},
+		{});
+	TestFalse(TEXT("unsupported bulk item reports no success"), Result.Data->GetBoolField(TEXT("success")));
+	TestTrue(TEXT("unsupported bulk item reports partial"), Result.Data->GetBoolField(TEXT("partial")));
+	const TSharedPtr<FJsonObject> Counts = Result.Data->GetObjectField(TEXT("counts"));
+	TestEqual(TEXT("unsupported bulk item increments failed count"), static_cast<int32>(Counts->GetNumberField(TEXT("failed"))), 1);
+	TestEqual(TEXT("unsupported bulk item increments no succeeded count"), static_cast<int32>(Counts->GetNumberField(TEXT("succeeded"))), 0);
+	TestEqual(TEXT("unsupported bulk item increments no skipped count"), static_cast<int32>(Counts->GetNumberField(TEXT("skipped"))), 0);
 
 	const TArray<TSharedPtr<FJsonObject>> ItemSummaries = GetBulkItemSummaries(Result.Data);
 	TestEqual(TEXT("unsupported bulk item returns one summary"), ItemSummaries.Num(), 1);
@@ -2463,8 +2564,17 @@ bool FCortexDataExportBulkDataAssetsPassthroughTest::RunTest(const FString& Para
 		return false;
 	}
 
-	TestEqual(TEXT("bulk data_asset item increments succeeded count"), static_cast<int32>(Result.Data->GetNumberField(TEXT("succeeded"))), 1);
-	TestEqual(TEXT("bulk data_asset item increments no failed count"), static_cast<int32>(Result.Data->GetNumberField(TEXT("failed"))), 0);
+	AssertCanonicalSummaryFields(
+		*this,
+		Result.Data,
+		{ OutPath },
+		{ TEXT("CortexTestDataAsset") });
+	TestTrue(TEXT("bulk data_asset item reports success"), Result.Data->GetBoolField(TEXT("success")));
+	TestFalse(TEXT("bulk data_asset item is not partial"), Result.Data->GetBoolField(TEXT("partial")));
+	const TSharedPtr<FJsonObject> Counts = Result.Data->GetObjectField(TEXT("counts"));
+	TestEqual(TEXT("bulk data_asset item increments succeeded count"), static_cast<int32>(Counts->GetNumberField(TEXT("succeeded"))), 1);
+	TestEqual(TEXT("bulk data_asset item increments no failed count"), static_cast<int32>(Counts->GetNumberField(TEXT("failed"))), 0);
+	TestEqual(TEXT("bulk data_asset item increments no skipped count"), static_cast<int32>(Counts->GetNumberField(TEXT("skipped"))), 0);
 	TestTrue(TEXT("bulk data_asset item writes file"), IFileManager::Get().FileExists(*OutPath));
 
 	TSharedPtr<FJsonObject> FileJson;
@@ -2532,11 +2642,17 @@ bool FCortexDataExportBulkStrictPartialChildSkipsRemainingTest::RunTest(const FS
 		return false;
 	}
 
-	TestFalse(TEXT("strict bulk partial child does not complete"), Result.Data->GetBoolField(TEXT("completed")));
+	AssertCanonicalSummaryFields(
+		*this,
+		Result.Data,
+		{},
+		{ TEXT("CortexTestDataAsset"), StringTable->GetPathName() });
+	TestFalse(TEXT("strict bulk partial child reports no success"), Result.Data->GetBoolField(TEXT("success")));
 	TestTrue(TEXT("strict bulk partial child marks partial"), Result.Data->GetBoolField(TEXT("partial")));
-	TestEqual(TEXT("strict bulk partial child counts no succeeded items"), static_cast<int32>(Result.Data->GetNumberField(TEXT("succeeded"))), 0);
-	TestEqual(TEXT("strict bulk partial child counts failed item"), static_cast<int32>(Result.Data->GetNumberField(TEXT("failed"))), 1);
-	TestEqual(TEXT("strict bulk partial child skips remaining item"), static_cast<int32>(Result.Data->GetNumberField(TEXT("skipped"))), 1);
+	const TSharedPtr<FJsonObject> Counts = Result.Data->GetObjectField(TEXT("counts"));
+	TestEqual(TEXT("strict bulk partial child counts no succeeded items"), static_cast<int32>(Counts->GetNumberField(TEXT("succeeded"))), 0);
+	TestEqual(TEXT("strict bulk partial child counts failed item"), static_cast<int32>(Counts->GetNumberField(TEXT("failed"))), 1);
+	TestEqual(TEXT("strict bulk partial child skips remaining item"), static_cast<int32>(Counts->GetNumberField(TEXT("skipped"))), 1);
 
 	const TArray<TSharedPtr<FJsonObject>> ItemSummaries = GetBulkItemSummaries(Result.Data);
 	TestEqual(TEXT("strict bulk partial child returns two summaries"), ItemSummaries.Num(), 2);
@@ -2599,16 +2715,19 @@ bool FCortexDataExportBulkStopsAndSkipsAfterFirstFailureTest::RunTest(const FStr
 		return false;
 	}
 
+	AssertCanonicalSummaryFields(
+		*this,
+		Result.Data,
+		{ FirstOutPath },
+		{ DataTable->GetPathName(), TEXT("/Game/CortexExportTests/Missing.Missing"), StringTable->GetPathName() });
 	TestTrue(TEXT("bulk summary omits raw payloads"), !Result.Data->HasField(TEXT("rows")) && !Result.Data->HasField(TEXT("entries")) && !Result.Data->HasField(TEXT("data_assets")));
 	TestTrue(TEXT("bulk has item summaries"), Result.Data->HasTypedField<EJson::Array>(TEXT("items")));
-	TestTrue(TEXT("bulk has succeeded count"), Result.Data->HasTypedField<EJson::Number>(TEXT("succeeded")));
-	TestTrue(TEXT("bulk has failed count"), Result.Data->HasTypedField<EJson::Number>(TEXT("failed")));
-	TestTrue(TEXT("bulk has skipped count"), Result.Data->HasTypedField<EJson::Number>(TEXT("skipped")));
-	TestFalse(TEXT("bulk does not complete after failure"), Result.Data->GetBoolField(TEXT("completed")));
 	TestTrue(TEXT("bulk marks partial after failure"), Result.Data->GetBoolField(TEXT("partial")));
-	TestEqual(TEXT("bulk succeeds one item"), static_cast<int32>(Result.Data->GetNumberField(TEXT("succeeded"))), 1);
-	TestEqual(TEXT("bulk fails one item"), static_cast<int32>(Result.Data->GetNumberField(TEXT("failed"))), 1);
-	TestEqual(TEXT("bulk skips remaining item"), static_cast<int32>(Result.Data->GetNumberField(TEXT("skipped"))), 1);
+	const TSharedPtr<FJsonObject> Counts = Result.Data->GetObjectField(TEXT("counts"));
+	TestEqual(TEXT("counts.items is three"), static_cast<int32>(Counts->GetNumberField(TEXT("items"))), 3);
+	TestEqual(TEXT("counts.succeeded is one"), static_cast<int32>(Counts->GetNumberField(TEXT("succeeded"))), 1);
+	TestEqual(TEXT("counts.failed is one"), static_cast<int32>(Counts->GetNumberField(TEXT("failed"))), 1);
+	TestEqual(TEXT("counts.skipped is one"), static_cast<int32>(Counts->GetNumberField(TEXT("skipped"))), 1);
 
 	const TArray<TSharedPtr<FJsonObject>> ItemSummaries = GetBulkItemSummaries(Result.Data);
 	TestEqual(TEXT("bulk returns three item summaries"), ItemSummaries.Num(), 3);
@@ -2669,16 +2788,19 @@ bool FCortexDataExportBulkAllowsPartialFailuresTest::RunTest(const FString& Para
 		return false;
 	}
 
+	AssertCanonicalSummaryFields(
+		*this,
+		Result.Data,
+		{ TableOutPath, StringTableOutPath },
+		{ DataTable->GetPathName(), TEXT("/Game/CortexExportTests/Missing.Missing"), StringTable->GetPathName() });
 	TestTrue(TEXT("bulk summary omits raw payloads"), !Result.Data->HasField(TEXT("rows")) && !Result.Data->HasField(TEXT("entries")) && !Result.Data->HasField(TEXT("data_assets")));
 	TestTrue(TEXT("bulk has item summaries"), Result.Data->HasTypedField<EJson::Array>(TEXT("items")));
-	TestTrue(TEXT("bulk has succeeded count"), Result.Data->HasTypedField<EJson::Number>(TEXT("succeeded")));
-	TestTrue(TEXT("bulk has failed count"), Result.Data->HasTypedField<EJson::Number>(TEXT("failed")));
-	TestTrue(TEXT("bulk has skipped count"), Result.Data->HasTypedField<EJson::Number>(TEXT("skipped")));
-	TestFalse(TEXT("bulk is not complete with partial failure"), Result.Data->GetBoolField(TEXT("completed")));
+	TestFalse(TEXT("bulk reports no success with partial failure"), Result.Data->GetBoolField(TEXT("success")));
 	TestTrue(TEXT("bulk marks partial failure"), Result.Data->GetBoolField(TEXT("partial")));
-	TestEqual(TEXT("bulk succeeds valid items"), static_cast<int32>(Result.Data->GetNumberField(TEXT("succeeded"))), 2);
-	TestEqual(TEXT("bulk fails invalid item"), static_cast<int32>(Result.Data->GetNumberField(TEXT("failed"))), 1);
-	TestEqual(TEXT("bulk skips no items with allow_partial"), static_cast<int32>(Result.Data->GetNumberField(TEXT("skipped"))), 0);
+	const TSharedPtr<FJsonObject> Counts = Result.Data->GetObjectField(TEXT("counts"));
+	TestEqual(TEXT("bulk succeeds valid items"), static_cast<int32>(Counts->GetNumberField(TEXT("succeeded"))), 2);
+	TestEqual(TEXT("bulk fails invalid item"), static_cast<int32>(Counts->GetNumberField(TEXT("failed"))), 1);
+	TestEqual(TEXT("bulk skips no items with allow_partial"), static_cast<int32>(Counts->GetNumberField(TEXT("skipped"))), 0);
 
 	const TArray<TSharedPtr<FJsonObject>> ItemSummaries = GetBulkItemSummaries(Result.Data);
 	TestEqual(TEXT("bulk returns three item summaries"), ItemSummaries.Num(), 3);
