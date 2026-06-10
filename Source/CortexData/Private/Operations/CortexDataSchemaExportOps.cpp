@@ -244,6 +244,11 @@ namespace
 		AssetRegistry->GetAssets(Filter, OutAssets);
 	}
 
+	void AddStructSchemaToCatalog(
+		const UScriptStruct* Struct,
+		bool bIncludeInherited,
+		FCortexDataSchemaExportOps::FSchemaExportState& State);
+
 	bool DiscoverDataAssetClassesFromAssets(
 		TSet<UClass*>& OutClasses,
 		FCortexDataSchemaExportOps::FSchemaExportState& State)
@@ -368,9 +373,55 @@ namespace
 		bool bIncludeInherited,
 		FCortexDataSchemaExportOps::FSchemaExportState& State)
 	{
-		(void)FieldObject;
-		(void)bIncludeInherited;
-		(void)State;
+		FString BaseStructName;
+		if (!FieldObject.IsValid() || !FieldObject->TryGetStringField(TEXT("instanced_struct_base"), BaseStructName))
+		{
+			if (FieldObject.IsValid())
+			{
+				FieldObject->SetField(TEXT("instanced_struct_base"), MakeShared<FJsonValueNull>());
+				FieldObject->SetArrayField(TEXT("known_subtypes"), TArray<TSharedPtr<FJsonValue>>());
+				FieldObject->SetBoolField(TEXT("partial"), true);
+			}
+
+			State.bPartial = true;
+			State.Warnings.Add(FString::Printf(TEXT("FInstancedStruct field '%s' is missing BaseStruct metadata"), *FieldObject->GetStringField(TEXT("name"))));
+			return;
+		}
+
+		UScriptStruct* BaseStruct = nullptr;
+		FString ResolveError;
+		if (!ResolveStructByName(BaseStructName, BaseStruct, ResolveError))
+		{
+			FieldObject->SetField(TEXT("instanced_struct_base"), MakeShared<FJsonValueNull>());
+			FieldObject->SetArrayField(TEXT("known_subtypes"), TArray<TSharedPtr<FJsonValue>>());
+			FieldObject->SetBoolField(TEXT("partial"), true);
+			State.bPartial = true;
+			State.Warnings.Add(FString::Printf(TEXT("FInstancedStruct base struct could not be resolved: %s"), *BaseStructName));
+			return;
+		}
+
+		FieldObject->SetStringField(TEXT("instanced_struct_base"), GetExportStructName(BaseStruct));
+		AddStructSchemaToCatalog(BaseStruct, bIncludeInherited, State);
+
+		TArray<UScriptStruct*> Subtypes = FCortexSerializer::FindInstancedStructSubtypes(BaseStruct);
+		Subtypes.Sort([](const UScriptStruct& Left, const UScriptStruct& Right)
+		{
+			return Left.GetName() < Right.GetName();
+		});
+
+		TArray<TSharedPtr<FJsonValue>> SubtypeNames;
+		for (UScriptStruct* Subtype : Subtypes)
+		{
+			if (Subtype == nullptr)
+			{
+				continue;
+			}
+
+			AddStructSchemaToCatalog(Subtype, bIncludeInherited, State);
+			SubtypeNames.Add(MakeShared<FJsonValueString>(GetExportStructName(Subtype)));
+		}
+
+		FieldObject->SetArrayField(TEXT("known_subtypes"), SubtypeNames);
 	}
 
 	void CollectChildSchemaObject(
@@ -382,11 +433,6 @@ namespace
 	void CollectChildSchemaFields(
 		const TSharedPtr<FJsonObject>& ParentObject,
 		const FString& FieldName,
-		bool bIncludeInherited,
-		FCortexDataSchemaExportOps::FSchemaExportState& State);
-
-	void AddStructSchemaToCatalog(
-		const UScriptStruct* Struct,
 		bool bIncludeInherited,
 		FCortexDataSchemaExportOps::FSchemaExportState& State);
 
@@ -767,17 +813,6 @@ FCortexCommandResult FCortexDataSchemaExportOps::ExportSchemaJson(const TSharedP
 		return Left->AsObject()->GetStringField(TEXT("string_table_path")) < Right->AsObject()->GetStringField(TEXT("string_table_path"));
 	});
 
-	TArray<TSharedPtr<FJsonValue>> StructEntries;
-	for (const TPair<FString, TSharedPtr<FJsonObject>>& Pair : State.StructCatalog)
-	{
-		StructEntries.Add(MakeShared<FJsonValueObject>(Pair.Value.ToSharedRef()));
-	}
-
-	StructEntries.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
-	{
-		return Left->AsObject()->GetStringField(TEXT("struct_name")) < Right->AsObject()->GetStringField(TEXT("struct_name"));
-	});
-
 	TArray<UClass*> SelectedAssetClasses = SelectedAssetClassSet.Array();
 	SelectedAssetClasses.Sort([](const UClass& Left, const UClass& Right)
 	{
@@ -813,6 +848,17 @@ FCortexCommandResult FCortexDataSchemaExportOps::ExportSchemaJson(const TSharedP
 			CollectStructClosureFromFields(ExportablePropertyFields, State.bIncludeInherited, State);
 		}
 	}
+
+	TArray<TSharedPtr<FJsonValue>> StructEntries;
+	for (const TPair<FString, TSharedPtr<FJsonObject>>& Pair : State.StructCatalog)
+	{
+		StructEntries.Add(MakeShared<FJsonValueObject>(Pair.Value.ToSharedRef()));
+	}
+
+	StructEntries.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		return Left->AsObject()->GetStringField(TEXT("struct_name")) < Right->AsObject()->GetStringField(TEXT("struct_name"));
+	});
 
 	State.TargetsTouched.Sort();
 	for (int32 Index = State.TargetsTouched.Num() - 1; Index > 0; --Index)
