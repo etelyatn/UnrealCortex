@@ -142,6 +142,15 @@ FCortexCommandResult FCortexDataAssetOps::ListDataAssets(const TSharedPtr<FJsonO
 
 FCortexCommandResult FCortexDataAssetOps::GetDataAsset(const TSharedPtr<FJsonObject>& Params)
 {
+	auto MakeReflectedReadPolicy = []()
+	{
+		FCortexSerializationPolicy Policy;
+		Policy.Label = ECortexSerializationPolicyLabel::ReflectedRead;
+		Policy.bIncludeTextMetadata = true;
+		Policy.MaxDepth = 8;
+		return Policy;
+	};
+
 	FString AssetPath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
 	{
@@ -173,12 +182,17 @@ FCortexCommandResult FCortexDataAssetOps::GetDataAsset(const TSharedPtr<FJsonObj
 
 	UClass* AssetClass = DataAsset->GetClass();
 
-	TSharedPtr<FJsonObject> Properties = FCortexSerializer::StructToJson(AssetClass, DataAsset);
+	const FCortexPropertySerializationResult Serialization = FCortexSerializer::ObjectToJsonDeep(DataAsset, MakeReflectedReadPolicy());
+	TSharedPtr<FJsonObject> Properties = Serialization.JsonValue.IsValid()
+		? Serialization.JsonValue->AsObject()
+		: MakeShared<FJsonObject>();
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetStringField(TEXT("asset_class"), AssetClass->GetName());
 	Data->SetObjectField(TEXT("properties"), Properties);
+	Data->SetBoolField(TEXT("partial"), Serialization.bPartial);
+	Data->SetArrayField(TEXT("issues"), FCortexSerializer::SerializationIssuesToJson(Serialization.Issues));
 
 	if (Warnings.Num() > 0)
 	{

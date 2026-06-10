@@ -291,3 +291,84 @@ bool FCortexDeleteDataAssetNotFoundTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGetDataAssetDeepPayloadTest,
+	"Cortex.Data.DataAsset.GetDeepPayload",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGetDataAssetDeepPayloadTest::RunTest(const FString& Parameters)
+{
+	const FString TestPath = TEXT("/Game/CortexTests/DA_GetDeepPayload");
+	CleanupTestAsset(TestPath);
+	ON_SCOPE_EXIT { CleanupTestAsset(TestPath); };
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("class_name"), TEXT("CortexTestDataAsset"));
+	CreateParams->SetStringField(TEXT("asset_path"), TestPath);
+	FCortexCommandResult CreateResult = FCortexDataAssetOps::CreateDataAsset(CreateParams);
+	TestTrue(TEXT("fixture asset is created"), CreateResult.bSuccess);
+
+	UCortexTestDataAsset* Asset = LoadObject<UCortexTestDataAsset>(nullptr, TEXT("/Game/CortexTests/DA_GetDeepPayload.DA_GetDeepPayload"));
+	TestNotNull(TEXT("created asset loads"), Asset);
+	if (Asset == nullptr)
+	{
+		return false;
+	}
+	Asset->Nested.Visible = TEXT("visible from get");
+	Asset->Nested.Internal = TEXT("internal from get");
+	Asset->NestedArray.Reset();
+	Asset->NestedArray.Add(Asset->Nested);
+	UCortexTestDataAssetUnsupportedObject* UnsupportedObject = NewObject<UCortexTestDataAssetUnsupportedObject>(Asset);
+	TScriptInterface<ICortexTestDataAssetUnsupportedInterface> UnsupportedInterface;
+	UnsupportedInterface.SetObject(UnsupportedObject);
+	UnsupportedInterface.SetInterface(Cast<ICortexTestDataAssetUnsupportedInterface>(UnsupportedObject));
+	Asset->UnsupportedExportInterface = UnsupportedInterface;
+
+	TSharedPtr<FJsonObject> GetParams = MakeShared<FJsonObject>();
+	GetParams->SetStringField(TEXT("asset_path"), TEXT("/Game/CortexTests/DA_GetDeepPayload.DA_GetDeepPayload"));
+	const FCortexCommandResult GetResult = FCortexDataAssetOps::GetDataAsset(GetParams);
+	TestTrue(TEXT("get_data_asset succeeds"), GetResult.bSuccess);
+	TestTrue(TEXT("get_data_asset returns payload"), GetResult.Data.IsValid());
+	if (!GetResult.Data.IsValid())
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("get_data_asset includes partial flag"), GetResult.Data->HasTypedField<EJson::Boolean>(TEXT("partial")));
+	TestTrue(TEXT("get_data_asset includes issues array"), GetResult.Data->HasTypedField<EJson::Array>(TEXT("issues")));
+
+	const TSharedPtr<FJsonObject>* Properties = nullptr;
+	TestTrue(TEXT("get_data_asset includes properties object"),
+		GetResult.Data->TryGetObjectField(TEXT("properties"), Properties) && Properties != nullptr && Properties->IsValid());
+	if (Properties == nullptr || !Properties->IsValid())
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> Nested = (*Properties)->GetObjectField(TEXT("Nested"));
+	TestEqual(TEXT("nested editable field is serialized"), Nested->GetStringField(TEXT("Visible")), TEXT("visible from get"));
+	TestEqual(TEXT("nested non-edit field is serialized for reflected read"), Nested->GetStringField(TEXT("Internal")), TEXT("internal from get"));
+
+	const TArray<TSharedPtr<FJsonValue>> Issues = GetResult.Data->GetArrayField(TEXT("issues"));
+	TestTrue(TEXT("deep get reports unsupported interface issue"), Issues.Num() > 0);
+	TestTrue(TEXT("deep get marks partial"), GetResult.Data->GetBoolField(TEXT("partial")));
+
+	bool bFoundUnsupportedField = false;
+	for (const TSharedPtr<FJsonValue>& IssueValue : Issues)
+	{
+		const TSharedPtr<FJsonObject>* Issue = nullptr;
+		if (!IssueValue.IsValid() || !IssueValue->TryGetObject(Issue) || Issue == nullptr || !Issue->IsValid())
+		{
+			continue;
+		}
+
+		bFoundUnsupportedField = bFoundUnsupportedField
+			|| ((*Issue)->GetStringField(TEXT("field")) == TEXT("UnsupportedExportInterface")
+				&& (*Issue)->GetStringField(TEXT("code")) == TEXT("UNSUPPORTED_PROPERTY_TYPE"));
+	}
+	TestTrue(TEXT("deep get uses stable issue codes and field paths"), bFoundUnsupportedField);
+
+	return true;
+}

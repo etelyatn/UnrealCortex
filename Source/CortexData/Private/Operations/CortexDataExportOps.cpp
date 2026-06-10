@@ -304,7 +304,8 @@ namespace
 
 	TSharedRef<FJsonObject> MakeDataAssetExportEntry(
 		const FDataAssetExportCandidate& Candidate,
-		const TSharedPtr<FJsonObject>& Properties)
+		const TSharedPtr<FJsonObject>& Properties,
+		const FCortexPropertySerializationResult* Serialization)
 	{
 		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 		Entry->SetStringField(TEXT("name"), Candidate.Name);
@@ -314,7 +315,56 @@ namespace
 		{
 			Entry->SetObjectField(TEXT("properties"), Properties);
 		}
+		if (Serialization != nullptr)
+		{
+			Entry->SetBoolField(TEXT("partial"), Serialization->bPartial);
+			Entry->SetArrayField(TEXT("issues"), FCortexSerializer::SerializationIssuesToJson(Serialization->Issues));
+		}
 		return Entry;
+	}
+
+	FCortexSerializationPolicy MakeDataAssetExportSerializationPolicy()
+	{
+		FCortexSerializationPolicy Policy;
+		Policy.Label = ECortexSerializationPolicyLabel::ExportableRead;
+		Policy.bIncludeTextMetadata = true;
+		Policy.MaxDepth = 8;
+		Policy.PropertyAdmissionRule = [](const FProperty* Property)
+		{
+			if (Property == nullptr)
+			{
+				return false;
+			}
+
+			const EPropertyFlags BlockedFlags =
+				CPF_Transient |
+				CPF_DuplicateTransient |
+				CPF_NonPIEDuplicateTransient |
+				CPF_Deprecated |
+				CPF_EditorOnly;
+
+			return !Property->HasAnyPropertyFlags(BlockedFlags)
+				&& Property->HasAnyPropertyFlags(CPF_Edit);
+		};
+		return Policy;
+	}
+
+	bool HasBlockingSerializationIssue(const FCortexSerializationIssue& Issue)
+	{
+		return Issue.Severity == ECortexSerializationSeverity::Error || Issue.bOmitted;
+	}
+
+	int32 CountBlockingSerializationIssues(const TArray<FCortexSerializationIssue>& Issues)
+	{
+		int32 Count = 0;
+		for (const FCortexSerializationIssue& Issue : Issues)
+		{
+			if (HasBlockingSerializationIssue(Issue))
+			{
+				++Count;
+			}
+		}
+		return Count;
 	}
 
 	void SetStringArrayOrNull(TSharedRef<FJsonObject> Object, const FString& FieldName, const TArray<FString>& Values)
@@ -630,29 +680,6 @@ bool FCortexDataExportOps::ShouldExportDataAssetProperty(const FProperty* Proper
 	}
 
 	return Property->HasAnyPropertyFlags(CPF_Edit);
-}
-
-TSharedPtr<FJsonObject> FCortexDataExportOps::ExportEditableProperties(const UDataAsset* DataAsset)
-{
-	TSharedRef<FJsonObject> Properties = MakeShared<FJsonObject>();
-	if (DataAsset == nullptr)
-	{
-		return Properties;
-	}
-
-	for (TFieldIterator<FProperty> It(DataAsset->GetClass()); It; ++It)
-	{
-		const FProperty* Property = *It;
-		if (!ShouldExportDataAssetProperty(Property))
-		{
-			continue;
-		}
-
-		const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(DataAsset);
-		Properties->SetField(Property->GetName(), FCortexSerializer::PropertyToJson(Property, ValuePtr));
-	}
-
-	return Properties;
 }
 
 FCortexCommandResult FCortexDataExportOps::ExportDatatableJson(const TSharedPtr<FJsonObject>& Params)
@@ -1034,7 +1061,10 @@ FCortexCommandResult FCortexDataExportOps::ExportDataAssetsJson(const TSharedPtr
 		return FCortexCommandRouter::Error(Failures[0].ErrorCode, Failures[0].Message);
 	}
 
+	const int32 PreSerializationFailureCount = Failures.Num();
 	TArray<TSharedPtr<FJsonValue>> DataAssetsArray;
+	TArray<TSharedPtr<FJsonValue>> OmittedAssetsArray;
+	int32 IssueCount = 0;
 	DataAssetsArray.Reserve(Candidates.Num());
 	for (FDataAssetExportCandidate& Candidate : Candidates)
 	{
@@ -1070,10 +1100,37 @@ FCortexCommandResult FCortexDataExportOps::ExportDataAssetsJson(const TSharedPtr
 			continue;
 		}
 
-		TSharedPtr<FJsonObject> Properties = bIncludeProperties
-			? ExportEditableProperties(Candidate.LoadedAsset)
-			: nullptr;
-		DataAssetsArray.Add(MakeShared<FJsonValueObject>(MakeDataAssetExportEntry(Candidate, Properties)));
+		TSharedPtr<FJsonObject> Properties;
+		TOptional<FCortexPropertySerializationResult> Serialization;
+		if (bIncludeProperties)
+		{
+			Serialization = FCortexSerializer::ObjectToJsonDeep(Candidate.LoadedAsset, MakeDataAssetExportSerializationPolicy());
+			IssueCount += Serialization->Issues.Num();
+
+			const bool bHasBlockingIssues = CountBlockingSerializationIssues(Serialization->Issues) > 0;
+			if (bHasBlockingIssues)
+			{
+				TSharedRef<FJsonObject> Omitted = MakeShared<FJsonObject>();
+				Omitted->SetStringField(TEXT("path"), Candidate.ObjectPath);
+				Omitted->SetArrayField(TEXT("issues"), FCortexSerializer::SerializationIssuesToJson(Serialization->Issues));
+				OmittedAssetsArray.Add(MakeShared<FJsonValueObject>(Omitted));
+
+				Failures.Add(FDataAssetExportFailure{
+					Candidate.ObjectPath,
+					CortexErrorCodes::SerializationError,
+					MakeDataAssetExportFailureMessage(Candidate.ObjectPath, TEXT("DataAsset serialization produced blocking issues")) });
+				continue;
+			}
+
+			Properties = Serialization->JsonValue.IsValid()
+				? Serialization->JsonValue->AsObject()
+				: MakeShared<FJsonObject>();
+		}
+
+		DataAssetsArray.Add(MakeShared<FJsonValueObject>(MakeDataAssetExportEntry(
+			Candidate,
+			Properties,
+			Serialization.IsSet() ? &Serialization.GetValue() : nullptr)));
 	}
 
 	if (!bAllowPartial && Failures.Num() > 0)
@@ -1108,11 +1165,18 @@ FCortexCommandResult FCortexDataExportOps::ExportDataAssetsJson(const TSharedPtr
 	Payload->SetBoolField(TEXT("include_properties"), bIncludeProperties);
 	Payload->SetBoolField(TEXT("explicit_asset_paths"), bHasExplicitAssetPaths);
 	SetStringArrayOrNull(Payload, TEXT("asset_paths"), NormalizedExplicitAssetPaths);
-	Payload->SetNumberField(TEXT("count"), DataAssetsArray.Num());
-	Payload->SetNumberField(TEXT("exported_count"), DataAssetsArray.Num());
-	Payload->SetNumberField(TEXT("failed_count"), Failures.Num());
-	Payload->SetNumberField(TEXT("total_count"), Candidates.Num() + Failures.Num());
+	const int32 ExportedCount = DataAssetsArray.Num();
+	const int32 OmittedCount = OmittedAssetsArray.Num();
+	const int32 FailedCount = Failures.Num();
+	const int32 TotalCount = Candidates.Num() + PreSerializationFailureCount;
+	Payload->SetBoolField(TEXT("partial"), FailedCount > 0 || OmittedCount > 0 || IssueCount > 0);
+	Payload->SetNumberField(TEXT("exported_count"), ExportedCount);
+	Payload->SetNumberField(TEXT("omitted_count"), OmittedCount);
+	Payload->SetNumberField(TEXT("failed_count"), FailedCount);
+	Payload->SetNumberField(TEXT("total_count"), TotalCount);
+	Payload->SetNumberField(TEXT("issue_count"), IssueCount);
 	Payload->SetArrayField(TEXT("data_assets"), DataAssetsArray);
+	Payload->SetArrayField(TEXT("omitted_assets"), OmittedAssetsArray);
 
 	const FExportWriteResult WriteResult = WriteJsonFile(ResolvedOutPath, Payload);
 	if (!WriteResult.bWritten)
@@ -1121,8 +1185,8 @@ FCortexCommandResult FCortexDataExportOps::ExportDataAssetsJson(const TSharedPtr
 	}
 
 	return FCortexCommandRouter::Success(MakeSingleSummary(
-		Failures.Num() == 0,
-		Failures.Num() > 0,
+		Failures.Num() == 0 && OmittedCount == 0 && IssueCount == 0,
+		Failures.Num() > 0 || OmittedCount > 0 || IssueCount > 0,
 		ResolvedOutPath.AbsolutePath,
 		WriteResult.BytesWritten,
 		DataAssetsArray.Num(),

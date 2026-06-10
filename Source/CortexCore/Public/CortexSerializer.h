@@ -5,9 +5,64 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 
+enum class ECortexSerializationPolicyLabel : uint8
+{
+	ReflectedRead,
+	ExportableRead
+};
+
+enum class ECortexSerializationSeverity : uint8
+{
+	Warning,
+	Error
+};
+
+struct CORTEXCORE_API FCortexSerializationIssue
+{
+	FString Field;
+	FString Issue;
+	FString Code;
+	ECortexSerializationSeverity Severity = ECortexSerializationSeverity::Warning;
+	bool bDegraded = false;
+	bool bOmitted = false;
+};
+
+struct CORTEXCORE_API FCortexSerializationPolicy
+{
+	ECortexSerializationPolicyLabel Label = ECortexSerializationPolicyLabel::ReflectedRead;
+	bool bIncludeTextMetadata = true;
+	int32 MaxDepth = 8;
+	bool bExpandInstancedSubobjects = false;
+	TFunction<bool(const FProperty*)> PropertyAdmissionRule;
+
+	bool ShouldAdmitProperty(const FProperty* Property) const
+	{
+		return Property != nullptr && (!PropertyAdmissionRule || PropertyAdmissionRule(Property));
+	}
+};
+
+struct CORTEXCORE_API FCortexPropertySerializationResult
+{
+	TSharedPtr<FJsonValue> JsonValue;
+	TArray<FCortexSerializationIssue> Issues;
+	bool bPartial = false;
+};
+
 class CORTEXCORE_API FCortexSerializer
 {
 public:
+	/** Deep serialize a UObject using a policy-driven recursive property admission rule. */
+	static FCortexPropertySerializationResult ObjectToJsonDeep(const UObject* Object, const FCortexSerializationPolicy& Policy);
+
+	/** Deep serialize a UStruct instance using a policy-driven recursive property admission rule. */
+	static FCortexPropertySerializationResult StructToJsonDeep(const UStruct* StructType, const void* StructData, const FCortexSerializationPolicy& Policy);
+
+	/** Deep serialize a single FProperty value. FieldPath is used for structured diagnostics. */
+	static FCortexPropertySerializationResult PropertyToJsonDeep(const FProperty* Property, const void* ValuePtr, const FCortexSerializationPolicy& Policy, const FString& FieldPath);
+
+	/** Convert structured serializer issues into payload JSON. */
+	static TArray<TSharedPtr<FJsonValue>> SerializationIssuesToJson(const TArray<FCortexSerializationIssue>& Issues);
+
 	/** Serialize a UStruct instance to a JSON object using UProperty reflection */
 	static TSharedPtr<FJsonObject> StructToJson(const UStruct* StructType, const void* StructData);
 

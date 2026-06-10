@@ -21,6 +21,134 @@ TMap<const UScriptStruct*, TArray<UScriptStruct*>> FCortexSerializer::SubtypeCac
 TMap<const UScriptStruct*, bool> FCortexSerializer::PositionalNumericStructCache;
 const FString FCortexSerializer::ChangedMarker = TEXT("<changed>");
 
+namespace
+{
+	void AppendSerializationIssues(FCortexPropertySerializationResult& Target, const FCortexPropertySerializationResult& Source)
+	{
+		Target.Issues.Append(Source.Issues);
+		Target.bPartial = Target.bPartial || Source.bPartial;
+	}
+
+	FCortexPropertySerializationResult MakeJsonObjectResult(TSharedPtr<FJsonObject> Object)
+	{
+		FCortexPropertySerializationResult Result;
+		Result.JsonValue = MakeShared<FJsonValueObject>(Object.IsValid() ? Object : MakeShared<FJsonObject>());
+		return Result;
+	}
+
+	FString JoinFieldPath(const FString& Parent, const FString& Child)
+	{
+		return Parent.IsEmpty() ? Child : Parent + TEXT(".") + Child;
+	}
+
+	FString IndexedFieldPath(const FString& Parent, int32 Index)
+	{
+		return FString::Printf(TEXT("%s[%d]"), *Parent, Index);
+	}
+
+	void AddIssue(
+		FCortexPropertySerializationResult& Result,
+		const FString& Field,
+		const FString& Code,
+		const FString& Message,
+		ECortexSerializationSeverity Severity,
+		bool bDegraded,
+		bool bOmitted)
+	{
+		FCortexSerializationIssue Issue;
+		Issue.Field = Field;
+		Issue.Code = Code;
+		Issue.Issue = Message;
+		Issue.Severity = Severity;
+		Issue.bDegraded = bDegraded;
+		Issue.bOmitted = bOmitted;
+		Result.Issues.Add(Issue);
+		Result.bPartial = Result.bPartial || bDegraded || bOmitted;
+	}
+
+	bool IsObjectIdentityProperty(const FProperty* Property)
+	{
+		return CastField<FObjectProperty>(Property) != nullptr
+			|| CastField<FClassProperty>(Property) != nullptr
+			|| CastField<FSoftObjectProperty>(Property) != nullptr
+			|| CastField<FSoftClassProperty>(Property) != nullptr;
+	}
+
+	bool HasObjectIdentityValue(const FProperty* Property, const void* ValuePtr)
+	{
+		if (const FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(Property))
+		{
+			return !SoftObjectProperty->GetPropertyValue(ValuePtr).ToSoftObjectPath().IsNull();
+		}
+
+		if (const FSoftClassProperty* SoftClassProperty = CastField<FSoftClassProperty>(Property))
+		{
+			return !SoftClassProperty->GetPropertyValue(ValuePtr).ToSoftObjectPath().IsNull();
+		}
+
+		if (const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(Property))
+		{
+			return ObjectProperty->GetObjectPropertyValue(ValuePtr) != nullptr;
+		}
+
+		if (const FClassProperty* ClassProperty = CastField<FClassProperty>(Property))
+		{
+			return ClassProperty->GetObjectPropertyValue(ValuePtr) != nullptr;
+		}
+
+		return false;
+	}
+
+	TSharedPtr<FJsonValue> ObjectIdentityToJson(const FProperty* Property, const void* ValuePtr)
+	{
+		if (const FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(Property))
+		{
+			const FSoftObjectPtr& SoftPtr = SoftObjectProperty->GetPropertyValue(ValuePtr);
+			return MakeShared<FJsonValueString>(SoftPtr.ToSoftObjectPath().ToString());
+		}
+
+		if (const FSoftClassProperty* SoftClassProperty = CastField<FSoftClassProperty>(Property))
+		{
+			const FSoftObjectPtr& SoftPtr = SoftClassProperty->GetPropertyValue(ValuePtr);
+			return MakeShared<FJsonValueString>(SoftPtr.ToSoftObjectPath().ToString());
+		}
+
+		if (const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(Property))
+		{
+			const UObject* Object = ObjectProperty->GetObjectPropertyValue(ValuePtr);
+			if (Object != nullptr)
+			{
+				TSharedPtr<FJsonValue> JsonValue = MakeShared<FJsonValueString>(Object->GetPathName());
+				return JsonValue;
+			}
+
+			TSharedPtr<FJsonValue> JsonValue = MakeShared<FJsonValueNull>();
+			return JsonValue;
+		}
+
+		if (const FClassProperty* ClassProperty = CastField<FClassProperty>(Property))
+		{
+			const UClass* Class = Cast<UClass>(ClassProperty->GetObjectPropertyValue(ValuePtr));
+			if (Class != nullptr)
+			{
+				TSharedPtr<FJsonValue> JsonValue = MakeShared<FJsonValueString>(Class->GetPathName());
+				return JsonValue;
+			}
+
+			TSharedPtr<FJsonValue> JsonValue = MakeShared<FJsonValueNull>();
+			return JsonValue;
+		}
+
+		return MakeShared<FJsonValueNull>();
+	}
+
+	FCortexPropertySerializationResult StructToJsonDeepInternal(
+		const UStruct* StructType,
+		const void* StructData,
+		const FCortexSerializationPolicy& Policy,
+		const FString& BasePath);
+}
+
 TSharedPtr<FJsonObject> FCortexSerializer::ObjectNonDefaultPropertiesToJson(
 	const UObject* Object,
 	const UObject* DefaultObject,
@@ -240,6 +368,356 @@ bool FCortexSerializer::TextFromJson(const TSharedPtr<FJsonValue>& JsonValue, FT
 
 	OutText = FText::FromStringTable(FName(*TableId), Key);
 	return true;
+}
+
+FCortexPropertySerializationResult FCortexSerializer::ObjectToJsonDeep(const UObject* Object, const FCortexSerializationPolicy& Policy)
+{
+	check(IsInGameThread());
+
+	if (Object == nullptr)
+	{
+		return MakeJsonObjectResult(MakeShared<FJsonObject>());
+	}
+
+	return StructToJsonDeep(Object->GetClass(), Object, Policy);
+}
+
+FCortexPropertySerializationResult FCortexSerializer::StructToJsonDeep(const UStruct* StructType, const void* StructData, const FCortexSerializationPolicy& Policy)
+{
+	check(IsInGameThread());
+	return StructToJsonDeepInternal(StructType, StructData, Policy, TEXT(""));
+}
+
+FCortexPropertySerializationResult FCortexSerializer::PropertyToJsonDeep(const FProperty* Property, const void* ValuePtr, const FCortexSerializationPolicy& Policy, const FString& FieldPath)
+{
+	FCortexPropertySerializationResult Result;
+	if (Property == nullptr || ValuePtr == nullptr)
+	{
+		Result.JsonValue = MakeShared<FJsonValueNull>();
+		AddIssue(Result, FieldPath, TEXT("INVALID_PROPERTY"), TEXT("Property or value pointer was null"), ECortexSerializationSeverity::Error, true, true);
+		return Result;
+	}
+
+	if (Policy.MaxDepth < 0)
+	{
+		Result.JsonValue = MakeShared<FJsonValueNull>();
+		AddIssue(Result, FieldPath, TEXT("MAX_DEPTH_EXCEEDED"), TEXT("Maximum serialization depth exceeded"), ECortexSerializationSeverity::Error, true, true);
+		return Result;
+	}
+
+	if (const FTextProperty* TextProp = CastField<FTextProperty>(Property))
+	{
+		const FText& TextValue = TextProp->GetPropertyValue(ValuePtr);
+		TSharedRef<FJsonObject> TextObject = MakeShared<FJsonObject>();
+		TextObject->SetStringField(TEXT("text"), TextValue.ToString());
+
+		FName TableId;
+		FString Key;
+		if (FTextInspector::GetTableIdAndKey(TextValue, TableId, Key))
+		{
+			TextObject->SetStringField(TEXT("string_table"), TableId.ToString());
+			TextObject->SetStringField(TEXT("key"), Key);
+		}
+		else if (Policy.bIncludeTextMetadata && !TextValue.IsEmpty())
+		{
+			AddIssue(
+				Result,
+				FieldPath,
+				TEXT("PARTIAL_TEXT_METADATA"),
+				TEXT("FText namespace/key/string-table/source metadata was unavailable; display text was serialized"),
+				ECortexSerializationSeverity::Warning,
+				true,
+				false);
+		}
+
+		Result.JsonValue = MakeShared<FJsonValueObject>(TextObject);
+		return Result;
+	}
+
+	if (CastField<FDelegateProperty>(Property) != nullptr || CastField<FMulticastDelegateProperty>(Property) != nullptr)
+	{
+		Result.JsonValue = MakeShared<FJsonValueNull>();
+		AddIssue(Result, FieldPath, TEXT("UNSUPPORTED_PROPERTY_TYPE"), TEXT("Delegate properties are not serializable"), ECortexSerializationSeverity::Error, true, true);
+		return Result;
+	}
+
+	if (CastField<FInterfaceProperty>(Property) != nullptr)
+	{
+		const FScriptInterface* InterfaceValue = static_cast<const FScriptInterface*>(ValuePtr);
+		Result.JsonValue = MakeShared<FJsonValueNull>();
+		if (InterfaceValue == nullptr || InterfaceValue->GetObject() == nullptr)
+		{
+			return Result;
+		}
+
+		AddIssue(Result, FieldPath, TEXT("UNSUPPORTED_PROPERTY_TYPE"), TEXT("Interface properties are not serializable"), ECortexSerializationSeverity::Error, true, true);
+		return Result;
+	}
+
+	if (const FStructProperty* StructProp = CastField<FStructProperty>(Property))
+	{
+		if (StructProp->Struct == FInstancedStruct::StaticStruct())
+		{
+			const FInstancedStruct* Instance = static_cast<const FInstancedStruct*>(ValuePtr);
+			if (!Instance->IsValid())
+			{
+				Result.JsonValue = MakeShared<FJsonValueNull>();
+				return Result;
+			}
+
+			FCortexSerializationPolicy NestedPolicy = Policy;
+			--NestedPolicy.MaxDepth;
+			FCortexPropertySerializationResult Inner = StructToJsonDeepInternal(Instance->GetScriptStruct(), Instance->GetMemory(), NestedPolicy, FieldPath);
+			TSharedPtr<FJsonObject> Object = Inner.JsonValue.IsValid() ? Inner.JsonValue->AsObject() : MakeShared<FJsonObject>();
+			Object->SetStringField(TEXT("_struct_type"), Instance->GetScriptStruct()->GetName());
+			Result.JsonValue = MakeShared<FJsonValueObject>(Object);
+			AppendSerializationIssues(Result, Inner);
+			return Result;
+		}
+
+		if (StructProp->Struct == FGameplayTag::StaticStruct()
+			|| StructProp->Struct == FGameplayTagContainer::StaticStruct()
+			|| StructProp->Struct == TBaseStructure<FSoftObjectPath>::Get())
+		{
+			Result.JsonValue = PropertyToJson(Property, ValuePtr);
+			return Result;
+		}
+
+		FCortexSerializationPolicy NestedPolicy = Policy;
+		--NestedPolicy.MaxDepth;
+		FCortexPropertySerializationResult Inner = StructToJsonDeepInternal(StructProp->Struct, ValuePtr, NestedPolicy, FieldPath);
+		Result.JsonValue = Inner.JsonValue;
+		AppendSerializationIssues(Result, Inner);
+		return Result;
+	}
+
+	if (const FArrayProperty* ArrayProp = CastField<FArrayProperty>(Property))
+	{
+		FScriptArrayHelper ArrayHelper(ArrayProp, ValuePtr);
+		TArray<TSharedPtr<FJsonValue>> JsonArray;
+		JsonArray.Reserve(ArrayHelper.Num());
+		FCortexSerializationPolicy NestedPolicy = Policy;
+		--NestedPolicy.MaxDepth;
+		for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+		{
+			FCortexPropertySerializationResult Element = PropertyToJsonDeep(ArrayProp->Inner, ArrayHelper.GetRawPtr(Index), NestedPolicy, IndexedFieldPath(FieldPath, Index));
+			JsonArray.Add(Element.JsonValue.IsValid() ? Element.JsonValue : MakeShared<FJsonValueNull>());
+			AppendSerializationIssues(Result, Element);
+		}
+		Result.JsonValue = MakeShared<FJsonValueArray>(JsonArray);
+		return Result;
+	}
+
+	if (const FSetProperty* SetProp = CastField<FSetProperty>(Property))
+	{
+		FScriptSetHelper SetHelper(SetProp, ValuePtr);
+		TArray<TSharedPtr<FJsonValue>> JsonArray;
+		FCortexSerializationPolicy NestedPolicy = Policy;
+		--NestedPolicy.MaxDepth;
+		for (int32 SparseIndex = 0; SparseIndex < SetHelper.GetMaxIndex(); ++SparseIndex)
+		{
+			if (!SetHelper.IsValidIndex(SparseIndex))
+			{
+				continue;
+			}
+
+			FCortexPropertySerializationResult Element = PropertyToJsonDeep(
+				SetProp->ElementProp,
+				SetHelper.GetElementPtr(SparseIndex),
+				NestedPolicy,
+				IndexedFieldPath(FieldPath, JsonArray.Num()));
+			JsonArray.Add(Element.JsonValue.IsValid() ? Element.JsonValue : MakeShared<FJsonValueNull>());
+			AppendSerializationIssues(Result, Element);
+		}
+		if (JsonArray.Num() > 0)
+		{
+			AddIssue(Result, FieldPath, TEXT("NON_DETERMINISTIC_SET_ORDER"), TEXT("Set order follows Unreal set iteration order"), ECortexSerializationSeverity::Warning, true, false);
+		}
+		Result.JsonValue = MakeShared<FJsonValueArray>(JsonArray);
+		return Result;
+	}
+
+	if (const FMapProperty* MapProp = CastField<FMapProperty>(Property))
+	{
+		FScriptMapHelper MapHelper(MapProp, ValuePtr);
+		struct FPendingMapEntry
+		{
+			FString KeyString;
+			int32 SparseIndex = INDEX_NONE;
+		};
+
+		TArray<FPendingMapEntry> Entries;
+		const bool bStringLikeKeys = CastField<FStrProperty>(MapProp->KeyProp) != nullptr || CastField<FNameProperty>(MapProp->KeyProp) != nullptr;
+		TSet<FString> SeenKeys;
+		bool bHasKeyCollision = false;
+		FCortexSerializationPolicy NestedPolicy = Policy;
+		--NestedPolicy.MaxDepth;
+
+		for (int32 SparseIndex = 0; SparseIndex < MapHelper.GetMaxIndex(); ++SparseIndex)
+		{
+			if (!MapHelper.IsValidIndex(SparseIndex))
+			{
+				continue;
+			}
+
+			FString KeyString;
+			MapProp->KeyProp->ExportTextItem_Direct(KeyString, MapHelper.GetKeyPtr(SparseIndex), nullptr, nullptr, PPF_None);
+			bHasKeyCollision = bHasKeyCollision || SeenKeys.Contains(KeyString);
+			SeenKeys.Add(KeyString);
+			Entries.Add({KeyString, SparseIndex});
+		}
+
+		if (bStringLikeKeys && !bHasKeyCollision)
+		{
+			TSharedPtr<FJsonObject> ObjectMap = MakeShared<FJsonObject>();
+			for (const FPendingMapEntry& Entry : Entries)
+			{
+				FCortexPropertySerializationResult Value = PropertyToJsonDeep(
+					MapProp->ValueProp,
+					MapHelper.GetValuePtr(Entry.SparseIndex),
+					NestedPolicy,
+					JoinFieldPath(FieldPath, Entry.KeyString));
+				ObjectMap->SetField(Entry.KeyString, Value.JsonValue.IsValid() ? Value.JsonValue : MakeShared<FJsonValueNull>());
+				AppendSerializationIssues(Result, Value);
+			}
+			Result.JsonValue = MakeShared<FJsonValueObject>(ObjectMap);
+		}
+		else
+		{
+			TArray<TSharedPtr<FJsonValue>> EntryArray;
+			EntryArray.Reserve(Entries.Num());
+			for (int32 EntryIndex = 0; EntryIndex < Entries.Num(); ++EntryIndex)
+			{
+				const FPendingMapEntry& PendingEntry = Entries[EntryIndex];
+				FCortexPropertySerializationResult Key = PropertyToJsonDeep(
+					MapProp->KeyProp,
+					MapHelper.GetKeyPtr(PendingEntry.SparseIndex),
+					NestedPolicy,
+					IndexedFieldPath(FieldPath, EntryIndex) + TEXT(".key"));
+				FCortexPropertySerializationResult Value = PropertyToJsonDeep(
+					MapProp->ValueProp,
+					MapHelper.GetValuePtr(PendingEntry.SparseIndex),
+					NestedPolicy,
+					IndexedFieldPath(FieldPath, EntryIndex) + TEXT(".value"));
+				TSharedRef<FJsonObject> EntryObject = MakeShared<FJsonObject>();
+				EntryObject->SetField(TEXT("key"), Key.JsonValue.IsValid() ? Key.JsonValue : MakeShared<FJsonValueString>(PendingEntry.KeyString));
+				EntryObject->SetField(TEXT("value"), Value.JsonValue.IsValid() ? Value.JsonValue : MakeShared<FJsonValueNull>());
+				EntryArray.Add(MakeShared<FJsonValueObject>(EntryObject));
+				AppendSerializationIssues(Result, Key);
+				AppendSerializationIssues(Result, Value);
+			}
+
+			TSharedRef<FJsonObject> EntriesObject = MakeShared<FJsonObject>();
+			EntriesObject->SetArrayField(TEXT("entries"), EntryArray);
+			Result.JsonValue = MakeShared<FJsonValueObject>(EntriesObject);
+		}
+		return Result;
+	}
+
+	if (IsObjectIdentityProperty(Property))
+	{
+		Result.JsonValue = ObjectIdentityToJson(Property, ValuePtr);
+		if (HasObjectIdentityValue(Property, ValuePtr)
+			&& CastField<FSoftObjectProperty>(Property) == nullptr
+			&& CastField<FSoftClassProperty>(Property) == nullptr)
+		{
+			AddIssue(Result, FieldPath, TEXT("OBJECT_REFERENCE_IDENTITY_ONLY"), TEXT("Object reference serialized as identity only"), ECortexSerializationSeverity::Warning, true, false);
+		}
+		return Result;
+	}
+
+	Result.JsonValue = PropertyToJson(Property, ValuePtr);
+	if (!Result.JsonValue.IsValid() || Result.JsonValue->IsNull())
+	{
+		AddIssue(
+			Result,
+			FieldPath,
+			TEXT("UNSUPPORTED_PROPERTY_TYPE"),
+			FString::Printf(TEXT("Unsupported property type: %s"), *Property->GetClass()->GetName()),
+			ECortexSerializationSeverity::Error,
+			true,
+			true);
+	}
+	return Result;
+}
+
+TArray<TSharedPtr<FJsonValue>> FCortexSerializer::SerializationIssuesToJson(const TArray<FCortexSerializationIssue>& Issues)
+{
+	TArray<TSharedPtr<FJsonValue>> JsonIssues;
+	JsonIssues.Reserve(Issues.Num());
+	for (const FCortexSerializationIssue& Issue : Issues)
+	{
+		TSharedRef<FJsonObject> IssueObject = MakeShared<FJsonObject>();
+		IssueObject->SetStringField(TEXT("field"), Issue.Field);
+		IssueObject->SetStringField(TEXT("issue"), Issue.Issue);
+		IssueObject->SetStringField(TEXT("code"), Issue.Code);
+		IssueObject->SetStringField(TEXT("severity"), Issue.Severity == ECortexSerializationSeverity::Error ? TEXT("error") : TEXT("warning"));
+		IssueObject->SetBoolField(TEXT("degraded"), Issue.bDegraded);
+		IssueObject->SetBoolField(TEXT("omitted"), Issue.bOmitted);
+		JsonIssues.Add(MakeShared<FJsonValueObject>(IssueObject));
+	}
+	return JsonIssues;
+}
+
+namespace
+{
+	FCortexPropertySerializationResult StructToJsonDeepInternal(
+		const UStruct* StructType,
+		const void* StructData,
+		const FCortexSerializationPolicy& Policy,
+		const FString& BasePath)
+	{
+		check(IsInGameThread());
+
+		TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
+		FCortexPropertySerializationResult Result = MakeJsonObjectResult(JsonObject);
+		if (StructType == nullptr || StructData == nullptr)
+		{
+			return Result;
+		}
+
+		if (StructType == FInstancedStruct::StaticStruct())
+		{
+			const FInstancedStruct* Instance = static_cast<const FInstancedStruct*>(StructData);
+			if (Instance == nullptr || !Instance->IsValid())
+			{
+				return Result;
+			}
+
+			FCortexSerializationPolicy NestedPolicy = Policy;
+			--NestedPolicy.MaxDepth;
+			FCortexPropertySerializationResult Inner = StructToJsonDeepInternal(
+				Instance->GetScriptStruct(),
+				Instance->GetMemory(),
+				NestedPolicy,
+				BasePath);
+			TSharedPtr<FJsonObject> Object = Inner.JsonValue.IsValid() ? Inner.JsonValue->AsObject() : MakeShared<FJsonObject>();
+			Object->SetStringField(TEXT("_struct_type"), Instance->GetScriptStruct()->GetName());
+			Inner.JsonValue = MakeShared<FJsonValueObject>(Object);
+			return Inner;
+		}
+
+		for (TFieldIterator<FProperty> It(StructType); It; ++It)
+		{
+			const FProperty* Property = *It;
+			if (!Policy.ShouldAdmitProperty(Property))
+			{
+				continue;
+			}
+
+			const FString FieldName = Property->GetName();
+			const FString Path = JoinFieldPath(BasePath, FieldName);
+			const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(StructData);
+			FCortexPropertySerializationResult PropertyResult = FCortexSerializer::PropertyToJsonDeep(Property, ValuePtr, Policy, Path);
+			if (PropertyResult.JsonValue.IsValid())
+			{
+				JsonObject->SetField(FieldName, PropertyResult.JsonValue);
+			}
+			AppendSerializationIssues(Result, PropertyResult);
+		}
+
+		return Result;
+	}
 }
 
 TSharedPtr<FJsonObject> FCortexSerializer::StructToJson(const UStruct* StructType, const void* StructData)
