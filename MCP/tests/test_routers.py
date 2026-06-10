@@ -465,3 +465,31 @@ def test_data_router_forwards_compare_data_json_payload():
             "mode": "datatable_rows",
         },
     )
+
+
+def test_data_router_forwards_export_schema_json_payload():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "success": True,
+        "data": {
+            "success": True,
+            "partial": False,
+            "warnings": [],
+            "errors": [],
+            "files_written": ["Saved/CortexExports/schema.json"],
+            "targets_touched": [],
+            "counts": {"datatables": 1, "structs": 3, "data_asset_classes": 1, "string_tables": 1},
+            "out_path": "Saved/CortexExports/schema.json",
+            "canonical_out_path": "D:/Project/Saved/CortexExports/schema.json",
+            "bytes_written": 1024,
+        },
+    }
+
+    router = make_router("data", connection, "data docs")
+    payload = json.loads(router("export_schema_json", {"out_path": "Saved/CortexExports/schema.json"}))
+
+    assert payload["counts"]["structs"] == 3
+    connection.send_command.assert_called_once_with(
+        "data.export_schema_json",
+        {"out_path": "Saved/CortexExports/schema.json"},
+    )

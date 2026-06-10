@@ -77,8 +77,9 @@ _COMPOSITE_HINTS: dict[str, str] = {
     "data": (
         "For large raw DataTable, StringTable, or DataAsset reads, use "
         "export_datatable_json, export_string_table_json, export_data_assets_json, "
-        "export_bulk_json, or compare_data_json through data_cmd. These commands write JSON files "
-        "or reconcile reports and return compact summaries; do not read exported files back into MCP responses.\n"
+        "export_schema_json, export_bulk_json, or compare_data_json through data_cmd. "
+        "Schema snapshots and raw exports write JSON files and return compact summaries; "
+        "do not read exported files back into MCP responses.\n"
     ),
     "material": "For creating a full material graph from scratch, use material_compose instead of chaining material_cmd calls.\n",
     "blueprint": "For creating or updating a full Blueprint, use blueprint_compose instead of chaining blueprint_cmd calls.\n",

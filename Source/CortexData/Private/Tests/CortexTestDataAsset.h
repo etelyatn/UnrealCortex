@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/DataAsset.h"
+#include "StructUtils/InstancedStruct.h"
 #include "UObject/Interface.h"
 #include "CortexTestDataAsset.generated.h"
 
@@ -79,4 +80,21 @@ UCLASS()
 class UCortexDerivedTestDataAsset : public UCortexTestDataAsset
 {
 	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere)
+	FString DerivedOnlyProperty = TEXT("derived editable");
+};
+
+UCLASS()
+class UCortexSchemaInstancedDataAsset : public UDataAsset
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere)
+	FString BaseEditable = TEXT("base editable");
+
+	UPROPERTY(EditAnywhere, meta=(BaseStruct="FCortexSchemaInstancedBase"))
+	FInstancedStruct Payload;
 };

@@ -7,6 +7,7 @@
 #include "Operations/CortexAssetSearchOps.h"
 #include "Operations/CortexCurveTableOps.h"
 #include "Operations/CortexDataExportOps.h"
+#include "Operations/CortexDataSchemaExportOps.h"
 #include "Operations/CortexDataImportQueueOps.h"
 #include "Operations/CortexDataJsonDiffOps.h"
 
@@ -167,6 +168,10 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
     {
         return FCortexDataExportOps::ExportBulkJson(Params);
     }
+    if (Command == TEXT("export_schema_json"))
+    {
+        return FCortexDataSchemaExportOps::ExportSchemaJson(Params);
+    }
     if (Command == TEXT("compare_data_json"))
     {
         return FCortexDataJsonDiffOps::CompareDataJson(Params);
@@ -322,6 +327,13 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Required(TEXT("out_dir"), TEXT("string"), TEXT("Base output directory"))
             .Required(TEXT("items"), TEXT("array"), TEXT("Typed export specs. Each item requires type=datatable|string_table|data_assets, optional name, and optional relative out_path. datatable items use table_path plus optional fields/row_names/row_name_pattern/include_schema. string_table items use string_table_path plus optional key_pattern. data_assets items use class_name/path_filter/asset_paths/include_properties. Item out_path values are always relative to out_dir."))
             .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Continue independent item exports after failures")),
+        FCortexCommandInfo{ TEXT("export_schema_json"), TEXT("Export deterministic Data-domain schema snapshots to a JSON file and return a compact summary") }
+            .Required(TEXT("out_path"), TEXT("string"), TEXT("Output JSON file path"))
+            .Optional(TEXT("datatable_paths"), TEXT("array"), TEXT("Explicit DataTable object paths to include"))
+            .Optional(TEXT("struct_names"), TEXT("array"), TEXT("Explicit UStruct names to seed the struct closure"))
+            .Optional(TEXT("data_asset_classes"), TEXT("array"), TEXT("Explicit DataAsset classes to include"))
+            .Optional(TEXT("string_table_paths"), TEXT("array"), TEXT("Explicit StringTable object paths to include"))
+            .Optional(TEXT("include_inherited"), TEXT("boolean"), TEXT("Include inherited struct fields and class properties; defaults to true")),
         FCortexCommandInfo{ TEXT("compare_data_json"), TEXT("Compare two structured JSON files and write a deterministic reconcile report") }
             .Required(TEXT("left_path"), TEXT("string"), TEXT("First JSON input path"))
             .Required(TEXT("right_path"), TEXT("string"), TEXT("Second JSON input path"))

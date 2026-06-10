@@ -240,6 +240,64 @@ namespace
 			return Asset;
 		}
 
+		UDataTable* CreateSchemaAnnotatedDataTable()
+		{
+			UDataTable* Table = CreateAsset<UDataTable>(TEXT("DT_CortexSchemaAnnotated"));
+			if (Table == nullptr)
+			{
+				return nullptr;
+			}
+
+			Table->RowStruct = FCortexSchemaAnnotatedRow::StaticStruct();
+
+			FCortexSchemaAnnotatedRow Row;
+			Row.Nested.Child.Label = TEXT("row");
+			Row.Payload.InitializeAs<FCortexSchemaInstancedDerived>();
+			Table->AddRow(TEXT("alpha"), Row);
+			return Table;
+		}
+
+		UDataTable* CreateSchemaUnannotatedDataTable()
+		{
+			UDataTable* Table = CreateAsset<UDataTable>(TEXT("DT_CortexSchemaUnannotated"));
+			if (Table == nullptr)
+			{
+				return nullptr;
+			}
+
+			Table->RowStruct = FCortexSchemaUnannotatedRow::StaticStruct();
+
+			FCortexSchemaUnannotatedRow Row;
+			Row.Payload.InitializeAs<FCortexSchemaInstancedDerived>();
+			Table->AddRow(TEXT("alpha"), Row);
+			return Table;
+		}
+
+		UCortexDerivedTestDataAsset* CreateDerivedSchemaDataAsset(const FString& AssetName = TEXT("DA_SchemaDerived"))
+		{
+			UCortexDerivedTestDataAsset* Asset = CreateAsset<UCortexDerivedTestDataAsset>(AssetName);
+			if (Asset == nullptr)
+			{
+				return nullptr;
+			}
+
+			Asset->TestProperty = TEXT("base editable");
+			Asset->DerivedOnlyProperty = TEXT("derived editable");
+			return Asset;
+		}
+
+		UCortexSchemaInstancedDataAsset* CreateSchemaInstancedDataAsset(const FString& AssetName = TEXT("DA_SchemaInstanced"))
+		{
+			UCortexSchemaInstancedDataAsset* Asset = CreateAsset<UCortexSchemaInstancedDataAsset>(AssetName);
+			if (Asset == nullptr)
+			{
+				return nullptr;
+			}
+
+			Asset->Payload.InitializeAs<FCortexSchemaInstancedDerived>();
+			return Asset;
+		}
+
 		FString MakeSavedOutputPath(const FString& FileName) const
 		{
 			return FPaths::Combine(GetSavedRunDir(), FileName);
@@ -432,6 +490,153 @@ namespace
 		}
 
 		return Entries;
+	}
+
+	TArray<TSharedPtr<FJsonObject>> GetObjectArrayEntries(const TSharedPtr<FJsonObject>& FileJson, const FString& FieldName)
+	{
+		TArray<TSharedPtr<FJsonObject>> Entries;
+		if (!FileJson.IsValid())
+		{
+			return Entries;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+		if (!FileJson->TryGetArrayField(FieldName, Values) || Values == nullptr)
+		{
+			return Entries;
+		}
+
+		for (const TSharedPtr<FJsonValue>& Value : *Values)
+		{
+			const TSharedPtr<FJsonObject>* EntryObject = nullptr;
+			if (Value.IsValid() && Value->TryGetObject(EntryObject) && EntryObject != nullptr && EntryObject->IsValid())
+			{
+				Entries.Add(*EntryObject);
+			}
+		}
+
+		return Entries;
+	}
+
+	TSharedPtr<FJsonObject> FindEntryByStringField(
+		const TArray<TSharedPtr<FJsonObject>>& Entries,
+		const FString& FieldName,
+		const FString& ExpectedValue)
+	{
+		for (const TSharedPtr<FJsonObject>& Entry : Entries)
+		{
+			FString Value;
+			if (Entry.IsValid() && Entry->TryGetStringField(FieldName, Value) && Value == ExpectedValue)
+			{
+				return Entry;
+			}
+		}
+
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> FindSchemaStructEntry(const TSharedPtr<FJsonObject>& FileJson, const FString& StructName)
+	{
+		return FindEntryByStringField(GetObjectArrayEntries(FileJson, TEXT("structs")), TEXT("struct_name"), StructName);
+	}
+
+	TSharedPtr<FJsonObject> FindSchemaClassEntry(const TSharedPtr<FJsonObject>& FileJson, const FString& ClassName)
+	{
+		return FindEntryByStringField(GetObjectArrayEntries(FileJson, TEXT("data_asset_classes")), TEXT("class_name"), ClassName);
+	}
+
+	TSharedPtr<FJsonObject> FindSchemaStringTableEntry(const TSharedPtr<FJsonObject>& FileJson, const FString& StringTablePath)
+	{
+		return FindEntryByStringField(GetObjectArrayEntries(FileJson, TEXT("string_tables")), TEXT("string_table_path"), StringTablePath);
+	}
+
+	TSharedPtr<FJsonObject> FindFieldSchema(const TSharedPtr<FJsonObject>& SchemaObject, const FString& FieldName)
+	{
+		if (!SchemaObject.IsValid())
+		{
+			return nullptr;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Fields = nullptr;
+		if (!SchemaObject->TryGetArrayField(TEXT("fields"), Fields) || Fields == nullptr)
+		{
+			return nullptr;
+		}
+
+		for (const TSharedPtr<FJsonValue>& FieldValue : *Fields)
+		{
+			const TSharedPtr<FJsonObject>* FieldObject = nullptr;
+			if (FieldValue.IsValid() && FieldValue->TryGetObject(FieldObject) && FieldObject != nullptr && FieldObject->IsValid())
+			{
+				FString Name;
+				if ((*FieldObject)->TryGetStringField(TEXT("name"), Name) && Name == FieldName)
+				{
+					return *FieldObject;
+				}
+			}
+		}
+
+		return nullptr;
+	}
+
+	bool StructCatalogContains(const TSharedPtr<FJsonObject>& FileJson, const FString& StructName)
+	{
+		return FindSchemaStructEntry(FileJson, StructName).IsValid();
+	}
+
+	bool SchemaEntryHasProperty(const TSharedPtr<FJsonObject>& FileJson, const FString& ClassName, const FString& PropertyName)
+	{
+		const TSharedPtr<FJsonObject> ClassEntry = FindSchemaClassEntry(FileJson, ClassName);
+		if (!ClassEntry.IsValid())
+		{
+			return false;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Properties = nullptr;
+		if (!ClassEntry->TryGetArrayField(TEXT("properties"), Properties) || Properties == nullptr)
+		{
+			return false;
+		}
+
+		for (const TSharedPtr<FJsonValue>& PropertyValue : *Properties)
+		{
+			const TSharedPtr<FJsonObject>* PropertyObject = nullptr;
+			if (PropertyValue.IsValid() && PropertyValue->TryGetObject(PropertyObject) && PropertyObject != nullptr && PropertyObject->IsValid())
+			{
+				FString Name;
+				if ((*PropertyObject)->TryGetStringField(TEXT("name"), Name) && Name == PropertyName)
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	bool WarningsContainSubstring(const TSharedPtr<FJsonObject>& JsonObject, const FString& Needle)
+	{
+		if (!JsonObject.IsValid())
+		{
+			return false;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Warnings = nullptr;
+		if (!JsonObject->TryGetArrayField(TEXT("warnings"), Warnings) || Warnings == nullptr)
+		{
+			return false;
+		}
+
+		for (const TSharedPtr<FJsonValue>& WarningValue : *Warnings)
+		{
+			FString Warning;
+			if (WarningValue.IsValid() && WarningValue->TryGetString(Warning) && Warning.Contains(Needle))
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	FString MakeMissingDataAssetObjectPath(const UDataAsset* Asset)
@@ -639,6 +844,418 @@ bool FCortexDataExportCommandsRegisteredTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("export_datatable_json is registered and validates the missing table"), Result.bSuccess);
 	TestEqual(TEXT("registered command returns domain error, not UnknownCommand"), Result.ErrorCode, CortexErrorCodes::TableNotFound);
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataSchemaExportCommandsRegisteredTest,
+	"Cortex.Data.Export.Schema.CommandsRegistered",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataSchemaExportCommandsRegisteredTest::RunTest(const FString& Parameters)
+{
+	FCortexDataCommandHandler Handler;
+	const TArray<FCortexCommandInfo> Commands = Handler.GetSupportedCommands();
+
+	TestTrue(TEXT("export_schema_json is advertised"),
+		SupportedCommandNamesContain(Commands, TEXT("export_schema_json")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataSchemaExportSummaryOmitsPayloadTest,
+	"Cortex.Data.Export.Schema.SummaryOmitsPayload",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataSchemaExportSummaryOmitsPayloadTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	UDataTable* Table = Fixture.CreateSchemaAnnotatedDataTable();
+	TestNotNull(TEXT("schema table fixture is created"), Table);
+	if (Table == nullptr)
+	{
+		return false;
+	}
+
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_path"), Fixture.MakeSavedOutputPath(TEXT("schema-summary.json")));
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_schema_json"), Params);
+	TestTrue(TEXT("schema export succeeds"), Result.bSuccess);
+	TestTrue(TEXT("schema summary returns data"), Result.Data.IsValid());
+	if (!Result.Data.IsValid())
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("summary omits datatables payload"), !Result.Data->HasField(TEXT("datatables")));
+	TestTrue(TEXT("summary omits structs payload"), !Result.Data->HasField(TEXT("structs")));
+	TestTrue(TEXT("summary has counts"), Result.Data->HasTypedField<EJson::Object>(TEXT("counts")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataSchemaExportWritesCanonicalSnapshotTest,
+	"Cortex.Data.Export.Schema.WritesCanonicalSnapshot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataSchemaExportWritesCanonicalSnapshotTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	UDataTable* Table = Fixture.CreateSchemaAnnotatedDataTable();
+	UStringTable* StringTable = Fixture.CreateStringTable();
+	UCortexDerivedTestDataAsset* DataAsset = Fixture.CreateDerivedSchemaDataAsset(TEXT("DA_SchemaDerived"));
+	TestNotNull(TEXT("schema DataTable exists"), Table);
+	TestNotNull(TEXT("schema StringTable exists"), StringTable);
+	TestNotNull(TEXT("schema DataAsset exists"), DataAsset);
+	if (Table == nullptr || StringTable == nullptr || DataAsset == nullptr)
+	{
+		return false;
+	}
+
+	const FString OutPath = Fixture.MakeSavedOutputPath(TEXT("schema-canonical.json"));
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_path"), OutPath);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_schema_json"), Params);
+	TestTrue(TEXT("schema export succeeds"), Result.bSuccess);
+
+	TSharedPtr<FJsonObject> FileJson;
+	FString ParseError;
+	TestTrue(TEXT("schema file parses"), Fixture.TryReadJsonFile(OutPath, FileJson, ParseError));
+	if (!ParseError.IsEmpty())
+	{
+		AddError(ParseError);
+	}
+	if (FileJson.IsValid())
+	{
+		TestEqual(TEXT("schema version is 1"), static_cast<int32>(FileJson->GetNumberField(TEXT("schema_version"))), 1);
+		TestTrue(TEXT("datatables array exists"), FileJson->HasTypedField<EJson::Array>(TEXT("datatables")));
+		TestTrue(TEXT("structs array exists"), FileJson->HasTypedField<EJson::Array>(TEXT("structs")));
+		TestTrue(TEXT("data_asset_classes array exists"), FileJson->HasTypedField<EJson::Array>(TEXT("data_asset_classes")));
+		TestTrue(TEXT("string_tables array exists"), FileJson->HasTypedField<EJson::Array>(TEXT("string_tables")));
+		TestFalse(TEXT("gameplay tags section is absent in v1"), FileJson->HasField(TEXT("gameplay_tags")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataSchemaExportSelectorDatatablesTest,
+	"Cortex.Data.Export.Schema.Selectors.Datatables",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataSchemaExportSelectorDatatablesTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	UDataTable* Table = Fixture.CreateSchemaAnnotatedDataTable();
+	TestNotNull(TEXT("schema table exists"), Table);
+	if (Table == nullptr)
+	{
+		return false;
+	}
+
+	const FString OutPath = Fixture.MakeSavedOutputPath(TEXT("schema-datatable-selector.json"));
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_path"), OutPath);
+	AddStringArrayField(Params, TEXT("datatable_paths"), TArray<FString>{ Table->GetPathName() });
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_schema_json"), Params);
+	TestTrue(TEXT("schema export succeeds"), Result.bSuccess);
+
+	TSharedPtr<FJsonObject> FileJson;
+	FString ParseError;
+	TestTrue(TEXT("schema file parses"), Fixture.TryReadJsonFile(OutPath, FileJson, ParseError));
+	if (FileJson.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonObject>> Datatables = GetObjectArrayEntries(FileJson, TEXT("datatables"));
+		TestEqual(TEXT("selector export writes one DataTable entry"), Datatables.Num(), 1);
+		if (Datatables.Num() == 1)
+		{
+			TestEqual(TEXT("DataTable entry keeps table path"), Datatables[0]->GetStringField(TEXT("table_path")), Table->GetPathName());
+			TestEqual(TEXT("DataTable entry keeps row struct"), Datatables[0]->GetStringField(TEXT("row_struct")), TEXT("FCortexSchemaAnnotatedRow"));
+			TestTrue(TEXT("DataTable entry emits inline fields"), Datatables[0]->HasTypedField<EJson::Array>(TEXT("fields")));
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataSchemaExportSelectorStructsTest,
+	"Cortex.Data.Export.Schema.Selectors.Structs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataSchemaExportSelectorStructsTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+	const FString OutPath = Fixture.MakeSavedOutputPath(TEXT("schema-struct-selector.json"));
+
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_path"), OutPath);
+	AddStringArrayField(Params, TEXT("struct_names"), TArray<FString>{ TEXT("FCortexSchemaParentStruct") });
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_schema_json"), Params);
+	TestTrue(TEXT("explicit struct export succeeds"), Result.bSuccess);
+
+	TSharedPtr<FJsonObject> FileJson;
+	FString ParseError;
+	TestTrue(TEXT("explicit struct schema file parses"), Fixture.TryReadJsonFile(OutPath, FileJson, ParseError));
+	if (FileJson.IsValid())
+	{
+		TestTrue(TEXT("explicit struct entry exists"), StructCatalogContains(FileJson, TEXT("FCortexSchemaParentStruct")));
+		TestTrue(TEXT("nested struct closure exists"), StructCatalogContains(FileJson, TEXT("FCortexSchemaLeafStruct")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataSchemaExportSelectorDataAssetClassesTest,
+	"Cortex.Data.Export.Schema.Selectors.DataAssetClasses",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataSchemaExportSelectorDataAssetClassesTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	UCortexDerivedTestDataAsset* DataAsset = Fixture.CreateDerivedSchemaDataAsset();
+	TestNotNull(TEXT("derived DataAsset exists"), DataAsset);
+	if (DataAsset == nullptr)
+	{
+		return false;
+	}
+
+	const FString OutPath = Fixture.MakeSavedOutputPath(TEXT("schema-dataasset-selector.json"));
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_path"), OutPath);
+	AddStringArrayField(Params, TEXT("data_asset_classes"), TArray<FString>{ DataAsset->GetClass()->GetPathName() });
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_schema_json"), Params);
+	TestTrue(TEXT("data asset class selector succeeds"), Result.bSuccess);
+
+	TSharedPtr<FJsonObject> FileJson;
+	FString ParseError;
+	TestTrue(TEXT("data asset class selector file parses"), Fixture.TryReadJsonFile(OutPath, FileJson, ParseError));
+	if (FileJson.IsValid())
+	{
+		TestTrue(TEXT("derived class entry exists"), FindSchemaClassEntry(FileJson, TEXT("CortexDerivedTestDataAsset")).IsValid());
+		TestTrue(TEXT("include_inherited=true keeps base property"),
+			SchemaEntryHasProperty(FileJson, TEXT("CortexDerivedTestDataAsset"), TEXT("TestProperty")));
+		TestTrue(TEXT("include_inherited=true keeps derived property"),
+			SchemaEntryHasProperty(FileJson, TEXT("CortexDerivedTestDataAsset"), TEXT("DerivedOnlyProperty")));
+	}
+
+	const FString NoInheritedOutPath = Fixture.MakeSavedOutputPath(TEXT("schema-dataasset-selector-no-inherited.json"));
+	Params->SetStringField(TEXT("out_path"), NoInheritedOutPath);
+	Params->SetBoolField(TEXT("include_inherited"), false);
+
+	const FCortexCommandResult NoInheritedResult = Router.Execute(TEXT("data.export_schema_json"), Params);
+	TestTrue(TEXT("include_inherited=false succeeds"), NoInheritedResult.bSuccess);
+
+	TSharedPtr<FJsonObject> NoInheritedFileJson;
+	ParseError.Reset();
+	TestTrue(TEXT("include_inherited=false schema file parses"), Fixture.TryReadJsonFile(NoInheritedOutPath, NoInheritedFileJson, ParseError));
+	if (NoInheritedFileJson.IsValid())
+	{
+		TestFalse(TEXT("include_inherited=false omits base property"),
+			SchemaEntryHasProperty(NoInheritedFileJson, TEXT("CortexDerivedTestDataAsset"), TEXT("TestProperty")));
+		TestTrue(TEXT("include_inherited=false keeps derived property"),
+			SchemaEntryHasProperty(NoInheritedFileJson, TEXT("CortexDerivedTestDataAsset"), TEXT("DerivedOnlyProperty")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataSchemaExportSelectorStringTablesTest,
+	"Cortex.Data.Export.Schema.Selectors.StringTables",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataSchemaExportSelectorStringTablesTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	UStringTable* StringTable = Fixture.CreateStringTable();
+	TestNotNull(TEXT("schema StringTable exists"), StringTable);
+	if (StringTable == nullptr)
+	{
+		return false;
+	}
+
+	const FString OutPath = Fixture.MakeSavedOutputPath(TEXT("schema-string-table-selector.json"));
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_path"), OutPath);
+	AddStringArrayField(Params, TEXT("string_table_paths"), TArray<FString>{ StringTable->GetPathName() });
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_schema_json"), Params);
+	TestTrue(TEXT("string table selector succeeds"), Result.bSuccess);
+
+	TSharedPtr<FJsonObject> FileJson;
+	FString ParseError;
+	TestTrue(TEXT("string table selector file parses"), Fixture.TryReadJsonFile(OutPath, FileJson, ParseError));
+	if (FileJson.IsValid())
+	{
+		const TSharedPtr<FJsonObject> Entry = FindSchemaStringTableEntry(FileJson, StringTable->GetPathName());
+		TestTrue(TEXT("string table metadata entry exists"), Entry.IsValid());
+		if (Entry.IsValid())
+		{
+			TestTrue(TEXT("string table metadata includes entry_count"), Entry->HasTypedField<EJson::Number>(TEXT("entry_count")));
+			TestFalse(TEXT("string table metadata omits raw entries"), Entry->HasField(TEXT("entries")));
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataSchemaExportInstancedStructCoverageTest,
+	"Cortex.Data.Export.Schema.InstancedStructCoverage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataSchemaExportInstancedStructCoverageTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	UDataTable* AnnotatedTable = Fixture.CreateSchemaAnnotatedDataTable();
+	UDataTable* UnannotatedTable = Fixture.CreateSchemaUnannotatedDataTable();
+	UCortexSchemaInstancedDataAsset* InstancedAsset = Fixture.CreateSchemaInstancedDataAsset();
+	TestNotNull(TEXT("annotated table exists"), AnnotatedTable);
+	TestNotNull(TEXT("unannotated table exists"), UnannotatedTable);
+	TestNotNull(TEXT("instanced asset exists"), InstancedAsset);
+	if (AnnotatedTable == nullptr || UnannotatedTable == nullptr || InstancedAsset == nullptr)
+	{
+		return false;
+	}
+
+	const FString OutPath = Fixture.MakeSavedOutputPath(TEXT("schema-instanced-structs.json"));
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_path"), OutPath);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_schema_json"), Params);
+	TestTrue(TEXT("instanced struct schema export succeeds"), Result.bSuccess);
+
+	TSharedPtr<FJsonObject> FileJson;
+	FString ParseError;
+	TestTrue(TEXT("instanced struct schema file parses"), Fixture.TryReadJsonFile(OutPath, FileJson, ParseError));
+	if (FileJson.IsValid())
+	{
+		TestTrue(TEXT("annotated instanced base schema exists"), StructCatalogContains(FileJson, TEXT("FCortexSchemaInstancedBase")));
+		TestTrue(TEXT("annotated instanced subtype schema exists"), StructCatalogContains(FileJson, TEXT("FCortexSchemaInstancedDerived")));
+		TestTrue(TEXT("unannotated snapshot is partial"), FileJson->GetBoolField(TEXT("partial")));
+		const TSharedPtr<FJsonObject> UnannotatedStruct = FindSchemaStructEntry(FileJson, TEXT("FCortexSchemaUnannotatedRow"));
+		const TSharedPtr<FJsonObject> PayloadField = FindFieldSchema(UnannotatedStruct, TEXT("Payload"));
+		TestTrue(TEXT("unannotated field marks partial"), PayloadField.IsValid() && PayloadField->GetBoolField(TEXT("partial")));
+		TestTrue(TEXT("unannotated warnings mention BaseStruct"), WarningsContainSubstring(FileJson, TEXT("BaseStruct")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataSchemaExportInvalidPathRejectedTest,
+	"Cortex.Data.Export.Schema.InvalidPathRejected",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataSchemaExportInvalidPathRejectedTest::RunTest(const FString& Parameters)
+{
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_path"), TEXT("../../schema-invalid.json"));
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_schema_json"), Params);
+	TestFalse(TEXT("invalid out_path is rejected"), Result.bSuccess);
+	TestEqual(TEXT("invalid out_path uses InvalidField"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataSchemaExportMalformedSelectorsRejectedTest,
+	"Cortex.Data.Export.Schema.MalformedSelectorsRejected",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataSchemaExportMalformedSelectorsRejectedTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("out_path"), Fixture.MakeSavedOutputPath(TEXT("schema-bad-selectors.json")));
+
+	TArray<TSharedPtr<FJsonValue>> BadSelectors;
+	BadSelectors.Add(MakeShared<FJsonValueNumber>(42.0));
+	Params->SetArrayField(TEXT("datatable_paths"), BadSelectors);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.export_schema_json"), Params);
+	TestFalse(TEXT("malformed selector array is rejected"), Result.bSuccess);
+	TestEqual(TEXT("malformed selector uses InvalidField"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataSchemaExportDeterministicRepeatedRunsTest,
+	"Cortex.Data.Export.Schema.DeterministicRepeatedRuns",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataSchemaExportDeterministicRepeatedRunsTest::RunTest(const FString& Parameters)
+{
+	FCortexDataExportTestFixture Fixture;
+	FCortexCommandRouter Router = CreateDataExportTestRouter();
+
+	UDataTable* Table = Fixture.CreateSchemaAnnotatedDataTable();
+	UStringTable* StringTable = Fixture.CreateStringTable();
+	UCortexDerivedTestDataAsset* DataAsset = Fixture.CreateDerivedSchemaDataAsset();
+	TestNotNull(TEXT("schema DataTable exists"), Table);
+	TestNotNull(TEXT("schema StringTable exists"), StringTable);
+	TestNotNull(TEXT("schema DataAsset exists"), DataAsset);
+	if (Table == nullptr || StringTable == nullptr || DataAsset == nullptr)
+	{
+		return false;
+	}
+
+	const FString FirstOutPath = Fixture.MakeSavedOutputPath(TEXT("schema-first.json"));
+	const FString SecondOutPath = Fixture.MakeSavedOutputPath(TEXT("schema-second.json"));
+
+	auto ExecuteSchemaExport = [&Router](const FString& OutPath)
+	{
+		TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("out_path"), OutPath);
+		return Router.Execute(TEXT("data.export_schema_json"), Params);
+	};
+
+	const FCortexCommandResult FirstResult = ExecuteSchemaExport(FirstOutPath);
+	const FCortexCommandResult SecondResult = ExecuteSchemaExport(SecondOutPath);
+	TestTrue(TEXT("first schema export succeeds"), FirstResult.bSuccess);
+	TestTrue(TEXT("second schema export succeeds"), SecondResult.bSuccess);
+
+	TArray<uint8> FirstBytes;
+	TArray<uint8> SecondBytes;
+	FString Error;
+	TestTrue(TEXT("first schema file bytes read"), Fixture.TryReadFileBytes(FirstOutPath, FirstBytes, Error));
+	TestTrue(TEXT("second schema file bytes read"), Fixture.TryReadFileBytes(SecondOutPath, SecondBytes, Error));
+	TestEqual(TEXT("repeated schema exports are byte-identical"), FirstBytes.Num(), SecondBytes.Num());
+	TestTrue(TEXT("repeated schema exports compare equal"), FirstBytes == SecondBytes);
 	return true;
 }
 
