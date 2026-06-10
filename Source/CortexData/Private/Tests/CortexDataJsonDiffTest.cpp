@@ -375,6 +375,24 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataJsonDiffMalformedJsonFailsWithoutReportTest,
+	"Cortex.Data.JsonDiff.Errors.MalformedJson",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataJsonDiffUnsafePathsFailTest,
+	"Cortex.Data.JsonDiff.Errors.UnsafePaths",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataJsonDiffReportCollisionFailsTest,
+	"Cortex.Data.JsonDiff.Errors.ReportCollision",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
 bool FCortexDataJsonDiffCommandsRegisteredTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
@@ -692,5 +710,73 @@ bool FCortexDataJsonDiffNullPresenceFlagsTest::RunTest(const FString& Parameters
 	TestTrue(TEXT("explicit null right value reports present"), MetaDelta->GetBoolField(TEXT("right_present")));
 	TestFalse(TEXT("missing left omits left value"), MetaDelta->HasField(TEXT("left")));
 	TestTrue(TEXT("explicit null right includes right value"), MetaDelta->HasField(TEXT("right")));
+	return true;
+}
+
+bool FCortexDataJsonDiffMalformedJsonFailsWithoutReportTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexDataJsonDiffTestFixture Fixture;
+	const FString LeftPath = Fixture.WriteJsonFile(TEXT("left.json"), TEXT("{"));
+	const FString RightPath = Fixture.WriteJsonFile(TEXT("right.json"), TEXT(R"([{"id":"QuestA","Priority":28}])"));
+	const FString ReportPath = Fixture.MakeSavedPath(TEXT("report.json"));
+
+	const FCortexCommandResult Result = Fixture.CompareJson(
+		LeftPath,
+		RightPath,
+		ReportPath,
+		TEXT("datatable_rows"),
+		TEXT("id"));
+
+	TestFalse(TEXT("malformed JSON compare fails"), Result.bSuccess);
+	TestEqual(TEXT("malformed JSON uses MALFORMED_JSON"), Result.ErrorCode, CortexErrorCodes::MalformedJson);
+	TestFalse(TEXT("malformed JSON writes no report"), Fixture.FileExists(ReportPath));
+	return true;
+}
+
+bool FCortexDataJsonDiffUnsafePathsFailTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexDataJsonDiffTestFixture Fixture;
+	const FString LeftPath = Fixture.WriteJsonFile(TEXT("left.json"), TEXT(R"([{"id":"QuestA","Priority":26}])"));
+	const FString RightPath = Fixture.WriteJsonFile(TEXT("right.json"), TEXT(R"([{"id":"QuestA","Priority":28}])"));
+	const FString ReportPath = FPaths::Combine(
+		TEXT("Saved"),
+		TEXT("CortexJsonDiffTests"),
+		TEXT(".."),
+		TEXT("TraversalEscape"),
+		TEXT("report.json"));
+
+	const FCortexCommandResult Result = Fixture.CompareJson(
+		LeftPath,
+		RightPath,
+		ReportPath,
+		TEXT("datatable_rows"),
+		TEXT("id"));
+
+	TestFalse(TEXT("unsafe path compare fails"), Result.bSuccess);
+	TestEqual(TEXT("unsafe path uses INVALID_FILE_PATH"), Result.ErrorCode, CortexErrorCodes::InvalidFilePath);
+	return true;
+}
+
+bool FCortexDataJsonDiffReportCollisionFailsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexDataJsonDiffTestFixture Fixture;
+	const FString LeftPath = Fixture.WriteJsonFile(TEXT("left.json"), TEXT(R"([{"id":"QuestA","Priority":26}])"));
+	const FString RightPath = Fixture.WriteJsonFile(TEXT("right.json"), TEXT(R"([{"id":"QuestA","Priority":28}])"));
+
+	const FCortexCommandResult Result = Fixture.CompareJson(
+		LeftPath,
+		RightPath,
+		LeftPath,
+		TEXT("datatable_rows"),
+		TEXT("id"));
+
+	TestFalse(TEXT("report collision compare fails"), Result.bSuccess);
+	TestEqual(TEXT("report collision uses INVALID_FILE_PATH"), Result.ErrorCode, CortexErrorCodes::InvalidFilePath);
 	return true;
 }
