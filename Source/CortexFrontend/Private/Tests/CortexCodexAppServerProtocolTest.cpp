@@ -203,9 +203,9 @@ bool FCortexCodexAppServerParseToolAndUsageNotificationsTest::RunTest(const FStr
         State,
         Events);
     TestEqual(TEXT("Token usage update should emit one accounting event"), Events.Num(), 1);
-    TestEqual(TEXT("Total input tokens should come from tokenUsage.total.inputTokens"), Events[0].InputTokens, 30);
-    TestEqual(TEXT("Cached input tokens should come from tokenUsage.total.cachedInputTokens"), Events[0].CacheReadTokens, 11);
-    TestEqual(TEXT("Output tokens should come from tokenUsage.total.outputTokens"), Events[0].OutputTokens, 12);
+    TestEqual(TEXT("Total input tokens should come from tokenUsage.total.inputTokens"), Events[0].InputTokens, static_cast<int64>(30));
+    TestEqual(TEXT("Cached input tokens should come from tokenUsage.total.cachedInputTokens"), Events[0].CacheReadTokens, static_cast<int64>(11));
+    TestEqual(TEXT("Output tokens should come from tokenUsage.total.outputTokens"), Events[0].OutputTokens, static_cast<int64>(12));
 
     return true;
 }

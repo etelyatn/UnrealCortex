@@ -7,27 +7,14 @@
 
 namespace
 {
+    FString JsonValueToTomlLiteral(const TSharedPtr<FJsonValue>& Value);
+
     FString QuoteTomlString(const FString& Value)
     {
         FString Escaped = Value;
         Escaped.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
         Escaped.ReplaceInline(TEXT("\""), TEXT("\\\""));
         return FString::Printf(TEXT("\"%s\""), *Escaped);
-    }
-
-    FString BuildTomlArray(const TArray<FString>& Values)
-    {
-        FString Result = TEXT("[");
-        for (int32 Index = 0; Index < Values.Num(); ++Index)
-        {
-            if (Index > 0)
-            {
-                Result += TEXT(",");
-            }
-            Result += QuoteTomlString(Values[Index]);
-        }
-        Result += TEXT("]");
-        return Result;
     }
 
     FString QuoteCodexConfigValue(const FString& Value)
@@ -37,16 +24,63 @@ namespace
         return FString::Printf(TEXT("\"%s\""), *Escaped);
     }
 
+    FString JsonValueToTomlLiteral(const TSharedPtr<FJsonValue>& Value)
+    {
+        if (!Value.IsValid())
+        {
+            return TEXT("\"\"");
+        }
+
+        switch (Value->Type)
+        {
+        case EJson::String:
+        {
+            FString StringValue;
+            Value->TryGetString(StringValue);
+            return QuoteTomlString(StringValue);
+        }
+
+        case EJson::Boolean:
+        {
+            bool bBoolValue = false;
+            Value->TryGetBool(bBoolValue);
+            return bBoolValue ? TEXT("true") : TEXT("false");
+        }
+
+        case EJson::Number:
+        {
+            double NumberValue = 0.0;
+            Value->TryGetNumber(NumberValue);
+            return FString::SanitizeFloat(NumberValue);
+        }
+
+        case EJson::Array:
+        {
+            const TArray<TSharedPtr<FJsonValue>>& JsonArray = Value->AsArray();
+            TArray<FString> Values;
+            Values.Reserve(JsonArray.Num());
+            for (const TSharedPtr<FJsonValue>& Element : JsonArray)
+            {
+                Values.Add(JsonValueToTomlLiteral(Element));
+            }
+            return FString::Printf(TEXT("[%s]"), *FString::Join(Values, TEXT(",")));
+        }
+
+        default:
+            return TEXT("\"\"");
+        }
+    }
+
     void AddCodexConfigOverride(TArray<FString>& OutOverrides, const FString& Value)
     {
         OutOverrides.Add(TEXT("-c"));
         OutOverrides.Add(QuoteCodexConfigValue(Value));
     }
 
-    void AppendCodexEnvOverrides(
+    void AppendCodexEnvOverrideValues(
         const FString& ServerName,
         const TSharedPtr<FJsonObject>& ServerObject,
-        TArray<FString>& OutOverrides)
+        TMap<FString, TSharedPtr<FJsonValue>>& OutOverrideValues)
     {
         const TSharedPtr<FJsonObject>* EnvObject = nullptr;
         if (!ServerObject->TryGetObjectField(TEXT("env"), EnvObject) || EnvObject == nullptr)
@@ -65,30 +99,9 @@ namespace
             {
                 continue;
             }
-
-            FString EnvText;
-            const TSharedPtr<FJsonValue>& ValueRef = *EnvValue;
-            if (ValueRef->TryGetString(EnvText))
-            {
-            }
-            else if (double NumberValue = 0.0; ValueRef->TryGetNumber(NumberValue))
-            {
-                EnvText = FString::SanitizeFloat(NumberValue);
-            }
-            else if (bool BoolValue = false; ValueRef->TryGetBool(BoolValue))
-            {
-                EnvText = BoolValue ? TEXT("true") : TEXT("false");
-            }
-            else
-            {
-                continue;
-            }
-
-            AddCodexConfigOverride(OutOverrides, FString::Printf(
-                TEXT("mcp_servers.%s.env.%s=%s"),
-                *ServerName,
-                *EnvKey,
-                *QuoteTomlString(EnvText)));
+            OutOverrideValues.Add(
+                FString::Printf(TEXT("mcp_servers.%s.env.%s"), *ServerName, *EnvKey),
+                *EnvValue);
         }
     }
 
@@ -123,38 +136,42 @@ namespace
         return false;
     }
 
-    void AppendServerOverrides(
+    void AppendServerOverrideValues(
         const FString& ServerName,
         const TSharedPtr<FJsonObject>& ServerObject,
-        TArray<FString>& OutOverrides)
+        TMap<FString, TSharedPtr<FJsonValue>>& OutOverrideValues)
     {
         FString Command;
         if (ServerObject->TryGetStringField(TEXT("command"), Command))
         {
-            AddCodexConfigOverride(OutOverrides, FString::Printf(TEXT("mcp_servers.%s.command=%s"), *ServerName, *QuoteTomlString(Command)));
+            OutOverrideValues.Add(
+                FString::Printf(TEXT("mcp_servers.%s.command"), *ServerName),
+                MakeShared<FJsonValueString>(Command));
         }
 
         const TArray<TSharedPtr<FJsonValue>>* ArgsArray = nullptr;
         if (ServerObject->TryGetArrayField(TEXT("args"), ArgsArray) && ArgsArray != nullptr)
         {
-            TArray<FString> Args;
+            TArray<TSharedPtr<FJsonValue>> Args;
             Args.Reserve(ArgsArray->Num());
             for (const TSharedPtr<FJsonValue>& ArgValue : *ArgsArray)
             {
                 FString Arg;
                 if (ArgValue.IsValid() && ArgValue->TryGetString(Arg))
                 {
-                    Args.Add(Arg);
+                    Args.Add(MakeShared<FJsonValueString>(Arg));
                 }
             }
 
             if (Args.Num() > 0)
             {
-                AddCodexConfigOverride(OutOverrides, FString::Printf(TEXT("mcp_servers.%s.args=%s"), *ServerName, *BuildTomlArray(Args)));
+                OutOverrideValues.Add(
+                    FString::Printf(TEXT("mcp_servers.%s.args"), *ServerName),
+                    MakeShared<FJsonValueArray>(Args));
             }
         }
 
-        AppendCodexEnvOverrides(ServerName, ServerObject, OutOverrides);
+        AppendCodexEnvOverrideValues(ServerName, ServerObject, OutOverrideValues);
     }
 }
 
@@ -174,17 +191,41 @@ TArray<FString> FCortexMcpConfigTranslator::BuildClaudeArgs(const FString& McpCo
 TArray<FString> FCortexMcpConfigTranslator::BuildCodexConfigOverrides(const FString& McpConfigPath)
 {
     TArray<FString> Overrides;
+    const TMap<FString, TSharedPtr<FJsonValue>> OverrideValues = BuildCodexConfigOverrideValues(McpConfigPath);
 
+    TArray<FString> Keys;
+    OverrideValues.GetKeys(Keys);
+    Keys.Sort();
+    for (const FString& Key : Keys)
+    {
+        const TSharedPtr<FJsonValue>* Value = OverrideValues.Find(Key);
+        if (Value == nullptr || !Value->IsValid())
+        {
+            continue;
+        }
+
+        AddCodexConfigOverride(Overrides, FString::Printf(
+            TEXT("%s=%s"),
+            *Key,
+            *JsonValueToTomlLiteral(*Value)));
+    }
+
+    return Overrides;
+}
+
+TMap<FString, TSharedPtr<FJsonValue>> FCortexMcpConfigTranslator::BuildCodexConfigOverrideValues(const FString& McpConfigPath)
+{
+    TMap<FString, TSharedPtr<FJsonValue>> OverrideValues;
     TSharedPtr<FJsonObject> RootObject;
     if (!LoadJsonFile(McpConfigPath, RootObject))
     {
-        return Overrides;
+        return OverrideValues;
     }
 
     const TSharedPtr<FJsonObject>* McpServersObject = nullptr;
     if (!LoadMcpServersObject(RootObject, McpServersObject) || McpServersObject == nullptr)
     {
-        return Overrides;
+        return OverrideValues;
     }
 
     TArray<FString> ServerNames;
@@ -196,9 +237,9 @@ TArray<FString> FCortexMcpConfigTranslator::BuildCodexConfigOverrides(const FStr
         const TSharedPtr<FJsonObject>* ServerObject = nullptr;
         if ((*McpServersObject)->TryGetObjectField(ServerName, ServerObject) && ServerObject != nullptr)
         {
-            AppendServerOverrides(ServerName, *ServerObject, Overrides);
+            AppendServerOverrideValues(ServerName, *ServerObject, OverrideValues);
         }
     }
 
-    return Overrides;
+    return OverrideValues;
 }
