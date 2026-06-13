@@ -52,20 +52,22 @@ namespace
         return Sanitized;
     }
 
-    FString BuildInstructionBlock(const FCortexSessionConfig& Config, ECortexAccessMode AccessMode)
+    FString BuildBaseInstructionBlock(const FCortexSessionConfig& Config)
+    {
+        if (!Config.SystemPrompt.IsEmpty())
+        {
+            return Config.SystemPrompt;
+        }
+
+        return TEXT("You are running inside the Unreal Editor's Cortex AI frontend. You can inspect and modify the local workspace and use Cortex MCP tools when available.");
+    }
+
+    FString BuildDeveloperInstructionBlock(const FCortexSessionConfig& Config, ECortexAccessMode AccessMode)
     {
         const FCortexResolvedLaunchOptions& LaunchOptions = Config.LaunchOptions;
 
-        FString Instructions = !Config.SystemPrompt.IsEmpty()
-            ? Config.SystemPrompt
-            : FString::Printf(
-                TEXT("You are running inside the Unreal Editor's Cortex AI frontend. ")
-                TEXT("You can inspect and modify the local workspace and use Cortex MCP tools when available. ")
-                TEXT("Current access mode: %s."),
-                *GetCodexAppServerAccessModeDisplayName(AccessMode));
-
-        Instructions += FString::Printf(
-            TEXT("\nCurrent access mode: %s")
+        FString Instructions = FString::Printf(
+            TEXT("Current access mode: %s")
             TEXT("\nWorkflow mode: %s")
             TEXT("\nProject context: %s")
             TEXT("\nAuto-context: %s"),
@@ -126,39 +128,6 @@ namespace
         return JsonText;
     }
 
-    void SetJsonPathValue(const TSharedPtr<FJsonObject>& RootObject, const FString& Path, const TSharedPtr<FJsonValue>& Value)
-    {
-        if (!RootObject.IsValid() || !Value.IsValid())
-        {
-            return;
-        }
-
-        TArray<FString> Segments;
-        Path.ParseIntoArray(Segments, TEXT("."), true);
-        if (Segments.Num() == 0)
-        {
-            return;
-        }
-
-        TSharedPtr<FJsonObject> Cursor = RootObject;
-        for (int32 Index = 0; Index < Segments.Num() - 1; ++Index)
-        {
-            const FString& Segment = Segments[Index];
-            const TSharedPtr<FJsonObject>* ExistingObject = nullptr;
-            if (!Cursor->TryGetObjectField(Segment, ExistingObject) || ExistingObject == nullptr)
-            {
-                TSharedPtr<FJsonObject> Child = MakeShared<FJsonObject>();
-                Cursor->SetObjectField(Segment, Child);
-                Cursor = Child;
-                continue;
-            }
-
-            Cursor = *ExistingObject;
-        }
-
-        Cursor->SetField(Segments.Last(), Value);
-    }
-
     TSharedPtr<FJsonObject> BuildStructuredConfigObject(const FCortexSessionConfig& Config)
     {
         TSharedPtr<FJsonObject> ConfigObject = MakeShared<FJsonObject>();
@@ -169,7 +138,10 @@ namespace
                 FCortexMcpConfigTranslator::BuildCodexConfigOverrideValues(Config.McpConfigPath);
             for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : OverrideValues)
             {
-                SetJsonPathValue(ConfigObject, Pair.Key, Pair.Value);
+                if (Pair.Value.IsValid())
+                {
+                    ConfigObject->SetField(Pair.Key, Pair.Value);
+                }
             }
         }
 
@@ -255,7 +227,8 @@ FString FCortexCodexAppServerProtocol::BuildThreadStartRequest(
     Params->SetStringField(TEXT("cwd"), NormalizePathForJson(WorkingDirectory));
     Params->SetStringField(TEXT("sandbox"), AccessModeToSandboxMode(AccessMode));
     Params->SetStringField(TEXT("approvalPolicy"), TEXT("never"));
-    Params->SetStringField(TEXT("instructions"), BuildInstructionBlock(Config, AccessMode));
+    Params->SetStringField(TEXT("baseInstructions"), BuildBaseInstructionBlock(Config));
+    Params->SetStringField(TEXT("developerInstructions"), BuildDeveloperInstructionBlock(Config, AccessMode));
     Params->SetObjectField(TEXT("config"), BuildStructuredConfigObject(Config));
 
     Root->SetObjectField(TEXT("params"), Params);
@@ -284,9 +257,7 @@ FString FCortexCodexAppServerProtocol::BuildTurnStartRequest(
 
     Params->SetObjectField(TEXT("sandboxPolicy"), AccessModeToSandboxPolicy(AccessMode));
 
-    TSharedPtr<FJsonObject> Effort = MakeShared<FJsonObject>();
-    Effort->SetStringField(TEXT("effort"), EffortToAppServerValue(Config.ResolvedOptions.EffortLevel));
-    Params->SetObjectField(TEXT("reasoning"), Effort);
+    Params->SetStringField(TEXT("effort"), EffortToAppServerValue(Config.ResolvedOptions.EffortLevel));
 
     Root->SetObjectField(TEXT("params"), Params);
     return WriteJsonLine(Root.ToSharedRef());
@@ -332,6 +303,24 @@ bool FCortexCodexAppServerProtocol::ParseLine(
         }
     }
 
+    const TSharedPtr<FJsonObject>* ErrorObject = nullptr;
+    if (Root->TryGetObjectField(TEXT("error"), ErrorObject) && ErrorObject != nullptr)
+    {
+        FCortexStreamEvent Event;
+        Event.Type = ECortexStreamEventType::Result;
+        Event.bIsError = true;
+        (*ErrorObject)->TryGetStringField(TEXT("message"), Event.ResultText);
+        if (Event.ResultText.IsEmpty())
+        {
+            Event.ResultText = TEXT("Codex app-server returned an error response.");
+        }
+        Event.RawJson = JsonLine;
+        State.PendingAssistantText.Reset();
+        State.ActiveTurnId.Reset();
+        OutEvents.Add(MoveTemp(Event));
+        return true;
+    }
+
     FString Method;
     if (!Root->TryGetStringField(TEXT("method"), Method))
     {
@@ -367,6 +356,22 @@ bool FCortexCodexAppServerProtocol::ParseLine(
         const TSharedPtr<FJsonObject>* TurnObject = nullptr;
         if ((*Params)->TryGetObjectField(TEXT("turn"), TurnObject) && TurnObject != nullptr)
         {
+            FString Status;
+            if ((*TurnObject)->TryGetStringField(TEXT("status"), Status) && Status == TEXT("failed"))
+            {
+                Event.bIsError = true;
+            }
+
+            const TSharedPtr<FJsonObject>* TurnErrorObject = nullptr;
+            if ((*TurnObject)->TryGetObjectField(TEXT("error"), TurnErrorObject) && TurnErrorObject != nullptr)
+            {
+                FString ErrorMessage;
+                if ((*TurnErrorObject)->TryGetStringField(TEXT("message"), ErrorMessage) && !ErrorMessage.IsEmpty())
+                {
+                    Event.ResultText = ErrorMessage;
+                }
+            }
+
             double DurationMs = 0.0;
             if ((*TurnObject)->TryGetNumberField(TEXT("durationMs"), DurationMs))
             {

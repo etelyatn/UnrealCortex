@@ -90,10 +90,21 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
         const TSharedPtr<FJsonObject>* EnvObject = nullptr;
         if ((*ServerObject)->TryGetObjectField(TEXT("env"), EnvObject) && EnvObject != nullptr && (*EnvObject)->Values.Num() > 0)
         {
-            const FString ExpectedOverride = FString::Printf(
-                TEXT("\"%senv.CORTEX_PROJECT_DIR=\\\".\\\"\""),
-                *Prefix);
-            TestTrue(FString::Printf(TEXT("Should translate env for %s"), *ServerName), Overrides.Contains(ExpectedOverride));
+            for (const TPair<FString, TSharedPtr<FJsonValue>>& EnvPair : (*EnvObject)->Values)
+            {
+                FString EnvValue;
+                if (!EnvPair.Value.IsValid() || !EnvPair.Value->TryGetString(EnvValue))
+                {
+                    continue;
+                }
+
+                const FString ExpectedOverride = FString::Printf(
+                    TEXT("\"%senv.%s=\\\"%s\\\"\""),
+                    *Prefix,
+                    *EnvPair.Key,
+                    *EnvValue);
+                TestTrue(FString::Printf(TEXT("Should translate env %s for %s"), *EnvPair.Key, *ServerName), Overrides.Contains(ExpectedOverride));
+            }
         }
     }
 

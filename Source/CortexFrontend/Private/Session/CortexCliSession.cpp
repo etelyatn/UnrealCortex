@@ -257,6 +257,21 @@ bool FCortexCliSession::Cancel()
 {
 	if (UsesCodexAppServerTransport())
 	{
+		const ECortexSessionState CurrentState = State.load();
+		if (CurrentState == ECortexSessionState::Spawning)
+		{
+			{
+				FScopeLock Lock(&PromptMutex);
+				PendingPrompt.Reset();
+				PendingAccessMode.Reset();
+			}
+
+			const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Inactive);
+			CleanupProcess();
+			BroadcastStateChange(PreviousState, ECortexSessionState::Inactive, TEXT("Cancelled Codex app-server startup"));
+			return true;
+		}
+
 		if (!TransitionState(ECortexSessionState::Processing, ECortexSessionState::Cancelling, TEXT("Cancellation requested")))
 		{
 			return false;
@@ -328,6 +343,25 @@ bool FCortexCliSession::Reconnect()
 	}
 
 	CleanupProcess();
+
+	if (UsesCodexAppServerTransport())
+	{
+		bHasProviderConversationId = false;
+		bCodexAppServerThreadReady = false;
+		State.store(ECortexSessionState::Spawning);
+		BroadcastStateChange(ECortexSessionState::Respawning, ECortexSessionState::Spawning, TEXT("Restarting Codex app-server chat"));
+
+		const ECortexAccessMode AccessMode = Config.LaunchOptions.AccessMode;
+		if (!EnsureCodexAppServerStarted(AccessMode))
+		{
+			State.store(ECortexSessionState::Inactive);
+			BroadcastStateChange(ECortexSessionState::Spawning, ECortexSessionState::Inactive, TEXT("Failed to restart Codex app-server chat"));
+			return false;
+		}
+
+		FCortexFrontendSettings::Get().ClearPendingChanges();
+		return true;
+	}
 
 	// Uses --resume to fork from existing conversation context.
 	// TODO: Verify empirically whether --resume alone re-applies --append-system-prompt
@@ -507,6 +541,15 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 
 		if (CurrentState == ECortexSessionState::Cancelling)
 		{
+			if (UsesCodexAppServerTransport())
+			{
+				CancelGraceTimer();
+				const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Idle);
+				BroadcastStateChange(PreviousState, ECortexSessionState::Idle, TEXT("Codex app-server turn cancelled"));
+				OnTurnComplete.Broadcast(Result);
+				return;
+			}
+
 			// During cancel: capture result but don't transition to Idle.
 			// The process will exit after this (stdin was closed), and
 			// HandleProcessExited will handle the Cancelling -> Respawning transition.
@@ -893,6 +936,15 @@ bool FCortexCliSession::DispatchCodexAppServerTurn(const FString& Prompt, ECorte
 	if (!TransitionState(ECortexSessionState::Idle, ECortexSessionState::Processing, TEXT("Codex app-server turn dispatched")))
 	{
 		return false;
+	}
+
+	{
+		FScopeLock Lock(&PromptMutex);
+		if (PendingPrompt.IsSet() && PendingPrompt.GetValue() == Prompt)
+		{
+			PendingPrompt.Reset();
+			PendingAccessMode.Reset();
+		}
 	}
 
 #if WITH_DEV_AUTOMATION_TESTS

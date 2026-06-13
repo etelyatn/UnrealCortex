@@ -1,4 +1,8 @@
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Providers/CortexCodexAppServerProtocol.h"
 #include "Session/CortexSessionTypes.h"
 
@@ -20,6 +24,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodexAppServerParseNotificationsTest,
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodexAppServerParseToolAndUsageNotificationsTest,
     "Cortex.Frontend.CodexAppServer.Protocol.ParseToolAndUsageNotifications",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodexAppServerParseErrorResponseTest,
+    "Cortex.Frontend.CodexAppServer.Protocol.ParseErrorResponse",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexCodexAppServerBuildInitializeTest::RunTest(const FString& Parameters)
@@ -51,12 +59,33 @@ bool FCortexCodexAppServerBuildThreadStartTest::RunTest(const FString& Parameter
 
     FCortexSessionConfig Config;
     Config.WorkingDirectory = TEXT("D:/UnrealProjects/CortexSandboxMirror");
-    Config.McpConfigPath = TEXT("D:/UnrealProjects/CortexSandboxMirror/.mcp.json");
     Config.SystemPrompt = TEXT("Cortex app-server base instructions.");
     Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
     Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
     Config.LaunchOptions.bSkipPermissions = false;
     Config.LaunchOptions.CustomDirective = TEXT("Prefer concise answers.");
+
+    const FString FixtureDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexFrontend"), TEXT("CodexAppServerProtocolTest"));
+    TestTrue(TEXT("MCP fixture directory should be created"), IFileManager::Get().MakeDirectory(*FixtureDir, true));
+    const FString FixturePath = FPaths::Combine(FixtureDir, TEXT("app-server.mcp.json"));
+    const FString FixtureJson = TEXT(R"({
+  "mcpServers": {
+    "fixture": {
+      "command": "uv",
+      "args": ["run", "cortex-mcp"],
+      "env": {
+        "CORTEX_PROJECT_DIR": "."
+      }
+    }
+  }
+})");
+    TestTrue(TEXT("MCP fixture should save"), FFileHelper::SaveStringToFile(FixtureJson, *FixturePath));
+    ON_SCOPE_EXIT
+    {
+        IFileManager::Get().Delete(*FixturePath, false, true);
+        IFileManager::Get().DeleteDirectory(*FixtureDir, false, true);
+    };
+    Config.McpConfigPath = FixturePath;
 
     const FString Json = FCortexCodexAppServerProtocol::BuildThreadStartRequest(
         9,
@@ -73,12 +102,46 @@ bool FCortexCodexAppServerBuildThreadStartTest::RunTest(const FString& Parameter
         Json.Contains(TEXT("\"sandbox\":\"workspace-write\"")));
     TestTrue(TEXT("Thread start should use never approval policy for frontend controlled sends"),
         Json.Contains(TEXT("\"approvalPolicy\":\"never\"")));
+    TestTrue(TEXT("Thread start should use current app-server baseInstructions field"),
+        Json.Contains(TEXT("\"baseInstructions\"")));
     TestTrue(TEXT("Thread start should include base instructions"),
         Json.Contains(TEXT("Cortex app-server base instructions.")));
-    TestTrue(TEXT("Thread start should pass MCP config through structured config overrides"),
-        Json.Contains(TEXT("mcp_servers")));
+    TestTrue(TEXT("Thread start should use current app-server developerInstructions field"),
+        Json.Contains(TEXT("\"developerInstructions\"")));
+    TestTrue(TEXT("Developer instructions should include access guidance"),
+        Json.Contains(TEXT("Current access mode: Guided")));
+    TestFalse(TEXT("Thread start should not use legacy instructions field"),
+        Json.Contains(TEXT("\"instructions\"")));
+    TestTrue(TEXT("Thread start should pass MCP config through flat app-server override keys"),
+        Json.Contains(TEXT("\"mcp_servers.fixture.command\":\"uv\"")));
+    TestTrue(TEXT("Thread start should pass MCP args as JSON arrays"),
+        Json.Contains(TEXT("\"mcp_servers.fixture.args\":[\"run\",\"cortex-mcp\"]")));
+    TestTrue(TEXT("Thread start should pass MCP env values as flat override keys"),
+        Json.Contains(TEXT("\"mcp_servers.fixture.env.CORTEX_PROJECT_DIR\":\".\"")));
     TestFalse(TEXT("Thread start config should not contain CLI -c arguments"),
         Json.Contains(TEXT("\"-c\"")));
+
+    return true;
+}
+
+bool FCortexCodexAppServerParseErrorResponseTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexCodexAppServerProtocolState State;
+    State.PendingAssistantText = TEXT("partial");
+    TArray<FCortexStreamEvent> Events;
+
+    FCortexCodexAppServerProtocol::ParseLine(
+        TEXT("{\"id\":3,\"error\":{\"code\":-32602,\"message\":\"Invalid app-server config\"}}"),
+        State,
+        Events);
+
+    TestEqual(TEXT("JSON-RPC error response should emit one event"), Events.Num(), 1);
+    TestEqual(TEXT("JSON-RPC error response should map to Result"), Events[0].Type, ECortexStreamEventType::Result);
+    TestTrue(TEXT("JSON-RPC error response should be marked as error"), Events[0].bIsError);
+    TestTrue(TEXT("JSON-RPC error response should preserve the message"), Events[0].ResultText.Contains(TEXT("Invalid app-server config")));
+    TestTrue(TEXT("JSON-RPC error should clear pending assistant text"), State.PendingAssistantText.IsEmpty());
 
     return true;
 }
@@ -110,6 +173,8 @@ bool FCortexCodexAppServerBuildTurnStartTest::RunTest(const FString& Parameters)
         Json.Contains(TEXT("\"type\":\"readOnly\"")));
     TestTrue(TEXT("High effort should map to high"),
         Json.Contains(TEXT("\"effort\":\"high\"")));
+    TestFalse(TEXT("Turn start should not use legacy nested reasoning object"),
+        Json.Contains(TEXT("\"reasoning\"")));
 
     return true;
 }
@@ -167,6 +232,21 @@ bool FCortexCodexAppServerParseNotificationsTest::RunTest(const FString& Paramet
     TestEqual(TEXT("Duration should be copied from turn"),
         Events[0].DurationMs,
         1234);
+
+    State.PendingAssistantText = TEXT("partial failure text");
+    Events.Reset();
+    FCortexCodexAppServerProtocol::ParseLine(
+        TEXT("{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-abc\",\"turn\":{\"id\":\"turn-2\",\"items\":[],\"itemsView\":\"full\",\"status\":\"failed\",\"error\":{\"message\":\"Tool policy denied\"},\"startedAt\":1,\"completedAt\":2,\"durationMs\":321}}}"),
+        State,
+        Events);
+    TestEqual(TEXT("Failed completed turn should emit one result event"),
+        Events.Num(),
+        1);
+    TestTrue(TEXT("Failed completed turn should be marked as error"),
+        Events[0].bIsError);
+    TestEqual(TEXT("Failed completed turn should use turn error message"),
+        Events[0].ResultText,
+        FString(TEXT("Tool policy denied")));
 
     return true;
 }
