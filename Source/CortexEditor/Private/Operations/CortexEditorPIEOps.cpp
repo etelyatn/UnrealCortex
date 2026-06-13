@@ -1,5 +1,6 @@
 #include "Operations/CortexEditorPIEOps.h"
 #include "CortexEditorPIEState.h"
+#include "CortexEditorModule.h"
 #include "CortexCommandRouter.h"
 #include "Editor.h"
 #include "Editor/EditorEngine.h"

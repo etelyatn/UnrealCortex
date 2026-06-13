@@ -67,10 +67,10 @@ struct FCortexDeepReadRootStruct
 	TSoftObjectPtr<UObject> SoftReference;
 
 	UPROPERTY(EditAnywhere)
-	UObject* HardReference = nullptr;
+	TObjectPtr<UObject> HardReference = nullptr;
 
 	UPROPERTY(EditAnywhere, Instanced)
-	UCortexDeepReadInstancedSubObject* InstancedObject = nullptr;
+	TObjectPtr<UCortexDeepReadInstancedSubObject> InstancedObject = nullptr;
 
 	UPROPERTY()
 	FCortexDeepReadDynamicDelegate UnsupportedDelegate;
