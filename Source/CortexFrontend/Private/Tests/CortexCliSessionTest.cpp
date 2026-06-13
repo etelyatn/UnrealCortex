@@ -532,9 +532,7 @@ bool FCortexCliSessionCodexChatUnexpectedExitDuringTurnFailsTest::RunTest(const 
     FirstTurnResult.SessionId = TEXT("thread-codex-chat");
     Session.SetStateForTest(ECortexSessionState::Processing);
     Session.HandleWorkerEvent(FirstTurnResult);
-    TestEqual(TEXT("Prior successful Codex chat turn should wait for the exec process to exit"), Session.GetState(), ECortexSessionState::AwaitingTurnExit);
-    Session.HandleProcessExited(TEXT("Provider CLI process exited after prior turn"));
-    TestEqual(TEXT("Prior successful Codex chat turn should become idle after the exec exits"), Session.GetState(), ECortexSessionState::Idle);
+    TestEqual(TEXT("Prior successful Codex chat turn should return directly to idle"), Session.GetState(), ECortexSessionState::Idle);
 
     bool bTurnCompleteCalled = false;
     FCortexTurnResult CapturedResult;

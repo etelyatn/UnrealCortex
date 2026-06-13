@@ -14,6 +14,7 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnCortexSessionTurnComplete, const FCortexT
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnCortexSessionStateChanged, const FCortexSessionStateChange&);
 
 class FCortexCliWorker;
+class FCortexCodexAppServerWorker;
 class ICortexCliProvider;
 
 class FCortexCliSession : public TSharedFromThis<FCortexCliSession>
@@ -75,7 +76,12 @@ public:
 #if WITH_DEV_AUTOMATION_TESTS
 	static void SetSpawnProcessOverrideForTests(TFunction<bool(FCortexCliSession&, ECortexAccessMode, bool)> InOverride);
 	static void ClearSpawnProcessOverrideForTests();
+	static void SetCodexAppServerStartOverrideForTests(TFunction<bool(FCortexCliSession&, ECortexAccessMode)> InOverride);
+	static void SetCodexAppServerTurnOverrideForTests(TFunction<bool(FCortexCliSession&, const FString&, ECortexAccessMode)> InOverride);
+	static void ClearCodexAppServerOverridesForTests();
 	void CompleteSpawnForTests(ECortexAccessMode AccessMode);
+	bool UsesCodexAppServerTransportForTest() const { return UsesCodexAppServerTransport(); }
+	void CompleteCodexAppServerStartForTests(const FString& ThreadId, ECortexAccessMode AccessMode);
 #endif
 
 private:
@@ -97,9 +103,10 @@ private:
 	friend class FCortexCliSessionLightweightConfigStaysMcpFreeTest;
 	friend class FCortexCliSessionPerTurnExecFirstTurnDoesNotResumeWithoutConversationTest;
 	friend class FCortexCliSessionCodexClosesStdinAfterPromptWriteTest;
-	friend class FCortexCliSessionCodexChatClosesStdinAfterPromptWriteTest;
+	friend class FCortexCliSessionCodexChatKeepsAppServerOpenTest;
 	friend class FCortexCliSessionCodexTurnBoundTaskClosesStdinAfterPromptWriteTest;
-	friend class FCortexCliSessionCodexChatResumesAcrossExecTurnsTest;
+	friend class FCortexCliSessionCodexChatDrainsFirstPromptAfterThreadStartTest;
+	friend class FCortexCliSessionCodexChatReusesAppServerWorkerTest;
 	friend class FCortexCliSessionCodexChatUnexpectedExitDuringTurnFailsTest;
 	friend class FCortexCliSessionTurnBoundFollowUpQueuesUntilProcessExitTest;
 	friend class FCortexCliSessionTurnBoundFollowUpRespawnFailureCompletesQueuedTurnTest;
@@ -130,6 +137,11 @@ private:
 	FString BuildAllowedToolsArg(ECortexAccessMode AccessMode) const;
 	FString BuildPromptEnvelope(const FString& Prompt, ECortexAccessMode AccessMode) const;
 	bool SpawnProcess(ECortexAccessMode AccessMode, bool bResumeSession);
+	bool UsesCodexAppServerTransport() const;
+	bool EnsureCodexAppServerStarted(ECortexAccessMode AccessMode);
+	bool SendPromptViaCodexAppServer(const FCortexPromptRequest& Request);
+	bool DispatchCodexAppServerTurn(const FString& Prompt, ECortexAccessMode AccessMode);
+	void TryDrainCodexAppServerPendingPrompt();
 	void CleanupProcess();
 	void WakeWorker();
 	FString ConsumePendingPromptEnvelope();
@@ -178,6 +190,7 @@ private:
 	TOptional<ECortexAccessMode> PendingAccessMode;
 	TOptional<ECortexAccessMode> LastSpawnedAccessMode;
 	TUniquePtr<FCortexCliWorker> Worker;
+	TUniquePtr<FCortexCodexAppServerWorker> CodexAppServerWorker;
 	FProcHandle ProcessHandle;
 	void* StdoutReadPipe = nullptr;
 	void* StdoutWritePipe = nullptr;
@@ -190,4 +203,5 @@ private:
 	uint32 CancelGeneration = 0;
 	uint8 ConsecutiveSpawnFailures = 0;
 	FTSTicker::FDelegateHandle GraceTimerHandle;
+	bool bCodexAppServerThreadReady = false;
 };

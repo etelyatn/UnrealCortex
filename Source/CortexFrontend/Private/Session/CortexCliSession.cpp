@@ -11,6 +11,7 @@
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/Paths.h"
+#include "Session/CortexCodexAppServerWorker.h"
 #include "Session/CortexCliWorker.h"
 
 namespace
@@ -20,6 +21,8 @@ namespace
 
 #if WITH_DEV_AUTOMATION_TESTS
 	TFunction<bool(FCortexCliSession&, ECortexAccessMode, bool)> GSpawnProcessOverrideForTests;
+	TFunction<bool(FCortexCliSession&, ECortexAccessMode)> GCodexAppServerStartOverrideForTests;
+	TFunction<bool(FCortexCliSession&, const FString&, ECortexAccessMode)> GCodexAppServerTurnOverrideForTests;
 #endif
 
 	const ICortexCliProvider& GetPinnedProvider(const FName& ProviderId)
@@ -134,6 +137,18 @@ bool FCortexCliSession::Connect()
 		return false;
 	}
 
+	if (UsesCodexAppServerTransport())
+	{
+		if (!EnsureCodexAppServerStarted(Config.LaunchOptions.AccessMode))
+		{
+			TransitionState(ECortexSessionState::Spawning, ECortexSessionState::Inactive, TEXT("Failed to start Codex app-server on connect"));
+			return false;
+		}
+
+		FCortexFrontendSettings::Get().ClearPendingChanges();
+		return true;
+	}
+
 	if (!SpawnProcess(Config.LaunchOptions.AccessMode, false))
 	{
 		UE_LOG(LogCortexFrontend, Warning, TEXT("Connect() failed: SpawnProcess returned false"));
@@ -152,6 +167,11 @@ bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
 		FScopeLock Lock(&PromptMutex);
 		PendingPrompt = Request.Prompt;
 		PendingAccessMode = Request.AccessMode;
+	}
+
+	if (UsesCodexAppServerTransport())
+	{
+		return SendPromptViaCodexAppServer(Request);
 	}
 
 	ECortexSessionState CurrentState = State.load();
@@ -235,6 +255,28 @@ bool FCortexCliSession::SendPrompt(const FCortexPromptRequest& Request)
 
 bool FCortexCliSession::Cancel()
 {
+	if (UsesCodexAppServerTransport())
+	{
+		if (!TransitionState(ECortexSessionState::Processing, ECortexSessionState::Cancelling, TEXT("Cancellation requested")))
+		{
+			return false;
+		}
+
+		if (CodexAppServerWorker.IsValid() && CodexAppServerWorker->InterruptTurn())
+		{
+			return true;
+		}
+
+		if (CodexAppServerWorker.IsValid())
+		{
+			CodexAppServerWorker->Shutdown();
+			CodexAppServerWorker.Reset();
+		}
+		bCodexAppServerThreadReady = false;
+		HandleProcessExited(TEXT("Failed to interrupt Codex app-server turn"));
+		return true;
+	}
+
 	if (!TransitionState(ECortexSessionState::Processing, ECortexSessionState::Cancelling, TEXT("Cancellation requested")))
 	{
 		return false;
@@ -355,6 +397,23 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 	// Extract model / session info from init event.
 	if (Event.Type == ECortexStreamEventType::SessionInit)
 	{
+		if (UsesCodexAppServerTransport())
+		{
+			if (!Event.SessionId.IsEmpty())
+			{
+				Config.SessionId = Event.SessionId;
+				bHasProviderConversationId = true;
+				bCodexAppServerThreadReady = true;
+			}
+
+			if (State.load() == ECortexSessionState::Spawning)
+			{
+				State.store(ECortexSessionState::Idle);
+				BroadcastStateChange(ECortexSessionState::Spawning, ECortexSessionState::Idle, TEXT("Codex app-server thread ready"));
+				TryDrainCodexAppServerPendingPrompt();
+			}
+		}
+
 		if (!Event.SessionId.IsEmpty())
 		{
 			Config.SessionId = Event.SessionId;
@@ -766,8 +825,122 @@ bool FCortexCliSession::SpawnProcess(ECortexAccessMode AccessMode, bool bResumeS
 	return true;
 }
 
+bool FCortexCliSession::UsesCodexAppServerTransport() const
+{
+	return Config.ProviderId == FName(TEXT("codex")) &&
+		ResolvedLifetimePolicy == ECortexSessionLifetimePolicy::Persistent;
+}
+
+bool FCortexCliSession::EnsureCodexAppServerStarted(ECortexAccessMode AccessMode)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (GCodexAppServerStartOverrideForTests)
+	{
+		return GCodexAppServerStartOverrideForTests(*this, AccessMode);
+	}
+#endif
+
+	if (!CodexAppServerWorker)
+	{
+		CodexAppServerWorker = MakeUnique<FCortexCodexAppServerWorker>(Config, AccessMode);
+		CodexAppServerWorker->OnEvent.BindSP(AsShared(), &FCortexCliSession::HandleWorkerEvent);
+		CodexAppServerWorker->OnExited.BindLambda([WeakSelf = AsWeak()](const FString& Reason)
+		{
+			if (TSharedPtr<FCortexCliSession> Self = WeakSelf.Pin())
+			{
+				Self->HandleProcessExited(Reason);
+			}
+		});
+	}
+
+	return CodexAppServerWorker->Start();
+}
+
+bool FCortexCliSession::SendPromptViaCodexAppServer(const FCortexPromptRequest& Request)
+{
+	const ECortexSessionState CurrentState = State.load();
+	if (CurrentState == ECortexSessionState::Inactive)
+	{
+		if (!TransitionState(ECortexSessionState::Inactive, ECortexSessionState::Spawning, TEXT("Starting Codex app-server session")))
+		{
+			return false;
+		}
+
+		if (!EnsureCodexAppServerStarted(Request.AccessMode))
+		{
+			TransitionState(ECortexSessionState::Spawning, ECortexSessionState::Inactive, TEXT("Failed to start Codex app-server"));
+			return false;
+		}
+
+		return true;
+	}
+
+	if (CurrentState == ECortexSessionState::Spawning)
+	{
+		return true;
+	}
+
+	if (CurrentState != ECortexSessionState::Idle)
+	{
+		return false;
+	}
+
+	return DispatchCodexAppServerTurn(Request.Prompt, Request.AccessMode);
+}
+
+bool FCortexCliSession::DispatchCodexAppServerTurn(const FString& Prompt, ECortexAccessMode AccessMode)
+{
+	if (!TransitionState(ECortexSessionState::Idle, ECortexSessionState::Processing, TEXT("Codex app-server turn dispatched")))
+	{
+		return false;
+	}
+
+#if WITH_DEV_AUTOMATION_TESTS
+	if (GCodexAppServerTurnOverrideForTests)
+	{
+		return GCodexAppServerTurnOverrideForTests(*this, Prompt, AccessMode);
+	}
+#endif
+
+	if (!CodexAppServerWorker.IsValid() || !CodexAppServerWorker->SendTurn(Prompt, AccessMode))
+	{
+		State.store(ECortexSessionState::Inactive);
+		BroadcastStateChange(ECortexSessionState::Processing, ECortexSessionState::Inactive, TEXT("Failed to send Codex app-server turn"));
+		return false;
+	}
+
+	return true;
+}
+
+void FCortexCliSession::TryDrainCodexAppServerPendingPrompt()
+{
+	FString Prompt;
+	ECortexAccessMode AccessMode = Config.LaunchOptions.AccessMode;
+	{
+		FScopeLock Lock(&PromptMutex);
+		if (!PendingPrompt.IsSet())
+		{
+			return;
+		}
+
+		Prompt = PendingPrompt.GetValue();
+		AccessMode = PendingAccessMode.Get(Config.LaunchOptions.AccessMode);
+		PendingPrompt.Reset();
+		PendingAccessMode.Reset();
+	}
+
+	DispatchCodexAppServerTurn(Prompt, AccessMode);
+}
+
 void FCortexCliSession::CleanupProcess()
 {
+	if (CodexAppServerWorker)
+	{
+		CodexAppServerWorker->Shutdown();
+		CodexAppServerWorker.Reset();
+		bCodexAppServerThreadReady = false;
+	}
+
 	// 1. Signal Worker to stop (sets bStopRequested, triggers FEvent)
 	if (Worker)
 	{
@@ -869,6 +1042,11 @@ void FCortexCliSession::HandlePromptWriteCompleted()
 
 bool FCortexCliSession::ShouldCloseStdinAfterPromptWrite() const
 {
+	if (UsesCodexAppServerTransport())
+	{
+		return false;
+	}
+
 	return PinnedProvider != nullptr &&
 		PinnedProvider->GetTransportMode() == ECortexCliTransportMode::PerTurnExec &&
 		UsesTurnBoundLifetimePolicy();
@@ -876,6 +1054,11 @@ bool FCortexCliSession::ShouldCloseStdinAfterPromptWrite() const
 
 bool FCortexCliSession::UsesTurnBoundLifetimePolicy() const
 {
+	if (UsesCodexAppServerTransport())
+	{
+		return false;
+	}
+
 	return ResolvedLifetimePolicy == ECortexSessionLifetimePolicy::TurnBound ||
 		(PinnedProvider != nullptr && PinnedProvider->GetTransportMode() == ECortexCliTransportMode::PerTurnExec);
 }
@@ -1078,6 +1261,22 @@ void FCortexCliSession::ClearSpawnProcessOverrideForTests()
 	GSpawnProcessOverrideForTests.Reset();
 }
 
+void FCortexCliSession::SetCodexAppServerStartOverrideForTests(TFunction<bool(FCortexCliSession&, ECortexAccessMode)> InOverride)
+{
+	GCodexAppServerStartOverrideForTests = MoveTemp(InOverride);
+}
+
+void FCortexCliSession::SetCodexAppServerTurnOverrideForTests(TFunction<bool(FCortexCliSession&, const FString&, ECortexAccessMode)> InOverride)
+{
+	GCodexAppServerTurnOverrideForTests = MoveTemp(InOverride);
+}
+
+void FCortexCliSession::ClearCodexAppServerOverridesForTests()
+{
+	GCodexAppServerStartOverrideForTests.Reset();
+	GCodexAppServerTurnOverrideForTests.Reset();
+}
+
 void FCortexCliSession::CompleteSpawnForTests(ECortexAccessMode AccessMode)
 {
 	LastSpawnedAccessMode = AccessMode;
@@ -1092,6 +1291,16 @@ void FCortexCliSession::CompleteSpawnForTests(ECortexAccessMode AccessMode)
 	{
 		TransitionState(ECortexSessionState::Idle, ECortexSessionState::Processing, TEXT("Draining queued prompt (test spawn)"));
 	}
+}
+
+void FCortexCliSession::CompleteCodexAppServerStartForTests(const FString& ThreadId, ECortexAccessMode AccessMode)
+{
+	(void)AccessMode;
+
+	FCortexStreamEvent InitEvent;
+	InitEvent.Type = ECortexStreamEventType::SessionInit;
+	InitEvent.SessionId = ThreadId;
+	HandleWorkerEvent(InitEvent);
 }
 #endif
 
