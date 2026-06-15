@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AutoComplete/CortexAutoCompleteTypes.h"
+#include "Session/CortexSessionTypes.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Containers/Ticker.h"
 #include "CoreMinimal.h"

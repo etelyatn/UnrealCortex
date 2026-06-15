@@ -25,6 +25,10 @@ public class CortexStateTree : ModuleRules
 			"GameplayStateTreeModule",
 			"StateTreeModule",
 			"StateTreeEditorModule",
+			// UE 5.7: FPropertyBindingBindableStructDescriptor and related binding
+			// types were extracted from StateTree into the PropertyBindingUtils
+			// plugin module. Required to resolve the dtor symbol at link time.
+			"PropertyBindingUtils",
 		});
 	}
 }
