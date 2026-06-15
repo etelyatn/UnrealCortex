@@ -25,6 +25,31 @@ namespace
         }
         return false;
     }
+
+    bool WaitForAppServerThreadStartResponse(void* StdoutReadPipe, FString& OutOutput)
+    {
+        const double StartTime = FPlatformTime::Seconds();
+        while ((FPlatformTime::Seconds() - StartTime) < 15.0)
+        {
+            const FString Chunk = StdoutReadPipe != nullptr
+                ? FPlatformProcess::ReadPipe(StdoutReadPipe)
+                : FString();
+            if (!Chunk.IsEmpty())
+            {
+                OutOutput += Chunk;
+                if (OutOutput.Contains(TEXT("\"id\":2")) && OutOutput.Contains(TEXT("\"thread\"")))
+                {
+                    return true;
+                }
+                if (OutOutput.Contains(TEXT("\"id\":2")) && OutOutput.Contains(TEXT("\"error\"")))
+                {
+                    return false;
+                }
+            }
+            FPlatformProcess::Sleep(0.01f);
+        }
+        return false;
+    }
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodexAppServerHandshakeSmokeTest,
@@ -90,6 +115,15 @@ bool FCortexCodexAppServerHandshakeSmokeTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Initialize response should include userAgent"), Output.Contains(TEXT("\"userAgent\"")));
 
     FPlatformProcess::WritePipe(StdinWritePipe, TEXT("{\"method\":\"initialized\",\"params\":{}}\n"));
+
+    const FString ThreadStartLine =
+        TEXT("{\"method\":\"thread/start\",\"id\":2,\"params\":{\"sandbox\":\"read-only\",\"approvalPolicy\":\"never\",\"ephemeral\":true}}\n");
+    TestTrue(TEXT("Thread start request should write to app-server stdin"),
+        FPlatformProcess::WritePipe(StdinWritePipe, ThreadStartLine));
+
+    const bool bSawThreadStart = WaitForAppServerThreadStartResponse(StdoutReadPipe, Output);
+    TestTrue(TEXT("Codex app-server should respond to thread/start without starting a model turn"), bSawThreadStart);
+    TestTrue(TEXT("Thread start response should include thread object"), Output.Contains(TEXT("\"thread\"")));
 
     if (FPlatformProcess::IsProcRunning(ProcessHandle))
     {

@@ -10,6 +10,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodexAppServerWorkerQueuesTurnsOnExistin
     "Cortex.Frontend.CodexAppServer.Worker.QueuesTurnsOnExistingThread",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodexAppServerWorkerInterruptRequiresTurnIdTest,
+    "Cortex.Frontend.CodexAppServer.Worker.InterruptRequiresTurnId",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodexAppServerWorkerInterruptWritesThreadAndTurnTest,
+    "Cortex.Frontend.CodexAppServer.Worker.InterruptWritesThreadAndTurn",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
 bool FCortexCodexAppServerWorkerQueuesInitializeAndThreadStartTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
@@ -85,5 +93,59 @@ bool FCortexCodexAppServerWorkerQueuesTurnsOnExistingThreadTest::RunTest(const F
     TestTrue(TEXT("Queued write should target the existing thread id"),
         CapturedWrites[0].Contains(TEXT("\"threadId\":\"thread-live\"")));
 
+    return true;
+}
+
+bool FCortexCodexAppServerWorkerInterruptRequiresTurnIdTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.LifetimePolicy = ECortexSessionLifetimePolicy::Persistent;
+
+    FCortexCodexAppServerWorker Worker(Config, ECortexAccessMode::Guided);
+    Worker.SetThreadIdForTests(TEXT("thread-ready"));
+
+    TestFalse(TEXT("Interrupt should fail without an active turn id"),
+        Worker.InterruptTurn());
+    return true;
+}
+
+bool FCortexCodexAppServerWorkerInterruptWritesThreadAndTurnTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.LifetimePolicy = ECortexSessionLifetimePolicy::Persistent;
+
+    TArray<FString> CapturedWrites;
+    FCortexCodexAppServerWorker::SetWriteOverrideForTests(
+        [&CapturedWrites](const FString& Line)
+        {
+            CapturedWrites.Add(Line);
+            return true;
+        });
+    ON_SCOPE_EXIT
+    {
+        FCortexCodexAppServerWorker::ClearWriteOverrideForTests();
+    };
+
+    FCortexCodexAppServerWorker Worker(Config, ECortexAccessMode::Guided);
+    Worker.SetThreadIdForTests(TEXT("thread-ready"));
+    Worker.SetActiveTurnIdForTests(TEXT("turn-live"));
+
+    TestTrue(TEXT("Interrupt should queue when thread and turn are ready"),
+        Worker.InterruptTurn());
+    TestEqual(TEXT("Interrupt should emit exactly one write"),
+        CapturedWrites.Num(),
+        1);
+    TestTrue(TEXT("Interrupt write should include thread id"),
+        CapturedWrites[0].Contains(TEXT("\"threadId\":\"thread-ready\"")));
+    TestTrue(TEXT("Interrupt write should include turn id"),
+        CapturedWrites[0].Contains(TEXT("\"turnId\":\"turn-live\"")));
     return true;
 }

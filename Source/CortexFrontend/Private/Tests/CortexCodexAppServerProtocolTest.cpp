@@ -30,6 +30,22 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodexAppServerParseErrorResponseTest,
     "Cortex.Frontend.CodexAppServer.Protocol.ParseErrorResponse",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodexAppServerCapturesTurnStartResponseTest,
+    "Cortex.Frontend.CodexAppServer.Protocol.CapturesTurnStartResponse",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodexAppServerCapturesTurnStartedNotificationTest,
+    "Cortex.Frontend.CodexAppServer.Protocol.CapturesTurnStartedNotification",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodexAppServerBuildInterruptIncludesTurnIdTest,
+    "Cortex.Frontend.CodexAppServer.Protocol.BuildInterruptIncludesTurnId",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCodexAppServerParseCommandCompletionTest,
+    "Cortex.Frontend.CodexAppServer.Protocol.ParseCommandCompletion",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
 bool FCortexCodexAppServerBuildInitializeTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
@@ -179,6 +195,70 @@ bool FCortexCodexAppServerBuildTurnStartTest::RunTest(const FString& Parameters)
     return true;
 }
 
+bool FCortexCodexAppServerCapturesTurnStartResponseTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexCodexAppServerProtocolState State;
+    State.ThreadId = TEXT("thread-abc");
+    TArray<FCortexStreamEvent> Events;
+
+    FCortexCodexAppServerProtocol::ParseLine(
+        TEXT("{\"id\":10,\"result\":{\"turn\":{\"id\":\"turn-123\",\"status\":\"inProgress\",\"items\":[],\"error\":null}}}"),
+        State,
+        Events);
+
+    TestEqual(TEXT("turn/start response should capture active turn id"),
+        State.ActiveTurnId,
+        FString(TEXT("turn-123")));
+    TestEqual(TEXT("turn/start response should not emit UI events"),
+        Events.Num(),
+        0);
+    return true;
+}
+
+bool FCortexCodexAppServerCapturesTurnStartedNotificationTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexCodexAppServerProtocolState State;
+    TArray<FCortexStreamEvent> Events;
+
+    FCortexCodexAppServerProtocol::ParseLine(
+        TEXT("{\"method\":\"turn/started\",\"params\":{\"threadId\":\"thread-abc\",\"turn\":{\"id\":\"turn-456\",\"status\":\"inProgress\",\"items\":[],\"error\":null}}}"),
+        State,
+        Events);
+
+    TestEqual(TEXT("turn/started notification should capture active turn id"),
+        State.ActiveTurnId,
+        FString(TEXT("turn-456")));
+    TestEqual(TEXT("turn/started notification should capture thread id"),
+        State.ThreadId,
+        FString(TEXT("thread-abc")));
+    TestEqual(TEXT("turn/started notification should not emit UI events"),
+        Events.Num(),
+        0);
+    return true;
+}
+
+bool FCortexCodexAppServerBuildInterruptIncludesTurnIdTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    const FString Json = FCortexCodexAppServerProtocol::BuildTurnInterruptRequest(
+        31,
+        TEXT("thread-abc"),
+        TEXT("turn-123"));
+
+    TestTrue(TEXT("Interrupt should use turn/interrupt method"),
+        Json.Contains(TEXT("\"method\":\"turn/interrupt\"")));
+    TestTrue(TEXT("Interrupt should include thread id"),
+        Json.Contains(TEXT("\"threadId\":\"thread-abc\"")));
+    TestTrue(TEXT("Interrupt should include turn id"),
+        Json.Contains(TEXT("\"turnId\":\"turn-123\"")));
+    return true;
+}
+
 bool FCortexCodexAppServerParseNotificationsTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
@@ -287,5 +367,26 @@ bool FCortexCodexAppServerParseToolAndUsageNotificationsTest::RunTest(const FStr
     TestEqual(TEXT("Cached input tokens should come from tokenUsage.total.cachedInputTokens"), Events[0].CacheReadTokens, static_cast<int64>(11));
     TestEqual(TEXT("Output tokens should come from tokenUsage.total.outputTokens"), Events[0].OutputTokens, static_cast<int64>(12));
 
+    return true;
+}
+
+bool FCortexCodexAppServerParseCommandCompletionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexCodexAppServerProtocolState State;
+    State.ThreadId = TEXT("thread-abc");
+    TArray<FCortexStreamEvent> Events;
+
+    FCortexCodexAppServerProtocol::ParseLine(
+        TEXT("{\"method\":\"item/completed\",\"params\":{\"threadId\":\"thread-abc\",\"turnId\":\"turn-1\",\"completedAtMs\":2,\"item\":{\"type\":\"commandExecution\",\"id\":\"cmd-1\",\"command\":\"git status --short\",\"cwd\":\"D:/repo\",\"processId\":123,\"source\":\"agent\",\"status\":\"completed\",\"aggregatedOutput\":\" M Source/File.cpp\\n\",\"exitCode\":0,\"durationMs\":42}}}"),
+        State,
+        Events);
+
+    TestEqual(TEXT("commandExecution completion should emit one event"), Events.Num(), 1);
+    TestEqual(TEXT("commandExecution completion should map to ToolResult"), Events[0].Type, ECortexStreamEventType::ToolResult);
+    TestEqual(TEXT("commandExecution completion should preserve tool call id"), Events[0].ToolCallId, FString(TEXT("cmd-1")));
+    TestEqual(TEXT("commandExecution completion should use command as tool name"), Events[0].ToolName, FString(TEXT("git status --short")));
+    TestTrue(TEXT("commandExecution output should be serialized for display"), Events[0].ToolResultContent.Contains(TEXT("Source/File.cpp")));
     return true;
 }

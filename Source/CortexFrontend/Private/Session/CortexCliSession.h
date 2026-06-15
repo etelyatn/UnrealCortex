@@ -82,6 +82,8 @@ public:
 	void CompleteSpawnForTests(ECortexAccessMode AccessMode);
 	bool UsesCodexAppServerTransportForTest() const { return UsesCodexAppServerTransport(); }
 	void CompleteCodexAppServerStartForTests(const FString& ThreadId, ECortexAccessMode AccessMode);
+	void HandleCodexAppServerStartupTimeoutForTest() { HandleCodexAppServerStartupTimeout(); }
+	void HandleCodexAppServerTurnTimeoutForTest() { HandleCodexAppServerTurnTimeout(); }
 #endif
 
 private:
@@ -112,6 +114,9 @@ private:
 	friend class FCortexCliSessionCodexChatIdleExitDoesNotFailCompletedTurnTest;
 	friend class FCortexCliSessionCodexChatCancelDuringStartupClearsQueuedPromptTest;
 	friend class FCortexCliSessionCodexChatReconnectUsesAppServerTest;
+	friend class FCortexCliSessionCodexAppServerStartupTimeoutTest;
+	friend class FCortexCliSessionCodexAppServerStartupTimeoutRecoveryTest;
+	friend class FCortexCliSessionCodexAppServerTurnTimeoutTest;
 	friend class FCortexCliSessionTurnBoundFollowUpQueuesUntilProcessExitTest;
 	friend class FCortexCliSessionTurnBoundFollowUpRespawnFailureCompletesQueuedTurnTest;
 	friend class FCortexCliSessionQueuePromptWhileSpawningTest;
@@ -146,6 +151,12 @@ private:
 	bool SendPromptViaCodexAppServer(const FCortexPromptRequest& Request);
 	bool DispatchCodexAppServerTurn(const FString& Prompt, ECortexAccessMode AccessMode);
 	void TryDrainCodexAppServerPendingPrompt();
+	void StartCodexAppServerStartupTimeout();
+	void StartCodexAppServerTurnTimeout();
+	void CancelCodexAppServerTimeouts();
+	void HandleCodexAppServerStartupTimeout();
+	void HandleCodexAppServerTurnTimeout();
+	void CompleteCodexAppServerTimeout(const FString& Message);
 	void CleanupProcess();
 	void WakeWorker();
 	FString ConsumePendingPromptEnvelope();
@@ -207,5 +218,9 @@ private:
 	uint32 CancelGeneration = 0;
 	uint8 ConsecutiveSpawnFailures = 0;
 	FTSTicker::FDelegateHandle GraceTimerHandle;
+	FTSTicker::FDelegateHandle CodexAppServerStartupTimeoutHandle;
+	FTSTicker::FDelegateHandle CodexAppServerTurnTimeoutHandle;
+	uint32 CodexAppServerStartupGeneration = 0;
+	uint32 CodexAppServerTurnGeneration = 0;
 	bool bCodexAppServerThreadReady = false;
 };

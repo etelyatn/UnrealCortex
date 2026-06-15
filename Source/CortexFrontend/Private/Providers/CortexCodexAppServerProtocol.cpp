@@ -263,11 +263,15 @@ FString FCortexCodexAppServerProtocol::BuildTurnStartRequest(
     return WriteJsonLine(Root.ToSharedRef());
 }
 
-FString FCortexCodexAppServerProtocol::BuildTurnInterruptRequest(int32 RequestId, const FString& ThreadId)
+FString FCortexCodexAppServerProtocol::BuildTurnInterruptRequest(
+    int32 RequestId,
+    const FString& ThreadId,
+    const FString& TurnId)
 {
     TSharedPtr<FJsonObject> Root = MakeRequest(RequestId, TEXT("turn/interrupt"));
     TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
     Params->SetStringField(TEXT("threadId"), ThreadId);
+    Params->SetStringField(TEXT("turnId"), TurnId);
     Root->SetObjectField(TEXT("params"), Params);
     return WriteJsonLine(Root.ToSharedRef());
 }
@@ -299,6 +303,13 @@ bool FCortexCodexAppServerProtocol::ParseLine(
             (*ResultObject)->TryGetStringField(TEXT("model"), Event.Model);
             Event.RawJson = JsonLine;
             OutEvents.Add(MoveTemp(Event));
+            return true;
+        }
+
+        const TSharedPtr<FJsonObject>* TurnObject = nullptr;
+        if ((*ResultObject)->TryGetObjectField(TEXT("turn"), TurnObject) && TurnObject != nullptr)
+        {
+            (*TurnObject)->TryGetStringField(TEXT("id"), State.ActiveTurnId);
             return true;
         }
     }
@@ -343,6 +354,18 @@ bool FCortexCodexAppServerProtocol::ParseLine(
         State.PendingAssistantText += Event.Text;
         Event.RawJson = JsonLine;
         OutEvents.Add(MoveTemp(Event));
+        return true;
+    }
+
+    if (Method == TEXT("turn/started"))
+    {
+        (*Params)->TryGetStringField(TEXT("threadId"), State.ThreadId);
+
+        const TSharedPtr<FJsonObject>* TurnObject = nullptr;
+        if ((*Params)->TryGetObjectField(TEXT("turn"), TurnObject) && TurnObject != nullptr)
+        {
+            (*TurnObject)->TryGetStringField(TEXT("id"), State.ActiveTurnId);
+        }
         return true;
     }
 
@@ -424,6 +447,34 @@ bool FCortexCodexAppServerProtocol::ParseLine(
             {
                 Event.ToolResultContent = SerializeCodexAppServerJsonObject(*ResultValue);
             }
+            Event.RawJson = JsonLine;
+            OutEvents.Add(MoveTemp(Event));
+            return true;
+        }
+
+        if (Method == TEXT("item/completed") && ItemType == TEXT("commandExecution"))
+        {
+            FCortexStreamEvent Event;
+            Event.Type = ECortexStreamEventType::ToolResult;
+            (*ItemObject)->TryGetStringField(TEXT("id"), Event.ToolCallId);
+            (*ItemObject)->TryGetStringField(TEXT("command"), Event.ToolName);
+
+            FString AggregatedOutput;
+            if ((*ItemObject)->TryGetStringField(TEXT("aggregatedOutput"), AggregatedOutput) && !AggregatedOutput.IsEmpty())
+            {
+                Event.ToolResultContent = AggregatedOutput;
+            }
+            else
+            {
+                Event.ToolResultContent = SerializeCodexAppServerJsonObject(*ItemObject);
+            }
+
+            double DurationMs = 0.0;
+            if ((*ItemObject)->TryGetNumberField(TEXT("durationMs"), DurationMs))
+            {
+                Event.DurationMs = static_cast<int32>(DurationMs);
+            }
+
             Event.RawJson = JsonLine;
             OutEvents.Add(MoveTemp(Event));
             return true;

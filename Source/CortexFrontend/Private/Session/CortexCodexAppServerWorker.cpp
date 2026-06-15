@@ -64,14 +64,15 @@ bool FCortexCodexAppServerWorker::SendTurn(const FString& Prompt, ECortexAccessM
 
 bool FCortexCodexAppServerWorker::InterruptTurn()
 {
-    if (ProtocolState.ThreadId.IsEmpty())
+    if (ProtocolState.ThreadId.IsEmpty() || ProtocolState.ActiveTurnId.IsEmpty())
     {
         return false;
     }
 
     return QueueWrite(FCortexCodexAppServerProtocol::BuildTurnInterruptRequest(
         NextRequestId(),
-        ProtocolState.ThreadId));
+        ProtocolState.ThreadId,
+        ProtocolState.ActiveTurnId));
 }
 
 void FCortexCodexAppServerWorker::Shutdown()
@@ -180,6 +181,11 @@ void FCortexCodexAppServerWorker::StartForTests()
 void FCortexCodexAppServerWorker::SetThreadIdForTests(const FString& ThreadId)
 {
     ProtocolState.ThreadId = ThreadId;
+}
+
+void FCortexCodexAppServerWorker::SetActiveTurnIdForTests(const FString& TurnId)
+{
+    ProtocolState.ActiveTurnId = TurnId;
 }
 #endif
 

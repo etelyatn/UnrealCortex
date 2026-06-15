@@ -27,7 +27,10 @@ public:
         const FString& Prompt,
         const FCortexSessionConfig& Config,
         ECortexAccessMode AccessMode);
-    static FString BuildTurnInterruptRequest(int32 RequestId, const FString& ThreadId);
+    static FString BuildTurnInterruptRequest(
+        int32 RequestId,
+        const FString& ThreadId,
+        const FString& TurnId);
 
     static bool ParseLine(
         const FString& JsonLine,

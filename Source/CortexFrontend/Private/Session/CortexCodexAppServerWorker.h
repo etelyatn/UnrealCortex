@@ -34,6 +34,7 @@ public:
     static void ClearWriteOverrideForTests();
     void StartForTests();
     void SetThreadIdForTests(const FString& ThreadId);
+    void SetActiveTurnIdForTests(const FString& TurnId);
 #endif
 
 private:

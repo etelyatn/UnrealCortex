@@ -18,6 +18,8 @@ namespace
 {
 	constexpr uint8 MaxRespawnAttempts = 2;
 	constexpr float GracePeriodSeconds = 2.0f;
+	constexpr float CodexAppServerStartupTimeoutSeconds = 30.0f;
+	constexpr float CodexAppServerTurnTimeoutSeconds = 120.0f;
 
 #if WITH_DEV_AUTOMATION_TESTS
 	TFunction<bool(FCortexCliSession&, ECortexAccessMode, bool)> GSpawnProcessOverrideForTests;
@@ -145,6 +147,7 @@ bool FCortexCliSession::Connect()
 			return false;
 		}
 
+		StartCodexAppServerStartupTimeout();
 		FCortexFrontendSettings::Get().ClearPendingChanges();
 		return true;
 	}
@@ -359,6 +362,7 @@ bool FCortexCliSession::Reconnect()
 			return false;
 		}
 
+		StartCodexAppServerStartupTimeout();
 		FCortexFrontendSettings::Get().ClearPendingChanges();
 		return true;
 	}
@@ -392,6 +396,7 @@ bool FCortexCliSession::Reconnect()
 void FCortexCliSession::NewChat()
 {
 	CancelGraceTimer();
+	CancelCodexAppServerTimeouts();
 	CleanupProcess();
 	ClearConversation();
 	Config.SessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
@@ -409,6 +414,7 @@ void FCortexCliSession::NewChat()
 void FCortexCliSession::Shutdown()
 {
 	CancelGraceTimer();
+	CancelCodexAppServerTimeouts();
 	CleanupProcess();
 	const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Terminated);
 	BroadcastStateChange(PreviousState, ECortexSessionState::Terminated, TEXT("Shutdown"));
@@ -444,6 +450,7 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 			{
 				State.store(ECortexSessionState::Idle);
 				BroadcastStateChange(ECortexSessionState::Spawning, ECortexSessionState::Idle, TEXT("Codex app-server thread ready"));
+				CancelCodexAppServerTimeouts();
 				TryDrainCodexAppServerPendingPrompt();
 			}
 		}
@@ -523,6 +530,10 @@ void FCortexCliSession::HandleWorkerEvent(const FCortexStreamEvent& Event)
 		Result.NumTurns = Event.NumTurns;
 		Result.TotalCostUsd = Event.TotalCostUsd;
 		Result.SessionId = Event.SessionId;
+		if (UsesCodexAppServerTransport())
+		{
+			CancelCodexAppServerTimeouts();
+		}
 		if (!Event.SessionId.IsEmpty())
 		{
 			Config.SessionId = Event.SessionId;
@@ -915,6 +926,7 @@ bool FCortexCliSession::SendPromptViaCodexAppServer(const FCortexPromptRequest& 
 			return false;
 		}
 
+		StartCodexAppServerStartupTimeout();
 		return true;
 	}
 
@@ -961,6 +973,7 @@ bool FCortexCliSession::DispatchCodexAppServerTurn(const FString& Prompt, ECorte
 		return false;
 	}
 
+	StartCodexAppServerTurnTimeout();
 	return true;
 }
 
@@ -984,8 +997,140 @@ void FCortexCliSession::TryDrainCodexAppServerPendingPrompt()
 	DispatchCodexAppServerTurn(Prompt, AccessMode);
 }
 
+void FCortexCliSession::StartCodexAppServerStartupTimeout()
+{
+	if (!UsesCodexAppServerTransport())
+	{
+		return;
+	}
+
+#if WITH_DEV_AUTOMATION_TESTS
+	if (GCodexAppServerStartOverrideForTests)
+	{
+		return;
+	}
+#endif
+
+	if (CodexAppServerStartupTimeoutHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(CodexAppServerStartupTimeoutHandle);
+		CodexAppServerStartupTimeoutHandle.Reset();
+	}
+
+	const uint32 ExpectedGeneration = ++CodexAppServerStartupGeneration;
+	TWeakPtr<FCortexCliSession> WeakSelf = AsWeak();
+	CodexAppServerStartupTimeoutHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateLambda([WeakSelf, ExpectedGeneration](float) -> bool
+		{
+			if (TSharedPtr<FCortexCliSession> Self = WeakSelf.Pin())
+			{
+				if (Self->CodexAppServerStartupGeneration == ExpectedGeneration &&
+					Self->State.load() == ECortexSessionState::Spawning)
+				{
+					Self->HandleCodexAppServerStartupTimeout();
+				}
+			}
+			return false;
+		}),
+		CodexAppServerStartupTimeoutSeconds);
+}
+
+void FCortexCliSession::StartCodexAppServerTurnTimeout()
+{
+	if (!UsesCodexAppServerTransport())
+	{
+		return;
+	}
+
+#if WITH_DEV_AUTOMATION_TESTS
+	if (GCodexAppServerTurnOverrideForTests)
+	{
+		return;
+	}
+#endif
+
+	if (CodexAppServerTurnTimeoutHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(CodexAppServerTurnTimeoutHandle);
+		CodexAppServerTurnTimeoutHandle.Reset();
+	}
+
+	const uint32 ExpectedGeneration = ++CodexAppServerTurnGeneration;
+	TWeakPtr<FCortexCliSession> WeakSelf = AsWeak();
+	CodexAppServerTurnTimeoutHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateLambda([WeakSelf, ExpectedGeneration](float) -> bool
+		{
+			if (TSharedPtr<FCortexCliSession> Self = WeakSelf.Pin())
+			{
+				if (Self->CodexAppServerTurnGeneration == ExpectedGeneration &&
+					Self->State.load() == ECortexSessionState::Processing)
+				{
+					Self->HandleCodexAppServerTurnTimeout();
+				}
+			}
+			return false;
+		}),
+		CodexAppServerTurnTimeoutSeconds);
+}
+
+void FCortexCliSession::CancelCodexAppServerTimeouts()
+{
+	++CodexAppServerStartupGeneration;
+	++CodexAppServerTurnGeneration;
+
+	if (CodexAppServerStartupTimeoutHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(CodexAppServerStartupTimeoutHandle);
+		CodexAppServerStartupTimeoutHandle.Reset();
+	}
+
+	if (CodexAppServerTurnTimeoutHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(CodexAppServerTurnTimeoutHandle);
+		CodexAppServerTurnTimeoutHandle.Reset();
+	}
+}
+
+void FCortexCliSession::HandleCodexAppServerStartupTimeout()
+{
+	CompleteCodexAppServerTimeout(TEXT("Codex app-server startup timed out before thread/start completed."));
+}
+
+void FCortexCliSession::HandleCodexAppServerTurnTimeout()
+{
+	CompleteCodexAppServerTimeout(TEXT("Codex app-server turn timed out before turn/completed arrived."));
+}
+
+void FCortexCliSession::CompleteCodexAppServerTimeout(const FString& Message)
+{
+	bool bHadPendingPrompt = false;
+	{
+		FScopeLock Lock(&PromptMutex);
+		bHadPendingPrompt = PendingPrompt.IsSet();
+		PendingPrompt.Reset();
+		PendingAccessMode.Reset();
+	}
+
+	CancelCodexAppServerTimeouts();
+	CleanupProcess();
+
+	const ECortexSessionState PreviousState = State.exchange(ECortexSessionState::Inactive);
+	BroadcastStateChange(PreviousState, ECortexSessionState::Inactive, Message);
+
+	if (bHadPendingPrompt || PreviousState == ECortexSessionState::Processing || PreviousState == ECortexSessionState::Cancelling)
+	{
+		FCortexTurnResult Result;
+		Result.bIsError = true;
+		Result.ResultText = Message;
+		Result.SessionId = Config.SessionId;
+		OnTurnComplete.Broadcast(Result);
+	}
+}
+
 void FCortexCliSession::CleanupProcess()
 {
+	CancelCodexAppServerTimeouts();
+
 	if (CodexAppServerWorker)
 	{
 		CodexAppServerWorker->Shutdown();
