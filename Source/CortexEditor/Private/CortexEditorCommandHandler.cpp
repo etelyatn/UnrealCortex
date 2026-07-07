@@ -80,6 +80,18 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	{
 		return FCortexEditorUtilityOps::ExecuteConsoleCommand(*PIEState, Params);
 	}
+	if (Command == TEXT("get_cvar"))
+	{
+		return FCortexEditorUtilityOps::GetCVar(Params);
+	}
+	if (Command == TEXT("set_cvar"))
+	{
+		return FCortexEditorUtilityOps::SetCVar(Params);
+	}
+	if (Command == TEXT("list_cvars"))
+	{
+		return FCortexEditorUtilityOps::ListCVars(Params);
+	}
 	if (PIEState.IsValid() && Command == TEXT("set_time_dilation"))
 	{
 		return FCortexEditorUtilityOps::SetTimeDilation(*PIEState, Params);
@@ -169,6 +181,14 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Required(TEXT("mode"), TEXT("string"), TEXT("Viewport mode name")),
 		FCortexCommandInfo{ TEXT("execute_console_command"), TEXT("Run console command in PIE") }
 			.Required(TEXT("command"), TEXT("string"), TEXT("Console command to execute")),
+		FCortexCommandInfo{ TEXT("get_cvar"), TEXT("Get an editor console variable") }
+			.Required(TEXT("name"), TEXT("string"), TEXT("Console variable name")),
+		FCortexCommandInfo{ TEXT("set_cvar"), TEXT("Set an editor console variable with ECVF_SetByConsole") }
+			.Required(TEXT("name"), TEXT("string"), TEXT("Console variable name"))
+			.Required(TEXT("value"), TEXT("string"), TEXT("Value to set; JSON numbers/bools may be represented as strings")),
+		FCortexCommandInfo{ TEXT("list_cvars"), TEXT("List editor console variables and commands by name pattern") }
+			.Optional(TEXT("pattern"), TEXT("string"), TEXT("Case-insensitive substring or prefix filter"))
+			.Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum results, clamped to 1..500")),
 		FCortexCommandInfo{ TEXT("get_recent_logs"), TEXT("Get recent log entries") }
 			.Optional(TEXT("severity"), TEXT("string"), TEXT("Minimum severity filter"))
 			.Optional(TEXT("since_seconds"), TEXT("number"), TEXT("Only include recent entries"))
