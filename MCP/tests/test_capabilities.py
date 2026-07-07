@@ -78,6 +78,72 @@ def test_build_router_docstring_lists_export_schema_json():
     assert "export_schema_json" in docstrings["data"]
 
 
+def test_editor_router_hint_warns_about_trusted_python():
+    """Editor router docs should warn agents before using run_python."""
+    capabilities = json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
+
+    docstrings = build_router_docstrings(capabilities)
+
+    assert "editor" in docstrings
+    assert "high-trust escape hatch" in docstrings["editor"]
+    assert "prefer structured Cortex commands" in docstrings["editor"]
+    assert "mutate assets/files" in docstrings["editor"]
+
+
+def test_editor_capabilities_include_python_and_cvars():
+    """Editor capabilities fixture should expose trusted Python and CVar commands."""
+    capabilities = json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
+    editor_commands = {
+        cmd["name"]: cmd
+        for cmd in capabilities["domains"]["editor"]["commands"]
+    }
+
+    for command_name in ("run_python", "get_cvar", "set_cvar", "list_cvars"):
+        assert command_name in editor_commands
+
+    run_python_params = {param["name"]: param for param in editor_commands["run_python"]["params"]}
+    assert "code" in run_python_params
+    assert run_python_params["code"]["required"] is True
+    assert "run_next_tick" in run_python_params
+    assert "defer" not in run_python_params
+
+    description = editor_commands["run_python"]["description"]
+    assert "high-trust escape hatch" in description
+    assert "prefer structured Cortex commands" in description
+    assert "mutate assets/files" in description
+
+
+def test_editor_docstrings_include_python_signature():
+    """Editor router docs should list run_python with run_next_tick and no defer alias."""
+    capabilities = json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
+    docstrings = build_router_docstrings(capabilities)
+
+    assert "- run_python(code: string, run_next_tick: boolean = optional)" in docstrings["editor"]
+    assert "defer" not in docstrings["editor"]
+
+
+def test_fallback_editor_has_python_and_cvars_without_defer():
+    """Generated no-editor fallback should match the selected editor slice."""
+    fallback_commands = {cmd["name"]: cmd for cmd in _FALLBACK_STRUCTURED["editor"]}
+
+    for command_name in ("run_python", "get_cvar", "set_cvar", "list_cvars"):
+        assert command_name in fallback_commands
+
+    run_python_params = {param["name"] for param in fallback_commands["run_python"].get("params", [])}
+    assert "code" in run_python_params
+    assert "run_next_tick" in run_python_params
+    assert "defer" not in run_python_params
+
+
+def test_animation_domains_absent_from_python_cvar_slice():
+    """This slice must not ship CortexAnimation or anim metadata."""
+    capabilities = json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
+    assert "anim" not in capabilities["domains"]
+    assert "animation" not in capabilities["domains"]
+    assert "anim" not in _FALLBACK_STRUCTURED
+    assert "animation" not in _FALLBACK_STRUCTURED
+
+
 def test_missing_cache_uses_minimal_fallback_and_logs_warning(caplog, tmp_path):
     """Missing cache should fall back to minimal router docs and log a warning."""
     old_project_dir = os.environ.get("CORTEX_PROJECT_DIR")

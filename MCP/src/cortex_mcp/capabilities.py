@@ -81,6 +81,11 @@ _COMPOSITE_HINTS: dict[str, str] = {
         "Schema snapshots and raw exports write JSON files and return compact summaries; "
         "do not read exported files back into MCP responses.\n"
     ),
+    "editor": (
+        "run_python is a high-trust escape hatch for trusted local editor automation; "
+        "prefer structured Cortex commands first because run_python can mutate assets/files "
+        "and bypass normal safeguards.\n"
+    ),
     "material": "For creating a full material graph from scratch, use material_compose instead of chaining material_cmd calls.\n",
     "blueprint": "For creating or updating a full Blueprint, use blueprint_compose instead of chaining blueprint_cmd calls.\n",
     "umg": "For creating a complete Widget Blueprint screen, use widget_compose instead of chaining umg_cmd calls.\n",
