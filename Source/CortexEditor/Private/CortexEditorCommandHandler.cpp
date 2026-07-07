@@ -129,6 +129,10 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	{
 		return FCortexEditorViewportOps::SetViewportMode(Params);
 	}
+	if (Command == TEXT("run_python"))
+	{
+		return FCortexEditorUtilityOps::RunPython(Params, MoveTemp(DeferredCallback));
+	}
 
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
@@ -198,6 +202,9 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Required(TEXT("factor"), TEXT("number"), TEXT("Global time dilation factor")),
 		FCortexCommandInfo{ TEXT("get_editor_state"), TEXT("Get general editor state") },
 		FCortexCommandInfo{ TEXT("get_world_info"), TEXT("Get PIE world metadata") },
+		FCortexCommandInfo{ TEXT("run_python"), TEXT("Run trusted editor Python as a high-trust escape hatch; prefer structured Cortex commands; can mutate assets/files") }
+			.Required(TEXT("code"), TEXT("string"), TEXT("Python code to execute inside the local editor process"))
+			.Optional(TEXT("run_next_tick"), TEXT("boolean"), TEXT("Run on the next core ticker tick; requires deferred callback")),
 	};
 }
 

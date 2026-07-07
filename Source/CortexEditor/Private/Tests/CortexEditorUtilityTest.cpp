@@ -1,12 +1,20 @@
 #include "Misc/AutomationTest.h"
+#include "Containers/Ticker.h"
 #include "CortexEditorLogCapture.h"
 #include "CortexEditorCommandHandler.h"
+#include "CortexCommandRouter.h"
 #include "HAL/IConsoleManager.h"
 
 static TAutoConsoleVariable<int32> GCortexEditorUtilityTestIntCVar(
 	TEXT("cortex.test.EditorUtilityInt"),
 	7,
 	TEXT("Cortex editor utility automation test integer CVar"),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> GCortexRunPythonBatchSentinelCVar(
+	TEXT("cortex.test.RunPythonBatchSentinel"),
+	0,
+	TEXT("Cortex run_python batch no-callback sentinel"),
 	ECVF_Default);
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -320,5 +328,268 @@ bool FCortexEditorListCVarsShapeAndLimitTest::RunTest(const FString& Parameters)
 		const int32 CommandCount = Commands != nullptr ? Commands->Num() : 0;
 		TestTrue(TEXT("List should respect limit"), VariableCount + CommandCount <= 5);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorRunPythonMissingCodeTest,
+	"Cortex.Editor.Utility.RunPython.MissingCode",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorRunPythonMissingCodeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	const FCortexCommandResult Result = Handler.Execute(TEXT("run_python"), MakeShared<FJsonObject>());
+	TestFalse(TEXT("run_python should fail without code"), Result.bSuccess);
+	TestEqual(TEXT("Missing code should return INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorRunPythonRejectsDeferAliasTest,
+	"Cortex.Editor.Utility.RunPython.RejectsDeferAlias",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorRunPythonRejectsDeferAliasTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("code"), TEXT("print('should not run')"));
+	Params->SetBoolField(TEXT("defer"), true);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("run_python"), Params);
+	TestFalse(TEXT("run_python should reject legacy defer alias"), Result.bSuccess);
+	TestEqual(TEXT("Legacy defer should return INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorRunPythonNextTickRequiresCallbackTest,
+	"Cortex.Editor.Utility.RunPython.NextTickRequiresCallback",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorRunPythonNextTickRequiresCallbackTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("code"), TEXT("print('should not run without callback')"));
+	Params->SetBoolField(TEXT("run_next_tick"), true);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("run_python"), Params);
+	TestFalse(TEXT("run_next_tick without callback should fail"), Result.bSuccess);
+	TestEqual(TEXT("run_next_tick without callback should return INVALID_OPERATION"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorRunPythonCapturesOutputTest,
+	"Cortex.Editor.Utility.RunPython.CapturesOutput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorRunPythonCapturesOutputTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("code"), TEXT("print('cortex python output')"));
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("run_python"), Params);
+	if (!Result.bSuccess && Result.ErrorCode == CortexErrorCodes::UnsupportedCommand)
+	{
+		AddInfo(TEXT("Skipping: PythonScriptPlugin unavailable"));
+		return true;
+	}
+
+	TestTrue(TEXT("run_python should succeed"), Result.bSuccess);
+	TestTrue(TEXT("Response should include data"), Result.Data.IsValid());
+	if (Result.Data.IsValid())
+	{
+		TestTrue(TEXT("ok should be true"), Result.Data->GetBoolField(TEXT("ok")));
+		TestTrue(TEXT("output should be present"), Result.Data->HasField(TEXT("output")));
+		TestFalse(TEXT("output_truncated should be false"), Result.Data->GetBoolField(TEXT("output_truncated")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorRunPythonErrorDetailsBoundedTest,
+	"Cortex.Editor.Utility.RunPython.ErrorDetailsBounded",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorRunPythonErrorDetailsBoundedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("code"), TEXT("raise RuntimeError('cortex expected failure')"));
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("run_python"), Params);
+	if (!Result.bSuccess && Result.ErrorCode == CortexErrorCodes::UnsupportedCommand)
+	{
+		AddInfo(TEXT("Skipping: PythonScriptPlugin unavailable"));
+		return true;
+	}
+
+	TestFalse(TEXT("Python exception should fail"), Result.bSuccess);
+	TestEqual(TEXT("Python exception should return INVALID_OPERATION"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
+	TestTrue(TEXT("Error details should be present"), Result.ErrorDetails.IsValid());
+	if (Result.ErrorDetails.IsValid())
+	{
+		TestTrue(TEXT("Error details should include result"), Result.ErrorDetails->HasField(TEXT("result")));
+		TestTrue(TEXT("Error details should include output"), Result.ErrorDetails->HasField(TEXT("output")));
+		TestTrue(TEXT("Error details should include output_truncated"), Result.ErrorDetails->HasField(TEXT("output_truncated")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorRunPythonTruncatesOutputTest,
+	"Cortex.Editor.Utility.RunPython.TruncatesOutput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorRunPythonTruncatesOutputTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("code"), TEXT("for i in range(130): print('line-' + str(i))"));
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("run_python"), Params);
+	if (!Result.bSuccess && Result.ErrorCode == CortexErrorCodes::UnsupportedCommand)
+	{
+		AddInfo(TEXT("Skipping: PythonScriptPlugin unavailable"));
+		return true;
+	}
+
+	TestTrue(TEXT("run_python should succeed"), Result.bSuccess);
+	if (Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Output = nullptr;
+		TestTrue(TEXT("output should be an array"), Result.Data->TryGetArrayField(TEXT("output"), Output));
+		TestTrue(TEXT("output should be capped to 100 entries"), Output != nullptr && Output->Num() <= 100);
+		TestTrue(TEXT("output_truncated should be true"), Result.Data->GetBoolField(TEXT("output_truncated")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorRunPythonTruncatesUnicodeOutputByUtf8BytesTest,
+	"Cortex.Editor.Utility.RunPython.TruncatesUnicodeOutputByUtf8Bytes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorRunPythonTruncatesUnicodeOutputByUtf8BytesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("code"), TEXT("print('é' * 70000)"));
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("run_python"), Params);
+	if (!Result.bSuccess && Result.ErrorCode == CortexErrorCodes::UnsupportedCommand)
+	{
+		AddInfo(TEXT("Skipping: PythonScriptPlugin unavailable"));
+		return true;
+	}
+
+	TestTrue(TEXT("run_python should succeed"), Result.bSuccess);
+	if (Result.Data.IsValid())
+	{
+		TestTrue(TEXT("unicode output should be truncated by UTF-8 byte cap"), Result.Data->GetBoolField(TEXT("output_truncated")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorRunPythonNextTickDeferredTest,
+	"Cortex.Editor.Utility.RunPython.NextTickDeferred",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorRunPythonNextTickDeferredTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("code"), TEXT("print('cortex deferred python')"));
+	Params->SetBoolField(TEXT("run_next_tick"), true);
+
+	bool bCallbackRan = false;
+	FDeferredResponseCallback Callback = [&bCallbackRan](FCortexCommandResult Result)
+	{
+		if (Result.bSuccess || Result.ErrorCode == CortexErrorCodes::UnsupportedCommand)
+		{
+			bCallbackRan = true;
+		}
+	};
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("run_python"), Params, MoveTemp(Callback));
+	TestTrue(TEXT("run_python run_next_tick should return deferred placeholder"), Result.bIsDeferred);
+	TestFalse(TEXT("Callback should not run before tick"), bCallbackRan);
+	for (int32 Attempt = 0; Attempt < 5 && !bCallbackRan; ++Attempt)
+	{
+		FTSTicker::GetCoreTicker().Tick(0.016f);
+	}
+	TestTrue(TEXT("Callback should run after tick"), bCallbackRan);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorRunPythonBatchNoCallbackDoesNotExecuteTest,
+	"Cortex.Editor.Utility.RunPython.BatchNoCallbackDoesNotExecute",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorRunPythonBatchNoCallbackDoesNotExecuteTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("editor"), TEXT("Cortex Editor"), TEXT("1.0.0"), MakeShared<FCortexEditorCommandHandler>());
+	IConsoleVariable* Sentinel = IConsoleManager::Get().FindConsoleVariable(TEXT("cortex.test.RunPythonBatchSentinel"));
+	if (Sentinel == nullptr)
+	{
+		AddInfo(TEXT("Skipping: cortex.test.RunPythonBatchSentinel unavailable"));
+		return true;
+	}
+	Sentinel->Set(TEXT("0"), ECVF_SetByConsole);
+
+	TSharedPtr<FJsonObject> BatchParams = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> Commands;
+	TSharedPtr<FJsonObject> Step = MakeShared<FJsonObject>();
+	Step->SetStringField(TEXT("command"), TEXT("editor.run_python"));
+	TSharedPtr<FJsonObject> StepParams = MakeShared<FJsonObject>();
+	StepParams->SetStringField(TEXT("code"), TEXT("import unreal\nunreal.SystemLibrary.execute_console_command(None, 'cortex.test.RunPythonBatchSentinel 1')"));
+	StepParams->SetBoolField(TEXT("run_next_tick"), true);
+	Step->SetObjectField(TEXT("params"), StepParams);
+	Commands.Add(MakeShared<FJsonValueObject>(Step));
+	BatchParams->SetArrayField(TEXT("commands"), Commands);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("batch_query"), BatchParams);
+	TestTrue(TEXT("batch_query should return a batch response"), Result.bSuccess);
+	if (Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
+		TestTrue(TEXT("Batch response should include results"), Result.Data->TryGetArrayField(TEXT("results"), Results));
+		if (Results != nullptr && Results->Num() == 1)
+		{
+			const TSharedPtr<FJsonObject> Entry = (*Results)[0]->AsObject();
+			TestTrue(TEXT("Batch entry should be valid"), Entry.IsValid());
+			if (Entry.IsValid())
+			{
+				TestFalse(TEXT("Batch run_python next tick should fail per step"), Entry->GetBoolField(TEXT("success")));
+				TestEqual(TEXT("Batch run_python next tick should return INVALID_OPERATION"), Entry->GetStringField(TEXT("error_code")), CortexErrorCodes::InvalidOperation);
+			}
+		}
+	}
+	TestEqual(TEXT("Python body should not execute in batch/no-callback context"), Sentinel->GetInt(), 0);
 	return true;
 }

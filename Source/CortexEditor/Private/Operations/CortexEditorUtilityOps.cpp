@@ -1,10 +1,14 @@
 #include "Operations/CortexEditorUtilityOps.h"
+#include "CortexDeferredExec.h"
 #include "CortexEditorPIEState.h"
 #include "CortexEditorLogCapture.h"
 #include "CortexCommandRouter.h"
 #include "HAL/IConsoleManager.h"
+#include "IPythonScriptPlugin.h"
 #include "Misc/App.h"
+#include "Misc/Base64.h"
 #include "Misc/DefaultValueHelper.h"
+#include "PythonScriptTypes.h"
 #include "Editor.h"
 #include "Engine/World.h"
 #include "GameFramework/WorldSettings.h"
@@ -12,6 +16,11 @@
 
 namespace
 {
+static constexpr int32 CortexPythonMaxOutputEntries = 100;
+static constexpr int32 CortexPythonMaxOutputTextBytes = 64 * 1024;
+static constexpr TCHAR CortexPythonErrorBeginMarker[] = TEXT("__CORTEX_PYTHON_ERROR__BEGIN__");
+static constexpr TCHAR CortexPythonErrorEndMarker[] = TEXT("__CORTEX_PYTHON_ERROR__END__");
+
 struct FCortexCVarSnapshot
 {
 	FString Name;
@@ -181,6 +190,196 @@ struct FCortexConsoleListEntry
 	bool bIsVariable = false;
 	TSharedPtr<FJsonObject> Payload;
 };
+
+static FString CortexPythonOutputTypeToString(EPythonLogOutputType Type)
+{
+	switch (Type)
+	{
+	case EPythonLogOutputType::Info:
+		return TEXT("info");
+	case EPythonLogOutputType::Warning:
+		return TEXT("warning");
+	case EPythonLogOutputType::Error:
+		return TEXT("error");
+	default:
+		return TEXT("unknown");
+	}
+}
+
+static int32 CortexUtf8ByteLen(const FString& Text)
+{
+	FTCHARToUTF8 Utf8(*Text);
+	return Utf8.Length();
+}
+
+static FString CortexLeftByUtf8ByteLimit(const FString& Text, int32 MaxBytes)
+{
+	FString Result;
+	for (int32 Index = 0; Index < Text.Len(); ++Index)
+	{
+		FString Candidate = Result;
+		Candidate.AppendChar(Text[Index]);
+		if (CortexUtf8ByteLen(Candidate) > MaxBytes)
+		{
+			break;
+		}
+		Result = MoveTemp(Candidate);
+	}
+	return Result;
+}
+
+static TArray<TSharedPtr<FJsonValue>> CortexBuildBoundedPythonOutput(
+	const TArray<FPythonLogOutputEntry>& LogOutput,
+	bool& bOutTruncated)
+{
+	TArray<TSharedPtr<FJsonValue>> Output;
+	int32 UsedBytes = 0;
+	bOutTruncated = false;
+
+	for (const FPythonLogOutputEntry& Entry : LogOutput)
+	{
+		if (Output.Num() >= CortexPythonMaxOutputEntries)
+		{
+			bOutTruncated = true;
+			break;
+		}
+
+		FString Text = Entry.Output;
+		const int32 RemainingBytes = CortexPythonMaxOutputTextBytes - UsedBytes;
+		if (RemainingBytes <= 0)
+		{
+			bOutTruncated = true;
+			break;
+		}
+
+		const int32 TextBytes = CortexUtf8ByteLen(Text);
+		if (TextBytes > RemainingBytes)
+		{
+			Text = CortexLeftByUtf8ByteLimit(Text, RemainingBytes);
+			bOutTruncated = true;
+		}
+
+		TSharedPtr<FJsonObject> Item = MakeShared<FJsonObject>();
+		Item->SetStringField(TEXT("type"), CortexPythonOutputTypeToString(Entry.Type));
+		Item->SetStringField(TEXT("text"), Text);
+		Output.Add(MakeShared<FJsonValueObject>(Item));
+		UsedBytes += CortexUtf8ByteLen(Text);
+
+		if (bOutTruncated)
+		{
+			break;
+		}
+	}
+
+	if (LogOutput.Num() > Output.Num())
+	{
+		bOutTruncated = true;
+	}
+	return Output;
+}
+
+static FString CortexWrapPythonForCapturedErrors(const FString& Code)
+{
+	FTCHARToUTF8 Utf8(*Code);
+	TArray<uint8> Bytes;
+	Bytes.Append(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length());
+	const FString EncodedCode = FBase64::Encode(Bytes);
+
+	return FString::Printf(
+		TEXT("import base64\n")
+		TEXT("import traceback\n")
+		TEXT("__cortex_code = base64.b64decode('%s').decode('utf-8')\n")
+		TEXT("try:\n")
+		TEXT("    exec(compile(__cortex_code, '<string>', 'exec'), globals(), globals())\n")
+		TEXT("except Exception:\n")
+		TEXT("    print('%s')\n")
+		TEXT("    print(traceback.format_exc())\n")
+		TEXT("    print('%s')\n"),
+		*EncodedCode,
+		CortexPythonErrorBeginMarker,
+		CortexPythonErrorEndMarker);
+}
+
+static bool CortexExtractPythonErrorOutput(
+	const TArray<FPythonLogOutputEntry>& LogOutput,
+	TArray<FPythonLogOutputEntry>& OutFilteredOutput,
+	FString& OutErrorText)
+{
+	bool bCapturingError = false;
+	bool bSawError = false;
+
+	for (const FPythonLogOutputEntry& Entry : LogOutput)
+	{
+		if (Entry.Output.Contains(CortexPythonErrorBeginMarker))
+		{
+			bCapturingError = true;
+			bSawError = true;
+			continue;
+		}
+		if (Entry.Output.Contains(CortexPythonErrorEndMarker))
+		{
+			bCapturingError = false;
+			continue;
+		}
+		if (bCapturingError)
+		{
+			OutErrorText.Append(Entry.Output);
+			if (!Entry.Output.EndsWith(TEXT("\n")))
+			{
+				OutErrorText.Append(TEXT("\n"));
+			}
+			continue;
+		}
+
+		OutFilteredOutput.Add(Entry);
+	}
+
+	OutErrorText.TrimStartAndEndInline();
+	return bSawError;
+}
+
+static FCortexCommandResult CortexRunPythonNow(const FString& Code)
+{
+	IPythonScriptPlugin* Python = IPythonScriptPlugin::Get();
+	if (Python == nullptr || !Python->IsPythonAvailable())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::UnsupportedCommand,
+			TEXT("PythonScriptPlugin is unavailable"));
+	}
+
+	FPythonCommandEx PythonCommand;
+	PythonCommand.Command = CortexWrapPythonForCapturedErrors(Code);
+	PythonCommand.ExecutionMode = EPythonCommandExecutionMode::ExecuteFile;
+	PythonCommand.Flags |= EPythonCommandFlags::Unattended;
+
+	const bool bOk = Python->ExecPythonCommandEx(PythonCommand);
+	TArray<FPythonLogOutputEntry> FilteredOutput;
+	FString CapturedErrorText;
+	const bool bCapturedError = CortexExtractPythonErrorOutput(PythonCommand.LogOutput, FilteredOutput, CapturedErrorText);
+	bool bOutputTruncated = false;
+	TArray<TSharedPtr<FJsonValue>> Output = CortexBuildBoundedPythonOutput(FilteredOutput, bOutputTruncated);
+
+	if (!bOk || bCapturedError)
+	{
+		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+		Details->SetStringField(TEXT("result"), bCapturedError ? CapturedErrorText : PythonCommand.CommandResult);
+		Details->SetArrayField(TEXT("output"), Output);
+		Details->SetBoolField(TEXT("output_truncated"), bOutputTruncated);
+		FCortexCommandResult Error = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			TEXT("Python execution failed"));
+		Error.ErrorDetails = Details;
+		return Error;
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetBoolField(TEXT("ok"), true);
+	Data->SetStringField(TEXT("result"), PythonCommand.CommandResult);
+	Data->SetArrayField(TEXT("output"), Output);
+	Data->SetBoolField(TEXT("output_truncated"), bOutputTruncated);
+	return FCortexCommandRouter::Success(Data);
+}
 }
 
 FCortexCommandResult FCortexEditorUtilityOps::GetEditorState(const FCortexEditorPIEState& PIEState)
@@ -352,6 +551,39 @@ FCortexCommandResult FCortexEditorUtilityOps::ListCVars(const TSharedPtr<FJsonOb
 	Data->SetNumberField(TEXT("total_matched"), TotalMatched);
 	Data->SetBoolField(TEXT("truncated"), TotalMatched > ReturnedCount);
 	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexEditorUtilityOps::RunPython(
+	const TSharedPtr<FJsonObject>& Params,
+	FDeferredResponseCallback DeferredCallback)
+{
+	if (Params.IsValid() && Params->HasField(TEXT("defer")))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Unsupported parameter: defer. Use run_next_tick."));
+	}
+
+	FString Code;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("code"), Code) || Code.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: code"));
+	}
+
+	bool bRunNextTick = false;
+	Params->TryGetBoolField(TEXT("run_next_tick"), bRunNextTick);
+
+	if (bRunNextTick)
+	{
+		return FCortexDeferredExec::RunNextTick(
+			[Code]()
+			{
+				return CortexRunPythonNow(Code);
+			},
+			MoveTemp(DeferredCallback));
+	}
+
+	return CortexRunPythonNow(Code);
 }
 
 FCortexCommandResult FCortexEditorUtilityOps::GetRecentLogs(
