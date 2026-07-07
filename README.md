@@ -107,7 +107,7 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 </details>
 
 <details>
-<summary><strong>Editor Control — CortexEditor</strong> &nbsp;·&nbsp; PIE lifecycle, viewport, input injection</summary>
+<summary><strong>Editor Control — CortexEditor</strong> &nbsp;·&nbsp; PIE lifecycle, viewport, input injection, Python, CVars</summary>
 
 <br>
 
@@ -119,9 +119,13 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 **Editor management:** Execute console commands. Adjust time dilation. Shutdown/restart editor.
 
-**Diagnostics:** Query world info, viewport state, and recent log output.
+**Diagnostics:** Query world info, viewport state, recent log output, and editor-wide console variables.
 
-**Example tasks:** *"Start PIE, take a screenshot of the main menu, then stop"* · *"Move the viewport camera to the boss arena and capture a top-down shot"* · *"Set time dilation to 0.25 so I can debug the dash animation"*
+**Trusted Python:** `run_python` executes local Unreal Editor Python through `editor_cmd` as a high-trust escape hatch. Prefer structured Cortex commands first; Python can mutate assets/files, import content, call editor APIs, and trigger project-specific side effects. Output and error detail payloads are bounded before JSON serialization.
+
+**CVars:** `get_cvar`, `set_cvar`, and `list_cvars` inspect or adjust editor console variables outside PIE. Listings are capped, sorted by name, and split console variables from console commands.
+
+**Example tasks:** *"Start PIE, take a screenshot of the main menu, then stop"* · *"Move the viewport camera to the boss arena and capture a top-down shot"* · *"Set time dilation to 0.25 so I can debug the dash animation"* · *"List render CVars matching r.Nanite and temporarily set one for editor diagnostics"* · *"Run a trusted editor Python snippet to inspect an API that Cortex does not expose yet"*
 
 </details>
 
@@ -242,7 +246,7 @@ flowchart TB
         ST["CortexStateTree<br/>StateTrees<br/>States · Transitions"]
         UMG["CortexUMG<br/>Widget Trees<br/>Properties · Animations"]
         Level["CortexLevel<br/>Actors · Components<br/>Streaming"]
-        Editor["CortexEditor<br/>PIE · Viewport<br/>Input · Console"]
+        Editor["CortexEditor<br/>PIE · Viewport<br/>Input · Python · CVars"]
         QA["CortexQA<br/>Game Actions<br/>Assertions · Scenarios"]
         Reflect["CortexReflect<br/>Class Hierarchy<br/>Cross-references"]
         Gen["CortexGen<br/>Mesh · Texture<br/>AI Generation"]
@@ -489,7 +493,7 @@ void FMyDomainModule::StartupModule()
 | **CortexBlueprint** | CortexCore · CortexGraph | `BlueprintGraph` · `Kismet` · `KismetCompiler` · `AssetRegistry` · `GameplayTags` |
 | **CortexMaterial** | CortexCore · CortexGraph | `MaterialEditor` · `AssetRegistry` |
 | **CortexData** | CortexCore | `GameplayTags` · `AssetRegistry` · `UnrealEd` |
-| **CortexEditor** | CortexCore | `LevelEditor` · `Slate` · `SlateCore` · `EnhancedInput` · `ImageWrapper` · `RenderCore` |
+| **CortexEditor** | CortexCore | `LevelEditor` · `Slate` · `SlateCore` · `EnhancedInput` · `ImageWrapper` · `RenderCore` · `PythonScriptPlugin` |
 | **CortexQA** | CortexCore · CortexEditor | `NavigationSystem` · `AIModule` · `GameplayTags` |
 | **CortexStateTree** | CortexCore | `CoreUObject` · `Engine` · `Json` · `JsonUtilities` · `AssetRegistry` · `AssetTools` · `UnrealEd` · `GameplayTags` · `StateTreeModule` · `StateTreeEditorModule` |
 | **CortexLevel** | CortexCore | `LevelEditor` · `DataLayerEditor` |

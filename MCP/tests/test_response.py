@@ -362,6 +362,28 @@ class TestRouterPagination:
         assert command == "data.search_datatable_content"
         assert call_params["limit"] == 100
 
+    def test_editor_list_cvars_forwards_limit_to_cpp(self):
+        """Editor CVar listing uses the C++ limit instead of router pagination."""
+        router, conn = _router_with_mock(
+            domain="editor",
+            response_data={
+                "variables": [{"name": f"t.Var{i}"} for i in range(3)],
+                "commands": [],
+                "returned_count": 3,
+                "total_matched": 100,
+                "truncated": True,
+            },
+        )
+
+        result = json.loads(router("list_cvars", {"pattern": "t.", "limit": 10}))
+
+        assert "_pagination" not in result
+        assert result["returned_count"] == 3
+        conn.send_command.assert_called_once()
+        command, call_params = conn.send_command.call_args[0]
+        assert command == "editor.list_cvars"
+        assert call_params["limit"] == 10
+
 
 class TestPaginationEdgeCases:
     """Edge cases and interaction between Phase 1 and Phase 2."""

@@ -256,6 +256,7 @@ def test_run_python_basic_execution(editor_connection):
     assert data["ok"] is True
     assert data["output_truncated"] is False
     assert isinstance(data["output"], list)
+    assert any("cortex e2e python" in entry.get("text", "") for entry in data["output"])
 
 
 @pytest.mark.e2e

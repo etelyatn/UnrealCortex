@@ -184,6 +184,23 @@ static bool CortexCVarValuesEqual(const FCortexCVarSnapshot& Before, const FCort
 	return After.Value == RequestedValue;
 }
 
+static bool CortexCVarSnapshotsValueEqual(const FCortexCVarSnapshot& Before, const FCortexCVarSnapshot& After)
+{
+	if (Before.bHasBoolValue && After.bHasBoolValue)
+	{
+		return Before.bBoolValue == After.bBoolValue;
+	}
+	if (Before.bHasIntValue && After.bHasIntValue)
+	{
+		return Before.IntValue == After.IntValue;
+	}
+	if (Before.bHasFloatValue && After.bHasFloatValue)
+	{
+		return FMath::IsNearlyEqual(Before.FloatValue, After.FloatValue, 0.0001f);
+	}
+	return Before.Value == After.Value;
+}
+
 struct FCortexConsoleListEntry
 {
 	FString Name;
@@ -278,6 +295,26 @@ static TArray<TSharedPtr<FJsonValue>> CortexBuildBoundedPythonOutput(
 	return Output;
 }
 
+static void CortexAppendByUtf8ByteLimit(FString& Target, const FString& Text, int32 MaxBytes, bool& bOutTruncated)
+{
+	const int32 UsedBytes = CortexUtf8ByteLen(Target);
+	const int32 RemainingBytes = MaxBytes - UsedBytes;
+	if (RemainingBytes <= 0)
+	{
+		bOutTruncated = true;
+		return;
+	}
+
+	if (CortexUtf8ByteLen(Text) > RemainingBytes)
+	{
+		Target.Append(CortexLeftByUtf8ByteLimit(Text, RemainingBytes));
+		bOutTruncated = true;
+		return;
+	}
+
+	Target.Append(Text);
+}
+
 static FString CortexWrapPythonForCapturedErrors(const FString& Code)
 {
 	FTCHARToUTF8 Utf8(*Code);
@@ -303,10 +340,12 @@ static FString CortexWrapPythonForCapturedErrors(const FString& Code)
 static bool CortexExtractPythonErrorOutput(
 	const TArray<FPythonLogOutputEntry>& LogOutput,
 	TArray<FPythonLogOutputEntry>& OutFilteredOutput,
-	FString& OutErrorText)
+	FString& OutErrorText,
+	bool& bOutErrorTextTruncated)
 {
 	bool bCapturingError = false;
 	bool bSawError = false;
+	bOutErrorTextTruncated = false;
 
 	for (const FPythonLogOutputEntry& Entry : LogOutput)
 	{
@@ -323,10 +362,10 @@ static bool CortexExtractPythonErrorOutput(
 		}
 		if (bCapturingError)
 		{
-			OutErrorText.Append(Entry.Output);
+			CortexAppendByUtf8ByteLimit(OutErrorText, Entry.Output, CortexPythonMaxOutputTextBytes, bOutErrorTextTruncated);
 			if (!Entry.Output.EndsWith(TEXT("\n")))
 			{
-				OutErrorText.Append(TEXT("\n"));
+				CortexAppendByUtf8ByteLimit(OutErrorText, TEXT("\n"), CortexPythonMaxOutputTextBytes, bOutErrorTextTruncated);
 			}
 			continue;
 		}
@@ -356,7 +395,8 @@ static FCortexCommandResult CortexRunPythonNow(const FString& Code)
 	const bool bOk = Python->ExecPythonCommandEx(PythonCommand);
 	TArray<FPythonLogOutputEntry> FilteredOutput;
 	FString CapturedErrorText;
-	const bool bCapturedError = CortexExtractPythonErrorOutput(PythonCommand.LogOutput, FilteredOutput, CapturedErrorText);
+	bool bErrorTextTruncated = false;
+	const bool bCapturedError = CortexExtractPythonErrorOutput(PythonCommand.LogOutput, FilteredOutput, CapturedErrorText, bErrorTextTruncated);
 	bool bOutputTruncated = false;
 	TArray<TSharedPtr<FJsonValue>> Output = CortexBuildBoundedPythonOutput(FilteredOutput, bOutputTruncated);
 
@@ -365,7 +405,7 @@ static FCortexCommandResult CortexRunPythonNow(const FString& Code)
 		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
 		Details->SetStringField(TEXT("result"), bCapturedError ? CapturedErrorText : PythonCommand.CommandResult);
 		Details->SetArrayField(TEXT("output"), Output);
-		Details->SetBoolField(TEXT("output_truncated"), bOutputTruncated);
+		Details->SetBoolField(TEXT("output_truncated"), bOutputTruncated || bErrorTextTruncated);
 		FCortexCommandResult Error = FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidOperation,
 			TEXT("Python execution failed"));
@@ -463,7 +503,7 @@ FCortexCommandResult FCortexEditorUtilityOps::SetCVar(const TSharedPtr<FJsonObje
 
 	TSharedPtr<FJsonObject> Data = CortexCVarSnapshotToJson(After);
 	Data->SetStringField(TEXT("old_value"), Before.Value);
-	Data->SetBoolField(TEXT("changed"), Before.Value != After.Value);
+	Data->SetBoolField(TEXT("changed"), !CortexCVarSnapshotsValueEqual(Before, After));
 	return FCortexCommandRouter::Success(Data);
 }
 

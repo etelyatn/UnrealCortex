@@ -95,11 +95,11 @@ def _handle_limit_request(domain: str, command: str, params: dict, limit: int, c
 
 def _should_forward_limit_to_cpp(domain: str, command: str, params: dict) -> bool:
     """Some C++ commands implement domain-specific limit semantics and must receive it."""
-    return (
-        domain == "data"
-        and command == "search_datatable_content"
-        and params.get("search_mode") == "string_table_refs"
-    )
+    if domain == "data" and command == "search_datatable_content":
+        return params.get("search_mode") == "string_table_refs"
+    if domain == "editor" and command == "list_cvars":
+        return True
+    return False
 
 
 def _format_ue_command_error(exc: UECommandError) -> str:

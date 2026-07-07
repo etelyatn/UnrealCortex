@@ -1220,6 +1220,87 @@ async def test_scenario_editor_viewport(mcp_client):
 
 
 # ================================================================
+# Scenario 9b: Editor Python And CVar Utilities
+# ================================================================
+
+
+@pytest.mark.anyio
+@pytest.mark.scenario
+async def test_scenario_editor_python_and_cvars(mcp_client):
+    """Verify trusted Python output/error handling and editor CVar roundtrip."""
+    # Step 1: Run a trusted local Python snippet through the router.
+    data = await call_tool(mcp_client, "editor_cmd", {
+        "command": "run_python",
+        "params": {"code": "print('cortex benchmark python')"},
+    })
+    assert data["ok"] is True
+    assert data["output_truncated"] is False
+    assert any("cortex benchmark python" in entry.get("text", "") for entry in data["output"])
+
+    # Step 2: Verify the deferred spelling is run_next_tick, not defer.
+    data = await call_tool(mcp_client, "editor_cmd", {
+        "command": "run_python",
+        "params": {"code": "print('cortex benchmark next tick')", "run_next_tick": True},
+    })
+    assert data["ok"] is True
+
+    defer_result = await call_tool(mcp_client, "editor_cmd", {
+        "command": "run_python",
+        "params": {"code": "print('legacy defer should fail')", "defer": True},
+    })
+    assert defer_result["success"] is False
+    assert defer_result["_error"] == "INVALID_FIELD"
+    assert defer_result["_command"] == "editor.run_python"
+
+    # Step 3: Python exceptions should be bounded and surface as INVALID_OPERATION.
+    python_result = await call_tool(mcp_client, "editor_cmd", {
+        "command": "run_python",
+        "params": {"code": "raise RuntimeError('cortex benchmark expected failure')"},
+    })
+    assert python_result["success"] is False
+    assert python_result["_error"] == "INVALID_OPERATION"
+    assert "cortex benchmark expected failure" in python_result["result"]
+    assert "output" in python_result
+    assert "output_truncated" in python_result
+
+    # Step 4: CVar get/set/list roundtrip with restore.
+    original = await call_tool(mcp_client, "editor_cmd", {
+        "command": "get_cvar",
+        "params": {"name": "t.MaxFPS"},
+    })
+    original_value = original["value"]
+    new_value = "29" if original_value != "29" else "31"
+
+    try:
+        changed = await call_tool(mcp_client, "editor_cmd", {
+            "command": "set_cvar",
+            "params": {"name": "t.MaxFPS", "value": new_value},
+        })
+        assert changed["old_value"] == original_value
+        assert changed["value"] == new_value
+        assert changed["changed"] is True
+
+        listed = await call_tool(mcp_client, "editor_cmd", {
+            "command": "list_cvars",
+            "params": {"pattern": "t.", "limit": 10},
+        })
+        assert "variables" in listed
+        assert "commands" in listed
+        assert "cvars" not in listed
+        assert listed["returned_count"] <= 10
+
+        variable_names = [entry["name"] for entry in listed["variables"]]
+        command_names = [entry["name"] for entry in listed["commands"]]
+        assert variable_names == sorted(variable_names, key=str.lower)
+        assert command_names == sorted(command_names, key=str.lower)
+    finally:
+        await call_tool(mcp_client, "editor_cmd", {
+            "command": "set_cvar",
+            "params": {"name": "t.MaxFPS", "value": original_value},
+        })
+
+
+# ================================================================
 # Scenario 10: Material Property Workflow (Material Domain + Node Enum)
 # ================================================================
 

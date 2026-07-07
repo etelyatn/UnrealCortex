@@ -11,11 +11,42 @@ static TAutoConsoleVariable<int32> GCortexEditorUtilityTestIntCVar(
 	TEXT("Cortex editor utility automation test integer CVar"),
 	ECVF_Default);
 
+static TAutoConsoleVariable<float> GCortexEditorUtilityTestFloatCVar(
+	TEXT("cortex.test.EditorUtilityFloat"),
+	1.0f,
+	TEXT("Cortex editor utility automation test float CVar"),
+	ECVF_Default);
+
 static TAutoConsoleVariable<int32> GCortexRunPythonBatchSentinelCVar(
 	TEXT("cortex.test.RunPythonBatchSentinel"),
 	0,
 	TEXT("Cortex run_python batch no-callback sentinel"),
 	ECVF_Default);
+
+static int32 CortexTestUtf8ByteLen(const FString& Text)
+{
+	FTCHARToUTF8 Utf8(*Text);
+	return Utf8.Length();
+}
+
+static bool CortexTestOutputContains(const TArray<TSharedPtr<FJsonValue>>& Output, const FString& ExpectedText)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Output)
+	{
+		const TSharedPtr<FJsonObject> Entry = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!Entry.IsValid())
+		{
+			continue;
+		}
+
+		FString Text;
+		if (Entry->TryGetStringField(TEXT("text"), Text) && Text.Contains(ExpectedText))
+		{
+			return true;
+		}
+	}
+	return false;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexEditorLogCaptureTest,
@@ -299,6 +330,41 @@ bool FCortexEditorSetCVarAcceptsJsonNumberForIntCVarTest::RunTest(const FString&
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorSetCVarSameFloatValueUnchangedTest,
+	"Cortex.Editor.Utility.CVar.SetSameFloatValueUnchanged",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorSetCVarSameFloatValueUnchangedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(TEXT("cortex.test.EditorUtilityFloat"));
+	if (Variable == nullptr)
+	{
+		AddInfo(TEXT("Skipping: cortex.test.EditorUtilityFloat unavailable"));
+		return true;
+	}
+
+	const FString OriginalValue = Variable->GetString();
+	Variable->Set(TEXT("1.0"), ECVF_SetByConsole);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("name"), TEXT("cortex.test.EditorUtilityFloat"));
+	Params->SetStringField(TEXT("value"), TEXT("1"));
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("set_cvar"), Params);
+	Variable->Set(*OriginalValue, ECVF_SetByConsole);
+
+	TestTrue(TEXT("set_cvar should accept normalized same float value"), Result.bSuccess);
+	if (Result.Data.IsValid())
+	{
+		TestFalse(TEXT("changed should be false for type-equivalent float value"), Result.Data->GetBoolField(TEXT("changed")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexEditorListCVarsShapeAndLimitTest,
 	"Cortex.Editor.Utility.CVar.ListShapeAndLimit",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
@@ -327,6 +393,37 @@ bool FCortexEditorListCVarsShapeAndLimitTest::RunTest(const FString& Parameters)
 		const int32 VariableCount = Variables != nullptr ? Variables->Num() : 0;
 		const int32 CommandCount = Commands != nullptr ? Commands->Num() : 0;
 		TestTrue(TEXT("List should respect limit"), VariableCount + CommandCount <= 5);
+	}
+
+	TSharedPtr<FJsonObject> SortedParams = MakeShared<FJsonObject>();
+	SortedParams->SetStringField(TEXT("pattern"), TEXT("cortex.test.EditorUtility"));
+	SortedParams->SetNumberField(TEXT("limit"), 10);
+	const FCortexCommandResult SortedResult = Handler.Execute(TEXT("list_cvars"), SortedParams);
+	TestTrue(TEXT("list_cvars sorted query should succeed"), SortedResult.bSuccess);
+	if (SortedResult.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Variables = nullptr;
+		TestTrue(TEXT("sorted query should include variables array"), SortedResult.Data->TryGetArrayField(TEXT("variables"), Variables));
+		if (Variables != nullptr && Variables->Num() >= 2)
+		{
+			FString PreviousName;
+			for (int32 Index = 0; Index < Variables->Num(); ++Index)
+			{
+				const TSharedPtr<FJsonObject> Entry = (*Variables)[Index]->AsObject();
+				TestTrue(TEXT("variable entry should be valid"), Entry.IsValid());
+				if (!Entry.IsValid())
+				{
+					continue;
+				}
+
+				const FString CurrentName = Entry->GetStringField(TEXT("name"));
+				if (Index > 0)
+				{
+					TestTrue(TEXT("variables should be sorted case-insensitively"), PreviousName.Compare(CurrentName, ESearchCase::IgnoreCase) <= 0);
+				}
+				PreviousName = CurrentName;
+			}
+		}
 	}
 	return true;
 }
@@ -412,7 +509,9 @@ bool FCortexEditorRunPythonCapturesOutputTest::RunTest(const FString& Parameters
 	if (Result.Data.IsValid())
 	{
 		TestTrue(TEXT("ok should be true"), Result.Data->GetBoolField(TEXT("ok")));
-		TestTrue(TEXT("output should be present"), Result.Data->HasField(TEXT("output")));
+		const TArray<TSharedPtr<FJsonValue>>* Output = nullptr;
+		TestTrue(TEXT("output should be present"), Result.Data->TryGetArrayField(TEXT("output"), Output));
+		TestTrue(TEXT("output should contain printed text"), Output != nullptr && CortexTestOutputContains(*Output, TEXT("cortex python output")));
 		TestFalse(TEXT("output_truncated should be false"), Result.Data->GetBoolField(TEXT("output_truncated")));
 	}
 	return true;
@@ -446,6 +545,39 @@ bool FCortexEditorRunPythonErrorDetailsBoundedTest::RunTest(const FString& Param
 		TestTrue(TEXT("Error details should include result"), Result.ErrorDetails->HasField(TEXT("result")));
 		TestTrue(TEXT("Error details should include output"), Result.ErrorDetails->HasField(TEXT("output")));
 		TestTrue(TEXT("Error details should include output_truncated"), Result.ErrorDetails->HasField(TEXT("output_truncated")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorRunPythonHugeErrorDetailsBoundedTest,
+	"Cortex.Editor.Utility.RunPython.HugeErrorDetailsBounded",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorRunPythonHugeErrorDetailsBoundedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("code"), TEXT("raise RuntimeError('é' * 70000)"));
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("run_python"), Params);
+	if (!Result.bSuccess && Result.ErrorCode == CortexErrorCodes::UnsupportedCommand)
+	{
+		AddInfo(TEXT("Skipping: PythonScriptPlugin unavailable"));
+		return true;
+	}
+
+	TestFalse(TEXT("Huge Python exception should fail"), Result.bSuccess);
+	TestEqual(TEXT("Huge Python exception should return INVALID_OPERATION"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
+	TestTrue(TEXT("Error details should be present"), Result.ErrorDetails.IsValid());
+	if (Result.ErrorDetails.IsValid())
+	{
+		FString ErrorResult;
+		TestTrue(TEXT("Error details should include result"), Result.ErrorDetails->TryGetStringField(TEXT("result"), ErrorResult));
+		TestTrue(TEXT("Error result should be capped to 64 KiB UTF-8"), CortexTestUtf8ByteLen(ErrorResult) <= 64 * 1024);
+		TestTrue(TEXT("Error details should report truncation"), Result.ErrorDetails->GetBoolField(TEXT("output_truncated")));
 	}
 	return true;
 }
