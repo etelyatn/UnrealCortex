@@ -99,6 +99,11 @@
       "LoadingPhase": "PostEngineInit"
     },
     {
+      "Name": "CortexAnimation",
+      "Type": "Editor",
+      "LoadingPhase": "PostEngineInit"
+    },
+    {
       "Name": "CortexFrontend",
       "Type": "Editor",
       "LoadingPhase": "PostEngineInit"

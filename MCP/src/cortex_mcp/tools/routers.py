@@ -99,6 +99,8 @@ def _should_forward_limit_to_cpp(domain: str, command: str, params: dict) -> boo
         return params.get("search_mode") == "string_table_refs"
     if domain == "editor" and command == "list_cvars":
         return True
+    if domain == "anim" and command == "list_assets":
+        return True
     return False
 
 

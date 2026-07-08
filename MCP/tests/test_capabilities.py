@@ -135,11 +135,12 @@ def test_fallback_editor_has_python_and_cvars_without_defer():
     assert "defer" not in run_python_params
 
 
-def test_animation_domains_absent_from_python_cvar_slice():
-    """This slice must not ship CortexAnimation or anim metadata."""
-    capabilities = json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
-    assert "anim" not in capabilities["domains"]
-    assert "animation" not in capabilities["domains"]
+def test_anim_absent_from_fallback_fixture_until_promoted():
+    """Phase A anim is live-capabilities only; fallback promotion needs an explicit fixture update."""
+    fixture = json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
+
+    assert "anim" not in fixture.get("domains", {})
+    assert "animation" not in fixture.get("domains", {})
     assert "anim" not in _FALLBACK_STRUCTURED
     assert "animation" not in _FALLBACK_STRUCTURED
 
@@ -185,6 +186,19 @@ def test_get_registered_domains_includes_gen_when_in_cache():
     capabilities = {"domains": {"gen": {"commands": []}}}
     registered = get_registered_domains(capabilities)
     assert registered == CORE_DOMAINS + ("gen",)
+
+
+def test_anim_is_optional_domain_not_core():
+    """Animation is exposed only when live capabilities prove the editor registered anim."""
+    assert "anim" not in CORE_DOMAINS
+    assert get_registered_domains(None) == CORE_DOMAINS
+
+
+def test_get_registered_domains_includes_anim_when_in_cache():
+    """Cache with anim domain should include anim in registered domains."""
+    capabilities = {"domains": {"anim": {"commands": []}}}
+    registered = get_registered_domains(capabilities)
+    assert registered == CORE_DOMAINS + ("anim",)
 
 
 def test_get_registered_domains_returns_core_when_malformed():
@@ -258,6 +272,42 @@ def test_gen_docstrings_excluded_when_cache_missing():
     """When no capabilities cache, gen should not appear in docstrings."""
     docstrings = build_router_docstrings(None)
     assert "gen" not in docstrings
+
+
+def test_anim_docstrings_excluded_when_cache_missing():
+    """No capabilities cache should not expose anim_cmd."""
+    docstrings = build_router_docstrings(None)
+    assert "anim" not in docstrings
+
+
+def test_anim_docstrings_included_when_cache_has_anim():
+    """A live capabilities cache with anim should expose anim_cmd and read-only command signatures."""
+    capabilities = {
+        "domains": {
+            "anim": {
+                "commands": [
+                    {
+                        "name": "get_sequence_info",
+                        "params": [
+                            {"name": "asset_path", "type": "string", "required": True},
+                            {"name": "notify_limit", "type": "number", "required": False},
+                        ],
+                    }
+                ]
+            }
+        }
+    }
+
+    docstrings = build_router_docstrings(capabilities)
+
+    assert "anim" in get_registered_domains(capabilities)
+    assert "anim" in docstrings
+    assert "anim_cmd(command, params)" in docstrings["anim"]
+    assert "- get_sequence_info(asset_path: string, notify_limit: number = optional)" in docstrings["anim"]
+    assert "read-only" in docstrings["anim"].lower()
+    assert "Never call or invent" in docstrings["anim"]
+    for authoring_name in ("add_notify", "update_notify", "remove_notify", "set_curve_keys"):
+        assert authoring_name not in docstrings["anim"]
 
 
 class TestFallbackDrift:
@@ -374,7 +424,7 @@ class TestCompositeHints:
 
     def test_hints_reference_existing_domains(self):
         """Every domain in _COMPOSITE_HINTS must be a known domain."""
-        all_domains = set(CORE_DOMAINS) | {"gen"}
+        all_domains = set(CORE_DOMAINS) | {"gen", "anim"}
         for domain in _COMPOSITE_HINTS:
             assert domain in all_domains, (
                 f"_COMPOSITE_HINTS references unknown domain '{domain}'"

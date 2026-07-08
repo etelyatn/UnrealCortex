@@ -9,6 +9,7 @@ import pytest
 from cortex_mcp.capabilities import CORE_DOMAINS
 from cortex_mcp.tools.routers import make_router, register_router_tools
 from cortex_mcp.tcp_client import EditorConnection, UECommandError
+from cortex_mcp import server
 
 
 class MockMCP:
@@ -220,6 +221,42 @@ def test_register_router_tools_excludes_gen_by_default():
     register_router_tools(mcp, connection, docstrings)
 
     assert "gen_cmd" not in mcp.tools
+
+
+def test_register_router_tools_excludes_anim_by_default():
+    mcp = MockMCP()
+    connection = MagicMock()
+    docstrings = {domain: f"{domain} docs" for domain in CORE_DOMAINS}
+
+    register_router_tools(mcp, connection, docstrings)
+
+    assert "anim_cmd" not in mcp.tools
+
+
+def test_register_router_tools_includes_anim_when_passed():
+    mcp = MockMCP()
+    connection = MagicMock()
+    domains = CORE_DOMAINS + ("anim",)
+    docstrings = {domain: f"{domain} docs" for domain in domains}
+
+    register_router_tools(mcp, connection, docstrings, domains)
+
+    assert "anim_cmd" in mcp.tools
+
+
+def test_register_explicit_tools_includes_anim_from_live_cache(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "load_capabilities_cache",
+        lambda: {"domains": {"anim": {"commands": []}}},
+    )
+
+    mcp = MockMCP()
+    connection = MagicMock()
+
+    server._register_explicit_tools(mcp, connection)
+
+    assert "anim_cmd" in mcp.tools
 
 
 def test_register_router_tools_includes_statetree_cmd():

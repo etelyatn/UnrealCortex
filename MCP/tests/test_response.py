@@ -384,6 +384,21 @@ class TestRouterPagination:
         assert command == "editor.list_cvars"
         assert call_params["limit"] == 10
 
+    def test_anim_list_assets_forwards_limit_to_cpp(self):
+        """anim.list_assets owns limit semantics in C++, not Python pagination."""
+        router, conn = _router_with_mock(
+            domain="anim",
+            response_data={"assets": {"count": 0, "returned": 0, "truncated": False, "items": []}},
+        )
+
+        result = json.loads(router("list_assets", {"limit": 10}))
+
+        assert "_pagination" not in result
+        conn.send_command.assert_called_once()
+        command, call_params = conn.send_command.call_args[0]
+        assert command == "anim.list_assets"
+        assert call_params["limit"] == 10
+
 
 class TestPaginationEdgeCases:
     """Edge cases and interaction between Phase 1 and Phase 2."""

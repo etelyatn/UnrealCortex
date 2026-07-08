@@ -26,7 +26,7 @@ CORE_DOMAINS = (
     "statetree",
 )
 
-_OPTIONAL_DOMAINS = ("gen",)
+_OPTIONAL_DOMAINS = ("gen", "anim")
 
 
 def get_registered_domains(capabilities: dict | None = None) -> tuple[str, ...]:
@@ -92,6 +92,12 @@ _COMPOSITE_HINTS: dict[str, str] = {
     "level": "For batch actor operations, use level_compose instead of chaining level_cmd calls.\n",
     "statetree": "For creating or updating a full StateTree structure, use statetree_compose instead of chaining statetree_cmd calls.\n",
     "gen": "AI asset generation. Submit with start_mesh/start_image/start_texturing, then poll with job_status until status is 'imported' or 'failed'. Generation takes 30-180 seconds. On download_failed or import_failed, call retry_import.\n",
+    "anim": (
+        "CortexAnimation Phase A is read-only. Only these Phase A commands are supported: "
+        "list_assets, get_sequence_info, get_montage_info, get_skeleton_info, get_animbp_info. "
+        "Never call or invent add_*, update_*, remove_*, set_*, or animation save_asset commands. "
+        "Report authoring unavailable unless the exact command is present in live capabilities.\n"
+    ),
 }
 
 
