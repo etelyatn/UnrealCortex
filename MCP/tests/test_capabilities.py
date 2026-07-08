@@ -333,18 +333,6 @@ class TestFallbackDrift:
             + "\n\nFix: cd MCP && uv run python scripts/sync_fallback.py --from-fixture"
         )
 
-    def test_blueprint_set_class_defaults_exposes_batch_items(self, cache_domains):
-        """The AI-facing fallback must advertise set_class_defaults batch mode."""
-        blueprint_commands = cache_domains["blueprint"]["commands"]
-        cache_command = next(cmd for cmd in blueprint_commands if cmd["name"] == "set_class_defaults")
-        fallback_command = next(cmd for cmd in _FALLBACK_STRUCTURED["blueprint"] if cmd["name"] == "set_class_defaults")
-
-        cache_params = {param["name"] for param in cache_command["params"]}
-        fallback_params = {param["name"] for param in fallback_command["params"]}
-
-        assert "items" in cache_params
-        assert "items" in fallback_params
-
     def test_fallback_domains_subset_of_cache(self, cache_domains):
         """Generated fallback should not contain domains absent from cache."""
         extra = set(_FALLBACK_STRUCTURED) - set(cache_domains)
@@ -352,6 +340,33 @@ class TestFallbackDrift:
             f"Fallback has domains not in cache: {extra}. "
             f"Regenerate from current cache."
         )
+
+def test_blueprint_set_class_defaults_exposes_batch_items():
+    """The AI-facing fallback must advertise set_class_defaults batch mode."""
+    capabilities = json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
+    blueprint_commands = capabilities["domains"]["blueprint"]["commands"]
+    cache_command = next(cmd for cmd in blueprint_commands if cmd["name"] == "set_class_defaults")
+    fallback_command = next(cmd for cmd in _FALLBACK_STRUCTURED["blueprint"] if cmd["name"] == "set_class_defaults")
+
+    cache_params = {param["name"] for param in cache_command["params"]}
+    fallback_params = {param["name"] for param in fallback_command["params"]}
+
+    assert "items" in cache_params
+    assert "items" in fallback_params
+
+
+def test_graph_set_pin_value_capability_includes_typed_text():
+    capabilities = json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
+    graph_commands = capabilities["domains"]["graph"]["commands"]
+    set_pin = next(command for command in graph_commands if command["name"] == "set_pin_value")
+    params = {param["name"]: param for param in set_pin["params"]}
+
+    assert params["value"]["required"] is False
+    assert params["text"]["type"] == "object"
+    assert params["text"]["required"] is False
+    assert params["expected_fingerprint"]["type"] == "object"
+    assert params["graph_kind"]["required"] is False
+    assert params["owning_interface"]["required"] is False
 
 
 class TestCompositeHints:

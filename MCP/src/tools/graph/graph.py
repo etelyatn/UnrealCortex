@@ -292,24 +292,34 @@ def register_graph_tools(mcp, connection: UEConnection):
         asset_path: str,
         node_id: str,
         pin_name: str,
-        value: str,
+        value: str = "",
+        text: str = "",
         graph_name: str = "EventGraph",
+        graph_kind: str = "",
+        owning_interface: str = "",
         subgraph_path: str = "",
+        expected_fingerprint: str = "",
     ) -> str:
         """Set the default value of an input pin in a Blueprint graph.
 
         Sets the default value for an input pin. The pin must not be connected.
+        Use value for non-text pins and simple literal text writes. Use text for
+        canonical FText descriptors, especially StringTable-backed values.
         Delegate graphs are readable but not mutable; use graph_list_graphs to check kind.
 
         Args:
             asset_path: Full asset path to the Blueprint.
             node_id: Node ID containing the pin.
             pin_name: Name of the input pin to set.
-            value: The value to set (as a string - will be converted to the appropriate type).
+            value: Optional raw value to set as a string.
+            text: Optional JSON string containing a canonical FText descriptor object.
             graph_name: Name of the graph containing the node (default: 'EventGraph').
+            graph_kind: Optional graph kind disambiguator for persisted text writes.
+            owning_interface: Optional interface owner disambiguator for interface impl graphs.
             subgraph_path: Dot-separated path into nested composite subgraphs.
                 Discover valid paths via graph_list_graphs(include_subgraphs=True)
                 or by reading subgraph_name fields from graph_get_subgraph output.
+            expected_fingerprint: Optional JSON object string for stale-write protection.
 
         Returns:
             JSON with success status and the set value.
@@ -319,15 +329,28 @@ def register_graph_tools(mcp, connection: UEConnection):
                 "asset_path": asset_path,
                 "node_id": node_id,
                 "pin_name": pin_name,
-                "value": value,
                 "graph_name": graph_name,
             }
+            if text:
+                if value:
+                    request["value"] = value
+                request["text"] = json.loads(text)
+            else:
+                request["value"] = value
+            if graph_kind:
+                request["graph_kind"] = graph_kind
+            if owning_interface:
+                request["owning_interface"] = owning_interface
             subgraph_path = subgraph_path.strip()
             if subgraph_path:
                 request["subgraph_path"] = subgraph_path
+            if expected_fingerprint:
+                request["expected_fingerprint"] = json.loads(expected_fingerprint)
 
             response = connection.send_command("graph.set_pin_value", request)
             connection.invalidate_cache("graph.")
             return format_response(response.get("data", {}), "set_pin_value")
+        except json.JSONDecodeError as e:
+            return f"Error: Invalid JSON in text or expected_fingerprint: {e}"
         except ConnectionError as e:
             return f"Error: {e}"

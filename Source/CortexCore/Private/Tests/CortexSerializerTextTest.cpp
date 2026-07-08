@@ -171,6 +171,117 @@ bool FCortexSerializerJsonToTextStringTableTest::RunTest(const FString& Paramete
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerTextDescriptorNormalizeLiteralTest,
+	"Cortex.Core.Serializer.TextDescriptor.NormalizeLiteral",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerTextDescriptorNormalizeLiteralTest::RunTest(const FString& Parameters)
+{
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("type"), TEXT("FText"));
+	Input->SetStringField(TEXT("source_kind"), TEXT("literal"));
+	Input->SetStringField(TEXT("value"), TEXT("Literal Pay"));
+
+	TArray<FString> Errors;
+	TSharedPtr<FJsonObject> Normalized;
+	FText Text;
+	const bool bOk = FCortexSerializer::NormalizeTextDescriptor(
+		MakeShared<FJsonValueObject>(Input),
+		Normalized,
+		&Text,
+		Errors);
+
+	TestTrue(TEXT("literal descriptor normalizes"), bOk);
+	TestEqual(TEXT("no errors"), Errors.Num(), 0);
+	TestEqual(TEXT("type is FText"), Normalized->GetStringField(TEXT("type")), TEXT("FText"));
+	TestEqual(TEXT("source kind is literal"), Normalized->GetStringField(TEXT("source_kind")), TEXT("literal"));
+	TestEqual(TEXT("value preserved"), Normalized->GetStringField(TEXT("value")), TEXT("Literal Pay"));
+	TestFalse(TEXT("literal has no string table"), Normalized->HasField(TEXT("string_table")));
+	TestEqual(TEXT("FText value resolves"), Text.ToString(), TEXT("Literal Pay"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerTextDescriptorNormalizeHistoricalStringTableTest,
+	"Cortex.Core.Serializer.TextDescriptor.NormalizeHistoricalStringTable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerTextDescriptorNormalizeHistoricalStringTableTest::RunTest(const FString& Parameters)
+{
+	UStringTable* TestTable = NewObject<UStringTable>(
+		GetTransientPackage(),
+		FName(TEXT("TestStringTable_NormalizeHistorical")));
+	TestTable->GetMutableStringTable()->SetNamespace(TEXT("TestNS"));
+	TestTable->GetMutableStringTable()->SetSourceString(TEXT("PayKey"), TEXT("Pay"));
+
+	TSharedPtr<FJsonObject> StringTable = MakeShared<FJsonObject>();
+	StringTable->SetStringField(TEXT("table_id"), TestTable->GetStringTableId().ToString());
+	StringTable->SetStringField(TEXT("key"), TEXT("PayKey"));
+
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("value"), TEXT("Pay"));
+	Input->SetObjectField(TEXT("string_table"), StringTable);
+
+	TArray<FString> Errors;
+	TSharedPtr<FJsonObject> Normalized;
+	FText Text;
+	const bool bOk = FCortexSerializer::NormalizeTextDescriptor(
+		MakeShared<FJsonValueObject>(Input),
+		Normalized,
+		&Text,
+		Errors);
+
+	TestTrue(TEXT("historical string_table shape normalizes"), bOk);
+	TestEqual(TEXT("source kind inferred"), Normalized->GetStringField(TEXT("source_kind")), TEXT("string_table"));
+	TestEqual(TEXT("type inferred"), Normalized->GetStringField(TEXT("type")), TEXT("FText"));
+	TestEqual(TEXT("value preserved"), Normalized->GetStringField(TEXT("value")), TEXT("Pay"));
+
+	const TSharedPtr<FJsonObject>* NormalizedStringTable = nullptr;
+	TestTrue(TEXT("normalized output has string_table"),
+		Normalized->TryGetObjectField(TEXT("string_table"), NormalizedStringTable));
+	TestEqual(TEXT("key preserved"),
+		(*NormalizedStringTable)->GetStringField(TEXT("key")), TEXT("PayKey"));
+
+	FName TableId;
+	FString Key;
+	TestTrue(TEXT("FText keeps table metadata"), FTextInspector::GetTableIdAndKey(Text, TableId, Key));
+	TestEqual(TEXT("table id preserved"), TableId, TestTable->GetStringTableId());
+	TestEqual(TEXT("key preserved in FText"), Key, TEXT("PayKey"));
+
+	TestTable->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerTextDescriptorRejectUnsupportedSourceKindTest,
+	"Cortex.Core.Serializer.TextDescriptor.RejectUnsupportedSourceKind",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerTextDescriptorRejectUnsupportedSourceKindTest::RunTest(const FString& Parameters)
+{
+	TSharedPtr<FJsonObject> Input = MakeShared<FJsonObject>();
+	Input->SetStringField(TEXT("type"), TEXT("FText"));
+	Input->SetStringField(TEXT("source_kind"), TEXT("format"));
+	Input->SetStringField(TEXT("value"), TEXT("{Count} items"));
+
+	TArray<FString> Errors;
+	TSharedPtr<FJsonObject> Normalized;
+	const bool bOk = FCortexSerializer::NormalizeTextDescriptor(
+		MakeShared<FJsonValueObject>(Input),
+		Normalized,
+		nullptr,
+		Errors);
+
+	TestFalse(TEXT("unsupported format source kind is rejected"), bOk);
+	TestTrue(TEXT("error mentions source_kind"),
+		Errors.Num() > 0 && Errors[0].Contains(TEXT("source_kind")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexSerializerStructToJsonStringTableTextTest,
 	"Cortex.Core.Serializer.JsonToText.StructToJsonStringTable",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
@@ -197,6 +308,10 @@ bool FCortexSerializerStructToJsonStringTableTextTest::RunTest(const FString& Pa
 		Result.IsValid() && Result->TryGetObjectField(TEXT("Title"), TitleObject));
 	if (TitleObject != nullptr && (*TitleObject).IsValid())
 	{
+		TestEqual(TEXT("FText object should include type"),
+			(*TitleObject)->GetStringField(TEXT("type")), TEXT("FText"));
+		TestTrue(TEXT("FText object should include source_kind"),
+			(*TitleObject)->HasTypedField<EJson::String>(TEXT("source_kind")));
 		TestEqual(TEXT("FText object should include value"),
 			(*TitleObject)->GetStringField(TEXT("value")), TEXT("Test Value"));
 		TestTrue(TEXT("FText object should include string_table"),

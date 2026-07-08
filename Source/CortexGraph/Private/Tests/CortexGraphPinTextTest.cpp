@@ -30,6 +30,10 @@ bool FCortexGraphPinTextSerializationTest::RunTest(const FString& Parameters)
 	const TSharedPtr<FJsonObject>* TextObject = nullptr;
 	if (PinJson->TryGetObjectField(TEXT("default_text_value"), TextObject) && TextObject)
 	{
+		TestEqual(TEXT("literal text should include FText type"),
+			(*TextObject)->GetStringField(TEXT("type")), TEXT("FText"));
+		TestEqual(TEXT("literal text should include literal source_kind"),
+			(*TextObject)->GetStringField(TEXT("source_kind")), TEXT("literal"));
 		TestEqual(TEXT("value should match literal text"),
 			(*TextObject)->GetStringField(TEXT("value")), TEXT("Literal pin text"));
 		TestFalse(TEXT("Literal text should not include string_table"),
@@ -68,6 +72,10 @@ bool FCortexGraphPinTextStringTableTest::RunTest(const FString& Parameters)
 	const TSharedPtr<FJsonObject>* TextObject = nullptr;
 	if (PinJson->TryGetObjectField(TEXT("default_text_value"), TextObject) && TextObject)
 	{
+		TestEqual(TEXT("table-backed text should include FText type"),
+			(*TextObject)->GetStringField(TEXT("type")), TEXT("FText"));
+		TestEqual(TEXT("table-backed text should include string_table source_kind"),
+			(*TextObject)->GetStringField(TEXT("source_kind")), TEXT("string_table"));
 		TestTrue(TEXT("Table-backed text should include string_table"),
 			(*TextObject)->HasField(TEXT("string_table")));
 

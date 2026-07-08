@@ -81,6 +81,32 @@ public:
 
 private:
 	static constexpr int32 MaxSubgraphDepth = 5;
+	static FCortexCommandResult ApplyTextPinValue(
+		UBlueprint* Blueprint,
+		UEdGraph* Graph,
+		UEdGraphNode* Node,
+		UEdGraphPin* Pin,
+		const TSharedPtr<FJsonObject>& TextObject,
+		const FString& AssetPath,
+		const FString& GraphName,
+		const FString& GraphKind,
+		const FString& OwningInterface,
+		const FString& SubgraphPath,
+		const FString& NodeId,
+		const FString& PinName,
+		const TSharedPtr<FJsonObject>& FingerprintBefore);
+
+	static TSharedPtr<FJsonObject> BuildPinLocator(
+		const FString& AssetPath,
+		UEdGraph* Graph,
+		UEdGraphNode* Node,
+		const FString& GraphName,
+		const FString& GraphKind,
+		const FString& OwningInterface,
+		const FString& SubgraphPath,
+		const FString& NodeId,
+		const FString& PinName);
+
 	/** Recursively collect composite subgraph entries for ListGraphs. */
 	static void CollectSubgraphsRecursive(
 		UEdGraph* Graph,

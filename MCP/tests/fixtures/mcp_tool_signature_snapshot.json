@@ -11,6 +11,14 @@
         "outputs"
       ]
     },
+    "add_blueprint_interface": {
+      "file": "tools/blueprint/class_settings.py",
+      "params": [
+        "asset_path",
+        "interface_path",
+        "compile"
+      ]
+    },
     "add_blueprint_variable": {
       "file": "tools/blueprint/structure.py",
       "params": [
@@ -20,6 +28,16 @@
         "default_value",
         "is_exposed",
         "category"
+      ]
+    },
+    "add_scs_component": {
+      "file": "tools/blueprint/structure.py",
+      "params": [
+        "asset_path",
+        "component_class",
+        "component_name",
+        "parent_component",
+        "compile"
       ]
     },
     "analyze_blueprint_for_migration": {
@@ -60,7 +78,8 @@
     "compile_blueprint": {
       "file": "tools/blueprint/assets.py",
       "params": [
-        "asset_path"
+        "asset_path",
+        "items"
       ]
     },
     "configure_timeline": {
@@ -95,7 +114,11 @@
         "nodes",
         "connections",
         "mode",
-        "asset_path"
+        "asset_path",
+        "subgraph_path",
+        "graph_kind",
+        "owning_interface",
+        "expected_fingerprint"
       ]
     },
     "delete_blueprint": {
@@ -131,7 +154,8 @@
     "get_blueprint_info": {
       "file": "tools/blueprint/assets.py",
       "params": [
-        "asset_path"
+        "asset_path",
+        "compact"
       ]
     },
     "get_class_defaults": {
@@ -161,6 +185,14 @@
         "asset_path"
       ]
     },
+    "remove_blueprint_interface": {
+      "file": "tools/blueprint/class_settings.py",
+      "params": [
+        "asset_path",
+        "interface_path",
+        "compile"
+      ]
+    },
     "remove_blueprint_variable": {
       "file": "tools/blueprint/structure.py",
       "params": [
@@ -173,7 +205,9 @@
       "params": [
         "asset_path",
         "component_name",
-        "compile"
+        "compile",
+        "acknowledged_losses",
+        "force"
       ]
     },
     "rename_blueprint": {
@@ -183,10 +217,43 @@
         "dest_path"
       ]
     },
+    "rename_scs_component": {
+      "file": "tools/blueprint/migration.py",
+      "params": [
+        "asset_path",
+        "old_name",
+        "new_name",
+        "compile"
+      ]
+    },
     "save_blueprint": {
       "file": "tools/blueprint/assets.py",
       "params": [
-        "asset_path"
+        "asset_path",
+        "items"
+      ]
+    },
+    "set_blueprint_replication_settings": {
+      "file": "tools/blueprint/class_settings.py",
+      "params": [
+        "asset_path",
+        "replicates",
+        "replicate_movement",
+        "net_dormancy",
+        "net_use_owner_relevancy",
+        "compile",
+        "save"
+      ]
+    },
+    "set_blueprint_tick_settings": {
+      "file": "tools/blueprint/class_settings.py",
+      "params": [
+        "asset_path",
+        "start_with_tick_enabled",
+        "can_ever_tick",
+        "tick_interval",
+        "compile",
+        "save"
       ]
     },
     "set_class_defaults": {
@@ -211,6 +278,89 @@
         "save",
         "expected_fingerprint",
         "items"
+      ]
+    }
+  },
+  "composites": {
+    "blueprint_compose": {
+      "file": "cortex_mcp/tools/composites/blueprint.py",
+      "params": [
+        "name",
+        "path",
+        "type",
+        "parent_class",
+        "variables",
+        "functions",
+        "graph_name",
+        "nodes",
+        "connections",
+        "mode",
+        "asset_path",
+        "subgraph_path",
+        "graph_kind",
+        "owning_interface"
+      ]
+    },
+    "level_compose": {
+      "file": "cortex_mcp/tools/composites/level.py",
+      "params": [
+        "operations",
+        "stop_on_error",
+        "save"
+      ]
+    },
+    "material_compose": {
+      "file": "cortex_mcp/tools/composites/material.py",
+      "params": [
+        "name",
+        "path",
+        "nodes",
+        "connections",
+        "material_properties",
+        "instances"
+      ]
+    },
+    "material_instance_compose": {
+      "file": "cortex_mcp/tools/composites/material.py",
+      "params": [
+        "name",
+        "path",
+        "parent",
+        "parameters"
+      ]
+    },
+    "scenario_compose": {
+      "file": "cortex_mcp/tools/composites/scenario.py",
+      "params": [
+        "scenario_name",
+        "steps",
+        "verbose"
+      ]
+    },
+    "statetree_compose": {
+      "file": "cortex_mcp/tools/composites/statetree.py",
+      "params": [
+        "asset_path",
+        "mode",
+        "schema_class",
+        "root_name",
+        "validate",
+        "compile",
+        "save",
+        "operations",
+        "states",
+        "transitions",
+        "removals",
+        "expected_fingerprint"
+      ]
+    },
+    "widget_compose": {
+      "file": "cortex_mcp/tools/composites/widget.py",
+      "params": [
+        "name",
+        "path",
+        "widgets",
+        "animations"
       ]
     }
   },
@@ -268,12 +418,6 @@
     "schema_status": {
       "file": "tools/core/schema.py",
       "params": []
-    },
-    "switch_editor": {
-      "file": "tools/core/switch_editor.py",
-      "params": [
-        "pid"
-      ]
     }
   },
   "data": {
@@ -283,6 +427,18 @@
         "table_path",
         "row_name",
         "row_data"
+      ]
+    },
+    "apply_import_ops_json": {
+      "file": "tools/data/import_queues.py",
+      "params": [
+        "ops_path",
+        "report_path",
+        "dry_run",
+        "apply",
+        "stop_on_error",
+        "query_back",
+        "allow_partial"
       ]
     },
     "batch_query": {
@@ -466,17 +622,6 @@
         "text"
       ]
     },
-    "update_string_table": {
-      "file": "tools/data/localization.py",
-      "params": [
-        "string_table_path",
-        "operations_json",
-        "dry_run",
-        "save",
-        "verbose",
-        "allow_partial"
-      ]
-    },
     "update_curve_table_row": {
       "file": "tools/data/curve_tables.py",
       "params": [
@@ -502,6 +647,17 @@
         "dry_run"
       ]
     },
+    "update_string_table": {
+      "file": "tools/data/localization.py",
+      "params": [
+        "string_table_path",
+        "operations_json",
+        "dry_run",
+        "save",
+        "verbose",
+        "allow_partial"
+      ]
+    },
     "validate_gameplay_tag": {
       "file": "tools/data/gameplay_tags.py",
       "params": [
@@ -514,6 +670,12 @@
       "file": "tools/editor/viewport.py",
       "params": [
         "output_path"
+      ]
+    },
+    "editor_restart": {
+      "file": "cortex_mcp/tools/standalone/editor.py",
+      "params": [
+        "timeout"
       ]
     },
     "execute_console_command": {
@@ -668,6 +830,7 @@
         "asset_path",
         "mode",
         "graph_name",
+        "subgraph_path",
         "horizontal_spacing",
         "vertical_spacing"
       ]
@@ -753,8 +916,12 @@
         "node_id",
         "pin_name",
         "value",
+        "text",
         "graph_name",
-        "subgraph_path"
+        "graph_kind",
+        "owning_interface",
+        "subgraph_path",
+        "expected_fingerprint"
       ]
     },
     "graph_trace_dataflow": {
@@ -828,7 +995,8 @@
     "find_actors": {
       "file": "tools/level/queries.py",
       "params": [
-        "pattern"
+        "pattern",
+        "include_components"
       ]
     },
     "get_actor": {
@@ -1404,6 +1572,15 @@
         "interaction_range"
       ]
     },
+    "qa_test_step": {
+      "file": "cortex_mcp/tools/standalone/qa.py",
+      "params": [
+        "action",
+        "wait",
+        "assertion",
+        "screenshot_name"
+      ]
+    },
     "run_scenario_inline": {
       "file": "tools/qa/composites.py",
       "params": [
@@ -1542,25 +1719,34 @@
       ]
     }
   },
+  "standalone": {
+    "schema_generate": {
+      "file": "cortex_mcp/tools/standalone/schema.py",
+      "params": [
+        "domain"
+      ]
+    }
+  },
+  "statetree": {
+    "create_statetree_tree": {
+      "file": "tools/statetree/composites.py",
+      "params": [
+        "asset_path",
+        "mode",
+        "schema_class",
+        "root_name",
+        "validate",
+        "compile",
+        "save",
+        "operations",
+        "states",
+        "transitions",
+        "removals",
+        "expected_fingerprint"
+      ]
+    }
+  },
   "umg": {
-    "add_widget": {
-      "file": "tools/umg/widget_tree.py",
-      "params": [
-        "asset_path",
-        "widget_class",
-        "name",
-        "parent_name",
-        "slot_index"
-      ]
-    },
-    "create_animation": {
-      "file": "tools/umg/widget_animations.py",
-      "params": [
-        "asset_path",
-        "animation_name",
-        "length"
-      ]
-    },
     "create_widget_screen": {
       "file": "tools/umg/composites.py",
       "params": [
@@ -1568,172 +1754,6 @@
         "path",
         "widgets",
         "animations"
-      ]
-    },
-    "duplicate_widget": {
-      "file": "tools/umg/widget_tree.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "new_name",
-        "name_prefix"
-      ]
-    },
-    "get_property": {
-      "file": "tools/umg/widget_properties.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "property_path"
-      ]
-    },
-    "get_schema": {
-      "file": "tools/umg/widget_properties.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "category"
-      ]
-    },
-    "get_tree": {
-      "file": "tools/umg/widget_tree.py",
-      "params": [
-        "asset_path"
-      ]
-    },
-    "get_widget": {
-      "file": "tools/umg/widget_tree.py",
-      "params": [
-        "asset_path",
-        "widget_name"
-      ]
-    },
-    "list_animations": {
-      "file": "tools/umg/widget_animations.py",
-      "params": [
-        "asset_path"
-      ]
-    },
-    "list_widget_classes": {
-      "file": "tools/umg/widget_tree.py",
-      "params": [
-        "category"
-      ]
-    },
-    "remove_animation": {
-      "file": "tools/umg/widget_animations.py",
-      "params": [
-        "asset_path",
-        "animation_name"
-      ]
-    },
-    "remove_widget": {
-      "file": "tools/umg/widget_tree.py",
-      "params": [
-        "asset_path",
-        "widget_name"
-      ]
-    },
-    "reparent": {
-      "file": "tools/umg/widget_tree.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "new_parent",
-        "slot_index"
-      ]
-    },
-    "set_alignment": {
-      "file": "tools/umg/widget_properties.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "horizontal",
-        "vertical"
-      ]
-    },
-    "set_anchor": {
-      "file": "tools/umg/widget_properties.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "preset"
-      ]
-    },
-    "set_brush": {
-      "file": "tools/umg/widget_properties.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "target",
-        "color",
-        "draw_as",
-        "corner_radius"
-      ]
-    },
-    "set_color": {
-      "file": "tools/umg/widget_properties.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "color",
-        "target"
-      ]
-    },
-    "set_font": {
-      "file": "tools/umg/widget_properties.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "size",
-        "typeface",
-        "letter_spacing",
-        "family"
-      ]
-    },
-    "set_padding": {
-      "file": "tools/umg/widget_properties.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "padding",
-        "target"
-      ]
-    },
-    "set_property": {
-      "file": "tools/umg/widget_properties.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "property_path",
-        "value"
-      ]
-    },
-    "set_size": {
-      "file": "tools/umg/widget_properties.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "width",
-        "height",
-        "size_rule",
-        "fill_ratio"
-      ]
-    },
-    "set_text": {
-      "file": "tools/umg/widget_properties.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "text"
-      ]
-    },
-    "set_visibility": {
-      "file": "tools/umg/widget_properties.py",
-      "params": [
-        "asset_path",
-        "widget_name",
-        "visibility"
       ]
     }
   }

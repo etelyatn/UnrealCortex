@@ -23,6 +23,10 @@ const FString FCortexSerializer::ChangedMarker = TEXT("<changed>");
 
 namespace
 {
+	constexpr const TCHAR* CortexTextType = TEXT("FText");
+	constexpr const TCHAR* CortexTextSourceLiteral = TEXT("literal");
+	constexpr const TCHAR* CortexTextSourceStringTable = TEXT("string_table");
+
 	void AppendSerializationIssues(FCortexPropertySerializationResult& Target, const FCortexPropertySerializationResult& Source)
 	{
 		Target.Issues.Append(Source.Issues);
@@ -147,6 +151,29 @@ namespace
 		const void* StructData,
 		const FCortexSerializationPolicy& Policy,
 		const FString& BasePath);
+
+	bool CortexGetTextObject(const TSharedPtr<FJsonValue>& JsonValue, TSharedPtr<FJsonObject>& OutObject, FString& OutLiteral)
+	{
+		if (!JsonValue.IsValid())
+		{
+			return false;
+		}
+
+		if (JsonValue->TryGetString(OutLiteral))
+		{
+			OutObject.Reset();
+			return true;
+		}
+
+		const TSharedPtr<FJsonObject>* Object = nullptr;
+		if (!JsonValue->TryGetObject(Object) || Object == nullptr || !(*Object).IsValid())
+		{
+			return false;
+		}
+
+		OutObject = *Object;
+		return true;
+	}
 }
 
 TSharedPtr<FJsonObject> FCortexSerializer::ObjectNonDefaultPropertiesToJson(
@@ -301,72 +328,179 @@ TSharedPtr<FJsonObject> FCortexSerializer::StructNonDefaultPropertiesToJson(
 TSharedPtr<FJsonObject> FCortexSerializer::TextToJson(const FText& Text)
 {
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("type"), CortexTextType);
 	Result->SetStringField(TEXT("value"), Text.ToString());
 
 	FName TableId;
 	FString Key;
 	if (FTextInspector::GetTableIdAndKey(Text, TableId, Key))
 	{
+		Result->SetStringField(TEXT("source_kind"), CortexTextSourceStringTable);
 		TSharedPtr<FJsonObject> StringTableObject = MakeShared<FJsonObject>();
 		StringTableObject->SetStringField(TEXT("table_id"), TableId.ToString());
 		StringTableObject->SetStringField(TEXT("key"), Key);
 		Result->SetObjectField(TEXT("string_table"), StringTableObject);
 	}
+	else
+	{
+		Result->SetStringField(TEXT("source_kind"), CortexTextSourceLiteral);
+	}
 
 	return Result;
 }
 
-bool FCortexSerializer::TextFromJson(const TSharedPtr<FJsonValue>& JsonValue, FText& OutText, TArray<FString>& OutWarnings)
+bool FCortexSerializer::NormalizeTextDescriptor(
+	const TSharedPtr<FJsonValue>& JsonValue,
+	TSharedPtr<FJsonObject>& OutDescriptor,
+	FText* OutText,
+	TArray<FString>& OutErrors)
 {
-	if (!JsonValue.IsValid())
+	OutDescriptor.Reset();
+
+	TSharedPtr<FJsonObject> InputObject;
+	FString LiteralValue;
+	if (!CortexGetTextObject(JsonValue, InputObject, LiteralValue))
 	{
-		OutWarnings.Add(TEXT("Invalid JSON value for FText"));
+		OutErrors.Add(TEXT("Expected string or object for FText descriptor"));
 		return false;
 	}
 
-	FString LiteralValue;
-	if (JsonValue->TryGetString(LiteralValue))
+	TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
+	Normalized->SetStringField(TEXT("type"), CortexTextType);
+
+	if (!InputObject.IsValid())
 	{
-		OutText = FText::FromString(LiteralValue);
+		Normalized->SetStringField(TEXT("source_kind"), CortexTextSourceLiteral);
+		Normalized->SetStringField(TEXT("value"), LiteralValue);
+		OutDescriptor = Normalized;
+		if (OutText != nullptr)
+		{
+			*OutText = FText::FromString(LiteralValue);
+		}
 		return true;
 	}
 
-	const TSharedPtr<FJsonObject>* TextObject = nullptr;
-	if (!JsonValue->TryGetObject(TextObject) || TextObject == nullptr || !(*TextObject).IsValid())
+	FString Type;
+	if (InputObject->TryGetStringField(TEXT("type"), Type) && Type != CortexTextType)
 	{
-		OutWarnings.Add(TEXT("Expected string or object for FText"));
+		OutErrors.Add(FString::Printf(TEXT("FText descriptor type must be '%s'"), CortexTextType));
 		return false;
 	}
 
-	if (!(*TextObject)->TryGetStringField(TEXT("value"), LiteralValue))
+	if (!InputObject->TryGetStringField(TEXT("value"), LiteralValue))
 	{
-		OutWarnings.Add(TEXT("FText object missing required 'value' string"));
+		OutErrors.Add(TEXT("FText descriptor missing required 'value' string"));
 		return false;
 	}
 
 	const TSharedPtr<FJsonObject>* StringTableObject = nullptr;
-	if (!(*TextObject)->TryGetObjectField(TEXT("string_table"), StringTableObject)
-		|| StringTableObject == nullptr
-		|| !(*StringTableObject).IsValid())
+	const bool bHasStringTable = InputObject->TryGetObjectField(TEXT("string_table"), StringTableObject)
+		&& StringTableObject != nullptr
+		&& (*StringTableObject).IsValid();
+
+	FString SourceKind;
+	if (!InputObject->TryGetStringField(TEXT("source_kind"), SourceKind) || SourceKind.IsEmpty())
 	{
-		OutText = FText::FromString(LiteralValue);
+		SourceKind = bHasStringTable ? CortexTextSourceStringTable : CortexTextSourceLiteral;
+	}
+
+	if (SourceKind != CortexTextSourceLiteral && SourceKind != CortexTextSourceStringTable)
+	{
+		OutErrors.Add(FString::Printf(TEXT("Unsupported FText source_kind '%s'"), *SourceKind));
+		return false;
+	}
+
+	Normalized->SetStringField(TEXT("source_kind"), SourceKind);
+	Normalized->SetStringField(TEXT("value"), LiteralValue);
+
+	if (SourceKind == CortexTextSourceLiteral)
+	{
+		if (bHasStringTable)
+		{
+			OutErrors.Add(TEXT("Literal FText descriptor must not include string_table"));
+			return false;
+		}
+		if (OutText != nullptr)
+		{
+			*OutText = FText::FromString(LiteralValue);
+		}
+		OutDescriptor = Normalized;
 		return true;
+	}
+
+	if (!bHasStringTable)
+	{
+		OutErrors.Add(TEXT("StringTable FText descriptor missing required string_table object"));
+		return false;
 	}
 
 	FString TableId;
 	FString Key;
 	if (!(*StringTableObject)->TryGetStringField(TEXT("table_id"), TableId) || TableId.IsEmpty())
 	{
-		OutWarnings.Add(TEXT("FText string_table object missing required 'table_id' string"));
+		OutErrors.Add(TEXT("FText string_table object missing required 'table_id' string"));
 		return false;
 	}
 	if (!(*StringTableObject)->TryGetStringField(TEXT("key"), Key) || Key.IsEmpty())
 	{
-		OutWarnings.Add(TEXT("FText string_table object missing required 'key' string"));
+		OutErrors.Add(TEXT("FText string_table object missing required 'key' string"));
 		return false;
 	}
 
-	OutText = FText::FromStringTable(FName(*TableId), Key);
+	TSharedPtr<FJsonObject> NormalizedStringTable = MakeShared<FJsonObject>();
+	NormalizedStringTable->SetStringField(TEXT("table_id"), TableId);
+	NormalizedStringTable->SetStringField(TEXT("key"), Key);
+	Normalized->SetObjectField(TEXT("string_table"), NormalizedStringTable);
+
+	if (OutText != nullptr)
+	{
+		*OutText = FText::FromStringTable(FName(*TableId), Key);
+	}
+
+	OutDescriptor = Normalized;
+	return true;
+}
+
+bool FCortexSerializer::TextFromJson(const TSharedPtr<FJsonValue>& JsonValue, FText& OutText, TArray<FString>& OutWarnings)
+{
+	TSharedPtr<FJsonObject> Normalized;
+	return NormalizeTextDescriptor(JsonValue, Normalized, &OutText, OutWarnings);
+}
+
+bool FCortexSerializer::TextDescriptorsEqual(
+	const TSharedPtr<FJsonValue>& Left,
+	const TSharedPtr<FJsonValue>& Right,
+	TArray<FString>& OutErrors)
+{
+	TSharedPtr<FJsonObject> NormalizedLeft;
+	TSharedPtr<FJsonObject> NormalizedRight;
+	if (!NormalizeTextDescriptor(Left, NormalizedLeft, nullptr, OutErrors))
+	{
+		return false;
+	}
+	if (!NormalizeTextDescriptor(Right, NormalizedRight, nullptr, OutErrors))
+	{
+		return false;
+	}
+
+	const FString LeftSource = NormalizedLeft->GetStringField(TEXT("source_kind"));
+	const FString RightSource = NormalizedRight->GetStringField(TEXT("source_kind"));
+	if (LeftSource != RightSource)
+	{
+		return false;
+	}
+	if (NormalizedLeft->GetStringField(TEXT("value")) != NormalizedRight->GetStringField(TEXT("value")))
+	{
+		return false;
+	}
+	if (LeftSource == CortexTextSourceStringTable)
+	{
+		const TSharedPtr<FJsonObject> LeftTable = NormalizedLeft->GetObjectField(TEXT("string_table"));
+		const TSharedPtr<FJsonObject> RightTable = NormalizedRight->GetObjectField(TEXT("string_table"));
+		return LeftTable->GetStringField(TEXT("table_id")) == RightTable->GetStringField(TEXT("table_id"))
+			&& LeftTable->GetStringField(TEXT("key")) == RightTable->GetStringField(TEXT("key"));
+	}
+
 	return true;
 }
 

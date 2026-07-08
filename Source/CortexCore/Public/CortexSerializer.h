@@ -79,8 +79,21 @@ public:
 	/** Serialize FText to JSON with optional string table source metadata. */
 	static TSharedPtr<FJsonObject> TextToJson(const FText& Text);
 
+	/** Normalize string, historical {value,string_table}, or canonical {type,source_kind,value,string_table} FText JSON. */
+	static bool NormalizeTextDescriptor(
+		const TSharedPtr<FJsonValue>& JsonValue,
+		TSharedPtr<FJsonObject>& OutDescriptor,
+		FText* OutText,
+		TArray<FString>& OutErrors);
+
 	/** Deserialize FText from a string or {value, string_table:{table_id,key}} object. */
 	static bool TextFromJson(const TSharedPtr<FJsonValue>& JsonValue, FText& OutText, TArray<FString>& OutWarnings);
+
+	/** Return true when two FText JSON payloads normalize to the same canonical descriptor. */
+	static bool TextDescriptorsEqual(
+		const TSharedPtr<FJsonValue>& Left,
+		const TSharedPtr<FJsonValue>& Right,
+		TArray<FString>& OutErrors);
 
 	/** Deserialize JSON into a UStruct instance. Returns true on success.
 	 *  Outer is the owning UObject for instanced sub-object creation. */

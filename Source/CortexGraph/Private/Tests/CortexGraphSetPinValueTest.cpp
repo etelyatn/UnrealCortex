@@ -178,6 +178,61 @@ bool FCortexGraphSetPinValueTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Error should be INVALID_OPERATION"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
 	}
 
+	// Test: expected_fingerprint is enforced on legacy value writes
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_id"), NodeId);
+		Params->SetStringField(TEXT("pin_name"), TEXT("Duration"));
+		Params->SetStringField(TEXT("value"), TEXT("2.0"));
+
+		TSharedPtr<FJsonObject> StaleFingerprint = MakeShared<FJsonObject>();
+		StaleFingerprint->SetStringField(TEXT("package_saved_hash"), TEXT("stale"));
+		StaleFingerprint->SetBoolField(TEXT("is_dirty"), false);
+		StaleFingerprint->SetStringField(TEXT("dirty_epoch"), TEXT("0"));
+		StaleFingerprint->SetBoolField(TEXT("not_ready"), false);
+		Params->SetObjectField(TEXT("expected_fingerprint"), StaleFingerprint);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.set_pin_value"), Params);
+		TestFalse(TEXT("stale expected_fingerprint should fail before value write"), Result.bSuccess);
+		TestEqual(TEXT("Error should be STALE_PRECONDITION"), Result.ErrorCode, CortexErrorCodes::StalePrecondition);
+	}
+
+	// Test: value and text are mutually exclusive
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_id"), PrintNodeId);
+		Params->SetStringField(TEXT("pin_name"), TEXT("InString"));
+		Params->SetStringField(TEXT("value"), TEXT("Hello"));
+		TSharedPtr<FJsonObject> Text = MakeShared<FJsonObject>();
+		Text->SetStringField(TEXT("type"), TEXT("FText"));
+		Text->SetStringField(TEXT("source_kind"), TEXT("literal"));
+		Text->SetStringField(TEXT("value"), TEXT("Hello"));
+		Params->SetObjectField(TEXT("text"), Text);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.set_pin_value"), Params);
+		TestFalse(TEXT("value plus text should fail"), Result.bSuccess);
+		TestEqual(TEXT("Error should be INVALID_OPERATION"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
+	}
+
+	// Test: structured text on non-text pin fails
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_id"), NodeId);
+		Params->SetStringField(TEXT("pin_name"), TEXT("Duration"));
+		TSharedPtr<FJsonObject> Text = MakeShared<FJsonObject>();
+		Text->SetStringField(TEXT("type"), TEXT("FText"));
+		Text->SetStringField(TEXT("source_kind"), TEXT("literal"));
+		Text->SetStringField(TEXT("value"), TEXT("Not duration"));
+		Params->SetObjectField(TEXT("text"), Text);
+
+		FCortexCommandResult Result = Router.Execute(TEXT("graph.set_pin_value"), Params);
+		TestFalse(TEXT("structured text on float pin should fail"), Result.bSuccess);
+		TestEqual(TEXT("Error should be TYPE_MISMATCH"), Result.ErrorCode, CortexErrorCodes::TypeMismatch);
+	}
+
 	TestBP->MarkAsGarbage();
 
 	return true;

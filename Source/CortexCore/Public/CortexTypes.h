@@ -38,6 +38,9 @@ namespace CortexErrorCodes
 	static const FString PinTypeMismatch = TEXT("PIN_TYPE_MISMATCH");
 	static const FString ConnectionExists = TEXT("CONNECTION_EXISTS");
 	static const FString InvalidOperation = TEXT("INVALID_OPERATION");
+	static const FString UnsupportedOperation = TEXT("UNSUPPORTED_OPERATION");
+	static const FString VerificationFailed = TEXT("VERIFICATION_FAILED");
+	static const FString LocatorDrift = TEXT("LOCATOR_DRIFT");
 	static const FString BlueprintNotFound = TEXT("BLUEPRINT_NOT_FOUND");
 	static const FString BlueprintAlreadyExists = TEXT("BLUEPRINT_ALREADY_EXISTS");
 	static const FString InvalidBlueprintType = TEXT("INVALID_BLUEPRINT_TYPE");
