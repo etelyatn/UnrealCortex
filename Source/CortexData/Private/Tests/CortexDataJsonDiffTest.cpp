@@ -152,8 +152,8 @@ namespace
 			}
 
 			Table->GetMutableStringTable()->SetNamespace(TEXT("CortexJsonDiffTests"));
-			Table->GetMutableStringTable()->SetSourceString(TEXT("alpha.key"), TEXT("Alpha text"));
-			Table->GetMutableStringTable()->SetSourceString(TEXT("beta.key"), TEXT("Beta text"));
+			Table->GetMutableStringTable()->SetSourceString(TEXT("alpha.key"), TEXT("Alpha text"), TEXT(""));
+			Table->GetMutableStringTable()->SetSourceString(TEXT("beta.key"), TEXT("Beta text"), TEXT(""));
 			return Table;
 		}
 
@@ -161,7 +161,7 @@ namespace
 		{
 			if (Table != nullptr)
 			{
-				Table->GetMutableStringTable()->SetSourceString(Key, Value);
+				Table->GetMutableStringTable()->SetSourceString(Key, Value, TEXT(""));
 			}
 		}
 

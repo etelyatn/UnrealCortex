@@ -57,7 +57,7 @@ bool FCortexGraphPinTextStringTableTest::RunTest(const FString& Parameters)
 		GetTransientPackage(),
 		FName(TEXT("TestStringTable_PinText")));
 	TestTable->GetMutableStringTable()->SetNamespace(TEXT("TestNS"));
-	TestTable->GetMutableStringTable()->SetSourceString(TEXT("PinKey"), TEXT("Pin Table Value"));
+	TestTable->GetMutableStringTable()->SetSourceString(TEXT("PinKey"), TEXT("Pin Table Value"), TEXT(""));
 
 	UEdGraph* TestGraph = NewObject<UEdGraph>(GetTransientPackage());
 	TestGraph->Schema = UEdGraphSchema_K2::StaticClass();

@@ -89,12 +89,15 @@ namespace
         }
 
         TArray<FString> EnvKeys;
-        (*EnvObject)->Values.GetKeys(EnvKeys);
+        for (const auto& Entry : (*EnvObject)->Values)
+        {
+            EnvKeys.Emplace(Entry.Key.ToView());
+        }
         EnvKeys.Sort();
 
         for (const FString& EnvKey : EnvKeys)
         {
-            const TSharedPtr<FJsonValue>* EnvValue = (*EnvObject)->Values.Find(EnvKey);
+            const TSharedPtr<FJsonValue>* EnvValue = (*EnvObject)->Values.Find(UE::FSharedString(EnvKey));
             if (EnvValue == nullptr || !EnvValue->IsValid())
             {
                 continue;
@@ -229,7 +232,10 @@ TMap<FString, TSharedPtr<FJsonValue>> FCortexMcpConfigTranslator::BuildCodexConf
     }
 
     TArray<FString> ServerNames;
-    (*McpServersObject)->Values.GetKeys(ServerNames);
+    for (const auto& Entry : (*McpServersObject)->Values)
+    {
+        ServerNames.Emplace(Entry.Key.ToView());
+    }
     ServerNames.Sort();
 
     for (const FString& ServerName : ServerNames)

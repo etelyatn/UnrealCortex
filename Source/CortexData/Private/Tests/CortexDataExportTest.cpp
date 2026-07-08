@@ -210,10 +210,10 @@ namespace
 			}
 
 			Table->GetMutableStringTable()->SetNamespace(TEXT("CortexExportTests"));
-			Table->GetMutableStringTable()->SetSourceString(TEXT("zeta.key"), TEXT("Zeta text"));
-			Table->GetMutableStringTable()->SetSourceString(TEXT("alpha.key"), TEXT("Alpha text"));
-			Table->GetMutableStringTable()->SetSourceString(TEXT("middle.key"), TEXT("Middle text"));
-			Table->GetMutableStringTable()->SetSourceString(TEXT("ignored.other"), TEXT("Ignored text"));
+			Table->GetMutableStringTable()->SetSourceString(TEXT("zeta.key"), TEXT("Zeta text"), TEXT(""));
+			Table->GetMutableStringTable()->SetSourceString(TEXT("alpha.key"), TEXT("Alpha text"), TEXT(""));
+			Table->GetMutableStringTable()->SetSourceString(TEXT("middle.key"), TEXT("Middle text"), TEXT(""));
+			Table->GetMutableStringTable()->SetSourceString(TEXT("ignored.other"), TEXT("Ignored text"), TEXT(""));
 			return Table;
 		}
 

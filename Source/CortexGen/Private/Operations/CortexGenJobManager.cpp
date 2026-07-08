@@ -861,7 +861,7 @@ void FCortexGenJobManager::LoadTimingData()
             continue;
         }
 
-        TArray<float>& Samples = TimingData.FindOrAdd(Pair.Key);
+        TArray<float>& Samples = TimingData.FindOrAdd(FString(Pair.Key.ToView()));
         for (const auto& Val : *SamplesArray)
         {
             double D;

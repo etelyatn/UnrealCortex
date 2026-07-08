@@ -1210,7 +1210,7 @@ bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, 
 	bool bSuccess = true;
 	for (const auto& Pair : JsonObject->Values)
 	{
-		const FString& FieldName = Pair.Key;
+		const FString FieldName(Pair.Key.ToView());
 		const TSharedPtr<FJsonValue>& JsonValue = Pair.Value;
 
 		// Skip internal metadata fields

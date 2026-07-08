@@ -148,7 +148,7 @@ bool FCortexUpdateStringTableDryRunSafetyTest::RunTest(const FString& Parameters
 		return true;
 	}
 
-	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"));
+	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"), TEXT(""));
 
 	const FCortexCommandResult Result = ExecuteUpdateStringTable(
 		Table,
@@ -232,8 +232,8 @@ bool FCortexUpdateStringTableOrderedApplyTest::RunTest(const FString& Parameters
 		return true;
 	}
 
-	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"));
-	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.body"), TEXT("Deals fire damage"));
+	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"), TEXT(""));
+	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.body"), TEXT("Deals fire damage"), TEXT(""));
 
 	const FCortexCommandResult Result = ExecuteUpdateStringTable(
 		Table,
@@ -297,8 +297,8 @@ bool FCortexUpdateStringTableCollisionReportingTest::RunTest(const FString& Para
 		return true;
 	}
 
-	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"));
-	Table->GetMutableStringTable()->SetSourceString(TEXT("fireball.title"), TEXT("Existing Fireball"));
+	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"), TEXT(""));
+	Table->GetMutableStringTable()->SetSourceString(TEXT("fireball.title"), TEXT("Existing Fireball"), TEXT(""));
 
 	const FCortexCommandResult Result = ExecuteUpdateStringTable(
 		Table,
@@ -350,7 +350,7 @@ bool FCortexUpdateStringTableMissingKeyReportingTest::RunTest(const FString& Par
 		return true;
 	}
 
-	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"));
+	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"), TEXT(""));
 
 	const FCortexCommandResult Result = ExecuteUpdateStringTable(
 		Table,
@@ -400,7 +400,7 @@ bool FCortexUpdateStringTableAllowPartialIssueResultsAreNonBlockingTest::RunTest
 		return true;
 	}
 
-	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"));
+	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"), TEXT(""));
 
 	const FCortexCommandResult Result = ExecuteUpdateStringTable(
 		Table,
@@ -460,7 +460,7 @@ bool FCortexUpdateStringTableStrictBlockedBatchDoesNotReportAppliedOpsTest::RunT
 		return true;
 	}
 
-	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"));
+	Table->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Entry Fireball"), TEXT(""));
 
 	const FCortexCommandResult Result = ExecuteUpdateStringTable(
 		Table,

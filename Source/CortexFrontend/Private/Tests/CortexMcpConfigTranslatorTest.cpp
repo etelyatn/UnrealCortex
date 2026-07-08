@@ -43,7 +43,10 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("MCP servers object should be valid"), ServersObject != nullptr && ServersObject->IsValid());
 
     TArray<FString> ServerNames;
-    (*ServersObject)->Values.GetKeys(ServerNames);
+    for (const auto& Entry : (*ServersObject)->Values)
+    {
+        ServerNames.Emplace(Entry.Key.ToView());
+    }
     ServerNames.Sort();
     TestTrue(TEXT("Project should define at least one MCP server"), ServerNames.Num() > 0);
 

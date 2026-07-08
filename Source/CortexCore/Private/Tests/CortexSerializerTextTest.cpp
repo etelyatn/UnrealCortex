@@ -41,7 +41,7 @@ bool FCortexSerializerTextToJsonStringTableTest::RunTest(const FString& Paramete
 		GetTransientPackage(),
 		FName(TEXT("TestStringTable_TextToJson")));
 	TestTable->GetMutableStringTable()->SetNamespace(TEXT("TestNS"));
-	TestTable->GetMutableStringTable()->SetSourceString(TEXT("TestKey"), TEXT("Test Value"));
+	TestTable->GetMutableStringTable()->SetSourceString(TEXT("TestKey"), TEXT("Test Value"), TEXT(""));
 
 	const FText TableText = FText::FromStringTable(TestTable->GetStringTableId(), TEXT("TestKey"));
 	const TSharedPtr<FJsonObject> Result = FCortexSerializer::TextToJson(TableText);
@@ -135,7 +135,7 @@ bool FCortexSerializerJsonToTextStringTableTest::RunTest(const FString& Paramete
 		GetTransientPackage(),
 		FName(TEXT("TestStringTable_JsonToText")));
 	TestTable->GetMutableStringTable()->SetNamespace(TEXT("TestNS"));
-	TestTable->GetMutableStringTable()->SetSourceString(TEXT("TestKey"), TEXT("Test Value"));
+	TestTable->GetMutableStringTable()->SetSourceString(TEXT("TestKey"), TEXT("Test Value"), TEXT(""));
 
 	TSharedPtr<FJsonObject> StringTableObject = MakeShared<FJsonObject>();
 	StringTableObject->SetStringField(TEXT("table_id"), TestTable->GetStringTableId().ToString());
@@ -214,7 +214,7 @@ bool FCortexSerializerTextDescriptorNormalizeHistoricalStringTableTest::RunTest(
 		GetTransientPackage(),
 		FName(TEXT("TestStringTable_NormalizeHistorical")));
 	TestTable->GetMutableStringTable()->SetNamespace(TEXT("TestNS"));
-	TestTable->GetMutableStringTable()->SetSourceString(TEXT("PayKey"), TEXT("Pay"));
+	TestTable->GetMutableStringTable()->SetSourceString(TEXT("PayKey"), TEXT("Pay"), TEXT(""));
 
 	TSharedPtr<FJsonObject> StringTable = MakeShared<FJsonObject>();
 	StringTable->SetStringField(TEXT("table_id"), TestTable->GetStringTableId().ToString());
@@ -293,7 +293,7 @@ bool FCortexSerializerStructToJsonStringTableTextTest::RunTest(const FString& Pa
 		GetTransientPackage(),
 		FName(TEXT("TestStringTable_StructToJsonText")));
 	TestTable->GetMutableStringTable()->SetNamespace(TEXT("TestNS"));
-	TestTable->GetMutableStringTable()->SetSourceString(TEXT("TestKey"), TEXT("Test Value"));
+	TestTable->GetMutableStringTable()->SetSourceString(TEXT("TestKey"), TEXT("Test Value"), TEXT(""));
 
 	UCortexSerializerTextTestObject* TestObject = NewObject<UCortexSerializerTextTestObject>();
 	TestObject->Title = FText::FromStringTable(TestTable->GetStringTableId(), TEXT("TestKey"));

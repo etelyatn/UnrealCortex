@@ -1416,7 +1416,7 @@ bool FCortexDataImportQueueHelperParityUpdateStringTableRejectsMalformedOperatio
 		return false;
 	}
 
-	StringTable->GetMutableStringTable()->SetSourceString(TEXT("existing"), TEXT("Original"));
+	StringTable->GetMutableStringTable()->SetSourceString(TEXT("existing"), TEXT("Original"), TEXT(""));
 
 	TSharedRef<FJsonObject> ValidSetOperation = MakeShared<FJsonObject>();
 	ValidSetOperation->SetStringField(TEXT("type"), TEXT("set"));

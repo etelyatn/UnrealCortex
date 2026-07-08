@@ -519,7 +519,7 @@ bool FCortexBPSearchWidgetStringTableMatchTest::RunTest(const FString& Parameter
 		GetTransientPackage(),
 		FName(TEXT("TestStringTable_BPSearchWidget")));
 	TestTable->GetMutableStringTable()->SetNamespace(TEXT("BPWidgetTest"));
-	TestTable->GetMutableStringTable()->SetSourceString(TEXT("WidgetSearchKey"), TEXT("Widget Search Value"));
+	TestTable->GetMutableStringTable()->SetSourceString(TEXT("WidgetSearchKey"), TEXT("Widget Search Value"), TEXT(""));
 
 	void* ValuePtr = TextProperty->ContainerPtrToValuePtr<void>(TextWidget);
 	TextProperty->SetPropertyValue(ValuePtr,
@@ -622,7 +622,7 @@ bool FCortexBPSearchPinTypedTextStringTableMatchTest::RunTest(const FString& Par
 		GetTransientPackage(),
 		FName(TEXT("TestStringTable_BPSearchPinTypedText")));
 	TestTable->GetMutableStringTable()->SetNamespace(TEXT("BPPinSearch"));
-	TestTable->GetMutableStringTable()->SetSourceString(TEXT("Mail.Button.Pay"), TEXT("Pay"));
+	TestTable->GetMutableStringTable()->SetSourceString(TEXT("Mail.Button.Pay"), TEXT("Pay"), TEXT(""));
 
 	TSharedPtr<FJsonObject> StringTablePayload = MakeShared<FJsonObject>();
 	StringTablePayload->SetStringField(TEXT("table_id"), TestTable->GetStringTableId().ToString());

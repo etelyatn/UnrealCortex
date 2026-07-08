@@ -505,11 +505,17 @@ namespace
 		TSet<FString> FieldNames;
 		if (LeftFields.IsValid())
 		{
-			LeftFields->Values.GetKeys(FieldNames);
+			for (const auto& Entry : LeftFields->Values)
+			{
+				FieldNames.Add(FString(Entry.Key.ToView()));
+			}
 		}
 		if (RightFields.IsValid())
 		{
-			RightFields->Values.GetKeys(FieldNames);
+			for (const auto& Entry : RightFields->Values)
+			{
+				FieldNames.Add(FString(Entry.Key.ToView()));
+			}
 		}
 
 		TArray<FString> SortedFields = FieldNames.Array();

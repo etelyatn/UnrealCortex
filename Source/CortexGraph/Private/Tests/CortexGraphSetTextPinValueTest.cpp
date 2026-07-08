@@ -86,7 +86,7 @@ bool FCortexGraphSetTextPinValueStringTableTest::RunTest(const FString& Paramete
 		GetTransientPackage(),
 		FName(TEXT("TestStringTable_GraphTextMutation")));
 	TestTable->GetMutableStringTable()->SetNamespace(TEXT("TestNS"));
-	TestTable->GetMutableStringTable()->SetSourceString(TEXT("Mail.Button.Pay"), TEXT("Pay"));
+	TestTable->GetMutableStringTable()->SetSourceString(TEXT("Mail.Button.Pay"), TEXT("Pay"), TEXT(""));
 
 	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
 	const FString PackageName = FString::Printf(TEXT("/Game/Temp/CortexGraphSetTextPinValueStringTable_%s"), *Suffix);

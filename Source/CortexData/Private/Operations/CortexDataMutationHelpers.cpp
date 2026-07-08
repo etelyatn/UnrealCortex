@@ -803,7 +803,7 @@ namespace CortexDataMutationHelpersPrivate
 
 		for (const TPair<FString, FString>& Entry : AfterEntries)
 		{
-			MutableTable->SetSourceString(Entry.Key, Entry.Value);
+			MutableTable->SetSourceString(Entry.Key, Entry.Value, TEXT(""));
 		}
 	}
 
@@ -1057,7 +1057,7 @@ FCortexDataMutationResult FCortexDataMutationHelpers::BuildUpdateDatatableRowPla
 
 	for (const auto& Pair : Request.RowData->Values)
 	{
-		OutPlan.ModifiedFields.Add(Pair.Key);
+		OutPlan.ModifiedFields.Add(FString(Pair.Key.ToView()));
 	}
 
 	TArray<FString> Warnings;
@@ -1116,8 +1116,8 @@ FCortexDataMutationResult FCortexDataMutationHelpers::PreviewUpdateDatatableRow(
 	TSharedPtr<FJsonObject> NewValues = FCortexSerializer::StructToJson(Plan.RowStruct, TempRowPtr);
 	for (const FString& Field : Plan.ModifiedFields)
 	{
-		const TSharedPtr<FJsonValue>* OldVal = OldValues.IsValid() ? OldValues->Values.Find(Field) : nullptr;
-		const TSharedPtr<FJsonValue>* NewVal = NewValues.IsValid() ? NewValues->Values.Find(Field) : nullptr;
+		const TSharedPtr<FJsonValue>* OldVal = OldValues.IsValid() ? OldValues->Values.Find(UE::FSharedString(Field)) : nullptr;
+		const TSharedPtr<FJsonValue>* NewVal = NewValues.IsValid() ? NewValues->Values.Find(UE::FSharedString(Field)) : nullptr;
 
 		TSharedRef<FJsonObject> ChangeEntry = MakeShared<FJsonObject>();
 		ChangeEntry->SetStringField(TEXT("field"), Field);
@@ -1825,7 +1825,7 @@ FCortexDataMutationResult FCortexDataMutationHelpers::BuildUpdateDataAssetPlan(
 	OutPlan.AssetClass = DataAsset->GetClass();
 	for (const auto& Pair : Request.Properties->Values)
 	{
-		OutPlan.ModifiedFields.Add(Pair.Key);
+		OutPlan.ModifiedFields.Add(FString(Pair.Key.ToView()));
 	}
 
 	TSharedPtr<FJsonObject> OldValues = FCortexSerializer::StructToJson(OutPlan.AssetClass, DataAsset);

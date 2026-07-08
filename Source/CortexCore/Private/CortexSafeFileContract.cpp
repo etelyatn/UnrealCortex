@@ -300,20 +300,18 @@ void WriteCanonicalObject(const TSharedPtr<FJsonObject>& Object, TJsonWriter<>& 
 	Writer.WriteObjectStart();
 	if (Object.IsValid())
 	{
-		TArray<FString> Keys;
-		Object->Values.GetKeys(Keys);
-		Keys.Sort();
-
-		for (const FString& Key : Keys)
+		TArray<TPair<FString, const TSharedPtr<FJsonValue>*>> SortedEntries;
+		SortedEntries.Reserve(Object->Values.Num());
+		for (const auto& Entry : Object->Values)
 		{
-			const TSharedPtr<FJsonValue>* Value = Object->Values.Find(Key);
-			if (Value == nullptr)
-			{
-				continue;
-			}
+			SortedEntries.Emplace(FString(Entry.Key.ToView()), &Entry.Value);
+		}
+		SortedEntries.Sort([](const auto& A, const auto& B) { return A.Key < B.Key; });
 
-			Writer.WriteIdentifierPrefix(Key);
-			WriteCanonicalValue(*Value, Writer);
+		for (const auto& Entry : SortedEntries)
+		{
+			Writer.WriteIdentifierPrefix(Entry.Key);
+			WriteCanonicalValue(*Entry.Value, Writer);
 		}
 	}
 	Writer.WriteObjectEnd();

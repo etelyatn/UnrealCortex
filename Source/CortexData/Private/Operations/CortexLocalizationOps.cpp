@@ -637,7 +637,7 @@ namespace
 
 		for (const TPair<FString, FString>& Entry : AfterEntries)
 		{
-			MutableTable->SetSourceString(Entry.Key, Entry.Value);
+			MutableTable->SetSourceString(Entry.Key, Entry.Value, TEXT(""));
 		}
 	}
 
