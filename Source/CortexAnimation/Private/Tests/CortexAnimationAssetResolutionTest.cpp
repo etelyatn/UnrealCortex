@@ -146,3 +146,23 @@ bool FCortexAnimationWrongClassTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("error details should include actual type"), Result.ErrorDetails.IsValid() && Result.ErrorDetails->HasField(TEXT("actual_type")));
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAnimationWrongObjectNameTest,
+	"Cortex.Animation.Resolve.WrongObjectName",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAnimationWrongObjectNameTest::RunTest(const FString& Parameters)
+{
+	FCortexCommandRouter Router = CreateAnimRouter();
+	FCortexCommandResult Result = Router.Execute(
+		TEXT("anim.get_sequence_info"),
+		ParamsWithAssetPath(TEXT("/Game/Characters/Mannequins/Anims/Pistol/MM_Pistol_Fire.NoSuchObject"))
+	);
+
+	TestFalse(TEXT("wrong object name should fail sequence inspection"), Result.bSuccess);
+	TestEqual(TEXT("error code should be asset_not_found"), Result.ErrorCode, FString(CortexErrorCodes::AssetNotFound));
+	TestTrue(TEXT("error details should be present"), Result.ErrorDetails.IsValid());
+	return true;
+}

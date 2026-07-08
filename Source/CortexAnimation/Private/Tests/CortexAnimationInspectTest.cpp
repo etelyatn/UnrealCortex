@@ -33,6 +33,14 @@ bool HasCollection(const TSharedPtr<FJsonObject>& Data, const TCHAR* FieldName)
 		&& (*Collection)->HasField(TEXT("truncated"))
 		&& (*Collection)->HasTypedField<EJson::Array>(TEXT("items"));
 }
+
+bool CollectionReturnedAtMost(const TSharedPtr<FJsonObject>& Collection, int32 Limit)
+{
+	int32 Returned = 0;
+	return Collection.IsValid()
+		&& Collection->TryGetNumberField(TEXT("returned"), Returned)
+		&& Returned <= Limit;
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -67,7 +75,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexAnimationMontageInfoTest::RunTest(const FString& Parameters)
 {
 	FCortexCommandRouter Router = CreateAnimInspectRouter();
-	FCortexCommandResult Result = Router.Execute(TEXT("anim.get_montage_info"), AssetParams(TEXT("/Game/Characters/Mannequins/Anims/Pistol/MM_Pistol_Fire_Montage")));
+	TSharedPtr<FJsonObject> Params = AssetParams(TEXT("/Game/Characters/Mannequins/Anims/Pistol/MM_Pistol_Fire_Montage"));
+	Params->SetNumberField(TEXT("segment_limit"), 1);
+	FCortexCommandResult Result = Router.Execute(TEXT("anim.get_montage_info"), Params);
 	TestTrue(TEXT("montage info should succeed"), Result.bSuccess);
 	TestTrue(TEXT("data should be valid"), Result.Data.IsValid());
 	TestEqual(TEXT("asset_type"), Result.Data->GetStringField(TEXT("asset_type")), FString(TEXT("AnimMontage")));
@@ -75,7 +85,21 @@ bool FCortexAnimationMontageInfoTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("sections collection exists"), HasCollection(Result.Data, TEXT("sections")));
 	TestTrue(TEXT("slots collection exists"), HasCollection(Result.Data, TEXT("slots")));
 	TestTrue(TEXT("notifies collection exists"), HasCollection(Result.Data, TEXT("notifies")));
+	TestTrue(TEXT("branching_points collection exists"), HasCollection(Result.Data, TEXT("branching_points")));
 	TestTrue(TEXT("fingerprint exists"), Result.Data->HasTypedField<EJson::Object>(TEXT("fingerprint")));
+
+	const TSharedPtr<FJsonObject>* Slots = nullptr;
+	if (Result.Data->TryGetObjectField(TEXT("slots"), Slots) && Slots != nullptr)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* SlotItems = nullptr;
+		if ((*Slots)->TryGetArrayField(TEXT("items"), SlotItems) && SlotItems != nullptr && SlotItems->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject> FirstSlot = (*SlotItems)[0]->AsObject();
+			const TSharedPtr<FJsonObject>* Segments = nullptr;
+			TestTrue(TEXT("slot segments collection exists"), FirstSlot.IsValid() && FirstSlot->TryGetObjectField(TEXT("segments"), Segments));
+			TestTrue(TEXT("segment_limit caps returned segments"), Segments != nullptr && CollectionReturnedAtMost(*Segments, 1));
+		}
+	}
 	return true;
 }
 

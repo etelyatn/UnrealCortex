@@ -59,6 +59,7 @@ TArray<FCortexCommandInfo> FCortexAnimationCommandHandler::GetSupportedCommands(
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("AnimMontage asset path"))
 			.Optional(TEXT("section_limit"), TEXT("number"), TEXT("Maximum sections returned; default 50, max 200"))
 			.Optional(TEXT("slot_limit"), TEXT("number"), TEXT("Maximum slot tracks returned; default 20, max 100"))
+			.Optional(TEXT("segment_limit"), TEXT("number"), TEXT("Maximum segments returned per slot; default 50, max 200"))
 			.Optional(TEXT("notify_limit"), TEXT("number"), TEXT("Maximum notifies returned; default 50, max 200"))
 	);
 	Commands.Add(

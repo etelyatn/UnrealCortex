@@ -201,6 +201,7 @@ FCortexCommandResult FCortexAnimInspectOps::GetMontageInfo(const TSharedPtr<FJso
 	}
 	Data->SetObjectField(TEXT("sections"), FCortexAnimAssetUtils::MakeLimitedArray(Sections, FCortexAnimAssetUtils::ReadLimit(Params, TEXT("section_limit"), 50, 200)));
 
+	const int32 SegmentLimit = FCortexAnimAssetUtils::ReadLimit(Params, TEXT("segment_limit"), 50, 200);
 	TArray<TSharedPtr<FJsonValue>> Slots;
 	for (const FSlotAnimationTrack& SlotTrack : Montage->SlotAnimTracks)
 	{
@@ -218,15 +219,17 @@ FCortexCommandResult FCortexAnimInspectOps::GetMontageInfo(const TSharedPtr<FJso
 			Segments.Add(MakeShared<FJsonValueObject>(SegmentObj));
 		}
 
-		Slot->SetObjectField(TEXT("segments"), FCortexAnimAssetUtils::MakeLimitedArray(Segments, 200));
+		Slot->SetObjectField(TEXT("segments"), FCortexAnimAssetUtils::MakeLimitedArray(Segments, SegmentLimit));
 		Slots.Add(MakeShared<FJsonValueObject>(Slot));
 	}
 	Data->SetObjectField(TEXT("slots"), FCortexAnimAssetUtils::MakeLimitedArray(Slots, FCortexAnimAssetUtils::ReadLimit(Params, TEXT("slot_limit"), 20, 100)));
 
 	TArray<TSharedPtr<FJsonValue>> Notifies;
+	TArray<TSharedPtr<FJsonValue>> BranchingPoints;
 	for (int32 Index = 0; Index < Montage->Notifies.Num(); ++Index)
 	{
 		const FAnimNotifyEvent& Notify = Montage->Notifies[Index];
+		const bool bIsBranchingPoint = Notify.IsBranchingPoint();
 		TSharedPtr<FJsonObject> Item = MakeShared<FJsonObject>();
 		Item->SetNumberField(TEXT("index"), Index);
 		Item->SetStringField(TEXT("name"), Notify.NotifyName.ToString());
@@ -234,9 +237,21 @@ FCortexCommandResult FCortexAnimInspectOps::GetMontageInfo(const TSharedPtr<FJso
 		Item->SetNumberField(TEXT("duration"), Notify.GetDuration());
 		Item->SetStringField(TEXT("notify_class"), Notify.Notify != nullptr ? Notify.Notify->GetClass()->GetPathName() : FString());
 		Item->SetStringField(TEXT("notify_object"), ObjectPathOf(Notify.Notify));
+		Item->SetBoolField(TEXT("is_branching_point"), bIsBranchingPoint);
 		Notifies.Add(MakeShared<FJsonValueObject>(Item));
+
+		if (bIsBranchingPoint)
+		{
+			TSharedPtr<FJsonObject> BranchingPoint = MakeShared<FJsonObject>();
+			BranchingPoint->SetNumberField(TEXT("notify_index"), Index);
+			BranchingPoint->SetStringField(TEXT("name"), Notify.NotifyName.ToString());
+			BranchingPoint->SetNumberField(TEXT("time"), Notify.GetTime());
+			BranchingPoint->SetNumberField(TEXT("duration"), Notify.GetDuration());
+			BranchingPoints.Add(MakeShared<FJsonValueObject>(BranchingPoint));
+		}
 	}
 	Data->SetObjectField(TEXT("notifies"), FCortexAnimAssetUtils::MakeLimitedArray(Notifies, FCortexAnimAssetUtils::ReadLimit(Params, TEXT("notify_limit"), 50, 200)));
+	Data->SetObjectField(TEXT("branching_points"), FCortexAnimAssetUtils::MakeLimitedArray(BranchingPoints, FCortexAnimAssetUtils::ReadLimit(Params, TEXT("notify_limit"), 50, 200)));
 
 	SetUnavailableFields(Data, {});
 	return FCortexCommandRouter::Success(Data);

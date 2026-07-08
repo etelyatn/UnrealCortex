@@ -13,6 +13,15 @@
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
 
+namespace
+{
+bool HasObjectSuffix(const FString& AssetPath)
+{
+	const int32 LastSlash = AssetPath.Find(TEXT("/"), ESearchCase::CaseSensitive, ESearchDir::FromEnd);
+	return LastSlash != INDEX_NONE && AssetPath.Mid(LastSlash + 1).Contains(TEXT("."));
+}
+}
+
 int32 FCortexAnimAssetUtils::ReadLimit(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldName, int32 DefaultValue, int32 MaxValue)
 {
 	double Raw = 0.0;
@@ -125,6 +134,7 @@ bool FCortexAnimAssetUtils::ListAnimationAssets(
 
 	FARFilter Filter;
 	Filter.bRecursivePaths = true;
+	Filter.bRecursiveClasses = true;
 	Filter.PackagePaths.Add(FName(*(Path.IsEmpty() ? FString(TEXT("/Game")) : Path)));
 
 	if (IsSupportedAssetType(AssetType))
@@ -193,10 +203,30 @@ bool FCortexAnimAssetUtils::ResolveRequiredAsset(
 			TEXT("Asset Registry is not available yet; open the editor and retry"));
 		return false;
 	}
+	if (AssetRegistry->IsLoadingAssets())
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::EditorNotReady,
+			TEXT("Asset Registry is still loading assets; retry after discovery completes"));
+		return false;
+	}
 
-	TArray<FAssetData> PackageAssets;
-	AssetRegistry->GetAssetsByPackageName(FName(*PackageName), PackageAssets);
-	if (PackageAssets.Num() == 0 || !FPackageName::DoesPackageExist(PackageName))
+	FAssetData AssetData;
+	if (HasObjectSuffix(OutResolved.RequestedPath))
+	{
+		AssetData = AssetRegistry->GetAssetByObjectPath(FSoftObjectPath(OutResolved.RequestedPath));
+	}
+	else
+	{
+		TArray<FAssetData> PackageAssets;
+		AssetRegistry->GetAssetsByPackageName(FName(*PackageName), PackageAssets);
+		if (PackageAssets.Num() > 0)
+		{
+			AssetData = PackageAssets[0];
+		}
+	}
+
+	if (!AssetData.IsValid() || !FPackageName::DoesPackageExist(PackageName))
 	{
 		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::AssetNotFound,
@@ -205,19 +235,10 @@ bool FCortexAnimAssetUtils::ResolveRequiredAsset(
 		return false;
 	}
 
-	OutResolved.AssetData = PackageAssets[0];
+	OutResolved.AssetData = AssetData;
 	OutResolved.AssetPath = OutResolved.AssetData.GetObjectPathString();
 	OutResolved.PackageName = OutResolved.AssetData.PackageName.ToString();
 	OutResolved.AssetType = OutResolved.AssetData.AssetClassPath.GetAssetName().ToString();
-
-	if (OutResolved.AssetData.AssetClassPath.GetAssetName() != AssetT::StaticClass()->GetFName())
-	{
-		OutError = FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			FString::Printf(TEXT("Expected %s but found %s: %s"), ExpectedType, *OutResolved.AssetType, *OutResolved.AssetPath),
-			MakeErrorDetails(TEXT("asset_path"), OutResolved.AssetPath, ExpectedType, OutResolved.AssetType));
-		return false;
-	}
 
 	UObject* Asset = OutResolved.AssetData.GetSoftObjectPath().ResolveObject();
 	if (Asset == nullptr)
