@@ -93,10 +93,11 @@ _COMPOSITE_HINTS: dict[str, str] = {
     "statetree": "For creating or updating a full StateTree structure, use statetree_compose instead of chaining statetree_cmd calls.\n",
     "gen": "AI asset generation. Submit with start_mesh/start_image/start_texturing, then poll with job_status until status is 'imported' or 'failed'. Generation takes 30-180 seconds. On download_failed or import_failed, call retry_import.\n",
     "anim": (
-        "CortexAnimation Phase A is read-only. Only these Phase A commands are supported: "
-        "list_assets, get_sequence_info, get_montage_info, get_skeleton_info, get_animbp_info. "
-        "Never call or invent add_*, update_*, remove_*, set_*, or animation save_asset commands. "
-        "Report authoring unavailable unless the exact command is present in live capabilities.\n"
+        "CortexAnimation supports inspection plus Phase B sequence named-notify authoring when live "
+        "capabilities list the exact commands: add_named_notify, update_named_notify, remove_named_notify. "
+        "Only call animation authoring commands that appear in live capabilities, and do not invent object "
+        "notify, notify state, curve, montage section, socket, AnimBP, blendspace, retargeting, preview, "
+        "or save_asset commands.\n"
     ),
 }
 

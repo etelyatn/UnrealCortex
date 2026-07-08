@@ -36,15 +36,17 @@ bool FCortexAnimationCapabilitiesReadOnlyTest::RunTest(const FString& Parameters
 		Names.Add(Command.Name);
 	}
 
-	TestEqual(TEXT("Phase A exposes five commands"), Commands.Num(), 5);
+	TestEqual(TEXT("Phase B named notify slice exposes eight commands"), Commands.Num(), 8);
 	TestTrue(TEXT("list_assets exists"), Names.Contains(TEXT("list_assets")));
 	TestTrue(TEXT("get_sequence_info exists"), Names.Contains(TEXT("get_sequence_info")));
 	TestTrue(TEXT("get_montage_info exists"), Names.Contains(TEXT("get_montage_info")));
 	TestTrue(TEXT("get_skeleton_info exists"), Names.Contains(TEXT("get_skeleton_info")));
 	TestTrue(TEXT("get_animbp_info exists"), Names.Contains(TEXT("get_animbp_info")));
+	TestTrue(TEXT("add_named_notify exists"), Names.Contains(TEXT("add_named_notify")));
+	TestTrue(TEXT("update_named_notify exists"), Names.Contains(TEXT("update_named_notify")));
+	TestTrue(TEXT("remove_named_notify exists"), Names.Contains(TEXT("remove_named_notify")));
 
 	const TSet<FString> Forbidden = {
-		TEXT("add_named_notify"),
 		TEXT("add_notify"),
 		TEXT("add_curve"),
 		TEXT("add_montage_section"),

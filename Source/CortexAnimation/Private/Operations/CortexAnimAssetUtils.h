@@ -24,6 +24,9 @@ struct FCortexAnimAssetUtils
 	static TSharedPtr<FJsonObject> MakeLimitedArray(const TArray<TSharedPtr<FJsonValue>>& Items, int32 Limit);
 	static TSharedPtr<FJsonObject> MakeErrorDetails(const FString& Field, const FString& AssetPath, const FString& ExpectedType, const FString& ActualType);
 	static void SetCommonAssetFields(TSharedPtr<FJsonObject>& Data, const FCortexAnimResolvedAsset& Resolved);
+	static TSharedPtr<FJsonObject> MakeFingerprint(UObject* Asset);
+	static bool CheckExpectedFingerprint(UObject* Asset, const TSharedPtr<FJsonObject>& Params, FCortexCommandResult& OutError);
+	static bool SaveAsset(UObject* Asset, FString& OutSavedPackage, FCortexCommandResult& OutError);
 	static bool IsSupportedAssetType(const FString& AssetType);
 	static UClass* ClassForAssetType(const FString& AssetType);
 	static bool ListAnimationAssets(

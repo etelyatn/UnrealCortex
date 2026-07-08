@@ -7,11 +7,13 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "CortexAssetFingerprint.h"
+#include "CortexBatchMutation.h"
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
+#include "UObject/SavePackage.h"
 
 namespace
 {
@@ -77,6 +79,80 @@ void FCortexAnimAssetUtils::SetCommonAssetFields(TSharedPtr<FJsonObject>& Data, 
 	{
 		Data->SetObjectField(TEXT("fingerprint"), MakeObjectAssetFingerprint(Resolved.Asset).ToJson());
 	}
+}
+
+TSharedPtr<FJsonObject> FCortexAnimAssetUtils::MakeFingerprint(UObject* Asset)
+{
+	return MakeObjectAssetFingerprint(Asset).ToJson();
+}
+
+bool FCortexAnimAssetUtils::CheckExpectedFingerprint(
+	UObject* Asset,
+	const TSharedPtr<FJsonObject>& Params,
+	FCortexCommandResult& OutError)
+{
+	if (!Params.IsValid() || !Params->HasTypedField<EJson::Object>(TEXT("expected_fingerprint")))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::StalePrecondition,
+			TEXT("Mutating animation command requires expected_fingerprint"));
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* Expected = nullptr;
+	Params->TryGetObjectField(TEXT("expected_fingerprint"), Expected);
+	const TSharedPtr<FJsonObject> Current = MakeFingerprint(Asset);
+	if (Expected == nullptr || !Expected->IsValid() || !FCortexBatchMutation::FingerprintsMatch(Current, *Expected))
+	{
+		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+		Details->SetObjectField(TEXT("current_fingerprint"), Current);
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::StalePrecondition,
+			TEXT("Expected fingerprint does not match current animation asset fingerprint"),
+			Details);
+		return false;
+	}
+
+	return true;
+}
+
+bool FCortexAnimAssetUtils::SaveAsset(UObject* Asset, FString& OutSavedPackage, FCortexCommandResult& OutError)
+{
+	OutSavedPackage.Empty();
+	if (Asset == nullptr || Asset->GetPackage() == nullptr)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Cannot save animation asset without a package"));
+		return false;
+	}
+
+	UPackage* Package = Asset->GetPackage();
+	const FString PackageName = Package->GetName();
+	FString PackageFilename;
+	if (!FPackageName::DoesPackageExist(PackageName, &PackageFilename))
+	{
+		PackageFilename = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+	}
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	if (!UPackage::SavePackage(Package, Asset, *PackageFilename, SaveArgs))
+	{
+		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+		Details->SetStringField(TEXT("asset_path"), Asset->GetPathName());
+		Details->SetStringField(TEXT("package"), PackageName);
+		Details->SetStringField(TEXT("filename"), PackageFilename);
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::SaveFailed,
+			FString::Printf(TEXT("Failed to save animation asset package: %s"), *PackageName),
+			Details);
+		return false;
+	}
+
+	OutSavedPackage = PackageName;
+	return true;
 }
 
 bool FCortexAnimAssetUtils::IsSupportedAssetType(const FString& AssetType)
@@ -226,7 +302,7 @@ bool FCortexAnimAssetUtils::ResolveRequiredAsset(
 		}
 	}
 
-	if (!AssetData.IsValid() || !FPackageName::DoesPackageExist(PackageName))
+	if (!AssetData.IsValid())
 	{
 		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::AssetNotFound,
@@ -247,6 +323,15 @@ bool FCortexAnimAssetUtils::ResolveRequiredAsset(
 	}
 	if (Asset == nullptr)
 	{
+		if (!FPackageName::DoesPackageExist(PackageName))
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::AssetNotFound,
+				FString::Printf(TEXT("Asset not found: %s"), *OutResolved.RequestedPath),
+				MakeErrorDetails(TEXT("asset_path"), OutResolved.RequestedPath, ExpectedType, TEXT("")));
+			return false;
+		}
+
 		Asset = OutResolved.AssetData.GetSoftObjectPath().TryLoad();
 	}
 

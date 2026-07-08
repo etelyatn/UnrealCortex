@@ -281,7 +281,7 @@ def test_anim_docstrings_excluded_when_cache_missing():
 
 
 def test_anim_docstrings_included_when_cache_has_anim():
-    """A live capabilities cache with anim should expose anim_cmd and read-only command signatures."""
+    """A live capabilities cache with anim should expose anim_cmd and exact live command signatures."""
     capabilities = {
         "domains": {
             "anim": {
@@ -291,6 +291,17 @@ def test_anim_docstrings_included_when_cache_has_anim():
                         "params": [
                             {"name": "asset_path", "type": "string", "required": True},
                             {"name": "notify_limit", "type": "number", "required": False},
+                        ],
+                    },
+                    {
+                        "name": "add_named_notify",
+                        "params": [
+                            {"name": "asset_path", "type": "string", "required": True},
+                            {"name": "notify_name", "type": "string", "required": True},
+                            {"name": "time", "type": "number", "required": True},
+                            {"name": "expected_fingerprint", "type": "object", "required": True},
+                            {"name": "dry_run", "type": "boolean", "required": False},
+                            {"name": "save", "type": "boolean", "required": False},
                         ],
                     }
                 ]
@@ -304,10 +315,15 @@ def test_anim_docstrings_included_when_cache_has_anim():
     assert "anim" in docstrings
     assert "anim_cmd(command, params)" in docstrings["anim"]
     assert "- get_sequence_info(asset_path: string, notify_limit: number = optional)" in docstrings["anim"]
-    assert "read-only" in docstrings["anim"].lower()
-    assert "Never call or invent" in docstrings["anim"]
+    assert (
+        "- add_named_notify(asset_path: string, notify_name: string, time: number, "
+        "expected_fingerprint: object, dry_run: boolean = optional, save: boolean = optional)"
+    ) in docstrings["anim"]
+    assert "sequence named-notify authoring" in docstrings["anim"]
+    assert "Only call animation authoring commands that appear in live capabilities" in docstrings["anim"]
     for authoring_name in ("add_notify", "update_notify", "remove_notify", "set_curve_keys"):
         assert authoring_name not in docstrings["anim"]
+    assert "- save_asset(" not in docstrings["anim"]
 
 
 class TestFallbackDrift:
