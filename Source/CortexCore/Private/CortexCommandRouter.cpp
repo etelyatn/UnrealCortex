@@ -1,5 +1,6 @@
 
 #include "CortexCommandRouter.h"
+#include "CortexVersionCompat.h"
 #include "CortexBatchScope.h"
 #include "CortexCoreModule.h"
 #include "CortexFileUtils.h"
@@ -416,7 +417,7 @@ bool FCortexCommandRouter::ResolveObjectRefs(
 	Keys.Reserve(Params->Values.Num());
 	for (const auto& Entry : Params->Values)
 	{
-		Keys.Emplace(Entry.Key.ToView());
+		Keys.Emplace(CortexJsonKeyToString(Entry.Key));
 	}
 
 	for (const FString& Key : Keys)

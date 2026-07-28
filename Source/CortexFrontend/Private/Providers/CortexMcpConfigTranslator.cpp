@@ -1,4 +1,5 @@
 #include "Providers/CortexMcpConfigTranslator.h"
+#include "CortexVersionCompat.h"
 
 #include "Dom/JsonObject.h"
 #include "Misc/FileHelper.h"
@@ -91,13 +92,13 @@ namespace
         TArray<FString> EnvKeys;
         for (const auto& Entry : (*EnvObject)->Values)
         {
-            EnvKeys.Emplace(Entry.Key.ToView());
+            EnvKeys.Emplace(CortexJsonKeyToString(Entry.Key));
         }
         EnvKeys.Sort();
 
         for (const FString& EnvKey : EnvKeys)
         {
-            const TSharedPtr<FJsonValue>* EnvValue = (*EnvObject)->Values.Find(UE::FSharedString(EnvKey));
+            const TSharedPtr<FJsonValue>* EnvValue = (*EnvObject)->Values.Find(CortexJsonKey(EnvKey));
             if (EnvValue == nullptr || !EnvValue->IsValid())
             {
                 continue;
@@ -234,7 +235,7 @@ TMap<FString, TSharedPtr<FJsonValue>> FCortexMcpConfigTranslator::BuildCodexConf
     TArray<FString> ServerNames;
     for (const auto& Entry : (*McpServersObject)->Values)
     {
-        ServerNames.Emplace(Entry.Key.ToView());
+        ServerNames.Emplace(CortexJsonKeyToString(Entry.Key));
     }
     ServerNames.Sort();
 

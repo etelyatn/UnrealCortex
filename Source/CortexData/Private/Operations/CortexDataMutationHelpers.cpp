@@ -1,4 +1,5 @@
 #include "Operations/CortexDataMutationHelpers.h"
+#include "CortexVersionCompat.h"
 
 #include "CortexDataModule.h"
 #include "CortexEditorUtils.h"
@@ -803,7 +804,7 @@ namespace CortexDataMutationHelpersPrivate
 
 		for (const TPair<FString, FString>& Entry : AfterEntries)
 		{
-			MutableTable->SetSourceString(Entry.Key, Entry.Value, TEXT(""));
+			CortexSetSourceString(*MutableTable, Entry.Key, Entry.Value);
 		}
 	}
 
@@ -1057,7 +1058,7 @@ FCortexDataMutationResult FCortexDataMutationHelpers::BuildUpdateDatatableRowPla
 
 	for (const auto& Pair : Request.RowData->Values)
 	{
-		OutPlan.ModifiedFields.Add(FString(Pair.Key.ToView()));
+		OutPlan.ModifiedFields.Add(CortexJsonKeyToString(Pair.Key));
 	}
 
 	TArray<FString> Warnings;
@@ -1116,8 +1117,8 @@ FCortexDataMutationResult FCortexDataMutationHelpers::PreviewUpdateDatatableRow(
 	TSharedPtr<FJsonObject> NewValues = FCortexSerializer::StructToJson(Plan.RowStruct, TempRowPtr);
 	for (const FString& Field : Plan.ModifiedFields)
 	{
-		const TSharedPtr<FJsonValue>* OldVal = OldValues.IsValid() ? OldValues->Values.Find(UE::FSharedString(Field)) : nullptr;
-		const TSharedPtr<FJsonValue>* NewVal = NewValues.IsValid() ? NewValues->Values.Find(UE::FSharedString(Field)) : nullptr;
+		const TSharedPtr<FJsonValue>* OldVal = OldValues.IsValid() ? OldValues->Values.Find(CortexJsonKey(Field)) : nullptr;
+		const TSharedPtr<FJsonValue>* NewVal = NewValues.IsValid() ? NewValues->Values.Find(CortexJsonKey(Field)) : nullptr;
 
 		TSharedRef<FJsonObject> ChangeEntry = MakeShared<FJsonObject>();
 		ChangeEntry->SetStringField(TEXT("field"), Field);
@@ -1825,7 +1826,7 @@ FCortexDataMutationResult FCortexDataMutationHelpers::BuildUpdateDataAssetPlan(
 	OutPlan.AssetClass = DataAsset->GetClass();
 	for (const auto& Pair : Request.Properties->Values)
 	{
-		OutPlan.ModifiedFields.Add(FString(Pair.Key.ToView()));
+		OutPlan.ModifiedFields.Add(CortexJsonKeyToString(Pair.Key));
 	}
 
 	TSharedPtr<FJsonObject> OldValues = FCortexSerializer::StructToJson(OutPlan.AssetClass, DataAsset);

@@ -1,5 +1,6 @@
 
 #include "Operations/CortexLocalizationOps.h"
+#include "CortexVersionCompat.h"
 #include "Operations/CortexDataMutationHelpers.h"
 #include "CortexDataModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
@@ -637,7 +638,7 @@ namespace
 
 		for (const TPair<FString, FString>& Entry : AfterEntries)
 		{
-			MutableTable->SetSourceString(Entry.Key, Entry.Value, TEXT(""));
+			CortexSetSourceString(*MutableTable, Entry.Key, Entry.Value);
 		}
 	}
 

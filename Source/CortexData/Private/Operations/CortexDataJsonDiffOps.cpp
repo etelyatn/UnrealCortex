@@ -1,4 +1,5 @@
 #include "Operations/CortexDataJsonDiffOps.h"
+#include "CortexVersionCompat.h"
 
 #include "CortexSafeFileContract.h"
 #include "CortexTypes.h"
@@ -507,14 +508,14 @@ namespace
 		{
 			for (const auto& Entry : LeftFields->Values)
 			{
-				FieldNames.Add(FString(Entry.Key.ToView()));
+				FieldNames.Add(CortexJsonKeyToString(Entry.Key));
 			}
 		}
 		if (RightFields.IsValid())
 		{
 			for (const auto& Entry : RightFields->Values)
 			{
-				FieldNames.Add(FString(Entry.Key.ToView()));
+				FieldNames.Add(CortexJsonKeyToString(Entry.Key));
 			}
 		}
 

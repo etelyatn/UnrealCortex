@@ -1,4 +1,5 @@
 #include "CortexSafeFileContract.h"
+#include "CortexVersionCompat.h"
 
 #include "Dom/JsonValue.h"
 #include "HAL/FileManager.h"
@@ -304,7 +305,7 @@ void WriteCanonicalObject(const TSharedPtr<FJsonObject>& Object, TJsonWriter<>& 
 		SortedEntries.Reserve(Object->Values.Num());
 		for (const auto& Entry : Object->Values)
 		{
-			SortedEntries.Emplace(FString(Entry.Key.ToView()), &Entry.Value);
+			SortedEntries.Emplace(CortexJsonKeyToString(Entry.Key), &Entry.Value);
 		}
 		SortedEntries.Sort([](const auto& A, const auto& B) { return A.Key < B.Key; });
 
