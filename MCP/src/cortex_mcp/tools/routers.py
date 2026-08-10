@@ -117,6 +117,50 @@ def _format_ue_command_error(exc: UECommandError) -> str:
     return format_response(payload, "ue_command_error")
 
 
+_CANONICAL_ROUTER_SHAPE = {"command": "string", "params": "object"}
+
+
+def _invalid_invocation_shape(message: str) -> str:
+    return json.dumps({
+        "_error": "INVALID_INVOCATION_SHAPE",
+        "_message": message,
+        "canonical_shape": _CANONICAL_ROUTER_SHAPE,
+    })
+
+
+def _batch_has_zero_commands(params) -> bool:
+    if not isinstance(params, dict):
+        return False
+    commands = params.get("commands", params.get("steps"))
+    if commands is None:
+        return False
+    return not isinstance(commands, list) or len(commands) == 0
+
+
+def strict_router_tool(router, domain: str) -> Callable[[str, dict | None], str]:
+    """Wrap a domain router with the strict {command, params} envelope contract."""
+
+    def wrapped(command: str, params: dict | None = None, **_extra) -> str:
+        if _extra:
+            return _invalid_invocation_shape(
+                f"Malformed {domain}_cmd envelope: unexpected top-level operation fields "
+                f"{sorted(_extra)}. Pass all operation fields inside the params object."
+            )
+        if params is not None and not isinstance(params, dict):
+            return _invalid_invocation_shape(
+                f"Malformed {domain}_cmd envelope: params must be an object, got {type(params).__name__}."
+            )
+        if domain == "core" and command in {"batch_query", "batch"} and _batch_has_zero_commands(params):
+            return _invalid_invocation_shape(
+                "batch_query requires at least one command; zero-command batches are never successful."
+            )
+        return router(command, params)
+
+    wrapped.__name__ = f"{domain}_cmd"
+    wrapped.__doc__ = router.__doc__
+    return wrapped
+
+
 def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict | None], str]:
     """Create a single router tool function for a domain."""
 
@@ -152,7 +196,11 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                     commands = route_params.get("commands", [])
                     if isinstance(commands, str):
                         commands = _json.loads(commands)
-                    response = connection.send_command("batch", {"commands": commands})
+                    batch_params = {"commands": commands}
+                    for key in ("stop_on_error", "rollback_on_error", "verify_rollback"):
+                        if key in route_params:
+                            batch_params[key] = route_params[key]
+                    response = connection.send_command("batch", batch_params)
                     return format_response(response.get("data", {}), "batch_query")
 
             # Check for cursor (subsequent page — no C++ call needed)
@@ -197,8 +245,25 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
 def register_router_tools(mcp, connection, docstrings: dict[str, str], domains: tuple[str, ...] = CORE_DOMAINS) -> None:
     """Register one explicit router tool per domain."""
     for domain in domains:
-        router = make_router(domain, connection, docstrings.get(domain, ""))
-        mcp.tool(name=f"{domain}_cmd", description=router.__doc__)(router)
+        router = strict_router_tool(make_router(domain, connection, docstrings.get(domain, "")), domain)
+        _register_strict_router(mcp, domain, router)
+
+
+def _register_strict_router(mcp, domain: str, strict_router) -> None:
+    """Register the strict wrapper behind a FastMCP-safe (command, params) facade.
+
+    FastMCP refuses tool parameters whose names start with an underscore, so the
+    strict wrapper's `**_extra` rejection hook cannot be registered directly.
+    The facade keeps the canonical {command, params} envelope exposed to callers.
+    """
+    docstring = strict_router.__doc__ or ""
+
+    def registered(command: str, params: dict | None = None) -> str:
+        return strict_router(command, params)
+
+    registered.__name__ = f"{domain}_cmd"
+    registered.__doc__ = docstring
+    mcp.tool(name=f"{domain}_cmd", description=docstring)(registered)
 
 
 def _qualify_command(domain: str, command: str) -> str:

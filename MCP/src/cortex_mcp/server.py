@@ -18,6 +18,7 @@ from .tools.composites.statetree import register_statetree_compose_tools
 from .tools.composites.widget import register_widget_compose_tools
 from .tools.routers import register_router_tools
 from .tools.standalone.editor import register_editor_standalone_tools
+from .tools.standalone.profile import register_profile_standalone_tools
 from .tools.standalone.qa import register_qa_standalone_tools
 from .tools.standalone.schema import register_schema_standalone_tools
 from tools.data.import_queues import register_import_queue_tools
@@ -60,6 +61,7 @@ def _register_explicit_tools(mcp_server, connection) -> None:
         register_gen_compose_tools(mcp_server, connection)
     register_editor_standalone_tools(mcp_server, connection)
     register_schema_standalone_tools(mcp_server, connection)
+    register_profile_standalone_tools(mcp_server, connection)
     register_qa_standalone_tools(mcp_server, connection)
     register_import_queue_tools(mcp_server, connection)
     register_reflect_tools(mcp_server, connection)
