@@ -1,6 +1,7 @@
 """Tests for explicit server registration during dual-stack migration."""
 
 from unittest.mock import MagicMock
+import importlib
 
 from cortex_mcp.capabilities import CORE_DOMAINS, minimal_router_docstrings
 from cortex_mcp.tools.routers import register_router_tools
@@ -55,3 +56,28 @@ def test_explicit_registration_adds_router_composite_and_standalone_tools():
     assert "qa_test_step" in mcp.tools
     assert "editor_restart" in mcp.tools
     assert "schema_generate" in mcp.tools
+
+
+def test_register_explicit_tools_includes_apply_import_ops_json(monkeypatch):
+    server = importlib.import_module("cortex_mcp.server")
+
+    class LocalMockMCP:
+        def __init__(self):
+            self.tools = {}
+
+        def tool(self, name=None, description=None, **_kwargs):
+            def decorator(func):
+                self.tools[name or func.__name__] = func
+                return func
+
+            return decorator
+
+    monkeypatch.setattr(server, "load_capabilities_cache", lambda: {"domains": {"data": {"commands": []}}})
+    monkeypatch.setattr(server, "get_registered_domains", lambda capabilities: ("data",))
+    monkeypatch.setattr(server, "build_router_docstrings", lambda capabilities: {"data": "data docs"})
+
+    mcp = LocalMockMCP()
+    connection = MagicMock()
+    server._register_explicit_tools(mcp, connection)
+
+    assert "apply_import_ops_json" in mcp.tools

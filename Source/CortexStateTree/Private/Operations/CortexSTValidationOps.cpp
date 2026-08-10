@@ -1,6 +1,7 @@
-#include "Operations/CortexSTValidationOps.h"
+﻿#include "Operations/CortexSTValidationOps.h"
 
 #include "CortexCommandRouter.h"
+#include "CortexSTCompat.h"
 #include "CortexSTTypes.h"
 #include "CortexStateTreeModule.h"
 #include "Logging/TokenizedMessage.h"
@@ -9,7 +10,6 @@
 #include "ScopedTransaction.h"
 #include "StateTree.h"
 #include "StateTreeCompilerLog.h"
-#include "StateTreeEditingSubsystem.h"
 #include "StateTreeEditorData.h"
 #include "StateTreeState.h"
 
@@ -84,7 +84,7 @@ TSharedPtr<FJsonObject> BuildCompilePayload(
 	const FStateTreeCompilerLog& CompileLog,
 	const bool bCompiled)
 {
-	TArray<TSharedRef<FTokenizedMessage>> TokenizedMessages = CompileLog.ToTokenizedMessages();
+	TArray<TSharedRef<FTokenizedMessage>> TokenizedMessages = CortexSTCompat::GetCompilerLogTokenizedMessages(CompileLog);
 	TArray<TSharedPtr<FJsonValue>> Diagnostics;
 	Diagnostics.Reserve(TokenizedMessages.Num());
 
@@ -244,7 +244,7 @@ FCortexCommandResult FCortexSTValidationOps::Compile(const TSharedPtr<FJsonObjec
 	Asset.StateTree->Modify();
 
 	FStateTreeCompilerLog CompileLog;
-	const bool bCompiled = UStateTreeEditingSubsystem::CompileStateTree(Asset.StateTree, CompileLog);
+	const bool bCompiled = CortexSTCompat::CompileStateTree(Asset.StateTree, CompileLog);
 
 	const bool bIsReady = Asset.StateTree->IsReadyToRun();
 	const uint32 CurrentCompiledHash = Asset.StateTree->LastCompiledEditorDataHash;
@@ -282,7 +282,7 @@ FCortexCommandResult FCortexSTValidationOps::RunPostMutationFixups(UStateTree* S
 			TEXT("RunPostMutationFixups requires a valid StateTree"));
 	}
 
-	UStateTreeEditingSubsystem::ValidateStateTree(StateTree);
+	CortexSTCompat::ValidateStateTree(StateTree);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetObjectField(TEXT("validation"), CortexST::BuildValidationPayload(StateTree));

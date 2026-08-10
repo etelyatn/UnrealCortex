@@ -16,6 +16,7 @@ class SMultiLineEditableTextBox;
 class STextBlock;
 class SCortexAutoCompletePopup;
 class FCortexMentionMarshaller;
+enum class ECortexEffortLevel : uint8;
 
 DECLARE_DELEGATE_OneParam(FOnCortexSendMessage, const FString&);
 DECLARE_DELEGATE(FOnCortexCancel);

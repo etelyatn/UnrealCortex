@@ -5,6 +5,8 @@
 #include "Engine/DataTable.h"
 #include "Editor.h"
 #include "FileHelpers.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 #include "UObject/Package.h"
 
 namespace
@@ -86,6 +88,72 @@ bool FCortexAssetSaveSingleTest::RunTest(const FString& Parameters)
 				TestFalse(TEXT("asset_type should not be empty"), AssetType.IsEmpty());
 			}
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetSaveWorldMapExtensionTest,
+	"Cortex.Core.Asset.SaveAsset.WorldUsesMapExtension",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetSaveWorldMapExtensionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+
+	const FString MapPackageName = TEXT("/Game/Maps/TestMap");
+
+	FString MapFilename;
+	FString AssetFilename;
+	TestTrue(TEXT("Map package resolves to .umap filename"),
+		FPackageName::TryConvertLongPackageNameToFilename(
+			MapPackageName, MapFilename, FPackageName::GetMapPackageExtension()));
+	TestTrue(TEXT("Map package resolves to .uasset filename"),
+		FPackageName::TryConvertLongPackageNameToFilename(
+			MapPackageName, AssetFilename, FPackageName::GetAssetPackageExtension()));
+
+	// Precondition: no shadow .uasset twin exists beside the tracked .umap.
+	TestFalse(TEXT("No .uasset twin exists before save"), FPaths::FileExists(AssetFilename));
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetStringField(TEXT("asset_path"), MapPackageName);
+	RequestParams->SetBoolField(TEXT("force"), true);
+
+	FCortexCommandResult Result = Router.Execute(TEXT("core.save_asset"), RequestParams);
+	TestTrue(TEXT("save_asset on World package should succeed"), Result.bSuccess);
+
+	if (Result.bSuccess && Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
+		TestTrue(TEXT("Response has results array"), Result.Data->TryGetArrayField(TEXT("results"), Results));
+		if (Results != nullptr && Results->Num() > 0)
+		{
+			const TSharedPtr<FJsonObject>* FirstResult = nullptr;
+			(*Results)[0]->TryGetObject(FirstResult);
+			if (FirstResult != nullptr)
+			{
+				bool bSaved = false;
+				(*FirstResult)->TryGetBoolField(TEXT("saved"), bSaved);
+				TestTrue(TEXT("World package should be saved"), bSaved);
+			}
+		}
+	}
+
+	TestTrue(TEXT(".umap file exists after save"), FPaths::FileExists(MapFilename));
+	TestFalse(TEXT("Save must not create a .uasset twin for a World package"),
+		FPaths::FileExists(AssetFilename));
+
+	// Cleanup: if a regression created the twin, remove it so one failing run
+	// does not poison subsequent runs.
+	if (FPaths::FileExists(AssetFilename))
+	{
+		IFileManager::Get().Delete(*AssetFilename);
 	}
 
 	return true;

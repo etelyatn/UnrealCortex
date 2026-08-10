@@ -15,6 +15,7 @@ from cortex_mcp.schema_generator import (
     read_meta_from_file,
 )
 from cortex_mcp.tcp_client import _discover_all_editors, _is_editor_alive
+from cortex_mcp.tcp_client import UECommandError
 
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ _CACHED_READ_COMMANDS = {
 }
 
 _MAX_LIMIT = 200
+_UE_ERROR_RESERVED_FIELDS = {"success", "_error", "_message", "_command"}
 
 
 def _validate_limit(limit) -> tuple[int | None, str | None]:
@@ -91,6 +93,30 @@ def _handle_limit_request(domain: str, command: str, params: dict, limit: int, c
     return format_response(result, f"{domain}_cmd")
 
 
+def _should_forward_limit_to_cpp(domain: str, command: str, params: dict) -> bool:
+    """Some C++ commands implement domain-specific limit semantics and must receive it."""
+    if domain == "data" and command == "search_datatable_content":
+        return params.get("search_mode") == "string_table_refs"
+    if domain == "editor" and command == "list_cvars":
+        return True
+    if domain == "anim" and command == "list_assets":
+        return True
+    return False
+
+
+def _format_ue_command_error(exc: UECommandError) -> str:
+    payload = {
+        "success": False,
+        "_error": exc.code,
+        "_message": exc.message,
+        "_command": exc.command,
+    }
+    for key, value in exc.details.items():
+        if key not in _UE_ERROR_RESERVED_FIELDS:
+            payload[key] = value
+    return format_response(payload, "ue_command_error")
+
+
 def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict | None], str]:
     """Create a single router tool function for a domain."""
 
@@ -140,6 +166,9 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                 limit, error = _validate_limit(limit_param)
                 if error:
                     return error
+                if _should_forward_limit_to_cpp(domain, command, route_params):
+                    response = connection.send_command(qualified, route_params)
+                    return format_response(response.get("data", {}), f"{domain}_cmd")
                 return _handle_limit_request(domain, command, route_params, limit, connection)
 
             # No pagination — normal dispatch
@@ -155,6 +184,8 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
             return format_response(response.get("data", {}), f"{domain}_cmd")
         except ConnectionError as exc:
             return f"Error: {exc}"
+        except UECommandError as exc:
+            return _format_ue_command_error(exc)
         except (RuntimeError, ValueError, KeyError) as exc:
             return f"Error: {exc}"
 

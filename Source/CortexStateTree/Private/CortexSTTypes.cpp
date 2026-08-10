@@ -4,6 +4,7 @@
 #include "CortexBatchMutation.h"
 #include "CortexCommandRouter.h"
 #include "CortexEditorUtils.h"
+#include "CortexSTCompat.h"
 #include "GameplayTagsManager.h"
 #include "Misc/PackageName.h"
 #include "StateTreeEditorNode.h"
@@ -409,7 +410,7 @@ void CollectStates(UStateTreeState* Root, TArray<FCortexSTStateRef>& OutStates)
 			StateRef.State = State;
 			StateRef.Parent = Parent;
 			StateRef.Id = State->ID.ToString(EGuidFormats::DigitsWithHyphens);
-			StateRef.Path = State->GetPath();
+			StateRef.Path = CortexSTCompat::GetStatePath(State);
 			StateRef.Index = Parent != nullptr ? Parent->Children.IndexOfByKey(State) : 0;
 			OutStates.Add(StateRef);
 
@@ -544,7 +545,7 @@ TSharedPtr<FJsonObject> SerializeState(const FCortexSTStateRef& StateRef, const 
 	StateObject->SetStringField(TEXT("path"), StateRef.Path);
 	StateObject->SetStringField(TEXT("name"), StateRef.State->Name.ToString());
 	StateObject->SetStringField(TEXT("type"), LexToStringStateType(StateRef.State->Type));
-	StateObject->SetStringField(TEXT("tag"), StateRef.State->Tag.ToString());
+	StateObject->SetStringField(TEXT("tag"), CortexSTCompat::GetStateTag(StateRef.State).ToString());
 	StateObject->SetBoolField(TEXT("enabled"), StateRef.State->bEnabled);
 	StateObject->SetStringField(TEXT("selection_behavior"), LexToStringSelectionBehavior(StateRef.State->SelectionBehavior));
 
@@ -581,14 +582,14 @@ TSharedPtr<FJsonObject> SerializeState(const FCortexSTStateRef& StateRef, const 
 			{
 				if (const UStateTreeState* TargetState = EditorData->GetStateByID(Transition.State.ID))
 				{
-					TargetPath = TargetState->GetPath();
+					TargetPath = CortexSTCompat::GetStatePath(TargetState);
 				}
 			}
 			TransitionObject->SetStringField(TEXT("target_state_path"), TargetPath);
 			TransitionObject->SetStringField(TEXT("trigger"), LexToStringTransitionTrigger(Transition.Trigger));
 			TransitionObject->SetStringField(TEXT("priority"), LexToStringTransitionPriority(Transition.Priority));
 			TransitionObject->SetBoolField(TEXT("enabled"), Transition.bTransitionEnabled);
-			TransitionObject->SetStringField(TEXT("event_tag"), Transition.RequiredEvent.Tag.ToString());
+			TransitionObject->SetStringField(TEXT("event_tag"), CortexSTCompat::GetTransitionEventTag(Transition).ToString());
 			TransitionValues.Add(MakeShared<FJsonValueObject>(TransitionObject));
 		}
 
@@ -600,7 +601,10 @@ TSharedPtr<FJsonObject> SerializeState(const FCortexSTStateRef& StateRef, const 
 		TArray<TSharedPtr<FJsonValue>> NodeValues;
 		AppendNodeArray(StateRef.State->EnterConditions, TEXT("EnterCondition"), NodeValues);
 		AppendNodeArray(StateRef.State->Tasks, TEXT("Task"), NodeValues);
+#if !UE_VERSION_OLDER_THAN(5, 5, 0)
+		// UStateTreeState::Considerations does not exist in UE 5.4.
 		AppendNodeArray(StateRef.State->Considerations, TEXT("Consideration"), NodeValues);
+#endif
 
 		if (StateRef.State->SingleTask.ID.IsValid())
 		{

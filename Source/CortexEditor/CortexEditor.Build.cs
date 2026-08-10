@@ -26,6 +26,7 @@ public class CortexEditor : ModuleRules
 			"EnhancedInput",
 			"ImageWrapper",
 			"RenderCore",
+			"PythonScriptPlugin",
 		});
 	}
 }

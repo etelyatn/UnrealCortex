@@ -1,5 +1,6 @@
 
 #include "Operations/CortexDataAssetOps.h"
+#include "Operations/CortexDataMutationHelpers.h"
 #include "CortexDataModule.h"
 #include "CortexLogCapture.h"
 #include "CortexSerializer.h"
@@ -141,6 +142,16 @@ FCortexCommandResult FCortexDataAssetOps::ListDataAssets(const TSharedPtr<FJsonO
 
 FCortexCommandResult FCortexDataAssetOps::GetDataAsset(const TSharedPtr<FJsonObject>& Params)
 {
+	auto MakeReflectedReadPolicy = []()
+	{
+		FCortexSerializationPolicy Policy;
+		Policy.Label = ECortexSerializationPolicyLabel::ReflectedRead;
+		Policy.bIncludeTextMetadata = true;
+		Policy.MaxDepth = 8;
+		Policy.bExpandInstancedSubobjects = true;
+		return Policy;
+	};
+
 	FString AssetPath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
 	{
@@ -172,12 +183,17 @@ FCortexCommandResult FCortexDataAssetOps::GetDataAsset(const TSharedPtr<FJsonObj
 
 	UClass* AssetClass = DataAsset->GetClass();
 
-	TSharedPtr<FJsonObject> Properties = FCortexSerializer::StructToJson(AssetClass, DataAsset);
+	const FCortexPropertySerializationResult Serialization = FCortexSerializer::ObjectToJsonDeep(DataAsset, MakeReflectedReadPolicy());
+	TSharedPtr<FJsonObject> Properties = Serialization.JsonValue.IsValid()
+		? Serialization.JsonValue->AsObject()
+		: MakeShared<FJsonObject>();
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetStringField(TEXT("asset_class"), AssetClass->GetName());
 	Data->SetObjectField(TEXT("properties"), Properties);
+	Data->SetBoolField(TEXT("partial"), Serialization.bPartial);
+	Data->SetArrayField(TEXT("issues"), FCortexSerializer::SerializationIssuesToJson(Serialization.Issues));
 
 	if (Warnings.Num() > 0)
 	{
@@ -197,187 +213,26 @@ FCortexCommandResult FCortexDataAssetOps::GetDataAsset(const TSharedPtr<FJsonObj
 
 FCortexCommandResult FCortexDataAssetOps::UpdateDataAsset(const TSharedPtr<FJsonObject>& Params)
 {
-	FString AssetPath;
-	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	check(IsInGameThread());
+
+	FCortexUpdateDataAssetMutationRequest Request;
+	FCortexDataMutationResult Result = FCortexDataMutationHelpers::ParseUpdateDataAssetParams(Params, Request);
+	if (!Result.bSuccess)
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing required param: asset_path")
-		);
+		return Result.ToCommandResult();
 	}
 
-	if (AssetPath.IsEmpty())
+	FCortexUpdateDataAssetMutationPlan Plan;
+	Result = FCortexDataMutationHelpers::BuildUpdateDataAssetPlan(Request, Plan);
+	if (!Result.bSuccess)
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Parameter 'asset_path' cannot be empty")
-		);
+		return Result.ToCommandResult();
 	}
 
-	const TSharedPtr<FJsonObject>* PropertiesObj = nullptr;
-	if (!Params->TryGetObjectField(TEXT("properties"), PropertiesObj) || PropertiesObj == nullptr || !(*PropertiesObj).IsValid())
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing required param: properties")
-		);
-	}
-
-	bool bDryRun = false;
-	if (Params.IsValid())
-	{
-		Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
-	}
-
-	FCortexCommandResult LoadError;
-	UDataAsset* DataAsset = LoadDataAsset(AssetPath, LoadError);
-	if (DataAsset == nullptr)
-	{
-		return LoadError;
-	}
-
-	UClass* AssetClass = DataAsset->GetClass();
-
-	// Track which fields were requested for modification
-	TArray<FString> ModifiedFields;
-	for (const auto& Pair : (*PropertiesObj)->Values)
-	{
-		ModifiedFields.Add(Pair.Key);
-	}
-
-	if (bDryRun)
-	{
-		// Dry-run mode: preview changes without applying them
-		TSharedPtr<FJsonObject> OldValues = FCortexSerializer::StructToJson(AssetClass, DataAsset);
-
-		// Create temp object of same class
-		UDataAsset* TempAsset = NewObject<UDataAsset>(GetTransientPackage(), AssetClass, NAME_None, RF_Transient);
-		if (TempAsset == nullptr)
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::SerializationError,
-				TEXT("Failed to create temporary DataAsset for dry-run preview")
-			);
-		}
-
-		// Copy current values to temp
-		for (TFieldIterator<FProperty> It(AssetClass); It; ++It)
-		{
-			It->CopyCompleteValue_InContainer(TempAsset, DataAsset);
-		}
-
-		TArray<FString> Warnings;
-		bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*PropertiesObj, AssetClass, TempAsset, TempAsset, Warnings);
-
-		if (!bDeserializeSuccess)
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::SerializationError,
-				TEXT("Failed to deserialize properties for dry-run preview")
-			);
-		}
-
-		// Capture new values from temp asset
-		TSharedPtr<FJsonObject> NewValues = FCortexSerializer::StructToJson(AssetClass, TempAsset);
-
-		// Compute diffs
-		TArray<TSharedPtr<FJsonValue>> ChangesArray;
-		for (const FString& Field : ModifiedFields)
-		{
-			if (NewValues.IsValid() && OldValues.IsValid())
-			{
-				TSharedPtr<FJsonValue> OldValue = OldValues->TryGetField(Field);
-				TSharedPtr<FJsonValue> NewValue = NewValues->TryGetField(Field);
-
-				TSharedRef<FJsonObject> Change = MakeShared<FJsonObject>();
-				Change->SetStringField(TEXT("field"), Field);
-				if (OldValue.IsValid())
-				{
-					Change->SetField(TEXT("old_value"), OldValue);
-				}
-				else
-				{
-					Change->SetField(TEXT("old_value"), MakeShared<FJsonValueNull>());
-				}
-				if (NewValue.IsValid())
-				{
-					Change->SetField(TEXT("new_value"), NewValue);
-				}
-				else
-				{
-					Change->SetField(TEXT("new_value"), MakeShared<FJsonValueNull>());
-				}
-				ChangesArray.Add(MakeShared<FJsonValueObject>(Change));
-			}
-		}
-
-		TempAsset->MarkAsGarbage();
-
-		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-		Data->SetBoolField(TEXT("dry_run"), true);
-		Data->SetStringField(TEXT("asset_path"), AssetPath);
-		Data->SetArrayField(TEXT("changes"), ChangesArray);
-		Data->SetNumberField(TEXT("change_count"), ChangesArray.Num());
-
-		if (Warnings.Num() > 0)
-		{
-			TArray<TSharedPtr<FJsonValue>> WarningsArray;
-			for (const FString& Warning : Warnings)
-			{
-				WarningsArray.Add(MakeShared<FJsonValueString>(Warning));
-			}
-			Data->SetArrayField(TEXT("warnings"), WarningsArray);
-		}
-
-		return FCortexCommandRouter::Success(Data);
-	}
-	else
-	{
-		// Normal mode: apply changes to actual asset
-		FScopedTransaction Transaction(FText::FromString(
-			FString::Printf(TEXT("Cortex:Update DataAsset '%s'"), *DataAsset->GetName())
-		));
-		DataAsset->Modify();
-
-		TArray<FString> Warnings;
-		bool bDeserializeSuccess = FCortexSerializer::JsonToStruct(*PropertiesObj, AssetClass, DataAsset, DataAsset, Warnings);
-
-		if (!bDeserializeSuccess)
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::SerializationError,
-				TEXT("Failed to deserialize properties into DataAsset")
-			);
-		}
-
-		DataAsset->MarkPackageDirty();
-		FCortexEditorUtils::NotifyAssetModified(DataAsset);
-
-		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-		Data->SetBoolField(TEXT("success"), true);
-		Data->SetStringField(TEXT("asset_path"), AssetPath);
-
-		TArray<TSharedPtr<FJsonValue>> ModifiedFieldsArray;
-		for (const FString& Field : ModifiedFields)
-		{
-			ModifiedFieldsArray.Add(MakeShared<FJsonValueString>(Field));
-		}
-		Data->SetArrayField(TEXT("modified_fields"), ModifiedFieldsArray);
-
-		if (Warnings.Num() > 0)
-		{
-			TArray<TSharedPtr<FJsonValue>> WarningsArray;
-			for (const FString& Warning : Warnings)
-			{
-				WarningsArray.Add(MakeShared<FJsonValueString>(Warning));
-			}
-			Data->SetArrayField(TEXT("warnings"), WarningsArray);
-		}
-
-		FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
-		Result.Warnings = MoveTemp(Warnings);
-		return Result;
-	}
+	Result = Request.bDryRun
+		? FCortexDataMutationHelpers::PreviewUpdateDataAsset(Plan)
+		: FCortexDataMutationHelpers::ApplyUpdateDataAsset(Plan);
+	return Result.ToCommandResult();
 }
 
 UClass* FCortexDataAssetOps::ResolveDataAssetClass(const FString& ClassName, FCortexCommandResult& OutError)

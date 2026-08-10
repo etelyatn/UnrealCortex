@@ -1,7 +1,7 @@
 {
   "FileVersion": 3,
-  "Version": 4,
-  "VersionName": "0.1.11",
+  "Version": 7,
+  "VersionName": "0.1.14",
   "FriendlyName": "Unreal Cortex",
   "Description": "Modular MCP plugin for AI-powered Unreal Engine development",
   "Category": "Developer Tools",
@@ -17,6 +17,10 @@
     },
     {
       "Name": "EditorScriptingUtilities",
+      "Enabled": true
+    },
+    {
+      "Name": "PythonScriptPlugin",
       "Enabled": true
     },
     {
@@ -91,6 +95,11 @@
     },
     {
       "Name": "CortexGen",
+      "Type": "Editor",
+      "LoadingPhase": "PostEngineInit"
+    },
+    {
+      "Name": "CortexAnimation",
       "Type": "Editor",
       "LoadingPhase": "PostEngineInit"
     },

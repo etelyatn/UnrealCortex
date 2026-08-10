@@ -8,7 +8,8 @@ import pytest
 
 from cortex_mcp.capabilities import CORE_DOMAINS
 from cortex_mcp.tools.routers import make_router, register_router_tools
-from cortex_mcp.tcp_client import EditorConnection
+from cortex_mcp.tcp_client import EditorConnection, UECommandError
+from cortex_mcp import server
 
 
 class MockMCP:
@@ -222,6 +223,42 @@ def test_register_router_tools_excludes_gen_by_default():
     assert "gen_cmd" not in mcp.tools
 
 
+def test_register_router_tools_excludes_anim_by_default():
+    mcp = MockMCP()
+    connection = MagicMock()
+    docstrings = {domain: f"{domain} docs" for domain in CORE_DOMAINS}
+
+    register_router_tools(mcp, connection, docstrings)
+
+    assert "anim_cmd" not in mcp.tools
+
+
+def test_register_router_tools_includes_anim_when_passed():
+    mcp = MockMCP()
+    connection = MagicMock()
+    domains = CORE_DOMAINS + ("anim",)
+    docstrings = {domain: f"{domain} docs" for domain in domains}
+
+    register_router_tools(mcp, connection, docstrings, domains)
+
+    assert "anim_cmd" in mcp.tools
+
+
+def test_register_explicit_tools_includes_anim_from_live_cache(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "load_capabilities_cache",
+        lambda: {"domains": {"anim": {"commands": []}}},
+    )
+
+    mcp = MockMCP()
+    connection = MagicMock()
+
+    server._register_explicit_tools(mcp, connection)
+
+    assert "anim_cmd" in mcp.tools
+
+
 def test_register_router_tools_includes_statetree_cmd():
     """Default registration should include the StateTree router."""
     mcp = MockMCP()
@@ -231,3 +268,281 @@ def test_register_router_tools_includes_statetree_cmd():
     register_router_tools(mcp, connection, docstrings)
 
     assert "statetree_cmd" in mcp.tools
+
+
+def test_data_router_forwards_update_string_table_payload():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "success": True,
+        "data": {
+            "string_table_path": "/Game/Data/ST_CodexEntries",
+            "dry_run": True,
+            "before": {"key_count": 2},
+            "after": {"key_count": 2},
+            "renamed": [],
+            "collisions": [],
+            "missing_keys": [],
+            "invalid_operations": [],
+            "operation_results": [],
+        },
+    }
+
+    router = make_router("data", connection, "data docs")
+    payload = json.loads(router("update_string_table", {
+        "string_table_path": "/Game/Data/ST_CodexEntries",
+        "operations": [{"type": "replace_all", "old_prefix": "entry.", "new_prefix": ""}],
+        "dry_run": True,
+    }))
+
+    assert payload["dry_run"] is True
+    connection.send_command.assert_called_once_with(
+        "data.update_string_table",
+        {
+            "string_table_path": "/Game/Data/ST_CodexEntries",
+            "operations": [{"type": "replace_all", "old_prefix": "entry.", "new_prefix": ""}],
+            "dry_run": True,
+        },
+    )
+
+
+def test_data_router_forwards_apply_import_ops_json_payload():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "success": True,
+        "data": {
+            "status": "dry_run_ok",
+            "success": True,
+            "partial": False,
+            "dry_run": True,
+            "applied": False,
+            "schema_version": 1,
+            "queue_id": "quest-import",
+            "ops_sha256": "0123456789abcdef",
+            "warnings": [],
+            "errors": [],
+            "files_written": ["Saved/CortexImports/report.json"],
+            "targets_touched": [],
+            "counts": {
+                "operations": 1,
+                "validated": 1,
+                "previewed": 1,
+                "attempted": 0,
+                "applied": 0,
+                "changed": 0,
+                "no_op": 0,
+                "failed": 0,
+                "skipped": 0,
+                "warnings": 0,
+                "errors": 0,
+                "save_requested": 0,
+                "saved": 0,
+                "save_failed": 0,
+                "dirty_packages": 0,
+            },
+            "report_path": "Saved/CortexImports/report.json",
+            "canonical_report_path": "D:/Project/Saved/CortexImports/report.json",
+        },
+    }
+
+    router = make_router("data", connection, "data docs")
+    payload = json.loads(router("apply_import_ops_json", {
+        "ops_path": "Saved/CortexImports/ops.json",
+        "report_path": "Saved/CortexImports/report.json",
+    }))
+
+    assert payload["status"] == "dry_run_ok"
+    assert "operations" not in payload
+    assert payload["counts"]["operations"] == 1
+    assert payload["files_written"] == ["Saved/CortexImports/report.json"]
+    connection.send_command.assert_called_once_with(
+        "data.apply_import_ops_json",
+        {
+            "ops_path": "Saved/CortexImports/ops.json",
+            "report_path": "Saved/CortexImports/report.json",
+        },
+    )
+
+
+def test_data_router_preserves_structured_unreal_error_details():
+    connection = MagicMock()
+    connection.send_command.side_effect = UECommandError(
+        "data.apply_import_ops_json",
+        "REPORT_WRITE_FAILED",
+        "Failed to write report",
+        {
+            "status": "report_write_failed",
+            "applied_count": 1,
+            "first_error": "Failed to write report",
+        },
+    )
+
+    router = make_router("data", connection, "data docs")
+    payload = json.loads(router("apply_import_ops_json", {
+        "ops_path": "Saved/CortexImports/ops.json",
+        "report_path": "Saved/CortexImports/report.json",
+    }))
+
+    assert payload["success"] is False
+    assert payload["_error"] == "REPORT_WRITE_FAILED"
+    assert payload["_message"] == "Failed to write report"
+    assert payload["_command"] == "data.apply_import_ops_json"
+    assert payload["status"] == "report_write_failed"
+    assert payload["applied_count"] == 1
+
+
+def test_data_router_does_not_let_error_details_override_reserved_fields():
+    connection = MagicMock()
+    connection.send_command.side_effect = UECommandError(
+        "data.apply_import_ops_json",
+        "REPORT_WRITE_FAILED",
+        "Failed to write report",
+        {
+            "success": True,
+            "_error": "OVERRIDE",
+            "_message": "override",
+            "_command": "override.command",
+            "status": "report_write_failed",
+        },
+    )
+
+    router = make_router("data", connection, "data docs")
+    payload = json.loads(router("apply_import_ops_json", {
+        "ops_path": "Saved/CortexImports/ops.json",
+        "report_path": "Saved/CortexImports/report.json",
+    }))
+
+    assert payload["success"] is False
+    assert payload["_error"] == "REPORT_WRITE_FAILED"
+    assert payload["_message"] == "Failed to write report"
+    assert payload["_command"] == "data.apply_import_ops_json"
+    assert payload["status"] == "report_write_failed"
+
+
+def test_data_router_forwards_export_bulk_payload():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "success": True,
+        "data": {
+            "success": True,
+            "partial": False,
+            "out_dir": "D:/Project/Saved/CortexExports",
+            "files_written": ["Saved/CortexExports/quests.json"],
+            "targets_touched": ["/Game/Data/DT_Quests"],
+            "counts": {
+                "items": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "skipped": 0,
+            },
+            "items": [{"name": "quests", "type": "datatable", "status": "written"}],
+            "warnings": [],
+            "errors": [],
+        },
+    }
+
+    router = make_router("data", connection, "data docs")
+    payload = json.loads(
+        router(
+            "export_bulk_json",
+            {
+                "out_dir": "Saved/CortexExports",
+                "items": [
+                    {
+                        "type": "datatable",
+                        "name": "quests",
+                        "table_path": "/Game/Data/DT_Quests",
+                        "out_path": "quests.json",
+                    }
+                ],
+            },
+        )
+    )
+
+    assert payload["counts"]["succeeded"] == 1
+    assert payload["files_written"] == ["Saved/CortexExports/quests.json"]
+    connection.send_command.assert_called_once_with(
+        "data.export_bulk_json",
+        {
+            "out_dir": "Saved/CortexExports",
+            "items": [
+                {
+                    "type": "datatable",
+                    "name": "quests",
+                    "table_path": "/Game/Data/DT_Quests",
+                    "out_path": "quests.json",
+                }
+            ],
+        },
+    )
+
+
+def test_data_router_forwards_compare_data_json_payload():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "success": True,
+        "data": {
+            "success": True,
+            "partial": False,
+            "warnings": [],
+            "errors": [],
+            "files_written": ["Saved/CortexReports/report.json"],
+            "targets_touched": [],
+            "counts": {"added": 0, "removed": 0, "changed": 1},
+            "mode": "datatable_rows",
+            "report_path": "Saved/CortexReports/report.json",
+            "canonical_report_path": "D:/Project/Saved/CortexReports/report.json",
+            "report_bytes": 512,
+        },
+    }
+
+    router = make_router("data", connection, "data docs")
+    payload = json.loads(
+        router(
+            "compare_data_json",
+            {
+                "left_path": "Saved/CortexExports/left.json",
+                "right_path": "Saved/CortexExports/right.json",
+                "report_path": "Saved/CortexReports/report.json",
+                "mode": "datatable_rows",
+            },
+        )
+    )
+
+    assert payload["counts"]["changed"] == 1
+    connection.send_command.assert_called_once_with(
+        "data.compare_data_json",
+        {
+            "left_path": "Saved/CortexExports/left.json",
+            "right_path": "Saved/CortexExports/right.json",
+            "report_path": "Saved/CortexReports/report.json",
+            "mode": "datatable_rows",
+        },
+    )
+
+
+def test_data_router_forwards_export_schema_json_payload():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "success": True,
+        "data": {
+            "success": True,
+            "partial": False,
+            "warnings": [],
+            "errors": [],
+            "files_written": ["Saved/CortexExports/schema.json"],
+            "targets_touched": [],
+            "counts": {"datatables": 1, "structs": 3, "data_asset_classes": 1, "string_tables": 1},
+            "out_path": "Saved/CortexExports/schema.json",
+            "canonical_out_path": "D:/Project/Saved/CortexExports/schema.json",
+            "bytes_written": 1024,
+        },
+    }
+
+    router = make_router("data", connection, "data docs")
+    payload = json.loads(router("export_schema_json", {"out_path": "Saved/CortexExports/schema.json"}))
+
+    assert payload["counts"]["structs"] == 3
+    connection.send_command.assert_called_once_with(
+        "data.export_schema_json",
+        {"out_path": "Saved/CortexExports/schema.json"},
+    )

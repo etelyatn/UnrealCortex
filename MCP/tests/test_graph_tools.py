@@ -103,6 +103,94 @@ def test_graph_write_tool_docstrings_document_delegate_read_only_policy():
         assert "delegate graphs are readable but not mutable" in doc.lower()
 
 
+def test_graph_set_pin_value_accepts_structured_text_without_value():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "data": {
+            "verification_passed": True,
+            "verified_text": {
+                "type": "FText",
+                "source_kind": "string_table",
+                "value": "Pay",
+                "string_table": {
+                    "table_id": "/Game/UI/ST_UI.ST_UI",
+                    "key": "Mail.Button.Pay",
+                },
+            },
+        }
+    }
+
+    tools = _register_tools(connection)
+    result = tools["graph_set_pin_value"](
+        asset_path="/Game/UI/BP_MailButton.BP_MailButton",
+        node_id="K2Node_CallFunction_0",
+        pin_name="InText",
+        text=json.dumps({
+            "type": "FText",
+            "source_kind": "string_table",
+            "value": "Pay",
+            "string_table": {
+                "table_id": "/Game/UI/ST_UI.ST_UI",
+                "key": "Mail.Button.Pay",
+            },
+        }),
+    )
+    parsed = json.loads(result)
+
+    assert parsed["verification_passed"] is True
+    connection.send_command.assert_called_once_with(
+        "graph.set_pin_value",
+        {
+            "asset_path": "/Game/UI/BP_MailButton.BP_MailButton",
+            "node_id": "K2Node_CallFunction_0",
+            "pin_name": "InText",
+            "text": {
+                "type": "FText",
+                "source_kind": "string_table",
+                "value": "Pay",
+                "string_table": {
+                    "table_id": "/Game/UI/ST_UI.ST_UI",
+                    "key": "Mail.Button.Pay",
+                },
+            },
+            "graph_name": "EventGraph",
+        },
+    )
+
+
+def test_graph_set_pin_value_forwards_empty_string_value():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "data": {
+            "success": True,
+            "node_id": "K2Node_CallFunction_0",
+            "pin_name": "InString",
+            "value": "",
+        }
+    }
+
+    tools = _register_tools(connection)
+    result = tools["graph_set_pin_value"](
+        asset_path="/Game/BP_Test",
+        node_id="K2Node_CallFunction_0",
+        pin_name="InString",
+        value="",
+    )
+    parsed = json.loads(result)
+
+    assert parsed["success"] is True
+    connection.send_command.assert_called_once_with(
+        "graph.set_pin_value",
+        {
+            "asset_path": "/Game/BP_Test",
+            "node_id": "K2Node_CallFunction_0",
+            "pin_name": "InString",
+            "value": "",
+            "graph_name": "EventGraph",
+        },
+    )
+
+
 def test_repo_has_no_active_legacy_graph_read_refs():
     repo_root = Path(__file__).resolve().parents[3]
     targets = [

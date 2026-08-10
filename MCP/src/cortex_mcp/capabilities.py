@@ -26,7 +26,7 @@ CORE_DOMAINS = (
     "statetree",
 )
 
-_OPTIONAL_DOMAINS = ("gen",)
+_OPTIONAL_DOMAINS = ("gen", "anim")
 
 
 def get_registered_domains(capabilities: dict | None = None) -> tuple[str, ...]:
@@ -74,6 +74,18 @@ if _missing:
 
 
 _COMPOSITE_HINTS: dict[str, str] = {
+    "data": (
+        "For large raw DataTable, StringTable, or DataAsset reads, use "
+        "export_datatable_json, export_string_table_json, export_data_assets_json, "
+        "export_schema_json, export_bulk_json, or compare_data_json through data_cmd. "
+        "Schema snapshots and raw exports write JSON files and return compact summaries; "
+        "do not read exported files back into MCP responses.\n"
+    ),
+    "editor": (
+        "run_python is a high-trust escape hatch for trusted local editor automation; "
+        "prefer structured Cortex commands first because run_python can mutate assets/files "
+        "and bypass normal safeguards.\n"
+    ),
     "material": "For creating a full material graph from scratch, use material_compose instead of chaining material_cmd calls.\n",
     "blueprint": "For creating or updating a full Blueprint, use blueprint_compose instead of chaining blueprint_cmd calls.\n",
     "umg": "For creating a complete Widget Blueprint screen, use widget_compose instead of chaining umg_cmd calls.\n",
@@ -81,6 +93,62 @@ _COMPOSITE_HINTS: dict[str, str] = {
     "statetree": "For creating or updating a full StateTree structure, use statetree_compose instead of chaining statetree_cmd calls.\n",
     "gen": "AI asset generation. Submit with start_mesh/start_image/start_texturing, then poll with job_status until status is 'imported' or 'failed'. Generation takes 30-180 seconds. On download_failed or import_failed, call retry_import.\n",
 }
+
+_ANIM_INSPECTION_COMMANDS = {
+    "list_assets",
+    "get_sequence_info",
+    "get_montage_info",
+    "get_skeleton_info",
+    "get_animbp_info",
+}
+_ANIM_AUTHORING_FAMILIES = {
+    "named notify": {"add_named_notify", "update_named_notify", "remove_named_notify"},
+    "float curve": {"add_curve", "set_curve_keys", "remove_curve"},
+    "montage section": {"add_montage_section", "update_montage_section", "remove_montage_section"},
+    "skeleton socket": {"add_socket", "set_socket_transform", "remove_socket"},
+    "object notify": {"add_notify", "update_notify", "remove_notify"},
+    "notify state": {"add_notify_state", "update_notify_state", "remove_notify_state"},
+}
+
+
+def _build_animation_hint(command_names: set[str]) -> str:
+    """Build animation guidance from complete live command families only."""
+    lines = ["CortexAnimation supports inspection plus guarded authoring proven by live capabilities."]
+    complete_families = [
+        family_name
+        for family_name, family_commands in _ANIM_AUTHORING_FAMILIES.items()
+        if family_commands <= command_names
+    ]
+    if complete_families:
+        lines.append("Available guarded authoring families: " + ", ".join(complete_families) + ".")
+        if "named notify" in complete_families:
+            lines.append("Phase B sequence named-notify authoring is available.")
+    lines.append(
+        "Use precise canonical selectors for updates/removes, including montage selector { index, name, start_time } "
+        "and socket selector { index, socket_name, bone_name }, pass expected_fingerprint for mutations, use "
+        "dry_run=true to preview, and remember save defaults to false."
+    )
+    lines.append(
+        "Only call animation authoring commands that appear in live capabilities and belong to a complete family. "
+        "Do not invent later-stage AnimBP authoring, blendspace, retargeting, runtime preview, Sequencer, or Control Rig commands.\n"
+    )
+    return " ".join(lines)
+
+
+def _animation_commands_for_docstring(commands: list[dict]) -> list[dict]:
+    """Keep inspection commands and only complete live animation authoring families."""
+    command_names = {command.get("name") for command in commands}
+    allowed = set(_ANIM_INSPECTION_COMMANDS)
+    for family_commands in _ANIM_AUTHORING_FAMILIES.values():
+        if family_commands <= command_names:
+            allowed.update(family_commands)
+    return [command for command in commands if command.get("name") in allowed]
+
+
+def _composite_hint(domain: str, command_names: set[str] | None = None) -> str:
+    if domain == "anim":
+        return _build_animation_hint(command_names or set())
+    return _COMPOSITE_HINTS.get(domain, "")
 
 
 def minimal_router_docstrings(domains: tuple[str, ...] | None = None) -> dict[str, str]:
@@ -94,7 +162,7 @@ def minimal_router_docstrings(domains: tuple[str, ...] | None = None) -> dict[st
     docstrings: dict[str, str] = {}
     for domain in domains:
         tool_name = f"{domain}_cmd"
-        hint = _COMPOSITE_HINTS.get(domain, "")
+        hint = _composite_hint(domain)
         base = f"Route UnrealCortex {domain} commands through `{tool_name}(command, params)`."
         commands = _FALLBACK_COMMANDS.get(domain, "")
         body = base + commands
@@ -121,13 +189,16 @@ def build_router_docstrings(capabilities: dict | None) -> dict[str, str]:
             continue
 
         commands = domain_info.get("commands", [])
+        command_names = {command.get("name") for command in commands}
+        if domain_name == "anim":
+            commands = _animation_commands_for_docstring(commands)
         lines = [
             f"Route UnrealCortex {domain_name} commands through `{domain_name}_cmd(command, params)`.",
             "Available commands:",
         ]
         for command in commands:
             lines.append(f"- {_format_command_signature(command)}")
-        hint = _COMPOSITE_HINTS.get(domain_name, "")
+        hint = _composite_hint(domain_name, command_names)
         body = "\n".join(lines)
         docstrings[domain_name] = (hint + body) if hint else body
 

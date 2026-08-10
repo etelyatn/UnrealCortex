@@ -6,10 +6,15 @@
 #include "CortexEditorUtils.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
+#include "Factories/Factory.h"
+#include "Misc/EngineVersionComparison.h"
+#if !UE_VERSION_OLDER_THAN(5, 5, 0)
 #include "StateTreeFactory.h"
+#endif
 #include "IAssetTools.h"
 #include "Misc/PackageName.h"
 #include "Misc/TextBuffer.h"
+#include "Modules/ModuleManager.h"
 #include "ObjectTools.h"
 #include "ScopedTransaction.h"
 #include "StateTree.h"
@@ -58,6 +63,21 @@ UClass* ResolveSchemaClass(const FString& SchemaClassPath)
 		return nullptr;
 	}
 
+	const FString ObjectPath = FPackageName::ExportTextPathToObjectPath(SchemaClassPath);
+	const FString CanonicalPath = !ObjectPath.IsEmpty() ? ObjectPath : SchemaClassPath;
+	if (CanonicalPath.Contains(TEXT(".")))
+	{
+		const FString CandidatePackageName = FPackageName::ObjectPathToPackageName(CanonicalPath);
+		if (CandidatePackageName.StartsWith(TEXT("/Script/")))
+		{
+			const FString ModuleName = CandidatePackageName.RightChop(8);
+			if (ModuleName.IsEmpty() || !FModuleManager::Get().ModuleExists(*ModuleName))
+			{
+				return nullptr;
+			}
+		}
+	}
+
 	if (UClass* FoundClass = FindObject<UClass>(nullptr, *SchemaClassPath))
 	{
 		return FoundClass;
@@ -68,15 +88,25 @@ UClass* ResolveSchemaClass(const FString& SchemaClassPath)
 		return LooseMatch;
 	}
 
-	if (UClass* LoadedClass = StaticLoadClass(UStateTreeSchema::StaticClass(), nullptr, *SchemaClassPath))
-	{
-		return LoadedClass;
-	}
-
-	const FString ObjectPath = FPackageName::ExportTextPathToObjectPath(SchemaClassPath);
 	if (ObjectPath.IsEmpty() || !ObjectPath.Contains(TEXT(".")))
 	{
 		return nullptr;
+	}
+
+	const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
+	const UPackage* ExistingPackage = FindPackage(nullptr, *PackageName);
+	const bool bPackageExists = ExistingPackage != nullptr
+		|| (!PackageName.IsEmpty()
+			&& FPackageName::IsValidLongPackageName(PackageName, true)
+			&& FPackageName::DoesPackageExist(PackageName));
+	if (!bPackageExists)
+	{
+		return nullptr;
+	}
+
+	if (UClass* LoadedClass = StaticLoadClass(UStateTreeSchema::StaticClass(), nullptr, *SchemaClassPath))
+	{
+		return LoadedClass;
 	}
 
 	if (UClass* FoundObjectPathClass = FindObject<UClass>(nullptr, *ObjectPath))
@@ -87,19 +117,6 @@ UClass* ResolveSchemaClass(const FString& SchemaClassPath)
 	if (UClass* LoadedObjectPathClass = StaticLoadClass(UStateTreeSchema::StaticClass(), nullptr, *ObjectPath))
 	{
 		return LoadedObjectPathClass;
-	}
-
-	const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
-	if (PackageName.StartsWith(TEXT("/Script/")))
-	{
-		return LoadObject<UClass>(nullptr, *ObjectPath);
-	}
-
-	if (PackageName.IsEmpty()
-		|| !FPackageName::IsValidLongPackageName(PackageName, true)
-		|| (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName)))
-	{
-		return nullptr;
 	}
 
 	return LoadObject<UClass>(nullptr, *ObjectPath);
@@ -279,8 +296,27 @@ FCortexCommandResult FCortexSTAssetOps::CreateAsset(const TSharedPtr<FJsonObject
 	FScopedTransaction Transaction(FText::FromString(
 		FString::Printf(TEXT("Cortex: Create StateTree %s"), *AssetName)));
 
+#if UE_VERSION_OLDER_THAN(5, 5, 0)
+	// StateTreeFactory.h is private in 5.4 (the class itself is module-exported):
+	// construct via reflection and set the protected StateTreeSchemaClass
+	// property directly. FactoryCreateNew honors it the same way SetSchemaClass
+	// does on 5.5+.
+	UClass* FactoryClass = FindObject<UClass>(nullptr, TEXT("/Script/StateTreeEditorModule.StateTreeFactory"));
+	if (FactoryClass == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			TEXT("StateTreeFactory class not found in StateTreeEditorModule"));
+	}
+	UFactory* Factory = NewObject<UFactory>(GetTransientPackage(), FactoryClass);
+	if (FObjectPropertyBase* SchemaProperty = CastField<FObjectPropertyBase>(FactoryClass->FindPropertyByName(TEXT("StateTreeSchemaClass"))))
+	{
+		SchemaProperty->SetObjectPropertyValue_InContainer(Factory, SchemaClass);
+	}
+#else
 	UStateTreeFactory* Factory = NewObject<UStateTreeFactory>();
 	Factory->SetSchemaClass(SchemaClass);
+#endif
 
 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
 	UObject* CreatedObject = AssetTools.CreateAsset(AssetName, AssetFolder, UStateTree::StaticClass(), Factory);

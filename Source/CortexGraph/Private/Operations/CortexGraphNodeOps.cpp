@@ -1,4 +1,6 @@
 #include "Operations/CortexGraphNodeOps.h"
+#include "CortexAssetFingerprint.h"
+#include "CortexBatchMutation.h"
 #include "CortexGraphModule.h"
 #include "CortexSerializer.h"
 #include "CortexEditorUtils.h"
@@ -37,11 +39,13 @@
 #include "K2Node_CreateDelegate.h"
 #include "UObject/UnrealType.h"
 #include "ScopedTransaction.h"
+#include "PackageTools.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/PackageName.h"
 #include "Editor.h"
 #include "Engine/World.h"
 #include "Engine/LevelScriptBlueprint.h"
+#include "UObject/SavePackage.h"
 #include "UObject/UObjectIterator.h"
 
 namespace
@@ -117,6 +121,128 @@ bool ResolveMutableNodeGraph(
 
 	OutGraph = Entry.Graph;
 	return true;
+}
+
+bool TryParseGraphKind(const FString& GraphKindString, ECortexGraphKind& OutKind)
+{
+	if (GraphKindString == TEXT("ubergraph"))
+	{
+		OutKind = ECortexGraphKind::Ubergraph;
+		return true;
+	}
+	if (GraphKindString == TEXT("function"))
+	{
+		OutKind = ECortexGraphKind::Function;
+		return true;
+	}
+	if (GraphKindString == TEXT("macro"))
+	{
+		OutKind = ECortexGraphKind::Macro;
+		return true;
+	}
+	if (GraphKindString == TEXT("delegate"))
+	{
+		OutKind = ECortexGraphKind::Delegate;
+		return true;
+	}
+	if (GraphKindString == TEXT("interface_impl"))
+	{
+		OutKind = ECortexGraphKind::InterfaceImpl;
+		return true;
+	}
+
+	return false;
+}
+
+bool ResolveMutableNodeGraphForSetPinValue(
+	UBlueprint* Blueprint,
+	const FString& GraphName,
+	const FString& GraphKindString,
+	const FString& OwningInterfaceString,
+	const bool bStructuredTextWrite,
+	UEdGraph*& OutGraph,
+	FCortexCommandResult& OutError)
+{
+	const FString TargetName = GraphName.IsEmpty() ? TEXT("EventGraph") : GraphName;
+	TArray<FCortexGraphEntry> Entries;
+	FCortexGraphNodeOps::EnumerateUserGraphs(Blueprint, Entries);
+
+	TArray<FCortexGraphEntry> MatchingEntries;
+	for (const FCortexGraphEntry& Entry : Entries)
+	{
+		if (Entry.Graph == nullptr || Entry.Graph->GetName() != TargetName)
+		{
+			continue;
+		}
+		if (!FCortexGraphNodeOps::IsMutableGraphKind(Entry.Kind))
+		{
+			continue;
+		}
+		MatchingEntries.Add(Entry);
+	}
+
+	if (!GraphKindString.IsEmpty())
+	{
+		ECortexGraphKind RequestedKind = ECortexGraphKind::Function;
+		if (!TryParseGraphKind(GraphKindString, RequestedKind))
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("Unknown graph_kind: %s"), *GraphKindString));
+			return false;
+		}
+
+		MatchingEntries = MatchingEntries.FilterByPredicate(
+			[RequestedKind](const FCortexGraphEntry& Entry)
+			{
+				return Entry.Kind == RequestedKind;
+			});
+	}
+
+	if (!OwningInterfaceString.IsEmpty())
+	{
+		MatchingEntries = MatchingEntries.FilterByPredicate(
+			[&OwningInterfaceString](const FCortexGraphEntry& Entry)
+			{
+				return Entry.OwningInterface.ToString() == OwningInterfaceString;
+			});
+	}
+
+	if (MatchingEntries.Num() == 0)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::GraphNotFound,
+			FString::Printf(TEXT("Graph not found: %s"), *TargetName));
+		return false;
+	}
+
+	if (bStructuredTextWrite && MatchingEntries.Num() > 1)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Graph name '%s' is ambiguous for persisted write; pass graph_kind or owning_interface"), *TargetName));
+		return false;
+	}
+
+	OutGraph = MatchingEntries[0].Graph;
+	return true;
+}
+
+bool ReloadBlueprintPackage(UPackage* Package)
+{
+	if (Package == nullptr)
+	{
+		return false;
+	}
+
+	TArray<UPackage*> PackagesToReload;
+	PackagesToReload.Add(Package);
+
+	FText ReloadError;
+	return UPackageTools::ReloadPackages(
+		PackagesToReload,
+		ReloadError,
+		EReloadPackagesInteractionMode::AssumePositive);
 }
 
 UClass* ResolveGraphNodeClassIdentifier(const FString& ClassIdentifier)
@@ -1586,19 +1712,41 @@ FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObje
 	FString NodeId;
 	FString PinName;
 	FString Value;
+	const bool bHasValue = Params.IsValid() && Params->TryGetStringField(TEXT("value"), Value);
+	const bool bHasText = Params.IsValid() && Params->HasTypedField<EJson::Object>(TEXT("text"));
 
 	bool bHasParams = Params.IsValid()
 		&& Params->TryGetStringField(TEXT("asset_path"), AssetPath)
 		&& Params->TryGetStringField(TEXT("node_id"), NodeId)
 		&& Params->TryGetStringField(TEXT("pin_name"), PinName)
-		&& Params->TryGetStringField(TEXT("value"), Value);
+		&& (bHasValue || bHasText);
 
 	if (!bHasParams)
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			TEXT("Missing required params: asset_path, node_id, pin_name, and value")
+			TEXT("Missing required params: asset_path, node_id, pin_name, and one of value or text")
 		);
+	}
+	if (bHasValue && bHasText)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			TEXT("graph.set_pin_value accepts either value or text, not both"));
+	}
+	if (Params.IsValid()
+		&& Params->HasField(TEXT("expected_fingerprint"))
+		&& !Params->HasTypedField<EJson::Object>(TEXT("expected_fingerprint")))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("expected_fingerprint must be an object when provided"));
+	}
+	if (bHasText && AssetPath.StartsWith(TEXT("__level_bp__:")))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::UnsupportedOperation,
+			TEXT("Structured text pin mutation does not support level Blueprint targets in Phase 1"));
 	}
 
 	FCortexCommandResult LoadError;
@@ -1615,9 +1763,13 @@ FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObje
 
 	FString GraphName;
 	Params->TryGetStringField(TEXT("graph_name"), GraphName);
+	FString GraphKind;
+	Params->TryGetStringField(TEXT("graph_kind"), GraphKind);
+	FString OwningInterface;
+	Params->TryGetStringField(TEXT("owning_interface"), OwningInterface);
 
 	UEdGraph* Graph = nullptr;
-	if (!ResolveMutableNodeGraph(Blueprint, GraphName, Graph, LoadError))
+	if (!ResolveMutableNodeGraphForSetPinValue(Blueprint, GraphName, GraphKind, OwningInterface, bHasText, Graph, LoadError))
 	{
 		return LoadError;
 	}
@@ -1664,6 +1816,47 @@ FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObje
 		);
 	}
 
+	TSharedPtr<FJsonObject> FingerprintBefore = MakeObjectAssetFingerprint(
+		Blueprint,
+		GetTypeHash(static_cast<uint32>(Blueprint->Status))).ToJson();
+	if (Params->HasTypedField<EJson::Object>(TEXT("expected_fingerprint")))
+	{
+		const TSharedPtr<FJsonObject> ExpectedFingerprint = Params->GetObjectField(TEXT("expected_fingerprint"));
+		if (!FCortexBatchMutation::FingerprintsMatch(FingerprintBefore, ExpectedFingerprint))
+		{
+			TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+			Details->SetObjectField(TEXT("current_fingerprint"), FingerprintBefore);
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::StalePrecondition,
+				FString::Printf(TEXT("Expected fingerprint does not match current asset fingerprint for %s"), *AssetPath),
+				Details);
+		}
+	}
+	if (bHasText)
+	{
+		if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Text)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::TypeMismatch,
+				FString::Printf(TEXT("Structured text can only be applied to FText pins: %s"), *PinName));
+		}
+
+		return ApplyTextPinValue(
+			Blueprint,
+			Graph,
+			Node,
+			Pin,
+			Params->GetObjectField(TEXT("text")),
+			AssetPath,
+			GraphName,
+			GraphKind,
+			OwningInterface,
+			SubgraphPath,
+			NodeId,
+			PinName,
+			FingerprintBefore);
+	}
+
 	FScopedTransaction Transaction(FText::FromString(
 		FString::Printf(TEXT("Cortex: Set pin value %s.%s"), *NodeId, *PinName)
 	));
@@ -1673,7 +1866,13 @@ FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObje
 
 	// Set the default value
 	// For class/object pins, try to resolve and set DefaultObject
-	if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class ||
+	if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Text)
+	{
+		Pin->DefaultTextValue = FText::FromString(Value);
+		Pin->DefaultValue.Empty();
+		Pin->DefaultObject = nullptr;
+	}
+	else if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class ||
 		Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_SoftClass)
 	{
 		// Try to load the class from the value string
@@ -1705,6 +1904,213 @@ FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObje
 
 	UE_LOG(LogCortexGraph, Log, TEXT("Set pin value %s.%s = %s"), *NodeId, *PinName, *Value);
 
+	return FCortexCommandRouter::Success(Data);
+}
+
+TSharedPtr<FJsonObject> FCortexGraphNodeOps::BuildPinLocator(
+	const FString& AssetPath,
+	UEdGraph* Graph,
+	UEdGraphNode* Node,
+	const FString& GraphName,
+	const FString& GraphKind,
+	const FString& OwningInterface,
+	const FString& SubgraphPath,
+	const FString& NodeId,
+	const FString& PinName)
+{
+	TSharedPtr<FJsonObject> Locator = MakeShared<FJsonObject>();
+	Locator->SetStringField(TEXT("asset_path"), AssetPath);
+	Locator->SetStringField(TEXT("graph_name"), GraphName.IsEmpty() && Graph != nullptr ? Graph->GetName() : GraphName);
+	if (!GraphKind.IsEmpty())
+	{
+		Locator->SetStringField(TEXT("graph_kind"), GraphKind);
+	}
+	if (!OwningInterface.IsEmpty())
+	{
+		Locator->SetStringField(TEXT("owning_interface"), OwningInterface);
+	}
+	if (!SubgraphPath.IsEmpty())
+	{
+		Locator->SetStringField(TEXT("subgraph_path"), SubgraphPath);
+	}
+	Locator->SetStringField(TEXT("node_id"), NodeId);
+	if (Node != nullptr)
+	{
+		Locator->SetStringField(TEXT("node_guid"), Node->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens));
+	}
+	Locator->SetStringField(TEXT("pin_name"), PinName);
+	return Locator;
+}
+
+FCortexCommandResult FCortexGraphNodeOps::ApplyTextPinValue(
+	UBlueprint* Blueprint,
+	UEdGraph* Graph,
+	UEdGraphNode* Node,
+	UEdGraphPin* Pin,
+	const TSharedPtr<FJsonObject>& TextObject,
+	const FString& AssetPath,
+	const FString& GraphName,
+	const FString& GraphKind,
+	const FString& OwningInterface,
+	const FString& SubgraphPath,
+	const FString& NodeId,
+	const FString& PinName,
+	const TSharedPtr<FJsonObject>& FingerprintBefore)
+{
+	TArray<FString> TextErrors;
+	TSharedPtr<FJsonObject> AppliedText;
+	FText NewText;
+	const FString EffectiveGraphName = GraphName.IsEmpty() && Graph != nullptr ? Graph->GetName() : GraphName;
+	if (!FCortexSerializer::NormalizeTextDescriptor(
+		MakeShared<FJsonValueObject>(TextObject),
+		AppliedText,
+		&NewText,
+		TextErrors))
+	{
+		const FString ErrorMessage = FString::Join(TextErrors, TEXT("; "));
+		const FString ErrorCode = ErrorMessage.Contains(TEXT("Unsupported FText source_kind"))
+			? CortexErrorCodes::UnsupportedOperation
+			: CortexErrorCodes::InvalidField;
+		return FCortexCommandRouter::Error(ErrorCode, ErrorMessage);
+	}
+
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Set text pin value %s.%s"), *NodeId, *PinName)));
+
+	Graph->Modify();
+	Node->Modify();
+	Pin->DefaultTextValue = NewText;
+	Pin->DefaultValue.Empty();
+	Pin->DefaultObject = nullptr;
+
+	Graph->NotifyGraphChanged();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	const TSharedPtr<FJsonObject> VerifiedText = FCortexSerializer::TextToJson(Pin->DefaultTextValue);
+	TArray<FString> CompareErrors;
+	const bool bVerifiedInMemory = FCortexSerializer::TextDescriptorsEqual(
+		MakeShared<FJsonValueObject>(AppliedText),
+		MakeShared<FJsonValueObject>(VerifiedText),
+		CompareErrors);
+	if (!bVerifiedInMemory)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::VerificationFailed,
+			CompareErrors.Num() > 0
+				? FString::Join(CompareErrors, TEXT("; "))
+				: TEXT("FText pin verification failed after mutation"));
+	}
+
+	UPackage* Package = Blueprint->GetOutermost();
+	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		Package->GetName(),
+		FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	const bool bSaved = UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs);
+	if (!bSaved)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::VerificationFailed,
+			FString::Printf(TEXT("Failed to save Blueprint package %s after text pin mutation"), *Package->GetName()));
+	}
+
+	if (!ReloadBlueprintPackage(Package))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::VerificationFailed,
+			FString::Printf(TEXT("Failed to reload Blueprint package %s after text pin mutation"), *Package->GetName()));
+	}
+
+	FCortexCommandResult ReloadError;
+	UBlueprint* ReloadedBlueprint = LoadBlueprint(AssetPath, ReloadError);
+	if (ReloadedBlueprint == nullptr)
+	{
+		return ReloadError;
+	}
+
+	UEdGraph* ReloadedGraph = nullptr;
+	if (!ResolveMutableNodeGraphForSetPinValue(
+			ReloadedBlueprint,
+			EffectiveGraphName,
+			GraphKind,
+			OwningInterface,
+			true,
+			ReloadedGraph,
+			ReloadError))
+	{
+		ReloadError.ErrorCode = CortexErrorCodes::LocatorDrift;
+		ReloadError.ErrorMessage = TEXT("Failed to re-resolve graph after reload");
+		return ReloadError;
+	}
+	if (!SubgraphPath.IsEmpty())
+	{
+		ReloadedGraph = ResolveSubgraph(ReloadedGraph, SubgraphPath, ReloadError);
+		if (ReloadedGraph == nullptr)
+		{
+			ReloadError.ErrorCode = CortexErrorCodes::LocatorDrift;
+			ReloadError.ErrorMessage = TEXT("Failed to re-resolve subgraph after reload");
+			return ReloadError;
+		}
+	}
+
+	UEdGraphNode* ReloadedNode = FindNode(ReloadedGraph, NodeId, ReloadError);
+	if (ReloadedNode == nullptr)
+	{
+		ReloadError.ErrorCode = CortexErrorCodes::LocatorDrift;
+		ReloadError.ErrorMessage = TEXT("Failed to re-resolve node after reload");
+		return ReloadError;
+	}
+
+	UEdGraphPin* ReloadedPin = FindPin(ReloadedNode, PinName, ReloadError);
+	if (ReloadedPin == nullptr)
+	{
+		ReloadError.ErrorCode = CortexErrorCodes::LocatorDrift;
+		ReloadError.ErrorMessage = TEXT("Failed to re-resolve pin after reload");
+		return ReloadError;
+	}
+
+	const TSharedPtr<FJsonObject> ReloadedText = FCortexSerializer::TextToJson(ReloadedPin->DefaultTextValue);
+	CompareErrors.Reset();
+	const bool bVerifiedReloaded = FCortexSerializer::TextDescriptorsEqual(
+		MakeShared<FJsonValueObject>(AppliedText),
+		MakeShared<FJsonValueObject>(ReloadedText),
+		CompareErrors);
+	if (!bVerifiedReloaded)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::VerificationFailed,
+			CompareErrors.Num() > 0
+				? FString::Join(CompareErrors, TEXT("; "))
+				: TEXT("FText pin verification failed after reload"));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetObjectField(TEXT("locator"), BuildPinLocator(
+		AssetPath,
+		ReloadedGraph,
+		ReloadedNode,
+		EffectiveGraphName,
+		GraphKind,
+		OwningInterface,
+		SubgraphPath,
+		NodeId,
+		PinName));
+	Data->SetStringField(TEXT("node_id"), NodeId);
+	Data->SetStringField(TEXT("pin_name"), PinName);
+	Data->SetObjectField(TEXT("applied_text"), AppliedText);
+	Data->SetObjectField(TEXT("verified_text"), ReloadedText);
+	Data->SetObjectField(TEXT("fingerprint_before"), FingerprintBefore);
+	Data->SetObjectField(TEXT("fingerprint_after"), MakeObjectAssetFingerprint(
+		ReloadedBlueprint,
+		GetTypeHash(static_cast<uint32>(ReloadedBlueprint->Status))).ToJson());
+	Data->SetBoolField(TEXT("compiled"), false);
+	Data->SetBoolField(TEXT("saved"), true);
+	Data->SetBoolField(TEXT("reloaded"), true);
+	Data->SetBoolField(TEXT("verification_passed"), true);
+	Data->SetBoolField(TEXT("locator_verified"), true);
+	Data->SetArrayField(TEXT("warnings"), TArray<TSharedPtr<FJsonValue>>());
+	Data->SetBoolField(TEXT("success"), true);
 	return FCortexCommandRouter::Success(Data);
 }
 

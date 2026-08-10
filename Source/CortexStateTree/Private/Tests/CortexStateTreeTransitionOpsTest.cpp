@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "CortexSTCompat.h"
 #include "CortexSTTypes.h"
 #include "CortexStateTreeCommandHandler.h"
 #include "CortexStateTreeTestUtils.h"
@@ -289,7 +290,7 @@ bool FCortexStateTreeTransitionMutationTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("set transition updates trigger"), TransitionAfterSet.Trigger, EStateTreeTransitionTrigger::OnTick);
 	TestEqual(TEXT("set transition updates priority"), TransitionAfterSet.Priority, EStateTreeTransitionPriority::Critical);
 	TestFalse(TEXT("set transition updates enabled"), TransitionAfterSet.bTransitionEnabled);
-	TestFalse(TEXT("set transition clears event tag"), TransitionAfterSet.RequiredEvent.Tag.IsValid());
+	TestFalse(TEXT("set transition clears event tag"), CortexSTCompat::GetTransitionEventTag(TransitionAfterSet).IsValid());
 	TestEqual(TEXT("set transition keeps target state"), TransitionAfterSet.State.ID.ToString(EGuidFormats::DigitsWithHyphens), TargetStateId);
 
 	const FCortexCommandResult GetStateAfterSet = Handler.Execute(TEXT("get_state"), GetStateParams);

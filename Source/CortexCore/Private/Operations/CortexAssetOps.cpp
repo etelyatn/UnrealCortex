@@ -412,9 +412,13 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 		bool bSaved = true;
 		if (bForce || bWasDirty)
 		{
+			// World packages must save as .umap — the asset extension would create a
+			// shadow .uasset duplicate beside the tracked .umap.
 			const FString PackageFilename = FPackageName::LongPackageNameToFilename(
 				Package->GetName(),
-				FPackageName::GetAssetPackageExtension()
+				Package->ContainsMap()
+					? FPackageName::GetMapPackageExtension()
+					: FPackageName::GetAssetPackageExtension()
 			);
 
 			FSavePackageArgs SaveArgs;

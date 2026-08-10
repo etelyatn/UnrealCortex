@@ -268,6 +268,14 @@ def register_datatable_tools(mcp, connection: UEConnection):
         include a '_struct_type' key specifying the concrete type name
         (e.g., '_struct_type': 'FRipRewardItem').
 
+        For table-backed FText fields, writes may pass this object shape. Query/get responses
+        return the same object shape for FText fields:
+        {"Title":{"value":"Fireball","string_table":{"table_id":"/Game/Data/ST_CodexEntries.ST_CodexEntries","key":"fireball.title"}}}
+
+        For TArray<UStruct> fields, pass an array of objects matching the element struct:
+        {"Steps":[{"Description":{"value":"Charge flame.","string_table":{"table_id":"/Game/Data/ST_CodexEntries.ST_CodexEntries","key":"fireball.step_0"}}}]}
+        Malformed nested array elements are rejected and reported with row/field context.
+
         Note: This marks the DataTable as dirty (unsaved). Use Unreal's File > Save All to persist.
 
         Args:
@@ -331,16 +339,25 @@ def register_datatable_tools(mcp, connection: UEConnection):
     @mcp.tool()
     def search_datatable_content(
         table_path: str,
-        search_text: str,
+        search_text: str = "",
         fields: str = "",
         preview_fields: str = "",
         limit: int = 20,
+        search_mode: str = "",
+        string_table_path: str = "",
+        key_pattern: str = "",
+        keys: str = "",
     ) -> str:
         """Search inside DataTable row field values for a case-insensitive substring match.
 
         Searches all string-like fields (FString, FName, FText) including one level of nested
         structs. For FText fields, searches the source/invariant string (English during dev).
         Works with both regular and CompositeDataTables (composites search all aggregated rows).
+
+        Set search_mode="string_table_refs" to scan recursive FText references instead of text content.
+        Use string_table_path, key_pattern, or keys to restrict the scan. Results include
+        {table_path,row_name,field_path,string_table_id,key,value}; nested array paths use
+        Steps[0].Description notation.
 
         Use this instead of query_datatable when row names are generic (e.g., 'GenericOrder_1')
         and you need to find rows by their content. Prefer composite tables (e.g., CQT_Quests)
@@ -373,6 +390,14 @@ def register_datatable_tools(mcp, connection: UEConnection):
                 "search_text": search_text,
                 "limit": limit,
             }
+            if search_mode:
+                params["search_mode"] = search_mode
+            if string_table_path:
+                params["string_table_path"] = string_table_path
+            if key_pattern:
+                params["key_pattern"] = key_pattern
+            if keys:
+                params["keys"] = [k.strip() for k in keys.split(",") if k.strip()]
             if fields:
                 params["fields"] = [f.strip() for f in fields.split(",")]
             if preview_fields:

@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "Misc/EngineVersionComparison.h"
 #include "CortexSTTypes.h"
 #include "CortexStateTreeCommandHandler.h"
 #include "CortexStateTreeTestUtils.h"
@@ -203,13 +204,19 @@ bool FCortexStateTreeStateMutationTest::RunTest(const FString& Parameters)
 	}
 
 	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
-	Properties->SetStringField(TEXT("description"), TEXT("Investigate noise"));
 	Properties->SetBoolField(TEXT("enabled"), false);
+	Properties->SetStringField(TEXT("selection_behavior"), TEXT("TryEnterState"));
+	// Engine-version-gated fields: set_state_properties rejects these with an
+	// unsupported-field error on engines that lack the state members.
+#if !UE_VERSION_OLDER_THAN(5, 5, 0)
+	Properties->SetStringField(TEXT("description"), TEXT("Investigate noise"));
 	Properties->SetBoolField(TEXT("check_prerequisites_when_activating_child_directly"), false);
+#endif
+#if !UE_VERSION_OLDER_THAN(5, 6, 0)
 	Properties->SetBoolField(TEXT("has_custom_tick_rate"), true);
 	Properties->SetNumberField(TEXT("custom_tick_rate"), 0.25);
-	Properties->SetStringField(TEXT("selection_behavior"), TEXT("TryEnterState"));
 	Properties->SetStringField(TEXT("tasks_completion"), TEXT("Any"));
+#endif
 
 	TSharedPtr<FJsonObject> SetParams = CortexStateTreeTest::Params();
 	SetParams->SetStringField(TEXT("asset_path"), AssetPath);
@@ -271,11 +278,15 @@ bool FCortexStateTreeStateMutationTest::RunTest(const FString& Parameters)
 	}
 
 	TestEqual(TEXT("rename mutates state name"), MovedState->Name.ToString(), FString(TEXT("Investigate")));
-	TestEqual(TEXT("set_state_properties mutates description"), MovedState->Description, FString(TEXT("Investigate noise")));
 	TestFalse(TEXT("set_state_properties mutates enabled"), MovedState->bEnabled);
+#if !UE_VERSION_OLDER_THAN(5, 5, 0)
+	TestEqual(TEXT("set_state_properties mutates description"), MovedState->Description, FString(TEXT("Investigate noise")));
 	TestFalse(TEXT("set_state_properties mutates child activation prerequisites"), MovedState->bCheckPrerequisitesWhenActivatingChildDirectly);
+#endif
+#if !UE_VERSION_OLDER_THAN(5, 6, 0)
 	TestTrue(TEXT("set_state_properties enables custom tick"), MovedState->bHasCustomTickRate);
 	TestEqual(TEXT("set_state_properties mutates custom tick"), MovedState->CustomTickRate, 0.25f);
+#endif
 	TestTrue(TEXT("move_state updates parent"), MovedState->Parent == TargetState);
 	TestEqual(TEXT("move_state places state under target"), TargetState->Children.Num(), 1);
 	TestTrue(TEXT("move_state preserves target child ordering"), TargetState->Children[0] == MovedState);

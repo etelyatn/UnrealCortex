@@ -43,12 +43,15 @@ class FCortexSkipPackageWarningCapture final : public FOutputDevice
 {
 public:
 	int32 SkipPackageWarnings = 0;
+	int32 FailedFindObjectWarnings = 0;
 
 	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category) override
 	{
 		(void)Category;
 
-		if (Verbosity != ELogVerbosity::Warning || V == nullptr)
+		const ELogVerbosity::Type VerbosityLevel =
+			static_cast<ELogVerbosity::Type>(Verbosity & ELogVerbosity::VerbosityMask);
+		if (VerbosityLevel != ELogVerbosity::Warning || V == nullptr)
 		{
 			return;
 		}
@@ -58,6 +61,15 @@ public:
 		{
 			++SkipPackageWarnings;
 		}
+		if (Message.Contains(TEXT("Failed to find object")))
+		{
+			++FailedFindObjectWarnings;
+		}
+	}
+
+	virtual bool CanBeUsedOnAnyThread() const override
+	{
+		return true;
 	}
 };
 
@@ -165,22 +177,31 @@ bool FCortexStateTreeCreateRejectsInvalidSchemaClassesTest::RunTest(const FStrin
 	}
 
 	{
-		FCortexSkipPackageWarningCapture Capture;
-		GLog->AddOutputDevice(&Capture);
+		auto ExpectQuietInvalidSchema = [this, &Handler](const FString& SchemaPath, const FString& AssetSuffix, const FString& CaseName)
+		{
+			FCortexSkipPackageWarningCapture Capture;
+			GLog->AddOutputDevice(&Capture);
 
-		const FString AssetPath = CortexStateTreeTest::MakeAssetPath(TEXT("ST_MissingSchema"));
-		TSharedPtr<FJsonObject> Params = CortexStateTreeTest::Params();
-		Params->SetStringField(TEXT("asset_path"), AssetPath);
-		Params->SetStringField(TEXT("schema_class"), TEXT("/Script/NoSuchModule.NoSuchSchema"));
+			const FString AssetPath = CortexStateTreeTest::MakeAssetPath(AssetSuffix);
+			TSharedPtr<FJsonObject> Params = CortexStateTreeTest::Params();
+			Params->SetStringField(TEXT("asset_path"), AssetPath);
+			Params->SetStringField(TEXT("schema_class"), SchemaPath);
 
-		const FCortexCommandResult Result = Handler.Execute(TEXT("create_asset"), Params);
+			const FCortexCommandResult Result = Handler.Execute(TEXT("create_asset"), Params);
 
-		GLog->RemoveOutputDevice(&Capture);
+			GLog->RemoveOutputDevice(&Capture);
 
-		TestFalse(TEXT("missing schema should fail"), Result.bSuccess);
-		TestEqual(TEXT("missing schema error code"), Result.ErrorCode, CortexErrorCodes::StateTreeSchemaInvalid);
-		TestEqual(TEXT("missing schema should not emit SkipPackage warnings"), Capture.SkipPackageWarnings, 0);
-		CortexStateTreeTest::DeleteIfLoaded(AssetPath);
+			TestFalse(*FString::Printf(TEXT("%s should fail"), *CaseName), Result.bSuccess);
+			TestEqual(*FString::Printf(TEXT("%s error code"), *CaseName), Result.ErrorCode, CortexErrorCodes::StateTreeSchemaInvalid);
+			TestEqual(*FString::Printf(TEXT("%s should not emit SkipPackage warnings"), *CaseName), Capture.SkipPackageWarnings, 0);
+			TestEqual(*FString::Printf(TEXT("%s should not emit find-object warnings"), *CaseName), Capture.FailedFindObjectWarnings, 0);
+			CortexStateTreeTest::DeleteIfLoaded(AssetPath);
+		};
+
+		ExpectQuietInvalidSchema(
+			TEXT("/Script/NoSuchModule.NoSuchSchema"),
+			TEXT("ST_MissingSchemaModule"),
+			TEXT("missing schema module"));
 	}
 
 	return true;

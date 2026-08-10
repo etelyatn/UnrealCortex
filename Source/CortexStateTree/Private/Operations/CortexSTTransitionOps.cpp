@@ -1,6 +1,7 @@
-#include "Operations/CortexSTTransitionOps.h"
+﻿#include "Operations/CortexSTTransitionOps.h"
 
 #include "CortexCommandRouter.h"
+#include "CortexSTCompat.h"
 #include "CortexSTTypes.h"
 #include "CortexStateTreeModule.h"
 #include "Logging/TokenizedMessage.h"
@@ -10,7 +11,6 @@
 #include "ScopedTransaction.h"
 #include "StateTree.h"
 #include "StateTreeCompilerLog.h"
-#include "StateTreeEditingSubsystem.h"
 #include "StateTreeEditorData.h"
 #include "StateTreeState.h"
 #include "StateTreeTypes.h"
@@ -534,7 +534,7 @@ TSharedPtr<FJsonObject> BuildTransitionCompileDiagnostics(
 	const FStateTreeCompilerLog& CompileLog,
 	const bool bCompiled)
 {
-	TArray<TSharedRef<FTokenizedMessage>> TokenizedMessages = CompileLog.ToTokenizedMessages();
+	TArray<TSharedRef<FTokenizedMessage>> TokenizedMessages = CortexSTCompat::GetCompilerLogTokenizedMessages(CompileLog);
 	TArray<TSharedPtr<FJsonValue>> Diagnostics;
 	Diagnostics.Reserve(TokenizedMessages.Num());
 
@@ -624,7 +624,7 @@ FCortexCommandResult FinalizeTransitionMutation(
 		const uint32 PreviousCompiledHash = Context.StateTree->LastCompiledEditorDataHash;
 
 		FStateTreeCompilerLog CompileLog;
-		const bool bCompiled = UStateTreeEditingSubsystem::CompileStateTree(Context.StateTree, CompileLog);
+		const bool bCompiled = CortexSTCompat::CompileStateTree(Context.StateTree, CompileLog);
 
 		const bool bIsReady = Context.StateTree->IsReadyToRun();
 		const uint32 CurrentCompiledHash = Context.StateTree->LastCompiledEditorDataHash;
@@ -761,7 +761,7 @@ bool ApplyTransitionPropertiesPatch(
 			return false;
 		}
 
-		Transition.RequiredEvent.Tag = EventTag;
+		CortexSTCompat::SetTransitionEventTag(Transition, EventTag);
 	}
 
 	FCortexSTStateRef TargetStateRef;
@@ -878,11 +878,12 @@ FCortexCommandResult FCortexSTTransitionOps::AddTransition(const TSharedPtr<FJso
 	Context.EditorData->Modify();
 	SourceStateRef.State->Modify();
 
-	FStateTreeTransition& Transition = SourceStateRef.State->AddTransition(
+	FStateTreeTransition& Transition = CortexSTCompat::AddTransition(
+		*SourceStateRef.State,
 		Trigger,
 		EStateTreeTransitionType::GotoState,
-		TargetStateRef.State);
-	Transition.RequiredEvent.Tag = EventTag;
+		TargetStateRef.State,
+		EventTag);
 	Transition.Priority = Priority;
 	Transition.bTransitionEnabled = true;
 	Transition.State = TargetStateRef.State->GetLinkToState();

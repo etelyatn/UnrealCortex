@@ -577,3 +577,121 @@ bool FCortexBPSearchWidgetStringTableMatchTest::RunTest(const FString& Parameter
 	CleanupSearchTestBlueprint(AssetPath);
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPSearchPinTypedTextStringTableMatchTest,
+	"Cortex.Blueprint.Search.PinTypedTextStringTableMatch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPSearchPinTypedTextStringTableMatchTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	FCortexBPCommandHandler Handler;
+	const FString AssetPath = CreateSearchTestBlueprint(Handler, Suffix);
+	TestFalse(TEXT("Test Blueprint should be created"), AssetPath.IsEmpty());
+	if (AssetPath.IsEmpty())
+	{
+		return false;
+	}
+
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("bp"), TEXT("Cortex Blueprint"), TEXT("1.0.1"),
+		MakeShared<FCortexBPCommandHandler>());
+	Router.RegisterDomain(TEXT("graph"), TEXT("Cortex Graph"), TEXT("1.0.1"),
+		MakeShared<FCortexGraphCommandHandler>());
+
+	const TSharedPtr<FJsonObject> AddNodeParams = MakeShared<FJsonObject>();
+	AddNodeParams->SetStringField(TEXT("asset_path"), AssetPath);
+	AddNodeParams->SetStringField(TEXT("node_class"), TEXT("UK2Node_CallFunction"));
+	TSharedPtr<FJsonObject> AddNodeInnerParams = MakeShared<FJsonObject>();
+	AddNodeInnerParams->SetStringField(TEXT("function_name"), TEXT("KismetSystemLibrary.PrintText"));
+	AddNodeParams->SetObjectField(TEXT("params"), AddNodeInnerParams);
+
+	const FCortexCommandResult AddNodeResult = Router.Execute(TEXT("graph.add_node"), AddNodeParams);
+	TestTrue(TEXT("graph.add_node PrintText should succeed"), AddNodeResult.bSuccess);
+
+	FString TextNodeId;
+	if (AddNodeResult.Data.IsValid())
+	{
+		AddNodeResult.Data->TryGetStringField(TEXT("node_id"), TextNodeId);
+	}
+	TestFalse(TEXT("Added node should have node_id"), TextNodeId.IsEmpty());
+
+	UStringTable* TestTable = NewObject<UStringTable>(
+		GetTransientPackage(),
+		FName(TEXT("TestStringTable_BPSearchPinTypedText")));
+	TestTable->GetMutableStringTable()->SetNamespace(TEXT("BPPinSearch"));
+	TestTable->GetMutableStringTable()->SetSourceString(TEXT("Mail.Button.Pay"), TEXT("Pay"));
+
+	TSharedPtr<FJsonObject> StringTablePayload = MakeShared<FJsonObject>();
+	StringTablePayload->SetStringField(TEXT("table_id"), TestTable->GetStringTableId().ToString());
+	StringTablePayload->SetStringField(TEXT("key"), TEXT("Mail.Button.Pay"));
+
+	TSharedPtr<FJsonObject> TextPayload = MakeShared<FJsonObject>();
+	TextPayload->SetStringField(TEXT("type"), TEXT("FText"));
+	TextPayload->SetStringField(TEXT("source_kind"), TEXT("string_table"));
+	TextPayload->SetStringField(TEXT("value"), TEXT("Pay"));
+	TextPayload->SetObjectField(TEXT("string_table"), StringTablePayload);
+
+	TSharedPtr<FJsonObject> SetPinParams = MakeShared<FJsonObject>();
+	SetPinParams->SetStringField(TEXT("asset_path"), AssetPath);
+	SetPinParams->SetStringField(TEXT("node_id"), TextNodeId);
+	SetPinParams->SetStringField(TEXT("pin_name"), TEXT("InText"));
+	SetPinParams->SetObjectField(TEXT("text"), TextPayload);
+
+	const FCortexCommandResult SetPinResult = Router.Execute(TEXT("graph.set_pin_value"), SetPinParams);
+	TestTrue(TEXT("typed text mutation succeeds before search"), SetPinResult.bSuccess);
+
+	const TSharedPtr<FJsonObject> SearchParams = MakeShared<FJsonObject>();
+	SearchParams->SetStringField(TEXT("asset_path"), AssetPath);
+	SearchParams->SetStringField(TEXT("query"), TEXT("Mail.Button.Pay"));
+	TArray<TSharedPtr<FJsonValue>> SearchIn;
+	SearchIn.Add(MakeShared<FJsonValueString>(TEXT("pins")));
+	SearchParams->SetArrayField(TEXT("search_in"), SearchIn);
+
+	const FCortexCommandResult SearchResult = Handler.Execute(TEXT("search"), SearchParams);
+	TestTrue(TEXT("search should succeed"), SearchResult.bSuccess);
+
+	bool bFoundPinMatch = false;
+	if (SearchResult.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Matches = nullptr;
+		if (SearchResult.Data->TryGetArrayField(TEXT("matches"), Matches) && Matches)
+		{
+			for (const TSharedPtr<FJsonValue>& MatchValue : *Matches)
+			{
+				const TSharedPtr<FJsonObject> MatchObj = MatchValue->AsObject();
+				if (!MatchObj.IsValid())
+				{
+					continue;
+				}
+
+				FString Type;
+				MatchObj->TryGetStringField(TEXT("type"), Type);
+				if (Type != TEXT("pin"))
+				{
+					continue;
+				}
+
+				const TSharedPtr<FJsonObject>* StringTableObj = nullptr;
+				if (MatchObj->TryGetObjectField(TEXT("string_table"), StringTableObj) && StringTableObj)
+				{
+					FString Key;
+					(*StringTableObj)->TryGetStringField(TEXT("key"), Key);
+					if (Key == TEXT("Mail.Button.Pay"))
+					{
+						bFoundPinMatch = true;
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	TestTrue(TEXT("search should match typed text pin StringTable key"), bFoundPinMatch);
+
+	TestTable->MarkAsGarbage();
+	CleanupSearchTestBlueprint(AssetPath);
+	return true;
+}

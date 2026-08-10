@@ -113,6 +113,12 @@ bool FCortexWorkbenchDefaultSessionUsesActiveProviderTest::RunTest(const FString
 	Settings.SetEffortLevel(ECortexEffortLevel::Medium);
 	Settings.SetSelectedModel(TEXT("gpt-5.4"));
 
+	FCortexFrontendModule& Module = FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
+	if (TSharedPtr<FCortexCliSession> ExistingSession = Module.GetOrCreateSession().Pin())
+	{
+		Module.ReleaseMainChatSession(ExistingSession);
+	}
+
 	const FCortexSessionConfig Config = FCortexFrontendModule::CreateDefaultSessionConfig();
 	TestEqual(TEXT("Default session config should pin the active provider"), Config.ProviderId, FName(TEXT("codex")));
 	TestEqual(TEXT("Default session config should resolve active provider metadata"), Config.ResolvedOptions.ProviderId, FName(TEXT("codex")));
@@ -125,7 +131,6 @@ bool FCortexWorkbenchDefaultSessionUsesActiveProviderTest::RunTest(const FString
 	TestEqual(TEXT("Default session config should snapshot custom directive"), Config.LaunchOptions.CustomDirective, FString(TEXT("Workbench snapshot")));
 	TestEqual(TEXT("Default chat session config should explicitly use persistent lifetime"), Config.LifetimePolicy, ECortexSessionLifetimePolicy::Persistent);
 
-	FCortexFrontendModule& Module = FModuleManager::GetModuleChecked<FCortexFrontendModule>(TEXT("CortexFrontend"));
 	TSharedPtr<FCortexCliSession> Session = Module.GetOrCreateSession().Pin();
 	TestTrue(TEXT("Workbench main chat session should exist"), Session.IsValid());
 	if (!Session.IsValid())
@@ -135,6 +140,7 @@ bool FCortexWorkbenchDefaultSessionUsesActiveProviderTest::RunTest(const FString
 
 	TestEqual(TEXT("Workbench session should use the active provider"), Session->GetProviderId(), FName(TEXT("codex")));
 	TestEqual(TEXT("Workbench session should pin persistent lifetime"), Session->GetLifetimePolicy(), ECortexSessionLifetimePolicy::Persistent);
+	Module.ReleaseMainChatSession(Session);
 	return true;
 }
 

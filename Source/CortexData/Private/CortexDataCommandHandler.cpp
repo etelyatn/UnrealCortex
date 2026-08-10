@@ -6,6 +6,10 @@
 #include "Operations/CortexLocalizationOps.h"
 #include "Operations/CortexAssetSearchOps.h"
 #include "Operations/CortexCurveTableOps.h"
+#include "Operations/CortexDataExportOps.h"
+#include "Operations/CortexDataSchemaExportOps.h"
+#include "Operations/CortexDataImportQueueOps.h"
+#include "Operations/CortexDataJsonDiffOps.h"
 
 FCortexCommandResult FCortexDataCommandHandler::Execute(
     const FString& Command,
@@ -122,6 +126,10 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
     {
         return FCortexDataLocalizationOps::SetTranslation(Params);
     }
+    if (Command == TEXT("update_string_table"))
+    {
+        return FCortexDataLocalizationOps::UpdateStringTable(Params);
+    }
 
     // Asset search
     if (Command == TEXT("search_assets"))
@@ -141,6 +149,38 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
     if (Command == TEXT("update_curve_table_row"))
     {
         return FCortexDataCurveTableOps::UpdateCurveTableRow(Params);
+    }
+
+    // Raw JSON export operations
+    if (Command == TEXT("export_datatable_json"))
+    {
+        return FCortexDataExportOps::ExportDatatableJson(Params);
+    }
+    if (Command == TEXT("export_string_table_json"))
+    {
+        return FCortexDataExportOps::ExportStringTableJson(Params);
+    }
+    if (Command == TEXT("export_data_assets_json"))
+    {
+        return FCortexDataExportOps::ExportDataAssetsJson(Params);
+    }
+    if (Command == TEXT("export_bulk_json"))
+    {
+        return FCortexDataExportOps::ExportBulkJson(Params);
+    }
+    if (Command == TEXT("export_schema_json"))
+    {
+        return FCortexDataSchemaExportOps::ExportSchemaJson(Params);
+    }
+    if (Command == TEXT("compare_data_json"))
+    {
+        return FCortexDataJsonDiffOps::CompareDataJson(Params);
+    }
+
+    // Import queue operations
+    if (Command == TEXT("apply_import_ops_json"))
+    {
+        return FCortexDataImportQueueOps::ApplyImportOpsJson(Params);
     }
 
     return FCortexCommandRouter::Error(
@@ -192,10 +232,14 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Validate without writing")),
         FCortexCommandInfo{ TEXT("search_datatable_content"), TEXT("Full-text search in tables") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable asset path"))
-            .Required(TEXT("search_text"), TEXT("string"), TEXT("Case-insensitive search text (alias: query)"))
+            .Optional(TEXT("search_text"), TEXT("string"), TEXT("Case-insensitive search text (alias: query)"))
             .Optional(TEXT("fields"), TEXT("array"), TEXT("Fields to search"))
             .Optional(TEXT("preview_fields"), TEXT("array"), TEXT("Fields to include in match previews"))
-            .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum matches to return")),
+            .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum matches to return"))
+            .Optional(TEXT("search_mode"), TEXT("string"), TEXT("Use string_table_refs to scan recursive FText StringTable references"))
+            .Optional(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable path/id filter for string_table_refs mode"))
+            .Optional(TEXT("key_pattern"), TEXT("string"), TEXT("Wildcard StringTable key filter for string_table_refs mode"))
+            .Optional(TEXT("keys"), TEXT("array"), TEXT("Exact StringTable keys for string_table_refs mode")),
         FCortexCommandInfo{ TEXT("get_data_catalog"), TEXT("Discovery catalog of all data") },
         FCortexCommandInfo{ TEXT("resolve_tags"), TEXT("Look up rows by GameplayTag") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))
@@ -216,7 +260,7 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
         FCortexCommandInfo{ TEXT("list_data_assets"), TEXT("List DataAssets") }
             .Optional(TEXT("class_name"), TEXT("string"), TEXT("Optional class filter"))
             .Optional(TEXT("path_filter"), TEXT("string"), TEXT("Optional asset path prefix")),
-        FCortexCommandInfo{ TEXT("get_data_asset"), TEXT("Get DataAsset properties") }
+        FCortexCommandInfo{ TEXT("get_data_asset"), TEXT("Get deep DataAsset properties with partial/issues diagnostics") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("DataAsset path")),
         FCortexCommandInfo{ TEXT("update_data_asset"), TEXT("Update DataAsset properties") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("DataAsset path"))
@@ -237,6 +281,13 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Required(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable asset path"))
             .Required(TEXT("key"), TEXT("string"), TEXT("StringTable key"))
             .Required(TEXT("text"), TEXT("string"), TEXT("Localized text value")),
+        FCortexCommandInfo{ TEXT("update_string_table"), TEXT("Apply ordered StringTable batch mutations") }
+            .Required(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable asset path"))
+            .Required(TEXT("operations"), TEXT("array"), TEXT("Ordered mutation operations"))
+            .Required(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview without mutating; must be explicit"))
+            .Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the asset after applying mutations"))
+            .Optional(TEXT("verbose"), TEXT("boolean"), TEXT("Include full mutation arrays"))
+            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Skip invalid operations and apply valid ones")),
         FCortexCommandInfo{ TEXT("search_assets"), TEXT("Asset Registry search") }
             .Optional(TEXT("query"), TEXT("string"), TEXT("Search text"))
             .Optional(TEXT("class_names"), TEXT("array"), TEXT("Allowed asset classes"))
@@ -251,5 +302,53 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Required(TEXT("table_path"), TEXT("string"), TEXT("CurveTable asset path"))
             .Required(TEXT("row_name"), TEXT("string"), TEXT("Curve row identifier"))
             .Required(TEXT("keyframes"), TEXT("array"), TEXT("Curve keyframes to apply")),
+        FCortexCommandInfo{ TEXT("export_datatable_json"), TEXT("Export DataTable rows to a JSON file and return a compact summary") }
+            .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable or CompositeDataTable asset path"))
+            .Required(TEXT("out_path"), TEXT("string"), TEXT("Output JSON file path"))
+            .Optional(TEXT("fields"), TEXT("array"), TEXT("Subset of row fields to serialize"))
+            .Optional(TEXT("row_names"), TEXT("array"), TEXT("Exact row names to export"))
+            .Optional(TEXT("row_name_pattern"), TEXT("string"), TEXT("Wildcard row-name filter"))
+            .Optional(TEXT("include_schema"), TEXT("boolean"), TEXT("Include row struct schema metadata in the file"))
+            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Permit serialization warnings without failing")),
+        FCortexCommandInfo{ TEXT("export_string_table_json"), TEXT("Export StringTable entries to a JSON file and return a compact summary") }
+            .Required(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable asset path"))
+            .Required(TEXT("out_path"), TEXT("string"), TEXT("Output JSON file path"))
+            .Optional(TEXT("key_pattern"), TEXT("string"), TEXT("Wildcard key filter"))
+            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Permit serialization warnings without failing")),
+        FCortexCommandInfo{ TEXT("export_data_assets_json"), TEXT("Export DataAsset catalog entries or properties to a JSON file and return a compact summary") }
+            .Required(TEXT("out_path"), TEXT("string"), TEXT("Output JSON file path"))
+            .Optional(TEXT("class_name"), TEXT("string"), TEXT("DataAsset class filter"))
+            .Optional(TEXT("class_filter"), TEXT("string"), TEXT("Compatibility alias for class_name"))
+            .Optional(TEXT("path_filter"), TEXT("string"), TEXT("Asset path prefix filter"))
+            .Optional(TEXT("asset_paths"), TEXT("array"), TEXT("Explicit asset paths"))
+            .Optional(TEXT("include_properties"), TEXT("boolean"), TEXT("Load assets and serialize editable/exportable properties"))
+            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Permit omitted assets from blocking serialization issues; warning-only issues return success with partial=true")),
+        FCortexCommandInfo{ TEXT("export_bulk_json"), TEXT("Export multiple typed data resources to JSON files under one output directory") }
+            .Required(TEXT("out_dir"), TEXT("string"), TEXT("Base output directory"))
+            .Required(TEXT("items"), TEXT("array"), TEXT("Typed export specs. Each item requires type=datatable|string_table|data_assets, optional name, and optional relative out_path. datatable items use table_path plus optional fields/row_names/row_name_pattern/include_schema. string_table items use string_table_path plus optional key_pattern. data_assets items use class_name/path_filter/asset_paths/include_properties. Item out_path values are always relative to out_dir."))
+            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Continue independent item exports after failures")),
+        FCortexCommandInfo{ TEXT("export_schema_json"), TEXT("Export deterministic Data-domain schema snapshots to a JSON file and return a compact summary") }
+            .Required(TEXT("out_path"), TEXT("string"), TEXT("Output JSON file path"))
+            .Optional(TEXT("datatable_paths"), TEXT("array"), TEXT("Explicit DataTable object paths to include"))
+            .Optional(TEXT("struct_names"), TEXT("array"), TEXT("Explicit UStruct names to seed the struct closure"))
+            .Optional(TEXT("data_asset_classes"), TEXT("array"), TEXT("Explicit DataAsset classes to include"))
+            .Optional(TEXT("string_table_paths"), TEXT("array"), TEXT("Explicit StringTable object paths to include"))
+            .Optional(TEXT("include_inherited"), TEXT("boolean"), TEXT("Include inherited struct fields and class properties; defaults to true")),
+        FCortexCommandInfo{ TEXT("compare_data_json"), TEXT("Compare two structured JSON files and write a deterministic reconcile report") }
+            .Required(TEXT("left_path"), TEXT("string"), TEXT("First JSON input path"))
+            .Required(TEXT("right_path"), TEXT("string"), TEXT("Second JSON input path"))
+            .Required(TEXT("report_path"), TEXT("string"), TEXT("Output reconcile report path"))
+            .Optional(TEXT("mode"), TEXT("string"), TEXT("datatable_rows, string_table_entries, data_assets, or auto; defaults to auto"))
+            .Optional(TEXT("key_field"), TEXT("string"), TEXT("Explicit identity field for external record shapes"))
+            .Optional(TEXT("ignore_fields"), TEXT("array"), TEXT("Top-level normalized field names to ignore"))
+            .Optional(TEXT("include_equal"), TEXT("boolean"), TEXT("Include unchanged normalized records in the report")),
+        FCortexCommandInfo{ TEXT("apply_import_ops_json"), TEXT("Apply a validated CortexData import operation queue from a JSON file and write a detailed report") }
+            .Required(TEXT("ops_path"), TEXT("string"), TEXT("Input operation queue JSON file path"))
+            .Required(TEXT("report_path"), TEXT("string"), TEXT("Output execution report JSON file path"))
+            .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview without mutating; defaults to true"))
+            .Optional(TEXT("apply"), TEXT("boolean"), TEXT("Must be true with dry_run=false for mutation"))
+            .Optional(TEXT("stop_on_error"), TEXT("boolean"), TEXT("Stop after first failed operation; defaults to true"))
+            .Optional(TEXT("query_back"), TEXT("boolean"), TEXT("Verify affected targets after real apply; defaults to true"))
+            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Permit partial execution summary; defaults to false")),
     };
 }

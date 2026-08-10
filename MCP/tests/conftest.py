@@ -227,7 +227,7 @@ def actors_for_test(tcp_connection, cleanup_actors):
 
 
 def _map_tool_call(name: str, args: dict) -> tuple[str, dict]:
-    if name in {"core_cmd", "data_cmd", "blueprint_cmd", "graph_cmd", "level_cmd", "material_cmd", "umg_cmd", "qa_cmd", "reflect_cmd", "editor_cmd", "statetree_cmd", "blueprint_compose", "material_compose", "material_instance_compose", "widget_compose", "level_compose", "scenario_compose", "editor_restart", "schema_generate", "qa_test_step"}:
+    if name in {"core_cmd", "data_cmd", "blueprint_cmd", "graph_cmd", "level_cmd", "material_cmd", "umg_cmd", "qa_cmd", "reflect_cmd", "editor_cmd", "statetree_cmd", "anim_cmd", "blueprint_compose", "material_compose", "material_instance_compose", "widget_compose", "level_compose", "scenario_compose", "editor_restart", "schema_generate", "qa_test_step"}:
         return name, args
 
     if name == "level_batch":

@@ -51,6 +51,10 @@ def register_blueprint_compose_tools(mcp, connection) -> None:
         connections: Optional[list[dict]] = None,
         mode: str = "create",
         asset_path: str = "",
+        subgraph_path: str = "",
+        graph_kind: str = "",
+        owning_interface: str = "",
+        expected_fingerprint: Optional[dict] = None,
     ) -> str:
         return captured["create_blueprint_graph"](
             name=name,
@@ -64,4 +68,8 @@ def register_blueprint_compose_tools(mcp, connection) -> None:
             connections=connections,
             mode=mode,
             asset_path=asset_path,
+            subgraph_path=subgraph_path,
+            graph_kind=graph_kind,
+            owning_interface=owning_interface,
+            expected_fingerprint=expected_fingerprint,
         )

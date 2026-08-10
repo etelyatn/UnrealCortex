@@ -157,6 +157,19 @@ class TestValidation:
         with pytest.raises(ValueError, match=r"\$steps\["):
             _validate_spec("BP_Test", "/Game/", nodes=nodes, connections=[])
 
+    def test_pin_values_and_pin_text_values_same_pin_rejected(self):
+        nodes = [
+            {
+                "name": "PrintText",
+                "class": "CallFunction",
+                "params": {"function_name": "KismetSystemLibrary.PrintText"},
+                "pin_values": {"InText": "Pay"},
+                "pin_text_values": {"InText": {"type": "FText", "source_kind": "literal", "value": "Pay"}},
+            },
+        ]
+        with pytest.raises(ValueError, match="sets both pin_values and pin_text_values"):
+            _validate_spec("BP_Test", "/Game/", nodes=nodes, connections=[])
+
     def test_empty_nodes_and_connections_valid(self):
         """Variables-only BP with no nodes/connections should pass."""
         _validate_spec(
@@ -266,6 +279,64 @@ class TestBatchCommandGeneration:
         assert set_pin_cmds[0]["params"]["node_id"] == "$steps[1].data.node_id"
         pin_names = {c["params"]["pin_name"] for c in set_pin_cmds}
         assert pin_names == {"InString", "bPrintToScreen"}
+
+    def test_pin_text_values_emit_structured_text_command(self):
+        nodes = [
+            {
+                "name": "PrintText",
+                "class": "CallFunction",
+                "params": {"function_name": "KismetSystemLibrary.PrintText"},
+                "pin_text_values": {
+                    "InText": {
+                        "type": "FText",
+                        "source_kind": "string_table",
+                        "value": "Pay",
+                        "string_table": {
+                            "table_id": "/Game/UI/ST_UI.ST_UI",
+                            "key": "Mail.Button.Pay",
+                        },
+                    },
+                },
+            },
+        ]
+        commands = _build_batch_commands("BP_Test", "/Game/", "Actor", [], [], nodes, [], "EventGraph")
+
+        set_pin_cmds = [c for c in commands if c["command"] == "graph.set_pin_value"]
+        assert len(set_pin_cmds) == 1
+        assert set_pin_cmds[0]["params"]["pin_name"] == "InText"
+        assert "value" not in set_pin_cmds[0]["params"]
+        assert set_pin_cmds[0]["params"]["text"]["source_kind"] == "string_table"
+
+    def test_pin_text_values_do_not_emit_legacy_value_field(self):
+        nodes = [
+            {
+                "name": "PrintText",
+                "class": "CallFunction",
+                "params": {"function_name": "KismetSystemLibrary.PrintText"},
+                "pin_text_values": {
+                    "InText": {
+                        "type": "FText",
+                        "source_kind": "literal",
+                        "value": "Pay",
+                    },
+                },
+            },
+        ]
+        commands = _build_batch_commands(
+            "BP_Test",
+            "/Game/",
+            "Actor",
+            [],
+            [],
+            nodes,
+            [],
+            "EventGraph",
+        )
+
+        set_pin_cmds = [c for c in commands if c["command"] == "graph.set_pin_value"]
+        assert len(set_pin_cmds) == 1
+        assert "value" not in set_pin_cmds[0]["params"]
+        assert set_pin_cmds[0]["params"]["text"]["value"] == "Pay"
 
     def test_command_order_create_vars_funcs_nodes_pins_connects(self):
         """Commands ordered: create, variables, functions, nodes, pin_values, connections."""
@@ -619,6 +690,90 @@ class TestUpdateMode:
         assert result["success"] is False
         delete_calls = [c for c in mock_connection.send_command.call_args_list if c.args[0] == "blueprint.delete"]
         assert delete_calls == []
+
+    def test_update_mode_preflights_expected_fingerprint_before_batch(self):
+        fingerprint = {"package_saved_hash": "abc", "is_dirty": False, "dirty_epoch": "0", "not_ready": False}
+        mock_connection = MagicMock()
+        mock_connection.send_command.side_effect = [
+            {
+                "success": True,
+                "data": {
+                    "fingerprints": [
+                        {
+                            "asset_path": "/Game/Blueprints/BP_Existing",
+                            "fingerprint": fingerprint,
+                        }
+                    ],
+                    "count": 1,
+                },
+            },
+            {
+                "success": True,
+                "data": {
+                    "results": [
+                        {"index": 0, "success": True, "data": {"node_id": "new-node"}, "timing_ms": 1},
+                    ],
+                    "total_timing_ms": 1,
+                },
+            },
+            {"success": True, "data": {"success": True}},
+            {"success": True, "data": {"success": True}},
+            {
+                "success": True,
+                "data": {
+                    "is_compiled": True,
+                    "variables": [],
+                    "functions": [],
+                    "graphs": [{"name": "EventGraph", "node_count": 1}],
+                },
+            },
+            {"success": True, "data": {"nodes": [{"id": "new-node"}]}},
+        ]
+
+        tool = _extract_tool(mock_connection)
+        result = json.loads(
+            tool(
+                mode="update",
+                asset_path="/Game/Blueprints/BP_Existing",
+                expected_fingerprint=fingerprint,
+                nodes=[{"name": "NewNode", "class": "CallFunction"}],
+            )
+        )
+
+        assert result["success"] is True
+        calls = mock_connection.send_command.call_args_list
+        assert calls[0].args[0] == "core.asset_fingerprint"
+        assert calls[0].args[1] == {"paths": ["/Game/Blueprints/BP_Existing"]}
+        assert calls[1].args[0] == "batch"
+
+    def test_update_mode_rejects_stale_expected_fingerprint_before_batch(self):
+        mock_connection = MagicMock()
+        mock_connection.send_command.return_value = {
+            "success": True,
+            "data": {
+                "fingerprints": [
+                    {
+                        "asset_path": "/Game/Blueprints/BP_Existing",
+                        "fingerprint": {"package_saved_hash": "current"},
+                    }
+                ],
+                "count": 1,
+            },
+        }
+
+        tool = _extract_tool(mock_connection)
+        result = json.loads(
+            tool(
+                mode="update",
+                asset_path="/Game/Blueprints/BP_Existing",
+                expected_fingerprint={"package_saved_hash": "stale"},
+                nodes=[{"name": "NewNode", "class": "CallFunction"}],
+            )
+        )
+
+        assert result["success"] is False
+        assert "fingerprint" in result["error"]
+        assert [call.args[0] for call in mock_connection.send_command.call_args_list] == ["core.asset_fingerprint"]
 
 
 class TestBlueprintVerificationIntegration:

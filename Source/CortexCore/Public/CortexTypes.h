@@ -16,6 +16,12 @@ namespace CortexErrorCodes
 	static const FString InvalidValue = TEXT("INVALID_VALUE");
 	static const FString InvalidStructType = TEXT("INVALID_STRUCT_TYPE");
 	static const FString InvalidTag = TEXT("INVALID_TAG");
+	static const FString InvalidFilePath = TEXT("INVALID_FILE_PATH");
+	static const FString FileNotFound = TEXT("FILE_NOT_FOUND");
+	static const FString MalformedJson = TEXT("MALFORMED_JSON");
+	static const FString InvalidQueueShape = TEXT("INVALID_QUEUE_SHAPE");
+	static const FString UnsupportedCommand = TEXT("UNSUPPORTED_COMMAND");
+	static const FString QueryBackMismatch = TEXT("QUERY_BACK_MISMATCH");
 	static const FString SerializationError = TEXT("SERIALIZATION_ERROR");
 	static const FString EditorNotReady = TEXT("EDITOR_NOT_READY");
 	static const FString UnknownCommand = TEXT("UNKNOWN_COMMAND");
@@ -32,6 +38,9 @@ namespace CortexErrorCodes
 	static const FString PinTypeMismatch = TEXT("PIN_TYPE_MISMATCH");
 	static const FString ConnectionExists = TEXT("CONNECTION_EXISTS");
 	static const FString InvalidOperation = TEXT("INVALID_OPERATION");
+	static const FString UnsupportedOperation = TEXT("UNSUPPORTED_OPERATION");
+	static const FString VerificationFailed = TEXT("VERIFICATION_FAILED");
+	static const FString LocatorDrift = TEXT("LOCATOR_DRIFT");
 	static const FString BlueprintNotFound = TEXT("BLUEPRINT_NOT_FOUND");
 	static const FString BlueprintAlreadyExists = TEXT("BLUEPRINT_ALREADY_EXISTS");
 	static const FString InvalidBlueprintType = TEXT("INVALID_BLUEPRINT_TYPE");

@@ -1,6 +1,7 @@
-#include "Operations/CortexSTStateOps.h"
+﻿#include "Operations/CortexSTStateOps.h"
 
 #include "CortexCommandRouter.h"
+#include "CortexSTCompat.h"
 #include "CortexSTTypes.h"
 #include "CortexStateTreeModule.h"
 #include "Logging/TokenizedMessage.h"
@@ -10,7 +11,6 @@
 #include "ScopedTransaction.h"
 #include "StateTree.h"
 #include "StateTreeCompilerLog.h"
-#include "StateTreeEditingSubsystem.h"
 #include "StateTreeEditorData.h"
 #include "StateTreeState.h"
 #include "StateTreeTypes.h"
@@ -268,7 +268,7 @@ FCortexSTStateRef MakeStateRef(UStateTreeState* State)
 	StateRef.State = State;
 	StateRef.Parent = State != nullptr ? State->Parent : nullptr;
 	StateRef.Id = State != nullptr ? State->ID.ToString(EGuidFormats::DigitsWithHyphens) : FString();
-	StateRef.Path = State != nullptr ? State->GetPath() : FString();
+	StateRef.Path = CortexSTCompat::GetStatePath(State);
 	StateRef.Index = State != nullptr && State->Parent != nullptr
 		? State->Parent->Children.IndexOfByKey(State)
 		: 0;
@@ -331,7 +331,7 @@ TSharedPtr<FJsonObject> BuildCompileDiagnostics(
 	const FStateTreeCompilerLog& CompileLog,
 	const bool bCompiled)
 {
-	TArray<TSharedRef<FTokenizedMessage>> TokenizedMessages = CompileLog.ToTokenizedMessages();
+	TArray<TSharedRef<FTokenizedMessage>> TokenizedMessages = CortexSTCompat::GetCompilerLogTokenizedMessages(CompileLog);
 	TArray<TSharedPtr<FJsonValue>> Diagnostics;
 	Diagnostics.Reserve(TokenizedMessages.Num());
 
@@ -422,6 +422,10 @@ bool ApplyStatePropertiesPatch(
 		}
 		else if (FieldName == TEXT("description"))
 		{
+#if UE_VERSION_OLDER_THAN(5, 5, 0)
+			OutError = MakeInvalidFieldError(TEXT("description requires UE 5.5+ (UStateTreeState has no Description on this engine version)"));
+			return false;
+#else
 			FString DescriptionValue;
 			if (!Properties->TryGetStringField(FieldName, DescriptionValue))
 			{
@@ -430,6 +434,7 @@ bool ApplyStatePropertiesPatch(
 			}
 
 			State->Description = DescriptionValue;
+#endif
 		}
 		else if (FieldName == TEXT("tag"))
 		{
@@ -446,7 +451,11 @@ bool ApplyStatePropertiesPatch(
 				return false;
 			}
 
-			State->Tag = Tag;
+			if (!CortexSTCompat::SetStateTag(*State, Tag))
+			{
+				OutError = MakeInvalidFieldError(TEXT("tag requires UE 5.5+ (UStateTreeState has no gameplay tag on this engine version)"));
+				return false;
+			}
 		}
 		else if (FieldName == TEXT("enabled"))
 		{
@@ -495,6 +504,10 @@ bool ApplyStatePropertiesPatch(
 		}
 		else if (FieldName == TEXT("tasks_completion"))
 		{
+#if UE_VERSION_OLDER_THAN(5, 6, 0)
+			OutError = MakeInvalidFieldError(TEXT("tasks_completion requires UE 5.6+ (EStateTreeTaskCompletionType does not exist on this engine version)"));
+			return false;
+#else
 			FString RawValue;
 			if (!Properties->TryGetStringField(FieldName, RawValue))
 			{
@@ -509,6 +522,7 @@ bool ApplyStatePropertiesPatch(
 			}
 
 			State->TasksCompletion = TasksCompletion;
+#endif
 		}
 		else if (FieldName == TEXT("required_event_tag"))
 		{
@@ -525,11 +539,18 @@ bool ApplyStatePropertiesPatch(
 				return false;
 			}
 
-			State->RequiredEventToEnter.Tag = Tag;
-			State->bHasRequiredEventToEnter = State->RequiredEventToEnter.IsValid();
+			if (!CortexSTCompat::SetStateRequiredEventToEnter(*State, Tag))
+			{
+				OutError = MakeInvalidFieldError(TEXT("required_event_tag requires UE 5.5+ (UStateTreeState has no RequiredEventToEnter on this engine version)"));
+				return false;
+			}
 		}
 		else if (FieldName == TEXT("check_prerequisites_when_activating_child_directly"))
 		{
+#if UE_VERSION_OLDER_THAN(5, 5, 0)
+			OutError = MakeInvalidFieldError(TEXT("check_prerequisites_when_activating_child_directly requires UE 5.5+"));
+			return false;
+#else
 			bool bCheckPrerequisites = true;
 			if (!Properties->TryGetBoolField(FieldName, bCheckPrerequisites))
 			{
@@ -538,9 +559,14 @@ bool ApplyStatePropertiesPatch(
 			}
 
 			State->bCheckPrerequisitesWhenActivatingChildDirectly = bCheckPrerequisites;
+#endif
 		}
 		else if (FieldName == TEXT("has_custom_tick_rate"))
 		{
+#if UE_VERSION_OLDER_THAN(5, 6, 0)
+			OutError = MakeInvalidFieldError(TEXT("has_custom_tick_rate requires UE 5.6+ (scheduled tick)"));
+			return false;
+#else
 			bool bHasCustomTickRate = false;
 			if (!Properties->TryGetBoolField(FieldName, bHasCustomTickRate))
 			{
@@ -549,9 +575,14 @@ bool ApplyStatePropertiesPatch(
 			}
 
 			State->bHasCustomTickRate = bHasCustomTickRate;
+#endif
 		}
 		else if (FieldName == TEXT("custom_tick_rate"))
 		{
+#if UE_VERSION_OLDER_THAN(5, 6, 0)
+			OutError = MakeInvalidFieldError(TEXT("custom_tick_rate requires UE 5.6+ (scheduled tick)"));
+			return false;
+#else
 			double TickRate = 0.0;
 			if (!Properties->TryGetNumberField(FieldName, TickRate))
 			{
@@ -566,6 +597,7 @@ bool ApplyStatePropertiesPatch(
 			}
 
 			State->CustomTickRate = static_cast<float>(TickRate);
+#endif
 		}
 	}
 
@@ -608,7 +640,7 @@ FCortexCommandResult FinalizeMutation(
 		const uint32 PreviousCompiledHash = Context.StateTree->LastCompiledEditorDataHash;
 
 		FStateTreeCompilerLog CompileLog;
-		const bool bCompiled = UStateTreeEditingSubsystem::CompileStateTree(Context.StateTree, CompileLog);
+		const bool bCompiled = CortexSTCompat::CompileStateTree(Context.StateTree, CompileLog);
 
 		const bool bIsReady = Context.StateTree->IsReadyToRun();
 		const uint32 CurrentCompiledHash = Context.StateTree->LastCompiledEditorDataHash;
@@ -750,7 +782,10 @@ FCortexCommandResult FCortexSTStateOps::AddState(const TSharedPtr<FJsonObject>& 
 		{
 			return Error;
 		}
-		NewState->Tag = Tag;
+		if (!CortexSTCompat::SetStateTag(*NewState, Tag))
+		{
+			return MakeInvalidFieldError(TEXT("tag requires UE 5.5+ (UStateTreeState has no gameplay tag on this engine version)"));
+		}
 	}
 
 	if (Params.IsValid() && Params->HasField(TEXT("enabled")))
@@ -780,7 +815,7 @@ FCortexCommandResult FCortexSTStateOps::AddState(const TSharedPtr<FJsonObject>& 
 	}
 
 	const FString StateId = NewState->ID.ToString(EGuidFormats::DigitsWithHyphens);
-	const FString StatePath = NewState->GetPath();
+	const FString StatePath = CortexSTCompat::GetStatePath(NewState);
 	UE_LOG(LogCortexStateTree, Log, TEXT("Added StateTree state %s to %s"), *StatePath, *Context.AssetPath);
 	return FinalizeMutation(Context, Params, StateId, StatePath);
 }
@@ -893,7 +928,7 @@ FCortexCommandResult FCortexSTStateOps::RenameState(const TSharedPtr<FJsonObject
 	StateRef.State->Modify();
 	StateRef.State->Name = FName(*Name);
 
-	const FString StatePath = StateRef.State->GetPath();
+	const FString StatePath = CortexSTCompat::GetStatePath(StateRef.State);
 	UE_LOG(LogCortexStateTree, Log, TEXT("Renamed StateTree state %s to %s"), *StateRef.Id, *StatePath);
 	return FinalizeMutation(Context, Params, StateRef.Id, StatePath);
 }
@@ -999,7 +1034,7 @@ FCortexCommandResult FCortexSTStateOps::MoveState(const TSharedPtr<FJsonObject>&
 	SourceStateRef.State->Parent = TargetParentStateRef.State;
 	ReouterStateSubtree(SourceStateRef.State, TargetParentStateRef.State);
 
-	const FString StatePath = SourceStateRef.State->GetPath();
+	const FString StatePath = CortexSTCompat::GetStatePath(SourceStateRef.State);
 	UE_LOG(LogCortexStateTree, Log, TEXT("Moved StateTree state %s to %s"), *SourceStateRef.Id, *StatePath);
 	return FinalizeMutation(Context, Params, SourceStateRef.Id, StatePath);
 }
@@ -1049,7 +1084,7 @@ FCortexCommandResult FCortexSTStateOps::SetStateProperties(const TSharedPtr<FJso
 		return Error;
 	}
 
-	const FString StatePath = StateRef.State->GetPath();
+	const FString StatePath = CortexSTCompat::GetStatePath(StateRef.State);
 	UE_LOG(LogCortexStateTree, Log, TEXT("Updated StateTree state properties %s"), *StatePath);
 	return FinalizeMutation(Context, Params, StateRef.Id, StatePath);
 }

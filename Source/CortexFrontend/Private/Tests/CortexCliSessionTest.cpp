@@ -75,10 +75,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCancelTransitionsTest, "Cortex
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionNewChatGeneratesFreshSessionIdTest, "Cortex.Frontend.CliSession.NewChatGeneratesFreshSessionId", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexFrontendModuleGetOrCreateSessionTest, "Cortex.Frontend.Module.GetOrCreateSession", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionPerTurnExecFirstTurnDoesNotResumeWithoutConversationTest, "Cortex.Frontend.CliSession.PerTurnExecFirstTurnDoesNotResumeWithoutConversation", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexChatClosesStdinAfterPromptWriteTest, "Cortex.Frontend.CliSession.CodexChatClosesStdinAfterPromptWrite", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexChatKeepsAppServerOpenTest, "Cortex.Frontend.CliSession.CodexChatKeepsAppServerOpen", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexTurnBoundTaskClosesStdinAfterPromptWriteTest, "Cortex.Frontend.CliSession.CodexTurnBoundTaskClosesStdinAfterPromptWrite", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexChatResumesAcrossExecTurnsTest, "Cortex.Frontend.CliSession.CodexChatResumesAcrossExecTurns", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexChatDrainsFirstPromptAfterThreadStartTest, "Cortex.Frontend.CliSession.CodexChatDrainsFirstPromptAfterThreadStart", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexChatReusesAppServerWorkerTest, "Cortex.Frontend.CliSession.CodexChatReusesAppServerWorker", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexChatUnexpectedExitDuringTurnFailsTest, "Cortex.Frontend.CliSession.CodexChatUnexpectedExitDuringTurnFails", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexChatCancelResultReturnsIdleTest, "Cortex.Frontend.CliSession.CodexChatCancelResultReturnsIdle", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexChatIdleExitDoesNotFailCompletedTurnTest, "Cortex.Frontend.CliSession.CodexChatIdleExitDoesNotFailCompletedTurn", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexChatCancelDuringStartupClearsQueuedPromptTest, "Cortex.Frontend.CliSession.CodexChatCancelDuringStartupClearsQueuedPrompt", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexChatReconnectUsesAppServerTest, "Cortex.Frontend.CliSession.CodexChatReconnectUsesAppServer", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexAppServerStartupTimeoutTest, "Cortex.Frontend.CliSession.CodexChatStartupTimeout", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexAppServerTurnTimeoutTest, "Cortex.Frontend.CliSession.CodexChatTurnTimeout", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionTurnBoundFollowUpQueuesUntilProcessExitTest, "Cortex.Frontend.CliSession.TurnBoundFollowUpQueuesUntilProcessExit", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionTurnBoundFollowUpRespawnFailureCompletesQueuedTurnTest, "Cortex.Frontend.CliSession.TurnBoundFollowUpRespawnFailureCompletesQueuedTurn", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -335,12 +342,12 @@ bool FCortexCliSessionPerTurnExecFirstTurnDoesNotResumeWithoutConversationTest::
     return true;
 }
 
-bool FCortexCliSessionCodexChatClosesStdinAfterPromptWriteTest::RunTest(const FString& Parameters)
+bool FCortexCliSessionCodexChatKeepsAppServerOpenTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
 
     FCortexSessionConfig CodexConfig;
-    CodexConfig.SessionId = TEXT("codex-chat-stdin");
+    CodexConfig.SessionId = TEXT("codex-chat-app-server");
     CodexConfig.ProviderId = FName(TEXT("codex"));
     CodexConfig.ResolvedOptions.ProviderId = FName(TEXT("codex"));
     CodexConfig.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
@@ -348,8 +355,18 @@ bool FCortexCliSessionCodexChatClosesStdinAfterPromptWriteTest::RunTest(const FS
     CodexConfig.LifetimePolicy = ECortexSessionLifetimePolicy::Persistent;
 
     FCortexCliSession CodexSession(CodexConfig);
-    TestTrue(TEXT("Codex exec reads prompts from stdin and must receive EOF even for chat sessions"),
+    TestTrue(TEXT("Persistent Codex chat should use the app-server transport"),
+        CodexSession.UsesCodexAppServerTransportForTest());
+    TestFalse(TEXT("Persistent Codex chat should not close stdin after each prompt"),
         CodexSession.ShouldCloseStdinAfterPromptWriteForTest());
+
+    FCortexSessionConfig TurnBoundConfig = CodexConfig;
+    TurnBoundConfig.LifetimePolicy = ECortexSessionLifetimePolicy::TurnBound;
+    FCortexCliSession TurnBoundSession(TurnBoundConfig);
+    TestFalse(TEXT("Turn-bound Codex tasks should not use app-server transport"),
+        TurnBoundSession.UsesCodexAppServerTransportForTest());
+    TestTrue(TEXT("Turn-bound Codex exec still closes stdin after each prompt"),
+        TurnBoundSession.ShouldCloseStdinAfterPromptWriteForTest());
 
     return true;
 }
@@ -382,12 +399,12 @@ bool FCortexCliSessionCodexTurnBoundTaskClosesStdinAfterPromptWriteTest::RunTest
     return true;
 }
 
-bool FCortexCliSessionCodexChatResumesAcrossExecTurnsTest::RunTest(const FString& Parameters)
+bool FCortexCliSessionCodexChatDrainsFirstPromptAfterThreadStartTest::RunTest(const FString& Parameters)
 {
     (void)Parameters;
 
     FCortexSessionConfig Config;
-    Config.SessionId = TEXT("codex-chat-reuse");
+    Config.SessionId = TEXT("codex-chat-app-server-reuse");
     Config.ProviderId = FName(TEXT("codex"));
     Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
     Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
@@ -396,49 +413,103 @@ bool FCortexCliSessionCodexChatResumesAcrossExecTurnsTest::RunTest(const FString
 
     FCortexCliSession Session(Config);
 
-    int32 SpawnCallCount = 0;
-    bool bObservedResumeSession = false;
-    FCortexCliSession::SetSpawnProcessOverrideForTests(
-        [&SpawnCallCount, &bObservedResumeSession](FCortexCliSession& InSession, ECortexAccessMode AccessMode, bool bResumeSession)
+    int32 StartCallCount = 0;
+    int32 TurnCallCount = 0;
+    FString CapturedPrompt;
+    FCortexCliSession::SetCodexAppServerStartOverrideForTests(
+        [&StartCallCount](FCortexCliSession&, ECortexAccessMode)
         {
-            ++SpawnCallCount;
-            bObservedResumeSession = bResumeSession;
-            InSession.CompleteSpawnForTests(AccessMode);
+            ++StartCallCount;
+            return true;
+        });
+    FCortexCliSession::SetCodexAppServerTurnOverrideForTests(
+        [&TurnCallCount, &CapturedPrompt](FCortexCliSession&, const FString& Prompt, ECortexAccessMode)
+        {
+            ++TurnCallCount;
+            CapturedPrompt = Prompt;
             return true;
         });
     ON_SCOPE_EXIT
     {
-        FCortexCliSession::ClearSpawnProcessOverrideForTests();
+        FCortexCliSession::ClearCodexAppServerOverridesForTests();
     };
 
     FCortexPromptRequest FirstPrompt;
     FirstPrompt.Prompt = TEXT("First chat prompt");
     FirstPrompt.AccessMode = ECortexAccessMode::Guided;
-    TestTrue(TEXT("First persistent chat prompt should be accepted"), Session.SendPrompt(FirstPrompt));
-    TestEqual(TEXT("First persistent chat prompt should spawn the provider once from inactive"), SpawnCallCount, 1);
-    TestFalse(TEXT("First persistent chat prompt should launch a fresh provider instead of resuming"), bObservedResumeSession);
+    TestTrue(TEXT("First persistent Codex chat prompt should be accepted"), Session.SendPrompt(FirstPrompt));
+    TestEqual(TEXT("First persistent Codex chat prompt should start app-server once"), StartCallCount, 1);
+    TestEqual(TEXT("First prompt should remain queued until app-server thread is ready"), TurnCallCount, 0);
+    TestEqual(TEXT("Session should remain spawning until thread/start response arrives"), Session.GetState(), ECortexSessionState::Spawning);
+
+    FCortexStreamEvent InitEvent;
+    InitEvent.Type = ECortexStreamEventType::SessionInit;
+    InitEvent.SessionId = TEXT("thread-app-server");
+    Session.HandleWorkerEvent(InitEvent);
+
+    TestEqual(TEXT("Thread-ready event should drain exactly one queued first prompt"), TurnCallCount, 1);
+    TestEqual(TEXT("Drained prompt should be the originally queued user prompt"), CapturedPrompt, FString(TEXT("First chat prompt")));
+    TestEqual(TEXT("Drained prompt should transition to processing"), Session.GetState(), ECortexSessionState::Processing);
+    return true;
+}
+
+bool FCortexCliSessionCodexChatReusesAppServerWorkerTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("codex-chat-app-server-reuse");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+    Config.LifetimePolicy = ECortexSessionLifetimePolicy::Persistent;
+
+    FCortexCliSession Session(Config);
+
+    int32 StartCallCount = 0;
+    int32 TurnCallCount = 0;
+    FCortexCliSession::SetCodexAppServerStartOverrideForTests(
+        [&StartCallCount](FCortexCliSession& InSession, ECortexAccessMode AccessMode)
+        {
+            ++StartCallCount;
+            InSession.CompleteCodexAppServerStartForTests(TEXT("thread-app-server"), AccessMode);
+            return true;
+        });
+    FCortexCliSession::SetCodexAppServerTurnOverrideForTests(
+        [&TurnCallCount](FCortexCliSession&, const FString&, ECortexAccessMode)
+        {
+            ++TurnCallCount;
+            return true;
+        });
+    ON_SCOPE_EXIT
+    {
+        FCortexCliSession::ClearCodexAppServerOverridesForTests();
+    };
+
+    FCortexPromptRequest FirstPrompt;
+    FirstPrompt.Prompt = TEXT("First chat prompt");
+    FirstPrompt.AccessMode = ECortexAccessMode::Guided;
+    TestTrue(TEXT("First persistent Codex chat prompt should be accepted"), Session.SendPrompt(FirstPrompt));
+    TestEqual(TEXT("First persistent Codex chat prompt should start app-server once"), StartCallCount, 1);
+    TestEqual(TEXT("First persistent Codex chat prompt should send one turn after thread readiness"), TurnCallCount, 1);
     TestEqual(TEXT("Accepted prompt should transition to processing"), Session.GetState(), ECortexSessionState::Processing);
 
     FCortexStreamEvent ResultEvent;
     ResultEvent.Type = ECortexStreamEventType::Result;
     ResultEvent.ResultText = TEXT("First reply");
-    ResultEvent.SessionId = TEXT("thread-codex-chat");
+    ResultEvent.SessionId = TEXT("thread-app-server");
     Session.HandleWorkerEvent(ResultEvent);
-    TestEqual(TEXT("Completed Codex chat turn should wait for the exec process to exit"), Session.GetState(), ECortexSessionState::AwaitingTurnExit);
+    TestEqual(TEXT("Completed app-server Codex turn should return directly to idle"), Session.GetState(), ECortexSessionState::Idle);
 
     FCortexPromptRequest SecondPrompt;
     SecondPrompt.Prompt = TEXT("Second chat prompt");
     SecondPrompt.AccessMode = ECortexAccessMode::Guided;
-    TestTrue(TEXT("Second persistent chat prompt should be queued until the previous exec exits"), Session.SendPrompt(SecondPrompt));
-    TestEqual(TEXT("Persistent chat follow-up should not spawn while the previous exec is still exiting"), SpawnCallCount, 1);
-    TestEqual(TEXT("Follow-up prompt should remain queued until the previous exec exits"), Session.GetPendingPromptForTest(), FString(TEXT("Second chat prompt")));
-    TestEqual(TEXT("Follow-up prompt should keep the session waiting for process exit"), Session.GetState(), ECortexSessionState::AwaitingTurnExit);
+    TestTrue(TEXT("Second persistent Codex chat prompt should be accepted"), Session.SendPrompt(SecondPrompt));
+    TestEqual(TEXT("Second prompt should reuse existing app-server worker"), StartCallCount, 1);
+    TestEqual(TEXT("Second prompt should send a second turn"), TurnCallCount, 2);
+    TestEqual(TEXT("Second prompt should transition to processing"), Session.GetState(), ECortexSessionState::Processing);
 
-    bObservedResumeSession = false;
-    Session.HandleProcessExited(TEXT("Provider CLI process exited"));
-    TestEqual(TEXT("Codex chat follow-up should spawn a resumed exec after the old process exits"), SpawnCallCount, 2);
-    TestTrue(TEXT("Codex chat follow-up should resume the provider conversation"), bObservedResumeSession);
-    TestEqual(TEXT("Follow-up prompt should transition back to processing"), Session.GetState(), ECortexSessionState::Processing);
     return true;
 }
 
@@ -467,9 +538,7 @@ bool FCortexCliSessionCodexChatUnexpectedExitDuringTurnFailsTest::RunTest(const 
     FirstTurnResult.SessionId = TEXT("thread-codex-chat");
     Session.SetStateForTest(ECortexSessionState::Processing);
     Session.HandleWorkerEvent(FirstTurnResult);
-    TestEqual(TEXT("Prior successful Codex chat turn should wait for the exec process to exit"), Session.GetState(), ECortexSessionState::AwaitingTurnExit);
-    Session.HandleProcessExited(TEXT("Provider CLI process exited after prior turn"));
-    TestEqual(TEXT("Prior successful Codex chat turn should become idle after the exec exits"), Session.GetState(), ECortexSessionState::Idle);
+    TestEqual(TEXT("Prior successful Codex chat turn should return directly to idle"), Session.GetState(), ECortexSessionState::Idle);
 
     bool bTurnCompleteCalled = false;
     FCortexTurnResult CapturedResult;
@@ -486,6 +555,338 @@ bool FCortexCliSessionCodexChatUnexpectedExitDuringTurnFailsTest::RunTest(const 
     TestTrue(TEXT("Unexpected exit during a persistent chat turn should report an error"), CapturedResult.bIsError);
     TestTrue(TEXT("Unexpected exit error should include the process exit reason"), CapturedResult.ResultText.Contains(TEXT("Provider CLI exited during persistent chat turn")));
     TestEqual(TEXT("Unexpected exit during a persistent chat turn should leave the session inactive"), Session.GetState(), ECortexSessionState::Inactive);
+    return true;
+}
+
+bool FCortexCliSessionCodexChatCancelResultReturnsIdleTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("codex-chat-cancel");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+    Config.LifetimePolicy = ECortexSessionLifetimePolicy::Persistent;
+
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Cancelling);
+
+    bool bTurnCompleteCalled = false;
+    FCortexTurnResult CapturedResult;
+    Session.OnTurnComplete.AddLambda([&bTurnCompleteCalled, &CapturedResult](const FCortexTurnResult& Result)
+    {
+        bTurnCompleteCalled = true;
+        CapturedResult = Result;
+    });
+
+    FCortexStreamEvent CancelResult;
+    CancelResult.Type = ECortexStreamEventType::Result;
+    CancelResult.ResultText = TEXT("Interrupted");
+    CancelResult.SessionId = TEXT("thread-codex-chat");
+    Session.HandleWorkerEvent(CancelResult);
+
+    TestTrue(TEXT("App-server cancel result should complete the turn"), bTurnCompleteCalled);
+    TestEqual(TEXT("App-server cancel result should return session to idle"), Session.GetState(), ECortexSessionState::Idle);
+    TestEqual(TEXT("Cancel completion result should be preserved"), CapturedResult.ResultText, FString(TEXT("Interrupted")));
+    return true;
+}
+
+bool FCortexCliSessionCodexChatIdleExitDoesNotFailCompletedTurnTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("codex-chat-idle-exit");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+    Config.LifetimePolicy = ECortexSessionLifetimePolicy::Persistent;
+
+    FCortexCliSession Session(Config);
+
+    int32 StartCallCount = 0;
+    int32 TurnCallCount = 0;
+    FCortexCliSession::SetCodexAppServerStartOverrideForTests(
+        [&StartCallCount](FCortexCliSession& InSession, ECortexAccessMode AccessMode)
+        {
+            ++StartCallCount;
+            InSession.CompleteCodexAppServerStartForTests(TEXT("thread-app-server"), AccessMode);
+            return true;
+        });
+    FCortexCliSession::SetCodexAppServerTurnOverrideForTests(
+        [&TurnCallCount](FCortexCliSession&, const FString&, ECortexAccessMode)
+        {
+            ++TurnCallCount;
+            return true;
+        });
+    ON_SCOPE_EXIT
+    {
+        FCortexCliSession::ClearCodexAppServerOverridesForTests();
+    };
+
+    FCortexPromptRequest Prompt;
+    Prompt.Prompt = TEXT("Completed prompt");
+    Prompt.AccessMode = ECortexAccessMode::Guided;
+    TestTrue(TEXT("Prompt should send through app-server"), Session.SendPrompt(Prompt));
+    TestEqual(TEXT("App-server should start once"), StartCallCount, 1);
+    TestEqual(TEXT("Prompt should dispatch one turn"), TurnCallCount, 1);
+
+    FCortexStreamEvent ResultEvent;
+    ResultEvent.Type = ECortexStreamEventType::Result;
+    ResultEvent.ResultText = TEXT("Done");
+    ResultEvent.SessionId = TEXT("thread-app-server");
+    Session.HandleWorkerEvent(ResultEvent);
+    TestEqual(TEXT("Completed app-server turn should be idle"), Session.GetState(), ECortexSessionState::Idle);
+
+    bool bUnexpectedTurnComplete = false;
+    Session.OnTurnComplete.AddLambda([&bUnexpectedTurnComplete](const FCortexTurnResult&)
+    {
+        bUnexpectedTurnComplete = true;
+    });
+
+    Session.HandleProcessExited(TEXT("Codex app-server exited while idle"));
+
+    TestFalse(TEXT("Idle app-server exit after a completed turn should not fail the completed turn"), bUnexpectedTurnComplete);
+    TestEqual(TEXT("Idle app-server exit should leave the session inactive"), Session.GetState(), ECortexSessionState::Inactive);
+    return true;
+}
+
+bool FCortexCliSessionCodexChatCancelDuringStartupClearsQueuedPromptTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("codex-chat-startup-cancel");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+    Config.LifetimePolicy = ECortexSessionLifetimePolicy::Persistent;
+
+    FCortexCliSession Session(Config);
+
+    int32 StartCallCount = 0;
+    FCortexCliSession::SetCodexAppServerStartOverrideForTests(
+        [&StartCallCount](FCortexCliSession&, ECortexAccessMode)
+        {
+            ++StartCallCount;
+            return true;
+        });
+    ON_SCOPE_EXIT
+    {
+        FCortexCliSession::ClearCodexAppServerOverridesForTests();
+    };
+
+    FCortexPromptRequest Prompt;
+    Prompt.Prompt = TEXT("Queued startup prompt");
+    Prompt.AccessMode = ECortexAccessMode::Guided;
+    TestTrue(TEXT("Startup prompt should be accepted and queued"), Session.SendPrompt(Prompt));
+    TestEqual(TEXT("App-server startup should be requested"), StartCallCount, 1);
+    TestEqual(TEXT("Session should be spawning before thread readiness"), Session.GetState(), ECortexSessionState::Spawning);
+    TestTrue(TEXT("Pending prompt should be queued before startup cancel"), Session.GetPendingPromptForTest().Contains(TEXT("Queued startup prompt")));
+
+    TestTrue(TEXT("Cancel during app-server startup should be accepted"), Session.Cancel());
+
+    TestEqual(TEXT("Cancel during app-server startup should return to inactive"), Session.GetState(), ECortexSessionState::Inactive);
+    TestTrue(TEXT("Cancel during app-server startup should clear pending prompt"), Session.GetPendingPromptForTest().IsEmpty());
+    return true;
+}
+
+bool FCortexCliSessionCodexChatReconnectUsesAppServerTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("codex-chat-reconnect");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+    Config.LifetimePolicy = ECortexSessionLifetimePolicy::Persistent;
+
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Idle);
+
+    int32 ExecSpawnCallCount = 0;
+    int32 AppServerStartCallCount = 0;
+    FCortexCliSession::SetSpawnProcessOverrideForTests(
+        [&ExecSpawnCallCount](FCortexCliSession&, ECortexAccessMode, bool)
+        {
+            ++ExecSpawnCallCount;
+            return false;
+        });
+    FCortexCliSession::SetCodexAppServerStartOverrideForTests(
+        [&AppServerStartCallCount](FCortexCliSession& InSession, ECortexAccessMode AccessMode)
+        {
+            ++AppServerStartCallCount;
+            InSession.CompleteCodexAppServerStartForTests(TEXT("thread-reconnected"), AccessMode);
+            return true;
+        });
+    ON_SCOPE_EXIT
+    {
+        FCortexCliSession::ClearSpawnProcessOverrideForTests();
+        FCortexCliSession::ClearCodexAppServerOverridesForTests();
+    };
+
+    TestTrue(TEXT("Persistent Codex reconnect should restart app-server"), Session.Reconnect());
+
+    TestEqual(TEXT("Persistent Codex reconnect should not use codex exec SpawnProcess"), ExecSpawnCallCount, 0);
+    TestEqual(TEXT("Persistent Codex reconnect should start app-server once"), AppServerStartCallCount, 1);
+    TestEqual(TEXT("Persistent Codex reconnect should become idle after thread readiness"), Session.GetState(), ECortexSessionState::Idle);
+    TestEqual(TEXT("Persistent Codex reconnect should capture new app-server thread id"), Session.GetSessionId(), FString(TEXT("thread-reconnected")));
+    return true;
+}
+
+bool FCortexCliSessionCodexAppServerStartupTimeoutTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("codex-startup-timeout");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.LifetimePolicy = ECortexSessionLifetimePolicy::Persistent;
+
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Spawning);
+
+    bool bCompleted = false;
+    Session.OnTurnComplete.AddLambda(
+        [&bCompleted](const FCortexTurnResult& Result)
+        {
+            (void)Result;
+            bCompleted = true;
+        });
+
+    Session.HandleCodexAppServerStartupTimeoutForTest();
+
+    TestEqual(TEXT("Startup timeout should move session inactive"),
+        Session.GetStateForTest(),
+        ECortexSessionState::Inactive);
+    TestFalse(TEXT("Startup timeout without a queued prompt should not complete a phantom turn"),
+        bCompleted);
+    return true;
+}
+
+bool FCortexCliSessionCodexAppServerTurnTimeoutTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("codex-turn-timeout");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.LifetimePolicy = ECortexSessionLifetimePolicy::Persistent;
+
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Processing);
+
+    bool bCompleted = false;
+    FCortexTurnResult CapturedResult;
+    Session.OnTurnComplete.AddLambda(
+        [&bCompleted, &CapturedResult](const FCortexTurnResult& Result)
+        {
+            bCompleted = true;
+            CapturedResult = Result;
+        });
+
+    Session.HandleCodexAppServerTurnTimeoutForTest();
+
+    TestEqual(TEXT("Turn timeout should move session inactive"),
+        Session.GetStateForTest(),
+        ECortexSessionState::Inactive);
+    TestTrue(TEXT("Turn timeout should complete the turn with error"),
+        bCompleted);
+    TestTrue(TEXT("Turn timeout result should be error"),
+        CapturedResult.bIsError);
+    TestTrue(TEXT("Turn timeout message should mention app-server turn"),
+        CapturedResult.ResultText.Contains(TEXT("Codex app-server turn timed out")));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexCliSessionCodexAppServerStartupTimeoutRecoveryTest, "Cortex.Frontend.CliSession.CodexChatStartupTimeoutRecovery", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCliSessionCodexAppServerStartupTimeoutRecoveryTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("codex-startup-timeout-recovery");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+    Config.LifetimePolicy = ECortexSessionLifetimePolicy::Persistent;
+
+    FCortexCliSession Session(Config);
+    Session.SetStateForTest(ECortexSessionState::Spawning);
+    Session.SetPendingPromptForTest(TEXT("stale prompt"));
+
+    bool bCompleted = false;
+    FCortexTurnResult CapturedResult;
+    Session.OnTurnComplete.AddLambda(
+        [&bCompleted, &CapturedResult](const FCortexTurnResult& Result)
+        {
+            bCompleted = true;
+            CapturedResult = Result;
+        });
+
+    Session.HandleCodexAppServerStartupTimeoutForTest();
+
+    TestEqual(TEXT("Startup timeout should move the session inactive"),
+        Session.GetStateForTest(),
+        ECortexSessionState::Inactive);
+    TestTrue(TEXT("Startup timeout with a queued prompt should complete that prompt with error"),
+        bCompleted);
+    TestTrue(TEXT("Startup timeout result should be an error"),
+        CapturedResult.bIsError);
+    TestTrue(TEXT("Startup timeout should clear the queued prompt"),
+        Session.GetPendingPromptForTest().IsEmpty());
+
+    int32 StartCallCount = 0;
+    int32 TurnCallCount = 0;
+    FString CapturedPrompt;
+    FCortexCliSession::SetCodexAppServerStartOverrideForTests(
+        [&StartCallCount](FCortexCliSession& InSession, ECortexAccessMode AccessMode)
+        {
+            ++StartCallCount;
+            InSession.CompleteCodexAppServerStartForTests(TEXT("thread-timeout-recovered"), AccessMode);
+            return true;
+        });
+    FCortexCliSession::SetCodexAppServerTurnOverrideForTests(
+        [&TurnCallCount, &CapturedPrompt](FCortexCliSession&, const FString& Prompt, ECortexAccessMode)
+        {
+            ++TurnCallCount;
+            CapturedPrompt = Prompt;
+            return true;
+        });
+    ON_SCOPE_EXIT
+    {
+        FCortexCliSession::ClearCodexAppServerOverridesForTests();
+    };
+
+    FCortexPromptRequest Prompt;
+    Prompt.Prompt = TEXT("fresh prompt");
+    Prompt.AccessMode = ECortexAccessMode::Guided;
+    TestTrue(TEXT("Session should accept a new prompt after startup timeout recovery"),
+        Session.SendPrompt(Prompt));
+    TestEqual(TEXT("Recovery path should restart the app-server once"),
+        StartCallCount,
+        1);
+    TestEqual(TEXT("Recovery path should dispatch exactly one turn"),
+        TurnCallCount,
+        1);
+    TestEqual(TEXT("Recovery path should dispatch only the fresh prompt"),
+        CapturedPrompt,
+        FString(TEXT("fresh prompt")));
+    TestEqual(TEXT("Recovered prompt should leave the session processing"),
+        Session.GetStateForTest(),
+        ECortexSessionState::Processing);
     return true;
 }
 
@@ -1173,6 +1574,7 @@ bool FCortexCliSessionCodexErrorWithoutThreadDoesNotResumeTest::RunTest(const FS
     Config.bHasLaunchOptions = true;
     Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
     Config.LaunchOptions.bSkipPermissions = false;
+    Config.LifetimePolicy = ECortexSessionLifetimePolicy::TurnBound;
 
     FCortexCliSession Session(Config);
     Session.SetStateForTest(ECortexSessionState::Processing);
@@ -1279,6 +1681,7 @@ bool FCortexCliSessionSendPromptDoesNotMutatePinnedAccessModeTest::RunTest(const
     Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
     Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
     Config.ResolvedOptions.ModelId = TEXT("gpt-5.4");
+    Config.LifetimePolicy = ECortexSessionLifetimePolicy::TurnBound;
     Config.bHasLaunchOptions = true;
     Config.LaunchOptions.AccessMode = ECortexAccessMode::ReadOnly;
     Config.LaunchOptions.bSkipPermissions = false;

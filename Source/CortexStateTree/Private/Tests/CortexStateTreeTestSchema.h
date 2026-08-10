@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Misc/EngineVersionComparison.h"
 #include "StateTreeSchema.h"
 #include "CortexStateTreeTestSchema.generated.h"
 
@@ -25,10 +26,13 @@ public:
 		return true;
 	}
 
+#if !UE_VERSION_OLDER_THAN(5, 6, 0)
+	// UStateTreeSchema::IsScheduledTickAllowed arrived with 5.6 scheduled tick.
 	virtual bool IsScheduledTickAllowed() const override
 	{
 		return true;
 	}
+#endif
 };
 
 UCLASS(Abstract)

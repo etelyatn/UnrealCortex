@@ -151,6 +151,18 @@ def _validate_spec(
                     f"Node '{node.get('name')}' pin_value '{key}' contains '$steps[' "
                     f"which conflicts with batch $ref syntax"
                 )
+        for key, value in (node.get("pin_text_values") or {}).items():
+            if _contains_ref_syntax(value):
+                raise ValueError(
+                    f"Node '{node.get('name')}' pin_text_value '{key}' contains '$steps[' "
+                    f"which conflicts with batch $ref syntax"
+                )
+        duplicate_text_pins = set((node.get("pin_values") or {}).keys()) & set((node.get("pin_text_values") or {}).keys())
+        if duplicate_text_pins:
+            raise ValueError(
+                f"Node '{node.get('name')}' sets both pin_values and pin_text_values for: "
+                f"{', '.join(sorted(duplicate_text_pins))}"
+            )
 
 
 def _build_batch_commands(
@@ -166,10 +178,14 @@ def _build_batch_commands(
     mode: str = "create",
     asset_path: str = "",
     subgraph_path: str = "",
+    graph_kind: str = "",
+    owning_interface: str = "",
 ) -> list[dict]:
     """Translate Blueprint spec into batch commands with $ref wiring."""
     path = path.rstrip("/")
     subgraph_path = subgraph_path.strip()
+    graph_kind = graph_kind.strip()
+    owning_interface = owning_interface.strip()
     commands: list[dict] = []
 
     if mode == "create":
@@ -255,6 +271,31 @@ def _build_batch_commands(
                 "params": pin_params,
             })
 
+    for i, node in enumerate(nodes):
+        node_name = (node.get("name") or "").strip() or f"Node_{i}"
+        pin_text_values = node.get("pin_text_values")
+        if not pin_text_values:
+            continue
+        step_index = node_name_to_step[node_name]
+        for pin_name, text in pin_text_values.items():
+            pin_params: dict[str, Any] = {
+                "asset_path": asset_path_ref,
+                "node_id": f"$steps[{step_index}].data.node_id",
+                "graph_name": graph_name,
+                "pin_name": pin_name,
+                "text": text,
+            }
+            if graph_kind:
+                pin_params["graph_kind"] = graph_kind
+            if owning_interface:
+                pin_params["owning_interface"] = owning_interface
+            if subgraph_path:
+                pin_params["subgraph_path"] = subgraph_path
+            commands.append({
+                "command": "graph.set_pin_value",
+                "params": pin_params,
+            })
+
     # Steps: connections
     for conn in connections:
         src_parts = conn["from"].split(".", 1)
@@ -286,6 +327,35 @@ def _build_batch_commands(
     return commands
 
 
+def _extract_single_asset_fingerprint(response: dict[str, Any], asset_path: str) -> dict[str, Any]:
+    data = response.get("data", {})
+    fingerprints = data.get("fingerprints")
+    if not isinstance(fingerprints, list) or not fingerprints:
+        raise ValueError("core.asset_fingerprint did not return a fingerprint entry")
+
+    for entry in fingerprints:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("asset_path") == asset_path:
+            fingerprint = entry.get("fingerprint")
+            if isinstance(fingerprint, dict):
+                return fingerprint
+
+    raise ValueError(f"core.asset_fingerprint did not return a fingerprint for {asset_path}")
+
+
+def _preflight_update_fingerprint(
+    connection: UEConnection,
+    asset_path: str,
+    expected_fingerprint: dict[str, Any],
+) -> dict[str, Any]:
+    response = connection.send_command("core.asset_fingerprint", {"paths": [asset_path]})
+    current_fingerprint = _extract_single_asset_fingerprint(response, asset_path)
+    if current_fingerprint != expected_fingerprint:
+        raise ValueError("Expected fingerprint does not match current Blueprint fingerprint")
+    return current_fingerprint
+
+
 def register_blueprint_composite_tools(mcp, connection: UEConnection):
     """Register Blueprint composite MCP tools."""
 
@@ -303,6 +373,9 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         mode: str = "create",
         asset_path: str = "",
         subgraph_path: str = "",
+        graph_kind: str = "",
+        owning_interface: str = "",
+        expected_fingerprint: dict | None = None,
     ) -> str:
         """Create a Blueprint with variables, functions, and graph logic in a single operation.
 
@@ -346,12 +419,19 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                     function_name: "KismetArrayLibrary.Array_ForEach"
                 - params: Optional dict of node-specific params (e.g., {"function_name": "KismetSystemLibrary.PrintString"})
                 - pin_values: Optional dict of pin default values (e.g., {"InString": "Hello!"})
+                - pin_text_values: Optional dict of FText pin descriptors.
+                  Use {"InText": {"type": "FText", "source_kind": "string_table",
+                  "value": "Pay", "string_table": {"table_id": "/Game/UI/ST_UI.ST_UI",
+                  "key": "Mail.Button.Pay"}}} for StringTable-backed text.
             connections: Array of connection specs using "NodeName.PinName" format:
                 - from: Source "NodeName.PinName" (e.g., "BeginPlay.then")
                 - to: Target "NodeName.PinName" (e.g., "PrintString.execute")
             mode: Operation mode. "create" (default) creates a new Blueprint.
                   "update" appends to an existing Blueprint (requires asset_path).
             asset_path: Required in update mode. Path to existing Blueprint asset.
+            expected_fingerprint: Optional stale-write guard for update mode. When
+                supplied, the composite checks the Blueprint fingerprint before
+                running the generated batch.
             subgraph_path: Dot-separated path into nested composite subgraphs.
                 When set, all graph operations target the resolved subgraph instead
                 of the top-level graph.
@@ -417,11 +497,20 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         except ValueError as e:
             return json.dumps({"success": False, "error": f"Invalid spec: {e}"})
 
+        if mode == "update" and expected_fingerprint is not None:
+            try:
+                _preflight_update_fingerprint(connection, asset_path, expected_fingerprint)
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)})
+            except (RuntimeError, ConnectionError, TimeoutError, OSError) as e:
+                return json.dumps({"success": False, "error": f"Connection error: {e}"})
+
         # 2. Build batch commands
         commands = _build_batch_commands(
             name, path, type, variables, functions, nodes, connections,
             graph_name, parent_class, mode=mode, asset_path=asset_path,
-            subgraph_path=subgraph_path,
+            subgraph_path=subgraph_path, graph_kind=graph_kind,
+            owning_interface=owning_interface,
         )
         total_steps = len(commands)
 

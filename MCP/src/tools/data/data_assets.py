@@ -47,9 +47,10 @@ def register_data_asset_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def get_data_asset(asset_path: str) -> str:
-        """Read all properties of a DataAsset.
+        """Read deep reflected properties of a DataAsset.
 
         Use list_data_assets to discover available assets and their paths.
+        Always inspect partial/issues before assuming every nested property serialized cleanly.
 
         Args:
             asset_path: Full asset path to the DataAsset
@@ -59,7 +60,9 @@ def register_data_asset_tools(mcp, connection: UEConnection):
             JSON with:
             - asset_path: The requested asset path
             - asset_class: UClass name of the DataAsset
-            - properties: Object with all property names and values
+            - properties: Object with reflected property names and values
+            - partial: True when any field was degraded or omitted
+            - issues: Field-level serialization diagnostics with stable code/severity
         """
         try:
             response = connection.send_command("data.get_data_asset", {

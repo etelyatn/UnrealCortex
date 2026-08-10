@@ -3,7 +3,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Unreal%20Engine-5.6%2B-blue?style=flat-square&logo=unrealengine" alt="UE 5.6+">
   <img src="https://img.shields.io/badge/Type-Editor%20Only-green?style=flat-square" alt="Editor Only">
-  <img src="https://img.shields.io/badge/Modules-13-lightgrey?style=flat-square" alt="13 Modules">
+  <img src="https://img.shields.io/badge/Modules-14-lightgrey?style=flat-square" alt="14 Modules">
   <img src="https://img.shields.io/badge/Python-3.10%2B-yellow?style=flat-square&logo=python" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/License-MIT-lightgrey?style=flat-square" alt="MIT">
 </p>
@@ -12,7 +12,7 @@
 
 Your AI assistant can already write code. UnrealCortex lets it work *inside* the editor — querying DataTables, editing Blueprint graphs, building UMG hierarchies, placing actors, converting Blueprints to C++, analyzing Blueprints for bugs and performance issues, generating 3D assets, and even playing and testing your game autonomously. No copy-pasting, no file exports. Changes appear live with full undo support.
 
-> **Status:** v0.1.9 Beta — All 13 modules shipped and tested.
+> **Status:** v0.1.9 Beta — All 14 modules shipped and tested.
 
 ---
 
@@ -86,6 +86,21 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 </details>
 
 <details>
+<summary><strong>Animation — CortexAnimation</strong> &nbsp;·&nbsp; Inspect skeletal assets and author guarded animation metadata</summary>
+
+<br>
+
+**Inspection:** List and inspect animation sequences, montages, skeletons, and Animation Blueprints without opening their editors.
+
+**Guarded authoring:** Add, update, and remove sequence skeleton named notifies, editable float curves, montage sections, skeleton sockets, object notifies, and notify states. Every mutation requires a fresh `expected_fingerprint`, supports `dry_run`, and defaults `save` to `false`.
+
+**Boundary:** Object notifies and notify states are sequence-only and use canonical selectors. Animation Blueprint authoring, blendspaces, retargeting, runtime preview, Sequencer, and Control Rig are not supported. There is no `anim.save_asset` command; use a mutation's `save=true` option, or `core.save_asset` where appropriate.
+
+**Example tasks:** *"Inspect a montage's sections and slots"* · *"Dry-run a curve-key update using the current fingerprint"* · *"Add a socket to the hand bone, then save only after the preview is correct"*
+
+</details>
+
+<details>
 <summary><strong>Level Design — CortexLevel</strong> &nbsp;·&nbsp; Actor placement, transforms, components, organization, streaming</summary>
 
 <br>
@@ -107,7 +122,7 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 </details>
 
 <details>
-<summary><strong>Editor Control — CortexEditor</strong> &nbsp;·&nbsp; PIE lifecycle, viewport, input injection</summary>
+<summary><strong>Editor Control — CortexEditor</strong> &nbsp;·&nbsp; PIE lifecycle, viewport, input injection, Python, CVars</summary>
 
 <br>
 
@@ -119,9 +134,13 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 **Editor management:** Execute console commands. Adjust time dilation. Shutdown/restart editor.
 
-**Diagnostics:** Query world info, viewport state, and recent log output.
+**Diagnostics:** Query world info, viewport state, recent log output, and editor-wide console variables.
 
-**Example tasks:** *"Start PIE, take a screenshot of the main menu, then stop"* · *"Move the viewport camera to the boss arena and capture a top-down shot"* · *"Set time dilation to 0.25 so I can debug the dash animation"*
+**Trusted Python:** `run_python` executes local Unreal Editor Python through `editor_cmd` as a high-trust escape hatch. Prefer structured Cortex commands first; Python can mutate assets/files, import content, call editor APIs, and trigger project-specific side effects. Output and error detail payloads are bounded before JSON serialization.
+
+**CVars:** `get_cvar`, `set_cvar`, and `list_cvars` inspect or adjust editor console variables outside PIE. Listings are capped, sorted by name, and split console variables from console commands.
+
+**Example tasks:** *"Start PIE, take a screenshot of the main menu, then stop"* · *"Move the viewport camera to the boss arena and capture a top-down shot"* · *"Set time dilation to 0.25 so I can debug the dash animation"* · *"List render CVars matching r.Nanite and temporarily set one for editor diagnostics"* · *"Run a trusted editor Python snippet to inspect an API that Cortex does not expose yet"*
 
 </details>
 
@@ -239,10 +258,11 @@ flowchart TB
         Data["CortexData<br/>DataTables · Tags<br/>DataAssets · Curves"]
         BP["CortexBlueprint<br/>Blueprint CRUD<br/>Graph Editing"]
         Mat["CortexMaterial<br/>Materials · Instances<br/>Parameter Collections"]
+        Anim["CortexAnimation<br/>Skeletal Assets · Guarded<br/>Notify · Curve · Montage · Socket"]
         ST["CortexStateTree<br/>StateTrees<br/>States · Transitions"]
         UMG["CortexUMG<br/>Widget Trees<br/>Properties · Animations"]
         Level["CortexLevel<br/>Actors · Components<br/>Streaming"]
-        Editor["CortexEditor<br/>PIE · Viewport<br/>Input · Console"]
+        Editor["CortexEditor<br/>PIE · Viewport<br/>Input · Python · CVars"]
         QA["CortexQA<br/>Game Actions<br/>Assertions · Scenarios"]
         Reflect["CortexReflect<br/>Class Hierarchy<br/>Cross-references"]
         Gen["CortexGen<br/>Mesh · Texture<br/>AI Generation"]
@@ -262,7 +282,7 @@ flowchart TB
 
 Commands are namespaced: `{domain}.{command}` — e.g. `data.query_datatable`, `bp.create`, `graph.add_node`. CortexCore routes each command to its registered domain handler and dispatches to the Game Thread. The port is auto-discovered via `Saved/CortexPort-{PID}.txt` — multiple editor instances each get their own port.
 
-Representative command examples include `data.query_datatable`, `bp.create`, `graph.add_node`, `statetree.dump_tree`, `statetree.add_state`, and `statetree.compile`.
+Representative command examples include `data.query_datatable`, `bp.create`, `graph.add_node`, `anim.get_sequence_info`, `anim.add_curve`, `statetree.dump_tree`, `statetree.add_state`, and `statetree.compile`.
 
 ---
 
@@ -313,7 +333,7 @@ Add the plugin to your `.uproject`:
 }
 ```
 
-Rebuild your project. All 13 modules load automatically at `PostEngineInit` — after `IAssetRegistry` and the Blueprint compilation system are ready. All modules are `Type: Editor` and are stripped from shipping builds.
+Rebuild your project. All 14 modules load automatically at `PostEngineInit` — after `IAssetRegistry` and the Blueprint compilation system are ready. All modules are `Type: Editor` and are stripped from shipping builds.
 
 ### Step 2 — Install Python Dependencies
 
@@ -496,20 +516,21 @@ void FMyDomainModule::StartupModule()
 | **CortexBlueprint** | CortexCore · CortexGraph | `BlueprintGraph` · `Kismet` · `KismetCompiler` · `AssetRegistry` · `GameplayTags` |
 | **CortexMaterial** | CortexCore · CortexGraph | `MaterialEditor` · `AssetRegistry` |
 | **CortexData** | CortexCore | `GameplayTags` · `AssetRegistry` · `UnrealEd` |
-| **CortexEditor** | CortexCore | `LevelEditor` · `Slate` · `SlateCore` · `EnhancedInput` · `ImageWrapper` · `RenderCore` |
+| **CortexEditor** | CortexCore | `LevelEditor` · `Slate` · `SlateCore` · `EnhancedInput` · `ImageWrapper` · `RenderCore` · `PythonScriptPlugin` |
 | **CortexQA** | CortexCore · CortexEditor | `NavigationSystem` · `AIModule` · `GameplayTags` |
 | **CortexStateTree** | CortexCore | `CoreUObject` · `Engine` · `Json` · `JsonUtilities` · `AssetRegistry` · `AssetTools` · `UnrealEd` · `GameplayTags` · `StateTreeModule` · `StateTreeEditorModule` |
 | **CortexLevel** | CortexCore | `LevelEditor` · `DataLayerEditor` |
 | **CortexUMG** | CortexCore | `UMG` · `UMGEditor` · `Slate` · `SlateCore` · `MovieScene` |
 | **CortexReflect** | CortexCore | `AssetRegistry` · `BlueprintGraph` · `Kismet` |
 | **CortexGen** | CortexCore | `HTTP` · `Json` · `JsonUtilities` · `AssetTools` · `DeveloperSettings` · `ImageWrapper` · `UnrealEd` |
+| **CortexAnimation** | CortexCore | `CoreUObject` · `Engine` · `Json` · `JsonUtilities` · `UnrealEd` · `AssetRegistry` · `AnimGraph` · `BlueprintGraph` · `Kismet` |
 | **CortexFrontend** | CortexCore · CortexGen | `Slate` · `SlateCore` · `GraphEditor` · `BlueprintGraph` · `Kismet` · `ImageWrapper` · `EditorScriptingUtilities` · `DesktopPlatform` |
 
 Domain modules depend only on CortexCore (and shared infrastructure: CortexGraph, CortexEditor). Never on each other. CortexFrontend is a UI leaf module with no MCP command surface.
 
 ### Cook and Packaging Safety
 
-All 13 modules declare `"Type": "Editor"` in `UnrealCortex.uplugin`. Because `Type: Editor` modules are not loaded in non-editor targets (cook, server, game), the `PostEngineInit` load phase is only relevant in the editor. The plugin is never included in cooked or packaged builds.
+All 14 modules declare `"Type": "Editor"` in `UnrealCortex.uplugin`. Because `Type: Editor` modules are not loaded in non-editor targets (cook, server, game), the `PostEngineInit` load phase is only relevant in the editor. The plugin is never included in cooked or packaged builds.
 
 ### Generic Serialization
 
@@ -539,7 +560,6 @@ These are the current boundaries of the beta. They're on the roadmap but not yet
 
 | Domain | What AI will be able to do |
 |--------|---------------------------|
-| **CortexAnimation** | Work with animation montages, state machines, blend spaces |
 | **CortexNiagara** | Modify particle system parameters, emitter configuration |
 
 ---

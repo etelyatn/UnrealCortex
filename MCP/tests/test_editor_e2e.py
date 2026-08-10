@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from cortex_mcp.tcp_client import UEConnection
+from cortex_mcp.tcp_client import UECommandError, UEConnection
 
 
 @pytest.fixture(scope="module")
@@ -31,6 +31,15 @@ def _stop_pie_if_running(conn):
             conn.send_command("editor.stop_pie", {}, timeout=30.0)
     except Exception:
         pass
+
+
+def _send_python_or_skip(editor_connection, params):
+    try:
+        return editor_connection.send_command("editor.run_python", params, timeout=30.0)
+    except UECommandError as exc:
+        if exc.code == "UNSUPPORTED_COMMAND":
+            pytest.skip("PythonScriptPlugin unavailable")
+        raise
 
 
 @pytest.fixture(autouse=True)
@@ -237,6 +246,91 @@ def test_focus_actor_not_found(editor_connection):
         editor_connection.send_command("editor.focus_actor", {
             "actor_path": "/Game/NonExistent/Actor_12345",
         })
+
+
+@pytest.mark.e2e
+def test_run_python_basic_execution(editor_connection):
+    result = _send_python_or_skip(editor_connection, {"code": "print('cortex e2e python')"})
+    assert result["success"] is True
+    data = result["data"]
+    assert data["ok"] is True
+    assert data["output_truncated"] is False
+    assert isinstance(data["output"], list)
+    assert any("cortex e2e python" in entry.get("text", "") for entry in data["output"])
+
+
+@pytest.mark.e2e
+def test_run_python_next_tick(editor_connection):
+    result = _send_python_or_skip(
+        editor_connection,
+        {"code": "print('cortex e2e next tick')", "run_next_tick": True},
+    )
+    assert result["success"] is True
+    assert result["data"]["ok"] is True
+
+
+@pytest.mark.e2e
+def test_run_python_error_and_missing_code(editor_connection):
+    with pytest.raises(UECommandError) as missing:
+        editor_connection.send_command("editor.run_python", {}, timeout=10.0)
+    assert missing.value.code == "INVALID_FIELD"
+
+    try:
+        editor_connection.send_command(
+            "editor.run_python",
+            {"code": "raise RuntimeError('cortex e2e expected failure')"},
+            timeout=30.0,
+        )
+    except UECommandError as exc:
+        if exc.code == "UNSUPPORTED_COMMAND":
+            pytest.skip("PythonScriptPlugin unavailable")
+        assert exc.code == "INVALID_OPERATION"
+        assert "result" in exc.details
+        assert "output" in exc.details
+    else:
+        pytest.fail("Python error should raise UECommandError")
+
+
+@pytest.mark.e2e
+def test_cvar_get_set_list_with_restore(editor_connection):
+    original = editor_connection.send_command("editor.get_cvar", {"name": "t.MaxFPS"}, timeout=10.0)
+    assert original["success"] is True
+    original_value = original["data"]["value"]
+    new_value = "29" if original_value != "29" else "31"
+
+    try:
+        changed = editor_connection.send_command(
+            "editor.set_cvar",
+            {"name": "t.MaxFPS", "value": new_value},
+            timeout=10.0,
+        )
+        assert changed["success"] is True
+        assert changed["data"]["old_value"] == original_value
+        assert changed["data"]["value"] == new_value
+
+        listed = editor_connection.send_command(
+            "editor.list_cvars",
+            {"pattern": "t.", "limit": 10},
+            timeout=10.0,
+        )
+        assert listed["success"] is True
+        assert "variables" in listed["data"]
+        assert "commands" in listed["data"]
+        assert "cvars" not in listed["data"]
+        assert listed["data"]["returned_count"] <= 10
+    finally:
+        editor_connection.send_command(
+            "editor.set_cvar",
+            {"name": "t.MaxFPS", "value": original_value},
+            timeout=10.0,
+        )
+
+
+@pytest.mark.e2e
+def test_unknown_cvar_error(editor_connection):
+    with pytest.raises(UECommandError) as exc_info:
+        editor_connection.send_command("editor.get_cvar", {"name": "cortex.DoesNotExist"}, timeout=10.0)
+    assert exc_info.value.code == "SYMBOL_NOT_FOUND"
 
 
 @pytest.mark.anyio

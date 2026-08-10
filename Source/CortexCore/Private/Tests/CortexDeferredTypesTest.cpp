@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "CortexDeferredExec.h"
 #include "CortexTypes.h"
 #include "CortexCommandRouter.h"
 #include "CortexTcpServer.h"
@@ -72,6 +73,82 @@ bool FCortexDeferredCallbackTypeTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("Deferred callback should fire"), bCallbackFired);
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDeferredExecRequiresCallbackTest,
+	"Cortex.Core.Deferred.RunNextTick.RequiresCallback",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDeferredExecRequiresCallbackTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	bool bWorkRan = false;
+
+	FCortexCommandResult Result = FCortexDeferredExec::RunNextTick(
+		[&bWorkRan]()
+		{
+			bWorkRan = true;
+			return FCortexCommandRouter::Success(MakeShared<FJsonObject>());
+		},
+		nullptr);
+
+	TestFalse(TEXT("RunNextTick without callback should fail"), Result.bSuccess);
+	TestFalse(TEXT("RunNextTick without callback should not be deferred"), Result.bIsDeferred);
+	TestEqual(TEXT("Error should be INVALID_OPERATION"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
+	TestFalse(TEXT("Work must not run without a callback"), bWorkRan);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDeferredExecRunsOnNextTickTest,
+	"Cortex.Core.Deferred.RunNextTick.CallbackOnTicker",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDeferredExecRunsOnNextTickTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	bool bWorkRan = false;
+	bool bCallbackRan = false;
+	FString Status;
+
+	bool bDeferredSuccess = false;
+	FDeferredResponseCallback Callback = [&bCallbackRan, &bDeferredSuccess, &Status](FCortexCommandResult Result)
+	{
+		bCallbackRan = true;
+		bDeferredSuccess = Result.bSuccess;
+		if (Result.Data.IsValid())
+		{
+			Result.Data->TryGetStringField(TEXT("status"), Status);
+		}
+	};
+
+	FCortexCommandResult Result = FCortexDeferredExec::RunNextTick(
+		[&bWorkRan]()
+		{
+			bWorkRan = true;
+			TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+			Data->SetStringField(TEXT("status"), TEXT("ran_next_tick"));
+			return FCortexCommandRouter::Success(Data);
+		},
+		MoveTemp(Callback));
+
+	TestTrue(TEXT("RunNextTick should return deferred placeholder"), Result.bIsDeferred);
+	TestFalse(TEXT("Work should not run before the ticker advances"), bWorkRan);
+	TestFalse(TEXT("Callback should not run before the ticker advances"), bCallbackRan);
+
+	for (int32 Attempt = 0; Attempt < 5 && !bCallbackRan; ++Attempt)
+	{
+		FTSTicker::GetCoreTicker().Tick(0.016f);
+	}
+
+	TestTrue(TEXT("Work should run after ticker advances"), bWorkRan);
+	TestTrue(TEXT("Callback should run after ticker advances"), bCallbackRan);
+	TestTrue(TEXT("Deferred callback should receive success"), bDeferredSuccess);
+	TestEqual(TEXT("Callback data should round-trip"), Status, TEXT("ran_next_tick"));
 	return true;
 }
 

@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "CortexSTCompat.h"
 #include "CortexSTTypes.h"
 #include "CortexStateTreeCommandHandler.h"
 #include "CortexStateTreeTestUtils.h"
@@ -168,7 +169,8 @@ bool FCortexStateTreeValidationNonGotoTransitionTest::RunTest(const FString& Par
 
 	StateTree->Modify();
 	RootState->Modify();
-	FStateTreeTransition& CompletionTransition = RootState->AddTransition(
+	FStateTreeTransition& CompletionTransition = CortexSTCompat::AddTransition(
+		*RootState,
 		EStateTreeTransitionTrigger::OnStateCompleted,
 		EStateTreeTransitionType::Succeeded,
 		nullptr);

@@ -5,6 +5,7 @@
 #include "CortexCommandRouter.h"
 
 class UDataAsset;
+class FCortexDataMutationHelpers;
 
 class FCortexDataAssetOps
 {
@@ -16,6 +17,8 @@ public:
 	static FCortexCommandResult DeleteDataAsset(const TSharedPtr<FJsonObject>& Params);
 
 private:
+	friend class FCortexDataMutationHelpers;
+
 	/** Load a DataAsset by asset path, returns nullptr and sets OutError if not found */
 	static UDataAsset* LoadDataAsset(const FString& AssetPath, FCortexCommandResult& OutError);
 

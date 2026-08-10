@@ -23,7 +23,6 @@ public class CortexData : ModuleRules
             "Networking",
             "AssetRegistry",
             "UnrealEd",
-            "StructUtils",
         });
 
         // StructUtils was deprecated in 5.5 — FInstancedStruct moved to CoreUObject

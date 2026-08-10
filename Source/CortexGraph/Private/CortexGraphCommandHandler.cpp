@@ -144,13 +144,17 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Required(TEXT("pin_name"), TEXT("string"), TEXT("Pin to disconnect"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
-		FCortexCommandInfo{ TEXT("set_pin_value"), TEXT("Set the default value of an input pin in a mutable graph. Delegate graphs are readable but not mutable.") }
+		FCortexCommandInfo{ TEXT("set_pin_value"), TEXT("Set an input pin default. Non-text pins use value; FText pins may use canonical text descriptor and are verified after save/reload.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node containing the pin"))
 			.Required(TEXT("pin_name"), TEXT("string"), TEXT("Input pin to modify"))
-			.Required(TEXT("value"), TEXT("string"), TEXT("Serialized pin value"))
+			.Optional(TEXT("value"), TEXT("string"), TEXT("Raw literal pin default for non-text pins or literal FText"))
+			.Optional(TEXT("text"), TEXT("object"), TEXT("Canonical FText descriptor for FText pins"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node"))
-			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
+			.Optional(TEXT("graph_kind"), TEXT("string"), TEXT("Graph kind disambiguator for persisted writes"))
+			.Optional(TEXT("owning_interface"), TEXT("string"), TEXT("Interface owner disambiguator for interface implementation graphs"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')"))
+			.Optional(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Optional stale-write guard")),
 		FCortexCommandInfo{ TEXT("auto_layout"), TEXT("Auto-arrange nodes in mutable Blueprint graphs for readability. Delegate graphs are readable but not mutable.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Specific graph to layout"))
