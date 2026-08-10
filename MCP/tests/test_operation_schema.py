@@ -77,9 +77,12 @@ def test_retry_budget_exhausted_after_declared_corrections():
         "core.get_operation_schema", "CAPABILITY_COMMAND_NOT_FOUND",
         "missing", {"cache_advertised": False, "restart_or_reload_required": False},
     )
-    first = json.loads(build_profile_operation_schema(connection, "UMGAuthoring", "graph", "describe_node"))
-    second = json.loads(build_profile_operation_schema(connection, "UMGAuthoring", "graph", "describe_node"))
-    third = json.loads(build_profile_operation_schema(connection, "UMGAuthoring", "graph", "describe_node"))
+    with pytest.MonkeyPatch.context() as mp:
+        from cortex_mcp import capabilities as caps_mod
+        mp.setattr(caps_mod, "load_capabilities_cache", lambda: None)
+        first = json.loads(build_profile_operation_schema(connection, "UMGAuthoring", "graph", "describe_node"))
+        second = json.loads(build_profile_operation_schema(connection, "UMGAuthoring", "graph", "describe_node"))
+        third = json.loads(build_profile_operation_schema(connection, "UMGAuthoring", "graph", "describe_node"))
     assert "budget_remaining" in first
     assert "budget_remaining" in second
     assert third.get("_error") == RETRY_BUDGET_EXHAUSTED

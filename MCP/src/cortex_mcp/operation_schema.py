@@ -87,7 +87,12 @@ def build_profile_operation_schema(connection, profile: str, domain: str, comman
 
     domain_allowed = domain in policy["allowed_domains"]
     schema = _live_schema(connection, domain, command)
-    editor_available = bool(schema and schema.get("editor_available", True) is not False)
+    # A successful send_command with no "data" payload means we reached the editor but the
+    # response shape was unexpected (editor contract violation), so the editor is reachable even
+    # though no live contract was returned.
+    editor_available = schema is None or schema.get("editor_available", True) is not False
+    if schema is None:
+        schema = {}
 
     if not domain_allowed or not editor_available:
         corrections = _record_correction(profile, domain, command)
