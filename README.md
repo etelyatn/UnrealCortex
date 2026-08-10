@@ -351,7 +351,7 @@ Then restart Codex if it was already running.
 
 OpenCode:
 
-Run `cortex-init` in your project and select OpenCode when asked which assistants to configure. This writes the `plugin` and `cortex_mcp` MCP entries into `opencode.json` and copies the Cortex agents into `.opencode/agents/`. See the [Cortex Toolkit README](https://github.com/etelyatn/cortex-toolkit) for details.
+Run `cortex-init` in your project and select OpenCode when asked which assistants to configure. This writes the `plugin` and `cortex_mcp` MCP entries into `opencode.json`. See the [Cortex Toolkit README](https://github.com/etelyatn/cortex-toolkit) for details.
 
 Then restart OpenCode if it was already running.
 
