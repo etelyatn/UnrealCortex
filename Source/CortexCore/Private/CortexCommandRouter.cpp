@@ -23,6 +23,82 @@ int32 FCortexCommandRouter::BatchDepth = 0;
 
 namespace
 {
+/** Recursively validate a JSON value tree, rejecting null shared pointers that would crash the serializer. */
+bool IsValidJsonValue(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid())
+	{
+		return false;
+	}
+
+	switch (Value->Type)
+	{
+	case EJson::Object:
+	{
+		const TSharedPtr<FJsonObject> Object = Value->AsObject();
+		if (!Object.IsValid())
+		{
+			return false;
+		}
+		for (const auto& Pair : Object->Values)
+		{
+			if (!IsValidJsonValue(Pair.Value))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+	case EJson::Array:
+	{
+		for (const TSharedPtr<FJsonValue>& Element : Value->AsArray())
+		{
+			if (!IsValidJsonValue(Element))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+	default:
+		return true;
+	}
+}
+
+/** Validate the assembled response envelope before serialization. */
+bool IsValidJsonTree(const TSharedPtr<FJsonObject>& Root)
+{
+	if (!Root.IsValid())
+	{
+		return false;
+	}
+	return IsValidJsonValue(MakeShared<FJsonValueObject>(Root));
+}
+
+/** Build the safe SERIALIZATION_ERROR fallback envelope when a response cannot be serialized. */
+FString BuildSerializationErrorResponse(const FString& RequestId)
+{
+	TSharedRef<FJsonObject> Fallback = MakeShared<FJsonObject>();
+	if (!RequestId.IsEmpty())
+	{
+		Fallback->SetStringField(TEXT("id"), RequestId);
+	}
+	Fallback->SetBoolField(TEXT("success"), false);
+
+	TSharedRef<FJsonObject> ErrorObj = MakeShared<FJsonObject>();
+	ErrorObj->SetStringField(TEXT("code"), CortexErrorCodes::SerializationError);
+	ErrorObj->SetStringField(TEXT("message"), TEXT("Failed to serialize command response"));
+	Fallback->SetObjectField(TEXT("error"), ErrorObj);
+
+	Fallback->SetNumberField(TEXT("timing_ms"), 0.0);
+
+	FString OutputString;
+	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&OutputString);
+	FJsonSerializer::Serialize(Fallback, Writer);
+	return OutputString;
+}
+
 TSharedPtr<FJsonObject> BuildCapabilitiesData(const TArray<FCortexRegisteredDomain>& RegisteredDomains)
 {
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -230,6 +306,14 @@ FString FCortexCommandRouter::ResultToJson(const FCortexCommandResult& Result, d
 	}
 
 	ResponseJson->SetNumberField(TEXT("timing_ms"), TimingMs);
+
+	if (!IsValidJsonTree(ResponseJson))
+	{
+		UE_LOG(LogCortex, Warning,
+			TEXT("ResultToJson: response envelope contains invalid JSON pointers (RequestId=%s); returning SERIALIZATION_ERROR fallback"),
+			*RequestId);
+		return BuildSerializationErrorResponse(RequestId);
+	}
 
 	FString OutputString;
 	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
