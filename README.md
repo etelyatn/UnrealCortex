@@ -230,7 +230,7 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 ```mermaid
 flowchart TB
-    AI["AI Assistant<br/>(Claude Code, Cursor, etc.)"]
+    AI["AI Assistant<br/>(Claude Code, Cursor, OpenCode, etc.)"]
     MCP["Python MCP Server"]
     Core["CortexCore<br/>Command Router · TCP Server"]
 
@@ -272,7 +272,7 @@ Representative command examples include `data.query_datatable`, `bp.create`, `gr
 
 - Unreal Engine 5.6+
 - Python 3.10+ with [uv](https://docs.astral.sh/uv/) (`pip install uv` or see [uv docs](https://docs.astral.sh/uv/getting-started/installation/))
-- An MCP-compatible AI assistant ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), Cursor, etc.)
+- An MCP-compatible AI assistant ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), Cursor, OpenCode, etc.)
 
 ### Step 1 — Install the Plugin
 
@@ -326,7 +326,7 @@ uv sync
 
 Choose one of the two installation paths below.
 
-#### Option A — Automatic Setup with Cortex Toolkit *(Claude Code, Codex, Cursor)*
+#### Option A — Automatic Setup with Cortex Toolkit *(Claude Code, Codex, Cursor, OpenCode)*
 
 > [!NOTE]
 > **[Cortex Toolkit](https://github.com/etelyatn/cortex-toolkit)** adds domain-specific skills, specialist agents, and project memory on top of UnrealCortex. It handles MCP configuration, editor auto-launch, and context injection automatically.
@@ -348,9 +348,16 @@ codex plugin add cortex-toolkit@cortex-toolkit
 ```
 
 Then restart Codex if it was already running.
+
+OpenCode:
+
+Run `cortex-init` in your project and select OpenCode when asked which assistants to configure. This writes the `plugin` and `cortex_mcp` MCP entries into `opencode.json` and copies the Cortex agents into `.opencode/agents/`. See the [Cortex Toolkit README](https://github.com/etelyatn/cortex-toolkit) for details.
+
+Then restart OpenCode if it was already running.
+
 For Cursor setup, see the [Cortex Toolkit README](https://github.com/etelyatn/cortex-toolkit).
 
-**Start the assisted workflow** — run `/cortex-start` (or `cortex-start` in Codex) first. It verifies the editor/MCP connection, checks project context, and recommends the next action for your project.
+**Start the assisted workflow** — run `/cortex-start` (or `cortex-start` in Codex/OpenCode) first. It verifies the editor/MCP connection, checks project context, and recommends the next action for your project.
 
 If you only want setup without the full guided flow, run `/cortex-init` (or `cortex-init`) directly. It will:
 
@@ -359,7 +366,7 @@ If you only want setup without the full guided flow, run `/cortex-init` (or `cor
 3. Create `.mcp.json` with the correct MCP server configuration
 4. Set up `.cortex/` project memory directory with domain knowledge templates
 
-After init, run `/cortex-schema-refresh` (or `cortex-schema-refresh`) to regenerate `.cortex/schema/` from live editor data. Use `/cortex-help` anytime for contextual suggestions. Codex users can also configure `.mcp.json` manually using Option B below; the Codex plugin supplies skills and setup guidance while the project-local MCP config supplies the live UnrealCortex connection.
+After init, run `/cortex-schema-refresh` (or `cortex-schema-refresh`) to regenerate `.cortex/schema/` from live editor data. Use `/cortex-help` anytime for contextual suggestions. Codex and OpenCode users can also configure `.mcp.json` manually using Option B below; the toolkit plugin supplies skills and setup guidance while the project-local MCP config supplies the live UnrealCortex connection.
 
 #### Option B — Manual Setup *(Cursor, Windsurf, or any MCP client)*
 
