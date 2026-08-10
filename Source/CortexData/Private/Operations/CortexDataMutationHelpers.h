@@ -200,4 +200,11 @@ private:
 		const FString& Message,
 		TSharedPtr<FJsonObject> Details = nullptr);
 	static FCortexDataMutationResult MakeSuccess(TSharedPtr<FJsonObject> PublicData = nullptr);
+
+public:
+	/** Map serializer warnings to a structured INVALID_GAMEPLAY_TAG error when an unresolved
+	 *  GameplayTag is present, otherwise fall back to SerializationError with the warnings. */
+	static FCortexDataMutationResult MakeDeserializeError(
+		const TArray<FString>& Warnings,
+		const FString& ContextMessage);
 };

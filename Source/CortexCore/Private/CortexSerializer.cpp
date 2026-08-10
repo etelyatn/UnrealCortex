@@ -1455,7 +1455,19 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		{
 			const FString TagString = JsonValue->AsString();
 			FGameplayTag* Tag = static_cast<FGameplayTag*>(ValuePtr);
+			if (TagString.IsEmpty())
+			{
+				*Tag = FGameplayTag();
+				return true;
+			}
 			*Tag = FGameplayTag::RequestGameplayTag(FName(*TagString), false);
+			if (!Tag->IsValid())
+			{
+				OutWarnings.Add(FString::Printf(
+					TEXT("INVALID_GAMEPLAY_TAG: Unresolved GameplayTag '%s' for field '%s'"),
+					*TagString, *Property->GetName()));
+				return false;
+			}
 			return true;
 		}
 
@@ -1470,15 +1482,26 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 			}
 			FGameplayTagContainer* Container = static_cast<FGameplayTagContainer*>(ValuePtr);
 			Container->Reset();
+			bool bAllTagsValid = true;
 			for (const TSharedPtr<FJsonValue>& Element : *JsonArray)
 			{
-				if (Element.IsValid())
+				if (!Element.IsValid())
 				{
-					FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*Element->AsString()), false);
-					Container->AddTag(Tag);
+					continue;
 				}
+				const FString TagString = Element->AsString();
+				FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*TagString), false);
+				if (!Tag.IsValid())
+				{
+					OutWarnings.Add(FString::Printf(
+						TEXT("INVALID_GAMEPLAY_TAG: Unresolved GameplayTag '%s' for field '%s' (container)"),
+						*TagString, *Property->GetName()));
+					bAllTagsValid = false;
+					continue;
+				}
+				Container->AddTag(Tag);
 			}
-			return true;
+			return bAllTagsValid;
 		}
 
 		// FInstancedStruct - deserialize with _struct_type discriminator

@@ -986,6 +986,64 @@ FCortexDataMutationResult FCortexDataMutationHelpers::MakeSuccess(TSharedPtr<FJs
 	return Result;
 }
 
+FCortexDataMutationResult FCortexDataMutationHelpers::MakeDeserializeError(
+	const TArray<FString>& Warnings,
+	const FString& ContextMessage)
+{
+	for (const FString& Warning : Warnings)
+	{
+		if (!Warning.StartsWith(TEXT("INVALID_GAMEPLAY_TAG:")))
+		{
+			continue;
+		}
+
+		FString Tag;
+		FString Field;
+		const int32 TagQuote = Warning.Find(TEXT("tag '"));
+		if (TagQuote != INDEX_NONE)
+		{
+			const int32 TagStart = TagQuote + 5;
+			const int32 TagEnd = Warning.Find(TEXT("'"), ESearchCase::CaseSensitive, ESearchDir::FromStart, TagStart);
+			if (TagEnd != INDEX_NONE)
+			{
+				Tag = Warning.Mid(TagStart, TagEnd - TagStart);
+			}
+		}
+		const int32 FieldQuote = Warning.Find(TEXT("for field '"));
+		if (FieldQuote != INDEX_NONE)
+		{
+			const int32 FieldStart = FieldQuote + 12;
+			const int32 FieldEnd = Warning.Find(TEXT("'"), ESearchCase::CaseSensitive, ESearchDir::FromStart, FieldStart);
+			if (FieldEnd != INDEX_NONE)
+			{
+				Field = Warning.Mid(FieldStart, FieldEnd - FieldStart);
+			}
+		}
+
+		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+		if (!Field.IsEmpty())
+		{
+			Details->SetStringField(TEXT("field_path"), Field);
+		}
+		if (!Tag.IsEmpty())
+		{
+			Details->SetStringField(TEXT("tag"), Tag);
+		}
+		TArray<TSharedPtr<FJsonValue>> SuggestedActions;
+		SuggestedActions.Add(MakeShared<FJsonValueString>(
+			TEXT("Register the tag in the correct project source file, then refresh the live tag registry")));
+		SuggestedActions.Add(MakeShared<FJsonValueString>(TEXT("Restart the editor and retry")));
+		Details->SetArrayField(TEXT("suggested_actions"), SuggestedActions);
+
+		return MakeError(CortexErrorCodes::InvalidGameplayTag, Warning, Details);
+	}
+
+	return MakeError(
+		CortexErrorCodes::SerializationError,
+		ContextMessage,
+		CortexDataMutationHelpersPrivate::MakeStringArrayDetails(TEXT("warnings"), Warnings));
+}
+
 FCortexDataMutationResult FCortexDataMutationHelpers::ParseUpdateDatatableRowParams(
 	const TSharedPtr<FJsonObject>& Params,
 	FCortexUpdateDatatableRowMutationRequest& OutRequest)
@@ -1070,10 +1128,9 @@ FCortexDataMutationResult FCortexDataMutationHelpers::BuildUpdateDatatableRowPla
 	{
 		RowStruct->DestroyStruct(TempRowPtr);
 		FMemory::Free(TempRowPtr);
-		return MakeError(
-			CortexErrorCodes::SerializationError,
-			TEXT("Failed to validate row_data for update"),
-			CortexDataMutationHelpersPrivate::MakeStringArrayDetails(TEXT("warnings"), Warnings));
+		return FCortexDataMutationHelpers::MakeDeserializeError(
+			Warnings,
+			TEXT("Failed to validate row_data for update"));
 	}
 
 	OutPlan.bWouldMutate = CortexDataMutationHelpersPrivate::RequestedFieldsWouldMutate(
@@ -1106,10 +1163,9 @@ FCortexDataMutationResult FCortexDataMutationHelpers::PreviewUpdateDatatableRow(
 	{
 		Plan.RowStruct->DestroyStruct(TempRowPtr);
 		FMemory::Free(TempRowPtr);
-		return MakeError(
-			CortexErrorCodes::SerializationError,
-			TEXT("Failed to validate row_data for update"),
-			CortexDataMutationHelpersPrivate::MakeStringArrayDetails(TEXT("warnings"), Warnings));
+		return FCortexDataMutationHelpers::MakeDeserializeError(
+			Warnings,
+			TEXT("Failed to validate row_data for update"));
 	}
 
 	TArray<TSharedPtr<FJsonValue>> ChangesArray;
@@ -1164,10 +1220,9 @@ FCortexDataMutationResult FCortexDataMutationHelpers::ApplyUpdateDatatableRow(co
 	{
 		Plan.RowStruct->DestroyStruct(TempRowPtr);
 		FMemory::Free(TempRowPtr);
-		return MakeError(
-			CortexErrorCodes::SerializationError,
-			TEXT("Failed to validate row_data for update"),
-			CortexDataMutationHelpersPrivate::MakeStringArrayDetails(TEXT("warnings"), Warnings));
+		return FCortexDataMutationHelpers::MakeDeserializeError(
+			Warnings,
+			TEXT("Failed to validate row_data for update"));
 	}
 
 	if (Plan.bWouldMutate)
@@ -1842,10 +1897,9 @@ FCortexDataMutationResult FCortexDataMutationHelpers::BuildUpdateDataAssetPlan(
 	if (!bDeserializeSuccess || Warnings.Num() > 0)
 	{
 		TempAsset->MarkAsGarbage();
-		return MakeError(
-			CortexErrorCodes::SerializationError,
-			TEXT("Failed to validate properties for DataAsset update"),
-			CortexDataMutationHelpersPrivate::MakeStringArrayDetails(TEXT("warnings"), Warnings));
+		return FCortexDataMutationHelpers::MakeDeserializeError(
+			Warnings,
+			TEXT("Failed to validate properties for DataAsset update"));
 	}
 
 	OutPlan.bWouldMutate = CortexDataMutationHelpersPrivate::RequestedFieldsWouldMutate(
@@ -1875,10 +1929,9 @@ FCortexDataMutationResult FCortexDataMutationHelpers::PreviewUpdateDataAsset(con
 	if (!bDeserializeSuccess || Warnings.Num() > 0)
 	{
 		TempAsset->MarkAsGarbage();
-		return MakeError(
-			CortexErrorCodes::SerializationError,
-			TEXT("Failed to validate properties for DataAsset update"),
-			CortexDataMutationHelpersPrivate::MakeStringArrayDetails(TEXT("warnings"), Warnings));
+		return FCortexDataMutationHelpers::MakeDeserializeError(
+			Warnings,
+			TEXT("Failed to validate properties for DataAsset update"));
 	}
 
 	TSharedPtr<FJsonObject> NewValues = FCortexSerializer::StructToJson(Plan.AssetClass, TempAsset);
@@ -1929,10 +1982,9 @@ FCortexDataMutationResult FCortexDataMutationHelpers::ApplyUpdateDataAsset(const
 	if (!bDeserializeSuccess || Warnings.Num() > 0)
 	{
 		TempAsset->MarkAsGarbage();
-		return MakeError(
-			CortexErrorCodes::SerializationError,
-			TEXT("Failed to validate properties for DataAsset update"),
-			CortexDataMutationHelpersPrivate::MakeStringArrayDetails(TEXT("warnings"), Warnings));
+		return FCortexDataMutationHelpers::MakeDeserializeError(
+			Warnings,
+			TEXT("Failed to validate properties for DataAsset update"));
 	}
 
 	if (Plan.bWouldMutate)

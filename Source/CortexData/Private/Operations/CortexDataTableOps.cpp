@@ -586,10 +586,9 @@ FCortexCommandResult FCortexDataTableOps::AddDatatableRow(const TSharedPtr<FJson
 	{
 		RowStruct->DestroyStruct(RowMemory);
 		FMemory::Free(RowMemory);
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::SerializationError,
-			TEXT("Failed to deserialize row_data into row struct")
-		);
+		return FCortexDataMutationHelpers::MakeDeserializeError(
+			Warnings,
+			TEXT("Failed to deserialize row_data into row struct")).ToCommandResult();
 	}
 
 	FScopedTransaction Transaction(FText::FromString(

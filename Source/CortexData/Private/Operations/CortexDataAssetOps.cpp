@@ -366,10 +366,9 @@ FCortexCommandResult FCortexDataAssetOps::CreateDataAsset(const TSharedPtr<FJson
 		{
 			NewAsset->MarkAsGarbage();
 			Package->MarkAsGarbage();
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::SerializationError,
-				TEXT("Failed to apply initial properties to DataAsset")
-			);
+			return FCortexDataMutationHelpers::MakeDeserializeError(
+				Warnings,
+				TEXT("Failed to apply initial properties to DataAsset")).ToCommandResult();
 		}
 	}
 

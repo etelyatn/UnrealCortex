@@ -16,6 +16,7 @@ namespace CortexErrorCodes
 	static const FString InvalidValue = TEXT("INVALID_VALUE");
 	static const FString InvalidStructType = TEXT("INVALID_STRUCT_TYPE");
 	static const FString InvalidTag = TEXT("INVALID_TAG");
+	static const FString InvalidGameplayTag = TEXT("INVALID_GAMEPLAY_TAG");
 	static const FString InvalidFilePath = TEXT("INVALID_FILE_PATH");
 	static const FString FileNotFound = TEXT("FILE_NOT_FOUND");
 	static const FString MalformedJson = TEXT("MALFORMED_JSON");

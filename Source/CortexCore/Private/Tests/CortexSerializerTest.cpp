@@ -4,6 +4,8 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "GameplayTagContainer.h"
+#include "UObject/Field.h"
+#include "UObject/UnrealType.h"
 #include "Misc/EngineVersionComparison.h"
 #if UE_VERSION_OLDER_THAN(5, 5, 0)
 #include "InstancedStruct.h"
@@ -362,5 +364,128 @@ bool FCortexSerializerEnumNumericByteTest::RunTest(const FString& Parameters)
 	}
 
 	TempObj->MarkAsGarbage();
+	return true;
+}
+
+// ============================================================================
+// Test: GameplayTag write gate — unresolved tags must fail deserialization
+// ============================================================================
+namespace CortexSerializerTagGateTest
+{
+	FStructProperty* MakeTagStructProperty(UScriptStruct* StructType)
+	{
+		FStructProperty* Prop = new FStructProperty(FFieldVariant(nullptr), FName(TEXT("TestTag")), RF_NoFlags);
+		if (Prop == nullptr)
+		{
+			return nullptr;
+		}
+		Prop->Struct = StructType;
+		Prop->ElementSize = StructType->GetStructureSize();
+		Prop->PropertyFlags = CPF_Edit;
+		return Prop;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerGameplayTagRejectsUnresolved,
+	"Cortex.Core.Serializer.GameplayTagRejectsUnresolved",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerGameplayTagRejectsUnresolved::RunTest(const FString& Parameters)
+{
+	FStructProperty* TagProp = CortexSerializerTagGateTest::MakeTagStructProperty(FGameplayTag::StaticStruct());
+	if (TagProp == nullptr)
+	{
+		AddInfo(TEXT("Could not construct FStructProperty — skipping"));
+		return true;
+	}
+
+	FGameplayTag Value;
+	TArray<FString> Warnings;
+	const TSharedPtr<FJsonValue> Json = MakeShared<FJsonValueString>(TEXT("Sound.VO.Does.Not.Exist"));
+	const bool bOk = FCortexSerializer::JsonToProperty(Json, TagProp, &Value, nullptr, Warnings);
+
+	TestFalse(TEXT("Unresolved GameplayTag must fail deserialization"), bOk);
+	TestEqual(TEXT("Warning identifies INVALID_GAMEPLAY_TAG"),
+		Warnings.Num() > 0 && Warnings[0].Contains(TEXT("INVALID_GAMEPLAY_TAG")), true);
+	if (Warnings.Num() > 0)
+	{
+		TestTrue(TEXT("Warning includes the unresolved tag"), Warnings[0].Contains(TEXT("Sound.VO.Does.Not.Exist")));
+		TestTrue(TEXT("Warning includes the field name"), Warnings[0].Contains(TEXT("TestTag")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerGameplayTagAcceptsResolved,
+	"Cortex.Core.Serializer.GameplayTagAcceptsResolved",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerGameplayTagAcceptsResolved::RunTest(const FString& Parameters)
+{
+	const FGameplayTag Resolved = FGameplayTag::RequestGameplayTag(FName(TEXT("Cortex.Test.Tag1")), false);
+	if (!Resolved.IsValid())
+	{
+		AddInfo(TEXT("Project tag registry not loaded — skipping resolved-tag path"));
+		return true;
+	}
+
+	FStructProperty* TagProp = CortexSerializerTagGateTest::MakeTagStructProperty(FGameplayTag::StaticStruct());
+	if (TagProp == nullptr)
+	{
+		AddInfo(TEXT("Could not construct FStructProperty — skipping"));
+		return true;
+	}
+
+	FGameplayTag Value;
+	TArray<FString> Warnings;
+	const TSharedPtr<FJsonValue> Json = MakeShared<FJsonValueString>(TEXT("Cortex.Test.Tag1"));
+	const bool bOk = FCortexSerializer::JsonToProperty(Json, TagProp, &Value, nullptr, Warnings);
+
+	TestTrue(TEXT("Resolved GameplayTag should deserialize"), bOk);
+	TestEqual(TEXT("No warnings expected for a resolved tag"), Warnings.Num(), 0);
+	TestTrue(TEXT("Value resolves to the requested tag"), Value == Resolved);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerGameplayTagContainerRejectsPartial,
+	"Cortex.Core.Serializer.GameplayTagContainerRejectsPartial",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerGameplayTagContainerRejectsPartial::RunTest(const FString& Parameters)
+{
+	const FGameplayTag GoodTag = FGameplayTag::RequestGameplayTag(FName(TEXT("Cortex.Test.Tag1")), false);
+	if (!GoodTag.IsValid())
+	{
+		AddInfo(TEXT("Project tag registry not loaded — skipping container partial-resolution path"));
+		return true;
+	}
+
+	FStructProperty* ContainerProp = CortexSerializerTagGateTest::MakeTagStructProperty(FGameplayTagContainer::StaticStruct());
+	if (ContainerProp == nullptr)
+	{
+		AddInfo(TEXT("Could not construct FStructProperty — skipping"));
+		return true;
+	}
+
+	FGameplayTagContainer Value;
+	TArray<FString> Warnings;
+	TArray<TSharedPtr<FJsonValue>> Tags;
+	Tags.Add(MakeShared<FJsonValueString>(TEXT("Cortex.Test.Tag1")));
+	Tags.Add(MakeShared<FJsonValueString>(TEXT("Sound.VO.Bad.NotFound")));
+	const TSharedPtr<FJsonValue> Json = MakeShared<FJsonValueArray>(Tags);
+
+	const bool bOk = FCortexSerializer::JsonToProperty(Json, ContainerProp, &Value, nullptr, Warnings);
+
+	TestFalse(TEXT("Container with an unresolved element must fail deserialization"), bOk);
+	TestTrue(TEXT("Warning identifies INVALID_GAMEPLAY_TAG"),
+		Warnings.Num() > 0 && Warnings[0].Contains(TEXT("INVALID_GAMEPLAY_TAG")));
+
 	return true;
 }
