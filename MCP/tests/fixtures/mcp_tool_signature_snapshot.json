@@ -1747,6 +1747,16 @@
     }
   },
   "umg": {
+    "add_widget": {
+      "file": "tools/umg/widget_tree.py",
+      "params": [
+        "asset_path",
+        "widget_class",
+        "name",
+        "parent_name",
+        "slot_index"
+      ]
+    },
     "create_widget_screen": {
       "file": "tools/umg/composites.py",
       "params": [
