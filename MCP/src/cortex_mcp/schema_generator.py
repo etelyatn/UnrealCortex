@@ -150,7 +150,7 @@ def render_catalog(
     lines.append("- Read THIS file first for project overview and index")
     lines.append("- Read domain files only when working in that domain")
     lines.append("- If a domain file is missing, use live MCP tools instead")
-    lines.append("- If generated timestamp is older than 24h, suggest /cortex-schema-refresh")
+    lines.append("- If generated timestamp is older than 24h, suggest cortex-setup (schema refresh)")
     lines.append("")
 
     # Schema Overview
