@@ -30,7 +30,7 @@ def register_schema_tools(mcp, connection: UEConnection):
         Requires a running Unreal Editor with UnrealCortex plugin.
 
         Args:
-            domain: Which domain to generate. "all", "data", or "blueprints".
+            domain: Which domain to generate. "all", "data", "blueprints", or "level".
                     Default "all" generates everything.
 
         Returns:

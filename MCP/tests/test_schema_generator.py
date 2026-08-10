@@ -10,6 +10,7 @@ from unittest.mock import patch
 from cortex_mcp.schema_generator import find_project_root, get_schema_dir
 from cortex_mcp.schema_generator import SCHEMA_VERSION, render_catalog
 from cortex_mcp.schema_generator import collect_data_domain
+from cortex_mcp.schema_generator import collect_level_domain
 from cortex_mcp.schema_generator import generate_schema
 from cortex_mcp.schema_generator import read_meta_from_file
 from cortex_mcp.schema_generator import _decode_data
@@ -1478,3 +1479,139 @@ class TestSchemaStatusV2(unittest.TestCase):
             self.assertIsNotNone(meta)
             self.assertEqual(meta["domain"], "data-index")
             self.assertEqual(meta["schema_version"], "2")
+
+class TestCollectLevelDomain(unittest.TestCase):
+    """Unit tests for the level domain schema collector."""
+
+    def _make_connection(self):
+        conn = MagicMock()
+        get_info_response = {
+            "success": True,
+            "data": {
+                "level_name": "Main",
+                "level_path": "/Game/Maps/Main",
+                "world_type": "Editor",
+                "actor_count": 3,
+                "is_world_partition": False,
+                "sublevels": 0,
+                "world_settings": {"game_mode": "", "kill_z": -100000},
+            },
+        }
+        list_actors_response = {
+            "success": True,
+            "data": {
+                "actors": [
+                    {"name": "BP_Light_C_0", "label": "BP_Light", "class": "BP_Light_C", "location": [0, 0, 0], "folder": "Lighting", "tags": []},
+                    {"name": "BP_Light_C_1", "label": "BP_Light2", "class": "BP_Light_C", "location": [0, 0, 0], "folder": "Lighting", "tags": []},
+                    {"name": "Floor", "label": "Floor", "class": "StaticMeshActor", "location": [0, 0, 0], "folder": "", "tags": ["FloorTag"]},
+                ],
+                "count": 3,
+                "total": 3,
+            },
+        }
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "level.get_info":
+                return get_info_response
+            if command == "level.list_actors":
+                return list_actors_response
+            return {"success": True, "data": {}}
+
+        conn.send_command.side_effect = mock_send
+        conn.send_command_cached.side_effect = mock_send
+        return conn
+
+    def test_collect_returns_world_info(self):
+        result = collect_level_domain(self._make_connection())
+        self.assertIn("world", result)
+        self.assertEqual(result["world"]["level_name"], "Main")
+        self.assertEqual(result["actor_count"], 3)
+
+    def test_collect_aggregates_actor_classes(self):
+        result = collect_level_domain(self._make_connection())
+        by_class = {c["class"]: c["count"] for c in result["actor_classes"]}
+        self.assertEqual(by_class["BP_Light_C"], 2)
+        self.assertEqual(by_class["StaticMeshActor"], 1)
+
+    def test_collect_returns_folder_breakdown(self):
+        result = collect_level_domain(self._make_connection())
+        by_folder = {f["folder"]: f["count"] for f in result["folder_breakdown"]}
+        self.assertEqual(by_folder["Lighting"], 2)
+
+    def test_collect_handles_json_string_data(self):
+        """TCP may return data as a JSON string rather than a dict."""
+        conn = MagicMock()
+        info_data = {"level_name": "StrMap", "actor_count": 1}
+        actors_data = {
+            "actors": [{"name": "A", "label": "A", "class": "StaticMeshActor", "location": [0, 0, 0], "folder": "", "tags": []}],
+            "count": 1,
+            "total": 1,
+        }
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "level.get_info":
+                return {"success": True, "data": json.dumps(info_data)}
+            if command == "level.list_actors":
+                return {"success": True, "data": json.dumps(actors_data)}
+            return {"success": True, "data": "{}"}
+
+        conn.send_command.side_effect = mock_send
+
+        result = collect_level_domain(conn)
+        self.assertEqual(result["world"]["level_name"], "StrMap")
+        self.assertEqual(result["actor_classes"][0]["class"], "StaticMeshActor")
+
+
+class TestRenderLevelCatalog(unittest.TestCase):
+
+    def test_renders_world_and_classes(self):
+        from cortex_mcp.schema_generator import render_level_catalog
+        level_data = {
+            "world": {"level_name": "Main", "world_type": "Editor", "actor_count": 3},
+            "actor_classes": [
+                {"class": "BP_Light_C", "count": 2},
+                {"class": "StaticMeshActor", "count": 1},
+            ],
+            "folder_breakdown": [{"folder": "Lighting", "count": 2}],
+        }
+        result = render_level_catalog(level_data)
+        self.assertIn("Main", result)
+        self.assertIn("BP_Light_C", result)
+        self.assertIn("schema-meta", result)
+        self.assertIn("domain: level", result)
+
+
+class TestGenerateSchemaLevelDomain(unittest.TestCase):
+
+    def test_generate_level_domain_writes_file(self):
+        conn = MagicMock()
+        info_response = {"success": True, "data": {"level_name": "Main", "world_type": "Editor", "actor_count": 1}}
+        actors_response = {
+            "success": True,
+            "data": {
+                "actors": [{"name": "Floor", "label": "Floor", "class": "StaticMeshActor", "location": [0, 0, 0], "folder": "", "tags": []}],
+                "count": 1,
+                "total": 1,
+            },
+        }
+
+        def mock_send(command, params=None, **kwargs):
+            if command == "get_status":
+                return {"success": True, "data": {"engine_version": "5.6", "plugin_version": "1.2.0"}}
+            if command == "level.get_info":
+                return info_response
+            if command == "level.list_actors":
+                return actors_response
+            return {"success": True, "data": {}}
+
+        conn.send_command.side_effect = mock_send
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_dir = Path(tmpdir) / ".cortex" / "schema"
+            result = generate_schema(conn, schema_dir, domain="level", project_name="Test")
+
+            self.assertIn("level", result["generated"])
+            self.assertTrue((schema_dir / "level.md").exists())
+            content = (schema_dir / "level.md").read_text(encoding="utf-8")
+            self.assertIn("Main", content)
+            self.assertIn("StaticMeshActor", content)

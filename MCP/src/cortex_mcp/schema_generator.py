@@ -310,6 +310,75 @@ def render_blueprint_catalog(blueprint_data: dict) -> str:
     return "\n".join(lines)
 
 
+def collect_level_domain(connection) -> dict:
+    """Collect level inventory and actor-class breakdown from a live editor."""
+    info_response = connection.send_command("level.get_info", {})
+    info = _decode_data(info_response)
+
+    actors_response = connection.send_command("level.list_actors", {"limit": 1000, "offset": 0})
+    actors = _decode_data(actors_response).get("actors", [])
+
+    class_counts: dict[str, int] = {}
+    folder_counts: dict[str, int] = {}
+    for actor in actors:
+        cls = actor.get("class", "Unknown")
+        class_counts[cls] = class_counts.get(cls, 0) + 1
+        folder = actor.get("folder", "") or "Root"
+        folder_counts[folder] = folder_counts.get(folder, 0) + 1
+
+    actor_classes = sorted(
+        [{"class": cls, "count": count} for cls, count in class_counts.items()],
+        key=lambda item: item["count"],
+        reverse=True,
+    )
+    folder_breakdown = sorted(
+        [{"folder": folder, "count": count} for folder, count in folder_counts.items()],
+        key=lambda item: item["count"],
+        reverse=True,
+    )
+
+    return {
+        "world": info,
+        "actors": actors,
+        "actor_count": info.get("actor_count", len(actors)),
+        "actor_classes": actor_classes,
+        "folder_breakdown": folder_breakdown,
+    }
+
+
+def render_level_catalog(level_data: dict) -> str:
+    """Render level.md with world info and actor class breakdown."""
+    lines = ["# Level Schema", "", _render_meta("level"), ""]
+
+    world = level_data.get("world", {})
+    level_name = world.get("level_name", "unknown")
+    actor_count = level_data.get("actor_count", 0)
+    lines.append(f"World: `{level_name}` — {actor_count} actors in the current editor world.")
+    lines.append("")
+
+    actor_classes = level_data.get("actor_classes", [])
+    if actor_classes:
+        lines.append("## Actor Classes")
+        lines.append("")
+        lines.append("| Class | Count |")
+        lines.append("|-------|-------|")
+        for entry in actor_classes:
+            lines.append(f"| {entry['class']} | {entry['count']} |")
+        lines.append("")
+
+    folder_breakdown = level_data.get("folder_breakdown", [])
+    if folder_breakdown:
+        lines.append("## Folder Organization")
+        lines.append("")
+        lines.append("| Folder | Count |")
+        lines.append("|--------|-------|")
+        for entry in folder_breakdown:
+            lines.append(f"| {entry['folder']} | {entry['count']} |")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def update_domain_auto_section(content: str, section_name: str, new_content: str) -> str:
     """Replace text between marker pairs, preserving surrounding human-authored content."""
     start_marker = f"<!-- auto:{section_name}:start -->"
@@ -790,7 +859,7 @@ def generate_schema(
     Args:
         connection: UEConnection instance.
         schema_dir: Target directory (e.g., .cortex/schema/).
-        domain: "all" or specific domain name ("data", "blueprints").
+        domain: "all" or specific domain name ("data", "blueprints", "level").
         project_name: Project name for catalog header.
         project_root: Resolved project root. When provided, reuse it for all
             internal path calculations instead of re-resolving from env/fs.
@@ -881,6 +950,22 @@ def generate_schema(
             logger.error("Failed to generate blueprint schema: %s", e)
             result["errors"].append(f"blueprints: {e}")
             raise RuntimeError(f"Failed to generate blueprint schema: {e}") from e
+
+    # Always regenerate catalog
+    if domain in ("all", "level"):
+        try:
+            level_summary = collect_level_domain(connection)
+            level_md = render_level_catalog(level_summary)
+            atomic_write(schema_dir / "level.md", level_md)
+            result["generated"]["level"] = str(schema_dir / "level.md")
+        except (ConnectionError, RuntimeError) as e:
+            logger.error("Failed to generate level schema: %s", e)
+            result["errors"].append(f"level: {e}")
+            raise
+        except Exception as e:
+            logger.error("Failed to generate level schema: %s", e)
+            result["errors"].append(f"level: {e}")
+            raise RuntimeError(f"Failed to generate level schema: {e}") from e
 
     # Always regenerate catalog
     catalog_md = render_catalog(
