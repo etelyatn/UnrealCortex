@@ -74,9 +74,9 @@ def test_ripper_scenario_call_budget():
 def test_toolkit_prompts_require_prefetched_state_and_expected_fingerprint():
     """Task-launch prompts should require prefetched state and stale-write guards."""
     files = [
-        _WORKSPACE_ROOT / "cortex-toolkit/agents/blueprint-developer.md",
-        _WORKSPACE_ROOT / "cortex-toolkit/agents/level-designer.md",
-        _WORKSPACE_ROOT / "cortex-toolkit/agents/material-developer.md",
+        _WORKSPACE_ROOT / "cortex-toolkit/resources/blueprint-development.md",
+        _WORKSPACE_ROOT / "cortex-toolkit/resources/level-design.md",
+        _WORKSPACE_ROOT / "cortex-toolkit/resources/material-development.md",
         _WORKSPACE_ROOT / "cortex-toolkit/skills/cortex-blueprint/SKILL.md",
         _WORKSPACE_ROOT / "cortex-toolkit/skills/cortex-level/SKILL.md",
         _WORKSPACE_ROOT / "cortex-toolkit/skills/cortex-material/SKILL.md",
