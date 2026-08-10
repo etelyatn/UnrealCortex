@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "CortexCoreCommandHandler.h"
+#include "CortexCommandRouter.h"
 #include "CortexTypes.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -10,7 +11,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexDeleteAssetNotFoundTest::RunTest(const FString& Parameters)
 {
-	FCortexCoreCommandHandler Handler;
+	FCortexCommandRouter TestRouter;
+	FCortexCoreCommandHandler Handler(&TestRouter);
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("asset_path"), TEXT("/Game/NonExistent/FakeAsset"));
 
@@ -31,7 +33,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexDeleteAssetMissingPathTest::RunTest(const FString& Parameters)
 {
-	FCortexCoreCommandHandler Handler;
+	FCortexCommandRouter TestRouter;
+	FCortexCoreCommandHandler Handler(&TestRouter);
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 
 	const FCortexCommandResult Result = Handler.Execute(TEXT("delete_asset"), Params);
@@ -51,7 +54,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexDeleteFolderEmptyTest::RunTest(const FString& Parameters)
 {
-	FCortexCoreCommandHandler Handler;
+	FCortexCommandRouter TestRouter;
+	FCortexCoreCommandHandler Handler(&TestRouter);
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("folder_path"), TEXT("/Game/Temp/NonExistentFolder"));
 
@@ -76,7 +80,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexDeleteFolderMissingPathTest::RunTest(const FString& Parameters)
 {
-	FCortexCoreCommandHandler Handler;
+	FCortexCommandRouter TestRouter;
+	FCortexCoreCommandHandler Handler(&TestRouter);
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 
 	const FCortexCommandResult Result = Handler.Execute(TEXT("delete_folder"), Params);

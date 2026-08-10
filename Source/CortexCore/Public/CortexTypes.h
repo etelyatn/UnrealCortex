@@ -139,6 +139,7 @@ namespace CortexErrorCodes
 	// Gen errors
 	static const FString ProviderNotFound = TEXT("PROVIDER_NOT_FOUND");
 	static const FString CapabilityNotSupported = TEXT("CAPABILITY_NOT_SUPPORTED");
+	static const FString CapabilityCommandNotFound = TEXT("CAPABILITY_COMMAND_NOT_FOUND");
 	static const FString JobNotFound = TEXT("JOB_NOT_FOUND");
 	static const FString JobNotRetryable = TEXT("JOB_NOT_RETRYABLE");
 	static const FString JobLimitReached = TEXT("JOB_LIMIT_REACHED");
