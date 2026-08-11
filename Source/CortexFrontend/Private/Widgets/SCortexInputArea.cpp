@@ -15,10 +15,12 @@
 #include "Logging/TokenizedMessage.h"
 #include "MessageLogModule.h"
 #include "IMessageLogListing.h"
+#include "Misc/EngineVersionComparison.h"   // ENGINE_MAJOR_VERSION / ENGINE_MINOR_VERSION version guards
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Rendering/CortexFrontendColors.h"
 #include "BlueprintEditor.h"
+#include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Selection.h"
