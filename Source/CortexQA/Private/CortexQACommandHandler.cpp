@@ -8,6 +8,7 @@
 #include "Operations/CortexQASetupOps.h"
 #include "Operations/CortexQAWorldOps.h"
 #include "CortexQAUtils.h"
+#include "Engine/World.h"
 #include "Recording/CortexQARecorder.h"
 #include "Recording/CortexQAReplaySequencer.h"
 #include "Recording/CortexQASessionSerializer.h"

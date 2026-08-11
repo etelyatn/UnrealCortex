@@ -2,7 +2,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/TimerHandle.h"
 #include "Recording/CortexQASessionTypes.h"
+#include "UObject/WeakObjectPtr.h"
 
 class FCortexQAInputRecorder;
 

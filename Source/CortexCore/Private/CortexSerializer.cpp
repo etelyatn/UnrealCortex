@@ -1,5 +1,6 @@
 
 #include "CortexSerializer.h"
+#include "CortexVersionCompat.h"
 #include "CortexCoreModule.h"
 #include "UObject/UnrealType.h"
 #include "UObject/TextProperty.h"
@@ -1210,7 +1211,7 @@ bool FCortexSerializer::JsonToStruct(const TSharedPtr<FJsonObject>& JsonObject, 
 	bool bSuccess = true;
 	for (const auto& Pair : JsonObject->Values)
 	{
-		const FString& FieldName = Pair.Key;
+		const FString FieldName(CortexJsonKeyToString(Pair.Key));
 		const TSharedPtr<FJsonValue>& JsonValue = Pair.Value;
 
 		// Skip internal metadata fields

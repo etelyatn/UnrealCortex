@@ -1,4 +1,5 @@
 #include "CoreMinimal.h"
+#include "CortexVersionCompat.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexDataTableOps.h"
 #include "CortexDataLocalizationTestTypes.h"
@@ -45,8 +46,8 @@ bool FCortexDataTableStringTableReferenceScanNestedArrayTest::RunTest(const FStr
 		GetTransientPackage(),
 		FName(TEXT("ST_CortexDataReferenceScanTest")));
 	TestStringTable->GetMutableStringTable()->SetNamespace(TEXT("CortexDataReferenceScanTest"));
-	TestStringTable->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Fireball"));
-	TestStringTable->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.step_0"), TEXT("Charge flame."));
+	CortexSetSourceString(*TestStringTable->GetMutableStringTable(), TEXT("entry.fireball.title"), TEXT("Fireball"));
+	CortexSetSourceString(*TestStringTable->GetMutableStringTable(), TEXT("entry.fireball.step_0"), TEXT("Charge flame."));
 
 	UDataTable* DataTable = NewObject<UDataTable>(
 		GetTransientPackage(),
@@ -259,8 +260,8 @@ bool FCortexDataTableImportRejectsMalformedNestedArrayBeforeReplaceTest::RunTest
 		GetTransientPackage(),
 		FName(TEXT("ST_CortexDataImportRejectTest")));
 	TestStringTable->GetMutableStringTable()->SetNamespace(TEXT("CortexDataImportRejectTest"));
-	TestStringTable->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.title"), TEXT("Fireball"));
-	TestStringTable->GetMutableStringTable()->SetSourceString(TEXT("entry.fireball.step_0"), TEXT("Charge flame."));
+	CortexSetSourceString(*TestStringTable->GetMutableStringTable(), TEXT("entry.fireball.title"), TEXT("Fireball"));
+	CortexSetSourceString(*TestStringTable->GetMutableStringTable(), TEXT("entry.fireball.step_0"), TEXT("Charge flame."));
 
 	UDataTable* DataTable = NewObject<UDataTable>(
 		GetTransientPackage(),

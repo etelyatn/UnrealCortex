@@ -1,4 +1,5 @@
 #include "CoreMinimal.h"
+#include "CortexVersionCompat.h"
 #include "CortexCommandRouter.h"
 #include "CortexDataCommandHandler.h"
 #include "CortexSafeFileContract.h"
@@ -1416,7 +1417,7 @@ bool FCortexDataImportQueueHelperParityUpdateStringTableRejectsMalformedOperatio
 		return false;
 	}
 
-	StringTable->GetMutableStringTable()->SetSourceString(TEXT("existing"), TEXT("Original"));
+	CortexSetSourceString(*StringTable->GetMutableStringTable(), TEXT("existing"), TEXT("Original"));
 
 	TSharedRef<FJsonObject> ValidSetOperation = MakeShared<FJsonObject>();
 	ValidSetOperation->SetStringField(TEXT("type"), TEXT("set"));

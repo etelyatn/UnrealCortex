@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "CortexVersionCompat.h"
 #include "HAL/FileManager.h"
 #include "Dom/JsonObject.h"
 #include "Misc/FileHelper.h"
@@ -43,7 +44,10 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("MCP servers object should be valid"), ServersObject != nullptr && ServersObject->IsValid());
 
     TArray<FString> ServerNames;
-    (*ServersObject)->Values.GetKeys(ServerNames);
+    for (const auto& Entry : (*ServersObject)->Values)
+    {
+        ServerNames.Emplace(CortexJsonKeyToString(Entry.Key));
+    }
     ServerNames.Sort();
     TestTrue(TEXT("Project should define at least one MCP server"), ServerNames.Num() > 0);
 
