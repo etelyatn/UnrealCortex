@@ -2,9 +2,19 @@
 #include "CortexCommandRouter.h"
 #include "CortexCoreCommandHandler.h"
 #include "CortexTcpServer.h"
+#include "CortexHttpServer.h"
 #include "CortexSettings.h"
+#include "HAL/IConsoleManager.h"
 
 DEFINE_LOG_CATEGORY(LogCortex);
+
+// POC: in-editor HTTP/SSE MCP transport. Port > 0 enables it alongside the TCP server.
+// Defaults ON (8127) on this isolated POC branch; production would default to 0 (off).
+static TAutoConsoleVariable<int32> CVarCortexHttpPort(
+	TEXT("cortex.http.port"),
+	8127,
+	TEXT("Port for the experimental in-editor MCP-over-HTTP server (0 = disabled)."),
+	ECVF_Default);
 
 void FCortexCoreModule::StartupModule()
 {
@@ -34,11 +44,28 @@ void FCortexCoreModule::StartupModule()
         TEXT("1.0.1"),
         MakeShared<FCortexCoreCommandHandler>()
     );
+
+    // POC: optional MCP-over-HTTP transport alongside the TCP server.
+    const int32 HttpPort = CVarCortexHttpPort.GetValueOnGameThread();
+    if (HttpPort > 0)
+    {
+        HttpServer = MakeUnique<FCortexHttpServer>();
+        if (!HttpServer->Start(HttpPort, *CommandRouter))
+        {
+            HttpServer.Reset();
+        }
+    }
 }
 
 void FCortexCoreModule::ShutdownModule()
 {
     UE_LOG(LogCortex, Log, TEXT("CortexCore module shutting down"));
+
+    if (HttpServer.IsValid())
+    {
+        HttpServer->Stop();
+        HttpServer.Reset();
+    }
 
     if (TcpServer.IsValid())
     {
