@@ -7,6 +7,7 @@
 #include "IPythonScriptPlugin.h"
 #include "Misc/App.h"
 #include "Misc/Base64.h"
+#include "Misc/EngineVersionComparison.h"
 #include "Misc/DefaultValueHelper.h"
 #include "PythonScriptTypes.h"
 #include "Editor.h"
@@ -524,10 +525,18 @@ FCortexCommandResult FCortexEditorUtilityOps::ListCVars(const TSharedPtr<FJsonOb
 	FConsoleObjectVisitor Visitor = FConsoleObjectVisitor::CreateLambda(
 		[&Matches, &TotalMatched](const TCHAR* Name, IConsoleObject* Object)
 		{
-			if (Object == nullptr || Object->IsShadowObject())
+			if (Object == nullptr)
 			{
 				return;
 			}
+#if !UE_VERSION_OLDER_THAN(5, 5, 0)
+			// IConsoleObject::IsShadowObject does not exist before UE 5.5; there are
+			// no shadow console objects to skip on older engines.
+			if (Object->IsShadowObject())
+			{
+				return;
+			}
+#endif
 
 			++TotalMatched;
 			const FString ObjectName(Name);

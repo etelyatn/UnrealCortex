@@ -348,7 +348,7 @@ bool FCortexAnimationMontageAuthoringAddReadbackTest::RunTest(const FString& Par
 	}
 	TestEqual(TEXT("new section name"), After->GetStringField(TEXT("name")), FString(TEXT("Cortex_B")));
 	TestEqual(TEXT("explicit empty next link is preserved"), After->GetStringField(TEXT("next_section")), FString());
-	TestEqual(TEXT("implicit predecessor link was not introduced"), Montage->CompositeSections[0].NextSectionName, NAME_None);
+	TestEqual(TEXT("implicit predecessor link was not introduced"), Montage->CompositeSections[0].NextSectionName, FName(NAME_None));
 
 	FCortexCommandResult Inspect = Router.Execute(TEXT("anim.get_montage_info"), MontageInfoParams(AssetPath));
 	TestTrue(TEXT("montage inspection succeeds"), Inspect.bSuccess);
@@ -524,7 +524,7 @@ bool FCortexAnimationMontageAuthoringUpdateRemoveTest::RunTest(const FString& Pa
 	ClearNextParams->SetStringField(TEXT("new_next_section"), TEXT(""));
 	FCortexCommandResult ClearNext = Router.Execute(TEXT("anim.update_montage_section"), ClearNextParams);
 	TestTrue(TEXT("present empty new_next_section clears link"), ClearNext.bSuccess);
-	TestEqual(TEXT("next link cleared"), Montage->CompositeSections[SectionIndexByName(Montage, TEXT("Cortex_B"))].NextSectionName, NAME_None);
+	TestEqual(TEXT("next link cleared"), Montage->CompositeSections[SectionIndexByName(Montage, TEXT("Cortex_B"))].NextSectionName, FName(NAME_None));
 
 	FCortexCommandResult Remove = Router.Execute(
 		TEXT("anim.remove_montage_section"),
