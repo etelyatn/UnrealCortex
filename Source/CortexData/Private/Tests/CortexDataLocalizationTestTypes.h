@@ -78,7 +78,7 @@ struct FCortexSchemaAnnotatedRow : public FTableRowBase
 	UPROPERTY()
 	FCortexSchemaParentStruct Nested;
 
-	UPROPERTY(meta=(BaseStruct="FCortexSchemaInstancedBase"))
+	UPROPERTY(meta=(BaseStruct="/Script/CortexData.CortexSchemaInstancedBase"))
 	FInstancedStruct Payload;
 };
 

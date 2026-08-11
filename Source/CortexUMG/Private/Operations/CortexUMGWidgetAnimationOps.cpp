@@ -81,16 +81,18 @@ FCortexCommandResult FCortexUMGWidgetAnimationOps::ListAnimations(
 
         double Length = 0.0;
         int32 TrackCount = 0;
-        if (Anim->MovieScene)
+        if (const UMovieScene* MovieScene = Anim->MovieScene)
         {
-            const FFrameRate TickRes = Anim->MovieScene->GetTickResolution();
-            const TRange<FFrameNumber> Range = Anim->MovieScene->GetPlaybackRange();
+            const FFrameRate TickRes = MovieScene->GetTickResolution();
+            const TRange<FFrameNumber> Range = MovieScene->GetPlaybackRange();
             if (Range.HasUpperBound() && Range.HasLowerBound())
             {
                 const FFrameNumber Delta = Range.GetUpperBoundValue() - Range.GetLowerBoundValue();
                 Length = TickRes.AsSeconds(Delta);
             }
-            TrackCount = Anim->MovieScene->GetBindings().Num();
+            // Access through a const pointer to select the const GetBindings() overload;
+            // the non-const overload is deprecated as of UE 5.7 (C4996).
+            TrackCount = MovieScene->GetBindings().Num();
         }
 
         Entry->SetNumberField(TEXT("length"), Length);

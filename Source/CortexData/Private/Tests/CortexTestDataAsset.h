@@ -100,6 +100,6 @@ public:
 	UPROPERTY(EditAnywhere)
 	FString BaseEditable = TEXT("base editable");
 
-	UPROPERTY(EditAnywhere, meta=(BaseStruct="FCortexSchemaInstancedBase"))
+	UPROPERTY(EditAnywhere, meta=(BaseStruct="/Script/CortexData.CortexSchemaInstancedBase"))
 	FInstancedStruct Payload;
 };
