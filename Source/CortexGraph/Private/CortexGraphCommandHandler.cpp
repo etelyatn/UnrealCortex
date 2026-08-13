@@ -67,6 +67,13 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	{
 		return FCortexGraphNodeOps::AutoLayout(Params);
 	}
+	if (Command == TEXT("describe_node"))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::UnsupportedOperation,
+			TEXT("graph.describe_node behavior is implemented by feat/safe-graph-authoring-recovery")
+		);
+	}
 
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
@@ -125,6 +132,9 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')"))
 			.Optional(TEXT("position"), TEXT("object"), TEXT("Optional node placement coordinates"))
 			.Optional(TEXT("params"), TEXT("object"), TEXT("Node-specific creation parameters")),
+		FCortexCommandInfo{ TEXT("describe_node"), TEXT("Return the typed construction contract for a supported node class") }
+			.Required(TEXT("node_class"), TEXT("string"), TEXT("Node class to describe"))
+			.Optional(TEXT("params"), TEXT("object"), TEXT("Optional construction params used to allocate expected pins")),
 		FCortexCommandInfo{ TEXT("remove_node"), TEXT("Remove a node from a mutable graph and clean up connections. Delegate graphs are readable but not mutable.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Identifier of the node to remove"))
@@ -144,7 +154,7 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Required(TEXT("pin_name"), TEXT("string"), TEXT("Pin to disconnect"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
-		FCortexCommandInfo{ TEXT("set_pin_value"), TEXT("Set an input pin default. Non-text pins use value; FText pins may use canonical text descriptor and are verified after save/reload.") }
+		FCortexCommandInfo{ TEXT("set_pin_value"), TEXT("Set an input pin default in a mutable graph. Delegate graphs are readable but not mutable.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node containing the pin"))
 			.Required(TEXT("pin_name"), TEXT("string"), TEXT("Input pin to modify"))
