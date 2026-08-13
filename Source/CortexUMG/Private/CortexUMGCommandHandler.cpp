@@ -108,15 +108,6 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
             TEXT("umg.set_widget_variable behavior is implemented by feat/safe-graph-authoring-recovery")
         );
     }
-
-	if (Command == TEXT("set_widget_variable"))
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::UnsupportedOperation,
-			TEXT("umg.set_widget_variable behavior is implemented by feat/safe-graph-authoring-recovery")
-		);
-	}
-
     return FCortexCommandRouter::Error(
         CortexErrorCodes::UnknownCommand,
         FString::Printf(TEXT("Unknown umg command: %s"), *Command)

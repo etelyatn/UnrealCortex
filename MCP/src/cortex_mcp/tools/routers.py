@@ -193,7 +193,9 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                     return format_response(response.get("data", {}), "get_data_catalog")
                 if command == "batch_query":
                     import json as _json
-                    commands = route_params.get("commands", [])
+                    commands = route_params.get("commands")
+                    if commands is None:
+                        commands = route_params.get("steps")
                     if isinstance(commands, str):
                         commands = _json.loads(commands)
                     batch_params = {"commands": commands}

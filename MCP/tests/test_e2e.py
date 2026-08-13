@@ -1357,16 +1357,16 @@ def test_live_operation_schema_round_trips(tcp_connection):
     assert any(p["name"] == "asset_path" for p in schema["params"])
 
 
+@pytest.mark.anyio
 @pytest.mark.e2e
-def test_profile_operation_schema_returns_live_contract(tcp_connection):
+async def test_profile_operation_schema_returns_live_contract(tcp_connection):
     """profile_operation_schema must expose the live editor contract without executing the command."""
-    from types import SimpleNamespace
     from mcp.server.fastmcp import FastMCP
     from cortex_mcp.server import _register_explicit_tools
 
     test_mcp = FastMCP("cortex-test")
     _register_explicit_tools(test_mcp, tcp_connection)
-    result = test_mcp.call_tool("profile_operation_schema", {
+    result = await test_mcp.call_tool("profile_operation_schema", {
         "profile": "UMGAuthoring", "domain": "core", "command": "save_asset"
     })
     content = result[0] if isinstance(result, tuple) else result
