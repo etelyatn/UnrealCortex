@@ -101,6 +101,13 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
         return FCortexUMGWidgetAnimationOps::RemoveAnimation(Params);
     }
 
+    if (Command == TEXT("set_widget_variable"))
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::UnsupportedOperation,
+            TEXT("umg.set_widget_variable behavior is implemented by feat/safe-graph-authoring-recovery")
+        );
+    }
     return FCortexCommandRouter::Error(
         CortexErrorCodes::UnknownCommand,
         FString::Printf(TEXT("Unknown umg command: %s"), *Command)
@@ -136,6 +143,11 @@ TArray<FCortexCommandInfo> FCortexUMGCommandHandler::GetSupportedCommands() cons
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to duplicate"))
             .Optional(TEXT("new_name"), TEXT("string"), TEXT("Explicit new widget name"))
             .Optional(TEXT("name_prefix"), TEXT("string"), TEXT("Prefix for generated duplicate names")),
+        FCortexCommandInfo{ TEXT("set_widget_variable"), TEXT("Set whether a designer widget becomes a Blueprint variable") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
+            .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
+            .Required(TEXT("is_variable"), TEXT("boolean"), TEXT("True makes the widget referenceable from graphs"))
+            .Optional(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Optional stale-write guard")),
         FCortexCommandInfo{ TEXT("set_color"), TEXT("Set foreground or background color") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))

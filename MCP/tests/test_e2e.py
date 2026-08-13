@@ -11,6 +11,8 @@ import pytest
 import uuid
 import json
 
+from cortex_mcp.tcp_client import UECommandError
+
 
 def _uniq(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
@@ -1333,3 +1335,55 @@ class TestMigrationAssets:
         metrics = data["complexity_metrics"]
         assert metrics["total_nodes"] >= 0
         assert metrics["migration_confidence"] in {"high", "medium", "low"}
+
+
+# ================================================================
+# Live Operation Schemas and Graph-Authoring Safety
+# ================================================================
+
+
+@pytest.mark.e2e
+def test_live_operation_schema_round_trips(tcp_connection):
+    schema = tcp_connection.send_command(
+        "core.get_operation_schema",
+        {"domain": "core", "command": "save_asset"},
+    )["data"]
+    assert schema["source"] == "live_editor"
+    assert schema["router"] == "core_cmd"
+    assert schema["domain"] == "core"
+    assert schema["command"] == "save_asset"
+    assert schema["editor_instance_id"]
+    assert schema["plugin_build_id"]
+    assert any(p["name"] == "asset_path" for p in schema["params"])
+
+
+@pytest.mark.anyio
+@pytest.mark.e2e
+async def test_profile_operation_schema_returns_live_contract(tcp_connection):
+    """profile_operation_schema must expose the live editor contract without executing the command."""
+    from mcp.server.fastmcp import FastMCP
+    from cortex_mcp.server import _register_explicit_tools
+
+    test_mcp = FastMCP("cortex-test")
+    _register_explicit_tools(test_mcp, tcp_connection)
+    result = await test_mcp.call_tool("profile_operation_schema", {
+        "profile": "UMGAuthoring", "domain": "core", "command": "save_asset"
+    })
+    content = result[0] if isinstance(result, tuple) else result
+    payload = json.loads(content.text)
+    assert payload["source"] == "live_editor"
+    assert payload["policy_allowed"] is True
+    assert payload["execution_shape"] == {"type": "router", "tool": "core_cmd"}
+
+
+@pytest.mark.e2e
+def test_core_save_asset_round_trip(blueprint_for_test, tcp_connection):
+    """Live schema contract plus a shipped Core command forms a strict round-trip."""
+    schema = tcp_connection.send_command(
+        "core.get_operation_schema",
+        {"domain": "core", "command": "save_asset"},
+    )["data"]
+    assert schema["source"] == "live_editor"
+
+    resp = tcp_connection.send_command("core.save_asset", {"asset_path": blueprint_for_test})
+    assert resp["data"].get("success") is True or "asset_path" in resp["data"]

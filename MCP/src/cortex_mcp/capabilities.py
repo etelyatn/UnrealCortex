@@ -74,6 +74,12 @@ if _missing:
 
 
 _COMPOSITE_HINTS: dict[str, str] = {
+    "core": (
+        "core.get_operation_schema and profile_operation_schema return contracts served from the "
+        "connected editor; a capabilities cache never proves a command is executable. Use "
+        "graph.describe_node before graph.add_node, and umg.set_widget_variable before referencing "
+        "a designer widget from a graph.\n"
+    ),
     "data": (
         "For large raw DataTable, StringTable, or DataAsset reads, use "
         "export_datatable_json, export_string_table_json, export_data_assets_json, "

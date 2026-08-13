@@ -263,8 +263,8 @@ def _map_tool_call(name: str, args: dict) -> tuple[str, dict]:
 
     umg_names = {
         "add_widget", "remove_widget", "reparent", "get_tree", "get_widget", "list_widget_classes",
-        "duplicate_widget", "set_color", "set_text", "set_font", "set_brush", "set_padding",
-        "set_anchor", "set_alignment", "set_size", "set_visibility", "set_property",
+        "duplicate_widget", "set_widget_variable", "set_color", "set_text", "set_font", "set_brush",
+        "set_padding", "set_anchor", "set_alignment", "set_size", "set_visibility", "set_property",
         "get_property", "get_schema", "create_animation", "list_animations", "remove_animation",
     }
     if name in umg_names:
@@ -355,11 +355,15 @@ def mcp_client(tcp_connection):
         async def call_tool(self, name: str, args: dict):
             if name == "batch_query":
                 normalized_args = _normalize_data_args(name, args)
-                response = tcp_connection.send_command(
-                    "batch",
-                    {"commands": normalized_args["commands"]},
-                )
-                return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(response.get("data", {})))])
+                params = {"commands": normalized_args["commands"]}
+                for key in ("stop_on_error", "rollback_on_error", "verify_rollback"):
+                    if key in normalized_args:
+                        params[key] = normalized_args[key]
+                response = tcp_connection.send_command("batch", params)
+                if response.get("success"):
+                    return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(response.get("data", {})))])
+                error = response.get("error", {})
+                return SimpleNamespace(content=[SimpleNamespace(text=json.dumps({"success": False, "error": error}))])
 
             if name == "level_batch":
                 _validate_level_batch_spec(args["operations"])

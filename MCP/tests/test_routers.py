@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cortex_mcp.capabilities import CORE_DOMAINS
-from cortex_mcp.tools.routers import make_router, register_router_tools
+from cortex_mcp.tools.routers import make_router, register_router_tools, strict_router_tool
 from cortex_mcp.tcp_client import EditorConnection, UECommandError
 from cortex_mcp import server
 
@@ -545,4 +545,84 @@ def test_data_router_forwards_export_schema_json_payload():
     connection.send_command.assert_called_once_with(
         "data.export_schema_json",
         {"out_path": "Saved/CortexExports/schema.json"},
+    )
+
+
+def test_router_rejects_top_level_operation_fields():
+    connection = MagicMock()
+    router = make_router("graph", connection, "graph docs")
+    strict = strict_router_tool(router, "graph")
+    payload = json.loads(strict("add_node", None, node_class="UK2Node_VariableGet", asset_path="/Game/BP_X"))
+    assert payload["_error"] == "INVALID_INVOCATION_SHAPE"
+    assert payload["canonical_shape"] == {"command": "string", "params": "object"}
+    connection.send_command.assert_not_called()
+
+
+def test_batch_query_rejects_empty_commands_locally():
+    connection = MagicMock()
+    router = make_router("core", connection, "core docs")
+    strict = strict_router_tool(router, "core")
+    payload = json.loads(strict("batch_query", {"commands": []}))
+    assert payload["_error"] == "INVALID_INVOCATION_SHAPE"
+    connection.send_command.assert_not_called()
+
+
+def test_batch_query_rejects_empty_steps_alias_locally():
+    connection = MagicMock()
+    router = make_router("core", connection, "core docs")
+    strict = strict_router_tool(router, "core")
+    payload = json.loads(strict("batch_query", {"steps": []}))
+    assert payload["_error"] == "INVALID_INVOCATION_SHAPE"
+    connection.send_command.assert_not_called()
+
+
+def test_batch_query_forwards_steps_alias_as_commands():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "success": True,
+        "data": {"results": [{"index": 0, "success": True}], "count": 1},
+    }
+    router = make_router("core", connection, "core docs")
+    strict = strict_router_tool(router, "core")
+    payload = json.loads(strict("batch_query", {
+        "steps": [{"command": "graph.add_node", "params": {"asset_path": "/Game/BP_X"}}],
+        "stop_on_error": True,
+        "rollback_on_error": True,
+        "verify_rollback": True,
+    }))
+    assert payload["count"] == 1
+    connection.send_command.assert_called_once_with(
+        "batch",
+        {
+            "commands": [{"command": "graph.add_node", "params": {"asset_path": "/Game/BP_X"}}],
+            "stop_on_error": True,
+            "rollback_on_error": True,
+            "verify_rollback": True,
+        },
+    )
+
+
+def test_batch_query_forwards_rollback_params():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "success": True,
+        "data": {"results": [{"index": 0, "success": True}], "count": 1},
+    }
+    router = make_router("core", connection, "core docs")
+    strict = strict_router_tool(router, "core")
+    payload = json.loads(strict("batch_query", {
+        "commands": [{"command": "graph.add_node", "params": {"asset_path": "/Game/BP_X"}}],
+        "stop_on_error": True,
+        "rollback_on_error": True,
+        "verify_rollback": True,
+    }))
+    assert payload["count"] == 1
+    connection.send_command.assert_called_once_with(
+        "batch",
+        {
+            "commands": [{"command": "graph.add_node", "params": {"asset_path": "/Game/BP_X"}}],
+            "stop_on_error": True,
+            "rollback_on_error": True,
+            "verify_rollback": True,
+        },
     )
