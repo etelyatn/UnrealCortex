@@ -152,23 +152,7 @@ bool FCortexGraphSymbolResolver::ResolveClass(
 		return false;
 	}
 
-	// 2. Short name resolution
-	// Check common engine packages first
-	const FString EnginePath = FString::Printf(TEXT("/Script/Engine.%s"), *ClassIdentifier);
-	if (UClass* EngineClass = FindObject<UClass>(nullptr, *EnginePath))
-	{
-		OutClass = EngineClass;
-		return true;
-	}
-
-	const FString CorePath = FString::Printf(TEXT("/Script/CoreUObject.%s"), *ClassIdentifier);
-	if (UClass* CoreClass = FindObject<UClass>(nullptr, *CorePath))
-	{
-		OutClass = CoreClass;
-		return true;
-	}
-
-	// Ambiguity-aware short name search
+	// 2. Short name resolution (ambiguity-aware search across all loaded classes)
 	TArray<UClass*> MatchingCandidates;
 	for (TObjectIterator<UClass> It; It; ++It)
 	{
@@ -178,11 +162,26 @@ bool FCortexGraphSymbolResolver::ResolveClass(
 			continue;
 		}
 
-		if (Candidate->GetName() == ClassIdentifier
-			|| Candidate->GetName() == FString::Printf(TEXT("U%s"), *ClassIdentifier)
-			|| Candidate->GetName() == FString::Printf(TEXT("A%s"), *ClassIdentifier))
+		const FString CandidateName = Candidate->GetName();
+		FString StrippedCandidate = CandidateName;
+		if (CandidateName.EndsWith(TEXT("_C")))
 		{
-			MatchingCandidates.Add(Candidate);
+			StrippedCandidate = CandidateName.LeftChop(2);
+		}
+
+		const bool bExactMatch =
+			CandidateName.Equals(ClassIdentifier, ESearchCase::IgnoreCase)
+			|| StrippedCandidate.Equals(ClassIdentifier, ESearchCase::IgnoreCase);
+
+		const bool bPrefixMatch =
+			FString::Printf(TEXT("A%s"), *CandidateName).Equals(ClassIdentifier, ESearchCase::IgnoreCase)
+			|| FString::Printf(TEXT("U%s"), *CandidateName).Equals(ClassIdentifier, ESearchCase::IgnoreCase)
+			|| FString::Printf(TEXT("A%s"), *StrippedCandidate).Equals(ClassIdentifier, ESearchCase::IgnoreCase)
+			|| FString::Printf(TEXT("U%s"), *StrippedCandidate).Equals(ClassIdentifier, ESearchCase::IgnoreCase);
+
+		if (bExactMatch || bPrefixMatch)
+		{
+			MatchingCandidates.AddUnique(Candidate);
 		}
 	}
 
@@ -404,10 +403,10 @@ bool FCortexGraphSymbolResolver::ResolveFunction(
 	UClass* DeclaringClass = Func->GetOwnerClass();
 	if (Func->HasAnyFunctionFlags(FUNC_Private))
 	{
-		UClass* SelfClass = Blueprint
-			? (Blueprint->SkeletonGeneratedClass ? Blueprint->SkeletonGeneratedClass : Blueprint->GeneratedClass)
-			: nullptr;
-		if (SelfClass != DeclaringClass)
+		const bool bIsBlueprintSelf = Blueprint && (
+			DeclaringClass == Blueprint->GeneratedClass
+			|| DeclaringClass == Blueprint->SkeletonGeneratedClass);
+		if (!bIsBlueprintSelf)
 		{
 			OutError = FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidField,

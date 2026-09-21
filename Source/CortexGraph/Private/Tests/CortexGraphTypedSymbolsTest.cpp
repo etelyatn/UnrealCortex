@@ -536,4 +536,81 @@ bool FCortexGraphSymbolsRebuildNoStalePointerTest::RunTest(const FString& Parame
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphSymbolsAmbiguityTest,
+	"Cortex.Graph.Authoring.Symbols.Ambiguity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphSymbolsAmbiguityTest::RunTest(const FString& Parameters)
+{
+	UPackage* PkgA = CreatePackage(TEXT("/Temp/PkgA"));
+	UBlueprint* BPA = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(), PkgA, FName("BP_CollisionTest"),
+		BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+	FKismetEditorUtilities::CompileBlueprint(BPA);
+
+	UPackage* PkgB = CreatePackage(TEXT("/Temp/PkgB"));
+	UBlueprint* BPB = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(), PkgB, FName("BP_CollisionTest"),
+		BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+	FKismetEditorUtilities::CompileBlueprint(BPB);
+
+	UPackage* ConsumerPkg = CreatePackage(TEXT("/Temp/BP_Ambiguity_Consumer"));
+	UBlueprint* ConsumerBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(), ConsumerPkg, FName("BP_Ambiguity_Consumer"),
+		BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+
+	// 1. Short name resolution fails with ambiguity error and returns candidate paths
+	{
+		UClass* ResolvedClass = nullptr;
+		FCortexCommandResult Error;
+		TArray<FString> Candidates;
+		const bool bResolved = FCortexGraphSymbolResolver::ResolveClass(TEXT("BP_CollisionTest"), ResolvedClass, Error, &Candidates);
+		TestFalse(TEXT("Short name BP_CollisionTest is ambiguous and fails resolution"), bResolved);
+		TestEqual(TEXT("Error code is INVALID_FIELD"), Error.ErrorCode, CortexErrorCodes::InvalidField);
+		TestTrue(TEXT("Error details has candidates array"), Error.ErrorDetails.IsValid() && Error.ErrorDetails->HasField(TEXT("candidates")));
+		if (Error.ErrorDetails.IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* CandArray = nullptr;
+			if (Error.ErrorDetails->TryGetArrayField(TEXT("candidates"), CandArray))
+			{
+				TestTrue(TEXT("Candidates array has at least 2 entries"), CandArray->Num() >= 2);
+				TestTrue(TEXT("Candidates array capped at 16"), CandArray->Num() <= 16);
+			}
+		}
+		TestTrue(TEXT("OutAmbiguityCandidates has at least 2 entries"), Candidates.Num() >= 2);
+
+		// Also verify via Validate
+		TSharedPtr<FJsonObject> NodeParams = MakeShared<FJsonObject>();
+		NodeParams->SetStringField(TEXT("class"), TEXT("BP_CollisionTest"));
+		FCortexCommandResult ValidateError;
+		TestFalse(TEXT("Validate ConstructObject with ambiguous class fails"),
+			FCortexGraphNodeContract::Validate(TEXT("ConstructObject"), ConsumerBP, NodeParams, ValidateError));
+		TestTrue(TEXT("Validate error details embed describe_node contract"),
+			ValidateError.ErrorDetails.IsValid() && ValidateError.ErrorDetails->HasField(TEXT("describe_node")));
+	}
+
+	// 2. Canonical path resolution succeeds unambiguously
+	{
+		UClass* ResolvedClass = nullptr;
+		FCortexCommandResult Error;
+		const bool bResolved = FCortexGraphSymbolResolver::ResolveClass(
+			BPA->GeneratedClass->GetPathName(), ResolvedClass, Error);
+		TestTrue(TEXT("Canonical path resolution succeeds"), bResolved);
+		TestEqual(TEXT("Resolved class matches BPA GeneratedClass"), ResolvedClass, BPA->GeneratedClass.Get());
+
+		// Also verify via Validate
+		TSharedPtr<FJsonObject> NodeParams = MakeShared<FJsonObject>();
+		NodeParams->SetStringField(TEXT("class"), BPA->GeneratedClass->GetPathName());
+		FCortexCommandResult ValidateError;
+		TestTrue(TEXT("Validate ConstructObject with canonical path succeeds"),
+			FCortexGraphNodeContract::Validate(TEXT("ConstructObject"), ConsumerBP, NodeParams, ValidateError));
+	}
+
+	CleanupTestPackage(PkgA);
+	CleanupTestPackage(PkgB);
+	CleanupTestPackage(ConsumerPkg);
+	return true;
+}
+
 #endif // WITH_EDITOR

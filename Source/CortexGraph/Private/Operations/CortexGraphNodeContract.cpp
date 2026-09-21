@@ -712,12 +712,21 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 
 	if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(NewNode))
 	{
-		FCortexResolvedSymbol Symbol;
-		FCortexCommandResult Error;
-		if (FCortexGraphSymbolResolver::ResolveFunction(Blueprint, NodeParams, Symbol, Error))
+		FString FunctionName;
+		if (NodeParams.IsValid() && NodeParams->TryGetStringField(TEXT("function_name"), FunctionName) && !FunctionName.IsEmpty())
 		{
-			EventNode->EventReference.SetExternalMember(Symbol.MemberName, Symbol.ContextClass);
-			EventNode->bOverrideFunction = true;
+			FCortexResolvedSymbol Symbol;
+			FCortexCommandResult Error;
+			if (FCortexGraphSymbolResolver::ResolveFunction(Blueprint, NodeParams, Symbol, Error))
+			{
+				EventNode->EventReference.SetExternalMember(Symbol.MemberName, Symbol.ContextClass);
+				EventNode->bOverrideFunction = true;
+			}
+			else
+			{
+				OutError = Error.ErrorMessage;
+				return false;
+			}
 		}
 	}
 
