@@ -7,6 +7,7 @@
 #include "K2Node_ConstructObjectFromClass.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_VariableGet.h"
+#include "K2Node_VariableSet.h"
 #include "Blueprint/UserWidget.h"
 #include "GameFramework/Actor.h"
 #include "WidgetBlueprint.h"
@@ -48,16 +49,13 @@ FString CaptureNativeAuthoring(UBlueprint* BP)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphAuthoringProofG1, "Cortex.Graph.AuthoringProof.G1", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FCortexGraphAuthoringProofG1::RunTest(const FString& Parameters)
 {
-    // 1. Create Actor Blueprint
     UPackage* ActorPkg = CreatePackage(TEXT("/Temp/BP_TestActor_G1"));
     UBlueprint* ActorBP = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), ActorPkg, FName("BP_TestActor_G1"), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
 
-    // 2. Create Widget Blueprint
     UPackage* WidgetPkg = CreatePackage(TEXT("/Temp/WBP_TestWidget_G1"));
     UWidgetBlueprint* WidgetBP = Cast<UWidgetBlueprint>(FKismetEditorUtilities::CreateBlueprint(UUserWidget::StaticClass(), WidgetPkg, FName("WBP_TestWidget_G1"), BPTYPE_Normal, UWidgetBlueprint::StaticClass(), UWidgetBlueprintGeneratedClass::StaticClass()));
 
-    // Test WidgetBP function graph terminators with existing function
-    UFunction* OverrideFunc = UUserWidget::StaticClass()->FindFunctionByName(FName("OnInitialized")); // void OnInitialized()
+    UFunction* OverrideFunc = UUserWidget::StaticClass()->FindFunctionByName(FName("OnInitialized"));
     if (OverrideFunc)
     {
         UEdGraph* FuncGraph = FBlueprintEditorUtils::CreateNewGraph(WidgetBP, FName("OnInitialized"), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
@@ -69,11 +67,9 @@ bool FCortexGraphAuthoringProofG1::RunTest(const FString& Parameters)
         FuncGraph->GetNodesOfClass(ResultNodes);
         
         TestEqual(TEXT("Function Entry created"), EntryNodes.Num(), 1);
-        // OnInitialized has no outputs, so no result node
         TestEqual(TEXT("Function Result not created for void"), ResultNodes.Num(), 0);
     }
 
-    // Test GenericCreateObject and exposed-on-spawn pins
     UPackage* ObjPkg = CreatePackage(TEXT("/Temp/BP_SpawnObj_G1"));
     UBlueprint* SpawnBP = FKismetEditorUtilities::CreateBlueprint(UObject::StaticClass(), ObjPkg, FName("BP_SpawnObj_G1"), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
     
@@ -83,8 +79,11 @@ bool FCortexGraphAuthoringProofG1::RunTest(const FString& Parameters)
     FBPVariableDescription* VarDesc = SpawnBP->NewVariables.FindByPredicate([](const FBPVariableDescription& Desc) { return Desc.VarName == FName("SpawnVar"); });
     if (VarDesc)
     {
-        VarDesc->PropertyFlags |= CPF_ExposeOnSpawn | CPF_BlueprintVisible;
+        // Clear CPF_DisableEditOnInstance so bIsSettableExternally is true
+        VarDesc->PropertyFlags &= ~CPF_DisableEditOnInstance;
+        VarDesc->PropertyFlags |= CPF_ExposeOnSpawn;
     }
+    FBlueprintEditorUtils::SetBlueprintVariableMetaData(SpawnBP, FName("SpawnVar"), nullptr, FBlueprintMetadata::MD_ExposeOnSpawn, TEXT("true"));
     FKismetEditorUtilities::CompileBlueprint(SpawnBP);
 
     UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(ActorBP);
@@ -93,8 +92,10 @@ bool FCortexGraphAuthoringProofG1::RunTest(const FString& Parameters)
         UK2Node_GenericCreateObject* CreateNode = NewObject<UK2Node_GenericCreateObject>(EventGraph);
         CreateNode->CreateNewGuid();
         EventGraph->AddNode(CreateNode);
+        CreateNode->AllocateDefaultPins(); // <-- MUST allocate default pins first so Class pin exists!
         
         UEdGraphPin* ClassPin = CreateNode->GetClassPin();
+        TestNotNull(TEXT("ClassPin exists after AllocateDefaultPins"), ClassPin);
         if (ClassPin)
         {
             ClassPin->DefaultObject = SpawnBP->GeneratedClass;
@@ -146,15 +147,11 @@ bool FCortexGraphAuthoringProofG2::RunTest(const FString& Parameters)
     EventGraph->AddNode(ValidNode);
     ValidNode->AllocateDefaultPins();
     
-    // Add a variable to the BP so we can make an invalid Set node
-    FEdGraphPinType IntPinType;
-    IntPinType.PinCategory = UEdGraphSchema_K2::PC_Int;
-    FBlueprintEditorUtils::AddMemberVariable(ActorBP, FName("MyInt"), IntPinType);
-
     FKismetEditorUtilities::CompileBlueprint(ActorBP);
     TestTrue(TEXT("Clean compile"), ActorBP->Status == BS_UpToDate);
 
     UPackage* SentinelPkg = CreatePackage(TEXT("/Temp/Sentinel_G2"));
+    UBlueprint* SentinelBP = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), SentinelPkg, FName("BP_Sentinel_G2"), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
     SentinelPkg->MarkPackageDirty();
 
     if (GEditor && GEditor->Trans)
@@ -165,14 +162,14 @@ bool FCortexGraphAuthoringProofG2::RunTest(const FString& Parameters)
     ActorBP->Modify();
     EventGraph->Modify();
 
-    // Inject bad node to force compile failure cleanly
-    UK2Node_VariableSet* BadNode = NewObject<UK2Node_VariableSet>(EventGraph);
+    AddExpectedError(TEXT("name conflicts with a native"), EAutomationExpectedErrorFlags::Contains, 1);
+
+    UK2Node_CustomEvent* BadNode = NewObject<UK2Node_CustomEvent>(EventGraph);
     BadNode->CreateNewGuid();
-    BadNode->VariableReference.SetSelfMember(FName("MyInt"));
+    BadNode->CustomFunctionName = FName("ReceiveBeginPlay");
     BadNode->Modify();
     EventGraph->AddNode(BadNode);
     BadNode->AllocateDefaultPins();
-    // Leaving value pin unconnected causes compile error
     
     FKismetEditorUtilities::CompileBlueprint(ActorBP);
     TestTrue(TEXT("Forced compile failure"), ActorBP->Status == BS_Error);
@@ -191,20 +188,32 @@ bool FCortexGraphAuthoringProofG2::RunTest(const FString& Parameters)
     if (GEditor && GEditor->Trans)
     {
         GEditor->Trans->End();
-    }
-    
-    if (GEditor && GEditor->Trans)
-    {
         GEditor->Trans->Undo();
+        // Flush the transactor so packages/objects are not rooted in the undo history
+        GEditor->Trans->Reset(FText::FromString(TEXT("ResetTestTransaction")));
     }
 
     CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 
     SentinelPkg->SetDirtyFlag(false);
     SentinelPkg->ClearFlags(RF_Standalone);
+    if (SentinelPkg->IsRooted())
+    {
+        SentinelPkg->RemoveFromRoot();
+    }
+    SentinelBP->ClearFlags(RF_Standalone);
+    SentinelBP->MarkAsGarbage();
     SentinelPkg->MarkAsGarbage();
     
+    ActorBP->ClearFlags(RF_Standalone);
+    ActorBP->MarkAsGarbage();
+
+    Pkg->SetDirtyFlag(false);
     Pkg->ClearFlags(RF_Standalone);
+    if (Pkg->IsRooted())
+    {
+        Pkg->RemoveFromRoot();
+    }
     Pkg->MarkAsGarbage();
 
     return true;
@@ -213,7 +222,6 @@ bool FCortexGraphAuthoringProofG2::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphAuthoringProofG3, "Cortex.Graph.AuthoringProof.G3", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FCortexGraphAuthoringProofG3::RunTest(const FString& Parameters)
 {
-    // G3: Hash and dependency coverage
     UPackage* Pkg = CreatePackage(TEXT("/Temp/BP_TestActor_G3"));
     UBlueprint* ActorBP = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), Pkg, FName("BP_TestActor_G3"), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
     
@@ -228,16 +236,13 @@ bool FCortexGraphAuthoringProofG3::RunTest(const FString& Parameters)
     
     FString InitialHash = CaptureNativeAuthoring(ActorBP);
     
-    // No-op check
     FString NoOpHash = CaptureNativeAuthoring(ActorBP);
     TestEqual(TEXT("No-op leaves hash identical"), InitialHash, NoOpHash);
     
-    // Simulate same-status edit (change node position)
     Node1->NodePosX = 200;
     FString PosChangeHash = CaptureNativeAuthoring(ActorBP);
     TestNotEqual(TEXT("Hash should detect position change"), InitialHash, PosChangeHash);
     
-    // Simulate pin default change
     if (Node1->Pins.Num() > 0)
     {
         Node1->Pins[0]->DefaultValue = TEXT("NewDefault");
