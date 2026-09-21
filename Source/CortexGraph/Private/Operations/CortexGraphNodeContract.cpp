@@ -526,26 +526,7 @@ bool FCortexGraphNodeContract::Validate(
 		{
 			return Fail(TEXT("params.macro_path"), TEXT("MacroInstance requires params.macro_path"));
 		}
-		UEdGraph* MacroGraph = nullptr;
-		if (Blueprint != nullptr)
-		{
-			for (UEdGraph* G : Blueprint->MacroGraphs)
-			{
-				if (G && (G->GetName() == MacroPath || G->GetPathName() == MacroPath))
-				{
-					MacroGraph = G;
-					break;
-				}
-			}
-		}
-		if (MacroGraph == nullptr)
-		{
-			const FString LongPackageName = FPackageName::ObjectPathToPackageName(MacroPath);
-			if (!LongPackageName.IsEmpty() && (FindPackage(nullptr, *LongPackageName) != nullptr || FPackageName::DoesPackageExist(LongPackageName)))
-			{
-				MacroGraph = LoadObject<UEdGraph>(nullptr, *MacroPath);
-			}
-		}
+		UEdGraph* MacroGraph = ResolveMacroGraph(Blueprint, MacroPath);
 		if (MacroGraph == nullptr)
 		{
 			TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
@@ -870,26 +851,7 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 		FString MacroPath;
 		if (NodeParams->TryGetStringField(TEXT("macro_path"), MacroPath))
 		{
-			UEdGraph* MacroGraph = nullptr;
-			if (Blueprint != nullptr)
-			{
-				for (UEdGraph* G : Blueprint->MacroGraphs)
-				{
-					if (G && (G->GetName() == MacroPath || G->GetPathName() == MacroPath))
-					{
-						MacroGraph = G;
-						break;
-					}
-				}
-			}
-			if (MacroGraph == nullptr)
-			{
-				const FString LongPackageName = FPackageName::ObjectPathToPackageName(MacroPath);
-				if (!LongPackageName.IsEmpty() && (FindPackage(nullptr, *LongPackageName) != nullptr || FPackageName::DoesPackageExist(LongPackageName)))
-				{
-					MacroGraph = LoadObject<UEdGraph>(nullptr, *MacroPath);
-				}
-			}
+			UEdGraph* MacroGraph = ResolveMacroGraph(Blueprint, MacroPath);
 			if (MacroGraph)
 			{
 				MacroNode->SetMacroGraph(MacroGraph);
@@ -898,5 +860,34 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 	}
 
 	return true;
+}
+
+UEdGraph* FCortexGraphNodeContract::ResolveMacroGraph(
+	UBlueprint* Blueprint,
+	const FString& MacroPath)
+{
+	if (MacroPath.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	if (Blueprint != nullptr)
+	{
+		for (UEdGraph* G : Blueprint->MacroGraphs)
+		{
+			if (G && (G->GetName() == MacroPath || G->GetPathName() == MacroPath))
+			{
+				return G;
+			}
+		}
+	}
+
+	const FString LongPackageName = FPackageName::ObjectPathToPackageName(MacroPath);
+	if (!LongPackageName.IsEmpty() && (FindPackage(nullptr, *LongPackageName) != nullptr || FPackageName::DoesPackageExist(LongPackageName)))
+	{
+		return LoadObject<UEdGraph>(nullptr, *MacroPath);
+	}
+
+	return nullptr;
 }
 

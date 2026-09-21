@@ -57,4 +57,7 @@ public:
 		UBlueprint* Blueprint,
 		const TSharedPtr<FJsonObject>& NodeParams,
 		FString& OutError);
+	static UEdGraph* ResolveMacroGraph(
+		UBlueprint* Blueprint,
+		const FString& MacroPath);
 };

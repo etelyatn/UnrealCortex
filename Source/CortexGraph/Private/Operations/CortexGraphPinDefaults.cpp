@@ -762,9 +762,18 @@ bool FCortexGraphPinDefaults::ReadDefault(
 		return true;
 	}
 
+	const bool bIsEnumPin = Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Enum ||
+		(Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Byte && Pin->PinType.PinSubCategoryObject.IsValid());
+	if (bIsEnumPin)
+	{
+		OutDescriptor->SetStringField(TEXT("kind"), TEXT("enum"));
+		OutDescriptor->SetStringField(TEXT("value"), Pin->DefaultValue);
+		return true;
+	}
+
 	if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Int ||
 		Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Int64 ||
-		Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Byte)
+		(Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Byte && !Pin->PinType.PinSubCategoryObject.IsValid()))
 	{
 		OutDescriptor->SetStringField(TEXT("kind"), TEXT("int"));
 		OutDescriptor->SetNumberField(TEXT("value"), FCString::Atoi64(*Pin->DefaultValue));
@@ -790,13 +799,6 @@ bool FCortexGraphPinDefaults::ReadDefault(
 	if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Name)
 	{
 		OutDescriptor->SetStringField(TEXT("kind"), TEXT("name"));
-		OutDescriptor->SetStringField(TEXT("value"), Pin->DefaultValue);
-		return true;
-	}
-
-	if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Enum)
-	{
-		OutDescriptor->SetStringField(TEXT("kind"), TEXT("enum"));
 		OutDescriptor->SetStringField(TEXT("value"), Pin->DefaultValue);
 		return true;
 	}

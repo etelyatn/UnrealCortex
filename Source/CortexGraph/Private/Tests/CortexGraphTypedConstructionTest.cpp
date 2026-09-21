@@ -319,7 +319,7 @@ bool FCortexGraphConstructionRejectionsTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Object of wrong class rejected"), FCortexGraphPinDefaults::Validate(TypedObjectPin, WrongClassObject, Error));
 	}
 
-	// 6. Reject an invalid enum value for an enum-typed pin
+	// 6. Reject an invalid enum value for an enum-typed pin, and verify round-trip symmetry
 	UEdGraphPin* EnumPin = FixtureNode->CreatePin(
 		EGPD_Input, UEdGraphSchema_K2::PC_Byte, StaticEnum<ECollisionChannel>(), TEXT("TypedEnumPin"));
 	TestNotNull(TEXT("Typed enum pin created"), EnumPin);
@@ -329,6 +329,36 @@ bool FCortexGraphConstructionRejectionsTest::RunTest(const FString& Parameters)
 		InvalidEnum->SetStringField(TEXT("kind"), TEXT("enum"));
 		InvalidEnum->SetStringField(TEXT("value"), TEXT("ECC_DoesNotExistT04"));
 		TestFalse(TEXT("Invalid enum value rejected"), FCortexGraphPinDefaults::Validate(EnumPin, InvalidEnum, Error));
+
+		// Verify round-trip symmetry: apply valid enum value and verify ReadDefault reports kind:"enum"
+		TSharedPtr<FJsonObject> ValidEnum = MakeShared<FJsonObject>();
+		ValidEnum->SetStringField(TEXT("kind"), TEXT("enum"));
+		ValidEnum->SetStringField(TEXT("value"), TEXT("ECC_WorldStatic"));
+		TestTrue(TEXT("Valid enum value accepted"), FCortexGraphPinDefaults::Validate(EnumPin, ValidEnum, Error));
+		TestTrue(TEXT("Apply valid enum default"), FCortexGraphPinDefaults::ApplyDefault(EnumPin, ValidEnum, Error));
+
+		TSharedPtr<FJsonObject> ReadEnumDesc;
+		TestTrue(TEXT("ReadDefault on PC_Byte enum pin succeeds"), FCortexGraphPinDefaults::ReadDefault(EnumPin, ReadEnumDesc, Error));
+		if (ReadEnumDesc.IsValid())
+		{
+			TestEqual(TEXT("PC_Byte enum pin reads back as kind enum"), ReadEnumDesc->GetStringField(TEXT("kind")), TEXT("enum"));
+			TestEqual(TEXT("PC_Byte enum pin reads back expected value"), ReadEnumDesc->GetStringField(TEXT("value")), TEXT("ECC_WorldStatic"));
+		}
+
+		// Also verify plain PC_Byte (non-enum) reads back as kind:"int"
+		UEdGraphPin* PlainBytePin = FixtureNode->CreatePin(
+			EGPD_Input, UEdGraphSchema_K2::PC_Byte, nullptr, TEXT("PlainBytePin"));
+		if (PlainBytePin)
+		{
+			PlainBytePin->DefaultValue = TEXT("7");
+			TSharedPtr<FJsonObject> ReadByteDesc;
+			TestTrue(TEXT("ReadDefault on plain PC_Byte pin succeeds"), FCortexGraphPinDefaults::ReadDefault(PlainBytePin, ReadByteDesc, Error));
+			if (ReadByteDesc.IsValid())
+			{
+				TestEqual(TEXT("Plain PC_Byte pin reads back as kind int"), ReadByteDesc->GetStringField(TEXT("kind")), TEXT("int"));
+				TestEqual(TEXT("Plain PC_Byte pin reads back numeric value"), ReadByteDesc->GetIntegerField(TEXT("value")), 7);
+			}
+		}
 	}
 
 	// 7. Reject unsupported soft-reference modes
