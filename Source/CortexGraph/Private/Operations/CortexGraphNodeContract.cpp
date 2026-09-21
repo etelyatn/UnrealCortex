@@ -370,6 +370,7 @@ FCortexNodeConstructionContract FCortexGraphNodeContract::Describe(const FString
 	{
 		Set(TEXT("K2Node_DynamicCast"));
 		Contract.OptionalParams.Add({ TEXT("class"), TEXT("string"), false, TEXT("Cast target class; alias target_class accepted") });
+		Contract.OptionalParams.Add({ TEXT("is_pure"), TEXT("bool"), false, TEXT("Pure cast mode (no execution pins); alias bIsPureCast, pure") });
 		Contract.NonRetryableErrors = TEXT("INVALID_FIELD, CLASS_NOT_FOUND");
 	}
 	else if (FamilyName == FName("ConstructObject"))
@@ -525,8 +526,8 @@ bool FCortexGraphNodeContract::Validate(
 		{
 			return Fail(TEXT("params.macro_path"), TEXT("MacroInstance requires params.macro_path"));
 		}
-		UEdGraph* MacroGraph = LoadObject<UEdGraph>(nullptr, *MacroPath);
-		if (MacroGraph == nullptr && Blueprint != nullptr)
+		UEdGraph* MacroGraph = nullptr;
+		if (Blueprint != nullptr)
 		{
 			for (UEdGraph* G : Blueprint->MacroGraphs)
 			{
@@ -535,6 +536,14 @@ bool FCortexGraphNodeContract::Validate(
 					MacroGraph = G;
 					break;
 				}
+			}
+		}
+		if (MacroGraph == nullptr)
+		{
+			const FString LongPackageName = FPackageName::ObjectPathToPackageName(MacroPath);
+			if (!LongPackageName.IsEmpty() && (FindPackage(nullptr, *LongPackageName) != nullptr || FPackageName::DoesPackageExist(LongPackageName)))
+			{
+				MacroGraph = LoadObject<UEdGraph>(nullptr, *MacroPath);
 			}
 		}
 		if (MacroGraph == nullptr)
@@ -696,6 +705,14 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 
 	if (UK2Node_DynamicCast* CastNode = Cast<UK2Node_DynamicCast>(NewNode))
 	{
+		bool bIsPure = false;
+		if (NodeParams->TryGetBoolField(TEXT("is_pure"), bIsPure)
+			|| NodeParams->TryGetBoolField(TEXT("pure"), bIsPure)
+			|| NodeParams->TryGetBoolField(TEXT("bIsPureCast"), bIsPure))
+		{
+			CastNode->SetPurity(bIsPure);
+		}
+
 		FString TargetClassIdentifier;
 		const bool bHasClass =
 			NodeParams->TryGetStringField(TEXT("class"), TargetClassIdentifier)
@@ -735,6 +752,7 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 			{
 				ClassPin->DefaultObject = ConstructClass;
 				CreateNode->PinDefaultValueChanged(ClassPin);
+				CreateNode->ReconstructNode();
 			}
 		}
 	}
@@ -852,8 +870,8 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 		FString MacroPath;
 		if (NodeParams->TryGetStringField(TEXT("macro_path"), MacroPath))
 		{
-			UEdGraph* MacroGraph = LoadObject<UEdGraph>(nullptr, *MacroPath);
-			if (MacroGraph == nullptr && Blueprint != nullptr)
+			UEdGraph* MacroGraph = nullptr;
+			if (Blueprint != nullptr)
 			{
 				for (UEdGraph* G : Blueprint->MacroGraphs)
 				{
@@ -862,6 +880,14 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 						MacroGraph = G;
 						break;
 					}
+				}
+			}
+			if (MacroGraph == nullptr)
+			{
+				const FString LongPackageName = FPackageName::ObjectPathToPackageName(MacroPath);
+				if (!LongPackageName.IsEmpty() && (FindPackage(nullptr, *LongPackageName) != nullptr || FPackageName::DoesPackageExist(LongPackageName)))
+				{
+					MacroGraph = LoadObject<UEdGraph>(nullptr, *MacroPath);
 				}
 			}
 			if (MacroGraph)
