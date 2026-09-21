@@ -388,14 +388,15 @@ bool FCortexGraphSymbolResolver::ResolveFunction(
 		return false;
 	}
 
-	// Validate Blueprint callability or placeability as event
+	// Validate Blueprint callability, placeability as event, or overridability
 	const bool bIsCallable = UEdGraphSchema_K2::CanUserKismetCallFunction(Func);
 	const bool bCanBeEvent = UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Func);
-	if (!bIsCallable && !bCanBeEvent)
+	const bool bIsOverridable = Func->HasAnyFunctionFlags(FUNC_BlueprintEvent);
+	if (!bIsCallable && !bCanBeEvent && !bIsOverridable)
 	{
 		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			FString::Printf(TEXT("Function '%s' on class '%s' is not callable or placeable in Blueprints"), *MemberNameStr, *ContextClass->GetName()));
+			FString::Printf(TEXT("Function '%s' on class '%s' is not callable, placeable, or overridable in Blueprints"), *MemberNameStr, *ContextClass->GetName()));
 		return false;
 	}
 

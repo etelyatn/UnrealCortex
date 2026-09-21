@@ -9,6 +9,7 @@
 #include "K2Node_CustomEvent.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
+#include "K2Node_CallParentFunction.h"
 
 FCortexGraphImplementationEnsureResult FCortexGraphImplementationOps::EnsureForPatch(
 	UBlueprint* Blueprint,
@@ -55,6 +56,23 @@ FCortexGraphImplementationEnsureResult FCortexGraphImplementationOps::EnsureForP
 		return Result;
 	}
 
+	// Inherited owner mismatch check
+	FString ExpectedOwnerClass;
+	if (Selector->TryGetStringField(TEXT("owner_class"), ExpectedOwnerClass) && !ExpectedOwnerClass.IsEmpty())
+	{
+		// Validated implicitly via SymbolResolver unless exact match needed, but the prompt says 
+		// "verifying rejection when function is not an inherited override"
+		// If the function's declaring class is not in the Blueprint's ancestry, it's not an inherited override.
+		// Wait, SymbolResolver already checks if it is in the Blueprint's class hierarchy!
+		// However, let's explicitly verify it is inherited (i.e. OwnerClass != Blueprint->GeneratedClass and is parent)
+		if (!Blueprint->GeneratedClass || !Blueprint->GeneratedClass->IsChildOf(FunctionClass) || Blueprint->GeneratedClass == FunctionClass)
+		{
+			Result.ErrorCode = CortexErrorCodes::InvalidOperation;
+			Result.ErrorMessage = TEXT("Function is not an inherited override.");
+			return Result;
+		}
+	}
+
 	// Conflict check: same-named custom event
 	for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
 	{
@@ -90,6 +108,7 @@ FCortexGraphImplementationEnsureResult FCortexGraphImplementationOps::EnsureForP
 	UEdGraph* OverrideGraph = nullptr;
 	UEdGraphNode* EntryNode = nullptr;
 	UEdGraphNode* ResultNode = nullptr;
+	bool bGraphCreated = false;
 
 	if (bCanBePlacedAsEvent)
 	{
@@ -119,6 +138,7 @@ FCortexGraphImplementationEnsureResult FCortexGraphImplementationOps::EnsureForP
 			{
 				OverrideGraph = FBlueprintEditorUtils::CreateNewGraph(Blueprint, UEdGraphSchema_K2::GN_EventGraph, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
 				FBlueprintEditorUtils::AddUbergraphPage(Blueprint, OverrideGraph);
+				bGraphCreated = true;
 			}
 			else
 			{
@@ -160,6 +180,7 @@ FCortexGraphImplementationEnsureResult FCortexGraphImplementationOps::EnsureForP
 			OverrideGraph = FBlueprintEditorUtils::CreateNewGraph(Blueprint, FunctionName, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
 			FBlueprintEditorUtils::AddFunctionGraph(Blueprint, OverrideGraph, true, FunctionClass);
 			Result.bCreated = true;
+			bGraphCreated = true;
 		}
 
 		if (OverrideGraph)
@@ -170,6 +191,11 @@ FCortexGraphImplementationEnsureResult FCortexGraphImplementationOps::EnsureForP
 				if (UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(Node))
 				{
 					EntryNode = Entry;
+					if (bGraphCreated && Function)
+					{
+						Entry->ClearExtraFlags(FUNC_AccessSpecifiers);
+						Entry->AddExtraFlags(Function->FunctionFlags & FUNC_AccessSpecifiers);
+					}
 				}
 				else if (UK2Node_FunctionResult* Res = Cast<UK2Node_FunctionResult>(Node))
 				{
@@ -181,6 +207,81 @@ FCortexGraphImplementationEnsureResult FCortexGraphImplementationOps::EnsureForP
 			Result.Graph = OverrideGraph;
 			Result.EntryNode = EntryNode;
 			Result.ResultNode = ResultNode;
+		}
+	}
+
+	// Handle Journaling
+	if (Result.bSuccess && Result.bCreated)
+	{
+		if (bGraphCreated)
+		{
+			PatchState.JournalGraphAdded(OverrideGraph);
+		}
+		PatchState.JournalNodeAdded(EntryNode);
+		if (ResultNode)
+		{
+			PatchState.JournalNodeAdded(ResultNode);
+		}
+
+		// Connect Parent Call if requested
+		if (Symbol.CallKind == ECortexCallKind::Parent)
+		{
+			UK2Node_CallParentFunction* ParentNode = NewObject<UK2Node_CallParentFunction>(OverrideGraph);
+			ParentNode->SetFromFunction(Function);
+			ParentNode->CreateNewGuid();
+			ParentNode->PostPlacedNewNode();
+			ParentNode->AllocateDefaultPins();
+			
+			// Position it nicely
+			ParentNode->NodePosX = EntryNode->NodePosX + 300;
+			ParentNode->NodePosY = EntryNode->NodePosY;
+			
+			OverrideGraph->AddNode(ParentNode, true, false);
+			PatchState.JournalNodeAdded(ParentNode);
+
+			const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
+			
+			// Connect Exec Pins
+			UEdGraphPin* EntryThenPin = EntryNode->FindPin(UEdGraphSchema_K2::PN_Then);
+			UEdGraphPin* ParentExecPin = ParentNode->GetExecPin();
+			if (EntryThenPin && ParentExecPin)
+			{
+				Schema->TryCreateConnection(EntryThenPin, ParentExecPin);
+			}
+
+			// Connect Data Pins
+			for (UEdGraphPin* EntryPin : EntryNode->Pins)
+			{
+				if (EntryPin->Direction == EGPD_Output && EntryPin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+				{
+					if (UEdGraphPin* ParentParamPin = ParentNode->FindPin(EntryPin->PinName))
+					{
+						Schema->TryCreateConnection(EntryPin, ParentParamPin);
+					}
+				}
+			}
+
+			if (ResultNode)
+			{
+				UEdGraphPin* ParentThenPin = ParentNode->FindPin(UEdGraphSchema_K2::PN_Then);
+				UEdGraphPin* ResultExecPin = Cast<UK2Node_FunctionResult>(ResultNode)->GetExecPin();
+				if (ParentThenPin && ResultExecPin)
+				{
+					Schema->TryCreateConnection(ParentThenPin, ResultExecPin);
+				}
+
+				// Connect Output Data Pins
+				for (UEdGraphPin* ResultPin : ResultNode->Pins)
+				{
+					if (ResultPin->Direction == EGPD_Input && ResultPin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+					{
+						if (UEdGraphPin* ParentOutputPin = ParentNode->FindPin(ResultPin->PinName))
+						{
+							Schema->TryCreateConnection(ParentOutputPin, ResultPin);
+						}
+					}
+				}
+			}
 		}
 	}
 
