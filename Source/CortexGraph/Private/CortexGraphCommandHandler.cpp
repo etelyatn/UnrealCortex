@@ -3,6 +3,7 @@
 #include "Operations/CortexGraphNodeOps.h"
 #include "Operations/CortexGraphConnectionOps.h"
 #include "Operations/CortexGraphTraceOps.h"
+#include "Operations/CortexGraphAuthoringContext.h"
 
 FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	const FString& Command,
@@ -10,6 +11,11 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	FDeferredResponseCallback DeferredCallback)
 {
 	(void)DeferredCallback;
+
+	if (Command == TEXT("get_authoring_context") || Command == TEXT("authoring_context"))
+	{
+		return FCortexGraphAuthoringContext::Read(Params);
+	}
 
 	if (Command == TEXT("list_graphs"))
 	{
@@ -88,6 +94,12 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() const
 {
 	return {
+		FCortexCommandInfo{ TEXT("get_authoring_context"), TEXT("Inspect Blueprint authoring context, candidate graphs, and current authoring fingerprint") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
+			.Optional(TEXT("target"), TEXT("object"), TEXT("Optional target graph locator (graph_ref or implementation)"))
+			.Optional(TEXT("owner_class"), TEXT("string"), TEXT("Optional class to query reflected members from"))
+			.Optional(TEXT("selector_kind"), TEXT("string"), TEXT("Optional filter for reflected members: function, property, event"))
+			.Optional(TEXT("query"), TEXT("object"), TEXT("Optional pagination/filter query (prefix, offset, max_results)")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("list_graphs"), TEXT("List user-visible Blueprint graphs with kind metadata and owning_interface for interface_impl graphs") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("include_subgraphs"), TEXT("boolean"), TEXT("Include composite subgraphs with parent_graph and subgraph_path fields")).RollbackSafe(),
