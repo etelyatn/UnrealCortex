@@ -16,7 +16,6 @@
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "K2Node_DynamicCast.h"
-#include "K2Node_GenericCreateObject.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
 #include "K2Node_Composite.h"
@@ -43,7 +42,7 @@ namespace
 		TArray<FGraphInfo>& OutGraphs,
 		int32 Depth)
 	{
-		if (!Graph || Depth > 4)
+		if (!Graph || Depth >= 4)
 		{
 			return;
 		}
@@ -259,7 +258,14 @@ TSharedPtr<FJsonObject> FCortexGraphPatchState::ComputeFingerprint(UBlueprint* B
 			}
 
 			// Sort pins by Direction then PinName
-			TArray<UEdGraphPin*> SortedPins = Node->Pins;
+			TArray<UEdGraphPin*> SortedPins;
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (Pin)
+				{
+					SortedPins.Add(Pin);
+				}
+			}
 			SortedPins.Sort([](const UEdGraphPin& A, const UEdGraphPin& B) {
 				if (A.Direction != B.Direction)
 				{
@@ -271,8 +277,6 @@ TSharedPtr<FJsonObject> FCortexGraphPatchState::ComputeFingerprint(UBlueprint* B
 			Buffer += FString::Printf(TEXT("   Pins: %d\n"), SortedPins.Num());
 			for (UEdGraphPin* Pin : SortedPins)
 			{
-				if (!Pin) continue;
-
 				Buffer += FString::Printf(TEXT("    Pin: Name=%s Dir=%d Cat=%s SubCat=%s SubObj=%s Container=%d Ref=%d Const=%d Def=\"%s\" DefText=\"%s\" DefObj=%s Links=%d\n"),
 					*Pin->PinName.ToString(),
 					static_cast<int32>(Pin->Direction),
@@ -288,7 +292,14 @@ TSharedPtr<FJsonObject> FCortexGraphPatchState::ComputeFingerprint(UBlueprint* B
 					Pin->LinkedTo.Num());
 
 				// Sort links deterministically
-				TArray<UEdGraphPin*> SortedLinks = Pin->LinkedTo;
+				TArray<UEdGraphPin*> SortedLinks;
+				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+				{
+					if (LinkedPin)
+					{
+						SortedLinks.Add(LinkedPin);
+					}
+				}
 				SortedLinks.Sort([](const UEdGraphPin& A, const UEdGraphPin& B) {
 					FString NodeA = A.GetOwningNode() ? (A.GetOwningNode()->NodeGuid.IsValid() ? A.GetOwningNode()->NodeGuid.ToString() : A.GetOwningNode()->GetName()) : TEXT("");
 					FString NodeB = B.GetOwningNode() ? (B.GetOwningNode()->NodeGuid.IsValid() ? B.GetOwningNode()->NodeGuid.ToString() : B.GetOwningNode()->GetName()) : TEXT("");
@@ -301,7 +312,6 @@ TSharedPtr<FJsonObject> FCortexGraphPatchState::ComputeFingerprint(UBlueprint* B
 
 				for (UEdGraphPin* Linked : SortedLinks)
 				{
-					if (!Linked) continue;
 					UEdGraphNode* LinkedNode = Linked->GetOwningNode();
 					FString LinkedNodeId = LinkedNode ? (LinkedNode->NodeGuid.IsValid() ? LinkedNode->NodeGuid.ToString() : LinkedNode->GetName()) : TEXT("None");
 					Buffer += FString::Printf(TEXT("     Link -> Node=%s Pin=%s Dir=%d\n"),

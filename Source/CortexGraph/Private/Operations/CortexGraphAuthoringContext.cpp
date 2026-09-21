@@ -26,7 +26,7 @@ namespace
 		TArray<FGraphChoiceEntry>& OutChoices,
 		int32 Depth)
 	{
-		if (!Graph || Depth > 4)
+		if (!Graph || Depth >= 4)
 		{
 			return;
 		}
@@ -167,6 +167,14 @@ FCortexCommandResult FCortexGraphAuthoringContext::Read(const TSharedPtr<FJsonOb
 	if (bHasTarget && TargetObjPtr && TargetObjPtr->IsValid())
 	{
 		const TSharedPtr<FJsonObject>& TargetObj = *TargetObjPtr;
+		if (TargetObj->HasField(TEXT("implementation")))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::UnsupportedOperation,
+				TEXT("Implementation target resolution is not yet supported")
+			);
+		}
+
 		const TSharedPtr<FJsonObject>* GraphRefPtr = nullptr;
 		if (TargetObj->TryGetObjectField(TEXT("graph_ref"), GraphRefPtr) && GraphRefPtr && GraphRefPtr->IsValid())
 		{
@@ -292,7 +300,6 @@ FCortexCommandResult FCortexGraphAuthoringContext::Read(const TSharedPtr<FJsonOb
 
 	TArray<TSharedPtr<FJsonValue>> Modes;
 	Modes.Add(MakeShared<FJsonValueString>(TEXT("graph_ref")));
-	Modes.Add(MakeShared<FJsonValueString>(TEXT("implementation")));
 	Data->SetArrayField(TEXT("supported_authoring_modes"), Modes);
 
 	TSharedRef<FJsonObject> LimitsObj = MakeShared<FJsonObject>();

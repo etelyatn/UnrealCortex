@@ -330,6 +330,23 @@ bool FCortexGraphAuthoringContextFailingCasesTest::RunTest(const FString& Parame
 
 		FCortexCommandResult Result = FCortexGraphAuthoringContext::Read(Params);
 		TestFalse(TEXT("unsupported subpath fails"), Result.bSuccess);
+		TestEqual(TEXT("unsupported subpath error code is SubgraphDepthExceeded"), Result.ErrorCode, CortexErrorCodes::SubgraphDepthExceeded);
+	}
+
+	// Case 4b: Implementation target not yet supported
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), WidgetBP->GetPathName());
+		TSharedPtr<FJsonObject> Impl = MakeShared<FJsonObject>();
+		Impl->SetStringField(TEXT("owner_class"), TEXT("/Script/UMG.UserWidget"));
+		Impl->SetStringField(TEXT("function_name"), TEXT("OnInitialized"));
+		TSharedPtr<FJsonObject> Target = MakeShared<FJsonObject>();
+		Target->SetObjectField(TEXT("implementation"), Impl);
+		Params->SetObjectField(TEXT("target"), Target);
+
+		FCortexCommandResult Result = FCortexGraphAuthoringContext::Read(Params);
+		TestFalse(TEXT("implementation target fails as unsupported"), Result.bSuccess);
+		TestEqual(TEXT("implementation target error code is UnsupportedOperation"), Result.ErrorCode, CortexErrorCodes::UnsupportedOperation);
 	}
 
 	// Case 5: Unready class context
