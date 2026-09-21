@@ -54,7 +54,11 @@ public:
 	 *   Default is false to preserve existing call sites (e.g. AddNode, pin text tests).
 	 *   MCP commands (GetNode) pass bCompact explicitly based on the user-supplied compact param (default true).
 	 */
-	static TSharedRef<FJsonObject> SerializePin(const UEdGraphPin* Pin, bool bDetailed = true, bool bCompact = false);
+	static TSharedRef<FJsonObject> SerializePin(
+		const UEdGraphPin* Pin,
+		bool bDetailed = true,
+		bool bCompact = false,
+		const UBlueprint* ContextBlueprint = nullptr);
 	static TSharedRef<FJsonObject> SerializeNode(const UEdGraphNode* Node, bool bIncludePins, bool bCompact);
 
 	/**

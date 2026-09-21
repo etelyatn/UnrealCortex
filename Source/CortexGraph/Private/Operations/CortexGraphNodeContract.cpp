@@ -33,6 +33,7 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "EdGraphSchema_K2.h"
+#include "Engine/TimelineTemplate.h"
 
 namespace
 {
@@ -512,6 +513,10 @@ bool FCortexGraphNodeContract::Validate(
 		{
 			return Fail(TEXT("params.timeline_name"), TEXT("Timeline requires params.timeline_name"));
 		}
+		if (Blueprint && Blueprint->FindTimelineTemplateByVariableName(FName(*TimelineName)) == nullptr)
+		{
+			return Fail(TEXT("params.timeline_name"), FString::Printf(TEXT("Timeline template not found on Blueprint: %s"), *TimelineName));
+		}
 	}
 	else if (FamilyName == FName("MacroInstance"))
 	{
@@ -519,6 +524,27 @@ bool FCortexGraphNodeContract::Validate(
 		if (!NodeParams.IsValid() || !NodeParams->TryGetStringField(TEXT("macro_path"), MacroPath) || MacroPath.IsEmpty())
 		{
 			return Fail(TEXT("params.macro_path"), TEXT("MacroInstance requires params.macro_path"));
+		}
+		UEdGraph* MacroGraph = LoadObject<UEdGraph>(nullptr, *MacroPath);
+		if (MacroGraph == nullptr && Blueprint != nullptr)
+		{
+			for (UEdGraph* G : Blueprint->MacroGraphs)
+			{
+				if (G && (G->GetName() == MacroPath || G->GetPathName() == MacroPath))
+				{
+					MacroGraph = G;
+					break;
+				}
+			}
+		}
+		if (MacroGraph == nullptr)
+		{
+			TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+			Details->SetStringField(TEXT("field"), TEXT("params.macro_path"));
+			Details->SetStringField(TEXT("message"), FString::Printf(TEXT("Macro graph not found: %s"), *MacroPath));
+			Details->SetObjectField(TEXT("describe_node"), Contract.ToJson());
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::AssetNotFound, FString::Printf(TEXT("Macro graph not found: %s"), *MacroPath), Details);
+			return false;
 		}
 	}
 	else if (FamilyName == FName("AddDelegate") || FamilyName == FName("RemoveDelegate") || FamilyName == FName("ClearDelegate"))
@@ -700,13 +726,16 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 				OutError = Error.ErrorMessage;
 				return false;
 			}
+			if (CreateNode->Pins.Num() == 0)
+			{
+				CreateNode->AllocateDefaultPins();
+			}
 			UEdGraphPin* ClassPin = CreateNode->GetClassPin();
 			if (ClassPin)
 			{
 				ClassPin->DefaultObject = ConstructClass;
 				CreateNode->PinDefaultValueChanged(ClassPin);
 			}
-			CreateNode->ReconstructNode();
 		}
 	}
 
@@ -799,6 +828,46 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 				return false;
 			}
 			SwitchEnumNode->SetEnum(Enum);
+		}
+	}
+
+	if (UK2Node_Timeline* TimelineNode = Cast<UK2Node_Timeline>(NewNode))
+	{
+		FString TimelineName;
+		if (NodeParams->TryGetStringField(TEXT("timeline_name"), TimelineName))
+		{
+			TimelineNode->TimelineName = FName(*TimelineName);
+			if (Blueprint)
+			{
+				if (UTimelineTemplate* Template = Blueprint->FindTimelineTemplateByVariableName(TimelineNode->TimelineName))
+				{
+					TimelineNode->TimelineGuid = Template->TimelineGuid;
+				}
+			}
+		}
+	}
+
+	if (UK2Node_MacroInstance* MacroNode = Cast<UK2Node_MacroInstance>(NewNode))
+	{
+		FString MacroPath;
+		if (NodeParams->TryGetStringField(TEXT("macro_path"), MacroPath))
+		{
+			UEdGraph* MacroGraph = LoadObject<UEdGraph>(nullptr, *MacroPath);
+			if (MacroGraph == nullptr && Blueprint != nullptr)
+			{
+				for (UEdGraph* G : Blueprint->MacroGraphs)
+				{
+					if (G && (G->GetName() == MacroPath || G->GetPathName() == MacroPath))
+					{
+						MacroGraph = G;
+						break;
+					}
+				}
+			}
+			if (MacroGraph)
+			{
+				MacroNode->SetMacroGraph(MacroGraph);
+			}
 		}
 	}
 
