@@ -1191,97 +1191,15 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 
 UClass* FCortexGraphNodeOps::ResolveNodeClass(const FString& NodeClassName)
 {
-	if (NodeClassName == TEXT("UK2Node_CallFunction"))
+	FName FamilyName;
+	UClass* OutClass = nullptr;
+	if (FCortexGraphNodeContract::ResolveFamily(NodeClassName, FamilyName, OutClass))
 	{
-		return UK2Node_CallFunction::StaticClass();
+		return OutClass;
 	}
-	else if (NodeClassName == TEXT("UK2Node_IfThenElse"))
-	{
-		return UK2Node_IfThenElse::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_VariableSet"))
-	{
-		return UK2Node_VariableSet::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_VariableGet"))
-	{
-		return UK2Node_VariableGet::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_Event") || NodeClassName == TEXT("Event"))
-	{
-		return UK2Node_Event::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_ExecutionSequence"))
-	{
-		return UK2Node_ExecutionSequence::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_CustomEvent"))
-	{
-		return UK2Node_CustomEvent::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_Self"))
-	{
-		return UK2Node_Self::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_Knot"))
-	{
-		return UK2Node_Knot::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_MakeArray"))
-	{
-		return UK2Node_MakeArray::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_Timeline"))
-	{
-		return UK2Node_Timeline::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_SpawnActorFromClass"))
-	{
-		return UK2Node_SpawnActorFromClass::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_DynamicCast"))
-	{
-		return UK2Node_DynamicCast::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_MacroInstance"))
-	{
-		return UK2Node_MacroInstance::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_SwitchEnum"))
-	{
-		return UK2Node_SwitchEnum::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_SwitchString"))
-	{
-		return UK2Node_SwitchString::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_SwitchInteger"))
-	{
-		return UK2Node_SwitchInteger::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_AddDelegate"))
-	{
-		return UK2Node_AddDelegate::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_RemoveDelegate"))
-	{
-		return UK2Node_RemoveDelegate::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_ClearDelegate"))
-	{
-		return UK2Node_ClearDelegate::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_CreateDelegate"))
-	{
-		return UK2Node_CreateDelegate::StaticClass();
-	}
-	else if (NodeClassName == TEXT("UK2Node_Composite") || NodeClassName == TEXT("Composite"))
-	{
-		return UK2Node_Composite::StaticClass();
-	}
-
 	return nullptr;
 }
+
 
 FCortexCommandResult FCortexGraphNodeOps::DescribeNode(const TSharedPtr<FJsonObject>& Params)
 {

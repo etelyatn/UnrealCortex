@@ -1,4 +1,5 @@
 #include "Operations/CortexGraphNodeContract.h"
+#include "Operations/CortexGraphSymbolResolver.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_IfThenElse.h"
 #include "K2Node_Variable.h"
@@ -13,6 +14,7 @@
 #include "K2Node_Timeline.h"
 #include "K2Node_SpawnActorFromClass.h"
 #include "K2Node_DynamicCast.h"
+#include "K2Node_GenericCreateObject.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_Composite.h"
 #include "K2Node_SwitchEnum.h"
@@ -30,6 +32,7 @@
 #include "GameFramework/Actor.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "EdGraphSchema_K2.h"
 
 namespace
 {
@@ -37,78 +40,196 @@ const FString VarGetPrerequisite = TEXT("Referenced UMG designer widgets must ha
 const FString VarGetNonRetryable = TEXT("VARIABLE_NOT_FOUND, INVALID_FIELD");
 const FString CallFunctionNonRetryable = TEXT("INVALID_FIELD");
 
-UClass* ResolveGraphNodeClassIdentifier(const FString& ClassIdentifier)
+struct FCortexFamilyMapping
 {
-	if (ClassIdentifier.IsEmpty())
-	{
-		return nullptr;
-	}
-
-	if (UClass* FoundClass = FindObject<UClass>(nullptr, *ClassIdentifier))
-	{
-		return FoundClass;
-	}
-
-	if (!ClassIdentifier.StartsWith(TEXT("/")))
-	{
-		if (UClass* FoundClass = FindFirstObject<UClass>(*ClassIdentifier, EFindFirstObjectOptions::NativeFirst))
-		{
-			return FoundClass;
-		}
-
-		const FString EnginePath = FString::Printf(TEXT("/Script/Engine.%s"), *ClassIdentifier);
-		if (UClass* EngineClass = FindObject<UClass>(nullptr, *EnginePath))
-		{
-			return EngineClass;
-		}
-	}
-
-	for (TObjectIterator<UClass> It; It; ++It)
-	{
-		UClass* Candidate = *It;
-		if (!IsValid(Candidate))
-		{
-			continue;
-		}
-
-		if (Candidate->GetName() == ClassIdentifier || Candidate->GetPathName() == ClassIdentifier)
-		{
-			return Candidate;
-		}
-	}
-
-	if (!ClassIdentifier.StartsWith(TEXT("/")))
-	{
-		return nullptr;
-	}
-
-	// In-memory Blueprint asset (no disk access, avoids SkipPackage warnings).
-	if (UBlueprint* InMemoryBlueprint = FindObject<UBlueprint>(nullptr, *ClassIdentifier))
-	{
-		return InMemoryBlueprint->GeneratedClass;
-	}
-
-	const FString PackageName = FPackageName::ObjectPathToPackageName(ClassIdentifier);
-	const bool bPackageExists =
-		PackageName.StartsWith(TEXT("/"))
-		&& (FindPackage(nullptr, *PackageName) || FPackageName::DoesPackageExist(PackageName));
-	if (!bPackageExists)
-	{
-		return nullptr;
-	}
-
-	if (UClass* LoadedClass = LoadObject<UClass>(nullptr, *ClassIdentifier))
-	{
-		return LoadedClass;
-	}
-
-	if (UBlueprint* BlueprintAsset = LoadObject<UBlueprint>(nullptr, *ClassIdentifier))
-	{
-		return BlueprintAsset->GeneratedClass;
-	}
-
-	return nullptr;
+	FName FamilyName;
+	FString ResolvedClass;
+	UClass* (*GetClassFunc)();
+	TArray<FString> Aliases;
+};
 }
+
+bool FCortexGraphNodeContract::ResolveFamily(
+	const FString& NodeClassOrAlias,
+	FName& OutFamilyName,
+	UClass*& OutNodeClass)
+{
+	OutFamilyName = NAME_None;
+	OutNodeClass = nullptr;
+
+	if (NodeClassOrAlias.IsEmpty())
+	{
+		return false;
+	}
+
+	static const FCortexFamilyMapping Registry[] = {
+		{
+			FName("CallFunction"),
+			TEXT("K2Node_CallFunction"),
+			[]() -> UClass* { return UK2Node_CallFunction::StaticClass(); },
+			{ TEXT("CallFunction"), TEXT("UK2Node_CallFunction"), TEXT("K2Node_CallFunction"), TEXT("/Script/BlueprintGraph.K2Node_CallFunction") }
+		},
+		{
+			FName("IfThenElse"),
+			TEXT("K2Node_IfThenElse"),
+			[]() -> UClass* { return UK2Node_IfThenElse::StaticClass(); },
+			{ TEXT("IfThenElse"), TEXT("UK2Node_IfThenElse"), TEXT("K2Node_IfThenElse"), TEXT("Branch"), TEXT("/Script/BlueprintGraph.K2Node_IfThenElse") }
+		},
+		{
+			FName("VariableSet"),
+			TEXT("K2Node_VariableSet"),
+			[]() -> UClass* { return UK2Node_VariableSet::StaticClass(); },
+			{ TEXT("VariableSet"), TEXT("UK2Node_VariableSet"), TEXT("K2Node_VariableSet"), TEXT("/Script/BlueprintGraph.K2Node_VariableSet") }
+		},
+		{
+			FName("VariableGet"),
+			TEXT("K2Node_VariableGet"),
+			[]() -> UClass* { return UK2Node_VariableGet::StaticClass(); },
+			{ TEXT("VariableGet"), TEXT("UK2Node_VariableGet"), TEXT("K2Node_VariableGet"), TEXT("/Script/BlueprintGraph.K2Node_VariableGet") }
+		},
+		{
+			FName("Event"),
+			TEXT("K2Node_Event"),
+			[]() -> UClass* { return UK2Node_Event::StaticClass(); },
+			{ TEXT("Event"), TEXT("UK2Node_Event"), TEXT("K2Node_Event"), TEXT("/Script/BlueprintGraph.K2Node_Event") }
+		},
+		{
+			FName("ExecutionSequence"),
+			TEXT("K2Node_ExecutionSequence"),
+			[]() -> UClass* { return UK2Node_ExecutionSequence::StaticClass(); },
+			{ TEXT("ExecutionSequence"), TEXT("UK2Node_ExecutionSequence"), TEXT("K2Node_ExecutionSequence"), TEXT("Sequence"), TEXT("/Script/BlueprintGraph.K2Node_ExecutionSequence") }
+		},
+		{
+			FName("CustomEvent"),
+			TEXT("K2Node_CustomEvent"),
+			[]() -> UClass* { return UK2Node_CustomEvent::StaticClass(); },
+			{ TEXT("CustomEvent"), TEXT("UK2Node_CustomEvent"), TEXT("K2Node_CustomEvent"), TEXT("/Script/BlueprintGraph.K2Node_CustomEvent") }
+		},
+		{
+			FName("Self"),
+			TEXT("K2Node_Self"),
+			[]() -> UClass* { return UK2Node_Self::StaticClass(); },
+			{ TEXT("Self"), TEXT("UK2Node_Self"), TEXT("K2Node_Self"), TEXT("/Script/BlueprintGraph.K2Node_Self") }
+		},
+		{
+			FName("Knot"),
+			TEXT("K2Node_Knot"),
+			[]() -> UClass* { return UK2Node_Knot::StaticClass(); },
+			{ TEXT("Knot"), TEXT("UK2Node_Knot"), TEXT("K2Node_Knot"), TEXT("Reroute"), TEXT("/Script/BlueprintGraph.K2Node_Knot") }
+		},
+		{
+			FName("MakeArray"),
+			TEXT("K2Node_MakeArray"),
+			[]() -> UClass* { return UK2Node_MakeArray::StaticClass(); },
+			{ TEXT("MakeArray"), TEXT("UK2Node_MakeArray"), TEXT("K2Node_MakeArray"), TEXT("/Script/BlueprintGraph.K2Node_MakeArray") }
+		},
+		{
+			FName("Timeline"),
+			TEXT("K2Node_Timeline"),
+			[]() -> UClass* { return UK2Node_Timeline::StaticClass(); },
+			{ TEXT("Timeline"), TEXT("UK2Node_Timeline"), TEXT("K2Node_Timeline"), TEXT("/Script/BlueprintGraph.K2Node_Timeline") }
+		},
+		{
+			FName("SpawnActorFromClass"),
+			TEXT("K2Node_SpawnActorFromClass"),
+			[]() -> UClass* { return UK2Node_SpawnActorFromClass::StaticClass(); },
+			{ TEXT("SpawnActorFromClass"), TEXT("UK2Node_SpawnActorFromClass"), TEXT("K2Node_SpawnActorFromClass"), TEXT("SpawnActor"), TEXT("/Script/BlueprintGraph.K2Node_SpawnActorFromClass") }
+		},
+		{
+			FName("DynamicCast"),
+			TEXT("K2Node_DynamicCast"),
+			[]() -> UClass* { return UK2Node_DynamicCast::StaticClass(); },
+			{ TEXT("DynamicCast"), TEXT("UK2Node_DynamicCast"), TEXT("K2Node_DynamicCast"), TEXT("CastTo"), TEXT("Cast"), TEXT("/Script/BlueprintGraph.K2Node_DynamicCast") }
+		},
+		{
+			FName("MacroInstance"),
+			TEXT("K2Node_MacroInstance"),
+			[]() -> UClass* { return UK2Node_MacroInstance::StaticClass(); },
+			{ TEXT("MacroInstance"), TEXT("UK2Node_MacroInstance"), TEXT("K2Node_MacroInstance"), TEXT("/Script/BlueprintGraph.K2Node_MacroInstance") }
+		},
+		{
+			FName("SwitchEnum"),
+			TEXT("K2Node_SwitchEnum"),
+			[]() -> UClass* { return UK2Node_SwitchEnum::StaticClass(); },
+			{ TEXT("SwitchEnum"), TEXT("UK2Node_SwitchEnum"), TEXT("K2Node_SwitchEnum"), TEXT("/Script/BlueprintGraph.K2Node_SwitchEnum") }
+		},
+		{
+			FName("SwitchString"),
+			TEXT("K2Node_SwitchString"),
+			[]() -> UClass* { return UK2Node_SwitchString::StaticClass(); },
+			{ TEXT("SwitchString"), TEXT("UK2Node_SwitchString"), TEXT("K2Node_SwitchString"), TEXT("/Script/BlueprintGraph.K2Node_SwitchString") }
+		},
+		{
+			FName("SwitchInteger"),
+			TEXT("K2Node_SwitchInteger"),
+			[]() -> UClass* { return UK2Node_SwitchInteger::StaticClass(); },
+			{ TEXT("SwitchInteger"), TEXT("UK2Node_SwitchInteger"), TEXT("K2Node_SwitchInteger"), TEXT("/Script/BlueprintGraph.K2Node_SwitchInteger") }
+		},
+		{
+			FName("AddDelegate"),
+			TEXT("K2Node_AddDelegate"),
+			[]() -> UClass* { return UK2Node_AddDelegate::StaticClass(); },
+			{ TEXT("AddDelegate"), TEXT("UK2Node_AddDelegate"), TEXT("K2Node_AddDelegate"), TEXT("BindEvent"), TEXT("/Script/BlueprintGraph.K2Node_AddDelegate") }
+		},
+		{
+			FName("RemoveDelegate"),
+			TEXT("K2Node_RemoveDelegate"),
+			[]() -> UClass* { return UK2Node_RemoveDelegate::StaticClass(); },
+			{ TEXT("RemoveDelegate"), TEXT("UK2Node_RemoveDelegate"), TEXT("K2Node_RemoveDelegate"), TEXT("UnbindEvent"), TEXT("/Script/BlueprintGraph.K2Node_RemoveDelegate") }
+		},
+		{
+			FName("ClearDelegate"),
+			TEXT("K2Node_ClearDelegate"),
+			[]() -> UClass* { return UK2Node_ClearDelegate::StaticClass(); },
+			{ TEXT("ClearDelegate"), TEXT("UK2Node_ClearDelegate"), TEXT("K2Node_ClearDelegate"), TEXT("UnbindAllEvents"), TEXT("/Script/BlueprintGraph.K2Node_ClearDelegate") }
+		},
+		{
+			FName("CreateDelegate"),
+			TEXT("K2Node_CreateDelegate"),
+			[]() -> UClass* { return UK2Node_CreateDelegate::StaticClass(); },
+			{ TEXT("CreateDelegate"), TEXT("UK2Node_CreateDelegate"), TEXT("K2Node_CreateDelegate"), TEXT("CreateEvent"), TEXT("/Script/BlueprintGraph.K2Node_CreateDelegate") }
+		},
+		{
+			FName("Composite"),
+			TEXT("K2Node_Composite"),
+			[]() -> UClass* { return UK2Node_Composite::StaticClass(); },
+			{ TEXT("Composite"), TEXT("UK2Node_Composite"), TEXT("K2Node_Composite"), TEXT("/Script/BlueprintGraph.K2Node_Composite") }
+		},
+		{
+			FName("ConstructObject"),
+			TEXT("K2Node_GenericCreateObject"),
+			[]() -> UClass* { return UK2Node_GenericCreateObject::StaticClass(); },
+			{ TEXT("ConstructObject"), TEXT("GenericCreateObject"), TEXT("UK2Node_GenericCreateObject"), TEXT("K2Node_GenericCreateObject"), TEXT("/Script/BlueprintGraph.K2Node_GenericCreateObject") }
+		}
+	};
+
+	for (const FCortexFamilyMapping& Mapping : Registry)
+	{
+		for (const FString& Alias : Mapping.Aliases)
+		{
+			if (Alias.Equals(NodeClassOrAlias, ESearchCase::IgnoreCase))
+			{
+				OutFamilyName = Mapping.FamilyName;
+				OutNodeClass = Mapping.GetClassFunc();
+				return true;
+			}
+		}
+	}
+
+	// Not in registry: try resolving canonical class path
+	FCortexCommandResult Error;
+	UClass* Resolved = nullptr;
+	if (FCortexGraphSymbolResolver::ResolveClass(NodeClassOrAlias, Resolved, Error))
+	{
+		if (Resolved && Resolved->IsChildOf(UEdGraphNode::StaticClass()))
+		{
+			OutFamilyName = Resolved->GetFName();
+			OutNodeClass = Resolved;
+			return true;
+		}
+	}
+
+	return false;
 }
 
 TSharedRef<FJsonObject> FCortexNodeConstructionContract::ToJson() const
@@ -170,116 +291,136 @@ FCortexNodeConstructionContract FCortexGraphNodeContract::Describe(const FString
 	FCortexNodeConstructionContract Contract;
 	Contract.NodeClass = NodeClassName;
 
+	FName FamilyName;
+	UClass* NodeClass = nullptr;
+	if (!ResolveFamily(NodeClassName, FamilyName, NodeClass))
+	{
+		Contract.ResolvedClass = TEXT("");
+		Contract.bSupported = false;
+		return Contract;
+	}
+
 	auto Set = [&Contract](const FString& ResolvedClass) -> void
 	{
 		Contract.ResolvedClass = ResolvedClass;
 		Contract.bSupported = true;
 	};
 
-	if (NodeClassName == TEXT("UK2Node_CallFunction"))
+	if (FamilyName == FName("CallFunction"))
 	{
 		Set(TEXT("K2Node_CallFunction"));
-		Contract.RequiredParams.Add({ TEXT("function_name"), TEXT("string"), true, TEXT("Canonical owner/function selector in ClassName.FunctionName format, e.g. KismetSystemLibrary.PrintString") });
+		Contract.RequiredParams.Add({ TEXT("function_name"), TEXT("string"), true, TEXT("Canonical owner/function selector in ClassName.FunctionName format, e.g. KismetSystemLibrary.PrintString, or separate owner_class + function_name") });
+		Contract.OptionalParams.Add({ TEXT("owner_class"), TEXT("string"), false, TEXT("Canonical owner class path, e.g. /Script/Engine.KismetSystemLibrary") });
+		Contract.OptionalParams.Add({ TEXT("call_kind"), TEXT("string"), false, TEXT("Call kind: ordinary, interface_message") });
 		Contract.Prerequisites = TEXT("Resolve the function selector with describe_node before wiring pins.");
 		Contract.NonRetryableErrors = CallFunctionNonRetryable;
 	}
-	else if (NodeClassName == TEXT("UK2Node_IfThenElse"))
+	else if (FamilyName == FName("IfThenElse"))
 	{
 		Set(TEXT("K2Node_IfThenElse"));
 	}
-	else if (NodeClassName == TEXT("UK2Node_VariableSet") || NodeClassName == TEXT("UK2Node_VariableGet"))
+	else if (FamilyName == FName("VariableSet") || FamilyName == FName("VariableGet"))
 	{
-		Set(NodeClassName == TEXT("UK2Node_VariableSet") ? TEXT("K2Node_VariableSet") : TEXT("K2Node_VariableGet"));
+		Set(FamilyName == FName("VariableSet") ? TEXT("K2Node_VariableSet") : TEXT("K2Node_VariableGet"));
 		Contract.RequiredParams.Add({ TEXT("variable_name"), TEXT("string"), true, TEXT("Property or Blueprint variable name to reference") });
 		Contract.OptionalParams.Add({ TEXT("variable_class"), TEXT("string"), false, TEXT("Owner class for external class properties, e.g. Actor for bHidden") });
+		Contract.OptionalParams.Add({ TEXT("owner_class"), TEXT("string"), false, TEXT("Canonical owner class path, e.g. /Script/Engine.Actor") });
 		Contract.Prerequisites = VarGetPrerequisite;
 		Contract.NonRetryableErrors = VarGetNonRetryable;
 	}
-	else if (NodeClassName == TEXT("UK2Node_Event") || NodeClassName == TEXT("Event"))
+	else if (FamilyName == FName("Event"))
 	{
 		Set(TEXT("K2Node_Event"));
 		Contract.OptionalParams.Add({ TEXT("function_name"), TEXT("string"), false, TEXT("Event selector in ClassName.EventName format, e.g. Actor.ReceiveBeginPlay") });
+		Contract.OptionalParams.Add({ TEXT("owner_class"), TEXT("string"), false, TEXT("Canonical owner class path, e.g. /Script/Engine.Actor") });
 		Contract.NonRetryableErrors = TEXT("INVALID_FIELD");
 	}
-	else if (NodeClassName == TEXT("UK2Node_ExecutionSequence"))
+	else if (FamilyName == FName("ExecutionSequence"))
 	{
 		Set(TEXT("K2Node_ExecutionSequence"));
 	}
-	else if (NodeClassName == TEXT("UK2Node_CustomEvent"))
+	else if (FamilyName == FName("CustomEvent"))
 	{
 		Set(TEXT("K2Node_CustomEvent"));
 	}
-	else if (NodeClassName == TEXT("UK2Node_Self"))
+	else if (FamilyName == FName("Self"))
 	{
 		Set(TEXT("K2Node_Self"));
 	}
-	else if (NodeClassName == TEXT("UK2Node_Knot"))
+	else if (FamilyName == FName("Knot"))
 	{
 		Set(TEXT("K2Node_Knot"));
 	}
-	else if (NodeClassName == TEXT("UK2Node_MakeArray"))
+	else if (FamilyName == FName("MakeArray"))
 	{
 		Set(TEXT("K2Node_MakeArray"));
 	}
-	else if (NodeClassName == TEXT("UK2Node_Timeline"))
+	else if (FamilyName == FName("Timeline"))
 	{
 		Set(TEXT("K2Node_Timeline"));
 		Contract.RequiredParams.Add({ TEXT("timeline_name"), TEXT("string"), true, TEXT("Name of the UTimelineTemplate already present on the Blueprint") });
 		Contract.NonRetryableErrors = TEXT("INVALID_FIELD, VARIABLE_NOT_FOUND");
 	}
-	else if (NodeClassName == TEXT("UK2Node_SpawnActorFromClass"))
+	else if (FamilyName == FName("SpawnActorFromClass"))
 	{
 		Set(TEXT("K2Node_SpawnActorFromClass"));
 	}
-	else if (NodeClassName == TEXT("UK2Node_DynamicCast"))
+	else if (FamilyName == FName("DynamicCast"))
 	{
 		Set(TEXT("K2Node_DynamicCast"));
 		Contract.OptionalParams.Add({ TEXT("class"), TEXT("string"), false, TEXT("Cast target class; alias target_class accepted") });
 		Contract.NonRetryableErrors = TEXT("INVALID_FIELD, CLASS_NOT_FOUND");
 	}
-	else if (NodeClassName == TEXT("UK2Node_MacroInstance"))
+	else if (FamilyName == FName("ConstructObject"))
+	{
+		Set(TEXT("K2Node_GenericCreateObject"));
+		Contract.RequiredParams.Add({ TEXT("class"), TEXT("string"), true, TEXT("Class to construct") });
+		Contract.NonRetryableErrors = TEXT("INVALID_FIELD, CLASS_NOT_FOUND");
+	}
+	else if (FamilyName == FName("MacroInstance"))
 	{
 		Set(TEXT("K2Node_MacroInstance"));
 		Contract.RequiredParams.Add({ TEXT("macro_path"), TEXT("string"), true, TEXT("Asset path to the macro Blueprint graph") });
 		Contract.NonRetryableErrors = TEXT("INVALID_FIELD, ASSET_NOT_FOUND");
 	}
-	else if (NodeClassName == TEXT("UK2Node_SwitchEnum"))
+	else if (FamilyName == FName("SwitchEnum"))
 	{
 		Set(TEXT("K2Node_SwitchEnum"));
 		Contract.OptionalParams.Add({ TEXT("enum_name"), TEXT("string"), false, TEXT("Reflected enum to switch on; pins allocate from its entries") });
 		Contract.NonRetryableErrors = TEXT("INVALID_FIELD, CLASS_NOT_FOUND");
 	}
-	else if (NodeClassName == TEXT("UK2Node_SwitchString"))
+	else if (FamilyName == FName("SwitchString"))
 	{
 		Set(TEXT("K2Node_SwitchString"));
 	}
-	else if (NodeClassName == TEXT("UK2Node_SwitchInteger"))
+	else if (FamilyName == FName("SwitchInteger"))
 	{
 		Set(TEXT("K2Node_SwitchInteger"));
 	}
-	else if (NodeClassName == TEXT("UK2Node_AddDelegate") || NodeClassName == TEXT("UK2Node_RemoveDelegate") || NodeClassName == TEXT("UK2Node_ClearDelegate"))
+	else if (FamilyName == FName("AddDelegate") || FamilyName == FName("RemoveDelegate") || FamilyName == FName("ClearDelegate"))
 	{
-		Set(NodeClassName == TEXT("UK2Node_AddDelegate") ? TEXT("K2Node_AddDelegate")
-			: NodeClassName == TEXT("UK2Node_RemoveDelegate") ? TEXT("K2Node_RemoveDelegate") : TEXT("K2Node_ClearDelegate"));
+		Set(FamilyName == FName("AddDelegate") ? TEXT("K2Node_AddDelegate")
+			: FamilyName == FName("RemoveDelegate") ? TEXT("K2Node_RemoveDelegate") : TEXT("K2Node_ClearDelegate"));
 		Contract.RequiredParams.Add({ TEXT("delegate_name"), TEXT("string"), true, TEXT("Multicast delegate name") });
 		Contract.OptionalParams.Add({ TEXT("delegate_class"), TEXT("string"), false, TEXT("Owner class for external delegates; omit for self-context event dispatchers") });
+		Contract.OptionalParams.Add({ TEXT("owner_class"), TEXT("string"), false, TEXT("Canonical owner class path") });
 		Contract.NonRetryableErrors = TEXT("INVALID_FIELD, VARIABLE_NOT_FOUND");
 	}
-	else if (NodeClassName == TEXT("UK2Node_CreateDelegate"))
+	else if (FamilyName == FName("CreateDelegate"))
 	{
 		Set(TEXT("K2Node_CreateDelegate"));
 		Contract.OptionalParams.Add({ TEXT("function_name"), TEXT("string"), false, TEXT("Target function name (bare name)") });
 		Contract.NonRetryableErrors = TEXT("INVALID_FIELD");
 	}
-	else if (NodeClassName == TEXT("UK2Node_Composite") || NodeClassName == TEXT("Composite"))
+	else if (FamilyName == FName("Composite"))
 	{
 		Set(TEXT("K2Node_Composite"));
 	}
 	else
 	{
-		Contract.ResolvedClass = TEXT("");
-		Contract.bSupported = false;
+		Set(NodeClass ? NodeClass->GetName() : NodeClassName);
 	}
+
 	return Contract;
 }
 
@@ -308,86 +449,63 @@ bool FCortexGraphNodeContract::Validate(
 		return false;
 	};
 
-	if (NodeClassName == TEXT("UK2Node_CallFunction"))
+	auto FailWithError = [&OutError, &Contract](const FString& DefaultField, const FCortexCommandResult& InError) -> bool
 	{
-		FString FunctionName;
-		if (!NodeParams.IsValid() || !NodeParams->TryGetStringField(TEXT("function_name"), FunctionName) || FunctionName.IsEmpty())
+		TSharedPtr<FJsonObject> Details = InError.ErrorDetails.IsValid()
+			? InError.ErrorDetails
+			: MakeShared<FJsonObject>();
+		if (!Details->HasField(TEXT("field")) && !DefaultField.IsEmpty())
 		{
-			return Fail(TEXT("params.function_name"), TEXT("CallFunction requires params.function_name in ClassName.FunctionName format"));
+			Details->SetStringField(TEXT("field"), DefaultField);
 		}
-		FString ClassName;
-		FString FuncName;
-		if (!FunctionName.Split(TEXT("."), &ClassName, &FuncName) || ClassName.IsEmpty() || FuncName.IsEmpty())
+		if (!Details->HasField(TEXT("message")))
 		{
-			return Fail(TEXT("params.function_name"), FString::Printf(TEXT("Malformed function selector '%s'; expected ClassName.FunctionName"), *FunctionName));
+			Details->SetStringField(TEXT("message"), InError.ErrorMessage);
 		}
-		UClass* FuncClass = FindFirstObject<UClass>(*ClassName);
-		if (FuncClass == nullptr)
+		Details->SetObjectField(TEXT("describe_node"), Contract.ToJson());
+		OutError = FCortexCommandRouter::Error(
+			InError.ErrorCode.IsEmpty() ? CortexErrorCodes::InvalidField : InError.ErrorCode,
+			InError.ErrorMessage,
+			Details);
+		return false;
+	};
+
+	FName FamilyName;
+	UClass* ResolvedClass = nullptr;
+	ResolveFamily(NodeClassName, FamilyName, ResolvedClass);
+
+	if (FamilyName == FName("CallFunction"))
+	{
+		FString CallKind;
+		if (NodeParams.IsValid() && NodeParams->TryGetStringField(TEXT("call_kind"), CallKind))
 		{
-			return Fail(TEXT("params.function_name"), FString::Printf(TEXT("Function owner class not found: %s"), *ClassName));
+			if (CallKind.Equals(TEXT("parent"), ESearchCase::IgnoreCase))
+			{
+				return Fail(TEXT("params.call_kind"), TEXT("CallFunction does not support parent calls; use explicit parent call"));
+			}
 		}
-		if (FuncClass->FindFunctionByName(FName(*FuncName)) == nullptr)
+
+		FCortexResolvedSymbol Symbol;
+		if (!FCortexGraphSymbolResolver::ResolveFunction(Blueprint, NodeParams, Symbol, OutError))
 		{
-			return Fail(TEXT("params.function_name"), FString::Printf(TEXT("Function not found: %s on class %s"), *FuncName, *ClassName));
+			return FailWithError(TEXT("params.function_name"), OutError);
+		}
+
+		if (!UEdGraphSchema_K2::CanUserKismetCallFunction(Symbol.Function))
+		{
+			return Fail(TEXT("params.function_name"), FString::Printf(TEXT("Function '%s' on class '%s' is not callable in Blueprints"), *Symbol.MemberName.ToString(), *Symbol.ContextClass->GetName()));
 		}
 	}
-	else if (NodeClassName == TEXT("UK2Node_VariableSet") || NodeClassName == TEXT("UK2Node_VariableGet"))
+	else if (FamilyName == FName("VariableSet") || FamilyName == FName("VariableGet"))
 	{
-		FString VariableName;
-		if (!NodeParams.IsValid() || !NodeParams->TryGetStringField(TEXT("variable_name"), VariableName) || VariableName.IsEmpty())
+		const bool bIsWrite = (FamilyName == FName("VariableSet"));
+		FCortexResolvedSymbol Symbol;
+		if (!FCortexGraphSymbolResolver::ResolveProperty(Blueprint, NodeParams, bIsWrite, Symbol, OutError))
 		{
-			return Fail(TEXT("params.variable_name"), FString::Printf(TEXT("%s requires params.variable_name"), *NodeClassName));
+			return FailWithError(TEXT("params.variable_name"), OutError);
 		}
-		FString VariableClass;
-		NodeParams->TryGetStringField(TEXT("variable_class"), VariableClass);
-		if (!VariableClass.IsEmpty())
-		{
-			UClass* VarClass = FindFirstObject<UClass>(*VariableClass);
-			if (VarClass == nullptr)
-			{
-				return Fail(TEXT("params.variable_class"), FString::Printf(TEXT("Variable owner class not found: %s"), *VariableClass));
-			}
-			if (VarClass->FindPropertyByName(FName(*VariableName)) == nullptr)
-			{
-				return Fail(TEXT("params.variable_name"), FString::Printf(TEXT("Property not found: %s on class %s"), *VariableName, *VariableClass));
-			}
-		}
-		else
-			{
-				UClass* SelfClass = Blueprint->SkeletonGeneratedClass
-					? Blueprint->SkeletonGeneratedClass
-					: Blueprint->GeneratedClass;
-				FProperty* Member = nullptr;
-				if (SelfClass)
-				{
-					Member = SelfClass->FindPropertyByName(FName(*VariableName));
-				}
-				// Designer widgets are Widget Tree members, not reflected FProperties or
-				// FBPVariableDescription entries. Resolve them BEFORE the generic self-property
-				// failure so a non-variable designer widget gets the actionable
-				// umg.set_widget_variable guidance, and a referenceable one validates cleanly.
-				if (UWidgetBlueprint* WBP = Cast<UWidgetBlueprint>(Blueprint))
-				{
-					if (UWidget* Widget = WBP->WidgetTree ? WBP->WidgetTree->FindWidget(FName(*VariableName)) : nullptr)
-					{
-						if (!Widget->bIsVariable)
-						{
-							return Fail(TEXT("params.variable_name"),
-								FString::Printf(TEXT("Designer widget '%s' has is_variable=false and cannot be referenced from a graph; call umg.set_widget_variable first."), *VariableName));
-						}
-						return true;
-					}
-				}
-				// Blueprint member variables are FBPVariableDescription entries (NewVariables), not
-				// reflected FProperties; FindNewVariableIndex returns INDEX_NONE when absent.
-				if (Member == nullptr
-					&& FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, FName(*VariableName)) == INDEX_NONE)
-				{
-					return Fail(TEXT("params.variable_name"), FString::Printf(TEXT("Self property not found: %s"), *VariableName));
-				}
-			}
 	}
-	else if (NodeClassName == TEXT("UK2Node_Timeline"))
+	else if (FamilyName == FName("Timeline"))
 	{
 		FString TimelineName;
 		if (!NodeParams.IsValid() || !NodeParams->TryGetStringField(TEXT("timeline_name"), TimelineName) || TimelineName.IsEmpty())
@@ -395,7 +513,7 @@ bool FCortexGraphNodeContract::Validate(
 			return Fail(TEXT("params.timeline_name"), TEXT("Timeline requires params.timeline_name"));
 		}
 	}
-	else if (NodeClassName == TEXT("UK2Node_MacroInstance"))
+	else if (FamilyName == FName("MacroInstance"))
 	{
 		FString MacroPath;
 		if (!NodeParams.IsValid() || !NodeParams->TryGetStringField(TEXT("macro_path"), MacroPath) || MacroPath.IsEmpty())
@@ -403,7 +521,7 @@ bool FCortexGraphNodeContract::Validate(
 			return Fail(TEXT("params.macro_path"), TEXT("MacroInstance requires params.macro_path"));
 		}
 	}
-	else if (NodeClassName == TEXT("UK2Node_AddDelegate") || NodeClassName == TEXT("UK2Node_RemoveDelegate") || NodeClassName == TEXT("UK2Node_ClearDelegate"))
+	else if (FamilyName == FName("AddDelegate") || FamilyName == FName("RemoveDelegate") || FamilyName == FName("ClearDelegate"))
 	{
 		FString DelegateName;
 		if (!NodeParams.IsValid() || !NodeParams->TryGetStringField(TEXT("delegate_name"), DelegateName) || DelegateName.IsEmpty())
@@ -411,10 +529,17 @@ bool FCortexGraphNodeContract::Validate(
 			return Fail(TEXT("params.delegate_name"), FString::Printf(TEXT("%s requires params.delegate_name"), *NodeClassName));
 		}
 		FString DelegateClass;
-		NodeParams->TryGetStringField(TEXT("delegate_class"), DelegateClass);
+		if (!NodeParams->TryGetStringField(TEXT("delegate_class"), DelegateClass) && !NodeParams->TryGetStringField(TEXT("owner_class"), DelegateClass))
+		{
+			DelegateClass.Reset();
+		}
 		if (!DelegateClass.IsEmpty())
 		{
-			UClass* OwnerClass = FindFirstObject<UClass>(*DelegateClass);
+			UClass* OwnerClass = nullptr;
+			if (!FCortexGraphSymbolResolver::ResolveClass(DelegateClass, OwnerClass, OutError))
+			{
+				return FailWithError(TEXT("params.delegate_class"), OutError);
+			}
 			if (OwnerClass == nullptr || CastField<FMulticastDelegateProperty>(OwnerClass->FindPropertyByName(FName(*DelegateName))) == nullptr)
 			{
 				return Fail(TEXT("params.delegate_name"), FString::Printf(TEXT("Multicast delegate property not found: %s on class %s"), *DelegateName, *DelegateClass));
@@ -422,27 +547,46 @@ bool FCortexGraphNodeContract::Validate(
 		}
 		else
 		{
-			UClass* SelfClass = Blueprint->SkeletonGeneratedClass
-				? Blueprint->SkeletonGeneratedClass
-				: Blueprint->GeneratedClass;
+			UClass* SelfClass = Blueprint ? (Blueprint->SkeletonGeneratedClass ? Blueprint->SkeletonGeneratedClass : Blueprint->GeneratedClass) : nullptr;
 			if (SelfClass == nullptr || CastField<FMulticastDelegateProperty>(SelfClass->FindPropertyByName(FName(*DelegateName))) == nullptr)
 			{
 				return Fail(TEXT("params.delegate_name"), FString::Printf(TEXT("Self delegate property not found: %s"), *DelegateName));
 			}
 		}
 	}
-	else if (NodeClassName == TEXT("UK2Node_DynamicCast"))
+	else if (FamilyName == FName("DynamicCast"))
 	{
 		FString TargetClassIdentifier;
 		const bool bHasClass = NodeParams.IsValid() && (
 			NodeParams->TryGetStringField(TEXT("class"), TargetClassIdentifier)
 			|| NodeParams->TryGetStringField(TEXT("target_class"), TargetClassIdentifier));
-		if (bHasClass && ResolveGraphNodeClassIdentifier(TargetClassIdentifier) == nullptr)
+		if (bHasClass)
 		{
-			return Fail(TEXT("params.class"), FString::Printf(TEXT("Cast target class not found: %s"), *TargetClassIdentifier));
+			UClass* TargetClass = nullptr;
+			if (!FCortexGraphSymbolResolver::ResolveClass(TargetClassIdentifier, TargetClass, OutError))
+			{
+				return FailWithError(TEXT("params.class"), OutError);
+			}
 		}
 	}
-	else if (NodeClassName == TEXT("UK2Node_SwitchEnum"))
+	else if (FamilyName == FName("ConstructObject"))
+	{
+		FString ClassIdentifier;
+		if (!NodeParams.IsValid() || !NodeParams->TryGetStringField(TEXT("class"), ClassIdentifier) || ClassIdentifier.IsEmpty())
+		{
+			return Fail(TEXT("params.class"), TEXT("ConstructObject requires params.class"));
+		}
+		UClass* ConstructClass = nullptr;
+		if (!FCortexGraphSymbolResolver::ResolveClass(ClassIdentifier, ConstructClass, OutError))
+		{
+			return FailWithError(TEXT("params.class"), OutError);
+		}
+		if (ConstructClass->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+		{
+			return Fail(TEXT("params.class"), FString::Printf(TEXT("Class '%s' cannot be constructed (abstract or deprecated)"), *ClassIdentifier));
+		}
+	}
+	else if (FamilyName == FName("SwitchEnum"))
 	{
 		FString EnumName;
 		if (NodeParams.IsValid() && NodeParams->TryGetStringField(TEXT("enum_name"), EnumName) && !EnumName.IsEmpty())
@@ -453,22 +597,19 @@ bool FCortexGraphNodeContract::Validate(
 			}
 		}
 	}
-	else if (NodeClassName == TEXT("UK2Node_Event") || NodeClassName == TEXT("Event"))
+	else if (FamilyName == FName("Event"))
 	{
 		FString FunctionName;
 		if (NodeParams.IsValid() && NodeParams->TryGetStringField(TEXT("function_name"), FunctionName) && !FunctionName.IsEmpty())
 		{
-			FString ClassName;
-			FString FuncName;
-			UClass* EventClass = nullptr;
-			if (!FunctionName.Split(TEXT("."), &ClassName, &FuncName) || ClassName.IsEmpty())
+			FCortexResolvedSymbol Symbol;
+			if (!FCortexGraphSymbolResolver::ResolveFunction(Blueprint, NodeParams, Symbol, OutError))
 			{
-				return Fail(TEXT("params.function_name"), FString::Printf(TEXT("Malformed event selector '%s'"), *FunctionName));
+				return FailWithError(TEXT("params.function_name"), OutError);
 			}
-			EventClass = FindFirstObject<UClass>(*ClassName);
-			if (EventClass == nullptr || EventClass->FindFunctionByName(FName(*FuncName)) == nullptr)
+			if (Symbol.Function && !UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Symbol.Function))
 			{
-				return Fail(TEXT("params.function_name"), FString::Printf(TEXT("Event function not found: %s"), *FunctionName));
+				return Fail(TEXT("params.function_name"), FString::Printf(TEXT("Function '%s' cannot be placed as an event"), *Symbol.MemberName.ToString()));
 			}
 		}
 	}
@@ -491,46 +632,39 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 
 	if (UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(NewNode))
 	{
-		FString FunctionName;
-		if (NodeParams->TryGetStringField(TEXT("function_name"), FunctionName))
+		FCortexResolvedSymbol Symbol;
+		FCortexCommandResult Error;
+		if (FCortexGraphSymbolResolver::ResolveFunction(Blueprint, NodeParams, Symbol, Error))
 		{
-			FString ClassName;
-			FString FuncName;
-			if (FunctionName.Split(TEXT("."), &ClassName, &FuncName))
-			{
-				UClass* FuncClass = FindFirstObject<UClass>(*ClassName);
-				UFunction* Func = FuncClass ? FuncClass->FindFunctionByName(FName(*FuncName)) : nullptr;
-				if (Func == nullptr)
-				{
-					OutError = FString::Printf(TEXT("Function not found: %s on class %s"), *FuncName, *ClassName);
-					return false;
-				}
-				CallNode->SetFromFunction(Func);
-			}
+			CallNode->SetFromFunction(Symbol.Function);
+		}
+		else
+		{
+			OutError = Error.ErrorMessage;
+			return false;
 		}
 	}
 
 	if (UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(NewNode))
 	{
-		FString VariableName;
-		if (NodeParams->TryGetStringField(TEXT("variable_name"), VariableName))
+		const bool bIsWrite = VarNode->IsA<UK2Node_VariableSet>();
+		FCortexResolvedSymbol Symbol;
+		FCortexCommandResult Error;
+		if (FCortexGraphSymbolResolver::ResolveProperty(Blueprint, NodeParams, bIsWrite, Symbol, Error))
 		{
-			FString VariableClass;
-			if (NodeParams->TryGetStringField(TEXT("variable_class"), VariableClass))
+			if (Symbol.Property)
 			{
-				UClass* VarClass = FindFirstObject<UClass>(*VariableClass);
-				FProperty* Prop = VarClass ? VarClass->FindPropertyByName(FName(*VariableName)) : nullptr;
-				if (Prop == nullptr)
-				{
-					OutError = FString::Printf(TEXT("Property not found: %s on class %s"), *VariableName, *VariableClass);
-					return false;
-				}
-				VarNode->SetFromProperty(Prop, false, VarClass);
+				VarNode->SetFromProperty(Symbol.Property, false, Symbol.ContextClass);
 			}
 			else
 			{
-				VarNode->VariableReference.SetSelfMember(FName(*VariableName));
+				VarNode->VariableReference.SetSelfMember(Symbol.MemberName);
 			}
+		}
+		else
+		{
+			OutError = Error.ErrorMessage;
+			return false;
 		}
 	}
 
@@ -542,10 +676,11 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 			|| NodeParams->TryGetStringField(TEXT("target_class"), TargetClassIdentifier);
 		if (bHasClass)
 		{
-			UClass* TargetClass = ResolveGraphNodeClassIdentifier(TargetClassIdentifier);
-			if (TargetClass == nullptr)
+			UClass* TargetClass = nullptr;
+			FCortexCommandResult Error;
+			if (!FCortexGraphSymbolResolver::ResolveClass(TargetClassIdentifier, TargetClass, Error))
 			{
-				OutError = FString::Printf(TEXT("Cast target class not found: %s"), *TargetClassIdentifier);
+				OutError = Error.ErrorMessage;
 				return false;
 			}
 			CastNode->TargetType = TargetClass;
@@ -553,19 +688,36 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 		}
 	}
 
+	if (UK2Node_GenericCreateObject* CreateNode = Cast<UK2Node_GenericCreateObject>(NewNode))
+	{
+		FString ClassIdentifier;
+		if (NodeParams->TryGetStringField(TEXT("class"), ClassIdentifier))
+		{
+			UClass* ConstructClass = nullptr;
+			FCortexCommandResult Error;
+			if (!FCortexGraphSymbolResolver::ResolveClass(ClassIdentifier, ConstructClass, Error))
+			{
+				OutError = Error.ErrorMessage;
+				return false;
+			}
+			UEdGraphPin* ClassPin = CreateNode->GetClassPin();
+			if (ClassPin)
+			{
+				ClassPin->DefaultObject = ConstructClass;
+				CreateNode->PinDefaultValueChanged(ClassPin);
+			}
+			CreateNode->ReconstructNode();
+		}
+	}
+
 	if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(NewNode))
 	{
-		FString FunctionName;
-		if (NodeParams->TryGetStringField(TEXT("function_name"), FunctionName))
+		FCortexResolvedSymbol Symbol;
+		FCortexCommandResult Error;
+		if (FCortexGraphSymbolResolver::ResolveFunction(Blueprint, NodeParams, Symbol, Error))
 		{
-			FString ClassName;
-			FString FuncName;
-			if (FunctionName.Split(TEXT("."), &ClassName, &FuncName))
-			{
-				UClass* FuncClass = FindFirstObject<UClass>(*ClassName);
-				EventNode->EventReference.SetExternalMember(FName(*FuncName), FuncClass);
-				EventNode->bOverrideFunction = true;
-			}
+			EventNode->EventReference.SetExternalMember(Symbol.MemberName, Symbol.ContextClass);
+			EventNode->bOverrideFunction = true;
 		}
 	}
 
@@ -575,18 +727,29 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 		if (NodeParams->TryGetStringField(TEXT("delegate_name"), DelegateName))
 		{
 			FString DelegateClass;
-			if (NodeParams->TryGetStringField(TEXT("delegate_class"), DelegateClass))
+			if (!NodeParams->TryGetStringField(TEXT("delegate_class"), DelegateClass) && !NodeParams->TryGetStringField(TEXT("owner_class"), DelegateClass))
 			{
-				UClass* OwnerClass = FindFirstObject<UClass>(*DelegateClass);
-				FMulticastDelegateProperty* DelegateProp = OwnerClass
-					? CastField<FMulticastDelegateProperty>(OwnerClass->FindPropertyByName(FName(*DelegateName)))
-					: nullptr;
-				if (DelegateProp == nullptr)
+				DelegateClass.Reset();
+			}
+			if (!DelegateClass.IsEmpty())
+			{
+				UClass* OwnerClass = nullptr;
+				FCortexCommandResult Error;
+				if (FCortexGraphSymbolResolver::ResolveClass(DelegateClass, OwnerClass, Error) && OwnerClass)
 				{
-					OutError = FString::Printf(TEXT("Multicast delegate property not found: %s on class %s"), *DelegateName, *DelegateClass);
+					FMulticastDelegateProperty* DelegateProp = CastField<FMulticastDelegateProperty>(OwnerClass->FindPropertyByName(FName(*DelegateName)));
+					if (DelegateProp == nullptr)
+					{
+						OutError = FString::Printf(TEXT("Multicast delegate property not found: %s on class %s"), *DelegateName, *DelegateClass);
+						return false;
+					}
+					DelegateNode->SetFromProperty(DelegateProp, false, OwnerClass);
+				}
+				else
+				{
+					OutError = Error.ErrorMessage;
 					return false;
 				}
-				DelegateNode->SetFromProperty(DelegateProp, false, OwnerClass);
 			}
 			else
 			{
@@ -632,3 +795,4 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 
 	return true;
 }
+

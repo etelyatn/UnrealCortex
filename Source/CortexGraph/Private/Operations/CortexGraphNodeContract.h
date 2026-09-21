@@ -41,6 +41,10 @@ struct FCortexNodeConstructionContract
 class FCortexGraphNodeContract
 {
 public:
+	static bool ResolveFamily(
+		const FString& NodeClassOrAlias,
+		FName& OutFamilyName,
+		UClass*& OutNodeClass);
 	static FCortexNodeConstructionContract Describe(const FString& NodeClassName);
 	static bool Validate(
 		const FString& NodeClassName,

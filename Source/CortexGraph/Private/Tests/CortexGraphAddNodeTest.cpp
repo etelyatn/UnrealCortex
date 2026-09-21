@@ -238,7 +238,7 @@ bool FCortexGraphAddNodeTest::RunTest(const FString& Parameters)
 		Params->SetStringField(TEXT("asset_path"), AssetPath);
 		Params->SetStringField(TEXT("node_class"), TEXT("UK2Node_VariableSet"));
 		TSharedPtr<FJsonObject> NParams = MakeShared<FJsonObject>();
-		NParams->SetStringField(TEXT("variable_name"), TEXT("bHidden"));
+		NParams->SetStringField(TEXT("variable_name"), TEXT("bCanBeDamaged"));
 		NParams->SetStringField(TEXT("variable_class"), TEXT("Actor"));
 		Params->SetObjectField(TEXT("params"), NParams);
 
