@@ -7,6 +7,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
 #include "EdGraph/EdGraph.h"
+#include "Editor.h"
 #include "Dom/JsonObject.h"
 
 #if WITH_EDITOR
@@ -90,6 +91,10 @@ bool FCortexGraphPatchApplyBasicTest::RunTest(const FString& Parameters)
 	TestTrue(FString::Printf(TEXT("prepared patch applies: %s"), *Error.ErrorMessage),
 		FCortexGraphPatchOps::Apply(Blueprint, Prepared, Error));
 	TestEqual(TEXT("apply adds exactly the planned node"), Blueprint->UbergraphPages[0]->Nodes.Num(), NodesBefore + 1);
+	TestTrue(TEXT("apply transaction undoes"), GEditor && GEditor->UndoTransaction());
+	TestEqual(TEXT("undo restores graph node count"), Blueprint->UbergraphPages[0]->Nodes.Num(), NodesBefore);
+	TestTrue(TEXT("apply transaction redoes"), GEditor && GEditor->RedoTransaction());
+	TestEqual(TEXT("redo reapplies graph node count"), Blueprint->UbergraphPages[0]->Nodes.Num(), NodesBefore + 1);
 
 	FCortexAssetMutationGuard::Block(Blueprint, TEXT("forced verification failure"));
 	TestFalse(TEXT("blocked asset refuses a second graph mutation before side effects"),
