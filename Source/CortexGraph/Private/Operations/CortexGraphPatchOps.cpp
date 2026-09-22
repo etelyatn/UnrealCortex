@@ -390,6 +390,7 @@ bool ParseTarget(
 	OutGraph = Plan.ExistingGraph;
 	OutImplementationWouldCreate = Plan.bWouldCreate;
 	OutImplementationIsEvent = Plan.bCanBePlacedAsEvent;
+	OutImplementationHasParentCall = Plan.bParentCall;
 	OutSymbolJson = MakeShared<FJsonObject>();
 	OutSymbolJson->SetStringField(TEXT("function_name"), Plan.Function->GetName());
 	OutSymbolJson->SetStringField(TEXT("owner_class"), Plan.FunctionClass ? Plan.FunctionClass->GetPathName() : FString());
@@ -590,6 +591,25 @@ bool ValidateConstructionParamShape(const FString& NodeClass, const TSharedPtr<F
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
 				FString::Printf(TEXT("Construction parameter '%s' for node class '%s' has invalid JSON type"), *Name, *NodeClass));
 			return false;
+		}
+	}
+	if (Family == TEXT("DynamicCast"))
+	{
+		for (const TCHAR* Alias : { TEXT("class"), TEXT("target_class") })
+		{
+			if (Params->HasField(Alias) && Params->Values.FindRef(Alias)->Type != EJson::String)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("DynamicCast class selector aliases must be strings"));
+				return false;
+			}
+		}
+		for (const TCHAR* Alias : { TEXT("is_pure"), TEXT("pure"), TEXT("bIsPureCast") })
+		{
+			if (Params->HasField(Alias) && Params->Values.FindRef(Alias)->Type != EJson::Boolean)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("DynamicCast purity aliases must be booleans"));
+				return false;
+			}
 		}
 	}
 	return true;
