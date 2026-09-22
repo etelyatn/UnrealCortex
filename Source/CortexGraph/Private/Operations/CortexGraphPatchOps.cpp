@@ -387,9 +387,9 @@ bool ParseTarget(
 	if (!HasOnlyFields(Selector, { TEXT("owner_class"), TEXT("function_name"), TEXT("call_kind") }, OutError, TEXT("target.implementation"))) return false;
 	FCortexGraphImplementationPlan Plan;
 	if (!FCortexGraphImplementationOps::ValidateEligibility(Blueprint, Selector, Plan, OutError)) return false;
+	OutGraph = Plan.ExistingGraph;
 	OutImplementationWouldCreate = Plan.bWouldCreate;
 	OutImplementationIsEvent = Plan.bCanBePlacedAsEvent;
-	OutImplementationHasParentCall = Plan.bParentCall;
 	OutSymbolJson = MakeShared<FJsonObject>();
 	OutSymbolJson->SetStringField(TEXT("function_name"), Plan.Function->GetName());
 	OutSymbolJson->SetStringField(TEXT("owner_class"), Plan.FunctionClass ? Plan.FunctionClass->GetPathName() : FString());
@@ -571,6 +571,27 @@ bool ValidateConstructionParamShape(const FString& NodeClass, const TSharedPtr<F
 			return false;
 		}
 	}
+	for (const auto& Pair : Params->Values)
+	{
+		const FString Name = CortexEngineCompat::JsonKeyToString(Pair.Key);
+		const FCortexNodeConstructionParam* Spec = nullptr;
+		for (const FCortexNodeConstructionParam& Candidate : Contract.RequiredParams) if (Candidate.Name == Name) Spec = &Candidate;
+		for (const FCortexNodeConstructionParam& Candidate : Contract.OptionalParams) if (Candidate.Name == Name) Spec = &Candidate;
+		if (!Spec) continue;
+		const FString Type = Spec->Type.ToLower();
+		const EJson Actual = Pair.Value.IsValid() ? Pair.Value->Type : EJson::Null;
+		const bool bTypeOk = (Type == TEXT("string") && Actual == EJson::String)
+			|| ((Type == TEXT("bool") || Type == TEXT("boolean")) && Actual == EJson::Boolean)
+			|| ((Type == TEXT("number") || Type == TEXT("integer")) && Actual == EJson::Number)
+			|| (Type == TEXT("object") && Actual == EJson::Object)
+			|| (Type == TEXT("array") && Actual == EJson::Array);
+		if (!bTypeOk)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("Construction parameter '%s' for node class '%s' has invalid JSON type"), *Name, *NodeClass));
+			return false;
+		}
+	}
 	return true;
 }
 
@@ -592,15 +613,10 @@ bool ValidateTaggedDefaults(const TSharedPtr<FJsonObject>& Defaults, UEdGraphNod
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Node defaults must be tagged objects"));
 			return false;
 		}
-		UEdGraphPin* Pin = Node->FindPin(FName(*PinName));
+		UEdGraphPin* Pin = Node ? Node->FindPin(FName(*PinName)) : nullptr;
 		if (!Pin)
 		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::PinNotFound, FString::Printf(TEXT("Default pin '%s' not found"), *PinName));
-			return false;
-		}
-		if (Pin->Direction != EGPD_Input || Pin->LinkedTo.Num() > 0)
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, FString::Printf(TEXT("Default cannot be set on connected/output pin '%s'"), *PinName));
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::PinNotFound, FString::Printf(TEXT("Pin '%s' not found for default"), *PinName));
 			return false;
 		}
 		if (!FCortexGraphPinDefaults::Validate(Pin, Literal, OutError)) return false;
@@ -621,7 +637,7 @@ void AddPlannedPinSignature(UEdGraphNode* Node, const TSharedPtr<FJsonObject>& N
 		Descriptor->SetNumberField(TEXT("direction"), static_cast<int32>(Pin->Direction));
 		Descriptor->SetStringField(TEXT("category"), Pin->PinType.PinCategory.ToString());
 		Descriptor->SetStringField(TEXT("subcategory"), Pin->PinType.PinSubCategory.ToString());
-		Descriptor->SetNumberField(TEXT("container"), static_cast<int32>(Pin->PinType.ContainerType));
+		Descriptor->SetStringField(TEXT("subobject"), Pin->PinType.PinSubCategoryObject.IsValid() ? Pin->PinType.PinSubCategoryObject->GetPathName() : FString());
 		Descriptor->SetBoolField(TEXT("reference"), Pin->PinType.bIsReference);
 		Descriptor->SetBoolField(TEXT("const"), Pin->PinType.bIsConst);
 		if (Pin->PinType.ContainerType == EPinContainerType::Map || !Pin->PinType.PinValueType.TerminalCategory.IsNone())
