@@ -607,6 +607,22 @@ bool ValidateConstructionParamShape(const FString& NodeClass, const TSharedPtr<F
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Conflicting function selector fields"));
 		return false;
 	}
+	if (Family == TEXT("DynamicCast"))
+	{
+		if (Params->HasField(TEXT("class")) && Params->HasField(TEXT("target_class")))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Conflicting dynamic-cast class selector aliases"));
+			return false;
+		}
+		const int32 PurityAliases = static_cast<int32>(Params->HasField(TEXT("is_pure")))
+			+ static_cast<int32>(Params->HasField(TEXT("pure")))
+			+ static_cast<int32>(Params->HasField(TEXT("bIsPureCast")));
+		if (PurityAliases > 1)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Conflicting dynamic-cast purity aliases"));
+			return false;
+		}
+	}
 	return true;
 }
 
