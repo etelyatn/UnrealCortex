@@ -145,10 +145,34 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 
 						if (Gap > StallWarningThresholdSeconds && PrevTick > 0.0)
 						{
-							UE_LOG(LogCortex, Warning,
-								TEXT("Game thread stall detected: %.1fs since last tick. "
-									 "Commands were queued but not processed during this period."),
-								Gap);
+							bool bHasPendingSocket = false;
+							{
+								FScopeLock Lock(&PendingSocketsCS);
+								bHasPendingSocket = !PendingClientSockets.IsEmpty();
+							}
+
+							bool bHasQueuedWork = bHasPendingSocket || !PendingDeferred.IsEmpty();
+							if (!bHasQueuedWork)
+							{
+								for (const TPair<FSocket*, FString>& Buffer : ReceiveBuffers)
+								{
+									uint32 PendingDataSize = 0;
+									if (!Buffer.Value.IsEmpty()
+										|| (Buffer.Key != nullptr && Buffer.Key->HasPendingData(PendingDataSize) && PendingDataSize > 0))
+									{
+										bHasQueuedWork = true;
+										break;
+									}
+								}
+							}
+
+							if (bHasQueuedWork)
+							{
+								UE_LOG(LogCortex, Warning,
+									TEXT("Game thread stall detected: %.1fs since last tick. "
+										 "Client connection, incoming data, or deferred work was pending during this period."),
+									Gap);
+							}
 						}
 
 						{
