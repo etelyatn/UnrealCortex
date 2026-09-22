@@ -45,6 +45,11 @@ struct FCortexGraphPreparedPatch
 	 * names, GUIDs and canonical descriptors, so apply, readback and recovery rebuild every pointer.
 	 */
 	TSharedPtr<FJsonObject> MigrationPlan;
+	/**
+	 * True when an accepted replay named a source locator that no longer exists. The apply consumed
+	 * the stale entry and that provenance is not inventoried, so it is reported instead of inferred.
+	 */
+	bool bReplayedWithAbsentSource = false;
 	bool bIsMigration() const { return MigrationPlan.IsValid(); }
 
 	/** Prepared state never owns transient UObject pointers. */
@@ -94,6 +99,7 @@ struct FCortexGraphPatchOutcome
 	int32 RecoveryCompileCount = 0;
 	bool bSaved = false;
 	bool bBlocked = false;
+	bool bReplayedWithAbsentSource = false;
 	/** Live fingerprint of the target asset before the coordinated patch and after it terminates. */
 	TSharedPtr<FJsonObject> FingerprintBefore;
 	TSharedPtr<FJsonObject> FingerprintAfter;

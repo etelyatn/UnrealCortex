@@ -1263,6 +1263,7 @@ bool FCortexGraphPatchOps::Preflight(
 			OutPrepared.bFullyReused = true;
 		}
 		OutPrepared.bChanged = !OutPrepared.bFullyReused;
+		OutPrepared.bReplayedWithAbsentSource = MigrationPlan.bReplayedWithAbsentSource;
 
 		FString MigrationIntent;
 		MigrationIntent += TEXT("graph_patch_v1|");
@@ -4107,6 +4108,12 @@ bool FCortexGraphPatchOps::Execute(
 	OutOutcome.PatchId = Prepared.PatchId;
 	OutOutcome.bChanged = Prepared.bChanged;
 	OutOutcome.ReusedClientIds = Prepared.ReusedClientIds;
+	OutOutcome.bReplayedWithAbsentSource = Prepared.bReplayedWithAbsentSource;
+	if (Prepared.bReplayedWithAbsentSource)
+	{
+		OutOutcome.Diagnostics.Add(TEXT(
+			"replay accepted with an absent source locator: the migration apply already consumed the stale entry this request names"));
+	}
 	OutOutcome.FingerprintBefore = Prepared.FingerprintBefore;
 	if (Prepared.bDryRun)
 	{

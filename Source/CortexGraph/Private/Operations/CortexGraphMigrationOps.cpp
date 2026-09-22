@@ -311,11 +311,20 @@ bool ReferenceOwnerMatchesAsset(UBlueprint* Target, const UClass* Owner)
  * references a member this asset declares when its member parent class resolves to this asset's
  * generated class, which is exactly what the engine's self-only removal would destroy.
  */
-bool NodeReferencesOwnMember(UBlueprint* Target, UK2Node_Variable* Variable, const FName MemberName)
+bool NodeReferencesOwnMember(UBlueprint* Target, UK2Node_Variable* Variable, const FName MemberName, bool& bOutUnresolved)
 {
+	bOutUnresolved = false;
 	if (!Variable || Variable->VariableReference.GetMemberName() != MemberName) return false;
 	UClass* const Generated = Target->GeneratedClass;
-	return Generated && Variable->VariableReference.GetMemberParentClass(Generated) == Generated;
+	if (!Generated) return false;
+	UClass* const Owner = Variable->VariableReference.GetMemberParentClass(Generated);
+	if (!Owner)
+	{
+		// The name matches but no owner resolves: a stale reference, not absence.
+		bOutUnresolved = true;
+		return true;
+	}
+	return Owner == Generated;
 }
 
 /** Foreign asset that would keep referencing the removed member after the migration. */
@@ -323,8 +332,10 @@ bool NodeReferencesMemberExternally(
 	UBlueprint* Target,
 	UBlueprint* Other,
 	UEdGraphNode* Node,
-	const FName MemberName)
+	const FName MemberName,
+	bool& bOutUnresolved)
 {
+	bOutUnresolved = false;
 	if (const UK2Node_Variable* Variable = Cast<UK2Node_Variable>(Node))
 	{
 		if (Variable->VariableReference.GetMemberName() != MemberName) return false;
@@ -334,9 +345,17 @@ bool NodeReferencesMemberExternally(
 			// from the asset being changed, which a member removal would silently break.
 			const UClass* const OtherClass = Other->SkeletonGeneratedClass
 				? Other->SkeletonGeneratedClass : Other->GeneratedClass;
+			if (!OtherClass) { bOutUnresolved = true; return true; }
 			return ReferenceOwnerMatchesAsset(Target, OtherClass);
 		}
-		return ReferenceOwnerMatchesAsset(Target, Variable->VariableReference.GetMemberParentClass());
+		const UClass* const Owner = Variable->VariableReference.GetMemberParentClass();
+		if (!Owner)
+		{
+			// A named reference with no resolvable owner can only be judged unsafe.
+			bOutUnresolved = true;
+			return true;
+		}
+		return ReferenceOwnerMatchesAsset(Target, Owner);
 	}
 	return false;
 }
@@ -351,6 +370,7 @@ bool CollectMemberReferences(
 	const FName MemberName,
 	TArray<FString>& OutInAssetGuids,
 	TArray<FInventoryReference>& OutExternalReferences,
+	TArray<FString>& OutUnresolvedReferences,
 	FCortexCommandResult& OutError)
 {
 	OutError = FCortexCommandResult();
@@ -369,7 +389,15 @@ bool CollectMemberReferences(
 					TEXT("replace_entry reference inventory exceeds the bounded node budget; reduce the asset before migrating"));
 				return false;
 			}
-			if (!NodeReferencesOwnMember(Target, Cast<UK2Node_Variable>(Node), MemberName)) continue;
+			bool bUnresolved = false;
+			if (!NodeReferencesOwnMember(Target, Cast<UK2Node_Variable>(Node), MemberName, bUnresolved)) continue;
+			if (bUnresolved)
+			{
+				OutUnresolvedReferences.Add(FString::Printf(
+					TEXT("asset '%s' graph '%s' node '%s' (GUID %s) names member '%s' but its owner does not resolve"),
+					*Target->GetName(), *Graph->GetName(), *Node->GetName(), *Node->NodeGuid.ToString(), *MemberName.ToString()));
+				continue;
+			}
 			OutInAssetGuids.Add(Node->NodeGuid.ToString());
 		}
 	}
@@ -399,7 +427,16 @@ bool CollectMemberReferences(
 						TEXT("replace_entry reference inventory exceeds the bounded node budget; reduce the loaded package set before migrating"));
 					return false;
 				}
-				if (!NodeReferencesMemberExternally(Target, Other, Node, MemberName)) continue;
+				bool bExternalUnresolved = false;
+				if (!NodeReferencesMemberExternally(Target, Other, Node, MemberName, bExternalUnresolved)) continue;
+				if (bExternalUnresolved)
+				{
+					OutUnresolvedReferences.Add(FString::Printf(
+						TEXT("package '%s' asset '%s' graph '%s' node '%s' (GUID %s) names member '%s' but its owner does not resolve"),
+						*Other->GetOutermost()->GetName(), *Other->GetName(), *Graph->GetName(), *Node->GetName(),
+						*Node->NodeGuid.ToString(), *MemberName.ToString()));
+					continue;
+				}
 				OutExternalReferences.Add({
 					FString::Printf(TEXT("package '%s' asset '%s' graph '%s' node '%s' (GUID %s) outside this asset references '%s'"),
 						*Other->GetOutermost()->GetName(), *Other->GetName(), *Graph->GetName(), *Node->GetName(),
@@ -524,6 +561,7 @@ TSharedPtr<FJsonObject> FCortexGraphMigrationPlan::ToJson() const
 	Out->SetStringField(TEXT("preservation_capture"), PreservationCapture);
 	Out->SetNumberField(TEXT("declaration_references"), DeclarationReferences);
 	Out->SetNumberField(TEXT("external_declaration_references"), ExternalDeclarationReferences);
+	Out->SetBoolField(TEXT("replayed_with_absent_source"), bReplayedWithAbsentSource);
 	Out->SetObjectField(TEXT("normalized_node"), NormalizedNode.IsValid() ? NormalizedNode : MakeShared<FJsonObject>());
 	Out->SetObjectField(TEXT("resolved_symbol"), ResolvedSymbol.IsValid() ? ResolvedSymbol : MakeShared<FJsonObject>());
 	return Out;
@@ -567,6 +605,7 @@ bool FCortexGraphMigrationPlan::FromJson(
 	if (Source->TryGetNumberField(TEXT("declaration_references"), DeclarationReferences)) OutPlan.DeclarationReferences = DeclarationReferences;
 	int32 ExternalDeclarationReferences = 0;
 	if (Source->TryGetNumberField(TEXT("external_declaration_references"), ExternalDeclarationReferences)) OutPlan.ExternalDeclarationReferences = ExternalDeclarationReferences;
+	Source->TryGetBoolField(TEXT("replayed_with_absent_source"), OutPlan.bReplayedWithAbsentSource);
 	Source->TryGetBoolField(TEXT("bubble_pinned"), OutPlan.bCommentBubblePinned);
 	Source->TryGetBoolField(TEXT("bubble_visible"), OutPlan.bCommentBubbleVisible);
 	Source->TryGetBoolField(TEXT("user_set_enabled_state"), OutPlan.bUserSetEnabledState);
@@ -781,14 +820,29 @@ UClass* ResolveReferenceOwner(UBlueprint* Asset, const FMemberReference& Referen
 	return Reference.GetMemberParentClass();
 }
 
+/**
+ * True when a resolved owner really declares the selected declaration. Name equality alone is not
+ * candidate identity: an unrelated same-named call site must neither reject a valid migration nor
+ * inflate the reported inventory.
+ */
+bool OwnerDeclaresSelected(UClass* Owner, const FName DeclarationName, UClass* DeclaringClass)
+{
+	if (!Owner) return false;
+	UFunction* const Found = Owner->FindFunctionByName(DeclarationName);
+	if (!Found) return false;
+	return DeclaringClass ? Found->GetOwnerClass() == DeclaringClass : true;
+}
+
 void ScanDeclarationReferences(
 	UBlueprint* Asset,
 	const FName DeclarationName,
+	UClass* DeclaringClass,
 	const bool bCountAsExternal,
+	int32& InOutScannedNodes,
 	FDeclarationInventory& InOut,
 	FCortexCommandResult& OutError)
 {
-	if (!Asset) return;
+	if (!Asset || !OutError.ErrorCode.IsEmpty()) return;
 	TArray<UEdGraph*> Graphs;
 	Asset->GetAllGraphs(Graphs);
 	for (UEdGraph* Graph : Graphs)
@@ -797,6 +851,14 @@ void ScanDeclarationReferences(
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
 			if (!Node) continue;
+			// The same bounded node budget the member inventory enforces: exhaustion refuses, it
+			// never truncates the inventory silently.
+			if (++InOutScannedNodes > MaxInventoryNodes)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded,
+					TEXT("replace_entry reference inventory exceeds the bounded node budget; reduce the asset or the loaded package set before migrating"));
+				return;
+			}
 			const FMemberReference* Reference = nullptr;
 			if (const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node))
 			{
@@ -804,9 +866,19 @@ void ScanDeclarationReferences(
 			}
 			else if (const UK2Node_CreateDelegate* CreateDelegate = Cast<UK2Node_CreateDelegate>(Node))
 			{
-				// A delegate binding names the function directly; it has no member reference.
 				if (CreateDelegate->GetFunctionName() != DeclarationName) continue;
-				if (bCountAsExternal) ++InOut.External; else ++InOut.Resolved;
+				const UClass* const AssetClass = Asset->SkeletonGeneratedClass ? Asset->SkeletonGeneratedClass.Get() : Asset->GeneratedClass.Get();
+				UFunction* const Bound = AssetClass ? AssetClass->FindFunctionByName(DeclarationName) : nullptr;
+				if (Bound && OwnerDeclaresSelected(Bound->GetOwnerClass(), DeclarationName, DeclaringClass))
+				{
+					if (bCountAsExternal) ++InOut.External; else ++InOut.Resolved;
+				}
+				else
+				{
+					InOut.Unresolved.Add(FString::Printf(
+						TEXT("asset '%s' graph '%s' node '%s' (GUID %s) binds '%s' but it does not resolve to the selected declaration"),
+						*Asset->GetName(), *Graph->GetName(), *Node->GetName(), *Node->NodeGuid.ToString(), *DeclarationName.ToString()));
+				}
 				continue;
 			}
 			else
@@ -817,13 +889,14 @@ void ScanDeclarationReferences(
 			UClass* const Owner = ResolveReferenceOwner(Asset, *Reference);
 			if (!Owner)
 			{
-				// A reference that names the declaration but resolves to no concrete owner is not
-				// absence: it is exactly the kind of stale call site that must block.
+				// A reference that names the declaration but resolves to no owner is not absence: it
+				// is exactly the stale call site that must block.
 				InOut.Unresolved.Add(FString::Printf(
 					TEXT("asset '%s' graph '%s' node '%s' (GUID %s) names '%s' but its owner does not resolve"),
 					*Asset->GetName(), *Graph->GetName(), *Node->GetName(), *Node->NodeGuid.ToString(), *DeclarationName.ToString()));
 				continue;
 			}
+			if (!OwnerDeclaresSelected(Owner, DeclarationName, DeclaringClass)) continue;
 			if (bCountAsExternal) ++InOut.External; else ++InOut.Resolved;
 		}
 	}
@@ -832,10 +905,12 @@ void ScanDeclarationReferences(
 bool CollectDeclarationReferences(
 	UBlueprint* Target,
 	const FName DeclarationName,
+	UClass* DeclaringClass,
 	FDeclarationInventory& OutInventory,
 	FCortexCommandResult& OutError)
 {
-	ScanDeclarationReferences(Target, DeclarationName, false, OutInventory, OutError);
+	int32 ScannedNodes = 0;
+	ScanDeclarationReferences(Target, DeclarationName, DeclaringClass, false, ScannedNodes, OutInventory, OutError);
 	if (!OutError.ErrorCode.IsEmpty()) return false;
 	int32 ScannedBlueprints = 0;
 	for (TObjectIterator<UBlueprint> It; It; ++It)
@@ -848,7 +923,7 @@ bool CollectDeclarationReferences(
 				TEXT("replace_entry declaration inventory exceeds the bounded loaded-package budget; close unrelated assets before migrating"));
 			return false;
 		}
-		ScanDeclarationReferences(Other, DeclarationName, true, OutInventory, OutError);
+		ScanDeclarationReferences(Other, DeclarationName, DeclaringClass, true, ScannedNodes, OutInventory, OutError);
 		if (!OutError.ErrorCode.IsEmpty()) return false;
 	}
 	return true;
@@ -973,6 +1048,7 @@ bool FCortexGraphMigrationOps::Plan(
 	// The declaration name is resolved first so the shadowing-member policy can run before the
 	// implementation primitive, which reports a same-named custom event as a generic conflict.
 	FName DeclarationName = NAME_None;
+	UClass* DeclaredSymbolDeclaringClass = nullptr;
 	{
 		FCortexResolvedSymbol DeclaredSymbol;
 		FCortexCommandResult DeclaredError;
@@ -985,6 +1061,7 @@ bool FCortexGraphMigrationOps::Plan(
 			return false;
 		}
 		DeclarationName = DeclaredSymbol.Function->GetFName();
+		DeclaredSymbolDeclaringClass = DeclaredSymbol.DeclaringClass;
 	}
 	const FString DeclaredFunctionName = DeclarationName.ToString();
 
@@ -992,7 +1069,7 @@ bool FCortexGraphMigrationOps::Plan(
 	// reference that cannot be resolved to a concrete owner blocks instead of looking like absence.
 	{
 		FDeclarationInventory Inventory;
-		if (!CollectDeclarationReferences(Blueprint, DeclarationName, Inventory, OutError)) return false;
+		if (!CollectDeclarationReferences(Blueprint, DeclarationName, DeclaredSymbolDeclaringClass, Inventory, OutError)) return false;
 		if (Inventory.Unresolved.Num() > 0)
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
@@ -1051,7 +1128,15 @@ bool FCortexGraphMigrationOps::Plan(
 	{
 		TArray<FString> InAssetReferences;
 		TArray<FInventoryReference> ExternalReferences;
-		if (!CollectMemberReferences(Blueprint, FName(*MemberName), InAssetReferences, ExternalReferences, OutError)) return false;
+		TArray<FString> UnresolvedMemberReferences;
+		if (!CollectMemberReferences(Blueprint, FName(*MemberName), InAssetReferences, ExternalReferences, UnresolvedMemberReferences, OutError)) return false;
+		if (UnresolvedMemberReferences.Num() > 0)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("the shadowing member '%s' has %d reference(s) whose owner cannot be resolved: %s. No automatic project repair is attempted."),
+					*MemberName, UnresolvedMemberReferences.Num(), *FString::Join(UnresolvedMemberReferences, TEXT("; "))));
+			return false;
+		}
 		if (ExternalReferences.Num() > 0)
 		{
 			TArray<FString> Reasons;
@@ -1142,6 +1227,19 @@ bool FCortexGraphMigrationOps::Plan(
 	// The requested locator is always resolved, so an unchanged replay cannot silently accept a
 	// request whose source entry is a different, still-present stale node.
 	UEdGraphNode* const RequestedSource = FindNodeByGuid(Blueprint, SourceEntryGuid);
+	if (bReused && RequestedSource == ReplacementEntry)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("the requested migration source locator %s is the deterministic replacement identity itself; source.entry_node_guid names the stale entry that is being replaced, not the replacement"),
+				*Identity.EntryGuid.ToString()));
+		return false;
+	}
+	if (bReused && !RequestedSource)
+	{
+		// The apply consumed the stale entry, so an accepted replay names a locator that no longer
+		// exists. That is reported, never inferred as some other provenance.
+		OutPlan.bReplayedWithAbsentSource = true;
+	}
 	if (bReused && RequestedSource && RequestedSource != ReplacementEntry)
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
@@ -2160,6 +2258,11 @@ TSharedPtr<FJsonObject> FCortexGraphMigrationOps::CaptureShadowingMember(UBluepr
 		? Variable.VarType.PinValueType.TerminalSubCategoryObject->GetPathName() : FString());
 	Out->SetBoolField(TEXT("terminal_const"), Variable.VarType.PinValueType.bTerminalIsConst);
 	Out->SetBoolField(TEXT("terminal_uobject_wrapper"), Variable.VarType.PinValueType.bTerminalIsUObjectWrapper);
+	const FSimpleMemberReference& MemberReference = Variable.VarType.PinSubCategoryMemberReference;
+	Out->SetStringField(TEXT("member_reference_name"), MemberReference.MemberName.ToString());
+	Out->SetStringField(TEXT("member_reference_parent"),
+		MemberReference.MemberParent ? MemberReference.MemberParent->GetPathName() : FString());
+	Out->SetStringField(TEXT("member_reference_guid"), MemberReference.MemberGuid.ToString());
 	Out->SetStringField(TEXT("rep_notify"), Variable.RepNotifyFunc.ToString());
 	Out->SetNumberField(TEXT("replication_condition"), static_cast<int32>(Variable.ReplicationCondition.GetValue()));
 	TArray<TSharedPtr<FJsonValue>> Metadata;
@@ -2286,6 +2389,32 @@ bool FCortexGraphMigrationOps::RestoreShadowingMember(
 	if (CapturedVariable->TryGetBoolField(TEXT("terminal_const"), bTerminalIsConstFlag)) Type.PinValueType.bTerminalIsConst = bTerminalIsConstFlag;
 	bool bTerminalIsUObjectWrapperFlag = false;
 	if (CapturedVariable->TryGetBoolField(TEXT("terminal_uobject_wrapper"), bTerminalIsUObjectWrapperFlag)) Type.PinValueType.bTerminalIsUObjectWrapper = bTerminalIsUObjectWrapperFlag;
+	FString MemberReferenceGuidText;
+	FGuid MemberReferenceGuid;
+	if (CapturedVariable->TryGetStringField(TEXT("member_reference_guid"), MemberReferenceGuidText)
+		&& FGuid::Parse(MemberReferenceGuidText, MemberReferenceGuid))
+	{
+		Type.PinSubCategoryMemberReference.MemberGuid = MemberReferenceGuid;
+	}
+	FString MemberReferenceName;
+	CapturedVariable->TryGetStringField(TEXT("member_reference_name"), MemberReferenceName);
+	if (!MemberReferenceName.IsEmpty())
+	{
+		Type.PinSubCategoryMemberReference.MemberName = FName(*MemberReferenceName);
+	}
+	FString MemberReferenceParentPath;
+	CapturedVariable->TryGetStringField(TEXT("member_reference_parent"), MemberReferenceParentPath);
+	if (!MemberReferenceParentPath.IsEmpty())
+	{
+		UClass* const MemberReferenceParent = FindObject<UClass>(nullptr, *MemberReferenceParentPath);
+		if (!MemberReferenceParent)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("captured shadowing member '%s' references owner '%s', which no longer resolves"), *Name, *MemberReferenceParentPath));
+			return false;
+		}
+		Type.PinSubCategoryMemberReference.MemberParent = MemberReferenceParent;
+	}
 	const int32 InsertIndex = Index >= 0 ? FMath::Clamp(Index, 0, Blueprint->NewVariables.Num()) : Blueprint->NewVariables.Num();
 	FString DefaultValue;
 	CapturedVariable->TryGetStringField(TEXT("default_value"), DefaultValue);

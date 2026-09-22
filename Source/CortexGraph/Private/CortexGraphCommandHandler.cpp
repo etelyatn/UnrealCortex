@@ -101,6 +101,7 @@ TSharedPtr<FJsonObject> MakePatchPhaseJson(
 	Data->SetNumberField(TEXT("recovery_compile_count"), Outcome.RecoveryCompileCount);
 	Data->SetBoolField(TEXT("saved"), Outcome.bSaved);
 	Data->SetBoolField(TEXT("blocked"), Outcome.bBlocked);
+	Data->SetBoolField(TEXT("replayed_with_absent_source"), Outcome.bReplayedWithAbsentSource);
 	if (bIncludeLiveState)
 	{
 		if (Outcome.FingerprintBefore.IsValid())
@@ -265,6 +266,7 @@ FCortexCommandResult HandleApplyPatch(const TSharedPtr<FJsonObject>& Params)
 		Preview.bDirtyBefore = Blueprint->GetOutermost()->IsDirty();
 		Preview.bDirtyAfter = Preview.bDirtyBefore;
 		Preview.ReusedClientIds = Prepared.ReusedClientIds;
+		Preview.bReplayedWithAbsentSource = Prepared.bReplayedWithAbsentSource;
 		// The planned graph locator is knowledge the caller needs before applying.
 		FGuid PreparedGraphGuid;
 		FGuid::Parse(Prepared.GraphGuid, PreparedGraphGuid);

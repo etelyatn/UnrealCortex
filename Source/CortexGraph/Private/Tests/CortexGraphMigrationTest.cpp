@@ -488,6 +488,16 @@ bool AddShadowingVariable(UBlueprint* Blueprint, const TCHAR* MemberName)
 	Description.VarType.PinCategory = UEdGraphSchema_K2::PC_Int;
 	Description.DefaultValue = TEXT("7");
 	Description.VarGuid = FGuid::NewGuid();
+	// Rep-notify, replication, metadata and the type's member reference are all invisible to the
+	// authoring fingerprint, so the fixture carries them to prove the migration captures them.
+	Description.RepNotifyFunc = FName(*FString::Printf(TEXT("OnRep_%s"), MemberName));
+	Description.ReplicationCondition = COND_SimulatedOnly;
+	FBPVariableMetaDataEntry MetadataEntry;
+	MetadataEntry.DataKey = FName(TEXT("CortexMigrationTestKey"));
+	MetadataEntry.DataValue = TEXT("cortex-migration-test-value");
+	Description.MetaDataArray.Add(MetadataEntry);
+	Description.VarType.PinSubCategoryMemberReference.MemberName = FName(TEXT("CortexMigrationSignature"));
+	Description.VarType.PinSubCategoryMemberReference.MemberGuid = FGuid::NewGuid();
 	Blueprint->Modify();
 	Blueprint->NewVariables.Add(Description);
 	return FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, FName(MemberName)) != INDEX_NONE;
@@ -985,6 +995,131 @@ bool FCortexGraphMigrationExternalReferenceTest::RunTest(const FString& Paramete
 }
 
 // ---------------------------------------------------------------------------
+// 4b. Reference inventory rules: unresolved owners block, unrelated same-named call sites do not.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphMigrationReferenceInventoryTest,
+	"Cortex.Graph.Authoring.Migration.Replace.ReferenceInventoryRules",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationReferenceInventoryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationReplaceTest;
+	ClearFaults();
+
+	// (a) R3: a call site that merely shares the declaration name is not a reference to it.
+	{
+		FFixture Fixture;
+		TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_MigrationInventory_T11")));
+		if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+		UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+		ClearGraphNodes(Graph);
+		UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
+		UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("inventory body"), 400, 0);
+		LinkNodes(Graph, StaleEntry, TEXT("then"), Print, TEXT("execute"));
+		// `PrintString` lives on UKismetSystemLibrary, which declares no `OnPayload`: a same-named
+		// call site with an unrelated, resolvable owner must not count as a reference to the target.
+		UK2Node_CallFunction* SameName = NewObject<UK2Node_CallFunction>(Graph);
+		SameName->FunctionReference.SetExternalMember(FName(TEXT("PrintString")), UKismetSystemLibrary::StaticClass());
+		SameName->CreateNewGuid();
+		SameName->AllocateDefaultPins();
+		Graph->AddNode(SameName, true, false);
+		FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+
+		TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000110010"),
+			MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
+		FCortexGraphPreparedPatch Prepared;
+		FCortexCommandResult Error;
+		TestTrue(FString::Printf(TEXT("an unrelated same-named call site does not block: %s"), *Error.ErrorMessage),
+			FCortexGraphPatchOps::Preflight(Fixture.Blueprint, Request, Prepared, Error));
+		double InAssetReferences = -1.0;
+		if (Prepared.MigrationPlan.IsValid())
+		{
+			int32 Counted = -1;
+			Prepared.MigrationPlan->TryGetNumberField(TEXT("declaration_references"), Counted);
+			InAssetReferences = Counted;
+		}
+		TestEqual(TEXT("only the replaced entry itself is inventoried, not the unrelated call site"),
+			static_cast<int32>(InAssetReferences), 0);
+		Fixture.Cleanup();
+	}
+
+	// (b) R3: a call site naming the declaration whose owner does not resolve blocks.
+	{
+		FFixture Fixture;
+		TestTrue(TEXT("second fixture created"), Fixture.Create(TEXT("BP_MigrationInventoryUnresolved_T11")));
+		if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+		UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+		ClearGraphNodes(Graph);
+		UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
+		UK2Node_CallFunction* Unresolved = NewObject<UK2Node_CallFunction>(Graph);
+		Unresolved->FunctionReference.SetExternalMember(FName(TEXT("OnPayload")), nullptr);
+		Unresolved->CreateNewGuid();
+		Graph->AddNode(Unresolved, true, false);
+		FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+
+		const FString HashBefore = LiveGraphHash(Fixture.Blueprint);
+		TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000110011"),
+			MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
+		FCortexGraphPatchOutcome Outcome;
+		FCortexCommandResult Error;
+		TestFalse(TEXT("an unresolved declaration reference blocks the migration"),
+			FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+		TestEqual(TEXT("unresolved declaration reference is INVALID_OPERATION"),
+			Error.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+		TestTrue(FString::Printf(TEXT("refusal names the unresolved reference [%s]"), *Error.ErrorMessage),
+			Error.ErrorMessage.Contains(TEXT("owner does not resolve")));
+		TestEqual(TEXT("unresolved declaration reference mutates nothing"),
+			LiveGraphHash(Fixture.Blueprint), HashBefore);
+		Fixture.Cleanup();
+	}
+
+	// (c) R2: an external member reference whose owner does not resolve is unresolved, never absence.
+	{
+		FFixture Fixture;
+		TestTrue(TEXT("third fixture created"), Fixture.Create(TEXT("BP_MigrationMemberUnresolved_T11")));
+		if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+		UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+		ClearGraphNodes(Graph);
+		UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
+		TestTrue(TEXT("shadowing member added"), AddShadowingVariable(Fixture.Blueprint, TEXT("OnPayload")));
+		FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+
+		FExternalReferenceFixture External;
+		TestTrue(TEXT("external asset created"), External.Create(Fixture.Blueprint, TEXT("BP_MigrationMemberUnresolvedChild_T11"), TEXT("OnPayload")));
+		// Break the external reference's owner so it cannot be resolved any more.
+		for (UEdGraphNode* Node : External.Blueprint->UbergraphPages[0]->Nodes)
+		{
+			if (UK2Node_VariableGet* VarGet = Cast<UK2Node_VariableGet>(Node))
+			{
+				VarGet->VariableReference.SetExternalMember(FName(TEXT("OnPayload")), nullptr);
+			}
+		}
+		const FString HashBefore = LiveGraphHash(Fixture.Blueprint);
+		TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000110012"),
+			MakeMigration(Graph, StaleEntry, OnPayloadPinMap(), true, true), TEXT("OnPayload"));
+		FCortexGraphPatchOutcome Outcome;
+		FCortexCommandResult Error;
+		TestFalse(TEXT("an unresolved external member reference blocks even with the removal flag"),
+			FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+		TestEqual(TEXT("unresolved external member reference is INVALID_OPERATION"),
+			Error.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+		TestTrue(FString::Printf(TEXT("refusal names the unresolved member reference [%s]"), *Error.ErrorMessage),
+			Error.ErrorMessage.Contains(TEXT("owner cannot be resolved")));
+		TestEqual(TEXT("unresolved external member reference mutates nothing"),
+			LiveGraphHash(Fixture.Blueprint), HashBefore);
+
+		External.Cleanup();
+		Fixture.Cleanup();
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // 5. ShadowingMemberRefusalByName
 // ---------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -1212,6 +1347,37 @@ void CheckInjectedFailureRestores(
 		CaptureSelectedNativeNodes(Fixture.Blueprint, DownstreamGuids), DownstreamBefore);
 	Test.TestTrue(FString::Printf(TEXT("%s: member state restored"), Context),
 		FBlueprintEditorUtils::FindNewVariableIndex(Fixture.Blueprint, FName(TEXT("OnPayload"))) != INDEX_NONE);
+	{
+		// R1: rep-notify, replication, metadata and the type's member reference are compared too,
+		// because the authoring fingerprint cannot see any of them.
+		const TSharedPtr<FJsonObject> Restored = FCortexGraphMigrationOps::CaptureShadowingMember(Fixture.Blueprint, FName(TEXT("OnPayload")));
+		Test.TestTrue(FString::Printf(TEXT("%s: restored member captures"), Context), Restored.IsValid());
+		if (Restored.IsValid())
+		{
+			FString RepNotify;
+			Restored->TryGetStringField(TEXT("rep_notify"), RepNotify);
+			Test.TestEqual(FString::Printf(TEXT("%s: rep-notify restored"), Context), RepNotify, FString(TEXT("OnRep_OnPayload")));
+			double Replication = 0.0;
+			Restored->TryGetNumberField(TEXT("replication_condition"), Replication);
+			Test.TestEqual(FString::Printf(TEXT("%s: replication condition restored"), Context),
+				static_cast<int32>(Replication), static_cast<int32>(COND_SimulatedOnly));
+			const TArray<TSharedPtr<FJsonValue>>* Metadata = nullptr;
+			Test.TestTrue(FString::Printf(TEXT("%s: metadata restored"), Context),
+				Restored->TryGetArrayField(TEXT("metadata"), Metadata) && Metadata && Metadata->Num() == 1);
+			FString MemberReferenceName;
+			Restored->TryGetStringField(TEXT("member_reference_name"), MemberReferenceName);
+			Test.TestEqual(FString::Printf(TEXT("%s: pin member reference restored"), Context),
+				MemberReferenceName, FString(TEXT("CortexMigrationSignature")));
+			FString MemberReferenceGuid;
+			Restored->TryGetStringField(TEXT("member_reference_guid"), MemberReferenceGuid);
+			FGuid ParsedReferenceGuid;
+			Test.TestTrue(FString::Printf(TEXT("%s: pin member reference guid restored"), Context),
+				FGuid::Parse(MemberReferenceGuid, ParsedReferenceGuid));
+			FString MemberFailure;
+			Test.TestTrue(FString::Printf(TEXT("%s: restored member matches its capture [%s]"), Context, *MemberFailure),
+				FCortexGraphMigrationOps::MemberMatchesCapture(Fixture.Blueprint, FName(TEXT("OnPayload")), Restored, MemberFailure));
+		}
+	}
 	Test.TestNotNull(FString::Printf(TEXT("%s: member reference node restored"), Context),
 		FindNodeByGuid(Fixture.Blueprint, Reference->NodeGuid));
 	Test.TestNotNull(FString::Printf(TEXT("%s: stale entry restored"), Context),
@@ -1330,6 +1496,31 @@ bool FCortexGraphMigrationReplayTest::RunTest(const FString& Parameters)
 	Operations.End();
 
 	TestEqual(TEXT("replay reports unchanged"), ReplayOutcome.ApplyStatus, FString(TEXT("unchanged")));
+	// R5: the requested locator no longer exists, which the result states explicitly instead of
+	// inventing provenance the inventory does not hold.
+	TestTrue(TEXT("replay reports that its source locator is absent"), ReplayOutcome.bReplayedWithAbsentSource);
+	TestTrue(TEXT("replay carries a diagnostic for the absent source locator"),
+		ReplayOutcome.Diagnostics.Num() > 0
+			&& ReplayOutcome.Diagnostics[0].Contains(TEXT("absent source locator")));
+	// R5: naming the replacement identity as the *source* locator is a contradictory intent.
+	{
+		TSharedPtr<FJsonObject> Contradictory = ReplacementRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000110009"),
+			MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
+		TSharedPtr<FJsonObject> Source = Contradictory->GetObjectField(TEXT("migration"))->GetObjectField(TEXT("source"));
+		Source->SetStringField(TEXT("entry_node_guid"), ReplacementGuid ? ReplacementGuid->ToString() : FString());
+		const FString HashBeforeContradiction = LiveGraphHash(Fixture.Blueprint);
+		FCortexGraphPatchOutcome ContradictoryOutcome;
+		FCortexCommandResult ContradictoryError;
+		TestFalse(TEXT("naming the replacement identity as the source locator is refused"),
+			FCortexGraphPatchOps::Execute(Fixture.Blueprint, Contradictory, ContradictoryOutcome, ContradictoryError));
+		TestEqual(TEXT("contradictory source locator is INVALID_OPERATION"),
+			ContradictoryError.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+		TestTrue(FString::Printf(TEXT("refusal names the contradictory locator [%s]"), *ContradictoryError.ErrorMessage),
+			ContradictoryError.ErrorMessage.Contains(TEXT("replacement identity itself")));
+		TestEqual(TEXT("contradictory source locator mutates nothing"),
+			LiveGraphHash(Fixture.Blueprint), HashBeforeContradiction);
+	}
 	TestEqual(TEXT("replay compiles nothing"), Operations.TargetCompiles, 0);
 	TestEqual(TEXT("replay performs no recovery compile"), Operations.RecoveryCompiles, 0);
 	TestEqual(TEXT("replay saves nothing"), Operations.Saves, 0);

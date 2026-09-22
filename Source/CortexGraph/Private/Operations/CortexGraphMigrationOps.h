@@ -111,6 +111,8 @@ struct FCortexGraphMigrationPlan
 	int32 ExternalDeclarationReferences = 0;
 	/** References that name the declaration but cannot be resolved to a concrete owner; any one blocks. */
 	TArray<FString> UnresolvedDeclarationReferences;
+	/** True when an accepted replay named a source locator that no longer exists (reported, never inferred). */
+	bool bReplayedWithAbsentSource = false;
 	/** Authoring-shaped descriptor of the replacement entry, so the shared readback also covers it. */
 	TSharedPtr<FJsonObject> NormalizedNode;
 	/** Resolved declaration symbol, shared with the authoring readback. */
