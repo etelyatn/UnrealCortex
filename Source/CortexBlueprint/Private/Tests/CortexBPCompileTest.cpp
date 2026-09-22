@@ -195,17 +195,23 @@ bool FCortexBPBlockedMutationDispatchTest::RunTest(const FString& Parameters)
 	Package->SetDirtyFlag(false);
 	FCortexAssetMutationGuard::Block(Blueprint, TEXT("forced recovery verification failure"));
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("blueprint_path"), TEXT("Blueprints/BP.BP"));
+	Params->SetStringField(TEXT("asset_path"), TEXT("Blueprints/BP.BP"));
 	FCortexBPCommandHandler Handler;
-	TestFalse(TEXT("relative alias compile refuses canonical blocked asset before load side effects"),
-		Handler.Execute(TEXT("compile"), Params).bSuccess);
-	TestFalse(TEXT("relative alias save refuses canonical blocked asset before load side effects"),
-		Handler.Execute(TEXT("save"), Params).bSuccess);
+	const FCortexCommandResult CompileResult = Handler.Execute(TEXT("compile"), Params);
+	const FCortexCommandResult SaveResult = Handler.Execute(TEXT("save"), Params);
+	TestFalse(TEXT("relative alias compile refuses canonical blocked asset before load side effects"), CompileResult.bSuccess);
+	TestEqual(TEXT("relative alias compile refusal is guard-specific"), CompileResult.ErrorCode, CortexErrorCodes::InvalidOperation);
+	TestTrue(TEXT("relative alias compile refusal identifies blocked asset"), CompileResult.ErrorMessage.Contains(TEXT("Asset is blocked after failed recovery")));
+	TestFalse(TEXT("relative alias save refuses canonical blocked asset before load side effects"), SaveResult.bSuccess);
+	TestEqual(TEXT("relative alias save refusal is guard-specific"), SaveResult.ErrorCode, CortexErrorCodes::InvalidOperation);
 	TSharedPtr<FJsonObject> DefaultsParams = MakeShared<FJsonObject>();
 	DefaultsParams->SetStringField(TEXT("blueprint_path"), TEXT("Blueprints/BP.BP"));
-	DefaultsParams->SetNumberField(TEXT("properties.InitialLifeSpan"), 12.0);
-	TestFalse(TEXT("blueprint_path alias blocks class defaults before side effects"),
-		Handler.Execute(TEXT("set_class_defaults"), DefaultsParams).bSuccess);
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetNumberField(TEXT("InitialLifeSpan"), 12.0);
+	DefaultsParams->SetObjectField(TEXT("properties"), Properties);
+	const FCortexCommandResult DefaultsResult = Handler.Execute(TEXT("set_class_defaults"), DefaultsParams);
+	TestFalse(TEXT("blueprint_path alias blocks class defaults before side effects"), DefaultsResult.bSuccess);
+	TestEqual(TEXT("blueprint_path refusal is guard-specific"), DefaultsResult.ErrorCode, CortexErrorCodes::InvalidOperation);
 	TestFalse(TEXT("blocked alias dispatch leaves package clean"), Package->IsDirty());
 	TestTrue(TEXT("relative alias read dispatch remains available"),
 		Handler.Execute(TEXT("get_info"), Params).bSuccess);
