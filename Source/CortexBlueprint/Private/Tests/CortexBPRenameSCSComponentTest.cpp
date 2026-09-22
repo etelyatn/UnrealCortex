@@ -959,8 +959,16 @@ bool FCortexBPRenameSCSComponentBlockedDependentTest::RunTest(const FString& Par
 	{
 		GEditor->Trans->Reset(FText::FromString(TEXT("CortexBPRenameBlockedDependentCleanup")));
 	}
-	Child->ClearFlags(RF_Standalone | RF_RootSet);
-	Parent->ClearFlags(RF_Standalone | RF_RootSet);
+	if (Child->IsRooted())
+	{
+		Child->RemoveFromRoot();
+	}
+	if (Parent->IsRooted())
+	{
+		Parent->RemoveFromRoot();
+	}
+	Child->ClearFlags(RF_Standalone);
+	Parent->ClearFlags(RF_Standalone);
 	Child->MarkAsGarbage();
 	Parent->MarkAsGarbage();
 	return true;

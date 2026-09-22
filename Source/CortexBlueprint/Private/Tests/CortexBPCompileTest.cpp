@@ -213,9 +213,17 @@ bool FCortexBPBlockedMutationDispatchTest::RunTest(const FString& Parameters)
 	{
 		GEditor->Trans->Reset(FText::FromString(TEXT("CortexBPBlockedMutationCleanup")));
 	}
-	Blueprint->ClearFlags(RF_Standalone | RF_RootSet);
+	if (Blueprint->IsRooted())
+	{
+		Blueprint->RemoveFromRoot();
+	}
+	Blueprint->ClearFlags(RF_Standalone);
 	Blueprint->MarkAsGarbage();
-	Package->ClearFlags(RF_Standalone | RF_RootSet);
+	if (Package->IsRooted())
+	{
+		Package->RemoveFromRoot();
+	}
+	Package->ClearFlags(RF_Standalone);
 	Package->MarkAsGarbage();
 	return true;
 }

@@ -19,6 +19,8 @@
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
 #include "K2Node_Composite.h"
+#include "UObject/Class.h"
+#include "UObject/UnrealType.h"
 #include "WidgetBlueprint.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Widget.h"
@@ -353,6 +355,65 @@ TSharedPtr<FJsonObject> FCortexGraphPatchState::ComputeFingerprint(UBlueprint* B
 
 	Json->SetStringField(TEXT("graph_authoring_hash"), HashHex);
 	return Json;
+}
+
+FString FCortexGraphPatchState::ComputeGeneratedStateDigest(UBlueprint* Blueprint)
+{
+	if (Blueprint == nullptr)
+	{
+		return FString();
+	}
+
+	UClass* GeneratedClass = Blueprint->GeneratedClass;
+	FString Buffer;
+	Buffer.Reserve(2048);
+	Buffer += FString::Printf(TEXT("GeneratedClass: %s\n"),
+		GeneratedClass ? *GeneratedClass->GetPathName() : TEXT("None"));
+	Buffer += FString::Printf(TEXT("SuperClass: %s\n"),
+		GeneratedClass && GeneratedClass->GetSuperClass() ? *GeneratedClass->GetSuperClass()->GetPathName() : TEXT("None"));
+	Buffer += FString::Printf(TEXT("ParentClass: %s\n"),
+		Blueprint->ParentClass ? *Blueprint->ParentClass->GetPathName() : TEXT("None"));
+
+	TArray<UFunction*> Functions;
+	if (GeneratedClass)
+	{
+		for (TFieldIterator<UFunction> It(GeneratedClass, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+		{
+			if (UFunction* Function = *It)
+			{
+				Functions.Add(Function);
+			}
+		}
+	}
+	Functions.Sort([](const UFunction& A, const UFunction& B) { return A.GetName() < B.GetName(); });
+
+	Buffer += FString::Printf(TEXT("Functions: %d\n"), Functions.Num());
+	for (const UFunction* Function : Functions)
+	{
+		Buffer += FString::Printf(TEXT("  Fn: %s Flags=%llu\n"),
+			*Function->GetName(),
+			static_cast<uint64>(Function->FunctionFlags));
+
+		TArray<const FProperty*> Parameters;
+		for (TFieldIterator<FProperty> It(Function); It; ++It)
+		{
+			const FProperty* Property = *It;
+			if (Property && Property->HasAnyPropertyFlags(CPF_Parm))
+			{
+				Parameters.Add(Property);
+			}
+		}
+		Parameters.Sort([](const FProperty& A, const FProperty& B) { return A.GetName() < B.GetName(); });
+		for (const FProperty* Parameter : Parameters)
+		{
+			Buffer += FString::Printf(TEXT("    Param: %s Type=%s Flags=%llu\n"),
+				*Parameter->GetName(),
+				*Parameter->GetCPPType(),
+				static_cast<uint64>(Parameter->PropertyFlags));
+		}
+	}
+
+	return Buffer;
 }
 
 bool FCortexGraphPatchState::ValidatePrecondition(

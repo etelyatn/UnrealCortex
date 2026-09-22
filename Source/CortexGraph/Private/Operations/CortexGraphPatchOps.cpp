@@ -24,14 +24,25 @@
 #include "K2Node_Event.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_CustomEvent.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_Variable.h"
+#include "K2Node_VariableSet.h"
+#include "K2Node_DynamicCast.h"
+#include "K2Node_GenericCreateObject.h"
+#include "K2Node_Timeline.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "Logging/TokenizedMessage.h"
 #include "Misc/Char.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
 #include "Misc/SecureHash.h"
 #include "Serialization/JsonSerializer.h"
 #include "ScopedTransaction.h"
-#include "Kismet2/BlueprintEditorUtils.h"
+#include "Editor.h"
+#include "Engine/World.h"
+#include "CortexSerializer.h"
 #include "CortexAssetMutationGuard.h"
 
 namespace
@@ -1208,9 +1219,1003 @@ bool FCortexGraphPatchOps::Preflight(
 	return true;
 }
 
-bool FCortexGraphPatchOps::Apply(
+
+namespace
+{
+#if WITH_AUTOMATION_TESTS
+FName ReadbackFaultForTesting = NAME_None;
+TFunction<void(FName, UBlueprint*)> OperationObserverForTesting;
+#endif
+
+bool ShouldInjectReadbackFault(const FName Field)
+{
+#if WITH_AUTOMATION_TESTS
+	return ReadbackFaultForTesting == Field;
+#else
+	(void)Field;
+	return false;
+#endif
+}
+
+void NotifyOperation(const FName Operation, UBlueprint* Blueprint)
+{
+#if WITH_AUTOMATION_TESTS
+	if (OperationObserverForTesting)
+	{
+		OperationObserverForTesting(Operation, Blueprint);
+	}
+#else
+	(void)Operation;
+	(void)Blueprint;
+#endif
+}
+
+constexpr int32 MaxStoredDiagnostics = 16;
+constexpr int32 MaxDiagnosticLength = 512;
+
+/**
+ * Journal of one prepared apply. Every entry is a durable identity (GUID, pin name, literal) so
+ * recovery keeps working after a target compile has reconstructed nodes and pins.
+ */
+struct FGraphPatchJournal
+{
+	TUniquePtr<FScopedTransaction> Transaction;
+	bool bPackageWasDirty = false;
+	EBlueprintStatus StatusBefore = BS_Unknown;
+	FString GeneratedStateBefore;
+	TArray<UEdGraph*> AddedGraphs;
+	TArray<FGuid> AddedNodeGuids;
+
+	struct FDefaultEntry
+	{
+		FGuid NodeGuid;
+		FName PinName;
+		FString PriorDefaultValue;
+		FString PriorDefaultObjectPath;
+		bool bPriorDefaultObjectSet = false;
+		FText PriorDefaultTextValue;
+	};
+	TArray<FDefaultEntry> Defaults;
+
+	struct FLinkEntry
+	{
+		FGuid SourceNodeGuid;
+		FName SourcePinName;
+		FGuid TargetNodeGuid;
+		FName TargetPinName;
+	};
+	TArray<FLinkEntry> Links;
+
+	struct FNodeStateEntry
+	{
+		FGuid NodeGuid;
+		FString Comment;
+		ENodeEnabledState EnabledState = ENodeEnabledState::Enabled;
+		bool bUserSetEnabledState = false;
+		bool bForceDisplayAsDisabled = false;
+		bool bCommentBubblePinned = false;
+		bool bCommentBubbleVisible = false;
+	};
+	/** Pre-request editor state of touched existing nodes, which engine paths derive from links. */
+	TArray<FNodeStateEntry> NodeStates;
+
+	FCortexGraphPatchLocators Locators;
+	bool bCompileAttempted = false;
+
+	bool WasNodeCreated(const FGuid& NodeGuid) const { return AddedNodeGuids.Contains(NodeGuid); }
+};
+
+/**
+ * Journals a pin's complete native default state. A tagged literal descriptor cannot represent an
+ * unset default exactly (for example an empty integer pin reads back as 0), so the raw state is
+ * captured instead of a lossy round-trip.
+ */
+void JournalPinDefault(UEdGraphPin* Pin, FGraphPatchJournal& Journal)
+{
+	if (!Pin) return;
+	FGraphPatchJournal::FDefaultEntry Entry;
+	const UEdGraphNode* OwningNode = Pin->GetOwningNode();
+	Entry.NodeGuid = OwningNode ? OwningNode->NodeGuid : FGuid();
+	Entry.PinName = Pin->PinName;
+	Entry.PriorDefaultValue = Pin->DefaultValue;
+	Entry.PriorDefaultTextValue = Pin->DefaultTextValue;
+	Entry.bPriorDefaultObjectSet = Pin->DefaultObject != nullptr;
+	Entry.PriorDefaultObjectPath = Pin->DefaultObject ? Pin->DefaultObject->GetPathName() : FString();
+	Journal.Defaults.Add(MoveTemp(Entry));
+}
+
+void JournalNodeState(UEdGraphNode* Node, FGraphPatchJournal& Journal)
+{
+	if (!Node || !Node->NodeGuid.IsValid()) return;
+	for (const FGraphPatchJournal::FNodeStateEntry& Existing : Journal.NodeStates)
+	{
+		if (Existing.NodeGuid == Node->NodeGuid) return;
+	}
+	FGraphPatchJournal::FNodeStateEntry Entry;
+	Entry.NodeGuid = Node->NodeGuid;
+	Entry.Comment = Node->NodeComment;
+	Entry.EnabledState = Node->GetDesiredEnabledState();
+	Entry.bUserSetEnabledState = Node->HasUserSetTheEnabledState();
+	Entry.bForceDisplayAsDisabled = Node->IsDisplayAsDisabledForced();
+	Entry.bCommentBubblePinned = Node->bCommentBubblePinned;
+	Entry.bCommentBubbleVisible = Node->bCommentBubbleVisible;
+	Journal.NodeStates.Add(MoveTemp(Entry));
+}
+
+void RestorePinDefault(UEdGraphPin* Pin, const FGraphPatchJournal::FDefaultEntry& Entry)
+{
+	UEdGraphNode* OwningNode = Pin->GetOwningNode();
+	OwningNode->Modify();
+	UEdGraph* OwningGraph = OwningNode->GetGraph();
+	if (OwningGraph)
+	{
+		OwningGraph->Modify();
+	}
+	UObject* PriorObject = nullptr;
+	if (Entry.bPriorDefaultObjectSet)
+	{
+		PriorObject = FindObject<UObject>(nullptr, *Entry.PriorDefaultObjectPath);
+	}
+	Pin->DefaultValue = Entry.PriorDefaultValue;
+	Pin->DefaultObject = PriorObject;
+	Pin->DefaultTextValue = Entry.PriorDefaultTextValue;
+	if (OwningGraph)
+	{
+		OwningGraph->NotifyGraphChanged();
+	}
+}
+
+void FindNodeByGuid(UBlueprint* Blueprint, const FGuid& NodeGuid, UEdGraphNode*& OutNode)
+{
+	OutNode = nullptr;
+	if (!Blueprint || !NodeGuid.IsValid()) return;
+	TArray<UEdGraph*> Graphs;
+	Blueprint->GetAllGraphs(Graphs);
+	for (UEdGraph* Graph : Graphs)
+	{
+		if (!Graph) continue;
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node && Node->NodeGuid == NodeGuid)
+			{
+				OutNode = Node;
+				return;
+			}
+		}
+	}
+}
+
+/** Reverses the journal in reverse order. Returns false when a recorded change cannot be undone. */
+bool RestoreJournal(UBlueprint* Blueprint, const FGraphPatchJournal& Journal)
+{
+	for (int32 Index = Journal.Links.Num() - 1; Index >= 0; --Index)
+	{
+		UEdGraphNode* SourceNode = nullptr;
+		UEdGraphNode* TargetNode = nullptr;
+		FindNodeByGuid(Blueprint, Journal.Links[Index].SourceNodeGuid, SourceNode);
+		FindNodeByGuid(Blueprint, Journal.Links[Index].TargetNodeGuid, TargetNode);
+		UEdGraphPin* SourcePin = SourceNode ? SourceNode->FindPin(Journal.Links[Index].SourcePinName) : nullptr;
+		UEdGraphPin* TargetPin = TargetNode ? TargetNode->FindPin(Journal.Links[Index].TargetPinName) : nullptr;
+		if (SourcePin && TargetPin && SourcePin->LinkedTo.Contains(TargetPin))
+		{
+			SourcePin->BreakLinkTo(TargetPin);
+		}
+	}
+
+	for (int32 Index = Journal.Defaults.Num() - 1; Index >= 0; --Index)
+	{
+		UEdGraphNode* Node = nullptr;
+		FindNodeByGuid(Blueprint, Journal.Defaults[Index].NodeGuid, Node);
+		UEdGraphPin* Pin = Node ? Node->FindPin(Journal.Defaults[Index].PinName) : nullptr;
+		if (!Pin)
+		{
+			// A default recorded on a node this patch created disappears with that node.
+			if (Journal.WasNodeCreated(Journal.Defaults[Index].NodeGuid)) continue;
+			return false;
+		}
+		if (Journal.Defaults[Index].bPriorDefaultObjectSet
+			&& FindObject<UObject>(nullptr, *Journal.Defaults[Index].PriorDefaultObjectPath) == nullptr)
+		{
+			return false;
+		}
+		RestorePinDefault(Pin, Journal.Defaults[Index]);
+	}
+
+	for (int32 Index = Journal.NodeStates.Num() - 1; Index >= 0; --Index)
+	{
+		UEdGraphNode* Node = nullptr;
+		FindNodeByGuid(Blueprint, Journal.NodeStates[Index].NodeGuid, Node);
+		if (!Node) continue;
+		Node->Modify();
+		Node->NodeComment = Journal.NodeStates[Index].Comment;
+		Node->SetEnabledState(Journal.NodeStates[Index].EnabledState, Journal.NodeStates[Index].bUserSetEnabledState);
+		Node->SetForceDisplayAsDisabled(Journal.NodeStates[Index].bForceDisplayAsDisabled);
+		Node->bCommentBubblePinned = Journal.NodeStates[Index].bCommentBubblePinned;
+		Node->bCommentBubbleVisible = Journal.NodeStates[Index].bCommentBubbleVisible;
+	}
+
+	for (int32 Index = Journal.AddedNodeGuids.Num() - 1; Index >= 0; --Index)
+	{
+		UEdGraphNode* Node = nullptr;
+		FindNodeByGuid(Blueprint, Journal.AddedNodeGuids[Index], Node);
+		if (Node)
+		{
+			Node->DestroyNode();
+		}
+	}
+
+	for (int32 Index = Journal.AddedGraphs.Num() - 1; Index >= 0; --Index)
+	{
+		if (Journal.AddedGraphs[Index])
+		{
+			FBlueprintEditorUtils::RemoveGraph(Blueprint, Journal.AddedGraphs[Index]);
+		}
+	}
+	return true;
+}
+
+bool RestoredAuthoringMatches(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& FingerprintBefore)
+{
+	const TSharedPtr<FJsonObject> Restored = FCortexGraphPatchState::ComputeFingerprint(Blueprint);
+	return Restored.IsValid() && FingerprintBefore.IsValid()
+		&& Restored->GetStringField(TEXT("graph_authoring_hash"))
+			== FingerprintBefore->GetStringField(TEXT("graph_authoring_hash"));
+}
+
+/** Compiles the target exactly once, reporting the real operation and preserving diagnostics. */
+bool CompileTargetBlueprint(UBlueprint* Blueprint, const FName Operation, TArray<FString>& OutDiagnostics)
+{
+	NotifyOperation(Operation, Blueprint);
+	FCompilerResultsLog Log;
+	Log.bAnnotateMentionedNodes = false;
+	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &Log);
+	for (const TSharedRef<FTokenizedMessage>& Message : Log.Messages)
+	{
+		const EMessageSeverity::Type Severity = Message->GetSeverity();
+		if (Severity != EMessageSeverity::Error && Severity != EMessageSeverity::Warning) continue;
+		if (OutDiagnostics.Num() >= MaxStoredDiagnostics)
+		{
+			OutDiagnostics.Add(TEXT("additional compiler diagnostics omitted"));
+			break;
+		}
+		FString Diagnostic = Message->ToText().ToString();
+		if (Diagnostic.Len() > MaxDiagnosticLength)
+		{
+			Diagnostic = Diagnostic.Left(MaxDiagnosticLength) + TEXT("...");
+		}
+		OutDiagnostics.Add(MoveTemp(Diagnostic));
+	}
+	return Log.NumErrors == 0 && Blueprint->Status != BS_Error;
+}
+
+bool ResolveLiveNode(
+	UBlueprint* Blueprint,
+	const FCortexGraphPatchLocators& Locators,
+	const FString& Identity,
+	UEdGraphNode*& OutNode)
+{
+	OutNode = nullptr;
+	FGuid NodeGuid;
+	if (Identity == TEXT("entry"))
+	{
+		if (!Locators.bHasEntryNode) return false;
+		NodeGuid = Locators.EntryNodeGuid;
+	}
+	else if (const FGuid* Mapped = Locators.NodeGuidByClientId.Find(Identity))
+	{
+		NodeGuid = *Mapped;
+	}
+	else if (!FGuid::Parse(Identity, NodeGuid))
+	{
+		return false;
+	}
+	FindNodeByGuid(Blueprint, NodeGuid, OutNode);
+	return OutNode != nullptr;
+}
+
+bool RequestedOwnerDeclared(const TSharedPtr<FJsonObject>& Params, const TCHAR* MemberField)
+{
+	if (!Params.IsValid()) return false;
+	FString Member;
+	if (Params->TryGetStringField(MemberField, Member) && Member.Contains(TEXT("."))) return true;
+	return Params->HasField(TEXT("owner_class")) || Params->HasField(TEXT("variable_class"));
+}
+
+FString DeclaredOwnerPath(UClass* OwnerClass)
+{
+	return OwnerClass ? OwnerClass->GetPathName() : FString(TEXT("none"));
+}
+
+/** Compares the re-resolved request symbol of one planned node against the applied native state. */
+bool CompareNodeSymbol(
+	UBlueprint* Blueprint,
+	const TSharedPtr<FJsonObject>& NodeJson,
+	UEdGraphNode* Live,
+	FName Family,
+	FString& OutExpected,
+	FString& OutActual,
+	FString& OutFailure)
+{
+	OutExpected.Reset();
+	OutActual.Reset();
+	(void)Family;
+
+	const TSharedPtr<FJsonObject>* ParamsPtr = nullptr;
+	TSharedPtr<FJsonObject> Params;
+	if (NodeJson->TryGetObjectField(TEXT("params"), ParamsPtr) && ParamsPtr && ParamsPtr->IsValid())
+	{
+		Params = *ParamsPtr;
+	}
+
+	if (const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Live))
+	{
+		FCortexResolvedSymbol Symbol;
+		FCortexCommandResult SymbolError;
+		if (!FCortexGraphSymbolResolver::ResolveFunction(Blueprint, Params, Symbol, SymbolError) || !Symbol.Function)
+		{
+			OutFailure = FString::Printf(TEXT("planned call symbol no longer resolves: %s"), *SymbolError.ErrorMessage);
+			return false;
+		}
+		const bool bOwnerDeclared = RequestedOwnerDeclared(Params, TEXT("function_name"));
+		UFunction* Target = Call->GetTargetFunction();
+		OutExpected = bOwnerDeclared
+			? FString::Printf(TEXT("%s|%s"), *Symbol.Function->GetName(), *DeclaredOwnerPath(Symbol.Function->GetOwnerClass()))
+			: Symbol.Function->GetName();
+		OutActual = Target
+			? (bOwnerDeclared
+				? FString::Printf(TEXT("%s|%s"), *Target->GetName(), *DeclaredOwnerPath(Target->GetOwnerClass()))
+				: Target->GetName())
+			: FString(TEXT("none"));
+		return true;
+	}
+
+	if (const UK2Node_Variable* Variable = Cast<UK2Node_Variable>(Live))
+	{
+		const bool bWrite = Variable->IsA<UK2Node_VariableSet>();
+		FCortexResolvedSymbol Symbol;
+		FCortexCommandResult SymbolError;
+		if (!FCortexGraphSymbolResolver::ResolveProperty(Blueprint, Params, bWrite, Symbol, SymbolError))
+		{
+			OutFailure = FString::Printf(TEXT("planned variable symbol no longer resolves: %s"), *SymbolError.ErrorMessage);
+			return false;
+		}
+		const bool bOwnerDeclared = RequestedOwnerDeclared(Params, TEXT("variable_name"));
+		const FString NativeName = Variable->VariableReference.GetMemberName().ToString();
+		const FString NativeOwner = Variable->VariableReference.IsSelfContext()
+			? FString(TEXT("self"))
+			: DeclaredOwnerPath(Variable->VariableReference.GetMemberParentClass());
+		OutExpected = bOwnerDeclared
+			? FString::Printf(TEXT("%s|%s"), *Symbol.MemberName.ToString(), *Symbol.ContextClassPath)
+			: Symbol.MemberName.ToString();
+		OutActual = bOwnerDeclared
+			? FString::Printf(TEXT("%s|%s"), *NativeName, *NativeOwner)
+			: NativeName;
+		return true;
+	}
+
+	if (const UK2Node_Event* Event = Cast<UK2Node_Event>(Live))
+	{
+		if (!Params.IsValid() || !Params->HasField(TEXT("function_name"))) return true;
+		FCortexResolvedSymbol Symbol;
+		FCortexCommandResult SymbolError;
+		if (!FCortexGraphSymbolResolver::ResolveFunction(Blueprint, Params, Symbol, SymbolError) || !Symbol.Function)
+		{
+			OutFailure = FString::Printf(TEXT("planned event symbol no longer resolves: %s"), *SymbolError.ErrorMessage);
+			return false;
+		}
+		OutExpected = Symbol.Function->GetName();
+		OutActual = Event->EventReference.GetMemberName().ToString();
+		return true;
+	}
+
+	if (const UK2Node_DynamicCast* CastNode = Cast<UK2Node_DynamicCast>(Live))
+	{
+		FString ClassIdentifier;
+		if (!Params.IsValid()) return true;
+		const bool bHasClass = Params->TryGetStringField(TEXT("class"), ClassIdentifier)
+			|| Params->TryGetStringField(TEXT("target_class"), ClassIdentifier);
+		if (!bHasClass) return true;
+		UClass* Target = nullptr;
+		FCortexCommandResult ResolveError;
+		if (!FCortexGraphSymbolResolver::ResolveClass(ClassIdentifier, Target, ResolveError) || !Target)
+		{
+			OutFailure = FString::Printf(TEXT("planned cast target no longer resolves: %s"), *ResolveError.ErrorMessage);
+			return false;
+		}
+		OutExpected = Target->GetPathName();
+		OutActual = CastNode->TargetType ? CastNode->TargetType->GetPathName() : FString(TEXT("none"));
+		return true;
+	}
+
+	if (const UK2Node_GenericCreateObject* Create = Cast<UK2Node_GenericCreateObject>(Live))
+	{
+		FString ClassIdentifier;
+		if (!Params.IsValid() || !Params->TryGetStringField(TEXT("class"), ClassIdentifier)) return true;
+		UClass* Target = nullptr;
+		FCortexCommandResult ResolveError;
+		if (!FCortexGraphSymbolResolver::ResolveClass(ClassIdentifier, Target, ResolveError) || !Target)
+		{
+			OutFailure = FString::Printf(TEXT("planned constructed class no longer resolves: %s"), *ResolveError.ErrorMessage);
+			return false;
+		}
+		const UEdGraphPin* ClassPin = Create->GetClassPin();
+		OutExpected = Target->GetPathName();
+		OutActual = ClassPin && ClassPin->DefaultObject ? ClassPin->DefaultObject->GetPathName() : FString(TEXT("none"));
+		return true;
+	}
+
+	if (const UK2Node_Timeline* Timeline = Cast<UK2Node_Timeline>(Live))
+	{
+		FString TimelineName;
+		if (!Params.IsValid() || !Params->TryGetStringField(TEXT("timeline_name"), TimelineName)) return true;
+		OutExpected = TimelineName;
+		OutActual = Timeline->TimelineName.ToString();
+		return true;
+	}
+
+	if (const UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Live))
+	{
+		OutExpected = TEXT("bound_graph");
+		OutActual = Composite->BoundGraph ? TEXT("bound_graph") : TEXT("none");
+		return true;
+	}
+
+	return true;
+}
+
+/** Compares one tagged literal descriptor against the pin's native default. */
+bool ComparePinLiteral(
+	const UEdGraphPin* Pin,
+	const TSharedPtr<FJsonObject>& Literal,
+	FString& OutExpected,
+	FString& OutActual,
+	FString& OutFailure)
+{
+	OutExpected.Reset();
+	OutActual.Reset();
+	if (!Pin || !Literal.IsValid())
+	{
+		OutFailure = TEXT("planned default no longer resolves to a pin and literal");
+		return false;
+	}
+	FString Kind;
+	if (!Literal->TryGetStringField(TEXT("kind"), Kind) || Kind.IsEmpty())
+	{
+		OutFailure = TEXT("planned default has no literal kind");
+		return false;
+	}
+
+	if (Kind == TEXT("class") || Kind == TEXT("soft_class"))
+	{
+		FString Path;
+		Literal->TryGetStringField(TEXT("path"), Path);
+		if (Path.IsEmpty() || Path.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+		{
+			OutExpected = TEXT("None");
+		}
+		else
+		{
+			UClass* ResolvedClass = nullptr;
+			FCortexCommandResult ResolveError;
+			if (!FCortexGraphSymbolResolver::ResolveClass(Path, ResolvedClass, ResolveError) || !ResolvedClass)
+			{
+				OutFailure = FString::Printf(TEXT("planned class default no longer resolves: %s"), *ResolveError.ErrorMessage);
+				return false;
+			}
+			OutExpected = ResolvedClass->GetPathName();
+		}
+		OutActual = Pin->DefaultObject ? Pin->DefaultObject->GetPathName() : FString(TEXT("None"));
+		return true;
+	}
+	if (Kind == TEXT("object") || Kind == TEXT("soft_object"))
+	{
+		FString Path;
+		Literal->TryGetStringField(TEXT("path"), Path);
+		OutExpected = Path.IsEmpty() ? FString(TEXT("None")) : Path;
+		OutActual = Pin->DefaultObject ? Pin->DefaultObject->GetPathName() : (Pin->DefaultValue.IsEmpty() ? FString(TEXT("None")) : Pin->DefaultValue);
+		return true;
+	}
+	if (Kind == TEXT("null"))
+	{
+		OutExpected = TEXT("None");
+		OutActual = (Pin->DefaultObject == nullptr && (Pin->DefaultValue.IsEmpty() || Pin->DefaultValue.Equals(TEXT("None"), ESearchCase::IgnoreCase)))
+			? FString(TEXT("None"))
+			: Pin->DefaultValue;
+		return true;
+	}
+	if (Kind == TEXT("text"))
+	{
+		FText ExpectedText;
+		bool bHasExpectedText = false;
+		FString LiteralValue;
+		if (Literal->TryGetStringField(TEXT("literal"), LiteralValue))
+		{
+			ExpectedText = FText::FromString(LiteralValue);
+			bHasExpectedText = true;
+		}
+		else if (Literal->HasField(TEXT("table")) || Literal->HasField(TEXT("table_id")))
+		{
+			FString TableId;
+			FString Key;
+			if (!Literal->TryGetStringField(TEXT("table"), TableId))
+			{
+				Literal->TryGetStringField(TEXT("table_id"), TableId);
+			}
+			Literal->TryGetStringField(TEXT("key"), Key);
+			ExpectedText = FText::FromStringTable(FName(*TableId), Key);
+			bHasExpectedText = true;
+		}
+		else
+		{
+			TArray<FString> Errors;
+			TSharedPtr<FJsonObject> Normalized;
+			FText NormalizedText;
+			const TSharedPtr<FJsonValue> Value = Literal->HasField(TEXT("value"))
+				? Literal->TryGetField(TEXT("value"))
+				: MakeShared<FJsonValueObject>(Literal);
+			if (Value.IsValid() && FCortexSerializer::NormalizeTextDescriptor(Value, Normalized, &NormalizedText, Errors))
+			{
+				ExpectedText = NormalizedText;
+				bHasExpectedText = true;
+			}
+		}
+		if (!bHasExpectedText)
+		{
+			OutFailure = TEXT("planned text default cannot be compared with native readback");
+			return false;
+		}
+		OutExpected = ExpectedText.ToString();
+		OutActual = Pin->DefaultTextValue.ToString();
+		return true;
+	}
+	if (Kind == TEXT("bool"))
+	{
+		bool bValue = false;
+		if (!Literal->TryGetBoolField(TEXT("value"), bValue))
+		{
+			FString Text;
+			Literal->TryGetStringField(TEXT("value"), Text);
+			bValue = Text.ToBool();
+		}
+		OutExpected = bValue ? TEXT("true") : TEXT("false");
+		OutActual = Pin->DefaultValue.ToBool() ? TEXT("true") : TEXT("false");
+		return true;
+	}
+	if (Kind == TEXT("int"))
+	{
+		int64 Value = 0;
+		if (!Literal->TryGetNumberField(TEXT("value"), Value))
+		{
+			FString Text;
+			Literal->TryGetStringField(TEXT("value"), Text);
+			Value = FCString::Atoi64(*Text);
+		}
+		OutExpected = FString::Printf(TEXT("%lld"), Value);
+		OutActual = FString::Printf(TEXT("%lld"), FCString::Atoi64(*Pin->DefaultValue));
+		return true;
+	}
+	if (Kind == TEXT("real") || Kind == TEXT("float"))
+	{
+		double Value = 0.0;
+		if (!Literal->TryGetNumberField(TEXT("value"), Value))
+		{
+			FString Text;
+			Literal->TryGetStringField(TEXT("value"), Text);
+			Value = FCString::Atod(*Text);
+		}
+		OutExpected = FString::Printf(TEXT("%f"), Value);
+		OutActual = FString::Printf(TEXT("%f"), FCString::Atod(*Pin->DefaultValue));
+		return true;
+	}
+	if (Kind == TEXT("string") || Kind == TEXT("name") || Kind == TEXT("enum"))
+	{
+		FString Value;
+		Literal->TryGetStringField(TEXT("value"), Value);
+		OutExpected = Value;
+		OutActual = Pin->DefaultValue;
+		return true;
+	}
+
+	OutFailure = FString::Printf(TEXT("planned default kind '%s' has no native readback comparison"), *Kind);
+	return false;
+}
+
+bool ComparePlannedDefaults(
+	UBlueprint* Blueprint,
+	const TSharedPtr<FJsonObject>& NodeJson,
+	UEdGraphNode* Live,
+	bool& bInjected,
+	FString& OutFailure)
+{
+	(void)Blueprint;
+	const TSharedPtr<FJsonObject>* DefaultsPtr = nullptr;
+	if (!NodeJson->TryGetObjectField(TEXT("defaults"), DefaultsPtr) || !DefaultsPtr || !DefaultsPtr->IsValid())
+	{
+		return true;
+	}
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*DefaultsPtr)->Values)
+	{
+		const FString PinName = Pair.Key;
+		const TSharedPtr<FJsonObject> Literal = Pair.Value.IsValid() ? Pair.Value->AsObject() : nullptr;
+		UEdGraphPin* Pin = Live ? Live->FindPin(FName(*PinName)) : nullptr;
+		FString Expected;
+		FString Actual;
+		if (!ComparePinLiteral(Pin, Literal, Expected, Actual, OutFailure))
+		{
+			if (OutFailure.IsEmpty())
+			{
+				OutFailure = FString::Printf(TEXT("planned default pin '%s' no longer resolves"), *PinName);
+			}
+			return false;
+		}
+		if (!bInjected && ShouldInjectReadbackFault(TEXT("readback_default")))
+		{
+			bInjected = true;
+			Expected += TEXT("#injected");
+		}
+		if (Expected != Actual)
+		{
+			OutFailure = FString::Printf(TEXT("pin '%s' default readback mismatch: expected '%s', found '%s'"),
+				*PinName, *Expected, *Actual);
+			return false;
+		}
+	}
+	return true;
+}
+
+bool ComparePlannedPinUpdates(
 	UBlueprint* Blueprint,
 	const FCortexGraphPreparedPatch& Prepared,
+	const FGraphPatchJournal& Journal,
+	bool& bInjectedDefault,
+	FString& OutFailure)
+{
+	const TArray<TSharedPtr<FJsonValue>>& Updates = Prepared.NormalizedRequest->GetArrayField(TEXT("pin_updates"));
+	for (const TSharedPtr<FJsonValue>& Value : Updates)
+	{
+		const TSharedPtr<FJsonObject> Update = Value->AsObject();
+		if (!Update.IsValid())
+		{
+			OutFailure = TEXT("normalized pin update is invalid");
+			return false;
+		}
+		const FString NodeGuidText = Update->GetStringField(TEXT("node_guid"));
+		FGuid NodeGuid;
+		FGuid::Parse(NodeGuidText, NodeGuid);
+		UEdGraphNode* Node = nullptr;
+		FindNodeByGuid(Blueprint, NodeGuid, Node);
+		const FString PinName = Update->GetStringField(TEXT("pin"));
+		UEdGraphPin* Pin = Node ? Node->FindPin(FName(*PinName)) : nullptr;
+		const TSharedPtr<FJsonObject>* LiteralPtr = nullptr;
+		if (!Pin || !Update->TryGetObjectField(Update->HasField(TEXT("default")) ? TEXT("default") : TEXT("value"), LiteralPtr)
+			|| !LiteralPtr || !LiteralPtr->IsValid())
+		{
+			OutFailure = FString::Printf(TEXT("planned pin update '%s.%s' no longer resolves"), *NodeGuidText, *PinName);
+			return false;
+		}
+		FString Expected;
+		FString Actual;
+		if (!ComparePinLiteral(Pin, *LiteralPtr, Expected, Actual, OutFailure)) return false;
+		if (!bInjectedDefault && ShouldInjectReadbackFault(TEXT("readback_default")))
+		{
+			bInjectedDefault = true;
+			Expected += TEXT("#injected");
+		}
+		if (Expected != Actual)
+		{
+			OutFailure = FString::Printf(TEXT("pin update '%s.%s' default readback mismatch: expected '%s', found '%s'"),
+				*NodeGuidText, *PinName, *Expected, *Actual);
+			return false;
+		}
+	}
+	return true;
+}
+
+bool GeneratedClassDeclaresFunction(UBlueprint* Blueprint, const FName FunctionName)
+{
+	UClass* GeneratedClass = Blueprint ? Blueprint->GeneratedClass : nullptr;
+	if (!GeneratedClass || FunctionName.IsNone()) return false;
+	for (TFieldIterator<UFunction> It(GeneratedClass, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+	{
+		if (UFunction* Function = *It)
+		{
+			if (Function->GetFName() == FunctionName) return true;
+		}
+	}
+	return false;
+}
+
+/** Re-resolves the planned entry locator and compares it with the applied native entry symbol. */
+bool CompareEntrySymbol(
+	UBlueprint* Blueprint,
+	const FCortexGraphPreparedPatch& Prepared,
+	const FGraphPatchJournal& Journal,
+	bool bCompiled,
+	FString& OutFailure)
+{
+	if (!Journal.Locators.bHasEntryNode) return true;
+	const TSharedPtr<FJsonObject>* SymbolPtr = nullptr;
+	if (!Prepared.NormalizedRequest->TryGetObjectField(TEXT("resolved_symbol"), SymbolPtr)
+		|| !SymbolPtr || !SymbolPtr->IsValid())
+	{
+		return true;
+	}
+	FString ExpectedName;
+	FString ExpectedOwner;
+	(*SymbolPtr)->TryGetStringField(TEXT("function_name"), ExpectedName);
+	(*SymbolPtr)->TryGetStringField(TEXT("owner_class"), ExpectedOwner);
+	if (ExpectedName.IsEmpty()) return true;
+
+	UEdGraphNode* Entry = nullptr;
+	FindNodeByGuid(Blueprint, Journal.Locators.EntryNodeGuid, Entry);
+	if (!Entry)
+	{
+		OutFailure = TEXT("implementation entry locator did not re-resolve after apply");
+		return false;
+	}
+
+	if (const UK2Node_Event* Event = Cast<UK2Node_Event>(Entry))
+	{
+		const FString ActualName = Event->EventReference.GetMemberName().ToString();
+		const FString ActualOwner = Event->EventReference.GetMemberParentClass()
+			? Event->EventReference.GetMemberParentClass()->GetPathName()
+			: FString(TEXT("none"));
+		if (ActualName != ExpectedName || (!ExpectedOwner.IsEmpty() && ActualOwner != ExpectedOwner))
+		{
+			OutFailure = FString::Printf(TEXT("implementation entry symbol mismatch: expected '%s' on '%s', found '%s' on '%s'"),
+				*ExpectedName, *ExpectedOwner, *ActualName, *ActualOwner);
+			return false;
+		}
+	}
+	else if (const UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Entry))
+	{
+		const FString ActualName = FunctionEntry->GetGraph() ? FunctionEntry->GetGraph()->GetName() : FString();
+		if (ActualName != ExpectedName)
+		{
+			OutFailure = FString::Printf(TEXT("implementation function entry mismatch: expected '%s', found '%s'"),
+				*ExpectedName, *ActualName);
+			return false;
+		}
+	}
+
+	if (bCompiled && !GeneratedClassDeclaresFunction(Blueprint, FName(*ExpectedName)))
+	{
+		OutFailure = FString::Printf(TEXT("compiled generated class does not declare the requested symbol '%s'"), *ExpectedName);
+		return false;
+	}
+	return true;
+}
+
+bool ComparePlannedEdges(
+	UBlueprint* Blueprint,
+	const FCortexGraphPreparedPatch& Prepared,
+	const FGraphPatchJournal& Journal,
+	bool& bInjected,
+	FString& OutFailure)
+{
+	const TArray<TSharedPtr<FJsonValue>>& Connections = Prepared.NormalizedRequest->GetArrayField(TEXT("connections"));
+	for (int32 Index = 0; Index < Connections.Num(); ++Index)
+	{
+		const TSharedPtr<FJsonObject> Connection = Connections[Index]->AsObject();
+		const TSharedPtr<FJsonObject>* FromPtr = nullptr;
+		const TSharedPtr<FJsonObject>* ToPtr = nullptr;
+		if (!Connection.IsValid()
+			|| !Connection->TryGetObjectField(TEXT("from"), FromPtr) || !FromPtr || !FromPtr->IsValid()
+			|| !Connection->TryGetObjectField(TEXT("to"), ToPtr) || !ToPtr || !ToPtr->IsValid())
+		{
+			OutFailure = FString::Printf(TEXT("normalized planned edge %d is invalid"), Index);
+			return false;
+		}
+		FString FromId;
+		FString FromPinName;
+		FString ToId;
+		FString ToPinName;
+		bool bFromEntry = false;
+		bool bToEntry = false;
+		FCortexCommandResult EndpointError;
+		if (!ParseEndpoint(*FromPtr, FromId, FromPinName, bFromEntry, EndpointError, TEXT("connection.from"))
+			|| !ParseEndpoint(*ToPtr, ToId, ToPinName, bToEntry, EndpointError, TEXT("connection.to")))
+		{
+			OutFailure = EndpointError.ErrorMessage;
+			return false;
+		}
+		if (!bInjected && ShouldInjectReadbackFault(TEXT("readback_edge")))
+		{
+			bInjected = true;
+			ToPinName += TEXT("#injected");
+		}
+
+		UEdGraphNode* SourceNode = nullptr;
+		UEdGraphNode* TargetNode = nullptr;
+		if (!ResolveLiveNode(Blueprint, Journal.Locators, FromId, SourceNode)
+			|| !ResolveLiveNode(Blueprint, Journal.Locators, ToId, TargetNode))
+		{
+			OutFailure = FString::Printf(TEXT("planned edge %d no longer re-resolves its endpoints"), Index);
+			return false;
+		}
+		UEdGraphPin* SourcePin = SourceNode->FindPin(FName(*FromPinName));
+		UEdGraphPin* TargetPin = TargetNode->FindPin(FName(*ToPinName));
+		if (!SourcePin || !TargetPin)
+		{
+			OutFailure = FString::Printf(TEXT("planned edge %d no longer resolves pin '%s' -> '%s'"),
+				Index, *FromPinName, *ToPinName);
+			return false;
+		}
+		if (!SourcePin->LinkedTo.Contains(TargetPin) || TargetPin->LinkedTo.Num() != 1)
+		{
+			OutFailure = FString::Printf(TEXT("planned edge %d is not exactly the requested native link"), Index);
+			return false;
+		}
+	}
+	return true;
+}
+
+/** Authoritative native readback of every planned locator against the applied state. */
+bool VerifyAppliedState(
+	UBlueprint* Blueprint,
+	const FCortexGraphPreparedPatch& Prepared,
+	const FGraphPatchJournal& Journal,
+	bool bCompiled,
+	FString& OutFailure)
+{
+	bool bInjectedClass = false;
+	bool bInjectedSymbol = false;
+	bool bInjectedDefault = false;
+	bool bInjectedEdge = false;
+
+	const TArray<TSharedPtr<FJsonValue>>& Nodes = Prepared.NormalizedRequest->GetArrayField(TEXT("nodes"));
+	for (const TSharedPtr<FJsonValue>& Value : Nodes)
+	{
+		const TSharedPtr<FJsonObject> NodeJson = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!NodeJson.IsValid())
+		{
+			OutFailure = TEXT("normalized planned node is invalid");
+			return false;
+		}
+		const FString ClientId = NodeJson->GetStringField(TEXT("client_id"));
+		const FString NodeClassName = NodeJson->GetStringField(TEXT("node_class"));
+
+		UEdGraphNode* Live = nullptr;
+		if (!ResolveLiveNode(Blueprint, Journal.Locators, ClientId, Live))
+		{
+			OutFailure = FString::Printf(TEXT("planned node '%s' did not re-resolve after apply"), *ClientId);
+			return false;
+		}
+
+		FName Family;
+		UClass* ResolvedClass = nullptr;
+		FCortexGraphNodeContract::ResolveFamily(NodeClassName, Family, ResolvedClass);
+		FString ExpectedClass = ResolvedClass ? ResolvedClass->GetPathName() : FString();
+		if (!bInjectedClass && ShouldInjectReadbackFault(TEXT("readback_class")))
+		{
+			bInjectedClass = true;
+			ExpectedClass += TEXT("#injected");
+		}
+		const FString ActualClass = Live->GetClass()->GetPathName();
+		if (ExpectedClass != ActualClass)
+		{
+			OutFailure = FString::Printf(TEXT("planned node '%s' canonical class mismatch: expected '%s', found '%s'"),
+				*ClientId, *ExpectedClass, *ActualClass);
+			return false;
+		}
+
+		FString ExpectedSymbol;
+		FString ActualSymbol;
+		FString SymbolFailure;
+		if (!CompareNodeSymbol(Blueprint, NodeJson, Live, Family, ExpectedSymbol, ActualSymbol, SymbolFailure))
+		{
+			OutFailure = SymbolFailure;
+			return false;
+		}
+		if (!bInjectedSymbol && ShouldInjectReadbackFault(TEXT("readback_symbol")))
+		{
+			bInjectedSymbol = true;
+			ExpectedSymbol += TEXT("#injected");
+		}
+		if (ExpectedSymbol != ActualSymbol)
+		{
+			OutFailure = FString::Printf(TEXT("planned node '%s' symbol mismatch: expected '%s', found '%s'"),
+				*ClientId, *ExpectedSymbol, *ActualSymbol);
+			return false;
+		}
+
+		if (!ComparePlannedDefaults(Blueprint, NodeJson, Live, bInjectedDefault, OutFailure)) return false;
+	}
+
+	if (!ComparePlannedPinUpdates(Blueprint, Prepared, Journal, bInjectedDefault, OutFailure)) return false;
+	if (!CompareEntrySymbol(Blueprint, Prepared, Journal, bCompiled, OutFailure)) return false;
+	if (!ComparePlannedEdges(Blueprint, Prepared, Journal, bInjectedEdge, OutFailure)) return false;
+	return true;
+}
+
+bool HandleApplyFailure(
+	UBlueprint* Blueprint,
+	const FCortexGraphPreparedPatch& Prepared,
+	FGraphPatchJournal& Journal,
+	FCortexGraphPatchOutcome* OutOutcome,
+	FCortexCommandResult& OutError,
+	const FString& Message,
+	const FString& ErrorCode,
+	bool bApplyPhaseFailure)
+{
+	if (Journal.Transaction)
+	{
+		Journal.Transaction->Cancel();
+	}
+	const bool bContentRestored = RestoreJournal(Blueprint, Journal);
+	Blueprint->GetOutermost()->SetDirtyFlag(Journal.bPackageWasDirty);
+
+	bool bRecoveryCompileSucceeded = true;
+	if (bContentRestored && Journal.bCompileAttempted)
+	{
+		TArray<FString> RecoveryDiagnostics;
+		bRecoveryCompileSucceeded =
+			CompileTargetBlueprint(Blueprint, TEXT("recovery_compile"), RecoveryDiagnostics);
+		if (OutOutcome)
+		{
+			OutOutcome->RecoveryCompileCount += 1;
+			OutOutcome->Diagnostics.Append(RecoveryDiagnostics);
+		}
+	}
+
+	const bool bInjectedFailure = ShouldInjectApplyFault(TEXT("verification_failure"));
+	const bool bAuthoringRestored = bContentRestored && RestoredAuthoringMatches(Blueprint, Prepared.FingerprintBefore);
+	bool bGeneratedRestored = true;
+	if (Journal.bCompileAttempted)
+	{
+		bGeneratedRestored = bRecoveryCompileSucceeded
+			&& FCortexGraphPatchState::ComputeGeneratedStateDigest(Blueprint) == Journal.GeneratedStateBefore;
+	}
+	const bool bVerified = (bInjectedFailure == false) && bAuthoringRestored && bGeneratedRestored;
+
+	if (!bVerified)
+	{
+		FCortexAssetMutationGuard::Block(Blueprint, TEXT("Graph patch rollback verification failed"));
+		if (OutOutcome)
+		{
+			if (bApplyPhaseFailure) OutOutcome->ApplyStatus = TEXT("failed");
+			OutOutcome->RollbackStatus = TEXT("unverified");
+			OutOutcome->bBlocked = true;
+			if (!bContentRestored)
+			{
+				OutOutcome->Diagnostics.Add(TEXT("rollback: a recorded change could not be reversed"));
+			}
+			if (!bAuthoringRestored)
+			{
+				OutOutcome->Diagnostics.Add(TEXT("rollback: authoring fingerprint was not restored"));
+			}
+			if (!bGeneratedRestored)
+			{
+				OutOutcome->Diagnostics.Add(TEXT("rollback: generated state was not restored"));
+			}
+			if (bInjectedFailure)
+			{
+				OutOutcome->Diagnostics.Add(TEXT("rollback: recovery verification failed by test injection"));
+			}
+		}
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("Graph patch recovery verification failed; asset is blocked from mutation"));
+		return false;
+	}
+
+	if (Journal.StatusBefore != BS_Unknown)
+	{
+		Blueprint->Status = Journal.StatusBefore;
+	}
+	if (OutOutcome)
+	{
+		if (bApplyPhaseFailure) OutOutcome->ApplyStatus = TEXT("failed");
+		OutOutcome->RollbackStatus = TEXT("restored");
+	}
+	OutError = FCortexCommandRouter::Error(ErrorCode, Message);
+	return false;
+}
+
+bool ApplyPrepared(
+	UBlueprint* Blueprint,
+	const FCortexGraphPreparedPatch& Prepared,
+	FGraphPatchJournal& Journal,
+	FCortexGraphPatchOutcome* OutOutcome,
 	FCortexCommandResult& OutError)
 {
 	OutError = FCortexCommandResult();
@@ -1232,8 +2237,17 @@ bool FCortexGraphPatchOps::Apply(
 		return false;
 	}
 
-	const bool bPackageWasDirty = Blueprint->GetOutermost()->IsDirty();
-	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Apply Graph Patch")));
+	Journal.bPackageWasDirty = Blueprint->GetOutermost()->IsDirty();
+	Journal.StatusBefore = Blueprint->Status;
+	Journal.GeneratedStateBefore = FCortexGraphPatchState::ComputeGeneratedStateDigest(Blueprint);
+	Journal.Transaction = MakeUnique<FScopedTransaction>(FText::FromString(TEXT("Cortex: Apply Graph Patch")));
+
+	auto Fail = [&](const FString& Message) -> bool
+	{
+		return HandleApplyFailure(Blueprint, Prepared, Journal, OutOutcome, OutError, Message,
+			CortexErrorCodes::InvalidOperation, true);
+	};
+
 	const TSharedPtr<FJsonObject>* TargetPtr = nullptr;
 	if (!Prepared.NormalizedRequest->TryGetObjectField(TEXT("target"), TargetPtr) || !TargetPtr || !TargetPtr->IsValid())
 	{
@@ -1256,6 +2270,8 @@ bool FCortexGraphPatchOps::Apply(
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Prepared graph target has an invalid graph reference"));
 			return false;
 		}
+		Journal.Locators.GraphGuid = GraphGuid;
+		Journal.Locators.SubgraphPath = SubgraphPath;
 		if (!ResolveGraphByGuid(Blueprint, GraphGuid, SubgraphPath, Graph, OutError))
 		{
 			return false;
@@ -1278,121 +2294,34 @@ bool FCortexGraphPatchOps::Apply(
 		}
 		ImplementationEntry = Ensured.EntryNode;
 		Graph = Ensured.Graph;
+		Journal.Locators.GraphGuid = Graph->GraphGuid;
+		Journal.Locators.SubgraphPath.Reset();
+		for (UEdGraphNode* CreatedNode : ImplementationState.AddedNodes)
+		{
+			if (CreatedNode && CreatedNode->NodeGuid.IsValid())
+			{
+				Journal.AddedNodeGuids.Add(CreatedNode->NodeGuid);
+			}
+		}
+		for (UEdGraph* CreatedGraph : ImplementationState.AddedGraphs)
+		{
+			if (CreatedGraph)
+			{
+				Journal.AddedGraphs.Add(CreatedGraph);
+			}
+		}
+		if (ImplementationEntry && ImplementationEntry->NodeGuid.IsValid())
+		{
+			Journal.Locators.EntryNodeGuid = ImplementationEntry->NodeGuid;
+			Journal.Locators.bHasEntryNode = true;
+		}
 	}
 
-
-	TArray<UEdGraphNode*> AddedNodes;
-	AddedNodes.Append(ImplementationState.AddedNodes);
-	struct FDefaultUndo
-	{
-		FGuid GraphGuid;
-		FGuid NodeGuid;
-		FName PinName;
-		TSharedPtr<FJsonObject> PriorLiteral;
-	};
-	TArray<FDefaultUndo> Defaults;
-	TArray<TPair<UEdGraphPin*, UEdGraphPin*>> AddedLinks;
-	auto Rollback = [&]()
-	{
-		for (int32 Index = AddedLinks.Num() - 1; Index >= 0; --Index)
-		{
-			if (AddedLinks[Index].Key && AddedLinks[Index].Value)
-			{
-				AddedLinks[Index].Key->BreakLinkTo(AddedLinks[Index].Value);
-			}
-		}
-		for (int32 Index = Defaults.Num() - 1; Index >= 0; --Index)
-		{
-			UEdGraph* CurrentGraph = nullptr;
-			TArray<UEdGraph*> CurrentGraphs;
-			Blueprint->GetAllGraphs(CurrentGraphs);
-			for (UEdGraph* Candidate : CurrentGraphs)
-			{
-				if (Candidate && Candidate->GraphGuid == Defaults[Index].GraphGuid)
-				{
-					CurrentGraph = Candidate;
-					break;
-				}
-			}
-			UEdGraphNode* CurrentNode = nullptr;
-			if (CurrentGraph)
-			{
-				for (UEdGraphNode* Candidate : CurrentGraph->Nodes)
-				{
-					if (Candidate && Candidate->NodeGuid == Defaults[Index].NodeGuid)
-					{
-						CurrentNode = Candidate;
-						break;
-					}
-				}
-			}
-			UEdGraphPin* CurrentPin = CurrentNode ? CurrentNode->FindPin(Defaults[Index].PinName) : nullptr;
-			FCortexCommandResult RestoreError;
-			if (!CurrentPin || !Defaults[Index].PriorLiteral.IsValid()
-				|| !FCortexGraphPinDefaults::ApplyDefault(CurrentPin, Defaults[Index].PriorLiteral, RestoreError))
-			{
-				return;
-			}
-		}
-		for (int32 Index = AddedNodes.Num() - 1; Index >= 0; --Index)
-		{
-			if (!AddedNodes[Index]) continue;
-			const FGuid AddedNodeGuid = AddedNodes[Index]->NodeGuid;
-			TArray<UEdGraph*> CurrentGraphs;
-			Blueprint->GetAllGraphs(CurrentGraphs);
-			for (UEdGraph* CurrentGraph : CurrentGraphs)
-			{
-				if (!CurrentGraph) continue;
-				for (UEdGraphNode* CurrentNode : CurrentGraph->Nodes)
-				{
-					if (CurrentNode && CurrentNode->NodeGuid == AddedNodeGuid)
-					{
-						CurrentNode->DestroyNode();
-						break;
-					}
-				}
-			}
-		}
-		for (int32 Index = ImplementationState.AddedGraphs.Num() - 1; Index >= 0; --Index)
-		{
-			if (ImplementationState.AddedGraphs[Index])
-			{
-				FBlueprintEditorUtils::RemoveGraph(Blueprint, ImplementationState.AddedGraphs[Index]);
-			}
-		}
-	};
-	auto Fail = [&](const FString& Message)
-	{
-		Transaction.Cancel();
-		Rollback();
-		Blueprint->GetOutermost()->SetDirtyFlag(bPackageWasDirty);
-		if (ShouldInjectApplyFault(TEXT("verification_failure")))
-		{
-			FCortexAssetMutationGuard::Block(Blueprint, TEXT("Test-forced recovery verification failure"));
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				TEXT("Graph patch recovery verification failed; asset is blocked from mutation"));
-			return false;
-		}
-		const TSharedPtr<FJsonObject> Restored = FCortexGraphPatchState::ComputeFingerprint(Blueprint);
-		const bool bRestored = Restored.IsValid() && Prepared.FingerprintBefore.IsValid()
-			&& Restored->GetStringField(TEXT("graph_authoring_hash"))
-				== Prepared.FingerprintBefore->GetStringField(TEXT("graph_authoring_hash"));
-		if (!bRestored)
-		{
-			FCortexAssetMutationGuard::Block(Blueprint, TEXT("Graph patch rollback verification failed"));
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				TEXT("Graph patch recovery verification failed; asset is blocked from mutation"));
-			return false;
-		}
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, Message);
-		return false;
-	};
-	if (ImplementationState.AddedGraphs.Num() > 0 && ShouldInjectApplyFault(TEXT("implementation_graph")))
+	if (Journal.AddedGraphs.Num() > 0 && ShouldInjectApplyFault(TEXT("implementation_graph")))
 	{
 		return Fail(TEXT("Test fault injected after implementation graph creation"));
 	}
 
-	Graph->Modify();
 	TMap<FString, UEdGraphNode*> NodesById;
 	for (UEdGraphNode* Existing : Graph->Nodes)
 	{
@@ -1400,6 +2329,9 @@ bool FCortexGraphPatchOps::Apply(
 	}
 	const TArray<TSharedPtr<FJsonValue>>& Nodes = Prepared.NormalizedRequest->GetArrayField(TEXT("nodes"));
 	if (ImplementationEntry) NodesById.Add(TEXT("entry"), ImplementationEntry);
+
+	Graph->Modify();
+	int32 CreatedByPatchNodes = 0;
 	for (const TSharedPtr<FJsonValue>& Value : Nodes)
 	{
 		const TSharedPtr<FJsonObject> NodeJson = Value->AsObject();
@@ -1426,7 +2358,7 @@ bool FCortexGraphPatchOps::Apply(
 			Node->AllocateDefaultPins();
 		}
 		Graph->AddNode(Node, true, false);
-		AddedNodes.Add(Node);
+		Journal.AddedNodeGuids.Add(Node->NodeGuid);
 		if (UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node))
 		{
 			CompositeNode->PostPlacedNewNode();
@@ -1445,12 +2377,14 @@ bool FCortexGraphPatchOps::Apply(
 				return Fail(TEXT("Test fault injected after layout mutation"));
 			}
 		}
-		if (AddedNodes.Num() == 2
+		++CreatedByPatchNodes;
+		if (CreatedByPatchNodes == 2
 			&& (ShouldInjectApplyFault(TEXT("second_node")) || ShouldInjectApplyFault(TEXT("verification_failure"))))
 		{
 			return Fail(TEXT("Test fault injected after second node"));
 		}
 		NodesById.Add(ClientId, Node);
+		Journal.Locators.NodeGuidByClientId.Add(ClientId, Node->NodeGuid);
 		const TSharedPtr<FJsonObject>* DefaultsPtr = nullptr;
 		if (NodeJson->TryGetObjectField(TEXT("defaults"), DefaultsPtr) && DefaultsPtr && DefaultsPtr->IsValid())
 		{
@@ -1459,13 +2393,9 @@ bool FCortexGraphPatchOps::Apply(
 				UEdGraphPin* Pin = Node->FindPin(FName(*Pair.Key));
 				const TSharedPtr<FJsonObject> Literal = Pair.Value->AsObject();
 				if (!Pin || !Literal.IsValid()) return Fail(TEXT("Prepared node default no longer resolves"));
-				TSharedPtr<FJsonObject> PriorLiteral;
 				FCortexCommandResult DefaultError;
-				if (!FCortexGraphPinDefaults::ReadDefault(Pin, PriorLiteral, DefaultError))
-				{
-					return Fail(DefaultError.ErrorMessage);
-				}
-				Defaults.Add({ Graph->GraphGuid, Node->NodeGuid, Pin->PinName, PriorLiteral });
+				JournalNodeState(Node, Journal);
+				JournalPinDefault(Pin, Journal);
 				if (!FCortexGraphPinDefaults::ApplyDefault(Pin, Literal, DefaultError)) return Fail(DefaultError.ErrorMessage);
 				if (ShouldInjectApplyFault(TEXT("first_default")))
 				{
@@ -1474,6 +2404,7 @@ bool FCortexGraphPatchOps::Apply(
 			}
 		}
 	}
+
 	const TArray<TSharedPtr<FJsonValue>>& PinUpdates = Prepared.NormalizedRequest->GetArrayField(TEXT("pin_updates"));
 	for (const TSharedPtr<FJsonValue>& Value : PinUpdates)
 	{
@@ -1494,15 +2425,12 @@ bool FCortexGraphPatchOps::Apply(
 		{
 			return Fail(TEXT("Prepared pin update no longer resolves"));
 		}
-		TSharedPtr<FJsonObject> PriorLiteral;
 		FCortexCommandResult DefaultError;
-		if (!FCortexGraphPinDefaults::ReadDefault(Pin, PriorLiteral, DefaultError))
-		{
-			return Fail(DefaultError.ErrorMessage);
-		}
-		Defaults.Add({ Graph->GraphGuid, Node->NodeGuid, Pin->PinName, PriorLiteral });
+		JournalNodeState(Node, Journal);
+		JournalPinDefault(Pin, Journal);
 		if (!FCortexGraphPinDefaults::ApplyDefault(Pin, *LiteralPtr, DefaultError)) return Fail(DefaultError.ErrorMessage);
 	}
+
 	const TArray<TSharedPtr<FJsonValue>>& Connections = Prepared.NormalizedRequest->GetArrayField(TEXT("connections"));
 	for (const TSharedPtr<FJsonValue>& Value : Connections)
 	{
@@ -1513,8 +2441,12 @@ bool FCortexGraphPatchOps::Apply(
 		{
 			return Fail(TEXT("Prepared connection is invalid"));
 		}
-		FString FromId, FromPinName, ToId, ToPinName;
-		bool bFromEntry = false, bToEntry = false;
+		FString FromId;
+		FString FromPinName;
+		FString ToId;
+		FString ToPinName;
+		bool bFromEntry = false;
+		bool bToEntry = false;
 		FCortexCommandResult EndpointError;
 		if (!ParseEndpoint(*FromPtr, FromId, FromPinName, bFromEntry, EndpointError, TEXT("connection.from"))
 			|| !ParseEndpoint(*ToPtr, ToId, ToPinName, bToEntry, EndpointError, TEXT("connection.to")))
@@ -1526,18 +2458,143 @@ bool FCortexGraphPatchOps::Apply(
 		UEdGraphPin* SourcePin = SourceNode ? SourceNode->FindPin(FName(*FromPinName)) : nullptr;
 		UEdGraphPin* TargetPin = TargetNode ? TargetNode->FindPin(FName(*ToPinName)) : nullptr;
 		if (!SourcePin || !TargetPin) return Fail(TEXT("Prepared connection endpoint no longer resolves"));
+		// Capture touched node state before connecting: the engine derives a disabled event's
+		// display state from its links and clears it as soon as the first link exists.
+		JournalNodeState(SourceNode, Journal);
+		JournalNodeState(TargetNode, Journal);
 		const UEdGraphSchema* Schema = Graph->GetSchema();
 		if (!Schema || Schema->CanCreateConnection(SourcePin, TargetPin).Response != CONNECT_RESPONSE_MAKE
 			|| !Schema->TryCreateConnection(SourcePin, TargetPin))
 		{
 			return Fail(TEXT("Prepared connection is no longer directly safe"));
 		}
-		AddedLinks.Add({ SourcePin, TargetPin });
+		Journal.Links.Add({ SourceNode->NodeGuid, SourcePin->PinName, TargetNode->NodeGuid, TargetPin->PinName });
 		if (ShouldInjectApplyFault(TEXT("first_link")))
 		{
 			return Fail(TEXT("Test fault injected after first link"));
 		}
 	}
+	return true;
+}
+}
+
+bool FCortexGraphPatchOps::ValidateEligibility(UBlueprint* Blueprint, FCortexCommandResult& OutError)
+{
+	OutError = FCortexCommandResult();
+	if (!Blueprint)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, TEXT("Blueprint is null"));
+		return false;
+	}
+	if (Blueprint->ParentClass == nullptr || Blueprint->GeneratedClass == nullptr || Blueprint->Status == BS_BeingCreated)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("Blueprint class context is unready: missing ParentClass or GeneratedClass"));
+		return false;
+	}
+	if (Blueprint->Status == BS_Error)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("Blueprint has pre-existing compiler errors; fix the asset before applying a typed patch"));
+		return false;
+	}
+	if (GEditor && (GEditor->PlayWorld != nullptr || GEditor->IsPlaySessionInProgress()))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("Typed graph patches cannot be applied while a play or simulate session is active"));
+		return false;
+	}
+	return true;
+}
+
+bool FCortexGraphPatchOps::Apply(
+	UBlueprint* Blueprint,
+	const FCortexGraphPreparedPatch& Prepared,
+	FCortexCommandResult& OutError)
+{
+	FGraphPatchJournal Journal;
+	return ApplyPrepared(Blueprint, Prepared, Journal, nullptr, OutError);
+}
+
+bool FCortexGraphPatchOps::Execute(
+	UBlueprint* Blueprint,
+	const TSharedPtr<FJsonObject>& Params,
+	FCortexGraphPatchOutcome& OutOutcome,
+	FCortexCommandResult& OutError)
+{
+	OutOutcome = FCortexGraphPatchOutcome();
+	OutError = FCortexCommandResult();
+	if (!ValidateEligibility(Blueprint, OutError)) return false;
+
+	FCortexGraphPreparedPatch Prepared;
+	if (!Preflight(Blueprint, Params, Prepared, OutError))
+	{
+		// Validation errors never mutate, never compile and never save.
+		return false;
+	}
+	OutOutcome.PatchId = Prepared.PatchId;
+	OutOutcome.bChanged = Prepared.bChanged;
+	if (Prepared.bDryRun)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("Execute requires an apply request (dry_run=false)"));
+		return false;
+	}
+	if (Prepared.bSave)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::UnsupportedOperation,
+			TEXT("save=true is not implemented by this coordinator; persistence is a separate verified step"));
+		return false;
+	}
+	FString BlockReason;
+	if (FCortexAssetMutationGuard::IsBlocked(Blueprint, BlockReason))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
+		return false;
+	}
+
+	if (!Prepared.bChanged)
+	{
+		// An idempotent no-op never mutates, never opens a transaction and never compiles.
+		OutOutcome.ApplyStatus = TEXT("unchanged");
+		return true;
+	}
+
+	FGraphPatchJournal Journal;
+	if (!ApplyPrepared(Blueprint, Prepared, Journal, &OutOutcome, OutError))
+	{
+		return false;
+	}
+	OutOutcome.ApplyStatus = TEXT("applied");
+	OutOutcome.Locators = Journal.Locators;
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	if (Prepared.bCompile)
+	{
+		Journal.bCompileAttempted = true;
+		OutOutcome.TargetCompileCount = 1;
+		TArray<FString> Diagnostics;
+		const bool bCompiled = CompileTargetBlueprint(Blueprint, TEXT("target_compile"), Diagnostics);
+		OutOutcome.Diagnostics.Append(Diagnostics);
+		if (!bCompiled)
+		{
+			OutOutcome.CompileStatus = TEXT("failed");
+			return HandleApplyFailure(Blueprint, Prepared, Journal, &OutOutcome, OutError,
+				FString::Printf(TEXT("Graph patch compilation failed: %s"), *FString::Join(Diagnostics, TEXT("; "))),
+				CortexErrorCodes::CompileFailed, false);
+		}
+		OutOutcome.CompileStatus = TEXT("compiled");
+	}
+
+	FString ReadbackFailure;
+	if (!VerifyAppliedState(Blueprint, Prepared, Journal, OutOutcome.CompileStatus == TEXT("compiled"), ReadbackFailure))
+	{
+		OutOutcome.ReadbackStatus = TEXT("mismatched");
+		return HandleApplyFailure(Blueprint, Prepared, Journal, &OutOutcome, OutError, ReadbackFailure,
+			CortexErrorCodes::VerificationFailed, false);
+	}
+	OutOutcome.ReadbackStatus = TEXT("matched");
 	return true;
 }
 
@@ -1551,5 +2608,20 @@ void FCortexGraphPatchOps::SetApplyFaultPointForTesting(const FName Point)
 void FCortexGraphPatchOps::ClearApplyFaultPointForTesting()
 {
 	ApplyFaultPointForTesting = NAME_None;
+}
+
+void FCortexGraphPatchOps::SetReadbackFaultForTesting(const FName Field)
+{
+	ReadbackFaultForTesting = Field;
+}
+
+void FCortexGraphPatchOps::SetOperationObserverForTesting(TFunction<void(FName, UBlueprint*)> Observer)
+{
+	OperationObserverForTesting = MoveTemp(Observer);
+}
+
+void FCortexGraphPatchOps::ClearOperationObserverForTesting()
+{
+	OperationObserverForTesting = nullptr;
 }
 #endif

@@ -4,6 +4,7 @@
 #include "K2Node_GenericCreateObject.h"
 #include "K2Node_DynamicCast.h"
 #include "K2Node_CallFunction.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
