@@ -3,6 +3,7 @@
 #include "CortexAssetFingerprint.h"
 #include "CortexBatchMutation.h"
 #include "CortexCommandRouter.h"
+#include "CortexAssetMutationGuard.h"
 #include "CortexLogCapture.h"
 #include "Editor.h"
 #include "FileHelpers.h"
@@ -399,6 +400,14 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 			continue;
 		}
 
+		FString BlockReason;
+		if (!bDryRun && Asset && FCortexAssetMutationGuard::IsBlocked(Asset, BlockReason))
+		{
+			Entry->SetStringField(TEXT("error"), CortexErrorCodes::InvalidOperation);
+			Entry->SetStringField(TEXT("message"), FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
 		const bool bWasDirty = Package->IsDirty();
 		Entry->SetBoolField(TEXT("was_dirty"), bWasDirty);
 
