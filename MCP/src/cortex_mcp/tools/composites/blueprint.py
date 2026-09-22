@@ -109,11 +109,12 @@ def _safe_update(
         return _local_error(
             "INVALID_PATCH", "Missing required field: asset_path (required in update mode)",
         )
-    patch_asset_path = patch.get("asset_path")
-    if patch_asset_path is not None and patch_asset_path != asset_path:
+    # The facade owns the envelope asset: any asset_path key inside the patch (including an
+    # explicit null) is duplicate ownership, so it is refused before forwarding.
+    if "asset_path" in patch and patch["asset_path"] != asset_path:
         return _local_error(
             "INVALID_PATCH",
-            f"patch.asset_path '{patch_asset_path}' conflicts with the envelope asset_path "
+            f"patch.asset_path '{patch['asset_path']}' conflicts with the envelope asset_path "
             f"'{asset_path}': the facade owns the envelope asset, so omit patch.asset_path or "
             "pass the same asset",
         )

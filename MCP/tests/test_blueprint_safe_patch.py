@@ -218,6 +218,20 @@ def test_update_conflicting_patch_asset_path_is_rejected_before_forwarding():
     connection.send_command.assert_not_called()
 
 
+def test_update_null_patch_asset_path_is_rejected_before_forwarding():
+    """A present null asset_path key is duplicate envelope ownership, not an omission."""
+    mcp, tool, connection = _register(MagicMock())
+    payload = _payload(tool(
+        mode="update",
+        asset_path=ASSET,
+        patch={"asset_path": None, "patch_id": PATCH_ID},
+    ))
+    assert payload["success"] is False
+    assert payload["_error"] == "INVALID_PATCH"
+    assert "asset_path" in payload["_message"]
+    connection.send_command.assert_not_called()
+
+
 def test_update_matching_patch_asset_path_forwards_one_envelope():
     mcp, tool, connection = _register(MagicMock())
     connection.send_command.return_value = {"success": True, "data": _native_data()}

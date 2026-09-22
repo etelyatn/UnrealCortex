@@ -5,6 +5,7 @@
 #include "Operations/CortexGraphTraceOps.h"
 #include "Operations/CortexGraphAuthoringContext.h"
 #include "Operations/CortexGraphPatchOps.h"
+#include "Operations/CortexGraphPatchState.h"
 #include "CortexAssetMutationGuard.h"
 #include "Engine/Blueprint.h"
 
@@ -70,23 +71,24 @@ TSharedPtr<FJsonObject> MakeLocatorsJson(
 }
 
 /**
- * The compact patch result: identities, phase statuses, counts, fingerprints, dirty state and the
- * bounded diagnostics. It deliberately carries no full graph data (that stays a separate bounded
- * read) so no response-size guard can turn a real mutation into an ambiguous failure.
+ * The phase part of the compact patch result: identity, phase statuses, counts, fingerprints, dirty
+ * state and the bounded diagnostics. It deliberately carries no full graph data (that stays a
+ * separate bounded read) so no response-size guard can turn a real mutation into an ambiguous
+ * failure. A patch id the request never named, and live state the handler could not read, are
+ * omitted instead of fabricated.
  */
-TSharedPtr<FJsonObject> MakePatchResultJson(
+TSharedPtr<FJsonObject> MakePatchPhaseJson(
 	const FString& PatchId,
 	const bool bChanged,
 	const bool bDryRun,
 	const FCortexGraphPatchOutcome& Outcome,
-	const TMap<FString, FGuid>& NodeGuidByClientId,
-	const FGuid& GraphGuid,
-	const FString& SubgraphPath,
-	const FGuid& EntryNodeGuid,
-	const bool bHasEntryNode)
+	const bool bIncludeLiveState)
 {
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-	Data->SetStringField(TEXT("patch_id"), CanonicalGuidString(PatchId));
+	if (!PatchId.IsEmpty())
+	{
+		Data->SetStringField(TEXT("patch_id"), CanonicalGuidString(PatchId));
+	}
 	Data->SetBoolField(TEXT("changed"), bChanged);
 	Data->SetBoolField(TEXT("dry_run"), bDryRun);
 	Data->SetStringField(TEXT("apply_status"), Outcome.ApplyStatus);
@@ -99,16 +101,19 @@ TSharedPtr<FJsonObject> MakePatchResultJson(
 	Data->SetNumberField(TEXT("recovery_compile_count"), Outcome.RecoveryCompileCount);
 	Data->SetBoolField(TEXT("saved"), Outcome.bSaved);
 	Data->SetBoolField(TEXT("blocked"), Outcome.bBlocked);
-	if (Outcome.FingerprintBefore.IsValid())
+	if (bIncludeLiveState)
 	{
-		Data->SetObjectField(TEXT("fingerprint_before"), Outcome.FingerprintBefore);
+		if (Outcome.FingerprintBefore.IsValid())
+		{
+			Data->SetObjectField(TEXT("fingerprint_before"), Outcome.FingerprintBefore);
+		}
+		if (Outcome.FingerprintAfter.IsValid())
+		{
+			Data->SetObjectField(TEXT("fingerprint_after"), Outcome.FingerprintAfter);
+		}
+		Data->SetBoolField(TEXT("dirty_before"), Outcome.bDirtyBefore);
+		Data->SetBoolField(TEXT("dirty_after"), Outcome.bDirtyAfter);
 	}
-	if (Outcome.FingerprintAfter.IsValid())
-	{
-		Data->SetObjectField(TEXT("fingerprint_after"), Outcome.FingerprintAfter);
-	}
-	Data->SetBoolField(TEXT("dirty_before"), Outcome.bDirtyBefore);
-	Data->SetBoolField(TEXT("dirty_after"), Outcome.bDirtyAfter);
 
 	TArray<TSharedPtr<FJsonValue>> Reused;
 	for (const FString& ClientId : Outcome.ReusedClientIds)
@@ -123,10 +128,91 @@ TSharedPtr<FJsonObject> MakePatchResultJson(
 		Diagnostics.Add(MakeShared<FJsonValueString>(Diagnostic));
 	}
 	Data->SetArrayField(TEXT("diagnostics"), Diagnostics);
+	return Data;
+}
 
+/** The complete compact patch result: the phases plus every identity the patch planned or reused. */
+TSharedPtr<FJsonObject> MakePatchResultJson(
+	const FString& PatchId,
+	const bool bChanged,
+	const bool bDryRun,
+	const FCortexGraphPatchOutcome& Outcome,
+	const TMap<FString, FGuid>& NodeGuidByClientId,
+	const FGuid& GraphGuid,
+	const FString& SubgraphPath,
+	const FGuid& EntryNodeGuid,
+	const bool bHasEntryNode)
+{
+	TSharedPtr<FJsonObject> Data = MakePatchPhaseJson(PatchId, bChanged, bDryRun, Outcome, true);
 	Data->SetObjectField(TEXT("node_mappings"), MakeNodeMappingJson(NodeGuidByClientId));
 	Data->SetObjectField(TEXT("locators"), MakeLocatorsJson(GraphGuid, SubgraphPath, EntryNodeGuid, bHasEntryNode));
 	return Data;
+}
+
+/** The patch id a request names, or empty when the field is absent or is not a GUID. */
+FString RequestedPatchId(const TSharedPtr<FJsonObject>& Params)
+{
+	FString Raw;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("patch_id"), Raw))
+	{
+		return FString();
+	}
+	FGuid Parsed;
+	return FGuid::Parse(Raw, Parsed) ? Parsed.ToString() : FString();
+}
+
+/** The requested dry_run flag, defaulting to the contract's preview default. */
+bool RequestedDryRun(const TSharedPtr<FJsonObject>& Params)
+{
+	bool bDryRun = true;
+	if (Params.IsValid())
+	{
+		Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
+	}
+	return bDryRun;
+}
+
+/** Diagnostics of one refusal: the structured error the caller must act on, under the shared bound. */
+TArray<FString> MakeRefusalDiagnostics(const FCortexCommandResult& Error)
+{
+	TArray<FString> Diagnostics;
+	Diagnostics.Add(Error.ErrorMessage.IsEmpty()
+		? Error.ErrorCode
+		: FString::Printf(TEXT("%s: %s"), *Error.ErrorCode, *Error.ErrorMessage));
+	FCortexGraphPatchOps::TrimDiagnostics(Diagnostics);
+	return Diagnostics;
+}
+
+/**
+ * A refusal that happened while the asset was loaded but before any patch work: the requested
+ * identity, change-free phase statuses and the live before/after state. Nothing was planned, so no
+ * client-id mapping and no locator is published.
+ */
+TSharedPtr<FJsonObject> MakeLoadedRefusalJson(
+	UBlueprint* Blueprint,
+	const TSharedPtr<FJsonObject>& Params,
+	const FCortexCommandResult& Error)
+{
+	FCortexGraphPatchOutcome Outcome;
+	Outcome.FingerprintBefore = FCortexGraphPatchState::ComputeFingerprint(Blueprint);
+	Outcome.FingerprintAfter = Outcome.FingerprintBefore;
+	Outcome.bDirtyBefore = Blueprint->GetOutermost()->IsDirty();
+	Outcome.bDirtyAfter = Outcome.bDirtyBefore;
+	Outcome.Diagnostics = MakeRefusalDiagnostics(Error);
+	return MakePatchPhaseJson(RequestedPatchId(Params), false, RequestedDryRun(Params), Outcome, true);
+}
+
+/**
+ * A refusal that happened before the asset was loaded: no fingerprint, dirty state, mapping or
+ * locator can be stated honestly, so only the requested identity, the statuses and the reason are.
+ */
+TSharedPtr<FJsonObject> MakeUnloadedRefusalJson(
+	const TSharedPtr<FJsonObject>& Params,
+	const FCortexCommandResult& Error)
+{
+	FCortexGraphPatchOutcome Outcome;
+	Outcome.Diagnostics = MakeRefusalDiagnostics(Error);
+	return MakePatchPhaseJson(RequestedPatchId(Params), false, RequestedDryRun(Params), Outcome, false);
 }
 
 /**
@@ -139,7 +225,10 @@ FCortexCommandResult HandleApplyPatch(const TSharedPtr<FJsonObject>& Params)
 	FString AssetPath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
+		FCortexCommandResult MissingAssetPath =
+			FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
+		MissingAssetPath.ErrorDetails = MakeUnloadedRefusalJson(Params, MissingAssetPath);
+		return MissingAssetPath;
 	}
 
 	// Entry-point selection only. The envelope validator re-reads the flag and owns its exact
@@ -151,6 +240,7 @@ FCortexCommandResult HandleApplyPatch(const TSharedPtr<FJsonObject>& Params)
 	UBlueprint* Blueprint = FCortexGraphNodeOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
 	{
+		LoadError.ErrorDetails = MakeUnloadedRefusalJson(Params, LoadError);
 		return LoadError;
 	}
 
@@ -160,6 +250,9 @@ FCortexCommandResult HandleApplyPatch(const TSharedPtr<FJsonObject>& Params)
 		FCortexCommandResult PreviewError;
 		if (!FCortexGraphPatchOps::Preflight(Blueprint, Params, Prepared, PreviewError))
 		{
+			// The asset is loaded and the read is non-mutating, so a refused preview still reports
+			// the requested identity, the change-free statuses and the live before/after state.
+			PreviewError.ErrorDetails = MakeLoadedRefusalJson(Blueprint, Params, PreviewError);
 			return PreviewError;
 		}
 		// A preview is an outcome whose phases never ran: patch identity, planned identities and
@@ -187,9 +280,17 @@ FCortexCommandResult HandleApplyPatch(const TSharedPtr<FJsonObject>& Params)
 	if (!FCortexGraphPatchOps::Execute(Blueprint, Params, Outcome, Error))
 	{
 		// A failed apply still reports the compact result, so a verified in-memory outcome that
-		// could not be persisted is never reported as an ambiguous failure.
+		// could not be persisted is never reported as an ambiguous failure. A refusal that happened
+		// before the coordinator learned the identity still reports the patch id the request named,
+		// never invents mappings for work that never ran, and always names the failure.
+		const FString FailurePatchId = Outcome.PatchId.IsEmpty() ? RequestedPatchId(Params) : Outcome.PatchId;
+		if (Outcome.Diagnostics.Num() == 0)
+		{
+			// No compiler or rollback diagnostics exist yet, so the refusal itself is the diagnostic.
+			Outcome.Diagnostics = MakeRefusalDiagnostics(Error);
+		}
 		Error.ErrorDetails = MakePatchResultJson(
-			Outcome.PatchId, Outcome.bChanged, false, Outcome, Outcome.Locators.NodeGuidByClientId,
+			FailurePatchId, Outcome.bChanged, false, Outcome, Outcome.Locators.NodeGuidByClientId,
 			Outcome.Locators.GraphGuid, Outcome.Locators.SubgraphPath, Outcome.Locators.EntryNodeGuid,
 			Outcome.Locators.bHasEntryNode);
 		return Error;
@@ -218,7 +319,13 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 		|| Command == TEXT("apply_patch"))
 	{
 		FCortexCommandResult GuardError;
-		if (RejectBlockedGraphMutation(Params, GuardError)) return GuardError;
+		if (RejectBlockedGraphMutation(Params, GuardError))
+		{
+			// A patch caller always gets the compact result. The guard runs before any load, so the
+			// refusal states no fingerprint, dirty state, mapping or locator: those are unknown.
+			if (Command == TEXT("apply_patch")) GuardError.ErrorDetails = MakeUnloadedRefusalJson(Params, GuardError);
+			return GuardError;
+		}
 	}
 
 	if (Command == TEXT("list_graphs"))

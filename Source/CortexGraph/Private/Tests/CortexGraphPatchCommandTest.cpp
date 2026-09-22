@@ -210,7 +210,10 @@ static void AddNode(
 	Params->SetStringField(TEXT("function_name"), TEXT("KismetSystemLibrary.PrintString"));
 	Node->SetObjectField(TEXT("params"), Params);
 	if (Defaults.IsValid()) Node->SetObjectField(TEXT("defaults"), Defaults);
-	TArray<TSharedPtr<FJsonValue>> Nodes = Request->GetArrayField(TEXT("nodes"));
+	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
+	TArray<TSharedPtr<FJsonValue>> Nodes = Request->TryGetArrayField(TEXT("nodes"), ExistingNodes) && ExistingNodes
+		? *ExistingNodes
+		: TArray<TSharedPtr<FJsonValue>>();
 	Nodes.Add(MakeShared<FJsonValueObject>(Node));
 	Request->SetArrayField(TEXT("nodes"), Nodes);
 }
@@ -275,6 +278,95 @@ static TSharedPtr<FJsonObject> Preview(FAutomationTestBase& Test, FCortexCommand
 	const FCortexCommandResult Result = Router.Execute(TEXT("graph.apply_patch"), Request);
 	Test.TestTrue(FString::Printf(TEXT("preview succeeds: %s"), *Result.ErrorMessage), Result.bSuccess);
 	return Result.bSuccess && Result.Data.IsValid() ? Result.Data : nullptr;
+}
+
+static FString FingerprintHash(const TSharedPtr<FJsonObject>& Fingerprint)
+{
+	FString Hash;
+	if (Fingerprint.IsValid()) Fingerprint->TryGetStringField(TEXT("graph_authoring_hash"), Hash);
+	return Hash;
+}
+
+/**
+ * A refusal that happens before any patch work still reports the compact result: the requested
+ * identity, change-free phase statuses and the bounded diagnostics. Everything the handler cannot
+ * honestly know yet is absent instead of fabricated.
+ */
+static void AssertCompactRefusal(
+	FAutomationTestBase& Test,
+	const FCortexCommandResult& Result,
+	const TCHAR* ExpectedPatchId,
+	const bool bExpectLiveState,
+	const bool bExpectEmptyPlanKeys)
+{
+	Test.TestFalse(TEXT("refusal stays a failure"), Result.bSuccess);
+	Test.TestTrue(TEXT("refusal carries the compact result"), Result.ErrorDetails.IsValid());
+	if (!Result.ErrorDetails.IsValid())
+	{
+		return;
+	}
+	const TSharedPtr<FJsonObject>& Details = Result.ErrorDetails;
+	Test.TestTrue(TEXT("refusal reports the requested patch id"),
+		Details->HasField(TEXT("patch_id"))
+			&& SameGuid(Details->GetStringField(TEXT("patch_id")), ExpectedPatchId));
+	Test.TestFalse(TEXT("refusal reports no change"), Details->GetBoolField(TEXT("changed")));
+	Test.TestEqual(TEXT("refusal reports no apply"), Details->GetStringField(TEXT("apply_status")), FString(TEXT("not_requested")));
+	Test.TestEqual(TEXT("refusal reports no compile"), Details->GetStringField(TEXT("compile_status")), FString(TEXT("not_requested")));
+	Test.TestEqual(TEXT("refusal reports no readback"), Details->GetStringField(TEXT("readback_status")), FString(TEXT("not_requested")));
+	Test.TestEqual(TEXT("refusal reports no rollback"), Details->GetStringField(TEXT("rollback_status")), FString(TEXT("not_requested")));
+	Test.TestEqual(TEXT("refusal reports no save"), Details->GetStringField(TEXT("save_status")), FString(TEXT("not_requested")));
+	Test.TestEqual(TEXT("refusal reports no post-save verification"),
+		Details->GetStringField(TEXT("post_save_status")), FString(TEXT("not_requested")));
+	Test.TestFalse(TEXT("refusal never claims a save"), Details->GetBoolField(TEXT("saved")));
+	Test.TestFalse(TEXT("refusal never claims a validation token"), Details->HasField(TEXT("validation_hash")));
+	Test.TestEqual(TEXT("refusal reports zero target compiles"), Details->GetNumberField(TEXT("target_compile_count")), 0.0);
+	Test.TestEqual(TEXT("refusal reports zero recovery compiles"), Details->GetNumberField(TEXT("recovery_compile_count")), 0.0);
+	Test.TestEqual(TEXT("refusal reports the reused client ids it reconciled by"),
+		Details->GetArrayField(TEXT("reused_client_ids")).Num(), 0);
+
+	const TArray<TSharedPtr<FJsonValue>>& Diagnostics = Details->GetArrayField(TEXT("diagnostics"));
+	Test.TestTrue(TEXT("refusal keeps the failure in its diagnostics"), Diagnostics.Num() > 0);
+	Test.TestTrue(TEXT("refusal diagnostics are bounded"),
+		Diagnostics.Num() <= 16);
+	if (Diagnostics.Num() > 0)
+	{
+		Test.TestTrue(TEXT("refusal diagnostics name the error code"),
+			Diagnostics[0]->AsString().Contains(Result.ErrorCode));
+	}
+
+	if (bExpectLiveState)
+	{
+		Test.TestTrue(TEXT("refusal reports the live before fingerprint"), Details->HasField(TEXT("fingerprint_before")));
+		Test.TestTrue(TEXT("refusal reports the live after fingerprint"), Details->HasField(TEXT("fingerprint_after")));
+		Test.TestTrue(TEXT("refusal reports the unchanged live fingerprint"),
+			FingerprintHash(Details->GetObjectField(TEXT("fingerprint_before"))).Len() > 0
+				&& FingerprintHash(Details->GetObjectField(TEXT("fingerprint_before")))
+					== FingerprintHash(Details->GetObjectField(TEXT("fingerprint_after"))));
+		Test.TestTrue(TEXT("refusal reports the live dirty state"),
+			Details->HasField(TEXT("dirty_before")) && Details->HasField(TEXT("dirty_after")));
+		Test.TestEqual(TEXT("refusal reports an unchanged dirty state"),
+			Details->GetBoolField(TEXT("dirty_before")), Details->GetBoolField(TEXT("dirty_after")));
+	}
+	else
+	{
+		Test.TestFalse(TEXT("a guard refusal claims no before fingerprint"), Details->HasField(TEXT("fingerprint_before")));
+		Test.TestFalse(TEXT("a guard refusal claims no after fingerprint"), Details->HasField(TEXT("fingerprint_after")));
+		Test.TestFalse(TEXT("a guard refusal claims no dirty state"),
+			Details->HasField(TEXT("dirty_before")) || Details->HasField(TEXT("dirty_after")));
+	}
+
+	if (bExpectEmptyPlanKeys)
+	{
+		Test.TestTrue(TEXT("an apply refusal reports an empty client-id mapping"),
+			Details->GetObjectField(TEXT("node_mappings"))->Values.Num() == 0);
+		Test.TestFalse(TEXT("an apply refusal reports no planned entry"),
+			Details->GetObjectField(TEXT("locators"))->GetBoolField(TEXT("has_entry_node")));
+	}
+	else
+	{
+		Test.TestFalse(TEXT("a plan-free refusal publishes no mappings"), Details->HasField(TEXT("node_mappings")));
+		Test.TestFalse(TEXT("a plan-free refusal publishes no locators"), Details->HasField(TEXT("locators")));
+	}
 }
 
 static TArray<FString> ParamNames(const FCortexCommandInfo& Info, const bool bRequired)
@@ -566,6 +658,7 @@ bool FCortexGraphPatchCommandRefusalTest::RunTest(const FString& Parameters)
 	const FCortexCommandResult UnknownResult = Router.Execute(TEXT("graph.apply_patch"), UnknownField);
 	TestFalse(TEXT("an unknown envelope field is refused"), UnknownResult.bSuccess);
 	TestEqual(TEXT("unknown field error code"), UnknownResult.ErrorCode, FString(CortexErrorCodes::InvalidField));
+	AssertCompactRefusal(*this, UnknownResult, TEXT("00000000-0000-0000-0000-0000000f0004"), true, false);
 
 	// (b) a flag that cannot be a boolean at all is refused. The engine's JSON DOM coerces
 	// strings and numbers into bools, so only arrays, objects and null are refused here; the MCP
@@ -584,6 +677,7 @@ bool FCortexGraphPatchCommandRefusalTest::RunTest(const FString& Parameters)
 	const FCortexCommandResult StaleResult = Router.Execute(TEXT("graph.apply_patch"), Stale);
 	TestFalse(TEXT("a stale fingerprint is refused"), StaleResult.bSuccess);
 	TestEqual(TEXT("stale fingerprint error code"), StaleResult.ErrorCode, FString(CortexErrorCodes::StalePrecondition));
+	AssertCompactRefusal(*this, StaleResult, TEXT("00000000-0000-0000-0000-0000000f0006"), true, false);
 
 	// (d) an apply without a preview token is refused (the token is a precondition, not auth)
 	TSharedPtr<FJsonObject> NoToken = IntentRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-0000000f0007"), nullptr);
@@ -591,10 +685,7 @@ bool FCortexGraphPatchCommandRefusalTest::RunTest(const FString& Parameters)
 	const FCortexCommandResult NoTokenResult = Router.Execute(TEXT("graph.apply_patch"), NoToken);
 	TestFalse(TEXT("an apply without a validation token is refused"), NoTokenResult.bSuccess);
 	TestEqual(TEXT("missing token error code"), NoTokenResult.ErrorCode, FString(CortexErrorCodes::StalePrecondition));
-	TestTrue(TEXT("a structured apply refusal still reports the compact result"),
-		NoTokenResult.ErrorDetails.IsValid() && NoTokenResult.ErrorDetails->HasField(TEXT("patch_id")));
-	TestTrue(TEXT("a structured apply refusal reports the live fingerprint"),
-		NoTokenResult.ErrorDetails.IsValid() && NoTokenResult.ErrorDetails->HasField(TEXT("fingerprint_before")));
+	AssertCompactRefusal(*this, NoTokenResult, TEXT("00000000-0000-0000-0000-0000000f0007"), true, true);
 
 	Operations.End();
 	TestEqual(TEXT("refusals perform no compile"), Operations.TargetCompiles, 0);
@@ -799,6 +890,10 @@ bool FCortexGraphPatchCommandBlockedAssetTest::RunTest(const FString& Parameters
 	TestFalse(TEXT("a blocked asset is refused"), Blocked.bSuccess);
 	TestEqual(TEXT("blocked asset error code"), Blocked.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
 	TestTrue(TEXT("the refusal names the blocked asset"), Blocked.ErrorMessage.Contains(TEXT("blocked after failed recovery")));
+	AssertCompactRefusal(*this, Blocked, TEXT("00000000-0000-0000-0000-0000000f000b"), false, false);
+	TestTrue(TEXT("the guard refusal keeps the guard reason in its diagnostics"),
+		Blocked.ErrorDetails.IsValid()
+			&& Blocked.ErrorDetails->GetArrayField(TEXT("diagnostics"))[0]->AsString().Contains(TEXT("blocked after failed recovery")));
 	TestEqual(TEXT("a blocked asset performs no compile"), Operations.TargetCompiles, 0);
 	TestEqual(TEXT("a blocked asset performs no save"), Operations.Saves, 0);
 	TestEqual(TEXT("a blocked asset leaves the authoring fingerprint untouched"), GraphHash(Fixture.Blueprint), HashBefore);
