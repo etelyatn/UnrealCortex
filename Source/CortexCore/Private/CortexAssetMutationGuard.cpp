@@ -1,5 +1,6 @@
 #include "CortexAssetMutationGuard.h"
 #include "CortexEditorUtils.h"
+#include "Misc/PackageName.h"
 #include "UObject/Object.h"
 
 namespace
@@ -45,6 +46,15 @@ bool FCortexAssetMutationGuard::IsPathBlocked(const FString& AssetPath, FString&
 	if (FindBlockedPath(AssetPath)) return true;
 	const FString NormalizedPath = FCortexEditorUtils::NormalizeMountedContentPath(AssetPath);
 	if (FindBlockedPath(NormalizedPath)) return true;
+	const FString RequestedPackage = FPackageName::ObjectPathToPackageName(NormalizedPath);
+	for (const TPair<FString, FString>& Pair : BlockedAssets)
+	{
+		if (FPackageName::ObjectPathToPackageName(Pair.Key) == RequestedPackage)
+		{
+			OutReason = Pair.Value;
+			return true;
+		}
+	}
 	if (const UObject* ResolvedAsset = StaticFindObject(UObject::StaticClass(), nullptr, *NormalizedPath))
 	{
 		return FindBlockedPath(ResolvedAsset->GetPathName());

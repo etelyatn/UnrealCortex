@@ -758,6 +758,11 @@ namespace
 		{
 			return FCortexBatchPreflightResult::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 		}
+		if (FCortexAssetMutationGuard::IsBlocked(Blueprint, BlockReason))
+		{
+			return FCortexBatchPreflightResult::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
+		}
 
 		return FCortexBatchPreflightResult::Success(MakeBlueprintAssetFingerprint(Blueprint).ToJson());
 	}
@@ -788,6 +793,11 @@ namespace
 		if (!Blueprint)
 		{
 			return FCortexBatchPreflightResult::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+		}
+		if (FCortexAssetMutationGuard::IsBlocked(Blueprint, BlockReason))
+		{
+			return FCortexBatchPreflightResult::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
 		}
 
 		return FCortexBatchPreflightResult::Success(MakeBlueprintAssetFingerprint(Blueprint).ToJson());

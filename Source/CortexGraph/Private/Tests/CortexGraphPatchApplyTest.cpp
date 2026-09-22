@@ -18,8 +18,7 @@
 #include "EdGraphSchema_K2.h"
 #include "Components/SceneComponent.h"
 
-
-#if WITH_EDITOR
+#if WITH_EDITOR && WITH_AUTOMATION_TESTS
 namespace CortexGraphPatchApplyTest
 {
 static UBlueprint* MakeBlueprint(UPackage*& OutPackage, const TCHAR* Name = TEXT("BP_PatchApply_T07"))

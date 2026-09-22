@@ -22,7 +22,8 @@ bool RejectBlockedBlueprintMutation(const TSharedPtr<FJsonObject>& Params, FCort
 	FString AssetPath;
 	if (!Params.IsValid()
 		|| (!Params->TryGetStringField(TEXT("asset_path"), AssetPath)
-			&& !Params->TryGetStringField(TEXT("source_path"), AssetPath)))
+			&& !Params->TryGetStringField(TEXT("source_path"), AssetPath)
+			&& !Params->TryGetStringField(TEXT("blueprint_path"), AssetPath)))
 	{
 		return false;
 	}
