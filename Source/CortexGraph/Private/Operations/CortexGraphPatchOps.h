@@ -114,6 +114,12 @@ public:
 	 * omission marker, and every entry at most 512 characters including any elision suffix.
 	 */
 	static void CollectCompilerDiagnostics(const FCompilerResultsLog& Log, TArray<FString>& OutDiagnostics);
+
+	/**
+	 * Enforces one shared final diagnostics bound over a whole outcome: at most 16 entries with a
+	 * single omission marker, and at most 512 characters per entry including any suffix.
+	 */
+	static void TrimDiagnostics(TArray<FString>& InOutDiagnostics);
 	#if WITH_AUTOMATION_TESTS
 	/** Test-only deterministic fault seam; never accepts external command input. */
 	static void SetApplyFaultPointForTesting(FName Point);

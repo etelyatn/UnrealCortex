@@ -629,6 +629,13 @@ bool ValidateConstructionParamShape(const FString& NodeClass, const TSharedPtr<F
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Conflicting function selector fields"));
 		return false;
 	}
+	if (Family == TEXT("Event") && !Params->HasField(TEXT("function_name"))
+		&& (Params->HasField(TEXT("owner_class")) || Params->HasField(TEXT("variable_class"))))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			TEXT("Event node requires function_name when an owner class is declared"));
+		return false;
+	}
 	if (Family == TEXT("DynamicCast"))
 	{
 		if (Params->HasField(TEXT("class")) && Params->HasField(TEXT("target_class")))
@@ -717,6 +724,30 @@ bool ValidateTaggedDefaults(const TSharedPtr<FJsonObject>& Defaults, UEdGraphNod
 	}
 	return true;
 }
+/** Canonical planned signature of one pin: type, flags, container kind and map terminal type. */
+TSharedPtr<FJsonObject> MakePinSignatureDescriptor(const UEdGraphPin& Pin)
+{
+	TSharedPtr<FJsonObject> Descriptor = MakeShared<FJsonObject>();
+	Descriptor->SetStringField(TEXT("name"), Pin.PinName.ToString());
+	Descriptor->SetNumberField(TEXT("direction"), static_cast<int32>(Pin.Direction));
+	Descriptor->SetStringField(TEXT("category"), Pin.PinType.PinCategory.ToString());
+	Descriptor->SetStringField(TEXT("subcategory"), Pin.PinType.PinSubCategory.ToString());
+	Descriptor->SetStringField(TEXT("subobject"), Pin.PinType.PinSubCategoryObject.IsValid() ? Pin.PinType.PinSubCategoryObject->GetPathName() : FString());
+	Descriptor->SetBoolField(TEXT("reference"), Pin.PinType.bIsReference);
+	Descriptor->SetBoolField(TEXT("const"), Pin.PinType.bIsConst);
+	Descriptor->SetNumberField(TEXT("container_type"), static_cast<int32>(Pin.PinType.ContainerType));
+	if (Pin.PinType.ContainerType == EPinContainerType::Map || !Pin.PinType.PinValueType.TerminalCategory.IsNone())
+	{
+		TSharedPtr<FJsonObject> Terminal = MakeShared<FJsonObject>();
+		Terminal->SetStringField(TEXT("category"), Pin.PinType.PinValueType.TerminalCategory.ToString());
+		Terminal->SetStringField(TEXT("subcategory"), Pin.PinType.PinValueType.TerminalSubCategory.ToString());
+		Terminal->SetStringField(TEXT("subobject"), Pin.PinType.PinValueType.TerminalSubCategoryObject.IsValid() ? Pin.PinType.PinValueType.TerminalSubCategoryObject->GetPathName() : FString());
+		Terminal->SetBoolField(TEXT("const"), Pin.PinType.PinValueType.bTerminalIsConst);
+		Descriptor->SetObjectField(TEXT("map_terminal_type"), Terminal);
+	}
+	return Descriptor;
+}
+
 void AddPlannedPinSignature(UEdGraphNode* Node, const TSharedPtr<FJsonObject>& NormalizedNode)
 {
 	if (!Node || !NormalizedNode.IsValid()) return;
@@ -726,25 +757,7 @@ void AddPlannedPinSignature(UEdGraphNode* Node, const TSharedPtr<FJsonObject>& N
 	TArray<TSharedPtr<FJsonValue>> Serialized;
 	for (const UEdGraphPin* Pin : Pins)
 	{
-		TSharedPtr<FJsonObject> Descriptor = MakeShared<FJsonObject>();
-		Descriptor->SetStringField(TEXT("name"), Pin->PinName.ToString());
-		Descriptor->SetNumberField(TEXT("direction"), static_cast<int32>(Pin->Direction));
-		Descriptor->SetStringField(TEXT("category"), Pin->PinType.PinCategory.ToString());
-		Descriptor->SetStringField(TEXT("subcategory"), Pin->PinType.PinSubCategory.ToString());
-		Descriptor->SetStringField(TEXT("subobject"), Pin->PinType.PinSubCategoryObject.IsValid() ? Pin->PinType.PinSubCategoryObject->GetPathName() : FString());
-		Descriptor->SetBoolField(TEXT("reference"), Pin->PinType.bIsReference);
-		Descriptor->SetBoolField(TEXT("const"), Pin->PinType.bIsConst);
-		Descriptor->SetNumberField(TEXT("container_type"), static_cast<int32>(Pin->PinType.ContainerType));
-		if (Pin->PinType.ContainerType == EPinContainerType::Map || !Pin->PinType.PinValueType.TerminalCategory.IsNone())
-		{
-			TSharedPtr<FJsonObject> Terminal = MakeShared<FJsonObject>();
-			Terminal->SetStringField(TEXT("category"), Pin->PinType.PinValueType.TerminalCategory.ToString());
-			Terminal->SetStringField(TEXT("subcategory"), Pin->PinType.PinValueType.TerminalSubCategory.ToString());
-			Terminal->SetStringField(TEXT("subobject"), Pin->PinType.PinValueType.TerminalSubCategoryObject.IsValid() ? Pin->PinType.PinValueType.TerminalSubCategoryObject->GetPathName() : FString());
-			Terminal->SetBoolField(TEXT("const"), Pin->PinType.PinValueType.bTerminalIsConst);
-			Descriptor->SetObjectField(TEXT("map_terminal_type"), Terminal);
-		}
-		Serialized.Add(MakeShared<FJsonValueObject>(Descriptor));
+		Serialized.Add(MakeShared<FJsonValueObject>(MakePinSignatureDescriptor(*Pin)));
 	}
 	NormalizedNode->SetArrayField(TEXT("resolved_pins"), Serialized);
 }
@@ -1094,7 +1107,12 @@ bool FCortexGraphPatchOps::Preflight(
 				return false;
 			}
 			ExistingDefaultInputs.Add(InputKey);
-			NormalizedPinUpdates.Add(MakeShared<FJsonValueObject>(Update));
+			TSharedPtr<FJsonObject> NormalizedUpdate = MakeShared<FJsonObject>();
+			NormalizedUpdate->SetStringField(TEXT("node_guid"), Update->GetStringField(TEXT("node_guid")));
+			NormalizedUpdate->SetStringField(TEXT("pin"), Pin->PinName.ToString());
+			NormalizedUpdate->SetObjectField(bDefault ? TEXT("default") : TEXT("value"), *LiteralPtr);
+			NormalizedUpdate->SetObjectField(TEXT("resolved_pin"), MakePinSignatureDescriptor(*Pin));
+			NormalizedPinUpdates.Add(MakeShared<FJsonValueObject>(NormalizedUpdate));
 		}
 	}
 	Normalized->SetArrayField(TEXT("pin_updates"), NormalizedPinUpdates);
@@ -1839,7 +1857,18 @@ bool CompareNodeSymbol(
 
 	if (const UK2Node_Event* Event = Cast<UK2Node_Event>(Live))
 	{
-		if (!Params.IsValid() || !Params->HasField(TEXT("function_name"))) return true;
+		if (!Params.IsValid()) return true;
+		if (!Params->HasField(TEXT("function_name")))
+		{
+			// An owner without a function name never identified an event: fail closed instead of
+			// reporting a match for an uninitialized node.
+			if (RequestedOwnerDeclared(Params, TEXT("function_name")))
+			{
+				OutFailure = TEXT("planned event selector declares an owner without a function name");
+				return false;
+			}
+			return true;
+		}
 		FCortexResolvedSymbol Symbol;
 		FCortexCommandResult SymbolError;
 		if (!FCortexGraphSymbolResolver::ResolveFunction(Blueprint, Params, Symbol, SymbolError) || !Symbol.Function)
@@ -1851,8 +1880,10 @@ bool CompareNodeSymbol(
 		const FString ActualOwner = Event->EventReference.GetMemberParentClass()
 			? Event->EventReference.GetMemberParentClass()->GetPathName()
 			: FString(TEXT("none"));
+		// Apply stores the resolved request context (Symbol.ContextClass) in the event reference,
+		// so readback must compare that same context owner rather than the declaring class.
 		OutExpected = bOwnerDeclared
-			? FString::Printf(TEXT("%s|%s"), *Symbol.Function->GetName(), *DeclaredOwnerPath(Symbol.Function->GetOwnerClass()))
+			? FString::Printf(TEXT("%s|%s"), *Symbol.Function->GetName(), *DeclaredOwnerPath(Symbol.ContextClass))
 			: Symbol.Function->GetName();
 		OutActual = bOwnerDeclared
 			? FString::Printf(TEXT("%s|%s"), *Event->EventReference.GetMemberName().ToString(), *ActualOwner)
@@ -2012,6 +2043,69 @@ bool CompareNodeSymbol(
 	return true;
 }
 
+/** Canonical string of a planned pin signature, used for exact native comparison. */
+FString CanonicalPinSignature(const TSharedPtr<FJsonObject>& Descriptor)
+{
+	if (!Descriptor.IsValid()) return FString();
+	FString Canonical = FString::Printf(TEXT("%s|dir=%d|cat=%s|sub=%s|subobj=%s|ref=%d|const=%d|container=%d"),
+		*Descriptor->GetStringField(TEXT("name")),
+		Descriptor->GetIntegerField(TEXT("direction")),
+		*Descriptor->GetStringField(TEXT("category")),
+		*Descriptor->GetStringField(TEXT("subcategory")),
+		*Descriptor->GetStringField(TEXT("subobject")),
+		Descriptor->GetBoolField(TEXT("reference")) ? 1 : 0,
+		Descriptor->GetBoolField(TEXT("const")) ? 1 : 0,
+		Descriptor->GetIntegerField(TEXT("container_type")));
+	const TSharedPtr<FJsonObject>* TerminalPtr = nullptr;
+	if (Descriptor->TryGetObjectField(TEXT("map_terminal_type"), TerminalPtr) && TerminalPtr && TerminalPtr->IsValid())
+	{
+		Canonical += FString::Printf(TEXT("|term=%s,%s,%s,%d"),
+			*(*TerminalPtr)->GetStringField(TEXT("category")),
+			*(*TerminalPtr)->GetStringField(TEXT("subcategory")),
+			*(*TerminalPtr)->GetStringField(TEXT("subobject")),
+			(*TerminalPtr)->GetBoolField(TEXT("const")) ? 1 : 0);
+	}
+	return Canonical;
+}
+
+/** Compares every planned pin signature of a created node against its native pins. */
+bool ComparePlannedPinSignatures(
+	const TSharedPtr<FJsonObject>& NodeJson,
+	UEdGraphNode* Live,
+	FString& OutFailure)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Signatures = nullptr;
+	if (!NodeJson->TryGetArrayField(TEXT("resolved_pins"), Signatures) || !Signatures)
+	{
+		return true;
+	}
+	for (const TSharedPtr<FJsonValue>& Value : *Signatures)
+	{
+		const TSharedPtr<FJsonObject> Descriptor = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!Descriptor.IsValid())
+		{
+			OutFailure = TEXT("planned pin signature is invalid");
+			return false;
+		}
+		const FString PinName = Descriptor->GetStringField(TEXT("name"));
+		const UEdGraphPin* Pin = Live->FindPin(FName(*PinName));
+		if (!Pin)
+		{
+			OutFailure = FString::Printf(TEXT("planned pin '%s' no longer exists on the applied node"), *PinName);
+			return false;
+		}
+		const FString Expected = CanonicalPinSignature(Descriptor);
+		const FString Actual = CanonicalPinSignature(MakePinSignatureDescriptor(*Pin));
+		if (Expected != Actual)
+		{
+			OutFailure = FString::Printf(TEXT("planned pin '%s' signature mismatch: expected '%s', found '%s'"),
+				*PinName, *Expected, *Actual);
+			return false;
+		}
+	}
+	return true;
+}
+
 bool ComparePlannedDefaults(
 	UBlueprint* Blueprint,
 	const TSharedPtr<FJsonObject>& NodeJson,
@@ -2098,6 +2192,18 @@ bool ComparePlannedPinUpdates(
 			OutFailure = FString::Printf(TEXT("pin update '%s.%s' default readback mismatch: expected '%s', found '%s'"),
 				*NodeGuidText, *PinName, *Expected, *Actual);
 			return false;
+		}
+		const TSharedPtr<FJsonObject>* SignaturePtr = nullptr;
+		if (Update->TryGetObjectField(TEXT("resolved_pin"), SignaturePtr) && SignaturePtr && SignaturePtr->IsValid())
+		{
+			const FString ExpectedSignature = CanonicalPinSignature(*SignaturePtr);
+			const FString ActualSignature = CanonicalPinSignature(MakePinSignatureDescriptor(*Pin));
+			if (ExpectedSignature != ActualSignature)
+			{
+				OutFailure = FString::Printf(TEXT("pin update '%s.%s' signature mismatch: expected '%s', found '%s'"),
+					*NodeGuidText, *PinName, *ExpectedSignature, *ActualSignature);
+				return false;
+			}
 		}
 	}
 	return true;
@@ -2311,6 +2417,7 @@ bool VerifyAppliedState(
 			return false;
 		}
 
+		if (!ComparePlannedPinSignatures(NodeJson, Live, OutFailure)) return false;
 		if (!ComparePlannedDefaults(Blueprint, NodeJson, Live, bInjectedDefault, OutFailure)) return false;
 	}
 
@@ -2335,7 +2442,6 @@ bool HandleApplyFailure(
 		Journal.Transaction->Cancel();
 	}
 	const bool bContentRestored = RestoreJournal(Blueprint, Journal);
-	Blueprint->GetOutermost()->SetDirtyFlag(Journal.bPackageWasDirty);
 
 	bool bRecoveryCompileSucceeded = true;
 	if (bContentRestored && Journal.bCompileAttempted)
@@ -2362,6 +2468,8 @@ bool HandleApplyFailure(
 
 	if (!bVerified)
 	{
+		// Unverified content must not look clean, otherwise it can be saved as if verified.
+		Blueprint->GetOutermost()->SetDirtyFlag(true);
 		FCortexAssetMutationGuard::Block(Blueprint, TEXT("Graph patch rollback verification failed"));
 		if (OutOutcome)
 		{
@@ -2384,12 +2492,14 @@ bool HandleApplyFailure(
 			{
 				OutOutcome->Diagnostics.Add(TEXT("rollback: recovery verification failed by test injection"));
 			}
+			FCortexGraphPatchOps::TrimDiagnostics(OutOutcome->Diagnostics);
 		}
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 			TEXT("Graph patch recovery verification failed; asset is blocked from mutation"));
 		return false;
 	}
 
+	Blueprint->GetOutermost()->SetDirtyFlag(Journal.bPackageWasDirty);
 	if (Journal.StatusBefore != BS_Unknown)
 	{
 		Blueprint->Status = Journal.StatusBefore;
@@ -2398,6 +2508,7 @@ bool HandleApplyFailure(
 	{
 		if (bApplyPhaseFailure) OutOutcome->ApplyStatus = TEXT("failed");
 		OutOutcome->RollbackStatus = TEXT("restored");
+		FCortexGraphPatchOps::TrimDiagnostics(OutOutcome->Diagnostics);
 	}
 	OutError = FCortexCommandRouter::Error(ErrorCode, Message);
 	return false;
@@ -2697,6 +2808,33 @@ void FCortexGraphPatchOps::CollectCompilerDiagnostics(const FCompilerResultsLog&
 	}
 }
 
+/**
+ * Enforces one shared final diagnostics bound over a whole outcome: at most 16 entries, a single
+ * omission marker inside that bound, and at most 512 characters per entry including the suffix.
+ */
+void FCortexGraphPatchOps::TrimDiagnostics(TArray<FString>& InOutDiagnostics)
+{
+	static const FString OmissionMarker = TEXT("additional compiler diagnostics omitted");
+	static const FString Elision = TEXT("...");
+	for (FString& Diagnostic : InOutDiagnostics)
+	{
+		if (Diagnostic.Len() + Elision.Len() > 512)
+		{
+			Diagnostic = Diagnostic.Left(512 - Elision.Len()) + Elision;
+		}
+	}
+	bool bTruncated = InOutDiagnostics.Remove(OmissionMarker) > 1;
+	if (InOutDiagnostics.Num() > 16 - 1)
+	{
+		InOutDiagnostics.SetNum(16 - 1);
+		bTruncated = true;
+	}
+	if (bTruncated)
+	{
+		InOutDiagnostics.Add(OmissionMarker);
+	}
+}
+
 bool FCortexGraphPatchOps::ValidateEligibility(UBlueprint* Blueprint, FCortexCommandResult& OutError)
 {
 	OutError = FCortexCommandResult();
@@ -2815,6 +2953,7 @@ bool FCortexGraphPatchOps::Execute(
 			CortexErrorCodes::VerificationFailed, false);
 	}
 	OutOutcome.ReadbackStatus = TEXT("matched");
+	FCortexGraphPatchOps::TrimDiagnostics(OutOutcome.Diagnostics);
 	return true;
 }
 
