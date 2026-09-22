@@ -1911,7 +1911,7 @@ bool FCortexGraphPatchPersistenceParentCallTest::RunTest(const FString& Paramete
 
 	// Intent: an explicit parent-call implementation plus one standalone planned node, so the replay
 	// still carries planned identities while the implementation owns the parent call.
-	auto MakeIntent = [&](const TCHAR* PatchId)
+	auto MakeIntent = [&](const TCHAR* PatchId, const TCHAR* CallKind = TEXT("parent"))
 	{
 		TSharedPtr<FJsonObject> Request = BaseRequest(Fixture.Blueprint, PatchId);
 		Request->RemoveField(TEXT("target"));
@@ -1919,7 +1919,7 @@ bool FCortexGraphPatchPersistenceParentCallTest::RunTest(const FString& Paramete
 		TSharedPtr<FJsonObject> Implementation = MakeShared<FJsonObject>();
 		Implementation->SetStringField(TEXT("owner_class"), TEXT("/Script/Engine.GameMode"));
 		Implementation->SetStringField(TEXT("function_name"), TEXT("ReadyToStartMatch"));
-		Implementation->SetStringField(TEXT("call_kind"), TEXT("parent"));
+		Implementation->SetStringField(TEXT("call_kind"), CallKind);
 		Target->SetObjectField(TEXT("implementation"), Implementation);
 		Request->SetObjectField(TEXT("target"), Target);
 
@@ -2068,6 +2068,77 @@ bool FCortexGraphPatchPersistenceParentCallTest::RunTest(const FString& Paramete
 			MissingError.ErrorMessage.Contains(TEXT("parent call")));
 		TestTrue(TEXT("a missing parent call is reported as missing"),
 			MissingError.ErrorMessage.Contains(TEXT("missing")));
+	}
+
+	// The resolver accepts the call-kind spelling case-insensitively, so the comparator has to decide
+	// on that same contract: a "PARENT" replay whose parent call is gone is not a complete replay.
+	{
+		FFixture Spelled;
+		TestTrue(TEXT("call-kind spelling fixture created"),
+			Spelled.Create(TEXT("BP_PatchPersistParentSpelling_T09"), AGameMode::StaticClass()));
+		if (!Spelled.Blueprint)
+		{
+			Spelled.Cleanup();
+		}
+		else
+		{
+			auto MakeSpelledIntent = [&](const TCHAR* CallKind)
+			{
+				TSharedPtr<FJsonObject> Request = BaseRequest(
+					Spelled.Blueprint, TEXT("00000000-0000-0000-0000-0000000e0917"));
+				Request->RemoveField(TEXT("target"));
+				TSharedPtr<FJsonObject> Target = MakeShared<FJsonObject>();
+				TSharedPtr<FJsonObject> Implementation = MakeShared<FJsonObject>();
+				Implementation->SetStringField(TEXT("owner_class"), TEXT("/Script/Engine.GameMode"));
+				Implementation->SetStringField(TEXT("function_name"), TEXT("ReadyToStartMatch"));
+				Implementation->SetStringField(TEXT("call_kind"), CallKind);
+				Target->SetObjectField(TEXT("implementation"), Implementation);
+				Request->SetObjectField(TEXT("target"), Target);
+				TSharedPtr<FJsonObject> NoteDefaults = MakeShared<FJsonObject>();
+				NoteDefaults->SetObjectField(TEXT("bPrintToScreen"), NoteDefaultLiteral());
+				TSharedPtr<FJsonObject> Note = AddNode(Request, TEXT("note"), TEXT("CallFunction"), PrintParams(), NoteDefaults);
+				SetPosition(Note, 480, 160);
+				return Request;
+			};
+
+			TSharedPtr<FJsonObject> UpperFirst = MakeSpelledIntent(TEXT("PARENT"));
+			FCortexGraphPreparedPatch UpperPrepared;
+			TestTrue(FString::Printf(TEXT("upper-case call kind preview succeeds: %s"), *Error.ErrorMessage),
+				PreviewForApply(Spelled.Blueprint, UpperFirst, UpperPrepared, Error));
+			FCortexGraphPatchOutcome UpperOutcome;
+			TestTrue(FString::Printf(TEXT("upper-case call kind applies and verifies: %s"), *Error.ErrorMessage),
+				FCortexGraphPatchOps::Execute(Spelled.Blueprint, UpperFirst, UpperOutcome, Error));
+			TestEqual(TEXT("upper-case call kind compiles after apply"),
+				UpperOutcome.CompileStatus, FString(TEXT("compiled")));
+			UEdGraphNode* UpperEntry = FindNodeByGuid(Spelled.Blueprint, UpperOutcome.Locators.EntryNodeGuid);
+			UK2Node_CallParentFunction* UpperParent = FindParentCall(UpperEntry);
+			TestNotNull(TEXT("the upper-case call kind really created a parent call"), UpperParent);
+
+			// Both accepted spellings must verify identically on an exact replay.
+			TSharedPtr<FJsonObject> LowerReplay = MakeSpelledIntent(TEXT("parent"));
+			FCortexGraphPreparedPatch LowerPrepared;
+			FCortexCommandResult LowerError;
+			TestTrue(FString::Printf(TEXT("lower-case call kind replay preview succeeds: %s"), *LowerError.ErrorMessage),
+				FCortexGraphPatchOps::Preflight(Spelled.Blueprint, LowerReplay, LowerPrepared, LowerError));
+			TestFalse(TEXT("a lower-case replay of an upper-case request reports no prospective change"),
+				LowerPrepared.bChanged);
+
+			if (UpperParent)
+			{
+				UpperParent->DestroyNode();
+			}
+			TestNull(TEXT("the parent call is removed again"), FindParentCall(UpperEntry));
+			TSharedPtr<FJsonObject> MissingUpper = MakeSpelledIntent(TEXT("PARENT"));
+			FCortexGraphPreparedPatch MissingUpperPrepared;
+			FCortexCommandResult MissingUpperError;
+			TestFalse(TEXT("an upper-case call kind replay with a missing parent call is refused"),
+				FCortexGraphPatchOps::Preflight(Spelled.Blueprint, MissingUpper, MissingUpperPrepared, MissingUpperError));
+			TestEqual(TEXT("an upper-case missing parent call reports an invalid operation"),
+				MissingUpperError.ErrorCode, CortexErrorCodes::InvalidOperation);
+			TestTrue(FString::Printf(TEXT("an upper-case missing parent call names the parent call [%s]"), *MissingUpperError.ErrorMessage),
+				MissingUpperError.ErrorMessage.Contains(TEXT("parent call")));
+		}
+		Spelled.Cleanup();
 	}
 
 	Fixture.Cleanup();

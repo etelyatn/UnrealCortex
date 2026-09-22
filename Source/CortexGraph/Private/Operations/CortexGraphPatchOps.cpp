@@ -2750,12 +2750,13 @@ bool CompareImplementationParentCall(
 	{
 		return true;
 	}
-	FString CallKind;
-	if (!(*ImplementationPtr)->TryGetStringField(TEXT("call_kind"), CallKind)
-		|| !CallKind.Equals(TEXT("parent"), ESearchCase::CaseSensitive))
-	{
-		return true;
-	}
+	FString CallKindText;
+	if (!(*ImplementationPtr)->TryGetStringField(TEXT("call_kind"), CallKindText)) return true;
+	// The accepted spelling contract lives in exactly one place: the resolver the apply path uses, so
+	// the comparator cannot drift from the call kinds the implementation target really acts on.
+	ECortexCallKind CallKind = ECortexCallKind::Ordinary;
+	if (!FCortexGraphSymbolResolver::TryParseCallKind(CallKindText, CallKind)) return true;
+	if (CallKind != ECortexCallKind::Parent) return true;
 	if (!Locators.bHasEntryNode) return true;
 
 	UEdGraphNode* Entry = nullptr;
