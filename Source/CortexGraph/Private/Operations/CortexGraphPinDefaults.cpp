@@ -98,20 +98,25 @@ FString CanonicalReferencePath(const EPinReferenceMode Mode, const FString& Path
  */
 FString CanonicalTextIdentity(const FText& Text)
 {
+	// Fields are length-prefixed so no separator inside a field can forge another identity.
 	if (Text.IsFromStringTable())
 	{
 		FName TableId;
 		FTextKey TableKey;
 		FTextInspector::GetTableIdAndKey(Text, TableId, TableKey);
-		return FString::Printf(TEXT("table:%s#%s"), *TableId.ToString(), *TableKey.ToString());
+		const FString TableIdText = TableId.ToString();
+		const FString TableKeyText = TableKey.ToString();
+		return FString::Printf(TEXT("table:%d:%s|%d:%s"), TableIdText.Len(), *TableIdText,
+			TableKeyText.Len(), *TableKeyText);
 	}
 	const TOptional<FString> Namespace = FTextInspector::GetNamespace(Text);
 	const TOptional<FString> Key = FTextInspector::GetKey(Text);
 	const FString NamespaceText = Namespace.IsSet() ? Namespace.GetValue() : FString();
 	const FString KeyText = Key.IsSet() ? Key.GetValue() : FString();
 	const FString* SourceString = FTextInspector::GetSourceString(Text);
-	return FString::Printf(TEXT("literal:%s#%s#%s"), *NamespaceText, *KeyText,
-		SourceString ? **SourceString : TEXT(""));
+	const FString SourceText = SourceString ? **SourceString : FString();
+	return FString::Printf(TEXT("literal:%d:%s|%d:%s|%d:%s"), NamespaceText.Len(), *NamespaceText,
+		KeyText.Len(), *KeyText, SourceText.Len(), *SourceText);
 }
 }
 
@@ -977,6 +982,16 @@ bool FCortexGraphPinDefaults::CompareAppliedLiteral(
 		return false;
 	}
 
+	// The planned kind must still match the pin's category: a native pin of another category that
+	// happens to carry the same default text is never a match.
+	FCortexCommandResult KindError;
+	if (!Validate(Pin, Literal, KindError))
+	{
+		OutFailure = FString::Printf(TEXT("planned default no longer validates against the pin: %s"),
+			*KindError.ErrorMessage);
+		return false;
+	}
+
 	if (Kind == TEXT("class") || Kind == TEXT("soft_class") || Kind == TEXT("object") || Kind == TEXT("soft_object"))
 	{
 		const EPinReferenceMode RequestedMode = RequestedReferenceMode(Kind);
@@ -1000,6 +1015,35 @@ bool FCortexGraphPinDefaults::CompareAppliedLiteral(
 				OutFailure = FString::Printf(TEXT("planned class default no longer resolves: %s"), *ResolveError.ErrorMessage);
 				return false;
 			}
+		}
+
+		// Native storage must agree with the mode before the identities are compared: a soft
+		// reference never also carries a hard object, and a hard reference stores its value as the
+		// native object rather than as competing default text.
+		if (IsSoftReferenceMode(NativeMode))
+		{
+			if (Pin->DefaultObject)
+			{
+				OutFailure = FString::Printf(
+					TEXT("soft reference pin '%s' also stores hard object '%s'"),
+					*Pin->PinName.ToString(), *Pin->DefaultObject->GetPathName());
+				return false;
+			}
+		}
+		else if (Pin->DefaultObject)
+		{
+			if (!Pin->DefaultValue.IsEmpty() && !Pin->DefaultValue.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+			{
+				OutFailure = FString::Printf(TEXT("hard reference pin '%s' stores competing default text '%s'"),
+					*Pin->PinName.ToString(), *Pin->DefaultValue);
+				return false;
+			}
+		}
+		else if (!Path.IsEmpty() && !Path.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+		{
+			OutFailure = FString::Printf(TEXT("hard reference pin '%s' does not store its default as a native object"),
+				*Pin->PinName.ToString());
+			return false;
 		}
 
 		// Soft references live in DefaultValue; hard references are the DefaultObject.

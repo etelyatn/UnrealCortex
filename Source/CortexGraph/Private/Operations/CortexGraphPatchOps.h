@@ -5,6 +5,7 @@
 
 class UBlueprint;
 class FJsonObject;
+class FCompilerResultsLog;
 
 /**
  * Durable result of a complete, non-mutating graph patch preflight.
@@ -107,6 +108,12 @@ public:
 		const TSharedPtr<FJsonObject>& Params,
 		FCortexGraphPatchOutcome& OutOutcome,
 		FCortexCommandResult& OutError);
+
+	/**
+	 * Appends bounded compiler diagnostics: at most 16 entries, reserving one slot for the
+	 * omission marker, and every entry at most 512 characters including any elision suffix.
+	 */
+	static void CollectCompilerDiagnostics(const FCompilerResultsLog& Log, TArray<FString>& OutDiagnostics);
 	#if WITH_AUTOMATION_TESTS
 	/** Test-only deterministic fault seam; never accepts external command input. */
 	static void SetApplyFaultPointForTesting(FName Point);

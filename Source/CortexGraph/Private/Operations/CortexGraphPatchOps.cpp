@@ -30,6 +30,10 @@
 #include "K2Node_DynamicCast.h"
 #include "K2Node_GenericCreateObject.h"
 #include "K2Node_ConstructObjectFromClass.h"
+#include "K2Node_SwitchEnum.h"
+#include "K2Node_BaseMCDelegate.h"
+#include "K2Node_CreateDelegate.h"
+#include "K2Node_MacroInstance.h"
 #include "K2Node_Timeline.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -1724,22 +1728,7 @@ bool CompileTargetBlueprint(UBlueprint* Blueprint, const FName Operation, TArray
 	FCompilerResultsLog Log;
 	Log.bAnnotateMentionedNodes = false;
 	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &Log);
-	for (const TSharedRef<FTokenizedMessage>& Message : Log.Messages)
-	{
-		const EMessageSeverity::Type Severity = Message->GetSeverity();
-		if (Severity != EMessageSeverity::Error && Severity != EMessageSeverity::Warning) continue;
-		if (OutDiagnostics.Num() >= MaxStoredDiagnostics)
-		{
-			OutDiagnostics.Add(TEXT("additional compiler diagnostics omitted"));
-			break;
-		}
-		FString Diagnostic = Message->ToText().ToString();
-		if (Diagnostic.Len() > MaxDiagnosticLength)
-		{
-			Diagnostic = Diagnostic.Left(MaxDiagnosticLength) + TEXT("...");
-		}
-		OutDiagnostics.Add(MoveTemp(Diagnostic));
-	}
+	FCortexGraphPatchOps::CollectCompilerDiagnostics(Log, OutDiagnostics);
 	return Log.NumErrors == 0 && Blueprint->Status != BS_Error;
 }
 
@@ -1858,27 +1847,49 @@ bool CompareNodeSymbol(
 			OutFailure = FString::Printf(TEXT("planned event symbol no longer resolves: %s"), *SymbolError.ErrorMessage);
 			return false;
 		}
-		OutExpected = Symbol.Function->GetName();
-		OutActual = Event->EventReference.GetMemberName().ToString();
+		const bool bOwnerDeclared = RequestedOwnerDeclared(Params, TEXT("function_name"));
+		const FString ActualOwner = Event->EventReference.GetMemberParentClass()
+			? Event->EventReference.GetMemberParentClass()->GetPathName()
+			: FString(TEXT("none"));
+		OutExpected = bOwnerDeclared
+			? FString::Printf(TEXT("%s|%s"), *Symbol.Function->GetName(), *DeclaredOwnerPath(Symbol.Function->GetOwnerClass()))
+			: Symbol.Function->GetName();
+		OutActual = bOwnerDeclared
+			? FString::Printf(TEXT("%s|%s"), *Event->EventReference.GetMemberName().ToString(), *ActualOwner)
+			: Event->EventReference.GetMemberName().ToString();
 		return true;
 	}
 
 	if (const UK2Node_DynamicCast* CastNode = Cast<UK2Node_DynamicCast>(Live))
 	{
-		FString ClassIdentifier;
 		if (!Params.IsValid()) return true;
+		FString ClassIdentifier;
 		const bool bHasClass = Params->TryGetStringField(TEXT("class"), ClassIdentifier)
 			|| Params->TryGetStringField(TEXT("target_class"), ClassIdentifier);
-		if (!bHasClass) return true;
-		UClass* Target = nullptr;
-		FCortexCommandResult ResolveError;
-		if (!FCortexGraphSymbolResolver::ResolveClass(ClassIdentifier, Target, ResolveError) || !Target)
+		bool bRequestedPure = false;
+		const bool bHasPurity = Params->TryGetBoolField(TEXT("is_pure"), bRequestedPure)
+			|| Params->TryGetBoolField(TEXT("pure"), bRequestedPure)
+			|| Params->TryGetBoolField(TEXT("bIsPureCast"), bRequestedPure);
+		if (!bHasClass && !bHasPurity) return true;
+
+		FString ExpectedClass = FString(TEXT("undeclared"));
+		if (bHasClass)
 		{
-			OutFailure = FString::Printf(TEXT("planned cast target no longer resolves: %s"), *ResolveError.ErrorMessage);
-			return false;
+			UClass* Target = nullptr;
+			FCortexCommandResult ResolveError;
+			if (!FCortexGraphSymbolResolver::ResolveClass(ClassIdentifier, Target, ResolveError) || !Target)
+			{
+				OutFailure = FString::Printf(TEXT("planned cast target no longer resolves: %s"), *ResolveError.ErrorMessage);
+				return false;
+			}
+			ExpectedClass = Target->GetPathName();
 		}
-		OutExpected = Target->GetPathName();
-		OutActual = CastNode->TargetType ? CastNode->TargetType->GetPathName() : FString(TEXT("none"));
+		// Purity is part of the requested node identity because the contract applies SetPurity.
+		const int32 ExpectedPure = bHasPurity ? (bRequestedPure ? 1 : 0) : -1;
+		const FString ActualClass = CastNode->TargetType ? CastNode->TargetType->GetPathName() : FString(TEXT("none"));
+		OutExpected = FString::Printf(TEXT("%s|pure=%d"), *ExpectedClass, ExpectedPure);
+		OutActual = FString::Printf(TEXT("%s|pure=%d"), *ActualClass,
+			ExpectedPure < 0 ? -1 : (CastNode->IsNodePure() ? 1 : 0));
 		return true;
 	}
 
@@ -1913,6 +1924,89 @@ bool CompareNodeSymbol(
 		OutExpected = TEXT("bound_graph");
 		OutActual = Composite->BoundGraph ? TEXT("bound_graph") : TEXT("none");
 		return true;
+	}
+
+	if (const UK2Node_SwitchEnum* SwitchEnum = Cast<UK2Node_SwitchEnum>(Live))
+	{
+		FString EnumName;
+		if (!Params.IsValid() || !Params->TryGetStringField(TEXT("enum_name"), EnumName) || EnumName.IsEmpty()) return true;
+		UEnum* RequestedEnum = FindFirstObject<UEnum>(*EnumName);
+		if (!RequestedEnum)
+		{
+			OutFailure = FString::Printf(TEXT("planned switch enum no longer resolves: %s"), *EnumName);
+			return false;
+		}
+		UEnum* NativeEnum = SwitchEnum->GetEnum();
+		OutExpected = RequestedEnum->GetPathName();
+		OutActual = NativeEnum ? NativeEnum->GetPathName() : FString(TEXT("none"));
+		return true;
+	}
+
+	if (const UK2Node_BaseMCDelegate* Delegate = Cast<UK2Node_BaseMCDelegate>(Live))
+	{
+		FString DelegateName;
+		if (!Params.IsValid() || !Params->TryGetStringField(TEXT("delegate_name"), DelegateName) || DelegateName.IsEmpty()) return true;
+		FString OwnerIdentifier;
+		const bool bOwnerDeclared = Params->TryGetStringField(TEXT("delegate_class"), OwnerIdentifier)
+			|| Params->TryGetStringField(TEXT("owner_class"), OwnerIdentifier);
+		const FString NativeName = Delegate->GetPropertyName().ToString();
+		if (!bOwnerDeclared)
+		{
+			OutExpected = DelegateName;
+			OutActual = NativeName;
+			return true;
+		}
+		UClass* Owner = nullptr;
+		FCortexCommandResult ResolveError;
+		if (!FCortexGraphSymbolResolver::ResolveClass(OwnerIdentifier, Owner, ResolveError) || !Owner)
+		{
+			OutFailure = FString::Printf(TEXT("planned delegate owner no longer resolves: %s"), *ResolveError.ErrorMessage);
+			return false;
+		}
+		const FString NativeOwner = Delegate->DelegateReference.IsSelfContext()
+			? FString(TEXT("self"))
+			: DeclaredOwnerPath(Delegate->DelegateReference.GetMemberParentClass());
+		OutExpected = FString::Printf(TEXT("%s|%s"), *DelegateName, *Owner->GetPathName());
+		OutActual = FString::Printf(TEXT("%s|%s"), *NativeName, *NativeOwner);
+		return true;
+	}
+
+	if (const UK2Node_CreateDelegate* CreateDelegate = Cast<UK2Node_CreateDelegate>(Live))
+	{
+		FString FunctionName;
+		if (!Params.IsValid() || !Params->TryGetStringField(TEXT("function_name"), FunctionName) || FunctionName.IsEmpty()) return true;
+		OutExpected = FunctionName;
+		OutActual = CreateDelegate->GetFunctionName().ToString();
+		return true;
+	}
+
+	if (const UK2Node_MacroInstance* Macro = Cast<UK2Node_MacroInstance>(Live))
+	{
+		FString MacroPath;
+		if (!Params.IsValid() || !Params->TryGetStringField(TEXT("macro_path"), MacroPath) || MacroPath.IsEmpty()) return true;
+		// macro_path is presence-validated only, so a node without the requested macro graph is not
+		// the requested node: report the mismatch instead of a false match.
+		OutExpected = MacroPath;
+		OutActual = Macro->GetMacroGraph() ? Macro->GetMacroGraph()->GetPathName() : FString(TEXT("none"));
+		return true;
+	}
+
+	// A selector this build cannot compare natively means the node identity was never verified:
+	// fail closed instead of reporting success.
+	if (Params.IsValid())
+	{
+		static const TCHAR* const UnverifiableSelectors[] = {
+			TEXT("function_name"), TEXT("member"), TEXT("variable_name"), TEXT("class"), TEXT("target_class"),
+			TEXT("enum_name"), TEXT("macro_path"), TEXT("delegate_name"), TEXT("timeline_name")
+		};
+		for (const TCHAR* Selector : UnverifiableSelectors)
+		{
+			if (Params->HasField(Selector))
+			{
+				OutFailure = FString::Printf(TEXT("planned selector '%s' has no native readback comparison for this node"), Selector);
+				return false;
+			}
+		}
 	}
 
 	return true;
@@ -2574,6 +2668,33 @@ bool ApplyPrepared(
 	}
 	return true;
 }
+}
+
+/** Bounded compiler diagnostics: the total entry count and each entry length respect the bound. */
+void FCortexGraphPatchOps::CollectCompilerDiagnostics(const FCompilerResultsLog& Log, TArray<FString>& OutDiagnostics)
+{
+	static const FString OmissionMarker = TEXT("additional compiler diagnostics omitted");
+	static const FString Elision = TEXT("...");
+	for (const TSharedRef<FTokenizedMessage>& Message : Log.Messages)
+	{
+		const EMessageSeverity::Type Severity = Message->GetSeverity();
+		if (Severity != EMessageSeverity::Error && Severity != EMessageSeverity::Warning) continue;
+		if (OutDiagnostics.Num() >= 16 - 1)
+		{
+			// Keep the total at or below 16 entries by reserving the final slot for the marker.
+			if (!OutDiagnostics.Contains(OmissionMarker))
+			{
+				OutDiagnostics.Add(OmissionMarker);
+			}
+			break;
+		}
+		FString Diagnostic = Message->ToText().ToString();
+		if (Diagnostic.Len() + Elision.Len() > 512)
+		{
+			Diagnostic = Diagnostic.Left(512 - Elision.Len()) + Elision;
+		}
+		OutDiagnostics.Add(MoveTemp(Diagnostic));
+	}
 }
 
 bool FCortexGraphPatchOps::ValidateEligibility(UBlueprint* Blueprint, FCortexCommandResult& OutError)
