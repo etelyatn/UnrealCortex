@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "Operations/CortexGraphPatchOps.h"
+#include "Operations/CortexGraphNodeContract.h"
 #include "Operations/CortexGraphPatchState.h"
 #include "Operations/CortexGraphPinDefaults.h"
 #include "Components/ActorComponent.h"
@@ -12,6 +13,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/GameMode.h"
 #include "GameFramework/Pawn.h"
 #include "Internationalization/StringTable.h"
 #include "Internationalization/StringTableCore.h"
@@ -965,6 +967,170 @@ bool FCortexGraphPatchReadbackUnexpectedPinTest::RunTest(const FString& Paramete
 			}
 		},
 		TEXT("unexpected native pin"));
+	CortexGraphPatchReadbackTest::Cleanup(Package, Blueprint);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 13. A failed patch still reports the durable identities it applied and reverted
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchReadbackFailureLocatorsTest,
+	"Cortex.Graph.Authoring.Readback.FailureLocators",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchReadbackFailureLocatorsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// (a) an apply-phase failure that ends in a blocked unverified recovery
+	{
+		UPackage* Package = nullptr;
+		UBlueprint* Blueprint = CortexGraphPatchReadbackTest::MakeBlueprint(Package, TEXT("BP_ReadbackFailureLocators_T08"));
+		TestNotNull(TEXT("locator fixture Blueprint created"), Blueprint);
+		if (Blueprint)
+		{
+			TSharedPtr<FJsonObject> Request = CortexGraphPatchReadbackTest::BaseRequest(
+				Blueprint, TEXT("00000000-0000-0000-0000-00000000dd01"));
+			TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+			Params->SetStringField(TEXT("function_name"), TEXT("KismetSystemLibrary.PrintString"));
+			CortexGraphPatchReadbackTest::AddNode(Request, TEXT("note"), TEXT("CallFunction"), Params, nullptr);
+			CortexGraphPatchReadbackTest::AddNode(Request, TEXT("second"), TEXT("CallFunction"), Params, nullptr);
+
+			FCortexCommandResult Error;
+			TestTrue(FString::Printf(TEXT("locator preview succeeds: %s"), *Error.ErrorMessage),
+				CortexGraphPatchReadbackTest::PrepareForApply(Blueprint, Request, Error));
+			const FString GraphGuidBefore = Blueprint->UbergraphPages[0]->GraphGuid.ToString();
+			FCortexGraphPatchOps::SetApplyFaultPointForTesting(TEXT("verification_failure"));
+			FCortexGraphPatchOutcome Outcome;
+			const bool bExecuted = FCortexGraphPatchOps::Execute(Blueprint, Request, Outcome, Error);
+			FCortexGraphPatchOps::SetApplyFaultPointForTesting(NAME_None);
+			TestFalse(FString::Printf(TEXT("failed patch is rejected [%s]"), *Error.ErrorMessage), bExecuted);
+			TestEqual(TEXT("failed patch reports the unverified rollback"),
+				Outcome.RollbackStatus, FString(TEXT("unverified")));
+			TestTrue(TEXT("failed recovery blocks the asset"), Outcome.bBlocked);
+
+			// The residual identities of what the patch applied and reverted must stay inspectable.
+			TestEqual(TEXT("failed patch reports the resolved graph identity"),
+				Outcome.Locators.GraphGuid.ToString(), GraphGuidBefore);
+			const FGuid* NodeGuid = Outcome.Locators.NodeGuidByClientId.Find(TEXT("note"));
+			TestTrue(TEXT("failed patch reports the planned client-id mapping"), NodeGuid != nullptr);
+			TestTrue(TEXT("failed patch reports a valid client-id node guid"), NodeGuid && NodeGuid->IsValid());
+			CortexGraphPatchReadbackTest::Cleanup(Package, Blueprint);
+		}
+	}
+
+	// (b) a readback failure on an implementation target still reports the entry locator
+	{
+		UPackage* Package = nullptr;
+		UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+			AGameMode::StaticClass(), Package = CreatePackage(TEXT("/Temp/BP_ReadbackLocatorEntry_T08")),
+			FName(TEXT("BP_ReadbackLocatorEntry_T08")), BPTYPE_Normal,
+			UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+		TestNotNull(TEXT("entry locator fixture Blueprint created"), Blueprint);
+		if (Blueprint)
+		{
+			TSharedPtr<FJsonObject> Request = CortexGraphPatchReadbackTest::BaseRequest(
+				Blueprint, TEXT("00000000-0000-0000-0000-00000000dd02"));
+			TSharedPtr<FJsonObject> Target = Request->GetObjectField(TEXT("target"));
+			Target->RemoveField(TEXT("graph_ref"));
+			TSharedPtr<FJsonObject> Implementation = MakeShared<FJsonObject>();
+			Implementation->SetStringField(TEXT("owner_class"), TEXT("/Script/Engine.GameMode"));
+			Implementation->SetStringField(TEXT("function_name"), TEXT("ReadyToStartMatch"));
+			Target->SetObjectField(TEXT("implementation"), Implementation);
+			TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+			Params->SetStringField(TEXT("function_name"), TEXT("KismetSystemLibrary.PrintString"));
+			CortexGraphPatchReadbackTest::AddNode(Request, TEXT("note"), TEXT("CallFunction"), Params, nullptr);
+
+			FCortexCommandResult Error;
+			TestTrue(FString::Printf(TEXT("entry locator preview succeeds: %s"), *Error.ErrorMessage),
+				CortexGraphPatchReadbackTest::PrepareForApply(Blueprint, Request, Error));
+			FCortexGraphPatchOps::SetReadbackFaultForTesting(TEXT("readback_class"));
+			FCortexGraphPatchOutcome Outcome;
+			const bool bExecuted = FCortexGraphPatchOps::Execute(Blueprint, Request, Outcome, Error);
+			FCortexGraphPatchOps::SetReadbackFaultForTesting(NAME_None);
+			TestFalse(FString::Printf(TEXT("entry locator patch is rejected [%s]"), *Error.ErrorMessage), bExecuted);
+			TestEqual(TEXT("entry locator patch reports the readback mismatch"),
+				Outcome.ReadbackStatus, FString(TEXT("mismatched")));
+			TestEqual(TEXT("entry locator patch reports its verified rollback"),
+				Outcome.RollbackStatus, FString(TEXT("restored")));
+			TestTrue(TEXT("entry locator patch reports the applied entry"),
+				Outcome.Locators.bHasEntryNode && Outcome.Locators.EntryNodeGuid.IsValid());
+			TestTrue(TEXT("entry locator patch reports the planned client-id mapping"),
+				Outcome.Locators.NodeGuidByClientId.Contains(TEXT("note")));
+			CortexGraphPatchReadbackTest::Cleanup(Package, Blueprint);
+		}
+	}
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 14. A DynamicCast request without a target class is refused before mutation
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchReadbackCastTargetTest,
+	"Cortex.Graph.Authoring.Readback.CastTargetRequired",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchReadbackCastTargetTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchReadbackTest::MakeBlueprint(Package, TEXT("BP_ReadbackCastTarget_T08"));
+	TestNotNull(TEXT("cast target fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	auto MakeCastRequest = [Blueprint](const TCHAR* PatchId, const TSharedPtr<FJsonObject>& CastParams)
+	{
+		TSharedPtr<FJsonObject> Request = CortexGraphPatchReadbackTest::BaseRequest(Blueprint, PatchId);
+		CortexGraphPatchReadbackTest::AddNode(Request, TEXT("cast"), TEXT("DynamicCast"), CastParams, nullptr);
+		return Request;
+	};
+
+	// (a) purity without a target class describes nothing that could ever verify
+	{
+		TSharedPtr<FJsonObject> CastParams = MakeShared<FJsonObject>();
+		CastParams->SetBoolField(TEXT("is_pure"), true);
+		TSharedPtr<FJsonObject> Request = MakeCastRequest(TEXT("00000000-0000-0000-0000-00000000de01"), CastParams);
+
+		FCortexCommandResult ContractError;
+		TestFalse(TEXT("the typed construction validator refuses purity without a target class"),
+			FCortexGraphNodeContract::Validate(TEXT("DynamicCast"), Blueprint, CastParams, ContractError));
+		TestTrue(FString::Printf(TEXT("the refusal names the missing cast target [%s|%s]"),
+			*ContractError.ErrorCode, *ContractError.ErrorMessage),
+			ContractError.ErrorCode == CortexErrorCodes::InvalidField
+				&& ContractError.ErrorMessage.Contains(TEXT("class")));
+
+		const FString FingerprintBefore = FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash"));
+		FCortexGraphPreparedPatch Preview;
+		FCortexCommandResult Error;
+		TestFalse(TEXT("a purity-only cast request is refused before mutation"),
+			FCortexGraphPatchOps::Preflight(Blueprint, Request, Preview, Error));
+		TestTrue(FString::Printf(TEXT("the purity-only refusal names the missing cast target [%s|%s]"),
+			*Error.ErrorCode, *Error.ErrorMessage),
+			Error.ErrorCode == CortexErrorCodes::InvalidField && Error.ErrorMessage.Contains(TEXT("class")));
+		TestEqual(TEXT("a refused purity-only cast leaves the graph untouched"),
+			FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash")), FingerprintBefore);
+	}
+
+	// (b) the validated patch contract requires the target class for a cast
+	{
+		TSharedPtr<FJsonObject> Request = MakeCastRequest(
+			TEXT("00000000-0000-0000-0000-00000000de02"), MakeShared<FJsonObject>());
+
+		const FString FingerprintBefore = FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash"));
+		FCortexGraphPreparedPatch Preview;
+		FCortexCommandResult Error;
+		TestFalse(TEXT("a cast without a target class is refused before mutation"),
+			FCortexGraphPatchOps::Preflight(Blueprint, Request, Preview, Error));
+		TestTrue(FString::Printf(TEXT("the classless cast refusal names the required target [%s|%s]"),
+			*Error.ErrorCode, *Error.ErrorMessage),
+			Error.ErrorCode == CortexErrorCodes::InvalidField && Error.ErrorMessage.Contains(TEXT("class")));
+		TestEqual(TEXT("a refused classless cast leaves the graph untouched"),
+			FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash")), FingerprintBefore);
+	}
+
 	CortexGraphPatchReadbackTest::Cleanup(Package, Blueprint);
 	return true;
 }

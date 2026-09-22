@@ -675,6 +675,17 @@ bool ValidateConstructionParamShape(const FString& NodeClass, const TSharedPtr<F
 	}
 	if (Family == TEXT("DynamicCast"))
 	{
+		FString DeclaredClass;
+		const bool bHasClass = (Params->TryGetStringField(TEXT("class"), DeclaredClass)
+			|| Params->TryGetStringField(TEXT("target_class"), DeclaredClass)) && !DeclaredClass.IsEmpty();
+		if (!bHasClass)
+		{
+			// The validated patch contract requires the target: a cast without one is a half-built
+			// node whose identity can never be verified, so it never reaches apply.
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				TEXT("DynamicCast requires params.class (alias target_class): a cast without a target class cannot be verified"));
+			return false;
+		}
 		for (const TCHAR* Alias : { TEXT("class"), TEXT("target_class") })
 		{
 			if (Params->HasField(Alias) && Params->Values.FindRef(Alias)->Type != EJson::String)
@@ -1903,18 +1914,24 @@ bool CompareNodeSymbol(
 			|| Params->TryGetBoolField(TEXT("bIsPureCast"), bRequestedPure);
 		if (!bHasClass && !bHasPurity) return true;
 
-		FString ExpectedClass = FString(TEXT("undeclared"));
-		if (bHasClass)
+		if (!bHasClass)
 		{
-			UClass* Target = nullptr;
+			// No target class was requested, so no cast identity exists to compare: fail closed
+			// instead of comparing the native target against a sentinel that can never match.
+			OutFailure = TEXT("planned cast selector declares no target class");
+			return false;
+		}
+
+		UClass* Target = nullptr;
+		{
 			FCortexCommandResult ResolveError;
 			if (!FCortexGraphSymbolResolver::ResolveClass(ClassIdentifier, Target, ResolveError) || !Target)
 			{
 				OutFailure = FString::Printf(TEXT("planned cast target no longer resolves: %s"), *ResolveError.ErrorMessage);
 				return false;
 			}
-			ExpectedClass = Target->GetPathName();
 		}
+		const FString ExpectedClass = Target->GetPathName();
 		// Purity is part of the requested node identity because the contract applies SetPurity.
 		const int32 ExpectedPure = bHasPurity ? (bRequestedPure ? 1 : 0) : -1;
 		const FString ActualClass = CastNode->TargetType ? CastNode->TargetType->GetPathName() : FString(TEXT("none"));
@@ -2471,6 +2488,13 @@ bool HandleApplyFailure(
 	const FString& ErrorCode,
 	bool bApplyPhaseFailure)
 {
+	if (OutOutcome)
+	{
+		// Durable identities of what the patch applied and reverted: report them on the failure
+		// path too (apply fault, compile failure, readback mismatch, blocked unverified recovery),
+		// so the residual mapping of a failed patch stays inspectable.
+		OutOutcome->Locators = Journal.Locators;
+	}
 	if (Journal.Transaction)
 	{
 		Journal.Transaction->Cancel();
@@ -2957,6 +2981,9 @@ bool FCortexGraphPatchOps::Execute(
 	FGraphPatchJournal Journal;
 	if (!ApplyPrepared(Blueprint, Prepared, Journal, &OutOutcome, OutError))
 	{
+		// A failed apply still reports the durable identities it reached: a blocked or partially
+		// applied asset must stay inspectable instead of returning empty residual identities.
+		OutOutcome.Locators = Journal.Locators;
 		return false;
 	}
 	OutOutcome.ApplyStatus = TEXT("applied");

@@ -4,6 +4,7 @@
 #include "CortexAssetMutationGuard.h"
 #include "Operations/CortexGraphPatchState.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
@@ -490,6 +491,60 @@ bool FCortexGraphPatchApplySubgraphRecoveryTest::RunTest(const FString& Paramete
 	FCortexGraphPatchOps::ClearApplyFaultPointForTesting();
 	TestEqual(TEXT("recovery leaves root graph untouched"), RootGraph->Nodes.Num(), RootNodesBefore);
 	TestEqual(TEXT("recovery resolves and restores the selected subgraph"), Subgraph->Nodes.Num(), SubgraphNodesBefore);
+	CortexGraphPatchApplyTest::Cleanup(Package, Blueprint);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// An implementation target whose function graph has no FunctionEntry is refused
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchApplyMalformedFunctionGraphTest,
+	"Cortex.Graph.Authoring.Apply.MalformedFunctionGraph",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchApplyMalformedFunctionGraphTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		AGameMode::StaticClass(), Package = CreatePackage(TEXT("/Temp/BP_PatchMalformedFunction_T08")),
+		FName("BP_PatchMalformedFunction_T08"), BPTYPE_Normal,
+		UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("malformed function fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	// A function graph whose FunctionEntry is gone cannot be re-entered by a patch.
+	UEdGraph* Malformed = FBlueprintEditorUtils::CreateNewGraph(
+		Blueprint, FName(TEXT("ReadyToStartMatch")), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	TestNotNull(TEXT("malformed function graph created"), Malformed);
+	if (!Malformed)
+	{
+		CortexGraphPatchApplyTest::Cleanup(Package, Blueprint);
+		return false;
+	}
+	Blueprint->FunctionGraphs.Add(Malformed);
+
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchApplyTest::MakeRequest(Blueprint);
+	TSharedPtr<FJsonObject> Target = Request->GetObjectField(TEXT("target"));
+	Target->RemoveField(TEXT("graph_ref"));
+	TSharedPtr<FJsonObject> Implementation = MakeShared<FJsonObject>();
+	Implementation->SetStringField(TEXT("owner_class"), TEXT("/Script/Engine.GameMode"));
+	Implementation->SetStringField(TEXT("function_name"), TEXT("ReadyToStartMatch"));
+	Target->SetObjectField(TEXT("implementation"), Implementation);
+
+	const FString FingerprintBefore = FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash"));
+	const int32 NodesBefore = Malformed->Nodes.Num();
+	FCortexGraphPreparedPatch Preview;
+	FCortexCommandResult Error;
+	TestFalse(TEXT("a function graph without a FunctionEntry is refused before mutation"),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, Preview, Error));
+	TestTrue(FString::Printf(TEXT("the refusal is an invalid operation naming the missing entry [%s|%s]"),
+		*Error.ErrorCode, *Error.ErrorMessage),
+		Error.ErrorCode == CortexErrorCodes::InvalidOperation && Error.ErrorMessage.Contains(TEXT("FunctionEntry")));
+	TestEqual(TEXT("a refused malformed target leaves the graph untouched"),
+		FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash")), FingerprintBefore);
+	TestEqual(TEXT("a refused malformed target adds no node"), Malformed->Nodes.Num(), NodesBefore);
 	CortexGraphPatchApplyTest::Cleanup(Package, Blueprint);
 	return true;
 }

@@ -102,6 +102,16 @@ bool FCortexGraphImplementationOps::ValidateEligibility(
 						break;
 					}
 				}
+				if (!OutPlan.ExistingEntryNode)
+				{
+					// A function graph without an entry cannot be re-entered by a patch: apply would
+					// mutate it and report success with no entry at all (readback skips the entry
+					// comparison when nothing was applied), so the target is refused before mutation.
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+						FString::Printf(TEXT("Function graph '%s' has no FunctionEntry node; the target graph is malformed and cannot be patched"),
+							*FunctionGraph->GetName()));
+					return false;
+				}
 			}
 		}
 	}

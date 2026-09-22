@@ -369,8 +369,8 @@ FCortexNodeConstructionContract FCortexGraphNodeContract::Describe(const FString
 	else if (FamilyName == FName("DynamicCast"))
 	{
 		Set(TEXT("K2Node_DynamicCast"));
-		Contract.OptionalParams.Add({ TEXT("class"), TEXT("string"), false, TEXT("Cast target class; alias target_class accepted") });
-		Contract.OptionalParams.Add({ TEXT("is_pure"), TEXT("bool"), false, TEXT("Pure cast mode (no execution pins); alias bIsPureCast, pure") });
+		Contract.RequiredParams.Add({ TEXT("class"), TEXT("string"), true, TEXT("Cast target class; alias target_class accepted") });
+		Contract.OptionalParams.Add({ TEXT("is_pure"), TEXT("bool"), false, TEXT("Pure cast mode (no execution pins); alias bIsPureCast, pure; requires a target class") });
 		Contract.NonRetryableErrors = TEXT("INVALID_FIELD, CLASS_NOT_FOUND");
 	}
 	else if (FamilyName == FName("ConstructObject"))
@@ -583,6 +583,16 @@ bool FCortexGraphNodeContract::Validate(
 			{
 				return FailWithError(TEXT("params.class"), OutError);
 			}
+		}
+		// Purity is only meaningful together with a cast target: a purity-only request describes a
+		// node whose identity can never be verified, so it is refused instead of being accepted and
+		// then failing after mutation.
+		const bool bDeclaresPurity = NodeParams.IsValid() && (
+			NodeParams->HasField(TEXT("is_pure")) || NodeParams->HasField(TEXT("pure"))
+			|| NodeParams->HasField(TEXT("bIsPureCast")));
+		if (!bHasClass && bDeclaresPurity)
+		{
+			return Fail(TEXT("params.class"), TEXT("DynamicCast purity requires a target class: params.class or target_class"));
 		}
 	}
 	else if (FamilyName == FName("ConstructObject"))
