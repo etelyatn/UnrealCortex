@@ -43,6 +43,8 @@
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
 #include "Misc/SecureHash.h"
+#include "HAL/FileManager.h"
+#include "UObject/SavePackage.h"
 #include "Serialization/JsonSerializer.h"
 #include "ScopedTransaction.h"
 #include "Editor.h"
@@ -60,6 +62,12 @@ constexpr int32 MaxScannedNodes = 2048;
 
 #if WITH_AUTOMATION_TESTS
 FName ApplyFaultPointForTesting = NAME_None;
+bool bSaveFaultForTesting = false;
+FName PostSaveVerificationFaultForTesting = NAME_None;
+FName ReadbackFaultForTesting = NAME_None;
+TFunction<void(FName, UBlueprint*)> OperationObserverForTesting;
+/** Test-only native-state mutator invoked after apply and before readback. */
+TFunction<void(UBlueprint*)> PreReadbackMutatorForTesting;
 #endif
 
 bool ShouldInjectApplyFault(const FName Point)
@@ -70,6 +78,174 @@ bool ShouldInjectApplyFault(const FName Point)
 	return false;
 #endif
 }
+
+/** Test-only persistence fault: makes the single target save report failure. */
+bool ShouldInjectSaveFault()
+{
+#if WITH_AUTOMATION_TESTS
+	return bSaveFaultForTesting;
+#else
+	return false;
+#endif
+}
+
+/** Test-only persistence fault: fails exactly one named post-save persistence check. */
+bool ShouldInjectPostSaveFault(const FName Check)
+{
+#if WITH_AUTOMATION_TESTS
+	return PostSaveVerificationFaultForTesting == Check;
+#else
+	(void)Check;
+	return false;
+#endif
+}
+
+void MutateNativeStateBeforeReadback(UBlueprint* Blueprint)
+{
+#if WITH_AUTOMATION_TESTS
+	if (PreReadbackMutatorForTesting)
+	{
+		PreReadbackMutatorForTesting(Blueprint);
+	}
+#else
+	(void)Blueprint;
+#endif
+}
+
+bool ShouldInjectReadbackFault(const FName Field)
+{
+#if WITH_AUTOMATION_TESTS
+	return ReadbackFaultForTesting == Field;
+#else
+	(void)Field;
+	return false;
+#endif
+}
+
+void NotifyOperation(const FName Operation, UBlueprint* Blueprint)
+{
+#if WITH_AUTOMATION_TESTS
+	if (OperationObserverForTesting)
+	{
+		OperationObserverForTesting(Operation, Blueprint);
+	}
+#else
+	(void)Operation;
+	(void)Blueprint;
+#endif
+}
+
+/**
+ * Divergence ledger of one planned-intent comparison pass. Every canonical dimension is corrupted
+ * at most once, and only when the comparison pass explicitly allows test fault injection, so a
+ * single injected fault proves the comparison really runs.
+ */
+struct FReadbackFaultState
+{
+	bool bInjectionAllowed = false;
+	bool bClass = false;
+	bool bSymbol = false;
+	bool bDefault = false;
+	bool bEdge = false;
+
+	/** True when the named divergence must corrupt this comparison pass exactly once. */
+	bool Inject(const FName Field, bool& bDimension)
+	{
+		if (!bInjectionAllowed || bDimension || !ShouldInjectReadbackFault(Field)) return false;
+		bDimension = true;
+		return true;
+	}
+
+	bool InjectClass() { return Inject(TEXT("readback_class"), bClass); }
+	bool InjectSymbol() { return Inject(TEXT("readback_symbol"), bSymbol); }
+	bool InjectDefault() { return Inject(TEXT("readback_default"), bDefault); }
+	bool InjectEdge() { return Inject(TEXT("readback_edge"), bEdge); }
+};
+
+/**
+ * Deterministic node identity of one planned client id: a stable hash of the canonical patch GUID
+ * and the client id. No clock, pointer or random input is involved, so the same pair derives the
+ * same GUID in every asset and every process.
+ */
+FGuid DerivePlannedNodeGuid(const FString& PatchId, const FString& ClientId)
+{
+	const FString Seed = FString::Printf(TEXT("cortex.graph.patch:%s:%s"), *PatchId, *ClientId);
+	FTCHARToUTF8 SeedUtf8(*Seed);
+	FMD5 Md5;
+	Md5.Update(reinterpret_cast<const uint8*>(SeedUtf8.Get()), SeedUtf8.Length());
+	FMD5Hash Digest;
+	Digest.Set(Md5);
+	FGuid Guid = MD5HashToGuid(Digest);
+	if (!Guid.IsValid())
+	{
+		// A valid GUID is a hard requirement for node identity, and an all-zero digest is the only
+		// way this derivation could produce one; keep the repair deterministic instead of random.
+		Guid.A = 1;
+	}
+	return Guid;
+}
+
+/**
+ * Graph that owns a node GUID anywhere in the Blueprint, or null when the GUID is unused. Used to
+ * refuse a deterministic identity that would collide across graphs of the same asset.
+ */
+UEdGraph* FindOwningGraphByNodeGuid(UBlueprint* Blueprint, const FGuid& NodeGuid, UEdGraphNode*& OutNode)
+{
+	OutNode = nullptr;
+	if (!Blueprint || !NodeGuid.IsValid()) return nullptr;
+	TArray<UEdGraph*> Graphs;
+	Blueprint->GetAllGraphs(Graphs);
+	for (UEdGraph* Graph : Graphs)
+	{
+		if (!Graph) continue;
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node && Node->NodeGuid == NodeGuid)
+			{
+				OutNode = Node;
+				return Graph;
+			}
+		}
+	}
+	return nullptr;
+}
+
+/** Durable locators of a prepared patch: every planned identity, known before the first mutation. */
+FCortexGraphPatchLocators MakePreparedLocators(const FCortexGraphPreparedPatch& Prepared)
+{
+	FCortexGraphPatchLocators Locators;
+	FGuid::Parse(Prepared.GraphGuid, Locators.GraphGuid);
+	Locators.SubgraphPath = Prepared.SubgraphPath;
+	Locators.NodeGuidByClientId = Prepared.NodeGuidByClientId;
+	Locators.EntryNodeGuid = Prepared.EntryNodeGuid;
+	Locators.bHasEntryNode = Prepared.bHasEntryNode;
+	return Locators;
+}
+
+/**
+ * Compares the whole planned intent against the live native asset. It is defined together with the
+ * native comparison helpers below and is shared by readback and by the planning-time reuse
+ * reconciliation, so exactly one comparator defines what "matches the planned intent" means.
+ */
+bool ComparePlannedIntentAgainstNative(
+	UBlueprint* Blueprint,
+	const FCortexGraphPreparedPatch& Prepared,
+	const FCortexGraphPatchLocators& Locators,
+	bool bCompiled,
+	bool bAllowFaultInjection,
+	FString& OutFailure);
+
+/**
+ * Compares one normalized planned node against a live native node on every canonical planned
+ * dimension: node class, resolved symbol, planned pin signatures, planned tagged defaults and the
+ * authored layout where a position was planned.
+ */
+bool ComparePlannedNodeAgainstNative(
+	UBlueprint* Blueprint,
+	const TSharedPtr<FJsonObject>& NodeJson,
+	UEdGraphNode* Live,
+	FReadbackFaultState& Faults,
+	FString& OutFailure);
 
 bool IsJsonType(const TSharedPtr<FJsonValue>& Value, EJson Expected)
 {
@@ -882,6 +1058,12 @@ bool FCortexGraphPatchOps::Preflight(
 			OutPrepared.GraphGuid = GraphGuid.ToString();
 			(*RefPtr)->TryGetStringField(TEXT("subgraph_path"), OutPrepared.SubgraphPath);
 		}
+		else
+		{
+			// An implementation target writes into the graph that already owns the entry, so its
+			// durable graph locator is known before the first mutation.
+			OutPrepared.GraphGuid = TargetGraph->GraphGuid.ToString();
+		}
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
@@ -914,6 +1096,10 @@ bool FCortexGraphPatchOps::Preflight(
 	Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
 	TArray<TSharedPtr<FJsonValue>> NormalizedNodes;
 	TSet<FString> ClientIds;
+	/** Owner of every derived GUID in this request, used to refuse intra-request collisions. */
+	TMap<FGuid, FString> DerivedGuidOwners;
+	/** Client ids whose deterministic node does not exist yet and must therefore be created. */
+	TArray<FString> CreatedClientIds;
 	TMap<FString, UEdGraphNode*> PlannedNodes;
 	TMap<FString, TSet<FString>> DefaultPins;
 	UBlueprint* PlanningBlueprint = NewObject<UBlueprint>(GetTransientPackage(), NAME_None, RF_Transient);
@@ -973,6 +1159,8 @@ bool FCortexGraphPatchOps::Preflight(
 				return false;
 			}
 			PlannedNodes.Add(TEXT("entry"), *EntryClone);
+			OutPrepared.EntryNodeGuid = ImplementationPlan.ExistingEntryNode->NodeGuid;
+			OutPrepared.bHasEntryNode = true;
 		}
 		else if (bImplementationIsEvent)
 		{
@@ -1034,8 +1222,18 @@ bool FCortexGraphPatchOps::Preflight(
 		if (NormalizedNode->TryGetObjectField(TEXT("params"), ParamsPtr) && ParamsPtr && ParamsPtr->IsValid()) NodeParams = *ParamsPtr;
 		if (!ValidateConstructionParamShape(NodeClass, NodeParams, OutError)) return false;
 		if (!FCortexGraphNodeContract::Validate(NodeClass, Blueprint, NodeParams, OutError)) return false;
+		const FGuid DerivedGuid = DerivePlannedNodeGuid(OutPrepared.PatchId, ClientId);
+		if (const FString* OtherClientId = DerivedGuidOwners.Find(DerivedGuid))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("client_id '%s' and client_id '%s' derive the same deterministic node GUID %s"),
+					*ClientId, **OtherClientId, *DerivedGuid.ToString()));
+			return false;
+		}
+		DerivedGuidOwners.Add(DerivedGuid, ClientId);
+		OutPrepared.NodeGuidByClientId.Add(ClientId, DerivedGuid);
 		UEdGraphNode* PlannedNode = NewObject<UEdGraphNode>(PlanningGraph, ResolvedNodeClass, NAME_None, RF_Transient);
-		PlannedNode->CreateNewGuid();
+		PlannedNode->NodeGuid = DerivedGuid;
 		FString ApplyError;
 		if (!FCortexGraphNodeContract::ApplyNodeConstructionParams(PlanningGraph, PlannedNode, Blueprint, NodeParams, ApplyError))
 		{
@@ -1055,6 +1253,38 @@ bool FCortexGraphPatchOps::Preflight(
 			return false;
 		}
 		AddPlannedPinSignature(PlannedNode, NormalizedNode);
+
+		// Deterministic identity reconciliation: an identity that already exists in the target graph
+		// is reused when its native state matches the canonical planned intent and refused when any
+		// dimension conflicts. An identity that exists in another graph of the same asset is a
+		// cross-graph collision and is always refused, because existing nodes are never overwritten.
+		UEdGraphNode* ExistingNode = nullptr;
+		UEdGraph* const ExistingGraph = FindOwningGraphByNodeGuid(Blueprint, DerivedGuid, ExistingNode);
+		if (ExistingNode && ExistingGraph != TargetGraph)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("client_id '%s' derives node GUID %s which already exists in graph '%s'; a deterministic node identity must not collide with a node in another graph"),
+					*ClientId, *DerivedGuid.ToString(), ExistingGraph ? *ExistingGraph->GetName() : TEXT("<unknown>")));
+			return false;
+		}
+		if (ExistingNode)
+		{
+			FReadbackFaultState ReuseFaults;
+			FString ReuseFailure;
+			if (!ComparePlannedNodeAgainstNative(Blueprint, NormalizedNode, ExistingNode, ReuseFaults, ReuseFailure))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("client_id '%s' already resolves to node GUID %s but its native state conflicts with the planned intent: %s"),
+						*ClientId, *DerivedGuid.ToString(), *ReuseFailure));
+				return false;
+			}
+			OutPrepared.ReusedClientIds.Add(ClientId);
+		}
+		else
+		{
+			CreatedClientIds.Add(ClientId);
+		}
+
 		PlanningGraph->AddNode(PlannedNode, false, false);
 		TSet<FString> Pins;
 		const TSharedPtr<FJsonObject>* DefaultsPtr = nullptr;
@@ -1066,6 +1296,25 @@ bool FCortexGraphPatchOps::Preflight(
 		PlannedNodes.Add(ClientId, PlannedNode);
 		OutPrepared.PlannedNodeIds.Add(ClientId);
 		NormalizedNodes.Add(MakeShared<FJsonValueObject>(NormalizedNode));
+	}
+
+	// Identity-set refusals are decided by the planned node identities alone and are reported before
+	// any connection-level check could answer with a less specific reason: a partial identity set is
+	// refused instead of appended to, and a complete identity set is refused when the implementation
+	// entry would still have to be created next to it.
+	if (OutPrepared.ReusedClientIds.Num() > 0 && CreatedClientIds.Num() > 0)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("patch identity set is partial: client_id(s) %s already exist exactly while client_id(s) %s are missing; a patch must be entirely new or a complete replay"),
+				*FString::Join(OutPrepared.ReusedClientIds, TEXT(", ")), *FString::Join(CreatedClientIds, TEXT(", "))));
+		return false;
+	}
+	if (OutPrepared.ReusedClientIds.Num() > 0 && bImplementationWouldCreate)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("client_id(s) %s already exist exactly while the implementation target still has to be created; a patch must be entirely new or a complete replay"),
+				*FString::Join(OutPrepared.ReusedClientIds, TEXT(", "))));
+		return false;
 	}
 	TArray<TSharedPtr<FJsonValue>> NormalizedPinUpdates;
 	TSet<FString> ExistingDefaultInputs;
@@ -1190,26 +1439,35 @@ bool FCortexGraphPatchOps::Preflight(
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, FString::Printf(TEXT("Input '%s' has competing connection/default"), *InputKey));
 			return false;
 		}
-		const UEdGraphSchema* Schema = PlanningGraph->GetSchema();
-		if (Schema)
+		// Replay edges: when every planned node identity already exists exactly, the planning graph
+		// may already model the native link through its cloned proxies, so re-creating the link here
+		// would look like replacing a competing native link. The exact native edge is verified
+		// against the live asset by the reuse comparison that decides this request is a replay.
+		const bool bReplayEdge = CreatedClientIds.Num() == 0 && OutPrepared.ReusedClientIds.Num() > 0
+			&& (!bFromEntry || OutPrepared.bHasEntryNode) && (!bToEntry || OutPrepared.bHasEntryNode);
+		if (!bReplayEdge)
 		{
-			const FPinConnectionResponse Response = Schema->CanCreateConnection(SourcePin, TargetPin);
-			if (Response.Response != CONNECT_RESPONSE_MAKE)
+			const UEdGraphSchema* Schema = PlanningGraph->GetSchema();
+			if (Schema)
 			{
-				OutError = FCortexCommandRouter::Error(Response.Response == CONNECT_RESPONSE_DISALLOW ? CortexErrorCodes::PinTypeMismatch : CortexErrorCodes::InvalidOperation,
-					FString::Printf(TEXT("Schema rejected connection: %s"), *Response.Message.ToString()));
+				const FPinConnectionResponse Response = Schema->CanCreateConnection(SourcePin, TargetPin);
+				if (Response.Response != CONNECT_RESPONSE_MAKE)
+				{
+					OutError = FCortexCommandRouter::Error(Response.Response == CONNECT_RESPONSE_DISALLOW ? CortexErrorCodes::PinTypeMismatch : CortexErrorCodes::InvalidOperation,
+						FString::Printf(TEXT("Schema rejected connection: %s"), *Response.Message.ToString()));
+					return false;
+				}
+			}
+			if (TargetPin->LinkedTo.Num() > 0)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, FString::Printf(TEXT("Input '%s' has competing connection/default"), *InputKey));
 				return false;
 			}
-		}
-		if (TargetPin->LinkedTo.Num() > 0)
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, FString::Printf(TEXT("Input '%s' has competing connection/default"), *InputKey));
-			return false;
-		}
-		if (Schema && !Schema->TryCreateConnection(SourcePin, TargetPin))
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Transient schema connection failed"));
-			return false;
+			if (Schema && !Schema->TryCreateConnection(SourcePin, TargetPin))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Transient schema connection failed"));
+				return false;
+			}
 		}
 		ConnectedInputs.Add(InputKey);
 		TSharedPtr<FJsonObject> NormalizedConnection = MakeShared<FJsonObject>();
@@ -1223,8 +1481,28 @@ bool FCortexGraphPatchOps::Preflight(
 	Normalized->SetBoolField(TEXT("allow_noop"), bAllowNoop);
 	Normalized->SetObjectField(TEXT("resolved_symbol"), SymbolJson.IsValid() ? SymbolJson : MakeShared<FJsonObject>());
 	OutPrepared.NormalizedRequest = Normalized;
-	OutPrepared.bChanged = Nodes->Num() > 0 || Connections->Num() > 0 || (PinUpdates && PinUpdates->Num() > 0) || bImplementationWouldCreate;
-	if (TargetGraph && !OutPrepared.bChanged && !bAllowNoop)
+
+	// A complete reuse match is an idempotent replay rather than an empty request: it must prove the
+	// whole planned intent against the live asset before it may claim no work is needed.
+	if (OutPrepared.ReusedClientIds.Num() > 0)
+	{
+		// The reuse match is proven without the compiled-class check: an idempotent replay never
+		// compiles, so it can only claim the authoring intent, not the compiled artifact.
+		FString ReuseFailure;
+		if (!ComparePlannedIntentAgainstNative(
+			Blueprint, OutPrepared, MakePreparedLocators(OutPrepared), false, false, ReuseFailure))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("the existing deterministic identity set does not match the planned intent: %s"), *ReuseFailure));
+			return false;
+		}
+		OutPrepared.bFullyReused = true;
+	}
+
+	const bool bHasPlannedIntent = NormalizedNodes.Num() > 0 || NormalizedConnections.Num() > 0
+		|| NormalizedPinUpdates.Num() > 0 || bImplementationWouldCreate;
+	OutPrepared.bChanged = bHasPlannedIntent && !OutPrepared.bFullyReused;
+	if (TargetGraph && !OutPrepared.bChanged && !bAllowNoop && !bHasPlannedIntent)
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("graph patch has no prospective change; set allow_noop=true for an idempotent request"));
 		return false;
@@ -1256,48 +1534,6 @@ bool FCortexGraphPatchOps::Preflight(
 
 namespace
 {
-#if WITH_AUTOMATION_TESTS
-FName ReadbackFaultForTesting = NAME_None;
-TFunction<void(FName, UBlueprint*)> OperationObserverForTesting;
-/** Test-only native-state mutator invoked after apply and before readback. */
-TFunction<void(UBlueprint*)> PreReadbackMutatorForTesting;
-#endif
-
-void MutateNativeStateBeforeReadback(UBlueprint* Blueprint)
-{
-#if WITH_AUTOMATION_TESTS
-	if (PreReadbackMutatorForTesting)
-	{
-		PreReadbackMutatorForTesting(Blueprint);
-	}
-#else
-	(void)Blueprint;
-#endif
-}
-
-bool ShouldInjectReadbackFault(const FName Field)
-{
-#if WITH_AUTOMATION_TESTS
-	return ReadbackFaultForTesting == Field;
-#else
-	(void)Field;
-	return false;
-#endif
-}
-
-void NotifyOperation(const FName Operation, UBlueprint* Blueprint)
-{
-#if WITH_AUTOMATION_TESTS
-	if (OperationObserverForTesting)
-	{
-		OperationObserverForTesting(Operation, Blueprint);
-	}
-#else
-	(void)Operation;
-	(void)Blueprint;
-#endif
-}
-
 constexpr int32 MaxStoredDiagnostics = 16;
 constexpr int32 MaxDiagnosticLength = 512;
 
@@ -2161,7 +2397,7 @@ bool ComparePlannedDefaults(
 	UBlueprint* Blueprint,
 	const TSharedPtr<FJsonObject>& NodeJson,
 	UEdGraphNode* Live,
-	bool& bInjected,
+	FReadbackFaultState& Faults,
 	FString& OutFailure)
 {
 	(void)Blueprint;
@@ -2185,9 +2421,8 @@ bool ComparePlannedDefaults(
 			}
 			return false;
 		}
-		if (!bInjected && ShouldInjectReadbackFault(TEXT("readback_default")))
+		if (Faults.InjectDefault())
 		{
-			bInjected = true;
 			Expected += TEXT("#injected");
 		}
 		if (Expected != Actual)
@@ -2200,11 +2435,87 @@ bool ComparePlannedDefaults(
 	return true;
 }
 
+/**
+ * Compares one normalized planned node against a live native node on every canonical planned
+ * dimension: node class, re-resolved symbol, planned pin signatures, planned tagged defaults and the
+ * authored layout where a position was planned. Readback uses it after apply, and the planning-time
+ * reuse reconciliation uses it for every identity that already exists, so exactly one comparator
+ * defines what "matches the planned intent" means.
+ */
+bool ComparePlannedNodeAgainstNative(
+	UBlueprint* Blueprint,
+	const TSharedPtr<FJsonObject>& NodeJson,
+	UEdGraphNode* Live,
+	FReadbackFaultState& Faults,
+	FString& OutFailure)
+{
+	if (!NodeJson.IsValid() || !Live)
+	{
+		OutFailure = TEXT("planned node or live node is missing");
+		return false;
+	}
+	const FString ClientId = NodeJson->GetStringField(TEXT("client_id"));
+	const FString NodeClassName = NodeJson->GetStringField(TEXT("node_class"));
+
+	FName Family;
+	UClass* ResolvedClass = nullptr;
+	FCortexGraphNodeContract::ResolveFamily(NodeClassName, Family, ResolvedClass);
+	FString ExpectedClass = ResolvedClass ? ResolvedClass->GetPathName() : FString();
+	if (Faults.InjectClass())
+	{
+		ExpectedClass += TEXT("#injected");
+	}
+	const FString ActualClass = Live->GetClass()->GetPathName();
+	if (ExpectedClass != ActualClass)
+	{
+		OutFailure = FString::Printf(TEXT("planned node '%s' canonical class mismatch: expected '%s', found '%s'"),
+			*ClientId, *ExpectedClass, *ActualClass);
+		return false;
+	}
+
+	FString ExpectedSymbol;
+	FString ActualSymbol;
+	FString SymbolFailure;
+	if (!CompareNodeSymbol(Blueprint, NodeJson, Live, Family, ExpectedSymbol, ActualSymbol, SymbolFailure))
+	{
+		OutFailure = SymbolFailure;
+		return false;
+	}
+	if (Faults.InjectSymbol())
+	{
+		ExpectedSymbol += TEXT("#injected");
+	}
+	if (ExpectedSymbol != ActualSymbol)
+	{
+		OutFailure = FString::Printf(TEXT("planned node '%s' symbol mismatch: expected '%s', found '%s'"),
+			*ClientId, *ExpectedSymbol, *ActualSymbol);
+		return false;
+	}
+
+	if (!ComparePlannedPinSignatures(NodeJson, Live, OutFailure)) return false;
+	if (!ComparePlannedDefaults(Blueprint, NodeJson, Live, Faults, OutFailure)) return false;
+
+	// Authored layout is part of the planned intent: when a position was planned, the native layout
+	// must match it exactly, otherwise the identity points at a node the request never authored.
+	const TSharedPtr<FJsonObject>* PositionPtr = nullptr;
+	if (NodeJson->TryGetObjectField(TEXT("position"), PositionPtr) && PositionPtr && PositionPtr->IsValid())
+	{
+		const int32 PlannedX = (*PositionPtr)->GetIntegerField(TEXT("x"));
+		const int32 PlannedY = (*PositionPtr)->GetIntegerField(TEXT("y"));
+		if (Live->NodePosX != PlannedX || Live->NodePosY != PlannedY)
+		{
+			OutFailure = FString::Printf(TEXT("planned node '%s' position mismatch: expected (%d,%d), found (%d,%d)"),
+				*ClientId, PlannedX, PlannedY, Live->NodePosX, Live->NodePosY);
+			return false;
+		}
+	}
+	return true;
+}
+
 bool ComparePlannedPinUpdates(
 	UBlueprint* Blueprint,
 	const FCortexGraphPreparedPatch& Prepared,
-	const FGraphPatchJournal& Journal,
-	bool& bInjectedDefault,
+	FReadbackFaultState& Faults,
 	FString& OutFailure)
 {
 	const TArray<TSharedPtr<FJsonValue>>& Updates = Prepared.NormalizedRequest->GetArrayField(TEXT("pin_updates"));
@@ -2233,9 +2544,8 @@ bool ComparePlannedPinUpdates(
 		FString Expected;
 		FString Actual;
 		if (!FCortexGraphPinDefaults::CompareAppliedLiteral(Pin, *LiteralPtr, Expected, Actual, OutFailure)) return false;
-		if (!bInjectedDefault && ShouldInjectReadbackFault(TEXT("readback_default")))
+		if (Faults.InjectDefault())
 		{
-			bInjectedDefault = true;
 			Expected += TEXT("#injected");
 		}
 		if (Expected != Actual)
@@ -2278,11 +2588,11 @@ bool GeneratedClassDeclaresFunction(UBlueprint* Blueprint, const FName FunctionN
 bool CompareEntrySymbol(
 	UBlueprint* Blueprint,
 	const FCortexGraphPreparedPatch& Prepared,
-	const FGraphPatchJournal& Journal,
+	const FCortexGraphPatchLocators& Locators,
 	bool bCompiled,
 	FString& OutFailure)
 {
-	if (!Journal.Locators.bHasEntryNode) return true;
+	if (!Locators.bHasEntryNode) return true;
 	const TSharedPtr<FJsonObject>* SymbolPtr = nullptr;
 	if (!Prepared.NormalizedRequest->TryGetObjectField(TEXT("resolved_symbol"), SymbolPtr)
 		|| !SymbolPtr || !SymbolPtr->IsValid())
@@ -2296,7 +2606,7 @@ bool CompareEntrySymbol(
 	if (ExpectedName.IsEmpty()) return true;
 
 	UEdGraphNode* Entry = nullptr;
-	FindNodeByGuid(Blueprint, Journal.Locators.EntryNodeGuid, Entry);
+	FindNodeByGuid(Blueprint, Locators.EntryNodeGuid, Entry);
 	if (!Entry)
 	{
 		OutFailure = TEXT("implementation entry locator did not re-resolve after apply");
@@ -2338,8 +2648,8 @@ bool CompareEntrySymbol(
 bool ComparePlannedEdges(
 	UBlueprint* Blueprint,
 	const FCortexGraphPreparedPatch& Prepared,
-	const FGraphPatchJournal& Journal,
-	bool& bInjected,
+	const FCortexGraphPatchLocators& Locators,
+	FReadbackFaultState& Faults,
 	FString& OutFailure)
 {
 	const TArray<TSharedPtr<FJsonValue>>& Connections = Prepared.NormalizedRequest->GetArrayField(TEXT("connections"));
@@ -2368,16 +2678,15 @@ bool ComparePlannedEdges(
 			OutFailure = EndpointError.ErrorMessage;
 			return false;
 		}
-		if (!bInjected && ShouldInjectReadbackFault(TEXT("readback_edge")))
+		if (Faults.InjectEdge())
 		{
-			bInjected = true;
 			ToPinName += TEXT("#injected");
 		}
 
 		UEdGraphNode* SourceNode = nullptr;
 		UEdGraphNode* TargetNode = nullptr;
-		if (!ResolveLiveNode(Blueprint, Journal.Locators, FromId, SourceNode)
-			|| !ResolveLiveNode(Blueprint, Journal.Locators, ToId, TargetNode))
+		if (!ResolveLiveNode(Blueprint, Locators, FromId, SourceNode)
+			|| !ResolveLiveNode(Blueprint, Locators, ToId, TargetNode))
 		{
 			OutFailure = FString::Printf(TEXT("planned edge %d no longer re-resolves its endpoints"), Index);
 			return false;
@@ -2399,18 +2708,22 @@ bool ComparePlannedEdges(
 	return true;
 }
 
-/** Authoritative native readback of every planned locator against the applied state. */
-bool VerifyAppliedState(
+/**
+ * Compares the whole planned intent against the live native asset: every planned node's canonical
+ * dimensions, every planned pin update, the implementation entry symbol and every planned edge.
+ * Readback after apply and the planning-time reuse reconciliation both use this one comparator, so
+ * a reuse match is proven by exactly the comparison that proves an applied patch.
+ */
+bool ComparePlannedIntentAgainstNative(
 	UBlueprint* Blueprint,
 	const FCortexGraphPreparedPatch& Prepared,
-	const FGraphPatchJournal& Journal,
+	const FCortexGraphPatchLocators& Locators,
 	bool bCompiled,
+	bool bAllowFaultInjection,
 	FString& OutFailure)
 {
-	bool bInjectedClass = false;
-	bool bInjectedSymbol = false;
-	bool bInjectedDefault = false;
-	bool bInjectedEdge = false;
+	FReadbackFaultState Faults;
+	Faults.bInjectionAllowed = bAllowFaultInjection;
 
 	const TArray<TSharedPtr<FJsonValue>>& Nodes = Prepared.NormalizedRequest->GetArrayField(TEXT("nodes"));
 	for (const TSharedPtr<FJsonValue>& Value : Nodes)
@@ -2422,60 +2735,32 @@ bool VerifyAppliedState(
 			return false;
 		}
 		const FString ClientId = NodeJson->GetStringField(TEXT("client_id"));
-		const FString NodeClassName = NodeJson->GetStringField(TEXT("node_class"));
 
 		UEdGraphNode* Live = nullptr;
-		if (!ResolveLiveNode(Blueprint, Journal.Locators, ClientId, Live))
+		if (!ResolveLiveNode(Blueprint, Locators, ClientId, Live))
 		{
 			OutFailure = FString::Printf(TEXT("planned node '%s' did not re-resolve after apply"), *ClientId);
 			return false;
 		}
 
-		FName Family;
-		UClass* ResolvedClass = nullptr;
-		FCortexGraphNodeContract::ResolveFamily(NodeClassName, Family, ResolvedClass);
-		FString ExpectedClass = ResolvedClass ? ResolvedClass->GetPathName() : FString();
-		if (!bInjectedClass && ShouldInjectReadbackFault(TEXT("readback_class")))
-		{
-			bInjectedClass = true;
-			ExpectedClass += TEXT("#injected");
-		}
-		const FString ActualClass = Live->GetClass()->GetPathName();
-		if (ExpectedClass != ActualClass)
-		{
-			OutFailure = FString::Printf(TEXT("planned node '%s' canonical class mismatch: expected '%s', found '%s'"),
-				*ClientId, *ExpectedClass, *ActualClass);
-			return false;
-		}
-
-		FString ExpectedSymbol;
-		FString ActualSymbol;
-		FString SymbolFailure;
-		if (!CompareNodeSymbol(Blueprint, NodeJson, Live, Family, ExpectedSymbol, ActualSymbol, SymbolFailure))
-		{
-			OutFailure = SymbolFailure;
-			return false;
-		}
-		if (!bInjectedSymbol && ShouldInjectReadbackFault(TEXT("readback_symbol")))
-		{
-			bInjectedSymbol = true;
-			ExpectedSymbol += TEXT("#injected");
-		}
-		if (ExpectedSymbol != ActualSymbol)
-		{
-			OutFailure = FString::Printf(TEXT("planned node '%s' symbol mismatch: expected '%s', found '%s'"),
-				*ClientId, *ExpectedSymbol, *ActualSymbol);
-			return false;
-		}
-
-		if (!ComparePlannedPinSignatures(NodeJson, Live, OutFailure)) return false;
-		if (!ComparePlannedDefaults(Blueprint, NodeJson, Live, bInjectedDefault, OutFailure)) return false;
+		if (!ComparePlannedNodeAgainstNative(Blueprint, NodeJson, Live, Faults, OutFailure)) return false;
 	}
 
-	if (!ComparePlannedPinUpdates(Blueprint, Prepared, Journal, bInjectedDefault, OutFailure)) return false;
-	if (!CompareEntrySymbol(Blueprint, Prepared, Journal, bCompiled, OutFailure)) return false;
-	if (!ComparePlannedEdges(Blueprint, Prepared, Journal, bInjectedEdge, OutFailure)) return false;
+	if (!ComparePlannedPinUpdates(Blueprint, Prepared, Faults, OutFailure)) return false;
+	if (!CompareEntrySymbol(Blueprint, Prepared, Locators, bCompiled, OutFailure)) return false;
+	if (!ComparePlannedEdges(Blueprint, Prepared, Locators, Faults, OutFailure)) return false;
 	return true;
+}
+
+/** Authoritative native readback of every planned locator against the applied state. */
+bool VerifyAppliedState(
+	UBlueprint* Blueprint,
+	const FCortexGraphPreparedPatch& Prepared,
+	const FGraphPatchJournal& Journal,
+	bool bCompiled,
+	FString& OutFailure)
+{
+	return ComparePlannedIntentAgainstNative(Blueprint, Prepared, Journal.Locators, bCompiled, true, OutFailure);
 }
 
 bool HandleApplyFailure(
@@ -2705,8 +2990,13 @@ bool ApplyPrepared(
 		{
 			return Fail(TEXT("Prepared node class no longer resolves"));
 		}
+		const FGuid* DerivedGuid = Prepared.NodeGuidByClientId.Find(ClientId);
+		if (!DerivedGuid || !DerivedGuid->IsValid())
+		{
+			return Fail(TEXT("Prepared node has no deterministic identity"));
+		}
 		UEdGraphNode* Node = NewObject<UEdGraphNode>(Graph, NodeClass, NAME_None, RF_Transactional);
-		Node->CreateNewGuid();
+		Node->NodeGuid = *DerivedGuid;
 		const TSharedPtr<FJsonObject>* ParamsPtr = nullptr;
 		FString ApplyError;
 		if (NodeJson->TryGetObjectField(TEXT("params"), ParamsPtr) && ParamsPtr && ParamsPtr->IsValid()
@@ -2837,6 +3127,85 @@ bool ApplyPrepared(
 	}
 	return true;
 }
+
+/**
+ * Post-save persistence verification of the committed target package, without reloading the asset:
+ * the package's on-disk filename must resolve to an existing file and the package must be clean
+ * again. The failing check is named so the caller never has to guess which boundary failed.
+ */
+bool VerifySavedTargetPackage(UPackage* Package, const FString& Filename, FName& OutFailedCheck)
+{
+	OutFailedCheck = NAME_None;
+	if (Filename.IsEmpty() || !IFileManager::Get().FileExists(*Filename))
+	{
+		OutFailedCheck = TEXT("asset_file");
+		return false;
+	}
+	if (ShouldInjectPostSaveFault(TEXT("asset_file")))
+	{
+		OutFailedCheck = TEXT("asset_file");
+		return false;
+	}
+	if (Package->IsDirty())
+	{
+		OutFailedCheck = TEXT("clean_package");
+		return false;
+	}
+	if (ShouldInjectPostSaveFault(TEXT("clean_package")))
+	{
+		OutFailedCheck = TEXT("clean_package");
+		return false;
+	}
+	return true;
+}
+
+/**
+ * Commits the verified in-memory result of a coordinated patch to disk: exactly one save of the
+ * target package and then post-save persistence verification. The asset is never reloaded and a
+ * committed file is never rolled back; a failure reports the persistence phases honestly instead.
+ */
+bool SaveVerifiedTargetPackage(
+	UBlueprint* Blueprint,
+	FCortexGraphPatchOutcome& OutOutcome,
+	FCortexCommandResult& OutError)
+{
+	UPackage* const Package = Blueprint->GetOutermost();
+	const FString Filename = FPackageName::LongPackageNameToFilename(
+		Package->GetName(), FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	const bool bSaveReported = !ShouldInjectSaveFault()
+		&& UPackage::SavePackage(Package, Blueprint, *Filename, SaveArgs);
+	if (!bSaveReported)
+	{
+		// The disk commit did not happen: keep the verified in-memory result, keep the package dirty
+		// and never claim that Undo reverted the file.
+		OutOutcome.SaveStatus = TEXT("failed");
+		OutOutcome.PostSaveStatus = TEXT("not_requested");
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, FString::Printf(
+			TEXT("Graph patch applied and verified in memory, but saving '%s' failed; the verified in-memory result is preserved, the package stays dirty and nothing was rolled back"),
+			*Package->GetName()));
+		return false;
+	}
+	OutOutcome.SaveStatus = TEXT("saved");
+	OutOutcome.bSaved = true;
+
+	FName FailedCheck = NAME_None;
+	if (!VerifySavedTargetPackage(Package, Filename, FailedCheck))
+	{
+		// The disk commit really happened, so the save result stays honest and only the persistence
+		// verification is reported as failed; nothing is rolled back and the asset is never blocked.
+		OutOutcome.PostSaveStatus = TEXT("failed");
+		const FString Message = FString::Printf(
+			TEXT("Post-save verification of '%s' failed after the file was committed; the in-memory result was not rolled back and the saved asset was not reloaded, so the asset must be reopened before further authoring"),
+			*FailedCheck.ToString());
+		OutOutcome.Diagnostics.Add(Message);
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::VerificationFailed, Message);
+		return false;
+	}
+	OutOutcome.PostSaveStatus = TEXT("verified");
+	return true;
+}
 }
 
 /** Bounded compiler diagnostics: the total entry count and each entry length respect the bound. */
@@ -2941,40 +3310,60 @@ bool FCortexGraphPatchOps::Execute(
 {
 	OutOutcome = FCortexGraphPatchOutcome();
 	OutError = FCortexCommandResult();
-	if (!ValidateEligibility(Blueprint, OutError)) return false;
+	if (!Blueprint)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, TEXT("Blueprint is null"));
+		return false;
+	}
+
+	// Every terminal path reports the live before/after state of the asset, so a caller that never
+	// learned the outcome can still reconcile by inspection, even after a refusal or a rollback.
+	OutOutcome.FingerprintBefore = FCortexGraphPatchState::ComputeFingerprint(Blueprint);
+	OutOutcome.bDirtyBefore = Blueprint->GetOutermost()->IsDirty();
+	auto CaptureAfterState = [&]()
+	{
+		OutOutcome.FingerprintAfter = FCortexGraphPatchState::ComputeFingerprint(Blueprint);
+		OutOutcome.bDirtyAfter = Blueprint->GetOutermost()->IsDirty();
+	};
+	auto Refuse = [&]() -> bool
+	{
+		CaptureAfterState();
+		return false;
+	};
+
+	if (!ValidateEligibility(Blueprint, OutError)) return Refuse();
 
 	FCortexGraphPreparedPatch Prepared;
 	if (!Preflight(Blueprint, Params, Prepared, OutError))
 	{
 		// Validation errors never mutate, never compile and never save.
-		return false;
+		return Refuse();
 	}
 	OutOutcome.PatchId = Prepared.PatchId;
 	OutOutcome.bChanged = Prepared.bChanged;
+	OutOutcome.ReusedClientIds = Prepared.ReusedClientIds;
+	OutOutcome.FingerprintBefore = Prepared.FingerprintBefore;
 	if (Prepared.bDryRun)
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 			TEXT("Execute requires an apply request (dry_run=false)"));
-		return false;
-	}
-	if (Prepared.bSave)
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::UnsupportedOperation,
-			TEXT("save=true is not implemented by this coordinator; persistence is a separate verified step"));
-		return false;
+		return Refuse();
 	}
 	FString BlockReason;
 	if (FCortexAssetMutationGuard::IsBlocked(Blueprint, BlockReason))
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 			FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
-		return false;
+		return Refuse();
 	}
 
 	if (!Prepared.bChanged)
 	{
-		// An idempotent no-op never mutates, never opens a transaction and never compiles.
+		// An idempotent replay or an allow_noop request never mutates, never opens a transaction,
+		// never compiles and never saves; it still reports the durable identities it reconciled by.
 		OutOutcome.ApplyStatus = TEXT("unchanged");
+		OutOutcome.Locators = MakePreparedLocators(Prepared);
+		CaptureAfterState();
 		return true;
 	}
 
@@ -2984,7 +3373,7 @@ bool FCortexGraphPatchOps::Execute(
 		// A failed apply still reports the durable identities it reached: a blocked or partially
 		// applied asset must stay inspectable instead of returning empty residual identities.
 		OutOutcome.Locators = Journal.Locators;
-		return false;
+		return Refuse();
 	}
 	OutOutcome.ApplyStatus = TEXT("applied");
 	OutOutcome.Locators = Journal.Locators;
@@ -3000,9 +3389,11 @@ bool FCortexGraphPatchOps::Execute(
 		if (!bCompiled)
 		{
 			OutOutcome.CompileStatus = TEXT("failed");
-			return HandleApplyFailure(Blueprint, Prepared, Journal, &OutOutcome, OutError,
+			// HandleApplyFailure always reports the failure: it completes the recovery attempt itself.
+			HandleApplyFailure(Blueprint, Prepared, Journal, &OutOutcome, OutError,
 				FString::Printf(TEXT("Graph patch compilation failed: %s"), *FString::Join(Diagnostics, TEXT("; "))),
 				CortexErrorCodes::CompileFailed, false);
+			return Refuse();
 		}
 		OutOutcome.CompileStatus = TEXT("compiled");
 	}
@@ -3012,11 +3403,21 @@ bool FCortexGraphPatchOps::Execute(
 	if (!VerifyAppliedState(Blueprint, Prepared, Journal, OutOutcome.CompileStatus == TEXT("compiled"), ReadbackFailure))
 	{
 		OutOutcome.ReadbackStatus = TEXT("mismatched");
-		return HandleApplyFailure(Blueprint, Prepared, Journal, &OutOutcome, OutError, ReadbackFailure,
+		// HandleApplyFailure always reports the failure: it completes the recovery attempt itself.
+		HandleApplyFailure(Blueprint, Prepared, Journal, &OutOutcome, OutError, ReadbackFailure,
 			CortexErrorCodes::VerificationFailed, false);
+		return Refuse();
 	}
 	OutOutcome.ReadbackStatus = TEXT("matched");
+
+	// Only a verified in-memory result is ever persisted, and only when the request asked for it.
+	if (Prepared.bSave && !SaveVerifiedTargetPackage(Blueprint, OutOutcome, OutError))
+	{
+		FCortexGraphPatchOps::TrimDiagnostics(OutOutcome.Diagnostics);
+		return Refuse();
+	}
 	FCortexGraphPatchOps::TrimDiagnostics(OutOutcome.Diagnostics);
+	CaptureAfterState();
 	return true;
 }
 
@@ -3055,5 +3456,15 @@ void FCortexGraphPatchOps::SetOperationObserverForTesting(TFunction<void(FName, 
 void FCortexGraphPatchOps::ClearOperationObserverForTesting()
 {
 	OperationObserverForTesting = nullptr;
+}
+
+void FCortexGraphPatchOps::SetSaveFaultForTesting(const bool bFail)
+{
+	bSaveFaultForTesting = bFail;
+}
+
+void FCortexGraphPatchOps::SetPostSaveVerificationFaultForTesting(const FName Check)
+{
+	PostSaveVerificationFaultForTesting = Check;
 }
 #endif

@@ -26,6 +26,18 @@ struct FCortexGraphPreparedPatch
 	bool bDryRun = true;
 	bool bCompile = true;
 	bool bSave = false;
+	/**
+	 * Deterministic identity of every planned client id: f(patch_id, client_id). Known before the
+	 * first mutation so preview, apply, readback and caller inspection agree without any receipt.
+	 */
+	TMap<FString, FGuid> NodeGuidByClientId;
+	/** Durable locator of an implementation entry node that already existed before this patch. */
+	FGuid EntryNodeGuid;
+	bool bHasEntryNode = false;
+	/** Client ids whose deterministic nodes already exist and match the canonical planned intent. */
+	TArray<FString> ReusedClientIds;
+	/** True when the whole planned intent is already present exactly: an idempotent replay. */
+	bool bFullyReused = false;
 	TArray<FString> PlannedNodeIds;
 	TArray<FString> PlannedConnectionKeys;
 
@@ -55,6 +67,12 @@ struct FCortexGraphPatchLocators
  * CompileStatus:   not_requested | compiled | failed
  * ReadbackStatus:  not_requested | matched | mismatched
  * RollbackStatus:  not_requested | restored | unverified
+ * SaveStatus:      not_requested | saved | failed
+ * PostSaveStatus:  not_requested | verified | failed
+ *
+ * Persistence is reported independently of the in-memory result: a save failure keeps
+ * ApplyStatus="applied" and never claims a rollback, and a post-save verification failure keeps
+ * SaveStatus="saved" because the disk commit really happened.
  */
 struct FCortexGraphPatchOutcome
 {
@@ -64,10 +82,19 @@ struct FCortexGraphPatchOutcome
 	FString CompileStatus = TEXT("not_requested");
 	FString ReadbackStatus = TEXT("not_requested");
 	FString RollbackStatus = TEXT("not_requested");
+	FString SaveStatus = TEXT("not_requested");
+	FString PostSaveStatus = TEXT("not_requested");
 	int32 TargetCompileCount = 0;
 	int32 RecoveryCompileCount = 0;
 	bool bSaved = false;
 	bool bBlocked = false;
+	/** Live fingerprint of the target asset before the coordinated patch and after it terminates. */
+	TSharedPtr<FJsonObject> FingerprintBefore;
+	TSharedPtr<FJsonObject> FingerprintAfter;
+	bool bDirtyBefore = false;
+	bool bDirtyAfter = false;
+	/** Client ids whose deterministic nodes were reused instead of created. */
+	TArray<FString> ReusedClientIds;
 	TArray<FString> Diagnostics;
 	FCortexGraphPatchLocators Locators;
 };
@@ -100,8 +127,10 @@ public:
 
 	/**
 	 * Runs the full apply coordinator for a non-preview request: prepare, eligibility, reversible
-	 * apply, optional single target compile, locator re-resolution and authoritative native
-	 * readback. Reports honest phase statuses and compile counts. Never saves.
+	 * apply, optional single target compile, locator re-resolution, authoritative native readback
+	 * and, only when the prepared request asked for it, exactly one save of the target package
+	 * followed by post-save persistence verification. Reports honest apply, compile, readback,
+	 * rollback and persistence statuses. Never reloads the asset and never saves a no-op.
 	 */
 	static bool Execute(
 		UBlueprint* Blueprint,
@@ -135,5 +164,12 @@ public:
 	/** Test-only observer of real coordinator operations ("target_compile", "recovery_compile"). */
 	static void SetOperationObserverForTesting(TFunction<void(FName, UBlueprint*)> Observer);
 	static void ClearOperationObserverForTesting();
+	/**
+	 * Test-only persistence fault seams; never accepts external command input and never reachable
+	 * from patch JSON. The save seam makes the single target save report failure, the post-save seam
+	 * fails exactly one named post-save persistence check.
+	 */
+	static void SetSaveFaultForTesting(bool bFail);
+	static void SetPostSaveVerificationFaultForTesting(FName Check);
 	#endif
 };
