@@ -10,10 +10,24 @@ enum class ECortexModuleOrigin : uint8
 	Engine
 };
 
+struct FCortexBlueprintCatalogClassPaths
+{
+	FTopLevelAssetPath GeneratedClassPath;
+	FTopLevelAssetPath ParentClassPath;
+	FTopLevelAssetPath NativeParentClassPath;
+};
+
 class FCortexReflectOps
 {
 public:
 	static FCortexCommandResult ClassHierarchy(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult BlueprintCatalog(const TSharedPtr<FJsonObject>& Params);
+	static bool ParseBlueprintCatalogClassPaths(
+		const FString& GeneratedTag,
+		const FString& ParentTag,
+		const FString& NativeParentTag,
+		FCortexBlueprintCatalogClassPaths& OutPaths,
+		TArray<FString>& OutInvalidFields);
 	static FCortexCommandResult ClassDetail(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult FindOverrides(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult FindUsages(const TSharedPtr<FJsonObject>& Params);
