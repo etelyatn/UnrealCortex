@@ -41,4 +41,13 @@ public:
 		const TSharedPtr<FJsonObject>& Params,
 		FCortexGraphPreparedPatch& OutPrepared,
 		FCortexCommandResult& OutError);
+
+	/**
+	 * Applies a prepared patch as one editor transaction. The prepared plan is revalidated
+	 * against the live asset immediately before the first mutation.
+	 */
+	static bool Apply(
+		UBlueprint* Blueprint,
+		const FCortexGraphPreparedPatch& Prepared,
+		FCortexCommandResult& OutError);
 };

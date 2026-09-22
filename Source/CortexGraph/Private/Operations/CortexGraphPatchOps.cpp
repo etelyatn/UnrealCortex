@@ -30,6 +30,9 @@
 #include "Misc/PackageName.h"
 #include "Misc/SecureHash.h"
 #include "Serialization/JsonSerializer.h"
+#include "ScopedTransaction.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "CortexAssetMutationGuard.h"
 
 namespace
 {
@@ -1188,6 +1191,197 @@ bool FCortexGraphPatchOps::Preflight(
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition, TEXT("expected_validation_hash does not match current preflight intent"));
 			return false;
 		}
+	}
+	return true;
+}
+
+bool FCortexGraphPatchOps::Apply(
+	UBlueprint* Blueprint,
+	const FCortexGraphPreparedPatch& Prepared,
+	FCortexCommandResult& OutError)
+{
+	OutError = FCortexCommandResult();
+	FString BlockReason;
+	if (FCortexAssetMutationGuard::IsBlocked(Blueprint, BlockReason))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
+		return false;
+	}
+	if (!Blueprint || !Prepared.NormalizedRequest.IsValid() || Prepared.bDryRun)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("A non-preview prepared graph patch is required"));
+		return false;
+	}
+	if (!FCortexGraphPatchState::ValidatePrecondition(
+		Prepared.FingerprintBefore, FCortexGraphPatchState::ComputeFingerprint(Blueprint), OutError))
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* TargetPtr = nullptr;
+	if (!Prepared.NormalizedRequest->TryGetObjectField(TEXT("target"), TargetPtr) || !TargetPtr || !TargetPtr->IsValid())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Prepared patch has no target"));
+		return false;
+	}
+	const TSharedPtr<FJsonObject>* GraphRefPtr = nullptr;
+	if (!(*TargetPtr)->TryGetObjectField(TEXT("graph_ref"), GraphRefPtr) || !GraphRefPtr || !GraphRefPtr->IsValid())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Implementation graph application is not available"));
+		return false;
+	}
+	FString GraphGuidString;
+	if (!(*GraphRefPtr)->TryGetStringField(TEXT("graph_guid"), GraphGuidString))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Prepared graph target has no graph_guid"));
+		return false;
+	}
+	FGuid GraphGuid;
+	if (!FGuid::Parse(GraphGuidString, GraphGuid))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Prepared graph target has an invalid graph_guid"));
+		return false;
+	}
+	TArray<UEdGraph*> Graphs;
+	Blueprint->GetAllGraphs(Graphs);
+	UEdGraph* Graph = nullptr;
+	for (UEdGraph* Candidate : Graphs)
+	{
+		if (Candidate && Candidate->GraphGuid == GraphGuid) { Graph = Candidate; break; }
+	}
+	if (!Graph)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::GraphNotFound, TEXT("Prepared graph target no longer exists"));
+		return false;
+	}
+
+	TArray<UEdGraphNode*> AddedNodes;
+	struct FDefaultUndo { UEdGraphPin* Pin; FString Value; FText Text; UObject* Object; };
+	TArray<FDefaultUndo> Defaults;
+	TArray<TPair<UEdGraphPin*, UEdGraphPin*>> AddedLinks;
+	auto Rollback = [&]()
+	{
+		for (int32 Index = AddedLinks.Num() - 1; Index >= 0; --Index)
+		{
+			if (AddedLinks[Index].Key && AddedLinks[Index].Value)
+			{
+				AddedLinks[Index].Key->BreakLinkTo(AddedLinks[Index].Value);
+			}
+		}
+		for (int32 Index = Defaults.Num() - 1; Index >= 0; --Index)
+		{
+			if (Defaults[Index].Pin)
+			{
+				Defaults[Index].Pin->DefaultValue = Defaults[Index].Value;
+				Defaults[Index].Pin->DefaultTextValue = Defaults[Index].Text;
+				Defaults[Index].Pin->DefaultObject = Defaults[Index].Object;
+			}
+		}
+		for (int32 Index = AddedNodes.Num() - 1; Index >= 0; --Index)
+		{
+			if (AddedNodes[Index] && AddedNodes[Index]->GetGraph())
+			{
+				AddedNodes[Index]->GetGraph()->RemoveNode(AddedNodes[Index]);
+			}
+		}
+	};
+	auto Fail = [&](const FString& Message)
+	{
+		Rollback();
+		const TSharedPtr<FJsonObject> Restored = FCortexGraphPatchState::ComputeFingerprint(Blueprint);
+		const bool bRestored = Restored.IsValid() && Prepared.FingerprintBefore.IsValid()
+			&& Restored->GetStringField(TEXT("graph_authoring_hash"))
+				== Prepared.FingerprintBefore->GetStringField(TEXT("graph_authoring_hash"));
+		if (!bRestored)
+		{
+			FCortexAssetMutationGuard::Block(Blueprint, TEXT("Graph patch rollback verification failed"));
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("Graph patch recovery verification failed; asset is blocked from mutation"));
+			return false;
+		}
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, Message);
+		return false;
+	};
+
+	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Apply Graph Patch")));
+	Blueprint->Modify();
+	Graph->Modify();
+	TMap<FString, UEdGraphNode*> NodesById;
+	for (UEdGraphNode* Existing : Graph->Nodes)
+	{
+		if (Existing) NodesById.Add(Existing->NodeGuid.ToString(), Existing);
+	}
+	const TArray<TSharedPtr<FJsonValue>>& Nodes = Prepared.NormalizedRequest->GetArrayField(TEXT("nodes"));
+	for (const TSharedPtr<FJsonValue>& Value : Nodes)
+	{
+		const TSharedPtr<FJsonObject> NodeJson = Value->AsObject();
+		if (!NodeJson.IsValid()) return Fail(TEXT("Prepared node is invalid"));
+		const FString ClientId = NodeJson->GetStringField(TEXT("client_id"));
+		const FString NodeClassName = NodeJson->GetStringField(TEXT("node_class"));
+		FName Family;
+		UClass* NodeClass = nullptr;
+		if (!FCortexGraphNodeContract::ResolveFamily(NodeClassName, Family, NodeClass) || !NodeClass)
+		{
+			return Fail(TEXT("Prepared node class no longer resolves"));
+		}
+		UEdGraphNode* Node = NewObject<UEdGraphNode>(Graph, NodeClass, NAME_None, RF_Transactional);
+		Node->CreateNewGuid();
+		const TSharedPtr<FJsonObject>* ParamsPtr = nullptr;
+		FString ApplyError;
+		if (NodeJson->TryGetObjectField(TEXT("params"), ParamsPtr) && ParamsPtr && ParamsPtr->IsValid()
+			&& !FCortexGraphNodeContract::ApplyNodeConstructionParams(Graph, Node, Blueprint, *ParamsPtr, ApplyError))
+		{
+			return Fail(ApplyError);
+		}
+		Node->AllocateDefaultPins();
+		Graph->AddNode(Node, true, false);
+		AddedNodes.Add(Node);
+		NodesById.Add(ClientId, Node);
+		const TSharedPtr<FJsonObject>* DefaultsPtr = nullptr;
+		if (NodeJson->TryGetObjectField(TEXT("defaults"), DefaultsPtr) && DefaultsPtr && DefaultsPtr->IsValid())
+		{
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*DefaultsPtr)->Values)
+			{
+				UEdGraphPin* Pin = Node->FindPin(FName(*Pair.Key));
+				const TSharedPtr<FJsonObject> Literal = Pair.Value->AsObject();
+				if (!Pin || !Literal.IsValid()) return Fail(TEXT("Prepared node default no longer resolves"));
+				Defaults.Add({ Pin, Pin->DefaultValue, Pin->DefaultTextValue, Pin->DefaultObject });
+				FCortexCommandResult DefaultError;
+				if (!FCortexGraphPinDefaults::ApplyDefault(Pin, Literal, DefaultError)) return Fail(DefaultError.ErrorMessage);
+			}
+		}
+	}
+	const TArray<TSharedPtr<FJsonValue>>& Connections = Prepared.NormalizedRequest->GetArrayField(TEXT("connections"));
+	for (const TSharedPtr<FJsonValue>& Value : Connections)
+	{
+		const TSharedPtr<FJsonObject> Connection = Value->AsObject();
+		const TSharedPtr<FJsonObject>* FromPtr = nullptr;
+		const TSharedPtr<FJsonObject>* ToPtr = nullptr;
+		if (!Connection.IsValid() || !Connection->TryGetObjectField(TEXT("from"), FromPtr) || !Connection->TryGetObjectField(TEXT("to"), ToPtr))
+		{
+			return Fail(TEXT("Prepared connection is invalid"));
+		}
+		FString FromId, FromPinName, ToId, ToPinName;
+		bool bFromEntry = false, bToEntry = false;
+		FCortexCommandResult EndpointError;
+		if (!ParseEndpoint(*FromPtr, FromId, FromPinName, bFromEntry, EndpointError, TEXT("connection.from"))
+			|| !ParseEndpoint(*ToPtr, ToId, ToPinName, bToEntry, EndpointError, TEXT("connection.to")))
+		{
+			return Fail(EndpointError.ErrorMessage);
+		}
+		UEdGraphNode* SourceNode = NodesById.FindRef(FromId);
+		UEdGraphNode* TargetNode = NodesById.FindRef(ToId);
+		UEdGraphPin* SourcePin = SourceNode ? SourceNode->FindPin(FName(*FromPinName)) : nullptr;
+		UEdGraphPin* TargetPin = TargetNode ? TargetNode->FindPin(FName(*ToPinName)) : nullptr;
+		if (!SourcePin || !TargetPin) return Fail(TEXT("Prepared connection endpoint no longer resolves"));
+		const UEdGraphSchema* Schema = Graph->GetSchema();
+		if (!Schema || Schema->CanCreateConnection(SourcePin, TargetPin).Response != CONNECT_RESPONSE_MAKE
+			|| !Schema->TryCreateConnection(SourcePin, TargetPin))
+		{
+			return Fail(TEXT("Prepared connection is no longer directly safe"));
+		}
+		AddedLinks.Add({ SourcePin, TargetPin });
 	}
 	return true;
 }
