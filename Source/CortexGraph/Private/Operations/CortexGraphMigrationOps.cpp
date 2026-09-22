@@ -27,6 +27,7 @@
 #include "Operations/CortexGraphNodeOps.h"
 #include "Operations/CortexGraphPatchOps.h"
 #include "Operations/CortexGraphSymbolResolver.h"
+#include "Serialization/JsonSerializer.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UObjectHash.h"
 
@@ -278,36 +279,15 @@ bool DeclarationCompiledIntoClass(UBlueprint* Blueprint, const FName FunctionNam
 	return false;
 }
 
-/** Canonical text of one JSON value, for exact field-by-field comparison. */
-FString CanonicalValue(const TSharedPtr<FJsonValue>& Value)
+/** Canonical frozen JSON text of one value, using the shared serializer. */
+FString FrozenJsonValue(const TSharedPtr<FJsonValue>& Value)
 {
 	if (!Value.IsValid()) return TEXT("null");
-	switch (Value->Type)
-	{
-	case EJson::String: return FString::Printf(TEXT("s:%s"), *Value->AsString());
-	case EJson::Number: return FString::Printf(TEXT("n:%.17g"), Value->AsNumber());
-	case EJson::Boolean: return Value->AsBool() ? TEXT("b:true") : TEXT("b:false");
-	case EJson::Array:
-	{
-		TArray<FString> Items;
-		for (const TSharedPtr<FJsonValue>& Item : Value->AsArray()) Items.Add(CanonicalValue(Item));
-		return FString::Printf(TEXT("a:[%s]"), *FString::Join(Items, TEXT(",")));
-	}
-	case EJson::Object:
-	{
-		TSharedPtr<FJsonObject> Object = Value->AsObject();
-		TArray<FString> Keys;
-		if (Object.IsValid()) for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values) Keys.Add(CortexEngineCompat::JsonKeyToString(Pair.Key));
-		Keys.Sort();
-		TArray<FString> Parts;
-		for (const FString& Key : Keys)
-		{
-			Parts.Add(FString::Printf(TEXT("%s=%s"), *Key, *CanonicalValue(Object->TryGetField(Key))));
-		}
-		return FString::Printf(TEXT("o:{%s}"), *FString::Join(Parts, TEXT(",")));
-	}
-	default: return TEXT("null");
-	}
+	FString Out;
+	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
+	FJsonSerializer::Serialize(Value.ToSharedRef(), FString(), Writer);
+	return Out;
 }
 
 /** One inventoried reference to a symbol the migration would invalidate. */
@@ -2387,18 +2367,15 @@ bool FCortexGraphMigrationOps::MemberMatchesCapture(
 		OutFailure = TEXT("restored shadowing member cannot be captured");
 		return false;
 	}
-	// Field-by-field: every captured key must be present with an equal canonical value, so a restored
-	// member that lost rep-notify, replication, metadata or a pin-type flag fails recovery.
-	for (const auto& Pair : Captured->Values)
+	// The whole captured description must match, field by field: the authoring fingerprint cannot see
+	// rep-notify, replication, metadata or the remaining pin-type flags, so a lost field must fail here.
+	const FString LiveText = FrozenJsonValue(MakeShared<FJsonValueObject>(Live));
+	const FString CapturedText = FrozenJsonValue(MakeShared<FJsonValueObject>(Captured));
+	if (LiveText != CapturedText)
 	{
-		const FString Key = CortexEngineCompat::JsonKeyToString(Pair.Key);
-		const TSharedPtr<FJsonValue> LiveValue = Live->TryGetField(Key);
-		if (!LiveValue.IsValid()
-			|| CanonicalValue(LiveValue) != CanonicalValue(Pair.Value))
-		{
-			OutFailure = FString::Printf(TEXT("restored shadowing member '%s' differs in '%s'"), *MemberName.ToString(), *Key);
-			return false;
-		}
+		OutFailure = FString::Printf(TEXT("restored shadowing member '%s' does not match its captured description: captured %s, found %s"),
+			*MemberName.ToString(), *CapturedText, *LiveText);
+		return false;
 	}
 	return true;
 }

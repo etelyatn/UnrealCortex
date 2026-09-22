@@ -811,7 +811,7 @@ void CheckIncompatibleMapping(
 		Error.ErrorCode, FString(CortexErrorCodes::TypeMismatch));
 	Test.TestTrue(FString::Printf(TEXT("%s: refusal names the %s dimension [%s]"), Context, Dimension, *Error.ErrorMessage),
 		NamesDimension(Error.ErrorMessage, Dimension));
-	Test.TestEqual(FString::Printf(TEXT("%s: refusal mutates nothing"), Context),
+	Test.TestEqual(FString::Printf(TEXT("%s: refusal mutates nothing"), *Context),
 		LiveGraphHash(Fixture.Blueprint), HashBefore);
 	Test.TestEqual(FString::Printf(TEXT("%s: refusal leaves the node count"), Context),
 		CountNativeNodes(Fixture.Blueprint), NodesBefore);
@@ -1382,11 +1382,11 @@ bool FCortexGraphMigrationMixedRequestTest::RunTest(const FString& Parameters)
 	{
 		FCortexGraphPatchOutcome Outcome;
 		FCortexCommandResult Error;
-		TestFalse(FString::Printf(TEXT("%s: request is refused"), Context),
+		TestFalse(FString::Printf(TEXT("%s: request is refused"), *Context),
 			FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
-		TestEqual(FString::Printf(TEXT("%s: refusal code [%s]"), Context, *Error.ErrorMessage),
+		TestEqual(FString::Printf(TEXT("%s: refusal code [%s]"), *Context, *Error.ErrorMessage),
 			Error.ErrorCode, ExpectedCode);
-		TestEqual(FString::Printf(TEXT("%s: refusal mutates nothing"), Context),
+		TestEqual(FString::Printf(TEXT("%s: refusal mutates nothing"), *Context),
 			LiveGraphHash(Fixture.Blueprint), HashBefore);
 	};
 
@@ -1469,12 +1469,12 @@ bool FCortexGraphMigrationMixedRequestTest::RunTest(const FString& Parameters)
 		{
 			TSharedPtr<FJsonObject> Request = FreshRequest();
 			Request->SetNumberField(Field, TrackToken);
-			ExpectRefusal(FString::Printf(TEXT("%s as a number"), Field), CortexErrorCodes::InvalidField, Request);
+			ExpectRefusal(FString(Field) + TEXT(" as a number"), CortexErrorCodes::InvalidField, Request);
 		}
 		{
 			TSharedPtr<FJsonObject> Request = FreshRequest();
 			Request->SetStringField(Field, Value);
-			ExpectRefusal(FString::Printf(TEXT("%s as a string"), Field), CortexErrorCodes::InvalidField, Request);
+			ExpectRefusal(FString(Field) + TEXT(" as a string"), CortexErrorCodes::InvalidField, Request);
 		}
 	};
 	ExpectFlagRefusal(TEXT("dry_run"), TEXT("false"), 0);
