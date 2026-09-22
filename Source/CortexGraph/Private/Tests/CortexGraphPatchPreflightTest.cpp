@@ -6,6 +6,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/GameMode.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
 #include "Dom/JsonObject.h"
@@ -624,4 +625,219 @@ bool FCortexGraphPatchPreflightExternalSignatureDriftTest::RunTest(const FString
 	return true;
 }
 
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchPreflightProspectiveGraphKindTest,
+	"Cortex.Graph.Authoring.Preflight.ProspectiveGraphKind",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchPreflightProspectiveGraphKindTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = CreatePackage(TEXT("/Temp/BP_PatchPreflightProspectiveKind_T06"));
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		AGameMode::StaticClass(), Package, FName(TEXT("BP_PatchPreflightProspectiveKind_T06")), BPTYPE_Normal,
+		UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("function-kind fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	auto AddImplementationTarget = [](const TSharedPtr<FJsonObject>& Request, const TCHAR* FunctionName)
+	{
+		TSharedPtr<FJsonObject> Implementation = MakeShared<FJsonObject>();
+		Implementation->SetStringField(TEXT("owner_class"), TEXT("/Script/Engine.GameMode"));
+		Implementation->SetStringField(TEXT("function_name"), FunctionName);
+		TSharedPtr<FJsonObject> Target = Request->GetObjectField(TEXT("target"));
+		Target->SetObjectField(TEXT("implementation"), Implementation);
+		Target->RemoveField(TEXT("graph_ref"));
+	};
+	auto AddNode = [](const TSharedPtr<FJsonObject>& Request, const TCHAR* ClientId, const TCHAR* NodeClass)
+	{
+		TSharedPtr<FJsonObject> Node = MakeShared<FJsonObject>();
+		Node->SetStringField(TEXT("client_id"), ClientId);
+		Node->SetStringField(TEXT("node_class"), NodeClass);
+		TArray<TSharedPtr<FJsonValue>> Nodes;
+		Nodes.Add(MakeShared<FJsonValueObject>(Node));
+		Request->SetArrayField(TEXT("nodes"), Nodes);
+	};
+
+	FCortexGraphPreparedPatch Prepared;
+	FCortexCommandResult Error;
+	TSharedPtr<FJsonObject> EventRequest = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	AddImplementationTarget(EventRequest, TEXT("ReceiveBeginPlay"));
+	AddNode(EventRequest, TEXT("custom_event"), TEXT("CustomEvent"));
+	TestTrue(FString::Printf(TEXT("event implementation plans an ubergraph-compatible node: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Blueprint, EventRequest, Prepared, Error));
+
+	TSharedPtr<FJsonObject> FunctionRequest = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	AddImplementationTarget(FunctionRequest, TEXT("ReadyToStartMatch"));
+	AddNode(FunctionRequest, TEXT("custom_event"), TEXT("CustomEvent"));
+	TestFalse(TEXT("event-only node is rejected from prospective function graph"),
+		FCortexGraphPatchOps::Preflight(Blueprint, FunctionRequest, Prepared, Error));
+	TestEqual(TEXT("function graph incompatibility code"), Error.ErrorCode, CortexErrorCodes::InvalidOperation);
+
+	FunctionRequest = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	AddImplementationTarget(FunctionRequest, TEXT("ReadyToStartMatch"));
+	AddNode(FunctionRequest, TEXT("print"), TEXT("Self"));
+	TestTrue(FString::Printf(TEXT("function implementation plans a function-compatible node: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Blueprint, FunctionRequest, Prepared, Error));
+
+	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchPreflightReservedEntryClientIdTest,
+	"Cortex.Graph.Authoring.Preflight.ReservedEntryClientId",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchPreflightReservedEntryClientIdTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchPreflightTest::MakeBlueprint(Package, TEXT("BP_PatchPreflightReservedEntry_T06"));
+	TestNotNull(TEXT("fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	TSharedPtr<FJsonObject> Implementation = MakeShared<FJsonObject>();
+	Implementation->SetStringField(TEXT("owner_class"), TEXT("/Script/Engine.Actor"));
+	Implementation->SetStringField(TEXT("function_name"), TEXT("ReceiveBeginPlay"));
+	TSharedPtr<FJsonObject> Target = Request->GetObjectField(TEXT("target"));
+	Target->SetObjectField(TEXT("implementation"), Implementation);
+	Target->RemoveField(TEXT("graph_ref"));
+	TSharedPtr<FJsonObject> Shadow = MakeShared<FJsonObject>();
+	Shadow->SetStringField(TEXT("client_id"), TEXT("entry"));
+	Shadow->SetStringField(TEXT("node_class"), TEXT("CustomEvent"));
+	TArray<TSharedPtr<FJsonValue>> Nodes;
+	Nodes.Add(MakeShared<FJsonValueObject>(Shadow));
+	Request->SetArrayField(TEXT("nodes"), Nodes);
+
+	FCortexGraphPreparedPatch Prepared;
+	FCortexCommandResult Error;
+	TestFalse(TEXT("node client_id cannot shadow the implementation entry endpoint"),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("reserved entry endpoint error"), Error.ErrorCode, CortexErrorCodes::InvalidField);
+
+	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchPreflightCanonicalPhysicalPinTest,
+	"Cortex.Graph.Authoring.Preflight.CanonicalPhysicalPin",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchPreflightCanonicalPhysicalPinTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchPreflightTest::MakeBlueprint(Package, TEXT("BP_PatchPreflightCanonicalPin_T06"));
+	TestNotNull(TEXT("fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UK2Node_CallFunction* PrintString = NewObject<UK2Node_CallFunction>(EventGraph);
+	PrintString->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("PrintString")));
+	PrintString->CreateNewGuid();
+	PrintString->AllocateDefaultPins();
+	EventGraph->AddNode(PrintString, false, false);
+
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	TSharedPtr<FJsonObject> Literal = MakeShared<FJsonObject>();
+	Literal->SetStringField(TEXT("kind"), TEXT("string"));
+	Literal->SetStringField(TEXT("value"), TEXT("configured"));
+	TSharedPtr<FJsonObject> Update = MakeShared<FJsonObject>();
+	Update->SetStringField(TEXT("node_guid"), PrintString->NodeGuid.ToString());
+	Update->SetStringField(TEXT("pin"), TEXT("InString"));
+	Update->SetObjectField(TEXT("default"), Literal);
+	TArray<TSharedPtr<FJsonValue>> PinUpdates;
+	PinUpdates.Add(MakeShared<FJsonValueObject>(Update));
+	Request->SetArrayField(TEXT("pin_updates"), PinUpdates);
+	TSharedPtr<FJsonObject> Source = MakeShared<FJsonObject>();
+	Source->SetStringField(TEXT("client_id"), TEXT("literal"));
+	Source->SetStringField(TEXT("node_class"), TEXT("CallFunction"));
+	TSharedPtr<FJsonObject> SourceParams = MakeShared<FJsonObject>();
+	SourceParams->SetStringField(TEXT("function_name"), TEXT("KismetSystemLibrary.MakeLiteralString"));
+	Source->SetObjectField(TEXT("params"), SourceParams);
+	TArray<TSharedPtr<FJsonValue>> Nodes;
+	Nodes.Add(MakeShared<FJsonValueObject>(Source));
+	Request->SetArrayField(TEXT("nodes"), Nodes);
+	TSharedPtr<FJsonObject> Connection = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> From = MakeShared<FJsonObject>();
+	From->SetStringField(TEXT("client_id"), TEXT("literal"));
+	From->SetStringField(TEXT("pin"), TEXT("ReturnValue"));
+	TSharedPtr<FJsonObject> To = MakeShared<FJsonObject>();
+	To->SetStringField(TEXT("node_guid"), PrintString->NodeGuid.ToString());
+	To->SetStringField(TEXT("pin"), TEXT("instring"));
+	Connection->SetObjectField(TEXT("from"), From);
+	Connection->SetObjectField(TEXT("to"), To);
+	TArray<TSharedPtr<FJsonValue>> Connections;
+	Connections.Add(MakeShared<FJsonValueObject>(Connection));
+	Request->SetArrayField(TEXT("connections"), Connections);
+	Request->SetObjectField(TEXT("expected_fingerprint"), FCortexGraphPatchState::ComputeFingerprint(Blueprint));
+
+	FCortexGraphPreparedPatch Prepared;
+	FCortexCommandResult Error;
+	TestFalse(TEXT("case-variant edge and pin update conflict on the same physical input"),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("connected-default conflict error"), Error.ErrorCode, CortexErrorCodes::InvalidOperation);
+	TestTrue(TEXT("case-variant conflict is reported before schema handling"), Error.ErrorMessage.Contains(TEXT("competing connection/default")));
+
+	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchPreflightExternalContainerSignatureTest,
+	"Cortex.Graph.Authoring.Preflight.ExternalContainerSignature",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchPreflightExternalContainerSignatureTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchPreflightTest::MakeBlueprint(Package, TEXT("BP_PatchPreflightExternalContainer_T06"));
+	TestNotNull(TEXT("fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	TSharedPtr<FJsonObject> Implementation = MakeShared<FJsonObject>();
+	Implementation->SetStringField(TEXT("owner_class"), TEXT("/Script/Engine.Actor"));
+	Implementation->SetStringField(TEXT("function_name"), TEXT("ReceiveEndPlay"));
+	TSharedPtr<FJsonObject> Target = Request->GetObjectField(TEXT("target"));
+	Target->SetObjectField(TEXT("implementation"), Implementation);
+	Target->RemoveField(TEXT("graph_ref"));
+
+	FCortexGraphPreparedPatch Preview;
+	FCortexCommandResult PreviewError;
+	TestTrue(FString::Printf(TEXT("scalar external implementation signature preview succeeds: %s"), *PreviewError.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, Preview, PreviewError));
+	UFunction* ExternalFunction = AActor::StaticClass()->FindFunctionByName(TEXT("ReceiveEndPlay"));
+	FByteProperty* EndPlayReason = nullptr;
+	for (TFieldIterator<FProperty> It(ExternalFunction); It; ++It)
+	{
+		if ((*It)->HasAnyPropertyFlags(CPF_Parm))
+		{
+			EndPlayReason = CastField<FByteProperty>(*It);
+			if (EndPlayReason) break;
+		}
+	}
+	TestNotNull(TEXT("external implementation has a scalar parameter fixture"), EndPlayReason);
+	if (EndPlayReason)
+	{
+		const int32 OriginalArrayDim = EndPlayReason->ArrayDim;
+		EndPlayReason->ArrayDim = 2;
+		Request->SetBoolField(TEXT("dry_run"), false);
+		Request->SetStringField(TEXT("expected_validation_hash"), Preview.ValidationHash);
+		FCortexGraphPreparedPatch Apply;
+		FCortexCommandResult ApplyError;
+		TestFalse(TEXT("scalar-to-array external signature rejects the stale token"),
+			FCortexGraphPatchOps::Preflight(Blueprint, Request, Apply, ApplyError));
+		TestNotEqual(TEXT("external parameter container changes validation hash"), Apply.ValidationHash, Preview.ValidationHash);
+		TestEqual(TEXT("external container drift is stale precondition"), ApplyError.ErrorCode, CortexErrorCodes::StalePrecondition);
+		EndPlayReason->ArrayDim = OriginalArrayDim;
+	}
+
+	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
+	return true;
+}
 #endif

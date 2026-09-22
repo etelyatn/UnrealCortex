@@ -182,6 +182,7 @@ void AddPropertyTypeIdentity(const FProperty* Property, const TSharedPtr<FJsonOb
 	if (!Property || !Out.IsValid()) return;
 	Out->SetStringField(TEXT("cpp_type"), Property->GetCPPType());
 	Out->SetStringField(TEXT("property_class"), Property->GetClass()->GetName());
+	Out->SetNumberField(TEXT("array_dim"), Property->ArrayDim);
 	if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
 	{
 		Out->SetStringField(TEXT("object_class"), ObjectProperty->PropertyClass ? ObjectProperty->PropertyClass->GetPathName() : FString());
