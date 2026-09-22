@@ -314,10 +314,12 @@ bool ParseTarget(
 	TSharedPtr<FJsonObject>& OutSymbolJson,
 	bool& OutImplementationWouldCreate,
 	bool& OutImplementationIsEvent,
+	bool& OutImplementationHasParentCall,
 	FCortexCommandResult& OutError)
 {
 	OutImplementationWouldCreate = false;
 	OutImplementationIsEvent = false;
+	OutImplementationHasParentCall = false;
 	const TSharedPtr<FJsonObject>* TargetPtr = nullptr;
 	if (!Request->TryGetObjectField(TEXT("target"), TargetPtr) || !TargetPtr || !TargetPtr->IsValid())
 	{
@@ -387,6 +389,7 @@ bool ParseTarget(
 	if (!FCortexGraphImplementationOps::ValidateEligibility(Blueprint, Selector, Plan, OutError)) return false;
 	OutImplementationWouldCreate = Plan.bWouldCreate;
 	OutImplementationIsEvent = Plan.bCanBePlacedAsEvent;
+	OutImplementationHasParentCall = Plan.bParentCall;
 	OutSymbolJson = MakeShared<FJsonObject>();
 	OutSymbolJson->SetStringField(TEXT("function_name"), Plan.Function->GetName());
 	OutSymbolJson->SetStringField(TEXT("owner_class"), Plan.FunctionClass ? Plan.FunctionClass->GetPathName() : FString());
@@ -726,12 +729,13 @@ bool FCortexGraphPatchOps::Preflight(
 	TSharedPtr<FJsonObject> SymbolJson;
 	bool bImplementationWouldCreate = false;
 	bool bImplementationIsEvent = false;
+	bool bImplementationHasParentCall = false;
 	if (!CountBlueprintNodesBounded(Blueprint))
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("graph scan exceeds max_scanned_nodes=2048"));
 		return false;
 	}
-	if (!ParseTarget(Blueprint, Params, Target, TargetGraph, SymbolJson, bImplementationWouldCreate, bImplementationIsEvent, OutError)) return false;
+	if (!ParseTarget(Blueprint, Params, Target, TargetGraph, SymbolJson, bImplementationWouldCreate, bImplementationIsEvent, bImplementationHasParentCall, OutError)) return false;
 	if (TargetGraph)
 	{
 		const TSharedPtr<FJsonObject>* RefPtr = nullptr;
@@ -953,9 +957,10 @@ bool FCortexGraphPatchOps::Preflight(
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("connection endpoint identity cannot contain whitespace"));
 			return false;
 		}
-		if ((bFromEntry || bToEntry) && !bImplementationTarget)
+		if ((bFromEntry || bToEntry) && (!bImplementationTarget || bImplementationHasParentCall))
 		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("entry endpoints require an implementation target"));
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				bImplementationHasParentCall ? TEXT("entry endpoints are not supported for explicit parent-call implementations") : TEXT("entry endpoints require an implementation target"));
 			return false;
 		}
 		if ((*FromPtr)->HasField(TEXT("client_id")) && !ClientIds.Contains(FromId))
