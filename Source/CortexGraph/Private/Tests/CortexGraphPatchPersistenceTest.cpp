@@ -14,7 +14,9 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_CallParentFunction.h"
 #include "K2Node_Event.h"
+#include "GameFramework/GameMode.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -28,6 +30,8 @@
 #include "UObject/SavePackage.h"
 #include "UObject/UObjectGlobals.h"
 #include "Dom/JsonObject.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 
 #if WITH_EDITOR && WITH_AUTOMATION_TESTS
 
@@ -137,11 +141,11 @@ struct FFixture
 	UBlueprint* Blueprint = nullptr;
 	FString Filename;
 
-	bool Create(const TCHAR* Name)
+	bool Create(const TCHAR* Name, UClass* ParentClass = nullptr)
 	{
 		Package = CreatePackage(*FString::Printf(TEXT("/Temp/%s"), Name));
 		Blueprint = FKismetEditorUtilities::CreateBlueprint(
-			AActor::StaticClass(), Package, FName(Name), BPTYPE_Normal,
+			ParentClass ? ParentClass : AActor::StaticClass(), Package, FName(Name), BPTYPE_Normal,
 			UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
 		if (!Blueprint) return false;
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
@@ -500,6 +504,54 @@ static void CheckDefaultIdentity(
 	Test.TestEqual(FString::Printf(TEXT("%s: canonical default identity"), Context), Actual, Expected);
 }
 
+/** Canonical JSON form of one descriptor field, used for exact token-by-token comparison. */
+static FString FrozenJsonValue(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid()) return FString();
+	FString Out;
+	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
+	FJsonSerializer::Serialize(Value.ToSharedRef(), FString(), Writer);
+	return Out;
+}
+
+/**
+ * Proves the canonical reader identity of one reloaded default: ReadDefault must report the planned
+ * kind and the planned value identity, so a client that only reads defaults through the public
+ * reader still sees the applied intent after the asset has been reloaded from disk.
+ */
+static void CheckDefaultDescriptorIdentity(
+	FAutomationTestBase& Test,
+	const UEdGraphPin* Pin,
+	const TSharedPtr<FJsonObject>& PlannedLiteral,
+	const TCHAR* Context)
+{
+	TSharedPtr<FJsonObject> Descriptor;
+	FCortexCommandResult Error;
+	Test.TestTrue(FString::Printf(TEXT("%s: ReadDefault succeeds [%s]"), Context, *Error.ErrorMessage),
+		FCortexGraphPinDefaults::ReadDefault(Pin, Descriptor, Error));
+	if (!Descriptor.IsValid()) return;
+	Test.TestEqual(FString::Printf(TEXT("%s: canonical default kind"), Context),
+		Descriptor->GetStringField(TEXT("kind")), PlannedLiteral->GetStringField(TEXT("kind")));
+	Test.TestEqual(FString::Printf(TEXT("%s: canonical default value identity"), Context),
+		FrozenJsonValue(Descriptor->TryGetField(TEXT("value"))),
+		FrozenJsonValue(PlannedLiteral->TryGetField(TEXT("value"))));
+}
+
+/** Parent call owned by the graph of one implementation entry node, if any. */
+static UK2Node_CallParentFunction* FindParentCall(UEdGraphNode* EntryNode)
+{
+	if (!EntryNode || !EntryNode->GetGraph()) return nullptr;
+	for (UEdGraphNode* Node : EntryNode->GetGraph()->Nodes)
+	{
+		if (UK2Node_CallParentFunction* Parent = Cast<UK2Node_CallParentFunction>(Node))
+		{
+			return Parent;
+		}
+	}
+	return nullptr;
+}
+
 /** Proves one planned edge is exactly the native link, single-linked. */
 static void CheckEdge(
 	FAutomationTestBase& Test,
@@ -683,12 +735,16 @@ bool FCortexGraphPatchPersistenceSaveSuccessAndReloadTest::RunTest(const FString
 			TestEqual(TEXT("reloaded convert node keeps its planned Y"), ReloadedConvert->NodePosY, 160);
 			CheckDefaultIdentity(*this, ReloadedConvert->FindPin(TEXT("InInt")),
 				ConvertDefaultLiteral(), TEXT("reloaded convert default"));
+			CheckDefaultDescriptorIdentity(*this, ReloadedConvert->FindPin(TEXT("InInt")),
+				ConvertDefaultLiteral(), TEXT("reloaded convert default"));
 		}
 		if (ReloadedNote)
 		{
 			TestEqual(TEXT("reloaded note node keeps its planned layout"), ReloadedNote->NodePosX, 560);
 			TestEqual(TEXT("reloaded note node keeps its planned Y"), ReloadedNote->NodePosY, 160);
 			CheckDefaultIdentity(*this, ReloadedNote->FindPin(TEXT("bPrintToScreen")),
+				NoteDefaultLiteral(), TEXT("reloaded note default"));
+			CheckDefaultDescriptorIdentity(*this, ReloadedNote->FindPin(TEXT("bPrintToScreen")),
 				NoteDefaultLiteral(), TEXT("reloaded note default"));
 		}
 		if (ReloadedConvert && ReloadedNote)
@@ -1414,38 +1470,42 @@ bool FCortexGraphPatchPersistenceLostResponseTest::RunTest(const FString& Parame
 	TestFalse(TEXT("fresh inspection preview reports no prospective change"), FreshPrepared.bChanged);
 	const FGuid NoteGuid = FindClientGuid(FreshPrepared, TEXT("note"));
 	const FGuid ConvertGuid = FindClientGuid(FreshPrepared, TEXT("convert"));
-	UEdGraphNode* NoteNode = FindNodeByGuid(Fixture.Blueprint, NoteGuid);
-	TestNotNull(TEXT("node listing resolves the deterministic print identity"), NoteNode);
-	TestNotNull(TEXT("node listing resolves the deterministic conversion identity"),
-		FindNodeByGuid(Fixture.Blueprint, ConvertGuid));
-
-	// The node listing surface confirms the same native nodes by name.
-	if (NoteNode)
+	// The public node listing is the reconciliation read a client actually has: it must expose the
+	// deterministic node_guid next to the unchanged name-based node_id.
+	TSharedPtr<FJsonObject> ListParams = MakeShared<FJsonObject>();
+	ListParams->SetStringField(TEXT("asset_path"), Fixture.Blueprint->GetPathName());
+	ListParams->SetStringField(TEXT("graph_name"), Fixture.Blueprint->UbergraphPages[0]->GetName());
+	const FCortexCommandResult ListResult = Router.Execute(TEXT("graph.get_subgraph"), ListParams);
+	TestTrue(FString::Printf(TEXT("node listing inspection succeeds: %s"), *ListResult.ErrorMessage),
+		ListResult.bSuccess);
+	TSet<FString> ListedGuids;
+	TSet<FString> ListedIds;
+	if (ListResult.bSuccess && ListResult.Data.IsValid())
 	{
-		TSharedPtr<FJsonObject> ListParams = MakeShared<FJsonObject>();
-		ListParams->SetStringField(TEXT("asset_path"), Fixture.Blueprint->GetPathName());
-		ListParams->SetStringField(TEXT("graph_name"), NoteNode->GetGraph()->GetName());
-		const FCortexCommandResult ListResult = Router.Execute(TEXT("graph.get_subgraph"), ListParams);
-		TestTrue(FString::Printf(TEXT("node listing inspection succeeds: %s"), *ListResult.ErrorMessage),
-			ListResult.bSuccess);
-		bool bListed = false;
-		if (ListResult.bSuccess && ListResult.Data.IsValid())
+		const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+		if (ListResult.Data->TryGetArrayField(TEXT("nodes"), Nodes) && Nodes)
 		{
-			const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
-			if (ListResult.Data->TryGetArrayField(TEXT("nodes"), Nodes) && Nodes)
+			for (const TSharedPtr<FJsonValue>& Value : *Nodes)
 			{
-				for (const TSharedPtr<FJsonValue>& Value : *Nodes)
-				{
-					const TSharedPtr<FJsonObject> Entry = Value.IsValid() ? Value->AsObject() : nullptr;
-					FString NodeId;
-					if (Entry.IsValid() && Entry->TryGetStringField(TEXT("node_id"), NodeId) && NodeId == NoteNode->GetName())
-					{
-						bListed = true;
-					}
-				}
+				const TSharedPtr<FJsonObject> Entry = Value.IsValid() ? Value->AsObject() : nullptr;
+				if (!Entry.IsValid()) continue;
+				FString NodeGuidText;
+				FString NodeId;
+				if (Entry->TryGetStringField(TEXT("node_guid"), NodeGuidText)) ListedGuids.Add(NodeGuidText);
+				if (Entry->TryGetStringField(TEXT("node_id"), NodeId)) ListedIds.Add(NodeId);
 			}
 		}
-		TestTrue(TEXT("node listing reports the node the deterministic identity resolves to"), bListed);
+	}
+	TestTrue(TEXT("node listing exposes the deterministic print identity"),
+		ListedGuids.Contains(NoteGuid.ToString()));
+	TestTrue(TEXT("node listing exposes the deterministic conversion identity"),
+		ListedGuids.Contains(ConvertGuid.ToString()));
+	// node_id keeps its existing meaning: the object name, unaffected by the additive node_guid.
+	UEdGraphNode* NoteNode = FindNodeByGuid(Fixture.Blueprint, NoteGuid);
+	TestNotNull(TEXT("the listed deterministic identity still resolves natively"), NoteNode);
+	if (NoteNode)
+	{
+		TestTrue(TEXT("node listing keeps the name-based node_id"), ListedIds.Contains(NoteNode->GetName()));
 	}
 
 	// Re-preview with the fresh fingerprint and re-apply: an unchanged replay without duplicates.
@@ -1821,6 +1881,195 @@ bool FCortexGraphPatchPersistenceSaveFailureLocatorsTest::RunTest(const FString&
 		CountNodesWithGuid(Fixture.Blueprint, NoteGuid), 1);
 
 	DeleteFixtureFile(Fixture.Filename);
+	Fixture.Cleanup();
+	return true;
+}
+
+
+// ---------------------------------------------------------------------------
+// 14. A parent-call implementation target is verified, not assumed
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchPersistenceParentCallTest,
+	"Cortex.Graph.Authoring.Persistence.ParentCallReuseVerified",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchPersistenceParentCallTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	CortexGraphPatchPersistenceTest::ClearFaults();
+	using namespace CortexGraphPatchPersistenceTest;
+
+	FFixture Fixture;
+	TestTrue(TEXT("parent-call fixture created"),
+		Fixture.Create(TEXT("BP_PatchPersistParentCall_T09"), AGameMode::StaticClass()));
+	if (!Fixture.Blueprint)
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+
+	// Intent: an explicit parent-call implementation plus one standalone planned node, so the replay
+	// still carries planned identities while the implementation owns the parent call.
+	auto MakeIntent = [&](const TCHAR* PatchId)
+	{
+		TSharedPtr<FJsonObject> Request = BaseRequest(Fixture.Blueprint, PatchId);
+		Request->RemoveField(TEXT("target"));
+		TSharedPtr<FJsonObject> Target = MakeShared<FJsonObject>();
+		TSharedPtr<FJsonObject> Implementation = MakeShared<FJsonObject>();
+		Implementation->SetStringField(TEXT("owner_class"), TEXT("/Script/Engine.GameMode"));
+		Implementation->SetStringField(TEXT("function_name"), TEXT("ReadyToStartMatch"));
+		Implementation->SetStringField(TEXT("call_kind"), TEXT("parent"));
+		Target->SetObjectField(TEXT("implementation"), Implementation);
+		Request->SetObjectField(TEXT("target"), Target);
+
+		TSharedPtr<FJsonObject> NoteDefaults = MakeShared<FJsonObject>();
+		NoteDefaults->SetObjectField(TEXT("bPrintToScreen"), NoteDefaultLiteral());
+		TSharedPtr<FJsonObject> Note = AddNode(Request, TEXT("note"), TEXT("CallFunction"), PrintParams(), NoteDefaults);
+		SetPosition(Note, 480, 160);
+		return Request;
+	};
+
+	TSharedPtr<FJsonObject> First = MakeIntent(TEXT("00000000-0000-0000-0000-0000000e0916"));
+	FCortexGraphPreparedPatch FirstPrepared;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("parent-call preview succeeds: %s"), *Error.ErrorMessage),
+		PreviewForApply(Fixture.Blueprint, First, FirstPrepared, Error));
+	FCortexGraphPatchOutcome FirstOutcome;
+	TestTrue(FString::Printf(TEXT("parent-call patch applies and verifies: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, First, FirstOutcome, Error));
+	TestEqual(TEXT("parent-call patch compiles after apply"),
+		FirstOutcome.CompileStatus, FString(TEXT("compiled")));
+	TestTrue(TEXT("parent-call patch reports its implementation entry locator"),
+		FirstOutcome.Locators.bHasEntryNode);
+	const FGuid NoteGuid = FindClientGuid(FirstPrepared, TEXT("note"));
+	TestNotNull(TEXT("parent-call planned node exists"), FindNodeByGuid(Fixture.Blueprint, NoteGuid));
+
+	// The engine really created the parent call and the entry wiring the comparator must verify.
+	UEdGraphNode* EntryNode = FindNodeByGuid(Fixture.Blueprint, FirstOutcome.Locators.EntryNodeGuid);
+	TestNotNull(TEXT("parent-call entry locator resolves"), EntryNode);
+	UK2Node_CallParentFunction* ParentNode = FindParentCall(EntryNode);
+	TestNotNull(TEXT("the implementation owner created a parent call"), ParentNode);
+	if (EntryNode && ParentNode)
+	{
+		UEdGraphPin* EntryThen = EntryNode->FindPin(UEdGraphSchema_K2::PN_Then);
+		UEdGraphPin* ParentExec = ParentNode->GetExecPin();
+		TestTrue(TEXT("the entry feeds the parent call exec"),
+			EntryThen && ParentExec && EntryThen->LinkedTo.Contains(ParentExec) && ParentExec->LinkedTo.Contains(EntryThen));
+	}
+	const int32 NodesAfterFirst = CountNativeNodes(Fixture.Blueprint);
+
+	// An exact replay of a parent-call target is an idempotent no-op.
+	{
+		TSharedPtr<FJsonObject> Replay = MakeIntent(TEXT("00000000-0000-0000-0000-0000000e0916"));
+		FOperations Operations;
+		Operations.Begin();
+		FCortexGraphPreparedPatch ReplayPrepared;
+		TestTrue(FString::Printf(TEXT("parent-call replay preview succeeds: %s"), *Error.ErrorMessage),
+			PreviewForApply(Fixture.Blueprint, Replay, ReplayPrepared, Error));
+		TestFalse(TEXT("parent-call replay preflight reports no prospective change"), ReplayPrepared.bChanged);
+		FCortexGraphPatchOutcome ReplayOutcome;
+		TestTrue(FString::Printf(TEXT("parent-call replay applies as a no-op: %s"), *Error.ErrorMessage),
+			FCortexGraphPatchOps::Execute(Fixture.Blueprint, Replay, ReplayOutcome, Error));
+		Operations.End();
+		TestEqual(TEXT("parent-call replay reports unchanged"),
+			ReplayOutcome.ApplyStatus, FString(TEXT("unchanged")));
+		TestEqual(TEXT("parent-call replay performs no compile"), Operations.TargetCompiles, 0);
+		TestEqual(TEXT("parent-call replay performs no save"), Operations.Saves, 0);
+		TestEqual(TEXT("parent-call replay does not duplicate nodes"),
+			CountNativeNodes(Fixture.Blueprint), NodesAfterFirst);
+	}
+
+	// An identity owned by two graphs of the same asset is ambiguous even when the target graph holds
+	// an exact match. The implementation's own function graph is scanned before graphs added later,
+	// which is exactly the order in which a duplicate used to hide inside the target graph.
+	{
+		UEdGraph* DuplicateGraph = FBlueprintEditorUtils::CreateNewGraph(
+			Fixture.Blueprint, TEXT("T09DuplicateParentGraph"), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+		FBlueprintEditorUtils::AddFunctionGraph<UClass>(Fixture.Blueprint, DuplicateGraph, false, nullptr);
+		UEdGraphNode* OwnerNode = FindNodeByGuid(Fixture.Blueprint, NoteGuid);
+		TestNotNull(TEXT("duplicate-identity target node exists"), OwnerNode);
+		if (OwnerNode)
+		{
+			UK2Node_CallFunction* DuplicateNode = Cast<UK2Node_CallFunction>(
+				StaticDuplicateObject(OwnerNode, DuplicateGraph));
+			TestNotNull(TEXT("duplicate-identity node duplicated"), DuplicateNode);
+			if (DuplicateNode)
+			{
+				DuplicateNode->NodeGuid = NoteGuid;
+				// The duplicate's copied links are dropped locally so only its GUID duplicates.
+				for (UEdGraphPin* Pin : DuplicateNode->Pins)
+				{
+					if (Pin) Pin->LinkedTo.Reset();
+				}
+				DuplicateGraph->AddNode(DuplicateNode, false, false);
+			}
+			TestEqual(TEXT("the deterministic identity is now owned by two graphs"),
+				CountNodesWithGuid(Fixture.Blueprint, NoteGuid), 2);
+
+			TSharedPtr<FJsonObject> DuplicateReplay = MakeIntent(TEXT("00000000-0000-0000-0000-0000000e0916"));
+			FCortexGraphPreparedPatch DuplicatePrepared;
+			FCortexCommandResult DuplicateError;
+			TestFalse(TEXT("an identity duplicated across two graphs is refused"),
+				FCortexGraphPatchOps::Preflight(Fixture.Blueprint, DuplicateReplay, DuplicatePrepared, DuplicateError));
+			TestEqual(TEXT("a duplicated identity reports an invalid operation"),
+				DuplicateError.ErrorCode, CortexErrorCodes::InvalidOperation);
+			TestTrue(FString::Printf(TEXT("a duplicated identity names the client id [%s]"), *DuplicateError.ErrorMessage),
+				DuplicateError.ErrorMessage.Contains(TEXT("note")));
+			TestEqual(TEXT("a duplicated identity leaves both nodes in place"),
+				CountNodesWithGuid(Fixture.Blueprint, NoteGuid), 2);
+			// Remove the duplicate again so the later wiring cases start from a unique identity.
+			if (DuplicateNode) DuplicateNode->DestroyNode();
+			TestEqual(TEXT("the duplicate is removed again"),
+				CountNodesWithGuid(Fixture.Blueprint, NoteGuid), 1);
+		}
+	}
+
+	// The duplicate block above added a graph, so the wiring cases snapshot the node set again.
+	const int32 NodesBeforeWiring = CountNativeNodes(Fixture.Blueprint);
+
+	// The parent call wiring is part of the implementation intent: a replay whose parent call is no
+	// longer fed by the entry must not be reported as a complete replay.
+	if (EntryNode && ParentNode)
+	{
+		UEdGraphPin* EntryThen = EntryNode->FindPin(UEdGraphSchema_K2::PN_Then);
+		UEdGraphPin* ParentExec = ParentNode->GetExecPin();
+		if (EntryThen && ParentExec)
+		{
+			EntryThen->BreakLinkTo(ParentExec);
+		}
+		TSharedPtr<FJsonObject> BrokenWiring = MakeIntent(TEXT("00000000-0000-0000-0000-0000000e0916"));
+		FCortexGraphPreparedPatch BrokenPrepared;
+		FCortexCommandResult BrokenError;
+		TestFalse(TEXT("a replay with broken parent-call wiring is refused"),
+			FCortexGraphPatchOps::Preflight(Fixture.Blueprint, BrokenWiring, BrokenPrepared, BrokenError));
+		TestEqual(TEXT("broken parent-call wiring reports an invalid operation"),
+			BrokenError.ErrorCode, CortexErrorCodes::InvalidOperation);
+		TestTrue(FString::Printf(TEXT("broken parent-call wiring names the parent call [%s]"), *BrokenError.ErrorMessage),
+			BrokenError.ErrorMessage.Contains(TEXT("parent call")));
+		TestEqual(TEXT("broken parent-call wiring appends nothing"),
+			CountNativeNodes(Fixture.Blueprint), NodesBeforeWiring);
+		if (EntryThen && ParentExec)
+		{
+			EntryNode->GetGraph()->GetSchema()->TryCreateConnection(EntryThen, ParentExec);
+		}
+	}
+
+	// A missing parent call is not a complete replay either.
+	if (ParentNode)
+	{
+		ParentNode->DestroyNode();
+		TSharedPtr<FJsonObject> MissingParent = MakeIntent(TEXT("00000000-0000-0000-0000-0000000e0916"));
+		FCortexGraphPreparedPatch MissingPrepared;
+		FCortexCommandResult MissingError;
+		TestFalse(TEXT("a replay with a missing parent call is refused"),
+			FCortexGraphPatchOps::Preflight(Fixture.Blueprint, MissingParent, MissingPrepared, MissingError));
+		TestTrue(FString::Printf(TEXT("a missing parent call names the parent call [%s]"), *MissingError.ErrorMessage),
+			MissingError.ErrorMessage.Contains(TEXT("parent call")));
+		TestTrue(TEXT("a missing parent call is reported as missing"),
+			MissingError.ErrorMessage.Contains(TEXT("missing")));
+	}
+
 	Fixture.Cleanup();
 	return true;
 }

@@ -23,6 +23,8 @@
 #include "K2Node_Composite.h"
 #include "K2Node_Event.h"
 #include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
+#include "K2Node_CallParentFunction.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_Variable.h"
@@ -186,13 +188,19 @@ FGuid DerivePlannedNodeGuid(const FString& PatchId, const FString& ClientId)
 }
 
 /**
- * Graph that owns a node GUID anywhere in the Blueprint, or null when the GUID is unused. Used to
- * refuse a deterministic identity that would collide across graphs of the same asset.
+ * Every graph that owns a node GUID anywhere in the Blueprint. A deterministic identity must be
+ * unambiguous inside the asset, so the caller refuses when more than one graph owns the GUID or when
+ * the only owner is not the target graph; a single match inside the target graph is the reuse case.
  */
-UEdGraph* FindOwningGraphByNodeGuid(UBlueprint* Blueprint, const FGuid& NodeGuid, UEdGraphNode*& OutNode)
+void FindGraphsOwningNodeGuid(
+	UBlueprint* Blueprint,
+	const FGuid& NodeGuid,
+	TArray<UEdGraph*>& OutGraphs,
+	UEdGraphNode*& OutFirstNode)
 {
-	OutNode = nullptr;
-	if (!Blueprint || !NodeGuid.IsValid()) return nullptr;
+	OutGraphs.Reset();
+	OutFirstNode = nullptr;
+	if (!Blueprint || !NodeGuid.IsValid()) return;
 	TArray<UEdGraph*> Graphs;
 	Blueprint->GetAllGraphs(Graphs);
 	for (UEdGraph* Graph : Graphs)
@@ -202,12 +210,12 @@ UEdGraph* FindOwningGraphByNodeGuid(UBlueprint* Blueprint, const FGuid& NodeGuid
 		{
 			if (Node && Node->NodeGuid == NodeGuid)
 			{
-				OutNode = Node;
-				return Graph;
+				OutGraphs.Add(Graph);
+				if (!OutFirstNode) OutFirstNode = Node;
+				break;
 			}
 		}
 	}
-	return nullptr;
 }
 
 /** Durable locators of a prepared patch: every planned identity, known before the first mutation. */
@@ -1259,12 +1267,20 @@ bool FCortexGraphPatchOps::Preflight(
 		// dimension conflicts. An identity that exists in another graph of the same asset is a
 		// cross-graph collision and is always refused, because existing nodes are never overwritten.
 		UEdGraphNode* ExistingNode = nullptr;
-		UEdGraph* const ExistingGraph = FindOwningGraphByNodeGuid(Blueprint, DerivedGuid, ExistingNode);
-		if (ExistingNode && ExistingGraph != TargetGraph)
+		TArray<UEdGraph*> OwningGraphs;
+		FindGraphsOwningNodeGuid(Blueprint, DerivedGuid, OwningGraphs, ExistingNode);
+		if (OwningGraphs.Num() > 1)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("client_id '%s' derives node GUID %s which is owned by %d graphs of this asset; a deterministic node identity must be unique inside the asset"),
+					*ClientId, *DerivedGuid.ToString(), OwningGraphs.Num()));
+			return false;
+		}
+		if (ExistingNode && OwningGraphs[0] != TargetGraph)
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 				FString::Printf(TEXT("client_id '%s' derives node GUID %s which already exists in graph '%s'; a deterministic node identity must not collide with a node in another graph"),
-					*ClientId, *DerivedGuid.ToString(), ExistingGraph ? *ExistingGraph->GetName() : TEXT("<unknown>")));
+					*ClientId, *DerivedGuid.ToString(), OwningGraphs[0] ? *OwningGraphs[0]->GetName() : TEXT("<unknown>")));
 			return false;
 		}
 		if (ExistingNode)
@@ -2709,6 +2725,146 @@ bool ComparePlannedEdges(
 }
 
 /**
+ * Verifies the implementation-owned parent call of a `call_kind="parent"` target exactly as
+ * FCortexGraphImplementationOps::EnsureForPatch creates and wires it: one
+ * UK2Node_CallParentFunction for the resolved symbol, fed by the entry's exec output, with every
+ * entry data output mirrored to the parent parameter of the same name and, for function-graph
+ * targets, the parent call's result routed into the function result node. Comparison only: nothing
+ * is created, rewired or journalled here.
+ */
+bool CompareImplementationParentCall(
+	UBlueprint* Blueprint,
+	const FCortexGraphPreparedPatch& Prepared,
+	const FCortexGraphPatchLocators& Locators,
+	FString& OutFailure)
+{
+	const TSharedPtr<FJsonObject>* TargetPtr = nullptr;
+	if (!Prepared.NormalizedRequest->TryGetObjectField(TEXT("target"), TargetPtr)
+		|| !TargetPtr || !TargetPtr->IsValid())
+	{
+		return true;
+	}
+	const TSharedPtr<FJsonObject>* ImplementationPtr = nullptr;
+	if (!(*TargetPtr)->TryGetObjectField(TEXT("implementation"), ImplementationPtr)
+		|| !ImplementationPtr || !ImplementationPtr->IsValid())
+	{
+		return true;
+	}
+	FString CallKind;
+	if (!(*ImplementationPtr)->TryGetStringField(TEXT("call_kind"), CallKind)
+		|| !CallKind.Equals(TEXT("parent"), ESearchCase::CaseSensitive))
+	{
+		return true;
+	}
+	if (!Locators.bHasEntryNode) return true;
+
+	UEdGraphNode* Entry = nullptr;
+	FindNodeByGuid(Blueprint, Locators.EntryNodeGuid, Entry);
+	if (!Entry || !Entry->GetGraph())
+	{
+		OutFailure = TEXT("implementation parent call cannot be verified: the entry locator did not re-resolve");
+		return false;
+	}
+	UEdGraph* const EntryGraph = Entry->GetGraph();
+	UK2Node_CallParentFunction* ParentCall = nullptr;
+	UK2Node_FunctionResult* ResultNode = nullptr;
+	for (UEdGraphNode* Node : EntryGraph->Nodes)
+	{
+		if (!ParentCall)
+		{
+			ParentCall = Cast<UK2Node_CallParentFunction>(Node);
+		}
+		if (!ResultNode)
+		{
+			ResultNode = Cast<UK2Node_FunctionResult>(Node);
+		}
+	}
+	if (!ParentCall)
+	{
+		OutFailure = FString::Printf(TEXT("implementation parent call is missing from graph '%s'"), *EntryGraph->GetName());
+		return false;
+	}
+
+	FString ExpectedName;
+	FString ExpectedOwner;
+	const TSharedPtr<FJsonObject>* SymbolPtr = nullptr;
+	if (Prepared.NormalizedRequest->TryGetObjectField(TEXT("resolved_symbol"), SymbolPtr)
+		&& SymbolPtr && SymbolPtr->IsValid())
+	{
+		(*SymbolPtr)->TryGetStringField(TEXT("function_name"), ExpectedName);
+		(*SymbolPtr)->TryGetStringField(TEXT("owner_class"), ExpectedOwner);
+	}
+	const UClass* const ActualOwner = ParentCall->FunctionReference.GetMemberParentClass();
+	const FString ActualOwnerPath = ActualOwner ? ActualOwner->GetPathName() : FString(TEXT("none"));
+	const FString ActualName = ParentCall->FunctionReference.GetMemberName().ToString();
+	if (!ExpectedName.IsEmpty() && ActualName != ExpectedName)
+	{
+		OutFailure = FString::Printf(TEXT("implementation parent call symbol mismatch: expected '%s', found '%s'"),
+			*ExpectedName, *ActualName);
+		return false;
+	}
+	if (!ExpectedOwner.IsEmpty() && ActualOwnerPath != ExpectedOwner)
+	{
+		OutFailure = FString::Printf(TEXT("implementation parent call owner mismatch: expected '%s', found '%s'"),
+			*ExpectedOwner, *ActualOwnerPath);
+		return false;
+	}
+
+	UEdGraphPin* const EntryThen = Entry->FindPin(UEdGraphSchema_K2::PN_Then);
+	UEdGraphPin* const ParentExec = ParentCall->GetExecPin();
+	if (!EntryThen || !ParentExec || !EntryThen->LinkedTo.Contains(ParentExec) || ParentExec->LinkedTo.Num() != 1)
+	{
+		OutFailure = TEXT("implementation parent call exec wiring mismatch: the entry 'then' pin does not feed the parent call exec pin");
+		return false;
+	}
+
+	for (UEdGraphPin* EntryPin : Entry->Pins)
+	{
+		if (!EntryPin || EntryPin->Direction != EGPD_Output
+			|| EntryPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+		{
+			continue;
+		}
+		UEdGraphPin* const ParentParam = ParentCall->FindPin(EntryPin->PinName);
+		if (!ParentParam || !EntryPin->LinkedTo.Contains(ParentParam))
+		{
+			OutFailure = FString::Printf(
+				TEXT("implementation parent call parameter '%s' is not fed by the entry output of the same name"),
+				*EntryPin->PinName.ToString());
+			return false;
+		}
+	}
+
+	if (ResultNode)
+	{
+		UEdGraphPin* const ParentThen = ParentCall->FindPin(UEdGraphSchema_K2::PN_Then);
+		UEdGraphPin* const ResultExec = ResultNode->GetExecPin();
+		if (!ParentThen || !ResultExec || !ParentThen->LinkedTo.Contains(ResultExec))
+		{
+			OutFailure = TEXT("implementation parent call result wiring mismatch: the parent call 'then' pin does not feed the function result exec pin");
+			return false;
+		}
+		for (UEdGraphPin* ResultPin : ResultNode->Pins)
+		{
+			if (!ResultPin || ResultPin->Direction != EGPD_Input
+				|| ResultPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+			{
+				continue;
+			}
+			UEdGraphPin* const ParentOutput = ParentCall->FindPin(ResultPin->PinName);
+			if (!ParentOutput || !ParentOutput->LinkedTo.Contains(ResultPin))
+			{
+				OutFailure = FString::Printf(
+					TEXT("implementation parent call output '%s' does not feed the function result input of the same name"),
+					*ResultPin->PinName.ToString());
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+/**
  * Compares the whole planned intent against the live native asset: every planned node's canonical
  * dimensions, every planned pin update, the implementation entry symbol and every planned edge.
  * Readback after apply and the planning-time reuse reconciliation both use this one comparator, so
@@ -2748,6 +2904,7 @@ bool ComparePlannedIntentAgainstNative(
 
 	if (!ComparePlannedPinUpdates(Blueprint, Prepared, Faults, OutFailure)) return false;
 	if (!CompareEntrySymbol(Blueprint, Prepared, Locators, bCompiled, OutFailure)) return false;
+	if (!CompareImplementationParentCall(Blueprint, Prepared, Locators, OutFailure)) return false;
 	if (!ComparePlannedEdges(Blueprint, Prepared, Locators, Faults, OutFailure)) return false;
 	return true;
 }

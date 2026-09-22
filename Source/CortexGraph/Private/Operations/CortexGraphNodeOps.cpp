@@ -1661,6 +1661,12 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializeNode(const UEdGraphNode* N
 {
 	TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 	Entry->SetStringField(TEXT("node_id"), Node->GetName());
+	// The canonical node identity, additive next to the unchanged name-based node_id, so a client can
+	// reconcile the deterministic identities it planned by inspection alone.
+	if (Node->NodeGuid.IsValid())
+	{
+		Entry->SetStringField(TEXT("node_guid"), Node->NodeGuid.ToString());
+	}
 
 	const FString ClassName = Node->GetClass()->GetName();
 	Entry->SetStringField(TEXT("class"), ClassName);
