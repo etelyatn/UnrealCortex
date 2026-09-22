@@ -12,15 +12,12 @@ bool RejectBlockedUMGMutation(const TSharedPtr<FJsonObject>& Params, FCortexComm
 {
     FString AssetPath;
     if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath)) return false;
-    if (UBlueprint* Blueprint = FindObject<UBlueprint>(nullptr, *AssetPath))
+    FString Reason;
+    if (FCortexAssetMutationGuard::IsPathBlocked(AssetPath, Reason))
     {
-        FString Reason;
-        if (FCortexAssetMutationGuard::IsBlocked(Blueprint, Reason))
-        {
-            OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-                FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *Reason));
-            return true;
-        }
+        OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+            FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *Reason));
+        return true;
     }
     return false;
 }

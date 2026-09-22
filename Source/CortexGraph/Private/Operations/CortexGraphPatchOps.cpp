@@ -42,6 +42,19 @@ constexpr int32 MaxClientIdLength = 32;
 constexpr int32 MaxRequestSize = 64 * 1024;
 constexpr int32 MaxScannedNodes = 2048;
 
+#if WITH_AUTOMATION_TESTS
+FName ApplyFaultPointForTesting = NAME_None;
+#endif
+
+bool ShouldInjectApplyFault(const FName Point)
+{
+#if WITH_AUTOMATION_TESTS
+	return ApplyFaultPointForTesting == Point;
+#else
+	return false;
+#endif
+}
+
 bool IsJsonType(const TSharedPtr<FJsonValue>& Value, EJson Expected)
 {
 	return Value.IsValid() && Value->Type == Expected;
@@ -1219,6 +1232,7 @@ bool FCortexGraphPatchOps::Apply(
 		return false;
 	}
 
+	const bool bPackageWasDirty = Blueprint->GetOutermost()->IsDirty();
 	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Apply Graph Patch")));
 	const TSharedPtr<FJsonObject>* TargetPtr = nullptr;
 	if (!Prepared.NormalizedRequest->TryGetObjectField(TEXT("target"), TargetPtr) || !TargetPtr || !TargetPtr->IsValid())
@@ -1233,21 +1247,17 @@ bool FCortexGraphPatchOps::Apply(
 	if ((*TargetPtr)->TryGetObjectField(TEXT("graph_ref"), GraphRefPtr) && GraphRefPtr && GraphRefPtr->IsValid())
 	{
 		FString GraphGuidString;
+		FString SubgraphPath;
 		FGuid GraphGuid;
-		if (!(*GraphRefPtr)->TryGetStringField(TEXT("graph_guid"), GraphGuidString) || !FGuid::Parse(GraphGuidString, GraphGuid))
+		if (!(*GraphRefPtr)->TryGetStringField(TEXT("graph_guid"), GraphGuidString) || !FGuid::Parse(GraphGuidString, GraphGuid)
+			|| ((*GraphRefPtr)->HasField(TEXT("subgraph_path"))
+				&& !(*GraphRefPtr)->TryGetStringField(TEXT("subgraph_path"), SubgraphPath)))
 		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Prepared graph target has an invalid graph_guid"));
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Prepared graph target has an invalid graph reference"));
 			return false;
 		}
-		TArray<UEdGraph*> Graphs;
-		Blueprint->GetAllGraphs(Graphs);
-		for (UEdGraph* Candidate : Graphs)
+		if (!ResolveGraphByGuid(Blueprint, GraphGuid, SubgraphPath, Graph, OutError))
 		{
-			if (Candidate && Candidate->GraphGuid == GraphGuid) { Graph = Candidate; break; }
-		}
-		if (!Graph)
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::GraphNotFound, TEXT("Prepared graph target no longer exists"));
 			return false;
 		}
 	}
@@ -1270,9 +1280,16 @@ bool FCortexGraphPatchOps::Apply(
 		Graph = Ensured.Graph;
 	}
 
+
 	TArray<UEdGraphNode*> AddedNodes;
 	AddedNodes.Append(ImplementationState.AddedNodes);
-	struct FDefaultUndo { UEdGraphPin* Pin; FString Value; FText Text; UObject* Object; };
+	struct FDefaultUndo
+	{
+		FGuid GraphGuid;
+		FGuid NodeGuid;
+		FName PinName;
+		TSharedPtr<FJsonObject> PriorLiteral;
+	};
 	TArray<FDefaultUndo> Defaults;
 	TArray<TPair<UEdGraphPin*, UEdGraphPin*>> AddedLinks;
 	auto Rollback = [&]()
@@ -1286,18 +1303,54 @@ bool FCortexGraphPatchOps::Apply(
 		}
 		for (int32 Index = Defaults.Num() - 1; Index >= 0; --Index)
 		{
-			if (Defaults[Index].Pin)
+			UEdGraph* CurrentGraph = nullptr;
+			TArray<UEdGraph*> CurrentGraphs;
+			Blueprint->GetAllGraphs(CurrentGraphs);
+			for (UEdGraph* Candidate : CurrentGraphs)
 			{
-				Defaults[Index].Pin->DefaultValue = Defaults[Index].Value;
-				Defaults[Index].Pin->DefaultTextValue = Defaults[Index].Text;
-				Defaults[Index].Pin->DefaultObject = Defaults[Index].Object;
+				if (Candidate && Candidate->GraphGuid == Defaults[Index].GraphGuid)
+				{
+					CurrentGraph = Candidate;
+					break;
+				}
+			}
+			UEdGraphNode* CurrentNode = nullptr;
+			if (CurrentGraph)
+			{
+				for (UEdGraphNode* Candidate : CurrentGraph->Nodes)
+				{
+					if (Candidate && Candidate->NodeGuid == Defaults[Index].NodeGuid)
+					{
+						CurrentNode = Candidate;
+						break;
+					}
+				}
+			}
+			UEdGraphPin* CurrentPin = CurrentNode ? CurrentNode->FindPin(Defaults[Index].PinName) : nullptr;
+			FCortexCommandResult RestoreError;
+			if (!CurrentPin || !Defaults[Index].PriorLiteral.IsValid()
+				|| !FCortexGraphPinDefaults::ApplyDefault(CurrentPin, Defaults[Index].PriorLiteral, RestoreError))
+			{
+				return;
 			}
 		}
 		for (int32 Index = AddedNodes.Num() - 1; Index >= 0; --Index)
 		{
-			if (AddedNodes[Index] && AddedNodes[Index]->GetGraph())
+			if (!AddedNodes[Index]) continue;
+			const FGuid AddedNodeGuid = AddedNodes[Index]->NodeGuid;
+			TArray<UEdGraph*> CurrentGraphs;
+			Blueprint->GetAllGraphs(CurrentGraphs);
+			for (UEdGraph* CurrentGraph : CurrentGraphs)
 			{
-				AddedNodes[Index]->GetGraph()->RemoveNode(AddedNodes[Index]);
+				if (!CurrentGraph) continue;
+				for (UEdGraphNode* CurrentNode : CurrentGraph->Nodes)
+				{
+					if (CurrentNode && CurrentNode->NodeGuid == AddedNodeGuid)
+					{
+						CurrentNode->DestroyNode();
+						break;
+					}
+				}
 			}
 		}
 		for (int32 Index = ImplementationState.AddedGraphs.Num() - 1; Index >= 0; --Index)
@@ -1310,7 +1363,16 @@ bool FCortexGraphPatchOps::Apply(
 	};
 	auto Fail = [&](const FString& Message)
 	{
+		Transaction.Cancel();
 		Rollback();
+		Blueprint->GetOutermost()->SetDirtyFlag(bPackageWasDirty);
+		if (ShouldInjectApplyFault(TEXT("verification_failure")))
+		{
+			FCortexAssetMutationGuard::Block(Blueprint, TEXT("Test-forced recovery verification failure"));
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("Graph patch recovery verification failed; asset is blocked from mutation"));
+			return false;
+		}
 		const TSharedPtr<FJsonObject> Restored = FCortexGraphPatchState::ComputeFingerprint(Blueprint);
 		const bool bRestored = Restored.IsValid() && Prepared.FingerprintBefore.IsValid()
 			&& Restored->GetStringField(TEXT("graph_authoring_hash"))
@@ -1325,6 +1387,10 @@ bool FCortexGraphPatchOps::Apply(
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, Message);
 		return false;
 	};
+	if (ImplementationState.AddedGraphs.Num() > 0 && ShouldInjectApplyFault(TEXT("implementation_graph")))
+	{
+		return Fail(TEXT("Test fault injected after implementation graph creation"));
+	}
 
 	Graph->Modify();
 	TMap<FString, UEdGraphNode*> NodesById;
@@ -1355,9 +1421,35 @@ bool FCortexGraphPatchOps::Apply(
 		{
 			return Fail(ApplyError);
 		}
-		Node->AllocateDefaultPins();
+		if (Node->Pins.Num() == 0)
+		{
+			Node->AllocateDefaultPins();
+		}
 		Graph->AddNode(Node, true, false);
 		AddedNodes.Add(Node);
+		if (UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node))
+		{
+			CompositeNode->PostPlacedNewNode();
+			if (CompositeNode->Pins.Num() == 0)
+			{
+				CompositeNode->AllocateDefaultPins();
+			}
+		}
+		const TSharedPtr<FJsonObject>* PositionPtr = nullptr;
+		if (NodeJson->TryGetObjectField(TEXT("position"), PositionPtr) && PositionPtr && PositionPtr->IsValid())
+		{
+			Node->NodePosX = (*PositionPtr)->GetIntegerField(TEXT("x"));
+			Node->NodePosY = (*PositionPtr)->GetIntegerField(TEXT("y"));
+			if (ShouldInjectApplyFault(TEXT("layout")))
+			{
+				return Fail(TEXT("Test fault injected after layout mutation"));
+			}
+		}
+		if (AddedNodes.Num() == 2
+			&& (ShouldInjectApplyFault(TEXT("second_node")) || ShouldInjectApplyFault(TEXT("verification_failure"))))
+		{
+			return Fail(TEXT("Test fault injected after second node"));
+		}
 		NodesById.Add(ClientId, Node);
 		const TSharedPtr<FJsonObject>* DefaultsPtr = nullptr;
 		if (NodeJson->TryGetObjectField(TEXT("defaults"), DefaultsPtr) && DefaultsPtr && DefaultsPtr->IsValid())
@@ -1367,9 +1459,18 @@ bool FCortexGraphPatchOps::Apply(
 				UEdGraphPin* Pin = Node->FindPin(FName(*Pair.Key));
 				const TSharedPtr<FJsonObject> Literal = Pair.Value->AsObject();
 				if (!Pin || !Literal.IsValid()) return Fail(TEXT("Prepared node default no longer resolves"));
-				Defaults.Add({ Pin, Pin->DefaultValue, Pin->DefaultTextValue, Pin->DefaultObject });
+				TSharedPtr<FJsonObject> PriorLiteral;
 				FCortexCommandResult DefaultError;
+				if (!FCortexGraphPinDefaults::ReadDefault(Pin, PriorLiteral, DefaultError))
+				{
+					return Fail(DefaultError.ErrorMessage);
+				}
+				Defaults.Add({ Graph->GraphGuid, Node->NodeGuid, Pin->PinName, PriorLiteral });
 				if (!FCortexGraphPinDefaults::ApplyDefault(Pin, Literal, DefaultError)) return Fail(DefaultError.ErrorMessage);
+				if (ShouldInjectApplyFault(TEXT("first_default")))
+				{
+					return Fail(TEXT("Test fault injected after first default"));
+				}
 			}
 		}
 	}
@@ -1393,8 +1494,13 @@ bool FCortexGraphPatchOps::Apply(
 		{
 			return Fail(TEXT("Prepared pin update no longer resolves"));
 		}
-		Defaults.Add({ Pin, Pin->DefaultValue, Pin->DefaultTextValue, Pin->DefaultObject });
+		TSharedPtr<FJsonObject> PriorLiteral;
 		FCortexCommandResult DefaultError;
+		if (!FCortexGraphPinDefaults::ReadDefault(Pin, PriorLiteral, DefaultError))
+		{
+			return Fail(DefaultError.ErrorMessage);
+		}
+		Defaults.Add({ Graph->GraphGuid, Node->NodeGuid, Pin->PinName, PriorLiteral });
 		if (!FCortexGraphPinDefaults::ApplyDefault(Pin, *LiteralPtr, DefaultError)) return Fail(DefaultError.ErrorMessage);
 	}
 	const TArray<TSharedPtr<FJsonValue>>& Connections = Prepared.NormalizedRequest->GetArrayField(TEXT("connections"));
@@ -1427,6 +1533,23 @@ bool FCortexGraphPatchOps::Apply(
 			return Fail(TEXT("Prepared connection is no longer directly safe"));
 		}
 		AddedLinks.Add({ SourcePin, TargetPin });
+		if (ShouldInjectApplyFault(TEXT("first_link")))
+		{
+			return Fail(TEXT("Test fault injected after first link"));
+		}
 	}
 	return true;
 }
+
+
+#if WITH_AUTOMATION_TESTS
+void FCortexGraphPatchOps::SetApplyFaultPointForTesting(const FName Point)
+{
+	ApplyFaultPointForTesting = Point;
+}
+
+void FCortexGraphPatchOps::ClearApplyFaultPointForTesting()
+{
+	ApplyFaultPointForTesting = NAME_None;
+}
+#endif

@@ -20,16 +20,18 @@ namespace
 bool RejectBlockedBlueprintMutation(const TSharedPtr<FJsonObject>& Params, FCortexCommandResult& OutError)
 {
 	FString AssetPath;
-	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath)) return false;
-	if (UBlueprint* Blueprint = FindObject<UBlueprint>(nullptr, *AssetPath))
+	if (!Params.IsValid()
+		|| (!Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+			&& !Params->TryGetStringField(TEXT("source_path"), AssetPath)))
 	{
-		FString Reason;
-		if (FCortexAssetMutationGuard::IsBlocked(Blueprint, Reason))
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *Reason));
-			return true;
-		}
+		return false;
+	}
+	FString Reason;
+	if (FCortexAssetMutationGuard::IsPathBlocked(AssetPath, Reason))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *Reason));
+		return true;
 	}
 	return false;
 }

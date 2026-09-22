@@ -10,4 +10,5 @@ class CORTEXCORE_API FCortexAssetMutationGuard
 public:
 	static void Block(const UObject* Asset, const FString& Reason);
 	static bool IsBlocked(const UObject* Asset, FString& OutReason);
+	static bool IsPathBlocked(const FString& AssetPath, FString& OutReason);
 };

@@ -3,6 +3,7 @@
 #include "Operations/CortexBPSCSDiagnostics.h"
 #include "CortexBlueprintModule.h"
 #include "CortexCommandRouter.h"
+#include "CortexAssetMutationGuard.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"
@@ -495,6 +496,12 @@ FCortexCommandResult FCortexBPCleanupOps::RecompileDependents(const TSharedPtr<F
 			TEXT("Missing required param: asset_path"));
 	}
 
+	FString BlockReason;
+	if (FCortexAssetMutationGuard::IsPathBlocked(AssetPath, BlockReason))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
+	}
 	FString ValidationError;
 	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
 	{
@@ -518,6 +525,12 @@ FCortexCommandResult FCortexBPCleanupOps::RecompileDependents(const TSharedPtr<F
 			continue;
 		}
 
+		FString DependentBlockReason;
+		if (FCortexAssetMutationGuard::IsBlocked(DependentBlueprint, DependentBlockReason))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *DependentBlockReason));
+		}
 		if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(DependentBlueprint->GetPathName(), ValidationError))
 		{
 			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
@@ -790,6 +803,15 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 			if (!IsValid(DependentBP) || DependentBP == BP)
 			{
 				continue;
+			}
+
+			FString BlockReason;
+			if (FCortexAssetMutationGuard::IsBlocked(DependentBP, BlockReason))
+			{
+				RestoreSCSComponentName(BP, SCS, NewFName, OldFName);
+				Transaction.Cancel();
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("Dependent Blueprint is blocked after failed recovery: %s"), *BlockReason));
 			}
 
 			DependentBP->Modify();

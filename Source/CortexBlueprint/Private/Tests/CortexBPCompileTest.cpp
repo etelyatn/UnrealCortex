@@ -1,9 +1,11 @@
 #include "Misc/AutomationTest.h"
 #include "CortexBPCommandHandler.h"
 #include "CortexCommandRouter.h"
+#include "CortexAssetMutationGuard.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Containers/Ticker.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Blueprint.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "EdGraph/EdGraph.h"
@@ -171,6 +173,37 @@ bool FCortexBPCompileTest::RunTest(const FString& Parameters)
 			Result.ErrorCode, CortexErrorCodes::InvalidField);
 	}
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPBlockedMutationDispatchTest,
+	"Cortex.Blueprint.Compile.BlockedMutationDispatch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPBlockedMutationDispatchTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = CreatePackage(TEXT("/Temp/BP_BlockedMutation_T07"));
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(), Package, FName("BP_BlockedMutation_T07"), BPTYPE_Normal,
+		UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("blocked Blueprint fixture created"), Blueprint);
+	if (!Blueprint) return false;
+	FCortexAssetMutationGuard::Block(Blueprint, TEXT("forced recovery verification failure"));
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
+	FCortexBPCommandHandler Handler;
+	TestFalse(TEXT("normal Blueprint compile dispatch refuses blocked asset"),
+		Handler.Execute(TEXT("compile"), Params).bSuccess);
+	TestFalse(TEXT("normal Blueprint save dispatch refuses blocked asset"),
+		Handler.Execute(TEXT("save"), Params).bSuccess);
+	TestTrue(TEXT("normal Blueprint read dispatch remains available"),
+		Handler.Execute(TEXT("get_info"), Params).bSuccess);
+	Blueprint->ClearFlags(RF_Standalone);
+	Blueprint->MarkAsGarbage();
+	Package->ClearFlags(RF_Standalone);
+	Package->MarkAsGarbage();
 	return true;
 }
 

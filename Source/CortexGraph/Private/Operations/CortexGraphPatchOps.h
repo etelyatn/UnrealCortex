@@ -50,4 +50,9 @@ public:
 		UBlueprint* Blueprint,
 		const FCortexGraphPreparedPatch& Prepared,
 		FCortexCommandResult& OutError);
+	#if WITH_AUTOMATION_TESTS
+	/** Test-only deterministic fault seam; never accepts external command input. */
+	static void SetApplyFaultPointForTesting(FName Point);
+	static void ClearApplyFaultPointForTesting();
+	#endif
 };

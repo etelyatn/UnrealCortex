@@ -381,12 +381,20 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 		Entry->SetStringField(TEXT("asset_path"), AssetPath);
 		Entry->SetStringField(TEXT("asset_type"), AssetData.AssetClassPath.GetAssetName().ToString());
 
+		FString BlockReason;
+		if (!bDryRun && FCortexAssetMutationGuard::IsPathBlocked(AssetPath, BlockReason))
+		{
+			Entry->SetStringField(TEXT("error"), CortexErrorCodes::InvalidOperation);
+			Entry->SetStringField(TEXT("message"), FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
+
 		UObject* Asset = LoadAssetWithFallbacks(AssetData, AssetPath);
 		if (Asset != nullptr)
 		{
 			Entry->SetStringField(TEXT("asset_type"), GetAssetTypeName(Asset));
 		}
-
 		UPackage* Package = FindPackage(nullptr, *AssetData.PackageName.ToString());
 		if (Package == nullptr)
 		{
@@ -400,14 +408,6 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 			continue;
 		}
 
-		FString BlockReason;
-		if (!bDryRun && Asset && FCortexAssetMutationGuard::IsBlocked(Asset, BlockReason))
-		{
-			Entry->SetStringField(TEXT("error"), CortexErrorCodes::InvalidOperation);
-			Entry->SetStringField(TEXT("message"), FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
-			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
-			continue;
-		}
 		const bool bWasDirty = Package->IsDirty();
 		Entry->SetBoolField(TEXT("was_dirty"), bWasDirty);
 
