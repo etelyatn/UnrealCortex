@@ -193,12 +193,17 @@ bool FCortexBPBlockedMutationDispatchTest::RunTest(const FString& Parameters)
 	Package->SetDirtyFlag(false);
 	FCortexAssetMutationGuard::Block(Blueprint, TEXT("forced recovery verification failure"));
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("asset_path"), TEXT("Blueprints/BP.BP"));
+	Params->SetStringField(TEXT("blueprint_path"), TEXT("Blueprints/BP.BP"));
 	FCortexBPCommandHandler Handler;
 	TestFalse(TEXT("relative alias compile refuses canonical blocked asset before load side effects"),
 		Handler.Execute(TEXT("compile"), Params).bSuccess);
 	TestFalse(TEXT("relative alias save refuses canonical blocked asset before load side effects"),
 		Handler.Execute(TEXT("save"), Params).bSuccess);
+	TSharedPtr<FJsonObject> DefaultsParams = MakeShared<FJsonObject>();
+	DefaultsParams->SetStringField(TEXT("blueprint_path"), TEXT("Blueprints/BP.BP"));
+	DefaultsParams->SetNumberField(TEXT("properties.InitialLifeSpan"), 12.0);
+	TestFalse(TEXT("blueprint_path alias blocks class defaults before side effects"),
+		Handler.Execute(TEXT("set_class_defaults"), DefaultsParams).bSuccess);
 	TestFalse(TEXT("blocked alias dispatch leaves package clean"), Package->IsDirty());
 	TestTrue(TEXT("relative alias read dispatch remains available"),
 		Handler.Execute(TEXT("get_info"), Params).bSuccess);
