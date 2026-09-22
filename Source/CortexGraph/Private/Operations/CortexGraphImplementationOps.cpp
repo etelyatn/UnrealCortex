@@ -11,6 +11,103 @@
 #include "K2Node_FunctionResult.h"
 #include "K2Node_CallParentFunction.h"
 
+bool FCortexGraphImplementationOps::ValidateEligibility(
+	UBlueprint* Blueprint,
+	const TSharedPtr<FJsonObject>& Selector,
+	FCortexGraphImplementationPlan& OutPlan,
+	FCortexCommandResult& OutError)
+{
+	OutPlan = FCortexGraphImplementationPlan();
+	if (!Blueprint)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, TEXT("Blueprint is null."));
+		return false;
+	}
+	FCortexResolvedSymbol Symbol;
+	if (!FCortexGraphSymbolResolver::ResolveFunction(Blueprint, Selector, Symbol, OutError)) return false;
+	UFunction* Function = Symbol.Function;
+	UClass* FunctionClass = Function ? Function->GetOwnerClass() : nullptr;
+	if (!Function)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::SymbolNotFound, TEXT("Resolved function is null."));
+		return false;
+	}
+	if (!Function->HasAnyFunctionFlags(FUNC_BlueprintEvent) || Function->HasAnyFunctionFlags(FUNC_Final))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Function is not overridable."));
+		return false;
+	}
+	UClass* SelfClass = Blueprint->GeneratedClass ? Blueprint->GeneratedClass : Blueprint->SkeletonGeneratedClass;
+	if (!SelfClass || !FunctionClass || SelfClass == FunctionClass || !SelfClass->IsChildOf(FunctionClass))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Function is not an inherited override."));
+		return false;
+	}
+	for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
+	{
+		if (!UberGraph) continue;
+		for (UEdGraphNode* Node : UberGraph->Nodes)
+		{
+			if (const UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
+			{
+				if (CustomEvent->CustomFunctionName == Function->GetFName())
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::FunctionExists, TEXT("A custom event with the same name already exists."));
+					return false;
+				}
+			}
+		}
+	}
+	if (Symbol.CallKind == ECortexCallKind::Parent && !Function->HasAnyFunctionFlags(FUNC_Native))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Explicit parent call requested but function is not a native event."));
+		return false;
+	}
+	OutPlan.Function = Function;
+	OutPlan.FunctionClass = FunctionClass;
+	OutPlan.bCanBePlacedAsEvent = UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Function);
+	OutPlan.bWouldCreate = true;
+	OutPlan.bParentCall = Symbol.CallKind == ECortexCallKind::Parent;
+	if (OutPlan.bCanBePlacedAsEvent)
+	{
+		for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
+		{
+			if (!UberGraph) continue;
+			for (UEdGraphNode* Node : UberGraph->Nodes)
+			{
+				UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
+				if (EventNode && EventNode->EventReference.GetMemberName() == Function->GetFName()
+					&& EventNode->EventReference.GetMemberParentClass() == FunctionClass)
+				{
+					OutPlan.bWouldCreate = false;
+					OutPlan.ExistingGraph = UberGraph;
+					OutPlan.ExistingEntryNode = EventNode;
+				}
+		}
+	}
+	}
+	else
+	{
+		for (UEdGraph* FunctionGraph : Blueprint->FunctionGraphs)
+		{
+			if (FunctionGraph && FunctionGraph->GetFName() == Function->GetFName())
+			{
+				OutPlan.bWouldCreate = false;
+				OutPlan.ExistingGraph = FunctionGraph;
+				for (UEdGraphNode* Node : FunctionGraph->Nodes)
+				{
+					if (Cast<UK2Node_FunctionEntry>(Node))
+					{
+						OutPlan.ExistingEntryNode = Node;
+						break;
+					}
+				}
+			}
+		}
+	}
+	return true;
+}
+
 FCortexGraphImplementationEnsureResult FCortexGraphImplementationOps::EnsureForPatch(
 	UBlueprint* Blueprint,
 	const TSharedPtr<FJsonObject>& Selector,
@@ -19,92 +116,20 @@ FCortexGraphImplementationEnsureResult FCortexGraphImplementationOps::EnsureForP
 	FCortexGraphImplementationEnsureResult Result;
 	Result.bSuccess = false;
 
-	if (!Blueprint)
+	FCortexGraphImplementationPlan Plan;
+	FCortexCommandResult EligibilityError;
+	if (!ValidateEligibility(Blueprint, Selector, Plan, EligibilityError))
 	{
-		Result.ErrorCode = CortexErrorCodes::BlueprintNotFound;
-		Result.ErrorMessage = TEXT("Blueprint is null.");
+		Result.ErrorCode = EligibilityError.ErrorCode;
+		Result.ErrorMessage = EligibilityError.ErrorMessage;
+		Result.ErrorDetails = EligibilityError.ErrorDetails;
 		return Result;
 	}
 
-	FCortexResolvedSymbol Symbol;
-	FCortexCommandResult ResolveError;
-	if (!FCortexGraphSymbolResolver::ResolveFunction(Blueprint, Selector, Symbol, ResolveError))
-	{
-		Result.ErrorCode = ResolveError.ErrorCode;
-		Result.ErrorMessage = ResolveError.ErrorMessage;
-		Result.ErrorDetails = ResolveError.ErrorDetails;
-		return Result;
-	}
-
-	UFunction* Function = Symbol.Function;
-	if (!Function)
-	{
-		Result.ErrorCode = CortexErrorCodes::SymbolNotFound;
-		Result.ErrorMessage = TEXT("Resolved function is null.");
-		return Result;
-	}
-
+	UFunction* Function = Plan.Function;
 	FName FunctionName = Function->GetFName();
-	UClass* FunctionClass = Function->GetOwnerClass();
-
-	// Verify overridable
-	bool bIsOverridable = Function->HasAnyFunctionFlags(FUNC_BlueprintEvent) && !Function->HasAnyFunctionFlags(FUNC_Final);
-	if (!bIsOverridable)
-	{
-		Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-		Result.ErrorMessage = TEXT("Function is not overridable.");
-		return Result;
-	}
-
-	// Inherited owner mismatch check
-	FString ExpectedOwnerClass;
-	if (Selector->TryGetStringField(TEXT("owner_class"), ExpectedOwnerClass) && !ExpectedOwnerClass.IsEmpty())
-	{
-		// Validated implicitly via SymbolResolver unless exact match needed, but the prompt says 
-		// "verifying rejection when function is not an inherited override"
-		// If the function's declaring class is not in the Blueprint's ancestry, it's not an inherited override.
-		// Wait, SymbolResolver already checks if it is in the Blueprint's class hierarchy!
-		// However, let's explicitly verify it is inherited (i.e. OwnerClass != Blueprint->GeneratedClass and is parent)
-		if (!Blueprint->GeneratedClass || !Blueprint->GeneratedClass->IsChildOf(FunctionClass) || Blueprint->GeneratedClass == FunctionClass)
-		{
-			Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-			Result.ErrorMessage = TEXT("Function is not an inherited override.");
-			return Result;
-		}
-	}
-
-	// Conflict check: same-named custom event
-	for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
-	{
-		if (UberGraph)
-		{
-			for (UEdGraphNode* Node : UberGraph->Nodes)
-			{
-				if (UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
-				{
-					if (CustomEvent->CustomFunctionName == FunctionName)
-					{
-						Result.ErrorCode = CortexErrorCodes::FunctionExists;
-						Result.ErrorMessage = TEXT("A custom event with the same name already exists.");
-						return Result;
-					}
-				}
-			}
-		}
-	}
-
-	// Verify Parent intent
-	if (Symbol.CallKind == ECortexCallKind::Parent)
-	{
-		if (!Function->HasAnyFunctionFlags(FUNC_Native))
-		{
-			Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-			Result.ErrorMessage = TEXT("Explicit parent call requested but function is not a native event.");
-			return Result;
-		}
-	}
-
-	bool bCanBePlacedAsEvent = UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Function);
+	UClass* FunctionClass = Plan.FunctionClass;
+	const bool bCanBePlacedAsEvent = Plan.bCanBePlacedAsEvent;
 	UEdGraph* OverrideGraph = nullptr;
 	UEdGraphNode* EntryNode = nullptr;
 	UEdGraphNode* ResultNode = nullptr;
@@ -224,7 +249,7 @@ FCortexGraphImplementationEnsureResult FCortexGraphImplementationOps::EnsureForP
 		}
 
 		// Connect Parent Call if requested
-		if (Symbol.CallKind == ECortexCallKind::Parent)
+		if (Plan.bParentCall)
 		{
 			UK2Node_CallParentFunction* ParentNode = NewObject<UK2Node_CallParentFunction>(OverrideGraph);
 			ParentNode->SetFromFunction(Function);

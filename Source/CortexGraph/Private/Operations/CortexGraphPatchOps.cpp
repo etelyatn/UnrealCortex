@@ -313,9 +313,11 @@ bool ParseTarget(
 	UEdGraph*& OutGraph,
 	TSharedPtr<FJsonObject>& OutSymbolJson,
 	bool& OutImplementationWouldCreate,
+	bool& OutImplementationIsEvent,
 	FCortexCommandResult& OutError)
 {
 	OutImplementationWouldCreate = false;
+	OutImplementationIsEvent = false;
 	const TSharedPtr<FJsonObject>* TargetPtr = nullptr;
 	if (!Request->TryGetObjectField(TEXT("target"), TargetPtr) || !TargetPtr || !TargetPtr->IsValid())
 	{
@@ -381,71 +383,14 @@ bool ParseTarget(
 	}
 	const TSharedPtr<FJsonObject>& Selector = *ImplementationPtr;
 	if (!HasOnlyFields(Selector, { TEXT("owner_class"), TEXT("function_name"), TEXT("call_kind") }, OutError, TEXT("target.implementation"))) return false;
-	FString FunctionName;
-	FCortexResolvedSymbol Symbol;
-	if (!FCortexGraphSymbolResolver::ResolveFunction(Blueprint, Selector, Symbol, OutError)) return false;
-	if (!ReadRequiredString(Selector, TEXT("function_name"), FunctionName, OutError)) return false;
-	if (!Symbol.Function || !Symbol.Function->HasAnyFunctionFlags(FUNC_BlueprintEvent) || Symbol.Function->HasAnyFunctionFlags(FUNC_Final))
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Implementation target is not an overridable Blueprint event"));
-		return false;
-	}
-	UClass* SelfClass = Blueprint ? (Blueprint->GeneratedClass ? Blueprint->GeneratedClass : Blueprint->SkeletonGeneratedClass) : nullptr;
-	UClass* DeclaringClass = Symbol.Function->GetOwnerClass();
-	if (!SelfClass || !DeclaringClass || SelfClass == DeclaringClass || !SelfClass->IsChildOf(DeclaringClass))
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Implementation target is not an inherited member of the Blueprint"));
-		return false;
-	}
-	if (Symbol.CallKind == ECortexCallKind::Parent && !Symbol.Function->HasAnyFunctionFlags(FUNC_Native))
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Explicit parent implementation requires a native event"));
-		return false;
-	}
-	for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
-	{
-		if (!UberGraph) continue;
-		for (UEdGraphNode* Node : UberGraph->Nodes)
-		{
-			if (const UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
-			{
-				if (CustomEvent->CustomFunctionName == Symbol.Function->GetFName())
-				{
-					OutError = FCortexCommandRouter::Error(CortexErrorCodes::FunctionExists, TEXT("A custom event with the implementation name already exists"));
-					return false;
-				}
-			}
-		}
-	}
-	OutImplementationWouldCreate = true;
-	if (UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Symbol.Function))
-	{
-		for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
-		{
-			if (!UberGraph) continue;
-			for (UEdGraphNode* Node : UberGraph->Nodes)
-			{
-				const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
-				if (EventNode && EventNode->EventReference.GetMemberName() == Symbol.Function->GetFName()
-					&& EventNode->EventReference.GetMemberParentClass() == DeclaringClass)
-				{
-					OutImplementationWouldCreate = false;
-				}
-			}
-		}
-	}
-	else
-	{
-		for (UEdGraph* FunctionGraph : Blueprint->FunctionGraphs)
-		{
-			if (FunctionGraph && FunctionGraph->GetFName() == Symbol.Function->GetFName())
-			{
-				OutImplementationWouldCreate = false;
-			}
-		}
-	}
-	OutSymbolJson = Symbol.ToJson();
-	AddFunctionSignature(Symbol.Function, OutSymbolJson);
+	FCortexGraphImplementationPlan Plan;
+	if (!FCortexGraphImplementationOps::ValidateEligibility(Blueprint, Selector, Plan, OutError)) return false;
+	OutImplementationWouldCreate = Plan.bWouldCreate;
+	OutImplementationIsEvent = Plan.bCanBePlacedAsEvent;
+	OutSymbolJson = MakeShared<FJsonObject>();
+	OutSymbolJson->SetStringField(TEXT("function_name"), Plan.Function->GetName());
+	OutSymbolJson->SetStringField(TEXT("owner_class"), Plan.FunctionClass ? Plan.FunctionClass->GetPathName() : FString());
+	AddFunctionSignature(Plan.Function, OutSymbolJson);
 	return true;
 }
 bool ParseEndpoint(const TSharedPtr<FJsonObject>& Endpoint, FString& OutIdentity, FString& OutPin, bool& OutEntry, FCortexCommandResult& OutError, const FString& Context)
@@ -673,10 +618,18 @@ void AddPlannedPinSignature(UEdGraphNode* Node, const TSharedPtr<FJsonObject>& N
 		Descriptor->SetNumberField(TEXT("direction"), static_cast<int32>(Pin->Direction));
 		Descriptor->SetStringField(TEXT("category"), Pin->PinType.PinCategory.ToString());
 		Descriptor->SetStringField(TEXT("subcategory"), Pin->PinType.PinSubCategory.ToString());
-		Descriptor->SetStringField(TEXT("subobject"), Pin->PinType.PinSubCategoryObject.IsValid() ? Pin->PinType.PinSubCategoryObject->GetPathName() : FString());
 		Descriptor->SetNumberField(TEXT("container"), static_cast<int32>(Pin->PinType.ContainerType));
 		Descriptor->SetBoolField(TEXT("reference"), Pin->PinType.bIsReference);
 		Descriptor->SetBoolField(TEXT("const"), Pin->PinType.bIsConst);
+		if (Pin->PinType.ContainerType == EPinContainerType::Map || !Pin->PinType.PinValueType.TerminalCategory.IsNone())
+		{
+			TSharedPtr<FJsonObject> Terminal = MakeShared<FJsonObject>();
+			Terminal->SetStringField(TEXT("category"), Pin->PinType.PinValueType.TerminalCategory.ToString());
+			Terminal->SetStringField(TEXT("subcategory"), Pin->PinType.PinValueType.TerminalSubCategory.ToString());
+			Terminal->SetStringField(TEXT("subobject"), Pin->PinType.PinValueType.TerminalSubCategoryObject.IsValid() ? Pin->PinType.PinValueType.TerminalSubCategoryObject->GetPathName() : FString());
+			Terminal->SetBoolField(TEXT("const"), Pin->PinType.PinValueType.bTerminalIsConst);
+			Descriptor->SetObjectField(TEXT("map_terminal_type"), Terminal);
+		}
 		Serialized.Add(MakeShared<FJsonValueObject>(Descriptor));
 	}
 	NormalizedNode->SetArrayField(TEXT("resolved_pins"), Serialized);
@@ -772,12 +725,13 @@ bool FCortexGraphPatchOps::Preflight(
 	UEdGraph* TargetGraph = nullptr;
 	TSharedPtr<FJsonObject> SymbolJson;
 	bool bImplementationWouldCreate = false;
+	bool bImplementationIsEvent = false;
 	if (!CountBlueprintNodesBounded(Blueprint))
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("graph scan exceeds max_scanned_nodes=2048"));
 		return false;
 	}
-	if (!ParseTarget(Blueprint, Params, Target, TargetGraph, SymbolJson, bImplementationWouldCreate, OutError)) return false;
+	if (!ParseTarget(Blueprint, Params, Target, TargetGraph, SymbolJson, bImplementationWouldCreate, bImplementationIsEvent, OutError)) return false;
 	if (TargetGraph)
 	{
 		const TSharedPtr<FJsonObject>* RefPtr = nullptr;
@@ -830,18 +784,35 @@ bool FCortexGraphPatchOps::Preflight(
 	{
 		const TSharedPtr<FJsonObject>* SelectorPtr = nullptr;
 		Target->TryGetObjectField(TEXT("implementation"), SelectorPtr);
-		FCortexResolvedSymbol EntrySymbol;
-		if (!SelectorPtr || !SelectorPtr->IsValid() || !FCortexGraphSymbolResolver::ResolveFunction(Blueprint, *SelectorPtr, EntrySymbol, OutError))
+		FCortexGraphImplementationPlan ImplementationPlan;
+		if (!SelectorPtr || !SelectorPtr->IsValid() || !FCortexGraphImplementationOps::ValidateEligibility(Blueprint, *SelectorPtr, ImplementationPlan, OutError))
 		{
 			return false;
 		}
-		GetDefault<UEdGraphSchema_K2>()->CreateFunctionGraphTerminators(*PlanningGraph, EntrySymbol.Function);
-		for (UEdGraphNode* Node : PlanningGraph->Nodes)
+		if (ImplementationPlan.ExistingEntryNode)
 		{
-			if (Cast<UK2Node_FunctionEntry>(Node))
+			PlannedNodes.Add(TEXT("entry"), ImplementationPlan.ExistingEntryNode);
+		}
+		else if (bImplementationIsEvent)
+		{
+			UK2Node_Event* EventNode = NewObject<UK2Node_Event>(PlanningGraph);
+			EventNode->CreateNewGuid();
+			EventNode->EventReference.SetExternalMember(ImplementationPlan.Function->GetFName(), ImplementationPlan.FunctionClass);
+			EventNode->bOverrideFunction = true;
+			EventNode->AllocateDefaultPins();
+			PlanningGraph->AddNode(EventNode, false, false);
+			PlannedNodes.Add(TEXT("entry"), EventNode);
+		}
+		else
+		{
+			GetDefault<UEdGraphSchema_K2>()->CreateFunctionGraphTerminators(*PlanningGraph, ImplementationPlan.Function);
+			for (UEdGraphNode* Node : PlanningGraph->Nodes)
 			{
-				PlannedNodes.Add(TEXT("entry"), Node);
-				break;
+				if (Cast<UK2Node_FunctionEntry>(Node))
+				{
+					PlannedNodes.Add(TEXT("entry"), Node);
+					break;
+				}
 			}
 		}
 	}
@@ -1021,6 +992,12 @@ bool FCortexGraphPatchOps::Preflight(
 					FString::Printf(TEXT("Schema rejected connection: %s"), *Response.Message.ToString()));
 				return false;
 			}
+			if (SourcePin->GetOwningNode()->GetTypedOuter<UEdGraph>() == PlanningGraph && TargetPin->GetOwningNode()->GetTypedOuter<UEdGraph>() == PlanningGraph
+				&& !Schema->TryCreateConnection(SourcePin, TargetPin))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Transient schema connection failed"));
+				return false;
+			}
 		}
 		ConnectedInputs.Add(InputKey);
 		TSharedPtr<FJsonObject> NormalizedConnection = MakeShared<FJsonObject>();
@@ -1032,6 +1009,7 @@ bool FCortexGraphPatchOps::Preflight(
 	Normalized->SetArrayField(TEXT("connections"), NormalizedConnections);
 	Normalized->SetBoolField(TEXT("compile"), bCompile);
 	Normalized->SetBoolField(TEXT("allow_noop"), bAllowNoop);
+	Normalized->SetObjectField(TEXT("resolved_symbol"), SymbolJson.IsValid() ? SymbolJson : MakeShared<FJsonObject>());
 	OutPrepared.NormalizedRequest = Normalized;
 	OutPrepared.bChanged = Nodes->Num() > 0 || Connections->Num() > 0 || (PinUpdates && PinUpdates->Num() > 0) || bImplementationWouldCreate;
 	if (TargetGraph && !OutPrepared.bChanged && !bAllowNoop)

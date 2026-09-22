@@ -6,8 +6,20 @@
 
 class UBlueprint;
 class UEdGraph;
-class UK2Node_FunctionEntry;
-class UK2Node_FunctionResult;
+class UEdGraphNode;
+class UFunction;
+class UClass;
+
+struct FCortexGraphImplementationPlan
+{
+	UFunction* Function = nullptr;
+	UClass* FunctionClass = nullptr;
+	UEdGraph* ExistingGraph = nullptr;
+	UEdGraphNode* ExistingEntryNode = nullptr;
+	bool bCanBePlacedAsEvent = false;
+	bool bParentCall = false;
+	bool bWouldCreate = false;
+};
 
 struct FCortexGraphImplementationEnsureResult : public FCortexCommandResult
 {
@@ -20,6 +32,13 @@ struct FCortexGraphImplementationEnsureResult : public FCortexCommandResult
 class FCortexGraphImplementationOps
 {
 public:
+	static bool ValidateEligibility(
+		UBlueprint* Blueprint,
+		const TSharedPtr<FJsonObject>& Selector,
+		FCortexGraphImplementationPlan& OutPlan,
+		FCortexCommandResult& OutError
+	);
+
 	static FCortexGraphImplementationEnsureResult EnsureForPatch(
 		UBlueprint* Blueprint,
 		const TSharedPtr<FJsonObject>& Selector,

@@ -264,6 +264,34 @@ bool FCortexGraphPatchPreflightEligibilityTest::RunTest(const FString& Parameter
 	TestFalse(TEXT("UTF-8 request byte budget is enforced"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
 	TestEqual(TEXT("UTF-8 request budget error"), Error.ErrorCode, CortexErrorCodes::LimitExceeded);
 
+	Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	TSharedPtr<FJsonObject> CallNode = MakeShared<FJsonObject>();
+	CallNode->SetStringField(TEXT("client_id"), TEXT("print"));
+	CallNode->SetStringField(TEXT("node_class"), TEXT("CallFunction"));
+	TSharedPtr<FJsonObject> CallParams = MakeShared<FJsonObject>();
+	CallParams->SetStringField(TEXT("function_name"), TEXT("KismetSystemLibrary.PrintString"));
+	CallNode->SetObjectField(TEXT("params"), CallParams);
+	Nodes.Reset();
+	Nodes.Add(MakeShared<FJsonValueObject>(CallNode));
+	Request->SetArrayField(TEXT("nodes"), Nodes);
+	TestTrue(FString::Printf(TEXT("valid class-dependent node planning succeeds: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+
+	TArray<TSharedPtr<FJsonValue>> MissingPinConnections;
+	TSharedPtr<FJsonObject> MissingConnection = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> MissingFrom = MakeShared<FJsonObject>();
+	MissingFrom->SetStringField(TEXT("client_id"), TEXT("print"));
+	MissingFrom->SetStringField(TEXT("pin"), TEXT("missing_pin"));
+	TSharedPtr<FJsonObject> MissingTo = MakeShared<FJsonObject>();
+	MissingTo->SetStringField(TEXT("client_id"), TEXT("print"));
+	MissingTo->SetStringField(TEXT("pin"), TEXT("missing_target"));
+	MissingConnection->SetObjectField(TEXT("from"), MissingFrom);
+	MissingConnection->SetObjectField(TEXT("to"), MissingTo);
+	MissingPinConnections.Add(MakeShared<FJsonValueObject>(MissingConnection));
+	Request->SetArrayField(TEXT("connections"), MissingPinConnections);
+	TestFalse(TEXT("planned connection with missing pin is rejected"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("missing planned pin error"), Error.ErrorCode, CortexErrorCodes::PinNotFound);
+
 	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
 	return true;
 }
