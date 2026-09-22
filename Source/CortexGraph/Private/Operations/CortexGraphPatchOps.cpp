@@ -29,6 +29,7 @@
 #include "K2Node_VariableSet.h"
 #include "K2Node_DynamicCast.h"
 #include "K2Node_GenericCreateObject.h"
+#include "K2Node_ConstructObjectFromClass.h"
 #include "K2Node_Timeline.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -1225,7 +1226,21 @@ namespace
 #if WITH_AUTOMATION_TESTS
 FName ReadbackFaultForTesting = NAME_None;
 TFunction<void(FName, UBlueprint*)> OperationObserverForTesting;
+/** Test-only native-state mutator invoked after apply and before readback. */
+TFunction<void(UBlueprint*)> PreReadbackMutatorForTesting;
 #endif
+
+void MutateNativeStateBeforeReadback(UBlueprint* Blueprint)
+{
+#if WITH_AUTOMATION_TESTS
+	if (PreReadbackMutatorForTesting)
+	{
+		PreReadbackMutatorForTesting(Blueprint);
+	}
+#else
+	(void)Blueprint;
+#endif
+}
 
 bool ShouldInjectReadbackFault(const FName Field)
 {
@@ -1299,11 +1314,86 @@ struct FGraphPatchJournal
 	/** Pre-request editor state of touched existing nodes, which engine paths derive from links. */
 	TArray<FNodeStateEntry> NodeStates;
 
+	struct FPinLinkTarget
+	{
+		FGuid NodeGuid;
+		FName PinName;
+	};
+
+	struct FPinStateEntry
+	{
+		FName PinName;
+		EEdGraphPinDirection Direction = EGPD_Input;
+		FEdGraphPinType PinType;
+		FString DefaultValue;
+		FString DefaultObjectPath;
+		FText DefaultTextValue;
+		bool bSplitChild = false;
+		TArray<FPinLinkTarget> LinkedTo;
+	};
+
+	/**
+	 * Complete pre-request pin identity of one existing node. A class-pin default rebuilds the
+	 * class-dependent pin set, so recovery has to replay that lifecycle and then restore the exact
+	 * pin types, defaults and durable links instead of only the changed pin's default.
+	 */
+	struct FNodePinSnapshot
+	{
+		FGuid NodeGuid;
+		TArray<FPinStateEntry> Pins;
+	};
+	TArray<FNodePinSnapshot> NodePins;
+
 	FCortexGraphPatchLocators Locators;
 	bool bCompileAttempted = false;
 
 	bool WasNodeCreated(const FGuid& NodeGuid) const { return AddedNodeGuids.Contains(NodeGuid); }
+
+	bool WasPinDefaulted(const FGuid& NodeGuid, const FName PinName) const
+	{
+		for (const FDefaultEntry& Entry : Defaults)
+		{
+			if (Entry.NodeGuid == NodeGuid && Entry.PinName == PinName) return true;
+		}
+		return false;
+	}
 };
+
+/**
+ * Journals the complete pin identity of an existing node the first time one of its defaults is
+ * changed. Later mutations of the same node stay outside the snapshot so it stays pre-request
+ * state even when the first change already rebuilt the pin set.
+ */
+void JournalNodePins(UEdGraphNode* Node, FGraphPatchJournal& Journal)
+{
+	if (!Node || !Node->NodeGuid.IsValid()) return;
+	for (const FGraphPatchJournal::FNodePinSnapshot& Existing : Journal.NodePins)
+	{
+		if (Existing.NodeGuid == Node->NodeGuid) return;
+	}
+	FGraphPatchJournal::FNodePinSnapshot Snapshot;
+	Snapshot.NodeGuid = Node->NodeGuid;
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (!Pin) continue;
+		FGraphPatchJournal::FPinStateEntry Entry;
+		Entry.PinName = Pin->PinName;
+		Entry.Direction = Pin->Direction;
+		Entry.PinType = Pin->PinType;
+		Entry.DefaultValue = Pin->DefaultValue;
+		Entry.DefaultObjectPath = Pin->DefaultObject ? Pin->DefaultObject->GetPathName() : FString();
+		Entry.DefaultTextValue = Pin->DefaultTextValue;
+		Entry.bSplitChild = Pin->ParentPin != nullptr;
+		for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+		{
+			UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+			if (!LinkedNode || !LinkedNode->NodeGuid.IsValid()) continue;
+			Entry.LinkedTo.Add({ LinkedNode->NodeGuid, LinkedPin->PinName });
+		}
+		Snapshot.Pins.Add(MoveTemp(Entry));
+	}
+	Journal.NodePins.Add(MoveTemp(Snapshot));
+}
 
 /**
  * Journals a pin's complete native default state. A tagged literal descriptor cannot represent an
@@ -1322,6 +1412,10 @@ void JournalPinDefault(UEdGraphPin* Pin, FGraphPatchJournal& Journal)
 	Entry.bPriorDefaultObjectSet = Pin->DefaultObject != nullptr;
 	Entry.PriorDefaultObjectPath = Pin->DefaultObject ? Pin->DefaultObject->GetPathName() : FString();
 	Journal.Defaults.Add(MoveTemp(Entry));
+	if (!Journal.WasNodeCreated(Entry.NodeGuid))
+	{
+		JournalNodePins(Pin->GetOwningNode(), Journal);
+	}
 }
 
 void JournalNodeState(UEdGraphNode* Node, FGraphPatchJournal& Journal)
@@ -1385,6 +1479,160 @@ void FindNodeByGuid(UBlueprint* Blueprint, const FGuid& NodeGuid, UEdGraphNode*&
 	}
 }
 
+bool RestorePinState(UEdGraphPin* Pin, const FGraphPatchJournal::FPinStateEntry& Entry)
+{
+	UObject* PriorObject = nullptr;
+	if (!Entry.DefaultObjectPath.IsEmpty())
+	{
+		PriorObject = FindObject<UObject>(nullptr, *Entry.DefaultObjectPath);
+		if (!PriorObject)
+		{
+			// A recorded default object vanished: recovery cannot be verified, so fail closed.
+			return false;
+		}
+	}
+	Pin->PinType = Entry.PinType;
+	Pin->DefaultValue = Entry.DefaultValue;
+	Pin->DefaultObject = PriorObject;
+	Pin->DefaultTextValue = Entry.DefaultTextValue;
+	return true;
+}
+
+FString LinkTargetKey(const FGuid& NodeGuid, const FName PinName)
+{
+	return FString::Printf(TEXT("%s.%s"), *NodeGuid.ToString(), *PinName.ToString());
+}
+
+/**
+ * Restores one existing node's complete pin identity after an apply, including the class-driven
+ * reconstruction a class-pin default triggers. The engine lifecycle the apply ran
+ * (PinDefaultValueChanged then ReconstructNode) is replayed so class-dependent pins are rebuilt
+ * from the restored class, then the journaled pin set, defaults and durable links are reconciled.
+ */
+bool RestoreNodePinState(
+	UBlueprint* Blueprint,
+	const FGraphPatchJournal& Journal,
+	const FGraphPatchJournal::FNodePinSnapshot& Snapshot)
+{
+	UEdGraphNode* Node = nullptr;
+	FindNodeByGuid(Blueprint, Snapshot.NodeGuid, Node);
+	if (!Node)
+	{
+		return false;
+	}
+	Node->Modify();
+	UEdGraph* Graph = Node->GetGraph();
+	if (Graph)
+	{
+		Graph->Modify();
+	}
+
+	// 1. Put every pin the node still has back into its journaled state. The class default has to
+	//    be restored before the replay, because the replay rebuilds pins from the class it reads.
+	for (const FGraphPatchJournal::FPinStateEntry& Entry : Snapshot.Pins)
+	{
+		if (UEdGraphPin* Pin = Node->FindPin(Entry.PinName))
+		{
+			if (!RestorePinState(Pin, Entry)) return false;
+		}
+	}
+
+	// 2. Replay the apply lifecycle when a class-pin default rebuilt the class-dependent pins.
+	if (UK2Node_ConstructObjectFromClass* Construct = Cast<UK2Node_ConstructObjectFromClass>(Node))
+	{
+		UEdGraphPin* ClassPin = Construct->GetClassPin();
+		if (ClassPin && Journal.WasPinDefaulted(Snapshot.NodeGuid, ClassPin->PinName))
+		{
+			const bool bPreviousDisableOrphanSaving = Construct->bDisableOrphanPinSaving;
+			Construct->bDisableOrphanPinSaving = true;
+			Construct->PinDefaultValueChanged(ClassPin);
+			Construct->ReconstructNode();
+			Construct->bDisableOrphanPinSaving = bPreviousDisableOrphanSaving;
+		}
+	}
+
+	// 3. Reconcile the pin set: drop what the reconstruction added, recreate what it removed.
+	TSet<FName> SnapshotPinNames;
+	for (const FGraphPatchJournal::FPinStateEntry& Entry : Snapshot.Pins)
+	{
+		SnapshotPinNames.Add(Entry.PinName);
+	}
+	TArray<UEdGraphPin*> CurrentPins = Node->Pins;
+	for (UEdGraphPin* Pin : CurrentPins)
+	{
+		if (!Pin || Pin->ParentPin != nullptr) continue;
+		if (SnapshotPinNames.Contains(Pin->PinName)) continue;
+		Node->RemovePin(Pin);
+		if (Node->FindPin(Pin->PinName))
+		{
+			return false;
+		}
+	}
+	for (const FGraphPatchJournal::FPinStateEntry& Entry : Snapshot.Pins)
+	{
+		UEdGraphPin* Pin = Node->FindPin(Entry.PinName);
+		if (!Pin)
+		{
+			if (Entry.bSplitChild)
+			{
+				// Split children cannot be recreated faithfully; recovery must fail closed.
+				return false;
+			}
+			Pin = Node->CreatePin(Entry.Direction, Entry.PinType, Entry.PinName);
+		}
+		if (!Pin || !RestorePinState(Pin, Entry))
+		{
+			return false;
+		}
+	}
+
+	// 4. Reconcile the durable link set through the schema.
+	const UEdGraphSchema* Schema = Graph ? Graph->GetSchema() : nullptr;
+	for (const FGraphPatchJournal::FPinStateEntry& Entry : Snapshot.Pins)
+	{
+		UEdGraphPin* Pin = Node->FindPin(Entry.PinName);
+		if (!Pin)
+		{
+			return false;
+		}
+		TSet<FString> DesiredLinks;
+		for (const FGraphPatchJournal::FPinLinkTarget& Link : Entry.LinkedTo)
+		{
+			DesiredLinks.Add(LinkTargetKey(Link.NodeGuid, Link.PinName));
+		}
+		TArray<UEdGraphPin*> CurrentLinks = Pin->LinkedTo;
+		for (UEdGraphPin* LinkedPin : CurrentLinks)
+		{
+			UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+			if (!LinkedNode || !DesiredLinks.Contains(LinkTargetKey(LinkedNode->NodeGuid, LinkedPin->PinName)))
+			{
+				Pin->BreakLinkTo(LinkedPin);
+			}
+		}
+		for (const FGraphPatchJournal::FPinLinkTarget& Link : Entry.LinkedTo)
+		{
+			UEdGraphNode* LinkedNode = nullptr;
+			FindNodeByGuid(Blueprint, Link.NodeGuid, LinkedNode);
+			UEdGraphPin* LinkedPin = LinkedNode ? LinkedNode->FindPin(Link.PinName) : nullptr;
+			if (!LinkedPin)
+			{
+				return false;
+			}
+			if (Pin->LinkedTo.Contains(LinkedPin)) continue;
+			if (!Schema || !Schema->TryCreateConnection(Pin, LinkedPin))
+			{
+				return false;
+			}
+		}
+	}
+
+	if (Graph)
+	{
+		Graph->NotifyGraphChanged();
+	}
+	return true;
+}
+
 /** Reverses the journal in reverse order. Returns false when a recorded change cannot be undone. */
 bool RestoreJournal(UBlueprint* Blueprint, const FGraphPatchJournal& Journal)
 {
@@ -1400,6 +1648,13 @@ bool RestoreJournal(UBlueprint* Blueprint, const FGraphPatchJournal& Journal)
 		{
 			SourcePin->BreakLinkTo(TargetPin);
 		}
+	}
+
+	// Existing nodes are restored by full pin identity first: a class-pin apply rebuilds the
+	// class-dependent pin set, which a default-only restore leaves diverged.
+	for (const FGraphPatchJournal::FNodePinSnapshot& Snapshot : Journal.NodePins)
+	{
+		if (!RestoreNodePinState(Blueprint, Journal, Snapshot)) return false;
 	}
 
 	for (int32 Index = Journal.Defaults.Num() - 1; Index >= 0; --Index)
@@ -1663,163 +1918,6 @@ bool CompareNodeSymbol(
 	return true;
 }
 
-/** Compares one tagged literal descriptor against the pin's native default. */
-bool ComparePinLiteral(
-	const UEdGraphPin* Pin,
-	const TSharedPtr<FJsonObject>& Literal,
-	FString& OutExpected,
-	FString& OutActual,
-	FString& OutFailure)
-{
-	OutExpected.Reset();
-	OutActual.Reset();
-	if (!Pin || !Literal.IsValid())
-	{
-		OutFailure = TEXT("planned default no longer resolves to a pin and literal");
-		return false;
-	}
-	FString Kind;
-	if (!Literal->TryGetStringField(TEXT("kind"), Kind) || Kind.IsEmpty())
-	{
-		OutFailure = TEXT("planned default has no literal kind");
-		return false;
-	}
-
-	if (Kind == TEXT("class") || Kind == TEXT("soft_class"))
-	{
-		FString Path;
-		Literal->TryGetStringField(TEXT("path"), Path);
-		if (Path.IsEmpty() || Path.Equals(TEXT("None"), ESearchCase::IgnoreCase))
-		{
-			OutExpected = TEXT("None");
-		}
-		else
-		{
-			UClass* ResolvedClass = nullptr;
-			FCortexCommandResult ResolveError;
-			if (!FCortexGraphSymbolResolver::ResolveClass(Path, ResolvedClass, ResolveError) || !ResolvedClass)
-			{
-				OutFailure = FString::Printf(TEXT("planned class default no longer resolves: %s"), *ResolveError.ErrorMessage);
-				return false;
-			}
-			OutExpected = ResolvedClass->GetPathName();
-		}
-		OutActual = Pin->DefaultObject ? Pin->DefaultObject->GetPathName() : FString(TEXT("None"));
-		return true;
-	}
-	if (Kind == TEXT("object") || Kind == TEXT("soft_object"))
-	{
-		FString Path;
-		Literal->TryGetStringField(TEXT("path"), Path);
-		OutExpected = Path.IsEmpty() ? FString(TEXT("None")) : Path;
-		OutActual = Pin->DefaultObject ? Pin->DefaultObject->GetPathName() : (Pin->DefaultValue.IsEmpty() ? FString(TEXT("None")) : Pin->DefaultValue);
-		return true;
-	}
-	if (Kind == TEXT("null"))
-	{
-		OutExpected = TEXT("None");
-		OutActual = (Pin->DefaultObject == nullptr && (Pin->DefaultValue.IsEmpty() || Pin->DefaultValue.Equals(TEXT("None"), ESearchCase::IgnoreCase)))
-			? FString(TEXT("None"))
-			: Pin->DefaultValue;
-		return true;
-	}
-	if (Kind == TEXT("text"))
-	{
-		FText ExpectedText;
-		bool bHasExpectedText = false;
-		FString LiteralValue;
-		if (Literal->TryGetStringField(TEXT("literal"), LiteralValue))
-		{
-			ExpectedText = FText::FromString(LiteralValue);
-			bHasExpectedText = true;
-		}
-		else if (Literal->HasField(TEXT("table")) || Literal->HasField(TEXT("table_id")))
-		{
-			FString TableId;
-			FString Key;
-			if (!Literal->TryGetStringField(TEXT("table"), TableId))
-			{
-				Literal->TryGetStringField(TEXT("table_id"), TableId);
-			}
-			Literal->TryGetStringField(TEXT("key"), Key);
-			ExpectedText = FText::FromStringTable(FName(*TableId), Key);
-			bHasExpectedText = true;
-		}
-		else
-		{
-			TArray<FString> Errors;
-			TSharedPtr<FJsonObject> Normalized;
-			FText NormalizedText;
-			const TSharedPtr<FJsonValue> Value = Literal->HasField(TEXT("value"))
-				? Literal->TryGetField(TEXT("value"))
-				: MakeShared<FJsonValueObject>(Literal);
-			if (Value.IsValid() && FCortexSerializer::NormalizeTextDescriptor(Value, Normalized, &NormalizedText, Errors))
-			{
-				ExpectedText = NormalizedText;
-				bHasExpectedText = true;
-			}
-		}
-		if (!bHasExpectedText)
-		{
-			OutFailure = TEXT("planned text default cannot be compared with native readback");
-			return false;
-		}
-		OutExpected = ExpectedText.ToString();
-		OutActual = Pin->DefaultTextValue.ToString();
-		return true;
-	}
-	if (Kind == TEXT("bool"))
-	{
-		bool bValue = false;
-		if (!Literal->TryGetBoolField(TEXT("value"), bValue))
-		{
-			FString Text;
-			Literal->TryGetStringField(TEXT("value"), Text);
-			bValue = Text.ToBool();
-		}
-		OutExpected = bValue ? TEXT("true") : TEXT("false");
-		OutActual = Pin->DefaultValue.ToBool() ? TEXT("true") : TEXT("false");
-		return true;
-	}
-	if (Kind == TEXT("int"))
-	{
-		int64 Value = 0;
-		if (!Literal->TryGetNumberField(TEXT("value"), Value))
-		{
-			FString Text;
-			Literal->TryGetStringField(TEXT("value"), Text);
-			Value = FCString::Atoi64(*Text);
-		}
-		OutExpected = FString::Printf(TEXT("%lld"), Value);
-		OutActual = FString::Printf(TEXT("%lld"), FCString::Atoi64(*Pin->DefaultValue));
-		return true;
-	}
-	if (Kind == TEXT("real") || Kind == TEXT("float"))
-	{
-		double Value = 0.0;
-		if (!Literal->TryGetNumberField(TEXT("value"), Value))
-		{
-			FString Text;
-			Literal->TryGetStringField(TEXT("value"), Text);
-			Value = FCString::Atod(*Text);
-		}
-		OutExpected = FString::Printf(TEXT("%f"), Value);
-		OutActual = FString::Printf(TEXT("%f"), FCString::Atod(*Pin->DefaultValue));
-		return true;
-	}
-	if (Kind == TEXT("string") || Kind == TEXT("name") || Kind == TEXT("enum"))
-	{
-		FString Value;
-		Literal->TryGetStringField(TEXT("value"), Value);
-		OutExpected = Value;
-		OutActual = Pin->DefaultValue;
-		return true;
-	}
-
-	OutFailure = FString::Printf(TEXT("planned default kind '%s' has no native readback comparison"), *Kind);
-	return false;
-}
-
 bool ComparePlannedDefaults(
 	UBlueprint* Blueprint,
 	const TSharedPtr<FJsonObject>& NodeJson,
@@ -1840,7 +1938,7 @@ bool ComparePlannedDefaults(
 		UEdGraphPin* Pin = Live ? Live->FindPin(FName(*PinName)) : nullptr;
 		FString Expected;
 		FString Actual;
-		if (!ComparePinLiteral(Pin, Literal, Expected, Actual, OutFailure))
+		if (!FCortexGraphPinDefaults::CompareAppliedLiteral(Pin, Literal, Expected, Actual, OutFailure))
 		{
 			if (OutFailure.IsEmpty())
 			{
@@ -1895,7 +1993,7 @@ bool ComparePlannedPinUpdates(
 		}
 		FString Expected;
 		FString Actual;
-		if (!ComparePinLiteral(Pin, *LiteralPtr, Expected, Actual, OutFailure)) return false;
+		if (!FCortexGraphPinDefaults::CompareAppliedLiteral(Pin, *LiteralPtr, Expected, Actual, OutFailure)) return false;
 		if (!bInjectedDefault && ShouldInjectReadbackFault(TEXT("readback_default")))
 		{
 			bInjectedDefault = true;
@@ -2588,6 +2686,7 @@ bool FCortexGraphPatchOps::Execute(
 	}
 
 	FString ReadbackFailure;
+	MutateNativeStateBeforeReadback(Blueprint);
 	if (!VerifyAppliedState(Blueprint, Prepared, Journal, OutOutcome.CompileStatus == TEXT("compiled"), ReadbackFailure))
 	{
 		OutOutcome.ReadbackStatus = TEXT("mismatched");
@@ -2613,6 +2712,16 @@ void FCortexGraphPatchOps::ClearApplyFaultPointForTesting()
 void FCortexGraphPatchOps::SetReadbackFaultForTesting(const FName Field)
 {
 	ReadbackFaultForTesting = Field;
+}
+
+void FCortexGraphPatchOps::SetPreReadbackMutatorForTesting(TFunction<void(UBlueprint*)> Mutator)
+{
+	PreReadbackMutatorForTesting = MoveTemp(Mutator);
+}
+
+void FCortexGraphPatchOps::ClearPreReadbackMutatorForTesting()
+{
+	PreReadbackMutatorForTesting = nullptr;
 }
 
 void FCortexGraphPatchOps::SetOperationObserverForTesting(TFunction<void(FName, UBlueprint*)> Observer)

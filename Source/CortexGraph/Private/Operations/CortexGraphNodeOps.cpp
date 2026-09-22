@@ -1,5 +1,6 @@
 #include "Operations/CortexGraphNodeOps.h"
 #include "Operations/CortexGraphNodeContract.h"
+#include "Operations/CortexGraphPinDefaults.h"
 #include "CortexAssetFingerprint.h"
 #include "CortexBatchMutation.h"
 #include "CortexGraphModule.h"
@@ -1530,14 +1531,7 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializePin(
 		TSharedPtr<FJsonObject> DefaultDesc = MakeShared<FJsonObject>();
 		if (Pin->DefaultObject != nullptr)
 		{
-			if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class || Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_SoftClass)
-			{
-				DefaultDesc->SetStringField(TEXT("kind"), TEXT("class"));
-			}
-			else
-			{
-				DefaultDesc->SetStringField(TEXT("kind"), TEXT("object"));
-			}
+			DefaultDesc->SetStringField(TEXT("kind"), FCortexGraphPinDefaults::ReferenceLiteralKind(*Pin));
 			DefaultDesc->SetStringField(TEXT("path"), Pin->DefaultObject->GetPathName());
 		}
 		else if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Text)
@@ -1612,16 +1606,8 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializePin(
 			}
 			else if (!Pin->DefaultValue.IsEmpty())
 			{
-				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class || Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_SoftClass)
-				{
-					DefaultDesc->SetStringField(TEXT("kind"), TEXT("class"));
-					DefaultDesc->SetStringField(TEXT("path"), Pin->DefaultValue);
-				}
-				else
-				{
-					DefaultDesc->SetStringField(TEXT("kind"), TEXT("object"));
-					DefaultDesc->SetStringField(TEXT("path"), Pin->DefaultValue);
-				}
+				DefaultDesc->SetStringField(TEXT("kind"), FCortexGraphPinDefaults::ReferenceLiteralKind(*Pin));
+				DefaultDesc->SetStringField(TEXT("path"), Pin->DefaultValue);
 			}
 		}
 

@@ -113,6 +113,12 @@ public:
 	static void ClearApplyFaultPointForTesting();
 	/** Test-only readback divergence seam (canonical dimension name); never accepts command input. */
 	static void SetReadbackFaultForTesting(FName Field);
+	/**
+	 * Test-only native-state mutation between apply and readback, used to prove readback compares
+	 * real native state instead of the planned request. Never accepts external command input.
+	 */
+	static void SetPreReadbackMutatorForTesting(TFunction<void(UBlueprint*)> Mutator);
+	static void ClearPreReadbackMutatorForTesting();
 	/** Test-only observer of real coordinator operations ("target_compile", "recovery_compile"). */
 	static void SetOperationObserverForTesting(TFunction<void(FName, UBlueprint*)> Observer);
 	static void ClearOperationObserverForTesting();

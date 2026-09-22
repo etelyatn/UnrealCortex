@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "Operations/CortexGraphPatchOps.h"
 #include "Operations/CortexGraphPatchState.h"
+#include "Operations/CortexGraphPinDefaults.h"
 #include "CortexAssetMutationGuard.h"
 #include "Editor.h"
 #include "Engine/Blueprint.h"
@@ -15,6 +16,7 @@
 #include "K2Node_CustomEvent.h"
 #include "K2Node_Event.h"
 #include "K2Node_FunctionEntry.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/ObjectSaveContext.h"
@@ -264,6 +266,116 @@ static TSharedPtr<FJsonObject> AdapterChainRequest(UBlueprint* Blueprint, const 
 		[](TSharedPtr<FJsonObject>& From) { From->SetStringField(TEXT("client_id"), TEXT("convert")); From->SetStringField(TEXT("pin"), TEXT("ReturnValue")); },
 		[](TSharedPtr<FJsonObject>& To) { To->SetStringField(TEXT("client_id"), TEXT("note")); To->SetStringField(TEXT("pin"), TEXT("InString")); });
 	return Request;
+}
+
+static UBlueprint* MakeBlueprintWithParent(UPackage*& OutPackage, const TCHAR* Name, UClass* ParentClass)
+{
+	OutPackage = CreatePackage(*FString::Printf(TEXT("/Temp/%s"), Name));
+	return FKismetEditorUtilities::CreateBlueprint(
+		ParentClass, OutPackage, FName(Name), BPTYPE_Normal,
+		UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+}
+
+/** Adds a blueprint member variable marked as exposed on spawn, which class-driven pin rebuilds expose. */
+static void AddExposeOnSpawnVariable(UBlueprint* Blueprint, const FName VariableName, const FEdGraphPinType& PinType)
+{
+	FBlueprintEditorUtils::AddMemberVariable(Blueprint, VariableName, PinType);
+	for (FBPVariableDescription& Description : Blueprint->NewVariables)
+	{
+		if (Description.VarName == VariableName)
+		{
+			Description.PropertyFlags &= ~CPF_DisableEditOnInstance;
+			Description.PropertyFlags |= CPF_ExposeOnSpawn;
+			break;
+		}
+	}
+	FBlueprintEditorUtils::SetBlueprintVariableMetaData(
+		Blueprint, VariableName, nullptr, FBlueprintMetadata::MD_ExposeOnSpawn, TEXT("true"));
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+}
+
+static UK2Node_CallFunction* AddCallNode(UEdGraph* Graph, UFunction* Function)
+{
+	UK2Node_CallFunction* Node = NewObject<UK2Node_CallFunction>(Graph);
+	Node->SetFromFunction(Function);
+	Node->CreateNewGuid();
+	Node->AllocateDefaultPins();
+	Graph->AddNode(Node, true, false);
+	return Node;
+}
+
+static UK2Node_GenericCreateObject* AddGenericCreateObject(UEdGraph* Graph)
+{
+	UK2Node_GenericCreateObject* Node = NewObject<UK2Node_GenericCreateObject>(Graph);
+	Node->CreateNewGuid();
+	Graph->AddNode(Node, true, false);
+	Node->AllocateDefaultPins();
+	return Node;
+}
+
+static UEdGraphNode* FindNodeByGuid(UBlueprint* Blueprint, const FGuid& NodeGuid)
+{
+	TArray<UEdGraph*> Graphs;
+	Blueprint->GetAllGraphs(Graphs);
+	for (UEdGraph* Graph : Graphs)
+	{
+		if (!Graph) continue;
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node && Node->NodeGuid == NodeGuid)
+			{
+				return Node;
+			}
+		}
+	}
+	return nullptr;
+}
+
+static TArray<FString> SortedPinNames(UEdGraphNode* Node)
+{
+	TArray<FString> Names;
+	if (Node)
+	{
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin) Names.Add(Pin->PinName.ToString());
+		}
+	}
+	Names.Sort();
+	return Names;
+}
+
+static TSharedPtr<FJsonObject> ClassLiteral(const TCHAR* ClassPath)
+{
+	TSharedPtr<FJsonObject> Literal = MakeShared<FJsonObject>();
+	Literal->SetStringField(TEXT("kind"), TEXT("class"));
+	Literal->SetStringField(TEXT("path"), ClassPath);
+	return Literal;
+}
+
+/** Appends one pin_updates entry that assigns a class default to an existing node's pin. */
+static void AddClassPinUpdate(
+	const TSharedPtr<FJsonObject>& Request,
+	const FGuid& NodeGuid,
+	const TCHAR* PinName,
+	const TCHAR* ClassPath)
+{
+	TSharedPtr<FJsonObject> Update = MakeShared<FJsonObject>();
+	Update->SetStringField(TEXT("node_guid"), NodeGuid.ToString());
+	Update->SetStringField(TEXT("pin"), PinName);
+	Update->SetObjectField(TEXT("default"), ClassLiteral(ClassPath));
+	TArray<TSharedPtr<FJsonValue>> Updates = Request->HasField(TEXT("pin_updates"))
+		? Request->GetArrayField(TEXT("pin_updates"))
+		: TArray<TSharedPtr<FJsonValue>>();
+	Updates.Add(MakeShared<FJsonValueObject>(Update));
+	Request->SetArrayField(TEXT("pin_updates"), Updates);
+}
+
+/** Canonical class identity stored by a construct-object node's class pin. */
+static FString ConstructedClassPath(UK2Node_GenericCreateObject* Node)
+{
+	UEdGraphPin* ClassPin = Node ? Node->GetClassPin() : nullptr;
+	return ClassPin && ClassPin->DefaultObject ? ClassPin->DefaultObject->GetPathName() : FString(TEXT("None"));
 }
 }
 
@@ -907,6 +1019,265 @@ bool FCortexGraphPatchCompilePreviewTest::RunTest(const FString& Parameters)
 	Operations.End();
 	CortexGraphPatchCompileTest::Cleanup(Package, Blueprint);
 	CortexGraphPatchCompileTest::Cleanup(ExternalPackage, External);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 9. A class-pin default that reconstructs the node is fully reversible
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchCompileClassPinRecoveryTest,
+	"Cortex.Graph.Authoring.Compile.ClassPinReconstructionRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchCompileClassPinRecoveryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchCompileTest::MakeBlueprint(Package, TEXT("BP_ClassPinRecovery_T08"));
+	TestNotNull(TEXT("class-pin recovery fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	UEdGraph* Graph = Blueprint->UbergraphPages[0];
+	UK2Node_CustomEvent* Event = CortexGraphPatchCompileTest::AddNamedCustomEvent(Blueprint, TEXT("T08ClassPinEvent"));
+	TestNotNull(TEXT("class-pin fixture event created"), Event);
+	UK2Node_GenericCreateObject* Create = CortexGraphPatchCompileTest::AddGenericCreateObject(Graph);
+	UK2Node_CallFunction* Consumer = CortexGraphPatchCompileTest::AddCallNode(
+		Graph, UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("IsValid")));
+	TestNotNull(TEXT("class-pin fixture construct node created"), Create);
+	TestNotNull(TEXT("class-pin fixture consumer created"), Consumer);
+	if (!Create || !Consumer || !Event)
+	{
+		CortexGraphPatchCompileTest::Cleanup(Package, Blueprint);
+		return false;
+	}
+
+	FCortexCommandResult Error;
+	UEdGraphPin* ClassPin = Create->GetClassPin();
+	TestNotNull(TEXT("class pin allocated"), ClassPin);
+	TestTrue(TEXT("fixture class default applies"),
+		FCortexGraphPinDefaults::ApplyDefault(ClassPin, CortexGraphPatchCompileTest::ClassLiteral(TEXT("/Script/Engine.StaticMesh")), Error));
+	TestEqual(TEXT("fixture class pin holds the initial class"),
+		CortexGraphPatchCompileTest::ConstructedClassPath(Create), FString(TEXT("/Script/Engine.StaticMesh")));
+
+	UEdGraphPin* ResultPin = Create->GetResultPin();
+	UEdGraphPin* ConsumerPin = Consumer->FindPin(TEXT("Object"));
+	const UEdGraphSchema* Schema = Graph->GetSchema();
+	TestTrue(TEXT("fixture result link created"),
+		ResultPin && ConsumerPin && Schema && Schema->TryCreateConnection(ResultPin, ConsumerPin));
+	TestTrue(TEXT("fixture exec link created"),
+		Schema && Schema->TryCreateConnection(Event->FindPin(TEXT("then")), Create->FindPin(TEXT("execute"))));
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	TestEqual(TEXT("class-pin fixture compiles"), static_cast<int32>(Blueprint->Status), static_cast<int32>(BS_UpToDate));
+	if (Blueprint->Status != BS_UpToDate)
+	{
+		CortexGraphPatchCompileTest::Cleanup(Package, Blueprint);
+		return false;
+	}
+
+	const EBlueprintStatus StatusBefore = Blueprint->Status;
+	const FString FingerprintBefore = CortexGraphPatchCompileTest::GraphHash(Blueprint);
+	const FString GeneratedBefore = FCortexGraphPatchState::ComputeGeneratedStateDigest(Blueprint);
+	const int32 NodesBefore = CortexGraphPatchCompileTest::CountNativeNodes(Blueprint);
+	const TArray<FString> PinsBefore = CortexGraphPatchCompileTest::SortedPinNames(Create);
+	const FString ResultTypeBefore = ResultPin->PinType.PinSubCategoryObject.IsValid()
+		? ResultPin->PinType.PinSubCategoryObject->GetPathName() : FString();
+
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchCompileTest::BaseRequest(
+		Blueprint, TEXT("00000000-0000-0000-0000-000000000908"));
+	CortexGraphPatchCompileTest::AddClassPinUpdate(Request, Create->NodeGuid, TEXT("Class"), TEXT("/Script/Engine.SkeletalMesh"));
+	CortexGraphPatchCompileTest::FOperations Operations;
+	Operations.Begin();
+	FCortexGraphPatchOps::SetReadbackFaultForTesting(NAME_None);
+
+	FCortexGraphPreparedPatch Preview;
+	TestTrue(FString::Printf(TEXT("class-pin recovery preview succeeds: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, Preview, Error));
+	Request->SetBoolField(TEXT("dry_run"), false);
+	Request->SetStringField(TEXT("expected_validation_hash"), Preview.ValidationHash);
+
+	FCortexGraphPatchOps::SetReadbackFaultForTesting(TEXT("readback_default"));
+	FCortexGraphPatchOutcome Outcome;
+	TestFalse(TEXT("induced readback failure rejects the class-pin patch"),
+		FCortexGraphPatchOps::Execute(Blueprint, Request, Outcome, Error));
+	FCortexGraphPatchOps::SetReadbackFaultForTesting(NAME_None);
+	TestEqual(TEXT("class-pin apply phase ran"), Outcome.ApplyStatus, FString(TEXT("applied")));
+	TestEqual(TEXT("class-pin patch compiled once"), Outcome.TargetCompileCount, 1);
+	TestEqual(TEXT("class-pin readback reported the mismatch"),
+		Outcome.ReadbackStatus, FString(TEXT("mismatched")));
+	TestEqual(TEXT("class-pin recovery is verified after the compile"), Outcome.RollbackStatus, FString(TEXT("restored")));
+	TestEqual(TEXT("class-pin recovery counts its own compile"), Outcome.RecoveryCompileCount, 1);
+	TestEqual(TEXT("class-pin recovery observed one recovery compile"), Operations.RecoveryCompiles, 1);
+	TestFalse(TEXT("class-pin recovery does not block the asset"), Outcome.bBlocked);
+	FString BlockReason;
+	TestFalse(TEXT("class-pin recovery leaves the asset mutable"),
+		FCortexAssetMutationGuard::IsBlocked(Blueprint, BlockReason));
+	TestEqual(TEXT("class-pin recovery restores the authoring fingerprint"),
+		CortexGraphPatchCompileTest::GraphHash(Blueprint), FingerprintBefore);
+	TestEqual(TEXT("class-pin recovery restores the generated digest"),
+		FCortexGraphPatchState::ComputeGeneratedStateDigest(Blueprint), GeneratedBefore);
+	TestEqual(TEXT("class-pin recovery restores the compile status"),
+		static_cast<int32>(Blueprint->Status), static_cast<int32>(StatusBefore));
+	TestEqual(TEXT("class-pin recovery leaves no residual nodes"),
+		CortexGraphPatchCompileTest::CountNativeNodes(Blueprint), NodesBefore);
+
+	UK2Node_GenericCreateObject* Restored = Cast<UK2Node_GenericCreateObject>(
+		CortexGraphPatchCompileTest::FindNodeByGuid(Blueprint, Create->NodeGuid));
+	TestNotNull(TEXT("class-pin node re-resolves after recovery"), Restored);
+	if (Restored)
+	{
+		TestEqual(TEXT("class-pin recovery restores the constructed class"),
+			CortexGraphPatchCompileTest::ConstructedClassPath(Restored), FString(TEXT("/Script/Engine.StaticMesh")));
+		TestEqual(TEXT("class-pin recovery restores the pin set"),
+			FString::Join(CortexGraphPatchCompileTest::SortedPinNames(Restored), TEXT(",")),
+			FString::Join(PinsBefore, TEXT(",")));
+		UEdGraphPin* RestoredResult = Restored->GetResultPin();
+		const FString RestoredResultType = RestoredResult && RestoredResult->PinType.PinSubCategoryObject.IsValid()
+			? RestoredResult->PinType.PinSubCategoryObject->GetPathName() : FString();
+		TestEqual(TEXT("class-pin recovery restores the reconstructed result pin type"),
+			RestoredResultType, ResultTypeBefore);
+		TestEqual(TEXT("class-pin recovery restores the pre-existing result link"),
+			RestoredResult ? RestoredResult->LinkedTo.Num() : 0, 1);
+	}
+	TestEqual(TEXT("class-pin recovery performs no save"), Operations.Saves, 0);
+	Operations.End();
+	CortexGraphPatchCompileTest::Cleanup(Package, Blueprint);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 10. Class-driven exposed-on-spawn pins are restored by rollback
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchCompileClassPinExposedPinRecoveryTest,
+	"Cortex.Graph.Authoring.Compile.ClassPinExposedPinRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchCompileClassPinExposedPinRecoveryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* BasePackage = nullptr;
+	UBlueprint* Base = CortexGraphPatchCompileTest::MakeBlueprintWithParent(
+		BasePackage, TEXT("BP_ClassPinExposedBase_T08"), UObject::StaticClass());
+	TestNotNull(TEXT("exposed-pin base Blueprint created"), Base);
+	if (!Base) return false;
+	FEdGraphPinType TextType;
+	TextType.PinCategory = UEdGraphSchema_K2::PC_Text;
+	CortexGraphPatchCompileTest::AddExposeOnSpawnVariable(Base, FName(TEXT("Title")), TextType);
+
+	UPackage* ChildPackage = nullptr;
+	UBlueprint* Child = CortexGraphPatchCompileTest::MakeBlueprintWithParent(
+		ChildPackage, TEXT("BP_ClassPinExposedChild_T08"), Base->GeneratedClass);
+	TestNotNull(TEXT("exposed-pin child Blueprint created"), Child);
+	if (!Child)
+	{
+		CortexGraphPatchCompileTest::Cleanup(BasePackage, Base);
+		return false;
+	}
+	FEdGraphPinType ObjectType;
+	ObjectType.PinCategory = UEdGraphSchema_K2::PC_Object;
+	ObjectType.PinSubCategoryObject = UObject::StaticClass();
+	CortexGraphPatchCompileTest::AddExposeOnSpawnVariable(Child, FName(TEXT("ConfigObj")), ObjectType);
+
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchCompileTest::MakeBlueprint(Package, TEXT("BP_ClassPinExposedRecovery_T08"));
+	TestNotNull(TEXT("exposed-pin recovery fixture Blueprint created"), Blueprint);
+	if (!Blueprint)
+	{
+		CortexGraphPatchCompileTest::Cleanup(ChildPackage, Child);
+		CortexGraphPatchCompileTest::Cleanup(BasePackage, Base);
+		return false;
+	}
+
+	UEdGraph* Graph = Blueprint->UbergraphPages[0];
+	UK2Node_GenericCreateObject* Create = CortexGraphPatchCompileTest::AddGenericCreateObject(Graph);
+	TestNotNull(TEXT("exposed-pin construct node created"), Create);
+	if (!Create)
+	{
+		CortexGraphPatchCompileTest::Cleanup(Package, Blueprint);
+		CortexGraphPatchCompileTest::Cleanup(ChildPackage, Child);
+		CortexGraphPatchCompileTest::Cleanup(BasePackage, Base);
+		return false;
+	}
+
+	FCortexCommandResult Error;
+	const FString ChildClassPath = Child->GeneratedClass->GetPathName();
+	const FString BaseClassPath = Base->GeneratedClass->GetPathName();
+	TestTrue(TEXT("fixture class default applies to the child class"),
+		FCortexGraphPinDefaults::ApplyDefault(Create->GetClassPin(),
+			CortexGraphPatchCompileTest::ClassLiteral(*ChildClassPath), Error));
+	TestNotNull(TEXT("child-class exposed Title pin exists"), Create->FindPin(TEXT("Title")));
+	TestNotNull(TEXT("child-class exposed ConfigObj pin exists"), Create->FindPin(TEXT("ConfigObj")));
+
+	const FString FingerprintBefore = CortexGraphPatchCompileTest::GraphHash(Blueprint);
+	const int32 NodesBefore = CortexGraphPatchCompileTest::CountNativeNodes(Blueprint);
+	const TArray<FString> PinsBefore = CortexGraphPatchCompileTest::SortedPinNames(Create);
+
+	auto MakeRequest = [&](const TCHAR* PatchId)
+	{
+		TSharedPtr<FJsonObject> Request = CortexGraphPatchCompileTest::BaseRequest(Blueprint, PatchId);
+		CortexGraphPatchCompileTest::AddClassPinUpdate(Request, Create->NodeGuid, TEXT("Class"), *BaseClassPath);
+		return Request;
+	};
+
+	// (a) an induced readback failure recovers the class-driven pin set exactly
+	TSharedPtr<FJsonObject> Request = MakeRequest(TEXT("00000000-0000-0000-0000-000000000a08"));
+	FCortexGraphPreparedPatch Preview;
+	TestTrue(FString::Printf(TEXT("exposed-pin recovery preview succeeds: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, Preview, Error));
+	Request->SetBoolField(TEXT("dry_run"), false);
+	Request->SetStringField(TEXT("expected_validation_hash"), Preview.ValidationHash);
+
+	FCortexGraphPatchOps::SetReadbackFaultForTesting(TEXT("readback_default"));
+	FCortexGraphPatchOutcome Outcome;
+	TestFalse(TEXT("induced readback failure rejects the exposed-pin class patch"),
+		FCortexGraphPatchOps::Execute(Blueprint, Request, Outcome, Error));
+	FCortexGraphPatchOps::SetReadbackFaultForTesting(NAME_None);
+	TestEqual(TEXT("exposed-pin readback reported the mismatch"),
+		Outcome.ReadbackStatus, FString(TEXT("mismatched")));
+	TestEqual(TEXT("exposed-pin recovery is verified"), Outcome.RollbackStatus, FString(TEXT("restored")));
+	TestFalse(TEXT("exposed-pin recovery does not block the asset"), Outcome.bBlocked);
+	TestEqual(TEXT("exposed-pin recovery restores the authoring fingerprint"),
+		CortexGraphPatchCompileTest::GraphHash(Blueprint), FingerprintBefore);
+	TestEqual(TEXT("exposed-pin recovery leaves no residual nodes"),
+		CortexGraphPatchCompileTest::CountNativeNodes(Blueprint), NodesBefore);
+
+	UK2Node_GenericCreateObject* Restored = Cast<UK2Node_GenericCreateObject>(
+		CortexGraphPatchCompileTest::FindNodeByGuid(Blueprint, Create->NodeGuid));
+	TestNotNull(TEXT("exposed-pin node re-resolves after recovery"), Restored);
+	if (Restored)
+	{
+		TestEqual(TEXT("exposed-pin recovery restores the constructed class"),
+			CortexGraphPatchCompileTest::ConstructedClassPath(Restored), ChildClassPath);
+		TestNotNull(TEXT("exposed-pin recovery restores the removed spawn pin"), Restored->FindPin(TEXT("ConfigObj")));
+		TestNotNull(TEXT("exposed-pin recovery keeps the shared spawn pin"), Restored->FindPin(TEXT("Title")));
+		TestEqual(TEXT("exposed-pin recovery restores the full pin set"),
+			FString::Join(CortexGraphPatchCompileTest::SortedPinNames(Restored), TEXT(",")),
+			FString::Join(PinsBefore, TEXT(",")));
+	}
+
+	// (b) the same patch now succeeds, proving the class change really rebuilds the pins
+	TSharedPtr<FJsonObject> Second = MakeRequest(TEXT("00000000-0000-0000-0000-000000000a09"));
+	FCortexGraphPreparedPatch SecondPreview;
+	TestTrue(FString::Printf(TEXT("exposed-pin reapply preview succeeds: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Blueprint, Second, SecondPreview, Error));
+	Second->SetBoolField(TEXT("dry_run"), false);
+	Second->SetStringField(TEXT("expected_validation_hash"), SecondPreview.ValidationHash);
+	FCortexGraphPatchOutcome SecondOutcome;
+	TestTrue(FString::Printf(TEXT("exposed-pin class change applies: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Execute(Blueprint, Second, SecondOutcome, Error));
+	TestEqual(TEXT("exposed-pin class change verifies"),
+		SecondOutcome.ReadbackStatus, FString(TEXT("matched")));
+	TestEqual(TEXT("exposed-pin class change keeps the base class"),
+		CortexGraphPatchCompileTest::ConstructedClassPath(Create), BaseClassPath);
+	TestNull(TEXT("exposed-pin class change drops the child-only spawn pin"), Create->FindPin(TEXT("ConfigObj")));
+	TestNotNull(TEXT("exposed-pin class change keeps the shared spawn pin"), Create->FindPin(TEXT("Title")));
+
+	CortexGraphPatchCompileTest::Cleanup(Package, Blueprint);
+	CortexGraphPatchCompileTest::Cleanup(ChildPackage, Child);
+	CortexGraphPatchCompileTest::Cleanup(BasePackage, Base);
 	return true;
 }
 

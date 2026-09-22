@@ -12,6 +12,124 @@
 #include "Internationalization/StringTable.h"
 #include "Internationalization/StringTableCore.h"
 
+namespace
+{
+/** Native storage mode a reference pin can hold, derived from its category. */
+enum class EPinReferenceMode : uint8
+{
+	None,
+	HardObject,
+	SoftObject,
+	HardClass,
+	SoftClass,
+};
+
+EPinReferenceMode ReferenceModeForCategory(const FName Category)
+{
+	if (Category == UEdGraphSchema_K2::PC_Class) return EPinReferenceMode::HardClass;
+	if (Category == UEdGraphSchema_K2::PC_SoftClass) return EPinReferenceMode::SoftClass;
+	if (Category == UEdGraphSchema_K2::PC_SoftObject) return EPinReferenceMode::SoftObject;
+	if (Category == UEdGraphSchema_K2::PC_Object || Category == UEdGraphSchema_K2::PC_Interface) return EPinReferenceMode::HardObject;
+	return EPinReferenceMode::None;
+}
+
+EPinReferenceMode RequestedReferenceMode(const FString& Kind)
+{
+	if (Kind == TEXT("class")) return EPinReferenceMode::HardClass;
+	if (Kind == TEXT("soft_class")) return EPinReferenceMode::SoftClass;
+	if (Kind == TEXT("soft_object")) return EPinReferenceMode::SoftObject;
+	if (Kind == TEXT("object")) return EPinReferenceMode::HardObject;
+	return EPinReferenceMode::None;
+}
+
+bool IsSoftReferenceMode(const EPinReferenceMode Mode)
+{
+	return Mode == EPinReferenceMode::SoftObject || Mode == EPinReferenceMode::SoftClass;
+}
+
+const TCHAR* ReferenceModeName(const EPinReferenceMode Mode)
+{
+	switch (Mode)
+	{
+	case EPinReferenceMode::HardClass:
+		return TEXT("class");
+	case EPinReferenceMode::SoftClass:
+		return TEXT("soft_class");
+	case EPinReferenceMode::SoftObject:
+		return TEXT("soft_object");
+	case EPinReferenceMode::HardObject:
+		return TEXT("object");
+	default:
+		return TEXT("none");
+	}
+}
+
+/**
+ * Canonical native string for a reference default path. Soft references live in DefaultValue as a
+ * path, so both the stored value and the compared value go through the same canonicalization.
+ */
+FString CanonicalReferencePath(const EPinReferenceMode Mode, const FString& Path)
+{
+	if (Path.IsEmpty() || Path.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+	{
+		return TEXT("None");
+	}
+	if (Mode == EPinReferenceMode::HardClass || Mode == EPinReferenceMode::SoftClass)
+	{
+		UClass* ResolvedClass = nullptr;
+		FCortexCommandResult ResolveError;
+		if (FCortexGraphSymbolResolver::ResolveClass(Path, ResolvedClass, ResolveError) && ResolvedClass)
+		{
+			return ResolvedClass->GetPathName();
+		}
+		return Path;
+	}
+	if (UObject* Found = FindObject<UObject>(nullptr, *Path))
+	{
+		return Found->GetPathName();
+	}
+	return Path;
+}
+
+/**
+ * Canonical identity of a text literal: string table identity (table id + key) or the
+ * namespace/key/source triple of a literal. Display text alone is not an identity, because a
+ * string table entry and a literal can share it, and so can two different tables.
+ */
+FString CanonicalTextIdentity(const FText& Text)
+{
+	if (Text.IsFromStringTable())
+	{
+		FName TableId;
+		FTextKey TableKey;
+		FTextInspector::GetTableIdAndKey(Text, TableId, TableKey);
+		return FString::Printf(TEXT("table:%s#%s"), *TableId.ToString(), *TableKey.ToString());
+	}
+	const TOptional<FString> Namespace = FTextInspector::GetNamespace(Text);
+	const TOptional<FString> Key = FTextInspector::GetKey(Text);
+	const FString NamespaceText = Namespace.IsSet() ? Namespace.GetValue() : FString();
+	const FString KeyText = Key.IsSet() ? Key.GetValue() : FString();
+	const FString* SourceString = FTextInspector::GetSourceString(Text);
+	return FString::Printf(TEXT("literal:%s#%s#%s"), *NamespaceText, *KeyText,
+		SourceString ? **SourceString : TEXT(""));
+}
+}
+
+const TCHAR* FCortexGraphPinDefaults::ReferenceLiteralKind(const UEdGraphPin& Pin)
+{
+	switch (ReferenceModeForCategory(Pin.PinType.PinCategory))
+	{
+	case EPinReferenceMode::HardClass:
+		return TEXT("class");
+	case EPinReferenceMode::SoftClass:
+		return TEXT("soft_class");
+	case EPinReferenceMode::SoftObject:
+		return TEXT("soft_object");
+	default:
+		return TEXT("object");
+	}
+}
+
 bool FCortexGraphPinDefaults::Validate(
 	const UEdGraphPin* Pin,
 	const TSharedPtr<FJsonObject>& Literal,
@@ -64,20 +182,28 @@ bool FCortexGraphPinDefaults::Validate(
 	// 4. Validate kind against pin category and value shape
 	if (Kind == TEXT("class") || Kind == TEXT("soft_class"))
 	{
-		if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Class &&
-			Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_SoftClass)
+		const EPinReferenceMode RequestedMode = RequestedReferenceMode(Kind);
+		const EPinReferenceMode NativeMode = ReferenceModeForCategory(Pin->PinType.PinCategory);
+		if (NativeMode != RequestedMode)
 		{
-			OutError = FCortexCommandRouter::Error(
-				CortexErrorCodes::TypeMismatch,
-				FString::Printf(TEXT("Cannot assign class literal to pin of category '%s'"), *Pin->PinType.PinCategory.ToString()));
-			return false;
-		}
-
-		if (Kind == TEXT("soft_class") && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class)
-		{
-			OutError = FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				TEXT("Cannot assign soft class literal to hard class pin: unsupported soft-reference mode"));
+			if (NativeMode == EPinReferenceMode::HardClass)
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					TEXT("Cannot assign soft class literal to hard class pin: unsupported soft-reference mode"));
+			}
+			else if (NativeMode == EPinReferenceMode::SoftClass)
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					TEXT("Cannot assign hard class literal to soft class pin: use a soft_class literal"));
+			}
+			else
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::TypeMismatch,
+					FString::Printf(TEXT("Cannot assign class literal to pin of category '%s'"), *Pin->PinType.PinCategory.ToString()));
+			}
 			return false;
 		}
 
@@ -144,21 +270,28 @@ bool FCortexGraphPinDefaults::Validate(
 
 	if (Kind == TEXT("object") || Kind == TEXT("soft_object"))
 	{
-		if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Object &&
-			Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_SoftObject &&
-			Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Interface)
+		const EPinReferenceMode RequestedMode = RequestedReferenceMode(Kind);
+		const EPinReferenceMode NativeMode = ReferenceModeForCategory(Pin->PinType.PinCategory);
+		if (NativeMode != RequestedMode)
 		{
-			OutError = FCortexCommandRouter::Error(
-				CortexErrorCodes::TypeMismatch,
-				FString::Printf(TEXT("Cannot assign object literal to pin of category '%s'"), *Pin->PinType.PinCategory.ToString()));
-			return false;
-		}
-
-		if (Kind == TEXT("soft_object") && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Object)
-		{
-			OutError = FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				TEXT("Cannot assign soft object literal to hard object pin: unsupported soft-reference mode"));
+			if (NativeMode == EPinReferenceMode::HardObject)
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					TEXT("Cannot assign soft object literal to hard object pin: unsupported soft-reference mode"));
+			}
+			else if (NativeMode == EPinReferenceMode::SoftObject)
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					TEXT("Cannot assign hard object literal to soft object pin: use a soft_object literal"));
+			}
+			else
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::TypeMismatch,
+					FString::Printf(TEXT("Cannot assign object literal to pin of category '%s'"), *Pin->PinType.PinCategory.ToString()));
+			}
 			return false;
 		}
 
@@ -515,11 +648,11 @@ bool FCortexGraphPinDefaults::ApplyDefault(
 			Pin->DefaultObject = nullptr;
 			Pin->DefaultValue = TEXT("None");
 		}
-		else if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_SoftClass || Kind == TEXT("soft_class"))
+		else if (IsSoftReferenceMode(RequestedReferenceMode(Kind)))
 		{
-			// Preserve soft references as soft references
+			// Soft references stay soft and live in DefaultValue as a canonical path.
 			Pin->DefaultObject = nullptr;
-			Pin->DefaultValue = Path;
+			Pin->DefaultValue = CanonicalReferencePath(EPinReferenceMode::SoftClass, Path);
 		}
 		else
 		{
@@ -553,11 +686,11 @@ bool FCortexGraphPinDefaults::ApplyDefault(
 			Pin->DefaultObject = nullptr;
 			Pin->DefaultValue = TEXT("None");
 		}
-		else if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_SoftObject || Kind == TEXT("soft_object"))
+		else if (IsSoftReferenceMode(RequestedReferenceMode(Kind)))
 		{
-			// Preserve soft references as soft references
+			// Preserve soft references as soft references.
 			Pin->DefaultObject = nullptr;
-			Pin->DefaultValue = Path;
+			Pin->DefaultValue = CanonicalReferencePath(EPinReferenceMode::SoftObject, Path);
 		}
 		else
 		{
@@ -611,7 +744,7 @@ bool FCortexGraphPinDefaults::ApplyDefault(
 				RealVal = FCString::Atod(*Str);
 			}
 		}
-		Pin->DefaultValue = FString::Printf(TEXT("%f"), RealVal);
+		Pin->DefaultValue = FString::Printf(TEXT("%.17g"), RealVal);
 	}
 	else if (Kind == TEXT("string") || Kind == TEXT("name") || Kind == TEXT("enum"))
 	{
@@ -722,17 +855,11 @@ bool FCortexGraphPinDefaults::ReadDefault(
 
 	OutDescriptor = MakeShared<FJsonObject>();
 
+	const TCHAR* ReferenceKind = ReferenceLiteralKind(*Pin);
+
 	if (Pin->DefaultObject != nullptr)
 	{
-		if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class ||
-			Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_SoftClass)
-		{
-			OutDescriptor->SetStringField(TEXT("kind"), TEXT("class"));
-		}
-		else
-		{
-			OutDescriptor->SetStringField(TEXT("kind"), TEXT("object"));
-		}
+		OutDescriptor->SetStringField(TEXT("kind"), ReferenceKind);
 		OutDescriptor->SetStringField(TEXT("path"), Pin->DefaultObject->GetPathName());
 		return true;
 	}
@@ -812,15 +939,9 @@ bool FCortexGraphPinDefaults::ReadDefault(
 		{
 			OutDescriptor->SetStringField(TEXT("kind"), TEXT("null"));
 		}
-		else if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class ||
-				 Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_SoftClass)
-		{
-			OutDescriptor->SetStringField(TEXT("kind"), TEXT("class"));
-			OutDescriptor->SetStringField(TEXT("path"), Pin->DefaultValue);
-		}
 		else
 		{
-			OutDescriptor->SetStringField(TEXT("kind"), TEXT("object"));
+			OutDescriptor->SetStringField(TEXT("kind"), ReferenceKind);
 			OutDescriptor->SetStringField(TEXT("path"), Pin->DefaultValue);
 		}
 		return true;
@@ -829,5 +950,169 @@ bool FCortexGraphPinDefaults::ReadDefault(
 	OutError = FCortexCommandRouter::Error(
 		CortexErrorCodes::UnsupportedOperation,
 		FString::Printf(TEXT("Pin category '%s' cannot be read as default descriptor"), *Pin->PinType.PinCategory.ToString()));
+	return false;
+}
+
+/**
+ * Compares one tagged literal descriptor against the pin's native default state.
+ */
+bool FCortexGraphPinDefaults::CompareAppliedLiteral(
+	const UEdGraphPin* Pin,
+	const TSharedPtr<FJsonObject>& Literal,
+	FString& OutExpected,
+	FString& OutActual,
+	FString& OutFailure)
+{
+	OutExpected.Reset();
+	OutActual.Reset();
+	if (!Pin || !Literal.IsValid())
+	{
+		OutFailure = TEXT("planned default no longer resolves to a pin and literal");
+		return false;
+	}
+	FString Kind;
+	if (!Literal->TryGetStringField(TEXT("kind"), Kind) || Kind.IsEmpty())
+	{
+		OutFailure = TEXT("planned default has no literal kind");
+		return false;
+	}
+
+	if (Kind == TEXT("class") || Kind == TEXT("soft_class") || Kind == TEXT("object") || Kind == TEXT("soft_object"))
+	{
+		const EPinReferenceMode RequestedMode = RequestedReferenceMode(Kind);
+		const EPinReferenceMode NativeMode = ReferenceModeForCategory(Pin->PinType.PinCategory);
+		if (RequestedMode == EPinReferenceMode::None || NativeMode != RequestedMode)
+		{
+			OutFailure = FString::Printf(TEXT("pin category '%s' cannot hold a %s default"),
+				*Pin->PinType.PinCategory.ToString(), *Kind);
+			return false;
+		}
+
+		FString Path;
+		Literal->TryGetStringField(TEXT("path"), Path);
+		if (!Path.IsEmpty() && !Path.Equals(TEXT("None"), ESearchCase::IgnoreCase)
+			&& (RequestedMode == EPinReferenceMode::HardClass || RequestedMode == EPinReferenceMode::SoftClass))
+		{
+			UClass* ResolvedClass = nullptr;
+			FCortexCommandResult ResolveError;
+			if (!FCortexGraphSymbolResolver::ResolveClass(Path, ResolvedClass, ResolveError) || !ResolvedClass)
+			{
+				OutFailure = FString::Printf(TEXT("planned class default no longer resolves: %s"), *ResolveError.ErrorMessage);
+				return false;
+			}
+		}
+
+		// Soft references live in DefaultValue; hard references are the DefaultObject.
+		const FString NativePath = IsSoftReferenceMode(NativeMode)
+			? Pin->DefaultValue
+			: (Pin->DefaultObject ? Pin->DefaultObject->GetPathName() : Pin->DefaultValue);
+		OutExpected = FString::Printf(TEXT("%s:%s"), ReferenceModeName(RequestedMode),
+			*CanonicalReferencePath(RequestedMode, Path));
+		OutActual = FString::Printf(TEXT("%s:%s"), ReferenceModeName(NativeMode),
+			*CanonicalReferencePath(NativeMode, NativePath));
+		return true;
+	}
+	if (Kind == TEXT("null"))
+	{
+		OutExpected = TEXT("None");
+		OutActual = (Pin->DefaultObject == nullptr && (Pin->DefaultValue.IsEmpty() || Pin->DefaultValue.Equals(TEXT("None"), ESearchCase::IgnoreCase)))
+			? FString(TEXT("None"))
+			: Pin->DefaultValue;
+		return true;
+	}
+	if (Kind == TEXT("text"))
+	{
+		FText ExpectedText;
+		bool bHasExpectedText = false;
+		FString LiteralValue;
+		if (Literal->TryGetStringField(TEXT("literal"), LiteralValue))
+		{
+			ExpectedText = FText::FromString(LiteralValue);
+			bHasExpectedText = true;
+		}
+		else if (Literal->HasField(TEXT("table")) || Literal->HasField(TEXT("table_id")))
+		{
+			FString TableId;
+			FString Key;
+			if (!Literal->TryGetStringField(TEXT("table"), TableId))
+			{
+				Literal->TryGetStringField(TEXT("table_id"), TableId);
+			}
+			Literal->TryGetStringField(TEXT("key"), Key);
+			ExpectedText = FText::FromStringTable(FName(*TableId), Key);
+			bHasExpectedText = true;
+		}
+		else
+		{
+			TArray<FString> Errors;
+			TSharedPtr<FJsonObject> Normalized;
+			FText NormalizedText;
+			const TSharedPtr<FJsonValue> Value = Literal->HasField(TEXT("value"))
+				? Literal->TryGetField(TEXT("value"))
+				: MakeShared<FJsonValueObject>(Literal);
+			if (Value.IsValid() && FCortexSerializer::NormalizeTextDescriptor(Value, Normalized, &NormalizedText, Errors))
+			{
+				ExpectedText = NormalizedText;
+				bHasExpectedText = true;
+			}
+		}
+		if (!bHasExpectedText)
+		{
+			OutFailure = TEXT("planned text default cannot be compared with native readback");
+			return false;
+		}
+		OutExpected = CanonicalTextIdentity(ExpectedText);
+		OutActual = CanonicalTextIdentity(Pin->DefaultTextValue);
+		return true;
+	}
+	if (Kind == TEXT("bool"))
+	{
+		bool bValue = false;
+		if (!Literal->TryGetBoolField(TEXT("value"), bValue))
+		{
+			FString Text;
+			Literal->TryGetStringField(TEXT("value"), Text);
+			bValue = Text.ToBool();
+		}
+		OutExpected = bValue ? TEXT("true") : TEXT("false");
+		OutActual = Pin->DefaultValue.ToBool() ? TEXT("true") : TEXT("false");
+		return true;
+	}
+	if (Kind == TEXT("int"))
+	{
+		int64 Value = 0;
+		if (!Literal->TryGetNumberField(TEXT("value"), Value))
+		{
+			FString Text;
+			Literal->TryGetStringField(TEXT("value"), Text);
+			Value = FCString::Atoi64(*Text);
+		}
+		OutExpected = FString::Printf(TEXT("%lld"), Value);
+		OutActual = FString::Printf(TEXT("%lld"), FCString::Atoi64(*Pin->DefaultValue));
+		return true;
+	}
+	if (Kind == TEXT("real") || Kind == TEXT("float"))
+	{
+		double Value = 0.0;
+		if (!Literal->TryGetNumberField(TEXT("value"), Value))
+		{
+			FString Text;
+			Literal->TryGetStringField(TEXT("value"), Text);
+			Value = FCString::Atod(*Text);
+		}
+		OutExpected = FString::Printf(TEXT("%.17g"), Value);
+		OutActual = FString::Printf(TEXT("%.17g"), FCString::Atod(*Pin->DefaultValue));
+		return true;
+	}
+	if (Kind == TEXT("string") || Kind == TEXT("name") || Kind == TEXT("enum"))
+	{
+		FString Value;
+		Literal->TryGetStringField(TEXT("value"), Value);
+		OutExpected = Value;
+		OutActual = Pin->DefaultValue;
+		return true;
+	}
+
+	OutFailure = FString::Printf(TEXT("planned default kind '%s' has no native readback comparison"), *Kind);
 	return false;
 }
