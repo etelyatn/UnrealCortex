@@ -320,6 +320,149 @@ class TestAtomicWrite(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "nested content")
 
 
+class TestSchemaMetadataSidecar(unittest.TestCase):
+
+    @staticmethod
+    def _collected_data():
+        return {
+            "catalog": {
+                "datatables": [],
+                "tag_prefixes": [],
+                "data_asset_classes": [],
+                "string_tables": [],
+            },
+            "schemas": {},
+            "format_examples": {},
+            "summary": {"structs": [], "tables": [], "tag_prefixes": [], "data_assets": []},
+        }
+
+    @staticmethod
+    def _blueprint_summary():
+        return {
+            "classes": [],
+            "blueprint_count": 0,
+            "cpp_count": 0,
+            "project_cpp_count": 0,
+            "engine_cpp_count": 0,
+        }
+
+    @staticmethod
+    def _level_summary():
+        return {
+            "world": {"level_name": "Main"},
+            "actor_count": 0,
+            "actor_classes": [],
+            "folder_breakdown": [],
+        }
+
+    def test_full_generation_records_each_written_markdown_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            schema_dir = project_root / ".cortex" / "schema"
+            with patch(
+                "cortex_mcp.schema_generator.collect_data_domain",
+                return_value=self._collected_data(),
+            ), patch(
+                "cortex_mcp.schema_generator.collect_blueprint_domain",
+                return_value=self._blueprint_summary(),
+            ), patch(
+                "cortex_mcp.schema_generator.collect_level_domain",
+                return_value=self._level_summary(),
+            ):
+                generate_schema(
+                    unittest.mock.Mock(),
+                    schema_dir,
+                    domain="all",
+                    project_name="Test",
+                    project_root=project_root,
+                    engine_version="5.8",
+                    plugin_version="0.1.0",
+                )
+
+            sidecar = json.loads((schema_dir / ".meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                set(sidecar["files"]),
+                {
+                    "data/_index.md",
+                    "data/structs.md",
+                    "data/formats.md",
+                    "blueprints.md",
+                    "level.md",
+                    "_catalog.md",
+                },
+            )
+            self.assertTrue(all(value.endswith("Z") for value in sidecar["files"].values()))
+
+    def test_partial_generation_preserves_other_domain_timestamps(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            schema_dir = project_root / ".cortex" / "schema"
+            schema_dir.mkdir(parents=True)
+            previous = {
+                "files": {
+                    "blueprints.md": "2026-01-01T00:00:00Z",
+                    "data/_index.md": "2026-01-02T00:00:00Z",
+                    "level.md": "2026-01-03T00:00:00Z",
+                    "_catalog.md": "2026-01-04T00:00:00Z",
+                }
+            }
+            (schema_dir / ".meta.json").write_text(json.dumps(previous), encoding="utf-8")
+            with patch(
+                "cortex_mcp.schema_generator.collect_level_domain",
+                return_value=self._level_summary(),
+            ):
+                generate_schema(
+                    unittest.mock.Mock(),
+                    schema_dir,
+                    domain="level",
+                    project_name="Test",
+                    project_root=project_root,
+                    engine_version="5.8",
+                    plugin_version="0.1.0",
+                )
+
+            updated = json.loads((schema_dir / ".meta.json").read_text(encoding="utf-8"))["files"]
+            self.assertEqual(updated["blueprints.md"], previous["files"]["blueprints.md"])
+            self.assertEqual(updated["data/_index.md"], previous["files"]["data/_index.md"])
+            self.assertNotEqual(updated["level.md"], previous["files"]["level.md"])
+            self.assertNotEqual(updated["_catalog.md"], previous["files"]["_catalog.md"])
+
+    def test_sidecar_write_failure_preserves_previous_metadata(self):
+        from cortex_mcp.schema_generator import atomic_write
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            schema_dir = project_root / ".cortex" / "schema"
+            schema_dir.mkdir(parents=True)
+            sidecar_path = schema_dir / ".meta.json"
+            original_sidecar = '{"files":{"level.md":"2026-01-01T00:00:00Z"}}'
+            sidecar_path.write_text(original_sidecar, encoding="utf-8")
+
+            def fail_sidecar_write(path, content):
+                if path == sidecar_path:
+                    raise OSError("simulated sidecar failure")
+                atomic_write(path, content)
+
+            with patch(
+                "cortex_mcp.schema_generator.collect_level_domain",
+                return_value=self._level_summary(),
+            ), patch(
+                "cortex_mcp.schema_generator.atomic_write",
+                side_effect=fail_sidecar_write,
+            ), self.assertRaisesRegex(OSError, "simulated sidecar failure"):
+                generate_schema(
+                    unittest.mock.Mock(),
+                    schema_dir,
+                    domain="level",
+                    project_name="Test",
+                    project_root=project_root,
+                    engine_version="5.8",
+                    plugin_version="0.1.0",
+                )
+
+            self.assertEqual(sidecar_path.read_text(encoding="utf-8"), original_sidecar)
+
+
 class TestRenderCatalog(unittest.TestCase):
 
     def setUp(self):

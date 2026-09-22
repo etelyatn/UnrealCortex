@@ -137,22 +137,83 @@ def test_core_router_handles_switch_editor_locally():
 
 
 def test_core_router_handles_schema_status_locally(tmp_path):
+    from cortex_mcp.schema_generator import _render_meta
+
     schema_dir = tmp_path / ".cortex" / "schema"
-    schema_dir.mkdir(parents=True)
+    data_dir = schema_dir / "data"
+    data_dir.mkdir(parents=True)
     (schema_dir / "_catalog.md").write_text(
-        "---\ngenerated: 2026-03-14T12:00:00Z\nschema_version: 1\n---\n",
+        f"# Catalog\n\n{_render_meta('catalog')}\n",
+        encoding="utf-8",
+    )
+    (schema_dir / "blueprints.md").write_text(
+        f"# Blueprints\n\n{_render_meta('blueprints')}\n",
+        encoding="utf-8",
+    )
+    (data_dir / "_index.md").write_text(
+        f"# Data\n\n{_render_meta('data-index')}\n",
+        encoding="utf-8",
+    )
+    (data_dir / "structs.md").write_text(
+        f"# Structs\n\n{_render_meta('data-structs')}\n",
+        encoding="utf-8",
+    )
+    (schema_dir / ".meta.json").write_text(
+        json.dumps({
+            "files": {
+                "_catalog.md": "2026-03-14T12:00:00Z",
+                "blueprints.md": "2026-03-14T12:01:00Z",
+                "data/_index.md": "2026-03-14T12:02:00Z",
+                "data/structs.md": "2026-03-14T12:03:00Z",
+            }
+        }),
         encoding="utf-8",
     )
 
     router = make_router("core", MagicMock(), "core docs")
-    with patch("cortex_mcp.tools.routers.get_schema_dir", return_value=schema_dir), patch(
-        "cortex_mcp.tools.routers.read_meta_from_file",
-        return_value={"generated": "2026-03-14T12:00:00Z", "schema_version": "1"},
-    ):
+    with patch("cortex_mcp.tools.routers.get_schema_dir", return_value=schema_dir):
         payload = json.loads(router("schema_status"))
 
     assert payload["exists"] is True
     assert payload["schema_dir"] == str(schema_dir)
+    assert payload["catalog"]["generated"] == "2026-03-14T12:00:00Z"
+    assert payload["current_schema_version"] == 3
+    assert payload["domains"]["blueprints"] == {
+        "file": "blueprints.md",
+        "generated": "2026-03-14T12:01:00Z",
+        "schema_version": 3,
+        "version_current": True,
+    }
+    assert payload["domains"]["data"]["files"] == {
+        "_index.md": "2026-03-14T12:02:00Z",
+        "structs.md": "2026-03-14T12:03:00Z",
+    }
+
+
+@pytest.mark.parametrize("sidecar_content", [None, "{not valid json"])
+def test_schema_status_reports_unknown_for_missing_or_corrupt_sidecar(tmp_path, sidecar_content):
+    from cortex_mcp.schema_generator import _render_meta
+
+    schema_dir = tmp_path / ".cortex" / "schema"
+    schema_dir.mkdir(parents=True)
+    data_dir = schema_dir / "data"
+    data_dir.mkdir()
+    (schema_dir / "_catalog.md").write_text(_render_meta("catalog"), encoding="utf-8")
+    (schema_dir / "blueprints.md").write_text(_render_meta("blueprints"), encoding="utf-8")
+    (data_dir / "_index.md").write_text(_render_meta("data-index"), encoding="utf-8")
+    if sidecar_content is not None:
+        (schema_dir / ".meta.json").write_text(sidecar_content, encoding="utf-8")
+
+    router = make_router("core", MagicMock(), "core docs")
+    with patch("cortex_mcp.tools.routers.get_schema_dir", return_value=schema_dir):
+        payload = json.loads(router("schema_status"))
+
+    assert payload["catalog"]["generated"] == "unknown"
+    assert payload["domains"]["blueprints"]["generated"] == "unknown"
+    assert payload["domains"]["blueprints"]["schema_version"] == 3
+    assert payload["domains"]["blueprints"]["version_current"] is True
+    assert payload["domains"]["data"]["generated"] == "unknown"
+    assert payload["domains"]["data"]["files"] == {"_index.md": "unknown"}
 
 
 def test_core_router_enriches_get_status_with_editor_discovery():

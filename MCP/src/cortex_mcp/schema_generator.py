@@ -6,6 +6,7 @@ import os
 import pathlib
 import tempfile
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from .project import resolve_project_dir
@@ -51,6 +52,31 @@ def atomic_write(path: pathlib.Path, content: str) -> None:
         except OSError:
             pass
         raise
+
+
+def read_schema_metadata(schema_dir: pathlib.Path) -> dict:
+    """Read local schema freshness metadata, treating missing/corrupt data as unknown."""
+    metadata_path = schema_dir / ".meta.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {"files": {}}
+
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("files"), dict):
+        return {"files": {}}
+
+    files = {
+        relative_path: timestamp
+        for relative_path, timestamp in metadata["files"].items()
+        if isinstance(relative_path, str) and isinstance(timestamp, str)
+    }
+    return {**metadata, "files": files}
+
+
+def write_schema_metadata(schema_dir: pathlib.Path, metadata: dict) -> None:
+    """Atomically write local per-file schema freshness metadata."""
+    content = json.dumps(metadata, indent=2, sort_keys=True) + "\n"
+    atomic_write(schema_dir / ".meta.json", content)
 
 
 def _yaml_field(field: dict, indent: int = 2) -> list[str]:
@@ -944,6 +970,11 @@ def generate_schema(
         Dict with generated domain names and file paths.
     """
     _start_time = time.perf_counter()
+    written_schema_files: list[pathlib.Path] = []
+
+    def write_schema_file(path: pathlib.Path, content: str) -> None:
+        atomic_write(path, content)
+        written_schema_files.append(path)
 
     # Fetch engine/plugin version from editor if not provided
     if not engine_version or not plugin_version:
@@ -969,17 +1000,17 @@ def generate_schema(
 
             # Write data/_index.md
             index_md = render_data_index(collected["catalog"])
-            atomic_write(schema_dir / "data" / "_index.md", index_md)
+            write_schema_file(schema_dir / "data" / "_index.md", index_md)
             result["generated"]["data_index"] = str(schema_dir / "data" / "_index.md")
 
             # Write data/structs.md
             structs_md = render_data_structs(collected["schemas"])
-            atomic_write(schema_dir / "data" / "structs.md", structs_md)
+            write_schema_file(schema_dir / "data" / "structs.md", structs_md)
             result["generated"]["data_structs"] = str(schema_dir / "data" / "structs.md")
 
             # Write data/formats.md
             formats_md = render_data_formats(collected["format_examples"])
-            atomic_write(schema_dir / "data" / "formats.md", formats_md)
+            write_schema_file(schema_dir / "data" / "formats.md", formats_md)
             result["generated"]["data_formats"] = str(schema_dir / "data" / "formats.md")
 
             data_summary = collected["summary"]
@@ -1001,7 +1032,7 @@ def generate_schema(
         try:
             blueprint_summary = collect_blueprint_domain(connection)
             blueprints_md = render_blueprint_catalog(blueprint_summary)
-            atomic_write(schema_dir / "blueprints.md", blueprints_md)
+            write_schema_file(schema_dir / "blueprints.md", blueprints_md)
             result["generated"]["blueprints"] = str(schema_dir / "blueprints.md")
 
             domain_file = project_root / ".cortex" / "domains" / "blueprints.md"
@@ -1030,7 +1061,7 @@ def generate_schema(
         try:
             level_summary = collect_level_domain(connection)
             level_md = render_level_catalog(level_summary)
-            atomic_write(schema_dir / "level.md", level_md)
+            write_schema_file(schema_dir / "level.md", level_md)
             result["generated"]["level"] = str(schema_dir / "level.md")
         except (ConnectionError, RuntimeError) as e:
             logger.error("Failed to generate level schema: %s", e)
@@ -1049,8 +1080,16 @@ def generate_schema(
         engine_version=engine_version,
         plugin_version=plugin_version,
     )
-    atomic_write(schema_dir / "_catalog.md", catalog_md)
+    write_schema_file(schema_dir / "_catalog.md", catalog_md)
     result["generated"]["_catalog"] = str(schema_dir / "_catalog.md")
+
+    metadata = read_schema_metadata(schema_dir)
+    file_timestamps = metadata["files"]
+    generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    for path in written_schema_files:
+        relative_path = path.relative_to(schema_dir).as_posix()
+        file_timestamps[relative_path] = generated_at
+    write_schema_metadata(schema_dir, metadata)
 
     result["elapsed_seconds"] = round(time.perf_counter() - _start_time, 2)
     return result
