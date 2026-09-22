@@ -55,6 +55,7 @@ static TSharedPtr<FJsonObject> BaseRequest(UBlueprint* Blueprint)
 	Request->SetBoolField(TEXT("dry_run"), true);
 	Request->SetBoolField(TEXT("compile"), true);
 	Request->SetBoolField(TEXT("save"), false);
+	Request->SetBoolField(TEXT("allow_noop"), true);
 	return Request;
 }
 }
@@ -205,6 +206,63 @@ bool FCortexGraphPatchPreflightEnvelopeCasesTest::RunTest(const FString& Paramet
 	Request->SetArrayField(TEXT("nodes"), OversizeNodes);
 	TestFalse(TEXT("oversize node request rejected"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
 	TestEqual(TEXT("oversize node code"), Error.ErrorCode, CortexErrorCodes::LimitExceeded);
+
+	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchPreflightEligibilityTest,
+	"Cortex.Graph.Authoring.Preflight.EligibilityAndBudget",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchPreflightEligibilityTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchPreflightTest::MakeBlueprint(Package, TEXT("BP_PatchPreflightEligibility_T06"));
+	TestNotNull(TEXT("fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	FCortexGraphPreparedPatch Prepared;
+	FCortexCommandResult Error;
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	Request->SetBoolField(TEXT("allow_noop"), false);
+	TArray<TSharedPtr<FJsonValue>> Empty;
+	Request->SetArrayField(TEXT("nodes"), Empty);
+	Request->SetArrayField(TEXT("connections"), Empty);
+	TestFalse(TEXT("empty graph patch is rejected as meaningless"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("empty graph patch error"), Error.ErrorCode, CortexErrorCodes::InvalidOperation);
+
+	Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	TSharedPtr<FJsonObject> Node = MakeShared<FJsonObject>();
+	Node->SetStringField(TEXT("client_id"), TEXT("self"));
+	Node->SetStringField(TEXT("node_class"), TEXT("Self"));
+	TSharedPtr<FJsonObject> TypoParams = MakeShared<FJsonObject>();
+	TypoParams->SetStringField(TEXT("typo_param"), TEXT("must-reject"));
+	Node->SetObjectField(TEXT("params"), TypoParams);
+	TArray<TSharedPtr<FJsonValue>> Nodes;
+	Nodes.Add(MakeShared<FJsonValueObject>(Node));
+	Request->SetArrayField(TEXT("nodes"), Nodes);
+	TestFalse(TEXT("unknown node construction parameter is rejected"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("unknown node parameter error"), Error.ErrorCode, CortexErrorCodes::InvalidField);
+
+	Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	TSharedPtr<FJsonObject> Target = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> Implementation = MakeShared<FJsonObject>();
+	Implementation->SetStringField(TEXT("owner_class"), TEXT("/Script/Engine.GameMode"));
+	Implementation->SetStringField(TEXT("function_name"), TEXT("ReadyToStartMatch"));
+	Target->SetObjectField(TEXT("implementation"), Implementation);
+	Request->SetObjectField(TEXT("target"), Target);
+	TestFalse(TEXT("implementation from unrelated owner is rejected"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("unrelated implementation error"), Error.ErrorCode, CortexErrorCodes::InvalidOperation);
+
+	Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	FString LargeUtf8;
+	for (int32 Index = 0; Index < 24000; ++Index) LargeUtf8 += TEXT("\u20AC");
+	Request->SetStringField(TEXT("oversize_unknown"), LargeUtf8);
+	TestFalse(TEXT("UTF-8 request byte budget is enforced"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("UTF-8 request budget error"), Error.ErrorCode, CortexErrorCodes::LimitExceeded);
 
 	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
 	return true;

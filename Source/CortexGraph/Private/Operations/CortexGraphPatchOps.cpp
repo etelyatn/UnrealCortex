@@ -21,6 +21,9 @@
 #include "EdGraphSchema_K2.h"
 #include "UObject/UnrealType.h"
 #include "K2Node_Composite.h"
+#include "K2Node_Event.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_CustomEvent.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/Char.h"
 #include "Misc/Guid.h"
@@ -174,6 +177,51 @@ FString CanonicalObject(const TSharedPtr<FJsonObject>& Object)
 	AppendCanonicalObject(Object, Result);
 	return Result;
 }
+void AddPropertyTypeIdentity(const FProperty* Property, const TSharedPtr<FJsonObject>& Out)
+{
+	if (!Property || !Out.IsValid()) return;
+	Out->SetStringField(TEXT("cpp_type"), Property->GetCPPType());
+	Out->SetStringField(TEXT("property_class"), Property->GetClass()->GetName());
+	if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+	{
+		Out->SetStringField(TEXT("object_class"), ObjectProperty->PropertyClass ? ObjectProperty->PropertyClass->GetPathName() : FString());
+	}
+	if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	{
+		Out->SetStringField(TEXT("struct"), StructProperty->Struct ? StructProperty->Struct->GetPathName() : FString());
+	}
+	if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+	{
+		Out->SetStringField(TEXT("enum"), EnumProperty->GetEnum() ? EnumProperty->GetEnum()->GetPathName() : FString());
+		AddPropertyTypeIdentity(EnumProperty->GetUnderlyingProperty(), Out);
+	}
+	if (const FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
+	{
+		Out->SetStringField(TEXT("enum"), ByteProperty->Enum ? ByteProperty->Enum->GetPathName() : FString());
+	}
+	if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+	{
+		TSharedPtr<FJsonObject> Inner = MakeShared<FJsonObject>();
+		AddPropertyTypeIdentity(ArrayProperty->Inner, Inner);
+		Out->SetObjectField(TEXT("inner"), Inner);
+	}
+	if (const FSetProperty* SetProperty = CastField<FSetProperty>(Property))
+	{
+		TSharedPtr<FJsonObject> Element = MakeShared<FJsonObject>();
+		AddPropertyTypeIdentity(SetProperty->ElementProp, Element);
+		Out->SetObjectField(TEXT("element"), Element);
+	}
+	if (const FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+	{
+		TSharedPtr<FJsonObject> Key = MakeShared<FJsonObject>();
+		TSharedPtr<FJsonObject> Value = MakeShared<FJsonObject>();
+		AddPropertyTypeIdentity(MapProperty->KeyProp, Key);
+		AddPropertyTypeIdentity(MapProperty->ValueProp, Value);
+		Out->SetObjectField(TEXT("key"), Key);
+		Out->SetObjectField(TEXT("value"), Value);
+	}
+}
+
 void AddFunctionSignature(UFunction* Function, const TSharedPtr<FJsonObject>& Out)
 {
 	if (!Function || !Out.IsValid()) return;
@@ -186,9 +234,9 @@ void AddFunctionSignature(UFunction* Function, const TSharedPtr<FJsonObject>& Ou
 		if (!Property || !Property->HasAnyPropertyFlags(CPF_Parm)) continue;
 		TSharedPtr<FJsonObject> Parameter = MakeShared<FJsonObject>();
 		Parameter->SetStringField(TEXT("name"), Property->GetName());
-		Parameter->SetStringField(TEXT("class"), Property->GetClass()->GetName());
 		Parameter->SetNumberField(TEXT("flags"), static_cast<double>(Property->PropertyFlags));
 		Parameter->SetNumberField(TEXT("array_dim"), Property->ArrayDim);
+		AddPropertyTypeIdentity(Property, Parameter);
 		Parameters.Add(MakeShared<FJsonValueObject>(Parameter));
 	}
 	Out->SetArrayField(TEXT("signature_parameters"), Parameters);
@@ -231,6 +279,32 @@ bool ResolveGraphByGuid(UBlueprint* Blueprint, const FGuid& GraphGuid, const FSt
 		FString::Printf(TEXT("Graph with GUID %s not found"), *GraphGuid.ToString()));
 	return false;
 }
+bool CountGraphNodesBounded(UEdGraph* Graph, int32& InOutCount, TSet<const UEdGraph*>& Visited)
+{
+	if (!Graph || Visited.Contains(Graph)) return true;
+	Visited.Add(Graph);
+	InOutCount += Graph->Nodes.Num();
+	if (InOutCount > MaxScannedNodes) return false;
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		const UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node);
+		if (Composite && !CountGraphNodesBounded(Composite->BoundGraph, InOutCount, Visited)) return false;
+	}
+	return true;
+}
+
+bool CountBlueprintNodesBounded(UBlueprint* Blueprint)
+{
+	TArray<FCortexGraphEntry> Entries;
+	FCortexGraphNodeOps::EnumerateUserGraphs(Blueprint, Entries);
+	TSet<const UEdGraph*> Visited;
+	int32 Count = 0;
+	for (const FCortexGraphEntry& Entry : Entries)
+	{
+		if (!CountGraphNodesBounded(Entry.Graph, Count, Visited)) return false;
+	}
+	return true;
+}
 
 bool ParseTarget(
 	UBlueprint* Blueprint,
@@ -238,8 +312,10 @@ bool ParseTarget(
 	TSharedPtr<FJsonObject>& OutTarget,
 	UEdGraph*& OutGraph,
 	TSharedPtr<FJsonObject>& OutSymbolJson,
+	bool& OutImplementationWouldCreate,
 	FCortexCommandResult& OutError)
 {
+	OutImplementationWouldCreate = false;
 	const TSharedPtr<FJsonObject>* TargetPtr = nullptr;
 	if (!Request->TryGetObjectField(TEXT("target"), TargetPtr) || !TargetPtr || !TargetPtr->IsValid())
 	{
@@ -306,30 +382,96 @@ bool ParseTarget(
 	const TSharedPtr<FJsonObject>& Selector = *ImplementationPtr;
 	if (!HasOnlyFields(Selector, { TEXT("owner_class"), TEXT("function_name"), TEXT("call_kind") }, OutError, TEXT("target.implementation"))) return false;
 	FString FunctionName;
-	if (!ReadRequiredString(Selector, TEXT("function_name"), FunctionName, OutError)) return false;
 	FCortexResolvedSymbol Symbol;
 	if (!FCortexGraphSymbolResolver::ResolveFunction(Blueprint, Selector, Symbol, OutError)) return false;
+	if (!ReadRequiredString(Selector, TEXT("function_name"), FunctionName, OutError)) return false;
 	if (!Symbol.Function || !Symbol.Function->HasAnyFunctionFlags(FUNC_BlueprintEvent) || Symbol.Function->HasAnyFunctionFlags(FUNC_Final))
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Implementation target is not an overridable Blueprint event"));
 		return false;
 	}
+	UClass* SelfClass = Blueprint ? (Blueprint->GeneratedClass ? Blueprint->GeneratedClass : Blueprint->SkeletonGeneratedClass) : nullptr;
+	UClass* DeclaringClass = Symbol.Function->GetOwnerClass();
+	if (!SelfClass || !DeclaringClass || SelfClass == DeclaringClass || !SelfClass->IsChildOf(DeclaringClass))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Implementation target is not an inherited member of the Blueprint"));
+		return false;
+	}
+	if (Symbol.CallKind == ECortexCallKind::Parent && !Symbol.Function->HasAnyFunctionFlags(FUNC_Native))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Explicit parent implementation requires a native event"));
+		return false;
+	}
+	for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
+	{
+		if (!UberGraph) continue;
+		for (UEdGraphNode* Node : UberGraph->Nodes)
+		{
+			if (const UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
+			{
+				if (CustomEvent->CustomFunctionName == Symbol.Function->GetFName())
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::FunctionExists, TEXT("A custom event with the implementation name already exists"));
+					return false;
+				}
+			}
+		}
+	}
+	OutImplementationWouldCreate = true;
+	if (UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Symbol.Function))
+	{
+		for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
+		{
+			if (!UberGraph) continue;
+			for (UEdGraphNode* Node : UberGraph->Nodes)
+			{
+				const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
+				if (EventNode && EventNode->EventReference.GetMemberName() == Symbol.Function->GetFName()
+					&& EventNode->EventReference.GetMemberParentClass() == DeclaringClass)
+				{
+					OutImplementationWouldCreate = false;
+				}
+			}
+		}
+	}
+	else
+	{
+		for (UEdGraph* FunctionGraph : Blueprint->FunctionGraphs)
+		{
+			if (FunctionGraph && FunctionGraph->GetFName() == Symbol.Function->GetFName())
+			{
+				OutImplementationWouldCreate = false;
+			}
+		}
+	}
 	OutSymbolJson = Symbol.ToJson();
 	AddFunctionSignature(Symbol.Function, OutSymbolJson);
 	return true;
 }
-
-bool ParseEndpoint(const TSharedPtr<FJsonObject>& Endpoint, FString& OutIdentity, FString& OutPin, FCortexCommandResult& OutError, const FString& Context)
+bool ParseEndpoint(const TSharedPtr<FJsonObject>& Endpoint, FString& OutIdentity, FString& OutPin, bool& OutEntry, FCortexCommandResult& OutError, const FString& Context)
 {
-	if (!Endpoint.IsValid() || !HasOnlyFields(Endpoint, { TEXT("client_id"), TEXT("node_guid"), TEXT("pin") }, OutError, Context)) return false;
+	OutEntry = false;
+	if (!Endpoint.IsValid() || !HasOnlyFields(Endpoint, { TEXT("client_id"), TEXT("node_guid"), TEXT("entry"), TEXT("pin") }, OutError, Context)) return false;
 	const bool bClient = Endpoint->HasField(TEXT("client_id"));
 	const bool bGuid = Endpoint->HasField(TEXT("node_guid"));
-	if (bClient == bGuid)
+	const bool bEntry = Endpoint->HasField(TEXT("entry"));
+	if (static_cast<int32>(bClient) + static_cast<int32>(bGuid) + static_cast<int32>(bEntry) != 1)
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s requires exactly one endpoint identity"), *Context));
 		return false;
 	}
-	if (bClient)
+	if (bEntry)
+	{
+		bool EntryValue = false;
+		if (!Endpoint->TryGetBoolField(TEXT("entry"), EntryValue) || !EntryValue)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s.entry must be true"), *Context));
+			return false;
+		}
+		OutEntry = true;
+		OutIdentity = TEXT("entry");
+	}
+	else if (bClient)
 	{
 		if (!ReadRequiredString(Endpoint, TEXT("client_id"), OutIdentity, OutError) || !IsAsciiClientId(OutIdentity))
 		{
@@ -431,6 +573,42 @@ bool AddNormalizedNode(const TSharedPtr<FJsonObject>& Node, TSharedPtr<FJsonObje
 	}
 	return true;
 }
+bool ValidateConstructionParamShape(const FString& NodeClass, const TSharedPtr<FJsonObject>& Params, FCortexCommandResult& OutError)
+{
+	if (!Params.IsValid()) return true;
+	const FCortexNodeConstructionContract Contract = FCortexGraphNodeContract::Describe(NodeClass);
+	TSet<FString> Allowed;
+	for (const FCortexNodeConstructionParam& Param : Contract.RequiredParams) Allowed.Add(Param.Name);
+	for (const FCortexNodeConstructionParam& Param : Contract.OptionalParams) Allowed.Add(Param.Name);
+	for (const FString& Selector : Contract.Selectors) Allowed.Add(Selector);
+	FName FamilyName;
+	UClass* ResolvedClass = nullptr;
+	FCortexGraphNodeContract::ResolveFamily(NodeClass, FamilyName, ResolvedClass);
+	const FString Family = FamilyName.ToString();
+	if (Family == TEXT("DynamicCast"))
+	{
+		Allowed.Add(TEXT("target_class"));
+		Allowed.Add(TEXT("is_pure"));
+		Allowed.Add(TEXT("pure"));
+		Allowed.Add(TEXT("bIsPureCast"));
+	}
+	for (const auto& Pair : Params->Values)
+	{
+		const FString Name = CortexEngineCompat::JsonKeyToString(Pair.Key);
+		if (!Allowed.Contains(Name))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("Unknown construction parameter '%s' for node class '%s'"), *Name, *NodeClass));
+			return false;
+		}
+	}
+	if (Family == TEXT("CallFunction") && Params->HasField(TEXT("function_name")) && Params->HasField(TEXT("member")))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Conflicting function selector fields"));
+		return false;
+	}
+	return true;
+}
 
 bool ValidateTaggedDefaults(const TSharedPtr<FJsonObject>& Defaults, UEdGraphNode* Node, TSet<FString>& OutDefaultPins, FCortexCommandResult& OutError)
 {
@@ -507,12 +685,14 @@ bool FCortexGraphPatchOps::Preflight(
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Params object is required"));
 		return false;
 	}
-	if (CanonicalObject(Params).Len() > MaxRequestSize)
+	const FString CanonicalRequest = CanonicalObject(Params);
+	FTCHARToUTF8 RequestUtf8(*CanonicalRequest);
+	if (RequestUtf8.Length() > MaxRequestSize)
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("normalized request exceeds max_request_size_bytes=65536"));
 		return false;
 	}
-	if (!HasOnlyFields(Params, { TEXT("asset_path"), TEXT("target"), TEXT("patch_id"), TEXT("expected_fingerprint"), TEXT("nodes"), TEXT("connections"), TEXT("pin_updates"), TEXT("dry_run"), TEXT("compile"), TEXT("save"), TEXT("expected_validation_hash") }, OutError, TEXT("patch request"))) return false;
+	if (!HasOnlyFields(Params, { TEXT("asset_path"), TEXT("target"), TEXT("patch_id"), TEXT("expected_fingerprint"), TEXT("nodes"), TEXT("connections"), TEXT("pin_updates"), TEXT("dry_run"), TEXT("compile"), TEXT("save"), TEXT("allow_noop"), TEXT("expected_validation_hash") }, OutError, TEXT("patch request"))) return false;
 	FString AssetPath;
 	if (!ReadRequiredString(Params, TEXT("asset_path"), AssetPath, OutError) || AssetPath != Blueprint->GetPathName())
 	{
@@ -528,8 +708,8 @@ bool FCortexGraphPatchOps::Preflight(
 	if (!ParseGuidField(Params, TEXT("patch_id"), PatchGuid, OutError)) return false;
 	OutPrepared.PatchId = PatchGuid.ToString(EGuidFormats::DigitsWithHyphensInBraces);
 
-	bool bDryRun = true, bCompile = true, bSave = false;
-	if (!ReadStrictBool(Params, TEXT("dry_run"), true, bDryRun, OutError) || !ReadStrictBool(Params, TEXT("compile"), true, bCompile, OutError) || !ReadStrictBool(Params, TEXT("save"), false, bSave, OutError)) return false;
+	bool bDryRun = true, bCompile = true, bSave = false, bAllowNoop = false;
+	if (!ReadStrictBool(Params, TEXT("dry_run"), true, bDryRun, OutError) || !ReadStrictBool(Params, TEXT("compile"), true, bCompile, OutError) || !ReadStrictBool(Params, TEXT("save"), false, bSave, OutError) || !ReadStrictBool(Params, TEXT("allow_noop"), false, bAllowNoop, OutError)) return false;
 	OutPrepared.bDryRun = bDryRun;
 	OutPrepared.bCompile = bCompile;
 	OutPrepared.bSave = bSave;
@@ -575,7 +755,13 @@ bool FCortexGraphPatchOps::Preflight(
 	TSharedPtr<FJsonObject> Target;
 	UEdGraph* TargetGraph = nullptr;
 	TSharedPtr<FJsonObject> SymbolJson;
-	if (!ParseTarget(Blueprint, Params, Target, TargetGraph, SymbolJson, OutError)) return false;
+	bool bImplementationWouldCreate = false;
+	if (!CountBlueprintNodesBounded(Blueprint))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("graph scan exceeds max_scanned_nodes=2048"));
+		return false;
+	}
+	if (!ParseTarget(Blueprint, Params, Target, TargetGraph, SymbolJson, bImplementationWouldCreate, OutError)) return false;
 	if (TargetGraph)
 	{
 		const TSharedPtr<FJsonObject>* RefPtr = nullptr;
@@ -621,13 +807,27 @@ bool FCortexGraphPatchOps::Preflight(
 	TSet<FString> ClientIds;
 	TMap<FString, UEdGraphNode*> PlannedNodes;
 	TMap<FString, TSet<FString>> DefaultPins;
-	UEdGraph* PlanningGraph = NewObject<UEdGraph>(GetTransientPackage(), NAME_None, RF_Transient);
+	UEdGraph* PlanningGraph = NewObject<UEdGraph>(Blueprint, NAME_None, RF_Transient);
 	PlanningGraph->Schema = UEdGraphSchema_K2::StaticClass();
-	int32 ScannedNodes = TargetGraph ? TargetGraph->Nodes.Num() : 0;
-	if (ScannedNodes > MaxScannedNodes)
+	const bool bImplementationTarget = Target->HasField(TEXT("implementation"));
+	if (bImplementationTarget)
 	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("graph scan exceeds max_scanned_nodes=2048"));
-		return false;
+		const TSharedPtr<FJsonObject>* SelectorPtr = nullptr;
+		Target->TryGetObjectField(TEXT("implementation"), SelectorPtr);
+		FCortexResolvedSymbol EntrySymbol;
+		if (!SelectorPtr || !SelectorPtr->IsValid() || !FCortexGraphSymbolResolver::ResolveFunction(Blueprint, *SelectorPtr, EntrySymbol, OutError))
+		{
+			return false;
+		}
+		GetDefault<UEdGraphSchema_K2>()->CreateFunctionGraphTerminators(*PlanningGraph, EntrySymbol.Function);
+		for (UEdGraphNode* Node : PlanningGraph->Nodes)
+		{
+			if (Cast<UK2Node_FunctionEntry>(Node))
+			{
+				PlannedNodes.Add(TEXT("entry"), Node);
+				break;
+			}
+		}
 	}
 
 	for (int32 Index = 0; Index < Nodes->Num(); ++Index)
@@ -658,6 +858,7 @@ bool FCortexGraphPatchOps::Preflight(
 		const TSharedPtr<FJsonObject>* ParamsPtr = nullptr;
 		TSharedPtr<FJsonObject> NodeParams = MakeShared<FJsonObject>();
 		if (NormalizedNode->TryGetObjectField(TEXT("params"), ParamsPtr) && ParamsPtr && ParamsPtr->IsValid()) NodeParams = *ParamsPtr;
+		if (!ValidateConstructionParamShape(NodeClass, NodeParams, OutError)) return false;
 		if (!FCortexGraphNodeContract::Validate(NodeClass, Blueprint, NodeParams, OutError)) return false;
 		UEdGraphNode* PlannedNode = NewObject<UEdGraphNode>(PlanningGraph, ResolvedNodeClass, NAME_None, RF_Transient);
 		PlannedNode->CreateNewGuid();
@@ -757,10 +958,17 @@ bool FCortexGraphPatchOps::Preflight(
 			return false;
 		}
 		FString FromId, FromPinName, ToId, ToPinName;
-		if (!ParseEndpoint(*FromPtr, FromId, FromPinName, OutError, TEXT("connection.from")) || !ParseEndpoint(*ToPtr, ToId, ToPinName, OutError, TEXT("connection.to"))) return false;
+		bool bFromEntry = false;
+		bool bToEntry = false;
+		if (!ParseEndpoint(*FromPtr, FromId, FromPinName, bFromEntry, OutError, TEXT("connection.from")) || !ParseEndpoint(*ToPtr, ToId, ToPinName, bToEntry, OutError, TEXT("connection.to"))) return false;
 		if (FromId != FromId.TrimStartAndEnd() || ToId != ToId.TrimStartAndEnd())
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("connection endpoint identity cannot contain whitespace"));
+			return false;
+		}
+		if ((bFromEntry || bToEntry) && !bImplementationTarget)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("entry endpoints require an implementation target"));
 			return false;
 		}
 		if ((*FromPtr)->HasField(TEXT("client_id")) && !ClientIds.Contains(FromId))
@@ -787,11 +995,6 @@ bool FCortexGraphPatchOps::Preflight(
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, FString::Printf(TEXT("Input '%s' has competing connection/default"), *InputKey));
 			return false;
 		}
-		if (TargetPin->LinkedTo.Num() > 0)
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, FString::Printf(TEXT("Input '%s' already has a connection"), *InputKey));
-			return false;
-		}
 		const UEdGraphSchema* Schema = PlanningGraph->GetSchema();
 		if (Schema)
 		{
@@ -812,9 +1015,14 @@ bool FCortexGraphPatchOps::Preflight(
 	}
 	Normalized->SetArrayField(TEXT("connections"), NormalizedConnections);
 	Normalized->SetBoolField(TEXT("compile"), bCompile);
-	Normalized->SetObjectField(TEXT("resolved_symbol"), SymbolJson.IsValid() ? SymbolJson : MakeShared<FJsonObject>());
+	Normalized->SetBoolField(TEXT("allow_noop"), bAllowNoop);
 	OutPrepared.NormalizedRequest = Normalized;
-	OutPrepared.bChanged = Nodes->Num() > 0 || Connections->Num() > 0;
+	OutPrepared.bChanged = Nodes->Num() > 0 || Connections->Num() > 0 || (PinUpdates && PinUpdates->Num() > 0) || bImplementationWouldCreate;
+	if (TargetGraph && !OutPrepared.bChanged && !bAllowNoop)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("graph patch has no prospective change; set allow_noop=true for an idempotent request"));
+		return false;
+	}
 
 	FString Intent;
 	Intent += TEXT("graph_patch_v1|");
