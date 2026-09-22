@@ -298,7 +298,9 @@
         "asset_path",
         "subgraph_path",
         "graph_kind",
-        "owning_interface"
+        "owning_interface",
+        "expected_fingerprint",
+        "patch"
       ]
     },
     "level_compose": {
