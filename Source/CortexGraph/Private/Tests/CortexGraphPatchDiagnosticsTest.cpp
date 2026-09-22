@@ -94,4 +94,42 @@ bool FCortexGraphPatchDiagnosticsAggregateTest::RunTest(const FString& Parameter
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// A pre-existing omission marker is never dropped: a truncated set stays truncated
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchDiagnosticsMarkerTest,
+	"Cortex.Graph.Authoring.Diagnostics.OmissionMarker",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchDiagnosticsMarkerTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FString Marker = TEXT("additional compiler diagnostics omitted");
+
+	// (a) a small set that already carries one marker keeps it
+	TArray<FString> Small;
+	Small.Add(TEXT("target diagnostic 0"));
+	Small.Add(Marker);
+	Small.Add(TEXT("target diagnostic 1"));
+	FCortexGraphPatchOps::TrimDiagnostics(Small);
+	TestEqual(TEXT("a small set keeps every entry"), Small.Num(), 3);
+	TestTrue(TEXT("a small set keeps its omission marker"),
+		Small.Contains(Marker));
+
+	// (b) a set that exactly fills the bound with its marker keeps the marker
+	TArray<FString> ExactCapacity;
+	for (int32 Index = 0; Index < CortexGraphPatchDiagnosticsTest::BoundEntryCount - 2; ++Index)
+	{
+		ExactCapacity.Add(FString::Printf(TEXT("target diagnostic %d"), Index));
+	}
+	ExactCapacity.Add(Marker);
+	FCortexGraphPatchOps::TrimDiagnostics(ExactCapacity);
+	TestEqual(TEXT("a set at the bound keeps its entry count"), ExactCapacity.Num(),
+		CortexGraphPatchDiagnosticsTest::BoundEntryCount - 1);
+	TestTrue(TEXT("a set at the bound keeps its omission marker"),
+		ExactCapacity.Contains(Marker));
+	return true;
+}
+
 #endif

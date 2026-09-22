@@ -23,7 +23,10 @@
 #include "K2Node_Event.h"
 #include "K2Node_CreateDelegate.h"
 #include "K2Node_DynamicCast.h"
+#include "K2Node_EditablePinBase.h"
+#include "K2Node_MacroInstance.h"
 #include "K2Node_SwitchEnum.h"
+#include "K2Node_Tunnel.h"
 #include "Kismet/KismetStringLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/KismetTextLibrary.h"
@@ -180,6 +183,29 @@ static TNodeType* FindNode(UBlueprint* Blueprint)
 		}
 	}
 	return nullptr;
+}
+
+/**
+ * Creates a real macro graph on a Blueprint the way the editor does (engine-created entry/exit
+ * tunnels plus one data parameter), so a MacroInstance built from it carries engine-derived pins.
+ */
+static UEdGraph* AddMacroGraph(UBlueprint* Blueprint, const TCHAR* MacroName, const TCHAR* ParameterName)
+{
+	if (!Blueprint) return nullptr;
+	UEdGraph* MacroGraph = FBlueprintEditorUtils::CreateNewGraph(
+		Blueprint, FName(MacroName), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	if (!MacroGraph) return nullptr;
+	FBlueprintEditorUtils::AddMacroGraph(Blueprint, MacroGraph, true, nullptr);
+	for (UEdGraphNode* Node : MacroGraph->Nodes)
+	{
+		UK2Node_Tunnel* Tunnel = Cast<UK2Node_Tunnel>(Node);
+		if (!Tunnel || Tunnel->GetClass() != UK2Node_Tunnel::StaticClass() || !Tunnel->bCanHaveOutputs) continue;
+		FEdGraphPinType PinType;
+		PinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
+		Tunnel->CreateUserDefinedPin(FName(ParameterName), PinType, EGPD_Output);
+		break;
+	}
+	return MacroGraph;
 }
 
 /** Runs one patch whose native state is mutated before readback and expects verified recovery. */
@@ -808,6 +834,138 @@ bool FCortexGraphPatchReadbackRecoveryDirtyStateTest::RunTest(const FString& Par
 		}
 	}
 
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 11. A macro instance's short-name selector is canonicalized the way apply resolves it
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchReadbackMacroInstanceTest,
+	"Cortex.Graph.Authoring.Readback.MacroInstanceShortName",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchReadbackMacroInstanceTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// (a) the macro graph's short name is a selector that apply accepts, so readback must accept it too
+	{
+		UPackage* Package = nullptr;
+		UBlueprint* Blueprint = CortexGraphPatchReadbackTest::MakeBlueprint(Package, TEXT("BP_ReadbackMacro_T08"));
+		TestNotNull(TEXT("macro fixture Blueprint created"), Blueprint);
+		if (Blueprint)
+		{
+			UEdGraph* MacroGraph = CortexGraphPatchReadbackTest::AddMacroGraph(
+				Blueprint, TEXT("Macro_Readback_T08"), TEXT("Amount"));
+			TestNotNull(TEXT("macro graph fixture created"), MacroGraph);
+
+			TSharedPtr<FJsonObject> Request = CortexGraphPatchReadbackTest::BaseRequest(
+				Blueprint, TEXT("00000000-0000-0000-0000-00000000db01"));
+			TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+			Params->SetStringField(TEXT("macro_path"), TEXT("Macro_Readback_T08"));
+			CortexGraphPatchReadbackTest::AddNode(Request, TEXT("macro"), TEXT("MacroInstance"), Params, nullptr);
+
+			FCortexCommandResult Error;
+			TestTrue(FString::Printf(TEXT("short-name macro preview succeeds: %s"), *Error.ErrorMessage),
+				CortexGraphPatchReadbackTest::PrepareForApply(Blueprint, Request, Error));
+			FCortexGraphPatchOutcome Outcome;
+			const bool bExecuted = FCortexGraphPatchOps::Execute(Blueprint, Request, Outcome, Error);
+			TestTrue(FString::Printf(TEXT("short-name macro patch applies and verifies [%s]"), *Error.ErrorMessage), bExecuted);
+			TestEqual(TEXT("short-name macro readback is authoritative"),
+				Outcome.ReadbackStatus, FString(TEXT("matched")));
+			TestEqual(TEXT("short-name macro leaves no rollback"),
+				Outcome.RollbackStatus, FString(TEXT("not_requested")));
+
+			UK2Node_MacroInstance* Macro = CortexGraphPatchReadbackTest::FindNode<UK2Node_MacroInstance>(Blueprint);
+			TestTrue(TEXT("the applied node is bound to the requested macro graph"),
+				Macro != nullptr && Macro->GetMacroGraph() == MacroGraph);
+			TestNotNull(TEXT("the macro instance carries the macro's parameter pin"),
+				Macro ? Macro->FindPin(TEXT("Amount")) : nullptr);
+			CortexGraphPatchReadbackTest::Cleanup(Package, Blueprint);
+		}
+	}
+
+	// (b) another Blueprint's macro graph with the same short name is not the requested macro
+	{
+		UPackage* Package = nullptr;
+		UBlueprint* Blueprint = CortexGraphPatchReadbackTest::MakeBlueprint(Package, TEXT("BP_ReadbackMacroTarget_T08"));
+		UPackage* OtherPackage = nullptr;
+		UBlueprint* OtherBlueprint = CortexGraphPatchReadbackTest::MakeBlueprint(OtherPackage, TEXT("BP_ReadbackMacroOther_T08"));
+		TestNotNull(TEXT("same-name macro target Blueprint created"), Blueprint);
+		TestNotNull(TEXT("same-name macro foreign Blueprint created"), OtherBlueprint);
+		if (Blueprint && OtherBlueprint)
+		{
+			UEdGraph* MacroGraph = CortexGraphPatchReadbackTest::AddMacroGraph(
+				Blueprint, TEXT("Macro_ReadbackSame_T08"), TEXT("Amount"));
+			UEdGraph* ForeignMacro = CortexGraphPatchReadbackTest::AddMacroGraph(
+				OtherBlueprint, TEXT("Macro_ReadbackSame_T08"), TEXT("Amount"));
+			TestNotNull(TEXT("same-name macro graph created"), MacroGraph);
+			TestNotNull(TEXT("foreign same-name macro graph created"), ForeignMacro);
+
+			TSharedPtr<FJsonObject> Request = CortexGraphPatchReadbackTest::BaseRequest(
+				Blueprint, TEXT("00000000-0000-0000-0000-00000000db02"));
+			TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+			Params->SetStringField(TEXT("macro_path"), TEXT("Macro_ReadbackSame_T08"));
+			CortexGraphPatchReadbackTest::AddNode(Request, TEXT("macro"), TEXT("MacroInstance"), Params, nullptr);
+
+			CortexGraphPatchReadbackTest::ExpectDivergenceRecovered(
+				*this, Blueprint, TEXT("same-name foreign macro"), Request,
+				[ForeignMacro](UBlueprint* Mutated)
+				{
+					if (UK2Node_MacroInstance* Macro = CortexGraphPatchReadbackTest::FindNode<UK2Node_MacroInstance>(Mutated))
+					{
+						Macro->SetMacroGraph(ForeignMacro);
+					}
+				},
+				TEXT("symbol mismatch"));
+			CortexGraphPatchReadbackTest::Cleanup(Package, Blueprint);
+			CortexGraphPatchReadbackTest::Cleanup(OtherPackage, OtherBlueprint);
+		}
+		else
+		{
+			if (Blueprint) CortexGraphPatchReadbackTest::Cleanup(Package, Blueprint);
+			if (OtherBlueprint) CortexGraphPatchReadbackTest::Cleanup(OtherPackage, OtherBlueprint);
+		}
+	}
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 12. An unexpected extra native pin on an applied node is a readback failure
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchReadbackUnexpectedPinTest,
+	"Cortex.Graph.Authoring.Readback.UnexpectedNativePin",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchReadbackUnexpectedPinTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchReadbackTest::MakeBlueprint(Package, TEXT("BP_ReadbackUnexpectedPin_T08"));
+	TestNotNull(TEXT("unexpected pin fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchReadbackTest::BaseRequest(
+		Blueprint, TEXT("00000000-0000-0000-0000-00000000dc01"));
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("function_name"), TEXT("KismetSystemLibrary.PrintString"));
+	CortexGraphPatchReadbackTest::AddNode(Request, TEXT("note"), TEXT("CallFunction"), Params, nullptr);
+
+	CortexGraphPatchReadbackTest::ExpectDivergenceRecovered(
+		*this, Blueprint, TEXT("unexpected native pin"), Request,
+		[](UBlueprint* Mutated)
+		{
+			UK2Node_CallFunction* Call = CortexGraphPatchReadbackTest::FindCallNode(Mutated, TEXT("PrintString"));
+			if (Call)
+			{
+				Call->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Boolean, FName(TEXT("UnexpectedExtraPin")));
+			}
+		},
+		TEXT("unexpected native pin"));
+	CortexGraphPatchReadbackTest::Cleanup(Package, Blueprint);
 	return true;
 }
 

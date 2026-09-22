@@ -2016,8 +2016,16 @@ bool CompareNodeSymbol(
 		FString MacroPath;
 		if (!Params.IsValid() || !Params->TryGetStringField(TEXT("macro_path"), MacroPath) || MacroPath.IsEmpty()) return true;
 		// macro_path is presence-validated only, so a node without the requested macro graph is not
-		// the requested node: report the mismatch instead of a false match.
-		OutExpected = MacroPath;
+		// the requested node: report the mismatch instead of a false match. Apply resolves the
+		// selector through ResolveMacroGraph (macro graph short name or full graph path), so the
+		// expectation is canonicalized through the same resolution or a valid selector never matches.
+		const UEdGraph* RequestedGraph = FCortexGraphNodeContract::ResolveMacroGraph(Blueprint, MacroPath);
+		if (!RequestedGraph)
+		{
+			OutFailure = FString::Printf(TEXT("planned macro selector no longer resolves: %s"), *MacroPath);
+			return false;
+		}
+		OutExpected = RequestedGraph->GetPathName();
 		OutActual = Macro->GetMacroGraph() ? Macro->GetMacroGraph()->GetPathName() : FString(TEXT("none"));
 		return true;
 	}
@@ -2100,6 +2108,32 @@ bool ComparePlannedPinSignatures(
 		{
 			OutFailure = FString::Printf(TEXT("planned pin '%s' signature mismatch: expected '%s', found '%s'"),
 				*PinName, *Expected, *Actual);
+			return false;
+		}
+	}
+
+	// Every native pin must be a planned pin: an extra pin means the applied node is not the node
+	// the request planned, even when all planned pins still match. The planned snapshot is taken
+	// after the construction params ran, so no engine-added pin is expected here; an unexpected
+	// pin therefore fails closed instead of being ignored.
+	TSet<FString> PlannedPinNames;
+	PlannedPinNames.Reserve(Signatures->Num());
+	for (const TSharedPtr<FJsonValue>& Value : *Signatures)
+	{
+		const TSharedPtr<FJsonObject> Descriptor = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (Descriptor.IsValid())
+		{
+			PlannedPinNames.Add(Descriptor->GetStringField(TEXT("name")));
+		}
+	}
+	for (const UEdGraphPin* Pin : Live->Pins)
+	{
+		if (!Pin) continue;
+		const FString PinName = Pin->PinName.ToString();
+		if (!PlannedPinNames.Contains(PinName))
+		{
+			OutFailure = FString::Printf(TEXT("applied node has an unexpected native pin '%s' that the request never planned"),
+				*PinName);
 			return false;
 		}
 	}
@@ -2823,7 +2857,9 @@ void FCortexGraphPatchOps::TrimDiagnostics(TArray<FString>& InOutDiagnostics)
 			Diagnostic = Diagnostic.Left(512 - Elision.Len()) + Elision;
 		}
 	}
-	bool bTruncated = InOutDiagnostics.Remove(OmissionMarker) > 1;
+	// Any pre-existing marker means the set is already truncated: it must survive the trim even
+	// when the aggregate then fits, otherwise a truncated set is reported as complete.
+	bool bTruncated = InOutDiagnostics.Remove(OmissionMarker) > 0;
 	if (InOutDiagnostics.Num() > 16 - 1)
 	{
 		InOutDiagnostics.SetNum(16 - 1);

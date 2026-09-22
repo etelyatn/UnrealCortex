@@ -21,6 +21,7 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_GenericCreateObject.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Kismet/KismetStringLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/KismetTextLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -800,6 +801,141 @@ bool FCortexGraphPinDefaultSoftReferenceReadbackTest::RunTest(const FString& Par
 	}
 
 	SoftTarget.Reset();
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 7. A struct literal is refused before mutation instead of accepting then rolling back
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPinDefaultStructRefusalTest,
+	"Cortex.Graph.Authoring.Defaults.StructLiteralRefused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPinDefaultStructRefusalTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPinDefaultIdentityTest::MakeBlueprint(Package, TEXT("BP_PinDefaultStruct_T08"));
+	TestNotNull(TEXT("struct fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	UEdGraph* Graph = Blueprint->UbergraphPages[0];
+	UK2Node_CallFunction* Node = CortexGraphPinDefaultIdentityTest::MakeCallNode(
+		Graph, UKismetMathLibrary::StaticClass()->FindFunctionByName(TEXT("BreakVector")));
+	TestNotNull(TEXT("struct fixture node created"), Node);
+	UEdGraphPin* Pin = Node ? Node->FindPin(TEXT("InVec")) : nullptr;
+	TestNotNull(TEXT("struct input pin resolved"), Pin);
+	if (!Pin)
+	{
+		CortexGraphPinDefaultIdentityTest::Cleanup(Package, Blueprint);
+		return false;
+	}
+	TestEqual(TEXT("fixture pin is a struct pin"), Pin->PinType.PinCategory, UEdGraphSchema_K2::PC_Struct);
+	TestNotNull(TEXT("fixture pin carries a real script struct pin"),
+		Cast<UScriptStruct>(Pin->PinType.PinSubCategoryObject.Get()));
+
+	const FString NativeBefore = Pin->DefaultValue;
+	TSharedPtr<FJsonObject> Literal = MakeShared<FJsonObject>();
+	Literal->SetStringField(TEXT("kind"), TEXT("struct"));
+	Literal->SetStringField(TEXT("value"), TEXT("(X=1.000000,Y=2.000000,Z=3.000000)"));
+
+	FCortexCommandResult Error;
+	TestFalse(TEXT("a struct literal is refused by validation"),
+		FCortexGraphPinDefaults::Validate(Pin, Literal, Error));
+	TestTrue(FString::Printf(TEXT("the refusal names the unsupported kind [%s]"), *Error.ErrorMessage),
+		Error.ErrorMessage.Contains(TEXT("struct")));
+	TestFalse(TEXT("a struct literal is never applied"),
+		FCortexGraphPinDefaults::ApplyDefault(Pin, Literal, Error));
+	TestEqual(TEXT("a refused struct literal does not touch the native pin"), Pin->DefaultValue, NativeBefore);
+
+	TSharedPtr<FJsonObject> Request = CortexGraphPinDefaultIdentityTest::BaseRequest(
+		Blueprint, TEXT("00000000-0000-0000-0000-000000000d01"));
+	CortexGraphPinDefaultIdentityTest::AddNode(Request, TEXT("break"), TEXT("CallFunction"),
+		TEXT("KismetMathLibrary.BreakVector"), TEXT("InVec"), Literal);
+
+	const FString FingerprintBefore = FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash"));
+	FCortexGraphPreparedPatch Preview;
+	TestFalse(TEXT("a planned struct default is refused before mutation"),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, Preview, Error));
+	TestTrue(FString::Printf(TEXT("a planned struct default is refused as an unsupported kind [%s|%s]"), *Error.ErrorCode, *Error.ErrorMessage),
+		Error.ErrorCode == CortexErrorCodes::InvalidField
+			&& Error.ErrorMessage.Contains(TEXT("Unsupported pin default kind: struct")));
+	TestEqual(TEXT("a refused struct default leaves the graph untouched"),
+		FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash")), FingerprintBefore);
+
+	CortexGraphPinDefaultIdentityTest::Cleanup(Package, Blueprint);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 8. A scalar literal is never a default of a container pin
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPinDefaultContainerScalarTest,
+	"Cortex.Graph.Authoring.Defaults.ContainerScalarRefused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPinDefaultContainerScalarTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPinDefaultIdentityTest::MakeBlueprint(Package, TEXT("BP_PinDefaultContainer_T08"));
+	TestNotNull(TEXT("container fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	UEdGraph* Graph = Blueprint->UbergraphPages[0];
+	UK2Node_CallFunction* Node = CortexGraphPinDefaultIdentityTest::MakeCallNode(
+		Graph, UKismetStringLibrary::StaticClass()->FindFunctionByName(TEXT("JoinStringArray")));
+	TestNotNull(TEXT("container fixture node created"), Node);
+	UEdGraphPin* Pin = Node ? Node->FindPin(TEXT("SourceArray")) : nullptr;
+	TestNotNull(TEXT("array input pin resolved"), Pin);
+	if (!Pin)
+	{
+		CortexGraphPinDefaultIdentityTest::Cleanup(Package, Blueprint);
+		return false;
+	}
+	TestEqual(TEXT("fixture pin keeps the element category"), Pin->PinType.PinCategory, UEdGraphSchema_K2::PC_String);
+	TestEqual(TEXT("fixture pin is an array pin"),
+		static_cast<int32>(Pin->PinType.ContainerType), static_cast<int32>(EPinContainerType::Array));
+
+	const FString NativeBefore = Pin->DefaultValue;
+	TSharedPtr<FJsonObject> Literal = MakeShared<FJsonObject>();
+	Literal->SetStringField(TEXT("kind"), TEXT("string"));
+	Literal->SetStringField(TEXT("value"), TEXT("scalar-on-array"));
+
+	FCortexCommandResult Error;
+	TestFalse(TEXT("a scalar literal on an array pin is refused by validation"),
+		FCortexGraphPinDefaults::Validate(Pin, Literal, Error));
+	TestTrue(FString::Printf(TEXT("the container refusal is a type mismatch on the container pin [%s|%s]"), *Error.ErrorCode, *Error.ErrorMessage),
+		Error.ErrorCode == CortexErrorCodes::TypeMismatch
+			&& Error.ErrorMessage.Contains(TEXT("container pin 'SourceArray'")));
+	TestFalse(TEXT("a scalar literal on an array pin is never applied"),
+		FCortexGraphPinDefaults::ApplyDefault(Pin, Literal, Error));
+	TestEqual(TEXT("a refused container default does not touch the native pin"), Pin->DefaultValue, NativeBefore);
+
+	FString Expected;
+	FString Actual;
+	FString Failure;
+	TestFalse(TEXT("a scalar literal is never reported as a matching container default"),
+		FCortexGraphPinDefaults::CompareAppliedLiteral(Pin, Literal, Expected, Actual, Failure));
+
+	TSharedPtr<FJsonObject> Request = CortexGraphPinDefaultIdentityTest::BaseRequest(
+		Blueprint, TEXT("00000000-0000-0000-0000-000000000d02"));
+	CortexGraphPinDefaultIdentityTest::AddNode(Request, TEXT("join"), TEXT("CallFunction"),
+		TEXT("KismetStringLibrary.JoinStringArray"), TEXT("SourceArray"), Literal);
+
+	const FString FingerprintBefore = FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash"));
+	FCortexGraphPreparedPatch Preview;
+	TestFalse(TEXT("a planned container default is refused before mutation"),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, Preview, Error));
+	TestTrue(FString::Printf(TEXT("a planned container default is refused as a container [%s|%s]"), *Error.ErrorCode, *Error.ErrorMessage),
+		Error.ErrorCode == CortexErrorCodes::TypeMismatch
+			&& Error.ErrorMessage.Contains(TEXT("container pin 'SourceArray'")));
+	TestEqual(TEXT("a refused container default leaves the graph untouched"),
+		FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash")), FingerprintBefore);
+
+	CortexGraphPinDefaultIdentityTest::Cleanup(Package, Blueprint);
 	return true;
 }
 

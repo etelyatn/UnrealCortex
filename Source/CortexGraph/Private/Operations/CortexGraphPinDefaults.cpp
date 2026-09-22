@@ -184,7 +184,18 @@ bool FCortexGraphPinDefaults::Validate(
 		return false;
 	}
 
-	// 4. Validate kind against pin category and value shape
+	// 4. Container pins have no scalar literal form in the patch contract: writing a scalar into a
+	// container pin's DefaultValue is not that container's default, so it must be refused before
+	// mutation and can never be reported as a matching default.
+	if (Pin->PinType.ContainerType != EPinContainerType::None)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::TypeMismatch,
+			FString::Printf(TEXT("Cannot set a scalar %s literal on container pin '%s'"), *Kind, *Pin->PinName.ToString()));
+		return false;
+	}
+
+	// 5. Validate kind against pin category and value shape
 	if (Kind == TEXT("class") || Kind == TEXT("soft_class"))
 	{
 		const EPinReferenceMode RequestedMode = RequestedReferenceMode(Kind);
@@ -603,18 +614,9 @@ bool FCortexGraphPinDefaults::Validate(
 		return true;
 	}
 
-	if (Kind == TEXT("struct"))
-	{
-		if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Struct)
-		{
-			OutError = FCortexCommandRouter::Error(
-				CortexErrorCodes::TypeMismatch,
-				FString::Printf(TEXT("Cannot assign struct literal to pin of category '%s'"), *Pin->PinType.PinCategory.ToString()));
-			return false;
-		}
-		return true;
-	}
-
+	// Struct literals are intentionally unsupported: nothing writes one to a pin and there is no
+	// lossless native readback for a struct shape, so they fall through to the refusal below
+	// instead of validating and then failing readback.
 	OutError = FCortexCommandRouter::Error(
 		CortexErrorCodes::InvalidField,
 		FString::Printf(TEXT("Unsupported pin default kind: %s"), *Kind));
