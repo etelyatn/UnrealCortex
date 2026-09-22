@@ -12,6 +12,33 @@
 #include "Dom/JsonValue.h"
 #include "UObject/Package.h"
 
+#include "Editor.h"
+#include "Editor/Transactor.h"
+
+static FString CapturePreflightNativeAuthoring(UBlueprint* Blueprint)
+{
+	FString Capture;
+	if (!Blueprint) return Capture;
+	TArray<UEdGraph*> Graphs;
+	Blueprint->GetAllGraphs(Graphs);
+	for (UEdGraph* Graph : Graphs)
+	{
+		if (!Graph) continue;
+		Capture += Graph->GetPathName();
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) continue;
+			Capture += FString::Printf(TEXT("|%s:%d:%d"), *Node->GetClass()->GetPathName(), Node->NodePosX, Node->NodePosY);
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (!Pin) continue;
+				Capture += FString::Printf(TEXT("|%s:%d:%s"), *Pin->PinName.ToString(), Pin->LinkedTo.Num(), *Pin->DefaultValue);
+			}
+		}
+	}
+	return Capture;
+}
+
 #if WITH_EDITOR
 namespace CortexGraphPatchPreflightTest
 {
@@ -73,6 +100,10 @@ bool FCortexGraphPatchPreflightMalformedEnvelopeTest::RunTest(const FString& Par
 	TestNotNull(TEXT("fixture Blueprint created"), Blueprint);
 	if (!Blueprint) return false;
 
+	const FString NativeBefore = CapturePreflightNativeAuthoring(Blueprint);
+	const int32 TransactionCountBefore = (GEditor && GEditor->Trans) ? GEditor->Trans->GetQueueLength() : 0;
+	const bool bDirtyBefore = Package->IsDirty();
+	const FString FingerprintBefore = FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash"));
 	TSharedPtr<FJsonObject> Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
 	Request->SetStringField(TEXT("nodes"), TEXT("not-an-array"));
 	FCortexGraphPreparedPatch Prepared;
@@ -80,7 +111,11 @@ bool FCortexGraphPatchPreflightMalformedEnvelopeTest::RunTest(const FString& Par
 	const bool bReady = FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error);
 	TestFalse(TEXT("malformed nodes type is rejected"), bReady);
 	TestEqual(TEXT("malformed nodes error"), Error.ErrorCode, CortexErrorCodes::InvalidField);
-
+	TestEqual(TEXT("rejected preflight leaves native authoring unchanged"), CapturePreflightNativeAuthoring(Blueprint), NativeBefore);
+	TestEqual(TEXT("rejected preflight leaves transaction queue unchanged"), (GEditor && GEditor->Trans) ? GEditor->Trans->GetQueueLength() : 0, TransactionCountBefore);
+	TestFalse(TEXT("rejected preflight leaves package dirty state unchanged"), Package->IsDirty() != bDirtyBefore);
+	TestEqual(TEXT("rejected preflight leaves graph authoring hash unchanged"),
+		FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash")), FingerprintBefore);
 	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
 	return true;
 }
@@ -99,26 +134,56 @@ bool FCortexGraphPatchPreflightNoMutationTest::RunTest(const FString& Parameters
 	if (!Blueprint) return false;
 
 	TSharedPtr<FJsonObject> Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
-	const FString Before = FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash"));
+	TSharedPtr<FJsonObject> Implementation = MakeShared<FJsonObject>();
+	Implementation->SetStringField(TEXT("owner_class"), TEXT("/Script/Engine.Actor"));
+	Implementation->SetStringField(TEXT("function_name"), TEXT("ReceiveBeginPlay"));
+	TSharedPtr<FJsonObject> Target = Request->GetObjectField(TEXT("target"));
+	Target->SetObjectField(TEXT("implementation"), Implementation);
+	Target->RemoveField(TEXT("graph_ref"));
+	const FString NativeBefore = CapturePreflightNativeAuthoring(Blueprint);
+	const int32 TransactionCountBefore = (GEditor && GEditor->Trans) ? GEditor->Trans->GetQueueLength() : 0;
+	const EBlueprintStatus StatusBefore = Blueprint->Status;
+	UClass* GeneratedClassBefore = Blueprint->GeneratedClass;
 	const bool bDirtyBefore = Package->IsDirty();
+	const FString Before = FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash"));
+
 	FCortexGraphPreparedPatch Prepared;
 	FCortexCommandResult Error;
 	const bool bReady = FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error);
 	TestTrue(FString::Printf(TEXT("valid preview succeeds: %s"), *Error.ErrorMessage), bReady);
 	TestFalse(TEXT("preview does not retain raw target UObject"), Prepared.HasTransientObjects());
+	TestEqual(TEXT("native authoring oracle unchanged after preview"), CapturePreflightNativeAuthoring(Blueprint), NativeBefore);
+	TestEqual(TEXT("transaction queue unchanged after preview"), (GEditor && GEditor->Trans) ? GEditor->Trans->GetQueueLength() : 0, TransactionCountBefore);
+	TestEqual(TEXT("compile status unchanged after preview"), Blueprint->Status, StatusBefore);
+	TestTrue(TEXT("generated class identity unchanged after preview"), Blueprint->GeneratedClass == GeneratedClassBefore);
 	TestFalse(TEXT("preview does not mutate dirty state"), Package->IsDirty() != bDirtyBefore);
 	TestEqual(TEXT("preview leaves graph authoring hash unchanged"),
 		FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash")), Before);
 	TestFalse(TEXT("preview has a validation hash only on success"), Prepared.ValidationHash.IsEmpty());
 
 	const FString PreviewHash = Prepared.ValidationHash;
+	Implementation->SetStringField(TEXT("function_name"), TEXT("ReceiveEndPlay"));
 	Request->SetBoolField(TEXT("dry_run"), false);
 	Request->SetStringField(TEXT("expected_validation_hash"), PreviewHash);
+	FCortexGraphPreparedPatch DriftPrepared;
+	FCortexCommandResult DriftError;
+	TestFalse(TEXT("changed external implementation signature rejects stale preview token"),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, DriftPrepared, DriftError));
+	TestEqual(TEXT("changed external signature error"), DriftError.ErrorCode, CortexErrorCodes::StalePrecondition);
+
+	Implementation->SetStringField(TEXT("function_name"), TEXT("ReceiveBeginPlay"));
 	FCortexGraphPreparedPatch ApplyPrepared;
 	FCortexCommandResult ApplyError;
 	const bool bApplyReady = FCortexGraphPatchOps::Preflight(Blueprint, Request, ApplyPrepared, ApplyError);
 	TestTrue(FString::Printf(TEXT("apply intent with preview token succeeds: %s"), *ApplyError.ErrorMessage), bApplyReady);
 	TestEqual(TEXT("dry_run does not change semantic validation token"), ApplyPrepared.ValidationHash, PreviewHash);
+	TestEqual(TEXT("native authoring oracle unchanged after apply preflight"), CapturePreflightNativeAuthoring(Blueprint), NativeBefore);
+	TestEqual(TEXT("transaction queue unchanged after apply preflight"), (GEditor && GEditor->Trans) ? GEditor->Trans->GetQueueLength() : 0, TransactionCountBefore);
+	TestEqual(TEXT("compile status unchanged after apply preflight"), Blueprint->Status, StatusBefore);
+	TestTrue(TEXT("generated class identity unchanged after apply preflight"), Blueprint->GeneratedClass == GeneratedClassBefore);
+	TestFalse(TEXT("apply preflight does not mutate dirty state"), Package->IsDirty() != bDirtyBefore);
+	TestEqual(TEXT("apply preflight leaves graph authoring hash unchanged"),
+		FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash")), Before);
 
 	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
 	return true;

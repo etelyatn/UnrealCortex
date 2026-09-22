@@ -901,6 +901,12 @@ bool FCortexGraphPatchOps::Preflight(
 			Composite->PostPlacedNewNode();
 			Composite->AllocateDefaultPins();
 		}
+		if (TargetGraph && (!PlannedNode->IsCompatibleWithGraph(TargetGraph) || !PlannedNode->CanPasteHere(TargetGraph)))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Node class '%s' is incompatible with the selected graph"), *NodeClass));
+			return false;
+		}
 		AddPlannedPinSignature(PlannedNode, NormalizedNode);
 		PlanningGraph->AddNode(PlannedNode, false, false);
 		TSet<FString> Pins;
@@ -1027,7 +1033,7 @@ bool FCortexGraphPatchOps::Preflight(
 				break;
 			}
 		}
-		if (ConnectedInputs.Contains(InputKey) || ExistingDefaultInputs.Contains(InputKey) || bHasPlannedDefault)
+		if (ConnectedInputs.Contains(InputKey) || ExistingDefaultInputs.Contains(InputKey) || bHasPlannedDefault || TargetPin->LinkedTo.Num() > 0)
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, FString::Printf(TEXT("Input '%s' has competing connection/default"), *InputKey));
 			return false;
