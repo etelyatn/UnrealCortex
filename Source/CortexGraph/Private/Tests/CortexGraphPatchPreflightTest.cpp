@@ -10,8 +10,14 @@
 #include "EdGraphSchema_K2.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
-#include "UObject/Package.h"
-
+#include "UObject/UnrealType.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_IfThenElse.h"
+#include "K2Node_PromotableOperator.h"
+#include "BlueprintEditorSettings.h"
+#include "BlueprintTypePromotion.h"
+#include "Kismet/KismetMathLibrary.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "Editor.h"
 #include "Editor/Transactor.h"
 
@@ -426,6 +432,194 @@ bool FCortexGraphPatchPreflightEligibilityTest::RunTest(const FString& Parameter
 	Request->SetArrayField(TEXT("connections"), SubtypeConnections);
 	TestFalse(TEXT("connected default conflict is rejected before schema conversion"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
 	TestEqual(TEXT("connected default conflict code"), Error.ErrorCode, CortexErrorCodes::InvalidOperation);
+	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchPreflightSchemaResponseTest,
+	"Cortex.Graph.Authoring.Preflight.SchemaResponses",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchPreflightSchemaResponseTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchPreflightTest::MakeBlueprint(Package, TEXT("BP_PatchPreflightSchemaResponses_T06"));
+	TestNotNull(TEXT("fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	UBlueprint* FixtureBlueprint = NewObject<UBlueprint>(GetTransientPackage(), NAME_None, RF_Transient);
+	FixtureBlueprint->ParentClass = Blueprint->ParentClass;
+	FixtureBlueprint->GeneratedClass = Blueprint->GeneratedClass;
+	FixtureBlueprint->SkeletonGeneratedClass = Blueprint->SkeletonGeneratedClass;
+	UEdGraph* FixtureGraph = NewObject<UEdGraph>(FixtureBlueprint, NAME_None, RF_Transient);
+	FixtureGraph->Schema = UEdGraphSchema_K2::StaticClass();
+	UBlueprintEditorSettings* BlueprintSettings = GetMutableDefault<UBlueprintEditorSettings>();
+	const bool bTypePromotionWasEnabled = BlueprintSettings->bEnableTypePromotion;
+	BlueprintSettings->bEnableTypePromotion = true;
+	TestTrue(TEXT("transient fixture enables K2 type promotion"), TypePromoDebug::IsTypePromoEnabled());
+	UK2Node_IfThenElse* ExistingSource = NewObject<UK2Node_IfThenElse>(FixtureGraph, NAME_None, RF_Transient);
+	UK2Node_IfThenElse* ReplacementSource = NewObject<UK2Node_IfThenElse>(FixtureGraph, NAME_None, RF_Transient);
+	UK2Node_IfThenElse* ExistingTarget = NewObject<UK2Node_IfThenElse>(FixtureGraph, NAME_None, RF_Transient);
+	for (UEdGraphNode* Node : { static_cast<UEdGraphNode*>(ExistingSource), static_cast<UEdGraphNode*>(ReplacementSource), static_cast<UEdGraphNode*>(ExistingTarget) })
+	{
+		Node->CreateNewGuid();
+		Node->AllocateDefaultPins();
+		FixtureGraph->AddNode(Node, false, false);
+	}
+	const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
+	Schema->TryCreateConnection(ExistingSource->FindPinChecked(TEXT("then")), ExistingTarget->FindPinChecked(TEXT("execute")));
+	TestEqual(TEXT("K2 fixture produces BREAK_OTHERS"),
+		Schema->CanCreateConnection(ExistingSource->FindPinChecked(TEXT("then")), ReplacementSource->FindPinChecked(TEXT("execute"))).Response,
+		CONNECT_RESPONSE_BREAK_OTHERS_A);
+
+	UK2Node_CallFunction* LiteralName = NewObject<UK2Node_CallFunction>(FixtureGraph, NAME_None, RF_Transient);
+	LiteralName->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("MakeLiteralName")));
+	LiteralName->CreateNewGuid();
+	FixtureGraph->AddNode(LiteralName, false, false);
+	LiteralName->AllocateDefaultPins();
+	UK2Node_CallFunction* PrintString = NewObject<UK2Node_CallFunction>(FixtureGraph, NAME_None, RF_Transient);
+	PrintString->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("PrintString")));
+	PrintString->CreateNewGuid();
+	FixtureGraph->AddNode(PrintString, false, false);
+	PrintString->AllocateDefaultPins();
+	TestEqual(TEXT("K2 fixture produces MAKE_WITH_CONVERSION_NODE"),
+		Schema->CanCreateConnection(LiteralName->FindPinChecked(TEXT("ReturnValue")), PrintString->FindPinChecked(TEXT("InString"))).Response,
+		CONNECT_RESPONSE_MAKE_WITH_CONVERSION_NODE);
+	UK2Node_PromotableOperator* PromotionTarget = NewObject<UK2Node_PromotableOperator>(FixtureGraph, NAME_None, RF_Transient);
+	PromotionTarget->SetFromFunction(UKismetMathLibrary::StaticClass()->FindFunctionByName(TEXT("Add_IntInt")));
+	PromotionTarget->CreateNewGuid();
+	FixtureGraph->AddNode(PromotionTarget, false, false);
+	PromotionTarget->AllocateDefaultPins();
+	UK2Node_CallFunction* LiteralInt = NewObject<UK2Node_CallFunction>(FixtureGraph, NAME_None, RF_Transient);
+	LiteralInt->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("MakeLiteralInt")));
+	LiteralInt->CreateNewGuid();
+	FixtureGraph->AddNode(LiteralInt, false, false);
+	LiteralInt->AllocateDefaultPins();
+	UK2Node_CallFunction* LiteralDouble = NewObject<UK2Node_CallFunction>(FixtureGraph, NAME_None, RF_Transient);
+	LiteralDouble->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("MakeLiteralDouble")));
+	LiteralDouble->CreateNewGuid();
+	FixtureGraph->AddNode(LiteralDouble, false, false);
+	LiteralDouble->AllocateDefaultPins();
+	UEdGraphPin* IntegerInputA = PromotionTarget->FindPinChecked(TEXT("A"));
+	UEdGraphPin* IntegerOutput = LiteralInt->FindPinChecked(TEXT("ReturnValue"));
+	UEdGraphPin* DoubleOutput = LiteralDouble->FindPinChecked(TEXT("ReturnValue"));
+	TestEqual(TEXT("literal double output category"), DoubleOutput->PinType.PinCategory, UEdGraphSchema_K2::PC_Real);
+	TestEqual(TEXT("literal double output subcategory"), DoubleOutput->PinType.PinSubCategory, UEdGraphSchema_K2::PC_Double);
+	TestTrue(TEXT("K2 fixture seeds Add operand A with an int"), Schema->TryCreateConnection(IntegerOutput, IntegerInputA));
+	PromotionTarget->NotifyPinConnectionListChanged(IntegerInputA);
+	UEdGraphPin* IntegerInputB = PromotionTarget->FindPinChecked(TEXT("B"));
+	TestEqual(TEXT("promotable Add operand B specializes to int"), IntegerInputB->PinType.PinCategory, UEdGraphSchema_K2::PC_Int);
+	TestTrue(TEXT("numeric promotion pair is genuinely valid"), FTypePromotion::IsValidPromotion(IntegerInputB->PinType, DoubleOutput->PinType));
+	TestEqual(TEXT("K2 fixture produces MAKE_WITH_PROMOTION"),
+		Schema->CanCreateConnection(DoubleOutput, IntegerInputB).Response,
+		CONNECT_RESPONSE_MAKE_WITH_PROMOTION);
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UK2Node_IfThenElse* Target = NewObject<UK2Node_IfThenElse>(EventGraph);
+	UK2Node_IfThenElse* Occupant = NewObject<UK2Node_IfThenElse>(EventGraph);
+	for (UEdGraphNode* Node : { static_cast<UEdGraphNode*>(Target), static_cast<UEdGraphNode*>(Occupant) })
+	{
+		Node->CreateNewGuid();
+		Node->AllocateDefaultPins();
+		EventGraph->AddNode(Node, false, false);
+	}
+	Occupant->FindPinChecked(TEXT("then"))->MakeLinkTo(Target->FindPinChecked(TEXT("execute")));
+	Package->SetDirtyFlag(false);
+	const FString NativeBefore = CapturePreflightNativeAuthoring(Blueprint);
+	const int32 TransactionCountBefore = (GEditor && GEditor->Trans) ? GEditor->Trans->GetQueueLength() : 0;
+	const bool bDirtyBefore = Package->IsDirty();
+	const FString FingerprintBefore = FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash"));
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	TSharedPtr<FJsonObject> SourceNode = MakeShared<FJsonObject>();
+	SourceNode->SetStringField(TEXT("client_id"), TEXT("recipient"));
+	SourceNode->SetStringField(TEXT("node_class"), TEXT("IfThenElse"));
+	TArray<TSharedPtr<FJsonValue>> Nodes;
+	Nodes.Add(MakeShared<FJsonValueObject>(SourceNode));
+	Request->SetArrayField(TEXT("nodes"), Nodes);
+	TSharedPtr<FJsonObject> Connection = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> From = MakeShared<FJsonObject>();
+	From->SetStringField(TEXT("node_guid"), Occupant->NodeGuid.ToString());
+	From->SetStringField(TEXT("pin"), TEXT("then"));
+	TSharedPtr<FJsonObject> To = MakeShared<FJsonObject>();
+	To->SetStringField(TEXT("client_id"), TEXT("recipient"));
+	To->SetStringField(TEXT("pin"), TEXT("execute"));
+	Connection->SetObjectField(TEXT("from"), From);
+	Connection->SetObjectField(TEXT("to"), To);
+	TArray<TSharedPtr<FJsonValue>> Connections;
+	Connections.Add(MakeShared<FJsonValueObject>(Connection));
+	Request->SetArrayField(TEXT("connections"), Connections);
+	Request->SetObjectField(TEXT("expected_fingerprint"), FCortexGraphPatchState::ComputeFingerprint(Blueprint));
+	FCortexGraphPreparedPatch Prepared;
+	FCortexCommandResult Error;
+	TestFalse(TEXT("preflight fails closed for BREAK_OTHERS"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("BREAK_OTHERS is an invalid operation"), Error.ErrorCode, CortexErrorCodes::InvalidOperation);
+	TestTrue(TEXT("BREAK_OTHERS reaches schema response handling"), Error.ErrorMessage.Contains(TEXT("Schema rejected connection")));
+	TestEqual(TEXT("schema rejection leaves target native authoring unchanged"),
+		CapturePreflightNativeAuthoring(Blueprint), NativeBefore);
+	TestEqual(TEXT("schema rejection leaves transaction queue unchanged"),
+		(GEditor && GEditor->Trans) ? GEditor->Trans->GetQueueLength() : 0, TransactionCountBefore);
+	TestFalse(TEXT("schema rejection leaves package dirty state unchanged"), Package->IsDirty() != bDirtyBefore);
+	TestEqual(TEXT("schema rejection leaves graph authoring hash unchanged"),
+		FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash")), FingerprintBefore);
+
+	BlueprintSettings->bEnableTypePromotion = bTypePromotionWasEnabled;
+	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
+	FixtureGraph->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchPreflightExternalSignatureDriftTest,
+	"Cortex.Graph.Authoring.Preflight.ExternalSignatureDrift",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchPreflightExternalSignatureDriftTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchPreflightTest::MakeBlueprint(Package, TEXT("BP_PatchPreflightExternalSignature_T06"));
+	TestNotNull(TEXT("fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	TSharedPtr<FJsonObject> Implementation = MakeShared<FJsonObject>();
+	Implementation->SetStringField(TEXT("owner_class"), TEXT("/Script/Engine.Actor"));
+	Implementation->SetStringField(TEXT("function_name"), TEXT("ReceiveEndPlay"));
+	TSharedPtr<FJsonObject> Target = Request->GetObjectField(TEXT("target"));
+	Target->SetObjectField(TEXT("implementation"), Implementation);
+	Target->RemoveField(TEXT("graph_ref"));
+	FCortexGraphPreparedPatch Preview;
+	FCortexCommandResult PreviewError;
+	TestTrue(FString::Printf(TEXT("stable external signature preview succeeds: %s"), *PreviewError.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, Preview, PreviewError));
+
+	UFunction* ExternalFunction = AActor::StaticClass()->FindFunctionByName(TEXT("ReceiveEndPlay"));
+	FByteProperty* EndPlayReason = nullptr;
+	for (TFieldIterator<FProperty> It(ExternalFunction); It; ++It)
+	{
+		if ((*It)->HasAnyPropertyFlags(CPF_Parm))
+		{
+			EndPlayReason = CastField<FByteProperty>(*It);
+			if (EndPlayReason) break;
+		}
+	}
+	TestNotNull(TEXT("external function has mutable enum parameter fixture"), EndPlayReason);
+	if (EndPlayReason)
+	{
+		UEnum* OriginalEnum = EndPlayReason->Enum;
+		EndPlayReason->Enum = StaticEnum<ECollisionChannel>();
+		Request->SetBoolField(TEXT("dry_run"), false);
+		Request->SetStringField(TEXT("expected_validation_hash"), Preview.ValidationHash);
+		FCortexGraphPreparedPatch Apply;
+		FCortexCommandResult ApplyError;
+		TestFalse(TEXT("unchanged request rejects token after reflected parameter type drift"),
+			FCortexGraphPatchOps::Preflight(Blueprint, Request, Apply, ApplyError));
+		TestEqual(TEXT("reflected parameter drift is stale precondition"), ApplyError.ErrorCode, CortexErrorCodes::StalePrecondition);
+		EndPlayReason->Enum = OriginalEnum;
+	}
+
 	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
 	return true;
 }

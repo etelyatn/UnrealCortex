@@ -1108,7 +1108,7 @@ bool FCortexGraphPatchOps::Preflight(
 				break;
 			}
 		}
-		if (ConnectedInputs.Contains(InputKey) || ExistingDefaultInputs.Contains(InputKey) || bHasPlannedDefault || TargetPin->LinkedTo.Num() > 0)
+		if (ConnectedInputs.Contains(InputKey) || ExistingDefaultInputs.Contains(InputKey) || bHasPlannedDefault)
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, FString::Printf(TEXT("Input '%s' has competing connection/default"), *InputKey));
 			return false;
@@ -1123,11 +1123,16 @@ bool FCortexGraphPatchOps::Preflight(
 					FString::Printf(TEXT("Schema rejected connection: %s"), *Response.Message.ToString()));
 				return false;
 			}
-			if (!Schema->TryCreateConnection(SourcePin, TargetPin))
-			{
-				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Transient schema connection failed"));
-				return false;
-			}
+		}
+		if (TargetPin->LinkedTo.Num() > 0)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, FString::Printf(TEXT("Input '%s' has competing connection/default"), *InputKey));
+			return false;
+		}
+		if (Schema && !Schema->TryCreateConnection(SourcePin, TargetPin))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Transient schema connection failed"));
+			return false;
 		}
 		ConnectedInputs.Add(InputKey);
 		TSharedPtr<FJsonObject> NormalizedConnection = MakeShared<FJsonObject>();
