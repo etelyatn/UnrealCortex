@@ -733,7 +733,7 @@ bool FCortexGraphMigrationCompatibleReplacementTest::RunTest(const FString& Para
 		TestNotNull(TEXT("stray custom event created"), StrayEvent);
 		const FGuid StrayGuid = StrayEvent->NodeGuid;
 		TSharedPtr<FJsonObject> StrayRequest = ReplacementRequest(Fixture.Blueprint,
-			TEXT("00000000-0000-0000-0000-000000110001"),
+			TEXT("00000000-0000-0000-0000-00000011000f"),
 			MakeMigration(Graph, StrayEvent, OnPayloadPinMap()), TEXT("OnPayload"));
 		const FString HashBeforeStray = LiveGraphHash(Fixture.Blueprint);
 		FCortexGraphPatchOutcome StrayOutcome;
@@ -811,7 +811,7 @@ void CheckIncompatibleMapping(
 		Error.ErrorCode, FString(CortexErrorCodes::TypeMismatch));
 	Test.TestTrue(FString::Printf(TEXT("%s: refusal names the %s dimension [%s]"), Context, Dimension, *Error.ErrorMessage),
 		NamesDimension(Error.ErrorMessage, Dimension));
-	Test.TestEqual(FString::Printf(TEXT("%s: refusal mutates nothing"), *Context),
+	Test.TestEqual(FString::Printf(TEXT("%s: refusal mutates nothing"), Context),
 		LiveGraphHash(Fixture.Blueprint), HashBefore);
 	Test.TestEqual(FString::Printf(TEXT("%s: refusal leaves the node count"), Context),
 		CountNativeNodes(Fixture.Blueprint), NodesBefore);
@@ -1374,7 +1374,7 @@ bool FCortexGraphMigrationMixedRequestTest::RunTest(const FString& Parameters)
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
 	ClearGraphNodes(Graph);
-	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("ReceiveEndPlay"), ActorClassPath, 0, 0);
+	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
 	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
 	const FString HashBefore = LiveGraphHash(Fixture.Blueprint);
 
@@ -1394,7 +1394,7 @@ bool FCortexGraphMigrationMixedRequestTest::RunTest(const FString& Parameters)
 	{
 		return ReplacementRequest(Fixture.Blueprint,
 			TEXT("00000000-0000-0000-0000-00000011000b"),
-			MakeMigration(Graph, StaleEntry, ReceiveBeginPlayPinMap()), TEXT("ReceiveBeginPlay"), ActorClassPath);
+			MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
 	};
 
 	{
