@@ -1,6 +1,7 @@
 #include "Operations/CortexGraphPatchOps.h"
 #include "Operations/CortexGraphAuthoringContext.h"
 #include "Operations/CortexGraphImplementationOps.h"
+#include "Operations/CortexGraphMigrationOps.h"
 #include "Operations/CortexGraphNodeContract.h"
 #include "Operations/CortexGraphNodeOps.h"
 #include "Operations/CortexGraphPatchState.h"
@@ -56,6 +57,45 @@
 
 namespace
 {
+/**
+ * The authoring shell and the migration shell validate and canonicalize through the same class
+ * statics; these forwarders keep the existing unqualified call sites inside this file.
+ */
+bool HasOnlyFields(const TSharedPtr<FJsonObject>& Object, const TSet<FString>& Allowed, FCortexCommandResult& OutError, const FString& Context)
+{
+	return FCortexGraphPatchOps::HasOnlyFields(Object, Allowed, OutError, Context);
+}
+
+bool ReadStrictBool(const TSharedPtr<FJsonObject>& Object, const FString& Field, bool DefaultValue, bool& OutValue, FCortexCommandResult& OutError)
+{
+	return FCortexGraphPatchOps::ReadStrictBool(Object, Field, DefaultValue, OutValue, OutError);
+}
+
+bool ReadRequiredString(const TSharedPtr<FJsonObject>& Object, const FString& Field, FString& OutValue, FCortexCommandResult& OutError)
+{
+	return FCortexGraphPatchOps::ReadRequiredString(Object, Field, OutValue, OutError);
+}
+
+bool ParseGuidField(const TSharedPtr<FJsonObject>& Object, const FString& Field, FGuid& OutGuid, FCortexCommandResult& OutError)
+{
+	return FCortexGraphPatchOps::ParseGuidField(Object, Field, OutGuid, OutError);
+}
+
+bool ResolveGraphByGuid(UBlueprint* Blueprint, const FGuid& GraphGuid, const FString& SubgraphPath, UEdGraph*& OutGraph, FCortexCommandResult& OutError)
+{
+	return FCortexGraphPatchOps::ResolveGraphByGuid(Blueprint, GraphGuid, SubgraphPath, OutGraph, OutError);
+}
+
+TSharedPtr<FJsonObject> MakePinSignatureDescriptor(const UEdGraphPin& Pin)
+{
+	return FCortexGraphPatchOps::MakePinSignatureDescriptor(Pin);
+}
+
+FString CanonicalPinSignature(const TSharedPtr<FJsonObject>& Descriptor)
+{
+	return FCortexGraphPatchOps::CanonicalPinSignature(Descriptor);
+}
+
 constexpr int32 MaxNodes = 64;
 constexpr int32 MaxEdges = 256;
 constexpr int32 MaxClientIdLength = 32;
@@ -260,51 +300,6 @@ bool IsJsonType(const TSharedPtr<FJsonValue>& Value, EJson Expected)
 	return Value.IsValid() && Value->Type == Expected;
 }
 
-bool HasOnlyFields(const TSharedPtr<FJsonObject>& Object, const TSet<FString>& Allowed, FCortexCommandResult& OutError, const FString& Context)
-{
-	if (!Object.IsValid())
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-			FString::Printf(TEXT("%s must be an object"), *Context));
-		return false;
-	}
-	for (const auto& Pair : Object->Values)
-	{
-		const FString Key = CortexEngineCompat::JsonKeyToString(Pair.Key);
-		if (!Allowed.Contains(Key))
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-				FString::Printf(TEXT("Unknown field '%s' in %s"), *Key, *Context));
-			return false;
-		}
-	}
-	return true;
-}
-
-bool ReadStrictBool(const TSharedPtr<FJsonObject>& Object, const FString& Field, bool DefaultValue, bool& OutValue, FCortexCommandResult& OutError)
-{
-	OutValue = DefaultValue;
-	if (!Object->HasField(Field)) return true;
-	if (!Object->TryGetBoolField(Field, OutValue))
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-			FString::Printf(TEXT("%s must be a boolean"), *Field));
-		return false;
-	}
-	return true;
-}
-
-bool ReadRequiredString(const TSharedPtr<FJsonObject>& Object, const FString& Field, FString& OutValue, FCortexCommandResult& OutError)
-{
-	if (!Object->TryGetStringField(Field, OutValue) || OutValue.IsEmpty())
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-			FString::Printf(TEXT("%s must be a non-empty string"), *Field));
-		return false;
-	}
-	return true;
-}
-
 bool IsAsciiClientId(const FString& Value)
 {
 	if (Value.IsEmpty() || Value.Len() > MaxClientIdLength) return false;
@@ -460,42 +455,6 @@ void AddFunctionSignature(UFunction* Function, const TSharedPtr<FJsonObject>& Ou
 }
 
 
-bool ParseGuidField(const TSharedPtr<FJsonObject>& Object, const FString& Field, FGuid& OutGuid, FCortexCommandResult& OutError)
-{
-	FString Value;
-	if (!ReadRequiredString(Object, Field, Value, OutError) || !FGuid::Parse(Value, OutGuid))
-	{
-		if (OutError.bSuccess || OutError.ErrorCode.IsEmpty())
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-				FString::Printf(TEXT("%s must be a valid GUID"), *Field));
-		}
-		return false;
-	}
-	return true;
-}
-
-bool ResolveGraphByGuid(UBlueprint* Blueprint, const FGuid& GraphGuid, const FString& SubgraphPath, UEdGraph*& OutGraph, FCortexCommandResult& OutError)
-{
-	OutGraph = nullptr;
-	TArray<FCortexGraphEntry> Entries;
-	FCortexGraphNodeOps::EnumerateUserGraphs(Blueprint, Entries);
-	for (const FCortexGraphEntry& Entry : Entries)
-	{
-		if (!Entry.Graph || Entry.Graph->GraphGuid != GraphGuid) continue;
-		if (!FCortexGraphNodeOps::IsMutableGraphKind(Entry.Kind))
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				TEXT("Target graph is not mutable"));
-			return false;
-		}
-		OutGraph = SubgraphPath.IsEmpty() ? Entry.Graph : FCortexGraphNodeOps::ResolveSubgraph(Entry.Graph, SubgraphPath, OutError);
-		return OutGraph != nullptr;
-	}
-	OutError = FCortexCommandRouter::Error(CortexErrorCodes::GraphNotFound,
-		FString::Printf(TEXT("Graph with GUID %s not found"), *GraphGuid.ToString()));
-	return false;
-}
 bool CountGraphNodesBounded(UEdGraph* Graph, int32& InOutCount, TSet<const UEdGraph*>& Visited)
 {
 	if (!Graph || Visited.Contains(Graph)) return true;
@@ -920,7 +879,126 @@ bool ValidateTaggedDefaults(const TSharedPtr<FJsonObject>& Defaults, UEdGraphNod
 	return true;
 }
 /** Canonical planned signature of one pin: type, flags, container kind and map terminal type. */
-TSharedPtr<FJsonObject> MakePinSignatureDescriptor(const UEdGraphPin& Pin)
+void AddPlannedPinSignature(UEdGraphNode* Node, const TSharedPtr<FJsonObject>& NormalizedNode)
+{
+	if (!Node || !NormalizedNode.IsValid()) return;
+	TArray<UEdGraphPin*> Pins;
+	for (UEdGraphPin* Pin : Node->Pins) if (Pin) Pins.Add(Pin);
+	Pins.Sort([](const UEdGraphPin& A, const UEdGraphPin& B) { return A.PinName.LexicalLess(B.PinName); });
+	TArray<TSharedPtr<FJsonValue>> Serialized;
+	for (const UEdGraphPin* Pin : Pins)
+	{
+		Serialized.Add(MakeShared<FJsonValueObject>(MakePinSignatureDescriptor(*Pin)));
+	}
+	NormalizedNode->SetArrayField(TEXT("resolved_pins"), Serialized);
+}
+}
+
+bool FCortexGraphPatchOps::HasOnlyFields(
+	const TSharedPtr<FJsonObject>& Object,
+	const TSet<FString>& Allowed,
+	FCortexCommandResult& OutError,
+	const FString& Context)
+{
+	if (!Object.IsValid())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("%s must be an object"), *Context));
+		return false;
+	}
+	for (const auto& Pair : Object->Values)
+	{
+		const FString Key = CortexEngineCompat::JsonKeyToString(Pair.Key);
+		if (!Allowed.Contains(Key))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("Unknown field '%s' in %s"), *Key, *Context));
+			return false;
+		}
+	}
+	return true;
+}
+
+bool FCortexGraphPatchOps::ReadStrictBool(
+	const TSharedPtr<FJsonObject>& Object,
+	const FString& Field,
+	const bool DefaultValue,
+	bool& OutValue,
+	FCortexCommandResult& OutError)
+{
+	OutValue = DefaultValue;
+	if (!Object.IsValid() || !Object->HasField(Field)) return true;
+	if (!Object->TryGetBoolField(Field, OutValue))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("%s must be a boolean"), *Field));
+		return false;
+	}
+	return true;
+}
+
+bool FCortexGraphPatchOps::ReadRequiredString(
+	const TSharedPtr<FJsonObject>& Object,
+	const FString& Field,
+	FString& OutValue,
+	FCortexCommandResult& OutError)
+{
+	if (!Object.IsValid() || !Object->TryGetStringField(Field, OutValue) || OutValue.IsEmpty())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("%s must be a non-empty string"), *Field));
+		return false;
+	}
+	return true;
+}
+
+bool FCortexGraphPatchOps::ParseGuidField(
+	const TSharedPtr<FJsonObject>& Object,
+	const FString& Field,
+	FGuid& OutGuid,
+	FCortexCommandResult& OutError)
+{
+	FString Value;
+	if (!ReadRequiredString(Object, Field, Value, OutError) || !FGuid::Parse(Value, OutGuid))
+	{
+		if (OutError.ErrorCode.IsEmpty())
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("%s must be a valid GUID"), *Field));
+		}
+		return false;
+	}
+	return true;
+}
+
+bool FCortexGraphPatchOps::ResolveGraphByGuid(
+	UBlueprint* Blueprint,
+	const FGuid& GraphGuid,
+	const FString& SubgraphPath,
+	UEdGraph*& OutGraph,
+	FCortexCommandResult& OutError)
+{
+	OutGraph = nullptr;
+	TArray<FCortexGraphEntry> Entries;
+	FCortexGraphNodeOps::EnumerateUserGraphs(Blueprint, Entries);
+	for (const FCortexGraphEntry& Entry : Entries)
+	{
+		if (!Entry.Graph || Entry.Graph->GraphGuid != GraphGuid) continue;
+		if (!FCortexGraphNodeOps::IsMutableGraphKind(Entry.Kind))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("Target graph is not mutable"));
+			return false;
+		}
+		OutGraph = SubgraphPath.IsEmpty() ? Entry.Graph : FCortexGraphNodeOps::ResolveSubgraph(Entry.Graph, SubgraphPath, OutError);
+		return OutGraph != nullptr;
+	}
+	OutError = FCortexCommandRouter::Error(CortexErrorCodes::GraphNotFound,
+		FString::Printf(TEXT("Graph with GUID %s not found"), *GraphGuid.ToString()));
+	return false;
+}
+
+TSharedPtr<FJsonObject> FCortexGraphPatchOps::MakePinSignatureDescriptor(const UEdGraphPin& Pin)
 {
 	TSharedPtr<FJsonObject> Descriptor = MakeShared<FJsonObject>();
 	Descriptor->SetStringField(TEXT("name"), Pin.PinName.ToString());
@@ -943,19 +1021,30 @@ TSharedPtr<FJsonObject> MakePinSignatureDescriptor(const UEdGraphPin& Pin)
 	return Descriptor;
 }
 
-void AddPlannedPinSignature(UEdGraphNode* Node, const TSharedPtr<FJsonObject>& NormalizedNode)
+FString FCortexGraphPatchOps::CanonicalPinSignature(const TSharedPtr<FJsonObject>& Descriptor)
 {
-	if (!Node || !NormalizedNode.IsValid()) return;
-	TArray<UEdGraphPin*> Pins;
-	for (UEdGraphPin* Pin : Node->Pins) if (Pin) Pins.Add(Pin);
-	Pins.Sort([](const UEdGraphPin& A, const UEdGraphPin& B) { return A.PinName.LexicalLess(B.PinName); });
-	TArray<TSharedPtr<FJsonValue>> Serialized;
-	for (const UEdGraphPin* Pin : Pins)
+	if (!Descriptor.IsValid()) return FString();
+	const TSharedPtr<FJsonObject>* TerminalPtr = nullptr;
+	const bool bHasTerminal = Descriptor->TryGetObjectField(TEXT("map_terminal_type"), TerminalPtr)
+		&& TerminalPtr && TerminalPtr->IsValid();
+	FString Canonical = FString::Printf(TEXT("%s|dir=%d|cat=%s|sub=%s|subobj=%s|ref=%d|const=%d|container=%d"),
+		*Descriptor->GetStringField(TEXT("name")),
+		Descriptor->GetIntegerField(TEXT("direction")),
+		*Descriptor->GetStringField(TEXT("category")),
+		*Descriptor->GetStringField(TEXT("subcategory")),
+		*Descriptor->GetStringField(TEXT("subobject")),
+		Descriptor->GetBoolField(TEXT("reference")) ? 1 : 0,
+		Descriptor->GetBoolField(TEXT("const")) ? 1 : 0,
+		Descriptor->GetIntegerField(TEXT("container_type")));
+	if (bHasTerminal)
 	{
-		Serialized.Add(MakeShared<FJsonValueObject>(MakePinSignatureDescriptor(*Pin)));
+		Canonical += FString::Printf(TEXT("|term=%s,%s,%s,%d"),
+			*(*TerminalPtr)->GetStringField(TEXT("category")),
+			*(*TerminalPtr)->GetStringField(TEXT("subcategory")),
+			*(*TerminalPtr)->GetStringField(TEXT("subobject")),
+			(*TerminalPtr)->GetBoolField(TEXT("const")) ? 1 : 0);
 	}
-	NormalizedNode->SetArrayField(TEXT("resolved_pins"), Serialized);
-}
+	return Canonical;
 }
 
 bool FCortexGraphPatchOps::Preflight(
@@ -983,7 +1072,7 @@ bool FCortexGraphPatchOps::Preflight(
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("normalized request exceeds max_request_size_bytes=65536"));
 		return false;
 	}
-	if (!HasOnlyFields(Params, { TEXT("asset_path"), TEXT("target"), TEXT("patch_id"), TEXT("expected_fingerprint"), TEXT("nodes"), TEXT("connections"), TEXT("pin_updates"), TEXT("dry_run"), TEXT("compile"), TEXT("save"), TEXT("allow_noop"), TEXT("expected_validation_hash") }, OutError, TEXT("patch request"))) return false;
+	if (!HasOnlyFields(Params, { TEXT("asset_path"), TEXT("target"), TEXT("patch_id"), TEXT("expected_fingerprint"), TEXT("nodes"), TEXT("connections"), TEXT("pin_updates"), TEXT("dry_run"), TEXT("compile"), TEXT("save"), TEXT("allow_noop"), TEXT("expected_validation_hash"), TEXT("migration") }, OutError, TEXT("patch request"))) return false;
 	FString AssetPath;
 	if (!ReadRequiredString(Params, TEXT("asset_path"), AssetPath, OutError) || AssetPath != Blueprint->GetPathName())
 	{
@@ -1042,6 +1131,153 @@ bool FCortexGraphPatchOps::Preflight(
 	}
 	OutPrepared.FingerprintBefore = FCortexGraphPatchState::ComputeFingerprint(Blueprint);
 	if (!FCortexGraphPatchState::ValidatePrecondition(*FingerprintPtr, OutPrepared.FingerprintBefore, OutError)) return false;
+
+	// The migration shell shares the envelope, the flags, the fingerprint guard and the validation
+	// token with authoring, but never the authoring arrays: a request selects exactly one shell.
+	const TSharedPtr<FJsonObject>* MigrationPtr = nullptr;
+	if (Params->HasField(TEXT("migration")))
+	{
+		if (!Params->TryGetObjectField(TEXT("migration"), MigrationPtr) || !MigrationPtr || !MigrationPtr->IsValid())
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("migration must be an object"));
+			return false;
+		}
+		for (const TCHAR* AuthoringField : { TEXT("nodes"), TEXT("connections"), TEXT("pin_updates") })
+		{
+			if (!Params->HasField(AuthoringField)) continue;
+			const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+			if (!Params->TryGetArrayField(AuthoringField, Array) || !Array)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("%s must be an array"), AuthoringField));
+				return false;
+			}
+			if (Array->Num() > 0)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("migration cannot be combined with a non-empty '%s' array; a migration request carries no authoring nodes, connections or pin_updates"), AuthoringField));
+				return false;
+			}
+		}
+	}
+	if (MigrationPtr != nullptr)
+	{
+		TSharedPtr<FJsonObject> MigrationTarget;
+		UEdGraph* MigrationTargetGraph = nullptr;
+		TSharedPtr<FJsonObject> MigrationSymbol;
+		bool bMigrationWouldCreate = false;
+		bool bMigrationIsEvent = false;
+		bool bMigrationHasParentCall = false;
+		if (!CountBlueprintNodesBounded(Blueprint))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("graph scan exceeds max_scanned_nodes=2048"));
+			return false;
+		}
+		if (!ParseTarget(Blueprint, Params, MigrationTarget, MigrationTargetGraph, MigrationSymbol, bMigrationWouldCreate,
+			bMigrationIsEvent, bMigrationHasParentCall, OutError))
+		{
+			return false;
+		}
+		if (!MigrationTarget->HasField(TEXT("implementation")))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				TEXT("migration requires an implementation target declaring the inherited implementation"));
+			return false;
+		}
+		const TSharedPtr<FJsonObject>* ImplementationSelector = nullptr;
+		MigrationTarget->TryGetObjectField(TEXT("implementation"), ImplementationSelector);
+		FCortexGraphMigrationIdentity Identity;
+		Identity.EntryGuid = DerivePlannedNodeGuid(OutPrepared.PatchId, TEXT("entry"));
+		Identity.ResultGuid = DerivePlannedNodeGuid(OutPrepared.PatchId, TEXT("result"));
+		FCortexGraphMigrationPlan MigrationPlan;
+		bool bMigrationReused = false;
+		if (!FCortexGraphMigrationOps::Plan(Blueprint, *MigrationPtr, ImplementationSelector ? *ImplementationSelector : nullptr,
+			Identity, MigrationPlan, bMigrationReused, OutError))
+		{
+			return false;
+		}
+		OutPrepared.GraphGuid = MigrationPlan.GraphGuid;
+		OutPrepared.SubgraphPath = MigrationPlan.SubgraphPath;
+		OutPrepared.NodeGuidByClientId.Add(TEXT("entry"), MigrationPlan.Identity.EntryGuid);
+		if (MigrationPlan.HasResultTerminator())
+		{
+			OutPrepared.NodeGuidByClientId.Add(TEXT("result"), MigrationPlan.Identity.ResultGuid);
+		}
+		OutPrepared.EntryNodeGuid = MigrationPlan.Identity.EntryGuid;
+		OutPrepared.bHasEntryNode = true;
+		OutPrepared.PlannedNodeIds.Add(TEXT("entry"));
+		if (MigrationPlan.HasResultTerminator()) OutPrepared.PlannedNodeIds.Add(TEXT("result"));
+		OutPrepared.MigrationPlan = MigrationPlan.ToJson();
+
+		TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
+		Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
+		Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
+		Normalized->SetObjectField(TEXT("target"), MigrationTarget);
+		Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+		TArray<TSharedPtr<FJsonValue>> NormalizedNodes;
+		if (MigrationPlan.NormalizedNode.IsValid())
+		{
+			NormalizedNodes.Add(MakeShared<FJsonValueObject>(MigrationPlan.NormalizedNode));
+		}
+		Normalized->SetArrayField(TEXT("nodes"), NormalizedNodes);
+		Normalized->SetArrayField(TEXT("connections"), TArray<TSharedPtr<FJsonValue>>());
+		Normalized->SetArrayField(TEXT("pin_updates"), TArray<TSharedPtr<FJsonValue>>());
+		Normalized->SetBoolField(TEXT("compile"), bCompile);
+		Normalized->SetBoolField(TEXT("allow_noop"), bAllowNoop);
+		Normalized->SetObjectField(TEXT("resolved_symbol"),
+			MigrationPlan.ResolvedSymbol.IsValid() ? MigrationPlan.ResolvedSymbol : MakeShared<FJsonObject>());
+		Normalized->SetObjectField(TEXT("migration"), OutPrepared.MigrationPlan);
+		OutPrepared.NormalizedRequest = Normalized;
+
+		if (bMigrationReused)
+		{
+			// A complete reuse is an idempotent replay: the whole planned intent and the replacement
+			// must already match the live asset before this request may claim no work is needed.
+			FString ReuseFailure;
+			if (!ComparePlannedIntentAgainstNative(
+				Blueprint, OutPrepared, MakePreparedLocators(OutPrepared), false, false, ReuseFailure))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("the existing deterministic replacement identity does not match the planned intent: %s"), *ReuseFailure));
+				return false;
+			}
+			if (!FCortexGraphMigrationOps::VerifyReplacementAgainstNative(
+				Blueprint, MigrationPlan, false, false, ReuseFailure))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("the existing deterministic replacement identity does not match the planned replace_entry: %s"), *ReuseFailure));
+				return false;
+			}
+			OutPrepared.ReusedClientIds.Add(TEXT("entry"));
+			if (MigrationPlan.HasResultTerminator()) OutPrepared.ReusedClientIds.Add(TEXT("result"));
+			OutPrepared.bFullyReused = true;
+		}
+		OutPrepared.bChanged = !OutPrepared.bFullyReused;
+
+		FString MigrationIntent;
+		MigrationIntent += TEXT("graph_patch_v1|");
+		MigrationIntent += CanonicalObject(Normalized);
+		MigrationIntent += TEXT("|fingerprint=");
+		MigrationIntent += OutPrepared.FingerprintBefore->GetStringField(TEXT("graph_authoring_hash"));
+		MigrationIntent += TEXT("|engine=UE5.8|schema=K2");
+		FTCHARToUTF8 MigrationUtf8(*MigrationIntent);
+		const FIoHash MigrationDigest = FIoHash::HashBuffer(
+			reinterpret_cast<const uint8*>(MigrationUtf8.Get()), MigrationUtf8.Length());
+		OutPrepared.ValidationHash = LexToString(MigrationDigest);
+
+		if (!bDryRun)
+		{
+			FString ExpectedToken;
+			Params->TryGetStringField(TEXT("expected_validation_hash"), ExpectedToken);
+			if (ExpectedToken != OutPrepared.ValidationHash)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
+					TEXT("expected_validation_hash does not match current preflight intent"));
+				return false;
+			}
+		}
+		return true;
+	}
 
 	TSharedPtr<FJsonObject> Target;
 	UEdGraph* TargetGraph = nullptr;
@@ -1629,6 +1865,50 @@ struct FGraphPatchJournal
 	};
 	TArray<FNodePinSnapshot> NodePins;
 
+	/**
+	 * One terminator node the migration detached from its graph. The node object stays alive here so
+	 * its identity (GUID and object name) survives, and the pin snapshot carries the state that the
+	 * detach broke: defaults, pin types and durable links back to the preserved downstream nodes.
+	 */
+	struct FRemovedNodeEntry
+	{
+		FGuid NodeGuid;
+		FGuid GraphGuid;
+		int32 NodePosX = 0;
+		int32 NodePosY = 0;
+		FString NodeComment;
+		bool bCommentBubblePinned = false;
+		bool bCommentBubbleVisible = false;
+		int32 EnabledState = 0;
+		bool bUserSetEnabledState = false;
+		bool bForceDisplayAsDisabled = false;
+		bool bOverrideFunction = false;
+		FName MemberName = NAME_None;
+		UClass* MemberParentClass = nullptr;
+		UEdGraphNode* Node = nullptr;
+		FNodePinSnapshot Snapshot;
+	};
+	TArray<FRemovedNodeEntry> RemovedNodes;
+
+	/** One shadowing member removed as part of a migration, journaled with its exact description. */
+	struct FMemberEntry
+	{
+		FName Name = NAME_None;
+		int32 Index = INDEX_NONE;
+		TSharedPtr<FJsonObject> Captured;
+	};
+	bool bMemberCaptured = false;
+	FMemberEntry Member;
+
+	/**
+	 * Preservation contract of a migration: the canonical capture of every node outside the replaced
+	 * set, verified again after recovery so a restored body is proven, not assumed.
+	 */
+	bool bVerifyPreservation = false;
+	FGuid PreservationGraphGuid;
+	TArray<FGuid> PreservationExcludedGuids;
+	FString PreservationBefore;
+
 	FCortexGraphPatchLocators Locators;
 	bool bCompileAttempted = false;
 
@@ -1645,18 +1925,13 @@ struct FGraphPatchJournal
 };
 
 /**
- * Journals the complete pin identity of an existing node the first time one of its defaults is
- * changed. Later mutations of the same node stay outside the snapshot so it stays pre-request
- * state even when the first change already rebuilt the pin set.
+ * Canonical pre-request pin identity of one node: names, directions, types, defaults and durable
+ * links. One implementation serves the default-mutation journal and the removal journal.
  */
-void JournalNodePins(UEdGraphNode* Node, FGraphPatchJournal& Journal)
+FGraphPatchJournal::FNodePinSnapshot MakeNodePinSnapshot(UEdGraphNode* Node)
 {
-	if (!Node || !Node->NodeGuid.IsValid()) return;
-	for (const FGraphPatchJournal::FNodePinSnapshot& Existing : Journal.NodePins)
-	{
-		if (Existing.NodeGuid == Node->NodeGuid) return;
-	}
 	FGraphPatchJournal::FNodePinSnapshot Snapshot;
+	if (!Node || !Node->NodeGuid.IsValid()) return Snapshot;
 	Snapshot.NodeGuid = Node->NodeGuid;
 	for (UEdGraphPin* Pin : Node->Pins)
 	{
@@ -1677,7 +1952,164 @@ void JournalNodePins(UEdGraphNode* Node, FGraphPatchJournal& Journal)
 		}
 		Snapshot.Pins.Add(MoveTemp(Entry));
 	}
-	Journal.NodePins.Add(MoveTemp(Snapshot));
+	return Snapshot;
+}
+
+/**
+ * Journals the complete pin identity of an existing node the first time one of its defaults is
+ * changed. Later mutations of the same node stay outside the snapshot so it stays pre-request
+ * state even when the first change already rebuilt the pin set.
+ */
+void JournalNodePins(UEdGraphNode* Node, FGraphPatchJournal& Journal)
+{
+	if (!Node || !Node->NodeGuid.IsValid()) return;
+	for (const FGraphPatchJournal::FNodePinSnapshot& Existing : Journal.NodePins)
+	{
+		if (Existing.NodeGuid == Node->NodeGuid) return;
+	}
+	Journal.NodePins.Add(MakeNodePinSnapshot(Node));
+}
+
+/**
+ * Journals the complete pre-removal identity of a node the migration detaches. The object itself is
+ * kept alive by the journal, so recovery re-registers the same node and its identity (including the
+ * object name the authoring fingerprint compares) is restored exactly.
+ */
+void JournalNodeRemoved(UEdGraphNode* Node, FGraphPatchJournal& Journal)
+{
+	if (!Node || !Node->NodeGuid.IsValid()) return;
+	for (const FGraphPatchJournal::FRemovedNodeEntry& Existing : Journal.RemovedNodes)
+	{
+		if (Existing.NodeGuid == Node->NodeGuid) return;
+	}
+	FGraphPatchJournal::FRemovedNodeEntry Entry;
+	Entry.NodeGuid = Node->NodeGuid;
+	Entry.GraphGuid = Node->GetGraph() ? Node->GetGraph()->GraphGuid : FGuid();
+	Entry.NodePosX = Node->NodePosX;
+	Entry.NodePosY = Node->NodePosY;
+	Entry.NodeComment = Node->NodeComment;
+	Entry.bCommentBubblePinned = Node->bCommentBubblePinned;
+	Entry.bCommentBubbleVisible = Node->bCommentBubbleVisible;
+	Entry.EnabledState = static_cast<int32>(Node->GetDesiredEnabledState());
+	Entry.bUserSetEnabledState = Node->HasUserSetTheEnabledState();
+	Entry.bForceDisplayAsDisabled = Node->IsDisplayAsDisabledForced();
+	if (const UK2Node_Event* Event = Cast<UK2Node_Event>(Node))
+	{
+		Entry.bOverrideFunction = Event->bOverrideFunction;
+		Entry.MemberName = Event->EventReference.GetMemberName();
+		Entry.MemberParentClass = Event->EventReference.GetMemberParentClass();
+	}
+	else if (const UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Node))
+	{
+		Entry.MemberName = FunctionEntry->FunctionReference.GetMemberName();
+		Entry.MemberParentClass = FunctionEntry->FunctionReference.GetMemberParentClass();
+	}
+	else if (const UK2Node_FunctionResult* FunctionResult = Cast<UK2Node_FunctionResult>(Node))
+	{
+		Entry.MemberName = FunctionResult->FunctionReference.GetMemberName();
+		Entry.MemberParentClass = FunctionResult->FunctionReference.GetMemberParentClass();
+	}
+	else if (const UK2Node_Variable* Variable = Cast<UK2Node_Variable>(Node))
+	{
+		Entry.MemberName = Variable->VariableReference.GetMemberName();
+		Entry.MemberParentClass = Variable->VariableReference.GetMemberParentClass();
+	}
+	Entry.Node = Node;
+	Entry.Snapshot = MakeNodePinSnapshot(Node);
+	Journal.RemovedNodes.Add(MoveTemp(Entry));
+}
+
+bool RestoreNodePinState(
+	UBlueprint* Blueprint,
+	const FGraphPatchJournal& Journal,
+	const FGraphPatchJournal::FNodePinSnapshot& Snapshot);
+
+/**
+ * Re-registers every detached node in its original graph and restores its complete state. Existing
+ * nodes are never destroyed, so the restored node keeps its object identity and one authoring
+ * fingerprint comparison proves the whole body came back.
+ */
+bool RestoreRemovedNodes(UBlueprint* Blueprint, const FGraphPatchJournal& Journal)
+{
+	TArray<UEdGraph*> Graphs;
+	Blueprint->GetAllGraphs(Graphs);
+	for (int32 Index = Journal.RemovedNodes.Num() - 1; Index >= 0; --Index)
+	{
+		const FGraphPatchJournal::FRemovedNodeEntry& Entry = Journal.RemovedNodes[Index];
+		UEdGraph* Graph = nullptr;
+		for (UEdGraph* Candidate : Graphs)
+		{
+			if (Candidate && Candidate->GraphGuid == Entry.GraphGuid)
+			{
+				Graph = Candidate;
+				break;
+			}
+		}
+		if (!Graph) return false;
+		UEdGraphNode* Node = nullptr;
+		for (UEdGraphNode* Candidate : Graph->Nodes)
+		{
+			if (Candidate && Candidate->NodeGuid == Entry.NodeGuid)
+			{
+				Node = Candidate;
+				break;
+			}
+		}
+		if (!Node)
+		{
+			if (!IsValid(Entry.Node)) return false;
+			Node = Entry.Node;
+			Graph->AddNode(Node, false, false);
+		}
+		Node->Modify();
+		Node->NodeGuid = Entry.NodeGuid;
+		Node->NodePosX = Entry.NodePosX;
+		Node->NodePosY = Entry.NodePosY;
+		Node->NodeComment = Entry.NodeComment;
+		Node->bCommentBubblePinned = Entry.bCommentBubblePinned;
+		Node->bCommentBubbleVisible = Entry.bCommentBubbleVisible;
+		Node->SetEnabledState(static_cast<ENodeEnabledState>(Entry.EnabledState), Entry.bUserSetEnabledState);
+		Node->SetForceDisplayAsDisabled(Entry.bForceDisplayAsDisabled);
+		if (UK2Node_Event* Event = Cast<UK2Node_Event>(Node))
+		{
+			Event->bOverrideFunction = Entry.bOverrideFunction;
+			if (Entry.MemberParentClass)
+			{
+				Event->EventReference.SetExternalMember(Entry.MemberName, Entry.MemberParentClass);
+			}
+			else if (!Entry.MemberName.IsNone())
+			{
+				Event->EventReference.SetSelfMember(Entry.MemberName);
+			}
+		}
+		else if (UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Node))
+		{
+			if (Entry.MemberParentClass) FunctionEntry->FunctionReference.SetExternalMember(Entry.MemberName, Entry.MemberParentClass);
+		}
+		else if (UK2Node_FunctionResult* FunctionResult = Cast<UK2Node_FunctionResult>(Node))
+		{
+			if (Entry.MemberParentClass) FunctionResult->FunctionReference.SetExternalMember(Entry.MemberName, Entry.MemberParentClass);
+		}
+		else if (UK2Node_Variable* Variable = Cast<UK2Node_Variable>(Node))
+		{
+			if (Entry.MemberParentClass) Variable->VariableReference.SetExternalMember(Entry.MemberName, Entry.MemberParentClass);
+		}
+		if (!RestoreNodePinState(Blueprint, Journal, Entry.Snapshot)) return false;
+		Graph->NotifyGraphChanged();
+	}
+	return true;
+}
+
+/** Re-inserts the shadowing member a migration removed, with its exact captured description. */
+bool RestoreRemovedMember(UBlueprint* Blueprint, const FGraphPatchJournal& Journal)
+{
+	if (!Journal.bMemberCaptured) return true;
+	FCortexCommandResult MemberError;
+	if (!FCortexGraphMigrationOps::RestoreShadowingMember(Blueprint, Journal.Member.Captured, Journal.Member.Index, MemberError))
+	{
+		return false;
+	}
+	return true;
 }
 
 /**
@@ -1983,6 +2415,11 @@ bool RestoreJournal(UBlueprint* Blueprint, const FGraphPatchJournal& Journal)
 			Node->DestroyNode();
 		}
 	}
+
+	// Detached nodes are re-registered only after everything this patch created is gone, so the
+	// preserved downstream pins are free again and the journaled links can be re-created exactly.
+	if (!RestoreRemovedNodes(Blueprint, Journal)) return false;
+	if (!RestoreRemovedMember(Blueprint, Journal)) return false;
 
 	for (int32 Index = Journal.AddedGraphs.Num() - 1; Index >= 0; --Index)
 	{
@@ -2318,31 +2755,6 @@ bool CompareNodeSymbol(
 	}
 
 	return true;
-}
-
-/** Canonical string of a planned pin signature, used for exact native comparison. */
-FString CanonicalPinSignature(const TSharedPtr<FJsonObject>& Descriptor)
-{
-	if (!Descriptor.IsValid()) return FString();
-	FString Canonical = FString::Printf(TEXT("%s|dir=%d|cat=%s|sub=%s|subobj=%s|ref=%d|const=%d|container=%d"),
-		*Descriptor->GetStringField(TEXT("name")),
-		Descriptor->GetIntegerField(TEXT("direction")),
-		*Descriptor->GetStringField(TEXT("category")),
-		*Descriptor->GetStringField(TEXT("subcategory")),
-		*Descriptor->GetStringField(TEXT("subobject")),
-		Descriptor->GetBoolField(TEXT("reference")) ? 1 : 0,
-		Descriptor->GetBoolField(TEXT("const")) ? 1 : 0,
-		Descriptor->GetIntegerField(TEXT("container_type")));
-	const TSharedPtr<FJsonObject>* TerminalPtr = nullptr;
-	if (Descriptor->TryGetObjectField(TEXT("map_terminal_type"), TerminalPtr) && TerminalPtr && TerminalPtr->IsValid())
-	{
-		Canonical += FString::Printf(TEXT("|term=%s,%s,%s,%d"),
-			*(*TerminalPtr)->GetStringField(TEXT("category")),
-			*(*TerminalPtr)->GetStringField(TEXT("subcategory")),
-			*(*TerminalPtr)->GetStringField(TEXT("subobject")),
-			(*TerminalPtr)->GetBoolField(TEXT("const")) ? 1 : 0);
-	}
-	return Canonical;
 }
 
 /** Compares every planned pin signature of a created node against its native pins. */
@@ -2918,7 +3330,24 @@ bool VerifyAppliedState(
 	bool bCompiled,
 	FString& OutFailure)
 {
-	return ComparePlannedIntentAgainstNative(Blueprint, Prepared, Journal.Locators, bCompiled, true, OutFailure);
+	if (!ComparePlannedIntentAgainstNative(Blueprint, Prepared, Journal.Locators, bCompiled, true, OutFailure))
+	{
+		return false;
+	}
+	// A migration additionally proves the replacement terminators, the realized boundary remap and
+	// the preservation capture the authoring comparator cannot express.
+	if (Prepared.MigrationPlan.IsValid())
+	{
+		FCortexGraphMigrationPlan Plan;
+		FCortexCommandResult PlanError;
+		if (!FCortexGraphMigrationPlan::FromJson(Prepared.MigrationPlan, Plan, PlanError))
+		{
+			OutFailure = PlanError.ErrorMessage;
+			return false;
+		}
+		return FCortexGraphMigrationOps::VerifyReplacementAgainstNative(Blueprint, Plan, bCompiled, true, OutFailure);
+	}
+	return true;
 }
 
 bool HandleApplyFailure(
@@ -2965,7 +3394,25 @@ bool HandleApplyFailure(
 		bGeneratedRestored = bRecoveryCompileSucceeded
 			&& FCortexGraphPatchState::ComputeGeneratedStateDigest(Blueprint) == Journal.GeneratedStateBefore;
 	}
-	const bool bVerified = (bInjectedFailure == false) && bAuthoringRestored && bGeneratedRestored;
+	bool bPreservationRestored = true;
+	if (Journal.bVerifyPreservation)
+	{
+		UEdGraph* PreservationGraph = nullptr;
+		TArray<UEdGraph*> PreservationGraphs;
+		Blueprint->GetAllGraphs(PreservationGraphs);
+		for (UEdGraph* Candidate : PreservationGraphs)
+		{
+			if (Candidate && Candidate->GraphGuid == Journal.PreservationGraphGuid)
+			{
+				PreservationGraph = Candidate;
+				break;
+			}
+		}
+		bPreservationRestored = PreservationGraph != nullptr
+			&& FCortexGraphMigrationOps::CapturePreservation(Blueprint, PreservationGraph, Journal.PreservationExcludedGuids)
+				== Journal.PreservationBefore;
+	}
+	const bool bVerified = (bInjectedFailure == false) && bAuthoringRestored && bGeneratedRestored && bPreservationRestored;
 
 	if (!bVerified)
 	{
@@ -2988,6 +3435,10 @@ bool HandleApplyFailure(
 			if (!bGeneratedRestored)
 			{
 				OutOutcome->Diagnostics.Add(TEXT("rollback: generated state was not restored"));
+			}
+			if (!bPreservationRestored)
+			{
+				OutOutcome->Diagnostics.Add(TEXT("rollback: the downstream node set outside the replaced entry was not restored"));
 			}
 			if (bInjectedFailure)
 			{
@@ -3051,6 +3502,139 @@ bool ApplyPrepared(
 		return HandleApplyFailure(Blueprint, Prepared, Journal, OutOutcome, OutError, Message,
 			CortexErrorCodes::InvalidOperation, true);
 	};
+
+	if (Prepared.MigrationPlan.IsValid())
+	{
+		// The migration shell: one journaled entry/terminator replacement (plus an optional member
+		// removal) inside the same transaction, followed by the caller's single compile and the
+		// shared readback.
+		FCortexGraphMigrationPlan Plan;
+		if (!FCortexGraphMigrationPlan::FromJson(Prepared.MigrationPlan, Plan, OutError))
+		{
+			return false;
+		}
+		FGuid GraphGuid;
+		FGuid::Parse(Plan.GraphGuid, GraphGuid);
+		UEdGraph* MigrationGraph = FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, GraphGuid);
+		if (!MigrationGraph)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("the migration target graph did not re-resolve after the final guard"));
+			return false;
+		}
+		Journal.Locators.GraphGuid = MigrationGraph->GraphGuid;
+		Journal.Locators.SubgraphPath = Plan.SubgraphPath;
+		Journal.Locators.EntryNodeGuid = Plan.Identity.EntryGuid;
+		Journal.Locators.bHasEntryNode = true;
+		Journal.Locators.NodeGuidByClientId.Add(TEXT("entry"), Plan.Identity.EntryGuid);
+		if (Plan.HasResultTerminator())
+		{
+			Journal.Locators.NodeGuidByClientId.Add(TEXT("result"), Plan.Identity.ResultGuid);
+		}
+
+		// The preservation contract is captured before the first migration mutation, so recovery can
+		// prove the downstream body came back instead of assuming it.
+		Journal.bVerifyPreservation = true;
+		Journal.PreservationGraphGuid = MigrationGraph->GraphGuid;
+		Journal.PreservationExcludedGuids.Add(Plan.Identity.EntryGuid);
+		Journal.PreservationExcludedGuids.Add(Plan.Identity.ResultGuid);
+		FGuid SourceEntryGuid;
+		if (FGuid::Parse(Plan.SourceEntryGuid, SourceEntryGuid)) Journal.PreservationExcludedGuids.Add(SourceEntryGuid);
+		FGuid SourceResultGuid;
+		if (FGuid::Parse(Plan.SourceResultGuid, SourceResultGuid)) Journal.PreservationExcludedGuids.Add(SourceResultGuid);
+		for (const FString& GuidText : Plan.MemberReferenceNodeGuids)
+		{
+			FGuid ReferenceGuid;
+			if (FGuid::Parse(GuidText, ReferenceGuid)) Journal.PreservationExcludedGuids.Add(ReferenceGuid);
+		}
+		Journal.PreservationBefore = FCortexGraphMigrationOps::CapturePreservation(
+			Blueprint, MigrationGraph, Journal.PreservationExcludedGuids);
+
+		if (Plan.bRemoveMember)
+		{
+			// The engine's self-only variable removal destroys the referencing nodes, so they are
+			// detached and journaled first and come back with the member on recovery.
+			for (const FString& GuidText : Plan.MemberReferenceNodeGuids)
+			{
+				FGuid ReferenceGuid;
+				FGuid::Parse(GuidText, ReferenceGuid);
+				UEdGraphNode* ReferenceNode = FCortexGraphMigrationOps::FindNodeByGuid(Blueprint, ReferenceGuid);
+				if (!ReferenceNode || !ReferenceNode->GetGraph())
+				{
+					return Fail(TEXT("a planned shadowing-member reference no longer resolves"));
+				}
+				JournalNodeRemoved(ReferenceNode, Journal);
+				ReferenceNode->GetGraph()->RemoveNode(ReferenceNode);
+			}
+			Journal.Member.Name = FName(*Plan.MemberName);
+			Journal.Member.Index = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, Journal.Member.Name);
+			Journal.Member.Captured = FCortexGraphMigrationOps::CaptureShadowingMember(Blueprint, Journal.Member.Name);
+			Journal.bMemberCaptured = Journal.Member.Captured.IsValid();
+			if (!Journal.bMemberCaptured)
+			{
+				return Fail(TEXT("the planned shadowing member no longer resolves"));
+			}
+			FCortexCommandResult MemberError;
+			if (!FCortexGraphMigrationOps::RemoveShadowingMember(Blueprint, Journal.Member.Name, MemberError))
+			{
+				return Fail(MemberError.ErrorMessage);
+			}
+		}
+
+		UEdGraphNode* SourceEntry = nullptr;
+		if (FGuid::Parse(Plan.SourceEntryGuid, SourceEntryGuid))
+		{
+			SourceEntry = FCortexGraphMigrationOps::FindNodeByGuid(Blueprint, SourceEntryGuid);
+		}
+		if (!SourceEntry || SourceEntry->GetGraph() != MigrationGraph)
+		{
+			return Fail(TEXT("the stale implementation entry no longer resolves in the target graph"));
+		}
+		JournalNodeRemoved(SourceEntry, Journal);
+		MigrationGraph->Modify();
+		MigrationGraph->RemoveNode(SourceEntry);
+		if (!Plan.SourceResultGuid.IsEmpty())
+		{
+			UEdGraphNode* SourceResult = FCortexGraphMigrationOps::FindNodeByGuid(Blueprint, SourceResultGuid);
+			if (!SourceResult || SourceResult->GetGraph() != MigrationGraph)
+			{
+				return Fail(TEXT("the stale result terminator no longer resolves in the target graph"));
+			}
+			JournalNodeRemoved(SourceResult, Journal);
+			MigrationGraph->RemoveNode(SourceResult);
+		}
+		if (ShouldInjectApplyFault(TEXT("migration_entry_removed")))
+		{
+			return Fail(TEXT("Test fault injected after entry removal"));
+		}
+
+		UEdGraphNode* ReplacementEntry = nullptr;
+		UEdGraphNode* ReplacementResult = nullptr;
+		if (!FCortexGraphMigrationOps::RegisterReplacement(Blueprint, MigrationGraph, Plan, ReplacementEntry, ReplacementResult, OutError))
+		{
+			return Fail(OutError.ErrorMessage);
+		}
+		if (ReplacementEntry) Journal.AddedNodeGuids.Add(ReplacementEntry->NodeGuid);
+		if (ReplacementResult) Journal.AddedNodeGuids.Add(ReplacementResult->NodeGuid);
+		if (ShouldInjectApplyFault(TEXT("migration_after_registration")))
+		{
+			return Fail(TEXT("Test fault injected after graph registration"));
+		}
+
+		TArray<FCortexGraphMigrationLink> CreatedLinks;
+		FCortexCommandResult RemapError;
+		if (!FCortexGraphMigrationOps::RemapBoundary(
+			Blueprint, MigrationGraph, Plan, ReplacementEntry, ReplacementResult, CreatedLinks, RemapError))
+		{
+			return Fail(RemapError.ErrorMessage);
+		}
+		for (const FCortexGraphMigrationLink& Link : CreatedLinks)
+		{
+			Journal.Links.Add({ Link.FromNodeGuid, Link.FromPin, Link.ToNodeGuid, Link.ToPin });
+		}
+		MigrationGraph->NotifyGraphChanged();
+		return true;
+	}
 
 	const TSharedPtr<FJsonObject>* TargetPtr = nullptr;
 	if (!Prepared.NormalizedRequest->TryGetObjectField(TEXT("target"), TargetPtr) || !TargetPtr || !TargetPtr->IsValid())

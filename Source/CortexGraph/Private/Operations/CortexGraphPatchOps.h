@@ -40,6 +40,12 @@ struct FCortexGraphPreparedPatch
 	bool bFullyReused = false;
 	TArray<FString> PlannedNodeIds;
 	TArray<FString> PlannedConnectionKeys;
+	/**
+	 * Durable `replace_entry` plan when the request selected the migration shell. It carries only
+	 * names, GUIDs and canonical descriptors, so apply, readback and recovery rebuild every pointer.
+	 */
+	TSharedPtr<FJsonObject> MigrationPlan;
+	bool bIsMigration() const { return MigrationPlan.IsValid(); }
 
 	/** Prepared state never owns transient UObject pointers. */
 	bool HasTransientObjects() const { return false; }
@@ -149,6 +155,44 @@ public:
 	 * single omission marker, and at most 512 characters per entry including any suffix.
 	 */
 	static void TrimDiagnostics(TArray<FString>& InOutDiagnostics);
+
+	/**
+	 * Shared request-validation primitives. The migration shell validates its own object against the
+	 * same strict rules the authoring envelope uses, so both shells refuse identical malformed input
+	 * with identical errors instead of growing a second validation scheme.
+	 */
+	static bool HasOnlyFields(
+		const TSharedPtr<FJsonObject>& Object,
+		const TSet<FString>& Allowed,
+		FCortexCommandResult& OutError,
+		const FString& Context);
+	static bool ReadStrictBool(
+		const TSharedPtr<FJsonObject>& Object,
+		const FString& Field,
+		bool DefaultValue,
+		bool& OutValue,
+		FCortexCommandResult& OutError);
+	static bool ReadRequiredString(
+		const TSharedPtr<FJsonObject>& Object,
+		const FString& Field,
+		FString& OutValue,
+		FCortexCommandResult& OutError);
+	static bool ParseGuidField(
+		const TSharedPtr<FJsonObject>& Object,
+		const FString& Field,
+		FGuid& OutGuid,
+		FCortexCommandResult& OutError);
+	/** Resolves one canonical graph reference to a mutable user graph, subgraph included. */
+	static bool ResolveGraphByGuid(
+		UBlueprint* Blueprint,
+		const FGuid& GraphGuid,
+		const FString& SubgraphPath,
+		UEdGraph*& OutGraph,
+		FCortexCommandResult& OutError);
+	/** Canonical planned signature descriptor of one native pin. */
+	static TSharedPtr<FJsonObject> MakePinSignatureDescriptor(const UEdGraphPin& Pin);
+	/** Canonical string of one planned pin signature descriptor. */
+	static FString CanonicalPinSignature(const TSharedPtr<FJsonObject>& Descriptor);
 	#if WITH_AUTOMATION_TESTS
 	/** Test-only deterministic fault seam; never accepts external command input. */
 	static void SetApplyFaultPointForTesting(FName Point);
