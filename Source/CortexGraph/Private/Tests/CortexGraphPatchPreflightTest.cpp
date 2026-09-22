@@ -356,8 +356,11 @@ bool FCortexGraphPatchPreflightEligibilityTest::RunTest(const FString& Parameter
 	TArray<TSharedPtr<FJsonValue>> OneEventConnection;
 	OneEventConnection.Add(EventConnections[0]);
 	Request->SetArrayField(TEXT("connections"), OneEventConnection);
-	TestTrue(FString::Printf(TEXT("planned defaults remain valid before connection: %s"), *Error.ErrorMessage),
-		FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+		TestTrue(FString::Printf(TEXT("planned defaults remain valid before connection: %s"), *Error.ErrorMessage),
+			FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	Request->SetArrayField(TEXT("connections"), SubtypeConnections);
+	TestFalse(TEXT("connected default conflict is rejected before schema conversion"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("connected default conflict code"), Error.ErrorCode, CortexErrorCodes::InvalidOperation);
 	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
 	return true;
 }
