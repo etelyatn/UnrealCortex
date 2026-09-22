@@ -469,6 +469,46 @@ UEdGraphPin* FindPlannedPin(const TMap<FString, UEdGraphNode*>& Nodes, const FSt
 	return nullptr;
 }
 
+void CloneExistingGraphIntoPlanningGraph(
+	UEdGraph* ExistingGraph,
+	UEdGraph* PlanningGraph,
+	TMap<FString, UEdGraphNode*>& InOutPlannedNodes)
+{
+	if (!ExistingGraph || !PlanningGraph) return;
+
+	TMap<const UEdGraphPin*, UEdGraphPin*> PinClones;
+	for (UEdGraphNode* ExistingNode : ExistingGraph->Nodes)
+	{
+		if (!ExistingNode) continue;
+		UEdGraphNode* Clone = Cast<UEdGraphNode>(StaticDuplicateObject(ExistingNode, PlanningGraph, NAME_None, RF_Transient));
+		if (!Clone) continue;
+		PlanningGraph->AddNode(Clone, false, false);
+		InOutPlannedNodes.Add(ExistingNode->NodeGuid.ToString(), Clone);
+		for (int32 PinIndex = 0; PinIndex < ExistingNode->Pins.Num() && PinIndex < Clone->Pins.Num(); ++PinIndex)
+		{
+			if (ExistingNode->Pins[PinIndex] && Clone->Pins[PinIndex])
+			{
+				Clone->Pins[PinIndex]->LinkedTo.Reset();
+				PinClones.Add(ExistingNode->Pins[PinIndex], Clone->Pins[PinIndex]);
+			}
+		}
+	}
+
+	for (const TPair<const UEdGraphPin*, UEdGraphPin*>& Pair : PinClones)
+	{
+		for (UEdGraphPin* LinkedPin : Pair.Key->LinkedTo)
+		{
+			if (UEdGraphPin* const* LinkedClone = PinClones.Find(LinkedPin))
+			{
+				if (!Pair.Value->LinkedTo.Contains(*LinkedClone))
+				{
+					Pair.Value->MakeLinkTo(*LinkedClone);
+				}
+			}
+		}
+	}
+}
+
 bool AddNormalizedNode(const TSharedPtr<FJsonObject>& Node, TSharedPtr<FJsonObject>& OutNode, FCortexCommandResult& OutError)
 {
 	if (!HasOnlyFields(Node, { TEXT("client_id"), TEXT("node_class"), TEXT("params"), TEXT("defaults"), TEXT("position") }, OutError, TEXT("node"))) return false;
@@ -817,8 +857,32 @@ bool FCortexGraphPatchOps::Preflight(
 	TSet<FString> ClientIds;
 	TMap<FString, UEdGraphNode*> PlannedNodes;
 	TMap<FString, TSet<FString>> DefaultPins;
-	UEdGraph* PlanningGraph = NewObject<UEdGraph>(Blueprint, NAME_None, RF_Transient);
+	UBlueprint* PlanningBlueprint = NewObject<UBlueprint>(GetTransientPackage(), NAME_None, RF_Transient);
+	PlanningBlueprint->ParentClass = Blueprint->ParentClass;
+	PlanningBlueprint->GeneratedClass = Blueprint->GeneratedClass;
+	PlanningBlueprint->SkeletonGeneratedClass = Blueprint->SkeletonGeneratedClass;
+	UEdGraph* PlanningGraph = NewObject<UEdGraph>(PlanningBlueprint, NAME_None, RF_Transient);
 	PlanningGraph->Schema = UEdGraphSchema_K2::StaticClass();
+	bool bNeedsExistingModel = Params->HasField(TEXT("pin_updates"));
+	if (!bNeedsExistingModel)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *Connections)
+		{
+			const TSharedPtr<FJsonObject> Connection = Value->AsObject();
+			const TSharedPtr<FJsonObject>* Endpoint = nullptr;
+			if (Connection.IsValid()
+				&& ((Connection->TryGetObjectField(TEXT("from"), Endpoint) && Endpoint && (*Endpoint)->HasField(TEXT("node_guid")))
+					|| (Connection->TryGetObjectField(TEXT("to"), Endpoint) && Endpoint && (*Endpoint)->HasField(TEXT("node_guid")))))
+			{
+				bNeedsExistingModel = true;
+				break;
+			}
+		}
+	}
+	if (bNeedsExistingModel)
+	{
+		CloneExistingGraphIntoPlanningGraph(TargetGraph, PlanningGraph, PlannedNodes);
+	}
 	const bool bImplementationTarget = Target->HasField(TEXT("implementation"));
 	if (bImplementationTarget)
 	{
@@ -831,7 +895,17 @@ bool FCortexGraphPatchOps::Preflight(
 		}
 		if (ImplementationPlan.ExistingEntryNode)
 		{
-			PlannedNodes.Add(TEXT("entry"), ImplementationPlan.ExistingEntryNode);
+			if (!PlannedNodes.Contains(ImplementationPlan.ExistingEntryNode->NodeGuid.ToString()))
+			{
+				CloneExistingGraphIntoPlanningGraph(TargetGraph, PlanningGraph, PlannedNodes);
+			}
+			UEdGraphNode* const* EntryClone = PlannedNodes.Find(ImplementationPlan.ExistingEntryNode->NodeGuid.ToString());
+			if (!EntryClone)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Failed to model existing implementation entry node"));
+				return false;
+			}
+			PlannedNodes.Add(TEXT("entry"), *EntryClone);
 		}
 		else if (bImplementationIsEvent)
 		{
@@ -856,6 +930,7 @@ bool FCortexGraphPatchOps::Preflight(
 			}
 		}
 	}
+	UEdGraph* const CompatibilityGraph = TargetGraph ? TargetGraph : PlanningGraph;
 
 	for (int32 Index = 0; Index < Nodes->Num(); ++Index)
 	{
@@ -901,7 +976,7 @@ bool FCortexGraphPatchOps::Preflight(
 			Composite->PostPlacedNewNode();
 			Composite->AllocateDefaultPins();
 		}
-		if (TargetGraph && (!PlannedNode->IsCompatibleWithGraph(TargetGraph) || !PlannedNode->CanPasteHere(TargetGraph)))
+		if (!PlannedNode->IsCompatibleWithGraph(CompatibilityGraph) || !PlannedNode->CanPasteHere(CompatibilityGraph))
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 				FString::Printf(TEXT("Node class '%s' is incompatible with the selected graph"), *NodeClass));
@@ -950,7 +1025,7 @@ bool FCortexGraphPatchOps::Preflight(
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("pin_update requires exactly one of default or value"));
 				return false;
 			}
-			UEdGraphPin* Pin = FindPlannedPin(PlannedNodes, NodeGuid.ToString(), PinName, TargetGraph, OutError);
+			UEdGraphPin* Pin = FindPlannedPin(PlannedNodes, NodeGuid.ToString(), PinName, nullptr, OutError);
 			if (!Pin) return false;
 			if (Pin->Direction != EGPD_Input || Pin->LinkedTo.Num() > 0)
 			{
@@ -1015,8 +1090,8 @@ bool FCortexGraphPatchOps::Preflight(
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("Forward or unknown target client_id '%s'"), *ToId));
 			return false;
 		}
-		UEdGraphPin* SourcePin = FindPlannedPin(PlannedNodes, FromId, FromPinName, TargetGraph, OutError);
-		UEdGraphPin* TargetPin = FindPlannedPin(PlannedNodes, ToId, ToPinName, TargetGraph, OutError);
+		UEdGraphPin* SourcePin = FindPlannedPin(PlannedNodes, FromId, FromPinName, nullptr, OutError);
+		UEdGraphPin* TargetPin = FindPlannedPin(PlannedNodes, ToId, ToPinName, nullptr, OutError);
 		if (!SourcePin || !TargetPin) return false;
 		if (SourcePin->Direction != EGPD_Output || TargetPin->Direction != EGPD_Input)
 		{
@@ -1048,8 +1123,7 @@ bool FCortexGraphPatchOps::Preflight(
 					FString::Printf(TEXT("Schema rejected connection: %s"), *Response.Message.ToString()));
 				return false;
 			}
-			if (SourcePin->GetOwningNode()->GetTypedOuter<UEdGraph>() == PlanningGraph && TargetPin->GetOwningNode()->GetTypedOuter<UEdGraph>() == PlanningGraph
-				&& !Schema->TryCreateConnection(SourcePin, TargetPin))
+			if (!Schema->TryCreateConnection(SourcePin, TargetPin))
 			{
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Transient schema connection failed"));
 				return false;
