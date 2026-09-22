@@ -845,6 +845,106 @@ bool FCortexGraphMigrationOps::Plan(
 			TEXT("migration requires target.implementation declaring the inherited declaration the entry must become"));
 		return false;
 	}
+	// The declaration name is resolved first so the shadowing-member policy can run before the
+	// implementation primitive, which reports a same-named custom event as a generic conflict.
+	FName DeclarationName = NAME_None;
+	{
+		FCortexResolvedSymbol DeclaredSymbol;
+		FCortexCommandResult DeclaredError;
+		if (!FCortexGraphSymbolResolver::ResolveFunction(Blueprint, TargetSelector, DeclaredSymbol, DeclaredError)
+			|| !DeclaredSymbol.Function)
+		{
+			OutError = DeclaredError.ErrorCode.IsEmpty()
+				? FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("the migration target declaration does not resolve"))
+				: DeclaredError;
+			return false;
+		}
+		DeclarationName = DeclaredSymbol.Function->GetFName();
+	}
+	const FString DeclaredFunctionName = DeclarationName.ToString();
+
+	// Shadowing-member policy and its reference inventory.
+	FString MemberName;
+	FString MemberKind;
+	{
+		const FName DeclName = DeclarationName;
+		if (FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, DeclName) != INDEX_NONE)
+		{
+			MemberName = DeclName.ToString();
+			MemberKind = TEXT("variable");
+		}
+		else
+		{
+			for (UEdGraph* Graph : Blueprint->UbergraphPages)
+			{
+				if (!Graph) continue;
+				for (UEdGraphNode* Node : Graph->Nodes)
+				{
+					if (const UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
+					{
+						if (CustomEvent->CustomFunctionName == DeclName)
+						{
+							MemberName = DeclName.ToString();
+							MemberKind = TEXT("custom_event");
+							break;
+						}
+					}
+				}
+				if (!MemberName.IsEmpty()) break;
+			}
+			if (MemberName.IsEmpty())
+			{
+				for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+				{
+					if (Graph && Graph != SourceGraph && Graph->GetFName() == DeclName)
+					{
+						MemberName = DeclName.ToString();
+						MemberKind = TEXT("function_graph");
+						break;
+					}
+				}
+			}
+		}
+	}
+	if (!MemberName.IsEmpty())
+	{
+		TArray<FString> InAssetReferences;
+		TArray<FInventoryReference> ExternalReferences;
+		if (!CollectMemberReferences(Blueprint, FName(*MemberName), InAssetReferences, ExternalReferences, OutError)) return false;
+		if (ExternalReferences.Num() > 0)
+		{
+			TArray<FString> Reasons;
+			for (const FInventoryReference& Reference : ExternalReferences)
+			{
+				Reasons.Add(Reference.Description);
+			}
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("the shadowing member '%s' is referenced outside this asset, so remove_shadowing_member cannot be proven safe: %s. No automatic project repair is attempted."),
+					*MemberName, *FString::Join(Reasons, TEXT("; "))));
+			return false;
+		}
+		if (!bRemoveMember)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("the target declaration '%s' is shadowed by a %s of the same name in this asset; remove_shadowing_member=false, so the member was not removed and the replacement was refused. Set remove_shadowing_member=true to remove the %s together with its %d resolved in-asset reference(s)."),
+					*DeclaredFunctionName, *MemberKind, *MemberKind, InAssetReferences.Num()));
+			return false;
+		}
+		if (MemberKind != TEXT("variable"))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("the shadowing member '%s' is a %s; replace_entry can remove a shadowing Blueprint variable, but never a %s"),
+					*MemberName, *MemberKind, *MemberKind));
+			return false;
+		}
+		InAssetReferences.Sort();
+		OutPlan.bRemoveMember = true;
+		OutPlan.MemberName = MemberName;
+		OutPlan.MemberKind = MemberKind;
+		OutPlan.MemberReferenceNodeGuids = InAssetReferences;
+	}
+
+	// Target declaration eligibility, resolved by the shared implementation primitive.
 	FCortexGraphImplementationPlan ImplPlan;
 	if (!FCortexGraphImplementationOps::ValidateEligibility(Blueprint, TargetSelector, ImplPlan, OutError)) return false;
 	if (ImplPlan.bParentCall)
@@ -906,12 +1006,6 @@ bool FCortexGraphMigrationOps::Plan(
 				*SourceEntryGuid.ToString(), *Identity.EntryGuid.ToString()));
 		return false;
 	}
-	if (!bReused && !SourceEntry)
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::NodeNotFound,
-			FString::Printf(TEXT("migration source entry %s does not exist in this asset"), *SourceEntryGuid.ToString()));
-		return false;
-	}
 	if (SourceEntry)
 	{
 		if (SourceEntry->GetGraph() != SourceGraph)
@@ -930,25 +1024,28 @@ bool FCortexGraphMigrationOps::Plan(
 					*SourceEntryGuid.ToString(), bIsEvent ? TEXT("event entry") : TEXT("function entry")));
 			return false;
 		}
-		const UEdGraphNode* Competing = FindCompetingDeclarationEntry(Blueprint, ReplacementEntry, SourceEntry, Function->GetFName(), FunctionClass);
-		if (Competing)
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				FString::Printf(TEXT("the target declaration '%s' already has an implementation entry in graph '%s' (node %s); a second entry would be ambiguous"),
-					*FunctionName, Competing->GetGraph() ? *Competing->GetGraph()->GetName() : TEXT("<none>"), *Competing->NodeGuid.ToString()));
-			return false;
-		}
 	}
-	else
+
+	// A competing implementation entry for the declaration is a conflicting identity state, so it is
+	// reported before a missing source entry: an already-implemented declaration must never look like
+	// a dangling locator, and it is never silently reused or overwritten.
+	if (const UEdGraphNode* Competing = FindCompetingDeclarationEntry(
+		Blueprint, ReplacementEntry, SourceEntry, Function->GetFName(), FunctionClass))
 	{
-		const UEdGraphNode* Competing = FindCompetingDeclarationEntry(Blueprint, ReplacementEntry, nullptr, Function->GetFName(), FunctionClass);
-		if (Competing)
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				FString::Printf(TEXT("the target declaration '%s' already has an implementation entry in graph '%s' (node %s) that is not this patch's deterministic identity"),
-					*FunctionName, Competing->GetGraph() ? *Competing->GetGraph()->GetName() : TEXT("<none>"), *Competing->NodeGuid.ToString()));
-			return false;
-		}
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("the target declaration '%s' already has an implementation entry in graph '%s' (node %s) that is not this patch's deterministic replacement identity %s; a partially applied or conflicting identity set is refused instead of repaired"),
+				*FunctionName,
+				Competing->GetGraph() ? *Competing->GetGraph()->GetName() : TEXT("<none>"),
+				*Competing->NodeGuid.ToString(),
+				*Identity.EntryGuid.ToString()));
+		return false;
+	}
+
+	if (!bReused && !SourceEntry)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::NodeNotFound,
+			FString::Printf(TEXT("migration source entry %s does not exist in this asset"), *SourceEntryGuid.ToString()));
+		return false;
 	}
 
 	// Result terminator shape of the replaced set.
@@ -998,87 +1095,6 @@ bool FCortexGraphMigrationOps::Plan(
 				return false;
 			}
 		}
-	}
-
-	// Shadowing-member policy and its reference inventory.
-	FString MemberName;
-	FString MemberKind;
-	{
-		const FName DeclName = Function->GetFName();
-		if (FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, DeclName) != INDEX_NONE)
-		{
-			MemberName = DeclName.ToString();
-			MemberKind = TEXT("variable");
-		}
-		else
-		{
-			for (UEdGraph* Graph : Blueprint->UbergraphPages)
-			{
-				if (!Graph) continue;
-				for (UEdGraphNode* Node : Graph->Nodes)
-				{
-					if (const UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
-					{
-						if (CustomEvent->CustomFunctionName == DeclName)
-						{
-							MemberName = DeclName.ToString();
-							MemberKind = TEXT("custom_event");
-							break;
-						}
-					}
-				}
-				if (!MemberName.IsEmpty()) break;
-			}
-			if (MemberName.IsEmpty())
-			{
-				for (UEdGraph* Graph : Blueprint->FunctionGraphs)
-				{
-					if (Graph && Graph != SourceGraph && Graph->GetFName() == DeclName)
-					{
-						MemberName = DeclName.ToString();
-						MemberKind = TEXT("function_graph");
-						break;
-					}
-				}
-			}
-		}
-	}
-	if (!MemberName.IsEmpty())
-	{
-		TArray<FString> InAssetReferences;
-		TArray<FInventoryReference> ExternalReferences;
-		if (!CollectMemberReferences(Blueprint, FName(*MemberName), InAssetReferences, ExternalReferences, OutError)) return false;
-		if (ExternalReferences.Num() > 0)
-		{
-			TArray<FString> Reasons;
-			for (const FInventoryReference& Reference : ExternalReferences)
-			{
-				Reasons.Add(Reference.Description);
-			}
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				FString::Printf(TEXT("the shadowing member '%s' is referenced outside this asset, so remove_shadowing_member cannot be proven safe: %s. No automatic project repair is attempted."),
-					*MemberName, *FString::Join(Reasons, TEXT("; "))));
-			return false;
-		}
-		if (!bRemoveMember)
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				FString::Printf(TEXT("the target declaration '%s' is shadowed by a %s of the same name in this asset; remove_shadowing_member=false, so the member was not removed and the replacement was refused. Set remove_shadowing_member=true to remove the %s together with its %d resolved in-asset reference(s)."),
-					*FunctionName, *MemberKind, *MemberKind, InAssetReferences.Num()));
-			return false;
-		}
-		if (MemberKind != TEXT("variable"))
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				FString::Printf(TEXT("the shadowing member '%s' is a %s; replace_entry can remove a shadowing Blueprint variable, but never a %s"),
-					*MemberName, *MemberKind, *MemberKind));
-			return false;
-		}
-		InAssetReferences.Sort();
-		OutPlan.bRemoveMember = true;
-		OutPlan.MemberName = MemberName;
-		OutPlan.MemberKind = MemberKind;
-		OutPlan.MemberReferenceNodeGuids = InAssetReferences;
 	}
 
 	// Replacement terminator pin set: the request must cover it exactly.
@@ -2035,44 +2051,33 @@ bool FCortexGraphMigrationOps::RestoreShadowingMember(
 		}
 		Type.PinSubCategoryObject = SubObject;
 	}
+	const int32 InsertIndex = Index >= 0 ? FMath::Clamp(Index, 0, Blueprint->NewVariables.Num()) : Blueprint->NewVariables.Num();
 	FString DefaultValue;
 	CapturedVariable->TryGetStringField(TEXT("default_value"), DefaultValue);
-	FBlueprintEditorUtils::AddMemberVariable(Blueprint, MemberName, Type, DefaultValue);
-	const int32 AddedIndex = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, MemberName);
-	if (AddedIndex == INDEX_NONE)
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-			FString::Printf(TEXT("shadowing member '%s' could not be restored"), *Name));
-		return false;
-	}
-	FBPVariableDescription Description = Blueprint->NewVariables[AddedIndex];
+	double NumericFlags = 0.0;
+	CapturedVariable->TryGetNumberField(TEXT("flags"), NumericFlags);
+	FString FriendlyName;
+	CapturedVariable->TryGetStringField(TEXT("friendly_name"), FriendlyName);
+	FString CategoryText;
+	CapturedVariable->TryGetStringField(TEXT("category"), CategoryText);
+	FBPVariableDescription Description;
+	Description.VarName = MemberName;
+	Description.VarType = Type;
+	Description.DefaultValue = DefaultValue;
+	Description.PropertyFlags = static_cast<uint64>(NumericFlags);
+	Description.FriendlyName = FriendlyName;
+	Description.Category = FText::FromString(CategoryText);
 	FString GuidText;
 	FGuid ParsedGuid;
 	if (CapturedVariable->TryGetStringField(TEXT("guid"), GuidText) && FGuid::Parse(GuidText, ParsedGuid))
 	{
 		Description.VarGuid = ParsedGuid;
 	}
-	Description.VarType = Type;
-	double Flags = 0.0;
-	if (CapturedVariable->TryGetNumberField(TEXT("flags"), Flags))
-	{
-		Description.PropertyFlags = static_cast<uint64>(Flags);
-	}
-	Description.DefaultValue = DefaultValue;
-	CapturedVariable->TryGetStringField(TEXT("friendly_name"), Description.FriendlyName);
-	FString CategoryText;
-	if (CapturedVariable->TryGetStringField(TEXT("category"), CategoryText))
-	{
-		Description.Category = FText::FromString(CategoryText);
-	}
-	Blueprint->NewVariables[AddedIndex] = Description;
-	if (Index >= 0 && Index != AddedIndex && Index < Blueprint->NewVariables.Num())
-	{
-		const FBPVariableDescription Moved = Blueprint->NewVariables[AddedIndex];
-		Blueprint->NewVariables.RemoveAt(AddedIndex);
-		Blueprint->NewVariables.Insert(Moved, FMath::Clamp(Index, 0, Blueprint->NewVariables.Num()));
-	}
-	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+	// The captured description is re-inserted verbatim: a re-creation round trip through the engine
+	// variable API cannot preserve the captured identity exactly, and it would regenerate the class
+	// while the recovered variable is present.
+	Blueprint->Modify();
+	Blueprint->NewVariables.Insert(Description, InsertIndex);
 	return true;
 }
 

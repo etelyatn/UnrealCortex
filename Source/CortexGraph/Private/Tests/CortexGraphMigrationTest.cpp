@@ -41,7 +41,12 @@
  */
 namespace CortexGraphMigrationReplaceTest
 {
-const TCHAR* const FixtureActorClassPath = TEXT("/Script/CortexGraph.ACortexGraphMigrationFixtureActor");
+/** Canonical class path of the fixture declaration owner (UObject names drop the C++ prefix). */
+FString FixtureActorClassPath()
+{
+	return ACortexGraphMigrationFixtureActor::StaticClass()->GetPathName();
+}
+
 const TCHAR* const ActorClassPath = TEXT("/Script/Engine.Actor");
 
 /** Observations around real coordinator operations, installed per test. */
@@ -269,9 +274,11 @@ struct FExternalReferenceFixture
 	bool Create(UBlueprint* Parent, const TCHAR* Name, const TCHAR* MemberName)
 	{
 		Package = CreatePackage(*FString::Printf(TEXT("/Game/Temp/%s"), Name));
+		UClass* const ParentClass = Parent && Parent->GeneratedClass
+			? Parent->GeneratedClass.Get()
+			: ACortexGraphMigrationFixtureActor::StaticClass();
 		Blueprint = FKismetEditorUtilities::CreateBlueprint(
-			Parent && Parent->GeneratedClass ? Parent->GeneratedClass : ACortexGraphMigrationFixtureActor::StaticClass(),
-			Package, FName(Name), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+			ParentClass, Package, FName(Name), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
 		if (!Blueprint) return false;
 		UEdGraph* Graph = EnsureEventGraph(Blueprint);
 		UK2Node_VariableGet* Get = NewObject<UK2Node_VariableGet>(Graph);
@@ -382,6 +389,44 @@ bool LinkNodes(UEdGraph* Graph, UEdGraphNode* From, const TCHAR* FromPin, UEdGra
 	return LinkPins(Graph, Source, Target);
 }
 
+/**
+ * Removes every node the engine pre-created in a fresh ubergraph, so the fixture graph contains
+ * exactly the stale entry and the downstream body the case authors (a new EventGraph otherwise
+ * already implements BeginPlay, which is itself one of the migration targets).
+ */
+int32 ClearGraphNodes(UEdGraph* Graph)
+{
+	int32 Removed = 0;
+	const TArray<UEdGraphNode*> Nodes = Graph->Nodes;
+	for (UEdGraphNode* Node : Nodes)
+	{
+		if (!Node) continue;
+		Node->DestroyNode();
+		++Removed;
+	}
+	return Removed;
+}
+
+/**
+ * Sorted far endpoints of one pin that live outside the replaced set: the boundary links the
+ * replacement must realize, expressed independently of the fixture pointers.
+ */
+TArray<FString> BoundaryFarEndpoints(UEdGraphNode* Node, const TCHAR* PinName, const TArray<FGuid>& ReplacedGuids)
+{
+	TArray<FString> Endpoints;
+	UEdGraphNode* Owning = Node;
+	UEdGraphPin* Pin = Owning ? Owning->FindPin(FName(PinName)) : nullptr;
+	if (!Pin) return Endpoints;
+	for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+	{
+		const UEdGraphNode* FarNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+		if (!FarNode || ReplacedGuids.Contains(FarNode->NodeGuid)) continue;
+		Endpoints.Add(FString::Printf(TEXT("%s.%s"), *FarNode->NodeGuid.ToString(), *LinkedPin->PinName.ToString()));
+	}
+	Endpoints.Sort();
+	return Endpoints;
+}
+
 /** A stale function terminator pair inside a function graph named after the declaration. */
 struct FStaleFunctionGraph
 {
@@ -429,12 +474,22 @@ UK2Node_VariableGet* AddVariableGetNode(UEdGraph* Graph, const TCHAR* MemberName
 	return Get;
 }
 
-/** Adds an app-declared Blueprint variable with the given name. */
+/**
+ * Adds an app-declared Blueprint variable with the given name.
+ *
+ * The authored description is inserted directly: a name that collides with an inherited declaration
+ * cannot be created through the engine variable API without an internal class-generation error, and
+ * the migration only needs the asset's authored member state to be adversarial.
+ */
 bool AddShadowingVariable(UBlueprint* Blueprint, const TCHAR* MemberName)
 {
-	FEdGraphPinType Type;
-	Type.PinCategory = UEdGraphSchema_K2::PC_Int;
-	FBlueprintEditorUtils::AddMemberVariable(Blueprint, FName(MemberName), Type, TEXT("7"));
+	FBPVariableDescription Description;
+	Description.VarName = FName(MemberName);
+	Description.VarType.PinCategory = UEdGraphSchema_K2::PC_Int;
+	Description.DefaultValue = TEXT("7");
+	Description.VarGuid = FGuid::NewGuid();
+	Blueprint->Modify();
+	Blueprint->NewVariables.Add(Description);
 	return FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, FName(MemberName)) != INDEX_NONE;
 }
 
@@ -491,14 +546,15 @@ TSharedPtr<FJsonObject> ReplacementRequest(
 	const TCHAR* PatchId,
 	const TSharedPtr<FJsonObject>& Migration,
 	const TCHAR* FunctionName,
-	const TCHAR* OwnerClassPath = FixtureActorClassPath)
+	const TCHAR* OwnerClassPath = nullptr)
 {
 	TSharedPtr<FJsonObject> Request = MakeShared<FJsonObject>();
 	Request->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 	Request->SetStringField(TEXT("patch_id"), PatchId);
 	TSharedPtr<FJsonObject> Target = MakeShared<FJsonObject>();
 	TSharedPtr<FJsonObject> Implementation = MakeShared<FJsonObject>();
-	Implementation->SetStringField(TEXT("owner_class"), OwnerClassPath);
+	Implementation->SetStringField(TEXT("owner_class"),
+		OwnerClassPath ? FString(OwnerClassPath) : FixtureActorClassPath());
 	Implementation->SetStringField(TEXT("function_name"), FunctionName);
 	Target->SetObjectField(TEXT("implementation"), Implementation);
 	Request->SetObjectField(TEXT("target"), Target);
@@ -537,8 +593,8 @@ TArray<TSharedPtr<FJsonValue>> ComputeScorePinMap()
 	TArray<TSharedPtr<FJsonValue>> Map;
 	Map.Add(MakeShared<FJsonValueObject>(PinMapEntry(TEXT("output"), TEXT("then"), TEXT("then"))));
 	Map.Add(MakeShared<FJsonValueObject>(PinMapEntry(TEXT("output"), TEXT("Tag"), TEXT("Tag"))));
-	Map.Add(MakeShared<FJsonValueObject>(PinMapEntry(TEXT("output"), TEXT("OutIds"), TEXT("OutIds"))));
 	Map.Add(MakeShared<FJsonValueObject>(PinMapEntry(TEXT("input"), TEXT("execute"), TEXT("execute"))));
+	Map.Add(MakeShared<FJsonValueObject>(PinMapEntry(TEXT("input"), TEXT("OutIds"), TEXT("OutIds"))));
 	Map.Add(MakeShared<FJsonValueObject>(PinMapEntry(TEXT("input"), TEXT("ReturnValue"), TEXT("ReturnValue"))));
 	return Map;
 }
@@ -585,6 +641,7 @@ bool FCortexGraphMigrationCompatibleReplacementTest::RunTest(const FString& Para
 	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_MigrationCompatible_T11")));
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+	ClearGraphNodes(Graph);
 	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("ReceiveEndPlay"), ActorClassPath, 0, 0);
 	UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("cortex migration"), 400, 0);
 	UK2Node_CallFunction* Tail = AddPrintNode(Graph, TEXT("tail"), 800, 0);
@@ -630,7 +687,7 @@ bool FCortexGraphMigrationCompatibleReplacementTest::RunTest(const FString& Para
 	TestEqual(TEXT("downstream presentation preserved"),
 		CaptureSelectedNativeNodes(Fixture.Blueprint, DownstreamGuids), DownstreamBefore);
 
-	UEdGraphNode* Replacement = FindNodeByGuid(Fixture.Blueprint, *ReplacementGuid);
+	UEdGraphNode* Replacement = ReplacementGuid ? FindNodeByGuid(Fixture.Blueprint, *ReplacementGuid) : nullptr;
 	TestNotNull(TEXT("replacement entry resolves at its deterministic identity"), Replacement);
 	TestNull(TEXT("stale entry was replaced"), FindNodeByGuid(Fixture.Blueprint, StaleEntry->NodeGuid));
 	if (Replacement)
@@ -662,7 +719,7 @@ bool FCortexGraphMigrationCompatibleReplacementTest::RunTest(const FString& Para
 		const TSharedPtr<FJsonObject>* Mappings = nullptr;
 		TestTrue(TEXT("replay preview publishes the replacement mapping"),
 			CommandResult.Data->TryGetObjectField(TEXT("node_mappings"), Mappings) && Mappings && (*Mappings)->HasField(TEXT("entry")));
-		if (Mappings)
+		if (Mappings && ReplacementGuid)
 		{
 			TestTrue(TEXT("the published mapping is the deterministic replacement identity"),
 				SameGuid((*Mappings)->GetStringField(TEXT("entry")), ReplacementGuid->ToString()));
@@ -706,7 +763,8 @@ void CheckIncompatibleMapping(
 		Fixture.Create(FixtureName));
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
-	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), FixtureActorClassPath, 0, 0);
+	ClearGraphNodes(Graph);
+	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
 	UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("mismatch body"), 400, 0);
 	Test.TestTrue(FString::Printf(TEXT("%s: body wired"), Context),
 		LinkNodes(Graph, StaleEntry, TEXT("then"), Print, TEXT("execute")));
@@ -760,9 +818,9 @@ bool FCortexGraphMigrationIncompatibleSignatureTest::RunTest(const FString& Para
 		[](UK2Node_Event* Stale) { FindMappablePin(Stale, TEXT("Tag"))->PinType.bIsReference = true; },
 		[]() { return OnPayloadPinMap(); });
 
-	// Const mismatch: the stale parameter is mutable while the declaration is const.
+	// Const mismatch: the declaration parameter is mutable while the stale pin claims const.
 	CheckIncompatibleMapping(*this, TEXT("BP_MigrationConst_T11"), TEXT("const"), TEXT("const"),
-		[](UK2Node_Event* Stale) { FindMappablePin(Stale, TEXT("Tag"))->PinType.bIsConst = false; },
+		[](UK2Node_Event* Stale) { FindMappablePin(Stale, TEXT("Source"))->PinType.bIsConst = true; },
 		[]() { return OnPayloadPinMap(); });
 
 	// Container-kind mismatch: the stale array parameter is a set.
@@ -820,7 +878,8 @@ bool FCortexGraphMigrationSameNameConflictTest::RunTest(const FString& Parameter
 	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_MigrationSameName_T11")));
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
-	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), FixtureActorClassPath, 0, 0);
+	ClearGraphNodes(Graph);
+	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
 	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
 	TestNotNull(TEXT("same-named custom event created"), AddCustomEventNode(Graph, TEXT("OnPayload")));
 
@@ -863,7 +922,8 @@ bool FCortexGraphMigrationExternalReferenceTest::RunTest(const FString& Paramete
 	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_MigrationExternal_T11")));
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
-	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), FixtureActorClassPath, 0, 0);
+	ClearGraphNodes(Graph);
+	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
 	UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("external body"), 400, 0);
 	TestTrue(TEXT("body wired"), LinkNodes(Graph, StaleEntry, TEXT("then"), Print, TEXT("execute")));
 	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
@@ -893,7 +953,8 @@ bool FCortexGraphMigrationExternalReferenceTest::RunTest(const FString& Paramete
 	TestEqual(TEXT("external reference leaves the other asset untouched"),
 		CountNativeNodes(External.Blueprint), ExternalNodes);
 	TestNotNull(TEXT("stale entry is untouched"), FindNodeByGuid(Fixture.Blueprint, StaleEntry->NodeGuid));
-	TestNotEqual(TEXT("shadowing member survives"), FBlueprintEditorUtils::FindNewVariableIndex(Fixture.Blueprint, FName(TEXT("OnPayload"))), INDEX_NONE);
+	TestTrue(TEXT("shadowing member survives"),
+		FBlueprintEditorUtils::FindNewVariableIndex(Fixture.Blueprint, FName(TEXT("OnPayload"))) != INDEX_NONE);
 
 	External.Cleanup();
 	Fixture.Cleanup();
@@ -920,7 +981,9 @@ bool FCortexGraphMigrationShadowingRefusalTest::RunTest(const FString& Parameter
 		TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_MigrationShadowing_T11")));
 		if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 		UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
-		UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), FixtureActorClassPath, 0, 0);
+		ClearGraphNodes(Graph);
+	ClearGraphNodes(Graph);
+		UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
 		UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("shadow body"), 400, 0);
 		LinkNodes(Graph, StaleEntry, TEXT("then"), Print, TEXT("execute"));
 		FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
@@ -942,8 +1005,8 @@ bool FCortexGraphMigrationShadowingRefusalTest::RunTest(const FString& Parameter
 		TestTrue(TEXT("shadowing refusal says removal was not attempted"),
 			Error.ErrorMessage.Contains(TEXT("was not removed")));
 		TestEqual(TEXT("shadowing refusal mutates nothing"), LiveGraphHash(Fixture.Blueprint), HashBefore);
-		TestNotEqual(TEXT("user member is untouched"),
-			FBlueprintEditorUtils::FindNewVariableIndex(Fixture.Blueprint, FName(TEXT("OnPayload"))), INDEX_NONE);
+		TestTrue(TEXT("user member is untouched"),
+			FBlueprintEditorUtils::FindNewVariableIndex(Fixture.Blueprint, FName(TEXT("OnPayload"))) != INDEX_NONE);
 		TestNotNull(TEXT("user member reference node is untouched"), FindNodeByGuid(Fixture.Blueprint, Reference->NodeGuid));
 		Fixture.Cleanup();
 	}
@@ -954,7 +1017,9 @@ bool FCortexGraphMigrationShadowingRefusalTest::RunTest(const FString& Parameter
 		TestTrue(TEXT("second fixture created"), Fixture.Create(TEXT("BP_MigrationShadowingUnsafe_T11")));
 		if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 		UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
-		UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), FixtureActorClassPath, 0, 0);
+		ClearGraphNodes(Graph);
+	ClearGraphNodes(Graph);
+		UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
 		FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
 		TestTrue(TEXT("second shadowing member added"), AddShadowingVariable(Fixture.Blueprint, TEXT("OnPayload")));
 
@@ -975,8 +1040,8 @@ bool FCortexGraphMigrationShadowingRefusalTest::RunTest(const FString& Parameter
 		TestTrue(FString::Printf(TEXT("unsafe refusal names the reference [%s]"), *Error.ErrorMessage),
 			Error.ErrorMessage.Contains(TEXT("BP_MigrationShadowingChild_T11")));
 		TestEqual(TEXT("unsafe refusal mutates nothing"), LiveGraphHash(Fixture.Blueprint), HashBefore);
-		TestNotEqual(TEXT("user member survives the unsafe refusal"),
-			FBlueprintEditorUtils::FindNewVariableIndex(Fixture.Blueprint, FName(TEXT("OnPayload"))), INDEX_NONE);
+		TestTrue(TEXT("user member survives the unsafe refusal"),
+			FBlueprintEditorUtils::FindNewVariableIndex(Fixture.Blueprint, FName(TEXT("OnPayload"))) != INDEX_NONE);
 
 		External.Cleanup();
 		Fixture.Cleanup();
@@ -1002,7 +1067,8 @@ bool FCortexGraphMigrationShadowingRemovalTest::RunTest(const FString& Parameter
 	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_MigrationShadowingSafe_T11")));
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
-	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), FixtureActorClassPath, 0, 0);
+	ClearGraphNodes(Graph);
+	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
 	UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("safe removal body"), 400, 0);
 	UK2Node_CallFunction* Tail = AddPrintNode(Graph, TEXT("safe removal tail"), 800, 0);
 	LinkNodes(Graph, StaleEntry, TEXT("then"), Print, TEXT("execute"));
@@ -1037,8 +1103,8 @@ bool FCortexGraphMigrationShadowingRemovalTest::RunTest(const FString& Parameter
 	TestEqual(TEXT("proven-safe removal target compile count"), Operations.TargetCompiles, 1);
 	TestEqual(TEXT("proven-safe removal readback matched"), Outcome.ReadbackStatus, FString(TEXT("matched")));
 	TestEqual(TEXT("proven-safe removal does not block"), Outcome.bBlocked, false);
-	TestEqual(TEXT("shadowing member was removed"),
-		FBlueprintEditorUtils::FindNewVariableIndex(Fixture.Blueprint, FName(TEXT("OnPayload"))), INDEX_NONE);
+	TestTrue(TEXT("shadowing member was removed"),
+		FBlueprintEditorUtils::FindNewVariableIndex(Fixture.Blueprint, FName(TEXT("OnPayload"))) == INDEX_NONE);
 	TestNull(TEXT("the resolved in-asset reference node was removed with the member"),
 		FindNodeByGuid(Fixture.Blueprint, Reference->NodeGuid));
 	TestNull(TEXT("stale entry was replaced"), FindNodeByGuid(Fixture.Blueprint, StaleEntry->NodeGuid));
@@ -1065,7 +1131,8 @@ void CheckInjectedFailureRestores(
 	Test.TestTrue(FString::Printf(TEXT("%s: fixture created"), Context), Fixture.Create(FixtureName));
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
-	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), FixtureActorClassPath, 0, 0);
+	ClearGraphNodes(Graph);
+	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
 	UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("restore body"), 400, 0);
 	UK2Node_CallFunction* Tail = AddPrintNode(Graph, TEXT("restore tail"), 800, 0);
 	UEdGraphNode_Comment* Comment = AddCommentNode(Graph, TEXT("restore comment"), -100, -200);
@@ -1120,8 +1187,8 @@ void CheckInjectedFailureRestores(
 		CountNativeNodes(Fixture.Blueprint), NodesBefore);
 	Test.TestEqual(FString::Printf(TEXT("%s: downstream capture restored"), Context),
 		CaptureSelectedNativeNodes(Fixture.Blueprint, DownstreamGuids), DownstreamBefore);
-	Test.TestNotEqual(FString::Printf(TEXT("%s: member state restored"), Context),
-		FBlueprintEditorUtils::FindNewVariableIndex(Fixture.Blueprint, FName(TEXT("OnPayload"))), INDEX_NONE);
+	Test.TestTrue(FString::Printf(TEXT("%s: member state restored"), Context),
+		FBlueprintEditorUtils::FindNewVariableIndex(Fixture.Blueprint, FName(TEXT("OnPayload"))) != INDEX_NONE);
 	Test.TestNotNull(FString::Printf(TEXT("%s: member reference node restored"), Context),
 		FindNodeByGuid(Fixture.Blueprint, Reference->NodeGuid));
 	Test.TestNotNull(FString::Printf(TEXT("%s: stale entry restored"), Context),
@@ -1191,6 +1258,7 @@ bool FCortexGraphMigrationReplayTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_MigrationReplay_T11")));
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+	ClearGraphNodes(Graph);
 	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("ReceiveEndPlay"), ActorClassPath, 0, 0);
 	UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("replay body"), 400, 0);
 	UEdGraphNode_Comment* Comment = AddCommentNode(Graph, TEXT("replay comment"), -100, -200);
@@ -1282,19 +1350,20 @@ bool FCortexGraphMigrationMixedRequestTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_MigrationMixed_T11")));
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+	ClearGraphNodes(Graph);
 	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("ReceiveEndPlay"), ActorClassPath, 0, 0);
 	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
 	const FString HashBefore = LiveGraphHash(Fixture.Blueprint);
 
-	auto ExpectRefusal = [&](const TCHAR* Context, const TCHAR* ExpectedCode, const TSharedPtr<FJsonObject>& Request)
+	auto ExpectRefusal = [&](const TCHAR* Context, const FString& ExpectedCode, const TSharedPtr<FJsonObject>& Request)
 	{
 		FCortexGraphPatchOutcome Outcome;
 		FCortexCommandResult Error;
-		Test.TestFalse(FString::Printf(TEXT("%s: request is refused"), Context),
+		TestFalse(FString::Printf(TEXT("%s: request is refused"), Context),
 			FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
-		Test.TestEqual(FString::Printf(TEXT("%s: refusal code [%s]"), Context, *Error.ErrorMessage),
-			Error.ErrorCode, FString(ExpectedCode));
-		Test.TestEqual(FString::Printf(TEXT("%s: refusal mutates nothing"), Context),
+		TestEqual(FString::Printf(TEXT("%s: refusal code [%s]"), Context, *Error.ErrorMessage),
+			Error.ErrorCode, ExpectedCode);
+		TestEqual(FString::Printf(TEXT("%s: refusal mutates nothing"), Context),
 			LiveGraphHash(Fixture.Blueprint), HashBefore);
 	};
 
@@ -1403,6 +1472,7 @@ bool FCortexGraphMigrationStaleTokenTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_MigrationStale_T11")));
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+	ClearGraphNodes(Graph);
 	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("ReceiveEndPlay"), ActorClassPath, 0, 0);
 	UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("stale body"), 400, 0);
 	LinkNodes(Graph, StaleEntry, TEXT("then"), Print, TEXT("execute"));
@@ -1416,20 +1486,30 @@ bool FCortexGraphMigrationStaleTokenTest::RunTest(const FString& Parameters)
 	TestTrue(FString::Printf(TEXT("stale token preview succeeds: %s"), *Error.ErrorMessage),
 		PreviewForApply(Fixture.Blueprint, Request, Prepared, Error));
 
-	// A changed pin map invalidates the token even though the asset is untouched.
+	// The same migration onto another parameterless inherited declaration is a valid request on its
+	// own, but the token was minted for the first target, so the changed migration intent invalidates
+	// it without any mutation.
 	{
 		TSharedPtr<FJsonObject> Changed = ReplacementRequest(Fixture.Blueprint,
 			TEXT("00000000-0000-0000-0000-00000011000c"),
-			MakeMigration(Graph, StaleEntry, WithEntry(ReceiveBeginPlayPinMap(), TEXT("then"), TEXT("output"), TEXT("OutputDelegate"))),
-			TEXT("ReceiveBeginPlay"), ActorClassPath);
+			MakeMigration(Graph, StaleEntry, ReceiveBeginPlayPinMap()),
+			TEXT("ReceiveDestroyed"), ActorClassPath);
+		FCortexGraphPreparedPatch ChangedPreview;
+		FCortexCommandResult PreviewError;
+		TestTrue(FString::Printf(TEXT("the changed migration intent is valid on its own: %s"), *PreviewError.ErrorMessage),
+			FCortexGraphPatchOps::Preflight(Fixture.Blueprint, Changed, ChangedPreview, PreviewError));
+		TestNotEqual(TEXT("the changed migration intent has a different validation hash"),
+			ChangedPreview.ValidationHash, Prepared.ValidationHash);
 		Changed->SetBoolField(TEXT("dry_run"), false);
 		Changed->SetStringField(TEXT("expected_validation_hash"), Prepared.ValidationHash);
 		const FString HashBefore = LiveGraphHash(Fixture.Blueprint);
 		FCortexGraphPatchOutcome Outcome;
-		TestFalse(TEXT("a changed pin map invalidates the preview token"),
+		TestFalse(TEXT("a changed migration intent invalidates the preview token"),
 			FCortexGraphPatchOps::Execute(Fixture.Blueprint, Changed, Outcome, Error));
-		TestEqual(TEXT("changed pin map is STALE_PRECONDITION"), Error.ErrorCode, FString(CortexErrorCodes::StalePrecondition));
-		TestEqual(TEXT("changed pin map mutates nothing"), LiveGraphHash(Fixture.Blueprint), HashBefore);
+		TestEqual(TEXT("changed migration intent is STALE_PRECONDITION"),
+			Error.ErrorCode, FString(CortexErrorCodes::StalePrecondition));
+		TestEqual(TEXT("changed migration intent mutates nothing"), LiveGraphHash(Fixture.Blueprint), HashBefore);
+		TestNotNull(TEXT("stale entry is untouched"), FindNodeByGuid(Fixture.Blueprint, StaleEntry->NodeGuid));
 	}
 
 	// A source-graph edit invalidates the fingerprint the token was computed over.
@@ -1468,7 +1548,8 @@ bool FCortexGraphMigrationPreviewTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_MigrationPreview_T11")));
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
-	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), FixtureActorClassPath, 0, 0);
+	ClearGraphNodes(Graph);
+	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
 	UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("preview body"), 400, 0);
 	UEdGraphNode_Comment* Comment = AddCommentNode(Graph, TEXT("preview comment"), -100, -200);
 	LinkNodes(Graph, StaleEntry, TEXT("then"), Print, TEXT("execute"));
@@ -1534,7 +1615,7 @@ bool FCortexGraphMigrationFunctionGraphTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_MigrationFunction_T11")));
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 
-	FStaleFunctionGraph Stale = AddStaleFunctionGraph(Fixture.Blueprint, TEXT("ComputeScore"), FixtureActorClassPath);
+	FStaleFunctionGraph Stale = AddStaleFunctionGraph(Fixture.Blueprint, TEXT("ComputeScore"), *FixtureActorClassPath());
 	UK2Node_CallFunction* Print = AddPrintNode(Stale.Graph, TEXT("function body"), 300, 0);
 	UK2Node_CallFunction* Tail = AddPrintNode(Stale.Graph, TEXT("function tail"), 600, 0);
 	UEdGraphNode_Comment* Comment = AddCommentNode(Stale.Graph, TEXT("function comment"), -100, -200);
@@ -1550,6 +1631,13 @@ bool FCortexGraphMigrationFunctionGraphTest::RunTest(const FString& Parameters)
 	DownstreamGuids.Add(Tail->NodeGuid);
 	DownstreamGuids.Add(Comment->NodeGuid);
 	const FString DownstreamBefore = CaptureSelectedNativeNodes(Fixture.Blueprint, DownstreamGuids);
+
+	// The replaced set: what the stale terminators carried outside it is the boundary contract.
+	TArray<FGuid> ReplacedGuids;
+	ReplacedGuids.Add(Stale.Entry->NodeGuid);
+	ReplacedGuids.Add(Stale.Result->NodeGuid);
+	const TArray<FString> EntryBoundaryBefore = BoundaryFarEndpoints(Stale.Entry, TEXT("then"), ReplacedGuids);
+	const TArray<FString> ResultBoundaryBefore = BoundaryFarEndpoints(Stale.Result, TEXT("execute"), ReplacedGuids);
 
 	TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
 		TEXT("00000000-0000-0000-0000-00000011000e"),
@@ -1593,8 +1681,16 @@ bool FCortexGraphMigrationFunctionGraphTest::RunTest(const FString& Parameters)
 		UEdGraphPin* ResultExec = ReplacementResult->FindPin(UEdGraphSchema_K2::PN_Execute);
 		UEdGraphPin* PrintExec = Print->FindPin(TEXT("execute"));
 		UEdGraphPin* PrintThen = Print->FindPin(UEdGraphSchema_K2::PN_Then);
-		TestTrue(TEXT("entry feeds the preserved body"),
-			EntryThen && PrintExec && EntryThen->LinkedTo.Contains(PrintExec));
+		TArray<FGuid> ReplacementGuids;
+		ReplacementGuids.Add(ReplacementEntry->NodeGuid);
+		ReplacementGuids.Add(ReplacementResult->NodeGuid);
+		TestEqual(TEXT("the replacement entry realizes every mapped boundary link of the stale entry"),
+			FString::Join(BoundaryFarEndpoints(ReplacementEntry, TEXT("then"), ReplacementGuids), TEXT(",")),
+			FString::Join(EntryBoundaryBefore, TEXT(",")));
+		TestEqual(TEXT("the replacement result realizes every mapped boundary link of the stale result"),
+			FString::Join(BoundaryFarEndpoints(ReplacementResult, TEXT("execute"), ReplacementGuids), TEXT(",")),
+			FString::Join(ResultBoundaryBefore, TEXT(",")));
+		(void)PrintExec;
 		TestTrue(TEXT("body feeds the replacement result"),
 			PrintThen && ResultExec && PrintThen->LinkedTo.Contains(ResultExec));
 		TestTrue(TEXT("the internal entry/result link was remapped"),

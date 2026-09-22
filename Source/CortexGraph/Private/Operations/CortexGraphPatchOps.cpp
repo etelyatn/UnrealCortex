@@ -928,12 +928,16 @@ bool FCortexGraphPatchOps::ReadStrictBool(
 {
 	OutValue = DefaultValue;
 	if (!Object.IsValid() || !Object->HasField(Field)) return true;
-	if (!Object->TryGetBoolField(Field, OutValue))
+	// The JSON type is checked explicitly: a boolean flag is never coerced from a string or number,
+	// so a malformed flag fails instead of silently selecting the default.
+	const TSharedPtr<FJsonValue> Value = Object->TryGetField(Field);
+	if (!Value.IsValid() || Value->Type != EJson::Boolean)
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
 			FString::Printf(TEXT("%s must be a boolean"), *Field));
 		return false;
 	}
+	OutValue = Value->AsBool();
 	return true;
 }
 
@@ -1162,30 +1166,36 @@ bool FCortexGraphPatchOps::Preflight(
 	}
 	if (MigrationPtr != nullptr)
 	{
-		TSharedPtr<FJsonObject> MigrationTarget;
-		UEdGraph* MigrationTargetGraph = nullptr;
-		TSharedPtr<FJsonObject> MigrationSymbol;
-		bool bMigrationWouldCreate = false;
-		bool bMigrationIsEvent = false;
-		bool bMigrationHasParentCall = false;
 		if (!CountBlueprintNodesBounded(Blueprint))
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("graph scan exceeds max_scanned_nodes=2048"));
 			return false;
 		}
-		if (!ParseTarget(Blueprint, Params, MigrationTarget, MigrationTargetGraph, MigrationSymbol, bMigrationWouldCreate,
-			bMigrationIsEvent, bMigrationHasParentCall, OutError))
+		// The target shape is validated here without resolving the declaration: eligibility (and so
+		// the shadowing-member policy) belongs to the migration planner, which reports a same-named
+		// app member as this operation's own conflict instead of the generic implementation conflict.
+		const TSharedPtr<FJsonObject>* MigrationTargetPtr = nullptr;
+		if (!Params->TryGetObjectField(TEXT("target"), MigrationTargetPtr) || !MigrationTargetPtr || !MigrationTargetPtr->IsValid())
 		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("target must be an object"));
 			return false;
 		}
-		if (!MigrationTarget->HasField(TEXT("implementation")))
+		TSharedPtr<FJsonObject> MigrationTarget = *MigrationTargetPtr;
+		if (!HasOnlyFields(MigrationTarget, { TEXT("graph_ref"), TEXT("implementation") }, OutError, TEXT("target"))) return false;
+		if (MigrationTarget->HasField(TEXT("graph_ref")) || !MigrationTarget->HasField(TEXT("implementation")))
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-				TEXT("migration requires an implementation target declaring the inherited implementation"));
+				TEXT("migration requires an implementation target declaring the inherited implementation the entry must become"));
 			return false;
 		}
 		const TSharedPtr<FJsonObject>* ImplementationSelector = nullptr;
-		MigrationTarget->TryGetObjectField(TEXT("implementation"), ImplementationSelector);
+		if (!MigrationTarget->TryGetObjectField(TEXT("implementation"), ImplementationSelector)
+			|| !ImplementationSelector || !ImplementationSelector->IsValid())
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("target.implementation must be an object"));
+			return false;
+		}
+		if (!HasOnlyFields(*ImplementationSelector, { TEXT("owner_class"), TEXT("function_name"), TEXT("call_kind") }, OutError, TEXT("target.implementation"))) return false;
 		FCortexGraphMigrationIdentity Identity;
 		Identity.EntryGuid = DerivePlannedNodeGuid(OutPrepared.PatchId, TEXT("entry"));
 		Identity.ResultGuid = DerivePlannedNodeGuid(OutPrepared.PatchId, TEXT("result"));

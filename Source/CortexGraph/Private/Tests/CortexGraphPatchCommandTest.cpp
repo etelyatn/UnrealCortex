@@ -6,6 +6,7 @@
 #include "Operations/CortexGraphPatchState.h"
 #include "CortexGraphCommandHandler.h"
 #include "Editor.h"
+#include "Editor/Transactor.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
@@ -1009,15 +1010,17 @@ bool FCortexGraphPatchCommandSchemaTest::RunTest(const FString& Parameters)
 	}
 
 	TestEqual(TEXT("required envelope fields"), FString::Join(ParamNames(*ApplyPatch, true), TEXT(",")),
-		FString(TEXT("asset_path,target,patch_id,expected_fingerprint,nodes,connections")));
+		FString(TEXT("asset_path,target,patch_id,expected_fingerprint")));
 	TestEqual(TEXT("optional envelope fields"), FString::Join(ParamNames(*ApplyPatch, false), TEXT(",")),
-		FString(TEXT("pin_updates,dry_run,compile,save,allow_noop,expected_validation_hash")));
+		FString(TEXT("nodes,connections,pin_updates,migration,dry_run,compile,save,allow_noop,expected_validation_hash")));
 	TestFalse(TEXT("apply_patch never opts into the rollback-safe contract"),
 		ApplyPatch->bRollbackSafe);
 	TestTrue(TEXT("the published description declares the batch restriction"),
 		ApplyPatch->Description.Contains(TEXT("rollback-enabled batch")));
 	TestTrue(TEXT("the published description declares the standalone contract"),
 		ApplyPatch->Description.Contains(TEXT("Standalone command")));
+	TestTrue(TEXT("the published description declares the migration shell"),
+		ApplyPatch->Description.Contains(TEXT("migration.op=\"replace_entry\"")));
 
 	const FCortexParamInfo* NodesParam = ApplyPatch->Params.FindByPredicate(
 		[](const FCortexParamInfo& Param) { return Param.Name == TEXT("nodes"); });
@@ -1027,6 +1030,29 @@ bool FCortexGraphPatchCommandSchemaTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("the published node families are the authoring families"),
 			NodesParam->Description.Contains(TEXT(
 				"Supported families: CallFunction, VariableGet, VariableSet, Self, DynamicCast, ConstructObject, Event.")));
+		TestTrue(TEXT("the published nodes parameter declares its conditional requirement"),
+			NodesParam->Description.Contains(TEXT("Required for an authoring request")));
+	}
+
+	const FCortexParamInfo* MigrationParam = ApplyPatch->Params.FindByPredicate(
+		[](const FCortexParamInfo& Param) { return Param.Name == TEXT("migration"); });
+	TestNotNull(TEXT("the migration parameter is published"), MigrationParam);
+	if (MigrationParam != nullptr)
+	{
+		TestFalse(TEXT("the migration parameter is optional"), MigrationParam->bRequired);
+		TestTrue(TEXT("the published migration selector names the operation"),
+			MigrationParam->Description.Contains(TEXT("replace_entry")));
+		TestTrue(TEXT("the published migration selector names its required target"),
+			MigrationParam->Description.Contains(TEXT("target.implementation")));
+		TestTrue(TEXT("the published migration selector refuses mixed authoring arrays"),
+			MigrationParam->Description.Contains(TEXT("nodes/connections/pin_updates")));
+		// No T12/T13 operation is published by this task.
+		TestFalse(TEXT("copy_subgraph is not published"),
+			MigrationParam->Description.Contains(TEXT("copy_subgraph")));
+		TestFalse(TEXT("move_subgraph is not published"),
+			MigrationParam->Description.Contains(TEXT("move_subgraph")));
+		TestFalse(TEXT("prune_island is not published"),
+			MigrationParam->Description.Contains(TEXT("prune_island")));
 	}
 
 	// No drift: every patch limit published in the description equals the live authoring limit.

@@ -4,6 +4,8 @@
 #include "Operations/CortexGraphPinDefaults.h"
 #include "CortexAssetMutationGuard.h"
 #include "Editor.h"
+#include "Editor/Transactor.h"
+#include "K2Node_GenericCreateObject.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/World.h"

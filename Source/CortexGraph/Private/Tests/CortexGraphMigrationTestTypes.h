@@ -22,11 +22,13 @@ class ACortexGraphMigrationFixtureActor : public AActor
 public:
 	/**
 	 * Event-shaped inherited declaration: no outputs, so it is placeable as an event entry. Its
-	 * pins are the map, the array and the const string.
+	 * pins are the map, the array, the const string and the object.
 	 */
 	UFUNCTION(BlueprintNativeEvent, Category = "CortexGraphMigrationTest")
-	void OnPayload(const TMap<int32, float>& Payload, const TArray<int32>& Ids, const FString& Tag);
-	virtual void OnPayload_Implementation(const TMap<int32, float>& Payload, const TArray<int32>& Ids, const FString& Tag);
+	void OnPayload(const TMap<int32, float>& Payload, const TArray<int32>& Ids, const FString& Tag, AActor* Source);
+	virtual void OnPayload_Implementation(const TMap<int32, float>& Payload, const TArray<int32>& Ids, const FString& Tag, AActor* Source)
+	{
+	}
 
 	/**
 	 * Function-graph-shaped inherited declaration: an out (reference) parameter and a return value,
@@ -34,5 +36,8 @@ public:
 	 */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "CortexGraphMigrationTest")
 	int32 ComputeScore(const FString& Tag, TArray<int32>& OutIds);
-	virtual int32 ComputeScore_Implementation(const FString& Tag, TArray<int32>& OutIds);
+	virtual int32 ComputeScore_Implementation(const FString& Tag, TArray<int32>& OutIds)
+	{
+		return 0;
+	}
 };
