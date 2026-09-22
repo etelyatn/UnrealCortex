@@ -1219,44 +1219,59 @@ bool FCortexGraphPatchOps::Apply(
 		return false;
 	}
 
+	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Apply Graph Patch")));
 	const TSharedPtr<FJsonObject>* TargetPtr = nullptr;
 	if (!Prepared.NormalizedRequest->TryGetObjectField(TEXT("target"), TargetPtr) || !TargetPtr || !TargetPtr->IsValid())
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Prepared patch has no target"));
 		return false;
 	}
-	const TSharedPtr<FJsonObject>* GraphRefPtr = nullptr;
-	if (!(*TargetPtr)->TryGetObjectField(TEXT("graph_ref"), GraphRefPtr) || !GraphRefPtr || !GraphRefPtr->IsValid())
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Implementation graph application is not available"));
-		return false;
-	}
-	FString GraphGuidString;
-	if (!(*GraphRefPtr)->TryGetStringField(TEXT("graph_guid"), GraphGuidString))
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Prepared graph target has no graph_guid"));
-		return false;
-	}
-	FGuid GraphGuid;
-	if (!FGuid::Parse(GraphGuidString, GraphGuid))
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Prepared graph target has an invalid graph_guid"));
-		return false;
-	}
-	TArray<UEdGraph*> Graphs;
-	Blueprint->GetAllGraphs(Graphs);
+	UEdGraphNode* ImplementationEntry = nullptr;
 	UEdGraph* Graph = nullptr;
-	for (UEdGraph* Candidate : Graphs)
+	FCortexGraphPatchState ImplementationState;
+	const TSharedPtr<FJsonObject>* GraphRefPtr = nullptr;
+	if ((*TargetPtr)->TryGetObjectField(TEXT("graph_ref"), GraphRefPtr) && GraphRefPtr && GraphRefPtr->IsValid())
 	{
-		if (Candidate && Candidate->GraphGuid == GraphGuid) { Graph = Candidate; break; }
+		FString GraphGuidString;
+		FGuid GraphGuid;
+		if (!(*GraphRefPtr)->TryGetStringField(TEXT("graph_guid"), GraphGuidString) || !FGuid::Parse(GraphGuidString, GraphGuid))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Prepared graph target has an invalid graph_guid"));
+			return false;
+		}
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+		for (UEdGraph* Candidate : Graphs)
+		{
+			if (Candidate && Candidate->GraphGuid == GraphGuid) { Graph = Candidate; break; }
+		}
+		if (!Graph)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::GraphNotFound, TEXT("Prepared graph target no longer exists"));
+			return false;
+		}
 	}
-	if (!Graph)
+	else
 	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::GraphNotFound, TEXT("Prepared graph target no longer exists"));
-		return false;
+		const TSharedPtr<FJsonObject>* ImplementationPtr = nullptr;
+		if (!(*TargetPtr)->TryGetObjectField(TEXT("implementation"), ImplementationPtr) || !ImplementationPtr || !ImplementationPtr->IsValid())
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Prepared patch target is invalid"));
+			return false;
+		}
+		FCortexGraphImplementationEnsureResult Ensured =
+			FCortexGraphImplementationOps::EnsureForPatch(Blueprint, *ImplementationPtr, ImplementationState);
+		if (!Ensured.bSuccess || !Ensured.Graph)
+		{
+			OutError = Ensured;
+			return false;
+		}
+		ImplementationEntry = Ensured.EntryNode;
+		Graph = Ensured.Graph;
 	}
 
 	TArray<UEdGraphNode*> AddedNodes;
+	AddedNodes.Append(ImplementationState.AddedNodes);
 	struct FDefaultUndo { UEdGraphPin* Pin; FString Value; FText Text; UObject* Object; };
 	TArray<FDefaultUndo> Defaults;
 	TArray<TPair<UEdGraphPin*, UEdGraphPin*>> AddedLinks;
@@ -1285,6 +1300,13 @@ bool FCortexGraphPatchOps::Apply(
 				AddedNodes[Index]->GetGraph()->RemoveNode(AddedNodes[Index]);
 			}
 		}
+		for (int32 Index = ImplementationState.AddedGraphs.Num() - 1; Index >= 0; --Index)
+		{
+			if (ImplementationState.AddedGraphs[Index])
+			{
+				FBlueprintEditorUtils::RemoveGraph(Blueprint, ImplementationState.AddedGraphs[Index]);
+			}
+		}
 	};
 	auto Fail = [&](const FString& Message)
 	{
@@ -1304,8 +1326,6 @@ bool FCortexGraphPatchOps::Apply(
 		return false;
 	};
 
-	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Apply Graph Patch")));
-	Blueprint->Modify();
 	Graph->Modify();
 	TMap<FString, UEdGraphNode*> NodesById;
 	for (UEdGraphNode* Existing : Graph->Nodes)
@@ -1313,6 +1333,7 @@ bool FCortexGraphPatchOps::Apply(
 		if (Existing) NodesById.Add(Existing->NodeGuid.ToString(), Existing);
 	}
 	const TArray<TSharedPtr<FJsonValue>>& Nodes = Prepared.NormalizedRequest->GetArrayField(TEXT("nodes"));
+	if (ImplementationEntry) NodesById.Add(TEXT("entry"), ImplementationEntry);
 	for (const TSharedPtr<FJsonValue>& Value : Nodes)
 	{
 		const TSharedPtr<FJsonObject> NodeJson = Value->AsObject();
@@ -1351,6 +1372,30 @@ bool FCortexGraphPatchOps::Apply(
 				if (!FCortexGraphPinDefaults::ApplyDefault(Pin, Literal, DefaultError)) return Fail(DefaultError.ErrorMessage);
 			}
 		}
+	}
+	const TArray<TSharedPtr<FJsonValue>>& PinUpdates = Prepared.NormalizedRequest->GetArrayField(TEXT("pin_updates"));
+	for (const TSharedPtr<FJsonValue>& Value : PinUpdates)
+	{
+		const TSharedPtr<FJsonObject> Update = Value->AsObject();
+		if (!Update.IsValid()) return Fail(TEXT("Prepared pin update is invalid"));
+		FGuid NodeGuid;
+		FString PinName;
+		if (!FGuid::Parse(Update->GetStringField(TEXT("node_guid")), NodeGuid)
+			|| !Update->TryGetStringField(TEXT("pin"), PinName))
+		{
+			return Fail(TEXT("Prepared pin update no longer identifies a pin"));
+		}
+		UEdGraphNode* Node = NodesById.FindRef(NodeGuid.ToString());
+		UEdGraphPin* Pin = Node ? Node->FindPin(FName(*PinName)) : nullptr;
+		const TSharedPtr<FJsonObject>* LiteralPtr = nullptr;
+		if (!Pin || !Update->TryGetObjectField(Update->HasField(TEXT("default")) ? TEXT("default") : TEXT("value"), LiteralPtr)
+			|| !LiteralPtr || !LiteralPtr->IsValid())
+		{
+			return Fail(TEXT("Prepared pin update no longer resolves"));
+		}
+		Defaults.Add({ Pin, Pin->DefaultValue, Pin->DefaultTextValue, Pin->DefaultObject });
+		FCortexCommandResult DefaultError;
+		if (!FCortexGraphPinDefaults::ApplyDefault(Pin, *LiteralPtr, DefaultError)) return Fail(DefaultError.ErrorMessage);
 	}
 	const TArray<TSharedPtr<FJsonValue>>& Connections = Prepared.NormalizedRequest->GetArrayField(TEXT("connections"));
 	for (const TSharedPtr<FJsonValue>& Value : Connections)
