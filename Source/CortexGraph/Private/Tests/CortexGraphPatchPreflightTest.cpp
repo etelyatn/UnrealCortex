@@ -291,6 +291,28 @@ bool FCortexGraphPatchPreflightEligibilityTest::RunTest(const FString& Parameter
 	Request->SetArrayField(TEXT("connections"), MissingPinConnections);
 	TestFalse(TEXT("planned connection with missing pin is rejected"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
 	TestEqual(TEXT("missing planned pin error"), Error.ErrorCode, CortexErrorCodes::PinNotFound);
+	Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	TSharedPtr<FJsonObject> EventTarget = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> EventImplementation = MakeShared<FJsonObject>();
+	EventImplementation->SetStringField(TEXT("owner_class"), TEXT("/Script/Engine.Actor"));
+	EventImplementation->SetStringField(TEXT("function_name"), TEXT("ReceiveBeginPlay"));
+	EventTarget->SetObjectField(TEXT("implementation"), EventImplementation);
+	Request->SetObjectField(TEXT("target"), EventTarget);
+	Request->SetArrayField(TEXT("nodes"), Nodes);
+	TArray<TSharedPtr<FJsonValue>> EventConnections;
+	TSharedPtr<FJsonObject> EventConnection = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> EventFrom = MakeShared<FJsonObject>();
+	EventFrom->SetBoolField(TEXT("entry"), true);
+	EventFrom->SetStringField(TEXT("pin"), TEXT("then"));
+	TSharedPtr<FJsonObject> EventTo = MakeShared<FJsonObject>();
+	EventTo->SetStringField(TEXT("client_id"), TEXT("print"));
+	EventTo->SetStringField(TEXT("pin"), TEXT("execute"));
+	EventConnection->SetObjectField(TEXT("from"), EventFrom);
+	EventConnection->SetObjectField(TEXT("to"), EventTo);
+	EventConnections.Add(MakeShared<FJsonValueObject>(EventConnection));
+	Request->SetArrayField(TEXT("connections"), EventConnections);
+	TestTrue(FString::Printf(TEXT("valid event entry connection plans without mutation: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
 
 	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
 	return true;
