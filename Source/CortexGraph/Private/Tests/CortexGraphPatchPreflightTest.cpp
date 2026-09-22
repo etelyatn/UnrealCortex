@@ -313,7 +313,51 @@ bool FCortexGraphPatchPreflightEligibilityTest::RunTest(const FString& Parameter
 	Request->SetArrayField(TEXT("connections"), EventConnections);
 	TestTrue(FString::Printf(TEXT("valid event entry connection plans without mutation: %s"), *Error.ErrorMessage),
 		FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	// The second proposed edge competes for the same evolving planned input.
+	EventConnections.Add(MakeShared<FJsonValueObject>(EventConnection));
+	Request->SetArrayField(TEXT("connections"), EventConnections);
+	TestFalse(TEXT("competing planned input is rejected"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("competing planned input error"), Error.ErrorCode, CortexErrorCodes::InvalidOperation);
 
+	TArray<TSharedPtr<FJsonValue>> DirectionConnections;
+	TSharedPtr<FJsonObject> DirectionConnection = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> DirectionFrom = MakeShared<FJsonObject>();
+	DirectionFrom->SetStringField(TEXT("client_id"), TEXT("print"));
+	DirectionFrom->SetStringField(TEXT("pin"), TEXT("execute"));
+	TSharedPtr<FJsonObject> DirectionTo = MakeShared<FJsonObject>();
+	DirectionTo->SetBoolField(TEXT("entry"), true);
+	DirectionTo->SetStringField(TEXT("pin"), TEXT("then"));
+	DirectionConnection->SetObjectField(TEXT("from"), DirectionFrom);
+	DirectionConnection->SetObjectField(TEXT("to"), DirectionTo);
+	DirectionConnections.Add(MakeShared<FJsonValueObject>(DirectionConnection));
+	Request->SetArrayField(TEXT("connections"), DirectionConnections);
+	TestFalse(TEXT("input-to-output direction is rejected"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("direction error"), Error.ErrorCode, CortexErrorCodes::InvalidOperation);
+
+	TArray<TSharedPtr<FJsonValue>> SubtypeConnections;
+	TSharedPtr<FJsonObject> SubtypeConnection = MakeShared<FJsonObject>();
+	SubtypeConnection->SetObjectField(TEXT("from"), EventFrom);
+	TSharedPtr<FJsonObject> SubtypeTo = MakeShared<FJsonObject>();
+	SubtypeTo->SetStringField(TEXT("client_id"), TEXT("print"));
+	SubtypeTo->SetStringField(TEXT("pin"), TEXT("InString"));
+	SubtypeConnection->SetObjectField(TEXT("to"), SubtypeTo);
+	SubtypeConnections.Add(MakeShared<FJsonValueObject>(SubtypeConnection));
+	Request->SetArrayField(TEXT("connections"), SubtypeConnections);
+	TestFalse(TEXT("execution-to-data subtype is rejected"), FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("subtype error"), Error.ErrorCode, CortexErrorCodes::PinTypeMismatch);
+
+	TSharedPtr<FJsonObject> DefaultValue = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> DefaultLiteral = MakeShared<FJsonObject>();
+	DefaultLiteral->SetStringField(TEXT("kind"), TEXT("string"));
+	DefaultLiteral->SetStringField(TEXT("value"), TEXT("preset"));
+	DefaultValue->SetObjectField(TEXT("InString"), DefaultLiteral);
+	CallNode->SetObjectField(TEXT("defaults"), DefaultValue);
+	Request->SetArrayField(TEXT("nodes"), Nodes);
+	TArray<TSharedPtr<FJsonValue>> OneEventConnection;
+	OneEventConnection.Add(EventConnections[0]);
+	Request->SetArrayField(TEXT("connections"), OneEventConnection);
+	TestTrue(FString::Printf(TEXT("planned defaults remain valid before connection: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, Prepared, Error));
 	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
 	return true;
 }

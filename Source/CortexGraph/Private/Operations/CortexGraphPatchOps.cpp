@@ -977,7 +977,16 @@ bool FCortexGraphPatchOps::Preflight(
 			return false;
 		}
 		const FString InputKey = ToId + TEXT(".") + ToPinName;
-		if (ConnectedInputs.Contains(InputKey) || ExistingDefaultInputs.Contains(InputKey) || DefaultPins.FindRef(ToId).Contains(ToPinName))
+		bool bHasPlannedDefault = false;
+		for (const FString& DefaultPin : DefaultPins.FindRef(ToId))
+		{
+			if (DefaultPin.Equals(ToPinName, ESearchCase::IgnoreCase))
+			{
+				bHasPlannedDefault = true;
+				break;
+			}
+		}
+		if (ConnectedInputs.Contains(InputKey) || ExistingDefaultInputs.Contains(InputKey) || bHasPlannedDefault)
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, FString::Printf(TEXT("Input '%s' has competing connection/default"), *InputKey));
 			return false;
