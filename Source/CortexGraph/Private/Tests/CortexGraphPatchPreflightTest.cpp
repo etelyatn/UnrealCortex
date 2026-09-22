@@ -15,7 +15,7 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_IfThenElse.h"
 #include "K2Node_PromotableOperator.h"
-#include "BlueprintEditorSettings.h"
+#include "K2Node_FunctionEntry.h"
 #include "BlueprintTypePromotion.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"
@@ -799,44 +799,117 @@ bool FCortexGraphPatchPreflightExternalContainerSignatureTest::RunTest(const FSt
 	TestNotNull(TEXT("fixture Blueprint created"), Blueprint);
 	if (!Blueprint) return false;
 
-	TSharedPtr<FJsonObject> Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
-	TSharedPtr<FJsonObject> Implementation = MakeShared<FJsonObject>();
-	Implementation->SetStringField(TEXT("owner_class"), TEXT("/Script/Engine.Actor"));
-	Implementation->SetStringField(TEXT("function_name"), TEXT("ReceiveEndPlay"));
-	TSharedPtr<FJsonObject> Target = Request->GetObjectField(TEXT("target"));
-	Target->SetObjectField(TEXT("implementation"), Implementation);
-	Target->RemoveField(TEXT("graph_ref"));
+	UPackage* ExternalPackage = nullptr;
+	UBlueprint* ExternalBlueprint = CortexGraphPatchPreflightTest::MakeBlueprint(ExternalPackage, TEXT("BP_PatchPreflightExternalContainerSource_T06"));
+	TestNotNull(TEXT("external function fixture Blueprint created"), ExternalBlueprint);
+	if (!ExternalBlueprint)
+	{
+		CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
+		return false;
+	}
+	UEdGraph* FunctionGraph = FBlueprintEditorUtils::CreateNewGraph(
+		ExternalBlueprint, TEXT("ContainerSignatureFixture"), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(ExternalBlueprint, FunctionGraph, false, nullptr);
+	GetDefault<UEdGraphSchema_K2>()->AddExtraFunctionFlags(FunctionGraph, FUNC_BlueprintCallable | FUNC_Public);
+	UK2Node_FunctionEntry* Entry = nullptr;
+	for (UEdGraphNode* Node : FunctionGraph->Nodes)
+	{
+		Entry = Cast<UK2Node_FunctionEntry>(Node);
+		if (Entry) break;
+	}
+	TestNotNull(TEXT("external function entry created"), Entry);
+	if (!Entry)
+	{
+		CortexGraphPatchPreflightTest::Cleanup(ExternalPackage, ExternalBlueprint);
+		CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
+		return false;
+	}
+	FEdGraphPinType ArrayType;
+	ArrayType.PinCategory = UEdGraphSchema_K2::PC_Int;
+	ArrayType.ContainerType = EPinContainerType::Array;
+	Entry->CreateUserDefinedPin(TEXT("Values"), ArrayType, EGPD_Output, false);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(ExternalBlueprint);
+	FKismetEditorUtilities::CompileBlueprint(ExternalBlueprint);
+	const FString OwnerClassPath = ExternalBlueprint->GeneratedClass->GetPathName();
 
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchPreflightTest::BaseRequest(Blueprint);
+	TSharedPtr<FJsonObject> Node = MakeShared<FJsonObject>();
+	Node->SetStringField(TEXT("client_id"), TEXT("external"));
+	Node->SetStringField(TEXT("node_class"), TEXT("CallFunction"));
+	TSharedPtr<FJsonObject> NodeParams = MakeShared<FJsonObject>();
+	NodeParams->SetStringField(TEXT("owner_class"), OwnerClassPath);
+	NodeParams->SetStringField(TEXT("function_name"), TEXT("ContainerSignatureFixture"));
+	Node->SetObjectField(TEXT("params"), NodeParams);
+	TArray<TSharedPtr<FJsonValue>> Nodes;
+	Nodes.Add(MakeShared<FJsonValueObject>(Node));
+	Request->SetArrayField(TEXT("nodes"), Nodes);
+
+	const FString NativeBefore = CapturePreflightNativeAuthoring(Blueprint);
+	const int32 TransactionCountBefore = (GEditor && GEditor->Trans) ? GEditor->Trans->GetQueueLength() : 0;
+	const bool bDirtyBefore = Package->IsDirty();
+	const FString FingerprintBefore = FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash"));
 	FCortexGraphPreparedPatch Preview;
 	FCortexCommandResult PreviewError;
-	TestTrue(FString::Printf(TEXT("scalar external implementation signature preview succeeds: %s"), *PreviewError.ErrorMessage),
-		FCortexGraphPatchOps::Preflight(Blueprint, Request, Preview, PreviewError));
-	UFunction* ExternalFunction = AActor::StaticClass()->FindFunctionByName(TEXT("ReceiveEndPlay"));
-	FByteProperty* EndPlayReason = nullptr;
-	for (TFieldIterator<FProperty> It(ExternalFunction); It; ++It)
+	const bool bPreviewReady = FCortexGraphPatchOps::Preflight(Blueprint, Request, Preview, PreviewError);
+	TestTrue(FString::Printf(TEXT("external array CallFunction preview succeeds: %s"), *PreviewError.ErrorMessage), bPreviewReady);
+	if (!bPreviewReady)
 	{
-		if ((*It)->HasAnyPropertyFlags(CPF_Parm))
+		CortexGraphPatchPreflightTest::Cleanup(ExternalPackage, ExternalBlueprint);
+		CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
+		return false;
+	}
+	const TArray<TSharedPtr<FJsonValue>>& PreviewNodes = Preview.NormalizedRequest->GetArrayField(TEXT("nodes"));
+	const TSharedPtr<FJsonObject> PreviewNode = PreviewNodes[0]->AsObject();
+	const TArray<TSharedPtr<FJsonValue>>& PreviewPins = PreviewNode->GetArrayField(TEXT("resolved_pins"));
+	int32 PreviewContainerType = INDEX_NONE;
+	for (const TSharedPtr<FJsonValue>& Value : PreviewPins)
+	{
+		const TSharedPtr<FJsonObject> Pin = Value->AsObject();
+		if (Pin.IsValid() && Pin->GetStringField(TEXT("name")) == TEXT("Values"))
 		{
-			EndPlayReason = CastField<FByteProperty>(*It);
-			if (EndPlayReason) break;
+			PreviewContainerType = static_cast<int32>(Pin->GetNumberField(TEXT("container_type")));
+			break;
 		}
 	}
-	TestNotNull(TEXT("external implementation has a scalar parameter fixture"), EndPlayReason);
-	if (EndPlayReason)
-	{
-		const int32 OriginalArrayDim = EndPlayReason->ArrayDim;
-		EndPlayReason->ArrayDim = 2;
-		Request->SetBoolField(TEXT("dry_run"), false);
-		Request->SetStringField(TEXT("expected_validation_hash"), Preview.ValidationHash);
-		FCortexGraphPreparedPatch Apply;
-		FCortexCommandResult ApplyError;
-		TestFalse(TEXT("scalar-to-array external signature rejects the stale token"),
-			FCortexGraphPatchOps::Preflight(Blueprint, Request, Apply, ApplyError));
-		TestNotEqual(TEXT("external parameter container changes validation hash"), Apply.ValidationHash, Preview.ValidationHash);
-		TestEqual(TEXT("external container drift is stale precondition"), ApplyError.ErrorCode, CortexErrorCodes::StalePrecondition);
-		EndPlayReason->ArrayDim = OriginalArrayDim;
-	}
+	TestEqual(TEXT("planned CallFunction records the external array parameter"), PreviewContainerType, static_cast<int32>(EPinContainerType::Array));
 
+	Entry->RemoveUserDefinedPinByName(TEXT("Values"));
+	FEdGraphPinType SetType;
+	SetType.PinCategory = UEdGraphSchema_K2::PC_Int;
+	SetType.ContainerType = EPinContainerType::Set;
+	Entry->CreateUserDefinedPin(TEXT("Values"), SetType, EGPD_Output, false);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(ExternalBlueprint);
+	FKismetEditorUtilities::CompileBlueprint(ExternalBlueprint);
+	Request->SetBoolField(TEXT("dry_run"), false);
+	Request->SetStringField(TEXT("expected_validation_hash"), Preview.ValidationHash);
+	FCortexGraphPreparedPatch Apply;
+	FCortexCommandResult ApplyError;
+	TestFalse(TEXT("array-to-set external CallFunction signature rejects the stale token"),
+		FCortexGraphPatchOps::Preflight(Blueprint, Request, Apply, ApplyError));
+	const TArray<TSharedPtr<FJsonValue>>& ApplyNodes = Apply.NormalizedRequest->GetArrayField(TEXT("nodes"));
+	const TSharedPtr<FJsonObject> ApplyNode = ApplyNodes[0]->AsObject();
+	const TArray<TSharedPtr<FJsonValue>>& ApplyPins = ApplyNode->GetArrayField(TEXT("resolved_pins"));
+	int32 ApplyContainerType = INDEX_NONE;
+	for (const TSharedPtr<FJsonValue>& Value : ApplyPins)
+	{
+		const TSharedPtr<FJsonObject> Pin = Value->AsObject();
+		if (Pin.IsValid() && Pin->GetStringField(TEXT("name")) == TEXT("Values"))
+		{
+			ApplyContainerType = static_cast<int32>(Pin->GetNumberField(TEXT("container_type")));
+			break;
+		}
+	}
+	TestEqual(TEXT("recomputed CallFunction records the external set parameter"), ApplyContainerType, static_cast<int32>(EPinContainerType::Set));
+	TestNotEqual(TEXT("external parameter container changes validation hash"), Apply.ValidationHash, Preview.ValidationHash);
+	TestEqual(TEXT("external CallFunction container drift is stale precondition"), ApplyError.ErrorCode, CortexErrorCodes::StalePrecondition);
+	TestEqual(TEXT("CallFunction preview and recompute leave target native authoring unchanged"), CapturePreflightNativeAuthoring(Blueprint), NativeBefore);
+	TestEqual(TEXT("CallFunction preview and recompute leave transaction queue unchanged"),
+		(GEditor && GEditor->Trans) ? GEditor->Trans->GetQueueLength() : 0, TransactionCountBefore);
+	TestFalse(TEXT("CallFunction preview and recompute leave target package dirty state unchanged"), Package->IsDirty() != bDirtyBefore);
+	TestEqual(TEXT("CallFunction preview and recompute leave target graph authoring hash unchanged"),
+		FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash")), FingerprintBefore);
+
+	CortexGraphPatchPreflightTest::Cleanup(ExternalPackage, ExternalBlueprint);
 	CortexGraphPatchPreflightTest::Cleanup(Package, Blueprint);
 	return true;
 }
