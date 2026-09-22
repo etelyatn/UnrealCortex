@@ -851,3 +851,29 @@ bool FCortexCoreBlockedSaveDispatchTest::RunTest(const FString& Parameters)
 		ExecuteSingleFingerprintRequest(Router, AssetPath).IsValid());
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCoreBlockedBatchSaveDispatchTest,
+	"Cortex.Core.ZBlockedBatchSaveDispatch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCoreBlockedBatchSaveDispatchTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FString AssetPath = TEXT("/Game/Data/DT_TestSimple");
+	UObject* Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
+	TestNotNull(TEXT("batch fixture asset resolves"), Asset);
+	if (!Asset) return false;
+	Asset->GetOutermost()->SetDirtyFlag(false);
+	FCortexAssetMutationGuard::Block(Asset, TEXT("forced recovery verification failure"));
+	FCortexCoreModule& CoreModule = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	TSharedPtr<FJsonObject> Item = MakeShared<FJsonObject>();
+	Item->SetStringField(TEXT("target"), AssetPath);
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("items"), { MakeShared<FJsonValueObject>(Item) });
+	const FCortexCommandResult Result = CoreModule.GetCommandRouter().Execute(TEXT("core.save_asset"), Params);
+	TestFalse(TEXT("blocked batch save rejects before commit"), Result.bSuccess);
+	TestEqual(TEXT("blocked batch save error code"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
+	TestFalse(TEXT("blocked batch save leaves package clean"), Asset->GetOutermost()->IsDirty());
+	return true;
+}

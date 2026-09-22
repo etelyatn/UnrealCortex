@@ -28,7 +28,6 @@ namespace
 {
 	TFunction<void(USCS_Node*, UBlueprint*)> GRemoveSCSComponentMidflightTestHook;
 	TFunction<void(UBlueprint*)> GRemoveSCSComponentPostCompileTestHook;
-TFunction<void(UBlueprint*, TArray<UBlueprint*>&)> GRenameSCSComponentDependentDiscoveryTestHook;
 	TFunction<void(UBlueprint*)> GRenameSCSComponentPostCompileTestHook;
 }
 #endif
@@ -704,12 +703,6 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 
 	TArray<UBlueprint*> DependentBlueprints;
 	FBlueprintEditorUtils::GetDependentBlueprints(BP, DependentBlueprints);
-#if WITH_DEV_AUTOMATION_TESTS
-	if (GRenameSCSComponentDependentDiscoveryTestHook)
-	{
-		GRenameSCSComponentDependentDiscoveryTestHook(BP, DependentBlueprints);
-	}
-#endif
 	for (UBlueprint* DependentBP : DependentBlueprints)
 	{
 		if (!IsValid(DependentBP) || DependentBP == BP)
@@ -1162,9 +1155,4 @@ void FCortexBPCleanupOps::SetRenameSCSComponentPostCompileTestHook(TFunction<voi
 	GRenameSCSComponentPostCompileTestHook = MoveTemp(InHook);
 }
 
-void FCortexBPCleanupOps::SetRenameSCSComponentDependentDiscoveryTestHook(
-	TFunction<void(UBlueprint*, TArray<UBlueprint*>&)> InHook)
-{
-	GRenameSCSComponentDependentDiscoveryTestHook = MoveTemp(InHook);
-}
 #endif

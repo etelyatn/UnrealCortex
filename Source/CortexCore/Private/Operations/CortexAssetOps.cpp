@@ -310,6 +310,12 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 
 		auto PreflightSaveAsset = [](const FCortexBatchMutationItem& Item) -> FCortexBatchPreflightResult
 		{
+			FString BlockReason;
+			if (FCortexAssetMutationGuard::IsPathBlocked(Item.Target, BlockReason))
+			{
+				return FCortexBatchPreflightResult::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
+			}
 			const FAssetData AssetData = FCortexAssetOps::ResolveLiteralAssetPath(Item.Target);
 			if (!AssetData.IsValid())
 			{

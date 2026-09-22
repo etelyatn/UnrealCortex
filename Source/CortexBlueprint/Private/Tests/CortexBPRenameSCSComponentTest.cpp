@@ -939,15 +939,19 @@ bool FCortexBPRenameSCSComponentBlockedDependentTest::RunTest(const FString& Par
 	FKismetEditorUtilities::CompileBlueprint(Child);
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Parent);
 	FKismetEditorUtilities::CompileBlueprint(Parent);
-	FCortexBPCleanupOps::SetRenameSCSComponentDependentDiscoveryTestHook(
-		[Child](UBlueprint*, TArray<UBlueprint*>& Dependents)
-		{
-			Dependents.AddUnique(Child);
-		});
+	TArray<UBlueprint*> Dependents;
+	FBlueprintEditorUtils::GetDependentBlueprints(Parent, Dependents);
+	const bool bChildDiscovered = Dependents.Contains(Child);
+	TestTrue(TEXT("engine discovers compiled child before blocked dependent fanout"), bChildDiscovered);
+	if (!bChildDiscovered)
+	{
+		Child->MarkAsGarbage();
+		Parent->MarkAsGarbage();
+		return false;
+	}
 	FCortexAssetMutationGuard::Block(Child, TEXT("forced recovery verification failure"));
 	const FCortexCommandResult Result = FCortexBPCleanupOps::RenameSCSComponent(
 		RenameMakeParams(Parent, TEXT("OldComp"), TEXT("NewComp"), false));
-	FCortexBPCleanupOps::SetRenameSCSComponentDependentDiscoveryTestHook(nullptr);
 	TestFalse(TEXT("blocked dependent rejects rename before parent side effects"), Result.bSuccess);
 	TestTrue(TEXT("parent component name remains unchanged"), RenameHasSCSNode(Parent, TEXT("OldComp")));
 	TestFalse(TEXT("blocked dependent did not receive the new component name"), RenameHasSCSNode(Parent, TEXT("NewComp")));
