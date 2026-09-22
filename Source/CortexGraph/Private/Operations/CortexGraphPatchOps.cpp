@@ -661,12 +661,6 @@ bool ValidateTaggedDefaults(const TSharedPtr<FJsonObject>& Defaults, UEdGraphNod
 	for (const auto& Pair : Defaults->Values)
 	{
 		const FString PinName = CortexEngineCompat::JsonKeyToString(Pair.Key);
-		if (OutDefaultPins.Contains(PinName))
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Duplicate default pin"));
-			return false;
-		}
-		OutDefaultPins.Add(PinName);
 		const TSharedPtr<FJsonObject> Literal = Pair.Value->AsObject();
 		if (!Literal.IsValid())
 		{
@@ -679,6 +673,13 @@ bool ValidateTaggedDefaults(const TSharedPtr<FJsonObject>& Defaults, UEdGraphNod
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::PinNotFound, FString::Printf(TEXT("Pin '%s' not found for default"), *PinName));
 			return false;
 		}
+		const FString CanonicalPinName = Pin->PinName.ToString();
+		if (OutDefaultPins.Contains(CanonicalPinName))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Duplicate default pin"));
+			return false;
+		}
+		OutDefaultPins.Add(CanonicalPinName);
 		if (!FCortexGraphPinDefaults::Validate(Pin, Literal, OutError)) return false;
 	}
 	return true;
@@ -700,6 +701,7 @@ void AddPlannedPinSignature(UEdGraphNode* Node, const TSharedPtr<FJsonObject>& N
 		Descriptor->SetStringField(TEXT("subobject"), Pin->PinType.PinSubCategoryObject.IsValid() ? Pin->PinType.PinSubCategoryObject->GetPathName() : FString());
 		Descriptor->SetBoolField(TEXT("reference"), Pin->PinType.bIsReference);
 		Descriptor->SetBoolField(TEXT("const"), Pin->PinType.bIsConst);
+		Descriptor->SetNumberField(TEXT("container_type"), static_cast<int32>(Pin->PinType.ContainerType));
 		if (Pin->PinType.ContainerType == EPinContainerType::Map || !Pin->PinType.PinValueType.TerminalCategory.IsNone())
 		{
 			TSharedPtr<FJsonObject> Terminal = MakeShared<FJsonObject>();
@@ -863,6 +865,14 @@ bool FCortexGraphPatchOps::Preflight(
 	PlanningBlueprint->SkeletonGeneratedClass = Blueprint->SkeletonGeneratedClass;
 	UEdGraph* PlanningGraph = NewObject<UEdGraph>(PlanningBlueprint, NAME_None, RF_Transient);
 	PlanningGraph->Schema = UEdGraphSchema_K2::StaticClass();
+	if (bImplementationIsEvent)
+	{
+		PlanningBlueprint->UbergraphPages.Add(PlanningGraph);
+	}
+	else
+	{
+		PlanningBlueprint->FunctionGraphs.Add(PlanningGraph);
+	}
 	bool bNeedsExistingModel = Params->HasField(TEXT("pin_updates"));
 	if (!bNeedsExistingModel)
 	{
@@ -948,6 +958,11 @@ bool FCortexGraphPatchOps::Preflight(
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("Duplicate node client_id '%s'"), *ClientId));
 			return false;
 		}
+		if (ClientId.Equals(TEXT("entry"), ESearchCase::CaseSensitive))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("node.client_id 'entry' is reserved"));
+			return false;
+		}
 		ClientIds.Add(ClientId);
 		const FString NodeClass = NormalizedNode->GetStringField(TEXT("node_class"));
 		FName Family;
@@ -1027,6 +1042,7 @@ bool FCortexGraphPatchOps::Preflight(
 			}
 			UEdGraphPin* Pin = FindPlannedPin(PlannedNodes, NodeGuid.ToString(), PinName, nullptr, OutError);
 			if (!Pin) return false;
+			const FString InputKey = NodeGuid.ToString() + TEXT(".") + Pin->PinName.ToString();
 			if (Pin->Direction != EGPD_Input || Pin->LinkedTo.Num() > 0)
 			{
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("pin_update target must be an unconnected input"));
@@ -1039,7 +1055,6 @@ bool FCortexGraphPatchOps::Preflight(
 				return false;
 			}
 			if (!FCortexGraphPinDefaults::Validate(Pin, *LiteralPtr, OutError)) return false;
-			const FString InputKey = NodeGuid.ToString() + TEXT(".") + PinName;
 			if (ExistingDefaultInputs.Contains(InputKey))
 			{
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Duplicate pin_update target"));
@@ -1098,7 +1113,7 @@ bool FCortexGraphPatchOps::Preflight(
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Connections must be output-to-input"));
 			return false;
 		}
-		const FString InputKey = ToId + TEXT(".") + ToPinName;
+		const FString InputKey = ToId + TEXT(".") + TargetPin->PinName.ToString();
 		bool bHasPlannedDefault = false;
 		for (const FString& DefaultPin : DefaultPins.FindRef(ToId))
 		{
