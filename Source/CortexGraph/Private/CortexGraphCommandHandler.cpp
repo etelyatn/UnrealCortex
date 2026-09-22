@@ -506,10 +506,10 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Optional(TEXT("connections"), TEXT("array"), TEXT("Authoring shell only: edges between planned client ids or existing node GUIDs: from and to each carry client_id, node_guid or entry, plus pin. Required for an authoring request and absent or empty for a migration request."))
 			.Optional(TEXT("pin_updates"), TEXT("array"), TEXT("Authoring shell only: existing input pin defaults to rewrite, each with node_guid, pin and a tagged default. Absent or empty for a migration request."))
 			.Optional(TEXT("migration"), TEXT("object"), TEXT("Migration shell selector: {\"op\":\"replace_entry\",\"source\":{\"graph_ref\":{graph_guid,graph_kind?,subgraph_path?},\"entry_node_guid\":\"<guid>\"},\"pin_map\":[{\"entry\":\"input\"|\"output\",\"from_pin\":\"<stale pin>\",\"to_pin\":\"<replacement pin>\"}],\"remove_shadowing_member\":false}. It requires target.implementation and refuses any non-empty nodes/connections/pin_updates."))
-			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview only, and never mutates, compiles or saves (default: true); an apply needs the expected_validation_hash returned by a preview"))
-			.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile the target once after a reversible apply (default: true)"))
-			.Optional(TEXT("save"), TEXT("boolean"), TEXT("Persist the target package after verified readback (default: false); requires compile=true and a clean starting package"))
-			.Optional(TEXT("allow_noop"), TEXT("boolean"), TEXT("Permit an explicit change-free patch instead of refusing it (default: false)"))
+			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Strict JSON boolean (numeric or string values are refused, never coerced). Preview only, and never mutates, compiles or saves (default: true); an apply needs the expected_validation_hash returned by a preview"))
+			.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Strict JSON boolean (never coerced). Compile the target once after a reversible apply (default: true)"))
+			.Optional(TEXT("save"), TEXT("boolean"), TEXT("Strict JSON boolean (never coerced). Persist the target package after verified readback (default: false); requires compile=true and a clean starting package"))
+			.Optional(TEXT("allow_noop"), TEXT("boolean"), TEXT("Strict JSON boolean (never coerced). Permit an explicit change-free patch instead of refusing it (default: false)"))
 			.Optional(TEXT("expected_validation_hash"), TEXT("string"), TEXT("validation_hash returned by a preview; required when dry_run is false")),
 	};
 }

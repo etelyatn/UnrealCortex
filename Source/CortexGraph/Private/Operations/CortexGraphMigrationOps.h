@@ -106,6 +106,11 @@ struct FCortexGraphMigrationPlan
 	TArray<FString> MemberReferenceNodeGuids;
 	/** Canonical capture of every node outside the replaced set, taken during preflight. */
 	FString PreservationCapture;
+	/** Reference inventory of the replaced declaration: resolved call sites and bindings, in-asset and across loaded packages. */
+	int32 DeclarationReferences = 0;
+	int32 ExternalDeclarationReferences = 0;
+	/** References that name the declaration but cannot be resolved to a concrete owner; any one blocks. */
+	TArray<FString> UnresolvedDeclarationReferences;
 	/** Authoring-shaped descriptor of the replacement entry, so the shared readback also covers it. */
 	TSharedPtr<FJsonObject> NormalizedNode;
 	/** Resolved declaration symbol, shared with the authoring readback. */
@@ -191,8 +196,19 @@ public:
 		int32 Index,
 		FCortexCommandResult& OutError);
 
-	/** Durable capture of one Blueprint variable, including the identity the fingerprint compares. */
+	/** Durable capture of one Blueprint variable: the complete description, not only its fingerprint fields. */
 	static TSharedPtr<FJsonObject> CaptureShadowingMember(UBlueprint* Blueprint, const FName MemberName);
+
+	/**
+	 * Field-by-field comparison of a live member against its captured description. The authoring
+	 * fingerprint cannot see rep-notify, replication, metadata or the remaining pin-type flags, so
+	 * recovery has to prove member restoration here instead.
+	 */
+	static bool MemberMatchesCapture(
+		UBlueprint* Blueprint,
+		const FName MemberName,
+		const TSharedPtr<FJsonObject>& Captured,
+		FString& OutFailure);
 
 	static UEdGraphNode* FindNodeByGuid(UBlueprint* Blueprint, const FGuid& NodeGuid);
 	static UEdGraph* FindGraphByGuid(UBlueprint* Blueprint, const FGuid& GraphGuid);

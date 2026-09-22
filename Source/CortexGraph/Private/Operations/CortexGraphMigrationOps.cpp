@@ -134,9 +134,11 @@ bool CompareMappedPins(
 		? Replacement.PinType.PinSubCategoryObject->GetPathName() : FString();
 	if (IsObjectCategory(Stale.PinType.PinCategory))
 	{
-		// An object pin is compatible when the replacement class is the stale class or a subclass of
-		// it: the remapped link keeps feeding the same downstream input, which accepted the stale
-		// class. An unrelated or base class would change what that input receives.
+		// Assignability is direction-sensitive. A terminator *output* feeds the preserved body, so the
+		// replacement class may only narrow (the body still receives what it accepted). A terminator
+		// *input* receives a value the body already produces, so the replacement class may only widen
+		// (it must accept everything the stale input accepted). Anything else is refused in preflight
+		// instead of being discovered later by CanCreateConnection during apply.
 		const UClass* const StaleClass = Cast<UClass>(Stale.PinType.PinSubCategoryObject.Get());
 		const UClass* const ReplacementClass = Cast<UClass>(Replacement.PinType.PinSubCategoryObject.Get());
 		if (StaleClass && !ReplacementClass)
@@ -145,12 +147,23 @@ bool CompareMappedPins(
 			OutDetail = FString::Printf(TEXT("the replacement pin lost the required class '%s'"), *StaleClass->GetPathName());
 			return false;
 		}
-		if (StaleClass && ReplacementClass && ReplacementClass != StaleClass && !ReplacementClass->IsChildOf(StaleClass))
+		if (StaleClass && ReplacementClass && ReplacementClass != StaleClass)
 		{
-			OutDimension = TEXT("object_class");
-			OutDetail = FString::Printf(TEXT("the replacement class '%s' is not '%s' or a subclass of it"),
-				*ReplacementClass->GetPathName(), *StaleClass->GetPathName());
-			return false;
+			const bool bReplacementIsNarrower = ReplacementClass->IsChildOf(StaleClass);
+			const bool bReplacementIsWider = StaleClass->IsChildOf(ReplacementClass);
+			const bool bCompatible = Replacement.Direction == EGPD_Input ? bReplacementIsWider : bReplacementIsNarrower;
+			if (!bCompatible)
+			{
+				OutDimension = TEXT("object_class");
+				OutDetail = FString::Printf(
+					TEXT("%s class '%s' vs required '%s' (%s)"),
+					Replacement.Direction == EGPD_Input ? TEXT("the wider input") : TEXT("the narrower output"),
+					*ReplacementClass->GetPathName(), *StaleClass->GetPathName(),
+					Replacement.Direction == EGPD_Input
+						? TEXT("the new input must accept everything the stale input accepted")
+						: TEXT("the body must still receive the stale class"));
+				return false;
+			}
 		}
 	}
 	else if (StaleObject != ReplacementObject)
@@ -263,6 +276,38 @@ bool DeclarationCompiledIntoClass(UBlueprint* Blueprint, const FName FunctionNam
 		}
 	}
 	return false;
+}
+
+/** Canonical text of one JSON value, for exact field-by-field comparison. */
+FString CanonicalValue(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid()) return TEXT("null");
+	switch (Value->Type)
+	{
+	case EJson::String: return FString::Printf(TEXT("s:%s"), *Value->AsString());
+	case EJson::Number: return FString::Printf(TEXT("n:%.17g"), Value->AsNumber());
+	case EJson::Boolean: return Value->AsBool() ? TEXT("b:true") : TEXT("b:false");
+	case EJson::Array:
+	{
+		TArray<FString> Items;
+		for (const TSharedPtr<FJsonValue>& Item : Value->AsArray()) Items.Add(CanonicalValue(Item));
+		return FString::Printf(TEXT("a:[%s]"), *FString::Join(Items, TEXT(",")));
+	}
+	case EJson::Object:
+	{
+		TSharedPtr<FJsonObject> Object = Value->AsObject();
+		TArray<FString> Keys;
+		if (Object.IsValid()) for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values) Keys.Add(CortexEngineCompat::JsonKeyToString(Pair.Key));
+		Keys.Sort();
+		TArray<FString> Parts;
+		for (const FString& Key : Keys)
+		{
+			Parts.Add(FString::Printf(TEXT("%s=%s"), *Key, *CanonicalValue(Object->TryGetField(Key))));
+		}
+		return FString::Printf(TEXT("o:{%s}"), *FString::Join(Parts, TEXT(",")));
+	}
+	default: return TEXT("null");
+	}
 }
 
 /** One inventoried reference to a symbol the migration would invalidate. */
@@ -497,6 +542,8 @@ TSharedPtr<FJsonObject> FCortexGraphMigrationPlan::ToJson() const
 	}
 	Out->SetArrayField(TEXT("member_references"), MemberReferences);
 	Out->SetStringField(TEXT("preservation_capture"), PreservationCapture);
+	Out->SetNumberField(TEXT("declaration_references"), DeclarationReferences);
+	Out->SetNumberField(TEXT("external_declaration_references"), ExternalDeclarationReferences);
 	Out->SetObjectField(TEXT("normalized_node"), NormalizedNode.IsValid() ? NormalizedNode : MakeShared<FJsonObject>());
 	Out->SetObjectField(TEXT("resolved_symbol"), ResolvedSymbol.IsValid() ? ResolvedSymbol : MakeShared<FJsonObject>());
 	return Out;
@@ -536,6 +583,10 @@ bool FCortexGraphMigrationPlan::FromJson(
 	Source->TryGetStringField(TEXT("member_kind"), OutPlan.MemberKind);
 	Source->TryGetStringField(TEXT("member_node_guid"), OutPlan.MemberNodeGuid);
 	Source->TryGetStringField(TEXT("preservation_capture"), OutPlan.PreservationCapture);
+	int32 DeclarationReferences = 0;
+	if (Source->TryGetNumberField(TEXT("declaration_references"), DeclarationReferences)) OutPlan.DeclarationReferences = DeclarationReferences;
+	int32 ExternalDeclarationReferences = 0;
+	if (Source->TryGetNumberField(TEXT("external_declaration_references"), ExternalDeclarationReferences)) OutPlan.ExternalDeclarationReferences = ExternalDeclarationReferences;
 	Source->TryGetBoolField(TEXT("bubble_pinned"), OutPlan.bCommentBubblePinned);
 	Source->TryGetBoolField(TEXT("bubble_visible"), OutPlan.bCommentBubbleVisible);
 	Source->TryGetBoolField(TEXT("user_set_enabled_state"), OutPlan.bUserSetEnabledState);
@@ -730,6 +781,100 @@ void AddCanonicalEdge(TArray<FCortexGraphMigrationEdge>& InOutEdges, TSet<FStrin
 }
 }
 
+namespace
+{
+/** Reference inventory of the replaced declaration itself: call sites and delegate bindings. */
+struct FDeclarationInventory
+{
+	int32 Resolved = 0;
+	int32 External = 0;
+	TArray<FString> Unresolved;
+};
+
+/** Concrete owner of a member reference, or null when the reference cannot be resolved. */
+UClass* ResolveReferenceOwner(UBlueprint* Asset, const FMemberReference& Reference)
+{
+	if (Reference.IsSelfContext())
+	{
+		return Asset && Asset->SkeletonGeneratedClass ? Asset->SkeletonGeneratedClass.Get() : (Asset ? Asset->GeneratedClass.Get() : nullptr);
+	}
+	return Reference.GetMemberParentClass();
+}
+
+void ScanDeclarationReferences(
+	UBlueprint* Asset,
+	const FName DeclarationName,
+	const bool bCountAsExternal,
+	FDeclarationInventory& InOut,
+	FCortexCommandResult& OutError)
+{
+	if (!Asset) return;
+	TArray<UEdGraph*> Graphs;
+	Asset->GetAllGraphs(Graphs);
+	for (UEdGraph* Graph : Graphs)
+	{
+		if (!Graph) continue;
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) continue;
+			const FMemberReference* Reference = nullptr;
+			if (const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node))
+			{
+				Reference = &Call->FunctionReference;
+			}
+			else if (const UK2Node_CreateDelegate* CreateDelegate = Cast<UK2Node_CreateDelegate>(Node))
+			{
+				// A delegate binding names the function directly; it has no member reference.
+				if (CreateDelegate->GetFunctionName() != DeclarationName) continue;
+				if (bCountAsExternal) ++InOut.External; else ++InOut.Resolved;
+				continue;
+			}
+			else
+			{
+				continue;
+			}
+			if (Reference->GetMemberName() != DeclarationName) continue;
+			UClass* const Owner = ResolveReferenceOwner(Asset, *Reference);
+			if (!Owner)
+			{
+				// A reference that names the declaration but resolves to no concrete owner is not
+				// absence: it is exactly the kind of stale call site that must block.
+				InOut.Unresolved.Add(FString::Printf(
+					TEXT("asset '%s' graph '%s' node '%s' (GUID %s) names '%s' but its owner does not resolve"),
+					*Asset->GetName(), *Graph->GetName(), *Node->GetName(), *Node->NodeGuid.ToString(), *DeclarationName.ToString()));
+				continue;
+			}
+			if (bCountAsExternal) ++InOut.External; else ++InOut.Resolved;
+		}
+	}
+}
+
+bool CollectDeclarationReferences(
+	UBlueprint* Target,
+	const FName DeclarationName,
+	FDeclarationInventory& OutInventory,
+	FCortexCommandResult& OutError)
+{
+	ScanDeclarationReferences(Target, DeclarationName, false, OutInventory, OutError);
+	if (!OutError.ErrorCode.IsEmpty()) return false;
+	int32 ScannedBlueprints = 0;
+	for (TObjectIterator<UBlueprint> It; It; ++It)
+	{
+		UBlueprint* Other = *It;
+		if (!Other || Other == Target || !IsValid(Other)) continue;
+		if (++ScannedBlueprints > MaxInventoryBlueprints)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded,
+				TEXT("replace_entry declaration inventory exceeds the bounded loaded-package budget; close unrelated assets before migrating"));
+			return false;
+		}
+		ScanDeclarationReferences(Other, DeclarationName, true, OutInventory, OutError);
+		if (!OutError.ErrorCode.IsEmpty()) return false;
+	}
+	return true;
+}
+}
+
 bool FCortexGraphMigrationOps::Plan(
 	UBlueprint* Blueprint,
 	const TSharedPtr<FJsonObject>& Migration,
@@ -862,6 +1007,22 @@ bool FCortexGraphMigrationOps::Plan(
 		DeclarationName = DeclaredSymbol.Function->GetFName();
 	}
 	const FString DeclaredFunctionName = DeclarationName.ToString();
+
+	// Inventory the replaced declaration's own references: resolved call sites are reported, and a
+	// reference that cannot be resolved to a concrete owner blocks instead of looking like absence.
+	{
+		FDeclarationInventory Inventory;
+		if (!CollectDeclarationReferences(Blueprint, DeclarationName, Inventory, OutError)) return false;
+		if (Inventory.Unresolved.Num() > 0)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("the replaced declaration '%s' has %d reference(s) that cannot be resolved to a concrete owner: %s. No automatic project repair is attempted."),
+					*DeclarationName.ToString(), Inventory.Unresolved.Num(), *FString::Join(Inventory.Unresolved, TEXT("; "))));
+			return false;
+		}
+		OutPlan.DeclarationReferences = Inventory.Resolved;
+		OutPlan.ExternalDeclarationReferences = Inventory.External;
+	}
 
 	// Shadowing-member policy and its reference inventory.
 	FString MemberName;
@@ -998,7 +1159,17 @@ bool FCortexGraphMigrationOps::Plan(
 		return false;
 	}
 	const bool bReused = ReplacementEntry != nullptr;
-	UEdGraphNode* SourceEntry = bReused ? nullptr : FindNodeByGuid(Blueprint, SourceEntryGuid);
+	// The requested locator is always resolved, so an unchanged replay cannot silently accept a
+	// request whose source entry is a different, still-present stale node.
+	UEdGraphNode* const RequestedSource = FindNodeByGuid(Blueprint, SourceEntryGuid);
+	if (bReused && RequestedSource && RequestedSource != ReplacementEntry)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("patch identity set is partial: the deterministic replacement identity %s already exists while the requested source entry %s is still present; a replace_entry must be entirely new or a complete replay"),
+				*Identity.EntryGuid.ToString(), *RequestedSource->NodeGuid.ToString()));
+		return false;
+	}
+	UEdGraphNode* SourceEntry = bReused ? nullptr : RequestedSource;
 	if (bReused && SourceEntry)
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
@@ -1014,15 +1185,43 @@ bool FCortexGraphMigrationOps::Plan(
 				FString::Printf(TEXT("migration source entry %s does not belong to the named source graph"), *SourceEntryGuid.ToString()));
 			return false;
 		}
-		const bool bIsEntryNode = bIsEvent
-			? SourceEntry->IsA<UK2Node_Event>()
-			: SourceEntry->IsA<UK2Node_FunctionEntry>();
-		if (!bIsEntryNode)
+		// The source entry must be the entry/terminator *of the replaced declaration*: any other
+		// entry node (including a user custom event, which derives from the event node class) would
+		// let the apply detach and delete unrelated authored work.
+		if (bIsEvent)
 		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				FString::Printf(TEXT("migration source node %s is not an %s of the replaced declaration"),
-					*SourceEntryGuid.ToString(), bIsEvent ? TEXT("event entry") : TEXT("function entry")));
-			return false;
+			if (SourceEntry->IsA<UK2Node_CustomEvent>())
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("migration source node %s is a custom event and never an entry of the replaced declaration '%s'"),
+						*SourceEntryGuid.ToString(), *DeclarationName.ToString()));
+				return false;
+			}
+			const UK2Node_Event* const SourceEvent = Cast<UK2Node_Event>(SourceEntry);
+			const UClass* const SourceOwner = SourceEvent ? SourceEvent->EventReference.GetMemberParentClass() : nullptr;
+			if (!SourceEvent
+				|| SourceEvent->EventReference.GetMemberName() != DeclarationName
+				|| !SourceOwner
+				|| !FunctionClass
+				|| (SourceOwner != FunctionClass && !SourceOwner->IsChildOf(FunctionClass)))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("migration source node %s is not an entry of the replaced declaration '%s' on '%s'"),
+						*SourceEntryGuid.ToString(), *DeclarationName.ToString(),
+						FunctionClass ? *FunctionClass->GetPathName() : TEXT("<none>")));
+				return false;
+			}
+		}
+		else
+		{
+			const UK2Node_FunctionEntry* const SourceFunctionEntry = Cast<UK2Node_FunctionEntry>(SourceEntry);
+			if (!SourceFunctionEntry || SourceFunctionEntry->FunctionReference.GetMemberName() != DeclarationName)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("migration source node %s is not the function entry of the replaced declaration '%s'"),
+						*SourceEntryGuid.ToString(), *DeclarationName.ToString()));
+				return false;
+			}
 		}
 	}
 
@@ -1969,6 +2168,29 @@ TSharedPtr<FJsonObject> FCortexGraphMigrationOps::CaptureShadowingMember(UBluepr
 	Out->SetStringField(TEXT("default_value"), Variable.DefaultValue);
 	Out->SetStringField(TEXT("friendly_name"), Variable.FriendlyName);
 	Out->SetStringField(TEXT("category"), Variable.Category.ToString());
+	// The remaining state the authoring fingerprint cannot see has to be captured explicitly.
+	Out->SetBoolField(TEXT("is_reference"), Variable.VarType.bIsReference);
+	Out->SetBoolField(TEXT("is_const"), Variable.VarType.bIsConst);
+	Out->SetBoolField(TEXT("is_weak_pointer"), Variable.VarType.bIsWeakPointer);
+	Out->SetBoolField(TEXT("is_uobject_wrapper"), Variable.VarType.bIsUObjectWrapper);
+	Out->SetBoolField(TEXT("single_precision"), Variable.VarType.bSerializeAsSinglePrecisionFloat);
+	Out->SetStringField(TEXT("terminal_category"), Variable.VarType.PinValueType.TerminalCategory.ToString());
+	Out->SetStringField(TEXT("terminal_subcategory"), Variable.VarType.PinValueType.TerminalSubCategory.ToString());
+	Out->SetStringField(TEXT("terminal_subobject"), Variable.VarType.PinValueType.TerminalSubCategoryObject.IsValid()
+		? Variable.VarType.PinValueType.TerminalSubCategoryObject->GetPathName() : FString());
+	Out->SetBoolField(TEXT("terminal_const"), Variable.VarType.PinValueType.bTerminalIsConst);
+	Out->SetBoolField(TEXT("terminal_uobject_wrapper"), Variable.VarType.PinValueType.bTerminalIsUObjectWrapper);
+	Out->SetStringField(TEXT("rep_notify"), Variable.RepNotifyFunc.ToString());
+	Out->SetNumberField(TEXT("replication_condition"), static_cast<int32>(Variable.ReplicationCondition.GetValue()));
+	TArray<TSharedPtr<FJsonValue>> Metadata;
+	for (const FBPVariableMetaDataEntry& Entry : Variable.MetaDataArray)
+	{
+		TSharedPtr<FJsonObject> MetadataEntry = MakeShared<FJsonObject>();
+		MetadataEntry->SetStringField(TEXT("key"), Entry.DataKey.ToString());
+		MetadataEntry->SetStringField(TEXT("value"), Entry.DataValue);
+		Metadata.Add(MakeShared<FJsonValueObject>(MetadataEntry));
+	}
+	Out->SetArrayField(TEXT("metadata"), Metadata);
 	return Out;
 }
 
@@ -2051,6 +2273,39 @@ bool FCortexGraphMigrationOps::RestoreShadowingMember(
 		}
 		Type.PinSubCategoryObject = SubObject;
 	}
+	bool bIsReference = false;
+	if (CapturedVariable->TryGetBoolField(TEXT("is_reference"), bIsReference)) Type.bIsReference = bIsReference;
+	bool bIsConst = false;
+	if (CapturedVariable->TryGetBoolField(TEXT("is_const"), bIsConst)) Type.bIsConst = bIsConst;
+	bool bIsWeakPointer = false;
+	if (CapturedVariable->TryGetBoolField(TEXT("is_weak_pointer"), bIsWeakPointer)) Type.bIsWeakPointer = bIsWeakPointer;
+	bool bIsUobjectWrapper = false;
+	if (CapturedVariable->TryGetBoolField(TEXT("is_uobject_wrapper"), bIsUobjectWrapper)) Type.bIsUObjectWrapper = bIsUobjectWrapper;
+	bool bSinglePrecision = false;
+	if (CapturedVariable->TryGetBoolField(TEXT("single_precision"), bSinglePrecision)) Type.bSerializeAsSinglePrecisionFloat = bSinglePrecision;
+	FString TerminalText;
+	CapturedVariable->TryGetStringField(TEXT("terminal_category"), TerminalText);
+	Type.PinValueType.TerminalCategory = FName(*TerminalText);
+	TerminalText.Reset();
+	CapturedVariable->TryGetStringField(TEXT("terminal_subcategory"), TerminalText);
+	Type.PinValueType.TerminalSubCategory = FName(*TerminalText);
+	FString TerminalSubObjectPath;
+	CapturedVariable->TryGetStringField(TEXT("terminal_subobject"), TerminalSubObjectPath);
+	if (!TerminalSubObjectPath.IsEmpty())
+	{
+		UObject* const TerminalSubObject = FindObject<UObject>(nullptr, *TerminalSubObjectPath);
+		if (!TerminalSubObject)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("captured shadowing member '%s' references terminal type '%s', which no longer resolves"), *Name, *TerminalSubObjectPath));
+			return false;
+		}
+		Type.PinValueType.TerminalSubCategoryObject = TerminalSubObject;
+	}
+	bool bTerminalIsConstFlag = false;
+	if (CapturedVariable->TryGetBoolField(TEXT("terminal_const"), bTerminalIsConstFlag)) Type.PinValueType.bTerminalIsConst = bTerminalIsConstFlag;
+	bool bTerminalIsUObjectWrapperFlag = false;
+	if (CapturedVariable->TryGetBoolField(TEXT("terminal_uobject_wrapper"), bTerminalIsUObjectWrapperFlag)) Type.PinValueType.bTerminalIsUObjectWrapper = bTerminalIsUObjectWrapperFlag;
 	const int32 InsertIndex = Index >= 0 ? FMath::Clamp(Index, 0, Blueprint->NewVariables.Num()) : Blueprint->NewVariables.Num();
 	FString DefaultValue;
 	CapturedVariable->TryGetStringField(TEXT("default_value"), DefaultValue);
@@ -2073,11 +2328,78 @@ bool FCortexGraphMigrationOps::RestoreShadowingMember(
 	{
 		Description.VarGuid = ParsedGuid;
 	}
+	FString RepNotify;
+	if (CapturedVariable->TryGetStringField(TEXT("rep_notify"), RepNotify) && !RepNotify.IsEmpty())
+	{
+		Description.RepNotifyFunc = FName(*RepNotify);
+	}
+	int32 ReplicationCondition = 0;
+	if (CapturedVariable->TryGetNumberField(TEXT("replication_condition"), ReplicationCondition))
+	{
+		Description.ReplicationCondition = static_cast<ELifetimeCondition>(ReplicationCondition);
+	}
+	const TArray<TSharedPtr<FJsonValue>>* Metadata = nullptr;
+	if (CapturedVariable->TryGetArrayField(TEXT("metadata"), Metadata) && Metadata)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *Metadata)
+		{
+			const TSharedPtr<FJsonObject> Entry = Value.IsValid() ? Value->AsObject() : nullptr;
+			if (!Entry.IsValid()) continue;
+			FString Key;
+			FString MetadataValue;
+			if (Entry->TryGetStringField(TEXT("key"), Key) && Entry->TryGetStringField(TEXT("value"), MetadataValue) && !Key.IsEmpty())
+			{
+				FBPVariableMetaDataEntry MetadataEntry;
+				MetadataEntry.DataKey = FName(*Key);
+				MetadataEntry.DataValue = MetadataValue;
+				Description.MetaDataArray.Add(MetadataEntry);
+			}
+		}
+	}
 	// The captured description is re-inserted verbatim: a re-creation round trip through the engine
 	// variable API cannot preserve the captured identity exactly, and it would regenerate the class
 	// while the recovered variable is present.
 	Blueprint->Modify();
 	Blueprint->NewVariables.Insert(Description, InsertIndex);
+	return true;
+}
+
+bool FCortexGraphMigrationOps::MemberMatchesCapture(
+	UBlueprint* Blueprint,
+	const FName MemberName,
+	const TSharedPtr<FJsonObject>& Captured,
+	FString& OutFailure)
+{
+	OutFailure.Reset();
+	if (!Blueprint || !Captured.IsValid())
+	{
+		OutFailure = TEXT("captured shadowing member is missing");
+		return false;
+	}
+	if (FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, MemberName) == INDEX_NONE)
+	{
+		OutFailure = FString::Printf(TEXT("shadowing member '%s' was not restored"), *MemberName.ToString());
+		return false;
+	}
+	const TSharedPtr<FJsonObject> Live = CaptureShadowingMember(Blueprint, MemberName);
+	if (!Live.IsValid())
+	{
+		OutFailure = TEXT("restored shadowing member cannot be captured");
+		return false;
+	}
+	// Field-by-field: every captured key must be present with an equal canonical value, so a restored
+	// member that lost rep-notify, replication, metadata or a pin-type flag fails recovery.
+	for (const auto& Pair : Captured->Values)
+	{
+		const FString Key = CortexEngineCompat::JsonKeyToString(Pair.Key);
+		const TSharedPtr<FJsonValue> LiveValue = Live->TryGetField(Key);
+		if (!LiveValue.IsValid()
+			|| CanonicalValue(LiveValue) != CanonicalValue(Pair.Value))
+		{
+			OutFailure = FString::Printf(TEXT("restored shadowing member '%s' differs in '%s'"), *MemberName.ToString(), *Key);
+			return false;
+		}
+	}
 	return true;
 }
 

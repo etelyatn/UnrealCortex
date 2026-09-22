@@ -1906,6 +1906,7 @@ struct FGraphPatchJournal
 		FName Name = NAME_None;
 		int32 Index = INDEX_NONE;
 		TSharedPtr<FJsonObject> Captured;
+		FString Diagnostic;
 	};
 	bool bMemberCaptured = false;
 	FMemberEntry Member;
@@ -2111,12 +2112,20 @@ bool RestoreRemovedNodes(UBlueprint* Blueprint, const FGraphPatchJournal& Journa
 }
 
 /** Re-inserts the shadowing member a migration removed, with its exact captured description. */
-bool RestoreRemovedMember(UBlueprint* Blueprint, const FGraphPatchJournal& Journal)
+bool RestoreRemovedMember(UBlueprint* Blueprint, FGraphPatchJournal& Journal)
 {
 	if (!Journal.bMemberCaptured) return true;
 	FCortexCommandResult MemberError;
 	if (!FCortexGraphMigrationOps::RestoreShadowingMember(Blueprint, Journal.Member.Captured, Journal.Member.Index, MemberError))
 	{
+		return false;
+	}
+	// The authoring fingerprint cannot see rep-notify, replication, metadata or the remaining pin-type
+	// flags, so restoration is proven field by field here; a lost field is an unverified recovery.
+	FString MemberFailure;
+	if (!FCortexGraphMigrationOps::MemberMatchesCapture(Blueprint, Journal.Member.Name, Journal.Member.Captured, MemberFailure))
+	{
+		Journal.Member.Diagnostic = MemberFailure;
 		return false;
 	}
 	return true;
@@ -2361,7 +2370,7 @@ bool RestoreNodePinState(
 }
 
 /** Reverses the journal in reverse order. Returns false when a recorded change cannot be undone. */
-bool RestoreJournal(UBlueprint* Blueprint, const FGraphPatchJournal& Journal)
+bool RestoreJournal(UBlueprint* Blueprint, FGraphPatchJournal& Journal)
 {
 	for (int32 Index = Journal.Links.Num() - 1; Index >= 0; --Index)
 	{
@@ -3449,6 +3458,10 @@ bool HandleApplyFailure(
 			if (!bPreservationRestored)
 			{
 				OutOutcome->Diagnostics.Add(TEXT("rollback: the downstream node set outside the replaced entry was not restored"));
+			}
+			if (!Journal.Member.Diagnostic.IsEmpty())
+			{
+				OutOutcome->Diagnostics.Add(FString::Printf(TEXT("rollback: %s"), *Journal.Member.Diagnostic));
 			}
 			if (bInjectedFailure)
 			{

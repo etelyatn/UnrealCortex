@@ -642,7 +642,7 @@ bool FCortexGraphMigrationCompatibleReplacementTest::RunTest(const FString& Para
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
 	ClearGraphNodes(Graph);
-	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("ReceiveEndPlay"), ActorClassPath, 0, 0);
+	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
 	UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("cortex migration"), 400, 0);
 	UK2Node_CallFunction* Tail = AddPrintNode(Graph, TEXT("tail"), 800, 0);
 	UEdGraphNode_Comment* Comment = AddCommentNode(Graph, TEXT("body comment"), -100, -200);
@@ -659,7 +659,7 @@ bool FCortexGraphMigrationCompatibleReplacementTest::RunTest(const FString& Para
 
 	TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
 		TEXT("00000000-0000-0000-0000-000000110001"),
-		MakeMigration(Graph, StaleEntry, ReceiveBeginPlayPinMap()), TEXT("ReceiveBeginPlay"), ActorClassPath);
+		MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
 
 	FCortexGraphPreparedPatch Prepared;
 	FCortexCommandResult Error;
@@ -708,7 +708,7 @@ bool FCortexGraphMigrationCompatibleReplacementTest::RunTest(const FString& Para
 	Router.RegisterDomain(TEXT("graph"), TEXT("Cortex Graph"), TEXT("1.0.1"), MakeShared<FCortexGraphCommandHandler>());
 	TSharedPtr<FJsonObject> CommandRequest = ReplacementRequest(Fixture.Blueprint,
 		TEXT("00000000-0000-0000-0000-000000110001"),
-		MakeMigration(Graph, StaleEntry, ReceiveBeginPlayPinMap()), TEXT("ReceiveBeginPlay"), ActorClassPath);
+		MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
 	const FCortexCommandResult CommandResult = Router.Execute(TEXT("graph.apply_patch"), CommandRequest);
 	TestTrue(FString::Printf(TEXT("replay preview through the command path succeeds: %s"), *CommandResult.ErrorMessage),
 		CommandResult.bSuccess);
@@ -724,6 +724,29 @@ bool FCortexGraphMigrationCompatibleReplacementTest::RunTest(const FString& Para
 			TestTrue(TEXT("the published mapping is the deterministic replacement identity"),
 				SameGuid((*Mappings)->GetStringField(TEXT("entry")), ReplacementGuid->ToString()));
 		}
+	}
+
+	// F1: a user custom event derives from the event node class, so it must never be treated as the
+	// entry of the replaced declaration, and it must never be detached or deleted by the apply.
+	{
+		UK2Node_CustomEvent* StrayEvent = AddCustomEventNode(Graph, TEXT("CortexStrayEvent"));
+		TestNotNull(TEXT("stray custom event created"), StrayEvent);
+		const FGuid StrayGuid = StrayEvent->NodeGuid;
+		TSharedPtr<FJsonObject> StrayRequest = ReplacementRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000110001"),
+			MakeMigration(Graph, StrayEvent, OnPayloadPinMap()), TEXT("OnPayload"));
+		const FString HashBeforeStray = LiveGraphHash(Fixture.Blueprint);
+		FCortexGraphPatchOutcome StrayOutcome;
+		FCortexCommandResult StrayError;
+		TestFalse(TEXT("an unrelated user custom event is not accepted as the source entry"),
+			FCortexGraphPatchOps::Execute(Fixture.Blueprint, StrayRequest, StrayOutcome, StrayError));
+		TestEqual(TEXT("unrelated custom event refusal is INVALID_OPERATION"),
+			StrayError.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+		TestTrue(FString::Printf(TEXT("refusal names the custom event [%s]"), *StrayError.ErrorMessage),
+			StrayError.ErrorMessage.Contains(TEXT("custom event")));
+		TestEqual(TEXT("unrelated custom event refusal mutates nothing"),
+			LiveGraphHash(Fixture.Blueprint), HashBeforeStray);
+		TestNotNull(TEXT("the user custom event still exists"), FindNodeByGuid(Fixture.Blueprint, StrayGuid));
 	}
 
 	Fixture.Cleanup();
@@ -1259,7 +1282,7 @@ bool FCortexGraphMigrationReplayTest::RunTest(const FString& Parameters)
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
 	ClearGraphNodes(Graph);
-	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("ReceiveEndPlay"), ActorClassPath, 0, 0);
+	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
 	UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("replay body"), 400, 0);
 	UEdGraphNode_Comment* Comment = AddCommentNode(Graph, TEXT("replay comment"), -100, -200);
 	LinkNodes(Graph, StaleEntry, TEXT("then"), Print, TEXT("execute"));
@@ -1273,7 +1296,7 @@ bool FCortexGraphMigrationReplayTest::RunTest(const FString& Parameters)
 
 	TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
 		TEXT("00000000-0000-0000-0000-000000110009"),
-		MakeMigration(Graph, StaleEntry, ReceiveBeginPlayPinMap()), TEXT("ReceiveBeginPlay"), ActorClassPath);
+		MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
 	FCortexGraphPreparedPatch Prepared;
 	FCortexCommandResult Error;
 	TestTrue(FString::Printf(TEXT("replay first preview succeeds: %s"), *Error.ErrorMessage),
@@ -1290,7 +1313,7 @@ bool FCortexGraphMigrationReplayTest::RunTest(const FString& Parameters)
 	// The identical request with the live fingerprint must reconcile as a complete reuse.
 	TSharedPtr<FJsonObject> Replay = ReplacementRequest(Fixture.Blueprint,
 		TEXT("00000000-0000-0000-0000-000000110009"),
-		MakeMigration(Graph, StaleEntry, ReceiveBeginPlayPinMap()), TEXT("ReceiveBeginPlay"), ActorClassPath);
+		MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
 	const int32 TransactionsBefore = TransactionCount();
 	FOperations Operations;
 	Operations.Begin();
@@ -1320,7 +1343,7 @@ bool FCortexGraphMigrationReplayTest::RunTest(const FString& Parameters)
 	// A different patch id for the same declaration is a conflicting identity state, not a replay.
 	TSharedPtr<FJsonObject> Conflicting = ReplacementRequest(Fixture.Blueprint,
 		TEXT("00000000-0000-0000-0000-00000011000a"),
-		MakeMigration(Graph, StaleEntry, ReceiveBeginPlayPinMap()), TEXT("ReceiveBeginPlay"), ActorClassPath);
+		MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
 	FCortexGraphPatchOutcome ConflictingOutcome;
 	TestFalse(TEXT("a conflicting identity state is refused"),
 		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Conflicting, ConflictingOutcome, Error));
@@ -1355,7 +1378,7 @@ bool FCortexGraphMigrationMixedRequestTest::RunTest(const FString& Parameters)
 	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
 	const FString HashBefore = LiveGraphHash(Fixture.Blueprint);
 
-	auto ExpectRefusal = [&](const TCHAR* Context, const FString& ExpectedCode, const TSharedPtr<FJsonObject>& Request)
+	auto ExpectRefusal = [&](const FString& Context, const FString& ExpectedCode, const TSharedPtr<FJsonObject>& Request)
 	{
 		FCortexGraphPatchOutcome Outcome;
 		FCortexCommandResult Error;
@@ -1439,6 +1462,30 @@ bool FCortexGraphMigrationMixedRequestTest::RunTest(const FString& Parameters)
 		Request->GetObjectField(TEXT("migration"))->SetArrayField(TEXT("pin_map"), TArray<TSharedPtr<FJsonValue>>());
 		ExpectRefusal(TEXT("empty pin map"), CortexErrorCodes::InvalidField, Request);
 	}
+	// Every published flag is a strict JSON boolean: a numeric or string value is refused, never
+	// coerced (design 4.4: "malformed flag types fail; no silent flag coercion").
+	auto ExpectFlagRefusal = [&](const TCHAR* Field, const TCHAR* Value, const int32 TrackToken)
+	{
+		{
+			TSharedPtr<FJsonObject> Request = FreshRequest();
+			Request->SetNumberField(Field, TrackToken);
+			ExpectRefusal(FString::Printf(TEXT("%s as a number"), Field), CortexErrorCodes::InvalidField, Request);
+		}
+		{
+			TSharedPtr<FJsonObject> Request = FreshRequest();
+			Request->SetStringField(Field, Value);
+			ExpectRefusal(FString::Printf(TEXT("%s as a string"), Field), CortexErrorCodes::InvalidField, Request);
+		}
+	};
+	ExpectFlagRefusal(TEXT("dry_run"), TEXT("false"), 0);
+	ExpectFlagRefusal(TEXT("compile"), TEXT("true"), 1);
+	ExpectFlagRefusal(TEXT("save"), TEXT("false"), 0);
+	ExpectFlagRefusal(TEXT("allow_noop"), TEXT("true"), 1);
+	{
+		TSharedPtr<FJsonObject> Request = FreshRequest();
+		Request->GetObjectField(TEXT("migration"))->SetNumberField(TEXT("remove_shadowing_member"), 1);
+		ExpectRefusal(TEXT("remove_shadowing_member as a number"), CortexErrorCodes::InvalidField, Request);
+	}
 	{
 		// The target of a migration must be the implementation selector.
 		TSharedPtr<FJsonObject> Request = FreshRequest();
@@ -1473,27 +1520,29 @@ bool FCortexGraphMigrationStaleTokenTest::RunTest(const FString& Parameters)
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
 	ClearGraphNodes(Graph);
-	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("ReceiveEndPlay"), ActorClassPath, 0, 0);
+	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
 	UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("stale body"), 400, 0);
 	LinkNodes(Graph, StaleEntry, TEXT("then"), Print, TEXT("execute"));
 	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
 
 	TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
 		TEXT("00000000-0000-0000-0000-00000011000c"),
-		MakeMigration(Graph, StaleEntry, ReceiveBeginPlayPinMap()), TEXT("ReceiveBeginPlay"), ActorClassPath);
+		MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
 	FCortexGraphPreparedPatch Prepared;
 	FCortexCommandResult Error;
 	TestTrue(FString::Printf(TEXT("stale token preview succeeds: %s"), *Error.ErrorMessage),
 		PreviewForApply(Fixture.Blueprint, Request, Prepared, Error));
 
-	// The same migration onto another parameterless inherited declaration is a valid request on its
-	// own, but the token was minted for the first target, so the changed migration intent invalidates
-	// it without any mutation.
+	// The same mapping set in a different order is a valid request on its own, but the token was
+	// minted for the previous intent bytes, so the changed migration intent invalidates it without
+	// any mutation.
 	{
+		TArray<TSharedPtr<FJsonValue>> Reordered = OnPayloadPinMap();
+		Algo::Reverse(Reordered);
 		TSharedPtr<FJsonObject> Changed = ReplacementRequest(Fixture.Blueprint,
 			TEXT("00000000-0000-0000-0000-00000011000c"),
-			MakeMigration(Graph, StaleEntry, ReceiveBeginPlayPinMap()),
-			TEXT("ReceiveDestroyed"), ActorClassPath);
+			MakeMigration(Graph, StaleEntry, Reordered),
+			TEXT("OnPayload"));
 		FCortexGraphPreparedPatch ChangedPreview;
 		FCortexCommandResult PreviewError;
 		TestTrue(FString::Printf(TEXT("the changed migration intent is valid on its own: %s"), *PreviewError.ErrorMessage),
@@ -1642,6 +1691,27 @@ bool FCortexGraphMigrationFunctionGraphTest::RunTest(const FString& Parameters)
 	TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
 		TEXT("00000000-0000-0000-0000-00000011000e"),
 		MakeMigration(Stale.Graph, Stale.Entry, ComputeScorePinMap()), TEXT("ComputeScore"));
+
+	// F7/F2: an out-parameter/result-terminator incompatibility (an array result mapped onto the
+	// scalar return input) must refuse in preflight with nothing mutated.
+	{
+		TSharedPtr<FJsonObject> BadRequest = ReplacementRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-00000011000e"),
+			MakeMigration(Stale.Graph, Stale.Entry, WithEntry(ComputeScorePinMap(), TEXT("ReturnValue"), TEXT("input"), TEXT("OutIds"))),
+			TEXT("ComputeScore"));
+		const FString HashBeforeBad = LiveGraphHash(Fixture.Blueprint);
+		const int32 NodesBeforeBad = CountNativeNodes(Fixture.Blueprint);
+		FCortexGraphPatchOutcome BadOutcome;
+		FCortexCommandResult BadError;
+		TestFalse(TEXT("an incompatible result-terminator mapping is refused"),
+			FCortexGraphPatchOps::Execute(Fixture.Blueprint, BadRequest, BadOutcome, BadError));
+		TestEqual(TEXT("result-terminator incompatibility is TYPE_MISMATCH"),
+			BadError.ErrorCode, FString(CortexErrorCodes::TypeMismatch));
+		TestTrue(FString::Printf(TEXT("refusal names the container dimension [%s]"), *BadError.ErrorMessage),
+			BadError.ErrorMessage.Contains(TEXT("container")));
+		TestEqual(TEXT("result-terminator refusal mutates nothing"), LiveGraphHash(Fixture.Blueprint), HashBeforeBad);
+		TestEqual(TEXT("result-terminator refusal leaves the node count"), CountNativeNodes(Fixture.Blueprint), NodesBeforeBad);
+	}
 
 	FCortexGraphPreparedPatch Prepared;
 	FCortexCommandResult Error;
