@@ -39,5 +39,7 @@ public:
 	static void SetRemoveSCSComponentMidflightTestHook(TFunction<void(class USCS_Node*, class UBlueprint*)> InHook);
 	static void SetRemoveSCSComponentPostCompileTestHook(TFunction<void(class UBlueprint*)> InHook);
 	static void SetRenameSCSComponentPostCompileTestHook(TFunction<void(class UBlueprint*)> InHook);
+	static void SetRenameSCSComponentDependentDiscoveryTestHook(
+		TFunction<void(class UBlueprint*, TArray<class UBlueprint*>&)> InHook);
 #endif
 };

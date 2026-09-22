@@ -139,6 +139,12 @@ namespace CortexBPComponentOpsPrivate
 
 	FCortexBatchPreflightResult PreflightSetComponentDefaults(const FCortexBatchMutationItem& Item)
 	{
+		FString BlockReason;
+		if (FCortexAssetMutationGuard::IsPathBlocked(Item.Target, BlockReason))
+		{
+			return FCortexBatchPreflightResult::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
+		}
 		FString ValidationError;
 		if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(Item.Target, ValidationError))
 		{
@@ -152,11 +158,11 @@ namespace CortexBPComponentOpsPrivate
 			return FCortexBatchPreflightResult::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 		}
 
-		FString BlockReason;
-		if (FCortexAssetMutationGuard::IsBlocked(Blueprint, BlockReason))
+		FString LoadedBlockReason;
+		if (FCortexAssetMutationGuard::IsBlocked(Blueprint, LoadedBlockReason))
 		{
 			return FCortexBatchPreflightResult::Error(CortexErrorCodes::InvalidOperation,
-				FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
+				FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *LoadedBlockReason));
 		}
 
 		FString ComponentName;

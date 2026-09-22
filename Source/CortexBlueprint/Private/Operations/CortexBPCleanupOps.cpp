@@ -28,6 +28,7 @@ namespace
 {
 	TFunction<void(USCS_Node*, UBlueprint*)> GRemoveSCSComponentMidflightTestHook;
 	TFunction<void(UBlueprint*)> GRemoveSCSComponentPostCompileTestHook;
+TFunction<void(UBlueprint*, TArray<UBlueprint*>&)> GRenameSCSComponentDependentDiscoveryTestHook;
 	TFunction<void(UBlueprint*)> GRenameSCSComponentPostCompileTestHook;
 }
 #endif
@@ -703,6 +704,12 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 
 	TArray<UBlueprint*> DependentBlueprints;
 	FBlueprintEditorUtils::GetDependentBlueprints(BP, DependentBlueprints);
+#if WITH_DEV_AUTOMATION_TESTS
+	if (GRenameSCSComponentDependentDiscoveryTestHook)
+	{
+		GRenameSCSComponentDependentDiscoveryTestHook(BP, DependentBlueprints);
+	}
+#endif
 	for (UBlueprint* DependentBP : DependentBlueprints)
 	{
 		if (!IsValid(DependentBP) || DependentBP == BP)
@@ -710,6 +717,12 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 			continue;
 		}
 
+		FString DependentBlockReason;
+		if (FCortexAssetMutationGuard::IsBlocked(DependentBP, DependentBlockReason))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Dependent Blueprint is blocked after failed recovery: %s"), *DependentBlockReason));
+		}
 		const bool bDependentVariableCollision = DependentBP->NewVariables.ContainsByPredicate(
 			[&NewFName](const FBPVariableDescription& Variable)
 			{
@@ -1147,5 +1160,11 @@ void FCortexBPCleanupOps::SetRemoveSCSComponentPostCompileTestHook(TFunction<voi
 void FCortexBPCleanupOps::SetRenameSCSComponentPostCompileTestHook(TFunction<void(UBlueprint*)> InHook)
 {
 	GRenameSCSComponentPostCompileTestHook = MoveTemp(InHook);
+}
+
+void FCortexBPCleanupOps::SetRenameSCSComponentDependentDiscoveryTestHook(
+	TFunction<void(UBlueprint*, TArray<UBlueprint*>&)> InHook)
+{
+	GRenameSCSComponentDependentDiscoveryTestHook = MoveTemp(InHook);
 }
 #endif

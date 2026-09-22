@@ -1,4 +1,5 @@
 #include "CortexAssetMutationGuard.h"
+#include "CortexEditorUtils.h"
 #include "UObject/Object.h"
 
 namespace
@@ -32,18 +33,21 @@ bool FCortexAssetMutationGuard::IsPathBlocked(const FString& AssetPath, FString&
 	OutReason.Reset();
 	if (AssetPath.IsEmpty()) return false;
 	FScopeLock Lock(&GuardLock);
-	if (const FString* Reason = BlockedAssets.Find(AssetPath))
+	auto FindBlockedPath = [&OutReason](const FString& Path)
 	{
-		OutReason = *Reason;
-		return true;
-	}
-	if (const UObject* ResolvedAsset = StaticFindObject(UObject::StaticClass(), nullptr, *AssetPath))
-	{
-		if (const FString* Reason = BlockedAssets.Find(ResolvedAsset->GetPathName()))
+		if (const FString* Reason = BlockedAssets.Find(Path))
 		{
 			OutReason = *Reason;
 			return true;
 		}
+		return false;
+	};
+	if (FindBlockedPath(AssetPath)) return true;
+	const FString NormalizedPath = FCortexEditorUtils::NormalizeMountedContentPath(AssetPath);
+	if (FindBlockedPath(NormalizedPath)) return true;
+	if (const UObject* ResolvedAsset = StaticFindObject(UObject::StaticClass(), nullptr, *NormalizedPath))
+	{
+		return FindBlockedPath(ResolvedAsset->GetPathName());
 	}
 	return false;
 }

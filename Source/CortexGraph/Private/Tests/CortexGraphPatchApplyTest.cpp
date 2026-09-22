@@ -12,6 +12,12 @@
 #include "Editor.h"
 #include "UObject/GarbageCollection.h"
 #include "Dom/JsonObject.h"
+#include "K2Node_Composite.h"
+#include "K2Node_DynamicCast.h"
+#include "K2Node_GenericCreateObject.h"
+#include "EdGraphSchema_K2.h"
+#include "Components/SceneComponent.h"
+
 
 #if WITH_EDITOR
 namespace CortexGraphPatchApplyTest
@@ -79,6 +85,44 @@ static void Cleanup(UPackage* Package, UBlueprint* Blueprint)
 		Package->MarkAsGarbage();
 	}
 }
+}
+
+static int32 CountPinsNamed(const UEdGraphNode* Node, const FName Name)
+{
+	int32 Count = 0;
+	if (Node)
+	{
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			Count += Pin && Pin->PinName == Name ? 1 : 0;
+		}
+	}
+	return Count;
+}
+
+static UK2Node_Composite* AddComposite(UEdGraph* RootGraph)
+{
+	UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(RootGraph);
+	Composite->CreateNewGuid();
+	RootGraph->AddNode(Composite, true, false);
+	Composite->PostPlacedNewNode();
+	return Composite;
+}
+
+static bool PrepareForApply(
+	UBlueprint* Blueprint,
+	const TSharedPtr<FJsonObject>& Request,
+	FCortexGraphPreparedPatch& OutPrepared,
+	FCortexCommandResult& OutError)
+{
+	FCortexGraphPreparedPatch Preview;
+	if (!FCortexGraphPatchOps::Preflight(Blueprint, Request, Preview, OutError))
+	{
+		return false;
+	}
+	Request->SetBoolField(TEXT("dry_run"), false);
+	Request->SetStringField(TEXT("expected_validation_hash"), Preview.ValidationHash);
+	return FCortexGraphPatchOps::Preflight(Blueprint, Request, OutPrepared, OutError);
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -299,6 +343,154 @@ bool FCortexGraphPatchApplyImplementationRecoveryTest::RunTest(const FString& Pa
 	FCortexGraphPatchOps::ClearApplyFaultPointForTesting();
 	TestEqual(TEXT("implementation graph recovery restores exact authoring fingerprint"),
 		FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash")), FingerprintBefore);
+	CortexGraphPatchApplyTest::Cleanup(Package, Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchApplyCompositeRecoveryTest,
+	"Cortex.Graph.Authoring.Apply.CompositeRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchApplyCompositeRecoveryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchApplyTest::MakeBlueprint(Package, TEXT("BP_PatchCompositeRecovery_T07"));
+	TestNotNull(TEXT("composite recovery fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	UEdGraph* RootGraph = Blueprint->UbergraphPages[0];
+	const int32 RootNodesBefore = RootGraph->Nodes.Num();
+	const int32 SubgraphsBefore = RootGraph->SubGraphs.Num();
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchApplyTest::MakeRequest(Blueprint, 2);
+	const TArray<TSharedPtr<FJsonValue>>& Nodes = Request->GetArrayField(TEXT("nodes"));
+	Nodes[0]->AsObject()->SetStringField(TEXT("node_class"), TEXT("Composite"));
+	FCortexGraphPreparedPatch Prepared;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("composite recovery preflight succeeds: %s"), *Error.ErrorMessage),
+		PrepareForApply(Blueprint, Request, Prepared, Error));
+
+	FCortexGraphPatchOps::SetApplyFaultPointForTesting(TEXT("second_node"));
+	TestFalse(TEXT("later injected failure rejects composite patch"), FCortexGraphPatchOps::Apply(Blueprint, Prepared, Error));
+	FCortexGraphPatchOps::ClearApplyFaultPointForTesting();
+	TestEqual(TEXT("recovery destroys the composite node"), RootGraph->Nodes.Num(), RootNodesBefore);
+	TestEqual(TEXT("recovery removes the composite subgraph registration"), RootGraph->SubGraphs.Num(), SubgraphsBefore);
+	for (UEdGraphNode* Node : RootGraph->Nodes)
+	{
+		const UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node);
+		TestTrue(TEXT("remaining root nodes have no created composite bound graph"), !Composite || Composite->BoundGraph == nullptr);
+	}
+	CortexGraphPatchApplyTest::Cleanup(Package, Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchApplyParameterizedNodeTest,
+	"Cortex.Graph.Authoring.Apply.ParameterizedNodes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchApplyParameterizedNodeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchApplyTest::MakeBlueprint(Package, TEXT("BP_PatchParameterized_T07"));
+	TestNotNull(TEXT("parameterized patch fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchApplyTest::MakeRequest(Blueprint, 2);
+	const TArray<TSharedPtr<FJsonValue>>& Nodes = Request->GetArrayField(TEXT("nodes"));
+	TSharedPtr<FJsonObject> Create = Nodes[0]->AsObject();
+	Create->SetStringField(TEXT("node_class"), TEXT("GenericCreateObject"));
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("class"), TEXT("/Script/Engine.SceneComponent"));
+	Create->SetObjectField(TEXT("params"), CreateParams);
+	TSharedPtr<FJsonObject> DynamicCastJson = Nodes[1]->AsObject();
+	DynamicCastJson->SetStringField(TEXT("node_class"), TEXT("DynamicCast"));
+	TSharedPtr<FJsonObject> CastParams = MakeShared<FJsonObject>();
+	CastParams->SetStringField(TEXT("class"), TEXT("/Script/Engine.SceneComponent"));
+	DynamicCastJson->SetObjectField(TEXT("params"), CastParams);
+	TSharedPtr<FJsonObject> Connection = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> From = MakeShared<FJsonObject>();
+	From->SetStringField(TEXT("client_id"), TEXT("self0"));
+	From->SetStringField(TEXT("pin"), TEXT("ReturnValue"));
+	TSharedPtr<FJsonObject> To = MakeShared<FJsonObject>();
+	To->SetStringField(TEXT("client_id"), TEXT("self1"));
+	To->SetStringField(TEXT("pin"), TEXT("Object"));
+	Connection->SetObjectField(TEXT("from"), From);
+	Connection->SetObjectField(TEXT("to"), To);
+	Request->SetArrayField(TEXT("connections"), { MakeShared<FJsonValueObject>(Connection) });
+
+	FCortexGraphPreparedPatch Prepared;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("parameterized patch preflight succeeds: %s"), *Error.ErrorMessage),
+		PrepareForApply(Blueprint, Request, Prepared, Error));
+	TestTrue(FString::Printf(TEXT("parameterized patch applies: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Apply(Blueprint, Prepared, Error));
+	UEdGraph* Graph = Blueprint->UbergraphPages[0];
+	UK2Node_GenericCreateObject* CreateNode = Cast<UK2Node_GenericCreateObject>(Graph->Nodes.Last());
+	UK2Node_DynamicCast* CastNode = nullptr;
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		CreateNode = Cast<UK2Node_GenericCreateObject>(Node) ? Cast<UK2Node_GenericCreateObject>(Node) : CreateNode;
+		CastNode = Cast<UK2Node_DynamicCast>(Node) ? Cast<UK2Node_DynamicCast>(Node) : CastNode;
+	}
+	TestNotNull(TEXT("one GenericCreateObject was added"), CreateNode);
+	TestNotNull(TEXT("one DynamicCast was added"), CastNode);
+	if (CreateNode && CastNode)
+	{
+		UEdGraphPin* ClassPin = CreateNode->GetClassPin();
+		UEdGraphPin* ResultPin = CreateNode->GetResultPin();
+		UEdGraphPin* ObjectPin = CastNode->FindPin(TEXT("Object"));
+		TestEqual(TEXT("GenericCreateObject has exactly one class pin"), CountPinsNamed(CreateNode, TEXT("Class")), 1);
+		TestEqual(TEXT("DynamicCast has exactly one Object pin"), CountPinsNamed(CastNode, TEXT("Object")), 1);
+		TestEqual(TEXT("GenericCreateObject class default is unambiguous"), ClassPin ? ClassPin->DefaultObject.Get() : nullptr, (UObject*)USceneComponent::StaticClass());
+		TestEqual(TEXT("DynamicCast target is configured before pin allocation"), CastNode->TargetType.Get(), (UClass*)USceneComponent::StaticClass());
+		TestTrue(TEXT("parameterized nodes retain exactly their requested connection"),
+			ResultPin && ObjectPin && ResultPin->LinkedTo.Num() == 1 && ResultPin->LinkedTo[0] == ObjectPin);
+	}
+	CortexGraphPatchApplyTest::Cleanup(Package, Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchApplySubgraphRecoveryTest,
+	"Cortex.Graph.Authoring.Apply.SubgraphRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchApplySubgraphRecoveryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchApplyTest::MakeBlueprint(Package, TEXT("BP_PatchSubgraphRecovery_T07"));
+	TestNotNull(TEXT("subgraph recovery fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+
+	UEdGraph* RootGraph = Blueprint->UbergraphPages[0];
+	UK2Node_Composite* Composite = AddComposite(RootGraph);
+	TestNotNull(TEXT("composite fixture created"), Composite);
+	UEdGraph* Subgraph = Composite ? Composite->BoundGraph : nullptr;
+	TestNotNull(TEXT("composite bound graph created"), Subgraph);
+	if (!Subgraph)
+	{
+		CortexGraphPatchApplyTest::Cleanup(Package, Blueprint);
+		return false;
+	}
+	const int32 RootNodesBefore = RootGraph->Nodes.Num();
+	const int32 SubgraphNodesBefore = Subgraph->Nodes.Num();
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchApplyTest::MakeRequest(Blueprint);
+	TSharedPtr<FJsonObject> GraphRef = Request->GetObjectField(TEXT("target"))->GetObjectField(TEXT("graph_ref"));
+	GraphRef->SetStringField(TEXT("graph_guid"), RootGraph->GraphGuid.ToString());
+	GraphRef->SetStringField(TEXT("subgraph_path"), Subgraph->GetName());
+	FCortexGraphPreparedPatch Prepared;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("subgraph patch preflight succeeds: %s"), *Error.ErrorMessage),
+		PrepareForApply(Blueprint, Request, Prepared, Error));
+	FCortexGraphPatchOps::SetApplyFaultPointForTesting(TEXT("layout"));
+	TestFalse(TEXT("subgraph layout fault rejects patch"), FCortexGraphPatchOps::Apply(Blueprint, Prepared, Error));
+	FCortexGraphPatchOps::ClearApplyFaultPointForTesting();
+	TestEqual(TEXT("recovery leaves root graph untouched"), RootGraph->Nodes.Num(), RootNodesBefore);
+	TestEqual(TEXT("recovery resolves and restores the selected subgraph"), Subgraph->Nodes.Num(), SubgraphNodesBefore);
 	CortexGraphPatchApplyTest::Cleanup(Package, Blueprint);
 	return true;
 }

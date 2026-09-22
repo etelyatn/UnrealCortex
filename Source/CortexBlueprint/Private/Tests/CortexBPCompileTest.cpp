@@ -184,21 +184,23 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPBlockedMutationDispatchTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
-	UPackage* Package = CreatePackage(TEXT("/Temp/BP_BlockedMutation_T07"));
+	UPackage* Package = CreatePackage(TEXT("/Game/Blueprints/BP"));
 	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
-		AActor::StaticClass(), Package, FName("BP_BlockedMutation_T07"), BPTYPE_Normal,
+		AActor::StaticClass(), Package, FName("BP"), BPTYPE_Normal,
 		UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
 	TestNotNull(TEXT("blocked Blueprint fixture created"), Blueprint);
 	if (!Blueprint) return false;
+	Package->SetDirtyFlag(false);
 	FCortexAssetMutationGuard::Block(Blueprint, TEXT("forced recovery verification failure"));
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
+	Params->SetStringField(TEXT("asset_path"), TEXT("Blueprints/BP.BP"));
 	FCortexBPCommandHandler Handler;
-	TestFalse(TEXT("normal Blueprint compile dispatch refuses blocked asset"),
+	TestFalse(TEXT("relative alias compile refuses canonical blocked asset before load side effects"),
 		Handler.Execute(TEXT("compile"), Params).bSuccess);
-	TestFalse(TEXT("normal Blueprint save dispatch refuses blocked asset"),
+	TestFalse(TEXT("relative alias save refuses canonical blocked asset before load side effects"),
 		Handler.Execute(TEXT("save"), Params).bSuccess);
-	TestTrue(TEXT("normal Blueprint read dispatch remains available"),
+	TestFalse(TEXT("blocked alias dispatch leaves package clean"), Package->IsDirty());
+	TestTrue(TEXT("relative alias read dispatch remains available"),
 		Handler.Execute(TEXT("get_info"), Params).bSuccess);
 	Blueprint->ClearFlags(RF_Standalone);
 	Blueprint->MarkAsGarbage();
