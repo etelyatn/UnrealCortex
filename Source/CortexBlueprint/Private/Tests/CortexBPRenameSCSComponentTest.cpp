@@ -955,6 +955,12 @@ bool FCortexBPRenameSCSComponentBlockedDependentTest::RunTest(const FString& Par
 	TestFalse(TEXT("blocked dependent rejects rename before parent side effects"), Result.bSuccess);
 	TestTrue(TEXT("parent component name remains unchanged"), RenameHasSCSNode(Parent, TEXT("OldComp")));
 	TestFalse(TEXT("blocked dependent did not receive the new component name"), RenameHasSCSNode(Parent, TEXT("NewComp")));
+	if (GEditor && GEditor->Trans)
+	{
+		GEditor->Trans->Reset(FText::FromString(TEXT("CortexBPRenameBlockedDependentCleanup")));
+	}
+	Child->ClearFlags(RF_Standalone | RF_RootSet);
+	Parent->ClearFlags(RF_Standalone | RF_RootSet);
 	Child->MarkAsGarbage();
 	Parent->MarkAsGarbage();
 	return true;

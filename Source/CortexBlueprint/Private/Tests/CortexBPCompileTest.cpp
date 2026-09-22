@@ -14,6 +14,8 @@
 #include "GameFramework/Actor.h"
 #include "Misc/Guid.h"
 #include "UObject/UObjectIterator.h"
+#include "Editor.h"
+#include "Editor/Transactor.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPCompileTest,
@@ -207,9 +209,13 @@ bool FCortexBPBlockedMutationDispatchTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("blocked alias dispatch leaves package clean"), Package->IsDirty());
 	TestTrue(TEXT("relative alias read dispatch remains available"),
 		Handler.Execute(TEXT("get_info"), Params).bSuccess);
-	Blueprint->ClearFlags(RF_Standalone);
+	if (GEditor && GEditor->Trans)
+	{
+		GEditor->Trans->Reset(FText::FromString(TEXT("CortexBPBlockedMutationCleanup")));
+	}
+	Blueprint->ClearFlags(RF_Standalone | RF_RootSet);
 	Blueprint->MarkAsGarbage();
-	Package->ClearFlags(RF_Standalone);
+	Package->ClearFlags(RF_Standalone | RF_RootSet);
 	Package->MarkAsGarbage();
 	return true;
 }
