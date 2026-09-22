@@ -4,6 +4,28 @@
 #include "Operations/CortexGraphConnectionOps.h"
 #include "Operations/CortexGraphTraceOps.h"
 #include "Operations/CortexGraphAuthoringContext.h"
+#include "CortexAssetMutationGuard.h"
+#include "Engine/Blueprint.h"
+
+namespace
+{
+bool RejectBlockedGraphMutation(const TSharedPtr<FJsonObject>& Params, FCortexCommandResult& OutError)
+{
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath)) return false;
+	if (UBlueprint* Blueprint = FindObject<UBlueprint>(nullptr, *AssetPath))
+	{
+		FString Reason;
+		if (FCortexAssetMutationGuard::IsBlocked(Blueprint, Reason))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *Reason));
+			return true;
+		}
+	}
+	return false;
+}
+}
 
 FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	const FString& Command,
@@ -15,6 +37,12 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	if (Command == TEXT("get_authoring_context") || Command == TEXT("authoring_context"))
 	{
 		return FCortexGraphAuthoringContext::Read(Params);
+	}
+	if (Command == TEXT("add_node") || Command == TEXT("remove_node") || Command == TEXT("connect")
+		|| Command == TEXT("disconnect") || Command == TEXT("set_pin_value") || Command == TEXT("auto_layout"))
+	{
+		FCortexCommandResult GuardError;
+		if (RejectBlockedGraphMutation(Params, GuardError)) return GuardError;
 	}
 
 	if (Command == TEXT("list_graphs"))
