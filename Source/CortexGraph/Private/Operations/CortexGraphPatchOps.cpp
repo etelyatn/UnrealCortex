@@ -530,6 +530,106 @@ FCortexCommandResult MakeNodeScanRefusal(const FString& MigrationOp, const int32
 	return Error;
 }
 
+/** One graph of the asset's graph tree together with the root-relative path that names it. */
+struct FCortexGraphChoice
+{
+	UEdGraph* Graph = nullptr;
+	/** Empty for a root graph; otherwise the dot-separated composite path published by discovery. */
+	FString RootRelativePath;
+	ECortexGraphKind Kind = ECortexGraphKind::Function;
+};
+
+/** The composite tree depth discovery publishes, so a published path always resolves. */
+constexpr int32 MaxGraphChoiceDepth = 4;
+
+/** Collects the composite children of one graph, depth-first, with their root-relative paths. */
+void CollectGraphChoices(
+	UEdGraph* Graph,
+	const ECortexGraphKind Kind,
+	const FString& CurrentPath,
+	TArray<FCortexGraphChoice>& OutChoices,
+	const int32 Depth)
+{
+	if (!Graph || Depth >= MaxGraphChoiceDepth)
+	{
+		return;
+	}
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (!IsValid(Node)) continue;
+		UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node);
+		if (!Composite || !IsValid(Composite->BoundGraph)) continue;
+
+		UEdGraph* Sub = Composite->BoundGraph;
+		const FString SubPath = CurrentPath.IsEmpty()
+			? Sub->GetName()
+			: FString::Printf(TEXT("%s.%s"), *CurrentPath, *Sub->GetName());
+
+		FCortexGraphChoice Choice;
+		Choice.Graph = Sub;
+		Choice.RootRelativePath = SubPath;
+		Choice.Kind = Kind;
+		OutChoices.Add(Choice);
+
+		CollectGraphChoices(Sub, Kind, SubPath, OutChoices, Depth + 1);
+	}
+}
+
+/** Every graph the patch route may address: the user graphs followed by their composite children. */
+void CollectAllGraphChoices(UBlueprint* Blueprint, TArray<FCortexGraphChoice>& OutChoices)
+{
+	TArray<FCortexGraphEntry> Entries;
+	FCortexGraphNodeOps::EnumerateUserGraphs(Blueprint, Entries);
+	for (const FCortexGraphEntry& Entry : Entries)
+	{
+		if (!Entry.Graph) continue;
+		FCortexGraphChoice Root;
+		Root.Graph = Entry.Graph;
+		Root.Kind = Entry.Kind;
+		OutChoices.Add(Root);
+		CollectGraphChoices(Entry.Graph, Entry.Kind, FString(), OutChoices, 0);
+	}
+}
+
+/**
+ * Resolves the one graph a `graph_guid` names, root or nested composite child. Refuses an ambiguous
+ * identity instead of silently picking one, because a GUID that names two graphs cannot be a target.
+ * The resolved choice is copied out: the collected tree is local to this lookup.
+ */
+bool FindGraphChoiceByGuid(
+	UBlueprint* Blueprint,
+	const FGuid& GraphGuid,
+	FCortexGraphChoice& OutChoice,
+	FCortexCommandResult& OutError)
+{
+	TArray<FCortexGraphChoice> Choices;
+	CollectAllGraphChoices(Blueprint, Choices);
+
+	int32 MatchCount = 0;
+	for (const FCortexGraphChoice& Choice : Choices)
+	{
+		if (Choice.Graph->GraphGuid == GraphGuid)
+		{
+			OutChoice = Choice;
+			++MatchCount;
+		}
+	}
+	if (MatchCount == 0)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::GraphNotFound,
+			FString::Printf(TEXT("Graph with GUID %s not found"), *GraphGuid.ToString()));
+		return false;
+	}
+	if (MatchCount > 1)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Graph GUID %s does not identify one graph of this Blueprint"), *GraphGuid.ToString()));
+		return false;
+	}
+	return true;
+}
+}
+
 bool ParseTarget(
 	UBlueprint* Blueprint,
 	const TSharedPtr<FJsonObject>& Request,
@@ -587,15 +687,14 @@ bool ParseTarget(
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("target.graph_ref.graph_kind must be a string"));
 				return false;
 			}
-			TArray<FCortexGraphEntry> Entries;
-			FCortexGraphNodeOps::EnumerateUserGraphs(Blueprint, Entries);
-			for (const FCortexGraphEntry& Entry : Entries)
+			// The consistency check uses the same identity resolution as the target lookup, so a
+			// nested composite child is checked against its own owning graph's kind.
+			FCortexGraphChoice Match;
+			if (!FindGraphChoiceByGuid(Blueprint, GraphGuid, Match, OutError)) return false;
+			if (Match.Graph && FCortexGraphNodeOps::GraphKindToString(Match.Kind) != RequestedKind)
 			{
-				if (Entry.Graph && Entry.Graph->GraphGuid == GraphGuid && FCortexGraphNodeOps::GraphKindToString(Entry.Kind) != RequestedKind)
-				{
-					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("target graph_kind conflicts with graph identity"));
-					return false;
-				}
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("target graph_kind conflicts with graph identity"));
+				return false;
 			}
 		}
 		return true;
@@ -940,7 +1039,7 @@ void AddPlannedPinSignature(UEdGraphNode* Node, const TSharedPtr<FJsonObject>& N
 	}
 	NormalizedNode->SetArrayField(TEXT("resolved_pins"), Serialized);
 }
-}
+
 
 bool FCortexGraphPatchOps::HasOnlyFields(
 	const TSharedPtr<FJsonObject>& Object,
@@ -1031,23 +1130,38 @@ bool FCortexGraphPatchOps::ResolveGraphByGuid(
 	FCortexCommandResult& OutError)
 {
 	OutGraph = nullptr;
-	TArray<FCortexGraphEntry> Entries;
-	FCortexGraphNodeOps::EnumerateUserGraphs(Blueprint, Entries);
-	for (const FCortexGraphEntry& Entry : Entries)
+	if (!Blueprint)
 	{
-		if (!Entry.Graph || Entry.Graph->GraphGuid != GraphGuid) continue;
-		if (!FCortexGraphNodeOps::IsMutableGraphKind(Entry.Kind))
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				TEXT("Target graph is not mutable"));
-			return false;
-		}
-		OutGraph = SubgraphPath.IsEmpty() ? Entry.Graph : FCortexGraphNodeOps::ResolveSubgraph(Entry.Graph, SubgraphPath, OutError);
-		return OutGraph != nullptr;
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, TEXT("Blueprint is null"));
+		return false;
 	}
-	OutError = FCortexCommandRouter::Error(CortexErrorCodes::GraphNotFound,
-		FString::Printf(TEXT("Graph with GUID %s not found"), *GraphGuid.ToString()));
-	return false;
+
+	// `graph_guid` names the TARGET graph, whether it is a root graph or a nested composite child.
+	// The identity is the lookup; a non-empty `subgraph_path` must equal that target's own
+	// root-relative path, so a pair that disagrees is refused instead of addressing another graph.
+	FCortexGraphChoice Match;
+	if (!FindGraphChoiceByGuid(Blueprint, GraphGuid, Match, OutError)) return false;
+	if (!Match.Graph)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::GraphNotFound,
+			FString::Printf(TEXT("Graph with GUID %s not found"), *GraphGuid.ToString()));
+		return false;
+	}
+	if (!SubgraphPath.IsEmpty() && Match.RootRelativePath != SubgraphPath)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("subgraph_path '%s' does not name the graph identified by graph_guid %s; that graph's path is '%s'"),
+				*SubgraphPath, *GraphGuid.ToString(), *Match.RootRelativePath));
+		return false;
+	}
+	if (!FCortexGraphNodeOps::IsMutableGraphKind(Match.Kind))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("Target graph is not mutable"));
+		return false;
+	}
+	OutGraph = Match.Graph;
+	return true;
 }
 
 TSharedPtr<FJsonObject> FCortexGraphPatchOps::MakePinSignatureDescriptor(const UEdGraphPin& Pin)

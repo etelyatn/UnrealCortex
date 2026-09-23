@@ -223,14 +223,27 @@ FCortexCommandResult FCortexGraphAuthoringContext::Read(const TSharedPtr<FJsonOb
 				}
 			}
 
+			// `graph_guid` names the target graph (a root graph or a bound composite child). The
+			// identity is the lookup; a supplied `subgraph_path` must equal that target's own
+			// root-relative path, so an omitted path resolves by identity alone and a pair that
+			// disagrees is refused instead of resolved to a different graph.
 			const FGraphChoiceEntry* FoundChoice = nullptr;
 			for (const FGraphChoiceEntry& Choice : Choices)
 			{
-				if (Choice.Graph->GraphGuid == TargetGuid && Choice.SubgraphPath == SubgraphPath)
+				if (Choice.Graph->GraphGuid == TargetGuid)
 				{
 					FoundChoice = &Choice;
 					break;
 				}
+			}
+
+			if (FoundChoice && !SubgraphPath.IsEmpty() && FoundChoice->SubgraphPath != SubgraphPath)
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("subgraph_path '%s' does not name the graph identified by graph_guid %s; that graph's path is '%s'"),
+						*SubgraphPath, *TargetGuidStr, *FoundChoice->SubgraphPath)
+				);
 			}
 
 			if (!FoundChoice)
