@@ -18,6 +18,7 @@
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Blueprint/BlueprintSupport.h"
 #include "UObject/SoftObjectPath.h"
+#include "UObject/CoreRedirects.h"
 #include "Modules/ModuleManager.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
@@ -768,6 +769,39 @@ bool FCortexReflectOps::ParseBlueprintCatalogClassPaths(
 	return OutInvalidFields.IsEmpty();
 }
 
+FTopLevelAssetPath FCortexReflectOps::ResolveBlueprintCatalogClassRedirect(
+	const FTopLevelAssetPath& ClassPath)
+{
+	if (!ClassPath.IsValid())
+	{
+		return ClassPath;
+	}
+
+	const FCoreRedirectObjectName RedirectedName = FCoreRedirects::GetRedirectedName(
+		ECoreRedirectFlags::Type_Class,
+		FCoreRedirectObjectName(ClassPath)
+	);
+	if (!RedirectedName.IsValid() || !RedirectedName.OuterName.IsNone())
+	{
+		return ClassPath;
+	}
+
+	return FTopLevelAssetPath(RedirectedName.PackageName, RedirectedName.ObjectName);
+}
+
+bool FCortexReflectOps::HasUnresolvedBlueprintCatalogMembership(
+	const bool bGeneratedPathInTree,
+	const bool bParentPathValid,
+	const bool bParentPathInTree)
+{
+	if (bGeneratedPathInTree || bParentPathInTree)
+	{
+		return false;
+	}
+
+	return !bParentPathValid;
+}
+
 FCortexCommandResult FCortexReflectOps::BlueprintCatalog(const TSharedPtr<FJsonObject>& Params)
 {
 	FString RootName;
@@ -887,8 +921,8 @@ FCortexCommandResult FCortexReflectOps::BlueprintCatalog(const TSharedPtr<FJsonO
 			ParseInvalidFields
 		);
 		const FTopLevelAssetPath& GeneratedClassPath = ClassPaths.GeneratedClassPath;
-		const FTopLevelAssetPath& ParentPath = ClassPaths.ParentClassPath;
-		const FTopLevelAssetPath& NativeParentPath = ClassPaths.NativeParentClassPath;
+		const FTopLevelAssetPath ParentPath = ResolveBlueprintCatalogClassRedirect(ClassPaths.ParentClassPath);
+		const FTopLevelAssetPath NativeParentPath = ResolveBlueprintCatalogClassRedirect(ClassPaths.NativeParentClassPath);
 		const bool bGeneratedPathValid = GeneratedClassPath.IsValid();
 		const bool bParentPathValid = ParentPath.IsValid();
 		const bool bNativeParentPathValid = NativeParentPath.IsValid();
@@ -898,9 +932,12 @@ FCortexCommandResult FCortexReflectOps::BlueprintCatalog(const TSharedPtr<FJsonO
 			&& (ParentPath == RootClassPath || DerivedClassPaths.Contains(ParentPath));
 		if (!bGeneratedPathInTree && !bParentPathInTree)
 		{
-			// A valid unrelated parent proves that this Blueprint is outside the
-			// requested tree. If neither tag can establish scope, completeness is unknown.
-			if (!bParentPathValid && !bGeneratedPathValid)
+			// A valid direct parent outside the requested tree proves the asset is
+			// unrelated. Without it, missing metadata leaves membership unknown.
+			if (HasUnresolvedBlueprintCatalogMembership(
+				bGeneratedPathInTree,
+				bParentPathValid,
+				bParentPathInTree))
 			{
 				AddDiagnostic(Asset, ParseInvalidFields);
 			}

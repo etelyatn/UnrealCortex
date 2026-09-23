@@ -28,6 +28,11 @@ public:
 		const FString& NativeParentTag,
 		FCortexBlueprintCatalogClassPaths& OutPaths,
 		TArray<FString>& OutInvalidFields);
+	static FTopLevelAssetPath ResolveBlueprintCatalogClassRedirect(const FTopLevelAssetPath& ClassPath);
+	static bool HasUnresolvedBlueprintCatalogMembership(
+		bool bGeneratedPathInTree,
+		bool bParentPathValid,
+		bool bParentPathInTree);
 	static FCortexCommandResult ClassDetail(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult FindOverrides(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult FindUsages(const TSharedPtr<FJsonObject>& Params);

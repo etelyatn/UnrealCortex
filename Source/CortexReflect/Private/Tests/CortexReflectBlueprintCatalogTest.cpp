@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "CortexReflectCommandHandler.h"
 #include "Operations/CortexReflectOps.h"
+#include "UObject/CoreRedirects.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexReflectBlueprintCatalogTest,
@@ -139,5 +140,50 @@ bool FCortexReflectBlueprintCatalogTagParsingTest::RunTest(const FString& Parame
 	TestFalse(TEXT("Missing generated class tag should be rejected"), bMalformedValid);
 	TestTrue(TEXT("Missing generated class tag should be diagnosed"),
 		MalformedFields.Contains(TEXT("GeneratedClassPath")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectBlueprintCatalogIncompleteMembershipTest,
+	"Cortex.Reflect.BlueprintCatalog.IncompleteMembership",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectBlueprintCatalogIncompleteMembershipTest::RunTest(const FString& Parameters)
+{
+	TestTrue(TEXT("Missing parent metadata leaves membership unresolved"),
+		FCortexReflectOps::HasUnresolvedBlueprintCatalogMembership(false, false, false));
+	TestFalse(TEXT("A valid parent outside the requested tree proves an asset is unrelated"),
+		FCortexReflectOps::HasUnresolvedBlueprintCatalogMembership(false, true, false));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectBlueprintCatalogCoreRedirectTest,
+	"Cortex.Reflect.BlueprintCatalog.CoreRedirect",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectBlueprintCatalogCoreRedirectTest::RunTest(const FString& Parameters)
+{
+	const FCoreRedirect Redirect(
+		ECoreRedirectFlags::Type_Class,
+		TEXT("/Script/CortexOldCatalogTest.OldParent"),
+		TEXT("/Script/CortexNewCatalogTest.NewParent")
+	);
+	const TArray<FCoreRedirect> Redirects = { Redirect };
+	const FString Source = TEXT("CortexReflect BlueprintCatalog automation test");
+	const bool bAdded = FCoreRedirects::AddRedirectList(Redirects, Source);
+	TestTrue(TEXT("Test class redirect should register"), bAdded);
+	if (!bAdded)
+	{
+		return true;
+	}
+
+	const FTopLevelAssetPath OldPath(FName(TEXT("/Script/CortexOldCatalogTest")), FName(TEXT("OldParent")));
+	const FTopLevelAssetPath Resolved = FCortexReflectOps::ResolveBlueprintCatalogClassRedirect(OldPath);
+	FCoreRedirects::RemoveRedirectList(Redirects, Source);
+	TestEqual(TEXT("Class redirect should normalize stale Blueprint parent tags"),
+		Resolved.ToString(), TEXT("/Script/CortexNewCatalogTest.NewParent"));
 	return true;
 }

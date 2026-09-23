@@ -245,7 +245,12 @@ def render_catalog(
     return "\n".join(lines)
 
 
-def _flatten_hierarchy(node: dict, rows: list[dict], depth: int = 0) -> None:
+def _flatten_hierarchy(
+    node: dict,
+    rows: list[dict],
+    depth: int = 0,
+    parent_name: str = "",
+) -> None:
     """Flatten hierarchy tree into rows with depth metadata."""
     if not isinstance(node, dict):
         return
@@ -256,12 +261,12 @@ def _flatten_hierarchy(node: dict, rows: list[dict], depth: int = 0) -> None:
             "type": node.get("type", ""),
             "asset_path": node.get("asset_path", ""),
             "depth": depth,
-            "parent": node.get("parent", ""),
+            "parent": node.get("parent") or parent_name,
         }
     )
     for child in node.get("children", []):
         if isinstance(child, dict):
-            _flatten_hierarchy(child, rows, depth + 1)
+            _flatten_hierarchy(child, rows, depth + 1, node.get("name", ""))
 
 
 def collect_blueprint_domain(connection) -> dict:
@@ -301,6 +306,43 @@ def collect_blueprint_domain(connection) -> dict:
             f"Asset Registry Blueprint catalog is incomplete ({invalid_count} invalid assets){detail}"
         )
 
+    catalog_classes = catalog.get("classes")
+    if not isinstance(catalog_classes, list):
+        raise RuntimeError("Asset Registry Blueprint catalog is missing its classes list")
+    blueprint_count = catalog.get("blueprint_count")
+    if (
+        not isinstance(blueprint_count, int)
+        or isinstance(blueprint_count, bool)
+        or blueprint_count != len(catalog_classes)
+    ):
+        raise RuntimeError(
+            "Asset Registry Blueprint catalog count is inconsistent "
+            f"(reported {blueprint_count}, rows {len(catalog_classes)})"
+        )
+
+    required_fields = (
+        "name",
+        "parent_name",
+        "generated_class_path",
+        "parent_class_path",
+        "native_parent_class_path",
+        "asset_path",
+    )
+    for index, item in enumerate(catalog_classes):
+        if not isinstance(item, dict):
+            raise RuntimeError(
+                f"Asset Registry Blueprint catalog record {index} is not an object"
+            )
+        missing_fields = [
+            field for field in required_fields
+            if not isinstance(item.get(field), str) or not item[field]
+        ]
+        if missing_fields:
+            raise RuntimeError(
+                f"Asset Registry Blueprint catalog record {index} is missing required fields: "
+                f"{', '.join(missing_fields)}"
+            )
+
     rows: list[dict] = []
     _flatten_hierarchy(data, rows)
     classes = [
@@ -323,11 +365,10 @@ def collect_blueprint_domain(connection) -> dict:
             "parent_class_path": item.get("parent_class_path", ""),
             "native_parent_class_path": item.get("native_parent_class_path", ""),
         }
-        for item in catalog.get("classes", [])
+        for item in catalog_classes
     ]
     classes.extend(blueprint_rows)
     classes.sort(key=_blueprint_class_sort_key)
-    blueprint_count = catalog.get("blueprint_count", len(blueprint_rows))
     return {
         "hierarchy": data,
         "classes": classes,
@@ -654,14 +695,9 @@ def render_data_index(catalog: dict) -> str:
     if composites:
         lines.append("## Composites")
         for t in composites:
-            parents = sorted(
-                t.get("parent_tables", []),
-                key=lambda parent: (
-                    parent.get("path", parent.get("name", "")).casefold()
-                    if isinstance(parent, dict)
-                    else str(parent).casefold()
-                ),
-            )
+            # Parent order controls composite row override precedence, so retain
+            # the authored order while sorting the surrounding table inventory.
+            parents = t.get("parent_tables", [])
             parent_names = ", ".join(
                 p["name"] if isinstance(p, dict) else p.rsplit("/", 1)[-1]
                 for p in parents

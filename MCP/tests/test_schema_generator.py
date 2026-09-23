@@ -55,9 +55,8 @@ class TestCollectBlueprintDomainAssetRegistry(unittest.TestCase):
         native_data = {
             "name": "AActor",
             "type": "cpp",
-            "parent": "UObject",
             "children": [
-                {"name": "ZActor", "type": "cpp", "parent": "AActor", "children": []},
+                {"name": "ZActor", "type": "cpp", "children": []},
             ],
             "cpp_count": 2,
             "blueprint_count": 99,
@@ -128,6 +127,30 @@ class TestCollectBlueprintDomainAssetRegistry(unittest.TestCase):
         blueprints = [row for row in result["classes"] if row["type"] == "blueprint"]
         self.assertEqual(blueprints[0]["parent"], "AActor")
         self.assertEqual(blueprints[0]["generated_class_path"], "/Game/Alpha.BP_Alpha_C")
+        native_classes = [row for row in result["classes"] if row["type"] == "cpp"]
+        self.assertEqual(native_classes[1]["parent"], "AActor")
+
+    def test_rejects_catalog_count_that_exceeds_returned_rows(self):
+        catalog_data = {
+            "complete": True,
+            "blueprint_count": 7,
+            "classes": [],
+        }
+        connection = self._make_connection(catalog_data)
+
+        with self.assertRaisesRegex(RuntimeError, "catalog.*7.*0"):
+            collect_blueprint_domain(connection)
+
+    def test_rejects_blueprint_record_with_missing_required_fields(self):
+        catalog_data = {
+            "complete": True,
+            "blueprint_count": 1,
+            "classes": [{}],
+        }
+        connection = self._make_connection(catalog_data)
+
+        with self.assertRaisesRegex(RuntimeError, "catalog.*record 0.*name"):
+            collect_blueprint_domain(connection)
 
     def test_incomplete_catalog_aborts_before_writing_blueprint_markdown(self):
         catalog_data = {
@@ -1514,6 +1537,31 @@ class TestRenderDataIndex(unittest.TestCase):
         }
         result = render_data_index(catalog)
         self.assertIn("CPT_All(10) <- PT_Meds", result)
+
+    def test_composite_parent_table_order_preserves_override_precedence(self):
+        from cortex_mcp.schema_generator import render_data_index
+        catalog = {
+            "datatables": [
+                {
+                    "name": "CPT_All",
+                    "path": "/Game/Data/CPT_All.CPT_All",
+                    "row_struct": "FMedRow",
+                    "row_count": 10,
+                    "is_composite": True,
+                    "parent_tables": [
+                        {"name": "ZBase", "path": "/Game/Data/ZBase"},
+                        {"name": "AOverride", "path": "/Game/Data/AOverride"},
+                    ],
+                },
+            ],
+            "tag_prefixes": [],
+            "data_asset_classes": [],
+            "string_tables": [],
+        }
+
+        result = render_data_index(catalog)
+
+        self.assertIn("CPT_All(10) <- ZBase, AOverride", result)
 
 
 class TestTruncateNestedFields(unittest.TestCase):
