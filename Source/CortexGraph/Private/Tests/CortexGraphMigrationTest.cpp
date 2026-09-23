@@ -1110,9 +1110,19 @@ bool FCortexGraphMigrationReferenceInventoryTest::RunTest(const FString& Paramet
 
 			UEdGraph* OtherEventGraph = EnsureEventGraph(Other);
 			UK2Node_CreateDelegate* Binding = NewObject<UK2Node_CreateDelegate>(OtherEventGraph);
-			Binding->SetFunction(FName(TEXT("OnPayload")));
 			Binding->CreateNewGuid();
+			// A real delegate carries its self/object pin: the unconnected pin is what makes the
+			// binding scope to its own asset the way the engine resolves it
+			// (`UK2Node_CreateDelegate::GetScopeClass`), instead of being an unresolved node.
+			Binding->AllocateDefaultPins();
 			OtherEventGraph->AddNode(Binding, true, false);
+			// Adding pins runs the engine's node repair (`NodeConnectionListChanged` ->
+			// `HandleAnyChange`), which clears the selected-function hint on a node the editor
+			// considers invalid (its delegate out pin is unconnected). The saved-asset state is
+			// authored last, exactly the way a reload leaves it.
+			Binding->SetFunction(FName(TEXT("OnPayload")));
+			TestEqual(TEXT("unrelated binding keeps its selected function"),
+				Binding->GetFunctionName().ToString(), FString(TEXT("OnPayload")));
 		}
 
 		TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
@@ -1185,6 +1195,140 @@ bool FCortexGraphMigrationReferenceInventoryTest::RunTest(const FString& Paramet
 			LiveGraphHash(Fixture.Blueprint), HashBefore);
 
 		External.Cleanup();
+		Fixture.Cleanup();
+	}
+
+	// (e) A delegate resolves its binding through its own scope, never through the class of the
+	// asset that happens to contain it. An external asset declaring its own same-named function must
+	// still be counted when the binding's object pin targets the selected declaration.
+	{
+		FFixture Fixture;
+		TestTrue(TEXT("fifth fixture created"), Fixture.Create(TEXT("BP_MigrationScopedBinding_T11")));
+		if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+		UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+		ClearGraphNodes(Graph);
+		UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
+		FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+
+		// The external asset declares its own, unrelated function of the same name: resolving the
+		// binding against the containing class would resolve to this one and silently drop the real
+		// reference.
+		UPackage* OtherPackage = CreatePackage(TEXT("/Game/Temp/BP_MigrationScoped_T11"));
+		UBlueprint* Other = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), OtherPackage,
+			TEXT("BP_MigrationScoped_T11"), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+		TestNotNull(TEXT("scoped binding package asset created"), Other);
+		if (Other)
+		{
+			UEdGraph* OtherGraph = FBlueprintEditorUtils::CreateNewGraph(Other, TEXT("OnPayload"),
+				UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+			Other->FunctionGraphs.Add(OtherGraph);
+			UK2Node_FunctionEntry* OtherEntry = NewObject<UK2Node_FunctionEntry>(OtherGraph);
+			OtherEntry->FunctionReference.SetSelfMember(FName(TEXT("OnPayload")));
+			OtherEntry->CreateNewGuid();
+			OtherEntry->AllocateDefaultPins();
+			OtherGraph->AddNode(OtherEntry, true, false);
+			FKismetEditorUtilities::CompileBlueprint(Other);
+
+			// A delegate whose object pin is wired to a fixture-declaration-typed member: that pin is
+			// what the engine reads as the binding's scope (`GetScopeClass`).
+			FEdGraphPinType ScopeType;
+			ScopeType.PinCategory = UEdGraphSchema_K2::PC_Object;
+			ScopeType.PinSubCategoryObject = ACortexGraphMigrationFixtureActor::StaticClass();
+			TestTrue(TEXT("scope member added"),
+				FBlueprintEditorUtils::AddMemberVariable(Other, FName(TEXT("PayloadTarget")), ScopeType));
+			UEdGraph* OtherEventGraph = EnsureEventGraph(Other);
+			UK2Node_VariableGet* ScopeGet = AddVariableGetNode(OtherEventGraph, TEXT("PayloadTarget"), 0, 0);
+			UK2Node_CreateDelegate* Binding = NewObject<UK2Node_CreateDelegate>(OtherEventGraph);
+			Binding->CreateNewGuid();
+			Binding->AllocateDefaultPins();
+			OtherEventGraph->AddNode(Binding, true, false);
+			TestTrue(TEXT("binding object pin scoped to the selected declaration"),
+				LinkPins(OtherEventGraph, ScopeGet ? ScopeGet->FindPin(FName(TEXT("PayloadTarget")), EGPD_Output) : nullptr,
+					Binding->FindPin(UEdGraphSchema_K2::PN_Self)));
+			// Wiring the object pin runs the engine's node repair (`NodeConnectionListChanged` ->
+			// `HandleAnyChange`), which clears the selected-function hint on a node the editor
+			// considers invalid (its delegate out pin is unconnected). The saved-asset state is
+			// authored last, exactly the way a reload leaves it.
+			Binding->SetFunction(FName(TEXT("OnPayload")));
+			TestEqual(TEXT("scoped binding keeps its selected function"),
+				Binding->GetFunctionName().ToString(), FString(TEXT("OnPayload")));
+		}
+
+		TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000110014"),
+			MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
+		FCortexGraphPreparedPatch Prepared;
+		FCortexCommandResult Error;
+		TestTrue(FString::Printf(TEXT("a delegate scoped to the selected declaration does not block: %s"), *Error.ErrorMessage),
+			FCortexGraphPatchOps::Preflight(Fixture.Blueprint, Request, Prepared, Error));
+		int32 InAssetReferences = -1;
+		int32 ExternalReferences = -1;
+		if (Prepared.MigrationPlan.IsValid())
+		{
+			Prepared.MigrationPlan->TryGetNumberField(TEXT("declaration_references"), InAssetReferences);
+			Prepared.MigrationPlan->TryGetNumberField(TEXT("external_declaration_references"), ExternalReferences);
+		}
+		TestEqual(TEXT("the scoped binding is not an in-asset reference"), InAssetReferences, 0);
+		TestEqual(TEXT("a delegate scoped to the selected declaration is counted externally"), ExternalReferences, 1);
+
+		if (Other)
+		{
+			Other->ClearFlags(RF_Standalone);
+			Other->MarkAsGarbage();
+		}
+		if (OtherPackage)
+		{
+			OtherPackage->ClearFlags(RF_Standalone);
+			OtherPackage->MarkAsGarbage();
+		}
+		Fixture.Cleanup();
+	}
+
+	// (f) A delegate whose scope resolves but declares no such function is unresolved, never counted
+	// through the class of the asset it lives in.
+	{
+		FFixture Fixture;
+		TestTrue(TEXT("sixth fixture created"), Fixture.Create(TEXT("BP_MigrationUnscopedBinding_T11")));
+		if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+		UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+		ClearGraphNodes(Graph);
+		UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
+		UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("unscoped body"), 400, 0);
+		LinkNodes(Graph, StaleEntry, TEXT("then"), Print, TEXT("execute"));
+		FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+
+		UK2Node_CreateDelegate* Binding = NewObject<UK2Node_CreateDelegate>(Graph);
+		Binding->CreateNewGuid();
+		Binding->AllocateDefaultPins();
+		Binding->NodePosX = 0;
+		Binding->NodePosY = 600;
+		Graph->AddNode(Binding, true, false);
+		// The object pin is wired to the entry's own `Source` pin, an `AActor*`: the scope resolves to
+		// AActor, which declares no `OnPayload`, so the binding cannot be resolved at all.
+		TestTrue(TEXT("binding object pin wired to an AActor-typed pin"),
+			LinkNodes(Graph, StaleEntry, TEXT("Source"), Binding, TEXT("self")));
+		// Wiring the object pin runs the engine's node repair (`NodeConnectionListChanged` ->
+		// `HandleAnyChange`), which clears the selected-function hint on a node the editor considers
+		// invalid (its delegate out pin is unconnected). The saved-asset state is authored last,
+		// exactly the way a reload leaves it.
+		Binding->SetFunction(FName(TEXT("OnPayload")));
+		TestEqual(TEXT("unresolved binding keeps its selected function"),
+			Binding->GetFunctionName().ToString(), FString(TEXT("OnPayload")));
+
+		const FString HashBefore = LiveGraphHash(Fixture.Blueprint);
+		TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000110015"),
+			MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
+		FCortexGraphPatchOutcome Outcome;
+		FCortexCommandResult Error;
+		TestFalse(TEXT("a delegate whose scope declares no such function blocks"),
+			FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+		TestEqual(TEXT("unresolved delegate binding is INVALID_OPERATION"),
+			Error.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+		TestTrue(FString::Printf(TEXT("refusal names the unresolved delegate binding [%s]"), *Error.ErrorMessage),
+			Error.ErrorMessage.Contains(TEXT("no such function resolves in its scope")));
+		TestEqual(TEXT("unresolved delegate binding mutates nothing"),
+			LiveGraphHash(Fixture.Blueprint), HashBefore);
 		Fixture.Cleanup();
 	}
 	return true;

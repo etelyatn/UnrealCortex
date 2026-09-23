@@ -867,23 +867,31 @@ void ScanDeclarationReferences(
 			else if (const UK2Node_CreateDelegate* CreateDelegate = Cast<UK2Node_CreateDelegate>(Node))
 			{
 				if (CreateDelegate->GetFunctionName() != DeclarationName) continue;
-				// Three outcomes: the binding resolves to the selected declaration (counted), it
-				// resolves to a function that is simply a different one with the same name (not a
-				// reference at all, so ignored), or it cannot be resolved (blocking).
-				const UClass* const AssetClass = Asset->SkeletonGeneratedClass ? Asset->SkeletonGeneratedClass.Get() : Asset->GeneratedClass.Get();
-				if (!AssetClass)
+				// A delegate resolves its binding through its own scope, never through the class of
+				// the asset that happens to contain it: the engine reads the scope from the node's
+				// self/object pin (`UK2Node_CreateDelegate::GetScopeClass`,
+				// Engine/Source/Editor/BlueprintGraph/Private/K2Node_CreateDelegate.cpp:364, declared
+				// at Classes/K2Node_CreateDelegate.h:66), falling back to the containing blueprint's
+				// class only when that pin is unconnected or is itself a self pin — which is exactly
+				// what GetScopeClass does. Three outcomes: the binding resolves to the selected
+				// declaration (counted), it resolves to a different function with the same name (not
+				// a reference at all, so ignored), or the scope or the function cannot be resolved
+				// (recorded as unresolved and blocking).
+				UClass* const ScopeClass = CreateDelegate->GetScopeClass();
+				if (!ScopeClass)
 				{
 					InOut.Unresolved.Add(FString::Printf(
-						TEXT("asset '%s' graph '%s' node '%s' (GUID %s) binds '%s' but the asset has no class context to resolve it against"),
+						TEXT("asset '%s' graph '%s' node '%s' (GUID %s) binds '%s' but its target object pin does not resolve to a scope class"),
 						*Asset->GetName(), *Graph->GetName(), *Node->GetName(), *Node->NodeGuid.ToString(), *DeclarationName.ToString()));
 					continue;
 				}
-				UFunction* const Bound = AssetClass->FindFunctionByName(DeclarationName);
+				UFunction* const Bound = ScopeClass->FindFunctionByName(DeclarationName);
 				if (!Bound)
 				{
 					InOut.Unresolved.Add(FString::Printf(
-						TEXT("asset '%s' graph '%s' node '%s' (GUID %s) binds '%s' but no such function resolves in that asset"),
-						*Asset->GetName(), *Graph->GetName(), *Node->GetName(), *Node->NodeGuid.ToString(), *DeclarationName.ToString()));
+						TEXT("asset '%s' graph '%s' node '%s' (GUID %s) binds '%s' but no such function resolves in its scope '%s'"),
+						*Asset->GetName(), *Graph->GetName(), *Node->GetName(), *Node->NodeGuid.ToString(),
+						*DeclarationName.ToString(), *ScopeClass->GetPathName()));
 					continue;
 				}
 				if (!OwnerDeclaresSelected(Bound->GetOwnerClass(), DeclarationName, DeclaringClass))
