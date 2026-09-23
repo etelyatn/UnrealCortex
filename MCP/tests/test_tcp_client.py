@@ -1,6 +1,8 @@
 """Unit tests for TCP client timeout handling."""
 
+import json
 import socket
+import time
 from unittest.mock import MagicMock, patch, PropertyMock
 from pathlib import Path
 
@@ -510,3 +512,25 @@ class TestNoEditorFallback:
         """Passing port= explicitly should skip discovery entirely."""
         conn = UEConnection(port=9999)
         assert conn.port == 9999
+
+
+class TestFragmentedResponseReassembly:
+    """Tests for reassembling a large response delivered across several reads."""
+
+    def test_read_response_line_reassembles_large_fragmented_line_and_preserves_remainder(self):
+        """A >40,000 character line split over three reads must be reassembled and the next line kept queued."""
+        conn = UEConnection(port=99999)
+        payload = json.dumps({"success": True, "data": {"payload": "x" * 50_000}}).encode()
+        second = b'{"success":true,"data":{"second":true}}\n'
+        chunks = [payload[:10_000], payload[10_000:35_000], payload[35_000:] + b"\n" + second]
+        sock = MagicMock()
+        sock.recv.side_effect = chunks
+        conn._socket = sock
+
+        first = json.loads(conn._read_response_line(time.monotonic() + 5))
+        assert len(first["data"]["payload"]) == 50_000
+        second_result = json.loads(conn._read_response_line(time.monotonic() + 5))
+        assert second_result["data"]["second"] is True
+
+        # The second line was already buffered behind the first line's delimiter.
+        assert sock.recv.call_count == 3

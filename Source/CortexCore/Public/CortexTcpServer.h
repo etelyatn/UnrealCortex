@@ -54,6 +54,11 @@ private:
 	/** Send a JSON response string followed by newline delimiter to a specific client */
 	void SendResponse(FSocket* InClientSocket, const FString& ResponseString);
 
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Grants the framing test direct access to SendResponse so it can drive a partial-write socket double. Test-only. */
+	friend class FCortexTcpServerPartialSendIsCompletedTest;
+#endif
+
 	/** Close and destroy a client socket */
 	void DestroyClientSocket(FSocket* InClientSocket);
 

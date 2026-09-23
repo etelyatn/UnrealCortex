@@ -516,13 +516,21 @@ void FCortexTcpServer::SendResponse(FSocket* InClientSocket, const FString& Resp
 	FString ResponseWithNewline = ResponseString + TEXT("\n");
 	FTCHARToUTF8 Utf8Response(*ResponseWithNewline);
 
-	int32 BytesSent = 0;
-	if (!InClientSocket->Send(
-		reinterpret_cast<const uint8*>(Utf8Response.Get()),
-		Utf8Response.Length(),
-		BytesSent))
+	const uint8* Data = reinterpret_cast<const uint8*>(Utf8Response.Get());
+	const int32 TotalBytes = Utf8Response.Length();
+	int32 TotalSent = 0;
+
+	// A single send may accept only part of the buffer; keep writing until the framed response is complete.
+	while (TotalSent < TotalBytes)
 	{
-		UE_LOG(LogCortex, Warning, TEXT("Failed to send response"));
+		int32 BytesSent = 0;
+		if (!InClientSocket->Send(Data + TotalSent, TotalBytes - TotalSent, BytesSent) || BytesSent <= 0)
+		{
+			UE_LOG(LogCortex, Warning, TEXT("Failed to send complete response (%d/%d bytes)"), TotalSent, TotalBytes);
+			return;
+		}
+
+		TotalSent += BytesSent;
 	}
 }
 
