@@ -46,11 +46,17 @@ struct FCortexGraphPreparedPatch
 	 */
 	TSharedPtr<FJsonObject> MigrationPlan;
 	/**
+	 * Durable `copy_subgraph` / `move_subgraph` plan when the request selected the transfer shell.
+	 * Like the replacement plan it carries only names, GUIDs and canonical captures.
+	 */
+	TSharedPtr<FJsonObject> TransferPlan;
+	/**
 	 * True when an accepted replay named a source locator that no longer exists. The apply consumed
 	 * the stale entry and that provenance is not inventoried, so it is reported instead of inferred.
 	 */
 	bool bReplayedWithAbsentSource = false;
 	bool bIsMigration() const { return MigrationPlan.IsValid(); }
+	bool bIsTransfer() const { return TransferPlan.IsValid(); }
 
 	/** Prepared state never owns transient UObject pointers. */
 	bool HasTransientObjects() const { return false; }
@@ -195,8 +201,19 @@ public:
 		const FString& SubgraphPath,
 		UEdGraph*& OutGraph,
 		FCortexCommandResult& OutError);
+	/**
+	 * Deterministic node identity of one planned identity seed: a stable hash of the canonical patch
+	 * GUID and the seed. Authoring client ids, replacement terminators and transfer destinations all
+	 * derive through this one function, so no second identity scheme can appear.
+	 */
+	static FGuid DeriveNodeGuid(const FString& PatchId, const FString& ClientId);
 	/** Canonical planned signature descriptor of one native pin. */
 	static TSharedPtr<FJsonObject> MakePinSignatureDescriptor(const UEdGraphPin& Pin);
+	/**
+	 * Canonical signature descriptor of one bare pin type (a declared variable's type), so authored
+	 * variable types compare through the same canonical scheme as native pins.
+	 */
+	static TSharedPtr<FJsonObject> MakePinSignatureDescriptorForType(const FEdGraphPinType& PinType);
 	/** Canonical string of one planned pin signature descriptor. */
 	static FString CanonicalPinSignature(const TSharedPtr<FJsonObject>& Descriptor);
 	#if WITH_AUTOMATION_TESTS

@@ -29,6 +29,7 @@
 #include "Operations/CortexGraphMigrationOps.h"
 #include "Operations/CortexGraphPatchOps.h"
 #include "Operations/CortexGraphPatchState.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
 
@@ -2046,7 +2047,7 @@ bool FCortexGraphMigrationMixedRequestTest::RunTest(const FString& Parameters)
 	}
 	{
 		TSharedPtr<FJsonObject> Request = FreshRequest();
-		Request->GetObjectField(TEXT("migration"))->SetStringField(TEXT("op"), TEXT("copy_subgraph"));
+		Request->GetObjectField(TEXT("migration"))->SetStringField(TEXT("op"), TEXT("rotate_subgraph"));
 		ExpectRefusal(TEXT("unknown migration operation"), CortexErrorCodes::UnsupportedOperation, Request);
 	}
 	{

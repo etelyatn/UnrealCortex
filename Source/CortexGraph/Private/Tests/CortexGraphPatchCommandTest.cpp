@@ -1020,7 +1020,7 @@ bool FCortexGraphPatchCommandSchemaTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("the published description declares the standalone contract"),
 		ApplyPatch->Description.Contains(TEXT("Standalone command")));
 	TestTrue(TEXT("the published description declares the migration shell"),
-		ApplyPatch->Description.Contains(TEXT("migration.op=\"replace_entry\"")));
+		ApplyPatch->Description.Contains(TEXT("replace_entry")));
 
 	const FCortexParamInfo* NodesParam = ApplyPatch->Params.FindByPredicate(
 		[](const FCortexParamInfo& Param) { return Param.Name == TEXT("nodes"); });
@@ -1046,10 +1046,10 @@ bool FCortexGraphPatchCommandSchemaTest::RunTest(const FString& Parameters)
 			MigrationParam->Description.Contains(TEXT("target.implementation")));
 		TestTrue(TEXT("the published migration selector refuses mixed authoring arrays"),
 			MigrationParam->Description.Contains(TEXT("nodes/connections/pin_updates")));
-		// No T12/T13 operation is published by this task.
-		TestFalse(TEXT("copy_subgraph is not published"),
+		// T12 publishes the bounded same-asset transfer; T13's prune_island stays unpublished.
+		TestTrue(TEXT("copy_subgraph is published"),
 			MigrationParam->Description.Contains(TEXT("copy_subgraph")));
-		TestFalse(TEXT("move_subgraph is not published"),
+		TestTrue(TEXT("move_subgraph is published"),
 			MigrationParam->Description.Contains(TEXT("move_subgraph")));
 		TestFalse(TEXT("prune_island is not published"),
 			MigrationParam->Description.Contains(TEXT("prune_island")));

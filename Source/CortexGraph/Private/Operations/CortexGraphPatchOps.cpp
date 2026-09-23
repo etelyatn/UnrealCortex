@@ -207,7 +207,8 @@ struct FReadbackFaultState
 /**
  * Deterministic node identity of one planned client id: a stable hash of the canonical patch GUID
  * and the client id. No clock, pointer or random input is involved, so the same pair derives the
- * same GUID in every asset and every process.
+ * same GUID in every asset and every process. Published as a class static below, so the authoring,
+ * persistence and migration shells derive identities through exactly one scheme.
  */
 FGuid DerivePlannedNodeGuid(const FString& PatchId, const FString& ClientId)
 {
@@ -1004,22 +1005,30 @@ bool FCortexGraphPatchOps::ResolveGraphByGuid(
 
 TSharedPtr<FJsonObject> FCortexGraphPatchOps::MakePinSignatureDescriptor(const UEdGraphPin& Pin)
 {
-	TSharedPtr<FJsonObject> Descriptor = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> Descriptor = MakePinSignatureDescriptorForType(Pin.PinType);
 	Descriptor->SetStringField(TEXT("name"), Pin.PinName.ToString());
 	Descriptor->SetNumberField(TEXT("direction"), static_cast<int32>(Pin.Direction));
-	Descriptor->SetStringField(TEXT("category"), Pin.PinType.PinCategory.ToString());
-	Descriptor->SetStringField(TEXT("subcategory"), Pin.PinType.PinSubCategory.ToString());
-	Descriptor->SetStringField(TEXT("subobject"), Pin.PinType.PinSubCategoryObject.IsValid() ? Pin.PinType.PinSubCategoryObject->GetPathName() : FString());
-	Descriptor->SetBoolField(TEXT("reference"), Pin.PinType.bIsReference);
-	Descriptor->SetBoolField(TEXT("const"), Pin.PinType.bIsConst);
-	Descriptor->SetNumberField(TEXT("container_type"), static_cast<int32>(Pin.PinType.ContainerType));
-	if (Pin.PinType.ContainerType == EPinContainerType::Map || !Pin.PinType.PinValueType.TerminalCategory.IsNone())
+	return Descriptor;
+}
+
+TSharedPtr<FJsonObject> FCortexGraphPatchOps::MakePinSignatureDescriptorForType(const FEdGraphPinType& PinType)
+{
+	TSharedPtr<FJsonObject> Descriptor = MakeShared<FJsonObject>();
+	Descriptor->SetStringField(TEXT("name"), FString());
+	Descriptor->SetNumberField(TEXT("direction"), 0);
+	Descriptor->SetStringField(TEXT("category"), PinType.PinCategory.ToString());
+	Descriptor->SetStringField(TEXT("subcategory"), PinType.PinSubCategory.ToString());
+	Descriptor->SetStringField(TEXT("subobject"), PinType.PinSubCategoryObject.IsValid() ? PinType.PinSubCategoryObject->GetPathName() : FString());
+	Descriptor->SetBoolField(TEXT("reference"), PinType.bIsReference);
+	Descriptor->SetBoolField(TEXT("const"), PinType.bIsConst);
+	Descriptor->SetNumberField(TEXT("container_type"), static_cast<int32>(PinType.ContainerType));
+	if (PinType.ContainerType == EPinContainerType::Map || !PinType.PinValueType.TerminalCategory.IsNone())
 	{
 		TSharedPtr<FJsonObject> Terminal = MakeShared<FJsonObject>();
-		Terminal->SetStringField(TEXT("category"), Pin.PinType.PinValueType.TerminalCategory.ToString());
-		Terminal->SetStringField(TEXT("subcategory"), Pin.PinType.PinValueType.TerminalSubCategory.ToString());
-		Terminal->SetStringField(TEXT("subobject"), Pin.PinType.PinValueType.TerminalSubCategoryObject.IsValid() ? Pin.PinType.PinValueType.TerminalSubCategoryObject->GetPathName() : FString());
-		Terminal->SetBoolField(TEXT("const"), Pin.PinType.PinValueType.bTerminalIsConst);
+		Terminal->SetStringField(TEXT("category"), PinType.PinValueType.TerminalCategory.ToString());
+		Terminal->SetStringField(TEXT("subcategory"), PinType.PinValueType.TerminalSubCategory.ToString());
+		Terminal->SetStringField(TEXT("subobject"), PinType.PinValueType.TerminalSubCategoryObject.IsValid() ? PinType.PinValueType.TerminalSubCategoryObject->GetPathName() : FString());
+		Terminal->SetBoolField(TEXT("const"), PinType.PinValueType.bTerminalIsConst);
 		Descriptor->SetObjectField(TEXT("map_terminal_type"), Terminal);
 	}
 	return Descriptor;
@@ -1171,6 +1180,93 @@ bool FCortexGraphPatchOps::Preflight(
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("graph scan exceeds max_scanned_nodes=2048"));
 			return false;
 		}
+		FString MigrationOp;
+		if ((*MigrationPtr)->TryGetStringField(TEXT("op"), MigrationOp) && MigrationOp != TEXT("replace_entry"))
+		{
+			if (MigrationOp != TEXT("copy_subgraph") && MigrationOp != TEXT("move_subgraph"))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::UnsupportedOperation,
+					FString::Printf(TEXT("Unsupported migration operation '%s'; the published migration operations are replace_entry, copy_subgraph and move_subgraph"), *MigrationOp));
+				return false;
+			}
+			// The transfer shell addresses its two graphs inside the migration object, so the
+			// implementation target of `replace_entry` must be absent instead of ignored.
+			if (Params->HasField(TEXT("target")))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("a %s request addresses its graphs through migration.source and migration.destination; 'target' must be absent"), *MigrationOp));
+				return false;
+			}
+			FCortexGraphMigrationTransferPlan TransferPlan;
+			bool bTransferReused = false;
+			if (!FCortexGraphMigrationOps::PlanTransfer(Blueprint, *MigrationPtr, OutPrepared.PatchId,
+				TransferPlan, bTransferReused, OutError))
+			{
+				return false;
+			}
+			OutPrepared.TransferPlan = TransferPlan.ToJson();
+			OutPrepared.GraphGuid = TransferPlan.DestinationGraphGuid;
+			OutPrepared.SubgraphPath = TransferPlan.DestinationSubgraphPath;
+			for (const FCortexGraphTransferNode& Node : TransferPlan.Nodes)
+			{
+				FGuid DestinationGuid;
+				FGuid::Parse(Node.DestinationGuid, DestinationGuid);
+				OutPrepared.NodeGuidByClientId.Add(Node.SourceGuid, DestinationGuid);
+				OutPrepared.PlannedNodeIds.Add(Node.SourceGuid);
+			}
+			OutPrepared.bFullyReused = bTransferReused;
+			if (bTransferReused)
+			{
+				for (const FCortexGraphTransferNode& Node : TransferPlan.Nodes)
+				{
+					OutPrepared.ReusedClientIds.Add(Node.SourceGuid);
+				}
+			}
+			OutPrepared.bChanged = !bTransferReused;
+
+			TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
+			Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
+			Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
+			Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+			Normalized->SetArrayField(TEXT("nodes"), TArray<TSharedPtr<FJsonValue>>());
+			Normalized->SetArrayField(TEXT("connections"), TArray<TSharedPtr<FJsonValue>>());
+			Normalized->SetArrayField(TEXT("pin_updates"), TArray<TSharedPtr<FJsonValue>>());
+			Normalized->SetObjectField(TEXT("migration"), OutPrepared.TransferPlan);
+			TSharedPtr<FJsonObject> DestinationLocator = MakeShared<FJsonObject>();
+			DestinationLocator->SetStringField(TEXT("graph_guid"), TransferPlan.DestinationGraphGuid);
+			if (!TransferPlan.DestinationSubgraphPath.IsEmpty())
+			{
+				DestinationLocator->SetStringField(TEXT("subgraph_path"), TransferPlan.DestinationSubgraphPath);
+			}
+			TSharedPtr<FJsonObject> NormalizedTarget = MakeShared<FJsonObject>();
+			NormalizedTarget->SetObjectField(TEXT("graph_ref"), DestinationLocator);
+			Normalized->SetObjectField(TEXT("target"), NormalizedTarget);
+			OutPrepared.NormalizedRequest = Normalized;
+
+			FString TransferIntent;
+			TransferIntent += TEXT("graph_patch_v1|");
+			TransferIntent += CanonicalObject(Normalized);
+			TransferIntent += TEXT("|fingerprint=");
+			TransferIntent += OutPrepared.FingerprintBefore->GetStringField(TEXT("graph_authoring_hash"));
+			TransferIntent += TEXT("|engine=UE5.8|schema=K2");
+			FTCHARToUTF8 TransferUtf8(*TransferIntent);
+			const FIoHash TransferDigest = FIoHash::HashBuffer(
+				reinterpret_cast<const uint8*>(TransferUtf8.Get()), TransferUtf8.Length());
+			OutPrepared.ValidationHash = LexToString(TransferDigest);
+
+			if (!bDryRun)
+			{
+				FString ExpectedToken;
+				Params->TryGetStringField(TEXT("expected_validation_hash"), ExpectedToken);
+				if (ExpectedToken != OutPrepared.ValidationHash)
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
+						TEXT("expected_validation_hash does not match current preflight intent"));
+					return false;
+				}
+			}
+			return true;
+		}
 		// The target shape is validated here without resolving the declaration: eligibility (and so
 		// the shadowing-member policy) belongs to the migration planner, which reports a same-named
 		// app member as this operation's own conflict instead of the generic implementation conflict.
@@ -1197,8 +1293,8 @@ bool FCortexGraphPatchOps::Preflight(
 		}
 		if (!HasOnlyFields(*ImplementationSelector, { TEXT("owner_class"), TEXT("function_name"), TEXT("call_kind") }, OutError, TEXT("target.implementation"))) return false;
 		FCortexGraphMigrationIdentity Identity;
-		Identity.EntryGuid = DerivePlannedNodeGuid(OutPrepared.PatchId, TEXT("entry"));
-		Identity.ResultGuid = DerivePlannedNodeGuid(OutPrepared.PatchId, TEXT("result"));
+		Identity.EntryGuid = FCortexGraphPatchOps::DeriveNodeGuid(OutPrepared.PatchId, TEXT("entry"));
+		Identity.ResultGuid = FCortexGraphPatchOps::DeriveNodeGuid(OutPrepared.PatchId, TEXT("result"));
 		FCortexGraphMigrationPlan MigrationPlan;
 		bool bMigrationReused = false;
 		if (!FCortexGraphMigrationOps::Plan(Blueprint, *MigrationPtr, ImplementationSelector ? *ImplementationSelector : nullptr,
@@ -1477,7 +1573,7 @@ bool FCortexGraphPatchOps::Preflight(
 		if (NormalizedNode->TryGetObjectField(TEXT("params"), ParamsPtr) && ParamsPtr && ParamsPtr->IsValid()) NodeParams = *ParamsPtr;
 		if (!ValidateConstructionParamShape(NodeClass, NodeParams, OutError)) return false;
 		if (!FCortexGraphNodeContract::Validate(NodeClass, Blueprint, NodeParams, OutError)) return false;
-		const FGuid DerivedGuid = DerivePlannedNodeGuid(OutPrepared.PatchId, ClientId);
+		const FGuid DerivedGuid = FCortexGraphPatchOps::DeriveNodeGuid(OutPrepared.PatchId, ClientId);
 		if (const FString* OtherClientId = DerivedGuidOwners.Find(DerivedGuid))
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
@@ -1812,6 +1908,17 @@ struct FGraphPatchJournal
 	FString GeneratedStateBefore;
 	TArray<UEdGraph*> AddedGraphs;
 	TArray<FGuid> AddedNodeGuids;
+	/**
+	 * Created nodes of a transfer, addressed by graph as well as identity. A move registers the
+	 * destination nodes before it deletes the source nodes, so for that window one identity is owned
+	 * by two graphs and recovery must resolve the created node inside its own graph.
+	 */
+	struct FAddedNodeEntry
+	{
+		FGuid GraphGuid;
+		FGuid NodeGuid;
+	};
+	TArray<FAddedNodeEntry> AddedNodeRefs;
 
 	struct FDefaultEntry
 	{
@@ -1832,6 +1939,20 @@ struct FGraphPatchJournal
 		FName TargetPinName;
 	};
 	TArray<FLinkEntry> Links;
+
+	/**
+	 * Links a transfer created, addressed by the graph that owns them, so recovery reverses them in
+	 * the destination graph even while a move's source nodes still carry the same identities.
+	 */
+	struct FGraphLinkEntry
+	{
+		FGuid GraphGuid;
+		FGuid SourceNodeGuid;
+		FName SourcePinName;
+		FGuid TargetNodeGuid;
+		FName TargetPinName;
+	};
+	TArray<FGraphLinkEntry> GraphLinks;
 
 	struct FNodeStateEntry
 	{
@@ -1921,10 +2042,24 @@ struct FGraphPatchJournal
 	TArray<FGuid> PreservationExcludedGuids;
 	FString PreservationBefore;
 
+	/**
+	 * Preservation contracts of a transfer: one per graph the transfer touches, so a failed transfer
+	 * proves both graphs restored instead of only the graph it wrote to last.
+	 */
+	TArray<FCortexGraphTransferPreservation> PreservationContracts;
+
 	FCortexGraphPatchLocators Locators;
 	bool bCompileAttempted = false;
 
-	bool WasNodeCreated(const FGuid& NodeGuid) const { return AddedNodeGuids.Contains(NodeGuid); }
+	bool WasNodeCreated(const FGuid& NodeGuid) const
+	{
+		if (AddedNodeGuids.Contains(NodeGuid)) return true;
+		for (const FAddedNodeEntry& Entry : AddedNodeRefs)
+		{
+			if (Entry.NodeGuid == NodeGuid) return true;
+		}
+		return false;
+	}
 
 	bool WasPinDefaulted(const FGuid& NodeGuid, const FName PinName) const
 	{
@@ -2386,6 +2521,20 @@ bool RestoreJournal(UBlueprint* Blueprint, FGraphPatchJournal& Journal)
 			SourcePin->BreakLinkTo(TargetPin);
 		}
 	}
+	// Transfer links are reversed inside the graph that owns them, for the same reason their nodes
+	// are: a move's duplicate-identity window must never let recovery break a source link.
+	for (int32 Index = Journal.GraphLinks.Num() - 1; Index >= 0; --Index)
+	{
+		UEdGraph* Graph = FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, Journal.GraphLinks[Index].GraphGuid);
+		UEdGraphNode* SourceNode = FCortexGraphMigrationOps::FindNodeByGuidInGraph(Graph, Journal.GraphLinks[Index].SourceNodeGuid);
+		UEdGraphNode* TargetNode = FCortexGraphMigrationOps::FindNodeByGuidInGraph(Graph, Journal.GraphLinks[Index].TargetNodeGuid);
+		UEdGraphPin* SourcePin = SourceNode ? SourceNode->FindPin(Journal.GraphLinks[Index].SourcePinName) : nullptr;
+		UEdGraphPin* TargetPin = TargetNode ? TargetNode->FindPin(Journal.GraphLinks[Index].TargetPinName) : nullptr;
+		if (SourcePin && TargetPin && SourcePin->LinkedTo.Contains(TargetPin))
+		{
+			SourcePin->BreakLinkTo(TargetPin);
+		}
+	}
 
 	// Existing nodes are restored by full pin identity first: a class-pin apply rebuilds the
 	// class-dependent pin set, which a default-only restore leaves diverged.
@@ -2430,6 +2579,18 @@ bool RestoreJournal(UBlueprint* Blueprint, FGraphPatchJournal& Journal)
 	{
 		UEdGraphNode* Node = nullptr;
 		FindNodeByGuid(Blueprint, Journal.AddedNodeGuids[Index], Node);
+		if (Node)
+		{
+			Node->DestroyNode();
+		}
+	}
+	// A transfer's created nodes are reversed inside their own graph: while a move still has its
+	// source nodes registered, one identity is owned by two graphs and only the graph-scoped lookup
+	// is unambiguous.
+	for (int32 Index = Journal.AddedNodeRefs.Num() - 1; Index >= 0; --Index)
+	{
+		UEdGraph* Graph = FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, Journal.AddedNodeRefs[Index].GraphGuid);
+		UEdGraphNode* Node = FCortexGraphMigrationOps::FindNodeByGuidInGraph(Graph, Journal.AddedNodeRefs[Index].NodeGuid);
 		if (Node)
 		{
 			Node->DestroyNode();
@@ -3356,6 +3517,17 @@ bool VerifyAppliedState(
 	}
 	// A migration additionally proves the replacement terminators, the realized boundary remap and
 	// the preservation capture the authoring comparator cannot express.
+	if (Prepared.TransferPlan.IsValid())
+	{
+		FCortexGraphMigrationTransferPlan TransferPlan;
+		FCortexCommandResult PlanError;
+		if (!FCortexGraphMigrationTransferPlan::FromJson(Prepared.TransferPlan, TransferPlan, PlanError))
+		{
+			OutFailure = PlanError.ErrorMessage;
+			return false;
+		}
+		return FCortexGraphMigrationOps::VerifyTransferAgainstNative(Blueprint, TransferPlan, OutFailure);
+	}
 	if (Prepared.MigrationPlan.IsValid())
 	{
 		FCortexGraphMigrationPlan Plan;
@@ -3432,7 +3604,11 @@ bool HandleApplyFailure(
 			&& FCortexGraphMigrationOps::CapturePreservation(Blueprint, PreservationGraph, Journal.PreservationExcludedGuids)
 				== Journal.PreservationBefore;
 	}
-	const bool bVerified = (bInjectedFailure == false) && bAuthoringRestored && bGeneratedRestored && bPreservationRestored;
+	// A transfer touches two graphs, so both preservation contracts are verified independently.
+	FString PreservationContractFailure;
+	const bool bContractsRestored = FCortexGraphMigrationOps::VerifyPreservationContracts(
+		Blueprint, Journal.PreservationContracts, PreservationContractFailure);
+	const bool bVerified = (bInjectedFailure == false) && bAuthoringRestored && bGeneratedRestored && bPreservationRestored && bContractsRestored;
 
 	if (!bVerified)
 	{
@@ -3459,6 +3635,12 @@ bool HandleApplyFailure(
 			if (!bPreservationRestored)
 			{
 				OutOutcome->Diagnostics.Add(TEXT("rollback: the downstream node set outside the replaced entry was not restored"));
+			}
+			if (!bContractsRestored)
+			{
+				OutOutcome->Diagnostics.Add(PreservationContractFailure.IsEmpty()
+					? TEXT("rollback: a graph preservation contract was not restored")
+					: FString::Printf(TEXT("rollback: %s"), *PreservationContractFailure));
 			}
 			if (!Journal.Member.Diagnostic.IsEmpty())
 			{
@@ -3526,6 +3708,102 @@ bool ApplyPrepared(
 		return HandleApplyFailure(Blueprint, Prepared, Journal, OutOutcome, OutError, Message,
 			CortexErrorCodes::InvalidOperation, true);
 	};
+
+	if (Prepared.TransferPlan.IsValid())
+	{
+		// The transfer shell: both graphs of one asset, destination registration, destination
+		// wiring, then source deletion for a move, all inside this one transaction. The caller
+		// compiles once and the shared readback verifies both graphs.
+		FCortexGraphMigrationTransferPlan TransferPlan;
+		if (!FCortexGraphMigrationTransferPlan::FromJson(Prepared.TransferPlan, TransferPlan, OutError))
+		{
+			return false;
+		}
+		FGuid SourceGraphGuid;
+		FGuid DestinationGraphGuid;
+		FGuid::Parse(TransferPlan.SourceGraphGuid, SourceGraphGuid);
+		FGuid::Parse(TransferPlan.DestinationGraphGuid, DestinationGraphGuid);
+		UEdGraph* const SourceGraph = FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, SourceGraphGuid);
+		UEdGraph* const DestinationGraph = FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, DestinationGraphGuid);
+		if (!SourceGraph || !DestinationGraph)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("a planned transfer graph did not re-resolve after the final guard"));
+			return false;
+		}
+		Journal.Locators.GraphGuid = DestinationGraph->GraphGuid;
+		Journal.Locators.SubgraphPath = TransferPlan.DestinationSubgraphPath;
+		for (const FCortexGraphTransferNode& Node : TransferPlan.Nodes)
+		{
+			FGuid DestinationGuid;
+			FGuid::Parse(Node.DestinationGuid, DestinationGuid);
+			Journal.Locators.NodeGuidByClientId.Add(Node.SourceGuid, DestinationGuid);
+		}
+		// Both graphs carry a preservation contract, so recovery proves both of them restored.
+		Journal.PreservationContracts = TransferPlan.Preservations;
+
+		// R5 order: destination registration, destination wiring, source deletion. The source nodes
+		// are resolved before registration so the deletion can never address an imported duplicate.
+		TArray<UEdGraphNode*> SourceNodes;
+		for (const FString& GuidText : TransferPlan.RemovalSet)
+		{
+			FGuid SourceGuid;
+			UEdGraphNode* const SourceNode = FGuid::Parse(GuidText, SourceGuid)
+				? FCortexGraphMigrationOps::FindNodeByGuidInGraph(SourceGraph, SourceGuid)
+				: nullptr;
+			if (!SourceNode)
+			{
+				return Fail(TEXT("a planned transfer source node no longer resolves in the source graph"));
+			}
+			SourceNodes.Add(SourceNode);
+		}
+
+		TArray<FGuid> CreatedGuids;
+		if (!FCortexGraphMigrationOps::RegisterTransferNodes(Blueprint, TransferPlan, CreatedGuids, OutError))
+		{
+			return Fail(OutError.ErrorMessage);
+		}
+		for (const FGuid& CreatedGuid : CreatedGuids)
+		{
+			Journal.AddedNodeRefs.Add({ DestinationGraph->GraphGuid, CreatedGuid });
+		}
+		if (ShouldInjectApplyFault(TEXT("migration_transfer_after_destination")))
+		{
+			return Fail(TEXT("Test fault injected after destination registration"));
+		}
+
+		TArray<FCortexGraphMigrationLink> CreatedLinks;
+		FCortexCommandResult WireError;
+		if (!FCortexGraphMigrationOps::WireTransfer(Blueprint, TransferPlan, CreatedLinks, WireError))
+		{
+			return Fail(WireError.ErrorMessage);
+		}
+		for (const FCortexGraphMigrationLink& Link : CreatedLinks)
+		{
+			Journal.GraphLinks.Add({ DestinationGraph->GraphGuid, Link.FromNodeGuid, Link.FromPin, Link.ToNodeGuid, Link.ToPin });
+		}
+		if (ShouldInjectApplyFault(TEXT("migration_transfer_after_wiring")))
+		{
+			return Fail(TEXT("Test fault injected after destination wiring"));
+		}
+
+		for (UEdGraphNode* SourceNode : SourceNodes)
+		{
+			JournalNodeRemoved(SourceNode, Journal);
+			SourceGraph->Modify();
+			if (!SourceGraph->RemoveNode(SourceNode))
+			{
+				return Fail(TEXT("a planned transfer source node could not be removed from the source graph"));
+			}
+		}
+		if (ShouldInjectApplyFault(TEXT("migration_transfer_after_source_removal")))
+		{
+			return Fail(TEXT("Test fault injected after source removal"));
+		}
+		SourceGraph->NotifyGraphChanged();
+		DestinationGraph->NotifyGraphChanged();
+		return true;
+	}
 
 	if (Prepared.MigrationPlan.IsValid())
 	{
@@ -4240,3 +4518,8 @@ void FCortexGraphPatchOps::SetPostSaveVerificationFaultForTesting(const FName Ch
 	PostSaveVerificationFaultForTesting = Check;
 }
 #endif
+
+FGuid FCortexGraphPatchOps::DeriveNodeGuid(const FString& PatchId, const FString& ClientId)
+{
+	return DerivePlannedNodeGuid(PatchId, ClientId);
+}

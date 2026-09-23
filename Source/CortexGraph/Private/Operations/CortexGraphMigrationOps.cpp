@@ -6,7 +6,9 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
+#include "EdGraphNode_Comment.h"
 #include "EdGraphSchema_K2.h"
+#include "EdGraphUtilities.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "K2Node.h"
@@ -2584,4 +2586,1955 @@ UEdGraph* FCortexGraphMigrationOps::FindGraphByGuid(UBlueprint* Blueprint, const
 		if (Graph && Graph->GraphGuid == GraphGuid) return Graph;
 	}
 	return nullptr;
+}
+
+UEdGraphNode* FCortexGraphMigrationOps::FindNodeByGuidInGraph(UEdGraph* Graph, const FGuid& NodeGuid)
+{
+	if (!Graph || !NodeGuid.IsValid()) return nullptr;
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (Node && Node->NodeGuid == NodeGuid) return Node;
+	}
+	return nullptr;
+}
+
+// ===========================================================================
+// Bounded same-asset transfer: `copy_subgraph` / `move_subgraph`
+// ===========================================================================
+
+namespace
+{
+constexpr int32 MaxTransferNodes = 64;
+constexpr int32 MaxTransferBoundary = 64;
+
+const TCHAR* const TransferCopyOp = TEXT("copy_subgraph");
+const TCHAR* const TransferMoveOp = TEXT("move_subgraph");
+
+bool IsTransferOp(const FString& Op)
+{
+	return Op == TransferCopyOp || Op == TransferMoveOp;
+}
+
+/** Canonical symbol descriptor of one transferable node, or empty when the class carries none. */
+FString TransferNodeSymbol(const UEdGraphNode* Node)
+{
+	if (const UK2Node_CallFunction* const Call = Cast<UK2Node_CallFunction>(Node))
+	{
+		const UFunction* const Target = Call->GetTargetFunction();
+		const UClass* const Owner = Target
+			? Target->GetOuterUClass()
+			: Call->FunctionReference.GetMemberParentClass();
+		return FString::Printf(TEXT("call:%s@%s|self=%d|pure=%d"),
+			*Call->FunctionReference.GetMemberName().ToString(),
+			Owner ? *Owner->GetPathName() : TEXT("none"),
+			Call->FunctionReference.IsSelfContext() ? 1 : 0,
+			Call->IsNodePure() ? 1 : 0);
+	}
+	if (const UK2Node_Variable* const Variable = Cast<UK2Node_Variable>(Node))
+	{
+		const UClass* const Owner = Variable->VariableReference.IsSelfContext()
+			? nullptr
+			: Variable->VariableReference.GetMemberParentClass();
+		return FString::Printf(TEXT("var:%s@%s|self=%d|local=%d|set=%d"),
+			*Variable->VariableReference.GetMemberName().ToString(),
+			Owner ? *Owner->GetPathName() : TEXT("self"),
+			Variable->VariableReference.IsSelfContext() ? 1 : 0,
+			Variable->VariableReference.IsLocalScope() ? 1 : 0,
+			Variable->IsA<UK2Node_VariableSet>() ? 1 : 0);
+	}
+	if (const UK2Node_DynamicCast* const DynCast = Cast<UK2Node_DynamicCast>(Node))
+	{
+		return FString::Printf(TEXT("cast:%s"), DynCast->TargetType ? *DynCast->TargetType->GetPathName() : TEXT("none"));
+	}
+	return FString();
+}
+
+/** Canonical capture of one node's class, layout, comment, bubble and enabled state. */
+FString TransferNodePresentation(const FCortexGraphTransferNode& Node)
+{
+	return FString::Printf(TEXT("pos=(%d,%d)|comment=\"%s\"|bubble=%d/%d|enabled=%d/%d/%d"),
+		Node.PosX, Node.PosY, *Node.Comment,
+		Node.bCommentBubblePinned ? 1 : 0, Node.bCommentBubbleVisible ? 1 : 0,
+		Node.EnabledState, Node.bUserSetEnabledState ? 1 : 0, Node.bForceDisplayAsDisabled ? 1 : 0);
+}
+
+/** The same capture read from live native state instead of from the durable plan. */
+FString TransferNodePresentation(const UEdGraphNode& Node)
+{
+	return FString::Printf(TEXT("pos=(%d,%d)|comment=\"%s\"|bubble=%d/%d|enabled=%d/%d/%d"),
+		Node.NodePosX, Node.NodePosY, *Node.NodeComment,
+		Node.bCommentBubblePinned ? 1 : 0, Node.bCommentBubbleVisible ? 1 : 0,
+		static_cast<int32>(Node.GetDesiredEnabledState()),
+		Node.HasUserSetTheEnabledState() ? 1 : 0,
+		Node.IsDisplayAsDisabledForced() ? 1 : 0);
+}
+
+/**
+ * Canonical authored capture of one node's pins: the shared canonical pin signature plus the
+ * authored default, and every link whose far endpoint is inside the captured set expressed as a
+ * slot index. Crossing links are deliberately outside this capture: for the source side they are
+ * the explicit boundary map and for the destination side the realized boundary edges.
+ */
+FString TransferNodePins(UEdGraphNode* Node, const TMap<FGuid, int32>& SlotByGuid)
+{
+	if (!Node) return FString();
+	TArray<UEdGraphPin*> Sorted;
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin && Pin->ParentPin == nullptr) Sorted.Add(Pin);
+	}
+	Sorted.Sort([](const UEdGraphPin& A, const UEdGraphPin& B)
+	{
+		if (A.Direction != B.Direction) return static_cast<int32>(A.Direction) < static_cast<int32>(B.Direction);
+		return A.PinName.LexicalLess(B.PinName);
+	});
+	FString Capture = FString::Printf(TEXT("pins=%d"), Sorted.Num());
+	for (const UEdGraphPin* Pin : Sorted)
+	{
+		TArray<FString> Links;
+		for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+		{
+			const UEdGraphNode* const LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+			if (!LinkedNode) continue;
+			const int32* const Slot = SlotByGuid.Find(LinkedNode->NodeGuid);
+			if (!Slot) continue;
+			Links.Add(FString::Printf(TEXT("slot:%d.%s"), *Slot, *LinkedPin->PinName.ToString()));
+		}
+		Links.Sort();
+		Capture += FString::Printf(TEXT(";%s|def=\"%s\"|deftext=\"%s\"|defobj=%s|links=[%s]"),
+			*FCortexGraphPatchOps::CanonicalPinSignature(FCortexGraphPatchOps::MakePinSignatureDescriptor(*Pin)),
+			*Pin->DefaultValue,
+			*Pin->DefaultTextValue.ToString(),
+			Pin->DefaultObject ? *Pin->DefaultObject->GetPathName() : TEXT("none"),
+			*FString::Join(Links, TEXT(",")));
+	}
+	return Capture;
+}
+
+/** Every graph of the asset that owns one node GUID. */
+void TransferGraphsOwningGuid(UBlueprint* Blueprint, const FGuid& NodeGuid, TArray<UEdGraph*>& OutGraphs)
+{
+	OutGraphs.Reset();
+	if (!Blueprint || !NodeGuid.IsValid()) return;
+	TArray<UEdGraph*> Graphs;
+	Blueprint->GetAllGraphs(Graphs);
+	for (UEdGraph* Graph : Graphs)
+	{
+		if (Graph && FCortexGraphMigrationOps::FindNodeByGuidInGraph(Graph, NodeGuid))
+		{
+			OutGraphs.Add(Graph);
+		}
+	}
+}
+
+/**
+ * Engine class names a bounded same-asset transfer refuses before any mutation, with the reason the
+ * refusal reports. The test walks the node's own inheritance chain, so a subclass of a refused class
+ * is refused under the same reason instead of slipping through the selection.
+ */
+const TMap<FString, FString>& TransferRefusedClassNames()
+{
+	static const TMap<FString, FString> Refused = {
+		{ TEXT("K2Node_Tunnel"), TEXT("tunnel") },
+		{ TEXT("K2Node_TunnelBoundary"), TEXT("tunnel boundary") },
+		{ TEXT("K2Node_Knot"), TEXT("knot") },
+		{ TEXT("K2Node_Composite"), TEXT("composite node with a bound subgraph") },
+		{ TEXT("K2Node_Timeline"), TEXT("timeline") },
+		{ TEXT("K2Node_EditablePinBase"), TEXT("editable-pin terminator owned by its graph lifecycle") },
+		{ TEXT("K2Node_Event"), TEXT("event node owned by its graph lifecycle") },
+		{ TEXT("K2Node_FunctionEntry"), TEXT("function terminator owned by its graph lifecycle") },
+		{ TEXT("K2Node_FunctionResult"), TEXT("function terminator owned by its graph lifecycle") },
+		{ TEXT("K2Node_CustomEvent"), TEXT("custom event node owned by its graph lifecycle") },
+		{ TEXT("K2Node_BaseMCDelegate"), TEXT("delegate node") },
+		{ TEXT("K2Node_CallDelegate"), TEXT("delegate node") },
+		{ TEXT("K2Node_CreateDelegate"), TEXT("delegate node") },
+		{ TEXT("K2Node_AssignDelegate"), TEXT("delegate node") },
+		{ TEXT("K2Node_DelegateSet"), TEXT("delegate node") },
+		{ TEXT("K2Node_BaseAsyncTask"), TEXT("latent async task node") },
+		{ TEXT("K2Node_AsyncAction"), TEXT("latent async action node") },
+		{ TEXT("K2Node_LatentGameplayTaskCall"), TEXT("latent gameplay task call") },
+	};
+	return Refused;
+}
+
+/** True when the node may be transferred into the given destination graph; otherwise names why not. */
+bool ClassifyTransferNode(UEdGraph* DestinationGraph, UEdGraphNode* Node, FString& OutReason)
+{
+	OutReason.Reset();
+	if (!Node || !Node->GetClass() || !Node->NodeGuid.IsValid())
+	{
+		OutReason = TEXT("invalid node");
+		return false;
+	}
+	if (const UK2Node_CallFunction* const Call = Cast<UK2Node_CallFunction>(Node))
+	{
+		if (Call->IsLatentFunction())
+		{
+			OutReason = FString::Printf(TEXT("latent function call '%s'"), *Call->FunctionReference.GetMemberName().ToString());
+			return false;
+		}
+	}
+	for (UClass* Class = Node->GetClass(); Class && Class != UObject::StaticClass(); Class = Class->GetSuperClass())
+	{
+		const FString ClassName = Class->GetName();
+		if (ClassName.Contains(TEXT("Latent")))
+		{
+			OutReason = FString::Printf(TEXT("latent node class '%s'"), *Node->GetClass()->GetName());
+			return false;
+		}
+		if (const FString* const Reason = TransferRefusedClassNames().Find(ClassName))
+		{
+			OutReason = *Reason;
+			return false;
+		}
+	}
+	if (!Node->IsA<UK2Node>() && !Node->IsA<UEdGraphNode_Comment>())
+	{
+		OutReason = FString::Printf(TEXT("non-K2 graph node class '%s'"), *Node->GetClass()->GetName());
+		return false;
+	}
+	if (!Node->CanDuplicateNode())
+	{
+		OutReason = FString::Printf(TEXT("the engine refuses to duplicate node class '%s'"), *Node->GetClass()->GetName());
+		return false;
+	}
+	if (!DestinationGraph || !Node->CanCreateUnderSpecifiedSchema(DestinationGraph->GetSchema()))
+	{
+		OutReason = FString::Printf(TEXT("node class '%s' cannot be created under the destination graph schema"), *Node->GetClass()->GetName());
+		return false;
+	}
+	return true;
+}
+
+/** The interface that declares the named member for this asset's class, when one does. */
+UClass* InterfaceDeclaringMember(UBlueprint* Blueprint, const FName MemberName)
+{
+	UClass* const AssetClass = Blueprint && Blueprint->SkeletonGeneratedClass
+		? Blueprint->SkeletonGeneratedClass.Get()
+		: (Blueprint ? Blueprint->GeneratedClass.Get() : nullptr);
+	if (!AssetClass || MemberName.IsNone()) return nullptr;
+	for (UClass* CurrentClass = AssetClass; CurrentClass; CurrentClass = CurrentClass->GetSuperClass())
+	{
+		for (const FImplementedInterface& Implemented : CurrentClass->Interfaces)
+		{
+			UClass* const Interface = Implemented.Class.Get();
+			if (Interface && Interface->FindFunctionByName(MemberName))
+			{
+				return Interface;
+			}
+		}
+	}
+	return nullptr;
+}
+
+/** Signature identity of one declared local variable, so a mismatch is comparable. */
+FString LocalVariableTypeIdentity(const FEdGraphPinType& PinType)
+{
+	return FCortexGraphPatchOps::CanonicalPinSignature(
+		FCortexGraphPatchOps::MakePinSignatureDescriptorForType(PinType));
+}
+
+/** Dependency inventory of one selected node. */
+void CollectTransferDependencies(
+	UBlueprint* Blueprint,
+	UEdGraphNode* Node,
+	TArray<FCortexGraphTransferDependency>& OutDependencies)
+{
+	const FName MemberName = [Node]() -> FName
+	{
+		if (const UK2Node_CallFunction* const Call = Cast<UK2Node_CallFunction>(Node))
+		{
+			return Call->FunctionReference.GetMemberName();
+		}
+		if (const UK2Node_Variable* const Variable = Cast<UK2Node_Variable>(Node))
+		{
+			return Variable->VariableReference.GetMemberName();
+		}
+		return NAME_None;
+	}();
+	if (MemberName.IsNone()) return;
+
+	FCortexGraphTransferDependency Dependency;
+	Dependency.NodeGuid = Node->NodeGuid.ToString();
+	Dependency.Member = MemberName.ToString();
+
+	const UK2Node_Variable* const Variable = Cast<UK2Node_Variable>(Node);
+	const UK2Node_CallFunction* const Call = Cast<UK2Node_CallFunction>(Node);
+	if (Variable && Variable->VariableReference.IsLocalScope())
+	{
+		Dependency.Kind = TEXT("local_variable");
+		if (const FBPVariableDescription* const Description =
+			FBlueprintEditorUtils::FindLocalVariable(Blueprint, Node->GetGraph(), MemberName))
+		{
+			Dependency.Type = LocalVariableTypeIdentity(Description->VarType);
+		}
+		Dependency.Detail = TEXT("a local variable of the source graph scope; the destination graph must declare an identically named and typed local variable when the graphs differ");
+		OutDependencies.Add(MoveTemp(Dependency));
+		return;
+	}
+
+	UClass* DeclaringClass = nullptr;
+	if (Call)
+	{
+		const UFunction* const Target = Call->GetTargetFunction();
+		DeclaringClass = Target ? Target->GetOuterUClass() : Call->FunctionReference.GetMemberParentClass();
+	}
+	else if (Variable)
+	{
+		DeclaringClass = Variable->VariableReference.GetMemberParentClass();
+	}
+	Dependency.OwnerClass = DeclaringClass ? DeclaringClass->GetPathName() : FString(TEXT("self"));
+
+	UClass* const Interface = InterfaceDeclaringMember(Blueprint, MemberName);
+	if (Interface)
+	{
+		Dependency.Kind = TEXT("interface");
+		Dependency.OwnerClass = Interface->GetPathName();
+		Dependency.Detail = FString::Printf(TEXT("declared by implemented interface '%s'"), *Interface->GetName());
+	}
+	else if (DeclaringClass && DeclaringClass->HasAnyClassFlags(CLASS_Interface))
+	{
+		Dependency.Kind = TEXT("interface");
+		Dependency.Detail = TEXT("declared by an interface class");
+	}
+	else if (DeclaringClass && Blueprint && Blueprint->ParentClass && DeclaringClass->IsChildOf(Blueprint->ParentClass))
+	{
+		Dependency.Kind = TEXT("member");
+		Dependency.Detail = TEXT("declared by this asset's own class hierarchy");
+	}
+	else if (DeclaringClass)
+	{
+		Dependency.Kind = TEXT("external");
+		Dependency.Detail = TEXT("declared outside this asset");
+	}
+	else
+	{
+		Dependency.Kind = TEXT("member");
+		Dependency.Detail = TEXT("self-context member reference resolved by the asset's class");
+	}
+	OutDependencies.Add(MoveTemp(Dependency));
+}
+
+/** Canonical key of one directed graph link endpoint. */
+FString TransferEndpointKey(const FGuid& NodeGuid, const FName PinName)
+{
+	return FString::Printf(TEXT("%s.%s"), *NodeGuid.ToString(), *PinName.ToString());
+}
+
+/** One crossing or internal link of the selection, canonicalized so both sides agree. */
+struct FTransferLink
+{
+	FGuid FromNode;
+	FName FromPin;
+	FGuid ToNode;
+	FName ToPin;
+
+	FString Key() const
+	{
+		return TransferEndpointKey(FromNode, FromPin) + TEXT("->") + TransferEndpointKey(ToNode, ToPin);
+	}
+};
+
+/**
+ * Inventories every link that touches the selection exactly once: a link with both endpoints inside
+ * the selection is an internal edge, any other link is a crossing edge. A crossing edge is recorded
+ * from its selected endpoint, so the boundary map is keyed by the pin the transfer owns.
+ */
+void InventoryTransferLinks(
+	UEdGraphNode* Node,
+	const TSet<FGuid>& Selection,
+	TArray<FTransferLink>& OutInternal,
+	TArray<FTransferLink>& OutCrossing,
+	TSet<FString>& InOutKeys)
+{
+	if (!Node) return;
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (!Pin || Pin->ParentPin != nullptr) continue;
+		for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+		{
+			UEdGraphNode* const FarNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+			if (!FarNode) continue;
+			const bool bFarInside = Selection.Contains(FarNode->NodeGuid);
+			FTransferLink Link;
+			if (!bFarInside)
+			{
+				// The selected endpoint owns the crossing edge, whichever side of the link it is.
+				Link = { Node->NodeGuid, Pin->PinName, FarNode->NodeGuid, LinkedPin->PinName };
+			}
+			else if (Pin->Direction == EGPD_Output
+				|| (Pin->Direction == LinkedPin->Direction && Pin->PinName.LexicalLess(LinkedPin->PinName)))
+			{
+				Link = { Node->NodeGuid, Pin->PinName, FarNode->NodeGuid, LinkedPin->PinName };
+			}
+			else
+			{
+				Link = { FarNode->NodeGuid, LinkedPin->PinName, Node->NodeGuid, Pin->PinName };
+			}
+			if (InOutKeys.Contains(Link.Key())) continue;
+			InOutKeys.Add(Link.Key());
+			if (bFarInside)
+			{
+				OutInternal.Add(Link);
+			}
+			else
+			{
+				OutCrossing.Add(Link);
+			}
+		}
+	}
+}
+
+/** Canonical key of one boundary `from` endpoint: the selected source pin a crossing edge leaves. */
+FString TransferBoundaryFromKey(const UEdGraphNode* Node, const UEdGraphPin& Pin)
+{
+	return TransferEndpointKey(Node ? Node->NodeGuid : FGuid(), Pin.PinName);
+}
+}
+
+// ---------------------------------------------------------------------------
+// Durable plan transport
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FCortexGraphMigrationTransferPlan::ToJson() const
+{
+	TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
+	Out->SetStringField(TEXT("op"), Op);
+	Out->SetStringField(TEXT("source_graph_guid"), SourceGraphGuid);
+	Out->SetStringField(TEXT("source_subgraph_path"), SourceSubgraphPath);
+	Out->SetStringField(TEXT("destination_graph_guid"), DestinationGraphGuid);
+	Out->SetStringField(TEXT("destination_subgraph_path"), DestinationSubgraphPath);
+	Out->SetBoolField(TEXT("reused"), bReused);
+
+	TArray<TSharedPtr<FJsonValue>> NodeValues;
+	for (const FCortexGraphTransferNode& Node : Nodes)
+	{
+		TSharedPtr<FJsonObject> NodeJson = MakeShared<FJsonObject>();
+		NodeJson->SetStringField(TEXT("source_guid"), Node.SourceGuid);
+		NodeJson->SetStringField(TEXT("destination_guid"), Node.DestinationGuid);
+		NodeJson->SetStringField(TEXT("class_path"), Node.ClassPath);
+		NodeJson->SetStringField(TEXT("symbol"), Node.Symbol);
+		NodeJson->SetNumberField(TEXT("pos_x"), Node.PosX);
+		NodeJson->SetNumberField(TEXT("pos_y"), Node.PosY);
+		NodeJson->SetStringField(TEXT("comment"), Node.Comment);
+		NodeJson->SetBoolField(TEXT("bubble_pinned"), Node.bCommentBubblePinned);
+		NodeJson->SetBoolField(TEXT("bubble_visible"), Node.bCommentBubbleVisible);
+		NodeJson->SetNumberField(TEXT("enabled_state"), Node.EnabledState);
+		NodeJson->SetBoolField(TEXT("user_set_enabled_state"), Node.bUserSetEnabledState);
+		NodeJson->SetBoolField(TEXT("force_display_disabled"), Node.bForceDisplayAsDisabled);
+		NodeJson->SetStringField(TEXT("pins"), Node.Pins);
+		NodeValues.Add(MakeShared<FJsonValueObject>(NodeJson));
+	}
+	Out->SetArrayField(TEXT("nodes"), NodeValues);
+
+	TArray<TSharedPtr<FJsonValue>> EdgeValues;
+	for (const FCortexGraphTransferEdge& Edge : InternalEdges)
+	{
+		TSharedPtr<FJsonObject> EdgeJson = MakeShared<FJsonObject>();
+		EdgeJson->SetStringField(TEXT("from_guid"), Edge.FromGuid);
+		EdgeJson->SetStringField(TEXT("from_pin"), Edge.FromPin);
+		EdgeJson->SetStringField(TEXT("to_guid"), Edge.ToGuid);
+		EdgeJson->SetStringField(TEXT("to_pin"), Edge.ToPin);
+		EdgeValues.Add(MakeShared<FJsonValueObject>(EdgeJson));
+	}
+	Out->SetArrayField(TEXT("internal_edges"), EdgeValues);
+
+	TArray<TSharedPtr<FJsonValue>> BoundaryValues;
+	for (const FCortexGraphTransferBoundary& Entry : Boundary)
+	{
+		TSharedPtr<FJsonObject> BoundaryJson = MakeShared<FJsonObject>();
+		BoundaryJson->SetStringField(TEXT("source_guid"), Entry.SourceGuid);
+		BoundaryJson->SetStringField(TEXT("source_pin"), Entry.SourcePin);
+		BoundaryJson->SetStringField(TEXT("source_far_guid"), Entry.SourceFarGuid);
+		BoundaryJson->SetStringField(TEXT("source_far_pin"), Entry.SourceFarPin);
+		BoundaryJson->SetStringField(TEXT("destination_node_guid"), Entry.DestinationNodeGuid);
+		BoundaryJson->SetStringField(TEXT("destination_pin"), Entry.DestinationPin);
+		BoundaryValues.Add(MakeShared<FJsonValueObject>(BoundaryJson));
+	}
+	Out->SetArrayField(TEXT("boundary"), BoundaryValues);
+
+	TArray<TSharedPtr<FJsonValue>> DependencyValues;
+	for (const FCortexGraphTransferDependency& Dependency : Dependencies)
+	{
+		TSharedPtr<FJsonObject> DependencyJson = MakeShared<FJsonObject>();
+		DependencyJson->SetStringField(TEXT("node_guid"), Dependency.NodeGuid);
+		DependencyJson->SetStringField(TEXT("kind"), Dependency.Kind);
+		DependencyJson->SetStringField(TEXT("member"), Dependency.Member);
+		DependencyJson->SetStringField(TEXT("owner_class"), Dependency.OwnerClass);
+		DependencyJson->SetStringField(TEXT("type"), Dependency.Type);
+		DependencyJson->SetStringField(TEXT("detail"), Dependency.Detail);
+		DependencyValues.Add(MakeShared<FJsonValueObject>(DependencyJson));
+	}
+	Out->SetArrayField(TEXT("dependencies"), DependencyValues);
+
+	TArray<TSharedPtr<FJsonValue>> RemovalValues;
+	for (const FString& Guid : RemovalSet)
+	{
+		RemovalValues.Add(MakeShared<FJsonValueString>(Guid));
+	}
+	Out->SetArrayField(TEXT("removal_set"), RemovalValues);
+
+	TArray<TSharedPtr<FJsonValue>> PreservationValues;
+	for (const FCortexGraphTransferPreservation& Contract : Preservations)
+	{
+		TSharedPtr<FJsonObject> ContractJson = MakeShared<FJsonObject>();
+		ContractJson->SetStringField(TEXT("label"), Contract.Label);
+		ContractJson->SetStringField(TEXT("graph_guid"), Contract.GraphGuid);
+		TArray<TSharedPtr<FJsonValue>> ExcludedValues;
+		for (const FString& Guid : Contract.ExcludedGuids)
+		{
+			ExcludedValues.Add(MakeShared<FJsonValueString>(Guid));
+		}
+		ContractJson->SetArrayField(TEXT("excluded_guids"), ExcludedValues);
+		ContractJson->SetStringField(TEXT("capture"), Contract.Capture);
+		PreservationValues.Add(MakeShared<FJsonValueObject>(ContractJson));
+	}
+	Out->SetArrayField(TEXT("preservations"), PreservationValues);
+	return Out;
+}
+
+bool FCortexGraphMigrationTransferPlan::FromJson(
+	const TSharedPtr<FJsonObject>& Source,
+	FCortexGraphMigrationTransferPlan& OutPlan,
+	FCortexCommandResult& OutError)
+{
+	OutPlan = FCortexGraphMigrationTransferPlan();
+	OutError = FCortexCommandResult();
+	if (!Source.IsValid())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("prepared transfer plan is missing"));
+		return false;
+	}
+	const bool bRead = Source->TryGetStringField(TEXT("op"), OutPlan.Op)
+		&& Source->TryGetStringField(TEXT("source_graph_guid"), OutPlan.SourceGraphGuid)
+		&& Source->TryGetStringField(TEXT("destination_graph_guid"), OutPlan.DestinationGraphGuid);
+	if (!bRead || !IsTransferOp(OutPlan.Op))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("prepared transfer plan is incomplete or names an unsupported transfer operation"));
+		return false;
+	}
+	Source->TryGetStringField(TEXT("source_subgraph_path"), OutPlan.SourceSubgraphPath);
+	Source->TryGetStringField(TEXT("destination_subgraph_path"), OutPlan.DestinationSubgraphPath);
+	Source->TryGetBoolField(TEXT("reused"), OutPlan.bReused);
+
+	const TArray<TSharedPtr<FJsonValue>>* NodeValues = nullptr;
+	if (Source->TryGetArrayField(TEXT("nodes"), NodeValues) && NodeValues)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *NodeValues)
+		{
+			const TSharedPtr<FJsonObject> NodeJson = Value.IsValid() ? Value->AsObject() : nullptr;
+			if (!NodeJson.IsValid()) continue;
+			FCortexGraphTransferNode Node;
+			NodeJson->TryGetStringField(TEXT("source_guid"), Node.SourceGuid);
+			NodeJson->TryGetStringField(TEXT("destination_guid"), Node.DestinationGuid);
+			NodeJson->TryGetStringField(TEXT("class_path"), Node.ClassPath);
+			NodeJson->TryGetStringField(TEXT("symbol"), Node.Symbol);
+			NodeJson->TryGetStringField(TEXT("comment"), Node.Comment);
+			NodeJson->TryGetStringField(TEXT("pins"), Node.Pins);
+			int32 Number = 0;
+			if (NodeJson->TryGetNumberField(TEXT("pos_x"), Number)) Node.PosX = Number;
+			if (NodeJson->TryGetNumberField(TEXT("pos_y"), Number)) Node.PosY = Number;
+			if (NodeJson->TryGetNumberField(TEXT("enabled_state"), Number)) Node.EnabledState = Number;
+			NodeJson->TryGetBoolField(TEXT("bubble_pinned"), Node.bCommentBubblePinned);
+			NodeJson->TryGetBoolField(TEXT("bubble_visible"), Node.bCommentBubbleVisible);
+			NodeJson->TryGetBoolField(TEXT("user_set_enabled_state"), Node.bUserSetEnabledState);
+			NodeJson->TryGetBoolField(TEXT("force_display_disabled"), Node.bForceDisplayAsDisabled);
+			OutPlan.Nodes.Add(MoveTemp(Node));
+		}
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* EdgeValues = nullptr;
+	if (Source->TryGetArrayField(TEXT("internal_edges"), EdgeValues) && EdgeValues)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *EdgeValues)
+		{
+			const TSharedPtr<FJsonObject> EdgeJson = Value.IsValid() ? Value->AsObject() : nullptr;
+			if (!EdgeJson.IsValid()) continue;
+			FCortexGraphTransferEdge Edge;
+			EdgeJson->TryGetStringField(TEXT("from_guid"), Edge.FromGuid);
+			EdgeJson->TryGetStringField(TEXT("from_pin"), Edge.FromPin);
+			EdgeJson->TryGetStringField(TEXT("to_guid"), Edge.ToGuid);
+			EdgeJson->TryGetStringField(TEXT("to_pin"), Edge.ToPin);
+			OutPlan.InternalEdges.Add(MoveTemp(Edge));
+		}
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* BoundaryValues = nullptr;
+	if (Source->TryGetArrayField(TEXT("boundary"), BoundaryValues) && BoundaryValues)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *BoundaryValues)
+		{
+			const TSharedPtr<FJsonObject> BoundaryJson = Value.IsValid() ? Value->AsObject() : nullptr;
+			if (!BoundaryJson.IsValid()) continue;
+			FCortexGraphTransferBoundary Entry;
+			BoundaryJson->TryGetStringField(TEXT("source_guid"), Entry.SourceGuid);
+			BoundaryJson->TryGetStringField(TEXT("source_pin"), Entry.SourcePin);
+			BoundaryJson->TryGetStringField(TEXT("source_far_guid"), Entry.SourceFarGuid);
+			BoundaryJson->TryGetStringField(TEXT("source_far_pin"), Entry.SourceFarPin);
+			BoundaryJson->TryGetStringField(TEXT("destination_node_guid"), Entry.DestinationNodeGuid);
+			BoundaryJson->TryGetStringField(TEXT("destination_pin"), Entry.DestinationPin);
+			OutPlan.Boundary.Add(MoveTemp(Entry));
+		}
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* DependencyValues = nullptr;
+	if (Source->TryGetArrayField(TEXT("dependencies"), DependencyValues) && DependencyValues)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *DependencyValues)
+		{
+			const TSharedPtr<FJsonObject> DependencyJson = Value.IsValid() ? Value->AsObject() : nullptr;
+			if (!DependencyJson.IsValid()) continue;
+			FCortexGraphTransferDependency Dependency;
+			DependencyJson->TryGetStringField(TEXT("node_guid"), Dependency.NodeGuid);
+			DependencyJson->TryGetStringField(TEXT("kind"), Dependency.Kind);
+			DependencyJson->TryGetStringField(TEXT("member"), Dependency.Member);
+			DependencyJson->TryGetStringField(TEXT("owner_class"), Dependency.OwnerClass);
+			DependencyJson->TryGetStringField(TEXT("type"), Dependency.Type);
+			DependencyJson->TryGetStringField(TEXT("detail"), Dependency.Detail);
+			OutPlan.Dependencies.Add(MoveTemp(Dependency));
+		}
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* RemovalValues = nullptr;
+	if (Source->TryGetArrayField(TEXT("removal_set"), RemovalValues) && RemovalValues)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *RemovalValues)
+		{
+			FString Guid;
+			if (Value.IsValid() && Value->TryGetString(Guid) && !Guid.IsEmpty())
+			{
+				OutPlan.RemovalSet.Add(Guid);
+			}
+		}
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* PreservationValues = nullptr;
+	if (Source->TryGetArrayField(TEXT("preservations"), PreservationValues) && PreservationValues)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *PreservationValues)
+		{
+			const TSharedPtr<FJsonObject> ContractJson = Value.IsValid() ? Value->AsObject() : nullptr;
+			if (!ContractJson.IsValid()) continue;
+			FCortexGraphTransferPreservation Contract;
+			ContractJson->TryGetStringField(TEXT("label"), Contract.Label);
+			ContractJson->TryGetStringField(TEXT("graph_guid"), Contract.GraphGuid);
+			ContractJson->TryGetStringField(TEXT("capture"), Contract.Capture);
+			const TArray<TSharedPtr<FJsonValue>>* ExcludedValues = nullptr;
+			if (ContractJson->TryGetArrayField(TEXT("excluded_guids"), ExcludedValues) && ExcludedValues)
+			{
+				for (const TSharedPtr<FJsonValue>& Excluded : *ExcludedValues)
+				{
+					FString Guid;
+					if (Excluded.IsValid() && Excluded->TryGetString(Guid) && !Guid.IsEmpty())
+					{
+						Contract.ExcludedGuids.Add(Guid);
+					}
+				}
+			}
+			OutPlan.Preservations.Add(MoveTemp(Contract));
+		}
+	}
+
+	if (OutPlan.Nodes.Num() == 0 || OutPlan.SourceGraphGuid.IsEmpty() || OutPlan.DestinationGraphGuid.IsEmpty())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("prepared transfer plan does not identify its graphs or its selected nodes"));
+		return false;
+	}
+	return true;
+}
+
+namespace
+{
+/** Reads one canonical `graph_ref` of a transfer request, without resolving it in the asset. */
+bool ReadTransferGraphRef(
+	const TSharedPtr<FJsonObject>& Container,
+	const TCHAR* Context,
+	FGuid& OutGraphGuid,
+	FString& OutSubgraphPath,
+	FCortexCommandResult& OutError)
+{
+	const TSharedPtr<FJsonObject>* GraphRefPtr = nullptr;
+	if (!Container.IsValid() || !Container->TryGetObjectField(TEXT("graph_ref"), GraphRefPtr)
+		|| !GraphRefPtr || !GraphRefPtr->IsValid())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("%s.graph_ref must be an object"), Context));
+		return false;
+	}
+	const TSharedPtr<FJsonObject>& GraphRef = *GraphRefPtr;
+	if (!FCortexGraphPatchOps::HasOnlyFields(GraphRef,
+		{ TEXT("graph_guid"), TEXT("graph_kind"), TEXT("subgraph_path") }, OutError,
+		FString::Printf(TEXT("%s.graph_ref"), Context)))
+	{
+		return false;
+	}
+	if (!FCortexGraphPatchOps::ParseGuidField(GraphRef, TEXT("graph_guid"), OutGraphGuid, OutError)) return false;
+	if (GraphRef->HasField(TEXT("subgraph_path"))
+		&& !GraphRef->TryGetStringField(TEXT("subgraph_path"), OutSubgraphPath))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("%s.graph_ref.subgraph_path must be a string"), Context));
+		return false;
+	}
+	if (GraphRef->HasField(TEXT("graph_kind")))
+	{
+		FString RequestedKind;
+		if (!GraphRef->TryGetStringField(TEXT("graph_kind"), RequestedKind))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("%s.graph_ref.graph_kind must be a string"), Context));
+			return false;
+		}
+	}
+	return true;
+}
+
+/** True when the requested `graph_kind` agrees with the graph identity the asset really owns. */
+bool ValidateTransferGraphKind(
+	UBlueprint* Blueprint,
+	const TSharedPtr<FJsonObject>& Container,
+	const FGuid& GraphGuid,
+	FCortexCommandResult& OutError)
+{
+	const TSharedPtr<FJsonObject>* GraphRefPtr = nullptr;
+	FString RequestedKind;
+	if (!Container->TryGetObjectField(TEXT("graph_ref"), GraphRefPtr)
+		|| !GraphRefPtr || !GraphRefPtr->IsValid()
+		|| !(*GraphRefPtr)->TryGetStringField(TEXT("graph_kind"), RequestedKind))
+	{
+		return true;
+	}
+	TArray<FCortexGraphEntry> Entries;
+	FCortexGraphNodeOps::EnumerateUserGraphs(Blueprint, Entries);
+	for (const FCortexGraphEntry& Entry : Entries)
+	{
+		if (Entry.Graph && Entry.Graph->GraphGuid == GraphGuid
+			&& FCortexGraphNodeOps::GraphKindToString(Entry.Kind) != RequestedKind)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				TEXT("migration graph_kind conflicts with graph identity"));
+			return false;
+		}
+	}
+	return true;
+}
+}
+
+bool FCortexGraphMigrationOps::PlanTransfer(
+	UBlueprint* Blueprint,
+	const TSharedPtr<FJsonObject>& Migration,
+	const FString& PatchId,
+	FCortexGraphMigrationTransferPlan& OutPlan,
+	bool& bOutReused,
+	FCortexCommandResult& OutError)
+{
+	OutPlan = FCortexGraphMigrationTransferPlan();
+	OutError = FCortexCommandResult();
+	bOutReused = false;
+	if (!Blueprint)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, TEXT("Blueprint is null"));
+		return false;
+	}
+	if (!Migration.IsValid())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("migration must be an object"));
+		return false;
+	}
+	if (!FCortexGraphPatchOps::HasOnlyFields(Migration,
+		{ TEXT("op"), TEXT("source"), TEXT("destination"), TEXT("boundary") }, OutError, TEXT("migration")))
+	{
+		return false;
+	}
+	FString Op;
+	if (!FCortexGraphPatchOps::ReadRequiredString(Migration, TEXT("op"), Op, OutError)) return false;
+	if (!IsTransferOp(Op))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::UnsupportedOperation,
+			FString::Printf(TEXT("Unsupported migration operation '%s'; the published migration operations are replace_entry, copy_subgraph and move_subgraph"), *Op));
+		return false;
+	}
+	// Source graph and selection.
+	const TSharedPtr<FJsonObject>* SourcePtr = nullptr;
+	if (!Migration->TryGetObjectField(TEXT("source"), SourcePtr) || !SourcePtr || !SourcePtr->IsValid())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("migration.source must be an object"));
+		return false;
+	}
+	const TSharedPtr<FJsonObject>& Source = *SourcePtr;
+	if (!FCortexGraphPatchOps::HasOnlyFields(Source,
+		{ TEXT("graph_ref"), TEXT("node_guids") }, OutError, TEXT("migration.source")))
+	{
+		return false;
+	}
+	FGuid SourceGraphGuid;
+	FString SourceSubgraphPath;
+	UEdGraph* SourceGraph = nullptr;
+	if (!ReadTransferGraphRef(Source, TEXT("migration.source"), SourceGraphGuid, SourceSubgraphPath, OutError)) return false;
+	if (!FindGraphByGuid(Blueprint, SourceGraphGuid))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("migration.source.graph_ref names graph '%s', which is not a graph of this asset"),
+				*SourceGraphGuid.ToString()));
+		return false;
+	}
+	if (!FCortexGraphPatchOps::ResolveGraphByGuid(Blueprint, SourceGraphGuid, SourceSubgraphPath, SourceGraph, OutError)) return false;
+	if (!ValidateTransferGraphKind(Blueprint, Source, SourceGraphGuid, OutError)) return false;
+
+	const TArray<TSharedPtr<FJsonValue>>* NodeGuids = nullptr;
+	if (!Source->TryGetArrayField(TEXT("node_guids"), NodeGuids) || !NodeGuids)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			TEXT("migration.source.node_guids must be an array of node GUIDs"));
+		return false;
+	}
+	if (NodeGuids->Num() == 0)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			TEXT("migration.source.node_guids must select at least one node"));
+		return false;
+	}
+	if (NodeGuids->Num() > MaxTransferNodes)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded,
+			TEXT("migration.source.node_guids exceeds the bounded selection limit"));
+		return false;
+	}
+	TArray<FGuid> Selection;
+	TArray<UEdGraphNode*> SelectedNodes;
+	TArray<FGuid> AbsentGuids;
+	for (const TSharedPtr<FJsonValue>& Value : *NodeGuids)
+	{
+		FString GuidText;
+		FGuid NodeGuid;
+		if (!Value.IsValid() || !Value->TryGetString(GuidText) || !FGuid::Parse(GuidText, NodeGuid) || !NodeGuid.IsValid())
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				TEXT("migration.source.node_guids entries must be node GUID strings"));
+			return false;
+		}
+		if (Selection.Contains(NodeGuid))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("migration.source.node_guids names node '%s' more than once"), *NodeGuid.ToString()));
+			return false;
+		}
+		Selection.Add(NodeGuid);
+		UEdGraphNode* const Node = FindNodeByGuidInGraph(SourceGraph, NodeGuid);
+		if (Node)
+		{
+			SelectedNodes.Add(Node);
+			continue;
+		}
+		if (!FindNodeByGuid(Blueprint, NodeGuid))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::NodeNotFound,
+				FString::Printf(TEXT("migration.source.node_guids names node '%s', which does not exist in this asset"), *NodeGuid.ToString()));
+			return false;
+		}
+		AbsentGuids.Add(NodeGuid);
+	}
+	Selection.Sort([](const FGuid& A, const FGuid& B) { return A.ToString() < B.ToString(); });
+	SelectedNodes.Sort([](const UEdGraphNode& A, const UEdGraphNode& B) { return A.NodeGuid.ToString() < B.NodeGuid.ToString(); });
+	if (AbsentGuids.Num() > 0 && AbsentGuids.Num() != Selection.Num())
+	{
+		TArray<FString> AbsentText;
+		for (const FGuid& Guid : AbsentGuids) AbsentText.Add(Guid.ToString());
+		TArray<FString> PresentText;
+		for (const UEdGraphNode* Node : SelectedNodes) PresentText.Add(Node->NodeGuid.ToString());
+		AbsentText.Sort();
+		PresentText.Sort();
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("the selected state is partial: %d of %d selected node(s) are already absent from the source graph (%s) while %d are still present (%s); the request is neither a fresh transfer nor a complete replay and is refused instead of transferring a smaller set"),
+				AbsentText.Num(), Selection.Num(), *FString::Join(AbsentText, TEXT(", ")),
+				PresentText.Num(), *FString::Join(PresentText, TEXT(", "))));
+		return false;
+	}
+
+	// Destination graph.
+	const TSharedPtr<FJsonObject>* DestinationPtr = nullptr;
+	if (!Migration->TryGetObjectField(TEXT("destination"), DestinationPtr) || !DestinationPtr || !DestinationPtr->IsValid())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("migration.destination must be an object"));
+		return false;
+	}
+	const TSharedPtr<FJsonObject>& Destination = *DestinationPtr;
+	if (!FCortexGraphPatchOps::HasOnlyFields(Destination,
+		{ TEXT("graph_ref") }, OutError, TEXT("migration.destination")))
+	{
+		return false;
+	}
+	FGuid DestinationGraphGuid;
+	FString DestinationSubgraphPath;
+	if (!ReadTransferGraphRef(Destination, TEXT("migration.destination"), DestinationGraphGuid, DestinationSubgraphPath, OutError)) return false;
+	if (!FindGraphByGuid(Blueprint, DestinationGraphGuid))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("migration.destination.graph_ref names graph '%s', which is not a graph of this asset; cross-asset transfer is not supported"),
+				*DestinationGraphGuid.ToString()));
+		return false;
+	}
+	UEdGraph* DestinationGraph = nullptr;
+	if (!FCortexGraphPatchOps::ResolveGraphByGuid(Blueprint, DestinationGraphGuid, DestinationSubgraphPath, DestinationGraph, OutError)) return false;
+	if (!ValidateTransferGraphKind(Blueprint, Destination, DestinationGraphGuid, OutError)) return false;
+	if (Op == TransferMoveOp && DestinationGraph == SourceGraph)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("move_subgraph requires a destination graph different from the source graph; use copy_subgraph to duplicate inside one graph"));
+		return false;
+	}
+
+	OutPlan.Op = Op;
+	OutPlan.SourceGraphGuid = SourceGraphGuid.ToString();
+	OutPlan.SourceSubgraphPath = SourceSubgraphPath;
+	OutPlan.DestinationGraphGuid = DestinationGraphGuid.ToString();
+	OutPlan.DestinationSubgraphPath = DestinationSubgraphPath;
+
+	// Boundary entries are read once, so the fresh and the replay path validate the same shape.
+	struct FPendingBoundary
+	{
+		FGuid FromNode;
+		FString FromPin;
+		FGuid ToNode;
+		FString ToPin;
+		int32 Index = INDEX_NONE;
+	};
+	TArray<FPendingBoundary> Pending;
+	{
+		const TArray<TSharedPtr<FJsonValue>>* BoundaryValues = nullptr;
+		if (Migration->TryGetArrayField(TEXT("boundary"), BoundaryValues) && BoundaryValues)
+		{
+			if (BoundaryValues->Num() > MaxTransferBoundary)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded,
+					TEXT("migration.boundary exceeds the bounded boundary limit"));
+				return false;
+			}
+			for (const TSharedPtr<FJsonValue>& Value : *BoundaryValues)
+			{
+				const TSharedPtr<FJsonObject> Entry = Value.IsValid() ? Value->AsObject() : nullptr;
+				if (!Entry.IsValid()
+					|| !FCortexGraphPatchOps::HasOnlyFields(Entry, { TEXT("from"), TEXT("to") }, OutError, TEXT("migration.boundary entry")))
+				{
+					if (OutError.ErrorCode.IsEmpty())
+					{
+						OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+							TEXT("migration.boundary entries must be objects"));
+					}
+					return false;
+				}
+				const TSharedPtr<FJsonObject>* FromPtr = nullptr;
+				const TSharedPtr<FJsonObject>* ToPtr = nullptr;
+				if (!Entry->TryGetObjectField(TEXT("from"), FromPtr) || !FromPtr || !FromPtr->IsValid()
+					|| !Entry->TryGetObjectField(TEXT("to"), ToPtr) || !ToPtr || !ToPtr->IsValid())
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+						TEXT("migration.boundary entries require a 'from' and a 'to' object"));
+					return false;
+				}
+				if (!FCortexGraphPatchOps::HasOnlyFields(*FromPtr, { TEXT("node_guid"), TEXT("pin") }, OutError, TEXT("migration.boundary.from"))
+					|| !FCortexGraphPatchOps::HasOnlyFields(*ToPtr, { TEXT("node_guid"), TEXT("pin") }, OutError, TEXT("migration.boundary.to")))
+				{
+					return false;
+				}
+				FPendingBoundary Boundary;
+				if (!FCortexGraphPatchOps::ParseGuidField(*FromPtr, TEXT("node_guid"), Boundary.FromNode, OutError)
+					|| !FCortexGraphPatchOps::ParseGuidField(*ToPtr, TEXT("node_guid"), Boundary.ToNode, OutError)
+					|| !FCortexGraphPatchOps::ReadRequiredString(*FromPtr, TEXT("pin"), Boundary.FromPin, OutError)
+					|| !FCortexGraphPatchOps::ReadRequiredString(*ToPtr, TEXT("pin"), Boundary.ToPin, OutError))
+				{
+					return false;
+				}
+				if (Op == TransferMoveOp && Selection.Contains(Boundary.ToNode))
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+						FString::Printf(TEXT("migration.boundary maps onto node '%s', which this move removes from the source graph"), *Boundary.ToNode.ToString()));
+					return false;
+				}
+				UEdGraphNode* const DestinationNode = FindNodeByGuidInGraph(DestinationGraph, Boundary.ToNode);
+				if (!DestinationNode)
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+						FString::Printf(TEXT("migration.boundary destination node '%s' is not a node of the named destination graph"), *Boundary.ToNode.ToString()));
+					return false;
+				}
+				if (!DestinationNode->FindPin(FName(*Boundary.ToPin)))
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+						FString::Printf(TEXT("migration.boundary destination pin '%s.%s' does not exist"), *Boundary.ToNode.ToString(), *Boundary.ToPin));
+					return false;
+				}
+				Boundary.Index = Pending.Num();
+				Pending.Add(Boundary);
+			}
+		}
+	}
+
+	// Dependency inventory: refusal source for local variables, preview output for the rest.
+	TArray<FCortexGraphTransferDependency> Dependencies;
+	for (UEdGraphNode* Node : SelectedNodes)
+	{
+		CollectTransferDependencies(Blueprint, Node, Dependencies);
+	}
+	if (SourceGraph != DestinationGraph)
+	{
+		for (const FCortexGraphTransferDependency& Dependency : Dependencies)
+		{
+			if (Dependency.Kind != TEXT("local_variable")) continue;
+			const FBPVariableDescription* const Target =
+				FBlueprintEditorUtils::FindLocalVariable(Blueprint, DestinationGraph, FName(*Dependency.Member));
+			if (!Target)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("selected node '%s' reads local variable '%s', which the destination graph does not declare; declare an identically named local variable in the destination graph or transfer a node without it"),
+						*Dependency.NodeGuid, *Dependency.Member));
+				return false;
+			}
+			if (LocalVariableTypeIdentity(Target->VarType) != Dependency.Type)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("the destination graph declares local variable '%s' with a different type than the source graph: '%s' vs '%s'"),
+						*Dependency.Member, *LocalVariableTypeIdentity(Target->VarType), *Dependency.Type));
+				return false;
+			}
+		}
+	}
+
+	// Supported node kinds and the deterministic identity map.
+	TSet<FGuid> SelectionSet;
+	for (const FGuid& Guid : Selection) SelectionSet.Add(Guid);
+	TMap<FGuid, int32> SlotByGuid;
+	for (int32 Index = 0; Index < Selection.Num(); ++Index) SlotByGuid.Add(Selection[Index], Index);
+	TSet<FGuid> DestinationGuidSet;
+	TArray<FGuid> DestinationGuids;
+	for (int32 Index = 0; Index < SelectedNodes.Num(); ++Index)
+	{
+		UEdGraphNode* const Node = SelectedNodes[Index];
+		FString Reason;
+		if (!ClassifyTransferNode(DestinationGraph, Node, Reason))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("selected node '%s' is a %s and cannot be transferred: %s"),
+					*Node->NodeGuid.ToString(), *Node->GetClass()->GetName(), *Reason));
+			return false;
+		}
+		const FGuid DestinationGuid = Op == TransferMoveOp
+			? Node->NodeGuid
+			: FCortexGraphPatchOps::DeriveNodeGuid(PatchId, Node->NodeGuid.ToString());
+		if (!DestinationGuid.IsValid())
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("selected node '%s' has no derivable destination identity"), *Node->NodeGuid.ToString()));
+			return false;
+		}
+		DestinationGuids.Add(DestinationGuid);
+		DestinationGuidSet.Add(DestinationGuid);
+	}
+
+	auto CollectCrossing = [&SelectionSet](const TArray<UEdGraphNode*>& Nodes, TArray<FTransferLink>& OutInternal, TArray<FTransferLink>& OutCrossing)
+	{
+		TSet<FString> Keys;
+		for (UEdGraphNode* Node : Nodes)
+		{
+			InventoryTransferLinks(Node, SelectionSet, OutInternal, OutCrossing, Keys);
+		}
+		OutInternal.Sort([](const FTransferLink& A, const FTransferLink& B) { return A.Key() < B.Key(); });
+		OutCrossing.Sort([](const FTransferLink& A, const FTransferLink& B) { return A.Key() < B.Key(); });
+	};
+
+	TArray<FTransferLink> InternalLinks;
+	TArray<FTransferLink> CrossingLinks;
+	CollectCrossing(SelectedNodes, InternalLinks, CrossingLinks);
+
+	// Asset-wide destination identity set, before anything is planned as a mutation.
+	bool bAnyDestinationPresent = false;
+	if (AbsentGuids.Num() == 0)
+	{
+		for (int32 Index = 0; Index < SelectedNodes.Num(); ++Index)
+		{
+			const FGuid DestinationGuid = DestinationGuids[Index];
+			TArray<UEdGraph*> Owners;
+			TransferGraphsOwningGuid(Blueprint, DestinationGuid, Owners);
+			if (Owners.Num() == 0)
+			{
+				continue;
+			}
+			bAnyDestinationPresent = true;
+			if (Owners.Num() > 1)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("the planned destination identity '%s' is already owned by more than one graph; the asset is not in a state this operation may repair"),
+						*DestinationGuid.ToString()));
+				return false;
+			}
+			if (Owners[0] != DestinationGraph
+				&& !(Op == TransferMoveOp && Owners[0] == SourceGraph))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("the planned destination identity '%s' already exists in graph '%s'"),
+						*DestinationGuid.ToString(), *Owners[0]->GraphGuid.ToString()));
+				return false;
+			}
+		}
+	}
+	if (Op == TransferCopyOp && !bAnyDestinationPresent && SelectedNodes.Num() > 0)
+	{
+		for (const FGuid& SourceGuid : Selection)
+		{
+			if (DestinationGuidSet.Contains(SourceGuid))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("the derived copy identity of node '%s' collides with a selected source identity"), *SourceGuid.ToString()));
+				return false;
+			}
+		}
+	}
+
+	// Boundary coverage: every crossing edge needs exactly one entry, and every entry needs exactly
+	// one crossing edge.
+	TMap<FString, TArray<FTransferLink>> CrossingByFrom;
+	for (const FTransferLink& Link : CrossingLinks)
+	{
+		CrossingByFrom.FindOrAdd(TransferEndpointKey(Link.FromNode, Link.FromPin)).Add(Link);
+	}
+	TMap<FString, TArray<const FPendingBoundary*>> EntriesByFrom;
+	TSet<FString> EntryKeys;
+	for (const FPendingBoundary& Boundary : Pending)
+	{
+		UEdGraphNode* const SourceNode = FindNodeByGuidInGraph(SourceGraph, Boundary.FromNode);
+		if (!SourceNode || !SelectionSet.Contains(Boundary.FromNode))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("migration.boundary names source node '%s', which is not a selected node of the source graph"),
+					*Boundary.FromNode.ToString()));
+			return false;
+		}
+		UEdGraphPin* const SourcePin = SourceNode->FindPin(FName(*Boundary.FromPin));
+		if (!SourcePin)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("migration.boundary names pin '%s' that selected node '%s' does not have"),
+					*Boundary.FromPin, *Boundary.FromNode.ToString()));
+			return false;
+		}
+		const FString FromKey = TransferEndpointKey(Boundary.FromNode, FName(*Boundary.FromPin));
+		if (!CrossingByFrom.Contains(FromKey))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("migration.boundary names '%s.%s', which is not a crossing edge of the selection"),
+					*Boundary.FromNode.ToString(), *Boundary.FromPin));
+			return false;
+		}
+		const FString EntryKey = FromKey + TEXT("->") + TransferEndpointKey(Boundary.ToNode, FName(*Boundary.ToPin));
+		if (EntryKeys.Contains(EntryKey))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("migration.boundary maps '%s.%s' onto '%s.%s' more than once"),
+					*Boundary.FromNode.ToString(), *Boundary.FromPin, *Boundary.ToNode.ToString(), *Boundary.ToPin));
+			return false;
+		}
+		EntryKeys.Add(EntryKey);
+		EntriesByFrom.FindOrAdd(FromKey).Add(&Boundary);
+	}
+	for (const TPair<FString, TArray<FTransferLink>>& Pair : CrossingByFrom)
+	{
+		const TArray<const FPendingBoundary*>* const Entries = EntriesByFrom.Find(Pair.Key);
+		if (!Entries || Entries->Num() < Pair.Value.Num())
+		{
+			const FTransferLink& Uncovered = Pair.Value.Num() > 0 ? Pair.Value[0] : FTransferLink();
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("crossing edge '%s.%s' -> '%s.%s' is not covered by a boundary entry; every crossing edge must be mapped explicitly, never dropped"),
+					*Uncovered.FromNode.ToString(), *Uncovered.FromPin.ToString(),
+					*Uncovered.ToNode.ToString(), *Uncovered.ToPin.ToString()));
+			return false;
+		}
+		if (Entries->Num() > Pair.Value.Num())
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("migration.boundary duplicates the mapping of crossing edge '%s', which has %d crossing link(s)"),
+					*Pair.Key, Pair.Value.Num()));
+			return false;
+		}
+	}
+	for (const TPair<FString, TArray<const FPendingBoundary*>>& Pair : EntriesByFrom)
+	{
+		if (CrossingByFrom.Contains(Pair.Key)) continue;
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("migration.boundary names '%s', which is not a crossing edge of the selection"), *Pair.Key));
+		return false;
+	}
+
+	if (AbsentGuids.Num() == Selection.Num())
+	{
+		// Move replay: the request names nodes that are already absent from the source graph. The
+		// authority of an accepted replay is the ruling's structural condition, so the plan is built
+		// from the live destination state and the whole request performs no work.
+		if (Op != TransferMoveOp)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("selected node '%s' is not a node of the named source graph; a copy never removes its source nodes"),
+					*Selection[0].ToString()));
+			return false;
+		}
+		for (int32 Index = 0; Index < Selection.Num(); ++Index)
+		{
+			const FGuid SourceGuid = Selection[Index];
+			TArray<UEdGraph*> Owners;
+			TransferGraphsOwningGuid(Blueprint, SourceGuid, Owners);
+			if (Owners.Num() == 0)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("move replay cannot be proven: selected node '%s' exists in neither the source nor the destination graph"),
+						*SourceGuid.ToString()));
+				return false;
+			}
+			if (Owners.Num() > 1 || Owners[0] != DestinationGraph)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("move replay cannot be proven: node '%s' is absent from the source graph but lives in graph '%s' instead of the named destination graph"),
+						*SourceGuid.ToString(), *Owners[0]->GraphGuid.ToString()));
+				return false;
+			}
+		}
+		TMap<FGuid, int32> DestinationSlots;
+		for (int32 Index = 0; Index < Selection.Num(); ++Index) DestinationSlots.Add(Selection[Index], Index);
+		for (int32 Index = 0; Index < Selection.Num(); ++Index)
+		{
+			UEdGraphNode* const Node = FindNodeByGuidInGraph(DestinationGraph, Selection[Index]);
+			if (!Node)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("move replay cannot be proven: node '%s' does not resolve in the destination graph"), *Selection[Index].ToString()));
+				return false;
+			}
+			FCortexGraphTransferNode Entry;
+			Entry.SourceGuid = Selection[Index].ToString();
+			Entry.DestinationGuid = Selection[Index].ToString();
+			Entry.ClassPath = Node->GetClass()->GetPathName();
+			Entry.Symbol = TransferNodeSymbol(Node);
+			Entry.PosX = Node->NodePosX;
+			Entry.PosY = Node->NodePosY;
+			Entry.Comment = Node->NodeComment;
+			Entry.bCommentBubblePinned = Node->bCommentBubblePinned;
+			Entry.bCommentBubbleVisible = Node->bCommentBubbleVisible;
+			Entry.EnabledState = static_cast<int32>(Node->GetDesiredEnabledState());
+			Entry.bUserSetEnabledState = Node->HasUserSetTheEnabledState();
+			Entry.bForceDisplayAsDisabled = Node->IsDisplayAsDisabledForced();
+			Entry.Pins = TransferNodePins(Node, DestinationSlots);
+			OutPlan.Nodes.Add(MoveTemp(Entry));
+		}
+		for (const FTransferLink& Link : InternalLinks)
+		{
+			FCortexGraphTransferEdge Edge;
+			Edge.FromGuid = Link.FromNode.ToString();
+			Edge.FromPin = Link.FromPin.ToString();
+			Edge.ToGuid = Link.ToNode.ToString();
+			Edge.ToPin = Link.ToPin.ToString();
+			OutPlan.InternalEdges.Add(MoveTemp(Edge));
+		}
+		for (const FPendingBoundary& Boundary : Pending)
+		{
+			FCortexGraphTransferBoundary Entry;
+			Entry.SourceGuid = Boundary.FromNode.ToString();
+			Entry.SourcePin = Boundary.FromPin;
+			Entry.DestinationNodeGuid = Boundary.ToNode.ToString();
+			Entry.DestinationPin = Boundary.ToPin;
+			OutPlan.Boundary.Add(MoveTemp(Entry));
+		}
+		OutPlan.Dependencies = Dependencies;
+		OutPlan.bReused = true;
+		OutPlan.RemovalSet = TArray<FString>();
+		{
+			FCortexGraphTransferPreservation SourceContract;
+			SourceContract.Label = TEXT("source_graph");
+			SourceContract.GraphGuid = SourceGraphGuid.ToString();
+			SourceContract.Capture = CapturePreservation(Blueprint, SourceGraph, Selection);
+			OutPlan.Preservations.Add(MoveTemp(SourceContract));
+			FCortexGraphTransferPreservation DestinationContract;
+			DestinationContract.Label = TEXT("destination_graph");
+			DestinationContract.GraphGuid = DestinationGraphGuid.ToString();
+			for (const FGuid& Guid : Selection) DestinationContract.ExcludedGuids.Add(Guid.ToString());
+			DestinationContract.Capture = CapturePreservation(Blueprint, DestinationGraph, Selection);
+			OutPlan.Preservations.Add(MoveTemp(DestinationContract));
+		}
+		bOutReused = true;
+		return true;
+	}
+
+	// Fresh transfer: the plan is complete before the caller may mutate anything.
+	for (int32 Index = 0; Index < SelectedNodes.Num(); ++Index)
+	{
+		UEdGraphNode* const Node = SelectedNodes[Index];
+		FCortexGraphTransferNode Entry;
+		Entry.SourceGuid = Node->NodeGuid.ToString();
+		Entry.DestinationGuid = DestinationGuids[Index].ToString();
+		Entry.ClassPath = Node->GetClass()->GetPathName();
+		Entry.Symbol = TransferNodeSymbol(Node);
+		Entry.PosX = Node->NodePosX;
+		Entry.PosY = Node->NodePosY;
+		Entry.Comment = Node->NodeComment;
+		Entry.bCommentBubblePinned = Node->bCommentBubblePinned;
+		Entry.bCommentBubbleVisible = Node->bCommentBubbleVisible;
+		Entry.EnabledState = static_cast<int32>(Node->GetDesiredEnabledState());
+		Entry.bUserSetEnabledState = Node->HasUserSetTheEnabledState();
+		Entry.bForceDisplayAsDisabled = Node->IsDisplayAsDisabledForced();
+		Entry.Pins = TransferNodePins(Node, SlotByGuid);
+		OutPlan.Nodes.Add(MoveTemp(Entry));
+	}
+	for (const FTransferLink& Link : InternalLinks)
+	{
+		FCortexGraphTransferEdge Edge;
+		Edge.FromGuid = Link.FromNode.ToString();
+		Edge.FromPin = Link.FromPin.ToString();
+		Edge.ToGuid = Link.ToNode.ToString();
+		Edge.ToPin = Link.ToPin.ToString();
+		OutPlan.InternalEdges.Add(MoveTemp(Edge));
+	}
+	for (const FPendingBoundary& Boundary : Pending)
+	{
+		UEdGraphNode* const SourceNode = FindNodeByGuidInGraph(SourceGraph, Boundary.FromNode);
+		UEdGraphPin* const SourcePin = SourceNode ? SourceNode->FindPin(FName(*Boundary.FromPin)) : nullptr;
+		UEdGraphNode* const DestinationNode = FindNodeByGuidInGraph(DestinationGraph, Boundary.ToNode);
+		UEdGraphPin* const DestinationPin = DestinationNode ? DestinationNode->FindPin(FName(*Boundary.ToPin)) : nullptr;
+		if (!SourcePin || !DestinationPin)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("a planned boundary pin no longer resolves"));
+			return false;
+		}
+		if (SourcePin->Direction == DestinationPin->Direction)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::TypeMismatch,
+				FString::Printf(TEXT("boundary mapping '%s.%s' -> '%s.%s' connects two %s pins; a link needs one output and one input"),
+					*Boundary.FromNode.ToString(), *Boundary.FromPin, *Boundary.ToNode.ToString(), *Boundary.ToPin,
+					SourcePin->Direction == EGPD_Output ? TEXT("output") : TEXT("input")));
+			return false;
+		}
+		UEdGraphPin* const OutputPin = SourcePin->Direction == EGPD_Output ? SourcePin : DestinationPin;
+		UEdGraphPin* const InputPin = SourcePin->Direction == EGPD_Output ? DestinationPin : SourcePin;
+		if (!DestinationGraph->GetSchema()
+			|| !DestinationGraph->GetSchema()->ArePinsCompatible(OutputPin, InputPin, Blueprint->SkeletonGeneratedClass.Get(), false))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::TypeMismatch,
+				FString::Printf(TEXT("boundary mapping '%s.%s' -> '%s.%s' is not type-compatible through the destination schema: '%s' vs '%s'"),
+					*Boundary.FromNode.ToString(), *Boundary.FromPin, *Boundary.ToNode.ToString(), *Boundary.ToPin,
+					*FCortexGraphPatchOps::CanonicalPinSignature(FCortexGraphPatchOps::MakePinSignatureDescriptor(*OutputPin)),
+					*FCortexGraphPatchOps::CanonicalPinSignature(FCortexGraphPatchOps::MakePinSignatureDescriptor(*InputPin))));
+			return false;
+		}
+		// The transferred copy's pin is new, so only the named destination pin can already be taken.
+		// An input endpoint must be free; an output endpoint may fan out to the transferred pin.
+		if (DestinationPin->Direction == EGPD_Input && DestinationPin->LinkedTo.Num() > 0)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::TypeMismatch,
+				FString::Printf(TEXT("boundary destination pin '%s.%s' already has a link, so the mapping cannot own it"),
+					*Boundary.ToNode.ToString(), *Boundary.ToPin));
+			return false;
+		}
+		FCortexGraphTransferBoundary Entry;
+		Entry.SourceGuid = Boundary.FromNode.ToString();
+		Entry.SourcePin = Boundary.FromPin;
+		const TArray<FTransferLink>* const Covered = CrossingByFrom.Find(TransferEndpointKey(Boundary.FromNode, FName(*Boundary.FromPin)));
+		const TArray<const FPendingBoundary*>* const Entries = EntriesByFrom.Find(TransferEndpointKey(Boundary.FromNode, FName(*Boundary.FromPin)));
+		if (Covered && Entries)
+		{
+			const int32 Position = Entries->IndexOfByKey(&Boundary);
+			if (Covered->IsValidIndex(Position))
+			{
+				Entry.SourceFarGuid = (*Covered)[Position].ToNode.ToString();
+				Entry.SourceFarPin = (*Covered)[Position].ToPin.ToString();
+			}
+		}
+		Entry.DestinationNodeGuid = Boundary.ToNode.ToString();
+		Entry.DestinationPin = Boundary.ToPin;
+		OutPlan.Boundary.Add(MoveTemp(Entry));
+	}
+	OutPlan.Dependencies = Dependencies;
+	if (Op == TransferMoveOp)
+	{
+		for (const FGuid& Guid : Selection) OutPlan.RemovalSet.Add(Guid.ToString());
+	}
+
+	// Preservation contracts of both graphs, captured before the first mutation.
+	{
+		FCortexGraphTransferPreservation SourceContract;
+		SourceContract.Label = TEXT("source_graph");
+		SourceContract.GraphGuid = SourceGraphGuid.ToString();
+		// A move excludes the identities it removes; a copy excludes the identities it creates, so a
+		// copy inside the source graph proves the pre-existing source body instead of the copy.
+		for (const FGuid& Guid : (Op == TransferMoveOp ? Selection : DestinationGuids))
+		{
+			SourceContract.ExcludedGuids.Add(Guid.ToString());
+		}
+		SourceContract.Capture = CapturePreservation(Blueprint, SourceGraph,
+			Op == TransferMoveOp ? Selection : DestinationGuids);
+		OutPlan.Preservations.Add(MoveTemp(SourceContract));
+
+		FCortexGraphTransferPreservation DestinationContract;
+		DestinationContract.Label = TEXT("destination_graph");
+		DestinationContract.GraphGuid = DestinationGraphGuid.ToString();
+		for (const FGuid& Guid : DestinationGuids) DestinationContract.ExcludedGuids.Add(Guid.ToString());
+		// Captured with the planned identities excluded, so the contract reads the pre-existing
+		// destination body identically before the transfer and during a repetition of it.
+		DestinationContract.Capture = CapturePreservation(Blueprint, DestinationGraph, DestinationGuids);
+		OutPlan.Preservations.Add(MoveTemp(DestinationContract));
+	}
+
+	// Idempotent replay reconciliation of a repeated copy: the deterministic destination identities
+	// make the destination identity set complete, so the whole planned intent is proven before the
+	// request may claim no work is needed.
+	if (Op == TransferCopyOp && bAnyDestinationPresent)
+	{
+		TMap<FGuid, int32> DestinationSlots;
+		for (int32 Index = 0; Index < DestinationGuids.Num(); ++Index) DestinationSlots.Add(DestinationGuids[Index], Index);
+		TArray<FString> Missing;
+		for (int32 Index = 0; Index < DestinationGuids.Num(); ++Index)
+		{
+			if (!FindNodeByGuidInGraph(DestinationGraph, DestinationGuids[Index]))
+			{
+				Missing.Add(DestinationGuids[Index].ToString());
+			}
+		}
+		if (Missing.Num() > 0)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("the destination identity set of this copy is partial: %d of %d planned destination nodes already exist; missing: %s. A partial identity set is refused instead of repaired."),
+					DestinationGuids.Num() - Missing.Num(), DestinationGuids.Num(), *FString::Join(Missing, TEXT(", "))));
+			return false;
+		}
+		FString ReuseFailure;
+		FCortexGraphMigrationTransferPlan ReusePlan = OutPlan;
+		ReusePlan.bReused = true;
+		if (!VerifyTransferAgainstNative(Blueprint, ReusePlan, ReuseFailure))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("the existing destination identity set does not match the planned transfer: %s"), *ReuseFailure));
+			return false;
+		}
+		OutPlan.bReused = true;
+		bOutReused = true;
+	}
+	return true;
+}
+
+bool FCortexGraphMigrationOps::RegisterTransferNodes(
+	UBlueprint* Blueprint,
+	const FCortexGraphMigrationTransferPlan& Plan,
+	TArray<FGuid>& OutCreatedGuids,
+	FCortexCommandResult& OutError)
+{
+	OutCreatedGuids.Reset();
+	OutError = FCortexCommandResult();
+	if (!Blueprint)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, TEXT("Blueprint is null"));
+		return false;
+	}
+	FGuid SourceGraphGuid;
+	FGuid DestinationGraphGuid;
+	FGuid::Parse(Plan.SourceGraphGuid, SourceGraphGuid);
+	FGuid::Parse(Plan.DestinationGraphGuid, DestinationGraphGuid);
+	UEdGraph* const SourceGraph = FindGraphByGuid(Blueprint, SourceGraphGuid);
+	UEdGraph* const DestinationGraph = FindGraphByGuid(Blueprint, DestinationGraphGuid);
+	if (!SourceGraph || !DestinationGraph)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("the planned transfer graphs did not re-resolve after the final guard"));
+		return false;
+	}
+	TSet<UObject*> ExportSet;
+	for (const FCortexGraphTransferNode& Node : Plan.Nodes)
+	{
+		FGuid SourceGuid;
+		FGuid::Parse(Node.SourceGuid, SourceGuid);
+		UEdGraphNode* const SourceNode = FindNodeByGuidInGraph(SourceGraph, SourceGuid);
+		if (!SourceNode)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("the planned source node '%s' no longer resolves in the source graph"), *Node.SourceGuid));
+			return false;
+		}
+		ExportSet.Add(SourceNode);
+	}
+	if (ExportSet.Num() != Plan.Nodes.Num())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("the planned selection no longer resolves to distinct source nodes"));
+		return false;
+	}
+
+	// The engine node-clone path the editor itself uses for graph copy/paste: the exported text is
+	// the node's own serialization, so every authored field the node owns travels with it and links
+	// inside the exported set resolve against the imported nodes instead of the originals.
+	FString ExportedText;
+	FEdGraphUtilities::ExportNodesToText(ExportSet, ExportedText);
+	if (ExportedText.IsEmpty())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("the engine clone path produced no text for the selected nodes"));
+		return false;
+	}
+	TSet<UEdGraphNode*> ImportedNodes;
+	DestinationGraph->Modify();
+	// The engine text factory gives an imported object the name the text carries. When the
+	// destination graph already owns an object of that name, the engine renames the *existing*
+	// object to keep the imported name, which would change authored state the request never
+	// selected. The pre-import names are snapshotted so every pre-existing node is restored.
+	TMap<FGuid, FName> PreExistingNames;
+	for (UEdGraphNode* Existing : DestinationGraph->Nodes)
+	{
+		if (Existing && Existing->NodeGuid.IsValid())
+		{
+			PreExistingNames.Add(Existing->NodeGuid, Existing->GetFName());
+		}
+	}
+	FEdGraphUtilities::ImportNodesFromText(DestinationGraph, ExportedText, ImportedNodes);
+	if (ImportedNodes.Num() != Plan.Nodes.Num())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("the engine clone path produced %d node(s) for %d planned node(s); a silently substituted or dropped node is never accepted"),
+				ImportedNodes.Num(), Plan.Nodes.Num()));
+		return false;
+	}
+	TSet<FGuid> Matched;
+	for (UEdGraphNode* Imported : ImportedNodes)
+	{
+		if (!Imported || !Imported->GetGraph() || Imported->GetGraph() != DestinationGraph)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("the engine clone path registered a node outside the destination graph"));
+			return false;
+		}
+		const FCortexGraphTransferNode* const Planned = Plan.Nodes.FindByPredicate(
+			[Imported](const FCortexGraphTransferNode& Candidate)
+			{
+				return Candidate.SourceGuid == Imported->NodeGuid.ToString();
+			});
+		if (!Planned)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("the engine clone path registered unplanned node '%s'"), *Imported->NodeGuid.ToString()));
+			return false;
+		}
+		if (Imported->GetClass()->GetPathName() != Planned->ClassPath)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("the engine clone path substituted node class '%s' for planned class '%s'; a substitution is never accepted"),
+					*Imported->GetClass()->GetPathName(), *Planned->ClassPath));
+			return false;
+		}
+		FGuid DestinationGuid;
+		if (!FGuid::Parse(Planned->DestinationGuid, DestinationGuid) || !DestinationGuid.IsValid())
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("a planned transfer identity is invalid"));
+			return false;
+		}
+		Imported->Modify();
+		Imported->NodeGuid = DestinationGuid;
+		Imported->NodePosX = Planned->PosX;
+		Imported->NodePosY = Planned->PosY;
+		Imported->NodeComment = Planned->Comment;
+		Imported->bCommentBubblePinned = Planned->bCommentBubblePinned;
+		Imported->bCommentBubbleVisible = Planned->bCommentBubbleVisible;
+		Imported->SetEnabledState(static_cast<ENodeEnabledState>(Planned->EnabledState), Planned->bUserSetEnabledState);
+		Imported->SetForceDisplayAsDisabled(Planned->bForceDisplayAsDisabled);
+		if (SourceGraph != DestinationGraph)
+		{
+			// A local variable belongs to the graph scope, so a transferred node must reference the
+			// destination graph's declaration. PlanTransfer already proved the declaration exists
+			// with the same name and type; here the reference is re-scoped onto it.
+			if (UK2Node_Variable* const Variable = Cast<UK2Node_Variable>(Imported))
+			{
+				if (Variable->VariableReference.IsLocalScope())
+				{
+					const FName MemberName = Variable->VariableReference.GetMemberName();
+					const FBPVariableDescription* const Target =
+						FBlueprintEditorUtils::FindLocalVariable(Blueprint, DestinationGraph, MemberName);
+					if (!Target)
+					{
+						OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+							FString::Printf(TEXT("the destination graph no longer declares local variable '%s'"), *MemberName.ToString()));
+						return false;
+					}
+					Variable->VariableReference.SetLocalMember(MemberName, DestinationGraph->GetName(), Target->VarGuid);
+				}
+			}
+		}
+		Matched.Add(DestinationGuid);
+		OutCreatedGuids.Add(DestinationGuid);
+	}
+	if (Matched.Num() != Plan.Nodes.Num())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("the engine clone path did not register every planned destination identity"));
+		return false;
+	}
+	// The clones release the names they took first, so each pre-existing node can be restored to
+	// exactly the name it had before the transfer. The clones get a name of their own family, so
+	// none of them can hold a name the restore below needs.
+	for (UEdGraphNode* Imported : ImportedNodes)
+	{
+		if (!Imported) continue;
+		Imported->Modify();
+		const FName Unique = MakeUniqueObjectName(DestinationGraph, Imported->GetClass(), FName(TEXT("CortexTransferNode")));
+		Imported->Rename(*Unique.ToString(), DestinationGraph, REN_DontCreateRedirectors);
+	}
+	for (UEdGraphNode* Existing : DestinationGraph->Nodes)
+	{
+		if (!Existing || !Existing->NodeGuid.IsValid()) continue;
+		if (Plan.Nodes.ContainsByPredicate(
+			[Existing](const FCortexGraphTransferNode& Candidate)
+			{
+				return Candidate.DestinationGuid == Existing->NodeGuid.ToString();
+			}))
+		{
+			continue;
+		}
+		const FName* const Original = PreExistingNames.Find(Existing->NodeGuid);
+		if (Original && Existing->GetFName() != *Original)
+		{
+			Existing->Modify();
+			Existing->Rename(*Original->ToString(), DestinationGraph, REN_DontCreateRedirectors);
+		}
+	}
+	OutCreatedGuids.Sort([](const FGuid& A, const FGuid& B) { return A.ToString() < B.ToString(); });
+	DestinationGraph->NotifyGraphChanged();
+	return true;
+}
+bool FCortexGraphMigrationOps::WireTransfer(
+	UBlueprint* Blueprint,
+	const FCortexGraphMigrationTransferPlan& Plan,
+	TArray<FCortexGraphMigrationLink>& OutCreatedLinks,
+	FCortexCommandResult& OutError)
+{
+	OutCreatedLinks.Reset();
+	OutError = FCortexCommandResult();
+	if (!Blueprint)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, TEXT("Blueprint is null"));
+		return false;
+	}
+	FGuid DestinationGraphGuid;
+	FGuid::Parse(Plan.DestinationGraphGuid, DestinationGraphGuid);
+	UEdGraph* const DestinationGraph = FindGraphByGuid(Blueprint, DestinationGraphGuid);
+	if (!DestinationGraph)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("the planned destination graph did not re-resolve after the final guard"));
+		return false;
+	}
+	const UEdGraphSchema* const Schema = DestinationGraph->GetSchema();
+	if (!Schema)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("the destination graph has no schema"));
+		return false;
+	}
+	TMap<FString, FString> DestinationBySource;
+	for (const FCortexGraphTransferNode& Node : Plan.Nodes)
+	{
+		DestinationBySource.Add(Node.SourceGuid, Node.DestinationGuid);
+	}
+
+	/** Realizes one link through the schema and journals it by durable identity. */
+	auto Connect = [&](UEdGraphPin* Pin, UEdGraphPin* FarPin, const FString& Context) -> bool
+	{
+		if (!Pin || !FarPin)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("%s did not re-resolve its pins after apply"), *Context));
+			return false;
+		}
+		if (Pin->LinkedTo.Contains(FarPin)) return true;
+		UEdGraphPin* const OutputPin = Pin->Direction == EGPD_Output ? Pin : FarPin;
+		UEdGraphPin* const InputPin = Pin->Direction == EGPD_Output ? FarPin : Pin;
+		const FPinConnectionResponse Response = Schema->CanCreateConnection(OutputPin, InputPin);
+		if (Response.Response != CONNECT_RESPONSE_MAKE || !Schema->TryCreateConnection(OutputPin, InputPin))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("%s is no longer safe: %s"), *Context, *Response.Message.ToString()));
+			return false;
+		}
+		OutCreatedLinks.Add({ OutputPin->GetOwningNode()->NodeGuid, OutputPin->PinName,
+			InputPin->GetOwningNode()->NodeGuid, InputPin->PinName });
+		return true;
+	};
+
+	DestinationGraph->Modify();
+	for (const FCortexGraphTransferEdge& Edge : Plan.InternalEdges)
+	{
+		// Internal edges are planned on source identities, so both endpoints are mapped through the
+		// transfer's identity map: a copy resolves its derived identities, a move resolves its own.
+		FGuid MappedFrom;
+		FGuid MappedTo;
+		const FString* const FromText = DestinationBySource.Find(Edge.FromGuid);
+		const FString* const ToText = DestinationBySource.Find(Edge.ToGuid);
+		if (!FromText || !ToText
+			|| !FGuid::Parse(*FromText, MappedFrom) || !FGuid::Parse(*ToText, MappedTo))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("planned internal edge '%s.%s' -> '%s.%s' names an unplanned source node"),
+					*Edge.FromGuid, *Edge.FromPin, *Edge.ToGuid, *Edge.ToPin));
+			return false;
+		}
+		UEdGraphNode* const FromNode = FindNodeByGuidInGraph(DestinationGraph, MappedFrom);
+		UEdGraphNode* const ToNode = FindNodeByGuidInGraph(DestinationGraph, MappedTo);
+		const FString Context = FString::Printf(TEXT("planned internal edge '%s.%s' -> '%s.%s'"),
+			*Edge.FromGuid, *Edge.FromPin, *Edge.ToGuid, *Edge.ToPin);
+		if (!FromNode || !ToNode)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("%s did not re-resolve its nodes after apply"), *Context));
+			return false;
+		}
+		if (!Connect(FromNode->FindPin(FName(*Edge.FromPin)), ToNode->FindPin(FName(*Edge.ToPin)), Context)) return false;
+	}
+	for (const FCortexGraphTransferBoundary& Boundary : Plan.Boundary)
+	{
+		const FString* const DestinationGuid = DestinationBySource.Find(Boundary.SourceGuid);
+		if (!DestinationGuid)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("boundary mapping '%s.%s' names an unplanned source node"), *Boundary.SourceGuid, *Boundary.SourcePin));
+			return false;
+		}
+		FGuid TransferredGuid;
+		FGuid::Parse(*DestinationGuid, TransferredGuid);
+		FGuid BoundaryNodeGuid;
+		FGuid::Parse(Boundary.DestinationNodeGuid, BoundaryNodeGuid);
+		UEdGraphNode* const Transferred = FindNodeByGuidInGraph(DestinationGraph, TransferredGuid);
+		UEdGraphNode* const BoundaryNode = FindNodeByGuidInGraph(DestinationGraph, BoundaryNodeGuid);
+		const FString Context = FString::Printf(TEXT("boundary mapping '%s.%s' -> '%s.%s'"),
+			*Boundary.SourceGuid, *Boundary.SourcePin, *Boundary.DestinationNodeGuid, *Boundary.DestinationPin);
+		if (!Transferred || !BoundaryNode)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("%s did not re-resolve its nodes after apply"), *Context));
+			return false;
+		}
+		if (!Connect(Transferred->FindPin(FName(*Boundary.SourcePin)), BoundaryNode->FindPin(FName(*Boundary.DestinationPin)), Context)) return false;
+	}
+	DestinationGraph->NotifyGraphChanged();
+	return true;
+}
+
+bool FCortexGraphMigrationOps::VerifyPreservationContracts(
+	UBlueprint* Blueprint,
+	const TArray<FCortexGraphTransferPreservation>& Contracts,
+	FString& OutFailure)
+{
+	OutFailure.Reset();
+	for (const FCortexGraphTransferPreservation& Contract : Contracts)
+	{
+		FGuid GraphGuid;
+		FGuid::Parse(Contract.GraphGuid, GraphGuid);
+		UEdGraph* const Graph = FindGraphByGuid(Blueprint, GraphGuid);
+		if (!Graph)
+		{
+			OutFailure = FString::Printf(TEXT("the '%s' preservation graph '%s' did not re-resolve"), *Contract.Label, *Contract.GraphGuid);
+			return false;
+		}
+		TArray<FGuid> Excluded;
+		for (const FString& GuidText : Contract.ExcludedGuids)
+		{
+			FGuid ExcludedGuid;
+			if (FGuid::Parse(GuidText, ExcludedGuid)) Excluded.Add(ExcludedGuid);
+		}
+		if (CapturePreservation(Blueprint, Graph, Excluded) != Contract.Capture)
+		{
+			OutFailure = FString::Printf(TEXT("the '%s' preservation contract of graph '%s' does not match live native state"),
+				*Contract.Label, *Contract.GraphGuid);
+			return false;
+		}
+	}
+	return true;
+}
+
+bool FCortexGraphMigrationOps::VerifyTransferAgainstNative(
+	UBlueprint* Blueprint,
+	const FCortexGraphMigrationTransferPlan& Plan,
+	FString& OutFailure)
+{
+	OutFailure.Reset();
+	if (!Blueprint)
+	{
+		OutFailure = TEXT("the blueprint is null");
+		return false;
+	}
+	FGuid SourceGraphGuid;
+	FGuid DestinationGraphGuid;
+	FGuid::Parse(Plan.SourceGraphGuid, SourceGraphGuid);
+	FGuid::Parse(Plan.DestinationGraphGuid, DestinationGraphGuid);
+	UEdGraph* const SourceGraph = FindGraphByGuid(Blueprint, SourceGraphGuid);
+	UEdGraph* const DestinationGraph = FindGraphByGuid(Blueprint, DestinationGraphGuid);
+	if (!SourceGraph || !DestinationGraph)
+	{
+		OutFailure = TEXT("the planned transfer graphs did not re-resolve");
+		return false;
+	}
+	TMap<FGuid, int32> DestinationSlots;
+	TMap<FGuid, int32> SourceSlots;
+	TSet<FGuid> RemovalSet;
+	for (int32 Index = 0; Index < Plan.Nodes.Num(); ++Index)
+	{
+		FGuid SourceGuid;
+		FGuid DestinationGuid;
+		FGuid::Parse(Plan.Nodes[Index].SourceGuid, SourceGuid);
+		FGuid::Parse(Plan.Nodes[Index].DestinationGuid, DestinationGuid);
+		if (!SourceGuid.IsValid() || !DestinationGuid.IsValid())
+		{
+			OutFailure = TEXT("the prepared transfer plan carries an invalid node identity");
+			return false;
+		}
+		SourceSlots.Add(SourceGuid, Index);
+		DestinationSlots.Add(DestinationGuid, Index);
+		RemovalSet.Add(SourceGuid);
+	}
+
+	for (const FCortexGraphTransferNode& Planned : Plan.Nodes)
+	{
+		FGuid DestinationGuid;
+		FGuid::Parse(Planned.DestinationGuid, DestinationGuid);
+		UEdGraphNode* const Node = FindNodeByGuidInGraph(DestinationGraph, DestinationGuid);
+		if (!Node)
+		{
+			OutFailure = FString::Printf(TEXT("the planned destination node '%s' is missing from the destination graph"), *Planned.DestinationGuid);
+			return false;
+		}
+		TArray<UEdGraph*> Owners;
+		TransferGraphsOwningGuid(Blueprint, DestinationGuid, Owners);
+		if (Owners.Num() != 1 || Owners[0] != DestinationGraph)
+		{
+			OutFailure = FString::Printf(TEXT("the destination identity '%s' is owned by %d graph(s) instead of exactly the destination graph"),
+				*Planned.DestinationGuid, Owners.Num());
+			return false;
+		}
+		if (Node->GetClass()->GetPathName() != Planned.ClassPath)
+		{
+			OutFailure = FString::Printf(TEXT("the destination node '%s' has class '%s' instead of the planned '%s'"),
+				*Planned.DestinationGuid, *Node->GetClass()->GetPathName(), *Planned.ClassPath);
+			return false;
+		}
+		if (TransferNodeSymbol(Node) != Planned.Symbol)
+		{
+			OutFailure = FString::Printf(TEXT("the destination node '%s' resolves symbol '%s' instead of the planned '%s'"),
+				*Planned.DestinationGuid, *TransferNodeSymbol(Node), *Planned.Symbol);
+			return false;
+		}
+		if (TransferNodePresentation(*Node) != TransferNodePresentation(Planned))
+		{
+			OutFailure = FString::Printf(TEXT("the destination node '%s' does not carry the planned authored presentation"), *Planned.DestinationGuid);
+			return false;
+		}
+		if (TransferNodePins(Node, DestinationSlots) != Planned.Pins)
+		{
+			OutFailure = FString::Printf(TEXT("the destination node '%s' does not carry the planned authored pin state or internal edges"), *Planned.DestinationGuid);
+			return false;
+		}
+	}
+
+	if (Plan.IsMove())
+	{
+		for (const FCortexGraphTransferNode& Planned : Plan.Nodes)
+		{
+			FGuid SourceGuid;
+			FGuid::Parse(Planned.SourceGuid, SourceGuid);
+			UEdGraphNode* const Stale = FindNodeByGuidInGraph(SourceGraph, SourceGuid);
+			if (Stale)
+			{
+				OutFailure = FString::Printf(TEXT("the moved node '%s' is still present in the source graph"), *Planned.SourceGuid);
+				return false;
+			}
+		}
+		// No dangling link may survive the removal: every pin of the source body must be free of a
+		// link to a removed identity.
+		for (UEdGraphNode* Body : SourceGraph->Nodes)
+		{
+			if (!Body) continue;
+			for (UEdGraphPin* Pin : Body->Pins)
+			{
+				if (!Pin) continue;
+				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+				{
+					UEdGraphNode* const Far = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+					if (Far && RemovalSet.Contains(Far->NodeGuid))
+					{
+						OutFailure = FString::Printf(TEXT("a dangling link from '%s.%s' reaches the removed node '%s'"),
+							*Body->NodeGuid.ToString(), *Pin->PinName.ToString(), *Far->NodeGuid.ToString());
+						return false;
+					}
+				}
+			}
+		}
+	}
+	else
+	{
+		// A copy never mutates its source: the named source nodes must still carry exactly the
+		// planned authored state.
+		for (const FCortexGraphTransferNode& Planned : Plan.Nodes)
+		{
+			FGuid SourceGuid;
+			FGuid::Parse(Planned.SourceGuid, SourceGuid);
+			UEdGraphNode* const SourceNode = FindNodeByGuidInGraph(SourceGraph, SourceGuid);
+			if (!SourceNode)
+			{
+				OutFailure = FString::Printf(TEXT("the source node '%s' the copy names no longer exists"), *Planned.SourceGuid);
+				return false;
+			}
+			if (TransferNodeSymbol(SourceNode) != Planned.Symbol
+				|| TransferNodePresentation(*SourceNode) != TransferNodePresentation(Planned)
+				|| TransferNodePins(SourceNode, SourceSlots) != Planned.Pins)
+			{
+				OutFailure = FString::Printf(TEXT("the copy modified its source node '%s'"), *Planned.SourceGuid);
+				return false;
+			}
+		}
+	}
+
+	for (const FCortexGraphTransferBoundary& Boundary : Plan.Boundary)
+	{
+		FGuid SourceGuid;
+		FGuid TransferredGuid;
+		FGuid BoundaryNodeGuid;
+		if (!FGuid::Parse(Boundary.SourceGuid, SourceGuid) || !FGuid::Parse(Boundary.DestinationNodeGuid, BoundaryNodeGuid))
+		{
+			OutFailure = TEXT("a prepared boundary mapping carries an invalid identity");
+			return false;
+		}
+		if (Plan.IsMove())
+		{
+			// A move preserves the documented identity, so the moved node is found by its own GUID.
+			TransferredGuid = SourceGuid;
+		}
+		else
+		{
+			const FCortexGraphTransferNode* const Planned = Plan.Nodes.FindByPredicate(
+				[&Boundary](const FCortexGraphTransferNode& Candidate) { return Candidate.SourceGuid == Boundary.SourceGuid; });
+			if (!Planned || !FGuid::Parse(Planned->DestinationGuid, TransferredGuid))
+			{
+				OutFailure = FString::Printf(TEXT("the boundary mapping '%s.%s' names an unplanned source node"), *Boundary.SourceGuid, *Boundary.SourcePin);
+				return false;
+			}
+		}
+		UEdGraphNode* const Transferred = FindNodeByGuidInGraph(DestinationGraph, TransferredGuid);
+		UEdGraphNode* const BoundaryNode = FindNodeByGuidInGraph(DestinationGraph, BoundaryNodeGuid);
+		if (!Transferred || !BoundaryNode)
+		{
+			OutFailure = FString::Printf(TEXT("the boundary mapping '%s.%s' did not re-resolve its nodes"), *Boundary.SourceGuid, *Boundary.SourcePin);
+			return false;
+		}
+		UEdGraphPin* const TransferredPin = Transferred->FindPin(FName(*Boundary.SourcePin));
+		UEdGraphPin* const BoundaryPin = BoundaryNode->FindPin(FName(*Boundary.DestinationPin));
+		if (!TransferredPin || !BoundaryPin || !TransferredPin->LinkedTo.Contains(BoundaryPin))
+		{
+			OutFailure = FString::Printf(TEXT("the boundary mapping '%s.%s' -> '%s.%s' is not realized in the destination graph"),
+				*Boundary.SourceGuid, *Boundary.SourcePin, *Boundary.DestinationNodeGuid, *Boundary.DestinationPin);
+			return false;
+		}
+	}
+	return VerifyPreservationContracts(Blueprint, Plan.Preservations, OutFailure);
 }

@@ -62,6 +62,113 @@ struct FCortexGraphMigrationLink
 };
 
 /**
+ * One selected node of a bounded same-asset transfer.
+ *
+ * `SourceGuid` and `DestinationGuid` are the complete deterministic identity map; every capture is
+ * presentation-shaped, so readback compares real authored state of both graphs without holding a
+ * pointer across the request boundary.
+ */
+struct FCortexGraphTransferNode
+{
+	FString SourceGuid;
+	FString DestinationGuid;
+	FString ClassPath;
+	/** Canonical symbol descriptor of the node's authored symbol (call target, variable, cast). */
+	FString Symbol;
+	int32 PosX = 0;
+	int32 PosY = 0;
+	FString Comment;
+	bool bCommentBubblePinned = false;
+	bool bCommentBubbleVisible = false;
+	int32 EnabledState = 0;
+	bool bUserSetEnabledState = false;
+	bool bForceDisplayAsDisabled = false;
+	/** Canonical capture of the node's pins, defaults and internal links (endpoints as slot indices). */
+	FString Pins;
+};
+
+/** One link whose two endpoints are both inside the selected set; transferred automatically. */
+struct FCortexGraphTransferEdge
+{
+	FString FromGuid;
+	FString FromPin;
+	FString ToGuid;
+	FString ToPin;
+};
+
+/**
+ * One explicit boundary mapping: a crossing edge of the selection and the destination endpoint that
+ * replaces it. The source crossing edge is never preserved literally, so an uncovered edge can only
+ * be refused, never silently dropped.
+ */
+struct FCortexGraphTransferBoundary
+{
+	FString SourceGuid;
+	FString SourcePin;
+	/** The far endpoint of the covered source crossing edge, reported so the refusal names the edge. */
+	FString SourceFarGuid;
+	FString SourceFarPin;
+	FString DestinationNodeGuid;
+	FString DestinationPin;
+};
+
+/** One inventoried dependency of the selection: preview output and refusal source. */
+struct FCortexGraphTransferDependency
+{
+	FString NodeGuid;
+	/** local_variable | interface | member | external */
+	FString Kind;
+	FString Member;
+	FString OwnerClass;
+	FString Type;
+	FString Detail;
+};
+
+/** One graph preservation contract, verified by readback and by both-graph recovery. */
+struct FCortexGraphTransferPreservation
+{
+	/** source_selection | source_graph | destination_graph */
+	FString Label;
+	FString GraphGuid;
+	TArray<FString> ExcludedGuids;
+	FString Capture;
+};
+
+/**
+ * Durable, JSON-serializable plan of one bounded same-asset `copy_subgraph` / `move_subgraph`.
+ *
+ * Like the replacement plan it carries only names, GUIDs and canonical captures, so the apply phase
+ * rebuilds every transient pointer after the final guard and the readback comparator compares
+ * native state instead of the request.
+ */
+struct FCortexGraphMigrationTransferPlan
+{
+	/** copy_subgraph | move_subgraph */
+	FString Op;
+	FString SourceGraphGuid;
+	FString SourceSubgraphPath;
+	FString DestinationGraphGuid;
+	FString DestinationSubgraphPath;
+	TArray<FCortexGraphTransferNode> Nodes;
+	TArray<FCortexGraphTransferEdge> InternalEdges;
+	TArray<FCortexGraphTransferBoundary> Boundary;
+	TArray<FCortexGraphTransferDependency> Dependencies;
+	/** Source GUIDs a `move_subgraph` removes; empty for a copy. */
+	TArray<FString> RemovalSet;
+	TArray<FCortexGraphTransferPreservation> Preservations;
+	/** True when the destination identity set already matched exactly: an idempotent replay. */
+	bool bReused = false;
+
+	bool IsMove() const { return Op == TEXT("move_subgraph"); }
+
+	TSharedPtr<FJsonObject> ToJson() const;
+	static bool FromJson(
+		const TSharedPtr<FJsonObject>& Source,
+		FCortexGraphMigrationTransferPlan& OutPlan,
+		FCortexCommandResult& OutError);
+};
+
+/**
  * Durable, JSON-serializable plan of one `replace_entry` migration.
  *
  * It carries only names, GUIDs and canonical descriptors, so a prepared patch survives without
@@ -179,6 +286,59 @@ public:
 		TArray<FCortexGraphMigrationLink>& OutCreatedLinks,
 		FCortexCommandResult& OutError);
 
+	/**
+	 * Validates and normalizes one bounded same-asset `copy_subgraph` / `move_subgraph` without
+	 * touching the asset: selection membership, supported node kinds, the complete crossing-edge
+	 * inventory against the explicit boundary map, the dependency inventory, the asset-wide
+	 * destination identity set and the idempotent-replay reconciliation. On success OutPlan is
+	 * complete and durable.
+	 */
+	static bool PlanTransfer(
+		UBlueprint* Blueprint,
+		const TSharedPtr<FJsonObject>& Migration,
+		const FString& PatchId,
+		FCortexGraphMigrationTransferPlan& OutPlan,
+		bool& bOutReused,
+		FCortexCommandResult& OutError);
+
+	/**
+	 * Creates the destination nodes of a planned transfer inside its destination graph through the
+	 * engine node-clone path, keeps every planned authored field, and refuses a clone that is
+	 * incomplete instead of accepting a silently substituted node set.
+	 */
+	static bool RegisterTransferNodes(
+		UBlueprint* Blueprint,
+		const FCortexGraphMigrationTransferPlan& Plan,
+		TArray<FGuid>& OutCreatedGuids,
+		FCortexCommandResult& OutError);
+
+	/**
+	 * Realizes the planned internal edges and every planned boundary mapping through the graph
+	 * schema. Nothing is created by hand: the schema owns connection safety on both sides.
+	 */
+	static bool WireTransfer(
+		UBlueprint* Blueprint,
+		const FCortexGraphMigrationTransferPlan& Plan,
+		TArray<FCortexGraphMigrationLink>& OutCreatedLinks,
+		FCortexCommandResult& OutError);
+
+	/**
+	 * Native comparison of the planned transfer against the live asset: destination node classes,
+	 * authored state through the canonical capture, internal edges, realized boundary links, the
+	 * asset-wide identity set and, for a move, the absence of the moved nodes in the source graph.
+	 * Shared by the readback and by the idempotent-reuse reconciliation.
+	 */
+	static bool VerifyTransferAgainstNative(
+		UBlueprint* Blueprint,
+		const FCortexGraphMigrationTransferPlan& Plan,
+		FString& OutFailure);
+
+	/** Compares graph preservation contracts against live native state. */
+	static bool VerifyPreservationContracts(
+		UBlueprint* Blueprint,
+		const TArray<FCortexGraphTransferPreservation>& Contracts,
+		FString& OutFailure);
+
 	/** Canonical capture of every node outside ExcludedGuids plus their links inside that set. */
 	static FString CapturePreservation(
 		UBlueprint* Blueprint,
@@ -213,5 +373,7 @@ public:
 		FString& OutFailure);
 
 	static UEdGraphNode* FindNodeByGuid(UBlueprint* Blueprint, const FGuid& NodeGuid);
+	/** Graph-scoped lookup: the durable way to resolve a node identity inside one named graph. */
+	static UEdGraphNode* FindNodeByGuidInGraph(UEdGraph* Graph, const FGuid& NodeGuid);
 	static UEdGraph* FindGraphByGuid(UBlueprint* Blueprint, const FGuid& GraphGuid);
 };
