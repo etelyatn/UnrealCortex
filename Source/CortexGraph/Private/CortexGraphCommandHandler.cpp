@@ -205,6 +205,32 @@ TArray<FString> MakeRefusalDiagnostics(const FCortexCommandResult& Error)
 }
 
 /**
+ * Reserved key under which a patch refusal carries the native structured cause.
+ *
+ * The compact outcome envelope owns the top level: patch identity, `apply_status`/`compile_status`/
+ * `readback_status`/`rollback_status`/`save_status`/`post_save_status`, `blocked`, `saved`,
+ * `diagnostics`, locators, client-id mappings and the bounded migration inventories. The cause is
+ * therefore nested under its own reserved key, so a cause field can never overwrite phase truth,
+ * blocked state, persistence results or any other reserved outcome field. The key is omitted when the
+ * native error carried no structured detail, so an absent key never means "detail was dropped".
+ */
+const TCHAR* const ErrorDetailsCauseKey = TEXT("error_details");
+
+/** The compact outcome envelope with the original structured cause preserved, not replaced. */
+FCortexCommandResult WithCompactOutcome(
+	const FCortexCommandResult& Error,
+	const TSharedPtr<FJsonObject>& OutcomeJson)
+{
+	FCortexCommandResult Result = Error;
+	Result.ErrorDetails = OutcomeJson;
+	if (OutcomeJson.IsValid() && Error.ErrorDetails.IsValid())
+	{
+		OutcomeJson->SetObjectField(ErrorDetailsCauseKey, Error.ErrorDetails);
+	}
+	return Result;
+}
+
+/**
  * A refusal that happened while the asset was loaded but before any patch work: the requested
  * identity, change-free phase statuses and the live before/after state. Nothing was planned, so no
  * client-id mapping and no locator is published.
@@ -248,8 +274,7 @@ FCortexCommandResult HandleApplyPatch(const TSharedPtr<FJsonObject>& Params)
 	{
 		FCortexCommandResult MissingAssetPath =
 			FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
-		MissingAssetPath.ErrorDetails = MakeUnloadedRefusalJson(Params, MissingAssetPath);
-		return MissingAssetPath;
+		return WithCompactOutcome(MissingAssetPath, MakeUnloadedRefusalJson(Params, MissingAssetPath));
 	}
 
 	// Entry-point selection only. The envelope validator re-reads the flag and owns its exact
@@ -261,8 +286,7 @@ FCortexCommandResult HandleApplyPatch(const TSharedPtr<FJsonObject>& Params)
 	UBlueprint* Blueprint = FCortexGraphNodeOps::LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
 	{
-		LoadError.ErrorDetails = MakeUnloadedRefusalJson(Params, LoadError);
-		return LoadError;
+		return WithCompactOutcome(LoadError, MakeUnloadedRefusalJson(Params, LoadError));
 	}
 
 	if (bDryRun)
@@ -273,7 +297,7 @@ FCortexCommandResult HandleApplyPatch(const TSharedPtr<FJsonObject>& Params)
 		{
 			// The asset is loaded and the read is non-mutating, so a refused preview still reports
 			// the requested identity, the change-free statuses and the live before/after state.
-			PreviewError.ErrorDetails = MakeLoadedRefusalJson(Blueprint, Params, PreviewError);
+			PreviewError = WithCompactOutcome(PreviewError, MakeLoadedRefusalJson(Blueprint, Params, PreviewError));
 			return PreviewError;
 		}
 		// A preview is an outcome whose phases never ran: patch identity, planned identities and
@@ -320,11 +344,10 @@ FCortexCommandResult HandleApplyPatch(const TSharedPtr<FJsonObject>& Params)
 			// No compiler or rollback diagnostics exist yet, so the refusal itself is the diagnostic.
 			Outcome.Diagnostics = MakeRefusalDiagnostics(Error);
 		}
-		Error.ErrorDetails = MakePatchResultJson(
+		return WithCompactOutcome(Error, MakePatchResultJson(
 			FailurePatchId, Outcome.bChanged, false, Outcome, Outcome.Locators.NodeGuidByClientId,
 			Outcome.Locators.GraphGuid, Outcome.Locators.SubgraphPath, Outcome.Locators.EntryNodeGuid,
-			Outcome.Locators.bHasEntryNode);
-		return Error;
+			Outcome.Locators.bHasEntryNode));
 	}
 
 	return FCortexCommandRouter::Success(MakePatchResultJson(
@@ -354,7 +377,7 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 		{
 			// A patch caller always gets the compact result. The guard runs before any load, so the
 			// refusal states no fingerprint, dirty state, mapping or locator: those are unknown.
-			if (Command == TEXT("apply_patch")) GuardError.ErrorDetails = MakeUnloadedRefusalJson(Params, GuardError);
+			if (Command == TEXT("apply_patch")) GuardError = WithCompactOutcome(GuardError, MakeUnloadedRefusalJson(Params, GuardError));
 			return GuardError;
 		}
 	}
