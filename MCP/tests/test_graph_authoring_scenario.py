@@ -220,6 +220,13 @@ def pin(subgraph: dict, node_name: str, pin_name: str) -> dict:
     raise AssertionError(f"pin {pin_name} not found on node {node_name}")
 
 
+async def apply_reviewed(run: "AuthoringRun", body: dict) -> dict:
+    """Preview the intent, then apply exactly it with the preview's token (the apply precondition)."""
+    preview = await run.apply({**body, "dry_run": True})
+    assert preview.get("validation_hash"), preview
+    return await run.apply({**body, "dry_run": False, "expected_validation_hash": preview["validation_hash"]})
+
+
 async def describe_node(client, node_class: str, params: dict, asset_package: str | None = None) -> dict:
     request = {"node_class": node_class, "params": params}
     if asset_package:
@@ -533,8 +540,10 @@ async def test_scenario_typed_authoring_adapter_widget_blueprint(mcp_client, tcp
         assert preview["saved"] is False
         assert preview["validation_hash"]
         assert set(preview["node_mappings"]) == {"self", "title_label", "host_cast", "model", "record", "store_model"}
-        assert preview["locators"]["has_entry_node"] is True
-        assert preview["locators"]["graph_guid"] == fixture["ubergraph"]["graph_guid"]
+        # The implementation entry does not exist yet at preview time, so the preview publishes the
+        # planned graph locator only and reports the absent entry honestly; the apply publishes both.
+        assert preview["locators"]["has_entry_node"] is False, preview["locators"]
+        assert "entry_node_guid" not in preview["locators"], preview["locators"]
         assert preview["fingerprint_after"] == preview["fingerprint_before"]
         assert preview["dirty_after"] == preview["dirty_before"]
         after_preview = await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"])
@@ -554,6 +563,10 @@ async def test_scenario_typed_authoring_adapter_widget_blueprint(mcp_client, tcp
         assert applied["saved"] is False and applied["blocked"] is False
         assert applied["dirty_after"] is True
         assert applied["reused_client_ids"] == []
+        # The created implementation entry has a durable locator after the apply.
+        assert applied["locators"]["has_entry_node"] is True, applied["locators"]
+        assert applied["locators"]["entry_node_guid"], applied["locators"]
+        assert applied["locators"]["graph_guid"] == fixture["ubergraph"]["graph_guid"], applied["locators"]
 
         # Read symbols, defaults and edges of the applied chain.
         names = node_name_map(await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"]))
@@ -584,21 +597,25 @@ async def test_scenario_typed_authoring_adapter_widget_blueprint(mcp_client, tcp
             by_client["store_model"],
             MODEL_VARIABLE,
         ) in read_edges, "the retained model reference is not stored"
-        entry_name = next(
-            node["node_id"] for node in subgraph["nodes"] if node["class"] == "K2Node_Event" and node["display_name"].startswith("PresentTitle")
-        )
+        entry_name = names[applied["locators"]["entry_node_guid"]]
         assert (entry_name, "Title", by_client["model"], "Title") in read_edges, "entry parameter does not feed the exposed-on-spawn input"
         tagged = pin(subgraph, by_client["record"], "Title")
-        assert tagged["default_descriptor"] == {"kind": "text", "literal": RECORDING_DEFAULT_LITERAL}, tagged
+        # The readback publishes the canonical FText identity of the tagged default (design 4.3: text
+        # identity is the source kind plus the literal/table identity), not the request's shorthand.
+        assert tagged["default_descriptor"]["kind"] == "text", tagged
+        assert tagged["default_descriptor"]["value"]["source_kind"] == "literal", tagged
+        assert tagged["default_descriptor"]["value"]["value"] == RECORDING_DEFAULT_LITERAL, tagged
         assert tagged.get("is_connected") is not True, tagged
         found = await graph(mcp_client, "search_nodes", {"asset_path": fixture["adapter_package"], "function_name": RECORDING_FUNCTION})
-        assert any(node["node_id"] == by_client["record"] for node in found["nodes"]), found
+        found_nodes = next((value for value in found.values() if isinstance(value, list)), [])
+        assert any(node.get("node_id") == by_client["record"] for node in found_nodes), found
 
         # The authored override of the returning native hook. ReadPresentedTitle is const and has a
         # return value, so its implementation is a function graph whose result terminator is
         # addressed through its graph_ref plus node_guid: the implementation target creates the
         # graph uncompiled, and the second patch wires the return value and compiles.
-        graph_preview = await run.apply(
+        graph_preview = await apply_reviewed(
+            run,
             envelope(
                 fixture["adapter_object"],
                 str(uuid.uuid4()),
@@ -615,17 +632,23 @@ async def test_scenario_typed_authoring_adapter_widget_blueprint(mcp_client, tcp
                 connections=[
                     {"from": {"client_id": "model_ref", "pin": MODEL_VARIABLE}, "to": {"client_id": "model_title", "pin": "self"}},
                 ],
-                dry_run=False,
                 compile=False,
-            )
+            ),
         )
         assert graph_preview["apply_status"] == "applied", graph_preview
         assert graph_preview["compile_status"] == "not_requested", graph_preview
 
         return_graph = (await run.graph_choices(fixture["adapter_package"]))["ReadPresentedTitle"]
         return_subgraph = await run.subgraph(fixture["adapter_package"], "ReadPresentedTitle")
-        return_entry = next(node for node in return_subgraph["nodes"] if node["class"] == "K2Node_FunctionEntry")
-        return_result = next(node for node in return_subgraph["nodes"] if node["class"] == "K2Node_FunctionResult")
+        return_entry = next(
+            (node for node in return_subgraph["nodes"] if node["class"] == "K2Node_FunctionEntry"), None
+        )
+        return_result = next(
+            (node for node in return_subgraph["nodes"] if node["class"] == "K2Node_FunctionResult"), None
+        )
+        assert return_entry is not None and return_result is not None, [
+            node["class"] for node in return_subgraph["nodes"]
+        ]
         return_names = node_name_map(return_subgraph)
         # The engine may already have linked the created entry to the created result terminator; the
         # patch never replaces an existing exec link, so that edge is only requested when it is absent.
@@ -646,15 +669,15 @@ async def test_scenario_typed_authoring_adapter_widget_blueprint(mcp_client, tcp
                     "to": {"node_guid": return_result["node_guid"], "pin": "execute"},
                 }
             )
-        wired = await run.apply(
+        wired = await apply_reviewed(
+            run,
             envelope(
                 fixture["adapter_object"],
                 str(uuid.uuid4()),
                 (await run.context(fixture["adapter_package"]))["fingerprint"],
                 target={"graph_ref": {"graph_guid": return_graph["graph_guid"]}},
                 connections=return_connections,
-                dry_run=False,
-            )
+            ),
         )
         assert wired["readback_status"] == "matched", wired
         assert wired["compile_status"] == "compiled", wired
