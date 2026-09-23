@@ -103,14 +103,24 @@ def collect_tokens(value) -> set[str]:
 
 
 def bind(template, bindings: dict[str, object]):
-    """Rebuilds a fixture fragment with its live tokens replaced by live values."""
+    """Rebuilds a fixture fragment with its live tokens replaced by live values.
+
+    A fixture may embed a token inside a larger literal (the adapter fixture writes a class path as
+    `/Game/Temp/CortexGraphAuthoring_<live: run>/WBP_...._C`), so a string is substituted token by
+    token, and a string that still carries an unbound token is an error instead of a silent miss.
+    """
     if isinstance(template, str):
-        if template.startswith("<live:") and template.endswith(">"):
+        if template.startswith("<live:") and template.endswith(">") and template.count("<live:") == 1:
             token = template[len("<live:") : -1].strip()
             if token not in bindings:
                 raise AssertionError(f"fixture token '{token}' has no live binding")
             return bindings[token]
-        return template
+        result = template
+        for token, value in bindings.items():
+            result = result.replace(f"<live: {token}>", str(value))
+        if "<live:" in result:
+            raise AssertionError(f"unbound fixture token in '{result}'")
+        return result
     if isinstance(template, dict):
         return {key: bind(value, bindings) for key, value in template.items()}
     if isinstance(template, list):
@@ -148,7 +158,10 @@ async def test_toolkit_adapter_flow_binds_live(mcp_client):
         overlay = load_fixture("adapter-apply.json")
         fingerprint = (await run.context(context["adapter_package"]))["fingerprint"]
 
-        bound_intent = bind(intent, {"cast target display name": context["cast_result_pin"]})
+        bound_intent = bind(
+            intent,
+            {"cast target display name": context["cast_result_pin"], "run": run.label},
+        )
         # The fragment carries no target and no patch_id: the harness supplies the envelope facts.
         patch_id = str(uuid.uuid4())
         body = envelope(context["adapter_object"], patch_id, fingerprint, **bound_intent)
@@ -293,6 +306,7 @@ async def test_toolkit_live_only_negatives_are_refused_live(mcp_client):
             mcp_client,
             envelope(fixture["adapter_object"], str(uuid.uuid4()), fingerprint, nodes=[print_text]),
         )
+        assert earlier.get("validation_hash"), earlier
         earlier_token = earlier["validation_hash"]
         mutation = await graph_raw_apply(
             mcp_client,

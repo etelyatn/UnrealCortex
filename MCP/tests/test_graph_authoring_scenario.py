@@ -981,6 +981,8 @@ async def test_scenario_typed_authoring_actor_context_null_cast_failure(mcp_clie
         ) in read_edges, "the recording write is not on the authored event's exec chain"
 
         observed = await observe_actor(mcp_client, actor_class)
+        assert observed["dispatch_function_owner"], observed
+        assert observed["dispatch_function_is_blueprint_override"] is True, observed
         assert observed["begin_play_dispatched"] is True, observed
         assert observed["begin_played"] is True, observed
         # The cast received a null object, so the success route must not have run.
