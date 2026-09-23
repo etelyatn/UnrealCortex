@@ -313,4 +313,81 @@ bool FCortexGraphPatchErrorDetailApplyOutcomeTest::RunTest(const FString& Parame
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchErrorDetailApplyCauseTest,
+	"Cortex.Graph.Authoring.Patch.ErrorDetail.FailedApplyKeepsCause",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchErrorDetailApplyCauseTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphPatchErrorDetailTest;
+
+	FFixture Fixture;
+	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_PatchErrorDetailApplyCause_T17")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+
+	// Above the published node bound the graph-wide scan refuses inside the apply itself, so the
+	// refusal leaves through the failed-apply wrapper with a structured cause, not through the
+	// preview wrapper that the sibling ScanLimitPreserved case already covers.
+	const int32 OverLimit = FCortexGraphPatchOps::MaxScannedNodes + 2;
+	for (int32 Index = 0; Index < OverLimit; ++Index)
+	{
+		AddPrintNode(Graph, 600 + (Index % 40) * 200, (Index / 40) * 60);
+	}
+	TestTrue(TEXT("the fixture exceeds the published node bound"),
+		Graph->Nodes.Num() > FCortexGraphPatchOps::MaxScannedNodes);
+
+	TSharedPtr<FJsonObject> Request = BaseRequest(Fixture.Blueprint, Graph);
+	Request->SetBoolField(TEXT("dry_run"), false);
+	Request->SetStringField(TEXT("expected_validation_hash"),
+		TEXT("0000000000000000000000000000000000000000000000000000000000000000"));
+
+	FCortexCommandRouter Router = MakeRouter();
+	const FCortexCommandResult Result = Router.Execute(TEXT("graph.apply_patch"), Request);
+
+	TestFalse(TEXT("the apply is refused"), Result.bSuccess);
+	TestEqual(TEXT("the scan refusal keeps its error code"), Result.ErrorCode,
+		FString(CortexErrorCodes::LimitExceeded));
+	TestTrue(TEXT("the failed apply still carries the compact outcome"), Result.ErrorDetails.IsValid());
+	if (Result.ErrorDetails.IsValid())
+	{
+		const TSharedPtr<FJsonObject>& Outcome = Result.ErrorDetails;
+		// The outcome is the apply envelope, not the preview one, so this case really exercises the
+		// failed-apply wrapper's cause preservation.
+		TestFalse(TEXT("the outcome reports an apply request, not a preview"),
+			Outcome->GetBoolField(TEXT("dry_run")));
+		TestEqual(TEXT("phase truth still reports no apply"),
+			Outcome->GetStringField(TEXT("apply_status")), FString(TEXT("not_requested")));
+		TestEqual(TEXT("phase truth still reports no compile"),
+			Outcome->GetStringField(TEXT("compile_status")), FString(TEXT("not_requested")));
+		TestFalse(TEXT("the refused apply never claims a save"), Outcome->GetBoolField(TEXT("saved")));
+		TestTrue(TEXT("the refusal is named in the bounded diagnostics"),
+			Outcome->GetArrayField(TEXT("diagnostics")).Num() > 0);
+		for (const TCHAR* Key : OutcomeKeys)
+		{
+			TestTrue(FString::Printf(TEXT("the outcome key '%s' is still present"), Key),
+				Outcome->HasField(Key));
+		}
+
+		const TSharedPtr<FJsonObject>* CausePtr = nullptr;
+		const bool bHasCause = Outcome->TryGetObjectField(ReservedCauseKey, CausePtr)
+			&& CausePtr && CausePtr->IsValid();
+		TestTrue(TEXT("the structured cause survives the failed-apply wrapper"), bHasCause);
+		if (bHasCause)
+		{
+			const TSharedPtr<FJsonObject>& Cause = *CausePtr;
+			TestEqual(TEXT("the cause keeps the published scan limit"),
+				Cause->GetIntegerField(TEXT("scan_limit")), FCortexGraphPatchOps::MaxScannedNodes);
+			TestTrue(TEXT("the cause keeps the observed node count"),
+				Cause->GetIntegerField(TEXT("scanned_nodes")) > FCortexGraphPatchOps::MaxScannedNodes);
+			TestFalse(TEXT("the cause never claims completeness"), Cause->GetBoolField(TEXT("complete")));
+		}
+	}
+
+	Fixture.Cleanup();
+	return true;
+}
+
 #endif // WITH_EDITOR && WITH_AUTOMATION_TESTS
