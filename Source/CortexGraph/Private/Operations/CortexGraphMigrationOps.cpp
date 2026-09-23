@@ -821,16 +821,43 @@ UClass* ResolveReferenceOwner(UBlueprint* Asset, const FMemberReference& Referen
 }
 
 /**
+ * One declaration owner behind a class pair. A Blueprint owns both a generated class and a skeleton
+ * class, and both declare the Blueprint's own functions, but the two pointers are distinct objects:
+ * the explicit target selector resolves a declaration through the generated class
+ * (`FCortexGraphSymbolResolver::ResolveClass` returns `UBlueprint::GeneratedClass`, and the
+ * declaration's owner is that class), while a delegate scope resolves through the skeleton class
+ * (`UK2Node_CreateDelegate::GetScopeClass` returns `SkeletonGeneratedClass` when the scope pin is
+ * typed as a Blueprint-generated class). Identity is therefore normalized in both directions before
+ * two owners are compared, so the same declaration is never treated as two different owners; a class
+ * without a generating Blueprint is returned unchanged.
+ */
+UClass* CanonicalDeclarationOwner(UClass* OwnerClass)
+{
+	if (const UBlueprint* const Blueprint = OwnerClass ? Cast<UBlueprint>(OwnerClass->ClassGeneratedBy) : nullptr)
+	{
+		if (UClass* const GeneratedClass = Blueprint->GeneratedClass)
+		{
+			return GeneratedClass;
+		}
+	}
+	return OwnerClass;
+}
+
+/**
  * True when a resolved owner really declares the selected declaration. Name equality alone is not
  * candidate identity: an unrelated same-named call site must neither reject a valid migration nor
- * inflate the reported inventory.
+ * inflate the reported inventory. Both inventory paths (call sites and delegate bindings) compare
+ * their resolved owner through this one predicate, so the generated/skeleton normalization above
+ * applies to both.
  */
 bool OwnerDeclaresSelected(UClass* Owner, const FName DeclarationName, UClass* DeclaringClass)
 {
 	if (!Owner) return false;
 	UFunction* const Found = Owner->FindFunctionByName(DeclarationName);
 	if (!Found) return false;
-	return DeclaringClass ? Found->GetOwnerClass() == DeclaringClass : true;
+	return DeclaringClass
+		? CanonicalDeclarationOwner(Found->GetOwnerClass()) == CanonicalDeclarationOwner(DeclaringClass)
+		: true;
 }
 
 void ScanDeclarationReferences(
