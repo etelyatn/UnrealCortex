@@ -335,6 +335,54 @@ struct FFixture
 	}
 };
 
+
+/** A function graph that implements the fixture declaration, so it owns a result terminator. */
+struct FTerminatorFunctionGraph
+{
+	UEdGraph* Graph = nullptr;
+	UK2Node_FunctionEntry* Entry = nullptr;
+	UK2Node_FunctionResult* Result = nullptr;
+};
+
+FTerminatorFunctionGraph AddComputeScoreFunctionGraph(UBlueprint* Blueprint, const TCHAR* Name)
+{
+	FTerminatorFunctionGraph Built;
+	UClass* const OwnerClass = ACortexGraphMigrationFixtureActor::StaticClass();
+	Built.Graph = FBlueprintEditorUtils::CreateNewGraph(Blueprint, FName(Name),
+		UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	Blueprint->FunctionGraphs.Add(Built.Graph);
+
+	Built.Entry = NewObject<UK2Node_FunctionEntry>(Built.Graph);
+	Built.Entry->FunctionReference.SetExternalMember(FName(TEXT("ComputeScore")), OwnerClass);
+	Built.Entry->CreateNewGuid();
+	Built.Entry->AllocateDefaultPins();
+	Built.Entry->NodePosX = -400;
+	Built.Entry->NodePosY = 0;
+	Built.Graph->AddNode(Built.Entry, true, false);
+
+	Built.Result = NewObject<UK2Node_FunctionResult>(Built.Graph);
+	Built.Result->FunctionReference = Built.Entry->FunctionReference;
+	Built.Result->CreateNewGuid();
+	Built.Result->AllocateDefaultPins();
+	Built.Result->NodePosX = 700;
+	Built.Result->NodePosY = 0;
+	Built.Graph->AddNode(Built.Result, true, false);
+	return Built;
+}
+
+/** A destination graph with one free int32 input pin for a boundary mapping. */
+UK2Node_CallFunction* AddIntMultiplyNode(UEdGraph* Graph, const int32 X, const int32 Y)
+{
+	UK2Node_CallFunction* Call = NewObject<UK2Node_CallFunction>(Graph);
+	Call->FunctionReference.SetExternalMember(FName(TEXT("Multiply_IntInt")), UKismetMathLibrary::StaticClass());
+	Call->CreateNewGuid();
+	Call->AllocateDefaultPins();
+	Call->NodePosX = X;
+	Call->NodePosY = Y;
+	Graph->AddNode(Call, true, false);
+	return Call;
+}
+
 UEdGraph* EnsureEventGraph(UBlueprint* Blueprint)
 {
 	if (Blueprint->UbergraphPages.Num() > 0) return Blueprint->UbergraphPages[0];
@@ -360,6 +408,53 @@ UK2Node_FunctionEntry* FindEntryNode(UEdGraph* Graph)
 		if (UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(Node)) return Entry;
 	}
 	return nullptr;
+}
+
+
+UK2Node_CallFunction* AddMakeVectorNode(UEdGraph* Graph, const int32 X, const int32 Y)
+{
+	UK2Node_CallFunction* Call = NewObject<UK2Node_CallFunction>(Graph);
+	Call->FunctionReference.SetExternalMember(FName(TEXT("MakeVector")), UKismetMathLibrary::StaticClass());
+	Call->CreateNewGuid();
+	Call->AllocateDefaultPins();
+	Call->NodePosX = X;
+	Call->NodePosY = Y;
+	Graph->AddNode(Call, true, false);
+	return Call;
+}
+
+/** Hand-authors the struct-expanded state of one struct output pin and returns the child X pin. */
+UEdGraphPin* SplitStructPinChildren(UEdGraphNode* Node, const TCHAR* ParentPinName)
+{
+	UEdGraphPin* Parent = Node ? Node->FindPin(FName(ParentPinName)) : nullptr;
+	if (!Parent) return nullptr;
+	FEdGraphPinType FloatType;
+	FloatType.PinCategory = UEdGraphSchema_K2::PC_Real;
+	FloatType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
+	const TCHAR* ChildNames[] = { TEXT("X"), TEXT("Y"), TEXT("Z") };
+	UEdGraphPin* First = nullptr;
+	for (const TCHAR* ChildName : ChildNames)
+	{
+		UEdGraphPin* Child = Node->CreatePin(EGPD_Output, FloatType, FName(ChildName));
+		if (!Child) continue;
+		Child->ParentPin = Parent;
+		Parent->SubPins.Add(Child);
+		if (!First) First = Child;
+	}
+	return First;
+}
+
+/** A destination graph with one free float input pin for a split-child boundary mapping. */
+UK2Node_CallFunction* AddFloatMultiplyNode(UEdGraph* Graph, const int32 X, const int32 Y)
+{
+	UK2Node_CallFunction* Call = NewObject<UK2Node_CallFunction>(Graph);
+	Call->FunctionReference.SetExternalMember(FName(TEXT("Multiply_FloatFloat")), UKismetMathLibrary::StaticClass());
+	Call->CreateNewGuid();
+	Call->AllocateDefaultPins();
+	Call->NodePosX = X;
+	Call->NodePosY = Y;
+	Graph->AddNode(Call, true, false);
+	return Call;
 }
 
 UK2Node_CallFunction* AddPrintNode(UEdGraph* Graph, const TCHAR* Text, const int32 X, const int32 Y)
@@ -799,6 +894,37 @@ bool FCortexGraphMigrationTransferExternalConsumerTest::RunTest(const FString& P
 	FCortexCommandResult Error;
 	TestTrue(FString::Printf(TEXT("external-consumer copy previews: %s"), *Error.ErrorMessage),
 		PreviewPlan(Fixture.Blueprint, Request, Prepared, Plan, Error));
+	{
+		// The published preview response carries the bounded transfer inventory, so a caller learns
+		// which crossing edges need boundary mappings without reading the durable plan.
+		FCortexCommandRouter Router;
+		Router.RegisterDomain(TEXT("graph"), TEXT("Cortex Graph"), TEXT("1.0.1"), MakeShared<FCortexGraphCommandHandler>());
+		TSharedPtr<FJsonObject> PreviewRequest = TransferRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000120301"), CopyOp, SourceGraph, Selection, DestinationGraph, Boundary);
+		const FCortexCommandResult PreviewResult = Router.Execute(TEXT("graph.apply_patch"), PreviewRequest);
+		TestTrue(FString::Printf(TEXT("the transfer preview succeeds through the command path: %s"), *PreviewResult.ErrorMessage),
+			PreviewResult.bSuccess);
+		if (PreviewResult.bSuccess && PreviewResult.Data.IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Crossing = nullptr;
+			TestTrue(TEXT("the preview publishes the crossing edges"),
+				PreviewResult.Data->TryGetArrayField(TEXT("crossing_edges"), Crossing) && Crossing && Crossing->Num() == 1);
+			if (Crossing && Crossing->Num() == 1)
+			{
+				FString CrossingText;
+				(*Crossing)[0]->TryGetString(CrossingText);
+				TestTrue(FString::Printf(TEXT("the published crossing edge names the covered edge [%s]"), *CrossingText),
+					CrossingText.Contains(Tail->NodeGuid.ToString()) && CrossingText.Contains(Consumer->NodeGuid.ToString()));
+			}
+			const TArray<TSharedPtr<FJsonValue>>* PublishedBoundary = nullptr;
+			TestTrue(TEXT("the preview publishes the boundary mapping"),
+				PreviewResult.Data->TryGetArrayField(TEXT("boundary"), PublishedBoundary)
+				&& PublishedBoundary && PublishedBoundary->Num() == 1);
+			const TArray<TSharedPtr<FJsonValue>>* Dependencies = nullptr;
+			TestTrue(TEXT("the preview publishes the dependency inventory"),
+				PreviewResult.Data->TryGetArrayField(TEXT("dependencies"), Dependencies) && Dependencies);
+		}
+	}
 	TestEqual(TEXT("the crossing edge is reported as one boundary mapping"), Plan.Boundary.Num(), 1);
 	if (Plan.Boundary.Num() == 1)
 	{
@@ -827,6 +953,7 @@ bool FCortexGraphMigrationTransferExternalConsumerTest::RunTest(const FString& P
 	}
 	TestTrue(TEXT("the source crossing edge stays untouched by a copy"),
 		NodesLinked(Tail, TEXT("then"), Consumer, TEXT("execute")));
+
 	{
 		const FString SourceAfter = CaptureGraphNative(Fixture.Blueprint, SourceGraph);
 		TestTrue(FString::Printf(TEXT("the copy left the source graph byte-identical [%s]"),
@@ -1502,7 +1629,7 @@ bool FCortexGraphMigrationTransferFailedMoveRestoresTest::RunTest(const FString&
 		Boundary.Add(MakeShared<FJsonValueObject>(BoundaryEntry(Tail, TEXT("then"), DestinationConsumer, TEXT("execute"))));
 		const TCHAR* PatchId = Index == 1
 			? TEXT("00000000-0000-0000-0000-000000121301")
-			: TEXT("00000000-0000-0000-0000-000000121302");
+			: (Index == 2 ? TEXT("00000000-0000-0000-0000-000000121303") : TEXT("00000000-0000-0000-0000-000000121302"));
 		TSharedPtr<FJsonObject> Request = TransferRequest(Fixture.Blueprint, PatchId, MoveOp, SourceGraph, Selection, DestinationGraph, Boundary);
 		FCortexGraphPreparedPatch Prepared;
 		FCortexGraphMigrationTransferPlan Plan;
@@ -1563,7 +1690,8 @@ bool FCortexGraphMigrationTransferFailedMoveRestoresTest::RunTest(const FString&
 	};
 
 	RunFaultCase(TEXT("BP_TransferFaultDestination_T12"), TEXT("migration_transfer_after_destination"), 1);
-	RunFaultCase(TEXT("BP_TransferFaultRemoval_T12"), TEXT("migration_transfer_after_source_removal"), 2);
+	RunFaultCase(TEXT("BP_TransferFaultWiring_T12"), TEXT("migration_transfer_after_wiring"), 2);
+	RunFaultCase(TEXT("BP_TransferFaultRemoval_T12"), TEXT("migration_transfer_after_source_removal"), 3);
 	return true;
 }
 
@@ -1758,13 +1886,37 @@ bool FCortexGraphMigrationTransferMoveReplayTest::RunTest(const FString& Paramet
 	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
 
 	const TArray<FGuid> Selection = { Head->NodeGuid, Tail->NodeGuid };
+	// The move carries a boundary mapping for a real source crossing edge, so the replay must
+	// reconcile that mapping instead of refusing it.
+	UK2Node_CallFunction* SourceConsumer = AddPrintNode(SourceGraph, TEXT("move replay consumer"), 1200, 0);
+	TestTrue(TEXT("the move's source crossing edge is wired"),
+		LinkNodes(SourceGraph, Tail, TEXT("then"), SourceConsumer, TEXT("execute")));
+	UK2Node_CallFunction* DestinationPrint = AddPrintNode(DestinationGraph, TEXT("move replay target"), 900, 0);
+	TArray<TSharedPtr<FJsonValue>> Boundary;
+	Boundary.Add(MakeShared<FJsonValueObject>(BoundaryEntry(Tail, TEXT("then"), DestinationPrint, TEXT("execute"))));
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
 	TSharedPtr<FJsonObject> Request = TransferRequest(Fixture.Blueprint,
-		TEXT("00000000-0000-0000-0000-000000121601"), MoveOp, SourceGraph, Selection, DestinationGraph, {});
+		TEXT("00000000-0000-0000-0000-000000121601"), MoveOp, SourceGraph, Selection, DestinationGraph, Boundary);
 	FCortexGraphPreparedPatch Prepared;
 	FCortexGraphMigrationTransferPlan Plan;
 	FCortexCommandResult Error;
 	TestTrue(FString::Printf(TEXT("move previews: %s"), *Error.ErrorMessage),
 		PreviewPlan(Fixture.Blueprint, Request, Prepared, Plan, Error));
+	{
+		FCortexCommandRouter Router;
+		Router.RegisterDomain(TEXT("graph"), TEXT("Cortex Graph"), TEXT("1.0.1"), MakeShared<FCortexGraphCommandHandler>());
+		TSharedPtr<FJsonObject> PreviewRequest = TransferRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000121601"), MoveOp, SourceGraph, Selection, DestinationGraph, Boundary);
+		const FCortexCommandResult PreviewResult = Router.Execute(TEXT("graph.apply_patch"), PreviewRequest);
+		TestTrue(FString::Printf(TEXT("the move preview succeeds through the command path: %s"), *PreviewResult.ErrorMessage),
+			PreviewResult.bSuccess);
+		if (PreviewResult.Data.IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Removal = nullptr;
+			TestTrue(TEXT("the preview publishes the removal set"),
+				PreviewResult.Data->TryGetArrayField(TEXT("removal_set"), Removal) && Removal && Removal->Num() == 2);
+		}
+	}
 	FCortexGraphPatchOutcome Outcome;
 	TestTrue(FString::Printf(TEXT("move applies: %s [%s]"), *Error.ErrorMessage, *JoinDiagnostics(Outcome.Diagnostics)),
 		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
@@ -1775,7 +1927,7 @@ bool FCortexGraphMigrationTransferMoveReplayTest::RunTest(const FString& Paramet
 	const int32 TransactionsAfterMove = TransactionCount();
 
 	TSharedPtr<FJsonObject> Replay = TransferRequest(Fixture.Blueprint,
-		TEXT("00000000-0000-0000-0000-000000121601"), MoveOp, SourceGraph, Selection, DestinationGraph, {});
+		TEXT("00000000-0000-0000-0000-000000121601"), MoveOp, SourceGraph, Selection, DestinationGraph, Boundary);
 	FCortexGraphPreparedPatch ReplayPrepared;
 	FCortexGraphMigrationTransferPlan ReplayPlan;
 	FCortexCommandResult ReplayError;
@@ -1798,7 +1950,7 @@ bool FCortexGraphMigrationTransferMoveReplayTest::RunTest(const FString& Paramet
 	TArray<FGuid> PartialSelection = Selection;
 	PartialSelection.Add(StayBehind->NodeGuid);
 	TSharedPtr<FJsonObject> Partial = TransferRequest(Fixture.Blueprint,
-		TEXT("00000000-0000-0000-0000-000000121602"), MoveOp, SourceGraph, PartialSelection, DestinationGraph, {});
+		TEXT("00000000-0000-0000-0000-000000121602"), MoveOp, SourceGraph, PartialSelection, DestinationGraph, Boundary);
 	FCortexGraphPreparedPatch PartialPrepared;
 	FCortexCommandResult PartialError;
 	TestFalse(TEXT("a partial move replay is refused"),
@@ -2010,6 +2162,157 @@ bool FCortexGraphMigrationTransferEnvelopeTest::RunTest(const FString& Parameter
 	StaleToken->SetBoolField(TEXT("dry_run"), false);
 	StaleToken->SetStringField(TEXT("expected_validation_hash"), TEXT("stale"));
 	ExpectRefusal(StaleToken, CortexErrorCodes::StalePrecondition, TEXT("a stale validation token"), TEXT("expected_validation_hash"));
+
+	Fixture.Cleanup();
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 19. SplitPinLinkRefused (F1)
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphMigrationTransferSplitPinTest,
+	"Cortex.Graph.Authoring.Migration.Transfer.SplitPinLinkRefused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationTransferSplitPinTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationTransferTest;
+	ClearFaults();
+
+	FFixture Fixture;
+	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_TransferSplitPin_T12")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	UEdGraph* SourceGraph = EnsureEventGraph(Fixture.Blueprint);
+	UK2Node_CallFunction* Source = AddMakeVectorNode(SourceGraph, 0, 0);
+	UEdGraphPin* ChildX = SplitStructPinChildren(Source, TEXT("ReturnValue"));
+	TestNotNull(TEXT("the struct output pin is expanded"), ChildX);
+	TestNotNull(TEXT("the expanded pin really is a split child"), ChildX ? ChildX->ParentPin : nullptr);
+	UK2Node_CallFunction* Outside = AddFloatMultiplyNode(SourceGraph, 400, 0);
+	TestTrue(TEXT("the split child is linked outside the selection"),
+		ChildX && LinkPins(SourceGraph, ChildX, Outside->FindPin(TEXT("A"))));
+	UEdGraph* DestinationGraph = AddVoidFunctionGraph(Fixture.Blueprint, TEXT("CortexSplitPinTarget"));
+	UK2Node_CallFunction* Destination = AddFloatMultiplyNode(DestinationGraph, 400, 0);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+	const FString HashBefore = LiveGraphHash(Fixture.Blueprint);
+	const int32 NodesBefore = CountNativeNodes(Fixture.Blueprint);
+
+	// A linked split child is refused instead of being silently dropped by the clone path.
+	const TArray<FGuid> Selection = { Source->NodeGuid };
+	TSharedPtr<FJsonObject> Request = TransferRequest(Fixture.Blueprint,
+		TEXT("00000000-0000-0000-0000-000000121901"), CopyOp, SourceGraph, Selection, DestinationGraph, {});
+	FCortexGraphPreparedPatch Prepared;
+	FCortexCommandResult Error;
+	TestFalse(TEXT("a linked split child is refused"),
+		FCortexGraphPatchOps::Preflight(Fixture.Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("the split-child refusal is INVALID_OPERATION"), Error.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+	TestTrue(FString::Printf(TEXT("the refusal names the node and the expanded pin [%s]"), *Error.ErrorMessage),
+		Error.ErrorMessage.Contains(Source->NodeGuid.ToString())
+		&& Error.ErrorMessage.Contains(TEXT("ReturnValue"))
+		&& Error.ErrorMessage.Contains(TEXT("X"))
+		&& Error.ErrorMessage.Contains(TEXT("split")));
+	TestEqual(TEXT("the split-child refusal mutates nothing"), LiveGraphHash(Fixture.Blueprint), HashBefore);
+	TestEqual(TEXT("the split-child refusal leaves the node count"), CountNativeNodes(Fixture.Blueprint), NodesBefore);
+	TestNull(TEXT("the split-child refusal leaves the destination graph"), FindNodeByGuidInGraph(DestinationGraph, Source->NodeGuid));
+
+	// The rule is total, not link-specific: an expanded pin without any link is refused too, because
+	// the clone path does not prove the expanded state either. A plain node still transfers, so the
+	// refusal is not blanket.
+	{
+		UK2Node_CallFunction* UnlinkedSource = AddMakeVectorNode(SourceGraph, 0, 400);
+		TestNotNull(TEXT("the unlinked expanded node exists"), SplitStructPinChildren(UnlinkedSource, TEXT("ReturnValue")));
+		const TArray<FGuid> UnlinkedSelection = { UnlinkedSource->NodeGuid };
+		TSharedPtr<FJsonObject> UnlinkedRequest = TransferRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000121902"), CopyOp, SourceGraph, UnlinkedSelection, DestinationGraph, {});
+		FCortexGraphPreparedPatch UnlinkedPrepared;
+		FCortexCommandResult UnlinkedError;
+		TestFalse(TEXT("an unlinked expanded pin is refused under the same rule"),
+			FCortexGraphPatchOps::Preflight(Fixture.Blueprint, UnlinkedRequest, UnlinkedPrepared, UnlinkedError));
+		TestTrue(FString::Printf(TEXT("the unlinked refusal names the expanded pin [%s]"), *UnlinkedError.ErrorMessage),
+			UnlinkedError.ErrorMessage.Contains(TEXT("ReturnValue")) && UnlinkedError.ErrorMessage.Contains(TEXT("split")));
+
+		UK2Node_CallFunction* PlainSource = AddPrintNode(SourceGraph, TEXT("plain"), 0, 800);
+		const TArray<FGuid> PlainSelection = { PlainSource->NodeGuid };
+		TSharedPtr<FJsonObject> PlainRequest = TransferRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000121903"), CopyOp, SourceGraph, PlainSelection, DestinationGraph, {});
+		FCortexGraphPreparedPatch PlainPrepared;
+		FCortexGraphMigrationTransferPlan PlainPlan;
+		FCortexCommandResult PlainError;
+		TestTrue(FString::Printf(TEXT("a node without expanded pins still transfers: %s"), *PlainError.ErrorMessage),
+			PreviewPlan(Fixture.Blueprint, PlainRequest, PlainPrepared, PlainPlan, PlainError));
+	}
+
+	Fixture.Cleanup();
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 20. FunctionResultBoundary (F7)
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphMigrationTransferFunctionResultBoundaryTest,
+	"Cortex.Graph.Authoring.Migration.Transfer.FunctionResultBoundary",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationTransferFunctionResultBoundaryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationTransferTest;
+	ClearFaults();
+
+	FFixture Fixture;
+	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_TransferResultBoundary_T12")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	FTerminatorFunctionGraph Source = AddComputeScoreFunctionGraph(Fixture.Blueprint, TEXT("ComputeScore"));
+	TestNotNull(TEXT("the source function result terminator exists"), Source.Result);
+	UK2Node_CallFunction* Producer = AddIntAddNode(Source.Graph, 0, 0);
+	UEdGraphPin* ResultInput = Source.Result ? Source.Result->FindPin(TEXT("ReturnValue")) : nullptr;
+	TestNotNull(TEXT("the function result owns a return value input"), ResultInput);
+	TestTrue(TEXT("the selected output feeds the function result boundary"),
+		ResultInput && LinkPins(Source.Graph, Producer->FindPin(TEXT("ReturnValue")), ResultInput));
+
+	UEdGraph* DestinationGraph = AddVoidFunctionGraph(Fixture.Blueprint, TEXT("CortexResultBoundaryTarget"));
+	UK2Node_CallFunction* DestinationConsumer = AddIntMultiplyNode(DestinationGraph, 500, 0);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+
+	const TArray<FGuid> Selection = { Producer->NodeGuid };
+	TArray<TSharedPtr<FJsonValue>> Boundary;
+	Boundary.Add(MakeShared<FJsonValueObject>(BoundaryEntry(Producer, TEXT("ReturnValue"), DestinationConsumer, TEXT("A"))));
+	TSharedPtr<FJsonObject> Request = TransferRequest(Fixture.Blueprint,
+		TEXT("00000000-0000-0000-0000-000000122001"), MoveOp, Source.Graph, Selection, DestinationGraph, Boundary);
+	FCortexGraphPreparedPatch Prepared;
+	FCortexGraphMigrationTransferPlan Plan;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("function-result boundary previews: %s"), *Error.ErrorMessage),
+		PreviewPlan(Fixture.Blueprint, Request, Prepared, Plan, Error));
+	TestEqual(TEXT("the function-result crossing needs exactly one boundary entry"), Plan.Boundary.Num(), 1);
+	if (Plan.Boundary.Num() == 1)
+	{
+		TestEqual(TEXT("the boundary entry names the source function result as the covered crossing edge"),
+			Plan.Boundary[0].SourceFarGuid, Source.Result ? Source.Result->NodeGuid.ToString() : FString());
+		TestEqual(TEXT("the boundary entry names the result return value pin"),
+			Plan.Boundary[0].SourceFarPin, FString(TEXT("ReturnValue")));
+	}
+
+	FCortexGraphPatchOutcome Outcome;
+	TestTrue(FString::Printf(TEXT("function-result boundary transfer applies: %s [%s]"), *Error.ErrorMessage, *JoinDiagnostics(Outcome.Diagnostics)),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	TestEqual(TEXT("function-result boundary readback matched"), Outcome.ReadbackStatus, FString(TEXT("matched")));
+	TestEqual(TEXT("function-result boundary compiles once"), Outcome.CompileStatus, FString(TEXT("compiled")));
+	UEdGraphNode* Moved = FindNodeByGuidInGraph(DestinationGraph, Producer->NodeGuid);
+	TestNotNull(TEXT("the moved producer resolves in the destination"), Moved);
+	if (Moved)
+	{
+		TestTrue(TEXT("the moved producer output is wired to the destination boundary pin"),
+			NodesLinked(Moved, TEXT("ReturnValue"), DestinationConsumer, TEXT("A")));
+	}
+	TestNull(TEXT("the moved producer is absent from the source graph"), FindNodeByGuidInGraph(Source.Graph, Producer->NodeGuid));
+	if (Source.Result)
+	{
+		UEdGraphPin* LeftBehind = Source.Result->FindPin(TEXT("ReturnValue"));
+		TestEqual(TEXT("the source function result keeps no dangling link"), LeftBehind ? LeftBehind->LinkedTo.Num() : -1, 0);
+	}
 
 	Fixture.Cleanup();
 	return true;

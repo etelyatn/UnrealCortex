@@ -333,6 +333,13 @@ public:
 		const FCortexGraphMigrationTransferPlan& Plan,
 		FString& OutFailure);
 
+	/**
+	 * The bounded, compact inventory of one transfer plan: crossing edges, boundary mappings, the
+	 * dependency inventory and the removal set, each capped by the shared diagnostics bound so the
+	 * published preview and apply responses stay small. Returns null for a non-transfer plan.
+	 */
+	static TSharedPtr<FJsonObject> MakeTransferInventory(const TSharedPtr<FJsonObject>& TransferPlanJson);
+
 	/** Compares graph preservation contracts against live native state. */
 	static bool VerifyPreservationContracts(
 		UBlueprint* Blueprint,

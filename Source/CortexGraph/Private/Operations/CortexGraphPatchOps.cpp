@@ -3758,14 +3758,17 @@ bool ApplyPrepared(
 			SourceNodes.Add(SourceNode);
 		}
 
+		// The registration hands back every identity it registered, including on the failure path,
+		// so a partially accepted import is always reversible.
 		TArray<FGuid> CreatedGuids;
-		if (!FCortexGraphMigrationOps::RegisterTransferNodes(Blueprint, TransferPlan, CreatedGuids, OutError))
-		{
-			return Fail(OutError.ErrorMessage);
-		}
+		const bool bRegistered = FCortexGraphMigrationOps::RegisterTransferNodes(Blueprint, TransferPlan, CreatedGuids, OutError);
 		for (const FGuid& CreatedGuid : CreatedGuids)
 		{
 			Journal.AddedNodeRefs.Add({ DestinationGraph->GraphGuid, CreatedGuid });
+		}
+		if (!bRegistered)
+		{
+			return Fail(OutError.ErrorMessage);
 		}
 		if (ShouldInjectApplyFault(TEXT("migration_transfer_after_destination")))
 		{
@@ -4384,6 +4387,7 @@ bool FCortexGraphPatchOps::Execute(
 		return Refuse();
 	}
 	OutOutcome.PatchId = Prepared.PatchId;
+	OutOutcome.TransferInventory = FCortexGraphMigrationOps::MakeTransferInventory(Prepared.TransferPlan);
 	OutOutcome.bChanged = Prepared.bChanged;
 	OutOutcome.ReusedClientIds = Prepared.ReusedClientIds;
 	OutOutcome.bReplayedWithAbsentSource = Prepared.bReplayedWithAbsentSource;

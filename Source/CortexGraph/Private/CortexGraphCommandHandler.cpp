@@ -1,4 +1,5 @@
 #include "CortexGraphCommandHandler.h"
+#include "Operations/CortexGraphMigrationOps.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexGraphNodeOps.h"
 #include "Operations/CortexGraphConnectionOps.h"
@@ -147,6 +148,15 @@ TSharedPtr<FJsonObject> MakePatchResultJson(
 	TSharedPtr<FJsonObject> Data = MakePatchPhaseJson(PatchId, bChanged, bDryRun, Outcome, true);
 	Data->SetObjectField(TEXT("node_mappings"), MakeNodeMappingJson(NodeGuidByClientId));
 	Data->SetObjectField(TEXT("locators"), MakeLocatorsJson(GraphGuid, SubgraphPath, EntryNodeGuid, bHasEntryNode));
+	// A transfer publishes its bounded inventory (crossing edges, boundary mappings, dependencies and
+	// the removal set) with the compact result, so no caller has to read the durable plan.
+	if (Outcome.TransferInventory.IsValid())
+	{
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Outcome.TransferInventory->Values)
+		{
+			Data->SetField(Pair.Key, Pair.Value);
+		}
+	}
 	return Data;
 }
 
@@ -269,6 +279,7 @@ FCortexCommandResult HandleApplyPatch(const TSharedPtr<FJsonObject>& Params)
 		// A caller must learn at preview time that the locator they named is not present, so the
 		// preview carries the same provenance flag and diagnostic the apply reports.
 		Preview.bReplayedWithAbsentSource = Prepared.bReplayedWithAbsentSource;
+		Preview.TransferInventory = FCortexGraphMigrationOps::MakeTransferInventory(Prepared.TransferPlan);
 		if (Prepared.bReplayedWithAbsentSource)
 		{
 			Preview.Diagnostics.Add(TEXT(
@@ -508,7 +519,7 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
 		FCortexCommandInfo{ TEXT("apply_patch"), TEXT("Preview or apply one typed graph patch as a single verified transaction: reversible mutation, one target compile, authoritative readback and optional explicit persistence. Two mutually exclusive shells share the envelope: the authoring shell (nodes/connections/pin_updates) and the migration shell, which publishes replace_entry (replaces a stale inherited implementation entry while preserving the downstream body) and copy_subgraph / move_subgraph (bounded same-asset transfer of a selected node set between two graphs with explicit boundary mappings and both-graph recovery). Standalone command: it cannot run inside a rollback-enabled batch because an outer batch cannot undo its compile or save boundary. Limits: max_nodes=64, max_edges=256, max_client_id_length=32, max_request_size_bytes=65536, max_scanned_nodes=2048.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset; the patch request must name the same asset"))
-			.Required(TEXT("target"), TEXT("object"), TEXT("Target locator: graph_ref with a canonical graph_guid (plus optional subgraph_path) or implementation with owner_class and function_name. Required by authoring and replace_entry; a copy_subgraph / move_subgraph request addresses its graphs inside migration and must not carry target."))
+			.Optional(TEXT("target"), TEXT("object"), TEXT("Target locator: graph_ref with a canonical graph_guid (plus optional subgraph_path) or implementation with owner_class and function_name. Required by an authoring request and by replace_entry; a copy_subgraph / move_subgraph request addresses its graphs inside migration and must not carry target."))
 			.Required(TEXT("patch_id"), TEXT("string"), TEXT("Caller-generated UUID that deterministically derives the identity of every new node"))
 			.Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Stale-write guard copied from graph.get_authoring_context: graph_authoring_version 1 plus graph_authoring_hash, package_saved_hash, is_dirty, dirty_epoch and not_ready"))
 			.Optional(TEXT("nodes"), TEXT("array"), TEXT("Authoring shell only: nodes to create or select, each with client_id, node_class, optional params, tagged defaults and position. node_class accepts a canonical class path or a family identifier. Supported families: CallFunction, VariableGet, VariableSet, Self, DynamicCast, ConstructObject, Event. Required for an authoring request (migration absent) and absent or empty for a migration request."))

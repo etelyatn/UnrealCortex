@@ -113,6 +113,12 @@ struct FCortexGraphPatchOutcome
 	bool bDirtyAfter = false;
 	/** Client ids whose deterministic nodes were reused instead of created. */
 	TArray<FString> ReusedClientIds;
+	/**
+	 * Bounded inventory of a transfer request (crossing edges, boundary mappings, dependencies and
+	 * the removal set), published with the preview and the apply result so a caller never has to read
+	 * the durable plan to learn which edges need explicit boundary mappings.
+	 */
+	TSharedPtr<FJsonObject> TransferInventory;
 	TArray<FString> Diagnostics;
 	FCortexGraphPatchLocators Locators;
 };

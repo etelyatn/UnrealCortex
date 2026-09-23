@@ -1009,10 +1009,12 @@ bool FCortexGraphPatchCommandSchemaTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
+	// `target` is conditionally required (authoring and replace_entry) and absent for a transfer, so
+	// the published partition declares it optional and every description states its condition.
 	TestEqual(TEXT("required envelope fields"), FString::Join(ParamNames(*ApplyPatch, true), TEXT(",")),
-		FString(TEXT("asset_path,target,patch_id,expected_fingerprint")));
+		FString(TEXT("asset_path,patch_id,expected_fingerprint")));
 	TestEqual(TEXT("optional envelope fields"), FString::Join(ParamNames(*ApplyPatch, false), TEXT(",")),
-		FString(TEXT("nodes,connections,pin_updates,migration,dry_run,compile,save,allow_noop,expected_validation_hash")));
+		FString(TEXT("target,nodes,connections,pin_updates,migration,dry_run,compile,save,allow_noop,expected_validation_hash")));
 	TestFalse(TEXT("apply_patch never opts into the rollback-safe contract"),
 		ApplyPatch->bRollbackSafe);
 	TestTrue(TEXT("the published description declares the batch restriction"),
