@@ -4,6 +4,7 @@
 #include "CortexCommandRouter.h"
 #include "CortexGraphCommandHandler.h"
 #include "CortexGraphMigrationTestTypes.h"
+#include "CortexGraphTestContentRoot.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
@@ -601,6 +602,7 @@ TSharedPtr<FJsonObject> TransferRequest(
 	const bool bSave = false,
 	const bool bCompile = true)
 {
+	EnsureCortexGraphTestTempContentRoot();
 	TSharedPtr<FJsonObject> Request = MakeShared<FJsonObject>();
 	Request->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 	Request->SetStringField(TEXT("patch_id"), PatchId);

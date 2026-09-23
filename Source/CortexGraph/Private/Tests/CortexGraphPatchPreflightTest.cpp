@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "Operations/CortexGraphPatchOps.h"
 #include "Operations/CortexGraphPatchState.h"
+#include "CortexGraphTestContentRoot.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Engine/Blueprint.h"
@@ -72,6 +73,7 @@ static UBlueprint* MakeBlueprint(UPackage*& OutPackage, const TCHAR* Name)
 
 static TSharedPtr<FJsonObject> BaseRequest(UBlueprint* Blueprint)
 {
+	EnsureCortexGraphTestTempContentRoot();
 	TSharedPtr<FJsonObject> Request = MakeShared<FJsonObject>();
 	Request->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 	Request->SetStringField(TEXT("patch_id"), TEXT("00000000-0000-0000-0000-000000000006"));

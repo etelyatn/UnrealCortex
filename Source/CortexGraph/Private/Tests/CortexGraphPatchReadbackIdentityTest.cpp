@@ -3,6 +3,7 @@
 #include "Operations/CortexGraphNodeContract.h"
 #include "Operations/CortexGraphPatchState.h"
 #include "Operations/CortexGraphPinDefaults.h"
+#include "CortexGraphTestContentRoot.h"
 #include "Components/ActorComponent.h"
 #include "Dom/JsonObject.h"
 #include "EdGraph/EdGraph.h"
@@ -71,6 +72,7 @@ static void Cleanup(UPackage* Package, UBlueprint* Blueprint)
 
 static TSharedPtr<FJsonObject> BaseRequest(UBlueprint* Blueprint, const TCHAR* PatchId)
 {
+	EnsureCortexGraphTestTempContentRoot();
 	TSharedPtr<FJsonObject> Request = MakeShared<FJsonObject>();
 	Request->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 	Request->SetStringField(TEXT("patch_id"), PatchId);

@@ -3,6 +3,7 @@
 #include "CortexGraphCommandHandler.h"
 #include "CortexAssetMutationGuard.h"
 #include "Operations/CortexGraphPatchState.h"
+#include "CortexGraphTestContentRoot.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Engine/Blueprint.h"
@@ -33,6 +34,7 @@ static UBlueprint* MakeBlueprint(UPackage*& OutPackage, const TCHAR* Name = TEXT
 
 static TSharedPtr<FJsonObject> MakeRequest(UBlueprint* Blueprint, const int32 NodeCount = 1)
 {
+	EnsureCortexGraphTestTempContentRoot();
 	TSharedPtr<FJsonObject> Request = MakeShared<FJsonObject>();
 	Request->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 	Request->SetStringField(TEXT("patch_id"), TEXT("00000000-0000-0000-0000-000000000007"));
@@ -479,9 +481,11 @@ bool FCortexGraphPatchApplySubgraphRecoveryTest::RunTest(const FString& Paramete
 	}
 	const int32 RootNodesBefore = RootGraph->Nodes.Num();
 	const int32 SubgraphNodesBefore = Subgraph->Nodes.Num();
+	// The graph_ref names the TARGET graph: the bound composite child's own identity plus its
+	// root-relative path, exactly the pair `graph.get_authoring_context` publishes for that child.
 	TSharedPtr<FJsonObject> Request = CortexGraphPatchApplyTest::MakeRequest(Blueprint);
 	TSharedPtr<FJsonObject> GraphRef = Request->GetObjectField(TEXT("target"))->GetObjectField(TEXT("graph_ref"));
-	GraphRef->SetStringField(TEXT("graph_guid"), RootGraph->GraphGuid.ToString());
+	GraphRef->SetStringField(TEXT("graph_guid"), Subgraph->GraphGuid.ToString());
 	GraphRef->SetStringField(TEXT("subgraph_path"), Subgraph->GetName());
 	FCortexGraphPreparedPatch Prepared;
 	FCortexCommandResult Error;

@@ -2,6 +2,7 @@
 #include "Operations/CortexGraphPatchOps.h"
 #include "Operations/CortexGraphPatchState.h"
 #include "Operations/CortexGraphPinDefaults.h"
+#include "CortexGraphTestContentRoot.h"
 #include "CortexAssetMutationGuard.h"
 #include "CortexCommandRouter.h"
 #include "CortexGraphCommandHandler.h"
@@ -187,6 +188,7 @@ struct FFixture
 
 static TSharedPtr<FJsonObject> BaseRequest(UBlueprint* Blueprint, const TCHAR* PatchId)
 {
+	EnsureCortexGraphTestTempContentRoot();
 	TSharedPtr<FJsonObject> Request = MakeShared<FJsonObject>();
 	Request->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 	Request->SetStringField(TEXT("patch_id"), PatchId);
