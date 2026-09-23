@@ -131,6 +131,35 @@ class TestSendCommandTimeout:
         assert exc_info.value.message == "Failed to write report"
         assert exc_info.value.details == {"applied_count": 1}
 
+def test_send_command_once_never_replays_after_request_dispatch(monkeypatch):
+    conn = UEConnection(port=99999)
+    sent = []
+    sock = MagicMock()
+    sock.sendall.side_effect = lambda payload: sent.append(payload)
+    sock.recv.side_effect = socket.timeout("receive timed out after dispatch")
+    conn._socket = sock
+    connect_calls = []
+    monkeypatch.setattr(conn, "connect", lambda: connect_calls.append(True))
+    discover_calls = []
+    monkeypatch.setattr("cortex_mcp.tcp_client._discover_port", lambda: discover_calls.append(True))
+    attempts = []
+    original = conn._send_and_receive
+
+    def record_attempt(*args, **kwargs):
+        attempts.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(conn, "_send_and_receive", record_attempt)
+    send_once = getattr(conn, "send_command_once", None)
+    assert callable(send_once), "UEConnection.send_command_once must be available"
+
+    with pytest.raises(ConnectionError):
+        send_once("graph.apply_patch", {"patch_id": "patch-1"}, timeout=0.01)
+
+    assert len(sent) == 1
+    assert len(attempts) == 1
+    assert len(connect_calls) == 1
+    assert discover_calls == []
 
 class TestPortFileParsing:
     """Tests for JSON and plain-text port file backward compatibility."""

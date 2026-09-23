@@ -12,7 +12,7 @@ from cortex_mcp.operation_schema import (
     reset_operation_schema_budget,
 )
 from cortex_mcp.pagination import encode_cursor
-from cortex_mcp.response import format_response, _MAX_RESPONSE_CHARS
+from cortex_mcp.response import format_response, MAX_RESPONSE_CHARS
 from cortex_mcp.tcp_client import UECommandError
 from cortex_mcp.tools.routers import make_router, strict_router_tool, _pagination_cache
 
@@ -368,7 +368,7 @@ def test_removal_result_below_40k_preserved_intact():
     formatted = format_response(data, "umg_cmd")
     result = json.loads(formatted)
 
-    assert len(formatted) <= _MAX_RESPONSE_CHARS
+    assert len(formatted) <= MAX_RESPONSE_CHARS
     assert result["changed"] is True
     assert result["dry_run"] is False
     assert result["save_attempted"] is True
@@ -386,10 +386,10 @@ def test_removal_result_above_40k_preserves_outcomes_and_truncates_remaining_bin
     # 201 bindings with moderate entry size clearly exceeds 40,000 chars
     data = _build_native_removal_result(num_remaining=201, entry_size=150)
     raw_size = len(json.dumps(data, indent=2))
-    assert raw_size > _MAX_RESPONSE_CHARS
+    assert raw_size > MAX_RESPONSE_CHARS
 
     formatted = format_response(data, "umg_cmd")
-    assert len(formatted) <= _MAX_RESPONSE_CHARS
+    assert len(formatted) <= MAX_RESPONSE_CHARS
     result = json.loads(formatted)
 
     # Must NEVER replace mutation result with generic size error
@@ -419,10 +419,10 @@ def test_removal_result_fewer_than_ten_large_entries_truncates_without_error():
     # 3 entries, but each entry is huge (~15,000 chars)
     data = _build_native_removal_result(num_remaining=3, entry_size=15_000)
     raw_size = len(json.dumps(data, indent=2))
-    assert raw_size > _MAX_RESPONSE_CHARS
+    assert raw_size > MAX_RESPONSE_CHARS
 
     formatted = format_response(data, "umg_cmd")
-    assert len(formatted) <= _MAX_RESPONSE_CHARS
+    assert len(formatted) <= MAX_RESPONSE_CHARS
     result = json.loads(formatted)
 
     # Must NOT fail with RESPONSE_TOO_LARGE
@@ -441,12 +441,12 @@ def test_removal_result_with_large_diagnostics_and_remaining_bindings():
     # 15 diagnostics and 11 remaining bindings
     data = _build_native_removal_result(num_remaining=11, entry_size=3_500, num_diagnostics=15)
     raw_size = len(json.dumps(data, indent=2))
-    assert raw_size > _MAX_RESPONSE_CHARS
+    assert raw_size > MAX_RESPONSE_CHARS
 
 
 
     formatted = format_response(data, "umg_cmd")
-    assert len(formatted) <= _MAX_RESPONSE_CHARS
+    assert len(formatted) <= MAX_RESPONSE_CHARS
     result = json.loads(formatted)
 
     assert result.get("_error") != "RESPONSE_TOO_LARGE"
@@ -470,10 +470,10 @@ def test_removal_save_failure_retains_error_identity_and_outcomes():
         save_error="Package save failed: disk read-only",
     )
     raw_size = len(json.dumps(data, indent=2))
-    assert raw_size > _MAX_RESPONSE_CHARS
+    assert raw_size > MAX_RESPONSE_CHARS
 
     formatted = format_response(data, "umg_cmd")
-    assert len(formatted) <= _MAX_RESPONSE_CHARS
+    assert len(formatted) <= MAX_RESPONSE_CHARS
     result = json.loads(formatted)
 
     assert result["changed"] is True

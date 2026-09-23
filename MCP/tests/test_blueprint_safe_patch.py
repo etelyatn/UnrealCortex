@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-from cortex_mcp.response import _MAX_RESPONSE_CHARS
+from cortex_mcp.response import MAX_RESPONSE_CHARS
 from cortex_mcp.tcp_client import UECommandError
 from cortex_mcp.tools.composites.blueprint import register_blueprint_compose_tools
 
@@ -379,7 +379,7 @@ def test_update_maximal_compact_outcome_survives_the_response_bound():
         mode="update", asset_path=ASSET, patch={"patch_id": PATCH_ID, "dry_run": False},
     )
     payload = _payload(raw)
-    assert len(raw) < _MAX_RESPONSE_CHARS
+    assert len(raw) < MAX_RESPONSE_CHARS
     assert "_truncated" not in payload
     assert payload["apply_status"] == "applied"
     assert payload["save_status"] == "saved"

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from cortex_mcp.pagination import PaginationCache, encode_cursor, decode_cursor
-from cortex_mcp.response import format_response, _MAX_RESPONSE_CHARS
+from cortex_mcp.response import format_response, MAX_RESPONSE_CHARS
 from cortex_mcp.tools.routers import make_router
 
 
@@ -21,7 +21,7 @@ def _router_with_mock(domain: str = "data", response_data: dict | None = None):
 
 
 def _make_large_list(key: str, count: int = 500) -> dict:
-    """Build a response with a large list that exceeds _MAX_RESPONSE_CHARS."""
+    """Build a response that exceeds MAX_RESPONSE_CHARS."""
     return {key: [{"id": i, "name": f"Item_{i}", "path": f"/Game/Test/Asset_{i}"} for i in range(count)]}
 
 
@@ -36,7 +36,7 @@ class TestAutoDetectTruncation:
         assert "_truncated" in result
         assert result["_truncated"]["original_count"] == 500
         assert len(result["blueprints"]) == result["_truncated"]["returned_count"]
-        assert len(json.dumps(result, indent=2)) <= _MAX_RESPONSE_CHARS
+        assert len(json.dumps(result, indent=2)) <= MAX_RESPONSE_CHARS
 
     def test_known_array_key_still_works(self):
         """Previously allowlisted keys like 'rows' must still be truncated."""
@@ -414,7 +414,7 @@ class TestPaginationEdgeCases:
         assert "_pagination" in result
         # If the page exceeds 40KB, truncation also kicks in
         result_text = json.dumps(result, indent=2)
-        assert len(result_text) <= _MAX_RESPONSE_CHARS
+        assert len(result_text) <= MAX_RESPONSE_CHARS
         # Safety net actually triggered — rows is checked directly because
         # _pagination.returned reflects the pre-truncation count (see TD-001).
         assert len(result["rows"]) < 200
@@ -516,7 +516,7 @@ class TestMutationResponseBounds:
             "save_error": None,
         }
         formatted = format_response(data, "umg_cmd")
-        assert len(formatted) <= _MAX_RESPONSE_CHARS
+        assert len(formatted) <= MAX_RESPONSE_CHARS
         res = json.loads(formatted)
         assert res.get("_error") != "RESPONSE_TOO_LARGE"
         assert res["changed"] is True
@@ -541,7 +541,7 @@ class TestMutationResponseBounds:
             "_remaining_bindings_total": 3,
         }
         formatted = format_response(data, "umg_cmd")
-        assert len(formatted) <= _MAX_RESPONSE_CHARS
+        assert len(formatted) <= MAX_RESPONSE_CHARS
         res = json.loads(formatted)
         assert res.get("_error") != "RESPONSE_TOO_LARGE"
         assert res["changed"] is True
@@ -572,7 +572,7 @@ class TestMutationResponseBounds:
         }
 
         formatted = format_response(data, "umg_cmd")
-        assert len(formatted) <= _MAX_RESPONSE_CHARS
+        assert len(formatted) <= MAX_RESPONSE_CHARS
         res = json.loads(formatted)
         returned_count = len(res["bindings"])
         assert returned_count < total_items
@@ -606,7 +606,7 @@ class TestMutationResponseBounds:
                 },
             }
             formatted = format_response(raw_page, "umg_cmd")
-            assert len(formatted) <= _MAX_RESPONSE_CHARS
+            assert len(formatted) <= MAX_RESPONSE_CHARS
             res = json.loads(formatted)
             for item in res["bindings"]:
                 retrieved_selectors.append(item["selector"])
@@ -643,7 +643,7 @@ class TestMutationResponseBounds:
             },
         }
         formatted = format_response(data, "umg_cmd")
-        assert len(formatted) <= _MAX_RESPONSE_CHARS
+        assert len(formatted) <= MAX_RESPONSE_CHARS
         res = json.loads(formatted)
         # All 10 bindings should be preserved
         assert len(res["bindings"]) == 10
@@ -683,7 +683,7 @@ class TestMutationResponseBounds:
             },
         }
         formatted = format_response(data, "umg_cmd")
-        assert len(formatted) <= _MAX_RESPONSE_CHARS
+        assert len(formatted) <= MAX_RESPONSE_CHARS
         res = json.loads(formatted)
         assert res.get("_error") != "RESPONSE_TOO_LARGE"
         assert len(res["bindings"]) == 1
@@ -726,7 +726,7 @@ class TestMutationResponseBounds:
             },
         }
         formatted = format_response(data, "umg_cmd")
-        assert len(formatted) <= _MAX_RESPONSE_CHARS
+        assert len(formatted) <= MAX_RESPONSE_CHARS
         res = json.loads(formatted)
         assert res.get("_error") != "RESPONSE_TOO_LARGE"
         assert len(res["bindings"]) > 0
