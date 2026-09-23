@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "CortexCommandRouter.h"
+#include "CortexEditorUtils.h"
 #include "CortexLevelCommandHandler.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -7,6 +8,7 @@
 #include "FileHelpers.h"
 #include "HAL/FileManager.h"
 #include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 #include "UObject/Package.h"
 
 namespace
@@ -18,6 +20,43 @@ namespace
 			MakeShared<FCortexLevelCommandHandler>());
 		return Router;
 	}
+
+	/** Registers a throwaway plugin-style mount backed by a directory under project Saved.
+	 *  Only the writable variant is added to the shared writable-root policy. */
+	class FScopedLifecycleTestMount
+	{
+	public:
+		FScopedLifecycleTestMount(
+			const FString& InRoot,
+			const FString& InDirectory,
+			bool bInWritable)
+			: Root(InRoot)
+			, Directory(InDirectory)
+			, bWritable(bInWritable)
+		{
+			IFileManager::Get().MakeDirectory(*Directory, true);
+			FPackageName::RegisterMountPoint(Root, Directory);
+			if (bWritable)
+			{
+				FCortexEditorUtils::AddTestWritableContentRoot(Root);
+			}
+		}
+
+		~FScopedLifecycleTestMount()
+		{
+			if (bWritable)
+			{
+				FCortexEditorUtils::RemoveTestWritableContentRoot(Root);
+			}
+			FPackageName::UnRegisterMountPoint(Root, Directory);
+			IFileManager::Get().DeleteDirectory(*Directory, false, true);
+		}
+
+	private:
+		FString Root;
+		FString Directory;
+		bool bWritable = false;
+	};
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -260,6 +299,109 @@ bool FCortexLevelOpenLevelNotFoundTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Should fail for non-existent level"), Result.bSuccess);
 	TestEqual(TEXT("Error should be ASSET_NOT_FOUND"), Result.ErrorCode, TEXT("ASSET_NOT_FOUND"));
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelOpenLevelWritableMountedRootTest,
+	"Cortex.Level.Lifecycle.OpenLevel.WritableMountedRoot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexLevelOpenLevelWritableMountedRootTest::RunTest(const FString& Parameters)
+{
+	const FString Root = TEXT("/CortexLifecycleWritable/");
+	const FString Dir = FPaths::ProjectSavedDir() / TEXT("CortexLifecycleWritable");
+	FScopedLifecycleTestMount Mount(Root, Dir, true);
+
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("path"), Root + TEXT("Maps/NoSuchLevel_XYZ"));
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("level.open_level"), Params);
+	TestFalse(TEXT("Missing level should fail"), Result.bSuccess);
+	TestEqual(TEXT("Writable mounted root must pass validation and reach lookup"),
+		Result.ErrorCode, FString(TEXT("ASSET_NOT_FOUND")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelOpenLevelRegisteredNonWritableRootTest,
+	"Cortex.Level.Lifecycle.OpenLevel.RegisteredNonWritableRoot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexLevelOpenLevelRegisteredNonWritableRootTest::RunTest(const FString& Parameters)
+{
+	const FString Root = TEXT("/CortexLifecycleReadOnly/");
+	const FString Dir = FPaths::ProjectSavedDir() / TEXT("CortexLifecycleReadOnly");
+	FScopedLifecycleTestMount Mount(Root, Dir, false);
+
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("path"), Root + TEXT("Maps/NoSuchLevel_XYZ"));
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("level.open_level"), Params);
+	TestFalse(TEXT("Registered non-writable root must fail"), Result.bSuccess);
+	TestEqual(TEXT("Registered non-writable root must be rejected before lookup"),
+		Result.ErrorCode, FString(TEXT("INVALID_PARAMETER")));
+	TestTrue(TEXT("Rejection message must name the mounted root"),
+		Result.ErrorMessage.Contains(TEXT("/CortexLifecycleReadOnly")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelOpenLevelUnknownRootTest,
+	"Cortex.Level.Lifecycle.OpenLevel.UnknownRoot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexLevelOpenLevelUnknownRootTest::RunTest(const FString& Parameters)
+{
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("path"), TEXT("/CortexLifecycleUnknown/Maps/NoSuchLevel_XYZ"));
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("level.open_level"), Params);
+	TestFalse(TEXT("Unknown root must fail"), Result.bSuccess);
+	TestEqual(TEXT("Unknown root must be rejected before lookup"),
+		Result.ErrorCode, FString(TEXT("INVALID_PARAMETER")));
+	TestTrue(TEXT("Rejection message must name the unknown root"),
+		Result.ErrorMessage.Contains(TEXT("/CortexLifecycleUnknown")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelOpenLevelEngineRootTest,
+	"Cortex.Level.Lifecycle.OpenLevel.EngineRoot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexLevelOpenLevelEngineRootTest::RunTest(const FString& Parameters)
+{
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("path"), TEXT("/Engine/Maps/NoSuchLevel_XYZ"));
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("level.open_level"), Params);
+	TestFalse(TEXT("Engine root must fail"), Result.bSuccess);
+	TestEqual(TEXT("Engine root is never writable"), Result.ErrorCode, FString(TEXT("INVALID_PARAMETER")));
+	TestTrue(TEXT("Rejection message must name the engine root"),
+		Result.ErrorMessage.Contains(TEXT("/Engine")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelOpenLevelTraversalPathTest,
+	"Cortex.Level.Lifecycle.OpenLevel.TraversalPath",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexLevelOpenLevelTraversalPathTest::RunTest(const FString& Parameters)
+{
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("path"), TEXT("/Game/../Engine/Foo"));
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("level.open_level"), Params);
+	TestFalse(TEXT("Traversal path must fail"), Result.bSuccess);
+	TestEqual(TEXT("Traversal path must not be normalized into writable content"),
+		Result.ErrorCode, FString(TEXT("INVALID_PARAMETER")));
 	return true;
 }
 
