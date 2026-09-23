@@ -910,43 +910,37 @@ async def test_scenario_typed_authoring_out_and_ref_implementation_signatures(mc
 
 
 @pytest.mark.anyio
-async def test_scenario_typed_authoring_late_compile_failure_restores_graph(mcp_client):
+async def test_scenario_typed_authoring_construct_object_refuses_component_before_mutation(mcp_client):
     run = AuthoringRun(mcp_client, uuid.uuid4().hex[:8])
     try:
-        package = await run.create("BP_CortexLateFailure", kind="Actor")
+        package = await run.create("BP_CortexComponentRefusal", kind="Actor")
         source = next(
-            choice for choice in (await run.graph_choices(package)).values()
+            choice for choice in (await run.context(package))["graph_choices"]
             if choice["graph_kind"] == "ubergraph"
         )
         before = await run.subgraph(package, source["graph_name"])
         before_fingerprint = (await run.context(package))["fingerprint"]
-        # The failure this route exercises is an intentional, narrowly scoped compiler failure: a
-        # construct-object node whose class the engine refuses to construct (a class in the
-        # UActorComponent subtree is excluded by K2Node_GenericCreateObject::EarlyValidation). The
-        # previous fixture drove the failure with the malformed `"None"` literal on an object pin,
-        # which is no longer a malformed default now that a null reference is written as an empty
-        # DefaultValue with a null DefaultObject.
         body = envelope(
-            run.object_path(package), str(uuid.uuid4()), before_fingerprint,
+            run.object_path(package),
+            str(uuid.uuid4()),
+            before_fingerprint,
             target={"graph_ref": {"graph_guid": source["graph_guid"]}},
             nodes=[
-                {"client_id": "bad_construct", "node_class": "ConstructObject",
+                {"client_id": "forbidden_component", "node_class": "ConstructObject",
                  "params": {"class": "/Script/Engine.SceneComponent"}},
-                {"client_id": "begin", "node_class": "Event", "params": {"function_name": "Actor.ReceiveEndPlay"}},
             ],
-            connections=[{"from": {"client_id": "begin", "pin": "then"},
-                          "to": {"client_id": "bad_construct", "pin": "execute"}}],
         )
-        preview = await run.apply(body)
-        assert preview["validation_hash"] and preview["changed"] is True, preview
-        failed = await graph_raw(
+
+        preview = await graph_raw(mcp_client, "apply_patch", body)
+        assert preview.get("_error") == "INVALID_FIELD", preview
+        assert "SceneComponent" in preview.get("_message", ""), preview
+
+        refused_apply = await graph_raw(
             mcp_client, "apply_patch",
-            {**body, "dry_run": False, "expected_validation_hash": preview["validation_hash"]},
+            {**body, "dry_run": False, "expected_validation_hash": "stale-token"},
         )
-        if failed.get("_error") == "STALE_PRECONDITION":
-            failed = await apply_reviewed(run, body, package)
-        assert failed.get("_error") == "COMPILE_FAILED", failed
-        assert failed["rollback_status"] == "restored" and failed["blocked"] is False, failed
+        assert refused_apply.get("_error") == "INVALID_FIELD", refused_apply
+        assert "SceneComponent" in refused_apply.get("_message", ""), refused_apply
         after = await run.subgraph(package, source["graph_name"])
         assert after["nodes"] == before["nodes"] and edges(after) == edges(before)
         assert (await run.context(package))["fingerprint"] == before_fingerprint

@@ -603,8 +603,10 @@ bool FCortexGraphSymbolsAmbiguityTest::RunTest(const FString& Parameters)
 		TSharedPtr<FJsonObject> NodeParams = MakeShared<FJsonObject>();
 		NodeParams->SetStringField(TEXT("class"), BPA->GeneratedClass->GetPathName());
 		FCortexCommandResult ValidateError;
-		TestTrue(TEXT("Validate ConstructObject with canonical path succeeds"),
+		TestFalse(TEXT("Validate refuses a canonical Actor Blueprint class for ConstructObject"),
 			FCortexGraphNodeContract::Validate(TEXT("ConstructObject"), ConsumerBP, NodeParams, ValidateError));
+		TestEqual(TEXT("forbidden canonical class returns INVALID_FIELD"),
+			ValidateError.ErrorCode, CortexErrorCodes::InvalidField);
 	}
 
 	CleanupTestPackage(PkgA);

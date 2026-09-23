@@ -27,6 +27,8 @@
 #include "UObject/UObjectGlobals.h"
 #include "Dom/JsonObject.h"
 
+#include "Curves/CurveFloat.h"
+#include "Components/SceneComponent.h"
 #if WITH_EDITOR && WITH_AUTOMATION_TESTS
 
 namespace CortexGraphPatchCompileTest
@@ -37,16 +39,19 @@ struct FOperations
 	int32 TargetCompiles = 0;
 	int32 RecoveryCompiles = 0;
 	int32 Saves = 0;
+	TFunction<void(FName, UBlueprint*)> BeforeOperation;
 
 	void Begin()
 	{
+		TFunction<void(FName, UBlueprint*)> SavedCallback = MoveTemp(BeforeOperation);
 		*this = FOperations();
+		BeforeOperation = MoveTemp(SavedCallback);
 		Active = this;
 		FCortexGraphPatchOps::SetOperationObserverForTesting(
 			[](const FName Operation, UBlueprint* Observed)
 			{
-				(void)Observed;
 				if (!Active) return;
+				if (Active->BeforeOperation) Active->BeforeOperation(Operation, Observed);
 				if (Operation == TEXT("target_compile")) ++Active->TargetCompiles;
 				else if (Operation == TEXT("recovery_compile")) ++Active->RecoveryCompiles;
 			});
@@ -100,6 +105,7 @@ static TSharedPtr<FJsonObject> BaseRequest(UBlueprint* Blueprint, const TCHAR* P
 	Request->SetBoolField(TEXT("save"), false);
 	Request->SetBoolField(TEXT("allow_noop"), false);
 	return Request;
+
 }
 
 static TSharedPtr<FJsonObject> AddNode(
@@ -140,9 +146,17 @@ static void AddConnection(
 static TSharedPtr<FJsonObject> StringLiteral(const TCHAR* Value)
 {
 	TSharedPtr<FJsonObject> Literal = MakeShared<FJsonObject>();
+
 	Literal->SetStringField(TEXT("kind"), TEXT("string"));
 	Literal->SetStringField(TEXT("value"), Value);
 	return Literal;
+}
+
+static TSharedPtr<FJsonObject> ClassParams(const TCHAR* ClassPath)
+{
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("class"), ClassPath);
+	return Params;
 }
 
 /** Runs a preview and converts the request into an apply request carrying its validation token. */
@@ -472,11 +486,47 @@ bool FCortexGraphPatchCompileFailureTest::RunTest(const FString& Parameters)
 	const int32 NodesBefore = CortexGraphPatchCompileTest::CountNativeNodes(Blueprint);
 	TestTrue(TEXT("pre-existing generated state is non-trivial"), GeneratedBefore.Contains(TEXT("T08PreexistingEvent")));
 
-	TSharedPtr<FJsonObject> Request = CortexGraphPatchCompileTest::BaseRequest(Blueprint, TEXT("00000000-0000-0000-0000-000000000208"));
-	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
-	CreateParams->SetStringField(TEXT("class"), TEXT("/Script/Engine.SceneComponent"));
-	CortexGraphPatchCompileTest::AddNode(Request, TEXT("badconstruct"), TEXT("GenericCreateObject"), CreateParams);
+	TSharedPtr<FJsonObject> Request = CortexGraphPatchCompileTest::BaseRequest(
+		Blueprint, TEXT("00000000-0000-0000-0000-000000000208"));
+	CortexGraphPatchCompileTest::AddNode(
+		Request, TEXT("badconstruct"), TEXT("GenericCreateObject"),
+		CortexGraphPatchCompileTest::ClassParams(TEXT("/Script/Engine.CurveFloat")));
+	CortexGraphPatchCompileTest::AddNode(Request, TEXT("compile_error"), TEXT("CustomEvent"));
+	CortexGraphPatchCompileTest::AddConnection(Request,
+		[](TSharedPtr<FJsonObject>& From)
+		{
+			From->SetStringField(TEXT("client_id"), TEXT("compile_error"));
+			From->SetStringField(TEXT("pin"), TEXT("then"));
+		},
+		[](TSharedPtr<FJsonObject>& To)
+		{
+			To->SetStringField(TEXT("client_id"), TEXT("badconstruct"));
+			To->SetStringField(TEXT("pin"), TEXT("execute"));
+		});
+
 	CortexGraphPatchCompileTest::FOperations Operations;
+	Operations.BeforeOperation = [](const FName Operation, UBlueprint* Target)
+	{
+		if (Operation != TEXT("target_compile") || !Target) return;
+		// This is a real UE compiler-only failure: CustomEvent rejects shadowing a native
+		// parent function during ValidateNodeDuringCompilation. The test hook configures the
+		// newly added event immediately before the real target compile; it does not fake a result.
+		TArray<UEdGraph*> Graphs;
+		Target->GetAllGraphs(Graphs);
+		for (UEdGraph* Graph : Graphs)
+		{
+			if (!Graph) continue;
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				UK2Node_CustomEvent* Event = Cast<UK2Node_CustomEvent>(Node);
+				if (Event && Event->CustomFunctionName.IsNone())
+				{
+					Event->CustomFunctionName = FName(TEXT("ReceiveBeginPlay"));
+					return;
+				}
+			}
+		}
+	};
 	Operations.Begin();
 	FCortexGraphPatchOps::SetReadbackFaultForTesting(NAME_None);
 
@@ -487,7 +537,7 @@ bool FCortexGraphPatchCompileFailureTest::RunTest(const FString& Parameters)
 	Request->SetBoolField(TEXT("dry_run"), false);
 	Request->SetStringField(TEXT("expected_validation_hash"), Preview.ValidationHash);
 
-	AddExpectedError(TEXT("Cannot construct objects of type"), EAutomationExpectedErrorFlags::Contains, 1);
+	AddExpectedError(TEXT("name conflicts with a native"), EAutomationExpectedErrorFlags::Contains, 1);
 	FCortexGraphPatchOutcome Outcome;
 	TestFalse(TEXT("structurally valid patch that fails compilation is rejected"),
 		FCortexGraphPatchOps::Execute(Blueprint, Request, Outcome, Error));
@@ -501,7 +551,7 @@ bool FCortexGraphPatchCompileFailureTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("verified restoration does not block the asset"), Outcome.bBlocked);
 	TestTrue(TEXT("compiler diagnostics are preserved"), Outcome.Diagnostics.Num() > 0);
 	TestTrue(TEXT("compiler diagnostics keep the engine message"),
-		FString::Join(Outcome.Diagnostics, TEXT(" | ")).Contains(TEXT("Cannot construct objects of type")));
+		FString::Join(Outcome.Diagnostics, TEXT(" | ")).Contains(TEXT("name conflicts with a native")));
 	TestEqual(TEXT("no save during a failed patch"), Operations.Saves, 0);
 	TestFalse(TEXT("failed patch does not claim a save"), Outcome.bSaved);
 	TestEqual(TEXT("compiler failure restores exact authoring state"),
@@ -1282,6 +1332,84 @@ bool FCortexGraphPatchCompileClassPinExposedPinRecoveryTest::RunTest(const FStri
 	CortexGraphPatchCompileTest::Cleanup(Package, Blueprint);
 	CortexGraphPatchCompileTest::Cleanup(ChildPackage, Child);
 	CortexGraphPatchCompileTest::Cleanup(BasePackage, Base);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchConstructObjectEligibilityTest,
+	"Cortex.Graph.Authoring.Construction.ConstructObjectEligibility",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchConstructObjectEligibilityTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = CortexGraphPatchCompileTest::MakeBlueprint(
+		Package, TEXT("BP_ConstructObjectEligibility"));
+	TestNotNull(TEXT("constructibility fixture Blueprint created"), Blueprint);
+	if (!Blueprint)
+	{
+		CortexGraphPatchCompileTest::Cleanup(Package, Blueprint);
+		return false;
+	}
+
+	const FString FingerprintBefore = CortexGraphPatchCompileTest::GraphHash(Blueprint);
+	const int32 NodesBefore = CortexGraphPatchCompileTest::CountNativeNodes(Blueprint);
+	const bool bDirtyBefore = Blueprint->GetOutermost()->IsDirty();
+	const int32 StatusBefore = static_cast<int32>(Blueprint->Status);
+
+	TSharedPtr<FJsonObject> Forbidden = CortexGraphPatchCompileTest::BaseRequest(
+		Blueprint, TEXT("00000000-0000-0000-0000-000000000a10"));
+	CortexGraphPatchCompileTest::AddNode(
+		Forbidden, TEXT("component"), TEXT("ConstructObject"),
+		CortexGraphPatchCompileTest::ClassParams(TEXT("/Script/Engine.SceneComponent")));
+	Forbidden->SetBoolField(TEXT("dry_run"), false);
+	Forbidden->SetStringField(TEXT("expected_validation_hash"), TEXT("stale-token"));
+
+	CortexGraphPatchCompileTest::FOperations Operations;
+	Operations.Begin();
+	FCortexGraphPatchOutcome Outcome;
+	FCortexCommandResult Error;
+	TestFalse(TEXT("SceneComponent is rejected by ConstructObject preflight"),
+		FCortexGraphPatchOps::Execute(Blueprint, Forbidden, Outcome, Error));
+	TestEqual(TEXT("forbidden class returns INVALID_FIELD"), Error.ErrorCode, CortexErrorCodes::InvalidField);
+	TestEqual(TEXT("forbidden class is refused before apply"), Outcome.ApplyStatus, FString(TEXT("not_requested")));
+	TestEqual(TEXT("forbidden class never reaches target compile"), Operations.TargetCompiles, 0);
+	TestEqual(TEXT("forbidden class leaves native nodes untouched"),
+		CortexGraphPatchCompileTest::CountNativeNodes(Blueprint), NodesBefore);
+	TestEqual(TEXT("forbidden class leaves the graph fingerprint unchanged"),
+		CortexGraphPatchCompileTest::GraphHash(Blueprint), FingerprintBefore);
+	TestEqual(TEXT("forbidden class leaves dirty state unchanged"),
+		Blueprint->GetOutermost()->IsDirty(), bDirtyBefore);
+	TestEqual(TEXT("forbidden class leaves compile status unchanged"),
+		static_cast<int32>(Blueprint->Status), StatusBefore);
+
+	TSharedPtr<FJsonObject> ActorClass = CortexGraphPatchCompileTest::BaseRequest(
+		Blueprint, TEXT("00000000-0000-0000-0000-000000000a12"));
+	CortexGraphPatchCompileTest::AddNode(
+		ActorClass, TEXT("actor"), TEXT("ConstructObject"),
+		CortexGraphPatchCompileTest::ClassParams(TEXT("/Script/Engine.Actor")));
+	FCortexGraphPatchOutcome ActorOutcome;
+	Error = FCortexCommandResult();
+	TestFalse(TEXT("AActor itself is rejected by ConstructObject preflight"),
+		FCortexGraphPatchOps::Execute(Blueprint, ActorClass, ActorOutcome, Error));
+	TestEqual(TEXT("AActor returns INVALID_FIELD"), Error.ErrorCode, CortexErrorCodes::InvalidField);
+	TestEqual(TEXT("AActor never reaches target compile"), Operations.TargetCompiles, 0);
+
+
+	TSharedPtr<FJsonObject> Allowed = CortexGraphPatchCompileTest::BaseRequest(
+		Blueprint, TEXT("00000000-0000-0000-0000-000000000a11"));
+	CortexGraphPatchCompileTest::AddNode(
+		Allowed, TEXT("curve"), TEXT("ConstructObject"),
+		CortexGraphPatchCompileTest::ClassParams(TEXT("/Script/Engine.CurveFloat")));
+	FCortexGraphPreparedPatch Prepared;
+	Error = FCortexCommandResult();
+	TestTrue(FString::Printf(TEXT("CurveFloat remains constructible: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Blueprint, Allowed, Prepared, Error));
+	TestEqual(TEXT("allowed-class preflight does not compile"), Operations.TargetCompiles, 0);
+	Operations.End();
+
+	CortexGraphPatchCompileTest::Cleanup(Package, Blueprint);
 	return true;
 }
 

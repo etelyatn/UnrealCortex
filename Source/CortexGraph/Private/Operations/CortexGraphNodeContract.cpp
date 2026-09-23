@@ -34,12 +34,61 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "EdGraphSchema_K2.h"
 #include "Engine/TimelineTemplate.h"
+#include "Components/ActorComponent.h"
 
 namespace
 {
 const FString VarGetPrerequisite = TEXT("Referenced UMG designer widgets must have is_variable=true; call umg.set_widget_variable before referencing them from a graph.");
 const FString VarGetNonRetryable = TEXT("VARIABLE_NOT_FOUND, INVALID_FIELD");
 const FString CallFunctionNonRetryable = TEXT("INVALID_FIELD");
+
+
+/**
+ * Mirrors UE 5.8 UK2Node_GenericCreateObject::CanSpawnObjectOfClass(..., false):
+ * ConstructObject always names a concrete class, so abstract classes are not allowed.
+ */
+bool IsConstructObjectClassAllowed(const UClass* ObjectClass)
+{
+	bool bCanSpawnObject = ObjectClass
+		&& !ObjectClass->HasAnyClassFlags(CLASS_Abstract)
+		&& !ObjectClass->HasAnyClassFlags(CLASS_Deprecated | CLASS_NewerVersionExists);
+
+	if (bCanSpawnObject)
+	{
+		static const FName BlueprintTypeName(TEXT("BlueprintType"));
+		static const FName NotBlueprintTypeName(TEXT("NotBlueprintType"));
+		static const FName DontUseGenericSpawnObjectName(TEXT("DontUseGenericSpawnObject"));
+
+		auto IsClassAllowed = [](const UClass* Class)
+		{
+			return Class != AActor::StaticClass()
+				&& Class != UActorComponent::StaticClass();
+		};
+
+		bCanSpawnObject = false;
+		const UClass* CurrentClass = ObjectClass;
+		while (!bCanSpawnObject && CurrentClass
+			&& !CurrentClass->GetBoolMetaData(NotBlueprintTypeName)
+			&& IsClassAllowed(CurrentClass))
+		{
+			bCanSpawnObject = CurrentClass->GetBoolMetaData(BlueprintTypeName);
+			if (bCanSpawnObject && CurrentClass->GetBoolMetaData(DontUseGenericSpawnObjectName))
+			{
+				bCanSpawnObject = false;
+				break;
+			}
+			CurrentClass = CurrentClass->GetSuperClass();
+		}
+
+		while (bCanSpawnObject && CurrentClass)
+		{
+			bCanSpawnObject &= IsClassAllowed(CurrentClass);
+			CurrentClass = CurrentClass->GetSuperClass();
+		}
+	}
+
+	return bCanSpawnObject;
+}
 
 struct FCortexFamilyMapping
 {
@@ -607,9 +656,11 @@ bool FCortexGraphNodeContract::Validate(
 		{
 			return FailWithError(TEXT("params.class"), OutError);
 		}
-		if (ConstructClass->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+		if (!IsConstructObjectClassAllowed(ConstructClass))
 		{
-			return Fail(TEXT("params.class"), FString::Printf(TEXT("Class '%s' cannot be constructed (abstract or deprecated)"), *ClassIdentifier));
+			return Fail(TEXT("params.class"), FString::Printf(
+				TEXT("Class '%s' cannot be constructed by the Generic Create Object node"),
+				*ClassIdentifier));
 		}
 	}
 	else if (FamilyName == FName("SwitchEnum"))

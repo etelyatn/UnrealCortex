@@ -20,6 +20,7 @@
 #include "K2Node_GenericCreateObject.h"
 #include "EdGraphSchema_K2.h"
 #include "Components/SceneComponent.h"
+#include "Curves/CurveFloat.h"
 
 #if WITH_EDITOR && WITH_AUTOMATION_TESTS
 namespace CortexGraphPatchApplyTest
@@ -406,7 +407,7 @@ bool FCortexGraphPatchApplyParameterizedNodeTest::RunTest(const FString& Paramet
 	TSharedPtr<FJsonObject> Create = Nodes[0]->AsObject();
 	Create->SetStringField(TEXT("node_class"), TEXT("GenericCreateObject"));
 	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
-	CreateParams->SetStringField(TEXT("class"), TEXT("/Script/Engine.SceneComponent"));
+	CreateParams->SetStringField(TEXT("class"), TEXT("/Script/Engine.CurveFloat"));
 	Create->SetObjectField(TEXT("params"), CreateParams);
 	TSharedPtr<FJsonObject> DynamicCastJson = Nodes[1]->AsObject();
 	DynamicCastJson->SetStringField(TEXT("node_class"), TEXT("DynamicCast"));
@@ -447,7 +448,7 @@ bool FCortexGraphPatchApplyParameterizedNodeTest::RunTest(const FString& Paramet
 		UEdGraphPin* ObjectPin = CastNode->FindPin(TEXT("Object"));
 		TestEqual(TEXT("GenericCreateObject has exactly one class pin"), CountPinsNamed(CreateNode, TEXT("Class")), 1);
 		TestEqual(TEXT("DynamicCast has exactly one Object pin"), CountPinsNamed(CastNode, TEXT("Object")), 1);
-		TestEqual(TEXT("GenericCreateObject class default is unambiguous"), ClassPin ? ClassPin->DefaultObject.Get() : nullptr, (UObject*)USceneComponent::StaticClass());
+		TestEqual(TEXT("GenericCreateObject class default is unambiguous"), ClassPin ? ClassPin->DefaultObject.Get() : nullptr, (UObject*)UCurveFloat::StaticClass());
 		TestEqual(TEXT("DynamicCast target is configured before pin allocation"), CastNode->TargetType.Get(), (UClass*)USceneComponent::StaticClass());
 		TestTrue(TEXT("parameterized nodes retain exactly their requested connection"),
 			ResultPin && ObjectPin && ResultPin->LinkedTo.Num() == 1 && ResultPin->LinkedTo[0] == ObjectPin);

@@ -16,6 +16,7 @@
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "Curves/CurveFloat.h"
 #include "Editor.h"
 #include "Editor/Transactor.h"
 
@@ -430,7 +431,7 @@ bool FCortexGraphDescribeClassDependentPinsTest::RunTest(const FString& Paramete
 		Params->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 		Params->SetObjectField(TEXT("target"), TargetObj);
 		TSharedPtr<FJsonObject> NodeParams = MakeShared<FJsonObject>();
-		NodeParams->SetStringField(TEXT("class"), TEXT("/Script/Engine.Actor"));
+		NodeParams->SetStringField(TEXT("class"), TEXT("/Script/Engine.CurveFloat"));
 		Params->SetObjectField(TEXT("params"), NodeParams);
 
 		const FCortexCommandResult Result = Router.Execute(TEXT("graph.describe_node"), Params);
@@ -448,8 +449,8 @@ bool FCortexGraphDescribeClassDependentPinsTest::RunTest(const FString& Paramete
 			{
 				TestEqual(TEXT("ReturnValue category is object"),
 					(*RetPin)->GetStringField(TEXT("category")), FString(TEXT("object")));
-				TestEqual(TEXT("ReturnValue sub_category_object is Actor"),
-					(*RetPin)->GetStringField(TEXT("sub_category_object")), AActor::StaticClass()->GetPathName());
+				TestEqual(TEXT("ReturnValue sub_category_object is CurveFloat"),
+					(*RetPin)->GetStringField(TEXT("sub_category_object")), UCurveFloat::StaticClass()->GetPathName());
 			}
 		}
 	}
