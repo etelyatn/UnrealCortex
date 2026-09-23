@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+import uuid
 
 from .response import MAX_RESPONSE_CHARS, format_response
 from .tcp_client import UECommandError
@@ -171,7 +171,7 @@ def _bounded_success(data: dict[str, Any], request: dict[str, Any]) -> str:
                 compact["_outcome_values_truncated"] = True
                 if key not in compact["_omitted_fields"]:
                     compact["_omitted_fields"].append(key)
-    return _fit_payload(compact, fallback_kind="success")
+    return _fit_payload(compact)
 
 
 def _bounded_error(exc: UECommandError, request: dict[str, Any]) -> str:
@@ -192,65 +192,158 @@ def _bounded_error(exc: UECommandError, request: dict[str, Any]) -> str:
         return _encode(payload)
 
     # Drop optional bulky collections before shortening the native message.
+    omitted_fields = []
     for key in ("diagnostics", "inventory", "removable", "approved_guids", "locators"):
         value = payload.get(key)
         if isinstance(value, (list, dict)):
             payload.pop(key)
             payload[f"_{key}_omitted"] = len(value)
+            omitted_fields.append(key)
+    if omitted_fields:
+        payload["_omitted_fields"] = omitted_fields
     payload["_truncated"] = True
     payload["_message_truncated"] = True
     payload["original_message_chars"] = len(exc.message)
     payload["original_response_size_chars"] = full_size
     payload["reconciliation_required"] = True
     payload["_reconciliation_guidance"] = "Read back patch state before any retry; native execution may have changed the asset."
-    return _fit_payload(payload, fallback_kind="error")
+    return _fit_payload(payload)
 
 
-def _fit_payload(payload: dict[str, Any], *, fallback_kind: str) -> str:
-    text = _encode(payload)
-    if len(text) <= MAX_RESPONSE_CHARS:
-        return text
-
-    # Preserve outcome/error identity and explicit evidence of omitted detail.
+def _record_omission(payload: dict[str, Any], key: str, value: Any) -> None:
+    fields = payload.setdefault("_omitted_fields", [])
+    label = key[:128]
+    if label not in fields:
+        fields.append(label)
+    if len(key) <= 120:
+        payload[f"_{key}_omitted"] = len(value) if isinstance(value, (list, dict)) else True
+    else:
+        payload["_other_field_omitted"] = True
     payload["_omitted_data"] = True
-    for key in ("diagnostics", "inventory", "removable", "approved_guids", "locators"):
-        value = payload.pop(key, None)
-        if value is not None:
-            payload[f"_{key}_omitted"] = len(value) if isinstance(value, (list, dict)) else True
-    message_key = "_message" if fallback_kind == "error" else "_reconciliation_guidance"
-    if isinstance(payload.get(message_key), str):
-        payload[message_key] = payload[message_key][:512]
+    payload["_truncated"] = True
+    payload["reconciliation_required"] = True
+    payload.setdefault(
+        "_reconciliation_guidance",
+        "Read back patch and asset state before any retry; the response omitted native outcome details.",
+    )
+
+
+def _fit_payload(payload: dict[str, Any]) -> str:
     text = _encode(payload)
     if len(text) <= MAX_RESPONSE_CHARS:
         return text
 
-    # Last-resort bounded envelope retains native outcome values only as far as they fit.
-    keep = {"success", "_error", "_command", "patch_id", "asset_path", "changed", "dry_run",
-            "apply_status", "compile_status", "readback_status", "rollback_status", "save_status",
-        "_message",
-        "_message_truncated",
-        "original_message_chars",
-        "_diagnostics_omitted",
-        "_inventory_omitted",
-        "_removable_omitted",
-        "_approved_guids_omitted",
-        "_locators_omitted",
-            "post_save_status", "target_compile_count", "recovery_compile_count", "saved", "blocked",
-            "replayed_with_absent_source", "fingerprint_before", "fingerprint_after", "dirty_before",
-            "dirty_after", "_truncated", "original_response_size_chars", "reconciliation_required",
-            "_reconciliation_guidance", "_omitted_data"}
-    bounded = {key: value for key, value in payload.items() if key in keep}
-    for key in ("_message", "_reconciliation_guidance"):
-        if key in bounded and isinstance(bounded[key], str):
-            bounded[key] = bounded[key][:512]
-    text = _encode(bounded)
+    original_size = len(text)
+    payload["_truncated"] = True
+    payload["original_response_size_chars"] = original_size
+    payload["reconciliation_required"] = True
+    payload["_omitted_data"] = True
+    payload.setdefault(
+        "_reconciliation_guidance",
+        "Read back patch and asset state before any retry; the response omitted native outcome details.",
+    )
+
+    for key in ("diagnostics", "inventory", "removable", "approved_guids", "locators"):
+        if key in payload:
+            _record_omission(payload, key, payload.pop(key))
+    for key in ("fingerprint_before", "fingerprint_after"):
+        value = payload.get(key)
+        if isinstance(value, (dict, list)) or (isinstance(value, str) and len(value) > 4096):
+            _record_omission(payload, key, payload.pop(key))
+
+    for key, value in tuple(payload.items()):
+        if isinstance(value, (dict, list)) and key != "_omitted_fields":
+            _record_omission(payload, key, payload.pop(key))
+    text = _encode(payload)
     if len(text) <= MAX_RESPONSE_CHARS:
         return text
-    # Arbitrarily future-sized outcome fields are never allowed to exceed the transport budget.
-    for key, value in tuple(bounded.items()):
-        if isinstance(value, str) and len(value) > 512:
+
+    # The final envelope keeps only native status/error identity and bounded reconciliation metadata.
+    keep = {
+        "success", "_error", "_command", "patch_id", "asset_path", "_message",
+        "changed", "dry_run", "apply_status", "compile_status", "readback_status",
+        "rollback_status", "save_status", "post_save_status", "target_compile_count",
+        "recovery_compile_count", "saved", "blocked", "replayed_with_absent_source",
+        "dirty_before", "dirty_after", "_truncated", "_message_truncated",
+        "original_message_chars", "original_response_size_chars", "reconciliation_required",
+        "_reconciliation_guidance", "_omitted_data", "_omitted_fields",
+        "_diagnostics_omitted", "_inventory_omitted", "_removable_omitted",
+        "_approved_guids_omitted", "_locators_omitted", "_other_field_omitted",
+        "_fingerprint_before_omitted", "_fingerprint_after_omitted",
+    }
+    bounded = {key: value for key, value in payload.items() if key in keep}
+    for key in tuple(bounded):
+        value = bounded[key]
+        if isinstance(value, (dict, list)) and key != "_omitted_fields":
+            _record_omission(bounded, key, value)
+            bounded.pop(key, None)
+        elif isinstance(value, str) and len(value) > 512:
             bounded[key] = value[:512]
+            if key == "_message":
+                bounded["_message_truncated"] = True
+                bounded["original_message_chars"] = len(value)
+            elif key in ("patch_id", "asset_path"):
+                bounded[f"_{key}_truncated"] = True
+            elif key in ("_command", "_error", "_reconciliation_guidance"):
+                bounded[key] = value[:512]
+    if isinstance(bounded.get("_omitted_fields"), list):
+        fields = bounded["_omitted_fields"]
+        if len(fields) > 50:
+            bounded["_omitted_fields"] = [str(field)[:128] for field in fields[:50]]
+            bounded["_omitted_fields_count"] = len(fields)
+        else:
+            bounded["_omitted_fields"] = [str(field)[:128] for field in fields]
     return _encode(bounded)
+
+
+def _canonical_guid_array(values: Any) -> tuple[str, ...] | None:
+    if not isinstance(values, list):
+        return None
+    try:
+        canonical = [uuid.UUID(value).hex for value in values if isinstance(value, str)]
+    except (ValueError, AttributeError):
+        return None
+    if len(canonical) != len(values) or len(set(canonical)) != len(canonical):
+        return None
+    return tuple(sorted(canonical))
+
+
+def _stale_precondition(request: dict[str, Any], message: str) -> str:
+    return _fit_payload({
+        "success": False,
+        "_error": "STALE_PRECONDITION",
+        "_message": message,
+        "_command": _GRAPH_PATCH_COMMAND,
+        **_identity(request),
+    })
+
+
+def _unknown_outcome(exc: ConnectionError, request: dict[str, Any]) -> str:
+    return _fit_payload({
+        "success": False,
+        "_error": "UNKNOWN_OUTCOME",
+        "_message": (
+            "The apply request was dispatched but its outcome is unknown. "
+            "Reconcile by reading back patch and asset state before any retry. "
+            + str(exc)
+        ),
+        "_command": _GRAPH_PATCH_COMMAND,
+        **_identity(request),
+        "reconciliation_required": True,
+        "_reconciliation_guidance": (
+            "Read back patch and asset state before any retry; native execution may have changed the asset."
+        ),
+    })
+
+
+def _prune_connection_error(exc: ConnectionError, request: dict[str, Any]) -> str:
+    return _fit_payload({
+        "success": False,
+        "_error": "CONNECTION_ERROR",
+        "_message": str(exc),
+        "_command": _GRAPH_PATCH_COMMAND,
+        **_identity(request),
+    })
 
 
 def _native_error(exc: UECommandError, request: dict[str, Any]) -> str:
@@ -298,7 +391,7 @@ def dispatch_graph_apply_patch(connection, request: dict[str, Any], *, tool_name
         except UECommandError as exc:
             return _native_error(exc, request)
         except ConnectionError as exc:
-            return _encode({"success": False, "_error": "CONNECTION_ERROR", "_message": str(exc)})
+            return _prune_connection_error(exc, request)
 
     if not applying:
         try:
@@ -310,9 +403,16 @@ def dispatch_graph_apply_patch(connection, request: dict[str, Any], *, tool_name
         except UECommandError as exc:
             return _native_error(exc, request)
         except ConnectionError as exc:
-            return _encode({"success": False, "_error": "CONNECTION_ERROR", "_message": str(exc)})
+            return _prune_connection_error(exc, request)
 
     migration = request["migration"]
+    caller_token = request.get("expected_validation_hash")
+    if not isinstance(caller_token, str) or not caller_token.strip():
+        return _stale_precondition(
+            request,
+            "A prune apply requires the nonempty validation hash returned by the caller's approved preview.",
+        )
+
     preview_request = dict(request)
     preview_request.pop("expected_validation_hash", None)
     preview_request["dry_run"] = True
@@ -322,7 +422,7 @@ def dispatch_graph_apply_patch(connection, request: dict[str, Any], *, tool_name
     except UECommandError as exc:
         return _native_error(exc, request)
     except ConnectionError as exc:
-        return _encode({"success": False, "_error": "CONNECTION_ERROR", "_message": str(exc)})
+        return _prune_connection_error(exc, request)
     error = _response_error(response, request)
     if error is not None:
         return error
@@ -331,78 +431,46 @@ def dispatch_graph_apply_patch(connection, request: dict[str, Any], *, tool_name
     if _json_size(preview) > MAX_RESPONSE_CHARS or preview.get("complete") is not True:
         return preview_text
 
-    caller_token = request.get("expected_validation_hash")
-    first_token = preview.get("validation_hash")
-    if caller_token is not None and first_token != caller_token:
-        return _encode({
-            "success": False,
-            "_error": "STALE_PRECONDITION",
-            "_message": "The prune validation hash changed after the caller's preview; review and approve a fresh preview.",
-            **_identity(request),
-        })
+    if preview.get("validation_hash") != caller_token:
+        return _stale_precondition(
+            request,
+            "The prune validation hash changed after the caller's preview; review and approve a fresh preview.",
+        )
 
-    requested_approved = migration.get("approved_node_guids", [])
-    approved = list(requested_approved) if requested_approved else list(preview.get("approved_guids", []))
-    second_request = dict(preview_request)
-    second_migration = dict(migration)
-    second_migration["approved_node_guids"] = approved
-    second_request["migration"] = second_migration
-    second_request["expected_validation_hash"] = first_token
-    try:
-        second_response = connection.send_command(_GRAPH_PATCH_COMMAND, second_request)
-    except UECommandError as exc:
-        return _native_error(exc, request)
-    except ConnectionError as exc:
-        return _encode({"success": False, "_error": "CONNECTION_ERROR", "_message": str(exc)})
-    error = _response_error(second_response, request)
-    if error is not None:
-        return error
-    second = second_response.get("data", {})
-    if second.get("complete") is not True:
-        return _prune_preview(second, request)
-    if second.get("approved_guids", approved) != approved:
-        return _encode({
-            "success": False,
-            "_error": "STALE_PRECONDITION",
-            "_message": "The native approved GUID set differs from the requested prune set.",
-            **_identity(request),
-        })
-    token = second.get("validation_hash")
-    if not isinstance(token, str) or not token:
-        return _encode({
-            "success": False,
-            "_error": "STALE_PRECONDITION",
-            "_message": "The complete approval preview did not provide a validation hash.",
-            **_identity(request),
-        })
+    requested_approved = migration.get("approved_node_guids")
+    caller_approved = _canonical_guid_array(requested_approved)
+    native_approved = _canonical_guid_array(preview.get("approved_guids"))
+    if (
+        caller_approved is None
+        or not caller_approved
+        or native_approved is None
+        or native_approved != caller_approved
+    ):
+        return _stale_precondition(
+            request,
+            "The native approved GUID set differs from the nonempty GUID set explicitly approved by the caller.",
+        )
 
-    prospective_size = _prospective_apply_size(second, request, approved)
-    removable = second.get("removable")
+    approved = requested_approved
+    prospective_size = _prospective_apply_size(preview, request, approved)
+    removable = preview.get("removable")
     removable_count = len(removable) if isinstance(removable, list) else 0
     if prospective_size > MAX_RESPONSE_CHARS:
         return _refusal(
             request,
             prospective_size=prospective_size,
-            native_complete=second.get("complete") is True,
+            native_complete=preview.get("complete") is True,
             removable_count=removable_count,
             approved_count=len(approved),
             message="The conservative prospective prune apply response exceeds the MCP response budget.",
         )
 
-    apply_request = dict(request)
-    apply_request["expected_validation_hash"] = token
     try:
-        result = connection.send_command_once(_GRAPH_PATCH_COMMAND, apply_request)
+        result = connection.send_command_once(_GRAPH_PATCH_COMMAND, request)
     except UECommandError as exc:
         return _native_error(exc, request)
     except ConnectionError as exc:
-        return _encode({
-            "success": False,
-            "_error": "UNKNOWN_OUTCOME",
-            "_message": "The apply request was dispatched but its outcome is unknown. Reconcile by reading back patch and asset state before any retry. " + str(exc),
-            **_identity(request),
-            "reconciliation_required": True,
-        })
+        return _unknown_outcome(exc, request)
     error = _response_error(result, request)
     if error is not None:
         return error

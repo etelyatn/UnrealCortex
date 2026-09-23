@@ -163,7 +163,7 @@ def test_prune_partition_preview_with_omitted_dry_run_uses_native_preview_once()
     connection.send_command.assert_called_once_with("graph.apply_patch", request)
 
 
-def test_apply_preflight_transforms_request_without_mutating_original():
+def test_apply_preflight_transforms_request_once_and_applies_original_with_caller_token():
     connection = MagicMock()
     approved = _guids(2)
     request = _request(
@@ -191,22 +191,67 @@ def test_apply_preflight_transforms_request_without_mutating_original():
     }
     dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd")
 
-    assert connection.send_command.call_args_list[0].args == ("graph.apply_patch", expected_preview)
-    assert connection.send_command.call_args_list[1].args[1]["migration"]["approved_node_guids"] == approved
-    assert connection.send_command.call_args_list[1].args[1]["expected_validation_hash"] == "token-123"
-    assert connection.send_command_once.call_args.args[1] == request
+    connection.send_command.assert_called_once_with("graph.apply_patch", expected_preview)
+    connection.send_command_once.assert_called_once_with("graph.apply_patch", request)
     assert request == original
 
 def test_apply_token_mismatch_stops_after_single_preview():
     connection = MagicMock()
-    request = _request(dry_run=False, expected_validation_hash="old-token")
-    connection.send_command.return_value = {"success": True, "data": _preview(1, token="new-token")}
+    approved = _guids(1)
+    request = _request(
+        dry_run=False,
+        expected_validation_hash="old-token",
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
+    )
+    connection.send_command.return_value = {
+        "success": True,
+        "data": _preview(1, token="new-token", approved_guids=approved),
+    }
 
     payload = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
 
     assert payload["success"] is False
     assert payload["_error"] == "STALE_PRECONDITION"
     connection.send_command.assert_called_once()
+    connection.send_command_once.assert_not_called()
+@pytest.mark.parametrize("token", [None, ""])
+def test_missing_or_empty_apply_token_fails_closed(token):
+    connection = MagicMock()
+    approved = _guids(1)
+    request = _request(
+        dry_run=False,
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
+    )
+    if token is not None:
+        request["expected_validation_hash"] = token
+    connection.send_command.return_value = {
+        "success": True, "data": _preview(1, approved_guids=approved),
+    }
+    connection.send_command_once.return_value = {"success": True, "data": {"patch_id": PATCH_ID}}
+
+    payload = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
+
+    assert payload.get("success") is False
+    assert payload["_error"] == "STALE_PRECONDITION"
+    connection.send_command_once.assert_not_called()
+
+
+def test_apply_does_not_infer_approved_set_from_unapproved_preview():
+    connection = MagicMock()
+    request = _request(
+        dry_run=False,
+        expected_validation_hash="token-123",
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": []},
+    )
+    connection.send_command.return_value = {
+        "success": True, "data": _preview(2, approved_guids=_guids(2)),
+    }
+    connection.send_command_once.return_value = {"success": True, "data": {"patch_id": PATCH_ID}}
+
+    payload = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
+
+    assert payload.get("success") is False
+    assert payload["_error"] == "STALE_PRECONDITION"
     connection.send_command_once.assert_not_called()
 
 
@@ -233,33 +278,33 @@ def test_apply_refuses_prospective_response_that_exceeds_budget():
     assert payload["removable_count"] == 400
     assert payload["approved_count"] == 400
     assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
-    assert connection.send_command.call_count == 2
+    connection.send_command.assert_called_once()
     connection.send_command_once.assert_not_called()
 
 
-def test_apply_approval_sequence_uses_exact_second_preview_set_and_token():
+def test_approved_apply_uses_one_exact_preview_and_caller_token():
     connection = MagicMock()
-    approved = _guids(3)
-    request = _request(dry_run=False, migration={
-        "op": "prune_island", "source": SOURCE, "approved_node_guids": [],
-    })
-    first = _preview(3, token="partition-token", approved_guids=approved)
-    second = _preview(3, token="approval-token", approved_guids=approved)
-    connection.send_command.side_effect = [
-        {"success": True, "data": first},
-        {"success": True, "data": second},
-    ]
+    approved = list(reversed(_guids(3)))
+    request = _request(
+        dry_run=False,
+        expected_validation_hash="approval-token",
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
+    )
+    native_approved = sorted(approved)
+    connection.send_command.return_value = {
+        "success": True,
+        "data": _preview(3, token="approval-token", approved_guids=native_approved),
+    }
     connection.send_command_once.return_value = {"success": True, "data": {"patch_id": PATCH_ID}}
 
     result = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
 
     assert result["patch_id"] == PATCH_ID
-    assert len(connection.send_command.call_args_list) == 2
-    second_request = connection.send_command.call_args_list[1].args[1]
-    assert second_request["migration"]["approved_node_guids"] == approved
-    assert second_request["expected_validation_hash"] == "partition-token"
-    assert connection.send_command_once.call_args.args[1]["expected_validation_hash"] == "approval-token"
-    assert connection.send_command_once.call_args.args[1] == request | {"expected_validation_hash": "approval-token"}
+    connection.send_command.assert_called_once()
+    preview_request = connection.send_command.call_args.args[1]
+    assert preview_request["migration"]["approved_node_guids"] == approved
+    assert "expected_validation_hash" not in preview_request
+    connection.send_command_once.assert_called_once_with("graph.apply_patch", request)
 
 
 def test_non_prune_request_makes_one_native_call():
@@ -275,8 +320,13 @@ def test_non_prune_request_makes_one_native_call():
 
 def test_apply_preserves_authoritative_native_outcome_fields():
     connection = MagicMock()
-    request = _request(dry_run=False)
-    data = _preview(1)
+    approved = _guids(1)
+    request = _request(
+        dry_run=False,
+        expected_validation_hash="token-123",
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
+    )
+    data = _preview(1, approved_guids=approved)
     data.update({
         "changed": True, "dry_run": False, "apply_status": "applied",
         "compile_status": "compiled", "readback_status": "verified",
@@ -287,7 +337,9 @@ def test_apply_preserves_authoritative_native_outcome_fields():
         "fingerprint_after": "after", "dirty_before": False, "dirty_after": False,
         "locators": [{"node_guid": "n1"}],
     })
-    connection.send_command.return_value = {"success": True, "data": _preview(1)}
+    connection.send_command.return_value = {
+        "success": True, "data": _preview(1, approved_guids=approved),
+    }
     connection.send_command_once.return_value = {"success": True, "data": data}
 
     payload = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
@@ -298,10 +350,17 @@ def test_apply_preserves_authoritative_native_outcome_fields():
 
 def test_native_apply_error_preserves_all_present_outcome_details():
     connection = MagicMock()
-    request = _request(dry_run=False)
+    approved = _guids(1)
+    request = _request(
+        dry_run=False,
+        expected_validation_hash="token-123",
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
+    )
     details = {"apply_status": "failed", "rollback_status": "restored", "saved": False,
                "diagnostics": [{"code": "failure"}], "target_compile_count": 0}
-    connection.send_command.return_value = {"success": True, "data": _preview(1)}
+    connection.send_command.return_value = {
+        "success": True, "data": _preview(1, approved_guids=approved),
+    }
     connection.send_command_once.side_effect = UECommandError(
         "graph.apply_patch", "APPLY_FAILED", "native failure", details,
     )
@@ -315,11 +374,17 @@ def test_native_apply_error_preserves_all_present_outcome_details():
     for key, value in details.items():
         assert payload[key] == value
 
-
 def test_apply_transport_failure_reports_unknown_outcome_without_retry():
     connection = MagicMock()
-    request = _request(dry_run=False)
-    connection.send_command.return_value = {"success": True, "data": _preview(1)}
+    approved = _guids(1)
+    request = _request(
+        dry_run=False,
+        expected_validation_hash="token-123",
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
+    )
+    connection.send_command.return_value = {
+        "success": True, "data": _preview(1, approved_guids=approved),
+    }
     connection.send_command_once.side_effect = ConnectionError("response lost")
 
     payload = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
@@ -335,10 +400,17 @@ def test_apply_transport_failure_reports_unknown_outcome_without_retry():
 
 def test_oversized_native_error_is_bounded_with_explicit_truncation():
     connection = MagicMock()
-    request = _request(dry_run=False)
+    approved = _guids(1)
+    request = _request(
+        dry_run=False,
+        expected_validation_hash="token-123",
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
+    )
     details = {"apply_status": "failed", "rollback_status": "restored", "saved": False,
                "diagnostics": [{"text": "d" * 30000} for _ in range(3)]}
-    connection.send_command.return_value = {"success": True, "data": _preview(1)}
+    connection.send_command.return_value = {
+        "success": True, "data": _preview(1, approved_guids=approved),
+    }
     connection.send_command_once.side_effect = UECommandError(
         "graph.apply_patch", "APPROVAL_MISMATCH", "mismatch " + "m" * 50000, details,
     )
@@ -364,8 +436,13 @@ def test_oversized_native_error_is_bounded_with_explicit_truncation():
 
 def test_oversized_post_apply_future_field_is_bounded_and_outcomes_survive():
     connection = MagicMock()
-    request = _request(dry_run=False)
-    data = _preview(1)
+    approved = _guids(1)
+    request = _request(
+        dry_run=False,
+        expected_validation_hash="token-123",
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
+    )
+    data = _preview(1, approved_guids=approved)
     data.update({
         "changed": True, "dry_run": False, "apply_status": "applied",
         "compile_status": "compiled", "readback_status": "verified",
@@ -376,7 +453,9 @@ def test_oversized_post_apply_future_field_is_bounded_and_outcomes_survive():
         "dirty_after": False, "future_bulk_field": "x" * 50000,
         "diagnostics": [{"text": "d" * 50000}],
     })
-    connection.send_command.return_value = {"success": True, "data": _preview(1)}
+    connection.send_command.return_value = {
+        "success": True, "data": _preview(1, approved_guids=approved),
+    }
     connection.send_command_once.return_value = {"success": True, "data": data}
 
     payload = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
@@ -389,6 +468,86 @@ def test_oversized_post_apply_future_field_is_bounded_and_outcomes_survive():
     assert payload["_truncated"] is True
     assert payload["_omitted_fields"]
     assert payload["reconciliation_required"] is True
+    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+
+def test_oversized_nested_fingerprints_are_omitted_from_success_envelope():
+    connection = MagicMock()
+    approved = _guids(1)
+    request = _request(
+        dry_run=False,
+        expected_validation_hash="token-123",
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
+    )
+    data = _preview(1, approved_guids=approved)
+    nested = {"fingerprint_data": {"items": ["x" * 2000 for _ in range(30)]}}
+    data["fingerprint_before"] = nested
+    data["fingerprint_after"] = nested
+    connection.send_command.return_value = {
+        "success": True, "data": _preview(1, approved_guids=approved),
+    }
+    connection.send_command_once.return_value = {"success": True, "data": data}
+
+    payload = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
+
+    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert payload["_truncated"] is True
+    assert payload["reconciliation_required"] is True
+    assert payload["_reconciliation_guidance"]
+    assert "fingerprint_before" in payload["_omitted_fields"]
+    assert "fingerprint_after" in payload["_omitted_fields"]
+
+
+def test_oversized_nested_fingerprints_are_omitted_from_error_envelope():
+    connection = MagicMock()
+    approved = _guids(1)
+    request = _request(
+        dry_run=False,
+        expected_validation_hash="token-123",
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
+    )
+    nested = {"fingerprint_data": {"items": ["x" * 2000 for _ in range(30)]}}
+    connection.send_command.return_value = {
+        "success": True, "data": _preview(1, approved_guids=approved),
+    }
+    connection.send_command_once.side_effect = UECommandError(
+        "graph.apply_patch",
+        "APPLY_FAILED",
+        "failed",
+        {"apply_status": "failed", "fingerprint_before": nested, "fingerprint_after": nested},
+    )
+
+    payload = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
+
+    assert payload["success"] is False
+    assert payload["_error"] == "APPLY_FAILED"
+    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert payload["_truncated"] is True
+    assert payload["reconciliation_required"] is True
+    assert payload["_reconciliation_guidance"]
+    assert "fingerprint_before" in payload["_omitted_fields"]
+    assert "fingerprint_after" in payload["_omitted_fields"]
+
+
+def test_oversized_unknown_outcome_is_always_bounded():
+    connection = MagicMock()
+    approved = _guids(1)
+    request = _request(
+        patch_id=PATCH_ID,
+        dry_run=False,
+        expected_validation_hash="token-123",
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
+    )
+    connection.send_command.return_value = {
+        "success": True, "data": _preview(1, approved_guids=approved),
+    }
+    connection.send_command_once.side_effect = ConnectionError("lost " + "x" * 50000)
+
+    payload = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
+
+    assert payload["success"] is False
+    assert payload["_error"] == "UNKNOWN_OUTCOME"
+    assert payload["reconciliation_required"] is True
+    assert payload["_truncated"] is True
     assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
 
 
