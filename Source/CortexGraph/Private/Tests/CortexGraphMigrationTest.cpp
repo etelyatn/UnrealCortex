@@ -15,6 +15,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_CreateDelegate.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_Event.h"
 #include "K2Node_FunctionEntry.h"
@@ -1079,6 +1080,71 @@ bool FCortexGraphMigrationReferenceInventoryTest::RunTest(const FString& Paramet
 		Fixture.Cleanup();
 	}
 
+	// (d) S1: a delegate binding whose name matches the declaration but resolves to an unrelated
+	// function of the same name is neither a reference nor a blocker.
+	{
+		FFixture Fixture;
+		TestTrue(TEXT("fourth fixture created"), Fixture.Create(TEXT("BP_MigrationUnrelatedBinding_T11")));
+		if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+		UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+		ClearGraphNodes(Graph);
+		UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
+		FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+
+		// A loaded package that declares its own, unrelated function of the same name.
+		UPackage* OtherPackage = CreatePackage(TEXT("/Game/Temp/BP_MigrationUnrelated_T11"));
+		UBlueprint* Other = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), OtherPackage,
+			TEXT("BP_MigrationUnrelated_T11"), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+		TestNotNull(TEXT("unrelated package asset created"), Other);
+		if (Other)
+		{
+			UEdGraph* OtherGraph = FBlueprintEditorUtils::CreateNewGraph(Other, TEXT("OnPayload"),
+				UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+			Other->FunctionGraphs.Add(OtherGraph);
+			UK2Node_FunctionEntry* OtherEntry = NewObject<UK2Node_FunctionEntry>(OtherGraph);
+			OtherEntry->FunctionReference.SetSelfMember(FName(TEXT("OnPayload")));
+			OtherEntry->CreateNewGuid();
+			OtherEntry->AllocateDefaultPins();
+			OtherGraph->AddNode(OtherEntry, true, false);
+			FKismetEditorUtilities::CompileBlueprint(Other);
+
+			UEdGraph* OtherEventGraph = EnsureEventGraph(Other);
+			UK2Node_CreateDelegate* Binding = NewObject<UK2Node_CreateDelegate>(OtherEventGraph);
+			Binding->SetFunction(FName(TEXT("OnPayload")));
+			Binding->CreateNewGuid();
+			OtherEventGraph->AddNode(Binding, true, false);
+		}
+
+		TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000110013"),
+			MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
+		FCortexGraphPreparedPatch Prepared;
+		FCortexCommandResult Error;
+		TestTrue(FString::Printf(TEXT("an unrelated same-named delegate binding does not block: %s"), *Error.ErrorMessage),
+			FCortexGraphPatchOps::Preflight(Fixture.Blueprint, Request, Prepared, Error));
+		int32 InAssetReferences = -1;
+		int32 ExternalReferences = -1;
+		if (Prepared.MigrationPlan.IsValid())
+		{
+			Prepared.MigrationPlan->TryGetNumberField(TEXT("declaration_references"), InAssetReferences);
+			Prepared.MigrationPlan->TryGetNumberField(TEXT("external_declaration_references"), ExternalReferences);
+		}
+		TestEqual(TEXT("an unrelated same-named binding is not counted in-asset"), InAssetReferences, 0);
+		TestEqual(TEXT("an unrelated same-named binding is not counted externally"), ExternalReferences, 0);
+
+		if (Other)
+		{
+			Other->ClearFlags(RF_Standalone);
+			Other->MarkAsGarbage();
+		}
+		if (OtherPackage)
+		{
+			OtherPackage->ClearFlags(RF_Standalone);
+			OtherPackage->MarkAsGarbage();
+		}
+		Fixture.Cleanup();
+	}
+
 	// (c) R2: an external member reference whose owner does not resolve is unresolved, never absence.
 	{
 		FFixture Fixture;
@@ -1492,6 +1558,34 @@ bool FCortexGraphMigrationReplayTest::RunTest(const FString& Parameters)
 	TestTrue(FString::Printf(TEXT("replay preview succeeds: %s"), *Error.ErrorMessage),
 		PreviewForApply(Fixture.Blueprint, Replay, ReplayPrepared, Error));
 	TestFalse(TEXT("replay preview reports no prospective change"), ReplayPrepared.bChanged);
+	TestTrue(TEXT("replay preview reports the absent source locator"), ReplayPrepared.bReplayedWithAbsentSource);
+	// S2: the published preview must carry the same diagnostic, so the caller learns at preview time
+	// that the locator they named is not present.
+	{
+		FCortexCommandRouter PreviewRouter;
+		PreviewRouter.RegisterDomain(TEXT("graph"), TEXT("Cortex Graph"), TEXT("1.0.1"), MakeShared<FCortexGraphCommandHandler>());
+		TSharedPtr<FJsonObject> PreviewRequest = ReplacementRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000110009"),
+			MakeMigration(Graph, StaleEntry, OnPayloadPinMap()), TEXT("OnPayload"));
+		const FCortexCommandResult PreviewResult = PreviewRouter.Execute(TEXT("graph.apply_patch"), PreviewRequest);
+		TestTrue(FString::Printf(TEXT("replay preview through the command path succeeds: %s"), *PreviewResult.ErrorMessage), PreviewResult.bSuccess);
+		if (PreviewResult.bSuccess && PreviewResult.Data.IsValid())
+		{
+			TestTrue(TEXT("replay preview publishes the absent-source flag"),
+				PreviewResult.Data->GetBoolField(TEXT("replayed_with_absent_source")));
+			const TArray<TSharedPtr<FJsonValue>>& PreviewDiagnostics = PreviewResult.Data->GetArrayField(TEXT("diagnostics"));
+			bool bDiagnosticNamed = false;
+			for (const TSharedPtr<FJsonValue>& Diagnostic : PreviewDiagnostics)
+			{
+				if (Diagnostic.IsValid() && Diagnostic->AsString().Contains(TEXT("absent source locator")))
+				{
+					bDiagnosticNamed = true;
+					break;
+				}
+			}
+			TestTrue(TEXT("replay preview publishes the absent-source diagnostic"), bDiagnosticNamed);
+		}
+	}
 	TestTrue(TEXT("replay preview reports a complete reuse match"), ReplayPrepared.bFullyReused);
 	TestEqual(TEXT("replay preview reports the reused deterministic identity"),
 		FString::Join(ReplayPrepared.ReusedClientIds, TEXT(",")), FString(TEXT("entry")));

@@ -266,7 +266,14 @@ FCortexCommandResult HandleApplyPatch(const TSharedPtr<FJsonObject>& Params)
 		Preview.bDirtyBefore = Blueprint->GetOutermost()->IsDirty();
 		Preview.bDirtyAfter = Preview.bDirtyBefore;
 		Preview.ReusedClientIds = Prepared.ReusedClientIds;
+		// A caller must learn at preview time that the locator they named is not present, so the
+		// preview carries the same provenance flag and diagnostic the apply reports.
 		Preview.bReplayedWithAbsentSource = Prepared.bReplayedWithAbsentSource;
+		if (Prepared.bReplayedWithAbsentSource)
+		{
+			Preview.Diagnostics.Add(TEXT(
+				"replay accepted with an absent source locator: the migration apply already consumed the stale entry this request names"));
+		}
 		// The planned graph locator is knowledge the caller needs before applying.
 		FGuid PreparedGraphGuid;
 		FGuid::Parse(Prepared.GraphGuid, PreparedGraphGuid);

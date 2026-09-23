@@ -867,18 +867,32 @@ void ScanDeclarationReferences(
 			else if (const UK2Node_CreateDelegate* CreateDelegate = Cast<UK2Node_CreateDelegate>(Node))
 			{
 				if (CreateDelegate->GetFunctionName() != DeclarationName) continue;
+				// Three outcomes: the binding resolves to the selected declaration (counted), it
+				// resolves to a function that is simply a different one with the same name (not a
+				// reference at all, so ignored), or it cannot be resolved (blocking).
 				const UClass* const AssetClass = Asset->SkeletonGeneratedClass ? Asset->SkeletonGeneratedClass.Get() : Asset->GeneratedClass.Get();
-				UFunction* const Bound = AssetClass ? AssetClass->FindFunctionByName(DeclarationName) : nullptr;
-				if (Bound && OwnerDeclaresSelected(Bound->GetOwnerClass(), DeclarationName, DeclaringClass))
-				{
-					if (bCountAsExternal) ++InOut.External; else ++InOut.Resolved;
-				}
-				else
+				if (!AssetClass)
 				{
 					InOut.Unresolved.Add(FString::Printf(
-						TEXT("asset '%s' graph '%s' node '%s' (GUID %s) binds '%s' but it does not resolve to the selected declaration"),
+						TEXT("asset '%s' graph '%s' node '%s' (GUID %s) binds '%s' but the asset has no class context to resolve it against"),
 						*Asset->GetName(), *Graph->GetName(), *Node->GetName(), *Node->NodeGuid.ToString(), *DeclarationName.ToString()));
+					continue;
 				}
+				UFunction* const Bound = AssetClass->FindFunctionByName(DeclarationName);
+				if (!Bound)
+				{
+					InOut.Unresolved.Add(FString::Printf(
+						TEXT("asset '%s' graph '%s' node '%s' (GUID %s) binds '%s' but no such function resolves in that asset"),
+						*Asset->GetName(), *Graph->GetName(), *Node->GetName(), *Node->NodeGuid.ToString(), *DeclarationName.ToString()));
+					continue;
+				}
+				if (!OwnerDeclaresSelected(Bound->GetOwnerClass(), DeclarationName, DeclaringClass))
+				{
+					// A fully resolved binding to an unrelated same-named function is not a reference
+					// to the selected declaration: it neither blocks nor inflates the inventory.
+					continue;
+				}
+				if (bCountAsExternal) ++InOut.External; else ++InOut.Resolved;
 				continue;
 			}
 			else
