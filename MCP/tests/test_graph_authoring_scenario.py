@@ -650,25 +650,32 @@ async def test_scenario_typed_authoring_adapter_widget_blueprint(mcp_client, tcp
             node["class"] for node in return_subgraph["nodes"]
         ]
         return_names = node_name_map(return_subgraph)
-        # The engine may already have linked the created entry to the created result terminator; the
-        # patch never replaces an existing exec link, so that edge is only requested when it is absent.
-        exec_linked = any(
-            edge[0] == return_entry["node_id"] and edge[1] == "then"
-            for edge in edges(return_subgraph)
-        )
+        # The engine links the created entry's exec output and the created result's return input when it
+        # builds an inherited implementation graph, and the patch contract deliberately refuses to take
+        # over an existing link. Both engine-created links are therefore detached first by the registered
+        # graph.disconnect operation: separate graph maintenance steps outside the patch transaction,
+        # never claimed as part of it. Detaching a pin that carries no link is a no-op.
+        for pin_name, node in (("then", return_entry), ("ReturnValue", return_result)):
+            await graph(
+                mcp_client,
+                "disconnect",
+                {
+                    "asset_path": fixture["adapter_package"],
+                    "node_id": node["node_id"],
+                    "pin_name": pin_name,
+                    "graph_name": "ReadPresentedTitle",
+                },
+            )
         return_connections = [
             {
                 "from": {"node_guid": graph_preview["node_mappings"]["model_title"], "pin": "Title"},
                 "to": {"node_guid": return_result["node_guid"], "pin": "ReturnValue"},
-            }
+            },
+            {
+                "from": {"node_guid": return_entry["node_guid"], "pin": "then"},
+                "to": {"node_guid": return_result["node_guid"], "pin": "execute"},
+            },
         ]
-        if not exec_linked:
-            return_connections.append(
-                {
-                    "from": {"node_guid": return_entry["node_guid"], "pin": "then"},
-                    "to": {"node_guid": return_result["node_guid"], "pin": "execute"},
-                }
-            )
         wired = await apply_reviewed(
             run,
             envelope(
