@@ -51,12 +51,18 @@ struct FCortexGraphPreparedPatch
 	 */
 	TSharedPtr<FJsonObject> TransferPlan;
 	/**
+	 * Durable `prune_island` plan when the request selected the prune shell: the approved removal set,
+	 * the published partition and the preservation contract of the retained body.
+	 */
+	TSharedPtr<FJsonObject> PrunePlan;
+	/**
 	 * True when an accepted replay named a source locator that no longer exists. The apply consumed
 	 * the stale entry and that provenance is not inventoried, so it is reported instead of inferred.
 	 */
 	bool bReplayedWithAbsentSource = false;
 	bool bIsMigration() const { return MigrationPlan.IsValid(); }
 	bool bIsTransfer() const { return TransferPlan.IsValid(); }
+	bool bIsPrune() const { return PrunePlan.IsValid(); }
 
 	/** Prepared state never owns transient UObject pointers. */
 	bool HasTransientObjects() const { return false; }
@@ -119,6 +125,12 @@ struct FCortexGraphPatchOutcome
 	 * the durable plan to learn which edges need explicit boundary mappings.
 	 */
 	TSharedPtr<FJsonObject> TransferInventory;
+	/**
+	 * Bounded inventory of a prune request (removable, shared, blocked and external-edge partitions
+	 * plus the scan counts and completeness), published with the preview and the apply result so a
+	 * caller approves the removable set from the response instead of reading the durable plan.
+	 */
+	TSharedPtr<FJsonObject> PruneInventory;
 	TArray<FString> Diagnostics;
 	FCortexGraphPatchLocators Locators;
 };
@@ -126,6 +138,13 @@ struct FCortexGraphPatchOutcome
 class FCortexGraphPatchOps
 {
 public:
+	/**
+	 * The published `max_scanned_nodes` bound of one graph-wide scan: the whole-asset node count a
+	 * patch request may address and the scan budget a bounded migration traversal may spend. It is
+	 * published by `graph.get_authoring_context` and is the one source of truth for both.
+	 */
+	static constexpr int32 MaxScannedNodes = 2048;
+
 	/** Performs strict, game-thread-only validation without changing the target Blueprint. */
 	static bool Preflight(
 		UBlueprint* Blueprint,

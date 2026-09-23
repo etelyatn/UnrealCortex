@@ -11,6 +11,7 @@
 #include "GameFramework/GameMode.h"
 #include "EdGraph/EdGraph.h"
 #include "Editor.h"
+#include "Editor/Transactor.h"
 #include "UObject/GarbageCollection.h"
 #include "Dom/JsonObject.h"
 #include "K2Node_Composite.h"

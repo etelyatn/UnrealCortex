@@ -168,6 +168,74 @@ struct FCortexGraphMigrationTransferPlan
 		FCortexCommandResult& OutError);
 };
 
+/** One node of a prune partition: its durable identity and why it is retained instead of removed. */
+struct FCortexGraphPruneNode
+{
+	FString NodeGuid;
+	FString ClassPath;
+	/** Why this node is retained (shared consumer, terminator, blocked kind); empty for a removable node. */
+	FString Reason;
+};
+
+/**
+ * One link crossing between the pruned set and everything retained: the approved boundary edge the
+ * apply removes because one of its two endpoints is a deleted node. Both endpoints are named so the
+ * readback proves the link is gone from the retained side instead of only from the deleted one.
+ */
+struct FCortexGraphPruneEdge
+{
+	FString FromGuid;
+	FString FromPin;
+	FString ToGuid;
+	FString ToPin;
+};
+
+/**
+ * Durable, JSON-serializable plan of one `prune_island` migration.
+ *
+ * Like the replacement and transfer plans it carries only GUIDs, names and canonical captures, so a
+ * prepared prune survives without retaining UObjects and the apply phase rebuilds every transient
+ * pointer after the final guard. The plan is the caller's approved removal set plus the partition
+ * the preview published, so the same comparison that a preview proves also guards the apply.
+ */
+struct FCortexGraphMigrationPrunePlan
+{
+	FString Op;
+	FString GraphGuid;
+	FString SubgraphPath;
+	/** The entry terminator whose island is pruned. It is retained and verified unchanged. */
+	FString EntryNodeGuid;
+	/** The approved removal set, canonical ascending. Empty only when the request awaited approval. */
+	TArray<FString> ApprovedGuids;
+	/**
+	 * The removable set the preview published: every island node this island uniquely owns, canonical
+	 * ascending. The apply only removes it when the approved set matches it exactly.
+	 */
+	TArray<FString> RemovableGuids;
+	/** The partition the preview published: nodes retained because a retained consumer uses them. */
+	TArray<FCortexGraphPruneNode> Shared;
+	/** The partition the preview published: island nodes whose ownership cannot be proven. */
+	TArray<FCortexGraphPruneNode> Blocked;
+	/** Every link of the approved set that reaches a retained node; each is removed and journaled. */
+	TArray<FCortexGraphPruneEdge> ExternalEdges;
+	/** Preservation contract of the retained body, shared by the readback and by recovery. */
+	FCortexGraphTransferPreservation Preservation;
+	int32 ScannedNodes = 0;
+	int32 ScannedLinks = 0;
+	/** False only when the graph-wide scan budget was exhausted, so the partition is not complete. */
+	bool bComplete = true;
+	/** True when the request carried no approved set: the plan publishes the partition for approval. */
+	bool bAwaitingApproval = false;
+	/** True when the approved set is already absent: an idempotent replay that removes nothing. */
+	bool bReused = false;
+
+	TSharedPtr<FJsonObject> ToJson() const;
+	static bool FromJson(
+		const TSharedPtr<FJsonObject>& Source,
+		FCortexGraphMigrationPrunePlan& OutPlan,
+		FCortexCommandResult& OutError);
+};
+
 /**
  * Durable, JSON-serializable plan of one `replace_entry` migration.
  *
@@ -379,8 +447,50 @@ public:
 		const TSharedPtr<FJsonObject>& Captured,
 		FString& OutFailure);
 
+	/**
+	 * Validates and normalizes one `prune_island` migration without touching the asset: the entry
+	 * terminator, the graph-wide bounded ownership scan (execution reachability plus the reverse
+	 * data-producer closure), the removable/shared/blocked/external-edge partition and the exact
+	 * match of the caller's approved set against the freshly recomputed removable set. On success
+	 * OutPlan is complete and durable.
+	 */
+	static bool PlanPrune(
+		UBlueprint* Blueprint,
+		const TSharedPtr<FJsonObject>& Migration,
+		FCortexGraphMigrationPrunePlan& OutPlan,
+		bool& bOutReused,
+		FCortexCommandResult& OutError);
+
+	/**
+	 * Native comparison of the planned prune against the live asset: the approved set is gone, the
+	 * entry terminator still resolves, every planned external edge is gone from its retained side,
+	 * no dangling link survives anywhere in the graph and the retained body matches its captured
+	 * preservation contract. Shared by the readback and by the idempotent-replay reconciliation.
+	 */
+	static bool VerifyPruneAgainstNative(
+		UBlueprint* Blueprint,
+		const FCortexGraphMigrationPrunePlan& Plan,
+		FString& OutFailure);
+
+	/**
+	 * The bounded, compact inventory of one prune plan: the removable, shared, blocked and
+	 * external-edge partitions plus the scan counts and completeness. The removable set is published
+	 * complete because the caller must echo it exactly; the informational lists are bounded by the
+	 * shared diagnostics bound. Returns null for a non-prune plan.
+	 */
+	static TSharedPtr<FJsonObject> MakePruneInventory(const TSharedPtr<FJsonObject>& PrunePlanJson);
+
 	static UEdGraphNode* FindNodeByGuid(UBlueprint* Blueprint, const FGuid& NodeGuid);
 	/** Graph-scoped lookup: the durable way to resolve a node identity inside one named graph. */
 	static UEdGraphNode* FindNodeByGuidInGraph(UEdGraph* Graph, const FGuid& NodeGuid);
 	static UEdGraph* FindGraphByGuid(UBlueprint* Blueprint, const FGuid& GraphGuid);
+
+#if WITH_AUTOMATION_TESTS
+	/**
+	 * Test-only readback divergence seam of the prune verifier: fails one named check after the
+	 * comparison that names it has really run. Never accepts external command input.
+	 */
+	static void SetPruneReadbackFaultForTesting(FName Check);
+	static void ClearPruneReadbackFaultForTesting();
+#endif
 };

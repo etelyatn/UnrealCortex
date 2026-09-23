@@ -100,7 +100,6 @@ constexpr int32 MaxNodes = 64;
 constexpr int32 MaxEdges = 256;
 constexpr int32 MaxClientIdLength = 32;
 constexpr int32 MaxRequestSize = 64 * 1024;
-constexpr int32 MaxScannedNodes = 2048;
 
 #if WITH_AUTOMATION_TESTS
 FName ApplyFaultPointForTesting = NAME_None;
@@ -461,7 +460,7 @@ bool CountGraphNodesBounded(UEdGraph* Graph, int32& InOutCount, TSet<const UEdGr
 	if (!Graph || Visited.Contains(Graph)) return true;
 	Visited.Add(Graph);
 	InOutCount += Graph->Nodes.Num();
-	if (InOutCount > MaxScannedNodes) return false;
+	if (InOutCount > FCortexGraphPatchOps::MaxScannedNodes) return false;
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
 		const UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node);
@@ -1177,17 +1176,97 @@ bool FCortexGraphPatchOps::Preflight(
 	{
 		if (!CountBlueprintNodesBounded(Blueprint))
 		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("graph scan exceeds max_scanned_nodes=2048"));
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, FString::Printf(
+				TEXT("graph scan exceeds max_scanned_nodes=%d"), FCortexGraphPatchOps::MaxScannedNodes));
 			return false;
 		}
 		FString MigrationOp;
 		if ((*MigrationPtr)->TryGetStringField(TEXT("op"), MigrationOp) && MigrationOp != TEXT("replace_entry"))
 		{
-			if (MigrationOp != TEXT("copy_subgraph") && MigrationOp != TEXT("move_subgraph"))
+			const bool bIsTransferOp = MigrationOp == TEXT("copy_subgraph") || MigrationOp == TEXT("move_subgraph");
+			const bool bIsPruneOp = MigrationOp == TEXT("prune_island");
+			if (!bIsTransferOp && !bIsPruneOp)
 			{
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::UnsupportedOperation,
-					FString::Printf(TEXT("Unsupported migration operation '%s'; the published migration operations are replace_entry, copy_subgraph and move_subgraph"), *MigrationOp));
+					FString::Printf(TEXT("Unsupported migration operation '%s'; the published migration operations are replace_entry, copy_subgraph, move_subgraph and prune_island"), *MigrationOp));
 				return false;
+			}
+			if (bIsPruneOp)
+			{
+				// The prune shell addresses its one graph inside the migration object, so the
+				// implementation target of `replace_entry` must be absent instead of ignored.
+				if (Params->HasField(TEXT("target")))
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+						TEXT("a prune_island request addresses its graph through migration.source; 'target' must be absent"));
+					return false;
+				}
+				FCortexGraphMigrationPrunePlan PrunePlan;
+				bool bPruneReused = false;
+				if (!FCortexGraphMigrationOps::PlanPrune(Blueprint, *MigrationPtr, PrunePlan, bPruneReused, OutError))
+				{
+					return false;
+				}
+				if (!bDryRun && PrunePlan.bAwaitingApproval)
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+						TEXT("a prune_island apply requires the migration.approved_node_guids of the preview; the preview that published the removable set must be approved before anything is deleted"));
+					return false;
+				}
+				OutPrepared.PrunePlan = PrunePlan.ToJson();
+				OutPrepared.GraphGuid = PrunePlan.GraphGuid;
+				OutPrepared.SubgraphPath = PrunePlan.SubgraphPath;
+				FGuid PruneEntryGuid;
+				FGuid::Parse(PrunePlan.EntryNodeGuid, PruneEntryGuid);
+				OutPrepared.EntryNodeGuid = PruneEntryGuid;
+				OutPrepared.bHasEntryNode = true;
+				// A partition-only preview has nothing to apply, and a reconciled replay has nothing
+				// left to remove: both are change-free without being a reuse of created identities.
+				OutPrepared.bFullyReused = bPruneReused || PrunePlan.bAwaitingApproval;
+				OutPrepared.bChanged = !OutPrepared.bFullyReused;
+
+				TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
+				Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
+				Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
+				Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+				Normalized->SetArrayField(TEXT("nodes"), TArray<TSharedPtr<FJsonValue>>());
+				Normalized->SetArrayField(TEXT("connections"), TArray<TSharedPtr<FJsonValue>>());
+				Normalized->SetArrayField(TEXT("pin_updates"), TArray<TSharedPtr<FJsonValue>>());
+				Normalized->SetObjectField(TEXT("migration"), OutPrepared.PrunePlan);
+				TSharedPtr<FJsonObject> PruneLocator = MakeShared<FJsonObject>();
+				PruneLocator->SetStringField(TEXT("graph_guid"), PrunePlan.GraphGuid);
+				if (!PrunePlan.SubgraphPath.IsEmpty())
+				{
+					PruneLocator->SetStringField(TEXT("subgraph_path"), PrunePlan.SubgraphPath);
+				}
+				TSharedPtr<FJsonObject> NormalizedTarget = MakeShared<FJsonObject>();
+				NormalizedTarget->SetObjectField(TEXT("graph_ref"), PruneLocator);
+				Normalized->SetObjectField(TEXT("target"), NormalizedTarget);
+				OutPrepared.NormalizedRequest = Normalized;
+
+				FString PruneIntent;
+				PruneIntent += TEXT("graph_patch_v1|");
+				PruneIntent += CanonicalObject(Normalized);
+				PruneIntent += TEXT("|fingerprint=");
+				PruneIntent += OutPrepared.FingerprintBefore->GetStringField(TEXT("graph_authoring_hash"));
+				PruneIntent += TEXT("|engine=UE5.8|schema=K2");
+				FTCHARToUTF8 PruneUtf8(*PruneIntent);
+				const FIoHash PruneDigest = FIoHash::HashBuffer(
+					reinterpret_cast<const uint8*>(PruneUtf8.Get()), PruneUtf8.Length());
+				OutPrepared.ValidationHash = LexToString(PruneDigest);
+
+				if (!bDryRun)
+				{
+					FString ExpectedToken;
+					Params->TryGetStringField(TEXT("expected_validation_hash"), ExpectedToken);
+					if (ExpectedToken != OutPrepared.ValidationHash)
+					{
+						OutError = FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
+							TEXT("expected_validation_hash does not match current preflight intent"));
+						return false;
+					}
+				}
+				return true;
 			}
 			// The transfer shell addresses its two graphs inside the migration object, so the
 			// implementation target of `replace_entry` must be absent instead of ignored.
@@ -1394,7 +1473,8 @@ bool FCortexGraphPatchOps::Preflight(
 	bool bImplementationHasParentCall = false;
 	if (!CountBlueprintNodesBounded(Blueprint))
 	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("graph scan exceeds max_scanned_nodes=2048"));
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, FString::Printf(
+			TEXT("graph scan exceeds max_scanned_nodes=%d"), FCortexGraphPatchOps::MaxScannedNodes));
 		return false;
 	}
 	if (!ParseTarget(Blueprint, Params, Target, TargetGraph, SymbolJson, bImplementationWouldCreate, bImplementationIsEvent, bImplementationHasParentCall, OutError)) return false;
@@ -3528,6 +3608,17 @@ bool VerifyAppliedState(
 		}
 		return FCortexGraphMigrationOps::VerifyTransferAgainstNative(Blueprint, TransferPlan, OutFailure);
 	}
+	if (Prepared.PrunePlan.IsValid())
+	{
+		FCortexGraphMigrationPrunePlan PrunePlan;
+		FCortexCommandResult PlanError;
+		if (!FCortexGraphMigrationPrunePlan::FromJson(Prepared.PrunePlan, PrunePlan, PlanError))
+		{
+			OutFailure = PlanError.ErrorMessage;
+			return false;
+		}
+		return FCortexGraphMigrationOps::VerifyPruneAgainstNative(Blueprint, PrunePlan, OutFailure);
+	}
 	if (Prepared.MigrationPlan.IsValid())
 	{
 		FCortexGraphMigrationPlan Plan;
@@ -3805,6 +3896,63 @@ bool ApplyPrepared(
 		}
 		SourceGraph->NotifyGraphChanged();
 		DestinationGraph->NotifyGraphChanged();
+		return true;
+	}
+
+	if (Prepared.PrunePlan.IsValid())
+	{
+		// The prune shell: the approved uniquely owned island nodes of one entry inside one graph, all
+		// inside this one transaction. Shared, blocked and out-of-island nodes are never touched: only
+		// the links whose far endpoint is a deleted node go with them, and each removal is journaled by
+		// durable identity so recovery re-registers the node and its exact pin state.
+		FCortexGraphMigrationPrunePlan PrunePlan;
+		if (!FCortexGraphMigrationPrunePlan::FromJson(Prepared.PrunePlan, PrunePlan, OutError))
+		{
+			return false;
+		}
+		FGuid PruneGraphGuid;
+		FGuid::Parse(PrunePlan.GraphGuid, PruneGraphGuid);
+		UEdGraph* const PruneGraph = FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, PruneGraphGuid);
+		if (!PruneGraph)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("the planned prune graph did not re-resolve after the final guard"));
+			return false;
+		}
+		Journal.Locators.GraphGuid = PruneGraph->GraphGuid;
+		Journal.Locators.SubgraphPath = PrunePlan.SubgraphPath;
+		FGuid PruneEntryGuid;
+		FGuid::Parse(PrunePlan.EntryNodeGuid, PruneEntryGuid);
+		Journal.Locators.EntryNodeGuid = PruneEntryGuid;
+		Journal.Locators.bHasEntryNode = true;
+		// The retained body carries one preservation contract, verified by the readback and again by
+		// recovery, so a restored graph is proven instead of assumed.
+		Journal.PreservationContracts = { PrunePlan.Preservation };
+
+		for (const FString& GuidText : PrunePlan.ApprovedGuids)
+		{
+			FGuid ApprovedGuid;
+			UEdGraphNode* const ApprovedNode = FGuid::Parse(GuidText, ApprovedGuid)
+				? FCortexGraphMigrationOps::FindNodeByGuidInGraph(PruneGraph, ApprovedGuid)
+				: nullptr;
+			if (!ApprovedNode)
+			{
+				return Fail(FString::Printf(TEXT("the approved island node '%s' no longer resolves in the pruned graph"), *GuidText));
+			}
+			// The engine node-removal path: breakpoints and watches are cleared, the schema breaks the
+			// links and DestroyNode removes the node, so a bound graph or subgraph cannot be orphaned.
+			JournalNodeRemoved(ApprovedNode, Journal);
+			FBlueprintEditorUtils::RemoveNode(Blueprint, ApprovedNode, /*bDontRecompile=*/true);
+			if (FCortexGraphMigrationOps::FindNodeByGuidInGraph(PruneGraph, ApprovedGuid))
+			{
+				return Fail(FString::Printf(TEXT("the approved island node '%s' could not be removed"), *GuidText));
+			}
+		}
+		if (ShouldInjectApplyFault(TEXT("migration_prune_removed")))
+		{
+			return Fail(TEXT("Test fault injected after the approved island nodes were removed"));
+		}
+		PruneGraph->NotifyGraphChanged();
 		return true;
 	}
 
@@ -4388,6 +4536,7 @@ bool FCortexGraphPatchOps::Execute(
 	}
 	OutOutcome.PatchId = Prepared.PatchId;
 	OutOutcome.TransferInventory = FCortexGraphMigrationOps::MakeTransferInventory(Prepared.TransferPlan);
+	OutOutcome.PruneInventory = FCortexGraphMigrationOps::MakePruneInventory(Prepared.PrunePlan);
 	OutOutcome.bChanged = Prepared.bChanged;
 	OutOutcome.ReusedClientIds = Prepared.ReusedClientIds;
 	OutOutcome.bReplayedWithAbsentSource = Prepared.bReplayedWithAbsentSource;

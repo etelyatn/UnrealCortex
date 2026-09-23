@@ -4726,3 +4726,1133 @@ bool FCortexGraphMigrationOps::VerifyTransferAgainstNative(
 	}
 	return VerifyPreservationContracts(Blueprint, Plan.Preservations, OutFailure);
 }
+
+// ===========================================================================
+// Execution-island pruning: `prune_island`
+// ===========================================================================
+
+namespace
+{
+/**
+ * Graph-wide scan budget of one prune preflight, measured in scan units (one visited node or one
+ * examined link). The value is the published `max_scanned_nodes` bound, so a refusal quotes the
+ * limit the caller already reads from `graph.get_authoring_context` instead of inventing a second.
+ */
+constexpr int32 PruneScanUnitLimit = FCortexGraphPatchOps::MaxScannedNodes;
+
+const TCHAR* const PruneOp = TEXT("prune_island");
+
+#if WITH_AUTOMATION_TESTS
+/** Test-only prune readback fault: fails exactly the named check of the prune readback verifier. */
+FName PruneReadbackFaultForTesting = NAME_None;
+#endif
+
+bool ShouldInjectPruneReadbackFault(const FName Check)
+{
+#if WITH_AUTOMATION_TESTS
+	return PruneReadbackFaultForTesting == Check;
+#else
+	(void)Check;
+	return false;
+#endif
+}
+
+/** One accumulating bounded scan: every visited node and every examined link is charged once. */
+struct FPruneScan
+{
+	int32 Nodes = 0;
+	int32 Links = 0;
+	bool bExhausted = false;
+
+	void VisitNode()
+	{
+		++Nodes;
+		if (Nodes + Links > PruneScanUnitLimit) bExhausted = true;
+	}
+
+	void ExamineLink()
+	{
+		++Links;
+		if (Nodes + Links > PruneScanUnitLimit) bExhausted = true;
+	}
+};
+
+/** The refusal of an exhausted scan: the observed counts and the limit, never a partial partition. */
+FCortexCommandResult MakePruneScanRefusal(const FPruneScan& Scan)
+{
+	FCortexCommandResult Error = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+		FString::Printf(TEXT("the graph-wide scan of this prune island exceeded max_scanned_nodes=%d after %d node visit(s) and %d examined link(s); the island partition is incomplete, so the request is refused instead of pruning a set that was never proven"),
+			PruneScanUnitLimit, Scan.Nodes, Scan.Links));
+	Error.ErrorDetails = MakeShared<FJsonObject>();
+	Error.ErrorDetails->SetNumberField(TEXT("scan_limit"), PruneScanUnitLimit);
+	Error.ErrorDetails->SetNumberField(TEXT("scanned_nodes"), Scan.Nodes);
+	Error.ErrorDetails->SetNumberField(TEXT("scanned_links"), Scan.Links);
+	Error.ErrorDetails->SetBoolField(TEXT("complete"), false);
+	return Error;
+}
+
+/**
+ * Engine class names a prune refuses to remove, with the reason the partition reports afterwards. The
+ * walk is over the node's own inheritance chain, so a subclass of a refused class is refused under
+ * the same reason instead of slipping through the ownership proof.
+ */
+const TMap<FString, FString>& PruneBlockedClassNames()
+{
+	static const TMap<FString, FString> Blocked = {
+		{ TEXT("K2Node_Tunnel"), TEXT("tunnel node whose pins are owned by a bound graph") },
+		{ TEXT("K2Node_TunnelBase"), TEXT("tunnel base whose pins are owned by a bound graph") },
+		{ TEXT("K2Node_TunnelBoundary"), TEXT("tunnel boundary whose pins are owned by a bound graph") },
+		{ TEXT("K2Node_Knot"), TEXT("reroute knot whose pin type is inferred from its links") },
+		{ TEXT("K2Node_Timeline"), TEXT("timeline node with its own bound state") },
+		{ TEXT("K2Node_EditablePinBase"), TEXT("editable-pin terminator owned by its graph lifecycle") },
+		{ TEXT("K2Node_BaseMCDelegate"), TEXT("delegate node owned by its delegate declaration") },
+		{ TEXT("K2Node_CallDelegate"), TEXT("delegate node owned by its delegate declaration") },
+		{ TEXT("K2Node_CreateDelegate"), TEXT("delegate node owned by its delegate declaration") },
+		{ TEXT("K2Node_AssignDelegate"), TEXT("delegate node owned by its delegate declaration") },
+		{ TEXT("K2Node_DelegateSet"), TEXT("delegate node owned by its delegate declaration") },
+		{ TEXT("K2Node_BaseAsyncTask"), TEXT("latent async task node") },
+		{ TEXT("K2Node_AsyncAction"), TEXT("latent async action node") },
+		{ TEXT("K2Node_LatentGameplayTaskCall"), TEXT("latent gameplay task call") },
+	};
+	return Blocked;
+}
+
+/**
+ * True when the node terminates a graph and is therefore owned by its graph lifecycle, so a prune
+ * always retains it. The reason is reported in the partition.
+ */
+bool PruneTerminatorReason(const UEdGraphNode* Node, FString& OutReason)
+{
+	OutReason.Reset();
+	if (!Node) return false;
+	if (Node->IsA<UK2Node_Event>())
+	{
+		OutReason = TEXT("an event terminator owned by its graph lifecycle");
+		return true;
+	}
+	if (Node->IsA<UK2Node_FunctionEntry>())
+	{
+		OutReason = TEXT("a function entry terminator owned by its graph lifecycle");
+		return true;
+	}
+	if (Node->IsA<UK2Node_FunctionResult>())
+	{
+		OutReason = TEXT("a function result terminator owned by its graph lifecycle");
+		return true;
+	}
+	return false;
+}
+
+/** True when the node may open a prune island: an event or function entry terminator with exec pins. */
+bool IsPruneEntryNode(const UEdGraphNode* Node, FString& OutReason)
+{
+	OutReason.Reset();
+	if (!Node || !Node->GetClass())
+	{
+		OutReason = TEXT("the node is null");
+		return false;
+	}
+	if (Node->IsA<UK2Node_Event>() || Node->IsA<UK2Node_FunctionEntry>())
+	{
+		if (Node->Pins.ContainsByPredicate(
+			[](const UEdGraphPin* Pin)
+			{
+				return Pin && Pin->Direction == EGPD_Output && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec;
+			}))
+		{
+			return true;
+		}
+		OutReason = FString::Printf(TEXT("node class '%s' has no execution output pin"), *Node->GetClass()->GetName());
+		return false;
+	}
+	OutReason = FString::Printf(TEXT("node class '%s' is not an event or function entry terminator"), *Node->GetClass()->GetName());
+	return false;
+}
+
+/** True when the ownership proof fails for the node; the reason names why it is never removable. */
+bool PruneBlockedReason(UEdGraphNode* Node, FString& OutReason)
+{
+	OutReason.Reset();
+	if (!Node || !Node->GetClass() || !Node->NodeGuid.IsValid())
+	{
+		OutReason = TEXT("invalid node identity");
+		return true;
+	}
+	if (Node->GetSubGraphs().Num() > 0)
+	{
+		OutReason = TEXT("the node owns a bound subgraph, which a removal would orphan");
+		return true;
+	}
+	if (const UK2Node_CallFunction* const Call = Cast<UK2Node_CallFunction>(Node))
+	{
+		if (Call->IsLatentFunction())
+		{
+			OutReason = FString::Printf(TEXT("latent function call '%s'"), *Call->FunctionReference.GetMemberName().ToString());
+			return true;
+		}
+	}
+	for (UClass* Class = Node->GetClass(); Class && Class != UObject::StaticClass(); Class = Class->GetSuperClass())
+	{
+		const FString ClassName = Class->GetName();
+		if (ClassName.Contains(TEXT("Latent")))
+		{
+			OutReason = FString::Printf(TEXT("latent node class '%s'"), *Node->GetClass()->GetName());
+			return true;
+		}
+		if (const FString* const Reason = PruneBlockedClassNames().Find(ClassName))
+		{
+			OutReason = *Reason;
+			return true;
+		}
+	}
+	if (!Node->IsA<UK2Node>() && !Node->IsA<UEdGraphNode_Comment>())
+	{
+		OutReason = FString::Printf(TEXT("non-K2 graph node class '%s'"), *Node->GetClass()->GetName());
+		return true;
+	}
+	return false;
+}
+
+FCortexGraphPruneNode MakePruneNode(const UEdGraphNode* Node, const FString& Reason)
+{
+	FCortexGraphPruneNode Entry;
+	Entry.NodeGuid = Node->NodeGuid.ToString();
+	Entry.ClassPath = Node->GetClass()->GetPathName();
+	Entry.Reason = Reason;
+	return Entry;
+}
+
+/** Canonical key of one directed link endpoint, so a planned edge is de-duplicated once. */
+FString PruneEndpointKey(const FGuid& NodeGuid, const FName PinName)
+{
+	return FString::Printf(TEXT("%s.%s"), *NodeGuid.ToString(), *PinName.ToString());
+}
+
+/** The complete partition of one prune island plus the scan work that produced it. */
+struct FPrunePartition
+{
+	/** Uniquely owned by this island: no consumer is retained. */
+	TArray<FGuid> Removable;
+	/** Island nodes retained because a retained consumer uses them. */
+	TArray<FCortexGraphPruneNode> Shared;
+	/** Island nodes retained because their ownership or traversal cannot be proven. */
+	TArray<FCortexGraphPruneNode> Blocked;
+	/** Every link of the removable set that reaches a retained node: the approved boundary edges. */
+	TArray<FCortexGraphPruneEdge> ExternalEdges;
+	FPruneScan Scan;
+};
+
+/**
+ * Computes the partition of the island of Entry inside Graph, with a bounded scan over the whole
+ * asset and the island.
+ *
+ * The island is the execution-reachable set of the entry (exec outputs only, so branch, sequence and
+ * loop bodies follow their own exec pins exactly as the trace helpers model them) plus the reverse
+ * data-producer closure feeding it. A visited set bounds every traversal, so a data cycle inside the
+ * island terminates instead of being refused. The entry and every graph terminator are retained by
+ * kind, a node whose ownership cannot be proven is blocked, and a candidate is retained as shared as
+ * soon as one of its consumers is not itself removable. That rule is also what makes a removal
+ * unable to orphan a retained consumer's link: a consumer outside the removable set is exactly what
+ * makes its producer shared, and the readback proves the retained link sets afterwards.
+ */
+bool ComputePrunePartition(
+	UBlueprint* Blueprint,
+	UEdGraph* Graph,
+	UEdGraphNode* Entry,
+	FPrunePartition& OutPartition,
+	FCortexCommandResult& OutError)
+{
+	OutPartition = FPrunePartition();
+	OutError = FCortexCommandResult();
+	if (!Blueprint || !Graph || !Entry)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("the prune island requires a blueprint, its graph and its entry node"));
+		return false;
+	}
+
+	// The graph-wide identity inventory: an island may only remove a GUID this asset owns once.
+	TMap<FGuid, int32> GuidOwners;
+	{
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+		for (UEdGraph* Candidate : Graphs)
+		{
+			if (!Candidate) continue;
+			for (UEdGraphNode* Node : Candidate->Nodes)
+			{
+				if (!Node) continue;
+				OutPartition.Scan.VisitNode();
+				if (OutPartition.Scan.bExhausted)
+				{
+					OutError = MakePruneScanRefusal(OutPartition.Scan);
+					return false;
+				}
+				int32& Count = GuidOwners.FindOrAdd(Node->NodeGuid);
+				++Count;
+			}
+		}
+	}
+
+	// Execution reachability from the entry, following every execution output pin.
+	TSet<FGuid> Island;
+	Island.Add(Entry->NodeGuid);
+	TArray<UEdGraphNode*> Worklist;
+	Worklist.Add(Entry);
+	for (int32 Index = 0; Index < Worklist.Num(); ++Index)
+	{
+		UEdGraphNode* const Current = Worklist[Index];
+		if (!Current) continue;
+		for (UEdGraphPin* Pin : Current->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Output || Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec) continue;
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				OutPartition.Scan.ExamineLink();
+				if (OutPartition.Scan.bExhausted)
+				{
+					OutError = MakePruneScanRefusal(OutPartition.Scan);
+					return false;
+				}
+				UEdGraphNode* const Next = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+				if (!Next || Island.Contains(Next->NodeGuid)) continue;
+				Island.Add(Next->NodeGuid);
+				Worklist.Add(Next);
+				OutPartition.Scan.VisitNode();
+				if (OutPartition.Scan.bExhausted)
+				{
+					OutError = MakePruneScanRefusal(OutPartition.Scan);
+					return false;
+				}
+			}
+		}
+	}
+
+	// Reverse data-producer closure of that set, pure and impure producers alike. The visited set is
+	// what bounds a data cycle: a member already inside the island is never enqueued twice.
+	for (int32 Index = 0; Index < Worklist.Num(); ++Index)
+	{
+		UEdGraphNode* const Current = Worklist[Index];
+		if (!Current) continue;
+		for (UEdGraphPin* Pin : Current->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Input || Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				OutPartition.Scan.ExamineLink();
+				if (OutPartition.Scan.bExhausted)
+				{
+					OutError = MakePruneScanRefusal(OutPartition.Scan);
+					return false;
+				}
+				UEdGraphNode* const Producer = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+				if (!Producer || Island.Contains(Producer->NodeGuid)) continue;
+				Island.Add(Producer->NodeGuid);
+				Worklist.Add(Producer);
+				OutPartition.Scan.VisitNode();
+				if (OutPartition.Scan.bExhausted)
+				{
+					OutError = MakePruneScanRefusal(OutPartition.Scan);
+					return false;
+				}
+			}
+		}
+	}
+
+	// Canonical island order: the partition is published, so it must not depend on graph order.
+	TArray<UEdGraphNode*> IslandNodes;
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (Node && Island.Contains(Node->NodeGuid)) IslandNodes.Add(Node);
+	}
+	IslandNodes.Sort([](const UEdGraphNode& A, const UEdGraphNode& B)
+	{
+		return A.NodeGuid.ToString() < B.NodeGuid.ToString();
+	});
+
+	// The candidate set: everything the island reaches that is not retained by kind and not blocked.
+	TSet<FGuid> Candidates;
+	TMap<FGuid, FString> RetainedReasons;
+	TMap<FGuid, FString> BlockedReasons;
+	for (UEdGraphNode* Node : IslandNodes)
+	{
+		FString Reason;
+		if (Node == Entry)
+		{
+			RetainedReasons.Add(Node->NodeGuid, TEXT("the entry terminator whose island is pruned"));
+			continue;
+		}
+		// An identity this asset owns more than once cannot be proven to belong to this island, so
+		// the node is blocked instead of being removed under an ambiguous name.
+		const int32* const OwnerCount = GuidOwners.Find(Node->NodeGuid);
+		if (!OwnerCount || *OwnerCount != 1)
+		{
+			BlockedReasons.Add(Node->NodeGuid, FString::Printf(
+				TEXT("the node identity is owned by %d node(s) in this asset instead of exactly one"),
+				OwnerCount ? *OwnerCount : 0));
+			continue;
+		}
+		if (PruneTerminatorReason(Node, Reason))
+		{
+			RetainedReasons.Add(Node->NodeGuid, Reason);
+			continue;
+		}
+		if (PruneBlockedReason(Node, Reason))
+		{
+			BlockedReasons.Add(Node->NodeGuid, Reason);
+			continue;
+		}
+		Candidates.Add(Node->NodeGuid);
+	}
+
+	// Shared: a candidate whose output is consumed by anything the approved set does not remove. The
+	// candidate set is snapshotted first, so the classification can only ever retain more than it
+	// removes, never less.
+	const TSet<FGuid> CandidateSnapshot = Candidates;
+	for (UEdGraphNode* Node : IslandNodes)
+	{
+		if (!CandidateSnapshot.Contains(Node->NodeGuid) || !Candidates.Contains(Node->NodeGuid)) continue;
+		FString ConsumingReason;
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Output) continue;
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				OutPartition.Scan.ExamineLink();
+				if (OutPartition.Scan.bExhausted)
+				{
+					OutError = MakePruneScanRefusal(OutPartition.Scan);
+					return false;
+				}
+				UEdGraphNode* const Consumer = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+				if (Consumer && CandidateSnapshot.Contains(Consumer->NodeGuid)) continue;
+				ConsumingReason = Consumer
+					? FString::Printf(TEXT("consumed by node '%s', which the approved set does not remove"), *Consumer->NodeGuid.ToString())
+					: TEXT("consumed by a link whose far endpoint does not resolve");
+				break;
+			}
+			if (!ConsumingReason.IsEmpty()) break;
+		}
+		if (!ConsumingReason.IsEmpty())
+		{
+			Candidates.Remove(Node->NodeGuid);
+			RetainedReasons.Add(Node->NodeGuid, ConsumingReason);
+		}
+	}
+
+	// The approved boundary edges of the removable set: every link whose far endpoint is retained.
+	TSet<FString> EdgeKeys;
+	for (UEdGraphNode* Node : IslandNodes)
+	{
+		if (!Node || !Candidates.Contains(Node->NodeGuid)) continue;
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || Pin->SubPins.Num() > 0) continue;
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				OutPartition.Scan.ExamineLink();
+				if (OutPartition.Scan.bExhausted)
+				{
+					OutError = MakePruneScanRefusal(OutPartition.Scan);
+					return false;
+				}
+				UEdGraphNode* const Far = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+				if (!Far || Candidates.Contains(Far->NodeGuid)) continue;
+				UEdGraphPin* const OutputPin = Pin->Direction == EGPD_Output ? Pin : LinkedPin;
+				UEdGraphPin* const InputPin = Pin->Direction == EGPD_Output ? LinkedPin : Pin;
+				FCortexGraphPruneEdge Edge;
+				Edge.FromGuid = OutputPin->GetOwningNode()->NodeGuid.ToString();
+				Edge.FromPin = OutputPin->PinName.ToString();
+				Edge.ToGuid = InputPin->GetOwningNode()->NodeGuid.ToString();
+				Edge.ToPin = InputPin->PinName.ToString();
+				const FString Key = PruneEndpointKey(OutputPin->GetOwningNode()->NodeGuid, OutputPin->PinName)
+					+ TEXT("->") + PruneEndpointKey(InputPin->GetOwningNode()->NodeGuid, InputPin->PinName);
+				if (EdgeKeys.Contains(Key)) continue;
+				EdgeKeys.Add(Key);
+				OutPartition.ExternalEdges.Add(MoveTemp(Edge));
+			}
+		}
+	}
+	OutPartition.ExternalEdges.Sort([](const FCortexGraphPruneEdge& A, const FCortexGraphPruneEdge& B)
+	{
+		return (A.FromGuid + TEXT(".") + A.FromPin + TEXT("->") + A.ToGuid + TEXT(".") + A.ToPin)
+			< (B.FromGuid + TEXT(".") + B.FromPin + TEXT("->") + B.ToGuid + TEXT(".") + B.ToPin);
+	});
+
+	for (UEdGraphNode* Node : IslandNodes)
+	{
+		if (Candidates.Contains(Node->NodeGuid))
+		{
+			OutPartition.Removable.Add(Node->NodeGuid);
+		}
+		else if (const FString* const Blocked = BlockedReasons.Find(Node->NodeGuid))
+		{
+			OutPartition.Blocked.Add(MakePruneNode(Node, *Blocked));
+		}
+		else
+		{
+			const FString* const Retained = RetainedReasons.Find(Node->NodeGuid);
+			OutPartition.Shared.Add(MakePruneNode(Node, Retained ? *Retained : FString(TEXT("retained"))));
+		}
+	}
+	OutPartition.Removable.Sort([](const FGuid& A, const FGuid& B) { return A.ToString() < B.ToString(); });
+	return true;
+}
+
+TArray<FString> PruneGuidText(const TArray<FGuid>& Guids)
+{
+	TArray<FString> Text;
+	for (const FGuid& Guid : Guids) Text.Add(Guid.ToString());
+	Text.Sort();
+	return Text;
+}
+}
+
+TSharedPtr<FJsonObject> FCortexGraphMigrationPrunePlan::ToJson() const
+{
+	TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
+	Out->SetStringField(TEXT("op"), Op);
+	Out->SetStringField(TEXT("graph_guid"), GraphGuid);
+	Out->SetStringField(TEXT("subgraph_path"), SubgraphPath);
+	Out->SetStringField(TEXT("entry_node_guid"), EntryNodeGuid);
+	Out->SetBoolField(TEXT("complete"), bComplete);
+	Out->SetBoolField(TEXT("awaiting_approval"), bAwaitingApproval);
+	Out->SetBoolField(TEXT("reused"), bReused);
+	Out->SetNumberField(TEXT("scanned_nodes"), ScannedNodes);
+	Out->SetNumberField(TEXT("scanned_links"), ScannedLinks);
+
+	auto ToStringValues = [](const TArray<FString>& Lines)
+	{
+		TArray<TSharedPtr<FJsonValue>> Values;
+		for (const FString& Line : Lines) Values.Add(MakeShared<FJsonValueString>(Line));
+		return Values;
+	};
+	Out->SetArrayField(TEXT("approved_guids"), ToStringValues(ApprovedGuids));
+	Out->SetArrayField(TEXT("removable_guids"), ToStringValues(RemovableGuids));
+
+	auto ToPartitionValues = [](const TArray<FCortexGraphPruneNode>& Nodes)
+	{
+		TArray<TSharedPtr<FJsonValue>> Values;
+		for (const FCortexGraphPruneNode& Node : Nodes)
+		{
+			TSharedPtr<FJsonObject> NodeJson = MakeShared<FJsonObject>();
+			NodeJson->SetStringField(TEXT("node_guid"), Node.NodeGuid);
+			NodeJson->SetStringField(TEXT("class_path"), Node.ClassPath);
+			NodeJson->SetStringField(TEXT("reason"), Node.Reason);
+			Values.Add(MakeShared<FJsonValueObject>(NodeJson));
+		}
+		return Values;
+	};
+	Out->SetArrayField(TEXT("shared"), ToPartitionValues(Shared));
+	Out->SetArrayField(TEXT("blocked"), ToPartitionValues(Blocked));
+
+	TArray<TSharedPtr<FJsonValue>> EdgeValues;
+	for (const FCortexGraphPruneEdge& Edge : ExternalEdges)
+	{
+		TSharedPtr<FJsonObject> EdgeJson = MakeShared<FJsonObject>();
+		EdgeJson->SetStringField(TEXT("from_guid"), Edge.FromGuid);
+		EdgeJson->SetStringField(TEXT("from_pin"), Edge.FromPin);
+		EdgeJson->SetStringField(TEXT("to_guid"), Edge.ToGuid);
+		EdgeJson->SetStringField(TEXT("to_pin"), Edge.ToPin);
+		EdgeValues.Add(MakeShared<FJsonValueObject>(EdgeJson));
+	}
+	Out->SetArrayField(TEXT("external_edges"), EdgeValues);
+
+	TSharedPtr<FJsonObject> ContractJson = MakeShared<FJsonObject>();
+	ContractJson->SetStringField(TEXT("label"), Preservation.Label);
+	ContractJson->SetStringField(TEXT("graph_guid"), Preservation.GraphGuid);
+	ContractJson->SetArrayField(TEXT("excluded_guids"), ToStringValues(Preservation.ExcludedGuids));
+	ContractJson->SetStringField(TEXT("capture"), Preservation.Capture);
+	Out->SetObjectField(TEXT("preservation"), ContractJson);
+	return Out;
+}
+
+bool FCortexGraphMigrationPrunePlan::FromJson(
+	const TSharedPtr<FJsonObject>& Source,
+	FCortexGraphMigrationPrunePlan& OutPlan,
+	FCortexCommandResult& OutError)
+{
+	OutPlan = FCortexGraphMigrationPrunePlan();
+	OutError = FCortexCommandResult();
+	if (!Source.IsValid())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("prepared prune plan is missing"));
+		return false;
+	}
+	const bool bRead = Source->TryGetStringField(TEXT("op"), OutPlan.Op)
+		&& Source->TryGetStringField(TEXT("graph_guid"), OutPlan.GraphGuid)
+		&& Source->TryGetStringField(TEXT("entry_node_guid"), OutPlan.EntryNodeGuid);
+	if (!bRead || OutPlan.Op != PruneOp)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("prepared prune plan is incomplete or names an unsupported migration operation"));
+		return false;
+	}
+	Source->TryGetStringField(TEXT("subgraph_path"), OutPlan.SubgraphPath);
+	Source->TryGetBoolField(TEXT("complete"), OutPlan.bComplete);
+	Source->TryGetBoolField(TEXT("awaiting_approval"), OutPlan.bAwaitingApproval);
+	Source->TryGetBoolField(TEXT("reused"), OutPlan.bReused);
+	int32 Number = 0;
+	if (Source->TryGetNumberField(TEXT("scanned_nodes"), Number)) OutPlan.ScannedNodes = Number;
+	if (Source->TryGetNumberField(TEXT("scanned_links"), Number)) OutPlan.ScannedLinks = Number;
+
+	auto ReadStringValues = [](const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, TArray<FString>& OutValues)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+		if (!Object->TryGetArrayField(Field, Values) || !Values) return;
+		for (const TSharedPtr<FJsonValue>& Value : *Values)
+		{
+			FString Line;
+			if (Value.IsValid() && Value->TryGetString(Line) && !Line.IsEmpty()) OutValues.Add(Line);
+		}
+	};
+	ReadStringValues(Source, TEXT("approved_guids"), OutPlan.ApprovedGuids);
+	ReadStringValues(Source, TEXT("removable_guids"), OutPlan.RemovableGuids);
+
+	auto ReadPartition = [](const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, TArray<FCortexGraphPruneNode>& OutNodes)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+		if (!Object->TryGetArrayField(Field, Values) || !Values) return;
+		for (const TSharedPtr<FJsonValue>& Value : *Values)
+		{
+			const TSharedPtr<FJsonObject> NodeJson = Value.IsValid() ? Value->AsObject() : nullptr;
+			if (!NodeJson.IsValid()) continue;
+			FCortexGraphPruneNode Node;
+			NodeJson->TryGetStringField(TEXT("node_guid"), Node.NodeGuid);
+			NodeJson->TryGetStringField(TEXT("class_path"), Node.ClassPath);
+			NodeJson->TryGetStringField(TEXT("reason"), Node.Reason);
+			if (Node.NodeGuid.IsEmpty()) continue;
+			OutNodes.Add(MoveTemp(Node));
+		}
+	};
+	ReadPartition(Source, TEXT("shared"), OutPlan.Shared);
+	ReadPartition(Source, TEXT("blocked"), OutPlan.Blocked);
+
+	const TArray<TSharedPtr<FJsonValue>>* EdgeValues = nullptr;
+	if (Source->TryGetArrayField(TEXT("external_edges"), EdgeValues) && EdgeValues)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *EdgeValues)
+		{
+			const TSharedPtr<FJsonObject> EdgeJson = Value.IsValid() ? Value->AsObject() : nullptr;
+			if (!EdgeJson.IsValid()) continue;
+			FCortexGraphPruneEdge Edge;
+			EdgeJson->TryGetStringField(TEXT("from_guid"), Edge.FromGuid);
+			EdgeJson->TryGetStringField(TEXT("from_pin"), Edge.FromPin);
+			EdgeJson->TryGetStringField(TEXT("to_guid"), Edge.ToGuid);
+			EdgeJson->TryGetStringField(TEXT("to_pin"), Edge.ToPin);
+			if (Edge.FromGuid.IsEmpty() || Edge.ToGuid.IsEmpty()) continue;
+			OutPlan.ExternalEdges.Add(MoveTemp(Edge));
+		}
+	}
+
+	const TSharedPtr<FJsonObject>* ContractPtr = nullptr;
+	if (Source->TryGetObjectField(TEXT("preservation"), ContractPtr) && ContractPtr && ContractPtr->IsValid())
+	{
+		const TSharedPtr<FJsonObject>& ContractJson = *ContractPtr;
+		ContractJson->TryGetStringField(TEXT("label"), OutPlan.Preservation.Label);
+		ContractJson->TryGetStringField(TEXT("graph_guid"), OutPlan.Preservation.GraphGuid);
+		ContractJson->TryGetStringField(TEXT("capture"), OutPlan.Preservation.Capture);
+		ReadStringValues(ContractJson, TEXT("excluded_guids"), OutPlan.Preservation.ExcludedGuids);
+	}
+	if (OutPlan.GraphGuid.IsEmpty() || OutPlan.EntryNodeGuid.IsEmpty() || OutPlan.Preservation.Capture.IsEmpty())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("prepared prune plan does not identify its graph, its entry or its preservation contract"));
+		return false;
+	}
+	return true;
+}
+
+bool FCortexGraphMigrationOps::PlanPrune(
+	UBlueprint* Blueprint,
+	const TSharedPtr<FJsonObject>& Migration,
+	FCortexGraphMigrationPrunePlan& OutPlan,
+	bool& bOutReused,
+	FCortexCommandResult& OutError)
+{
+	OutPlan = FCortexGraphMigrationPrunePlan();
+	OutError = FCortexCommandResult();
+	bOutReused = false;
+	if (!Blueprint)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, TEXT("Blueprint is null"));
+		return false;
+	}
+	if (!Migration.IsValid())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("migration must be an object"));
+		return false;
+	}
+	if (!FCortexGraphPatchOps::HasOnlyFields(Migration,
+		{ TEXT("op"), TEXT("source"), TEXT("approved_node_guids") }, OutError, TEXT("migration")))
+	{
+		return false;
+	}
+	FString Op;
+	if (!FCortexGraphPatchOps::ReadRequiredString(Migration, TEXT("op"), Op, OutError)) return false;
+	if (Op != PruneOp)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::UnsupportedOperation,
+			FString::Printf(TEXT("Unsupported migration operation '%s'; the published migration operations are replace_entry, copy_subgraph, move_subgraph and prune_island"), *Op));
+		return false;
+	}
+
+	// Source graph and entry terminator.
+	const TSharedPtr<FJsonObject>* SourcePtr = nullptr;
+	if (!Migration->TryGetObjectField(TEXT("source"), SourcePtr) || !SourcePtr || !SourcePtr->IsValid())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("migration.source must be an object"));
+		return false;
+	}
+	const TSharedPtr<FJsonObject>& Source = *SourcePtr;
+	if (!FCortexGraphPatchOps::HasOnlyFields(Source,
+		{ TEXT("graph_ref"), TEXT("entry_node_guid") }, OutError, TEXT("migration.source")))
+	{
+		return false;
+	}
+	FGuid GraphGuid;
+	FString SubgraphPath;
+	if (!ReadTransferGraphRef(Source, TEXT("migration.source"), GraphGuid, SubgraphPath, OutError)) return false;
+	if (!FindGraphByGuid(Blueprint, GraphGuid))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("migration.source.graph_ref names graph '%s', which is not a graph of this asset"),
+				*GraphGuid.ToString()));
+		return false;
+	}
+	UEdGraph* Graph = nullptr;
+	if (!FCortexGraphPatchOps::ResolveGraphByGuid(Blueprint, GraphGuid, SubgraphPath, Graph, OutError)) return false;
+	if (!ValidateTransferGraphKind(Blueprint, Source, GraphGuid, OutError)) return false;
+
+	FGuid EntryGuid;
+	if (!FCortexGraphPatchOps::ParseGuidField(Source, TEXT("entry_node_guid"), EntryGuid, OutError)) return false;
+	UEdGraphNode* const Entry = FindNodeByGuidInGraph(Graph, EntryGuid);
+	if (!Entry)
+	{
+		UEdGraphNode* const Elsewhere = FindNodeByGuid(Blueprint, EntryGuid);
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::NodeNotFound, Elsewhere
+			? FString::Printf(TEXT("migration.source.entry_node_guid names node '%s', which is a node of graph '%s' instead of the named graph '%s'"),
+				*EntryGuid.ToString(), *Elsewhere->GetGraph()->GraphGuid.ToString(), *GraphGuid.ToString())
+			: FString::Printf(TEXT("migration.source.entry_node_guid names node '%s', which does not exist in the named graph '%s'"),
+				*EntryGuid.ToString(), *GraphGuid.ToString()));
+		return false;
+	}
+	FString EntryRefusalReason;
+	if (!IsPruneEntryNode(Entry, EntryRefusalReason))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("the prune entry '%s' cannot open an island: %s"), *EntryGuid.ToString(), *EntryRefusalReason));
+		return false;
+	}
+
+	// The approved set is the caller's echo of the published removable set. It may be absent, which
+	// asks for the partition alone, but an explicitly empty set is refused: a prune that removes
+	// nothing is not a prune.
+	bool bHasApproved = false;
+	TArray<FGuid> Approved;
+	if (Migration->HasField(TEXT("approved_node_guids")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ApprovedValues = nullptr;
+		if (!Migration->TryGetArrayField(TEXT("approved_node_guids"), ApprovedValues) || !ApprovedValues)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				TEXT("migration.approved_node_guids must be an array of node GUIDs"));
+			return false;
+		}
+		bHasApproved = true;
+		if (ApprovedValues->Num() == 0)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				TEXT("migration.approved_node_guids is empty, and an empty approved set is refused: a prune that removes nothing is not a prune. Omit the field to preview the partition, or approve at least one removable node"));
+			return false;
+		}
+		for (const TSharedPtr<FJsonValue>& Value : *ApprovedValues)
+		{
+			FString GuidText;
+			FGuid ApprovedGuid;
+			if (!Value.IsValid() || !Value->TryGetString(GuidText) || !FGuid::Parse(GuidText, ApprovedGuid) || !ApprovedGuid.IsValid())
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+					TEXT("migration.approved_node_guids entries must be node GUID strings"));
+				return false;
+			}
+			if (Approved.Contains(ApprovedGuid))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("migration.approved_node_guids names node '%s' more than once"), *ApprovedGuid.ToString()));
+				return false;
+			}
+			Approved.Add(ApprovedGuid);
+		}
+	}
+
+	// Ownership of the entry identity: one asset, one owner.
+	{
+		TArray<UEdGraph*> Owners;
+		int32 MatchCount = 0;
+		TransferGraphsOwningGuid(Blueprint, EntryGuid, Owners, MatchCount);
+		if (Owners.Num() != 1 || MatchCount != 1 || Owners[0] != Graph)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("the prune entry identity '%s' is owned by %d graph(s) and %d node(s) instead of exactly the named graph; a duplicate identity is not a state this operation may repair"),
+					*EntryGuid.ToString(), Owners.Num(), MatchCount));
+			return false;
+		}
+	}
+
+	// Where each approved identity lives right now: present in the pruned graph, or absent from it.
+	TArray<FGuid> Present;
+	TArray<FString> Absent;
+	for (const FGuid& ApprovedGuid : Approved)
+	{
+		if (FindNodeByGuidInGraph(Graph, ApprovedGuid))
+		{
+			Present.Add(ApprovedGuid);
+			continue;
+		}
+		Absent.Add(ApprovedGuid.ToString());
+	}
+	// An approved identity that lives in another graph of this asset is an ownership conflict: this
+	// request may not prune a node it does not name a graph for, and it is never a replay.
+	for (const FString& AbsentText : Absent)
+	{
+		FGuid AbsentGuid;
+		if (!FGuid::Parse(AbsentText, AbsentGuid)) continue;
+		UEdGraphNode* const Elsewhere = FindNodeByGuid(Blueprint, AbsentGuid);
+		if (!Elsewhere) continue;
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("migration.approved_node_guids names node '%s', which lives in graph '%s' instead of the pruned graph '%s'"),
+				*AbsentText, *Elsewhere->GetGraph()->GraphGuid.ToString(), *GraphGuid.ToString()));
+		return false;
+	}
+
+	OutPlan.Op = Op;
+	OutPlan.GraphGuid = GraphGuid.ToString();
+	OutPlan.SubgraphPath = SubgraphPath;
+	OutPlan.EntryNodeGuid = EntryGuid.ToString();
+	OutPlan.bAwaitingApproval = !bHasApproved;
+
+	if (Absent.Num() == Approved.Num() && Approved.Num() > 0)
+	{
+		// The whole approved set is already absent: an idempotent replay. Nothing is computed about
+		// an island that no longer exists; the live graph must instead prove the postcondition this
+		// request asks for, so the operation reconciles by inspection instead of trusting the caller.
+		OutPlan.ApprovedGuids = PruneGuidText(Approved);
+		OutPlan.Preservation.Label = TEXT("graph");
+		OutPlan.Preservation.GraphGuid = GraphGuid.ToString();
+		OutPlan.Preservation.ExcludedGuids = OutPlan.ApprovedGuids;
+		OutPlan.Preservation.Capture = CapturePreservation(Blueprint, Graph, Approved);
+		FString Failure;
+		if (!VerifyPruneAgainstNative(Blueprint, OutPlan, Failure))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("migration.approved_node_guids is already absent, but the live graph is not the postcondition of this request: %s"), *Failure));
+			return false;
+		}
+		OutPlan.bReused = true;
+		OutPlan.bComplete = true;
+		bOutReused = true;
+		return true;
+	}
+	if (Absent.Num() > 0)
+	{
+		TArray<FString> PresentText;
+		for (const FGuid& Guid : Present) PresentText.Add(Guid.ToString());
+		PresentText.Sort();
+		Absent.Sort();
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("migration.approved_node_guids is a partial removal state: %d of %d approved node(s) are already absent (%s) while %d are still present in the pruned graph (%s); a partial island is refused instead of pruning a smaller set"),
+				Absent.Num(), Approved.Num(), *FString::Join(Absent, TEXT(", ")),
+				PresentText.Num(), *FString::Join(PresentText, TEXT(", "))));
+		return false;
+	}
+
+	// The fresh island: the bounded graph-wide partition of the entry's island.
+	FPrunePartition Partition;
+	if (!ComputePrunePartition(Blueprint, Graph, Entry, Partition, OutError)) return false;
+	OutPlan.ScannedNodes = Partition.Scan.Nodes;
+	OutPlan.ScannedLinks = Partition.Scan.Links;
+	OutPlan.bComplete = !Partition.Scan.bExhausted;
+	OutPlan.Shared = Partition.Shared;
+	OutPlan.Blocked = Partition.Blocked;
+	OutPlan.ExternalEdges = Partition.ExternalEdges;
+	OutPlan.RemovableGuids = PruneGuidText(Partition.Removable);
+
+	if (bHasApproved)
+	{
+		// The approved set must match the freshly recomputed removable set exactly, in both
+		// directions, before anything may be deleted: this is the operation's staleness guard.
+		const TArray<FString> ApprovedText = PruneGuidText(Approved);
+		TArray<FString> Missing;
+		for (const FString& Removable : OutPlan.RemovableGuids)
+		{
+			if (!ApprovedText.Contains(Removable)) Missing.Add(Removable);
+		}
+		TArray<FString> Extra;
+		for (const FString& ApprovedGuid : ApprovedText)
+		{
+			if (OutPlan.RemovableGuids.Contains(ApprovedGuid)) continue;
+			FGuid ExtraGuid;
+			FGuid::Parse(ApprovedGuid, ExtraGuid);
+			const FCortexGraphPruneNode* const BlockedNode = Partition.Blocked.FindByPredicate(
+				[&ApprovedGuid](const FCortexGraphPruneNode& Candidate) { return Candidate.NodeGuid == ApprovedGuid; });
+			const FCortexGraphPruneNode* const SharedNode = Partition.Shared.FindByPredicate(
+				[&ApprovedGuid](const FCortexGraphPruneNode& Candidate) { return Candidate.NodeGuid == ApprovedGuid; });
+			if (BlockedNode)
+			{
+				Extra.Add(FString::Printf(TEXT("%s (%s)"), *ApprovedGuid, *BlockedNode->Reason));
+			}
+			else if (SharedNode)
+			{
+				Extra.Add(FString::Printf(TEXT("%s (%s)"), *ApprovedGuid, *SharedNode->Reason));
+			}
+			else
+			{
+				Extra.Add(FString::Printf(TEXT("%s (not part of this entry's island)"), *ApprovedGuid));
+			}
+		}
+		if (Missing.Num() > 0 || Extra.Num() > 0)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("migration.approved_node_guids does not match the removable set of this island in the current state: %d removable node(s) are missing from the approved set (%s) and %d approved node(s) are not removable (%s); approve exactly the removable set this preview publishes"),
+					Missing.Num(), Missing.Num() > 0 ? *FString::Join(Missing, TEXT(", ")) : TEXT("none"),
+					Extra.Num(), Extra.Num() > 0 ? *FString::Join(Extra, TEXT(", ")) : TEXT("none")));
+			return false;
+		}
+		OutPlan.ApprovedGuids = ApprovedText;
+	}
+
+	// The preservation contract of the retained body: captured before the first mutation, verified by
+	// the readback and again after recovery. The removable set is excluded in both the preview and the
+	// apply, so one contract describes both.
+	OutPlan.Preservation.Label = TEXT("graph");
+	OutPlan.Preservation.GraphGuid = GraphGuid.ToString();
+	OutPlan.Preservation.ExcludedGuids = OutPlan.RemovableGuids;
+	TArray<FGuid> ExcludedGuids;
+	for (const FString& GuidText : OutPlan.RemovableGuids)
+	{
+		FGuid ExcludedGuid;
+		if (FGuid::Parse(GuidText, ExcludedGuid)) ExcludedGuids.Add(ExcludedGuid);
+	}
+	OutPlan.Preservation.Capture = CapturePreservation(Blueprint, Graph, ExcludedGuids);
+	if (OutPlan.Preservation.Capture.IsEmpty())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("the preservation contract of the pruned graph could not be captured"));
+		return false;
+	}
+	return true;
+}
+
+bool FCortexGraphMigrationOps::VerifyPruneAgainstNative(
+	UBlueprint* Blueprint,
+	const FCortexGraphMigrationPrunePlan& Plan,
+	FString& OutFailure)
+{
+	OutFailure.Reset();
+	if (!Blueprint)
+	{
+		OutFailure = TEXT("the blueprint is null");
+		return false;
+	}
+	FGuid GraphGuid;
+	FGuid EntryGuid;
+	if (!FGuid::Parse(Plan.GraphGuid, GraphGuid) || !FGuid::Parse(Plan.EntryNodeGuid, EntryGuid))
+	{
+		OutFailure = TEXT("the prepared prune plan carries an invalid graph or entry identity");
+		return false;
+	}
+	UEdGraph* const Graph = FindGraphByGuid(Blueprint, GraphGuid);
+	if (!Graph)
+	{
+		OutFailure = FString::Printf(TEXT("the pruned graph '%s' did not re-resolve"), *Plan.GraphGuid);
+		return false;
+	}
+	if (!FindNodeByGuidInGraph(Graph, EntryGuid))
+	{
+		OutFailure = FString::Printf(TEXT("the prune entry terminator '%s' did not re-resolve in the pruned graph"), *Plan.EntryNodeGuid);
+		return false;
+	}
+
+	TSet<FGuid> Removed;
+	for (const FString& GuidText : Plan.ApprovedGuids)
+	{
+		FGuid RemovedGuid;
+		if (!FGuid::Parse(GuidText, RemovedGuid))
+		{
+			OutFailure = TEXT("the prepared prune plan carries an invalid node identity");
+			return false;
+		}
+		Removed.Add(RemovedGuid);
+		if (FindNodeByGuidInGraph(Graph, RemovedGuid))
+		{
+			OutFailure = FString::Printf(TEXT("the approved node '%s' is still present in the pruned graph"), *GuidText);
+			return false;
+		}
+		if (FindNodeByGuid(Blueprint, RemovedGuid))
+		{
+			OutFailure = FString::Printf(TEXT("the approved node '%s' still exists in another graph of this asset"), *GuidText);
+			return false;
+		}
+	}
+
+	// Every approved boundary edge is gone from its retained endpoint. A removed endpoint cannot hold
+	// a link at all, so only the retained side needs the proof.
+	for (const FCortexGraphPruneEdge& Edge : Plan.ExternalEdges)
+	{
+		FGuid FromGuid;
+		FGuid ToGuid;
+		if (!FGuid::Parse(Edge.FromGuid, FromGuid) || !FGuid::Parse(Edge.ToGuid, ToGuid))
+		{
+			OutFailure = TEXT("the prepared prune plan carries an invalid boundary edge");
+			return false;
+		}
+		const bool bFromRemoved = Removed.Contains(FromGuid);
+		const bool bToRemoved = Removed.Contains(ToGuid);
+		if (!bFromRemoved && !bToRemoved)
+		{
+			OutFailure = FString::Printf(TEXT("the planned boundary edge '%s' names two retained nodes"), *Edge.FromGuid);
+			return false;
+		}
+		const FGuid RetainedGuid = bFromRemoved ? ToGuid : FromGuid;
+		const FName RetainedPin = FName(*(bFromRemoved ? Edge.ToPin : Edge.FromPin));
+		const FGuid RemovedFarGuid = bFromRemoved ? FromGuid : ToGuid;
+		const FName RemovedFarPin = FName(*(bFromRemoved ? Edge.FromPin : Edge.ToPin));
+		UEdGraphNode* const RetainedNode = FindNodeByGuidInGraph(Graph, RetainedGuid);
+		if (!RetainedNode)
+		{
+			OutFailure = FString::Printf(TEXT("the retained endpoint '%s' of a planned boundary edge did not re-resolve"), *RetainedGuid.ToString());
+			return false;
+		}
+		UEdGraphPin* const RetainedPinPtr = RetainedNode->FindPin(RetainedPin);
+		if (!RetainedPinPtr) continue;
+		const bool bStillLinked = RetainedPinPtr->LinkedTo.ContainsByPredicate(
+			[&](const UEdGraphPin* LinkedPin)
+			{
+				const UEdGraphNode* const FarNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+				return FarNode && FarNode->NodeGuid == RemovedFarGuid && LinkedPin->PinName == RemovedFarPin;
+			});
+		if (bStillLinked)
+		{
+			OutFailure = FString::Printf(TEXT("the approved boundary edge '%s.%s' -> '%s.%s' still carries a link"),
+				*Edge.FromGuid, *Edge.FromPin, *Edge.ToGuid, *Edge.ToPin);
+			return false;
+		}
+	}
+	if (ShouldInjectPruneReadbackFault(TEXT("prune_after_removal")))
+	{
+		OutFailure = TEXT("the prune readback failed by test injection after the removal check");
+		return false;
+	}
+
+	// No dangling link may survive anywhere in the pruned graph: every link must resolve to a node of
+	// this graph and be reciprocal from the far side.
+	{
+		TSet<FGuid> InGraph;
+		for (const UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node) InGraph.Add(Node->NodeGuid);
+		}
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) continue;
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (!Pin) continue;
+				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+				{
+					UEdGraphNode* const FarNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+					if (!FarNode || !InGraph.Contains(FarNode->NodeGuid))
+					{
+						OutFailure = FString::Printf(TEXT("a dangling link survives on '%s.%s'"), *Node->NodeGuid.ToString(), *Pin->PinName.ToString());
+						return false;
+					}
+					if (!LinkedPin->LinkedTo.Contains(Pin))
+					{
+						OutFailure = FString::Printf(TEXT("the link on '%s.%s' is not reciprocal"), *Node->NodeGuid.ToString(), *Pin->PinName.ToString());
+						return false;
+					}
+				}
+			}
+		}
+	}
+
+	const TArray<FCortexGraphTransferPreservation> Contracts = { Plan.Preservation };
+	if (!VerifyPreservationContracts(Blueprint, Contracts, OutFailure)) return false;
+	if (ShouldInjectPruneReadbackFault(TEXT("prune_after_preservation")))
+	{
+		OutFailure = TEXT("the prune readback failed by test injection after the preservation check");
+		return false;
+	}
+	return true;
+}
+
+TSharedPtr<FJsonObject> FCortexGraphMigrationOps::MakePruneInventory(const TSharedPtr<FJsonObject>& PrunePlanJson)
+{
+	if (!PrunePlanJson.IsValid()) return nullptr;
+	FCortexGraphMigrationPrunePlan Plan;
+	FCortexCommandResult PlanError;
+	if (!FCortexGraphMigrationPrunePlan::FromJson(PrunePlanJson, Plan, PlanError)) return nullptr;
+
+	TSharedPtr<FJsonObject> Inventory = MakeShared<FJsonObject>();
+	Inventory->SetStringField(TEXT("operation"), Plan.Op);
+	Inventory->SetStringField(TEXT("graph_guid"), Plan.GraphGuid);
+	if (!Plan.SubgraphPath.IsEmpty())
+	{
+		Inventory->SetStringField(TEXT("subgraph_path"), Plan.SubgraphPath);
+	}
+	Inventory->SetStringField(TEXT("entry_node_guid"), Plan.EntryNodeGuid);
+	Inventory->SetBoolField(TEXT("awaiting_approval"), Plan.bAwaitingApproval);
+	Inventory->SetBoolField(TEXT("complete"), Plan.bComplete);
+	Inventory->SetBoolField(TEXT("reused"), Plan.bReused);
+	Inventory->SetNumberField(TEXT("scan_limit"), PruneScanUnitLimit);
+	Inventory->SetNumberField(TEXT("scanned_nodes"), Plan.ScannedNodes);
+	Inventory->SetNumberField(TEXT("scanned_links"), Plan.ScannedLinks);
+
+	auto ToValues = [](const TArray<FString>& Lines)
+	{
+		TArray<TSharedPtr<FJsonValue>> Values;
+		for (const FString& Line : Lines) Values.Add(MakeShared<FJsonValueString>(Line));
+		return Values;
+	};
+	// The removable set is published complete, because the caller has to echo it exactly; the
+	// informational partitions are bounded by the shared diagnostics bound like every other preview.
+	Inventory->SetArrayField(TEXT("removable"), ToValues(Plan.RemovableGuids));
+	Inventory->SetArrayField(TEXT("approved_guids"), ToValues(Plan.ApprovedGuids));
+
+	auto PartitionLines = [](const TArray<FCortexGraphPruneNode>& Nodes)
+	{
+		TArray<FString> Lines;
+		for (const FCortexGraphPruneNode& Node : Nodes)
+		{
+			Lines.Add(FString::Printf(TEXT("%s %s (%s)"), *Node.NodeGuid, *Node.ClassPath, *Node.Reason));
+		}
+		return Lines;
+	};
+	TArray<FString> Shared = PartitionLines(Plan.Shared);
+	TArray<FString> Blocked = PartitionLines(Plan.Blocked);
+	TArray<FString> ExternalEdges;
+	for (const FCortexGraphPruneEdge& Edge : Plan.ExternalEdges)
+	{
+		ExternalEdges.Add(FString::Printf(TEXT("%s.%s -> %s.%s"), *Edge.FromGuid, *Edge.FromPin, *Edge.ToGuid, *Edge.ToPin));
+	}
+	FCortexGraphPatchOps::TrimDiagnostics(Shared);
+	FCortexGraphPatchOps::TrimDiagnostics(Blocked);
+	FCortexGraphPatchOps::TrimDiagnostics(ExternalEdges);
+	Inventory->SetArrayField(TEXT("shared"), ToValues(Shared));
+	Inventory->SetArrayField(TEXT("blocked"), ToValues(Blocked));
+	Inventory->SetArrayField(TEXT("external_edges"), ToValues(ExternalEdges));
+	return Inventory;
+}
+
+#if WITH_AUTOMATION_TESTS
+void FCortexGraphMigrationOps::SetPruneReadbackFaultForTesting(const FName Check)
+{
+	PruneReadbackFaultForTesting = Check;
+}
+
+void FCortexGraphMigrationOps::ClearPruneReadbackFaultForTesting()
+{
+	PruneReadbackFaultForTesting = NAME_None;
+}
+#endif

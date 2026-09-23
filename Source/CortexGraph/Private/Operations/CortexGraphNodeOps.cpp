@@ -1,6 +1,7 @@
 #include "Operations/CortexGraphNodeOps.h"
 #include "Operations/CortexGraphNodeContract.h"
 #include "Operations/CortexGraphPinDefaults.h"
+#include "Operations/CortexGraphSymbolResolver.h"
 #include "CortexAssetFingerprint.h"
 #include "CortexBatchMutation.h"
 #include "CortexGraphModule.h"

@@ -1048,13 +1048,16 @@ bool FCortexGraphPatchCommandSchemaTest::RunTest(const FString& Parameters)
 			MigrationParam->Description.Contains(TEXT("target.implementation")));
 		TestTrue(TEXT("the published migration selector refuses mixed authoring arrays"),
 			MigrationParam->Description.Contains(TEXT("nodes/connections/pin_updates")));
-		// T12 publishes the bounded same-asset transfer; T13's prune_island stays unpublished.
+		// T12 published the bounded same-asset transfer; T13 publishes the execution-island prune once
+		// its native path and its own coverage exist.
 		TestTrue(TEXT("copy_subgraph is published"),
 			MigrationParam->Description.Contains(TEXT("copy_subgraph")));
 		TestTrue(TEXT("move_subgraph is published"),
 			MigrationParam->Description.Contains(TEXT("move_subgraph")));
-		TestFalse(TEXT("prune_island is not published"),
+		TestTrue(TEXT("prune_island is published"),
 			MigrationParam->Description.Contains(TEXT("prune_island")));
+		TestTrue(TEXT("the published prune selector names its approved set"),
+			MigrationParam->Description.Contains(TEXT("approved_node_guids")));
 	}
 
 	// No drift: every patch limit published in the description equals the live authoring limit.
