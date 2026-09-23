@@ -1054,11 +1054,13 @@ bool FCortexGraphMigrationReferenceInventoryTest::RunTest(const FString& Paramet
 		UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
 		ClearGraphNodes(Graph);
 		UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
+		// The asset is compiled while it is still consistent; the dangling reference is added
+		// afterwards and never compiled, so eligibility cannot mask the inventory refusal.
+		FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
 		UK2Node_CallFunction* Unresolved = NewObject<UK2Node_CallFunction>(Graph);
 		Unresolved->FunctionReference.SetExternalMember(FName(TEXT("OnPayload")), nullptr);
 		Unresolved->CreateNewGuid();
 		Graph->AddNode(Unresolved, true, false);
-		FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
 
 		const FString HashBefore = LiveGraphHash(Fixture.Blueprint);
 		TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
@@ -1085,12 +1087,15 @@ bool FCortexGraphMigrationReferenceInventoryTest::RunTest(const FString& Paramet
 		UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
 		ClearGraphNodes(Graph);
 		UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
-		TestTrue(TEXT("shadowing member added"), AddShadowingVariable(Fixture.Blueprint, TEXT("OnPayload")));
+		// Compile while the asset is consistent, then author the shadowing member: compiling after it
+		// would regenerate the class and warn about the deliberate name collision.
 		FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+		TestTrue(TEXT("shadowing member added"), AddShadowingVariable(Fixture.Blueprint, TEXT("OnPayload")));
 
 		FExternalReferenceFixture External;
 		TestTrue(TEXT("external asset created"), External.Create(Fixture.Blueprint, TEXT("BP_MigrationMemberUnresolvedChild_T11"), TEXT("OnPayload")));
-		// Break the external reference's owner so it cannot be resolved any more.
+		// Break the external reference's owner directly on FMemberReference: a named, non-self
+		// reference whose parent class is null resolves to no concrete owner.
 		for (UEdGraphNode* Node : External.Blueprint->UbergraphPages[0]->Nodes)
 		{
 			if (UK2Node_VariableGet* VarGet = Cast<UK2Node_VariableGet>(Node))
