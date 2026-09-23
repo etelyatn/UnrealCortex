@@ -840,10 +840,18 @@ def collect_data_domain(connection, project_root: pathlib.Path | None = None) ->
             excludes,
         )
 
+    datatables = sorted(
+        catalog.get("datatables", []),
+        key=lambda table: (
+            table.get("path", table.get("name", "")).casefold(),
+            table.get("name", "").casefold(),
+        ),
+    )
+
     # 2. Get schemas for each unique row struct
     schemas = {}
     struct_to_tables = {}  # struct_name -> [table_name, ...]
-    for table in catalog.get("datatables", []):
+    for table in datatables:
         struct_name = table["row_struct"]
         if struct_name not in struct_to_tables:
             struct_to_tables[struct_name] = []
@@ -873,7 +881,7 @@ def collect_data_domain(connection, project_root: pathlib.Path | None = None) ->
     # 3. Collect 1 example row per unique struct (not per table), skip composites
     example_rows = {}
     seen_structs_for_examples: set[str] = set()
-    for table in catalog.get("datatables", []):
+    for table in datatables:
         if table.get("is_composite"):
             continue
         if table["row_struct"] in seen_structs_for_examples:
@@ -919,7 +927,7 @@ def collect_data_domain(connection, project_root: pathlib.Path | None = None) ->
         ],
         "tables": [
             {"name": t["name"], "row_struct": t["row_struct"], "rows": t["row_count"]}
-            for t in catalog.get("datatables", [])
+            for t in datatables
         ],
         "tag_prefixes": [
             {"prefix": f"{tp['prefix']}.*", "count": tp["count"]}

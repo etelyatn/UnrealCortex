@@ -236,6 +236,35 @@ class TestDeterministicSchemaRendering(unittest.TestCase):
         self.assertEqual(examples, reversed_examples)
         self.assertEqual(examples["FRow"]["source_table"], "ATable")
 
+    def test_data_collection_queries_example_from_canonical_table(self):
+        connection = unittest.mock.Mock()
+        catalog = {
+            "datatables": [
+                {"name": "ZTable", "path": "/Game/ZTable", "row_struct": "FRow", "row_count": 1},
+                {"name": "ATable", "path": "/Game/ATable", "row_struct": "FRow", "row_count": 1},
+            ],
+            "tag_prefixes": [],
+            "data_asset_classes": [],
+            "string_tables": [],
+        }
+
+        def send_command(command, params=None):
+            if command == "data.get_data_catalog":
+                return {"success": True, "data": catalog}
+            if command == "data.get_datatable_schema":
+                return {"success": True, "data": {"schema": []}}
+            if command == "data.query_datatable":
+                value = "A" if params["table_path"] == "/Game/ATable" else "Z"
+                return {"success": True, "data": {"rows": [{"row_data": {"Value": value}}]}}
+            if command == "data.list_curve_tables":
+                return {"success": True, "data": {"curve_tables": []}}
+            raise AssertionError(f"Unexpected command: {command}")
+
+        connection.send_command.side_effect = send_command
+        result = collect_data_domain(connection)
+
+        self.assertEqual(result["format_examples"]["FRow"]["source_table"], "ATable")
+
     def test_collect_blueprint_domain_uses_explicit_project_root(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir) / "CortexSandboxMirror"
