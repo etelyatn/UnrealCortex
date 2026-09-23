@@ -227,6 +227,18 @@ public:
 		UEdGraph*& OutGraph,
 		FCortexCommandResult& OutError);
 	/**
+	 * Published kind string of the one graph a `graph_guid` names, root or nested composite child.
+	 * This is the single identity resolution behind every optional `graph_kind` consistency check, so
+	 * a nested target is compared against its own owning graph's kind instead of being skipped. It
+	 * fails with the same identity errors ResolveGraphByGuid raises: GRAPH_NOT_FOUND when no graph
+	 * matches and INVALID_FIELD when the GUID identifies more than one.
+	 */
+	static bool ResolveGraphKindByGuid(
+		UBlueprint* Blueprint,
+		const FGuid& GraphGuid,
+		FString& OutKind,
+		FCortexCommandResult& OutError);
+	/**
 	 * Deterministic node identity of one planned identity seed: a stable hash of the canonical patch
 	 * GUID and the seed. Authoring client ids, replacement terminators and transfer destinations all
 	 * derive through this one function, so no second identity scheme can appear.

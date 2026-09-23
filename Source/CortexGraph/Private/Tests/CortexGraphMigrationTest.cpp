@@ -17,6 +17,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "K2Node_AddDelegate.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_Composite.h"
 #include "K2Node_CreateDelegate.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_Event.h"
@@ -133,6 +134,31 @@ FString FingerprintHash(const TSharedPtr<FJsonObject>& Fingerprint)
 FString LiveGraphHash(UBlueprint* Blueprint)
 {
 	return FingerprintHash(FCortexGraphPatchState::ComputeFingerprint(Blueprint));
+}
+
+/**
+ * The locator `graph.get_authoring_context` publishes for one graph, or null when discovery did not
+ * publish it. A migration test asserts the convention from the caller's side by echoing this back.
+ */
+TSharedPtr<FJsonObject> PublishedGraphChoice(UBlueprint* Blueprint, const FGuid& GraphGuid)
+{
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("graph"), TEXT("Cortex Graph"), TEXT("1.0.1"), MakeShared<FCortexGraphCommandHandler>());
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
+	const FCortexCommandResult Result = Router.Execute(TEXT("graph.get_authoring_context"), Params);
+	if (!Result.bSuccess || !Result.Data.IsValid()) return nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* Choices = nullptr;
+	if (!Result.Data->TryGetArrayField(TEXT("graph_choices"), Choices) || !Choices) return nullptr;
+	for (const TSharedPtr<FJsonValue>& Value : *Choices)
+	{
+		const TSharedPtr<FJsonObject> Choice = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (Choice.IsValid() && Choice->GetStringField(TEXT("graph_guid")) == GraphGuid.ToString())
+		{
+			return Choice;
+		}
+	}
+	return nullptr;
 }
 
 UEdGraphNode* FindNodeByGuid(UBlueprint* Blueprint, const FGuid& NodeGuid)
@@ -2385,6 +2411,95 @@ bool FCortexGraphMigrationFunctionGraphTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("the mapped data link was remapped"),
 			EntryTag && PrintInString && EntryTag->LinkedTo.Contains(PrintInString));
 	}
+
+	Fixture.Cleanup();
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 15. NestedSourceGraphKindRefused
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphMigrationNestedSourceKindTest,
+	"Cortex.Graph.Authoring.Migration.Replace.NestedSourceGraphKindRefused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationNestedSourceKindTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationReplaceTest;
+	ClearFaults();
+
+	FFixture Fixture;
+	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_MigrationNestedKind_T100")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+	ClearGraphNodes(Graph);
+	UK2Node_Event* StaleEntry = AddEventNode(Graph, TEXT("OnPayload"), *FixtureActorClassPath(), 0, 0);
+	UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("nested kind body"), 400, 0);
+	LinkNodes(Graph, StaleEntry, TEXT("then"), Print, TEXT("execute"));
+
+	// A composite child of the ubergraph is a published migration target under the corrected
+	// convention, so its own locator carries its own identity, path and owning graph kind.
+	UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(Graph);
+	Composite->CreateNewGuid();
+	Graph->AddNode(Composite, true, false);
+	Composite->PostPlacedNewNode();
+	UEdGraph* Child = Composite->BoundGraph;
+	TestNotNull(TEXT("the composite owns a bound child graph"), Child);
+	if (!Child)
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	UK2Node_CallFunction* ChildPrint = AddPrintNode(Child, TEXT("nested body"), 200, 0);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+
+	// The locator a caller echoes back is taken from discovery, not from the fixture pointers.
+	const TSharedPtr<FJsonObject> ChildChoice = PublishedGraphChoice(Fixture.Blueprint, Child->GraphGuid);
+	TestNotNull(TEXT("discovery publishes the nested composite child"), ChildChoice.Get());
+	if (!ChildChoice.IsValid())
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	const FString TrueKind = ChildChoice->GetStringField(TEXT("graph_kind"));
+	const FString WrongKind = TrueKind == TEXT("function") ? TEXT("ubergraph") : TEXT("function");
+	TestTrue(TEXT("the deliberate kind differs from the published kind"), TrueKind != WrongKind);
+
+	// A replace_entry request whose source is the nested child, claiming a kind that graph does not own.
+	auto NestedRequest = [&](const TCHAR* Kind)
+	{
+		TSharedPtr<FJsonObject> Request = ReplacementRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-00000011000f"),
+			MakeMigration(Child, ChildPrint, OnPayloadPinMap()), TEXT("OnPayload"));
+		TSharedPtr<FJsonObject> GraphRef = Request->GetObjectField(TEXT("migration"))
+			->GetObjectField(TEXT("source"))->GetObjectField(TEXT("graph_ref"));
+		GraphRef->SetStringField(TEXT("graph_kind"), Kind);
+		GraphRef->SetStringField(TEXT("subgraph_path"), ChildChoice->GetStringField(TEXT("subgraph_path")));
+		return Request;
+	};
+
+	const FString HashBefore = LiveGraphHash(Fixture.Blueprint);
+	const int32 NodesBefore = CountNativeNodes(Fixture.Blueprint);
+	FCortexGraphPreparedPatch Prepared;
+	FCortexCommandResult Error;
+	TestFalse(TEXT("a nested source graph_ref with a mismatched graph_kind is refused"),
+		FCortexGraphPatchOps::Preflight(Fixture.Blueprint, NestedRequest(*WrongKind), Prepared, Error));
+	TestEqual(TEXT("the nested kind conflict is INVALID_FIELD"), Error.ErrorCode,
+		FString(CortexErrorCodes::InvalidField));
+	TestTrue(FString::Printf(TEXT("the refusal names the graph_kind conflict [%s]"), *Error.ErrorMessage),
+		Error.ErrorMessage.Contains(TEXT("graph_kind conflicts with graph identity")));
+	TestEqual(TEXT("the nested kind refusal mutates nothing"), LiveGraphHash(Fixture.Blueprint), HashBefore);
+	TestEqual(TEXT("the nested kind refusal leaves the node count"), CountNativeNodes(Fixture.Blueprint), NodesBefore);
+
+	// Control: the same nested locator with its published kind is never refused as a kind conflict,
+	// so the check discriminates instead of refusing every nested source.
+	FCortexGraphPreparedPatch CorrectPrepared;
+	FCortexCommandResult CorrectError;
+	FCortexGraphPatchOps::Preflight(Fixture.Blueprint, NestedRequest(*TrueKind), CorrectPrepared, CorrectError);
+	TestFalse(FString::Printf(TEXT("the published kind is not a kind conflict [%s]"), *CorrectError.ErrorMessage),
+		CorrectError.ErrorMessage.Contains(TEXT("graph_kind conflicts with graph identity")));
 
 	Fixture.Cleanup();
 	return true;

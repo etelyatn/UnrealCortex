@@ -688,9 +688,9 @@ bool ParseTarget(
 			}
 			// The consistency check uses the same identity resolution as the target lookup, so a
 			// nested composite child is checked against its own owning graph's kind.
-			FCortexGraphChoice Match;
-			if (!FindGraphChoiceByGuid(Blueprint, GraphGuid, Match, OutError)) return false;
-			if (Match.Graph && FCortexGraphNodeOps::GraphKindToString(Match.Kind) != RequestedKind)
+			FString ResolvedKind;
+			if (!FCortexGraphPatchOps::ResolveGraphKindByGuid(Blueprint, GraphGuid, ResolvedKind, OutError)) return false;
+			if (ResolvedKind != RequestedKind)
 			{
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("target graph_kind conflicts with graph identity"));
 				return false;
@@ -1160,6 +1160,24 @@ bool FCortexGraphPatchOps::ResolveGraphByGuid(
 		return false;
 	}
 	OutGraph = Match.Graph;
+	return true;
+}
+
+bool FCortexGraphPatchOps::ResolveGraphKindByGuid(
+	UBlueprint* Blueprint,
+	const FGuid& GraphGuid,
+	FString& OutKind,
+	FCortexCommandResult& OutError)
+{
+	OutKind.Reset();
+	if (!Blueprint)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, TEXT("Blueprint is null"));
+		return false;
+	}
+	FCortexGraphChoice Match;
+	if (!FindGraphChoiceByGuid(Blueprint, GraphGuid, Match, OutError)) return false;
+	OutKind = FCortexGraphNodeOps::GraphKindToString(Match.Kind);
 	return true;
 }
 

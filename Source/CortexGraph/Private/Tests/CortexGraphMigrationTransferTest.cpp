@@ -402,6 +402,16 @@ UEdGraph* AddVoidFunctionGraph(UBlueprint* Blueprint, const TCHAR* Name)
 	return Graph;
 }
 
+/** A composite node whose bound graph becomes a nested child of the graph it is placed in. */
+UK2Node_Composite* AddCompositeChild(UEdGraph* ParentGraph)
+{
+	UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(ParentGraph);
+	Composite->CreateNewGuid();
+	ParentGraph->AddNode(Composite, true, false);
+	Composite->PostPlacedNewNode();
+	return Composite;
+}
+
 UK2Node_FunctionEntry* FindEntryNode(UEdGraph* Graph)
 {
 	for (UEdGraphNode* Node : Graph->Nodes)
@@ -2447,6 +2457,80 @@ bool FCortexGraphMigrationTransferOverLinkedReplayTest::RunTest(const FString& P
 		&& ReplayError.ErrorMessage.Contains(TEXT("execute")));
 	TestEqual(TEXT("the over-linked refusal mutates nothing"), LiveGraphHash(Fixture.Blueprint), HashBefore);
 	TestEqual(TEXT("the over-linked refusal leaves the node count"), CountNativeNodes(Fixture.Blueprint), NodesBefore);
+
+	Fixture.Cleanup();
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// NestedSourceGraphKindRefused: a nested source locator's claimed kind is checked too
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphMigrationTransferNestedKindTest,
+	"Cortex.Graph.Authoring.Migration.Transfer.NestedSourceGraphKindRefused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationTransferNestedKindTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationTransferTest;
+	ClearFaults();
+
+	FFixture Fixture;
+	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_TransferNestedKind_T100")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	UEdGraph* SourceGraph = EnsureEventGraph(Fixture.Blueprint);
+	UK2Node_CallFunction* Outside = AddPrintNode(SourceGraph, TEXT("outside"), 0, 0);
+
+	// A composite child of the ubergraph: a nested target whose owning kind is the ubergraph's.
+	UK2Node_Composite* Composite = AddCompositeChild(SourceGraph);
+	UEdGraph* NestedSource = Composite ? Composite->BoundGraph : nullptr;
+	TestNotNull(TEXT("the composite owns a bound child graph"), NestedSource);
+	if (!NestedSource)
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	UK2Node_CallFunction* Nested = AddPrintNode(NestedSource, TEXT("nested"), 200, 0);
+	UEdGraph* DestinationGraph = AddVoidFunctionGraph(Fixture.Blueprint, TEXT("CortexNestedKindTarget"));
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+
+	const TArray<FGuid> Selection = { Nested->NodeGuid };
+	auto NestedRequest = [&](const TCHAR* Kind)
+	{
+		TSharedPtr<FJsonObject> Request = TransferRequest(Fixture.Blueprint,
+			TEXT("00000000-0000-0000-0000-000000129999"), CopyOp, NestedSource, Selection,
+			DestinationGraph, TArray<TSharedPtr<FJsonValue>>());
+		Request->GetObjectField(TEXT("migration"))->GetObjectField(TEXT("source"))
+			->GetObjectField(TEXT("graph_ref"))->SetStringField(TEXT("graph_kind"), Kind);
+		return Request;
+	};
+
+	// The nested locator claims the function kind while its owning ubergraph publishes ubergraph, so
+	// the pair is inconsistent and must be refused before anything is planned.
+	const FString HashBefore = LiveGraphHash(Fixture.Blueprint);
+	const int32 NodesBefore = CountNativeNodes(Fixture.Blueprint);
+	FCortexGraphPreparedPatch Prepared;
+	FCortexCommandResult Error;
+	TestFalse(TEXT("a transfer from a nested source with a mismatched graph_kind is refused"),
+		FCortexGraphPatchOps::Preflight(Fixture.Blueprint, NestedRequest(TEXT("function")), Prepared, Error));
+	TestEqual(TEXT("the nested transfer kind conflict is INVALID_FIELD"), Error.ErrorCode,
+		FString(CortexErrorCodes::InvalidField));
+	TestTrue(FString::Printf(TEXT("the refusal names the graph_kind conflict [%s]"), *Error.ErrorMessage),
+		Error.ErrorMessage.Contains(TEXT("graph_kind conflicts with graph identity")));
+	TestEqual(TEXT("the nested transfer kind refusal mutates nothing"), LiveGraphHash(Fixture.Blueprint), HashBefore);
+	TestEqual(TEXT("the nested transfer kind refusal leaves the node count"), CountNativeNodes(Fixture.Blueprint), NodesBefore);
+
+	// Control: the same nested locator claiming its own published kind is never a kind conflict,
+	// which also proves the fixture's kind really is ubergraph and not the claimed function.
+	FCortexGraphPreparedPatch CorrectPrepared;
+	FCortexCommandResult CorrectError;
+	FCortexGraphPatchOps::Preflight(Fixture.Blueprint, NestedRequest(TEXT("ubergraph")), CorrectPrepared, CorrectError);
+	TestFalse(FString::Printf(TEXT("the published kind is not a kind conflict [%s]"), *CorrectError.ErrorMessage),
+		CorrectError.ErrorMessage.Contains(TEXT("graph_kind conflicts with graph identity")));
+
+	// The unselected node of the source's root graph is untouched by every refusal above.
+	TestNotNull(TEXT("the untouched root node is still present"), FindNodeByGuid(Fixture.Blueprint, Outside->NodeGuid));
 
 	Fixture.Cleanup();
 	return true;

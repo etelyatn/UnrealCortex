@@ -26,7 +26,6 @@
 #include "K2Node_VariableSet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Operations/CortexGraphImplementationOps.h"
-#include "Operations/CortexGraphNodeOps.h"
 #include "Operations/CortexGraphPatchOps.h"
 #include "Operations/CortexGraphSymbolResolver.h"
 #include "Serialization/JsonSerializer.h"
@@ -1073,17 +1072,13 @@ bool FCortexGraphMigrationOps::Plan(
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("migration.source.graph_ref.graph_kind must be a string"));
 			return false;
 		}
-		TArray<FCortexGraphEntry> Entries;
-		FCortexGraphNodeOps::EnumerateUserGraphs(Blueprint, Entries);
-		for (const FCortexGraphEntry& Entry : Entries)
+		FString ResolvedKind;
+		if (!FCortexGraphPatchOps::ResolveGraphKindByGuid(Blueprint, GraphGuid, ResolvedKind, OutError)) return false;
+		if (ResolvedKind != RequestedKind)
 		{
-			if (Entry.Graph && Entry.Graph->GraphGuid == GraphGuid
-				&& FCortexGraphNodeOps::GraphKindToString(Entry.Kind) != RequestedKind)
-			{
-				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-					TEXT("migration source graph_kind conflicts with graph identity"));
-				return false;
-			}
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				TEXT("migration source graph_kind conflicts with graph identity"));
+			return false;
 		}
 	}
 	FGuid SourceEntryGuid;
@@ -3345,17 +3340,15 @@ bool ValidateTransferGraphKind(
 	{
 		return true;
 	}
-	TArray<FCortexGraphEntry> Entries;
-	FCortexGraphNodeOps::EnumerateUserGraphs(Blueprint, Entries);
-	for (const FCortexGraphEntry& Entry : Entries)
+	// The same identity resolution the reference was looked up by, so a nested composite child is
+	// compared against its own owning graph's kind instead of skipping the check.
+	FString ResolvedKind;
+	if (!FCortexGraphPatchOps::ResolveGraphKindByGuid(Blueprint, GraphGuid, ResolvedKind, OutError)) return false;
+	if (ResolvedKind != RequestedKind)
 	{
-		if (Entry.Graph && Entry.Graph->GraphGuid == GraphGuid
-			&& FCortexGraphNodeOps::GraphKindToString(Entry.Kind) != RequestedKind)
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-				TEXT("migration graph_kind conflicts with graph identity"));
-			return false;
-		}
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			TEXT("migration graph_kind conflicts with graph identity"));
+		return false;
 	}
 	return true;
 }
