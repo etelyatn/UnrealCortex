@@ -54,6 +54,7 @@
 #include "Engine/World.h"
 #include "CortexSerializer.h"
 #include "CortexAssetMutationGuard.h"
+#include "CortexEditorUtils.h"
 
 namespace
 {
@@ -1137,6 +1138,19 @@ bool FCortexGraphPatchOps::Preflight(
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("asset_path does not identify the supplied Blueprint"));
 		return false;
+	}
+	// The patch route applies the same normalized writable-content-root policy as every other graph
+	// mutator, sourced from the one shared authority, before it plans anything. A resolvable target
+	// under a mount the policy excludes is refused at preview and at apply, so an approval token can
+	// never reach the mutation coordinator for it. The policy message names the offending root.
+	{
+		FString RootPolicyError;
+		if (!FCortexEditorUtils::IsWritableMountedContentPath(
+			FPackageName::ObjectPathToPackageName(AssetPath), RootPolicyError))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, RootPolicyError);
+			return false;
+		}
 	}
 	if (!Params->HasField(TEXT("patch_id")))
 	{
