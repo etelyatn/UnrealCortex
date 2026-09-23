@@ -17,14 +17,17 @@ Run (editor lease required):
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from pathlib import Path
 
 import pytest
 
 from test_graph_authoring_scenario import (
+    FIXTURE_WIDGET_BASE,
     RECORDING_DEFAULT_LITERAL,
     TITLE_ARGUMENT,
+    apply_reviewed,
     AuthoringRun,
     build_adapter,
     build_host_and_model,
@@ -59,9 +62,7 @@ BOUND_TOKENS = {
     "legacy node spec",
     "legacy connection spec",
     "cast target display name",
-    "stale entry input pin",
     "stale entry output pin",
-    "replacement entry input pin",
     "replacement entry output pin",
     "crossing source pin name",
     "destination pin name",
@@ -91,8 +92,7 @@ def collect_tokens(value) -> set[str]:
     """Every `<live: ...>` token declared by a fixture fragment."""
     found: set[str] = set()
     if isinstance(value, str):
-        if value.startswith("<live:") and value.endswith(">"):
-            found.add(value[len("<live:") : -1].strip())
+        found.update(match.strip() for match in re.findall(r"<live:\s*([^>]+)>", value))
     elif isinstance(value, dict):
         for entry in value.values():
             found |= collect_tokens(entry)
@@ -124,7 +124,9 @@ def bind(template, bindings: dict[str, object]):
     if isinstance(template, dict):
         return {key: bind(value, bindings) for key, value in template.items()}
     if isinstance(template, list):
-        return [bind(value, bindings) for value in template]
+        values = [bind(value, bindings) for value in template]
+        # A single placeholder can represent the complete approved GUID array.
+        return values[0] if len(values) == 1 and isinstance(values[0], list) else values
     return template
 
 
@@ -385,7 +387,7 @@ async def test_toolkit_live_only_negatives_are_refused_live(mcp_client):
 
         # parent-call-replace-entry: replace_entry never authors a parent call.
         parent_descriptor = load_fixture("negative/parent-call-replace-entry.json")
-        assert parent_descriptor["expected"]["code"] == "INVALID_FIELD"
+        assert parent_descriptor["expected"]["code"] == "INVALID_OPERATION"
         entry_node_guid = adapter_applied["locators"]["entry_node_guid"]
         replace_entry = {
             "op": "replace_entry",
@@ -415,64 +417,309 @@ async def test_toolkit_live_only_negatives_are_refused_live(mcp_client):
                 migration=replace_entry,
             ),
         )
-        # Fixture mismatch recorded for T16: the descriptor declares INVALID_FIELD with
-        # "replace_entry preserves the body and never authors a parent call", but the live contract
-        # refuses the child first, in the implementation plan's parent-call eligibility, with
-        # INVALID_OPERATION and "Explicit parent call requested but function is not a native event.".
-        # The row therefore asserts the refusal the editor actually produces, and the descriptor is
-        # reported as needing correction rather than being forced green.
-        assert payload["_error"] == "INVALID_OPERATION", payload
-        assert "Explicit parent call requested" in payload["_message"], payload
-        assert payload["_error"] != parent_descriptor["expected"]["code"] or parent_descriptor["expected"]["message_contains"] in payload["_message"], (
-            "the descriptor now matches the live refusal; update this row and the T16 note"
-        )
+        assert payload["_error"] == parent_descriptor["expected"]["code"], payload
+        assert parent_descriptor["expected"]["message_contains"] in payload["_message"], payload
 
         # cross-graph-duplicate-identity: the planned destination identity already owned by another
         # graph is refused. The descriptor's code is asserted; the message is reported as observed.
         duplicate_descriptor = load_fixture("negative/cross-graph-duplicate-identity.json")
         assert duplicate_descriptor["expected"]["code"] == "INVALID_OPERATION"
+        for function_name in ("TransferFirst", "TransferSecond"):
+            created = await call(
+                mcp_client,
+                "blueprint_cmd",
+                {
+                    "command": "add_function",
+                    "params": {"asset_path": fixture["adapter_package"], "name": function_name},
+                },
+            )
+            assert created.get("added") is True and created.get("graph_name") == function_name, created
         graphs = await run.graph_choices(fixture["adapter_package"])
         function_graphs = [choice for choice in graphs.values() if choice["graph_kind"] == "function"]
         ubergraph_nodes = await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"])
         selected = next(
-            node for node in ubergraph_nodes["nodes"] if node["class"] == "K2Node_CallFunction"
+            node for node in ubergraph_nodes["nodes"]
+            if node["node_guid"] == applied["node_mappings"]["spare_print"]
         )
-        if len(function_graphs) >= 2:
-            transfer_patch_id = str(uuid.uuid4())
-            source_ref = {"graph_guid": fixture["ubergraph"]["graph_guid"]}
-            selection = {"graph_ref": source_ref, "node_guids": [selected["node_guid"]]}
-            first = await graph_raw_apply(
-                mcp_client,
-                envelope(
-                    fixture["adapter_object"],
-                    transfer_patch_id,
-                    (await run.context(fixture["adapter_package"]))["fingerprint"],
-                    migration={
-                        "op": "copy_subgraph",
-                        "source": selection,
-                        "destination": {"graph_ref": {"graph_guid": function_graphs[0]["graph_guid"]}},
-                        "boundary": [],
-                    },
+        assert len(function_graphs) >= 2, (
+            "cross-graph duplicate identity requires two suitable function graphs",
+            graphs,
+        )
+        transfer_patch_id = str(uuid.uuid4())
+        source_ref = {"graph_guid": fixture["ubergraph"]["graph_guid"]}
+        selection = {"graph_ref": source_ref, "node_guids": [selected["node_guid"]]}
+        first_body = envelope(
+            fixture["adapter_object"],
+            transfer_patch_id,
+            (await run.context(fixture["adapter_package"]))["fingerprint"],
+            migration={
+                "op": "copy_subgraph",
+                "source": selection,
+                "destination": {"graph_ref": {"graph_guid": function_graphs[0]["graph_guid"]}},
+                "boundary": [],
+            },
+        )
+        first_preview = await graph_raw_apply(mcp_client, first_body)
+        assert first_preview.get("validation_hash"), first_preview
+        first = await graph_raw_apply(
+            mcp_client,
+            {
+                **first_body,
+                "dry_run": False,
+                "expected_validation_hash": first_preview["validation_hash"],
+            },
+        )
+        assert first.get("apply_status") == "applied", first
+        assert first.get("node_mappings"), first
+        destination_after_first = await run.subgraph(
+            fixture["adapter_package"], function_graphs[0]["graph_name"]
+        )
+        assert any(
+            node.get("node_guid") in first["node_mappings"].values()
+            for node in destination_after_first["nodes"]
+        ), (first, destination_after_first)
+        second = await graph_raw_apply(
+            mcp_client,
+            envelope(
+                fixture["adapter_object"],
+                transfer_patch_id,
+                (await run.context(fixture["adapter_package"]))["fingerprint"],
+                migration={
+                    "op": "copy_subgraph",
+                    "source": selection,
+                    "destination": {"graph_ref": {"graph_guid": function_graphs[1]["graph_guid"]}},
+                    "boundary": [],
+                },
+            ),
+        )
+        assert second["_error"] == duplicate_descriptor["expected"]["code"], second
+        assert duplicate_descriptor["expected"]["message_contains"] in second["_message"], (
+            first,
+            second,
+        )
+    finally:
+        await run.cleanup()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ("copy_subgraph", "move_subgraph"))
+async def test_toolkit_transfer_flow_preserves_internal_edges_and_maps_boundary(mcp_client, operation):
+    """Bind the published transfer intent to two real graphs and verify its cross-graph result."""
+    run = AuthoringRun(mcp_client, uuid.uuid4().hex[:8])
+    try:
+        package = await run.create("BP_CortexTransferFixture")
+        asset = run.object_path(package)
+        created = await call(
+            mcp_client,
+            "blueprint_cmd",
+            {"command": "add_function", "params": {"asset_path": package, "name": "TransferTarget"}},
+        )
+        assert created.get("added") is True, created
+        choices = await run.graph_choices(package)
+        source = next(choice for choice in choices.values() if choice["graph_kind"] == "ubergraph")
+        destination = choices["TransferTarget"]
+        print_node = lambda name: {
+            "client_id": name,
+            "node_class": "CallFunction",
+            "params": {"function_name": "KismetSystemLibrary.PrintString"},
+        }
+        source_body = envelope(
+            asset, str(uuid.uuid4()), (await run.context(package))["fingerprint"],
+            target={"graph_ref": {"graph_guid": source["graph_guid"]}},
+            nodes=[print_node(name) for name in ("head", "tail", "consumer")],
+            connections=[
+                {"from": {"client_id": left, "pin": "then"}, "to": {"client_id": right, "pin": "execute"}}
+                for left, right in (("head", "tail"), ("tail", "consumer"))
+            ],
+        )
+        source_preview = await graph_raw_apply(mcp_client, source_body)
+        assert source_preview.get("validation_hash"), source_preview
+        authored = await graph_raw_apply(
+            mcp_client, {**source_body, "dry_run": False, "expected_validation_hash": source_preview["validation_hash"]}
+        )
+        assert authored["readback_status"] == "matched", authored
+        sink_body = envelope(
+            asset, str(uuid.uuid4()), (await run.context(package))["fingerprint"],
+            target={"graph_ref": {"graph_guid": destination["graph_guid"]}},
+            nodes=[print_node("sink")],
+        )
+        sink_preview = await graph_raw_apply(mcp_client, sink_body)
+        assert sink_preview.get("validation_hash"), sink_preview
+        sink = await graph_raw_apply(
+            mcp_client, {**sink_body, "dry_run": False, "expected_validation_hash": sink_preview["validation_hash"]}
+        )
+        assert sink["readback_status"] == "matched", sink
+        source_before = await run.subgraph(package, source["graph_name"])
+        guids = authored["node_mappings"]
+        bindings = {
+            "source graph_guid": source["graph_guid"],
+            "destination graph_guid": destination["graph_guid"],
+            "first selected node GUID": guids["head"],
+            "second selected node GUID": guids["tail"],
+            "selected source node GUID": guids["tail"],
+            "crossing source pin name": "then",
+            "existing destination node GUID": sink["node_mappings"]["sink"],
+            "destination pin name": "execute",
+        }
+        request = bind(
+            load_fixture(f"{operation.replace('_', '-')}-intent.json"), bindings
+        )
+        body = envelope(asset, str(uuid.uuid4()), (await run.context(package))["fingerprint"], **request)
+        preview = await graph_raw_apply(mcp_client, body)
+        assert preview["changed"] is True and preview["validation_hash"], preview
+        assert len(preview["boundary"]) == 1 and len(preview["crossing_edges"]) == 1, preview
+        applied = await graph_raw_apply(
+            mcp_client, {**body, "dry_run": False, "expected_validation_hash": preview["validation_hash"]}
+        )
+        assert applied["apply_status"] == "applied" and applied["readback_status"] == "matched", applied
+        assert applied["target_compile_count"] == 1 and applied["blocked"] is False, applied
+        source_after = await run.subgraph(package, source["graph_name"])
+        destination_after = await run.subgraph(package, destination["graph_name"])
+        if operation == "copy_subgraph":
+            assert source_after["nodes"] == source_before["nodes"], "copy changed the source graph"
+            assert edges(source_after) == edges(source_before), "copy changed source edges"
+        else:
+            assert not {guids["head"], guids["tail"]} & {
+                node["node_guid"] for node in source_after["nodes"]
+            }, "move retained selected source nodes"
+            assert any(node["node_guid"] == guids["consumer"] for node in source_after["nodes"])
+        mapping = applied["node_mappings"]
+        copied_head = mapping[guids["head"]] if operation == "copy_subgraph" else guids["head"]
+        copied_tail = mapping[guids["tail"]] if operation == "copy_subgraph" else guids["tail"]
+        names = node_name_map(destination_after)
+        assert {copied_head, copied_tail, sink["node_mappings"]["sink"]} <= set(names), applied
+        assert (names[copied_head], "then", names[copied_tail], "execute") in edges(destination_after)
+        assert (
+            names[copied_tail], "then", names[sink["node_mappings"]["sink"]], "execute"
+        ) in edges(destination_after)
+    finally:
+        await run.cleanup()
+
+
+@pytest.mark.anyio
+async def test_toolkit_prune_preview_and_approved_apply_preserves_entry(mcp_client):
+    """The published prune overlay approves precisely the preview's removable island."""
+    run = AuthoringRun(mcp_client, uuid.uuid4().hex[:8])
+    try:
+        package = await run.create("BP_CortexPruneFixture")
+        asset = run.object_path(package)
+        source = next(
+            choice for choice in (await run.graph_choices(package)).values()
+            if choice["graph_kind"] == "ubergraph"
+        )
+        authored_body = envelope(
+            asset, str(uuid.uuid4()), (await run.context(package))["fingerprint"],
+            target={"graph_ref": {"graph_guid": source["graph_guid"]}},
+            nodes=[
+                {"client_id": "begin", "node_class": "Event", "params": {"function_name": "Actor.ReceiveBeginPlay"}},
+                *(
+                    {"client_id": name, "node_class": "CallFunction",
+                     "params": {"function_name": "KismetSystemLibrary.PrintString"}}
+                    for name in ("first", "second")
                 ),
-            )
-            second = await graph_raw_apply(
-                mcp_client,
-                envelope(
-                    fixture["adapter_object"],
-                    transfer_patch_id,
-                    (await run.context(fixture["adapter_package"]))["fingerprint"],
-                    migration={
-                        "op": "copy_subgraph",
-                        "source": selection,
-                        "destination": {"graph_ref": {"graph_guid": function_graphs[1]["graph_guid"]}},
-                        "boundary": [],
-                    },
-                ),
-            )
-            assert second["_error"] == duplicate_descriptor["expected"]["code"], second
-            assert duplicate_descriptor["expected"]["message_contains"] in second["_message"], (
-                first,
-                second,
-            )
+            ],
+            connections=[
+                {"from": {"client_id": left, "pin": "then"}, "to": {"client_id": right, "pin": "execute"}}
+                for left, right in (("begin", "first"), ("first", "second"))
+            ],
+        )
+        authored = await apply_reviewed(run, authored_body, package)
+        assert authored["readback_status"] == "matched", authored
+        nodes_before = await run.subgraph(package, source["graph_name"])
+        bindings = {
+            "source graph_guid": source["graph_guid"],
+            "island entry node_guid": authored["node_mappings"]["begin"],
+        }
+        intent = bind(load_fixture("prune-island-intent.json"), bindings)
+        body = envelope(asset, str(uuid.uuid4()), (await run.context(package))["fingerprint"], **intent)
+        preview = await graph_raw_apply(mcp_client, body)
+        assert preview["awaiting_approval"] is True and preview["complete"] is True, preview
+        removable = preview["removable"]
+        assert set(removable) == {
+            authored["node_mappings"]["first"], authored["node_mappings"]["second"]
+        }, preview
+        # Approval changes the reviewed intent, so preview the exact approved request before apply.
+        approved_intent = {**body, "migration": {**body["migration"], "approved_node_guids": removable}}
+        approved_preview = await graph_raw_apply(mcp_client, approved_intent)
+        assert approved_preview.get("validation_hash") and approved_preview["changed"] is True, approved_preview
+        approved = bind(
+            load_fixture("prune-island-apply.json"),
+            {
+                **bindings,
+                "removable set published by the preview": removable,
+                "validation_hash returned by the preview": approved_preview["validation_hash"],
+            },
+        )
+        applied = await graph_raw_apply(mcp_client, {**approved_intent, **approved})
+        assert applied["apply_status"] == "applied" and applied["readback_status"] == "matched", applied
+        assert applied["target_compile_count"] == 1 and applied["blocked"] is False, applied
+        assert applied["blocked_nodes"] == [], applied
+        after = await run.subgraph(package, source["graph_name"])
+        remaining = {node["node_guid"] for node in after["nodes"]}
+        assert authored["node_mappings"]["begin"] in remaining
+        assert not set(removable) & remaining
+        assert len(after["nodes"]) == len(nodes_before["nodes"]) - len(removable)
+    finally:
+        await run.cleanup()
+
+
+@pytest.mark.anyio
+async def test_toolkit_replace_entry_preserves_body(mcp_client):
+    """Bind the published replacement intent and observe the unchanged downstream body."""
+    run = AuthoringRun(mcp_client, uuid.uuid4().hex[:8])
+    try:
+        package = await run.create("WBP_CortexReplaceFixture", parent_class=FIXTURE_WIDGET_BASE)
+        asset = run.object_path(package)
+        source = next(
+            choice for choice in (await run.graph_choices(package)).values()
+            if choice["graph_kind"] == "ubergraph"
+        )
+        authored_body = envelope(
+            asset, str(uuid.uuid4()), (await run.context(package))["fingerprint"],
+            target={"graph_ref": {"graph_guid": source["graph_guid"]}},
+            nodes=[
+                {"client_id": "stale", "node_class": "Event",
+                 "params": {"owner_class": FIXTURE_WIDGET_BASE, "function_name": "PresentTitle"}},
+                {"client_id": "body", "node_class": "CallFunction",
+                 "params": {"function_name": "KismetSystemLibrary.PrintString"}},
+            ],
+            connections=[
+                {"from": {"client_id": "stale", "pin": "then"},
+                 "to": {"client_id": "body", "pin": "execute"}}
+            ],
+        )
+        authored = await apply_reviewed(run, authored_body, package)
+        assert authored["readback_status"] == "matched", authored
+        before = await run.subgraph(package, source["graph_name"])
+        body_guid = authored["node_mappings"]["body"]
+        body_before = next(node for node in before["nodes"] if node["node_guid"] == body_guid)
+        bindings = {
+            "source graph_guid": source["graph_guid"],
+            "stale entry node_guid": authored["node_mappings"]["stale"],
+            "stale entry output pin": "then",
+            "replacement entry output pin": "then",
+        }
+        intent = bind(load_fixture("replace-entry-intent.json"), bindings)
+        body = envelope(asset, str(uuid.uuid4()), (await run.context(package))["fingerprint"], **intent)
+        preview = await graph_raw_apply(mcp_client, body)
+        assert preview["changed"] is True and preview["validation_hash"], preview
+        result = await graph_raw_apply(
+            mcp_client, {**body, "dry_run": False, "expected_validation_hash": preview["validation_hash"]}
+        )
+        assert result["apply_status"] == "applied" and result["readback_status"] == "matched", result
+        after = await run.subgraph(package, source["graph_name"])
+        body_after = next(node for node in after["nodes"] if node["node_guid"] == body_guid)
+        # Only the mapped boundary link may change; intrinsic pins/defaults and node identity stay.
+        for item in (body_before, body_after):
+            item["pins"] = [
+                {key: value for key, value in candidate.items() if key != "connections"}
+                if candidate["name"] == "execute" else candidate
+                for candidate in item["pins"]
+            ]
+        assert body_after == body_before
+        assert authored["node_mappings"]["stale"] not in node_name_map(after)
+        replacement = result["node_mappings"]["entry"]
+        names = node_name_map(after)
+        assert (names[replacement], "then", names[body_guid], "execute") in edges(after)
     finally:
         await run.cleanup()

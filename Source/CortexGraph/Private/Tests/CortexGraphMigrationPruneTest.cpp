@@ -685,6 +685,12 @@ bool FCortexGraphMigrationPruneTwoEntriesSharedProducerTest::RunTest(const FStri
 			const TArray<TSharedPtr<FJsonValue>>* Shared = nullptr;
 			TestTrue(TEXT("the preview publishes the shared partition"),
 				PreviewResult.Data->TryGetArrayField(TEXT("shared"), Shared) && Shared != nullptr && Shared->Num() > 0);
+			bool bBlocked = true;
+			TestTrue(TEXT("the prune inventory preserves the Boolean asset-block status"),
+				PreviewResult.Data->TryGetBoolField(TEXT("blocked"), bBlocked) && !bBlocked);
+			const TArray<TSharedPtr<FJsonValue>>* BlockedNodes = nullptr;
+			TestTrue(TEXT("the blocked-node partition has a distinct field"),
+				PreviewResult.Data->TryGetArrayField(TEXT("blocked_nodes"), BlockedNodes) && BlockedNodes != nullptr);
 			const TArray<TSharedPtr<FJsonValue>>* ExternalEdges = nullptr;
 			TestTrue(TEXT("the preview publishes the external edges"),
 				PreviewResult.Data->TryGetArrayField(TEXT("external_edges"), ExternalEdges) && ExternalEdges != nullptr

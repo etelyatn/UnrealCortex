@@ -157,7 +157,7 @@ TSharedPtr<FJsonObject> MakePatchResultJson(
 			Data->SetField(Pair.Key, Pair.Value);
 		}
 	}
-	// A prune publishes its partition (removable, shared, blocked and external-edge sets plus the
+	// A prune publishes its partition (removable, shared, blocked_nodes and external-edge sets plus the
 	// scan counts and completeness) for the same reason: a caller approves the removable set from the
 	// response, never from a private plan.
 	if (Outcome.PruneInventory.IsValid())

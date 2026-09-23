@@ -789,6 +789,7 @@ async def test_scenario_typed_authoring_preview_invalid_save_and_replay(mcp_clie
         # 4. A stale precondition is refused: an earlier preview token no longer matches the intent.
         #    The asset has been edited by the apply, so the reviewed guard is stale by construction and
         #    the refusal is observed through the raw entry point (the reviewed flow is never retried).
+        before_stale = await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"])
         stale = await graph_raw(
             mcp_client,
             "apply_patch",
@@ -796,8 +797,9 @@ async def test_scenario_typed_authoring_preview_invalid_save_and_replay(mcp_clie
         )
         assert stale["_error"] == "STALE_PRECONDITION", stale
         assert "stale" in stale["_message"].lower(), stale
-        unchanged = await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"])
-        assert len(unchanged["nodes"]) == len((await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"]))["nodes"])
+        after_stale = await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"])
+        assert after_stale["nodes"] == before_stale["nodes"], "a stale-token refusal changed graph nodes or pins"
+        assert edges(after_stale) == edges(before_stale), "a stale-token refusal changed graph links"
 
         # 5. No-op replay: the same patch_id and intent report a complete reuse with no compile/save.
         replay_body = envelope(
@@ -873,6 +875,80 @@ async def test_scenario_typed_authoring_preview_invalid_save_and_replay(mcp_clie
         assert reloaded["reloaded"] is True, reloaded
         assert reloaded["saved"] is True and reloaded["verification_passed"] is True, reloaded
         assert reloaded["verified_text"]["value"] == "ReloadedTitle", reloaded
+    finally:
+        await run.cleanup()
+
+
+# Out and ref signatures are a separate implementation-graph contract from the returning hook.
+@pytest.mark.anyio
+async def test_scenario_typed_authoring_out_and_ref_implementation_signatures(mcp_client):
+    run = AuthoringRun(mcp_client, uuid.uuid4().hex[:8])
+    try:
+        package = await run.create(ADAPTER_NAME, parent_class=FIXTURE_WIDGET_BASE)
+        result = await apply_reviewed(
+            run,
+            envelope(
+                run.object_path(package),
+                str(uuid.uuid4()),
+                (await run.context(package))["fingerprint"],
+                target={"implementation": {"owner_class": FIXTURE_WIDGET_BASE, "function_name": "TransformTitle"}},
+                nodes=[{"client_id": "self", "node_class": "Self"}],
+            ),
+            package,
+        )
+        assert result["apply_status"] == "applied" and result["readback_status"] == "matched", result
+        graph_choice = (await run.graph_choices(package))["TransformTitle"]
+        assert graph_choice["graph_kind"] == "function", graph_choice
+        subgraph = await run.subgraph(package, "TransformTitle")
+        entry = next(node for node in subgraph["nodes"] if node["class"] == "K2Node_FunctionEntry")
+        terminator = next(node for node in subgraph["nodes"] if node["class"] == "K2Node_FunctionResult")
+        assert pin(subgraph, entry["node_id"], "Title")["is_reference"] is True
+        assert pin(subgraph, terminator["node_id"], "OutTitle")["direction"] == "input"
+        assert pin(subgraph, terminator["node_id"], "OutTitle")["category"] == "text"
+    finally:
+        await run.cleanup()
+
+
+@pytest.mark.anyio
+async def test_scenario_typed_authoring_late_compile_failure_restores_graph(mcp_client):
+    run = AuthoringRun(mcp_client, uuid.uuid4().hex[:8])
+    try:
+        package = await run.create("BP_CortexLateFailure", kind="Actor")
+        await blueprint(
+            mcp_client, "add_variable",
+            {"asset_path": package, "name": "ActorRef", "type": "/Script/Engine.Actor"},
+        )
+        source = next(
+            choice for choice in (await run.graph_choices(package)).values()
+            if choice["graph_kind"] == "ubergraph"
+        )
+        before = await run.subgraph(package, source["graph_name"])
+        before_fingerprint = (await run.context(package))["fingerprint"]
+        body = envelope(
+            run.object_path(package), str(uuid.uuid4()), before_fingerprint,
+            target={"graph_ref": {"graph_guid": source["graph_guid"]}},
+            nodes=[
+                {"client_id": "write_null", "node_class": "VariableSet",
+                 "params": {"variable_name": "ActorRef"},
+                 "defaults": {"ActorRef": {"kind": "object", "path": "None"}}},
+                {"client_id": "begin", "node_class": "Event", "params": {"function_name": "Actor.ReceiveEndPlay"}},
+            ],
+            connections=[{"from": {"client_id": "begin", "pin": "then"},
+                          "to": {"client_id": "write_null", "pin": "execute"}}],
+        )
+        preview = await run.apply(body)
+        assert preview["validation_hash"] and preview["changed"] is True, preview
+        failed = await graph_raw(
+            mcp_client, "apply_patch",
+            {**body, "dry_run": False, "expected_validation_hash": preview["validation_hash"]},
+        )
+        if failed.get("_error") == "STALE_PRECONDITION":
+            failed = await apply_reviewed(run, body, package)
+        assert failed.get("_error") == "COMPILE_FAILED", failed
+        assert failed["rollback_status"] == "restored" and failed["blocked"] is False, failed
+        after = await run.subgraph(package, source["graph_name"])
+        assert after["nodes"] == before["nodes"] and edges(after) == edges(before)
+        assert (await run.context(package))["fingerprint"] == before_fingerprint
     finally:
         await run.cleanup()
 

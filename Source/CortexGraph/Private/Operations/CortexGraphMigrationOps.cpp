@@ -5833,7 +5833,6 @@ TSharedPtr<FJsonObject> FCortexGraphMigrationOps::MakePruneInventory(const TShar
 	// informational partitions are bounded by the shared diagnostics bound like every other preview.
 	Inventory->SetArrayField(TEXT("removable"), ToValues(Plan.RemovableGuids));
 	Inventory->SetArrayField(TEXT("approved_guids"), ToValues(Plan.ApprovedGuids));
-
 	auto PartitionLines = [](const TArray<FCortexGraphPruneNode>& Nodes)
 	{
 		TArray<FString> Lines;
@@ -5854,7 +5853,7 @@ TSharedPtr<FJsonObject> FCortexGraphMigrationOps::MakePruneInventory(const TShar
 	FCortexGraphPatchOps::TrimDiagnostics(Blocked);
 	FCortexGraphPatchOps::TrimDiagnostics(ExternalEdges);
 	Inventory->SetArrayField(TEXT("shared"), ToValues(Shared));
-	Inventory->SetArrayField(TEXT("blocked"), ToValues(Blocked));
+	Inventory->SetArrayField(TEXT("blocked_nodes"), ToValues(Blocked));
 	Inventory->SetArrayField(TEXT("external_edges"), ToValues(ExternalEdges));
 	return Inventory;
 }
