@@ -3702,6 +3702,14 @@ bool FCortexGraphMigrationOps::PlanTransfer(
 				continue;
 			}
 			bAnyDestinationPresent = true;
+			if (Owners.Num() > 1)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("the planned destination identity '%s' is owned by %d graphs ('%s', '%s'); a cross-graph duplicate identity is not a state this operation may repair"),
+						*DestinationGuid.ToString(), Owners.Num(),
+						*Owners[0]->GraphGuid.ToString(), *Owners[1]->GraphGuid.ToString()));
+				return false;
+			}
 			if (MatchCount > Owners.Num())
 			{
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
@@ -4014,13 +4022,19 @@ bool FCortexGraphMigrationOps::PlanTransfer(
 				FGuid::Parse(Planned->DestinationGuid, PlannedGuid);
 				UEdGraphNode* const PlannedNode = FindNodeByGuidInGraph(DestinationGraph, PlannedGuid);
 				UEdGraphPin* const PlannedPin = PlannedNode ? PlannedNode->FindPin(FName(*Boundary.FromPin)) : nullptr;
-				bAlreadyRealized = PlannedPin && DestinationPin->LinkedTo.Contains(PlannedPin);
+				// The pin must carry exactly the intended link: an extra peer is not a replay, and a
+				// request may only claim no work when the realized mapping is the planned mapping.
+				bAlreadyRealized = PlannedPin
+					&& DestinationPin->LinkedTo.Num() == 1
+					&& DestinationPin->LinkedTo.Contains(PlannedPin);
 			}
 			if (!bAlreadyRealized)
 			{
-				OutError = FCortexCommandRouter::Error(CortexErrorCodes::TypeMismatch,
-					FString::Printf(TEXT("boundary destination pin '%s.%s' already has a link, so the mapping cannot own it"),
-						*Boundary.ToNode.ToString(), *Boundary.ToPin));
+				// A taken destination pin whose link is not exactly the planned mapping is a conflict
+				// with live state, not a type mismatch: the request cannot own that pin.
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("boundary destination pin '%s.%s' already carries %d link(s) that are not exactly the planned mapping, so the mapping cannot own it"),
+						*Boundary.ToNode.ToString(), *Boundary.ToPin, DestinationPin->LinkedTo.Num()));
 				return false;
 			}
 		}
@@ -4696,6 +4710,17 @@ bool FCortexGraphMigrationOps::VerifyTransferAgainstNative(
 		{
 			OutFailure = FString::Printf(TEXT("the boundary mapping '%s.%s' -> '%s.%s' is not realized in the destination graph"),
 				*Boundary.SourceGuid, *Boundary.SourcePin, *Boundary.DestinationNodeGuid, *Boundary.DestinationPin);
+			return false;
+		}
+		// The complete live link set is the oracle, not containment: the input side of the pair must
+		// carry exactly the planned link, so an extra peer is a divergence instead of a replay.
+		UEdGraphPin* const BoundaryInputSide = TransferredPin->Direction == EGPD_Input ? TransferredPin : BoundaryPin;
+		if (BoundaryInputSide->LinkedTo.Num() != 1 || !BoundaryInputSide->LinkedTo.Contains(
+			BoundaryInputSide == TransferredPin ? BoundaryPin : TransferredPin))
+		{
+			OutFailure = FString::Printf(TEXT("the boundary mapping '%s.%s' -> '%s.%s' leaves its input pin with %d link(s) instead of exactly the planned one"),
+				*Boundary.SourceGuid, *Boundary.SourcePin, *Boundary.DestinationNodeGuid, *Boundary.DestinationPin,
+				BoundaryInputSide->LinkedTo.Num());
 			return false;
 		}
 	}

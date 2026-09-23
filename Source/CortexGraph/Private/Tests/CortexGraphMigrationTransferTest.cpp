@@ -2317,4 +2317,136 @@ bool FCortexGraphMigrationTransferFunctionResultBoundaryTest::RunTest(const FStr
 	Fixture.Cleanup();
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// 21. CrossGraphDuplicateMoveRefused (G1)
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphMigrationTransferCrossGraphDuplicateTest,
+	"Cortex.Graph.Authoring.Migration.Transfer.CrossGraphDuplicateMoveRefused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationTransferCrossGraphDuplicateTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationTransferTest;
+	ClearFaults();
+
+	FFixture Fixture;
+	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_TransferCrossGraphDup_T12")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	UEdGraph* SourceGraph = EnsureEventGraph(Fixture.Blueprint);
+	UK2Node_CallFunction* Head = AddPrintNode(SourceGraph, TEXT("head"), 0, 0);
+	UEdGraph* DestinationGraph = AddVoidFunctionGraph(Fixture.Blueprint, TEXT("CortexCrossGraphDupTarget"));
+	// The destination graph already owns a node with a selected node's identity, which a move would
+	// re-stamp onto its clone and later collide with.
+	UK2Node_CallFunction* Squatter = AddPrintNode(DestinationGraph, TEXT("squatter"), 900, 0);
+	Squatter->NodeGuid = Head->NodeGuid;
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+	const FString HashBefore = LiveGraphHash(Fixture.Blueprint);
+	const int32 NodesBefore = CountNativeNodes(Fixture.Blueprint);
+
+	const TArray<FGuid> Selection = { Head->NodeGuid };
+	TSharedPtr<FJsonObject> Request = TransferRequest(Fixture.Blueprint,
+		TEXT("00000000-0000-0000-0000-000000122101"), MoveOp, SourceGraph, Selection, DestinationGraph, {});
+	FCortexGraphPreparedPatch Prepared;
+	FCortexCommandResult Error;
+	TestFalse(TEXT("a selected identity already owned by the destination graph is refused"),
+		FCortexGraphPatchOps::Preflight(Fixture.Blueprint, Request, Prepared, Error));
+	TestEqual(TEXT("the cross-graph duplicate refusal is INVALID_OPERATION"),
+		Error.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+	TestTrue(FString::Printf(TEXT("the refusal names the duplicated identity [%s]"), *Error.ErrorMessage),
+		Error.ErrorMessage.Contains(Head->NodeGuid.ToString()));
+	TestEqual(TEXT("the cross-graph duplicate refusal mutates nothing"), LiveGraphHash(Fixture.Blueprint), HashBefore);
+	TestEqual(TEXT("the cross-graph duplicate refusal leaves the node count"), CountNativeNodes(Fixture.Blueprint), NodesBefore);
+	TestNotNull(TEXT("the source node still resolves"), FindNodeByGuidInGraph(SourceGraph, Head->NodeGuid));
+	TestEqual(TEXT("the destination squatter still owns the identity exactly once"),
+		CountNodesWithGuid(Fixture.Blueprint, Head->NodeGuid), 2);
+
+	// A copy of the same selection is unaffected: the copy derives a fresh identity.
+	TSharedPtr<FJsonObject> CopyRequest = TransferRequest(Fixture.Blueprint,
+		TEXT("00000000-0000-0000-0000-000000122102"), CopyOp, SourceGraph, Selection, DestinationGraph, {});
+	FCortexGraphPreparedPatch CopyPrepared;
+	FCortexGraphMigrationTransferPlan CopyPlan;
+	FCortexCommandResult CopyError;
+	TestTrue(FString::Printf(TEXT("a copy of the same selection still previews: %s"), *CopyError.ErrorMessage),
+		PreviewPlan(Fixture.Blueprint, CopyRequest, CopyPrepared, CopyPlan, CopyError));
+
+	Fixture.Cleanup();
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 22. OverLinkedReplayInputRefused (G2)
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphMigrationTransferOverLinkedReplayTest,
+	"Cortex.Graph.Authoring.Migration.Transfer.OverLinkedReplayInputRefused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationTransferOverLinkedReplayTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationTransferTest;
+	ClearFaults();
+
+	FFixture Fixture;
+	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_TransferOverLinked_T12")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	UEdGraph* SourceGraph = EnsureEventGraph(Fixture.Blueprint);
+	UK2Node_CallFunction* Head = AddPrintNode(SourceGraph, TEXT("head"), 0, 0);
+	UK2Node_CallFunction* Consumer = AddPrintNode(SourceGraph, TEXT("consumer"), 400, 0);
+	TestTrue(TEXT("source crossing edge wired"), LinkNodes(SourceGraph, Head, TEXT("then"), Consumer, TEXT("execute")));
+	UEdGraph* DestinationGraph = AddVoidFunctionGraph(Fixture.Blueprint, TEXT("CortexOverLinkedTarget"));
+	UK2Node_CallFunction* DestinationConsumer = AddPrintNode(DestinationGraph, TEXT("destination consumer"), 700, 0);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+
+	const TArray<FGuid> Selection = { Head->NodeGuid };
+	TArray<TSharedPtr<FJsonValue>> Boundary;
+	Boundary.Add(MakeShared<FJsonValueObject>(BoundaryEntry(Head, TEXT("then"), DestinationConsumer, TEXT("execute"))));
+	TSharedPtr<FJsonObject> Request = TransferRequest(Fixture.Blueprint,
+		TEXT("00000000-0000-0000-0000-000000122201"), CopyOp, SourceGraph, Selection, DestinationGraph, Boundary);
+	FCortexGraphPreparedPatch Prepared;
+	FCortexGraphMigrationTransferPlan Plan;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("over-linked replay fixture previews: %s"), *Error.ErrorMessage),
+		PreviewPlan(Fixture.Blueprint, Request, Prepared, Plan, Error));
+	FCortexGraphPatchOutcome Outcome;
+	TestTrue(FString::Printf(TEXT("over-linked replay fixture applies: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	TestEqual(TEXT("over-linked replay fixture readback matched"), Outcome.ReadbackStatus, FString(TEXT("matched")));
+
+	// A conflicting extra peer is attached to the destination boundary input pin, so the pin no
+	// longer carries exactly the planned link and the request can no longer be an unchanged replay.
+	UEdGraphPin* BoundaryInput = DestinationConsumer->FindPin(TEXT("execute"));
+	UK2Node_CallFunction* ExtraPeer = AddPrintNode(DestinationGraph, TEXT("conflicting peer"), 700, 400);
+	UEdGraphPin* ExtraOutput = ExtraPeer->FindPin(TEXT("then"));
+	TestNotNull(TEXT("the boundary input pin resolves"), BoundaryInput);
+	TestNotNull(TEXT("the conflicting peer output pin resolves"), ExtraOutput);
+	if (BoundaryInput && ExtraOutput)
+	{
+		BoundaryInput->LinkedTo.Add(ExtraOutput);
+		ExtraOutput->LinkedTo.Add(BoundaryInput);
+	}
+	const FString HashBefore = LiveGraphHash(Fixture.Blueprint);
+	const int32 NodesBefore = CountNativeNodes(Fixture.Blueprint);
+
+	TSharedPtr<FJsonObject> Replay = TransferRequest(Fixture.Blueprint,
+		TEXT("00000000-0000-0000-0000-000000122201"), CopyOp, SourceGraph, Selection, DestinationGraph, Boundary);
+	FCortexGraphPreparedPatch ReplayPrepared;
+	FCortexGraphMigrationTransferPlan ReplayPlan;
+	FCortexCommandResult ReplayError;
+	TestFalse(TEXT("a boundary input carrying a conflicting extra link is refused, not reported unchanged"),
+		PreviewPlan(Fixture.Blueprint, Replay, ReplayPrepared, ReplayPlan, ReplayError));
+	TestEqual(TEXT("the over-linked replay refusal is INVALID_OPERATION"),
+		ReplayError.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+	TestTrue(FString::Printf(TEXT("the over-linked refusal names the boundary pin [%s]"), *ReplayError.ErrorMessage),
+		ReplayError.ErrorMessage.Contains(DestinationConsumer->NodeGuid.ToString())
+		&& ReplayError.ErrorMessage.Contains(TEXT("execute")));
+	TestEqual(TEXT("the over-linked refusal mutates nothing"), LiveGraphHash(Fixture.Blueprint), HashBefore);
+	TestEqual(TEXT("the over-linked refusal leaves the node count"), CountNativeNodes(Fixture.Blueprint), NodesBefore);
+
+	Fixture.Cleanup();
+	return true;
+}
 #endif
