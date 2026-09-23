@@ -1,5 +1,6 @@
 #include "Operations/CortexGraphPatchState.h"
 #include "Operations/CortexGraphNodeOps.h"
+#include "Operations/CortexGraphPinDefaults.h"
 #include "CortexAssetFingerprint.h"
 #include "CortexEngineCompat.h"
 #include "Dom/JsonObject.h"
@@ -279,7 +280,7 @@ TSharedPtr<FJsonObject> FCortexGraphPatchState::ComputeFingerprint(UBlueprint* B
 			Buffer += FString::Printf(TEXT("   Pins: %d\n"), SortedPins.Num());
 			for (UEdGraphPin* Pin : SortedPins)
 			{
-				Buffer += FString::Printf(TEXT("    Pin: Name=%s Dir=%d Cat=%s SubCat=%s SubObj=%s Container=%d Ref=%d Const=%d Def=\"%s\" DefText=\"%s\" DefObj=%s Links=%d\n"),
+				Buffer += FString::Printf(TEXT("    Pin: Name=%s Dir=%d Cat=%s SubCat=%s SubObj=%s Container=%d Ref=%d Const=%d Def=\"%s\" DefTextId=\"%s\" DefObj=%s Links=%d\n"),
 					*Pin->PinName.ToString(),
 					static_cast<int32>(Pin->Direction),
 					*Pin->PinType.PinCategory.ToString(),
@@ -289,7 +290,10 @@ TSharedPtr<FJsonObject> FCortexGraphPatchState::ComputeFingerprint(UBlueprint* B
 					Pin->PinType.bIsReference ? 1 : 0,
 					Pin->PinType.bIsConst ? 1 : 0,
 					*Pin->DefaultValue,
-					*Pin->DefaultTextValue.ToString(),
+					// Canonical FText identity, shared with the pin-default comparison: two defaults
+					// that display identically (a table entry and a literal, or two tables) are
+					// different intents and must move the hash.
+					*FCortexGraphPinDefaults::CanonicalTextIdentity(Pin->DefaultTextValue),
 					Pin->DefaultObject ? *Pin->DefaultObject->GetPathName() : TEXT("None"),
 					Pin->LinkedTo.Num());
 

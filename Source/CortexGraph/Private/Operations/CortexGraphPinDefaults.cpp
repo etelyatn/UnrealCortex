@@ -90,13 +90,24 @@ FString CanonicalReferencePath(const EPinReferenceMode Mode, const FString& Path
 	}
 	return Path;
 }
+}
 
-/**
- * Canonical identity of a text literal: string table identity (table id + key) or the
- * namespace/key/source triple of a literal. Display text alone is not an identity, because a
- * string table entry and a literal can share it, and so can two different tables.
- */
-FString CanonicalTextIdentity(const FText& Text)
+const TCHAR* FCortexGraphPinDefaults::ReferenceLiteralKind(const UEdGraphPin& Pin)
+{
+	switch (ReferenceModeForCategory(Pin.PinType.PinCategory))
+	{
+	case EPinReferenceMode::HardClass:
+		return TEXT("class");
+	case EPinReferenceMode::SoftClass:
+		return TEXT("soft_class");
+	case EPinReferenceMode::SoftObject:
+		return TEXT("soft_object");
+	default:
+		return TEXT("object");
+	}
+}
+
+FString FCortexGraphPinDefaults::CanonicalTextIdentity(const FText& Text)
 {
 	// Fields are length-prefixed so no separator inside a field can forge another identity.
 	if (Text.IsFromStringTable())
@@ -117,22 +128,6 @@ FString CanonicalTextIdentity(const FText& Text)
 	const FString SourceText = SourceString ? **SourceString : FString();
 	return FString::Printf(TEXT("literal:%d:%s|%d:%s|%d:%s"), NamespaceText.Len(), *NamespaceText,
 		KeyText.Len(), *KeyText, SourceText.Len(), *SourceText);
-}
-}
-
-const TCHAR* FCortexGraphPinDefaults::ReferenceLiteralKind(const UEdGraphPin& Pin)
-{
-	switch (ReferenceModeForCategory(Pin.PinType.PinCategory))
-	{
-	case EPinReferenceMode::HardClass:
-		return TEXT("class");
-	case EPinReferenceMode::SoftClass:
-		return TEXT("soft_class");
-	case EPinReferenceMode::SoftObject:
-		return TEXT("soft_object");
-	default:
-		return TEXT("object");
-	}
 }
 
 bool FCortexGraphPinDefaults::Validate(
@@ -1107,8 +1102,8 @@ bool FCortexGraphPinDefaults::CompareAppliedLiteral(
 			OutFailure = TEXT("planned text default cannot be compared with native readback");
 			return false;
 		}
-		OutExpected = CanonicalTextIdentity(ExpectedText);
-		OutActual = CanonicalTextIdentity(Pin->DefaultTextValue);
+		OutExpected = FCortexGraphPinDefaults::CanonicalTextIdentity(ExpectedText);
+		OutActual = FCortexGraphPinDefaults::CanonicalTextIdentity(Pin->DefaultTextValue);
 		return true;
 	}
 	if (Kind == TEXT("bool"))

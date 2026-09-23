@@ -49,6 +49,17 @@ public:
 	static const TCHAR* ReferenceLiteralKind(const UEdGraphPin& Pin);
 
 	/**
+	 * Canonical identity of an FText default: the string-table id and key, or the
+	 * namespace/key/source triple of a literal, with length-prefixed fields so no separator inside a
+	 * field can forge another identity. Display text alone is not an identity, because a string table
+	 * entry and a literal can share it, and so can two different tables.
+	 *
+	 * The single shared implementation: the pin-default comparison and the authoring fingerprint both
+	 * hash this, so no second identity rule can appear.
+	 */
+	static FString CanonicalTextIdentity(const FText& Text);
+
+	/**
 	 * Reads the default value of a pin into a tagged literal descriptor.
 	 * Does not perform persistence or reload.
 	 */
