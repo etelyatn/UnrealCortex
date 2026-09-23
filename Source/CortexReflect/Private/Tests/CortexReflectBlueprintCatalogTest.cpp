@@ -11,6 +11,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexReflectBlueprintCatalogTest::RunTest(const FString& Parameters)
 {
+	const TCHAR* const GeneratedClassObjectPath =
+		TEXT("/Game/Blueprints/BP_SimpleActor.BP_SimpleActor_C");
+	TestNull(TEXT("Saved Blueprint generated class should be unloaded before catalog query"),
+		FindObject<UClass>(nullptr, GeneratedClassObjectPath));
 	FCortexReflectCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("root"), TEXT("AActor"));
@@ -21,6 +25,8 @@ bool FCortexReflectBlueprintCatalogTest::RunTest(const FString& Parameters)
 	{
 		return true;
 	}
+	TestNull(TEXT("Catalog query should not load the saved Blueprint generated class"),
+		FindObject<UClass>(nullptr, GeneratedClassObjectPath));
 
 	bool bComplete = false;
 	TestTrue(TEXT("Catalog should report completeness"),
@@ -185,5 +191,44 @@ bool FCortexReflectBlueprintCatalogCoreRedirectTest::RunTest(const FString& Para
 	FCoreRedirects::RemoveRedirectList(Redirects, Source);
 	TestEqual(TEXT("Class redirect should normalize stale Blueprint parent tags"),
 		Resolved.ToString(), TEXT("/Script/CortexNewCatalogTest.NewParent"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectBlueprintCatalogGeneratedClassRedirectTest,
+	"Cortex.Reflect.BlueprintCatalog.GeneratedClassRedirect",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectBlueprintCatalogGeneratedClassRedirectTest::RunTest(const FString& Parameters)
+{
+	const FCoreRedirect Redirect(
+		ECoreRedirectFlags::Type_Class,
+		TEXT("/Game/Legacy/BP_Old.BP_Old_C"),
+		TEXT("/Game/Blueprints/BP_SimpleActor.BP_SimpleActor_C")
+	);
+	const TArray<FCoreRedirect> Redirects = { Redirect };
+	const FString Source = TEXT("CortexReflect generated class redirect automation test");
+	const bool bAdded = FCoreRedirects::AddRedirectList(Redirects, Source);
+	TestTrue(TEXT("Generated class redirect should register"), bAdded);
+	if (!bAdded)
+	{
+		return true;
+	}
+
+	FCortexBlueprintCatalogClassPaths Parsed;
+	TArray<FString> InvalidFields;
+	FCortexReflectOps::ParseBlueprintCatalogClassPaths(
+		TEXT("BlueprintGeneratedClass'/Game/Legacy/BP_Old.BP_Old_C'"),
+		TEXT("Class'/Script/Engine.Actor'"),
+		TEXT("Class'/Script/Engine.Actor'"),
+		Parsed,
+		InvalidFields
+	);
+	FCoreRedirects::RemoveRedirectList(Redirects, Source);
+
+	TestEqual(TEXT("Generated class path should be redirect-normalized before catalog use"),
+		Parsed.GeneratedClassPath.ToString(),
+		TEXT("/Game/Blueprints/BP_SimpleActor.BP_SimpleActor_C"));
 	return true;
 }

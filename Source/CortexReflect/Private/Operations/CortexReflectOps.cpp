@@ -761,6 +761,7 @@ bool FCortexReflectOps::ParseBlueprintCatalogClassPaths(
 		{
 			OutInvalidFields.Add(FieldName);
 		}
+		OutPath = FCortexReflectOps::ResolveBlueprintCatalogClassRedirect(OutPath);
 	};
 
 	ParsePath(GeneratedTag, TEXT("GeneratedClassPath"), OutPaths.GeneratedClassPath);
@@ -921,8 +922,8 @@ FCortexCommandResult FCortexReflectOps::BlueprintCatalog(const TSharedPtr<FJsonO
 			ParseInvalidFields
 		);
 		const FTopLevelAssetPath& GeneratedClassPath = ClassPaths.GeneratedClassPath;
-		const FTopLevelAssetPath ParentPath = ResolveBlueprintCatalogClassRedirect(ClassPaths.ParentClassPath);
-		const FTopLevelAssetPath NativeParentPath = ResolveBlueprintCatalogClassRedirect(ClassPaths.NativeParentClassPath);
+		const FTopLevelAssetPath& ParentPath = ClassPaths.ParentClassPath;
+		const FTopLevelAssetPath& NativeParentPath = ClassPaths.NativeParentClassPath;
 		const bool bGeneratedPathValid = GeneratedClassPath.IsValid();
 		const bool bParentPathValid = ParentPath.IsValid();
 		const bool bNativeParentPathValid = NativeParentPath.IsValid();
