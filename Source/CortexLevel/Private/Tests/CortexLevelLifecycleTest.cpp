@@ -22,7 +22,9 @@ namespace
 	}
 
 	/** Registers a throwaway plugin-style mount backed by a directory under project Saved.
-	 *  Only the writable variant is added to the shared writable-root policy. */
+	 *  Only the writable variant is added to the shared writable-root policy.
+	 *  When the backing directory cannot be created the fixture stays unmounted and
+	 *  invalid, so the calling test fails instead of passing without a real root. */
 	class FScopedLifecycleTestMount
 	{
 	public:
@@ -35,6 +37,12 @@ namespace
 			, bWritable(bInWritable)
 		{
 			IFileManager::Get().MakeDirectory(*Directory, true);
+			bSetupSucceeded = IFileManager::Get().DirectoryExists(*Directory);
+			if (!bSetupSucceeded)
+			{
+				return;
+			}
+
 			FPackageName::RegisterMountPoint(Root, Directory);
 			if (bWritable)
 			{
@@ -44,6 +52,11 @@ namespace
 
 		~FScopedLifecycleTestMount()
 		{
+			if (!bSetupSucceeded)
+			{
+				return;
+			}
+
 			if (bWritable)
 			{
 				FCortexEditorUtils::RemoveTestWritableContentRoot(Root);
@@ -52,10 +65,17 @@ namespace
 			IFileManager::Get().DeleteDirectory(*Directory, false, true);
 		}
 
+		/** True when the backing directory exists and the mount is registered. */
+		bool IsValid() const
+		{
+			return bSetupSucceeded;
+		}
+
 	private:
 		FString Root;
 		FString Directory;
 		bool bWritable = false;
+		bool bSetupSucceeded = false;
 	};
 }
 
@@ -312,6 +332,10 @@ bool FCortexLevelOpenLevelWritableMountedRootTest::RunTest(const FString& Parame
 	const FString Root = TEXT("/CortexLifecycleWritable/");
 	const FString Dir = FPaths::ProjectSavedDir() / TEXT("CortexLifecycleWritable");
 	FScopedLifecycleTestMount Mount(Root, Dir, true);
+	if (!TestTrue(TEXT("Writable test mount fixture must be created"), Mount.IsValid()))
+	{
+		return false;
+	}
 
 	FCortexCommandRouter Router = CreateLifecycleRouter();
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -334,6 +358,10 @@ bool FCortexLevelOpenLevelRegisteredNonWritableRootTest::RunTest(const FString& 
 	const FString Root = TEXT("/CortexLifecycleReadOnly/");
 	const FString Dir = FPaths::ProjectSavedDir() / TEXT("CortexLifecycleReadOnly");
 	FScopedLifecycleTestMount Mount(Root, Dir, false);
+	if (!TestTrue(TEXT("Registered non-writable test mount fixture must be created"), Mount.IsValid()))
+	{
+		return false;
+	}
 
 	FCortexCommandRouter Router = CreateLifecycleRouter();
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
