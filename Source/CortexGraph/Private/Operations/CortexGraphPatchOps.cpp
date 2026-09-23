@@ -388,6 +388,24 @@ FString CanonicalObject(const TSharedPtr<FJsonObject>& Object)
 	AppendCanonicalObject(Object, Result);
 	return Result;
 }
+
+/**
+ * The identity a pin signature carries independently of its type: name, direction and the
+ * reference/const/container flags. Used for a planned pin the engine still reports as `wildcard`,
+ * where the plan has no type claim to compare and the engine's normalized type is not something the
+ * plan can predict (it finalizes class-dependent pins when it compiles the applied graph).
+ */
+FString CanonicalPinIdentityIgnoringType(const TSharedPtr<FJsonObject>& Descriptor)
+{
+	if (!Descriptor.IsValid()) return FString();
+	return FString::Printf(TEXT("%s|dir=%d|ref=%d|const=%d|container=%d"),
+		*Descriptor->GetStringField(TEXT("name")),
+		Descriptor->GetIntegerField(TEXT("direction")),
+		Descriptor->GetBoolField(TEXT("reference")) ? 1 : 0,
+		Descriptor->GetBoolField(TEXT("const")) ? 1 : 0,
+		Descriptor->GetIntegerField(TEXT("container_type")));
+}
+
 void AddPropertyTypeIdentity(const FProperty* Property, const TSharedPtr<FJsonObject>& Out)
 {
 	if (!Property || !Out.IsValid()) return;
@@ -2778,7 +2796,21 @@ bool RequestedOwnerDeclared(const TSharedPtr<FJsonObject>& Params, const TCHAR* 
 
 FString DeclaredOwnerPath(UClass* OwnerClass)
 {
-	return OwnerClass ? OwnerClass->GetPathName() : FString(TEXT("none"));
+	if (!OwnerClass)
+	{
+		return FString(TEXT("none"));
+	}
+	// A Blueprint's skeleton class and its generated class declare the same members: the engine moves
+	// a member reference between them as it compiles, so comparing the raw class path would report a
+	// symbol mismatch for a node that names exactly the planned declaration on the same Blueprint.
+	if (const UBlueprint* OwningBlueprint = Cast<UBlueprint>(OwnerClass->ClassGeneratedBy))
+	{
+		if (UClass* GeneratedClass = OwningBlueprint->GeneratedClass)
+		{
+			return GeneratedClass->GetPathName();
+		}
+	}
+	return OwnerClass->GetPathName();
 }
 
 /** Compares the re-resolved request symbol of one planned node against the applied native state. */
@@ -3078,7 +3110,19 @@ bool ComparePlannedPinSignatures(
 		}
 		const FString Expected = CanonicalPinSignature(Descriptor);
 		const FString Actual = CanonicalPinSignature(MakePinSignatureDescriptor(*Pin));
-		if (Expected != Actual)
+		// A planned input pin the engine still reports as `wildcard` carries no planned type: the
+		// engine types it from the edge the patch creates and normalizes it again when it compiles the
+		// applied graph (a DynamicCast's Object-to-cast input is exactly that case). Comparing a
+		// wildcard claim against the engine's normalized type would refuse an otherwise exact apply,
+		// so only the identity that is actually planned (name, direction, reference/const/container
+		// flags) is compared for such a pin; every concrete planned type is still compared in full, and
+		// the planned edge itself is verified separately.
+		const bool bPlannedWildcard = Descriptor->GetStringField(TEXT("category")) == TEXT("wildcard");
+		const bool bMatches = bPlannedWildcard
+			? CanonicalPinIdentityIgnoringType(Descriptor) == CanonicalPinIdentityIgnoringType(
+				MakePinSignatureDescriptor(*Pin))
+			: Expected == Actual;
+		if (!bMatches)
 		{
 			OutFailure = FString::Printf(TEXT("planned pin '%s' signature mismatch: expected '%s', found '%s'"),
 				*PinName, *Expected, *Actual);
