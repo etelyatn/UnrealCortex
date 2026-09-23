@@ -12,6 +12,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_VariableSet.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -23,14 +24,15 @@
 /**
  * A null reference default must be the representation the engine schema actually accepts: an empty
  * `DefaultValue` with a null `DefaultObject`. The candidate wrote the literal `"None"` into
- * `DefaultValue`, which the engine's own default validity rejects for every object/class category
- * (`UEdGraphSchema_K2::IsCurrentPinDefaultValid` reports "Default value 'None' ... is invalid"), so a
- * `compile=true` patch could fail *after* the mutation on a default the preflight had advertised as
- * valid, and a `compile=false` patch left a malformed default behind.
+ * `DefaultValue`, which the engine's own default validity rejects for object and class pins
+ * (`UEdGraphSchema_K2::IsCurrentPinDefaultValid` reports "String NewDefaultValue 'None' specified on
+ * object pin"), so a `compile=true` patch could fail *after* the mutation on a default the preflight
+ * had advertised as valid, and a `compile=false` patch left a malformed default behind.
  *
  * These cases assert on three independent oracles: the native pin storage (empty value, null object),
- * the engine's own schema validity call, and a real target compile. The negative case asserts that a
- * reference default the engine refuses is refused at preflight with nothing mutated.
+ * the engine's own schema validity call, and a real target compile. Where the engine cannot represent
+ * a null at all — a "by ref" parameter pin, which requires a non-empty default — the write is refused
+ * instead of silently leaving a state the engine rejects.
  */
 namespace CortexGraphPatchNullDefaultTest
 {
@@ -74,6 +76,22 @@ UK2Node_CallFunction* NullDefaultCallNode(UEdGraph* Graph, const TCHAR* Function
 	if (!Function) return nullptr;
 	UK2Node_CallFunction* Node = NewObject<UK2Node_CallFunction>(Graph);
 	Node->SetFromFunction(Function);
+	Node->CreateNewGuid();
+	Node->AllocateDefaultPins();
+	Graph->AddNode(Node, true, false);
+	return Node;
+}
+
+/** Declares one Blueprint variable of a reference storage mode and returns a setter for it. */
+UK2Node_VariableSet* NullDefaultVariableSet(UBlueprint* Blueprint, UEdGraph* Graph, const TCHAR* Name, const FName Category)
+{
+	FEdGraphPinType Type;
+	Type.PinCategory = Category;
+	Type.PinSubCategoryObject = UObject::StaticClass();
+	FBlueprintEditorUtils::AddMemberVariable(Blueprint, FName(Name), Type);
+
+	UK2Node_VariableSet* Node = NewObject<UK2Node_VariableSet>(Graph);
+	Node->VariableReference.SetSelfMember(FName(Name));
 	Node->CreateNewGuid();
 	Node->AllocateDefaultPins();
 	Graph->AddNode(Node, true, false);
@@ -288,6 +306,11 @@ bool FCortexGraphPatchNullDefaultObjectPinTest::RunTest(const FString& Parameter
 	return true;
 }
 
+/**
+ * Every reference storage mode, authored through its ordinary surface: a Blueprint variable of that
+ * type written by a `VariableSet` node. Those pins are not "by ref" parameters, so the engine accepts
+ * the canonical empty-value/null-object null in all four categories.
+ */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexGraphPatchNullDefaultCategoryModesTest,
 	"Cortex.Graph.Authoring.Patch.NullDefault.ReferenceCategoryModes",
@@ -307,36 +330,36 @@ bool FCortexGraphPatchNullDefaultCategoryModesTest::RunTest(const FString& Param
 		return false;
 	}
 	UEdGraph* Graph = NullDefaultGraph(Blueprint);
-	UK2Node_CallFunction* HardObject = NullDefaultCallNode(Graph, TEXT("IsValid"));
-	UK2Node_CallFunction* HardClass = NullDefaultCallNode(Graph, TEXT("IsValidClass"));
-	UK2Node_CallFunction* SoftObject = NullDefaultCallNode(Graph, TEXT("IsValidSoftObjectReference"));
-	UK2Node_CallFunction* SoftClass = NullDefaultCallNode(Graph, TEXT("IsValidSoftClassReference"));
-	TestNotNull(TEXT("hard object fixture node created"), HardObject);
-	TestNotNull(TEXT("hard class fixture node created"), HardClass);
-	TestNotNull(TEXT("soft object fixture node created"), SoftObject);
-	TestNotNull(TEXT("soft class fixture node created"), SoftClass);
-	if (!HardObject || !HardClass || !SoftObject || !SoftClass)
+	UK2Node_VariableSet* SetObject = NullDefaultVariableSet(Blueprint, Graph, TEXT("ObjRef"), UEdGraphSchema_K2::PC_Object);
+	UK2Node_VariableSet* SetClass = NullDefaultVariableSet(Blueprint, Graph, TEXT("ClassRef"), UEdGraphSchema_K2::PC_Class);
+	UK2Node_VariableSet* SetSoftObject = NullDefaultVariableSet(Blueprint, Graph, TEXT("SoftObjRef"), UEdGraphSchema_K2::PC_SoftObject);
+	UK2Node_VariableSet* SetSoftClass = NullDefaultVariableSet(Blueprint, Graph, TEXT("SoftClassRef"), UEdGraphSchema_K2::PC_SoftClass);
+	TestNotNull(TEXT("object variable setter created"), SetObject);
+	TestNotNull(TEXT("class variable setter created"), SetClass);
+	TestNotNull(TEXT("soft object variable setter created"), SetSoftObject);
+	TestNotNull(TEXT("soft class variable setter created"), SetSoftClass);
+	if (!SetObject || !SetClass || !SetSoftObject || !SetSoftClass)
 	{
 		NullDefaultCleanup(Package, Blueprint);
 		return false;
 	}
 
-	// The declared categories are exactly the four reference storage modes, so the same null must be
-	// written in each one's own storage.
-	TestEqual(TEXT("hard object pin category"), HardObject->FindPin(TEXT("Object"))->PinType.PinCategory.ToString(),
+	// The declared categories are exactly the four reference storage modes, and none of them is a
+	// "by ref" parameter, so the same null must be writable in each one's own storage.
+	TestEqual(TEXT("object pin category"), SetObject->FindPin(TEXT("ObjRef"))->PinType.PinCategory.ToString(),
 		UEdGraphSchema_K2::PC_Object.ToString());
-	TestEqual(TEXT("hard class pin category"), HardClass->FindPin(TEXT("Class"))->PinType.PinCategory.ToString(),
+	TestEqual(TEXT("class pin category"), SetClass->FindPin(TEXT("ClassRef"))->PinType.PinCategory.ToString(),
 		UEdGraphSchema_K2::PC_Class.ToString());
-	TestEqual(TEXT("soft object pin category"), SoftObject->FindPin(TEXT("SoftObjectReference"))->PinType.PinCategory.ToString(),
+	TestEqual(TEXT("soft object pin category"), SetSoftObject->FindPin(TEXT("SoftObjRef"))->PinType.PinCategory.ToString(),
 		UEdGraphSchema_K2::PC_SoftObject.ToString());
-	TestEqual(TEXT("soft class pin category"), SoftClass->FindPin(TEXT("SoftClassReference"))->PinType.PinCategory.ToString(),
+	TestEqual(TEXT("soft class pin category"), SetSoftClass->FindPin(TEXT("SoftClassRef"))->PinType.PinCategory.ToString(),
 		UEdGraphSchema_K2::PC_SoftClass.ToString());
 
 	TSharedPtr<FJsonObject> Request = NullDefaultRequest(Blueprint, TEXT("00000000-0000-0000-0000-000000001902"), true, true);
-	NullDefaultAddPinUpdate(Request, HardObject, TEXT("Object"), NullDefaultLiteral());
-	NullDefaultAddPinUpdate(Request, HardClass, TEXT("Class"), NullDefaultLiteral());
-	NullDefaultAddPinUpdate(Request, SoftObject, TEXT("SoftObjectReference"), NullDefaultReferenceLiteral(TEXT("soft_object"), TEXT("None")));
-	NullDefaultAddPinUpdate(Request, SoftClass, TEXT("SoftClassReference"), NullDefaultReferenceLiteral(TEXT("soft_class"), TEXT("")));
+	NullDefaultAddPinUpdate(Request, SetObject, TEXT("ObjRef"), NullDefaultLiteral());
+	NullDefaultAddPinUpdate(Request, SetClass, TEXT("ClassRef"), NullDefaultReferenceLiteral(TEXT("class"), TEXT("None")));
+	NullDefaultAddPinUpdate(Request, SetSoftObject, TEXT("SoftObjRef"), NullDefaultReferenceLiteral(TEXT("soft_object"), TEXT("None")));
+	NullDefaultAddPinUpdate(Request, SetSoftClass, TEXT("SoftClassRef"), NullDefaultReferenceLiteral(TEXT("soft_class"), TEXT("")));
 
 	FCortexGraphPreparedPatch Preview;
 	FCortexCommandResult Error;
@@ -353,10 +376,76 @@ bool FCortexGraphPatchNullDefaultCategoryModesTest::RunTest(const FString& Param
 	TestEqual(TEXT("the category readback matched"), Outcome.ReadbackStatus, FString(TEXT("matched")));
 	TestEqual(TEXT("the target compiled after every category null"), Outcome.CompileStatus, FString(TEXT("compiled")));
 
-	NullDefaultCheck(*this, HardObject->FindPin(TEXT("Object")), TEXT("object pin null"));
-	NullDefaultCheck(*this, HardClass->FindPin(TEXT("Class")), TEXT("class pin null"));
-	NullDefaultCheck(*this, SoftObject->FindPin(TEXT("SoftObjectReference")), TEXT("soft object pin null"));
-	NullDefaultCheck(*this, SoftClass->FindPin(TEXT("SoftClassReference")), TEXT("soft class pin null"));
+	NullDefaultCheck(*this, SetObject->FindPin(TEXT("ObjRef")), TEXT("object pin null"));
+	NullDefaultCheck(*this, SetClass->FindPin(TEXT("ClassRef")), TEXT("class pin null"));
+	NullDefaultCheck(*this, SetSoftObject->FindPin(TEXT("SoftObjRef")), TEXT("soft object pin null"));
+	NullDefaultCheck(*this, SetSoftClass->FindPin(TEXT("SoftClassRef")), TEXT("soft class pin null"));
+
+	NullDefaultCleanup(Package, Blueprint);
+	return true;
+}
+
+/**
+ * A "by ref" reference parameter pin cannot hold a null default at all: the engine requires such a
+ * pin to carry an input it can operate on (`IsPinDefaultValid` reports "must have an input wired into
+ * it"), so the canonical empty value is not a valid state there. The apply must be refused with the
+ * shared invalid-field code and no mutation, instead of silently reporting success for a default the
+ * engine rejects.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchNullDefaultByRefReferenceTest,
+	"Cortex.Graph.Authoring.Patch.NullDefault.ByRefReferenceRefused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchNullDefaultByRefReferenceTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphPatchNullDefaultTest;
+
+	UPackage* Package = nullptr;
+	UBlueprint* Blueprint = NullDefaultBlueprint(Package, TEXT("BP_PatchNullDefaultByRef_T19"));
+	TestNotNull(TEXT("by-ref fixture Blueprint created"), Blueprint);
+	if (!Blueprint)
+	{
+		NullDefaultCleanup(Package, Blueprint);
+		return false;
+	}
+	UEdGraph* Graph = NullDefaultGraph(Blueprint);
+	UK2Node_CallFunction* SoftObject = NullDefaultCallNode(Graph, TEXT("IsValidSoftObjectReference"));
+	UEdGraphPin* Pin = SoftObject ? SoftObject->FindPin(TEXT("SoftObjectReference")) : nullptr;
+	TestNotNull(TEXT("by-ref soft object pin resolved"), Pin);
+	if (!Pin)
+	{
+		NullDefaultCleanup(Package, Blueprint);
+		return false;
+	}
+	TestTrue(TEXT("the fixture pin really is a by-ref parameter"), Pin->PinType.bIsReference);
+
+	const FString FingerprintBefore = FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash"));
+	const int32 NodesBefore = Graph->Nodes.Num();
+	Blueprint->GetOutermost()->SetDirtyFlag(false);
+
+	TSharedPtr<FJsonObject> Request = NullDefaultRequest(Blueprint, TEXT("00000000-0000-0000-0000-000000001905"), true, false);
+	Request->SetStringField(TEXT("expected_validation_hash"), TEXT("0000000000000000000000000000000000000000"));
+	NullDefaultAddPinUpdate(Request, SoftObject, TEXT("SoftObjectReference"), NullDefaultLiteral());
+
+	FNullDefaultCompileCounter Counter;
+	Counter.Begin();
+	FCortexGraphPatchOutcome Outcome;
+	FCortexCommandResult Error;
+	const bool bApplied = FCortexGraphPatchOps::Execute(Blueprint, Request, Outcome, Error);
+	Counter.End();
+
+	TestFalse(TEXT("a null default on a by-ref reference pin is refused"), bApplied);
+	TestEqual(TEXT("the by-ref refusal uses the shared invalid-field code"),
+		Error.ErrorCode, FString(CortexErrorCodes::InvalidField));
+	TestTrue(TEXT("the refusal names the offending pin"), Error.ErrorMessage.Contains(TEXT("SoftObjectReference")));
+	TestEqual(TEXT("a by-ref refusal applies nothing"), Outcome.ApplyStatus, FString(TEXT("not_requested")));
+	TestEqual(TEXT("a by-ref refusal never compiles"), Counter.Compiles, 0);
+	TestEqual(TEXT("a by-ref refusal mutates no node"), Graph->Nodes.Num(), NodesBefore);
+	TestEqual(TEXT("a by-ref refusal leaves the authoring hash unchanged"),
+		FCortexGraphPatchState::ComputeFingerprint(Blueprint)->GetStringField(TEXT("graph_authoring_hash")), FingerprintBefore);
+	TestFalse(TEXT("a by-ref refusal leaves the package clean"), Blueprint->GetOutermost()->IsDirty());
 
 	NullDefaultCleanup(Package, Blueprint);
 	return true;

@@ -914,27 +914,28 @@ async def test_scenario_typed_authoring_late_compile_failure_restores_graph(mcp_
     run = AuthoringRun(mcp_client, uuid.uuid4().hex[:8])
     try:
         package = await run.create("BP_CortexLateFailure", kind="Actor")
-        await blueprint(
-            mcp_client, "add_variable",
-            {"asset_path": package, "name": "ActorRef", "type": "/Script/Engine.Actor"},
-        )
         source = next(
             choice for choice in (await run.graph_choices(package)).values()
             if choice["graph_kind"] == "ubergraph"
         )
         before = await run.subgraph(package, source["graph_name"])
         before_fingerprint = (await run.context(package))["fingerprint"]
+        # The failure this route exercises is an intentional, narrowly scoped compiler failure: a
+        # construct-object node whose class the engine refuses to construct (a class in the
+        # UActorComponent subtree is excluded by K2Node_GenericCreateObject::EarlyValidation). The
+        # previous fixture drove the failure with the malformed `"None"` literal on an object pin,
+        # which is no longer a malformed default now that a null reference is written as an empty
+        # DefaultValue with a null DefaultObject.
         body = envelope(
             run.object_path(package), str(uuid.uuid4()), before_fingerprint,
             target={"graph_ref": {"graph_guid": source["graph_guid"]}},
             nodes=[
-                {"client_id": "write_null", "node_class": "VariableSet",
-                 "params": {"variable_name": "ActorRef"},
-                 "defaults": {"ActorRef": {"kind": "object", "path": "None"}}},
+                {"client_id": "bad_construct", "node_class": "ConstructObject",
+                 "params": {"class": "/Script/Engine.SceneComponent"}},
                 {"client_id": "begin", "node_class": "Event", "params": {"function_name": "Actor.ReceiveEndPlay"}},
             ],
             connections=[{"from": {"client_id": "begin", "pin": "then"},
-                          "to": {"client_id": "write_null", "pin": "execute"}}],
+                          "to": {"client_id": "bad_construct", "pin": "execute"}}],
         )
         preview = await run.apply(body)
         assert preview["validation_hash"] and preview["changed"] is True, preview

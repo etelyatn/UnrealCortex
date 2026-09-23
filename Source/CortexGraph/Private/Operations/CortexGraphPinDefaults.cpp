@@ -90,6 +90,62 @@ FString CanonicalReferencePath(const EPinReferenceMode Mode, const FString& Path
 	}
 	return Path;
 }
+
+/**
+ * The engine's own verdict on the null representation this contract writes for a reference pin: an
+ * empty default value with a null default object. A pin the schema refuses in that state has no valid
+ * null default at all, because the engine requires a "by ref" parameter pin to carry an input it can
+ * operate on.
+ */
+bool NullReferenceIsSchemaValid(const UEdGraphPin* Pin, FString& OutReason)
+{
+	const UEdGraphSchema* Schema = Pin ? Pin->GetSchema() : nullptr;
+	if (!Schema)
+	{
+		OutReason = TEXT("the pin has no graph schema");
+		return false;
+	}
+	OutReason = Schema->IsPinDefaultValid(Pin, FString(), nullptr, FText());
+	return OutReason.IsEmpty();
+}
+
+/**
+ * Writes a null reference default through the pin's own schema setter, so the resulting storage is
+ * the representation the engine accepts for the pin category: an empty `DefaultValue` with a null
+ * `DefaultObject` (the K2 override also routes soft categories through an empty string default).
+ *
+ * The base schema setter only assigns `DefaultObject` and never clears `DefaultValue`, so the
+ * resulting state is re-checked with the engine's own default validity rule and the write is
+ * reported as a failure when the schema does not accept it. A refused write is never left behind as
+ * an accepted default: the caller fails, and the coordinator rolls the transaction back.
+ */
+bool ApplyNullReference(
+	UEdGraphPin* Pin,
+	FCortexCommandResult& OutError)
+{
+	const UEdGraphSchema* Schema = Pin ? Pin->GetSchema() : nullptr;
+	if (!Schema)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Pin '%s' has no graph schema to write a null default through"),
+				Pin ? *Pin->PinName.ToString() : TEXT("<null>")));
+		return false;
+	}
+
+	Schema->TrySetDefaultObject(*Pin, nullptr, /*bMarkAsModified=*/false);
+
+	const FString ValidityError = Schema->IsCurrentPinDefaultValid(Pin);
+	if (!ValidityError.IsEmpty())
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Pin '%s' does not accept a null %s default: %s"),
+				*Pin->PinName.ToString(), *Pin->PinType.PinCategory.ToString(), *ValidityError));
+		return false;
+	}
+	return true;
+}
 }
 
 const TCHAR* FCortexGraphPinDefaults::ReferenceLiteralKind(const UEdGraphPin& Pin)
@@ -229,6 +285,15 @@ bool FCortexGraphPinDefaults::Validate(
 
 		if (Path.IsEmpty() || Path.Equals(TEXT("None"), ESearchCase::IgnoreCase))
 		{
+			FString NullReason;
+			if (!NullReferenceIsSchemaValid(Pin, NullReason))
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("Pin '%s' has no valid null %s default: %s"),
+						*Pin->PinName.ToString(), *Pin->PinType.PinCategory.ToString(), *NullReason));
+				return false;
+			}
 			return true; // Typed null semantics
 		}
 
@@ -317,6 +382,15 @@ bool FCortexGraphPinDefaults::Validate(
 
 		if (Path.IsEmpty() || Path.Equals(TEXT("None"), ESearchCase::IgnoreCase))
 		{
+			FString NullReason;
+			if (!NullReferenceIsSchemaValid(Pin, NullReason))
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("Pin '%s' has no valid null %s default: %s"),
+						*Pin->PinName.ToString(), *Pin->PinType.PinCategory.ToString(), *NullReason));
+				return false;
+			}
 			return true; // Typed null semantics
 		}
 
@@ -606,6 +680,15 @@ bool FCortexGraphPinDefaults::Validate(
 				FString::Printf(TEXT("Cannot assign null literal to pin of category '%s'"), *Pin->PinType.PinCategory.ToString()));
 			return false;
 		}
+		FString NullReason;
+		if (!NullReferenceIsSchemaValid(Pin, NullReason))
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("Pin '%s' has no valid null %s default: %s"),
+					*Pin->PinName.ToString(), *Pin->PinType.PinCategory.ToString(), *NullReason));
+			return false;
+		}
 		return true;
 	}
 
@@ -647,8 +730,7 @@ bool FCortexGraphPinDefaults::ApplyDefault(
 		const FString Path = Literal->GetStringField(TEXT("path"));
 		if (Path.IsEmpty() || Path.Equals(TEXT("None"), ESearchCase::IgnoreCase))
 		{
-			Pin->DefaultObject = nullptr;
-			Pin->DefaultValue = TEXT("None");
+			if (!ApplyNullReference(Pin, OutError)) return false;
 		}
 		else if (IsSoftReferenceMode(RequestedReferenceMode(Kind)))
 		{
@@ -685,8 +767,7 @@ bool FCortexGraphPinDefaults::ApplyDefault(
 		const FString Path = Literal->GetStringField(TEXT("path"));
 		if (Path.IsEmpty() || Path.Equals(TEXT("None"), ESearchCase::IgnoreCase))
 		{
-			Pin->DefaultObject = nullptr;
-			Pin->DefaultValue = TEXT("None");
+			if (!ApplyNullReference(Pin, OutError)) return false;
 		}
 		else if (IsSoftReferenceMode(RequestedReferenceMode(Kind)))
 		{
@@ -756,8 +837,7 @@ bool FCortexGraphPinDefaults::ApplyDefault(
 	}
 	else if (Kind == TEXT("null"))
 	{
-		Pin->DefaultObject = nullptr;
-		Pin->DefaultValue = TEXT("None");
+		if (!ApplyNullReference(Pin, OutError)) return false;
 	}
 
 	if (Graph != nullptr)
