@@ -220,11 +220,29 @@ def pin(subgraph: dict, node_name: str, pin_name: str) -> dict:
     raise AssertionError(f"pin {pin_name} not found on node {node_name}")
 
 
-async def apply_reviewed(run: "AuthoringRun", body: dict) -> dict:
-    """Preview the intent, then apply exactly it with the preview's token (the apply precondition)."""
-    preview = await run.apply({**body, "dry_run": True})
-    assert preview.get("validation_hash"), preview
-    return await run.apply({**body, "dry_run": False, "expected_validation_hash": preview["validation_hash"]})
+async def apply_reviewed(run: "AuthoringRun", body: dict, asset_package: str) -> dict:
+    """Preview then apply the same reviewed intent against the live state.
+
+    The stale-write guard is live editor state, and the contract requires a *fresh preview* after a
+    stale guard. When the engine refuses an apply with STALE_PRECONDITION because that state drifted
+    (a deferred compile finalizing the package dirty state, for example), the intent is previewed again
+    against the current state and applied with that preview's token. The intent itself is never
+    altered, and no attempt is made without a fresh preview.
+    """
+    applied = {}
+    for _ in range(2):
+        fingerprint = (await run.context(asset_package))["fingerprint"]
+        attempt = {**body, "expected_fingerprint": fingerprint}
+        preview = await graph_raw(run.client, "apply_patch", {**attempt, "dry_run": True})
+        assert preview.get("validation_hash"), preview
+        applied = await graph_raw(
+            run.client,
+            "apply_patch",
+            {**attempt, "dry_run": False, "expected_validation_hash": preview["validation_hash"]},
+        )
+        if applied.get("_error") != "STALE_PRECONDITION":
+            return applied
+    return applied
 
 
 async def describe_node(client, node_class: str, params: dict, asset_package: str | None = None) -> dict:
@@ -634,6 +652,7 @@ async def test_scenario_typed_authoring_adapter_widget_blueprint(mcp_client, tcp
                 ],
                 compile=False,
             ),
+            fixture["adapter_package"],
         )
         assert graph_preview["apply_status"] == "applied", graph_preview
         assert graph_preview["compile_status"] == "not_requested", graph_preview
@@ -685,6 +704,7 @@ async def test_scenario_typed_authoring_adapter_widget_blueprint(mcp_client, tcp
                 target={"graph_ref": {"graph_guid": return_graph["graph_guid"]}},
                 connections=return_connections,
             ),
+            fixture["adapter_package"],
         )
         assert wired["readback_status"] == "matched", wired
         assert wired["compile_status"] == "compiled", wired
@@ -740,21 +760,24 @@ async def test_scenario_typed_authoring_preview_invalid_save_and_replay(mcp_clie
             node if node["client_id"] != "record" else {**node, "defaults": {"Title": RECORDING_DEFAULT_LITERAL}}
             for node in fixture["intent"]["nodes"]
         ]
-        refused = await run.apply(
+        refused = await graph_raw(
+            mcp_client,
+            "apply_patch",
             envelope(
                 fixture["adapter_object"],
                 str(uuid.uuid4()),
                 (await run.context(fixture["adapter_package"]))["fingerprint"],
                 **untagged,
-            )
+            ),
         )
         assert refused["_error"] == "INVALID_FIELD", refused
         assert refused["apply_status"] == "not_requested", refused
         after_refusal = await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"])
         assert after_refusal["node_count"] == after_preview_count, "an invalid request mutated the graph"
 
-        # 3. Apply the reviewed intent (the preview token is the precondition).
-        applied = await run.apply({**body, "dry_run": False, "expected_validation_hash": preview["validation_hash"]})
+        # 3. Apply the reviewed intent: previewed against the live state, then applied with that
+        #    preview's token (the apply precondition).
+        applied = await apply_reviewed(run, body, fixture["adapter_package"])
         assert applied["apply_status"] == "applied", applied
 
         # 4. A stale precondition is refused: an earlier preview token no longer matches the intent.
@@ -848,6 +871,10 @@ async def test_scenario_typed_authoring_actor_context_null_cast_failure(mcp_clie
         for variable in ("bBeginPlayed", "bCastSucceeded"):
             await blueprint(mcp_client, "add_variable", {"asset_path": actor_package, "name": variable, "type": "bool"})
         await blueprint(mcp_client, "add_variable", {"asset_path": actor_package, "name": MODEL_VARIABLE, "type": host["model_class"]})
+        # The null input this route exercises is a typed null: a null reference of the widget class the
+        # cast targets, taken from a Blueprint variable. An unwired cast input would be a wildcard pin
+        # the compiler refuses instead of a runtime null.
+        await blueprint(mcp_client, "add_variable", {"asset_path": actor_package, "name": "HostRef", "type": host["host_class"]})
 
         graphs = await run.graph_choices(actor_package)
         event_graph = next(choice for choice in graphs.values() if choice["graph_kind"] == "ubergraph")
@@ -868,10 +895,14 @@ async def test_scenario_typed_authoring_actor_context_null_cast_failure(mcp_clie
                     "defaults": {"bBeginPlayed": {"kind": "bool", "value": True}},
                 },
                 {
+                    "client_id": "host_ref",
+                    "node_class": "VariableGet",
+                    "params": {"variable_name": "HostRef"},
+                },
+                {
                     "client_id": "cast_host",
                     "node_class": "DynamicCast",
                     "params": {"class": host["host_class"], "is_pure": False},
-                    "defaults": {"Object": {"kind": "null"}},
                 },
                 {
                     "client_id": "mark_cast",
@@ -880,14 +911,16 @@ async def test_scenario_typed_authoring_actor_context_null_cast_failure(mcp_clie
                     "defaults": {"bCastSucceeded": {"kind": "bool", "value": True}},
                 },
                 {
+                    # The unwired value input of this variable write is the typed null the route
+                    # stores; a pinned null literal is not a valid default on an object pin.
                     "client_id": "store_null",
                     "node_class": "VariableSet",
                     "params": {"variable_name": MODEL_VARIABLE},
-                    "defaults": {MODEL_VARIABLE: {"kind": "null"}},
                 },
             ],
             connections=[
                 {"from": {"client_id": "begin", "pin": "then"}, "to": {"client_id": "mark_begin", "pin": "execute"}},
+                {"from": {"client_id": "host_ref", "pin": "HostRef"}, "to": {"client_id": "cast_host", "pin": "Object"}},
                 {"from": {"client_id": "mark_begin", "pin": "then"}, "to": {"client_id": "cast_host", "pin": "execute"}},
                 {"from": {"client_id": "cast_host", "pin": "then"}, "to": {"client_id": "mark_cast", "pin": "execute"}},
                 {"from": {"client_id": "cast_host", "pin": "CastFailed"}, "to": {"client_id": "store_null", "pin": "execute"}},
@@ -895,7 +928,7 @@ async def test_scenario_typed_authoring_actor_context_null_cast_failure(mcp_clie
         )
         preview = await run.apply(body)
         assert preview["changed"] is True, preview
-        applied = await run.apply({**body, "dry_run": False, "expected_validation_hash": preview["validation_hash"]})
+        applied = await apply_reviewed(run, body, actor_package)
         assert applied["apply_status"] == "applied" and applied["readback_status"] == "matched", applied
 
         names = node_name_map(await run.subgraph(actor_package, event_graph["graph_name"]))
@@ -903,7 +936,12 @@ async def test_scenario_typed_authoring_actor_context_null_cast_failure(mcp_clie
         subgraph = await run.subgraph(actor_package, event_graph["graph_name"])
         read_edges = edges(subgraph)
         null_input = pin(subgraph, by_client["cast_host"], "Object")
-        assert null_input["default_descriptor"] == {"kind": "null"}, null_input
+        assert (
+            by_client["host_ref"],
+            "HostRef",
+            by_client["cast_host"],
+            "Object",
+        ) in read_edges, "the cast input is not fed by the null host reference"
         assert (by_client["cast_host"], "CastFailed", by_client["store_null"], "execute") in read_edges
         assert (by_client["begin"], "then", by_client["mark_begin"], "execute") in read_edges
 
