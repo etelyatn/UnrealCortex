@@ -335,7 +335,13 @@ FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonOb
 		UEdGraphSchema_K2::StaticClass()
 	);
 
-	FBlueprintEditorUtils::AddFunctionGraph<UClass>(Blueprint, NewGraph, false, nullptr);
+	// A function graph created as a *user* graph is what the engine flags with
+	// FUNC_BlueprintCallable | FUNC_BlueprintEvent | FUNC_Public (and marks editable), exactly like the
+	// editor's own New Function. Creating it without that flag yields a function that no Kismet graph
+	// can call or override, so `graph.apply_patch` rightly refuses a CallFunction node for it — which
+	// makes every published way of calling a Blueprint-defined function (including the typed authoring
+	// contract's explicit-target call) impossible.
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(Blueprint, NewGraph, true, nullptr);
 
 	// Find entry node
 	UK2Node_FunctionEntry* EntryNode = nullptr;

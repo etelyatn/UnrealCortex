@@ -614,70 +614,12 @@ class TestCompileFailureHandling:
         assert result["success"] is True
 
 
-class TestUpdateMode:
-    """Tests for create_blueprint_graph update mode."""
+class TestLegacyUpdateRouteRemoved:
+    """The legacy batch update route is gone: update mode refuses with migration guidance."""
 
-    def test_update_mode_requires_asset_path(self):
-        with pytest.raises(ValueError, match="asset_path"):
-            _validate_spec(
-                "",
-                "",
-                bp_type="Actor",
-                nodes=[],
-                connections=[],
-                mode="update",
-                asset_path="",
-            )
-
-    def test_update_mode_allows_unknown_connection_nodes(self):
-        _validate_spec(
-            "",
-            "",
-            bp_type="Actor",
-            nodes=[{"name": "NewNode", "class": "CallFunction"}],
-            connections=[{"from": "ExistingNode.then", "to": "NewNode.execute"}],
-            mode="update",
-            asset_path="/Game/Blueprints/BP_Existing",
-        )
-
-    def test_update_mode_build_uses_existing_asset_without_create(self):
-        commands = _build_batch_commands(
-            "",
-            "",
-            "Actor",
-            [],
-            [],
-            [{"name": "NewNode", "class": "CallFunction"}],
-            [{"from": "ExistingNode.then", "to": "NewNode.execute"}],
-            "EventGraph",
-            mode="update",
-            asset_path="/Game/Blueprints/BP_Existing",
-        )
-
-        assert commands[0]["command"] == "graph.add_node"
-        assert commands[0]["params"]["asset_path"] == "/Game/Blueprints/BP_Existing"
-        connect_cmd = [c for c in commands if c["command"] == "graph.connect"][0]
-        assert connect_cmd["params"]["source_node"] == "ExistingNode"
-        assert connect_cmd["params"]["target_node"] == "$steps[0].data.node_id"
-
-    def test_update_mode_failure_does_not_delete_asset(self):
+    def test_update_mode_refuses_with_migration_guidance_before_validation(self):
+        """The refusal precedes spec validation: no name/path is required to be told to migrate."""
         mock_connection = MagicMock()
-        mock_connection.send_command.return_value = {
-            "success": True,
-            "data": {
-                "results": [
-                    {
-                        "index": 0,
-                        "success": False,
-                        "error_message": "Node class invalid",
-                        "command": "graph.add_node",
-                        "timing_ms": 0,
-                    },
-                ],
-                "total_timing_ms": 0,
-            },
-        }
-
         tool = _extract_tool(mock_connection)
         result = json.loads(
             tool(
@@ -688,92 +630,60 @@ class TestUpdateMode:
         )
 
         assert result["success"] is False
-        delete_calls = [c for c in mock_connection.send_command.call_args_list if c.args[0] == "blueprint.delete"]
-        assert delete_calls == []
+        assert "mode='update'" in result["error"]
+        assert "graph.apply_patch" in result["error"]
+        assert "blueprint_compose(mode='update'" in result["error"]
+        assert "/Game/Blueprints/BP_Existing" in result["error"]
+        assert mock_connection.send_command.call_args_list == []
 
-    def test_update_mode_preflights_expected_fingerprint_before_batch(self):
+    def test_update_mode_never_builds_a_batch_or_a_fingerprint_preflight(self):
         fingerprint = {"package_saved_hash": "abc", "is_dirty": False, "dirty_epoch": "0", "not_ready": False}
-        mock_connection = MagicMock()
-        mock_connection.send_command.side_effect = [
-            {
-                "success": True,
-                "data": {
-                    "fingerprints": [
-                        {
-                            "asset_path": "/Game/Blueprints/BP_Existing",
-                            "fingerprint": fingerprint,
-                        }
-                    ],
-                    "count": 1,
-                },
-            },
-            {
-                "success": True,
-                "data": {
-                    "results": [
-                        {"index": 0, "success": True, "data": {"node_id": "new-node"}, "timing_ms": 1},
-                    ],
-                    "total_timing_ms": 1,
-                },
-            },
-            {"success": True, "data": {"success": True}},
-            {"success": True, "data": {"success": True}},
-            {
-                "success": True,
-                "data": {
-                    "is_compiled": True,
-                    "variables": [],
-                    "functions": [],
-                    "graphs": [{"name": "EventGraph", "node_count": 1}],
-                },
-            },
-            {"success": True, "data": {"nodes": [{"id": "new-node"}]}},
-        ]
+        for expected_fingerprint in (None, fingerprint):
+            mock_connection = MagicMock()
+            tool = _extract_tool(mock_connection)
+            result = json.loads(
+                tool(
+                    mode="update",
+                    asset_path="/Game/Blueprints/BP_Existing",
+                    expected_fingerprint=expected_fingerprint,
+                    variables=[{"name": "Health", "type": "float"}],
+                    nodes=[{"name": "NewNode", "class": "CallFunction"}],
+                    connections=[{"from": "ExistingNode.then", "to": "NewNode.execute"}],
+                )
+            )
 
+            assert result["success"] is False
+            assert mock_connection.send_command.call_args_list == []
+
+    def test_update_mode_refuses_without_an_asset_path(self):
+        mock_connection = MagicMock()
+        tool = _extract_tool(mock_connection)
+        result = json.loads(tool(mode="update", asset_path=""))
+
+        assert result["success"] is False
+        assert "graph.apply_patch" in result["error"]
+        assert mock_connection.send_command.call_args_list == []
+
+    def test_unknown_mode_is_refused(self):
+        mock_connection = MagicMock()
+        tool = _extract_tool(mock_connection)
+        result = json.loads(tool(mode="append", asset_path="/Game/Blueprints/BP_Existing"))
+
+        assert result["success"] is False
+        assert "Unsupported mode 'append'" in result["error"]
+        assert mock_connection.send_command.call_args_list == []
+
+    def test_create_mode_refuses_subgraph_path_and_points_at_the_patch_route(self):
+        mock_connection = MagicMock()
         tool = _extract_tool(mock_connection)
         result = json.loads(
-            tool(
-                mode="update",
-                asset_path="/Game/Blueprints/BP_Existing",
-                expected_fingerprint=fingerprint,
-                nodes=[{"name": "NewNode", "class": "CallFunction"}],
-            )
-        )
-
-        assert result["success"] is True
-        calls = mock_connection.send_command.call_args_list
-        assert calls[0].args[0] == "core.asset_fingerprint"
-        assert calls[0].args[1] == {"paths": ["/Game/Blueprints/BP_Existing"]}
-        assert calls[1].args[0] == "batch"
-
-    def test_update_mode_rejects_stale_expected_fingerprint_before_batch(self):
-        mock_connection = MagicMock()
-        mock_connection.send_command.return_value = {
-            "success": True,
-            "data": {
-                "fingerprints": [
-                    {
-                        "asset_path": "/Game/Blueprints/BP_Existing",
-                        "fingerprint": {"package_saved_hash": "current"},
-                    }
-                ],
-                "count": 1,
-            },
-        }
-
-        tool = _extract_tool(mock_connection)
-        result = json.loads(
-            tool(
-                mode="update",
-                asset_path="/Game/Blueprints/BP_Existing",
-                expected_fingerprint={"package_saved_hash": "stale"},
-                nodes=[{"name": "NewNode", "class": "CallFunction"}],
-            )
+            tool(name="BP_Test", path="/Game/", subgraph_path="BeginPlay.Inner")
         )
 
         assert result["success"] is False
-        assert "fingerprint" in result["error"]
-        assert [call.args[0] for call in mock_connection.send_command.call_args_list] == ["core.asset_fingerprint"]
+        assert "subgraph_path" in result["error"]
+        assert "graph.apply_patch" in result["error"]
+        assert mock_connection.send_command.call_args_list == []
 
 
 class TestBlueprintVerificationIntegration:

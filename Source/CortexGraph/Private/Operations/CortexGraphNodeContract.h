@@ -41,6 +41,10 @@ struct FCortexNodeConstructionContract
 class FCortexGraphNodeContract
 {
 public:
+	static bool ResolveFamily(
+		const FString& NodeClassOrAlias,
+		FName& OutFamilyName,
+		UClass*& OutNodeClass);
 	static FCortexNodeConstructionContract Describe(const FString& NodeClassName);
 	static bool Validate(
 		const FString& NodeClassName,
@@ -53,4 +57,7 @@ public:
 		UBlueprint* Blueprint,
 		const TSharedPtr<FJsonObject>& NodeParams,
 		FString& OutError);
+	static UEdGraph* ResolveMacroGraph(
+		UBlueprint* Blueprint,
+		const FString& MacroPath);
 };

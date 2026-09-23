@@ -1,6 +1,10 @@
 #include "Misc/AutomationTest.h"
 
 #include "Operations/CortexBPClassDefaultsOps.h"
+#include "Operations/CortexBPComponentOps.h"
+#include "CortexAssetMutationGuard.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -104,5 +108,37 @@ bool FCortexBPSetClassDefaultsBatchTest::RunTest(const FString& Parameters)
 
 	BlueprintA->MarkAsGarbage();
 	BlueprintB->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPBlockedDefaultsBatchTest,
+	"Cortex.Blueprint.Batch.BlockedDefaults",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPBlockedDefaultsBatchTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UBlueprint* Blueprint = CreateBatchMutationBlueprint(TEXT("BP_BatchBlockedDefaults"));
+	TestNotNull(TEXT("blocked defaults blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+	Blueprint->GetOutermost()->SetDirtyFlag(false);
+	FCortexAssetMutationGuard::Block(Blueprint, TEXT("forced recovery verification failure"));
+
+	const FCortexCommandResult ClassDefaults = FCortexBPClassDefaultsOps::SetClassDefaults(
+		MakeBatchSetClassDefaultsParams(Blueprint, Blueprint));
+	TestFalse(TEXT("blocked set_class_defaults batch item refuses before side effects"), ClassDefaults.bSuccess);
+	TestFalse(TEXT("blocked class-defaults batch leaves package clean"), Blueprint->GetOutermost()->IsDirty());
+
+	TSharedPtr<FJsonObject> Item = MakeShared<FJsonObject>();
+	Item->SetStringField(TEXT("target"), Blueprint->GetPathName());
+	Item->SetStringField(TEXT("component_name"), TEXT("NeverLoaded"));
+	Item->SetObjectField(TEXT("properties"), MakeShared<FJsonObject>());
+	TSharedPtr<FJsonObject> ComponentParams = MakeShared<FJsonObject>();
+	ComponentParams->SetArrayField(TEXT("items"), { MakeShared<FJsonValueObject>(Item) });
+	const FCortexCommandResult ComponentDefaults = FCortexBPComponentOps::SetComponentDefaults(ComponentParams);
+	TestFalse(TEXT("blocked set_component_defaults batch item refuses before component lookup"), ComponentDefaults.bSuccess);
+	TestFalse(TEXT("blocked component-defaults batch leaves package clean"), Blueprint->GetOutermost()->IsDirty());
+	Blueprint->MarkAsGarbage();
 	return true;
 }

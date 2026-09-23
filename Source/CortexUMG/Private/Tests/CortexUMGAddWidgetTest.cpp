@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "CortexCommandRouter.h"
 #include "CortexUMGCommandHandler.h"
+#include "CortexAssetMutationGuard.h"
 #include "WidgetBlueprint.h"
 #include "Blueprint/WidgetTree.h"
 #include "Blueprint/UserWidget.h"
@@ -91,4 +92,32 @@ bool FCortexUMGAddWidgetTest::RunTest(const FString& Parameters)
 
     WBP->MarkAsGarbage();
     return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGBlockedMutationDispatchTest,
+	"Cortex.UMG.AddWidget.BlockedMutationDispatch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGBlockedMutationDispatchTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UPackage* Package = CreatePackage(TEXT("/Temp/WBP_BlockedMutation_T07"));
+	UWidgetBlueprint* Blueprint = NewObject<UWidgetBlueprint>(
+		Package, TEXT("WBP_BlockedMutation_T07"), RF_Public | RF_Standalone | RF_Transactional);
+	Blueprint->ParentClass = UUserWidget::StaticClass();
+	Blueprint->WidgetTree = NewObject<UWidgetTree>(Blueprint, TEXT("WidgetTree"));
+	FCortexAssetMutationGuard::Block(Blueprint, TEXT("forced recovery verification failure"));
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
+	FCortexUMGCommandHandler Handler;
+	TestFalse(TEXT("normal UMG mutation dispatch refuses blocked asset"),
+		Handler.Execute(TEXT("add_widget"), Params).bSuccess);
+	TestTrue(TEXT("normal UMG read dispatch remains available"),
+		Handler.Execute(TEXT("get_tree"), Params).bSuccess);
+	Blueprint->ClearFlags(RF_Standalone);
+	Blueprint->MarkAsGarbage();
+	Package->ClearFlags(RF_Standalone);
+	Package->MarkAsGarbage();
+	return true;
 }

@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "Operations/CortexBPCleanupOps.h"
+#include "CortexAssetMutationGuard.h"
 #include "CortexBPTestLiftActor.h"
 #include "CortexEditorUtils.h"
 #include "CortexTypes.h"
@@ -914,4 +915,61 @@ bool FCortexBPRenameSCSComponentCompileFailureRollbackTest::RunTest(const FStrin
 	AddInfo(TEXT("WITH_DEV_AUTOMATION_TESTS disabled; skipping compile failure rollback test."));
 	return true;
 #endif
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRenameSCSComponentBlockedDependentTest,
+	"Cortex.Blueprint.Cleanup.RenameSCSComponent.BlockedDependent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRenameSCSComponentBlockedDependentTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	UBlueprint* Parent = RenameCreateLiftBP(TEXT("BP_RenameBlockedParent"), AActor::StaticClass());
+	TestNotNull(TEXT("rename parent created"), Parent);
+	if (!Parent) return false;
+	TestNotNull(TEXT("rename component created"), RenameAddSCSNode(Parent, UCortexBPTestSubobjComponent::StaticClass(), TEXT("OldComp")));
+	UBlueprint* Child = RenameCreateLiftBP(TEXT("BP_RenameBlockedChild"), Parent->GeneratedClass);
+	TestNotNull(TEXT("rename dependent created"), Child);
+	if (!Child)
+	{
+		Parent->MarkAsGarbage();
+		return false;
+	}
+	FKismetEditorUtilities::CompileBlueprint(Child);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Parent);
+	FKismetEditorUtilities::CompileBlueprint(Parent);
+	TArray<UBlueprint*> Dependents;
+	FBlueprintEditorUtils::GetDependentBlueprints(Parent, Dependents);
+	const bool bChildDiscovered = Dependents.Contains(Child);
+	TestTrue(TEXT("engine discovers compiled child before blocked dependent fanout"), bChildDiscovered);
+	if (!bChildDiscovered)
+	{
+		Child->MarkAsGarbage();
+		Parent->MarkAsGarbage();
+		return false;
+	}
+	FCortexAssetMutationGuard::Block(Child, TEXT("forced recovery verification failure"));
+	const FCortexCommandResult Result = FCortexBPCleanupOps::RenameSCSComponent(
+		RenameMakeParams(Parent, TEXT("OldComp"), TEXT("NewComp"), false));
+	TestFalse(TEXT("blocked dependent rejects rename before parent side effects"), Result.bSuccess);
+	TestTrue(TEXT("parent component name remains unchanged"), RenameHasSCSNode(Parent, TEXT("OldComp")));
+	TestFalse(TEXT("blocked dependent did not receive the new component name"), RenameHasSCSNode(Parent, TEXT("NewComp")));
+	if (GEditor && GEditor->Trans)
+	{
+		GEditor->Trans->Reset(FText::FromString(TEXT("CortexBPRenameBlockedDependentCleanup")));
+	}
+	if (Child->IsRooted())
+	{
+		Child->RemoveFromRoot();
+	}
+	if (Parent->IsRooted())
+	{
+		Parent->RemoveFromRoot();
+	}
+	Child->ClearFlags(RF_Standalone);
+	Parent->ClearFlags(RF_Standalone);
+	Child->MarkAsGarbage();
+	Parent->MarkAsGarbage();
+	return true;
 }

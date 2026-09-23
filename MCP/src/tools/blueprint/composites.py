@@ -74,22 +74,16 @@ def _validate_spec(
     functions: list[dict] | None = None,
     nodes: list[dict] | None = None,
     connections: list[dict] | None = None,
-    mode: str = "create",
-    asset_path: str = "",
 ):
-    """Validate the Blueprint graph spec. Raises ValueError on invalid spec."""
-    if mode == "update":
-        if not asset_path:
-            raise ValueError("Missing required field: asset_path (required in update mode)")
-    else:
-        if not name:
-            raise ValueError("Missing required field: name")
-        if not path:
-            raise ValueError("Missing required field: path")
-        if bp_type == "Widget":
-            raise ValueError("type 'Widget' is not supported here. Use create_widget_screen instead.")
-        if bp_type not in _VALID_BP_TYPES:
-            raise ValueError(f"type must be one of {sorted(_VALID_BP_TYPES)}")
+    """Validate the Blueprint graph creation spec. Raises ValueError on invalid spec."""
+    if not name:
+        raise ValueError("Missing required field: name")
+    if not path:
+        raise ValueError("Missing required field: path")
+    if bp_type == "Widget":
+        raise ValueError("type 'Widget' is not supported here. Use create_widget_screen instead.")
+    if bp_type not in _VALID_BP_TYPES:
+        raise ValueError(f"type must be one of {sorted(_VALID_BP_TYPES)}")
 
     variables = variables or []
     functions = functions or []
@@ -130,12 +124,11 @@ def _validate_spec(
         if len(tgt_parts) != 2:
             raise ValueError(f"Invalid 'to' format: {conn['to']} (expected 'NodeName.PinName')")
 
-        # In update mode, unknown node names are allowed (pre-existing nodes).
-        if mode != "update":
-            if src_parts[0] not in node_name_set:
-                raise ValueError(f"Unknown source node: {src_parts[0]}")
-            if tgt_parts[0] not in node_name_set:
-                raise ValueError(f"Unknown target node: {tgt_parts[0]}")
+        # Every referenced node must exist in the spec: create mode has no pre-existing graph.
+        if src_parts[0] not in node_name_set:
+            raise ValueError(f"Unknown source node: {src_parts[0]}")
+        if tgt_parts[0] not in node_name_set:
+            raise ValueError(f"Unknown target node: {tgt_parts[0]}")
 
     # No $steps[ in user params or pin_values
     for node in nodes:
@@ -175,30 +168,21 @@ def _build_batch_commands(
     connections: list[dict],
     graph_name: str,
     parent_class: str = "",
-    mode: str = "create",
-    asset_path: str = "",
-    subgraph_path: str = "",
     graph_kind: str = "",
     owning_interface: str = "",
 ) -> list[dict]:
-    """Translate Blueprint spec into batch commands with $ref wiring."""
+    """Translate a Blueprint creation spec into batch commands with $ref wiring."""
     path = path.rstrip("/")
-    subgraph_path = subgraph_path.strip()
     graph_kind = graph_kind.strip()
     owning_interface = owning_interface.strip()
     commands: list[dict] = []
 
-    if mode == "create":
-        # Step 0: create blueprint
-        create_params: dict = {"name": name, "path": path, "type": bp_type}
-        if parent_class:
-            create_params["parent_class"] = parent_class
-        commands.append({"command": "blueprint.create", "params": create_params})
-        # In create mode, asset_path comes from step 0 result.
-        asset_path_ref = "$steps[0].data.asset_path"
-    else:
-        # In update mode, use the provided asset_path directly (no create step).
-        asset_path_ref = asset_path
+    # Step 0: create blueprint; the asset path of every later step comes from its result.
+    create_params: dict = {"name": name, "path": path, "type": bp_type}
+    if parent_class:
+        create_params["parent_class"] = parent_class
+    commands.append({"command": "blueprint.create", "params": create_params})
+    asset_path_ref = "$steps[0].data.asset_path"
 
     # Steps 1..V: add variables
     for var in variables:
@@ -245,8 +229,6 @@ def _build_batch_commands(
         }
         if node.get("params"):
             add_params["params"] = node["params"]
-        if subgraph_path:
-            add_params["subgraph_path"] = subgraph_path
         commands.append({"command": "graph.add_node", "params": add_params})
 
     # Steps: set pin values
@@ -264,8 +246,6 @@ def _build_batch_commands(
                 "pin_name": pin_name,
                 "value": value,
             }
-            if subgraph_path:
-                pin_params["subgraph_path"] = subgraph_path
             commands.append({
                 "command": "graph.set_pin_value",
                 "params": pin_params,
@@ -289,8 +269,6 @@ def _build_batch_commands(
                 pin_params["graph_kind"] = graph_kind
             if owning_interface:
                 pin_params["owning_interface"] = owning_interface
-            if subgraph_path:
-                pin_params["subgraph_path"] = subgraph_path
             commands.append({
                 "command": "graph.set_pin_value",
                 "params": pin_params,
@@ -317,8 +295,6 @@ def _build_batch_commands(
             "target_pin": tgt_parts[1],
             "graph_name": graph_name,
         }
-        if subgraph_path:
-            connect_params["subgraph_path"] = subgraph_path
         commands.append({
             "command": "graph.connect",
             "params": connect_params,
@@ -327,33 +303,12 @@ def _build_batch_commands(
     return commands
 
 
-def _extract_single_asset_fingerprint(response: dict[str, Any], asset_path: str) -> dict[str, Any]:
-    data = response.get("data", {})
-    fingerprints = data.get("fingerprints")
-    if not isinstance(fingerprints, list) or not fingerprints:
-        raise ValueError("core.asset_fingerprint did not return a fingerprint entry")
-
-    for entry in fingerprints:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("asset_path") == asset_path:
-            fingerprint = entry.get("fingerprint")
-            if isinstance(fingerprint, dict):
-                return fingerprint
-
-    raise ValueError(f"core.asset_fingerprint did not return a fingerprint for {asset_path}")
-
-
-def _preflight_update_fingerprint(
-    connection: UEConnection,
-    asset_path: str,
-    expected_fingerprint: dict[str, Any],
-) -> dict[str, Any]:
-    response = connection.send_command("core.asset_fingerprint", {"paths": [asset_path]})
-    current_fingerprint = _extract_single_asset_fingerprint(response, asset_path)
-    if current_fingerprint != expected_fingerprint:
-        raise ValueError("Expected fingerprint does not match current Blueprint fingerprint")
-    return current_fingerprint
+_UPDATE_ROUTE_GUIDANCE = (
+    "Blueprint updates run through one reviewed graph patch instead: call "
+    "blueprint_compose(mode='update', asset_path=<asset>, patch={...}) or "
+    "graph_cmd('apply_patch', {...}) with a graph.apply_patch envelope. The legacy batch update "
+    "route was removed and is never used as a fallback."
+)
 
 
 def register_blueprint_composite_tools(mcp, connection: UEConnection):
@@ -380,10 +335,13 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         """Create a Blueprint with variables, functions, and graph logic in a single operation.
 
         Creates a new Blueprint asset, adds variables, functions, graph nodes, sets pin values,
-        and wires connections. All operations execute atomically via batch.
+        and wires connections. The generated steps run as one stop-on-error batch, and a partial
+        asset is deleted when a step fails; this is recovery, not an atomic transaction.
 
         Use this instead of calling create_blueprint + add_blueprint_variable + graph_add_node
-        individually when building a Blueprint from scratch.
+        individually when building a Blueprint from scratch. Creating a Blueprint is the only
+        mode this helper supports: updating an existing Blueprint runs through one reviewed
+        graph.apply_patch envelope (see blueprint_compose mode='update' with a `patch`).
 
         Args:
             name: Blueprint name (e.g., "BP_HealthSystem")
@@ -426,39 +384,33 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
             connections: Array of connection specs using "NodeName.PinName" format:
                 - from: Source "NodeName.PinName" (e.g., "BeginPlay.then")
                 - to: Target "NodeName.PinName" (e.g., "PrintString.execute")
-            mode: Operation mode. "create" (default) creates a new Blueprint.
-                  "update" appends to an existing Blueprint (requires asset_path).
-            asset_path: Required in update mode. Path to existing Blueprint asset.
-            expected_fingerprint: Optional stale-write guard for update mode. When
-                supplied, the composite checks the Blueprint fingerprint before
-                running the generated batch.
-            subgraph_path: Dot-separated path into nested composite subgraphs.
-                When set, all graph operations target the resolved subgraph instead
-                of the top-level graph.
-                Note: all graph operations in one call target the same subgraph.
-                To add nodes to both the top-level graph and a composite, call this
-                tool twice: once without subgraph_path (top-level), then again with
-                mode='update' and subgraph_path (composite nodes).
-                subgraph_path is not valid with mode='create'.
-                Composite names must not contain dots (the path separator).
+            mode: Operation mode. Only "create" (default) is supported: it creates a new
+                  Blueprint. "update" is refused with migration guidance (see below).
+            asset_path: Unused by this helper; it exists for the historic update-mode call
+                  shape. Safe updates carry asset_path in the graph.apply_patch envelope.
+            expected_fingerprint: Unused by this helper; the safe update route carries the
+                  stale-write guard in patch.expected_fingerprint.
+            subgraph_path: Refused here: a new Blueprint has no composite subgraph to target
+                yet. Target a composite subgraph with a graph.apply_patch envelope whose
+                target.graph_ref carries subgraph_path.
 
-                Common pin names by node type:
-                    Event: outputs "then"
-                    CallFunction: inputs "execute", outputs "then"
-                    Branch: inputs "execute", "Condition", outputs "True", "False"
-                    Sequence: inputs "execute", outputs "then 0", "then 1", ...
-                    VariableGet: output is variable name
-                    VariableSet: inputs "execute" + variable name, outputs "then"
-                    AddDelegate/RemoveDelegate: inputs "execute", "self" (Target), "Delegate" (Event); outputs "then"
-                    ClearDelegate: inputs "execute", "self" (Target); outputs "then"
-                    CreateDelegate: inputs "self" (Object); outputs "OutputDelegate" (Event)
-                    Note: Self-context delegates (no delegate_class) require a pre-compiled
-                    Blueprint. If adding an event dispatcher variable and binding to it,
-                    use two calls: first create_blueprint_graph (compiles), then update mode.
+            Common pin names by node type:
+                Event: outputs "then"
+                CallFunction: inputs "execute", outputs "then"
+                Branch: inputs "execute", "Condition", outputs "True", "False"
+                Sequence: inputs "execute", outputs "then 0", "then 1", ...
+                VariableGet: output is variable name
+                VariableSet: inputs "execute" + variable name, outputs "then"
+                AddDelegate/RemoveDelegate: inputs "execute", "self" (Target), "Delegate" (Event); outputs "then"
+                ClearDelegate: inputs "execute", "self" (Target); outputs "then"
+                CreateDelegate: inputs "self" (Object); outputs "OutputDelegate" (Event)
+                Note: Self-context delegates (no delegate_class) require a pre-compiled
+                Blueprint.
 
         Returns:
             JSON with asset_path, node_count, variable_count, function_count, timing.
             On failure: summary, asset_path, completed_steps, failed_step, total_steps.
+            Refusing mode='update' returns {"success": False, "error": <migration guidance>}.
 
         Example:
             create_blueprint_graph(
@@ -473,43 +425,49 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                 connections=[{"from": "BeginPlay.then", "to": "PrintHealth.execute"}]
             )
         """
+        # The legacy update route (asset_path + generated batch) was removed: it compiled and
+        # saved through an unverified batch. Refuse it here too, so a direct caller can never
+        # reach the removed path through an older call shape.
+        if mode == "update":
+            target = f" for '{asset_path}'" if asset_path else ""
+            return json.dumps({
+                "success": False,
+                "error": f"mode='update'{target} is no longer supported. {_UPDATE_ROUTE_GUIDANCE}",
+            }, indent=2)
+        if mode != "create":
+            return json.dumps({
+                "success": False,
+                "error": f"Unsupported mode '{mode}'. {_UPDATE_ROUTE_GUIDANCE}",
+            }, indent=2)
+
         variables = variables or []
         functions = functions or []
         nodes = nodes or []
         connections = connections or []
 
-        # Guard: subgraph_path is meaningless in create mode (Blueprint doesn't exist yet)
-        if subgraph_path and mode == "create":
+        # Guard: a new Blueprint has no composite subgraph to target yet.
+        if subgraph_path:
             return json.dumps({
                 "success": False,
                 "error": (
-                    "subgraph_path cannot be used with mode='create': the Blueprint does not "
-                    "exist yet, so composite subgraphs cannot be pre-targeted. Use mode='update' "
-                    "after the Blueprint is created."
+                    "subgraph_path cannot be used when creating a Blueprint: the asset does not "
+                    "exist yet, so composite subgraphs cannot be pre-targeted. Create the "
+                    "Blueprint first, then send a graph.apply_patch envelope that targets the "
+                    "subgraph through target.graph_ref.subgraph_path."
                 ),
             }, indent=2)
 
         # 1. Validate spec
         try:
             _validate_spec(name, path, bp_type=type, variables=variables,
-                          functions=functions, nodes=nodes, connections=connections,
-                          mode=mode, asset_path=asset_path)
+                          functions=functions, nodes=nodes, connections=connections)
         except ValueError as e:
             return json.dumps({"success": False, "error": f"Invalid spec: {e}"})
-
-        if mode == "update" and expected_fingerprint is not None:
-            try:
-                _preflight_update_fingerprint(connection, asset_path, expected_fingerprint)
-            except ValueError as e:
-                return json.dumps({"success": False, "error": str(e)})
-            except (RuntimeError, ConnectionError, TimeoutError, OSError) as e:
-                return json.dumps({"success": False, "error": f"Connection error: {e}"})
 
         # 2. Build batch commands
         commands = _build_batch_commands(
             name, path, type, variables, functions, nodes, connections,
-            graph_name, parent_class, mode=mode, asset_path=asset_path,
-            subgraph_path=subgraph_path, graph_kind=graph_kind,
+            graph_name, parent_class, graph_kind=graph_kind,
             owning_interface=owning_interface,
         )
         total_steps = len(commands)
@@ -529,15 +487,16 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         batch_data = batch_result.get("data", {})
         results = batch_data.get("results", [])
 
-        # 4. Check for failures
-        asset_path = asset_path if mode == "update" else None
+        # 4. Check for failures. The created asset comes from the create step's result: creating is
+        # the only mode left, so no caller-supplied asset path is ever trusted here.
+        asset_path = None
         failed_step = None
         completed_count = 0
 
         for entry in results:
             if entry.get("success"):
                 completed_count += 1
-                if mode == "create" and entry.get("index") == 0 and "data" in entry:
+                if entry.get("index") == 0 and "data" in entry:
                     asset_path = entry["data"].get("asset_path")
             else:
                 failed_step = entry
@@ -546,7 +505,7 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         # 5. Handle failure
         if failed_step is not None:
             recovery_action = None
-            if asset_path and mode == "create":
+            if asset_path:
                 try:
                     connection.send_command("blueprint.delete", {"asset_path": asset_path, "force": True})
                     recovery_action = {"action": "deleted_partial", "path": asset_path}
@@ -584,8 +543,6 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                     "asset_path": asset_path,
                     "graph_name": graph_name,
                 }
-                if subgraph_path:
-                    auto_layout_params["subgraph_path"] = subgraph_path
                 connection.send_command("graph.auto_layout", auto_layout_params)
             except Exception as e:
                 logger.warning(f"auto_layout failed for {asset_path}: {e}", exc_info=True)
@@ -646,8 +603,6 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                 "asset_path": asset_path,
                 "graph_name": graph_name,
             }
-            if subgraph_path:
-                verify_params["subgraph_path"] = subgraph_path
             nodes_data = connection.send_command(
                 "graph.get_subgraph",
                 verify_params,

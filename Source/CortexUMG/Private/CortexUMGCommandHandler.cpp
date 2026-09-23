@@ -3,6 +3,25 @@
 #include "Operations/CortexUMGWidgetTreeOps.h"
 #include "Operations/CortexUMGWidgetPropertyOps.h"
 #include "Operations/CortexUMGWidgetAnimationOps.h"
+#include "CortexAssetMutationGuard.h"
+#include "Engine/Blueprint.h"
+
+namespace
+{
+bool RejectBlockedUMGMutation(const TSharedPtr<FJsonObject>& Params, FCortexCommandResult& OutError)
+{
+    FString AssetPath;
+    if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath)) return false;
+    FString Reason;
+    if (FCortexAssetMutationGuard::IsPathBlocked(AssetPath, Reason))
+    {
+        OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+            FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *Reason));
+        return true;
+    }
+    return false;
+}
+}
 
 FCortexCommandResult FCortexUMGCommandHandler::Execute(
     const FString& Command,
@@ -11,6 +30,15 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
 {
     (void)DeferredCallback;
 
+    const bool bReadOnly = Command == TEXT("get_tree") || Command == TEXT("get_widget")
+        || Command == TEXT("list_widget_classes") || Command == TEXT("get_property")
+        || Command == TEXT("get_schema") || Command == TEXT("list_animations")
+        || Command == TEXT("get_animation") || Command == TEXT("list_animation_bindings");
+    if (!bReadOnly)
+    {
+        FCortexCommandResult GuardError;
+        if (RejectBlockedUMGMutation(Params, GuardError)) return GuardError;
+    }
     if (Command == TEXT("add_widget"))
     {
         return FCortexUMGWidgetTreeOps::AddWidget(Params);

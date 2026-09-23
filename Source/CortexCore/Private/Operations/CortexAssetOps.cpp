@@ -3,6 +3,7 @@
 #include "CortexAssetFingerprint.h"
 #include "CortexBatchMutation.h"
 #include "CortexCommandRouter.h"
+#include "CortexAssetMutationGuard.h"
 #include "CortexLogCapture.h"
 #include "Editor.h"
 #include "FileHelpers.h"
@@ -309,6 +310,12 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 
 		auto PreflightSaveAsset = [](const FCortexBatchMutationItem& Item) -> FCortexBatchPreflightResult
 		{
+			FString BlockReason;
+			if (FCortexAssetMutationGuard::IsPathBlocked(Item.Target, BlockReason))
+			{
+				return FCortexBatchPreflightResult::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
+			}
 			const FAssetData AssetData = FCortexAssetOps::ResolveLiteralAssetPath(Item.Target);
 			if (!AssetData.IsValid())
 			{
@@ -380,12 +387,20 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 		Entry->SetStringField(TEXT("asset_path"), AssetPath);
 		Entry->SetStringField(TEXT("asset_type"), AssetData.AssetClassPath.GetAssetName().ToString());
 
+		FString BlockReason;
+		if (!bDryRun && FCortexAssetMutationGuard::IsPathBlocked(AssetPath, BlockReason))
+		{
+			Entry->SetStringField(TEXT("error"), CortexErrorCodes::InvalidOperation);
+			Entry->SetStringField(TEXT("message"), FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			continue;
+		}
+
 		UObject* Asset = LoadAssetWithFallbacks(AssetData, AssetPath);
 		if (Asset != nullptr)
 		{
 			Entry->SetStringField(TEXT("asset_type"), GetAssetTypeName(Asset));
 		}
-
 		UPackage* Package = FindPackage(nullptr, *AssetData.PackageName.ToString());
 		if (Package == nullptr)
 		{

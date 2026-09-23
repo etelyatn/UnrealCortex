@@ -2,6 +2,7 @@
 #include "Modules/ModuleManager.h"
 #include "CortexCommandRouter.h"
 #include "CortexCoreModule.h"
+#include "CortexAssetMutationGuard.h"
 #include "Engine/DataTable.h"
 #include "Editor.h"
 #include "FileHelpers.h"
@@ -812,5 +813,67 @@ bool FCortexAssetOpenWorldTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCoreBlockedSaveDispatchTest,
+	"Cortex.Core.ZBlockedSaveDispatch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCoreBlockedSaveDispatchTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FString AssetPath = TEXT("/Game/Data/DT_TestSimple");
+	UObject* Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
+	TestNotNull(TEXT("persisted fixture asset resolves"), Asset);
+	if (!Asset) return false;
+	FCortexAssetMutationGuard::Block(Asset, TEXT("forced recovery verification failure"));
+	FCortexCoreModule& CoreModule =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	FCortexCommandRouter& Router = CoreModule.GetCommandRouter();
+	TSharedPtr<FJsonObject> SaveParams = MakeShared<FJsonObject>();
+	SaveParams->SetStringField(TEXT("asset_path"), AssetPath);
+	const FCortexCommandResult SaveResult = Router.Execute(TEXT("core.save_asset"), SaveParams);
+	TestTrue(TEXT("core save command returns its per-asset refusal result"), SaveResult.bSuccess);
+	const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
+	TestTrue(TEXT("core save result contains one asset"), SaveResult.Data.IsValid()
+		&& SaveResult.Data->TryGetArrayField(TEXT("results"), Results) && Results && Results->Num() == 1);
+	if (Results && Results->Num() == 1)
+	{
+		const TSharedPtr<FJsonObject> Entry = (*Results)[0]->AsObject();
+		FString ErrorCode;
+		TestTrue(TEXT("core save is refused before save side effects"),
+			Entry.IsValid() && Entry->TryGetStringField(TEXT("error"), ErrorCode));
+		TestEqual(TEXT("core blocked save error code"), ErrorCode, CortexErrorCodes::InvalidOperation);
+	}
+	TestTrue(TEXT("core fingerprint read remains available"),
+		ExecuteSingleFingerprintRequest(Router, AssetPath).IsValid());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCoreBlockedBatchSaveDispatchTest,
+	"Cortex.Core.ZBlockedBatchSaveDispatch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCoreBlockedBatchSaveDispatchTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FString AssetPath = TEXT("/Game/Data/DT_TestSimple");
+	UObject* Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
+	TestNotNull(TEXT("batch fixture asset resolves"), Asset);
+	if (!Asset) return false;
+	Asset->GetOutermost()->SetDirtyFlag(false);
+	FCortexAssetMutationGuard::Block(Asset, TEXT("forced recovery verification failure"));
+	FCortexCoreModule& CoreModule = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"));
+	TSharedPtr<FJsonObject> Item = MakeShared<FJsonObject>();
+	Item->SetStringField(TEXT("target"), AssetPath);
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("items"), { MakeShared<FJsonValueObject>(Item) });
+	const FCortexCommandResult Result = CoreModule.GetCommandRouter().Execute(TEXT("core.save_asset"), Params);
+	TestFalse(TEXT("blocked batch save rejects before commit"), Result.bSuccess);
+	TestEqual(TEXT("blocked batch save error code"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
+	TestFalse(TEXT("blocked batch save leaves package clean"), Asset->GetOutermost()->IsDirty());
 	return true;
 }

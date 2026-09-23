@@ -12,6 +12,31 @@
 #include "Operations/CortexBPStructureOps.h"
 #include "Operations/CortexBPTimelineOps.h"
 #include "Operations/CortexBPClassSettingsOps.h"
+#include "CortexAssetMutationGuard.h"
+#include "Engine/Blueprint.h"
+
+namespace
+{
+bool RejectBlockedBlueprintMutation(const TSharedPtr<FJsonObject>& Params, FCortexCommandResult& OutError)
+{
+	FString AssetPath;
+	if (!Params.IsValid()
+		|| (!Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+			&& !Params->TryGetStringField(TEXT("source_path"), AssetPath)
+			&& !Params->TryGetStringField(TEXT("blueprint_path"), AssetPath)))
+	{
+		return false;
+	}
+	FString Reason;
+	if (FCortexAssetMutationGuard::IsPathBlocked(AssetPath, Reason))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *Reason));
+		return true;
+	}
+	return false;
+}
+}
 
 FCortexCommandResult FCortexBPCommandHandler::Execute(
 	const FString& Command,
@@ -20,6 +45,16 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 {
 	(void)DeferredCallback;
 
+	const bool bReadOnly = Command == TEXT("list") || Command == TEXT("get_info")
+		|| Command == TEXT("get_class_defaults") || Command == TEXT("list_inherited_properties")
+		|| Command == TEXT("list_settable_defaults") || Command == TEXT("list_scs_components")
+		|| Command == TEXT("analyze_for_migration") || Command == TEXT("compare_blueprints")
+		|| Command == TEXT("search");
+	if (!bReadOnly)
+	{
+		FCortexCommandResult GuardError;
+		if (RejectBlockedBlueprintMutation(Params, GuardError)) return GuardError;
+	}
 	if (Command == TEXT("create"))
 	{
 		return FCortexBPAssetOps::Create(Params);
