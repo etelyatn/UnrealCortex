@@ -1,19 +1,19 @@
 """Generate LLM-readable schema files in .cortex/schema/."""
 
-import datetime
 import json
 import logging
 import os
 import pathlib
 import tempfile
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from .project import resolve_project_dir
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def find_project_root() -> pathlib.Path:
@@ -54,6 +54,31 @@ def atomic_write(path: pathlib.Path, content: str) -> None:
         raise
 
 
+def read_schema_metadata(schema_dir: pathlib.Path) -> dict:
+    """Read local schema freshness metadata, treating missing/corrupt data as unknown."""
+    metadata_path = schema_dir / ".meta.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {"files": {}}
+
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("files"), dict):
+        return {"files": {}}
+
+    files = {
+        relative_path: timestamp
+        for relative_path, timestamp in metadata["files"].items()
+        if isinstance(relative_path, str) and isinstance(timestamp, str)
+    }
+    return {**metadata, "files": files}
+
+
+def write_schema_metadata(schema_dir: pathlib.Path, metadata: dict) -> None:
+    """Atomically write local per-file schema freshness metadata."""
+    content = json.dumps(metadata, indent=2, sort_keys=True) + "\n"
+    atomic_write(schema_dir / ".meta.json", content)
+
+
 def _yaml_field(field: dict, indent: int = 2) -> list[str]:
     """Render a single schema field as YAML lines."""
     prefix = " " * indent
@@ -82,11 +107,9 @@ def _render_meta(domain: str, **extra) -> str:
         domain: The domain name (e.g., "data", "catalog").
         **extra: Additional key-value pairs to include in the meta block.
     """
-    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = [
         "<!-- schema-meta",
         f"schema_version: {SCHEMA_VERSION}",
-        f"generated: {now}",
         f"domain: {domain}",
     ]
     for key, value in extra.items():
@@ -150,7 +173,7 @@ def render_catalog(
     lines.append("- Read THIS file first for project overview and index")
     lines.append("- Read domain files only when working in that domain")
     lines.append("- If a domain file is missing, use live MCP tools instead")
-    lines.append("- If generated timestamp is older than 24h, suggest cortex-setup (schema refresh)")
+    lines.append("- Use schema_status to check when files were generated on this machine")
     lines.append("")
 
     # Schema Overview
@@ -194,7 +217,8 @@ def render_catalog(
 
         structs = data_s.get("structs", [])
         if structs:
-            lines.append(f"**Structs:** {', '.join(s['name'] for s in structs)}")
+            struct_names = sorted((s["name"] for s in structs), key=str.casefold)
+            lines.append(f"**Structs:** {', '.join(struct_names)}")
             lines.append("")
 
         tables = data_s.get("tables", [])
@@ -211,14 +235,22 @@ def render_catalog(
             lines.append("#### Blueprint Classes")
             lines.append("| Name | Parent |")
             lines.append("|------|--------|")
-            for c in bp_classes_list:
+            for c in sorted(bp_classes_list, key=lambda item: (
+                item.get("asset_path", "").casefold(),
+                item.get("generated_class_path", item.get("name", "")).casefold(),
+            )):
                 lines.append(f"| {c['name']} | {c['parent']} |")
             lines.append("")
 
     return "\n".join(lines)
 
 
-def _flatten_hierarchy(node: dict, rows: list[dict], depth: int = 0) -> None:
+def _flatten_hierarchy(
+    node: dict,
+    rows: list[dict],
+    depth: int = 0,
+    parent_name: str = "",
+) -> None:
     """Flatten hierarchy tree into rows with depth metadata."""
     if not isinstance(node, dict):
         return
@@ -229,22 +261,22 @@ def _flatten_hierarchy(node: dict, rows: list[dict], depth: int = 0) -> None:
             "type": node.get("type", ""),
             "asset_path": node.get("asset_path", ""),
             "depth": depth,
-            "parent": node.get("parent", ""),
+            "parent": node.get("parent") or parent_name,
         }
     )
     for child in node.get("children", []):
         if isinstance(child, dict):
-            _flatten_hierarchy(child, rows, depth + 1)
+            _flatten_hierarchy(child, rows, depth + 1, node.get("name", ""))
 
 
 def collect_blueprint_domain(connection) -> dict:
-    """Collect Blueprint class hierarchy from reflect.class_hierarchy."""
+    """Collect native class context and saved Blueprint rows from the Asset Registry."""
     params = {
         "root": "AActor",
         "depth": 10,
         "max_results": 5000,
         "include_engine": False,
-        "include_blueprint": True,
+        "include_blueprint": False,
     }
     response = connection.send_command_cached(
         "reflect.class_hierarchy",
@@ -252,6 +284,65 @@ def collect_blueprint_domain(connection) -> dict:
         ttl=3600,
     )
     data = _decode_data(response)
+    # This inventory reflects the editor's current Asset Registry state, so do
+    # not reuse a long-lived command cache when a schema refresh is requested.
+    catalog_response = connection.send_command(
+        "reflect.blueprint_catalog",
+        {"root": "AActor"},
+    )
+    catalog = _decode_data(catalog_response)
+    if catalog.get("complete") is not True:
+        invalid_count = catalog.get("invalid_asset_count", "unknown")
+        diagnostics = catalog.get("diagnostics", [])
+        if not isinstance(diagnostics, list):
+            diagnostics = []
+        diagnostic_summary = ", ".join(
+            f"{item.get('asset_path', '<unknown asset>')}: {', '.join(item.get('invalid_fields', []))}"
+            for item in diagnostics[:3]
+            if isinstance(item, dict)
+        )
+        detail = f"; diagnostics: {diagnostic_summary}" if diagnostic_summary else ""
+        raise RuntimeError(
+            f"Asset Registry Blueprint catalog is incomplete ({invalid_count} invalid assets){detail}"
+        )
+
+    catalog_classes = catalog.get("classes")
+    if not isinstance(catalog_classes, list):
+        raise RuntimeError("Asset Registry Blueprint catalog is missing its classes list")
+    blueprint_count = catalog.get("blueprint_count")
+    if (
+        not isinstance(blueprint_count, int)
+        or isinstance(blueprint_count, bool)
+        or blueprint_count != len(catalog_classes)
+    ):
+        raise RuntimeError(
+            "Asset Registry Blueprint catalog count is inconsistent "
+            f"(reported {blueprint_count}, rows {len(catalog_classes)})"
+        )
+
+    required_fields = (
+        "name",
+        "parent_name",
+        "generated_class_path",
+        "parent_class_path",
+        "native_parent_class_path",
+        "asset_path",
+    )
+    for index, item in enumerate(catalog_classes):
+        if not isinstance(item, dict):
+            raise RuntimeError(
+                f"Asset Registry Blueprint catalog record {index} is not an object"
+            )
+        missing_fields = [
+            field for field in required_fields
+            if not isinstance(item.get(field), str) or not item[field]
+        ]
+        if missing_fields:
+            raise RuntimeError(
+                f"Asset Registry Blueprint catalog record {index} is missing required fields: "
+                f"{', '.join(missing_fields)}"
+            )
+
     rows: list[dict] = []
     _flatten_hierarchy(data, rows)
     classes = [
@@ -264,19 +355,44 @@ def collect_blueprint_domain(connection) -> dict:
         }
         for row in rows
     ]
+    blueprint_rows = [
+        {
+            "name": item.get("name", ""),
+            "parent": item.get("parent_name", ""),
+            "type": "blueprint",
+            "asset_path": item.get("asset_path", ""),
+            "generated_class_path": item.get("generated_class_path", ""),
+            "parent_class_path": item.get("parent_class_path", ""),
+            "native_parent_class_path": item.get("native_parent_class_path", ""),
+        }
+        for item in catalog_classes
+    ]
+    classes.extend(blueprint_rows)
+    classes.sort(key=_blueprint_class_sort_key)
     return {
         "hierarchy": data,
         "classes": classes,
-        "blueprint_count": data.get("blueprint_count", 0),
+        "blueprint_count": blueprint_count,
         "cpp_count": data.get("cpp_count", 0),
         "project_cpp_count": data.get("project_cpp_count", 0),
         "engine_cpp_count": data.get("engine_cpp_count", 0),
-        "project_blueprint_count": data.get("project_blueprint_count", 0),
+        "project_blueprint_count": blueprint_count,
     }
 
 
+def _blueprint_class_sort_key(row: dict) -> tuple[int, str, str]:
+    """Sort native classes by name and Blueprint assets by asset/class path."""
+    if row.get("type") == "blueprint":
+        return (
+            1,
+            row.get("asset_path", "").casefold(),
+            row.get("generated_class_path", row.get("name", "")).casefold(),
+        )
+    return (0, row.get("name", "").casefold(), row.get("name", ""))
+
+
 def render_blueprint_catalog(blueprint_data: dict) -> str:
-    """Render blueprints.md with hierarchy and summary counts."""
+    """Render blueprints.md as a canonically ordered flat class catalog."""
     lines = ["# Blueprint Catalog", "", _render_meta("blueprints"), ""]
 
     bp_count = blueprint_data.get("blueprint_count", 0)
@@ -289,23 +405,22 @@ def render_blueprint_catalog(blueprint_data: dict) -> str:
     )
     lines.append("")
 
-    lines.append("## Hierarchy")
-    hierarchy = blueprint_data.get("hierarchy", {})
-    rows: list[dict] = []
-    _flatten_hierarchy(hierarchy, rows)
+    rows = blueprint_data.get("classes", [])
     if not rows:
-        lines.append("- No hierarchy data available.")
+        lines.append("- No class data available.")
         lines.append("")
         return "\n".join(lines)
 
-    lines.append("| Class | Type | Asset Path |")
-    lines.append("|-------|------|------------|")
-    for row in rows:
-        indent = "  " * int(row.get("depth", 0))
-        name = f"{indent}{row.get('name', '')}"
+    lines.append("## Classes")
+    lines.append("")
+    lines.append("| Class | Type | Parent | Asset Path |")
+    lines.append("|-------|------|--------|------------|")
+    for row in sorted(rows, key=_blueprint_class_sort_key):
+        name = row.get("name", "")
         cls_type = row.get("type", "")
+        parent = row.get("parent", row.get("parent_name", ""))
         asset_path = row.get("asset_path", "")
-        lines.append(f"| `{name}` | {cls_type} | {asset_path} |")
+        lines.append(f"| `{name}` | {cls_type} | {parent} | {asset_path} |")
     lines.append("")
     return "\n".join(lines)
 
@@ -328,13 +443,11 @@ def collect_level_domain(connection) -> dict:
 
     actor_classes = sorted(
         [{"class": cls, "count": count} for cls, count in class_counts.items()],
-        key=lambda item: item["count"],
-        reverse=True,
+        key=lambda item: (-item["count"], item["class"].casefold()),
     )
     folder_breakdown = sorted(
         [{"folder": folder, "count": count} for folder, count in folder_counts.items()],
-        key=lambda item: item["count"],
-        reverse=True,
+        key=lambda item: (-item["count"], item["folder"].casefold()),
     )
 
     return {
@@ -362,7 +475,7 @@ def render_level_catalog(level_data: dict) -> str:
         lines.append("")
         lines.append("| Class | Count |")
         lines.append("|-------|-------|")
-        for entry in actor_classes:
+        for entry in sorted(actor_classes, key=lambda item: (-item["count"], item["class"].casefold())):
             lines.append(f"| {entry['class']} | {entry['count']} |")
         lines.append("")
 
@@ -372,7 +485,7 @@ def render_level_catalog(level_data: dict) -> str:
         lines.append("")
         lines.append("| Folder | Count |")
         lines.append("|--------|-------|")
-        for entry in folder_breakdown:
+        for entry in sorted(folder_breakdown, key=lambda item: (-item["count"], item["folder"].casefold())):
             lines.append(f"| {entry['folder']} | {entry['count']} |")
         lines.append("")
 
@@ -551,7 +664,13 @@ def render_data_index(catalog: dict) -> str:
     """
     lines = ["# Data Domain Index", "", _render_meta("data-index"), ""]
 
-    tables = catalog.get("datatables", [])
+    tables = sorted(
+        catalog.get("datatables", []),
+        key=lambda table: (
+            table.get("path", table.get("name", "")).casefold(),
+            table.get("name", "").casefold(),
+        ),
+    )
     regular = [t for t in tables if not t.get("is_composite")]
     composites = [t for t in tables if t.get("is_composite")]
 
@@ -560,7 +679,12 @@ def render_data_index(catalog: dict) -> str:
     for t in regular:
         struct_groups.setdefault(t.get("row_struct", "Unknown"), []).append(t)
 
-    for struct_name, group in struct_groups.items():
+    for struct_name in sorted(struct_groups, key=str.casefold):
+        group = struct_groups[struct_name]
+        group.sort(key=lambda table: (
+            table.get("path", table.get("name", "")).casefold(),
+            table.get("name", "").casefold(),
+        ))
         total_rows = sum(t["row_count"] for t in group)
         lines.append(f"## {struct_name} ({len(group)} tables, {total_rows} rows)")
         table_list = " ".join(f"{t['name']}({t['row_count']})" for t in group)
@@ -571,6 +695,8 @@ def render_data_index(catalog: dict) -> str:
     if composites:
         lines.append("## Composites")
         for t in composites:
+            # Parent order controls composite row override precedence, so retain
+            # the authored order while sorting the surrounding table inventory.
             parents = t.get("parent_tables", [])
             parent_names = ", ".join(
                 p["name"] if isinstance(p, dict) else p.rsplit("/", 1)[-1]
@@ -583,7 +709,7 @@ def render_data_index(catalog: dict) -> str:
     tag_prefixes = catalog.get("tag_prefixes", [])
     if tag_prefixes:
         lines.append("## Tags")
-        for tp in tag_prefixes:
+        for tp in sorted(tag_prefixes, key=lambda item: item.get("prefix", "").casefold()):
             lines.append(f"- {tp['prefix']} ({tp['count']})")
         lines.append("")
 
@@ -591,7 +717,7 @@ def render_data_index(catalog: dict) -> str:
     asset_classes = catalog.get("data_asset_classes", [])
     if asset_classes:
         lines.append("## DataAssets")
-        for ac in asset_classes:
+        for ac in sorted(asset_classes, key=lambda item: item.get("class_name", "").casefold()):
             lines.append(f"- {ac['class_name']} ({ac['count']})")
         lines.append("")
 
@@ -599,7 +725,10 @@ def render_data_index(catalog: dict) -> str:
     string_tables = catalog.get("string_tables", [])
     if string_tables:
         lines.append("## StringTables")
-        for st in string_tables:
+        for st in sorted(string_tables, key=lambda item: (
+            item.get("path", item.get("name", "")).casefold(),
+            item.get("name", "").casefold(),
+        )):
             lines.append(f"- {st['name']} ({st.get('entry_count', '?')} entries)")
         lines.append("")
 
@@ -631,7 +760,7 @@ def render_data_structs(schemas: dict[str, dict]) -> str:
     """Render data/structs.md — struct field definitions with depth limiting."""
     lines = ["# Data Struct Schemas", "", _render_meta("data-structs"), ""]
 
-    for struct_name, schema_data in schemas.items():
+    for struct_name, schema_data in sorted(schemas.items(), key=lambda item: item[0].casefold()):
         parent = schema_data.get("parent", "FTableRowBase")
         lines.append(f"## {struct_name} (extends {parent})")
         raw_fields = schema_data.get("schema", [])
@@ -650,7 +779,14 @@ def collect_format_examples(
 ) -> dict[str, dict]:
     """Collect 1 format example per unique struct type. Skip composites."""
     seen_structs: dict[str, dict] = {}
-    for table in catalog.get("datatables", []):
+    tables = sorted(
+        catalog.get("datatables", []),
+        key=lambda table: (
+            table.get("path", table.get("name", "")).casefold(),
+            table.get("name", "").casefold(),
+        ),
+    )
+    for table in tables:
         if table.get("is_composite"):
             continue
         struct_name = table.get("row_struct", "Unknown")
@@ -685,7 +821,7 @@ def render_data_formats(format_examples: dict[str, dict]) -> str:
         lines.append("")
         return "\n".join(lines)
 
-    for struct_name, example in format_examples.items():
+    for struct_name, example in sorted(format_examples.items(), key=lambda item: item[0].casefold()):
         source = example.get("source_table", "unknown")
         row_data = example.get("row_data", {})
         lines.append(f"## {struct_name}")
@@ -693,7 +829,7 @@ def render_data_formats(format_examples: dict[str, dict]) -> str:
         if row_data:
             lines.append("| Field | Example |")
             lines.append("|-------|---------|")
-            for field_name, value in row_data.items():
+            for field_name, value in sorted(row_data.items(), key=lambda item: item[0].casefold()):
                 lines.append(f"| {field_name} | {_truncate_value(value)} |")
         lines.append("")
 
@@ -740,10 +876,18 @@ def collect_data_domain(connection, project_root: pathlib.Path | None = None) ->
             excludes,
         )
 
+    datatables = sorted(
+        catalog.get("datatables", []),
+        key=lambda table: (
+            table.get("path", table.get("name", "")).casefold(),
+            table.get("name", "").casefold(),
+        ),
+    )
+
     # 2. Get schemas for each unique row struct
     schemas = {}
     struct_to_tables = {}  # struct_name -> [table_name, ...]
-    for table in catalog.get("datatables", []):
+    for table in datatables:
         struct_name = table["row_struct"]
         if struct_name not in struct_to_tables:
             struct_to_tables[struct_name] = []
@@ -773,7 +917,7 @@ def collect_data_domain(connection, project_root: pathlib.Path | None = None) ->
     # 3. Collect 1 example row per unique struct (not per table), skip composites
     example_rows = {}
     seen_structs_for_examples: set[str] = set()
-    for table in catalog.get("datatables", []):
+    for table in datatables:
         if table.get("is_composite"):
             continue
         if table["row_struct"] in seen_structs_for_examples:
@@ -819,7 +963,7 @@ def collect_data_domain(connection, project_root: pathlib.Path | None = None) ->
         ],
         "tables": [
             {"name": t["name"], "row_struct": t["row_struct"], "rows": t["row_count"]}
-            for t in catalog.get("datatables", [])
+            for t in datatables
         ],
         "tag_prefixes": [
             {"prefix": f"{tp['prefix']}.*", "count": tp["count"]}
@@ -870,6 +1014,11 @@ def generate_schema(
         Dict with generated domain names and file paths.
     """
     _start_time = time.perf_counter()
+    written_schema_files: list[pathlib.Path] = []
+
+    def write_schema_file(path: pathlib.Path, content: str) -> None:
+        atomic_write(path, content)
+        written_schema_files.append(path)
 
     # Fetch engine/plugin version from editor if not provided
     if not engine_version or not plugin_version:
@@ -895,17 +1044,17 @@ def generate_schema(
 
             # Write data/_index.md
             index_md = render_data_index(collected["catalog"])
-            atomic_write(schema_dir / "data" / "_index.md", index_md)
+            write_schema_file(schema_dir / "data" / "_index.md", index_md)
             result["generated"]["data_index"] = str(schema_dir / "data" / "_index.md")
 
             # Write data/structs.md
             structs_md = render_data_structs(collected["schemas"])
-            atomic_write(schema_dir / "data" / "structs.md", structs_md)
+            write_schema_file(schema_dir / "data" / "structs.md", structs_md)
             result["generated"]["data_structs"] = str(schema_dir / "data" / "structs.md")
 
             # Write data/formats.md
             formats_md = render_data_formats(collected["format_examples"])
-            atomic_write(schema_dir / "data" / "formats.md", formats_md)
+            write_schema_file(schema_dir / "data" / "formats.md", formats_md)
             result["generated"]["data_formats"] = str(schema_dir / "data" / "formats.md")
 
             data_summary = collected["summary"]
@@ -927,7 +1076,7 @@ def generate_schema(
         try:
             blueprint_summary = collect_blueprint_domain(connection)
             blueprints_md = render_blueprint_catalog(blueprint_summary)
-            atomic_write(schema_dir / "blueprints.md", blueprints_md)
+            write_schema_file(schema_dir / "blueprints.md", blueprints_md)
             result["generated"]["blueprints"] = str(schema_dir / "blueprints.md")
 
             domain_file = project_root / ".cortex" / "domains" / "blueprints.md"
@@ -956,7 +1105,7 @@ def generate_schema(
         try:
             level_summary = collect_level_domain(connection)
             level_md = render_level_catalog(level_summary)
-            atomic_write(schema_dir / "level.md", level_md)
+            write_schema_file(schema_dir / "level.md", level_md)
             result["generated"]["level"] = str(schema_dir / "level.md")
         except (ConnectionError, RuntimeError) as e:
             logger.error("Failed to generate level schema: %s", e)
@@ -975,8 +1124,16 @@ def generate_schema(
         engine_version=engine_version,
         plugin_version=plugin_version,
     )
-    atomic_write(schema_dir / "_catalog.md", catalog_md)
+    write_schema_file(schema_dir / "_catalog.md", catalog_md)
     result["generated"]["_catalog"] = str(schema_dir / "_catalog.md")
+
+    metadata = read_schema_metadata(schema_dir)
+    file_timestamps = metadata["files"]
+    generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    for path in written_schema_files:
+        relative_path = path.relative_to(schema_dir).as_posix()
+        file_timestamps[relative_path] = generated_at
+    write_schema_metadata(schema_dir, metadata)
 
     result["elapsed_seconds"] = round(time.perf_counter() - _start_time, 2)
     return result

@@ -16,6 +16,7 @@ from cortex_mcp.schema_generator import (
     SCHEMA_VERSION,
     get_schema_dir,
     read_meta_from_file,
+    read_schema_metadata,
 )
 from cortex_mcp.tcp_client import _discover_all_editors, _is_editor_alive
 from cortex_mcp.tcp_client import UECommandError
@@ -388,8 +389,14 @@ def _schema_status() -> str:
             }
         )
 
+    file_timestamps = read_schema_metadata(schema_dir).get("files", {})
+
+    def generated_time(md_file) -> str:
+        relative_path = md_file.relative_to(schema_dir).as_posix()
+        return file_timestamps.get(relative_path, "unknown")
+
     domains = {}
-    for md_file in schema_dir.glob("*.md"):
+    for md_file in sorted(schema_dir.glob("*.md")):
         if md_file.name.startswith("_") or md_file.name == "README.md":
             continue
         meta = read_meta_from_file(md_file)
@@ -398,7 +405,7 @@ def _schema_status() -> str:
             version = int(meta.get("schema_version", "0"))
             domains[domain_name] = {
                 "file": md_file.name,
-                "generated": meta.get("generated", "unknown"),
+                "generated": generated_time(md_file),
                 "schema_version": version,
                 "version_current": version == SCHEMA_VERSION,
             }
@@ -409,38 +416,38 @@ def _schema_status() -> str:
                 "error": "No meta block found",
             }
 
-    for subdir in schema_dir.iterdir():
+    for subdir in sorted(schema_dir.iterdir()):
         if not subdir.is_dir() or subdir.name.startswith("_"):
             continue
         files = {}
-        oldest_generated = None
+        generated_values = []
         version = 0
         first_file_seen = False
         for md_file in sorted(subdir.glob("*.md")):
             meta = read_meta_from_file(md_file)
             if meta:
-                files[md_file.name] = meta.get("generated", "unknown")
-                generated = meta.get("generated")
-                if oldest_generated is None or (generated and generated < oldest_generated):
-                    oldest_generated = generated
+                generated = generated_time(md_file)
+                files[md_file.name] = generated
+                if generated != "unknown":
+                    generated_values.append(generated)
                 if not first_file_seen:
                     version = int(meta.get("schema_version", "0"))
                     first_file_seen = True
         if files:
             domains[subdir.name] = {
                 "files": files,
-                "generated": oldest_generated or "unknown",
+                "generated": min(generated_values) if generated_values else "unknown",
                 "schema_version": version,
                 "version_current": version == SCHEMA_VERSION,
             }
 
-    catalog_meta = read_meta_from_file(schema_dir / "_catalog.md")
+    catalog_file = schema_dir / "_catalog.md"
     return json.dumps(
         {
             "exists": True,
             "schema_dir": str(schema_dir),
             "catalog": {
-                "generated": catalog_meta.get("generated", "unknown") if catalog_meta else "missing",
+                "generated": generated_time(catalog_file) if catalog_file.exists() else "missing",
             },
             "domains": domains,
             "current_schema_version": SCHEMA_VERSION,

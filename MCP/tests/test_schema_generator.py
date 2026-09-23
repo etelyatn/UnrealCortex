@@ -9,11 +9,14 @@ from unittest.mock import patch
 
 from cortex_mcp.schema_generator import find_project_root, get_schema_dir
 from cortex_mcp.schema_generator import SCHEMA_VERSION, render_catalog
+from cortex_mcp.schema_generator import collect_blueprint_domain
 from cortex_mcp.schema_generator import collect_data_domain
 from cortex_mcp.schema_generator import collect_level_domain
+from cortex_mcp.schema_generator import collect_format_examples
 from cortex_mcp.schema_generator import generate_schema
 from cortex_mcp.schema_generator import read_meta_from_file
 from cortex_mcp.schema_generator import _decode_data
+from cortex_mcp.schema_generator import render_data_formats, render_data_index, render_data_structs
 
 
 class TestProjectRootDiscovery(unittest.TestCase):
@@ -43,6 +46,247 @@ class TestProjectRootDiscovery(unittest.TestCase):
                 os.environ.pop("CLAUDE_PROJECT_DIR", None)
                 result = get_schema_dir()
                 self.assertEqual(result, Path(tempfile.gettempdir()) / ".cortex" / "schema")
+
+
+class TestCollectBlueprintDomainAssetRegistry(unittest.TestCase):
+
+    def _make_connection(self, catalog_data):
+        connection = unittest.mock.Mock()
+        native_data = {
+            "name": "AActor",
+            "type": "cpp",
+            "children": [
+                {"name": "ZActor", "type": "cpp", "children": []},
+            ],
+            "cpp_count": 2,
+            "blueprint_count": 99,
+            "project_cpp_count": 1,
+            "engine_cpp_count": 1,
+        }
+
+        def send(command, params=None, ttl=None):
+            if command == "reflect.class_hierarchy":
+                return {"success": True, "data": native_data}
+            if command == "reflect.blueprint_catalog":
+                return {"success": True, "data": catalog_data}
+            raise AssertionError(f"Unexpected command: {command}")
+
+        connection.send_command_cached.side_effect = send
+        connection.send_command.side_effect = send
+        return connection
+
+    def test_collects_native_hierarchy_and_asset_registry_blueprints(self):
+        catalog_data = {
+            "complete": True,
+            "blueprint_count": 2,
+            "classes": [
+                {
+                    "name": "BP_Zed_C",
+                    "generated_class_path": "/Game/Zed.BP_Zed_C",
+                    "parent_name": "ZActor",
+                    "parent_class_path": "/Script/Project.ZActor",
+                    "native_parent_class_path": "/Script/Project.ZActor",
+                    "asset_path": "/Game/Zed.Zed",
+                },
+                {
+                    "name": "BP_Alpha_C",
+                    "generated_class_path": "/Game/Alpha.BP_Alpha_C",
+                    "parent_name": "AActor",
+                    "parent_class_path": "/Script/Engine.Actor",
+                    "native_parent_class_path": "/Script/Engine.Actor",
+                    "asset_path": "/Game/Alpha.Alpha",
+                },
+            ],
+        }
+        connection = self._make_connection(catalog_data)
+
+        result = collect_blueprint_domain(connection)
+
+        calls = connection.send_command_cached.call_args_list
+        self.assertEqual([call.args[0] for call in calls], [
+            "reflect.class_hierarchy",
+        ])
+        self.assertEqual(calls[0].kwargs["params"]["include_blueprint"], False)
+        self.assertEqual(calls[0].kwargs["params"]["include_engine"], False)
+        connection.send_command.assert_called_once_with(
+            "reflect.blueprint_catalog",
+            {"root": "AActor"},
+        )
+        self.assertEqual(result["blueprint_count"], 2)
+        self.assertEqual(result["cpp_count"], 2)
+        self.assertEqual(result["project_cpp_count"], 1)
+        self.assertEqual(
+            [(row["name"], row["type"]) for row in result["classes"]],
+            [
+                ("AActor", "cpp"),
+                ("ZActor", "cpp"),
+                ("BP_Alpha_C", "blueprint"),
+                ("BP_Zed_C", "blueprint"),
+            ],
+        )
+        blueprints = [row for row in result["classes"] if row["type"] == "blueprint"]
+        self.assertEqual(blueprints[0]["parent"], "AActor")
+        self.assertEqual(blueprints[0]["generated_class_path"], "/Game/Alpha.BP_Alpha_C")
+        native_classes = [row for row in result["classes"] if row["type"] == "cpp"]
+        self.assertEqual(native_classes[1]["parent"], "AActor")
+
+    def test_rejects_catalog_count_that_exceeds_returned_rows(self):
+        catalog_data = {
+            "complete": True,
+            "blueprint_count": 7,
+            "classes": [],
+        }
+        connection = self._make_connection(catalog_data)
+
+        with self.assertRaisesRegex(RuntimeError, "catalog.*7.*0"):
+            collect_blueprint_domain(connection)
+
+    def test_rejects_blueprint_record_with_missing_required_fields(self):
+        catalog_data = {
+            "complete": True,
+            "blueprint_count": 1,
+            "classes": [{}],
+        }
+        connection = self._make_connection(catalog_data)
+
+        with self.assertRaisesRegex(RuntimeError, "catalog.*record 0.*name"):
+            collect_blueprint_domain(connection)
+
+    def test_incomplete_catalog_aborts_before_writing_blueprint_markdown(self):
+        catalog_data = {
+            "complete": False,
+            "invalid_asset_count": 1,
+            "diagnostics": [{"asset_path": "/Game/Broken.Broken", "invalid_fields": ["ParentClassPath"]}],
+            "classes": [],
+        }
+        connection = self._make_connection(catalog_data)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            schema_dir = project_root / ".cortex" / "schema"
+            with self.assertRaisesRegex(RuntimeError, "incomplete.*1"):
+                generate_schema(
+                    connection,
+                    schema_dir,
+                    domain="blueprints",
+                    project_name="Test",
+                    project_root=project_root,
+                    engine_version="5.8",
+                    plugin_version="0.1.0",
+                )
+            self.assertFalse((schema_dir / "blueprints.md").exists())
+            self.assertFalse((schema_dir / "_catalog.md").exists())
+
+
+class TestDeterministicSchemaRendering(unittest.TestCase):
+
+    def test_schema_version_and_metadata_have_no_generation_timestamp(self):
+        from cortex_mcp.schema_generator import _render_meta
+
+        self.assertEqual(SCHEMA_VERSION, 3)
+        self.assertNotIn("generated:", _render_meta("data"))
+
+    def test_data_renderers_sort_semantic_collections(self):
+        tables = [
+            {"name": "ZTable", "path": "/Game/Z", "row_struct": "ZStruct", "row_count": 1},
+            {"name": "ATable", "path": "/Game/A", "row_struct": "AStruct", "row_count": 1},
+        ]
+        tag_prefixes = [{"prefix": "Z.Tag", "count": 1}, {"prefix": "A.Tag", "count": 1}]
+        data_asset_classes = [
+            {"class_name": "ZAsset", "count": 1},
+            {"class_name": "AAsset", "count": 1},
+        ]
+        string_tables = [{"name": "ZStrings"}, {"name": "AStrings"}]
+        catalog = {
+            "datatables": tables,
+            "tag_prefixes": tag_prefixes,
+            "data_asset_classes": data_asset_classes,
+            "string_tables": string_tables,
+        }
+        reversed_catalog = {
+            "datatables": list(reversed(tables)),
+            "tag_prefixes": list(reversed(tag_prefixes)),
+            "data_asset_classes": list(reversed(data_asset_classes)),
+            "string_tables": list(reversed(string_tables)),
+        }
+        schemas = {
+            "ZStruct": {"schema": []},
+            "AStruct": {"schema": []},
+        }
+        formats = {
+            "ZStruct": {"source_table": "ZTable", "row_data": {"ZField": 1, "AField": 2}},
+            "AStruct": {"source_table": "ATable", "row_data": {"Value": 3}},
+        }
+
+        index = render_data_index(catalog)
+        self.assertEqual(index, render_data_index(reversed_catalog))
+        self.assertLess(index.index("## AStruct"), index.index("## ZStruct"))
+        self.assertLess(index.index("A.Tag"), index.index("Z.Tag"))
+        self.assertLess(index.index("AAsset"), index.index("ZAsset"))
+        self.assertLess(index.index("AStrings"), index.index("ZStrings"))
+
+        structs = render_data_structs(schemas)
+        self.assertLess(structs.index("## AStruct"), structs.index("## ZStruct"))
+        self.assertEqual(
+            structs,
+            render_data_structs(dict(reversed(list(schemas.items())))),
+        )
+
+        rendered_formats = render_data_formats(formats)
+        reversed_formats = dict(reversed(list(formats.items())))
+        self.assertEqual(rendered_formats, render_data_formats(reversed_formats))
+        self.assertLess(rendered_formats.index("## AStruct"), rendered_formats.index("## ZStruct"))
+        self.assertLess(rendered_formats.index("AField"), rendered_formats.index("ZField"))
+
+    def test_format_example_selection_is_independent_of_table_order(self):
+        catalog = {
+            "datatables": [
+                {"name": "ZTable", "path": "/Game/Z", "row_struct": "FRow"},
+                {"name": "ATable", "path": "/Game/A", "row_struct": "FRow"},
+            ]
+        }
+        example_rows = {
+            "ATable": [{"row_data": {"Value": "A"}}],
+            "ZTable": [{"row_data": {"Value": "Z"}}],
+        }
+
+        examples = collect_format_examples(catalog, example_rows)
+        reversed_examples = collect_format_examples(
+            {"datatables": list(reversed(catalog["datatables"]))},
+            example_rows,
+        )
+
+        self.assertEqual(examples, reversed_examples)
+        self.assertEqual(examples["FRow"]["source_table"], "ATable")
+
+    def test_data_collection_queries_example_from_canonical_table(self):
+        connection = unittest.mock.Mock()
+        catalog = {
+            "datatables": [
+                {"name": "ZTable", "path": "/Game/ZTable", "row_struct": "FRow", "row_count": 1},
+                {"name": "ATable", "path": "/Game/ATable", "row_struct": "FRow", "row_count": 1},
+            ],
+            "tag_prefixes": [],
+            "data_asset_classes": [],
+            "string_tables": [],
+        }
+
+        def send_command(command, params=None):
+            if command == "data.get_data_catalog":
+                return {"success": True, "data": catalog}
+            if command == "data.get_datatable_schema":
+                return {"success": True, "data": {"schema": []}}
+            if command == "data.query_datatable":
+                value = "A" if params["table_path"] == "/Game/ATable" else "Z"
+                return {"success": True, "data": {"rows": [{"row_data": {"Value": value}}]}}
+            if command == "data.list_curve_tables":
+                return {"success": True, "data": {"curve_tables": []}}
+            raise AssertionError(f"Unexpected command: {command}")
+
+        connection.send_command.side_effect = send_command
+        result = collect_data_domain(connection)
+
+        self.assertEqual(result["format_examples"]["FRow"]["source_table"], "ATable")
 
     def test_collect_blueprint_domain_uses_explicit_project_root(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -126,6 +370,149 @@ class TestAtomicWrite(unittest.TestCase):
             atomic_write(target, "nested content")
             self.assertTrue(target.exists())
             self.assertEqual(target.read_text(encoding="utf-8"), "nested content")
+
+
+class TestSchemaMetadataSidecar(unittest.TestCase):
+
+    @staticmethod
+    def _collected_data():
+        return {
+            "catalog": {
+                "datatables": [],
+                "tag_prefixes": [],
+                "data_asset_classes": [],
+                "string_tables": [],
+            },
+            "schemas": {},
+            "format_examples": {},
+            "summary": {"structs": [], "tables": [], "tag_prefixes": [], "data_assets": []},
+        }
+
+    @staticmethod
+    def _blueprint_summary():
+        return {
+            "classes": [],
+            "blueprint_count": 0,
+            "cpp_count": 0,
+            "project_cpp_count": 0,
+            "engine_cpp_count": 0,
+        }
+
+    @staticmethod
+    def _level_summary():
+        return {
+            "world": {"level_name": "Main"},
+            "actor_count": 0,
+            "actor_classes": [],
+            "folder_breakdown": [],
+        }
+
+    def test_full_generation_records_each_written_markdown_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            schema_dir = project_root / ".cortex" / "schema"
+            with patch(
+                "cortex_mcp.schema_generator.collect_data_domain",
+                return_value=self._collected_data(),
+            ), patch(
+                "cortex_mcp.schema_generator.collect_blueprint_domain",
+                return_value=self._blueprint_summary(),
+            ), patch(
+                "cortex_mcp.schema_generator.collect_level_domain",
+                return_value=self._level_summary(),
+            ):
+                generate_schema(
+                    unittest.mock.Mock(),
+                    schema_dir,
+                    domain="all",
+                    project_name="Test",
+                    project_root=project_root,
+                    engine_version="5.8",
+                    plugin_version="0.1.0",
+                )
+
+            sidecar = json.loads((schema_dir / ".meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                set(sidecar["files"]),
+                {
+                    "data/_index.md",
+                    "data/structs.md",
+                    "data/formats.md",
+                    "blueprints.md",
+                    "level.md",
+                    "_catalog.md",
+                },
+            )
+            self.assertTrue(all(value.endswith("Z") for value in sidecar["files"].values()))
+
+    def test_partial_generation_preserves_other_domain_timestamps(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            schema_dir = project_root / ".cortex" / "schema"
+            schema_dir.mkdir(parents=True)
+            previous = {
+                "files": {
+                    "blueprints.md": "2026-01-01T00:00:00Z",
+                    "data/_index.md": "2026-01-02T00:00:00Z",
+                    "level.md": "2026-01-03T00:00:00Z",
+                    "_catalog.md": "2026-01-04T00:00:00Z",
+                }
+            }
+            (schema_dir / ".meta.json").write_text(json.dumps(previous), encoding="utf-8")
+            with patch(
+                "cortex_mcp.schema_generator.collect_level_domain",
+                return_value=self._level_summary(),
+            ):
+                generate_schema(
+                    unittest.mock.Mock(),
+                    schema_dir,
+                    domain="level",
+                    project_name="Test",
+                    project_root=project_root,
+                    engine_version="5.8",
+                    plugin_version="0.1.0",
+                )
+
+            updated = json.loads((schema_dir / ".meta.json").read_text(encoding="utf-8"))["files"]
+            self.assertEqual(updated["blueprints.md"], previous["files"]["blueprints.md"])
+            self.assertEqual(updated["data/_index.md"], previous["files"]["data/_index.md"])
+            self.assertNotEqual(updated["level.md"], previous["files"]["level.md"])
+            self.assertNotEqual(updated["_catalog.md"], previous["files"]["_catalog.md"])
+
+    def test_sidecar_write_failure_preserves_previous_metadata(self):
+        from cortex_mcp.schema_generator import atomic_write
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            schema_dir = project_root / ".cortex" / "schema"
+            schema_dir.mkdir(parents=True)
+            sidecar_path = schema_dir / ".meta.json"
+            original_sidecar = '{"files":{"level.md":"2026-01-01T00:00:00Z"}}'
+            sidecar_path.write_text(original_sidecar, encoding="utf-8")
+
+            def fail_sidecar_write(path, content):
+                if path == sidecar_path:
+                    raise OSError("simulated sidecar failure")
+                atomic_write(path, content)
+
+            with patch(
+                "cortex_mcp.schema_generator.collect_level_domain",
+                return_value=self._level_summary(),
+            ), patch(
+                "cortex_mcp.schema_generator.atomic_write",
+                side_effect=fail_sidecar_write,
+            ), self.assertRaisesRegex(OSError, "simulated sidecar failure"):
+                generate_schema(
+                    unittest.mock.Mock(),
+                    schema_dir,
+                    domain="level",
+                    project_name="Test",
+                    project_root=project_root,
+                    engine_version="5.8",
+                    plugin_version="0.1.0",
+                )
+
+            self.assertEqual(sidecar_path.read_text(encoding="utf-8"), original_sidecar)
 
 
 class TestRenderCatalog(unittest.TestCase):
@@ -1151,6 +1538,31 @@ class TestRenderDataIndex(unittest.TestCase):
         result = render_data_index(catalog)
         self.assertIn("CPT_All(10) <- PT_Meds", result)
 
+    def test_composite_parent_table_order_preserves_override_precedence(self):
+        from cortex_mcp.schema_generator import render_data_index
+        catalog = {
+            "datatables": [
+                {
+                    "name": "CPT_All",
+                    "path": "/Game/Data/CPT_All.CPT_All",
+                    "row_struct": "FMedRow",
+                    "row_count": 10,
+                    "is_composite": True,
+                    "parent_tables": [
+                        {"name": "ZBase", "path": "/Game/Data/ZBase"},
+                        {"name": "AOverride", "path": "/Game/Data/AOverride"},
+                    ],
+                },
+            ],
+            "tag_prefixes": [],
+            "data_asset_classes": [],
+            "string_tables": [],
+        }
+
+        result = render_data_index(catalog)
+
+        self.assertIn("CPT_All(10) <- ZBase, AOverride", result)
+
 
 class TestTruncateNestedFields(unittest.TestCase):
 
@@ -1425,9 +1837,9 @@ class TestGenerateSchemaV2(unittest.TestCase):
 
             self.assertFalse(old_file.exists())
 
-    def test_schema_version_is_2(self):
+    def test_schema_version_is_3(self):
         from cortex_mcp.schema_generator import SCHEMA_VERSION
-        self.assertEqual(SCHEMA_VERSION, 2)
+        self.assertEqual(SCHEMA_VERSION, 3)
 
     def test_catalog_references_subdirectory(self):
         conn = self._make_connection()
@@ -1451,7 +1863,7 @@ class TestGenerateSchemaV2(unittest.TestCase):
             self.assertIn("data_formats", result["generated"])
 
 
-class TestSchemaStatusV2(unittest.TestCase):
+class TestSchemaStatusV3(unittest.TestCase):
 
     def test_status_detects_v2_subdirectory(self):
         """schema_status should detect data/ subdirectory structure."""
@@ -1462,7 +1874,7 @@ class TestSchemaStatusV2(unittest.TestCase):
             data_dir = schema_dir / "data"
             data_dir.mkdir(parents=True)
 
-            # Write v2 files with meta blocks
+            # Write schema v3 files with meta blocks
             from cortex_mcp.schema_generator import _render_meta
             (data_dir / "_index.md").write_text(
                 f"# Index\n\n{_render_meta('data-index')}\n",
@@ -1478,7 +1890,7 @@ class TestSchemaStatusV2(unittest.TestCase):
             meta = read_meta_from_file(data_dir / "_index.md")
             self.assertIsNotNone(meta)
             self.assertEqual(meta["domain"], "data-index")
-            self.assertEqual(meta["schema_version"], "2")
+            self.assertEqual(meta["schema_version"], "3")
 
 class TestCollectLevelDomain(unittest.TestCase):
     """Unit tests for the level domain schema collector."""

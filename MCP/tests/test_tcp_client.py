@@ -52,10 +52,10 @@ class TestSendCommandTimeout:
 
         conn._send_and_receive("ping", timeout=120.0)
 
-        # Socket timeout should be set to 120.0 before recv
+        # Socket timeout should be positive and bounded by the requested deadline.
         calls = mock_socket.settimeout.call_args_list
-        assert any(call[0][0] == 120.0 for call in calls), \
-            f"Expected settimeout(120.0) in calls: {calls}"
+        assert any(0 < call[0][0] <= 120.0 for call in calls), \
+            f"Expected a positive settimeout no greater than 120.0: {calls}"
 
     def test_timeout_uses_deadline_based_socket_timeout(self):
         """send_and_receive should apply per-read timeout from remaining deadline."""
