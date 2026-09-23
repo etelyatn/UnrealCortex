@@ -2,7 +2,7 @@
 
 ## Goal
 
-Version the existing UnrealCortex and Cortex Toolkit candidates for their next minor releases, preserve exact cross-repository candidate links, and merge the requested PRs without losing the separate stacked PR #131.
+Apply exactly two minor SemVer version increments: UnrealCortex `0.1.17` → `0.2.0` and Cortex Toolkit `0.9.1` → `0.10.0`. Preserve exact cross-repository candidate links and merge the requested PRs without losing the separate stacked PR #131.
 
 ## Current state
 
