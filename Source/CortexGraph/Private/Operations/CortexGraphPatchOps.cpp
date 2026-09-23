@@ -469,17 +469,46 @@ bool CountGraphNodesBounded(UEdGraph* Graph, int32& InOutCount, TSet<const UEdGr
 	return true;
 }
 
-bool CountBlueprintNodesBounded(UBlueprint* Blueprint)
+/**
+ * Counts the user graphs of the asset against the published `max_scanned_nodes` bound, reporting the
+ * observed count so a refusal can carry it instead of quoting the limit alone.
+ */
+bool CountBlueprintNodesBounded(UBlueprint* Blueprint, int32& OutScannedNodes)
 {
 	TArray<FCortexGraphEntry> Entries;
 	FCortexGraphNodeOps::EnumerateUserGraphs(Blueprint, Entries);
 	TSet<const UEdGraph*> Visited;
 	int32 Count = 0;
+	OutScannedNodes = 0;
 	for (const FCortexGraphEntry& Entry : Entries)
 	{
-		if (!CountGraphNodesBounded(Entry.Graph, Count, Visited)) return false;
+		if (!CountGraphNodesBounded(Entry.Graph, Count, Visited))
+		{
+			OutScannedNodes = Count;
+			return false;
+		}
 	}
+	OutScannedNodes = Count;
 	return true;
+}
+
+/**
+ * The refusal of the graph-wide node limit: the observed count, the limit and completeness, so a
+ * caller never receives a bare budget refusal. The prune shell publishes the same contract as its own
+ * scan under INVALID_OPERATION; every other shell keeps the published budget-refusal code.
+ */
+FCortexCommandResult MakeNodeScanRefusal(const FString& MigrationOp, const int32 ScannedNodes)
+{
+	const bool bPrune = MigrationOp == TEXT("prune_island");
+	FCortexCommandResult Error = FCortexCommandRouter::Error(
+		bPrune ? CortexErrorCodes::InvalidOperation : CortexErrorCodes::LimitExceeded,
+		FString::Printf(TEXT("the graph-wide scan of this request exceeded max_scanned_nodes=%d after %d node(s); the request is refused instead of proceeding on an incompletely scanned asset"),
+			FCortexGraphPatchOps::MaxScannedNodes, ScannedNodes));
+	Error.ErrorDetails = MakeShared<FJsonObject>();
+	Error.ErrorDetails->SetNumberField(TEXT("scan_limit"), FCortexGraphPatchOps::MaxScannedNodes);
+	Error.ErrorDetails->SetNumberField(TEXT("scanned_nodes"), ScannedNodes);
+	Error.ErrorDetails->SetBoolField(TEXT("complete"), false);
+	return Error;
 }
 
 bool ParseTarget(
@@ -1174,14 +1203,17 @@ bool FCortexGraphPatchOps::Preflight(
 	}
 	if (MigrationPtr != nullptr)
 	{
-		if (!CountBlueprintNodesBounded(Blueprint))
+		// The graph-wide node scan refusal carries its observed count and completeness, and the prune
+		// shell's refusal contract (INVALID_OPERATION) applies here as well as to its own scan.
+		FString MigrationOp;
+		(*MigrationPtr)->TryGetStringField(TEXT("op"), MigrationOp);
+		int32 MigrationScannedNodes = 0;
+		if (!CountBlueprintNodesBounded(Blueprint, MigrationScannedNodes))
 		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, FString::Printf(
-				TEXT("graph scan exceeds max_scanned_nodes=%d"), FCortexGraphPatchOps::MaxScannedNodes));
+			OutError = MakeNodeScanRefusal(MigrationOp, MigrationScannedNodes);
 			return false;
 		}
-		FString MigrationOp;
-		if ((*MigrationPtr)->TryGetStringField(TEXT("op"), MigrationOp) && MigrationOp != TEXT("replace_entry"))
+		if (!MigrationOp.IsEmpty() && MigrationOp != TEXT("replace_entry"))
 		{
 			const bool bIsTransferOp = MigrationOp == TEXT("copy_subgraph") || MigrationOp == TEXT("move_subgraph");
 			const bool bIsPruneOp = MigrationOp == TEXT("prune_island");
@@ -1471,10 +1503,10 @@ bool FCortexGraphPatchOps::Preflight(
 	bool bImplementationWouldCreate = false;
 	bool bImplementationIsEvent = false;
 	bool bImplementationHasParentCall = false;
-	if (!CountBlueprintNodesBounded(Blueprint))
+	int32 AuthoringScannedNodes = 0;
+	if (!CountBlueprintNodesBounded(Blueprint, AuthoringScannedNodes))
 	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, FString::Printf(
-			TEXT("graph scan exceeds max_scanned_nodes=%d"), FCortexGraphPatchOps::MaxScannedNodes));
+		OutError = MakeNodeScanRefusal(TEXT(""), AuthoringScannedNodes);
 		return false;
 	}
 	if (!ParseTarget(Blueprint, Params, Target, TargetGraph, SymbolJson, bImplementationWouldCreate, bImplementationIsEvent, bImplementationHasParentCall, OutError)) return false;

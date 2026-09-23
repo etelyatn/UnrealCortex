@@ -884,7 +884,173 @@ bool FCortexGraphMigrationPruneSecondExternalConsumerTest::RunTest(const FString
 }
 
 // ---------------------------------------------------------------------------
-// 4. GraphWideScanLimitRefusedWithCounts
+// 3b. ProducerChainToRetainedConsumer
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphMigrationPruneProducerChainTest,
+	"Cortex.Graph.Authoring.Migration.Prune.ProducerChainToRetainedConsumer",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationPruneProducerChainTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationPruneTest;
+	ClearFaults();
+
+	FFixture Fixture;
+	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_PruneProducerChain_T13")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+	UK2Node_CustomEvent* Entry = AddEntryNode(Graph, TEXT("CortexPruneChainEntry"), 0, 0);
+	DeclareFixtureMember(Fixture.Blueprint, TEXT("PruneCounter"));
+	DeclareFixtureMember(Fixture.Blueprint, TEXT("PruneSink"));
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+
+	// Producer -> Setter (data) -> External. The setter is retained because the external consumer uses
+	// its value, and that retention must reach the producer through the chain: the producer's only
+	// consumer is a node the approved set does not remove.
+	UK2Node_VariableSet* Setter = AddVariableSetNode(Graph, TEXT("PruneCounter"), 300, 0);
+	UK2Node_CallFunction* Tail = AddPrintNode(Graph, TEXT("chain tail"), 700, 0);
+	UK2Node_CallFunction* Producer = AddIntAddNode(Graph, 300, 300);
+	UK2Node_VariableSet* External = AddVariableSetNode(Graph, TEXT("PruneSink"), 300, 700);
+	TestTrue(TEXT("the entry drives the setter"), LinkNodes(Graph, Entry, TEXT("then"), Setter, TEXT("execute")));
+	TestTrue(TEXT("the setter drives the tail"), LinkNodes(Graph, Setter, TEXT("then"), Tail, TEXT("execute")));
+	TestTrue(TEXT("the producer feeds the setter value"),
+		LinkNodes(Graph, Producer, TEXT("ReturnValue"), Setter, TEXT("PruneCounter")));
+	TestTrue(TEXT("the setter value feeds the retained consumer"),
+		LinkNodes(Graph, Setter, TEXT("Output_Get"), External, TEXT("PruneSink")));
+
+	const FFixtureState Before = Observe(Fixture.Blueprint);
+
+	// The whole chain upstream of a retained consumer is retained, so only the tail is removable.
+	TSharedPtr<FJsonObject> Request = PruneRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-000000131351"),
+		Graph, Entry, { Tail->NodeGuid });
+	FCortexGraphPreparedPatch Prepared;
+	FCortexGraphMigrationPrunePlan Plan;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("the chained island previews: %s"), *Error.ErrorMessage),
+		PrepareApply(Fixture.Blueprint, Request, Prepared, Plan, Error));
+	TestEqual(TEXT("only the removable tail is removable"), Plan.ApprovedGuids, GuidStrings({ Tail->NodeGuid }));
+	TestTrue(TEXT("the retained setter is not removable"), !PlanContainsGuid(Plan.ApprovedGuids, Setter->NodeGuid));
+	TestTrue(TEXT("the producer of a retained consumer is not removable"),
+		!PlanContainsGuid(Plan.ApprovedGuids, Producer->NodeGuid));
+	TestNotNull(TEXT("the setter is reported as retained"), FindPartitionNode(Plan.Shared, Setter->NodeGuid));
+	TestNotNull(TEXT("the chained producer is reported as retained"), FindPartitionNode(Plan.Shared, Producer->NodeGuid));
+
+	// Approving the chained producer would disconnect the retained setter, so it is refused by name.
+	FCortexGraphPreparedPatch ChainPrepared;
+	FCortexCommandResult ChainError;
+	const TArray<FGuid> WithProducer = { Tail->NodeGuid, Producer->NodeGuid };
+	TestFalse(TEXT("approving the chained producer is refused"),
+		FCortexGraphPatchOps::Preflight(Fixture.Blueprint,
+			PruneRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-000000131352"), Graph, Entry, WithProducer),
+			ChainPrepared, ChainError));
+	TestEqual(TEXT("the chained-producer refusal is INVALID_OPERATION"), ChainError.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+	TestTrue(FString::Printf(TEXT("the refusal names the chained producer [%s]"), *ChainError.ErrorMessage),
+		ChainError.ErrorMessage.Contains(Producer->NodeGuid.ToString()));
+	TestEqual(TEXT("the chained-producer refusal mutates nothing"), LiveGraphHash(Fixture.Blueprint), Before.Hash);
+
+	// The approved tail alone leaves the retained consumer's whole feeding chain intact.
+	FCortexGraphPatchOutcome Outcome;
+	TestTrue(FString::Printf(TEXT("the chained island applies: %s [%s]"), *Error.ErrorMessage, *FString::Join(Outcome.Diagnostics, TEXT("; "))),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	TestEqual(TEXT("the chained prune readback matches"), Outcome.ReadbackStatus, FString(TEXT("matched")));
+	TestNull(TEXT("the island tail is gone"), FindNodeByGuidInGraph(Graph, Tail->NodeGuid));
+	TestNotNull(TEXT("the retained setter survives"), FindNodeByGuidInGraph(Graph, Setter->NodeGuid));
+	TestNotNull(TEXT("the chained producer survives"), FindNodeByGuidInGraph(Graph, Producer->NodeGuid));
+	TestTrue(TEXT("the producer still feeds the retained setter"),
+		NodesLinked(Producer, TEXT("ReturnValue"), Setter, TEXT("PruneCounter")));
+	TestTrue(TEXT("the retained consumer link survives exactly"),
+		NodesLinked(Setter, TEXT("Output_Get"), External, TEXT("PruneSink")));
+	TestEqual(TEXT("the removed boundary link is gone from the setter"), CountLinkedPins(Setter, TEXT("then")), 0);
+	TestEqual(TEXT("only the approved tail was removed"), CountNativeNodes(Fixture.Blueprint), Before.Nodes - 1);
+
+	Fixture.Cleanup();
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 4a. BelowNodeLimitPrunes
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphMigrationPruneBelowNodeLimitTest,
+	"Cortex.Graph.Authoring.Migration.Prune.BelowNodeLimitPrunes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationPruneBelowNodeLimitTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationPruneTest;
+	ClearFaults();
+
+	FFixture Fixture;
+	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_PruneBelowLimit_T13")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+	UK2Node_CustomEvent* Entry = AddEntryNode(Graph, TEXT("CortexPruneBelowLimitEntry"), 0, 0);
+	UK2Node_CallFunction* Producer = AddPureProducerNode(Graph, 300, 0);
+
+	// A wide island below the published node bound: the scan limit is a node bound, so this fixture
+	// must be plannable and prunable even though its traversal examines far more links than nodes.
+	constexpr int32 FanOut = 500;
+	TArray<FGuid> Approved;
+	Approved.Add(Producer->NodeGuid);
+	UK2Node_CallFunction* Previous = nullptr;
+	for (int32 Index = 0; Index < FanOut; ++Index)
+	{
+		UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("wide"), 600 + (Index % 20) * 200, 0);
+		Approved.Add(Print->NodeGuid);
+		if (!LinkNodes(Graph, Producer, TEXT("ReturnValue"), Print, TEXT("InString")))
+		{
+			TestTrue(TEXT("the fan-out data link is wired"), false);
+			Fixture.Cleanup();
+			return false;
+		}
+		if (Previous == nullptr)
+		{
+			LinkNodes(Graph, Entry, TEXT("then"), Print, TEXT("execute"));
+		}
+		else
+		{
+			LinkNodes(Graph, Previous, TEXT("then"), Print, TEXT("execute"));
+		}
+		Previous = Print;
+	}
+	const int32 NodesBefore = CountNativeNodes(Fixture.Blueprint);
+	TestTrue(TEXT("the wide fixture stays well below the published node bound"),
+		NodesBefore < FCortexGraphPatchOps::MaxScannedNodes);
+
+	TSharedPtr<FJsonObject> Request = PruneRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-000000131301"),
+		Graph, Entry, Approved, true, false);
+	FCortexGraphPreparedPatch Prepared;
+	FCortexGraphMigrationPrunePlan Plan;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("the wide island plans under the node bound: %s"), *Error.ErrorMessage),
+		PrepareApply(Fixture.Blueprint, Request, Prepared, Plan, Error));
+	TestTrue(TEXT("the wide island partition is complete"), Plan.bComplete);
+	TestTrue(TEXT("the wide island scan reports the nodes it examined"),
+		Plan.ScannedNodes > 0 && Plan.ScannedNodes <= FCortexGraphPatchOps::MaxScannedNodes);
+	TestEqual(TEXT("every uniquely owned island node is removable"), Plan.ApprovedGuids.Num(), FanOut + 1);
+
+	FCortexGraphPatchOutcome Outcome;
+	TestTrue(FString::Printf(TEXT("the wide island prunes: %s [%s]"), *Error.ErrorMessage, *FString::Join(Outcome.Diagnostics, TEXT("; "))),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	TestEqual(TEXT("the wide prune readback matches"), Outcome.ReadbackStatus, FString(TEXT("matched")));
+	TestEqual(TEXT("the wide prune removed exactly the island"), CountNativeNodes(Fixture.Blueprint), NodesBefore - (FanOut + 1));
+	TestTrue(TEXT("the wide prune kept the entry"), FindNodeByGuidInGraph(Graph, Entry->NodeGuid) != nullptr);
+	TestEqual(TEXT("the wide prune left the entry unlinked"), CountLinkedPins(Entry, TEXT("then")), 0);
+	if (Plan.ScannedNodes > 0)
+	{
+		AddInfo(FString::Printf(TEXT("wide island scan counts: nodes=%d links=%d limit=%d fixture_nodes=%d"),
+			Plan.ScannedNodes, Plan.ScannedLinks, FCortexGraphPatchOps::MaxScannedNodes, NodesBefore));
+	}
+
+	Fixture.Cleanup();
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 4b. GraphWideScanLimitRefusedWithCounts
 // ---------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexGraphMigrationPruneScanLimitTest,
@@ -902,66 +1068,43 @@ bool FCortexGraphMigrationPruneScanLimitTest::RunTest(const FString& Parameters)
 	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
 	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
 	UK2Node_CustomEvent* Entry = AddEntryNode(Graph, TEXT("CortexPruneScanEntry"), 0, 0);
-	UK2Node_CallFunction* Producer = AddPureProducerNode(Graph, 300, 0);
 
-	// A wide island whose node count stays far below the published node bound: the scan budget is
-	// spent on real traversal work, so exhaustion is reachable without an over-large asset.
-	constexpr int32 FanOut = 700;
-	UK2Node_CallFunction* Previous = nullptr;
-	UK2Node_CallFunction* Last = nullptr;
-	for (int32 Index = 0; Index < FanOut; ++Index)
+	// A graph above the published node bound: the graph-wide node scan must refuse with the observed
+	// count, the limit and completeness, instead of proceeding on an incompletely scanned asset.
+	const int32 OverLimit = FCortexGraphPatchOps::MaxScannedNodes + 2;
+	for (int32 Index = 0; Index < OverLimit; ++Index)
 	{
-		UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("scan"), 600 + (Index % 20) * 200, 0);
-		Last = Print;
-		if (!LinkNodes(Graph, Producer, TEXT("ReturnValue"), Print, TEXT("InString")))
-		{
-			TestTrue(TEXT("the fan-out data link is wired"), false);
-			Fixture.Cleanup();
-			return false;
-		}
-		if (Previous == nullptr)
-		{
-			LinkNodes(Graph, Entry, TEXT("then"), Print, TEXT("execute"));
-		}
-		else
-		{
-			LinkNodes(Graph, Previous, TEXT("then"), Print, TEXT("execute"));
-		}
-		Previous = Print;
+		AddPrintNode(Graph, TEXT("gate"), 600 + (Index % 40) * 200, (Index / 40) * 60);
 	}
-	TestNotNull(TEXT("the fan-out built"), Last);
-	TestTrue(TEXT("the fixture stays under the published node bound"),
-		CountNativeNodes(Fixture.Blueprint) < FCortexGraphPatchOps::MaxScannedNodes);
+	const int32 NodesBefore = CountNativeNodes(Fixture.Blueprint);
+	TestTrue(TEXT("the fixture exceeds the published node bound"), NodesBefore > FCortexGraphPatchOps::MaxScannedNodes);
 
 	const FFixtureState Before = Observe(Fixture.Blueprint);
 	FCortexGraphPreparedPatch Prepared;
 	FCortexCommandResult Error;
 	TestFalse(TEXT("the graph-wide scan limit refuses the request"),
 		FCortexGraphPatchOps::Preflight(Fixture.Blueprint,
-			PruneRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-000000131401"), Graph, Entry, { Last->NodeGuid }),
+			PruneRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-000000131401"), Graph, Entry, {}, false),
 			Prepared, Error));
 	TestEqual(TEXT("the scan-limit refusal is INVALID_OPERATION"), Error.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
 	TestTrue(FString::Printf(TEXT("the refusal reports the scan limit [%s]"), *Error.ErrorMessage),
 		Error.ErrorMessage.Contains(FString::Printf(TEXT("%d"), FCortexGraphPatchOps::MaxScannedNodes)));
-	TestTrue(TEXT("the refusal carries the observed counts"),
+	TestTrue(TEXT("the refusal carries the observed node count"),
 		Error.ErrorDetails.IsValid()
 			&& Error.ErrorDetails->GetIntegerField(TEXT("scan_limit")) == FCortexGraphPatchOps::MaxScannedNodes
-			&& Error.ErrorDetails->GetIntegerField(TEXT("scanned_nodes")) > 0
-			&& Error.ErrorDetails->GetIntegerField(TEXT("scanned_links")) > 0);
-	TestTrue(TEXT("the reported scan work explains the refusal"),
+			&& Error.ErrorDetails->GetIntegerField(TEXT("scanned_nodes")) > FCortexGraphPatchOps::MaxScannedNodes);
+	TestTrue(TEXT("the refusal never claims completeness"),
+		Error.ErrorDetails.IsValid() && !Error.ErrorDetails->GetBoolField(TEXT("complete")));
+	TestTrue(FString::Printf(TEXT("the refusal message reports the observed count [%s]"), *Error.ErrorMessage),
 		Error.ErrorDetails.IsValid()
-			&& Error.ErrorDetails->GetIntegerField(TEXT("scanned_nodes"))
-				+ Error.ErrorDetails->GetIntegerField(TEXT("scanned_links")) > FCortexGraphPatchOps::MaxScannedNodes);
+			&& Error.ErrorMessage.Contains(FString::Printf(TEXT("%d"), Error.ErrorDetails->GetIntegerField(TEXT("scanned_nodes")))));
 	if (Error.ErrorDetails.IsValid())
 	{
-		AddInfo(FString::Printf(TEXT("scan-limit refusal counts: nodes=%d links=%d limit=%d fixture_nodes=%d"),
+		AddInfo(FString::Printf(TEXT("graph-wide node-limit refusal counts: nodes=%d limit=%d fixture_nodes=%d"),
 			Error.ErrorDetails->GetIntegerField(TEXT("scanned_nodes")),
-			Error.ErrorDetails->GetIntegerField(TEXT("scanned_links")),
 			Error.ErrorDetails->GetIntegerField(TEXT("scan_limit")),
 			Before.Nodes));
 	}
-	TestTrue(TEXT("the refusal never claims completeness"),
-		Error.ErrorDetails.IsValid() && !Error.ErrorDetails->GetBoolField(TEXT("complete")));
 	TestEqual(TEXT("the refused scan removes no node"), CountNativeNodes(Fixture.Blueprint), Before.Nodes);
 	TestEqual(TEXT("the refused scan mutates nothing"), LiveGraphHash(Fixture.Blueprint), Before.Hash);
 

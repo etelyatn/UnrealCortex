@@ -4734,11 +4734,11 @@ bool FCortexGraphMigrationOps::VerifyTransferAgainstNative(
 namespace
 {
 /**
- * Graph-wide scan budget of one prune preflight, measured in scan units (one visited node or one
- * examined link). The value is the published `max_scanned_nodes` bound, so a refusal quotes the
- * limit the caller already reads from `graph.get_authoring_context` instead of inventing a second.
+ * Graph-wide scan budget of one prune preflight. The value is the published `max_scanned_nodes`
+ * bound, and the budgeted unit is a *distinct node* — exactly what that published bound means — so a
+ * legitimate asset below the node limit can never become unprunable because its island has many links.
  */
-constexpr int32 PruneScanUnitLimit = FCortexGraphPatchOps::MaxScannedNodes;
+constexpr int32 PruneScanNodeLimit = FCortexGraphPatchOps::MaxScannedNodes;
 
 const TCHAR* const PruneOp = TEXT("prune_island");
 
@@ -4757,34 +4757,37 @@ bool ShouldInjectPruneReadbackFault(const FName Check)
 #endif
 }
 
-/** One accumulating bounded scan: every visited node and every examined link is charged once. */
+/**
+ * One accumulating bounded scan. Every distinct node identity the scan examines is charged once
+ * against the published node bound; examined links are counted for the refusal report only, because
+ * the traversal is already bounded by its visited sets and the link inventory of one node is finite.
+ */
 struct FPruneScan
 {
+	TSet<FGuid> Counted;
 	int32 Nodes = 0;
 	int32 Links = 0;
 	bool bExhausted = false;
 
-	void VisitNode()
+	void Visit(const FGuid& NodeGuid)
 	{
+		if (Counted.Contains(NodeGuid)) return;
+		Counted.Add(NodeGuid);
 		++Nodes;
-		if (Nodes + Links > PruneScanUnitLimit) bExhausted = true;
+		if (Nodes > PruneScanNodeLimit) bExhausted = true;
 	}
 
-	void ExamineLink()
-	{
-		++Links;
-		if (Nodes + Links > PruneScanUnitLimit) bExhausted = true;
-	}
+	void ExamineLink() { ++Links; }
 };
 
 /** The refusal of an exhausted scan: the observed counts and the limit, never a partial partition. */
 FCortexCommandResult MakePruneScanRefusal(const FPruneScan& Scan)
 {
 	FCortexCommandResult Error = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-		FString::Printf(TEXT("the graph-wide scan of this prune island exceeded max_scanned_nodes=%d after %d node visit(s) and %d examined link(s); the island partition is incomplete, so the request is refused instead of pruning a set that was never proven"),
-			PruneScanUnitLimit, Scan.Nodes, Scan.Links));
+		FString::Printf(TEXT("the graph-wide scan of this prune island exceeded max_scanned_nodes=%d after %d node(s) (%d link(s) examined); the island partition is incomplete, so the request is refused instead of pruning a set that was never proven"),
+			PruneScanNodeLimit, Scan.Nodes, Scan.Links));
 	Error.ErrorDetails = MakeShared<FJsonObject>();
-	Error.ErrorDetails->SetNumberField(TEXT("scan_limit"), PruneScanUnitLimit);
+	Error.ErrorDetails->SetNumberField(TEXT("scan_limit"), PruneScanNodeLimit);
 	Error.ErrorDetails->SetNumberField(TEXT("scanned_nodes"), Scan.Nodes);
 	Error.ErrorDetails->SetNumberField(TEXT("scanned_links"), Scan.Links);
 	Error.ErrorDetails->SetBoolField(TEXT("complete"), false);
@@ -4982,7 +4985,7 @@ bool ComputePrunePartition(
 			for (UEdGraphNode* Node : Candidate->Nodes)
 			{
 				if (!Node) continue;
-				OutPartition.Scan.VisitNode();
+				OutPartition.Scan.Visit(Node->NodeGuid);
 				if (OutPartition.Scan.bExhausted)
 				{
 					OutError = MakePruneScanRefusal(OutPartition.Scan);
@@ -5009,16 +5012,11 @@ bool ComputePrunePartition(
 			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
 			{
 				OutPartition.Scan.ExamineLink();
-				if (OutPartition.Scan.bExhausted)
-				{
-					OutError = MakePruneScanRefusal(OutPartition.Scan);
-					return false;
-				}
 				UEdGraphNode* const Next = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
 				if (!Next || Island.Contains(Next->NodeGuid)) continue;
 				Island.Add(Next->NodeGuid);
 				Worklist.Add(Next);
-				OutPartition.Scan.VisitNode();
+				OutPartition.Scan.Visit(Next->NodeGuid);
 				if (OutPartition.Scan.bExhausted)
 				{
 					OutError = MakePruneScanRefusal(OutPartition.Scan);
@@ -5040,16 +5038,11 @@ bool ComputePrunePartition(
 			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
 			{
 				OutPartition.Scan.ExamineLink();
-				if (OutPartition.Scan.bExhausted)
-				{
-					OutError = MakePruneScanRefusal(OutPartition.Scan);
-					return false;
-				}
 				UEdGraphNode* const Producer = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
 				if (!Producer || Island.Contains(Producer->NodeGuid)) continue;
 				Island.Add(Producer->NodeGuid);
 				Worklist.Add(Producer);
-				OutPartition.Scan.VisitNode();
+				OutPartition.Scan.Visit(Producer->NodeGuid);
 				if (OutPartition.Scan.bExhausted)
 				{
 					OutError = MakePruneScanRefusal(OutPartition.Scan);
@@ -5105,13 +5098,21 @@ bool ComputePrunePartition(
 		Candidates.Add(Node->NodeGuid);
 	}
 
-	// Shared: a candidate whose output is consumed by anything the approved set does not remove. The
-	// candidate set is snapshotted first, so the classification can only ever retain more than it
-	// removes, never less.
-	const TSet<FGuid> CandidateSnapshot = Candidates;
+	// Shared: retention is a closure, not one pass. A candidate whose output is consumed by anything
+	// the approved set does not remove is retained, and so is every island node upstream of it, because
+	// a retained node consumes that node's output too. Seeding the closure with the retained consumers
+	// (and with every island node that is retained by kind) and then walking the feeding links once per
+	// retained node computes that closure exactly; the visited check bounds it, because each island node
+	// is enqueued at most once. A single pass would leave a producer of a retained node removable and
+	// would delete a link a retained node depends on.
+	TArray<UEdGraphNode*> RetainedWorklist;
 	for (UEdGraphNode* Node : IslandNodes)
 	{
-		if (!CandidateSnapshot.Contains(Node->NodeGuid) || !Candidates.Contains(Node->NodeGuid)) continue;
+		if (!Candidates.Contains(Node->NodeGuid)) RetainedWorklist.Add(Node);
+	}
+	for (UEdGraphNode* Node : IslandNodes)
+	{
+		if (!Candidates.Contains(Node->NodeGuid)) continue;
 		FString ConsumingReason;
 		for (UEdGraphPin* Pin : Node->Pins)
 		{
@@ -5119,13 +5120,8 @@ bool ComputePrunePartition(
 			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
 			{
 				OutPartition.Scan.ExamineLink();
-				if (OutPartition.Scan.bExhausted)
-				{
-					OutError = MakePruneScanRefusal(OutPartition.Scan);
-					return false;
-				}
 				UEdGraphNode* const Consumer = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
-				if (Consumer && CandidateSnapshot.Contains(Consumer->NodeGuid)) continue;
+				if (Consumer && Candidates.Contains(Consumer->NodeGuid)) continue;
 				ConsumingReason = Consumer
 					? FString::Printf(TEXT("consumed by node '%s', which the approved set does not remove"), *Consumer->NodeGuid.ToString())
 					: TEXT("consumed by a link whose far endpoint does not resolve");
@@ -5133,10 +5129,28 @@ bool ComputePrunePartition(
 			}
 			if (!ConsumingReason.IsEmpty()) break;
 		}
-		if (!ConsumingReason.IsEmpty())
+		if (ConsumingReason.IsEmpty()) continue;
+		Candidates.Remove(Node->NodeGuid);
+		RetainedReasons.Add(Node->NodeGuid, ConsumingReason);
+		RetainedWorklist.Add(Node);
+	}
+	for (int32 Index = 0; Index < RetainedWorklist.Num(); ++Index)
+	{
+		UEdGraphNode* const RetainedNode = RetainedWorklist[Index];
+		if (!RetainedNode) continue;
+		for (UEdGraphPin* Pin : RetainedNode->Pins)
 		{
-			Candidates.Remove(Node->NodeGuid);
-			RetainedReasons.Add(Node->NodeGuid, ConsumingReason);
+			if (!Pin || Pin->Direction != EGPD_Input) continue;
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				OutPartition.Scan.ExamineLink();
+				UEdGraphNode* const Producer = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+				if (!Producer || !Candidates.Contains(Producer->NodeGuid)) continue;
+				Candidates.Remove(Producer->NodeGuid);
+				RetainedReasons.Add(Producer->NodeGuid, FString::Printf(
+					TEXT("produced for the retained node '%s'"), *RetainedNode->NodeGuid.ToString()));
+				RetainedWorklist.Add(Producer);
+			}
 		}
 	}
 
@@ -5805,7 +5819,7 @@ TSharedPtr<FJsonObject> FCortexGraphMigrationOps::MakePruneInventory(const TShar
 	Inventory->SetBoolField(TEXT("awaiting_approval"), Plan.bAwaitingApproval);
 	Inventory->SetBoolField(TEXT("complete"), Plan.bComplete);
 	Inventory->SetBoolField(TEXT("reused"), Plan.bReused);
-	Inventory->SetNumberField(TEXT("scan_limit"), PruneScanUnitLimit);
+	Inventory->SetNumberField(TEXT("scan_limit"), PruneScanNodeLimit);
 	Inventory->SetNumberField(TEXT("scanned_nodes"), Plan.ScannedNodes);
 	Inventory->SetNumberField(TEXT("scanned_links"), Plan.ScannedLinks);
 

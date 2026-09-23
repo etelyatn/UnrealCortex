@@ -220,7 +220,9 @@ struct FCortexGraphMigrationPrunePlan
 	TArray<FCortexGraphPruneEdge> ExternalEdges;
 	/** Preservation contract of the retained body, shared by the readback and by recovery. */
 	FCortexGraphTransferPreservation Preservation;
+	/** Distinct node identities the graph-wide scan examined: the budgeted unit of the published limit. */
 	int32 ScannedNodes = 0;
+	/** Examined link endpoints, reported for context only; links are not a budget. */
 	int32 ScannedLinks = 0;
 	/** False only when the graph-wide scan budget was exhausted, so the partition is not complete. */
 	bool bComplete = true;
