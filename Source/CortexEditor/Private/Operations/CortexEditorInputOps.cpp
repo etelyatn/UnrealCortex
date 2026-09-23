@@ -196,46 +196,155 @@ bool DispatchMouseScroll(const FVector2D& ScreenPos, float Delta)
 	return FSlateApplication::Get().ProcessMouseWheelOrGestureEvent(WheelEvent, nullptr);
 }
 
-FCortexCommandResult DispatchEnhancedInputAction(const FString& ActionName, float Value)
+// Resolves the PIE Enhanced Input subsystem, or fills OutError and returns null.
+UEnhancedInputLocalPlayerSubsystem* ResolvePIEEnhancedInputSubsystem(FCortexCommandResult& OutError)
 {
 	if (!GEditor || !GEditor->PlayWorld)
 	{
-		return FCortexCommandRouter::Error(
+		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::PIENotActive,
 			TEXT("PIE world not available"));
+		return nullptr;
 	}
 
 	APlayerController* PlayerController = GEditor->PlayWorld->GetFirstPlayerController();
 	if (!PlayerController)
 	{
-		return FCortexCommandRouter::Error(
+		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidOperation,
 			TEXT("No player controller in PIE world"));
+		return nullptr;
 	}
 
 	ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer();
 	if (!LocalPlayer)
 	{
-		return FCortexCommandRouter::Error(
+		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidOperation,
 			TEXT("No local player in PIE world"));
+		return nullptr;
 	}
 
 	UEnhancedInputLocalPlayerSubsystem* Subsystem =
 		LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
 	if (!Subsystem)
 	{
-		return FCortexCommandRouter::Error(
+		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidOperation,
 			TEXT("Enhanced Input subsystem not available"));
+		return nullptr;
 	}
 
+	return Subsystem;
+}
+
+/**
+ * Reads the action name, accepting `action` as an alias for `action_name`.
+ *
+ * The advertised command schema said `action` while the code only ever read `action_name`,
+ * so a caller following the schema got "Missing required param: action_name" and no hint.
+ */
+bool TryGetActionName(const TSharedPtr<FJsonObject>& Params, FString& OutActionName)
+{
+	if (!Params.IsValid())
+	{
+		return false;
+	}
+	if (Params->TryGetStringField(TEXT("action_name"), OutActionName) && !OutActionName.IsEmpty())
+	{
+		return true;
+	}
+	if (Params->TryGetStringField(TEXT("action"), OutActionName) && !OutActionName.IsEmpty())
+	{
+		return true;
+	}
+	return false;
+}
+
+UInputAction* ResolveInputActionByName(const FString& ActionName)
+{
 	UInputAction* FoundAction = FindObject<UInputAction>(nullptr, *ActionName);
 	if (!FoundAction)
 	{
 		FoundAction = FindFirstObject<UInputAction>(*ActionName);
 	}
+	return FoundAction;
+}
 
+/**
+ * Builds a value that respects the action's OWN ValueType.
+ *
+ * `value` accepts either a number or an object with x/y/z. Passing a bare number for an
+ * Axis2D action (a 2D movement action, for example) lands entirely on X and leaves Y at
+ * zero, which reads as "strafe" rather than "walk forward" - so vectors must survive.
+ */
+bool BuildActionValueFromParams(
+	const UInputAction* Action,
+	const TSharedPtr<FJsonObject>& Params,
+	FInputActionValue& OutValue,
+	FString& OutError)
+{
+	FVector Raw(1.0, 0.0, 0.0);
+
+	if (Params.IsValid() && Params->HasField(TEXT("value")))
+	{
+		const TSharedPtr<FJsonObject>* ValueObject = nullptr;
+		double Scalar = 0.0;
+		if (Params->TryGetObjectField(TEXT("value"), ValueObject) && ValueObject != nullptr && ValueObject->IsValid())
+		{
+			double X = 0.0;
+			double Y = 0.0;
+			double Z = 0.0;
+			(*ValueObject)->TryGetNumberField(TEXT("x"), X);
+			(*ValueObject)->TryGetNumberField(TEXT("y"), Y);
+			(*ValueObject)->TryGetNumberField(TEXT("z"), Z);
+			Raw = FVector(X, Y, Z);
+		}
+		else if (Params->TryGetNumberField(TEXT("value"), Scalar))
+		{
+			Raw = FVector(Scalar, 0.0, 0.0);
+		}
+		else
+		{
+			OutError = TEXT("value must be numeric or an object with x/y/z");
+			return false;
+		}
+	}
+
+	// Zeroes the components the action does not use, so getters keep working.
+	OutValue = FInputActionValue(Action->ValueType, Raw);
+	return true;
+}
+
+void DescribeActionValue(const FInputActionValue& Value, const TSharedPtr<FJsonObject>& Data)
+{
+	const FVector Raw = Value.Get<FVector>();
+	TSharedPtr<FJsonObject> ValueObject = MakeShared<FJsonObject>();
+	ValueObject->SetNumberField(TEXT("x"), Raw.X);
+	ValueObject->SetNumberField(TEXT("y"), Raw.Y);
+	ValueObject->SetNumberField(TEXT("z"), Raw.Z);
+	Data->SetObjectField(TEXT("value"), ValueObject);
+
+	switch (Value.GetValueType())
+	{
+	case EInputActionValueType::Boolean: Data->SetStringField(TEXT("value_type"), TEXT("Boolean")); break;
+	case EInputActionValueType::Axis1D:  Data->SetStringField(TEXT("value_type"), TEXT("Axis1D"));  break;
+	case EInputActionValueType::Axis2D:  Data->SetStringField(TEXT("value_type"), TEXT("Axis2D"));  break;
+	case EInputActionValueType::Axis3D:  Data->SetStringField(TEXT("value_type"), TEXT("Axis3D"));  break;
+	default: Data->SetStringField(TEXT("value_type"), TEXT("Unknown")); break;
+	}
+}
+
+FCortexCommandResult DispatchEnhancedInputAction(const FString& ActionName, const TSharedPtr<FJsonObject>& Params)
+{
+	FCortexCommandResult SubsystemError;
+	UEnhancedInputLocalPlayerSubsystem* Subsystem = ResolvePIEEnhancedInputSubsystem(SubsystemError);
+	if (!Subsystem)
+	{
+		return SubsystemError;
+	}
+
+	UInputAction* FoundAction = ResolveInputActionByName(ActionName);
 	if (!FoundAction)
 	{
 		return FCortexCommandRouter::Error(
@@ -243,13 +352,20 @@ FCortexCommandResult DispatchEnhancedInputAction(const FString& ActionName, floa
 			FString::Printf(TEXT("Input action not found: %s"), *ActionName));
 	}
 
+	FInputActionValue ActionValue;
+	FString ValueError;
+	if (!BuildActionValueFromParams(FoundAction, Params, ActionValue, ValueError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValueError);
+	}
+
 	const TArray<UInputModifier*> NoModifiers;
 	const TArray<UInputTrigger*> NoTriggers;
-	Subsystem->InjectInputForAction(FoundAction, FInputActionValue(Value), NoModifiers, NoTriggers);
+	Subsystem->InjectInputForAction(FoundAction, ActionValue, NoModifiers, NoTriggers);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("action_name"), ActionName);
-	Data->SetNumberField(TEXT("value"), Value);
+	DescribeActionValue(ActionValue, Data);
 	return FCortexCommandRouter::Success(Data);
 }
 }
@@ -440,15 +556,12 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputAction(
 	const TSharedPtr<FJsonObject>& Params)
 {
 	FString ActionName;
-	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("action_name"), ActionName) || ActionName.IsEmpty())
+	if (!TryGetActionName(Params, ActionName))
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			TEXT("Missing required param: action_name"));
+			TEXT("Missing required param: action_name (alias: action)"));
 	}
-
-	double Value = 1.0;
-	Params->TryGetNumberField(TEXT("value"), Value);
 
 	const FCortexCommandResult Context = ValidateInputContext(PIEState);
 	if (!Context.bSuccess)
@@ -456,7 +569,7 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputAction(
 		return Context;
 	}
 
-	return DispatchEnhancedInputAction(ActionName, static_cast<float>(Value));
+	return DispatchEnhancedInputAction(ActionName, Params);
 }
 
 FCortexCommandResult FCortexEditorInputOps::InjectInputSequence(
@@ -723,6 +836,183 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputSequence(
 
 		PIEState->RegisterInputTickerHandle(Handle);
 	}
+
+	FCortexCommandResult Deferred;
+	Deferred.bIsDeferred = true;
+	return Deferred;
+}
+
+FCortexCommandResult FCortexEditorInputOps::InjectInputContinuous(
+	TSharedPtr<FCortexEditorPIEState> PIEState,
+	const TSharedPtr<FJsonObject>& Params,
+	FDeferredResponseCallback DeferredCallback)
+{
+	FString ActionName;
+	if (!TryGetActionName(Params, ActionName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: action_name (alias: action)"));
+	}
+
+	FString Mode = TEXT("start");
+	Params->TryGetStringField(TEXT("mode"), Mode);
+	if (Mode != TEXT("start") && Mode != TEXT("update") && Mode != TEXT("stop"))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("mode invalid: %s (expected start, update or stop)"), *Mode));
+	}
+
+	double DurationMs = 0.0;
+	if (Params->HasField(TEXT("duration_ms")) && !Params->TryGetNumberField(TEXT("duration_ms"), DurationMs))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("duration_ms must be numeric"));
+	}
+
+	if (!PIEState.IsValid())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::PIENotActive,
+			TEXT("PIE is not running. Call start_pie first."));
+	}
+
+	const FCortexCommandResult Context = ValidateInputContext(*PIEState);
+	if (!Context.bSuccess)
+	{
+		return Context;
+	}
+
+	FCortexCommandResult SubsystemError;
+	UEnhancedInputLocalPlayerSubsystem* Subsystem = ResolvePIEEnhancedInputSubsystem(SubsystemError);
+	if (!Subsystem)
+	{
+		return SubsystemError;
+	}
+
+	UInputAction* FoundAction = ResolveInputActionByName(ActionName);
+	if (!FoundAction)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InputActionNotFound,
+			FString::Printf(TEXT("Input action not found: %s"), *ActionName));
+	}
+
+	if (Mode == TEXT("stop"))
+	{
+		Subsystem->StopContinuousInputInjectionForAction(FoundAction);
+
+		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+		Data->SetStringField(TEXT("action_name"), ActionName);
+		Data->SetStringField(TEXT("mode"), TEXT("stop"));
+		Data->SetBoolField(TEXT("injecting"), false);
+		return FCortexCommandRouter::Success(Data);
+	}
+
+	FInputActionValue ActionValue;
+	FString ValueError;
+	if (!BuildActionValueFromParams(FoundAction, Params, ActionValue, ValueError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValueError);
+	}
+
+	if (Mode == TEXT("update"))
+	{
+		Subsystem->UpdateValueOfContinuousInputInjectionForAction(FoundAction, ActionValue);
+
+		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+		Data->SetStringField(TEXT("action_name"), ActionName);
+		Data->SetStringField(TEXT("mode"), TEXT("update"));
+		Data->SetBoolField(TEXT("injecting"), true);
+		DescribeActionValue(ActionValue, Data);
+		return FCortexCommandRouter::Success(Data);
+	}
+
+	const TArray<UInputModifier*> NoModifiers;
+	const TArray<UInputTrigger*> NoTriggers;
+	EnsurePIEViewportFocus();
+	Subsystem->StartContinuousInputInjectionForAction(FoundAction, ActionValue, NoModifiers, NoTriggers);
+
+	if (DurationMs <= 0.0)
+	{
+		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+		Data->SetStringField(TEXT("action_name"), ActionName);
+		Data->SetStringField(TEXT("mode"), TEXT("start"));
+		Data->SetBoolField(TEXT("injecting"), true);
+		Data->SetNumberField(TEXT("duration_ms"), 0.0);
+		Data->SetStringField(
+			TEXT("note"),
+			TEXT("Injecting every tick until mode=stop, PIE ends, or another command cancels input."));
+		DescribeActionValue(ActionValue, Data);
+		return FCortexCommandRouter::Success(Data);
+	}
+
+	if (!DeferredCallback)
+	{
+		// Already injecting; without a deferred channel we cannot report the auto-stop,
+		// so stop now rather than leave input pinned on with no way to observe it.
+		Subsystem->StopContinuousInputInjectionForAction(FoundAction);
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			TEXT("duration_ms requires deferred callback support; omit duration_ms and call mode=stop instead"));
+	}
+
+	const uint32 CallbackId = PIEState->RegisterPendingInputCallback(MoveTemp(DeferredCallback));
+	const double StartTime = FPlatformTime::Seconds();
+	const TWeakPtr<FCortexEditorPIEState> WeakPIEState = PIEState;
+	const TSharedRef<FThreadSafeBool> CancelToken = PIEState->GetInputCancelToken();
+	const TWeakObjectPtr<UInputAction> WeakAction(FoundAction);
+	const FString CapturedActionName = ActionName;
+	const double CapturedDurationMs = DurationMs;
+
+	const FTSTicker::FDelegateHandle Handle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateLambda([
+			WeakPIEState,
+			WeakAction,
+			CancelToken,
+			CallbackId,
+			StartTime,
+			CapturedActionName,
+			CapturedDurationMs
+		](float DeltaTime) -> bool
+		{
+			(void)DeltaTime;
+
+			// Stop first and unconditionally: a cancelled or torn-down run must not
+			// leave the action injecting every tick forever.
+			FCortexCommandResult StopError;
+			if (UEnhancedInputLocalPlayerSubsystem* ActiveSubsystem = ResolvePIEEnhancedInputSubsystem(StopError))
+			{
+				if (UInputAction* Action = WeakAction.Get())
+				{
+					ActiveSubsystem->StopContinuousInputInjectionForAction(Action);
+				}
+			}
+
+			const TSharedPtr<FCortexEditorPIEState> ActivePIEState = WeakPIEState.Pin();
+			if (!ActivePIEState.IsValid() || *CancelToken)
+			{
+				return false;
+			}
+
+			FCortexCommandResult Final;
+			Final.bSuccess = true;
+			Final.Data = MakeShared<FJsonObject>();
+			Final.Data->SetStringField(TEXT("action_name"), CapturedActionName);
+			Final.Data->SetStringField(TEXT("mode"), TEXT("start"));
+			Final.Data->SetBoolField(TEXT("injecting"), false);
+			Final.Data->SetNumberField(TEXT("duration_ms"), CapturedDurationMs);
+			Final.Data->SetNumberField(
+				TEXT("actual_duration_ms"),
+				(FPlatformTime::Seconds() - StartTime) * 1000.0);
+			ActivePIEState->CompletePendingInputCallback(CallbackId, Final);
+			return false;
+		}),
+		static_cast<float>(DurationMs / 1000.0));
+
+	PIEState->RegisterInputTickerHandle(Handle);
 
 	FCortexCommandResult Deferred;
 	Deferred.bIsDeferred = true;

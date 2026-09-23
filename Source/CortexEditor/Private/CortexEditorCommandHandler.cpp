@@ -72,6 +72,10 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	{
 		return FCortexEditorInputOps::InjectInputSequence(PIEState, Params, MoveTemp(DeferredCallback));
 	}
+	if (PIEState.IsValid() && Command == TEXT("inject_input_continuous"))
+	{
+		return FCortexEditorInputOps::InjectInputContinuous(PIEState, Params, MoveTemp(DeferredCallback));
+	}
 	if (PIEState.IsValid() && Command == TEXT("get_editor_state"))
 	{
 		return FCortexEditorUtilityOps::GetEditorState(*PIEState);
@@ -161,13 +165,18 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Optional(TEXT("action"), TEXT("string"), TEXT("tap, press, or release"))
 			.Optional(TEXT("duration_ms"), TEXT("number"), TEXT("Press duration in milliseconds"))
 			.Optional(TEXT("delta"), TEXT("object"), TEXT("Optional relative mouse delta")),
-		FCortexCommandInfo{ TEXT("inject_input_action"), TEXT("Inject Enhanced Input action into PIE") }
-			.Required(TEXT("action"), TEXT("string"), TEXT("Input action asset or name"))
-			.Optional(TEXT("value"), TEXT("object"), TEXT("Input value payload"))
+		FCortexCommandInfo{ TEXT("inject_input_action"), TEXT("Inject Enhanced Input action into PIE for a single frame") }
+			.Required(TEXT("action_name"), TEXT("string"), TEXT("Input action asset path or name (alias: action)"))
+			.Optional(TEXT("value"), TEXT("object"), TEXT("Number, or object with x/y/z for Axis2D/Axis3D actions"))
 			.Optional(TEXT("trigger_event"), TEXT("string"), TEXT("Trigger event to simulate")),
 		FCortexCommandInfo{ TEXT("inject_input_sequence"), TEXT("Execute timed input sequence") }
 			.Required(TEXT("steps"), TEXT("array"), TEXT("Timed input steps to execute"))
 			.Optional(TEXT("timeout"), TEXT("number"), TEXT("Overall timeout in seconds")),
+		FCortexCommandInfo{ TEXT("inject_input_continuous"), TEXT("Inject an Enhanced Input action EVERY TICK until stopped, to drive sustained movement") }
+			.Required(TEXT("action_name"), TEXT("string"), TEXT("Input action asset path or name (alias: action)"))
+			.Optional(TEXT("value"), TEXT("object"), TEXT("Number, or object with x/y/z for Axis2D/Axis3D actions"))
+			.Optional(TEXT("mode"), TEXT("string"), TEXT("start (default), update, or stop"))
+			.Optional(TEXT("duration_ms"), TEXT("number"), TEXT("Auto-stop after this long; response is deferred until then. Omit to run until mode=stop")),
 		FCortexCommandInfo{ TEXT("capture_screenshot"), TEXT("Capture viewport screenshot") }
 			.Optional(TEXT("output_path"), TEXT("string"), TEXT("Optional screenshot output path")),
 		FCortexCommandInfo{ TEXT("get_viewport_info"), TEXT("Get viewport state") },

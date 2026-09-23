@@ -17,6 +17,9 @@
 #include "Misc/EngineVersionComparison.h"
 #include "HAL/FileManager.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/PlayerController.h"
+#include "Camera/PlayerCameraManager.h"
+#include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
@@ -159,6 +162,13 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 	// returns the last cached frame (which may predate material changes).
 	FSlateApplication::Get().Tick(ESlateTickType::All);
 
+	// The Slate tick alone is NOT enough: Slate skips drawing a viewport that is not
+	// visible (minimised editor, hidden tab, remote desktop), so ReadPixels returns the
+	// stale render target. Measured: two captures either side of a 180-degree camera
+	// change were byte-identical (same md5), which reads as "screenshots are broken"
+	// rather than "the viewport was never redrawn". Draw explicitly instead of hoping.
+	ActiveViewport->Draw(false);
+
 	FlushRenderingCommands();
 
 	TArray<FColor> Pixels;
@@ -204,6 +214,41 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 	Data->SetNumberField(TEXT("height"), Size.Y);
 	Data->SetNumberField(TEXT("file_size_bytes"), static_cast<double>(IFileManager::Get().FileSize(*OutputPath)));
 	Data->SetNumberField(TEXT("capture_time_ms"), CaptureTimeMs);
+
+	// Name the camera this image came from. During PIE the viewport renders the GAME
+	// camera, so set_viewport_camera has no effect here and two captures either side of
+	// it are byte-identical - which reads as a broken capture rather than the wrong view.
+	const bool bPIEViewport = Viewport->HasPlayInEditorViewport();
+	Data->SetStringField(TEXT("view"), bPIEViewport ? TEXT("pie_game_camera") : TEXT("editor_camera"));
+	Data->SetBoolField(TEXT("pie_active"), bPIEViewport);
+
+	FVector CameraLocation = Client.GetViewLocation();
+	FRotator CameraRotation = Client.GetViewRotation();
+	if (bPIEViewport && GEditor != nullptr && GEditor->PlayWorld != nullptr)
+	{
+		if (const APlayerController* PlayerController = GEditor->PlayWorld->GetFirstPlayerController())
+		{
+			if (const APlayerCameraManager* CameraManager = PlayerController->PlayerCameraManager)
+			{
+				CameraLocation = CameraManager->GetCameraLocation();
+				CameraRotation = CameraManager->GetCameraRotation();
+			}
+		}
+	}
+
+	TSharedPtr<FJsonObject> CameraObject = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> LocationObject = MakeShared<FJsonObject>();
+	LocationObject->SetNumberField(TEXT("x"), CameraLocation.X);
+	LocationObject->SetNumberField(TEXT("y"), CameraLocation.Y);
+	LocationObject->SetNumberField(TEXT("z"), CameraLocation.Z);
+	CameraObject->SetObjectField(TEXT("location"), LocationObject);
+	TSharedPtr<FJsonObject> RotationObject = MakeShared<FJsonObject>();
+	RotationObject->SetNumberField(TEXT("pitch"), CameraRotation.Pitch);
+	RotationObject->SetNumberField(TEXT("yaw"), CameraRotation.Yaw);
+	RotationObject->SetNumberField(TEXT("roll"), CameraRotation.Roll);
+	CameraObject->SetObjectField(TEXT("rotation"), RotationObject);
+	Data->SetObjectField(TEXT("camera"), CameraObject);
+
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -230,6 +275,21 @@ FCortexCommandResult FCortexEditorViewportOps::SetViewportCamera(const TSharedPt
 	(*LocationObj)->TryGetNumberField(TEXT("y"), Y);
 	(*LocationObj)->TryGetNumberField(TEXT("z"), Z);
 
+	// While PIE owns this viewport it renders the GAME camera, so moving the editor
+	// camera changes nothing on screen - and a later capture_screenshot returns a
+	// byte-identical image. Report that instead of a bare "ok" nobody can act on.
+	const bool bPIEViewport = Viewport->HasPlayInEditorViewport();
+	bool bAllowDuringPIE = false;
+	Params->TryGetBoolField(TEXT("allow_during_pie"), bAllowDuringPIE);
+	if (bPIEViewport && !bAllowDuringPIE)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			TEXT("Viewport is running PIE and renders the game camera, so moving the editor camera "
+				 "would have no visible effect. Stop PIE first, or pass allow_during_pie=true to "
+				 "position the editor camera for after PIE ends."));
+	}
+
 	FEditorViewportClient& Client = Viewport->GetAssetViewportClient();
 	Client.SetViewLocation(FVector(X, Y, Z));
 
@@ -245,8 +305,17 @@ FCortexCommandResult FCortexEditorViewportOps::SetViewportCamera(const TSharedPt
 		Client.SetViewRotation(FRotator(Pitch, Yaw, Roll));
 	}
 
+	Client.Invalidate(true, true);
+
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("status"), TEXT("ok"));
+	Data->SetBoolField(TEXT("pie_active"), bPIEViewport);
+	if (bPIEViewport)
+	{
+		Data->SetStringField(
+			TEXT("note"),
+			TEXT("Editor camera moved, but PIE is rendering the game camera - screenshots will not reflect this."));
+	}
 	return FCortexCommandRouter::Success(Data);
 }
 
