@@ -628,7 +628,6 @@ bool FindGraphChoiceByGuid(
 	}
 	return true;
 }
-}
 
 bool ParseTarget(
 	UBlueprint* Blueprint,
@@ -1039,7 +1038,7 @@ void AddPlannedPinSignature(UEdGraphNode* Node, const TSharedPtr<FJsonObject>& N
 	}
 	NormalizedNode->SetArrayField(TEXT("resolved_pins"), Serialized);
 }
-
+}
 
 bool FCortexGraphPatchOps::HasOnlyFields(
 	const TSharedPtr<FJsonObject>& Object,
