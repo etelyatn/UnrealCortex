@@ -753,13 +753,24 @@ async def test_scenario_typed_authoring_preview_invalid_save_and_replay(mcp_clie
         assert preview["changed"] is True and preview["validation_hash"], preview
         after_preview_count = (await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"]))["node_count"]
 
-        # 2. Invalid request: a bare string default is not a tagged literal, and it is refused before
+
+        # 2. Apply the reviewed intent immediately after its preview: the fingerprint and the token
+        #    are the reviewed ones, and nothing runs in between (the guard and the token are both
+        #    derived from them, so the reviewed pair must be presented unchanged -- a live probe showed
+        #    the fingerprint is deterministic and stable across reads, compiles and a preview).
+        applied = await run.apply(
+            {**body, "dry_run": False, "expected_validation_hash": preview["validation_hash"]}
+        )
+        assert applied["apply_status"] == "applied", applied
+
+        # 3. Invalid request: a bare string default is not a tagged literal, and it is refused before
         #    any mutation.
         untagged = dict(fixture["intent"])
         untagged["nodes"] = [
             node if node["client_id"] != "record" else {**node, "defaults": {"Title": RECORDING_DEFAULT_LITERAL}}
             for node in fixture["intent"]["nodes"]
         ]
+        before_refusal = (await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"]))["node_count"]
         refused = await graph_raw(
             mcp_client,
             "apply_patch",
@@ -773,31 +784,36 @@ async def test_scenario_typed_authoring_preview_invalid_save_and_replay(mcp_clie
         assert refused["_error"] == "INVALID_FIELD", refused
         assert refused["apply_status"] == "not_requested", refused
         after_refusal = await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"])
-        assert after_refusal["node_count"] == after_preview_count, "an invalid request mutated the graph"
-
-        # 3. Apply the reviewed intent: previewed against the live state, then applied with that
-        #    preview's token (the apply precondition).
-        applied = await apply_reviewed(run, body, fixture["adapter_package"])
-        assert applied["apply_status"] == "applied", applied
+        assert after_refusal["node_count"] == before_refusal, "an invalid request mutated the graph"
 
         # 4. A stale precondition is refused: an earlier preview token no longer matches the intent.
-        stale = await run.apply({**body, "dry_run": False, "expected_validation_hash": preview["validation_hash"] + "00"})
+        #    The asset has been edited by the apply, so the reviewed guard is stale by construction and
+        #    the refusal is observed through the raw entry point (the reviewed flow is never retried).
+        stale = await graph_raw(
+            mcp_client,
+            "apply_patch",
+            {**body, "dry_run": False, "expected_validation_hash": preview["validation_hash"]},
+        )
         assert stale["_error"] == "STALE_PRECONDITION", stale
+        assert "stale" in stale["_message"].lower(), stale
         unchanged = await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"])
         assert len(unchanged["nodes"]) == len((await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"]))["nodes"])
 
         # 5. No-op replay: the same patch_id and intent report a complete reuse with no compile/save.
-        replay_preview = await run.apply(
-            envelope(
-                fixture["adapter_object"],
-                patch_id,
-                (await run.context(fixture["adapter_package"]))["fingerprint"],
-                **fixture["intent"],
-            )
+        replay_body = envelope(
+            fixture["adapter_object"],
+            patch_id,
+            (await run.context(fixture["adapter_package"]))["fingerprint"],
+            **fixture["intent"],
         )
+        replay_preview = await run.apply(replay_body)
         assert replay_preview["changed"] is False, replay_preview
         replay = await run.apply(
-            {**body, "dry_run": False, "expected_validation_hash": replay_preview["validation_hash"]}
+            {
+                **replay_body,
+                "dry_run": False,
+                "expected_validation_hash": replay_preview["validation_hash"],
+            }
         )
         assert replay["apply_status"] == "unchanged", replay
         assert sorted(replay["reused_client_ids"]) == sorted(applied["node_mappings"]), replay
@@ -823,8 +839,13 @@ async def test_scenario_typed_authoring_preview_invalid_save_and_replay(mcp_clie
             dry_run=False,
             save=True,
         )
-        save_preview = await run.apply({**save_body, "dry_run": True})
-        saved = await run.apply({**save_body, "expected_validation_hash": save_preview["validation_hash"]})
+        # A preview may not request persistence ("Preview must use save=false"); save is an apply-only
+        # flag, and it is not part of the reviewed intent the token pins, so the reviewed preview is
+        # presented unchanged except for the save flag and the token it returned.
+        save_preview = await run.apply({**save_body, "dry_run": True, "save": False})
+        saved = await run.apply(
+            {**save_body, "save": True, "expected_validation_hash": save_preview["validation_hash"]}
+        )
         assert saved["apply_status"] == "applied", saved
         assert saved["save_status"] == "saved", saved
         assert saved["post_save_status"] == "verified", saved
@@ -944,6 +965,20 @@ async def test_scenario_typed_authoring_actor_context_null_cast_failure(mcp_clie
         ) in read_edges, "the cast input is not fed by the null host reference"
         assert (by_client["cast_host"], "CastFailed", by_client["store_null"], "execute") in read_edges
         assert (by_client["begin"], "then", by_client["mark_begin"], "execute") in read_edges
+
+        # Is the authored event the dispatched override? The applied graph must hold exactly one
+        # ReceiveBeginPlay event entry whose exec chain reaches the recording variable write; anything
+        # else would mean the dispatch reaches a different (engine-created) entry.
+        begin_events = [
+            node for node in subgraph["nodes"] if node["class"] == "K2Node_Event" and "BeginPlay" in node["display_name"]
+        ]
+        assert len(begin_events) == 1, [node["display_name"] for node in begin_events]
+        assert (
+            by_client["mark_begin"],
+            "then",
+            by_client["cast_host"],
+            "execute",
+        ) in read_edges, "the recording write is not on the authored event's exec chain"
 
         observed = await observe_actor(mcp_client, actor_class)
         assert observed["begin_play_dispatched"] is True, observed
