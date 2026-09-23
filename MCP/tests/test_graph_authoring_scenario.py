@@ -984,7 +984,18 @@ async def test_scenario_typed_authoring_actor_context_null_cast_failure(mcp_clie
         assert observed["dispatch_function_owner"], observed
         assert observed["dispatch_function_is_blueprint_override"] is True, observed
         assert observed["begin_play_dispatched"] is True, observed
-        assert observed["begin_played"] is True, observed
+        assert observed["begin_played"] is True, {
+            "finding": "the authored event override did not receive the runtime dispatch",
+            "dispatch_function_owner": observed.get("dispatch_function_owner"),
+            "dispatch_function_is_blueprint_override": observed.get("dispatch_function_is_blueprint_override"),
+            "dispatch_function_generated_by": observed.get("dispatch_function_generated_by"),
+            "dispatch_function_script_bytes": observed.get("dispatch_function_script_bytes"),
+            "dispatch_function_has_script": observed.get("dispatch_function_has_script"),
+            "begin_play_dispatched": observed.get("begin_play_dispatched"),
+            "begin_played": observed.get("begin_played"),
+            "cast_succeeded": observed.get("cast_succeeded"),
+            "model_ref_valid": observed.get("model_ref_valid"),
+        }
         # The cast received a null object, so the success route must not have run.
         assert observed["cast_succeeded"] is False, observed
         assert observed["model_ref_valid"] is False, observed

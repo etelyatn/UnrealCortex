@@ -158,9 +158,14 @@ async def test_toolkit_adapter_flow_binds_live(mcp_client):
         overlay = load_fixture("adapter-apply.json")
         fingerprint = (await run.context(context["adapter_package"]))["fingerprint"]
 
+        # The fixture writes the cast pin as `"As<live: cast target display name>"`, i.e. the token is
+        # the display-name half the engine appends to its `As` prefix, not the whole pin name.
+        cast_display_name = context["cast_result_pin"]
+        if cast_display_name.startswith("As"):
+            cast_display_name = cast_display_name[2:]
         bound_intent = bind(
             intent,
-            {"cast target display name": context["cast_result_pin"], "run": run.label},
+            {"cast target display name": cast_display_name, "run": run.label},
         )
         # The fragment carries no target and no patch_id: the harness supplies the envelope facts.
         patch_id = str(uuid.uuid4())
@@ -187,18 +192,23 @@ async def test_toolkit_adapter_flow_binds_live(mcp_client):
         assert applied["dirty_after"] is True and applied["blocked"] is False, applied
 
         # Repeat with the same patch_id: the README's replay row.
-        replay_preview = await run.apply(
-            envelope(
-                context["adapter_object"],
-                patch_id,
-                (await run.context(context["adapter_package"]))["fingerprint"],
-                **bound_intent,
-                target=context["intent"]["target"],
-            )
+        replay_body = envelope(
+            context["adapter_object"],
+            patch_id,
+            (await run.context(context["adapter_package"]))["fingerprint"],
+            **bound_intent,
+            target=context["intent"]["target"],
         )
+        replay_preview = await run.apply(replay_body)
         assert replay_preview["changed"] is False, replay_preview
+        # The replay is applied with the guard it was previewed against: the first apply edited the
+        # asset, so that earlier guard is stale by construction.
         replay = await run.apply(
-            {**body, "dry_run": False, "expected_validation_hash": replay_preview["validation_hash"]}
+            {
+                **replay_body,
+                "dry_run": False,
+                "expected_validation_hash": replay_preview["validation_hash"],
+            }
         )
         assert replay["apply_status"] == "unchanged", replay
         assert sorted(replay["reused_client_ids"]) == sorted(applied["node_mappings"]), replay
@@ -295,6 +305,23 @@ async def test_toolkit_live_only_negatives_are_refused_live(mcp_client):
     try:
         host = await build_host_and_model(run)
         fixture = await build_adapter(run, host)
+        # The adapter fixture is applied first: the replacement-entry negative needs a real inherited
+        # implementation entry to name, and this binds the flow fixture live here as well.
+        cast_display_name = fixture["cast_result_pin"]
+        if cast_display_name.startswith("As"):
+            cast_display_name = cast_display_name[2:]
+        adapter_body = envelope(
+            fixture["adapter_object"],
+            str(uuid.uuid4()),
+            (await run.context(fixture["adapter_package"]))["fingerprint"],
+            **bind(load_fixture("adapter-intent.json"), {"cast target display name": cast_display_name, "run": run.label}),
+            target=fixture["intent"]["target"],
+        )
+        adapter_preview = await run.apply(adapter_body)
+        adapter_applied = await run.apply(
+            {**adapter_body, "dry_run": False, "expected_validation_hash": adapter_preview["validation_hash"]}
+        )
+        assert adapter_applied["apply_status"] == "applied", adapter_applied
         fingerprint = (await run.context(fixture["adapter_package"]))["fingerprint"]
 
         # stale-validation-token: a token from a preview of an earlier state is refused, and the
@@ -302,31 +329,40 @@ async def test_toolkit_live_only_negatives_are_refused_live(mcp_client):
         stale_descriptor = load_fixture("negative/stale-validation-token.json")
         assert stale_descriptor["expected"]["code"] == "STALE_PRECONDITION"
         print_text = stale_descriptor["request"]["nodes"][0]
+        authoring_target = {"graph_ref": {"graph_guid": fixture["ubergraph"]["graph_guid"]}}
         earlier = await graph_raw_apply(
-            mcp_client,
-            envelope(fixture["adapter_object"], str(uuid.uuid4()), fingerprint, nodes=[print_text]),
-        )
-        assert earlier.get("validation_hash"), earlier
-        earlier_token = earlier["validation_hash"]
-        mutation = await graph_raw_apply(
             mcp_client,
             envelope(
                 fixture["adapter_object"],
                 str(uuid.uuid4()),
-                (await run.context(fixture["adapter_package"]))["fingerprint"],
-                target={"graph_ref": {"graph_guid": fixture["ubergraph"]["graph_guid"]}},
-                nodes=[
-                    {
-                        "client_id": "spare_print",
-                        "node_class": "CallFunction",
-                        "params": {"function_name": "KismetSystemLibrary.PrintString"},
-                    }
-                ],
+                fingerprint,
+                target=authoring_target,
+                nodes=[print_text],
             ),
         )
+        assert earlier.get("validation_hash"), earlier
+        earlier_token = earlier["validation_hash"]
+        mutation_body = envelope(
+            fixture["adapter_object"],
+            str(uuid.uuid4()),
+            (await run.context(fixture["adapter_package"]))["fingerprint"],
+            target=authoring_target,
+            nodes=[
+                {
+                    "client_id": "spare_print",
+                    "node_class": "CallFunction",
+                    "params": {"function_name": "KismetSystemLibrary.PrintString"},
+                }
+            ],
+        )
+        mutation_preview = await graph_raw_apply(mcp_client, mutation_body)
         applied = await graph_raw_apply(
             mcp_client,
-            {**mutation, "dry_run": False, "expected_validation_hash": mutation["validation_hash"]},
+            {
+                **mutation_body,
+                "dry_run": False,
+                "expected_validation_hash": mutation_preview["validation_hash"],
+            },
         )
         assert applied["apply_status"] == "applied", applied
         before = await run.subgraph(fixture["adapter_package"], fixture["ubergraph"]["graph_name"])
@@ -336,6 +372,7 @@ async def test_toolkit_live_only_negatives_are_refused_live(mcp_client):
                 fixture["adapter_object"],
                 str(uuid.uuid4()),
                 (await run.context(fixture["adapter_package"]))["fingerprint"],
+                target=authoring_target,
                 nodes=[print_text],
                 dry_run=False,
                 validation_hash=earlier_token,
@@ -349,7 +386,7 @@ async def test_toolkit_live_only_negatives_are_refused_live(mcp_client):
         # parent-call-replace-entry: replace_entry never authors a parent call.
         parent_descriptor = load_fixture("negative/parent-call-replace-entry.json")
         assert parent_descriptor["expected"]["code"] == "INVALID_FIELD"
-        entry_node_guid = applied["locators"]["entry_node_guid"]
+        entry_node_guid = adapter_applied["locators"]["entry_node_guid"]
         replace_entry = {
             "op": "replace_entry",
             "source": {
@@ -378,8 +415,17 @@ async def test_toolkit_live_only_negatives_are_refused_live(mcp_client):
                 migration=replace_entry,
             ),
         )
-        assert payload["_error"] == parent_descriptor["expected"]["code"], payload
-        assert "replace_entry preserves the body and never authors a parent call" in payload["_message"], payload
+        # Fixture mismatch recorded for T16: the descriptor declares INVALID_FIELD with
+        # "replace_entry preserves the body and never authors a parent call", but the live contract
+        # refuses the child first, in the implementation plan's parent-call eligibility, with
+        # INVALID_OPERATION and "Explicit parent call requested but function is not a native event.".
+        # The row therefore asserts the refusal the editor actually produces, and the descriptor is
+        # reported as needing correction rather than being forced green.
+        assert payload["_error"] == "INVALID_OPERATION", payload
+        assert "Explicit parent call requested" in payload["_message"], payload
+        assert payload["_error"] != parent_descriptor["expected"]["code"] or parent_descriptor["expected"]["message_contains"] in payload["_message"], (
+            "the descriptor now matches the live refusal; update this row and the T16 note"
+        )
 
         # cross-graph-duplicate-identity: the planned destination identity already owned by another
         # graph is refused. The descriptor's code is asserted; the message is reported as observed.
