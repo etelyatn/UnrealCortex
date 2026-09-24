@@ -161,7 +161,7 @@ def test_umg_authoring_profile_still_blocks_unrelated_blueprint_commands():
     assert "blueprint.add_variable" in payload["blocked_reason"]
 
 
-def test_graph_cmd_qualifies_and_forwards_apply_patch_once():
+def test_graph_cmd_qualifies_and_forwards_non_prune_apply_patch_once():
     connection = MagicMock()
     connection.send_command.return_value = {
         "success": True,
