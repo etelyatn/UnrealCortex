@@ -64,12 +64,12 @@
       "LoadingPhase": "PostEngineInit"
     },
     {
-      "Name": "CortexMaterial",
+      "Name": "CortexEditor",
       "Type": "Editor",
       "LoadingPhase": "PostEngineInit"
     },
     {
-      "Name": "CortexEditor",
+      "Name": "CortexMaterial",
       "Type": "Editor",
       "LoadingPhase": "PostEngineInit"
     },
