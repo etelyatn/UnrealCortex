@@ -37,6 +37,10 @@ class UECommandError(RuntimeError):
         self.details = details or {}
 
 
+class UECommandNotDispatchedError(ConnectionError):
+    """Connection failure before a one-shot command was sent."""
+
+
 @dataclasses.dataclass(frozen=True)
 class EditorConnection:
     """Metadata for a discovered Unreal Editor instance."""
@@ -426,7 +430,10 @@ class UEConnection:
         """Send one command attempt without replaying after dispatch."""
         try:
             with self._socket_lock:
-                self.connect()
+                try:
+                    self.connect()
+                except ConnectionError as exc:
+                    raise UECommandNotDispatchedError(str(exc)) from exc
                 self._telemetry["tcp_calls"] += 1
                 self._record_metric("tcp_call", {"command": command, "attempt": 1})
                 return self._send_and_receive(command, params, timeout=timeout)

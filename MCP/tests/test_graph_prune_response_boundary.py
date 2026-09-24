@@ -434,6 +434,66 @@ def test_oversized_native_error_is_bounded_with_explicit_truncation():
     assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
 
 
+
+
+def test_pre_dispatch_connection_failure_is_not_reported_as_unknown_outcome():
+    from importlib import import_module
+
+    connection = MagicMock()
+    approved = _guids(1)
+    request = _request(
+        dry_run=False,
+        expected_validation_hash="token-123",
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
+    )
+    connection.send_command.return_value = {
+        "success": True, "data": _preview(1, approved_guids=approved),
+    }
+    not_dispatched = getattr(
+        import_module("cortex_mcp.tcp_client"),
+        "UECommandNotDispatchedError",
+        ConnectionError,
+    )
+    connection.send_command_once.side_effect = not_dispatched("connection refused before dispatch")
+
+    payload = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
+
+    assert payload["success"] is False
+    assert payload["_error"] == "CONNECTION_ERROR"
+    assert payload.get("reconciliation_required") is not True
+    connection.send_command_once.assert_called_once_with("graph.apply_patch", request)
+
+
+def test_error_compaction_does_not_claim_short_message_was_truncated():
+    connection = MagicMock()
+    approved = _guids(1)
+    request = _request(
+        dry_run=False,
+        expected_validation_hash="token-123",
+        migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
+    )
+    message = "native apply failed"
+    details = {
+        "apply_status": "failed",
+        "diagnostics": [{"text": "d" * 30000} for _ in range(3)],
+    }
+    connection.send_command.return_value = {
+        "success": True, "data": _preview(1, approved_guids=approved),
+    }
+    connection.send_command_once.side_effect = UECommandError(
+        "graph.apply_patch", "APPLY_FAILED", message, details,
+    )
+
+    payload = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
+
+    assert payload["success"] is False
+    assert payload["_error"] == "APPLY_FAILED"
+    assert payload["_message"] == message
+    assert payload.get("_message_truncated") is not True
+    assert "original_message_chars" not in payload
+    assert payload["_truncated"] is True
+    assert payload["_diagnostics_omitted"] == 3
+    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
 def test_oversized_post_apply_future_field_is_bounded_and_outcomes_survive():
     connection = MagicMock()
     approved = _guids(1)

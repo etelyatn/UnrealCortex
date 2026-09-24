@@ -6,7 +6,7 @@ import json
 import uuid
 
 from .response import MAX_RESPONSE_CHARS, format_response
-from .tcp_client import UECommandError
+from .tcp_client import UECommandError, UECommandNotDispatchedError
 
 _GRAPH_PATCH_COMMAND = "graph.apply_patch"
 _OUTCOME_FIELDS = (
@@ -202,8 +202,6 @@ def _bounded_error(exc: UECommandError, request: dict[str, Any]) -> str:
     if omitted_fields:
         payload["_omitted_fields"] = omitted_fields
     payload["_truncated"] = True
-    payload["_message_truncated"] = True
-    payload["original_message_chars"] = len(exc.message)
     payload["original_response_size_chars"] = full_size
     payload["reconciliation_required"] = True
     payload["_reconciliation_guidance"] = "Read back patch state before any retry; native execution may have changed the asset."
@@ -467,6 +465,8 @@ def dispatch_graph_apply_patch(connection, request: dict[str, Any], *, tool_name
 
     try:
         result = connection.send_command_once(_GRAPH_PATCH_COMMAND, request)
+    except UECommandNotDispatchedError as exc:
+        return _prune_connection_error(exc, request)
     except UECommandError as exc:
         return _native_error(exc, request)
     except ConnectionError as exc:

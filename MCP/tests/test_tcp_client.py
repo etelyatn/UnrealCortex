@@ -161,6 +161,26 @@ def test_send_command_once_never_replays_after_request_dispatch(monkeypatch):
     assert len(connect_calls) == 1
     assert discover_calls == []
 
+
+
+def test_send_command_once_distinguishes_failure_before_dispatch(monkeypatch):
+    conn = UEConnection(port=99999)
+    connect = MagicMock(side_effect=ConnectionError("connection refused"))
+    send_attempt = MagicMock()
+    monkeypatch.setattr(conn, "connect", connect)
+    monkeypatch.setattr(conn, "_send_and_receive", send_attempt)
+    not_dispatched = getattr(
+        sys.modules["cortex_mcp.tcp_client"],
+        "UECommandNotDispatchedError",
+        None,
+    )
+    assert not_dispatched is not None, "pre-dispatch failures must remain distinguishable"
+
+    with pytest.raises(not_dispatched, match="connection refused"):
+        conn.send_command_once("graph.apply_patch", {"patch_id": "patch-1"})
+
+    connect.assert_called_once()
+    send_attempt.assert_not_called()
 class TestPortFileParsing:
     """Tests for JSON and plain-text port file backward compatibility."""
 
