@@ -662,6 +662,7 @@ bool FCortexReflectProjectPluginBlueprintFixtureCleanupTest::RunTest(const FStri
 	FString FixtureDirectory;
 	bool bFixtureRemovedFromRegistry = false;
 	bool bLateFixtureAssetAdded = false;
+	bool bFixtureResaved = false;
 	FDelegateHandle AssetAddedHandle;
 	FDelegateHandle AssetRemovedHandle;
 	{
@@ -695,17 +696,20 @@ bool FCortexReflectProjectPluginBlueprintFixtureCleanupTest::RunTest(const FStri
 			});
 		AssetRegistry.WaitForCompletion();
 		FString ResaveError;
-		if (!Fixture.Resave(ResaveError))
+		bFixtureResaved = Fixture.Resave(ResaveError);
+		if (!bFixtureResaved)
 		{
 			AddError(FString::Printf(
 				TEXT("Project-plugin Blueprint fixture resave failed: %s"), *ResaveError));
-			return false;
 		}
-		FDirectoryWatcherModule& DirectoryWatcherModule =
-			FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
-		if (IDirectoryWatcher* DirectoryWatcher = DirectoryWatcherModule.Get())
+		else
 		{
-			DirectoryWatcher->Tick(-1.0f);
+			FDirectoryWatcherModule& DirectoryWatcherModule =
+				FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
+			if (IDirectoryWatcher* DirectoryWatcher = DirectoryWatcherModule.Get())
+			{
+				DirectoryWatcher->Tick(-1.0f);
+			}
 		}
 	}
 
@@ -714,6 +718,7 @@ bool FCortexReflectProjectPluginBlueprintFixtureCleanupTest::RunTest(const FStri
 	AssetRegistry.Tick(-1.0f);
 	AssetRegistry.OnAssetAdded().Remove(AssetAddedHandle);
 	AssetRegistry.OnAssetRemoved().Remove(AssetRemovedHandle);
+	TestTrue(TEXT("Fixture package must resave"), bFixtureResaved);
 
 	TArray<FAssetData> RemainingAssets;
 	AssetRegistry.GetAssetsByPath(FName(*FixtureMountRootPath), RemainingAssets, true);
