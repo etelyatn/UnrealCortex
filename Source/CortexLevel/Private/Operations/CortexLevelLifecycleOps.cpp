@@ -1,6 +1,7 @@
 #include "Operations/CortexLevelLifecycleOps.h"
 #include "CortexEditorUtils.h"
 
+#include "CortexEditorUtils.h"
 #include "CortexEngineCompat.h"
 #include "CortexTypes.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -98,7 +99,8 @@ FCortexCommandResult FCortexLevelLifecycleOps::CreateLevel(const TSharedPtr<FJso
 	FString ValidationError;
 	if (!ValidateContentPath(Path, ValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
+			ValidationError);
 	}
 
 	if (DoesLevelExist(Path))
@@ -308,7 +310,8 @@ FCortexCommandResult FCortexLevelLifecycleOps::OpenLevel(const TSharedPtr<FJsonO
 	FString ValidationError;
 	if (!ValidateContentPath(Path, ValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
+			ValidationError);
 	}
 
 	if (!DoesLevelExist(Path))
@@ -395,12 +398,14 @@ FCortexCommandResult FCortexLevelLifecycleOps::DuplicateLevel(const TSharedPtr<F
 	FString ValidationError;
 	if (!ValidateContentPath(SourcePath, ValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
+			ValidationError);
 	}
 
 	if (!ValidateContentPath(DestPath, ValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
+			ValidationError);
 	}
 
 	if (!DoesLevelExist(SourcePath))
@@ -484,12 +489,14 @@ FCortexCommandResult FCortexLevelLifecycleOps::RenameLevel(const TSharedPtr<FJso
 	FString ValidationError;
 	if (!ValidateContentPath(Path, ValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
+			ValidationError);
 	}
 
 	if (!ValidateContentPath(NewPath, ValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
+			ValidationError);
 	}
 
 	if (!DoesLevelExist(Path))
@@ -557,7 +564,8 @@ FCortexCommandResult FCortexLevelLifecycleOps::DeleteLevel(const TSharedPtr<FJso
 	FString ValidationError;
 	if (!ValidateContentPath(Path, ValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
+			ValidationError);
 	}
 
 	if (!DoesLevelExist(Path))
@@ -736,11 +744,13 @@ bool FCortexLevelLifecycleOps::IsCurrentLevelDirty()
 bool FCortexLevelLifecycleOps::ValidateContentPath(const FString& Path, FString& OutError)
 {
 	OutError.Reset();
+
 	if (!FPackageName::IsValidLongPackageName(Path))
 	{
 		OutError = FString::Printf(TEXT("Invalid long package name: %s"), *Path);
 		return false;
 	}
+
 	return FCortexEditorUtils::IsWritableMountedContentPath(Path, OutError);
 }
 

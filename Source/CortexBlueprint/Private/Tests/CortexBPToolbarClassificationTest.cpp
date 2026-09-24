@@ -56,7 +56,11 @@ namespace CortexBPToolbarClassificationTest
 		bool bRegistered = false;
 	};
 
-	/** Creates and releases the fixed-name generated interface so the test is repeatable. */
+	/**
+	 * Create the fixed-name Blueprint Interface fixture, classify its generated class, then
+	 * release it. Every fixture or classification failure is recorded on Test; the body has no
+	 * early return before the cleanup block.
+	 */
 	void RunInterfaceClassificationFixture(FAutomationTestBase& Test)
 	{
 		const FString Directory = FPaths::ProjectSavedDir() / InterfaceBackingDirectory;
@@ -98,6 +102,8 @@ namespace CortexBPToolbarClassificationTest
 		Test.TestFalse(TEXT("Native UInterface must classify as native"),
 			FCortexBPToolbarExtension::IsBlueprintInterfaceForPayload(UInterface::StaticClass()));
 
+		// Release the fixture; the mount above cleans itself up on every exit path, including
+		// early failure returns.
 		if (Blueprint)
 		{
 			Blueprint->MarkAsGarbage();
@@ -106,6 +112,9 @@ namespace CortexBPToolbarClassificationTest
 		{
 			Package->MarkAsGarbage();
 		}
+		// Marking alone leaves both objects findable by name until a collection happens, so the
+		// fixed names could only be reused after an unrelated GC. Reclaim them now:
+		// Cortex.Blueprint.Toolbar.InterfaceNameReuse fails on the next CreateBlueprint otherwise.
 		CollectGarbage(RF_NoFlags);
 	}
 }
@@ -118,6 +127,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPToolbarInterfaceClassificationTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+
 	CortexBPToolbarClassificationTest::RunInterfaceClassificationFixture(*this);
 	return true;
 }
@@ -130,8 +140,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPToolbarInterfaceNameReuseTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+
 	using namespace CortexBPToolbarClassificationTest;
 
+	// The fixture uses fixed mount, package, and asset names, so building it a second time inside
+	// the same editor process is only possible if the first run actually released its names
+	// instead of leaving a garbage-marked Blueprint/package behind.
 	RunInterfaceClassificationFixture(*this);
 	const FString PackageName = InterfacePackageName();
 	const FString BlueprintPath = PackageName + TEXT(".") + InterfaceAssetName;
@@ -139,6 +153,7 @@ bool FCortexBPToolbarInterfaceNameReuseTest::RunTest(const FString& Parameters)
 		FindObject<UPackage>(nullptr, *PackageName));
 	TestNull(TEXT("Fixture Blueprint must be reclaimed before its name is reused"),
 		FindObject<UBlueprint>(nullptr, *BlueprintPath));
+
 	RunInterfaceClassificationFixture(*this);
 	return true;
 }

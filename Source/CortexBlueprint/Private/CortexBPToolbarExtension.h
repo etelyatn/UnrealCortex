@@ -16,7 +16,8 @@ public:
 
 	/**
 	 * Classify an implemented interface for conversion dependency payloads.
-	 * Module-private API because this header is under Source/CortexBlueprint/Private.
+	 * Module-private API: this header lives under Source/CortexBlueprint/Private and must not be
+	 * included by other modules or exposed as public plugin API.
 	 */
 	static bool IsBlueprintInterfaceForPayload(const UClass* InterfaceClass);
 private:
