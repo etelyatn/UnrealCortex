@@ -68,6 +68,28 @@ const TMap<FString, ECortexModuleOrigin>& GetPluginModuleOrigins()
 	static const TMap<FString, ECortexModuleOrigin> ModuleOrigins = BuildPluginModuleOrigins();
 	return ModuleOrigins;
 }
+
+// True when the package's resolved filename lives under the project directory.
+// Blueprint-generated classes have no module binary, so package-to-filename resolution is the
+// only ownership signal available for them. Resolving the mount is required: `/Game` is the
+// standard project mount, but project-owned content plugins mount elsewhere (and project tests
+// mount arbitrary roots) while still storing their files inside the project directory.
+bool IsPackageUnderProjectDir(const FString& PackageName)
+{
+	FString Filename;
+	if (!FPackageName::TryConvertLongPackageNameToFilename(PackageName, Filename))
+	{
+		return false;
+	}
+
+	FString AssetDir = FPaths::ConvertRelativePathToFull(FPaths::GetPath(Filename));
+	FPaths::NormalizeDirectoryName(AssetDir);
+
+	FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+	FPaths::NormalizeDirectoryName(ProjectDir);
+
+	return FPaths::IsUnderDirectory(AssetDir, ProjectDir);
+}
 }
 
 // Returns the full C++ name of a class (e.g. "AActor" not "Actor").
@@ -197,11 +219,13 @@ bool FCortexReflectOps::IsProjectClass(const UClass* Class)
 		return false;
 	}
 
-	// Blueprint in /Game/ is a project class
+	// Blueprint-generated class: ownership follows where the package lives on disk. That keeps
+	// project-plugin Blueprints (any mount whose files are under the project directory, not only
+	// /Game) classified like their project-plugin C++ siblings.
 	if (const UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(Class))
 	{
 		UBlueprint* BP = Cast<UBlueprint>(BPGC->ClassGeneratedBy);
-		return BP && BP->GetPathName().StartsWith(TEXT("/Game/"));
+		return BP && IsPackageUnderProjectDir(BP->GetOutermost()->GetName());
 	}
 
 	// C++ class: resolve the owning module binary first. This distinguishes
