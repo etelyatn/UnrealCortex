@@ -1,3 +1,5 @@
+#include "Operations/CortexGraphPatchOps.h"
+#include "Operations/CortexGraphPatchState.h"
 #include "Misc/AutomationTest.h"
 
 #include "WidgetBlueprint.h"
@@ -398,6 +400,63 @@ bool FCortexGraphMigrationRetireUnsupportedBodyTest::RunTest(const FString& Para
 	const TArray<FString> Approved = PlanValue.RemovableGuids;
 	TestFalse(TEXT("reviewed retirement refuses the latent body blocker"),
 		Plan(Fixture, { Fixture.Alpha->NodeGuid.ToString() }, PlanValue, bReused, Error, true, Approved));
+	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetirePatchEligibilityTest,
+	"Cortex.Graph.Authoring.Migration.Retire.PatchEligibilityAndStrictPreflight",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetirePatchEligibilityTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("Widget fixture is created"), Fixture.Build(TEXT("BP_RetirePatchEligibility")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+
+	Fixture.Blueprint->Status = BS_Error;
+	FCortexCommandResult Error;
+	const TSharedPtr<FJsonObject> RetirementMigration = Fixture.Migration({ Fixture.Alpha->NodeGuid.ToString() });
+	const TSharedPtr<FJsonObject> RetireRequest = MakeShared<FJsonObject>();
+	RetireRequest->SetObjectField(TEXT("migration"), RetirementMigration);
+	TestTrue(TEXT("retire_entries is eligible for a compiler-error Blueprint"),
+		FCortexGraphPatchOps::ValidateEligibility(Fixture.Blueprint, RetireRequest, Error));
+	Error = FCortexCommandResult();
+	const TSharedPtr<FJsonObject> PruneRequest = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> PruneMigration = MakeShared<FJsonObject>();
+	PruneMigration->SetStringField(TEXT("op"), TEXT("prune_island"));
+	PruneRequest->SetObjectField(TEXT("migration"), PruneMigration);
+	TestFalse(TEXT("prune_island remains ineligible for a compiler-error Blueprint"),
+		FCortexGraphPatchOps::ValidateEligibility(Fixture.Blueprint, PruneRequest, Error));
+	Error = FCortexCommandResult();
+	const TSharedPtr<FJsonObject> AuthoringRequest = MakeShared<FJsonObject>();
+	TestFalse(TEXT("ordinary authoring remains ineligible for a compiler-error Blueprint"),
+		FCortexGraphPatchOps::ValidateEligibility(Fixture.Blueprint, AuthoringRequest, Error));
+
+	TSharedPtr<FJsonObject> Malformed = MakeShared<FJsonObject>();
+	Malformed->SetStringField(TEXT("asset_path"), Fixture.Blueprint->GetPathName());
+	Malformed->SetStringField(TEXT("patch_id"), FGuid::NewGuid().ToString());
+	Malformed->SetObjectField(TEXT("expected_fingerprint"),
+		FCortexGraphPatchState::ComputeFingerprint(Fixture.Blueprint));
+	Malformed->SetObjectField(TEXT("migration"), RetirementMigration);
+	TArray<TSharedPtr<FJsonValue>> Nodes;
+	Nodes.Add(MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()));
+	Malformed->SetArrayField(TEXT("nodes"), Nodes);
+	FCortexGraphPreparedPatch Prepared;
+	Error = FCortexCommandResult();
+	const FString BeforeHash = FCortexGraphPatchState::ComputeFingerprint(Fixture.Blueprint)
+		->GetStringField(TEXT("graph_authoring_hash"));
+	const int32 BeforeNodeCount = Fixture.Graph->Nodes.Num();
+	TestFalse(TEXT("retirement with mixed authoring nodes is refused"),
+		FCortexGraphPatchOps::Preflight(Fixture.Blueprint, Malformed, Prepared, Error));
+	TestEqual(TEXT("mixed authoring fields report INVALID_FIELD"), Error.ErrorCode, FString(TEXT("INVALID_FIELD")));
+	TestEqual(TEXT("malformed retirement does not change the graph hash"),
+		FCortexGraphPatchState::ComputeFingerprint(Fixture.Blueprint)->GetStringField(TEXT("graph_authoring_hash")),
+		BeforeHash);
+	TestEqual(TEXT("malformed retirement does not change the graph node count"),
+		Fixture.Graph->Nodes.Num(), BeforeNodeCount);
 	Fixture.Cleanup();
 	return true;
 }

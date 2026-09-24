@@ -1058,6 +1058,16 @@ bool FCortexGraphPatchCommandSchemaTest::RunTest(const FString& Parameters)
 			MigrationParam->Description.Contains(TEXT("prune_island")));
 		TestTrue(TEXT("the published prune selector names its approved set"),
 			MigrationParam->Description.Contains(TEXT("approved_node_guids")));
+		TestTrue(TEXT("retire_entries is published"),
+			MigrationParam->Description.Contains(TEXT("retire_entries")));
+		TestTrue(TEXT("retirement request publishes selected entry GUIDs"),
+			MigrationParam->Description.Contains(TEXT("entry_node_guids")));
+		TestTrue(TEXT("retirement request publishes the approved node set"),
+			MigrationParam->Description.Contains(TEXT("approved_node_guids")));
+		TestTrue(TEXT("retirement requires override-style UK2Node_Event entries"),
+			MigrationParam->Description.Contains(TEXT("UK2Node_Event")));
+		TestTrue(TEXT("retirement explicitly permits repair of compile-invalid assets"),
+			MigrationParam->Description.Contains(TEXT("compile-invalid")));
 	}
 
 	// No drift: every patch limit published in the description equals the live authoring limit.
