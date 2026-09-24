@@ -46,6 +46,8 @@ def test_explicit_registration_adds_router_composite_and_standalone_tools():
     for domain in CORE_DOMAINS:
         assert f"{domain}_cmd" in mcp.tools
 
+    assert "remove_graph" not in mcp.tools
+    assert "blueprint_cmd" in mcp.tools
     assert "blueprint_compose" in mcp.tools
     assert "material_compose" in mcp.tools
     assert "material_instance_compose" in mcp.tools

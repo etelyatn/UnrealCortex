@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -92,9 +93,11 @@ def test_blueprint_remove_graph_forwards_guarded_envelope_unchanged():
         "expected_validation_hash": "token",
     }
 
+    expected_params = deepcopy(params)
     payload = json.loads(router("remove_graph", params))
     assert payload["readback_status"] == "matched"
-    connection.send_command.assert_called_once_with("blueprint.remove_graph", params)
+    connection.send_command.assert_called_once_with("blueprint.remove_graph", expected_params)
+    assert params == expected_params
 
 
 def test_blueprint_remove_graph_preserves_structured_phase_errors():

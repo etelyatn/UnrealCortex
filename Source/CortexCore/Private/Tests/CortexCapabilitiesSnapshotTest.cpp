@@ -134,6 +134,40 @@ bool FCortexCapabilitiesSnapshotTest::RunTest(const FString& Parameters)
 		TestNotNull(TEXT("blueprint.remove_graph capability params"), RemoveParams);
 		if (RemoveParams != nullptr)
 		{
+			const TArray<FString> ExpectedRemoveParamNames = {
+				TEXT("asset_path"),
+				TEXT("name"),
+				TEXT("dry_run"),
+				TEXT("compile"),
+				TEXT("save"),
+				TEXT("cascade_exec_chain"),
+				TEXT("expected_fingerprint"),
+				TEXT("expected_validation_hash")
+			};
+			TestEqual(
+				TEXT("blueprint.remove_graph exact param count"),
+				RemoveParams->Num(),
+				ExpectedRemoveParamNames.Num());
+			for (int32 Index = 0; Index < RemoveParams->Num() && Index < ExpectedRemoveParamNames.Num(); ++Index)
+			{
+				const TSharedPtr<FJsonObject>* ParamObj = nullptr;
+				FString ParamName;
+				const bool bHasParamName =
+					(*RemoveParams)[Index]->TryGetObject(ParamObj)
+					&& ParamObj != nullptr
+					&& (*ParamObj)->TryGetStringField(TEXT("name"), ParamName);
+				TestTrue(
+					FString::Printf(TEXT("blueprint.remove_graph param[%d] has a name"), Index),
+					bHasParamName);
+				if (bHasParamName)
+				{
+					TestEqual(
+						FString::Printf(TEXT("blueprint.remove_graph param[%d] order"), Index),
+						ParamName,
+						ExpectedRemoveParamNames[Index]);
+				}
+			}
+
 			AssertParam(*RemoveParams, TEXT("asset_path"), TEXT("string"), true);
 			AssertParam(*RemoveParams, TEXT("name"), TEXT("string"), true);
 			AssertParam(*RemoveParams, TEXT("dry_run"), TEXT("boolean"), true);
