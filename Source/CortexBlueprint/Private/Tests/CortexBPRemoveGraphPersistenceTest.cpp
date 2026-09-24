@@ -248,6 +248,40 @@ bool FCortexBPRemoveGraphStrictFieldsTest::RunTest(const FString&)
 		TestFalse(FString::Printf(TEXT("string %s is rejected"), Field), Result.bSuccess);
 		TestEqual(FString::Printf(TEXT("string %s returns INVALID_FIELD"), Field), Result.ErrorCode, CortexErrorCodes::InvalidField);
 	}
+	const FString GuardAssetPath = TEXT("/Game/Temp/CortexBPRemoveGraphStrictFields/BP_Strict");
+	UBlueprint* GuardBlueprint = CreateRemoveGraphFixture(Handler, *GuardAssetPath);
+	if (!TestNotNull(TEXT("guard preview fixture Blueprint"), GuardBlueprint)) return false;
+	TSharedPtr<FJsonObject> AddFunction = MakeShared<FJsonObject>();
+	AddFunction->SetStringField(TEXT("asset_path"), GuardAssetPath);
+	AddFunction->SetStringField(TEXT("name"), TEXT("DeleteMe"));
+	if (!TestTrue(TEXT("guard preview target is created"),
+		Handler.Execute(TEXT("add_function"), AddFunction).bSuccess))
+	{
+		MarkFixtureGarbage(GuardBlueprint);
+		return false;
+	}
+
+	for (const TCHAR* GuardField : { TEXT("expected_fingerprint"), TEXT("expected_validation_hash") })
+	{
+		TSharedPtr<FJsonObject> Params =
+			PreviewParams(GuardAssetPath, TEXT("DeleteMe"), false);
+		if (FString(GuardField) == TEXT("expected_fingerprint"))
+		{
+			Params->SetObjectField(GuardField, MakeShared<FJsonObject>());
+		}
+		else
+		{
+			Params->SetStringField(GuardField, TEXT("stale-token"));
+		}
+		const FCortexCommandResult Result = Handler.Execute(TEXT("remove_graph"), Params);
+		TestFalse(FString::Printf(TEXT("preview rejects apply-only %s"), GuardField), Result.bSuccess);
+		TestEqual(FString::Printf(TEXT("preview %s returns INVALID_FIELD"), GuardField),
+			Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+	MarkFixtureGarbage(GuardBlueprint);
+	IFileManager::Get().Delete(*PackageFilename(GuardBlueprint->GetOutermost()), false, true);
+
+
 	return true;
 }
 
@@ -814,6 +848,8 @@ bool FCortexBPRemoveGraphTemplateRecoveryTest::RunTest(const FString&)
 			Applied.ErrorDetails->GetBoolField(TEXT("changed")));
 	}
 	TestTrue(TEXT("timeline remains live after rollback"), IsValid(Timeline));
+	TestTrue(TEXT("recovered timeline retains original outer"), Timeline->GetOuter() == TimelineOuter);
+	TestTrue(TEXT("recovered timeline is reattached to Blueprint"), BP->Timelines.Contains(Timeline));
 	TestFalse(TEXT("recovered timeline remains serializable"), Timeline->HasAnyFlags(RF_Transient));
 	TestTrue(TEXT("recovered timeline package saves"), SaveFixture(BP));
 	TestTrue(TEXT("component template restored"),
@@ -1080,6 +1116,59 @@ bool FCortexBPRemoveGraphNameReboundTest::RunTest(const FString&)
 	MarkFixtureGarbage(BP);
 	return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphMissingTargetStaleTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.MissingTargetStale",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphMissingTargetStaleTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_MissingTarget");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	TSharedPtr<FJsonObject> Add = MakeShared<FJsonObject>();
+	Add->SetStringField(TEXT("asset_path"), Path);
+	Add->SetStringField(TEXT("name"), TEXT("DeleteMe"));
+	if (!TestTrue(TEXT("function target is created"),
+		Handler.Execute(TEXT("add_function"), Add).bSuccess))
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	UEdGraph* Target = nullptr;
+	for (UEdGraph* Graph : BP->FunctionGraphs)
+	{
+		if (Graph && Graph->GetName() == TEXT("DeleteMe"))
+			Target = Graph;
+	}
+	if (!TestNotNull(TEXT("function target exists before preview"), Target))
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteMe"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	if (!TestTrue(TEXT("target preview succeeds"), Preview.bSuccess) || !Preview.Data.IsValid())
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	FBlueprintEditorUtils::RemoveGraph(BP, Target, EGraphRemoveFlags::MarkTransient);
+	TestFalse(TEXT("preview target disappeared before apply"), BP->FunctionGraphs.Contains(Target));
+	const FCortexCommandResult Applied = Handler.Execute(
+		TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	TestFalse(TEXT("apply refuses vanished preview target"), Applied.bSuccess);
+	TestEqual(TEXT("vanished target is a stale precondition"),
+		Applied.ErrorCode, CortexErrorCodes::StalePrecondition);
+	TestFalse(TEXT("no function with the previewed name remains"),
+		BP->FunctionGraphs.ContainsByPredicate([](const UEdGraph* Graph)
+		{
+			return Graph && Graph->GetName() == TEXT("DeleteMe");
+		}));
+	MarkFixtureGarbage(BP);
+	return true;
+}
+
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPRemoveGraphCascadeSetChangedTest,
@@ -1255,34 +1344,105 @@ bool FCortexBPRemoveGraphCompositeCascadeRecoveryTest::RunTest(const FString&)
 	Event->CustomFunctionName = TEXT("DeleteEvent");
 	HostGraph->AddNode(Event, false, false);
 	Event->AllocateDefaultPins();
-	UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(HostGraph);
-	Composite->CreateNewGuid();
-	HostGraph->AddNode(Composite, false, false);
-	Composite->PostPlacedNewNode();
-	Composite->GetEntryNode()->CreatePin(
-		EGPD_Output, UEdGraphSchema_K2::PC_Exec, NAME_None, FName(TEXT("Enter")));
-	Composite->AllocateDefaultPins();
-	UEdGraph* BoundGraph = Composite->BoundGraph;
-	UEdGraphNode* Content = NewObject<UEdGraphNode>(BoundGraph);
-	Content->CreateNewGuid();
-	Content->NodeComment = TEXT("composite bound-graph content");
-	BoundGraph->AddNode(Content, false, false);
-	const FGuid CompositeGuid = Composite->NodeGuid;
-	UEdGraphPin* EventOutput = FindPin(Event, EGPD_Output, UEdGraphSchema_K2::PC_Exec);
-	UEdGraphPin* CompositeInput = FindPin(Composite, EGPD_Input, UEdGraphSchema_K2::PC_Exec);
-	if (!EventOutput || !CompositeInput)
+
+	UK2Node_Composite* Composites[4] = {};
+	UEdGraph* BoundGraphs[4] = {};
+	for (int32 Index = 0; Index < UE_ARRAY_COUNT(Composites); ++Index)
 	{
+		Composites[Index] = NewObject<UK2Node_Composite>(HostGraph);
+		Composites[Index]->CreateNewGuid();
+		HostGraph->AddNode(Composites[Index], false, false);
+		Composites[Index]->PostPlacedNewNode();
+		Composites[Index]->GetEntryNode()->CreatePin(
+			EGPD_Output, UEdGraphSchema_K2::PC_Exec, NAME_None, FName(TEXT("Enter")));
+		Composites[Index]->AllocateDefaultPins();
+		BoundGraphs[Index] = Composites[Index]->BoundGraph;
+		if (!TestNotNull(TEXT("composite bound graph exists"), BoundGraphs[Index]))
+		{
+			MarkFixtureGarbage(BP);
+			return false;
+		}
+	}
+
+	// The removal list is GUID-sorted, deliberately opposite to SubGraphs order.
+	Composites[1]->NodeGuid = FGuid(0, 0, 0, 2);
+	Composites[2]->NodeGuid = FGuid(0, 0, 0, 1);
+	const EObjectFlags PersistentFlags = RF_Public | RF_Standalone | RF_Transient;
+	BoundGraphs[1]->ClearFlags(PersistentFlags);
+	BoundGraphs[1]->SetFlags(RF_Public | RF_Standalone);
+	BoundGraphs[1]->AddToRoot();
+	BoundGraphs[2]->ClearFlags(PersistentFlags);
+	BoundGraphs[2]->SetFlags(RF_Standalone);
+
+	const FGuid LowCompositeGuid = Composites[1]->NodeGuid;
+	const FGuid HighCompositeGuid = Composites[2]->NodeGuid;
+	UEdGraphNode* LowContent = NewObject<UEdGraphNode>(BoundGraphs[1]);
+	LowContent->CreateNewGuid();
+	LowContent->NodeComment = TEXT("low-index composite content");
+	BoundGraphs[1]->AddNode(LowContent, false, false);
+	UEdGraphNode* HighContent = NewObject<UEdGraphNode>(BoundGraphs[2]);
+	HighContent->CreateNewGuid();
+	HighContent->NodeComment = TEXT("high-index composite content");
+	BoundGraphs[2]->AddNode(HighContent, false, false);
+
+	UEdGraphPin* EventOutput = FindPin(Event, EGPD_Output, UEdGraphSchema_K2::PC_Exec);
+	UEdGraphPin* LowInput = FindPin(Composites[1], EGPD_Input, UEdGraphSchema_K2::PC_Exec);
+	UEdGraphPin* HighInput = FindPin(Composites[2], EGPD_Input, UEdGraphSchema_K2::PC_Exec);
+	if (!EventOutput || !LowInput || !HighInput)
+	{
+		BoundGraphs[1]->RemoveFromRoot();
 		MarkFixtureGarbage(BP);
 		return false;
 	}
-	EventOutput->MakeLinkTo(CompositeInput);
+	EventOutput->MakeLinkTo(LowInput);
+	EventOutput->MakeLinkTo(HighInput);
+	const TArray<UEdGraph*> ExpectedSubGraphs = {
+		BoundGraphs[0], BoundGraphs[1], BoundGraphs[2], BoundGraphs[3]};
+	for (int32 Index = 0; Index < ExpectedSubGraphs.Num(); ++Index)
+	{
+		TestTrue(TEXT("fixture composite subgraph order is deterministic"),
+			HostGraph->SubGraphs.IsValidIndex(Index)
+				&& HostGraph->SubGraphs[Index] == ExpectedSubGraphs[Index]);
+	}
+
 	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteEvent"), false, true);
 	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
 	if (!TestTrue(TEXT("composite cascade preview succeeds"), Preview.bSuccess) || !Preview.Data.IsValid())
 	{
+		BoundGraphs[1]->RemoveFromRoot();
 		MarkFixtureGarbage(BP);
 		return false;
 	}
+
+	const TSharedPtr<FJsonObject> Deletion = TryObjectField(Preview.Data, TEXT("deletion"));
+	const TArray<TSharedPtr<FJsonValue>>* NodeGuids = nullptr;
+	TestTrue(TEXT("cascade preview includes the deletion set"),
+		Deletion.IsValid() && Deletion->TryGetArrayField(TEXT("node_guids"), NodeGuids));
+	if (NodeGuids)
+	{
+		TestTrue(TEXT("low-index composite is included in the cascade"),
+			NodeGuids->ContainsByPredicate([&LowCompositeGuid](const TSharedPtr<FJsonValue>& Value)
+			{
+				return Value.IsValid() && Value->AsString() == LowCompositeGuid.ToString();
+			}));
+		TestTrue(TEXT("high-index composite is included in the cascade"),
+			NodeGuids->ContainsByPredicate([&HighCompositeGuid](const TSharedPtr<FJsonValue>& Value)
+			{
+				return Value.IsValid() && Value->AsString() == HighCompositeGuid.ToString();
+			}));
+		auto FindGuidIndex = [NodeGuids](const FGuid& Guid)
+		{
+			return NodeGuids->IndexOfByPredicate([&Guid](const TSharedPtr<FJsonValue>& Value)
+			{
+				return Value.IsValid() && Value->AsString() == Guid.ToString();
+			});
+		};
+		const int32 LowOrder = FindGuidIndex(LowCompositeGuid);
+		const int32 HighOrder = FindGuidIndex(HighCompositeGuid);
+		TestTrue(TEXT("higher subgraph index is captured before lower index"),
+			HighOrder >= 0 && LowOrder >= 0 && HighOrder < LowOrder);
+	}
+
 	int32 ChangedNotifications = 0;
 	const FDelegateHandle ChangedHandle = BP->OnChanged().AddLambda(
 		[&ChangedNotifications](UBlueprint*) { ++ChangedNotifications; });
@@ -1294,24 +1454,47 @@ bool FCortexBPRemoveGraphCompositeCascadeRecoveryTest::RunTest(const FString&)
 	TestFalse(TEXT("injected failure enters recovery"), Applied.bSuccess);
 	TestTrue(TEXT("recovery reports details"), Applied.ErrorDetails.IsValid());
 	if (Applied.ErrorDetails.IsValid())
+	{
 		TestEqual(TEXT("composite cascade rollback is verified"),
 			Applied.ErrorDetails->GetStringField(TEXT("rollback_status")), FString(TEXT("restored")));
 		TestFalse(TEXT("verified composite rollback reports no remaining changes"),
 			Applied.ErrorDetails->GetBoolField(TEXT("changed")));
+	}
 	TestEqual(TEXT("compile=false suppresses structural Blueprint change"),
 		ChangedNotifications, 0);
-	UK2Node_Composite* Restored = Cast<UK2Node_Composite>(FindNodeByGuid(HostGraph, CompositeGuid));
-	TestTrue(TEXT("composite node GUID identity survives rollback"),
-		Restored && Restored->NodeGuid == CompositeGuid);
-	TestTrue(TEXT("bound graph identity survives rollback"), Restored && Restored->BoundGraph == BoundGraph);
-	TestFalse(TEXT("restored bound graph remains serializable"), BoundGraph->HasAnyFlags(RF_Transient));
-	TestTrue(TEXT("composite entry tunnel is rebound"),
-		Restored && Restored->InputSinkNode && Restored->InputSinkNode->OutputSourceNode == Restored);
-	TestTrue(TEXT("bound graph is back in host SubGraphs"), HostGraph->SubGraphs.Contains(BoundGraph));
-	TestTrue(TEXT("bound graph content survives rollback"), BoundGraph->Nodes.Contains(Content));
-	TestEqual(TEXT("bound graph content is unchanged"), Content->NodeComment,
-		FString(TEXT("composite bound-graph content")));
+	UK2Node_Composite* RestoredLow = Cast<UK2Node_Composite>(FindNodeByGuid(HostGraph, LowCompositeGuid));
+	UK2Node_Composite* RestoredHigh = Cast<UK2Node_Composite>(FindNodeByGuid(HostGraph, HighCompositeGuid));
+	TestTrue(TEXT("low-index composite GUID survives rollback"),
+		RestoredLow && RestoredLow->NodeGuid == LowCompositeGuid);
+	TestTrue(TEXT("high-index composite GUID survives rollback"),
+		RestoredHigh && RestoredHigh->NodeGuid == HighCompositeGuid);
+	TestTrue(TEXT("low-index bound graph identity survives rollback"),
+		RestoredLow && RestoredLow->BoundGraph == BoundGraphs[1]);
+	TestTrue(TEXT("high-index bound graph identity survives rollback"),
+		RestoredHigh && RestoredHigh->BoundGraph == BoundGraphs[2]);
+	TestTrue(TEXT("low-index bound graph restores exact persistence flags"),
+		(BoundGraphs[1]->GetFlags() & PersistentFlags) == (RF_Public | RF_Standalone));
+	TestTrue(TEXT("high-index bound graph restores exact persistence flags"),
+		(BoundGraphs[2]->GetFlags() & PersistentFlags) == RF_Standalone);
+	TestTrue(TEXT("low-index bound graph restores rooted state"), BoundGraphs[1]->IsRooted());
+	TestFalse(TEXT("high-index bound graph restores unrooted state"), BoundGraphs[2]->IsRooted());
+	TestEqual(TEXT("restored SubGraphs count"), HostGraph->SubGraphs.Num(), ExpectedSubGraphs.Num());
+	for (int32 Index = 0; Index < ExpectedSubGraphs.Num(); ++Index)
+	{
+		TestTrue(FString::Printf(TEXT("restored SubGraphs order at index %d"), Index),
+			HostGraph->SubGraphs.IsValidIndex(Index)
+				&& HostGraph->SubGraphs[Index] == ExpectedSubGraphs[Index]);
+	}
+	TestTrue(TEXT("low-index bound graph content survives rollback"),
+		BoundGraphs[1]->Nodes.Contains(LowContent));
+	TestTrue(TEXT("high-index bound graph content survives rollback"),
+		BoundGraphs[2]->Nodes.Contains(HighContent));
+	TestEqual(TEXT("low-index bound graph content is unchanged"), LowContent->NodeComment,
+		FString(TEXT("low-index composite content")));
+	TestEqual(TEXT("high-index bound graph content is unchanged"), HighContent->NodeComment,
+		FString(TEXT("high-index composite content")));
 	TestTrue(TEXT("recovered composite package saves"), SaveFixture(BP));
+	BoundGraphs[1]->RemoveFromRoot();
 	MarkFixtureGarbage(BP);
 	IFileManager::Get().Delete(*PackageFilename(BP->GetOutermost()), false, true);
 	return true;
@@ -1330,17 +1513,56 @@ bool FCortexBPRemoveGraphCompositeWholeGraphRecoveryTest::RunTest(const FString&
 	UEdGraph* HostGraph = FBlueprintEditorUtils::CreateNewGraph(
 		BP, FName(TEXT("GraphWithComposite")), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
 	FBlueprintEditorUtils::AddUbergraphPage(BP, HostGraph);
-	UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(HostGraph);
-	Composite->CreateNewGuid();
-	HostGraph->AddNode(Composite, false, false);
-	Composite->PostPlacedNewNode();
-	Composite->AllocateDefaultPins();
-	UEdGraph* BoundGraph = Composite->BoundGraph;
-	UEdGraphNode* Content = NewObject<UEdGraphNode>(BoundGraph);
-	Content->CreateNewGuid();
-	Content->NodeComment = TEXT("whole-graph composite content");
-	BoundGraph->AddNode(Content, false, false);
-	const FGuid CompositeGuid = Composite->NodeGuid;
+	UK2Node_Composite* Composites[4] = {};
+	UEdGraph* BoundGraphs[4] = {};
+	FGuid CompositeGuids[4];
+	for (int32 Index = 0; Index < UE_ARRAY_COUNT(Composites); ++Index)
+	{
+		Composites[Index] = NewObject<UK2Node_Composite>(HostGraph);
+		Composites[Index]->CreateNewGuid();
+		HostGraph->AddNode(Composites[Index], false, false);
+		Composites[Index]->PostPlacedNewNode();
+		Composites[Index]->AllocateDefaultPins();
+		BoundGraphs[Index] = Composites[Index]->BoundGraph;
+		CompositeGuids[Index] = Composites[Index]->NodeGuid;
+		if (!TestNotNull(TEXT("composite bound graph exists"), BoundGraphs[Index]))
+		{
+			MarkFixtureGarbage(BP);
+			return false;
+		}
+	}
+
+	const TArray<UEdGraph*> ExpectedSubGraphs = {
+		BoundGraphs[0], BoundGraphs[1], BoundGraphs[2], BoundGraphs[3]};
+	for (int32 Index = 0; Index < ExpectedSubGraphs.Num(); ++Index)
+	{
+		TestTrue(TEXT("fixture subgraph order is deterministic"),
+			HostGraph->SubGraphs.IsValidIndex(Index)
+				&& HostGraph->SubGraphs[Index] == ExpectedSubGraphs[Index]);
+	}
+
+	TArray<UEdGraphNode*> ReorderedNodes;
+	ReorderedNodes.Reserve(HostGraph->Nodes.Num());
+	for (UEdGraphNode* Node : HostGraph->Nodes)
+	{
+		if (!Cast<UK2Node_Composite>(Node))
+			ReorderedNodes.Add(Node);
+	}
+	for (int32 Index : {3, 1, 0, 2})
+	{
+		ReorderedNodes.Add(Composites[Index]);
+	}
+	HostGraph->Nodes = MoveTemp(ReorderedNodes);
+	const int32 CapturedCompositeOrder[] = {3, 1, 0, 2};
+	int32 PreviousNodeIndex = INDEX_NONE;
+	for (int32 CompositeIndex : CapturedCompositeOrder)
+	{
+		const int32 NodeIndex = HostGraph->Nodes.IndexOfByKey(Composites[CompositeIndex]);
+		TestTrue(TEXT("fixture composite capture order differs from SubGraphs order"),
+			NodeIndex > PreviousNodeIndex);
+		PreviousNodeIndex = NodeIndex;
+	}
+
 	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("GraphWithComposite"), false);
 	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
 	if (!TestTrue(TEXT("whole-graph preview succeeds"), Preview.bSuccess) || !Preview.Data.IsValid())
@@ -1355,26 +1577,40 @@ bool FCortexBPRemoveGraphCompositeWholeGraphRecoveryTest::RunTest(const FString&
 	TestFalse(TEXT("injected failure enters recovery"), Applied.bSuccess);
 	TestTrue(TEXT("recovery reports details"), Applied.ErrorDetails.IsValid());
 	if (Applied.ErrorDetails.IsValid())
+	{
 		TestEqual(TEXT("whole-graph rollback is verified"),
 			Applied.ErrorDetails->GetStringField(TEXT("rollback_status")), FString(TEXT("restored")));
 		TestFalse(TEXT("verified whole-graph rollback reports no remaining changes"),
 			Applied.ErrorDetails->GetBoolField(TEXT("changed")));
-	UEdGraph* RestoredHost = BP->UbergraphPages.FindByPredicate(
-		[](const UEdGraph* Candidate) { return Candidate && Candidate->GetName() == TEXT("GraphWithComposite"); })
-		? *BP->UbergraphPages.FindByPredicate(
-			[](const UEdGraph* Candidate) { return Candidate && Candidate->GetName() == TEXT("GraphWithComposite"); })
-		: nullptr;
-	UK2Node_Composite* Restored = Cast<UK2Node_Composite>(FindNodeByGuid(RestoredHost, CompositeGuid));
-	TestTrue(TEXT("composite node GUID identity survives rollback"),
-		Restored && Restored->NodeGuid == CompositeGuid);
-	TestTrue(TEXT("bound graph identity survives rollback"), Restored && Restored->BoundGraph == BoundGraph);
-	TestFalse(TEXT("restored bound graph remains serializable"), BoundGraph->HasAnyFlags(RF_Transient));
-	TestTrue(TEXT("composite entry tunnel is rebound"),
-		Restored && Restored->InputSinkNode && Restored->InputSinkNode->OutputSourceNode == Restored);
-	TestTrue(TEXT("bound graph is back in host SubGraphs"), RestoredHost && RestoredHost->SubGraphs.Contains(BoundGraph));
-	TestTrue(TEXT("bound graph content survives rollback"), BoundGraph->Nodes.Contains(Content));
-	TestEqual(TEXT("bound graph content is unchanged"), Content->NodeComment,
-		FString(TEXT("whole-graph composite content")));
+	}
+	UEdGraph* RestoredHost = nullptr;
+	for (UEdGraph* Candidate : BP->UbergraphPages)
+	{
+		if (Candidate && Candidate->GetName() == TEXT("GraphWithComposite"))
+		{
+			RestoredHost = Candidate;
+			break;
+		}
+	}
+	TestNotNull(TEXT("whole graph restored"), RestoredHost);
+	if (RestoredHost)
+	{
+		TestEqual(TEXT("restored composite subgraph count"),
+			RestoredHost->SubGraphs.Num(), ExpectedSubGraphs.Num());
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(Composites); ++Index)
+		{
+			UK2Node_Composite* Restored = Cast<UK2Node_Composite>(
+				FindNodeByGuid(RestoredHost, CompositeGuids[Index]));
+			TestTrue(FString::Printf(TEXT("composite %d identity survives rollback"), Index),
+				Restored && Restored->BoundGraph == BoundGraphs[Index]);
+			TestTrue(FString::Printf(TEXT("composite %d bound graph remains serializable"), Index),
+				BoundGraphs[Index] && !BoundGraphs[Index]->HasAnyFlags(RF_Transient));
+			TestTrue(FString::Printf(TEXT("restored SubGraphs order at index %d"), Index),
+				RestoredHost->SubGraphs.IsValidIndex(Index)
+					&& RestoredHost->SubGraphs[Index] == ExpectedSubGraphs[Index]);
+		}
+	}
+	TestTrue(TEXT("recovered whole-graph package saves"), SaveFixture(BP));
 	MarkFixtureGarbage(BP);
 	IFileManager::Get().Delete(*PackageFilename(BP->GetOutermost()), false, true);
 	return true;

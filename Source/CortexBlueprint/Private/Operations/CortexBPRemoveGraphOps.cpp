@@ -600,6 +600,7 @@ struct FRemoveGraphJournal
 		TStrongObjectPtr<UEdGraph> BoundGraph;
 		FName OriginalName;
 		int32 OriginalSubGraphIndex = INDEX_NONE;
+		int32 HostDepth = 0;
 		EObjectFlags OriginalPersistentFlags = RF_NoFlags;
 		bool bWasRooted = false;
 	};
@@ -666,7 +667,8 @@ bool CaptureCompositeBoundGraph(
 	UEdGraph* HostGraph,
 	UK2Node_Composite* Composite,
 	FRemoveGraphJournal& Journal,
-	TSet<UEdGraph*>& CapturedGraphs)
+	TSet<UEdGraph*>& CapturedGraphs,
+	int32 HostDepth)
 {
 	if (!HostGraph || !Composite || !Composite->BoundGraph) return false;
 	UEdGraph* BoundGraph = Composite->BoundGraph;
@@ -681,6 +683,7 @@ bool CaptureCompositeBoundGraph(
 	Saved.CompositeNodeGuid = Composite->NodeGuid;
 	Saved.BoundGraph = TStrongObjectPtr<UEdGraph>(BoundGraph);
 	Saved.OriginalName = BoundGraph->GetFName();
+	Saved.HostDepth = HostDepth;
 	Saved.OriginalPersistentFlags = BoundGraph->GetFlags() & (RF_Public | RF_Standalone | RF_Transient);
 	Saved.bWasRooted = BoundGraph->IsRooted();
 	Saved.OriginalSubGraphIndex = SubGraphIndex;
@@ -688,7 +691,8 @@ bool CaptureCompositeBoundGraph(
 	{
 		if (UK2Node_Composite* ChildComposite = Cast<UK2Node_Composite>(ChildNode))
 		{
-			if (!CaptureCompositeBoundGraph(BoundGraph, ChildComposite, Journal, CapturedGraphs))
+			if (!CaptureCompositeBoundGraph(
+				BoundGraph, ChildComposite, Journal, CapturedGraphs, HostDepth + 1))
 				return false;
 		}
 	}
@@ -703,7 +707,7 @@ bool CaptureCompositeBoundGraphsIn(UEdGraph* HostGraph, FRemoveGraphJournal& Jou
 	{
 		if (UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node))
 		{
-			if (!CaptureCompositeBoundGraph(HostGraph, Composite, Journal, CapturedGraphs))
+			if (!CaptureCompositeBoundGraph(HostGraph, Composite, Journal, CapturedGraphs, 0))
 				return false;
 		}
 	}
@@ -720,7 +724,7 @@ bool CaptureCompositeBoundGraphsForNodes(
 	{
 		if (UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Saved.OriginalNode.Get()))
 		{
-			if (!CaptureCompositeBoundGraph(HostGraph, Composite, Journal, CapturedGraphs))
+			if (!CaptureCompositeBoundGraph(HostGraph, Composite, Journal, CapturedGraphs, 0))
 				return false;
 		}
 	}
@@ -728,6 +732,13 @@ bool CaptureCompositeBoundGraphsForNodes(
 }
 bool RestoreCompositeBoundGraphs(UBlueprint* Blueprint, FRemoveGraphJournal& Journal)
 {
+	Journal.CompositeBoundGraphs.Sort(
+		[](const FRemoveGraphJournal::FCompositeBoundGraph& A,
+			const FRemoveGraphJournal::FCompositeBoundGraph& B)
+		{
+			if (A.HostDepth != B.HostDepth) return A.HostDepth < B.HostDepth;
+			return A.OriginalSubGraphIndex < B.OriginalSubGraphIndex;
+		});
 	for (const FRemoveGraphJournal::FCompositeBoundGraph& Saved : Journal.CompositeBoundGraphs)
 	{
 		UEdGraph* HostGraph = FindGraphByGuid(Blueprint, Saved.HostGraphGuid);
@@ -783,6 +794,14 @@ bool RestoreCompositeBoundGraphs(UBlueprint* Blueprint, FRemoveGraphJournal& Jou
 		if ((BoundGraph->GetFlags() & (RF_Public | RF_Standalone | RF_Transient))
 				!= Saved.OriginalPersistentFlags
 			|| BoundGraph->IsRooted() != Saved.bWasRooted)
+			return false;
+	}
+	for (const FRemoveGraphJournal::FCompositeBoundGraph& Saved : Journal.CompositeBoundGraphs)
+	{
+		UEdGraph* HostGraph = FindGraphByGuid(Blueprint, Saved.HostGraphGuid);
+		UEdGraph* BoundGraph = Saved.BoundGraph.Get();
+		if (!HostGraph || !BoundGraph
+			|| HostGraph->SubGraphs.IndexOfByKey(BoundGraph) != Saved.OriginalSubGraphIndex)
 			return false;
 	}
 	return true;
@@ -1253,6 +1272,13 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 	{
 		return ParseError;
 	}
+	if (Prepared.bDryRun
+		&& (Params->HasField(TEXT("expected_fingerprint"))
+			|| Params->HasField(TEXT("expected_validation_hash"))))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			TEXT("expected_fingerprint and expected_validation_hash are apply-only fields"));
+	}
 	if (Params->HasField(TEXT("expected_fingerprint")))
 	{
 		const TSharedPtr<FJsonObject>* ExpectedFingerprintField = nullptr;
@@ -1313,12 +1339,22 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 		return ReturnErrorWithOutcome(FCortexCommandRouter::Error(
 			CortexErrorCodes::DirtyEditorState, TEXT("save=true requires a clean starting package")));
 	}
+	if (!Prepared.bDryRun && (!ExpectedFingerprint.IsValid() || ExpectedValidationHash.IsEmpty()))
+	{
+		return ReturnErrorWithOutcome(FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
+			TEXT("Apply requires expected_fingerprint and expected_validation_hash from preview")));
+	}
 
 	TArray<TSharedPtr<FJsonValue>> RemovedNodes;
 	TSharedPtr<FJsonObject> Removed;
 	FCortexCommandResult PlanError;
 	if (!BuildPlan(Blueprint, Prepared, RemovedNodes, Removed, PlanError))
 	{
+		if (!Prepared.bDryRun && PlanError.ErrorCode == CortexErrorCodes::GraphNotFound)
+		{
+			PlanError = FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
+				TEXT("The preview target no longer exists; request a new preview"));
+		}
 		return ReturnErrorWithOutcome(PlanError);
 	}
 	Outcome.Target = Prepared.Target;
@@ -1343,11 +1379,6 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 		}
 		const TSharedPtr<FJsonObject> CurrentFingerprint = FCortexGraphFingerprint::Compute(Blueprint);
 		FCortexCommandResult FingerprintError;
-		if (!ExpectedFingerprint.IsValid() || ExpectedValidationHash.IsEmpty())
-		{
-			return ReturnErrorWithOutcome(FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
-				TEXT("Apply requires expected_fingerprint and expected_validation_hash from preview")));
-		}
 		if (!FCortexGraphFingerprint::ValidatePrecondition(ExpectedFingerprint, CurrentFingerprint, FingerprintError))
 		{
 			return ReturnErrorWithOutcome(FingerprintError);
