@@ -3907,6 +3907,17 @@ bool VerifyAppliedState(
 		}
 		return FCortexGraphMigrationOps::VerifyPruneAgainstNative(Blueprint, PrunePlan, OutFailure);
 	}
+	if (Prepared.RetirementPlan.IsValid())
+	{
+		FCortexGraphMigrationRetirePlan RetirePlan;
+		FCortexCommandResult PlanError;
+		if (!FCortexGraphMigrationRetirePlan::FromJson(Prepared.RetirementPlan, RetirePlan, PlanError))
+		{
+			OutFailure = PlanError.ErrorMessage;
+			return false;
+		}
+		return FCortexGraphMigrationOps::VerifyRetirementAgainstNative(Blueprint, RetirePlan, OutFailure);
+	}
 	if (Prepared.MigrationPlan.IsValid())
 	{
 		FCortexGraphMigrationPlan Plan;
@@ -4241,6 +4252,63 @@ bool ApplyPrepared(
 			return Fail(TEXT("Test fault injected after the approved island nodes were removed"));
 		}
 		PruneGraph->NotifyGraphChanged();
+		return true;
+	}
+
+	if (Prepared.RetirementPlan.IsValid())
+	{
+		FCortexGraphMigrationRetirePlan RetirePlan;
+		if (!FCortexGraphMigrationRetirePlan::FromJson(Prepared.RetirementPlan, RetirePlan, OutError))
+		{
+			return false;
+		}
+		FGuid RetirementGraphGuid;
+		if (!FGuid::Parse(RetirePlan.GraphGuid, RetirementGraphGuid))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("the prepared retirement plan carries an invalid graph identity"));
+			return false;
+		}
+		UEdGraph* const RetirementGraph =
+			FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, RetirementGraphGuid);
+		if (!RetirementGraph)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("the planned retirement graph did not re-resolve after the final guard"));
+			return false;
+		}
+		Journal.Locators.GraphGuid = RetirementGraph->GraphGuid;
+		Journal.Locators.SubgraphPath.Reset();
+		Journal.PreservationContracts = { RetirePlan.Preservation };
+
+		for (int32 Index = 0; Index < RetirePlan.ApprovedGuids.Num(); ++Index)
+		{
+			const FString& GuidText = RetirePlan.ApprovedGuids[Index];
+			FGuid ApprovedGuid;
+			UEdGraphNode* const ApprovedNode = FGuid::Parse(GuidText, ApprovedGuid)
+				? FCortexGraphMigrationOps::FindNodeByGuidInGraph(RetirementGraph, ApprovedGuid)
+				: nullptr;
+			if (!ApprovedNode)
+			{
+				return Fail(FString::Printf(TEXT("the approved retirement node '%s' no longer resolves in the named graph"),
+					*GuidText));
+			}
+			JournalNodeRemoved(ApprovedNode, Journal);
+			FBlueprintEditorUtils::RemoveNode(Blueprint, ApprovedNode, /*bDontRecompile=*/true);
+			if (FCortexGraphMigrationOps::FindNodeByGuidInGraph(RetirementGraph, ApprovedGuid))
+			{
+				return Fail(FString::Printf(TEXT("the approved retirement node '%s' could not be removed"), *GuidText));
+			}
+			if (Index == 0 && ShouldInjectApplyFault(TEXT("migration_retire_after_first_removal")))
+			{
+				return Fail(TEXT("Test fault injected after the first approved retirement removal"));
+			}
+		}
+		if (ShouldInjectApplyFault(TEXT("migration_retire_after_removals")))
+		{
+			return Fail(TEXT("Test fault injected after the approved retirement nodes were removed"));
+		}
+		RetirementGraph->NotifyGraphChanged();
 		return true;
 	}
 

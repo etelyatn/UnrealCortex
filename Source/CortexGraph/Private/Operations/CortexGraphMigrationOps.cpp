@@ -4739,6 +4739,21 @@ const TCHAR* const PruneOp = TEXT("prune_island");
 /** Test-only prune readback fault: fails exactly the named check of the prune readback verifier. */
 FName PruneReadbackFaultForTesting = NAME_None;
 #endif
+#if WITH_AUTOMATION_TESTS
+/** Test-only retirement readback fault, isolated from the prune verifier seam. */
+FName RetirementReadbackFaultForTesting = NAME_None;
+#endif
+
+bool ShouldInjectRetirementReadbackFault(const FName Check)
+{
+#if WITH_AUTOMATION_TESTS
+	return RetirementReadbackFaultForTesting == Check;
+#else
+	(void)Check;
+	return false;
+#endif
+}
+
 
 bool ShouldInjectPruneReadbackFault(const FName Check)
 {
@@ -5800,6 +5815,137 @@ bool FCortexGraphMigrationOps::VerifyPruneAgainstNative(
 	return true;
 }
 
+bool FCortexGraphMigrationOps::VerifyRetirementAgainstNative(
+	UBlueprint* Blueprint,
+	const FCortexGraphMigrationRetirePlan& Plan,
+	FString& OutFailure)
+{
+	OutFailure.Reset();
+	if (!Blueprint)
+	{
+		OutFailure = TEXT("the blueprint is null");
+		return false;
+	}
+	FGuid GraphGuid;
+	if (!FGuid::Parse(Plan.GraphGuid, GraphGuid))
+	{
+		OutFailure = TEXT("the prepared retirement plan carries an invalid graph identity");
+		return false;
+	}
+	UEdGraph* const Graph = FindGraphByGuid(Blueprint, GraphGuid);
+	if (!Graph)
+	{
+		OutFailure = FString::Printf(TEXT("the retirement graph '%s' did not re-resolve"), *Plan.GraphGuid);
+		return false;
+	}
+
+	TSet<FGuid> Removed;
+	for (const FString& GuidText : Plan.ApprovedGuids)
+	{
+		FGuid RemovedGuid;
+		if (!FGuid::Parse(GuidText, RemovedGuid) || !RemovedGuid.IsValid())
+		{
+			OutFailure = TEXT("the prepared retirement plan carries an invalid approved node identity");
+			return false;
+		}
+		Removed.Add(RemovedGuid);
+		if (FindNodeByGuidInGraph(Graph, RemovedGuid))
+		{
+			OutFailure = FString::Printf(TEXT("the approved node '%s' is still present in the retirement graph"), *GuidText);
+			return false;
+		}
+		if (FindNodeByGuid(Blueprint, RemovedGuid))
+		{
+			OutFailure = FString::Printf(TEXT("the approved node '%s' still exists in another graph of this asset"), *GuidText);
+			return false;
+		}
+	}
+
+	for (const FCortexGraphPruneEdge& Edge : Plan.ExternalEdges)
+	{
+		FGuid FromGuid;
+		FGuid ToGuid;
+		if (!FGuid::Parse(Edge.FromGuid, FromGuid) || !FGuid::Parse(Edge.ToGuid, ToGuid))
+		{
+			OutFailure = TEXT("the prepared retirement plan carries an invalid external edge");
+			return false;
+		}
+		const bool bFromRemoved = Removed.Contains(FromGuid);
+		const bool bToRemoved = Removed.Contains(ToGuid);
+		if (bFromRemoved == bToRemoved)
+		{
+			OutFailure = TEXT("a planned retirement external edge does not cross the removed set");
+			return false;
+		}
+		const FGuid RetainedGuid = bFromRemoved ? ToGuid : FromGuid;
+		const FName RetainedPinName(*(bFromRemoved ? Edge.ToPin : Edge.FromPin));
+		const FGuid RemovedGuid = bFromRemoved ? FromGuid : ToGuid;
+		const FName RemovedPinName(*(bFromRemoved ? Edge.FromPin : Edge.ToPin));
+		UEdGraphNode* const RetainedNode = FindNodeByGuidInGraph(Graph, RetainedGuid);
+		UEdGraphPin* const RetainedPin = RetainedNode ? RetainedNode->FindPin(RetainedPinName) : nullptr;
+		if (!RetainedPin)
+		{
+			OutFailure = FString::Printf(TEXT("the retained endpoint '%s.%s' of a retirement boundary edge did not re-resolve"),
+				*RetainedGuid.ToString(), *RetainedPinName.ToString());
+			return false;
+		}
+		if (RetainedPin->LinkedTo.ContainsByPredicate([&](const UEdGraphPin* LinkedPin)
+			{
+				const UEdGraphNode* const FarNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+				return FarNode && FarNode->NodeGuid == RemovedGuid && LinkedPin->PinName == RemovedPinName;
+			}))
+		{
+			OutFailure = FString::Printf(TEXT("the approved retirement boundary edge '%s.%s' -> '%s.%s' still carries a link"),
+				*Edge.FromGuid, *Edge.FromPin, *Edge.ToGuid, *Edge.ToPin);
+			return false;
+		}
+	}
+	if (ShouldInjectRetirementReadbackFault(TEXT("retire_after_removal")))
+	{
+		OutFailure = TEXT("retirement readback failed by test injection after the removal comparison");
+		return false;
+	}
+
+	TSet<FGuid> InGraph;
+	for (const UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (Node) InGraph.Add(Node->NodeGuid);
+	}
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (!Node) continue;
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin) continue;
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				UEdGraphNode* const FarNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+				if (!FarNode || !InGraph.Contains(FarNode->NodeGuid))
+				{
+					OutFailure = FString::Printf(TEXT("a dangling link survives on '%s.%s'"),
+						*Node->NodeGuid.ToString(), *Pin->PinName.ToString());
+					return false;
+				}
+				if (!LinkedPin->LinkedTo.Contains(Pin))
+				{
+					OutFailure = FString::Printf(TEXT("the link on '%s.%s' is not reciprocal"),
+						*Node->NodeGuid.ToString(), *Pin->PinName.ToString());
+					return false;
+				}
+			}
+		}
+	}
+
+	const TArray<FCortexGraphTransferPreservation> Contracts = { Plan.Preservation };
+	if (!VerifyPreservationContracts(Blueprint, Contracts, OutFailure)) return false;
+	if (ShouldInjectRetirementReadbackFault(TEXT("retire_after_preservation")))
+	{
+		OutFailure = TEXT("retirement readback failed by test injection after the preservation comparison");
+		return false;
+	}
+	return true;
+}
+
 TSharedPtr<FJsonObject> FCortexGraphMigrationOps::MakePruneInventory(const TSharedPtr<FJsonObject>& PrunePlanJson)
 {
 	if (!PrunePlanJson.IsValid()) return nullptr;
@@ -6305,4 +6451,14 @@ void FCortexGraphMigrationOps::ClearPruneReadbackFaultForTesting()
 {
 	PruneReadbackFaultForTesting = NAME_None;
 }
+void FCortexGraphMigrationOps::SetRetirementReadbackFaultForTesting(const FName Check)
+{
+	RetirementReadbackFaultForTesting = Check;
+}
+
+void FCortexGraphMigrationOps::ClearRetirementReadbackFaultForTesting()
+{
+	RetirementReadbackFaultForTesting = NAME_None;
+}
+
 #endif

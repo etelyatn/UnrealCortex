@@ -520,6 +520,17 @@ public:
 	/** Compact presentation inventory of a durable retirement plan. */
 	static TSharedPtr<FJsonObject> MakeRetirementInventory(const TSharedPtr<FJsonObject>& RetirePlanJson);
 
+	/** Native readback for the approved retirement set and its retained graph contract. */
+	static bool VerifyRetirementAgainstNative(
+		UBlueprint* Blueprint,
+		const FCortexGraphMigrationRetirePlan& Plan,
+		FString& OutFailure);
+#if WITH_AUTOMATION_TESTS
+	/** Test-only divergence seams; each fires only after its named native comparison. */
+	static void SetRetirementReadbackFaultForTesting(FName Check);
+	static void ClearRetirementReadbackFaultForTesting();
+#endif
+
 	static UEdGraphNode* FindNodeByGuid(UBlueprint* Blueprint, const FGuid& NodeGuid);
 	/** Graph-scoped lookup: the durable way to resolve a node identity inside one named graph. */
 	static UEdGraphNode* FindNodeByGuidInGraph(UEdGraph* Graph, const FGuid& NodeGuid);

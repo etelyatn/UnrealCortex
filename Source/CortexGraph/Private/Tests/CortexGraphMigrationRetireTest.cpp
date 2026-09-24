@@ -141,6 +141,82 @@ bool Plan(FFixture& Fixture, const TArray<FString>& Entries, FCortexGraphMigrati
 	return FCortexGraphMigrationOps::PlanRetirement(Fixture.Blueprint,
 		Fixture.Migration(Entries, bApproved, Approved), OutPlan, bReused, Error);
 }
+FString CaptureNativeGraph(UEdGraph* Graph, const TSet<FGuid>* Filter = nullptr)
+{
+	TArray<FString> Records;
+	if (!Graph) return FString();
+	for (const UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (!Node) continue;
+		const FString Guid = Node->NodeGuid.ToString();
+		if (Filter && !Filter->Contains(Node->NodeGuid)) continue;
+		Records.Add(FString::Printf(TEXT("N|%s|%s|%d|%d|%s"), *Guid, *Node->GetClass()->GetPathName(),
+			Node->NodePosX, Node->NodePosY, *Node->NodeComment));
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin) continue;
+			Records.Add(FString::Printf(TEXT("P|%s|%s|%d|%s|%s|%s"), *Guid, *Pin->PinName.ToString(),
+				static_cast<int32>(Pin->Direction), *Pin->PinType.PinCategory.ToString(), *Pin->DefaultValue,
+				Pin->DefaultObject ? *Pin->DefaultObject->GetPathName() : TEXT("")));
+			for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				const UEdGraphNode* FarNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+				if (!FarNode || !LinkedPin || (Filter && !Filter->Contains(FarNode->NodeGuid))) continue;
+				const FString From = Guid + TEXT(".") + Pin->PinName.ToString();
+				const FString To = FarNode->NodeGuid.ToString() + TEXT(".") + LinkedPin->PinName.ToString();
+				if (From < To) Records.Add(TEXT("L|") + From + TEXT("|") + To);
+			}
+		}
+	}
+	Records.Sort();
+	return FString::Join(Records, TEXT("\n"));
+}
+
+bool PrepareApprovedRequest(
+	FFixture& Fixture,
+	const TCHAR* PatchId,
+	TSharedPtr<FJsonObject>& OutRequest,
+	TArray<FString>& OutApproved,
+	FCortexCommandResult& OutError)
+{
+	OutRequest = MakeShared<FJsonObject>();
+	OutRequest->SetStringField(TEXT("asset_path"), Fixture.Blueprint->GetPathName());
+	OutRequest->SetStringField(TEXT("patch_id"), PatchId);
+	OutRequest->SetObjectField(TEXT("expected_fingerprint"), FCortexGraphPatchState::ComputeFingerprint(Fixture.Blueprint));
+	OutRequest->SetArrayField(TEXT("nodes"), {});
+	OutRequest->SetArrayField(TEXT("connections"), {});
+	OutRequest->SetArrayField(TEXT("pin_updates"), {});
+	OutRequest->SetBoolField(TEXT("dry_run"), true);
+	OutRequest->SetBoolField(TEXT("compile"), false);
+	OutRequest->SetBoolField(TEXT("save"), false);
+	OutRequest->SetBoolField(TEXT("allow_noop"), false);
+	TSharedPtr<FJsonObject> Migration = Fixture.Migration({
+		Fixture.Alpha->NodeGuid.ToString(), Fixture.Beta->NodeGuid.ToString() });
+	OutRequest->SetObjectField(TEXT("migration"), Migration);
+
+	FCortexGraphPreparedPatch Preview;
+	if (!FCortexGraphPatchOps::Preflight(Fixture.Blueprint, OutRequest, Preview, OutError)) return false;
+	const TSharedPtr<FJsonObject> Inventory =
+		FCortexGraphMigrationOps::MakeRetirementInventory(Preview.RetirementPlan);
+	const TArray<TSharedPtr<FJsonValue>>* Removable = nullptr;
+	if (!Inventory.IsValid() || !Inventory->TryGetArrayField(TEXT("removable"), Removable) || !Removable)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("retirement preview did not publish its removable set"));
+		return false;
+	}
+	for (const TSharedPtr<FJsonValue>& Value : *Removable) OutApproved.Add(Value->AsString());
+	TArray<TSharedPtr<FJsonValue>> ApprovalValues;
+	for (const FString& Guid : OutApproved) ApprovalValues.Add(MakeShared<FJsonValueString>(Guid));
+	Migration->SetArrayField(TEXT("approved_node_guids"), ApprovalValues);
+
+	FCortexGraphPreparedPatch Reviewed;
+	if (!FCortexGraphPatchOps::Preflight(Fixture.Blueprint, OutRequest, Reviewed, OutError)) return false;
+	OutRequest->SetBoolField(TEXT("dry_run"), false);
+	OutRequest->SetStringField(TEXT("expected_validation_hash"), Reviewed.ValidationHash);
+	return true;
+}
+
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireSelectedEntriesTest,
@@ -460,4 +536,177 @@ bool FCortexGraphMigrationRetirePatchEligibilityTest::RunTest(const FString& Par
 	Fixture.Cleanup();
 	return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireFailureAtomicityTest,
+	"Cortex.Graph.Authoring.Migration.Retire.FailureAtomicity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireFailureAtomicityTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	struct FFaultCase
+	{
+		const TCHAR* Name;
+		bool bReadback;
+	};
+	const FFaultCase Faults[] = {
+		{ TEXT("migration_retire_after_first_removal"), false },
+		{ TEXT("migration_retire_after_removals"), false },
+		{ TEXT("retire_after_removal"), true },
+		{ TEXT("retire_after_preservation"), true }
+	};
+	bool bAllPassed = true;
+	for (int32 Index = 0; Index < UE_ARRAY_COUNT(Faults); ++Index)
+	{
+		FFixture Fixture;
+		const FString AssetName = FString::Printf(TEXT("BP_RetireAtomic_%d"), Index);
+		bAllPassed &= TestTrue(TEXT("retirement fault fixture is created"), Fixture.Build(*AssetName, true));
+		if (!Fixture.Blueprint) { Fixture.Cleanup(); continue; }
+		const FString GraphBefore = CaptureNativeGraph(Fixture.Graph);
+		const bool bDirtyBefore = Fixture.Package->IsDirty();
+		TSharedPtr<FJsonObject> Request;
+		TArray<FString> Approved;
+		FCortexCommandResult Error;
+		const FString PatchId = FString::Printf(TEXT("00000000-0000-0000-0000-00000010731%d"), Index);
+		if (!PrepareApprovedRequest(Fixture, *PatchId, Request, Approved, Error))
+		{
+			bAllPassed &= TestFalse(FString::Printf(TEXT("%s approved preflight failed: %s"), Faults[Index].Name,
+				*Error.ErrorMessage), true);
+			Fixture.Cleanup();
+			continue;
+		}
+		if (Faults[Index].bReadback)
+		{
+			FCortexGraphMigrationOps::SetRetirementReadbackFaultForTesting(FName(Faults[Index].Name));
+		}
+		else
+		{
+			FCortexGraphPatchOps::SetApplyFaultPointForTesting(FName(Faults[Index].Name));
+		}
+		FCortexGraphPatchOutcome Outcome;
+		Error = FCortexCommandResult();
+		bAllPassed &= TestFalse(FString::Printf(TEXT("%s causes Execute to fail"), Faults[Index].Name),
+			FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+		FCortexGraphPatchOps::SetApplyFaultPointForTesting(NAME_None);
+		FCortexGraphMigrationOps::ClearRetirementReadbackFaultForTesting();
+		bAllPassed &= TestEqual(FString::Printf(TEXT("%s restores the transaction"), Faults[Index].Name),
+			Outcome.RollbackStatus, FString(TEXT("restored")));
+		bAllPassed &= TestFalse(FString::Printf(TEXT("%s does not block the asset"), Faults[Index].Name),
+			Outcome.bBlocked);
+		if (Faults[Index].bReadback)
+		{
+			bAllPassed &= TestEqual(FString::Printf(TEXT("%s reports failed readback"), Faults[Index].Name),
+				Outcome.ReadbackStatus, FString(TEXT("mismatched")));
+		}
+		bAllPassed &= TestEqual(FString::Printf(TEXT("%s restores the independent native graph snapshot"), Faults[Index].Name),
+			CaptureNativeGraph(Fixture.Graph), GraphBefore);
+		bAllPassed &= TestEqual(FString::Printf(TEXT("%s restores the dirty baseline"), Faults[Index].Name),
+			Fixture.Package->IsDirty(), bDirtyBefore);
+		for (const FString& GuidText : Approved)
+		{
+			FGuid Guid;
+			FGuid::Parse(GuidText, Guid);
+			bAllPassed &= TestNotNull(FString::Printf(TEXT("%s restores approved GUID %s"), Faults[Index].Name, *GuidText),
+				FCortexGraphMigrationOps::FindNodeByGuid(Fixture.Blueprint, Guid));
+		}
+		Fixture.Cleanup();
+	}
+	FCortexGraphPatchOps::SetApplyFaultPointForTesting(NAME_None);
+	FCortexGraphMigrationOps::ClearRetirementReadbackFaultForTesting();
+	return bAllPassed;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireApplyReadbackTest,
+	"Cortex.Graph.Authoring.Migration.Retire.ApplyReadbackWithoutCompile",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireApplyReadbackTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("retirement fixture is created"), Fixture.Build(TEXT("BP_RetireApplyReadback"), true));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+
+	TSharedPtr<FJsonObject> Request = MakeShared<FJsonObject>();
+	Request->SetStringField(TEXT("asset_path"), Fixture.Blueprint->GetPathName());
+	Request->SetStringField(TEXT("patch_id"), TEXT("00000000-0000-0000-0000-000000107301"));
+	Request->SetObjectField(TEXT("expected_fingerprint"), FCortexGraphPatchState::ComputeFingerprint(Fixture.Blueprint));
+	Request->SetArrayField(TEXT("nodes"), {});
+	Request->SetArrayField(TEXT("connections"), {});
+	Request->SetArrayField(TEXT("pin_updates"), {});
+	Request->SetBoolField(TEXT("dry_run"), true);
+	Request->SetBoolField(TEXT("compile"), false);
+	Request->SetBoolField(TEXT("save"), false);
+	Request->SetBoolField(TEXT("allow_noop"), false);
+	const FString AlphaGuid = Fixture.Alpha->NodeGuid.ToString();
+	const FString BetaGuid = Fixture.Beta->NodeGuid.ToString();
+	TSharedPtr<FJsonObject> Migration = Fixture.Migration({ AlphaGuid, BetaGuid });
+	Request->SetObjectField(TEXT("migration"), Migration);
+
+	FCortexGraphPreparedPatch Preview;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("retirement preview succeeds: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Fixture.Blueprint, Request, Preview, Error));
+	TArray<FString> Approved;
+	const TSharedPtr<FJsonObject> PreviewInventory =
+		FCortexGraphMigrationOps::MakeRetirementInventory(Preview.RetirementPlan);
+	if (PreviewInventory.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ApprovedValues = nullptr;
+		PreviewInventory->TryGetArrayField(TEXT("removable"), ApprovedValues);
+		if (ApprovedValues)
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *ApprovedValues) Approved.Add(Value->AsString());
+		}
+	}
+	TestTrue(TEXT("the reviewed approval includes both selected entries"), Approved.Contains(AlphaGuid) && Approved.Contains(BetaGuid));
+	TArray<TSharedPtr<FJsonValue>> ApprovedValues;
+	for (const FString& Guid : Approved) ApprovedValues.Add(MakeShared<FJsonValueString>(Guid));
+	Migration->SetArrayField(TEXT("approved_node_guids"), ApprovedValues);
+	FCortexGraphPreparedPatch Reviewed;
+	Error = FCortexCommandResult();
+	TestTrue(FString::Printf(TEXT("approved preview succeeds: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Fixture.Blueprint, Request, Reviewed, Error));
+	TSet<FGuid> RetainedGuids = { Fixture.Retained->NodeGuid, Fixture.Producer->NodeGuid, Fixture.RetainedBody->NodeGuid };
+	const FString RetainedBefore = CaptureNativeGraph(Fixture.Graph, &RetainedGuids);
+	Request->SetBoolField(TEXT("dry_run"), false);
+	Request->SetStringField(TEXT("expected_validation_hash"), Reviewed.ValidationHash);
+
+	FCortexGraphPatchOutcome Outcome;
+	Error = FCortexCommandResult();
+	TestTrue(FString::Printf(TEXT("approved retirement applies: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	TestEqual(TEXT("approved retirement reports applied"), Outcome.ApplyStatus, FString(TEXT("applied")));
+	for (const FString& GuidText : Approved)
+	{
+		FGuid Guid;
+		FGuid::Parse(GuidText, Guid);
+		TestNull(FString::Printf(TEXT("approved node %s is absent from the graph and asset"), *GuidText),
+			FCortexGraphMigrationOps::FindNodeByGuid(Fixture.Blueprint, Guid));
+	}
+	TestNotNull(TEXT("retained event remains"), FCortexGraphMigrationOps::FindNodeByGuid(Fixture.Blueprint, Fixture.Retained->NodeGuid));
+	TestNotNull(TEXT("shared producer remains"), FCortexGraphMigrationOps::FindNodeByGuid(Fixture.Blueprint, Fixture.Producer->NodeGuid));
+	TestNotNull(TEXT("retained body remains"), FCortexGraphMigrationOps::FindNodeByGuid(Fixture.Blueprint, Fixture.RetainedBody->NodeGuid));
+	TestEqual(TEXT("retained event, body and shared producer are unchanged"),
+		CaptureNativeGraph(Fixture.Graph, &RetainedGuids), RetainedBefore);
+	TestTrue(TEXT("retained body execute link survives"),
+		Fixture.Retained->FindPin(TEXT("then"))->LinkedTo.Contains(Fixture.RetainedBody->FindPin(TEXT("execute"))));
+	TestTrue(TEXT("shared producer remains linked to retained body"),
+		Fixture.Producer->FindPin(TEXT("ReturnValue"))->LinkedTo.Contains(Fixture.RetainedBody->FindPin(TEXT("InString"))));
+	TestEqual(TEXT("compile is not requested"), Outcome.CompileStatus, FString(TEXT("not_requested")));
+	TestEqual(TEXT("native retirement readback matches"), Outcome.ReadbackStatus, FString(TEXT("matched")));
+	TestEqual(TEXT("retirement requests no target compile"), Outcome.TargetCompileCount, 0);
+	TestEqual(TEXT("rollback is not requested"), Outcome.RollbackStatus, FString(TEXT("not_requested")));
+	TestTrue(TEXT("the package is dirty after retirement"), Fixture.Package->IsDirty());
+	TestNotNull(TEXT("retirement inventory is returned"), Outcome.RetirementInventory.Get());
+	const TArray<TSharedPtr<FJsonValue>>* InventoryApproved = nullptr;
+	TestTrue(TEXT("inventory reports the exact applied approval"),
+		Outcome.RetirementInventory.IsValid()
+			&& Outcome.RetirementInventory->TryGetArrayField(TEXT("approved_guids"), InventoryApproved)
+			&& InventoryApproved && InventoryApproved->Num() == Approved.Num());
+	Fixture.Cleanup();
+	return true;
+}
+
 #endif
