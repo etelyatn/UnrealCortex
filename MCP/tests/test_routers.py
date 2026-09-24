@@ -273,6 +273,45 @@ def test_core_router_batch_query_accepts_steps_alias_and_json_string():
     )
 
 
+_BATCH_WITH_GRAPH_PATCH = [
+    {"command": "data.list_datatables", "params": {}},
+    {"command": "graph.apply_patch", "params": {"asset_path": "/Game/Test/BP_Test"}},
+]
+
+
+@pytest.mark.parametrize("batch_options", [{}, {"rollback_on_error": True}])
+def test_batch_query_rejects_graph_apply_patch_before_batch_dispatch(batch_options):
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": {"count": 2}}
+    router = make_router("core", connection, "core docs")
+
+    payload = json.loads(router("batch_query", {
+        "commands": _BATCH_WITH_GRAPH_PATCH,
+        **batch_options,
+    }))
+
+    assert payload.get("_error") == "INVALID_OPERATION"
+    connection.send_command.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("field", "commands"),
+    [
+        ("steps", _BATCH_WITH_GRAPH_PATCH),
+        ("commands", json.dumps(_BATCH_WITH_GRAPH_PATCH)),
+    ],
+)
+def test_batch_query_rejects_graph_apply_patch_from_steps_alias_and_json_string(field, commands):
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": {"count": 2}}
+    router = make_router("core", connection, "core docs")
+
+    payload = json.loads(router("batch_query", {field: commands}))
+
+    assert payload.get("_error") == "INVALID_OPERATION"
+    connection.send_command.assert_not_called()
+
+
 def test_core_router_handles_switch_editor_locally():
     connection = MagicMock()
     connection.port = 8742
