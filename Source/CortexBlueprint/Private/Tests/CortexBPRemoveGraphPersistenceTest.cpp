@@ -22,10 +22,41 @@
 #include "Misc/Paths.h"
 #include "UObject/SavePackage.h"
 #include "IO/IoHash.h"
+#include "UObject/ObjectSaveContext.h"
+#include "UObject/Package.h"
 #include "Misc/FileHelper.h"
 #include "Operations/CortexBPRemoveGraphOps.h"
 #include "CortexAssetMutationGuard.h"
  
+
+struct FPackageSaveObservation
+{
+	int32 SaveCount = 0;
+	TArray<FString> SavedPackages;
+	FDelegateHandle Handle;
+
+	void Begin()
+	{
+		Active = this;
+		Handle = UPackage::PackageSavedWithContextEvent.AddLambda(
+			[](const FString&, UPackage* Package, FObjectPostSaveContext)
+			{
+				if (!Active) return;
+				++Active->SaveCount;
+				if (Package) Active->SavedPackages.Add(Package->GetName());
+			});
+	}
+
+	void End()
+	{
+		UPackage::PackageSavedWithContextEvent.Remove(Handle);
+		Active = nullptr;
+	}
+
+	static FPackageSaveObservation* Active;
+};
+
+FPackageSaveObservation* FPackageSaveObservation::Active = nullptr;
 
 namespace
 {
@@ -1081,8 +1112,11 @@ bool FCortexBPRemoveGraphExplicitSaveTest::RunTest(const FString&)
 		MarkFixtureGarbage(BP);
 		return false;
 	}
+	FPackageSaveObservation SaveObservation;
+	SaveObservation.Begin();
 	const FCortexCommandResult Applied = Handler.Execute(
 		TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, true));
+	SaveObservation.End();
 	TestTrue(TEXT("apply succeeds"), Applied.bSuccess);
 	if (Applied.Data.IsValid())
 	{
@@ -1094,6 +1128,12 @@ bool FCortexBPRemoveGraphExplicitSaveTest::RunTest(const FString&)
 		TestEqual(TEXT("post-save status"), Data->GetStringField(TEXT("post_save_status")), FString(TEXT("verified")));
 		TestTrue(TEXT("saved true"), Data->GetBoolField(TEXT("saved")));
 		TestFalse(TEXT("package clean"), Data->GetBoolField(TEXT("dirty_after")));
+	}
+	TestEqual(TEXT("exactly one package save event"), SaveObservation.SaveCount, 1);
+	TestEqual(TEXT("only one package reported saved"), SaveObservation.SavedPackages.Num(), 1);
+	if (SaveObservation.SavedPackages.Num() == 1)
+	{
+		TestEqual(TEXT("target package was saved"), SaveObservation.SavedPackages[0], BP->GetOutermost()->GetName());
 	}
 	TestNotEqual(TEXT("package bytes changed"), FileHash(Filename), HashBefore);
 	TestFalse(TEXT("target remains absent"), BP->FunctionGraphs.ContainsByPredicate(
@@ -1114,7 +1154,7 @@ bool FCortexBPRemoveGraphSaveFaultsTest::RunTest(const FString&)
 	{
 		const FString Path = FString::Printf(TEXT("/Game/Temp/CortexBPRemoveGraphPersistence/BP_%s"), Fault);
 		UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
-		if (!TestNotNull(FString::Printf(TEXT("%s fixture"), Fault), BP)) continue;
+		if (!TestNotNull(FString::Printf(TEXT("%s fixture"), Fault), BP)) return false;
 		TSharedPtr<FJsonObject> Add = MakeShared<FJsonObject>();
 		Add->SetStringField(TEXT("asset_path"), Path);
 		Add->SetStringField(TEXT("name"), TEXT("DeleteMe"));
@@ -1125,7 +1165,14 @@ bool FCortexBPRemoveGraphSaveFaultsTest::RunTest(const FString&)
 		const FString HashBefore = FileHash(Filename);
 		const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteMe"), true);
 		const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
-		if (!Preview.bSuccess || !Preview.Data.IsValid()) { MarkFixtureGarbage(BP); continue; }
+		if (!TestTrue(FString::Printf(TEXT("%s preview succeeds"), Fault),
+			Preview.bSuccess && Preview.Data.IsValid()))
+		{
+			MarkFixtureGarbage(BP);
+			return false;
+		}
+		TWeakObjectPtr<UBlueprint> BlueprintBeforeApply(BP);
+		TWeakObjectPtr<UPackage> PackageBeforeApply(BP->GetOutermost());
 		FCortexBPRemoveGraphOps::SetFaultPointForTesting(FName(Fault));
 		const FCortexCommandResult Applied = Handler.Execute(
 			TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, true));
@@ -1135,6 +1182,8 @@ bool FCortexBPRemoveGraphSaveFaultsTest::RunTest(const FString&)
 		if (Applied.ErrorDetails.IsValid())
 		{
 			TestEqual(TEXT("applied remains reported"), Applied.ErrorDetails->GetStringField(TEXT("apply_status")), FString(TEXT("applied")));
+			TestEqual(TEXT("compile status remains compiled after persistence failure"),
+				Applied.ErrorDetails->GetStringField(TEXT("compile_status")), FString(TEXT("compiled")));
 			TestEqual(TEXT("readback remains matched"), Applied.ErrorDetails->GetStringField(TEXT("readback_status")), FString(TEXT("matched")));
 			TestEqual(TEXT("rollback not requested"), Applied.ErrorDetails->GetStringField(TEXT("rollback_status")), FString(TEXT("not_requested")));
 			if (FCString::Strcmp(Fault, TEXT("save")) == 0)
@@ -1152,6 +1201,10 @@ bool FCortexBPRemoveGraphSaveFaultsTest::RunTest(const FString&)
 				TestEqual(TEXT("post-save fails"), Applied.ErrorDetails->GetStringField(TEXT("post_save_status")), FString(TEXT("failed")));
 				TestTrue(TEXT("saved true"), Applied.ErrorDetails->GetBoolField(TEXT("saved")));
 				TestNotEqual(TEXT("disk bytes changed"), FileHash(Filename), HashBefore);
+				TestTrue(TEXT("post-save failure retained original Blueprint object"),
+					BlueprintBeforeApply.Get() == BP);
+				TestTrue(TEXT("post-save failure retained original package object"),
+					PackageBeforeApply.Get() == BP->GetOutermost());
 			}
 		}
 		TestFalse(TEXT("removed target remains absent in memory"), BP->FunctionGraphs.ContainsByPredicate(

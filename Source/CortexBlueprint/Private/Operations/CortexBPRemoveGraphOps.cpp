@@ -1202,6 +1202,10 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 				bFailed = true;
 				FailurePhase = TEXT("compile");
 			}
+			else if (Prepared.bSave)
+			{
+				Outcome.CompileStatus = TEXT("compiled");
+			}
 		}
 		else if (Prepared.bCompile)
 		{
@@ -1312,7 +1316,6 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 				AttachRemoveGraphOutcome(SaveError, Outcome);
 				return SaveError;
 			}
-			Outcome.CompileStatus = TEXT("compiled");
 		}
 
 		Outcome.FingerprintAfter = FCortexGraphFingerprint::Compute(Blueprint);
