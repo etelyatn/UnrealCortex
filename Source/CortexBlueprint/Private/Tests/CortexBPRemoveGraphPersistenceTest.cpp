@@ -1,3 +1,5 @@
+#include "Editor.h"
+#include "Editor/Transactor.h"
 #include "HAL/FileManager.h"
 #include "Misc/AutomationTest.h"
 #include "CortexBPCommandHandler.h"
@@ -598,6 +600,50 @@ bool FCortexBPRemoveGraphStaleFingerprintDirtyEditTest::RunTest(const FString&)
 	TestTrue(TEXT("target function survives"), BP->FunctionGraphs.ContainsByPredicate(
 		[](const UEdGraph* Candidate) { return Candidate && Candidate->GetName() == TEXT("DeleteMe"); }));
 	TestTrue(TEXT("later edit survives"), Graph->Nodes.Contains(LaterEdit));
+	MarkFixtureGarbage(BP);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphWholeGraphUndoTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.WholeGraphUndo",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphWholeGraphUndoTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_WholeGraphUndo");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	TSharedPtr<FJsonObject> Add = MakeShared<FJsonObject>();
+	Add->SetStringField(TEXT("asset_path"), Path);
+	Add->SetStringField(TEXT("name"), TEXT("DeleteMe"));
+	TestTrue(TEXT("function fixture created"), Handler.Execute(TEXT("add_function"), Add).bSuccess);
+	const TSharedPtr<FJsonObject> PreviewRequest = PreviewParams(Path, TEXT("DeleteMe"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), PreviewRequest);
+	if (!TestTrue(TEXT("preview succeeds"), Preview.bSuccess) || !Preview.Data.IsValid())
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	if (GEditor && GEditor->Trans)
+	{
+		GEditor->Trans->Reset(FText::FromString(TEXT("RemoveGraphWholeGraphUndoSetup")));
+	}
+	const FCortexCommandResult Applied = Handler.Execute(
+		TEXT("remove_graph"), ApplyFromPreview(PreviewRequest, Preview.Data, false));
+	TestTrue(TEXT("whole graph apply succeeds"), Applied.bSuccess);
+	TestFalse(TEXT("function graph absent after apply"),
+		BP->FunctionGraphs.ContainsByPredicate([](const UEdGraph* Graph)
+			{ return Graph && Graph->GetName() == TEXT("DeleteMe"); }));
+	TestTrue(TEXT("whole graph removal is undoable"),
+		GEditor && GEditor->UndoTransaction());
+	TestTrue(TEXT("undo restores Blueprint function graph collection"),
+		BP->FunctionGraphs.ContainsByPredicate([](const UEdGraph* Graph)
+			{ return Graph && Graph->GetName() == TEXT("DeleteMe"); }));
+	if (GEditor && GEditor->Trans)
+	{
+		GEditor->Trans->Reset(FText::FromString(TEXT("RemoveGraphWholeGraphUndoCleanup")));
+	}
 	MarkFixtureGarbage(BP);
 	return true;
 }

@@ -1153,6 +1153,7 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 		}
 		TUniquePtr<FScopedTransaction> Transaction = MakeUnique<FScopedTransaction>(
 			FText::FromString(TEXT("Cortex: Remove Blueprint Graph")));
+		Blueprint->Modify();
 		UEdGraph* TargetGraph = FindGraphByGuid(Blueprint, Journal.TargetGraphGuid);
 		const FString TargetKind = Prepared.Target->GetStringField(TEXT("kind"));
 		bool bMutationSucceeded = TargetGraph != nullptr;
