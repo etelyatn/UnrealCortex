@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -59,6 +60,82 @@ def test_make_router_dispatches_domain_command():
     )
 
 
+
+def test_blueprint_remove_graph_forwards_guarded_envelope_unchanged():
+    connection = MagicMock()
+    connection.send_command.return_value = {
+        "data": {
+            "changed": True,
+            "apply_status": "applied",
+            "compile_status": "not_requested",
+            "readback_status": "matched",
+            "rollback_status": "not_requested",
+            "save_status": "not_requested",
+            "post_save_status": "not_requested",
+        }
+    }
+    router = make_router("blueprint", connection, "blueprint docs")
+    params = {
+        "asset_path": "/Game/BP_Test.BP_Test",
+        "name": "DeleteMe",
+        "dry_run": False,
+        "compile": False,
+        "save": False,
+        "cascade_exec_chain": False,
+        "expected_fingerprint": {
+            "package_saved_hash": "abc",
+            "is_dirty": True,
+            "dirty_epoch": "0",
+            "not_ready": False,
+            "graph_authoring_version": 1,
+            "graph_authoring_hash": "def",
+        },
+        "expected_validation_hash": "token",
+    }
+
+    expected_params = deepcopy(params)
+    payload = json.loads(router("remove_graph", params))
+    assert payload["readback_status"] == "matched"
+    connection.send_command.assert_called_once_with("blueprint.remove_graph", expected_params)
+    assert params == expected_params
+
+
+def test_blueprint_remove_graph_preserves_structured_phase_errors():
+    connection = MagicMock()
+    connection.send_command.side_effect = UECommandError(
+        "blueprint.remove_graph",
+        "VERIFICATION_FAILED",
+        "remove_graph readback failed",
+        {
+            "apply_status": "failed",
+            "readback_status": "mismatched",
+            "rollback_status": "restored",
+            "save_status": "not_requested",
+        },
+    )
+    router = make_router("blueprint", connection, "blueprint docs")
+
+    payload = json.loads(
+        router(
+            "remove_graph",
+            {
+                "asset_path": "/Game/BP_Test.BP_Test",
+                "name": "DeleteMe",
+                "dry_run": False,
+                "compile": False,
+                "save": False,
+            },
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["_error"] == "VERIFICATION_FAILED"
+    assert payload["_message"] == "remove_graph readback failed"
+    assert payload["_command"] == "blueprint.remove_graph"
+    assert payload["apply_status"] == "failed"
+    assert payload["readback_status"] == "mismatched"
+    assert payload["rollback_status"] == "restored"
+    assert payload["save_status"] == "not_requested"
 def _graph_prune_request(**changes):
     request = {
         "asset_path": "/Game/Temp/BP_Test.BP_Test",

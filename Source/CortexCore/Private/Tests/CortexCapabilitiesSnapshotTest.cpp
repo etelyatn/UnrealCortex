@@ -99,6 +99,86 @@ bool FCortexCapabilitiesSnapshotTest::RunTest(const FString& Parameters)
 		return nullptr;
 	};
 
+	auto AssertParam = [this](const TArray<TSharedPtr<FJsonValue>>& Params, const FString& Name, const FString& Type, bool bRequired)
+	{
+		for (const TSharedPtr<FJsonValue>& ParamValue : Params)
+		{
+			const TSharedPtr<FJsonObject>* ParamObj = nullptr;
+			FString ParamName;
+			if (!ParamValue->TryGetObject(ParamObj) || ParamObj == nullptr
+				|| !(*ParamObj)->TryGetStringField(TEXT("name"), ParamName) || ParamName != Name)
+			{
+				continue;
+			}
+
+			FString ParamType;
+			bool bParamRequired = false;
+			TestTrue(FString::Printf(TEXT("%s type exists"), *Name), (*ParamObj)->TryGetStringField(TEXT("type"), ParamType));
+			TestTrue(FString::Printf(TEXT("%s required exists"), *Name), (*ParamObj)->TryGetBoolField(TEXT("required"), bParamRequired));
+			TestEqual(FString::Printf(TEXT("%s type"), *Name), ParamType, Type);
+			TestEqual(FString::Printf(TEXT("%s required"), *Name), bParamRequired, bRequired);
+			return;
+		}
+
+		AddError(FString::Printf(TEXT("Missing capability param: %s"), *Name));
+	};
+
+	const TSharedPtr<FJsonObject>* BlueprintDomain = nullptr;
+	TestTrue(
+		TEXT("Capabilities contain blueprint domain"),
+		(*DomainsObj)->TryGetObjectField(TEXT("blueprint"), BlueprintDomain) && BlueprintDomain != nullptr);
+	if (BlueprintDomain != nullptr)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* RemoveParams =
+			FindCommandParams(*BlueprintDomain, TEXT("remove_graph"));
+		TestNotNull(TEXT("blueprint.remove_graph capability params"), RemoveParams);
+		if (RemoveParams != nullptr)
+		{
+			const TArray<FString> ExpectedRemoveParamNames = {
+				TEXT("asset_path"),
+				TEXT("name"),
+				TEXT("dry_run"),
+				TEXT("compile"),
+				TEXT("save"),
+				TEXT("cascade_exec_chain"),
+				TEXT("expected_fingerprint"),
+				TEXT("expected_validation_hash")
+			};
+			TestEqual(
+				TEXT("blueprint.remove_graph exact param count"),
+				RemoveParams->Num(),
+				ExpectedRemoveParamNames.Num());
+			for (int32 Index = 0; Index < RemoveParams->Num() && Index < ExpectedRemoveParamNames.Num(); ++Index)
+			{
+				const TSharedPtr<FJsonObject>* ParamObj = nullptr;
+				FString ParamName;
+				const bool bHasParamName =
+					(*RemoveParams)[Index]->TryGetObject(ParamObj)
+					&& ParamObj != nullptr
+					&& (*ParamObj)->TryGetStringField(TEXT("name"), ParamName);
+				TestTrue(
+					FString::Printf(TEXT("blueprint.remove_graph param[%d] has a name"), Index),
+					bHasParamName);
+				if (bHasParamName)
+				{
+					TestEqual(
+						FString::Printf(TEXT("blueprint.remove_graph param[%d] order"), Index),
+						ParamName,
+						ExpectedRemoveParamNames[Index]);
+				}
+			}
+
+			AssertParam(*RemoveParams, TEXT("asset_path"), TEXT("string"), true);
+			AssertParam(*RemoveParams, TEXT("name"), TEXT("string"), true);
+			AssertParam(*RemoveParams, TEXT("dry_run"), TEXT("boolean"), true);
+			AssertParam(*RemoveParams, TEXT("compile"), TEXT("boolean"), true);
+			AssertParam(*RemoveParams, TEXT("save"), TEXT("boolean"), true);
+			AssertParam(*RemoveParams, TEXT("cascade_exec_chain"), TEXT("boolean"), false);
+			AssertParam(*RemoveParams, TEXT("expected_fingerprint"), TEXT("object"), false);
+			AssertParam(*RemoveParams, TEXT("expected_validation_hash"), TEXT("string"), false);
+		}
+	}
+
 	auto SnapshotParams = [this, SnapshotJson](const FString& DomainName, const FString& ToolName, const TArray<FString>& Expected) -> bool
 	{
 		const TSharedPtr<FJsonObject>* DomainObj = nullptr;
