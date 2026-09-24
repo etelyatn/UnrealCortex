@@ -3,6 +3,7 @@
 #include "Operations/CortexReflectOps.h"
 #include "CortexTypes.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Containers/Ticker.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
@@ -10,6 +11,8 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "UObject/GarbageCollection.h"
 #include "UObject/SavePackage.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -401,6 +404,11 @@ namespace CortexReflectProjectPluginBlueprintTest
 		/** Removes registry, package, disk, and mount state; safe to call more than once. */
 		void Release()
 		{
+			if (!PackageFilename.IsEmpty())
+			{
+				IFileManager::Get().Delete(*PackageFilename, false, true, true);
+				PackageFilename.Reset();
+			}
 			if (Blueprint && bAssetRegistryRegistered)
 			{
 				FAssetRegistryModule::AssetDeleted(Blueprint);
@@ -422,12 +430,12 @@ namespace CortexReflectProjectPluginBlueprintTest
 			// Purge the marked objects now: the mount and asset names are fixed, so a later test in
 			// the same editor process must not find this Blueprint still occupying the package.
 			CollectGarbage(RF_NoFlags);
+			IAssetRegistry& AssetRegistry =
+				FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+			AssetRegistry.WaitForCompletion();
+			FlushAsyncLoading();
+			FTSTicker::GetCoreTicker().Tick(0.0f);
 
-			if (!PackageFilename.IsEmpty())
-			{
-				IFileManager::Get().Delete(*PackageFilename, false, true, true);
-				PackageFilename.Reset();
-			}
 			if (bMountRegistered)
 			{
 				FPackageName::UnRegisterMountPoint(MountRoot, Directory);
@@ -602,6 +610,62 @@ bool FCortexReflectClassHierarchyProjectPluginBlueprintVisibleTest::RunTest(cons
 		TEXT("Project-only hierarchy must include the project-plugin Blueprint class %s (total_classes=%d)"),
 		*ExpectedClassName, TotalClasses),
 		ClassesArrayContainsName(Result, ExpectedClassName));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectProjectPluginBlueprintFixtureCleanupTest,
+	"Cortex.Reflect.Search.ProjectPluginBlueprintFixtureCleanup",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectProjectPluginBlueprintFixtureCleanupTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexReflectProjectPluginBlueprintTest;
+
+	IAssetRegistry& AssetRegistry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+	FString FixtureMountRootPath;
+	FString FixtureDirectory;
+	bool bTearingDownFixture = false;
+	bool bLateFixtureAssetAdded = false;
+	FDelegateHandle AssetAddedHandle;
+	{
+		FScopedProjectPluginBlueprintFixture Fixture;
+		FString FixtureError;
+		if (!Fixture.Create(FixtureError))
+		{
+			AddError(FString::Printf(
+				TEXT("Project-plugin Blueprint fixture creation failed: %s"), *FixtureError));
+			return false;
+		}
+
+		FixtureMountRootPath = Fixture.MountRoot;
+		FixtureDirectory = Fixture.Directory;
+		AssetAddedHandle = AssetRegistry.OnAssetAdded().AddLambda(
+			[&](const FAssetData& AssetData)
+			{
+				if (bTearingDownFixture
+					&& AssetData.PackageName.ToString().StartsWith(FixtureMountRootPath))
+				{
+					bLateFixtureAssetAdded = true;
+				}
+			});
+		bTearingDownFixture = true;
+	}
+
+	AssetRegistry.WaitForCompletion();
+	FlushAsyncLoading();
+	FTSTicker::GetCoreTicker().Tick(0.0f);
+	AssetRegistry.OnAssetAdded().Remove(AssetAddedHandle);
+
+	TArray<FAssetData> RemainingAssets;
+	AssetRegistry.GetAssetsByPath(FName(*FixtureMountRootPath), RemainingAssets, true);
+	TestFalse(TEXT("Asset Registry must not add the fixture after teardown"), bLateFixtureAssetAdded);
+	TestTrue(TEXT("Asset Registry must not retain the released fixture"), RemainingAssets.IsEmpty());
+	TestFalse(TEXT("Fixture directory must be removed"), IFileManager::Get().DirectoryExists(*FixtureDirectory));
 
 	return true;
 }
