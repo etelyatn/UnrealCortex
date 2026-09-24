@@ -147,6 +147,7 @@ bool FCortexGraphFingerprintDirtyMutationTest::RunTest(const FString& Parameters
 
 	const TSharedPtr<FJsonObject> Before = FCortexGraphFingerprint::Compute(Blueprint);
 	const FString SavedPackageHashBefore = Before->GetStringField(TEXT("package_saved_hash"));
+	const FString GraphHashBefore = Before->GetStringField(TEXT("graph_authoring_hash"));
 	UK2Node_CustomEvent* DirtyEvent = NewObject<UK2Node_CustomEvent>(Graph);
 	DirtyEvent->CreateNewGuid();
 	DirtyEvent->CustomFunctionName = TEXT("DirtyEvent");
