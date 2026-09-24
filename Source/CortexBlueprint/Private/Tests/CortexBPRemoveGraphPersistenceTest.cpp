@@ -619,12 +619,16 @@ bool FCortexBPRemoveGraphCompileInvalidCleanupTest::RunTest(const FString&)
 	const FString Filename = PackageFilename(BP->GetOutermost());
 	const FString HashBefore = FileHash(Filename);
 	BP->Status = BS_Error;
+	TestTrue(TEXT("fixture skeleton contains target before apply"),
+		BP->SkeletonGeneratedClass && BP->SkeletonGeneratedClass->FindFunctionByName(TEXT("DeleteMe")));
 	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteMe"), false);
 	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
 	TestTrue(TEXT("preview succeeds"), Preview.bSuccess);
 	if (!Preview.bSuccess || !Preview.Data.IsValid()) return false;
 	const FCortexCommandResult Applied = Handler.Execute(TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
 	TestTrue(TEXT("staged cleanup succeeds without compile"), Applied.bSuccess);
+	TestTrue(TEXT("compile=false leaves the skeleton uncompiled"),
+		BP->SkeletonGeneratedClass && BP->SkeletonGeneratedClass->FindFunctionByName(TEXT("DeleteMe")));
 	TestEqual(TEXT("saved package bytes unchanged"), FileHash(Filename), HashBefore);
 	MarkFixtureGarbage(BP);
 	IFileManager::Get().Delete(*Filename, false, true);

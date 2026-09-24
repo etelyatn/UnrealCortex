@@ -1158,7 +1158,7 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 		bool bMutationSucceeded = TargetGraph != nullptr;
 		if (bMutationSucceeded && TargetKind == TEXT("graph"))
 		{
-			FBlueprintEditorUtils::RemoveGraph(Blueprint, TargetGraph);
+			FBlueprintEditorUtils::RemoveGraph(Blueprint, TargetGraph, EGraphRemoveFlags::MarkTransient);
 		}
 		else if (bMutationSucceeded)
 		{
