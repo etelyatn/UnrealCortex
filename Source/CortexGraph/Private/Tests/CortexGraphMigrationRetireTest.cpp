@@ -12,6 +12,7 @@
 #include "Kismet/KismetStringLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "K2Node_Composite.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -55,11 +56,12 @@ struct FFixture
 		return Call;
 	}
 
-	bool Build(const TCHAR* Name, const bool bRetainProducer = false, const bool bBlockAlpha = false)
+	bool Build(const TCHAR* Name, const bool bRetainProducer = false, const bool bBlockAlpha = false,
+		UClass* ParentClass = nullptr)
 	{
 		Package = CreatePackage(*FString::Printf(TEXT("/Game/Temp/%s"), Name));
 		Blueprint = Cast<UWidgetBlueprint>(FKismetEditorUtilities::CreateBlueprint(
-			UCortexGraphRetireLegacyWidget::StaticClass(), Package, FName(Name), BPTYPE_Normal,
+			ParentClass ? ParentClass : UCortexGraphRetireLegacyWidget::StaticClass(), Package, FName(Name), BPTYPE_Normal,
 			UWidgetBlueprint::StaticClass(), UWidgetBlueprintGeneratedClass::StaticClass()));
 		if (!Blueprint) return false;
 		if (Blueprint->UbergraphPages.Num() == 0)
@@ -175,6 +177,34 @@ bool FCortexGraphMigrationRetireSelectedEntriesTest::RunTest(const FString& Para
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireStaleLegacyOverrideTest,
+	"Cortex.Graph.Authoring.Migration.Retire.StaleLegacyOverrideAfterReparent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireStaleLegacyOverrideTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("reparented Widget fixture is created"), Fixture.Build(TEXT("BP_RetireStaleLegacy"),
+		false, false, UCortexGraphRetireTargetWidget::StaticClass()));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	TestTrue(TEXT("the Widget BP is reparented away from the stale event parent"),
+		!Fixture.Blueprint->ParentClass->IsChildOf(UCortexGraphRetireLegacyWidget::StaticClass()));
+	TestEqual(TEXT("the event retains its legacy parent identity"),
+		Fixture.Alpha->EventReference.GetMemberParentClass(), UCortexGraphRetireLegacyWidget::StaticClass());
+	FCortexGraphMigrationRetirePlan PlanValue;
+	bool bReused = false;
+	FCortexCommandResult Error;
+	const FString AlphaGuid = Fixture.Alpha->NodeGuid.ToString();
+	TestTrue(FString::Printf(TEXT("stale legacy override remains eligible for retirement: %s"), *Error.ErrorMessage),
+		Plan(Fixture, { AlphaGuid }, PlanValue, bReused, Error));
+	TestTrue(TEXT("stale legacy override is removable"),
+		PlanValue.RemovableGuids.Contains(AlphaGuid));
+	Fixture.Cleanup();
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireSharedProducerTest,
 	"Cortex.Graph.Authoring.Migration.Retire.RetainsSharedProducer",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -265,9 +295,11 @@ bool FCortexGraphMigrationRetireStrictShapeTest::RunTest(const FString& Paramete
 	};
 	Error = FCortexCommandResult();
 	UK2Node_CustomEvent* Custom = NewObject<UK2Node_CustomEvent>(Fixture.Graph);
-	Custom->CustomFunctionName = TEXT("NotAnOverride");
+	Custom->CustomFunctionName = TEXT("OnLegacyAlpha");
+	Custom->EventReference.SetExternalMember(TEXT("OnLegacyAlpha"), UCortexGraphRetireLegacyWidget::StaticClass());
+	Custom->bOverrideFunction = true;
 	const FString CustomGuid = AddUnsupportedNode(Custom);
-	TestFalse(TEXT("custom event is refused"),
+	TestFalse(TEXT("override-shaped custom event is refused"),
 		Plan(Fixture, { CustomGuid }, PlanValue, bReused, Error));
 
 	Error = FCortexCommandResult();
@@ -289,6 +321,48 @@ bool FCortexGraphMigrationRetireStrictShapeTest::RunTest(const FString& Paramete
 	TestFalse(TEXT("duplicate GUID ownership is refused"),
 		Plan(Fixture, { AlphaGuid }, PlanValue, bReused, Error));
 
+	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireNestedGraphTest,
+	"Cortex.Graph.Authoring.Migration.Retire.RefusesNestedCompositeGraph",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireNestedGraphTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("Widget fixture is created"), Fixture.Build(TEXT("BP_RetireNested")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	FCortexGraphMigrationRetirePlan PlanValue;
+	bool bReused = false;
+	FCortexCommandResult Error;
+
+	UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(Fixture.Graph);
+	Composite->CreateNewGuid();
+	Fixture.Graph->AddNode(Composite, true, false);
+	Composite->PostPlacedNewNode();
+	UEdGraph* ChildGraph = Composite->BoundGraph;
+	TestNotNull(TEXT("a real nested composite graph is created"), ChildGraph);
+	if (!ChildGraph) { Fixture.Cleanup(); return false; }
+
+	UK2Node_Event* ChildEntry = NewObject<UK2Node_Event>(ChildGraph);
+	ChildEntry->EventReference.SetExternalMember(TEXT("OnLegacyAlpha"), UCortexGraphRetireLegacyWidget::StaticClass());
+	ChildEntry->bOverrideFunction = true;
+	ChildEntry->CreateNewGuid();
+	ChildEntry->AllocateDefaultPins();
+	ChildGraph->AddNode(ChildEntry, true, false);
+
+	TSharedPtr<FJsonObject> Migration = Fixture.Migration({ ChildEntry->NodeGuid.ToString() });
+	const TSharedPtr<FJsonObject>* Source = nullptr;
+	Migration->TryGetObjectField(TEXT("source"), Source);
+	const TSharedPtr<FJsonObject>* GraphRef = nullptr;
+	(*Source)->TryGetObjectField(TEXT("graph_ref"), GraphRef);
+	(*GraphRef)->SetStringField(TEXT("graph_guid"), ChildGraph->GraphGuid.ToString());
+	TestFalse(TEXT("nested graph GUID with empty subgraph path is refused"),
+		FCortexGraphMigrationOps::PlanRetirement(Fixture.Blueprint, Migration, PlanValue, bReused, Error));
 	Fixture.Cleanup();
 	return true;
 }

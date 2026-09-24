@@ -6080,6 +6080,12 @@ bool FCortexGraphMigrationOps::PlanRetirement(
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("retirement is supported only in a top-level ubergraph"));
 		return false;
 	}
+	if (!Blueprint->UbergraphPages.Contains(Graph))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("retirement is supported only in a top-level ubergraph"));
+		return false;
+	}
 	if ((*GraphRefPtr)->HasField(TEXT("graph_kind")))
 	{
 		FString RequestedKind;
@@ -6137,8 +6143,8 @@ bool FCortexGraphMigrationOps::PlanRetirement(
 		UClass* Parent = Event ? Event->EventReference.GetMemberParentClass() : nullptr;
 		const FName Member = Event ? Event->EventReference.GetMemberName() : NAME_None;
 		UFunction* Function = Parent && !Member.IsNone() ? Parent->FindFunctionByName(Member) : nullptr;
-		if (!Event || !Event->bOverrideFunction || Event->bInternalEvent || !Parent || Member.IsNone() || !Function
-			|| !Blueprint->ParentClass || !Blueprint->ParentClass->IsChildOf(Parent)
+		if (!Event || Node->IsA<UK2Node_CustomEvent>() || !Event->bOverrideFunction || Event->bInternalEvent
+			|| !Parent || Member.IsNone() || !Function
 			|| !Function->HasAnyFunctionFlags(FUNC_BlueprintEvent)
 			|| Event->GetSubGraphs().Num() > 0
 			|| (Event->GetDelegatePin() && Event->GetDelegatePin()->LinkedTo.Num() > 0)
