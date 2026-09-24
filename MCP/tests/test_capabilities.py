@@ -22,6 +22,44 @@ from cortex_mcp._fallback_generated import FALLBACK_COMMANDS as _FALLBACK_STRUCT
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
+def _command(domain: str, name: str, source):
+    return next(cmd for cmd in source[domain] if cmd["name"] == name)
+
+
+def test_remove_graph_fallback_contract_is_explicit():
+    cmd = _command("blueprint", "remove_graph", _FALLBACK_STRUCTURED)
+    params = {p["name"]: p for p in cmd["params"]}
+
+    for name in ("asset_path", "name", "dry_run", "compile", "save"):
+        assert params[name]["required"] is True
+
+    assert params["dry_run"]["type"] == "boolean"
+    assert params["compile"]["type"] == "boolean"
+    assert params["save"]["type"] == "boolean"
+    assert params["cascade_exec_chain"] == {
+        "name": "cascade_exec_chain", "type": "boolean", "required": False
+    }
+    assert params["expected_fingerprint"]["type"] == "object"
+    assert params["expected_validation_hash"]["type"] == "string"
+
+
+def test_remove_graph_fixture_docstring_marks_guards_optional_only():
+    fixture = json.loads(
+        (FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8")
+    )
+    docstring = build_router_docstrings(fixture)["blueprint"]
+    signature = next(
+        line for line in docstring.splitlines() if line.startswith("- remove_graph(")
+    )
+
+    for name in ("dry_run: boolean", "compile: boolean", "save: boolean"):
+        assert f"{name} = optional" not in signature
+        assert name in signature
+    assert "cascade_exec_chain: boolean = optional" in signature
+    assert "expected_fingerprint: object = optional" in signature
+    assert "expected_validation_hash: string = optional" in signature
+
+
 def test_capabilities_fixture_reports_current_plugin_version():
     fixture = json.loads(
         (FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8")
