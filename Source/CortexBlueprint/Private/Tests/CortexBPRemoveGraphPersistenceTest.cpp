@@ -577,6 +577,17 @@ bool FCortexBPRemoveGraphRecoveryFaultTest::RunTest(const FString&)
 	TestTrue(TEXT("fixture saved"), SaveFixture(BP));
 	const FString Filename = PackageFilename(BP->GetOutermost());
 	const FString HashBefore = FileHash(Filename);
+	UEdGraph* EventGraph = BP->UbergraphPages[0];
+	if (!TestTrue(TEXT("fixture has an unrelated stable graph node"), EventGraph && EventGraph->Nodes.Num() > 0))
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	UEdGraphNode* UnrelatedEdit = EventGraph->Nodes[0];
+	const FGuid UnrelatedEditGuid = UnrelatedEdit->NodeGuid;
+	UnrelatedEdit->NodeComment = TEXT("Unrelated unsaved edit");
+	BP->GetOutermost()->SetDirtyFlag(true);
+	TestTrue(TEXT("unrelated unsaved edit leaves package dirty"), BP->GetOutermost()->IsDirty());
 	for (const TCHAR* Fault : { TEXT("compile"), TEXT("readback"), TEXT("after_mutation") })
 	{
 		const bool bCompile = FCString::Strcmp(Fault, TEXT("after_mutation")) != 0;
@@ -584,6 +595,8 @@ bool FCortexBPRemoveGraphRecoveryFaultTest::RunTest(const FString&)
 		const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
 		TestTrue(FString::Printf(TEXT("%s preview succeeds"), Fault), Preview.bSuccess);
 		if (!Preview.bSuccess || !Preview.Data.IsValid()) continue;
+		const TSharedPtr<FJsonObject> FingerprintBefore = TryObjectField(Preview.Data, TEXT("fingerprint_before"));
+		TestTrue(FString::Printf(TEXT("%s dirty preview fingerprint exists"), Fault), FingerprintBefore.IsValid());
 		FCortexBPRemoveGraphOps::SetFaultPointForTesting(FName(Fault));
 		const FCortexCommandResult Applied = Handler.Execute(
 			TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
@@ -592,18 +605,51 @@ bool FCortexBPRemoveGraphRecoveryFaultTest::RunTest(const FString&)
 		TestEqual(FString::Printf(TEXT("%s restores source graph"), Fault),
 			BP->FunctionGraphs.ContainsByPredicate([](const UEdGraph* Graph)
 				{ return Graph && Graph->GetName() == TEXT("DeleteMe"); }), true);
-		TestEqual(FString::Printf(TEXT("%s does not save"), Fault), FileHash(Filename), HashBefore);
+		UEdGraphNode* RestoredUnrelated = FindNodeByGuid(EventGraph, UnrelatedEditGuid);
+		TestNotNull(FString::Printf(TEXT("%s preserves unrelated stable-identity edit"), Fault), RestoredUnrelated);
+		if (RestoredUnrelated)
+		{
+			TestEqual(FString::Printf(TEXT("%s preserves unrelated node edit"), Fault),
+				RestoredUnrelated->NodeComment, FString(TEXT("Unrelated unsaved edit")));
+		}
+		const TSharedPtr<FJsonObject> FingerprintAfter = FCortexGraphFingerprint::Compute(BP);
+		TestTrue(FString::Printf(TEXT("%s recovery fingerprint exists"), Fault), FingerprintAfter.IsValid());
+		if (FingerprintBefore.IsValid() && FingerprintAfter.IsValid())
+		{
+			TestEqual(FString::Printf(TEXT("%s graph fingerprint matches dirty preview"), Fault),
+				FingerprintAfter->GetStringField(TEXT("graph_authoring_hash")),
+				FingerprintBefore->GetStringField(TEXT("graph_authoring_hash")));
+		}
+		TestTrue(FString::Printf(TEXT("%s preserves pre-existing dirty package state"), Fault),
+			BP->GetOutermost()->IsDirty());
+		TestEqual(FString::Printf(TEXT("%s does not save dirty edits"), Fault), FileHash(Filename), HashBefore);
 		if (Applied.ErrorDetails.IsValid())
 		{
 			FString Rollback;
+			FString ApplyStatus;
+			FString CompileStatus;
+			FString ReadbackStatus;
 			TestTrue(TEXT("rollback status present"), Applied.ErrorDetails->TryGetStringField(TEXT("rollback_status"), Rollback));
 			TestEqual(TEXT("recovery verified"), Rollback, FString(TEXT("restored")));
-			if (Rollback != TEXT("restored"))
+			TestTrue(TEXT("apply status present"), Applied.ErrorDetails->TryGetStringField(TEXT("apply_status"), ApplyStatus));
+			TestEqual(FString::Printf(TEXT("%s mutation remains reported as applied"), Fault),
+				ApplyStatus, FString(TEXT("applied")));
+			TestTrue(TEXT("compile status present"), Applied.ErrorDetails->TryGetStringField(TEXT("compile_status"), CompileStatus));
+			TestTrue(TEXT("readback status present"), Applied.ErrorDetails->TryGetStringField(TEXT("readback_status"), ReadbackStatus));
+			if (FCString::Strcmp(Fault, TEXT("compile")) == 0)
 			{
-				TestTrue(FString::Printf(TEXT("rollback content=%d authoring=%d generated=%d"),
-					Applied.ErrorDetails->GetBoolField(TEXT("rollback_content_restored")),
-					Applied.ErrorDetails->GetBoolField(TEXT("rollback_authoring_matches")),
-					Applied.ErrorDetails->GetBoolField(TEXT("rollback_generated_matches"))), false);
+				TestEqual(TEXT("compile fault reports failed compile"), CompileStatus, FString(TEXT("failed")));
+				TestEqual(TEXT("compile fault skips readback"), ReadbackStatus, FString(TEXT("not_requested")));
+			}
+			else if (FCString::Strcmp(Fault, TEXT("readback")) == 0)
+			{
+				TestEqual(TEXT("readback fault follows successful compile"), CompileStatus, FString(TEXT("succeeded")));
+				TestEqual(TEXT("readback fault reports mismatch"), ReadbackStatus, FString(TEXT("mismatched")));
+			}
+			else
+			{
+				TestEqual(TEXT("post-mutation fault skips compile"), CompileStatus, FString(TEXT("not_requested")));
+				TestEqual(TEXT("post-mutation fault skips readback"), ReadbackStatus, FString(TEXT("not_requested")));
 			}
 		}
 		else TestTrue(TEXT("failure includes operation statuses"), false);

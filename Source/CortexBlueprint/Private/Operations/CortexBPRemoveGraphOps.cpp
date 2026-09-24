@@ -1136,7 +1136,7 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 #if WITH_AUTOMATION_TESTS
 			if (RemoveGraphFaultPoint == TEXT("readback") || RemoveGraphFaultPoint == TEXT("rollback_verify")) bMatched = false;
 #endif
-			Outcome.ReadbackStatus = bMatched ? TEXT("matched") : TEXT("mismatch");
+			Outcome.ReadbackStatus = bMatched ? TEXT("matched") : TEXT("mismatched");
 			if (!bMatched)
 			{
 				bFailed = true;
