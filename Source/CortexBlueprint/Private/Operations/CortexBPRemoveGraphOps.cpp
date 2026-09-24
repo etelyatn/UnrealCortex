@@ -1192,25 +1192,16 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 			FCompilerResultsLog Log;
 			Log.bAnnotateMentionedNodes = false;
 			FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &Log);
-			CollectCompilerDiagnostics(Log, Outcome.Diagnostics);
 			Outcome.CompileStatus = (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings)
-				? TEXT("succeeded") : TEXT("failed");
+				? TEXT("compiled") : TEXT("failed");
 #if WITH_AUTOMATION_TESTS
 			if (RemoveGraphFaultPoint == TEXT("compile")) Outcome.CompileStatus = TEXT("failed");
 #endif
-			if (Outcome.CompileStatus != TEXT("succeeded"))
+			if (Outcome.CompileStatus != TEXT("compiled"))
 			{
 				bFailed = true;
 				FailurePhase = TEXT("compile");
 			}
-			else if (Prepared.bSave)
-			{
-				Outcome.CompileStatus = TEXT("compiled");
-			}
-		}
-		else if (Prepared.bCompile)
-		{
-			Outcome.CompileStatus = TEXT("not_run");
 		}
 		if (!bFailed)
 		{

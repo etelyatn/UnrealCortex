@@ -682,7 +682,7 @@ bool FCortexBPRemoveGraphRecoveryFaultTest::RunTest(const FString&)
 			}
 			else if (FCString::Strcmp(Fault, TEXT("readback")) == 0)
 			{
-				TestEqual(TEXT("readback fault follows successful compile"), CompileStatus, FString(TEXT("succeeded")));
+				TestEqual(TEXT("readback fault follows successful compile"), CompileStatus, FString(TEXT("compiled")));
 			TestTrue(TEXT("failure includes changed outcome"), Applied.ErrorDetails->HasField(TEXT("changed")));
 			TestFalse(TEXT("verified recovery leaves no net change"), Applied.ErrorDetails->GetBoolField(TEXT("changed")));
 			}
