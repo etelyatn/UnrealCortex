@@ -68,6 +68,25 @@ const TMap<FString, ECortexModuleOrigin>& GetPluginModuleOrigins()
 	static const TMap<FString, ECortexModuleOrigin> ModuleOrigins = BuildPluginModuleOrigins();
 	return ModuleOrigins;
 }
+
+// Resolve the package mount to distinguish project-owned plugin content.
+bool IsPackageUnderProjectDir(const FString& PackageName)
+{
+	FString Filename;
+	if (!FPackageName::TryConvertLongPackageNameToFilename(PackageName, Filename))
+	{
+		return false;
+	}
+
+	FString AssetDir = FPaths::ConvertRelativePathToFull(FPaths::GetPath(Filename));
+	FPaths::NormalizeDirectoryName(AssetDir);
+
+	FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+	FPaths::NormalizeDirectoryName(ProjectDir);
+
+	return FPaths::IsUnderDirectory(AssetDir, ProjectDir);
+}
+
 }
 
 // Returns the full C++ name of a class (e.g. "AActor" not "Actor").
@@ -197,11 +216,11 @@ bool FCortexReflectOps::IsProjectClass(const UClass* Class)
 		return false;
 	}
 
-	// Blueprint in /Game/ is a project class
+	// Blueprint-generated class ownership follows where its package resolves on disk.
 	if (const UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(Class))
 	{
 		UBlueprint* BP = Cast<UBlueprint>(BPGC->ClassGeneratedBy);
-		return BP && BP->GetPathName().StartsWith(TEXT("/Game/"));
+		return BP && IsPackageUnderProjectDir(BP->GetOutermost()->GetName());
 	}
 
 	// C++ class: resolve the owning module binary first. This distinguishes

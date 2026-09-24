@@ -70,6 +70,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexTcpServerPendingSocketsStopTest,
+	"Cortex.Core.TcpServer.StopClosesPendingSocket",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
 #if WITH_DEV_AUTOMATION_TESTS
 /**
  * Test double for FSocket that limits partial writes and can inject one send failure.
@@ -162,6 +168,32 @@ private:
 	bool bSendFailed = false;
 
 
+};
+
+class FCortexTrackedPendingSocket final : public FCortexPartialSendSocket
+{
+public:
+	FCortexTrackedPendingSocket(bool& bOutClosed, bool& bOutDestroyed)
+		: FCortexPartialSendSocket(1)
+		, bClosedObserved(bOutClosed)
+		, bDestroyedObserved(bOutDestroyed)
+	{
+	}
+
+	~FCortexTrackedPendingSocket() override
+	{
+		bDestroyedObserved = true;
+	}
+
+	bool Close() override
+	{
+		bClosedObserved = true;
+		return FCortexPartialSendSocket::Close();
+	}
+
+private:
+	bool& bClosedObserved;
+	bool& bDestroyedObserved;
 };
 /** Formats raw bytes for failure diagnostics. */
 static FString CortexBytesToHex(const TArray<uint8>& Bytes)
@@ -826,5 +858,35 @@ bool FCortexTcpServerAcceptsNonBlockingSocketTest::RunTest(const FString& Parame
 	Server.PendingClientSockets.Empty();
 #endif
 
+	return true;
+}
+
+bool FCortexTcpServerPendingSocketsStopTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+#if WITH_DEV_AUTOMATION_TESTS
+	bool bSocketClosed = false;
+	bool bSocketDestroyed = false;
+	FCortexTcpServer Server;
+	if (!TestTrue(TEXT("TCP server starts"), Server.Start(18750, FCortexTcpServer::FCommandDispatcher())))
+	{
+		return true;
+	}
+
+	FCortexTrackedPendingSocket* PendingSocket = new FCortexTrackedPendingSocket(
+		bSocketClosed, bSocketDestroyed);
+	{
+		FScopeLock Lock(&Server.PendingSocketsCS);
+		Server.PendingClientSockets.Add(PendingSocket);
+	}
+
+	Server.Stop();
+	TestTrue(TEXT("Stop closes an accepted socket not yet promoted"), bSocketClosed);
+	TestTrue(TEXT("Stop destroys an accepted socket not yet promoted"), bSocketDestroyed);
+	if (!bSocketDestroyed)
+	{
+		ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(PendingSocket);
+	}
+#endif
 	return true;
 }

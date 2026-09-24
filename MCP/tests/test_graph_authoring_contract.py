@@ -88,7 +88,7 @@ def _live_schema_connection(command: dict) -> MagicMock:
         "data": {
             "source": "live_editor",
             "editor_instance_id": "instance-1",
-            "plugin_build_id": "0.1.16-24601",
+            "plugin_build_id": "0.3.0-24601",
             "domain": "graph",
             "command": command["name"],
             "router": "graph_cmd",

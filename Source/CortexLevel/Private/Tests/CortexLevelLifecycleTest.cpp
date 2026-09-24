@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "CortexCommandRouter.h"
+#include "CortexEditorUtils.h"
 #include "CortexLevelCommandHandler.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -7,6 +8,7 @@
 #include "FileHelpers.h"
 #include "HAL/FileManager.h"
 #include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 #include "UObject/Package.h"
 
 namespace
@@ -18,6 +20,51 @@ namespace
 			MakeShared<FCortexLevelCommandHandler>());
 		return Router;
 	}
+	/** Registers a throwaway plugin-style mount backed by a directory under project Saved. */
+	class FScopedLifecycleTestMount
+	{
+	public:
+		FScopedLifecycleTestMount(const FString& InRoot, const FString& InDirectory, bool bInWritable)
+			: Root(InRoot)
+			, Directory(InDirectory)
+			, bWritable(bInWritable)
+		{
+			IFileManager::Get().MakeDirectory(*Directory, true);
+			bSetupSucceeded = IFileManager::Get().DirectoryExists(*Directory);
+			if (!bSetupSucceeded)
+			{
+				return;
+			}
+
+			FPackageName::RegisterMountPoint(Root, Directory);
+			if (bWritable)
+			{
+				FCortexEditorUtils::AddTestWritableContentRoot(Root);
+			}
+		}
+
+		~FScopedLifecycleTestMount()
+		{
+			if (!bSetupSucceeded)
+			{
+				return;
+			}
+			if (bWritable)
+			{
+				FCortexEditorUtils::RemoveTestWritableContentRoot(Root);
+			}
+			FPackageName::UnRegisterMountPoint(Root, Directory);
+			IFileManager::Get().DeleteDirectory(*Directory, false, true);
+		}
+
+		bool IsValid() const { return bSetupSucceeded; }
+
+	private:
+		FString Root;
+		FString Directory;
+		bool bWritable = false;
+		bool bSetupSucceeded = false;
+	};
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -260,6 +307,48 @@ bool FCortexLevelOpenLevelNotFoundTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Should fail for non-existent level"), Result.bSuccess);
 	TestEqual(TEXT("Error should be ASSET_NOT_FOUND"), Result.ErrorCode, TEXT("ASSET_NOT_FOUND"));
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelOpenLevelWritableMountedRootTest,
+	"Cortex.Level.Lifecycle.OpenLevel.WritableMountedRoot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexLevelOpenLevelWritableMountedRootTest::RunTest(const FString& Parameters)
+{
+	const FString Root = TEXT("/CortexLifecycleWritable/");
+	const FString Directory = FPaths::ProjectSavedDir() / TEXT("CortexLifecycleWritable");
+	FScopedLifecycleTestMount Mount(Root, Directory, true);
+	if (!TestTrue(TEXT("Writable test mount fixture must be created"), Mount.IsValid()))
+	{
+		return false;
+	}
+
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("path"), Root + TEXT("Maps/NoSuchLevel_XYZ"));
+	const FCortexCommandResult Result = Router.Execute(TEXT("level.open_level"), Params);
+	TestFalse(TEXT("Missing level should fail"), Result.bSuccess);
+	TestEqual(TEXT("Writable mounted root must reach asset lookup"),
+		Result.ErrorCode, FString(TEXT("ASSET_NOT_FOUND")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelOpenLevelTraversalPathTest,
+	"Cortex.Level.Lifecycle.OpenLevel.TraversalPath",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexLevelOpenLevelTraversalPathTest::RunTest(const FString& Parameters)
+{
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("path"), TEXT("/Game/../Engine/Foo"));
+	const FCortexCommandResult Result = Router.Execute(TEXT("level.open_level"), Params);
+	TestFalse(TEXT("Traversal path must fail"), Result.bSuccess);
+	TestEqual(TEXT("Traversal path must be rejected before lookup"),
+		Result.ErrorCode, FString(TEXT("INVALID_PARAMETER")));
 	return true;
 }
 

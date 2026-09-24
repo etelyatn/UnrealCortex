@@ -107,6 +107,11 @@ void FCortexBPToolbarExtension::OnConvertBPClicked(TWeakPtr<FBlueprintEditor> We
 	Core.OnConversionRequested().Broadcast(Payload);
 }
 
+bool FCortexBPToolbarExtension::IsBlueprintInterfaceForPayload(const UClass* InterfaceClass)
+{
+	return InterfaceClass && InterfaceClass->ClassGeneratedBy != nullptr;
+}
+
 FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FBlueprintEditor> Editor)
 {
 	FCortexConversionPayload Payload;
@@ -299,8 +304,8 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 		}
 		FCortexConversionPayload::FPayloadInterfaceInfo Info;
 		Info.InterfaceName = IfaceDesc.Interface->GetName();
-		// Blueprint interfaces live under /Game/, native ones under /Script/
-		Info.bIsBlueprint = IfaceDesc.Interface->GetPathName().StartsWith(TEXT("/Game/"));
+		// Blueprint-generated interfaces have a generator; native interfaces do not.
+		Info.bIsBlueprint = IsBlueprintInterfaceForPayload(IfaceDesc.Interface);
 		Payload.ImplementedInterfaces.Add(MoveTemp(Info));
 	}
 

@@ -227,6 +227,22 @@ void FCortexTcpServer::Stop()
 		FTSTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
 		TickDelegateHandle.Reset();
 	}
+	// Join the accept thread before draining its cross-thread queue.
+	Listener.Reset();
+
+	TArray<FSocket*> PendingSockets;
+	{
+		FScopeLock Lock(&PendingSocketsCS);
+		PendingSockets = MoveTemp(PendingClientSockets);
+	}
+	for (FSocket* Socket : PendingSockets)
+	{
+		if (Socket != nullptr)
+		{
+			Socket->Close();
+			ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(Socket);
+		}
+	}
 
 	for (FSocket* Socket : ClientSockets)
 	{
@@ -238,14 +254,10 @@ void FCortexTcpServer::Stop()
 	}
 	ClientSockets.Empty();
 	PendingClientDisconnects.Empty();
-	PendingClientSockets.Empty();
 	ReceiveBuffers.Empty();
 	PendingResponses.Empty();
 	PendingDeferred.Empty();
 	NextDeferredId = 1;
-
-	Listener.Reset();
-
 	UE_LOG(LogCortex, Log, TEXT("TCP server stopped"));
 }
 

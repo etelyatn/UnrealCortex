@@ -1,4 +1,5 @@
 #include "Operations/CortexLevelLifecycleOps.h"
+#include "CortexEditorUtils.h"
 
 #include "CortexEngineCompat.h"
 #include "CortexTypes.h"
@@ -94,10 +95,10 @@ FCortexCommandResult FCortexLevelLifecycleOps::CreateLevel(const TSharedPtr<FJso
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: path"));
 	}
 
-	if (!IsValidContentPath(Path))
+	FString ValidationError;
+	if (!ValidateContentPath(Path, ValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
-			FString::Printf(TEXT("Invalid content path: %s. Must start with /Game/ or /Plugins/"), *Path));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
 	}
 
 	if (DoesLevelExist(Path))
@@ -304,10 +305,10 @@ FCortexCommandResult FCortexLevelLifecycleOps::OpenLevel(const TSharedPtr<FJsonO
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: path"));
 	}
 
-	if (!IsValidContentPath(Path))
+	FString ValidationError;
+	if (!ValidateContentPath(Path, ValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
-			FString::Printf(TEXT("Invalid content path: %s"), *Path));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
 	}
 
 	if (!DoesLevelExist(Path))
@@ -391,16 +392,15 @@ FCortexCommandResult FCortexLevelLifecycleOps::DuplicateLevel(const TSharedPtr<F
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: dest_path"));
 	}
 
-	if (!IsValidContentPath(SourcePath))
+	FString ValidationError;
+	if (!ValidateContentPath(SourcePath, ValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
-			FString::Printf(TEXT("Invalid source path: %s"), *SourcePath));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
 	}
 
-	if (!IsValidContentPath(DestPath))
+	if (!ValidateContentPath(DestPath, ValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
-			FString::Printf(TEXT("Invalid dest path: %s"), *DestPath));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
 	}
 
 	if (!DoesLevelExist(SourcePath))
@@ -481,9 +481,15 @@ FCortexCommandResult FCortexLevelLifecycleOps::RenameLevel(const TSharedPtr<FJso
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: new_path"));
 	}
 
-	if (!IsValidContentPath(Path) || !IsValidContentPath(NewPath))
+	FString ValidationError;
+	if (!ValidateContentPath(Path, ValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Invalid content path"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
+	}
+
+	if (!ValidateContentPath(NewPath, ValidationError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
 	}
 
 	if (!DoesLevelExist(Path))
@@ -548,10 +554,10 @@ FCortexCommandResult FCortexLevelLifecycleOps::DeleteLevel(const TSharedPtr<FJso
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: path"));
 	}
 
-	if (!IsValidContentPath(Path))
+	FString ValidationError;
+	if (!ValidateContentPath(Path, ValidationError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter,
-			FString::Printf(TEXT("Invalid content path: %s"), *Path));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, ValidationError);
 	}
 
 	if (!DoesLevelExist(Path))
@@ -727,9 +733,15 @@ bool FCortexLevelLifecycleOps::IsCurrentLevelDirty()
 	return false;
 }
 
-bool FCortexLevelLifecycleOps::IsValidContentPath(const FString& Path)
+bool FCortexLevelLifecycleOps::ValidateContentPath(const FString& Path, FString& OutError)
 {
-	return Path.StartsWith(TEXT("/Game/")) || Path.StartsWith(TEXT("/Plugins/"));
+	OutError.Reset();
+	if (!FPackageName::IsValidLongPackageName(Path))
+	{
+		OutError = FString::Printf(TEXT("Invalid long package name: %s"), *Path);
+		return false;
+	}
+	return FCortexEditorUtils::IsWritableMountedContentPath(Path, OutError);
 }
 
 bool FCortexLevelLifecycleOps::DoesLevelExist(const FString& ContentPath)

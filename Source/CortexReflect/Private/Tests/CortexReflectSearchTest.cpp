@@ -2,6 +2,76 @@
 #include "CortexReflectCommandHandler.h"
 #include "Operations/CortexReflectOps.h"
 #include "CortexTypes.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "GameFramework/Actor.h"
+#include "HAL/FileManager.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectProjectPluginBlueprintClassificationTest,
+	"Cortex.Reflect.ProjectPluginBlueprintClassification",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectProjectPluginBlueprintClassificationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FString MountRoot = TEXT("/CortexReflectClassificationTest/");
+	const FString Directory = FPaths::ProjectSavedDir() / TEXT("CortexReflectClassificationTest");
+	IFileManager::Get().MakeDirectory(*Directory, true);
+	if (!TestTrue(TEXT("Project plugin fixture directory must exist"),
+		IFileManager::Get().DirectoryExists(*Directory)))
+	{
+		return false;
+	}
+
+	FPackageName::RegisterMountPoint(MountRoot, Directory);
+	const FString PackageName = MountRoot + TEXT("BP_ProjectPluginClass");
+	UPackage* Package = CreatePackage(*PackageName);
+	UBlueprint* Blueprint = Package
+		? FKismetEditorUtilities::CreateBlueprint(
+			AActor::StaticClass(),
+			Package,
+			FName(TEXT("BP_ProjectPluginClass")),
+			BPTYPE_Normal,
+			UBlueprint::StaticClass(),
+			UBlueprintGeneratedClass::StaticClass())
+		: nullptr;
+	TestNotNull(TEXT("Project plugin Blueprint fixture must exist"), Blueprint);
+
+	if (Blueprint)
+	{
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		UClass* GeneratedClass = Blueprint->GeneratedClass.Get();
+		TestNotNull(TEXT("Project plugin Blueprint must compile to a generated class"),
+			GeneratedClass);
+		if (GeneratedClass)
+		{
+			TestTrue(TEXT("Blueprint under a project-owned non-/Game mount is a project class"),
+				FCortexReflectOps::IsProjectClass(GeneratedClass));
+		}
+	}
+
+	TestFalse(TEXT("Engine classes remain non-project classes"),
+		FCortexReflectOps::IsProjectClass(AActor::StaticClass()));
+	if (Blueprint)
+	{
+		Blueprint->MarkAsGarbage();
+	}
+	if (Package)
+	{
+		Package->MarkAsGarbage();
+	}
+	CollectGarbage(RF_NoFlags);
+	FPackageName::UnRegisterMountPoint(MountRoot, Directory);
+	IFileManager::Get().DeleteDirectory(*Directory, false, true);
+
+	return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexReflectMetadataProjectPluginModuleClassificationTest,

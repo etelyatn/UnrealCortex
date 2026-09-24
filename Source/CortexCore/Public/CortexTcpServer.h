@@ -68,6 +68,7 @@ private:
 	friend class FCortexTcpServerQueuedResponseBacklogLimitTest;
 	friend class FCortexTcpServerDeferredSendFailureRetiresClientTest;
 	friend class FCortexTcpServerProcessesBufferedRequestsWithoutNewDataTest;
+	friend class FCortexTcpServerPendingSocketsStopTest;
 #endif
 
 	/** Close and destroy a client socket */

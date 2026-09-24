@@ -16,6 +16,6 @@ public:
 private:
 	static bool IsLevelCurrentlyOpen(const FString& ContentPath);
 	static bool IsCurrentLevelDirty();
-	static bool IsValidContentPath(const FString& Path);
+	static bool ValidateContentPath(const FString& Path, FString& OutError);
 	static bool DoesLevelExist(const FString& ContentPath);
 };

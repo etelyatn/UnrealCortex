@@ -14,6 +14,11 @@ public:
 	/** Unregister the toolbar extension. */
 	static void Unregister();
 
+	/**
+	 * Classify an implemented interface for conversion dependency payloads.
+	 * Module-private API because this header is under Source/CortexBlueprint/Private.
+	 */
+	static bool IsBlueprintInterfaceForPayload(const UClass* InterfaceClass);
 private:
 	/** Build the dropdown menu entries. */
 	static void BuildMenu(class UToolMenu* Menu);
