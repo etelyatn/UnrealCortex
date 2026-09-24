@@ -449,6 +449,21 @@ def test_update_prune_pagination_fields_are_rejected_before_native_call(field, v
     connection.send_command.assert_not_called()
     connection.send_command_once.assert_not_called()
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("limit", 5), ("cursor", "next-page"), ("offset", 5)],
+)
+def test_update_non_prune_pagination_is_rejected_before_native_call(field, value):
+    mcp, tool, connection = _register(MagicMock())
+    connection.send_command.return_value = {"success": True, "data": {}}
+    patch = {"patch_id": PATCH_ID, "dry_run": True, field: value}
+
+    payload = _payload(tool(mode="update", asset_path=ASSET, patch=patch))
+
+    assert payload.get("_error") == "INVALID_FIELD"
+    connection.send_command.assert_not_called()
+    connection.send_command_once.assert_not_called()
+
 
 def _prune_patch(*, dry_run, approved_guids=None, token="approval-token", patch_id=PATCH_ID):
     return {
@@ -565,6 +580,7 @@ def test_registered_description_explains_prune_dispatch_and_reconciliation():
     description = mcp.descriptions["blueprint_compose"]
 
     assert "A non-prune update sends the reviewed patch once" in description
+    assert "on every `graph.apply_patch` before dispatch" in description
     assert "bounded preflight" in description
     assert "one one-shot apply" in description
     assert "exact approved GUID set" in description

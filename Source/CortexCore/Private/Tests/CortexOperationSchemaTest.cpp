@@ -4,6 +4,8 @@
 #include "ICortexDomainHandler.h"
 #include "Dom/JsonObject.h"
 
+#include "Interfaces/IPluginManager.h"
+
 namespace
 {
 /** Test double for a domain handler advertising a graph-style command contract. */
@@ -40,6 +42,15 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexOperationSchemaTest::RunTest(const FString& Parameters)
 {
+	const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealCortex"));
+	TestTrue(TEXT("UnrealCortex descriptor is available"), Plugin.IsValid());
+	if (!Plugin.IsValid())
+	{
+		return false;
+	}
+	const FString ExpectedPluginVersion = Plugin->GetDescriptor().VersionName;
+	TestEqual(TEXT("descriptor declares the current release version"),
+		ExpectedPluginVersion, FString(TEXT("0.3.0")));
 	FCortexCommandRouter Router;
 	Router.RegisterDomain(TEXT("graph"), TEXT("Cortex Graph"), TEXT("1.0.1"),
 		MakeShared<FCortexOperationSchemaGraphHandler>());
@@ -58,7 +69,9 @@ bool FCortexOperationSchemaTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("command echoes"), Result.Data->GetStringField(TEXT("command")), FString(TEXT("add_node")));
 		TestEqual(TEXT("router is graph_cmd"), Result.Data->GetStringField(TEXT("router")), FString(TEXT("graph_cmd")));
 		TestTrue(TEXT("editor_instance_id is non-empty"), !Result.Data->GetStringField(TEXT("editor_instance_id")).IsEmpty());
-		TestTrue(TEXT("plugin_build_id is non-empty"), !Result.Data->GetStringField(TEXT("plugin_build_id")).IsEmpty());
+		const FString PluginBuildId = Result.Data->GetStringField(TEXT("plugin_build_id"));
+		TestTrue(TEXT("plugin_build_id uses the descriptor release version"),
+			PluginBuildId.StartsWith(ExpectedPluginVersion + TEXT("-")));
 		const TArray<TSharedPtr<FJsonValue>>* ParamList = nullptr;
 		TestTrue(TEXT("params array present"), Result.Data->TryGetArrayField(TEXT("params"), ParamList));
 		if (ParamList)
@@ -115,5 +128,19 @@ bool FCortexOperationSchemaTest::RunTest(const FString& Parameters)
 
 	FCortexCommandResult Status = Router.Execute(TEXT("get_status"), MakeShared<FJsonObject>());
 	TestTrue(TEXT("get_status succeeds"), Status.bSuccess);
+	if (Status.bSuccess && Status.Data.IsValid())
+	{
+		TestEqual(TEXT("get_status reports the release version"),
+			Status.Data->GetStringField(TEXT("plugin_version")), ExpectedPluginVersion);
+	}
+
+	const FCortexCommandResult Capabilities =
+		Router.Execute(TEXT("get_capabilities"), MakeShared<FJsonObject>());
+	TestTrue(TEXT("get_capabilities succeeds"), Capabilities.bSuccess);
+	if (Capabilities.bSuccess && Capabilities.Data.IsValid())
+	{
+		TestEqual(TEXT("get_capabilities reports the release version"),
+			Capabilities.Data->GetStringField(TEXT("plugin_version")), ExpectedPluginVersion);
+	}
 	return true;
 }

@@ -107,6 +107,33 @@ def test_graph_prune_apply_patch_rejects_pagination_before_dispatch(field, value
     connection.send_command_once.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("limit", 10), ("cursor", "opaque"), ("offset", 0)],
+)
+def test_registered_graph_cmd_rejects_non_prune_apply_pagination_before_dispatch(field, value):
+    from mcp.server.fastmcp import FastMCP
+
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": {}}
+    mcp = FastMCP("graph-apply-pagination-test")
+    register_router_tools(mcp, connection, {"graph": "graph docs"}, domains=("graph",))
+    params = {
+        "asset_path": "/Game/Temp/BP_Test.BP_Test",
+        "patch_id": "update-patch",
+        "nodes": [],
+    }
+    params[field] = value
+
+    payload = _call_tool_payload(
+        mcp, "graph_cmd", {"command": "apply_patch", "params": params},
+    )
+
+    assert payload.get("_error") == "INVALID_FIELD"
+    connection.send_command.assert_not_called()
+    connection.send_command_once.assert_not_called()
+
+
 def test_graph_prune_preview_uses_one_native_call_through_router():
     connection = MagicMock()
     params = _graph_prune_request()

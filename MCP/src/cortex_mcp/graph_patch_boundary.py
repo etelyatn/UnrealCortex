@@ -1,4 +1,4 @@
-"""Shared bounded dispatch boundary for graph.apply_patch prune migrations."""
+"""Shared pre-dispatch boundary for graph.apply_patch pagination and bounded prune responses."""
 
 from __future__ import annotations
 
@@ -38,13 +38,12 @@ def is_prune_patch(request: dict[str, Any]) -> bool:
 
 
 def reject_apply_patch_pagination(request: dict[str, Any]) -> str | None:
-    if is_prune_patch(request):
-        fields = [key for key in ("limit", "cursor", "offset", "page") if key in request]
-        if fields:
-            return (
-                "Pagination parameters (" + ", ".join(fields)
-                + ") are not supported on graph.apply_patch prune migrations."
-            )
+    fields = [key for key in ("limit", "cursor", "offset", "page") if key in request]
+    if fields:
+        return (
+            "Pagination parameters (" + ", ".join(fields)
+            + ") are not supported on graph.apply_patch."
+        )
     return None
 
 

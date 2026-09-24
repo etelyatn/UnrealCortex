@@ -111,11 +111,20 @@ def test_is_prune_patch_requires_exact_migration_operation():
     assert is_prune_patch({}) is False
 
 
-def test_reject_apply_patch_pagination_only_rejects_prune_pagination():
-    assert reject_apply_patch_pagination(_request(limit=10))
-    assert reject_apply_patch_pagination(_request(cursor="cursor"))
-    assert reject_apply_patch_pagination(_request()) is None
-    assert reject_apply_patch_pagination({"limit": 10}) is None
+@pytest.mark.parametrize(
+    "patch_request",
+    [
+        pytest.param(_request(), id="prune"),
+        pytest.param({"asset_path": ASSET, "patch_id": PATCH_ID, "nodes": []}, id="non-prune"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("limit", 10), ("cursor", "cursor"), ("offset", 0), ("page", 1)],
+)
+def test_reject_apply_patch_pagination_for_every_patch_kind(patch_request, field, value):
+    candidate = {**patch_request, field: value}
+    assert reject_apply_patch_pagination(candidate)
 
 
 def test_prune_preview_at_supported_boundary_returns_every_guid_without_truncation():
