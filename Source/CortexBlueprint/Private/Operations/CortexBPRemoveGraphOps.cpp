@@ -941,6 +941,7 @@ void AttachRemoveGraphOutcome(FCortexCommandResult& Error, const FCortexBPRemove
 		Error.ErrorDetails = MakeShared<FJsonObject>();
 	}
 	// Set phase fields after retaining any native details so callers always receive the operation outcome.
+	Error.ErrorDetails->SetBoolField(TEXT("changed"), Outcome.bChanged);
 	Error.ErrorDetails->SetStringField(TEXT("apply_status"), Outcome.ApplyStatus);
 	Error.ErrorDetails->SetStringField(TEXT("compile_status"), Outcome.CompileStatus);
 	Error.ErrorDetails->SetStringField(TEXT("readback_status"), Outcome.ReadbackStatus);
@@ -1292,6 +1293,7 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 				Outcome.RollbackStatus = TEXT("unverified");
 				Outcome.bBlocked = true;
 			}
+			Outcome.bChanged = !bVerified;
 			Outcome.CompileStatus = FailurePhase == TEXT("compile") ? TEXT("failed") : Outcome.CompileStatus;
 			Outcome.FingerprintAfter = FCortexGraphFingerprint::Compute(Blueprint);
 			Outcome.bDirtyAfter = Blueprint->GetOutermost()->IsDirty();
@@ -1330,6 +1332,7 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 	Data->SetBoolField(TEXT("dry_run"), Prepared.bDryRun);
 	Data->SetBoolField(TEXT("compiled"), Prepared.bCompile && !Prepared.bDryRun);
 	Data->SetStringField(TEXT("apply_status"), Outcome.ApplyStatus);
+	Data->SetBoolField(TEXT("changed"), Outcome.bChanged);
 	Data->SetStringField(TEXT("compile_status"), Outcome.CompileStatus);
 	Data->SetStringField(TEXT("readback_status"), Outcome.ReadbackStatus);
 	Data->SetStringField(TEXT("rollback_status"), Outcome.RollbackStatus);

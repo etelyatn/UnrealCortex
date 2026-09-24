@@ -270,6 +270,8 @@ bool FCortexBPRemoveGraphPreviewFunctionTest::RunTest(const FString&)
 	if (Result.bSuccess && Result.Data.IsValid())
 	{
 		FString ApplyStatus;
+		TestTrue(TEXT("preview includes authoritative changed"), Result.Data->HasField(TEXT("changed")));
+		TestFalse(TEXT("preview did not change the Blueprint"), Result.Data->GetBoolField(TEXT("changed")));
 		TestTrue(TEXT("preview apply status exists"), Result.Data->TryGetStringField(TEXT("apply_status"), ApplyStatus));
 		TestEqual(TEXT("preview apply not requested"), ApplyStatus, FString(TEXT("not_requested")));
 		FString ValidationHash;
@@ -476,6 +478,12 @@ bool FCortexBPRemoveGraphUnsavedFunctionDiskInvariantTest::RunTest(const FString
 	if (!Preview.bSuccess || !Preview.Data.IsValid()) return false;
 	const FCortexCommandResult Applied = Handler.Execute(TEXT("remove_graph"), ApplyFromPreview(PreviewRequest, Preview.Data, false));
 	TestTrue(TEXT("in-memory apply succeeds"), Applied.bSuccess);
+	if (Applied.Data.IsValid())
+	{
+		TestTrue(TEXT("successful apply reports changed"), Applied.Data->GetBoolField(TEXT("changed")));
+		TestEqual(TEXT("compile=false remains not requested"),
+			Applied.Data->GetStringField(TEXT("compile_status")), FString(TEXT("not_requested")));
+	}
 	TestFalse(TEXT("graph absent from memory"), BP->FunctionGraphs.ContainsByPredicate(
 		[](const UEdGraph* Graph) { return Graph && Graph->GetName() == TEXT("DeleteMe"); }));
 	TestTrue(TEXT("package dirty"), BP->GetOutermost()->IsDirty());
@@ -675,7 +683,8 @@ bool FCortexBPRemoveGraphRecoveryFaultTest::RunTest(const FString&)
 			else if (FCString::Strcmp(Fault, TEXT("readback")) == 0)
 			{
 				TestEqual(TEXT("readback fault follows successful compile"), CompileStatus, FString(TEXT("succeeded")));
-				TestEqual(TEXT("readback fault reports mismatch"), ReadbackStatus, FString(TEXT("mismatched")));
+			TestTrue(TEXT("failure includes changed outcome"), Applied.ErrorDetails->HasField(TEXT("changed")));
+			TestFalse(TEXT("verified recovery leaves no net change"), Applied.ErrorDetails->GetBoolField(TEXT("changed")));
 			}
 			else
 			{
@@ -1127,6 +1136,7 @@ bool FCortexBPRemoveGraphExplicitSaveTest::RunTest(const FString&)
 		TestEqual(TEXT("save status"), Data->GetStringField(TEXT("save_status")), FString(TEXT("saved")));
 		TestEqual(TEXT("post-save status"), Data->GetStringField(TEXT("post_save_status")), FString(TEXT("verified")));
 		TestTrue(TEXT("saved true"), Data->GetBoolField(TEXT("saved")));
+		TestTrue(TEXT("successful save reports changed"), Data->GetBoolField(TEXT("changed")));
 		TestFalse(TEXT("package clean"), Data->GetBoolField(TEXT("dirty_after")));
 	}
 	TestEqual(TEXT("exactly one package save event"), SaveObservation.SaveCount, 1);
@@ -1191,6 +1201,7 @@ bool FCortexBPRemoveGraphSaveFaultsTest::RunTest(const FString&)
 				TestEqual(TEXT("save fails"), Applied.ErrorCode, CortexErrorCodes::SaveFailed);
 				TestEqual(TEXT("save status failed"), Applied.ErrorDetails->GetStringField(TEXT("save_status")), FString(TEXT("failed")));
 				TestEqual(TEXT("post-save not requested"), Applied.ErrorDetails->GetStringField(TEXT("post_save_status")), FString(TEXT("not_requested")));
+				TestFalse(TEXT("failed save is not reported saved"), Applied.ErrorDetails->GetBoolField(TEXT("saved")));
 				TestTrue(TEXT("package remains dirty"), BP->GetOutermost()->IsDirty());
 				TestEqual(TEXT("disk bytes unchanged"), FileHash(Filename), HashBefore);
 			}
