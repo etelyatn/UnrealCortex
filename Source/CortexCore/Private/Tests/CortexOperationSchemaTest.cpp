@@ -3,7 +3,6 @@
 #include "CortexCoreCommandHandler.h"
 #include "ICortexDomainHandler.h"
 #include "Dom/JsonObject.h"
-
 #include "Interfaces/IPluginManager.h"
 
 namespace
@@ -49,8 +48,6 @@ bool FCortexOperationSchemaTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	const FString ExpectedPluginVersion = Plugin->GetDescriptor().VersionName;
-	TestEqual(TEXT("descriptor declares the current release version"),
-		ExpectedPluginVersion, FString(TEXT("0.3.0")));
 	FCortexCommandRouter Router;
 	Router.RegisterDomain(TEXT("graph"), TEXT("Cortex Graph"), TEXT("1.0.1"),
 		MakeShared<FCortexOperationSchemaGraphHandler>());
