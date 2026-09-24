@@ -601,6 +601,15 @@ struct FRemoveGraphJournal
 	TArray<FMacroInstance> ExternalMacroInstances;
 	TArray<FMacroLink> ExternalMacroLinks;
 	TArray<FEditedDocumentInfo> LastEditedDocuments;
+	TArray<FBPVariableDescription> NewVariables;
+	struct FOwnedTemplate
+	{
+		TStrongObjectPtr<UObject> Object;
+		TStrongObjectPtr<UObject> OriginalOuter;
+		FName OriginalName;
+	};
+	TArray<FOwnedTemplate> Timelines;
+	TArray<FOwnedTemplate> ComponentTemplates;
 	TArray<TObjectPtr<UEdGraph>> DelegateSignatureGraphs;
 	TArray<FBPInterfaceDescription> ImplementedInterfaces;
 	TMap<FGuid, FEditedDocumentInfo> Bookmarks;
@@ -741,6 +750,23 @@ bool CaptureJournal(UBlueprint* Blueprint, const FCortexBPRemoveGraphPrepared& P
 	Journal.GraphFingerprintBefore = Prepared.FingerprintBefore->GetStringField(TEXT("graph_authoring_hash"));
 	if (Prepared.bCompile) Journal.GeneratedStateBefore = FCortexGraphFingerprint::ComputeGeneratedStateDigest(Blueprint);
 	Journal.LastEditedDocuments = Blueprint->LastEditedDocuments;
+	Journal.NewVariables = Blueprint->NewVariables;
+	for (UTimelineTemplate* Timeline : Blueprint->Timelines)
+	{
+		if (!Timeline) continue;
+		FRemoveGraphJournal::FOwnedTemplate& Saved = Journal.Timelines.AddDefaulted_GetRef();
+		Saved.Object = TStrongObjectPtr<UObject>(Timeline);
+		Saved.OriginalOuter = TStrongObjectPtr<UObject>(Timeline->GetOuter());
+		Saved.OriginalName = Timeline->GetFName();
+	}
+	for (UActorComponent* Component : Blueprint->ComponentTemplates)
+	{
+		if (!Component) continue;
+		FRemoveGraphJournal::FOwnedTemplate& Saved = Journal.ComponentTemplates.AddDefaulted_GetRef();
+		Saved.Object = TStrongObjectPtr<UObject>(Component);
+		Saved.OriginalOuter = TStrongObjectPtr<UObject>(Component->GetOuter());
+		Saved.OriginalName = Component->GetFName();
+	}
 	Journal.DelegateSignatureGraphs = Blueprint->DelegateSignatureGraphs;
 	Journal.ImplementedInterfaces = Blueprint->ImplementedInterfaces;
 	Journal.Bookmarks = Blueprint->Bookmarks;
@@ -818,6 +844,55 @@ bool CaptureJournal(UBlueprint* Blueprint, const FCortexBPRemoveGraphPrepared& P
 	return true;
 }
 
+bool RestoreBlueprintOwnedState(
+	UBlueprint* Blueprint,
+	FRemoveGraphJournal& Journal,
+	UEdGraph* RestoredGraph = nullptr)
+{
+	Blueprint->NewVariables = Journal.NewVariables;
+	Blueprint->DelegateSignatureGraphs = Journal.DelegateSignatureGraphs;
+	for (TObjectPtr<UEdGraph>& Graph : Blueprint->DelegateSignatureGraphs)
+	{
+		if (Journal.OriginalGraph.IsValid() && Graph == Journal.OriginalGraph.Get())
+			Graph = RestoredGraph;
+	}
+	Blueprint->ImplementedInterfaces = Journal.ImplementedInterfaces;
+	for (FBPInterfaceDescription& Interface : Blueprint->ImplementedInterfaces)
+	{
+		for (TObjectPtr<UEdGraph>& Graph : Interface.Graphs)
+		{
+			if (Journal.OriginalGraph.IsValid() && Graph == Journal.OriginalGraph.Get())
+				Graph = RestoredGraph;
+		}
+	}
+	Blueprint->LastEditedDocuments = Journal.LastEditedDocuments;
+	Blueprint->Bookmarks = Journal.Bookmarks;
+
+	Blueprint->Timelines.Reset();
+	for (const FRemoveGraphJournal::FOwnedTemplate& Saved : Journal.Timelines)
+	{
+		UTimelineTemplate* Timeline = Cast<UTimelineTemplate>(Saved.Object.Get());
+		if (!Timeline || !Saved.OriginalOuter.IsValid()) return false;
+		if ((Timeline->GetOuter() != Saved.OriginalOuter.Get() || Timeline->GetFName() != Saved.OriginalName)
+			&& !Timeline->Rename(*Saved.OriginalName.ToString(), Saved.OriginalOuter.Get(),
+				REN_DontCreateRedirectors | REN_NonTransactional))
+			return false;
+		Blueprint->Timelines.Add(Timeline);
+	}
+	Blueprint->ComponentTemplates.Reset();
+	for (const FRemoveGraphJournal::FOwnedTemplate& Saved : Journal.ComponentTemplates)
+	{
+		UActorComponent* Component = Cast<UActorComponent>(Saved.Object.Get());
+		if (!Component || !Saved.OriginalOuter.IsValid()) return false;
+		if ((Component->GetOuter() != Saved.OriginalOuter.Get() || Component->GetFName() != Saved.OriginalName)
+			&& !Component->Rename(*Saved.OriginalName.ToString(), Saved.OriginalOuter.Get(),
+				REN_DontCreateRedirectors | REN_NonTransactional))
+			return false;
+		Blueprint->ComponentTemplates.Add(Component);
+	}
+	return true;
+}
+
 bool RestoreJournal(UBlueprint* Blueprint, FRemoveGraphJournal& Journal)
 {
 	if (!Journal.GraphType.IsEmpty())
@@ -826,7 +901,7 @@ bool RestoreJournal(UBlueprint* Blueprint, FRemoveGraphJournal& Journal)
 		{
 			if (Journal.GraphType == TEXT("Macro")
 				&& !RestoreExternalMacroInstances(Blueprint, Journal, ExistingGraph)) return false;
-			return true;
+			return RestoreBlueprintOwnedState(Blueprint, Journal, ExistingGraph);
 		}
 		if (!Journal.SnapshotGraph.IsValid() || Journal.SnapshotGraph->GetOuter() != Journal.SnapshotBlueprint.Get())
 			return false;
@@ -850,13 +925,10 @@ bool RestoreJournal(UBlueprint* Blueprint, FRemoveGraphJournal& Journal)
 		{
 			Blueprint->UbergraphPages.Insert(Restored, FMath::Clamp(Journal.GraphIndex, 1, Blueprint->UbergraphPages.Num()));
 		}
-		Blueprint->LastEditedDocuments = Journal.LastEditedDocuments;
-		Blueprint->DelegateSignatureGraphs = Journal.DelegateSignatureGraphs;
-		Blueprint->ImplementedInterfaces = Journal.ImplementedInterfaces;
-		Blueprint->Bookmarks = Journal.Bookmarks;
 		if (Journal.GraphType == TEXT("Macro") && !RestoreExternalMacroInstances(Blueprint, Journal, Restored))
 			return false;
-		return FindGraphByGuid(Blueprint, Journal.TargetGraphGuid) == Restored;
+		return FindGraphByGuid(Blueprint, Journal.TargetGraphGuid) == Restored
+			&& RestoreBlueprintOwnedState(Blueprint, Journal, Restored);
 	}
 
 	UEdGraph* Graph = FindGraphByGuid(Blueprint, Journal.TargetGraphGuid);
@@ -897,9 +969,8 @@ bool RestoreJournal(UBlueprint* Blueprint, FRemoveGraphJournal& Journal)
 		if (!SourcePin || !TargetPin) return false;
 		if (!SourcePin->LinkedTo.Contains(TargetPin)) SourcePin->MakeLinkTo(TargetPin);
 	}
-	return true;
+	return RestoreBlueprintOwnedState(Blueprint, Journal);
 }
-
 void CollectCompilerDiagnostics(const FCompilerResultsLog& Log, TArray<FString>& OutDiagnostics)
 {
 	for (const TSharedRef<FTokenizedMessage>& Message : Log.Messages)

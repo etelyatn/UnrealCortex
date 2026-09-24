@@ -17,6 +17,12 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_Knot.h"
 #include "K2Node_MacroInstance.h"
+#include "K2Node_FunctionEntry.h"
+#include "UObject/UObjectIterator.h"
+#include "K2Node_AddComponent.h"
+#include "K2Node_Timeline.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/TimelineTemplate.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -644,6 +650,150 @@ bool FCortexBPRemoveGraphWholeGraphUndoTest::RunTest(const FString&)
 	{
 		GEditor->Trans->Reset(FText::FromString(TEXT("RemoveGraphWholeGraphUndoCleanup")));
 	}
+	MarkFixtureGarbage(BP);
+	return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphBlueprintStateRecoveryTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.BlueprintStateRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphBlueprintStateRecoveryTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_BlueprintStateRecovery");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	TSharedPtr<FJsonObject> Add = MakeShared<FJsonObject>();
+	Add->SetStringField(TEXT("asset_path"), Path);
+	Add->SetStringField(TEXT("name"), TEXT("DeleteMe"));
+	TestTrue(TEXT("function fixture created"), Handler.Execute(TEXT("add_function"), Add).bSuccess);
+	UEdGraph* Original = nullptr;
+	for (UEdGraph* Candidate : BP->FunctionGraphs)
+		if (Candidate && Candidate->GetName() == TEXT("DeleteMe")) Original = Candidate;
+	if (!TestNotNull(TEXT("target function graph exists"), Original)) return false;
+	UK2Node_FunctionEntry* Entry = nullptr;
+	for (UEdGraphNode* Node : Original->Nodes)
+		if (UK2Node_FunctionEntry* Candidate = Cast<UK2Node_FunctionEntry>(Node)) Entry = Candidate;
+	if (!TestNotNull(TEXT("function entry exists"), Entry)) return false;
+
+	UClass* FieldNotifyInterface = nullptr;
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		if (It->GetFName() == TEXT("NotifyFieldValueChanged"))
+		{
+			FieldNotifyInterface = *It;
+			break;
+		}
+	}
+	if (!TestNotNull(TEXT("FieldNotify interface is loaded"), FieldNotifyInterface)) return false;
+	Entry->MetaData.SetMetaData(FBlueprintMetadata::MD_FieldNotify, FString(TEXT("true")));
+	FBPVariableDescription Variable;
+	Variable.VarName = TEXT("ObservedValue");
+	Variable.SetMetaData(FBlueprintMetadata::MD_FieldNotify, TEXT("DeleteMe|RetainedFunction"));
+	BP->NewVariables.Add(Variable);
+	FBPInterfaceDescription InterfaceDescription;
+	InterfaceDescription.Interface = FieldNotifyInterface;
+	InterfaceDescription.Graphs.Add(Original);
+	BP->ImplementedInterfaces.Add(InterfaceDescription);
+	BP->DelegateSignatureGraphs.Add(Original);
+	const FGuid TargetGuid = Original->GraphGuid;
+
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteMe"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	if (!TestTrue(TEXT("Blueprint state preview succeeds"), Preview.bSuccess) || !Preview.Data.IsValid())
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	FCortexBPRemoveGraphOps::SetFaultPointForTesting(TEXT("after_mutation"));
+	const FCortexCommandResult Applied = Handler.Execute(
+		TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	FCortexBPRemoveGraphOps::ClearFaultPointForTesting();
+	TestFalse(TEXT("failure enters recovery"), Applied.bSuccess);
+	UEdGraph* Restored = nullptr;
+	for (UEdGraph* Candidate : BP->FunctionGraphs)
+		if (Candidate && Candidate->GraphGuid == TargetGuid) Restored = Candidate;
+	TestNotNull(TEXT("function graph is restored"), Restored);
+	TestTrue(TEXT("delegate graph reference is rebound to restored function"),
+		Restored && BP->DelegateSignatureGraphs.Contains(Restored));
+	TestTrue(TEXT("interface graph reference is rebound to restored function"),
+		BP->ImplementedInterfaces.ContainsByPredicate([Restored](const FBPInterfaceDescription& Interface)
+			{ return Restored && Interface.Graphs.Contains(Restored); }));
+	TestEqual(TEXT("FieldNotify variable metadata survives recovery"),
+		BP->NewVariables.Num() ? BP->NewVariables[0].GetMetaData(FBlueprintMetadata::MD_FieldNotify) : FString(),
+		FString(TEXT("DeleteMe|RetainedFunction")));
+	MarkFixtureGarbage(BP);
+	return true;
+}
+
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphTemplateRecoveryTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.TemplateRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphTemplateRecoveryTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_TemplateRecovery");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	UEdGraph* Graph = BP->UbergraphPages[0];
+	UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(Graph);
+	Event->CreateNewGuid();
+	Event->CustomFunctionName = TEXT("DeleteEvent");
+	Graph->AddNode(Event, false, false);
+	Event->AllocateDefaultPins();
+
+	UTimelineTemplate* Timeline = NewObject<UTimelineTemplate>(
+		BP->GeneratedClass, *UTimelineTemplate::TimelineVariableNameToTemplateName(FName(TEXT("Timeline"))));
+	Timeline->TimelineGuid = FGuid::NewGuid();
+	UObject* TimelineOuter = Timeline->GetOuter();
+	BP->Timelines.Add(Timeline);
+	UK2Node_Timeline* TimelineNode = NewObject<UK2Node_Timeline>(Graph);
+	TimelineNode->CreateNewGuid();
+	TimelineNode->TimelineName = TEXT("Timeline");
+	Graph->AddNode(TimelineNode, false, false);
+	TimelineNode->AllocateDefaultPins();
+
+	UStaticMeshComponent* ComponentTemplate =
+		NewObject<UStaticMeshComponent>(BP->GeneratedClass, TEXT("TemplateForRecovery"));
+	BP->ComponentTemplates.Add(ComponentTemplate);
+	UK2Node_AddComponent* AddComponent = NewObject<UK2Node_AddComponent>(Graph);
+	AddComponent->CreateNewGuid();
+	Graph->AddNode(AddComponent, false, false);
+	UEdGraphPin* ComponentExecInput = AddComponent->CreatePin(
+		EGPD_Input, UEdGraphSchema_K2::PC_Exec, NAME_None, TEXT("Execute"));
+	UEdGraphPin* TemplateNamePin = AddComponent->CreatePin(
+		EGPD_Input, UEdGraphSchema_K2::PC_Name, NAME_None, TEXT("TemplateName"));
+	if (TemplateNamePin) TemplateNamePin->DefaultValue = ComponentTemplate->GetName();
+	TestNotNull(TEXT("component template resolves through node"), AddComponent->GetTemplateFromNode());
+	if (!TestNotNull(TEXT("component exec input created"), ComponentExecInput)) return false;
+	TestNotNull(TEXT("component template created"), ComponentTemplate);
+	const FGuid ComponentNodeGuid = AddComponent->NodeGuid;
+	if (UEdGraphPin* EventOut = FindPin(Event, EGPD_Output, UEdGraphSchema_K2::PC_Exec))
+	{
+		if (UEdGraphPin* TimelineIn = FindPin(TimelineNode, EGPD_Input, UEdGraphSchema_K2::PC_Exec))
+			EventOut->MakeLinkTo(TimelineIn);
+		if (UEdGraphPin* AddComponentIn = FindPin(AddComponent, EGPD_Input, UEdGraphSchema_K2::PC_Exec))
+			EventOut->MakeLinkTo(AddComponentIn);
+	}
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteEvent"), false, true);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	if (!TestTrue(TEXT("template recovery preview succeeds"), Preview.bSuccess) || !Preview.Data.IsValid())
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	FCortexBPRemoveGraphOps::SetFaultPointForTesting(TEXT("after_mutation"));
+	const FCortexCommandResult Applied = Handler.Execute(
+		TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	FCortexBPRemoveGraphOps::ClearFaultPointForTesting();
+	TestFalse(TEXT("fault triggers journal recovery"), Applied.bSuccess);
+	TestTrue(TEXT("timeline template restored"), BP->Timelines.Contains(Timeline));
+	TestTrue(TEXT("timeline template restored to its owner"), Timeline->GetOuter() == TimelineOuter);
+	TestTrue(TEXT("component template restored"),
+		ComponentTemplate && BP->ComponentTemplates.Contains(ComponentTemplate));
+	TestNotNull(TEXT("AddComponent node restored"), FindNodeByGuid(Graph, ComponentNodeGuid));
 	MarkFixtureGarbage(BP);
 	return true;
 }
