@@ -25,11 +25,24 @@
 #include "Misc/Char.h"
 #include "Containers/StringConv.h"
 
+#include "HAL/FileManager.h"
+#include "Misc/PackageName.h"
+#include "UObject/SavePackage.h"
+
 namespace
 {
 #if WITH_AUTOMATION_TESTS
 FName RemoveGraphFaultPoint;
 #endif
+
+bool ShouldInjectFault(const TCHAR* Point)
+{
+#if WITH_AUTOMATION_TESTS
+	return RemoveGraphFaultPoint == FName(Point);
+#else
+	return false;
+#endif
+}
 
 bool ReadRequiredStrictBool(
 	const TSharedPtr<FJsonObject>& Params,
@@ -898,6 +911,95 @@ void CollectCompilerDiagnostics(const FCompilerResultsLog& Log, TArray<FString>&
 		}
 	}
 }
+void TrimRemoveGraphDiagnostics(TArray<FString>& Diagnostics)
+{
+	static const FString OmissionMarker = TEXT("additional compiler diagnostics omitted");
+	static const FString Elision = TEXT("...");
+	for (FString& Diagnostic : Diagnostics)
+	{
+		if (Diagnostic.Len() + Elision.Len() > 512)
+		{
+			Diagnostic = Diagnostic.Left(512 - Elision.Len()) + Elision;
+		}
+	}
+	bool bTruncated = Diagnostics.Remove(OmissionMarker) > 0;
+	if (Diagnostics.Num() > 15)
+	{
+		Diagnostics.SetNum(15);
+		bTruncated = true;
+	}
+	if (bTruncated)
+	{
+		Diagnostics.Add(OmissionMarker);
+	}
+}
+
+void AttachRemoveGraphOutcome(FCortexCommandResult& Error, const FCortexBPRemoveGraphOutcome& Outcome)
+{
+	if (!Error.ErrorDetails.IsValid())
+	{
+		Error.ErrorDetails = MakeShared<FJsonObject>();
+	}
+	// Set phase fields after retaining any native details so callers always receive the operation outcome.
+	Error.ErrorDetails->SetStringField(TEXT("apply_status"), Outcome.ApplyStatus);
+	Error.ErrorDetails->SetStringField(TEXT("compile_status"), Outcome.CompileStatus);
+	Error.ErrorDetails->SetStringField(TEXT("readback_status"), Outcome.ReadbackStatus);
+	Error.ErrorDetails->SetStringField(TEXT("rollback_status"), Outcome.RollbackStatus);
+	Error.ErrorDetails->SetStringField(TEXT("save_status"), Outcome.SaveStatus);
+	Error.ErrorDetails->SetStringField(TEXT("post_save_status"), Outcome.PostSaveStatus);
+	Error.ErrorDetails->SetBoolField(TEXT("saved"), Outcome.bSaved);
+	Error.ErrorDetails->SetBoolField(TEXT("blocked"), Outcome.bBlocked);
+	Error.ErrorDetails->SetBoolField(TEXT("dirty_before"), Outcome.bDirtyBefore);
+	Error.ErrorDetails->SetBoolField(TEXT("dirty_after"), Outcome.bDirtyAfter);
+	Error.ErrorDetails->SetObjectField(TEXT("fingerprint_before"), Outcome.FingerprintBefore);
+	Error.ErrorDetails->SetObjectField(TEXT("fingerprint_after"), Outcome.FingerprintAfter);
+	Error.ErrorDetails->SetObjectField(TEXT("target"), Outcome.Target);
+	Error.ErrorDetails->SetObjectField(TEXT("deletion"), Outcome.Deletion);
+	Error.AddContext(TEXT("diagnostics"), Outcome.Diagnostics);
+}
+
+static bool SaveVerifiedTargetPackage(
+	UBlueprint* Blueprint,
+	FCortexBPRemoveGraphOutcome& Outcome,
+	FCortexCommandResult& OutError)
+{
+	UPackage* Package = Blueprint->GetOutermost();
+	const FString Filename = FPackageName::LongPackageNameToFilename(
+		Package->GetName(), FPackageName::GetAssetPackageExtension());
+
+	FSavePackageArgs Args;
+	Args.TopLevelFlags = RF_Public | RF_Standalone;
+
+	const bool bSaved = !ShouldInjectFault(TEXT("save"))
+		&& UPackage::SavePackage(Package, Blueprint, *Filename, Args);
+	if (!bSaved)
+	{
+		Outcome.SaveStatus = TEXT("failed");
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::SaveFailed,
+			TEXT("remove_graph applied and verified in memory, but package save failed"));
+		return false;
+	}
+
+	Outcome.SaveStatus = TEXT("saved");
+	Outcome.bSaved = true;
+
+	const bool bPostSaveVerified =
+		!ShouldInjectFault(TEXT("post_save_verify"))
+		&& IFileManager::Get().FileExists(*Filename)
+		&& !Package->IsDirty();
+	if (!bPostSaveVerified)
+	{
+		Outcome.PostSaveStatus = TEXT("failed");
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::VerificationFailed,
+			TEXT("remove_graph package was saved but post-save verification failed; reopen/reconcile before further destructive authoring"));
+		return false;
+	}
+
+	Outcome.PostSaveStatus = TEXT("verified");
+	return true;
+}
 }
 
 FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObject>& Params)
@@ -965,10 +1067,6 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 	{
 		return InvalidOperation(TEXT("save=true requires compile=true"));
 	}
-	if (!Prepared.bDryRun && Prepared.bSave)
-	{
-		return InvalidOperation(TEXT("save=true persistence is not available for this operation"));
-	}
 
 	FString ValidationError;
 	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(Prepared.AssetPath, ValidationError))
@@ -982,9 +1080,23 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 	const bool bDirtyBefore = Blueprint->GetOutermost()->IsDirty();
+	FCortexBPRemoveGraphOutcome Outcome;
+	Outcome.bDirtyBefore = bDirtyBefore;
+	Outcome.bDirtyAfter = bDirtyBefore;
+	Outcome.FingerprintBefore = FCortexGraphFingerprint::Compute(Blueprint);
+	Outcome.FingerprintAfter = Outcome.FingerprintBefore;
+	auto ReturnErrorWithOutcome = [&Blueprint, &Outcome](FCortexCommandResult Error)
+	{
+		Outcome.FingerprintAfter = FCortexGraphFingerprint::Compute(Blueprint);
+		Outcome.bDirtyAfter = Blueprint->GetOutermost()->IsDirty();
+		TrimRemoveGraphDiagnostics(Outcome.Diagnostics);
+		AttachRemoveGraphOutcome(Error, Outcome);
+		return Error;
+	};
 	if (Prepared.bSave && bDirtyBefore)
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::DirtyEditorState, TEXT("save=true requires a clean starting package"));
+		return ReturnErrorWithOutcome(FCortexCommandRouter::Error(
+			CortexErrorCodes::DirtyEditorState, TEXT("save=true requires a clean starting package")));
 	}
 
 	TArray<TSharedPtr<FJsonValue>> RemovedNodes;
@@ -992,52 +1104,50 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 	FCortexCommandResult PlanError;
 	if (!BuildPlan(Blueprint, Prepared, RemovedNodes, Removed, PlanError))
 	{
-		return PlanError;
+		return ReturnErrorWithOutcome(PlanError);
 	}
+	Outcome.Target = Prepared.Target;
+	Outcome.Deletion = Prepared.Deletion;
 	Prepared.FingerprintBefore = FCortexGraphFingerprint::Compute(Blueprint);
 	if (!Prepared.FingerprintBefore.IsValid())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Could not compute Blueprint graph fingerprint"));
+		return ReturnErrorWithOutcome(FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation, TEXT("Could not compute Blueprint graph fingerprint")));
 	}
-	BuildValidationHash(Prepared);
-
-	FCortexBPRemoveGraphOutcome Outcome;
 	Outcome.FingerprintBefore = Prepared.FingerprintBefore;
 	Outcome.FingerprintAfter = Prepared.FingerprintBefore;
-	Outcome.bDirtyBefore = bDirtyBefore;
-	Outcome.bDirtyAfter = bDirtyBefore;
-	Outcome.Target = Prepared.Target;
-	Outcome.Deletion = Prepared.Deletion;
+	BuildValidationHash(Prepared);
+
 	if (!Prepared.bDryRun)
 	{
 		FString BlockReason;
 		if (FCortexAssetMutationGuard::IsBlocked(Blueprint, BlockReason))
 		{
-			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
+			return ReturnErrorWithOutcome(FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason)));
 		}
 		const TSharedPtr<FJsonObject> CurrentFingerprint = FCortexGraphFingerprint::Compute(Blueprint);
 		FCortexCommandResult FingerprintError;
 		if (!ExpectedFingerprint.IsValid() || ExpectedValidationHash.IsEmpty())
 		{
-			return FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
-				TEXT("Apply requires expected_fingerprint and expected_validation_hash from preview"));
+			return ReturnErrorWithOutcome(FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
+				TEXT("Apply requires expected_fingerprint and expected_validation_hash from preview")));
 		}
 		if (!FCortexGraphFingerprint::ValidatePrecondition(ExpectedFingerprint, CurrentFingerprint, FingerprintError))
 		{
-			return FingerprintError;
+			return ReturnErrorWithOutcome(FingerprintError);
 		}
 		if (ExpectedValidationHash != Prepared.ValidationHash)
 		{
-			return FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
-				TEXT("expected_validation_hash does not match the current remove_graph plan"));
+			return ReturnErrorWithOutcome(FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
+				TEXT("expected_validation_hash does not match the current remove_graph plan")));
 		}
 
 		FRemoveGraphJournal Journal;
 		if (!CaptureJournal(Blueprint, Prepared, Journal))
 		{
-			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				TEXT("Could not capture exact remove_graph recovery journal"));
+			return ReturnErrorWithOutcome(FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("Could not capture exact remove_graph recovery journal")));
 		}
 		TUniquePtr<FScopedTransaction> Transaction = MakeUnique<FScopedTransaction>(
 			FText::FromString(TEXT("Cortex: Remove Blueprint Graph")));
@@ -1179,23 +1289,35 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 				Outcome.bBlocked = true;
 			}
 			Outcome.CompileStatus = FailurePhase == TEXT("compile") ? TEXT("failed") : Outcome.CompileStatus;
+			Outcome.FingerprintAfter = FCortexGraphFingerprint::Compute(Blueprint);
 			Outcome.bDirtyAfter = Blueprint->GetOutermost()->IsDirty();
+			TrimRemoveGraphDiagnostics(Outcome.Diagnostics);
 			FCortexCommandResult Error = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 				FString::Printf(TEXT("remove_graph %s failed"), *FailurePhase));
-			Error.AddContext(TEXT("apply_status"), Outcome.ApplyStatus);
-			Error.AddContext(TEXT("compile_status"), Outcome.CompileStatus);
-			Error.AddContext(TEXT("readback_status"), Outcome.ReadbackStatus);
-			Error.AddContext(TEXT("rollback_status"), Outcome.RollbackStatus);
-			Error.AddContext(TEXT("diagnostics"), Outcome.Diagnostics);
-			Error.ErrorDetails->SetBoolField(TEXT("blocked"), Outcome.bBlocked);
+			AttachRemoveGraphOutcome(Error, Outcome);
 			Error.ErrorDetails->SetBoolField(TEXT("rollback_content_restored"), bRestored);
 			Error.ErrorDetails->SetBoolField(TEXT("rollback_authoring_matches"), bAuthoringMatches);
 			Error.ErrorDetails->SetBoolField(TEXT("rollback_generated_matches"), bGeneratedMatches);
 			return Error;
 		}
+
+		if (Prepared.bSave)
+		{
+			FCortexCommandResult SaveError;
+			if (!SaveVerifiedTargetPackage(Blueprint, Outcome, SaveError))
+			{
+				Outcome.FingerprintAfter = FCortexGraphFingerprint::Compute(Blueprint);
+				Outcome.bDirtyAfter = Blueprint->GetOutermost()->IsDirty();
+				TrimRemoveGraphDiagnostics(Outcome.Diagnostics);
+				AttachRemoveGraphOutcome(SaveError, Outcome);
+				return SaveError;
+			}
+			Outcome.CompileStatus = TEXT("compiled");
+		}
+
 		Outcome.FingerprintAfter = FCortexGraphFingerprint::Compute(Blueprint);
-		Outcome.CompileStatus = Prepared.bCompile ? TEXT("succeeded") : TEXT("not_requested");
 		Outcome.bDirtyAfter = Blueprint->GetOutermost()->IsDirty();
+		TrimRemoveGraphDiagnostics(Outcome.Diagnostics);
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
