@@ -51,23 +51,52 @@ private:
 	/** Process data for a single client socket. Returns false if client should be removed. */
 	bool ProcessSingleClient(FSocket* InClientSocket);
 
-	/** Send a JSON response string followed by newline delimiter to a specific client */
-	void SendResponse(FSocket* InClientSocket, const FString& ResponseString);
+	/** Queue a JSON response and flush it without blocking the Game Thread. */
+	bool SendResponse(FSocket* InClientSocket, const FString& ResponseString);
+
+	/** Try to flush queued response bytes for a socket; false means it must be disconnected. */
+	bool FlushPendingResponses(FSocket* InClientSocket);
+	/** Keep queued bytes on retryable send errors; retire the queue on terminal errors. */
+	bool HandleSendFailure(FSocket* InClientSocket, int32 SocketErrorCode);
 
 #if WITH_DEV_AUTOMATION_TESTS
-	/** Grants the framing test direct access to SendResponse so it can drive a partial-write socket double. Test-only. */
+	/** Test-only access for deterministic accepted-socket and response framing tests. */
 	friend class FCortexTcpServerPartialSendIsCompletedTest;
+	friend class FCortexTcpServerAcceptsNonBlockingSocketTest;
+	friend class FCortexTcpServerResumesAfterWouldBlockTest;
+	friend class FCortexTcpServerTerminalSendFailureTest;
+	friend class FCortexTcpServerQueuedResponseBacklogLimitTest;
+	friend class FCortexTcpServerDeferredSendFailureRetiresClientTest;
+	friend class FCortexTcpServerProcessesBufferedRequestsWithoutNewDataTest;
 #endif
 
 	/** Close and destroy a client socket */
 	void DestroyClientSocket(FSocket* InClientSocket);
+	static constexpr double ResponseSendTimeoutSeconds = 30.0;
+	/** Bounds response frames queued behind the active frame; the active frame remains uncapped. */
+	static constexpr int32 MaxQueuedResponseBacklogBytesPerClient = MaxMessageSize;
+	static constexpr int32 MaxQueuedResponseFramesPerClient = 1024;
 
 	static constexpr double CommandTimeoutWarningSeconds = 30.0;
 	static constexpr double DefaultDeferredTimeoutSeconds = 30.0;
 	static constexpr int32 ReceiveBufferSize = 65536;
 
 	TUniquePtr<FTcpListener> Listener;
+	struct FPendingResponse
+	{
+		TArray<uint8> Bytes;
+		int32 BytesSent = 0;
+		double QueuedAt = 0.0;
+	};
+
+	struct FPendingResponseQueue
+	{
+		TArray<FPendingResponse> Responses;
+		int64 BacklogBytes = 0;
+	};
+	TMap<FSocket*, FPendingResponseQueue> PendingResponses;
 	TArray<FSocket*> ClientSockets;
+	TSet<FSocket*> PendingClientDisconnects;
 	TArray<FSocket*> PendingClientSockets;
 	FCriticalSection PendingSocketsCS;
 	TMap<FSocket*, FString> ReceiveBuffers;

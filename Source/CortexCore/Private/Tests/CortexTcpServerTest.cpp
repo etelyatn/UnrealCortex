@@ -34,33 +34,82 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexTcpServerResumesAfterWouldBlockTest,
+	"Cortex.Core.TcpServer.ResumesAfterWouldBlock",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexTcpServerTerminalSendFailureTest,
+	"Cortex.Core.TcpServer.TerminalSendFailureClosesConnection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexTcpServerAcceptsNonBlockingSocketTest,
+	"Cortex.Core.TcpServer.AcceptsNonBlockingSocket",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexTcpServerQueuedResponseBacklogLimitTest,
+	"Cortex.Core.TcpServer.QueuedResponseBacklogLimit",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexTcpServerDeferredSendFailureRetiresClientTest,
+	"Cortex.Core.TcpServer.DeferredSendFailureRetiresClient",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexTcpServerProcessesBufferedRequestsWithoutNewDataTest,
+	"Cortex.Core.TcpServer.ProcessesBufferedRequestsWithoutNewData",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
 #if WITH_DEV_AUTOMATION_TESTS
 /**
- * Test double for FSocket that accepts at most MaxBytesPerSend bytes per Send() call.
- * Production code never constructs this; it exists so the framing test can prove a
- * response is delivered completely across partial writes on a single connection.
+ * Test double for FSocket that limits partial writes and can inject one send failure.
+ * Production code never constructs this; framing tests use it to drive retry paths
+ * deterministically without a runtime send delegate.
  */
 class FCortexPartialSendSocket : public FSocket
 {
 public:
-	explicit FCortexPartialSendSocket(int32 InMaxBytesPerSend)
+	explicit FCortexPartialSendSocket(
+		int32 InMaxBytesPerSend,
+		int32 InFailOnSendCall = INDEX_NONE,
+		bool bInTerminalFailure = false,
+		bool bInWouldBlockReportsNotConnected = false)
 		: FSocket(SOCKTYPE_Streaming, TEXT("CortexPartialSendSocket"), NAME_None)
 		, MaxBytesPerSend(InMaxBytesPerSend)
+		, FailOnSendCall(InFailOnSendCall)
+		, bTerminalFailure(bInTerminalFailure)
+		, bWouldBlockReportsNotConnected(bInWouldBlockReportsNotConnected)
 	{
 	}
 
-	/** Accepts a partial write, records it, and reports how many bytes were taken. */
+	/** Accepts partial writes and can simulate one send failure. */
 	virtual bool Send(const uint8* Data, int32 Count, int32& BytesSent) override
 	{
 		++SendCallCount;
+		if (SendCallCount == FailOnSendCall)
+		{
+			BytesSent = 0;
+			bSendFailed = true;
+			return false;
+		}
 		BytesSent = FMath::Min(Count, MaxBytesPerSend);
 		SentBytes.Append(Data, BytesSent);
 		return true;
 	}
 
-	// The remaining FSocket surface is never exercised by SendResponse.
+	// Unused FSocket operations remain inert in this test double.
 	virtual bool Shutdown(ESocketShutdownMode /*Mode*/) override { return true; }
-	virtual bool Close() override { return true; }
+	virtual bool Close() override { bClosed = true; return true; }
 	virtual bool Bind(const FInternetAddr& /*Addr*/) override { return true; }
 	virtual bool Connect(const FInternetAddr& /*Addr*/) override { return true; }
 	virtual bool Listen(int32 /*MaxBacklog*/) override { return true; }
@@ -69,10 +118,18 @@ public:
 	virtual FSocket* Accept(const FString& /*InSocketDescription*/) override { return nullptr; }
 	virtual FSocket* Accept(FInternetAddr& /*OutAddr*/, const FString& /*InSocketDescription*/) override { return nullptr; }
 	virtual bool Wait(ESocketWaitConditions::Type /*Condition*/, FTimespan /*WaitTime*/) override { return false; }
-	virtual ESocketConnectionState GetConnectionState() override { return SCS_Connected; }
+	virtual ESocketConnectionState GetConnectionState() override
+	{
+		if (bTerminalFailure)
+		{
+			return SCS_ConnectionError;
+		}
+
+		return bWouldBlockReportsNotConnected && bSendFailed ? SCS_NotConnected : SCS_Connected;
+	}
 	virtual void GetAddress(FInternetAddr& /*OutAddr*/) override {}
 	virtual bool GetPeerAddress(FInternetAddr& /*OutAddr*/) override { return true; }
-	virtual bool SetNonBlocking(bool /*bIsNonBlocking*/) override { return true; }
+	virtual bool SetNonBlocking(bool bIsNonBlocking) override { bWasSetNonBlocking = bIsNonBlocking; return true; }
 	virtual bool SetBroadcast(bool /*bAllowBroadcast*/) override { return true; }
 	virtual bool SetNoDelay(bool /*bIsNoDelay*/) override { return true; }
 	virtual bool JoinMulticastGroup(const FInternetAddr& /*GroupAddress*/) override { return true; }
@@ -89,16 +146,23 @@ public:
 	virtual bool SetReceiveBufferSize(int32 /*Size*/, int32& NewSize) override { NewSize = 0; return true; }
 	virtual int32 GetPortNo() override { return 0; }
 
-	/** Number of Send() calls accepted by the socket. */
+	/** Number of Send() calls. */
 	int32 SendCallCount = 0;
 
 	/** Every byte handed to Send() across all calls, in order. */
 	TArray<uint8> SentBytes;
+	bool bClosed = false;
+	bool bWasSetNonBlocking = false;
 
 private:
 	int32 MaxBytesPerSend;
-};
+	int32 FailOnSendCall;
+	bool bTerminalFailure;
+	bool bWouldBlockReportsNotConnected;
+	bool bSendFailed = false;
 
+
+};
 /** Formats raw bytes for failure diagnostics. */
 static FString CortexBytesToHex(const TArray<uint8>& Bytes)
 {
@@ -500,6 +564,266 @@ bool FCortexTcpServerPartialSendIsCompletedTest::RunTest(const FString& Paramete
 			*CortexBytesToHex(ExpectedBytes),
 			*CortexBytesToHex(FakeSocket.SentBytes)));
 	}
+#endif
+
+	return true;
+}
+
+bool FCortexTcpServerResumesAfterWouldBlockTest::RunTest(const FString& Parameters)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	const TArray<uint8> ExpectedBytes = { 0x61, 0x62, 0xC3, 0xA9, 0x63, 0x64, 0x0A };
+
+	FCortexPartialSendSocket FakeSocket(3, 2, false, true);
+	FCortexTcpServer Server;
+	FCortexTcpServer::FPendingResponseQueue& PendingQueue =
+		Server.PendingResponses.FindOrAdd(&FakeSocket);
+	FCortexTcpServer::FPendingResponse& PendingResponse = PendingQueue.Responses.AddDefaulted_GetRef();
+	PendingResponse.Bytes = ExpectedBytes;
+	PendingResponse.QueuedAt = FPlatformTime::Seconds();
+
+	int32 BytesSent = 0;
+	TestTrue(
+		TEXT("The first partial send writes the response prefix"),
+		FakeSocket.Send(PendingResponse.Bytes.GetData(), PendingResponse.Bytes.Num(), BytesSent));
+	PendingResponse.BytesSent = BytesSent;
+	TestEqual(TEXT("Three UTF-8 bytes are written before backpressure"), BytesSent, 3);
+
+	int32 FailedBytesSent = 0;
+	TestFalse(
+		TEXT("The next send reports temporary backpressure"),
+		FakeSocket.Send(
+			PendingResponse.Bytes.GetData() + PendingResponse.BytesSent,
+			PendingResponse.Bytes.Num() - PendingResponse.BytesSent,
+			FailedBytesSent));
+	TestTrue(
+		TEXT("Would-block remains retryable even when connection state is not connected"),
+		Server.HandleSendFailure(&FakeSocket, SE_EWOULDBLOCK));
+	TestFalse(TEXT("Temporary backpressure does not close the socket"), FakeSocket.bClosed);
+
+	Server.ClientSockets.Add(&FakeSocket);
+	Server.ProcessClientData();
+
+	TestEqual(TEXT("The server resumes the unsent suffix on a later tick"), FakeSocket.SentBytes.Num(), ExpectedBytes.Num());
+	TestEqual(TEXT("The resumed response uses one retry after backpressure"), FakeSocket.SendCallCount, 4);
+	const bool bBytesMatch = FakeSocket.SentBytes.Num() == ExpectedBytes.Num()
+		&& FMemory::Memcmp(FakeSocket.SentBytes.GetData(), ExpectedBytes.GetData(), ExpectedBytes.Num()) == 0;
+	TestTrue(TEXT("Resumed bytes preserve UTF-8 content and newline framing"), bBytesMatch);
+
+	Server.ClientSockets.Empty();
+#endif
+
+	return true;
+}
+
+bool FCortexTcpServerTerminalSendFailureTest::RunTest(const FString& Parameters)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	FCortexPartialSendSocket FakeSocket(3);
+	FCortexTcpServer Server;
+	FCortexTcpServer::FPendingResponseQueue& PendingQueue =
+		Server.PendingResponses.FindOrAdd(&FakeSocket);
+	FCortexTcpServer::FPendingResponse& PendingResponse = PendingQueue.Responses.AddDefaulted_GetRef();
+	PendingResponse.Bytes = { 0x7B };
+
+	TestFalse(
+		TEXT("A terminal send error retires the response queue"),
+		Server.HandleSendFailure(&FakeSocket, SE_ECONNRESET));
+	TestTrue(TEXT("A terminal send failure closes the client connection"), FakeSocket.bClosed);
+	TestFalse(TEXT("A terminal send failure removes queued response data"), Server.PendingResponses.Contains(&FakeSocket));
+#endif
+
+	return true;
+}
+
+bool FCortexTcpServerQueuedResponseBacklogLimitTest::RunTest(const FString& Parameters)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	FCortexPartialSendSocket AcceptedSocket(FCortexTcpServer::MaxMessageSize * 2);
+	FCortexTcpServer AcceptedServer;
+	FCortexTcpServer::FPendingResponseQueue& AcceptedQueue =
+		AcceptedServer.PendingResponses.FindOrAdd(&AcceptedSocket);
+	FCortexTcpServer::FPendingResponse& ActiveAcceptedResponse = AcceptedQueue.Responses.AddDefaulted_GetRef();
+	ActiveAcceptedResponse.Bytes = { 0x61, 0x0A };
+	ActiveAcceptedResponse.BytesSent = 1;
+	ActiveAcceptedResponse.QueuedAt = FPlatformTime::Seconds();
+	AcceptedSocket.SentBytes.Add(0x61);
+
+	const FString BoundaryBacklog = FString::ChrN(FCortexTcpServer::MaxMessageSize - 1, TEXT('x'));
+	TestTrue(
+		TEXT("A response backlog exactly at the per-client byte budget is accepted"),
+		AcceptedServer.SendResponse(&AcceptedSocket, BoundaryBacklog));
+	TestFalse(TEXT("An in-budget response backlog does not close the client socket"), AcceptedSocket.bClosed);
+	TestEqual(
+		TEXT("The accepted active and queued frames retain exact newline-framed byte count"),
+		AcceptedSocket.SentBytes.Num(),
+		FCortexTcpServer::MaxMessageSize + 2);
+
+	FCortexPartialSendSocket FakeSocket(FCortexTcpServer::MaxMessageSize * 2);
+	FCortexTcpServer Server;
+	FCortexTcpServer::FPendingResponseQueue& PendingQueue =
+		Server.PendingResponses.FindOrAdd(&FakeSocket);
+	FCortexTcpServer::FPendingResponse& ActiveResponse = PendingQueue.Responses.AddDefaulted_GetRef();
+	ActiveResponse.Bytes = { 0x61, 0x0A };
+	ActiveResponse.BytesSent = 1;
+	ActiveResponse.QueuedAt = FPlatformTime::Seconds();
+	FakeSocket.SentBytes.Add(0x61);
+
+	const FString Backlog = FString::ChrN(FCortexTcpServer::MaxMessageSize, TEXT('x'));
+	TestFalse(
+		TEXT("A response backlog exceeding the per-client byte budget is rejected"),
+		Server.SendResponse(&FakeSocket, Backlog));
+	TestTrue(TEXT("Backlog overflow closes the client socket"), FakeSocket.bClosed);
+	TestFalse(TEXT("Backlog overflow removes queued output"), Server.PendingResponses.Contains(&FakeSocket));
+	constexpr int32 MaxExpectedQueuedFrames = 1024;
+
+	FCortexPartialSendSocket FrameBoundarySocket(FCortexTcpServer::MaxMessageSize * 2);
+	FCortexTcpServer FrameBoundaryServer;
+	FCortexTcpServer::FPendingResponseQueue& FrameBoundaryQueue =
+		FrameBoundaryServer.PendingResponses.FindOrAdd(&FrameBoundarySocket);
+	FCortexTcpServer::FPendingResponse& ActiveBoundaryFrame =
+		FrameBoundaryQueue.Responses.AddDefaulted_GetRef();
+	ActiveBoundaryFrame.Bytes = { 0x61, 0x0A };
+	ActiveBoundaryFrame.BytesSent = 1;
+	ActiveBoundaryFrame.QueuedAt = FPlatformTime::Seconds();
+	FrameBoundarySocket.SentBytes.Add(0x61);
+	for (int32 QueuedFrameIndex = 0; QueuedFrameIndex < MaxExpectedQueuedFrames - 1; ++QueuedFrameIndex)
+	{
+		FCortexTcpServer::FPendingResponse& QueuedFrame =
+			FrameBoundaryQueue.Responses.AddDefaulted_GetRef();
+		QueuedFrame.Bytes = { 0x78, 0x0A };
+		QueuedFrame.QueuedAt = FPlatformTime::Seconds();
+		FrameBoundaryQueue.BacklogBytes += QueuedFrame.Bytes.Num();
+	}
+	TestTrue(
+		TEXT("Exactly the allowed queued-frame count is accepted"),
+		FrameBoundaryServer.SendResponse(&FrameBoundarySocket, TEXT("x")));
+	TestFalse(TEXT("In-count responses do not close the client socket"), FrameBoundarySocket.bClosed);
+
+	FCortexPartialSendSocket FrameOverflowSocket(FCortexTcpServer::MaxMessageSize * 2);
+	FCortexTcpServer FrameOverflowServer;
+	FCortexTcpServer::FPendingResponseQueue& FrameOverflowQueue =
+		FrameOverflowServer.PendingResponses.FindOrAdd(&FrameOverflowSocket);
+	FCortexTcpServer::FPendingResponse& ActiveOverflowFrame =
+		FrameOverflowQueue.Responses.AddDefaulted_GetRef();
+	ActiveOverflowFrame.Bytes = { 0x61, 0x0A };
+	ActiveOverflowFrame.BytesSent = 1;
+	ActiveOverflowFrame.QueuedAt = FPlatformTime::Seconds();
+	FrameOverflowSocket.SentBytes.Add(0x61);
+	for (int32 QueuedFrameIndex = 0; QueuedFrameIndex < MaxExpectedQueuedFrames; ++QueuedFrameIndex)
+	{
+		FCortexTcpServer::FPendingResponse& QueuedFrame =
+			FrameOverflowQueue.Responses.AddDefaulted_GetRef();
+		QueuedFrame.Bytes = { 0x78, 0x0A };
+		QueuedFrame.QueuedAt = FPlatformTime::Seconds();
+		FrameOverflowQueue.BacklogBytes += QueuedFrame.Bytes.Num();
+	}
+	TestFalse(
+		TEXT("A response beyond the per-client queued-frame limit is rejected"),
+		FrameOverflowServer.SendResponse(&FrameOverflowSocket, TEXT("x")));
+	TestTrue(TEXT("Queued-frame overflow closes the client socket"), FrameOverflowSocket.bClosed);
+	TestFalse(TEXT("Queued-frame overflow removes all retained frames"), FrameOverflowServer.PendingResponses.Contains(&FrameOverflowSocket));
+
+
+#endif
+
+	return true;
+}
+
+bool FCortexTcpServerProcessesBufferedRequestsWithoutNewDataTest::RunTest(const FString& Parameters)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	FCortexPartialSendSocket FakeSocket(FCortexTcpServer::MaxMessageSize * 2);
+	FCortexTcpServer Server;
+	TArray<FString> ProcessedCommands;
+	Server.CommandDispatcher =
+		[&ProcessedCommands](
+			const FString& Command,
+			const TSharedPtr<FJsonObject>& /*Params*/,
+			FDeferredResponseCallback /*DeferredCallback*/)
+		{
+			ProcessedCommands.Add(Command);
+			return FCortexCommandRouter::Success(MakeShared<FJsonObject>());
+		};
+
+	Server.ClientSockets.Add(&FakeSocket);
+	Server.ReceiveBuffers.Add(
+		&FakeSocket,
+		TEXT("{\"command\":\"core.first\",\"id\":\"first\"}\n")
+		TEXT("{\"command\":\"core.second\",\"id\":\"second\"}\n"));
+	Server.ProcessClientData();
+
+	TestEqual(TEXT("Buffered pipelined commands run without new socket data"), ProcessedCommands.Num(), 2);
+	if (ProcessedCommands.Num() == 2)
+	{
+		TestEqual(TEXT("The first buffered command keeps its order"), ProcessedCommands[0], FString(TEXT("core.first")));
+		TestEqual(TEXT("The second buffered command is not stranded"), ProcessedCommands[1], FString(TEXT("core.second")));
+	}
+	Server.ClientSockets.Empty();
+#endif
+
+	return true;
+}
+
+bool FCortexTcpServerDeferredSendFailureRetiresClientTest::RunTest(const FString& Parameters)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	FCortexTcpServer Server;
+	FCortexPartialSendSocket* FakeSocket =
+		new FCortexPartialSendSocket(FCortexTcpServer::MaxMessageSize * 2);
+	Server.ClientSockets.Add(FakeSocket);
+
+	FCortexTcpServer::FPendingResponseQueue& Queue = Server.PendingResponses.FindOrAdd(FakeSocket);
+	FCortexTcpServer::FPendingResponse& ActiveResponse = Queue.Responses.AddDefaulted_GetRef();
+	ActiveResponse.Bytes = { 0x61, 0x0A };
+	ActiveResponse.BytesSent = 1;
+	ActiveResponse.QueuedAt = FPlatformTime::Seconds();
+	Queue.BacklogBytes = FCortexTcpServer::MaxQueuedResponseBacklogBytesPerClient;
+	FakeSocket->SentBytes.Add(0x61);
+
+	FCortexPendingDeferred CurrentDeferred;
+	CurrentDeferred.ClientSocket = FakeSocket;
+	CurrentDeferred.RequestId = TEXT("current");
+	CurrentDeferred.StartTime = FPlatformTime::Seconds();
+	Server.PendingDeferred.Add(1, CurrentDeferred);
+	FCortexPendingDeferred SiblingDeferred = CurrentDeferred;
+	SiblingDeferred.RequestId = TEXT("sibling");
+	Server.PendingDeferred.Add(2, SiblingDeferred);
+
+	Server.SendDeferredResponse(
+		1,
+		FCortexCommandRouter::Error(TEXT("TEST_ERROR"), TEXT("deferred send exceeds backlog")));
+	TestTrue(TEXT("Backlog overflow closes the deferred client's socket"), FakeSocket->bClosed);
+
+	Server.ProcessClientData();
+	TestTrue(TEXT("A deferred send failure retires the closed client"), Server.ClientSockets.IsEmpty());
+	TestTrue(TEXT("Client retirement clears sibling deferred responses"), Server.PendingDeferred.IsEmpty());
+	TestFalse(TEXT("Client retirement removes pending response frames"), Server.PendingResponses.Contains(FakeSocket));
+
+	if (Server.ClientSockets.Contains(FakeSocket))
+	{
+		Server.ClientSockets.RemoveSingle(FakeSocket);
+		ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(FakeSocket);
+	}
+#endif
+
+	return true;
+}
+
+bool FCortexTcpServerAcceptsNonBlockingSocketTest::RunTest(const FString& Parameters)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	FCortexPartialSendSocket FakeSocket(3);
+	FCortexTcpServer Server;
+
+	TestTrue(
+		TEXT("The connection callback accepts a nonblocking socket"),
+		Server.HandleConnectionAccepted(
+			&FakeSocket,
+			FIPv4Endpoint(FIPv4Address::InternalLoopback, 8742)));
+	TestTrue(TEXT("Accepted sockets are configured nonblocking"), FakeSocket.bWasSetNonBlocking);
+
+	Server.PendingClientSockets.Empty();
 #endif
 
 	return true;
