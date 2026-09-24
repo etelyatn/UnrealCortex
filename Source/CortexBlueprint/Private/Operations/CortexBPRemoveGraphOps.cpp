@@ -566,7 +566,10 @@ struct FRemoveGraphJournal
 	{
 		FGuid HostGraphGuid;
 		FGuid NodeGuid;
+		FName OriginalNodeName;
+		int32 OriginalIndex = INDEX_NONE;
 		TStrongObjectPtr<UEdGraphNode> Snapshot;
+		TStrongObjectPtr<UEdGraphNode> OriginalNode;
 	};
 	struct FMacroLink
 	{
@@ -608,7 +611,12 @@ UEdGraph* FindGraphByGuid(UBlueprint* Blueprint, const FGuid& Guid, FString* Out
 	};
 	if (UEdGraph* Graph = FindIn(Blueprint->FunctionGraphs, TEXT("Function"), 0)) return Graph;
 	if (UEdGraph* Graph = FindIn(Blueprint->MacroGraphs, TEXT("Macro"), 0)) return Graph;
-	return FindIn(Blueprint->UbergraphPages, TEXT("EventGraph"), 0);
+	if (UEdGraph* Graph = FindIn(Blueprint->UbergraphPages, TEXT("EventGraph"), 0)) return Graph;
+	TArray<UEdGraph*> AllGraphs;
+	Blueprint->GetAllGraphs(AllGraphs);
+	for (UEdGraph* Graph : AllGraphs)
+		if (Graph && Graph->GraphGuid == Guid) return Graph;
+	return nullptr;
 }
 UEdGraphNode* FindNodeByGuid(UEdGraph* Graph, const FGuid& Guid)
 {
@@ -622,9 +630,8 @@ UEdGraphNode* FindNodeByGuid(UEdGraph* Graph, const FGuid& Guid)
 
 bool CaptureExternalMacroInstances(UBlueprint* Blueprint, UEdGraph* Target, FRemoveGraphJournal& Journal)
 {
-	TArray<UEdGraph*> Graphs = Blueprint->FunctionGraphs;
-	Graphs.Append(Blueprint->MacroGraphs);
-	Graphs.Append(Blueprint->UbergraphPages);
+	TArray<UEdGraph*> Graphs;
+	Blueprint->GetAllGraphs(Graphs);
 	TSet<FGuid> InstanceGuids;
 	for (UEdGraph* HostGraph : Graphs)
 	{
@@ -636,9 +643,14 @@ bool CaptureExternalMacroInstances(UBlueprint* Blueprint, UEdGraph* Target, FRem
 			FRemoveGraphJournal::FMacroInstance& Saved = Journal.ExternalMacroInstances.AddDefaulted_GetRef();
 			Saved.HostGraphGuid = HostGraph->GraphGuid;
 			Saved.NodeGuid = Instance->NodeGuid;
+			Saved.OriginalNode = TStrongObjectPtr<UEdGraphNode>(Instance);
+			Saved.OriginalNodeName = Instance->GetFName();
+			Saved.OriginalIndex = HostGraph->Nodes.IndexOfByKey(Instance);
+			const FName SnapshotName = MakeUniqueObjectName(
+				Journal.SnapshotBlueprint.Get(), Instance->GetClass(), Instance->GetFName());
 			Saved.Snapshot = TStrongObjectPtr<UEdGraphNode>(
-				DuplicateObject<UEdGraphNode>(Instance, Journal.SnapshotBlueprint.Get(), Instance->GetFName()));
-			if (!Saved.Snapshot.IsValid()) return false;
+				DuplicateObject<UEdGraphNode>(Instance, Journal.SnapshotBlueprint.Get(), SnapshotName));
+			if (!Saved.Snapshot.IsValid() || Saved.OriginalIndex == INDEX_NONE) return false;
 			for (UEdGraphPin* Pin : Saved.Snapshot->Pins)
 				if (Pin) Pin->LinkedTo.Reset();
 			InstanceGuids.Add(Instance->NodeGuid);
@@ -671,20 +683,29 @@ bool CaptureExternalMacroInstances(UBlueprint* Blueprint, UEdGraph* Target, FRem
 
 bool RestoreExternalMacroInstances(UBlueprint* Blueprint, FRemoveGraphJournal& Journal, UEdGraph* RestoredMacro)
 {
-	for (FRemoveGraphJournal::FMacroInstance& Saved : Journal.ExternalMacroInstances)
+	for (const FRemoveGraphJournal::FMacroInstance& Saved : Journal.ExternalMacroInstances)
 	{
 		UEdGraph* HostGraph = FindGraphByGuid(Blueprint, Saved.HostGraphGuid);
 		if (!HostGraph) return false;
 		UEdGraphNode* Node = FindNodeByGuid(HostGraph, Saved.NodeGuid);
 		if (!Node)
 		{
-			if (!Saved.Snapshot.IsValid()) return false;
-			Node = DuplicateObject<UEdGraphNode>(Saved.Snapshot.Get(), HostGraph, Saved.Snapshot->GetFName());
+			if (Saved.OriginalNode.IsValid() && Saved.OriginalNode->GetOuter() == HostGraph
+				&& !Saved.OriginalNode->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional))
+			{
+				return false;
+			}
+			Node = DuplicateObject<UEdGraphNode>(Saved.Snapshot.Get(), HostGraph, Saved.OriginalNodeName);
 			if (!Node) return false;
 			HostGraph->AddNode(Node, false, false);
+			const int32 AddedIndex = HostGraph->Nodes.IndexOfByKey(Node);
+			if (AddedIndex == INDEX_NONE) return false;
+			HostGraph->Nodes.RemoveAt(AddedIndex);
+			HostGraph->Nodes.Insert(Node, FMath::Clamp(Saved.OriginalIndex, 0, HostGraph->Nodes.Num()));
 		}
 		UK2Node_MacroInstance* Instance = Cast<UK2Node_MacroInstance>(Node);
-		if (!Instance) return false;
+		if (!Instance || Instance->GetFName() != Saved.OriginalNodeName
+			|| HostGraph->Nodes.IndexOfByKey(Instance) != Saved.OriginalIndex) return false;
 		Instance->SetMacroGraph(RestoredMacro);
 	}
 	for (const FRemoveGraphJournal::FMacroLink& Link : Journal.ExternalMacroLinks)
@@ -788,7 +809,12 @@ bool RestoreJournal(UBlueprint* Blueprint, FRemoveGraphJournal& Journal)
 {
 	if (!Journal.GraphType.IsEmpty())
 	{
-		if (FindGraphByGuid(Blueprint, Journal.TargetGraphGuid)) return true;
+		if (UEdGraph* ExistingGraph = FindGraphByGuid(Blueprint, Journal.TargetGraphGuid))
+		{
+			if (Journal.GraphType == TEXT("Macro")
+				&& !RestoreExternalMacroInstances(Blueprint, Journal, ExistingGraph)) return false;
+			return true;
+		}
 		if (!Journal.SnapshotGraph.IsValid() || Journal.SnapshotGraph->GetOuter() != Journal.SnapshotBlueprint.Get())
 			return false;
 		if (Journal.OriginalGraph.IsValid() && Journal.OriginalGraph->GetOuter() == Blueprint
@@ -822,8 +848,17 @@ bool RestoreJournal(UBlueprint* Blueprint, FRemoveGraphJournal& Journal)
 
 	UEdGraph* Graph = FindGraphByGuid(Blueprint, Journal.TargetGraphGuid);
 	if (!Graph || !Journal.SnapshotGraph.IsValid()) return false;
-	for (const FRemoveGraphJournal::FRemovedNode& Saved : Journal.RemovedNodes)
+	TArray<int32> NodesByOriginalIndex;
+	NodesByOriginalIndex.Reserve(Journal.RemovedNodes.Num());
+	for (int32 Index = 0; Index < Journal.RemovedNodes.Num(); ++Index)
+		NodesByOriginalIndex.Add(Index);
+	NodesByOriginalIndex.Sort([&Journal](int32 A, int32 B)
 	{
+		return Journal.RemovedNodes[A].OriginalIndex < Journal.RemovedNodes[B].OriginalIndex;
+	});
+	for (int32 SavedIndex : NodesByOriginalIndex)
+	{
+		const FRemoveGraphJournal::FRemovedNode& Saved = Journal.RemovedNodes[SavedIndex];
 		if (FindNodeByGuid(Graph, Saved.Guid)) continue;
 		UEdGraphNode* Snapshot = FindNodeByGuid(Journal.SnapshotGraph.Get(), Saved.Guid);
 		if (!Snapshot) return false;

@@ -740,10 +740,12 @@ bool FCortexBPRemoveGraphCustomEventRecoveryTest::RunTest(const FString&)
 		UEdGraph* Graph = BP->UbergraphPages[0];
 		UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(Graph);
 		Event->CreateNewGuid(); Event->CustomFunctionName = TEXT("DeleteEvent"); Graph->AddNode(Event, false, false); Event->AllocateDefaultPins();
+		Event->NodeGuid = FGuid(0x20000001, 0, 0, 0);
 		UK2Node_CustomEvent* PreservedEvent = NewObject<UK2Node_CustomEvent>(Graph);
 		PreservedEvent->CreateNewGuid(); PreservedEvent->CustomFunctionName = TEXT("PreservedEvent"); Graph->AddNode(PreservedEvent, false, false); PreservedEvent->AllocateDefaultPins();
 		UK2Node_Knot* Reroute = NewObject<UK2Node_Knot>(Graph);
 		Reroute->CreateNewGuid(); Graph->AddNode(Reroute, false, false); Reroute->AllocateDefaultPins();
+		Reroute->NodeGuid = FGuid(0x10000001, 0, 0, 0);
 		UK2Node_CallFunction* Print = NewObject<UK2Node_CallFunction>(Graph);
 		Print->CreateNewGuid(); Print->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("PrintString")));
 		Graph->AddNode(Print, false, false); Print->AllocateDefaultPins();
@@ -768,6 +770,8 @@ bool FCortexBPRemoveGraphCustomEventRecoveryTest::RunTest(const FString&)
 			MarkFixtureGarbage(BP);
 			continue;
 		}
+		const int32 EventIndexBefore = Graph->Nodes.IndexOfByKey(Event);
+		const int32 RerouteIndexBefore = Graph->Nodes.IndexOfByKey(Reroute);
 		const FString EventName = Event->GetName();
 		const FString RerouteName = Reroute->GetName();
 		const FString EventPinsBefore = PinStateSignature(Event);
@@ -809,6 +813,10 @@ bool FCortexBPRemoveGraphCustomEventRecoveryTest::RunTest(const FString&)
 		UEdGraphNode* RestoredPrint = FindNodeByGuid(Graph, PrintGuid);
 		TestNotNull(FString::Printf(TEXT("%s restores event identity"), Fault), RestoredEvent);
 		TestNotNull(FString::Printf(TEXT("%s restores reroute identity"), Fault), RestoredReroute);
+		TestEqual(FString::Printf(TEXT("%s restores event array order"), Fault),
+			Graph->Nodes.IndexOfByKey(RestoredEvent), EventIndexBefore);
+		TestEqual(FString::Printf(TEXT("%s restores reroute array order"), Fault),
+			Graph->Nodes.IndexOfByKey(RestoredReroute), RerouteIndexBefore);
 		if (RestoredEvent && RestoredReroute)
 		{
 			TestEqual(FString::Printf(TEXT("%s preserves event object name"), Fault), RestoredEvent->GetName(), EventName);
@@ -895,6 +903,109 @@ bool FCortexBPRemoveGraphMacroInstanceRecoveryTest::RunTest(const FString&)
 			return Info.SavedZoomAmount == 2.25f
 				&& Info.EditedObjectPath.ToString().Contains(TEXT("DeleteMacro"));
 		}));
+	MarkFixtureGarbage(BP);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphMacroGraphCollectionRecoveryTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.MacroGraphCollectionRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphMacroGraphCollectionRecoveryTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_MacroCollections");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	UEdGraph* MacroGraph = FBlueprintEditorUtils::CreateNewGraph(
+		BP, FName(TEXT("CollectionMacro")), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddMacroGraph(BP, MacroGraph, false, nullptr);
+
+	auto AddInstance = [MacroGraph](UEdGraph* Host, FName Name, const TCHAR* Comment)
+	{
+		UK2Node_MacroInstance* Instance = NewObject<UK2Node_MacroInstance>(Host, Name);
+		Instance->CreateNewGuid();
+		Instance->SetMacroGraph(MacroGraph);
+		Instance->NodeComment = Comment;
+		Host->AddNode(Instance, false, false);
+		Instance->AllocateDefaultPins();
+		return Instance;
+	};
+
+	UEdGraph* MainGraph = BP->UbergraphPages[0];
+	const FGuid MainGraphGuid = MainGraph->GraphGuid;
+	UK2Node_MacroInstance* FirstMacro = AddInstance(MainGraph, FName(TEXT("FirstMacro")), TEXT("first"));
+	const FGuid FirstMacroGuid = FirstMacro->NodeGuid;
+	UK2Node_CustomEvent* MiddleNode = NewObject<UK2Node_CustomEvent>(MainGraph);
+	MiddleNode->CreateNewGuid(); MiddleNode->CustomFunctionName = TEXT("MiddleNode"); MainGraph->AddNode(MiddleNode, false, false); MiddleNode->AllocateDefaultPins();
+	UK2Node_MacroInstance* LastMacro = AddInstance(MainGraph, FName(TEXT("LastMacro")), TEXT("last"));
+	const FGuid LastMacroGuid = LastMacro->NodeGuid;
+	const int32 FirstMacroIndex = MainGraph->Nodes.IndexOfByKey(FirstMacro);
+	const int32 LastMacroIndex = MainGraph->Nodes.IndexOfByKey(LastMacro);
+
+	UEdGraph* InterfaceGraph = FBlueprintEditorUtils::CreateNewGraph(
+		BP, FName(TEXT("InterfaceImplementationHost")), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddInterfaceGraph(BP, InterfaceGraph, UInterface::StaticClass());
+	FBPInterfaceDescription InterfaceDescription;
+	InterfaceDescription.Interface = UInterface::StaticClass();
+	InterfaceDescription.Graphs.Add(InterfaceGraph);
+	BP->ImplementedInterfaces.Add(InterfaceDescription);
+	UK2Node_MacroInstance* InterfaceMacro = AddInstance(
+		InterfaceGraph, FName(TEXT("SharedMacroInstance")), TEXT("interface-hosted"));
+	const FGuid InterfaceMacroGuid = InterfaceMacro->NodeGuid;
+
+	UEdGraph* BoundSubgraph = NewObject<UEdGraph>(MainGraph, FName(TEXT("BoundMacroHost")));
+	BoundSubgraph->Schema = UEdGraphSchema_K2::StaticClass();
+	MainGraph->SubGraphs.Add(BoundSubgraph);
+	UK2Node_MacroInstance* BoundMacro = AddInstance(
+		BoundSubgraph, FName(TEXT("SharedMacroInstance")), TEXT("bound-subgraph-hosted"));
+	const FGuid BoundMacroGuid = BoundMacro->NodeGuid;
+
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("CollectionMacro"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	if (!TestTrue(TEXT("macro collection preview succeeds"), Preview.bSuccess) || !Preview.Data.IsValid())
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	FCortexBPRemoveGraphOps::SetFaultPointForTesting(TEXT("after_mutation"));
+	const FCortexCommandResult Applied = Handler.Execute(TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	FCortexBPRemoveGraphOps::ClearFaultPointForTesting();
+	TestFalse(TEXT("faulted macro removal fails"), Applied.bSuccess);
+	TestTrue(TEXT("macro collection failure details exist"), Applied.ErrorDetails.IsValid());
+	if (Applied.ErrorDetails.IsValid())
+	{
+		TestEqual(TEXT("macro collection rollback verified"),
+			Applied.ErrorDetails->GetStringField(TEXT("rollback_status")), FString(TEXT("restored")));
+	}
+	UEdGraph* RestoredMainGraph = BP->UbergraphPages[0];
+	TestEqual(TEXT("main host graph identity survives"), RestoredMainGraph->GraphGuid, MainGraphGuid);
+	UK2Node_MacroInstance* RestoredFirst = Cast<UK2Node_MacroInstance>(FindNodeByGuid(RestoredMainGraph, FirstMacroGuid));
+	UK2Node_MacroInstance* RestoredLast = Cast<UK2Node_MacroInstance>(FindNodeByGuid(RestoredMainGraph, LastMacroGuid));
+	TestNotNull(TEXT("first main-graph instance restored"), RestoredFirst);
+	TestNotNull(TEXT("last main-graph instance restored"), RestoredLast);
+	if (RestoredFirst && RestoredLast)
+	{
+		TestEqual(TEXT("first host-local index restored"), RestoredMainGraph->Nodes.IndexOfByKey(RestoredFirst), FirstMacroIndex);
+		TestEqual(TEXT("last host-local index restored"), RestoredMainGraph->Nodes.IndexOfByKey(RestoredLast), LastMacroIndex);
+	}
+	UK2Node_MacroInstance* RestoredInterface = Cast<UK2Node_MacroInstance>(
+		FindNodeByGuid(InterfaceGraph, InterfaceMacroGuid));
+	UK2Node_MacroInstance* RestoredBound = Cast<UK2Node_MacroInstance>(
+		FindNodeByGuid(BoundSubgraph, BoundMacroGuid));
+	TestNotNull(TEXT("interface-hosted macro instance restored"), RestoredInterface);
+	TestNotNull(TEXT("bound-subgraph macro instance restored"), RestoredBound);
+	if (RestoredInterface && RestoredBound)
+	{
+		TestEqual(TEXT("interface-hosted original node name restored"), RestoredInterface->GetName(),
+			FString(TEXT("SharedMacroInstance")));
+		TestEqual(TEXT("bound-subgraph original node name restored"), RestoredBound->GetName(),
+			FString(TEXT("SharedMacroInstance")));
+		TestEqual(TEXT("interface-hosted node metadata restored"), RestoredInterface->NodeComment,
+			FString(TEXT("interface-hosted")));
+		TestEqual(TEXT("bound-subgraph node metadata restored"), RestoredBound->NodeComment,
+			FString(TEXT("bound-subgraph-hosted")));
+	}
 	MarkFixtureGarbage(BP);
 	return true;
 }
