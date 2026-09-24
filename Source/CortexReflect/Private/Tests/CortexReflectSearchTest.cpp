@@ -3,7 +3,8 @@
 #include "Operations/CortexReflectOps.h"
 #include "CortexTypes.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "Containers/Ticker.h"
+#include "DirectoryWatcherModule.h"
+#include "IDirectoryWatcher.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
@@ -401,14 +402,49 @@ namespace CortexReflectProjectPluginBlueprintTest
 			return true;
 		}
 
+		bool Resave(FString& OutError)
+		{
+			if (!Package || !Blueprint || PackageFilename.IsEmpty())
+			{
+				OutError = TEXT("fixture is incomplete");
+				return false;
+			}
+
+			Package->SetDirtyFlag(true);
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+			SaveArgs.SaveFlags = SAVE_NoError;
+			if (!UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs))
+			{
+				OutError = FString::Printf(
+					TEXT("failed to resave fixture package to %s"), *PackageFilename);
+				return false;
+			}
+			Package->SetDirtyFlag(false);
+			return true;
+		}
+
 		/** Removes registry, package, disk, and mount state; safe to call more than once. */
 		void Release()
 		{
+			IAssetRegistry& AssetRegistry =
+				FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
 			if (!PackageFilename.IsEmpty())
 			{
 				IFileManager::Get().Delete(*PackageFilename, false, true, true);
 				PackageFilename.Reset();
 			}
+
+			FDirectoryWatcherModule& DirectoryWatcherModule =
+				FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
+			if (IDirectoryWatcher* DirectoryWatcher = DirectoryWatcherModule.Get())
+			{
+				DirectoryWatcher->Tick(-1.0f);
+			}
+			AssetRegistry.WaitForCompletion();
+			FlushAsyncLoading();
+			AssetRegistry.Tick(-1.0f);
+
 			if (Blueprint && bAssetRegistryRegistered)
 			{
 				FAssetRegistryModule::AssetDeleted(Blueprint);
@@ -430,11 +466,6 @@ namespace CortexReflectProjectPluginBlueprintTest
 			// Purge the marked objects now: the mount and asset names are fixed, so a later test in
 			// the same editor process must not find this Blueprint still occupying the package.
 			CollectGarbage(RF_NoFlags);
-			IAssetRegistry& AssetRegistry =
-				FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
-			AssetRegistry.WaitForCompletion();
-			FlushAsyncLoading();
-			FTSTicker::GetCoreTicker().Tick(0.0f);
 
 			if (bMountRegistered)
 			{
@@ -629,9 +660,10 @@ bool FCortexReflectProjectPluginBlueprintFixtureCleanupTest::RunTest(const FStri
 		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
 	FString FixtureMountRootPath;
 	FString FixtureDirectory;
-	bool bTearingDownFixture = false;
+	bool bFixtureRemovedFromRegistry = false;
 	bool bLateFixtureAssetAdded = false;
 	FDelegateHandle AssetAddedHandle;
+	FDelegateHandle AssetRemovedHandle;
 	{
 		FScopedProjectPluginBlueprintFixture Fixture;
 		FString FixtureError;
@@ -647,23 +679,46 @@ bool FCortexReflectProjectPluginBlueprintFixtureCleanupTest::RunTest(const FStri
 		AssetAddedHandle = AssetRegistry.OnAssetAdded().AddLambda(
 			[&](const FAssetData& AssetData)
 			{
-				if (bTearingDownFixture
+				if (bFixtureRemovedFromRegistry
 					&& AssetData.PackageName.ToString().StartsWith(FixtureMountRootPath))
 				{
 					bLateFixtureAssetAdded = true;
 				}
 			});
-		bTearingDownFixture = true;
+		AssetRemovedHandle = AssetRegistry.OnAssetRemoved().AddLambda(
+			[&](const FAssetData& AssetData)
+			{
+				if (AssetData.PackageName.ToString().StartsWith(FixtureMountRootPath))
+				{
+					bFixtureRemovedFromRegistry = true;
+				}
+			});
+		AssetRegistry.WaitForCompletion();
+		FString ResaveError;
+		if (!Fixture.Resave(ResaveError))
+		{
+			AddError(FString::Printf(
+				TEXT("Project-plugin Blueprint fixture resave failed: %s"), *ResaveError));
+			return false;
+		}
+		FDirectoryWatcherModule& DirectoryWatcherModule =
+			FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
+		if (IDirectoryWatcher* DirectoryWatcher = DirectoryWatcherModule.Get())
+		{
+			DirectoryWatcher->Tick(-1.0f);
+		}
 	}
 
 	AssetRegistry.WaitForCompletion();
 	FlushAsyncLoading();
-	FTSTicker::GetCoreTicker().Tick(0.0f);
+	AssetRegistry.Tick(-1.0f);
 	AssetRegistry.OnAssetAdded().Remove(AssetAddedHandle);
+	AssetRegistry.OnAssetRemoved().Remove(AssetRemovedHandle);
 
 	TArray<FAssetData> RemainingAssets;
 	AssetRegistry.GetAssetsByPath(FName(*FixtureMountRootPath), RemainingAssets, true);
-	TestFalse(TEXT("Asset Registry must not add the fixture after teardown"), bLateFixtureAssetAdded);
+	TestTrue(TEXT("Fixture must be removed from the Asset Registry"), bFixtureRemovedFromRegistry);
+	TestFalse(TEXT("Asset Registry must not add the fixture after removal"), bLateFixtureAssetAdded);
 	TestTrue(TEXT("Asset Registry must not retain the released fixture"), RemainingAssets.IsEmpty());
 	TestFalse(TEXT("Fixture directory must be removed"), IFileManager::Get().DirectoryExists(*FixtureDirectory));
 
