@@ -233,7 +233,7 @@ def _fit_payload(payload: dict[str, Any]) -> str:
 
     original_size = len(text)
     payload["_truncated"] = True
-    payload["original_response_size_chars"] = original_size
+    payload.setdefault("original_response_size_chars", original_size)
     payload["reconciliation_required"] = True
     payload["_omitted_data"] = True
     payload.setdefault(

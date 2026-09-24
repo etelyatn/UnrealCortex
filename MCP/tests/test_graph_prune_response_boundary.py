@@ -406,13 +406,24 @@ def test_oversized_native_error_is_bounded_with_explicit_truncation():
         expected_validation_hash="token-123",
         migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
     )
+    message = "mismatch " + "m" * 50000
     details = {"apply_status": "failed", "rollback_status": "restored", "saved": False,
                "diagnostics": [{"text": "d" * 30000} for _ in range(3)]}
+    original_envelope = {
+        "success": False,
+        "_error": "APPROVAL_MISMATCH",
+        "_message": message,
+        "_command": "graph.apply_patch",
+        "patch_id": PATCH_ID,
+        "asset_path": ASSET,
+        **details,
+    }
+    original_size = len(json.dumps(original_envelope, indent=2))
     connection.send_command.return_value = {
         "success": True, "data": _preview(1, approved_guids=approved),
     }
     connection.send_command_once.side_effect = UECommandError(
-        "graph.apply_patch", "APPROVAL_MISMATCH", "mismatch " + "m" * 50000, details,
+        "graph.apply_patch", "APPROVAL_MISMATCH", message, details,
     )
 
     payload = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
@@ -426,6 +437,7 @@ def test_oversized_native_error_is_bounded_with_explicit_truncation():
     assert payload["saved"] is False
     assert payload["_truncated"] is True
     assert payload["original_response_size_chars"] > MAX_RESPONSE_CHARS
+    assert payload["original_response_size_chars"] == original_size
     assert payload["_message_truncated"] is True
     assert payload["original_message_chars"] > MAX_RESPONSE_CHARS
     assert payload["_diagnostics_omitted"] == 3
