@@ -238,6 +238,34 @@ struct FCortexGraphMigrationPrunePlan
 		FCortexCommandResult& OutError);
 };
 
+/** Durable preview of a bounded set-level `retire_entries` migration. */
+struct FCortexGraphMigrationRetirePlan
+{
+	FString Op;
+	FString GraphGuid;
+	TArray<FString> SelectedEntryGuids;
+	TArray<FString> ApprovedGuids;
+	TArray<FString> RemovableGuids;
+	TArray<FCortexGraphPruneNode> Shared;
+	TArray<FCortexGraphPruneNode> Blocked;
+	TArray<FCortexGraphPruneEdge> ExternalEdges;
+	FCortexGraphTransferPreservation Preservation;
+	int32 ScannedNodes = 0;
+	int32 ScannedLinks = 0;
+	bool bComplete = true;
+	bool bAwaitingApproval = false;
+	bool bReused = false;
+	FString BlueprintStatusBefore;
+	TArray<FString> PreexistingDiagnostics;
+	bool bPreexistingDiagnosticsTruncated = false;
+
+	TSharedPtr<FJsonObject> ToJson() const;
+	static bool FromJson(
+		const TSharedPtr<FJsonObject>& Source,
+		FCortexGraphMigrationRetirePlan& OutPlan,
+		FCortexCommandResult& OutError);
+};
+
 /**
  * Durable, JSON-serializable plan of one `replace_entry` migration.
  *
@@ -481,6 +509,16 @@ public:
 	 * shared diagnostics bound. Returns null for a non-prune plan.
 	 */
 	static TSharedPtr<FJsonObject> MakePruneInventory(const TSharedPtr<FJsonObject>& PrunePlanJson);
+	/** Strictly plans retirement of a set of inherited Widget event overrides. */
+	static bool PlanRetirement(
+		UBlueprint* Blueprint,
+		const TSharedPtr<FJsonObject>& Migration,
+		FCortexGraphMigrationRetirePlan& OutPlan,
+		bool& bOutReused,
+		FCortexCommandResult& OutError);
+
+	/** Compact presentation inventory of a durable retirement plan. */
+	static TSharedPtr<FJsonObject> MakeRetirementInventory(const TSharedPtr<FJsonObject>& RetirePlanJson);
 
 	static UEdGraphNode* FindNodeByGuid(UBlueprint* Blueprint, const FGuid& NodeGuid);
 	/** Graph-scoped lookup: the durable way to resolve a node identity inside one named graph. */
