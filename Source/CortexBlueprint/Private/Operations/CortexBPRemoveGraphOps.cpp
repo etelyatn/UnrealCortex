@@ -11,6 +11,7 @@
 #include "EdGraphSchema_K2.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_MacroInstance.h"
+#include "K2Node_Composite.h"
 #include "K2Node_Knot.h"
 #include "CortexAssetMutationGuard.h"
 #include "ScopedTransaction.h"
@@ -592,6 +593,14 @@ struct FRemoveGraphJournal
 		FGuid TargetNodeGuid;
 		FName TargetPin;
 	};
+	struct FCompositeBoundGraph
+	{
+		FGuid HostGraphGuid;
+		FGuid CompositeNodeGuid;
+		TStrongObjectPtr<UEdGraph> BoundGraph;
+		FName OriginalName;
+		int32 OriginalSubGraphIndex = INDEX_NONE;
+	};
 	TArray<FGuid> PreservedGraphGuids;
 	TArray<FGuid> RemovedNodeGuids;
 	TArray<FRemovedNode> RemovedNodes;
@@ -600,6 +609,7 @@ struct FRemoveGraphJournal
 	TArray<FBoundaryLink> BoundaryLinks;
 	TArray<FMacroInstance> ExternalMacroInstances;
 	TArray<FMacroLink> ExternalMacroLinks;
+	TArray<FCompositeBoundGraph> CompositeBoundGraphs;
 	TArray<FEditedDocumentInfo> LastEditedDocuments;
 	TArray<FBPVariableDescription> NewVariables;
 	struct FOwnedTemplate
@@ -648,6 +658,116 @@ UEdGraphNode* FindNodeByGuid(UEdGraph* Graph, const FGuid& Guid)
 		if (Node && Node->NodeGuid == Guid) return Node;
 	}
 	return nullptr;
+}
+
+bool CaptureCompositeBoundGraph(
+	UEdGraph* HostGraph,
+	UK2Node_Composite* Composite,
+	FRemoveGraphJournal& Journal,
+	TSet<UEdGraph*>& CapturedGraphs)
+{
+	if (!HostGraph || !Composite || !Composite->BoundGraph) return false;
+	UEdGraph* BoundGraph = Composite->BoundGraph;
+	if (CapturedGraphs.Contains(BoundGraph)) return true;
+	if (!HostGraph->GraphGuid.IsValid() || !Composite->NodeGuid.IsValid()) return false;
+	const int32 SubGraphIndex = HostGraph->SubGraphs.IndexOfByKey(BoundGraph);
+	if (SubGraphIndex == INDEX_NONE) return false;
+	CapturedGraphs.Add(BoundGraph);
+	FRemoveGraphJournal::FCompositeBoundGraph& Saved =
+		Journal.CompositeBoundGraphs.AddDefaulted_GetRef();
+	Saved.HostGraphGuid = HostGraph->GraphGuid;
+	Saved.CompositeNodeGuid = Composite->NodeGuid;
+	Saved.BoundGraph = TStrongObjectPtr<UEdGraph>(BoundGraph);
+	Saved.OriginalName = BoundGraph->GetFName();
+	Saved.OriginalSubGraphIndex = SubGraphIndex;
+	for (UEdGraphNode* ChildNode : BoundGraph->Nodes)
+	{
+		if (UK2Node_Composite* ChildComposite = Cast<UK2Node_Composite>(ChildNode))
+		{
+			if (!CaptureCompositeBoundGraph(BoundGraph, ChildComposite, Journal, CapturedGraphs))
+				return false;
+		}
+	}
+	return true;
+}
+
+bool CaptureCompositeBoundGraphsIn(UEdGraph* HostGraph, FRemoveGraphJournal& Journal)
+{
+	if (!HostGraph) return false;
+	TSet<UEdGraph*> CapturedGraphs;
+	for (UEdGraphNode* Node : HostGraph->Nodes)
+	{
+		if (UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node))
+		{
+			if (!CaptureCompositeBoundGraph(HostGraph, Composite, Journal, CapturedGraphs))
+				return false;
+		}
+	}
+	return true;
+}
+
+bool CaptureCompositeBoundGraphsForNodes(
+	UEdGraph* HostGraph,
+	const TArray<FRemoveGraphJournal::FRemovedNode>& Nodes,
+	FRemoveGraphJournal& Journal)
+{
+	TSet<UEdGraph*> CapturedGraphs;
+	for (const FRemoveGraphJournal::FRemovedNode& Saved : Nodes)
+	{
+		if (UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Saved.OriginalNode.Get()))
+		{
+			if (!CaptureCompositeBoundGraph(HostGraph, Composite, Journal, CapturedGraphs))
+				return false;
+		}
+	}
+	return true;
+}
+bool RestoreCompositeBoundGraphs(UBlueprint* Blueprint, FRemoveGraphJournal& Journal)
+{
+	for (const FRemoveGraphJournal::FCompositeBoundGraph& Saved : Journal.CompositeBoundGraphs)
+	{
+		UEdGraph* HostGraph = FindGraphByGuid(Blueprint, Saved.HostGraphGuid);
+		UK2Node_Composite* Composite = Cast<UK2Node_Composite>(
+			FindNodeByGuid(HostGraph, Saved.CompositeNodeGuid));
+		UEdGraph* BoundGraph = Saved.BoundGraph.Get();
+		if (!HostGraph || !Composite || !BoundGraph) return false;
+		if (Composite->BoundGraph && Composite->BoundGraph != BoundGraph)
+		{
+			UEdGraph* DuplicateGraph = Composite->BoundGraph;
+			HostGraph->SubGraphs.Remove(DuplicateGraph);
+			Composite->BoundGraph = nullptr;
+			if (DuplicateGraph->GetOuter() == Composite
+				&& !DuplicateGraph->Rename(nullptr, GetTransientPackage(),
+					REN_DontCreateRedirectors | REN_NonTransactional))
+				return false;
+		}
+		if ((BoundGraph->GetOuter() != Composite || BoundGraph->GetFName() != Saved.OriginalName)
+			&& !BoundGraph->Rename(*Saved.OriginalName.ToString(), Composite,
+				REN_DontCreateRedirectors | REN_NonTransactional))
+			return false;
+		Composite->BoundGraph = BoundGraph;
+		Composite->InputSinkNode = nullptr;
+		Composite->OutputSourceNode = nullptr;
+		for (UEdGraphNode* Node : BoundGraph->Nodes)
+		{
+			UK2Node_Tunnel* Tunnel = Cast<UK2Node_Tunnel>(Node);
+			if (!Tunnel) continue;
+			if (Tunnel->bCanHaveOutputs && !Tunnel->bCanHaveInputs)
+			{
+				Tunnel->OutputSourceNode = Composite;
+				Composite->InputSinkNode = Tunnel;
+			}
+			else if (Tunnel->bCanHaveInputs && !Tunnel->bCanHaveOutputs)
+			{
+				Tunnel->InputSinkNode = Composite;
+				Composite->OutputSourceNode = Tunnel;
+			}
+		}
+		HostGraph->SubGraphs.Remove(BoundGraph);
+		HostGraph->SubGraphs.Insert(
+			BoundGraph, FMath::Clamp(Saved.OriginalSubGraphIndex, 0, HostGraph->SubGraphs.Num()));
+	}
+	return true;
 }
 
 bool CaptureExternalMacroInstances(UBlueprint* Blueprint, UEdGraph* Target, FRemoveGraphJournal& Journal)
@@ -787,6 +907,7 @@ bool CaptureJournal(UBlueprint* Blueprint, const FCortexBPRemoveGraphPrepared& P
 				Journal.PreservedGraphGuids.Add(Blueprint->UbergraphPages[Index]->GraphGuid);
 		UEdGraph* Target = FindGraphByGuid(Blueprint, Guid, &Journal.GraphType, &Journal.GraphIndex);
 		if (!Target) return false;
+		if (!CaptureCompositeBoundGraphsIn(Target, Journal)) return false;
 		Journal.OriginalGraph = TStrongObjectPtr<UEdGraph>(Target);
 		Journal.GraphName = Target->GetName();
 		Journal.SnapshotGraph = TStrongObjectPtr<UEdGraph>(
@@ -841,7 +962,7 @@ bool CaptureJournal(UBlueprint* Blueprint, const FCortexBPRemoveGraphPrepared& P
 			}
 		}
 	}
-	return true;
+	return CaptureCompositeBoundGraphsForNodes(Graph, Journal.RemovedNodes, Journal);
 }
 
 bool RestoreBlueprintOwnedState(
@@ -849,6 +970,7 @@ bool RestoreBlueprintOwnedState(
 	FRemoveGraphJournal& Journal,
 	UEdGraph* RestoredGraph = nullptr)
 {
+	if (!RestoreCompositeBoundGraphs(Blueprint, Journal)) return false;
 	Blueprint->NewVariables = Journal.NewVariables;
 	Blueprint->DelegateSignatureGraphs = Journal.DelegateSignatureGraphs;
 	for (TObjectPtr<UEdGraph>& Graph : Blueprint->DelegateSignatureGraphs)
@@ -1261,7 +1383,15 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 					bMutationSucceeded = false;
 					break;
 				}
+				UEdGraph* BoundGraph = nullptr;
+				if (UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node))
+				{
+					BoundGraph = Composite->BoundGraph;
+					Composite->BoundGraph = nullptr;
+				}
 				FBlueprintEditorUtils::RemoveNode(Blueprint, Node, true);
+				if (BoundGraph)
+					FBlueprintEditorUtils::RemoveGraph(Blueprint, BoundGraph, EGraphRemoveFlags::MarkTransient);
 			}
 		}
 		Outcome.ApplyStatus = bMutationSucceeded ? TEXT("applied") : TEXT("failed");

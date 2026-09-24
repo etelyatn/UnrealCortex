@@ -17,6 +17,7 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_Knot.h"
 #include "K2Node_MacroInstance.h"
+#include "K2Node_Composite.h"
 #include "K2Node_FunctionEntry.h"
 #include "UObject/UObjectIterator.h"
 #include "K2Node_AddComponent.h"
@@ -1219,6 +1220,143 @@ bool FCortexBPRemoveGraphCustomEventRecoveryTest::RunTest(const FString&)
 			RestoredPreservedOutput && RestoredPrintInput && RestoredPreservedOutput->LinkedTo.Contains(RestoredPrintInput));
 		MarkFixtureGarbage(BP);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphCompositeCascadeRecoveryTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.CompositeCascadeRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphCompositeCascadeRecoveryTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_CompositeCascadeRecovery");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	UEdGraph* HostGraph = BP->UbergraphPages.IsEmpty() ? nullptr : BP->UbergraphPages[0];
+	if (!TestNotNull(TEXT("event host graph exists"), HostGraph))
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(HostGraph);
+	Event->CreateNewGuid();
+	Event->CustomFunctionName = TEXT("DeleteEvent");
+	HostGraph->AddNode(Event, false, false);
+	Event->AllocateDefaultPins();
+	UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(HostGraph);
+	Composite->CreateNewGuid();
+	HostGraph->AddNode(Composite, false, false);
+	Composite->PostPlacedNewNode();
+	Composite->GetEntryNode()->CreatePin(
+		EGPD_Output, UEdGraphSchema_K2::PC_Exec, NAME_None, FName(TEXT("Enter")));
+	Composite->AllocateDefaultPins();
+	UEdGraph* BoundGraph = Composite->BoundGraph;
+	UEdGraphNode* Content = NewObject<UEdGraphNode>(BoundGraph);
+	Content->CreateNewGuid();
+	Content->NodeComment = TEXT("composite bound-graph content");
+	BoundGraph->AddNode(Content, false, false);
+	const FGuid CompositeGuid = Composite->NodeGuid;
+	UEdGraphPin* EventOutput = FindPin(Event, EGPD_Output, UEdGraphSchema_K2::PC_Exec);
+	UEdGraphPin* CompositeInput = FindPin(Composite, EGPD_Input, UEdGraphSchema_K2::PC_Exec);
+	if (!EventOutput || !CompositeInput)
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	EventOutput->MakeLinkTo(CompositeInput);
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteEvent"), false, true);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	if (!TestTrue(TEXT("composite cascade preview succeeds"), Preview.bSuccess) || !Preview.Data.IsValid())
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	int32 ChangedNotifications = 0;
+	const FDelegateHandle ChangedHandle = BP->OnChanged().AddLambda(
+		[&ChangedNotifications](UBlueprint*) { ++ChangedNotifications; });
+	FCortexBPRemoveGraphOps::SetFaultPointForTesting(TEXT("after_mutation"));
+	const FCortexCommandResult Applied = Handler.Execute(
+		TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	BP->OnChanged().Remove(ChangedHandle);
+	FCortexBPRemoveGraphOps::ClearFaultPointForTesting();
+	TestFalse(TEXT("injected failure enters recovery"), Applied.bSuccess);
+	TestTrue(TEXT("recovery reports details"), Applied.ErrorDetails.IsValid());
+	if (Applied.ErrorDetails.IsValid())
+		TestEqual(TEXT("composite cascade rollback is verified"),
+			Applied.ErrorDetails->GetStringField(TEXT("rollback_status")), FString(TEXT("restored")));
+	TestEqual(TEXT("compile=false suppresses structural Blueprint change"),
+		ChangedNotifications, 0);
+	UK2Node_Composite* Restored = Cast<UK2Node_Composite>(FindNodeByGuid(HostGraph, CompositeGuid));
+	TestTrue(TEXT("composite node GUID identity survives rollback"),
+		Restored && Restored->NodeGuid == CompositeGuid);
+	TestTrue(TEXT("bound graph identity survives rollback"), Restored && Restored->BoundGraph == BoundGraph);
+	TestTrue(TEXT("composite entry tunnel is rebound"),
+		Restored && Restored->InputSinkNode && Restored->InputSinkNode->OutputSourceNode == Restored);
+	TestTrue(TEXT("bound graph is back in host SubGraphs"), HostGraph->SubGraphs.Contains(BoundGraph));
+	TestTrue(TEXT("bound graph content survives rollback"), BoundGraph->Nodes.Contains(Content));
+	TestEqual(TEXT("bound graph content is unchanged"), Content->NodeComment,
+		FString(TEXT("composite bound-graph content")));
+	MarkFixtureGarbage(BP);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphCompositeWholeGraphRecoveryTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.CompositeWholeGraphRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphCompositeWholeGraphRecoveryTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_CompositeWholeGraphRecovery");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	UEdGraph* HostGraph = FBlueprintEditorUtils::CreateNewGraph(
+		BP, FName(TEXT("GraphWithComposite")), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddUbergraphPage(BP, HostGraph);
+	UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(HostGraph);
+	Composite->CreateNewGuid();
+	HostGraph->AddNode(Composite, false, false);
+	Composite->PostPlacedNewNode();
+	Composite->AllocateDefaultPins();
+	UEdGraph* BoundGraph = Composite->BoundGraph;
+	UEdGraphNode* Content = NewObject<UEdGraphNode>(BoundGraph);
+	Content->CreateNewGuid();
+	Content->NodeComment = TEXT("whole-graph composite content");
+	BoundGraph->AddNode(Content, false, false);
+	const FGuid CompositeGuid = Composite->NodeGuid;
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("GraphWithComposite"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	if (!TestTrue(TEXT("whole-graph preview succeeds"), Preview.bSuccess) || !Preview.Data.IsValid())
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	FCortexBPRemoveGraphOps::SetFaultPointForTesting(TEXT("after_mutation"));
+	const FCortexCommandResult Applied = Handler.Execute(
+		TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	FCortexBPRemoveGraphOps::ClearFaultPointForTesting();
+	TestFalse(TEXT("injected failure enters recovery"), Applied.bSuccess);
+	TestTrue(TEXT("recovery reports details"), Applied.ErrorDetails.IsValid());
+	if (Applied.ErrorDetails.IsValid())
+		TestEqual(TEXT("whole-graph rollback is verified"),
+			Applied.ErrorDetails->GetStringField(TEXT("rollback_status")), FString(TEXT("restored")));
+	UEdGraph* RestoredHost = BP->UbergraphPages.FindByPredicate(
+		[](const UEdGraph* Candidate) { return Candidate && Candidate->GetName() == TEXT("GraphWithComposite"); })
+		? *BP->UbergraphPages.FindByPredicate(
+			[](const UEdGraph* Candidate) { return Candidate && Candidate->GetName() == TEXT("GraphWithComposite"); })
+		: nullptr;
+	UK2Node_Composite* Restored = Cast<UK2Node_Composite>(FindNodeByGuid(RestoredHost, CompositeGuid));
+	TestTrue(TEXT("composite node GUID identity survives rollback"),
+		Restored && Restored->NodeGuid == CompositeGuid);
+	TestTrue(TEXT("bound graph identity survives rollback"), Restored && Restored->BoundGraph == BoundGraph);
+	TestTrue(TEXT("composite entry tunnel is rebound"),
+		Restored && Restored->InputSinkNode && Restored->InputSinkNode->OutputSourceNode == Restored);
+	TestTrue(TEXT("bound graph is back in host SubGraphs"), RestoredHost && RestoredHost->SubGraphs.Contains(BoundGraph));
+	TestTrue(TEXT("bound graph content survives rollback"), BoundGraph->Nodes.Contains(Content));
+	TestEqual(TEXT("bound graph content is unchanged"), Content->NodeComment,
+		FString(TEXT("whole-graph composite content")));
+	MarkFixtureGarbage(BP);
 	return true;
 }
 
