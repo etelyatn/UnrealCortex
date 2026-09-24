@@ -20,6 +20,10 @@
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "UObject/SavePackage.h"
+#include "IO/IoHash.h"
+#include "Misc/FileHelper.h"
+#include "Operations/CortexBPRemoveGraphOps.h"
+#include "CortexAssetMutationGuard.h"
  
 
 namespace
@@ -45,6 +49,9 @@ static UBlueprint* CreateRemoveGraphFixture(FCortexBPCommandHandler&, const TCHA
 	const FString Path(AssetPath);
 	const FString PackageName = FPackageName::ObjectPathToPackageName(Path);
 	const FString AssetName = FPackageName::GetLongPackageAssetName(PackageName);
+	const FString ExistingFilename = FPackageName::LongPackageNameToFilename(
+		PackageName, FPackageName::GetAssetPackageExtension());
+	IFileManager::Get().Delete(*ExistingFilename, false, true);
 	UPackage* Package = CreatePackage(*PackageName);
 	return Package ? FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(),
@@ -73,6 +80,40 @@ static UEdGraphPin* FindPin(UEdGraphNode* Node, EEdGraphPinDirection Direction, 
 	return nullptr;
 }
 
+static FString PackageFilename(UPackage* Package)
+{
+	return FPackageName::LongPackageNameToFilename(
+		Package->GetName(), FPackageName::GetAssetPackageExtension());
+}
+
+static FString FileHash(const FString& Filename)
+{
+	TArray64<uint8> Bytes;
+	if (!FFileHelper::LoadFileToArray(Bytes, *Filename)) return FString();
+	return LexToString(FIoHash::HashBuffer(Bytes.GetData(), Bytes.Num()));
+}
+
+static bool SaveFixture(UBlueprint* BP)
+{
+	FSavePackageArgs Args;
+	Args.TopLevelFlags = RF_Public | RF_Standalone;
+	const FString Filename = PackageFilename(BP->GetOutermost());
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename), true);
+	return UPackage::SavePackage(BP->GetOutermost(), BP, *Filename, Args);
+}
+
+static TSharedPtr<FJsonObject> ApplyFromPreview(
+	const TSharedPtr<FJsonObject>& PreviewRequest,
+	const TSharedPtr<FJsonObject>& PreviewData,
+	bool bSave)
+{
+	TSharedPtr<FJsonObject> Apply = MakeShared<FJsonObject>(*PreviewRequest);
+	Apply->SetBoolField(TEXT("dry_run"), false);
+	Apply->SetBoolField(TEXT("save"), bSave);
+	Apply->SetObjectField(TEXT("expected_fingerprint"), PreviewData->GetObjectField(TEXT("fingerprint_before")));
+	Apply->SetStringField(TEXT("expected_validation_hash"), PreviewData->GetStringField(TEXT("validation_hash")));
+	return Apply;
+}
 static void MarkFixtureGarbage(UBlueprint* BP)
 {
 	if (BP)
@@ -348,6 +389,308 @@ bool FCortexBPRemoveGraphInvalidIdentityTest::RunTest(const FString&)
 	TestFalse(TEXT("invalid custom event identity refuses preview"), EventResult.bSuccess);
 	TestEqual(TEXT("invalid custom event identity is invalid operation"), EventResult.ErrorCode, CortexErrorCodes::InvalidOperation);
 	TestTrue(TEXT("invalid event identity leaves event node present"), EventGraph->Nodes.Contains(Event));
+	MarkFixtureGarbage(BP);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphUnsavedFunctionDiskInvariantTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.UnsavedFunctionDiskInvariant",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphUnsavedFunctionDiskInvariantTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_FunctionDisk");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	TSharedPtr<FJsonObject> Add = MakeShared<FJsonObject>();
+	Add->SetStringField(TEXT("asset_path"), Path); Add->SetStringField(TEXT("name"), TEXT("DeleteMe"));
+	TestTrue(TEXT("fixture function created"), Handler.Execute(TEXT("add_function"), Add).bSuccess);
+	TestTrue(TEXT("fixture saved"), SaveFixture(BP));
+	const FString Filename = PackageFilename(BP->GetOutermost());
+	const FString HashBefore = FileHash(Filename);
+	const TSharedPtr<FJsonObject> PreviewRequest = PreviewParams(Path, TEXT("DeleteMe"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), PreviewRequest);
+	TestTrue(TEXT("preview succeeds"), Preview.bSuccess);
+	if (!Preview.bSuccess || !Preview.Data.IsValid()) return false;
+	const FCortexCommandResult Applied = Handler.Execute(TEXT("remove_graph"), ApplyFromPreview(PreviewRequest, Preview.Data, false));
+	TestTrue(TEXT("in-memory apply succeeds"), Applied.bSuccess);
+	TestFalse(TEXT("graph absent from memory"), BP->FunctionGraphs.ContainsByPredicate(
+		[](const UEdGraph* Graph) { return Graph && Graph->GetName() == TEXT("DeleteMe"); }));
+	TestTrue(TEXT("package dirty"), BP->GetOutermost()->IsDirty());
+	if (Applied.Data.IsValid())
+		TestEqual(TEXT("save was not requested"), Applied.Data->GetStringField(TEXT("save_status")), FString(TEXT("not_requested")));
+	TestEqual(TEXT("package bytes unchanged"), FileHash(Filename), HashBefore);
+	MarkFixtureGarbage(BP);
+	IFileManager::Get().Delete(*Filename, false, true);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphUnsavedCustomEventDiskInvariantTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.UnsavedCustomEventDiskInvariant",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphUnsavedCustomEventDiskInvariantTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_EventDisk");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	UEdGraph* Graph = BP->UbergraphPages[0];
+	UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(Graph);
+	Event->CreateNewGuid(); Event->CustomFunctionName = TEXT("DeleteEvent"); Graph->AddNode(Event, false, false); Event->AllocateDefaultPins();
+	UK2Node_CustomEvent* PreservedEvent = NewObject<UK2Node_CustomEvent>(Graph);
+	PreservedEvent->CreateNewGuid(); PreservedEvent->CustomFunctionName = TEXT("PreservedEvent"); Graph->AddNode(PreservedEvent, false, false); PreservedEvent->AllocateDefaultPins();
+	UK2Node_Knot* Reroute = NewObject<UK2Node_Knot>(Graph);
+	Reroute->CreateNewGuid(); Graph->AddNode(Reroute, false, false); Reroute->AllocateDefaultPins();
+	UK2Node_CallFunction* Print = NewObject<UK2Node_CallFunction>(Graph);
+	Print->CreateNewGuid(); Print->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("PrintString")));
+	Graph->AddNode(Print, false, false); Print->AllocateDefaultPins();
+	FindPin(Event, EGPD_Output, UEdGraphSchema_K2::PC_Exec)->MakeLinkTo(Reroute->GetInputPin());
+	Reroute->GetOutputPin()->MakeLinkTo(FindPin(Print, EGPD_Input, UEdGraphSchema_K2::PC_Exec));
+	TestTrue(TEXT("fixture saved"), SaveFixture(BP));
+	const FString Filename = PackageFilename(BP->GetOutermost());
+	const FString HashBefore = FileHash(Filename);
+	const TSharedPtr<FJsonObject> PreviewRequest = PreviewParams(Path, TEXT("DeleteEvent"), false, true);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), PreviewRequest);
+	TestTrue(TEXT("preview succeeds"), Preview.bSuccess);
+	if (!Preview.bSuccess || !Preview.Data.IsValid()) return false;
+	const FCortexCommandResult Applied = Handler.Execute(TEXT("remove_graph"), ApplyFromPreview(PreviewRequest, Preview.Data, false));
+	TestTrue(TEXT("cascade apply succeeds"), Applied.bSuccess);
+	TestFalse(TEXT("selected event absent from memory"), Graph->Nodes.Contains(Event));
+	TestFalse(TEXT("owned reroute absent from memory"), Graph->Nodes.Contains(Reroute));
+	TestFalse(TEXT("owned call absent from memory"), Graph->Nodes.Contains(Print));
+	TestTrue(TEXT("unrelated event preserved"), Graph->Nodes.Contains(PreservedEvent));
+	TestTrue(TEXT("package dirty"), BP->GetOutermost()->IsDirty());
+	TestEqual(TEXT("package bytes unchanged"), FileHash(Filename), HashBefore);
+	MarkFixtureGarbage(BP);
+	IFileManager::Get().Delete(*Filename, false, true);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphStaleFingerprintDirtyEditTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.StaleFingerprintDirtyEdit",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphStaleFingerprintDirtyEditTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_Stale");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	TSharedPtr<FJsonObject> Add = MakeShared<FJsonObject>();
+	Add->SetStringField(TEXT("asset_path"), Path); Add->SetStringField(TEXT("name"), TEXT("DeleteMe"));
+	Handler.Execute(TEXT("add_function"), Add);
+	UEdGraph* Graph = BP->UbergraphPages[0];
+	UK2Node_CustomEvent* Edit = NewObject<UK2Node_CustomEvent>(Graph);
+	Edit->CreateNewGuid(); Edit->CustomFunctionName = TEXT("UnsavedEdit"); Graph->AddNode(Edit, false, false); Edit->AllocateDefaultPins();
+	BP->GetOutermost()->MarkPackageDirty();
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteMe"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	TestTrue(TEXT("preview succeeds"), Preview.bSuccess);
+	if (!Preview.bSuccess || !Preview.Data.IsValid()) { MarkFixtureGarbage(BP); return false; }
+	UK2Node_CustomEvent* LaterEdit = NewObject<UK2Node_CustomEvent>(Graph);
+	LaterEdit->CreateNewGuid(); LaterEdit->CustomFunctionName = TEXT("LaterEdit"); Graph->AddNode(LaterEdit, false, false); LaterEdit->AllocateDefaultPins();
+	const FCortexCommandResult Applied = Handler.Execute(TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	TestFalse(TEXT("stale apply refused"), Applied.bSuccess);
+	TestEqual(TEXT("stale precondition reported"), Applied.ErrorCode, CortexErrorCodes::StalePrecondition);
+	TestTrue(TEXT("target function survives"), BP->FunctionGraphs.ContainsByPredicate(
+		[](const UEdGraph* Candidate) { return Candidate && Candidate->GetName() == TEXT("DeleteMe"); }));
+	TestTrue(TEXT("later edit survives"), Graph->Nodes.Contains(LaterEdit));
+	MarkFixtureGarbage(BP);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphCompileInvalidCleanupTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.CompileInvalidCleanup",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphCompileInvalidCleanupTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_InvalidStatus");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	TSharedPtr<FJsonObject> Add = MakeShared<FJsonObject>();
+	Add->SetStringField(TEXT("asset_path"), Path); Add->SetStringField(TEXT("name"), TEXT("DeleteMe"));
+	Handler.Execute(TEXT("add_function"), Add);
+	TestTrue(TEXT("fixture saved"), SaveFixture(BP));
+	const FString Filename = PackageFilename(BP->GetOutermost());
+	const FString HashBefore = FileHash(Filename);
+	BP->Status = BS_Error;
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteMe"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	TestTrue(TEXT("preview succeeds"), Preview.bSuccess);
+	if (!Preview.bSuccess || !Preview.Data.IsValid()) return false;
+	const FCortexCommandResult Applied = Handler.Execute(TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	TestTrue(TEXT("staged cleanup succeeds without compile"), Applied.bSuccess);
+	TestEqual(TEXT("saved package bytes unchanged"), FileHash(Filename), HashBefore);
+	MarkFixtureGarbage(BP);
+	IFileManager::Get().Delete(*Filename, false, true);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphRecoveryFaultTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.RecoveryFaults",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphRecoveryFaultTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_Recovery");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	TSharedPtr<FJsonObject> Add = MakeShared<FJsonObject>();
+	Add->SetStringField(TEXT("asset_path"), Path); Add->SetStringField(TEXT("name"), TEXT("DeleteMe"));
+	Handler.Execute(TEXT("add_function"), Add);
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	TestTrue(TEXT("fixture saved"), SaveFixture(BP));
+	const FString Filename = PackageFilename(BP->GetOutermost());
+	const FString HashBefore = FileHash(Filename);
+	for (const TCHAR* Fault : { TEXT("compile"), TEXT("readback"), TEXT("after_mutation") })
+	{
+		const bool bCompile = FCString::Strcmp(Fault, TEXT("after_mutation")) != 0;
+		const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteMe"), bCompile);
+		const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+		TestTrue(FString::Printf(TEXT("%s preview succeeds"), Fault), Preview.bSuccess);
+		if (!Preview.bSuccess || !Preview.Data.IsValid()) continue;
+		FCortexBPRemoveGraphOps::SetFaultPointForTesting(FName(Fault));
+		const FCortexCommandResult Applied = Handler.Execute(
+			TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+		FCortexBPRemoveGraphOps::ClearFaultPointForTesting();
+		TestFalse(FString::Printf(TEXT("%s fault fails command"), Fault), Applied.bSuccess);
+		TestEqual(FString::Printf(TEXT("%s restores source graph"), Fault),
+			BP->FunctionGraphs.ContainsByPredicate([](const UEdGraph* Graph)
+				{ return Graph && Graph->GetName() == TEXT("DeleteMe"); }), true);
+		TestEqual(FString::Printf(TEXT("%s does not save"), Fault), FileHash(Filename), HashBefore);
+		if (Applied.ErrorDetails.IsValid())
+		{
+			FString Rollback;
+			TestTrue(TEXT("rollback status present"), Applied.ErrorDetails->TryGetStringField(TEXT("rollback_status"), Rollback));
+			TestEqual(TEXT("recovery verified"), Rollback, FString(TEXT("restored")));
+			if (Rollback != TEXT("restored"))
+			{
+				TestTrue(FString::Printf(TEXT("rollback content=%d authoring=%d generated=%d"),
+					Applied.ErrorDetails->GetBoolField(TEXT("rollback_content_restored")),
+					Applied.ErrorDetails->GetBoolField(TEXT("rollback_authoring_matches")),
+					Applied.ErrorDetails->GetBoolField(TEXT("rollback_generated_matches"))), false);
+			}
+		}
+		else TestTrue(TEXT("failure includes operation statuses"), false);
+	}
+	MarkFixtureGarbage(BP);
+	IFileManager::Get().Delete(*Filename, false, true);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphRollbackUnverifiedBlocksTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.RollbackUnverifiedBlocks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphRollbackUnverifiedBlocksTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_Blocked");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	TSharedPtr<FJsonObject> Add = MakeShared<FJsonObject>();
+	Add->SetStringField(TEXT("asset_path"), Path); Add->SetStringField(TEXT("name"), TEXT("DeleteMe"));
+	Handler.Execute(TEXT("add_function"), Add);
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteMe"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	TestTrue(TEXT("preview succeeds"), Preview.bSuccess);
+	if (!Preview.bSuccess || !Preview.Data.IsValid()) return false;
+	FCortexBPRemoveGraphOps::SetFaultPointForTesting(TEXT("rollback_verify"));
+	const FCortexCommandResult Applied = Handler.Execute(
+		TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	FCortexBPRemoveGraphOps::ClearFaultPointForTesting();
+	TestFalse(TEXT("faulted apply fails"), Applied.bSuccess);
+	TestTrue(TEXT("error details present"), Applied.ErrorDetails.IsValid());
+	if (Applied.ErrorDetails.IsValid())
+	{
+		TestEqual(TEXT("rollback is unverified"), Applied.ErrorDetails->GetStringField(TEXT("rollback_status")), FString(TEXT("unverified")));
+		TestTrue(TEXT("asset blocked"), Applied.ErrorDetails->GetBoolField(TEXT("blocked")));
+	}
+	TestTrue(TEXT("package remains dirty"), BP->GetOutermost()->IsDirty());
+	const TSharedPtr<FJsonObject> SecondPreviewRequest = PreviewParams(Path, TEXT("DeleteMe"), false);
+	const FCortexCommandResult SecondPreview = Handler.Execute(TEXT("remove_graph"), SecondPreviewRequest);
+	if (SecondPreview.bSuccess && SecondPreview.Data.IsValid())
+	{
+		const FCortexCommandResult Second = Handler.Execute(
+			TEXT("remove_graph"), ApplyFromPreview(SecondPreviewRequest, SecondPreview.Data, false));
+		TestFalse(TEXT("second mutation is refused"), Second.bSuccess);
+	}
+	else TestFalse(TEXT("blocked target remains previewable for refusal test"), SecondPreview.bSuccess);
+	MarkFixtureGarbage(BP);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphNameReboundTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.NameRebound",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphNameReboundTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_Rebound");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	TSharedPtr<FJsonObject> Add = MakeShared<FJsonObject>();
+	Add->SetStringField(TEXT("asset_path"), Path); Add->SetStringField(TEXT("name"), TEXT("DeleteMe"));
+	Handler.Execute(TEXT("add_function"), Add);
+	UEdGraph* Original = nullptr;
+	for (UEdGraph* Graph : BP->FunctionGraphs) if (Graph && Graph->GetName() == TEXT("DeleteMe")) Original = Graph;
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteMe"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	TestTrue(TEXT("preview succeeds"), Preview.bSuccess);
+	if (!Preview.bSuccess || !Preview.Data.IsValid() || !Original) return false;
+	const FGuid OriginalGuid = Original->GraphGuid;
+	FBlueprintEditorUtils::RemoveGraph(BP, Original);
+	UEdGraph* Replacement = FBlueprintEditorUtils::CreateNewGraph(
+		BP, FName(TEXT("DeleteMe")), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddFunctionGraph(BP, Replacement, false, UClass::StaticClass());
+	TestNotEqual(TEXT("replacement identity differs"), Replacement->GraphGuid, OriginalGuid);
+	const FCortexCommandResult Applied = Handler.Execute(
+		TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	TestFalse(TEXT("old prepared graph identity refused"), Applied.bSuccess);
+	TestEqual(TEXT("stale precondition reported"), Applied.ErrorCode, CortexErrorCodes::StalePrecondition);
+	TestTrue(TEXT("replacement survives"), BP->FunctionGraphs.Contains(Replacement));
+	MarkFixtureGarbage(BP);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphCascadeSetChangedTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.CascadeSetChanged",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphCascadeSetChangedTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_CascadeStale");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	UEdGraph* Graph = BP->UbergraphPages[0];
+	UK2Node_CustomEvent* EventA = NewObject<UK2Node_CustomEvent>(Graph);
+	EventA->CreateNewGuid(); EventA->CustomFunctionName = TEXT("EventA"); Graph->AddNode(EventA, false, false); EventA->AllocateDefaultPins();
+	UK2Node_CustomEvent* EventB = NewObject<UK2Node_CustomEvent>(Graph);
+	EventB->CreateNewGuid(); EventB->CustomFunctionName = TEXT("EventB"); Graph->AddNode(EventB, false, false); EventB->AllocateDefaultPins();
+	UK2Node_CallFunction* Call = NewObject<UK2Node_CallFunction>(Graph);
+	Call->CreateNewGuid(); Call->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("PrintString")));
+	Graph->AddNode(Call, false, false); Call->AllocateDefaultPins();
+	UEdGraphPin* ExecInput = FindPin(Call, EGPD_Input, UEdGraphSchema_K2::PC_Exec);
+	FindPin(EventA, EGPD_Output, UEdGraphSchema_K2::PC_Exec)->MakeLinkTo(ExecInput);
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("EventA"), false, true);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	TestTrue(TEXT("cascade preview succeeds"), Preview.bSuccess);
+	if (!Preview.bSuccess || !Preview.Data.IsValid()) return false;
+	FindPin(EventB, EGPD_Output, UEdGraphSchema_K2::PC_Exec)->MakeLinkTo(ExecInput);
+	const FCortexCommandResult Applied = Handler.Execute(
+		TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	TestFalse(TEXT("changed cascade set refused"), Applied.bSuccess);
+	TestEqual(TEXT("stale precondition reported"), Applied.ErrorCode, CortexErrorCodes::StalePrecondition);
+	TestTrue(TEXT("original event survives"), Graph->Nodes.Contains(EventA));
+	TestTrue(TEXT("new external event survives"), Graph->Nodes.Contains(EventB));
+	TestTrue(TEXT("shared call survives"), Graph->Nodes.Contains(Call));
 	MarkFixtureGarbage(BP);
 	return true;
 }

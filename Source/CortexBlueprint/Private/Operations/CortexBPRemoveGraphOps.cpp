@@ -11,6 +11,14 @@
 #include "EdGraphSchema_K2.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_Knot.h"
+#include "CortexAssetMutationGuard.h"
+#include "ScopedTransaction.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "Logging/TokenizedMessage.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "IO/IoHash.h"
 #include "Misc/Char.h"
@@ -526,6 +534,199 @@ void BuildValidationHash(FCortexBPRemoveGraphPrepared& Prepared)
 	Prepared.ValidationHash = LexToString(FIoHash::HashBuffer(
 		reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length()));
 }
+
+struct FRemoveGraphJournal
+{
+	bool bPackageWasDirty = false;
+	EBlueprintStatus StatusBefore = BS_Unknown;
+	FString GraphFingerprintBefore;
+	FString GeneratedStateBefore;
+	TStrongObjectPtr<UBlueprint> SnapshotBlueprint;
+	FGuid TargetGraphGuid;
+	FString GraphType;
+	FString GraphName;
+	TStrongObjectPtr<UEdGraph> OriginalGraph;
+	int32 GraphIndex = INDEX_NONE;
+
+	struct FBoundaryLink
+	{
+		FGuid SourceNodeGuid;
+		FName SourcePin;
+		FGuid TargetNodeGuid;
+		FName TargetPin;
+	};
+	TArray<FGuid> PreservedGraphGuids;
+	TArray<FGuid> RemovedNodeGuids;
+	TArray<FGuid> PreservedNodeGuids;
+	TStrongObjectPtr<UEdGraph> SnapshotGraph;
+	TArray<FBoundaryLink> BoundaryLinks;
+};
+
+UEdGraph* FindGraphByGuid(UBlueprint* Blueprint, const FGuid& Guid, FString* OutType = nullptr, int32* OutIndex = nullptr)
+{
+	auto FindIn = [&](auto& Graphs, const TCHAR* Type, int32 StartIndex) -> UEdGraph*
+	{
+		for (int32 Index = StartIndex; Index < Graphs.Num(); ++Index)
+		{
+			UEdGraph* Graph = Graphs[Index];
+			if (Graph && Graph->GraphGuid == Guid)
+			{
+				if (OutType) *OutType = Type;
+				if (OutIndex) *OutIndex = Index;
+				return Graph;
+			}
+		}
+		return nullptr;
+	};
+	if (UEdGraph* Graph = FindIn(Blueprint->FunctionGraphs, TEXT("Function"), 0)) return Graph;
+	if (UEdGraph* Graph = FindIn(Blueprint->MacroGraphs, TEXT("Macro"), 0)) return Graph;
+	return FindIn(Blueprint->UbergraphPages, TEXT("EventGraph"), 0);
+}
+UEdGraphNode* FindNodeByGuid(UEdGraph* Graph, const FGuid& Guid)
+{
+	if (!Graph) return nullptr;
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (Node && Node->NodeGuid == Guid) return Node;
+	}
+	return nullptr;
+}
+
+bool CaptureJournal(UBlueprint* Blueprint, const FCortexBPRemoveGraphPrepared& Prepared, FRemoveGraphJournal& Journal)
+{
+	Journal.bPackageWasDirty = Blueprint->GetOutermost()->IsDirty();
+	Journal.StatusBefore = Blueprint->Status;
+	Journal.GraphFingerprintBefore = Prepared.FingerprintBefore->GetStringField(TEXT("graph_authoring_hash"));
+	if (Prepared.bCompile) Journal.GeneratedStateBefore = FCortexGraphFingerprint::ComputeGeneratedStateDigest(Blueprint);
+	Journal.SnapshotBlueprint = TStrongObjectPtr<UBlueprint>(NewObject<UBlueprint>(GetTransientPackage()));
+	if (!Journal.SnapshotBlueprint.IsValid()) return false;
+	const FString Kind = Prepared.Target->GetStringField(TEXT("kind"));
+	if (Kind == TEXT("graph"))
+	{
+		FGuid Guid;
+		if (!FGuid::Parse(Prepared.Target->GetStringField(TEXT("graph_guid")), Guid)) return false;
+		Journal.TargetGraphGuid = Guid;
+		for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+			if (Graph && Graph->GraphGuid != Guid) Journal.PreservedGraphGuids.Add(Graph->GraphGuid);
+		for (UEdGraph* Graph : Blueprint->MacroGraphs)
+			if (Graph && Graph->GraphGuid != Guid) Journal.PreservedGraphGuids.Add(Graph->GraphGuid);
+		for (int32 Index = 0; Index < Blueprint->UbergraphPages.Num(); ++Index)
+			if (Blueprint->UbergraphPages[Index] && Blueprint->UbergraphPages[Index]->GraphGuid != Guid)
+				Journal.PreservedGraphGuids.Add(Blueprint->UbergraphPages[Index]->GraphGuid);
+		UEdGraph* Target = FindGraphByGuid(Blueprint, Guid, &Journal.GraphType, &Journal.GraphIndex);
+		if (!Target) return false;
+		Journal.OriginalGraph = TStrongObjectPtr<UEdGraph>(Target);
+		Journal.GraphName = Target->GetName();
+		Journal.SnapshotGraph = TStrongObjectPtr<UEdGraph>(
+			DuplicateObject<UEdGraph>(Target, Journal.SnapshotBlueprint.Get(), Target->GetFName()));
+		return Journal.SnapshotGraph.IsValid();
+	}
+	FGuid GraphGuid;
+	if (!FGuid::Parse(Prepared.Target->GetStringField(TEXT("graph_guid")), GraphGuid)) return false;
+	UEdGraph* Graph = FindGraphByGuid(Blueprint, GraphGuid);
+	if (!Graph) return false;
+	Journal.TargetGraphGuid = GraphGuid;
+	Journal.SnapshotGraph = TStrongObjectPtr<UEdGraph>(
+		NewObject<UEdGraph>(Journal.SnapshotBlueprint.Get(), NAME_None, RF_Transient));
+	TSet<FGuid> Removal;
+	const TArray<TSharedPtr<FJsonValue>>& NodeGuids = Prepared.Deletion->GetArrayField(TEXT("node_guids"));
+	for (const TSharedPtr<FJsonValue>& Value : NodeGuids)
+	{
+		FGuid Guid;
+		if (!FGuid::Parse(Value->AsString(), Guid)) return false;
+		UEdGraphNode* Node = FindNodeByGuid(Graph, Guid);
+		if (!Node) return false;
+		Removal.Add(Guid);
+		Journal.RemovedNodeGuids.Add(Guid);
+		UEdGraphNode* SnapshotNode = DuplicateObject<UEdGraphNode>(Node, Journal.SnapshotGraph.Get(), Node->GetFName());
+		if (!SnapshotNode) return false;
+		Journal.SnapshotGraph->AddNode(SnapshotNode, false, false);
+	}
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (Node && !Removal.Contains(Node->NodeGuid)) Journal.PreservedNodeGuids.Add(Node->NodeGuid);
+	}
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (!Node || !Removal.Contains(Node->NodeGuid)) continue;
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin) continue;
+			for (UEdGraphPin* Linked : Pin->LinkedTo)
+			{
+				UEdGraphNode* Other = Linked ? Linked->GetOwningNode() : nullptr;
+				if (!Other) continue;
+				if (Removal.Contains(Other->NodeGuid) && Node->NodeGuid.ToString() > Other->NodeGuid.ToString()) continue;
+				Journal.BoundaryLinks.Add({Node->NodeGuid, Pin->PinName, Other->NodeGuid, Linked->PinName});
+			}
+		}
+	}
+	return true;
+}
+
+bool RestoreJournal(UBlueprint* Blueprint, FRemoveGraphJournal& Journal)
+{
+	if (FindGraphByGuid(Blueprint, Journal.TargetGraphGuid)) return true;
+	if (Journal.SnapshotGraph.IsValid() && Journal.SnapshotGraph->GetOuter() == Journal.SnapshotBlueprint.Get()
+		&& !Journal.GraphType.IsEmpty())
+	{
+		if (Journal.OriginalGraph.IsValid() && Journal.OriginalGraph->GetOuter() == Blueprint
+			&& !Journal.OriginalGraph->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional))
+		{
+			return false;
+		}
+		UEdGraph* Restored = Journal.SnapshotGraph.Get();
+		if (!Restored->Rename(*Journal.GraphName, Blueprint, REN_DontCreateRedirectors | REN_NonTransactional))
+			return false;
+		if (Journal.GraphType == TEXT("Function"))
+		{
+			Blueprint->FunctionGraphs.Insert(Restored, FMath::Clamp(Journal.GraphIndex, 0, Blueprint->FunctionGraphs.Num()));
+		}
+		else if (Journal.GraphType == TEXT("Macro"))
+		{
+			Blueprint->MacroGraphs.Insert(Restored, FMath::Clamp(Journal.GraphIndex, 0, Blueprint->MacroGraphs.Num()));
+		}
+		else
+		{
+			Blueprint->UbergraphPages.Insert(Restored, FMath::Clamp(Journal.GraphIndex, 1, Blueprint->UbergraphPages.Num()));
+		}
+		return true;
+	}
+	UEdGraph* Graph = FindGraphByGuid(Blueprint, Journal.TargetGraphGuid);
+	if (!Graph) return false;
+	for (FGuid Guid : Journal.RemovedNodeGuids)
+	{
+		if (FindNodeByGuid(Graph, Guid)) continue;
+		UEdGraphNode* Snapshot = FindNodeByGuid(Journal.SnapshotGraph.Get(), Guid);
+		if (!Snapshot) return false;
+		UEdGraphNode* Restored = DuplicateObject<UEdGraphNode>(Snapshot, Graph, Snapshot->GetFName());
+		if (!Restored) return false;
+		Graph->AddNode(Restored, false, false);
+	}
+	const UEdGraphSchema* Schema = Graph->GetSchema();
+	for (const FRemoveGraphJournal::FBoundaryLink& Link : Journal.BoundaryLinks)
+	{
+		UEdGraphNode* Source = FindNodeByGuid(Graph, Link.SourceNodeGuid);
+		UEdGraphNode* Target = FindNodeByGuid(Graph, Link.TargetNodeGuid);
+		UEdGraphPin* SourcePin = Source ? Source->FindPin(Link.SourcePin) : nullptr;
+		UEdGraphPin* TargetPin = Target ? Target->FindPin(Link.TargetPin) : nullptr;
+		if (!SourcePin || !TargetPin || !Schema) return false;
+		if (!SourcePin->LinkedTo.Contains(TargetPin) && !Schema->TryCreateConnection(SourcePin, TargetPin)) return false;
+	}
+	return true;
+}
+
+void CollectCompilerDiagnostics(const FCompilerResultsLog& Log, TArray<FString>& OutDiagnostics)
+{
+	for (const TSharedRef<FTokenizedMessage>& Message : Log.Messages)
+	{
+		const EMessageSeverity::Type Severity = Message->GetSeverity();
+		if (Severity == EMessageSeverity::Error || Severity == EMessageSeverity::Warning)
+		{
+			OutDiagnostics.Add(Message->ToText().ToString());
+		}
+	}
+}
 }
 
 FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObject>& Params)
@@ -593,6 +794,10 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 	{
 		return InvalidOperation(TEXT("save=true requires compile=true"));
 	}
+	if (!Prepared.bDryRun && Prepared.bSave)
+	{
+		return InvalidOperation(TEXT("save=true persistence is not available for this operation"));
+	}
 
 	FString ValidationError;
 	if (!FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(Prepared.AssetPath, ValidationError))
@@ -625,45 +830,204 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 	}
 	BuildValidationHash(Prepared);
 
+	FCortexBPRemoveGraphOutcome Outcome;
+	Outcome.FingerprintBefore = Prepared.FingerprintBefore;
+	Outcome.FingerprintAfter = Prepared.FingerprintBefore;
+	Outcome.bDirtyBefore = bDirtyBefore;
+	Outcome.bDirtyAfter = bDirtyBefore;
+	Outcome.Target = Prepared.Target;
+	Outcome.Deletion = Prepared.Deletion;
 	if (!Prepared.bDryRun)
 	{
-		const bool bHasExpectedFingerprint = ExpectedFingerprint.IsValid();
-		if (!bHasExpectedFingerprint || ExpectedValidationHash.IsEmpty())
+		FString BlockReason;
+		if (FCortexAssetMutationGuard::IsBlocked(Blueprint, BlockReason))
 		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::StalePrecondition,
-				TEXT("Apply requires expected_fingerprint and expected_validation_hash from preview"));
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
 		}
 		const TSharedPtr<FJsonObject> CurrentFingerprint = FCortexGraphFingerprint::Compute(Blueprint);
 		FCortexCommandResult FingerprintError;
+		if (!ExpectedFingerprint.IsValid() || ExpectedValidationHash.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
+				TEXT("Apply requires expected_fingerprint and expected_validation_hash from preview"));
+		}
 		if (!FCortexGraphFingerprint::ValidatePrecondition(ExpectedFingerprint, CurrentFingerprint, FingerprintError))
 		{
 			return FingerprintError;
 		}
 		if (ExpectedValidationHash != Prepared.ValidationHash)
 		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::StalePrecondition,
+			return FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
 				TEXT("expected_validation_hash does not match the current remove_graph plan"));
 		}
-		return InvalidOperation(TEXT("remove_graph apply coordinator is not enabled in this intermediate commit"));
-	}
 
-	FCortexBPRemoveGraphOutcome Outcome;
-	Outcome.bChanged = true;
-	Outcome.FingerprintBefore = Prepared.FingerprintBefore;
-	Outcome.FingerprintAfter = Prepared.FingerprintBefore;
-	Outcome.bDirtyBefore = bDirtyBefore;
-	Outcome.bDirtyAfter = Outcome.bDirtyBefore;
-	Outcome.Target = Prepared.Target;
-	Outcome.Deletion = Prepared.Deletion;
+		FRemoveGraphJournal Journal;
+		if (!CaptureJournal(Blueprint, Prepared, Journal))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("Could not capture exact remove_graph recovery journal"));
+		}
+		TUniquePtr<FScopedTransaction> Transaction = MakeUnique<FScopedTransaction>(
+			FText::FromString(TEXT("Cortex: Remove Blueprint Graph")));
+		UEdGraph* TargetGraph = FindGraphByGuid(Blueprint, Journal.TargetGraphGuid);
+		const FString TargetKind = Prepared.Target->GetStringField(TEXT("kind"));
+		bool bMutationSucceeded = TargetGraph != nullptr;
+		if (bMutationSucceeded && TargetKind == TEXT("graph"))
+		{
+			FBlueprintEditorUtils::RemoveGraph(Blueprint, TargetGraph);
+		}
+		else if (bMutationSucceeded)
+		{
+			const TArray<TSharedPtr<FJsonValue>>& GuidValues = Prepared.Deletion->GetArrayField(TEXT("node_guids"));
+			for (const TSharedPtr<FJsonValue>& Value : GuidValues)
+			{
+				FGuid Guid;
+				FGuid::Parse(Value->AsString(), Guid);
+				UEdGraphNode* Node = FindNodeByGuid(TargetGraph, Guid);
+				if (!Node)
+				{
+					bMutationSucceeded = false;
+					break;
+				}
+				FBlueprintEditorUtils::RemoveNode(Blueprint, Node, true);
+			}
+			if (bMutationSucceeded) FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		}
+		Outcome.ApplyStatus = bMutationSucceeded ? TEXT("applied") : TEXT("failed");
+		Outcome.bChanged = bMutationSucceeded;
+		bool bFailed = !bMutationSucceeded;
+		FString FailurePhase = bMutationSucceeded ? TEXT("") : TEXT("mutation");
+#if WITH_AUTOMATION_TESTS
+		if (!bFailed && RemoveGraphFaultPoint == TEXT("after_mutation"))
+		{
+			bFailed = true;
+			FailurePhase = TEXT("mutation");
+		}
+#endif
+		if (!bFailed && Prepared.bCompile)
+		{
+			FCompilerResultsLog Log;
+			Log.bAnnotateMentionedNodes = false;
+			FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &Log);
+			CollectCompilerDiagnostics(Log, Outcome.Diagnostics);
+			Outcome.CompileStatus = (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings)
+				? TEXT("succeeded") : TEXT("failed");
+#if WITH_AUTOMATION_TESTS
+			if (RemoveGraphFaultPoint == TEXT("compile")) Outcome.CompileStatus = TEXT("failed");
+#endif
+			if (Outcome.CompileStatus != TEXT("succeeded"))
+			{
+				bFailed = true;
+				FailurePhase = TEXT("compile");
+			}
+		}
+		else if (Prepared.bCompile)
+		{
+			Outcome.CompileStatus = TEXT("not_run");
+		}
+		if (!bFailed)
+		{
+			bool bMatched = true;
+			if (TargetKind == TEXT("graph"))
+			{
+				bMatched = FindGraphByGuid(Blueprint, Journal.TargetGraphGuid) == nullptr;
+				for (UEdGraph* Candidate : Blueprint->FunctionGraphs)
+					if (Candidate && Candidate->GraphGuid == Journal.TargetGraphGuid) bMatched = false;
+				for (UEdGraph* Candidate : Blueprint->MacroGraphs)
+					if (Candidate && Candidate->GraphGuid == Journal.TargetGraphGuid) bMatched = false;
+				for (int32 Index = 0; Index < Blueprint->UbergraphPages.Num(); ++Index)
+					if (Blueprint->UbergraphPages[Index] && Blueprint->UbergraphPages[Index]->GraphGuid == Journal.TargetGraphGuid) bMatched = false;
+				for (FGuid Guid : Journal.PreservedGraphGuids)
+					bMatched &= FindGraphByGuid(Blueprint, Guid) != nullptr;
+			}
+			else
+			{
+				UEdGraph* Graph = FindGraphByGuid(Blueprint, Journal.TargetGraphGuid);
+				for (FGuid Guid : Journal.RemovedNodeGuids) bMatched &= FindNodeByGuid(Graph, Guid) == nullptr;
+				for (FGuid Guid : Journal.PreservedNodeGuids) bMatched &= FindNodeByGuid(Graph, Guid) != nullptr;
+				for (const FRemoveGraphJournal::FBoundaryLink& Link : Journal.BoundaryLinks)
+				{
+					if (!Journal.RemovedNodeGuids.Contains(Link.TargetNodeGuid))
+					{
+						UEdGraphNode* Preserved = FindNodeByGuid(Graph, Link.TargetNodeGuid);
+						bMatched &= Preserved && Preserved->FindPin(Link.TargetPin);
+					}
+				}
+			}
+			if (Prepared.bCompile)
+				bMatched &= Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings;
+#if WITH_AUTOMATION_TESTS
+			if (RemoveGraphFaultPoint == TEXT("readback") || RemoveGraphFaultPoint == TEXT("rollback_verify")) bMatched = false;
+#endif
+			Outcome.ReadbackStatus = bMatched ? TEXT("matched") : TEXT("mismatch");
+			if (!bMatched)
+			{
+				bFailed = true;
+				FailurePhase = TEXT("readback");
+			}
+		}
+		if (bFailed)
+		{
+			Transaction->Cancel();
+			bool bRestored = RestoreJournal(Blueprint, Journal);
+			bool bRecoveryCompile = true;
+			if (bRestored && Prepared.bCompile && FailurePhase != TEXT("mutation"))
+			{
+				FCompilerResultsLog RecoveryLog;
+				RecoveryLog.bAnnotateMentionedNodes = false;
+				FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &RecoveryLog);
+				CollectCompilerDiagnostics(RecoveryLog, Outcome.Diagnostics);
+				bRecoveryCompile = Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings;
+			}
+			const TSharedPtr<FJsonObject> RestoredFingerprint = FCortexGraphFingerprint::Compute(Blueprint);
+			const bool bAuthoringMatches = RestoredFingerprint.IsValid()
+				&& RestoredFingerprint->GetStringField(TEXT("graph_authoring_hash")) == Journal.GraphFingerprintBefore;
+			const bool bGeneratedMatches = !Prepared.bCompile || (bRecoveryCompile
+				&& FCortexGraphFingerprint::ComputeGeneratedStateDigest(Blueprint) == Journal.GeneratedStateBefore);
+			bool bVerified = bRestored && bAuthoringMatches && bGeneratedMatches;
+#if WITH_AUTOMATION_TESTS
+			if (RemoveGraphFaultPoint == TEXT("rollback_verify")) bVerified = false;
+#endif
+			if (bVerified)
+			{
+				Blueprint->GetOutermost()->SetDirtyFlag(Journal.bPackageWasDirty);
+				Blueprint->Status = Journal.StatusBefore;
+				Outcome.RollbackStatus = TEXT("restored");
+			}
+			else
+			{
+				Blueprint->GetOutermost()->SetDirtyFlag(true);
+				FCortexAssetMutationGuard::Block(Blueprint, TEXT("remove_graph rollback verification failed"));
+				Outcome.RollbackStatus = TEXT("unverified");
+				Outcome.bBlocked = true;
+			}
+			Outcome.CompileStatus = FailurePhase == TEXT("compile") ? TEXT("failed") : Outcome.CompileStatus;
+			Outcome.bDirtyAfter = Blueprint->GetOutermost()->IsDirty();
+			FCortexCommandResult Error = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("remove_graph %s failed"), *FailurePhase));
+			Error.AddContext(TEXT("apply_status"), Outcome.ApplyStatus);
+			Error.AddContext(TEXT("compile_status"), Outcome.CompileStatus);
+			Error.AddContext(TEXT("readback_status"), Outcome.ReadbackStatus);
+			Error.AddContext(TEXT("rollback_status"), Outcome.RollbackStatus);
+			Error.AddContext(TEXT("diagnostics"), Outcome.Diagnostics);
+			Error.ErrorDetails->SetBoolField(TEXT("blocked"), Outcome.bBlocked);
+			Error.ErrorDetails->SetBoolField(TEXT("rollback_content_restored"), bRestored);
+			Error.ErrorDetails->SetBoolField(TEXT("rollback_authoring_matches"), bAuthoringMatches);
+			Error.ErrorDetails->SetBoolField(TEXT("rollback_generated_matches"), bGeneratedMatches);
+			return Error;
+		}
+		Outcome.FingerprintAfter = FCortexGraphFingerprint::Compute(Blueprint);
+		Outcome.CompileStatus = Prepared.bCompile ? TEXT("succeeded") : TEXT("not_requested");
+		Outcome.bDirtyAfter = Blueprint->GetOutermost()->IsDirty();
+	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), Prepared.AssetPath);
 	Data->SetObjectField(TEXT("removed"), Removed);
 	Data->SetArrayField(TEXT("removed_nodes"), RemovedNodes);
-	Data->SetBoolField(TEXT("dry_run"), true);
-	Data->SetBoolField(TEXT("compiled"), false);
+	Data->SetBoolField(TEXT("dry_run"), Prepared.bDryRun);
+	Data->SetBoolField(TEXT("compiled"), Prepared.bCompile && !Prepared.bDryRun);
 	Data->SetStringField(TEXT("apply_status"), Outcome.ApplyStatus);
 	Data->SetStringField(TEXT("compile_status"), Outcome.CompileStatus);
 	Data->SetStringField(TEXT("readback_status"), Outcome.ReadbackStatus);
@@ -678,6 +1042,12 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 	Data->SetObjectField(TEXT("fingerprint_after"), Outcome.FingerprintAfter);
 	Data->SetObjectField(TEXT("target"), Outcome.Target);
 	Data->SetObjectField(TEXT("deletion"), Outcome.Deletion);
+	TArray<TSharedPtr<FJsonValue>> Diagnostics;
+	for (const FString& Diagnostic : Outcome.Diagnostics)
+	{
+		Diagnostics.Add(MakeShared<FJsonValueString>(Diagnostic));
+	}
+	Data->SetArrayField(TEXT("diagnostics"), Diagnostics);
 	Data->SetStringField(TEXT("validation_hash"), Prepared.ValidationHash);
 	return FCortexCommandRouter::Success(Data);
 }
