@@ -191,6 +191,7 @@ static void MarkFixtureGarbage(UBlueprint* BP)
 		BP->GetOutermost()->MarkAsGarbage();
 	}
 }
+
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -804,12 +805,22 @@ bool FCortexBPRemoveGraphTemplateRecoveryTest::RunTest(const FString&)
 		TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
 	FCortexBPRemoveGraphOps::ClearFaultPointForTesting();
 	TestFalse(TEXT("fault triggers journal recovery"), Applied.bSuccess);
-	TestTrue(TEXT("timeline template restored"), BP->Timelines.Contains(Timeline));
-	TestTrue(TEXT("timeline template restored to its owner"), Timeline->GetOuter() == TimelineOuter);
+	TestTrue(TEXT("recovery reports details"), Applied.ErrorDetails.IsValid());
+	if (Applied.ErrorDetails.IsValid())
+	{
+		TestEqual(TEXT("timeline rollback is verified"),
+			Applied.ErrorDetails->GetStringField(TEXT("rollback_status")), FString(TEXT("restored")));
+		TestFalse(TEXT("verified timeline rollback reports no remaining changes"),
+			Applied.ErrorDetails->GetBoolField(TEXT("changed")));
+	}
+	TestTrue(TEXT("timeline remains live after rollback"), IsValid(Timeline));
+	TestFalse(TEXT("recovered timeline remains serializable"), Timeline->HasAnyFlags(RF_Transient));
+	TestTrue(TEXT("recovered timeline package saves"), SaveFixture(BP));
 	TestTrue(TEXT("component template restored"),
 		ComponentTemplate && BP->ComponentTemplates.Contains(ComponentTemplate));
 	TestNotNull(TEXT("AddComponent node restored"), FindNodeByGuid(Graph, ComponentNodeGuid));
 	MarkFixtureGarbage(BP);
+	IFileManager::Get().Delete(*PackageFilename(BP->GetOutermost()), false, true);
 	return true;
 }
 
@@ -1285,19 +1296,24 @@ bool FCortexBPRemoveGraphCompositeCascadeRecoveryTest::RunTest(const FString&)
 	if (Applied.ErrorDetails.IsValid())
 		TestEqual(TEXT("composite cascade rollback is verified"),
 			Applied.ErrorDetails->GetStringField(TEXT("rollback_status")), FString(TEXT("restored")));
+		TestFalse(TEXT("verified composite rollback reports no remaining changes"),
+			Applied.ErrorDetails->GetBoolField(TEXT("changed")));
 	TestEqual(TEXT("compile=false suppresses structural Blueprint change"),
 		ChangedNotifications, 0);
 	UK2Node_Composite* Restored = Cast<UK2Node_Composite>(FindNodeByGuid(HostGraph, CompositeGuid));
 	TestTrue(TEXT("composite node GUID identity survives rollback"),
 		Restored && Restored->NodeGuid == CompositeGuid);
 	TestTrue(TEXT("bound graph identity survives rollback"), Restored && Restored->BoundGraph == BoundGraph);
+	TestFalse(TEXT("restored bound graph remains serializable"), BoundGraph->HasAnyFlags(RF_Transient));
 	TestTrue(TEXT("composite entry tunnel is rebound"),
 		Restored && Restored->InputSinkNode && Restored->InputSinkNode->OutputSourceNode == Restored);
 	TestTrue(TEXT("bound graph is back in host SubGraphs"), HostGraph->SubGraphs.Contains(BoundGraph));
 	TestTrue(TEXT("bound graph content survives rollback"), BoundGraph->Nodes.Contains(Content));
 	TestEqual(TEXT("bound graph content is unchanged"), Content->NodeComment,
 		FString(TEXT("composite bound-graph content")));
+	TestTrue(TEXT("recovered composite package saves"), SaveFixture(BP));
 	MarkFixtureGarbage(BP);
+	IFileManager::Get().Delete(*PackageFilename(BP->GetOutermost()), false, true);
 	return true;
 }
 
@@ -1341,6 +1357,8 @@ bool FCortexBPRemoveGraphCompositeWholeGraphRecoveryTest::RunTest(const FString&
 	if (Applied.ErrorDetails.IsValid())
 		TestEqual(TEXT("whole-graph rollback is verified"),
 			Applied.ErrorDetails->GetStringField(TEXT("rollback_status")), FString(TEXT("restored")));
+		TestFalse(TEXT("verified whole-graph rollback reports no remaining changes"),
+			Applied.ErrorDetails->GetBoolField(TEXT("changed")));
 	UEdGraph* RestoredHost = BP->UbergraphPages.FindByPredicate(
 		[](const UEdGraph* Candidate) { return Candidate && Candidate->GetName() == TEXT("GraphWithComposite"); })
 		? *BP->UbergraphPages.FindByPredicate(
@@ -1350,6 +1368,7 @@ bool FCortexBPRemoveGraphCompositeWholeGraphRecoveryTest::RunTest(const FString&
 	TestTrue(TEXT("composite node GUID identity survives rollback"),
 		Restored && Restored->NodeGuid == CompositeGuid);
 	TestTrue(TEXT("bound graph identity survives rollback"), Restored && Restored->BoundGraph == BoundGraph);
+	TestFalse(TEXT("restored bound graph remains serializable"), BoundGraph->HasAnyFlags(RF_Transient));
 	TestTrue(TEXT("composite entry tunnel is rebound"),
 		Restored && Restored->InputSinkNode && Restored->InputSinkNode->OutputSourceNode == Restored);
 	TestTrue(TEXT("bound graph is back in host SubGraphs"), RestoredHost && RestoredHost->SubGraphs.Contains(BoundGraph));
@@ -1357,6 +1376,7 @@ bool FCortexBPRemoveGraphCompositeWholeGraphRecoveryTest::RunTest(const FString&
 	TestEqual(TEXT("bound graph content is unchanged"), Content->NodeComment,
 		FString(TEXT("whole-graph composite content")));
 	MarkFixtureGarbage(BP);
+	IFileManager::Get().Delete(*PackageFilename(BP->GetOutermost()), false, true);
 	return true;
 }
 

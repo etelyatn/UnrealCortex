@@ -600,6 +600,8 @@ struct FRemoveGraphJournal
 		TStrongObjectPtr<UEdGraph> BoundGraph;
 		FName OriginalName;
 		int32 OriginalSubGraphIndex = INDEX_NONE;
+		EObjectFlags OriginalPersistentFlags = RF_NoFlags;
+		bool bWasRooted = false;
 	};
 	TArray<FGuid> PreservedGraphGuids;
 	TArray<FGuid> RemovedNodeGuids;
@@ -679,6 +681,8 @@ bool CaptureCompositeBoundGraph(
 	Saved.CompositeNodeGuid = Composite->NodeGuid;
 	Saved.BoundGraph = TStrongObjectPtr<UEdGraph>(BoundGraph);
 	Saved.OriginalName = BoundGraph->GetFName();
+	Saved.OriginalPersistentFlags = BoundGraph->GetFlags() & (RF_Public | RF_Standalone | RF_Transient);
+	Saved.bWasRooted = BoundGraph->IsRooted();
 	Saved.OriginalSubGraphIndex = SubGraphIndex;
 	for (UEdGraphNode* ChildNode : BoundGraph->Nodes)
 	{
@@ -746,6 +750,16 @@ bool RestoreCompositeBoundGraphs(UBlueprint* Blueprint, FRemoveGraphJournal& Jou
 				REN_DontCreateRedirectors | REN_NonTransactional))
 			return false;
 		Composite->BoundGraph = BoundGraph;
+		BoundGraph->ClearFlags(RF_Public | RF_Standalone | RF_Transient);
+		BoundGraph->SetFlags(Saved.OriginalPersistentFlags);
+		if (Saved.bWasRooted)
+		{
+			BoundGraph->AddToRoot();
+		}
+		else
+		{
+			BoundGraph->RemoveFromRoot();
+		}
 		Composite->InputSinkNode = nullptr;
 		Composite->OutputSourceNode = nullptr;
 		for (UEdGraphNode* Node : BoundGraph->Nodes)
@@ -766,6 +780,10 @@ bool RestoreCompositeBoundGraphs(UBlueprint* Blueprint, FRemoveGraphJournal& Jou
 		HostGraph->SubGraphs.Remove(BoundGraph);
 		HostGraph->SubGraphs.Insert(
 			BoundGraph, FMath::Clamp(Saved.OriginalSubGraphIndex, 0, HostGraph->SubGraphs.Num()));
+		if ((BoundGraph->GetFlags() & (RF_Public | RF_Standalone | RF_Transient))
+				!= Saved.OriginalPersistentFlags
+			|| BoundGraph->IsRooted() != Saved.bWasRooted)
+			return false;
 	}
 	return true;
 }
@@ -999,6 +1017,8 @@ bool RestoreBlueprintOwnedState(
 			&& !Timeline->Rename(*Saved.OriginalName.ToString(), Saved.OriginalOuter.Get(),
 				REN_DontCreateRedirectors | REN_NonTransactional))
 			return false;
+		Timeline->ClearGarbage();
+		if (!IsValid(Timeline)) return false;
 		Blueprint->Timelines.Add(Timeline);
 	}
 	Blueprint->ComponentTemplates.Reset();
