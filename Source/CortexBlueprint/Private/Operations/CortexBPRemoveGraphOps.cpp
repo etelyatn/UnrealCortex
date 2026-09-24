@@ -10,6 +10,7 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_CustomEvent.h"
+#include "K2Node_MacroInstance.h"
 #include "K2Node_Knot.h"
 #include "CortexAssetMutationGuard.h"
 #include "ScopedTransaction.h"
@@ -555,11 +556,38 @@ struct FRemoveGraphJournal
 		FGuid TargetNodeGuid;
 		FName TargetPin;
 	};
+	struct FRemovedNode
+	{
+		FGuid Guid;
+		int32 OriginalIndex = INDEX_NONE;
+		TStrongObjectPtr<UEdGraphNode> OriginalNode;
+	};
+	struct FMacroInstance
+	{
+		FGuid HostGraphGuid;
+		FGuid NodeGuid;
+		TStrongObjectPtr<UEdGraphNode> Snapshot;
+	};
+	struct FMacroLink
+	{
+		FGuid HostGraphGuid;
+		FGuid SourceNodeGuid;
+		FName SourcePin;
+		FGuid TargetNodeGuid;
+		FName TargetPin;
+	};
 	TArray<FGuid> PreservedGraphGuids;
 	TArray<FGuid> RemovedNodeGuids;
+	TArray<FRemovedNode> RemovedNodes;
 	TArray<FGuid> PreservedNodeGuids;
 	TStrongObjectPtr<UEdGraph> SnapshotGraph;
 	TArray<FBoundaryLink> BoundaryLinks;
+	TArray<FMacroInstance> ExternalMacroInstances;
+	TArray<FMacroLink> ExternalMacroLinks;
+	TArray<FEditedDocumentInfo> LastEditedDocuments;
+	TArray<TObjectPtr<UEdGraph>> DelegateSignatureGraphs;
+	TArray<FBPInterfaceDescription> ImplementedInterfaces;
+	TMap<FGuid, FEditedDocumentInfo> Bookmarks;
 };
 
 UEdGraph* FindGraphByGuid(UBlueprint* Blueprint, const FGuid& Guid, FString* OutType = nullptr, int32* OutIndex = nullptr)
@@ -592,12 +620,96 @@ UEdGraphNode* FindNodeByGuid(UEdGraph* Graph, const FGuid& Guid)
 	return nullptr;
 }
 
+bool CaptureExternalMacroInstances(UBlueprint* Blueprint, UEdGraph* Target, FRemoveGraphJournal& Journal)
+{
+	TArray<UEdGraph*> Graphs = Blueprint->FunctionGraphs;
+	Graphs.Append(Blueprint->MacroGraphs);
+	Graphs.Append(Blueprint->UbergraphPages);
+	TSet<FGuid> InstanceGuids;
+	for (UEdGraph* HostGraph : Graphs)
+	{
+		if (!HostGraph || HostGraph == Target) continue;
+		for (UEdGraphNode* Node : HostGraph->Nodes)
+		{
+			UK2Node_MacroInstance* Instance = Cast<UK2Node_MacroInstance>(Node);
+			if (!Instance || Instance->GetMacroGraph() != Target) continue;
+			FRemoveGraphJournal::FMacroInstance& Saved = Journal.ExternalMacroInstances.AddDefaulted_GetRef();
+			Saved.HostGraphGuid = HostGraph->GraphGuid;
+			Saved.NodeGuid = Instance->NodeGuid;
+			Saved.Snapshot = TStrongObjectPtr<UEdGraphNode>(
+				DuplicateObject<UEdGraphNode>(Instance, Journal.SnapshotBlueprint.Get(), Instance->GetFName()));
+			if (!Saved.Snapshot.IsValid()) return false;
+			for (UEdGraphPin* Pin : Saved.Snapshot->Pins)
+				if (Pin) Pin->LinkedTo.Reset();
+			InstanceGuids.Add(Instance->NodeGuid);
+		}
+	}
+	for (UEdGraph* HostGraph : Graphs)
+	{
+		if (!HostGraph || HostGraph == Target) continue;
+		for (UEdGraphNode* Node : HostGraph->Nodes)
+		{
+			if (!Node || !InstanceGuids.Contains(Node->NodeGuid)) continue;
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (!Pin) continue;
+				for (UEdGraphPin* Linked : Pin->LinkedTo)
+				{
+					UEdGraphNode* Other = Linked ? Linked->GetOwningNode() : nullptr;
+					if (!Other) return false;
+					if (InstanceGuids.Contains(Other->NodeGuid)
+						&& Node->NodeGuid.ToString() > Other->NodeGuid.ToString()) continue;
+					Journal.ExternalMacroLinks.Add({
+						HostGraph->GraphGuid, Node->NodeGuid, Pin->PinName,
+						Other->NodeGuid, Linked->PinName});
+				}
+			}
+		}
+	}
+	return true;
+}
+
+bool RestoreExternalMacroInstances(UBlueprint* Blueprint, FRemoveGraphJournal& Journal, UEdGraph* RestoredMacro)
+{
+	for (FRemoveGraphJournal::FMacroInstance& Saved : Journal.ExternalMacroInstances)
+	{
+		UEdGraph* HostGraph = FindGraphByGuid(Blueprint, Saved.HostGraphGuid);
+		if (!HostGraph) return false;
+		UEdGraphNode* Node = FindNodeByGuid(HostGraph, Saved.NodeGuid);
+		if (!Node)
+		{
+			if (!Saved.Snapshot.IsValid()) return false;
+			Node = DuplicateObject<UEdGraphNode>(Saved.Snapshot.Get(), HostGraph, Saved.Snapshot->GetFName());
+			if (!Node) return false;
+			HostGraph->AddNode(Node, false, false);
+		}
+		UK2Node_MacroInstance* Instance = Cast<UK2Node_MacroInstance>(Node);
+		if (!Instance) return false;
+		Instance->SetMacroGraph(RestoredMacro);
+	}
+	for (const FRemoveGraphJournal::FMacroLink& Link : Journal.ExternalMacroLinks)
+	{
+		UEdGraph* HostGraph = FindGraphByGuid(Blueprint, Link.HostGraphGuid);
+		UEdGraphNode* Source = FindNodeByGuid(HostGraph, Link.SourceNodeGuid);
+		UEdGraphNode* Target = FindNodeByGuid(HostGraph, Link.TargetNodeGuid);
+		UEdGraphPin* SourcePin = Source ? Source->FindPin(Link.SourcePin) : nullptr;
+		UEdGraphPin* TargetPin = Target ? Target->FindPin(Link.TargetPin) : nullptr;
+		if (!SourcePin || !TargetPin) return false;
+		if (!SourcePin->LinkedTo.Contains(TargetPin)) SourcePin->MakeLinkTo(TargetPin);
+	}
+	return true;
+}
+
 bool CaptureJournal(UBlueprint* Blueprint, const FCortexBPRemoveGraphPrepared& Prepared, FRemoveGraphJournal& Journal)
 {
 	Journal.bPackageWasDirty = Blueprint->GetOutermost()->IsDirty();
 	Journal.StatusBefore = Blueprint->Status;
 	Journal.GraphFingerprintBefore = Prepared.FingerprintBefore->GetStringField(TEXT("graph_authoring_hash"));
 	if (Prepared.bCompile) Journal.GeneratedStateBefore = FCortexGraphFingerprint::ComputeGeneratedStateDigest(Blueprint);
+	Journal.LastEditedDocuments = Blueprint->LastEditedDocuments;
+	Journal.DelegateSignatureGraphs = Blueprint->DelegateSignatureGraphs;
+	Journal.ImplementedInterfaces = Blueprint->ImplementedInterfaces;
+	Journal.Bookmarks = Blueprint->Bookmarks;
 	Journal.SnapshotBlueprint = TStrongObjectPtr<UBlueprint>(NewObject<UBlueprint>(GetTransientPackage()));
 	if (!Journal.SnapshotBlueprint.IsValid()) return false;
 	const FString Kind = Prepared.Target->GetStringField(TEXT("kind"));
@@ -619,8 +731,10 @@ bool CaptureJournal(UBlueprint* Blueprint, const FCortexBPRemoveGraphPrepared& P
 		Journal.GraphName = Target->GetName();
 		Journal.SnapshotGraph = TStrongObjectPtr<UEdGraph>(
 			DuplicateObject<UEdGraph>(Target, Journal.SnapshotBlueprint.Get(), Target->GetFName()));
-		return Journal.SnapshotGraph.IsValid();
+		if (!Journal.SnapshotGraph.IsValid()) return false;
+		return Journal.GraphType != TEXT("Macro") || CaptureExternalMacroInstances(Blueprint, Target, Journal);
 	}
+
 	FGuid GraphGuid;
 	if (!FGuid::Parse(Prepared.Target->GetStringField(TEXT("graph_guid")), GraphGuid)) return false;
 	UEdGraph* Graph = FindGraphByGuid(Blueprint, GraphGuid);
@@ -638,8 +752,14 @@ bool CaptureJournal(UBlueprint* Blueprint, const FCortexBPRemoveGraphPrepared& P
 		if (!Node) return false;
 		Removal.Add(Guid);
 		Journal.RemovedNodeGuids.Add(Guid);
+		FRemoveGraphJournal::FRemovedNode& Saved = Journal.RemovedNodes.AddDefaulted_GetRef();
+		Saved.Guid = Guid;
+		Saved.OriginalIndex = Graph->Nodes.IndexOfByKey(Node);
+		Saved.OriginalNode = TStrongObjectPtr<UEdGraphNode>(Node);
 		UEdGraphNode* SnapshotNode = DuplicateObject<UEdGraphNode>(Node, Journal.SnapshotGraph.Get(), Node->GetFName());
 		if (!SnapshotNode) return false;
+		for (UEdGraphPin* Pin : SnapshotNode->Pins)
+			if (Pin) Pin->LinkedTo.Reset();
 		Journal.SnapshotGraph->AddNode(SnapshotNode, false, false);
 	}
 	for (UEdGraphNode* Node : Graph->Nodes)
@@ -666,10 +786,11 @@ bool CaptureJournal(UBlueprint* Blueprint, const FCortexBPRemoveGraphPrepared& P
 
 bool RestoreJournal(UBlueprint* Blueprint, FRemoveGraphJournal& Journal)
 {
-	if (FindGraphByGuid(Blueprint, Journal.TargetGraphGuid)) return true;
-	if (Journal.SnapshotGraph.IsValid() && Journal.SnapshotGraph->GetOuter() == Journal.SnapshotBlueprint.Get()
-		&& !Journal.GraphType.IsEmpty())
+	if (!Journal.GraphType.IsEmpty())
 	{
+		if (FindGraphByGuid(Blueprint, Journal.TargetGraphGuid)) return true;
+		if (!Journal.SnapshotGraph.IsValid() || Journal.SnapshotGraph->GetOuter() != Journal.SnapshotBlueprint.Get())
+			return false;
 		if (Journal.OriginalGraph.IsValid() && Journal.OriginalGraph->GetOuter() == Blueprint
 			&& !Journal.OriginalGraph->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional))
 		{
@@ -690,28 +811,43 @@ bool RestoreJournal(UBlueprint* Blueprint, FRemoveGraphJournal& Journal)
 		{
 			Blueprint->UbergraphPages.Insert(Restored, FMath::Clamp(Journal.GraphIndex, 1, Blueprint->UbergraphPages.Num()));
 		}
-		return true;
+		Blueprint->LastEditedDocuments = Journal.LastEditedDocuments;
+		Blueprint->DelegateSignatureGraphs = Journal.DelegateSignatureGraphs;
+		Blueprint->ImplementedInterfaces = Journal.ImplementedInterfaces;
+		Blueprint->Bookmarks = Journal.Bookmarks;
+		if (Journal.GraphType == TEXT("Macro") && !RestoreExternalMacroInstances(Blueprint, Journal, Restored))
+			return false;
+		return FindGraphByGuid(Blueprint, Journal.TargetGraphGuid) == Restored;
 	}
+
 	UEdGraph* Graph = FindGraphByGuid(Blueprint, Journal.TargetGraphGuid);
-	if (!Graph) return false;
-	for (FGuid Guid : Journal.RemovedNodeGuids)
+	if (!Graph || !Journal.SnapshotGraph.IsValid()) return false;
+	for (const FRemoveGraphJournal::FRemovedNode& Saved : Journal.RemovedNodes)
 	{
-		if (FindNodeByGuid(Graph, Guid)) continue;
-		UEdGraphNode* Snapshot = FindNodeByGuid(Journal.SnapshotGraph.Get(), Guid);
+		if (FindNodeByGuid(Graph, Saved.Guid)) continue;
+		UEdGraphNode* Snapshot = FindNodeByGuid(Journal.SnapshotGraph.Get(), Saved.Guid);
 		if (!Snapshot) return false;
+		if (Saved.OriginalNode.IsValid() && Saved.OriginalNode->GetOuter() == Graph
+			&& !Saved.OriginalNode->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional))
+		{
+			return false;
+		}
 		UEdGraphNode* Restored = DuplicateObject<UEdGraphNode>(Snapshot, Graph, Snapshot->GetFName());
 		if (!Restored) return false;
 		Graph->AddNode(Restored, false, false);
+		const int32 AddedIndex = Graph->Nodes.IndexOfByKey(Restored);
+		if (AddedIndex == INDEX_NONE) return false;
+		Graph->Nodes.RemoveAt(AddedIndex);
+		Graph->Nodes.Insert(Restored, FMath::Clamp(Saved.OriginalIndex, 0, Graph->Nodes.Num()));
 	}
-	const UEdGraphSchema* Schema = Graph->GetSchema();
 	for (const FRemoveGraphJournal::FBoundaryLink& Link : Journal.BoundaryLinks)
 	{
 		UEdGraphNode* Source = FindNodeByGuid(Graph, Link.SourceNodeGuid);
 		UEdGraphNode* Target = FindNodeByGuid(Graph, Link.TargetNodeGuid);
 		UEdGraphPin* SourcePin = Source ? Source->FindPin(Link.SourcePin) : nullptr;
 		UEdGraphPin* TargetPin = Target ? Target->FindPin(Link.TargetPin) : nullptr;
-		if (!SourcePin || !TargetPin || !Schema) return false;
-		if (!SourcePin->LinkedTo.Contains(TargetPin) && !Schema->TryCreateConnection(SourcePin, TargetPin)) return false;
+		if (!SourcePin || !TargetPin) return false;
+		if (!SourcePin->LinkedTo.Contains(TargetPin)) SourcePin->MakeLinkTo(TargetPin);
 	}
 	return true;
 }
@@ -940,6 +1076,11 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 					if (Blueprint->UbergraphPages[Index] && Blueprint->UbergraphPages[Index]->GraphGuid == Journal.TargetGraphGuid) bMatched = false;
 				for (FGuid Guid : Journal.PreservedGraphGuids)
 					bMatched &= FindGraphByGuid(Blueprint, Guid) != nullptr;
+				for (const FRemoveGraphJournal::FMacroInstance& Instance : Journal.ExternalMacroInstances)
+				{
+					UEdGraph* HostGraph = FindGraphByGuid(Blueprint, Instance.HostGraphGuid);
+					bMatched &= !FindNodeByGuid(HostGraph, Instance.NodeGuid);
+				}
 			}
 			else
 			{

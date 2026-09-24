@@ -14,6 +14,7 @@
 #include "K2Node_CustomEvent.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_Knot.h"
+#include "K2Node_MacroInstance.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -78,6 +79,35 @@ static UEdGraphPin* FindPin(UEdGraphNode* Node, EEdGraphPinDirection Direction, 
 		}
 	}
 	return nullptr;
+}
+static UEdGraphNode* FindNodeByGuid(UEdGraph* Graph, const FGuid& Guid)
+{
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (Node && Node->NodeGuid == Guid) return Node;
+	}
+	return nullptr;
+}
+static FString PinStateSignature(UEdGraphNode* Node)
+{
+	TArray<UEdGraphPin*> Pins = Node->Pins;
+	Pins.Sort([](const UEdGraphPin& A, const UEdGraphPin& B)
+	{
+		if (A.Direction != B.Direction) return A.Direction < B.Direction;
+		return A.PinName.LexicalLess(B.PinName);
+	});
+	FString State;
+	for (const UEdGraphPin* Pin : Pins)
+	{
+		State += FString::Printf(TEXT("%s|%d|%s|%s|%s|%d|%d|%d|%s|%s|%d;"),
+			*Pin->PinName.ToString(), static_cast<int32>(Pin->Direction),
+			*Pin->PinType.PinCategory.ToString(), *Pin->PinType.PinSubCategory.ToString(),
+			Pin->PinType.PinSubCategoryObject.IsValid() ? *Pin->PinType.PinSubCategoryObject->GetPathName() : TEXT("None"),
+			static_cast<int32>(Pin->PinType.ContainerType), Pin->PinType.bIsReference ? 1 : 0,
+			Pin->PinType.bIsConst ? 1 : 0, *Pin->DefaultValue, *Pin->DefaultTextValue.ToString(),
+			Pin->LinkedTo.Num());
+	}
+	return State;
 }
 
 static FString PackageFilename(UPackage* Package)
@@ -691,6 +721,180 @@ bool FCortexBPRemoveGraphCascadeSetChangedTest::RunTest(const FString&)
 	TestTrue(TEXT("original event survives"), Graph->Nodes.Contains(EventA));
 	TestTrue(TEXT("new external event survives"), Graph->Nodes.Contains(EventB));
 	TestTrue(TEXT("shared call survives"), Graph->Nodes.Contains(Call));
+	MarkFixtureGarbage(BP);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphCustomEventRecoveryTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.CustomEventRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphCustomEventRecoveryTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	for (const TCHAR* Fault : { TEXT("after_mutation"), TEXT("compile"), TEXT("readback") })
+	{
+		const FString Path = FString::Printf(TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_EventRecovery_%s"), Fault);
+		UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+		if (!TestNotNull(FString::Printf(TEXT("%s fixture Blueprint"), Fault), BP)) continue;
+		UEdGraph* Graph = BP->UbergraphPages[0];
+		UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(Graph);
+		Event->CreateNewGuid(); Event->CustomFunctionName = TEXT("DeleteEvent"); Graph->AddNode(Event, false, false); Event->AllocateDefaultPins();
+		UK2Node_CustomEvent* PreservedEvent = NewObject<UK2Node_CustomEvent>(Graph);
+		PreservedEvent->CreateNewGuid(); PreservedEvent->CustomFunctionName = TEXT("PreservedEvent"); Graph->AddNode(PreservedEvent, false, false); PreservedEvent->AllocateDefaultPins();
+		UK2Node_Knot* Reroute = NewObject<UK2Node_Knot>(Graph);
+		Reroute->CreateNewGuid(); Graph->AddNode(Reroute, false, false); Reroute->AllocateDefaultPins();
+		UK2Node_CallFunction* Print = NewObject<UK2Node_CallFunction>(Graph);
+		Print->CreateNewGuid(); Print->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("PrintString")));
+		Graph->AddNode(Print, false, false); Print->AllocateDefaultPins();
+		FindPin(Event, EGPD_Output, UEdGraphSchema_K2::PC_Exec)->MakeLinkTo(Reroute->GetInputPin());
+		Reroute->GetOutputPin()->MakeLinkTo(FindPin(Print, EGPD_Input, UEdGraphSchema_K2::PC_Exec));
+		FindPin(PreservedEvent, EGPD_Output, UEdGraphSchema_K2::PC_Exec)->MakeLinkTo(
+			FindPin(Print, EGPD_Input, UEdGraphSchema_K2::PC_Exec));
+		const FGuid EventGuid = Event->NodeGuid;
+		const FGuid RerouteGuid = Reroute->NodeGuid;
+		const FGuid PreservedEventGuid = PreservedEvent->NodeGuid;
+		const FGuid PrintGuid = Print->NodeGuid;
+
+		FKismetEditorUtilities::CompileBlueprint(BP);
+		Graph = BP->UbergraphPages[0];
+		Event = Cast<UK2Node_CustomEvent>(FindNodeByGuid(Graph, EventGuid));
+		Reroute = Cast<UK2Node_Knot>(FindNodeByGuid(Graph, RerouteGuid));
+		PreservedEvent = Cast<UK2Node_CustomEvent>(FindNodeByGuid(Graph, PreservedEventGuid));
+		Print = Cast<UK2Node_CallFunction>(FindNodeByGuid(Graph, PrintGuid));
+		if (!Event || !Reroute || !PreservedEvent || !Print)
+		{
+			TestFalse(FString::Printf(TEXT("%s compiled fixture retains graph nodes"), Fault), true);
+			MarkFixtureGarbage(BP);
+			continue;
+		}
+		const FString EventName = Event->GetName();
+		const FString RerouteName = Reroute->GetName();
+		const FString EventPinsBefore = PinStateSignature(Event);
+		const FString ReroutePinsBefore = PinStateSignature(Reroute);
+		const FName EventOutputName = FindPin(Event, EGPD_Output, UEdGraphSchema_K2::PC_Exec)->PinName;
+		const FName RerouteInputName = Reroute->GetInputPin()->PinName;
+		const FName RerouteOutputName = Reroute->GetOutputPin()->PinName;
+		const bool bCompile = FCString::Strcmp(Fault, TEXT("after_mutation")) != 0;
+		const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteEvent"), bCompile, true);
+		const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+		if (!TestTrue(FString::Printf(TEXT("%s preview succeeds"), Fault), Preview.bSuccess) || !Preview.Data.IsValid())
+		{
+			MarkFixtureGarbage(BP);
+			continue;
+		}
+		FCortexBPRemoveGraphOps::SetFaultPointForTesting(FName(Fault));
+		const FCortexCommandResult Applied = Handler.Execute(TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+		FCortexBPRemoveGraphOps::ClearFaultPointForTesting();
+		TestFalse(FString::Printf(TEXT("%s fault fails command"), Fault), Applied.bSuccess);
+		TestTrue(FString::Printf(TEXT("%s failure details present"), Fault), Applied.ErrorDetails.IsValid());
+		if (Applied.ErrorDetails.IsValid())
+		{
+			TestEqual(FString::Printf(TEXT("%s rollback verified"), Fault),
+				Applied.ErrorDetails->GetStringField(TEXT("rollback_status")), FString(TEXT("restored")));
+			if (Applied.ErrorDetails->GetStringField(TEXT("rollback_status")) != TEXT("restored"))
+			{
+				TestTrue(FString::Printf(TEXT("%s rollback operation restored"), Fault),
+					Applied.ErrorDetails->GetBoolField(TEXT("rollback_content_restored")));
+				TestTrue(FString::Printf(TEXT("%s authoring state restored"), Fault),
+					Applied.ErrorDetails->GetBoolField(TEXT("rollback_authoring_matches")));
+				TestTrue(FString::Printf(TEXT("%s generated state restored"), Fault),
+					Applied.ErrorDetails->GetBoolField(TEXT("rollback_generated_matches")));
+			}
+		}
+		Graph = BP->UbergraphPages[0];
+		UEdGraphNode* RestoredEvent = FindNodeByGuid(Graph, EventGuid);
+		UEdGraphNode* RestoredReroute = FindNodeByGuid(Graph, RerouteGuid);
+		UEdGraphNode* RestoredPreservedEvent = FindNodeByGuid(Graph, PreservedEventGuid);
+		UEdGraphNode* RestoredPrint = FindNodeByGuid(Graph, PrintGuid);
+		TestNotNull(FString::Printf(TEXT("%s restores event identity"), Fault), RestoredEvent);
+		TestNotNull(FString::Printf(TEXT("%s restores reroute identity"), Fault), RestoredReroute);
+		if (RestoredEvent && RestoredReroute)
+		{
+			TestEqual(FString::Printf(TEXT("%s preserves event object name"), Fault), RestoredEvent->GetName(), EventName);
+			TestEqual(FString::Printf(TEXT("%s preserves reroute object name"), Fault), RestoredReroute->GetName(), RerouteName);
+			TestEqual(FString::Printf(TEXT("%s preserves event pin metadata"), Fault), PinStateSignature(RestoredEvent), EventPinsBefore);
+			TestEqual(FString::Printf(TEXT("%s preserves reroute pin metadata"), Fault), PinStateSignature(RestoredReroute), ReroutePinsBefore);
+		}
+		UEdGraphPin* RestoredEventOutput = RestoredEvent ? RestoredEvent->FindPin(EventOutputName) : nullptr;
+		UEdGraphPin* RestoredRerouteInput = RestoredReroute ? RestoredReroute->FindPin(RerouteInputName) : nullptr;
+		UEdGraphPin* RestoredRerouteOutput = RestoredReroute ? RestoredReroute->FindPin(RerouteOutputName) : nullptr;
+		UEdGraphPin* RestoredPrintInput = RestoredPrint
+			? FindPin(RestoredPrint, EGPD_Input, UEdGraphSchema_K2::PC_Exec) : nullptr;
+		UEdGraphPin* RestoredPreservedOutput = RestoredPreservedEvent
+			? FindPin(RestoredPreservedEvent, EGPD_Output, UEdGraphSchema_K2::PC_Exec) : nullptr;
+		TestTrue(FString::Printf(TEXT("%s restores internal event-to-reroute link"), Fault),
+			RestoredEventOutput && RestoredRerouteInput && RestoredEventOutput->LinkedTo.Contains(RestoredRerouteInput));
+		TestTrue(FString::Printf(TEXT("%s restores boundary reroute-to-call link"), Fault),
+			RestoredRerouteOutput && RestoredPrintInput && RestoredRerouteOutput->LinkedTo.Contains(RestoredPrintInput));
+		TestTrue(FString::Printf(TEXT("%s preserves unrelated event link"), Fault),
+			RestoredPreservedOutput && RestoredPrintInput && RestoredPreservedOutput->LinkedTo.Contains(RestoredPrintInput));
+		MarkFixtureGarbage(BP);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphMacroInstanceRecoveryTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.MacroInstanceRecovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphMacroInstanceRecoveryTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_MacroRecovery");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	UEdGraph* MacroGraph = FBlueprintEditorUtils::CreateNewGraph(
+		BP, FName(TEXT("DeleteMacro")), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddMacroGraph(BP, MacroGraph, false, nullptr);
+	FEditedDocumentInfo EditedMacro(MacroGraph);
+	EditedMacro.SavedZoomAmount = 2.25f;
+	BP->LastEditedDocuments.Add(EditedMacro);
+	UEdGraph* HostGraph = BP->UbergraphPages[0];
+	UK2Node_MacroInstance* Instance = NewObject<UK2Node_MacroInstance>(HostGraph);
+	Instance->CreateNewGuid();
+	Instance->SetMacroGraph(MacroGraph);
+	Instance->NodeComment = TEXT("operation-owned macro instance metadata");
+	Instance->bCommentBubbleVisible = true;
+	HostGraph->AddNode(Instance, false, false);
+	Instance->AllocateDefaultPins();
+	const FGuid InstanceGuid = Instance->NodeGuid;
+
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteMacro"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	if (!TestTrue(TEXT("macro preview succeeds"), Preview.bSuccess) || !Preview.Data.IsValid())
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	FCortexBPRemoveGraphOps::SetFaultPointForTesting(TEXT("after_mutation"));
+	const FCortexCommandResult Applied = Handler.Execute(TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	FCortexBPRemoveGraphOps::ClearFaultPointForTesting();
+	TestFalse(TEXT("macro failure hook returns an error"), Applied.bSuccess);
+	TestEqual(TEXT("macro rollback verified"),
+		Applied.ErrorDetails->GetStringField(TEXT("rollback_status")), FString(TEXT("restored")));
+	TestTrue(TEXT("macro graph is restored"), BP->MacroGraphs.ContainsByPredicate(
+		[](const UEdGraph* Candidate) { return Candidate && Candidate->GetName() == TEXT("DeleteMacro"); }));
+	UK2Node_MacroInstance* Restored = Cast<UK2Node_MacroInstance>(FindNodeByGuid(HostGraph, InstanceGuid));
+	TestNotNull(TEXT("macro instance identity restored"), Restored);
+	if (Restored)
+	{
+		UEdGraph* RestoredMacro = BP->MacroGraphs.FindByPredicate(
+			[](const UEdGraph* Candidate) { return Candidate && Candidate->GetName() == TEXT("DeleteMacro"); })
+			? *BP->MacroGraphs.FindByPredicate(
+				[](const UEdGraph* Candidate) { return Candidate && Candidate->GetName() == TEXT("DeleteMacro"); })
+			: nullptr;
+		TestTrue(TEXT("macro instance references restored graph"), Restored->GetMacroGraph() == RestoredMacro);
+		TestEqual(TEXT("macro instance comment metadata restored"), Restored->NodeComment,
+			FString(TEXT("operation-owned macro instance metadata")));
+		TestTrue(TEXT("macro instance comment bubble metadata restored"), Restored->bCommentBubbleVisible);
+	}
+	TestTrue(TEXT("macro document metadata restored"), BP->LastEditedDocuments.ContainsByPredicate(
+		[](const FEditedDocumentInfo& Info)
+		{
+			return Info.SavedZoomAmount == 2.25f
+				&& Info.EditedObjectPath.ToString().Contains(TEXT("DeleteMacro"));
+		}));
 	MarkFixtureGarbage(BP);
 	return true;
 }
