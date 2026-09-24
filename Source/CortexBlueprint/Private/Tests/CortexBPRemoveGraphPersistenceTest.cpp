@@ -1223,6 +1223,53 @@ bool FCortexBPRemoveGraphCustomEventRecoveryTest::RunTest(const FString&)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphMacroCompileFalseTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.MacroCompileFalse",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphMacroCompileFalseTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_MacroCompileFalse");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	UEdGraph* MacroGraph = FBlueprintEditorUtils::CreateNewGraph(
+		BP, FName(TEXT("CompileFalseMacro")), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddMacroGraph(BP, MacroGraph, false, nullptr);
+	UEdGraph* HostGraph = BP->UbergraphPages.IsEmpty() ? nullptr : BP->UbergraphPages[0];
+	if (!TestNotNull(TEXT("macro host graph exists"), HostGraph))
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	UK2Node_MacroInstance* Instance = NewObject<UK2Node_MacroInstance>(HostGraph);
+	Instance->CreateNewGuid();
+	Instance->SetMacroGraph(MacroGraph);
+	HostGraph->AddNode(Instance, false, false);
+	Instance->AllocateDefaultPins();
+
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("CompileFalseMacro"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	if (!TestTrue(TEXT("macro preview succeeds"), Preview.bSuccess) || !Preview.Data.IsValid())
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	int32 ChangedNotifications = 0;
+	const FDelegateHandle ChangedHandle = BP->OnChanged().AddLambda(
+		[&ChangedNotifications](UBlueprint*) { ++ChangedNotifications; });
+	const FCortexCommandResult Applied = Handler.Execute(
+		TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	BP->OnChanged().Remove(ChangedHandle);
+	TestTrue(TEXT("compile=false macro apply succeeds"), Applied.bSuccess);
+	TestFalse(TEXT("macro graph is removed"), BP->MacroGraphs.Contains(MacroGraph));
+	TestFalse(TEXT("dependent macro instance is removed"), HostGraph->Nodes.Contains(Instance));
+	TestEqual(TEXT("compile=false does not broadcast structural Blueprint change"),
+		ChangedNotifications, 0);
+	MarkFixtureGarbage(BP);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPRemoveGraphMacroInstanceRecoveryTest,
 	"Cortex.Blueprint.RemoveGraph.Apply.MacroInstanceRecovery",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

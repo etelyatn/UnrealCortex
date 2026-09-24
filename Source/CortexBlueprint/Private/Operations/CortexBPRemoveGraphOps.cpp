@@ -1230,7 +1230,23 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 		bool bMutationSucceeded = TargetGraph != nullptr;
 		if (bMutationSucceeded && TargetKind == TEXT("graph"))
 		{
-			FBlueprintEditorUtils::RemoveGraph(Blueprint, TargetGraph, EGraphRemoveFlags::MarkTransient);
+			if (Journal.GraphType == TEXT("Macro"))
+			{
+				for (const FRemoveGraphJournal::FMacroInstance& Saved : Journal.ExternalMacroInstances)
+				{
+					UEdGraph* HostGraph = FindGraphByGuid(Blueprint, Saved.HostGraphGuid);
+					UK2Node_MacroInstance* Instance = Cast<UK2Node_MacroInstance>(
+						FindNodeByGuid(HostGraph, Saved.NodeGuid));
+					if (!Instance || Instance->GetMacroGraph() != TargetGraph)
+					{
+						bMutationSucceeded = false;
+						break;
+					}
+					FBlueprintEditorUtils::RemoveNode(Blueprint, Instance, true);
+				}
+			}
+			if (bMutationSucceeded)
+				FBlueprintEditorUtils::RemoveGraph(Blueprint, TargetGraph, EGraphRemoveFlags::MarkTransient);
 		}
 		else if (bMutationSucceeded)
 		{
