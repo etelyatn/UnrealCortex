@@ -1247,7 +1247,6 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 				}
 				FBlueprintEditorUtils::RemoveNode(Blueprint, Node, true);
 			}
-			if (bMutationSucceeded) FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 		}
 		Outcome.ApplyStatus = bMutationSucceeded ? TEXT("applied") : TEXT("failed");
 		Outcome.bChanged = bMutationSucceeded;

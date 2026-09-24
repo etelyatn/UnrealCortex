@@ -832,6 +832,54 @@ bool FCortexBPRemoveGraphCompileInvalidCleanupTest::RunTest(const FString&)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphCustomEventCompileFalseTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.CustomEventCompileFalse",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphCustomEventCompileFalseTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString Path = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_CustomEventCompileFalse");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *Path);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	UEdGraph* Graph = BP->UbergraphPages.IsEmpty() ? nullptr : BP->UbergraphPages[0];
+	if (!TestNotNull(TEXT("event graph exists"), Graph))
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(Graph);
+	Event->CreateNewGuid();
+	Event->CustomFunctionName = TEXT("DeleteEvent");
+	Graph->AddNode(Event, false, false);
+	Event->AllocateDefaultPins();
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	TestTrue(TEXT("fixture skeleton contains event before apply"),
+		BP->SkeletonGeneratedClass && BP->SkeletonGeneratedClass->FindFunctionByName(TEXT("DeleteEvent")));
+	if (!TestTrue(TEXT("fixture saved"), SaveFixture(BP)))
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> Request = PreviewParams(Path, TEXT("DeleteEvent"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), Request);
+	TestTrue(TEXT("custom-event preview succeeds"), Preview.bSuccess);
+	if (!Preview.bSuccess || !Preview.Data.IsValid())
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	const FCortexCommandResult Applied = Handler.Execute(
+		TEXT("remove_graph"), ApplyFromPreview(Request, Preview.Data, false));
+	TestTrue(TEXT("compile=false custom-event apply succeeds"), Applied.bSuccess);
+	TestTrue(TEXT("compile=false preserves the pre-apply skeleton function"),
+		BP->SkeletonGeneratedClass && BP->SkeletonGeneratedClass->FindFunctionByName(TEXT("DeleteEvent")));
+	MarkFixtureGarbage(BP);
+	IFileManager::Get().Delete(*PackageFilename(BP->GetOutermost()), false, true);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPRemoveGraphRecoveryFaultTest,
 	"Cortex.Blueprint.RemoveGraph.Apply.RecoveryFaults",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
