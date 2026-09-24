@@ -1,4 +1,4 @@
-#include "Misc/AutomationTest.h"
+#include "K2Node_CustomEvent.h"
 #include "CortexGraphFingerprint.h"
 #include "CortexAssetFingerprint.h"
 #include "CortexCommandRouter.h"
@@ -147,11 +147,12 @@ bool FCortexGraphFingerprintDirtyMutationTest::RunTest(const FString& Parameters
 
 	const TSharedPtr<FJsonObject> Before = FCortexGraphFingerprint::Compute(Blueprint);
 	const FString SavedPackageHashBefore = Before->GetStringField(TEXT("package_saved_hash"));
-	const FString GraphHashBefore = Before->GetStringField(TEXT("graph_authoring_hash"));
-	UEdGraphNode* DirtyNode = NewObject<UEdGraphNode>(Graph);
-	DirtyNode->CreateNewGuid();
-	DirtyNode->NodePosX = 17;
-	Graph->AddNode(DirtyNode);
+	UK2Node_CustomEvent* DirtyEvent = NewObject<UK2Node_CustomEvent>(Graph);
+	DirtyEvent->CreateNewGuid();
+	DirtyEvent->CustomFunctionName = TEXT("DirtyEvent");
+	DirtyEvent->NodePosX = 17;
+	Graph->AddNode(DirtyEvent, false, false);
+	DirtyEvent->AllocateDefaultPins();
 
 	const TSharedPtr<FJsonObject> After = FCortexGraphFingerprint::Compute(Blueprint);
 	TestNotEqual(TEXT("dirty graph mutation changes graph-authoring hash"),
