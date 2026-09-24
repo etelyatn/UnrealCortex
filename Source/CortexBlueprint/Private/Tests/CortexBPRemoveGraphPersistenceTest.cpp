@@ -529,11 +529,43 @@ bool FCortexBPRemoveGraphUnsavedCustomEventDiskInvariantTest::RunTest(const FStr
 	TestFalse(TEXT("selected event absent from memory"), Graph->Nodes.Contains(Event));
 	TestFalse(TEXT("owned reroute absent from memory"), Graph->Nodes.Contains(Reroute));
 	TestFalse(TEXT("owned call absent from memory"), Graph->Nodes.Contains(Print));
+
 	TestTrue(TEXT("unrelated event preserved"), Graph->Nodes.Contains(PreservedEvent));
 	TestTrue(TEXT("package dirty"), BP->GetOutermost()->IsDirty());
 	TestEqual(TEXT("package bytes unchanged"), FileHash(Filename), HashBefore);
 	MarkFixtureGarbage(BP);
 	IFileManager::Get().Delete(*Filename, false, true);
+	return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphCanonicalPathTokenTest,
+	"Cortex.Blueprint.RemoveGraph.Apply.CanonicalPathToken",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphCanonicalPathTokenTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	const FString CanonicalPath = TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_CanonicalPath");
+	UBlueprint* BP = CreateRemoveGraphFixture(Handler, *CanonicalPath);
+	if (!TestNotNull(TEXT("fixture Blueprint"), BP)) return false;
+	TSharedPtr<FJsonObject> Add = MakeShared<FJsonObject>();
+	Add->SetStringField(TEXT("asset_path"), CanonicalPath);
+	Add->SetStringField(TEXT("name"), TEXT("DeleteMe"));
+	TestTrue(TEXT("function fixture created"), Handler.Execute(TEXT("add_function"), Add).bSuccess);
+	const TSharedPtr<FJsonObject> PreviewRequest = PreviewParams(CanonicalPath, TEXT("DeleteMe"), false);
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("remove_graph"), PreviewRequest);
+	if (!TestTrue(TEXT("canonical preview succeeds"), Preview.bSuccess) || !Preview.Data.IsValid())
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	TSharedPtr<FJsonObject> Apply = ApplyFromPreview(PreviewRequest, Preview.Data, false);
+	Apply->SetStringField(TEXT("asset_path"), TEXT("Temp/CortexBPRemoveGraphApply/BP_CanonicalPath"));
+	const FCortexCommandResult Result = Handler.Execute(TEXT("remove_graph"), Apply);
+	TestTrue(TEXT("equivalent relative path reuses preview authorization"), Result.bSuccess);
+	TestEqual(TEXT("same package target is removed"),
+		BP->FunctionGraphs.ContainsByPredicate([](const UEdGraph* Graph)
+			{ return Graph && Graph->GetName() == TEXT("DeleteMe"); }), false);
+	MarkFixtureGarbage(BP);
 	return true;
 }
 

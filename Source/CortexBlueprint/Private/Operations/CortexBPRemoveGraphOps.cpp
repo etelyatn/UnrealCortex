@@ -1080,6 +1080,7 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
+	Prepared.AssetPath = Blueprint->GetOutermost()->GetName();
 	const bool bDirtyBefore = Blueprint->GetOutermost()->IsDirty();
 	FCortexBPRemoveGraphOutcome Outcome;
 	Outcome.bDirtyBefore = bDirtyBefore;
