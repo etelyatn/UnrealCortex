@@ -31,7 +31,7 @@ _SAFE_UPDATE_DOC = (
     "  {'patch_id': <uuid>, 'target': {'graph_ref'|'implementation': ...},\n"
     "   'expected_fingerprint': <graph.get_authoring_context fingerprint>, 'nodes': [],\n"
     "   'connections': [], 'pin_updates': [], 'dry_run': true, 'compile': true, 'save': false,\n"
-    "   'allow_noop': false, 'expected_validation_hash': <from the exact approved-set preview>}\n"
+    "   'allow_noop': false, 'expected_validation_hash': <from a matching preview>}\n"
     "Legacy update fields (nodes, connections, variables, functions, expected_fingerprint, ...) are\n"
     "refused in update mode; the legacy batch update route was removed and is never a fallback.\n"
 )

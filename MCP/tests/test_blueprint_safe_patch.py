@@ -568,4 +568,5 @@ def test_registered_description_explains_prune_dispatch_and_reconciliation():
     assert "bounded preflight" in description
     assert "one one-shot apply" in description
     assert "exact approved GUID set" in description
+    assert "expected_validation_hash': <from a matching preview>" in description
     assert "readback reconciliation" in description
