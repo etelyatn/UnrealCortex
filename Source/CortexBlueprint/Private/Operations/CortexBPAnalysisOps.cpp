@@ -1360,10 +1360,13 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 	const UClass* DelegateClass = BP->SkeletonGeneratedClass ? BP->SkeletonGeneratedClass : BP->GeneratedClass;
 	if (DelegateClass)
 	{
-		for (TFieldIterator<FMulticastDelegateProperty> It(DelegateClass, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+		// Presence test only: the previous for-loop broke unconditionally, so its ++It was
+		// unreachable (-Wunreachable-code -Werror on clang). Only ever SET the flag, never
+		// clear it — an earlier pass may already have found dispatchers.
+		TFieldIterator<FMulticastDelegateProperty> DelegateIt(DelegateClass, EFieldIteratorFlags::ExcludeSuper);
+		if (DelegateIt)
 		{
 			bHasDispatchers = true;
-			break;
 		}
 	}
 

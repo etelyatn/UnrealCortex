@@ -1401,14 +1401,15 @@ bool FCortexDataExportPathSafetyTest::RunTest(const FString& Parameters)
 		AddInfo(FString::Printf(TEXT("Skipping symlink/junction escape test; mklink /J failed with code %d: %s %s"), MklinkExitCode, *StdOut, *StdErr));
 		return true;
 	}
-#else
-	AddInfo(TEXT("Skipping symlink/junction escape test on this platform"));
-	return true;
-#endif
 
+	// Assertions live INSIDE the Windows branch: the #else returns, so anything after the
+	// #endif is unreachable on every other platform (-Wunreachable-code -Werror on clang).
 	const FCortexCommandResult SymlinkResult = ExecuteDatatableExport(FPaths::Combine(LinkDir, TEXT("NewDir"), TEXT("out.json")));
 	TestFalse(TEXT("Symlink/junction parent escapes are rejected"), SymlinkResult.bSuccess);
 	TestEqual(TEXT("Symlink/junction rejection uses InvalidField"), SymlinkResult.ErrorCode, CortexErrorCodes::InvalidField);
+#else
+	AddInfo(TEXT("Skipping symlink/junction escape test on this platform"));
+#endif
 
 	return true;
 }

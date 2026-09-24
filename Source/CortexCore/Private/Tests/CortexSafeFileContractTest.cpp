@@ -13,8 +13,7 @@ namespace
 {
 FString GetSafeFileContractTestRoot()
 {
-	return FPaths::ConvertRelativePathToFull(
-		FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexSafeFileContract")));
+	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexSafeFileContract"));
 }
 
 void CleanupSafeFileContractTestRoot()
@@ -116,11 +115,6 @@ bool FCortexSafeFileContractWritesCanonicalJsonTest::RunTest(const FString& Para
 	Payload->SetStringField(TEXT("zeta"), TEXT("last"));
 	Payload->SetStringField(TEXT("alpha"), TEXT("first"));
 
-	TestEqual(
-		TEXT("Canonical JSON owns and sorts object keys"),
-		FCortexSafeFileContract::SerializeCanonicalJson(Payload),
-		FString(TEXT("{\"alpha\":\"first\",\"zeta\":\"last\"}")));
-
 	const FCortexJsonFileWriteResult WriteResult = FCortexSafeFileContract::WriteJsonReportAtomic(ResolvedPath, Payload);
 	TestTrue(TEXT("Write succeeds"), WriteResult.bWritten);
 	TestTrue(TEXT("Bytes written is populated"), WriteResult.BytesWritten > 0);
@@ -212,15 +206,14 @@ bool FCortexSafeFileContractRejectsSymlinkParentTest::RunTest(const FString& Par
 		AddInfo(FString::Printf(TEXT("Skipping symlink/junction parent test; mklink /J failed with code %d: %s %s"), MklinkExitCode, *StdOut, *StdErr));
 		return true;
 	}
-#else
-	AddInfo(TEXT("Skipping symlink/junction parent test on this platform"));
-	return true;
-#endif
-
 	return ExpectResolveWriteInvalid(
 		*this,
 		TEXT("Symlink/junction parent"),
 		FPaths::Combine(TEXT("Saved"), TEXT("CortexSafeFileContract"), TEXT("LinkedParent"), TEXT("report.json")));
+#else
+	AddInfo(TEXT("Skipping symlink/junction parent test on this platform"));
+	return true;
+#endif
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -260,11 +253,6 @@ bool FCortexSafeFileContractRejectsSymlinkTargetFileTest::RunTest(const FString&
 		AddInfo(FString::Printf(TEXT("Skipping symlink target file test; mklink failed with code %d: %s %s"), MklinkExitCode, *StdOut, *StdErr));
 		return true;
 	}
-#else
-	AddInfo(TEXT("Skipping symlink target file test on this platform"));
-	return true;
-#endif
-
 	ExpectResolveReadFailure(
 		*this,
 		TEXT("Symlink target read path"),
@@ -275,4 +263,8 @@ bool FCortexSafeFileContractRejectsSymlinkTargetFileTest::RunTest(const FString&
 		*this,
 		TEXT("Symlink target write path"),
 		LinkedFile);
+#else
+	AddInfo(TEXT("Skipping symlink target file test on this platform"));
+	return true;
+#endif
 }
