@@ -3,6 +3,8 @@
 #include "Operations/CortexReflectOps.h"
 #include "CortexTypes.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "DirectoryWatcherModule.h"
+#include "IDirectoryWatcher.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
@@ -10,7 +12,72 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "UObject/GarbageCollection.h"
 #include "UObject/SavePackage.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectProjectPluginBlueprintClassificationTest,
+	"Cortex.Reflect.ProjectPluginBlueprintClassification",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectProjectPluginBlueprintClassificationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	const FString MountRoot = TEXT("/CortexReflectClassificationTest/");
+	const FString Directory = FPaths::ProjectSavedDir() / TEXT("CortexReflectClassificationTest");
+	IFileManager::Get().MakeDirectory(*Directory, true);
+	if (!TestTrue(TEXT("Project plugin fixture directory must exist"),
+		IFileManager::Get().DirectoryExists(*Directory)))
+	{
+		return false;
+	}
+
+	FPackageName::RegisterMountPoint(MountRoot, Directory);
+	const FString PackageName = MountRoot + TEXT("BP_ProjectPluginClass");
+	UPackage* Package = CreatePackage(*PackageName);
+	UBlueprint* Blueprint = Package
+		? FKismetEditorUtilities::CreateBlueprint(
+			AActor::StaticClass(),
+			Package,
+			FName(TEXT("BP_ProjectPluginClass")),
+			BPTYPE_Normal,
+			UBlueprint::StaticClass(),
+			UBlueprintGeneratedClass::StaticClass())
+		: nullptr;
+	TestNotNull(TEXT("Project plugin Blueprint fixture must exist"), Blueprint);
+
+	if (Blueprint)
+	{
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		UClass* GeneratedClass = Blueprint->GeneratedClass.Get();
+		TestNotNull(TEXT("Project plugin Blueprint must compile to a generated class"),
+			GeneratedClass);
+		if (GeneratedClass)
+		{
+			TestTrue(TEXT("Blueprint under a project-owned non-/Game mount is a project class"),
+				FCortexReflectOps::IsProjectClass(GeneratedClass));
+		}
+	}
+
+	TestFalse(TEXT("Engine classes remain non-project classes"),
+		FCortexReflectOps::IsProjectClass(AActor::StaticClass()));
+	if (Blueprint)
+	{
+		Blueprint->MarkAsGarbage();
+	}
+	if (Package)
+	{
+		Package->MarkAsGarbage();
+	}
+	CollectGarbage(RF_NoFlags);
+	FPackageName::UnRegisterMountPoint(MountRoot, Directory);
+	IFileManager::Get().DeleteDirectory(*Directory, false, true);
+
+	return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexReflectMetadataProjectPluginModuleClassificationTest,
@@ -335,9 +402,49 @@ namespace CortexReflectProjectPluginBlueprintTest
 			return true;
 		}
 
+		bool Resave(FString& OutError)
+		{
+			if (!Package || !Blueprint || PackageFilename.IsEmpty())
+			{
+				OutError = TEXT("fixture is incomplete");
+				return false;
+			}
+
+			Package->SetDirtyFlag(true);
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+			SaveArgs.SaveFlags = SAVE_NoError;
+			if (!UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs))
+			{
+				OutError = FString::Printf(
+					TEXT("failed to resave fixture package to %s"), *PackageFilename);
+				return false;
+			}
+			Package->SetDirtyFlag(false);
+			return true;
+		}
+
 		/** Removes registry, package, disk, and mount state; safe to call more than once. */
 		void Release()
 		{
+			IAssetRegistry& AssetRegistry =
+				FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+			if (!PackageFilename.IsEmpty())
+			{
+				IFileManager::Get().Delete(*PackageFilename, false, true, true);
+				PackageFilename.Reset();
+			}
+
+			FDirectoryWatcherModule& DirectoryWatcherModule =
+				FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
+			if (IDirectoryWatcher* DirectoryWatcher = DirectoryWatcherModule.Get())
+			{
+				DirectoryWatcher->Tick(-1.0f);
+			}
+			AssetRegistry.WaitForCompletion();
+			FlushAsyncLoading();
+			AssetRegistry.Tick(-1.0f);
+
 			if (Blueprint && bAssetRegistryRegistered)
 			{
 				FAssetRegistryModule::AssetDeleted(Blueprint);
@@ -360,11 +467,6 @@ namespace CortexReflectProjectPluginBlueprintTest
 			// the same editor process must not find this Blueprint still occupying the package.
 			CollectGarbage(RF_NoFlags);
 
-			if (!PackageFilename.IsEmpty())
-			{
-				IFileManager::Get().Delete(*PackageFilename, false, true, true);
-				PackageFilename.Reset();
-			}
 			if (bMountRegistered)
 			{
 				FPackageName::UnRegisterMountPoint(MountRoot, Directory);
@@ -539,6 +641,91 @@ bool FCortexReflectClassHierarchyProjectPluginBlueprintVisibleTest::RunTest(cons
 		TEXT("Project-only hierarchy must include the project-plugin Blueprint class %s (total_classes=%d)"),
 		*ExpectedClassName, TotalClasses),
 		ClassesArrayContainsName(Result, ExpectedClassName));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectProjectPluginBlueprintFixtureCleanupTest,
+	"Cortex.Reflect.Search.ProjectPluginBlueprintFixtureCleanup",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectProjectPluginBlueprintFixtureCleanupTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexReflectProjectPluginBlueprintTest;
+
+	IAssetRegistry& AssetRegistry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+	FString FixtureMountRootPath;
+	FString FixtureDirectory;
+	bool bFixtureRemovedFromRegistry = false;
+	bool bLateFixtureAssetAdded = false;
+	bool bFixtureResaved = false;
+	FDelegateHandle AssetAddedHandle;
+	FDelegateHandle AssetRemovedHandle;
+	{
+		FScopedProjectPluginBlueprintFixture Fixture;
+		FString FixtureError;
+		if (!Fixture.Create(FixtureError))
+		{
+			AddError(FString::Printf(
+				TEXT("Project-plugin Blueprint fixture creation failed: %s"), *FixtureError));
+			return false;
+		}
+
+		FixtureMountRootPath = Fixture.MountRoot;
+		FixtureDirectory = Fixture.Directory;
+		AssetAddedHandle = AssetRegistry.OnAssetAdded().AddLambda(
+			[&](const FAssetData& AssetData)
+			{
+				if (bFixtureRemovedFromRegistry
+					&& AssetData.PackageName.ToString().StartsWith(FixtureMountRootPath))
+				{
+					bLateFixtureAssetAdded = true;
+				}
+			});
+		AssetRemovedHandle = AssetRegistry.OnAssetRemoved().AddLambda(
+			[&](const FAssetData& AssetData)
+			{
+				if (AssetData.PackageName.ToString().StartsWith(FixtureMountRootPath))
+				{
+					bFixtureRemovedFromRegistry = true;
+				}
+			});
+		AssetRegistry.WaitForCompletion();
+		FString ResaveError;
+		bFixtureResaved = Fixture.Resave(ResaveError);
+		if (!bFixtureResaved)
+		{
+			AddError(FString::Printf(
+				TEXT("Project-plugin Blueprint fixture resave failed: %s"), *ResaveError));
+		}
+		else
+		{
+			FDirectoryWatcherModule& DirectoryWatcherModule =
+				FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
+			if (IDirectoryWatcher* DirectoryWatcher = DirectoryWatcherModule.Get())
+			{
+				DirectoryWatcher->Tick(-1.0f);
+			}
+		}
+	}
+
+	AssetRegistry.WaitForCompletion();
+	FlushAsyncLoading();
+	AssetRegistry.Tick(-1.0f);
+	AssetRegistry.OnAssetAdded().Remove(AssetAddedHandle);
+	AssetRegistry.OnAssetRemoved().Remove(AssetRemovedHandle);
+	TestTrue(TEXT("Fixture package must resave"), bFixtureResaved);
+
+	TArray<FAssetData> RemainingAssets;
+	AssetRegistry.GetAssetsByPath(FName(*FixtureMountRootPath), RemainingAssets, true);
+	TestTrue(TEXT("Fixture must be removed from the Asset Registry"), bFixtureRemovedFromRegistry);
+	TestFalse(TEXT("Asset Registry must not add the fixture after removal"), bLateFixtureAssetAdded);
+	TestTrue(TEXT("Asset Registry must not retain the released fixture"), RemainingAssets.IsEmpty());
+	TestFalse(TEXT("Fixture directory must be removed"), IFileManager::Get().DirectoryExists(*FixtureDirectory));
 
 	return true;
 }

@@ -5,7 +5,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-_MAX_RESPONSE_CHARS = 40_000
+MAX_RESPONSE_CHARS = 40_000
 _MIN_LIST_SIZE = 10
 
 
@@ -48,7 +48,7 @@ def _bound_nested_tracks(data: dict, max_tracks: int) -> dict:
 def format_response(data: dict, tool_name: str) -> str:
     """Serialize data to JSON, truncating array results if over size limit.
 
-    If the response exceeds _MAX_RESPONSE_CHARS:
+    If the response exceeds MAX_RESPONSE_CHARS:
     1. For mutation results with remaining_bindings, essential outcome fields
        are always preserved, and remaining_bindings is truncated with dedicated metadata.
     2. For binding queries, nested track details are bounded first so canonical selectors
@@ -63,10 +63,10 @@ def format_response(data: dict, tool_name: str) -> str:
         tool_name: Name of the tool for error messages.
 
     Returns:
-        JSON string, guaranteed under _MAX_RESPONSE_CHARS.
+        JSON string, guaranteed under MAX_RESPONSE_CHARS.
     """
     text = json.dumps(data, indent=2)
-    if len(text) <= _MAX_RESPONSE_CHARS:
+    if len(text) <= MAX_RESPONSE_CHARS:
         return text
 
     # 1. Special handling for UMG animation binding mutation results:
@@ -91,7 +91,7 @@ def format_response(data: dict, tool_name: str) -> str:
             trial["_suggestion"] = suggestion
             trial["_remaining_bindings_instructions"] = suggestion
             trial_text = json.dumps(trial, indent=2)
-            if len(trial_text) <= _MAX_RESPONSE_CHARS:
+            if len(trial_text) <= MAX_RESPONSE_CHARS:
                 best = mid
                 best_candidate = trial
                 lo = mid + 1
@@ -121,7 +121,7 @@ def format_response(data: dict, tool_name: str) -> str:
                 trial["_remaining_bindings_instructions"] = suggestion
                 trial["diagnostics"] = diag[:mid]
                 trial_text = json.dumps(trial, indent=2)
-                if len(trial_text) <= _MAX_RESPONSE_CHARS:
+                if len(trial_text) <= MAX_RESPONSE_CHARS:
                     best_diag_candidate = trial
                     lo = mid + 1
                 else:
@@ -162,7 +162,7 @@ def format_response(data: dict, tool_name: str) -> str:
                 mid = (lo + hi) // 2
                 trial = _bound_nested_tracks(working_data, mid)
                 trial_text = json.dumps(trial, indent=2)
-                if len(trial_text) <= _MAX_RESPONSE_CHARS:
+                if len(trial_text) <= MAX_RESPONSE_CHARS:
                     best_track_limit = mid
                     best_bounded = trial
                     lo = mid + 1
@@ -194,7 +194,7 @@ def format_response(data: dict, tool_name: str) -> str:
             trial["_diagnostics_total"] = orig_diag_count
             trial["_diagnostics_returned"] = mid
             trial_text = json.dumps(trial, indent=2)
-            if len(trial_text) <= _MAX_RESPONSE_CHARS:
+            if len(trial_text) <= MAX_RESPONSE_CHARS:
                 best_diag_count = mid
                 best_diag_candidate = trial
                 lo = mid + 1
@@ -268,7 +268,7 @@ def format_response(data: dict, tool_name: str) -> str:
             "suggestion": "Pass 'limit' parameter to paginate through results.",
         }
         trial_text = json.dumps(trial, indent=2)
-        if len(trial_text) <= _MAX_RESPONSE_CHARS:
+        if len(trial_text) <= MAX_RESPONSE_CHARS:
             best = mid
             lo = mid + 1
         else:
@@ -277,7 +277,7 @@ def format_response(data: dict, tool_name: str) -> str:
     if best == 0:
         logger.warning(
             "Response for %s cannot fit even a single item of %s under %d chars",
-            tool_name, array_key, _MAX_RESPONSE_CHARS,
+            tool_name, array_key, MAX_RESPONSE_CHARS,
         )
         return json.dumps({
             "_error": "RESPONSE_TOO_LARGE",

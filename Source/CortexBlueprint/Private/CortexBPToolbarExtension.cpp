@@ -304,7 +304,7 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 		}
 		FCortexConversionPayload::FPayloadInterfaceInfo Info;
 		Info.InterfaceName = IfaceDesc.Interface->GetName();
-		// Blueprint interfaces are Blueprint-generated classes; native ones have no generator
+		// Blueprint-generated interfaces have a generator; native interfaces do not.
 		Info.bIsBlueprint = IsBlueprintInterfaceForPayload(IfaceDesc.Interface);
 		Payload.ImplementedInterfaces.Add(MoveTemp(Info));
 	}

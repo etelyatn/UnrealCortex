@@ -59,6 +59,191 @@ def test_make_router_dispatches_domain_command():
     )
 
 
+def _graph_prune_request(**changes):
+    request = {
+        "asset_path": "/Game/Temp/BP_Test.BP_Test",
+        "patch_id": "prune-patch",
+        "expected_fingerprint": {"graph_authoring_hash": "fingerprint"},
+        "migration": {
+            "op": "prune_island",
+            "source": {
+                "graph_ref": {"graph_guid": "00000000-0000-0000-0000-000000000001"},
+                "entry_node_guid": "00000000-0000-0000-0000-000000000002",
+            },
+            "approved_node_guids": [],
+        },
+        "dry_run": True,
+        "compile": True,
+        "save": False,
+    }
+    request.update(changes)
+    return request
+
+
+def _graph_prune_preview(approved, token="approved-token"):
+    return {
+        "complete": True,
+        "validation_hash": token,
+        "removable": approved,
+        "approved_guids": approved,
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("limit", 10), ("cursor", "opaque"), ("offset", 0)],
+)
+def test_graph_prune_apply_patch_rejects_pagination_before_dispatch(field, value):
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": {}}
+    router = make_router("graph", connection, "graph docs")
+    params = _graph_prune_request()
+    params[field] = value
+
+    payload = json.loads(router("apply_patch", params))
+
+    assert payload.get("_error") == "INVALID_FIELD"
+    connection.send_command.assert_not_called()
+    connection.send_command_once.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("limit", 10), ("cursor", "opaque"), ("offset", 0)],
+)
+def test_registered_graph_cmd_rejects_non_prune_apply_pagination_before_dispatch(field, value):
+    from mcp.server.fastmcp import FastMCP
+
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": {}}
+    mcp = FastMCP("graph-apply-pagination-test")
+    register_router_tools(mcp, connection, {"graph": "graph docs"}, domains=("graph",))
+    params = {
+        "asset_path": "/Game/Temp/BP_Test.BP_Test",
+        "patch_id": "update-patch",
+        "nodes": [],
+    }
+    params[field] = value
+
+    payload = _call_tool_payload(
+        mcp, "graph_cmd", {"command": "apply_patch", "params": params},
+    )
+
+    assert payload.get("_error") == "INVALID_FIELD"
+    connection.send_command.assert_not_called()
+    connection.send_command_once.assert_not_called()
+
+
+def test_graph_prune_preview_uses_one_native_call_through_router():
+    connection = MagicMock()
+    params = _graph_prune_request()
+    preview = _graph_prune_preview([])
+    connection.send_command.return_value = {"success": True, "data": preview}
+    router = make_router("graph", connection, "graph docs")
+
+    payload = json.loads(router("apply_patch", params))
+
+    assert payload == preview
+    connection.send_command.assert_called_once_with("graph.apply_patch", params)
+    connection.send_command_once.assert_not_called()
+
+
+def test_graph_prune_accepted_apply_routes_preview_then_one_shot_apply():
+    connection = MagicMock()
+    approved = ["00000000-0000-0000-0000-000000000003"]
+    params = _graph_prune_request(
+        migration={
+            "op": "prune_island",
+            "source": {
+                "graph_ref": {"graph_guid": "00000000-0000-0000-0000-000000000001"},
+                "entry_node_guid": "00000000-0000-0000-0000-000000000002",
+            },
+            "approved_node_guids": approved,
+        },
+        dry_run=False,
+        expected_validation_hash="approved-token",
+        save=True,
+    )
+    connection.send_command.return_value = {
+        "success": True,
+        "data": _graph_prune_preview(approved),
+    }
+    connection.send_command_once.return_value = {
+        "success": True,
+        "data": {"patch_id": params["patch_id"], "changed": True},
+    }
+    router = make_router("graph", connection, "graph docs")
+    expected_preview = dict(params)
+    expected_preview.pop("expected_validation_hash")
+    expected_preview["dry_run"] = True
+    expected_preview["save"] = False
+
+    payload = json.loads(router("apply_patch", params))
+
+    assert payload.get("changed") is True
+    connection.send_command.assert_called_once_with("graph.apply_patch", expected_preview)
+    connection.send_command_once.assert_called_once_with("graph.apply_patch", params)
+
+
+def test_graph_prune_stale_apply_routes_preview_without_apply():
+    connection = MagicMock()
+    approved = ["00000000-0000-0000-0000-000000000003"]
+    params = _graph_prune_request(
+        migration={
+            "op": "prune_island",
+            "source": {
+                "graph_ref": {"graph_guid": "00000000-0000-0000-0000-000000000001"},
+                "entry_node_guid": "00000000-0000-0000-0000-000000000002",
+            },
+            "approved_node_guids": approved,
+        },
+        dry_run=False,
+        expected_validation_hash="old-token",
+        save=True,
+    )
+    connection.send_command.return_value = {
+        "success": True,
+        "data": _graph_prune_preview(approved, token="new-token"),
+    }
+    router = make_router("graph", connection, "graph docs")
+
+    payload = json.loads(router("apply_patch", params))
+
+    assert payload.get("_error") == "STALE_PRECONDITION"
+    connection.send_command.assert_called_once()
+    connection.send_command_once.assert_not_called()
+
+
+def test_graph_prune_oversized_apply_routes_preview_without_apply():
+    connection = MagicMock()
+    approved = ["00000000-0000-0000-0000-000000000003"]
+    params = _graph_prune_request(
+        patch_id="p" * 50_000,
+        migration={
+            "op": "prune_island",
+            "source": {
+                "graph_ref": {"graph_guid": "00000000-0000-0000-0000-000000000001"},
+                "entry_node_guid": "00000000-0000-0000-0000-000000000002",
+            },
+            "approved_node_guids": approved,
+        },
+        dry_run=False,
+        expected_validation_hash="approved-token",
+        save=True,
+    )
+    connection.send_command.return_value = {
+        "success": True,
+        "data": _graph_prune_preview(approved),
+    }
+    router = make_router("graph", connection, "graph docs")
+
+    payload = json.loads(router("apply_patch", params))
+
+    assert payload.get("_error") == "LIMIT_EXCEEDED"
+    assert payload.get("prospective_apply_size_chars", 0) > 40_000
+    connection.send_command.assert_called_once()
+    connection.send_command_once.assert_not_called()
+
 def test_core_router_handles_batch_query_without_controls():
     """batch_query must still work with commands only."""
     connection = MagicMock()
@@ -113,6 +298,45 @@ def test_core_router_batch_query_accepts_steps_alias_and_json_string():
         "batch",
         {"commands": commands, "rollback_on_error": True},
     )
+
+
+_BATCH_WITH_GRAPH_PATCH = [
+    {"command": "data.list_datatables", "params": {}},
+    {"command": "graph.apply_patch", "params": {"asset_path": "/Game/Test/BP_Test"}},
+]
+
+
+@pytest.mark.parametrize("batch_options", [{}, {"rollback_on_error": True}])
+def test_batch_query_rejects_graph_apply_patch_before_batch_dispatch(batch_options):
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": {"count": 2}}
+    router = make_router("core", connection, "core docs")
+
+    payload = json.loads(router("batch_query", {
+        "commands": _BATCH_WITH_GRAPH_PATCH,
+        **batch_options,
+    }))
+
+    assert payload.get("_error") == "INVALID_OPERATION"
+    connection.send_command.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("field", "commands"),
+    [
+        ("steps", _BATCH_WITH_GRAPH_PATCH),
+        ("commands", json.dumps(_BATCH_WITH_GRAPH_PATCH)),
+    ],
+)
+def test_batch_query_rejects_graph_apply_patch_from_steps_alias_and_json_string(field, commands):
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": {"count": 2}}
+    router = make_router("core", connection, "core docs")
+
+    payload = json.loads(router("batch_query", {field: commands}))
+
+    assert payload.get("_error") == "INVALID_OPERATION"
+    connection.send_command.assert_not_called()
 
 
 def test_core_router_handles_switch_editor_locally():

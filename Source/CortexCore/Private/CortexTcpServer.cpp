@@ -227,6 +227,22 @@ void FCortexTcpServer::Stop()
 		FTSTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
 		TickDelegateHandle.Reset();
 	}
+	// Join the accept thread before draining its cross-thread queue.
+	Listener.Reset();
+
+	TArray<FSocket*> PendingSockets;
+	{
+		FScopeLock Lock(&PendingSocketsCS);
+		PendingSockets = MoveTemp(PendingClientSockets);
+	}
+	for (FSocket* Socket : PendingSockets)
+	{
+		if (Socket != nullptr)
+		{
+			Socket->Close();
+			ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(Socket);
+		}
+	}
 
 	for (FSocket* Socket : ClientSockets)
 	{
@@ -237,13 +253,11 @@ void FCortexTcpServer::Stop()
 		}
 	}
 	ClientSockets.Empty();
-	PendingClientSockets.Empty();
+	PendingClientDisconnects.Empty();
 	ReceiveBuffers.Empty();
+	PendingResponses.Empty();
 	PendingDeferred.Empty();
 	NextDeferredId = 1;
-
-	Listener.Reset();
-
 	UE_LOG(LogCortex, Log, TEXT("TCP server stopped"));
 }
 
@@ -269,6 +283,18 @@ bool FCortexTcpServer::IsRunning() const
 
 bool FCortexTcpServer::HandleConnectionAccepted(FSocket* InClientSocket, const FIPv4Endpoint& ClientEndpoint)
 {
+	if (InClientSocket == nullptr)
+	{
+		return false;
+	}
+
+	if (!InClientSocket->SetNonBlocking(true))
+	{
+		UE_LOG(LogCortex, Warning, TEXT("Failed to make client socket nonblocking; rejecting connection from %s"),
+			*ClientEndpoint.ToString());
+		return false;
+	}
+
 	UE_LOG(LogCortex, Log, TEXT("Client connected from %s"), *ClientEndpoint.ToString());
 	FScopeLock Lock(&PendingSocketsCS);
 	PendingClientSockets.Add(InClientSocket);
@@ -282,10 +308,30 @@ void FCortexTcpServer::ProcessClientData()
 		return;
 	}
 
-	// Iterate in reverse so we can safely remove disconnected clients
+	// Iterate in reverse so we can safely remove disconnected clients.
 	for (int32 Index = ClientSockets.Num() - 1; Index >= 0; --Index)
 	{
 		FSocket* Socket = ClientSockets[Index];
+		if (PendingClientDisconnects.Contains(Socket))
+		{
+			DestroyClientSocket(Socket);
+			ClientSockets.RemoveAt(Index);
+			continue;
+		}
+
+		if (!FlushPendingResponses(Socket))
+		{
+			DestroyClientSocket(Socket);
+			ClientSockets.RemoveAt(Index);
+			continue;
+		}
+
+		// Preserve response ordering and bound queued output to in-flight work for this client.
+		if (PendingResponses.Contains(Socket))
+		{
+			continue;
+		}
+
 		if (!ProcessSingleClient(Socket))
 		{
 			DestroyClientSocket(Socket);
@@ -309,43 +355,50 @@ bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 		return false;
 	}
 
-	// Read available data
+	FString* ExistingBuffer = ReceiveBuffers.Find(InClientSocket);
+	int32 NewlineIndex = INDEX_NONE;
+	const bool bHasBufferedCompleteLine =
+		ExistingBuffer != nullptr && ExistingBuffer->FindChar(TEXT('\n'), NewlineIndex);
 	uint32 PendingDataSize = 0;
-	if (!InClientSocket->HasPendingData(PendingDataSize) || PendingDataSize == 0)
+	if (!bHasBufferedCompleteLine
+		&& (!InClientSocket->HasPendingData(PendingDataSize) || PendingDataSize == 0))
 	{
 		return true;
 	}
 
 	FString& ClientBuffer = ReceiveBuffers.FindOrAdd(InClientSocket);
-	int32 TotalBytesRead = 0;
-
-	// Loop until all pending data is read or 2MB limit is reached
-	do
+	if (!bHasBufferedCompleteLine)
 	{
-		TArray<uint8> TempBuffer;
-		TempBuffer.SetNumUninitialized(ReceiveBufferSize);
-		int32 BytesRead = 0;
+		int32 TotalBytesRead = 0;
 
-		if (!InClientSocket->Recv(TempBuffer.GetData(), ReceiveBufferSize - 1, BytesRead) || BytesRead <= 0)
+		// Loop until all pending data is read or 2MB limit is reached
+		do
 		{
-			break;
-		}
+			TArray<uint8> TempBuffer;
+			TempBuffer.SetNumUninitialized(ReceiveBufferSize);
+			int32 BytesRead = 0;
 
-		FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(TempBuffer.GetData()), BytesRead);
-		ClientBuffer.Append(Converter.Get(), Converter.Length());
-		TotalBytesRead += BytesRead;
+			if (!InClientSocket->Recv(TempBuffer.GetData(), ReceiveBufferSize - 1, BytesRead) || BytesRead <= 0)
+			{
+				break;
+			}
 
-		if (TotalBytesRead >= MaxMessageSize)
-		{
-			UE_LOG(LogCortex, Warning, TEXT("Client message exceeds MaxMessageSize (%d bytes), truncating"), MaxMessageSize);
-			break;
-		}
+			FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(TempBuffer.GetData()), BytesRead);
+			ClientBuffer.Append(Converter.Get(), Converter.Length());
+			TotalBytesRead += BytesRead;
 
-		PendingDataSize = 0;
-	} while (InClientSocket->HasPendingData(PendingDataSize) && PendingDataSize > 0);
+			if (TotalBytesRead >= MaxMessageSize)
+			{
+				UE_LOG(LogCortex, Warning, TEXT("Client message exceeds MaxMessageSize (%d bytes), truncating"), MaxMessageSize);
+				break;
+			}
+
+			PendingDataSize = 0;
+		} while (InClientSocket->HasPendingData(PendingDataSize) && PendingDataSize > 0);
+	}
 
 	// Process complete lines (delimited by \n)
-	int32 NewlineIndex = INDEX_NONE;
+	NewlineIndex = INDEX_NONE;
 	while (ClientBuffer.FindChar(TEXT('\n'), NewlineIndex))
 	{
 		FString Line = ClientBuffer.Left(NewlineIndex);
@@ -368,7 +421,14 @@ bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 				TEXT("PARSE_ERROR"),
 				TEXT("Failed to parse JSON request")
 			);
-			SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(ParseError, 0.0));
+			if (!SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(ParseError, 0.0)))
+			{
+				return false;
+			}
+			if (PendingResponses.Contains(InClientSocket))
+			{
+				return true;
+			}
 			continue;
 		}
 
@@ -383,7 +443,14 @@ bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 			);
 			FString MissingCommandRequestId;
 			RequestJson->TryGetStringField(TEXT("id"), MissingCommandRequestId);
-			SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(MissingCmd, 0.0, MissingCommandRequestId));
+			if (!SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(MissingCmd, 0.0, MissingCommandRequestId)))
+			{
+				return false;
+			}
+			if (PendingResponses.Contains(InClientSocket))
+			{
+				return true;
+			}
 			continue;
 		}
 
@@ -496,34 +563,145 @@ bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 				TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&AckString);
 			FJsonSerializer::Serialize(AckJson, AckWriter);
 
-			SendResponse(InClientSocket, AckString);
+			if (!SendResponse(InClientSocket, AckString))
+			{
+				return false;
+			}
+			if (PendingResponses.Contains(InClientSocket))
+			{
+				return true;
+			}
 			continue;
 		}
 
-		SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(Result, TimingMs, RequestId));
+		if (!SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(Result, TimingMs, RequestId)))
+		{
+			return false;
+		}
+		if (PendingResponses.Contains(InClientSocket))
+		{
+			return true;
+		}
 	}
 
 	return true;
 }
 
-void FCortexTcpServer::SendResponse(FSocket* InClientSocket, const FString& ResponseString)
+bool FCortexTcpServer::SendResponse(FSocket* InClientSocket, const FString& ResponseString)
 {
 	if (InClientSocket == nullptr)
 	{
-		return;
+		return false;
 	}
 
-	FString ResponseWithNewline = ResponseString + TEXT("\n");
-	FTCHARToUTF8 Utf8Response(*ResponseWithNewline);
-
-	int32 BytesSent = 0;
-	if (!InClientSocket->Send(
-		reinterpret_cast<const uint8*>(Utf8Response.Get()),
-		Utf8Response.Length(),
-		BytesSent))
+	FTCHARToUTF8 Utf8Response(*ResponseString);
+	FCortexTcpServer::FPendingResponseQueue& PendingQueue = PendingResponses.FindOrAdd(InClientSocket);
+	if (!PendingQueue.Responses.IsEmpty())
 	{
-		UE_LOG(LogCortex, Warning, TEXT("Failed to send response"));
+		const int32 BacklogFrameCount = PendingQueue.Responses.Num() - 1;
+		const int64 BacklogBytes = PendingQueue.BacklogBytes + static_cast<int64>(Utf8Response.Length()) + 1;
+		if (BacklogFrameCount >= MaxQueuedResponseFramesPerClient
+			|| BacklogBytes > MaxQueuedResponseBacklogBytesPerClient)
+		{
+			UE_LOG(LogCortex, Log,
+				TEXT("Client response backlog exceeded the per-client limit (%d frames, %d bytes)"),
+				MaxQueuedResponseFramesPerClient,
+				MaxQueuedResponseBacklogBytesPerClient);
+			PendingResponses.Remove(InClientSocket);
+			InClientSocket->Close();
+			return false;
+		}
+		PendingQueue.BacklogBytes = BacklogBytes;
 	}
+
+	FPendingResponse& PendingResponse = PendingQueue.Responses.AddDefaulted_GetRef();
+	PendingResponse.Bytes.Append(reinterpret_cast<const uint8*>(Utf8Response.Get()), Utf8Response.Length());
+	PendingResponse.Bytes.Add(static_cast<uint8>('\n'));
+	PendingResponse.QueuedAt = FPlatformTime::Seconds();
+
+	return FlushPendingResponses(InClientSocket);
+}
+
+bool FCortexTcpServer::HandleSendFailure(FSocket* InClientSocket, int32 SocketErrorCode)
+{
+	if (InClientSocket == nullptr)
+	{
+		return false;
+	}
+
+	const ESocketErrors SocketError = static_cast<ESocketErrors>(SocketErrorCode);
+	if (SocketError == SE_EWOULDBLOCK || SocketError == SE_EINTR || SocketError == SE_ENOBUFS)
+	{
+		return true;
+	}
+
+	UE_LOG(LogCortex, Log, TEXT("Client send failed with error %d"), SocketErrorCode);
+	PendingResponses.Remove(InClientSocket);
+	InClientSocket->Close();
+	return false;
+}
+
+bool FCortexTcpServer::FlushPendingResponses(FSocket* InClientSocket)
+{
+	if (InClientSocket == nullptr)
+	{
+		return false;
+	}
+
+	FPendingResponseQueue* PendingQueue = PendingResponses.Find(InClientSocket);
+	if (PendingQueue == nullptr)
+	{
+		return true;
+	}
+
+	TArray<FPendingResponse>& Responses = PendingQueue->Responses;
+	while (!Responses.IsEmpty())
+	{
+		FPendingResponse& Response = Responses[0];
+		if (FPlatformTime::Seconds() - Response.QueuedAt >= ResponseSendTimeoutSeconds)
+		{
+			UE_LOG(LogCortex, Warning, TEXT("Timed out sending response (%d/%d bytes)"),
+				Response.BytesSent, Response.Bytes.Num());
+			PendingResponses.Remove(InClientSocket);
+			InClientSocket->Close();
+			return false;
+		}
+
+		while (Response.BytesSent < Response.Bytes.Num())
+		{
+			int32 BytesSent = 0;
+			if (!InClientSocket->Send(
+				Response.Bytes.GetData() + Response.BytesSent,
+				Response.Bytes.Num() - Response.BytesSent,
+				BytesSent))
+			{
+				const int32 SocketErrorCode = static_cast<int32>(
+					ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->GetLastErrorCode());
+				return HandleSendFailure(InClientSocket, SocketErrorCode);
+			}
+
+			if (BytesSent <= 0)
+			{
+				UE_LOG(LogCortex, Log, TEXT("Client accepted no response bytes (%d/%d bytes sent)"),
+					Response.BytesSent, Response.Bytes.Num());
+				PendingResponses.Remove(InClientSocket);
+				InClientSocket->Close();
+				return false;
+			}
+
+			Response.BytesSent += BytesSent;
+		}
+
+		if (Responses.Num() > 1)
+		{
+			PendingQueue->BacklogBytes = FMath::Max<int64>(
+				0, PendingQueue->BacklogBytes - Responses[1].Bytes.Num());
+		}
+		Responses.RemoveAt(0);
+	}
+
+	PendingResponses.Remove(InClientSocket);
+	return true;
 }
 
 void FCortexTcpServer::DestroyClientSocket(FSocket* InClientSocket)
@@ -533,7 +711,9 @@ void FCortexTcpServer::DestroyClientSocket(FSocket* InClientSocket)
 		return;
 	}
 
+	PendingClientDisconnects.Remove(InClientSocket);
 	ReceiveBuffers.Remove(InClientSocket);
+	PendingResponses.Remove(InClientSocket);
 
 	TArray<int32> DeferredIdsToRemove;
 	for (const TPair<int32, FCortexPendingDeferred>& Pair : PendingDeferred)
@@ -568,27 +748,38 @@ void FCortexTcpServer::SendDeferredResponse(int32 DeferredId, const FCortexComma
 		return;
 	}
 
+	FSocket* ClientSocket = Pending->ClientSocket;
+	if (PendingClientDisconnects.Contains(ClientSocket))
+	{
+		PendingDeferred.Remove(DeferredId);
+		return;
+	}
+
 	const double TimingMs = (FPlatformTime::Seconds() - Pending->StartTime) * 1000.0;
 	FString FinalResponse = FCortexCommandRouter::ResultToJson(Result, TimingMs, Pending->RequestId);
 
 	TSharedPtr<FJsonObject> ResponseJson;
 	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(FinalResponse);
+	FString CompleteString;
 	if (FJsonSerializer::Deserialize(Reader, ResponseJson) && ResponseJson.IsValid())
 	{
 		ResponseJson->SetStringField(TEXT("status"), TEXT("complete"));
 
-		FString CompleteString;
 		TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
 			TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&CompleteString);
 		FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
-		SendResponse(Pending->ClientSocket, CompleteString);
 	}
 	else
 	{
-		SendResponse(Pending->ClientSocket, FinalResponse);
+		CompleteString = MoveTemp(FinalResponse);
 	}
 
+	const bool bSendSucceeded = SendResponse(ClientSocket, CompleteString);
 	PendingDeferred.Remove(DeferredId);
+	if (!bSendSucceeded)
+	{
+		PendingClientDisconnects.Add(ClientSocket);
+	}
 }
 
 void FCortexTcpServer::CheckDeferredTimeouts()

@@ -88,7 +88,7 @@ def _live_schema_connection(command: dict) -> MagicMock:
         "data": {
             "source": "live_editor",
             "editor_instance_id": "instance-1",
-            "plugin_build_id": "0.1.16-24601",
+            "plugin_build_id": "0.3.0-24601",
             "domain": "graph",
             "command": command["name"],
             "router": "graph_cmd",
@@ -136,6 +136,8 @@ def test_published_schema_declares_the_standalone_batch_restriction():
 def test_umg_authoring_profile_exposes_apply_patch_through_graph_cmd():
     reset_operation_schema_budget()
     connection = _live_schema_connection(_graph_command("apply_patch"))
+    native_schema = connection.send_command.return_value["data"]
+    native_snapshot = json.loads(json.dumps(native_schema))
     payload = json.loads(
         build_profile_operation_schema(connection, "UMGAuthoring", "graph", "apply_patch")
     )
@@ -144,6 +146,12 @@ def test_umg_authoring_profile_exposes_apply_patch_through_graph_cmd():
     assert payload["policy_allowed"] is True
     assert payload["execution_shape"] == {"type": "router", "tool": "graph_cmd"}
     assert [param["name"] for param in payload["params"]][0] == "asset_path"
+    assert payload["mcp_limits"]["max_response_chars"] == 40_000
+    assert all(param["name"] != "max_response_chars" for param in payload["params"])
+    assert native_schema == native_snapshot
+    assert "max_response_chars" not in native_schema
+    assert NATIVE_LIMITS["max_scanned_nodes"] == 2048
+    assert payload["mcp_limits"]["max_response_chars"] != NATIVE_LIMITS["max_scanned_nodes"]
 
 
 def test_umg_authoring_profile_still_blocks_unrelated_blueprint_commands():
@@ -161,7 +169,7 @@ def test_umg_authoring_profile_still_blocks_unrelated_blueprint_commands():
     assert "blueprint.add_variable" in payload["blocked_reason"]
 
 
-def test_graph_cmd_qualifies_and_forwards_apply_patch_once():
+def test_graph_cmd_qualifies_and_forwards_non_prune_apply_patch_once():
     connection = MagicMock()
     connection.send_command.return_value = {
         "success": True,

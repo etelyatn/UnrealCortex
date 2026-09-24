@@ -1,5 +1,6 @@
 #include "CortexCoreCommandHandler.h"
 #include "CortexCoreModule.h"
+#include "CortexPluginIdentity.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexAssetFingerprintOps.h"
 #include "Operations/CortexAssetDeletionOps.h"
@@ -16,12 +17,11 @@
 
 namespace
 {
-const FString CortexPluginVersion = TEXT("0.1.13");
 
 FString BuildPluginBuildId()
 {
 	return FString::Printf(TEXT("%s-%u"),
-		*CortexPluginVersion, FEngineVersion::Current().GetChangelist());
+		*CortexPluginIdentity::GetVersionName(), FEngineVersion::Current().GetChangelist());
 }
 }
 
