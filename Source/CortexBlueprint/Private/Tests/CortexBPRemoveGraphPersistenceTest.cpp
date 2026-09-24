@@ -315,7 +315,7 @@ bool FCortexBPRemoveGraphPreviewFunctionTest::RunTest(const FString&)
 	{
 		FString ApplyStatus;
 		TestTrue(TEXT("preview includes authoritative changed"), Result.Data->HasField(TEXT("changed")));
-		TestFalse(TEXT("preview did not change the Blueprint"), Result.Data->GetBoolField(TEXT("changed")));
+		TestTrue(TEXT("preview reports a prospective removal"), Result.Data->GetBoolField(TEXT("changed")));
 		TestTrue(TEXT("preview apply status exists"), Result.Data->TryGetStringField(TEXT("apply_status"), ApplyStatus));
 		TestEqual(TEXT("preview apply not requested"), ApplyStatus, FString(TEXT("not_requested")));
 		FString ValidationHash;

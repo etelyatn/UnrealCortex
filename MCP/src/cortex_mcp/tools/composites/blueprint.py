@@ -11,9 +11,7 @@ _MCP_ROOT = Path(__file__).resolve().parents[4]
 if str(_MCP_ROOT) not in sys.path:
     sys.path.insert(0, str(_MCP_ROOT))
 
-from cortex_mcp.response import format_response
-from cortex_mcp.tcp_client import UECommandError
-from cortex_mcp.tools.routers import _format_ue_command_error
+from cortex_mcp.graph_patch_boundary import dispatch_graph_apply_patch
 from tools.blueprint.composites import register_blueprint_composite_tools
 
 _BP_DISAMBIG = (
@@ -24,14 +22,19 @@ _BP_DISAMBIG = (
 _SAFE_UPDATE_DOC = (
     "\n\nSafe update mode:\n"
     "  blueprint_compose(mode='update', asset_path='/Game/BP_X.BP_X', patch={...})\n"
-    "Update mode forwards exactly one reviewed `graph.apply_patch` envelope — the facade adds\n"
-    "asset_path and sends `patch` unchanged, so native validation stays authoritative:\n"
+    "A non-prune update sends the reviewed patch once in a `graph.apply_patch` call. The MCP boundary\n"
+    "refuses `limit`, `cursor`, `offset`, and `page` on every `graph.apply_patch` before dispatch.\n"
+    "A prune preview must be complete and fit the response budget. A prune apply requires the\n"
+    "validation hash from a separate preview of the exact approved GUID set, then uses a bounded preflight "
+    "followed by one one-shot apply; the initial partition preview hash is not sufficient.\n"
+    "If the apply result is ambiguous, perform readback reconciliation before any retry. The facade\n"
+    "adds `asset_path` and sends `patch` unchanged, so native validation remains authoritative for\n"
+    "remaining patch-envelope fields:\n"
     "  {'patch_id': <uuid>, 'target': {'graph_ref'|'implementation': ...},\n"
     "   'expected_fingerprint': <graph.get_authoring_context fingerprint>, 'nodes': [],\n"
     "   'connections': [], 'pin_updates': [], 'dry_run': true, 'compile': true, 'save': false,\n"
-    "   'allow_noop': false, 'expected_validation_hash': <from a preview>}\n"
-    "Preview first (dry_run=true) and apply with the returned expected_validation_hash. Legacy\n"
-    "update fields (nodes, connections, variables, functions, expected_fingerprint, ...) are\n"
+    "   'allow_noop': false, 'expected_validation_hash': <from a matching preview>}\n"
+    "Legacy update fields (nodes, connections, variables, functions, expected_fingerprint, ...) are\n"
     "refused in update mode; the legacy batch update route was removed and is never a fallback.\n"
 )
 
@@ -74,7 +77,7 @@ def _safe_update(
     patch: Optional[dict],
     legacy_supplied: list[str],
 ) -> str:
-    """Forward one reviewed patch to `graph.apply_patch`; never fall back to the legacy batch."""
+    """Dispatch a reviewed patch without falling back to the legacy batch route."""
     if patch is None:
         legacy_note = (
             f" The legacy fields supplied with this call ({', '.join(legacy_supplied)}) are no "
@@ -85,9 +88,11 @@ def _safe_update(
         return _local_error(
             "MIGRATION_REQUIRED",
             "mode='update' requires a 'patch' object: send the reviewed envelope to "
-            "blueprint_compose(mode='update', asset_path=<asset>, patch={...}), which forwards it "
-            "once to graph.apply_patch. The legacy batch update route was removed and is never "
-            f"used as a fallback.{legacy_note}",
+            "blueprint_compose(mode='update', asset_path=<asset>, patch={...}), which uses the "
+            "graph.apply_patch contract: non-prune updates send once, while prune applies use a "
+            "bounded preflight and one one-shot apply. The legacy batch update route was removed "
+            "and is never used as a fallback."
+            f"{legacy_note}",
         )
     if legacy_supplied:
         return _local_error(
@@ -127,16 +132,7 @@ def _safe_update(
             )
 
     request = {"asset_path": asset_path, **patch}
-    try:
-        response = connection.send_command("graph.apply_patch", request)
-    except UECommandError as exc:
-        # Native structured errors (code, message and the compact outcome in details) pass through.
-        return _format_ue_command_error(exc)
-    except (ConnectionError, TimeoutError, OSError, RuntimeError) as exc:
-        return f"Error: {exc}"
-
-    data = response.get("data")
-    return format_response(data if isinstance(data, dict) else {}, "blueprint_compose")
+    return dispatch_graph_apply_patch(connection, request, tool_name="blueprint_compose")
 
 
 def register_blueprint_compose_tools(mcp, connection) -> None:

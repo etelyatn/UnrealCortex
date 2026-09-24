@@ -20,7 +20,6 @@ public:
 	 * included by other modules or exposed as public plugin API.
 	 */
 	static bool IsBlueprintInterfaceForPayload(const UClass* InterfaceClass);
-
 private:
 	/** Build the dropdown menu entries. */
 	static void BuildMenu(class UToolMenu* Menu);

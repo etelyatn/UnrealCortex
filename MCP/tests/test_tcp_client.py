@@ -1,6 +1,8 @@
 """Unit tests for TCP client timeout handling."""
 
+import json
 import socket
+import time
 from unittest.mock import MagicMock, patch, PropertyMock
 from pathlib import Path
 
@@ -129,7 +131,56 @@ class TestSendCommandTimeout:
         assert exc_info.value.message == "Failed to write report"
         assert exc_info.value.details == {"applied_count": 1}
 
+def test_send_command_once_never_replays_after_request_dispatch(monkeypatch):
+    conn = UEConnection(port=99999)
+    sent = []
+    sock = MagicMock()
+    sock.sendall.side_effect = lambda payload: sent.append(payload)
+    sock.recv.side_effect = socket.timeout("receive timed out after dispatch")
+    conn._socket = sock
+    connect_calls = []
+    monkeypatch.setattr(conn, "connect", lambda: connect_calls.append(True))
+    discover_calls = []
+    monkeypatch.setattr("cortex_mcp.tcp_client._discover_port", lambda: discover_calls.append(True))
+    attempts = []
+    original = conn._send_and_receive
 
+    def record_attempt(*args, **kwargs):
+        attempts.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(conn, "_send_and_receive", record_attempt)
+    send_once = getattr(conn, "send_command_once", None)
+    assert callable(send_once), "UEConnection.send_command_once must be available"
+
+    with pytest.raises(ConnectionError):
+        send_once("graph.apply_patch", {"patch_id": "patch-1"}, timeout=0.01)
+
+    assert len(sent) == 1
+    assert len(attempts) == 1
+    assert len(connect_calls) == 1
+    assert discover_calls == []
+
+
+
+def test_send_command_once_distinguishes_failure_before_dispatch(monkeypatch):
+    conn = UEConnection(port=99999)
+    connect = MagicMock(side_effect=ConnectionError("connection refused"))
+    send_attempt = MagicMock()
+    monkeypatch.setattr(conn, "connect", connect)
+    monkeypatch.setattr(conn, "_send_and_receive", send_attempt)
+    not_dispatched = getattr(
+        sys.modules["cortex_mcp.tcp_client"],
+        "UECommandNotDispatchedError",
+        None,
+    )
+    assert not_dispatched is not None, "pre-dispatch failures must remain distinguishable"
+
+    with pytest.raises(not_dispatched, match="connection refused"):
+        conn.send_command_once("graph.apply_patch", {"patch_id": "patch-1"})
+
+    connect.assert_called_once()
+    send_attempt.assert_not_called()
 class TestPortFileParsing:
     """Tests for JSON and plain-text port file backward compatibility."""
 
@@ -510,3 +561,25 @@ class TestNoEditorFallback:
         """Passing port= explicitly should skip discovery entirely."""
         conn = UEConnection(port=9999)
         assert conn.port == 9999
+
+
+class TestFragmentedResponseReassembly:
+    """Tests for reassembling a large response delivered across several reads."""
+
+    def test_read_response_line_reassembles_large_fragmented_line_and_preserves_remainder(self):
+        """A >40,000 character line split over three reads must be reassembled and the next line kept queued."""
+        conn = UEConnection(port=99999)
+        payload = json.dumps({"success": True, "data": {"payload": "x" * 50_000}}).encode()
+        second = b'{"success":true,"data":{"second":true}}\n'
+        chunks = [payload[:10_000], payload[10_000:35_000], payload[35_000:] + b"\n" + second]
+        sock = MagicMock()
+        sock.recv.side_effect = chunks
+        conn._socket = sock
+
+        first = json.loads(conn._read_response_line(time.monotonic() + 5))
+        assert len(first["data"]["payload"]) == 50_000
+        second_result = json.loads(conn._read_response_line(time.monotonic() + 5))
+        assert second_result["data"]["second"] is True
+
+        # The second line was already buffered behind the first line's delimiter.
+        assert sock.recv.call_count == 3

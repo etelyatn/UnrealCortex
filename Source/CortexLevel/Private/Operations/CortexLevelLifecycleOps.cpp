@@ -1,4 +1,5 @@
 #include "Operations/CortexLevelLifecycleOps.h"
+#include "CortexEditorUtils.h"
 
 #include "CortexEditorUtils.h"
 #include "CortexEngineCompat.h"

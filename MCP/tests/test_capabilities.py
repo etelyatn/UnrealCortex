@@ -64,7 +64,7 @@ def test_capabilities_fixture_reports_current_plugin_version():
     fixture = json.loads(
         (FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8")
     )
-    assert fixture["plugin_version"] == "0.1.16"
+    assert fixture["plugin_version"] == "0.3.0"
 
 
 def test_load_capabilities_cache_reads_saved_cortex_file(tmp_path):

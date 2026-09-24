@@ -1,8 +1,9 @@
 """Transport, shape and refusal tests for the safe Blueprint update route.
 
-`blueprint_compose(mode="update")` must forward exactly one reviewed `graph.apply_patch`
-envelope and must never reach the removed legacy batch update route. Native validation stays
-authoritative in C++: these tests only pin the facade's transport and shape contract.
+`blueprint_compose(mode="update")` forwards non-prune patches once. Prune previews are bounded,
+and prune applies use a bounded preflight followed by one one-shot `graph.apply_patch` call.
+Neither path may reach the removed legacy batch update route. Native validation stays authoritative
+in C++: these tests pin the facade's transport and shape contract.
 """
 
 from __future__ import annotations
@@ -10,7 +11,9 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-from cortex_mcp.response import _MAX_RESPONSE_CHARS
+import pytest
+
+from cortex_mcp.response import MAX_RESPONSE_CHARS
 from cortex_mcp.tcp_client import UECommandError
 from cortex_mcp.tools.composites.blueprint import register_blueprint_compose_tools
 
@@ -20,10 +23,13 @@ class Capture:
 
     def __init__(self):
         self.tools = {}
+        self.descriptions = {}
 
     def tool(self, name=None, description=None, **_kwargs):
         def decorator(fn):
-            self.tools[name or fn.__name__] = fn
+            tool_name = name or fn.__name__
+            self.tools[tool_name] = fn
+            self.descriptions[tool_name] = description
             return fn
 
         return decorator
@@ -379,7 +385,7 @@ def test_update_maximal_compact_outcome_survives_the_response_bound():
         mode="update", asset_path=ASSET, patch={"patch_id": PATCH_ID, "dry_run": False},
     )
     payload = _payload(raw)
-    assert len(raw) < _MAX_RESPONSE_CHARS
+    assert len(raw) < MAX_RESPONSE_CHARS
     assert "_truncated" not in payload
     assert payload["apply_status"] == "applied"
     assert payload["save_status"] == "saved"
@@ -425,3 +431,158 @@ def test_unknown_mode_is_refused_without_calling_the_editor():
     assert payload["success"] is False
     assert payload["_error"] == "UNSUPPORTED_MODE"
     connection.send_command.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("limit", 5), ("cursor", "next-page"), ("offset", 5)],
+)
+def test_update_prune_pagination_fields_are_rejected_before_native_call(field, value):
+    mcp, tool, connection = _register(MagicMock())
+    patch = _prune_patch(dry_run=True)
+    patch[field] = value
+
+    payload = _payload(tool(mode="update", asset_path=ASSET, patch=patch))
+
+    assert payload.get("success") is False
+    assert payload["_error"] == "INVALID_FIELD"
+    connection.send_command.assert_not_called()
+    connection.send_command_once.assert_not_called()
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("limit", 5), ("cursor", "next-page"), ("offset", 5)],
+)
+def test_update_non_prune_pagination_is_rejected_before_native_call(field, value):
+    mcp, tool, connection = _register(MagicMock())
+    connection.send_command.return_value = {"success": True, "data": {}}
+    patch = {"patch_id": PATCH_ID, "dry_run": True, field: value}
+
+    payload = _payload(tool(mode="update", asset_path=ASSET, patch=patch))
+
+    assert payload.get("_error") == "INVALID_FIELD"
+    connection.send_command.assert_not_called()
+    connection.send_command_once.assert_not_called()
+
+
+def _prune_patch(*, dry_run, approved_guids=None, token="approval-token", patch_id=PATCH_ID):
+    return {
+        "patch_id": patch_id,
+        "expected_fingerprint": "fingerprint-1",
+        "migration": {
+            "op": "prune_island",
+            "source": {"node_guid": "source-node", "pin_name": "Then"},
+            "approved_node_guids": list(approved_guids or []),
+        },
+        "dry_run": dry_run,
+        "compile": True,
+        "save": False,
+        **({"expected_validation_hash": token} if not dry_run else {}),
+    }
+
+
+def _prune_preview(*, approved_guids=None, token="approval-token", removable=None):
+    return _native_data(
+        complete=True,
+        validation_hash=token,
+        approved_guids=list(approved_guids or []),
+        removable=list(removable if removable is not None else approved_guids or []),
+    )
+
+
+def test_update_prune_preview_forwards_one_preview():
+    mcp, tool, connection = _register(MagicMock())
+    patch = _prune_patch(dry_run=True)
+    connection.send_command.return_value = {
+        "success": True,
+        "data": _prune_preview(),
+    }
+
+    payload = _payload(tool(mode="update", asset_path=ASSET, patch=patch))
+
+    assert payload["validation_hash"] == "approval-token"
+    connection.send_command.assert_called_once_with(
+        "graph.apply_patch", {"asset_path": ASSET, **patch},
+    )
+    connection.send_command_once.assert_not_called()
+
+
+def test_update_prune_apply_preflights_then_applies():
+    approved = ["00000000-0000-0000-0000-000000000001"]
+    mcp, tool, connection = _register(MagicMock())
+    patch = _prune_patch(dry_run=False, approved_guids=approved)
+    connection.send_command.return_value = {
+        "success": True,
+        "data": _prune_preview(approved_guids=approved),
+    }
+    connection.send_command_once.return_value = {
+        "success": True,
+        "data": _native_data(changed=True, dry_run=False, apply_status="applied"),
+    }
+
+    payload = _payload(tool(mode="update", asset_path=ASSET, patch=patch))
+
+    assert payload["apply_status"] == "applied"
+    connection.send_command.assert_called_once()
+    preview_request = connection.send_command.call_args.args[1]
+    assert preview_request["dry_run"] is True
+    assert "expected_validation_hash" not in preview_request
+    assert preview_request["migration"]["approved_node_guids"] == approved
+    connection.send_command_once.assert_called_once_with(
+        "graph.apply_patch", {"asset_path": ASSET, **patch},
+    )
+
+
+def test_update_oversized_prune_apply_never_mutates():
+    approved = [
+        f"00000000-0000-0000-0000-{index:012d}"
+        for index in range(400)
+    ]
+    mcp, tool, connection = _register(MagicMock())
+    patch = _prune_patch(dry_run=False, approved_guids=approved, patch_id="p" * 5000)
+    connection.send_command.return_value = {
+        "success": True,
+        "data": _prune_preview(approved_guids=approved, removable=approved),
+    }
+
+    payload = _payload(tool(mode="update", asset_path=ASSET, patch=patch))
+
+    assert payload.get("success") is False
+    assert payload["_error"] == "LIMIT_EXCEEDED"
+    connection.send_command.assert_called_once()
+    connection.send_command_once.assert_not_called()
+
+
+def test_update_stale_prune_token_never_mutates():
+    approved = ["00000000-0000-0000-0000-000000000001"]
+    mcp, tool, connection = _register(MagicMock())
+    patch = _prune_patch(
+        dry_run=False,
+        approved_guids=approved,
+        token="stale-token",
+    )
+    connection.send_command.return_value = {
+        "success": True,
+        "data": _prune_preview(approved_guids=approved, token="fresh-token"),
+    }
+
+    payload = _payload(tool(mode="update", asset_path=ASSET, patch=patch))
+
+    assert payload.get("success") is False
+    assert payload["_error"] == "STALE_PRECONDITION"
+    connection.send_command.assert_called_once()
+    connection.send_command_once.assert_not_called()
+
+
+def test_registered_description_explains_prune_dispatch_and_reconciliation():
+    mcp, _tool, _connection = _register(MagicMock())
+
+    description = mcp.descriptions["blueprint_compose"]
+
+    assert "A non-prune update sends the reviewed patch once" in description
+    assert "on every `graph.apply_patch` before dispatch" in description
+    assert "bounded preflight" in description
+    assert "one one-shot apply" in description
+    assert "exact approved GUID set" in description
+    assert "expected_validation_hash': <from a matching preview>" in description
+    assert "readback reconciliation" in description

@@ -90,6 +90,7 @@ bool IsPackageUnderProjectDir(const FString& PackageName)
 
 	return FPaths::IsUnderDirectory(AssetDir, ProjectDir);
 }
+
 }
 
 // Returns the full C++ name of a class (e.g. "AActor" not "Actor").

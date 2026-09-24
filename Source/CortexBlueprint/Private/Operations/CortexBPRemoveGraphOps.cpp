@@ -1368,6 +1368,10 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 	Outcome.FingerprintBefore = Prepared.FingerprintBefore;
 	Outcome.FingerprintAfter = Prepared.FingerprintBefore;
 	BuildValidationHash(Prepared);
+	if (Prepared.bDryRun)
+	{
+		Outcome.bChanged = true;
+	}
 
 	if (!Prepared.bDryRun)
 	{

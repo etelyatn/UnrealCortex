@@ -6,6 +6,7 @@ import json
 from collections import defaultdict
 
 from .tcp_client import UECommandError
+from .response import MAX_RESPONSE_CHARS
 
 RETRY_BUDGET_EXHAUSTED = "RETRY_BUDGET_EXHAUSTED"
 INVALID_INVOCATION_SHAPE = "INVALID_INVOCATION_SHAPE"
@@ -139,7 +140,7 @@ def build_profile_operation_schema(connection, profile: str, domain: str, comman
         return json.dumps(blocked)
 
     budget_remaining = max(0, _STATIC_ERROR_BUDGET - _correction_counts[(profile, domain, command)])
-    return json.dumps({
+    result = {
         "source": "live_editor",
         "profile": profile,
         "domain": domain,
@@ -149,4 +150,7 @@ def build_profile_operation_schema(connection, profile: str, domain: str, comman
         "execution_shape": resolve_execution_shape(domain, command),
         "params": schema.get("params", []),
         "budget_remaining": budget_remaining,
-    })
+    }
+    if domain == "graph" and command == "apply_patch":
+        result["mcp_limits"] = {"max_response_chars": MAX_RESPONSE_CHARS}
+    return json.dumps(result)

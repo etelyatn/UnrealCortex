@@ -129,7 +129,6 @@ bool FCortexBPToolbarInterfaceClassificationTest::RunTest(const FString& Paramet
 	(void)Parameters;
 
 	CortexBPToolbarClassificationTest::RunInterfaceClassificationFixture(*this);
-
 	return true;
 }
 
@@ -148,7 +147,6 @@ bool FCortexBPToolbarInterfaceNameReuseTest::RunTest(const FString& Parameters)
 	// the same editor process is only possible if the first run actually released its names
 	// instead of leaving a garbage-marked Blueprint/package behind.
 	RunInterfaceClassificationFixture(*this);
-
 	const FString PackageName = InterfacePackageName();
 	const FString BlueprintPath = PackageName + TEXT(".") + InterfaceAssetName;
 	TestNull(TEXT("Fixture package must be reclaimed before its name is reused"),
@@ -157,6 +155,5 @@ bool FCortexBPToolbarInterfaceNameReuseTest::RunTest(const FString& Parameters)
 		FindObject<UBlueprint>(nullptr, *BlueprintPath));
 
 	RunInterfaceClassificationFixture(*this);
-
 	return true;
 }

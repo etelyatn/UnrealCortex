@@ -19,6 +19,7 @@ public class CortexReflect : ModuleRules
 			"UnrealEd",
 			"Projects",
 			"AssetRegistry",
+			"DirectoryWatcher",
 			"Json",
 			"BlueprintGraph",
 			"Kismet",

@@ -10,6 +10,7 @@ from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase
 from pydantic import ConfigDict, WithJsonSchema, create_model
 
 from cortex_mcp.capabilities import CORE_DOMAINS
+from cortex_mcp.graph_patch_boundary import dispatch_graph_apply_patch
 from cortex_mcp.pagination import PaginationCache, decode_cursor
 from cortex_mcp.response import format_response, _find_largest_list
 from cortex_mcp.schema_generator import (
@@ -217,8 +218,27 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                     for key in ("stop_on_error", "rollback_on_error", "verify_rollback"):
                         if key in route_params:
                             batch_params[key] = route_params[key]
+                    if isinstance(commands, list) and any(
+                        isinstance(step, dict) and step.get("command") == "graph.apply_patch"
+                        for step in commands
+                    ):
+                        return json.dumps({
+                            "_error": "INVALID_OPERATION",
+                            "_message": (
+                                "graph.apply_patch is a standalone mutation and cannot run inside "
+                                "core_cmd(batch_query); call graph_cmd or blueprint_compose so the "
+                                "MCP prune response boundary can run before mutation."
+                            ),
+                        })
                     response = connection.send_command("batch", batch_params)
                     return format_response(response.get("data", {}), "batch_query")
+
+            if domain == "graph" and command == "apply_patch":
+                return dispatch_graph_apply_patch(
+                    connection,
+                    route_params,
+                    tool_name="graph_cmd",
+                )
 
             # UMG animation binding inspection and guarded removal
             if domain == "umg" and command in {"remove_animation_binding", "list_animation_bindings"}:
