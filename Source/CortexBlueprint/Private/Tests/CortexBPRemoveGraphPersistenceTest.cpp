@@ -304,6 +304,20 @@ bool FCortexBPRemoveGraphPreviewFunctionTest::RunTest(const FString&)
 		TestEqual(TEXT("deletion graph guid"), DeletionGuid, Selected->GraphGuid.ToString());
 	}
 	TestTrue(TEXT("preview leaves function graph intact"), BP->FunctionGraphs.Contains(Selected));
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		MarkFixtureGarbage(BP);
+		return false;
+	}
+	const TSharedPtr<FJsonObject> PreviewRequest = PreviewParams(Path, TEXT("DeleteMe"), false);
+	const FCortexCommandResult Applied = Handler.Execute(
+		TEXT("remove_graph"), ApplyFromPreview(PreviewRequest, Result.Data, false));
+	TestTrue(TEXT("apply succeeds"), Applied.bSuccess);
+	TestTrue(TEXT("apply returns response data"), Applied.Data.IsValid());
+	if (Applied.Data.IsValid())
+	{
+		TestFalse(TEXT("validation hash is preview-only"), Applied.Data->HasField(TEXT("validation_hash")));
+	}
 	MarkFixtureGarbage(BP);
 	return true;
 }

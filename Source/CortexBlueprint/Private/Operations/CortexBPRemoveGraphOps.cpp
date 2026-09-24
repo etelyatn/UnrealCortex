@@ -1415,7 +1415,7 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 		Diagnostics.Add(MakeShared<FJsonValueString>(Diagnostic));
 	}
 	Data->SetArrayField(TEXT("diagnostics"), Diagnostics);
-	Data->SetStringField(TEXT("validation_hash"), Prepared.ValidationHash);
+	if (Prepared.bDryRun) Data->SetStringField(TEXT("validation_hash"), Prepared.ValidationHash);
 	return FCortexCommandRouter::Success(Data);
 }
 
