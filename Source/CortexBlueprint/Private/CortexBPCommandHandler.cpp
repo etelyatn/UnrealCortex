@@ -284,12 +284,17 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("access"), TEXT("string"), TEXT("Function access level"))
 		.Optional(TEXT("inputs"), TEXT("array"), TEXT("Input parameter definitions"))
 		.Optional(TEXT("outputs"), TEXT("array"), TEXT("Output parameter definitions")));
-	Commands.Add(FCortexCommandInfo{TEXT("remove_graph"), TEXT("Remove a graph (function, macro, event graph) or custom event from a Blueprint")}
+	Commands.Add(FCortexCommandInfo{
+		TEXT("remove_graph"),
+		TEXT("Preview or remove a graph/custom event with explicit compile/save lifecycle") }
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
-		.Required(TEXT("name"), TEXT("string"), TEXT("Name of graph or custom event to remove"))
-		.Optional(TEXT("cascade_exec_chain"), TEXT("boolean"), TEXT("Remove connected execution chain for custom events (default: false)"))
-		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after removal (default: true)"))
-		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview what would be removed without modifying anything")));
+		.Required(TEXT("name"), TEXT("string"), TEXT("Graph or custom-event name selector"))
+		.Required(TEXT("dry_run"), TEXT("boolean"), TEXT("true=preview, false=apply"))
+		.Required(TEXT("compile"), TEXT("boolean"), TEXT("Compile after apply"))
+		.Required(TEXT("save"), TEXT("boolean"), TEXT("Persist the verified result after compile/readback"))
+		.Optional(TEXT("cascade_exec_chain"), TEXT("boolean"), TEXT("Custom-event exec cascade, default false"))
+		.OptionalExpectedFingerprint()
+		.Optional(TEXT("expected_validation_hash"), TEXT("string"), TEXT("Validation hash returned by preview")));
 	Commands.Add(FCortexCommandInfo{TEXT("get_class_defaults"), TEXT("Read default property values from a Blueprint CDO")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("properties"), TEXT("array"), TEXT("Specific properties to read"))
