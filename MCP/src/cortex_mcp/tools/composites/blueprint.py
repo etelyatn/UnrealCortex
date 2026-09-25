@@ -22,13 +22,14 @@ _BP_DISAMBIG = (
 _SAFE_UPDATE_DOC = (
     "\n\nSafe update mode:\n"
     "  blueprint_compose(mode='update', asset_path='/Game/BP_X.BP_X', patch={...})\n"
-    "A non-prune update sends the reviewed patch once in a `graph.apply_patch` call. The MCP boundary\n"
-    "refuses `limit`, `cursor`, `offset`, and `page` on every `graph.apply_patch` before dispatch.\n"
-    "Both `prune_island` and `retire_entries` previews must be complete and fit the response budget.\n"
-    "Either apply requires the validation hash from a separate preview of the exact approved GUID set,\n"
-    "then uses a bounded preflight followed by one one-shot apply; an initial partition preview hash is\n"
-    "not sufficient. If the apply result is ambiguous, perform readback reconciliation and re-preview\n"
-    "before any retry.\n"
+    "Updates other than `prune_island` and `retire_entries` use the normal reviewed patch flow. "
+    "`prune_island` and `retire_entries` are complete-approval migrations: their previews must be "
+    "complete and fit the response budget, and their applies require the validation hash from a "
+    "reviewed preview containing the exact approved GUID set, then use a bounded preflight followed "
+    "by one one-shot apply; an initial partition preview hash is not sufficient. If the apply result "
+    "is ambiguous, perform readback reconciliation and re-preview before any retry.\n"
+    "The MCP boundary refuses `limit`, `cursor`, `offset`, and `page` on every `graph.apply_patch` "
+    "before dispatch.\n"
     "The facade adds `asset_path` and sends `patch` unchanged, so native validation remains authoritative for\n"
     "remaining patch-envelope fields:\n"
     "  {'patch_id': <uuid>, 'target': {'graph_ref'|'implementation': ...},\n"
@@ -90,9 +91,9 @@ def _safe_update(
             "MIGRATION_REQUIRED",
             "mode='update' requires a 'patch' object: send the reviewed envelope to "
             "blueprint_compose(mode='update', asset_path=<asset>, patch={...}), which uses the "
-            "graph.apply_patch contract: non-prune updates send once, while `prune_island` and "
-            "`retire_entries` applies use a bounded preflight and one one-shot apply. The legacy batch "
-            "update route was removed and is never used as a fallback."
+            "graph.apply_patch contract: updates other than `prune_island` and `retire_entries` send "
+            "once, while `prune_island` and `retire_entries` applies use a bounded preflight and one "
+            "one-shot apply. The legacy batch update route was removed and is never used as a fallback."
             f"{legacy_note}",
         )
     if legacy_supplied:

@@ -138,6 +138,8 @@ def test_update_without_patch_reports_migration_error_and_never_calls_editor():
     assert payload["_error"] == "MIGRATION_REQUIRED"
     assert "graph.apply_patch" in payload["_message"]
     assert "patch" in payload["_message"]
+    assert "non-prune" not in payload["_message"].lower()
+    assert "updates other than `prune_island` and `retire_entries`" in payload["_message"]
     connection.send_command.assert_not_called()
 
 
@@ -579,7 +581,15 @@ def test_registered_description_explains_prune_dispatch_and_reconciliation():
 
     description = mcp.descriptions["blueprint_compose"]
 
-    assert "A non-prune update sends the reviewed patch once" in description
+    assert "non-prune" not in description.lower()
+    assert (
+        "Updates other than `prune_island` and `retire_entries` use the normal reviewed patch flow."
+        in description
+    )
+    assert (
+        "`prune_island` and `retire_entries` are complete-approval migrations"
+        in description
+    )
     assert "on every `graph.apply_patch` before dispatch" in description
     assert "bounded preflight" in description
     assert "one one-shot apply" in description
