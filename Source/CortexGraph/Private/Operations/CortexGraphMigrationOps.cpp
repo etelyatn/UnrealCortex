@@ -5115,6 +5115,42 @@ bool ComputeOwnedIslandPartition(
 	{
 		if (!Candidates.Contains(Node->NodeGuid)) RetainedWorklist.Add(Node);
 	}
+
+	// A candidate body with an execution input from a retained entry cannot be safely removed:
+	// preservation capture intentionally excludes links crossing the approved removal set.
+	for (UEdGraphNode* Node : IslandNodes)
+	{
+		if (!Candidates.Contains(Node->NodeGuid)) continue;
+		FString RetainedExecutionReason;
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Input || Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec) continue;
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				OutPartition.Scan.ExamineLink();
+				if (OutPartition.Scan.bExhausted)
+				{
+					OutError = MakePruneScanRefusal(OutPartition.Scan);
+					return false;
+				}
+				UEdGraphNode* Producer = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+				const bool bSelectedPruneSeed = !bSelectedEntriesRemovable && Producer
+					&& Selected.Contains(Producer->NodeGuid);
+				if ((Producer && Candidates.Contains(Producer->NodeGuid)) || bSelectedPruneSeed) continue;
+				RetainedExecutionReason = Producer
+					? FString::Printf(TEXT("execution input is also linked from retained node '%s'"),
+						*Producer->NodeGuid.ToString())
+					: TEXT("execution input has a link whose producer does not resolve");
+				break;
+			}
+			if (!RetainedExecutionReason.IsEmpty()) break;
+		}
+		if (RetainedExecutionReason.IsEmpty()) continue;
+		Candidates.Remove(Node->NodeGuid);
+		BlockedReasons.Add(Node->NodeGuid, RetainedExecutionReason);
+		RetainedWorklist.Add(Node);
+	}
+
 	for (UEdGraphNode* Node : IslandNodes)
 	{
 		if (!Candidates.Contains(Node->NodeGuid)) continue;

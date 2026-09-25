@@ -439,6 +439,53 @@ bool FCortexGraphMigrationRetireSharedProducerTest::RunTest(const FString& Param
 	Fixture.Cleanup();
 	return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireSharedExecutionBodyTest,
+	"Cortex.Graph.Authoring.Migration.Retire.RefusesSharedExecutionBody",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireSharedExecutionBodyTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("Widget fixture is created"), Fixture.Build(TEXT("BP_RetireSharedExecutionBody")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+
+	const UEdGraphSchema* Schema = Fixture.Graph->GetSchema();
+	UEdGraphPin* RetainedThen = Fixture.Retained->FindPin(TEXT("then"));
+	UEdGraphPin* SharedBodyExecute = Fixture.AlphaBody->FindPin(TEXT("execute"));
+	TestTrue(TEXT("retained entry can share the selected entry's execution body"),
+		Schema && RetainedThen && SharedBodyExecute && Schema->TryCreateConnection(RetainedThen, SharedBodyExecute));
+	const FString GraphBefore = CaptureNativeGraph(Fixture.Graph);
+
+	FCortexGraphMigrationRetirePlan PlanValue;
+	bool bReused = false;
+	FCortexCommandResult Error;
+	const FString SelectedGuid = Fixture.Alpha->NodeGuid.ToString();
+	TestTrue(FString::Printf(TEXT("retirement preview succeeds: %s"), *Error.ErrorMessage),
+		Plan(Fixture, { SelectedGuid }, PlanValue, bReused, Error));
+	TestTrue(TEXT("execution body with an incoming retained execution edge is blocked"),
+		PlanValue.Blocked.ContainsByPredicate([&](const FCortexGraphPruneNode& Node)
+			{ return Node.NodeGuid == Fixture.AlphaBody->NodeGuid.ToString(); }));
+	TestFalse(TEXT("blocked execution body is not approved for removal"),
+		PlanValue.RemovableGuids.Contains(Fixture.AlphaBody->NodeGuid.ToString()));
+	TestTrue(TEXT("selected entry feeding the retained body is blocked"),
+		PlanValue.Blocked.ContainsByPredicate([&](const FCortexGraphPruneNode& Node)
+			{ return Node.NodeGuid == SelectedGuid; }));
+	TestFalse(TEXT("selected entry is not approved for removal"), PlanValue.RemovableGuids.Contains(SelectedGuid));
+
+	Error = FCortexCommandResult();
+	TestFalse(TEXT("reviewed retirement refuses the blocked shared execution body"),
+		Plan(Fixture, { SelectedGuid }, PlanValue, bReused, Error, true, PlanValue.RemovableGuids));
+	TestEqual(TEXT("shared execution body refusal is INVALID_OPERATION"),
+		Error.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+	TestEqual(TEXT("refused retirement leaves the complete graph unchanged"),
+		CaptureNativeGraph(Fixture.Graph), GraphBefore);
+
+	Fixture.Cleanup();
+	return true;
+}
+
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireBlockedEntryTest,
 	"Cortex.Graph.Authoring.Migration.Retire.BlocksSelectedEntryFeedingRetainedLogic",
