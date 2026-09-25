@@ -6421,11 +6421,7 @@ bool FCortexGraphMigrationOps::PlanRetirement(
 			{
 				if (Node && Node->bHasCompilerMessage && !Node->ErrorMsg.IsEmpty()) OutPlan.PreexistingDiagnostics.Add(Node->ErrorMsg);
 			}
-			const bool bDiagnosticsTruncated = OutPlan.PreexistingDiagnostics.Num() > 15
-				|| OutPlan.PreexistingDiagnostics.Contains(TEXT("additional compiler diagnostics omitted"));
-			FCortexGraphPatchOps::TrimDiagnostics(OutPlan.PreexistingDiagnostics);
-			OutPlan.bPreexistingDiagnosticsTruncated = bDiagnosticsTruncated
-				|| OutPlan.PreexistingDiagnostics.Contains(TEXT("additional compiler diagnostics omitted"));
+			OutPlan.bPreexistingDiagnosticsTruncated = FCortexGraphPatchOps::TrimDiagnostics(OutPlan.PreexistingDiagnostics);
 			bOutReused = true;
 			return true;
 		}
@@ -6530,11 +6526,7 @@ bool FCortexGraphMigrationOps::PlanRetirement(
 	{
 		if (Node && Node->bHasCompilerMessage && !Node->ErrorMsg.IsEmpty()) OutPlan.PreexistingDiagnostics.Add(Node->ErrorMsg);
 	}
-	const bool bDiagnosticsTruncated = OutPlan.PreexistingDiagnostics.Num() > 15
-		|| OutPlan.PreexistingDiagnostics.Contains(TEXT("additional compiler diagnostics omitted"));
-	FCortexGraphPatchOps::TrimDiagnostics(OutPlan.PreexistingDiagnostics);
-	OutPlan.bPreexistingDiagnosticsTruncated = bDiagnosticsTruncated
-		|| OutPlan.PreexistingDiagnostics.Contains(TEXT("additional compiler diagnostics omitted"));
+	OutPlan.bPreexistingDiagnosticsTruncated = FCortexGraphPatchOps::TrimDiagnostics(OutPlan.PreexistingDiagnostics);
 	return true;
 }
 

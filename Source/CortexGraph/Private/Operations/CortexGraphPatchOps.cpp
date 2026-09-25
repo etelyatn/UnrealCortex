@@ -4805,30 +4805,39 @@ void FCortexGraphPatchOps::CollectCompilerDiagnostics(const FCompilerResultsLog&
 /**
  * Enforces one shared final diagnostics bound over a whole outcome: at most 16 entries, a single
  * omission marker inside that bound, and at most 512 characters per entry including the suffix.
+ * Returns true if any diagnostic was truncated or omitted.
  */
-void FCortexGraphPatchOps::TrimDiagnostics(TArray<FString>& InOutDiagnostics)
+bool FCortexGraphPatchOps::TrimDiagnostics(TArray<FString>& InOutDiagnostics)
 {
 	static const FString OmissionMarker = TEXT("additional compiler diagnostics omitted");
 	static const FString Elision = TEXT("...");
+	bool bModified = false;
 	for (FString& Diagnostic : InOutDiagnostics)
 	{
 		if (Diagnostic.Len() + Elision.Len() > 512)
 		{
 			Diagnostic = Diagnostic.Left(512 - Elision.Len()) + Elision;
+			bModified = true;
 		}
 	}
 	// Any pre-existing marker means the set is already truncated: it must survive the trim even
 	// when the aggregate then fits, otherwise a truncated set is reported as complete.
 	bool bTruncated = InOutDiagnostics.Remove(OmissionMarker) > 0;
+	if (bTruncated)
+	{
+		bModified = true;
+	}
 	if (InOutDiagnostics.Num() > 16 - 1)
 	{
 		InOutDiagnostics.SetNum(16 - 1);
 		bTruncated = true;
+		bModified = true;
 	}
 	if (bTruncated)
 	{
 		InOutDiagnostics.Add(OmissionMarker);
 	}
+	return bModified;
 }
 
 bool FCortexGraphPatchOps::ValidateEligibility(

@@ -1496,4 +1496,197 @@ bool FCortexGraphMigrationRetireOwnershipConflictTest::RunTest(const FString& Pa
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireDiagnosticsTruncationTest,
+	"Cortex.Graph.Authoring.Migration.Retire.DiagnosticsTruncationIsTruthful",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireDiagnosticsTruncationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+
+	// Case A: Long cached diagnostic (> 512 chars)
+	{
+		FFixture Fixture;
+		TestTrue(TEXT("Case A fixture created"), Fixture.Build(TEXT("BP_RetireDiagLong")));
+		if (Fixture.Blueprint)
+		{
+			Fixture.Alpha->bHasCompilerMessage = true;
+			Fixture.Alpha->ErrorMsg = FString::ChrN(700, TEXT('x'));
+
+			FCortexGraphMigrationRetirePlan PlanValue;
+			bool bReused = false;
+			FCortexCommandResult Error;
+			TestTrue(TEXT("preview succeeds with long diagnostic"),
+				Plan(Fixture, { Fixture.AlphaGuid.ToString(), Fixture.BetaGuid.ToString() }, PlanValue, bReused, Error));
+			TestEqual(TEXT("exactly one cached diagnostic collected"), PlanValue.PreexistingDiagnostics.Num(), 1);
+			if (PlanValue.PreexistingDiagnostics.Num() == 1)
+			{
+				TestTrue(TEXT("returned string respects 512 character bound"), PlanValue.PreexistingDiagnostics[0].Len() <= 512);
+			}
+			TestTrue(TEXT("preexisting_diagnostics_truncated is true for character truncation"),
+				PlanValue.bPreexistingDiagnosticsTruncated);
+
+			const TSharedPtr<FJsonObject> Inventory = FCortexGraphMigrationOps::MakeRetirementInventory(PlanValue.ToJson());
+			TestNotNull(TEXT("inventory is valid"), Inventory.Get());
+			if (Inventory.IsValid())
+			{
+				TestTrue(TEXT("inventory reports preexisting_diagnostics_truncated true"),
+					Inventory->GetBoolField(TEXT("preexisting_diagnostics_truncated")));
+				TestEqual(TEXT("inventory names cached_node_messages source"),
+					Inventory->GetStringField(TEXT("preexisting_diagnostics_source")), FString(TEXT("cached_node_messages")));
+			}
+			Fixture.Cleanup();
+		}
+	}
+
+	// Case B: Count truncation (> 16 messages)
+	{
+		FFixture Fixture;
+		TestTrue(TEXT("Case B fixture created"), Fixture.Build(TEXT("BP_RetireDiagCount")));
+		if (Fixture.Blueprint)
+		{
+			for (int32 Index = 0; Index < 20; ++Index)
+			{
+				UK2Node_CallFunction* Dummy = Fixture.AddCall(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("PrintString")));
+				Dummy->bHasCompilerMessage = true;
+				Dummy->ErrorMsg = FString::Printf(TEXT("error message %d"), Index);
+			}
+
+			FCortexGraphMigrationRetirePlan PlanValue;
+			bool bReused = false;
+			FCortexCommandResult Error;
+			TestTrue(TEXT("preview succeeds with many diagnostics"),
+				Plan(Fixture, { Fixture.AlphaGuid.ToString(), Fixture.BetaGuid.ToString() }, PlanValue, bReused, Error));
+			TestTrue(TEXT("diagnostics count bounded by 16"), PlanValue.PreexistingDiagnostics.Num() <= 16);
+			TestTrue(TEXT("omission marker is present"),
+				PlanValue.PreexistingDiagnostics.Contains(TEXT("additional compiler diagnostics omitted")));
+			TestTrue(TEXT("preexisting_diagnostics_truncated is true for count truncation"),
+				PlanValue.bPreexistingDiagnosticsTruncated);
+
+			const TSharedPtr<FJsonObject> Inventory = FCortexGraphMigrationOps::MakeRetirementInventory(PlanValue.ToJson());
+			TestNotNull(TEXT("inventory is valid"), Inventory.Get());
+			if (Inventory.IsValid())
+			{
+				TestTrue(TEXT("inventory reports preexisting_diagnostics_truncated true for count truncation"),
+					Inventory->GetBoolField(TEXT("preexisting_diagnostics_truncated")));
+			}
+			Fixture.Cleanup();
+		}
+	}
+
+	// Case C: No truncation (single short message)
+	{
+		FFixture Fixture;
+		TestTrue(TEXT("Case C fixture created"), Fixture.Build(TEXT("BP_RetireDiagShort")));
+		if (Fixture.Blueprint)
+		{
+			Fixture.Alpha->bHasCompilerMessage = true;
+			Fixture.Alpha->ErrorMsg = TEXT("short compiler warning message");
+
+			FCortexGraphMigrationRetirePlan PlanValue;
+			bool bReused = false;
+			FCortexCommandResult Error;
+			TestTrue(TEXT("preview succeeds with short diagnostic"),
+				Plan(Fixture, { Fixture.AlphaGuid.ToString(), Fixture.BetaGuid.ToString() }, PlanValue, bReused, Error));
+			TestEqual(TEXT("exactly one cached diagnostic collected"), PlanValue.PreexistingDiagnostics.Num(), 1);
+			TestFalse(TEXT("preexisting_diagnostics_truncated is false when no truncation occurs"),
+				PlanValue.bPreexistingDiagnosticsTruncated);
+
+			const TSharedPtr<FJsonObject> Inventory = FCortexGraphMigrationOps::MakeRetirementInventory(PlanValue.ToJson());
+			TestNotNull(TEXT("inventory is valid"), Inventory.Get());
+			if (Inventory.IsValid())
+			{
+				TestFalse(TEXT("inventory reports preexisting_diagnostics_truncated false when no truncation"),
+					Inventory->GetBoolField(TEXT("preexisting_diagnostics_truncated")));
+			}
+			Fixture.Cleanup();
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireConformEngineTransitionTest,
+	"Cortex.Graph.Authoring.Migration.Retire.PostReparentCompileConformsStaleOverride",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireConformEngineTransitionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+
+	FFixture Fixture;
+	TestTrue(TEXT("Build legacy parent widget fixture"),
+		Fixture.Build(TEXT("BP_RetireEngineTransition"), false, false, UCortexGraphRetireLegacyWidget::StaticClass()));
+	if (!Fixture.Blueprint) return false;
+
+	// 1. Before compile / reparent: genuine eligible override event
+	TestNotNull(TEXT("Alpha exists before reparent"), Fixture.Alpha);
+	TestTrue(TEXT("Alpha is UK2Node_Event before reparent"), Fixture.Alpha != nullptr && !Fixture.Alpha->IsA<UK2Node_CustomEvent>());
+	if (Fixture.Alpha)
+	{
+		TestTrue(TEXT("Alpha is an override function before reparent"), Fixture.Alpha->bOverrideFunction);
+		TestEqual(TEXT("Alpha member name is OnLegacyAlpha"),
+			Fixture.Alpha->EventReference.GetMemberName(), FName(TEXT("OnLegacyAlpha")));
+	}
+	const FGuid OriginalAlphaGuid = Fixture.AlphaGuid;
+
+	// 2. Reparent to target widget (where OnLegacyAlpha does not exist)
+	Fixture.Blueprint->ParentClass = UCortexGraphRetireCollisionTargetWidget::StaticClass();
+	FBlueprintEditorUtils::RefreshAllNodes(Fixture.Blueprint);
+
+	// 3. Add an independent deterministic defect causing compile failure
+	Fixture.AddNativeNameCollision();
+
+	// 4. Compile: Blueprint enters real BS_Error
+	// In UE 5.8, ConformImplementedEvents emits a warning for each stale override conformed to custom event
+	AddExpectedError(TEXT("replaced as a Custom Event"), EAutomationExpectedErrorFlags::Contains, 2);
+	AddExpectedError(TEXT("name conflicts with a native"), EAutomationExpectedErrorFlags::Contains, 1);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+
+	TestEqual(TEXT("Blueprint entered real BS_Error status"),
+		static_cast<int32>(Fixture.Blueprint->Status), static_cast<int32>(BS_Error));
+
+	// 5. In UE 5.8, FBlueprintEditorUtils::ConformImplementedEvents destroys stale override UK2Node_Event
+	// and substitutes a UK2Node_CustomEvent that preserves the original NodeGuid
+	UK2Node_CustomEvent* SubstituteCustomEvent = nullptr;
+	for (UEdGraphNode* Node : Fixture.Graph->Nodes)
+	{
+		if (UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
+		{
+			if (CustomEvent->CustomFunctionName.ToString().Contains(TEXT("OnLegacyAlpha")))
+			{
+				SubstituteCustomEvent = CustomEvent;
+				break;
+			}
+		}
+	}
+	TestNotNull(TEXT("stale override node was conformed into a UK2Node_CustomEvent by UE 5.8 compiler"),
+		SubstituteCustomEvent);
+	if (SubstituteCustomEvent)
+	{
+		TestEqual(TEXT("substitute custom event inherits the original node GUID"),
+			SubstituteCustomEvent->NodeGuid, OriginalAlphaGuid);
+		TestTrue(TEXT("substitute node is a UK2Node_CustomEvent"),
+			SubstituteCustomEvent->IsA<UK2Node_CustomEvent>());
+		TestFalse(TEXT("substitute node no longer has bOverrideFunction"),
+			SubstituteCustomEvent->bOverrideFunction);
+	}
+
+	// 6. Prove the conformed node is refused by retire_entries because it is now a custom event:
+	FCortexGraphMigrationRetirePlan PlanValue;
+	bool bReused = false;
+	FCortexCommandResult Error;
+	TestFalse(TEXT("retire_entries refuses conformed custom event"),
+		Plan(Fixture, { OriginalAlphaGuid.ToString() }, PlanValue, bReused, Error));
+	TestEqual(TEXT("refusal error code is INVALID_OPERATION"), Error.ErrorCode, FString(TEXT("INVALID_OPERATION")));
+	TestTrue(TEXT("error message explains node is not a supported unbound override event"),
+		Error.ErrorMessage.Contains(TEXT("not a supported unbound override event")));
+
+	Fixture.Cleanup();
+	return true;
+}
+
 #endif
+

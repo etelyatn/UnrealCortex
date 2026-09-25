@@ -198,8 +198,9 @@ public:
 	/**
 	 * Enforces one shared final diagnostics bound over a whole outcome: at most 16 entries with a
 	 * single omission marker, and at most 512 characters per entry including any suffix.
+	 * Returns true if the diagnostics were modified (by count or per-message character truncation).
 	 */
-	static void TrimDiagnostics(TArray<FString>& InOutDiagnostics);
+	static bool TrimDiagnostics(TArray<FString>& InOutDiagnostics);
 
 	/**
 	 * Shared request-validation primitives. The migration shell validates its own object against the
