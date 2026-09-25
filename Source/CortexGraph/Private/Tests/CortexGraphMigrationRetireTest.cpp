@@ -1322,6 +1322,8 @@ bool FCortexGraphMigrationRetireAbsentSourceReplayTest::RunTest(const FString& P
 	TestTrue(FString::Printf(TEXT("fresh approved replay preview succeeds: %s"), *Error.ErrorMessage),
 		FCortexGraphPatchOps::Preflight(Fixture.Blueprint, ReplayRequest, ReplayPreview, Error));
 	TestTrue(TEXT("replay preview reuses the retirement plan"), ReplayPreview.RetirementPlan.IsValid());
+	TestFalse(TEXT("replay preview reports no graph change"), ReplayPreview.bChanged);
+	TestTrue(TEXT("replay preview records absent-source provenance"), ReplayPreview.bReplayedWithAbsentSource);
 	TestTrue(TEXT("replay preview carries a fresh validation hash"),
 		!ReplayPreview.ValidationHash.IsEmpty()
 			&& ReplayPreview.ValidationHash != InitialRequest->GetStringField(TEXT("expected_validation_hash")));
@@ -1330,6 +1332,9 @@ bool FCortexGraphMigrationRetireAbsentSourceReplayTest::RunTest(const FString& P
 		const TSharedPtr<FJsonObject> Inventory =
 			FCortexGraphMigrationOps::MakeRetirementInventory(ReplayPreview.RetirementPlan);
 		TestTrue(TEXT("replay is marked reused"), Inventory.IsValid() && Inventory->GetBoolField(TEXT("reused")));
+		TestTrue(TEXT("replay inventory is complete"), Inventory.IsValid() && Inventory->GetBoolField(TEXT("complete")));
+		TestFalse(TEXT("replay inventory is not awaiting approval"),
+			Inventory.IsValid() && Inventory->GetBoolField(TEXT("awaiting_approval")));
 	}
 	ReplayRequest->SetBoolField(TEXT("dry_run"), false);
 	ReplayRequest->SetStringField(TEXT("expected_validation_hash"), ReplayPreview.ValidationHash);
