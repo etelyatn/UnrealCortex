@@ -1607,5 +1607,86 @@ bool FCortexGraphMigrationRetireDiagnosticsTruncationTest::RunTest(const FString
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireConformEngineTransitionTest,
+	"Cortex.Graph.Authoring.Migration.Retire.PostReparentCompileConformsStaleOverride",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireConformEngineTransitionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+
+	FFixture Fixture;
+	TestTrue(TEXT("Build legacy parent widget fixture"),
+		Fixture.Build(TEXT("BP_RetireEngineTransition"), false, false, UCortexGraphRetireLegacyWidget::StaticClass()));
+	if (!Fixture.Blueprint) return false;
+
+	// 1. Before compile / reparent: genuine eligible override event
+	TestNotNull(TEXT("Alpha exists before reparent"), Fixture.Alpha);
+	TestTrue(TEXT("Alpha is UK2Node_Event before reparent"), Fixture.Alpha != nullptr && !Fixture.Alpha->IsA<UK2Node_CustomEvent>());
+	if (Fixture.Alpha)
+	{
+		TestTrue(TEXT("Alpha is an override function before reparent"), Fixture.Alpha->bOverrideFunction);
+		TestEqual(TEXT("Alpha member name is OnLegacyAlpha"),
+			Fixture.Alpha->EventReference.GetMemberName(), FName(TEXT("OnLegacyAlpha")));
+	}
+	const FGuid OriginalAlphaGuid = Fixture.AlphaGuid;
+
+	// 2. Reparent to target widget (where OnLegacyAlpha does not exist)
+	Fixture.Blueprint->ParentClass = UCortexGraphRetireCollisionTargetWidget::StaticClass();
+	FBlueprintEditorUtils::RefreshAllNodes(Fixture.Blueprint);
+
+	// 3. Add an independent deterministic defect causing compile failure
+	Fixture.AddNativeNameCollision();
+
+	// 4. Compile: Blueprint enters real BS_Error
+	// In UE 5.8, ConformImplementedEvents emits a warning for each stale override conformed to custom event
+	AddExpectedError(TEXT("replaced as a Custom Event"), EAutomationExpectedErrorFlags::Contains, 2);
+	AddExpectedError(TEXT("name conflicts with a native"), EAutomationExpectedErrorFlags::Contains, 1);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+
+	TestEqual(TEXT("Blueprint entered real BS_Error status"),
+		static_cast<int32>(Fixture.Blueprint->Status), static_cast<int32>(BS_Error));
+
+	// 5. In UE 5.8, FBlueprintEditorUtils::ConformImplementedEvents destroys stale override UK2Node_Event
+	// and substitutes a UK2Node_CustomEvent that preserves the original NodeGuid
+	UK2Node_CustomEvent* SubstituteCustomEvent = nullptr;
+	for (UEdGraphNode* Node : Fixture.Graph->Nodes)
+	{
+		if (UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
+		{
+			if (CustomEvent->CustomFunctionName.ToString().Contains(TEXT("OnLegacyAlpha")))
+			{
+				SubstituteCustomEvent = CustomEvent;
+				break;
+			}
+		}
+	}
+	TestNotNull(TEXT("stale override node was conformed into a UK2Node_CustomEvent by UE 5.8 compiler"),
+		SubstituteCustomEvent);
+	if (SubstituteCustomEvent)
+	{
+		TestEqual(TEXT("substitute custom event inherits the original node GUID"),
+			SubstituteCustomEvent->NodeGuid, OriginalAlphaGuid);
+		TestTrue(TEXT("substitute node is a UK2Node_CustomEvent"),
+			SubstituteCustomEvent->IsA<UK2Node_CustomEvent>());
+		TestFalse(TEXT("substitute node no longer has bOverrideFunction"),
+			SubstituteCustomEvent->bOverrideFunction);
+	}
+
+	// 6. Prove the conformed node is refused by retire_entries because it is now a custom event:
+	FCortexGraphMigrationRetirePlan PlanValue;
+	bool bReused = false;
+	FCortexCommandResult Error;
+	TestFalse(TEXT("retire_entries refuses conformed custom event"),
+		Plan(Fixture, { OriginalAlphaGuid.ToString() }, PlanValue, bReused, Error));
+	TestEqual(TEXT("refusal error code is INVALID_OPERATION"), Error.ErrorCode, FString(TEXT("INVALID_OPERATION")));
+	TestTrue(TEXT("error message explains node is not a supported unbound override event"),
+		Error.ErrorMessage.Contains(TEXT("not a supported unbound override event")));
+
+	Fixture.Cleanup();
+	return true;
+}
+
 #endif
 
