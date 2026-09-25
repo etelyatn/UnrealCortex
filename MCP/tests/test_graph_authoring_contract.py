@@ -133,6 +133,15 @@ def test_published_schema_declares_the_standalone_batch_restriction():
     assert "batch" in description
 
 
+def test_published_apply_patch_description_documents_entry_retirement():
+    command = _graph_command("apply_patch")
+    assert "retire_entries" in command["description"]
+    assert "entry_node_guids" in command["description"]
+    assert [param["name"] for param in command["params"]] == (
+        ENVELOPE_REQUIRED + ENVELOPE_OPTIONAL
+    )
+
+
 def test_umg_authoring_profile_exposes_apply_patch_through_graph_cmd():
     reset_operation_schema_budget()
     connection = _live_schema_connection(_graph_command("apply_patch"))
