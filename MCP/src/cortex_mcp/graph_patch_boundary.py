@@ -40,6 +40,8 @@ def complete_approval_migration_op(request: dict[str, Any]) -> str | None:
     if not isinstance(migration, dict):
         return None
     op = migration.get("op")
+    if not isinstance(op, str):
+        return None
     return op if op in _COMPLETE_APPROVAL_MIGRATIONS else None
 
 

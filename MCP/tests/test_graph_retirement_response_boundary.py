@@ -273,3 +273,9 @@ def test_complete_approval_predicate_recognizes_only_supported_migrations():
     assert predicate({"migration": {"op": "prune_island"}}) == "prune_island"
     assert predicate({"migration": {"op": "add_node"}}) is None
     assert predicate({}) is None
+
+
+@pytest.mark.parametrize("op", [[], {}])
+def test_complete_approval_predicate_rejects_non_string_migration_op(op):
+    predicate = complete_approval_migration_op
+    assert predicate({"migration": {"op": op}}) is None
