@@ -1496,4 +1496,116 @@ bool FCortexGraphMigrationRetireOwnershipConflictTest::RunTest(const FString& Pa
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireDiagnosticsTruncationTest,
+	"Cortex.Graph.Authoring.Migration.Retire.DiagnosticsTruncationIsTruthful",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireDiagnosticsTruncationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+
+	// Case A: Long cached diagnostic (> 512 chars)
+	{
+		FFixture Fixture;
+		TestTrue(TEXT("Case A fixture created"), Fixture.Build(TEXT("BP_RetireDiagLong")));
+		if (Fixture.Blueprint)
+		{
+			Fixture.Alpha->bHasCompilerMessage = true;
+			Fixture.Alpha->ErrorMsg = FString::ChrN(700, TEXT('x'));
+
+			FCortexGraphMigrationRetirePlan PlanValue;
+			bool bReused = false;
+			FCortexCommandResult Error;
+			TestTrue(TEXT("preview succeeds with long diagnostic"),
+				Plan(Fixture, { Fixture.AlphaGuid.ToString(), Fixture.BetaGuid.ToString() }, PlanValue, bReused, Error));
+			TestEqual(TEXT("exactly one cached diagnostic collected"), PlanValue.PreexistingDiagnostics.Num(), 1);
+			if (PlanValue.PreexistingDiagnostics.Num() == 1)
+			{
+				TestTrue(TEXT("returned string respects 512 character bound"), PlanValue.PreexistingDiagnostics[0].Len() <= 512);
+			}
+			TestTrue(TEXT("preexisting_diagnostics_truncated is true for character truncation"),
+				PlanValue.bPreexistingDiagnosticsTruncated);
+
+			const TSharedPtr<FJsonObject> Inventory = FCortexGraphMigrationOps::MakeRetirementInventory(PlanValue.ToJson());
+			TestNotNull(TEXT("inventory is valid"), Inventory.Get());
+			if (Inventory.IsValid())
+			{
+				TestTrue(TEXT("inventory reports preexisting_diagnostics_truncated true"),
+					Inventory->GetBoolField(TEXT("preexisting_diagnostics_truncated")));
+				TestEqual(TEXT("inventory names cached_node_messages source"),
+					Inventory->GetStringField(TEXT("preexisting_diagnostics_source")), FString(TEXT("cached_node_messages")));
+			}
+			Fixture.Cleanup();
+		}
+	}
+
+	// Case B: Count truncation (> 16 messages)
+	{
+		FFixture Fixture;
+		TestTrue(TEXT("Case B fixture created"), Fixture.Build(TEXT("BP_RetireDiagCount")));
+		if (Fixture.Blueprint)
+		{
+			for (int32 Index = 0; Index < 20; ++Index)
+			{
+				UK2Node_CallFunction* Dummy = Fixture.AddCall(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("PrintString")));
+				Dummy->bHasCompilerMessage = true;
+				Dummy->ErrorMsg = FString::Printf(TEXT("error message %d"), Index);
+			}
+
+			FCortexGraphMigrationRetirePlan PlanValue;
+			bool bReused = false;
+			FCortexCommandResult Error;
+			TestTrue(TEXT("preview succeeds with many diagnostics"),
+				Plan(Fixture, { Fixture.AlphaGuid.ToString(), Fixture.BetaGuid.ToString() }, PlanValue, bReused, Error));
+			TestTrue(TEXT("diagnostics count bounded by 16"), PlanValue.PreexistingDiagnostics.Num() <= 16);
+			TestTrue(TEXT("omission marker is present"),
+				PlanValue.PreexistingDiagnostics.Contains(TEXT("additional compiler diagnostics omitted")));
+			TestTrue(TEXT("preexisting_diagnostics_truncated is true for count truncation"),
+				PlanValue.bPreexistingDiagnosticsTruncated);
+
+			const TSharedPtr<FJsonObject> Inventory = FCortexGraphMigrationOps::MakeRetirementInventory(PlanValue.ToJson());
+			TestNotNull(TEXT("inventory is valid"), Inventory.Get());
+			if (Inventory.IsValid())
+			{
+				TestTrue(TEXT("inventory reports preexisting_diagnostics_truncated true for count truncation"),
+					Inventory->GetBoolField(TEXT("preexisting_diagnostics_truncated")));
+			}
+			Fixture.Cleanup();
+		}
+	}
+
+	// Case C: No truncation (single short message)
+	{
+		FFixture Fixture;
+		TestTrue(TEXT("Case C fixture created"), Fixture.Build(TEXT("BP_RetireDiagShort")));
+		if (Fixture.Blueprint)
+		{
+			Fixture.Alpha->bHasCompilerMessage = true;
+			Fixture.Alpha->ErrorMsg = TEXT("short compiler warning message");
+
+			FCortexGraphMigrationRetirePlan PlanValue;
+			bool bReused = false;
+			FCortexCommandResult Error;
+			TestTrue(TEXT("preview succeeds with short diagnostic"),
+				Plan(Fixture, { Fixture.AlphaGuid.ToString(), Fixture.BetaGuid.ToString() }, PlanValue, bReused, Error));
+			TestEqual(TEXT("exactly one cached diagnostic collected"), PlanValue.PreexistingDiagnostics.Num(), 1);
+			TestFalse(TEXT("preexisting_diagnostics_truncated is false when no truncation occurs"),
+				PlanValue.bPreexistingDiagnosticsTruncated);
+
+			const TSharedPtr<FJsonObject> Inventory = FCortexGraphMigrationOps::MakeRetirementInventory(PlanValue.ToJson());
+			TestNotNull(TEXT("inventory is valid"), Inventory.Get());
+			if (Inventory.IsValid())
+			{
+				TestFalse(TEXT("inventory reports preexisting_diagnostics_truncated false when no truncation"),
+					Inventory->GetBoolField(TEXT("preexisting_diagnostics_truncated")));
+			}
+			Fixture.Cleanup();
+		}
+	}
+
+	return true;
+}
+
 #endif
+
