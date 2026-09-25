@@ -4,7 +4,10 @@
 
 #include "WidgetBlueprint.h"
 #include "CortexGraphMigrationTestTypes.h"
+#include "CortexGraphTestContentRoot.h"
 #include "EdGraph/EdGraph.h"
+#include "Editor.h"
+#include "Editor/Transactor.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -18,8 +21,15 @@
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Operations/CortexGraphMigrationOps.h"
 #include "UObject/Package.h"
+#include "UObject/SavePackage.h"
+#include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
+#include "HAL/FileManager.h"
+#include "PackageTools.h"
+#include "UObject/GarbageCollection.h"
+#include "Dom/JsonObject.h"
+#include "UObject/UObjectGlobals.h"
 
 #if WITH_EDITOR && WITH_AUTOMATION_TESTS
 namespace CortexGraphMigrationRetireTest
@@ -36,9 +46,27 @@ struct FFixture
 	UK2Node_CallFunction* AlphaBody = nullptr;
 	UK2Node_CallFunction* BetaBody = nullptr;
 	UK2Node_CallFunction* RetainedBody = nullptr;
+	FGuid AlphaGuid;
+	FGuid BetaGuid;
+	FGuid RetainedGuid;
+	FGuid ProducerGuid;
+	FGuid AlphaBodyGuid;
+	FGuid BetaBodyGuid;
+	FGuid RetainedBodyGuid;
+
 
 	UK2Node_Event* AddEvent(const TCHAR* Name)
 	{
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			UK2Node_Event* Existing = Cast<UK2Node_Event>(Node);
+			if (Existing && Existing->EventReference.GetMemberName() == FName(Name))
+			{
+				Existing->EventReference.SetExternalMember(FName(Name), UCortexGraphRetireLegacyWidget::StaticClass());
+				Existing->bOverrideFunction = true;
+				return Existing;
+			}
+		}
 		UK2Node_Event* Event = NewObject<UK2Node_Event>(Graph);
 		Event->EventReference.SetExternalMember(FName(Name), UCortexGraphRetireLegacyWidget::StaticClass());
 		Event->bOverrideFunction = true;
@@ -57,10 +85,21 @@ struct FFixture
 		Graph->AddNode(Call, true, false);
 		return Call;
 	}
+	UK2Node_CustomEvent* AddNativeNameCollision()
+	{
+		UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(Graph);
+		Event->CustomFunctionName = TEXT("OnInitialized");
+		Event->CreateNewGuid();
+		Event->AllocateDefaultPins();
+		Graph->AddNode(Event, true, false);
+		return Event;
+	}
+
 
 	bool Build(const TCHAR* Name, const bool bRetainProducer = false, const bool bBlockAlpha = false,
-		UClass* ParentClass = nullptr)
+		UClass* ParentClass = nullptr, const bool bCompileParentFirst = false, const bool bDelayGraphNodes = false)
 	{
+		EnsureCortexGraphTestTempContentRoot();
 		Package = CreatePackage(*FString::Printf(TEXT("/Game/Temp/%s"), Name));
 		Blueprint = Cast<UWidgetBlueprint>(FKismetEditorUtilities::CreateBlueprint(
 			ParentClass ? ParentClass : UCortexGraphRetireLegacyWidget::StaticClass(), Package, FName(Name), BPTYPE_Normal,
@@ -73,6 +112,12 @@ struct FFixture
 			FBlueprintEditorUtils::AddUbergraphPage(Blueprint, Graph);
 		}
 		else Graph = Blueprint->UbergraphPages[0];
+		if (bCompileParentFirst) FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		return bDelayGraphNodes || PopulateGraph(bRetainProducer, bBlockAlpha);
+	}
+
+	bool PopulateGraph(const bool bRetainProducer = false, const bool bBlockAlpha = false)
+	{
 		Alpha = AddEvent(TEXT("OnLegacyAlpha"));
 		Beta = AddEvent(TEXT("OnLegacyBeta"));
 		Retained = AddEvent(TEXT("OnRetainedEvent"));
@@ -96,6 +141,13 @@ struct FFixture
 			if (!Link(Retained, TEXT("then"), RetainedBody, TEXT("execute"))
 				|| !Link(Producer, TEXT("ReturnValue"), RetainedBody, TEXT("InString"))) return false;
 		}
+		AlphaGuid = Alpha->NodeGuid;
+		BetaGuid = Beta->NodeGuid;
+		RetainedGuid = Retained->NodeGuid;
+		ProducerGuid = Producer->NodeGuid;
+		AlphaBodyGuid = AlphaBody->NodeGuid;
+		BetaBodyGuid = BetaBody->NodeGuid;
+		RetainedBodyGuid = RetainedBody->NodeGuid;
 		if (bBlockAlpha)
 		{
 			UK2Node_CallFunction* RetainedData = AddCall(UKismetStringLibrary::StaticClass()->FindFunctionByName(TEXT("Conv_IntToString")));
@@ -106,6 +158,23 @@ struct FFixture
 		return true;
 	}
 
+
+	bool RefreshPointers()
+	{
+		auto Find = [this](const FGuid& Guid) -> UEdGraphNode*
+		{
+			for (UEdGraphNode* Node : Graph->Nodes) if (Node && Node->NodeGuid == Guid) return Node;
+			return nullptr;
+		};
+		Alpha = Cast<UK2Node_Event>(Find(AlphaGuid));
+		Beta = Cast<UK2Node_Event>(Find(BetaGuid));
+		Retained = Cast<UK2Node_Event>(Find(RetainedGuid));
+		Producer = Cast<UK2Node_CallFunction>(Find(ProducerGuid));
+		AlphaBody = Cast<UK2Node_CallFunction>(Find(AlphaBodyGuid));
+		BetaBody = Cast<UK2Node_CallFunction>(Find(BetaBodyGuid));
+		RetainedBody = Cast<UK2Node_CallFunction>(Find(RetainedBodyGuid));
+		return Alpha && Beta && Retained && Producer && AlphaBody && BetaBody && RetainedBody;
+	}
 	TSharedPtr<FJsonObject> Migration(const TArray<FString>& Entries, const bool bApproved = false,
 		const TArray<FString>& Approved = {}) const
 	{
@@ -128,12 +197,74 @@ struct FFixture
 		return MigrationJson;
 	}
 
+	FString Filename() const
+	{
+		return Package ? FPackageName::LongPackageNameToFilename(Package->GetName(),
+			FPackageName::GetAssetPackageExtension()) : FString();
+	}
+
+	bool SaveToDisk()
+	{
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		return UPackage::SavePackage(Package, Blueprint, *Filename(), SaveArgs);
+	}
+
 	void Cleanup()
 	{
 		if (Blueprint) { Blueprint->ClearFlags(RF_Standalone); Blueprint->MarkAsGarbage(); Blueprint = nullptr; }
 		if (Package) { Package->ClearFlags(RF_Standalone); Package->MarkAsGarbage(); Package = nullptr; }
 	}
 };
+
+struct FOperations
+{
+	int32 TargetCompiles = 0;
+	int32 RecoveryCompiles = 0;
+	int32 Saves = 0;
+
+	void Begin()
+	{
+		Active = this;
+		FCortexGraphPatchOps::SetOperationObserverForTesting([](const FName Operation, UBlueprint*)
+		{
+			if (!Active) return;
+			if (Operation == TEXT("target_compile")) ++Active->TargetCompiles;
+			else if (Operation == TEXT("recovery_compile")) ++Active->RecoveryCompiles;
+		});
+		SaveHandle = UPackage::PackageSavedWithContextEvent.AddLambda(
+			[](const FString&, UPackage*, FObjectPostSaveContext)
+			{
+				if (Active) ++Active->Saves;
+			});
+	}
+
+	void End()
+	{
+		UPackage::PackageSavedWithContextEvent.Remove(SaveHandle);
+		FCortexGraphPatchOps::ClearOperationObserverForTesting();
+		Active = nullptr;
+	}
+
+private:
+	static FOperations* Active;
+	FDelegateHandle SaveHandle;
+};
+
+FOperations* FOperations::Active = nullptr;
+
+TArray<uint8> ReadBytes(const FString& Filename)
+{
+	TArray<uint8> Bytes;
+	FFileHelper::LoadFileToArray(Bytes, *Filename);
+	return Bytes;
+}
+
+bool SameBytes(const TArray<uint8>& Left, const TArray<uint8>& Right)
+{
+	return Left.Num() > 0 && Left.Num() == Right.Num()
+		&& FMemory::Memcmp(Left.GetData(), Right.GetData(), Left.Num()) == 0;
+}
 
 bool Plan(FFixture& Fixture, const TArray<FString>& Entries, FCortexGraphMigrationRetirePlan& OutPlan,
 	bool& bReused, FCortexCommandResult& Error, const bool bApproved = false, const TArray<FString>& Approved = {})
@@ -177,7 +308,9 @@ bool PrepareApprovedRequest(
 	const TCHAR* PatchId,
 	TSharedPtr<FJsonObject>& OutRequest,
 	TArray<FString>& OutApproved,
-	FCortexCommandResult& OutError)
+	FCortexCommandResult& OutError,
+	const bool bCompile = false,
+	const bool bSave = false)
 {
 	OutRequest = MakeShared<FJsonObject>();
 	OutRequest->SetStringField(TEXT("asset_path"), Fixture.Blueprint->GetPathName());
@@ -187,7 +320,7 @@ bool PrepareApprovedRequest(
 	OutRequest->SetArrayField(TEXT("connections"), {});
 	OutRequest->SetArrayField(TEXT("pin_updates"), {});
 	OutRequest->SetBoolField(TEXT("dry_run"), true);
-	OutRequest->SetBoolField(TEXT("compile"), false);
+	OutRequest->SetBoolField(TEXT("compile"), bCompile);
 	OutRequest->SetBoolField(TEXT("save"), false);
 	OutRequest->SetBoolField(TEXT("allow_noop"), false);
 	TSharedPtr<FJsonObject> Migration = Fixture.Migration({
@@ -213,6 +346,7 @@ bool PrepareApprovedRequest(
 	FCortexGraphPreparedPatch Reviewed;
 	if (!FCortexGraphPatchOps::Preflight(Fixture.Blueprint, OutRequest, Reviewed, OutError)) return false;
 	OutRequest->SetBoolField(TEXT("dry_run"), false);
+	OutRequest->SetBoolField(TEXT("save"), bSave);
 	OutRequest->SetStringField(TEXT("expected_validation_hash"), Reviewed.ValidationHash);
 	return true;
 }
@@ -706,6 +840,434 @@ bool FCortexGraphMigrationRetireApplyReadbackTest::RunTest(const FString& Parame
 			&& Outcome.RetirementInventory->TryGetArrayField(TEXT("approved_guids"), InventoryApproved)
 			&& InventoryApproved && InventoryApproved->Num() == Approved.Num());
 	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireCompileRecoveryTest,
+	"Cortex.Graph.Authoring.Migration.Retire.CompileRecoveryRejectsGeneratedDrift",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireCompileRecoveryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("collision Widget fixture is created under its legacy parent"),
+		Fixture.Build(TEXT("BP_RetireCompileRecovery"), false, false, nullptr, false, true));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	const FString Filename = Fixture.Filename();
+	IFileManager::Get().Delete(*Filename, false, true, true);
+	TestTrue(TEXT("legacy-parent baseline is saved"), Fixture.SaveToDisk());
+	Fixture.Blueprint->ParentClass = UCortexGraphRetireCollisionTargetWidget::StaticClass();
+	FBlueprintEditorUtils::RefreshAllNodes(Fixture.Blueprint);
+	Fixture.AddNativeNameCollision();
+	AddExpectedError(TEXT("name conflicts with a native"), EAutomationExpectedErrorFlags::Contains, 1);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+	TestEqual(TEXT("unrelated native collision establishes the original error status"),
+		static_cast<int32>(Fixture.Blueprint->Status), static_cast<int32>(BS_Error));
+	TestTrue(TEXT("stale graph entries are created after failed compilation"), Fixture.PopulateGraph(true));
+	Fixture.Retained->EventReference.SetExternalMember(TEXT("OnRetainedEvent"), UCortexGraphRetireTargetWidget::StaticClass());
+	const FString GraphBefore = CaptureNativeGraph(Fixture.Graph);
+	const FString GeneratedBefore = FCortexGraphPatchState::ComputeGeneratedStateDigest(Fixture.Blueprint);
+	TArray<FString> Approved;
+	TSharedPtr<FJsonObject> Request;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("approved compile request is prepared: %s"), *Error.ErrorMessage),
+		PrepareApprovedRequest(Fixture, TEXT("00000000-0000-0000-0000-000000107401"),
+			Request, Approved, Error, true));
+	FOperations Operations;
+	Operations.Begin();
+	AddExpectedError(TEXT("name conflicts with a native"), EAutomationExpectedErrorFlags::Contains, 2);
+	AddExpectedError(TEXT("Pasted node"), EAutomationExpectedErrorFlags::Contains, 2);
+	FCortexGraphPatchOutcome Outcome;
+	Error = FCortexCommandResult();
+	TestFalse(TEXT("retirement fails while unrelated compiler collision persists"),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	TestEqual(TEXT("generated state drift keeps recovery blocked"), Error.ErrorCode, FString(TEXT("INVALID_OPERATION")));
+	TestEqual(TEXT("rollback refuses a changed generated class"), Outcome.RollbackStatus, FString(TEXT("unverified")));
+	TestTrue(TEXT("unverified generated recovery blocks the asset"), Outcome.bBlocked);
+	TestEqual(TEXT("the recovery compile retains BS_Error"),
+		static_cast<int32>(Fixture.Blueprint->Status), static_cast<int32>(BS_Error));
+	TestNotEqual(TEXT("generated drift is not reported as exact restoration"),
+		FCortexGraphPatchState::ComputeGeneratedStateDigest(Fixture.Blueprint), GeneratedBefore);
+	TestNotEqual(TEXT("engine mutation during failed recovery is not represented as restored authoring"),
+		CaptureNativeGraph(Fixture.Graph), GraphBefore);
+	for (const FString& GuidText : Approved)
+	{
+		FGuid Guid;
+		FGuid::Parse(GuidText, Guid);
+		TestNotNull(TEXT("every approved GUID is restored"), FCortexGraphMigrationOps::FindNodeByGuid(Fixture.Blueprint, Guid));
+	}
+	TestTrue(TEXT("blocked failed recovery remains dirty"), Fixture.Package->IsDirty());
+	TestEqual(TEXT("failed apply does not save"), Operations.Saves, 0);
+	Operations.End();
+	Fixture.Cleanup();
+	IFileManager::Get().Delete(*Filename, false, true, true);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireCompileRecoveryExactMatchTest,
+	"Cortex.Graph.Authoring.Migration.Retire.CompileRecoveryAcceptsExactErrorState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireCompileRecoveryExactMatchTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("legacy Widget fixture includes the selected override entries"),
+		Fixture.Build(TEXT("BP_RetireCompileRecoveryExact"), true, false, nullptr, false, false));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	const FString Filename = Fixture.Filename();
+	IFileManager::Get().Delete(*Filename, false, true, true);
+	Fixture.AddNativeNameCollision();
+	AddExpectedError(TEXT("name conflicts with a native"), EAutomationExpectedErrorFlags::Contains, 1);
+	TestTrue(TEXT("legacy-parent entries and the unrelated compile error are saved"), Fixture.SaveToDisk());
+	AddExpectedError(TEXT("name conflicts with a native"), EAutomationExpectedErrorFlags::Contains, 1);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+	TestEqual(TEXT("saved legacy-parent fixture has the real unrelated compile error"),
+		static_cast<int32>(Fixture.Blueprint->Status), static_cast<int32>(BS_Error));
+	TestTrue(TEXT("legacy override nodes survive their valid-parent compile"), Fixture.RefreshPointers());
+
+	Fixture.Blueprint->ParentClass = UCortexGraphRetireCollisionTargetWidget::StaticClass();
+	FBlueprintEditorUtils::RefreshAllNodes(Fixture.Blueprint);
+	TestTrue(TEXT("event nodes remain override nodes after reparent refresh"),
+		Fixture.RefreshPointers() && Fixture.Alpha->bOverrideFunction && !Fixture.Alpha->IsA<UK2Node_CustomEvent>()
+			&& Fixture.Beta->bOverrideFunction && !Fixture.Beta->IsA<UK2Node_CustomEvent>());
+	FBPVariableDescription& CollisionVariable = Fixture.Blueprint->NewVariables.AddDefaulted_GetRef();
+	CollisionVariable.VarName = FName(TEXT("NativeCollision"));
+	CollisionVariable.VarType.PinCategory = UEdGraphSchema_K2::PC_Int;
+	Fixture.Package->MarkPackageDirty();
+	Fixture.Blueprint->Status = BS_Error;
+	Fixture.Retained->EventReference.SetExternalMember(TEXT("OnRetainedEvent"), UCortexGraphRetireTargetWidget::StaticClass());
+
+	const FString GraphBefore = CaptureNativeGraph(Fixture.Graph);
+	const FString GeneratedBefore = FCortexGraphPatchState::ComputeGeneratedStateDigest(Fixture.Blueprint);
+	const bool bDirtyBefore = Fixture.Package->IsDirty();
+	TestEqual(TEXT("the pre-request generated digest is captured exactly"),
+		FCortexGraphPatchState::ComputeGeneratedStateDigest(Fixture.Blueprint), GeneratedBefore);
+	TArray<FString> Approved;
+	TSharedPtr<FJsonObject> Request;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("approved compile request is prepared: %s"), *Error.ErrorMessage),
+		PrepareApprovedRequest(Fixture, TEXT("00000000-0000-0000-0000-000000107405"),
+			Request, Approved, Error, true));
+
+	FOperations Operations;
+	Operations.Begin();
+	FCortexGraphPatchOps::SetApplyFaultPointForTesting(TEXT("retirement_compile_result_failure"));
+	FCortexGraphPatchOutcome Outcome;
+	TestFalse(TEXT("injected compile-result failure enters recovery"),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	FCortexGraphPatchOps::ClearApplyFaultPointForTesting();
+
+	TestEqual(TEXT("target compile fails once"), Outcome.TargetCompileCount, 1);
+	TestEqual(TEXT("coordinator observes one target compile"), Operations.TargetCompiles, 1);
+	TestEqual(TEXT("failed recovery compile runs once"), Outcome.RecoveryCompileCount, 1);
+	TestEqual(TEXT("coordinator observes one recovery compile"), Operations.RecoveryCompiles, 1);
+	TestEqual(TEXT("compile failure remains the operation result"), Error.ErrorCode, FString(TEXT("COMPILE_FAILED")));
+	TestEqual(TEXT("exact error-state restoration verifies"), Outcome.RollbackStatus, FString(TEXT("restored")));
+	TestFalse(TEXT("exact error-state restoration does not block the asset"), Outcome.bBlocked);
+	TestEqual(TEXT("BS_Error is restored exactly"),
+		static_cast<int32>(Fixture.Blueprint->Status), static_cast<int32>(BS_Error));
+	TestEqual(TEXT("generated state digest is identical"),
+		FCortexGraphPatchState::ComputeGeneratedStateDigest(Fixture.Blueprint), GeneratedBefore);
+	TestEqual(TEXT("authoring graph is restored exactly"), CaptureNativeGraph(Fixture.Graph), GraphBefore);
+	TestEqual(TEXT("dirty baseline is restored"), Fixture.Package->IsDirty(), bDirtyBefore);
+	TestEqual(TEXT("failed recovery does not save"), Operations.Saves, 0);
+	Operations.End();
+	Fixture.Cleanup();
+	IFileManager::Get().Delete(*Filename, false, true, true);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireCompileOnceTest,
+	"Cortex.Graph.Authoring.Migration.Retire.CompileOnceAfterReparent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireCompileOnceTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("Widget fixture is created under its legacy parent"),
+		Fixture.Build(TEXT("BP_RetireCompileOnce"), false, false, nullptr, false, true));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	const FString Filename = Fixture.Filename();
+	IFileManager::Get().Delete(*Filename, false, true, true);
+	TestTrue(TEXT("legacy-parent Widget is saved before reparenting"), Fixture.SaveToDisk());
+	Fixture.Blueprint->ParentClass = UCortexGraphRetireTargetWidget::StaticClass();
+	FBlueprintEditorUtils::RefreshAllNodes(Fixture.Blueprint);
+	UK2Node_CustomEvent* NativeNameCollision = Fixture.AddNativeNameCollision();
+	AddExpectedError(TEXT("name conflicts with a native"), EAutomationExpectedErrorFlags::Contains, 1);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+	TestEqual(TEXT("baseline compiler collision establishes BS_Error status"),
+		static_cast<int32>(Fixture.Blueprint->Status), static_cast<int32>(BS_Error));
+	Fixture.Graph->RemoveNode(NativeNameCollision);
+	TestTrue(TEXT("stale graph entries are created after baseline compilation"), Fixture.PopulateGraph(true));
+	Fixture.Retained->EventReference.SetExternalMember(TEXT("OnRetainedEvent"), UCortexGraphRetireTargetWidget::StaticClass());
+	TArray<FString> Approved;
+	TSharedPtr<FJsonObject> Request;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("approved compile-once request is prepared: %s"), *Error.ErrorMessage),
+		PrepareApprovedRequest(Fixture, TEXT("00000000-0000-0000-0000-000000107402"),
+			Request, Approved, Error, true));
+	FOperations Operations;
+	Operations.Begin();
+	FCortexGraphPatchOutcome Outcome;
+	TestTrue(FString::Printf(TEXT("retirement compiles and verifies: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	TestEqual(TEXT("successful retirement target compile count is one"), Outcome.TargetCompileCount, 1);
+	TestEqual(TEXT("one real target compile is observed"), Operations.TargetCompiles, 1);
+	TestEqual(TEXT("successful retirement does not recovery compile"), Operations.RecoveryCompiles, 0);
+	TestEqual(TEXT("compile status is compiled"), Outcome.CompileStatus, FString(TEXT("compiled")));
+	TestEqual(TEXT("readback status is matched"), Outcome.ReadbackStatus, FString(TEXT("matched")));
+	TestEqual(TEXT("successful retirement does not save"), Operations.Saves, 0);
+	for (const FString& GuidText : Approved)
+	{
+		FGuid Guid;
+		FGuid::Parse(GuidText, Guid);
+		TestNull(TEXT("retired entry/body/producer is absent"), FCortexGraphMigrationOps::FindNodeByGuid(Fixture.Blueprint, Guid));
+	}
+	TestNotNull(TEXT("retained override remains"), FCortexGraphMigrationOps::FindNodeByGuid(Fixture.Blueprint, Fixture.Retained->NodeGuid));
+	TestNotNull(TEXT("retained body remains"), FCortexGraphMigrationOps::FindNodeByGuid(Fixture.Blueprint, Fixture.RetainedBody->NodeGuid));
+	Operations.End();
+	Fixture.Cleanup();
+	IFileManager::Get().Delete(*Filename, false, true, true);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireStagedBytesTest,
+	"Cortex.Graph.Authoring.Migration.Retire.StagedApplyPreservesDiskBytes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireStagedBytesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("Widget fixture is created"), Fixture.Build(TEXT("BP_RetireStagedBytes"), false, false, nullptr, false, true));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	const FString Filename = Fixture.Filename();
+	IFileManager::Get().Delete(*Filename, false, true, true);
+	TestTrue(TEXT("clean baseline package is saved"), Fixture.SaveToDisk());
+	const TArray<uint8> DiskBefore = ReadBytes(Filename);
+	Fixture.AddNativeNameCollision();
+	AddExpectedError(TEXT("name conflicts with a native"), EAutomationExpectedErrorFlags::Contains, 1);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+	TestEqual(TEXT("in-memory package starts invalid"), static_cast<int32>(Fixture.Blueprint->Status), static_cast<int32>(BS_Error));
+	Fixture.Blueprint->ParentClass = UCortexGraphRetireCollisionTargetWidget::StaticClass();
+	FBlueprintEditorUtils::RefreshAllNodes(Fixture.Blueprint);
+	FBPVariableDescription& CollisionVariable = Fixture.Blueprint->NewVariables.AddDefaulted_GetRef();
+	CollisionVariable.VarName = FName(TEXT("NativeCollision"));
+	CollisionVariable.VarType.PinCategory = UEdGraphSchema_K2::PC_Int;
+	Fixture.Package->MarkPackageDirty();
+	TestTrue(TEXT("stale graph entries are created after failed compilation"), Fixture.PopulateGraph(false));
+	Fixture.Blueprint->Status = BS_Error;
+	Fixture.Retained->EventReference.SetExternalMember(TEXT("OnRetainedEvent"), UCortexGraphRetireTargetWidget::StaticClass());
+	TArray<FString> Approved;
+	TSharedPtr<FJsonObject> Request;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("staged request is prepared: %s"), *Error.ErrorMessage),
+		PrepareApprovedRequest(Fixture, TEXT("00000000-0000-0000-0000-000000107403"),
+			Request, Approved, Error, false, false));
+	FOperations Operations;
+	Operations.Begin();
+	FCortexGraphPatchOutcome Outcome;
+	TestTrue(FString::Printf(TEXT("staged retirement applies and reads back: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	TestEqual(TEXT("staged compile status is not_requested"), Outcome.CompileStatus, FString(TEXT("not_requested")));
+	TestEqual(TEXT("staged readback matches"), Outcome.ReadbackStatus, FString(TEXT("matched")));
+	TestFalse(TEXT("staged operation does not claim save"), Outcome.bSaved);
+	TestEqual(TEXT("staged operation does not compile"), Operations.TargetCompiles, 0);
+	TestEqual(TEXT("staged operation does not save"), Operations.Saves, 0);
+	TestTrue(TEXT("staged operation leaves package dirty"), Fixture.Package->IsDirty());
+	TestEqual(TEXT("staged mutation leaves the compiler status dirty"),
+		static_cast<int32>(Fixture.Blueprint->Status), static_cast<int32>(BS_Dirty));
+	TestTrue(TEXT("cached compiler information does not claim a successful compile"),
+		Outcome.CompileStatus != TEXT("compiled"));
+	TestTrue(TEXT("on-disk bytes are unchanged"), SameBytes(DiskBefore, ReadBytes(Filename)));
+	Operations.End();
+	Fixture.Cleanup();
+	IFileManager::Get().Delete(*Filename, false, true, true);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireSaveCleanStartTest,
+	"Cortex.Graph.Authoring.Migration.Retire.SaveAfterVerifiedCleanStart",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireSaveCleanStartTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("Widget fixture is created"), Fixture.Build(TEXT("BP_RetireSaveClean"), false, false, nullptr, false, true));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	const FString Filename = Fixture.Filename();
+	IFileManager::Get().Delete(*Filename, false, true, true);
+	TestTrue(TEXT("legacy-parent baseline saves"), Fixture.SaveToDisk());
+	Fixture.Blueprint->ParentClass = UCortexGraphRetireTargetWidget::StaticClass();
+	FBlueprintEditorUtils::RefreshAllNodes(Fixture.Blueprint);
+	UK2Node_CustomEvent* NativeNameCollision = Fixture.AddNativeNameCollision();
+	AddExpectedError(TEXT("name conflicts with a native"), EAutomationExpectedErrorFlags::Contains, 1);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+	TestEqual(TEXT("invalid reparented package is BS_Error before recovery"),
+		static_cast<int32>(Fixture.Blueprint->Status), static_cast<int32>(BS_Error));
+	Fixture.Graph->RemoveNode(NativeNameCollision);
+	TestTrue(TEXT("stale graph entries are created after baseline compilation"), Fixture.PopulateGraph(true));
+	Fixture.Retained->EventReference.SetExternalMember(TEXT("OnRetainedEvent"), UCortexGraphRetireTargetWidget::StaticClass());
+	TestTrue(TEXT("invalid reparented state is persisted as a clean starting package"), Fixture.SaveToDisk());
+	TestFalse(TEXT("package begins clean"), Fixture.Package->IsDirty());
+	TArray<FString> Approved;
+	TSharedPtr<FJsonObject> Request;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("save request is prepared: %s"), *Error.ErrorMessage),
+		PrepareApprovedRequest(Fixture, TEXT("00000000-0000-0000-0000-000000107404"),
+			Request, Approved, Error, true, true));
+	FOperations Operations;
+	Operations.Begin();
+	FCortexGraphPatchOutcome Outcome;
+	TestTrue(FString::Printf(TEXT("verified retirement saves: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	TestEqual(TEXT("post-save status is saved"), Outcome.SaveStatus, FString(TEXT("saved")));
+	TestEqual(TEXT("post-save verification is verified"), Outcome.PostSaveStatus, FString(TEXT("verified")));
+	TestTrue(TEXT("outcome reports saved"), Outcome.bSaved);
+	TestEqual(TEXT("one target compile precedes save"), Operations.TargetCompiles, 1);
+	TestEqual(TEXT("one explicit package save occurs"), Operations.Saves, 1);
+	TestFalse(TEXT("verified saved package is clean"), Fixture.Package->IsDirty());
+	const FString PackageName = Fixture.Package->GetName();
+	const FString ObjectName = Fixture.Blueprint->GetName();
+	const FGuid GraphGuid = Fixture.Graph->GraphGuid;
+	const FGuid RetainedGuid = Fixture.Retained->NodeGuid;
+	const FGuid RetainedBodyGuid = Fixture.RetainedBody->NodeGuid;
+	const FGuid ProducerGuid = Fixture.Producer->NodeGuid;
+	const TArray<FString> RetiredGuidTexts = Approved;
+	UPackage* const PackageBeforeReload = Fixture.Package;
+	UBlueprint* const BlueprintBeforeReload = Fixture.Blueprint;
+	Operations.End();
+
+	TArray<UPackage*> PackagesToReload;
+	PackagesToReload.Add(PackageBeforeReload);
+	FText ReloadError;
+	const bool bReloaded = UPackageTools::ReloadPackages(
+		PackagesToReload, ReloadError, EReloadPackagesInteractionMode::AssumeNegative);
+	TestTrue(FString::Printf(TEXT("saved retirement package reloads: %s"), *ReloadError.ToString()), bReloaded);
+	UPackage* ReloadedPackage = FindPackage(nullptr, *PackageName);
+	UWidgetBlueprint* Reloaded = ReloadedPackage
+		? FindObject<UWidgetBlueprint>(ReloadedPackage, *ObjectName) : nullptr;
+	TestNotNull(TEXT("saved Widget Blueprint resolves after reload"), Reloaded);
+	if (Reloaded)
+	{
+		TestTrue(TEXT("reload replaced the in-memory Blueprint instance"), Reloaded != BlueprintBeforeReload);
+		TArray<UEdGraph*> ReloadedGraphs;
+		Reloaded->GetAllGraphs(ReloadedGraphs);
+		UEdGraph* ReloadedGraph = nullptr;
+		for (UEdGraph* Candidate : ReloadedGraphs)
+		{
+			if (Candidate && Candidate->GraphGuid == GraphGuid)
+			{
+				ReloadedGraph = Candidate;
+				break;
+			}
+		}
+		TestNotNull(TEXT("retained event graph resolves from disk"), ReloadedGraph);
+		auto FindNodeInGraph = [](UEdGraph* Graph, const FGuid& Guid) -> UEdGraphNode*
+		{
+			if (!Graph) return nullptr;
+			for (UEdGraphNode* Node : Graph->Nodes) if (Node && Node->NodeGuid == Guid) return Node;
+			return nullptr;
+		};
+		UEdGraphNode* ReloadedRetained = FindNodeInGraph(ReloadedGraph, RetainedGuid);
+		UEdGraphNode* ReloadedRetainedBody = FindNodeInGraph(ReloadedGraph, RetainedBodyGuid);
+		UEdGraphNode* ReloadedProducer = FindNodeInGraph(ReloadedGraph, ProducerGuid);
+		TestNotNull(TEXT("retained event survives in the reloaded graph"), ReloadedRetained);
+		TestNotNull(TEXT("retained body survives in the reloaded graph"), ReloadedRetainedBody);
+		TestNotNull(TEXT("shared producer survives in the reloaded graph"), ReloadedProducer);
+		for (const FString& GuidText : RetiredGuidTexts)
+		{
+			FGuid Guid;
+			FGuid::Parse(GuidText, Guid);
+			TestNull(TEXT("retired GUID is absent from the reloaded asset"),
+				FCortexGraphMigrationOps::FindNodeByGuid(Reloaded, Guid));
+		}
+		if (ReloadedRetained && ReloadedRetainedBody && ReloadedProducer)
+		{
+			UEdGraphPin* RetainedThen = ReloadedRetained->FindPin(TEXT("then"));
+			UEdGraphPin* RetainedBodyExecute = ReloadedRetainedBody->FindPin(TEXT("execute"));
+			UEdGraphPin* ProducerOutput = ReloadedProducer->FindPin(TEXT("ReturnValue"));
+			UEdGraphPin* RetainedBodyInput = ReloadedRetainedBody->FindPin(TEXT("InString"));
+			TestNotNull(TEXT("reloaded retained entry has its exec pin"), RetainedThen);
+			TestNotNull(TEXT("reloaded retained body has its exec input"), RetainedBodyExecute);
+			TestNotNull(TEXT("reloaded producer has its output pin"), ProducerOutput);
+			TestNotNull(TEXT("reloaded retained body has its data input"), RetainedBodyInput);
+			if (RetainedThen && RetainedBodyExecute)
+			{
+				TestTrue(TEXT("retained entry-to-body link survives the disk reload"),
+					RetainedThen->LinkedTo.Contains(RetainedBodyExecute));
+			}
+			if (ProducerOutput && RetainedBodyInput)
+			{
+				TestTrue(TEXT("retained producer-to-body link survives the disk reload"),
+					ProducerOutput->LinkedTo.Contains(RetainedBodyInput));
+			}
+		}
+	}
+
+	if (GEditor && GEditor->Trans)
+	{
+		GEditor->Trans->Reset(FText::FromString(TEXT("CortexGraphMigrationRetireSaveReloadCleanup")));
+	}
+	UPackage* PackageToCleanup = ReloadedPackage ? ReloadedPackage : PackageBeforeReload;
+	if (PackageToCleanup)
+	{
+		PackageToCleanup->ClearFlags(RF_Standalone);
+		PackageToCleanup->MarkAsGarbage();
+		ResetLoaders(PackageToCleanup);
+	}
+	Fixture.Package = nullptr;
+	Fixture.Blueprint = nullptr;
+	FlushAsyncLoading();
+	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+	TestTrue(TEXT("reloaded retirement fixture file is removed"),
+		IFileManager::Get().Delete(*Filename, false, true, true));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireSaveDirtyStartTest,
+	"Cortex.Graph.Authoring.Migration.Retire.RefusesDirtyStartSave",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireSaveDirtyStartTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("Widget fixture is created"), Fixture.Build(TEXT("BP_RetireSaveDirty"), true));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	const FString Filename = Fixture.Filename();
+	IFileManager::Get().Delete(*Filename, false, true, true);
+	TestTrue(TEXT("baseline package is saved"), Fixture.SaveToDisk());
+	const TArray<uint8> DiskBefore = ReadBytes(Filename);
+	Fixture.Retained->NodeComment = TEXT("unrelated retained edit");
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Fixture.Blueprint);
+	const FString GraphBefore = CaptureNativeGraph(Fixture.Graph);
+	TArray<FString> Approved;
+	TSharedPtr<FJsonObject> Request;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("dirty-start save request is prepared: %s"), *Error.ErrorMessage),
+		PrepareApprovedRequest(Fixture, TEXT("00000000-0000-0000-0000-000000107405"),
+			Request, Approved, Error, true, true));
+	FCortexGraphPatchOutcome Outcome;
+	TestFalse(TEXT("dirty-start save is refused"), FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	TestEqual(TEXT("dirty-start refusal reports DIRTY_EDITOR_STATE"), Error.ErrorCode, FString(TEXT("DIRTY_EDITOR_STATE")));
+	TestEqual(TEXT("preflight refusal has no target compile"), Outcome.TargetCompileCount, 0);
+	TestEqual(TEXT("dirty start has no recovery compile"), Outcome.RecoveryCompileCount, 0);
+	TestEqual(TEXT("dirty edit remains in memory"), CaptureNativeGraph(Fixture.Graph), GraphBefore);
+	TestTrue(TEXT("dirty baseline remains dirty"), Fixture.Package->IsDirty());
+	TestTrue(TEXT("disk bytes remain unchanged"), SameBytes(DiskBefore, ReadBytes(Filename)));
+	Fixture.Cleanup();
+	IFileManager::Get().Delete(*Filename, false, true, true);
 	return true;
 }
 

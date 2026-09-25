@@ -2966,6 +2966,17 @@ bool RestoredAuthoringMatches(UBlueprint* Blueprint, const TSharedPtr<FJsonObjec
 bool CompileTargetBlueprint(UBlueprint* Blueprint, const FName Operation, TArray<FString>& OutDiagnostics)
 {
 	NotifyOperation(Operation, Blueprint);
+#if WITH_AUTOMATION_TESTS
+	// Isolate the coordinator's failed-recovery policy from compiler-side Blueprint mutations.
+	// This test-only result seam preserves source/generated state while exercising both real
+	// operation notifications and the same failure branch as a failed compiler invocation.
+	if (ShouldInjectApplyFault(TEXT("retirement_compile_result_failure")))
+	{
+		Blueprint->Status = BS_Error;
+		OutDiagnostics.Add(TEXT("test: compile result failure with BS_Error preserved"));
+		return false;
+	}
+#endif
 	FCompilerResultsLog Log;
 	Log.bAnnotateMentionedNodes = false;
 	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &Log);
@@ -3956,11 +3967,15 @@ bool HandleApplyFailure(
 	const bool bContentRestored = RestoreJournal(Blueprint, Journal);
 
 	bool bRecoveryCompileSucceeded = true;
+	bool bRecoveryCompileReachedExpectedStatus = true;
 	if (bContentRestored && Journal.bCompileAttempted)
 	{
 		TArray<FString> RecoveryDiagnostics;
 		bRecoveryCompileSucceeded =
 			CompileTargetBlueprint(Blueprint, TEXT("recovery_compile"), RecoveryDiagnostics);
+		bRecoveryCompileReachedExpectedStatus = Journal.StatusBefore == BS_Error
+			? !bRecoveryCompileSucceeded && Blueprint->Status == BS_Error
+			: bRecoveryCompileSucceeded;
 		if (OutOutcome)
 		{
 			OutOutcome->RecoveryCompileCount += 1;
@@ -3973,7 +3988,7 @@ bool HandleApplyFailure(
 	bool bGeneratedRestored = true;
 	if (Journal.bCompileAttempted)
 	{
-		bGeneratedRestored = bRecoveryCompileSucceeded
+		bGeneratedRestored = bRecoveryCompileReachedExpectedStatus
 			&& FCortexGraphPatchState::ComputeGeneratedStateDigest(Blueprint) == Journal.GeneratedStateBefore;
 	}
 	bool bPreservationRestored = true;
