@@ -6248,7 +6248,6 @@ bool FCortexGraphMigrationOps::PlanRetirement(
 		return false;
 	}
 	TArray<FGuid> SelectedGuids;
-	TArray<UEdGraphNode*> SelectedNodes;
 	TSet<FGuid> SelectedSet;
 	for (const TSharedPtr<FJsonValue>& Value : *SelectedValues)
 	{
@@ -6265,6 +6264,138 @@ bool FCortexGraphMigrationOps::PlanRetirement(
 			return false;
 		}
 		SelectedSet.Add(Guid);
+		SelectedGuids.Add(Guid);
+	}
+	const bool bHasApproval = Migration->HasField(TEXT("approved_node_guids"));
+	TArray<FGuid> Approved;
+	if (bHasApproval)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+		if (!Migration->TryGetArrayField(TEXT("approved_node_guids"), Values) || !Values)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("approved_node_guids must be an array"));
+			return false;
+		}
+		TSet<FGuid> Seen;
+		for (const TSharedPtr<FJsonValue>& Value : *Values)
+		{
+			FString Text;
+			FGuid Guid;
+			if (!Value.IsValid() || !Value->TryGetString(Text) || !FGuid::Parse(Text, Guid) || !Guid.IsValid() || Seen.Contains(Guid))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("approved_node_guids must contain unique valid GUID strings"));
+				return false;
+			}
+			Seen.Add(Guid);
+			Approved.Add(Guid);
+		}
+	}
+	TArray<UEdGraphNode*> SelectedNodes;
+	if (bHasApproval)
+	{
+		for (const FGuid& Guid : SelectedGuids)
+		{
+			if (!Approved.Contains(Guid))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("approved_node_guids must include selected entry '%s'"), *Guid.ToString()));
+				return false;
+			}
+		}
+
+		TArray<UEdGraph*> AssetGraphs;
+		Blueprint->GetAllGraphs(AssetGraphs);
+		TArray<FString> PresentGuids;
+		TArray<FString> AbsentGuids;
+		for (const FGuid& Guid : Approved)
+		{
+			UEdGraphNode* TargetOwner = nullptr;
+			TArray<UEdGraph*> OtherOwners;
+			for (UEdGraph* AssetGraph : AssetGraphs)
+			{
+				if (!AssetGraph) continue;
+				for (UEdGraphNode* Node : AssetGraph->Nodes)
+				{
+					if (!Node || Node->NodeGuid != Guid) continue;
+					if (AssetGraph == Graph)
+					{
+						if (TargetOwner)
+						{
+							OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+								FString::Printf(TEXT("approved identity '%s' is owned by multiple nodes in graph '%s'"),
+									*Guid.ToString(), *GraphGuid.ToString()));
+							return false;
+						}
+						TargetOwner = Node;
+					}
+					else
+					{
+						OtherOwners.Add(AssetGraph);
+					}
+				}
+			}
+			if (!TargetOwner && !OtherOwners.IsEmpty())
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("absent retirement identity '%s' is owned by another graph '%s'"),
+						*Guid.ToString(), *OtherOwners[0]->GraphGuid.ToString()));
+				return false;
+			}
+			if (TargetOwner)
+			{
+				PresentGuids.Add(Guid.ToString());
+			}
+			else
+			{
+				AbsentGuids.Add(Guid.ToString());
+			}
+		}
+		PresentGuids.Sort();
+		AbsentGuids.Sort();
+		if (!AbsentGuids.IsEmpty() && !PresentGuids.IsEmpty())
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("retirement replay is partial: %d approved identities are absent [%s] and %d are present [%s]"),
+					AbsentGuids.Num(), *FString::Join(AbsentGuids, TEXT(", ")),
+					PresentGuids.Num(), *FString::Join(PresentGuids, TEXT(", "))));
+			return false;
+		}
+		if (AbsentGuids.Num() == Approved.Num())
+		{
+			OutPlan.Op = Op;
+			OutPlan.GraphGuid = GraphGuid.ToString();
+			for (const FGuid& Guid : SelectedGuids) OutPlan.SelectedEntryGuids.Add(Guid.ToString());
+			OutPlan.SelectedEntryGuids.Sort();
+			OutPlan.ApprovedGuids = PruneGuidText(Approved);
+			OutPlan.RemovableGuids = OutPlan.ApprovedGuids;
+			OutPlan.bComplete = true;
+			OutPlan.bAwaitingApproval = false;
+			OutPlan.bReused = true;
+			OutPlan.Preservation.Label = TEXT("graph");
+			OutPlan.Preservation.GraphGuid = GraphGuid.ToString();
+			OutPlan.Preservation.ExcludedGuids = OutPlan.ApprovedGuids;
+			OutPlan.Preservation.Capture = CapturePreservation(Blueprint, Graph, Approved);
+			if (OutPlan.Preservation.Capture.IsEmpty())
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("retirement preservation could not be captured"));
+				return false;
+			}
+			OutPlan.BlueprintStatusBefore = BlueprintStatusName(Blueprint->Status);
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (Node && Node->bHasCompilerMessage && !Node->ErrorMsg.IsEmpty()) OutPlan.PreexistingDiagnostics.Add(Node->ErrorMsg);
+			}
+			const bool bDiagnosticsTruncated = OutPlan.PreexistingDiagnostics.Num() > 15
+				|| OutPlan.PreexistingDiagnostics.Contains(TEXT("additional compiler diagnostics omitted"));
+			FCortexGraphPatchOps::TrimDiagnostics(OutPlan.PreexistingDiagnostics);
+			OutPlan.bPreexistingDiagnosticsTruncated = bDiagnosticsTruncated
+				|| OutPlan.PreexistingDiagnostics.Contains(TEXT("additional compiler diagnostics omitted"));
+			bOutReused = true;
+			return true;
+		}
+	}
+	for (const FGuid& Guid : SelectedGuids)
+	{
 		UEdGraphNode* Node = FindNodeByGuidInGraph(Graph, Guid);
 		if (!Node)
 		{
@@ -6309,32 +6440,7 @@ bool FCortexGraphMigrationOps::PlanRetirement(
 				FString::Printf(TEXT("lifecycle event '%s' is not supported for retirement"), *MemberName));
 			return false;
 		}
-		SelectedGuids.Add(Guid);
 		SelectedNodes.Add(Node);
-	}
-	bool bHasApproval = Migration->HasField(TEXT("approved_node_guids"));
-	TArray<FGuid> Approved;
-	if (bHasApproval)
-	{
-		const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
-		if (!Migration->TryGetArrayField(TEXT("approved_node_guids"), Values) || !Values)
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("approved_node_guids must be an array"));
-			return false;
-		}
-		TSet<FGuid> Seen;
-		for (const TSharedPtr<FJsonValue>& Value : *Values)
-		{
-			FString Text;
-			FGuid Guid;
-			if (!Value.IsValid() || !Value->TryGetString(Text) || !FGuid::Parse(Text, Guid) || !Guid.IsValid() || Seen.Contains(Guid))
-			{
-				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("approved_node_guids must contain unique valid GUID strings"));
-				return false;
-			}
-			Seen.Add(Guid);
-			Approved.Add(Guid);
-		}
 	}
 	FPrunePartition Partition;
 	if (!ComputeOwnedIslandPartition(Blueprint, Graph, SelectedNodes, true, Partition, OutError)) return false;

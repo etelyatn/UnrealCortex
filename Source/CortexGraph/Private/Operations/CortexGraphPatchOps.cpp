@@ -1413,6 +1413,7 @@ bool FCortexGraphPatchOps::Preflight(
 				OutPrepared.bHasEntryNode = false;
 				OutPrepared.bFullyReused = bRetireReused || RetirementPlan.bAwaitingApproval;
 				OutPrepared.bChanged = !OutPrepared.bFullyReused;
+				OutPrepared.bReplayedWithAbsentSource = bRetireReused;
 
 				TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
 				Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());

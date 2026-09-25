@@ -1271,4 +1271,177 @@ bool FCortexGraphMigrationRetireSaveDirtyStartTest::RunTest(const FString& Param
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireAbsentSourceReplayTest,
+	"Cortex.Graph.Authoring.Migration.Retire.AbsentSourceReplayIsUnchanged",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireAbsentSourceReplayTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("retirement fixture is created"), Fixture.Build(TEXT("BP_RetireReplay"), true));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+
+	TSharedPtr<FJsonObject> InitialRequest;
+	TArray<FString> Approved;
+	FCortexCommandResult Error;
+	TestTrue(TEXT("initial reviewed request is prepared"),
+		PrepareApprovedRequest(Fixture, TEXT("00000000-0000-0000-0000-000000107501"),
+			InitialRequest, Approved, Error));
+	FCortexGraphPatchOutcome InitialOutcome;
+	TestTrue(FString::Printf(TEXT("initial retirement applies: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, InitialRequest, InitialOutcome, Error));
+	TestEqual(TEXT("initial retirement applies"), InitialOutcome.ApplyStatus, FString(TEXT("applied")));
+
+	const FString GraphAfterRetirement = CaptureNativeGraph(Fixture.Graph);
+	const TSharedPtr<FJsonObject> FingerprintAfterRetirement =
+		FCortexGraphPatchState::ComputeFingerprint(Fixture.Blueprint);
+	const FString FingerprintHashAfterRetirement =
+		FingerprintAfterRetirement->GetStringField(TEXT("graph_authoring_hash"));
+	const bool bDirtyAfterRetirement = Fixture.Package->IsDirty();
+	const int32 QueueBeforeReplay = GEditor->Trans->GetQueueLength();
+	const int32 UndoBeforeReplay = GEditor->Trans->GetUndoCount();
+	const int32 NodeCountBeforeReplay = Fixture.Graph->Nodes.Num();
+	TSharedPtr<FJsonObject> ReplayRequest = MakeShared<FJsonObject>();
+	ReplayRequest->SetStringField(TEXT("asset_path"), Fixture.Blueprint->GetPathName());
+	ReplayRequest->SetStringField(TEXT("patch_id"), TEXT("00000000-0000-0000-0000-000000107501"));
+	ReplayRequest->SetObjectField(TEXT("expected_fingerprint"), FingerprintAfterRetirement);
+	ReplayRequest->SetArrayField(TEXT("nodes"), {});
+	ReplayRequest->SetArrayField(TEXT("connections"), {});
+	ReplayRequest->SetArrayField(TEXT("pin_updates"), {});
+	ReplayRequest->SetBoolField(TEXT("dry_run"), true);
+	ReplayRequest->SetBoolField(TEXT("compile"), false);
+	ReplayRequest->SetBoolField(TEXT("save"), false);
+	ReplayRequest->SetBoolField(TEXT("allow_noop"), false);
+	ReplayRequest->SetObjectField(TEXT("migration"), Fixture.Migration(
+		{ Fixture.AlphaGuid.ToString(), Fixture.BetaGuid.ToString() }, true, Approved));
+
+	FCortexGraphPreparedPatch ReplayPreview;
+	Error = FCortexCommandResult();
+	TestTrue(FString::Printf(TEXT("fresh approved replay preview succeeds: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Preflight(Fixture.Blueprint, ReplayRequest, ReplayPreview, Error));
+	TestTrue(TEXT("replay preview reuses the retirement plan"), ReplayPreview.RetirementPlan.IsValid());
+	TestTrue(TEXT("replay preview carries a fresh validation hash"),
+		!ReplayPreview.ValidationHash.IsEmpty()
+			&& ReplayPreview.ValidationHash != InitialRequest->GetStringField(TEXT("expected_validation_hash")));
+	if (ReplayPreview.RetirementPlan.IsValid())
+	{
+		const TSharedPtr<FJsonObject> Inventory =
+			FCortexGraphMigrationOps::MakeRetirementInventory(ReplayPreview.RetirementPlan);
+		TestTrue(TEXT("replay is marked reused"), Inventory.IsValid() && Inventory->GetBoolField(TEXT("reused")));
+	}
+	ReplayRequest->SetBoolField(TEXT("dry_run"), false);
+	ReplayRequest->SetStringField(TEXT("expected_validation_hash"), ReplayPreview.ValidationHash);
+
+	FOperations Operations;
+	Operations.Begin();
+	FCortexGraphPatchOutcome ReplayOutcome;
+	Error = FCortexCommandResult();
+	TestTrue(FString::Printf(TEXT("freshly reviewed replay applies: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, ReplayRequest, ReplayOutcome, Error));
+	Operations.End();
+	TestEqual(TEXT("replay reports unchanged"), ReplayOutcome.ApplyStatus, FString(TEXT("unchanged")));
+	TestFalse(TEXT("replay reports no graph change"), ReplayOutcome.bChanged);
+	TestTrue(TEXT("replay outcome reports reused retirement inventory"),
+		ReplayOutcome.RetirementInventory.IsValid()
+			&& ReplayOutcome.RetirementInventory->GetBoolField(TEXT("reused")));
+	TestTrue(TEXT("replay records absent-source provenance"), ReplayOutcome.bReplayedWithAbsentSource);
+	TestEqual(TEXT("replay creates no transaction"), GEditor->Trans->GetQueueLength(), QueueBeforeReplay);
+	TestEqual(TEXT("replay creates no undo record"), GEditor->Trans->GetUndoCount(), UndoBeforeReplay);
+	TestEqual(TEXT("replay requests no target compile"), Operations.TargetCompiles, 0);
+	TestEqual(TEXT("replay requests no recovery compile"), Operations.RecoveryCompiles, 0);
+	TestEqual(TEXT("replay does not save"), Operations.Saves, 0);
+	TestFalse(TEXT("replay does not claim save"), ReplayOutcome.bSaved);
+	TestEqual(TEXT("replay preserves graph state"), CaptureNativeGraph(Fixture.Graph), GraphAfterRetirement);
+	TestEqual(TEXT("replay preserves graph node count"), Fixture.Graph->Nodes.Num(), NodeCountBeforeReplay);
+	TestEqual(TEXT("replay preserves fingerprint"), FCortexGraphPatchState::ComputeFingerprint(Fixture.Blueprint)
+		->GetStringField(TEXT("graph_authoring_hash")), FingerprintHashAfterRetirement);
+	TestEqual(TEXT("replay preserves package dirty state"), Fixture.Package->IsDirty(), bDirtyAfterRetirement);
+	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetirePartialReplayRefusalTest,
+	"Cortex.Graph.Authoring.Migration.Retire.PartialReplayNamesAbsentAndPresentIdentities",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetirePartialReplayRefusalTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("retirement fixture is created"), Fixture.Build(TEXT("BP_RetirePartialReplay"), true));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	TSharedPtr<FJsonObject> InitialRequest;
+	TArray<FString> Approved;
+	FCortexCommandResult Error;
+	TestTrue(TEXT("initial reviewed request is prepared"),
+		PrepareApprovedRequest(Fixture, TEXT("00000000-0000-0000-0000-000000107502"),
+			InitialRequest, Approved, Error));
+	FCortexGraphPatchOutcome Outcome;
+	TestTrue(TEXT("initial retirement applies"),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, InitialRequest, Outcome, Error));
+
+	UK2Node_CustomEvent* Reintroduced = NewObject<UK2Node_CustomEvent>(Fixture.Graph);
+	Reintroduced->NodeGuid = FGuid(Approved[0]);
+	Fixture.Graph->AddNode(Reintroduced, true, false);
+	FCortexGraphMigrationRetirePlan PlanValue;
+	bool bReused = false;
+	Error = FCortexCommandResult();
+	TestFalse(TEXT("partial postcondition is refused"),
+		Plan(Fixture, { Fixture.AlphaGuid.ToString(), Fixture.BetaGuid.ToString() },
+			PlanValue, bReused, Error, true, Approved));
+	TestEqual(TEXT("partial replay reports INVALID_OPERATION"), Error.ErrorCode, FString(TEXT("INVALID_OPERATION")));
+	TArray<FString> ExpectedAbsent = Approved;
+	ExpectedAbsent.RemoveAt(0);
+	ExpectedAbsent.Sort();
+	const FString ExpectedPartialDiagnostic = FString::Printf(
+		TEXT("retirement replay is partial: %d approved identities are absent [%s] and 1 are present [%s]"),
+		Approved.Num() - 1, *FString::Join(ExpectedAbsent, TEXT(", ")), *Approved[0]);
+	TestEqual(TEXT("partial replay reports exact absent and present counts and identities"),
+		Error.ErrorMessage, ExpectedPartialDiagnostic);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireOwnershipConflictTest,
+	"Cortex.Graph.Authoring.Migration.Retire.AbsentSourceOwnershipConflictIsRefused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireOwnershipConflictTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FFixture Fixture;
+	TestTrue(TEXT("retirement fixture is created"), Fixture.Build(TEXT("BP_RetireOwnershipConflict"), true));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	TSharedPtr<FJsonObject> InitialRequest;
+	TArray<FString> Approved;
+	FCortexCommandResult Error;
+	TestTrue(TEXT("initial reviewed request is prepared"),
+		PrepareApprovedRequest(Fixture, TEXT("00000000-0000-0000-0000-000000107503"),
+			InitialRequest, Approved, Error));
+	FCortexGraphPatchOutcome Outcome;
+	TestTrue(TEXT("initial retirement applies"),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, InitialRequest, Outcome, Error));
+
+	UEdGraph* OtherGraph = NewObject<UEdGraph>(Fixture.Blueprint);
+	OtherGraph->GraphGuid = FGuid::NewGuid();
+	Fixture.Blueprint->FunctionGraphs.Add(OtherGraph);
+	UK2Node_CustomEvent* Reowned = NewObject<UK2Node_CustomEvent>(OtherGraph);
+	Reowned->NodeGuid = FGuid(Approved[0]);
+	OtherGraph->AddNode(Reowned, true, false);
+	FCortexGraphMigrationRetirePlan PlanValue;
+	bool bReused = false;
+	Error = FCortexCommandResult();
+	TestFalse(TEXT("approved absent GUID owned by another graph is refused"),
+		Plan(Fixture, { Fixture.AlphaGuid.ToString(), Fixture.BetaGuid.ToString() },
+			PlanValue, bReused, Error, true, Approved));
+	TestEqual(TEXT("ownership conflict reports INVALID_OPERATION"), Error.ErrorCode, FString(TEXT("INVALID_OPERATION")));
+	TestTrue(TEXT("ownership conflict names the conflicting GUID and graph"),
+		Error.ErrorMessage.Contains(Approved[0]) && Error.ErrorMessage.Contains(OtherGraph->GraphGuid.ToString()));
+	Fixture.Cleanup();
+	return true;
+}
+
 #endif
