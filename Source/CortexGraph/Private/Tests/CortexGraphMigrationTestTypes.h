@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 
 #include "GameFramework/Actor.h"
+#include "Blueprint/UserWidget.h"
 
 #include "CortexGraphMigrationTestTypes.generated.h"
 
@@ -66,4 +67,45 @@ public:
 	{
 		(void)Value;
 	}
+};
+
+/** Generic Widget-derived native test fixtures for guarded event retirement. */
+UCLASS(Blueprintable)
+class UCortexGraphRetireLegacyWidget : public UUserWidget
+{
+	GENERATED_BODY()
+
+public:
+	UFUNCTION(BlueprintNativeEvent, Category = "CortexGraphMigrationTest")
+	void OnLegacyAlpha(int32 Value);
+	virtual void OnLegacyAlpha_Implementation(int32 Value) { (void)Value; }
+
+	UFUNCTION(BlueprintNativeEvent, Category = "CortexGraphMigrationTest")
+	void OnLegacyBeta(const FString& Value);
+	virtual void OnLegacyBeta_Implementation(const FString& Value) { (void)Value; }
+
+	UFUNCTION(BlueprintNativeEvent, Category = "CortexGraphMigrationTest")
+	void OnRetainedEvent();
+	virtual void OnRetainedEvent_Implementation() {}
+};
+
+UCLASS(Blueprintable)
+class UCortexGraphRetireTargetWidget : public UUserWidget
+{
+	GENERATED_BODY()
+
+public:
+	UFUNCTION(BlueprintNativeEvent, Category = "CortexGraphMigrationTest")
+	void OnRetainedEvent();
+	virtual void OnRetainedEvent_Implementation() {}
+};
+
+UCLASS(Blueprintable)
+class UCortexGraphRetireCollisionTargetWidget : public UCortexGraphRetireTargetWidget
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CortexGraphMigrationTest")
+	int32 NativeCollision = 0;
 };

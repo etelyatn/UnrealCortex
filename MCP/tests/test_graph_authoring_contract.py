@@ -23,9 +23,29 @@ from cortex_mcp.tools.routers import make_router
 
 FIXTURE = Path(__file__).parent / "fixtures" / "capabilities_cache_full.json"
 
-ENVELOPE_REQUIRED = ["asset_path", "target", "patch_id", "expected_fingerprint", "nodes", "connections"]
+ENVELOPE_REQUIRED = ["asset_path", "patch_id", "expected_fingerprint"]
 ENVELOPE_OPTIONAL = [
+    "target",
+    "nodes",
+    "connections",
     "pin_updates",
+    "migration",
+    "dry_run",
+    "compile",
+    "save",
+    "allow_noop",
+    "expected_validation_hash",
+]
+
+ENVELOPE_FIELDS = [
+    "asset_path",
+    "target",
+    "patch_id",
+    "expected_fingerprint",
+    "nodes",
+    "connections",
+    "pin_updates",
+    "migration",
     "dry_run",
     "compile",
     "save",
@@ -131,6 +151,15 @@ def test_published_schema_declares_the_standalone_batch_restriction():
     description = _graph_command("apply_patch")["description"]
     assert "rollback-enabled" in description
     assert "batch" in description
+
+
+def test_published_apply_patch_description_documents_entry_retirement():
+    command = _graph_command("apply_patch")
+    migration_description = _param(command, "migration")["description"]
+    assert "retire_entries" in command["description"]
+    assert "retire_entries" in migration_description
+    assert "entry_node_guids" in migration_description
+    assert [param["name"] for param in command["params"]] == ENVELOPE_FIELDS
 
 
 def test_umg_authoring_profile_exposes_apply_patch_through_graph_cmd():

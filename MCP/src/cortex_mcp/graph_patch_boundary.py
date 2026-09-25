@@ -1,4 +1,4 @@
-"""Shared pre-dispatch boundary for graph.apply_patch pagination and bounded prune responses."""
+"""Shared pre-dispatch boundary for graph.apply_patch pagination and bounded approvals."""
 
 from __future__ import annotations
 
@@ -32,10 +32,22 @@ _OUTCOME_FIELDS = (
 )
 
 
-def is_prune_patch(request: dict[str, Any]) -> bool:
-    migration = request.get("migration")
-    return isinstance(migration, dict) and migration.get("op") == "prune_island"
+_COMPLETE_APPROVAL_MIGRATIONS = {"prune_island", "retire_entries"}
 
+
+def complete_approval_migration_op(request: dict[str, Any]) -> str | None:
+    migration = request.get("migration")
+    if not isinstance(migration, dict):
+        return None
+    op = migration.get("op")
+    if not isinstance(op, str):
+        return None
+    return op if op in _COMPLETE_APPROVAL_MIGRATIONS else None
+
+
+def is_prune_patch(request: dict[str, Any]) -> bool:
+    """Retained for the existing prune contract test; dispatch uses the generic predicate."""
+    return complete_approval_migration_op(request) == "prune_island"
 
 def reject_apply_patch_pagination(request: dict[str, Any]) -> str | None:
     fields = [key for key in ("limit", "cursor", "offset", "page") if key in request]
@@ -67,7 +79,7 @@ def _refusal(
     native_complete: bool | None = None,
     removable_count: int = 0,
     approved_count: int = 0,
-    message: str = "The complete prune response exceeds the MCP response budget.",
+    message: str = "The complete approval response exceeds the MCP response budget.",
 ) -> str:
     payload: dict[str, Any] = {
         "success": False,
@@ -87,7 +99,7 @@ def _refusal(
     text = _encode(payload)
     if len(text) <= MAX_RESPONSE_CHARS:
         return text
-    payload["_message"] = "Prune response exceeds the MCP response budget."
+    payload["_message"] = "Approval response exceeds the MCP response budget."
     text = _encode(payload)
     if len(text) <= MAX_RESPONSE_CHARS:
         return text
@@ -120,7 +132,11 @@ def _prospective_apply_size(
     return _json_size(candidate)
 
 
-def _prune_preview(data: dict[str, Any], request: dict[str, Any]) -> str:
+def _complete_approval_preview(
+    data: dict[str, Any],
+    request: dict[str, Any],
+    operation: str,
+) -> str:
     size = _json_size(data)
     removable = data.get("removable")
     approved = data.get("approved_guids")
@@ -135,9 +151,9 @@ def _prune_preview(data: dict[str, Any], request: dict[str, Any]) -> str:
         approved_count=approved_count,
         native_complete=data.get("complete") if isinstance(data.get("complete"), bool) else None,
         message=(
-            "The prune scan is incomplete; approval requires a complete native preview."
+            f"The {operation} scan is incomplete; approval requires a complete native preview."
             if data.get("complete") is not True
-            else "The complete prune preview exceeds the MCP response budget."
+            else f"The complete {operation} preview exceeds the MCP response budget."
         ),
     )
 
@@ -333,7 +349,7 @@ def _unknown_outcome(exc: ConnectionError, request: dict[str, Any]) -> str:
     })
 
 
-def _prune_connection_error(exc: ConnectionError, request: dict[str, Any]) -> str:
+def _approval_connection_error(exc: ConnectionError, request: dict[str, Any]) -> str:
     return _fit_payload({
         "success": False,
         "_error": "CONNECTION_ERROR",
@@ -341,7 +357,6 @@ def _prune_connection_error(exc: ConnectionError, request: dict[str, Any]) -> st
         "_command": _GRAPH_PATCH_COMMAND,
         **_identity(request),
     })
-
 
 def _native_error(exc: UECommandError, request: dict[str, Any]) -> str:
     return _bounded_error(exc, request)
@@ -365,7 +380,8 @@ def dispatch_graph_apply_patch(connection, request: dict[str, Any], *, tool_name
     pagination_error = reject_apply_patch_pagination(request)
     if pagination_error:
         return _encode({"success": False, "_error": "INVALID_FIELD", "_message": pagination_error})
-    if not is_prune_patch(request):
+    operation = complete_approval_migration_op(request)
+    if operation is None:
         try:
             response = connection.send_command(_GRAPH_PATCH_COMMAND, request)
             error = _response_error(response, request)
@@ -384,11 +400,11 @@ def dispatch_graph_apply_patch(connection, request: dict[str, Any], *, tool_name
             error = _response_error(response, request)
             if error is not None:
                 return error
-            return _prune_preview(response.get("data", {}), request)
+            return _complete_approval_preview(response.get("data", {}), request, operation)
         except UECommandError as exc:
             return _native_error(exc, request)
         except ConnectionError as exc:
-            return _prune_connection_error(exc, request)
+            return _approval_connection_error(exc, request)
 
     if not applying:
         try:
@@ -396,18 +412,18 @@ def dispatch_graph_apply_patch(connection, request: dict[str, Any], *, tool_name
             error = _response_error(response, request)
             if error is not None:
                 return error
-            return _prune_preview(response.get("data", {}), request)
+            return _complete_approval_preview(response.get("data", {}), request, operation)
         except UECommandError as exc:
             return _native_error(exc, request)
         except ConnectionError as exc:
-            return _prune_connection_error(exc, request)
+            return _approval_connection_error(exc, request)
 
     migration = request["migration"]
     caller_token = request.get("expected_validation_hash")
     if not isinstance(caller_token, str) or not caller_token.strip():
         return _stale_precondition(
             request,
-            "A prune apply requires the nonempty validation hash returned by the caller's approved preview.",
+            f"A {operation} apply requires the nonempty validation hash returned by the caller's approved preview.",
         )
 
     preview_request = dict(request)
@@ -419,19 +435,19 @@ def dispatch_graph_apply_patch(connection, request: dict[str, Any], *, tool_name
     except UECommandError as exc:
         return _native_error(exc, request)
     except ConnectionError as exc:
-        return _prune_connection_error(exc, request)
+        return _approval_connection_error(exc, request)
     error = _response_error(response, request)
     if error is not None:
         return error
     preview = response.get("data", {})
-    preview_text = _prune_preview(preview, request)
+    preview_text = _complete_approval_preview(preview, request, operation)
     if _json_size(preview) > MAX_RESPONSE_CHARS or preview.get("complete") is not True:
         return preview_text
 
     if preview.get("validation_hash") != caller_token:
         return _stale_precondition(
             request,
-            "The prune validation hash changed after the caller's preview; review and approve a fresh preview.",
+            f"The {operation} validation hash changed after the caller's preview; review and approve a fresh preview.",
         )
 
     requested_approved = migration.get("approved_node_guids")
@@ -459,13 +475,13 @@ def dispatch_graph_apply_patch(connection, request: dict[str, Any], *, tool_name
             native_complete=preview.get("complete") is True,
             removable_count=removable_count,
             approved_count=len(approved),
-            message="The conservative prospective prune apply response exceeds the MCP response budget.",
+            message=f"The conservative prospective {operation} apply response exceeds the MCP response budget.",
         )
 
     try:
         result = connection.send_command_once(_GRAPH_PATCH_COMMAND, request)
     except UECommandNotDispatchedError as exc:
-        return _prune_connection_error(exc, request)
+        return _approval_connection_error(exc, request)
     except UECommandError as exc:
         return _native_error(exc, request)
     except ConnectionError as exc:

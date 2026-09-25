@@ -1380,11 +1380,79 @@ bool FCortexGraphPatchOps::Preflight(
 		{
 			const bool bIsTransferOp = MigrationOp == TEXT("copy_subgraph") || MigrationOp == TEXT("move_subgraph");
 			const bool bIsPruneOp = MigrationOp == TEXT("prune_island");
-			if (!bIsTransferOp && !bIsPruneOp)
+			const bool bIsRetireOp = MigrationOp == TEXT("retire_entries");
+			if (!bIsTransferOp && !bIsPruneOp && !bIsRetireOp)
 			{
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::UnsupportedOperation,
-					FString::Printf(TEXT("Unsupported migration operation '%s'; the published migration operations are replace_entry, copy_subgraph, move_subgraph and prune_island"), *MigrationOp));
+					FString::Printf(TEXT("Unsupported migration operation '%s'; the published migration operations are replace_entry, copy_subgraph, move_subgraph, prune_island and retire_entries"), *MigrationOp));
 				return false;
+			}
+			if (bIsRetireOp)
+			{
+				if (Params->HasField(TEXT("target")))
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+						TEXT("a retire_entries request addresses its graph through migration.source; 'target' must be absent"));
+					return false;
+				}
+				FCortexGraphMigrationRetirePlan RetirementPlan;
+				bool bRetireReused = false;
+				if (!FCortexGraphMigrationOps::PlanRetirement(
+					Blueprint, *MigrationPtr, RetirementPlan, bRetireReused, OutError))
+				{
+					return false;
+				}
+				if (!bDryRun && RetirementPlan.bAwaitingApproval)
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+						TEXT("a retire_entries apply requires the migration.approved_node_guids of the preview; the preview that published the removable set must be approved before anything is deleted"));
+					return false;
+				}
+				OutPrepared.RetirementPlan = RetirementPlan.ToJson();
+				OutPrepared.GraphGuid = RetirementPlan.GraphGuid;
+				OutPrepared.bHasEntryNode = false;
+				OutPrepared.bFullyReused = bRetireReused || RetirementPlan.bAwaitingApproval;
+				OutPrepared.bChanged = !OutPrepared.bFullyReused;
+				OutPrepared.bReplayedWithAbsentSource = bRetireReused;
+
+				TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
+				Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
+				Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
+				Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+				Normalized->SetArrayField(TEXT("nodes"), TArray<TSharedPtr<FJsonValue>>());
+				Normalized->SetArrayField(TEXT("connections"), TArray<TSharedPtr<FJsonValue>>());
+				Normalized->SetArrayField(TEXT("pin_updates"), TArray<TSharedPtr<FJsonValue>>());
+				Normalized->SetObjectField(TEXT("migration"), OutPrepared.RetirementPlan);
+				TSharedPtr<FJsonObject> RetirementLocator = MakeShared<FJsonObject>();
+				RetirementLocator->SetStringField(TEXT("graph_guid"), RetirementPlan.GraphGuid);
+				TSharedPtr<FJsonObject> NormalizedTarget = MakeShared<FJsonObject>();
+				NormalizedTarget->SetObjectField(TEXT("graph_ref"), RetirementLocator);
+				Normalized->SetObjectField(TEXT("target"), NormalizedTarget);
+				OutPrepared.NormalizedRequest = Normalized;
+
+				FString RetirementIntent;
+				RetirementIntent += TEXT("graph_patch_v1|");
+				RetirementIntent += CanonicalObject(Normalized);
+				RetirementIntent += TEXT("|fingerprint=");
+				RetirementIntent += OutPrepared.FingerprintBefore->GetStringField(TEXT("graph_authoring_hash"));
+				RetirementIntent += TEXT("|engine=UE5.8|schema=K2");
+				FTCHARToUTF8 RetirementUtf8(*RetirementIntent);
+				const FIoHash RetirementDigest = FIoHash::HashBuffer(
+					reinterpret_cast<const uint8*>(RetirementUtf8.Get()), RetirementUtf8.Length());
+				OutPrepared.ValidationHash = LexToString(RetirementDigest);
+
+				if (!bDryRun)
+				{
+					FString ExpectedToken;
+					Params->TryGetStringField(TEXT("expected_validation_hash"), ExpectedToken);
+					if (ExpectedToken != OutPrepared.ValidationHash)
+					{
+						OutError = FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
+							TEXT("expected_validation_hash does not match current preflight intent"));
+						return false;
+					}
+				}
+				return true;
 			}
 			if (bIsPruneOp)
 			{
@@ -2899,6 +2967,17 @@ bool RestoredAuthoringMatches(UBlueprint* Blueprint, const TSharedPtr<FJsonObjec
 bool CompileTargetBlueprint(UBlueprint* Blueprint, const FName Operation, TArray<FString>& OutDiagnostics)
 {
 	NotifyOperation(Operation, Blueprint);
+#if WITH_AUTOMATION_TESTS
+	// Isolate the coordinator's failed-recovery policy from compiler-side Blueprint mutations.
+	// This test-only result seam preserves source/generated state while exercising both real
+	// operation notifications and the same failure branch as a failed compiler invocation.
+	if (ShouldInjectApplyFault(TEXT("retirement_compile_result_failure")))
+	{
+		Blueprint->Status = BS_Error;
+		OutDiagnostics.Add(TEXT("test: compile result failure with BS_Error preserved"));
+		return false;
+	}
+#endif
 	FCompilerResultsLog Log;
 	Log.bAnnotateMentionedNodes = false;
 	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &Log);
@@ -3840,6 +3919,17 @@ bool VerifyAppliedState(
 		}
 		return FCortexGraphMigrationOps::VerifyPruneAgainstNative(Blueprint, PrunePlan, OutFailure);
 	}
+	if (Prepared.RetirementPlan.IsValid())
+	{
+		FCortexGraphMigrationRetirePlan RetirePlan;
+		FCortexCommandResult PlanError;
+		if (!FCortexGraphMigrationRetirePlan::FromJson(Prepared.RetirementPlan, RetirePlan, PlanError))
+		{
+			OutFailure = PlanError.ErrorMessage;
+			return false;
+		}
+		return FCortexGraphMigrationOps::VerifyRetirementAgainstNative(Blueprint, RetirePlan, OutFailure);
+	}
 	if (Prepared.MigrationPlan.IsValid())
 	{
 		FCortexGraphMigrationPlan Plan;
@@ -3878,11 +3968,15 @@ bool HandleApplyFailure(
 	const bool bContentRestored = RestoreJournal(Blueprint, Journal);
 
 	bool bRecoveryCompileSucceeded = true;
+	bool bRecoveryCompileReachedExpectedStatus = true;
 	if (bContentRestored && Journal.bCompileAttempted)
 	{
 		TArray<FString> RecoveryDiagnostics;
 		bRecoveryCompileSucceeded =
 			CompileTargetBlueprint(Blueprint, TEXT("recovery_compile"), RecoveryDiagnostics);
+		bRecoveryCompileReachedExpectedStatus = Journal.StatusBefore == BS_Error
+			? !bRecoveryCompileSucceeded && Blueprint->Status == BS_Error
+			: bRecoveryCompileSucceeded;
 		if (OutOutcome)
 		{
 			OutOutcome->RecoveryCompileCount += 1;
@@ -3895,7 +3989,7 @@ bool HandleApplyFailure(
 	bool bGeneratedRestored = true;
 	if (Journal.bCompileAttempted)
 	{
-		bGeneratedRestored = bRecoveryCompileSucceeded
+		bGeneratedRestored = bRecoveryCompileReachedExpectedStatus
 			&& FCortexGraphPatchState::ComputeGeneratedStateDigest(Blueprint) == Journal.GeneratedStateBefore;
 	}
 	bool bPreservationRestored = true;
@@ -4174,6 +4268,63 @@ bool ApplyPrepared(
 			return Fail(TEXT("Test fault injected after the approved island nodes were removed"));
 		}
 		PruneGraph->NotifyGraphChanged();
+		return true;
+	}
+
+	if (Prepared.RetirementPlan.IsValid())
+	{
+		FCortexGraphMigrationRetirePlan RetirePlan;
+		if (!FCortexGraphMigrationRetirePlan::FromJson(Prepared.RetirementPlan, RetirePlan, OutError))
+		{
+			return false;
+		}
+		FGuid RetirementGraphGuid;
+		if (!FGuid::Parse(RetirePlan.GraphGuid, RetirementGraphGuid))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("the prepared retirement plan carries an invalid graph identity"));
+			return false;
+		}
+		UEdGraph* const RetirementGraph =
+			FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, RetirementGraphGuid);
+		if (!RetirementGraph)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				TEXT("the planned retirement graph did not re-resolve after the final guard"));
+			return false;
+		}
+		Journal.Locators.GraphGuid = RetirementGraph->GraphGuid;
+		Journal.Locators.SubgraphPath.Reset();
+		Journal.PreservationContracts = { RetirePlan.Preservation };
+
+		for (int32 Index = 0; Index < RetirePlan.ApprovedGuids.Num(); ++Index)
+		{
+			const FString& GuidText = RetirePlan.ApprovedGuids[Index];
+			FGuid ApprovedGuid;
+			UEdGraphNode* const ApprovedNode = FGuid::Parse(GuidText, ApprovedGuid)
+				? FCortexGraphMigrationOps::FindNodeByGuidInGraph(RetirementGraph, ApprovedGuid)
+				: nullptr;
+			if (!ApprovedNode)
+			{
+				return Fail(FString::Printf(TEXT("the approved retirement node '%s' no longer resolves in the named graph"),
+					*GuidText));
+			}
+			JournalNodeRemoved(ApprovedNode, Journal);
+			FBlueprintEditorUtils::RemoveNode(Blueprint, ApprovedNode, /*bDontRecompile=*/true);
+			if (FCortexGraphMigrationOps::FindNodeByGuidInGraph(RetirementGraph, ApprovedGuid))
+			{
+				return Fail(FString::Printf(TEXT("the approved retirement node '%s' could not be removed"), *GuidText));
+			}
+			if (Index == 0 && ShouldInjectApplyFault(TEXT("migration_retire_after_first_removal")))
+			{
+				return Fail(TEXT("Test fault injected after the first approved retirement removal"));
+			}
+		}
+		if (ShouldInjectApplyFault(TEXT("migration_retire_after_removals")))
+		{
+			return Fail(TEXT("Test fault injected after the approved retirement nodes were removed"));
+		}
+		RetirementGraph->NotifyGraphChanged();
 		return true;
 	}
 
@@ -4680,7 +4831,10 @@ void FCortexGraphPatchOps::TrimDiagnostics(TArray<FString>& InOutDiagnostics)
 	}
 }
 
-bool FCortexGraphPatchOps::ValidateEligibility(UBlueprint* Blueprint, FCortexCommandResult& OutError)
+bool FCortexGraphPatchOps::ValidateEligibility(
+	UBlueprint* Blueprint,
+	const TSharedPtr<FJsonObject>& Params,
+	FCortexCommandResult& OutError)
 {
 	OutError = FCortexCommandResult();
 	if (!Blueprint)
@@ -4694,16 +4848,27 @@ bool FCortexGraphPatchOps::ValidateEligibility(UBlueprint* Blueprint, FCortexCom
 			TEXT("Blueprint class context is unready: missing ParentClass or GeneratedClass"));
 		return false;
 	}
-	if (Blueprint->Status == BS_Error)
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-			TEXT("Blueprint has pre-existing compiler errors; fix the asset before applying a typed patch"));
-		return false;
-	}
 	if (GEditor && (GEditor->PlayWorld != nullptr || GEditor->IsPlaySessionInProgress()))
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 			TEXT("Typed graph patches cannot be applied while a play or simulate session is active"));
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* Migration = nullptr;
+	FString Op;
+	const bool bRetirement =
+		Params.IsValid()
+		&& Params->TryGetObjectField(TEXT("migration"), Migration)
+		&& Migration && Migration->IsValid()
+		&& (*Migration)->TryGetStringField(TEXT("op"), Op)
+		&& Op == TEXT("retire_entries");
+
+	if (Blueprint->Status == BS_Error && !bRetirement)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			TEXT("Blueprint has pre-existing compiler errors; only retire_entries may repair this state through graph.apply_patch"));
 		return false;
 	}
 	return true;
@@ -4747,7 +4912,7 @@ bool FCortexGraphPatchOps::Execute(
 		return false;
 	};
 
-	if (!ValidateEligibility(Blueprint, OutError)) return Refuse();
+	if (!ValidateEligibility(Blueprint, Params, OutError)) return Refuse();
 
 	FCortexGraphPreparedPatch Prepared;
 	if (!Preflight(Blueprint, Params, Prepared, OutError))
@@ -4758,6 +4923,7 @@ bool FCortexGraphPatchOps::Execute(
 	OutOutcome.PatchId = Prepared.PatchId;
 	OutOutcome.TransferInventory = FCortexGraphMigrationOps::MakeTransferInventory(Prepared.TransferPlan);
 	OutOutcome.PruneInventory = FCortexGraphMigrationOps::MakePruneInventory(Prepared.PrunePlan);
+	OutOutcome.RetirementInventory = FCortexGraphMigrationOps::MakeRetirementInventory(Prepared.RetirementPlan);
 	OutOutcome.bChanged = Prepared.bChanged;
 	OutOutcome.ReusedClientIds = Prepared.ReusedClientIds;
 	OutOutcome.bReplayedWithAbsentSource = Prepared.bReplayedWithAbsentSource;

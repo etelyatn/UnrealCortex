@@ -55,6 +55,8 @@ struct FCortexGraphPreparedPatch
 	 * the published partition and the preservation contract of the retained body.
 	 */
 	TSharedPtr<FJsonObject> PrunePlan;
+	/** Durable `retire_entries` plan when the request selected the compile-invalid retirement shell. */
+	TSharedPtr<FJsonObject> RetirementPlan;
 	/**
 	 * True when an accepted replay named a source locator that no longer exists. The apply consumed
 	 * the stale entry and that provenance is not inventoried, so it is reported instead of inferred.
@@ -63,6 +65,7 @@ struct FCortexGraphPreparedPatch
 	bool bIsMigration() const { return MigrationPlan.IsValid(); }
 	bool bIsTransfer() const { return TransferPlan.IsValid(); }
 	bool bIsPrune() const { return PrunePlan.IsValid(); }
+	bool bIsRetirement() const { return RetirementPlan.IsValid(); }
 
 	/** Prepared state never owns transient UObject pointers. */
 	bool HasTransientObjects() const { return false; }
@@ -131,6 +134,8 @@ struct FCortexGraphPatchOutcome
 	 * caller approves the removable set from the response instead of reading the durable plan.
 	 */
 	TSharedPtr<FJsonObject> PruneInventory;
+	/** Bounded inventory of a retirement request, published with preview and apply results. */
+	TSharedPtr<FJsonObject> RetirementInventory;
 	TArray<FString> Diagnostics;
 	FCortexGraphPatchLocators Locators;
 };
@@ -166,7 +171,10 @@ public:
 	 * already be in a compiler-error state and must not be inside an active play or simulate session.
 	 * Pre-existing broken assets are never silently compiled to make them eligible.
 	 */
-	static bool ValidateEligibility(UBlueprint* Blueprint, FCortexCommandResult& OutError);
+	static bool ValidateEligibility(
+		UBlueprint* Blueprint,
+		const TSharedPtr<FJsonObject>& Params,
+		FCortexCommandResult& OutError);
 
 	/**
 	 * Runs the full apply coordinator for a non-preview request: prepare, eligibility, reversible
