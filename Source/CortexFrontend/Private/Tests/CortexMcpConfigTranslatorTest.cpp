@@ -16,23 +16,38 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
     (void)Parameters;
 
     const FString ConfigPath = FPaths::Combine(FPaths::ProjectDir(), TEXT(".mcp.json"));
-    TestTrue(TEXT("Real project .mcp.json should exist"), IFileManager::Get().FileExists(*ConfigPath));
+    if (!TestTrue(TEXT("Real project .mcp.json should exist"), IFileManager::Get().FileExists(*ConfigPath)))
+    {
+        return false;
+    }
 
     FString JsonText;
-    TestTrue(TEXT("Real project .mcp.json should load"), FFileHelper::LoadFileToString(JsonText, *ConfigPath));
+    if (!TestTrue(TEXT("Real project .mcp.json should load"), FFileHelper::LoadFileToString(JsonText, *ConfigPath)))
+    {
+        return false;
+    }
 
     TSharedPtr<FJsonObject> RootObject;
     const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
-    TestTrue(TEXT("Real project .mcp.json should parse"), FJsonSerializer::Deserialize(Reader, RootObject) && RootObject.IsValid());
+    if (!TestTrue(TEXT("Real project .mcp.json should parse"), FJsonSerializer::Deserialize(Reader, RootObject) && RootObject.IsValid()))
+    {
+        return false;
+    }
 
     const TArray<FString> ClaudeArgs = FCortexMcpConfigTranslator::BuildClaudeArgs(ConfigPath);
-    TestEqual(TEXT("Claude args should be split into flag and path"), ClaudeArgs.Num(), 2);
+    if (!TestEqual(TEXT("Claude args should be split into flag and path"), ClaudeArgs.Num(), 2))
+    {
+        return false;
+    }
     TestEqual(TEXT("Claude args should include mcp config flag"), ClaudeArgs[0], FString(TEXT("--mcp-config")));
     TestTrue(TEXT("Claude args should include quoted config path"), ClaudeArgs[1].Contains(TEXT(".mcp.json")));
 
     const TArray<FString> Overrides = FCortexMcpConfigTranslator::BuildCodexConfigOverrides(ConfigPath);
     TestTrue(TEXT("Should include at least one override"), Overrides.Num() > 0);
-    TestEqual(TEXT("Codex overrides should be flag/value pairs"), Overrides.Num() % 2, 0);
+    if (!TestEqual(TEXT("Codex overrides should be flag/value pairs"), Overrides.Num() % 2, 0))
+    {
+        return false;
+    }
     for (int32 Index = 0; Index < Overrides.Num(); Index += 2)
     {
         TestEqual(TEXT("Codex override flag should be a separate argv token"), Overrides[Index], FString(TEXT("-c")));
@@ -41,7 +56,10 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
 
     const TSharedPtr<FJsonObject>* ServersObject = nullptr;
     TestTrue(TEXT("Real project .mcp.json should contain mcpServers"), RootObject->TryGetObjectField(TEXT("mcpServers"), ServersObject) || RootObject->TryGetObjectField(TEXT("mcp_servers"), ServersObject));
-    TestTrue(TEXT("MCP servers object should be valid"), ServersObject != nullptr && ServersObject->IsValid());
+    if (!TestTrue(TEXT("MCP servers object should be valid"), ServersObject != nullptr && ServersObject->IsValid()))
+    {
+        return false;
+    }
 
     TArray<FString> ServerNames;
     ServerNames.Reserve((*ServersObject)->Values.Num());
@@ -55,7 +73,7 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
     for (const FString& ServerName : ServerNames)
     {
         const TSharedPtr<FJsonObject>* ServerObject = nullptr;
-        if (!(*ServersObject)->TryGetObjectField(ServerName, ServerObject) || ServerObject == nullptr)
+        if (!(*ServersObject)->TryGetObjectField(ServerName, ServerObject) || ServerObject == nullptr || !ServerObject->IsValid())
         {
             continue;
         }
@@ -93,7 +111,7 @@ bool FCortexMcpConfigTranslatorCodexTest::RunTest(const FString& Parameters)
         }
 
         const TSharedPtr<FJsonObject>* EnvObject = nullptr;
-        if ((*ServerObject)->TryGetObjectField(TEXT("env"), EnvObject) && EnvObject != nullptr && (*EnvObject)->Values.Num() > 0)
+        if ((*ServerObject)->TryGetObjectField(TEXT("env"), EnvObject) && EnvObject != nullptr && EnvObject->IsValid() && (*EnvObject)->Values.Num() > 0)
         {
             for (const auto& EnvPair : (*EnvObject)->Values)
             {
