@@ -54,7 +54,10 @@ bool FCortexAnimationSequenceInfoTest::RunTest(const FString& Parameters)
 	FCortexCommandRouter Router = CreateAnimInspectRouter();
 	FCortexCommandResult Result = Router.Execute(TEXT("anim.get_sequence_info"), AssetParams(TEXT("/Game/Characters/Mannequins/Anims/Pistol/MM_Pistol_Fire")));
 	TestTrue(TEXT("sequence info should succeed"), Result.bSuccess);
-	TestTrue(TEXT("data should be valid"), Result.Data.IsValid());
+	if (!TestTrue(TEXT("data should be valid"), Result.Data.IsValid()))
+	{
+		return false;
+	}
 	TestEqual(TEXT("asset_type"), Result.Data->GetStringField(TEXT("asset_type")), FString(TEXT("AnimSequence")));
 	TestTrue(TEXT("length_seconds exists"), Result.Data->HasField(TEXT("length_seconds")));
 	TestTrue(TEXT("skeleton exists"), Result.Data->HasField(TEXT("skeleton")));
@@ -79,7 +82,10 @@ bool FCortexAnimationMontageInfoTest::RunTest(const FString& Parameters)
 	Params->SetNumberField(TEXT("segment_limit"), 1);
 	FCortexCommandResult Result = Router.Execute(TEXT("anim.get_montage_info"), Params);
 	TestTrue(TEXT("montage info should succeed"), Result.bSuccess);
-	TestTrue(TEXT("data should be valid"), Result.Data.IsValid());
+	if (!TestTrue(TEXT("data should be valid"), Result.Data.IsValid()))
+	{
+		return false;
+	}
 	TestEqual(TEXT("asset_type"), Result.Data->GetStringField(TEXT("asset_type")), FString(TEXT("AnimMontage")));
 	TestTrue(TEXT("length_seconds exists"), Result.Data->HasField(TEXT("length_seconds")));
 	TestTrue(TEXT("sections collection exists"), HasCollection(Result.Data, TEXT("sections")));
@@ -114,7 +120,10 @@ bool FCortexAnimationSkeletonInfoTest::RunTest(const FString& Parameters)
 	FCortexCommandRouter Router = CreateAnimInspectRouter();
 	FCortexCommandResult Result = Router.Execute(TEXT("anim.get_skeleton_info"), AssetParams(TEXT("/Game/Characters/Mannequins/Meshes/SK_Mannequin")));
 	TestTrue(TEXT("skeleton info should succeed"), Result.bSuccess);
-	TestTrue(TEXT("data should be valid"), Result.Data.IsValid());
+	if (!TestTrue(TEXT("data should be valid"), Result.Data.IsValid()))
+	{
+		return false;
+	}
 	TestEqual(TEXT("asset_type"), Result.Data->GetStringField(TEXT("asset_type")), FString(TEXT("Skeleton")));
 	TestTrue(TEXT("bones collection exists"), HasCollection(Result.Data, TEXT("bones")));
 	TestTrue(TEXT("sockets collection exists"), HasCollection(Result.Data, TEXT("sockets")));
@@ -134,7 +143,10 @@ bool FCortexAnimationAnimBlueprintInfoTest::RunTest(const FString& Parameters)
 	FCortexCommandRouter Router = CreateAnimInspectRouter();
 	FCortexCommandResult Result = Router.Execute(TEXT("anim.get_animbp_info"), AssetParams(TEXT("/Game/Characters/Mannequins/Anims/Unarmed/ABP_Unarmed")));
 	TestTrue(TEXT("AnimBP info should succeed"), Result.bSuccess);
-	TestTrue(TEXT("data should be valid"), Result.Data.IsValid());
+	if (!TestTrue(TEXT("data should be valid"), Result.Data.IsValid()))
+	{
+		return false;
+	}
 	TestEqual(TEXT("asset_type"), Result.Data->GetStringField(TEXT("asset_type")), FString(TEXT("AnimBlueprint")));
 	TestTrue(TEXT("target_skeleton exists"), Result.Data->HasField(TEXT("target_skeleton")));
 	TestTrue(TEXT("parent_class exists"), Result.Data->HasField(TEXT("parent_class")));

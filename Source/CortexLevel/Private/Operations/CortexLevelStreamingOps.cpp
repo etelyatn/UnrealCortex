@@ -10,6 +10,8 @@
 #include "GameFramework/Actor.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/WorldSettings.h"
+#include "Misc/PackageName.h"
+#include "UObject/Package.h"
 #include "WorldPartition/DataLayer/DataLayerInstance.h"
 
 namespace
@@ -363,7 +365,19 @@ FCortexCommandResult FCortexLevelStreamingOps::SaveLevel(const TSharedPtr<FJsonO
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Persistent level unavailable"));
     }
 
-    const bool bSaved = FEditorFileUtils::SaveLevel(PersistentLevel);
+    // SaveLevel falls back to a modal Save As dialog for an Untitled map.
+    UPackage* Package = PersistentLevel->GetOutermost();
+    if (!FPackageName::DoesPackageExist(Package->GetName()) || FEditorFileUtils::GetFilename(World).IsEmpty())
+    {
+        return FCortexCommandRouter::Error(CortexErrorCodes::LevelNotSaved,
+            TEXT("Level has no existing map file. Save it in the editor first to preserve current edits, "
+                 "or use level.create_level with an explicit path to create a new saved map."));
+    }
+
+    // SavePackages uses the engine's non-dialog save path, including map data
+    // and external actor packages. Keep error reporting unattended as well.
+    TGuardValue<bool> SuppressDialogs(GIsRunningUnattendedScript, true);
+    const bool bSaved = UEditorLoadingAndSavingUtils::SavePackages({Package}, /*bOnlyDirty*/false);
     if (!bSaved)
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Failed to save current level"));

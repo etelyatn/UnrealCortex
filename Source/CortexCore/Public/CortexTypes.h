@@ -100,6 +100,7 @@ namespace CortexErrorCodes
 	static const FString TypeMismatch = TEXT("TYPE_MISMATCH");
 	static const FString SublevelNotFound = TEXT("SUBLEVEL_NOT_FOUND");
 	static const FString LevelInUse = TEXT("LEVEL_IN_USE");
+	static const FString LevelNotSaved = TEXT("LEVEL_NOT_SAVED");
 	static const FString UnsavedChanges = TEXT("UNSAVED_CHANGES");
 	static const FString EditorBusy = TEXT("EDITOR_BUSY");
 	static const FString SourceControlError = TEXT("SOURCE_CONTROL_ERROR");

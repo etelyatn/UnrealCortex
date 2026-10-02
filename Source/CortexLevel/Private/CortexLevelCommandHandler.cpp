@@ -315,7 +315,7 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
         FCortexCommandInfo{ TEXT("set_data_layer"), TEXT("Assign actor to data layer") }
             .Required(TEXT("actors"), TEXT("array"), TEXT("Actors to assign"))
             .Required(TEXT("data_layer"), TEXT("string"), TEXT("Target data layer")),
-        FCortexCommandInfo{ TEXT("save_level"), TEXT("Save current level without prompt") },
+        FCortexCommandInfo{ TEXT("save_level"), TEXT("Save current level without prompt; requires an existing map file, otherwise returns LEVEL_NOT_SAVED") },
         FCortexCommandInfo{ TEXT("save_all"), TEXT("Save all dirty map/content packages without prompt") },
         FCortexCommandInfo{ TEXT("list_templates"), TEXT("List available level templates") },
         FCortexCommandInfo{ TEXT("create_level"), TEXT("Create a new level asset") }
