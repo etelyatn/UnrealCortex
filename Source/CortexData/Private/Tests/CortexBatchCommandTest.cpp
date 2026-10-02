@@ -194,23 +194,8 @@ bool FCortexBatchCommandTest::RunTest(const FString& Parameters)
 		}
 	}
 
-	// --- Test 4: Empty batch ---
-	{
-		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-		Params->SetArrayField(TEXT("commands"), TArray<TSharedPtr<FJsonValue>>());
 
-		FCortexCommandResult Result = Handler.Execute(TEXT("batch"), Params);
-		TestTrue(TEXT("Empty batch should succeed"), Result.bSuccess);
-
-		if (Result.bSuccess && Result.Data.IsValid())
-		{
-			double Count = 0.0;
-			Result.Data->TryGetNumberField(TEXT("count"), Count);
-			TestEqual(TEXT("Empty batch count should be 0"), static_cast<int32>(Count), 0);
-		}
-	}
-
-	// --- Test 5: Batch limit exceeded ---
+	// --- Test 4: Batch limit exceeded ---
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 

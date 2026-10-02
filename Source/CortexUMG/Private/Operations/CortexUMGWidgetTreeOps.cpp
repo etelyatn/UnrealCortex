@@ -49,6 +49,10 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "UObject/UnrealType.h"
+#if __has_include("UIComponentWidgetBlueprintExtension.h")
+#include "UIComponentWidgetBlueprintExtension.h"
+#include "Extensions/UIComponentContainer.h"
+#endif
 
 struct FCuratedWidgetEntry
 {
@@ -858,6 +862,26 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
         }
         TArray<UBlueprint*> Dependents;
         FBlueprintEditorUtils::FindDependentBlueprints(WBP, Dependents);
+        TArray<FName, TInlineAllocator<4>> RenamedMembers;
+        RenamedMembers.Add(Widget->GetFName());
+#if __has_include("UIComponentWidgetBlueprintExtension.h")
+        if (!Dependents.IsEmpty())
+        {
+            if (const UUIComponentWidgetBlueprintExtension* Extension =
+                UWidgetBlueprintExtension::GetExtension<UUIComponentWidgetBlueprintExtension>(WBP))
+            {
+                // Native rename propagates these generated members as well as the widget.
+                for (const UUIComponent* Component : Extension->GetComponentsFor(Widget))
+                {
+                    if (Component)
+                    {
+                        RenamedMembers.Add(UUIComponentContainer::GetPropertyNameForComponent(
+                            Component, Widget->GetFName()));
+                    }
+                }
+            }
+        }
+#endif
         for (UBlueprint* Dependent : Dependents)
         {
             if (!Dependent || Dependent == WBP) continue;
@@ -868,7 +892,8 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
                 for (UEdGraphNode* Node : Graph->Nodes)
                 {
                     const UK2Node* K2Node = Cast<UK2Node>(Node);
-                    if (K2Node && K2Node->ReferencesVariable(Widget->GetFName(), nullptr))
+                    if (K2Node && RenamedMembers.ContainsByPredicate([K2Node](FName MemberName)
+                        { return K2Node->ReferencesVariable(MemberName, nullptr); }))
                     {
                         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
                             FString::Printf(TEXT("Widget rename would modify an unguarded dependent Blueprint: %s"), *Dependent->GetPathName()));

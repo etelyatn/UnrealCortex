@@ -14,6 +14,12 @@
 #include "CortexUMGAnimationBindingTestUtils.h"
 #include "UObject/UnrealType.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Misc/ScopeExit.h"
+#if __has_include("UIComponentWidgetBlueprintExtension.h")
+#include "UIComponentWidgetBlueprintExtension.h"
+#include "Extensions/UIComponentContainer.h"
+#include "Extensions/UIComponents/NavigationUIComponent.h"
+#endif
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexUMGWidgetVariableTest,
@@ -353,6 +359,92 @@ bool FCortexUMGRenameWidgetTest::RunTest(const FString& Parameters)
     Dependent->MarkAsGarbage();
     return true;
 }
+
+#if __has_include("UIComponentWidgetBlueprintExtension.h")
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexUMGRenameWidgetComponentDependentTest,
+    "Cortex.UMG.RenameWidgetComponentDependent",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGRenameWidgetComponentDependentTest::RunTest(const FString& Parameters)
+{
+    FCortexUMGAnimationBindingFixture Fixture(*this);
+    UWidgetBlueprint* WBP = Fixture.Blueprint.Get();
+    UWidget* Widget = WBP->WidgetTree->FindWidget(TEXT("BodySizeBox"));
+    if (!TestNotNull(TEXT("component owner widget exists"), Widget)) return false;
+    UUIComponentWidgetBlueprintExtension* Extension =
+        UWidgetBlueprintExtension::RequestExtension<UUIComponentWidgetBlueprintExtension>(WBP);
+    FText ComponentError;
+    UUIComponent* Component = Extension->AddComponent(
+        UNavigationUIComponent::StaticClass(), Widget->GetFName(), ComponentError);
+    if (!TestNotNull(TEXT("real navigation component created"), Component)) return false;
+    const FName ComponentMember = UUIComponentContainer::GetPropertyNameForComponent(
+        Component, Widget->GetFName());
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WBP);
+    FKismetEditorUtilities::CompileBlueprint(WBP);
+    if (!TestEqual(TEXT("component widget compiles without warnings"), WBP->Status, BS_UpToDate)
+        || !TestNotNull(TEXT("component generated member exists"),
+            FindFProperty<FObjectPropertyBase>(WBP->GeneratedClass, ComponentMember))) return false;
+
+    UPackage* DependentPackage = CreatePackage(*(TEXT("/Temp/CortexRenameComponentDependent_")
+        + FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+    UBlueprint* Dependent = FKismetEditorUtilities::CreateBlueprint(UObject::StaticClass(),
+        DependentPackage, TEXT("ComponentDependent"), BPTYPE_Normal,
+        UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass(), TEXT("CortexWidgetRenameTest"));
+    if (!TestNotNull(TEXT("component dependent Blueprint created"), Dependent)) return false;
+    ON_SCOPE_EXIT
+    {
+        WBP->CachedDependents.Remove(Dependent);
+        Dependent->CachedDependencies.Remove(WBP);
+        Dependent->MarkAsGarbage();
+        DependentPackage->SetDirtyFlag(false);
+        DependentPackage->MarkAsGarbage();
+    };
+    UEdGraph* Graph = FBlueprintEditorUtils::CreateNewGraph(Dependent, TEXT("ComponentGraph"),
+        UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+    Dependent->UbergraphPages.Add(Graph);
+    UK2Node_VariableGet* Reference = NewObject<UK2Node_VariableGet>(Graph);
+    Reference->VariableReference.SetExternalMember(ComponentMember, WBP->GeneratedClass);
+    Reference->CreateNewGuid();
+    Graph->AddNode(Reference, false, false);
+    if (!TestNotNull(TEXT("external getter resolves real component property"),
+        Reference->GetPropertyForVariable())) return false;
+    Reference->AllocateDefaultPins();
+    TestFalse(TEXT("component getter does not reference bare widget member"),
+        Reference->ReferencesVariable(Widget->GetFName(), nullptr));
+    TestTrue(TEXT("component getter references generated component member"),
+        Reference->ReferencesVariable(ComponentMember, nullptr));
+    Dependent->bCachedDependenciesUpToDate = false;
+    TArray<UBlueprint*> Dependents;
+    FBlueprintEditorUtils::FindDependentBlueprints(WBP, Dependents);
+    if (!TestTrue(TEXT("engine discovers component-only dependent"), Dependents.Contains(Dependent))) return false;
+
+    WBP->GetPackage()->SetDirtyFlag(false);
+    DependentPackage->SetDirtyFlag(false);
+    TSharedPtr<FJsonObject> StateParams = MakeShared<FJsonObject>();
+    StateParams->SetStringField(TEXT("asset_path"), WBP->GetPathName());
+    StateParams->SetStringField(TEXT("widget_name"), Widget->GetName());
+    StateParams->SetBoolField(TEXT("is_variable"), Widget->bIsVariable);
+    FCortexCommandResult State = Fixture.Router.Execute(TEXT("umg.set_widget_variable"), StateParams);
+    if (!TestTrue(TEXT("component tree fingerprint available"), State.bSuccess)) return false;
+    const FGuid ReferenceGuid = Reference->NodeGuid;
+    TSharedPtr<FJsonObject> RenameParams = MakeShared<FJsonObject>();
+    RenameParams->SetStringField(TEXT("asset_path"), WBP->GetPathName());
+    RenameParams->SetStringField(TEXT("widget_name"), Widget->GetName());
+    RenameParams->SetStringField(TEXT("new_name"), TEXT("RenamedBodySizeBox"));
+    RenameParams->SetObjectField(TEXT("expected_fingerprint"), State.Data->GetObjectField(TEXT("fingerprint")));
+    FCortexCommandResult Result = Fixture.Router.Execute(TEXT("umg.rename_widget"), RenameParams);
+    TestFalse(TEXT("external component member refuses target-only rename"), Result.bSuccess);
+    TestEqual(TEXT("component refusal reports containment"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
+    TestEqual(TEXT("component refusal preserves widget name"), Widget->GetName(), FString(TEXT("BodySizeBox")));
+    TestTrue(TEXT("component refusal preserves component target"),
+        Extension->GetComponent(UNavigationUIComponent::StaticClass(), TEXT("BodySizeBox")) == Component);
+    TestEqual(TEXT("component refusal preserves external member"), Reference->VariableReference.GetMemberName(), ComponentMember);
+    TestEqual(TEXT("component refusal preserves external node identity"), Reference->NodeGuid, ReferenceGuid);
+    TestFalse(TEXT("component refusal leaves target clean"), WBP->GetPackage()->IsDirty());
+    TestFalse(TEXT("component refusal leaves dependent clean"), DependentPackage->IsDirty());
+    return true;
+}
+#endif
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexUMGRenameWidgetSlotFirstAnimationBindingTest,
     "Cortex.UMG.RenameWidgetSlotFirstAnimationBinding",

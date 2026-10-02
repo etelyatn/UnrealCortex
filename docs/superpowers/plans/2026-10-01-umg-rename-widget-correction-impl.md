@@ -97,3 +97,7 @@
   5. Live registered FastMCP `umg_cmd` rename executed successfully (`changed=true`, `saved=false`).
   6. Blueprint compile (0 errors, 0 warnings), package save, `core.reload_asset`, and readback clean with new name and variable flag intact; test asset deleted cleanly.
 - **Verification Boundary:** Regression verified; overall acceptance pending. Full Graph suite acceptance is independently blocked by a reproduced GC crash; this rename correction does not establish its cause or resolution.
+
+## Final PR #156 Acceptance (2026-10-03)
+
+The historical verification boundary above is superseded by the final candidate acceptance in [the PR #156 report](../../verification/2026-10-02-pr-156.md). The normal full native run passed 1,649/1,649 tests. This is observed acceptance, not a claim that the earlier intermittent GC crashes have an established root cause. The final candidate also includes generated UI-component member-reference containment.

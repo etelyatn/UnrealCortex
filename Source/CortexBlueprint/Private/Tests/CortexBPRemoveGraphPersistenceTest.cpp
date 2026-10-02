@@ -188,6 +188,9 @@ static void MarkFixtureGarbage(UBlueprint* BP)
 {
 	if (BP)
 	{
+		// Discard the asset itself: package garbage alone leaves it visible to PIE compilation.
+		BP->ClearFlags(RF_Public | RF_Standalone);
+		BP->MarkAsGarbage();
 		BP->GetOutermost()->MarkAsGarbage();
 	}
 }
@@ -773,6 +776,7 @@ bool FCortexBPRemoveGraphBlueprintStateRecoveryTest::RunTest(const FString&)
 		BP->NewVariables.Num() ? BP->NewVariables[0].GetMetaData(FBlueprintMetadata::MD_FieldNotify) : FString(),
 		FString(TEXT("DeleteMe|RetainedFunction")));
 	MarkFixtureGarbage(BP);
+	TestFalse(TEXT("discarded recovery fixture is no longer eligible for editor compilation"), IsValid(BP));
 	return true;
 }
 
