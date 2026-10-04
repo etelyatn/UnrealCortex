@@ -1105,3 +1105,103 @@ bool FCortexReplayLibraryPublishStagingFailureTest::RunTest(const FString& Param
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibraryEmbeddedCarriageReturnTest,
+	"Cortex.Replay.Library.EmbeddedCarriageReturnRejected",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibraryEmbeddedCarriageReturnTest::RunTest(const FString& Parameters)
+{
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+
+	int32 Id = 0;
+	TestTrue(TEXT("Reserve"), Library.ReserveId(Id).bSuccess);
+	TestTrue(TEXT("Publish"), Library.Publish(Fixture.MakeRecording(Id, false, { MakeKeyDownEvent(0, 0.0) })).bSuccess);
+
+	const FString InputsPath = Fixture.GetInputsPath(Id);
+	FString Inputs;
+	TestTrue(TEXT("Read inputs"), LoadTextFile(InputsPath, Inputs));
+	TestTrue(TEXT("Persisted row carries the recorded key"), Inputs.Contains(TEXT("\"SpaceBar\"")));
+
+	// Inject a raw carriage return inside the persisted key string. It must not be
+	// stripped into the valid registered key "SpaceBar".
+	Inputs.ReplaceInline(TEXT("\"SpaceBar\""), TEXT("\"Space\rBar\""));
+	TestTrue(TEXT("Write CR-bearing row"), FFileHelper::SaveStringToFile(Inputs, *InputsPath));
+
+	TSharedPtr<const FCortexReplaySnapshot> Snapshot;
+	FCortexReplayLibrary Reopened(Fixture.GetProjectRoot());
+	const FCortexCommandResult Result = Reopened.Load(Id, false, Snapshot);
+	TestFalse(TEXT("Embedded carriage return is rejected"), Result.bSuccess);
+	TestEqual(TEXT("Embedded carriage return is a format error"), Result.ErrorCode, FString(CortexReplayErrorCodes::UnsupportedRecordingFormat));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibraryViewportSizeTest,
+	"Cortex.Replay.Library.ViewportSizeValidation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibraryViewportSizeTest::RunTest(const FString& Parameters)
+{
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+
+	int32 Id = 0;
+	TestTrue(TEXT("Reserve"), Library.ReserveId(Id).bSuccess);
+
+	{
+		FCortexReplaySnapshot Snapshot = Fixture.MakeRecording(Id, false, {});
+		Snapshot.Metadata.Prerequisites.ViewportSize = FIntPoint(0, 1080);
+		TestFalse(TEXT("Zero-width viewport rejected"), Library.Publish(Snapshot).bSuccess);
+	}
+
+	{
+		FCortexReplaySnapshot Snapshot = Fixture.MakeRecording(Id, false, {});
+		Snapshot.Metadata.Prerequisites.ViewportSize = FIntPoint(1920, -1);
+		TestFalse(TEXT("Negative viewport height rejected"), Library.Publish(Snapshot).bSuccess);
+	}
+
+	TestTrue(TEXT("Publish valid"), Library.Publish(Fixture.MakeRecording(Id, false, {})).bSuccess);
+
+	const FString MetadataPath = FPaths::Combine(RecordingDirectoryPath(Fixture, Id), TEXT("metadata.json"));
+	FString OriginalMetadata;
+	TestTrue(TEXT("Read metadata"), LoadTextFile(MetadataPath, OriginalMetadata));
+
+	auto TamperViewportAndLoad = [&](const TCHAR* Label, double X, double Y)
+	{
+		TestTrue(TEXT("Restore metadata"), FFileHelper::SaveStringToFile(OriginalMetadata, *MetadataPath));
+		TSharedPtr<FJsonObject> Metadata = LoadJsonObject(MetadataPath);
+		if (!Metadata.IsValid())
+		{
+			return;
+		}
+
+		const TSharedPtr<FJsonObject>* Prerequisites = nullptr;
+		if (Metadata->TryGetObjectField(TEXT("prerequisites"), Prerequisites) && Prerequisites != nullptr)
+		{
+			const TSharedPtr<FJsonObject>* ViewportSize = nullptr;
+			if ((*Prerequisites)->TryGetObjectField(TEXT("viewport_size"), ViewportSize) && ViewportSize != nullptr)
+			{
+				(*ViewportSize)->SetNumberField(TEXT("x"), X);
+				(*ViewportSize)->SetNumberField(TEXT("y"), Y);
+			}
+		}
+		TestTrue(TEXT("Write tampered metadata"), SaveJsonObject(MetadataPath, Metadata));
+
+		TSharedPtr<const FCortexReplaySnapshot> Snapshot;
+		FCortexReplayLibrary Reopened(Fixture.GetProjectRoot());
+		const FCortexCommandResult Result = Reopened.Load(Id, false, Snapshot);
+		TestFalse(Label, Result.bSuccess);
+		TestEqual(TEXT("Rejected as an unsupported format"), Result.ErrorCode, FString(CortexReplayErrorCodes::UnsupportedRecordingFormat));
+	};
+
+	TamperViewportAndLoad(TEXT("Fractional viewport width is rejected"), 1920.5, 1080.0);
+	TamperViewportAndLoad(TEXT("Zero viewport height is rejected"), 1920.0, 0.0);
+
+	return true;
+}

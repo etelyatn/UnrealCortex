@@ -1522,6 +1522,34 @@ bool TryReadVector2DField(const TSharedPtr<FJsonObject>& Object, const TCHAR* Fi
 	return true;
 }
 
+bool TryReadJsonVector2DIntegralField(
+	const TSharedPtr<FJsonObject>& Object,
+	const TCHAR* Field,
+	int32 MinValue,
+	int32 MaxValue,
+	FIntPoint& OutValue,
+	FString& OutError)
+{
+	const TSharedPtr<FJsonObject>* VectorObject = nullptr;
+	if (!Object->TryGetObjectField(Field, VectorObject) || VectorObject == nullptr)
+	{
+		OutError = FString::Printf(TEXT("Missing object field '%s'"), Field);
+		return false;
+	}
+
+	int32 X = 0;
+	int32 Y = 0;
+	if (!TryReadJsonInt32(*VectorObject, TEXT("x"), MinValue, MaxValue, X, OutError)
+		|| !TryReadJsonInt32(*VectorObject, TEXT("y"), MinValue, MaxValue, Y, OutError))
+	{
+		OutError = FString::Printf(TEXT("Field '%s': %s"), Field, *OutError);
+		return false;
+	}
+
+	OutValue = FIntPoint(X, Y);
+	return true;
+}
+
 bool TryReadRotatorField(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, FRotator& OutValue, FString& OutError)
 {
 	const TSharedPtr<FJsonObject>* RotatorObject = nullptr;
@@ -2143,10 +2171,9 @@ bool ParseMetadata(
 		return false;
 	}
 
-	FVector2D ViewportSize = FVector2D::ZeroVector;
 	FString InputDevice;
 	if (!TryReadJsonInt32(*PrerequisitesObject, TEXT("local_player_index"), 0, MAX_int32, Metadata.Prerequisites.LocalPlayerIndex, OutError)
-		|| !TryReadVector2DField(*PrerequisitesObject, TEXT("viewport_size"), ViewportSize, OutError)
+		|| !TryReadJsonVector2DIntegralField(*PrerequisitesObject, TEXT("viewport_size"), 1, MAX_int32, Metadata.Prerequisites.ViewportSize, OutError)
 		|| !TryReadJsonNumber(*PrerequisitesObject, TEXT("dpi_scale"), Metadata.Prerequisites.DpiScale, OutError)
 		|| !TryReadJsonString(*PrerequisitesObject, TEXT("input_device"), true, InputDevice, OutError)
 		|| InputDevice != TEXT("keyboard_mouse"))
@@ -2154,7 +2181,6 @@ bool ParseMetadata(
 		OutError = TEXT("metadata.json prerequisites are invalid");
 		return false;
 	}
-	Metadata.Prerequisites.ViewportSize = FIntPoint(FMath::RoundToInt(ViewportSize.X), FMath::RoundToInt(ViewportSize.Y));
 
 	const TSharedPtr<FJsonObject>* CoverageObject = nullptr;
 	if (!Object->TryGetObjectField(TEXT("guard_coverage"), CoverageObject) || CoverageObject == nullptr)
@@ -2673,6 +2699,13 @@ bool ParseInputsStream(
 			const uint8 Byte = Buffer[ByteIndex];
 			if (Byte == '\n')
 			{
+				// Strip only the CR of a CRLF terminator; an embedded CR stays in the row
+				// so JSON/key validation sees the malformed content instead of a repaired row.
+				if (LineBytes.Num() > 0 && LineBytes.Last() == '\r')
+				{
+					LineBytes.RemoveAt(LineBytes.Num() - 1);
+				}
+
 				if (!ParseInputRow(LineBytes, RowOrdinal, Catalog, OutEvents, OutError))
 				{
 					return false;
@@ -2681,7 +2714,7 @@ bool ParseInputsStream(
 				++RowOrdinal;
 				LineBytes.Reset();
 			}
-			else if (Byte != '\r')
+			else
 			{
 				LineBytes.Add(Byte);
 			}
