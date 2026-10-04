@@ -8,13 +8,16 @@
 #include "Containers/StringConv.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/CString.h"
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonReader.h"
@@ -22,7 +25,6 @@
 #include "Serialization/JsonWriter.h"
 
 #if PLATFORM_WINDOWS
-#include "Windows/WindowsHWrapper.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include <bcrypt.h>
 #include "Windows/HideWindowsPlatformTypes.h"
@@ -39,8 +41,8 @@ constexpr int32 MaxTagUnits = 128;
 constexpr int32 MaxComponentPathUnits = 256;
 constexpr int32 MaxAncestrySegments = 64;
 constexpr int32 MaxAncestrySegmentUnits = 128;
-constexpr int32 MaxNameUnits = 128;
-constexpr int32 MaxDescriptionUnits = 1024;
+constexpr int32 MaxNameScalars = 128;
+constexpr int32 MaxDescriptionScalars = 1024;
 constexpr int32 MaxVersionUnits = 128;
 
 constexpr int32 MaxListPageSize = 100;
@@ -111,20 +113,37 @@ bool EnsureDirectory(const FString& Directory)
 }
 
 // ---------------------------------------------------------------------------
-// Text validation and bytes
+// Unicode text validation
 // ---------------------------------------------------------------------------
 
-bool ContainsInvalidText(const FString& Text)
+/** Rejects C0/C1 control characters, DEL, and unpaired UTF-16 surrogates. */
+bool ContainsInvalidUnicode(const FString& Text)
 {
 	for (int32 Index = 0; Index < Text.Len(); ++Index)
 	{
-		const TCHAR Character = Text[Index];
-		if (Character == TEXT('\0') || Character == 0x7f)
+		const uint32 CodeUnit = static_cast<uint32>(Text[Index]);
+
+		if (CodeUnit <= 0x1f || CodeUnit == 0x7f || (CodeUnit >= 0x80 && CodeUnit <= 0x9f))
 		{
 			return true;
 		}
 
-		if (Character < 0x20)
+		if (CodeUnit >= 0xd800 && CodeUnit <= 0xdbff)
+		{
+			if (Index + 1 >= Text.Len())
+			{
+				return true;
+			}
+
+			const uint32 Next = static_cast<uint32>(Text[Index + 1]);
+			if (Next < 0xdc00 || Next > 0xdfff)
+			{
+				return true;
+			}
+
+			++Index;
+		}
+		else if (CodeUnit >= 0xdc00 && CodeUnit <= 0xdfff)
 		{
 			return true;
 		}
@@ -133,7 +152,29 @@ bool ContainsInvalidText(const FString& Text)
 	return false;
 }
 
-bool IsValidBoundedText(const FString& Text, int32 MaxUnits, bool bRequireNonEmpty)
+/** Counts Unicode scalar values (a surrogate pair counts once). */
+int32 CountUnicodeScalars(const FString& Text)
+{
+	int32 Count = 0;
+	for (int32 Index = 0; Index < Text.Len(); ++Index)
+	{
+		const uint32 CodeUnit = static_cast<uint32>(Text[Index]);
+		if (CodeUnit >= 0xd800 && CodeUnit <= 0xdbff && Index + 1 < Text.Len())
+		{
+			const uint32 Next = static_cast<uint32>(Text[Index + 1]);
+			if (Next >= 0xdc00 && Next <= 0xdfff)
+			{
+				++Index;
+			}
+		}
+
+		++Count;
+	}
+
+	return Count;
+}
+
+bool IsValidBoundedTextUnits(const FString& Text, int32 MaxUnits, bool bRequireNonEmpty)
 {
 	if (bRequireNonEmpty && Text.IsEmpty())
 	{
@@ -145,82 +186,235 @@ bool IsValidBoundedText(const FString& Text, int32 MaxUnits, bool bRequireNonEmp
 		return false;
 	}
 
-	return !ContainsInvalidText(Text);
+	return !ContainsInvalidUnicode(Text);
 }
 
-bool IsValidAssetPath(const FString& Path, int32 MaxUnits, bool bRequireNonEmpty)
+bool IsValidBoundedTextScalars(const FString& Text, int32 MinScalars, int32 MaxScalars)
 {
-	return IsValidBoundedText(Path, MaxUnits, bRequireNonEmpty)
-		&& (!bRequireNonEmpty || Path.StartsWith(TEXT("/")));
+	if (ContainsInvalidUnicode(Text))
+	{
+		return false;
+	}
+
+	const int32 Count = CountUnicodeScalars(Text);
+	return Count >= MinScalars && Count <= MaxScalars;
 }
 
-TArray<uint8> ToUtf8Bytes(const FString& Text)
+bool IsValidLongPackagePath(const FString& Path, int32 MaxUnits, bool bRequireNonEmpty)
 {
-	TArray<uint8> Bytes;
-	FTCHARToUTF8 Converter(*Text);
-	Bytes.Append(reinterpret_cast<const uint8*>(Converter.Get()), Converter.Length());
-	return Bytes;
+	if (!IsValidBoundedTextUnits(Path, MaxUnits, bRequireNonEmpty))
+	{
+		return false;
+	}
+
+	if (!bRequireNonEmpty && Path.IsEmpty())
+	{
+		return true;
+	}
+
+	return FPackageName::IsValidLongPackageName(Path, true);
 }
+
+bool IsValidAssetObjectPath(const FString& Path, int32 MaxUnits, bool bRequireNonEmpty)
+{
+	if (!IsValidBoundedTextUnits(Path, MaxUnits, bRequireNonEmpty))
+	{
+		return false;
+	}
+
+	if (!bRequireNonEmpty && Path.IsEmpty())
+	{
+		return true;
+	}
+
+	return FPackageName::IsValidObjectPath(Path);
+}
+
+// ---------------------------------------------------------------------------
+// SHA-256
+// ---------------------------------------------------------------------------
+
+class FCortexReplaySha256State
+{
+public:
+	~FCortexReplaySha256State()
+	{
+		Close();
+	}
+
+	bool Begin(FString& OutError)
+	{
+		Close();
+
+#if PLATFORM_WINDOWS
+		const NTSTATUS OpenStatus = BCryptOpenAlgorithmProvider(&AlgorithmHandle, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
+		if (OpenStatus < 0 || AlgorithmHandle == nullptr)
+		{
+			OutError = TEXT("Failed to initialize the SHA-256 provider");
+			return false;
+		}
+
+		const NTSTATUS CreateStatus = BCryptCreateHash(AlgorithmHandle, &HashHandle, nullptr, 0, nullptr, 0, 0);
+		if (CreateStatus < 0 || HashHandle == nullptr)
+		{
+			Close();
+			OutError = TEXT("Failed to create the SHA-256 hash state");
+			return false;
+		}
+
+		bActive = true;
+		return true;
+#else
+		OutError = TEXT("SHA-256 hashing is not implemented on this platform");
+		return false;
+#endif
+	}
+
+	bool Update(const uint8* Data, int64 Size)
+	{
+#if PLATFORM_WINDOWS
+		if (!bActive || Size < 0)
+		{
+			return false;
+		}
+
+		if (Size == 0)
+		{
+			return true;
+		}
+
+		return BCryptHashData(HashHandle, const_cast<PUCHAR>(Data), static_cast<ULONG>(Size), 0) >= 0;
+#else
+		(void)Data;
+		(void)Size;
+		return false;
+#endif
+	}
+
+	bool Finish(FString& OutHex, FString& OutError)
+	{
+		OutHex.Reset();
+
+#if PLATFORM_WINDOWS
+		if (!bActive)
+		{
+			OutError = TEXT("SHA-256 hash state was not initialized");
+			return false;
+		}
+
+		uint8 Digest[32];
+		const NTSTATUS Status = BCryptFinishHash(HashHandle, Digest, static_cast<ULONG>(sizeof(Digest)), 0);
+		Close();
+
+		if (Status < 0)
+		{
+			OutError = TEXT("Failed to compute the SHA-256 digest");
+			return false;
+		}
+
+		OutHex.Reserve(static_cast<int32>(sizeof(Digest)) * 2);
+		for (const uint8 Byte : Digest)
+		{
+			OutHex += FString::Printf(TEXT("%02x"), static_cast<int32>(Byte));
+		}
+
+		return true;
+#else
+		OutError = TEXT("SHA-256 hashing is not implemented on this platform");
+		return false;
+#endif
+	}
+
+private:
+	void Close()
+	{
+#if PLATFORM_WINDOWS
+		if (HashHandle != nullptr)
+		{
+			BCryptDestroyHash(HashHandle);
+			HashHandle = nullptr;
+		}
+
+		if (AlgorithmHandle != nullptr)
+		{
+			BCryptCloseAlgorithmProvider(AlgorithmHandle, 0);
+			AlgorithmHandle = nullptr;
+		}
+
+		bActive = false;
+#endif
+	}
+
+#if PLATFORM_WINDOWS
+	BCRYPT_ALG_HANDLE AlgorithmHandle = nullptr;
+	BCRYPT_HASH_HANDLE HashHandle = nullptr;
+	bool bActive = false;
+#endif
+};
 
 bool ComputeSha256Hex(const uint8* Data, int64 Size, FString& OutHex, FString& OutError)
 {
-	OutHex.Reset();
-
-#if PLATFORM_WINDOWS
-	uint8 Digest[32];
-	BCRYPT_ALG_HANDLE AlgorithmHandle = nullptr;
-	BCRYPT_HASH_HANDLE HashHandle = nullptr;
-
-	const NTSTATUS OpenStatus = BCryptOpenAlgorithmProvider(&AlgorithmHandle, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
-	if (OpenStatus < 0 || AlgorithmHandle == nullptr)
+	FCortexReplaySha256State State;
+	if (!State.Begin(OutError))
 	{
-		OutError = TEXT("Failed to initialize the SHA-256 provider");
 		return false;
 	}
 
-	const NTSTATUS CreateStatus = BCryptCreateHash(AlgorithmHandle, &HashHandle, nullptr, 0, nullptr, 0, 0);
-	if (CreateStatus < 0 || HashHandle == nullptr)
+	if (!State.Update(Data, Size))
 	{
-		BCryptCloseAlgorithmProvider(AlgorithmHandle, 0);
-		OutError = TEXT("Failed to create the SHA-256 hash state");
+		OutError = TEXT("Failed to hash the payload bytes");
 		return false;
 	}
 
-	NTSTATUS Status = 0;
-	if (Size > 0)
-	{
-		Status = BCryptHashData(HashHandle, const_cast<PUCHAR>(Data), static_cast<ULONG>(Size), 0);
-	}
-	if (Status >= 0)
-	{
-		Status = BCryptFinishHash(HashHandle, Digest, static_cast<ULONG>(sizeof(Digest)), 0);
-	}
-
-	BCryptDestroyHash(HashHandle);
-	BCryptCloseAlgorithmProvider(AlgorithmHandle, 0);
-
-	if (Status < 0)
-	{
-		OutError = TEXT("Failed to compute the SHA-256 digest");
-		return false;
-	}
-
-	OutHex.Reserve(static_cast<int32>(sizeof(Digest)) * 2);
-	for (const uint8 Byte : Digest)
-	{
-		OutHex += FString::Printf(TEXT("%02x"), static_cast<int32>(Byte));
-	}
-
-	return true;
-#else
-	OutError = TEXT("SHA-256 hashing is not implemented on this platform");
-	return false;
-#endif
+	return State.Finish(OutHex, OutError);
 }
 
 bool ComputeSha256Hex(const TArray<uint8>& Bytes, FString& OutHex, FString& OutError)
 {
 	return ComputeSha256Hex(Bytes.GetData(), static_cast<int64>(Bytes.Num()), OutHex, OutError);
+}
+
+bool ComputeFileSha256Hex(const FString& Path, FString& OutHex, FString& OutError)
+{
+	OutHex.Reset();
+
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	TUniquePtr<IFileHandle> Handle(PlatformFile.OpenRead(*Path));
+	if (!Handle.IsValid())
+	{
+		OutError = FString::Printf(TEXT("Failed to open '%s' for hashing"), *Path);
+		return false;
+	}
+
+	FCortexReplaySha256State State;
+	if (!State.Begin(OutError))
+	{
+		return false;
+	}
+
+	const int64 Total = Handle->Size();
+	int64 Offset = 0;
+	uint8 Buffer[65536];
+	while (Offset < Total)
+	{
+		const int64 Chunk = FMath::Min<int64>(static_cast<int64>(sizeof(Buffer)), Total - Offset);
+		if (!Handle->Read(Buffer, Chunk))
+		{
+			OutError = FString::Printf(TEXT("Failed to read '%s' for hashing"), *Path);
+			return false;
+		}
+
+		if (!State.Update(Buffer, Chunk))
+		{
+			OutError = FString::Printf(TEXT("Failed to hash '%s'"), *Path);
+			return false;
+		}
+
+		Offset += Chunk;
+	}
+
+	Handle.Reset();
+	return State.Finish(OutHex, OutError);
 }
 
 bool IsLowerHexSha256(const FString& Value)
@@ -245,6 +439,31 @@ bool IsLowerHexSha256(const FString& Value)
 }
 
 // ---------------------------------------------------------------------------
+// Byte helpers
+// ---------------------------------------------------------------------------
+
+TArray<uint8> ToUtf8Bytes(const FString& Text)
+{
+	TArray<uint8> Bytes;
+	FTCHARToUTF8 Converter(*Text);
+	Bytes.Append(reinterpret_cast<const uint8*>(Converter.Get()), Converter.Length());
+	return Bytes;
+}
+
+FString Utf8BytesToFString(const TArray<uint8>& Bytes)
+{
+	FString Result;
+	if (Bytes.Num() == 0)
+	{
+		return Result;
+	}
+
+	const FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(Bytes.GetData()), Bytes.Num());
+	Result.Append(Converter.Get(), Converter.Length());
+	return Result;
+}
+
+// ---------------------------------------------------------------------------
 // File helpers
 // ---------------------------------------------------------------------------
 
@@ -254,10 +473,98 @@ bool ReadFileBytes(const FString& Path, TArray<uint8>& OutBytes)
 	return FFileHelper::LoadFileToArray(OutBytes, *Path);
 }
 
-bool WriteFileBytes(const FString& Path, const TArray<uint8>& Bytes)
+/** Writes bytes through an owned handle, requiring a full flush to storage before close. */
+bool WriteFileBytesDurably(const FString& Path, const TArray<uint8>& Bytes, FString& OutError)
 {
-	return FFileHelper::SaveArrayToFile(Bytes, *Path);
+	OutError.Reset();
+
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	TUniquePtr<IFileHandle> Handle(PlatformFile.OpenWrite(*Path, false, false));
+	if (!Handle.IsValid())
+	{
+		OutError = FString::Printf(TEXT("Failed to open '%s' for writing"), *Path);
+		return false;
+	}
+
+	if (Bytes.Num() > 0 && !Handle->Write(Bytes.GetData(), Bytes.Num()))
+	{
+		OutError = FString::Printf(TEXT("Failed to write '%s'"), *Path);
+		return false;
+	}
+
+	if (!Handle->Flush(true))
+	{
+		OutError = FString::Printf(TEXT("Failed to flush '%s' to storage"), *Path);
+		return false;
+	}
+
+	Handle.Reset();
+	return true;
 }
+
+class FCortexReplayDurableWriter
+{
+public:
+	~FCortexReplayDurableWriter()
+	{
+		Handle.Reset();
+	}
+
+	bool Open(const FString& InPath, FString& OutError)
+	{
+		Handle.Reset();
+		Path = InPath;
+
+		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+		Handle.Reset(PlatformFile.OpenWrite(*Path, false, false));
+		if (!Handle.IsValid())
+		{
+			OutError = FString::Printf(TEXT("Failed to open '%s' for writing"), *Path);
+			return false;
+		}
+
+		return true;
+	}
+
+	bool WriteBytes(const uint8* Data, int64 Size, FString& OutError)
+	{
+		if (!Handle.IsValid())
+		{
+			OutError = FString::Printf(TEXT("Writer for '%s' is not open"), *Path);
+			return false;
+		}
+
+		if (Size > 0 && !Handle->Write(Data, Size))
+		{
+			OutError = FString::Printf(TEXT("Failed to write '%s'"), *Path);
+			return false;
+		}
+
+		return true;
+	}
+
+	bool Commit(FString& OutError)
+	{
+		if (!Handle.IsValid())
+		{
+			OutError = FString::Printf(TEXT("Writer for '%s' is not open"), *Path);
+			return false;
+		}
+
+		if (!Handle->Flush(true))
+		{
+			OutError = FString::Printf(TEXT("Failed to flush '%s' to storage"), *Path);
+			return false;
+		}
+
+		Handle.Reset();
+		return true;
+	}
+
+private:
+	TUniquePtr<IFileHandle> Handle;
+	FString Path;
+};
 
 FString MakeTempFilePath(const FString& Directory)
 {
@@ -320,9 +627,9 @@ bool WriteFileAtomically(const FString& Destination, const TArray<uint8>& Bytes,
 	}
 
 	const FString TempPath = MakeTempFilePath(Directory);
-	if (!WriteFileBytes(TempPath, Bytes))
+	if (!WriteFileBytesDurably(TempPath, Bytes, OutError))
 	{
-		OutError = FString::Printf(TEXT("Failed to write temporary file: %s"), *TempPath);
+		IFileManager::Get().Delete(*TempPath, false, true, true);
 		return false;
 	}
 
@@ -524,6 +831,134 @@ bool DeserializeJsonObject(const FString& Text, TSharedPtr<FJsonObject>& OutObje
 }
 
 // ---------------------------------------------------------------------------
+// Strict JSON field readers
+// ---------------------------------------------------------------------------
+
+bool TryReadJsonNumber(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, double& OutValue, FString& OutError)
+{
+	const TSharedPtr<FJsonValue> Value = Object->TryGetField(Field);
+	if (!Value.IsValid() || Value->Type != EJson::Number)
+	{
+		OutError = FString::Printf(TEXT("Field '%s' must be a JSON number"), Field);
+		return false;
+	}
+
+	const double Number = Value->AsNumber();
+	if (!FMath::IsFinite(Number))
+	{
+		OutError = FString::Printf(TEXT("Field '%s' must be finite"), Field);
+		return false;
+	}
+
+	OutValue = Number;
+	return true;
+}
+
+bool TryReadJsonInteger(
+	const TSharedPtr<FJsonObject>& Object,
+	const TCHAR* Field,
+	int64 MinValue,
+	int64 MaxValue,
+	int64& OutValue,
+	FString& OutError)
+{
+	const TSharedPtr<FJsonValue> Value = Object->TryGetField(Field);
+	if (!Value.IsValid() || Value->Type != EJson::Number)
+	{
+		OutError = FString::Printf(TEXT("Field '%s' must be a JSON integer, not a string or other type"), Field);
+		return false;
+	}
+
+	const double Number = Value->AsNumber();
+	if (!FMath::IsFinite(Number) || FMath::TruncToDouble(Number) != Number)
+	{
+		OutError = FString::Printf(TEXT("Field '%s' must be an integral number"), Field);
+		return false;
+	}
+
+	if (Number < static_cast<double>(MinValue) || Number > static_cast<double>(MaxValue))
+	{
+		OutError = FString::Printf(TEXT("Field '%s' is outside its supported range"), Field);
+		return false;
+	}
+
+	OutValue = static_cast<int64>(Number);
+	return true;
+}
+
+bool TryReadJsonInt32(
+	const TSharedPtr<FJsonObject>& Object,
+	const TCHAR* Field,
+	int32 MinValue,
+	int32 MaxValue,
+	int32& OutValue,
+	FString& OutError)
+{
+	int64 Value = 0;
+	if (!TryReadJsonInteger(Object, Field, MinValue, MaxValue, Value, OutError))
+	{
+		return false;
+	}
+
+	OutValue = static_cast<int32>(Value);
+	return true;
+}
+
+bool TryReadJsonInt64(
+	const TSharedPtr<FJsonObject>& Object,
+	const TCHAR* Field,
+	int64 MinValue,
+	int64 MaxValue,
+	int64& OutValue,
+	FString& OutError)
+{
+	return TryReadJsonInteger(Object, Field, MinValue, MaxValue, OutValue, OutError);
+}
+
+bool TryReadJsonBool(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, bool& OutValue, FString& OutError)
+{
+	const TSharedPtr<FJsonValue> Value = Object->TryGetField(Field);
+	if (!Value.IsValid() || Value->Type != EJson::Boolean)
+	{
+		OutError = FString::Printf(TEXT("Field '%s' must be a JSON boolean"), Field);
+		return false;
+	}
+
+	OutValue = Value->AsBool();
+	return true;
+}
+
+bool TryReadJsonString(
+	const TSharedPtr<FJsonObject>& Object,
+	const TCHAR* Field,
+	bool bRequired,
+	FString& OutValue,
+	FString& OutError)
+{
+	OutValue.Reset();
+
+	const TSharedPtr<FJsonValue> Value = Object->TryGetField(Field);
+	if (!Value.IsValid())
+	{
+		if (bRequired)
+		{
+			OutError = FString::Printf(TEXT("Missing required field '%s'"), Field);
+			return false;
+		}
+
+		return true;
+	}
+
+	if (Value->Type != EJson::String)
+	{
+		OutError = FString::Printf(TEXT("Field '%s' must be a JSON string"), Field);
+		return false;
+	}
+
+	return Value->TryGetString(OutValue);
+}
+
+// ---------------------------------------------------------------------------
 // Enum text mapping
 // ---------------------------------------------------------------------------
 
@@ -626,9 +1061,41 @@ const TCHAR* SurfaceToString(const ECortexEditorUISurface Surface)
 	return Surface == ECortexEditorUISurface::WorldComponent ? TEXT("world_component") : TEXT("viewport");
 }
 
+bool SurfaceFromString(const FString& Value, ECortexEditorUISurface& OutSurface)
+{
+	if (Value == TEXT("viewport"))
+	{
+		OutSurface = ECortexEditorUISurface::Viewport;
+		return true;
+	}
+	if (Value == TEXT("world_component"))
+	{
+		OutSurface = ECortexEditorUISurface::WorldComponent;
+		return true;
+	}
+
+	return false;
+}
+
 const TCHAR* RootKindToString(const ECortexEditorUIRootKind RootKind)
 {
 	return RootKind == ECortexEditorUIRootKind::Slate ? TEXT("slate") : TEXT("umg");
+}
+
+bool RootKindFromString(const FString& Value, ECortexEditorUIRootKind& OutRootKind)
+{
+	if (Value == TEXT("umg"))
+	{
+		OutRootKind = ECortexEditorUIRootKind::UMG;
+		return true;
+	}
+	if (Value == TEXT("slate"))
+	{
+		OutRootKind = ECortexEditorUIRootKind::Slate;
+		return true;
+	}
+
+	return false;
 }
 
 const TCHAR* DiscriminatorToString(const ECortexEditorUIRootDiscriminator Discriminator)
@@ -642,6 +1109,27 @@ const TCHAR* DiscriminatorToString(const ECortexEditorUIRootDiscriminator Discri
 	default:
 		return TEXT("singleton_class");
 	}
+}
+
+bool DiscriminatorFromString(const FString& Value, ECortexEditorUIRootDiscriminator& OutDiscriminator)
+{
+	if (Value == TEXT("singleton_class"))
+	{
+		OutDiscriminator = ECortexEditorUIRootDiscriminator::SingletonClass;
+		return true;
+	}
+	if (Value == TEXT("root_tag"))
+	{
+		OutDiscriminator = ECortexEditorUIRootDiscriminator::RootTag;
+		return true;
+	}
+	if (Value == TEXT("saved_component"))
+	{
+		OutDiscriminator = ECortexEditorUIRootDiscriminator::SavedComponent;
+		return true;
+	}
+
+	return false;
 }
 
 const TCHAR* CoverageToString(const ECortexEditorUICoverage Coverage)
@@ -672,6 +1160,88 @@ const TCHAR* UnavailableReasonToString(const ECortexEditorUIUnavailableReason Re
 	default:
 		return TEXT("");
 	}
+}
+
+bool UnavailableReasonFromString(const FString& Value, ECortexEditorUIUnavailableReason& OutReason)
+{
+	if (Value == TEXT("missing_authored_discriminator"))
+	{
+		OutReason = ECortexEditorUIUnavailableReason::MissingAuthoredDiscriminator;
+		return true;
+	}
+	if (Value == TEXT("dynamic_instance"))
+	{
+		OutReason = ECortexEditorUIUnavailableReason::DynamicInstance;
+		return true;
+	}
+	if (Value == TEXT("unobservable_pointer_route"))
+	{
+		OutReason = ECortexEditorUIUnavailableReason::UnobservablePointerRoute;
+		return true;
+	}
+	if (Value == TEXT("anonymous_slate"))
+	{
+		OutReason = ECortexEditorUIUnavailableReason::AnonymousSlate;
+		return true;
+	}
+
+	return false;
+}
+
+/** Rejects unregistered keys and gamepad/touch input, and enforces kind-specific key classes. */
+bool IsKeyEligibleForKind(const FKey& Key, ECortexEditorPhysicalInputKind Kind, FString& OutError)
+{
+	if (!Key.IsValid())
+	{
+		OutError = FString::Printf(TEXT("Input key '%s' is not a registered engine key"), *Key.ToString());
+		return false;
+	}
+
+	if (Key.IsGamepadKey() || Key.IsTouch())
+	{
+		OutError = FString::Printf(TEXT("Input key '%s' is outside the keyboard/mouse scope"), *Key.ToString());
+		return false;
+	}
+
+	const bool bIsPointerAxis = Key.IsButtonAxis() || Key.IsAxis1D() || Key.IsAxis2D() || Key.IsAxis3D();
+
+	switch (Kind)
+	{
+	case ECortexEditorPhysicalInputKind::KeyDown:
+	case ECortexEditorPhysicalInputKind::KeyUp:
+		if (Key.IsMouseButton() || bIsPointerAxis)
+		{
+			OutError = FString::Printf(TEXT("Key event '%s' requires a keyboard key"), *Key.ToString());
+			return false;
+		}
+		break;
+	case ECortexEditorPhysicalInputKind::PointerDown:
+	case ECortexEditorPhysicalInputKind::PointerUp:
+	case ECortexEditorPhysicalInputKind::DoubleClick:
+		if (!Key.IsMouseButton())
+		{
+			OutError = FString::Printf(TEXT("Pointer button event '%s' requires a mouse button"), *Key.ToString());
+			return false;
+		}
+		break;
+	case ECortexEditorPhysicalInputKind::PointerMove:
+	case ECortexEditorPhysicalInputKind::RelativeMove:
+		if (!Key.IsMouseButton() && !bIsPointerAxis)
+		{
+			OutError = FString::Printf(TEXT("Pointer motion event '%s' requires a mouse key or axis"), *Key.ToString());
+			return false;
+		}
+		break;
+	case ECortexEditorPhysicalInputKind::Wheel:
+		if (!bIsPointerAxis && !Key.IsMouseButton())
+		{
+			OutError = FString::Printf(TEXT("Wheel event '%s' requires a mouse axis or button"), *Key.ToString());
+			return false;
+		}
+		break;
+	}
+
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -751,6 +1321,10 @@ TSharedPtr<FJsonObject> SerializeIdentity(const FCortexEditorPhysicalInputWidget
 	else if (Identity.RootKind == ECortexEditorUIRootKind::UMG)
 	{
 		Object->SetStringField(TEXT("root_class_path"), Identity.RootClassPath);
+		if (Identity.Discriminator == ECortexEditorUIRootDiscriminator::RootTag)
+		{
+			Object->SetStringField(TEXT("root_tag"), Identity.RootTag);
+		}
 	}
 	else
 	{
@@ -831,17 +1405,6 @@ FString SerializeInitialState(const FCortexReplayInitialState& InitialState)
 	return SerializeCanonicalJson(Object.ToSharedRef());
 }
 
-FString SerializeInputs(const TArray<FCortexReplayEvent>& Events)
-{
-	FString Output;
-	for (const FCortexReplayEvent& Event : Events)
-	{
-		Output += SerializeCanonicalJson(SerializeEvent(Event).ToSharedRef());
-		Output += TEXT("\n");
-	}
-	return Output;
-}
-
 TSharedPtr<FJsonObject> MakePrerequisitesJson(const FCortexEditorPhysicalInputTargetInfo& Prerequisites)
 {
 	TSharedPtr<FJsonObject> Object = MakeShared<FJsonObject>();
@@ -910,7 +1473,7 @@ FString SerializeMetadata(
 }
 
 // ---------------------------------------------------------------------------
-// Parsing and validation
+// Structured readers
 // ---------------------------------------------------------------------------
 
 bool TryReadVectorField(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, FVector& OutValue, FString& OutError)
@@ -925,17 +1488,11 @@ bool TryReadVectorField(const TSharedPtr<FJsonObject>& Object, const TCHAR* Fiel
 	double X = 0.0;
 	double Y = 0.0;
 	double Z = 0.0;
-	if (!(*VectorObject)->TryGetNumberField(TEXT("x"), X)
-		|| !(*VectorObject)->TryGetNumberField(TEXT("y"), Y)
-		|| !(*VectorObject)->TryGetNumberField(TEXT("z"), Z))
+	if (!TryReadJsonNumber(*VectorObject, TEXT("x"), X, OutError)
+		|| !TryReadJsonNumber(*VectorObject, TEXT("y"), Y, OutError)
+		|| !TryReadJsonNumber(*VectorObject, TEXT("z"), Z, OutError))
 	{
-		OutError = FString::Printf(TEXT("Field '%s' must contain finite numeric x/y/z"), Field);
-		return false;
-	}
-
-	if (!FMath::IsFinite(X) || !FMath::IsFinite(Y) || !FMath::IsFinite(Z))
-	{
-		OutError = FString::Printf(TEXT("Field '%s' contains a non-finite value"), Field);
+		OutError = FString::Printf(TEXT("Field '%s': %s"), Field, *OutError);
 		return false;
 	}
 
@@ -954,15 +1511,10 @@ bool TryReadVector2DField(const TSharedPtr<FJsonObject>& Object, const TCHAR* Fi
 
 	double X = 0.0;
 	double Y = 0.0;
-	if (!(*VectorObject)->TryGetNumberField(TEXT("x"), X) || !(*VectorObject)->TryGetNumberField(TEXT("y"), Y))
+	if (!TryReadJsonNumber(*VectorObject, TEXT("x"), X, OutError)
+		|| !TryReadJsonNumber(*VectorObject, TEXT("y"), Y, OutError))
 	{
-		OutError = FString::Printf(TEXT("Field '%s' must contain finite numeric x/y"), Field);
-		return false;
-	}
-
-	if (!FMath::IsFinite(X) || !FMath::IsFinite(Y))
-	{
-		OutError = FString::Printf(TEXT("Field '%s' contains a non-finite value"), Field);
+		OutError = FString::Printf(TEXT("Field '%s': %s"), Field, *OutError);
 		return false;
 	}
 
@@ -982,17 +1534,11 @@ bool TryReadRotatorField(const TSharedPtr<FJsonObject>& Object, const TCHAR* Fie
 	double Pitch = 0.0;
 	double Yaw = 0.0;
 	double Roll = 0.0;
-	if (!(*RotatorObject)->TryGetNumberField(TEXT("pitch"), Pitch)
-		|| !(*RotatorObject)->TryGetNumberField(TEXT("yaw"), Yaw)
-		|| !(*RotatorObject)->TryGetNumberField(TEXT("roll"), Roll))
+	if (!TryReadJsonNumber(*RotatorObject, TEXT("pitch"), Pitch, OutError)
+		|| !TryReadJsonNumber(*RotatorObject, TEXT("yaw"), Yaw, OutError)
+		|| !TryReadJsonNumber(*RotatorObject, TEXT("roll"), Roll, OutError))
 	{
-		OutError = FString::Printf(TEXT("Field '%s' must contain finite numeric pitch/yaw/roll"), Field);
-		return false;
-	}
-
-	if (!FMath::IsFinite(Pitch) || !FMath::IsFinite(Yaw) || !FMath::IsFinite(Roll))
-	{
-		OutError = FString::Printf(TEXT("Field '%s' contains a non-finite value"), Field);
+		OutError = FString::Printf(TEXT("Field '%s': %s"), Field, *OutError);
 		return false;
 	}
 
@@ -1028,6 +1574,10 @@ bool IsDegenerateScale(const FVector& Scale)
 	return Scale.X == 0.0 || Scale.Y == 0.0 || Scale.Z == 0.0;
 }
 
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
 bool ValidatePose(const FCortexEditorPhysicalInputPlayerPose& Pose, FString& OutError)
 {
 	const FVector Location = Pose.PawnTransform.GetLocation();
@@ -1061,8 +1611,15 @@ bool ValidatePose(const FCortexEditorPhysicalInputPlayerPose& Pose, FString& Out
 	return true;
 }
 
+/** Enforces the surface/root-kind/discriminator matrix and rejects irrelevant selector fields. */
 bool ValidateIdentity(const FCortexEditorPhysicalInputWidgetIdentity& Identity, FString& OutError)
 {
+	const bool bHasClassPath = !Identity.RootClassPath.IsEmpty();
+	const bool bHasRootTag = !Identity.RootTag.IsEmpty();
+	const bool bHasTargetTag = !Identity.TargetTag.IsEmpty();
+	const bool bHasActorPath = !Identity.ActorPath.IsEmpty();
+	const bool bHasComponentPath = !Identity.ComponentPath.IsEmpty();
+
 	if (Identity.Discriminator == ECortexEditorUIRootDiscriminator::SavedComponent)
 	{
 		if (Identity.Surface != ECortexEditorUISurface::WorldComponent)
@@ -1071,21 +1628,21 @@ bool ValidateIdentity(const FCortexEditorPhysicalInputWidgetIdentity& Identity, 
 			return false;
 		}
 
-		if (!IsValidAssetPath(Identity.ActorPath, MaxAssetPathUnits, true))
+		if (!IsValidAssetObjectPath(Identity.ActorPath, MaxAssetPathUnits, true))
 		{
-			OutError = TEXT("Identity actor_path is missing or invalid");
+			OutError = TEXT("Identity actor_path is not a valid Unreal object path");
 			return false;
 		}
 
-		if (!IsValidBoundedText(Identity.ComponentPath, MaxComponentPathUnits, true))
+		if (!IsValidBoundedTextUnits(Identity.ComponentPath, MaxComponentPathUnits, true))
 		{
 			OutError = TEXT("Identity component_path is missing or invalid");
 			return false;
 		}
 
-		if (!Identity.RootClassPath.IsEmpty() || !Identity.RootTag.IsEmpty() || !Identity.TargetTag.IsEmpty())
+		if (bHasClassPath || bHasRootTag || bHasTargetTag)
 		{
-			OutError = TEXT("Identity contains irrelevant fields for a saved-component discriminator");
+			OutError = TEXT("Identity contains fields that are irrelevant for a saved-component discriminator");
 			return false;
 		}
 	}
@@ -1097,16 +1654,37 @@ bool ValidateIdentity(const FCortexEditorPhysicalInputWidgetIdentity& Identity, 
 			return false;
 		}
 
-		if (!IsValidAssetPath(Identity.RootClassPath, MaxAssetPathUnits, true))
+		if (!IsValidAssetObjectPath(Identity.RootClassPath, MaxAssetPathUnits, true))
 		{
-			OutError = TEXT("Identity root_class_path is missing or invalid");
+			OutError = TEXT("Identity root_class_path is not a valid Unreal object path");
 			return false;
 		}
 
-		if (!Identity.RootTag.IsEmpty() || !Identity.TargetTag.IsEmpty()
-			|| !Identity.ActorPath.IsEmpty() || !Identity.ComponentPath.IsEmpty())
+		if (bHasTargetTag || bHasActorPath || bHasComponentPath)
 		{
-			OutError = TEXT("Identity contains irrelevant fields for a UMG identity");
+			OutError = TEXT("Identity contains fields that are irrelevant for a UMG root");
+			return false;
+		}
+
+		if (Identity.Discriminator == ECortexEditorUIRootDiscriminator::RootTag)
+		{
+			if (!IsValidBoundedTextUnits(Identity.RootTag, MaxTagUnits, true))
+			{
+				OutError = TEXT("A UMG root-tag identity requires a bounded authored root_tag");
+				return false;
+			}
+		}
+		else if (Identity.Discriminator == ECortexEditorUIRootDiscriminator::SingletonClass)
+		{
+			if (bHasRootTag)
+			{
+				OutError = TEXT("A UMG singleton-class identity must not carry a root_tag");
+				return false;
+			}
+		}
+		else
+		{
+			OutError = TEXT("Invalid discriminator for a UMG root identity");
 			return false;
 		}
 	}
@@ -1119,16 +1697,16 @@ bool ValidateIdentity(const FCortexEditorPhysicalInputWidgetIdentity& Identity, 
 			return false;
 		}
 
-		if (!IsValidBoundedText(Identity.RootTag, MaxTagUnits, true)
-			|| !IsValidBoundedText(Identity.TargetTag, MaxTagUnits, true))
+		if (!IsValidBoundedTextUnits(Identity.RootTag, MaxTagUnits, true)
+			|| !IsValidBoundedTextUnits(Identity.TargetTag, MaxTagUnits, true))
 		{
 			OutError = TEXT("Identity root_tag and target_tag are required and bounded");
 			return false;
 		}
 
-		if (!Identity.RootClassPath.IsEmpty() || !Identity.ActorPath.IsEmpty() || !Identity.ComponentPath.IsEmpty())
+		if (bHasClassPath || bHasActorPath || bHasComponentPath)
 		{
-			OutError = TEXT("Identity contains irrelevant fields for a Slate identity");
+			OutError = TEXT("Identity contains fields that are irrelevant for a Slate root");
 			return false;
 		}
 	}
@@ -1141,7 +1719,7 @@ bool ValidateIdentity(const FCortexEditorPhysicalInputWidgetIdentity& Identity, 
 
 	for (const FName& Segment : Identity.WidgetAncestry)
 	{
-		if (!IsValidBoundedText(Segment.ToString(), MaxAncestrySegmentUnits, true))
+		if (!IsValidBoundedTextUnits(Segment.ToString(), MaxAncestrySegmentUnits, true))
 		{
 			OutError = TEXT("Identity widget_ancestry contains an invalid segment");
 			return false;
@@ -1242,9 +1820,9 @@ bool ValidateEvents(
 			return false;
 		}
 
-		if (Event.Input.Key.GetFName().IsNone())
+		if (!IsKeyEligibleForKind(Event.Input.Key, Event.Input.Kind, OutError))
 		{
-			OutError = FString::Printf(TEXT("Event %d is missing its key identity"), Event.Sequence);
+			OutError = FString::Printf(TEXT("Event %d: %s"), Event.Sequence, *OutError);
 			return false;
 		}
 
@@ -1325,26 +1903,26 @@ bool ValidateMetadataFields(const FCortexReplayMetadata& Metadata, FString& OutE
 		return false;
 	}
 
-	if (!IsValidBoundedText(Metadata.Name, MaxNameUnits, true))
+	if (!IsValidBoundedTextScalars(Metadata.Name, 1, MaxNameScalars))
 	{
 		OutError = TEXT("Recording name must be 1..128 valid Unicode characters");
 		return false;
 	}
 
-	if (!IsValidBoundedText(Metadata.Description, MaxDescriptionUnits, false))
+	if (!IsValidBoundedTextScalars(Metadata.Description, 0, MaxDescriptionScalars))
 	{
 		OutError = TEXT("Recording description must be at most 1024 valid Unicode characters");
 		return false;
 	}
 
-	if (!IsValidAssetPath(Metadata.MapAssetPath, MaxAssetPathUnits, true))
+	if (!IsValidLongPackagePath(Metadata.MapAssetPath, MaxAssetPathUnits, true))
 	{
-		OutError = TEXT("Recording map_asset_path is missing or invalid");
+		OutError = TEXT("Recording map_asset_path is not a valid Unreal long package name");
 		return false;
 	}
 
-	if (!IsValidBoundedText(Metadata.EngineVersion, MaxVersionUnits, true)
-		|| !IsValidBoundedText(Metadata.PluginVersion, MaxVersionUnits, true))
+	if (!IsValidBoundedTextUnits(Metadata.EngineVersion, MaxVersionUnits, true)
+		|| !IsValidBoundedTextUnits(Metadata.PluginVersion, MaxVersionUnits, true))
 	{
 		OutError = TEXT("Recording engine/plugin version is missing or invalid");
 		return false;
@@ -1400,9 +1978,9 @@ bool ValidateInitialState(const FCortexReplayInitialState& InitialState, int32 E
 		return false;
 	}
 
-	if (!IsValidAssetPath(InitialState.PawnClassPath, MaxAssetPathUnits, true))
+	if (!IsValidAssetObjectPath(InitialState.PawnClassPath, MaxAssetPathUnits, true))
 	{
-		OutError = TEXT("Initial-state pawn_class_path is missing or invalid");
+		OutError = TEXT("Initial-state pawn_class_path is not a valid Unreal object path");
 		return false;
 	}
 
@@ -1416,6 +1994,67 @@ bool ValidateInitialState(const FCortexReplayInitialState& InitialState, int32 E
 	return ValidatePose(InitialState.Pose, OutError);
 }
 
+// ---------------------------------------------------------------------------
+// Identity interning
+// ---------------------------------------------------------------------------
+
+/**
+ * Load-scoped catalog of interned widget selectors.
+ *
+ * Selectors are canonically serialized, hashed once to a lower-case SHA-256 digest and keyed by
+ * that digest. A digest collision is resolved by comparing the full canonical selector, so two
+ * distinct selectors can never alias even if their digests match.
+ */
+class FCortexReplayIdentityCatalog
+{
+public:
+	TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> Intern(
+		const FCortexEditorPhysicalInputWidgetIdentity& Identity,
+		FString& OutError)
+	{
+		FCortexEditorPhysicalInputWidgetIdentity Canonical = Identity;
+		Canonical.IdentitySha256.Reset();
+
+		if (!ValidateIdentity(Canonical, OutError))
+		{
+			return nullptr;
+		}
+
+		const FString SelectorJson = SerializeCanonicalJson(SerializeIdentity(Canonical).ToSharedRef());
+		const TArray<uint8> SelectorBytes = ToUtf8Bytes(SelectorJson);
+
+		FString Digest;
+		if (!ComputeSha256Hex(SelectorBytes, Digest, OutError))
+		{
+			return nullptr;
+		}
+		Canonical.IdentitySha256 = Digest;
+
+		TArray<TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity>>& Bucket = ByDigest.FindOrAdd(Digest);
+		for (const TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity>& Existing : Bucket)
+		{
+			if (Existing.IsValid()
+				&& SerializeCanonicalJson(SerializeIdentity(*Existing).ToSharedRef()) == SelectorJson)
+			{
+				return Existing;
+			}
+		}
+
+		TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> Interned =
+			TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity>(
+				MakeShared<FCortexEditorPhysicalInputWidgetIdentity>(Canonical));
+		Bucket.Add(Interned);
+		return Interned;
+	}
+
+private:
+	TMap<FString, TArray<TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity>>> ByDigest;
+};
+
+// ---------------------------------------------------------------------------
+// Parsing
+// ---------------------------------------------------------------------------
+
 bool ParseInitialState(const FString& Text, int32 ExpectedId, FCortexReplayInitialState& OutInitialState, FString& OutError)
 {
 	TSharedPtr<FJsonObject> Object;
@@ -1425,21 +2064,14 @@ bool ParseInitialState(const FString& Text, int32 ExpectedId, FCortexReplayIniti
 		return false;
 	}
 
-	int32 SchemaVersion = 0;
-	int32 RecordingId = 0;
-	FString PawnClassPath;
-	if (!Object->TryGetNumberField(TEXT("schema_version"), SchemaVersion)
-		|| !Object->TryGetNumberField(TEXT("recording_id"), RecordingId)
-		|| !Object->TryGetStringField(TEXT("pawn_class_path"), PawnClassPath))
+	FCortexReplayInitialState InitialState;
+
+	if (!TryReadJsonInt32(Object, TEXT("schema_version"), 0, MAX_int32, InitialState.SchemaVersion, OutError)
+		|| !TryReadJsonInt32(Object, TEXT("recording_id"), 0, MAX_int32, InitialState.RecordingId, OutError)
+		|| !TryReadJsonString(Object, TEXT("pawn_class_path"), true, InitialState.PawnClassPath, OutError))
 	{
-		OutError = TEXT("Initial-state file is missing required fields");
 		return false;
 	}
-
-	FCortexReplayInitialState InitialState;
-	InitialState.SchemaVersion = SchemaVersion;
-	InitialState.RecordingId = RecordingId;
-	InitialState.PawnClassPath = PawnClassPath;
 
 	if (!TryReadTransformField(Object, TEXT("pawn_transform"), InitialState.Pose.PawnTransform, OutError)
 		|| !TryReadRotatorField(Object, TEXT("control_rotation_deg"), InitialState.Pose.ControlRotation, OutError))
@@ -1453,337 +2085,6 @@ bool ParseInitialState(const FString& Text, int32 ExpectedId, FCortexReplayIniti
 	}
 
 	OutInitialState = InitialState;
-	return true;
-}
-
-bool ParseInputs(const FString& Text, TArray<FCortexReplayEvent>& OutEvents, FCortexReplayGuardCoverage& OutCoverage, FString& OutError)
-{
-	OutEvents.Reset();
-
-	TArray<FString> Lines;
-	Text.ParseIntoArrayLines(Lines, false);
-	if (Lines.Num() == 0)
-	{
-		OutCoverage = FCortexReplayGuardCoverage();
-		return true;
-	}
-
-	for (int32 Index = 0; Index < Lines.Num(); ++Index)
-	{
-		const FString& Line = Lines[Index];
-		if (Line.TrimStartAndEnd().IsEmpty())
-		{
-			continue;
-		}
-
-		TSharedPtr<FJsonObject> Object;
-		if (!DeserializeJsonObject(Line, Object))
-		{
-			OutError = FString::Printf(TEXT("Input row %d is not valid JSON"), Index);
-			return false;
-		}
-
-		FCortexReplayEvent Event;
-
-		int32 SchemaVersion = 0;
-		int32 Sequence = 0;
-		double TimeSeconds = 0.0;
-		FString KindString;
-		FString KeyString;
-		FString CoordinateSpace;
-		FString CaptureFrame;
-		double WorldTimeSeconds = 0.0;
-
-		if (!Object->TryGetNumberField(TEXT("schema_version"), SchemaVersion)
-			|| !Object->TryGetNumberField(TEXT("sequence"), Sequence)
-			|| !Object->TryGetNumberField(TEXT("time_seconds"), TimeSeconds)
-			|| !Object->TryGetStringField(TEXT("kind"), KindString)
-			|| !Object->TryGetStringField(TEXT("key"), KeyString)
-			|| !Object->TryGetStringField(TEXT("coordinate_space"), CoordinateSpace)
-			|| !Object->TryGetStringField(TEXT("capture_frame"), CaptureFrame)
-			|| !Object->TryGetNumberField(TEXT("world_time_seconds"), WorldTimeSeconds))
-		{
-			OutError = FString::Printf(TEXT("Input row %d is missing required fields"), Index);
-			return false;
-		}
-
-		if (SchemaVersion != ReplayFormatSchemaVersion)
-		{
-			OutError = FString::Printf(TEXT("Input row %d uses an unsupported schema version"), Index);
-			return false;
-		}
-
-		ECortexEditorPhysicalInputKind Kind = ECortexEditorPhysicalInputKind::KeyDown;
-		if (!KindFromString(KindString, Kind))
-		{
-			OutError = FString::Printf(TEXT("Input row %d has an unknown kind"), Index);
-			return false;
-		}
-
-		if (CoordinateSpace != CoordinateSpaceToString(Kind))
-		{
-			OutError = FString::Printf(TEXT("Input row %d has a coordinate_space that does not match its kind"), Index);
-			return false;
-		}
-
-		if (!IsValidBoundedText(KeyString, MaxTagUnits, true))
-		{
-			OutError = FString::Printf(TEXT("Input row %d has an invalid key identity"), Index);
-			return false;
-		}
-
-		uint64 FrameNumber = 0;
-		if (CaptureFrame.IsEmpty())
-		{
-			OutError = FString::Printf(TEXT("Input row %d has an empty capture_frame"), Index);
-			return false;
-		}
-		for (int32 CharacterIndex = 0; CharacterIndex < CaptureFrame.Len(); ++CharacterIndex)
-		{
-			if (!FChar::IsDigit(CaptureFrame[CharacterIndex]))
-			{
-				OutError = FString::Printf(TEXT("Input row %d has a malformed capture_frame"), Index);
-				return false;
-			}
-		}
-		FrameNumber = FCString::Strtoui64(*CaptureFrame, nullptr, 10);
-
-		Event.Sequence = Sequence;
-		Event.TimeSeconds = TimeSeconds;
-		Event.Input.Kind = Kind;
-		Event.Input.Key = FKey(FName(*KeyString));
-
-		bool bRepeat = false;
-		if (!Object->TryGetBoolField(TEXT("repeat"), bRepeat))
-		{
-			OutError = FString::Printf(TEXT("Input row %d is missing 'repeat'"), Index);
-			return false;
-		}
-		Event.Input.bRepeat = bRepeat;
-
-		bool bTargetOwnsPointerCapture = false;
-		if (!Object->TryGetBoolField(TEXT("target_owned_pointer_capture"), bTargetOwnsPointerCapture))
-		{
-			OutError = FString::Printf(TEXT("Input row %d is missing pointer-capture state"), Index);
-			return false;
-		}
-		Event.CaptureContext.bTargetOwnsPointerCapture = bTargetOwnsPointerCapture;
-
-		bool bWorldPaused = false;
-		if (!Object->TryGetBoolField(TEXT("world_paused"), bWorldPaused))
-		{
-			OutError = FString::Printf(TEXT("Input row %d is missing world_paused"), Index);
-			return false;
-		}
-		Event.CaptureContext.bWorldPaused = bWorldPaused;
-		Event.CaptureContext.FrameNumber = FrameNumber;
-		Event.CaptureContext.WorldTimeSeconds = WorldTimeSeconds;
-
-		if (!TryReadVector2DField(Object, TEXT("viewport_position"), Event.Input.ViewportPosition, OutError)
-			|| !TryReadVector2DField(Object, TEXT("delta"), Event.Input.Delta, OutError))
-		{
-			OutError = FString::Printf(TEXT("Input row %d: %s"), Index, *OutError);
-			return false;
-		}
-
-		double WheelDelta = 0.0;
-		if (!Object->TryGetNumberField(TEXT("wheel_delta"), WheelDelta) || !FMath::IsFinite(WheelDelta))
-		{
-			OutError = FString::Printf(TEXT("Input row %d has an invalid wheel_delta"), Index);
-			return false;
-		}
-		Event.Input.WheelDelta = static_cast<float>(WheelDelta);
-
-		const TSharedPtr<FJsonObject>* ModifiersObject = nullptr;
-		if (!Object->TryGetObjectField(TEXT("modifiers"), ModifiersObject) || ModifiersObject == nullptr)
-		{
-			OutError = FString::Printf(TEXT("Input row %d is missing 'modifiers'"), Index);
-			return false;
-		}
-
-		bool ModifierValues[9] = { false, false, false, false, false, false, false, false, false };
-		static const TCHAR* const ModifierFields[9] =
-		{
-			TEXT("left_shift"), TEXT("right_shift"),
-			TEXT("left_control"), TEXT("right_control"),
-			TEXT("left_alt"), TEXT("right_alt"),
-			TEXT("left_command"), TEXT("right_command"),
-			TEXT("caps_lock")
-		};
-		for (int32 ModifierIndex = 0; ModifierIndex < 9; ++ModifierIndex)
-		{
-			if (!(*ModifiersObject)->TryGetBoolField(ModifierFields[ModifierIndex], ModifierValues[ModifierIndex]))
-			{
-				OutError = FString::Printf(TEXT("Input row %d has an incomplete modifiers object"), Index);
-				return false;
-			}
-		}
-		Event.Input.Modifiers = FModifierKeysState(
-			ModifierValues[0], ModifierValues[1],
-			ModifierValues[2], ModifierValues[3],
-			ModifierValues[4], ModifierValues[5],
-			ModifierValues[6], ModifierValues[7],
-			ModifierValues[8]);
-
-		const TSharedPtr<FJsonObject>* GuardObject = nullptr;
-		if (Object->TryGetObjectField(TEXT("guard"), GuardObject) && GuardObject != nullptr)
-		{
-			FCortexReplayInteractionGuard Guard;
-
-			const TSharedPtr<FJsonObject>* PoseObject = nullptr;
-			if (!(*GuardObject)->TryGetObjectField(TEXT("pose"), PoseObject) || PoseObject == nullptr)
-			{
-				OutError = FString::Printf(TEXT("Input row %d guard is missing its pose"), Index);
-				return false;
-			}
-
-			if (!TryReadTransformField(*PoseObject, TEXT("pawn_transform"), Guard.ExpectedPose.PawnTransform, OutError)
-				|| !TryReadRotatorField(*PoseObject, TEXT("control_rotation_deg"), Guard.ExpectedPose.ControlRotation, OutError))
-			{
-				OutError = FString::Printf(TEXT("Input row %d guard: %s"), Index, *OutError);
-				return false;
-			}
-
-			const TSharedPtr<FJsonObject>* UiObject = nullptr;
-			if (!(*GuardObject)->TryGetObjectField(TEXT("ui"), UiObject) || UiObject == nullptr)
-			{
-				OutError = FString::Printf(TEXT("Input row %d guard is missing its ui block"), Index);
-				return false;
-			}
-
-			FString CoverageString;
-			if (!(*UiObject)->TryGetStringField(TEXT("coverage"), CoverageString))
-			{
-				OutError = FString::Printf(TEXT("Input row %d guard is missing coverage"), Index);
-				return false;
-			}
-
-			if (CoverageString == TEXT("not_applicable"))
-			{
-				Guard.UICoverage = ECortexEditorUICoverage::NotApplicable;
-				Guard.UIUnavailableReason = ECortexEditorUIUnavailableReason::None;
-			}
-			else if (CoverageString == TEXT("supported"))
-			{
-				Guard.UICoverage = ECortexEditorUICoverage::Supported;
-
-				const TSharedPtr<FJsonObject>* IdentityObject = nullptr;
-				if (!(*UiObject)->TryGetObjectField(TEXT("identity"), IdentityObject) || IdentityObject == nullptr)
-				{
-					OutError = FString::Printf(TEXT("Input row %d supported guard is missing its identity"), Index);
-					return false;
-				}
-
-				TSharedPtr<FCortexEditorPhysicalInputWidgetIdentity> Identity = MakeShared<FCortexEditorPhysicalInputWidgetIdentity>();
-
-				FString SurfaceString;
-				FString RootKindString;
-				FString DiscriminatorString;
-				if (!(*IdentityObject)->TryGetStringField(TEXT("surface"), SurfaceString)
-					|| !(*IdentityObject)->TryGetStringField(TEXT("root_kind"), RootKindString)
-					|| !(*IdentityObject)->TryGetStringField(TEXT("discriminator"), DiscriminatorString))
-				{
-					OutError = FString::Printf(TEXT("Input row %d identity is missing required fields"), Index);
-					return false;
-				}
-
-				Identity->Surface = SurfaceString == TEXT("world_component")
-					? ECortexEditorUISurface::WorldComponent
-					: ECortexEditorUISurface::Viewport;
-				Identity->RootKind = RootKindString == TEXT("slate")
-					? ECortexEditorUIRootKind::Slate
-					: ECortexEditorUIRootKind::UMG;
-
-				if (DiscriminatorString == TEXT("root_tag"))
-				{
-					Identity->Discriminator = ECortexEditorUIRootDiscriminator::RootTag;
-				}
-				else if (DiscriminatorString == TEXT("saved_component"))
-				{
-					Identity->Discriminator = ECortexEditorUIRootDiscriminator::SavedComponent;
-				}
-				else
-				{
-					Identity->Discriminator = ECortexEditorUIRootDiscriminator::SingletonClass;
-				}
-
-				(*IdentityObject)->TryGetStringField(TEXT("root_class_path"), Identity->RootClassPath);
-				(*IdentityObject)->TryGetStringField(TEXT("root_tag"), Identity->RootTag);
-				(*IdentityObject)->TryGetStringField(TEXT("target_tag"), Identity->TargetTag);
-				(*IdentityObject)->TryGetStringField(TEXT("actor_path"), Identity->ActorPath);
-				(*IdentityObject)->TryGetStringField(TEXT("component_path"), Identity->ComponentPath);
-
-				const TArray<TSharedPtr<FJsonValue>>* Ancestry = nullptr;
-				if ((*IdentityObject)->TryGetArrayField(TEXT("widget_ancestry"), Ancestry) && Ancestry != nullptr)
-				{
-					for (const TSharedPtr<FJsonValue>& Segment : *Ancestry)
-					{
-						FString SegmentString;
-						if (Segment.IsValid() && Segment->TryGetString(SegmentString))
-						{
-							Identity->WidgetAncestry.Add(FName(*SegmentString));
-						}
-					}
-				}
-
-				Guard.UITarget = TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity>(Identity);
-
-				if (!TryReadVector2DField(*UiObject, TEXT("local_position"), Guard.ExpectedLocalPosition, OutError))
-				{
-					OutError = FString::Printf(TEXT("Input row %d supported guard: %s"), Index, *OutError);
-					return false;
-				}
-			}
-			else if (CoverageString == TEXT("unavailable"))
-			{
-				Guard.UICoverage = ECortexEditorUICoverage::Unavailable;
-
-				FString ReasonString;
-				if (!(*UiObject)->TryGetStringField(TEXT("reason"), ReasonString))
-				{
-					OutError = FString::Printf(TEXT("Input row %d unavailable guard is missing its reason"), Index);
-					return false;
-				}
-
-				if (ReasonString == TEXT("missing_authored_discriminator"))
-				{
-					Guard.UIUnavailableReason = ECortexEditorUIUnavailableReason::MissingAuthoredDiscriminator;
-				}
-				else if (ReasonString == TEXT("dynamic_instance"))
-				{
-					Guard.UIUnavailableReason = ECortexEditorUIUnavailableReason::DynamicInstance;
-				}
-				else if (ReasonString == TEXT("unobservable_pointer_route"))
-				{
-					Guard.UIUnavailableReason = ECortexEditorUIUnavailableReason::UnobservablePointerRoute;
-				}
-				else if (ReasonString == TEXT("anonymous_slate"))
-				{
-					Guard.UIUnavailableReason = ECortexEditorUIUnavailableReason::AnonymousSlate;
-				}
-				else
-				{
-					OutError = FString::Printf(TEXT("Input row %d unavailable guard has an unknown reason"), Index);
-					return false;
-				}
-			}
-			else
-			{
-				OutError = FString::Printf(TEXT("Input row %d guard has an unknown coverage"), Index);
-				return false;
-			}
-
-			Event.Guard = Guard;
-		}
-
-		OutEvents.Add(MoveTemp(Event));
-	}
-
-	if (!ValidateEvents(OutEvents, OutCoverage, OutError))
-	{
-		return false;
-	}
-
 	return true;
 }
 
@@ -1801,7 +2102,7 @@ bool ParseMetadata(
 	}
 
 	FString Format;
-	if (!Object->TryGetStringField(TEXT("format"), Format) || Format != TEXT("CortexReplay"))
+	if (!TryReadJsonString(Object, TEXT("format"), true, Format, OutError) || Format != TEXT("CortexReplay"))
 	{
 		OutError = TEXT("metadata.json format is not CortexReplay");
 		return false;
@@ -1809,28 +2110,26 @@ bool ParseMetadata(
 
 	FCortexReplayMetadata Metadata;
 
-	if (!Object->TryGetNumberField(TEXT("schema_version"), Metadata.SchemaVersion)
-		|| !Object->TryGetNumberField(TEXT("recording_id"), Metadata.RecordingId)
-		|| !Object->TryGetStringField(TEXT("name"), Metadata.Name)
-		|| !Object->TryGetStringField(TEXT("description"), Metadata.Description)
-		|| !Object->TryGetStringField(TEXT("map_asset_path"), Metadata.MapAssetPath)
-		|| !Object->TryGetStringField(TEXT("engine_version"), Metadata.EngineVersion)
-		|| !Object->TryGetStringField(TEXT("plugin_version"), Metadata.PluginVersion))
+	if (!TryReadJsonInt32(Object, TEXT("schema_version"), 0, MAX_int32, Metadata.SchemaVersion, OutError)
+		|| !TryReadJsonInt32(Object, TEXT("recording_id"), 0, MAX_int32, Metadata.RecordingId, OutError)
+		|| !TryReadJsonString(Object, TEXT("name"), true, Metadata.Name, OutError)
+		|| !TryReadJsonString(Object, TEXT("description"), true, Metadata.Description, OutError)
+		|| !TryReadJsonString(Object, TEXT("map_asset_path"), true, Metadata.MapAssetPath, OutError)
+		|| !TryReadJsonString(Object, TEXT("engine_version"), true, Metadata.EngineVersion, OutError)
+		|| !TryReadJsonString(Object, TEXT("plugin_version"), true, Metadata.PluginVersion, OutError))
 	{
-		OutError = TEXT("metadata.json is missing required fields");
 		return false;
 	}
 
-	if (!Object->TryGetNumberField(TEXT("duration_seconds"), Metadata.DurationSeconds)
-		|| !Object->TryGetBoolField(TEXT("ai_enabled"), Metadata.bAIEnabled)
-		|| !Object->TryGetBoolField(TEXT("complete"), Metadata.bComplete))
+	if (!TryReadJsonNumber(Object, TEXT("duration_seconds"), Metadata.DurationSeconds, OutError)
+		|| !TryReadJsonBool(Object, TEXT("ai_enabled"), Metadata.bAIEnabled, OutError)
+		|| !TryReadJsonBool(Object, TEXT("complete"), Metadata.bComplete, OutError))
 	{
-		OutError = TEXT("metadata.json is missing required scalar fields");
 		return false;
 	}
 
 	FString CreatedAtText;
-	if (!Object->TryGetStringField(TEXT("created_at_utc"), CreatedAtText)
+	if (!TryReadJsonString(Object, TEXT("created_at_utc"), true, CreatedAtText, OutError)
 		|| !FDateTime::ParseIso8601(*CreatedAtText, Metadata.CreatedAtUtc))
 	{
 		OutError = TEXT("metadata.json created_at_utc is not a canonical UTC timestamp");
@@ -1846,10 +2145,10 @@ bool ParseMetadata(
 
 	FVector2D ViewportSize = FVector2D::ZeroVector;
 	FString InputDevice;
-	if (!(*PrerequisitesObject)->TryGetNumberField(TEXT("local_player_index"), Metadata.Prerequisites.LocalPlayerIndex)
+	if (!TryReadJsonInt32(*PrerequisitesObject, TEXT("local_player_index"), 0, MAX_int32, Metadata.Prerequisites.LocalPlayerIndex, OutError)
 		|| !TryReadVector2DField(*PrerequisitesObject, TEXT("viewport_size"), ViewportSize, OutError)
-		|| !(*PrerequisitesObject)->TryGetNumberField(TEXT("dpi_scale"), Metadata.Prerequisites.DpiScale)
-		|| !(*PrerequisitesObject)->TryGetStringField(TEXT("input_device"), InputDevice)
+		|| !TryReadJsonNumber(*PrerequisitesObject, TEXT("dpi_scale"), Metadata.Prerequisites.DpiScale, OutError)
+		|| !TryReadJsonString(*PrerequisitesObject, TEXT("input_device"), true, InputDevice, OutError)
 		|| InputDevice != TEXT("keyboard_mouse"))
 	{
 		OutError = TEXT("metadata.json prerequisites are invalid");
@@ -1865,20 +2164,19 @@ bool ParseMetadata(
 	}
 
 	FString Scope;
-	if (!(*CoverageObject)->TryGetStringField(TEXT("scope"), Scope) || Scope != TEXT("press_only")
-		|| !(*CoverageObject)->TryGetNumberField(TEXT("pose_presses"), Metadata.GuardCoverage.PosePresses)
-		|| !(*CoverageObject)->TryGetNumberField(TEXT("ui_supported_presses"), Metadata.GuardCoverage.UISupportedPresses)
-		|| !(*CoverageObject)->TryGetNumberField(TEXT("ui_unavailable_presses"), Metadata.GuardCoverage.UIUnavailablePresses)
-		|| !(*CoverageObject)->TryGetNumberField(TEXT("ui_not_applicable_presses"), Metadata.GuardCoverage.UINotApplicablePresses))
+	if (!TryReadJsonString(*CoverageObject, TEXT("scope"), true, Scope, OutError) || Scope != TEXT("press_only")
+		|| !TryReadJsonInt32(*CoverageObject, TEXT("pose_presses"), 0, MAX_int32, Metadata.GuardCoverage.PosePresses, OutError)
+		|| !TryReadJsonInt32(*CoverageObject, TEXT("ui_supported_presses"), 0, MAX_int32, Metadata.GuardCoverage.UISupportedPresses, OutError)
+		|| !TryReadJsonInt32(*CoverageObject, TEXT("ui_unavailable_presses"), 0, MAX_int32, Metadata.GuardCoverage.UIUnavailablePresses, OutError)
+		|| !TryReadJsonInt32(*CoverageObject, TEXT("ui_not_applicable_presses"), 0, MAX_int32, Metadata.GuardCoverage.UINotApplicablePresses, OutError))
 	{
 		OutError = TEXT("metadata.json guard_coverage is invalid");
 		return false;
 	}
 
-	if (!Object->TryGetStringField(TEXT("initial_state_sha256"), Metadata.InitialStateSha256)
-		|| !Object->TryGetStringField(TEXT("inputs_sha256"), Metadata.InputsSha256))
+	if (!TryReadJsonString(Object, TEXT("initial_state_sha256"), true, Metadata.InitialStateSha256, OutError)
+		|| !TryReadJsonString(Object, TEXT("inputs_sha256"), true, Metadata.InputsSha256, OutError))
 	{
-		OutError = TEXT("metadata.json is missing payload hashes");
 		return false;
 	}
 
@@ -1895,6 +2193,519 @@ bool ParseMetadata(
 
 	OutMetadata = Metadata;
 	return true;
+}
+
+bool ParseGuardIdentity(
+	const TSharedPtr<FJsonObject>& UiObject,
+	FCortexReplayIdentityCatalog& Catalog,
+	FCortexReplayInteractionGuard& OutGuard,
+	FString& OutError)
+{
+	const TSharedPtr<FJsonObject>* IdentityObject = nullptr;
+	if (!UiObject->TryGetObjectField(TEXT("identity"), IdentityObject) || IdentityObject == nullptr)
+	{
+		OutError = TEXT("Supported UI guard is missing its identity");
+		return false;
+	}
+
+	FString SurfaceString;
+	FString RootKindString;
+	FString DiscriminatorString;
+	if (!TryReadJsonString(*IdentityObject, TEXT("surface"), true, SurfaceString, OutError)
+		|| !TryReadJsonString(*IdentityObject, TEXT("root_kind"), true, RootKindString, OutError)
+		|| !TryReadJsonString(*IdentityObject, TEXT("discriminator"), true, DiscriminatorString, OutError))
+	{
+		return false;
+	}
+
+	FCortexEditorPhysicalInputWidgetIdentity Identity;
+	if (!SurfaceFromString(SurfaceString, Identity.Surface))
+	{
+		OutError = FString::Printf(TEXT("Unknown identity surface '%s'"), *SurfaceString);
+		return false;
+	}
+	if (!RootKindFromString(RootKindString, Identity.RootKind))
+	{
+		OutError = FString::Printf(TEXT("Unknown identity root_kind '%s'"), *RootKindString);
+		return false;
+	}
+	if (!DiscriminatorFromString(DiscriminatorString, Identity.Discriminator))
+	{
+		OutError = FString::Printf(TEXT("Unknown identity discriminator '%s'"), *DiscriminatorString);
+		return false;
+	}
+
+	const bool bHasClassPath = (*IdentityObject)->HasField(TEXT("root_class_path"));
+	const bool bHasRootTag = (*IdentityObject)->HasField(TEXT("root_tag"));
+	const bool bHasTargetTag = (*IdentityObject)->HasField(TEXT("target_tag"));
+	const bool bHasActorPath = (*IdentityObject)->HasField(TEXT("actor_path"));
+	const bool bHasComponentPath = (*IdentityObject)->HasField(TEXT("component_path"));
+
+	if (Identity.Discriminator == ECortexEditorUIRootDiscriminator::SavedComponent)
+	{
+		if (!bHasActorPath || !bHasComponentPath || bHasClassPath || bHasRootTag || bHasTargetTag)
+		{
+			OutError = TEXT("Identity field set does not match its saved-component discriminator");
+			return false;
+		}
+	}
+	else if (Identity.RootKind == ECortexEditorUIRootKind::UMG)
+	{
+		if (!bHasClassPath || bHasTargetTag || bHasActorPath || bHasComponentPath)
+		{
+			OutError = TEXT("Identity field set does not match a UMG root");
+			return false;
+		}
+
+		if (Identity.Discriminator == ECortexEditorUIRootDiscriminator::RootTag)
+		{
+			if (!bHasRootTag)
+			{
+				OutError = TEXT("Identity field set does not match a UMG root-tag discriminator");
+				return false;
+			}
+		}
+		else if (Identity.Discriminator == ECortexEditorUIRootDiscriminator::SingletonClass)
+		{
+			if (bHasRootTag)
+			{
+				OutError = TEXT("Identity field set does not match a UMG singleton-class discriminator");
+				return false;
+			}
+		}
+		else
+		{
+			OutError = TEXT("Invalid discriminator for a UMG root identity");
+			return false;
+		}
+	}
+	else
+	{
+		if (bHasClassPath || bHasActorPath || bHasComponentPath)
+		{
+			OutError = TEXT("Identity field set does not match a Slate root");
+			return false;
+		}
+
+		if (Identity.Discriminator != ECortexEditorUIRootDiscriminator::RootTag)
+		{
+			OutError = TEXT("A Slate identity requires a root_tag discriminator");
+			return false;
+		}
+
+		if (!bHasRootTag || !bHasTargetTag)
+		{
+			OutError = TEXT("A Slate identity requires root_tag and target_tag");
+			return false;
+		}
+	}
+
+	if (!TryReadJsonString(*IdentityObject, TEXT("root_class_path"), false, Identity.RootClassPath, OutError)
+		|| !TryReadJsonString(*IdentityObject, TEXT("root_tag"), false, Identity.RootTag, OutError)
+		|| !TryReadJsonString(*IdentityObject, TEXT("target_tag"), false, Identity.TargetTag, OutError)
+		|| !TryReadJsonString(*IdentityObject, TEXT("actor_path"), false, Identity.ActorPath, OutError)
+		|| !TryReadJsonString(*IdentityObject, TEXT("component_path"), false, Identity.ComponentPath, OutError))
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Ancestry = nullptr;
+	if (!(*IdentityObject)->TryGetArrayField(TEXT("widget_ancestry"), Ancestry) || Ancestry == nullptr)
+	{
+		OutError = TEXT("Identity is missing its widget_ancestry array");
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Segment : *Ancestry)
+	{
+		FString SegmentString;
+		if (!Segment.IsValid() || Segment->Type != EJson::String || !Segment->TryGetString(SegmentString))
+		{
+			OutError = TEXT("Identity widget_ancestry entries must all be strings");
+			return false;
+		}
+
+		Identity.WidgetAncestry.Add(FName(*SegmentString));
+	}
+
+	OutGuard.UITarget = Catalog.Intern(Identity, OutError);
+	return OutGuard.UITarget.IsValid();
+}
+
+bool ParseGuard(
+	const TSharedPtr<FJsonObject>& GuardObject,
+	FCortexReplayIdentityCatalog& Catalog,
+	FCortexReplayInteractionGuard& OutGuard,
+	FString& OutError)
+{
+	const TSharedPtr<FJsonObject>* PoseObject = nullptr;
+	if (!GuardObject->TryGetObjectField(TEXT("pose"), PoseObject) || PoseObject == nullptr)
+	{
+		OutError = TEXT("Guard is missing its pose");
+		return false;
+	}
+
+	if (!TryReadTransformField(*PoseObject, TEXT("pawn_transform"), OutGuard.ExpectedPose.PawnTransform, OutError)
+		|| !TryReadRotatorField(*PoseObject, TEXT("control_rotation_deg"), OutGuard.ExpectedPose.ControlRotation, OutError))
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* UiObject = nullptr;
+	if (!GuardObject->TryGetObjectField(TEXT("ui"), UiObject) || UiObject == nullptr)
+	{
+		OutError = TEXT("Guard is missing its ui block");
+		return false;
+	}
+
+	const bool bHasIdentity = (*UiObject)->HasField(TEXT("identity"));
+	const bool bHasLocalPosition = (*UiObject)->HasField(TEXT("local_position"));
+	const bool bHasReason = (*UiObject)->HasField(TEXT("reason"));
+
+	FString CoverageString;
+	if (!TryReadJsonString(*UiObject, TEXT("coverage"), true, CoverageString, OutError))
+	{
+		return false;
+	}
+
+	if (CoverageString == TEXT("not_applicable"))
+	{
+		if (bHasIdentity || bHasLocalPosition || bHasReason)
+		{
+			OutError = TEXT("A not-applicable UI guard must not carry selector or reason fields");
+			return false;
+		}
+
+		OutGuard.UICoverage = ECortexEditorUICoverage::NotApplicable;
+		OutGuard.UIUnavailableReason = ECortexEditorUIUnavailableReason::None;
+		return true;
+	}
+
+	if (CoverageString == TEXT("supported"))
+	{
+		if (bHasReason)
+		{
+			OutError = TEXT("A supported UI guard must not carry an unavailable reason");
+			return false;
+		}
+
+		if (!bHasIdentity || !bHasLocalPosition)
+		{
+			OutError = TEXT("A supported UI guard requires both identity and local_position");
+			return false;
+		}
+
+		OutGuard.UICoverage = ECortexEditorUICoverage::Supported;
+		if (!ParseGuardIdentity(*UiObject, Catalog, OutGuard, OutError))
+		{
+			return false;
+		}
+
+		return TryReadVector2DField(*UiObject, TEXT("local_position"), OutGuard.ExpectedLocalPosition, OutError);
+	}
+
+	if (CoverageString == TEXT("unavailable"))
+	{
+		if (bHasIdentity || bHasLocalPosition)
+		{
+			OutError = TEXT("An unavailable UI guard must not carry selector or local-position fields");
+			return false;
+		}
+
+		FString ReasonString;
+		if (!TryReadJsonString(*UiObject, TEXT("reason"), true, ReasonString, OutError))
+		{
+			return false;
+		}
+
+		if (!UnavailableReasonFromString(ReasonString, OutGuard.UIUnavailableReason))
+		{
+			OutError = FString::Printf(TEXT("Unknown unavailable UI reason '%s'"), *ReasonString);
+			return false;
+		}
+
+		OutGuard.UICoverage = ECortexEditorUICoverage::Unavailable;
+		return true;
+	}
+
+	OutError = FString::Printf(TEXT("Unknown UI guard coverage '%s'"), *CoverageString);
+	return false;
+}
+
+bool ParseInputRow(
+	const TArray<uint8>& LineBytes,
+	int32 RowOrdinal,
+	FCortexReplayIdentityCatalog& Catalog,
+	TArray<FCortexReplayEvent>& OutEvents,
+	FString& OutError)
+{
+	const FString Line = Utf8BytesToFString(LineBytes);
+
+	if (Line.TrimStartAndEnd().IsEmpty())
+	{
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> Object;
+	if (!DeserializeJsonObject(Line, Object))
+	{
+		OutError = FString::Printf(TEXT("Input row %d is not valid JSON"), RowOrdinal);
+		return false;
+	}
+
+	FCortexReplayEvent Event;
+
+	int32 SchemaVersion = 0;
+	int32 Sequence = 0;
+	double TimeSeconds = 0.0;
+	FString KindString;
+	FString KeyString;
+	FString CoordinateSpace;
+	FString CaptureFrame;
+	double WorldTimeSeconds = 0.0;
+
+	if (!TryReadJsonInt32(Object, TEXT("schema_version"), 0, MAX_int32, SchemaVersion, OutError)
+		|| !TryReadJsonInt32(Object, TEXT("sequence"), 0, MAX_int32, Sequence, OutError)
+		|| !TryReadJsonNumber(Object, TEXT("time_seconds"), TimeSeconds, OutError)
+		|| !TryReadJsonString(Object, TEXT("kind"), true, KindString, OutError)
+		|| !TryReadJsonString(Object, TEXT("key"), true, KeyString, OutError)
+		|| !TryReadJsonString(Object, TEXT("coordinate_space"), true, CoordinateSpace, OutError)
+		|| !TryReadJsonString(Object, TEXT("capture_frame"), true, CaptureFrame, OutError)
+		|| !TryReadJsonNumber(Object, TEXT("world_time_seconds"), WorldTimeSeconds, OutError))
+	{
+		OutError = FString::Printf(TEXT("Input row %d: %s"), RowOrdinal, *OutError);
+		return false;
+	}
+
+	if (SchemaVersion != ReplayFormatSchemaVersion)
+	{
+		OutError = FString::Printf(TEXT("Input row %d uses an unsupported schema version"), RowOrdinal);
+		return false;
+	}
+
+	ECortexEditorPhysicalInputKind Kind = ECortexEditorPhysicalInputKind::KeyDown;
+	if (!KindFromString(KindString, Kind))
+	{
+		OutError = FString::Printf(TEXT("Input row %d has an unknown kind"), RowOrdinal);
+		return false;
+	}
+
+	if (CoordinateSpace != CoordinateSpaceToString(Kind))
+	{
+		OutError = FString::Printf(TEXT("Input row %d has a coordinate_space that does not match its kind"), RowOrdinal);
+		return false;
+	}
+
+	if (!IsValidBoundedTextUnits(KeyString, MaxTagUnits, true))
+	{
+		OutError = FString::Printf(TEXT("Input row %d has an invalid key identity"), RowOrdinal);
+		return false;
+	}
+
+	if (CaptureFrame.IsEmpty())
+	{
+		OutError = FString::Printf(TEXT("Input row %d has an empty capture_frame"), RowOrdinal);
+		return false;
+	}
+
+	uint64 FrameNumber = 0;
+	for (int32 CharacterIndex = 0; CharacterIndex < CaptureFrame.Len(); ++CharacterIndex)
+	{
+		const TCHAR Character = CaptureFrame[CharacterIndex];
+		if (!FChar::IsDigit(Character))
+		{
+			OutError = FString::Printf(TEXT("Input row %d has a malformed capture_frame"), RowOrdinal);
+			return false;
+		}
+
+		const uint64 Digit = static_cast<uint64>(Character - TEXT('0'));
+		if (FrameNumber > (MAX_uint64 - Digit) / 10)
+		{
+			OutError = FString::Printf(TEXT("Input row %d capture_frame overflows a 64-bit unsigned integer"), RowOrdinal);
+			return false;
+		}
+
+		FrameNumber = FrameNumber * 10 + Digit;
+	}
+
+	Event.Sequence = Sequence;
+	Event.TimeSeconds = TimeSeconds;
+	Event.Input.Kind = Kind;
+	Event.Input.Key = FKey(FName(*KeyString));
+
+	bool bRepeat = false;
+	if (!TryReadJsonBool(Object, TEXT("repeat"), bRepeat, OutError))
+	{
+		OutError = FString::Printf(TEXT("Input row %d: %s"), RowOrdinal, *OutError);
+		return false;
+	}
+	Event.Input.bRepeat = bRepeat;
+
+	bool bTargetOwnsPointerCapture = false;
+	if (!TryReadJsonBool(Object, TEXT("target_owned_pointer_capture"), bTargetOwnsPointerCapture, OutError))
+	{
+		OutError = FString::Printf(TEXT("Input row %d: %s"), RowOrdinal, *OutError);
+		return false;
+	}
+	Event.CaptureContext.bTargetOwnsPointerCapture = bTargetOwnsPointerCapture;
+
+	bool bWorldPaused = false;
+	if (!TryReadJsonBool(Object, TEXT("world_paused"), bWorldPaused, OutError))
+	{
+		OutError = FString::Printf(TEXT("Input row %d: %s"), RowOrdinal, *OutError);
+		return false;
+	}
+	Event.CaptureContext.bWorldPaused = bWorldPaused;
+	Event.CaptureContext.FrameNumber = FrameNumber;
+	Event.CaptureContext.WorldTimeSeconds = WorldTimeSeconds;
+
+	if (!TryReadVector2DField(Object, TEXT("viewport_position"), Event.Input.ViewportPosition, OutError)
+		|| !TryReadVector2DField(Object, TEXT("delta"), Event.Input.Delta, OutError))
+	{
+		OutError = FString::Printf(TEXT("Input row %d: %s"), RowOrdinal, *OutError);
+		return false;
+	}
+
+	double WheelDelta = 0.0;
+	if (!TryReadJsonNumber(Object, TEXT("wheel_delta"), WheelDelta, OutError))
+	{
+		OutError = FString::Printf(TEXT("Input row %d: %s"), RowOrdinal, *OutError);
+		return false;
+	}
+	Event.Input.WheelDelta = static_cast<float>(WheelDelta);
+
+	const TSharedPtr<FJsonObject>* ModifiersObject = nullptr;
+	if (!Object->TryGetObjectField(TEXT("modifiers"), ModifiersObject) || ModifiersObject == nullptr)
+	{
+		OutError = FString::Printf(TEXT("Input row %d is missing 'modifiers'"), RowOrdinal);
+		return false;
+	}
+
+	bool ModifierValues[9] = { false, false, false, false, false, false, false, false, false };
+	static const TCHAR* const ModifierFields[9] =
+	{
+		TEXT("left_shift"), TEXT("right_shift"),
+		TEXT("left_control"), TEXT("right_control"),
+		TEXT("left_alt"), TEXT("right_alt"),
+		TEXT("left_command"), TEXT("right_command"),
+		TEXT("caps_lock")
+	};
+	for (int32 ModifierIndex = 0; ModifierIndex < 9; ++ModifierIndex)
+	{
+		if (!TryReadJsonBool(*ModifiersObject, ModifierFields[ModifierIndex], ModifierValues[ModifierIndex], OutError))
+		{
+			OutError = FString::Printf(TEXT("Input row %d has an incomplete modifiers object: %s"), RowOrdinal, *OutError);
+			return false;
+		}
+	}
+	Event.Input.Modifiers = FModifierKeysState(
+		ModifierValues[0], ModifierValues[1],
+		ModifierValues[2], ModifierValues[3],
+		ModifierValues[4], ModifierValues[5],
+		ModifierValues[6], ModifierValues[7],
+		ModifierValues[8]);
+
+	const TSharedPtr<FJsonObject>* GuardObject = nullptr;
+	if (Object->TryGetObjectField(TEXT("guard"), GuardObject) && GuardObject != nullptr)
+	{
+		FCortexReplayInteractionGuard Guard;
+		if (!ParseGuard(*GuardObject, Catalog, Guard, OutError))
+		{
+			OutError = FString::Printf(TEXT("Input row %d guard: %s"), RowOrdinal, *OutError);
+			return false;
+		}
+
+		Event.Guard = Guard;
+	}
+
+	OutEvents.Add(MoveTemp(Event));
+	return true;
+}
+
+bool ParseInputsStream(
+	const FString& Path,
+	FCortexReplayIdentityCatalog& Catalog,
+	TArray<FCortexReplayEvent>& OutEvents,
+	FCortexReplayGuardCoverage& OutCoverage,
+	FString& OutSha256,
+	FString& OutError)
+{
+	OutEvents.Reset();
+	OutCoverage = FCortexReplayGuardCoverage();
+	OutSha256.Reset();
+
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	TUniquePtr<IFileHandle> Handle(PlatformFile.OpenRead(*Path));
+	if (!Handle.IsValid())
+	{
+		OutError = FString::Printf(TEXT("Failed to open '%s' for reading"), *Path);
+		return false;
+	}
+
+	FCortexReplaySha256State State;
+	if (!State.Begin(OutError))
+	{
+		return false;
+	}
+
+	const int64 Total = Handle->Size();
+	int64 Offset = 0;
+	int32 RowOrdinal = 0;
+	TArray<uint8> LineBytes;
+	uint8 Buffer[16384];
+	while (Offset < Total)
+	{
+		const int64 Chunk = FMath::Min<int64>(static_cast<int64>(sizeof(Buffer)), Total - Offset);
+		if (!Handle->Read(Buffer, Chunk))
+		{
+			OutError = FString::Printf(TEXT("Failed to read '%s'"), *Path);
+			return false;
+		}
+
+		if (!State.Update(Buffer, Chunk))
+		{
+			OutError = FString::Printf(TEXT("Failed to hash '%s'"), *Path);
+			return false;
+		}
+
+		for (int64 ByteIndex = 0; ByteIndex < Chunk; ++ByteIndex)
+		{
+			const uint8 Byte = Buffer[ByteIndex];
+			if (Byte == '\n')
+			{
+				if (!ParseInputRow(LineBytes, RowOrdinal, Catalog, OutEvents, OutError))
+				{
+					return false;
+				}
+
+				++RowOrdinal;
+				LineBytes.Reset();
+			}
+			else if (Byte != '\r')
+			{
+				LineBytes.Add(Byte);
+			}
+		}
+
+		Offset += Chunk;
+	}
+
+	if (LineBytes.Num() > 0)
+	{
+		if (!ParseInputRow(LineBytes, RowOrdinal, Catalog, OutEvents, OutError))
+		{
+			return false;
+		}
+	}
+
+	Handle.Reset();
+
+	if (!State.Finish(OutSha256, OutError))
+	{
+		return false;
+	}
+
+	return ValidateEvents(OutEvents, OutCoverage, OutError);
 }
 
 // ---------------------------------------------------------------------------
@@ -1955,6 +2766,68 @@ FCortexReplayLibrary::FCortexReplayLibrary(const FString& InProjectRoot)
 {
 }
 
+FCortexCommandResult FCortexReplayLibrary::ReadValidatedNextId(int64& OutNextId) const
+{
+	OutNextId = 1;
+
+	const FString LibraryPath = GetLibraryJsonPath(ProjectRoot);
+	if (!IFileManager::Get().FileExists(*LibraryPath))
+	{
+		return ReplaySuccess();
+	}
+
+	FString LibraryText;
+	if (!FFileHelper::LoadFileToString(LibraryText, *LibraryPath))
+	{
+		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Failed to read library.json"));
+	}
+
+	TSharedPtr<FJsonObject> LibraryObject;
+	if (!DeserializeJsonObject(LibraryText, LibraryObject))
+	{
+		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("library.json is not valid JSON"));
+	}
+
+	int32 LibrarySchemaVersion = 0;
+	int64 StoredNextId = 0;
+	FString ValidationError;
+	if (!TryReadJsonInt32(LibraryObject, TEXT("schema_version"), 0, MAX_int32, LibrarySchemaVersion, ValidationError))
+	{
+		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, FString::Printf(TEXT("library.json: %s"), *ValidationError));
+	}
+
+	if (LibrarySchemaVersion != ReplayFormatSchemaVersion)
+	{
+		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, TEXT("library.json schema is unsupported"));
+	}
+
+	if (!TryReadJsonInt64(LibraryObject, TEXT("next_recording_id"), 1, ExhaustedCounterValue, StoredNextId, ValidationError))
+	{
+		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, FString::Printf(TEXT("library.json: %s"), *ValidationError));
+	}
+
+	OutNextId = StoredNextId;
+	return ReplaySuccess();
+}
+
+FCortexCommandResult FCortexReplayLibrary::CommitCounterAtomically(int64 NextValue)
+{
+	TSharedPtr<FJsonObject> CommittedObject = MakeShared<FJsonObject>();
+	CommittedObject->SetNumberField(TEXT("schema_version"), ReplayFormatSchemaVersion);
+	CommittedObject->SetNumberField(TEXT("next_recording_id"), static_cast<double>(NextValue));
+
+	FString CommitError;
+	if (!WriteFileAtomically(
+		GetLibraryJsonPath(ProjectRoot),
+		ToUtf8Bytes(SerializeCanonicalJson(CommittedObject.ToSharedRef())),
+		CommitError))
+	{
+		return ReplayError(CortexReplayErrorCodes::SaveFailed, CommitError);
+	}
+
+	return ReplaySuccess();
+}
+
 FCortexCommandResult FCortexReplayLibrary::ReserveId(int32& OutId)
 {
 	OutId = 0;
@@ -1976,56 +2849,25 @@ FCortexCommandResult FCortexReplayLibrary::ReserveId(int32& OutId)
 		return ReplayError(CortexReplayErrorCodes::EditorBusy, LockError);
 	}
 
-	const FString LibraryPath = GetLibraryJsonPath(ProjectRoot);
-	int64 NextId = 1;
-
-	if (IFileManager::Get().FileExists(*LibraryPath))
+	int64 Next = 0;
+	const FCortexCommandResult Read = ReadValidatedNextId(Next);
+	if (!Read.bSuccess)
 	{
-		FString LibraryText;
-		if (!FFileHelper::LoadFileToString(LibraryText, *LibraryPath))
-		{
-			return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Failed to read library.json"));
-		}
-
-		TSharedPtr<FJsonObject> LibraryObject;
-		if (!DeserializeJsonObject(LibraryText, LibraryObject))
-		{
-			return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("library.json is not valid JSON"));
-		}
-
-		int32 LibrarySchemaVersion = 0;
-		int64 StoredNextId = 0;
-		if (!LibraryObject->TryGetNumberField(TEXT("schema_version"), LibrarySchemaVersion)
-			|| LibrarySchemaVersion != ReplayFormatSchemaVersion
-			|| !LibraryObject->TryGetNumberField(TEXT("next_recording_id"), StoredNextId))
-		{
-			return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, TEXT("library.json schema is unsupported"));
-		}
-
-		if (StoredNextId < 1 || StoredNextId > ExhaustedCounterValue)
-		{
-			return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("library.json next_recording_id is out of range"));
-		}
-
-		NextId = StoredNextId;
+		return Read;
 	}
 
-	if (NextId > MaxRecordingId)
+	if (Next > MaxRecordingId)
 	{
 		return ReplayError(CortexReplayErrorCodes::LimitExceeded, TEXT("Recording IDs exhausted"));
 	}
 
-	TSharedPtr<FJsonObject> CommittedObject = MakeShared<FJsonObject>();
-	CommittedObject->SetNumberField(TEXT("schema_version"), ReplayFormatSchemaVersion);
-	CommittedObject->SetNumberField(TEXT("next_recording_id"), static_cast<double>(NextId + 1));
-
-	FString CommitError;
-	if (!WriteFileAtomically(LibraryPath, ToUtf8Bytes(SerializeCanonicalJson(CommittedObject.ToSharedRef())), CommitError))
+	const FCortexCommandResult Saved = CommitCounterAtomically(Next + 1);
+	if (!Saved.bSuccess)
 	{
-		return ReplayError(CortexReplayErrorCodes::SaveFailed, CommitError);
+		return Saved;
 	}
 
-	OutId = static_cast<int32>(NextId);
+	OutId = static_cast<int32>(Next);
 	return ReplaySuccess();
 }
 
@@ -2070,8 +2912,7 @@ FCortexCommandResult FCortexReplayLibrary::ListPage(
 		return ReplayError(CortexReplayErrorCodes::InvalidValue, TEXT("after_recording_id must be positive"));
 	}
 
-	const TArray<int32> Ids = EnumerateRecordingIds(ProjectRoot);
-	for (const int32 Id : Ids)
+	for (const int32 Id : EnumerateRecordingIds(ProjectRoot))
 	{
 		if (Id <= AfterId)
 		{
@@ -2119,45 +2960,48 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 	const FString InputsPath = GetInputsPath(RecordingDirectory);
 
 	TArray<uint8> MetadataBytes;
-	TArray<uint8> InitialStateBytes;
-	TArray<uint8> InputsBytes;
-	if (!ReadFileBytes(MetadataPath, MetadataBytes)
-		|| !ReadFileBytes(InitialStatePath, InitialStateBytes)
-		|| !ReadFileBytes(InputsPath, InputsBytes))
+	if (!ReadFileBytes(MetadataPath, MetadataBytes))
 	{
-		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing one of its three required files"));
+		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing metadata.json"));
 	}
 
-	FString MetadataText;
-	FString InitialStateText;
-	FString InputsText;
-	if (!FFileHelper::LoadFileToString(MetadataText, *MetadataPath)
-		|| !FFileHelper::LoadFileToString(InitialStateText, *InitialStatePath)
-		|| !FFileHelper::LoadFileToString(InputsText, *InputsPath))
+	TArray<uint8> InitialStateBytes;
+	if (!ReadFileBytes(InitialStatePath, InitialStateBytes))
 	{
-		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Failed to read the recording files"));
+		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing initial_state.json"));
+	}
+
+	if (!IFileManager::Get().FileExists(*InputsPath))
+	{
+		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing inputs.jsonl"));
 	}
 
 	FCortexReplayMetadata Metadata;
 	FString ValidationError;
-	if (!ParseMetadata(MetadataText, Id, Metadata, ValidationError))
+	if (!ParseMetadata(Utf8BytesToFString(MetadataBytes), Id, Metadata, ValidationError))
 	{
-		return ReplayError(CortexReplayErrorCodes::InvalidRecording, ValidationError);
+		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, ValidationError);
 	}
 
 	FCortexReplayInitialState InitialState;
-	if (!ParseInitialState(InitialStateText, Id, InitialState, ValidationError))
+	if (!ParseInitialState(Utf8BytesToFString(InitialStateBytes), Id, InitialState, ValidationError))
 	{
-		return ReplayError(CortexReplayErrorCodes::InvalidRecording, ValidationError);
+		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, ValidationError);
+	}
+
+	FCortexReplayIdentityCatalog IdentityCatalog;
+	TArray<FCortexReplayEvent> Events;
+	FCortexReplayGuardCoverage Coverage;
+	FString InputsSha256;
+	if (!ParseInputsStream(InputsPath, IdentityCatalog, Events, Coverage, InputsSha256, ValidationError))
+	{
+		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, ValidationError);
 	}
 
 	FString InitialStateSha256;
-	FString InputsSha256;
-	FString HashError;
-	if (!ComputeSha256Hex(InitialStateBytes, InitialStateSha256, HashError)
-		|| !ComputeSha256Hex(InputsBytes, InputsSha256, HashError))
+	if (!ComputeSha256Hex(InitialStateBytes, InitialStateSha256, ValidationError))
 	{
-		return ReplayError(CortexReplayErrorCodes::StorageFailure, HashError);
+		return ReplayError(CortexReplayErrorCodes::StorageFailure, ValidationError);
 	}
 
 	if (!IsLowerHexSha256(Metadata.InitialStateSha256) || !IsLowerHexSha256(Metadata.InputsSha256))
@@ -2173,13 +3017,6 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 	if (InputsSha256 != Metadata.InputsSha256)
 	{
 		return ReplayError(CortexReplayErrorCodes::InvalidRecording, TEXT("inputs.jsonl does not match its recorded hash"));
-	}
-
-	TArray<FCortexReplayEvent> Events;
-	FCortexReplayGuardCoverage Coverage;
-	if (!ParseInputs(InputsText, Events, Coverage, ValidationError))
-	{
-		return ReplayError(CortexReplayErrorCodes::InvalidRecording, ValidationError);
 	}
 
 	if (!CoverageEquals(Coverage, Metadata.GuardCoverage))
@@ -2210,13 +3047,16 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 	// Freeze all three files under one publication revision: re-read and compare.
 	TArray<uint8> MetadataRecheckBytes;
 	TArray<uint8> InitialStateRecheckBytes;
-	TArray<uint8> InputsRecheckBytes;
 	if (!ReadFileBytes(MetadataPath, MetadataRecheckBytes)
 		|| !ReadFileBytes(InitialStatePath, InitialStateRecheckBytes)
-		|| !ReadFileBytes(InputsPath, InputsRecheckBytes)
 		|| MetadataRecheckBytes != MetadataBytes
-		|| InitialStateRecheckBytes != InitialStateBytes
-		|| InputsRecheckBytes != InputsBytes)
+		|| InitialStateRecheckBytes != InitialStateBytes)
+	{
+		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Recording changed while it was being loaded"));
+	}
+
+	FString InputsRecheckSha256;
+	if (!ComputeFileSha256Hex(InputsPath, InputsRecheckSha256, ValidationError) || InputsRecheckSha256 != InputsSha256)
 	{
 		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Recording changed while it was being loaded"));
 	}
@@ -2228,7 +3068,7 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 
 	FString SnapshotHashError;
 	const TArray<uint8> ImmutableBytes = ToUtf8Bytes(SerializeCanonicalJson(
-		MakeImmutableMetadataJson(Metadata, Metadata.InitialStateSha256, Metadata.InputsSha256).ToSharedRef()));
+		MakeImmutableMetadataJson(Snapshot.Metadata, Metadata.InitialStateSha256, Metadata.InputsSha256).ToSharedRef()));
 	if (!ComputeSha256Hex(ImmutableBytes, Snapshot.RecordingSnapshotSha256, SnapshotHashError))
 	{
 		return ReplayError(CortexReplayErrorCodes::StorageFailure, SnapshotHashError);
@@ -2279,18 +3119,14 @@ FCortexCommandResult FCortexReplayLibrary::Publish(const FCortexReplaySnapshot& 
 	}
 
 	const TArray<uint8> InitialStateBytes = ToUtf8Bytes(SerializeInitialState(Recording.InitialState));
-	const TArray<uint8> InputsBytes = ToUtf8Bytes(SerializeInputs(Recording.Events));
 
 	FString InitialStateSha256;
 	FString InputsSha256;
 	FString HashError;
-	if (!ComputeSha256Hex(InitialStateBytes, InitialStateSha256, HashError)
-		|| !ComputeSha256Hex(InputsBytes, InputsSha256, HashError))
+	if (!ComputeSha256Hex(InitialStateBytes, InitialStateSha256, HashError))
 	{
 		return ReplayError(CortexReplayErrorCodes::StorageFailure, HashError);
 	}
-
-	const TArray<uint8> MetadataBytes = ToUtf8Bytes(SerializeMetadata(Recording.Metadata, InitialStateSha256, InputsSha256));
 
 	if (!EnsureDirectory(GetReplayRoot(ProjectRoot)) || !EnsureDirectory(GetRecordingsRoot(ProjectRoot)) || !EnsureDirectory(GetPendingRoot(ProjectRoot)))
 	{
@@ -2316,41 +3152,65 @@ FCortexCommandResult FCortexReplayLibrary::Publish(const FCortexReplaySnapshot& 
 		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Failed to create the CortexReplay pending directory"));
 	}
 
-	bool bStaged = WriteFileBytes(GetInitialStatePath(PendingDirectory), InitialStateBytes)
-		&& WriteFileBytes(GetInputsPath(PendingDirectory), InputsBytes)
-		&& WriteFileBytes(GetMetadataPath(PendingDirectory), MetadataBytes);
+	// Stage the initial state and stream every input row to the staging file while hashing it.
+	FString StageError;
+	bool bStaged = WriteFileBytesDurably(GetInitialStatePath(PendingDirectory), InitialStateBytes, StageError);
 
 	if (bStaged)
 	{
-		TArray<uint8> StagedMetadata;
-		TArray<uint8> StagedInitialState;
-		TArray<uint8> StagedInputs;
-		FString StagedInitialStateSha256;
-		FString StagedInputsSha256;
-		bStaged = ReadFileBytes(GetMetadataPath(PendingDirectory), StagedMetadata)
-			&& ReadFileBytes(GetInitialStatePath(PendingDirectory), StagedInitialState)
-			&& ReadFileBytes(GetInputsPath(PendingDirectory), StagedInputs)
-			&& StagedMetadata == MetadataBytes
-			&& ComputeSha256Hex(StagedInitialState, StagedInitialStateSha256, HashError)
-			&& ComputeSha256Hex(StagedInputs, StagedInputsSha256, HashError)
-			&& StagedInitialStateSha256 == InitialStateSha256
-			&& StagedInputsSha256 == InputsSha256;
+		FCortexReplayDurableWriter Writer;
+		bStaged = Writer.Open(GetInputsPath(PendingDirectory), StageError);
+		if (bStaged)
+		{
+			FCortexReplaySha256State Hash;
+			bStaged = Hash.Begin(StageError);
+			for (int32 EventIndex = 0; EventIndex < Recording.Events.Num() && bStaged; ++EventIndex)
+			{
+				const FString Row = SerializeCanonicalJson(SerializeEvent(Recording.Events[EventIndex]).ToSharedRef());
+				const TArray<uint8> RowBytes = ToUtf8Bytes(Row + TEXT("\n"));
+				bStaged = Writer.WriteBytes(RowBytes.GetData(), RowBytes.Num(), StageError)
+					&& Hash.Update(RowBytes.GetData(), RowBytes.Num());
+			}
+
+			if (bStaged)
+			{
+				bStaged = Writer.Commit(StageError) && Hash.Finish(InputsSha256, StageError);
+			}
+		}
 	}
 
 	if (bStaged)
 	{
-		FString RenameError;
-		if (!RenameDirectoryNoOverwrite(CanonicalDirectory, PendingDirectory, RenameError))
+		const TArray<uint8> MetadataBytes = ToUtf8Bytes(SerializeMetadata(Recording.Metadata, InitialStateSha256, InputsSha256));
+		bStaged = WriteFileBytesDurably(GetMetadataPath(PendingDirectory), MetadataBytes, StageError);
+
+		if (bStaged)
 		{
-			IFileManager::Get().DeleteDirectory(*PendingDirectory, false, true);
-			return ReplayError(CortexReplayErrorCodes::StorageFailure, RenameError);
+			TArray<uint8> StagedMetadata;
+			TArray<uint8> StagedInitialState;
+			FString StagedInitialStateSha256;
+			FString StagedInputsSha256;
+			bStaged = ReadFileBytes(GetMetadataPath(PendingDirectory), StagedMetadata)
+				&& ReadFileBytes(GetInitialStatePath(PendingDirectory), StagedInitialState)
+				&& ComputeFileSha256Hex(GetInputsPath(PendingDirectory), StagedInputsSha256, StageError)
+				&& ComputeSha256Hex(StagedInitialState, StagedInitialStateSha256, StageError)
+				&& StagedMetadata == MetadataBytes
+				&& StagedInitialStateSha256 == InitialStateSha256
+				&& StagedInputsSha256 == InputsSha256;
 		}
 	}
 
 	if (!bStaged)
 	{
 		IFileManager::Get().DeleteDirectory(*PendingDirectory, false, true);
-		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Failed to stage and verify the recording files"));
+		return ReplayError(CortexReplayErrorCodes::StorageFailure, StageError);
+	}
+
+	FString RenameError;
+	if (!RenameDirectoryNoOverwrite(CanonicalDirectory, PendingDirectory, RenameError))
+	{
+		IFileManager::Get().DeleteDirectory(*PendingDirectory, false, true);
+		return ReplayError(CortexReplayErrorCodes::StorageFailure, RenameError);
 	}
 
 	return ReplaySuccess();
@@ -2367,12 +3227,12 @@ FCortexCommandResult FCortexReplayLibrary::SaveMetadata(
 		return ReplayError(CortexReplayErrorCodes::InvalidValue, TEXT("recording_id must be a positive signed 32-bit integer"));
 	}
 
-	if (!IsValidBoundedText(Name, MaxNameUnits, true))
+	if (!IsValidBoundedTextScalars(Name, 1, MaxNameScalars))
 	{
 		return ReplayError(CortexReplayErrorCodes::InvalidField, TEXT("Recording name must be 1..128 valid Unicode characters"));
 	}
 
-	if (!IsValidBoundedText(Description, MaxDescriptionUnits, false))
+	if (!IsValidBoundedTextScalars(Description, 0, MaxDescriptionScalars))
 	{
 		return ReplayError(CortexReplayErrorCodes::InvalidField, TEXT("Recording description must be at most 1024 valid Unicode characters"));
 	}

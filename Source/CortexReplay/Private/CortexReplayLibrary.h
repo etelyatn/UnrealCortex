@@ -20,5 +20,11 @@ public:
 	FCortexCommandResult Delete(int32 Id);
 
 private:
+	/** Reads and strictly validates library.json's next_recording_id. Caller holds the authoring lock. */
+	FCortexCommandResult ReadValidatedNextId(int64& OutNextId) const;
+
+	/** Durably and atomically commits the next_recording_id counter. Caller holds the authoring lock. */
+	FCortexCommandResult CommitCounterAtomically(int64 NextValue);
+
 	FString ProjectRoot;
 };
