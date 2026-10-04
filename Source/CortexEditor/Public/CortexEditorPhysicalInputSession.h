@@ -146,6 +146,7 @@ private:
 	struct FOwnedRequest
 	{
 		FString MapAssetPath;
+		FString RequestedPackagePath;
 		int32 LocalPlayerIndex = 0;
 		double DeadlineSeconds = 0.0;
 		TArray<FName> BaselinePIEContextHandles;
@@ -155,7 +156,9 @@ private:
 	EOwnedState OwnedState = EOwnedState::None;
 	bool bOwnsPIE = false;
 	bool bOwnedRequestOutstanding = false;
+	bool bStartupResolved = false;
 	uint64 Generation = 0;
+	uint64 SubmittedRequestFingerprint = 0;
 	FOwnedRequest OwnedRequest;
 	TFunction<void(const FCortexCommandResult&)> ReadyCallback;
 	bool bReadyCallbackInvoked = false;
@@ -184,6 +187,27 @@ private:
 
 	/** Completes the pending preparation once with the resolved target. */
 	void CompletePreparationSuccess();
+
+	/** Starts owned termination: releases the usable binding, invalidates readiness, requests end. */
+	void BeginOwnedTermination();
+
+	/** Drops the usable binding/target info while retaining the owned-world teardown identity. */
+	void ReleaseReadyBinding();
+
+	/** Polls owned startup while ending so a created context can never be missed. */
+	void PollTeardown();
+
+	/** Relinquishes ownership of the queued request without cancelling it. */
+	void RelinquishOwnedRequest();
+
+	/** True when an unrelated PIE session, queued request or queued teardown already exists. */
+	bool HasUnrelatedPIESession() const;
+
+	/** Validates the effective play settings for a single owned in-process PIE session. */
+	static bool ArePlaySettingsSupported(FString& OutReason);
+
+	/** Resolves the PIE world of the captured owned context handle. */
+	UWorld* ResolveOwnedContextWorld() const;
 
 	/** Cancels/ends only the matching pending request or owned PIE context. */
 	void RequestOwnedTermination();

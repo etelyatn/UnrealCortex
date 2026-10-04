@@ -18,6 +18,7 @@
 #include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
 #include "PlayInEditorDataTypes.h"
+#include "Settings/LevelEditorPlaySettings.h"
 #include "Slate/SGameLayerManager.h"
 #include "Slate/SceneViewport.h"
 #include "UObject/Package.h"
@@ -49,6 +50,40 @@ FCortexCommandResult MakeErrorResult(const FString& ErrorCode, const FString& Me
 FCortexCommandResult MakeInvalidTargetResult(const FString& Message)
 {
 	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, Message);
+}
+
+/**
+ * Engine-visible identity of a queued play request. The engine overwrites its queued
+ * request wholesale, so a matching fingerprint is the only way to know the queued
+ * request is still the exact one this session accepted.
+ *
+ * DestinationSlateViewport is deliberately excluded: the engine nulls it on the
+ * retained request once the session starts (PlayLevel.cpp:3105), so it is not stable
+ * across the queued-vs-started comparison.
+ */
+uint64 ComputeRequestFingerprint(const FRequestPlaySessionParams& Request)
+{
+	const FString StartLocation = Request.StartLocation.IsSet() ? Request.StartLocation->ToString() : FString();
+	const FString StartRotation = Request.StartRotation.IsSet() ? Request.StartRotation->ToString() : FString();
+	const FString GameModeOverride = Request.GameModeOverride ? Request.GameModeOverride->GetPathName() : FString();
+	const FString ExtraParameters = Request.AdditionalStandaloneCommandLineParameters.Get(TEXT(""));
+
+	const FString Canonical = FString::Printf(
+		TEXT("%s|%d|%d|%p|%d|%s|%d|%s|%d|%s|%s|%d"),
+		*Request.GlobalMapOverride,
+		static_cast<int32>(Request.SessionDestination),
+		static_cast<int32>(Request.WorldType),
+		static_cast<const void*>(Request.CustomPIEWindow.Pin().Get()),
+		Request.StartLocation.IsSet() ? 1 : 0,
+		*StartLocation,
+		Request.StartRotation.IsSet() ? 1 : 0,
+		*StartRotation,
+		Request.bAllowOnlineSubsystem ? 1 : 0,
+		*ExtraParameters,
+		*GameModeOverride,
+		Request.SessionPreviewTypeOverride.IsSet() ? static_cast<int32>(Request.SessionPreviewTypeOverride.GetValue()) : -1);
+
+	return static_cast<uint64>(GetTypeHash(Canonical));
 }
 }
 
@@ -101,6 +136,11 @@ bool FCortexEditorPhysicalInputSession::TickInternal(float DeltaTime)
 	{
 		PollPreparation();
 	}
+	else if (OwnedState == EOwnedState::Ending)
+	{
+		// Owned teardown must keep observing startup/context until it is resolved.
+		PollTeardown();
+	}
 
 	if (OwnedState == EOwnedState::Ending && IsOwnedPIEEnded())
 	{
@@ -109,6 +149,26 @@ bool FCortexEditorPhysicalInputSession::TickInternal(float DeltaTime)
 		return false; // Teardown observed; stop the minimal observer.
 	}
 	return true;
+}
+
+UWorld* FCortexEditorPhysicalInputSession::ResolveOwnedContextWorld() const
+{
+	if (GEngine == nullptr)
+	{
+		return nullptr;
+	}
+	for (const FWorldContext& Context : GEngine->GetWorldContexts())
+	{
+		if (Context.WorldType != EWorldType::PIE)
+		{
+			continue;
+		}
+		if (OwnedContextHandle != NAME_None && Context.ContextHandle == OwnedContextHandle)
+		{
+			return Context.World();
+		}
+	}
+	return nullptr;
 }
 
 UWorld* FCortexEditorPhysicalInputSession::FindNewPIEWorld(FName& OutContextHandle, bool& bOutAmbiguous) const
@@ -128,6 +188,12 @@ UWorld* FCortexEditorPhysicalInputSession::FindNewPIEWorld(FName& OutContextHand
 			continue;
 		}
 		if (OwnedRequest.BaselinePIEContextHandles.Contains(Context.ContextHandle))
+		{
+			continue;
+		}
+		// Correlate with the accepted request by map, not merely by absence from the baseline.
+		if (!OwnedRequest.RequestedPackagePath.IsEmpty()
+			&& UWorld::RemovePIEPrefix(Context.World()->GetPackage()->GetName()) != OwnedRequest.RequestedPackagePath)
 		{
 			continue;
 		}
@@ -161,24 +227,75 @@ void FCortexEditorPhysicalInputSession::PollPreparation()
 		return;
 	}
 
-	FName ContextHandle = NAME_None;
-	bool bAmbiguous = false;
-	UWorld* PIEWorld = FindNewPIEWorld(ContextHandle, bAmbiguous);
-	if (bAmbiguous)
+	UWorld* PIEWorld = nullptr;
+	if (!bStartupResolved)
 	{
-		CompletePreparationFailure(CortexErrorCodes::InvalidOperation,
-			TEXT("Owned PIE created more than one candidate world context"));
-		return;
-	}
-	if (PIEWorld == nullptr)
-	{
-		return;
-	}
+		if (bOwnedRequestOutstanding)
+		{
+			if (IsOwnedRequestPending())
+			{
+				return; // Still queued; wait for the engine to start it.
+			}
+			// No longer queued: it must be the exact session we accepted, otherwise someone
+			// replaced our request and we must relinquish it without cancelling theirs.
+			const TOptional<FPlayInEditorSessionInfo> Info = GEditor->GetPlayInEditorSessionInfo();
+			if (!Info.IsSet() || ComputeRequestFingerprint(Info->OriginalRequestParams) != SubmittedRequestFingerprint)
+			{
+				RelinquishOwnedRequest();
+				CompletePreparationFailure(CortexErrorCodes::InvalidOperation,
+					TEXT("The queued owned play request was replaced before it started"));
+				return;
+			}
+			bOwnedRequestOutstanding = false;
+		}
 
-	// Capture the exact owned context as soon as it exists so failure teardown ends it.
-	OwnedWorld = PIEWorld;
-	OwnedContextHandle = ContextHandle;
-	bOwnedRequestOutstanding = false;
+		// The engine consumed the request; the started session must be exactly ours.
+		const TOptional<FPlayInEditorSessionInfo> SessionInfo = GEditor->GetPlayInEditorSessionInfo();
+		if (!SessionInfo.IsSet())
+		{
+			CompletePreparationFailure(CortexErrorCodes::EditorBusy,
+				TEXT("The queued owned play request did not start a PIE session"));
+			return;
+		}
+		if (ComputeRequestFingerprint(SessionInfo->OriginalRequestParams) != SubmittedRequestFingerprint)
+		{
+			RelinquishOwnedRequest();
+			CompletePreparationFailure(CortexErrorCodes::InvalidOperation,
+				TEXT("The owned PIE session was replaced before its target was ready"));
+			return;
+		}
+
+		FName ContextHandle = NAME_None;
+		bool bAmbiguous = false;
+		PIEWorld = FindNewPIEWorld(ContextHandle, bAmbiguous);
+		if (bAmbiguous)
+		{
+			CompletePreparationFailure(CortexErrorCodes::InvalidOperation,
+				TEXT("Owned PIE created more than one candidate world context"));
+			return;
+		}
+		if (PIEWorld == nullptr)
+		{
+			return; // The world has not been created yet; keep polling.
+		}
+
+		// Pin the exact owned context immediately so teardown can always end it.
+		OwnedWorld = PIEWorld;
+		OwnedContextHandle = ContextHandle;
+		bOwnedRequestOutstanding = false;
+		bStartupResolved = true;
+	}
+	else
+	{
+		// Once pinned, never adopt a successor: poll only the captured context.
+		PIEWorld = ResolveOwnedContextWorld();
+		if (PIEWorld == nullptr)
+		{
+			CompletePreparationFailure(CortexErrorCodes::InvalidOperation,
+				TEXT("The owned PIE context disappeared before its target was ready"));
+			return;
+		}
+	}
 
 	FCortexEditorPhysicalInputTargetBinding ResolvedBinding;
 	FCortexEditorPhysicalInputTargetInfo ResolvedInfo;
@@ -201,8 +318,6 @@ void FCortexEditorPhysicalInputSession::PollPreparation()
 		return;
 	}
 
-	OwnedWorld = PIEWorld;
-	OwnedContextHandle = ContextHandle;
 	Binding = ResolvedBinding;
 	TargetInfo = ResolvedInfo;
 	BoundPawnClass = ResolvedBinding.Pawn.Get()->GetClass();
@@ -210,6 +325,82 @@ void FCortexEditorPhysicalInputSession::PollPreparation()
 	bOwnsPIE = true;
 	OwnedState = EOwnedState::Ready;
 	CompletePreparationSuccess();
+}
+
+void FCortexEditorPhysicalInputSession::PollTeardown()
+{
+	if (!bOwnsPIE)
+	{
+		// Borrowed/foreign worlds are never observed or ended.
+		bStartupResolved = true;
+		return;
+	}
+	if (GEditor == nullptr)
+	{
+		bStartupResolved = true;
+		return;
+	}
+
+	if (!bStartupResolved)
+	{
+		if (bOwnedRequestOutstanding)
+		{
+			if (IsOwnedRequestPending())
+			{
+				// Still queued: cancel it; nothing of ours was ever created.
+				GEditor->CancelRequestPlaySession();
+				RelinquishOwnedRequest();
+				bStartupResolved = true;
+			}
+			else
+			{
+				// Consumed by the engine only if it is the exact session we accepted.
+				const TOptional<FPlayInEditorSessionInfo> Info = GEditor->GetPlayInEditorSessionInfo();
+				if (Info.IsSet() && ComputeRequestFingerprint(Info->OriginalRequestParams) == SubmittedRequestFingerprint)
+				{
+					bOwnedRequestOutstanding = false;
+					bStartupResolved = true;
+				}
+				else
+				{
+					RelinquishOwnedRequest();
+					bStartupResolved = true;
+				}
+			}
+		}
+		else
+		{
+			bStartupResolved = true;
+		}
+
+		if (!OwnedWorld.IsValid() && OwnedContextHandle == NAME_None && SubmittedRequestFingerprint != 0)
+		{
+			// Only adopt a context that belongs to the exact session we accepted.
+			const TOptional<FPlayInEditorSessionInfo> SessionInfo = GEditor->GetPlayInEditorSessionInfo();
+			if (SessionInfo.IsSet()
+				&& ComputeRequestFingerprint(SessionInfo->OriginalRequestParams) == SubmittedRequestFingerprint)
+			{
+				FName ContextHandle = NAME_None;
+				bool bAmbiguous = false;
+				if (UWorld* Created = FindNewPIEWorld(ContextHandle, bAmbiguous))
+				{
+					OwnedWorld = Created;
+					OwnedContextHandle = ContextHandle;
+				}
+			}
+		}
+	}
+
+	if (IsOwnedContextPresent())
+	{
+		GEditor->RequestEndPlayMap();
+	}
+}
+
+void FCortexEditorPhysicalInputSession::RelinquishOwnedRequest()
+{
+	bOwnedRequestOutstanding = false;
+	SubmittedRequestFingerprint = 0;
 }
 
 void FCortexEditorPhysicalInputSession::CompletePreparationFailure(const FString& ErrorCode, const FString& Message)
@@ -225,7 +416,16 @@ void FCortexEditorPhysicalInputSession::CompletePreparationFailure(const FString
 	OwnedState = EOwnedState::Ending;
 	RequestOwnedTermination();
 
-	UE_LOG(LogCortexEditor, Warning, TEXT("Owned physical input preparation failed: %s (%s)"), *ErrorCode, *Message);
+	if (ErrorCode == CortexErrorCodes::EditorNotReady)
+	{
+		// A missing editor is the only genuinely unexpected preparation failure.
+		UE_LOG(LogCortexEditor, Warning, TEXT("Owned physical input preparation failed: %s (%s)"), *ErrorCode, *Message);
+	}
+	else
+	{
+		// Every other preparation outcome is an explicit, caller-visible rejection.
+		UE_LOG(LogCortexEditor, Log, TEXT("Owned physical input preparation failed: %s (%s)"), *ErrorCode, *Message);
+	}
 
 	TFunction<void(const FCortexCommandResult&)> Callback = MoveTemp(ReadyCallback);
 	ReadyCallback = nullptr;
@@ -263,9 +463,24 @@ void FCortexEditorPhysicalInputSession::RequestOwnedTermination()
 	{
 		if (IsOwnedRequestPending())
 		{
+			// Our request is still queued: cancel it and drop ownership.
 			GEditor->CancelRequestPlaySession();
+			RelinquishOwnedRequest();
 		}
-		bOwnedRequestOutstanding = false;
+		else
+		{
+			// Not queued anymore. Keep the fingerprint so teardown can correlate and end
+			// the context the engine created for us; relinquish only for foreign requests.
+			const TOptional<FPlayInEditorSessionInfo> Info = GEditor->GetPlayInEditorSessionInfo();
+			if (Info.IsSet() && ComputeRequestFingerprint(Info->OriginalRequestParams) == SubmittedRequestFingerprint)
+			{
+				bOwnedRequestOutstanding = false;
+			}
+			else
+			{
+				RelinquishOwnedRequest();
+			}
+		}
 	}
 	// End only when the exact captured owned PIE context is actually present.
 	if (IsOwnedContextPresent())
@@ -276,15 +491,12 @@ void FCortexEditorPhysicalInputSession::RequestOwnedTermination()
 
 bool FCortexEditorPhysicalInputSession::IsOwnedRequestPending() const
 {
-	if (!bOwnedRequestOutstanding || GEditor == nullptr)
+	if (!bOwnedRequestOutstanding || GEditor == nullptr || SubmittedRequestFingerprint == 0)
 	{
 		return false;
 	}
 	const TOptional<FRequestPlaySessionParams> Pending = GEditor->GetPlaySessionRequest();
-	return Pending.IsSet()
-		&& Pending->SessionDestination == EPlaySessionDestinationType::InProcess
-		&& Pending->WorldType == EPlaySessionWorldType::PlayInEditor
-		&& Pending->GlobalMapOverride == OwnedRequest.MapAssetPath;
+	return Pending.IsSet() && ComputeRequestFingerprint(Pending.GetValue()) == SubmittedRequestFingerprint;
 }
 
 bool FCortexEditorPhysicalInputSession::IsOwnedContextPresent() const
@@ -312,6 +524,113 @@ bool FCortexEditorPhysicalInputSession::IsOwnedContextPresent() const
 }
 
 // ---------------------------------------------------------------------------
+// Admission helpers
+// ---------------------------------------------------------------------------
+
+bool FCortexEditorPhysicalInputSession::HasUnrelatedPIESession() const
+{
+	if (GEditor == nullptr)
+	{
+		return true;
+	}
+	// Anything the engine would consume or tear down before our own request must be
+	// rejected, otherwise a fresh session could destroy an unrelated human PIE run.
+	if (GEditor->PlayWorld != nullptr)
+	{
+		return true;
+	}
+	if (GEditor->GetPlaySessionRequest().IsSet())
+	{
+		return true;
+	}
+	if (GEditor->ShouldEndPlayMap())
+	{
+		return true;
+	}
+	if (GEngine != nullptr)
+	{
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			if (Context.WorldType == EWorldType::PIE)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool FCortexEditorPhysicalInputSession::ArePlaySettingsSupported(FString& OutReason)
+{
+	const ULevelEditorPlaySettings* PlaySettings = GetDefault<ULevelEditorPlaySettings>();
+	if (PlaySettings == nullptr)
+	{
+		OutReason = TEXT("Play in editor settings are not available");
+		return false;
+	}
+
+	bool bRunUnderOneProcess = false;
+	PlaySettings->GetRunUnderOneProcess(bRunUnderOneProcess);
+	if (!bRunUnderOneProcess)
+	{
+		OutReason = TEXT("Owned physical input PIE requires RunUnderOneProcess");
+		return false;
+	}
+	if (PlaySettings->bLaunchSeparateServer)
+	{
+		OutReason = TEXT("Owned physical input PIE does not support a separate server");
+		return false;
+	}
+
+	int32 ClientCount = 1;
+	PlaySettings->GetPlayNumberOfClients(ClientCount);
+	if (ClientCount != 1)
+	{
+		OutReason = TEXT("Owned physical input PIE supports exactly one local client");
+		return false;
+	}
+
+	EPlayNetMode NetMode = PIE_Standalone;
+	PlaySettings->GetPlayNetMode(NetMode);
+	if (NetMode != PIE_Standalone)
+	{
+		OutReason = TEXT("Owned physical input PIE supports the standalone play net mode only");
+		return false;
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Owned termination
+// ---------------------------------------------------------------------------
+
+void FCortexEditorPhysicalInputSession::ReleaseReadyBinding()
+{
+	++Generation;
+	bBound = false;
+	Binding = FCortexEditorPhysicalInputTargetBinding();
+	TargetInfo = FCortexEditorPhysicalInputTargetInfo();
+	BoundPawnClass = nullptr;
+}
+
+void FCortexEditorPhysicalInputSession::BeginOwnedTermination()
+{
+	// The usable target is invalid the moment termination starts; the separate owned
+	// world/context identity is retained to observe teardown.
+	ReleaseReadyBinding();
+
+	if (OwnedState == EOwnedState::Preparing)
+	{
+		// Invalidate readiness before teardown so no late callback can bind or dispatch.
+		bReadyCallbackInvoked = true;
+		ReadyCallback = nullptr;
+	}
+	OwnedState = EOwnedState::Ending;
+	EnsureTicker();
+	RequestOwnedTermination();
+}
+
+// ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
 
@@ -335,6 +654,18 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 	if (OwnedState == EOwnedState::Ready || bBound)
 	{
 		return MakeErrorResult(CortexErrorCodes::EditorBusy, TEXT("Session already owns a physical input target"));
+	}
+	// A fresh owned request would make the engine tear down whatever is already playing.
+	if (HasUnrelatedPIESession())
+	{
+		return MakeErrorResult(CortexErrorCodes::EditorBusy,
+			TEXT("An unrelated PIE session, play request or pending teardown is already active"));
+	}
+
+	FString UnsupportedSettingsReason;
+	if (!ArePlaySettingsSupported(UnsupportedSettingsReason))
+	{
+		return MakeErrorResult(CortexErrorCodes::InvalidOperation, UnsupportedSettingsReason);
 	}
 	if (LocalPlayerIndex < 0)
 	{
@@ -383,6 +714,7 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 	// Record the request generation, deadline and baseline before the request is queued.
 	OwnedRequest = FOwnedRequest();
 	OwnedRequest.MapAssetPath = MapAssetPath;
+	OwnedRequest.RequestedPackagePath = PackageName;
 	OwnedRequest.LocalPlayerIndex = LocalPlayerIndex;
 	OwnedRequest.DeadlineSeconds = FPlatformTime::Seconds() + CortexOwnedPIEPreparationBudgetSeconds;
 	for (const FWorldContext& Context : GEngine->GetWorldContexts())
@@ -397,6 +729,8 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 	bReadyCallbackInvoked = false;
 	bOwnsPIE = true;
 	bOwnedRequestOutstanding = true;
+	bStartupResolved = false;
+	SubmittedRequestFingerprint = 0;
 	OwnedState = EOwnedState::Preparing;
 	OwnedContextHandle = NAME_None;
 	OwnedWorld = nullptr;
@@ -407,6 +741,13 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 
 	EnsureTicker();
 	GEditor->RequestPlaySession(Request);
+
+	// Capture the identity of the request the engine actually queued so a replacement
+	// request can never be mistaken for ours.
+	if (const TOptional<FRequestPlaySessionParams> Queued = GEditor->GetPlaySessionRequest())
+	{
+		SubmittedRequestFingerprint = ComputeRequestFingerprint(Queued.GetValue());
+	}
 
 	// The request is accepted; the session does not own a target until readiness succeeds.
 	return MakeSuccessResult();
@@ -596,6 +937,13 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::RestorePlayerPose(
 			TEXT("Recorded pawn class does not match the bound pawn"));
 	}
 
+	// Reject unusable recorded data before any mutation; only a usable mismatch restores.
+	if (!IsPoseUsable(Pose))
+	{
+		return MakeErrorResult(CortexEditorPhysicalInputErrorCodes::InitialPoseRestoreFailed,
+			TEXT("Recorded player pose is not finite or is degenerate"));
+	}
+
 	FCortexEditorPhysicalInputPlayerPose CurrentPose;
 	if (!ReadPlayerPose(CurrentPose).bSuccess)
 	{
@@ -606,7 +954,11 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::RestorePlayerPose(
 	// Mutate only on an actual mismatch; an exact match is already restored.
 	if (!ComparePlayerPose(Pose, CurrentPose).bSuccess)
 	{
-		Pawn->SetActorTransform(Pose.PawnTransform, false, nullptr, ETeleportType::TeleportPhysics);
+		if (!Pawn->SetActorTransform(Pose.PawnTransform, false, nullptr, ETeleportType::TeleportPhysics))
+		{
+			return MakeErrorResult(CortexEditorPhysicalInputErrorCodes::InitialPoseRestoreFailed,
+				TEXT("The bound pawn rejected the recorded transform (no movable root)"));
+		}
 		Controller->SetControlRotation(Pose.ControlRotation);
 	}
 
@@ -640,17 +992,7 @@ void FCortexEditorPhysicalInputSession::EndOwnedPIE()
 		OwnedState = EOwnedState::Ending;
 		return;
 	}
-
-	if (OwnedState == EOwnedState::Preparing)
-	{
-		// Invalidate readiness before teardown so no late callback can bind or dispatch.
-		++Generation;
-		bReadyCallbackInvoked = true;
-		ReadyCallback = nullptr;
-	}
-	OwnedState = EOwnedState::Ending;
-	EnsureTicker();
-	RequestOwnedTermination();
+	BeginOwnedTermination();
 }
 
 bool FCortexEditorPhysicalInputSession::IsOwnedPIEEnded() const
@@ -658,6 +1000,12 @@ bool FCortexEditorPhysicalInputSession::IsOwnedPIEEnded() const
 	if (!bOwnsPIE)
 	{
 		return true;
+	}
+	// Startup must be resolved before completion can be claimed: a request the engine
+	// already consumed must not be mistaken for "nothing was ever created".
+	if (!bStartupResolved)
+	{
+		return false;
 	}
 	if (IsOwnedRequestPending())
 	{
@@ -669,22 +1017,17 @@ bool FCortexEditorPhysicalInputSession::IsOwnedPIEEnded() const
 
 void FCortexEditorPhysicalInputSession::Shutdown()
 {
-	++Generation;
-	bReadyCallbackInvoked = true;
-	ReadyCallback = nullptr;
 	LastObservedPawnClass = nullptr;
 	StablePawnClassObservations = 0;
-	bBound = false;
-	Binding = FCortexEditorPhysicalInputTargetBinding();
-	TargetInfo = FCortexEditorPhysicalInputTargetInfo();
-	BoundPawnClass = nullptr;
+	ReleaseReadyBinding();
+	bReadyCallbackInvoked = true;
+	ReadyCallback = nullptr;
 
 	if (bOwnsPIE)
 	{
 		if (OwnedState != EOwnedState::Ending)
 		{
-			OwnedState = EOwnedState::Ending;
-			RequestOwnedTermination();
+			BeginOwnedTermination();
 		}
 		// Keep the minimal teardown observer alive until the owned context is gone.
 		EnsureTicker();
