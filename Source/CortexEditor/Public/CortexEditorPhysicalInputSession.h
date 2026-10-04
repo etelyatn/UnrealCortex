@@ -9,10 +9,14 @@
 
 class APawn;
 class APlayerController;
+class FCortexEditorPhysicalInputCaptureProcessor;
 class SWidget;
 class SViewport;
 class UClass;
 class UWorld;
+struct FCortexEditorPhysicalInputCaptureState;
+struct FCortexEditorPhysicalInputDispatchContext;
+struct FCortexEditorPhysicalInputGuardState;
 
 /**
  * Shared CortexEditor physical input error codes.
@@ -31,6 +35,18 @@ namespace CortexEditorPhysicalInputErrorCodes
 
 	/** The original player pose could not be restored on the captured target. */
 	constexpr TCHAR InitialPoseRestoreFailed[] = TEXT("INITIAL_POSE_RESTORE_FAILED");
+
+	/**
+	 * A required UI identity/observation could not be produced on the exact selected route
+	 * (malformed expected selector, unobservable route or a fresh wrong target).
+	 */
+	constexpr TCHAR UIObservationFailed[] = TEXT("INPUT_UI_OBSERVATION_FAILED");
+
+	/**
+	 * Owned synthetic input or the original target could not be safely neutralized during
+	 * release; the terminal cleanup state is not claimed as completed.
+	 */
+	constexpr TCHAR CleanupFailed[] = TEXT("INPUT_CLEANUP_FAILED");
 }
 
 /**
@@ -60,8 +76,9 @@ struct FCortexEditorPhysicalInputTargetBinding
  * world, user or device. Owned PIE preparation carries a production 30-second deadline
  * that fails through the readiness callback.
  *
- * Task 2 declares and implements only the target/pose surface below; UI observation,
- * capture and dispatch belong to Task 3 and must not be declared here yet.
+ * Task 2 declared the target/pose surface; Task 3 adds capture, UI observation and normal
+ * dispatch. Capture/dispatch behavior lives in the private helper units
+ * (CortexEditorPhysicalInputCapture/Dispatch/Guards); this header stays free of UMG headers.
  */
 class CORTEXEDITOR_API FCortexEditorPhysicalInputSession
 {
@@ -117,6 +134,57 @@ public:
 		const FString& RecordedPawnClassPath);
 
 	/**
+	 * Replays one captured portable event through normal engine routing on the exact bound
+	 * target. Keys use the normal FKeyEvent path, pointer button/down/up/double-click/wheel use
+	 * the normal Slate processors and pointer motion uses the normal mouse-move path inside a
+	 * reentry guard so Slate drag detection and preprocessors are preserved. Generated events
+	 * are never re-captured by this session and never count as human interference. The engine's
+	 * handled boolean is not dispatch success; validated admission and the actual invocation
+	 * are.
+	 */
+	FCortexCommandResult Dispatch(const FCortexEditorPhysicalInputEvent& Event);
+
+	/**
+	 * Non-blocking observation of the exact selected route for one guarded press. Returns the
+	 * structured ready/pending/mismatch evidence in Out and never invokes a widget callback or
+	 * issues a movement command. Pending freshness precedes any wrong-target verdict.
+	 */
+	FCortexCommandResult ObserveUI(const FCortexEditorPhysicalInputEvent& Press,
+		const FCortexEditorPhysicalInputWidgetIdentity& Expected,
+		FCortexEditorPhysicalInputUIObservation& Out) const;
+
+	/**
+	 * True only while no key/button owned by this session is held and no capture or drag is
+	 * active. A UI wait is never permitted from a non-neutral owned state.
+	 */
+	bool CanWaitForUI() const;
+
+	/**
+	 * Arms human capture on the selected target. Requires a neutral physical keyboard/mouse
+	 * state; a pre-held key, button or modifier (including a UI-consumed press) fails with
+	 * INVALID_OPERATION plus a release-inputs instruction and leaves the original human state
+	 * untouched. The callback receives the portable event, its monotonic capture time and the
+	 * pre-press context.
+	 */
+	FCortexCommandResult SetCaptureCallback(TFunction<void(const FCortexEditorPhysicalInputEvent&,
+		double, const FCortexEditorPhysicalInputCaptureContext&)>&& Callback);
+
+	/**
+	 * Registers the one interruption callback. It is invoked when foreign physical input is
+	 * observed while this session is actively replaying; reentrant callbacks only record
+	 * state and never re-enter dispatch. Passing an empty callback clears it.
+	 */
+	void SetInterruptionCallback(TFunction<void(const FCortexCommandResult&)>&& Callback);
+
+	/**
+	 * Releases this operation's owned synthetic and captured state on the original target by
+	 * the shared cleanup algorithm. Success requires observed neutralization of this
+	 * operation's state, never a handled boolean. Live owned state that cannot be safely
+	 * neutralized returns INPUT_CLEANUP_FAILED with bounded original-target diagnostics.
+	 */
+	FCortexCommandResult ReleaseHeldInputs();
+
+	/**
 	 * Requests termination of the matching owned PIE session asynchronously. A void
 	 * return is not completion; IsOwnedPIEEnded() is the only completion signal.
 	 */
@@ -133,6 +201,9 @@ public:
 	void Shutdown();
 
 private:
+	/** The non-consuming processor reports every observed engine input back to this session. */
+	friend class FCortexEditorPhysicalInputCaptureProcessor;
+
 	/** Owned PIE lifecycle; borrowed bindings leave this at None. */
 	enum class EOwnedState : uint8
 	{
@@ -177,6 +248,71 @@ private:
 	FCortexEditorPhysicalInputTargetBinding Binding;
 	FCortexEditorPhysicalInputTargetInfo TargetInfo;
 	TWeakObjectPtr<UClass> BoundPawnClass;
+
+	// ---- capture/dispatch/guard state (Task 3) ----
+	/**
+	 * The armed capture callback and its single interruption callback. Both are cleared by
+	 * ReleaseHeldInputs/Shutdown; neither owns the session.
+	 */
+	TFunction<void(const FCortexEditorPhysicalInputEvent&, double,
+		const FCortexEditorPhysicalInputCaptureContext&)> CaptureCallbackImpl;
+	TFunction<void(const FCortexCommandResult&)> InterruptionCallbackImpl;
+	/** Installed before any consuming preprocessor for the selected user/device. */
+	TSharedPtr<FCortexEditorPhysicalInputCaptureProcessor> CaptureProcessor;
+	/** Owned capture/dispatch/guard bookkeeping; opaque here so the public header stays UMG-free. */
+	TSharedPtr<FCortexEditorPhysicalInputCaptureState> CaptureState;
+	TSharedPtr<FCortexEditorPhysicalInputDispatchContext> DispatchContext;
+	TSharedPtr<FCortexEditorPhysicalInputGuardState> GuardState;
+	/** Frozen once cleanup starts so no further generated event can be dispatched. */
+	bool bDispatchFrozen = false;
+	/** True after this session dispatched a synthetic event and before cleanup: unattended replay. */
+	bool bReplayInProgress = false;
+
+	/** Creates the capture/dispatch/guard state and installs the non-consuming processor. */
+	void AttachCaptureToBinding();
+
+	/** Removes the processor and clears every capture/dispatch bookkeeping field. */
+	void DetachCapture();
+
+	/** Validates neutrality and arms the capture epoch with the given callback. */
+	FCortexCommandResult ArmCapture(TFunction<void(const FCortexEditorPhysicalInputEvent&,
+		double, const FCortexEditorPhysicalInputCaptureContext&)>&& Callback);
+
+	/** True only when no physical key/button/modifier is observed down on the selected target. */
+	bool IsPhysicalInputNeutral(FCortexCommandResult& OutError) const;
+
+	/** Processor callbacks; each filters by the selected user/device before observing. */
+	void ObserveProcessorKey(const FKeyEvent& KeyEvent, bool bKeyDown);
+	void ObserveProcessorMouseButton(const FPointerEvent& MouseEvent, ECortexEditorPhysicalInputKind Kind);
+	void ObserveProcessorMouseMove(const FPointerEvent& MouseEvent);
+	void ObserveProcessorMouseWheel(const FPointerEvent& MouseEvent);
+
+	/** Records one already-attributed human event and invokes the capture callback. */
+	void HandleCapturedEvent(const FCortexEditorPhysicalInputEvent& Event);
+
+	/** Samples the pre-press context (frame/time/pause/pose/UI) for one recorded event. */
+	void BuildCaptureContext(const FCortexEditorPhysicalInputEvent& Event,
+		FCortexEditorPhysicalInputCaptureContext& OutContext) const;
+
+	/** Resolves the tagged-runtime Slate identity at one viewport-local coordinate. */
+	bool ResolveTaggedSlateIdentity(const FVector2D& ViewportPosition,
+		FCortexEditorPhysicalInputWidgetIdentity& OutIdentity,
+		FVector2D& OutNormalizedLocal) const;
+
+	/** Converts a screen-space coordinate into the selected viewport's local space. */
+	FVector2D ToViewportPosition(const FVector2D& ScreenSpacePosition) const;
+
+	/** Converts a viewport-local coordinate back into screen space. */
+	FVector2D ToScreenSpacePosition(const FVector2D& ViewportPosition) const;
+
+	/** The widget whose geometry maps screen space to the selected viewport-local space. */
+	TSharedPtr<SWidget> GetCoordinateRootWidget() const;
+
+	/** True when the engine event belongs to the selected Slate user and input device. */
+	bool IsSelectedUserAndDevice(uint32 UserIndex, const FInputDeviceId& Device) const;
+
+	/** Reports a foreign-input interruption through the single interruption callback. */
+	void NotifyInterruption(const FCortexCommandResult& Result);
 
 	void EnsureTicker();
 	void RemoveTicker();

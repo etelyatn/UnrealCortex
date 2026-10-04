@@ -21,8 +21,9 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
-#include "GameFramework/Pawn.h"
+#include "Framework/Application/SlateApplication.h"
 #include "GameFramework/GameModeBase.h"
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "InputCoreTypes.h"
 #include "Input/Events.h"
@@ -34,7 +35,10 @@
 #include "Tests/AutomationEditorCommon.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SSlider.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SCompoundWidget.h"
 #include "Widgets/SWidget.h"
 #include "Widgets/SViewport.h"
 
@@ -73,6 +77,23 @@ struct FCortexEditorPhysicalInputTestFixture
 	bool bSuccessorReadySeen = false;
 	FCortexCommandResult SuccessorReady;
 	int32 SuccessorReadyCallbackCount = 0;
+
+	// Task 3 extensions: capture/dispatch/UI observation state and foreign consumers.
+	bool bCaptureArmed = false;
+	TArray<double> CapturedTimes;
+	int32 InterruptionCount = 0;
+	FCortexCommandResult Interruption;
+	TSharedPtr<SButton> ForeignButton;
+	int32 ForeignButtonClicks = 0;
+	TSharedPtr<SWidget> CapturingWidget;
+	int32 CapturingWidgetUps = 0;
+	FCortexEditorPhysicalInputUIObservation LastObservation;
+	TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> CapturedIdentity;
+	FVector2D CapturedLocalPosition = FVector2D::ZeroVector;
+	FVector2D CapturedAbsolutePosition = FVector2D::ZeroVector;
+	int32 CapturedPressIndex = INDEX_NONE;
+	FVector2D CapturedSliderSize = FVector2D::ZeroVector;
+	FVector2D CapturedSliderPosition = FVector2D::ZeroVector;
 
 	FCortexEditorPhysicalInputTestFixture()
 	{
@@ -972,6 +993,427 @@ private:
 	bool bAssertedDeferred = false;
 	bool bWorldRestored = false;
 };
+
+// ---------------------------------------------------------------------------
+// Task 3: consuming Slate probe, capture/dispatch drivers and foreign consumers
+//
+// The probe is the real rendered consumer the capture/dispatch tests observe: its menu is
+// opened by a consuming M handler, its value only changes through genuine SSlider routing and
+// its root/control carry distinct authored tags. No test invokes OnKeyDown, OnValueChanged or
+// a capture handler directly.
+// ---------------------------------------------------------------------------
+
+class SCortexPhysicalInputProbe : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SCortexPhysicalInputProbe) {}
+		SLATE_ARGUMENT(TSharedPtr<FCortexEditorPhysicalInputTestFixture>, Fixture)
+	SLATE_END_ARGS()
+	void Construct(const FArguments& Args)
+	{
+		Fixture = Args._Fixture;
+		const auto Pinned = Fixture.Pin();
+		check(Pinned.IsValid());
+		const TWeakPtr<FCortexEditorPhysicalInputTestFixture> Weak = Fixture;
+		ChildSlot
+		[
+			SNew(SBox).WidthOverride(320.0f).HeightOverride(100.0f)
+			[
+				SAssignNew(Pinned->Slider, SSlider)
+				.Value_Lambda([Weak]()
+				{
+					const auto F = Weak.Pin();
+					return F ? F->SliderValue : 0.0f;
+				})
+				.Visibility_Lambda([Weak]()
+				{
+					const auto F = Weak.Pin();
+					return F && F->bMenuOpen ? EVisibility::Visible : EVisibility::Collapsed;
+				})
+				.OnValueChanged_Lambda([Weak](float Value)
+				{
+					if (const auto F = Weak.Pin()) { F->SliderValue = Value; }
+				})
+			]
+		];
+		SetTag(FName(TEXT("CortexPhysicalProbeRoot")));
+		Pinned->Slider->SetTag(FName(TEXT("CortexPhysicalProbeSlider")));
+	}
+	bool SupportsKeyboardFocus() const override { return true; }
+	FReply OnKeyDown(const FGeometry&, const FKeyEvent& Event) override
+	{
+		if (Event.GetKey() == EKeys::M)
+		{
+			if (const auto F = Fixture.Pin())
+			{
+				F->bMenuOpen = !F->bMenuOpen;
+				return FReply::Handled();
+			}
+		}
+		return FReply::Unhandled();
+	}
+private:
+	TWeakPtr<FCortexEditorPhysicalInputTestFixture> Fixture;
+};
+
+/**
+ * A foreign (non-owned) editor consumer for the cleanup regressions. It captures the pointer
+ * on Down and records only its real matching Up, so cleanup must neither synthesize a click
+ * nor steal its capture or cached button state.
+ */
+class SCortexPhysicalInputForeignButton : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SCortexPhysicalInputForeignButton) {}
+		SLATE_ARGUMENT(TSharedPtr<FCortexEditorPhysicalInputTestFixture>, Fixture)
+	SLATE_END_ARGS()
+	void Construct(const FArguments& Args)
+	{
+		Fixture = Args._Fixture;
+		ChildSlot
+		[
+			SNew(SBox).WidthOverride(140.0f).HeightOverride(44.0f)
+		];
+		SetTag(FName(TEXT("CortexPhysicalForeignButton")));
+	}
+	// Real focusable Slate widget: SetUserFocus walks the path to the first widget that supports
+	// keyboard focus, so this must be true for the foreign focus regression to establish focus on
+	// this consumer rather than one of its ancestors.
+	bool SupportsKeyboardFocus() const override { return true; }
+	virtual FReply OnMouseButtonDown(const FGeometry&, const FPointerEvent& Event) override
+	{
+		if (Event.GetEffectingButton() == EKeys::LeftMouseButton)
+		{
+			return FReply::Handled().CaptureMouse(SharedThis(this));
+		}
+		return FReply::Unhandled();
+	}
+	virtual FReply OnMouseButtonUp(const FGeometry&, const FPointerEvent& Event) override
+	{
+		if (Event.GetEffectingButton() == EKeys::LeftMouseButton)
+		{
+			if (const auto F = Fixture.Pin()) { F->ForeignButtonClicks++; }
+			return FReply::Handled().ReleaseMouseCapture();
+		}
+		return FReply::Unhandled();
+	}
+private:
+	TWeakPtr<FCortexEditorPhysicalInputTestFixture> Fixture;
+};
+
+/** Records every captured event, its monotonic capture time and its pre-press context. */
+TFunction<void(const FCortexEditorPhysicalInputEvent&, double,
+	const FCortexEditorPhysicalInputCaptureContext&)> MakeFixtureCaptureCallback(
+		const TSharedRef<FCortexEditorPhysicalInputTestFixture>& Fixture)
+{
+	const TWeakPtr<FCortexEditorPhysicalInputTestFixture> Weak = Fixture;
+	return [Weak](const FCortexEditorPhysicalInputEvent& Event, double TimeSeconds,
+		const FCortexEditorPhysicalInputCaptureContext& Context)
+	{
+		if (const TSharedPtr<FCortexEditorPhysicalInputTestFixture> Pinned = Weak.Pin())
+		{
+			Pinned->Captured.Add(Event);
+			Pinned->CapturedTimes.Add(TimeSeconds);
+			Pinned->CapturedContexts.Add(Context);
+		}
+	};
+}
+
+/** Adds the probe to the owned viewport, enables GameAndUI input and focuses the selected user. */
+TSharedPtr<SWidget> InstallFixtureProbe(const TSharedRef<FCortexEditorPhysicalInputTestFixture>& Fixture,
+	FCortexEditorPhysicalInputSession& Session)
+{
+	UWorld* World = Session.GetTargetBinding().World.Get();
+	APlayerController* Controller = Session.GetTargetBinding().Controller.Get();
+	if (!World || !Controller || !World->GetGameViewport())
+	{
+		return nullptr;
+	}
+	const TSharedRef<SCortexPhysicalInputProbe> Probe = SNew(SCortexPhysicalInputProbe).Fixture(Fixture);
+	Fixture->Overlay = Probe;
+	World->GetGameViewport()->AddViewportWidgetContent(Probe);
+	Controller->SetShowMouseCursor(true);
+	Controller->SetInputMode(FInputModeGameAndUI().SetWidgetToFocus(Probe).SetHideCursorDuringCapture(false));
+	FSlateApplication::Get().SetUserFocus(Session.GetTargetBinding().SlateUserIndex, Probe, EFocusCause::SetDirectly);
+	return Probe;
+}
+
+/**
+ * Installs the probe (optional), arms capture on a neutral target (optional), waits for real
+ * probe geometry and then runs one semantic action on the Game Thread.
+ */
+class FCortexDrivePhysicalInput : public IAutomationLatentCommand
+{
+public:
+	using FAction = TFunction<void(FAutomationTestBase&, FCortexEditorPhysicalInputTestFixture&)>;
+
+	FCortexDrivePhysicalInput(FAutomationTestBase* InTest,
+		TSharedRef<FCortexEditorPhysicalInputTestFixture> InFixture,
+		FString InLabel, FAction InAction,
+		bool bInInstallProbe = true, bool bInArmCapture = true, bool bInOpenMenu = true)
+		: Test(InTest)
+		, Fixture(InFixture)
+		, Label(MoveTemp(InLabel))
+		, Action(MoveTemp(InAction))
+		, bInstallProbe(bInInstallProbe)
+		, bArmCapture(bInArmCapture)
+		, bOpenMenu(bInOpenMenu) {}
+
+	bool Update() override
+	{
+		if (Deadline == 0.0) { Deadline = FPlatformTime::Seconds() + CortexPhysicalInputReadyWatchdogSeconds; }
+		UWorld* World = Fixture->Session->GetTargetBinding().World.Get();
+		APlayerController* Controller = Fixture->Session->GetTargetBinding().Controller.Get();
+		if (!World || !Controller || !World->GetGameViewport())
+		{
+			if (FPlatformTime::Seconds() <= Deadline) { return false; }
+			Test->AddError(FString::Printf(TEXT("%s: physical capture target disappeared"), *Label));
+			return true;
+		}
+		if (Stage == 0)
+		{
+			if (bInstallProbe && !Fixture->Overlay.IsValid())
+			{
+				if (InstallFixtureProbe(Fixture, *Fixture->Session) == nullptr)
+				{
+					Test->AddError(FString::Printf(TEXT("%s: probe installation failed"), *Label));
+					return true;
+				}
+			}
+			if (bInstallProbe && bOpenMenu && !Fixture->bMenuOpen)
+			{
+				// Open the menu through the real consuming handler so the slider is hit-testable.
+				// This setup input is issued before capture is armed, so it is never recorded.
+				const auto& Binding = Fixture->Session->GetTargetBinding();
+				const FModifierKeysState Modifiers;
+				FSlateApplication::Get().ProcessKeyDownEvent(
+					FKeyEvent(EKeys::M, Modifiers, Binding.InputDevice, false, 0, 0, Binding.SlateUserIndex));
+				FSlateApplication::Get().ProcessKeyUpEvent(
+					FKeyEvent(EKeys::M, Modifiers, Binding.InputDevice, false, 0, 0, Binding.SlateUserIndex));
+			}
+			if (bArmCapture && !Fixture->bCaptureArmed)
+			{
+				const FCortexCommandResult Armed =
+					Fixture->Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture));
+				Test->TestTrue(FString::Printf(TEXT("%s: neutral capture armed"), *Label), Armed.bSuccess);
+				if (!Armed.bSuccess) { return true; }
+				Fixture->bCaptureArmed = true;
+			}
+			Stage = 1;
+			Deadline = FPlatformTime::Seconds() + CortexPhysicalInputReadyWatchdogSeconds;
+			return false;
+		}
+		if (bInstallProbe && (!Fixture->Slider.IsValid()
+			|| Fixture->Slider->GetCachedGeometry().GetLocalSize().X <= 0.0))
+		{
+			if (FPlatformTime::Seconds() <= Deadline) { return false; }
+			Test->AddError(FString::Printf(TEXT("%s: probe geometry never became usable"), *Label));
+			return true;
+		}
+		if (!bRan)
+		{
+			bRan = true;
+			Action(*Test, *Fixture);
+		}
+		return true;
+	}
+
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexEditorPhysicalInputTestFixture> Fixture;
+	FString Label;
+	FAction Action;
+	bool bInstallProbe = true;
+	bool bArmCapture = true;
+	bool bOpenMenu = true;
+	bool bRan = false;
+	int32 Stage = 0;
+	double Deadline = 0.0;
+};
+
+/**
+ * Retained native capture-and-drag driver: the consuming M press opens the probe menu, a real
+ * pointer drag moves the rendered slider, and the recorded pointer stream is replayed through
+ * normal Slate routing without being re-recorded.
+ */
+class FCortexDrivePhysicalCapture : public IAutomationLatentCommand
+{
+public:
+	FCortexDrivePhysicalCapture(FAutomationTestBase* InTest,
+		TSharedRef<FCortexEditorPhysicalInputTestFixture> InFixture)
+		: Test(InTest), Fixture(InFixture) {}
+	bool Update() override
+	{
+		if (!Fixture->Ready.bSuccess) { return true; }
+		if (Deadline == 0.0) { Deadline = FPlatformTime::Seconds() + 15.0; }
+		if (FPlatformTime::Seconds() > Deadline)
+		{
+			Test->AddError(TEXT("Rendered physical capture fixture timed out"));
+			return true;
+		}
+		const auto& Binding = Fixture->Session->GetTargetBinding();
+		UWorld* World = Binding.World.Get();
+		APlayerController* Controller = Binding.Controller.Get();
+		if (!World || !Controller || !World->GetGameViewport())
+		{
+			Test->AddError(TEXT("Exact physical capture target disappeared"));
+			return true;
+		}
+		auto& Slate = FSlateApplication::Get();
+		const FModifierKeysState Modifiers;
+		if (Stage == 0)
+		{
+			const auto Probe = SNew(SCortexPhysicalInputProbe).Fixture(Fixture);
+			Fixture->Overlay = Probe;
+			World->GetGameViewport()->AddViewportWidgetContent(Probe);
+			Controller->SetShowMouseCursor(true);
+			Controller->SetInputMode(FInputModeGameAndUI().SetWidgetToFocus(Probe).SetHideCursorDuringCapture(false));
+			Slate.SetUserFocus(Binding.SlateUserIndex, Probe, EFocusCause::SetDirectly);
+			const TWeakPtr<FCortexEditorPhysicalInputTestFixture> Weak = Fixture;
+			const auto Armed = Fixture->Session->SetCaptureCallback(
+				[Weak](const FCortexEditorPhysicalInputEvent& Event, double,
+					const FCortexEditorPhysicalInputCaptureContext& Context)
+				{
+					if (const auto F = Weak.Pin())
+					{
+						F->Captured.Add(Event);
+						F->CapturedContexts.Add(Context);
+					}
+				});
+			Test->TestTrue(TEXT("Neutral target capture armed"), Armed.bSuccess);
+			if (!Armed.bSuccess) { return true; }
+			Fixture->bCaptureArmed = true;
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::M, Modifiers, Binding.InputDevice, false, 0, 0, Binding.SlateUserIndex));
+			Slate.ProcessKeyUpEvent(FKeyEvent(EKeys::M, Modifiers, Binding.InputDevice, false, 0, 0, Binding.SlateUserIndex));
+			Test->TestTrue(TEXT("Normal consuming handler opened menu"), Fixture->bMenuOpen);
+			Stage = 1;
+			return false;
+		}
+		const FGeometry Geometry = Fixture->Slider->GetCachedGeometry();
+		const FVector2D Size = Geometry.GetLocalSize();
+		if (Size.X <= 0.0 || Size.Y <= 0.0) { return false; }
+		if (Stage == 2)
+		{
+			bool bReplayedMove = false;
+			for (const auto& Event : PointerReplay)
+			{
+				Test->TestTrue(TEXT("Captured pointer event dispatched"), Fixture->Session->Dispatch(Event).bSuccess);
+				if (Event.Kind == ECortexEditorPhysicalInputKind::PointerMove)
+				{
+					bReplayedMove = true;
+					Test->TestTrue(TEXT("Bridge move changed slider before Up"), Fixture->SliderValue > 0.60f);
+				}
+			}
+			Test->TestTrue(TEXT("Captured pointer move was replayed"), bReplayedMove);
+			Test->TestTrue(TEXT("Bridge replay drag changed actual slider"), Fixture->SliderValue > 0.60f);
+			Test->TestEqual(TEXT("Pointer replay was not re-recorded"), Fixture->Captured.Num(), BeforePointerReplay);
+			return true;
+		}
+		const FVector2D Start = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.25, Size.Y * 0.5));
+		const FVector2D Finish = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.75, Size.Y * 0.5));
+		TSet<FKey> Pressed;
+		Pressed.Add(EKeys::LeftMouseButton);
+		const int32 PointerBegin = Fixture->Captured.Num();
+		const uint32 Pointer = FSlateApplicationBase::CursorPointerIndex;
+		Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Binding.InputDevice, Pointer, Start, Start, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+		Slate.ProcessMouseMoveEvent(FPointerEvent(Binding.InputDevice, Pointer, Finish, Start, Pressed, EKeys::Invalid, 0.0f, Modifiers, Binding.SlateUserIndex), false);
+		Pressed.Reset();
+		Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice, Pointer, Finish, Finish, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+		Test->TestTrue(TEXT("Normal drag changed the rendered slider"), Fixture->SliderValue > 0.60f);
+
+		// The guarded press boundary must carry a real pre-press pose and the exact tagged
+		// runtime selector resolved from the actual hit route, not a callback echo.
+		if (!Fixture->CapturedContexts.IsValidIndex(PointerBegin))
+		{
+			Test->AddError(TEXT("Pointer press context missing from capture"));
+			return true;
+		}
+		const auto& PressContext = Fixture->CapturedContexts[PointerBegin];
+		Test->TestTrue(TEXT("Press pose captured before the consumer"), PressContext.PressPose.IsSet());
+		Test->TestEqual(TEXT("Tagged slider protection supported"),
+			PressContext.UICoverage, ECortexEditorUICoverage::Supported);
+		Test->TestTrue(TEXT("Portable target selector exists"), PressContext.UITarget.IsValid());
+		if (PressContext.UITarget.IsValid())
+		{
+			Test->TestEqual(TEXT("Authored root tag"), PressContext.UITarget->RootTag,
+				FString(TEXT("CortexPhysicalProbeRoot")));
+			Test->TestEqual(TEXT("Authored control tag"), PressContext.UITarget->TargetTag,
+				FString(TEXT("CortexPhysicalProbeSlider")));
+		}
+
+		if (Fixture->Captured.Num() < 2)
+		{
+			Test->AddError(TEXT("Consuming opening press/release missing from capture"));
+			return true;
+		}
+		Test->TestEqual(TEXT("Opening press captured before consumer"), Fixture->Captured[0].Key, EKeys::M);
+		Test->TestEqual(TEXT("Opening edge kind"), Fixture->Captured[0].Kind, ECortexEditorPhysicalInputKind::KeyDown);
+		const int32 BeforeReplay = Fixture->Captured.Num();
+		Test->TestTrue(TEXT("Opening press dispatched"), Fixture->Session->Dispatch(Fixture->Captured[0]).bSuccess);
+		Test->TestTrue(TEXT("Opening release dispatched"), Fixture->Session->Dispatch(Fixture->Captured[1]).bSuccess);
+		Test->TestFalse(TEXT("Normal replay consumer closed menu"), Fixture->bMenuOpen);
+		Test->TestEqual(TEXT("Synthetic dispatch was not re-recorded"), Fixture->Captured.Num(), BeforeReplay);
+		for (int32 Index = PointerBegin; Index < BeforeReplay; ++Index)
+		{
+			PointerReplay.Add(Fixture->Captured[Index]);
+		}
+		Fixture->SliderValue = 0.0f;
+		Test->TestTrue(TEXT("Menu reopen press dispatched"), Fixture->Session->Dispatch(Fixture->Captured[0]).bSuccess);
+		Test->TestTrue(TEXT("Menu reopen release dispatched"), Fixture->Session->Dispatch(Fixture->Captured[1]).bSuccess);
+		Test->TestTrue(TEXT("Visible replay-drag phase reopened menu"), Fixture->bMenuOpen);
+		BeforePointerReplay = Fixture->Captured.Num();
+		Stage = 2;
+		return false;
+	}
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexEditorPhysicalInputTestFixture> Fixture;
+	int32 Stage = 0;
+	TArray<FCortexEditorPhysicalInputEvent> PointerReplay;
+	int32 BeforePointerReplay = 0;
+	double Deadline = 0.0;
+};
+
+/** Waits a fixed number of frames, then runs one action once (layout settle after re-creation). */
+class FCortexRunAfterFrames : public IAutomationLatentCommand
+{
+public:
+	FCortexRunAfterFrames(FAutomationTestBase* InTest, int32 InFrames,
+		TFunction<void(FAutomationTestBase&)> InAction)
+		: Test(InTest), FramesRemaining(InFrames), Action(MoveTemp(InAction)) {}
+	bool Update() override
+	{
+		if (Deadline == 0.0) { Deadline = FPlatformTime::Seconds() + CortexPhysicalInputReadyWatchdogSeconds; }
+		if (FramesRemaining > 0)
+		{
+			if (FPlatformTime::Seconds() > Deadline)
+			{
+				Test->AddError(TEXT("Frame wait timed out"));
+				return true;
+			}
+			--FramesRemaining;
+			return false;
+		}
+		if (!bRan)
+		{
+			bRan = true;
+			Action(*Test);
+		}
+		return true;
+	}
+private:
+	FAutomationTestBase* Test;
+	int32 FramesRemaining = 0;
+	TFunction<void(FAutomationTestBase&)> Action;
+	bool bRan = false;
+	double Deadline = 0.0;
+};
+
+/** Captures the selected binding's controller for convenient assertions inside actions. */
+APlayerController* FixtureController(FCortexEditorPhysicalInputTestFixture& Fixture)
+{
+	return Fixture.Session->GetTargetBinding().Controller.Get();
+}
 } // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputOwnedMapTest,
@@ -1206,6 +1648,18 @@ bool FCortexPhysicalInputPawnReplacedTest::RunTest(const FString& Parameters)
 				Test.TestFalse(TEXT("Replaced pawn is not adopted as the target"),
 					Fixture->Session->ValidateTarget(SuccessorError));
 				Test.TestFalse(TEXT("Replaced pawn is not readable"), Fixture->Session->ReadPlayerPose(Pose).bSuccess);
+
+				// The real Dispatch must fail on the destroyed original pawn instead of following
+				// the successor, and must leave the successor controller key/consumer state unchanged.
+				FCortexEditorPhysicalInputEvent PhysicalKeyDown;
+				PhysicalKeyDown.Kind = ECortexEditorPhysicalInputKind::KeyDown;
+				PhysicalKeyDown.Key = EKeys::W;
+				const FCortexCommandResult Dispatched = Fixture->Session->Dispatch(PhysicalKeyDown);
+				Test.TestFalse(TEXT("Dispatch on the replaced pawn fails"), Dispatched.bSuccess);
+				Test.TestFalse(TEXT("Successor controller key state unchanged"),
+					Controller->IsInputKeyDown(EKeys::W));
+				Test.TestTrue(TEXT("Successor pawn still possesses the controller"),
+					Controller->GetPawn() == Replacement);
 			}
 		}));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
@@ -1817,5 +2271,792 @@ bool FCortexPhysicalInputUnsupportedSettingsTest::RunTest(const FString& Paramet
 		Rejected.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
 	TestFalse(TEXT("Rejected admission never binds a world"),
 		Fixture->Session->GetTargetBinding().World.IsValid());
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Rendered capture/dispatch: consuming key captured before the consumer and replayed
+// without re-recording, plus a held-button drag that moves the real rendered slider
+// (Review Focus #1).
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputCaptureAndDragTest,
+	"Cortex.Editor.PhysicalInputCaptureAndDrag",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputCaptureAndDragTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	const TWeakPtr<FCortexEditorPhysicalInputTestFixture> Weak = Fixture;
+	const auto Accepted = Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0,
+		[Weak](const FCortexCommandResult& Ready)
+		{
+			if (const auto F = Weak.Pin())
+			{
+				F->Ready = Ready;
+				F->bReadySeen = true;
+				F->PIEWorld = F->Session->GetTargetBinding().World;
+			}
+		});
+	TestTrue(TEXT("Capture PIE preparation admitted"), Accepted.bSuccess);
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalCapture(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Repeat/modifier and release ordering survive the input-mode change of the opening press
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputRepeatModifierOrderingTest,
+	"Cortex.Editor.PhysicalInputRepeatModifierOrdering",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputRepeatModifierOrderingTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("RepeatModifierOrdering"),
+		[](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const int32 User = Binding.SlateUserIndex;
+			const FInputDeviceId Device = Binding.InputDevice;
+			const FModifierKeysState NoModifiers;
+			const FModifierKeysState ShiftDown(true, false, false, false, false, false, false, false, false);
+
+			// A modifier transition, a modifier-held press, its repeat, then the mode change and
+			// the matching releases. Non-consume paths only.
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::LeftShift, ShiftDown, Device, false, 0, 0, User));
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::W, ShiftDown, Device, false, 0, 0, User));
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::W, ShiftDown, Device, true, 0, 0, User));
+			APlayerController* Controller = FixtureController(F);
+			if (Controller)
+			{
+				Controller->SetInputMode(FInputModeGameOnly());
+			}
+			Slate.ProcessKeyUpEvent(FKeyEvent(EKeys::W, ShiftDown, Device, false, 0, 0, User));
+			Slate.ProcessKeyUpEvent(FKeyEvent(EKeys::LeftShift, NoModifiers, Device, false, 0, 0, User));
+
+			TArray<int32> WIndices;
+			for (int32 Index = 0; Index < F.Captured.Num(); ++Index)
+			{
+				if (F.Captured[Index].Key == EKeys::W)
+				{
+					WIndices.Add(Index);
+				}
+			}
+			Test.TestEqual(TEXT("Exactly the three W edges were captured"), WIndices.Num(), 3);
+			if (WIndices.Num() != 3) { return; }
+			Test.TestEqual(TEXT("First W edge is a down"), F.Captured[WIndices[0]].Kind,
+				ECortexEditorPhysicalInputKind::KeyDown);
+			Test.TestFalse(TEXT("First W edge is not a repeat"), F.Captured[WIndices[0]].bRepeat);
+			Test.TestTrue(TEXT("Modifier held across the press is captured"),
+				F.Captured[WIndices[0]].Modifiers.IsShiftDown());
+			Test.TestEqual(TEXT("Second W edge is the repeat"), F.Captured[WIndices[1]].Kind,
+				ECortexEditorPhysicalInputKind::KeyDown);
+			Test.TestTrue(TEXT("Repeat flag is preserved"), F.Captured[WIndices[1]].bRepeat);
+			Test.TestEqual(TEXT("Third W edge is the release after the mode change"),
+				F.Captured[WIndices[2]].Kind, ECortexEditorPhysicalInputKind::KeyUp);
+			Test.TestTrue(TEXT("Release keeps the held modifier"),
+				F.Captured[WIndices[2]].Modifiers.IsShiftDown());
+			Test.TestTrue(TEXT("Recorded edges stay ordered"),
+				WIndices[0] < WIndices[1] && WIndices[1] < WIndices[2]);
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Absolute UI coordinates are preserved; relative gameplay motion is not an absolute UI hit
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputRelativeVersusAbsoluteTest,
+	"Cortex.Editor.PhysicalInputRelativeVersusAbsolute",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputRelativeVersusAbsoluteTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("RelativeVersusAbsolute"),
+		[](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const FModifierKeysState Modifiers;
+			const FGeometry Geometry = F.Slider->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0) { return; }
+			const FVector2D Start = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.2, Size.Y * 0.5));
+			const FVector2D Finish = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.8, Size.Y * 0.5));
+			const int32 Begin = F.Captured.Num();
+			TSet<FKey> Pressed;
+			Slate.ProcessMouseMoveEvent(FPointerEvent(Binding.InputDevice,
+				FSlateApplicationBase::CursorPointerIndex, Finish, Start, Pressed, EKeys::Invalid,
+				0.0f, Modifiers, Binding.SlateUserIndex), false);
+
+			Test.TestTrue(TEXT("Absolute pointer motion was captured"), F.Captured.Num() > Begin);
+			if (F.Captured.Num() <= Begin) { return; }
+			const auto& Move = F.Captured[Begin];
+			Test.TestEqual(TEXT("Captured absolute motion kind"), Move.Kind,
+				ECortexEditorPhysicalInputKind::PointerMove);
+			Test.TestTrue(TEXT("Absolute motion preserves its explicit cursor delta"),
+				Move.Delta.Equals(Finish - Start, 0.01));
+			Test.TestTrue(TEXT("Absolute motion records a viewport position"),
+				Move.ViewportPosition.SizeSquared() > 0.0);
+
+			// Relative gameplay/camera motion is dispatched as relative movement: it must not be
+			// applied as an absolute UI pointer position.
+			FCortexEditorPhysicalInputEvent Relative;
+			Relative.Kind = ECortexEditorPhysicalInputKind::RelativeMove;
+			Relative.Key = EKeys::MouseX;
+			Relative.Delta = FVector2D(12.0, 0.0);
+			const float Before = F.SliderValue;
+			Test.TestTrue(TEXT("Relative motion dispatched"), F.Session->Dispatch(Relative).bSuccess);
+			Test.TestEqual(TEXT("Relative camera motion is not an absolute UI coordinate"),
+				F.SliderValue, Before);
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Double-click and wheel are captured/replayed once with a balanced button state
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputDoubleClickWheelTest,
+	"Cortex.Editor.PhysicalInputDoubleClickWheel",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputDoubleClickWheelTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("DoubleClickWheel"),
+		[](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const FModifierKeysState Modifiers;
+			const uint32 Pointer = FSlateApplicationBase::CursorPointerIndex;
+			const FGeometry Geometry = F.Slider->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0) { return; }
+			const FVector2D Center = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.5, Size.Y * 0.5));
+			TSet<FKey> Pressed;
+
+			// Wheel over the viewport: the real engine wheel edge must be captured exactly once.
+			const int32 WheelBegin = F.Captured.Num();
+			Slate.ProcessMouseWheelOrGestureEvent(FPointerEvent(Binding.InputDevice, Pointer,
+				Center, Center, Pressed, EKeys::Invalid, 1.0f, Modifiers, Binding.SlateUserIndex), nullptr);
+			int32 WheelIndex = INDEX_NONE;
+			int32 WheelCount = 0;
+			for (int32 Index = WheelBegin; Index < F.Captured.Num(); ++Index)
+			{
+				if (F.Captured[Index].Kind == ECortexEditorPhysicalInputKind::Wheel)
+				{
+					if (WheelIndex == INDEX_NONE) { WheelIndex = Index; }
+					++WheelCount;
+				}
+			}
+			Test.TestEqual(TEXT("Exactly one wheel edge recorded"), WheelCount, 1);
+			if (WheelIndex != INDEX_NONE)
+			{
+				Test.TestTrue(TEXT("Wheel edge records its delta"), F.Captured[WheelIndex].WheelDelta != 0.0f);
+				const int32 BeforeWheelReplay = F.Captured.Num();
+				Test.TestTrue(TEXT("Captured wheel dispatched once"),
+					F.Session->Dispatch(F.Captured[WheelIndex]).bSuccess);
+				Test.TestEqual(TEXT("Wheel replay was not re-recorded"), F.Captured.Num(), BeforeWheelReplay);
+			}
+
+			// A double click is one classified press plus its own release. The human sequence must be
+			// balanced, and the recorded pair is replayed together so no cached bit is left held.
+			const int32 DoubleBegin = F.Captured.Num();
+			TSet<FKey> DownPressed;
+			DownPressed.Add(EKeys::LeftMouseButton);
+			Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Binding.InputDevice, Pointer,
+				Center, Center, DownPressed, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice, Pointer,
+				Center, Center, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+			Slate.ProcessMouseButtonDoubleClickEvent(nullptr, FPointerEvent(Binding.InputDevice, Pointer,
+				Center, Center, DownPressed, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice, Pointer,
+				Center, Center, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+			Test.TestEqual(TEXT("Balanced button state after the human double-click sequence"),
+				Slate.GetPressedMouseButtons().Num(), 0);
+
+			int32 DoubleIndex = INDEX_NONE;
+			int32 DoubleCount = 0;
+			for (int32 Index = DoubleBegin; Index < F.Captured.Num(); ++Index)
+			{
+				if (F.Captured[Index].Kind == ECortexEditorPhysicalInputKind::DoubleClick)
+				{
+					if (DoubleIndex == INDEX_NONE) { DoubleIndex = Index; }
+					++DoubleCount;
+				}
+			}
+			Test.TestEqual(TEXT("Double click captured exactly once"), DoubleCount, 1);
+			if (DoubleIndex != INDEX_NONE)
+			{
+				// The classified DoubleClick press is always followed by its own release; replaying
+				// the press alone would leave Slate's cached button bit set.
+				Test.TestTrue(TEXT("Classified double click has a recorded release"),
+					F.Captured.IsValidIndex(DoubleIndex + 1)
+						&& F.Captured[DoubleIndex + 1].Kind == ECortexEditorPhysicalInputKind::PointerUp);
+				const int32 BeforeDoubleReplay = F.Captured.Num();
+				Test.TestTrue(TEXT("Double click press dispatched once"),
+					F.Session->Dispatch(F.Captured[DoubleIndex]).bSuccess);
+				if (F.Captured.IsValidIndex(DoubleIndex + 1))
+				{
+					Test.TestTrue(TEXT("Double click release dispatched once"),
+						F.Session->Dispatch(F.Captured[DoubleIndex + 1]).bSuccess);
+				}
+				Test.TestEqual(TEXT("Double-click replay was not re-recorded"),
+					F.Captured.Num(), BeforeDoubleReplay);
+			}
+			Test.TestEqual(TEXT("Balanced button state after the double-click replay"),
+				Slate.GetPressedMouseButtons().Num(), 0);
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Unrelated editor input is excluded; matching captured releases survive focus loss
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputUnrelatedAndPostFocusReleaseTest,
+	"Cortex.Editor.PhysicalInputUnrelatedAndPostFocusRelease",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputUnrelatedAndPostFocusReleaseTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("UnrelatedAndPostFocusRelease"),
+		[](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const int32 User = Binding.SlateUserIndex;
+			const FInputDeviceId Device = Binding.InputDevice;
+			const FModifierKeysState Modifiers;
+			const int32 Begin = F.Captured.Num();
+
+			// Input attributed to another Slate user is unrelated editor input and excluded.
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::K, Modifiers, Device, false, 0, 0, User + 1));
+			Slate.ProcessKeyUpEvent(FKeyEvent(EKeys::K, Modifiers, Device, false, 0, 0, User + 1));
+			Test.TestEqual(TEXT("Unrelated-user input was excluded"), F.Captured.Num(), Begin);
+
+			// A real selected-user down is captured.
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::W, Modifiers, Device, false, 0, 0, User));
+			Test.TestEqual(TEXT("Selected-user down captured"), F.Captured.Num(), Begin + 1);
+			if (F.Captured.Num() <= Begin) { return; }
+			Test.TestEqual(TEXT("Captured down is W"), F.Captured[Begin].Key, EKeys::W);
+
+			// Focus leaves the viewport to an unrelated editor control; the matching release of an
+			// already-captured press must still be recorded in order.
+			const TSharedPtr<SButton> ForeignButton = SNew(SButton);
+			F.ForeignButton = ForeignButton;
+			if (UWorld* World = F.Session->GetTargetBinding().World.Get())
+			{
+				if (UGameViewportClient* ViewportClient = World->GetGameViewport())
+				{
+					ViewportClient->AddViewportWidgetContent(ForeignButton.ToSharedRef());
+				}
+			}
+			Slate.SetUserFocus(User, ForeignButton, EFocusCause::SetDirectly);
+			Slate.ProcessKeyUpEvent(FKeyEvent(EKeys::W, Modifiers, Device, false, 0, 0, User));
+			Test.TestEqual(TEXT("Matching release after focus loss captured"), F.Captured.Num(), Begin + 2);
+			if (F.Captured.Num() > Begin + 1)
+			{
+				Test.TestEqual(TEXT("Focus-loss release kind"),
+					F.Captured[Begin + 1].Kind, ECortexEditorPhysicalInputKind::KeyUp);
+				Test.TestEqual(TEXT("Focus-loss release key"), F.Captured[Begin + 1].Key, EKeys::W);
+			}
+			Test.TestTrue(TEXT("Foreign editor focus was not stolen"),
+				Slate.GetUserFocusedWidget(User).Get() == ForeignButton.Get());
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Replay never re-captures itself or counts as human interference; foreign input interrupts
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputReplaySelfCaptureAndInterruptionTest,
+	"Cortex.Editor.PhysicalInputReplaySelfCaptureAndInterruption",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputReplaySelfCaptureAndInterruptionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture,
+		TEXT("ReplaySelfCaptureAndInterruption"),
+		[Fixture](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			F.Session->SetInterruptionCallback([Fixture](const FCortexCommandResult& Result)
+			{
+				Fixture->InterruptionCount++;
+				Fixture->Interruption = Result;
+			});
+			const FCortexCommandResult Armed = F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture));
+			Test.TestTrue(TEXT("Capture armed for the self-capture case"), Armed.bSuccess);
+			if (!Armed.bSuccess) { return; }
+			F.bCaptureArmed = true;
+
+			// Synthetic replay must not be re-captured and must not be treated as human interference.
+			const int32 Before = F.Captured.Num();
+			FCortexEditorPhysicalInputEvent Synthetic;
+			Synthetic.Kind = ECortexEditorPhysicalInputKind::KeyDown;
+			Synthetic.Key = EKeys::W;
+			Test.TestTrue(TEXT("Synthetic replay input dispatched"), F.Session->Dispatch(Synthetic).bSuccess);
+			Test.TestEqual(TEXT("Synthetic replay was not re-captured"), F.Captured.Num(), Before);
+			Test.TestEqual(TEXT("Synthetic replay did not interrupt"), F.InterruptionCount, 0);
+
+			// A foreign physical press on the selected user/device interrupts the unattended replay.
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const FModifierKeysState Modifiers;
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::Q, Modifiers, Binding.InputDevice, false, 0, 0,
+				Binding.SlateUserIndex));
+			Test.TestEqual(TEXT("Foreign physical input interrupted the unattended replay"),
+				F.InterruptionCount, 1);
+			Test.TestFalse(TEXT("Interruption reports a non-success result"), F.Interruption.bSuccess);
+		}, /*bInstallProbe=*/false, /*bArmCapture=*/false));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Capture admission and edge policy: a pre-held key/button/modifier denies arming without
+// touching the human's original state
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputCaptureAdmissionTest,
+	"Cortex.Editor.PhysicalInputCaptureAdmission",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputCaptureAdmissionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("CaptureAdmission"),
+		[Fixture](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const int32 User = Binding.SlateUserIndex;
+			const FInputDeviceId Device = Binding.InputDevice;
+			const FModifierKeysState NoModifiers;
+
+			// Pre-held W: denied with INVALID_OPERATION, and an immediate re-arm stays denied,
+			// which proves the session did not forcibly release the human's key to admit itself.
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::W, NoModifiers, Device, false, 0, 0, User));
+			FCortexCommandResult Denied = F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture));
+			Test.TestFalse(TEXT("Pre-held W denies capture admission"), Denied.bSuccess);
+			Test.TestEqual(TEXT("Pre-held W denial is INVALID_OPERATION"),
+				Denied.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+			Test.TestFalse(TEXT("Pre-held W human state untouched (re-arm still denied)"),
+				F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture)).bSuccess);
+			Slate.ProcessKeyUpEvent(FKeyEvent(EKeys::W, NoModifiers, Device, false, 0, 0, User));
+
+			// Pre-held Shift modifier: denied and untouched.
+			const FModifierKeysState ShiftDown(true, false, false, false, false, false, false, false, false);
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::LeftShift, ShiftDown, Device, false, 0, 0, User));
+			Denied = F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture));
+			Test.TestFalse(TEXT("Pre-held Shift denies capture admission"), Denied.bSuccess);
+			Test.TestEqual(TEXT("Pre-held Shift denial is INVALID_OPERATION"),
+				Denied.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+			Test.TestFalse(TEXT("Pre-held Shift human state untouched (re-arm still denied)"),
+				F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture)).bSuccess);
+			Slate.ProcessKeyUpEvent(FKeyEvent(EKeys::LeftShift, NoModifiers, Device, false, 0, 0, User));
+
+			// A UI-consumed mouse press is still a held button: denied, Slate keeps it pressed, and
+			// the human's button is not released by the denial.
+			const FGeometry Geometry = F.Slider->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			const FVector2D Center = Size.X > 0.0
+				? Geometry.LocalToAbsolute(FVector2D(Size.X * 0.5, Size.Y * 0.5))
+				: FVector2D::ZeroVector;
+			TSet<FKey> Pressed;
+			Pressed.Add(EKeys::LeftMouseButton);
+			Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Device,
+				FSlateApplicationBase::CursorPointerIndex, Center, Center, Pressed,
+				EKeys::LeftMouseButton, 0.0f, NoModifiers, User));
+			Test.TestTrue(TEXT("UI-consumed press is really held by Slate"),
+				Slate.GetPressedMouseButtons().Contains(EKeys::LeftMouseButton));
+			Denied = F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture));
+			Test.TestFalse(TEXT("UI-consumed press denies capture admission"), Denied.bSuccess);
+			Test.TestEqual(TEXT("UI-consumed press denial is INVALID_OPERATION"),
+				Denied.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+			Test.TestTrue(TEXT("UI-consumed press still held after denial"),
+				Slate.GetPressedMouseButtons().Contains(EKeys::LeftMouseButton));
+			TSet<FKey> Released;
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Device,
+				FSlateApplicationBase::CursorPointerIndex, Center, Center, Released,
+				EKeys::LeftMouseButton, 0.0f, NoModifiers, User));
+
+			// A neutral target is admitted.
+			const FCortexCommandResult Armed = F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture));
+			Test.TestTrue(TEXT("Neutral target capture admitted"), Armed.bSuccess);
+			F.bCaptureArmed = Armed.bSuccess;
+		}, /*bInstallProbe=*/true, /*bArmCapture=*/false, /*bOpenMenu=*/true));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup regressions with real consumers: owned key/drag neutralization and target loss
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputCleanupOwnedStateTest,
+	"Cortex.Editor.PhysicalInputCleanupOwnedState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputCleanupOwnedStateTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("CleanupOwnedState"),
+		[](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			APlayerController* Controller = FixtureController(F);
+			Test.TestNotNull(TEXT("Bound controller for cleanup"), Controller);
+			if (!Controller) { return; }
+
+			// An owned synthetic W down and an owned pointer drag are both live at cleanup time.
+			FCortexEditorPhysicalInputEvent KeyDown;
+			KeyDown.Kind = ECortexEditorPhysicalInputKind::KeyDown;
+			KeyDown.Key = EKeys::W;
+			Test.TestTrue(TEXT("Owned W down dispatched"), F.Session->Dispatch(KeyDown).bSuccess);
+
+			const FGeometry Geometry = F.Slider->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X > 0.0)
+			{
+				const FVector2D Start = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.2, Size.Y * 0.5));
+				const FVector2D Finish = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.7, Size.Y * 0.5));
+				FCortexEditorPhysicalInputEvent PointerDown;
+				PointerDown.Kind = ECortexEditorPhysicalInputKind::PointerDown;
+				PointerDown.Key = EKeys::LeftMouseButton;
+				PointerDown.ViewportPosition = Start;
+				FCortexEditorPhysicalInputEvent PointerMove;
+				PointerMove.Kind = ECortexEditorPhysicalInputKind::PointerMove;
+				PointerMove.ViewportPosition = Finish;
+				PointerMove.Delta = Finish - Start;
+				Test.TestTrue(TEXT("Owned pointer down dispatched"), F.Session->Dispatch(PointerDown).bSuccess);
+				Test.TestTrue(TEXT("Owned pointer move dispatched"), F.Session->Dispatch(PointerMove).bSuccess);
+			}
+
+			Test.TestFalse(TEXT("UI wait is unavailable while owned key/button state is held"),
+				F.Session->CanWaitForUI());
+
+			const FCortexCommandResult Released = F.Session->ReleaseHeldInputs();
+			Test.TestTrue(TEXT("Owned key and drag cleanup succeeded"), Released.bSuccess);
+			Test.TestFalse(TEXT("Original controller is not down after cleanup"),
+				Controller->IsInputKeyDown(EKeys::W));
+			Test.TestTrue(TEXT("UI wait is available again"), F.Session->CanWaitForUI());
+			Test.TestEqual(TEXT("Owned cached button bit was cleared"),
+				Slate.GetPressedMouseButtons().Num(), 0);
+
+			// Repeated cleanup must not mutate the prior success result.
+			const FCortexCommandResult Repeated = F.Session->ReleaseHeldInputs();
+			Test.TestTrue(TEXT("Repeated cleanup stays successful"), Repeated.bSuccess);
+
+			// Losing the original target reports INPUT_CLEANUP_FAILED instead of claiming success.
+			APawn* Pawn = F.Session->GetTargetBinding().Pawn.Get();
+			Test.TestNotNull(TEXT("Bound pawn for the lost-target cleanup"), Pawn);
+			if (Pawn)
+			{
+				Pawn->Destroy();
+				Controller->UnPossess();
+				const FCortexCommandResult Lost = F.Session->ReleaseHeldInputs();
+				Test.TestFalse(TEXT("Cleanup after target loss fails"), Lost.bSuccess);
+				Test.TestEqual(TEXT("Lost-target cleanup is INPUT_CLEANUP_FAILED"), Lost.ErrorCode,
+					FString(CortexEditorPhysicalInputErrorCodes::CleanupFailed));
+			}
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup must preserve foreign focus, a foreign held button, its capture and its real Up
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputCleanupForeignStateTest,
+	"Cortex.Editor.PhysicalInputCleanupForeignState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputCleanupForeignStateTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("CleanupForeignState"),
+		[Fixture](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			UWorld* World = F.Session->GetTargetBinding().World.Get();
+			if (!World || !World->GetGameViewport()) { return; }
+			const TSharedRef<SCortexPhysicalInputForeignButton> Foreign =
+				SNew(SCortexPhysicalInputForeignButton).Fixture(Fixture);
+			F.CapturingWidget = Foreign;
+			World->GetGameViewport()->AddViewportWidgetContent(Foreign);
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const int32 User = Binding.SlateUserIndex;
+			const FModifierKeysState Modifiers;
+			const uint32 Pointer = FSlateApplicationBase::CursorPointerIndex;
+
+			// An independent target binding acts as the successor observer for this cleanup.
+			F.BorrowedSession = MakeShared<FCortexEditorPhysicalInputSession>();
+			UWorld* World = Binding.World.Get();
+			Test.TestTrue(TEXT("Independent successor binding succeeds"),
+				World && F.BorrowedSession->BindTarget(*World, 0).bSuccess);
+			APlayerController* SuccessorController =
+				F.BorrowedSession->GetTargetBinding().Controller.Get();
+			APawn* SuccessorPawn = F.BorrowedSession->GetTargetBinding().Pawn.Get();
+
+			const TSharedPtr<SWidget> Foreign = F.CapturingWidget;
+			Test.TestTrue(TEXT("Foreign consumer present"), Foreign.IsValid());
+			if (!Foreign.IsValid()) { return; }
+
+			// Establish the foreign focus only now that the consumer is laid out, and prove it is
+			// foreign before cleanup so the later assertion really covers cleanup behaviour.
+			Slate.SetUserFocus(User, Foreign, EFocusCause::SetDirectly);
+			Test.TestTrue(TEXT("Foreign focus established before cleanup"),
+				Slate.GetUserFocusedWidget(User).Get() == Foreign.Get());
+
+			const FGeometry ForeignGeometry = Foreign->GetCachedGeometry();
+			const FVector2D ForeignSize = ForeignGeometry.GetLocalSize();
+			const FVector2D ForeignCenter = ForeignSize.X > 0.0
+				? ForeignGeometry.LocalToAbsolute(FVector2D(ForeignSize.X * 0.5, ForeignSize.Y * 0.5))
+				: FVector2D::ZeroVector;
+			TSet<FKey> Pressed;
+			Pressed.Add(EKeys::LeftMouseButton);
+			Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Binding.InputDevice, Pointer,
+				ForeignCenter, ForeignCenter, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, User));
+			Test.TestTrue(TEXT("Foreign press really captured the pointer"),
+				Slate.GetPressedMouseButtons().Contains(EKeys::LeftMouseButton));
+
+			// Cleanup must not synthesize a click on the already-pressed foreign button, must not
+			// steal its capture, and must leave its cached button bit intact.
+			const FCortexCommandResult Cleanup = F.Session->ReleaseHeldInputs();
+			Test.TestTrue(TEXT("Owned cleanup reports success"), Cleanup.bSuccess);
+			Test.TestEqual(TEXT("Foreign button received no cleanup click"), F.ForeignButtonClicks, 0);
+			Test.TestTrue(TEXT("Foreign cached button bit survived cleanup"),
+				Slate.GetPressedMouseButtons().Contains(EKeys::LeftMouseButton));
+			Test.TestTrue(TEXT("Foreign focus survived cleanup"),
+				Slate.GetUserFocusedWidget(User).Get() == Foreign.Get());
+
+			// The foreign consumer's real Up is still usable and completes its capture normally.
+			TSet<FKey> Released;
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice, Pointer,
+				ForeignCenter, ForeignCenter, Released, EKeys::LeftMouseButton, 0.0f, Modifiers, User));
+			Test.TestEqual(TEXT("Foreign button received its real Up"), F.ForeignButtonClicks, 1);
+			Test.TestEqual(TEXT("Foreign button state is balanced after its real Up"),
+				Slate.GetPressedMouseButtons().Num(), 0);
+
+			// The successor binding is unchanged by the original session's cleanup.
+			FCortexCommandResult SuccessorError;
+			Test.TestTrue(TEXT("Successor target still validates after cleanup"),
+				F.BorrowedSession->ValidateTarget(SuccessorError));
+			Test.TestTrue(TEXT("Successor controller unchanged after cleanup"),
+				F.BorrowedSession->GetTargetBinding().Controller.Get() == SuccessorController);
+			Test.TestTrue(TEXT("Successor pawn unchanged after cleanup"),
+				F.BorrowedSession->GetTargetBinding().Pawn.Get() == SuccessorPawn);
+			F.BorrowedSession->Shutdown();
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Guard geometry: a recreated tagged root resolves on the selected route and the observation
+// reports the actual normalized position for the new geometry, not a recorded echo
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputGuardGeometryTest,
+	"Cortex.Editor.PhysicalInputGuardGeometry",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputGuardGeometryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("GuardGeometryCapture"),
+		[](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const FModifierKeysState Modifiers;
+			const FGeometry Geometry = F.Slider->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0) { return; }
+			const FVector2D Local(Size.X * 0.25, Size.Y * 0.5);
+			const FVector2D Absolute = Geometry.LocalToAbsolute(Local);
+			const int32 PressIndex = F.Captured.Num();
+			F.CapturedPressIndex = PressIndex;
+			F.CapturedAbsolutePosition = Absolute;
+			F.CapturedSliderSize = Size;
+			F.CapturedSliderPosition = Geometry.GetAbsolutePosition();
+			const uint32 Pointer = FSlateApplicationBase::CursorPointerIndex;
+			TSet<FKey> Pressed;
+			Pressed.Add(EKeys::LeftMouseButton);
+			Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Binding.InputDevice, Pointer,
+				Absolute, Absolute, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+			TSet<FKey> Released;
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice, Pointer,
+				Absolute, Absolute, Released, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+
+			Test.TestTrue(TEXT("Guarded press captured"), F.Captured.Num() > PressIndex);
+			if (F.Captured.Num() <= PressIndex || !F.CapturedContexts.IsValidIndex(PressIndex)) { return; }
+			const auto& Context = F.CapturedContexts[PressIndex];
+			Test.TestTrue(TEXT("Guard context carries a tagged identity"), Context.UITarget.IsValid());
+			if (!Context.UITarget.IsValid()) { return; }
+			F.CapturedIdentity = Context.UITarget;
+			F.CapturedLocalPosition = Context.UILocalPosition;
+			Test.TestEqual(TEXT("Guard root tag"), Context.UITarget->RootTag,
+				FString(TEXT("CortexPhysicalProbeRoot")));
+			Test.TestEqual(TEXT("Guard control tag"), Context.UITarget->TargetTag,
+				FString(TEXT("CortexPhysicalProbeSlider")));
+
+			FCortexEditorPhysicalInputUIObservation Observation;
+			const FCortexCommandResult Observed = F.Session->ObserveUI(
+				F.Captured[PressIndex], *Context.UITarget, Observation);
+			Test.TestTrue(TEXT("ObserveUI succeeded for the captured press"), Observed.bSuccess);
+			Test.TestEqual(TEXT("Captured press observation is ready"),
+				Observation.State, ECortexEditorUIObservationState::Ready);
+			Test.TestTrue(TEXT("Observed normalized X matches the real press"),
+				FMath::Abs(Observation.LocalPosition.X
+					- static_cast<float>(F.CapturedLocalPosition.X)) <= 0.005f);
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("GuardGeometryRecreate"),
+		[Fixture](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			// A recreated tagged root that genuinely changes the control geometry replaces the
+			// captured root. WidthOverride/HeightOverride only affect an auto-sized SBox's desired
+			// size and are ignored under the viewport overlay's fill slot, so Padding is used: the
+			// SBox still fills, but the slider is arranged inside a smaller, offset child area.
+			UWorld* World = F.Session->GetTargetBinding().World.Get();
+			if (!World || !World->GetGameViewport()) { return; }
+			if (F.Overlay.IsValid())
+			{
+				World->GetGameViewport()->RemoveViewportWidgetContent(F.Overlay.ToSharedRef());
+			}
+			const TWeakPtr<FCortexEditorPhysicalInputTestFixture> Weak = Fixture;
+			const TSharedRef<SWidget> Replacement = SNew(SBox)
+				.Padding(FMargin(0.0f, 20.0f, 200.0f, 20.0f))
+				[
+					SAssignNew(F.Slider, SSlider)
+					.Value_Lambda([Weak]()
+					{
+						const auto P = Weak.Pin();
+						return P ? P->SliderValue : 0.0f;
+					})
+					.OnValueChanged_Lambda([Weak](float Value)
+					{
+						if (const auto P = Weak.Pin()) { P->SliderValue = Value; }
+					})
+				];
+			Replacement->SetTag(FName(TEXT("CortexPhysicalProbeRoot")));
+			F.Slider->SetTag(FName(TEXT("CortexPhysicalProbeSlider")));
+			F.Overlay = Replacement;
+			World->GetGameViewport()->AddViewportWidgetContent(Replacement);
+		}, /*bInstallProbe=*/false, /*bArmCapture=*/false));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			if (!F.CapturedIdentity.IsValid()
+				|| !F.Captured.IsValidIndex(F.CapturedPressIndex))
+			{
+				Test.AddError(TEXT("Captured press identity missing for the geometry change"));
+				return;
+			}
+			const FGeometry NewGeometry = F.Slider->GetCachedGeometry();
+			const FVector2D NewSize = NewGeometry.GetLocalSize();
+			if (NewSize.X <= 0.0)
+			{
+				Test.AddError(TEXT("Recreated tagged root has no geometry"));
+				return;
+			}
+			// Prove the recreated control really has different absolute geometry before relying on
+			// the normalized-position check.
+			const FVector2D NewPosition = NewGeometry.GetAbsolutePosition();
+			Test.TestTrue(TEXT("Recreated control size really changed"),
+				!NewSize.Equals(F.CapturedSliderSize, 0.5));
+			Test.TestTrue(TEXT("Recreated control absolute geometry really changed"),
+				!NewPosition.Equals(F.CapturedSliderPosition, 0.5)
+					|| !NewSize.Equals(F.CapturedSliderSize, 0.5));
+
+			const FVector2D NewLocal = NewGeometry.AbsoluteToLocal(F.CapturedAbsolutePosition);
+			const float NewNormalizedX = static_cast<float>(NewLocal.X / NewSize.X);
+			Test.TestTrue(TEXT("Recreated geometry really differs from the capture geometry"),
+				FMath::Abs(NewNormalizedX - static_cast<float>(F.CapturedLocalPosition.X)) > 0.005f);
+
+			FCortexEditorPhysicalInputUIObservation Observation;
+			const FCortexCommandResult Observed = F.Session->ObserveUI(
+				F.Captured[F.CapturedPressIndex], *F.CapturedIdentity, Observation);
+			Test.TestTrue(TEXT("Recreated tagged root resolved on the selected route"), Observed.bSuccess);
+			Test.TestEqual(TEXT("Recreated tagged root observation is ready"),
+				Observation.State, ECortexEditorUIObservationState::Ready);
+			Test.TestTrue(TEXT("Observation reflects the new geometry, not the recorded echo"),
+				FMath::Abs(Observation.LocalPosition.X - NewNormalizedX) <= 0.005f);
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
 	return true;
 }

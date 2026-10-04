@@ -1,6 +1,10 @@
 #include "CortexEditorPhysicalInputSession.h"
 
+#include "Application/SlateApplicationBase.h"
 #include "CortexCommandRouter.h"
+#include "CortexEditorPhysicalInputCapture.h"
+#include "CortexEditorPhysicalInputDispatch.h"
+#include "CortexEditorPhysicalInputGuards.h"
 #include "Containers/Ticker.h"
 #include "Editor.h"
 #include "Editor/EditorEngine.h"
@@ -9,11 +13,18 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "Framework/Application/IInputProcessor.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/PlayerInput.h"
+#include "GenericPlatform/GenericApplication.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
+#include "GenericPlatform/GenericWindow.h"
 #include "IAssetViewport.h"
+#include "InputKeyEventArgs.h"
+#include "KeyState.h"
 #include "LevelEditor.h"
 #include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
@@ -21,11 +32,19 @@
 #include "Settings/LevelEditorPlaySettings.h"
 #include "Slate/SGameLayerManager.h"
 #include "Slate/SceneViewport.h"
+#include "Templates/UnrealTemplate.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
+#include "Widgets/SWidget.h"
 #include "Widgets/SWindow.h"
 
 #include "CortexEditorModule.h"
+
+#if PLATFORM_WINDOWS
+// Declares the real GetAsyncKeyState used for the physical-key snapshot in capture admission.
+// UE's wrapper keeps windows.h out of the module's other translation units and off the PCH.
+#include "Windows/WindowsHWrapper.h"
+#endif
 
 namespace
 {
@@ -105,6 +124,14 @@ FCortexEditorPhysicalInputSession::FCortexEditorPhysicalInputSession()
 
 FCortexEditorPhysicalInputSession::~FCortexEditorPhysicalInputSession()
 {
+	// Never leave this operation's owned synthetic state cached in Slate when the owner is destroyed
+	// without Shutdown(), and never leave the capture processor registered.
+	if (bBound && FSlateApplication::IsInitialized())
+	{
+		ReleaseHeldInputs();
+	}
+	DetachCapture();
+
 	// Never leave an owned PIE session orphaned if the owner is destroyed without Shutdown().
 	if (bOwnsPIE && GEditor != nullptr && !IsOwnedPIEEnded())
 	{
@@ -343,6 +370,7 @@ void FCortexEditorPhysicalInputSession::PollPreparation()
 	bBound = true;
 	bOwnsPIE = true;
 	OwnedState = EOwnedState::Ready;
+	AttachCaptureToBinding();
 	CompletePreparationSuccess();
 }
 
@@ -672,6 +700,7 @@ bool FCortexEditorPhysicalInputSession::ArePlaySettingsSupported(FString& OutRea
 
 void FCortexEditorPhysicalInputSession::ReleaseReadyBinding()
 {
+	DetachCapture();
 	++Generation;
 	bBound = false;
 	Binding = FCortexEditorPhysicalInputTargetBinding();
@@ -852,6 +881,7 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BindTarget(UWorld& World
 	bBound = true;
 	bOwnsPIE = false;
 	++Generation;
+	AttachCaptureToBinding();
 	return MakeSuccessResult();
 }
 
@@ -1087,6 +1117,12 @@ bool FCortexEditorPhysicalInputSession::IsOwnedPIEEnded() const
 
 void FCortexEditorPhysicalInputSession::Shutdown()
 {
+	// Teardown must only clear this operation's own cached state: neutralize owned synthetic input
+	// while the binding is still available, so no synthetic key/button stays cached in Slate.
+	if (bBound && FSlateApplication::IsInitialized())
+	{
+		ReleaseHeldInputs();
+	}
 	LastObservedPawnClass = nullptr;
 	StablePawnClassObservations = 0;
 	ReleaseReadyBinding();
@@ -1305,4 +1341,978 @@ UClass* FCortexEditorPhysicalInputSession::ResolveRecordedPawnClass(const FStrin
 		return nullptr;
 	}
 	return LoadObject<UClass>(nullptr, *RecordedPawnClassPath);
+}
+
+// ---------------------------------------------------------------------------
+// Task 3: non-consuming capture, tagged-route UI observation, normal dispatch and
+// original-target cleanup.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+#if PLATFORM_WINDOWS
+	/** Bit set in the short returned by GetAsyncKeyState when the key is currently down. */
+	constexpr short CortexPhysicalKeyDownBit = static_cast<short>(0x8000);
+#endif
+
+	struct FCortexPhysicalSupportedKey
+	{
+		FKey Key;
+		int32 VirtualKey;
+	};
+
+	/** The supported gameplay keyboard/mouse keys and their Windows virtual-key codes. */
+	const TArray<FCortexPhysicalSupportedKey>& GetSupportedPhysicalKeys()
+	{
+		static const TArray<FCortexPhysicalSupportedKey> Keys = {
+			{ EKeys::W, 0x57 }, { EKeys::A, 0x41 }, { EKeys::S, 0x53 }, { EKeys::D, 0x44 },
+			{ EKeys::E, 0x45 }, { EKeys::Q, 0x51 }, { EKeys::R, 0x52 }, { EKeys::F, 0x46 },
+			{ EKeys::SpaceBar, 0x20 },
+			{ EKeys::LeftShift, 0xA0 }, { EKeys::RightShift, 0xA1 },
+			{ EKeys::LeftControl, 0xA2 }, { EKeys::RightControl, 0xA3 },
+			{ EKeys::LeftAlt, 0xA4 }, { EKeys::RightAlt, 0xA5 },
+			{ EKeys::Left, 0x25 }, { EKeys::Up, 0x26 }, { EKeys::Right, 0x27 }, { EKeys::Down, 0x28 },
+			{ EKeys::LeftMouseButton, 0x01 }, { EKeys::RightMouseButton, 0x02 },
+			{ EKeys::MiddleMouseButton, 0x04 }
+		};
+		return Keys;
+	}
+
+	bool IsPhysicalKeyDownSnapshot(const FKey& Key)
+	{
+#if PLATFORM_WINDOWS
+		for (const FCortexPhysicalSupportedKey& Supported : GetSupportedPhysicalKeys())
+		{
+			if (Supported.Key == Key)
+			{
+				return (::GetAsyncKeyState(Supported.VirtualKey) & CortexPhysicalKeyDownBit) != 0;
+			}
+		}
+#endif
+		return false;
+	}
+
+	/**
+	 * Cleanup-only input shield. It consumes exactly the tagged synthetic cleanup Up this
+	 * operation generates before normal widget routing, and nothing else; the capture processor
+	 * stays non-consuming for every event.
+	 */
+	class FCortexPhysicalInputCleanupShield : public IInputProcessor
+	{
+	public:
+		virtual void Tick(const float /*DeltaTime*/, FSlateApplication& /*SlateApp*/,
+			TSharedRef<ICursor> /*Cursor*/) override
+		{
+		}
+
+		virtual bool HandleMouseButtonUpEvent(FSlateApplication& /*SlateApp*/,
+			const FPointerEvent& MouseEvent) override
+		{
+			if (bConsumed || MouseEvent.GetEffectingButton() != ExpectedButton)
+			{
+				return false;
+			}
+			if (MouseEvent.GetInputDeviceId() != ExpectedDevice)
+			{
+				return false;
+			}
+			bConsumed = true;
+			return true;
+		}
+
+		FKey ExpectedButton;
+		FInputDeviceId ExpectedDevice = INPUTDEVICEID_NONE;
+		bool bConsumed = false;
+	};
+}
+
+void FCortexEditorPhysicalInputSession::AttachCaptureToBinding()
+{
+	if (!CaptureState.IsValid())
+	{
+		CaptureState = MakeShared<FCortexEditorPhysicalInputCaptureState>();
+	}
+	if (!DispatchContext.IsValid())
+	{
+		DispatchContext = MakeShared<FCortexEditorPhysicalInputDispatchContext>();
+	}
+	if (!GuardState.IsValid())
+	{
+		GuardState = MakeShared<FCortexEditorPhysicalInputGuardState>();
+	}
+	if (CaptureProcessor.IsValid())
+	{
+		return;
+	}
+
+	CaptureProcessor = MakeShared<FCortexEditorPhysicalInputCaptureProcessor>(*this);
+	if (FSlateApplication::IsInitialized())
+	{
+		// CommonUI/CommonInput consume input from the PreGame bucket
+		// (CommonInputSubsystem.cpp registers there), so observe from the earlier PreEngine bucket
+		// to guarantee this non-consuming processor always runs first.
+		FSlateApplication::Get().RegisterInputPreProcessor(
+			CaptureProcessor, EInputPreProcessorType::PreEngine);
+	}
+}
+
+void FCortexEditorPhysicalInputSession::DetachCapture()
+{
+	if (CaptureProcessor.IsValid())
+	{
+		if (FSlateApplication::IsInitialized())
+		{
+			FSlateApplication::Get().UnregisterInputPreProcessor(CaptureProcessor);
+		}
+		CaptureProcessor.Reset();
+	}
+	CaptureCallbackImpl = nullptr;
+	InterruptionCallbackImpl = nullptr;
+	bDispatchFrozen = false;
+	bReplayInProgress = false;
+	if (DispatchContext.IsValid())
+	{
+		DispatchContext->SyntheticDepth = 0;
+	}
+	if (CaptureState.IsValid())
+	{
+		CaptureState->bArmed = false;
+		CaptureState->bInterrupted = false;
+		CaptureState->bInconsistentModifiers = false;
+		CaptureState->ObservedHeldKeys.Reset();
+		CaptureState->ObservedHeldButtons.Reset();
+		CaptureState->ObservedModifierKeys.Reset();
+		CaptureState->CapturedHeldKeys.Reset();
+		CaptureState->CapturedHeldButtons.Reset();
+		CaptureState->OwnedSyntheticKeys.Reset();
+		CaptureState->OwnedSyntheticButtons.Reset();
+		CaptureState->ForeignHeldKeys.Reset();
+		CaptureState->ForeignHeldButtons.Reset();
+		CaptureState->ForeignInFlight.Reset();
+		CaptureState->SyntheticFocusOwner.Reset();
+	}
+}
+
+bool FCortexEditorPhysicalInputSession::IsSelectedUserAndDevice(
+	uint32 UserIndex, const FInputDeviceId& Device) const
+{
+	if (!bBound)
+	{
+		return false;
+	}
+	return UserIndex == static_cast<uint32>(Binding.SlateUserIndex) && Device == Binding.InputDevice;
+}
+
+FVector2D FCortexEditorPhysicalInputSession::ToViewportPosition(const FVector2D& ScreenSpacePosition) const
+{
+	const TSharedPtr<SWidget> Viewport = GetCoordinateRootWidget();
+	if (!Viewport.IsValid())
+	{
+		return ScreenSpacePosition;
+	}
+	return Viewport->GetCachedGeometry().AbsoluteToLocal(ScreenSpacePosition);
+}
+
+FVector2D FCortexEditorPhysicalInputSession::ToScreenSpacePosition(const FVector2D& ViewportPosition) const
+{
+	const TSharedPtr<SWidget> Viewport = GetCoordinateRootWidget();
+	if (!Viewport.IsValid())
+	{
+		return ViewportPosition;
+	}
+	return Viewport->GetCachedGeometry().LocalToAbsolute(ViewportPosition);
+}
+
+TSharedPtr<SWidget> FCortexEditorPhysicalInputSession::GetCoordinateRootWidget() const
+{
+	// The scene viewport widget normally owns the viewport-local mapping; the layer-manager root
+	// covers targets whose scene viewport widget is not exposed.
+	if (const TSharedPtr<SWidget> ViewportWidget = Binding.ViewportWidget.Pin())
+	{
+		return ViewportWidget;
+	}
+	return Binding.InputRoot.Pin();
+}
+
+bool FCortexEditorPhysicalInputSession::IsPhysicalInputNeutral(FCortexCommandResult& OutError) const
+{
+	static const TCHAR* const ReleaseInstruction =
+		TEXT("Release all held keys, mouse buttons and modifiers before starting capture");
+
+	if (CaptureState.IsValid()
+		&& (CaptureState->ObservedHeldKeys.Num() > 0
+			|| CaptureState->ObservedHeldButtons.Num() > 0
+			|| CaptureState->ObservedModifierKeys.Num() > 0))
+	{
+		OutError = MakeErrorResult(CortexErrorCodes::InvalidOperation, ReleaseInstruction);
+		return false;
+	}
+	if (FSlateApplication::IsInitialized() && !FSlateApplication::Get().GetPressedMouseButtons().IsEmpty())
+	{
+		OutError = MakeErrorResult(CortexErrorCodes::InvalidOperation, ReleaseInstruction);
+		return false;
+	}
+	if (const APlayerController* Controller = Binding.Controller.Get())
+	{
+		for (const FCortexPhysicalSupportedKey& Supported : GetSupportedPhysicalKeys())
+		{
+			if (Controller->IsInputKeyDown(Supported.Key))
+			{
+				OutError = MakeErrorResult(CortexErrorCodes::InvalidOperation, ReleaseInstruction);
+				return false;
+			}
+		}
+	}
+	for (const FCortexPhysicalSupportedKey& Supported : GetSupportedPhysicalKeys())
+	{
+		if (IsPhysicalKeyDownSnapshot(Supported.Key))
+		{
+			OutError = MakeErrorResult(CortexErrorCodes::InvalidOperation, ReleaseInstruction);
+			return false;
+		}
+	}
+	return true;
+}
+
+FCortexCommandResult FCortexEditorPhysicalInputSession::ArmCapture(
+	TFunction<void(const FCortexEditorPhysicalInputEvent&, double,
+		const FCortexEditorPhysicalInputCaptureContext&)>&& Callback)
+{
+	FCortexCommandResult Error;
+	if (!ValidateTarget(Error))
+	{
+		return Error;
+	}
+	if (!IsPhysicalInputNeutral(Error))
+	{
+		return Error;
+	}
+	if (!CaptureState.IsValid())
+	{
+		CaptureState = MakeShared<FCortexEditorPhysicalInputCaptureState>();
+	}
+	if (!DispatchContext.IsValid())
+	{
+		DispatchContext = MakeShared<FCortexEditorPhysicalInputDispatchContext>();
+	}
+
+	CaptureCallbackImpl = MoveTemp(Callback);
+	CaptureState->bArmed = true;
+	CaptureState->bInterrupted = false;
+	CaptureState->bInconsistentModifiers = false;
+	CaptureState->CaptureEpochSeconds = FPlatformTime::Seconds();
+	CaptureState->CapturedHeldKeys.Reset();
+	CaptureState->CapturedHeldButtons.Reset();
+	return MakeSuccessResult();
+}
+
+void FCortexEditorPhysicalInputSession::ObserveProcessorKey(const FKeyEvent& KeyEvent, bool bKeyDown)
+{
+	if (!IsSelectedUserAndDevice(KeyEvent.GetUserIndex(), KeyEvent.GetInputDeviceId()))
+	{
+		return;
+	}
+	// Generated events are this session's own dispatch: never human state, never recorded.
+	if (DispatchContext.IsValid() && DispatchContext->SyntheticDepth > 0)
+	{
+		return;
+	}
+	const FKey Key = KeyEvent.GetKey();
+	if (!Key.IsValid())
+	{
+		return;
+	}
+	if (!CaptureState.IsValid())
+	{
+		CaptureState = MakeShared<FCortexEditorPhysicalInputCaptureState>();
+	}
+
+	if (bKeyDown)
+	{
+		CaptureState->ObservedHeldKeys.Add(Key);
+	}
+	else
+	{
+		CaptureState->ObservedHeldKeys.Remove(Key);
+	}
+	if (Key.IsModifierKey())
+	{
+		if (bKeyDown)
+		{
+			CaptureState->ObservedModifierKeys.Add(Key);
+		}
+		else
+		{
+			CaptureState->ObservedModifierKeys.Remove(Key);
+		}
+	}
+
+	if (bReplayInProgress)
+	{
+		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
+			TEXT("Foreign physical input interrupted unattended playback")));
+	}
+	if (!CaptureState->bArmed)
+	{
+		return;
+	}
+
+	FCortexEditorPhysicalInputEvent Event;
+	Event.Kind = bKeyDown
+		? ECortexEditorPhysicalInputKind::KeyDown : ECortexEditorPhysicalInputKind::KeyUp;
+	Event.Key = Key;
+	Event.Modifiers = KeyEvent.GetModifierKeys();
+	Event.bRepeat = KeyEvent.IsRepeat();
+	HandleCapturedEvent(Event);
+}
+
+void FCortexEditorPhysicalInputSession::ObserveProcessorMouseButton(
+	const FPointerEvent& MouseEvent, ECortexEditorPhysicalInputKind Kind)
+{
+	if (!IsSelectedUserAndDevice(MouseEvent.GetUserIndex(), MouseEvent.GetInputDeviceId()))
+	{
+		return;
+	}
+	if (DispatchContext.IsValid() && DispatchContext->SyntheticDepth > 0)
+	{
+		return;
+	}
+	const FKey Button = MouseEvent.GetEffectingButton();
+	if (!Button.IsValid())
+	{
+		return;
+	}
+	if (!CaptureState.IsValid())
+	{
+		CaptureState = MakeShared<FCortexEditorPhysicalInputCaptureState>();
+	}
+
+	const bool bDownEdge = (Kind == ECortexEditorPhysicalInputKind::PointerDown
+		|| Kind == ECortexEditorPhysicalInputKind::DoubleClick);
+	if (bDownEdge)
+	{
+		CaptureState->ObservedHeldButtons.Add(Button);
+	}
+	else
+	{
+		CaptureState->ObservedHeldButtons.Remove(Button);
+	}
+
+	if (bReplayInProgress)
+	{
+		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
+			TEXT("Foreign physical input interrupted unattended playback")));
+	}
+	if (!CaptureState->bArmed)
+	{
+		return;
+	}
+
+	FCortexEditorPhysicalInputEvent Event;
+	Event.Kind = Kind;
+	Event.Key = Button;
+	Event.Modifiers = MouseEvent.GetModifierKeys();
+	Event.ViewportPosition = ToViewportPosition(MouseEvent.GetScreenSpacePosition());
+	Event.Delta = MouseEvent.GetCursorDelta();
+	HandleCapturedEvent(Event);
+}
+
+void FCortexEditorPhysicalInputSession::ObserveProcessorMouseMove(const FPointerEvent& MouseEvent)
+{
+	if (!IsSelectedUserAndDevice(MouseEvent.GetUserIndex(), MouseEvent.GetInputDeviceId()))
+	{
+		return;
+	}
+	if (DispatchContext.IsValid() && DispatchContext->SyntheticDepth > 0)
+	{
+		return;
+	}
+	if (!CaptureState.IsValid())
+	{
+		CaptureState = MakeShared<FCortexEditorPhysicalInputCaptureState>();
+	}
+
+	const FVector2D ViewportPosition = ToViewportPosition(MouseEvent.GetScreenSpacePosition());
+	if (GuardState.IsValid())
+	{
+		GuardState->LastViewportPointerPosition = ViewportPosition;
+	}
+
+	if (bReplayInProgress)
+	{
+		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
+			TEXT("Foreign physical input interrupted unattended playback")));
+	}
+	if (!CaptureState->bArmed)
+	{
+		return;
+	}
+
+	FCortexEditorPhysicalInputEvent Event;
+	Event.Kind = (FSlateApplication::IsInitialized()
+		&& FSlateApplication::Get().IsUsingHighPrecisionMouseMovment())
+		? ECortexEditorPhysicalInputKind::RelativeMove : ECortexEditorPhysicalInputKind::PointerMove;
+	Event.Modifiers = MouseEvent.GetModifierKeys();
+	Event.ViewportPosition = ViewportPosition;
+	Event.Delta = MouseEvent.GetCursorDelta();
+	HandleCapturedEvent(Event);
+}
+
+void FCortexEditorPhysicalInputSession::ObserveProcessorMouseWheel(const FPointerEvent& MouseEvent)
+{
+	if (!IsSelectedUserAndDevice(MouseEvent.GetUserIndex(), MouseEvent.GetInputDeviceId()))
+	{
+		return;
+	}
+	if (DispatchContext.IsValid() && DispatchContext->SyntheticDepth > 0)
+	{
+		return;
+	}
+	if (!CaptureState.IsValid())
+	{
+		CaptureState = MakeShared<FCortexEditorPhysicalInputCaptureState>();
+	}
+	if (bReplayInProgress)
+	{
+		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
+			TEXT("Foreign physical input interrupted unattended playback")));
+	}
+	if (!CaptureState->bArmed)
+	{
+		return;
+	}
+
+	FCortexEditorPhysicalInputEvent Event;
+	Event.Kind = ECortexEditorPhysicalInputKind::Wheel;
+	Event.Key = EKeys::Invalid;
+	Event.Modifiers = MouseEvent.GetModifierKeys();
+	Event.WheelDelta = MouseEvent.GetWheelDelta();
+	Event.ViewportPosition = ToViewportPosition(MouseEvent.GetScreenSpacePosition());
+	HandleCapturedEvent(Event);
+}
+
+void FCortexEditorPhysicalInputSession::HandleCapturedEvent(const FCortexEditorPhysicalInputEvent& Event)
+{
+	if (!CaptureState.IsValid() || !CaptureState->bArmed)
+	{
+		return;
+	}
+
+	// Repeat/up edges are recorded only after a fresh attributed Down in this capture epoch, and
+	// a matching captured release survives focus leaving the viewport.
+	bool bRecord = true;
+	switch (Event.Kind)
+	{
+	case ECortexEditorPhysicalInputKind::KeyDown:
+		if (Event.bRepeat && !CaptureState->CapturedHeldKeys.Contains(Event.Key))
+		{
+			bRecord = false;
+		}
+		else
+		{
+			CaptureState->CapturedHeldKeys.Add(Event.Key);
+		}
+		break;
+	case ECortexEditorPhysicalInputKind::PointerDown:
+	case ECortexEditorPhysicalInputKind::DoubleClick:
+		CaptureState->CapturedHeldButtons.Add(Event.Key);
+		break;
+	case ECortexEditorPhysicalInputKind::KeyUp:
+		if (!CaptureState->CapturedHeldKeys.Contains(Event.Key))
+		{
+			bRecord = false;
+		}
+		else
+		{
+			CaptureState->CapturedHeldKeys.Remove(Event.Key);
+		}
+		break;
+	case ECortexEditorPhysicalInputKind::PointerUp:
+		if (!CaptureState->CapturedHeldButtons.Contains(Event.Key))
+		{
+			bRecord = false;
+		}
+		else
+		{
+			CaptureState->CapturedHeldButtons.Remove(Event.Key);
+		}
+		break;
+	default:
+		break;
+	}
+	if (!bRecord)
+	{
+		return;
+	}
+
+	// Held modifier bits must agree with the captured modifier transitions; otherwise the epoch
+	// is incomplete rather than silently injecting or masking a modifier.
+	const FModifierKeysState& Modifiers = Event.Modifiers;
+	const bool bObservedShift = CaptureState->ObservedModifierKeys.Contains(EKeys::LeftShift)
+		|| CaptureState->ObservedModifierKeys.Contains(EKeys::RightShift);
+	const bool bObservedControl = CaptureState->ObservedModifierKeys.Contains(EKeys::LeftControl)
+		|| CaptureState->ObservedModifierKeys.Contains(EKeys::RightControl);
+	const bool bObservedAlt = CaptureState->ObservedModifierKeys.Contains(EKeys::LeftAlt)
+		|| CaptureState->ObservedModifierKeys.Contains(EKeys::RightAlt);
+	if (Modifiers.IsShiftDown() != bObservedShift
+		|| Modifiers.IsControlDown() != bObservedControl
+		|| Modifiers.IsAltDown() != bObservedAlt)
+	{
+		CaptureState->bInconsistentModifiers = true;
+	}
+
+	FCortexEditorPhysicalInputCaptureContext Context;
+	BuildCaptureContext(Event, Context);
+	if (CaptureCallbackImpl)
+	{
+		CaptureCallbackImpl(Event, FPlatformTime::Seconds(), Context);
+	}
+}
+
+void FCortexEditorPhysicalInputSession::BuildCaptureContext(const FCortexEditorPhysicalInputEvent& Event,
+	FCortexEditorPhysicalInputCaptureContext& OutContext) const
+{
+	OutContext = FCortexEditorPhysicalInputCaptureContext();
+	UWorld* World = Binding.World.Get();
+	OutContext.FrameNumber = GFrameCounter;
+	OutContext.WorldTimeSeconds = World ? World->GetTimeSeconds() : 0.0;
+	OutContext.bWorldPaused = World ? World->IsPaused() : false;
+	OutContext.bTargetOwnsPointerCapture = CaptureState.IsValid()
+		&& (CaptureState->CapturedHeldButtons.Num() > 0 || CaptureState->OwnedSyntheticButtons.Num() > 0);
+
+	FCortexEditorPhysicalInputPlayerPose Pose;
+	if (ReadPlayerPose(Pose).bSuccess)
+	{
+		OutContext.PressPose = Pose;
+	}
+
+	// Non-repeat keyboard presses are pose-only: only pointer/double-click boundaries carry UI.
+	const bool bGuardedPress = (Event.Kind == ECortexEditorPhysicalInputKind::PointerDown
+		|| Event.Kind == ECortexEditorPhysicalInputKind::DoubleClick);
+	if (!bGuardedPress)
+	{
+		OutContext.UICoverage = ECortexEditorUICoverage::NotApplicable;
+		OutContext.UIUnavailableReason = ECortexEditorUIUnavailableReason::None;
+		return;
+	}
+
+	FCortexEditorPhysicalInputWidgetIdentity Identity;
+	FVector2D Normalized = FVector2D::ZeroVector;
+	if (ResolveTaggedSlateIdentity(Event.ViewportPosition, Identity, Normalized))
+	{
+		OutContext.UICoverage = ECortexEditorUICoverage::Supported;
+		OutContext.UIUnavailableReason = ECortexEditorUIUnavailableReason::None;
+		OutContext.UITarget = MakeShared<const FCortexEditorPhysicalInputWidgetIdentity>(MoveTemp(Identity));
+		OutContext.UILocalPosition = Normalized;
+	}
+	else
+	{
+		OutContext.UICoverage = ECortexEditorUICoverage::Unavailable;
+		OutContext.UIUnavailableReason = ECortexEditorUIUnavailableReason::UnobservablePointerRoute;
+	}
+}
+
+bool FCortexEditorPhysicalInputSession::ResolveTaggedSlateIdentity(const FVector2D& ViewportPosition,
+	FCortexEditorPhysicalInputWidgetIdentity& OutIdentity, FVector2D& OutNormalizedLocal) const
+{
+	if (!GuardState.IsValid())
+	{
+		return false;
+	}
+	// Weak live resolution only: the tagged-runtime Slate route, never UMG/CommonUI/world.
+	GuardState->ViewportWidget = GetCoordinateRootWidget();
+	GuardState->SlateUserIndex = Binding.SlateUserIndex;
+	return FCortexEditorPhysicalInputUIResolver::ResolveActualSlateTarget(
+		ViewportPosition, *GuardState, OutIdentity, OutNormalizedLocal);
+}
+
+void FCortexEditorPhysicalInputSession::NotifyInterruption(const FCortexCommandResult& Result)
+{
+	if (!CaptureState.IsValid() || CaptureState->bInterrupted)
+	{
+		return;
+	}
+	CaptureState->bInterrupted = true;
+	if (InterruptionCallbackImpl)
+	{
+		InterruptionCallbackImpl(Result);
+	}
+}
+
+FCortexCommandResult FCortexEditorPhysicalInputSession::SetCaptureCallback(
+	TFunction<void(const FCortexEditorPhysicalInputEvent&, double,
+		const FCortexEditorPhysicalInputCaptureContext&)>&& Callback)
+{
+	return ArmCapture(MoveTemp(Callback));
+}
+
+void FCortexEditorPhysicalInputSession::SetInterruptionCallback(
+	TFunction<void(const FCortexCommandResult&)>&& Callback)
+{
+	InterruptionCallbackImpl = MoveTemp(Callback);
+}
+
+FCortexCommandResult FCortexEditorPhysicalInputSession::ObserveUI(
+	const FCortexEditorPhysicalInputEvent& Press,
+	const FCortexEditorPhysicalInputWidgetIdentity& Expected,
+	FCortexEditorPhysicalInputUIObservation& Out) const
+{
+	FCortexCommandResult Error;
+	if (!ValidateTarget(Error))
+	{
+		Out = FCortexEditorPhysicalInputUIObservation();
+		Out.State = ECortexEditorUIObservationState::Unavailable;
+		return Error;
+	}
+	if (!GuardState.IsValid())
+	{
+		Out = FCortexEditorPhysicalInputUIObservation();
+		Out.State = ECortexEditorUIObservationState::Unavailable;
+		return MakeErrorResult(CortexEditorPhysicalInputErrorCodes::UIObservationFailed,
+			TEXT("No UI observation state is available"));
+	}
+
+	GuardState->ViewportWidget = GetCoordinateRootWidget();
+	GuardState->SlateUserIndex = Binding.SlateUserIndex;
+	const ECortexEditorUIObservationState State = FCortexEditorPhysicalInputUIResolver::ResolveSlateObservation(
+		Press, Expected, *GuardState, Out);
+	if (State == ECortexEditorUIObservationState::Ready
+		|| State == ECortexEditorUIObservationState::PointerPending
+		|| State == ECortexEditorUIObservationState::LayoutPending)
+	{
+		return MakeSuccessResult();
+	}
+	return MakeErrorResult(CortexEditorPhysicalInputErrorCodes::UIObservationFailed,
+		TEXT("The expected UI target is not the current normal-route target"));
+}
+
+bool FCortexEditorPhysicalInputSession::CanWaitForUI() const
+{
+	FCortexCommandResult Error;
+	if (!ValidateTarget(Error))
+	{
+		return false;
+	}
+	if (bReplayInProgress)
+	{
+		return false;
+	}
+	if (!CaptureState.IsValid())
+	{
+		return true;
+	}
+	// A UI wait is never permitted from an active capture epoch, an owned held key/button, or a
+	// captured human-held key/button (which also means an active drag).
+	return !CaptureState->bArmed
+		&& CaptureState->OwnedSyntheticKeys.Num() == 0
+		&& CaptureState->OwnedSyntheticButtons.Num() == 0
+		&& CaptureState->CapturedHeldKeys.Num() == 0
+		&& CaptureState->CapturedHeldButtons.Num() == 0;
+}
+
+FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEditorPhysicalInputEvent& Event)
+{
+	if (bDispatchFrozen)
+	{
+		return MakeErrorResult(CortexErrorCodes::InvalidOperation,
+			TEXT("Physical input dispatch is frozen while the original target is being cleaned up"));
+	}
+	FCortexCommandResult Error;
+	if (!ValidateTarget(Error))
+	{
+		return Error;
+	}
+	if (!FSlateApplication::IsInitialized())
+	{
+		return MakeErrorResult(CortexErrorCodes::EditorNotReady, TEXT("Slate is not initialized"));
+	}
+	if (!CaptureState.IsValid())
+	{
+		CaptureState = MakeShared<FCortexEditorPhysicalInputCaptureState>();
+	}
+	if (!DispatchContext.IsValid())
+	{
+		DispatchContext = MakeShared<FCortexEditorPhysicalInputDispatchContext>();
+	}
+	if (!GuardState.IsValid())
+	{
+		GuardState = MakeShared<FCortexEditorPhysicalInputGuardState>();
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+	const FInputDeviceId Device = Binding.InputDevice;
+	const int32 UserIndex = Binding.SlateUserIndex;
+	TGuardValue<int32> SyntheticGuard(
+		DispatchContext->SyntheticDepth, DispatchContext->SyntheticDepth + 1);
+	bReplayInProgress = true;
+
+	// Stored portable coordinates are viewport-local; every engine event needs screen space.
+	FCortexEditorPhysicalInputEvent EngineEvent = Event;
+	EngineEvent.ViewportPosition = ToScreenSpacePosition(Event.ViewportPosition);
+
+	switch (Event.Kind)
+	{
+	case ECortexEditorPhysicalInputKind::KeyDown:
+	case ECortexEditorPhysicalInputKind::KeyUp:
+	{
+		FKeyEvent KeyEvent;
+		if (!FCortexEditorPhysicalInputEventBuilder::BuildKeyEvent(EngineEvent, Device, UserIndex, KeyEvent))
+		{
+			return MakeErrorResult(CortexErrorCodes::InvalidOperation,
+				TEXT("The captured key event is not a valid key"));
+		}
+		if (Event.Kind == ECortexEditorPhysicalInputKind::KeyDown)
+		{
+			Slate.ProcessKeyDownEvent(KeyEvent);
+			CaptureState->OwnedSyntheticKeys.Add(Event.Key);
+		}
+		else
+		{
+			Slate.ProcessKeyUpEvent(KeyEvent);
+			CaptureState->OwnedSyntheticKeys.Remove(Event.Key);
+		}
+		break;
+	}
+	case ECortexEditorPhysicalInputKind::PointerMove:
+	case ECortexEditorPhysicalInputKind::RelativeMove:
+	{
+		const FVector2D LastViewportPosition = GuardState->LastViewportPointerPosition;
+		const FVector2D LastScreenPosition = ToScreenSpacePosition(LastViewportPosition);
+		if (Event.Kind == ECortexEditorPhysicalInputKind::RelativeMove)
+		{
+			// Relative gameplay motion preserves the recorded delta and never becomes an absolute
+			// UI coordinate.
+			EngineEvent.Kind = ECortexEditorPhysicalInputKind::PointerMove;
+			EngineEvent.ViewportPosition = ToScreenSpacePosition(LastViewportPosition + Event.Delta);
+		}
+		FPointerEvent PointerEvent;
+		if (!FCortexEditorPhysicalInputEventBuilder::BuildPointerMoveEvent(EngineEvent, Device, UserIndex,
+			CaptureState->OwnedSyntheticButtons, LastScreenPosition, PointerEvent))
+		{
+			return MakeErrorResult(CortexErrorCodes::InvalidOperation,
+				TEXT("The captured pointer motion is not dispatchable"));
+		}
+		// Normal routing with drag detection: false must not be changed to true, which would skip
+		// preprocessors and Slate drag detection.
+		Slate.ProcessMouseMoveEvent(PointerEvent, false);
+		GuardState->LastViewportPointerPosition = Event.Kind == ECortexEditorPhysicalInputKind::RelativeMove
+			? LastViewportPosition + Event.Delta : Event.ViewportPosition;
+		++DispatchContext->ProcessedMotionGeneration;
+		GuardState->MotionGeneration = DispatchContext->ProcessedMotionGeneration;
+		break;
+	}
+	case ECortexEditorPhysicalInputKind::PointerDown:
+	case ECortexEditorPhysicalInputKind::PointerUp:
+	case ECortexEditorPhysicalInputKind::DoubleClick:
+	{
+		TSet<FKey> PressedButtons = CaptureState->OwnedSyntheticButtons;
+		const bool bDownEdge = (Event.Kind != ECortexEditorPhysicalInputKind::PointerUp);
+		if (bDownEdge)
+		{
+			PressedButtons.Add(Event.Key);
+		}
+		else
+		{
+			PressedButtons.Remove(Event.Key);
+		}
+		FPointerEvent PointerEvent;
+		if (!FCortexEditorPhysicalInputEventBuilder::BuildPointerButtonEvent(EngineEvent, Device, UserIndex,
+			PressedButtons, PointerEvent))
+		{
+			return MakeErrorResult(CortexErrorCodes::InvalidOperation,
+				TEXT("The captured pointer button is not a valid key"));
+		}
+		if (Event.Kind == ECortexEditorPhysicalInputKind::PointerDown)
+		{
+			Slate.ProcessMouseButtonDownEvent(nullptr, PointerEvent);
+			CaptureState->OwnedSyntheticButtons.Add(Event.Key);
+		}
+		else if (Event.Kind == ECortexEditorPhysicalInputKind::DoubleClick)
+		{
+			Slate.ProcessMouseButtonDoubleClickEvent(nullptr, PointerEvent);
+			CaptureState->OwnedSyntheticButtons.Add(Event.Key);
+		}
+		else
+		{
+			Slate.ProcessMouseButtonUpEvent(PointerEvent);
+			CaptureState->OwnedSyntheticButtons.Remove(Event.Key);
+		}
+		GuardState->LastViewportPointerPosition = Event.ViewportPosition;
+		break;
+	}
+	case ECortexEditorPhysicalInputKind::Wheel:
+	{
+		FPointerEvent PointerEvent;
+		if (!FCortexEditorPhysicalInputEventBuilder::BuildWheelEvent(EngineEvent, Device, UserIndex,
+			CaptureState->OwnedSyntheticButtons, PointerEvent))
+		{
+			return MakeErrorResult(CortexErrorCodes::InvalidOperation,
+				TEXT("The captured wheel event is not dispatchable"));
+		}
+		Slate.ProcessMouseWheelOrGestureEvent(PointerEvent, nullptr);
+		break;
+	}
+	default:
+		return MakeErrorResult(CortexErrorCodes::InvalidOperation,
+			TEXT("The captured event kind is not dispatchable"));
+	}
+
+	++DispatchContext->OperationGeneration;
+	return MakeSuccessResult();
+}
+
+FCortexCommandResult FCortexEditorPhysicalInputSession::ReleaseHeldInputs()
+{
+	// Step 1: freeze dispatch once and detach the capture callbacks.
+	bDispatchFrozen = true;
+	bReplayInProgress = false;
+	CaptureCallbackImpl = nullptr;
+	if (CaptureState.IsValid())
+	{
+		CaptureState->bArmed = false;
+	}
+	if (DispatchContext.IsValid())
+	{
+		DispatchContext->SyntheticDepth = 0;
+	}
+
+	// Validate the saved original identities without requiring current focus.
+	APlayerController* Controller = Binding.Controller.Get();
+	APawn* Pawn = Binding.Pawn.Get();
+	UWorld* World = Binding.World.Get();
+	if (!bBound || Controller == nullptr || Pawn == nullptr || World == nullptr)
+	{
+		return MakeErrorResult(CortexEditorPhysicalInputErrorCodes::CleanupFailed,
+			TEXT("The original physical input target is no longer available for cleanup"));
+	}
+	UPlayerInput* const OriginalPlayerInput = Controller->PlayerInput;
+
+	TSet<FKey> OwnedKeys;
+	TSet<FKey> OwnedButtons;
+	if (CaptureState.IsValid())
+	{
+		OwnedKeys = CaptureState->OwnedSyntheticKeys;
+		OwnedButtons = CaptureState->OwnedSyntheticButtons;
+	}
+
+	// Step 2: release owned digital keys directly to the still-original controller and apply only
+	// these owned keys' neutralization fields.
+	for (const FKey& Key : OwnedKeys)
+	{
+		Controller->InputKey(FInputKeyEventArgs(nullptr, Binding.InputDevice, Key, IE_Released,
+			0.0f, false, FPlatformTime::Cycles64()));
+	}
+	if (Controller->PlayerInput == OriginalPlayerInput && OriginalPlayerInput != nullptr)
+	{
+		for (const FKey& Key : OwnedKeys)
+		{
+			if (FKeyState* State = OriginalPlayerInput->GetKeyState(Key))
+			{
+				State->RawValue = FVector::ZeroVector;
+				State->bDown = false;
+				State->bDownPrevious = false;
+				State->LastUpDownTransitionTime = static_cast<float>(World->GetRealTimeSeconds());
+				State->bWasJustFlushed = true;
+			}
+		}
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+
+	// Step 3: clear focus only when the exact synthetic keyboard-focus owner still holds it.
+	if (CaptureState.IsValid() && CaptureState->SyntheticFocusOwner.IsValid())
+	{
+		const TSharedPtr<SWidget> Focused = Slate.GetUserFocusedWidget(
+			static_cast<uint32>(Binding.SlateUserIndex));
+		if (Focused.IsValid() && Focused == CaptureState->SyntheticFocusOwner.Pin())
+		{
+			Slate.ClearUserFocus(static_cast<uint32>(Binding.SlateUserIndex), EFocusCause::SetDirectly);
+		}
+	}
+
+	// Step 4: clear this operation's cached mouse-button bits without foreign routing.
+	for (const FKey& Button : OwnedButtons)
+	{
+		if (CaptureState.IsValid()
+			&& (CaptureState->ForeignHeldButtons.Contains(Button)
+				|| CaptureState->ForeignInFlight.Contains(Button)))
+		{
+			continue; // Held by a foreign source or its in-flight Down: never generate an Up.
+		}
+		if (!Slate.GetPressedMouseButtons().Contains(Button))
+		{
+			continue;
+		}
+		TSet<FKey> RemainingButtons = Slate.GetPressedMouseButtons();
+		RemainingButtons.Remove(Button);
+		const TSharedRef<FCortexPhysicalInputCleanupShield> Shield =
+			MakeShared<FCortexPhysicalInputCleanupShield>();
+		Shield->ExpectedButton = Button;
+		Shield->ExpectedDevice = Binding.InputDevice;
+		Slate.RegisterInputPreProcessor(Shield, EInputPreProcessorType::PreGame);
+		const FVector2D LastViewportPosition = GuardState.IsValid()
+			? GuardState->LastViewportPointerPosition : FVector2D::ZeroVector;
+		const FVector2D ScreenSpace = ToScreenSpacePosition(LastViewportPosition);
+		const FPointerEvent UpEvent(Binding.InputDevice, FSlateApplicationBase::CursorPointerIndex,
+			ScreenSpace, ScreenSpace, RemainingButtons, Button, 0.0f, FModifierKeysState(),
+			TOptional<int32>(Binding.SlateUserIndex));
+		Slate.ProcessMouseButtonUpEvent(UpEvent);
+		Slate.UnregisterInputPreProcessor(Shield);
+	}
+
+	// Step 5: clear residual native capture only when this operation genuinely owned it. A foreign
+	// widget's capture (or its in-flight Down) must never be released, and another native window's
+	// capture or cursor lock is never touched.
+	const bool bOperationOwnedCapture = OwnedButtons.Num() > 0;
+	const bool bForeignCapturePresent = CaptureState.IsValid()
+		&& (CaptureState->ForeignHeldButtons.Num() > 0 || CaptureState->ForeignInFlight.Num() > 0);
+	if (bOperationOwnedCapture && !bForeignCapturePresent)
+	{
+		if (const TSharedPtr<GenericApplication> PlatformApplication = Slate.GetPlatformApplication())
+		{
+			if (PlatformApplication->GetCapture() != nullptr)
+			{
+				const TSharedPtr<SWidget> Viewport = GetCoordinateRootWidget();
+				const TSharedPtr<SWindow> Window = Viewport.IsValid()
+					? Slate.FindWidgetWindow(Viewport.ToSharedRef()) : nullptr;
+				const TSharedPtr<FGenericWindow> NativeWindow = Window.IsValid()
+					? Window->GetNativeWindow() : nullptr;
+				if (NativeWindow.IsValid()
+					&& PlatformApplication->GetCapture() == NativeWindow->GetOSWindowHandle())
+				{
+					PlatformApplication->SetCapture(nullptr);
+				}
+			}
+		}
+	}
+
+	// Step 6: observe owned state after cleanup.
+	bool bNeutralized = true;
+	for (const FKey& Key : OwnedKeys)
+	{
+		if (Controller->IsInputKeyDown(Key))
+		{
+			bNeutralized = false;
+		}
+	}
+	for (const FKey& Button : OwnedButtons)
+	{
+		if (Slate.GetPressedMouseButtons().Contains(Button))
+		{
+			bNeutralized = false;
+		}
+	}
+	if (CaptureState.IsValid())
+	{
+		CaptureState->OwnedSyntheticKeys.Reset();
+		CaptureState->OwnedSyntheticButtons.Reset();
+		CaptureState->CapturedHeldKeys.Reset();
+		CaptureState->CapturedHeldButtons.Reset();
+	}
+	if (!bNeutralized)
+	{
+		return MakeErrorResult(CortexEditorPhysicalInputErrorCodes::CleanupFailed,
+			TEXT("Owned physical input could not be safely neutralized on the original target"));
+	}
+	return MakeSuccessResult();
 }
