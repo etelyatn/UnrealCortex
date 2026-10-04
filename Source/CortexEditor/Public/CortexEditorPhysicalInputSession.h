@@ -13,6 +13,7 @@ class FCortexEditorPhysicalInputCaptureProcessor;
 class SWidget;
 class SViewport;
 class UClass;
+class UPlayerInput;
 class UWorld;
 struct FCortexEditorPhysicalInputCaptureState;
 struct FCortexEditorPhysicalInputDispatchContext;
@@ -267,6 +268,8 @@ private:
 	bool bDispatchFrozen = false;
 	/** True after this session dispatched a synthetic event and before cleanup: unattended replay. */
 	bool bReplayInProgress = false;
+	/** Exact PlayerInput instance the binding was acquired with; never a replacement. */
+	TWeakObjectPtr<UPlayerInput> BoundPlayerInput;
 
 	/** Creates the capture/dispatch/guard state and installs the non-consuming processor. */
 	void AttachCaptureToBinding();
@@ -313,6 +316,15 @@ private:
 
 	/** Reports a foreign-input interruption through the single interruption callback. */
 	void NotifyInterruption(const FCortexCommandResult& Result);
+
+	/** Signals an incomplete capture epoch (for example inconsistent modifier bits). */
+	void SignalCaptureFault(const FString& Message);
+
+	/** True when the pointer at this screen coordinate is over the selected viewport route. */
+	bool IsPointerPositionOnSelectedRoute(const FVector2D& ScreenSpacePosition) const;
+
+	/** True when the selected user's keyboard focus is inside the selected viewport route. */
+	bool IsKeyboardFocusOnSelectedRoute() const;
 
 	void EnsureTicker();
 	void RemoveTicker();

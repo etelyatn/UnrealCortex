@@ -3,9 +3,12 @@
 #include "CoreMinimal.h"
 #include "CortexEditorPhysicalInput.h"
 #include "Framework/Application/IInputProcessor.h"
+#include "Input/Events.h"
 #include "InputCoreTypes.h"
 #include "Templates/Function.h"
 #include "Templates/SharedPointer.h"
+
+class FWidgetPath;
 
 class FCortexEditorPhysicalInputSession;
 class FSlateApplication;
@@ -66,6 +69,15 @@ struct FCortexEditorPhysicalInputCaptureState
 	bool bInterrupted = false;
 	/** True when a recorded event's modifier bits disagreed with captured transitions. */
 	bool bInconsistentModifiers = false;
+	/** Set once a capture fault has been signalled for this epoch. */
+	bool bFaulted = false;
+	/** True once this operation's own dispatch acquired the Slate pointer captor. */
+	bool bOwnedPointerCapture = false;
+	/** Exact captor path and event this operation acquired, reused for the guarded release reply. */
+	TSharedPtr<FWidgetPath> OwnedCaptorPath;
+	FPointerEvent OwnedPointerEvent;
+	/** Modifier keys recorded by transitions in this epoch (not device-wide observations). */
+	TSet<FKey> CapturedModifierKeys;
 	/** Observed down state, maintained from processor installation even before arming. */
 	TSet<FKey> ObservedHeldKeys;
 	TSet<FKey> ObservedHeldButtons;

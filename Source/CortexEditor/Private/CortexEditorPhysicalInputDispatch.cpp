@@ -18,10 +18,14 @@ bool FCortexEditorPhysicalInputEventBuilder::BuildKeyEvent(const FCortexEditorPh
 
 bool FCortexEditorPhysicalInputEventBuilder::BuildPointerMoveEvent(
 	const FCortexEditorPhysicalInputEvent& Event, const FInputDeviceId& Device, int32 SlateUserIndex,
-	const TSet<FKey>& PressedButtons, const FVector2D& LastViewportPosition, FPointerEvent& OutEvent)
+	const TSet<FKey>& PressedButtons, const FVector2D& ScreenSpacePosition, FPointerEvent& OutEvent)
 {
+	// Derive the previous position from the recorded delta so the constructor's
+	// CursorDelta = Screen - LastScreen is exactly the captured delta (never a difference against
+	// an unrelated or zero prior position).
+	const FVector2D LastScreenSpacePosition = ScreenSpacePosition - Event.Delta;
 	OutEvent = FPointerEvent(Device, FSlateApplicationBase::CursorPointerIndex,
-		Event.ViewportPosition, LastViewportPosition, PressedButtons, EKeys::Invalid, 0.0f,
+		ScreenSpacePosition, LastScreenSpacePosition, PressedButtons, EKeys::Invalid, 0.0f,
 		Event.Modifiers, TOptional<int32>(SlateUserIndex));
 	return true;
 }

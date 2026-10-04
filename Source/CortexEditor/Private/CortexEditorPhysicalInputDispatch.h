@@ -39,10 +39,14 @@ public:
 	static bool BuildKeyEvent(const FCortexEditorPhysicalInputEvent& Event,
 		const FInputDeviceId& Device, int32 SlateUserIndex, FKeyEvent& OutEvent);
 
-	/** Builds the FPointerEvent for a PointerMove against the previous viewport position. */
+	/**
+	 * Builds the FPointerEvent for a PointerMove at an explicit screen position. The previous
+	 * position is derived from Event.Delta, so the reconstructed CursorDelta is exactly the
+	 * recorded delta and never a difference against an unrelated prior position.
+	 */
 	static bool BuildPointerMoveEvent(const FCortexEditorPhysicalInputEvent& Event,
 		const FInputDeviceId& Device, int32 SlateUserIndex,
-		const TSet<FKey>& PressedButtons, const FVector2D& LastViewportPosition,
+		const TSet<FKey>& PressedButtons, const FVector2D& ScreenSpacePosition,
 		FPointerEvent& OutEvent);
 
 	/** Builds the FPointerEvent for a PointerDown/PointerUp/DoubleClick boundary. */
