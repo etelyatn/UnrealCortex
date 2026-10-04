@@ -19,6 +19,8 @@ public class CortexReplay : ModuleRules
 			"InputCore",
 			"Json",
 			"JsonUtilities",
+			"Slate",
+			"UnrealEd",
 			"CortexEditor",
 		});
 	}

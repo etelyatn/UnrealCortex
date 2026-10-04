@@ -244,6 +244,17 @@ private:
 	FTSTicker::FDelegateHandle TickerHandle;
 	FName OwnedContextHandle;
 	TWeakObjectPtr<UWorld> OwnedWorld;
+	/**
+	 * True once this operation actually observed its owned context carrying a live world.
+	 *
+	 * Before that (deferred startup) a world-less owned context must still count as present, so a
+	 * request that has not produced its world yet is never reported as ended. Afterwards, that
+	 * world's destruction ends the operation even if the engine leaves the emptied context in its
+	 * world-context list.
+	 */
+	bool bOwnedWorldObserved = false;
+	/** Throttle for the "teardown still pending" diagnostic; 0 means it has not fired yet. */
+	double LastTeardownDiagnosticSeconds = 0.0;
 	TWeakObjectPtr<UClass> LastObservedPawnClass;
 	int32 StablePawnClassObservations = 0;
 

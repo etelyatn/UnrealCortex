@@ -330,6 +330,7 @@ void FCortexEditorPhysicalInputSession::PollPreparation()
 		// Pin the exact owned context immediately so teardown can always end it.
 		OwnedWorld = PIEWorld;
 		OwnedContextHandle = ContextHandle;
+		bOwnedWorldObserved = true;
 		bOwnedRequestOutstanding = false;
 		bStartupResolved = true;
 	}
@@ -439,6 +440,10 @@ void FCortexEditorPhysicalInputSession::PollTeardown()
 				// Created may still be null until the deferred world appears; keep observing it.
 				OwnedWorld = Created;
 				OwnedContextHandle = ContextHandle;
+				if (Created != nullptr)
+				{
+					bOwnedWorldObserved = true;
+				}
 			}
 		}
 
@@ -462,6 +467,20 @@ void FCortexEditorPhysicalInputSession::PollTeardown()
 	if (IsOwnedContextWorldPresent())
 	{
 		GEditor->RequestEndPlayMap();
+	}
+
+	// Bounded diagnostic: an owned teardown should resolve within a frame or two, so a pending
+	// teardown lasting a full second is itself a defect worth reporting with its observations.
+	if (FPlatformTime::Seconds() - LastTeardownDiagnosticSeconds >= 1.0)
+	{
+		LastTeardownDiagnosticSeconds = FPlatformTime::Seconds();
+		UWorld* OwnedWorldPtr = OwnedWorld.Get();
+		UE_LOG(LogCortexEditor, Log,
+			TEXT("Owned PIE teardown still pending: resolved=%d requestPending=%d contextPresent=%d worldPresent=%d worldObserved=%d worldTearingDown=%d"),
+			bStartupResolved ? 1 : 0, IsOwnedRequestPending() ? 1 : 0,
+			IsOwnedContextPresent() ? 1 : 0, IsOwnedContextWorldPresent() ? 1 : 0,
+			bOwnedWorldObserved ? 1 : 0,
+			(OwnedWorldPtr != nullptr && OwnedWorldPtr->bIsTearingDown) ? 1 : 0);
 	}
 }
 
@@ -585,7 +604,21 @@ bool FCortexEditorPhysicalInputSession::IsOwnedContextPresent() const
 		}
 		if (OwnedContextHandle != NAME_None && Context.ContextHandle == OwnedContextHandle)
 		{
-			return true;
+			if (!bOwnedWorldObserved)
+			{
+				// Deferred startup: a world-less owned context is still ours and must stay observed
+				// until its world appears (PlayLevel deferred startup).
+				return true;
+			}
+			// Once this operation actually drove a world, its context is ours only while that world
+			// is still a live, non-tearing-down PIE world. A finished PIE world can stay alive (and
+			// renamed by CleanupWorld) until GC, and must not keep the operation open.
+			UWorld* ContextWorld = Context.World();
+			if (ContextWorld != nullptr && !ContextWorld->bIsTearingDown)
+			{
+				return true;
+			}
+			continue;
 		}
 		if (OwnedWorld.IsValid() && Context.World() == OwnedWorld.Get())
 		{
@@ -609,7 +642,8 @@ bool FCortexEditorPhysicalInputSession::IsOwnedContextWorldPresent() const
 		}
 		if (OwnedContextHandle != NAME_None && Context.ContextHandle == OwnedContextHandle)
 		{
-			return Context.World() != nullptr;
+			UWorld* ContextWorld = Context.World();
+			return ContextWorld != nullptr && !ContextWorld->bIsTearingDown;
 		}
 		if (OwnedWorld.IsValid() && Context.World() == OwnedWorld.Get())
 		{
@@ -832,6 +866,7 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 	OwnedState = EOwnedState::Preparing;
 	OwnedContextHandle = NAME_None;
 	OwnedWorld = nullptr;
+	bOwnedWorldObserved = false;
 	BoundPawnClass = nullptr;
 	LastObservedPawnClass = nullptr;
 	StablePawnClassObservations = 0;
