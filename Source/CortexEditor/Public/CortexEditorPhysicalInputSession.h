@@ -158,7 +158,10 @@ private:
 	bool bOwnedRequestOutstanding = false;
 	bool bStartupResolved = false;
 	uint64 Generation = 0;
+	/** Identity of the request the engine queued, excluding DestinationSlateViewport (nulled at start). */
 	uint64 SubmittedRequestFingerprint = 0;
+	/** Identity of the request while still queued, including DestinationSlateViewport. */
+	uint64 SubmittedQueuedRequestFingerprint = 0;
 	FOwnedRequest OwnedRequest;
 	TFunction<void(const FCortexCommandResult&)> ReadyCallback;
 	bool bReadyCallbackInvoked = false;
@@ -217,6 +220,9 @@ private:
 
 	/** True while the exact captured owned PIE world context is present. */
 	bool IsOwnedContextPresent() const;
+
+	/** True while the exact captured owned PIE context is present and already has a world. */
+	bool IsOwnedContextWorldPresent() const;
 
 	/** Finds the single new PIE world created for this request, or nullptr. */
 	UWorld* FindNewPIEWorld(FName& OutContextHandle, bool& bOutAmbiguous) const;

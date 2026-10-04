@@ -29,9 +29,11 @@
 #include "Misc/PackageName.h"
 #include "PlayInEditorDataTypes.h"
 #include "Slate/SceneViewport.h"
+#include "Settings/LevelEditorPlaySettings.h"
 #include "Tests/AutomationCommon.h"
 #include "Tests/AutomationEditorCommon.h"
 #include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
 #include "Widgets/Input/SSlider.h"
 #include "Widgets/SWidget.h"
 #include "Widgets/SViewport.h"
@@ -894,6 +896,82 @@ TFunction<void(const FCortexCommandResult&)> MakeFixtureReadyCallback(
 		}
 	};
 }
+
+/**
+ * Simulates the engine's deferred PIE startup window, where the PIE context exists before
+ * its world (PlayLevel.cpp:1827-1875 creates the context; :1603-1622 creates the world
+ * later). The test consumes the owned request and detaches the owned world, so the session
+ * must keep observing the world-less owned context instead of claiming completion, and must
+ * end that context once its world is restored.
+ */
+class FCortexRestoreDeferredOwnedWorld : public IAutomationLatentCommand
+{
+public:
+	FCortexRestoreDeferredOwnedWorld(FAutomationTestBase* InTest,
+		TSharedRef<FCortexEditorPhysicalInputTestFixture> InFixture,
+		FName InContextHandle,
+		UWorld* InDetachedWorld)
+		: Test(InTest)
+		, Fixture(InFixture)
+		, ContextHandle(InContextHandle)
+		, DetachedWorld(InDetachedWorld) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+
+		if (!bAssertedDeferred)
+		{
+			bAssertedDeferred = true;
+			// The request was consumed before the session's first poll and the owned context has
+			// no world yet: the session must keep observing instead of claiming completion.
+			Test->TestFalse(TEXT("Deferred owned startup is not declared complete without a world"),
+				Fixture->Session->IsOwnedPIEEnded());
+
+			// The deferred world now appears; the session must end the owned context.
+			if (DetachedWorld != nullptr && GEngine)
+			{
+				for (const FWorldContext& Context : GEngine->GetWorldContexts())
+				{
+					if (Context.WorldType == EWorldType::PIE && Context.ContextHandle == ContextHandle)
+					{
+						// GetWorldContexts() exposes the engine-owned array const; the context
+						// itself is mutable engine state, so re-attach through a const-cast.
+						const_cast<FWorldContext&>(Context).SetCurrentWorld(DetachedWorld);
+						DetachedWorld->RemoveFromRoot();
+						bWorldRestored = true;
+						break;
+					}
+				}
+			}
+			return false;
+		}
+
+		if (!Fixture->Session->IsOwnedPIEEnded())
+		{
+			if (FPlatformTime::Seconds() - StartTime <= CortexPhysicalInputTeardownWatchdogSeconds) { return false; }
+			Test->AddError(TEXT("Owned PIE did not end after its deferred world appeared"));
+			return true;
+		}
+		if (DetachedWorld != nullptr)
+		{
+			Test->TestTrue(TEXT("Detached owned world was restored for teardown"), bWorldRestored);
+		}
+		Test->TestFalse(TEXT("No owned PIE world remains after deferred teardown"),
+			IsPIEWorldContextPresentForMap(Fixture->RequestedMap));
+		Test->TestFalse(TEXT("No PIE session remains after deferred teardown"), HasAnyPIEWorldContext());
+		return true;
+	}
+
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexEditorPhysicalInputTestFixture> Fixture;
+	FName ContextHandle;
+	UWorld* DetachedWorld = nullptr;
+	double StartTime = 0.0;
+	bool bAssertedDeferred = false;
+	bool bWorldRestored = false;
+};
 } // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputOwnedMapTest,
@@ -1196,6 +1274,18 @@ bool FCortexPhysicalInputRestorationTest::RunTest(const FString& Parameters)
 			Test.TestFalse(TEXT("Mismatched recorded pawn class rejected"), Mismatched.bSuccess);
 			Test.TestEqual(TEXT("Mismatched class is INITIAL_POSE_RESTORE_FAILED"),
 				Mismatched.ErrorCode, FString(CortexEditorPhysicalInputErrorCodes::InitialPoseRestoreFailed));
+
+			// A non-finite recorded pose is rejected before any mutation.
+			FCortexEditorPhysicalInputPlayerPose InvalidPose;
+			InvalidPose.PawnTransform = FTransform::Identity;
+			InvalidPose.PawnTransform.SetLocation(
+				FVector(std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0));
+			InvalidPose.ControlRotation = FRotator::ZeroRotator;
+			const FCortexCommandResult InvalidRestore = Fixture->Session->RestorePlayerPose(
+				InvalidPose, Fixture->Session->GetTargetInfo().PawnClassPath);
+			Test.TestFalse(TEXT("Invalid recorded pose rejected"), InvalidRestore.bSuccess);
+			Test.TestEqual(TEXT("Invalid recorded pose is INITIAL_POSE_RESTORE_FAILED"),
+				InvalidRestore.ErrorCode, FString(CortexEditorPhysicalInputErrorCodes::InitialPoseRestoreFailed));
 		}));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
 	return true;
@@ -1564,5 +1654,168 @@ bool FCortexPhysicalInputImmutableRootTest::RunTest(const FString& Parameters)
 			}
 		}));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A successor that differs only in DestinationSlateViewport is never cancelled
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputSuccessorViewportDiffersTest,
+	"Cortex.Editor.PhysicalInputSuccessorViewportDiffers",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputSuccessorViewportDiffersTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	const TOptional<FRequestPlaySessionParams> OwnRequest = GEditor->GetPlaySessionRequest();
+	TestTrue(TEXT("Owned request is still queued before the replacement"), OwnRequest.IsSet());
+	TestTrue(TEXT("Owned request selects an in-process destination viewport"),
+		OwnRequest.IsSet() && OwnRequest->DestinationSlateViewport.IsSet());
+	TestTrue(TEXT("No PIE play world exists while the request is still queued"), GEditor->PlayWorld == nullptr);
+
+	// The successor differs from the accepted request ONLY in DestinationSlateViewport: it keeps
+	// the same map and leaves StartLocation/StartRotation unset exactly like the owned request.
+	// Its destination viewport is left unset, so the queued identity cannot be mistaken for ours.
+	FRequestPlaySessionParams Replacement;
+	Replacement.SessionDestination = EPlaySessionDestinationType::InProcess;
+	Replacement.WorldType = EPlaySessionWorldType::PlayInEditor;
+	Replacement.GlobalMapOverride = Fixture->RequestedMap;
+	TestFalse(TEXT("Successor viewport really differs from the owned request"),
+		Replacement.DestinationSlateViewport.IsSet());
+	GEditor->RequestPlaySession(Replacement);
+
+	// Ending the bridge must relinquish its claim without cancelling the successor.
+	Fixture->Session->EndOwnedPIE();
+
+	TestFalse(TEXT("Bridge does not claim completion from an unresolved request"),
+		Fixture->Session->IsOwnedPIEEnded());
+
+	const TOptional<FRequestPlaySessionParams> Pending = GEditor->GetPlaySessionRequest();
+	TestTrue(TEXT("Bridge did not cancel the viewport-only successor"), Pending.IsSet());
+	if (Pending.IsSet())
+	{
+		TestEqual(TEXT("Successor request identity is preserved"),
+			Pending->GlobalMapOverride, Fixture->RequestedMap);
+		TestFalse(TEXT("Successor keeps its own destination viewport identity"),
+			Pending->DestinationSlateViewport.IsSet());
+	}
+
+	// The relinquishing bridge must not adopt the survivor as its own target either.
+	FCortexCommandResult RelinquishError;
+	TestFalse(TEXT("Relinquished bridge validates no target"),
+		Fixture->Session->ValidateTarget(RelinquishError));
+	TestFalse(TEXT("Relinquished bridge binds no world"),
+		Fixture->Session->GetTargetBinding().World.IsValid());
+
+	// The successor is a real session the test caused; the cleanup ends it safely.
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexCleanupPIERequests(this));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A request consumed before the first poll, with a deferred-startup (world-less) context
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputDeferredStartupTest,
+	"Cortex.Editor.PhysicalInputDeferredStartup",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputDeferredStartupTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	// Consume the queued request in this invocation so the session cannot observe it while it is
+	// still merely queued; the engine only consumes it in UEditorEngine::Tick otherwise.
+	GEditor->StartQueuedPlaySessionRequest();
+
+	// Locate the owned PIE context the engine created for the consumed request.
+	UWorld* DetachedWorld = nullptr;
+	FName ContextHandle = NAME_None;
+	for (const FWorldContext& Context : GEngine->GetWorldContexts())
+	{
+		if (Context.WorldType != EWorldType::PIE)
+		{
+			continue;
+		}
+		UWorld* ContextWorld = Context.World();
+		if (ContextWorld != nullptr
+			&& UWorld::RemovePIEPrefix(ContextWorld->GetPackage()->GetName()) != Fixture->RequestedMap)
+		{
+			continue;
+		}
+		ContextHandle = Context.ContextHandle;
+		DetachedWorld = ContextWorld;
+		break;
+	}
+	TestTrue(TEXT("Owned PIE context exists after the request is consumed"), ContextHandle != NAME_None);
+	if (ContextHandle == NAME_None) { return false; }
+
+	// Reproduce the deferred-startup window: the owned PIE context exists but has no world yet.
+	// The detached world is kept alive by the test until it is restored, which is exactly the
+	// point at which the session must end its owned context.
+	if (DetachedWorld != nullptr)
+	{
+		DetachedWorld->AddToRoot();
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			if (Context.WorldType == EWorldType::PIE && Context.ContextHandle == ContextHandle)
+			{
+				// GetWorldContexts() exposes the engine-owned array const; the context itself is
+				// mutable engine state, so detach through a const-cast.
+				const_cast<FWorldContext&>(Context).SetCurrentWorld(nullptr);
+				break;
+			}
+		}
+	}
+
+	Fixture->Session->EndOwnedPIE();
+
+	ADD_LATENT_AUTOMATION_COMMAND(
+		FCortexRestoreDeferredOwnedWorld(this, Fixture, ContextHandle, DetachedWorld));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Admission rejects unsupported play settings
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputUnsupportedSettingsTest,
+	"Cortex.Editor.PhysicalInputUnsupportedSettings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputUnsupportedSettingsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+
+	ULevelEditorPlaySettings* PlaySettings = GetMutableDefault<ULevelEditorPlaySettings>();
+	TestNotNull(TEXT("Play in editor settings available"), PlaySettings);
+	if (!PlaySettings) { return false; }
+
+	bool bOriginalRunUnderOneProcess = false;
+	PlaySettings->GetRunUnderOneProcess(bOriginalRunUnderOneProcess);
+	TestTrue(TEXT("Supported settings keep RunUnderOneProcess enabled"), bOriginalRunUnderOneProcess);
+
+	// An owned in-process session must not be admitted without RunUnderOneProcess.
+	PlaySettings->SetRunUnderOneProcess(false);
+	const FCortexCommandResult Rejected = Fixture->Session->BeginOwnedPIE(
+		Fixture->RequestedMap, 0, [](const FCortexCommandResult&) {});
+	PlaySettings->SetRunUnderOneProcess(bOriginalRunUnderOneProcess);
+
+	TestFalse(TEXT("Owned PIE rejected without RunUnderOneProcess"), Rejected.bSuccess);
+	TestEqual(TEXT("Unsupported settings report an invalid operation"),
+		Rejected.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+	TestFalse(TEXT("Rejected admission never binds a world"),
+		Fixture->Session->GetTargetBinding().World.IsValid());
 	return true;
 }

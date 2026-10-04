@@ -53,23 +53,33 @@ FCortexCommandResult MakeInvalidTargetResult(const FString& Message)
 }
 
 /**
- * Engine-visible identity of a queued play request. The engine overwrites its queued
- * request wholesale, so a matching fingerprint is the only way to know the queued
- * request is still the exact one this session accepted.
+ * Engine-visible identity of a play request. The engine overwrites its queued request
+ * wholesale, so a matching fingerprint is the only way to know the queued request is
+ * still the exact one this session accepted.
  *
- * DestinationSlateViewport is deliberately excluded: the engine nulls it on the
- * retained request once the session starts (PlayLevel.cpp:3105), so it is not stable
- * across the queued-vs-started comparison.
+ * DestinationSlateViewport is included only for the queued comparison. The engine keeps
+ * it verbatim while the request is still merely queued, so a same-map successor that
+ * differs only in its destination viewport is not mistaken for ours. Once the session
+ * starts the engine nulls that field on the request it retains
+ * (PlayLevel.cpp:3099-3105, reached through the by-reference
+ * `PlayInEditorSessionInfo->OriginalRequestParams` at PlayLevel.cpp:1622), so the
+ * consumed-session comparison must exclude it.
  */
-uint64 ComputeRequestFingerprint(const FRequestPlaySessionParams& Request)
+uint64 ComputeRequestFingerprint(const FRequestPlaySessionParams& Request, bool bIncludeDestinationSlateViewport)
 {
 	const FString StartLocation = Request.StartLocation.IsSet() ? Request.StartLocation->ToString() : FString();
 	const FString StartRotation = Request.StartRotation.IsSet() ? Request.StartRotation->ToString() : FString();
 	const FString GameModeOverride = Request.GameModeOverride ? Request.GameModeOverride->GetPathName() : FString();
 	const FString ExtraParameters = Request.AdditionalStandaloneCommandLineParameters.Get(TEXT(""));
+	const FString DestinationViewport = bIncludeDestinationSlateViewport
+		? FString::Printf(TEXT("%d:%p"),
+			Request.DestinationSlateViewport.IsSet() ? 1 : 0,
+			static_cast<const void*>(Request.DestinationSlateViewport.IsSet()
+				? Request.DestinationSlateViewport.GetValue().Pin().Get() : nullptr))
+		: FString(TEXT("excluded"));
 
 	const FString Canonical = FString::Printf(
-		TEXT("%s|%d|%d|%p|%d|%s|%d|%s|%d|%s|%s|%d"),
+		TEXT("%s|%d|%d|%p|%d|%s|%d|%s|%d|%s|%s|%d|%s"),
 		*Request.GlobalMapOverride,
 		static_cast<int32>(Request.SessionDestination),
 		static_cast<int32>(Request.WorldType),
@@ -81,7 +91,8 @@ uint64 ComputeRequestFingerprint(const FRequestPlaySessionParams& Request)
 		Request.bAllowOnlineSubsystem ? 1 : 0,
 		*ExtraParameters,
 		*GameModeOverride,
-		Request.SessionPreviewTypeOverride.IsSet() ? static_cast<int32>(Request.SessionPreviewTypeOverride.GetValue()) : -1);
+		Request.SessionPreviewTypeOverride.IsSet() ? static_cast<int32>(Request.SessionPreviewTypeOverride.GetValue()) : -1,
+		*DestinationViewport);
 
 	return static_cast<uint64>(GetTypeHash(Canonical));
 }
@@ -181,9 +192,11 @@ UWorld* FCortexEditorPhysicalInputSession::FindNewPIEWorld(FName& OutContextHand
 	}
 
 	UWorld* Candidate = nullptr;
+	FName CandidateHandle = NAME_None;
+	bool bFoundCandidate = false;
 	for (const FWorldContext& Context : GEngine->GetWorldContexts())
 	{
-		if (Context.WorldType != EWorldType::PIE || Context.World() == nullptr)
+		if (Context.WorldType != EWorldType::PIE)
 		{
 			continue;
 		}
@@ -191,20 +204,26 @@ UWorld* FCortexEditorPhysicalInputSession::FindNewPIEWorld(FName& OutContextHand
 		{
 			continue;
 		}
-		// Correlate with the accepted request by map, not merely by absence from the baseline.
-		if (!OwnedRequest.RequestedPackagePath.IsEmpty()
-			&& UWorld::RemovePIEPrefix(Context.World()->GetPackage()->GetName()) != OwnedRequest.RequestedPackagePath)
+		UWorld* ContextWorld = Context.World();
+		// Correlate with the accepted request by map when the world already exists. A PIE
+		// context can also exist before its world during deferred login
+		// (PlayLevel.cpp:1827-1875), so a world-less context is still a candidate.
+		if (ContextWorld != nullptr
+			&& !OwnedRequest.RequestedPackagePath.IsEmpty()
+			&& UWorld::RemovePIEPrefix(ContextWorld->GetPackage()->GetName()) != OwnedRequest.RequestedPackagePath)
 		{
 			continue;
 		}
-		if (Candidate != nullptr)
+		if (bFoundCandidate)
 		{
 			bOutAmbiguous = true;
 			return nullptr;
 		}
-		Candidate = Context.World();
-		OutContextHandle = Context.ContextHandle;
+		bFoundCandidate = true;
+		Candidate = ContextWorld;
+		CandidateHandle = Context.ContextHandle;
 	}
+	OutContextHandle = CandidateHandle;
 	return Candidate;
 }
 
@@ -239,7 +258,7 @@ void FCortexEditorPhysicalInputSession::PollPreparation()
 			// No longer queued: it must be the exact session we accepted, otherwise someone
 			// replaced our request and we must relinquish it without cancelling theirs.
 			const TOptional<FPlayInEditorSessionInfo> Info = GEditor->GetPlayInEditorSessionInfo();
-			if (!Info.IsSet() || ComputeRequestFingerprint(Info->OriginalRequestParams) != SubmittedRequestFingerprint)
+			if (!Info.IsSet() || ComputeRequestFingerprint(Info->OriginalRequestParams, false) != SubmittedRequestFingerprint)
 			{
 				RelinquishOwnedRequest();
 				CompletePreparationFailure(CortexErrorCodes::InvalidOperation,
@@ -257,7 +276,7 @@ void FCortexEditorPhysicalInputSession::PollPreparation()
 				TEXT("The queued owned play request did not start a PIE session"));
 			return;
 		}
-		if (ComputeRequestFingerprint(SessionInfo->OriginalRequestParams) != SubmittedRequestFingerprint)
+		if (ComputeRequestFingerprint(SessionInfo->OriginalRequestParams, false) != SubmittedRequestFingerprint)
 		{
 			RelinquishOwnedRequest();
 			CompletePreparationFailure(CortexErrorCodes::InvalidOperation,
@@ -347,51 +366,70 @@ void FCortexEditorPhysicalInputSession::PollTeardown()
 		{
 			if (IsOwnedRequestPending())
 			{
-				// Still queued: cancel it; nothing of ours was ever created.
+				// Still queued: nothing of ours was ever created; cancel the exact request.
 				GEditor->CancelRequestPlaySession();
 				RelinquishOwnedRequest();
 				bStartupResolved = true;
+				return;
+			}
+			// No longer queued: it is only ours if the started session is the exact one accepted.
+			const TOptional<FPlayInEditorSessionInfo> Info = GEditor->GetPlayInEditorSessionInfo();
+			if (Info.IsSet() && ComputeRequestFingerprint(Info->OriginalRequestParams, false) == SubmittedRequestFingerprint)
+			{
+				bOwnedRequestOutstanding = false;
 			}
 			else
 			{
-				// Consumed by the engine only if it is the exact session we accepted.
-				const TOptional<FPlayInEditorSessionInfo> Info = GEditor->GetPlayInEditorSessionInfo();
-				if (Info.IsSet() && ComputeRequestFingerprint(Info->OriginalRequestParams) == SubmittedRequestFingerprint)
-				{
-					bOwnedRequestOutstanding = false;
-					bStartupResolved = true;
-				}
-				else
-				{
-					RelinquishOwnedRequest();
-					bStartupResolved = true;
-				}
+				// Replaced/foreign: never cancel it, and nothing of ours exists to observe.
+				RelinquishOwnedRequest();
+				bStartupResolved = true;
+				return;
 			}
-		}
-		else
-		{
-			bStartupResolved = true;
 		}
 
-		if (!OwnedWorld.IsValid() && OwnedContextHandle == NAME_None && SubmittedRequestFingerprint != 0)
+		// The engine can hold our PIE context before its world exists during deferred startup
+		// (PlayLevel.cpp:1827-1875), so capture the exact context now, world or not, and keep
+		// observing it instead of claiming completion for a context that can still appear.
+		if (OwnedContextHandle == NAME_None)
 		{
-			// Only adopt a context that belongs to the exact session we accepted.
 			const TOptional<FPlayInEditorSessionInfo> SessionInfo = GEditor->GetPlayInEditorSessionInfo();
-			if (SessionInfo.IsSet()
-				&& ComputeRequestFingerprint(SessionInfo->OriginalRequestParams) == SubmittedRequestFingerprint)
+			if (!SessionInfo.IsSet()
+				|| ComputeRequestFingerprint(SessionInfo->OriginalRequestParams, false) != SubmittedRequestFingerprint)
 			{
-				FName ContextHandle = NAME_None;
-				bool bAmbiguous = false;
-				if (UWorld* Created = FindNewPIEWorld(ContextHandle, bAmbiguous))
-				{
-					OwnedWorld = Created;
-					OwnedContextHandle = ContextHandle;
-				}
+				// A different session owns the editor; nothing of ours will be created.
+				RelinquishOwnedRequest();
+				bStartupResolved = true;
+				return;
 			}
+			FName ContextHandle = NAME_None;
+			bool bAmbiguous = false;
+			UWorld* Created = FindNewPIEWorld(ContextHandle, bAmbiguous);
+			if (ContextHandle != NAME_None)
+			{
+				// Created may still be null until the deferred world appears; keep observing it.
+				OwnedWorld = Created;
+				OwnedContextHandle = ContextHandle;
+			}
+		}
+
+		if (OwnedContextHandle != NAME_None)
+		{
+			// The exact owned context is captured; observe it until it is gone.
+			bStartupResolved = true;
+		}
+		else if (FPlatformTime::Seconds() >= OwnedRequest.DeadlineSeconds)
+		{
+			// A consumed request that never produced any context is positively abandoned.
+			RelinquishOwnedRequest();
+			bStartupResolved = true;
+			return;
 		}
 	}
 
-	if (IsOwnedContextPresent())
+	// End only once the captured owned context has a world to tear down. A world-less context
+	// is still ours and must stay observed: ending it before its deferred world appears is not
+	// what resolves the session (its world appears at PlayLevel.cpp:1603-1622).
+	if (IsOwnedContextWorldPresent())
 	{
 		GEditor->RequestEndPlayMap();
 	}
@@ -401,6 +439,7 @@ void FCortexEditorPhysicalInputSession::RelinquishOwnedRequest()
 {
 	bOwnedRequestOutstanding = false;
 	SubmittedRequestFingerprint = 0;
+	SubmittedQueuedRequestFingerprint = 0;
 }
 
 void FCortexEditorPhysicalInputSession::CompletePreparationFailure(const FString& ErrorCode, const FString& Message)
@@ -472,7 +511,7 @@ void FCortexEditorPhysicalInputSession::RequestOwnedTermination()
 			// Not queued anymore. Keep the fingerprint so teardown can correlate and end
 			// the context the engine created for us; relinquish only for foreign requests.
 			const TOptional<FPlayInEditorSessionInfo> Info = GEditor->GetPlayInEditorSessionInfo();
-			if (Info.IsSet() && ComputeRequestFingerprint(Info->OriginalRequestParams) == SubmittedRequestFingerprint)
+			if (Info.IsSet() && ComputeRequestFingerprint(Info->OriginalRequestParams, false) == SubmittedRequestFingerprint)
 			{
 				bOwnedRequestOutstanding = false;
 			}
@@ -491,12 +530,15 @@ void FCortexEditorPhysicalInputSession::RequestOwnedTermination()
 
 bool FCortexEditorPhysicalInputSession::IsOwnedRequestPending() const
 {
-	if (!bOwnedRequestOutstanding || GEditor == nullptr || SubmittedRequestFingerprint == 0)
+	if (!bOwnedRequestOutstanding || GEditor == nullptr || SubmittedQueuedRequestFingerprint == 0)
 	{
 		return false;
 	}
+	// Compare against the engine's queued copy, which still carries DestinationSlateViewport,
+	// so a same-map successor that differs only in its destination viewport is not ours.
 	const TOptional<FRequestPlaySessionParams> Pending = GEditor->GetPlaySessionRequest();
-	return Pending.IsSet() && ComputeRequestFingerprint(Pending.GetValue()) == SubmittedRequestFingerprint;
+	return Pending.IsSet()
+		&& ComputeRequestFingerprint(Pending.GetValue(), true) == SubmittedQueuedRequestFingerprint;
 }
 
 bool FCortexEditorPhysicalInputSession::IsOwnedContextPresent() const
@@ -514,6 +556,30 @@ bool FCortexEditorPhysicalInputSession::IsOwnedContextPresent() const
 		if (OwnedContextHandle != NAME_None && Context.ContextHandle == OwnedContextHandle)
 		{
 			return true;
+		}
+		if (OwnedWorld.IsValid() && Context.World() == OwnedWorld.Get())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FCortexEditorPhysicalInputSession::IsOwnedContextWorldPresent() const
+{
+	if (GEngine == nullptr)
+	{
+		return false;
+	}
+	for (const FWorldContext& Context : GEngine->GetWorldContexts())
+	{
+		if (Context.WorldType != EWorldType::PIE)
+		{
+			continue;
+		}
+		if (OwnedContextHandle != NAME_None && Context.ContextHandle == OwnedContextHandle)
+		{
+			return Context.World() != nullptr;
 		}
 		if (OwnedWorld.IsValid() && Context.World() == OwnedWorld.Get())
 		{
@@ -731,6 +797,7 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 	bOwnedRequestOutstanding = true;
 	bStartupResolved = false;
 	SubmittedRequestFingerprint = 0;
+	SubmittedQueuedRequestFingerprint = 0;
 	OwnedState = EOwnedState::Preparing;
 	OwnedContextHandle = NAME_None;
 	OwnedWorld = nullptr;
@@ -742,11 +809,14 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 	EnsureTicker();
 	GEditor->RequestPlaySession(Request);
 
-	// Capture the identity of the request the engine actually queued so a replacement
-	// request can never be mistaken for ours.
+	// Capture the identity of the request the engine actually queued in this same tick.
+	// DestinationSlateViewport is still present on the queued copy, so the queued identity
+	// distinguishes a same-map successor that differs only in its destination viewport. The
+	// consumed identity excludes it because the engine nulls the field once the session starts.
 	if (const TOptional<FRequestPlaySessionParams> Queued = GEditor->GetPlaySessionRequest())
 	{
-		SubmittedRequestFingerprint = ComputeRequestFingerprint(Queued.GetValue());
+		SubmittedRequestFingerprint = ComputeRequestFingerprint(Queued.GetValue(), false);
+		SubmittedQueuedRequestFingerprint = ComputeRequestFingerprint(Queued.GetValue(), true);
 	}
 
 	// The request is accepted; the session does not own a target until readiness succeeds.
