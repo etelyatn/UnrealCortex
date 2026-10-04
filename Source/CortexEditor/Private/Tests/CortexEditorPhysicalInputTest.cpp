@@ -22,11 +22,13 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/SlateUser.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerInput.h"
 #include "InputCoreTypes.h"
+#include "Input/DragAndDrop.h"
 #include "Input/Events.h"
 #include "Misc/PackageName.h"
 #include "PlayInEditorDataTypes.h"
@@ -51,6 +53,26 @@ namespace
 constexpr double CortexPhysicalInputReadyWatchdogSeconds = 15.0;
 constexpr double CortexPhysicalInputProductDeadlineWatchdogSeconds = 45.0;
 constexpr double CortexPhysicalInputTeardownWatchdogSeconds = 15.0;
+
+/**
+ * Real drag-drop payload for the owned drag cleanup regression. It records the engine's own
+ * cancellation callback, so the test can judge cleanup by the operation's observable lifecycle
+ * rather than by session bookkeeping.
+ */
+class FCortexPhysicalInputTestDragDrop : public FDragDropOperation
+{
+public:
+	DRAG_DROP_OPERATOR_TYPE(FCortexPhysicalInputTestDragDrop, FDragDropOperation)
+
+	int32 DropCount = 0;
+	bool bLastDropCancelled = false;
+
+	virtual void OnDrop(bool bDropWasHandled, const FPointerEvent& /*MouseEvent*/) override
+	{
+		++DropCount;
+		bLastDropCancelled = !bDropWasHandled;
+	}
+};
 
 struct FCortexEditorPhysicalInputTestFixture
 {
@@ -104,6 +126,11 @@ struct FCortexEditorPhysicalInputTestFixture
 	int32 CapturedPressIndex = INDEX_NONE;
 	FVector2D CapturedSliderSize = FVector2D::ZeroVector;
 	FVector2D CapturedSliderPosition = FVector2D::ZeroVector;
+	// Fix-round-4 regression consumers: a real drag source and a real high-precision requester.
+	TSharedPtr<SWidget> DragConsumer;
+	TSharedPtr<FCortexPhysicalInputTestDragDrop> DragDropOperation;
+	int32 DragDetectedCount = 0;
+	TSharedPtr<SWidget> HighPrecisionConsumer;
 
 	FCortexEditorPhysicalInputTestFixture()
 	{
@@ -1152,6 +1179,78 @@ public:
 	}
 private:
 	TWeakPtr<FCortexEditorPhysicalInputTestFixture> Fixture;
+};
+
+/**
+ * Real drag source for the owned drag/drop cleanup regression. A pointer down starts Slate drag
+ * detection and the first move past the trigger distance establishes a real drag-drop operation
+ * through this widget's normal OnDragDetected path.
+ */
+class SCortexPhysicalInputDragConsumer : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SCortexPhysicalInputDragConsumer) {}
+		SLATE_ARGUMENT(TSharedPtr<FCortexEditorPhysicalInputTestFixture>, Fixture)
+	SLATE_END_ARGS()
+	void Construct(const FArguments& Args)
+	{
+		Fixture = Args._Fixture;
+		ChildSlot
+		[
+			SNew(SBox).WidthOverride(320.0f).HeightOverride(100.0f)
+		];
+		SetTag(FName(TEXT("CortexPhysicalDragRoot")));
+	}
+	virtual FReply OnMouseButtonDown(const FGeometry&, const FPointerEvent& Event) override
+	{
+		if (Event.GetEffectingButton() == EKeys::LeftMouseButton)
+		{
+			return FReply::Handled().DetectDrag(SharedThis(this), EKeys::LeftMouseButton);
+		}
+		return FReply::Unhandled();
+	}
+	virtual FReply OnDragDetected(const FGeometry&, const FPointerEvent& Event) override
+	{
+		const TSharedPtr<FCortexEditorPhysicalInputTestFixture> Pinned = Fixture.Pin();
+		if (!Pinned.IsValid())
+		{
+			return FReply::Unhandled();
+		}
+		const TSharedRef<FCortexPhysicalInputTestDragDrop> Operation =
+			MakeShared<FCortexPhysicalInputTestDragDrop>();
+		Pinned->DragDropOperation = Operation;
+		Pinned->DragDetectedCount++;
+		return FReply::Handled().BeginDragDrop(Operation);
+	}
+private:
+	TWeakPtr<FCortexEditorPhysicalInputTestFixture> Fixture;
+};
+
+/**
+ * Real consumer that requests high-precision (raw input) mouse movement on its pointer down, so the
+ * owned high-precision mode cleanup must release is genuinely established by the engine.
+ */
+class SCortexPhysicalInputHighPrecisionConsumer : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SCortexPhysicalInputHighPrecisionConsumer) {}
+	SLATE_END_ARGS()
+	void Construct(const FArguments&)
+	{
+		ChildSlot
+		[
+			SNew(SBox).WidthOverride(320.0f).HeightOverride(100.0f)
+		];
+		SetTag(FName(TEXT("CortexPhysicalHighPrecisionRoot")));
+	}
+	virtual FReply OnMouseButtonDown(const FGeometry&, const FPointerEvent& Event) override
+	{
+		if (Event.GetEffectingButton() == EKeys::LeftMouseButton)
+		{
+			return FReply::Handled().UseHighPrecisionMouseMovement(SharedThis(this));
+		}
+		return FReply::Unhandled();
+	}
 };
 
 /** Records every captured event, its monotonic capture time and its pre-press context. */
@@ -3546,6 +3645,366 @@ bool FCortexPhysicalInputOwnedMouseButtonNeutralizedTest::RunTest(const FString&
 				Controller->IsInputKeyDown(EKeys::LeftMouseButton));
 			Test.TestEqual(TEXT("Cached mouse button bit cleared by the mouse-button cleanup"),
 				Slate.GetPressedMouseButtons().Num(), 0);
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A balanced replayed press/release on a real captured consumer reconciles owned capture
+// ownership with the live engine state, so a UI wait is permitted again
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputReplayedCaptureWaitTest,
+	"Cortex.Editor.PhysicalInputReplayedCaptureWait",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputReplayedCaptureWaitTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("ReplayedCaptureWait"),
+		[](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const int32 User = Binding.SlateUserIndex;
+			const FGeometry Geometry = F.Slider->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0) { return; }
+			const FVector2D Center = Geometry.LocalToAbsolute(Size * 0.5);
+			const FVector2D CenterViewport = ToViewportLocal(F, Center);
+
+			FCortexEditorPhysicalInputEvent PointerDown;
+			PointerDown.Kind = ECortexEditorPhysicalInputKind::PointerDown;
+			PointerDown.Key = EKeys::LeftMouseButton;
+			PointerDown.ViewportPosition = CenterViewport;
+			Test.TestTrue(TEXT("Replayed press dispatched"), F.Session->Dispatch(PointerDown).bSuccess);
+			Test.TestTrue(TEXT("Replayed press really captured the pointer"),
+				Slate.HasUserMouseCapture(User));
+			Test.TestFalse(TEXT("UI wait is not eligible while the replayed press holds capture"),
+				F.Session->CanWaitForUI());
+
+			FCortexEditorPhysicalInputEvent PointerUp;
+			PointerUp.Kind = ECortexEditorPhysicalInputKind::PointerUp;
+			PointerUp.Key = EKeys::LeftMouseButton;
+			PointerUp.ViewportPosition = CenterViewport;
+			Test.TestTrue(TEXT("Replayed release dispatched"), F.Session->Dispatch(PointerUp).bSuccess);
+			Test.TestFalse(TEXT("Replayed release really released the live pointer capture"),
+				Slate.HasUserMouseCapture(User));
+			Test.TestTrue(TEXT("UI wait is eligible after the balanced capture release"),
+				F.Session->CanWaitForUI());
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Movement routed to a live selected-route captor outside its hit area is admitted and recorded
+// with the off-route position, while unrelated editor motion remains excluded. Consumer-level
+// delivery of a captured off-route move (a rendered widget reacting to the routed move) is deferred
+// to the Task 10 rendered matrix (physical human input) per the fix-cap ruling: this harness can
+// only establish the session's admission/recording contract (the round-4
+// IsPointerCaptureOnSelectedRoute admission is what admits this move).
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputCapturedMoveOutsideRouteTest,
+	"Cortex.Editor.PhysicalInputCapturedMoveOutsideRoute",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputCapturedMoveOutsideRouteTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture,
+		TEXT("CapturedMoveOutsideRoute"),
+		[](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const int32 User = Binding.SlateUserIndex;
+			const FModifierKeysState Modifiers;
+			const uint32 Pointer = FSlateApplicationBase::CursorPointerIndex;
+			const TSharedPtr<SWidget> InputRoot = Binding.InputRoot.Pin();
+			Test.TestTrue(TEXT("Selected input root available"), InputRoot.IsValid());
+			if (!InputRoot.IsValid()) { return; }
+			const FGeometry Geometry = F.Slider->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0) { return; }
+			const FVector2D Center = Geometry.LocalToAbsolute(Size * 0.5);
+			// A point outside the selected viewport's own route (same Slate user and device).
+			const FVector2D OffRoute =
+				InputRoot->GetCachedGeometry().GetAbsolutePosition() - FVector2D(40.0, 40.0);
+			const FVector2D OffRouteLocal =
+				InputRoot->GetCachedGeometry().AbsoluteToLocal(OffRoute);
+
+			const int32 Begin = F.Captured.Num();
+			TSet<FKey> Pressed;
+			Pressed.Add(EKeys::LeftMouseButton);
+			Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Binding.InputDevice, Pointer,
+				Center, Center, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, User));
+			Test.TestTrue(TEXT("Captured press really captured the pointer"),
+				Slate.HasUserMouseCapture(User));
+
+			// The pointer leaves the viewport while the capture is live: the round-4
+			// IsPointerCaptureOnSelectedRoute admission admits the move, so the replay stream records
+			// it (with the off-route position) even though it is outside the captured hit area.
+			Slate.ProcessMouseMoveEvent(FPointerEvent(Binding.InputDevice, Pointer, OffRoute, Center,
+				Pressed, EKeys::Invalid, 0.0f, Modifiers, User), false);
+			Test.TestEqual(TEXT("Captured outside-route press and move were recorded"),
+				F.Captured.Num(), Begin + 2);
+			if (F.Captured.IsValidIndex(Begin + 1))
+			{
+				Test.TestTrue(TEXT("Recorded outside-route move carries the off-route position"),
+					F.Captured[Begin + 1].ViewportPosition.Equals(OffRouteLocal, 1.0f));
+			}
+
+			Pressed.Reset();
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice, Pointer, OffRoute,
+				OffRoute, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, User));
+			Test.TestEqual(TEXT("Captured outside-route release was recorded"),
+				F.Captured.Num(), Begin + 3);
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A human down on a replay-owned keyboard key is foreign: cleanup never synthesizes its release or
+// per-key neutralization, and the human's own Up balances the engine state
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputForeignSameKeyDownTest,
+	"Cortex.Editor.PhysicalInputForeignSameKeyDown",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputForeignSameKeyDownTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("ForeignSameKeySetup"),
+		[](FAutomationTestBase&, FCortexEditorPhysicalInputTestFixture&) {}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			F.Session->SetInterruptionCallback([Fixture](const FCortexCommandResult& Result)
+			{
+				Fixture->InterruptionCount++;
+				Fixture->Interruption = Result;
+			});
+
+			// Replay owns W, then a human press of the same key arrives while replay is active.
+			FCortexEditorPhysicalInputEvent KeyDown;
+			KeyDown.Kind = ECortexEditorPhysicalInputKind::KeyDown;
+			KeyDown.Key = EKeys::W;
+			Test.TestTrue(TEXT("Owned W down dispatched"), F.Session->Dispatch(KeyDown).bSuccess);
+			const FModifierKeysState Modifiers;
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::W, Modifiers, Binding.InputDevice,
+				false, 0, 0, Binding.SlateUserIndex));
+			Test.TestEqual(TEXT("Foreign same-key down interrupted replay"), F.InterruptionCount, 1);
+			Test.TestFalse(TEXT("Interruption reports a non-success result"), F.Interruption.bSuccess);
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 3,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			APlayerController* Controller = FixtureController(F);
+			Test.TestNotNull(TEXT("Bound controller for the foreign-key cleanup"), Controller);
+			if (!Controller) { return; }
+			Test.TestTrue(TEXT("Original controller reports the key down before cleanup"),
+				Controller->IsInputKeyDown(EKeys::W));
+
+			const FCortexCommandResult Cleanup = F.Session->ReleaseHeldInputs();
+			Test.TestTrue(TEXT("Foreign-held key cleanup reports success"), Cleanup.bSuccess);
+			Test.TestTrue(TEXT("Human-held key is not synthetically released by cleanup"),
+				Controller->IsInputKeyDown(EKeys::W));
+
+			// The human's real Up ends the foreign ownership and balances the engine state.
+			const FModifierKeysState Modifiers;
+			Slate.ProcessKeyUpEvent(FKeyEvent(EKeys::W, Modifiers, Binding.InputDevice,
+				false, 0, 0, Binding.SlateUserIndex));
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 3,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			APlayerController* Controller = FixtureController(F);
+			if (!Controller) { return; }
+			Test.TestFalse(TEXT("Human key release balances the original controller"),
+				Controller->IsInputKeyDown(EKeys::W));
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// An owned drag-drop established by dispatch survives a capture-only check, so cleanup cancels the
+// exact owned operation and only then reports success
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputOwnedDragDropCleanupTest,
+	"Cortex.Editor.PhysicalInputOwnedDragDropCleanup",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputOwnedDragDropCleanupTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("OwnedDragDropInstall"),
+		[Fixture](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			UWorld* World = F.Session->GetTargetBinding().World.Get();
+			if (!World || !World->GetGameViewport()) { return; }
+			const TSharedRef<SCortexPhysicalInputDragConsumer> Consumer =
+				SNew(SCortexPhysicalInputDragConsumer).Fixture(Fixture);
+			F.DragConsumer = Consumer;
+			World->GetGameViewport()->AddViewportWidgetContent(Consumer);
+		}, /*bInstallProbe=*/false, /*bArmCapture=*/false));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const TSharedPtr<SWidget> Consumer = F.DragConsumer;
+			Test.TestTrue(TEXT("Drag consumer present"), Consumer.IsValid());
+			if (!Consumer.IsValid()) { return; }
+			const FGeometry Geometry = Consumer->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0)
+			{
+				Test.AddError(TEXT("Drag consumer has no geometry"));
+				return;
+			}
+			const FVector2D Start = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.3, Size.Y * 0.5));
+			const FVector2D Finish = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.9, Size.Y * 0.5));
+
+			FCortexEditorPhysicalInputEvent PointerDown;
+			PointerDown.Kind = ECortexEditorPhysicalInputKind::PointerDown;
+			PointerDown.Key = EKeys::LeftMouseButton;
+			PointerDown.ViewportPosition = ToViewportLocal(F, Start);
+			Test.TestTrue(TEXT("Drag pointer down dispatched"),
+				F.Session->Dispatch(PointerDown).bSuccess);
+
+			FCortexEditorPhysicalInputEvent PointerMove;
+			PointerMove.Kind = ECortexEditorPhysicalInputKind::PointerMove;
+			PointerMove.ViewportPosition = ToViewportLocal(F, Finish);
+			PointerMove.Delta = Finish - Start;
+			Test.TestTrue(TEXT("Drag pointer move dispatched"),
+				F.Session->Dispatch(PointerMove).bSuccess);
+
+			const TSharedPtr<FSlateUser> User = Slate.GetUser(Binding.SlateUserIndex);
+			Test.TestTrue(TEXT("Owned dispatch really established a drag-drop operation"),
+				User.IsValid() && User->GetDragDropContent().IsValid());
+			Test.TestEqual(TEXT("Drag was detected exactly once"), F.DragDetectedCount, 1);
+			Test.TestFalse(TEXT("UI wait is not eligible while the owned drag is live"),
+				F.Session->CanWaitForUI());
+
+			const FCortexCommandResult Cleanup = F.Session->ReleaseHeldInputs();
+			Test.TestTrue(TEXT("Owned drag-drop cleanup succeeded"), Cleanup.bSuccess);
+			const TSharedPtr<FSlateUser> PostUser = Slate.GetUser(Binding.SlateUserIndex);
+			Test.TestFalse(TEXT("Owned drag-drop operation is gone after cleanup"),
+				PostUser.IsValid() && PostUser->GetDragDropContent().IsValid());
+			Test.TestTrue(TEXT("Owned drag-drop operation received the engine's cancel callback"),
+				F.DragDropOperation.IsValid() && F.DragDropOperation->DropCount == 1
+					&& F.DragDropOperation->bLastDropCancelled);
+			Test.TestTrue(TEXT("UI wait is eligible again after the owned drag was cancelled"),
+				F.Session->CanWaitForUI());
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// High-precision raw mouse movement established by an owned dispatch is released under the same
+// identity guard during cleanup
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputOwnedHighPrecisionCleanupTest,
+	"Cortex.Editor.PhysicalInputOwnedHighPrecisionCleanup",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputOwnedHighPrecisionCleanupTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("HighPrecisionInstall"),
+		[](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			UWorld* World = F.Session->GetTargetBinding().World.Get();
+			if (!World || !World->GetGameViewport()) { return; }
+			const TSharedRef<SCortexPhysicalInputHighPrecisionConsumer> Consumer =
+				SNew(SCortexPhysicalInputHighPrecisionConsumer);
+			F.HighPrecisionConsumer = Consumer;
+			World->GetGameViewport()->AddViewportWidgetContent(Consumer);
+		}, /*bInstallProbe=*/false, /*bArmCapture=*/false));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const TSharedPtr<SWidget> Consumer = F.HighPrecisionConsumer;
+			Test.TestTrue(TEXT("High-precision consumer present"), Consumer.IsValid());
+			if (!Consumer.IsValid()) { return; }
+			const FGeometry Geometry = Consumer->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0)
+			{
+				Test.AddError(TEXT("High-precision consumer has no geometry"));
+				return;
+			}
+			const FVector2D Center = Geometry.LocalToAbsolute(Size * 0.5);
+			FCortexEditorPhysicalInputEvent PointerDown;
+			PointerDown.Kind = ECortexEditorPhysicalInputKind::PointerDown;
+			PointerDown.Key = EKeys::LeftMouseButton;
+			PointerDown.ViewportPosition = ToViewportLocal(F, Center);
+			Test.TestTrue(TEXT("High-precision pointer down dispatched"),
+				F.Session->Dispatch(PointerDown).bSuccess);
+			Test.TestTrue(TEXT("Owned dispatch really enabled high-precision mouse movement"),
+				Slate.IsUsingHighPrecisionMouseMovment());
+			Test.TestFalse(TEXT("UI wait is not eligible while the owned capture is live"),
+				F.Session->CanWaitForUI());
+
+			const FCortexCommandResult Cleanup = F.Session->ReleaseHeldInputs();
+			Test.TestTrue(TEXT("Owned high-precision cleanup succeeded"), Cleanup.bSuccess);
+			Test.TestFalse(TEXT("Owned high-precision mouse movement is disabled after cleanup"),
+				Slate.IsUsingHighPrecisionMouseMovment());
+			Test.TestFalse(TEXT("Owned pointer capture is released after cleanup"),
+				Slate.HasUserMouseCapture(Binding.SlateUserIndex));
 		}));
 
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));

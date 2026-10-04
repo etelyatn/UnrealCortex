@@ -10,6 +10,8 @@
 class APawn;
 class APlayerController;
 class FCortexEditorPhysicalInputCaptureProcessor;
+class FDragDropOperation;
+class FSlateApplication;
 class SWidget;
 class SViewport;
 class UClass;
@@ -18,6 +20,7 @@ class UWorld;
 struct FCortexEditorPhysicalInputCaptureState;
 struct FCortexEditorPhysicalInputDispatchContext;
 struct FCortexEditorPhysicalInputGuardState;
+struct FPointerEvent;
 
 /**
  * Shared CortexEditor physical input error codes.
@@ -325,6 +328,24 @@ private:
 
 	/** True when the selected user's keyboard focus is inside the selected viewport route. */
 	bool IsKeyboardFocusOnSelectedRoute() const;
+
+	/** True when the given widget (or one of its ancestors) is on the selected viewport route. */
+	bool IsWidgetOnSelectedRoute(const TSharedPtr<const SWidget>& Widget) const;
+
+	/**
+	 * True when the selected user's live pointer capture belongs to the selected viewport route,
+	 * so ongoing movement is routed to a selected consumer even outside its hit area.
+	 */
+	bool IsPointerCaptureOnSelectedRoute() const;
+
+	/**
+	 * Retains the exact captor/drag-drop/high-precision identities this operation's own dispatch
+	 * established and reconciles a capture/high-precision the normal dispatch released. Called
+	 * after each pointer event so cleanup only ever cancels live, genuinely owned state.
+	 */
+	void RetainOwnedPointerState(FSlateApplication& Slate, const FPointerEvent& PointerEvent,
+		bool bHadUserCaptureBefore, bool bHadHighPrecisionBefore,
+		const TSharedPtr<FDragDropOperation>& DragDropBefore);
 
 	void EnsureTicker();
 	void RemoveTicker();

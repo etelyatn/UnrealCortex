@@ -8,6 +8,7 @@
 #include "Templates/Function.h"
 #include "Templates/SharedPointer.h"
 
+class FDragDropOperation;
 class FWidgetPath;
 
 class FCortexEditorPhysicalInputSession;
@@ -76,6 +77,16 @@ struct FCortexEditorPhysicalInputCaptureState
 	/** Exact captor path and event this operation acquired, reused for the guarded release reply. */
 	TSharedPtr<FWidgetPath> OwnedCaptorPath;
 	FPointerEvent OwnedPointerEvent;
+	/**
+	 * True once this operation's own dispatch started a Slate drag-drop operation. A drag start
+	 * releases mouse capture and establishes its content separately, so the captor path alone
+	 * cannot identify it during cleanup.
+	 */
+	bool bOwnedDragDrop = false;
+	/** The exact drag-drop operation this operation started; cancelled only under this identity. */
+	TWeakPtr<FDragDropOperation> OwnedDragDropContent;
+	/** True once this operation's own dispatch enabled high-precision (raw input) mouse movement. */
+	bool bOwnedHighPrecision = false;
 	/** Modifier keys recorded by transitions in this epoch (not device-wide observations). */
 	TSet<FKey> CapturedModifierKeys;
 	/** Observed down state, maintained from processor installation even before arming. */

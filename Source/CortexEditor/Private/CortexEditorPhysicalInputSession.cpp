@@ -23,6 +23,7 @@
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "GenericPlatform/GenericWindow.h"
 #include "IAssetViewport.h"
+#include "Input/DragAndDrop.h"
 #include "InputKeyEventArgs.h"
 #include "KeyState.h"
 #include "LevelEditor.h"
@@ -1538,6 +1539,10 @@ void FCortexEditorPhysicalInputSession::DetachCapture()
 		CaptureState->bFaulted = false;
 		CaptureState->bOwnedPointerCapture = false;
 		CaptureState->OwnedCaptorPath.Reset();
+		CaptureState->OwnedPointerEvent = FPointerEvent();
+		CaptureState->bOwnedDragDrop = false;
+		CaptureState->OwnedDragDropContent.Reset();
+		CaptureState->bOwnedHighPrecision = false;
 		CaptureState->ObservedHeldKeys.Reset();
 		CaptureState->ObservedHeldButtons.Reset();
 		CaptureState->ObservedModifierKeys.Reset();
@@ -1663,6 +1668,10 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::ArmCapture(
 	CaptureState->bFaulted = false;
 	CaptureState->bOwnedPointerCapture = false;
 	CaptureState->OwnedCaptorPath.Reset();
+	CaptureState->OwnedPointerEvent = FPointerEvent();
+	CaptureState->bOwnedDragDrop = false;
+	CaptureState->OwnedDragDropContent.Reset();
+	CaptureState->bOwnedHighPrecision = false;
 	CaptureState->CaptureEpochSeconds = FPlatformTime::Seconds();
 	CaptureState->CapturedHeldKeys.Reset();
 	CaptureState->CapturedHeldButtons.Reset();
@@ -1864,7 +1873,12 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseMove(const FPointer
 	{
 		return;
 	}
-	if (!IsPointerPositionOnSelectedRoute(ScreenSpacePosition))
+	// Movement is attributed to the selected route either through the current hit path or through a
+	// live capture that belongs to the selected route: Slate keeps routing a captured drag to the
+	// selected consumer after the pointer leaves the viewport, and the replay stream must include
+	// that consumer-visible change. Unrelated editor motion has neither.
+	if (!IsPointerPositionOnSelectedRoute(ScreenSpacePosition)
+		&& !IsPointerCaptureOnSelectedRoute())
 	{
 		return;
 	}
@@ -2124,33 +2138,56 @@ bool FCortexEditorPhysicalInputSession::IsPointerPositionOnSelectedRoute(
 	return false;
 }
 
+bool FCortexEditorPhysicalInputSession::IsWidgetOnSelectedRoute(
+	const TSharedPtr<const SWidget>& Widget) const
+{
+	const TSharedPtr<SWidget> CoordinateRoot = GetCoordinateRootWidget();
+	const TSharedPtr<SWidget> InputRoot = Binding.InputRoot.Pin();
+	for (TSharedPtr<const SWidget> Current = Widget; Current.IsValid();
+		Current = Current->GetParentWidget())
+	{
+		if ((CoordinateRoot.IsValid() && Current.Get() == CoordinateRoot.Get())
+			|| (InputRoot.IsValid() && Current.Get() == InputRoot.Get()))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FCortexEditorPhysicalInputSession::IsPointerCaptureOnSelectedRoute() const
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		return false;
+	}
+	const TSharedPtr<FSlateUser> User = FSlateApplication::Get().GetUser(Binding.SlateUserIndex);
+	if (!User.IsValid() || !User->HasAnyCapture())
+	{
+		return false;
+	}
+	// Slate routes movement to a live captor even when the pointer left its hit area, so a captor
+	// that belongs to the selected route still drives a selected consumer; a captor outside the
+	// route (ordinary editor input) is never admitted.
+	for (const TSharedRef<SWidget>& Captor : User->GetCaptorWidgets())
+	{
+		if (IsWidgetOnSelectedRoute(Captor))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 bool FCortexEditorPhysicalInputSession::IsKeyboardFocusOnSelectedRoute() const
 {
 	if (!FSlateApplication::IsInitialized())
 	{
 		return false;
 	}
-	const TSharedPtr<SWidget> CoordinateRoot = GetCoordinateRootWidget();
-	const TSharedPtr<SWidget> InputRoot = Binding.InputRoot.Pin();
-	if (!CoordinateRoot.IsValid() && !InputRoot.IsValid())
-	{
-		return false;
-	}
 	const TSharedPtr<SWidget> Focused = FSlateApplication::Get().GetUserFocusedWidget(
 		static_cast<uint32>(Binding.SlateUserIndex));
-	if (!Focused.IsValid())
-	{
-		return false;
-	}
-	for (SWidget* Widget = Focused.Get(); Widget != nullptr; Widget = Widget->GetParentWidget().Get())
-	{
-		if ((CoordinateRoot.IsValid() && Widget == CoordinateRoot.Get())
-			|| (InputRoot.IsValid() && Widget == InputRoot.Get()))
-		{
-			return true;
-		}
-	}
-	return false;
+	return IsWidgetOnSelectedRoute(Focused);
 }
 
 FCortexCommandResult FCortexEditorPhysicalInputSession::SetCaptureCallback(
@@ -2215,6 +2252,7 @@ bool FCortexEditorPhysicalInputSession::CanWaitForUI() const
 	// ever dispatched: a balanced KeyDown/KeyUp (for example a menu open/close) leaves the session
 	// able to wait and to dispatch again.
 	return !CaptureState->bOwnedPointerCapture
+		&& !CaptureState->bOwnedDragDrop
 		&& CaptureState->OwnedSyntheticKeys.Num() == 0
 		&& CaptureState->OwnedSyntheticButtons.Num() == 0
 		&& CaptureState->CapturedHeldKeys.Num() == 0
@@ -2260,9 +2298,13 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 	{
 		InactiveInputGuard = MakeUnique<FCortexScopedInactivePhysicalInput>(Slate);
 	}
-	// Snapshot whether the selected user already had mouse capture so a foreign captor is never
-	// attributed to this operation (and therefore never released by cleanup).
+	// Snapshot the pre-dispatch state so only capture/high-precision/drag state this operation's own
+	// event establishes is ever attributed to it, and a foreign captor or drag is never released.
 	const bool bHadUserCaptureBefore = Slate.HasUserMouseCapture(UserIndex);
+	const bool bHadHighPrecisionBefore = Slate.IsUsingHighPrecisionMouseMovment();
+	const TSharedPtr<FSlateUser> SelectedPreUser = Slate.GetUser(UserIndex);
+	const TSharedPtr<FDragDropOperation> DragDropBefore = SelectedPreUser.IsValid()
+		? SelectedPreUser->GetDragDropContent() : nullptr;
 	TGuardValue<int32> SyntheticGuard(
 		DispatchContext->SyntheticDepth, DispatchContext->SyntheticDepth + 1);
 	bReplayInProgress = true;
@@ -2325,6 +2367,8 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 			? ToViewportPosition(ScreenSpacePosition) : Event.ViewportPosition;
 		++DispatchContext->ProcessedMotionGeneration;
 		GuardState->MotionGeneration = DispatchContext->ProcessedMotionGeneration;
+		RetainOwnedPointerState(Slate, PointerEvent, bHadUserCaptureBefore, bHadHighPrecisionBefore,
+			DragDropBefore);
 		break;
 	}
 	case ECortexEditorPhysicalInputKind::PointerDown:
@@ -2365,22 +2409,11 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 		}
 		GuardState->LastViewportPointerPosition = Event.ViewportPosition;
 
-		// Retain the exact captor this operation acquired through its own dispatch: only a capture
-		// that did not exist before this event is ours, so a foreign captor is never recorded and
-		// never released by cleanup.
-		if (!bHadUserCaptureBefore
-			&& !CaptureState->bOwnedPointerCapture
-			&& Slate.HasUserMouseCapture(UserIndex))
-		{
-			FWidgetPath CaptorPath;
-			if (ResolveSelectedRoutePath(Slate, UserIndex, GetCoordinateRootWidget(),
-				EngineEvent.ViewportPosition, CaptorPath))
-			{
-				CaptureState->OwnedCaptorPath = MakeShared<FWidgetPath>(CaptorPath);
-				CaptureState->OwnedPointerEvent = PointerEvent;
-				CaptureState->bOwnedPointerCapture = true;
-			}
-		}
+		// Retain the exact captor/drag/high-precision state this operation acquired through its own
+		// dispatch and reconcile anything the normal routing already released, so cleanup only ever
+		// cancels live, genuinely owned state.
+		RetainOwnedPointerState(Slate, PointerEvent, bHadUserCaptureBefore, bHadHighPrecisionBefore,
+			DragDropBefore);
 		break;
 	}
 	case ECortexEditorPhysicalInputKind::Wheel:
@@ -2402,6 +2435,77 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 
 	++DispatchContext->OperationGeneration;
 	return MakeSuccessResult();
+}
+
+void FCortexEditorPhysicalInputSession::RetainOwnedPointerState(FSlateApplication& Slate,
+	const FPointerEvent& PointerEvent, bool bHadUserCaptureBefore, bool bHadHighPrecisionBefore,
+	const TSharedPtr<FDragDropOperation>& DragDropBefore)
+{
+	if (!CaptureState.IsValid())
+	{
+		return;
+	}
+	const int32 UserIndex = Binding.SlateUserIndex;
+
+	// Capture: retain only the exact captor this operation's own event acquired, so a foreign
+	// captor is never recorded and never released. Reconcile afterwards so a matching release (for
+	// example the slider's own OnMouseButtonUp) does not retain acquisition history until terminal
+	// cleanup and wrongly block a UI wait.
+	if (Slate.HasUserMouseCapture(UserIndex))
+	{
+		if (!bHadUserCaptureBefore && !CaptureState->bOwnedPointerCapture)
+		{
+			FWidgetPath CaptorPath;
+			if (ResolveSelectedRoutePath(Slate, UserIndex, GetCoordinateRootWidget(),
+				PointerEvent.GetScreenSpacePosition(), CaptorPath))
+			{
+				CaptureState->OwnedCaptorPath = MakeShared<FWidgetPath>(CaptorPath);
+				CaptureState->OwnedPointerEvent = PointerEvent;
+				CaptureState->bOwnedPointerCapture = true;
+			}
+		}
+	}
+	else if (CaptureState->bOwnedPointerCapture)
+	{
+		CaptureState->bOwnedPointerCapture = false;
+		CaptureState->OwnedCaptorPath.Reset();
+		CaptureState->OwnedPointerEvent = FPointerEvent();
+	}
+
+	// High-precision raw mouse movement is established together with the capture and, per the engine
+	// contract, released by the matching release reply. Track any mode that turns on during this
+	// operation's own dispatch as owned (it can only have been requested by this dispatch's reply,
+	// FReply::UseHighPrecisionMouseMovement sets MouseCaptor and bUseHighPrecisionMouse together,
+	// Reply.h:36-43) and reconcile it when the mode turns off.
+	if (Slate.IsUsingHighPrecisionMouseMovment())
+	{
+		if (!bHadHighPrecisionBefore && !CaptureState->bOwnedHighPrecision)
+		{
+			CaptureState->bOwnedHighPrecision = true;
+		}
+	}
+	else if (CaptureState->bOwnedHighPrecision)
+	{
+		CaptureState->bOwnedHighPrecision = false;
+	}
+
+	// Drag-drop: Slate releases mouse capture when a drag starts (BeginDragDrop) and keeps the drag
+	// content in a separate slot, so the captor path cannot identify it. Retain the exact operation
+	// this dispatch established, and reconcile it once the owned drop/cancel has ended it.
+	const TSharedPtr<FSlateUser> SelectedUser = Slate.GetUser(UserIndex);
+	const TSharedPtr<FDragDropOperation> DragDropAfter = SelectedUser.IsValid()
+		? SelectedUser->GetDragDropContent() : nullptr;
+	if (!CaptureState->bOwnedDragDrop && DragDropAfter.IsValid() && DragDropAfter != DragDropBefore)
+	{
+		CaptureState->bOwnedDragDrop = true;
+		CaptureState->OwnedDragDropContent = DragDropAfter;
+	}
+	else if (CaptureState->bOwnedDragDrop
+		&& DragDropAfter != CaptureState->OwnedDragDropContent.Pin())
+	{
+		CaptureState->bOwnedDragDrop = false;
+		CaptureState->OwnedDragDropContent.Reset();
+	}
 }
 
 FCortexCommandResult FCortexEditorPhysicalInputSession::ReleaseHeldInputs()
@@ -2440,17 +2544,37 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::ReleaseHeldInputs()
 	TSet<FKey> OwnedKeys;
 	TSet<FKey> OwnedButtons;
 	TSet<FKey> ForeignHeld;
+	TSet<FKey> ForeignHeldKeys;
 	if (CaptureState.IsValid())
 	{
 		OwnedKeys = CaptureState->OwnedSyntheticKeys;
 		OwnedButtons = CaptureState->OwnedSyntheticButtons;
 		ForeignHeld = CaptureState->ForeignHeldButtons;
-		ForeignHeld.Append(CaptureState->ForeignInFlight);
+		ForeignHeldKeys = CaptureState->ForeignHeldKeys;
+		for (const FKey& InFlight : CaptureState->ForeignInFlight)
+		{
+			if (InFlight.IsMouseButton())
+			{
+				ForeignHeld.Add(InFlight);
+			}
+			else
+			{
+				ForeignHeldKeys.Add(InFlight);
+			}
+		}
 	}
 
-	// Owned digital mouse buttons join the guarded controller release, excluding any button a
-	// foreign source holds (or is currently routing).
-	TSet<FKey> ReleaseKeys = OwnedKeys;
+	// Owned digital keys and mouse buttons join the guarded controller release, excluding any key or
+	// button a foreign source holds (or is currently routing): a human press on a replay-owned key
+	// must never receive a synthetic release or per-key neutralization.
+	TSet<FKey> ReleaseKeys;
+	for (const FKey& Key : OwnedKeys)
+	{
+		if (!ForeignHeldKeys.Contains(Key))
+		{
+			ReleaseKeys.Add(Key);
+		}
+	}
 	for (const FKey& Button : OwnedButtons)
 	{
 		if (!ForeignHeld.Contains(Button))
@@ -2512,22 +2636,60 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::ReleaseHeldInputs()
 	// release any capture then, and never release a capture this operation does not own.
 	const bool bForeignCapturePresent = ForeignHeld.Num() > 0;
 
-	// Step 3.5: cancel this operation's own Slate pointer capture, drag and cursor lock. A cancelled
-	// slider keeps responding to physical movement while its capture persists, so this must happen
-	// before success can be reported.
-	if (CaptureState.IsValid()
-		&& CaptureState->bOwnedPointerCapture
-		&& CaptureState->OwnedCaptorPath.IsValid()
-		&& !bForeignCapturePresent
-		&& Slate.HasUserMouseCapture(Binding.SlateUserIndex))
+	// Step 3.5: cancel this operation's own Slate drag-drop, pointer capture and cursor lock. A
+	// cancelled slider keeps responding to physical movement while its capture persists, and a
+	// drag-drop established by BeginDragDrop survives a capture-only check (the engine releases
+	// capture when the drag starts), so both are cancelled under their exact owned identities.
+	const TSharedPtr<FSlateUser> SelectedUser = Slate.GetUser(Binding.SlateUserIndex);
+	if (CaptureState.IsValid() && !bForeignCapturePresent)
 	{
-		// Cancel only the owned drag operation (this capture is the operation's own).
-		Slate.CancelDragDrop();
+		// Cancel only the exact drag-drop operation this operation started.
+		if (CaptureState->bOwnedDragDrop && SelectedUser.IsValid())
+		{
+			const TSharedPtr<FDragDropOperation> OwnedDrag = CaptureState->OwnedDragDropContent.Pin();
+			if (OwnedDrag.IsValid() && SelectedUser->GetDragDropContent() == OwnedDrag)
+			{
+				SelectedUser->CancelDragDrop();
+			}
+		}
 		// Normal focus/capture cancellation through the public reply path, not a direct widget
 		// callback. The normal release branches also disable high-precision mode and cursor lock.
-		const FReply ReleaseReply = FReply::Handled().ReleaseMouseCapture().ReleaseMouseLock();
-		Slate.ProcessReply(*CaptureState->OwnedCaptorPath, ReleaseReply, nullptr,
-			&CaptureState->OwnedPointerEvent, static_cast<uint32>(Binding.SlateUserIndex));
+		if (CaptureState->bOwnedPointerCapture
+			&& Slate.HasUserMouseCapture(Binding.SlateUserIndex))
+		{
+			if (CaptureState->OwnedCaptorPath.IsValid())
+			{
+				const FReply ReleaseReply = FReply::Handled().ReleaseMouseCapture().ReleaseMouseLock();
+				Slate.ProcessReply(*CaptureState->OwnedCaptorPath, ReleaseReply, nullptr,
+					&CaptureState->OwnedPointerEvent, static_cast<uint32>(Binding.SlateUserIndex));
+			}
+			// Fallback for an owned capture whose recorded path is no longer resolvable: release the
+			// exact cursor-pointer capture this operation established through the public per-user API
+			// (FSlateUser::ReleaseCapture / ReleaseCursorCapture are public in 5.8, SlateUser.h:74-76).
+			if (Slate.HasUserMouseCapture(Binding.SlateUserIndex) && SelectedUser.IsValid())
+			{
+				SelectedUser->ReleaseCapture(CaptureState->OwnedPointerEvent.GetPointerIndex());
+			}
+		}
+	}
+
+	// Step 3.6: an engine-side captor release does not necessarily deactivate high-precision mouse
+	// mode. ProcessReply releases the captor when a drag starts but only the matching release reply
+	// disables high precision (SlateApplication.cpp:3398-3400 vs :3625-3635), so a drag started from
+	// an owned high-precision press can leave the mode on with the captor already gone. Release this
+	// operation's own high-precision mode explicitly through the public platform API so the success
+	// contract is genuinely verifiable. A foreign/pre-existing mode was never claimed as owned.
+	if (CaptureState.IsValid() && CaptureState->bOwnedHighPrecision && !bForeignCapturePresent
+		&& Slate.IsUsingHighPrecisionMouseMovment())
+	{
+		if (const TSharedPtr<GenericApplication> PlatformApplication = Slate.GetPlatformApplication())
+		{
+			const TSharedPtr<SWidget> CoordinateRoot = GetCoordinateRootWidget();
+			const TSharedPtr<SWindow> Window = CoordinateRoot.IsValid()
+				? Slate.FindWidgetWindow(CoordinateRoot.ToSharedRef()) : nullptr;
+			PlatformApplication->SetHighPrecisionMouseMode(false,
+				Window.IsValid() ? Window->GetNativeWindow() : nullptr);
+		}
 	}
 
 	// Step 4: clear this operation's cached mouse-button bits without foreign routing.
@@ -2609,6 +2771,23 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::ReleaseHeldInputs()
 			bNeutralized = false;
 		}
 	}
+	// The exact drag-drop operation and high-precision mode this operation established must also be
+	// gone before success is claimed; a foreign drag is not ours and is left untouched.
+	if (CaptureState.IsValid() && CaptureState->bOwnedDragDrop)
+	{
+		const TSharedPtr<FDragDropOperation> OwnedDrag = CaptureState->OwnedDragDropContent.Pin();
+		const TSharedPtr<FSlateUser> SelectedPostUser = Slate.GetUser(Binding.SlateUserIndex);
+		if (OwnedDrag.IsValid() && SelectedPostUser.IsValid()
+			&& SelectedPostUser->GetDragDropContent() == OwnedDrag)
+		{
+			bNeutralized = false;
+		}
+	}
+	if (CaptureState.IsValid() && CaptureState->bOwnedHighPrecision
+		&& Slate.IsUsingHighPrecisionMouseMovment())
+	{
+		bNeutralized = false;
+	}
 	if (CaptureState.IsValid())
 	{
 		CaptureState->OwnedSyntheticKeys.Reset();
@@ -2617,6 +2796,10 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::ReleaseHeldInputs()
 		CaptureState->CapturedHeldButtons.Reset();
 		CaptureState->bOwnedPointerCapture = false;
 		CaptureState->OwnedCaptorPath.Reset();
+		CaptureState->OwnedPointerEvent = FPointerEvent();
+		CaptureState->bOwnedDragDrop = false;
+		CaptureState->OwnedDragDropContent.Reset();
+		CaptureState->bOwnedHighPrecision = false;
 	}
 	if (!bNeutralized)
 	{
