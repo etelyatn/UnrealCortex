@@ -344,7 +344,7 @@ private:
 	 * after each pointer event so cleanup only ever cancels live, genuinely owned state.
 	 */
 	void RetainOwnedPointerState(FSlateApplication& Slate, const FPointerEvent& PointerEvent,
-		bool bHadUserCaptureBefore, bool bHadHighPrecisionBefore,
+		bool bHadUserCaptureBefore, bool bHadHighPrecisionBefore, const void* NativeCaptureBefore,
 		const TSharedPtr<FDragDropOperation>& DragDropBefore);
 
 	void EnsureTicker();

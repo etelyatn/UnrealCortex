@@ -1543,6 +1543,8 @@ void FCortexEditorPhysicalInputSession::DetachCapture()
 		CaptureState->bOwnedDragDrop = false;
 		CaptureState->OwnedDragDropContent.Reset();
 		CaptureState->bOwnedHighPrecision = false;
+		CaptureState->bOwnedNativeCapture = false;
+		CaptureState->OwnedNativeCaptureHandle = nullptr;
 		CaptureState->ObservedHeldKeys.Reset();
 		CaptureState->ObservedHeldButtons.Reset();
 		CaptureState->ObservedModifierKeys.Reset();
@@ -1672,6 +1674,8 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::ArmCapture(
 	CaptureState->bOwnedDragDrop = false;
 	CaptureState->OwnedDragDropContent.Reset();
 	CaptureState->bOwnedHighPrecision = false;
+	CaptureState->bOwnedNativeCapture = false;
+	CaptureState->OwnedNativeCaptureHandle = nullptr;
 	CaptureState->CaptureEpochSeconds = FPlatformTime::Seconds();
 	CaptureState->CapturedHeldKeys.Reset();
 	CaptureState->CapturedHeldButtons.Reset();
@@ -2302,6 +2306,9 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 	// event establishes is ever attributed to it, and a foreign captor or drag is never released.
 	const bool bHadUserCaptureBefore = Slate.HasUserMouseCapture(UserIndex);
 	const bool bHadHighPrecisionBefore = Slate.IsUsingHighPrecisionMouseMovment();
+	const TSharedPtr<GenericApplication> PlatformApplicationBefore = Slate.GetPlatformApplication();
+	const void* const NativeCaptureBefore = PlatformApplicationBefore.IsValid()
+		? PlatformApplicationBefore->GetCapture() : nullptr;
 	const TSharedPtr<FSlateUser> SelectedPreUser = Slate.GetUser(UserIndex);
 	const TSharedPtr<FDragDropOperation> DragDropBefore = SelectedPreUser.IsValid()
 		? SelectedPreUser->GetDragDropContent() : nullptr;
@@ -2368,7 +2375,7 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 		++DispatchContext->ProcessedMotionGeneration;
 		GuardState->MotionGeneration = DispatchContext->ProcessedMotionGeneration;
 		RetainOwnedPointerState(Slate, PointerEvent, bHadUserCaptureBefore, bHadHighPrecisionBefore,
-			DragDropBefore);
+			NativeCaptureBefore, DragDropBefore);
 		break;
 	}
 	case ECortexEditorPhysicalInputKind::PointerDown:
@@ -2409,11 +2416,11 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 		}
 		GuardState->LastViewportPointerPosition = Event.ViewportPosition;
 
-		// Retain the exact captor/drag/high-precision state this operation acquired through its own
-		// dispatch and reconcile anything the normal routing already released, so cleanup only ever
-		// cancels live, genuinely owned state.
+		// Retain the exact captor/drag/high-precision/native-capture state this operation acquired
+		// through its own dispatch and reconcile anything the normal routing already released, so
+		// cleanup only ever cancels live, genuinely owned state.
 		RetainOwnedPointerState(Slate, PointerEvent, bHadUserCaptureBefore, bHadHighPrecisionBefore,
-			DragDropBefore);
+			NativeCaptureBefore, DragDropBefore);
 		break;
 	}
 	case ECortexEditorPhysicalInputKind::Wheel:
@@ -2439,7 +2446,7 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 
 void FCortexEditorPhysicalInputSession::RetainOwnedPointerState(FSlateApplication& Slate,
 	const FPointerEvent& PointerEvent, bool bHadUserCaptureBefore, bool bHadHighPrecisionBefore,
-	const TSharedPtr<FDragDropOperation>& DragDropBefore)
+	const void* NativeCaptureBefore, const TSharedPtr<FDragDropOperation>& DragDropBefore)
 {
 	if (!CaptureState.IsValid())
 	{
@@ -2487,6 +2494,29 @@ void FCortexEditorPhysicalInputSession::RetainOwnedPointerState(FSlateApplicatio
 	else if (CaptureState->bOwnedHighPrecision)
 	{
 		CaptureState->bOwnedHighPrecision = false;
+	}
+
+	// Native (OS) capture: Slate's ProcessReply establishes it together with a high-precision reply
+	// (PlatformApplication->SetCapture(Window->GetNativeWindow()), SlateApplication.cpp:3592-3596),
+	// but when a drag starts Slate releases only the Slate captor (bStartingDragDrop at :3398-3400)
+	// and leaves OS capture in place. Retain native ownership independently of the live Slate captor
+	// so cleanup still releases and verifies it. Reconcile once the captured handle is no longer
+	// current (our own capture released, or replaced by a foreign window that is never ours).
+	if (const TSharedPtr<GenericApplication> PlatformApplication = Slate.GetPlatformApplication())
+	{
+		const void* const NativeCaptureAfter = PlatformApplication->GetCapture();
+		if (NativeCaptureAfter != nullptr && NativeCaptureAfter != NativeCaptureBefore
+			&& !CaptureState->bOwnedNativeCapture)
+		{
+			CaptureState->bOwnedNativeCapture = true;
+			CaptureState->OwnedNativeCaptureHandle = NativeCaptureAfter;
+		}
+		else if (CaptureState->bOwnedNativeCapture
+			&& NativeCaptureAfter != CaptureState->OwnedNativeCaptureHandle)
+		{
+			CaptureState->bOwnedNativeCapture = false;
+			CaptureState->OwnedNativeCaptureHandle = nullptr;
+		}
 	}
 
 	// Drag-drop: Slate releases mouse capture when a drag starts (BeginDragDrop) and keeps the drag
@@ -2722,23 +2752,39 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::ReleaseHeldInputs()
 		Slate.UnregisterInputPreProcessor(Shield);
 	}
 
-	// Step 5: clear residual native capture only when this operation genuinely owned it. A foreign
-	// widget's capture (or its in-flight Down) must never be released, and another native window's
-	// capture or cursor lock is never touched.
+	// Step 5: clear residual native (OS) capture only when this operation genuinely owned it. Native
+	// ownership is tracked independently of the live Slate captor because Slate releases only the
+	// Slate captor when a drag starts, leaving OS capture in place. A foreign widget's capture (or its
+	// in-flight Down) must never be released, and another native window's capture is never touched.
 	const bool bOperationOwnedCapture = CaptureState.IsValid() && CaptureState->bOwnedPointerCapture;
-	if (bOperationOwnedCapture && !bForeignCapturePresent)
+	const bool bOperationOwnedNativeCapture = CaptureState.IsValid()
+		&& CaptureState->bOwnedNativeCapture;
+	// Native mouse capture only ever belongs to the cursor user's physical mouse input (the same
+	// condition the engine uses to release high-precision raw input, SlateApplication.cpp:3619).
+	const bool bCursorUser =
+		Binding.SlateUserIndex == static_cast<int32>(FSlateApplicationBase::CursorUserIndex);
+	if ((bOperationOwnedCapture || bOperationOwnedNativeCapture) && !bForeignCapturePresent && bCursorUser)
 	{
 		if (const TSharedPtr<GenericApplication> PlatformApplication = Slate.GetPlatformApplication())
 		{
-			if (PlatformApplication->GetCapture() != nullptr)
+			void* const CurrentCapture = PlatformApplication->GetCapture();
+			if (CurrentCapture != nullptr)
 			{
-				const TSharedPtr<SWidget> Viewport = GetCoordinateRootWidget();
-				const TSharedPtr<SWindow> Window = Viewport.IsValid()
-					? Slate.FindWidgetWindow(Viewport.ToSharedRef()) : nullptr;
-				const TSharedPtr<FGenericWindow> NativeWindow = Window.IsValid()
-					? Window->GetNativeWindow() : nullptr;
-				if (NativeWindow.IsValid()
-					&& PlatformApplication->GetCapture() == NativeWindow->GetOSWindowHandle())
+				// Release only the exact native capture this operation established, or (while this
+				// operation still owns its Slate captor) the selected viewport's own native window.
+				bool bMayRelease = bOperationOwnedNativeCapture
+					&& CurrentCapture == CaptureState->OwnedNativeCaptureHandle;
+				if (!bMayRelease && bOperationOwnedCapture)
+				{
+					const TSharedPtr<SWidget> Viewport = GetCoordinateRootWidget();
+					const TSharedPtr<SWindow> Window = Viewport.IsValid()
+						? Slate.FindWidgetWindow(Viewport.ToSharedRef()) : nullptr;
+					const TSharedPtr<FGenericWindow> NativeWindow = Window.IsValid()
+						? Window->GetNativeWindow() : nullptr;
+					bMayRelease = NativeWindow.IsValid()
+						&& CurrentCapture == NativeWindow->GetOSWindowHandle();
+				}
+				if (bMayRelease)
 				{
 					PlatformApplication->SetCapture(nullptr);
 				}
@@ -2771,6 +2817,19 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::ReleaseHeldInputs()
 			bNeutralized = false;
 		}
 	}
+	// The native (OS) capture this operation established must also be gone: Slate releases only the
+	// Slate captor when a drag starts, so this is the only check that catches a leaked OS capture. A
+	// foreign window's native capture is not ours and is never reported as a failure.
+	if (CaptureState.IsValid() && CaptureState->bOwnedNativeCapture && !bForeignCapturePresent)
+	{
+		if (const TSharedPtr<GenericApplication> PlatformApplication = Slate.GetPlatformApplication())
+		{
+			if (PlatformApplication->GetCapture() == CaptureState->OwnedNativeCaptureHandle)
+			{
+				bNeutralized = false;
+			}
+		}
+	}
 	// The exact drag-drop operation and high-precision mode this operation established must also be
 	// gone before success is claimed; a foreign drag is not ours and is left untouched.
 	if (CaptureState.IsValid() && CaptureState->bOwnedDragDrop)
@@ -2800,6 +2859,8 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::ReleaseHeldInputs()
 		CaptureState->bOwnedDragDrop = false;
 		CaptureState->OwnedDragDropContent.Reset();
 		CaptureState->bOwnedHighPrecision = false;
+		CaptureState->bOwnedNativeCapture = false;
+		CaptureState->OwnedNativeCaptureHandle = nullptr;
 	}
 	if (!bNeutralized)
 	{

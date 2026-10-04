@@ -87,6 +87,15 @@ struct FCortexEditorPhysicalInputCaptureState
 	TWeakPtr<FDragDropOperation> OwnedDragDropContent;
 	/** True once this operation's own dispatch enabled high-precision (raw input) mouse movement. */
 	bool bOwnedHighPrecision = false;
+	/**
+	 * True once this operation's own dispatch established NATIVE (OS) mouse capture. Slate releases
+	 * only the Slate captor when a drag starts (ProcessReply bStartingDragDrop), leaving OS capture
+	 * in place, so native ownership is tracked independently of bOwnedPointerCapture and both
+	 * released and verified during cleanup.
+	 */
+	bool bOwnedNativeCapture = false;
+	/** The exact native capture handle this operation established; released only under this identity. */
+	const void* OwnedNativeCaptureHandle = nullptr;
 	/** Modifier keys recorded by transitions in this epoch (not device-wide observations). */
 	TSet<FKey> CapturedModifierKeys;
 	/** Observed down state, maintained from processor installation even before arming. */

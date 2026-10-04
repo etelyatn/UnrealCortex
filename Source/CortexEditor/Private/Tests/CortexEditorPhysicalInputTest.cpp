@@ -128,6 +128,7 @@ struct FCortexEditorPhysicalInputTestFixture
 	FVector2D CapturedSliderPosition = FVector2D::ZeroVector;
 	// Fix-round-4 regression consumers: a real drag source and a real high-precision requester.
 	TSharedPtr<SWidget> DragConsumer;
+	bool bDragConsumerHighPrecision = false;
 	TSharedPtr<FCortexPhysicalInputTestDragDrop> DragDropOperation;
 	int32 DragDetectedCount = 0;
 	TSharedPtr<SWidget> HighPrecisionConsumer;
@@ -1205,7 +1206,17 @@ public:
 	{
 		if (Event.GetEffectingButton() == EKeys::LeftMouseButton)
 		{
-			return FReply::Handled().DetectDrag(SharedThis(this), EKeys::LeftMouseButton);
+			FReply Reply = FReply::Handled().DetectDrag(SharedThis(this), EKeys::LeftMouseButton);
+			// Opt-in: also request high-precision raw mouse movement so this owned dispatch acquires
+			// Slate capture, OS capture and the raw-input mode together (as a real consumer can).
+			if (const TSharedPtr<FCortexEditorPhysicalInputTestFixture> Pinned = Fixture.Pin())
+			{
+				if (Pinned->bDragConsumerHighPrecision)
+				{
+					Reply.UseHighPrecisionMouseMovement(SharedThis(this));
+				}
+			}
+			return Reply;
 		}
 		return FReply::Unhandled();
 	}
@@ -4005,6 +4016,101 @@ bool FCortexPhysicalInputOwnedHighPrecisionCleanupTest::RunTest(const FString& P
 				Slate.IsUsingHighPrecisionMouseMovment());
 			Test.TestFalse(TEXT("Owned pointer capture is released after cleanup"),
 				Slate.HasUserMouseCapture(Binding.SlateUserIndex));
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// An owned dispatch can establish native (OS) capture together with high precision and then start a
+// drag; Slate releases only the Slate captor on the drag start, so the native capture and
+// high-precision mode survive with no Slate captor left. Cleanup must retain native-capture ownership
+// independently of the Slate captor, release it under the owned identity, and verify it is gone
+// before reporting success.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputOwnedNativeCaptureCleanupTest,
+	"Cortex.Editor.PhysicalInputOwnedNativeCaptureCleanup",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputOwnedNativeCaptureCleanupTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("OwnedNativeCaptureInstall"),
+		[Fixture](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			F.bDragConsumerHighPrecision = true;
+			UWorld* World = F.Session->GetTargetBinding().World.Get();
+			if (!World || !World->GetGameViewport())
+			{
+				Test.AddError(TEXT("Native-capture drag consumer target disappeared"));
+				return;
+			}
+			const TSharedRef<SCortexPhysicalInputDragConsumer> Consumer =
+				SNew(SCortexPhysicalInputDragConsumer).Fixture(Fixture);
+			F.DragConsumer = Consumer;
+			World->GetGameViewport()->AddViewportWidgetContent(Consumer);
+		}, /*bInstallProbe=*/false, /*bArmCapture=*/false));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const TSharedPtr<SWidget> Consumer = F.DragConsumer;
+			Test.TestTrue(TEXT("Native-capture drag consumer present"), Consumer.IsValid());
+			if (!Consumer.IsValid()) { return; }
+			const FGeometry Geometry = Consumer->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0)
+			{
+				Test.AddError(TEXT("Native-capture drag consumer has no geometry"));
+				return;
+			}
+			const TSharedPtr<GenericApplication> PlatformApplication = Slate.GetPlatformApplication();
+			const FVector2D Start = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.3, Size.Y * 0.5));
+			const FVector2D Finish = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.9, Size.Y * 0.5));
+
+			FCortexEditorPhysicalInputEvent PointerDown;
+			PointerDown.Kind = ECortexEditorPhysicalInputKind::PointerDown;
+			PointerDown.Key = EKeys::LeftMouseButton;
+			PointerDown.ViewportPosition = ToViewportLocal(F, Start);
+			Test.TestTrue(TEXT("Native-capture drag down dispatched"),
+				F.Session->Dispatch(PointerDown).bSuccess);
+			const void* const OwnedNativeCapture = PlatformApplication.IsValid()
+				? PlatformApplication->GetCapture() : nullptr;
+			Test.TestTrue(TEXT("Owned dispatch established native capture"),
+				OwnedNativeCapture != nullptr);
+
+			FCortexEditorPhysicalInputEvent PointerMove;
+			PointerMove.Kind = ECortexEditorPhysicalInputKind::PointerMove;
+			PointerMove.ViewportPosition = ToViewportLocal(F, Finish);
+			PointerMove.Delta = Finish - Start;
+			Test.TestTrue(TEXT("Native-capture drag move dispatched"),
+				F.Session->Dispatch(PointerMove).bSuccess);
+			const TSharedPtr<FSlateUser> User = Slate.GetUser(Binding.SlateUserIndex);
+			Test.TestTrue(TEXT("Owned dispatch really started a drag-drop operation"),
+				User.IsValid() && User->GetDragDropContent().IsValid());
+			Test.TestTrue(TEXT("Owned high precision survives the drag-start captor release"),
+				Slate.IsUsingHighPrecisionMouseMovment());
+			Test.TestTrue(TEXT("Owned native capture survives the drag-start captor release"),
+				PlatformApplication.IsValid() && PlatformApplication->GetCapture() == OwnedNativeCapture);
+
+			const FCortexCommandResult Cleanup = F.Session->ReleaseHeldInputs();
+			Test.TestTrue(TEXT("Owned native-capture cleanup succeeded"), Cleanup.bSuccess);
+			Test.TestFalse(TEXT("Owned native capture is released after cleanup"),
+				PlatformApplication.IsValid() && PlatformApplication->GetCapture() == OwnedNativeCapture);
+			Test.TestFalse(TEXT("Owned high precision is disabled after cleanup"),
+				Slate.IsUsingHighPrecisionMouseMovment());
+			Test.TestFalse(TEXT("Owned drag-drop operation is gone after cleanup"),
+				User.IsValid() && User->GetDragDropContent().IsValid());
 		}));
 
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
