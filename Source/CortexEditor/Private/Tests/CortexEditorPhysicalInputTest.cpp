@@ -1364,6 +1364,37 @@ TSharedPtr<SWidget> InstallFixtureProbe(const TSharedRef<FCortexEditorPhysicalIn
 	return Probe;
 }
 
+/** The window hosting the session's selected route widget (its viewport, else its input root). */
+TSharedPtr<SWindow> ResolveSelectedRouteWindow(const FCortexEditorPhysicalInputSession& Session)
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		return nullptr;
+	}
+	const FCortexEditorPhysicalInputTargetBinding& Binding = Session.GetTargetBinding();
+	TSharedPtr<SWidget> RouteWidget = Binding.ViewportWidget.Pin();
+	if (!RouteWidget.IsValid())
+	{
+		RouteWidget = Binding.InputRoot.Pin();
+	}
+	return RouteWidget.IsValid()
+		? FSlateApplication::Get().FindWidgetWindow(RouteWidget.ToSharedRef()) : nullptr;
+}
+
+/**
+ * Brings the session's selected route window to the front so it is the actually-active top-level
+ * window. Replay ownership requires the actually-active route (CR-03); automation may leave another
+ * window active, which is a test environment condition, never a product relaxation. Never mutates
+ * shared Slate application activation state.
+ */
+void EnsureSelectedRouteWindowActive(const FCortexEditorPhysicalInputSession& Session)
+{
+	if (const TSharedPtr<SWindow> Window = ResolveSelectedRouteWindow(Session))
+	{
+		Window->BringToFront();
+	}
+}
+
 /**
  * Installs the probe (optional), arms capture on a neutral target (optional), waits for real
  * probe geometry and then runs one semantic action on the Game Thread.
@@ -2997,7 +3028,7 @@ bool FCortexPhysicalInputReplaySelfCaptureAndInterruptionTest::RunTest(const FSt
 
 			// Replay ownership is armed at epoch establishment, not at the first Dispatch.
 			Test.TestTrue(TEXT("Replay epoch armed for unattended ownership"),
-				F.Session->BeginReplayEpoch().bSuccess);
+				F.Session->BeginReplayEpoch(true).bSuccess);
 
 			// Synthetic replay must not be re-captured and must not be treated as human interference.
 			const int32 Before = F.Captured.Num();
@@ -3018,6 +3049,172 @@ bool FCortexPhysicalInputReplaySelfCaptureAndInterruptionTest::RunTest(const FSt
 				F.InterruptionCount, 1);
 			Test.TestFalse(TEXT("Interruption reports a non-success result"), F.Interruption.bSuccess);
 		}, /*bInstallProbe=*/true, /*bArmCapture=*/false));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// An attended (human-origin) replay epoch does not treat the human's own real key, button and
+// motion edges as interference: the run is never interrupted, while synthetic replay input is
+// still never re-captured.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputReplayAttendedInputTest,
+	"Cortex.Editor.PhysicalInputReplayAttendedInput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputReplayAttendedInputTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture,
+		TEXT("ReplayAttendedInput"),
+		[Fixture](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const int32 User = Binding.SlateUserIndex;
+			const FModifierKeysState Modifiers;
+			const uint32 Pointer = FSlateApplicationBase::CursorPointerIndex;
+			const FGeometry Geometry = F.Slider->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0) { return; }
+			const FVector2D Center = Geometry.LocalToAbsolute(Size * 0.5);
+
+			F.Session->SetInterruptionCallback([Fixture](const FCortexCommandResult& Result)
+			{
+				Fixture->InterruptionCount++;
+				Fixture->Interruption = Result;
+			});
+			const FCortexCommandResult Armed = F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture));
+			Test.TestTrue(TEXT("Capture armed for the attended-input case"), Armed.bSuccess);
+			if (!Armed.bSuccess) { return; }
+			F.bCaptureArmed = true;
+
+			// Establish the preconditions replay ownership requires before arming: the selected
+			// route window must be the actually-active top-level window and the selected user's
+			// focus must be on the route. Automation may leave another window active, so bring the
+			// resolved route window to the front (never mutating shared Slate activation state) and
+			// re-assert the probe focus, as the passing sibling and the CR-03 replay fixtures do.
+			EnsureSelectedRouteWindowActive(*F.Session);
+			if (F.Overlay.IsValid())
+			{
+				Slate.SetUserFocus(User, F.Overlay, EFocusCause::SetDirectly);
+			}
+			const TSharedPtr<SWindow> RouteWindow = ResolveSelectedRouteWindow(*F.Session);
+			Test.TestTrue(TEXT("Selected route is the actually-active top-level window before arming"),
+				Slate.IsActive() && RouteWindow.IsValid()
+					&& Slate.GetActiveTopLevelWindow() == RouteWindow);
+			Test.TestTrue(TEXT("Selected user has a focused widget on the route before arming"),
+				Slate.GetUserFocusedWidget(static_cast<uint32>(User)).IsValid());
+
+			// A human-origin replay is attended: the human's own real input never interrupts.
+			Test.TestTrue(TEXT("Replay epoch armed for attended ownership"),
+				F.Session->BeginReplayEpoch(false).bSuccess);
+			Test.TestFalse(TEXT("Armed epoch is not unattended"), F.Session->IsReplayUnattended());
+
+			// Synthetic replay input is still never re-captured by this session. The result is
+			// captured so a refused dispatch names the exact route-loss branch in the test failure.
+			const int32 Before = F.Captured.Num();
+			FCortexEditorPhysicalInputEvent Synthetic;
+			Synthetic.Kind = ECortexEditorPhysicalInputKind::KeyDown;
+			Synthetic.Key = EKeys::W;
+			const FCortexCommandResult SyntheticResult = F.Session->Dispatch(Synthetic);
+			Test.TestTrue(FString::Printf(TEXT("Synthetic replay input dispatched (%s: %s)"),
+				*SyntheticResult.ErrorCode, *SyntheticResult.ErrorMessage), SyntheticResult.bSuccess);
+			Test.TestEqual(TEXT("Synthetic replay was not re-captured"), F.Captured.Num(), Before);
+
+			// The human's own real key edge on the selected user/device does not interrupt.
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::Q, Modifiers, Binding.InputDevice, false, 0, 0, User));
+			Test.TestEqual(TEXT("Attended real key edge did not interrupt"), F.InterruptionCount, 0);
+
+			// A real mouse button edge on the selected user/device does not interrupt.
+			TSet<FKey> Pressed;
+			Pressed.Add(EKeys::LeftMouseButton);
+			Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Binding.InputDevice, Pointer,
+				Center, Center, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, User));
+			Test.TestEqual(TEXT("Attended real button edge did not interrupt"), F.InterruptionCount, 0);
+
+			// A real mouse move on the selected user/device does not interrupt.
+			Slate.ProcessMouseMoveEvent(FPointerEvent(Binding.InputDevice, Pointer,
+				Center + FVector2D(12.0, 0.0), Center, Pressed, EKeys::Invalid, 0.0f, Modifiers, User),
+				false);
+			Test.TestEqual(TEXT("Attended real motion did not interrupt"), F.InterruptionCount, 0);
+
+			// Balance the real button and key state; the attended epoch stays uninterrupted.
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice, Pointer,
+				Center, Center, TSet<FKey>(), EKeys::LeftMouseButton, 0.0f, Modifiers, User));
+			Slate.ProcessKeyUpEvent(FKeyEvent(EKeys::Q, Modifiers, Binding.InputDevice, false, 0, 0, User));
+			Test.TestEqual(TEXT("Attended epoch never marked the run interrupted"),
+				F.InterruptionCount, 0);
+		}, /*bInstallProbe=*/true, /*bArmCapture=*/false));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// An attended (human-origin) replay still refuses to dispatch once route ownership is lost:
+// the real-input exemption never weakens the focus/window/route guarantee.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputReplayAttendedOwnershipTest,
+	"Cortex.Editor.PhysicalInputReplayAttendedOwnership",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputReplayAttendedOwnershipTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture,
+		TEXT("ReplayAttendedOwnership"),
+		[Fixture](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const int32 User = F.Session->GetTargetBinding().SlateUserIndex;
+			F.Session->SetInterruptionCallback([Fixture](const FCortexCommandResult& Result)
+			{
+				Fixture->InterruptionCount++;
+				Fixture->Interruption = Result;
+			});
+
+			// A human-origin replay is attended, but route ownership is still enforced.
+			Test.TestTrue(TEXT("Attended replay epoch armed before the first event"),
+				F.Session->BeginReplayEpoch(false).bSuccess);
+
+			// A human establishes foreign, off-route focus before the first recorded event.
+			const TSharedRef<SCortexPhysicalForeignKeyConsumer> Foreign =
+				SNew(SCortexPhysicalForeignKeyConsumer).Fixture(Fixture);
+			F.ForeignKeyConsumer = Foreign;
+			const TSharedRef<SWindow> HostWindow =
+				SNew(SWindow).ClientSize(FVector2D(200.0f, 120.0f))[Foreign];
+			F.ForeignKeyHostWindow = HostWindow;
+			Slate.AddWindow(HostWindow);
+			Slate.SetUserFocus(User, Foreign, EFocusCause::SetDirectly);
+			Test.TestTrue(TEXT("Foreign off-route focus established before the first event"),
+				Slate.GetUserFocusedWidget(User) == F.ForeignKeyConsumer);
+
+			// The first recorded event must never reach the foreign consumer, attended or not.
+			FCortexEditorPhysicalInputEvent Recorded;
+			Recorded.Kind = ECortexEditorPhysicalInputKind::KeyDown;
+			Recorded.Key = EKeys::M;
+			const FCortexCommandResult Dispatched = F.Session->Dispatch(Recorded);
+			Test.TestFalse(TEXT("Attended dispatch refuses once the selected route lost ownership"),
+				Dispatched.bSuccess);
+			Test.TestEqual(TEXT("Route loss raised exactly one interruption"), F.InterruptionCount, 1);
+			Test.TestEqual(TEXT("The foreign consumer received no synthetic key"), F.ForeignKeyCount, 0);
+			Test.TestTrue(TEXT("Foreign focus was not stolen"),
+				Slate.GetUserFocusedWidget(User) == F.ForeignKeyConsumer);
+
+			Slate.RequestDestroyWindow(HostWindow);
+		}));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
 	return true;
 }
@@ -3054,7 +3251,7 @@ bool FCortexPhysicalInputReplayOwnershipBeforeFirstEventTest::RunTest(const FStr
 
 			// Replay ownership is armed at epoch establishment, before the first event.
 			Test.TestTrue(TEXT("Replay epoch armed before the first event"),
-				F.Session->BeginReplayEpoch().bSuccess);
+				F.Session->BeginReplayEpoch(true).bSuccess);
 
 			// A human establishes foreign, off-route focus before the first recorded event.
 			const TSharedRef<SCortexPhysicalForeignKeyConsumer> Foreign =
@@ -3119,7 +3316,7 @@ bool FCortexPhysicalInputReplayOwnershipFocusLossBetweenEventsTest::RunTest(cons
 				Fixture->Interruption = Result;
 			});
 			Test.TestTrue(TEXT("Replay epoch armed before the first event"),
-				F.Session->BeginReplayEpoch().bSuccess);
+				F.Session->BeginReplayEpoch(true).bSuccess);
 
 			// The first event is dispatched while the selected route still owns focus.
 			FCortexEditorPhysicalInputEvent First;
@@ -3630,7 +3827,7 @@ bool FCortexPhysicalInputForeignSameButtonDownTest::RunTest(const FString& Param
 
 			// Replay ownership is armed at epoch establishment, not at the first Dispatch.
 			Test.TestTrue(TEXT("Replay epoch armed for unattended ownership"),
-				F.Session->BeginReplayEpoch().bSuccess);
+				F.Session->BeginReplayEpoch(true).bSuccess);
 
 			// Own the left mouse button through a real replayed press.
 			FCortexEditorPhysicalInputEvent PointerDown;
@@ -4162,7 +4359,7 @@ bool FCortexPhysicalInputForeignSameKeyDownTest::RunTest(const FString& Paramete
 
 			// Replay ownership is armed at epoch establishment, not at the first Dispatch.
 			Test.TestTrue(TEXT("Replay epoch armed for unattended ownership"),
-				F.Session->BeginReplayEpoch().bSuccess);
+				F.Session->BeginReplayEpoch(true).bSuccess);
 
 			// Replay owns W, then a human press of the same key arrives while replay is active.
 			FCortexEditorPhysicalInputEvent KeyDown;
@@ -4892,7 +5089,7 @@ bool FCortexPhysicalInputReplayOwnershipInactiveApplicationTest::RunTest(const F
 				Fixture->Interruption = Result;
 			});
 			Test.TestTrue(TEXT("Replay epoch armed before the first event"),
-				F.Session->BeginReplayEpoch().bSuccess);
+				F.Session->BeginReplayEpoch(true).bSuccess);
 
 			// The first event is delivered only while the route is the actually-active route.
 			Test.TestTrue(TEXT("Selected route is the active top-level window before the first event"),

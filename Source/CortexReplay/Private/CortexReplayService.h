@@ -94,6 +94,17 @@ public:
 	/** Backend-owner shutdown: neutralizes owned input, ends owned PIE and drops delegates/ticker. */
 	void Shutdown();
 
+#if WITH_DEV_AUTOMATION_TESTS
+	/**
+	 * Test-support observation of the active physical-input session's replay epoch. Reports false
+	 * when no session exists or no epoch is armed.
+	 */
+	bool IsActiveReplayEpochArmedForTests() const;
+
+	/** Test-support observation of whether that armed replay epoch is unattended (AI-origin). */
+	bool IsActiveReplayEpochUnattendedForTests() const;
+#endif
+
 private:
 	/**
 	 * Enters Finalizing exactly once, rejects new admission, freezes dispatch and detaches capture,

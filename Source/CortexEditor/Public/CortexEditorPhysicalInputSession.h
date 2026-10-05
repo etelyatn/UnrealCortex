@@ -149,14 +149,23 @@ public:
 	FCortexCommandResult Dispatch(const FCortexEditorPhysicalInputEvent& Event);
 
 	/**
-	 * Arms unattended-replay interference ownership at replay epoch establishment, before the
-	 * first event. While armed, foreign physical input and any loss of the selected
-	 * focus/window/route are treated as interference, including during the idle/wait window
-	 * before the first dispatch. Does not steal focus and does not enable inactive-application
-	 * input handling; a lost route is reported as interference instead. Requires the exact
-	 * binding to still be valid; cleared by ReleaseHeldInputs/Shutdown.
+	 * Arms replay epoch interference ownership at epoch establishment, before the first event.
+	 *
+	 * While armed, any loss of the selected focus/window/route is always treated as interference,
+	 * including during the idle/wait window before the first dispatch. Real physical input is
+	 * treated as interference only when bUnattended is true: an unattended (AI-origin) replay
+	 * interrupts on any real key/button/move edge, while an attended (human-origin) replay lets
+	 * the human's own input through without interrupting. Does not steal focus and does not enable
+	 * inactive-application input handling; a lost route is reported as interference instead.
+	 * Requires the exact binding to still be valid; cleared by ReleaseHeldInputs/Shutdown.
 	 */
-	FCortexCommandResult BeginReplayEpoch();
+	FCortexCommandResult BeginReplayEpoch(bool bUnattended);
+
+	/** True only while a replay epoch is armed (attended or unattended). */
+	bool IsReplayEpochArmed() const;
+
+	/** True only while an armed replay epoch is unattended (AI-origin) interference ownership. */
+	bool IsReplayUnattended() const;
 
 	/**
 	 * Non-blocking observation of the exact selected route for one guarded press. Returns the
@@ -184,9 +193,10 @@ public:
 		double, const FCortexEditorPhysicalInputCaptureContext&)>&& Callback);
 
 	/**
-	 * Registers the one interruption callback. It is invoked when foreign physical input is
-	 * observed while this session is actively replaying; reentrant callbacks only record
-	 * state and never re-enter dispatch. Passing an empty callback clears it.
+	 * Registers the one interruption callback. It is invoked when real physical input is observed
+	 * during an unattended replay, or when the selected route loses ownership during any replay
+	 * (attended or unattended); reentrant callbacks only record state and never re-enter dispatch.
+	 * Passing an empty callback clears it.
 	 */
 	void SetInterruptionCallback(TFunction<void(const FCortexCommandResult&)>&& Callback);
 
@@ -332,8 +342,15 @@ private:
 	TSharedPtr<FCortexEditorPhysicalInputGuardState> GuardState;
 	/** Frozen once cleanup starts so no further generated event can be dispatched. */
 	bool bDispatchFrozen = false;
-	/** True after this session dispatched a synthetic event and before cleanup: unattended replay. */
+	/** True after this session arms a replay epoch and before cleanup: replay is in progress. */
 	bool bReplayInProgress = false;
+	/**
+	 * True while that replay epoch is unattended (AI-origin): real physical input is interference.
+	 * Cleared when the epoch ends. Meaningful only while bReplayInProgress is true.
+	 */
+	bool bReplayUnattended = false;
+	/** True once per epoch so the attended-suppression Display log fires at most once. */
+	bool bAttendedSuppressionLogged = false;
 	/** Exact PlayerInput instance the binding was acquired with; never a replacement. */
 	TWeakObjectPtr<UPlayerInput> BoundPlayerInput;
 
@@ -396,6 +413,12 @@ private:
 
 	/** Reports a foreign-input interruption through the single interruption callback. */
 	void NotifyInterruption(const FCortexCommandResult& Result);
+
+	/**
+	 * Logs once per epoch (Display) that real physical input was observed while the replay is
+	 * attended, so the interruption was suppressed instead of ending the run.
+	 */
+	void LogAttendedInputSuppressed(const FKey& Key);
 
 	/** Signals an incomplete capture epoch (for example inconsistent modifier bits). */
 	void SignalCaptureFault(const FString& Message);

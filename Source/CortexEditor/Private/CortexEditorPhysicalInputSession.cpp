@@ -182,6 +182,8 @@ bool FCortexEditorPhysicalInputSession::TickInternal(float DeltaTime)
 		FString OwnershipReason;
 		if (!IsSelectedRouteOwnershipIntact(OwnershipReason))
 		{
+			UE_LOG(LogCortexEditor, Display,
+				TEXT("Replay route ownership lost during playback; interrupting: %s"), *OwnershipReason);
 			NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation, OwnershipReason));
 		}
 	}
@@ -1802,6 +1804,8 @@ void FCortexEditorPhysicalInputSession::DetachCapture()
 	BoundPlayerInput = nullptr;
 	bDispatchFrozen = false;
 	bReplayInProgress = false;
+	bReplayUnattended = false;
+	bAttendedSuppressionLogged = false;
 	if (DispatchContext.IsValid())
 	{
 		DispatchContext->SyntheticDepth = 0;
@@ -2043,8 +2047,8 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorKey(const FKeyEvent& Key
 		}
 	}
 
-	// A physical edge for a key this operation already owns synthetically (or during unattended
-	// replay) is foreign: record that ownership BEFORE notifying interruption so cleanup can never
+	// A physical edge for a key this operation already owns synthetically (or during a replay
+	// epoch) is foreign: record that ownership BEFORE notifying interruption so cleanup can never
 	// clear or release a foreign key, and clear it only on the matching Up.
 	if (bKeyDown)
 	{
@@ -2060,10 +2064,19 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorKey(const FKeyEvent& Key
 		CaptureState->ForeignHeldKeys.Remove(Key);
 	}
 
+	// Real input interrupts only an unattended replay; an attended (human-origin) replay lets the
+	// human's own input through and logs the suppression once per epoch.
 	if (bReplayInProgress)
 	{
-		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("Foreign physical input interrupted unattended playback")));
+		if (bReplayUnattended)
+		{
+			NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
+				TEXT("Foreign physical input interrupted unattended playback")));
+		}
+		else
+		{
+			LogAttendedInputSuppressed(Key);
+		}
 	}
 	if (!CaptureState->bArmed)
 	{
@@ -2119,7 +2132,7 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseButton(
 	}
 
 	// Device-wide down state for admission, plus foreign ownership recorded BEFORE interruption:
-	// a physical edge on a button this operation owns (or during unattended replay) is foreign, and
+	// a physical edge on a button this operation owns (or during a replay epoch) is foreign, and
 	// cleanup must never clear or release it. Foreign ownership ends only on the matching Up.
 	if (bDownEdge)
 	{
@@ -2137,10 +2150,19 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseButton(
 		CaptureState->ForeignHeldButtons.Remove(Button);
 	}
 
+	// Real input interrupts only an unattended replay; an attended (human-origin) replay lets the
+	// human's own input through and logs the suppression once per epoch.
 	if (bReplayInProgress)
 	{
-		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("Foreign physical input interrupted unattended playback")));
+		if (bReplayUnattended)
+		{
+			NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
+				TEXT("Foreign physical input interrupted unattended playback")));
+		}
+		else
+		{
+			LogAttendedInputSuppressed(Button);
+		}
 	}
 	if (!CaptureState->bArmed)
 	{
@@ -2186,10 +2208,19 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseMove(const FPointer
 		GuardState->LastViewportPointerPosition = ViewportPosition;
 	}
 
+	// Real motion interrupts only an unattended replay; an attended (human-origin) replay lets the
+	// human's own motion through and logs the suppression once per epoch.
 	if (bReplayInProgress)
 	{
-		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("Foreign physical input interrupted unattended playback")));
+		if (bReplayUnattended)
+		{
+			NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
+				TEXT("Foreign physical input interrupted unattended playback")));
+		}
+		else
+		{
+			LogAttendedInputSuppressed(EKeys::Mouse2D);
+		}
 	}
 	if (!CaptureState->bArmed)
 	{
@@ -2234,10 +2265,19 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseWheel(const FPointe
 		CaptureState = MakeShared<FCortexEditorPhysicalInputCaptureState>();
 	}
 	const FVector2D ScreenSpacePosition = MouseEvent.GetScreenSpacePosition();
+	// Real wheel input interrupts only an unattended replay; an attended (human-origin) replay lets
+	// the human's own input through and logs the suppression once per epoch.
 	if (bReplayInProgress)
 	{
-		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("Foreign physical input interrupted unattended playback")));
+		if (bReplayUnattended)
+		{
+			NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
+				TEXT("Foreign physical input interrupted unattended playback")));
+		}
+		else
+		{
+			LogAttendedInputSuppressed(EKeys::MouseWheelAxis);
+		}
 	}
 	if (!CaptureState->bArmed)
 	{
@@ -2452,6 +2492,28 @@ void FCortexEditorPhysicalInputSession::NotifyInterruption(const FCortexCommandR
 	}
 }
 
+void FCortexEditorPhysicalInputSession::LogAttendedInputSuppressed(const FKey& Key)
+{
+	if (bAttendedSuppressionLogged)
+	{
+		return;
+	}
+	bAttendedSuppressionLogged = true;
+	UE_LOG(LogCortexEditor, Display,
+		TEXT("Replay epoch attended (unattended=0): real physical input (%s) observed; interruption suppressed"),
+		*Key.ToString());
+}
+
+bool FCortexEditorPhysicalInputSession::IsReplayEpochArmed() const
+{
+	return bReplayInProgress;
+}
+
+bool FCortexEditorPhysicalInputSession::IsReplayUnattended() const
+{
+	return bReplayInProgress && bReplayUnattended;
+}
+
 void FCortexEditorPhysicalInputSession::SignalCaptureFault(const FString& Message)
 {
 	if (!CaptureState.IsValid() || CaptureState->bFaulted)
@@ -2571,6 +2633,9 @@ bool FCortexEditorPhysicalInputSession::IsSelectedRouteOwnershipIntact(FString& 
 		? Slate.FindWidgetWindow(CoordinateRoot.ToSharedRef()) : nullptr;
 	if (!Slate.IsActive())
 	{
+		UE_LOG(LogCortexEditor, Display,
+			TEXT("Replay route loss: target route is not the active application (appActive=%d activeTopLevelValid=%d)"),
+			Slate.IsActive() ? 1 : 0, Slate.GetActiveTopLevelWindow().IsValid() ? 1 : 0);
 		OutReason = TEXT("Replay target route is not the active application");
 		return false;
 	}
@@ -2599,6 +2664,10 @@ bool FCortexEditorPhysicalInputSession::IsSelectedRouteOwnershipIntact(FString& 
 		static_cast<uint32>(Binding.SlateUserIndex));
 	if (Focused.IsValid() && !IsWidgetOnSelectedRoute(Focused))
 	{
+		UE_LOG(LogCortexEditor, Display,
+			TEXT("Replay route loss: foreign keyboard focus (appActive=%d focusedValid=%d focusedOnRoute=%d)"),
+			Slate.IsActive() ? 1 : 0, Focused.IsValid() ? 1 : 0,
+			IsWidgetOnSelectedRoute(Focused) ? 1 : 0);
 		OutReason = TEXT("Replay lost the selected route to a foreign keyboard focus");
 		return false;
 	}
@@ -2675,7 +2744,7 @@ bool FCortexEditorPhysicalInputSession::CanWaitForUI() const
 		&& CaptureState->CapturedHeldButtons.Num() == 0;
 }
 
-FCortexCommandResult FCortexEditorPhysicalInputSession::BeginReplayEpoch()
+FCortexCommandResult FCortexEditorPhysicalInputSession::BeginReplayEpoch(bool bUnattended)
 {
 	if (bDispatchFrozen)
 	{
@@ -2708,6 +2777,10 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginReplayEpoch()
 	// foreign focus/input during the pre-first-event window is detected exactly like interference
 	// after dispatch. Focus is never stolen and inactive input is never forced.
 	bReplayInProgress = true;
+	bReplayUnattended = bUnattended;
+	bAttendedSuppressionLogged = false;
+	UE_LOG(LogCortexEditor, Display, TEXT("Replay epoch armed (unattended=%d)"),
+		bReplayUnattended ? 1 : 0);
 	return MakeSuccessResult();
 }
 
@@ -3006,6 +3079,8 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::ReleaseHeldInputs()
 	// Step 1: freeze dispatch once and detach the capture callbacks.
 	bDispatchFrozen = true;
 	bReplayInProgress = false;
+	bReplayUnattended = false;
+	bAttendedSuppressionLogged = false;
 	CaptureCallbackImpl = nullptr;
 	if (CaptureState.IsValid())
 	{

@@ -331,6 +331,62 @@ private:
 	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
 };
 
+/**
+ * Polls get_run with an explicit AI-only scope until the run reports one exact state, then runs
+ * one synchronous check in the same frame so an observed epoch arming mode is not lost to a later
+ * transition.
+ */
+class FCortexReplayAwaitStateThenCheck : public IAutomationLatentCommand
+{
+public:
+	FCortexReplayAwaitStateThenCheck(FAutomationTestBase* InTest,
+		TSharedRef<FCortexReplayService> InService, TSharedPtr<FGuid> InRunId, FString InExpected,
+		bool bInAIOnly, TFunction<void(FAutomationTestBase&)> InCheck,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr,
+		double InWatchdog = ReplayReadyWatchdogSeconds * 2)
+		: Test(InTest), Service(MoveTemp(InService)), RunId(MoveTemp(InRunId))
+		, Expected(MoveTemp(InExpected)), bAIOnly(bInAIOnly), Check(MoveTemp(InCheck))
+		, Watchdog(InWatchdog), KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		const FCortexCommandResult Run = Service->GetRun(*RunId, bAIOnly);
+		if (!Run.bSuccess)
+		{
+			Test->AddError(TEXT("get_run failed while awaiting a run state"));
+			return true;
+		}
+		const FString State = RunState(Run);
+		if (State == Expected)
+		{
+			if (Check) { Check(*Test); }
+			return true;
+		}
+		if (IsTerminalRunState(State) && State != Expected)
+		{
+			Test->AddError(FString::Printf(TEXT("Run reached %s instead of %s"), *State, *Expected));
+			return true;
+		}
+		if (FPlatformTime::Seconds() - StartTime > Watchdog)
+		{
+			Test->AddError(FString::Printf(TEXT("Run never reached %s (last %s)"), *Expected, *State));
+			return true;
+		}
+		return false;
+	}
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	TSharedPtr<FGuid> RunId;
+	FString Expected;
+	bool bAIOnly = true;
+	TFunction<void(FAutomationTestBase&)> Check;
+	double Watchdog = 0.0;
+	double StartTime = 0.0;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+};
+
 /** Polls get_run until the run reports any terminal state and stores that state. */
 class FCortexReplayAwaitRunTerminal : public IAutomationLatentCommand
 {
@@ -1127,6 +1183,90 @@ bool FCortexReplayLifecycleFinalizationTest::RunTest(const FString& Parameters)
 				Service->CancelReplay(SuccessorId, true);
 			}
 		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The replay epoch is armed from the run's origin: an AI-origin run is unattended (real input
+// interrupts) and a human-origin run is attended (the human's own input is allowed).
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleEpochArmingModeTest,
+	"Cortex.Replay.Lifecycle.EpochArmingModeMatchesOrigin",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleEpochArmingModeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	// One AI-eligible recording usable by both origins; the trailing edge keeps the run in
+	// playback long enough to observe the armed epoch before it completes.
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		 MakeKeyPress(1, 0.5, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)}, true))
+	{
+		return false;
+	}
+
+	// An AI-origin run arms the epoch unattended.
+	const FCortexCommandResult AIStart = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	TestTrue(TEXT("AI replay admitted"), AIStart.bSuccess);
+	if (!AIStart.bSuccess) { return false; }
+	const TSharedPtr<FGuid> AIRunId = MakeShared<FGuid>(ParseRunId(AIStart));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitStateThenCheck(this, Service, AIRunId,
+		TEXT("Replaying"), /*bAIOnly=*/true,
+		[Service](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("AI-origin replay epoch is armed"),
+				Service->IsActiveReplayEpochArmedForTests());
+			T.TestTrue(TEXT("AI-origin replay epoch is unattended"),
+				Service->IsActiveReplayEpochUnattendedForTests());
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, AIRunId](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("AI run cancelled"), Service->CancelReplay(*AIRunId, true).bSuccess);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitStateThenCheck(this, Service, AIRunId,
+		TEXT("Cancelled"), /*bAIOnly=*/true, TFunction<void(FAutomationTestBase&)>(), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	// A human-origin run arms the same epoch attended. ADD_LATENT_AUTOMATION_COMMAND only queues,
+	// so the human start must run inside the latent chain after the AI run's teardown; starting it
+	// synchronously here would still see the AI run owning the target and be refused busy.
+	const TSharedPtr<FGuid> HumanRunId = MakeShared<FGuid>();
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, HumanRunId](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::Human);
+			T.TestTrue(TEXT("Human replay admitted"), Started.bSuccess);
+			if (Started.bSuccess)
+			{
+				*HumanRunId = ParseRunId(Started);
+			}
+		}, Fixture));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitStateThenCheck(this, Service, HumanRunId,
+		TEXT("Replaying"), /*bAIOnly=*/false,
+		[Service](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("Human-origin replay epoch is armed"),
+				Service->IsActiveReplayEpochArmedForTests());
+			T.TestFalse(TEXT("Human-origin replay epoch is attended, not unattended"),
+				Service->IsActiveReplayEpochUnattendedForTests());
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, HumanRunId](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("Human run cancelled"), Service->CancelReplay(*HumanRunId, false).bSuccess);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitStateThenCheck(this, Service, HumanRunId,
+		TEXT("Cancelled"), /*bAIOnly=*/false, TFunction<void(FAutomationTestBase&)>(), Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 
 	return true;

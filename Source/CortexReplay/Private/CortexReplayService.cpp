@@ -547,8 +547,11 @@ void FCortexReplayService::FImpl::TickRun()
 
 		// Arm replay interference ownership at epoch establishment, before the first dispatch, so a
 		// foreign focus/input established during the pre-first-event window is treated as
-		// interference rather than being delivered to the foreign consumer.
-		const FCortexCommandResult Epoch = Session->BeginReplayEpoch();
+		// interference rather than being delivered to the foreign consumer. An AI-origin run is
+		// unattended (real input interrupts); a human-origin run is attended (the human's own input
+		// is allowed and only route loss interrupts).
+		const FCortexCommandResult Epoch = Session->BeginReplayEpoch(
+			ActiveRun.Origin == ECortexReplayOrigin::AI);
 		if (!Epoch.bSuccess)
 		{
 			Owner->Finalize(ECortexReplayState::Interrupted, Epoch);
@@ -1460,6 +1463,18 @@ bool FCortexReplayService::IsRecordInUse(int32 Id) const
 	}
 	return false;
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+bool FCortexReplayService::IsActiveReplayEpochArmedForTests() const
+{
+	return Impl->Session.IsValid() && Impl->Session->IsReplayEpochArmed();
+}
+
+bool FCortexReplayService::IsActiveReplayEpochUnattendedForTests() const
+{
+	return Impl->Session.IsValid() && Impl->Session->IsReplayUnattended();
+}
+#endif
 
 FCortexCommandResult FCortexReplayService::EnumerateHumanCaptureTargets(
 	TArray<FCortexReplayCaptureTargetChoice>& Out) const
