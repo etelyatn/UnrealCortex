@@ -762,6 +762,111 @@ def test_oversized_native_error_is_an_explicit_contract_error():
     assert _utf8_size(result) <= MAX_RESPONSE_BYTES
 
 
+# --------------------------------------------------------------------------------------
+# CR-05: every reply path is bounded by the encoded UTF-8 budget
+# --------------------------------------------------------------------------------------
+
+
+def test_unknown_command_with_oversized_name_is_a_bounded_contract_error(boundary_connection):
+    command = "unknown_" + "x" * 40000
+    result = dispatch_replay_command(boundary_connection, command, {})
+    payload = _payload(result)
+    assert _error(payload) == "UNKNOWN_COMMAND"
+    assert _utf8_size(result) <= MAX_RESPONSE_BYTES
+    # Pre-dispatch: the unknown command never reaches the native transport.
+    assert boundary_connection.calls == []
+    assert boundary_connection.started_run_ids == []
+
+
+def test_unknown_fields_with_oversized_names_are_a_bounded_contract_error(boundary_connection):
+    ascii_name = "z" * 40000
+    unicode_name = "\u6f22" * 40000  # 3 UTF-8 bytes per codepoint
+    result = dispatch_replay_command(
+        boundary_connection, "list_recordings", {ascii_name: 1, unicode_name: 2}
+    )
+    payload = _payload(result)
+    assert _error(payload) == "INVALID_FIELD"
+    assert _utf8_size(result) <= MAX_RESPONSE_BYTES
+    # Pre-dispatch: rejected fields never reach the native transport.
+    assert boundary_connection.calls == []
+
+
+class _OversizedConnectionFailure:
+    """Live read-path transport that fails with an oversized exception message."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+        self.calls: list[tuple[str, dict]] = []
+
+    def send_command(self, command, params=None, timeout=None):
+        self.calls.append((command, dict(params or {})))
+        raise self.exc
+
+    def record_tool_invocation(self, *args, **kwargs):
+        return None
+
+
+def test_long_connection_exception_is_a_bounded_contract_error():
+    connection = _OversizedConnectionFailure(ConnectionError("\u6f22" * 50000))
+    result = dispatch_replay_command(connection, "get_run", {"run_id": RUN_ID})
+    payload = _payload(result)
+    assert _error(payload) == "CONNECTION_ERROR"
+    assert _utf8_size(result) <= MAX_RESPONSE_BYTES
+    assert connection.calls != []
+
+
+class _OversizedStartLossConnection:
+    """One-shot start transport that dispatches, then loses the ack with oversized text."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.dispatched: list[dict] = []
+
+    def send_command_once(self, command, params=None, timeout=None):
+        self.calls.append((command, dict(params or {})))
+        self.dispatched.append(dict(params or {}))
+        raise ConnectionError("\u6f22" * 50000)
+
+    def record_tool_invocation(self, *args, **kwargs):
+        return None
+
+
+def test_oversized_start_loss_keeps_unknown_outcome_and_recovery_required():
+    connection = _OversizedStartLossConnection()
+    result = dispatch_replay_command(connection, "start_replay", {"recording_id": 1})
+    payload = _payload(result)
+    assert _error(payload) == "REPLAY_START_OUTCOME_UNKNOWN"
+    assert payload["outcome"] == "unknown"
+    assert payload["recovery_required"] is True
+    assert _utf8_size(result) <= MAX_RESPONSE_BYTES
+    # An uncertain dispatched start must never be presented as safe to retry.
+    assert connection.dispatched == [{"recording_id": 1}]
+
+
+class _OversizedStartNotDispatchedConnection:
+    """One-shot start transport that fails before dispatch with oversized text."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def send_command_once(self, command, params=None, timeout=None):
+        self.calls.append((command, dict(params or {})))
+        raise UECommandNotDispatchedError("\u6f22" * 50000)
+
+    def record_tool_invocation(self, *args, **kwargs):
+        return None
+
+
+def test_oversized_start_presend_failure_keeps_not_dispatched_semantics():
+    connection = _OversizedStartNotDispatchedConnection()
+    result = dispatch_replay_command(connection, "start_replay", {"recording_id": 1})
+    payload = _payload(result)
+    assert _error(payload) == "REPLAY_START_NOT_DISPATCHED"
+    assert payload["outcome"] == "not_dispatched"
+    assert payload["recovery_required"] is False
+    assert _utf8_size(result) <= MAX_RESPONSE_BYTES
+
+
 def test_client_never_invents_success_or_reissues_start(boundary_connection):
     boundary_connection.drop_next_start_ack = True
     payload = _payload(

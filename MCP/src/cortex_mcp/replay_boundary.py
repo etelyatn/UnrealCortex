@@ -18,6 +18,11 @@ from .tcp_client import UECommandError, UECommandNotDispatchedError
 # Native compact response budget (UTF-8 bytes) for one Replay reply.
 MAX_REPLAY_RESPONSE_BYTES = 39000
 
+# Human-readable diagnostics are bounded separately so that semantics-critical
+# machine fields survive; the final encoded budget remains the authority.
+_MAX_DIAGNOSTIC_BYTES = 4096
+_TRUNCATION_MARKER = "...[truncated]"
+
 _MAX_RECORDING_ID = 2147483647
 _MIN_PAGE_SIZE = 1
 _MAX_PAGE_SIZE = 100
@@ -36,14 +41,59 @@ _NIL_UUID = "00000000-0000-0000-0000-000000000000"
 _RESERVED_ERROR_FIELDS = {"success", "_error", "_message", "_command"}
 
 
-def _encode(payload: dict[str, Any]) -> str:
+def _encode(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _limit_exceeded_response(response_bytes: int) -> str:
+    """The one explicit oversize contract error; never a silent truncation."""
+    return _encode(
+        {
+            "_error": "LIMIT_EXCEEDED",
+            "_message": (
+                f"Replay reply of {response_bytes} bytes exceeds the "
+                f"{MAX_REPLAY_RESPONSE_BYTES}-byte MCP budget."
+            ),
+            "max_response_bytes": MAX_REPLAY_RESPONSE_BYTES,
+            "response_bytes": response_bytes,
+        }
+    )
+
+
+def _finalize(value: Any) -> str:
+    """Enforce the encoded UTF-8 budget on EVERY result path (the single gate)."""
+    text = _encode(value)
+    size = len(text.encode("utf-8"))
+    if size <= MAX_REPLAY_RESPONSE_BYTES:
+        return text
+    return _limit_exceeded_response(size)
+
+
+def _cap_diagnostic(text: str, limit_bytes: int = _MAX_DIAGNOSTIC_BYTES) -> str:
+    """Bound a human-readable diagnostic without splitting a UTF-8 codepoint.
+
+    The cap is applied explicitly (a marker is appended) so machine-readable
+    fields are preserved while the diagnostic never drives the whole reply over
+    the encoded budget.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit_bytes:
+        return text
+    marker = _TRUNCATION_MARKER
+    keep = limit_bytes - len(marker.encode("utf-8"))
+    head = encoded[:keep]
+    while head:
+        try:
+            return head.decode("utf-8") + marker
+        except UnicodeDecodeError:
+            head = head[:-1]
+    return marker
 
 
 def _error_envelope(code: str, message: str, **extra: Any) -> str:
     payload: dict[str, Any] = {"_error": code, "_message": message}
     payload.update(extra)
-    return _encode(payload)
+    return _finalize(payload)
 
 
 def _strict_int(
@@ -84,18 +134,8 @@ def _native_error(exc: UECommandError) -> str:
     for key, value in exc.details.items():
         if key not in _RESERVED_ERROR_FIELDS:
             payload[key] = value
-    text = _encode(payload)
-    size = len(text.encode("utf-8"))
-    if size <= MAX_REPLAY_RESPONSE_BYTES:
-        return text
     # Never trim diagnostics: an over-budget native error is an explicit contract error.
-    return _error_envelope(
-        "LIMIT_EXCEEDED",
-        f"Native Replay error envelope of {size} bytes exceeds the "
-        f"{MAX_REPLAY_RESPONSE_BYTES}-byte MCP budget.",
-        max_response_bytes=MAX_REPLAY_RESPONSE_BYTES,
-        response_bytes=size,
-    )
+    return _finalize(payload)
 
 
 def _response_error(response: dict[str, Any]) -> str | None:
@@ -115,7 +155,9 @@ def _response_error(response: dict[str, Any]) -> str | None:
 def _not_dispatched(exc: ConnectionError) -> str:
     return _error_envelope(
         "REPLAY_START_NOT_DISPATCHED",
-        "The replay start was never dispatched and no run was admitted. " + str(exc),
+        _cap_diagnostic(
+            "The replay start was never dispatched and no run was admitted. " + str(exc)
+        ),
         _command="replay.start_replay",
         outcome="not_dispatched",
         recovery_required=False,
@@ -123,15 +165,17 @@ def _not_dispatched(exc: ConnectionError) -> str:
 
 
 def _connection_error(exc: ConnectionError) -> str:
-    return _error_envelope("CONNECTION_ERROR", str(exc))
+    return _error_envelope("CONNECTION_ERROR", _cap_diagnostic(str(exc)))
 
 
 def _unknown_outcome(exc: ConnectionError) -> str:
     return _error_envelope(
         "REPLAY_START_OUTCOME_UNKNOWN",
-        "The replay start was dispatched but its outcome is unknown. "
-        "Query replay.list_recordings / replay.get_run to recover the admitted run; do not reissue start. "
-        + str(exc),
+        _cap_diagnostic(
+            "The replay start was dispatched but its outcome is unknown. "
+            "Query replay.list_recordings / replay.get_run to recover the admitted run; do not reissue start. "
+            + str(exc)
+        ),
         _command="replay.start_replay",
         outcome="unknown",
         recovery_required=True,
@@ -139,20 +183,13 @@ def _unknown_outcome(exc: ConnectionError) -> str:
 
 
 def _bounded_data(data: Any) -> str:
-    text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-    size = len(text.encode("utf-8"))
-    if size <= MAX_REPLAY_RESPONSE_BYTES:
-        return text
-    return _error_envelope(
-        "LIMIT_EXCEEDED",
-        f"Native Replay response of {size} bytes exceeds the {MAX_REPLAY_RESPONSE_BYTES}-byte MCP budget.",
-        max_response_bytes=MAX_REPLAY_RESPONSE_BYTES,
-        response_bytes=size,
-    )
+    return _finalize(data)
 
 
 def _unknown_command(command: str) -> str:
-    return _error_envelope("UNKNOWN_COMMAND", f"Unknown Replay command: {command}")
+    return _error_envelope(
+        "UNKNOWN_COMMAND", _cap_diagnostic(f"Unknown Replay command: {command}")
+    )
 
 
 def _unknown_fields(command: str, params: dict[str, Any]) -> str | None:
@@ -161,7 +198,9 @@ def _unknown_fields(command: str, params: dict[str, Any]) -> str | None:
     if unknown:
         return _error_envelope(
             "INVALID_FIELD",
-            f"{command} accepts only its declared parameter fields; rejected: {', '.join(unknown)}",
+            _cap_diagnostic(
+                f"{command} accepts only its declared parameter fields; rejected: {', '.join(unknown)}"
+            ),
         )
     return None
 
