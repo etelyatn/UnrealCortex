@@ -176,7 +176,20 @@ class ReplayCommandPeer:
         return recording_id
 
     def revoke(self, recording_id: int) -> None:
+        """Commit a permission revocation; a live run for that recording cancels natively."""
         self.recordings[recording_id]["ai_enabled"] = False
+        for run_id, run in self.runs.items():
+            if (
+                run["origin"] == "ai"
+                and run["recording_id"] == recording_id
+                and run["state"] not in TERMINAL_STATES
+            ):
+                run["state"] = "Cancelled"
+                run["waiting"] = None
+                if run["finalized_at_utc"] is None:
+                    run["finalized_at_utc"] = "2026-10-05T00:05:00.000Z"
+                if self.active_run_id == run_id:
+                    self.active_run_id = None
 
     def delete_recording(self, recording_id: int) -> None:
         self.recordings.pop(recording_id, None)
@@ -577,6 +590,7 @@ def test_replay_paging_fields_are_list_only(command, base, field, value):
         "../Runs/x",
         "",
         RUN_ID.upper(),
+        RUN_ID + "\n",
         "0" * 32,
         "00000000-0000-0000-0000-000000000000",
         1,
@@ -652,13 +666,14 @@ def test_start_replay_returns_preparing_identity(boundary_connection):
     assert payload["run_id"] in boundary_connection.started_run_ids
 
 
-def test_pre_dispatch_failure_reports_connection_error_without_admission(boundary_connection):
+def test_pre_dispatch_failure_reports_not_dispatched_without_admission(boundary_connection):
     boundary_connection.fail_next_start_presend = True
     payload = _payload(
         dispatch_replay_command(boundary_connection, "start_replay", {"recording_id": 1})
     )
-    assert _error(payload) == "CONNECTION_ERROR"
-    assert payload.get("reconciliation_required") is not True
+    assert _error(payload) == "REPLAY_START_NOT_DISPATCHED"
+    assert payload["outcome"] == "not_dispatched"
+    assert payload["recovery_required"] is False
     assert boundary_connection.started_run_ids == []
 
 
@@ -667,8 +682,9 @@ def test_uncertain_start_reports_unknown_outcome_and_recovers_same_run(boundary_
     payload = _payload(
         dispatch_replay_command(boundary_connection, "start_replay", {"recording_id": 1})
     )
-    assert _error(payload) == "UNKNOWN_OUTCOME"
-    assert payload.get("reconciliation_required") is True
+    assert _error(payload) == "REPLAY_START_OUTCOME_UNKNOWN"
+    assert payload["outcome"] == "unknown"
+    assert payload["recovery_required"] is True
     assert len(boundary_connection.started_run_ids) == 1
     run_id = boundary_connection.started_run_ids[0]
 
@@ -687,7 +703,7 @@ def test_lost_ack_then_completed_history(boundary_connection):
     payload = _payload(
         dispatch_replay_command(boundary_connection, "start_replay", {"recording_id": 1})
     )
-    assert _error(payload) == "UNKNOWN_OUTCOME"
+    assert _error(payload) == "REPLAY_START_OUTCOME_UNKNOWN"
     run_id = boundary_connection.started_run_ids[0]
 
     boundary_connection.advance_run(
@@ -720,12 +736,39 @@ def test_native_command_error_preserves_structured_details(boundary_connection):
     assert _detail(payload, "recording_id") == 999
 
 
+class _OversizedErrorConnection:
+    """Connection whose native error envelope exceeds the 39,000-byte budget."""
+
+    def send_command(self, command, params=None, timeout=None):
+        raise UECommandError(
+            command,
+            "STORAGE_FAILURE",
+            "m" * 60000,
+            {"blob": "x" * 60000},
+        )
+
+    def record_tool_invocation(self, *args, **kwargs):
+        return None
+
+
+def test_oversized_native_error_is_an_explicit_contract_error():
+    result = dispatch_replay_command(_OversizedErrorConnection(), "get_recording", {"recording_id": 1})
+    payload = _payload(result)
+    assert _error(payload) == "LIMIT_EXCEEDED"
+    assert payload["max_response_bytes"] == MAX_RESPONSE_BYTES
+    assert payload["response_bytes"] > MAX_RESPONSE_BYTES
+    assert "blob" not in payload
+    assert payload.get("_truncated") is not True
+    assert _utf8_size(result) <= MAX_RESPONSE_BYTES
+
+
 def test_client_never_invents_success_or_reissues_start(boundary_connection):
     boundary_connection.drop_next_start_ack = True
     payload = _payload(
         dispatch_replay_command(boundary_connection, "start_replay", {"recording_id": 1})
     )
-    assert _error(payload) == "UNKNOWN_OUTCOME"
+    assert _error(payload) == "REPLAY_START_OUTCOME_UNKNOWN"
+    assert payload["recovery_required"] is True
     assert payload.get("state") != "Completed"
     assert boundary_connection.native_start_count == 1
 
@@ -897,7 +940,7 @@ def test_oversized_status_diagnostics_are_an_explicit_contract_error(boundary_co
     assert _utf8_size(result) <= MAX_RESPONSE_BYTES
 
 
-def test_waiting_run_cancelled_after_committed_permission_revocation(boundary_connection):
+def test_waiting_run_cancelled_by_committed_permission_revocation(boundary_connection):
     run_id = _start(boundary_connection)
     boundary_connection.advance_run(
         run_id,
@@ -911,17 +954,46 @@ def test_waiting_run_cancelled_after_committed_permission_revocation(boundary_co
             "remaining_run_seconds": 4.9,
         },
     )
+    waiting = _payload(dispatch_replay_command(boundary_connection, "get_run", {"run_id": run_id}))
+    assert waiting["state"] == "Replaying"
+    assert waiting["waiting"]["sequence"] == 1
+
+    # Committed native revocation cancels the run without the client issuing a cancel command.
     boundary_connection.revoke(1)
 
+    status = _payload(dispatch_replay_command(boundary_connection, "get_run", {"run_id": run_id}))
+    assert status["state"] == "Cancelled"
+    assert status["waiting"] is None
+    assert status["recording_snapshot_sha256"] == "c" * 64
+    assert status["initial_state_sha256"] == "a" * 64
+    assert status["inputs_sha256"] == "b" * 64
+    assert all(command != "replay.cancel_replay" for command, _ in boundary_connection.calls)
+
+    denied = _payload(dispatch_replay_command(boundary_connection, "start_replay", {"recording_id": 1}))
+    assert _error(denied) == "PERMISSION_DENIED"
+    assert boundary_connection.native_start_count == 1
+
+
+def test_explicit_cancel_returns_terminal_state(boundary_connection):
+    run_id = _start(boundary_connection)
+    boundary_connection.advance_run(
+        run_id,
+        state="Replaying",
+        waiting={
+            "sequence": 2,
+            "reason": "pointer_pending",
+            "elapsed_seconds": 0.3,
+            "committed_wait_seconds": 0.0,
+            "remaining_event_seconds": 0.7,
+            "remaining_run_seconds": 4.7,
+        },
+    )
     cancel = _payload(dispatch_replay_command(boundary_connection, "cancel_replay", {"run_id": run_id}))
     assert cancel["state"] == "Cancelled"
     status = _payload(dispatch_replay_command(boundary_connection, "get_run", {"run_id": run_id}))
     assert status["state"] == "Cancelled"
     assert status["waiting"] is None
-
-    denied = _payload(dispatch_replay_command(boundary_connection, "start_replay", {"recording_id": 1}))
-    assert _error(denied) == "PERMISSION_DENIED"
-    assert boundary_connection.native_start_count == 1
+    assert any(command == "replay.cancel_replay" for command, _ in boundary_connection.calls)
 
 
 @pytest.mark.parametrize("mutation", ["restart", "replace_library", "delete"])
@@ -1294,8 +1366,9 @@ def test_post_dispatch_connection_loss_is_unknown_outcome_over_real_transport():
     connection = UEConnection("127.0.0.1", server.port)
     try:
         payload = _payload(dispatch_replay_command(connection, "start_replay", {"recording_id": 1}))
-        assert _error(payload) == "UNKNOWN_OUTCOME"
-        assert payload.get("reconciliation_required") is True
+        assert _error(payload) == "REPLAY_START_OUTCOME_UNKNOWN"
+        assert payload["outcome"] == "unknown"
+        assert payload["recovery_required"] is True
         assert server.admitted == [1]
 
         listing = _payload(dispatch_replay_command(connection, "list_recordings", {}))
@@ -1311,8 +1384,9 @@ def test_pre_dispatch_connection_refused_is_not_unknown_outcome():
 
     connection = UEConnection("127.0.0.1", _closed_port())
     payload = _payload(dispatch_replay_command(connection, "start_replay", {"recording_id": 1}))
-    assert _error(payload) == "CONNECTION_ERROR"
-    assert payload.get("reconciliation_required") is not True
+    assert _error(payload) == "REPLAY_START_NOT_DISPATCHED"
+    assert payload["outcome"] == "not_dispatched"
+    assert payload["recovery_required"] is False
 
 
 # --------------------------------------------------------------------------------------

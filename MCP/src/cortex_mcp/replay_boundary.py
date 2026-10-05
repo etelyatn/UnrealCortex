@@ -69,21 +69,9 @@ def _canonical_run_id(params: dict[str, Any]) -> tuple[str | None, str | None]:
     if "run_id" not in params:
         return None, _error_envelope("INVALID_FIELD", "Missing required param: run_id")
     value = params["run_id"]
-    if not isinstance(value, str) or not _CANONICAL_UUID.match(value) or value == _NIL_UUID:
+    if not isinstance(value, str) or not _CANONICAL_UUID.fullmatch(value) or value == _NIL_UUID:
         return None, _error_envelope("INVALID_VALUE", "run_id must be a canonical UUID string")
     return value, None
-
-
-def _bounded(payload: dict[str, Any]) -> str:
-    text = _encode(payload)
-    if len(text.encode("utf-8")) <= MAX_REPLAY_RESPONSE_BYTES:
-        return text
-    bounded = {key: value for key, value in payload.items() if key in _RESERVED_ERROR_FIELDS
-               or key in {"reconciliation_required", "_reconciliation_guidance", "max_response_bytes",
-                          "response_bytes"}}
-    bounded["_message"] = str(payload.get("_message", ""))[:1024]
-    bounded["_truncated"] = True
-    return _encode(bounded)
 
 
 def _native_error(exc: UECommandError) -> str:
@@ -96,7 +84,18 @@ def _native_error(exc: UECommandError) -> str:
     for key, value in exc.details.items():
         if key not in _RESERVED_ERROR_FIELDS:
             payload[key] = value
-    return _bounded(payload)
+    text = _encode(payload)
+    size = len(text.encode("utf-8"))
+    if size <= MAX_REPLAY_RESPONSE_BYTES:
+        return text
+    # Never trim diagnostics: an over-budget native error is an explicit contract error.
+    return _error_envelope(
+        "LIMIT_EXCEEDED",
+        f"Native Replay error envelope of {size} bytes exceeds the "
+        f"{MAX_REPLAY_RESPONSE_BYTES}-byte MCP budget.",
+        max_response_bytes=MAX_REPLAY_RESPONSE_BYTES,
+        response_bytes=size,
+    )
 
 
 def _response_error(response: dict[str, Any]) -> str | None:
@@ -114,7 +113,13 @@ def _response_error(response: dict[str, Any]) -> str | None:
 
 
 def _not_dispatched(exc: ConnectionError) -> str:
-    return _error_envelope("CONNECTION_ERROR", str(exc))
+    return _error_envelope(
+        "REPLAY_START_NOT_DISPATCHED",
+        "The replay start was never dispatched and no run was admitted. " + str(exc),
+        _command="replay.start_replay",
+        outcome="not_dispatched",
+        recovery_required=False,
+    )
 
 
 def _connection_error(exc: ConnectionError) -> str:
@@ -123,14 +128,13 @@ def _connection_error(exc: ConnectionError) -> str:
 
 def _unknown_outcome(exc: ConnectionError) -> str:
     return _error_envelope(
-        "UNKNOWN_OUTCOME",
+        "REPLAY_START_OUTCOME_UNKNOWN",
         "The replay start was dispatched but its outcome is unknown. "
         "Query replay.list_recordings / replay.get_run to recover the admitted run; do not reissue start. "
         + str(exc),
-        reconciliation_required=True,
-        _reconciliation_guidance=(
-            "Read back the admitted run through list_recordings/get_run before any retry."
-        ),
+        _command="replay.start_replay",
+        outcome="unknown",
+        recovery_required=True,
     )
 
 
