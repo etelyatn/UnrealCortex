@@ -1886,6 +1886,7 @@ bool FCortexReplayLifecycleOwnedCapturePublishFailureTest::RunTest(const FString
 		[Service, Fixture, BlockedPath](FAutomationTestBase& T)
 		{
 			// While retries are pending the retained failure is observable through the status.
+			FString RetainedCode;
 			const FCortexCommandResult Active = Service->GetCurrentOperation();
 			T.TestTrue(TEXT("Failed owned capture remains queryable"),
 				Active.bSuccess && Active.Data.IsValid());
@@ -1903,11 +1904,19 @@ bool FCortexReplayLifecycleOwnedCapturePublishFailureTest::RunTest(const FString
 					&& PublicationError != nullptr && PublicationError->IsValid());
 				if (PublicationError != nullptr && PublicationError->IsValid())
 				{
-					T.TestFalse(TEXT("Publication error carries a code"),
-						(*PublicationError)->GetStringField(TEXT("code")).IsEmpty());
+					RetainedCode = (*PublicationError)->GetStringField(TEXT("code"));
+					T.TestFalse(TEXT("Publication error carries a code"), RetainedCode.IsEmpty());
 				}
 			}
 			T.TestTrue(TEXT("Failed owned capture still owns the record"), Service->IsRecordInUse(1));
+
+			// A subsequent stop returns the retained asynchronous publication failure instead of
+			// the "No capture is active" Finalizing rejection.
+			const FCortexCommandResult RetainedStop = Service->StopCapture(false);
+			T.TestFalse(TEXT("Subsequent stop reports the retained publication failure"),
+				RetainedStop.bSuccess);
+			T.TestEqual(TEXT("Retained stop failure carries the published error code"),
+				RetainedStop.ErrorCode, RetainedCode);
 
 			// Let the retained publication retry succeed.
 			T.TestTrue(TEXT("Publication path unblocked"),

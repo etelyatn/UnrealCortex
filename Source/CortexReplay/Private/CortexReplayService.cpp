@@ -1570,8 +1570,18 @@ FCortexCommandResult FCortexReplayService::StartCapture(const FString& SavedEdit
 FCortexCommandResult FCortexReplayService::StopCapture(bool bAbnormal)
 {
 	FImpl& State = *Impl;
-	if (State.CapturePhase == FImpl::ECapturePhase::None
-		|| State.CapturePhase == FImpl::ECapturePhase::Finalizing)
+	if (State.CapturePhase == FImpl::ECapturePhase::None)
+	{
+		return ServiceError(CortexReplayErrorCodes::InvalidOperation,
+			TEXT("No capture is active"));
+	}
+	// A capture retained in Finalizing with a failed asynchronous publication reports that retained
+	// failure; it is not "inactive" while the publication retry is still outstanding.
+	if (State.CapturePhase == FImpl::ECapturePhase::Finalizing && State.bCapturePublicationFailed)
+	{
+		return State.CapturePublicationError;
+	}
+	if (State.CapturePhase == FImpl::ECapturePhase::Finalizing)
 	{
 		return ServiceError(CortexReplayErrorCodes::InvalidOperation,
 			TEXT("No capture is active"));
