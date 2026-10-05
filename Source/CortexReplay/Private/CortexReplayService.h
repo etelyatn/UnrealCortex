@@ -70,6 +70,13 @@ public:
 	FCortexCommandResult ListRecordings(int32 AfterId, int32 PageSize) const;
 	FCortexCommandResult ListHumanRecordings(TArray<FCortexReplayMetadata>& Out) const;
 
+	/**
+	 * Monotonic revision of the owned library, bumped by successful publish/delete/metadata saves.
+	 * The human window uses it to rebuild rows when a recording appears or changes without
+	 * re-reading the filesystem every frame.
+	 */
+	int64 GetLibraryRevision() const;
+
 	/** Nullable human-only status of the current capture/replay operation. */
 	FCortexCommandResult GetCurrentOperation() const;
 

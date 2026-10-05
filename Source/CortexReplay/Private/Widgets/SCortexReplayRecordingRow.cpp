@@ -1,6 +1,7 @@
 #include "Widgets/SCortexReplayRecordingRow.h"
 
 #include "Misc/Paths.h"
+#include "InputCoreTypes.h"
 #include "Styling/AppStyle.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
@@ -49,6 +50,7 @@ void SCortexReplayRecordingRow::Construct(const FArguments& InArgs)
 	OnPlay = InArgs._OnPlay;
 	OnEdit = InArgs._OnEdit;
 	OnDelete = InArgs._OnDelete;
+	OnSelected = InArgs._OnSelected;
 
 	const int32 RecordingId = Recording.RecordingId;
 	const FMargin RowPadding = bCompact ? FMargin(6.0f, 2.0f) : FMargin(10.0f, 4.0f);
@@ -201,6 +203,18 @@ void SCortexReplayRecordingRow::Construct(const FArguments& InArgs)
 			]
 		]
 	];
+}
+
+FReply SCortexReplayRecordingRow::OnMouseButtonDown(const FGeometry& /*MyGeometry*/,
+	const FPointerEvent& MouseEvent)
+{
+	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	{
+		// A row click selects the recording; the action buttons handle their own clicks first.
+		OnSelected.ExecuteIfBound(Recording.RecordingId);
+		return FReply::Handled();
+	}
+	return FReply::Unhandled();
 }
 
 int32 SCortexReplayRecordingRow::GetRecordingId() const

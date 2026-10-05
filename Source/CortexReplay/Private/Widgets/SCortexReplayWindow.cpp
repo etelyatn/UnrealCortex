@@ -2,7 +2,9 @@
 
 #include "Dom/JsonObject.h"
 #include "Editor.h"
+#include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Misc/Paths.h"
 #include "Styling/AppStyle.h"
 #include "Widgets/Images/SImage.h"
@@ -25,6 +27,7 @@
 
 void SCortexReplayDeleteDialog::Construct(const FArguments& InArgs)
 {
+	SetCanTick(true);
 	RecordingId = InArgs._RecordingId;
 	RecordingName = InArgs._RecordingName;
 	bDeleteBlocked = InArgs._bDeleteBlocked;
@@ -117,6 +120,20 @@ TSharedPtr<SWidget> SCortexReplayDeleteDialog::GetInitialFocusWidget() const
 {
 	// The confirmation defaults to Cancel.
 	return CancelButton;
+}
+
+void SCortexReplayDeleteDialog::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime,
+	const float InDeltaTime)
+{
+	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+
+	// Give Cancel the initial keyboard focus once the confirmation is live in a widget path.
+	if (!bRequestedInitialFocus && GetVisibility().IsVisible() && CancelButton.IsValid()
+		&& FSlateApplication::IsInitialized())
+	{
+		bRequestedInitialFocus = true;
+		FSlateApplication::Get().SetKeyboardFocus(CancelButton, EFocusCause::SetDirectly);
+	}
 }
 
 FReply SCortexReplayDeleteDialog::OnCancelClicked()
@@ -265,6 +282,7 @@ FReply SCortexReplayTargetChoiceDialog::OnCancelClicked()
 void SCortexReplayWindow::Construct(const FArguments& InArgs)
 {
 	Service = InArgs._Service;
+	SetCanTick(true);
 
 	ChildSlot
 	[
@@ -435,13 +453,58 @@ void SCortexReplayWindow::BeginRecord()
 	}
 
 	LastStatusMessage.Reset();
+
+	// Genuinely absent PIE routes to an owned saved-map capture; existing-but-unready or
+	// ambiguous PIE stays a fatal selection error (never a first-world fallback).
+	const bool bHasPie = HasAnyPieWorldContext();
 	TArray<FCortexReplayCaptureTargetChoice> Candidates;
 	const FCortexCommandResult Enumerated = Service->EnumerateHumanCaptureTargets(Candidates);
-	if (!Enumerated.bSuccess)
+	if (Enumerated.bSuccess)
 	{
-		// Vanished/ambiguous candidates error out; never fall back to the first world.
-		LastStatusMessage = Enumerated.ErrorMessage;
-		UpdateOperationLabel();
+		BeginRecordForCandidates(Candidates);
+		return;
+	}
+	if (bHasPie)
+	{
+		SurfaceOperationError(Enumerated);
+		return;
+	}
+	BeginRecordForCandidates(TArray<FCortexReplayCaptureTargetChoice>());
+}
+
+void SCortexReplayWindow::BeginRecordForCandidates(
+	const TArray<FCortexReplayCaptureTargetChoice>& Candidates)
+{
+	if (!Service.IsValid())
+	{
+		return;
+	}
+
+	if (Candidates.Num() == 0)
+	{
+		// No PIE: capture with an owned session on the saved editor map.
+		if (!GEditor)
+		{
+			LastStatusMessage = TEXT("No editor world is available to record");
+			UpdateOperationLabel();
+			return;
+		}
+		UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
+		if (!EditorWorld)
+		{
+			LastStatusMessage = TEXT("No saved editor map is available to record");
+			UpdateOperationLabel();
+			return;
+		}
+
+		const FCortexCommandResult Started = Service->StartCapture(
+			UWorld::RemovePIEPrefix(EditorWorld->GetPackage()->GetName()));
+		if (!Started.bSuccess)
+		{
+			SurfaceOperationError(Started);
+			return;
+		}
+		RefreshLibrary();
 		return;
 	}
 
@@ -453,32 +516,9 @@ void SCortexReplayWindow::BeginRecord()
 		return;
 	}
 
+	// One ready candidate is selected explicitly (PromptForCaptureTarget chose index 0).
 	bPendingRecordStart = false;
-	if (Candidates.Num() == 1)
-	{
-		// One ready candidate is selected explicitly.
-		StartBorrowedCaptureAtIndex(0);
-		return;
-	}
-
-	// No PIE: capture with an owned session on the saved editor map.
-	if (!GEditor)
-	{
-		LastStatusMessage = TEXT("No editor world is available to record");
-		UpdateOperationLabel();
-		return;
-	}
-	UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
-	if (!EditorWorld)
-	{
-		LastStatusMessage = TEXT("No saved editor map is available to record");
-		UpdateOperationLabel();
-		return;
-	}
-
-	bLastCaptureBorrowed = false;
-	Service->StartCapture(UWorld::RemovePIEPrefix(EditorWorld->GetPackage()->GetName()));
-	RefreshLibrary();
+	StartBorrowedCaptureAtIndex(0);
 }
 
 void SCortexReplayWindow::StopActiveOperation()
@@ -659,6 +699,19 @@ void SCortexReplayWindow::Tick(const FGeometry& AllottedGeometry, const double I
 {
 	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
 
+	// The real docked width decides the compact row layout for a narrow arrangement.
+	UpdateCompactLayoutFromGeometry(AllottedGeometry);
+
+	// Backend operation and library-revision transitions refresh the rows and their availability,
+	// so a transport-started run disables Play/Delete and a recording published asynchronously
+	// (even after the operation went idle) appears without any external refresh call.
+	const FString RefreshKey = BuildRefreshKey();
+	if (RefreshKey != LastOperationSignature)
+	{
+		LastOperationSignature = RefreshKey;
+		RefreshLibrary();
+	}
+
 	TimeSinceOperationRefresh += InDeltaTime;
 	if (TimeSinceOperationRefresh < 0.2)
 	{
@@ -669,6 +722,72 @@ void SCortexReplayWindow::Tick(const FGeometry& AllottedGeometry, const double I
 	UpdateOperationLabel();
 	UpdateToolbarEnablement();
 	UpdatePlaybackSummary();
+}
+
+void SCortexReplayWindow::UpdateCompactLayoutFromGeometry(const FGeometry& AllottedGeometry)
+{
+	// Below this width the wider compaction from the mockup (smaller map/date/AI columns) wins.
+	static constexpr float CompactLayoutWidthThreshold = 700.0f;
+	const bool bCompact = AllottedGeometry.GetLocalSize().X > 0.0f
+		&& AllottedGeometry.GetLocalSize().X < CompactLayoutWidthThreshold;
+	if (bCompact != bCompactLayout)
+	{
+		bCompactLayout = bCompact;
+		RebuildRows();
+	}
+}
+
+FString SCortexReplayWindow::BuildRefreshKey() const
+{
+	// The library revision catches recordings published/deleted/metadata-saved by the backend even
+	// when the operation has already returned to idle, without re-reading the filesystem.
+	FString Key = Service.IsValid()
+		? FString::Printf(TEXT("lib:%lld"), Service->GetLibraryRevision()) : FString();
+
+	const FCortexCommandResult Operation = Service.IsValid()
+		? Service->GetCurrentOperation() : FCortexCommandResult();
+	if (!Operation.bSuccess || !Operation.Data.IsValid())
+	{
+		return Key;
+	}
+
+	Key += TEXT("|");
+	Key += Operation.Data->GetStringField(TEXT("kind"));
+	Key += TEXT("|");
+	Key += Operation.Data->GetStringField(TEXT("state"));
+	Key += TEXT("|");
+	Key += FString::FromInt(
+		static_cast<int32>(Operation.Data->GetNumberField(TEXT("recording_id"))));
+	FString RunId;
+	if (Operation.Data->TryGetStringField(TEXT("run_id"), RunId))
+	{
+		Key += TEXT("|");
+		Key += RunId;
+	}
+	return Key;
+}
+
+bool SCortexReplayWindow::HasAnyPieWorldContext() const
+{
+	if (!GEngine)
+	{
+		return false;
+	}
+	for (const FWorldContext& Context : GEngine->GetWorldContexts())
+	{
+		if (Context.WorldType == EWorldType::PIE)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void SCortexReplayWindow::SurfaceOperationError(const FCortexCommandResult& Result)
+{
+	LastStatusMessage = Result.ErrorMessage.IsEmpty()
+		? FString(TEXT("The replay operation was rejected")) : Result.ErrorMessage;
+	UpdateOperationLabel();
 }
 
 void SCortexReplayWindow::RebuildRows()
@@ -691,7 +810,8 @@ void SCortexReplayWindow::RebuildRows()
 			.bDeleteEnabled(!bInUse)
 			.OnPlay(this, &SCortexReplayWindow::HandlePlayClicked)
 			.OnEdit(this, &SCortexReplayWindow::HandleEditClicked)
-			.OnDelete(this, &SCortexReplayWindow::HandleDeleteClicked);
+			.OnDelete(this, &SCortexReplayWindow::HandleDeleteClicked)
+			.OnSelected(this, &SCortexReplayWindow::HandleRowSelected);
 
 		Rows.Add(Row);
 		if (RowContainer.IsValid())
@@ -769,13 +889,10 @@ bool SCortexReplayWindow::IsReplayActiveForRecording(int32 RecordingId) const
 
 FText SCortexReplayWindow::BuildOperationLabel() const
 {
-	if (!LastStatusMessage.IsEmpty())
-	{
-		return FText::FromString(LastStatusMessage);
-	}
 	if (!Service.IsValid())
 	{
-		return LOCTEXT("ReadyLabel", "Ready");
+		return LastStatusMessage.IsEmpty() ? LOCTEXT("ReadyLabel", "Ready")
+			: FText::FromString(LastStatusMessage);
 	}
 
 	const FCortexCommandResult Operation = Service->GetCurrentOperation();
@@ -785,7 +902,9 @@ FText SCortexReplayWindow::BuildOperationLabel() const
 	}
 	if (!Operation.Data.IsValid())
 	{
-		return LOCTEXT("ReadyLabel", "Ready");
+		// No active operation: any rejection message from the last human action stays visible.
+		return LastStatusMessage.IsEmpty() ? LOCTEXT("ReadyLabel", "Ready")
+			: FText::FromString(LastStatusMessage);
 	}
 
 	const FString Kind = Operation.Data->GetStringField(TEXT("kind"));
@@ -799,7 +918,11 @@ FText SCortexReplayWindow::BuildOperationLabel() const
 	}
 	else
 	{
-		const TCHAR* Ownership = bLastCaptureBorrowed ? TEXT("borrowed") : TEXT("owned");
+		// The backend reports borrowed capture as human origin, so ownership survives a
+		// window close/reopen instead of relying on window-local state.
+		FString Origin;
+		Operation.Data->TryGetStringField(TEXT("origin"), Origin);
+		const TCHAR* Ownership = Origin == TEXT("human") ? TEXT("borrowed") : TEXT("owned");
 		Label = FString::Printf(TEXT("Recording #%d · %s · %s"), RecordingId, Ownership, *State);
 		if (Operation.Data->GetBoolField(TEXT("publication_failed")))
 		{
@@ -863,11 +986,18 @@ void SCortexReplayWindow::ShowPopup(const TSharedPtr<SWidget>& Content)
 
 void SCortexReplayWindow::HidePopup()
 {
+	// If the popup held keyboard focus, hand it back to the window on dismissal.
+	const bool bPopupHadFocus = PopupContent.IsValid()
+		&& PopupContent->HasAnyUserFocusOrFocusedDescendants();
 	PopupContent.Reset();
 	if (PopupLayer.IsValid())
 	{
 		PopupLayer->SetContent(SNullWidget::NullWidget);
 		PopupLayer->SetVisibility(EVisibility::Collapsed);
+	}
+	if (bPopupHadFocus && FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().SetKeyboardFocus(SharedThis(this), EFocusCause::SetDirectly);
 	}
 }
 
@@ -908,18 +1038,36 @@ void SCortexReplayWindow::StartBorrowedCaptureAtIndex(int32 CandidateIndex)
 		return;
 	}
 
-	bLastCaptureBorrowed = true;
-	Service->StartCaptureAtTarget(*World, Choice.LocalPlayerIndex);
+	const FCortexCommandResult Started = Service->StartCaptureAtTarget(*World, Choice.LocalPlayerIndex);
+	if (!Started.bSuccess)
+	{
+		// Vanished/ambiguous/held-input admission errors must be visible, not reported as Ready.
+		SurfaceOperationError(Started);
+		return;
+	}
 	RefreshLibrary();
 }
 
 void SCortexReplayWindow::HandleMetadataCommitted(int32 RecordingId, const FString& Name,
 	const FString& Description, bool bAIEnabled)
 {
-	if (Service.IsValid())
+	if (!Service.IsValid())
 	{
-		Service->SaveMetadata(RecordingId, Name, Description, bAIEnabled);
+		return;
 	}
+
+	const FCortexCommandResult Saved = Service->SaveMetadata(RecordingId, Name, Description, bAIEnabled);
+	if (!Saved.bSuccess)
+	{
+		// Keep the popup and its drafts so the human can correct the invalid value; the native
+		// failure is shown instead of silently discarding the edit.
+		if (MetadataDialog.IsValid())
+		{
+			MetadataDialog->SetCommitError(Saved.ErrorMessage);
+		}
+		return;
+	}
+
 	MetadataDialog.Reset();
 	HidePopup();
 	RefreshLibrary();
@@ -969,6 +1117,11 @@ void SCortexReplayWindow::HandleEditClicked(int32 RecordingId)
 void SCortexReplayWindow::HandleDeleteClicked(int32 RecordingId)
 {
 	OpenDeleteConfirmation(RecordingId);
+}
+
+void SCortexReplayWindow::HandleRowSelected(int32 RecordingId)
+{
+	SelectRecording(RecordingId);
 }
 
 #undef LOCTEXT_NAMESPACE

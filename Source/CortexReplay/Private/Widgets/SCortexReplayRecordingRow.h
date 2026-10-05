@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "CortexReplayTypes.h"
+#include "Input/Events.h"
 #include "Input/Reply.h"
 #include "Styling/SlateColor.h"
 #include "Widgets/SCompoundWidget.h"
@@ -38,9 +39,13 @@ public:
 		SLATE_EVENT(FOnCortexReplayRowAction, OnPlay)
 		SLATE_EVENT(FOnCortexReplayRowAction, OnEdit)
 		SLATE_EVENT(FOnCortexReplayRowAction, OnDelete)
+		SLATE_EVENT(FOnCortexReplayRowAction, OnSelected)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
+
+	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry,
+		const FPointerEvent& MouseEvent) override;
 
 	int32 GetRecordingId() const;
 	const FCortexReplayMetadata& GetRecording() const;
@@ -85,4 +90,5 @@ private:
 	FOnCortexReplayRowAction OnPlay;
 	FOnCortexReplayRowAction OnEdit;
 	FOnCortexReplayRowAction OnDelete;
+	FOnCortexReplayRowAction OnSelected;
 };

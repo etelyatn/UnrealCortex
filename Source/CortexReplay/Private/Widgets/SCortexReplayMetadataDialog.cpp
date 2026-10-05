@@ -76,6 +76,16 @@ void SCortexReplayMetadataDialog::Construct(const FArguments& InArgs)
 
 				+ SVerticalBox::Slot()
 				.AutoHeight()
+				.Padding(0.0f, 0.0f, 0.0f, 8.0f)
+				[
+					SAssignNew(CommitError, STextBlock)
+					.AutoWrapText(true)
+					.Visibility(EVisibility::Collapsed)
+					.ColorAndOpacity(FLinearColor(0.92f, 0.35f, 0.35f, 1.0f))
+				]
+
+				+ SVerticalBox::Slot()
+				.AutoHeight()
 				.Padding(0.0f, 0.0f, 0.0f, 2.0f)
 				[
 					SNew(STextBlock).Text(LOCTEXT("NameLabel", "Name"))
@@ -229,6 +239,16 @@ FText SCortexReplayMetadataDialog::GetCoverageWarningText() const
 
 	return FText::FromString(FString::Printf(
 		TEXT("No unavailable UI guards in this recording. %s"), *PressOnly));
+}
+
+void SCortexReplayMetadataDialog::SetCommitError(const FString& Message)
+{
+	if (CommitError.IsValid())
+	{
+		CommitError->SetText(FText::FromString(Message));
+		CommitError->SetVisibility(Message.IsEmpty()
+			? EVisibility::Collapsed : EVisibility::Visible);
+	}
 }
 
 FReply SCortexReplayMetadataDialog::OnSaveClicked()

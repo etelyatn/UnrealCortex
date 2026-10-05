@@ -67,6 +67,8 @@ public:
 	FReply OnConfirmClicked();
 
 	virtual bool SupportsKeyboardFocus() const override;
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime,
+		const float InDeltaTime) override;
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 
 	TSharedPtr<STextBlock> TitleText;
@@ -78,6 +80,7 @@ private:
 	int32 RecordingId = 0;
 	FString RecordingName;
 	bool bDeleteBlocked = false;
+	bool bRequestedInitialFocus = false;
 	FOnCortexReplayDeleteConfirmed OnConfirmed;
 	FSimpleDelegate OnDismissed;
 };
@@ -149,6 +152,14 @@ public:
 	FReply OnRecordClicked();
 	FReply OnStopClicked();
 	void BeginRecord();
+
+	/**
+	 * Post-enumeration Record entry: routes an explicit candidate set to an owned saved-map
+	 * capture (empty), one explicitly selected target, or the transient choice popup. Public so the
+	 * record path can be exercised without a live enumeration.
+	 */
+	void BeginRecordForCandidates(const TArray<FCortexReplayCaptureTargetChoice>& Candidates);
+
 	void StopActiveOperation();
 	FText GetOperationLabel() const;
 
@@ -200,6 +211,10 @@ private:
 	FText BuildOperationLabel() const;
 	FText BuildPlaybackSummaryText() const;
 	bool IsReplayActiveForRecording(int32 RecordingId) const;
+	bool HasAnyPieWorldContext() const;
+	FString BuildRefreshKey() const;
+	void UpdateCompactLayoutFromGeometry(const FGeometry& AllottedGeometry);
+	void SurfaceOperationError(const FCortexCommandResult& Result);
 
 	void ShowPopup(const TSharedPtr<SWidget>& Content);
 	void HidePopup();
@@ -207,6 +222,7 @@ private:
 	void HandlePlayClicked(int32 RecordingId);
 	void HandleEditClicked(int32 RecordingId);
 	void HandleDeleteClicked(int32 RecordingId);
+	void HandleRowSelected(int32 RecordingId);
 
 	void HandleTargetChosen(int32 CandidateIndex);
 	void HandleTargetChoiceCancelled();
@@ -235,9 +251,10 @@ private:
 	TArray<FCortexReplayCaptureTargetChoice> PendingCandidates;
 	int32 ChosenTargetIndex = INDEX_NONE;
 	bool bPendingRecordStart = false;
-	bool bLastCaptureBorrowed = false;
 	int32 SelectedRecordingId = 0;
 	bool bCompactLayout = false;
+	/** Last backend operation signature; a change refreshes the rows (start/completion/publication). */
+	FString LastOperationSignature;
 	TSharedPtr<SWidget> PopupContent;
 	FString LastStatusMessage;
 	double TimeSinceOperationRefresh = 0.0;

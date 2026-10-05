@@ -3246,6 +3246,7 @@ FCortexCommandResult FCortexReplayLibrary::Publish(const FCortexReplaySnapshot& 
 		return ReplayError(CortexReplayErrorCodes::StorageFailure, RenameError);
 	}
 
+	++Revision;
 	return ReplaySuccess();
 }
 
@@ -3310,6 +3311,7 @@ FCortexCommandResult FCortexReplayLibrary::SaveMetadata(
 		return ReplayError(CortexReplayErrorCodes::SaveFailed, WriteError);
 	}
 
+	++Revision;
 	return ReplaySuccess();
 }
 
@@ -3345,5 +3347,11 @@ FCortexCommandResult FCortexReplayLibrary::Delete(int32 Id)
 		return ReplayError(CortexReplayErrorCodes::StorageFailure, FString::Printf(TEXT("Failed to delete recording %d"), Id));
 	}
 
+	++Revision;
 	return ReplaySuccess();
+}
+
+int64 FCortexReplayLibrary::GetRevision() const
+{
+	return Revision;
 }

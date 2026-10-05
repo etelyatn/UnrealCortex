@@ -62,6 +62,9 @@ public:
 	/** Press-only / partial-coverage warning text; non-empty even without unavailable guards. */
 	FText GetCoverageWarningText() const;
 
+	/** Shows a native Save failure without discarding the drafts or closing the popup. */
+	void SetCommitError(const FString& Message);
+
 	/** The popup's own actions, wired to the Save/Cancel buttons and the Escape key. */
 	FReply OnSaveClicked();
 	FReply OnCancelClicked();
@@ -73,6 +76,8 @@ public:
 	TSharedPtr<STextBlock> DateText;
 	TSharedPtr<STextBlock> MapText;
 	TSharedPtr<STextBlock> CoverageWarning;
+	/** Native Save failure, visible only after a rejected commit. */
+	TSharedPtr<STextBlock> CommitError;
 
 	TSharedPtr<SEditableTextBox> NameEdit;
 	TSharedPtr<SMultiLineEditableTextBox> DescriptionEdit;

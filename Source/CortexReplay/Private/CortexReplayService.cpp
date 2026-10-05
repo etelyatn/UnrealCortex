@@ -1752,6 +1752,11 @@ FCortexCommandResult FCortexReplayService::ListHumanRecordings(
 	return Impl->Library.List(false, Out);
 }
 
+int64 FCortexReplayService::GetLibraryRevision() const
+{
+	return Impl->Library.GetRevision();
+}
+
 FCortexCommandResult FCortexReplayService::SaveMetadata(int32 Id, const FString& Name,
 	const FString& Description, bool bAIEnabled)
 {

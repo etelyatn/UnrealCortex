@@ -19,6 +19,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformTime.h"
+#include "Rendering/SlateLayoutTransform.h"
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
@@ -27,6 +28,8 @@
 #include "Misc/SecureHash.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "Tests/AutomationEditorCommon.h"
+#include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableText.h"
@@ -35,6 +38,7 @@
 #include "Widgets/SCortexReplayMetadataDialog.h"
 #include "Widgets/SCortexReplayRecordingRow.h"
 #include "Widgets/SCortexReplayWindow.h"
+#include "Widgets/SWindow.h"
 #include "Widgets/Text/STextBlock.h"
 
 namespace
@@ -174,7 +178,7 @@ TSharedPtr<SCortexReplayMetadataDialog> SaveMetadataThroughDialog(FAutomationTes
 	Dialog->EditDraftDescription(Description);
 	Dialog->SetDraftAIEnabled(bAIEnabled);
 	Dialog->OnSaveClicked();
-	Window.CloseMetadataDialog();
+	// The window closes the popup only on a successful commit.
 	return Dialog;
 }
 
@@ -191,8 +195,24 @@ TSharedPtr<SCortexReplayMetadataDialog> CancelMetadataDraft(FAutomationTestBase&
 	Dialog->EditDraftName(Name);
 	Dialog->SetDraftAIEnabled(bAIEnabled);
 	Dialog->OnCancelClicked();
-	Window.CloseMetadataDialog();
 	return Dialog;
+}
+
+/** A left-button row click through the row's own mouse handler (real selection input). */
+void ClickRowSelection(SCortexReplayRecordingRow& Row)
+{
+	const TSet<FKey> PressedButtons;
+	const FModifierKeysState ModifierKeys;
+	const FPointerEvent Event(0u, FVector2D::ZeroVector, FVector2D::ZeroVector, PressedButtons,
+		EKeys::LeftMouseButton, 0.0f, ModifierKeys);
+	Row.OnMouseButtonDown(FGeometry(), Event);
+}
+
+/** Drives one real window tick with a geometry wide enough to stay in desktop layout. */
+void TickWindow(SCortexReplayWindow& Window, double CurrentTime = 0.0, float DeltaSeconds = 0.05f)
+{
+	Window.Tick(FGeometry::MakeRoot(FVector2D(1000.0f, 800.0f), FSlateLayoutTransform()),
+		CurrentTime, DeltaSeconds);
 }
 
 /** Counts editable text/checkbox controls anywhere in a widget subtree. */
@@ -353,8 +373,17 @@ public:
 	bool Update() override
 	{
 		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
-		Window->RefreshLibrary();
-		Window->SelectRecording(RecordingId);
+
+		// The window must reach the active state through its own tick/transition handling.
+		TickWindow(*Window);
+		if (Window->GetSelectedRecordingId() != RecordingId)
+		{
+			const TSharedPtr<SCortexReplayRecordingRow> Row = Window->GetRow(RecordingId);
+			if (Row.IsValid())
+			{
+				ClickRowSelection(*Row);
+			}
+		}
 		if (Window->GetSelectedPlaybackSummaryKind() == ECortexReplayPlaybackSummary::ActiveRun
 			&& Service->GetCurrentOperation().bSuccess)
 		{
@@ -414,6 +443,156 @@ public:
 
 private:
 	FAutomationTestBase* Test;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+	double StartTime = 0.0;
+};
+
+/** Waits for an externally started PIE session to begin playing with a controller. */
+class FWindowAwaitPiePlaying : public IAutomationLatentCommand
+{
+public:
+	explicit FWindowAwaitPiePlaying(FAutomationTestBase* InTest,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Test(InTest), KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		if (GEditor && GEditor->PlayWorld != nullptr
+			&& GEditor->PlayWorld->HasBegunPlay()
+			&& GEditor->PlayWorld->GetFirstPlayerController() != nullptr)
+		{
+			return true;
+		}
+		if (FPlatformTime::Seconds() - StartTime > WindowReadyWatchdogSeconds)
+		{
+			Test->AddError(TEXT("Timed out waiting for the PIE session"));
+			return true;
+		}
+		return false;
+	}
+
+private:
+	FAutomationTestBase* Test;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+	double StartTime = 0.0;
+};
+
+/** Waits until the service can resolve at least one ready PIE capture target. */
+class FWindowAwaitReadyTargets : public IAutomationLatentCommand
+{
+public:
+	FWindowAwaitReadyTargets(FAutomationTestBase* InTest,
+		TSharedRef<FCortexReplayService> InService,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Test(InTest), Service(MoveTemp(InService)), KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		TArray<FCortexReplayCaptureTargetChoice> Candidates;
+		if (Service->EnumerateHumanCaptureTargets(Candidates).bSuccess)
+		{
+			return true;
+		}
+		if (FPlatformTime::Seconds() - StartTime > WindowReadyWatchdogSeconds)
+		{
+			Test->AddError(TEXT("No ready PIE capture target became available"));
+			return true;
+		}
+		return false;
+	}
+
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+	double StartTime = 0.0;
+};
+
+/**
+ * Waits for the current-operation kind to become active (optionally a specific kind) or for the
+ * backend to go idle.
+ */
+class FWindowAwaitOperation : public IAutomationLatentCommand
+{
+public:
+	FWindowAwaitOperation(FAutomationTestBase* InTest, TSharedRef<FCortexReplayService> InService,
+		FString InKind, bool bInWantActive, double InWatchdog,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Test(InTest), Service(MoveTemp(InService)), Kind(MoveTemp(InKind))
+		, bWantActive(bInWantActive), Watchdog(InWatchdog), KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		const FCortexCommandResult Operation = Service->GetCurrentOperation();
+		const bool bActive = Operation.bSuccess && Operation.Data.IsValid();
+		if (!bWantActive)
+		{
+			if (!bActive) { return true; }
+		}
+		else if (bActive && (Kind.IsEmpty()
+			|| Operation.Data->GetStringField(TEXT("kind")) == Kind))
+		{
+			return true;
+		}
+		if (FPlatformTime::Seconds() - StartTime > Watchdog)
+		{
+			Test->AddError(FString::Printf(TEXT("Backend never reached %s (%s)"),
+				bWantActive ? TEXT("active") : TEXT("idle"), *Kind));
+			return true;
+		}
+		return false;
+	}
+
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	FString Kind;
+	bool bWantActive;
+	double Watchdog;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+	double StartTime = 0.0;
+};
+
+/**
+ * Waits for the active capture to reach one exact phase. An owned capture only becomes Recording
+ * (and therefore publishable) after asynchronous PIE readiness, so a test must not Stop earlier.
+ */
+class FWindowAwaitCapturePhase : public IAutomationLatentCommand
+{
+public:
+	FWindowAwaitCapturePhase(FAutomationTestBase* InTest, TSharedRef<FCortexReplayService> InService,
+		FString InExpectedPhase, double InWatchdog,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Test(InTest), Service(MoveTemp(InService)), ExpectedPhase(MoveTemp(InExpectedPhase))
+		, Watchdog(InWatchdog), KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		const FCortexCommandResult Operation = Service->GetCurrentOperation();
+		if (Operation.bSuccess && Operation.Data.IsValid()
+			&& Operation.Data->GetStringField(TEXT("kind")) == TEXT("capture")
+			&& Operation.Data->GetStringField(TEXT("state")) == ExpectedPhase)
+		{
+			return true;
+		}
+		if (FPlatformTime::Seconds() - StartTime > Watchdog)
+		{
+			Test->AddError(FString::Printf(
+				TEXT("Capture never reached phase %s"), *ExpectedPhase));
+			return true;
+		}
+		return false;
+	}
+
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	FString ExpectedPhase;
+	double Watchdog;
 	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
 	double StartTime = 0.0;
 };
@@ -666,7 +845,12 @@ bool FCortexReplayWindowSelectedSummaryTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Nothing selected shows no result"),
 		Window->GetSelectedPlaybackSummaryKind() == ECortexReplayPlaybackSummary::None);
 
-	Window->SelectRecording(1);
+	const TSharedPtr<SCortexReplayRecordingRow> Row1 = Window->GetRow(1);
+	if (TestTrue(TEXT("Row 1 exists"), Row1.IsValid()))
+	{
+		ClickRowSelection(*Row1);
+	}
+	TestTrue(TEXT("Row click selects the recording"), Window->GetSelectedRecordingId() == 1);
 	TestTrue(TEXT("Retained terminal result is shown"),
 		Window->GetSelectedPlaybackSummaryKind() == ECortexReplayPlaybackSummary::PreviousTerminal);
 	TestTrue(TEXT("Retained summary names Completed"),
@@ -674,13 +858,22 @@ bool FCortexReplayWindowSelectedSummaryTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Retained summary is not 'Not replayed yet'"),
 		Window->GetSelectedPlaybackSummaryText().ToString().Contains(TEXT("Not replayed yet")));
 
-	Window->SelectRecording(2);
+	const TSharedPtr<SCortexReplayRecordingRow> Row2 = Window->GetRow(2);
+	if (TestTrue(TEXT("Row 2 exists"), Row2.IsValid()))
+	{
+		ClickRowSelection(*Row2);
+	}
+	TestTrue(TEXT("Row click switches selection"), Window->GetSelectedRecordingId() == 2);
 	TestTrue(TEXT("Recording without a run shows none"),
 		Window->GetSelectedPlaybackSummaryKind() == ECortexReplayPlaybackSummary::None);
 	TestEqual(TEXT("Recording without a run says Not replayed yet"),
 		Window->GetSelectedPlaybackSummaryText().ToString(), FString(TEXT("Not replayed yet")));
 
-	Window->SelectRecording(1);
+	const TSharedPtr<SCortexReplayRecordingRow> Row1Again = Window->GetRow(1);
+	if (TestTrue(TEXT("Row 1 still exists"), Row1Again.IsValid()))
+	{
+		ClickRowSelection(*Row1Again);
+	}
 	TestTrue(TEXT("Switching back restores the retained result"),
 		Window->GetSelectedPlaybackSummaryKind() == ECortexReplayPlaybackSummary::PreviousTerminal);
 
@@ -689,11 +882,19 @@ bool FCortexReplayWindowSelectedSummaryTest::RunTest(const FString& Parameters)
 	const TSharedRef<SCortexReplayWindow> ReopenedWindow =
 		SNew(SCortexReplayWindow).Service(RestartedService);
 	ReopenedWindow->RefreshLibrary();
-	ReopenedWindow->SelectRecording(1);
+	const TSharedPtr<SCortexReplayRecordingRow> ReopenRow1 = ReopenedWindow->GetRow(1);
+	if (TestTrue(TEXT("Reopened row 1 exists"), ReopenRow1.IsValid()))
+	{
+		ClickRowSelection(*ReopenRow1);
+	}
 	TestTrue(TEXT("Reopen reads the retained result"),
 		ReopenedWindow->GetSelectedPlaybackSummaryKind()
 			== ECortexReplayPlaybackSummary::PreviousTerminal);
-	ReopenedWindow->SelectRecording(2);
+	const TSharedPtr<SCortexReplayRecordingRow> ReopenRow2 = ReopenedWindow->GetRow(2);
+	if (TestTrue(TEXT("Reopened row 2 exists"), ReopenRow2.IsValid()))
+	{
+		ClickRowSelection(*ReopenRow2);
+	}
 	TestTrue(TEXT("Reopen still isolates the other recording"),
 		ReopenedWindow->GetSelectedPlaybackSummaryKind() == ECortexReplayPlaybackSummary::None);
 
@@ -721,11 +922,19 @@ bool FCortexReplayWindowCompactAndTargetChoiceTest::RunTest(const FString& Param
 	const TSharedRef<FCortexReplayService> Service = MakeWindowService(Fixture);
 	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
 
-	for (const bool bCompact : { false, true })
+	// The compact layout follows the real docked width, not a manually set flag.
+	struct FWidthCase
 	{
-		Window->SetCompactLayout(bCompact);
-		Window->RefreshLibrary();
-		TestEqual(TEXT("Window reports the requested layout"), Window->IsCompactLayout(), bCompact);
+		float Width;
+		bool bCompact;
+	};
+	const FWidthCase WidthCases[] = { {1000.0f, false}, {500.0f, true} };
+	for (const FWidthCase& Case : WidthCases)
+	{
+		Window->Tick(FGeometry::MakeRoot(FVector2D(Case.Width, 800.0f), FSlateLayoutTransform()),
+			0.0, 0.05f);
+		TestEqual(TEXT("Compact layout follows the docked width"), Window->IsCompactLayout(),
+			Case.bCompact);
 
 		for (const int32 Id : { 1, 2 })
 		{
@@ -734,7 +943,7 @@ bool FCortexReplayWindowCompactAndTargetChoiceTest::RunTest(const FString& Param
 			{
 				continue;
 			}
-			TestEqual(TEXT("Row follows compact layout"), Row->IsCompact(), bCompact);
+			TestEqual(TEXT("Row follows compact layout"), Row->IsCompact(), Case.bCompact);
 			TestTrue(TEXT("Row keeps its ID"), Row->IDText.IsValid()
 				&& Row->IDText->GetText().ToString().StartsWith(TEXT("#")));
 			TestTrue(TEXT("Row keeps its title"), Row->TitleText.IsValid());
@@ -830,7 +1039,6 @@ bool FCortexReplayWindowActiveRunLifecycleTest::RunTest(const FString& Parameter
 
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
-	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
 	const FString MapPath = WindowMapAssetPath();
 
 	if (!WindowPublishPlaybackRecording(*this, *Fixture, 1, MapPath,
@@ -839,6 +1047,10 @@ bool FCortexReplayWindowActiveRunLifecycleTest::RunTest(const FString& Parameter
 	{
 		return false;
 	}
+
+	// The window is opened after the recording exists, so the completed-run assertions observe the
+	// real start/completion transitions rather than a missing initial library read.
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
 
 	// First run completes and supplies the retained previous terminal result.
 	const FCortexCommandResult FirstStart = Service->StartReplay(1, ECortexReplayOrigin::AI);
@@ -856,8 +1068,12 @@ bool FCortexReplayWindowActiveRunLifecycleTest::RunTest(const FString& Parameter
 	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
 		[Window](FAutomationTestBase& T)
 		{
-			Window->RefreshLibrary();
-			Window->SelectRecording(1);
+			TickWindow(*Window);
+			const TSharedPtr<SCortexReplayRecordingRow> Row = Window->GetRow(1);
+			if (T.TestTrue(TEXT("Completed run row exists"), Row.IsValid()))
+			{
+				ClickRowSelection(*Row);
+			}
 			T.TestTrue(TEXT("Completed first run is shown as previous"),
 				Window->GetSelectedPlaybackSummaryKind()
 					== ECortexReplayPlaybackSummary::PreviousTerminal);
@@ -877,7 +1093,7 @@ bool FCortexReplayWindowActiveRunLifecycleTest::RunTest(const FString& Parameter
 	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
 		[Window](FAutomationTestBase& T)
 		{
-			Window->RefreshLibrary();
+			TickWindow(*Window);
 			const TSharedPtr<SCortexReplayRecordingRow> Row = Window->GetRow(1);
 			if (!T.TestTrue(TEXT("Active record row exists"), Row.IsValid()))
 			{
@@ -903,8 +1119,12 @@ bool FCortexReplayWindowActiveRunLifecycleTest::RunTest(const FString& Parameter
 	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
 		[Window, Service, Fixture](FAutomationTestBase& T)
 		{
-			Window->RefreshLibrary();
-			Window->SelectRecording(1);
+			TickWindow(*Window);
+			const TSharedPtr<SCortexReplayRecordingRow> Row = Window->GetRow(1);
+			if (T.TestTrue(TEXT("Interrupted run row exists"), Row.IsValid()))
+			{
+				ClickRowSelection(*Row);
+			}
 
 			// The second run keeps its single terminal interruption result after revocation.
 			const FCortexCommandResult Last = Service->GetLastRunForRecording(1);
@@ -913,7 +1133,7 @@ bool FCortexReplayWindowActiveRunLifecycleTest::RunTest(const FString& Parameter
 				? Last.Data->GetStringField(TEXT("state")) : FString();
 
 			SaveMetadataThroughDialog(T, *Window, 1, TEXT("Revoked"), TEXT("ai off"), false);
-			Window->RefreshLibrary();
+			TickWindow(*Window);
 
 			const FCortexCommandResult After = Service->GetLastRunForRecording(1);
 			T.TestTrue(TEXT("Retained result survives revocation"), After.bSuccess && After.Data.IsValid());
@@ -924,6 +1144,309 @@ bool FCortexReplayWindowActiveRunLifecycleTest::RunTest(const FString& Parameter
 			T.TestFalse(TEXT("Revoked recording denies a new AI start"),
 				Service->StartReplay(1, ECortexReplayOrigin::AI).bSuccess);
 		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Record with no PIE must start the owned saved-map capture and surface the asynchronously
+// published recording through the window's own transition handling.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowOwnedRecordTest,
+	"Cortex.Replay.Window.RecordWithoutPieUsesOwnedCaptureAndPublishesRow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowOwnedRecordTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor)
+	{
+		AddError(TEXT("GEditor missing"));
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("No PIE is present before Record"), !WindowAnyPIEWorld());
+			// Real Record action, not a fabricated candidate array.
+			Window->OnRecordClicked();
+		}, Fixture));
+	// An owned capture becomes Recording only after asynchronous PIE readiness; a stop before that
+	// point is a preparation abort that is never published (see StopCapture's bPublish rule), so the
+	// test must wait for Recording and record one real input before stopping.
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitCapturePhase(this, Service, TEXT("Recording"), 60.0, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window](FAutomationTestBase& T)
+		{
+			TickWindow(*Window);
+			T.TestTrue(TEXT("Owned capture is reported as owned"),
+				Window->GetOperationLabel().ToString().Contains(TEXT("owned")));
+
+			// Record one real key edge through normal Slate routing so the capture is non-empty.
+			if (FSlateApplication::IsInitialized())
+			{
+				const FModifierKeysState Modifiers;
+				const uint32 UserIndex = FSlateApplication::Get().GetUserIndexForKeyboard();
+				FSlateApplication::Get().ProcessKeyDownEvent(
+					FKeyEvent(EKeys::W, Modifiers, UserIndex, false, 0, 0));
+				FSlateApplication::Get().ProcessKeyUpEvent(
+					FKeyEvent(EKeys::W, Modifiers, UserIndex, false, 0, 0));
+			}
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window](FAutomationTestBase&)
+		{
+			Window->OnStopClicked();
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitOperation(this, Service, TEXT(""), false, 30.0, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window](FAutomationTestBase& T)
+		{
+			// No manual RefreshLibrary: the publication transition must surface the new row.
+			TickWindow(*Window);
+			T.TestEqual(TEXT("Published owned capture appears as a row"), Window->GetRows().Num(), 1);
+			if (Window->GetRows().Num() == 1)
+			{
+				T.TestTrue(TEXT("Published row is playable"),
+					Window->GetRows()[0]->PlayButton.IsValid()
+					&& Window->GetRows()[0]->PlayButton->IsEnabled());
+			}
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Borrowed capture ownership is reported from backend state, so it survives a window reopen.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowBorrowedOwnershipTest,
+	"Cortex.Replay.Window.BorrowedCaptureOwnershipSurvivesReopen",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowBorrowedOwnershipTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor)
+	{
+		AddError(TEXT("GEditor missing"));
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitPiePlaying(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitReadyTargets(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window](FAutomationTestBase&)
+		{
+			Window->OnRecordClicked();
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitOperation(this, Service, TEXT("capture"), true, 45.0, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window, Service](FAutomationTestBase& T)
+		{
+			TickWindow(*Window);
+			T.TestTrue(TEXT("Borrowed capture is reported as borrowed"),
+				Window->GetOperationLabel().ToString().Contains(TEXT("borrowed")));
+
+			// Close/reopen the window while the capture is active: the ownership presentation must
+			// come from the backend, not from window-local state.
+			const TSharedRef<SCortexReplayWindow> Reopened =
+				SNew(SCortexReplayWindow).Service(Service);
+			Reopened->RefreshLibrary();
+			T.TestTrue(TEXT("Reopened window still reports borrowed ownership"),
+				Reopened->GetOperationLabel().ToString().Contains(TEXT("borrowed")));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window](FAutomationTestBase&)
+		{
+			Window->OnStopClicked();
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitOperation(this, Service, TEXT(""), false, 30.0, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("Borrowed Stop leaves the human PIE running"),
+				GEditor && GEditor->PlayWorld != nullptr);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A rejected capture admission is exposed through the operation label instead of Ready.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowAdmissionRejectionTest,
+	"Cortex.Replay.Window.CaptureAdmissionRejectionSurfaces",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowAdmissionRejectionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor)
+	{
+		AddError(TEXT("GEditor missing"));
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitPiePlaying(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitReadyTargets(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window, Service](FAutomationTestBase& T)
+		{
+			TArray<FCortexReplayCaptureTargetChoice> Choices;
+			T.TestTrue(TEXT("Enumeration succeeds"), Service->EnumerateHumanCaptureTargets(Choices).bSuccess);
+			if (Choices.Num() == 0)
+			{
+				return;
+			}
+
+			// A real enumerated world with an unresolvable local-player index forces the native
+			// admission rejection through the real post-enumeration Record entry.
+			FCortexReplayCaptureTargetChoice BadChoice = Choices[0];
+			BadChoice.LocalPlayerIndex = 99;
+			TArray<FCortexReplayCaptureTargetChoice> Bad;
+			Bad.Add(BadChoice);
+			Window->BeginRecordForCandidates(Bad);
+
+			T.TestFalse(TEXT("Rejected admission starts no backend operation"),
+				Service->GetCurrentOperation().Data.IsValid());
+			const FString Label = Window->GetOperationLabel().ToString();
+			T.TestTrue(TEXT("Rejection is exposed in the operation label"),
+				!Label.IsEmpty() && Label != TEXT("Ready"));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A failed metadata Save keeps the popup and drafts and shows the native error.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowMetadataSaveFailureTest,
+	"Cortex.Replay.Window.MetadataSaveFailureKeepsDrafts",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowMetadataSaveFailureTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	if (!PublishRecording(*this, Fixture, 1, false, FString(),
+		{WindowMakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W)}))
+	{
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(Fixture);
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+	Window->RefreshLibrary();
+
+	const TSharedPtr<SCortexReplayMetadataDialog> Dialog = Window->OpenMetadataDialog(1);
+	if (!TestTrue(TEXT("Metadata dialog opens"), Dialog.IsValid()))
+	{
+		return false;
+	}
+
+	// An empty name is rejected by the library, so the commit fails.
+	Dialog->EditDraftName(TEXT(""));
+	Dialog->EditDraftDescription(TEXT("draft kept"));
+	Dialog->SetDraftAIEnabled(true);
+	Dialog->OnSaveClicked();
+
+	TestTrue(TEXT("Failed Save keeps the popup open"), Window->GetOpenMetadataDialog().IsValid());
+	if (Window->GetOpenMetadataDialog().IsValid())
+	{
+		TestTrue(TEXT("Failed Save keeps the draft name"),
+			Window->GetOpenMetadataDialog()->GetDraftName().IsEmpty());
+		TestEqual(TEXT("Failed Save keeps the draft description"),
+			Window->GetOpenMetadataDialog()->GetDraftDescription(), FString(TEXT("draft kept")));
+		TestTrue(TEXT("Failed Save keeps the draft permission"),
+			Window->GetOpenMetadataDialog()->IsDraftAIEnabled());
+		TestTrue(TEXT("Failed Save surfaces the native error"),
+			Window->GetOpenMetadataDialog()->CommitError.IsValid()
+			&& !Window->GetOpenMetadataDialog()->CommitError->GetText().IsEmpty());
+	}
+
+	const FCortexReplayMetadata Committed = ReadMetadata(Fixture, 1);
+	TestEqual(TEXT("Failed Save leaves the committed name"), Committed.Name,
+		FString(TEXT("Recording 1")));
+	TestFalse(TEXT("Failed Save leaves the committed permission"), Committed.bAIEnabled);
+
+	// A corrected draft commits and closes the popup.
+	if (Window->GetOpenMetadataDialog().IsValid())
+	{
+		Window->GetOpenMetadataDialog()->EditDraftName(TEXT("Recovered"));
+		Window->GetOpenMetadataDialog()->OnSaveClicked();
+	}
+	TestNull(TEXT("Successful Save closes the popup"), Window->GetOpenMetadataDialog().Get());
+	TestEqual(TEXT("Successful Save commits the corrected name"), ReadMetadata(Fixture, 1).Name,
+		FString(TEXT("Recovered")));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The delete confirmation gives its Cancel button the initial Slate keyboard focus.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowDeleteFocusTest,
+	"Cortex.Replay.Window.DeleteConfirmationFocusesCancelButton",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowDeleteFocusTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddInfo(TEXT("Slate not initialized - skipping delete focus test"));
+		return true;
+	}
+
+	FCortexReplayTestFixture Fixture;
+	if (!PublishRecording(*this, Fixture, 1, false, FString(),
+		{WindowMakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W)}))
+	{
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(Fixture);
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+
+	// Host the window so the confirmation is inside a live widget path with real Slate focus.
+	const TSharedRef<SWindow> HostWindow =
+		SNew(SWindow).ClientSize(FVector2D(640.0f, 720.0f))[Window];
+	FSlateApplication::Get().AddWindow(HostWindow);
+	FSlateApplication::Get().Tick(ESlateTickType::All);
+
+	const TSharedPtr<SCortexReplayDeleteDialog> Dialog = Window->OpenDeleteConfirmation(1);
+	if (!TestTrue(TEXT("Delete confirmation opens"), Dialog.IsValid()))
+	{
+		FSlateApplication::Get().RequestDestroyWindow(HostWindow);
+		return false;
+	}
+	FSlateApplication::Get().Tick(ESlateTickType::All);
+	TestTrue(TEXT("Cancel owns the initial keyboard focus"),
+		Dialog->CancelButton.IsValid() && Dialog->CancelButton->HasKeyboardFocus());
+
+	Dialog->OnCancelClicked();
+	FSlateApplication::Get().Tick(ESlateTickType::All);
+	TestFalse(TEXT("Dismissal releases the Cancel focus"),
+		Dialog->CancelButton.IsValid() && Dialog->CancelButton->HasKeyboardFocus());
+
+	FSlateApplication::Get().RequestDestroyWindow(HostWindow);
+	FSlateApplication::Get().Tick(ESlateTickType::All);
 
 	return true;
 }

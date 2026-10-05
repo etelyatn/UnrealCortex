@@ -19,6 +19,13 @@ public:
 		const FString& Description, bool bAIEnabled);
 	FCortexCommandResult Delete(int32 Id);
 
+	/**
+	 * Monotonic in-memory revision of this library instance, bumped by every successful
+	 * Publish/Delete/SaveMetadata. Lets an owner detect recording-set/metadata changes without
+	 * re-reading the filesystem.
+	 */
+	int64 GetRevision() const;
+
 private:
 	/** Reads and strictly validates library.json's next_recording_id. Caller holds the authoring lock. */
 	FCortexCommandResult ReadValidatedNextId(int64& OutNextId) const;
@@ -27,4 +34,7 @@ private:
 	FCortexCommandResult CommitCounterAtomically(int64 NextValue);
 
 	FString ProjectRoot;
+
+	/** Bumped on every successful mutation; see GetRevision(). */
+	int64 Revision = 0;
 };
