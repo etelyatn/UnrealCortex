@@ -21,6 +21,13 @@ constexpr int32 ReplayHandlerMaxPageSize = 100;
 /** Native compact response budget (UTF-8 bytes) for one list page. */
 constexpr int32 ReplayHandlerPageBudgetBytes = 39000;
 
+/**
+ * Conservative reserve for the post-selection paging-field rewrite: the service baseline may carry
+ * a null cursor or `has_more:false` that becomes `has_more:true` plus an up-to-10-digit
+ * `next_after_recording_id` once rows are trimmed.
+ */
+constexpr int32 ReplayHandlerCursorReserveBytes = 16;
+
 /** Positive signed 32-bit recording id upper bound. */
 constexpr double ReplayHandlerMaxRecordingId = 2147483647.0;
 
@@ -205,6 +212,11 @@ FCortexCommandResult ReplayHandlerApplyPageBudget(FCortexCommandResult Result)
 	}
 	Fixed->SetArrayField(TEXT("recordings"), TArray<TSharedPtr<FJsonValue>>());
 	const int32 FixedBytes = ReplayHandlerJsonBytes(Fixed);
+	// Candidate below already carries the whole baseline, so the reserved ceiling bounds the full
+	// emitted page: rows are admitted only while baseline plus rows plus separators stays within
+	// the budget minus the bounded post-selection cursor rewrite.
+	const int64 RowBudget = static_cast<int64>(ReplayHandlerPageBudgetBytes)
+		- ReplayHandlerCursorReserveBytes;
 
 	TArray<TSharedPtr<FJsonValue>> Included;
 	Included.Reserve(Rows.Num());
@@ -213,10 +225,10 @@ FCortexCommandResult ReplayHandlerApplyPageBudget(FCortexCommandResult Result)
 	{
 		const TSharedPtr<FJsonObject> RowObject = Row.IsValid() ? Row->AsObject() : nullptr;
 		const int32 RowBytes = ReplayHandlerJsonBytes(RowObject);
-		// Baseline contributes the two '[]' characters; each extra row adds its bytes and one comma.
-		const int64 Candidate = static_cast<int64>(FixedBytes) - 2 + SumRowBytes + RowBytes
-			+ (Included.Num() > 0 ? 1 : 0);
-		if (Included.Num() > 0 && Candidate > ReplayHandlerPageBudgetBytes)
+		// Baseline brackets are retained; each extra row adds its bytes plus one comma separator.
+		const int64 Candidate = static_cast<int64>(FixedBytes) + SumRowBytes + RowBytes
+			+ Included.Num();
+		if (Included.Num() > 0 && Candidate > RowBudget)
 		{
 			break;
 		}

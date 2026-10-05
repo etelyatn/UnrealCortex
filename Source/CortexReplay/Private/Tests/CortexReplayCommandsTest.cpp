@@ -150,6 +150,21 @@ FString ReplayCommandsWorstCaseText(int32 Scalars)
 	return Text;
 }
 
+/** Exactly `Scalars` code points mixing 1-, 2-, 3- and 4-byte UTF-8 scalar widths. */
+FString ReplayCommandsMixedWidthText(int32 Scalars)
+{
+	static const TCHAR* const Atoms[] = {
+		TEXT("a"), TEXT("\u00e9"), TEXT("\u6f22"), TEXT("\U0001F600")
+	};
+	FString Text;
+	Text.Reserve(Scalars * 2);
+	for (int32 Index = 0; Index < Scalars; ++Index)
+	{
+		Text.Append(Atoms[Index % 4]);
+	}
+	return Text;
+}
+
 bool ReplayCommandsPublish(
 	FAutomationTestBase& Test,
 	FCortexReplayTestFixture& Fixture,
@@ -265,6 +280,24 @@ bool ReplayCommandsWriteRun(
 		return false;
 	}
 	return FFileHelper::SaveStringToFile(Text, *ReplayCommandsRunFilePath(Fixture, Id));
+}
+
+/** Writes `Count` recent retained terminal AI runs so the recovery baseline is worst-case full. */
+TArray<FGuid> ReplayCommandsWriteTerminalRuns(FCortexReplayCommandsHarness& Harness, int32 Count)
+{
+	TArray<FGuid> Ids;
+	Ids.Reserve(Count);
+	const FDateTime Base = FDateTime::UtcNow() - FTimespan::FromHours(1);
+	for (int32 Index = 0; Index < Count; ++Index)
+	{
+		const FGuid RunId = FGuid::NewGuid();
+		Ids.Add(RunId);
+		ReplayCommandsWriteRun(*Harness.Fixture, RunId, ReplayCommandsRetainedRunJson(
+			RunId, 1, TEXT("ai"), TEXT("Cancelled"), TEXT("origin-editor"),
+			Base, Base + FTimespan::FromSeconds(Index + 1),
+			FString::ChrN(64, TEXT('a')), FString::ChrN(64, TEXT('b')), FString::ChrN(64, TEXT('c'))));
+	}
+	return Ids;
 }
 
 /** Compact UTF-8 size of one JSON object exactly as the native serializer emits it. */
@@ -1466,6 +1499,266 @@ bool FCortexReplayCommandsPageTest::RunTest(const FString& Parameters)
 	const FCortexCommandResult Cancelled = Harness.Execute(
 		TEXT("replay.cancel_replay"), ReplayCommandsRunParams(ActiveRunId));
 	TestTrue(TEXT("Active run cancelled"), Cancelled.bSuccess);
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayCommandsAwaitIdle(
+		this, Harness.ServiceRef(), Harness.Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Actual encoded-size boundary: the bracket/separator accounting must keep a
+// budget-filled page at or below 39,000 compact UTF-8 bytes.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayCommandsBoundaryTest,
+	"Cortex.Replay.Commands.PageBudgetBoundary",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayCommandsBoundaryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	constexpr int32 BoundaryBudgetBytes = 39000;
+	constexpr int32 BoundaryRecordingCount = 20;
+	constexpr int32 BoundaryFirstRecordingId = 1000;
+
+	// Legal maximum-size metadata: 128-scalar name, 1024-scalar description, long canonical map
+	// path (all mixed 1/2/3/4-byte UTF-8 scalars so the byte count is non-trivial).
+	const FString MaxName = ReplayCommandsMixedWidthText(128);
+	const FString MaxDescription = ReplayCommandsMixedWidthText(1024);
+	const FString LongMapPath = TEXT("/Game/Maps/PageBudget") + FString::ChrN(100, TEXT('M'));
+	const FString LiveMapPath = ReplayCommandsPickMapPath();
+
+	FCortexReplayCommandsHarness Harness;
+	ReplayCommandsWriteTerminalRuns(Harness, 100);
+	TMap<int32, FString> ExpectedMapPath;
+	bool bPublished = true;
+	for (int32 Index = 0; Index < BoundaryRecordingCount; ++Index)
+	{
+		const int32 Id = BoundaryFirstRecordingId + Index;
+		// The first recording must load for the live active summary; the rest use the long path.
+		const FString MapPath = (Index == 0) ? LiveMapPath : LongMapPath;
+		ExpectedMapPath.Add(Id, MapPath);
+		bPublished &= ReplayCommandsPublish(*this, *Harness.Fixture, *Harness.Library, Id, true,
+			{ ReplayCommandsKeyDown(0) }, MaxName, MaxDescription, MapPath,
+			(Index == 0) ? FString(TEXT("/Script/Engine.DefaultPawn")) : FString());
+	}
+	if (!bPublished)
+	{
+		AddError(TEXT("Boundary recordings could not be published"));
+		return true;
+	}
+	Harness.StartDomain();
+
+	// One live AI run so every page carries an active summary.
+	const FCortexCommandResult Started = Harness.Execute(
+		TEXT("replay.start_replay"), ReplayCommandsRecordingParams(BoundaryFirstRecordingId));
+	TestTrue(TEXT("Boundary active run admitted"), Started.bSuccess);
+	if (!Started.bSuccess || !Started.Data.IsValid())
+	{
+		AddError(TEXT("Boundary active run was not admitted"));
+		return true;
+	}
+	FString ActiveRunId;
+	Started.Data->TryGetStringField(TEXT("run_id"), ActiveRunId);
+	AddInfo(FString::Printf(TEXT("PageBudgetBoundary active run: %s"), *ActiveRunId));
+
+	// Genuinely empty page (no rows) for the non-row baseline; it carries the same recovery and
+	// active summaries every real page carries.
+	int32 EmptyBaselineBytes = 0;
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetNumberField(TEXT("page_size"), 100);
+		Params->SetNumberField(TEXT("after_recording_id"), 1000000);
+		const FCortexCommandResult Page = Harness.Execute(TEXT("replay.list_recordings"), Params);
+		TestTrue(TEXT("Empty baseline page succeeds"), Page.bSuccess);
+		const TArray<TSharedPtr<FJsonValue>>* Rows = ReplayCommandsRows(Page);
+		TestEqual(TEXT("Empty baseline page has no rows"), Rows != nullptr ? Rows->Num() : -1, 0);
+		EmptyBaselineBytes = ReplayCommandsUtf8Size(Page.Data);
+	}
+	AddInfo(FString::Printf(TEXT("PageBudgetBoundary empty baseline bytes: %d"), EmptyBaselineBytes));
+	if (EmptyBaselineBytes <= 0)
+	{
+		AddError(TEXT("Boundary empty baseline could not be measured"));
+		return true;
+	}
+
+	TSet<int32> VisitedIds;
+	int32 SumAllRowBytes = 0;
+	int32 After = 0;
+	bool bFirst = true;
+	bool bMore = true;
+	int32 Pages = 0;
+	while (bMore && Pages < 64)
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetNumberField(TEXT("page_size"), 100);
+		if (!bFirst)
+		{
+			Params->SetNumberField(TEXT("after_recording_id"), After);
+		}
+		const FCortexCommandResult Page = Harness.Execute(TEXT("replay.list_recordings"), Params);
+		TestTrue(FString::Printf(TEXT("Boundary page %d succeeds"), Pages), Page.bSuccess);
+		if (!Page.bSuccess || !Page.Data.IsValid())
+		{
+			AddError(FString::Printf(TEXT("Boundary page %d returned no data"), Pages));
+			return true;
+		}
+
+		const int32 Emitted = ReplayCommandsUtf8Size(Page.Data);
+		TestTrue(FString::Printf(TEXT("Boundary page %d is within the encoded budget"), Pages),
+			Emitted <= BoundaryBudgetBytes);
+
+		// Recovery/active summaries are never trimmed.
+		const TArray<TSharedPtr<FJsonValue>>* Recent = nullptr;
+		Page.Data->TryGetArrayField(TEXT("recent_ai_runs"), Recent);
+		TestEqual(FString::Printf(TEXT("Boundary page %d keeps 100 recovery summaries"), Pages),
+			Recent != nullptr ? Recent->Num() : 0, 100);
+		const TSharedPtr<FJsonObject>* Active = nullptr;
+		TestTrue(FString::Printf(TEXT("Boundary page %d keeps the active summary"), Pages),
+			Page.Data->TryGetObjectField(TEXT("active_ai_run"), Active) && Active != nullptr);
+		if (Active != nullptr)
+		{
+			FString ActiveId;
+			(*Active)->TryGetStringField(TEXT("run_id"), ActiveId);
+			TestEqual(FString::Printf(TEXT("Boundary page %d active identity"), Pages),
+				ActiveId, ActiveRunId);
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Rows = ReplayCommandsRows(Page);
+		const int32 RowCountOnPage = Rows != nullptr ? Rows->Num() : 0;
+		TestTrue(FString::Printf(TEXT("Boundary page %d is non-empty"), Pages), RowCountOnPage > 0);
+
+		int64 SumRowBytes = 0;
+		int32 LastId = After;
+		if (Rows != nullptr)
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *Rows)
+			{
+				const TSharedPtr<FJsonObject>* Row = nullptr;
+				if (!Value.IsValid() || !Value->TryGetObject(Row) || Row == nullptr)
+				{
+					AddError(FString::Printf(TEXT("Boundary page %d has a non-object row"), Pages));
+					continue;
+				}
+				double IdValue = 0.0;
+				(*Row)->TryGetNumberField(TEXT("recording_id"), IdValue);
+				const int32 Id = static_cast<int32>(IdValue);
+				TestTrue(FString::Printf(TEXT("Boundary page %d row %d advances"), Pages, Id), Id > After);
+				TestFalse(FString::Printf(TEXT("Boundary page %d row %d not duplicated"), Pages, Id),
+					VisitedIds.Contains(Id));
+				VisitedIds.Add(Id);
+				LastId = Id;
+				const int32 RowBytes = ReplayCommandsUtf8Size(*Row);
+				SumRowBytes += RowBytes;
+				SumAllRowBytes += RowBytes;
+
+				// Full metadata row: no field was trimmed to fit the budget.
+				FString NameValue;
+				FString DescriptionValue;
+				FString MapValue;
+				(*Row)->TryGetStringField(TEXT("name"), NameValue);
+				(*Row)->TryGetStringField(TEXT("description"), DescriptionValue);
+				(*Row)->TryGetStringField(TEXT("map_asset_path"), MapValue);
+				TestEqual(FString::Printf(TEXT("Boundary row %d name intact"), Id), NameValue, MaxName);
+				TestEqual(FString::Printf(TEXT("Boundary row %d description intact"), Id),
+					DescriptionValue, MaxDescription);
+				const FString* ExpectedMap = ExpectedMapPath.Find(Id);
+				TestTrue(FString::Printf(TEXT("Boundary row %d map intact"), Id),
+					ExpectedMap != nullptr && MapValue == *ExpectedMap);
+				TestTrue(FString::Printf(TEXT("Boundary row %d hashes intact"), Id),
+					(*Row)->HasField(TEXT("initial_state_sha256"))
+						&& (*Row)->HasField(TEXT("inputs_sha256")));
+			}
+		}
+
+		// The fix's identity: for n >= 2 rows the emitted page is the non-row baseline plus every
+		// row plus one comma separator each. The baseline is the genuinely empty page, adjusted
+		// only by the bounded has_more/cursor rewrite (ids here are always four digits).
+		if (RowCountOnPage >= 2 && SumRowBytes > 0)
+		{
+			const int64 DerivedBaseline =
+				static_cast<int64>(Emitted) - SumRowBytes - (RowCountOnPage - 1);
+			TestTrue(FString::Printf(TEXT("Boundary page %d separator accounting"), Pages),
+				DerivedBaseline == static_cast<int64>(EmptyBaselineBytes)
+					|| DerivedBaseline == static_cast<int64>(EmptyBaselineBytes) - 1);
+			AddInfo(FString::Printf(
+				TEXT("PageBudgetBoundary page %d rows %d emitted %d baseline %d"),
+				Pages, RowCountOnPage, Emitted, static_cast<int32>(DerivedBaseline)));
+		}
+
+		bool bPageMore = false;
+		Page.Data->TryGetBoolField(TEXT("has_more"), bPageMore);
+		if (bPageMore)
+		{
+			double Next = 0.0;
+			TestTrue(FString::Printf(TEXT("Boundary page %d has a next cursor"), Pages),
+				Page.Data->TryGetNumberField(TEXT("next_after_recording_id"), Next));
+			TestEqual(FString::Printf(TEXT("Boundary page %d cursor is the last id"), Pages),
+				static_cast<int32>(Next), LastId);
+		}
+		else
+		{
+			TestTrue(FString::Printf(TEXT("Final boundary page %d has a null cursor"), Pages),
+				Page.Data->HasTypedField<EJson::Null>(TEXT("next_after_recording_id")));
+		}
+
+		After = LastId;
+		bMore = bPageMore;
+		bFirst = false;
+		++Pages;
+	}
+	AddInfo(FString::Printf(TEXT("PageBudgetBoundary pages %d visited %d row bytes %d"),
+		Pages, VisitedIds.Num(), SumAllRowBytes));
+	TestTrue(TEXT("Boundary produced at least one page"), Pages >= 1);
+	TestEqual(TEXT("Every boundary recording was visited"), VisitedIds.Num(), BoundaryRecordingCount);
+
+	// Explicit two-row boundary case. With the corrected budget two legal maximum-metadata rows fit
+	// alongside the same 100 recovery summaries (baseline + both rows + exactly one comma <=
+	// 39,000), so the page must return exactly two rows; the old double-counted budget returned one
+	// row here, making this case the direct regression guard for that defect.
+	{
+		TSharedPtr<FJsonObject> TwoParams = MakeShared<FJsonObject>();
+		TwoParams->SetNumberField(TEXT("page_size"), 2);
+		const FCortexCommandResult TwoPage = Harness.Execute(TEXT("replay.list_recordings"), TwoParams);
+		TestTrue(TEXT("Two-row boundary page succeeds"), TwoPage.bSuccess);
+		if (!TwoPage.bSuccess || !TwoPage.Data.IsValid())
+		{
+			AddError(TEXT("Two-row boundary page returned no data"));
+		}
+		else
+		{
+			const TArray<TSharedPtr<FJsonValue>>* TwoRows = ReplayCommandsRows(TwoPage);
+			const int32 TwoRowCount = TwoRows != nullptr ? TwoRows->Num() : 0;
+			TestTrue(TEXT("Two-row boundary page returns two rows"), TwoRowCount == 2);
+			if (TwoRowCount != 2)
+			{
+				AddError(FString::Printf(
+					TEXT("Two-row boundary page returned %d rows for page_size 2"), TwoRowCount));
+			}
+			else
+			{
+				const int32 TwoEmitted = ReplayCommandsUtf8Size(TwoPage.Data);
+				const int32 Row1Bytes = ReplayCommandsUtf8Size((*TwoRows)[0]->AsObject());
+				const int32 Row2Bytes = ReplayCommandsUtf8Size((*TwoRows)[1]->AsObject());
+				TestTrue(TEXT("Two-row boundary page is within the encoded budget"),
+					TwoEmitted <= BoundaryBudgetBytes);
+				// Emitted == empty baseline + both rows + exactly one comma, allowing only the
+				// bounded has_more/cursor rewrite (one byte here: false -> true).
+				const int64 TwoBaseline = static_cast<int64>(TwoEmitted) - Row1Bytes - Row2Bytes - 1;
+				TestTrue(TEXT("Two-row page counts exactly one separator"),
+					TwoBaseline == static_cast<int64>(EmptyBaselineBytes)
+						|| TwoBaseline == static_cast<int64>(EmptyBaselineBytes) - 1);
+				AddInfo(FString::Printf(
+					TEXT("PageBudgetBoundary two-row emitted %d row1 %d row2 %d baseline %d"),
+					TwoEmitted, Row1Bytes, Row2Bytes, EmptyBaselineBytes));
+			}
+		}
+	}
+
+	// Release the active run and let any owned PIE teardown complete.
+	const FCortexCommandResult Cancelled = Harness.Execute(
+		TEXT("replay.cancel_replay"), ReplayCommandsRunParams(ActiveRunId));
+	TestTrue(TEXT("Boundary active run cancelled"), Cancelled.bSuccess);
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayCommandsAwaitIdle(
 		this, Harness.ServiceRef(), Harness.Fixture));
 
