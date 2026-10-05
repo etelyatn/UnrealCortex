@@ -4531,7 +4531,7 @@ bool FCortexPhysicalInputCaptureAdmissionCoverageTest::RunTest(const FString& Pa
 			const FInputDeviceId Device = F.Session->GetTargetBinding().InputDevice;
 			// Held directly on the selected controller, so no Slate edge reaches the (installed)
 			// observation processor: exactly the pre-processor-install hold the old table missed.
-			for (const FKey Key : { EKeys::Tab, EKeys::Enter, EKeys::I, EKeys::F5 })
+			for (const FKey Key : { EKeys::Tab, EKeys::Enter, EKeys::I, EKeys::F5, EKeys::Comma })
 			{
 				Controller->InputKey(FInputKeyEventArgs(nullptr, Device, Key, IE_Pressed, 0));
 			}
@@ -4544,7 +4544,7 @@ bool FCortexPhysicalInputCaptureAdmissionCoverageTest::RunTest(const FString& Pa
 			APlayerController* Controller = FixtureController(F);
 			if (!Controller) { Test.AddError(TEXT("Bound controller missing")); return; }
 			const FInputDeviceId Device = F.Session->GetTargetBinding().InputDevice;
-			for (const FKey Key : { EKeys::Tab, EKeys::Enter, EKeys::I, EKeys::F5 })
+			for (const FKey Key : { EKeys::Tab, EKeys::Enter, EKeys::I, EKeys::F5, EKeys::Comma })
 			{
 				const FString Label = Key.ToString();
 				Test.TestTrue(FString::Printf(TEXT("Selected controller reports %s held"), *Label),
@@ -4801,6 +4801,19 @@ bool FCortexPhysicalInputPreInstallSnapshotAdmissionTest::RunTest(const FString&
 	TestEqual(TEXT("Snapshot preparation denial is INVALID_OPERATION"),
 		Denied.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
 
+	// A held punctuation key is resolvable through the same snapshot channel (it is neither in
+	// the observation sets nor delivered to the controller before a target exists).
+#if WITH_DEV_AUTOMATION_TESTS
+	FCortexEditorPhysicalInputSession::SetPhysicalKeySnapshotResolver(
+		[](const FKey& Key) { return Key == EKeys::Comma; });
+#endif
+	const FCortexCommandResult PunctuationDenied = Fixture->Session->BeginOwnedPIE(
+		Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture));
+	TestFalse(TEXT("Pre-held punctuation key denies preparation admission through the snapshot"),
+		PunctuationDenied.bSuccess);
+	TestEqual(TEXT("Snapshot punctuation denial is INVALID_OPERATION"),
+		PunctuationDenied.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+
 	// Once the physical key is released, preparation is admitted.
 #if WITH_DEV_AUTOMATION_TESTS
 	FCortexEditorPhysicalInputSession::SetPhysicalKeySnapshotResolver(
@@ -4833,6 +4846,95 @@ bool FCortexPhysicalInputPreInstallSnapshotAdmissionTest::RunTest(const FString&
 				[](const FKey&) { return false; });
 		}));
 #endif
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Replay ownership requires actual activation: with the application deactivated (the selected
+// route is no longer the actually-active route) a scheduled synthetic event must not be delivered
+// and the replay must interrupt, rather than forcing inactive-application input into the route.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputReplayOwnershipInactiveApplicationTest,
+	"Cortex.Editor.PhysicalInputReplayOwnershipInactiveApplication",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputReplayOwnershipInactiveApplicationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("ReplayInactiveSetup"),
+		[](FAutomationTestBase&, FCortexEditorPhysicalInputTestFixture&) {}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			F.Session->SetInterruptionCallback([Fixture](const FCortexCommandResult& Result)
+			{
+				Fixture->InterruptionCount++;
+				Fixture->Interruption = Result;
+			});
+			Test.TestTrue(TEXT("Replay epoch armed before the first event"),
+				F.Session->BeginReplayEpoch().bSuccess);
+
+			// The first event is delivered only while the route is the actually-active route.
+			Test.TestTrue(TEXT("Selected route is the active top-level window before the first event"),
+				Slate.IsActive() && Slate.GetActiveTopLevelWindow().IsValid());
+			FCortexEditorPhysicalInputEvent First;
+			First.Kind = ECortexEditorPhysicalInputKind::KeyDown;
+			First.Key = EKeys::W;
+			Test.TestTrue(TEXT("First event dispatched while the route is active"),
+				F.Session->Dispatch(First).bSuccess);
+			Test.TestEqual(TEXT("No interruption while the route is active"), F.InterruptionCount, 0);
+
+			// A foreign top-level window becomes the actually-active one while the application
+			// stays active, so the selected route is no longer the actually-active route. This
+			// uses a supported window-activation API rather than destabilising the shared editor
+			// application's activation state.
+			const TSharedRef<SWindow> ForeignWindow = SNew(SWindow)
+				.ClientSize(FVector2D(240.0f, 140.0f))
+				[ SNew(SBox) ];
+			F.ForeignKeyHostWindow = ForeignWindow;
+			Slate.AddWindow(ForeignWindow);
+			ForeignWindow->BringToFront();
+			Test.TestTrue(TEXT("Foreign window is the actually-active top-level window"),
+				Slate.GetActiveTopLevelWindow() == ForeignWindow);
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 3,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			Test.TestTrue(TEXT("Non-active route interrupted replay"), F.InterruptionCount >= 1);
+			Test.TestFalse(TEXT("Non-active route interruption is a non-success result"),
+				F.Interruption.bSuccess);
+
+			// A scheduled event while the route is not actually active must not be delivered.
+			FCortexEditorPhysicalInputEvent Second;
+			Second.Kind = ECortexEditorPhysicalInputKind::KeyDown;
+			Second.Key = EKeys::E;
+			const int32 InterruptionsBefore = F.InterruptionCount;
+			const FCortexCommandResult Delivered = F.Session->Dispatch(Second);
+			Test.TestFalse(TEXT("Scheduled event is not delivered while the route is not actually active"),
+				Delivered.bSuccess);
+			Test.TestEqual(TEXT("Blocked non-active-route event adds no further interruption"),
+				F.InterruptionCount, InterruptionsBefore);
+
+			if (F.ForeignKeyHostWindow.IsValid())
+			{
+				Slate.RequestDestroyWindow(F.ForeignKeyHostWindow.ToSharedRef());
+				F.ForeignKeyHostWindow.Reset();
+			}
+		}));
 
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
 	return true;

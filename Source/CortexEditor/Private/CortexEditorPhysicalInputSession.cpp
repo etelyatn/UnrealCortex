@@ -1532,7 +1532,7 @@ namespace
 				const FKey Key = FInputKeyManager::Get().GetKeyFromCodes(VirtualKey, VirtualKey);
 				if (!Key.IsValid())
 				{
-					UE_LOG(LogCortexEditor, Warning,
+					UE_LOG(LogCortexEditor, Verbose,
 						TEXT("Physical key snapshot: no FKey for virtual key 0x%04X; skipped"), VirtualKey);
 					return;
 				}
@@ -1547,19 +1547,54 @@ namespace
 			{
 				AddVirtualKey(KeyCodes[Index]);
 			}
-			// The printable map is keyed by character code. Only the alphanumeric ranges are valid
-			// Windows virtual keys (their character code equals the VK); the punctuation character
-			// codes are NOT virtual keys and those keys are already covered by the platform key
-			// map's OEM/scan-code virtual keys above.
+			// The printable map is keyed by character code. For letters/digits the character code
+			// equals the virtual key; for punctuation it does not, so resolve the virtual key
+			// through the platform's own character->virtual-key mapping. This covers the printable
+			// punctuation keys the platform key map removes because their scan code collides with a
+			// printable character code.
 			for (uint32 Index = 0; Index < CharCount; ++Index)
 			{
 				const uint32 CharCode = CharCodes[Index];
-				const bool bAlphaNumericVk =
-					(CharCode >= 0x30 && CharCode <= 0x39) || (CharCode >= 0x41 && CharCode <= 0x5A);
-				if (bAlphaNumericVk)
+				if (CharCode == 0)
 				{
-					AddVirtualKey(CharCode);
+					continue;
 				}
+				const SHORT Scanned = VkKeyScanW(static_cast<wchar_t>(CharCode));
+				if (Scanned == -1)
+				{
+					UE_LOG(LogCortexEditor, Verbose,
+						TEXT("Physical key snapshot: printable code 0x%04X is not resolvable to a virtual key; skipped"),
+						CharCode);
+					continue;
+				}
+				const uint32 VirtualKey = static_cast<uint32>(static_cast<uint16>(Scanned)) & 0xFF;
+				if (VirtualKey == 0 || VirtualKey > 0xFF || SeenVirtualKeys.Contains(static_cast<int32>(VirtualKey)))
+				{
+					continue;
+				}
+				const FKey Key = FInputKeyManager::Get().GetKeyFromCodes(0, CharCode);
+				if (!Key.IsValid())
+				{
+					UE_LOG(LogCortexEditor, Verbose,
+						TEXT("Physical key snapshot: no FKey for printable code 0x%04X; skipped"), CharCode);
+					continue;
+				}
+				SeenVirtualKeys.Add(static_cast<int32>(VirtualKey));
+				FCortexPhysicalSupportedKey Mapping;
+				Mapping.Key = Key;
+				Mapping.VirtualKey = static_cast<int32>(VirtualKey);
+				Mappings.Add(Mapping);
+			}
+			// OEM punctuation virtual keys that neither map names (the platform key map removes
+			// them and the printable map does not carry every punctuation character) are added
+			// directly, named through the engine's own key manager, so no punctuation key is left
+			// unresolvable and silently assumed up.
+			static const uint32 OemVirtualKeys[] = {
+				VK_OEM_1, VK_OEM_PLUS, VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PERIOD,
+				VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_8, VK_OEM_102 };
+			for (const uint32 VirtualKey : OemVirtualKeys)
+			{
+				AddVirtualKey(VirtualKey);
 			}
 			return Mappings;
 		}();
@@ -2509,15 +2544,31 @@ bool FCortexEditorPhysicalInputSession::IsSelectedRouteOwnershipIntact(FString& 
 
 	// The focused widget must be in the selected viewport's own window, not a different window.
 	const TSharedPtr<SWidget> CoordinateRoot = GetCoordinateRootWidget();
+	const TSharedPtr<SWindow> RouteWindow = CoordinateRoot.IsValid()
+		? Slate.FindWidgetWindow(CoordinateRoot.ToSharedRef()) : nullptr;
 	if (Focused.IsValid() && CoordinateRoot.IsValid())
 	{
-		const TSharedPtr<SWindow> RouteWindow = Slate.FindWidgetWindow(CoordinateRoot.ToSharedRef());
 		const TSharedPtr<SWindow> FocusWindow = Slate.FindWidgetWindow(Focused.ToSharedRef());
 		if (RouteWindow.IsValid() && FocusWindow.IsValid() && FocusWindow != RouteWindow)
 		{
 			OutReason = TEXT("Replay lost the selected route window to a foreign active window");
 			return false;
 		}
+	}
+
+	// Actual activation, not just membership in a retained set: replay must only deliver into a
+	// route that is genuinely the active application window. A deactivated application or a
+	// different active top-level window is route loss, never a reason to force inactive input.
+	if (!Slate.IsActive())
+	{
+		OutReason = TEXT("Replay target route is not the active application");
+		return false;
+	}
+	const TSharedPtr<SWindow> ActiveTopLevel = Slate.GetActiveTopLevelWindow();
+	if (RouteWindow.IsValid() && ActiveTopLevel.IsValid() && ActiveTopLevel != RouteWindow)
+	{
+		OutReason = TEXT("Replay target route window is not the active top-level window");
+		return false;
 	}
 
 	return true;
@@ -2674,10 +2725,12 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 	FSlateApplication& Slate = FSlateApplication::Get();
 	const FInputDeviceId Device = Binding.InputDevice;
 	const int32 UserIndex = Binding.SlateUserIndex;
-	// Synthetic dispatch must apply mouse capture/drag state even when the editor window does not
-	// currently hold OS focus; this guard restores the previous Slate setting on every exit path.
+	// Inactive-application input handling is enabled only for capture/setup dispatch, where the
+	// editor window may not hold OS focus; it is never enabled during replay. Replay requires the
+	// selected route to be the actually-active route (checked above), and forcing input while the
+	// application is inactive would deliver into a route the host is not actually driving.
 	TUniquePtr<FCortexScopedInactivePhysicalInput> InactiveInputGuard;
-	if (!Slate.IsActive())
+	if (!bReplayInProgress && !Slate.IsActive())
 	{
 		InactiveInputGuard = MakeUnique<FCortexScopedInactivePhysicalInput>(Slate);
 	}
