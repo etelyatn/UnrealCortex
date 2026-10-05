@@ -12,6 +12,7 @@ from pydantic import ConfigDict, WithJsonSchema, create_model
 from cortex_mcp.capabilities import CORE_DOMAINS
 from cortex_mcp.graph_patch_boundary import dispatch_graph_apply_patch
 from cortex_mcp.pagination import PaginationCache, decode_cursor
+from cortex_mcp.replay_boundary import dispatch_replay_command
 from cortex_mcp.response import format_response, _find_largest_list
 from cortex_mcp.schema_generator import (
     SCHEMA_VERSION,
@@ -153,6 +154,29 @@ def _batch_has_zero_commands(params) -> bool:
     return not isinstance(commands, list) or len(commands) == 0
 
 
+def _batch_contains_replay_start(route_params: dict) -> bool:
+    """True when a core batch carries a one-shot replay start step.
+
+    Replay start must be dispatched directly; a generic batch may retry, so the
+    start is refused before any run/request is allocated (matching the native
+    ``FCortexCommandRouter::IsInBatch`` denial).
+    """
+    commands = route_params.get("commands")
+    if commands is None:
+        commands = route_params.get("steps")
+    if isinstance(commands, str):
+        try:
+            commands = json.loads(commands)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(commands, list):
+        return False
+    return any(
+        isinstance(step, dict) and step.get("command") == "replay.start_replay"
+        for step in commands
+    )
+
+
 def strict_router_tool(router, domain: str) -> Callable[[str, dict | None], str]:
     """Wrap a domain router with the strict {command, params} envelope contract."""
 
@@ -192,6 +216,21 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
             )
 
         try:
+            # Replay start must be dispatched directly; refuse it inside a core batch before sending.
+            if (
+                domain == "core"
+                and command in {"batch", "batch_query"}
+                and _batch_contains_replay_start(route_params)
+            ):
+                return json.dumps({
+                    "_error": "INVALID_OPERATION",
+                    "_message": (
+                        "replay.start_replay is a one-shot operation and cannot run inside "
+                        "core_cmd(batch/batch_query); call replay_cmd directly so the MCP "
+                        "one-shot boundary runs before dispatch."
+                    ),
+                })
+
             # Handle core special commands first (no pagination for these)
             if domain == "core":
                 if command == "switch_editor":
@@ -239,6 +278,10 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                     route_params,
                     tool_name="graph_cmd",
                 )
+
+            # Replay: validate and dispatch before the generic cursor/cache shortcuts.
+            if domain == "replay":
+                return dispatch_replay_command(connection, command, route_params)
 
             # UMG animation binding inspection and guarded removal
             if domain == "umg" and command in {"remove_animation_binding", "list_animation_bindings"}:
