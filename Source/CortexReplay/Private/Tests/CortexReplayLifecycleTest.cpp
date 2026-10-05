@@ -11,14 +11,20 @@
 #include "Dom/JsonValue.h"
 #include "Editor.h"
 #include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/SlateUser.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
+#include "Input/Events.h"
+#include "Interfaces/IPluginManager.h"
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -31,6 +37,7 @@
 #include "Tests/AutomationCommon.h"
 #include "Tests/AutomationEditorCommon.h"
 #include "UObject/Package.h"
+#include "Widgets/SViewport.h"
 
 namespace
 {
@@ -1947,6 +1954,184 @@ bool FCortexReplayLifecycleOwnedCapturePublishFailureTest::RunTest(const FString
 			{
 				T.TestEqual(TEXT("Retried capture is complete"),
 					Recording.Data->GetBoolField(TEXT("complete")), true);
+			}
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// CR-06: a required pre-press pose that cannot be read at the press is a capture fault. Even
+// though the pose recovers before the next service tick, the recording must not be published as
+// complete with an invented (initial-pose) guard.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureRequiredPoseFaultTest,
+	"Cortex.Replay.Lifecycle.CaptureRequiredPoseFaultWithheld",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleCaptureRequiredPoseFaultTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const FCortexCommandResult Started = Service->StartCapture(MapPath);
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned capture PIE world exists"), PlayWorld);
+			if (!PlayWorld || !FSlateApplication::IsInitialized()) { return; }
+			APlayerController* Controller = PlayWorld->GetFirstPlayerController();
+			T.TestNotNull(TEXT("Owned capture controller exists"), Controller);
+			if (!Controller) { return; }
+			APawn* OriginalPawn = Controller->GetPawn();
+			T.TestNotNull(TEXT("Owned capture pawn exists"), OriginalPawn);
+			if (!OriginalPawn) { return; }
+
+			ULocalPlayer* LocalPlayer = PlayWorld->GetGameInstance()
+				? PlayWorld->GetGameInstance()->GetLocalPlayerByIndex(0) : nullptr;
+			const TSharedPtr<FSlateUser> SlateUser = LocalPlayer ? LocalPlayer->GetSlateUser() : nullptr;
+			UGameViewportClient* ViewportClient = PlayWorld->GetGameViewport();
+			FSceneViewport* SceneViewport = ViewportClient ? ViewportClient->GetGameViewport() : nullptr;
+			const TSharedPtr<SViewport> ViewportWidget =
+				SceneViewport ? SceneViewport->GetViewportWidget().Pin() : nullptr;
+			T.TestTrue(TEXT("Owned capture viewport widget exists"), ViewportWidget.IsValid());
+			if (!SlateUser.IsValid() || !ViewportWidget.IsValid()) { return; }
+			const FGeometry Geometry = ViewportWidget->GetCachedGeometry();
+			const FVector2D ViewportSize = Geometry.GetLocalSize();
+			if (ViewportSize.X <= 0.0 || ViewportSize.Y <= 0.0) { return; }
+			const FVector2D Center =
+				Geometry.LocalToAbsolute(FVector2D(ViewportSize.X * 0.5, ViewportSize.Y * 0.5));
+			const FInputDeviceId Device = IPlatformInputDeviceMapper::Get()
+				.GetPrimaryInputDeviceForUser(SlateUser->GetPlatformUserId());
+			const int32 UserIndex = SlateUser->GetUserIndex();
+
+			// The required pre-press pose is unreadable exactly at the press: the selected target's
+			// pawn is transiently unbound (a state that does not destroy the target or trigger an
+			// engine fault) and restored before the next service tick. A real pointer press at the
+			// selected viewport centre is used so capture admission does not depend on editor
+			// keyboard focus.
+			Controller->UnPossess();
+
+			// Slate routes device input only while the application is active unless inactive-input
+			// handling is enabled (the session's dispatch does the same); automation drives input
+			// while the editor window may not hold OS focus.
+			const bool bSavedInactiveInputHandling =
+				FSlateApplication::Get().GetHandleDeviceInputWhenApplicationNotActive();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(true);
+
+			const FModifierKeysState Modifiers;
+			TSet<FKey> Pressed;
+			Pressed.Add(EKeys::LeftMouseButton);
+			FSlateApplication::Get().ProcessMouseButtonDownEvent(nullptr,
+				FPointerEvent(Device, FSlateApplicationBase::CursorPointerIndex, Center, Center,
+					Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, UserIndex));
+			Pressed.Reset();
+			FSlateApplication::Get().ProcessMouseButtonUpEvent(
+				FPointerEvent(Device, FSlateApplicationBase::CursorPointerIndex, Center, Center,
+					Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, UserIndex));
+
+			Controller->Possess(OriginalPawn);
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+			T.TestTrue(TEXT("Controller re-possessed the original pawn after the press"),
+				Controller->GetPawn() == OriginalPawn);
+		}, Fixture));
+
+	// Stop is accepted or already auto-finalized; either way the fault withholds publication.
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase&)
+		{
+			Service->StopCapture(false);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Fixture](FAutomationTestBase& T)
+		{
+			// Later recovery must not legitimize the guard that was never observed: no complete
+			// recording is published for the reserved id.
+			const FCortexCommandResult Recording = Service->GetRecording(1, false);
+			T.TestFalse(TEXT("Faulted capture is not published as complete"), Recording.bSuccess);
+			T.TestFalse(TEXT("Faulted capture no longer owns the record"), Service->IsRecordInUse(1));
+			FCortexReplayLibrary Library(Fixture->GetProjectRoot());
+			TArray<FCortexReplayMetadata> All;
+			T.TestTrue(TEXT("Library listing still succeeds"), Library.List(false, All).bSuccess);
+			for (const FCortexReplayMetadata& Metadata : All)
+			{
+				T.TestFalse(TEXT("Library has no recording for the faulted id"), Metadata.RecordingId == 1);
+			}
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// CR-07: the persisted immutable provenance version must come from the loaded UnrealCortex
+// plugin descriptor, not a second hard-coded release string.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureProvenanceVersionTest,
+	"Cortex.Replay.Lifecycle.CaptureProvenanceMatchesPluginDescriptor",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleCaptureProvenanceVersionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const FCortexCommandResult Started = Service->StartCapture(MapPath);
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase&)
+		{
+			// Record one real key edge through normal Slate routing so the capture is non-empty.
+			if (FSlateApplication::IsInitialized())
+			{
+				const FModifierKeysState Modifiers;
+				const uint32 UserIndex = FSlateApplication::Get().GetUserIndexForKeyboard();
+				FSlateApplication::Get().ProcessKeyDownEvent(
+					FKeyEvent(EKeys::W, Modifiers, UserIndex, false, 0, 0));
+				FSlateApplication::Get().ProcessKeyUpEvent(
+					FKeyEvent(EKeys::W, Modifiers, UserIndex, false, 0, 0));
+			}
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("Owned capture stop accepted"), Service->StopCapture(false).bSuccess);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			const TSharedPtr<IPlugin> Plugin =
+				IPluginManager::Get().FindPlugin(FString(TEXT("UnrealCortex")));
+			T.TestTrue(TEXT("UnrealCortex plugin descriptor is available"), Plugin.IsValid());
+			const FString DescriptorVersion = Plugin.IsValid()
+				? Plugin->GetDescriptor().VersionName : FString();
+			T.TestFalse(TEXT("Plugin descriptor declares a version"), DescriptorVersion.IsEmpty());
+
+			const FCortexCommandResult Recording = Service->GetRecording(1, false);
+			T.TestTrue(TEXT("Captured recording loads"), Recording.bSuccess);
+			if (Recording.Data.IsValid())
+			{
+				T.TestEqual(TEXT("Persisted provenance equals the plugin descriptor VersionName"),
+					Recording.Data->GetStringField(TEXT("plugin_version")), DescriptorVersion);
 			}
 		}, Fixture));
 

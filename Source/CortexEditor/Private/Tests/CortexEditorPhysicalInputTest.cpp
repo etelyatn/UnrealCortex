@@ -30,6 +30,7 @@
 #include "InputCoreTypes.h"
 #include "Input/DragAndDrop.h"
 #include "Input/Events.h"
+#include "InputKeyEventArgs.h"
 #include "Misc/PackageName.h"
 #include "PlayInEditorDataTypes.h"
 #include "Slate/SceneViewport.h"
@@ -133,6 +134,8 @@ struct FCortexEditorPhysicalInputTestFixture
 	TSharedPtr<FCortexPhysicalInputTestDragDrop> DragDropOperation;
 	int32 DragDetectedCount = 0;
 	TSharedPtr<SWidget> HighPrecisionConsumer;
+	/** CR-08: a second runtime panel sharing the probe's root/control tags. */
+	TSharedPtr<SWidget> DuplicateTaggedOverlay;
 
 	// CR-03 replay-ownership regressions: an off-route foreign keyboard consumer in its own window.
 	TSharedPtr<SWidget> ForeignKeyConsumer;
@@ -142,6 +145,13 @@ struct FCortexEditorPhysicalInputTestFixture
 
 	FCortexEditorPhysicalInputTestFixture()
 	{
+#if WITH_DEV_AUTOMATION_TESTS
+		// Deterministic automation: override the physical-key snapshot to neutral so admission
+		// never depends on ambient host keyboard input. The real GetAsyncKeyState snapshot remains
+		// the production default; the pre-installation regression drives it explicitly.
+		FCortexEditorPhysicalInputSession::SetPhysicalKeySnapshotResolver(
+			[](const FKey&) { return false; });
+#endif
 		if (FSlateApplication::IsInitialized())
 		{
 			FSlateApplication& Slate = FSlateApplication::Get();
@@ -179,6 +189,9 @@ struct FCortexEditorPhysicalInputTestFixture
 		{
 			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
 		}
+#if WITH_DEV_AUTOMATION_TESTS
+		FCortexEditorPhysicalInputSession::ClearPhysicalKeySnapshotResolver();
+#endif
 	}
 };
 
@@ -4441,6 +4454,385 @@ bool FCortexPhysicalInputOwnedNativeCaptureCleanupTest::RunTest(const FString& P
 			Test.TestFalse(TEXT("Owned drag-drop operation is gone after cleanup"),
 				User.IsValid() && User->GetDragDropContent().IsValid());
 		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// CR-04: admission must resolve the whole supported keyboard/mouse domain, not a small
+// gameplay subset. A non-table key (Tab/Enter/I/F5) held on the selected controller before the
+// capture processor could observe its down edge must deny admission; where the physical state
+// cannot be resolved the policy fails rather than assumes neutrality.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Waits until capture admission is admitted, recording (once) the measured held-input report
+// while it is denied and failing on timeout so a stuck non-neutral state is never a silent pass.
+// This keeps the admission-on-neutral assertion independent of momentary ambient host input.
+// ---------------------------------------------------------------------------
+class FCortexWaitCaptureAdmitted : public IAutomationLatentCommand
+{
+public:
+	FCortexWaitCaptureAdmitted(FAutomationTestBase* InTest,
+		TSharedRef<FCortexEditorPhysicalInputTestFixture> InFixture)
+		: Test(InTest), Fixture(MoveTemp(InFixture)) {}
+	bool Update() override
+	{
+		if (Deadline == 0.0) { Deadline = FPlatformTime::Seconds() + CortexPhysicalInputReadyWatchdogSeconds; }
+		FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+		const FCortexCommandResult Armed =
+			F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture));
+		if (Armed.bSuccess)
+		{
+			Test->TestTrue(TEXT("Neutral target is admitted after every held key is released"), true);
+			F.bCaptureArmed = true;
+			return true;
+		}
+		if (!bInfoRecorded)
+		{
+			bInfoRecorded = true;
+			Test->AddInfo(FString::Printf(
+				TEXT("Capture admission still held while waiting for neutrality: %s"), *Armed.ErrorMessage));
+		}
+		if (FPlatformTime::Seconds() > Deadline)
+		{
+			Test->AddError(FString::Printf(
+				TEXT("Neutral target was never admitted; capture admission still held: %s"),
+				*Armed.ErrorMessage));
+			return true;
+		}
+		return false;
+	}
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexEditorPhysicalInputTestFixture> Fixture;
+	double Deadline = 0.0;
+	bool bInfoRecorded = false;
+};
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputCaptureAdmissionCoverageTest,
+	"Cortex.Editor.PhysicalInputCaptureAdmissionCoverage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputCaptureAdmissionCoverageTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("CoverageHoldKeys"),
+		[Fixture](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			APlayerController* Controller = FixtureController(F);
+			if (!Controller) { Test.AddError(TEXT("Bound controller missing")); return; }
+			const FInputDeviceId Device = F.Session->GetTargetBinding().InputDevice;
+			// Held directly on the selected controller, so no Slate edge reaches the (installed)
+			// observation processor: exactly the pre-processor-install hold the old table missed.
+			for (const FKey Key : { EKeys::Tab, EKeys::Enter, EKeys::I, EKeys::F5 })
+			{
+				Controller->InputKey(FInputKeyEventArgs(nullptr, Device, Key, IE_Pressed, 0));
+			}
+		}, /*bInstallProbe=*/false, /*bArmCapture=*/false, /*bOpenMenu=*/false));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			APlayerController* Controller = FixtureController(F);
+			if (!Controller) { Test.AddError(TEXT("Bound controller missing")); return; }
+			const FInputDeviceId Device = F.Session->GetTargetBinding().InputDevice;
+			for (const FKey Key : { EKeys::Tab, EKeys::Enter, EKeys::I, EKeys::F5 })
+			{
+				const FString Label = Key.ToString();
+				Test.TestTrue(FString::Printf(TEXT("Selected controller reports %s held"), *Label),
+					Controller->IsInputKeyDown(Key));
+				const FCortexCommandResult Denied = F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture));
+				Test.TestFalse(FString::Printf(TEXT("Pre-held non-table key %s denies admission"), *Label),
+					Denied.bSuccess);
+				Test.TestEqual(FString::Printf(TEXT("Pre-held %s denial is INVALID_OPERATION"), *Label),
+					Denied.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+				Test.TestFalse(FString::Printf(TEXT("Pre-held %s human state untouched (re-arm denied)"), *Label),
+					F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture)).bSuccess);
+				Controller->InputKey(FInputKeyEventArgs(nullptr, Device, Key, IE_Released, 0));
+			}
+
+			// A UI-consumed non-table key delivered through the real preprocessor route is held in
+			// the observed sets and must deny admission as well.
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const FModifierKeysState NoModifiers;
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::M, NoModifiers, Binding.InputDevice,
+				false, 0, 0, Binding.SlateUserIndex));
+			const FCortexCommandResult UiDenied = F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture));
+			Test.TestFalse(TEXT("UI-consumed non-table key denies admission"), UiDenied.bSuccess);
+			Test.TestTrue(TEXT("UI-consumed key still held after denial"),
+				F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture)).bSuccess == false);
+			Slate.ProcessKeyUpEvent(FKeyEvent(EKeys::M, NoModifiers, Binding.InputDevice,
+				false, 0, 0, Binding.SlateUserIndex));
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitCaptureAdmitted(this, Fixture));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// CR-08: a tagged runtime selector must uniquely identify its instance within the selected
+// scope. A second runtime panel with identical root/control tags is ambiguous: capture must not
+// claim Supported coverage and playback must reject the match; removing the duplicate restores
+// the unique identity (replacement ordering).
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputTaggedSelectorUniquenessTest,
+	"Cortex.Editor.PhysicalInputTaggedSelectorUniqueness",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputTaggedSelectorUniquenessTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("UniquenessBaseline"),
+		[Fixture](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const FModifierKeysState Modifiers;
+			const FGeometry Geometry = F.Slider->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0) { Test.AddError(TEXT("Probe slider has no geometry")); return; }
+			const FVector2D Absolute = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.5, Size.Y * 0.5));
+
+			// The singly tagged runtime panel resolves as Supported.
+			const int32 BaselineIndex = F.Captured.Num();
+			const uint32 Pointer = FSlateApplicationBase::CursorPointerIndex;
+			TSet<FKey> Pressed;
+			Pressed.Add(EKeys::LeftMouseButton);
+			Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Binding.InputDevice, Pointer,
+				Absolute, Absolute, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+			TSet<FKey> Released;
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice, Pointer,
+				Absolute, Absolute, Released, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+			Test.TestTrue(TEXT("Baseline tagged press was captured"), F.CapturedContexts.IsValidIndex(BaselineIndex));
+			if (F.CapturedContexts.IsValidIndex(BaselineIndex))
+			{
+				Test.TestEqual(TEXT("Unique tagged control is supported"),
+					F.CapturedContexts[BaselineIndex].UICoverage, ECortexEditorUICoverage::Supported);
+			}
+
+			// Add a second runtime panel with the identical root/control tags in the same viewport.
+			UWorld* World = Binding.World.Get();
+			if (!World || !World->GetGameViewport()) { return; }
+			TSharedPtr<SSlider> DuplicateSlider;
+			const TSharedRef<SWidget> Duplicate = SNew(SBox)
+				[
+					SAssignNew(DuplicateSlider, SSlider)
+				];
+			Duplicate->SetTag(FName(TEXT("CortexPhysicalProbeRoot")));
+			DuplicateSlider->SetTag(FName(TEXT("CortexPhysicalProbeSlider")));
+			F.DuplicateTaggedOverlay = Duplicate;
+			World->GetGameViewport()->AddViewportWidgetContent(Duplicate);
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const FModifierKeysState Modifiers;
+			const FGeometry Geometry = F.Slider->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0) { Test.AddError(TEXT("Probe slider has no geometry")); return; }
+			const FVector2D Absolute = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.5, Size.Y * 0.5));
+
+			const int32 AmbiguousIndex = F.Captured.Num();
+			const uint32 Pointer = FSlateApplicationBase::CursorPointerIndex;
+			TSet<FKey> Pressed;
+			Pressed.Add(EKeys::LeftMouseButton);
+			Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Binding.InputDevice, Pointer,
+				Absolute, Absolute, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+			TSet<FKey> Released;
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice, Pointer,
+				Absolute, Absolute, Released, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+			Test.TestTrue(TEXT("Ambiguous tagged press was captured"), F.CapturedContexts.IsValidIndex(AmbiguousIndex));
+			if (!F.CapturedContexts.IsValidIndex(AmbiguousIndex)) { return; }
+			Test.TestFalse(TEXT("Ambiguous capture is not recorded as Supported"),
+				F.CapturedContexts[AmbiguousIndex].UICoverage == ECortexEditorUICoverage::Supported);
+			Test.TestEqual(TEXT("Ambiguous capture is Unavailable"),
+				F.CapturedContexts[AmbiguousIndex].UICoverage, ECortexEditorUICoverage::Unavailable);
+			Test.TestFalse(TEXT("Ambiguous capture carries no target identity"),
+				F.CapturedContexts[AmbiguousIndex].UITarget.IsValid());
+
+			// Playback: the same recorded selector must be rejected as ambiguous, never Ready.
+			FCortexEditorPhysicalInputWidgetIdentity Expected;
+			Expected.RootKind = ECortexEditorUIRootKind::Slate;
+			Expected.Surface = ECortexEditorUISurface::Viewport;
+			Expected.Discriminator = ECortexEditorUIRootDiscriminator::RootTag;
+			Expected.RootTag = TEXT("CortexPhysicalProbeRoot");
+			Expected.TargetTag = TEXT("CortexPhysicalProbeSlider");
+			FCortexEditorPhysicalInputUIObservation Observation;
+			const FCortexCommandResult Observed =
+				F.Session->ObserveUI(F.Captured[AmbiguousIndex], Expected, Observation);
+			Test.TestFalse(TEXT("ObserveUI rejects the ambiguous match"), Observed.bSuccess);
+			Test.TestEqual(TEXT("Ambiguous playback match reports ambiguous state"),
+				Observation.State, ECortexEditorUIObservationState::Ambiguous);
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			UWorld* World = F.Session->GetTargetBinding().World.Get();
+			if (!F.DuplicateTaggedOverlay.IsValid() || !World || !World->GetGameViewport()) { return; }
+			World->GetGameViewport()->RemoveViewportWidgetContent(F.DuplicateTaggedOverlay.ToSharedRef());
+			F.DuplicateTaggedOverlay.Reset();
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const FModifierKeysState Modifiers;
+			const FGeometry Geometry = F.Slider->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0) { Test.AddError(TEXT("Probe slider has no geometry")); return; }
+			const FVector2D Absolute = Geometry.LocalToAbsolute(FVector2D(Size.X * 0.5, Size.Y * 0.5));
+
+			const int32 RestoredIndex = F.Captured.Num();
+			const uint32 Pointer = FSlateApplicationBase::CursorPointerIndex;
+			TSet<FKey> Pressed;
+			Pressed.Add(EKeys::LeftMouseButton);
+			Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Binding.InputDevice, Pointer,
+				Absolute, Absolute, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+			TSet<FKey> Released;
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice, Pointer,
+				Absolute, Absolute, Released, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+			Test.TestTrue(TEXT("Restored tagged press was captured"), F.CapturedContexts.IsValidIndex(RestoredIndex));
+			if (!F.CapturedContexts.IsValidIndex(RestoredIndex)) { return; }
+			Test.TestEqual(TEXT("Removing the duplicate restores Supported coverage"),
+				F.CapturedContexts[RestoredIndex].UICoverage, ECortexEditorUICoverage::Supported);
+			Test.TestTrue(TEXT("Restored capture carries a target identity"),
+				F.CapturedContexts[RestoredIndex].UITarget.IsValid());
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Owned teardown is resolved exactly once: after IsOwnedPIEEnded() is observed, ticking well
+// past resolution and re-entering termination must perform no further end-PIE work (no second
+// end while the engine tears the level viewport down) and must not crash.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputOwnedTeardownResolvedOnceTest,
+	"Cortex.Editor.PhysicalInputOwnedTeardownResolvedOnce",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputOwnedTeardownResolvedOnceTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunOnceCommand(this, [Fixture](FAutomationTestBase&)
+	{
+		Fixture->PIEWorld = Fixture->Session->GetTargetBinding().World;
+		Fixture->Session->EndOwnedPIE();
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitForOwnedInputEnded(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 20,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			// Re-entering termination long after resolution must be a no-op, never another end-PIE.
+			F.Session->EndOwnedPIE();
+			Test.TestTrue(TEXT("Owned teardown stays resolved after a redundant end"),
+				F.Session->IsOwnedPIEEnded());
+			Test.TestFalse(TEXT("Resolved session binds no world"),
+				F.Session->GetTargetBinding().World.IsValid());
+			Test.TestFalse(TEXT("Owned PIE world is gone after resolution"),
+				F.PIEWorld.IsValid());
+			Test.TestTrue(TEXT("Editor owns no PIE world after resolution"),
+				GEditor == nullptr || GEditor->PlayWorld == nullptr);
+		}));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A physical non-table key held before the observation processor was installed is resolved by
+// the Windows high-bit snapshot and denies admission both before preparation and at arming.
+// The snapshot resolver is driven explicitly so the pre-installation path is covered
+// deterministically instead of depending on ambient host keyboard input.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputPreInstallSnapshotAdmissionTest,
+	"Cortex.Editor.PhysicalInputPreInstallSnapshotAdmission",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputPreInstallSnapshotAdmissionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+
+	// A physical non-table key (Tab) held in the snapshot, before any target exists and before
+	// the processor could have observed a down edge, denies preparation admission.
+#if WITH_DEV_AUTOMATION_TESTS
+	FCortexEditorPhysicalInputSession::SetPhysicalKeySnapshotResolver(
+		[](const FKey& Key) { return Key == EKeys::Tab; });
+#endif
+	const FCortexCommandResult Denied = Fixture->Session->BeginOwnedPIE(
+		Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture));
+	TestFalse(TEXT("Pre-held non-table key denies preparation admission through the snapshot"),
+		Denied.bSuccess);
+	TestEqual(TEXT("Snapshot preparation denial is INVALID_OPERATION"),
+		Denied.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+
+	// Once the physical key is released, preparation is admitted.
+#if WITH_DEV_AUTOMATION_TESTS
+	FCortexEditorPhysicalInputSession::SetPhysicalKeySnapshotResolver(
+		[](const FKey&) { return false; });
+#endif
+	TestTrue(TEXT("Neutral snapshot prepares the same session"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+#if WITH_DEV_AUTOMATION_TESTS
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			Test.TestTrue(TEXT("Neutral snapshot arms the prepared target"),
+				F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture)).bSuccess);
+			F.bCaptureArmed = true;
+
+			// The same physical key held at arming denies through the snapshot as well; it is not
+			// in the observed sets or the controller state, so only the snapshot can catch it.
+			FCortexEditorPhysicalInputSession::SetPhysicalKeySnapshotResolver(
+				[](const FKey& Key) { return Key == EKeys::Tab; });
+			const FCortexCommandResult Armed =
+				F.Session->SetCaptureCallback(MakeFixtureCaptureCallback(Fixture));
+			Test.TestFalse(TEXT("Pre-held non-table key denies arming through the snapshot"),
+				Armed.bSuccess);
+			Test.TestEqual(TEXT("Snapshot arming denial is INVALID_OPERATION"),
+				Armed.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
+			FCortexEditorPhysicalInputSession::SetPhysicalKeySnapshotResolver(
+				[](const FKey&) { return false; });
+		}));
+#endif
 
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
 	return true;

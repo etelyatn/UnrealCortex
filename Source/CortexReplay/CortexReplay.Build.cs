@@ -14,12 +14,14 @@ public class CortexReplay : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
+			"ApplicationCore",
 			"CoreUObject",
 			"Engine",
 			"EditorStyle",
 			"InputCore",
 			"Json",
 			"JsonUtilities",
+			"Projects",
 			"Slate",
 			"SlateCore",
 			"ToolMenus",

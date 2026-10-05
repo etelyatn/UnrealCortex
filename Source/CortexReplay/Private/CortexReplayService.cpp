@@ -20,6 +20,7 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/PlatformTime.h"
+#include "Interfaces/IPluginManager.h"
 #include "Misc/App.h"
 #include "Misc/DateTime.h"
 #include "Misc/EngineVersion.h"
@@ -43,6 +44,21 @@ constexpr double ServiceRecentTerminalWindowSeconds = 86400.0;
 /** Mirrors of the scheduler's fixed wait budgets for the reported progress fields. */
 constexpr double ServiceMaxAuthorizedWaitSeconds = 5.0;
 constexpr double ServiceMaxWaitPerPressSeconds = 1.0;
+
+/**
+ * The immutable recording provenance version comes from the actual loaded plugin descriptor, so
+ * it can never drift from the shipped UnrealCortex.uplugin as a second hard-coded string. An
+ * unresolved descriptor yields an empty version and publication validation then rejects it.
+ */
+FString ResolveCortexPluginVersion()
+{
+	IPluginManager& PluginManager = IPluginManager::Get();
+	if (const TSharedPtr<IPlugin> Plugin = PluginManager.FindPlugin(FString(TEXT("UnrealCortex"))))
+	{
+		return Plugin->GetDescriptor().VersionName;
+	}
+	return FString();
+}
 
 FString ServiceGuidToString(const FGuid& Id)
 {
@@ -784,7 +800,7 @@ FCortexCommandResult FCortexReplayService::FImpl::PublishCaptureSnapshot()
 	CaptureSnapshot.Metadata.Description.Reset();
 	CaptureSnapshot.Metadata.MapAssetPath = CaptureMapAssetPath;
 	CaptureSnapshot.Metadata.EngineVersion = FEngineVersion::Current().ToString();
-	CaptureSnapshot.Metadata.PluginVersion = TEXT("0.4.0");
+	CaptureSnapshot.Metadata.PluginVersion = ResolveCortexPluginVersion();
 	CaptureSnapshot.Metadata.CreatedAtUtc = FDateTime::UtcNow();
 	// The recorded duration is the full monotonic capture span, not the last input timestamp.
 	CaptureSnapshot.Metadata.DurationSeconds = FMath::Max(0.0, CaptureStopSeconds - CaptureEpochSeconds);
@@ -1009,8 +1025,16 @@ void FCortexReplayService::FImpl::OnCaptureEvent(const FCortexEditorPhysicalInpu
 			|| Event.Kind == ECortexEditorPhysicalInputKind::DoubleClick);
 	if (bPress)
 	{
+		if (!Context.PressPose.IsSet())
+		{
+			// A press whose genuinely observed pre-press pose is absent must never be published
+			// with a substituted guard; fault the recording instead.
+			MarkCaptureFaulted(ServiceError(CortexReplayErrorCodes::InvalidOperation,
+				TEXT("A captured press is missing its required pre-press player pose")));
+			return;
+		}
 		FCortexReplayInteractionGuard Guard;
-		Guard.ExpectedPose = Context.PressPose.IsSet() ? Context.PressPose.GetValue() : CaptureInitialPose;
+		Guard.ExpectedPose = Context.PressPose.GetValue();
 		Guard.UICoverage = Context.UICoverage;
 		Guard.UIUnavailableReason = Context.UIUnavailableReason;
 		Guard.UITarget = Context.UITarget;

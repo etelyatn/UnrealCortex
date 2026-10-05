@@ -1,5 +1,7 @@
 #include "CortexReplayTestUtils.h"
 
+#include "CortexEditorPhysicalInputSession.h"
+
 #include "HAL/FileManager.h"
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
@@ -32,11 +34,22 @@ FCortexReplayTestFixture::FCortexReplayTestFixture()
 		FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("CortexReplayTests")),
 		FGuid::NewGuid().ToString(EGuidFormats::Digits))))
 {
+	// Deterministic automation: override the physical-key snapshot to neutral so admission never
+	// depends on ambient host keyboard input. The real GetAsyncKeyState snapshot remains the
+	// production default; the pre-installation regression drives the snapshot through this
+	// resolver explicitly.
+#if WITH_DEV_AUTOMATION_TESTS
+	FCortexEditorPhysicalInputSession::SetPhysicalKeySnapshotResolver(
+		[](const FKey&) { return false; });
+#endif
 	IFileManager::Get().MakeDirectory(*FPaths::Combine(ProjectRoot, TEXT(".cortex/replay")), true);
 }
 
 FCortexReplayTestFixture::~FCortexReplayTestFixture()
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	FCortexEditorPhysicalInputSession::ClearPhysicalKeySnapshotResolver();
+#endif
 	if (!ProjectRoot.IsEmpty())
 	{
 		IFileManager::Get().DeleteDirectory(*ProjectRoot, false, true);

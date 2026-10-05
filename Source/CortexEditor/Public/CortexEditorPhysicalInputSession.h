@@ -214,6 +214,18 @@ public:
 	/** Releases this session's target, cancels pending work and ends only owned PIE. */
 	void Shutdown();
 
+	/**
+	 * Test-support override for the Windows physical-key snapshot (see IsPhysicalInputNeutral).
+	 *
+	 * Compiled only into automation-enabled builds: production must never be able to replace the
+	 * physical snapshot and bypass the neutral-admission guarantee. When no resolver is set, the
+	 * real GetAsyncKeyState high-bit snapshot over the complete supported domain is used.
+	 */
+#if WITH_DEV_AUTOMATION_TESTS
+	static void SetPhysicalKeySnapshotResolver(TFunction<bool(const FKey&)>&& Resolver);
+	static void ClearPhysicalKeySnapshotResolver();
+#endif
+
 private:
 	/** The non-consuming processor reports every observed engine input back to this session. */
 	friend class FCortexEditorPhysicalInputCaptureProcessor;
@@ -273,6 +285,21 @@ private:
 	mutable bool bOwnedContextObserved = false;
 	/** Latched once the exact captured owned context has been observed absent; never cleared mid-run. */
 	mutable bool bOwnedContextGone = false;
+	/**
+	 * Latched once this operation's owned teardown is fully resolved (IsOwnedPIEEnded()).
+	 *
+	 * From that point the session performs NO further engine/teardown calls, issues no further
+	 * end-PIE/CancelRequestPlaySession request (a double end-PIE while the engine is already
+	 * tearing the level viewport down asserts), and stops its teardown ticker.
+	 */
+	bool bOwnedTerminationResolved = false;
+	/**
+	 * True once this operation has issued its single RequestEndPlayMap for the owned context.
+	 *
+	 * Exactly one actor issues end-PIE per owned session; the engine queues the request and ends
+	 * it once, so re-issuing every tick is neither needed nor safe.
+	 */
+	bool bOwnedEndPlayRequested = false;
 	/** Throttle for the "teardown still pending" diagnostic; 0 means it has not fired yet. */
 	double LastTeardownDiagnosticSeconds = 0.0;
 	TWeakObjectPtr<UClass> LastObservedPawnClass;
@@ -315,7 +342,17 @@ private:
 	FCortexCommandResult ArmCapture(TFunction<void(const FCortexEditorPhysicalInputEvent&,
 		double, const FCortexEditorPhysicalInputCaptureContext&)>&& Callback);
 
-	/** True only when no physical key/button/modifier is observed down on the selected target. */
+	/**
+	 * True only when no physical key/button/modifier is observed down on the selected target.
+	 *
+	 * Uses the target-attributable signals (the session observation sets, which include
+	 * processor-observed keys and mouse buttons for the selected user/device, and the selected
+	 * controller's key state) plus the Windows physical-key high-bit snapshot over the complete
+	 * cached supported key->virtual-key mapping, which catches a key held before the processor was
+	 * installed (including UI-consumed presses the engine never routed). The editor-global Slate
+	 * cached button set is deliberately NOT consulted: it retains synthetic bits from this or an
+	 * earlier operation's own dispatch and is not attributable to the capture target.
+	 */
 	bool IsPhysicalInputNeutral(FCortexCommandResult& OutError) const;
 
 	/** Processor callbacks; each filters by the selected user/device before observing. */
@@ -327,9 +364,13 @@ private:
 	/** Records one already-attributed human event and invokes the capture callback. */
 	void HandleCapturedEvent(const FCortexEditorPhysicalInputEvent& Event);
 
-	/** Samples the pre-press context (frame/time/pause/pose/UI) for one recorded event. */
-	void BuildCaptureContext(const FCortexEditorPhysicalInputEvent& Event,
-		FCortexEditorPhysicalInputCaptureContext& OutContext) const;
+	/**
+	 * Samples the pre-press context (frame/time/pause/pose/UI) for one recorded event. Returns
+	 * false, with OutError describing the required observation that failed, when a guarded press
+	 * cannot carry a genuinely observed pre-press pose; the caller signals a capture fault.
+	 */
+	bool BuildCaptureContext(const FCortexEditorPhysicalInputEvent& Event,
+		FCortexEditorPhysicalInputCaptureContext& OutContext, FCortexCommandResult& OutError) const;
 
 	/** Resolves the tagged-runtime Slate identity at one viewport-local coordinate. */
 	bool ResolveTaggedSlateIdentity(const FVector2D& ViewportPosition,

@@ -8,6 +8,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "InputCoreTypes.h"
 #include "Layout/ArrangedWidget.h"
+#include "Layout/Children.h"
 #include "Layout/WidgetPath.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonWriter.h"
@@ -242,6 +243,75 @@ FString ComputeSelectorSha256Hex(const uint8* Data, int64 Size)
 	return FString();
 #endif
 }
+
+/**
+ * Counts live widgets carrying the requested root/target tags across the whole subtree of one
+ * scope root. The tagged-runtime Slate panels are the only tagged widgets in the selected
+ * viewport window, so a count greater than one means the selector does not uniquely identify an
+ * instance and must never be treated as supported.
+ */
+void CountTaggedWidgetsInScope(const TSharedRef<SWidget>& ScopeRoot, const FName RootTag,
+	const FName TargetTag, int32& OutRootCount, int32& OutTargetCount)
+{
+	OutRootCount = 0;
+	OutTargetCount = 0;
+	TArray<TSharedRef<SWidget>> Stack;
+	Stack.Add(ScopeRoot);
+	while (Stack.Num() > 0)
+	{
+		const TSharedRef<SWidget> Widget = Stack.Pop();
+		const FName Tag = Widget->GetTag();
+		if (Tag != NAME_None)
+		{
+			if (Tag == RootTag)
+			{
+				++OutRootCount;
+			}
+			if (Tag == TargetTag)
+			{
+				++OutTargetCount;
+			}
+		}
+		if (FChildren* Children = Widget->GetChildren())
+		{
+			for (int32 Index = 0; Index < Children->Num(); ++Index)
+			{
+				Stack.Add(Children->GetChildAt(Index));
+			}
+		}
+	}
+}
+
+/** The window hosting the selected viewport, or null when the scope cannot be resolved. */
+TSharedPtr<SWindow> ResolveSelectedScopeWindow(const FCortexEditorPhysicalInputGuardState& State)
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		return nullptr;
+	}
+	const TSharedPtr<SWidget> Viewport = State.ViewportWidget.Pin();
+	if (!Viewport.IsValid())
+	{
+		return nullptr;
+	}
+	return FSlateApplication::Get().FindWidgetWindow(Viewport.ToSharedRef());
+}
+
+/** True when either recorded tag appears on more than one widget in the selected scope. */
+bool IsSlateSelectorAmbiguous(const FString& RootTag, const FString& TargetTag,
+	const FCortexEditorPhysicalInputGuardState& State)
+{
+	const TSharedPtr<SWindow> Window = ResolveSelectedScopeWindow(State);
+	if (!Window.IsValid())
+	{
+		return false;
+	}
+	int32 RootCount = 0;
+	int32 TargetCount = 0;
+	CountTaggedWidgetsInScope(Window.ToSharedRef(), FName(*RootTag), FName(*TargetTag),
+		RootCount, TargetCount);
+	return RootCount > 1 || TargetCount > 1;
+}
 }
 
 FCortexEditorPhysicalInputWidgetIdentity FCortexEditorPhysicalInputSelectorBuilder::BuildSlateIdentity(
@@ -338,6 +408,20 @@ bool FCortexEditorPhysicalInputUIResolver::ResolveActualSlateTarget(
 
 	const FArrangedWidget& TargetArranged = Path.Widgets[TargetIndex];
 	const FArrangedWidget& RootArranged = Path.Widgets[RootIndex];
+
+	// The tags must uniquely identify this instance within the selected runtime scope. Two
+	// runtime panels with identical root/control tags cannot be distinguished by the recorded
+	// selector, so this hit path is never a supported identity.
+	int32 RootCount = 0;
+	int32 TargetCount = 0;
+	CountTaggedWidgetsInScope(Window.ToSharedRef(),
+		RootArranged.GetWidgetPtr()->GetTag(), TargetArranged.GetWidgetPtr()->GetTag(),
+		RootCount, TargetCount);
+	if (RootCount != 1 || TargetCount != 1)
+	{
+		return false;
+	}
+
 	OutIdentity = FCortexEditorPhysicalInputSelectorBuilder::BuildSlateIdentity(
 		*RootArranged.GetWidgetPtr(), *TargetArranged.GetWidgetPtr());
 
@@ -362,6 +446,14 @@ ECortexEditorUIObservationState FCortexEditorPhysicalInputUIResolver::ResolveSla
 		|| Expected.TargetTag.IsEmpty())
 	{
 		Out.State = ECortexEditorUIObservationState::Unavailable;
+		return Out.State;
+	}
+
+	// More than one widget in the selected scope carrying either tag makes the recorded selector
+	// unable to identify an instance: reject rather than match strings as Ready.
+	if (IsSlateSelectorAmbiguous(Expected.RootTag, Expected.TargetTag, State))
+	{
+		Out.State = ECortexEditorUIObservationState::Ambiguous;
 		return Out.State;
 	}
 

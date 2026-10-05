@@ -22,8 +22,10 @@
 #include "GenericPlatform/GenericApplication.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "GenericPlatform/GenericWindow.h"
+#include "HAL/PlatformInput.h"
 #include "IAssetViewport.h"
 #include "Input/DragAndDrop.h"
+#include "InputCoreTypes.h"
 #include "InputKeyEventArgs.h"
 #include "KeyState.h"
 #include "LevelEditor.h"
@@ -190,15 +192,26 @@ bool FCortexEditorPhysicalInputSession::TickInternal(float DeltaTime)
 	}
 	else if (OwnedState == EOwnedState::Ending)
 	{
-		// Owned teardown must keep observing startup/context until it is resolved.
-		PollTeardown();
-	}
-
-	if (OwnedState == EOwnedState::Ending && IsOwnedPIEEnded())
-	{
-		OwnedState = EOwnedState::None;
-		TickerHandle.Reset();
-		return false; // Teardown observed; stop the minimal observer.
+		// Latch resolution before any teardown action: once IsOwnedPIEEnded() has been observed
+		// the session must perform no further engine/teardown work and must stop its ticker.
+		if (!bOwnedTerminationResolved && IsOwnedPIEEnded())
+		{
+			bOwnedTerminationResolved = true;
+		}
+		if (!bOwnedTerminationResolved)
+		{
+			PollTeardown();
+			if (IsOwnedPIEEnded())
+			{
+				bOwnedTerminationResolved = true;
+			}
+		}
+		if (bOwnedTerminationResolved)
+		{
+			OwnedState = EOwnedState::None;
+			TickerHandle.Reset();
+			return false; // Teardown observed; stop the minimal observer.
+		}
 	}
 	return true;
 }
@@ -392,6 +405,11 @@ void FCortexEditorPhysicalInputSession::PollPreparation()
 
 void FCortexEditorPhysicalInputSession::PollTeardown()
 {
+	// Once this operation's teardown is resolved, no further engine/teardown call is ever made.
+	if (bOwnedTerminationResolved)
+	{
+		return;
+	}
 	if (!bOwnsPIE)
 	{
 		// Borrowed/foreign worlds are never observed or ended.
@@ -482,22 +500,25 @@ void FCortexEditorPhysicalInputSession::PollTeardown()
 		}
 	}
 
-	// End only once the captured owned context has a world to tear down. A world-less context
-	// is still ours and must stay observed: ending it before its deferred world appears is not
-	// what resolves the session (its world appears at PlayLevel.cpp:1603-1622).
-	if (IsOwnedContextWorldPresent())
+	// End only once the captured owned context has a world to tear down, and only once per
+	// operation: the engine queues the request and ends the session exactly once, so re-issuing
+	// it every tick is neither needed nor safe.
+	if (IsOwnedContextWorldPresent() && !bOwnedEndPlayRequested)
 	{
 		GEditor->RequestEndPlayMap();
+		bOwnedEndPlayRequested = true;
 	}
 
 	// Bounded diagnostic: an owned teardown should resolve within a frame or two, so a pending
 	// teardown lasting a full second is itself a defect worth reporting with its observations.
+	// It only prints while the teardown is genuinely unresolved (this function returns early once
+	// bOwnedTerminationResolved is set).
 	if (FPlatformTime::Seconds() - LastTeardownDiagnosticSeconds >= 1.0)
 	{
 		LastTeardownDiagnosticSeconds = FPlatformTime::Seconds();
 		UWorld* OwnedWorldPtr = OwnedWorld.Get();
 		UE_LOG(LogCortexEditor, Log,
-			TEXT("Owned PIE teardown still pending: resolved=%d requestPending=%d contextPresent=%d worldPresent=%d worldObserved=%d worldTearingDown=%d"),
+			TEXT("Owned PIE teardown still pending: startupResolved=%d requestPending=%d contextPresent=%d worldPresent=%d worldObserved=%d worldTearingDown=%d"),
 			bStartupResolved ? 1 : 0, IsOwnedRequestPending() ? 1 : 0,
 			IsOwnedContextPresent() ? 1 : 0, IsOwnedContextWorldPresent() ? 1 : 0,
 			bOwnedWorldObserved ? 1 : 0,
@@ -563,7 +584,7 @@ void FCortexEditorPhysicalInputSession::CompletePreparationSuccess()
 
 void FCortexEditorPhysicalInputSession::RequestOwnedTermination()
 {
-	if (GEditor == nullptr)
+	if (GEditor == nullptr || bOwnedTerminationResolved)
 	{
 		return;
 	}
@@ -591,10 +612,14 @@ void FCortexEditorPhysicalInputSession::RequestOwnedTermination()
 			}
 		}
 	}
-	// End only when the exact captured owned PIE context is actually present.
-	if (IsOwnedContextPresent())
+	// End only when the exact captured owned PIE context has a world to tear down, and only once
+	// per operation (the engine queues the request and ends the session exactly once). A world-less
+	// deferred context is left to PollTeardown, which issues the single request once the world
+	// exists; a world-less end request would be dropped by the engine and never retried.
+	if (IsOwnedContextWorldPresent() && !bOwnedEndPlayRequested)
 	{
 		GEditor->RequestEndPlayMap();
+		bOwnedEndPlayRequested = true;
 	}
 }
 
@@ -791,6 +816,11 @@ void FCortexEditorPhysicalInputSession::ReleaseReadyBinding()
 
 void FCortexEditorPhysicalInputSession::BeginOwnedTermination()
 {
+	// A fully resolved owned teardown is never re-entered.
+	if (bOwnedTerminationResolved)
+	{
+		return;
+	}
 	// The usable target is invalid the moment termination starts; the separate owned
 	// world/context identity is retained to observe teardown.
 	ReleaseReadyBinding();
@@ -802,6 +832,8 @@ void FCortexEditorPhysicalInputSession::BeginOwnedTermination()
 		ReadyCallback = nullptr;
 	}
 	OwnedState = EOwnedState::Ending;
+	// The bounded pending-teardown diagnostic window starts when teardown begins.
+	LastTeardownDiagnosticSeconds = FPlatformTime::Seconds();
 	EnsureTicker();
 	RequestOwnedTermination();
 }
@@ -842,6 +874,13 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 	if (!ArePlaySettingsSupported(UnsupportedSettingsReason))
 	{
 		return MakeErrorResult(CortexErrorCodes::InvalidOperation, UnsupportedSettingsReason);
+	}
+	// The neutral-state admission policy applies before preparation as well as again at arming:
+	// starting a PIE session from an unknown held state is never admitted.
+	FCortexCommandResult PreparationNeutralError;
+	if (!IsPhysicalInputNeutral(PreparationNeutralError))
+	{
+		return PreparationNeutralError;
 	}
 	if (LocalPlayerIndex < 0)
 	{
@@ -914,6 +953,9 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 	bOwnedWorldObserved = false;
 	bOwnedContextObserved = false;
 	bOwnedContextGone = false;
+	bOwnedTerminationResolved = false;
+	bOwnedEndPlayRequested = false;
+	LastTeardownDiagnosticSeconds = 0.0;
 	BoundPawnClass = nullptr;
 	LastObservedPawnClass = nullptr;
 	StablePawnClassObservations = 0;
@@ -1213,7 +1255,7 @@ void FCortexEditorPhysicalInputSession::Shutdown()
 	bReadyCallbackInvoked = true;
 	ReadyCallback = nullptr;
 
-	if (bOwnsPIE)
+	if (bOwnsPIE && !bOwnedTerminationResolved && !IsOwnedPIEEnded())
 	{
 		if (OwnedState != EOwnedState::Ending)
 		{
@@ -1224,6 +1266,7 @@ void FCortexEditorPhysicalInputSession::Shutdown()
 	}
 	else
 	{
+		// Resolved (or never owned): no further teardown work and no ticker.
 		OwnedState = EOwnedState::None;
 		RemoveTicker();
 	}
@@ -1434,9 +1477,15 @@ UClass* FCortexEditorPhysicalInputSession::ResolveRecordedPawnClass(const FStrin
 
 namespace
 {
-#if PLATFORM_WINDOWS
 	/** Bit set in the short returned by GetAsyncKeyState when the key is currently down. */
 	constexpr short CortexPhysicalKeyDownBit = static_cast<short>(0x8000);
+
+#if PLATFORM_WINDOWS && WITH_DEV_AUTOMATION_TESTS
+	/**
+	 * Test-support override for the physical-key snapshot. Null in production, where the real
+	 * GetAsyncKeyState high-bit state is used. Compiled only into automation-enabled builds.
+	 */
+	TFunction<bool(const FKey&)> GPhysicalKeySnapshotResolver;
 #endif
 
 	struct FCortexPhysicalSupportedKey
@@ -1445,35 +1494,106 @@ namespace
 		int32 VirtualKey;
 	};
 
-	/** The supported gameplay keyboard/mouse keys and their Windows virtual-key codes. */
+	/**
+	 * The complete supported keyboard/mouse domain, built once and cached as unique
+	 * (FKey, Windows virtual-key) pairs. The capture path can record any key the OS reports as a
+	 * key event, so admission must resolve every one of them from the OS high-bit snapshot.
+	 *
+	 * The engine splits this domain across two platform maps: `GetKeyMap` provides the
+	 * non-printable/navigation/mouse keys keyed by virtual key, while `GetCharKeyMap` provides the
+	 * printable letters/digits keyed by character code. Both are merged here, and the virtual key
+	 * is taken from the engine's own `FInputKeyManager` (virtual-key map first, character map
+	 * second), so the snapshot queries exactly the code the engine maps the key to — proving the
+	 * key->VK conversion against the engine rather than re-deriving it.
+	 */
 	const TArray<FCortexPhysicalSupportedKey>& GetSupportedPhysicalKeys()
 	{
-		static const TArray<FCortexPhysicalSupportedKey> Keys = {
-			{ EKeys::W, 0x57 }, { EKeys::A, 0x41 }, { EKeys::S, 0x53 }, { EKeys::D, 0x44 },
-			{ EKeys::E, 0x45 }, { EKeys::Q, 0x51 }, { EKeys::R, 0x52 }, { EKeys::F, 0x46 },
-			{ EKeys::SpaceBar, 0x20 },
-			{ EKeys::LeftShift, 0xA0 }, { EKeys::RightShift, 0xA1 },
-			{ EKeys::LeftControl, 0xA2 }, { EKeys::RightControl, 0xA3 },
-			{ EKeys::LeftAlt, 0xA4 }, { EKeys::RightAlt, 0xA5 },
-			{ EKeys::Left, 0x25 }, { EKeys::Up, 0x26 }, { EKeys::Right, 0x27 }, { EKeys::Down, 0x28 },
-			{ EKeys::LeftMouseButton, 0x01 }, { EKeys::RightMouseButton, 0x02 },
-			{ EKeys::MiddleMouseButton, 0x04 }
-		};
+#if PLATFORM_WINDOWS
+		static const TArray<FCortexPhysicalSupportedKey> Keys = []()
+		{
+			constexpr uint32 MaxMappings = 256;
+			uint32 KeyCodes[MaxMappings];
+			FString KeyNames[MaxMappings];
+			uint32 KeyCount = FPlatformInput::GetKeyMap(KeyCodes, KeyNames, MaxMappings);
+			uint32 CharCodes[MaxMappings];
+			FString CharKeyNames[MaxMappings];
+			uint32 CharCount = FPlatformInput::GetCharKeyMap(CharCodes, CharKeyNames, MaxMappings);
+
+			TArray<FCortexPhysicalSupportedKey> Mappings;
+			TSet<int32> SeenVirtualKeys;
+			auto AddVirtualKey = [&Mappings, &SeenVirtualKeys](uint32 VirtualKey)
+			{
+				if (VirtualKey == 0 || VirtualKey > 0xFF || SeenVirtualKeys.Contains(static_cast<int32>(VirtualKey)))
+				{
+					return;
+				}
+				// Name the VK through the engine's own key manager so the snapshot's reported key
+				// matches the engine's FKey for that code.
+				const FKey Key = FInputKeyManager::Get().GetKeyFromCodes(VirtualKey, VirtualKey);
+				if (!Key.IsValid())
+				{
+					UE_LOG(LogCortexEditor, Warning,
+						TEXT("Physical key snapshot: no FKey for virtual key 0x%04X; skipped"), VirtualKey);
+					return;
+				}
+				SeenVirtualKeys.Add(static_cast<int32>(VirtualKey));
+				FCortexPhysicalSupportedKey Mapping;
+				Mapping.Key = Key;
+				Mapping.VirtualKey = static_cast<int32>(VirtualKey);
+				Mappings.Add(Mapping);
+			};
+
+			for (uint32 Index = 0; Index < KeyCount; ++Index)
+			{
+				AddVirtualKey(KeyCodes[Index]);
+			}
+			// The printable map is keyed by character code. Only the alphanumeric ranges are valid
+			// Windows virtual keys (their character code equals the VK); the punctuation character
+			// codes are NOT virtual keys and those keys are already covered by the platform key
+			// map's OEM/scan-code virtual keys above.
+			for (uint32 Index = 0; Index < CharCount; ++Index)
+			{
+				const uint32 CharCode = CharCodes[Index];
+				const bool bAlphaNumericVk =
+					(CharCode >= 0x30 && CharCode <= 0x39) || (CharCode >= 0x41 && CharCode <= 0x5A);
+				if (bAlphaNumericVk)
+				{
+					AddVirtualKey(CharCode);
+				}
+			}
+			return Mappings;
+		}();
 		return Keys;
+#else
+		static const TArray<FCortexPhysicalSupportedKey> Keys;
+		return Keys;
+#endif
 	}
 
-	bool IsPhysicalKeyDownSnapshot(const FKey& Key)
+	/** True only when the physical keyboard/mouse snapshot can actually be resolved here. */
+	bool CanResolvePhysicalKeyState()
 	{
 #if PLATFORM_WINDOWS
-		for (const FCortexPhysicalSupportedKey& Supported : GetSupportedPhysicalKeys())
+		return GetSupportedPhysicalKeys().Num() > 0;
+#else
+		return false;
+#endif
+	}
+
+	/** The raw async high-bit state for one supported key (0 when unresolvable). */
+	short PhysicalKeyAsyncState(const FCortexPhysicalSupportedKey& Supported)
+	{
+#if PLATFORM_WINDOWS
+#if WITH_DEV_AUTOMATION_TESTS
+		if (GPhysicalKeySnapshotResolver)
 		{
-			if (Supported.Key == Key)
-			{
-				return (::GetAsyncKeyState(Supported.VirtualKey) & CortexPhysicalKeyDownBit) != 0;
-			}
+			return GPhysicalKeySnapshotResolver(Supported.Key) ? CortexPhysicalKeyDownBit : 0;
 		}
 #endif
-		return false;
+		return ::GetAsyncKeyState(Supported.VirtualKey);
+#else
+		return 0;
+#endif
 	}
 
 	/**
@@ -1560,6 +1680,25 @@ namespace
 		bool bConsumed = false;
 	};
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+void FCortexEditorPhysicalInputSession::SetPhysicalKeySnapshotResolver(
+	TFunction<bool(const FKey&)>&& Resolver)
+{
+#if PLATFORM_WINDOWS
+	GPhysicalKeySnapshotResolver = MoveTemp(Resolver);
+#else
+	(void)Resolver;
+#endif
+}
+
+void FCortexEditorPhysicalInputSession::ClearPhysicalKeySnapshotResolver()
+{
+#if PLATFORM_WINDOWS
+	GPhysicalKeySnapshotResolver = nullptr;
+#endif
+}
+#endif // WITH_DEV_AUTOMATION_TESTS
 
 void FCortexEditorPhysicalInputSession::AttachCaptureToBinding()
 {
@@ -1688,17 +1827,48 @@ bool FCortexEditorPhysicalInputSession::IsPhysicalInputNeutral(FCortexCommandRes
 	static const TCHAR* const ReleaseInstruction =
 		TEXT("Release all held keys, mouse buttons and modifiers before starting capture");
 
-	if (CaptureState.IsValid()
-		&& (CaptureState->ObservedHeldKeys.Num() > 0
-			|| CaptureState->ObservedHeldButtons.Num() > 0
-			|| CaptureState->ObservedModifierKeys.Num() > 0))
+	auto Deny = [&OutError](const FString& Detail)
 	{
-		OutError = MakeErrorResult(CortexErrorCodes::InvalidOperation, ReleaseInstruction);
+		const FString Message = Detail.IsEmpty()
+			? FString(ReleaseInstruction)
+			: FString::Printf(TEXT("%s (holding: %s)"), ReleaseInstruction, *Detail);
+		UE_LOG(LogCortexEditor, Display, TEXT("Physical input admission rejected: %s"), *Message);
+		OutError = MakeErrorResult(CortexErrorCodes::InvalidOperation, Message);
 		return false;
-	}
-	if (FSlateApplication::IsInitialized() && !FSlateApplication::Get().GetPressedMouseButtons().IsEmpty())
+	};
+
+	// The observation sets are the authoritative attributable channel: the processor records every
+	// selected-user/device down edge (including UI-consumed mouse presses) even before arming.
+	if (CaptureState.IsValid())
 	{
-		OutError = MakeErrorResult(CortexErrorCodes::InvalidOperation, ReleaseInstruction);
+		TArray<FString> Held;
+		TSet<FString> Seen;
+		auto AddHeld = [&Held, &Seen](const TSet<FKey>& Keys)
+		{
+			for (const FKey& Key : Keys)
+			{
+				const FString Name = Key.ToString();
+				if (!Seen.Contains(Name))
+				{
+					Seen.Add(Name);
+					Held.Add(Name);
+				}
+			}
+		};
+		AddHeld(CaptureState->ObservedHeldKeys);
+		AddHeld(CaptureState->ObservedHeldButtons);
+		AddHeld(CaptureState->ObservedModifierKeys);
+		if (Held.Num() > 0)
+		{
+			return Deny(FString::Printf(TEXT("observed[%s]"), *FString::Join(Held, TEXT(","))));
+		}
+	}
+	// A neutral state can only be claimed when the physical snapshot is genuinely resolvable;
+	// assuming neutrality where it is not would admit capture from an unknown held state.
+	if (!CanResolvePhysicalKeyState())
+	{
+		OutError = MakeErrorResult(CortexErrorCodes::InvalidOperation,
+			TEXT("Physical keyboard/mouse state cannot be resolved on this platform"));
 		return false;
 	}
 	if (const APlayerController* Controller = Binding.Controller.Get())
@@ -1707,18 +1877,25 @@ bool FCortexEditorPhysicalInputSession::IsPhysicalInputNeutral(FCortexCommandRes
 		{
 			if (Controller->IsInputKeyDown(Supported.Key))
 			{
-				OutError = MakeErrorResult(CortexErrorCodes::InvalidOperation, ReleaseInstruction);
-				return false;
+				return Deny(FString::Printf(TEXT("controller[%s]"), *Supported.Key.ToString()));
 			}
 		}
 	}
 	for (const FCortexPhysicalSupportedKey& Supported : GetSupportedPhysicalKeys())
 	{
-		if (IsPhysicalKeyDownSnapshot(Supported.Key))
+		const short Raw = PhysicalKeyAsyncState(Supported);
+		if ((Raw & CortexPhysicalKeyDownBit) == 0)
 		{
-			OutError = MakeErrorResult(CortexErrorCodes::InvalidOperation, ReleaseInstruction);
-			return false;
+			continue;
 		}
+		// Raw-value evidence: the held report names the key, its virtual-key code and the exact
+		// GetAsyncKeyState return, so a mapping/variant fault can be told apart from genuine
+		// ambient host keyboard input in the run log.
+		UE_LOG(LogCortexEditor, Display,
+			TEXT("Physical snapshot reports %s held (VK=0x%04X raw=0x%04X)"),
+			*Supported.Key.ToString(), static_cast<uint32>(Supported.VirtualKey),
+			static_cast<uint32>(static_cast<uint16>(Raw)));
+		return Deny(FString::Printf(TEXT("snapshot[%s]"), *Supported.Key.ToString()));
 	}
 	return true;
 }
@@ -2109,15 +2286,22 @@ void FCortexEditorPhysicalInputSession::HandleCapturedEvent(const FCortexEditorP
 	}
 
 	FCortexEditorPhysicalInputCaptureContext Context;
-	BuildCaptureContext(Event, Context);
+	FCortexCommandResult ContextError;
+	if (!BuildCaptureContext(Event, Context, ContextError))
+	{
+		// A required pre-press observation failed. This is a capture fault, never a downgraded or
+		// invented guard; the fault is only signalled here so teardown stays outside this stack.
+		SignalCaptureFault(ContextError.ErrorMessage);
+		return;
+	}
 	if (CaptureCallbackImpl)
 	{
 		CaptureCallbackImpl(Event, FPlatformTime::Seconds(), Context);
 	}
 }
 
-void FCortexEditorPhysicalInputSession::BuildCaptureContext(const FCortexEditorPhysicalInputEvent& Event,
-	FCortexEditorPhysicalInputCaptureContext& OutContext) const
+bool FCortexEditorPhysicalInputSession::BuildCaptureContext(const FCortexEditorPhysicalInputEvent& Event,
+	FCortexEditorPhysicalInputCaptureContext& OutContext, FCortexCommandResult& OutError) const
 {
 	OutContext = FCortexEditorPhysicalInputCaptureContext();
 	UWorld* World = Binding.World.Get();
@@ -2128,9 +2312,25 @@ void FCortexEditorPhysicalInputSession::BuildCaptureContext(const FCortexEditorP
 		&& (CaptureState->CapturedHeldButtons.Num() > 0 || CaptureState->OwnedSyntheticButtons.Num() > 0);
 
 	FCortexEditorPhysicalInputPlayerPose Pose;
-	if (ReadPlayerPose(Pose).bSuccess)
+	const FCortexCommandResult PoseResult = ReadPlayerPose(Pose);
+	if (PoseResult.bSuccess)
 	{
 		OutContext.PressPose = Pose;
+	}
+
+	// Every non-repeat press requires the genuinely observed pre-press pose that its durable
+	// guard is built from. A failed read is a required-observation fault, never a substitute.
+	const bool bRequiredPosePress = !Event.bRepeat
+		&& (Event.Kind == ECortexEditorPhysicalInputKind::KeyDown
+			|| Event.Kind == ECortexEditorPhysicalInputKind::PointerDown
+			|| Event.Kind == ECortexEditorPhysicalInputKind::DoubleClick);
+	if (bRequiredPosePress && !OutContext.PressPose.IsSet())
+	{
+		OutError = PoseResult.bSuccess
+			? MakeErrorResult(CortexErrorCodes::InvalidValue,
+				TEXT("Required pre-press player pose was not observed"))
+			: PoseResult;
+		return false;
 	}
 
 	// Non-repeat keyboard presses are pose-only: only pointer/double-click boundaries carry UI.
@@ -2140,7 +2340,7 @@ void FCortexEditorPhysicalInputSession::BuildCaptureContext(const FCortexEditorP
 	{
 		OutContext.UICoverage = ECortexEditorUICoverage::NotApplicable;
 		OutContext.UIUnavailableReason = ECortexEditorUIUnavailableReason::None;
-		return;
+		return true;
 	}
 
 	FCortexEditorPhysicalInputWidgetIdentity Identity;
@@ -2157,6 +2357,7 @@ void FCortexEditorPhysicalInputSession::BuildCaptureContext(const FCortexEditorP
 		OutContext.UICoverage = ECortexEditorUICoverage::Unavailable;
 		OutContext.UIUnavailableReason = ECortexEditorUIUnavailableReason::UnobservablePointerRoute;
 	}
+	return true;
 }
 
 bool FCortexEditorPhysicalInputSession::ResolveTaggedSlateIdentity(const FVector2D& ViewportPosition,
@@ -2195,6 +2396,7 @@ void FCortexEditorPhysicalInputSession::SignalCaptureFault(const FString& Messag
 	// Signal through the error/interruption channel only; teardown is never performed here and the
 	// human event remains non-consuming because the processor always returns false.
 	CaptureState->bFaulted = true;
+	UE_LOG(LogCortexEditor, Display, TEXT("Physical capture fault signalled: %s"), *Message);
 	if (InterruptionCallbackImpl)
 	{
 		InterruptionCallbackImpl(MakeErrorResult(CortexErrorCodes::InvalidOperation, Message));
