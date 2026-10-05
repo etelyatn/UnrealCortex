@@ -2404,7 +2404,10 @@ bool FCortexEditorPhysicalInputSession::BuildCaptureContext(const FCortexEditorP
 
 	FCortexEditorPhysicalInputWidgetIdentity Identity;
 	FVector2D Normalized = FVector2D::ZeroVector;
-	if (ResolveTaggedSlateIdentity(Event.ViewportPosition, Identity, Normalized))
+	// Capture claims Supported only for a trustworthy selector digest; a resolver false (ambiguous
+	// route, systemic identity fault) or an invalid digest is Unavailable, never a downgraded guard.
+	if (ResolveTaggedSlateIdentity(Event.ViewportPosition, Identity, Normalized)
+		&& FCortexEditorPhysicalInputSelectorBuilder::IsValidSelectorDigest(Identity.IdentitySha256))
 	{
 		OutContext.UICoverage = ECortexEditorUICoverage::Supported;
 		OutContext.UIUnavailableReason = ECortexEditorUIUnavailableReason::None;
@@ -2429,8 +2432,11 @@ bool FCortexEditorPhysicalInputSession::ResolveTaggedSlateIdentity(const FVector
 	// Weak live resolution only: the tagged-runtime Slate route, never UMG/CommonUI/world.
 	GuardState->ViewportWidget = GetCoordinateRootWidget();
 	GuardState->SlateUserIndex = Binding.SlateUserIndex;
+	// Capture maps every unresolved outcome (including a systemic identity fault) to Unavailable,
+	// so the fault flag is only distinguished by the live observation path.
+	bool bIdentityFault = false;
 	return FCortexEditorPhysicalInputUIResolver::ResolveActualSlateTarget(
-		ViewportPosition, *GuardState, OutIdentity, OutNormalizedLocal);
+		ViewportPosition, *GuardState, OutIdentity, OutNormalizedLocal, bIdentityFault);
 }
 
 void FCortexEditorPhysicalInputSession::NotifyInterruption(const FCortexCommandResult& Result)

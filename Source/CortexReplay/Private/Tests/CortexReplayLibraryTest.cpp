@@ -1385,3 +1385,101 @@ bool FCortexReplayLibraryViewportSizeTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// CR-02 phase-1 R4: with the real hash provider, capture, load and the live hashing path all
+// carry the SAME non-empty lower-case 64-hex selector digest (cross-stage equality, not just
+// non-emptiness). The load-time provider-failure rejection is a pre-existing fail-closed
+// regression, not a phase-2 red assertion.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibrarySelectorDigestStageConsistencyTest,
+	"Cortex.Replay.Library.SelectorDigestStageConsistency",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibrarySelectorDigestStageConsistencyTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddInfo(TEXT("Slate not initialized - skipping selector digest stage test"));
+		return true;
+	}
+
+	FCortexEditorPhysicalInputSelectorBuilder::ClearSelectorDigestFailureForTests();
+
+	auto IsLowerHex64 = [](const FString& Value)
+	{
+		if (Value.Len() != 64) { return false; }
+		for (const TCHAR Character : Value)
+		{
+			const bool bHex = (Character >= TEXT('0') && Character <= TEXT('9'))
+				|| (Character >= TEXT('a') && Character <= TEXT('f'));
+			if (!bHex) { return false; }
+		}
+		return true;
+	};
+
+	// Capture stage: a real tagged Slate root/control produce the live selector and digest.
+	const TSharedRef<SBox> RootWidget = SNew(SBox);
+	RootWidget->SetTag(FName(TEXT("CortexDigestStageRoot")));
+	const TSharedRef<SBox> TargetWidget = SNew(SBox);
+	TargetWidget->SetTag(FName(TEXT("CortexDigestStageTarget")));
+	const FCortexEditorPhysicalInputWidgetIdentity Captured =
+		FCortexEditorPhysicalInputSelectorBuilder::BuildSlateIdentity(*RootWidget, *TargetWidget);
+	TestTrue(TEXT("Captured digest is a non-empty lower-case 64-hex SHA-256"),
+		IsLowerHex64(Captured.IdentitySha256));
+
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+	int32 Id = 0;
+	TestTrue(TEXT("Reserve"), Library.ReserveId(Id).bSuccess);
+
+	FCortexReplayEvent Press;
+	Press.Sequence = 0;
+	Press.TimeSeconds = 0.0;
+	Press.Input.Kind = ECortexEditorPhysicalInputKind::PointerDown;
+	Press.Input.Key = EKeys::LeftMouseButton;
+	Press.Input.ViewportPosition = FVector2D(0.5, 0.5);
+	FCortexReplayInteractionGuard Guard;
+	Guard.ExpectedPose = FCortexEditorPhysicalInputPlayerPose();
+	Guard.UICoverage = ECortexEditorUICoverage::Supported;
+	Guard.UITarget = MakeShared<const FCortexEditorPhysicalInputWidgetIdentity>(Captured);
+	Guard.ExpectedLocalPosition = FVector2D(0.5, 0.5);
+	Press.Guard = Guard;
+	TestTrue(TEXT("Captured selector publishes"),
+		Library.Publish(Fixture.MakeRecording(Id, false, { Press })).bSuccess);
+
+	// Load stage: the loader rebuilds the identical digest from the selector alone.
+	TSharedPtr<const FCortexReplaySnapshot> Loaded;
+	TestTrue(TEXT("Captured selector loads"), Library.Load(Id, false, Loaded).bSuccess);
+	if (!Loaded.IsValid() || Loaded->Events.Num() != 1
+		|| !Loaded->Events[0].Guard.IsSet() || !Loaded->Events[0].Guard->UITarget.IsValid())
+	{
+		AddError(TEXT("Loaded recording did not carry the supported guard"));
+		return false;
+	}
+	const FCortexEditorPhysicalInputWidgetIdentity& LoadedIdentity = *Loaded->Events[0].Guard->UITarget;
+	TestTrue(TEXT("Loaded digest is a non-empty lower-case 64-hex SHA-256"),
+		IsLowerHex64(LoadedIdentity.IdentitySha256));
+	TestEqual(TEXT("Capture and load carry the same digest"),
+		LoadedIdentity.IdentitySha256, Captured.IdentitySha256);
+
+	// Live stage: the live hashing path over the loaded selector yields the same bytes.
+	const FString LiveDigest =
+		FCortexEditorPhysicalInputSelectorBuilder::ComputeIdentitySha256(LoadedIdentity);
+	TestEqual(TEXT("Load and live hashing carry the same digest"),
+		LiveDigest, Captured.IdentitySha256);
+
+	// Provider failure: loading an already published recording is rejected (fail-closed).
+	FCortexEditorPhysicalInputSelectorBuilder::SetSelectorDigestFailureForTests(true);
+	FCortexReplayLibrary ReloadProbe(Fixture.GetProjectRoot());
+	TSharedPtr<const FCortexReplaySnapshot> AfterFailure;
+	const FCortexCommandResult FailedReload = ReloadProbe.Load(Id, false, AfterFailure);
+	FCortexEditorPhysicalInputSelectorBuilder::ClearSelectorDigestFailureForTests();
+	TestFalse(TEXT("A digest provider failure during load is rejected"), FailedReload.bSuccess);
+	TestFalse(TEXT("A digest provider failure yields no snapshot"), AfterFailure.IsValid());
+
+	return true;
+}

@@ -50,6 +50,8 @@ struct FSchedulerGuardProbe
 			Identity->Discriminator = ECortexEditorUIRootDiscriminator::RootTag;
 			Identity->RootTag = TEXT("SchedulerRoot");
 			Identity->TargetTag = TEXT("SchedulerControl");
+			// Supported selectors must carry a trustworthy digest.
+			Identity->IdentitySha256 = FCortexEditorPhysicalInputSelectorBuilder::ComputeIdentitySha256(*Identity);
 			Target = Identity;
 		}
 
@@ -379,6 +381,8 @@ bool FCortexReplaySchedulerShiftedDeadlineTest::RunTest(const FString& Parameter
 	Target->Discriminator = ECortexEditorUIRootDiscriminator::RootTag;
 	Target->RootTag = TEXT("ReadyRoot");
 	Target->TargetTag = TEXT("ReadyControl");
+	// Supported selectors must carry a trustworthy digest.
+	Target->IdentitySha256 = FCortexEditorPhysicalInputSelectorBuilder::ComputeIdentitySha256(*Target);
 	auto& Guard = Recording.Events[0].Guard.GetValue();
 	Guard.UICoverage = ECortexEditorUICoverage::Supported;
 	Guard.UITarget = Target;

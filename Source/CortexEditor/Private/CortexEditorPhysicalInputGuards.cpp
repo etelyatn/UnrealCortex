@@ -23,6 +23,11 @@
 
 namespace
 {
+#if WITH_DEV_AUTOMATION_TESTS
+/** Test-only override; see FCortexEditorPhysicalInputSelectorBuilder::SetSelectorDigestFailureForTests. */
+bool GSelectorDigestFailureForTests = false;
+#endif
+
 // ---------------------------------------------------------------------------
 // Canonical selector (single implementation shared by capture and load)
 // ---------------------------------------------------------------------------
@@ -245,31 +250,26 @@ FString ComputeSelectorSha256Hex(const uint8* Data, int64 Size)
 }
 
 /**
- * Counts live widgets carrying the requested root/target tags across the whole subtree of one
- * scope root. The tagged-runtime Slate panels are the only tagged widgets in the selected
- * viewport window, so a count greater than one means the selector does not uniquely identify an
- * instance and must never be treated as supported.
+ * Collects every widget carrying Tag across the whole subtree of one scope root (including the
+ * scope root itself). Returns the count; when OutWidgets is provided it also receives the
+ * matching widgets. Tags are authored per runtime root/control, so a count other than one means
+ * the selector does not uniquely identify an instance within that scope.
  */
-void CountTaggedWidgetsInScope(const TSharedRef<SWidget>& ScopeRoot, const FName RootTag,
-	const FName TargetTag, int32& OutRootCount, int32& OutTargetCount)
+int32 CollectTaggedWidgetsInScope(const TSharedRef<SWidget>& ScopeRoot, const FName Tag,
+	TArray<TSharedPtr<SWidget>>* OutWidgets)
 {
-	OutRootCount = 0;
-	OutTargetCount = 0;
+	int32 Count = 0;
 	TArray<TSharedRef<SWidget>> Stack;
 	Stack.Add(ScopeRoot);
 	while (Stack.Num() > 0)
 	{
 		const TSharedRef<SWidget> Widget = Stack.Pop();
-		const FName Tag = Widget->GetTag();
-		if (Tag != NAME_None)
+		if (Tag != NAME_None && Widget->GetTag() == Tag)
 		{
-			if (Tag == RootTag)
+			++Count;
+			if (OutWidgets != nullptr)
 			{
-				++OutRootCount;
-			}
-			if (Tag == TargetTag)
-			{
-				++OutTargetCount;
+				OutWidgets->Add(Widget);
 			}
 		}
 		if (FChildren* Children = Widget->GetChildren())
@@ -280,37 +280,46 @@ void CountTaggedWidgetsInScope(const TSharedRef<SWidget>& ScopeRoot, const FName
 			}
 		}
 	}
+	return Count;
 }
 
-/** The window hosting the selected viewport, or null when the scope cannot be resolved. */
-TSharedPtr<SWindow> ResolveSelectedScopeWindow(const FCortexEditorPhysicalInputGuardState& State)
+/**
+ * The selected runtime scope: the viewport widget subtree. Editor chrome elsewhere in the same
+ * top-level window is out of scope and must never influence runtime-UI uniqueness.
+ */
+TSharedPtr<SWidget> ResolveRuntimeScope(const FCortexEditorPhysicalInputGuardState& State)
 {
-	if (!FSlateApplication::IsInitialized())
-	{
-		return nullptr;
-	}
-	const TSharedPtr<SWidget> Viewport = State.ViewportWidget.Pin();
-	if (!Viewport.IsValid())
-	{
-		return nullptr;
-	}
-	return FSlateApplication::Get().FindWidgetWindow(Viewport.ToSharedRef());
+	return State.ViewportWidget.Pin();
 }
 
-/** True when either recorded tag appears on more than one widget in the selected scope. */
+/**
+ * True when the recorded selector cannot uniquely identify one instance within the selected
+ * runtime scope: an unresolvable scope, a root tag used by more than one in-scope widget, or a
+ * target tag used by more than one widget within the uniquely resolved root's subtree. A root tag
+ * that occurs nowhere in scope is not ambiguity: the ordinary hit/observation decides.
+ */
 bool IsSlateSelectorAmbiguous(const FString& RootTag, const FString& TargetTag,
 	const FCortexEditorPhysicalInputGuardState& State)
 {
-	const TSharedPtr<SWindow> Window = ResolveSelectedScopeWindow(State);
-	if (!Window.IsValid())
+	const TSharedPtr<SWidget> Scope = ResolveRuntimeScope(State);
+	if (!Scope.IsValid())
+	{
+		// A runtime scope that cannot be resolved is a systemic fault: fail closed.
+		return true;
+	}
+	TArray<TSharedPtr<SWidget>> Roots;
+	const int32 RootCount = CollectTaggedWidgetsInScope(Scope.ToSharedRef(), FName(*RootTag), &Roots);
+	if (RootCount == 0)
 	{
 		return false;
 	}
-	int32 RootCount = 0;
-	int32 TargetCount = 0;
-	CountTaggedWidgetsInScope(Window.ToSharedRef(), FName(*RootTag), FName(*TargetTag),
-		RootCount, TargetCount);
-	return RootCount > 1 || TargetCount > 1;
+	if (RootCount != 1)
+	{
+		return true;
+	}
+	const int32 TargetCount = CollectTaggedWidgetsInScope(
+		Roots[0].ToSharedRef(), FName(*TargetTag), nullptr);
+	return TargetCount != 1;
 }
 }
 
@@ -341,24 +350,67 @@ FString FCortexEditorPhysicalInputSelectorBuilder::CanonicalizeSelector(
 FString FCortexEditorPhysicalInputSelectorBuilder::ComputeIdentitySha256(
 	const FCortexEditorPhysicalInputWidgetIdentity& Identity)
 {
+#if WITH_DEV_AUTOMATION_TESTS
+	if (GSelectorDigestFailureForTests)
+	{
+		// Simulated provider failure: callers must fail closed on the missing digest.
+		return FString();
+	}
+#endif
 	const FString Canonical = CanonicalizeSelector(Identity);
 	const TArray<uint8> Bytes = SelectorToUtf8Bytes(Canonical);
 	return ComputeSelectorSha256Hex(Bytes.GetData(), static_cast<int64>(Bytes.Num()));
 }
 
-bool FCortexEditorPhysicalInputUIResolver::ResolveActualSlateTarget(
-	const FVector2D& ViewportPosition, const FCortexEditorPhysicalInputGuardState& State,
-	FCortexEditorPhysicalInputWidgetIdentity& OutIdentity, FVector2D& OutNormalizedLocal)
+bool FCortexEditorPhysicalInputSelectorBuilder::IsValidSelectorDigest(const FString& Digest)
 {
-	const TSharedPtr<SWidget> Viewport = State.ViewportWidget.Pin();
-	if (!Viewport.IsValid())
+	if (Digest.Len() != 64)
 	{
 		return false;
 	}
+	for (const TCHAR Character : Digest)
+	{
+		const bool bLowerHex = (Character >= TEXT('0') && Character <= TEXT('9'))
+			|| (Character >= TEXT('a') && Character <= TEXT('f'));
+		if (!bLowerHex)
+		{
+			return false;
+		}
+	}
+	return true;
+}
 
-	const FVector2D ScreenSpace = Viewport->GetCachedGeometry().LocalToAbsolute(ViewportPosition);
+#if WITH_DEV_AUTOMATION_TESTS
+void FCortexEditorPhysicalInputSelectorBuilder::SetSelectorDigestFailureForTests(bool bForceFailure)
+{
+	GSelectorDigestFailureForTests = bForceFailure;
+}
+
+void FCortexEditorPhysicalInputSelectorBuilder::ClearSelectorDigestFailureForTests()
+{
+	GSelectorDigestFailureForTests = false;
+}
+#endif // WITH_DEV_AUTOMATION_TESTS
+
+bool FCortexEditorPhysicalInputUIResolver::ResolveActualSlateTarget(
+	const FVector2D& ViewportPosition, const FCortexEditorPhysicalInputGuardState& State,
+	FCortexEditorPhysicalInputWidgetIdentity& OutIdentity, FVector2D& OutNormalizedLocal,
+	bool& bOutIdentityFault)
+{
+	bOutIdentityFault = false;
+
+	// The runtime scope is the selected viewport widget subtree; without it the route cannot be
+	// trusted and nothing is claimed as supported.
+	const TSharedPtr<SWidget> Scope = ResolveRuntimeScope(State);
+	if (!Scope.IsValid())
+	{
+		return false;
+	}
+	const TSharedRef<SWidget> ScopeRef = Scope.ToSharedRef();
+
+	const FVector2D ScreenSpace = ScopeRef->GetCachedGeometry().LocalToAbsolute(ViewportPosition);
 	FSlateApplication& Slate = FSlateApplication::Get();
-	const TSharedPtr<SWindow> Window = Slate.FindWidgetWindow(Viewport.ToSharedRef());
+	const TSharedPtr<SWindow> Window = Slate.FindWidgetWindow(ScopeRef);
 	if (!Window.IsValid())
 	{
 		return false;
@@ -376,10 +428,27 @@ bool FCortexEditorPhysicalInputUIResolver::ResolveActualSlateTarget(
 		return false;
 	}
 
-	// The tagged-runtime route: the deepest tagged widget on the real hit path is the control and
-	// the next tagged ancestor is its root. Nothing else is claimed as a supported identity.
+	// The runtime scope must be on the hit route: editor chrome elsewhere in the same window is
+	// not runtime UI, so a hit that does not pass through the selected viewport is not supported.
+	int32 ScopeIndex = INDEX_NONE;
+	for (int32 Index = 0; Index < Path.Widgets.Num(); ++Index)
+	{
+		if (Path.Widgets[Index].GetWidgetPtr() == &ScopeRef.Get())
+		{
+			ScopeIndex = Index;
+			break;
+		}
+	}
+	if (ScopeIndex == INDEX_NONE)
+	{
+		return false;
+	}
+
+	// The tagged-runtime route: within the runtime scope the deepest tagged widget on the real hit
+	// path is the control and the next tagged ancestor is its root. A tagged ancestor above the
+	// viewport widget is never a runtime root.
 	int32 TargetIndex = INDEX_NONE;
-	for (int32 Index = Path.Widgets.Num() - 1; Index >= 0; --Index)
+	for (int32 Index = Path.Widgets.Num() - 1; Index > ScopeIndex; --Index)
 	{
 		if (Path.Widgets[Index].GetWidgetPtr()->GetTag() != NAME_None)
 		{
@@ -393,7 +462,7 @@ bool FCortexEditorPhysicalInputUIResolver::ResolveActualSlateTarget(
 	}
 
 	int32 RootIndex = INDEX_NONE;
-	for (int32 Index = TargetIndex - 1; Index >= 0; --Index)
+	for (int32 Index = TargetIndex - 1; Index >= ScopeIndex; --Index)
 	{
 		if (Path.Widgets[Index].GetWidgetPtr()->GetTag() != NAME_None)
 		{
@@ -408,22 +477,33 @@ bool FCortexEditorPhysicalInputUIResolver::ResolveActualSlateTarget(
 
 	const FArrangedWidget& TargetArranged = Path.Widgets[TargetIndex];
 	const FArrangedWidget& RootArranged = Path.Widgets[RootIndex];
+	const FName RootTag = RootArranged.GetWidgetPtr()->GetTag();
+	const FName TargetTag = TargetArranged.GetWidgetPtr()->GetTag();
 
-	// The tags must uniquely identify this instance within the selected runtime scope. Two
-	// runtime panels with identical root/control tags cannot be distinguished by the recorded
-	// selector, so this hit path is never a supported identity.
-	int32 RootCount = 0;
-	int32 TargetCount = 0;
-	CountTaggedWidgetsInScope(Window.ToSharedRef(),
-		RootArranged.GetWidgetPtr()->GetTag(), TargetArranged.GetWidgetPtr()->GetTag(),
-		RootCount, TargetCount);
-	if (RootCount != 1 || TargetCount != 1)
+	// The root tag must uniquely identify one runtime root within the scope, and the target tag
+	// must uniquely identify one control within THAT resolved root's subtree. Two distinct
+	// uniquely-tagged runtime roots may reuse one target tag and still resolve independently.
+	TArray<TSharedPtr<SWidget>> Roots;
+	if (CollectTaggedWidgetsInScope(ScopeRef, RootTag, &Roots) != 1)
+	{
+		return false;
+	}
+	if (CollectTaggedWidgetsInScope(Roots[0].ToSharedRef(), TargetTag, nullptr) != 1)
 	{
 		return false;
 	}
 
 	OutIdentity = FCortexEditorPhysicalInputSelectorBuilder::BuildSlateIdentity(
 		*RootArranged.GetWidgetPtr(), *TargetArranged.GetWidgetPtr());
+
+	// A selector without a trustworthy digest is a systemic identity fault (never a pending hit):
+	// the identity is discarded so no caller can treat it as supported.
+	if (!FCortexEditorPhysicalInputSelectorBuilder::IsValidSelectorDigest(OutIdentity.IdentitySha256))
+	{
+		OutIdentity = FCortexEditorPhysicalInputWidgetIdentity();
+		bOutIdentityFault = true;
+		return false;
+	}
 
 	const FGeometry& TargetGeometry = TargetArranged.Geometry;
 	const FVector2D Local = TargetGeometry.AbsoluteToLocal(ScreenSpace);
@@ -459,10 +539,14 @@ ECortexEditorUIObservationState FCortexEditorPhysicalInputUIResolver::ResolveSla
 
 	FCortexEditorPhysicalInputWidgetIdentity Actual;
 	FVector2D Normalized = FVector2D::ZeroVector;
-	if (!ResolveActualSlateTarget(Press.ViewportPosition, State, Actual, Normalized))
+	bool bIdentityFault = false;
+	if (!ResolveActualSlateTarget(Press.ViewportPosition, State, Actual, Normalized, bIdentityFault))
 	{
-		// Unknown freshness is pending, never a wrong-target verdict.
-		Out.State = ECortexEditorUIObservationState::PointerPending;
+		// A selector we cannot trust is a systemic identity fault and must fail closed; an ordinary
+		// unresolved hit is pending freshness and is never a wrong-target verdict.
+		Out.State = bIdentityFault
+			? ECortexEditorUIObservationState::Unavailable
+			: ECortexEditorUIObservationState::PointerPending;
 		return Out.State;
 	}
 

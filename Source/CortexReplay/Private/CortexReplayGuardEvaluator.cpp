@@ -1,6 +1,7 @@
 #include "CortexReplayGuardEvaluator.h"
 
 #include "CortexCommandRouter.h"
+#include "CortexEditorPhysicalInput.h"
 #include "CortexEditorPhysicalInputSession.h"
 #include "CortexReplayErrorCodes.h"
 
@@ -56,9 +57,13 @@ FCortexCommandResult GuardUIError(const TCHAR* Reason,
 		Details);
 }
 
-/** True only for a structurally usable expected selector for its discriminator kind. */
+/** True only for a structurally usable expected selector carrying a trustworthy digest. */
 bool GuardIsValidSupportedSelector(const FCortexEditorPhysicalInputWidgetIdentity& Identity)
 {
+	if (!FCortexEditorPhysicalInputSelectorBuilder::IsValidSelectorDigest(Identity.IdentitySha256))
+	{
+		return false;
+	}
 	switch (Identity.Discriminator)
 	{
 	case ECortexEditorUIRootDiscriminator::SingletonClass:
@@ -73,15 +78,17 @@ bool GuardIsValidSupportedSelector(const FCortexEditorPhysicalInputWidgetIdentit
 }
 
 /**
- * Full structural identity comparison with the digest as a first-class disambiguator: when both
- * sides carry a hash it must match, and the declared fields must always match so a digest
- * collision cannot alias two different selectors.
+ * Full structural identity comparison with the digest as a first-class disambiguator: BOTH sides
+ * must carry a trustworthy digest and the digests must match, and the declared fields must always
+ * match so a digest collision cannot alias two different selectors. A missing or malformed digest
+ * on either side is never a match.
  */
 bool GuardIdentitiesEqual(const FCortexEditorPhysicalInputWidgetIdentity& A,
 	const FCortexEditorPhysicalInputWidgetIdentity& B)
 {
-	if (!A.IdentitySha256.IsEmpty() && !B.IdentitySha256.IsEmpty()
-		&& !A.IdentitySha256.Equals(B.IdentitySha256, ESearchCase::CaseSensitive))
+	if (!FCortexEditorPhysicalInputSelectorBuilder::IsValidSelectorDigest(A.IdentitySha256)
+		|| !FCortexEditorPhysicalInputSelectorBuilder::IsValidSelectorDigest(B.IdentitySha256)
+		|| !A.IdentitySha256.Equals(B.IdentitySha256, ESearchCase::CaseSensitive))
 	{
 		return false;
 	}

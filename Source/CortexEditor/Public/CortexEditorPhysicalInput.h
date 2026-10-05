@@ -129,4 +129,24 @@ public:
 	 * a matchable digest.
 	 */
 	static FString ComputeIdentitySha256(const FCortexEditorPhysicalInputWidgetIdentity& Identity);
+
+	/**
+	 * True only for a trustworthy selector digest: exactly 64 lower-case hexadecimal characters
+	 * ([0-9a-f]). This is the single validity predicate shared by capture, load and the guard
+	 * comparison; an empty, short, long, upper-case, or non-hex digest is never acceptable.
+	 */
+	static bool IsValidSelectorDigest(const FString& Digest);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/**
+	 * Test-support override that simulates a SHA-256 provider failure.
+	 *
+	 * Compiled only into automation-enabled builds so production can never force an empty digest:
+	 * with no override the real hash always runs and this type stays byte-identical to production.
+	 * While forced, ComputeIdentitySha256 returns an empty string for every identity; callers must
+	 * then fail closed instead of treating the selector as supported or ready.
+	 */
+	static void SetSelectorDigestFailureForTests(bool bForceFailure);
+	static void ClearSelectorDigestFailureForTests();
+#endif
 };

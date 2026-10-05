@@ -7,6 +7,8 @@
 #include "CortexReplayTestUtils.h"
 #include "CortexReplayTypes.h"
 
+#include "Dom/JsonObject.h"
+
 #include <limits>
 
 namespace
@@ -21,6 +23,8 @@ TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> MakeTarget(
 	Identity->Discriminator = ECortexEditorUIRootDiscriminator::RootTag;
 	Identity->RootTag = RootTag;
 	Identity->TargetTag = TargetTag;
+	// A supported selector must carry a trustworthy digest; the positive guard paths need one.
+	Identity->IdentitySha256 = FCortexEditorPhysicalInputSelectorBuilder::ComputeIdentitySha256(*Identity);
 	return TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity>(Identity);
 }
 
@@ -479,6 +483,143 @@ bool FCortexReplayGuardsSchedulerSuppressionTest::RunTest(const FString& Paramet
 		FString(TEXT("REPLAY_POSE_GUARD_FAILED")));
 	TestEqual(TEXT("Interaction suppressed"), Dispatches, 0);
 	TestEqual(TEXT("No sequence consumed"), Scheduler.GetDispatchedCount(), 0);
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// CR-02 phase-1 red test: the guard identity comparison must fail closed for a missing or
+// malformed digest on EITHER side (never Ready via a structural alias), while a valid matching
+// digest and the structural comparison after digest equality stay fully exercised.
+//
+// The live capture/load hash path can only ever produce empty-or-valid, so the malformed cases
+// are the defensive depth the review located at the comparison contract.
+// ---------------------------------------------------------------------------
+namespace
+{
+TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> MakeDigestIdentity(
+	const FString& RootTag, const FString& TargetTag, const FString& Digest)
+{
+	TSharedPtr<FCortexEditorPhysicalInputWidgetIdentity> Identity =
+		MakeShared<FCortexEditorPhysicalInputWidgetIdentity>();
+	Identity->RootKind = ECortexEditorUIRootKind::Slate;
+	Identity->Surface = ECortexEditorUISurface::Viewport;
+	Identity->Discriminator = ECortexEditorUIRootDiscriminator::RootTag;
+	Identity->RootTag = RootTag;
+	Identity->TargetTag = TargetTag;
+	Identity->IdentitySha256 = Digest;
+	return TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity>(Identity);
+}
+} // namespace
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayGuardsIdentityDigestFailClosedTest,
+	"Cortex.Replay.Guards.IdentityDigestFailClosed",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayGuardsIdentityDigestFailClosedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// The real provider must be unforced so the positive controls compute genuine digests.
+	FCortexEditorPhysicalInputSelectorBuilder::ClearSelectorDigestFailureForTests();
+
+	const TCHAR* const RootTag = TEXT("DigestGuardRoot");
+	const TCHAR* const TargetTag = TEXT("DigestGuardControl");
+	const TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> BaseIdentity =
+		MakeDigestIdentity(RootTag, TargetTag, FString());
+	const FString ValidDigest =
+		FCortexEditorPhysicalInputSelectorBuilder::ComputeIdentitySha256(*BaseIdentity);
+	TestEqual(TEXT("Synthetic digest is a 64-character lower-case SHA-256"), ValidDigest.Len(), 64);
+	const TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> Expected =
+		MakeDigestIdentity(RootTag, TargetTag, ValidDigest);
+
+	auto EvaluateWith = [&](const TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity>& ExpectedIdentity,
+		const TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity>& ActualIdentity)
+	{
+		const FVector2D Local(0.25, 0.5);
+		const FCortexReplayEvent Event = MakeGuardedPress(
+			ECortexEditorUICoverage::Supported, ExpectedIdentity, Local);
+		const FCortexEditorPhysicalInputPlayerPose Pose = Event.Guard->ExpectedPose;
+		return FCortexReplayGuardEvaluator::Evaluate(Event, Pose,
+			MakeObservation(ECortexEditorUIObservationState::Ready, ActualIdentity, Local), true);
+	};
+
+	auto AssertGuardError = [&](const TCHAR* Label, const FCortexReplayGuardDecision& Decision,
+		const TCHAR* Reason)
+	{
+		TestTrue(FString::Printf(TEXT("%s never resolves Ready (Error)"), Label),
+			Decision.State == ECortexReplayGuardDecisionState::Error);
+		TestEqual(FString::Printf(TEXT("%s uses the UI guard code"), Label),
+			Decision.Error.ErrorCode, FString(TEXT("REPLAY_UI_GUARD_FAILED")));
+		if (Decision.Error.ErrorDetails.IsValid())
+		{
+			TestEqual(FString::Printf(TEXT("%s reports %s"), Label, Reason),
+				Decision.Error.ErrorDetails->GetStringField(TEXT("reason")),
+				FString(Reason));
+		}
+		else
+		{
+			TestTrue(FString::Printf(TEXT("%s carries failure details"), Label), false);
+		}
+	};
+
+	// Positive control: identical valid digests with matching declared fields are Ready.
+	TestFalse(TEXT("Real digest is non-empty"), ValidDigest.IsEmpty());
+	const FCortexReplayGuardDecision Identical = EvaluateWith(Expected, Expected);
+	TestTrue(TEXT("Identical valid digests with matching fields are Ready"),
+		Identical.State == ECortexReplayGuardDecisionState::Ready);
+
+	// A different but valid digest errors even when every declared field matches.
+	const TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> OtherValidDigest =
+		MakeDigestIdentity(RootTag, TargetTag, FString::ChrN(64, TEXT('b')));
+	AssertGuardError(TEXT("Different valid digests"), EvaluateWith(Expected, OtherValidDigest),
+		TEXT("identity_mismatch"));
+
+	// Malformed ACTUAL digests: empty, wrong length (63 and 65), upper-case, and non-hex.
+	AssertGuardError(TEXT("Actual empty digest"),
+		EvaluateWith(Expected, MakeDigestIdentity(RootTag, TargetTag, FString())),
+		TEXT("identity_mismatch"));
+	AssertGuardError(TEXT("Actual 63-character digest"),
+		EvaluateWith(Expected, MakeDigestIdentity(RootTag, TargetTag, ValidDigest.LeftChop(1))),
+		TEXT("identity_mismatch"));
+	AssertGuardError(TEXT("Actual 65-character digest"),
+		EvaluateWith(Expected, MakeDigestIdentity(RootTag, TargetTag, ValidDigest + TEXT("a"))),
+		TEXT("identity_mismatch"));
+	AssertGuardError(TEXT("Actual upper-case digest"),
+		EvaluateWith(Expected, MakeDigestIdentity(RootTag, TargetTag, ValidDigest.ToUpper())),
+		TEXT("identity_mismatch"));
+	{
+		FString NonHex = ValidDigest;
+		NonHex[32] = TEXT('z');
+		AssertGuardError(TEXT("Actual non-hex digest"),
+			EvaluateWith(Expected, MakeDigestIdentity(RootTag, TargetTag, NonHex)),
+			TEXT("identity_mismatch"));
+	}
+
+	// A malformed EXPECTED selector is rejected before the comparison as an unusable selector.
+	AssertGuardError(TEXT("Expected empty digest"),
+		EvaluateWith(MakeDigestIdentity(RootTag, TargetTag, FString()),
+			MakeDigestIdentity(RootTag, TargetTag, ValidDigest)),
+		TEXT("missing_expected_selector"));
+	AssertGuardError(TEXT("Expected 63-character digest"),
+		EvaluateWith(MakeDigestIdentity(RootTag, TargetTag, ValidDigest.LeftChop(1)),
+			MakeDigestIdentity(RootTag, TargetTag, ValidDigest)),
+		TEXT("missing_expected_selector"));
+	AssertGuardError(TEXT("Expected 65-character digest"),
+		EvaluateWith(MakeDigestIdentity(RootTag, TargetTag, ValidDigest + TEXT("a")),
+			MakeDigestIdentity(RootTag, TargetTag, ValidDigest)),
+		TEXT("missing_expected_selector"));
+	AssertGuardError(TEXT("Expected upper-case digest"),
+		EvaluateWith(MakeDigestIdentity(RootTag, TargetTag, ValidDigest.ToUpper()),
+			MakeDigestIdentity(RootTag, TargetTag, ValidDigest)),
+		TEXT("missing_expected_selector"));
+	{
+		FString NonHex = ValidDigest;
+		NonHex[32] = TEXT('z');
+		AssertGuardError(TEXT("Expected non-hex digest"),
+			EvaluateWith(MakeDigestIdentity(RootTag, TargetTag, NonHex),
+				MakeDigestIdentity(RootTag, TargetTag, ValidDigest)),
+			TEXT("missing_expected_selector"));
+	}
 
 	return true;
 }

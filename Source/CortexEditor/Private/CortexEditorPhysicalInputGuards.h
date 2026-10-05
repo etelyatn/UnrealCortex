@@ -42,12 +42,18 @@ class FCortexEditorPhysicalInputUIResolver
 {
 public:
 	/**
-	 * Resolves the actual tagged target at one viewport-local coordinate on the normal hit path.
-	 * Returns false when no tagged root/control can be observed (unknown freshness).
+	 * Resolves the actual tagged target at one viewport-local coordinate on the normal hit path,
+	 * restricted to the selected runtime scope (State.ViewportWidget). Root uniqueness is counted
+	 * within that scope and target uniqueness within the resolved root's own subtree.
+	 *
+	 * Returns false when no trustworthy tagged root/control can be observed. On false,
+	 * bOutIdentityFault is true only for a systemic identity fault (a resolved selector whose
+	 * digest is missing or malformed); an ordinary unresolved/pending hit leaves it false.
 	 */
 	static bool ResolveActualSlateTarget(const FVector2D& ViewportPosition,
 		const FCortexEditorPhysicalInputGuardState& State,
-		FCortexEditorPhysicalInputWidgetIdentity& OutIdentity, FVector2D& OutNormalizedLocal);
+		FCortexEditorPhysicalInputWidgetIdentity& OutIdentity, FVector2D& OutNormalizedLocal,
+		bool& bOutIdentityFault);
 
 	/**
 	 * Non-blocking: returns Ready with the actual normalized local coordinates only when the

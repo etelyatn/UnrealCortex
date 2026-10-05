@@ -43,6 +43,7 @@
 #include "Widgets/Input/SSlider.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/SWidget.h"
 #include "Widgets/SViewport.h"
 #include "Widgets/SWindow.h"
@@ -4943,6 +4944,590 @@ bool FCortexPhysicalInputReplayOwnershipInactiveApplicationTest::RunTest(const F
 			{
 				Slate.RequestDestroyWindow(F.ForeignKeyHostWindow.ToSharedRef());
 				F.ForeignKeyHostWindow.Reset();
+			}
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ===========================================================================
+// CR-02 / CR-09 phase-1 fail-closed red tests (tests + inert guarded seam only).
+//
+// R1/R2 drive the real capture and live-resolution paths with the guarded SHA-256
+// provider-failure seam forced: a selector whose digest cannot be produced must never be
+// Supported or Ready. R6/R7 build real tagged runtime Slate trees and assert that root/target
+// uniqueness is a property of the selected runtime scope (and, for the target, of the resolved
+// root subtree) rather than of the whole hosting window. These assertions fail on the current
+// production code and are fixed by the phase-2 fail-closed/scope changes. R5 is the in-scope
+// regression that must stay green across both phases.
+// ===========================================================================
+
+namespace
+{
+/** Screen-space center of a live widget's cached geometry. */
+FVector2D PhysicalTestWidgetAbsoluteCenter(const SWidget& Widget)
+{
+	const FGeometry& Geometry = Widget.GetCachedGeometry();
+	return Geometry.LocalToAbsolute(Geometry.GetLocalSize() * 0.5);
+}
+
+/** One real pointer down/up on the selected user/device at a screen-space position. */
+void PhysicalTestProcessPointerPress(FSlateApplication& Slate,
+	const FCortexEditorPhysicalInputTargetBinding& Binding, const FVector2D& Absolute)
+{
+	const FModifierKeysState Modifiers;
+	const uint32 Pointer = FSlateApplicationBase::CursorPointerIndex;
+	TSet<FKey> Pressed;
+	Pressed.Add(EKeys::LeftMouseButton);
+	Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Binding.InputDevice, Pointer,
+		Absolute, Absolute, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+	TSet<FKey> Released;
+	Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice, Pointer,
+		Absolute, Absolute, Released, EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+}
+
+/** A real tagged Slate selector carrying the canonical digest that capture and load produce. */
+TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> PhysicalTestMakeSlateIdentity(
+	const FString& RootTag, const FString& TargetTag)
+{
+	TSharedPtr<FCortexEditorPhysicalInputWidgetIdentity> Identity =
+		MakeShared<FCortexEditorPhysicalInputWidgetIdentity>();
+	Identity->RootKind = ECortexEditorUIRootKind::Slate;
+	Identity->Surface = ECortexEditorUISurface::Viewport;
+	Identity->Discriminator = ECortexEditorUIRootDiscriminator::RootTag;
+	Identity->RootTag = RootTag;
+	Identity->TargetTag = TargetTag;
+	Identity->IdentitySha256 = FCortexEditorPhysicalInputSelectorBuilder::ComputeIdentitySha256(*Identity);
+	return TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity>(Identity);
+}
+} // namespace
+
+// R1: a real captured pointer press whose selector digest cannot be produced is Unavailable and
+// records no supported identity.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputCaptureDigestFailureTest,
+	"Cortex.Editor.PhysicalInputCaptureDigestFailureFailsClosed",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputCaptureDigestFailureTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("DigestFailureCapture"),
+		[](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			if (!F.Slider.IsValid() || F.Slider->GetCachedGeometry().GetLocalSize().X <= 0.0)
+			{
+				Test.AddError(TEXT("Probe slider geometry unusable"));
+				return;
+			}
+			const FVector2D Absolute = PhysicalTestWidgetAbsoluteCenter(*F.Slider);
+
+			// Force the simulated provider failure across the real capture path.
+			FCortexEditorPhysicalInputSelectorBuilder::SetSelectorDigestFailureForTests(true);
+			const int32 FailedIndex = F.Captured.Num();
+			PhysicalTestProcessPointerPress(Slate, Binding, Absolute);
+			FCortexEditorPhysicalInputSelectorBuilder::ClearSelectorDigestFailureForTests();
+
+			Test.TestTrue(TEXT("Digest-failure press was captured"), F.CapturedContexts.IsValidIndex(FailedIndex));
+			if (F.CapturedContexts.IsValidIndex(FailedIndex))
+			{
+				const FCortexEditorPhysicalInputCaptureContext& Context = F.CapturedContexts[FailedIndex];
+				Test.TestTrue(TEXT("A failed digest is never recorded as Supported"),
+					Context.UICoverage != ECortexEditorUICoverage::Supported);
+				Test.TestEqual(TEXT("A failed digest is Unavailable"),
+					Context.UICoverage, ECortexEditorUICoverage::Unavailable);
+				Test.TestFalse(TEXT("A failed digest records no supported identity"),
+					Context.UITarget.IsValid());
+			}
+
+			// Positive control: with the real provider restored the same real press is Supported.
+			const int32 HealthyIndex = F.Captured.Num();
+			PhysicalTestProcessPointerPress(Slate, Binding, Absolute);
+			Test.TestTrue(TEXT("Healthy press was captured"), F.CapturedContexts.IsValidIndex(HealthyIndex));
+			if (F.CapturedContexts.IsValidIndex(HealthyIndex))
+			{
+				Test.TestEqual(TEXT("The real provider still yields Supported coverage"),
+					F.CapturedContexts[HealthyIndex].UICoverage, ECortexEditorUICoverage::Supported);
+			}
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// R2: live resolution of a valid recorded selector must never become Ready when the digest
+// provider fails; it must fail closed instead of matching structurally.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputLiveDigestFailureTest,
+	"Cortex.Editor.PhysicalInputLiveDigestFailureFailsClosed",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputLiveDigestFailureTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("DigestFailureLive"),
+		[](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			if (!F.Slider.IsValid() || F.Slider->GetCachedGeometry().GetLocalSize().X <= 0.0)
+			{
+				Test.AddError(TEXT("Probe slider geometry unusable"));
+				return;
+			}
+			const FVector2D Absolute = PhysicalTestWidgetAbsoluteCenter(*F.Slider);
+
+			// Record a real supported selector with the healthy provider.
+			const int32 BaselineIndex = F.Captured.Num();
+			PhysicalTestProcessPointerPress(Slate, Binding, Absolute);
+			if (!F.CapturedContexts.IsValidIndex(BaselineIndex)
+				|| !F.CapturedContexts[BaselineIndex].UITarget.IsValid())
+			{
+				Test.AddError(TEXT("Baseline supported selector was not captured"));
+				return;
+			}
+			const TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> Expected =
+				F.CapturedContexts[BaselineIndex].UITarget;
+
+			// Healthy live resolution of the recorded selector carries the same digest (green
+			// regression: capture and live stages agree while the real provider is active).
+			{
+				FCortexEditorPhysicalInputUIObservation Healthy;
+				const FCortexCommandResult HealthyObserved =
+					F.Session->ObserveUI(F.Captured[BaselineIndex], *Expected, Healthy);
+				Test.TestTrue(TEXT("Healthy live resolution observes Ready"), HealthyObserved.bSuccess);
+				Test.TestEqual(TEXT("Healthy live resolution state Ready"),
+					Healthy.State, ECortexEditorUIObservationState::Ready);
+				if (Healthy.ActualTarget.IsValid())
+				{
+					Test.TestEqual(TEXT("Healthy live resolution carries the recorded digest"),
+						Healthy.ActualTarget->IdentitySha256, Expected->IdentitySha256);
+				}
+				else
+				{
+					Test.TestTrue(TEXT("Healthy live resolution carries an actual identity"), false);
+				}
+			}
+
+			// With the provider forced to fail, the same live route must never resolve Ready.
+			FCortexEditorPhysicalInputSelectorBuilder::SetSelectorDigestFailureForTests(true);
+			FCortexEditorPhysicalInputUIObservation Observation;
+			const FCortexCommandResult Observed =
+				F.Session->ObserveUI(F.Captured[BaselineIndex], *Expected, Observation);
+			FCortexEditorPhysicalInputSelectorBuilder::ClearSelectorDigestFailureForTests();
+
+			Test.TestFalse(TEXT("A failed live digest does not observe successfully"), Observed.bSuccess);
+			Test.TestTrue(TEXT("A failed live digest never resolves Ready"),
+				Observation.State != ECortexEditorUIObservationState::Ready);
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// R6: same-window editor widgets that carry colliding root/target tags but live OUTSIDE the
+// selected runtime scope must not invalidate the in-scope runtime selector.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputSameWindowOutOfScopeTagCollisionTest,
+	"Cortex.Editor.PhysicalInputSameWindowOutOfScopeTagCollision",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputSameWindowOutOfScopeTagCollisionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("OutOfScopeTagCollision"),
+		[](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			if (!F.Slider.IsValid() || F.Slider->GetCachedGeometry().GetLocalSize().X <= 0.0)
+			{
+				Test.AddError(TEXT("Probe slider geometry unusable"));
+				return;
+			}
+			const FVector2D Absolute = PhysicalTestWidgetAbsoluteCenter(*F.Slider);
+
+			// Baseline: the real in-scope probe selector is Supported and observes Ready.
+			const int32 BaselineIndex = F.Captured.Num();
+			PhysicalTestProcessPointerPress(Slate, Binding, Absolute);
+			if (!F.CapturedContexts.IsValidIndex(BaselineIndex)
+				|| !F.CapturedContexts[BaselineIndex].UITarget.IsValid())
+			{
+				Test.AddError(TEXT("Baseline probe selector was not captured"));
+				return;
+			}
+			Test.TestEqual(TEXT("Baseline probe press is Supported"),
+				F.CapturedContexts[BaselineIndex].UICoverage, ECortexEditorUICoverage::Supported);
+			const TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> Expected =
+				F.CapturedContexts[BaselineIndex].UITarget;
+			{
+				FCortexEditorPhysicalInputUIObservation Observation;
+				const FCortexCommandResult Observed =
+					F.Session->ObserveUI(F.Captured[BaselineIndex], *Expected, Observation);
+				Test.TestTrue(TEXT("Baseline probe observes Ready"), Observed.bSuccess);
+				Test.TestEqual(TEXT("Baseline probe observation state Ready"),
+					Observation.State, ECortexEditorUIObservationState::Ready);
+			}
+
+			// A real same-window editor widget that is an ancestor of (and therefore outside) the
+			// selected runtime scope carries the colliding tags.
+			const TSharedPtr<SWidget> Viewport = Binding.ViewportWidget.Pin();
+			if (!Viewport.IsValid()) { Test.AddError(TEXT("Viewport widget missing")); return; }
+			TSharedPtr<SWidget> Carrier = Viewport->GetParentWidget();
+			if (!Carrier.IsValid())
+			{
+				Carrier = Slate.FindWidgetWindow(Viewport.ToSharedRef());
+			}
+			if (!Carrier.IsValid()) { Test.AddError(TEXT("Out-of-scope carrier missing")); return; }
+			const FName PreviousTag = Carrier->GetTag();
+
+			auto PressAndObserve = [&](const TCHAR* Label)
+			{
+				const int32 Index = F.Captured.Num();
+				PhysicalTestProcessPointerPress(Slate, Binding, Absolute);
+				Test.TestTrue(FString::Printf(TEXT("%s press was captured"), Label),
+					F.CapturedContexts.IsValidIndex(Index));
+				if (!F.CapturedContexts.IsValidIndex(Index)) { return; }
+				Test.TestEqual(FString::Printf(TEXT("%s keeps capture Supported"), Label),
+					F.CapturedContexts[Index].UICoverage, ECortexEditorUICoverage::Supported);
+				Test.TestTrue(FString::Printf(TEXT("%s keeps a target identity"), Label),
+					F.CapturedContexts[Index].UITarget.IsValid());
+				FCortexEditorPhysicalInputUIObservation Observation;
+				const FCortexCommandResult Observed =
+					F.Session->ObserveUI(F.Captured[Index], *Expected, Observation);
+				Test.TestTrue(FString::Printf(TEXT("%s observes Ready"), Label), Observed.bSuccess);
+				Test.TestEqual(FString::Printf(TEXT("%s observation state Ready"), Label),
+					Observation.State, ECortexEditorUIObservationState::Ready);
+			};
+
+			Carrier->SetTag(FName(TEXT("CortexPhysicalProbeRoot")));
+			PressAndObserve(TEXT("Out-of-scope root-tag collision"));
+			Carrier->SetTag(PreviousTag);
+
+			Carrier->SetTag(FName(TEXT("CortexPhysicalProbeSlider")));
+			PressAndObserve(TEXT("Out-of-scope target-tag collision"));
+			Carrier->SetTag(PreviousTag);
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// R5: duplicate root tag or duplicate target tag INSIDE the selected runtime scope keeps capture
+// Unavailable and playback Ambiguous.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputTaggedSelectorScopeUniquenessTest,
+	"Cortex.Editor.PhysicalInputTaggedSelectorScopeUniqueness",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputTaggedSelectorScopeUniquenessTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	const TSharedPtr<TSharedPtr<SSlider>> Phase1Control = MakeShared<TSharedPtr<SSlider>>();
+	const TSharedPtr<TSharedPtr<SSlider>> Phase2Control = MakeShared<TSharedPtr<SSlider>>();
+	const TSharedPtr<TSharedPtr<SWidget>> CurrentOverlay = MakeShared<TSharedPtr<SWidget>>();
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("ScopeUniquenessSetup"),
+		[Phase1Control, CurrentOverlay](FAutomationTestBase& Test,
+			FCortexEditorPhysicalInputTestFixture& F)
+		{
+			UWorld* World = F.Session->GetTargetBinding().World.Get();
+			if (!World || !World->GetGameViewport()) { Test.AddError(TEXT("Viewport missing")); return; }
+
+			// Phase 1: one root tag with two controls sharing the same target tag. The root tag
+			// lives on the hit-testable container so the root is genuinely present on the hit path.
+			TSharedPtr<SSlider> First, Second;
+			const TSharedPtr<SBox> FirstBox = SNew(SBox).WidthOverride(160.0f).HeightOverride(60.0f)
+				[
+					SAssignNew(First, SSlider)
+				];
+			const TSharedPtr<SBox> SecondBox = SNew(SBox).WidthOverride(160.0f).HeightOverride(60.0f)
+				[
+					SAssignNew(Second, SSlider)
+				];
+			const TSharedRef<SBox> RootBox = SNew(SBox)
+				[
+					SNew(SOverlay)
+					+ SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Top)
+					[
+						FirstBox.ToSharedRef()
+					]
+					+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Bottom)
+					[
+						SecondBox.ToSharedRef()
+					]
+				];
+			RootBox->SetTag(FName(TEXT("CortexScopeRoot")));
+			First->SetTag(FName(TEXT("CortexScopeControl")));
+			Second->SetTag(FName(TEXT("CortexScopeControl")));
+			World->GetGameViewport()->AddViewportWidgetContent(RootBox);
+			*Phase1Control = First;
+			*CurrentOverlay = RootBox;
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture, Phase1Control, Phase2Control, CurrentOverlay](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			UWorld* World = Binding.World.Get();
+			if (!World || !World->GetGameViewport() || !Phase1Control->IsValid())
+			{
+				Test.AddError(TEXT("Phase-1 scope tree missing"));
+				return;
+			}
+			if ((*Phase1Control)->GetCachedGeometry().GetLocalSize().X <= 0.0)
+			{
+				Test.AddError(TEXT("Phase-1 control geometry unusable"));
+				return;
+			}
+
+			// Duplicate target tag inside the resolved root subtree: capture Unavailable, playback Ambiguous.
+			const FVector2D Absolute = PhysicalTestWidgetAbsoluteCenter(**Phase1Control);
+			const int32 Index = F.Captured.Num();
+			PhysicalTestProcessPointerPress(Slate, Binding, Absolute);
+			Test.TestTrue(TEXT("Duplicate-target-tag press was captured"),
+				F.CapturedContexts.IsValidIndex(Index));
+			if (F.CapturedContexts.IsValidIndex(Index))
+			{
+				Test.TestEqual(TEXT("Duplicate target tag in the root subtree is Unavailable"),
+					F.CapturedContexts[Index].UICoverage, ECortexEditorUICoverage::Unavailable);
+				Test.TestFalse(TEXT("Duplicate target tag records no supported identity"),
+					F.CapturedContexts[Index].UITarget.IsValid());
+			}
+			{
+				const TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> Expected =
+					PhysicalTestMakeSlateIdentity(TEXT("CortexScopeRoot"), TEXT("CortexScopeControl"));
+				FCortexEditorPhysicalInputUIObservation Observation;
+				const FCortexCommandResult Observed = F.Session->ObserveUI(
+					F.Captured.IsValidIndex(Index) ? F.Captured[Index] : FCortexEditorPhysicalInputEvent(),
+					*Expected, Observation);
+				Test.TestFalse(TEXT("Duplicate target tag playback is rejected"), Observed.bSuccess);
+				Test.TestEqual(TEXT("Duplicate target tag playback is Ambiguous"),
+					Observation.State, ECortexEditorUIObservationState::Ambiguous);
+			}
+
+			// Swap to phase 2: two roots sharing one root tag, each with a distinct target tag.
+			World->GetGameViewport()->RemoveViewportWidgetContent(CurrentOverlay->ToSharedRef());
+			CurrentOverlay->Reset();
+
+			TSharedPtr<SSlider> ControlA, ControlB;
+			const TSharedPtr<SBox> RootA = SNew(SBox).WidthOverride(160.0f).HeightOverride(60.0f)
+				[
+					SAssignNew(ControlA, SSlider)
+				];
+			const TSharedPtr<SBox> RootB = SNew(SBox).WidthOverride(160.0f).HeightOverride(60.0f)
+				[
+					SAssignNew(ControlB, SSlider)
+				];
+			const TSharedRef<SOverlay> Phase2 = SNew(SOverlay)
+				+ SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Top)
+				[
+					RootA.ToSharedRef()
+				]
+				+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Bottom)
+				[
+					RootB.ToSharedRef()
+				];
+			RootA->SetTag(FName(TEXT("CortexScopeDupRoot")));
+			RootB->SetTag(FName(TEXT("CortexScopeDupRoot")));
+			ControlA->SetTag(FName(TEXT("CortexScopeTargetA")));
+			ControlB->SetTag(FName(TEXT("CortexScopeTargetB")));
+			World->GetGameViewport()->AddViewportWidgetContent(Phase2);
+			*Phase2Control = ControlA;
+			*CurrentOverlay = Phase2;
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture, Phase2Control, CurrentOverlay](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			if (!Phase2Control->IsValid() || (*Phase2Control)->GetCachedGeometry().GetLocalSize().X <= 0.0)
+			{
+				Test.AddError(TEXT("Phase-2 control geometry unusable"));
+				return;
+			}
+
+			// Duplicate root tag inside the runtime scope: capture Unavailable, playback Ambiguous.
+			const FVector2D Absolute = PhysicalTestWidgetAbsoluteCenter(**Phase2Control);
+			const int32 Index = F.Captured.Num();
+			PhysicalTestProcessPointerPress(Slate, Binding, Absolute);
+			Test.TestTrue(TEXT("Duplicate-root-tag press was captured"),
+				F.CapturedContexts.IsValidIndex(Index));
+			if (F.CapturedContexts.IsValidIndex(Index))
+			{
+				Test.TestEqual(TEXT("Duplicate root tag in scope is Unavailable"),
+					F.CapturedContexts[Index].UICoverage, ECortexEditorUICoverage::Unavailable);
+				Test.TestFalse(TEXT("Duplicate root tag records no supported identity"),
+					F.CapturedContexts[Index].UITarget.IsValid());
+			}
+			{
+				const TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> Expected =
+					PhysicalTestMakeSlateIdentity(TEXT("CortexScopeDupRoot"), TEXT("CortexScopeTargetA"));
+				FCortexEditorPhysicalInputUIObservation Observation;
+				const FCortexCommandResult Observed = F.Session->ObserveUI(
+					F.Captured.IsValidIndex(Index) ? F.Captured[Index] : FCortexEditorPhysicalInputEvent(),
+					*Expected, Observation);
+				Test.TestFalse(TEXT("Duplicate root tag playback is rejected"), Observed.bSuccess);
+				Test.TestEqual(TEXT("Duplicate root tag playback is Ambiguous"),
+					Observation.State, ECortexEditorUIObservationState::Ambiguous);
+			}
+
+			if (CurrentOverlay->IsValid())
+			{
+				if (UWorld* World = Binding.World.Get())
+				{
+					if (UGameViewportClient* Viewport = World->GetGameViewport())
+					{
+						Viewport->RemoveViewportWidgetContent(CurrentOverlay->ToSharedRef());
+					}
+				}
+				CurrentOverlay->Reset();
+			}
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// R7: two distinct uniquely-tagged runtime roots in the same runtime scope may reuse the SAME
+// target tag; each root resolves independently.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputDistinctRootsSharedTargetTagTest,
+	"Cortex.Editor.PhysicalInputDistinctRootsSharedTargetTag",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputDistinctRootsSharedTargetTagTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	const TSharedPtr<TSharedPtr<SSlider>> ControlA = MakeShared<TSharedPtr<SSlider>>();
+	const TSharedPtr<TSharedPtr<SSlider>> ControlB = MakeShared<TSharedPtr<SSlider>>();
+	const TSharedPtr<TSharedPtr<SWidget>> Overlay = MakeShared<TSharedPtr<SWidget>>();
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("DistinctRootsSetup"),
+		[ControlA, ControlB, Overlay](FAutomationTestBase& Test,
+			FCortexEditorPhysicalInputTestFixture& F)
+		{
+			UWorld* World = F.Session->GetTargetBinding().World.Get();
+			if (!World || !World->GetGameViewport()) { Test.AddError(TEXT("Viewport missing")); return; }
+
+			TSharedPtr<SSlider> A, B;
+			const TSharedPtr<SBox> RootA = SNew(SBox).WidthOverride(220.0f).HeightOverride(80.0f)
+				[
+					SAssignNew(A, SSlider)
+				];
+			const TSharedPtr<SBox> RootB = SNew(SBox).WidthOverride(220.0f).HeightOverride(80.0f)
+				[
+					SAssignNew(B, SSlider)
+				];
+			const TSharedRef<SOverlay> Built = SNew(SOverlay)
+				+ SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Top)
+				[
+					RootA.ToSharedRef()
+				]
+				+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Bottom)
+				[
+					RootB.ToSharedRef()
+				];
+			RootA->SetTag(FName(TEXT("CortexSharedTargetRootA")));
+			RootB->SetTag(FName(TEXT("CortexSharedTargetRootB")));
+			A->SetTag(FName(TEXT("CortexSharedTargetControl")));
+			B->SetTag(FName(TEXT("CortexSharedTargetControl")));
+			World->GetGameViewport()->AddViewportWidgetContent(Built);
+			*ControlA = A;
+			*ControlB = B;
+			*Overlay = Built;
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture, ControlA, ControlB, Overlay](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			if (!ControlA->IsValid() || !ControlB->IsValid())
+			{
+				Test.AddError(TEXT("Shared-target-tag controls missing"));
+				return;
+			}
+
+			auto PressRoot = [&](const TSharedPtr<SSlider>& Control, const TCHAR* RootTag, const TCHAR* Label)
+			{
+				if (Control->GetCachedGeometry().GetLocalSize().X <= 0.0)
+				{
+					Test.AddError(FString::Printf(TEXT("%s geometry unusable"), Label));
+					return;
+				}
+				const FVector2D Absolute = PhysicalTestWidgetAbsoluteCenter(*Control);
+				const int32 Index = F.Captured.Num();
+				PhysicalTestProcessPointerPress(Slate, Binding, Absolute);
+				Test.TestTrue(FString::Printf(TEXT("%s press was captured"), Label),
+					F.CapturedContexts.IsValidIndex(Index));
+				if (!F.CapturedContexts.IsValidIndex(Index)) { return; }
+				Test.TestEqual(FString::Printf(TEXT("%s is Supported"), Label),
+					F.CapturedContexts[Index].UICoverage, ECortexEditorUICoverage::Supported);
+				if (!F.CapturedContexts[Index].UITarget.IsValid())
+				{
+					Test.AddError(FString::Printf(TEXT("%s records no target identity"), Label));
+					return;
+				}
+				Test.TestEqual(FString::Printf(TEXT("%s resolves its own root tag"), Label),
+					F.CapturedContexts[Index].UITarget->RootTag, FString(RootTag));
+
+				const TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> Expected =
+					PhysicalTestMakeSlateIdentity(RootTag, TEXT("CortexSharedTargetControl"));
+				FCortexEditorPhysicalInputUIObservation Observation;
+				const FCortexCommandResult Observed =
+					F.Session->ObserveUI(F.Captured[Index], *Expected, Observation);
+				Test.TestTrue(FString::Printf(TEXT("%s observes Ready"), Label), Observed.bSuccess);
+				Test.TestEqual(FString::Printf(TEXT("%s observation state Ready"), Label),
+					Observation.State, ECortexEditorUIObservationState::Ready);
+			};
+
+			PressRoot(*ControlA, TEXT("CortexSharedTargetRootA"), TEXT("Shared-target root A"));
+			PressRoot(*ControlB, TEXT("CortexSharedTargetRootB"), TEXT("Shared-target root B"));
+
+			if (Overlay->IsValid())
+			{
+				if (UWorld* World = Binding.World.Get())
+				{
+					if (UGameViewportClient* Viewport = World->GetGameViewport())
+					{
+						Viewport->RemoveViewportWidgetContent(Overlay->ToSharedRef());
+					}
+				}
+				Overlay->Reset();
 			}
 		}));
 

@@ -2058,7 +2058,7 @@ public:
 		// equivalent therefore always carry byte-identical digests.
 		const FString SelectorText = FCortexEditorPhysicalInputSelectorBuilder::CanonicalizeSelector(Canonical);
 		const FString Digest = FCortexEditorPhysicalInputSelectorBuilder::ComputeIdentitySha256(Canonical);
-		if (Digest.IsEmpty())
+		if (!FCortexEditorPhysicalInputSelectorBuilder::IsValidSelectorDigest(Digest))
 		{
 			OutError = TEXT("Failed to compute the identity digest");
 			return nullptr;
