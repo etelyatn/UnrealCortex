@@ -18,10 +18,29 @@ from .tcp_client import UECommandError, UECommandNotDispatchedError
 # Native compact response budget (UTF-8 bytes) for one Replay reply.
 MAX_REPLAY_RESPONSE_BYTES = 39000
 
-# Human-readable diagnostics are bounded separately so that semantics-critical
-# machine fields survive; the final encoded budget remains the authority.
-_MAX_DIAGNOSTIC_BYTES = 4096
-_TRUNCATION_MARKER = "...[truncated]"
+# The single overflow contract error.  These four fields describe the overflow
+# itself, so preserved overflow context can never override them.
+_LIMIT_RESERVED_FIELDS = frozenset(
+    {"_error", "_message", "max_response_bytes", "response_bytes"}
+)
+
+# Total fallback when a value cannot be serialized to JSON at all.
+_REPLAY_REPLY_FORMAT_ERROR = "REPLAY_REPLY_FORMAT_ERROR"
+_REPLAY_REPLY_FORMAT_MESSAGE = (
+    "The Replay reply could not be serialized to JSON; no partial reply was emitted."
+)
+
+# One-shot start machine context must survive every overflow / formatting failure.
+_START_NOT_DISPATCHED_FIELDS: dict[str, Any] = {
+    "_command": "replay.start_replay",
+    "outcome": "not_dispatched",
+    "recovery_required": False,
+}
+_START_UNKNOWN_FIELDS: dict[str, Any] = {
+    "_command": "replay.start_replay",
+    "outcome": "unknown",
+    "recovery_required": True,
+}
 
 _MAX_RECORDING_ID = 2147483647
 _MIN_PAGE_SIZE = 1
@@ -45,55 +64,98 @@ def _encode(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
-def _limit_exceeded_response(response_bytes: int) -> str:
-    """The one explicit oversize contract error; never a silent truncation."""
-    return _encode(
-        {
-            "_error": "LIMIT_EXCEEDED",
-            "_message": (
-                f"Replay reply of {response_bytes} bytes exceeds the "
-                f"{MAX_REPLAY_RESPONSE_BYTES}-byte MCP budget."
-            ),
-            "max_response_bytes": MAX_REPLAY_RESPONSE_BYTES,
-            "response_bytes": response_bytes,
-        }
-    )
+def _encode_ascii(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 
-def _finalize(value: Any) -> str:
-    """Enforce the encoded UTF-8 budget on EVERY result path (the single gate)."""
-    text = _encode(value)
-    size = len(text.encode("utf-8"))
+def _limit_exceeded_response(
+    response_bytes: int, overflow_fields: dict[str, Any] | None = None
+) -> str:
+    """The one explicit oversize contract error; never a silent truncation.
+
+    Machine context in ``overflow_fields`` is preserved but can never override
+    the budget contract fields themselves.
+    """
+    payload: dict[str, Any] = {
+        "_error": "LIMIT_EXCEEDED",
+        "_message": (
+            f"Replay reply of {response_bytes} bytes exceeds the "
+            f"{MAX_REPLAY_RESPONSE_BYTES}-byte MCP budget."
+        ),
+        "max_response_bytes": MAX_REPLAY_RESPONSE_BYTES,
+        "response_bytes": response_bytes,
+    }
+    for key, value in (overflow_fields or {}).items():
+        if key not in _LIMIT_RESERVED_FIELDS:
+            payload[key] = value
+    try:
+        return _encode_ascii(payload)
+    except Exception:
+        # Preserved context was unserializable; drop it rather than lose the contract.
+        return _encode_ascii(
+            {
+                "_error": "LIMIT_EXCEEDED",
+                "_message": payload["_message"],
+                "max_response_bytes": MAX_REPLAY_RESPONSE_BYTES,
+                "response_bytes": response_bytes,
+            }
+        )
+
+
+def _format_error_response(overflow_fields: dict[str, Any] | None = None) -> str:
+    """Fixed fallback envelope for a value that cannot be serialized at all."""
+    payload: dict[str, Any] = {
+        "_error": _REPLAY_REPLY_FORMAT_ERROR,
+        "_message": _REPLAY_REPLY_FORMAT_MESSAGE,
+    }
+    for key, value in (overflow_fields or {}).items():
+        if key not in _LIMIT_RESERVED_FIELDS:
+            payload[key] = value
+    try:
+        text = _encode_ascii(payload)
+        size = len(text.encode("utf-8"))
+    except Exception:
+        return _encode_ascii(
+            {"_error": _REPLAY_REPLY_FORMAT_ERROR, "_message": _REPLAY_REPLY_FORMAT_MESSAGE}
+        )
     if size <= MAX_REPLAY_RESPONSE_BYTES:
         return text
-    return _limit_exceeded_response(size)
+    return _limit_exceeded_response(size, overflow_fields)
 
 
-def _cap_diagnostic(text: str, limit_bytes: int = _MAX_DIAGNOSTIC_BYTES) -> str:
-    """Bound a human-readable diagnostic without splitting a UTF-8 codepoint.
+def _finalize(value: Any, overflow_fields: dict[str, Any] | None = None) -> str:
+    """Enforce the encoded UTF-8 budget on EVERY result path (the single gate).
 
-    The cap is applied explicitly (a marker is appended) so machine-readable
-    fields are preserved while the diagnostic never drives the whole reply over
-    the encoded budget.
+    Total: this never raises for any input.  Unpaired surrogates are re-serialized
+    with ASCII escaping (``\\uXXXX``), which is always strict-UTF-8 encodable, so
+    malformed text cannot escape as a router-level exception.  A value that cannot
+    be serialized at all yields a fixed envelope that still carries the supplied
+    ``overflow_fields`` machine context.
     """
-    encoded = text.encode("utf-8")
-    if len(encoded) <= limit_bytes:
-        return text
-    marker = _TRUNCATION_MARKER
-    keep = limit_bytes - len(marker.encode("utf-8"))
-    head = encoded[:keep]
-    while head:
+    try:
         try:
-            return head.decode("utf-8") + marker
-        except UnicodeDecodeError:
-            head = head[:-1]
-    return marker
+            text = _encode(value)
+            size = len(text.encode("utf-8"))
+        except UnicodeEncodeError:
+            text = _encode_ascii(value)
+            size = len(text.encode("utf-8"))
+    except Exception:
+        return _format_error_response(overflow_fields)
+    if size <= MAX_REPLAY_RESPONSE_BYTES:
+        return text
+    return _limit_exceeded_response(size, overflow_fields)
 
 
-def _error_envelope(code: str, message: str, **extra: Any) -> str:
+def _error_envelope(
+    code: str,
+    message: str,
+    *,
+    overflow_fields: dict[str, Any] | None = None,
+    **extra: Any,
+) -> str:
     payload: dict[str, Any] = {"_error": code, "_message": message}
     payload.update(extra)
-    return _finalize(payload)
+    return _finalize(payload, overflow_fields)
 
 
 def _strict_int(
@@ -134,8 +196,9 @@ def _native_error(exc: UECommandError) -> str:
     for key, value in exc.details.items():
         if key not in _RESERVED_ERROR_FIELDS:
             payload[key] = value
-    # Never trim diagnostics: an over-budget native error is an explicit contract error.
-    return _finalize(payload)
+    # Never trim diagnostics: an over-budget native error is an explicit contract error
+    # that still carries the failing command identity.
+    return _finalize(payload, {"success": False, "_command": exc.command})
 
 
 def _response_error(response: dict[str, Any]) -> str | None:
@@ -155,30 +218,24 @@ def _response_error(response: dict[str, Any]) -> str | None:
 def _not_dispatched(exc: ConnectionError) -> str:
     return _error_envelope(
         "REPLAY_START_NOT_DISPATCHED",
-        _cap_diagnostic(
-            "The replay start was never dispatched and no run was admitted. " + str(exc)
-        ),
-        _command="replay.start_replay",
-        outcome="not_dispatched",
-        recovery_required=False,
+        "The replay start was never dispatched and no run was admitted. " + str(exc),
+        overflow_fields=_START_NOT_DISPATCHED_FIELDS,
+        **_START_NOT_DISPATCHED_FIELDS,
     )
 
 
 def _connection_error(exc: ConnectionError) -> str:
-    return _error_envelope("CONNECTION_ERROR", _cap_diagnostic(str(exc)))
+    return _error_envelope("CONNECTION_ERROR", str(exc))
 
 
 def _unknown_outcome(exc: ConnectionError) -> str:
     return _error_envelope(
         "REPLAY_START_OUTCOME_UNKNOWN",
-        _cap_diagnostic(
-            "The replay start was dispatched but its outcome is unknown. "
-            "Query replay.list_recordings / replay.get_run to recover the admitted run; do not reissue start. "
-            + str(exc)
-        ),
-        _command="replay.start_replay",
-        outcome="unknown",
-        recovery_required=True,
+        "The replay start was dispatched but its outcome is unknown. "
+        "Query replay.list_recordings / replay.get_run to recover the admitted run; do not reissue start. "
+        + str(exc),
+        overflow_fields=_START_UNKNOWN_FIELDS,
+        **_START_UNKNOWN_FIELDS,
     )
 
 
@@ -187,20 +244,16 @@ def _bounded_data(data: Any) -> str:
 
 
 def _unknown_command(command: str) -> str:
-    return _error_envelope(
-        "UNKNOWN_COMMAND", _cap_diagnostic(f"Unknown Replay command: {command}")
-    )
+    return _error_envelope("UNKNOWN_COMMAND", f"Unknown Replay command: {command}")
 
 
 def _unknown_fields(command: str, params: dict[str, Any]) -> str | None:
     allowed = _REPLAY_COMMANDS[command]
-    unknown = sorted(key for key in params if key not in allowed)
+    unknown = sorted(str(key) for key in params if key not in allowed)
     if unknown:
         return _error_envelope(
             "INVALID_FIELD",
-            _cap_diagnostic(
-                f"{command} accepts only its declared parameter fields; rejected: {', '.join(unknown)}"
-            ),
+            f"{command} accepts only its declared parameter fields; rejected: {', '.join(unknown)}",
         )
     return None
 

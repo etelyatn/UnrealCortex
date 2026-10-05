@@ -771,7 +771,11 @@ def test_unknown_command_with_oversized_name_is_a_bounded_contract_error(boundar
     command = "unknown_" + "x" * 40000
     result = dispatch_replay_command(boundary_connection, command, {})
     payload = _payload(result)
-    assert _error(payload) == "UNKNOWN_COMMAND"
+    # No diagnostic pre-trimming: the complete reply overflows, so the single
+    # explicit budget error is returned instead of a truncated UNKNOWN_COMMAND.
+    assert _error(payload) == "LIMIT_EXCEEDED"
+    assert payload["max_response_bytes"] == MAX_RESPONSE_BYTES
+    assert payload["response_bytes"] > MAX_RESPONSE_BYTES
     assert _utf8_size(result) <= MAX_RESPONSE_BYTES
     # Pre-dispatch: the unknown command never reaches the native transport.
     assert boundary_connection.calls == []
@@ -785,7 +789,9 @@ def test_unknown_fields_with_oversized_names_are_a_bounded_contract_error(bounda
         boundary_connection, "list_recordings", {ascii_name: 1, unicode_name: 2}
     )
     payload = _payload(result)
-    assert _error(payload) == "INVALID_FIELD"
+    assert _error(payload) == "LIMIT_EXCEEDED"
+    assert payload["max_response_bytes"] == MAX_RESPONSE_BYTES
+    assert payload["response_bytes"] > MAX_RESPONSE_BYTES
     assert _utf8_size(result) <= MAX_RESPONSE_BYTES
     # Pre-dispatch: rejected fields never reach the native transport.
     assert boundary_connection.calls == []
@@ -810,7 +816,9 @@ def test_long_connection_exception_is_a_bounded_contract_error():
     connection = _OversizedConnectionFailure(ConnectionError("\u6f22" * 50000))
     result = dispatch_replay_command(connection, "get_run", {"run_id": RUN_ID})
     payload = _payload(result)
-    assert _error(payload) == "CONNECTION_ERROR"
+    assert _error(payload) == "LIMIT_EXCEEDED"
+    assert payload["max_response_bytes"] == MAX_RESPONSE_BYTES
+    assert payload["response_bytes"] > MAX_RESPONSE_BYTES
     assert _utf8_size(result) <= MAX_RESPONSE_BYTES
     assert connection.calls != []
 
@@ -835,7 +843,11 @@ def test_oversized_start_loss_keeps_unknown_outcome_and_recovery_required():
     connection = _OversizedStartLossConnection()
     result = dispatch_replay_command(connection, "start_replay", {"recording_id": 1})
     payload = _payload(result)
-    assert _error(payload) == "REPLAY_START_OUTCOME_UNKNOWN"
+    assert _error(payload) == "LIMIT_EXCEEDED"
+    assert payload["max_response_bytes"] == MAX_RESPONSE_BYTES
+    assert payload["response_bytes"] > MAX_RESPONSE_BYTES
+    # One-shot machine context survives the overflow.
+    assert payload["_command"] == "replay.start_replay"
     assert payload["outcome"] == "unknown"
     assert payload["recovery_required"] is True
     assert _utf8_size(result) <= MAX_RESPONSE_BYTES
@@ -861,10 +873,175 @@ def test_oversized_start_presend_failure_keeps_not_dispatched_semantics():
     connection = _OversizedStartNotDispatchedConnection()
     result = dispatch_replay_command(connection, "start_replay", {"recording_id": 1})
     payload = _payload(result)
-    assert _error(payload) == "REPLAY_START_NOT_DISPATCHED"
+    assert _error(payload) == "LIMIT_EXCEEDED"
+    assert payload["max_response_bytes"] == MAX_RESPONSE_BYTES
+    assert payload["response_bytes"] > MAX_RESPONSE_BYTES
+    assert payload["_command"] == "replay.start_replay"
     assert payload["outcome"] == "not_dispatched"
     assert payload["recovery_required"] is False
     assert _utf8_size(result) <= MAX_RESPONSE_BYTES
+
+
+class _SurrogateStartLossConnection:
+    """One-shot start transport that dispatches, then loses the ack with lone surrogates."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.dispatched: list[dict] = []
+
+    def send_command_once(self, command, params=None, timeout=None):
+        self.calls.append((command, dict(params or {})))
+        self.dispatched.append(dict(params or {}))
+        raise ConnectionError("\ud800" * 32)
+
+    def record_tool_invocation(self, *args, **kwargs):
+        return None
+
+
+def test_unpaired_surrogate_local_diagnostic_never_escapes(boundary_connection):
+    # A lone surrogate cannot be strict-UTF-8 encoded; the boundary must escape it
+    # rather than let UnicodeEncodeError escape through the generic router.
+    command = "unknown_" + "\ud800" * 64
+    result = dispatch_replay_command(boundary_connection, command, {})
+    payload = _payload(result)
+    assert _error(payload) == "UNKNOWN_COMMAND"
+    assert _utf8_size(result) <= MAX_RESPONSE_BYTES
+    assert boundary_connection.calls == []
+
+
+def test_unpaired_surrogate_unknown_start_keeps_outcome_semantics():
+    connection = _SurrogateStartLossConnection()
+    result = dispatch_replay_command(connection, "start_replay", {"recording_id": 1})
+    payload = _payload(result)
+    assert _error(payload) == "REPLAY_START_OUTCOME_UNKNOWN"
+    assert payload["_command"] == "replay.start_replay"
+    assert payload["outcome"] == "unknown"
+    assert payload["recovery_required"] is True
+    assert _utf8_size(result) <= MAX_RESPONSE_BYTES
+    assert connection.dispatched == [{"recording_id": 1}]
+
+
+class _OversizedSurrogateStartLossConnection:
+    """One-shot start transport that dispatches, then loses the ack with huge surrogate text."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.dispatched: list[dict] = []
+
+    def send_command_once(self, command, params=None, timeout=None):
+        self.calls.append((command, dict(params or {})))
+        self.dispatched.append(dict(params or {}))
+        raise ConnectionError("\ud800" * 60000)
+
+    def record_tool_invocation(self, *args, **kwargs):
+        return None
+
+
+def test_oversized_unpaired_surrogate_start_stays_unknown_and_bounded():
+    connection = _OversizedSurrogateStartLossConnection()
+    result = dispatch_replay_command(connection, "start_replay", {"recording_id": 1})
+    payload = _payload(result)
+    assert _error(payload) == "LIMIT_EXCEEDED"
+    assert payload["outcome"] == "unknown"
+    assert payload["recovery_required"] is True
+    assert payload["_command"] == "replay.start_replay"
+    assert _utf8_size(result) <= MAX_RESPONSE_BYTES
+    assert connection.dispatched == [{"recording_id": 1}]
+
+
+def test_finalize_is_total_for_unserializable_and_surrogate_inputs():
+    from cortex_mcp.replay_boundary import _finalize
+
+    fallback = _payload(_finalize({"data": object()}))
+    assert _error(fallback) == "REPLAY_REPLY_FORMAT_ERROR"
+
+    # Unpaired surrogate: ASCII escaping keeps the reply valid and encodable.
+    escaped = _finalize({"value": "\ud800"})
+    json.loads(escaped)
+    assert _utf8_size(escaped) <= MAX_RESPONSE_BYTES
+
+    # A formatting failure must still carry start one-shot machine context.
+    context = {
+        "_command": "replay.start_replay",
+        "outcome": "unknown",
+        "recovery_required": True,
+    }
+    with_context = _payload(_finalize({"data": object()}, overflow_fields=context))
+    assert _error(with_context) == "REPLAY_REPLY_FORMAT_ERROR"
+    assert with_context["_command"] == "replay.start_replay"
+    assert with_context["outcome"] == "unknown"
+    assert with_context["recovery_required"] is True
+
+    # Overflow may never let preserved fields override the budget contract fields.
+    from cortex_mcp.replay_boundary import _limit_exceeded_response
+
+    hostile = _payload(
+        _limit_exceeded_response(
+            50000,
+            {"_error": "OK", "_message": "nope", "max_response_bytes": 1, "response_bytes": 1, "outcome": "unknown"},
+        )
+    )
+    assert hostile["_error"] == "LIMIT_EXCEEDED"
+    assert hostile["max_response_bytes"] == MAX_RESPONSE_BYTES
+    assert hostile["response_bytes"] == 50000
+    assert hostile["outcome"] == "unknown"
+
+
+def test_strict_router_rejections_use_the_replay_budget(boundary_connection):
+    from cortex_mcp.tools.routers import _invalid_invocation_shape, make_router, strict_router_tool
+
+    replay_cmd = strict_router_tool(
+        make_router("replay", boundary_connection, "replay docs"), "replay"
+    )
+    # A malformed/huge command name still yields valid, bounded JSON, never a raise.
+    huge_command = "x" * 40000
+    oversized = replay_cmd(huge_command, {})
+    payload = _payload(oversized)
+    assert _error(payload) == "LIMIT_EXCEEDED"
+    assert payload["max_response_bytes"] == MAX_RESPONSE_BYTES
+    assert payload["response_bytes"] > MAX_RESPONSE_BYTES
+    assert _utf8_size(oversized) <= MAX_RESPONSE_BYTES
+
+    # The shared strict-envelope helper with the Replay finalizer is bounded too.
+    from cortex_mcp.replay_boundary import _finalize
+
+    envelope = _invalid_invocation_shape(
+        "Malformed replay_cmd envelope: " + "y" * 40000, finalize=_finalize
+    )
+    envelope_payload = _payload(envelope)
+    assert _error(envelope_payload) == "LIMIT_EXCEEDED"
+    assert envelope_payload["response_bytes"] > MAX_RESPONSE_BYTES
+    assert _utf8_size(envelope) <= MAX_RESPONSE_BYTES
+    assert boundary_connection.calls == []
+
+
+def test_every_replay_reply_path_stays_within_the_utf8_budget(boundary_connection):
+    from cortex_mcp.replay_boundary import _finalize
+    from cortex_mcp.tools.routers import _invalid_invocation_shape
+
+    replies = [
+        dispatch_replay_command(boundary_connection, "unknown_" + "x" * 40000, {}),
+        dispatch_replay_command(
+            boundary_connection, "list_recordings", {"z" * 40000: 1, "\u6f22" * 40000: 2}
+        ),
+        dispatch_replay_command(_OversizedErrorConnection(), "get_recording", {"recording_id": 1}),
+        dispatch_replay_command(
+            _OversizedConnectionFailure(ConnectionError("\u6f22" * 50000)), "get_run", {"run_id": RUN_ID}
+        ),
+        dispatch_replay_command(_OversizedStartLossConnection(), "start_replay", {"recording_id": 1}),
+        dispatch_replay_command(
+            _OversizedStartNotDispatchedConnection(), "start_replay", {"recording_id": 1}
+        ),
+        dispatch_replay_command(_SurrogateStartLossConnection(), "start_replay", {"recording_id": 1}),
+        dispatch_replay_command(
+            _OversizedSurrogateStartLossConnection(), "start_replay", {"recording_id": 1}
+        ),
+        dispatch_replay_command(boundary_connection, "unknown_" + "\ud800" * 64, {}),
+        _invalid_invocation_shape("Malformed replay_cmd envelope: " + "y" * 40000, finalize=_finalize),
+    ]
+    for reply in replies:
+        json.loads(reply)
+        assert _utf8_size(reply) <= MAX_RESPONSE_BYTES
 
 
 def test_malformed_replay_envelope_preserves_shape_error(boundary_connection):
