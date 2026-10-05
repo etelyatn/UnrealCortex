@@ -35,6 +35,11 @@ struct FSchedulerGuardProbe
 	double ExpectedLocalX = 0.25;
 	double ExpectedLocalY = 0.5;
 
+	void MakeReady()
+	{
+		UI.State = ECortexEditorUIObservationState::Ready;
+	}
+
 	void Setup(FCortexReplayEvent& Event)
 	{
 		if (!Target.IsValid())
@@ -413,6 +418,79 @@ bool FCortexReplaySchedulerShiftedDeadlineTest::RunTest(const FString& Parameter
 	Elapsed = 1.0;
 	TestTrue(TEXT("Shifted duration completed"), Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
 	TestTrue(TEXT("Complete after full duration"), Scheduler.IsComplete());
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Every pending poll's evaluation interval is excluded from the committed wait, not only the
+// final one, so accumulated evaluation work never shifts later deadlines as authorized wait.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplaySchedulerWaitExcludesEvaluationTest,
+	"Cortex.Replay.Scheduler.WaitExcludesEveryEvaluationInterval",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplaySchedulerWaitExcludesEvaluationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayEvent Press = MakePointerPressEvent(0, 0.0,
+		ECortexEditorPhysicalInputKind::PointerDown, EKeys::LeftMouseButton);
+	FSchedulerGuardProbe Probe;
+	Probe.Setup(Press);
+
+	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Press});
+	Recording.Metadata.DurationSeconds = 0.3;
+	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
+	FCortexReplayScheduler Scheduler(Snapshot);
+
+	double Elapsed = 0.0;
+	int32 GuardCalls = 0;
+	// Simulated guard-evaluation work per poll; the first entry poll is not part of the wait.
+	const double EvaluationWork[] = { 0.0, 0.02, 0.02, 0.01 };
+	TArray<int32> Dispatched;
+	auto Clock = [&Elapsed]() { return Elapsed; };
+	auto Evaluate = [&](const FCortexReplayEvent& Event)
+	{
+		const FCortexReplayGuardDecision Decision = FCortexReplayGuardEvaluator::Evaluate(
+			Event, Snapshot->InitialState.Pose, Probe.UI, true);
+		if (GuardCalls < static_cast<int32>(UE_ARRAY_COUNT(EvaluationWork)))
+		{
+			Elapsed += EvaluationWork[GuardCalls];
+		}
+		++GuardCalls;
+		return Decision;
+	};
+	auto Dispatch = [&Dispatched](const FCortexReplayEvent& Event)
+	{
+		Dispatched.Add(Event.Sequence);
+		return FCortexCommandRouter::Success(nullptr);
+	};
+
+	// The target is disabled, so the run enters its readiness wait at t=0.
+	TestTrue(TEXT("Readiness wait admitted"),
+		Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
+	TestEqual(TEXT("Blocked press retained"), Scheduler.GetWaitingSequence(), 0);
+
+	// Two pending polls, each with evaluation work under the 100 ms allowance.
+	Elapsed = 0.05;
+	TestTrue(TEXT("First pending poll accepted"),
+		Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
+	Elapsed = 0.10;
+	TestTrue(TEXT("Second pending poll accepted"),
+		Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
+	TestEqual(TEXT("Still waiting on the same press"), Scheduler.GetWaitingSequence(), 0);
+
+	// The target becomes ready at an observed wait of 0.15 s.
+	Probe.MakeReady();
+	Elapsed = 0.15;
+	TestTrue(TEXT("Fresh ready press accepted"),
+		Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
+	TestEqual(TEXT("Press dispatched once ready"), Dispatched.Num(), 1);
+	TestEqual(TEXT("Wait state cleared"), Scheduler.GetWaitingSequence(), INDEX_NONE);
+
+	// 0.15 s observed minus 0.04 s of earlier evaluation work is the authorized wait.
+	TestEqual(TEXT("Committed wait excludes every evaluation interval"),
+		Scheduler.GetAuthorizedWaitSeconds(), 0.11, 1.0e-9);
 
 	return true;
 }

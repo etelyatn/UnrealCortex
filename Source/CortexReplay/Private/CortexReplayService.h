@@ -101,5 +101,9 @@ private:
 		bool bLive, const FCortexReplayScheduler* Scheduler);
 
 	struct FImpl;
-	TUniquePtr<FImpl> Impl;
+	/**
+	 * Shared so the finalization ticker can keep the backend (and its teardown observation) alive
+	 * after this service object is destroyed; the ticker releases it once teardown is complete.
+	 */
+	TSharedPtr<FImpl> Impl;
 };

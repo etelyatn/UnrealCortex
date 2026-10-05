@@ -77,6 +77,11 @@ private:
 	int32 WaitingSequence = INDEX_NONE;
 	ECortexEditorUIObservationState WaitReason = ECortexEditorUIObservationState::Ready;
 	double WaitStartElapsed = 0.0;
+	/**
+	 * Guard-evaluation time consumed by earlier pending polls of the current wait. It is never
+	 * authorized wait time, so it is subtracted before the measured wait is committed.
+	 */
+	double WaitEvaluationSeconds = 0.0;
 	double AuthorizedWaitSeconds = 0.0;
 	double LastObservedElapsed = 0.0;
 

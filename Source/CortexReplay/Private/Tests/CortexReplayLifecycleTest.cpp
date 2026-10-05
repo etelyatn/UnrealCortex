@@ -8,6 +8,7 @@
 #include "CortexReplayTestUtils.h"
 #include "CortexReplayTypes.h"
 #include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "Editor.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -18,10 +19,14 @@
 #include "GameFramework/PlayerController.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
+#include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "PlayInEditorDataTypes.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "Slate/SceneViewport.h"
 #include "Tests/AutomationCommon.h"
 #include "Tests/AutomationEditorCommon.h"
@@ -70,13 +75,96 @@ FCortexReplayEvent MakeKeyPress(int32 Sequence, double TimeSeconds,
 
 /** Publishes one valid AI-eligible recording whose map is a real loadable PIE map. */
 bool PublishReplayRecording(FAutomationTestBase& Test, FCortexReplayTestFixture& Fixture,
-	int32 Id, const FString& MapPath, const TArray<FCortexReplayEvent>& Events, bool bAIEnabled)
+	int32 Id, const FString& MapPath, const TArray<FCortexReplayEvent>& Events, bool bAIEnabled,
+	double DurationOverrideSeconds = 0.0)
 {
 	FCortexReplaySnapshot Snapshot = Fixture.MakeRecording(Id, bAIEnabled, Events);
 	Snapshot.Metadata.MapAssetPath = MapPath;
 	Snapshot.InitialState.PawnClassPath = ReplayPawnClassPath;
+	if (DurationOverrideSeconds > 0.0)
+	{
+		Snapshot.Metadata.DurationSeconds = FMath::Max(Snapshot.Metadata.DurationSeconds,
+			DurationOverrideSeconds);
+	}
 	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
 	return Test.TestTrue(TEXT("Recording published"), Library.Publish(Snapshot).bSuccess);
+}
+
+FString ReplayMetadataPath(const FCortexReplayTestFixture& Fixture, int32 Id)
+{
+	return FPaths::Combine(
+		FPaths::Combine(
+			FPaths::Combine(Fixture.GetProjectRoot(), TEXT(".cortex/replay/recordings")),
+			FString::FromInt(Id)),
+		TEXT("metadata.json"));
+}
+
+FString ReplayRunRecordPath(const FCortexReplayTestFixture& Fixture, const FGuid& Id)
+{
+	return FPaths::Combine(
+		FPaths::Combine(Fixture.GetProjectRoot(), TEXT("Saved/CortexReplay/Runs")),
+		Id.ToString(EGuidFormats::DigitsWithHyphens).ToLower() + TEXT(".json"));
+}
+
+bool SaveJsonObjectFile(const FString& Path, const TSharedRef<FJsonObject>& Object)
+{
+	FString Text;
+	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Text);
+	if (!FJsonSerializer::Serialize(Object, Writer))
+	{
+		return false;
+	}
+	return FFileHelper::SaveStringToFile(Text, *Path);
+}
+
+/** Builds a retained terminal run record; the coverage counts are caller-supplied deliberately. */
+TSharedRef<FJsonObject> MakeRetainedRunRecordJson(const FGuid& Id, int32 RecordingId,
+	const FString& State, int32 Dispatched, int32 Total, int32 PosePresses, int32 SupportedPresses,
+	int32 UnavailablePresses, int32 NotApplicablePresses)
+{
+	const FString Stamp = FDateTime::UtcNow().ToIso8601();
+	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetStringField(TEXT("format"), TEXT("CortexReplayRun"));
+	Object->SetNumberField(TEXT("schema_version"), 1);
+	Object->SetStringField(TEXT("run_id"), Id.ToString(EGuidFormats::DigitsWithHyphens).ToLower());
+	Object->SetNumberField(TEXT("recording_id"), RecordingId);
+	Object->SetStringField(TEXT("origin"), TEXT("ai"));
+	Object->SetStringField(TEXT("state"), State);
+	Object->SetStringField(TEXT("editor_instance_id"), TEXT("test-editor"));
+	Object->SetStringField(TEXT("started_at_utc"), Stamp);
+	Object->SetStringField(TEXT("finalized_at_utc"), Stamp);
+	Object->SetNumberField(TEXT("dispatched_events"), Dispatched);
+	Object->SetNumberField(TEXT("total_events"), Total);
+	Object->SetNumberField(TEXT("authorized_wait_seconds"), 0.0);
+	Object->SetStringField(TEXT("recording_snapshot_sha256"), FString::ChrN(64, TEXT('a')));
+	Object->SetStringField(TEXT("initial_state_sha256"), FString::ChrN(64, TEXT('b')));
+	Object->SetStringField(TEXT("inputs_sha256"), FString::ChrN(64, TEXT('c')));
+
+	TSharedRef<FJsonObject> Coverage = MakeShared<FJsonObject>();
+	Coverage->SetNumberField(TEXT("pose_presses"), PosePresses);
+	Coverage->SetNumberField(TEXT("ui_supported_presses"), SupportedPresses);
+	Coverage->SetNumberField(TEXT("ui_unavailable_presses"), UnavailablePresses);
+	Coverage->SetNumberField(TEXT("ui_not_applicable_presses"), NotApplicablePresses);
+	Object->SetObjectField(TEXT("guard_coverage"), Coverage);
+	return Object;
+}
+
+/** Rewrites only the live permission bit of a published recording's metadata. */
+bool SetMetadataAIEnabled(const FString& MetadataPath, bool bEnabled)
+{
+	FString Text;
+	if (!FFileHelper::LoadFileToString(Text, *MetadataPath))
+	{
+		return false;
+	}
+	TSharedPtr<FJsonObject> Object;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Text);
+	if (!FJsonSerializer::Deserialize(Reader, Object) || !Object.IsValid())
+	{
+		return false;
+	}
+	Object->SetBoolField(TEXT("ai_enabled"), bEnabled);
+	return SaveJsonObjectFile(MetadataPath, Object.ToSharedRef());
 }
 
 FString RunState(const FCortexCommandResult& Result)
@@ -328,6 +416,105 @@ private:
 	FAutomationTestBase* Test;
 	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
 	double StartTime = 0.0;
+};
+
+/** Polls get_run until the dispatched-event count is reached. */
+class FCortexReplayAwaitDispatchedEvents : public IAutomationLatentCommand
+{
+public:
+	FCortexReplayAwaitDispatchedEvents(FAutomationTestBase* InTest,
+		TSharedRef<FCortexReplayService> InService, FGuid InRunId, int32 InCount,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Test(InTest), Service(MoveTemp(InService)), RunId(InRunId), Count(InCount)
+		, KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		const FCortexCommandResult Run = Service->GetRun(RunId, true);
+		if (!Run.bSuccess)
+		{
+			Test->AddError(TEXT("get_run failed while awaiting dispatched events"));
+			return true;
+		}
+		if (RunDispatchedEvents(Run) >= Count) { return true; }
+		if (IsTerminalRunState(RunState(Run))
+			|| FPlatformTime::Seconds() - StartTime > ReplayReadyWatchdogSeconds * 2)
+		{
+			Test->AddError(FString::Printf(TEXT("Run never dispatched %d events (last %s)"),
+				Count, *RunState(Run)));
+			return true;
+		}
+		return false;
+	}
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	FGuid RunId;
+	int32 Count = 0;
+	double StartTime = 0.0;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+};
+
+/** Polls a freshly constructed service until the retained terminal record is queryable. */
+class FCortexReplayAwaitRetainedRun : public IAutomationLatentCommand
+{
+public:
+	FCortexReplayAwaitRetainedRun(FAutomationTestBase* InTest,
+		TSharedPtr<FCortexReplayTestFixture> InFixture, FGuid InRunId, FString InExpected,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Test(InTest), Fixture(MoveTemp(InFixture)), RunId(InRunId)
+		, Expected(MoveTemp(InExpected)), KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		// A new service re-loads the retained history from disk on construction.
+		FCortexReplayService Probe(Fixture->GetProjectRoot());
+		const FCortexCommandResult Run = Probe.GetRun(RunId, true);
+		if (Run.bSuccess && RunState(Run) == Expected) { return true; }
+		if (FPlatformTime::Seconds() - StartTime > ReplayReadyWatchdogSeconds * 2)
+		{
+			Test->AddError(FString::Printf(TEXT("Retained run never became %s"), *Expected));
+			return true;
+		}
+		return false;
+	}
+private:
+	FAutomationTestBase* Test;
+	TSharedPtr<FCortexReplayTestFixture> Fixture;
+	FGuid RunId;
+	FString Expected;
+	double StartTime = 0.0;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+};
+
+/** Waits until the native service reports no active capture operation. */
+class FCortexReplayAwaitCaptureIdle : public IAutomationLatentCommand
+{
+public:
+	FCortexReplayAwaitCaptureIdle(FAutomationTestBase* InTest,
+		TSharedRef<FCortexReplayService> InService,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Test(InTest), Service(MoveTemp(InService)), KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		const FCortexCommandResult Current = Service->GetCurrentOperation();
+		if (Current.bSuccess && !Current.Data.IsValid()) { return true; }
+		if (FPlatformTime::Seconds() - StartTime > ReplayReadyWatchdogSeconds * 2)
+		{
+			Test->AddError(TEXT("Capture never released its retained publication state"));
+			return true;
+		}
+		return false;
+	}
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	double StartTime = 0.0;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
 };
 
 /**
@@ -1361,6 +1548,229 @@ bool FCortexReplayLifecycleMetadataWriteFailureTest::RunTest(const FString& Para
 		TestEqual(TEXT("Name unchanged after the failed write"),
 			Found->Name, FString(TEXT("Recording 1")));
 	}
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// An external revocation during trailing idle must cancel instead of completing.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleTrailingRevocationTest,
+	"Cortex.Replay.Lifecycle.RevocationDuringTrailingIdleCancels",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleTrailingRevocationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	// A long recorded duration leaves the run idle after its last event, which is exactly where an
+	// external revocation must still be observed before completion is claimed.
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		 MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)}, true,
+		1.0 /* duration override: trailing idle */))
+	{
+		return false;
+	}
+
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	TestTrue(TEXT("AI replay admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 2, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Fixture](FAutomationTestBase& T)
+		{
+			// An external (out-of-process style) revocation while the run is only trailing idle.
+			T.TestTrue(TEXT("Live permission revoked externally"),
+				SetMetadataAIEnabled(ReplayMetadataPath(*Fixture, 1), false));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Cancelled"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, RunId](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestTrue(TEXT("Revoked run is queryable"), Run.bSuccess);
+			T.TestEqual(TEXT("Revocation during trailing idle cancels instead of completing"),
+				RunState(Run), FString(TEXT("Cancelled")));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Malformed retained terminal records are never indexed.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleMalformedRecordTest,
+	"Cortex.Replay.Lifecycle.MalformedRetainedRecordRejected",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleMalformedRecordTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const FString RunsRoot = FPaths::Combine(Fixture->GetProjectRoot(), TEXT("Saved/CortexReplay/Runs"));
+	TestTrue(TEXT("Run store directory created"), IFileManager::Get().MakeDirectory(*RunsRoot, true));
+
+	// Control: a consistent terminal record must be indexed.
+	const FGuid ValidId = FGuid::NewGuid();
+	TestTrue(TEXT("Valid retained record written"),
+		SaveJsonObjectFile(ReplayRunRecordPath(*Fixture, ValidId),
+			MakeRetainedRunRecordJson(ValidId, 1, TEXT("Cancelled"), 2, 2,
+				1, 1, 0, 0)));
+
+	// Malformed: the three UI counts sum far beyond int32, wrapping to the declared pose count in a
+	// 32-bit sum (1500000000 * 3 = 4500000000 -> 205032704 in int32). An int64 partition rejects it.
+	const FGuid MalformedId = FGuid::NewGuid();
+	TestTrue(TEXT("Malformed retained record written"),
+		SaveJsonObjectFile(ReplayRunRecordPath(*Fixture, MalformedId),
+			MakeRetainedRunRecordJson(MalformedId, 1, TEXT("Cancelled"), 0, MAX_int32,
+				205032704, 1500000000, 1500000000, 1500000000)));
+
+	FCortexReplayService Service(Fixture->GetProjectRoot());
+	const FCortexCommandResult Valid = Service.GetRun(ValidId, true);
+	TestTrue(TEXT("Consistent retained record is indexed"), Valid.bSuccess);
+	TestEqual(TEXT("Consistent record state"), RunState(Valid), FString(TEXT("Cancelled")));
+
+	const FCortexCommandResult Malformed = Service.GetRun(MalformedId, true);
+	TestFalse(TEXT("Malformed retained record is rejected"), Malformed.bSuccess);
+	TestEqual(TEXT("Malformed record reports RUN_NOT_FOUND"), Malformed.ErrorCode,
+		FString(CortexReplayErrorCodes::RunNotFound));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The lifetime-owned finalization backend outlives the destroyed service object.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleDestructionTest,
+	"Cortex.Replay.Lifecycle.FinalizationSurvivesServiceDestruction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleDestructionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	// The holder lets one command drop the last client reference while the run is only Finalizing.
+	const TSharedRef<TSharedPtr<FCortexReplayService>> Holder =
+		MakeShared<TSharedPtr<FCortexReplayService>>();
+	*Holder = MakeShared<FCortexReplayService>(Fixture->GetProjectRoot());
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		 MakeKeyPress(1, 0.25, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)}, true))
+	{
+		return false;
+	}
+
+	const FCortexCommandResult Started = (*Holder)->StartReplay(1, ECortexReplayOrigin::AI);
+	TestTrue(TEXT("AI replay admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Holder->ToSharedRef(), RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Holder, RunId](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("Cancellation accepted"), (*Holder)->CancelReplay(RunId, true).bSuccess);
+			// Destroy the owning service while the owned teardown is still asynchronous.
+			Holder->Reset();
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRetainedRun(this, Fixture, RunId,
+		TEXT("Cancelled"), Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A failed owned/borrowed capture publication is retained and retried, not silently completed.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCapturePublishFailureTest,
+	"Cortex.Replay.Lifecycle.CapturePublicationFailureRetained",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleCapturePublishFailureTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitExternalPiePlaying(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Fixture](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("External PIE world exists"), PlayWorld);
+
+			TArray<FCortexReplayCaptureTargetChoice> Choices;
+			T.TestTrue(TEXT("Human capture target enumeration succeeds"),
+				Service->EnumerateHumanCaptureTargets(Choices).bSuccess);
+			const FCortexReplayCaptureTargetChoice* Selected = nullptr;
+			for (const FCortexReplayCaptureTargetChoice& Choice : Choices)
+			{
+				if (Choice.World.Get() == PlayWorld) { Selected = &Choice; break; }
+			}
+			T.TestNotNull(TEXT("Matching capture target enumerated"), Selected);
+			if (Selected == nullptr || PlayWorld == nullptr) { return; }
+			T.TestTrue(TEXT("Borrowed capture admitted"),
+				Service->StartCaptureAtTarget(*PlayWorld, Selected->LocalPlayerIndex).bSuccess);
+
+			// Occupy the canonical publication path with a file so Publish must fail.
+			const FString RecordingsRoot = FPaths::Combine(Fixture->GetProjectRoot(),
+				TEXT(".cortex/replay/recordings"));
+			T.TestTrue(TEXT("Recordings root created"),
+				IFileManager::Get().MakeDirectory(*RecordingsRoot, true));
+			const FString BlockedPath = FPaths::Combine(RecordingsRoot, TEXT("1"));
+			T.TestTrue(TEXT("Publication path blocked"),
+				FFileHelper::SaveStringToFile(TEXT("blocked"), *BlockedPath));
+
+			const FCortexCommandResult Stopped = Service->StopCapture(false);
+			T.TestFalse(TEXT("Publication failure is reported to the caller"), Stopped.bSuccess);
+
+			const FCortexCommandResult Active = Service->GetCurrentOperation();
+			T.TestTrue(TEXT("Failed capture remains queryable"), Active.bSuccess && Active.Data.IsValid());
+			if (Active.Data.IsValid())
+			{
+				T.TestEqual(TEXT("Failed capture keeps its reserved recording id"),
+					static_cast<int32>(Active.Data->GetNumberField(TEXT("recording_id"))), 1);
+				T.TestEqual(TEXT("Failed capture stays Finalizing"),
+					Active.Data->GetStringField(TEXT("state")), FString(TEXT("Finalizing")));
+			}
+			T.TestTrue(TEXT("Repository still holds the failed recording"),
+				Service->IsRecordInUse(1));
+
+			// Allow the retained publication to be retried successfully.
+			T.TestTrue(TEXT("Publication path unblocked"),
+				IFileManager::Get().Delete(*BlockedPath, false, true, true));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Idle = Service->GetCurrentOperation();
+			T.TestTrue(TEXT("get_current_operation succeeds after the retry"), Idle.bSuccess);
+			T.TestFalse(TEXT("Capture released once its publication succeeded"), Idle.Data.IsValid());
+			T.TestFalse(TEXT("Failed capture no longer owns the record"), Service->IsRecordInUse(1));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 
 	return true;
 }

@@ -107,15 +107,19 @@ FCortexCommandResult FCortexReplayScheduler::Advance(
 				return Decision.Error;
 			}
 
-			// The wait duration excludes the evaluation interval; the per-press limit is the lesser
-			// of the fixed per-press budget and the remaining cumulative run budget.
+			// The wait duration excludes the evaluation intervals of every pending poll, not only
+			// the current one; the per-press limit is the lesser of the fixed per-press budget and
+			// the remaining cumulative run budget.
 			const double RemainingRunBudget = SCHEDULER_MAX_WAIT_TOTAL_SECONDS - AuthorizedWaitSeconds;
 			const double PerPressLimit = FMath::Min(SCHEDULER_MAX_WAIT_PER_PRESS_SECONDS, RemainingRunBudget);
-			const double Measured = BeforeEvaluation - WaitStartElapsed;
+			const double Measured = FMath::Max(0.0,
+				(BeforeEvaluation - WaitStartElapsed) - WaitEvaluationSeconds);
 
 			if (Decision.State == ECortexReplayGuardDecisionState::Wait)
 			{
-				// A pending poll at a reached limit times out.
+				// A pending poll at a reached limit times out; its own evaluation time is only
+				// excluded for later polls because it happens after the observation point.
+				WaitEvaluationSeconds += EvaluationSeconds;
 				if (Measured >= PerPressLimit)
 				{
 					return WaitTimeoutError(Event.Sequence);
@@ -217,6 +221,7 @@ FCortexCommandResult FCortexReplayScheduler::Advance(
 			WaitingSequence = Event.Sequence;
 			WaitReason = Decision.WaitReason;
 			WaitStartElapsed = Elapsed;
+			WaitEvaluationSeconds = 0.0;
 			return SchedulerSuccess();
 		}
 

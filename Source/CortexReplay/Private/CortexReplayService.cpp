@@ -29,6 +29,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Templates/Function.h"
+#include "Templates/SharedPointer.h"
 #include "UObject/Package.h"
 
 namespace
@@ -38,9 +39,6 @@ constexpr double ServicePreparationDeadlineSeconds = 30.0;
 
 constexpr int32 ServiceRecentTerminalRunLimit = 100;
 constexpr double ServiceRecentTerminalWindowSeconds = 86400.0;
-
-/** How often an active AI run re-reads the live permission without reloading recorded inputs. */
-constexpr double ServicePermissionCheckIntervalSeconds = 0.25;
 
 /** Mirrors of the scheduler's fixed wait budgets for the reported progress fields. */
 constexpr double ServiceMaxAuthorizedWaitSeconds = 5.0;
@@ -205,8 +203,14 @@ TSharedRef<FJsonObject> ServiceWaitingToJson(const FCortexReplayScheduler& Sched
 }
 }
 
-/** All mutable service state lives here so the public header stays declaration-only. */
-struct FCortexReplayService::FImpl
+/**
+ * All mutable service state lives here so the public header stays declaration-only.
+ *
+ * The finalization ticker captures a shared reference to this state, so an asynchronous owned
+ * teardown can finish (and persist its terminal record) after the service object itself is
+ * destroyed without any tick touching freed memory.
+ */
+struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService::FImpl>
 {
 	/** The single capture operation's phase; capture ownership spans preparation through teardown. */
 	enum class ECapturePhase : uint8 { None, Preparing, Recording, Finalizing };
@@ -247,6 +251,8 @@ struct FCortexReplayService::FImpl
 	TArray<FCortexReplayEvent> CaptureEvents;
 	double CaptureEpochSeconds = 0.0;
 	double CaptureStopSeconds = 0.0;
+	/** Throttle for owned-capture publication retries after a storage/validation failure. */
+	double LastCapturePublishAttemptSeconds = 0.0;
 
 	// ---- run ----
 	bool bRunActive = false;
@@ -268,7 +274,6 @@ struct FCortexReplayService::FImpl
 	FCortexCommandResult InterruptionResult;
 	bool bPermissionRevoked = false;
 	FCortexCommandResult PermissionRevocationResult;
-	double LastPermissionCheckSeconds = 0.0;
 	ECortexReplayState PendingTerminalState = ECortexReplayState::Cancelled;
 	FCortexCommandResult PendingTerminalResult;
 
@@ -286,6 +291,7 @@ struct FCortexReplayService::FImpl
 	bool CheckLivePermission();
 	void MarkCaptureFaulted(const FCortexCommandResult& Result);
 	void BeginCaptureFinalization(bool bPublish);
+	void RetainCaptureForPublicationRetry();
 	void CompleteCaptureFinalization();
 	FCortexCommandResult PublishCaptureSnapshot();
 	void OnCaptureInterruption(uint64 Generation, const FCortexCommandResult& Result);
@@ -301,8 +307,14 @@ void FCortexReplayService::FImpl::EnsureTicker()
 	{
 		return;
 	}
+	// The ticker holds a shared reference to this state so an in-flight finalization can never
+	// outlive the memory that owns it.
+	const TSharedRef<FCortexReplayService::FImpl> Self = AsShared();
 	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
-		FTickerDelegate::CreateRaw(this, &FCortexReplayService::FImpl::Tick));
+		FTickerDelegate::CreateLambda([Self](float DeltaSeconds)
+		{
+			return Self->Tick(DeltaSeconds);
+		}));
 }
 
 void FCortexReplayService::FImpl::DetachTickerAndSession()
@@ -328,6 +340,14 @@ void FCortexReplayService::FImpl::SetRunState(ECortexReplayState NewState)
 bool FCortexReplayService::FImpl::Tick(float DeltaSeconds)
 {
 	(void)DeltaSeconds;
+	if (bShutdown)
+	{
+		// The owning service may already be destroyed: only the lifetime-owned finalization
+		// bookkeeping runs, and the ticker stops as soon as nothing is pending.
+		TickCapture();
+		TickFinalization();
+		return bRunActive || bFinalizing || CapturePhase != ECapturePhase::None;
+	}
 	TickRun();
 	TickCapture();
 	TickFinalization();
@@ -358,17 +378,13 @@ bool FCortexReplayService::FImpl::CheckLivePermission()
 	{
 		return false;
 	}
-	const double Now = FPlatformTime::Seconds();
-	if (Now - LastPermissionCheckSeconds < ServicePermissionCheckIntervalSeconds)
-	{
-		return true;
-	}
-	LastPermissionCheckSeconds = Now;
 
+	// The live grant is re-read for every guard/dispatch decision and at trailing completion: a
+	// cached value is never treated as fresh authorization, so an external revocation takes effect
+	// before the next press. Only the metadata permission bit is read, never the recorded inputs.
 	bool bEnabled = false;
 	if (!ServiceReadMetadataAIEnabled(ProjectRoot, ActiveRun.RecordingId, bEnabled) || !bEnabled)
 	{
-		// An externally revoked grant cancels the run once and emits no further press.
 		bPermissionRevoked = true;
 		PermissionRevocationResult = ServiceError(CortexReplayErrorCodes::PermissionDenied,
 			TEXT("AI replay permission was revoked"));
@@ -401,7 +417,6 @@ void FCortexReplayService::FImpl::ResetRun()
 	Scheduler.Reset();
 	PrepareDeadline = 0.0;
 	ReplayEpoch = 0.0;
-	LastPermissionCheckSeconds = 0.0;
 }
 
 void FCortexReplayService::FImpl::TickRun()
@@ -492,7 +507,6 @@ void FCortexReplayService::FImpl::TickRun()
 
 		Scheduler = MakeShared<FCortexReplayScheduler>(Snapshot.ToSharedRef());
 		ReplayEpoch = FPlatformTime::Seconds();
-		LastPermissionCheckSeconds = -ServicePermissionCheckIntervalSeconds;
 		SetRunState(ECortexReplayState::Replaying);
 	}
 
@@ -538,9 +552,11 @@ void FCortexReplayService::FImpl::TickRun()
 			return;
 		}
 
-		// Completion is only claimed when no cancellation/interruption arrived at the boundary.
+		// Completion is only claimed when no cancellation/interruption arrived at the boundary, and
+		// a recording whose tail is idle still revalidates the live grant before completing.
 		if (Scheduler->IsComplete())
 		{
+			CheckLivePermission();
 			if (bCancellationRequested)
 			{
 				Owner->Finalize(ECortexReplayState::Cancelled,
@@ -591,6 +607,16 @@ void FCortexReplayService::FImpl::BeginCaptureFinalization(bool bPublish)
 	}
 }
 
+void FCortexReplayService::FImpl::RetainCaptureForPublicationRetry()
+{
+	// Keep the captured events, recording id and Finalizing phase so the publication failure stays
+	// queryable and can be retried instead of silently completing.
+	CapturePhase = ECapturePhase::Finalizing;
+	bCapturePublishOnComplete = true;
+	bFrozen = true;
+	LastCapturePublishAttemptSeconds = FPlatformTime::Seconds();
+}
+
 void FCortexReplayService::FImpl::TickCapture()
 {
 	if (CapturePhase == ECapturePhase::None)
@@ -635,20 +661,30 @@ void FCortexReplayService::FImpl::TickCapture()
 	{
 		return;
 	}
+	// A failed publication is retained and retried at most once per second.
+	if (bCapturePublishOnComplete && !bCaptureFaulted
+		&& LastCapturePublishAttemptSeconds > 0.0
+		&& FPlatformTime::Seconds() - LastCapturePublishAttemptSeconds < 1.0)
+	{
+		return;
+	}
 	CompleteCaptureFinalization();
 }
 
 void FCortexReplayService::FImpl::CompleteCaptureFinalization()
 {
-	FCortexCommandResult PublishResult = ServiceSuccess();
 	const bool bShouldPublish = bCapturePublishOnComplete && !bCaptureFaulted;
 	if (bShouldPublish)
 	{
-		PublishResult = PublishCaptureSnapshot();
+		LastCapturePublishAttemptSeconds = FPlatformTime::Seconds();
+		const FCortexCommandResult PublishResult = PublishCaptureSnapshot();
 		if (!PublishResult.bSuccess)
 		{
-			UE_LOG(LogCortexReplay, Log, TEXT("Capture %d publication failed: %s (%s)"),
+			// Ownership, the recording id and the captured events are retained (the active capture
+			// status shows Finalizing) so the failure is queryable and the publication is retried.
+			UE_LOG(LogCortexReplay, Log, TEXT("Capture %d publication failed: %s (%s); retained for retry"),
 				CaptureRecordingId, *PublishResult.ErrorCode, *PublishResult.ErrorMessage);
+			return;
 		}
 	}
 	if (Session.IsValid())
@@ -678,6 +714,7 @@ void FCortexReplayService::FImpl::ResetCapture()
 	CaptureEvents.Reset();
 	CaptureEpochSeconds = 0.0;
 	CaptureStopSeconds = 0.0;
+	LastCapturePublishAttemptSeconds = 0.0;
 	bFrozen = false;
 }
 
@@ -954,7 +991,7 @@ void FCortexReplayService::FImpl::OnCaptureEvent(const FCortexEditorPhysicalInpu
 }
 
 FCortexReplayService::FCortexReplayService(const FString& ProjectRoot)
-	: Impl(MakeUnique<FImpl>(this, ProjectRoot))
+	: Impl(MakeShared<FImpl>(this, ProjectRoot))
 {
 	Impl->EnsureTicker();
 }
@@ -1521,17 +1558,24 @@ FCortexCommandResult FCortexReplayService::StopCapture(bool bAbnormal)
 			State.Session->Shutdown();
 			State.Session.Reset();
 		}
-		FCortexCommandResult Result = ServiceSuccess();
 		if (bPublish)
 		{
-			Result = State.PublishCaptureSnapshot();
+			const FCortexCommandResult PublishResult = State.PublishCaptureSnapshot();
+			if (!PublishResult.bSuccess)
+			{
+				// The captured data and recording id are retained so the failure is queryable and
+				// the publication is retried instead of silently completing.
+				State.RetainCaptureForPublicationRetry();
+				State.EnsureTicker();
+				return PublishResult;
+			}
 		}
 		State.ResetCapture();
 		if (State.bShutdown)
 		{
 			State.DetachTickerAndSession();
 		}
-		return Result;
+		return ServiceSuccess();
 	}
 
 	// Owned capture retains its session and ownership until the matching teardown is observed.
@@ -1685,22 +1729,13 @@ FCortexCommandResult FCortexReplayService::SaveMetadata(int32 Id, const FString&
 
 FCortexCommandResult FCortexReplayService::DeleteRecording(int32 Id)
 {
-	FImpl& State = *Impl;
+	// Refusal is side-effect-free; an actual external deletion during playback is picked up by the
+	// live eligibility check, which cancels only an AI run whose recording disappeared.
 	if (IsRecordInUse(Id))
 	{
-		// Deleting the recording an active run is playing removes its permission/eligibility.
-		State.bPermissionRevoked = true;
-		State.PermissionRevocationResult = ServiceError(CortexReplayErrorCodes::RecordingNotFound,
-			TEXT("Recording was deleted during playback"));
-		if (State.bRunActive && !State.bFinalizing)
-		{
-			State.bCancellationRequested = true;
-			State.CancellationResult = State.PermissionRevocationResult;
-			Finalize(ECortexReplayState::Cancelled, State.PermissionRevocationResult);
-		}
 		return ServiceError(CortexErrorCodes::EditorBusy, TEXT("Recording is in use"));
 	}
-	return State.Library.Delete(Id);
+	return Impl->Library.Delete(Id);
 }
 
 void FCortexReplayService::Shutdown()

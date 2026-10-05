@@ -69,6 +69,18 @@ bool StoreTryReadDouble(const TSharedPtr<FJsonObject>& Object, const TCHAR* Fiel
 	return true;
 }
 
+/** Reads a mandatory integral count into int64 so partitioned sums cannot overflow. */
+bool StoreTryReadCount(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, int64& Out)
+{
+	int32 Value = 0;
+	if (!StoreTryReadInt32(Object, Field, Value, 0, MAX_int32))
+	{
+		return false;
+	}
+	Out = static_cast<int64>(Value);
+	return true;
+}
+
 /** True only for a lower-case 64-hex digest. */
 bool StoreIsLowerHexSha256(const FString& Value)
 {
@@ -264,23 +276,26 @@ FCortexCommandResult FCortexReplayRunStore::Initialize()
 		Record.EditorInstanceId = EditorInstanceId;
 
 		const TSharedPtr<FJsonObject>* Coverage = nullptr;
-		int32 PosePresses = 0;
-		int32 SupportedPresses = 0;
-		int32 UnavailablePresses = 0;
-		int32 NotApplicablePresses = 0;
+		int64 PosePresses = 0;
+		int64 SupportedPresses = 0;
+		int64 UnavailablePresses = 0;
+		int64 NotApplicablePresses = 0;
 		if (!Object->TryGetObjectField(TEXT("guard_coverage"), Coverage) || Coverage == nullptr
-			|| !StoreTryReadInt32(*Coverage, TEXT("pose_presses"), PosePresses, 0, MAX_int32)
-			|| !StoreTryReadInt32(*Coverage, TEXT("ui_supported_presses"), SupportedPresses, 0, MAX_int32)
-			|| !StoreTryReadInt32(*Coverage, TEXT("ui_unavailable_presses"), UnavailablePresses, 0, MAX_int32)
-			|| !StoreTryReadInt32(*Coverage, TEXT("ui_not_applicable_presses"), NotApplicablePresses, 0, MAX_int32)
-			|| SupportedPresses + UnavailablePresses + NotApplicablePresses != PosePresses)
+			|| !StoreTryReadCount(*Coverage, TEXT("pose_presses"), PosePresses)
+			|| !StoreTryReadCount(*Coverage, TEXT("ui_supported_presses"), SupportedPresses)
+			|| !StoreTryReadCount(*Coverage, TEXT("ui_unavailable_presses"), UnavailablePresses)
+			|| !StoreTryReadCount(*Coverage, TEXT("ui_not_applicable_presses"), NotApplicablePresses)
+			// The partition is summed in int64 so large counts cannot wrap and alias a valid total,
+			// and the guarded presses must not exceed the admitted event count.
+			|| SupportedPresses + UnavailablePresses + NotApplicablePresses != PosePresses
+			|| PosePresses > static_cast<int64>(Record.TotalEvents))
 		{
 			continue;
 		}
-		Record.GuardCoverage.PosePresses = PosePresses;
-		Record.GuardCoverage.UISupportedPresses = SupportedPresses;
-		Record.GuardCoverage.UIUnavailablePresses = UnavailablePresses;
-		Record.GuardCoverage.UINotApplicablePresses = NotApplicablePresses;
+		Record.GuardCoverage.PosePresses = static_cast<int32>(PosePresses);
+		Record.GuardCoverage.UISupportedPresses = static_cast<int32>(SupportedPresses);
+		Record.GuardCoverage.UIUnavailablePresses = static_cast<int32>(UnavailablePresses);
+		Record.GuardCoverage.UINotApplicablePresses = static_cast<int32>(NotApplicablePresses);
 
 		if (State == ECortexReplayState::Error)
 		{
