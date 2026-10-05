@@ -172,6 +172,18 @@ bool FCortexEditorPhysicalInputSession::TickInternal(float DeltaTime)
 {
 	(void)DeltaTime;
 
+	// While replay owns the target, a loss of the selected focus/window/route between events (a
+	// wait or idle transition) is interference too, not only a loss observed at the next dispatch.
+	if (bReplayInProgress && !bDispatchFrozen
+		&& CaptureState.IsValid() && !CaptureState->bInterrupted)
+	{
+		FString OwnershipReason;
+		if (!IsSelectedRouteOwnershipIntact(OwnershipReason))
+		{
+			NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation, OwnershipReason));
+		}
+	}
+
 	if (OwnedState == EOwnedState::Preparing)
 	{
 		PollPreparation();
@@ -331,6 +343,7 @@ void FCortexEditorPhysicalInputSession::PollPreparation()
 		OwnedWorld = PIEWorld;
 		OwnedContextHandle = ContextHandle;
 		bOwnedWorldObserved = true;
+		bOwnedContextObserved = true;
 		bOwnedRequestOutstanding = false;
 		bStartupResolved = true;
 	}
@@ -391,6 +404,13 @@ void FCortexEditorPhysicalInputSession::PollTeardown()
 		return;
 	}
 
+	if (bOwnedContextGone)
+	{
+		// The exact captured context was observed gone: never adopt or end a successor PIE.
+		bStartupResolved = true;
+		return;
+	}
+
 	if (!bStartupResolved)
 	{
 		if (bOwnedRequestOutstanding)
@@ -440,6 +460,7 @@ void FCortexEditorPhysicalInputSession::PollTeardown()
 				// Created may still be null until the deferred world appears; keep observing it.
 				OwnedWorld = Created;
 				OwnedContextHandle = ContextHandle;
+				bOwnedContextObserved = true;
 				if (Created != nullptr)
 				{
 					bOwnedWorldObserved = true;
@@ -592,8 +613,10 @@ bool FCortexEditorPhysicalInputSession::IsOwnedRequestPending() const
 
 bool FCortexEditorPhysicalInputSession::IsOwnedContextPresent() const
 {
-	if (GEngine == nullptr)
+	if (bOwnedContextGone || GEngine == nullptr)
 	{
+		// Once the exact captured context has been observed absent, no later context (including a
+		// successor PIE with an identical request) is ever ours again.
 		return false;
 	}
 	for (const FWorldContext& Context : GEngine->GetWorldContexts())
@@ -608,29 +631,45 @@ bool FCortexEditorPhysicalInputSession::IsOwnedContextPresent() const
 			{
 				// Deferred startup: a world-less owned context is still ours and must stay observed
 				// until its world appears (PlayLevel deferred startup).
+				bOwnedContextObserved = true;
 				return true;
+			}
+			UWorld* ContextWorld = Context.World();
+			// Defensive: a context under our handle whose world is a different object is a
+			// successor, not ours.
+			if (ContextWorld != nullptr && OwnedWorld.IsValid() && ContextWorld != OwnedWorld.Get())
+			{
+				continue;
 			}
 			// Once this operation actually drove a world, its context is ours only while that world
 			// is still a live, non-tearing-down PIE world. A finished PIE world can stay alive (and
 			// renamed by CleanupWorld) until GC, and must not keep the operation open.
-			UWorld* ContextWorld = Context.World();
 			if (ContextWorld != nullptr && !ContextWorld->bIsTearingDown)
 			{
+				bOwnedContextObserved = true;
 				return true;
 			}
 			continue;
 		}
 		if (OwnedWorld.IsValid() && Context.World() == OwnedWorld.Get())
 		{
+			bOwnedContextObserved = true;
 			return true;
 		}
+	}
+
+	// The exact captured context is gone. Latch the loss so a successor can never be adopted or
+	// ended and this operation issues no further end-PIE request.
+	if (bOwnedContextObserved)
+	{
+		bOwnedContextGone = true;
 	}
 	return false;
 }
 
 bool FCortexEditorPhysicalInputSession::IsOwnedContextWorldPresent() const
 {
-	if (GEngine == nullptr)
+	if (bOwnedContextGone || GEngine == nullptr)
 	{
 		return false;
 	}
@@ -643,6 +682,12 @@ bool FCortexEditorPhysicalInputSession::IsOwnedContextWorldPresent() const
 		if (OwnedContextHandle != NAME_None && Context.ContextHandle == OwnedContextHandle)
 		{
 			UWorld* ContextWorld = Context.World();
+			// A successor context under our handle must never be treated as endable by this session.
+			if (ContextWorld != nullptr && bOwnedWorldObserved && OwnedWorld.IsValid()
+				&& ContextWorld != OwnedWorld.Get())
+			{
+				continue;
+			}
 			return ContextWorld != nullptr && !ContextWorld->bIsTearingDown;
 		}
 		if (OwnedWorld.IsValid() && Context.World() == OwnedWorld.Get())
@@ -867,6 +912,8 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 	OwnedContextHandle = NAME_None;
 	OwnedWorld = nullptr;
 	bOwnedWorldObserved = false;
+	bOwnedContextObserved = false;
+	bOwnedContextGone = false;
 	BoundPawnClass = nullptr;
 	LastObservedPawnClass = nullptr;
 	StablePawnClassObservations = 0;
@@ -1926,6 +1973,10 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseMove(const FPointer
 	Event.Kind = (FSlateApplication::IsInitialized()
 		&& FSlateApplication::Get().IsUsingHighPrecisionMouseMovment())
 		? ECortexEditorPhysicalInputKind::RelativeMove : ECortexEditorPhysicalInputKind::PointerMove;
+	// Canonical pointer-motion key: the portable 2D mouse axis. Absolute UI motion and relative
+	// gameplay/camera motion both carry the 2D delta, so both record Mouse2D; replay never re-reads
+	// this key for motion (the recorded delta drives it), but the recording must remain portable.
+	Event.Key = EKeys::Mouse2D;
 	Event.Modifiers = MouseEvent.GetModifierKeys();
 	Event.ViewportPosition = ViewportPosition;
 	Event.Delta = MouseEvent.GetCursorDelta();
@@ -1963,7 +2014,8 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseWheel(const FPointe
 
 	FCortexEditorPhysicalInputEvent Event;
 	Event.Kind = ECortexEditorPhysicalInputKind::Wheel;
-	Event.Key = EKeys::Invalid;
+	// Canonical wheel key: the portable mouse wheel axis (never the invalid key).
+	Event.Key = EKeys::MouseWheelAxis;
 	Event.Modifiers = MouseEvent.GetModifierKeys();
 	Event.WheelDelta = MouseEvent.GetWheelDelta();
 	Event.ViewportPosition = ToViewportPosition(ScreenSpacePosition);
@@ -2229,6 +2281,46 @@ bool FCortexEditorPhysicalInputSession::IsKeyboardFocusOnSelectedRoute() const
 	return IsWidgetOnSelectedRoute(Focused);
 }
 
+bool FCortexEditorPhysicalInputSession::IsSelectedRouteOwnershipIntact(FString& OutReason) const
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		OutReason = TEXT("Slate is not initialized");
+		return false;
+	}
+	FSlateApplication& Slate = FSlateApplication::Get();
+	if (!Slate.GetUser(Binding.SlateUserIndex).IsValid())
+	{
+		OutReason = TEXT("The selected Slate user is no longer available");
+		return false;
+	}
+
+	// A foreign keyboard focus (an editor control outside the selected route) would receive every
+	// synthetic key. Focus that has never been established is not claimed as a foreign owner.
+	const TSharedPtr<SWidget> Focused = Slate.GetUserFocusedWidget(
+		static_cast<uint32>(Binding.SlateUserIndex));
+	if (Focused.IsValid() && !IsWidgetOnSelectedRoute(Focused))
+	{
+		OutReason = TEXT("Replay lost the selected route to a foreign keyboard focus");
+		return false;
+	}
+
+	// The focused widget must be in the selected viewport's own window, not a different window.
+	const TSharedPtr<SWidget> CoordinateRoot = GetCoordinateRootWidget();
+	if (Focused.IsValid() && CoordinateRoot.IsValid())
+	{
+		const TSharedPtr<SWindow> RouteWindow = Slate.FindWidgetWindow(CoordinateRoot.ToSharedRef());
+		const TSharedPtr<SWindow> FocusWindow = Slate.FindWidgetWindow(Focused.ToSharedRef());
+		if (RouteWindow.IsValid() && FocusWindow.IsValid() && FocusWindow != RouteWindow)
+		{
+			OutReason = TEXT("Replay lost the selected route window to a foreign active window");
+			return false;
+		}
+	}
+
+	return true;
+}
+
 FCortexCommandResult FCortexEditorPhysicalInputSession::SetCaptureCallback(
 	TFunction<void(const FCortexEditorPhysicalInputEvent&, double,
 		const FCortexEditorPhysicalInputCaptureContext&)>&& Callback)
@@ -2298,6 +2390,42 @@ bool FCortexEditorPhysicalInputSession::CanWaitForUI() const
 		&& CaptureState->CapturedHeldButtons.Num() == 0;
 }
 
+FCortexCommandResult FCortexEditorPhysicalInputSession::BeginReplayEpoch()
+{
+	if (bDispatchFrozen)
+	{
+		return MakeErrorResult(CortexErrorCodes::InvalidOperation,
+			TEXT("Physical input dispatch is frozen while the original target is being cleaned up"));
+	}
+	FCortexCommandResult Error;
+	if (!ValidateTarget(Error))
+	{
+		return Error;
+	}
+	if (!FSlateApplication::IsInitialized())
+	{
+		return MakeErrorResult(CortexErrorCodes::EditorNotReady, TEXT("Slate is not initialized"));
+	}
+	if (!CaptureState.IsValid())
+	{
+		CaptureState = MakeShared<FCortexEditorPhysicalInputCaptureState>();
+	}
+	if (!DispatchContext.IsValid())
+	{
+		DispatchContext = MakeShared<FCortexEditorPhysicalInputDispatchContext>();
+	}
+	if (!GuardState.IsValid())
+	{
+		GuardState = MakeShared<FCortexEditorPhysicalInputGuardState>();
+	}
+
+	// Interference ownership is armed here, at epoch establishment, not at the first Dispatch, so
+	// foreign focus/input during the pre-first-event window is detected exactly like interference
+	// after dispatch. Focus is never stolen and inactive input is never forced.
+	bReplayInProgress = true;
+	return MakeSuccessResult();
+}
+
 FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEditorPhysicalInputEvent& Event)
 {
 	if (bDispatchFrozen)
@@ -2327,6 +2455,20 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 		GuardState = MakeShared<FCortexEditorPhysicalInputGuardState>();
 	}
 
+	// When replay ownership is armed, the selected focus/window/route must still own input before
+	// any synthetic event is delivered. A foreign focus/window is interference: never deliver the
+	// event through global Slate routing to a foreign consumer. No focus is stolen.
+	if (bReplayInProgress)
+	{
+		FString OwnershipReason;
+		if (!IsSelectedRouteOwnershipIntact(OwnershipReason))
+		{
+			const FCortexCommandResult Lost = MakeErrorResult(CortexErrorCodes::InvalidOperation, OwnershipReason);
+			NotifyInterruption(Lost);
+			return Lost;
+		}
+	}
+
 	FSlateApplication& Slate = FSlateApplication::Get();
 	const FInputDeviceId Device = Binding.InputDevice;
 	const int32 UserIndex = Binding.SlateUserIndex;
@@ -2349,7 +2491,6 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 		? SelectedPreUser->GetDragDropContent() : nullptr;
 	TGuardValue<int32> SyntheticGuard(
 		DispatchContext->SyntheticDepth, DispatchContext->SyntheticDepth + 1);
-	bReplayInProgress = true;
 
 	// Stored portable coordinates are viewport-local; every engine event needs screen space.
 	FCortexEditorPhysicalInputEvent EngineEvent = Event;

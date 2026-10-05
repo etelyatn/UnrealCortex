@@ -149,6 +149,16 @@ public:
 	FCortexCommandResult Dispatch(const FCortexEditorPhysicalInputEvent& Event);
 
 	/**
+	 * Arms unattended-replay interference ownership at replay epoch establishment, before the
+	 * first event. While armed, foreign physical input and any loss of the selected
+	 * focus/window/route are treated as interference, including during the idle/wait window
+	 * before the first dispatch. Does not steal focus and does not enable inactive-application
+	 * input handling; a lost route is reported as interference instead. Requires the exact
+	 * binding to still be valid; cleared by ReleaseHeldInputs/Shutdown.
+	 */
+	FCortexCommandResult BeginReplayEpoch();
+
+	/**
 	 * Non-blocking observation of the exact selected route for one guarded press. Returns the
 	 * structured ready/pending/mismatch evidence in Out and never invokes a widget callback or
 	 * issues a movement command. Pending freshness precedes any wrong-target verdict.
@@ -253,6 +263,16 @@ private:
 	 * world-context list.
 	 */
 	bool bOwnedWorldObserved = false;
+	/**
+	 * True once the exact captured owned context has been observed present at least once.
+	 *
+	 * The first absence afterwards is a terminal loss of ownership: a later context (a successor
+	 * PIE, which may carry an identical request fingerprint) can never be adopted or ended, and no
+	 * further end-PIE request is issued for this operation.
+	 */
+	mutable bool bOwnedContextObserved = false;
+	/** Latched once the exact captured owned context has been observed absent; never cleared mid-run. */
+	mutable bool bOwnedContextGone = false;
 	/** Throttle for the "teardown still pending" diagnostic; 0 means it has not fired yet. */
 	double LastTeardownDiagnosticSeconds = 0.0;
 	TWeakObjectPtr<UClass> LastObservedPawnClass;
@@ -339,6 +359,12 @@ private:
 
 	/** True when the selected user's keyboard focus is inside the selected viewport route. */
 	bool IsKeyboardFocusOnSelectedRoute() const;
+
+	/**
+	 * True when the selected user's current keyboard focus/window still belongs to the selected
+	 * route. A foreign focus or a different active window means replay no longer owns input.
+	 */
+	bool IsSelectedRouteOwnershipIntact(FString& OutReason) const;
 
 	/** True when the given widget (or one of its ancestors) is on the selected viewport route. */
 	bool IsWidgetOnSelectedRoute(const TSharedPtr<const SWidget>& Widget) const;

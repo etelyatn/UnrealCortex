@@ -1,11 +1,13 @@
 #include "Misc/AutomationTest.h"
 
 #include "CortexReplayErrorCodes.h"
+#include "CortexReplayGuardEvaluator.h"
 #include "CortexReplayLibrary.h"
 #include "CortexReplayTestUtils.h"
 #include "CortexReplayTypes.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Framework/Application/SlateApplication.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -14,6 +16,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "Templates/Function.h"
+#include "Widgets/Layout/SBox.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"
@@ -700,6 +703,183 @@ bool FCortexReplayLibraryKeyEligibilityTest::RunTest(const FString& Parameters)
 	const FCortexCommandResult Result = Reopened.Load(Id, false, Snapshot);
 	TestFalse(TEXT("Unregistered persisted key denies load"), Result.bSuccess);
 	TestEqual(TEXT("Unregistered key is a format error"), Result.ErrorCode, FString(CortexReplayErrorCodes::UnsupportedRecordingFormat));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// CR-01: the ONE kind-specific portable key representation. Motion carries the canonical
+// Mouse2D axis, wheel the canonical MouseWheelAxis; the recording is accepted, loadable and
+// preserves the canonical keys, while any other representation is rejected.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibraryPortableMotionWheelKeysTest,
+	"Cortex.Replay.Library.PortableMotionWheelKeys",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibraryPortableMotionWheelKeysTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+
+	int32 Id = 0;
+	TestTrue(TEXT("Reserve"), Library.ReserveId(Id).bSuccess);
+
+	FCortexReplayEvent Key = MakeKeyDownEvent(0, 0.0, EKeys::W);
+
+	FCortexReplayEvent Move;
+	Move.Sequence = 1;
+	Move.TimeSeconds = 0.01;
+	Move.Input.Kind = ECortexEditorPhysicalInputKind::PointerMove;
+	Move.Input.Key = EKeys::Mouse2D;
+	Move.Input.ViewportPosition = FVector2D(0.25, 0.5);
+	Move.Input.Delta = FVector2D(3.0, -2.0);
+
+	FCortexReplayEvent Relative;
+	Relative.Sequence = 2;
+	Relative.TimeSeconds = 0.02;
+	Relative.Input.Kind = ECortexEditorPhysicalInputKind::RelativeMove;
+	Relative.Input.Key = EKeys::Mouse2D;
+	Relative.Input.Delta = FVector2D(12.0, 0.0);
+
+	FCortexReplayEvent Wheel;
+	Wheel.Sequence = 3;
+	Wheel.TimeSeconds = 0.03;
+	Wheel.Input.Kind = ECortexEditorPhysicalInputKind::Wheel;
+	Wheel.Input.Key = EKeys::MouseWheelAxis;
+	Wheel.Input.WheelDelta = 1.0f;
+
+	TestTrue(TEXT("Recording with captured motion and wheel publishes"),
+		Library.Publish(Fixture.MakeRecording(Id, false, { Key, Move, Relative, Wheel })).bSuccess);
+
+	TSharedPtr<const FCortexReplaySnapshot> Loaded;
+	TestTrue(TEXT("Recording with captured motion and wheel loads"),
+		Library.Load(Id, false, Loaded).bSuccess);
+	if (Loaded.IsValid() && Loaded->Events.Num() == 4)
+	{
+		TestEqual(TEXT("Loaded motion key is the canonical Mouse2D"),
+			Loaded->Events[1].Input.Key, EKeys::Mouse2D);
+		TestEqual(TEXT("Loaded relative key is the canonical Mouse2D"),
+			Loaded->Events[2].Input.Key, EKeys::Mouse2D);
+		TestEqual(TEXT("Loaded wheel key is the canonical MouseWheelAxis"),
+			Loaded->Events[3].Input.Key, EKeys::MouseWheelAxis);
+	}
+
+	// Exactly one representation: a registered-but-different motion axis is not the canonical key.
+	{
+		int32 MoveId = 0;
+		TestTrue(TEXT("Reserve non-canonical motion"), Library.ReserveId(MoveId).bSuccess);
+		FCortexReplayEvent NonCanonicalMove;
+		NonCanonicalMove.Sequence = 0;
+		NonCanonicalMove.TimeSeconds = 0.0;
+		NonCanonicalMove.Input.Kind = ECortexEditorPhysicalInputKind::PointerMove;
+		NonCanonicalMove.Input.Key = EKeys::MouseX;
+		TestFalse(TEXT("Non-canonical motion key is rejected"),
+			Library.Publish(Fixture.MakeRecording(MoveId, false, { NonCanonicalMove })).bSuccess);
+	}
+	{
+		int32 WheelId = 0;
+		TestTrue(TEXT("Reserve keyless wheel"), Library.ReserveId(WheelId).bSuccess);
+		FCortexReplayEvent KeylessWheel;
+		KeylessWheel.Sequence = 0;
+		KeylessWheel.TimeSeconds = 0.0;
+		KeylessWheel.Input.Kind = ECortexEditorPhysicalInputKind::Wheel;
+		KeylessWheel.Input.Key = EKeys::Invalid;
+		TestFalse(TEXT("Keyless wheel is rejected"),
+			Library.Publish(Fixture.MakeRecording(WheelId, false, { KeylessWheel })).bSuccess);
+	}
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// CR-02: a real tagged Slate selector captured live and the identical selector loaded from a
+// published recording carry the SAME non-empty lower-case 64-hex SHA-256, so the live evaluator
+// accepts the guard instead of reporting identity_mismatch.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibrarySlateIdentityDigestRoundTripTest,
+	"Cortex.Replay.Library.SlateIdentityDigestRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibrarySlateIdentityDigestRoundTripTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddInfo(TEXT("Slate not initialized - skipping identity digest test"));
+		return true;
+	}
+
+	// Capture side: a real tagged Slate root/control produce the live selector and digest.
+	const TSharedRef<SBox> RootWidget = SNew(SBox);
+	RootWidget->SetTag(FName(TEXT("CortexReplayDigestRoot")));
+	const TSharedRef<SBox> TargetWidget = SNew(SBox);
+	TargetWidget->SetTag(FName(TEXT("CortexReplayDigestTarget")));
+	const FCortexEditorPhysicalInputWidgetIdentity Captured =
+		FCortexEditorPhysicalInputSelectorBuilder::BuildSlateIdentity(*RootWidget, *TargetWidget);
+
+	TestEqual(TEXT("Captured digest is 64 hex characters"), Captured.IdentitySha256.Len(), 64);
+	TestFalse(TEXT("Captured digest is non-empty"), Captured.IdentitySha256.IsEmpty());
+	bool bLowerHex = Captured.IdentitySha256.Len() == 64;
+	for (int32 Index = 0; bLowerHex && Index < Captured.IdentitySha256.Len(); ++Index)
+	{
+		const TCHAR Character = Captured.IdentitySha256[Index];
+		bLowerHex = (Character >= TEXT('0') && Character <= TEXT('9'))
+			|| (Character >= TEXT('a') && Character <= TEXT('f'));
+	}
+	TestTrue(TEXT("Captured digest is lower-case hex"), bLowerHex);
+
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+
+	int32 Id = 0;
+	TestTrue(TEXT("Reserve"), Library.ReserveId(Id).bSuccess);
+
+	FCortexReplayEvent Press;
+	Press.Sequence = 0;
+	Press.TimeSeconds = 0.0;
+	Press.Input.Kind = ECortexEditorPhysicalInputKind::PointerDown;
+	Press.Input.Key = EKeys::LeftMouseButton;
+	Press.Input.ViewportPosition = FVector2D(0.5, 0.5);
+	FCortexReplayInteractionGuard Guard;
+	Guard.ExpectedPose = FCortexEditorPhysicalInputPlayerPose();
+	Guard.UICoverage = ECortexEditorUICoverage::Supported;
+	Guard.UITarget = MakeShared<const FCortexEditorPhysicalInputWidgetIdentity>(Captured);
+	Guard.ExpectedLocalPosition = FVector2D(0.5, 0.5);
+	Press.Guard = Guard;
+
+	TestTrue(TEXT("Captured selector publishes"),
+		Library.Publish(Fixture.MakeRecording(Id, false, { Press })).bSuccess);
+
+	TSharedPtr<const FCortexReplaySnapshot> Loaded;
+	TestTrue(TEXT("Captured selector loads"), Library.Load(Id, false, Loaded).bSuccess);
+	if (!Loaded.IsValid() || Loaded->Events.Num() != 1
+		|| !Loaded->Events[0].Guard.IsSet() || !Loaded->Events[0].Guard->UITarget.IsValid())
+	{
+		AddError(TEXT("Loaded recording did not carry the supported guard"));
+		return false;
+	}
+	const FCortexEditorPhysicalInputWidgetIdentity& LoadedIdentity =
+		*Loaded->Events[0].Guard->UITarget;
+	TestFalse(TEXT("Loaded digest is non-empty"), LoadedIdentity.IdentitySha256.IsEmpty());
+	TestEqual(TEXT("Load rebuilds the same digest as live capture"),
+		LoadedIdentity.IdentitySha256, Captured.IdentitySha256);
+
+	// Live resolution: the same real selector observed on the exact route is Ready.
+	FCortexEditorPhysicalInputUIObservation Observation;
+	Observation.State = ECortexEditorUIObservationState::Ready;
+	Observation.LocalPosition = Guard.ExpectedLocalPosition;
+	Observation.ActualTarget = MakeShared<const FCortexEditorPhysicalInputWidgetIdentity>(Captured);
+
+	FCortexEditorPhysicalInputPlayerPose ActualPose;
+	const FCortexReplayGuardDecision Decision =
+		FCortexReplayGuardEvaluator::Evaluate(Loaded->Events[0], ActualPose, Observation, false);
+	TestTrue(TEXT("A live selector matching the loaded selector is Ready, not identity_mismatch"),
+		Decision.State == ECortexReplayGuardDecisionState::Ready);
 
 	return true;
 }

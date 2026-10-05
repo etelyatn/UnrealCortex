@@ -31,21 +31,11 @@ struct FCortexEditorPhysicalInputGuardState
 	FVector2D LastViewportPointerPosition = FVector2D::ZeroVector;
 };
 
-/** Builds and canonicalizes the portable selector for a tagged runtime Slate root/control. */
-class FCortexEditorPhysicalInputSelectorBuilder
-{
-public:
-	/**
-	 * RootTag/TargetTag come from SWidget::GetTag for distinct root and control widgets. An
-	 * empty root/target tag is not a supported selector and must surface as unavailable, never
-	 * as an anonymous fallback.
-	 */
-	static FCortexEditorPhysicalInputWidgetIdentity BuildSlateIdentity(
-		const SWidget& RootWidget, const SWidget& TargetWidget);
-
-	/** Interned canonical plain selector used for identity hashing. */
-	static FString CanonicalizeSelector(const FCortexEditorPhysicalInputWidgetIdentity& Identity);
-};
+/**
+ * The portable selector builder (BuildSlateIdentity/CanonicalizeSelector/ComputeIdentitySha256)
+ * lives in the public CortexEditorPhysicalInput.h so capture and load share exactly one
+ * canonical selector + SHA-256 implementation.
+ */
 
 /** Resolves normal-route evidence for the exact selected tagged Slate route. */
 class FCortexEditorPhysicalInputUIResolver

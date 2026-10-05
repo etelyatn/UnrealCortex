@@ -1226,16 +1226,21 @@ bool IsKeyEligibleForKind(const FKey& Key, ECortexEditorPhysicalInputKind Kind, 
 		break;
 	case ECortexEditorPhysicalInputKind::PointerMove:
 	case ECortexEditorPhysicalInputKind::RelativeMove:
-		if (!Key.IsMouseButton() && !bIsPointerAxis)
+		// One canonical portable motion key: the 2D mouse axis. Any other key (including a
+		// different registered axis) is a different representation and is rejected.
+		if (Key != EKeys::Mouse2D)
 		{
-			OutError = FString::Printf(TEXT("Pointer motion event '%s' requires a mouse key or axis"), *Key.ToString());
+			OutError = FString::Printf(
+				TEXT("Pointer motion event '%s' requires the canonical Mouse2D axis key"), *Key.ToString());
 			return false;
 		}
 		break;
 	case ECortexEditorPhysicalInputKind::Wheel:
-		if (!bIsPointerAxis && !Key.IsMouseButton())
+		// One canonical portable wheel key: the mouse wheel axis.
+		if (Key != EKeys::MouseWheelAxis)
 		{
-			OutError = FString::Printf(TEXT("Wheel event '%s' requires a mouse axis or button"), *Key.ToString());
+			OutError = FString::Printf(
+				TEXT("Wheel event '%s' requires the canonical MouseWheelAxis key"), *Key.ToString());
 			return false;
 		}
 		break;
@@ -2048,12 +2053,14 @@ public:
 			return nullptr;
 		}
 
-		const FString SelectorJson = SerializeCanonicalJson(SerializeIdentity(Canonical).ToSharedRef());
-		const TArray<uint8> SelectorBytes = ToUtf8Bytes(SelectorJson);
-
-		FString Digest;
-		if (!ComputeSha256Hex(SelectorBytes, Digest, OutError))
+		// Exactly one canonical selector + lower-case 64-hex SHA-256 implementation, shared with
+		// live capture (FCortexEditorPhysicalInputSelectorBuilder). A live selector and its loaded
+		// equivalent therefore always carry byte-identical digests.
+		const FString SelectorText = FCortexEditorPhysicalInputSelectorBuilder::CanonicalizeSelector(Canonical);
+		const FString Digest = FCortexEditorPhysicalInputSelectorBuilder::ComputeIdentitySha256(Canonical);
+		if (Digest.IsEmpty())
 		{
+			OutError = TEXT("Failed to compute the identity digest");
 			return nullptr;
 		}
 		Canonical.IdentitySha256 = Digest;
@@ -2062,7 +2069,7 @@ public:
 		for (const TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity>& Existing : Bucket)
 		{
 			if (Existing.IsValid()
-				&& SerializeCanonicalJson(SerializeIdentity(*Existing).ToSharedRef()) == SelectorJson)
+				&& FCortexEditorPhysicalInputSelectorBuilder::CanonicalizeSelector(*Existing) == SelectorText)
 			{
 				return Existing;
 			}

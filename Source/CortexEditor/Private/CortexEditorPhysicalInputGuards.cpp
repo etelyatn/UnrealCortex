@@ -1,12 +1,248 @@
 #include "CortexEditorPhysicalInputGuards.h"
 
+#include "CortexEngineCompat.h"
+
+#include "Containers/StringConv.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "Framework/Application/SlateApplication.h"
 #include "InputCoreTypes.h"
 #include "Layout/ArrangedWidget.h"
 #include "Layout/WidgetPath.h"
-#include "Misc/SecureHash.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
+#include "Serialization/JsonWriter.h"
 #include "Widgets/SWidget.h"
 #include "Widgets/SWindow.h"
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <bcrypt.h>
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
+
+namespace
+{
+// ---------------------------------------------------------------------------
+// Canonical selector (single implementation shared by capture and load)
+// ---------------------------------------------------------------------------
+
+const TCHAR* SelectorSurfaceToString(const ECortexEditorUISurface Surface)
+{
+	return Surface == ECortexEditorUISurface::WorldComponent ? TEXT("world_component") : TEXT("viewport");
+}
+
+const TCHAR* SelectorRootKindToString(const ECortexEditorUIRootKind RootKind)
+{
+	return RootKind == ECortexEditorUIRootKind::Slate ? TEXT("slate") : TEXT("umg");
+}
+
+const TCHAR* SelectorDiscriminatorToString(const ECortexEditorUIRootDiscriminator Discriminator)
+{
+	switch (Discriminator)
+	{
+	case ECortexEditorUIRootDiscriminator::RootTag:
+		return TEXT("root_tag");
+	case ECortexEditorUIRootDiscriminator::SavedComponent:
+		return TEXT("saved_component");
+	default:
+		return TEXT("singleton_class");
+	}
+}
+
+/**
+ * The exact structured selector payload that is canonicalized and hashed. Field presence mirrors
+ * the persisted identity JSON so a captured selector and its loaded equivalent hash identically.
+ */
+TSharedPtr<FJsonObject> MakeCanonicalIdentityObject(const FCortexEditorPhysicalInputWidgetIdentity& Identity)
+{
+	TSharedPtr<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetStringField(TEXT("surface"), SelectorSurfaceToString(Identity.Surface));
+	Object->SetStringField(TEXT("root_kind"), SelectorRootKindToString(Identity.RootKind));
+	Object->SetStringField(TEXT("discriminator"), SelectorDiscriminatorToString(Identity.Discriminator));
+
+	if (Identity.Discriminator == ECortexEditorUIRootDiscriminator::SavedComponent)
+	{
+		Object->SetStringField(TEXT("actor_path"), Identity.ActorPath);
+		Object->SetStringField(TEXT("component_path"), Identity.ComponentPath);
+	}
+	else if (Identity.RootKind == ECortexEditorUIRootKind::UMG)
+	{
+		Object->SetStringField(TEXT("root_class_path"), Identity.RootClassPath);
+		if (Identity.Discriminator == ECortexEditorUIRootDiscriminator::RootTag)
+		{
+			Object->SetStringField(TEXT("root_tag"), Identity.RootTag);
+		}
+	}
+	else
+	{
+		Object->SetStringField(TEXT("root_tag"), Identity.RootTag);
+		Object->SetStringField(TEXT("target_tag"), Identity.TargetTag);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> Ancestry;
+	Ancestry.Reserve(Identity.WidgetAncestry.Num());
+	for (const FName& Segment : Identity.WidgetAncestry)
+	{
+		Ancestry.Add(MakeShared<FJsonValueString>(Segment.ToString()));
+	}
+	Object->SetArrayField(TEXT("widget_ancestry"), Ancestry);
+
+	return Object;
+}
+
+// Deterministic JSON writer: object keys are sorted, arrays keep their order. Mirrors the
+// canonical writer used for every persisted payload so the selector bytes never depend on TMap
+// iteration order.
+template <typename CharType, typename PrintPolicy>
+void WriteCanonicalSelectorValue(const TSharedPtr<FJsonValue>& Value,
+	TJsonWriter<CharType, PrintPolicy>& Writer);
+
+template <typename CharType, typename PrintPolicy>
+void WriteCanonicalSelectorObject(const TSharedPtr<FJsonObject>& Object,
+	TJsonWriter<CharType, PrintPolicy>& Writer)
+{
+	Writer.WriteObjectStart();
+	if (Object.IsValid())
+	{
+		TArray<FString> Keys;
+		Keys.Reserve(Object->Values.Num());
+		for (const auto& Pair : Object->Values)
+		{
+			Keys.Add(CortexEngineCompat::JsonKeyToString(Pair.Key));
+		}
+		Keys.Sort();
+
+		for (const FString& Key : Keys)
+		{
+			const TSharedPtr<FJsonValue> Value = Object->TryGetField(Key);
+			if (!Value.IsValid())
+			{
+				continue;
+			}
+			Writer.WriteIdentifierPrefix(Key);
+			WriteCanonicalSelectorValue(Value, Writer);
+		}
+	}
+	Writer.WriteObjectEnd();
+}
+
+template <typename CharType, typename PrintPolicy>
+void WriteCanonicalSelectorValue(const TSharedPtr<FJsonValue>& Value,
+	TJsonWriter<CharType, PrintPolicy>& Writer)
+{
+	if (!Value.IsValid() || Value->Type == EJson::Null)
+	{
+		Writer.WriteNull();
+		return;
+	}
+
+	switch (Value->Type)
+	{
+	case EJson::Object:
+	{
+		const TSharedPtr<FJsonObject>* Object = nullptr;
+		if (Value->TryGetObject(Object) && Object != nullptr)
+		{
+			WriteCanonicalSelectorObject(*Object, Writer);
+		}
+		else
+		{
+			Writer.WriteNull();
+		}
+		break;
+	}
+	case EJson::Array:
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+		if (Value->TryGetArray(Array) && Array != nullptr)
+		{
+			Writer.WriteArrayStart();
+			for (const TSharedPtr<FJsonValue>& Entry : *Array)
+			{
+				WriteCanonicalSelectorValue(Entry, Writer);
+			}
+			Writer.WriteArrayEnd();
+		}
+		else
+		{
+			Writer.WriteNull();
+		}
+		break;
+	}
+	case EJson::String:
+	{
+		FString StringValue;
+		Value->TryGetString(StringValue);
+		Writer.WriteValue(StringValue);
+		break;
+	}
+	case EJson::Number:
+		Writer.WriteValue(Value->AsNumber());
+		break;
+	case EJson::Boolean:
+		Writer.WriteValue(Value->AsBool());
+		break;
+	default:
+		Writer.WriteNull();
+		break;
+	}
+}
+
+TArray<uint8> SelectorToUtf8Bytes(const FString& Text)
+{
+	TArray<uint8> Bytes;
+	FTCHARToUTF8 Converter(*Text);
+	Bytes.Append(reinterpret_cast<const uint8*>(Converter.Get()), Converter.Length());
+	return Bytes;
+}
+
+/** Lower-case 64-hex SHA-256 of the payload bytes; empty when the provider is unavailable. */
+FString ComputeSelectorSha256Hex(const uint8* Data, int64 Size)
+{
+#if PLATFORM_WINDOWS
+	BCRYPT_ALG_HANDLE AlgorithmHandle = nullptr;
+	BCRYPT_HASH_HANDLE HashHandle = nullptr;
+	if (BCryptOpenAlgorithmProvider(&AlgorithmHandle, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0
+		|| AlgorithmHandle == nullptr)
+	{
+		return FString();
+	}
+	if (BCryptCreateHash(AlgorithmHandle, &HashHandle, nullptr, 0, nullptr, 0, 0) < 0
+		|| HashHandle == nullptr)
+	{
+		BCryptCloseAlgorithmProvider(AlgorithmHandle, 0);
+		return FString();
+	}
+
+	bool bHashed = Size == 0
+		|| BCryptHashData(HashHandle, const_cast<PUCHAR>(Data), static_cast<ULONG>(Size), 0) >= 0;
+
+	uint8 Digest[32];
+	const bool bFinished = bHashed
+		&& BCryptFinishHash(HashHandle, Digest, static_cast<ULONG>(sizeof(Digest)), 0) >= 0;
+
+	BCryptDestroyHash(HashHandle);
+	BCryptCloseAlgorithmProvider(AlgorithmHandle, 0);
+
+	if (!bFinished)
+	{
+		return FString();
+	}
+
+	FString OutHex;
+	OutHex.Reserve(static_cast<int32>(sizeof(Digest)) * 2);
+	for (const uint8 Byte : Digest)
+	{
+		OutHex += FString::Printf(TEXT("%02x"), static_cast<int32>(Byte));
+	}
+	return OutHex;
+#else
+	(void)Data;
+	(void)Size;
+	return FString();
+#endif
+}
+}
 
 FCortexEditorPhysicalInputWidgetIdentity FCortexEditorPhysicalInputSelectorBuilder::BuildSlateIdentity(
 	const SWidget& RootWidget, const SWidget& TargetWidget)
@@ -17,23 +253,27 @@ FCortexEditorPhysicalInputWidgetIdentity FCortexEditorPhysicalInputSelectorBuild
 	Identity.Discriminator = ECortexEditorUIRootDiscriminator::RootTag;
 	Identity.RootTag = RootWidget.GetTag().ToString();
 	Identity.TargetTag = TargetWidget.GetTag().ToString();
-
-	const FString Canonical = CanonicalizeSelector(Identity);
-	FSHA1 Hash;
-	Hash.UpdateWithString(*Canonical, Canonical.Len());
-	Hash.Final();
-	uint8 Digest[20];
-	Hash.GetHash(Digest);
-	Identity.IdentitySha256 = BytesToHex(Digest, 20);
+	Identity.IdentitySha256 = ComputeIdentitySha256(Identity);
 	return Identity;
 }
 
 FString FCortexEditorPhysicalInputSelectorBuilder::CanonicalizeSelector(
 	const FCortexEditorPhysicalInputWidgetIdentity& Identity)
 {
-	// A stable, plain-text selector: never transient widget names, addresses or runtime counters.
-	return FString::Printf(TEXT("slate|viewport|roottag=%s|targettag=%s"),
-		*Identity.RootTag, *Identity.TargetTag);
+	FString Output;
+	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Output);
+	WriteCanonicalSelectorObject(MakeCanonicalIdentityObject(Identity), *Writer);
+	Writer->Close();
+	return Output;
+}
+
+FString FCortexEditorPhysicalInputSelectorBuilder::ComputeIdentitySha256(
+	const FCortexEditorPhysicalInputWidgetIdentity& Identity)
+{
+	const FString Canonical = CanonicalizeSelector(Identity);
+	const TArray<uint8> Bytes = SelectorToUtf8Bytes(Canonical);
+	return ComputeSelectorSha256Hex(Bytes.GetData(), static_cast<int64>(Bytes.Num()));
 }
 
 bool FCortexEditorPhysicalInputUIResolver::ResolveActualSlateTarget(

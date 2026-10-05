@@ -4,6 +4,8 @@
 #include "InputCoreTypes.h"
 #include "Input/Events.h"
 
+class SWidget;
+
 /**
  * Data-only foundation for the CortexEditor physical input session.
  *
@@ -94,4 +96,37 @@ struct FCortexEditorPhysicalInputTargetInfo
 	int32 LocalPlayerIndex = 0;
 	FIntPoint ViewportSize = FIntPoint::ZeroValue;
 	double DpiScale = 1.0;
+};
+
+/**
+ * Builds and hashes the portable widget selector.
+ *
+ * There is exactly ONE canonical selector representation and ONE lower-case 64-hex SHA-256
+ * digest implementation, shared by live capture (this type), persisted loading and live
+ * resolution. The digest is always SHA-256 of the UTF-8 bytes of CanonicalizeSelector; a
+ * separate SHA-1 or a differently canonicalized digest must never be produced for an identity.
+ */
+class CORTEXEDITOR_API FCortexEditorPhysicalInputSelectorBuilder
+{
+public:
+	/**
+	 * RootTag/TargetTag come from SWidget::GetTag for distinct root and control widgets. An
+	 * empty root/target tag is not a supported selector and must surface as unavailable, never
+	 * as an anonymous fallback.
+	 */
+	static FCortexEditorPhysicalInputWidgetIdentity BuildSlateIdentity(
+		const SWidget& RootWidget, const SWidget& TargetWidget);
+
+	/**
+	 * Canonical, digest-free selector text for the identity. The exact bytes returned here are
+	 * the only input to ComputeIdentitySha256, in capture, load and live resolution alike.
+	 */
+	static FString CanonicalizeSelector(const FCortexEditorPhysicalInputWidgetIdentity& Identity);
+
+	/**
+	 * Lower-case 64-hex SHA-256 of the UTF-8 canonical selector. Returns an empty string when the
+	 * platform hashing provider is unavailable; callers must treat empty as a failure, never as
+	 * a matchable digest.
+	 */
+	static FString ComputeIdentitySha256(const FCortexEditorPhysicalInputWidgetIdentity& Identity);
 };

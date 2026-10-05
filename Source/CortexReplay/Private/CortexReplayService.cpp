@@ -514,6 +514,17 @@ void FCortexReplayService::FImpl::TickRun()
 
 		Scheduler = MakeShared<FCortexReplayScheduler>(Snapshot.ToSharedRef());
 		ReplayEpoch = FPlatformTime::Seconds();
+
+		// Arm replay interference ownership at epoch establishment, before the first dispatch, so a
+		// foreign focus/input established during the pre-first-event window is treated as
+		// interference rather than being delivered to the foreign consumer.
+		const FCortexCommandResult Epoch = Session->BeginReplayEpoch();
+		if (!Epoch.bSuccess)
+		{
+			Owner->Finalize(ECortexReplayState::Interrupted, Epoch);
+			return;
+		}
+
 		SetRunState(ECortexReplayState::Replaying);
 	}
 
