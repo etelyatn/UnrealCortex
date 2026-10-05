@@ -49,6 +49,13 @@ public:
 	/** Measured authorized wait offset committed so far (total, capped at 5 seconds). */
 	double GetAuthorizedWaitSeconds() const;
 
+	/**
+	 * Duration of the in-progress blocked-event wait, measured from its observation start; 0 when
+	 * no wait is active. This is reported separately from the committed authorized offset so a
+	 * slow evaluation is never counted as authorized wait time.
+	 */
+	double GetCurrentWaitSeconds() const;
+
 	/** Sequence currently blocked on a UI wait, or INDEX_NONE when not waiting. */
 	int32 GetWaitingSequence() const;
 

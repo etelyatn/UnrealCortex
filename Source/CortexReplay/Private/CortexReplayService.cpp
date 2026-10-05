@@ -14,6 +14,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -22,7 +23,11 @@
 #include "Misc/App.h"
 #include "Misc/DateTime.h"
 #include "Misc/EngineVersion.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
+#include "Misc/Paths.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "Templates/Function.h"
 #include "UObject/Package.h"
 
@@ -33,6 +38,13 @@ constexpr double ServicePreparationDeadlineSeconds = 30.0;
 
 constexpr int32 ServiceRecentTerminalRunLimit = 100;
 constexpr double ServiceRecentTerminalWindowSeconds = 86400.0;
+
+/** How often an active AI run re-reads the live permission without reloading recorded inputs. */
+constexpr double ServicePermissionCheckIntervalSeconds = 0.25;
+
+/** Mirrors of the scheduler's fixed wait budgets for the reported progress fields. */
+constexpr double ServiceMaxAuthorizedWaitSeconds = 5.0;
+constexpr double ServiceMaxWaitPerPressSeconds = 1.0;
 
 FString ServiceGuidToString(const FGuid& Id)
 {
@@ -77,6 +89,11 @@ const TCHAR* ServiceObservationStateToString(ECortexEditorUIObservationState Sta
 	}
 }
 
+FString ServiceIsoUtc(const FDateTime& Time)
+{
+	return Time.GetTicks() > 0 ? Time.ToIso8601() : FString();
+}
+
 FCortexCommandResult ServiceSuccess()
 {
 	return FCortexCommandRouter::Success(nullptr);
@@ -90,11 +107,6 @@ FCortexCommandResult ServiceError(const TCHAR* Code, const FString& Message)
 FCortexCommandResult ServiceError(const FString& Code, const FString& Message)
 {
 	return FCortexCommandRouter::Error(Code, Message);
-}
-
-FString ServiceIsoUtc(const FDateTime& Time)
-{
-	return Time.GetTicks() > 0 ? Time.ToIso8601() : FString();
 }
 
 TSharedRef<FJsonObject> ServiceGuardCoverageToJson(const FCortexReplayGuardCoverage& Coverage)
@@ -138,11 +150,67 @@ TSharedRef<FJsonObject> ServiceMetadataToJson(const FCortexReplayMetadata& Metad
 	Object->SetObjectField(TEXT("guard_coverage"), ServiceGuardCoverageToJson(Metadata.GuardCoverage));
 	return Object;
 }
+
+/**
+ * Reads only the live `ai_enabled` permission bit for a recording.
+ *
+ * The immutable admitted payload is never reloaded for this; a small metadata-only read keeps the
+ * live permission check independent of the recorded inputs.
+ */
+bool ServiceReadMetadataAIEnabled(const FString& ProjectRoot, int32 RecordingId, bool& bOutEnabled)
+{
+	const FString Path = FPaths::Combine(
+		FPaths::Combine(
+			FPaths::Combine(ProjectRoot, TEXT(".cortex/replay/recordings")),
+			FString::FromInt(RecordingId)),
+		TEXT("metadata.json"));
+	FString Text;
+	if (!FFileHelper::LoadFileToString(Text, *Path))
+	{
+		return false;
+	}
+	TSharedPtr<FJsonObject> Object;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Text);
+	if (!FJsonSerializer::Deserialize(Reader, Object) || !Object.IsValid())
+	{
+		return false;
+	}
+	int32 ParsedId = 0;
+	if (!Object->TryGetNumberField(TEXT("recording_id"), ParsedId) || ParsedId != RecordingId)
+	{
+		return false;
+	}
+	return Object->TryGetBoolField(TEXT("ai_enabled"), bOutEnabled);
+}
+
+/** Bounded waiting/progress object shared by get_run and the human current-operation status. */
+TSharedRef<FJsonObject> ServiceWaitingToJson(const FCortexReplayScheduler& Scheduler)
+{
+	const double Committed = Scheduler.GetAuthorizedWaitSeconds();
+	const double Current = Scheduler.GetCurrentWaitSeconds();
+	const double RemainingRun = FMath::Max(0.0, ServiceMaxAuthorizedWaitSeconds - Committed);
+	const double PerPressLimit = FMath::Min(ServiceMaxWaitPerPressSeconds, RemainingRun);
+
+	TSharedRef<FJsonObject> Waiting = MakeShared<FJsonObject>();
+	Waiting->SetNumberField(TEXT("sequence"), Scheduler.GetWaitingSequence());
+	Waiting->SetStringField(TEXT("reason"),
+		FString(ServiceObservationStateToString(Scheduler.GetWaitReason())));
+	// The blocked event's current wait duration, reported separately from the committed offset.
+	Waiting->SetNumberField(TEXT("elapsed_seconds"), Current);
+	Waiting->SetNumberField(TEXT("committed_wait_seconds"), Committed);
+	Waiting->SetNumberField(TEXT("remaining_event_seconds"), FMath::Max(0.0, PerPressLimit - Current));
+	Waiting->SetNumberField(TEXT("remaining_run_seconds"),
+		FMath::Max(0.0, ServiceMaxAuthorizedWaitSeconds - Committed - Current));
+	return Waiting;
+}
 }
 
 /** All mutable service state lives here so the public header stays declaration-only. */
 struct FCortexReplayService::FImpl
 {
+	/** The single capture operation's phase; capture ownership spans preparation through teardown. */
+	enum class ECapturePhase : uint8 { None, Preparing, Recording, Finalizing };
+
 	explicit FImpl(FCortexReplayService* InOwner, const FString& InProjectRoot)
 		: Owner(InOwner)
 		, ProjectRoot(InProjectRoot)
@@ -163,15 +231,22 @@ struct FCortexReplayService::FImpl
 	FTSTicker::FDelegateHandle TickerHandle;
 	bool bShutdown = false;
 
-	// ---- capture ----
-	bool bCaptureActive = false;
+	// ---- capture (human) ----
+	ECapturePhase CapturePhase = ECapturePhase::None;
+	/** Scopes async capture callbacks to the exact operation that started them. */
+	uint64 CaptureOperationGeneration = 0;
 	bool bBorrowedCapture = false;
+	bool bOwnedCapture = false;
+	bool bCaptureFaulted = false;
+	bool bCapturePublishOnComplete = false;
+	FCortexCommandResult CaptureFaultResult;
 	int32 CaptureRecordingId = 0;
 	FString CaptureMapAssetPath;
 	FCortexEditorPhysicalInputTargetInfo CaptureTargetInfo;
 	FCortexEditorPhysicalInputPlayerPose CaptureInitialPose;
 	TArray<FCortexReplayEvent> CaptureEvents;
 	double CaptureEpochSeconds = 0.0;
+	double CaptureStopSeconds = 0.0;
 
 	// ---- run ----
 	bool bRunActive = false;
@@ -188,17 +263,33 @@ struct FCortexReplayService::FImpl
 	bool bReadySeen = false;
 	FCortexCommandResult PreparationResult;
 	bool bCancellationRequested = false;
+	FCortexCommandResult CancellationResult;
 	bool bInterruptionRequested = false;
 	FCortexCommandResult InterruptionResult;
+	bool bPermissionRevoked = false;
+	FCortexCommandResult PermissionRevocationResult;
+	double LastPermissionCheckSeconds = 0.0;
 	ECortexReplayState PendingTerminalState = ECortexReplayState::Cancelled;
 	FCortexCommandResult PendingTerminalResult;
 
 	bool Tick(float DeltaSeconds);
 	void TickRun();
+	void TickCapture();
 	void TickFinalization();
 	void EnsureTicker();
+	void DetachTickerAndSession();
+	void ResetRun();
+	void ResetCapture();
 	FCortexReplayGuardDecision EvaluateGuard(const FCortexReplayEvent& Event);
 	FCortexCommandResult DispatchEvent(const FCortexReplayEvent& Event);
+	FCortexCommandResult DispatchBlockError() const;
+	bool CheckLivePermission();
+	void MarkCaptureFaulted(const FCortexCommandResult& Result);
+	void BeginCaptureFinalization(bool bPublish);
+	void CompleteCaptureFinalization();
+	FCortexCommandResult PublishCaptureSnapshot();
+	void OnCaptureInterruption(uint64 Generation, const FCortexCommandResult& Result);
+	void OnOwnedCaptureReady(uint64 Generation, const FCortexCommandResult& Ready);
 	void OnCaptureEvent(const FCortexEditorPhysicalInputEvent& Event, double TimeSeconds,
 		const FCortexEditorPhysicalInputCaptureContext& Context);
 	void SetRunState(ECortexReplayState NewState);
@@ -214,6 +305,20 @@ void FCortexReplayService::FImpl::EnsureTicker()
 		FTickerDelegate::CreateRaw(this, &FCortexReplayService::FImpl::Tick));
 }
 
+void FCortexReplayService::FImpl::DetachTickerAndSession()
+{
+	if (Session.IsValid())
+	{
+		Session->Shutdown();
+		Session.Reset();
+	}
+	if (TickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+		TickerHandle.Reset();
+	}
+}
+
 void FCortexReplayService::FImpl::SetRunState(ECortexReplayState NewState)
 {
 	RunState = NewState;
@@ -224,8 +329,79 @@ bool FCortexReplayService::FImpl::Tick(float DeltaSeconds)
 {
 	(void)DeltaSeconds;
 	TickRun();
+	TickCapture();
 	TickFinalization();
 	return true;
+}
+
+FCortexCommandResult FCortexReplayService::FImpl::DispatchBlockError() const
+{
+	if (bInterruptionRequested && !InterruptionResult.ErrorCode.IsEmpty())
+	{
+		return InterruptionResult;
+	}
+	if (bCancellationRequested && !CancellationResult.ErrorCode.IsEmpty())
+	{
+		return CancellationResult;
+	}
+	return ServiceError(CortexReplayErrorCodes::InvalidOperation,
+		TEXT("Replay dispatch is no longer active"));
+}
+
+bool FCortexReplayService::FImpl::CheckLivePermission()
+{
+	if (!bRunActive || bFinalizing || ActiveRun.Origin != ECortexReplayOrigin::AI)
+	{
+		return true;
+	}
+	if (bPermissionRevoked)
+	{
+		return false;
+	}
+	const double Now = FPlatformTime::Seconds();
+	if (Now - LastPermissionCheckSeconds < ServicePermissionCheckIntervalSeconds)
+	{
+		return true;
+	}
+	LastPermissionCheckSeconds = Now;
+
+	bool bEnabled = false;
+	if (!ServiceReadMetadataAIEnabled(ProjectRoot, ActiveRun.RecordingId, bEnabled) || !bEnabled)
+	{
+		// An externally revoked grant cancels the run once and emits no further press.
+		bPermissionRevoked = true;
+		PermissionRevocationResult = ServiceError(CortexReplayErrorCodes::PermissionDenied,
+			TEXT("AI replay permission was revoked"));
+		bCancellationRequested = true;
+		CancellationResult = PermissionRevocationResult;
+		return false;
+	}
+	return true;
+}
+
+void FCortexReplayService::FImpl::ResetRun()
+{
+	bRunActive = false;
+	bFinalizing = false;
+	bTerminalPublished = false;
+	bFrozen = false;
+	bOwnedPie = false;
+	bReadySeen = false;
+	bCancellationRequested = false;
+	bInterruptionRequested = false;
+	bPermissionRevoked = false;
+	CancellationResult = FCortexCommandResult();
+	InterruptionResult = FCortexCommandResult();
+	PermissionRevocationResult = FCortexCommandResult();
+	PreparationResult = FCortexCommandResult();
+	PendingTerminalResult = FCortexCommandResult();
+	PendingTerminalState = ECortexReplayState::Cancelled;
+	ActiveRun = FCortexReplayRunRecord();
+	Snapshot.Reset();
+	Scheduler.Reset();
+	PrepareDeadline = 0.0;
+	ReplayEpoch = 0.0;
+	LastPermissionCheckSeconds = 0.0;
 }
 
 void FCortexReplayService::FImpl::TickRun()
@@ -248,10 +424,9 @@ void FCortexReplayService::FImpl::TickRun()
 		// The service's deadline cannot be extended by the session's own deadline.
 		if (FPlatformTime::Seconds() >= PrepareDeadline)
 		{
-			FCortexCommandResult Timeout = ServiceError(
+			Owner->Finalize(ECortexReplayState::Error, ServiceError(
 				CortexEditorPhysicalInputErrorCodes::PreparationTimeout,
-				TEXT("Replay preparation exceeded the monotonic deadline"));
-			Owner->Finalize(ECortexReplayState::Error, Timeout);
+				TEXT("Replay preparation exceeded the monotonic deadline")));
 			return;
 		}
 		if (!bReadySeen)
@@ -286,10 +461,9 @@ void FCortexReplayService::FImpl::TickRun()
 			Snapshot->InitialState.Pose, Snapshot->InitialState.PawnClassPath);
 		if (FPlatformTime::Seconds() >= PrepareDeadline)
 		{
-			FCortexCommandResult Timeout = ServiceError(
+			Owner->Finalize(ECortexReplayState::Error, ServiceError(
 				CortexEditorPhysicalInputErrorCodes::PreparationTimeout,
-				TEXT("Replay preparation exceeded the monotonic deadline"));
-			Owner->Finalize(ECortexReplayState::Error, Timeout);
+				TEXT("Replay preparation exceeded the monotonic deadline")));
 			return;
 		}
 		if (!Restored.bSuccess)
@@ -307,8 +481,18 @@ void FCortexReplayService::FImpl::TickRun()
 			return;
 		}
 
+		// Final deadline check immediately before the epoch is established.
+		if (FPlatformTime::Seconds() >= PrepareDeadline)
+		{
+			Owner->Finalize(ECortexReplayState::Error, ServiceError(
+				CortexEditorPhysicalInputErrorCodes::PreparationTimeout,
+				TEXT("Replay preparation exceeded the monotonic deadline")));
+			return;
+		}
+
 		Scheduler = MakeShared<FCortexReplayScheduler>(Snapshot.ToSharedRef());
 		ReplayEpoch = FPlatformTime::Seconds();
+		LastPermissionCheckSeconds = -ServicePermissionCheckIntervalSeconds;
 		SetRunState(ECortexReplayState::Replaying);
 	}
 
@@ -316,7 +500,8 @@ void FCortexReplayService::FImpl::TickRun()
 	{
 		if (bCancellationRequested)
 		{
-			Owner->Finalize(ECortexReplayState::Cancelled, ServiceSuccess());
+			Owner->Finalize(ECortexReplayState::Cancelled,
+				CancellationResult.bSuccess ? ServiceSuccess() : CancellationResult);
 			return;
 		}
 		if (bInterruptionRequested)
@@ -341,6 +526,11 @@ void FCortexReplayService::FImpl::TickRun()
 			{
 				Owner->Finalize(ECortexReplayState::Interrupted, InterruptionResult);
 			}
+			else if (bCancellationRequested)
+			{
+				Owner->Finalize(ECortexReplayState::Cancelled,
+					CancellationResult.bSuccess ? ServiceSuccess() : CancellationResult);
+			}
 			else
 			{
 				Owner->Finalize(ECortexReplayState::Error, Advanced);
@@ -348,11 +538,246 @@ void FCortexReplayService::FImpl::TickRun()
 			return;
 		}
 
+		// Completion is only claimed when no cancellation/interruption arrived at the boundary.
 		if (Scheduler->IsComplete())
 		{
-			Owner->Finalize(ECortexReplayState::Completed, ServiceSuccess());
+			if (bCancellationRequested)
+			{
+				Owner->Finalize(ECortexReplayState::Cancelled,
+					CancellationResult.bSuccess ? ServiceSuccess() : CancellationResult);
+			}
+			else if (bInterruptionRequested)
+			{
+				Owner->Finalize(ECortexReplayState::Interrupted, InterruptionResult);
+			}
+			else
+			{
+				Owner->Finalize(ECortexReplayState::Completed, ServiceSuccess());
+			}
 		}
 	}
+}
+
+void FCortexReplayService::FImpl::MarkCaptureFaulted(const FCortexCommandResult& Result)
+{
+	bCaptureFaulted = true;
+	CaptureFaultResult = Result.bSuccess
+		? ServiceError(CortexReplayErrorCodes::TargetUnavailable, TEXT("Capture target was lost"))
+		: Result;
+	if (CapturePhase == ECapturePhase::Finalizing)
+	{
+		// A fault during teardown withholds the pending publication.
+		bCapturePublishOnComplete = false;
+	}
+}
+
+void FCortexReplayService::FImpl::BeginCaptureFinalization(bool bPublish)
+{
+	if (CapturePhase == ECapturePhase::None || CapturePhase == ECapturePhase::Finalizing)
+	{
+		return;
+	}
+	CapturePhase = ECapturePhase::Finalizing;
+	bCapturePublishOnComplete = bPublish;
+	bFrozen = true;
+	if (Session.IsValid())
+	{
+		// Freeze dispatch and detach capture; only a matching owned session is ended.
+		Session->ReleaseHeldInputs();
+		if (bOwnedCapture)
+		{
+			Session->EndOwnedPIE();
+		}
+	}
+}
+
+void FCortexReplayService::FImpl::TickCapture()
+{
+	if (CapturePhase == ECapturePhase::None)
+	{
+		return;
+	}
+
+	if (CapturePhase == ECapturePhase::Preparing)
+	{
+		if (bCaptureFaulted)
+		{
+			BeginCaptureFinalization(false);
+			TickCapture();
+		}
+		return;
+	}
+
+	if (CapturePhase == ECapturePhase::Recording)
+	{
+		if (bCaptureFaulted)
+		{
+			BeginCaptureFinalization(false);
+			TickCapture();
+			return;
+		}
+		// Target destruction is abnormal capture termination, never a complete recording.
+		if (Session.IsValid())
+		{
+			FCortexCommandResult TargetError;
+			if (!Session->ValidateTarget(TargetError))
+			{
+				MarkCaptureFaulted(TargetError);
+				BeginCaptureFinalization(false);
+				TickCapture();
+			}
+		}
+		return;
+	}
+
+	// Finalizing: owned captures retain their session until the matching teardown is observed.
+	if (Session.IsValid() && bOwnedCapture && !Session->IsOwnedPIEEnded())
+	{
+		return;
+	}
+	CompleteCaptureFinalization();
+}
+
+void FCortexReplayService::FImpl::CompleteCaptureFinalization()
+{
+	FCortexCommandResult PublishResult = ServiceSuccess();
+	const bool bShouldPublish = bCapturePublishOnComplete && !bCaptureFaulted;
+	if (bShouldPublish)
+	{
+		PublishResult = PublishCaptureSnapshot();
+		if (!PublishResult.bSuccess)
+		{
+			UE_LOG(LogCortexReplay, Log, TEXT("Capture %d publication failed: %s (%s)"),
+				CaptureRecordingId, *PublishResult.ErrorCode, *PublishResult.ErrorMessage);
+		}
+	}
+	if (Session.IsValid())
+	{
+		Session->Shutdown();
+		Session.Reset();
+	}
+	ResetCapture();
+	if (bShutdown)
+	{
+		DetachTickerAndSession();
+	}
+}
+
+void FCortexReplayService::FImpl::ResetCapture()
+{
+	CapturePhase = ECapturePhase::None;
+	bBorrowedCapture = false;
+	bOwnedCapture = false;
+	bCaptureFaulted = false;
+	bCapturePublishOnComplete = false;
+	CaptureFaultResult = FCortexCommandResult();
+	CaptureRecordingId = 0;
+	CaptureMapAssetPath.Reset();
+	CaptureTargetInfo = FCortexEditorPhysicalInputTargetInfo();
+	CaptureInitialPose = FCortexEditorPhysicalInputPlayerPose();
+	CaptureEvents.Reset();
+	CaptureEpochSeconds = 0.0;
+	CaptureStopSeconds = 0.0;
+	bFrozen = false;
+}
+
+FCortexCommandResult FCortexReplayService::FImpl::PublishCaptureSnapshot()
+{
+	FCortexReplaySnapshot CaptureSnapshot;
+	CaptureSnapshot.InitialState.SchemaVersion = 1;
+	CaptureSnapshot.InitialState.RecordingId = CaptureRecordingId;
+	CaptureSnapshot.InitialState.PawnClassPath = CaptureTargetInfo.PawnClassPath;
+	CaptureSnapshot.InitialState.Pose = CaptureInitialPose;
+	CaptureSnapshot.Events = CaptureEvents;
+
+	for (const FCortexReplayEvent& Event : CaptureSnapshot.Events)
+	{
+		if (Event.Guard.IsSet())
+		{
+			++CaptureSnapshot.Metadata.GuardCoverage.PosePresses;
+			switch (Event.Guard->UICoverage)
+			{
+			case ECortexEditorUICoverage::Supported:
+				++CaptureSnapshot.Metadata.GuardCoverage.UISupportedPresses;
+				break;
+			case ECortexEditorUICoverage::Unavailable:
+				++CaptureSnapshot.Metadata.GuardCoverage.UIUnavailablePresses;
+				break;
+			default:
+				++CaptureSnapshot.Metadata.GuardCoverage.UINotApplicablePresses;
+				break;
+			}
+		}
+	}
+
+	CaptureSnapshot.Metadata.SchemaVersion = 1;
+	CaptureSnapshot.Metadata.RecordingId = CaptureRecordingId;
+	CaptureSnapshot.Metadata.Name = FString::Printf(TEXT("Capture %d"), CaptureRecordingId);
+	CaptureSnapshot.Metadata.Description.Reset();
+	CaptureSnapshot.Metadata.MapAssetPath = CaptureMapAssetPath;
+	CaptureSnapshot.Metadata.EngineVersion = FEngineVersion::Current().ToString();
+	CaptureSnapshot.Metadata.PluginVersion = TEXT("0.4.0");
+	CaptureSnapshot.Metadata.CreatedAtUtc = FDateTime::UtcNow();
+	// The recorded duration is the full monotonic capture span, not the last input timestamp.
+	CaptureSnapshot.Metadata.DurationSeconds = FMath::Max(0.0, CaptureStopSeconds - CaptureEpochSeconds);
+	CaptureSnapshot.Metadata.bAIEnabled = false;
+	CaptureSnapshot.Metadata.bComplete = true;
+	CaptureSnapshot.Metadata.Prerequisites = CaptureTargetInfo;
+
+	return Library.Publish(CaptureSnapshot);
+}
+
+void FCortexReplayService::FImpl::OnCaptureInterruption(uint64 Generation,
+	const FCortexCommandResult& Result)
+{
+	if (Generation != CaptureOperationGeneration || CapturePhase == ECapturePhase::None)
+	{
+		return;
+	}
+	MarkCaptureFaulted(Result);
+}
+
+void FCortexReplayService::FImpl::OnOwnedCaptureReady(uint64 Generation,
+	const FCortexCommandResult& Ready)
+{
+	if (Generation != CaptureOperationGeneration || CapturePhase != ECapturePhase::Preparing
+		|| !Session.IsValid())
+	{
+		return;
+	}
+	if (!Ready.bSuccess)
+	{
+		MarkCaptureFaulted(Ready);
+		return;
+	}
+
+	FCortexEditorPhysicalInputPlayerPose Pose;
+	const FCortexCommandResult PoseResult = Session->ReadPlayerPose(Pose);
+	if (!PoseResult.bSuccess)
+	{
+		MarkCaptureFaulted(PoseResult);
+		return;
+	}
+
+	FCortexReplayService::FImpl* RawState = this;
+	const FCortexCommandResult Armed = Session->SetCaptureCallback(
+		[RawState](const FCortexEditorPhysicalInputEvent& Event, double TimeSeconds,
+			const FCortexEditorPhysicalInputCaptureContext& Context)
+		{
+			RawState->OnCaptureEvent(Event, TimeSeconds, Context);
+		});
+	if (!Armed.bSuccess)
+	{
+		// A rejected neutral-state arming check is abnormal termination, never Recording.
+		MarkCaptureFaulted(Armed);
+		return;
+	}
+
+	CaptureTargetInfo = Session->GetTargetInfo();
+	CaptureMapAssetPath = CaptureTargetInfo.MapAssetPath;
+	CaptureInitialPose = Pose;
+	CaptureEpochSeconds = FPlatformTime::Seconds();
+	CapturePhase = ECapturePhase::Recording;
 }
 
 void FCortexReplayService::FImpl::TickFinalization()
@@ -369,35 +794,70 @@ void FCortexReplayService::FImpl::TickFinalization()
 		return;
 	}
 
-	ActiveRun.State = PendingTerminalState;
-	ActiveRun.FinalizedAtUtc = FDateTime::UtcNow();
+	FCortexReplayRunRecord Terminal = ActiveRun;
+	Terminal.State = PendingTerminalState;
+	Terminal.FinalizedAtUtc = FDateTime::UtcNow();
 	if (PendingTerminalState == ECortexReplayState::Error)
 	{
-		ActiveRun.ExecutionError = PendingTerminalResult;
+		Terminal.ExecutionError = PendingTerminalResult;
+		if (Terminal.ExecutionError.ErrorCode.IsEmpty())
+		{
+			// A terminal Error must always carry a bounded execution code so the retained record
+			// stays valid and reloadable.
+			Terminal.ExecutionError = ServiceError(CortexReplayErrorCodes::InvalidOperation,
+				TEXT("Replay execution failed"));
+		}
 	}
 	else
 	{
-		ActiveRun.ExecutionError = FCortexCommandResult();
+		Terminal.ExecutionError = FCortexCommandResult();
 	}
-	RunStore.SaveTerminal(ActiveRun);
-	UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s finalized as %s"),
-		*ServiceGuidToString(ActiveRun.Id), *FString(ServiceStateToString(ActiveRun.State)));
 
+	// Ownership is released only after the terminal record is durably indexed.
+	const FCortexCommandResult Saved = RunStore.SaveTerminal(Terminal);
+	if (!Saved.bSuccess)
+	{
+		UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s terminal persistence failed: %s (%s)"),
+			*ServiceGuidToString(Terminal.Id), *Saved.ErrorCode, *Saved.ErrorMessage);
+		return;
+	}
+
+	ActiveRun = Terminal;
 	bTerminalPublished = true;
 	bFinalizing = false;
 	bRunActive = false;
-	SetRunState(PendingTerminalState);
+	SetRunState(Terminal.State);
+	UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s finalized as %s"),
+		*ServiceGuidToString(ActiveRun.Id), *FString(ServiceStateToString(ActiveRun.State)));
 
 	if (Session.IsValid())
 	{
 		Session->Shutdown();
 		Session.Reset();
 	}
+	if (bShutdown)
+	{
+		DetachTickerAndSession();
+	}
 }
 
 FCortexReplayGuardDecision FCortexReplayService::FImpl::EvaluateGuard(const FCortexReplayEvent& Event)
 {
 	FCortexReplayGuardDecision Decision;
+
+	// A frozen or already-cancelled/interrupted run never evaluates further events.
+	if (bFrozen || bCancellationRequested || bInterruptionRequested)
+	{
+		Decision.State = ECortexReplayGuardDecisionState::Error;
+		Decision.Error = DispatchBlockError();
+		return Decision;
+	}
+	if (!CheckLivePermission())
+	{
+		Decision.State = ECortexReplayGuardDecisionState::Error;
+		Decision.Error = PermissionRevocationResult;
+		return Decision;
+	}
 
 	// Validate the exact target before every guard decision.
 	FCortexCommandResult TargetError;
@@ -441,6 +901,15 @@ FCortexReplayGuardDecision FCortexReplayService::FImpl::EvaluateGuard(const FCor
 
 FCortexCommandResult FCortexReplayService::FImpl::DispatchEvent(const FCortexReplayEvent& Event)
 {
+	// Interruption/cancellation arriving during evaluation must stop the same-time event drain.
+	if (bFrozen || bCancellationRequested || bInterruptionRequested)
+	{
+		return DispatchBlockError();
+	}
+	if (!CheckLivePermission())
+	{
+		return PermissionRevocationResult;
+	}
 	if (!Session.IsValid())
 	{
 		return ServiceError(CortexReplayErrorCodes::TargetUnavailable, TEXT("Replay target is gone"));
@@ -451,7 +920,7 @@ FCortexCommandResult FCortexReplayService::FImpl::DispatchEvent(const FCortexRep
 void FCortexReplayService::FImpl::OnCaptureEvent(const FCortexEditorPhysicalInputEvent& Event,
 	double TimeSeconds, const FCortexEditorPhysicalInputCaptureContext& Context)
 {
-	if (!bCaptureActive || bFrozen)
+	if (CapturePhase != ECapturePhase::Recording || bFrozen || bCaptureFaulted)
 	{
 		return;
 	}
@@ -508,18 +977,23 @@ FCortexCommandResult FCortexReplayService::Finalize(ECortexReplayState TerminalS
 
 		if (State.Session.IsValid())
 		{
-			// The cleanup contract applies to a bound original target. A run that never bound
-			// (cancelled while still preparing) or whose target already disappeared has no live
-			// owned input to neutralize, so a cleanup failure there must not rewrite an
-			// intentional Cancelled/Interrupted result into an execution Error.
-			FCortexCommandResult TargetError;
-			const bool bTargetAvailable = State.Session->ValidateTarget(TargetError);
+			// Cleanup is judged against the original live ownership (world + controller), not mere
+			// target readiness: a replaced pawn or unregistered viewport can still leave owned
+			// input live on the original controller, while a never-bound or destroyed target has
+			// nothing to neutralize.
+			const FCortexEditorPhysicalInputTargetBinding& Binding = State.Session->GetTargetBinding();
+			const bool bOriginalOwnershipLive = Binding.World.IsValid() && Binding.Controller.IsValid();
 
 			const FCortexCommandResult Cleanup = State.Session->ReleaseHeldInputs();
-			if (!Cleanup.bSuccess && bTargetAvailable
+			if (!Cleanup.bSuccess && bOriginalOwnershipLive
 				&& State.PendingTerminalState != ECortexReplayState::Error)
 			{
 				State.PendingTerminalState = ECortexReplayState::Error;
+				State.PendingTerminalResult = Cleanup;
+			}
+			else if (!Cleanup.bSuccess && State.PendingTerminalState == ECortexReplayState::Error
+				&& State.PendingTerminalResult.ErrorCode.IsEmpty())
+			{
 				State.PendingTerminalResult = Cleanup;
 			}
 			if (State.bOwnedPie)
@@ -544,6 +1018,8 @@ FCortexCommandResult FCortexReplayService::Finalize(ECortexReplayState TerminalS
 FCortexCommandResult FCortexReplayService::StartReplay(int32 Id, ECortexReplayOrigin Origin)
 {
 	FImpl& State = *Impl;
+	// The preparation deadline begins at native acceptance and covers snapshot validation.
+	const double AcceptanceSeconds = FPlatformTime::Seconds();
 	auto Refuse = [Id](const FCortexCommandResult& Result) -> FCortexCommandResult
 	{
 		UE_LOG(LogCortexReplay, Log, TEXT("Replay start for recording %d refused: %s (%s)"),
@@ -554,7 +1030,7 @@ FCortexCommandResult FCortexReplayService::StartReplay(int32 Id, ECortexReplayOr
 	{
 		return Refuse(ServiceError(CortexReplayErrorCodes::InvalidOperation, TEXT("Replay service is shut down")));
 	}
-	if (State.bRunActive || State.bFinalizing || State.bCaptureActive)
+	if (State.bRunActive || State.bFinalizing || State.CapturePhase != FImpl::ECapturePhase::None)
 	{
 		return Refuse(ServiceError(CortexErrorCodes::EditorBusy, TEXT("Another replay operation owns the target")));
 	}
@@ -564,6 +1040,11 @@ FCortexCommandResult FCortexReplayService::StartReplay(int32 Id, ECortexReplayOr
 	if (!Loaded.bSuccess)
 	{
 		return Refuse(Loaded);
+	}
+	if (FPlatformTime::Seconds() - AcceptanceSeconds >= ServicePreparationDeadlineSeconds)
+	{
+		return Refuse(ServiceError(CortexEditorPhysicalInputErrorCodes::PreparationTimeout,
+			TEXT("Replay preparation exceeded the monotonic deadline during snapshot validation")));
 	}
 	if (!SnapshotPtr.IsValid())
 	{
@@ -583,20 +1064,13 @@ FCortexCommandResult FCortexReplayService::StartReplay(int32 Id, ECortexReplayOr
 	Record.TotalEvents = SnapshotPtr->Events.Num();
 	Record.GuardCoverage = SnapshotPtr->Metadata.GuardCoverage;
 
+	State.ResetRun();
 	State.ActiveRun = Record;
 	State.Snapshot = SnapshotPtr;
-	State.Scheduler.Reset();
 	State.bRunActive = true;
-	State.bFinalizing = false;
-	State.bTerminalPublished = false;
-	State.bFrozen = false;
 	State.bOwnedPie = true;
-	State.bReadySeen = false;
-	State.bCancellationRequested = false;
-	State.bInterruptionRequested = false;
-	State.PreparationResult = FCortexCommandResult();
 	State.SetRunState(ECortexReplayState::Preparing);
-	State.PrepareDeadline = FPlatformTime::Seconds() + ServicePreparationDeadlineSeconds;
+	State.PrepareDeadline = AcceptanceSeconds + ServicePreparationDeadlineSeconds;
 
 	State.Session = MakeShared<FCortexEditorPhysicalInputSession>();
 
@@ -646,13 +1120,17 @@ FCortexCommandResult FCortexReplayService::GetRun(const FGuid& Id, bool bAIOnly)
 	}
 
 	FCortexReplayRunRecord Record;
-	const ECortexReplayOrigin Origin = bAIOnly ? ECortexReplayOrigin::AI : ECortexReplayOrigin::Human;
-	const FCortexCommandResult Loaded = State.RunStore.Load(Id, Origin, Record);
-	if (!Loaded.bSuccess)
+	if (State.RunStore.Load(Id, ECortexReplayOrigin::AI, Record).bSuccess)
 	{
-		return Loaded;
+		return FCortexCommandRouter::Success(BuildRunData(Record, false, nullptr));
 	}
-	return FCortexCommandRouter::Success(BuildRunData(Record, false, nullptr));
+	// An unrestricted human query resolves retained runs of either origin.
+	if (!bAIOnly && State.RunStore.Load(Id, ECortexReplayOrigin::Human, Record).bSuccess)
+	{
+		return FCortexCommandRouter::Success(BuildRunData(Record, false, nullptr));
+	}
+	return ServiceError(CortexReplayErrorCodes::RunNotFound,
+		FString::Printf(TEXT("No replay run %s"), *ServiceGuidToString(Id)));
 }
 
 TSharedRef<FJsonObject> FCortexReplayService::BuildRunData(const FCortexReplayRunRecord& Record,
@@ -688,6 +1166,11 @@ TSharedRef<FJsonObject> FCortexReplayService::BuildRunData(const FCortexReplayRu
 		TSharedRef<FJsonObject> Error = MakeShared<FJsonObject>();
 		Error->SetStringField(TEXT("code"), Record.ExecutionError.ErrorCode);
 		Error->SetStringField(TEXT("message"), Record.ExecutionError.ErrorMessage);
+		if (Record.ExecutionError.ErrorDetails.IsValid())
+		{
+			// Bounded details (sequence/kind/tolerances/normalized positions/hashes/wait values).
+			Error->SetObjectField(TEXT("details"), Record.ExecutionError.ErrorDetails);
+		}
 		Data->SetObjectField(TEXT("execution_error"), Error);
 	}
 	else
@@ -697,16 +1180,7 @@ TSharedRef<FJsonObject> FCortexReplayService::BuildRunData(const FCortexReplayRu
 
 	if (bLive && Scheduler != nullptr && Scheduler->GetWaitingSequence() != INDEX_NONE)
 	{
-		TSharedRef<FJsonObject> Waiting = MakeShared<FJsonObject>();
-		Waiting->SetNumberField(TEXT("sequence"), Scheduler->GetWaitingSequence());
-		Waiting->SetStringField(TEXT("reason"),
-			FString(ServiceObservationStateToString(Scheduler->GetWaitReason())));
-		Waiting->SetNumberField(TEXT("elapsed_seconds"), Scheduler->GetAuthorizedWaitSeconds());
-		Waiting->SetNumberField(TEXT("remaining_event_seconds"),
-			FMath::Max(0.0, 1.0 - Scheduler->GetAuthorizedWaitSeconds()));
-		Waiting->SetNumberField(TEXT("remaining_run_seconds"),
-			FMath::Max(0.0, 5.0 - Scheduler->GetAuthorizedWaitSeconds()));
-		Data->SetObjectField(TEXT("waiting"), Waiting);
+		Data->SetObjectField(TEXT("waiting"), ServiceWaitingToJson(*Scheduler));
 	}
 	else
 	{
@@ -724,6 +1198,7 @@ FCortexCommandResult FCortexReplayService::CancelReplay(const FGuid& Id, bool bA
 	if (bMatchesActive && State.bRunActive)
 	{
 		State.bCancellationRequested = true;
+		State.CancellationResult = ServiceSuccess();
 		Finalize(ECortexReplayState::Cancelled, ServiceSuccess());
 		return FCortexCommandRouter::Success(BuildRunData(State.ActiveRun, true, State.Scheduler.Get()));
 	}
@@ -733,13 +1208,16 @@ FCortexCommandResult FCortexReplayService::CancelReplay(const FGuid& Id, bool bA
 	}
 
 	FCortexReplayRunRecord Record;
-	const ECortexReplayOrigin Origin = bAIOnly ? ECortexReplayOrigin::AI : ECortexReplayOrigin::Human;
-	const FCortexCommandResult Loaded = State.RunStore.Load(Id, Origin, Record);
-	if (!Loaded.bSuccess)
+	if (State.RunStore.Load(Id, ECortexReplayOrigin::AI, Record).bSuccess)
 	{
-		return Loaded;
+		return FCortexCommandRouter::Success(BuildRunData(Record, false, nullptr));
 	}
-	return FCortexCommandRouter::Success(BuildRunData(Record, false, nullptr));
+	if (!bAIOnly && State.RunStore.Load(Id, ECortexReplayOrigin::Human, Record).bSuccess)
+	{
+		return FCortexCommandRouter::Success(BuildRunData(Record, false, nullptr));
+	}
+	return ServiceError(CortexReplayErrorCodes::RunNotFound,
+		FString::Printf(TEXT("No replay run %s"), *ServiceGuidToString(Id)));
 }
 
 FCortexCommandResult FCortexReplayService::GetLastRunForRecording(int32 Id) const
@@ -761,7 +1239,7 @@ FCortexCommandResult FCortexReplayService::GetLastRunForRecording(int32 Id) cons
 FCortexCommandResult FCortexReplayService::GetCurrentOperation() const
 {
 	const FImpl& State = *Impl;
-	if (!State.bRunActive && !State.bCaptureActive)
+	if (!State.bRunActive && State.CapturePhase == FImpl::ECapturePhase::None)
 	{
 		return ServiceSuccess();
 	}
@@ -775,13 +1253,28 @@ FCortexCommandResult FCortexReplayService::GetCurrentOperation() const
 		Data->SetStringField(TEXT("run_id"), ServiceGuidToString(State.ActiveRun.Id));
 		Data->SetStringField(TEXT("state"), ServiceStateToString(State.RunState));
 		Data->SetObjectField(TEXT("guard_coverage"), ServiceGuardCoverageToJson(State.ActiveRun.GuardCoverage));
+		Data->SetNumberField(TEXT("dispatched_events"), State.ActiveRun.DispatchedEvents);
+		Data->SetNumberField(TEXT("total_events"), State.ActiveRun.TotalEvents);
+		Data->SetNumberField(TEXT("authorized_wait_seconds"), State.ActiveRun.AuthorizedWaitSeconds);
+		if (State.Scheduler.IsValid() && State.Scheduler->GetWaitingSequence() != INDEX_NONE)
+		{
+			Data->SetObjectField(TEXT("waiting"), ServiceWaitingToJson(*State.Scheduler));
+		}
+		else
+		{
+			Data->SetField(TEXT("waiting"), MakeShared<FJsonValueNull>());
+		}
 	}
 	else
 	{
+		const TCHAR* CaptureState =
+			State.CapturePhase == FImpl::ECapturePhase::Preparing ? TEXT("Preparing")
+			: State.CapturePhase == FImpl::ECapturePhase::Finalizing ? TEXT("Finalizing")
+			: TEXT("Recording");
 		Data->SetStringField(TEXT("kind"), TEXT("capture"));
 		Data->SetStringField(TEXT("origin"), State.bBorrowedCapture ? TEXT("human") : TEXT("ai"));
 		Data->SetNumberField(TEXT("recording_id"), State.CaptureRecordingId);
-		Data->SetStringField(TEXT("state"), ServiceStateToString(ECortexReplayState::Recording));
+		Data->SetStringField(TEXT("state"), CaptureState);
 	}
 	return FCortexCommandRouter::Success(Data);
 }
@@ -789,7 +1282,7 @@ FCortexCommandResult FCortexReplayService::GetCurrentOperation() const
 bool FCortexReplayService::IsRecordInUse(int32 Id) const
 {
 	const FImpl& State = *Impl;
-	if (State.bCaptureActive && State.CaptureRecordingId == Id)
+	if (State.CapturePhase != FImpl::ECapturePhase::None && State.CaptureRecordingId == Id)
 	{
 		return true;
 	}
@@ -818,34 +1311,49 @@ FCortexCommandResult FCortexReplayService::EnumerateHumanCaptureTargets(
 		{
 			continue;
 		}
-		// Exclude non-rendered/unready candidates rather than selecting the first.
-		if (World->GetGameViewport() == nullptr)
+		// Viewport existence alone is not readiness: the client must expose a registered scene
+		// viewport and a game layer manager, and each candidate is validated per local player.
+		UGameViewportClient* ViewportClient = World->GetGameViewport();
+		if (ViewportClient == nullptr || ViewportClient->GetGameViewport() == nullptr
+			|| !ViewportClient->GetGameLayerManager().IsValid())
 		{
 			continue;
 		}
-		ULocalPlayer* LocalPlayer = World->GetFirstLocalPlayerFromController();
-		if (LocalPlayer == nullptr)
-		{
-			continue;
-		}
-		if (World->GetFirstPlayerController() == nullptr)
+		UGameInstance* GameInstance = World->GetGameInstance();
+		if (GameInstance == nullptr)
 		{
 			continue;
 		}
 
-		FCortexReplayCaptureTargetChoice Choice;
-		Choice.World = World;
-		Choice.LocalPlayerIndex = 0;
-		Choice.MapAssetPath = UWorld::RemovePIEPrefix(World->GetPackage()->GetName());
-		Choice.ViewportLabel = FString::Printf(TEXT("%s [PIE]"), *Choice.MapAssetPath);
-		Out.Add(MoveTemp(Choice));
-		++Resolved;
+		const int32 LocalPlayerCount = GameInstance->GetNumLocalPlayers();
+		for (int32 LocalPlayerIndex = 0; LocalPlayerIndex < LocalPlayerCount; ++LocalPlayerIndex)
+		{
+			ULocalPlayer* LocalPlayer = GameInstance->GetLocalPlayerByIndex(LocalPlayerIndex);
+			if (LocalPlayer == nullptr)
+			{
+				continue;
+			}
+			APlayerController* Controller = LocalPlayer->GetPlayerController(World);
+			if (!IsValid(Controller) || !IsValid(Controller->GetPawn()))
+			{
+				continue;
+			}
+
+			FCortexReplayCaptureTargetChoice Choice;
+			Choice.World = World;
+			Choice.LocalPlayerIndex = LocalPlayerIndex;
+			Choice.MapAssetPath = UWorld::RemovePIEPrefix(World->GetPackage()->GetName());
+			Choice.ViewportLabel = FString::Printf(TEXT("%s [PIE player %d]"),
+				*Choice.MapAssetPath, LocalPlayerIndex);
+			Out.Add(MoveTemp(Choice));
+			++Resolved;
+		}
 	}
 
 	if (Resolved == 0)
 	{
 		return ServiceError(CortexReplayErrorCodes::TargetUnavailable,
-			TEXT("No rendered PIE local-player/viewport candidate could be resolved"));
+			TEXT("No ready PIE local-player/viewport candidate could be resolved"));
 	}
 	return ServiceSuccess();
 }
@@ -853,16 +1361,38 @@ FCortexCommandResult FCortexReplayService::EnumerateHumanCaptureTargets(
 FCortexCommandResult FCortexReplayService::StartCaptureAtTarget(UWorld& World, int32 LocalPlayerIndex)
 {
 	FImpl& State = *Impl;
-	if (State.bRunActive || State.bFinalizing || State.bCaptureActive)
+	if (State.bShutdown)
+	{
+		return ServiceError(CortexReplayErrorCodes::InvalidOperation, TEXT("Replay service is shut down"));
+	}
+	if (State.bRunActive || State.bFinalizing || State.CapturePhase != FImpl::ECapturePhase::None)
 	{
 		return ServiceError(CortexErrorCodes::EditorBusy, TEXT("Another replay operation owns the target"));
 	}
 
+	// Reserve capture ownership before any asynchronous work so status, IsRecordInUse and
+	// competing admission all see the operation from its first frame.
+	State.ResetCapture();
+	State.CapturePhase = FImpl::ECapturePhase::Preparing;
+	State.bBorrowedCapture = true;
+	State.bOwnedCapture = false;
+	++State.CaptureOperationGeneration;
+	const uint64 Generation = State.CaptureOperationGeneration;
+
 	State.Session = MakeShared<FCortexEditorPhysicalInputSession>();
+	FCortexReplayService::FImpl* RawState = &State;
+	State.Session->SetInterruptionCallback(
+		[RawState, Generation](const FCortexCommandResult& Interruption)
+		{
+			RawState->OnCaptureInterruption(Generation, Interruption);
+		});
+
 	const FCortexCommandResult Bound = State.Session->BindTarget(World, LocalPlayerIndex);
 	if (!Bound.bSuccess)
 	{
+		State.Session->Shutdown();
 		State.Session.Reset();
+		State.ResetCapture();
 		return Bound;
 	}
 
@@ -872,25 +1402,22 @@ FCortexCommandResult FCortexReplayService::StartCaptureAtTarget(UWorld& World, i
 	{
 		State.Session->Shutdown();
 		State.Session.Reset();
+		State.ResetCapture();
 		return Reserved;
 	}
-
 	State.CaptureRecordingId = ReservedId;
-	State.CaptureTargetInfo = State.Session->GetTargetInfo();
-	State.CaptureMapAssetPath = State.CaptureTargetInfo.MapAssetPath;
 	State.CaptureEvents.Reset();
 
 	FCortexEditorPhysicalInputPlayerPose Pose;
-	if (State.Session->ReadPlayerPose(Pose).bSuccess)
+	const FCortexCommandResult PoseResult = State.Session->ReadPlayerPose(Pose);
+	if (!PoseResult.bSuccess)
 	{
-		State.CaptureInitialPose = Pose;
-	}
-	else
-	{
-		State.CaptureInitialPose = FCortexEditorPhysicalInputPlayerPose();
+		State.MarkCaptureFaulted(PoseResult);
+		State.BeginCaptureFinalization(false);
+		State.TickCapture();
+		return PoseResult;
 	}
 
-	FCortexReplayService::FImpl* RawState = &State;
 	const FCortexCommandResult Armed = State.Session->SetCaptureCallback(
 		[RawState](const FCortexEditorPhysicalInputEvent& Event, double TimeSeconds,
 			const FCortexEditorPhysicalInputCaptureContext& Context)
@@ -899,15 +1426,18 @@ FCortexCommandResult FCortexReplayService::StartCaptureAtTarget(UWorld& World, i
 		});
 	if (!Armed.bSuccess)
 	{
-		State.Session->Shutdown();
-		State.Session.Reset();
+		// A human-held key makes the neutral-state arming check reject this; never report Recording.
+		State.MarkCaptureFaulted(Armed);
+		State.BeginCaptureFinalization(false);
+		State.TickCapture();
 		return Armed;
 	}
 
-	State.bCaptureActive = true;
-	State.bBorrowedCapture = true;
-	State.bFrozen = false;
+	State.CaptureTargetInfo = State.Session->GetTargetInfo();
+	State.CaptureMapAssetPath = State.CaptureTargetInfo.MapAssetPath;
+	State.CaptureInitialPose = Pose;
 	State.CaptureEpochSeconds = FPlatformTime::Seconds();
+	State.CapturePhase = FImpl::ECapturePhase::Recording;
 	State.EnsureTicker();
 	return ServiceSuccess();
 }
@@ -915,7 +1445,11 @@ FCortexCommandResult FCortexReplayService::StartCaptureAtTarget(UWorld& World, i
 FCortexCommandResult FCortexReplayService::StartCapture(const FString& SavedEditorMapAssetPath)
 {
 	FImpl& State = *Impl;
-	if (State.bRunActive || State.bFinalizing || State.bCaptureActive)
+	if (State.bShutdown)
+	{
+		return ServiceError(CortexReplayErrorCodes::InvalidOperation, TEXT("Replay service is shut down"));
+	}
+	if (State.bRunActive || State.bFinalizing || State.CapturePhase != FImpl::ECapturePhase::None)
 	{
 		return ServiceError(CortexErrorCodes::EditorBusy, TEXT("Another replay operation owns the target"));
 	}
@@ -927,39 +1461,34 @@ FCortexCommandResult FCortexReplayService::StartCapture(const FString& SavedEdit
 		return Reserved;
 	}
 
-	State.Session = MakeShared<FCortexEditorPhysicalInputSession>();
-	State.CaptureRecordingId = ReservedId;
-	State.CaptureEvents.Reset();
+	// Capture ownership is reserved for the whole owned preparation, not only after readiness.
+	State.ResetCapture();
+	State.CapturePhase = FImpl::ECapturePhase::Preparing;
 	State.bBorrowedCapture = false;
-	State.bFrozen = false;
+	State.bOwnedCapture = true;
+	State.CaptureRecordingId = ReservedId;
+	++State.CaptureOperationGeneration;
+	const uint64 Generation = State.CaptureOperationGeneration;
 
+	State.Session = MakeShared<FCortexEditorPhysicalInputSession>();
 	FCortexReplayService::FImpl* RawState = &State;
-	const FCortexCommandResult Armed = State.Session->BeginOwnedPIE(SavedEditorMapAssetPath, 0,
-		[RawState](const FCortexCommandResult& Ready)
+	State.Session->SetInterruptionCallback(
+		[RawState, Generation](const FCortexCommandResult& Interruption)
 		{
-			// Owned capture arms as soon as the target is ready.
-			if (Ready.bSuccess && RawState->Session.IsValid())
-			{
-				FCortexEditorPhysicalInputPlayerPose Pose;
-				RawState->Session->ReadPlayerPose(Pose);
-				RawState->Session->SetCaptureCallback(
-					[RawState](const FCortexEditorPhysicalInputEvent& Event, double TimeSeconds,
-						const FCortexEditorPhysicalInputCaptureContext& Context)
-					{
-						RawState->OnCaptureEvent(Event, TimeSeconds, Context);
-					});
-				RawState->CaptureTargetInfo = RawState->Session->GetTargetInfo();
-				RawState->CaptureMapAssetPath = RawState->CaptureTargetInfo.MapAssetPath;
-				RawState->CaptureInitialPose = Pose;
-				RawState->bCaptureActive = true;
-				RawState->CaptureEpochSeconds = FPlatformTime::Seconds();
-			}
+			RawState->OnCaptureInterruption(Generation, Interruption);
 		});
-	if (!Armed.bSuccess)
+
+	const FCortexCommandResult Accepted = State.Session->BeginOwnedPIE(SavedEditorMapAssetPath, 0,
+		[RawState, Generation](const FCortexCommandResult& Ready)
+		{
+			RawState->OnOwnedCaptureReady(Generation, Ready);
+		});
+	if (!Accepted.bSuccess)
 	{
-		State.Session->Shutdown();
-		State.Session.Reset();
-		return Armed;
+		State.MarkCaptureFaulted(Accepted);
+		State.BeginCaptureFinalization(false);
+		State.TickCapture();
+		return Accepted;
 	}
 
 	State.EnsureTicker();
@@ -969,89 +1498,64 @@ FCortexCommandResult FCortexReplayService::StartCapture(const FString& SavedEdit
 FCortexCommandResult FCortexReplayService::StopCapture(bool bAbnormal)
 {
 	FImpl& State = *Impl;
-	if (!State.bCaptureActive)
+	if (State.CapturePhase == FImpl::ECapturePhase::None
+		|| State.CapturePhase == FImpl::ECapturePhase::Finalizing)
 	{
-		return ServiceError(CortexReplayErrorCodes::InvalidOperation, TEXT("No capture is active"));
+		return ServiceError(CortexReplayErrorCodes::InvalidOperation,
+			TEXT("No capture is active"));
 	}
 
-	State.bCaptureActive = false;
-	State.bFrozen = true;
-	if (State.Session.IsValid())
-	{
-		State.Session->ReleaseHeldInputs();
-		State.Session->Shutdown();
-		State.Session.Reset();
-	}
+	// Duration is the full monotonic capture span, sampled before any cleanup; a capture aborted
+	// before it began recording is never published.
+	State.CaptureStopSeconds = FPlatformTime::Seconds();
+	const bool bPublish = !bAbnormal && !State.bCaptureFaulted
+		&& State.CapturePhase == FImpl::ECapturePhase::Recording;
 
-	if (bAbnormal)
+	if (State.bBorrowedCapture)
 	{
-		// Abnormal capture termination stays incomplete/error and publishes no partial record.
-		State.CaptureEvents.Reset();
-		return ServiceSuccess();
-	}
-
-	FCortexReplaySnapshot Snapshot;
-	Snapshot.InitialState.SchemaVersion = 1;
-	Snapshot.InitialState.RecordingId = State.CaptureRecordingId;
-	Snapshot.InitialState.PawnClassPath = State.CaptureTargetInfo.PawnClassPath;
-	Snapshot.InitialState.Pose = State.CaptureInitialPose;
-	Snapshot.Events = State.CaptureEvents;
-
-	double FinalTime = 0.0;
-	for (const FCortexReplayEvent& Event : Snapshot.Events)
-	{
-		FinalTime = FMath::Max(FinalTime, Event.TimeSeconds);
-		if (Event.Guard.IsSet())
+		// Borrowed capture detaches without ending the human PIE session.
+		State.bFrozen = true;
+		if (State.Session.IsValid())
 		{
-			++Snapshot.Metadata.GuardCoverage.PosePresses;
-			switch (Event.Guard->UICoverage)
-			{
-			case ECortexEditorUICoverage::Supported:
-				++Snapshot.Metadata.GuardCoverage.UISupportedPresses;
-				break;
-			case ECortexEditorUICoverage::Unavailable:
-				++Snapshot.Metadata.GuardCoverage.UIUnavailablePresses;
-				break;
-			default:
-				++Snapshot.Metadata.GuardCoverage.UINotApplicablePresses;
-				break;
-			}
+			State.Session->ReleaseHeldInputs();
+			State.Session->Shutdown();
+			State.Session.Reset();
 		}
+		FCortexCommandResult Result = ServiceSuccess();
+		if (bPublish)
+		{
+			Result = State.PublishCaptureSnapshot();
+		}
+		State.ResetCapture();
+		if (State.bShutdown)
+		{
+			State.DetachTickerAndSession();
+		}
+		return Result;
 	}
 
-	Snapshot.Metadata.SchemaVersion = 1;
-	Snapshot.Metadata.RecordingId = State.CaptureRecordingId;
-	Snapshot.Metadata.Name = FString::Printf(TEXT("Capture %d"), State.CaptureRecordingId);
-	Snapshot.Metadata.Description.Reset();
-	Snapshot.Metadata.MapAssetPath = State.CaptureMapAssetPath;
-	Snapshot.Metadata.EngineVersion = FEngineVersion::Current().ToString();
-	Snapshot.Metadata.PluginVersion = TEXT("0.4.0");
-	Snapshot.Metadata.CreatedAtUtc = FDateTime::UtcNow();
-	Snapshot.Metadata.DurationSeconds = FinalTime;
-	Snapshot.Metadata.bAIEnabled = false;
-	Snapshot.Metadata.bComplete = true;
-	Snapshot.Metadata.Prerequisites = State.CaptureTargetInfo;
-
-	State.CaptureEvents.Reset();
-	return State.Library.Publish(Snapshot);
+	// Owned capture retains its session and ownership until the matching teardown is observed.
+	State.BeginCaptureFinalization(bPublish);
+	State.TickCapture();
+	return ServiceSuccess();
 }
 
 FCortexCommandResult FCortexReplayService::GetRecording(int32 Id, bool bAIOnly) const
 {
-	TSharedPtr<const FCortexReplaySnapshot> Snapshot;
-	const FCortexCommandResult Loaded = Impl->Library.Load(Id, bAIOnly, Snapshot);
+	TSharedPtr<const FCortexReplaySnapshot> LoadedSnapshot;
+	const FCortexCommandResult Loaded = Impl->Library.Load(Id, bAIOnly, LoadedSnapshot);
 	if (!Loaded.bSuccess)
 	{
 		return Loaded;
 	}
 
-	TSharedRef<FJsonObject> Data = ServiceMetadataToJson(Snapshot->Metadata);
+	TSharedRef<FJsonObject> Data = ServiceMetadataToJson(LoadedSnapshot->Metadata);
 	TSharedRef<FJsonObject> InitialState = MakeShared<FJsonObject>();
-	InitialState->SetNumberField(TEXT("schema_version"), Snapshot->InitialState.SchemaVersion);
-	InitialState->SetNumberField(TEXT("recording_id"), Snapshot->InitialState.RecordingId);
-	InitialState->SetStringField(TEXT("pawn_class_path"), Snapshot->InitialState.PawnClassPath);
+	InitialState->SetNumberField(TEXT("schema_version"), LoadedSnapshot->InitialState.SchemaVersion);
+	InitialState->SetNumberField(TEXT("recording_id"), LoadedSnapshot->InitialState.RecordingId);
+	InitialState->SetStringField(TEXT("pawn_class_path"), LoadedSnapshot->InitialState.PawnClassPath);
 
-	const FCortexEditorPhysicalInputPlayerPose& Pose = Snapshot->InitialState.Pose;
+	const FCortexEditorPhysicalInputPlayerPose& Pose = LoadedSnapshot->InitialState.Pose;
 	const FVector Location = Pose.PawnTransform.GetLocation();
 	TSharedRef<FJsonObject> PawnTransform = MakeShared<FJsonObject>();
 	TSharedRef<FJsonObject> LocationJson = MakeShared<FJsonObject>();
@@ -1080,7 +1584,7 @@ FCortexCommandResult FCortexReplayService::GetRecording(int32 Id, bool bAIOnly) 
 	InitialState->SetObjectField(TEXT("control_rotation_deg"), ControlRotation);
 
 	Data->SetObjectField(TEXT("initial_state"), InitialState);
-	Data->SetStringField(TEXT("recording_snapshot_sha256"), Snapshot->RecordingSnapshotSha256);
+	Data->SetStringField(TEXT("recording_snapshot_sha256"), LoadedSnapshot->RecordingSnapshotSha256);
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -1088,7 +1592,8 @@ FCortexCommandResult FCortexReplayService::ListRecordings(int32 AfterId, int32 P
 {
 	TArray<FCortexReplayMetadata> Metadata;
 	bool bHasMore = false;
-	const FCortexCommandResult Listed = Impl->Library.ListPage(false, AfterId, PageSize, Metadata, bHasMore);
+	// Discovery is AI-only eligibility; human listing keeps its unrestricted API.
+	const FCortexCommandResult Listed = Impl->Library.ListPage(true, AfterId, PageSize, Metadata, bHasMore);
 	if (!Listed.bSuccess)
 	{
 		return Listed;
@@ -1107,8 +1612,7 @@ FCortexCommandResult FCortexReplayService::ListRecordings(int32 AfterId, int32 P
 	Data->SetBoolField(TEXT("has_more"), bHasMore);
 	if (bHasMore && Metadata.Num() > 0)
 	{
-		Data->SetNumberField(TEXT("next_after_recording_id"),
-			Metadata.Last().RecordingId);
+		Data->SetNumberField(TEXT("next_after_recording_id"), Metadata.Last().RecordingId);
 	}
 	else
 	{
@@ -1163,24 +1667,40 @@ FCortexCommandResult FCortexReplayService::SaveMetadata(int32 Id, const FString&
 	}
 
 	// Revocation cancels only a still-active AI run of that recording.
-	if (!bAIEnabled && State.bRunActive && !State.bFinalizing
-		&& State.ActiveRun.Origin == ECortexReplayOrigin::AI && State.ActiveRun.RecordingId == Id)
+	if (!bAIEnabled && State.ActiveRun.Origin == ECortexReplayOrigin::AI
+		&& State.ActiveRun.RecordingId == Id)
 	{
-		State.bCancellationRequested = true;
-		Finalize(ECortexReplayState::Cancelled,
-			ServiceError(CortexReplayErrorCodes::PermissionDenied,
-				TEXT("Replay permission was revoked")));
+		State.bPermissionRevoked = true;
+		State.PermissionRevocationResult = ServiceError(CortexReplayErrorCodes::PermissionDenied,
+			TEXT("Replay permission was revoked"));
+		if (State.bRunActive && !State.bFinalizing)
+		{
+			State.bCancellationRequested = true;
+			State.CancellationResult = State.PermissionRevocationResult;
+			Finalize(ECortexReplayState::Cancelled, State.PermissionRevocationResult);
+		}
 	}
 	return Saved;
 }
 
 FCortexCommandResult FCortexReplayService::DeleteRecording(int32 Id)
 {
+	FImpl& State = *Impl;
 	if (IsRecordInUse(Id))
 	{
+		// Deleting the recording an active run is playing removes its permission/eligibility.
+		State.bPermissionRevoked = true;
+		State.PermissionRevocationResult = ServiceError(CortexReplayErrorCodes::RecordingNotFound,
+			TEXT("Recording was deleted during playback"));
+		if (State.bRunActive && !State.bFinalizing)
+		{
+			State.bCancellationRequested = true;
+			State.CancellationResult = State.PermissionRevocationResult;
+			Finalize(ECortexReplayState::Cancelled, State.PermissionRevocationResult);
+		}
 		return ServiceError(CortexErrorCodes::EditorBusy, TEXT("Recording is in use"));
 	}
-	return Impl->Library.Delete(Id);
+	return State.Library.Delete(Id);
 }
 
 void FCortexReplayService::Shutdown()
@@ -1196,17 +1716,34 @@ void FCortexReplayService::Shutdown()
 	}
 	State.bShutdown = true;
 
-	if (State.TickerHandle.IsValid())
+	// An active capture terminates abnormally and never publishes a partial record.
+	if (State.CapturePhase != FImpl::ECapturePhase::None
+		&& State.CapturePhase != FImpl::ECapturePhase::Finalizing)
 	{
-		FTSTicker::GetCoreTicker().RemoveTicker(State.TickerHandle);
-		State.TickerHandle.Reset();
+		State.MarkCaptureFaulted(ServiceError(CortexReplayErrorCodes::InvalidOperation,
+			TEXT("Replay service shut down")));
+		State.BeginCaptureFinalization(false);
+		State.TickCapture();
 	}
-	if (State.Session.IsValid())
+
+	// An active run is routed through the single finalizer so exactly one terminal record is
+	// retained, instead of dropping ownership without a persisted result.
+	if (State.bRunActive && !State.bFinalizing)
 	{
-		State.Session->Shutdown();
-		State.Session.Reset();
+		State.bCancellationRequested = true;
+		State.CancellationResult = ServiceError(CortexReplayErrorCodes::InvalidOperation,
+			TEXT("Replay service shut down"));
+		Finalize(ECortexReplayState::Cancelled, State.CancellationResult);
 	}
-	State.bCaptureActive = false;
-	State.bRunActive = false;
-	State.bFinalizing = false;
+	else if (State.bFinalizing)
+	{
+		State.TickFinalization();
+	}
+
+	// The finalization ticker (and the session it observes) is retained until the owned teardown
+	// completes; only then is everything released.
+	if (!State.bRunActive && !State.bFinalizing && State.CapturePhase == FImpl::ECapturePhase::None)
+	{
+		State.DetachTickerAndSession();
+	}
 }

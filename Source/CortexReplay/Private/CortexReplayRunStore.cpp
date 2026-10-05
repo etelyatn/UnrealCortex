@@ -19,6 +19,74 @@ namespace
 {
 constexpr TCHAR StoreFormat[] = TEXT("CortexReplayRun");
 constexpr int32 StoreSchemaVersion = 1;
+/** The scheduler's fixed cumulative authorized-wait budget; retained records are bounded by it. */
+constexpr double StoreMaxAuthorizedWaitSeconds = 5.0;
+
+/** Reads a mandatory integral field without coercion; rejects fractions and out-of-range values. */
+bool StoreTryReadInt32(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, int32& Out,
+	int32 MinValue, int32 MaxValue)
+{
+	if (!Object.IsValid())
+	{
+		return false;
+	}
+	const TSharedPtr<FJsonValue>* Value = Object->Values.Find(Field);
+	if (Value == nullptr || !Value->IsValid())
+	{
+		return false;
+	}
+	double Number = 0.0;
+	if (!(*Value)->TryGetNumber(Number) || !FMath::IsFinite(Number)
+		|| Number < static_cast<double>(MinValue) || Number > static_cast<double>(MaxValue)
+		|| Number != FMath::FloorToDouble(Number))
+	{
+		return false;
+	}
+	Out = static_cast<int32>(Number);
+	return true;
+}
+
+/** Reads a mandatory finite scalar within an inclusive range. */
+bool StoreTryReadDouble(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, double& Out,
+	double MinValue, double MaxValue)
+{
+	if (!Object.IsValid())
+	{
+		return false;
+	}
+	const TSharedPtr<FJsonValue>* Value = Object->Values.Find(Field);
+	if (Value == nullptr || !Value->IsValid())
+	{
+		return false;
+	}
+	double Number = 0.0;
+	if (!(*Value)->TryGetNumber(Number) || !FMath::IsFinite(Number)
+		|| Number < MinValue || Number > MaxValue)
+	{
+		return false;
+	}
+	Out = Number;
+	return true;
+}
+
+/** True only for a lower-case 64-hex digest. */
+bool StoreIsLowerHexSha256(const FString& Value)
+{
+	if (Value.Len() != 64)
+	{
+		return false;
+	}
+	for (const TCHAR Character : Value)
+	{
+		const bool bDigit = Character >= TEXT('0') && Character <= TEXT('9');
+		const bool bLowerHex = Character >= TEXT('a') && Character <= TEXT('f');
+		if (!bDigit && !bLowerHex)
+		{
+			return false;
+		}
+	}
+	return true;
+}
 
 FString StoreGuidToString(const FGuid& Id)
 {
@@ -163,46 +231,74 @@ FCortexCommandResult FCortexReplayRunStore::Initialize()
 		Record.Id = Id;
 		Record.Origin = Origin;
 		Record.State = State;
-		Object->TryGetNumberField(TEXT("recording_id"), Record.RecordingId);
-		Object->TryGetStringField(TEXT("editor_instance_id"), Record.EditorInstanceId);
-		Object->TryGetNumberField(TEXT("dispatched_events"), Record.DispatchedEvents);
-		Object->TryGetNumberField(TEXT("total_events"), Record.TotalEvents);
-		Object->TryGetNumberField(TEXT("authorized_wait_seconds"), Record.AuthorizedWaitSeconds);
-		Object->TryGetStringField(TEXT("recording_snapshot_sha256"), Record.RecordingSnapshotSha256);
-		Object->TryGetStringField(TEXT("initial_state_sha256"), Record.InitialStateSha256);
-		Object->TryGetStringField(TEXT("inputs_sha256"), Record.InputsSha256);
 
+		// Mandatory terminal fields, invariants and state-specific error data are all required;
+		// a malformed record is skipped rather than indexed as a partially valid result.
+		FString EditorInstanceId;
 		FString StartedText;
 		FString FinalizedText;
-		if (Object->TryGetStringField(TEXT("started_at_utc"), StartedText))
+		if (!StoreTryReadInt32(Object, TEXT("recording_id"), Record.RecordingId, 1, MAX_int32)
+			|| !Object->TryGetStringField(TEXT("editor_instance_id"), EditorInstanceId)
+			|| EditorInstanceId.IsEmpty()
+			|| !Object->TryGetStringField(TEXT("started_at_utc"), StartedText)
+			|| !FDateTime::ParseIso8601(*StartedText, Record.StartedAtUtc)
+			|| !Object->TryGetStringField(TEXT("finalized_at_utc"), FinalizedText)
+			|| FinalizedText.IsEmpty()
+			|| !FDateTime::ParseIso8601(*FinalizedText, Record.FinalizedAtUtc)
+			|| Record.FinalizedAtUtc < Record.StartedAtUtc
+			|| !StoreTryReadInt32(Object, TEXT("dispatched_events"), Record.DispatchedEvents, 0, MAX_int32)
+			|| !StoreTryReadInt32(Object, TEXT("total_events"), Record.TotalEvents, 0, MAX_int32)
+			|| Record.DispatchedEvents > Record.TotalEvents
+			|| !StoreTryReadDouble(Object, TEXT("authorized_wait_seconds"),
+				Record.AuthorizedWaitSeconds, 0.0, StoreMaxAuthorizedWaitSeconds)
+			|| !Object->TryGetStringField(TEXT("recording_snapshot_sha256"),
+				Record.RecordingSnapshotSha256)
+			|| !Object->TryGetStringField(TEXT("initial_state_sha256"), Record.InitialStateSha256)
+			|| !Object->TryGetStringField(TEXT("inputs_sha256"), Record.InputsSha256)
+			|| !StoreIsLowerHexSha256(Record.RecordingSnapshotSha256)
+			|| !StoreIsLowerHexSha256(Record.InitialStateSha256)
+			|| !StoreIsLowerHexSha256(Record.InputsSha256))
 		{
-			FDateTime::ParseIso8601(*StartedText, Record.StartedAtUtc);
+			continue;
 		}
-		if (Object->TryGetStringField(TEXT("finalized_at_utc"), FinalizedText)
-			&& !FinalizedText.IsEmpty())
-		{
-			FDateTime::ParseIso8601(*FinalizedText, Record.FinalizedAtUtc);
-		}
+		Record.EditorInstanceId = EditorInstanceId;
 
 		const TSharedPtr<FJsonObject>* Coverage = nullptr;
-		if (Object->TryGetObjectField(TEXT("guard_coverage"), Coverage) && Coverage != nullptr)
+		int32 PosePresses = 0;
+		int32 SupportedPresses = 0;
+		int32 UnavailablePresses = 0;
+		int32 NotApplicablePresses = 0;
+		if (!Object->TryGetObjectField(TEXT("guard_coverage"), Coverage) || Coverage == nullptr
+			|| !StoreTryReadInt32(*Coverage, TEXT("pose_presses"), PosePresses, 0, MAX_int32)
+			|| !StoreTryReadInt32(*Coverage, TEXT("ui_supported_presses"), SupportedPresses, 0, MAX_int32)
+			|| !StoreTryReadInt32(*Coverage, TEXT("ui_unavailable_presses"), UnavailablePresses, 0, MAX_int32)
+			|| !StoreTryReadInt32(*Coverage, TEXT("ui_not_applicable_presses"), NotApplicablePresses, 0, MAX_int32)
+			|| SupportedPresses + UnavailablePresses + NotApplicablePresses != PosePresses)
 		{
-			(*Coverage)->TryGetNumberField(TEXT("pose_presses"), Record.GuardCoverage.PosePresses);
-			(*Coverage)->TryGetNumberField(TEXT("ui_supported_presses"),
-				Record.GuardCoverage.UISupportedPresses);
-			(*Coverage)->TryGetNumberField(TEXT("ui_unavailable_presses"),
-				Record.GuardCoverage.UIUnavailablePresses);
-			(*Coverage)->TryGetNumberField(TEXT("ui_not_applicable_presses"),
-				Record.GuardCoverage.UINotApplicablePresses);
+			continue;
 		}
+		Record.GuardCoverage.PosePresses = PosePresses;
+		Record.GuardCoverage.UISupportedPresses = SupportedPresses;
+		Record.GuardCoverage.UIUnavailablePresses = UnavailablePresses;
+		Record.GuardCoverage.UINotApplicablePresses = NotApplicablePresses;
 
-		const TSharedPtr<FJsonObject>* Error = nullptr;
-		if (State == ECortexReplayState::Error
-			&& Object->TryGetObjectField(TEXT("execution_error"), Error) && Error != nullptr)
+		if (State == ECortexReplayState::Error)
 		{
+			const TSharedPtr<FJsonObject>* Error = nullptr;
+			FString ErrorCode;
+			if (!Object->TryGetObjectField(TEXT("execution_error"), Error) || Error == nullptr
+				|| !(*Error)->TryGetStringField(TEXT("code"), ErrorCode) || ErrorCode.IsEmpty())
+			{
+				continue; // A terminal Error must carry its bounded execution error data.
+			}
 			Record.ExecutionError.bSuccess = false;
-			(*Error)->TryGetStringField(TEXT("code"), Record.ExecutionError.ErrorCode);
+			Record.ExecutionError.ErrorCode = ErrorCode;
 			(*Error)->TryGetStringField(TEXT("message"), Record.ExecutionError.ErrorMessage);
+			const TSharedPtr<FJsonObject>* Details = nullptr;
+			if ((*Error)->TryGetObjectField(TEXT("details"), Details) && Details != nullptr)
+			{
+				Record.ExecutionError.ErrorDetails = *Details;
+			}
 		}
 
 		Records.Add(RecordKey(Id, Origin), MoveTemp(Record));
@@ -254,6 +350,11 @@ FCortexCommandResult FCortexReplayRunStore::SaveTerminal(const FCortexReplayRunR
 		TSharedRef<FJsonObject> Error = MakeShared<FJsonObject>();
 		Error->SetStringField(TEXT("code"), Record.ExecutionError.ErrorCode);
 		Error->SetStringField(TEXT("message"), Record.ExecutionError.ErrorMessage);
+		if (Record.ExecutionError.ErrorDetails.IsValid())
+		{
+			// Bounded execution-error details (sequences, poses, tolerances, hashes, wait values).
+			Error->SetObjectField(TEXT("details"), Record.ExecutionError.ErrorDetails);
+		}
 		Object->SetObjectField(TEXT("execution_error"), Error);
 	}
 

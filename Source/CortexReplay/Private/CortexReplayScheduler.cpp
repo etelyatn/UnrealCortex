@@ -47,6 +47,11 @@ FCortexCommandResult FCortexReplayScheduler::Advance(
 	{
 		return FMath::IsFinite(Value) && Value >= 0.0 && Value >= LastObservedElapsed;
 	};
+	auto WaitTimeoutError = [](int32 Sequence)
+	{
+		return FCortexCommandRouter::Error(FString(CortexReplayErrorCodes::ReplayUIWaitTimeout),
+			FString::Printf(TEXT("UI readiness wait exceeded its budget at event %d"), Sequence));
+	};
 
 	double Elapsed = ReadElapsedSeconds();
 	if (!ValidateObservation(Elapsed))
@@ -77,7 +82,9 @@ FCortexCommandResult FCortexReplayScheduler::Advance(
 
 		if (WaitingSequence != INDEX_NONE)
 		{
-			// Repeated polls re-evaluate only the blocked guard.
+			// Repeated polls re-evaluate only the blocked guard. The evaluation interval itself is
+			// never authorized wait time.
+			const double BeforeEvaluation = Elapsed;
 			const FCortexReplayGuardDecision Decision = EvaluateGuard(Event);
 			const double AfterEvaluation = ReadElapsedSeconds();
 			if (!ValidateObservation(AfterEvaluation))
@@ -87,37 +94,42 @@ FCortexCommandResult FCortexReplayScheduler::Advance(
 			Elapsed = AfterEvaluation;
 			LastObservedElapsed = Elapsed;
 
+			// Accidental evaluation latency over the fixed allowance is a timing failure, never a wait.
+			const double EvaluationSeconds = AfterEvaluation - BeforeEvaluation;
+			if (EvaluationSeconds > SCHEDULER_LATENESS_ALLOWANCE_SECONDS)
+			{
+				return TimingError(Event.Sequence,
+					EvaluationSeconds - SCHEDULER_LATENESS_ALLOWANCE_SECONDS);
+			}
+
 			if (Decision.State == ECortexReplayGuardDecisionState::Error)
 			{
 				return Decision.Error;
 			}
 
+			// The wait duration excludes the evaluation interval; the per-press limit is the lesser
+			// of the fixed per-press budget and the remaining cumulative run budget.
+			const double RemainingRunBudget = SCHEDULER_MAX_WAIT_TOTAL_SECONDS - AuthorizedWaitSeconds;
+			const double PerPressLimit = FMath::Min(SCHEDULER_MAX_WAIT_PER_PRESS_SECONDS, RemainingRunBudget);
+			const double Measured = BeforeEvaluation - WaitStartElapsed;
+
 			if (Decision.State == ECortexReplayGuardDecisionState::Wait)
 			{
-				const double Measured = Elapsed - WaitStartElapsed;
-				if (Measured > SCHEDULER_MAX_WAIT_PER_PRESS_SECONDS
-					|| AuthorizedWaitSeconds + Measured > SCHEDULER_MAX_WAIT_TOTAL_SECONDS)
+				// A pending poll at a reached limit times out.
+				if (Measured >= PerPressLimit)
 				{
-					return FCortexCommandRouter::Error(
-						FString(CortexReplayErrorCodes::ReplayUIWaitTimeout),
-						FString::Printf(TEXT("UI readiness wait exceeded its budget at event %d"),
-							Event.Sequence));
+					return WaitTimeoutError(Event.Sequence);
 				}
 				WaitReason = Decision.WaitReason;
 				return SchedulerSuccess();
 			}
 
-			// Ready: enforce both budgets before committing the measured duration.
-			const double Measured = Elapsed - WaitStartElapsed;
-			if (Measured > SCHEDULER_MAX_WAIT_PER_PRESS_SECONDS
-				|| AuthorizedWaitSeconds + Measured > SCHEDULER_MAX_WAIT_TOTAL_SECONDS)
+			// Ready at exactly the limit is still accepted.
+			if (Measured > PerPressLimit)
 			{
-				return FCortexCommandRouter::Error(
-					FString(CortexReplayErrorCodes::ReplayUIWaitTimeout),
-					FString::Printf(TEXT("UI readiness wait exceeded its budget at event %d"),
-						Event.Sequence));
+				return WaitTimeoutError(Event.Sequence);
 			}
-			AuthorizedWaitSeconds += Measured;
+			AuthorizedWaitSeconds += FMath::Max(0.0, Measured);
 			WaitingSequence = INDEX_NONE;
 			WaitReason = ECortexEditorUIObservationState::Ready;
 
@@ -132,6 +144,11 @@ FCortexCommandResult FCortexReplayScheduler::Advance(
 			if (!ValidateObservation(BeforeDispatch))
 			{
 				return TimingError(Event.Sequence, 0.0);
+			}
+			// Dispatch latency after the ready observation is not authorized wait time either.
+			if (BeforeDispatch - AfterEvaluation > SCHEDULER_LATENESS_ALLOWANCE_SECONDS)
+			{
+				return TimingError(Event.Sequence, BeforeDispatch - AfterEvaluation);
 			}
 			if (BeforeDispatch - ShiftedDeadline > SCHEDULER_LATENESS_ALLOWANCE_SECONDS)
 			{
@@ -191,14 +208,11 @@ FCortexCommandResult FCortexReplayScheduler::Advance(
 
 		if (Decision.State == ECortexReplayGuardDecisionState::Wait)
 		{
-			// A wait starts only when the full per-press budget is still available.
-			if (SCHEDULER_MAX_WAIT_PER_PRESS_SECONDS > SCHEDULER_MAX_WAIT_TOTAL_SECONDS - AuthorizedWaitSeconds
-				|| SCHEDULER_MAX_WAIT_TOTAL_SECONDS - AuthorizedWaitSeconds <= 0.0)
+			// Admit a wait whenever positive cumulative budget remains; the per-press limit applied
+			// while waiting is the lesser of 1 s and the remaining run budget.
+			if (SCHEDULER_MAX_WAIT_TOTAL_SECONDS - AuthorizedWaitSeconds <= 0.0)
 			{
-				return FCortexCommandRouter::Error(
-					FString(CortexReplayErrorCodes::ReplayUIWaitTimeout),
-					FString::Printf(TEXT("UI readiness budget exhausted at event %d"),
-						Event.Sequence));
+				return WaitTimeoutError(Event.Sequence);
 			}
 			WaitingSequence = Event.Sequence;
 			WaitReason = Decision.WaitReason;
@@ -210,6 +224,11 @@ FCortexCommandResult FCortexReplayScheduler::Advance(
 		if (!ValidateObservation(BeforeDispatch))
 		{
 			return TimingError(Event.Sequence, 0.0);
+		}
+		// Accidental dispatch latency after the ready evaluation is not authorized wait time.
+		if (BeforeDispatch - AfterEvaluation > SCHEDULER_LATENESS_ALLOWANCE_SECONDS)
+		{
+			return TimingError(Event.Sequence, BeforeDispatch - AfterEvaluation);
 		}
 		if (BeforeDispatch - EffectiveDeadline > SCHEDULER_LATENESS_ALLOWANCE_SECONDS)
 		{
@@ -257,6 +276,13 @@ bool FCortexReplayScheduler::IsComplete() const
 double FCortexReplayScheduler::GetAuthorizedWaitSeconds() const
 {
 	return AuthorizedWaitSeconds;
+}
+
+double FCortexReplayScheduler::GetCurrentWaitSeconds() const
+{
+	return WaitingSequence != INDEX_NONE
+		? FMath::Max(0.0, LastObservedElapsed - WaitStartElapsed)
+		: 0.0;
 }
 
 int32 FCortexReplayScheduler::GetWaitingSequence() const

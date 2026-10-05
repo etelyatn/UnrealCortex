@@ -887,7 +887,8 @@ bool FCortexReplayLifecycleImmutabilityTest::RunTest(const FString& Parameters)
 	const FString MapPath = MakeReplayMapAssetPath();
 
 	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
-		{MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W)}, true))
+		{MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		 MakeKeyPress(1, 0.25, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)}, true))
 	{
 		return false;
 	}
@@ -911,24 +912,47 @@ bool FCortexReplayLifecycleImmutabilityTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Admitted initial digest is exposed"), AdmittedInitial.IsEmpty());
 	TestFalse(TEXT("Admitted inputs digest is exposed"), AdmittedInputs.IsEmpty());
 
+	// The payload is replaced with a different *valid* payload (fewer events) while the run is
+	// still active, so the regression proves dispatch uses the admitted snapshot rather than
+	// re-reading the library mid-flight.
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Service, RunId](FAutomationTestBase& T)
+		[Fixture](FAutomationTestBase& T)
 		{
-			T.TestTrue(TEXT("Admitted run cancelled"), Service->CancelReplay(RunId, true).bSuccess);
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, RunId, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Fixture, RunId, AdmittedSnapshot, AdmittedInitial, AdmittedInputs](FAutomationTestBase& T)
-		{
-			// External edits to the published recording must not change the admitted identity.
 			const FString RecordDirectory = FPaths::Combine(
 				FPaths::Combine(Fixture->GetProjectRoot(), TEXT(".cortex/replay/recordings")),
 				FString::FromInt(1));
 			const FString InputsPath = FPaths::Combine(RecordDirectory, TEXT("inputs.jsonl"));
-			T.TestTrue(TEXT("Inputs file is writable for the external edit"),
-				FFileHelper::SaveStringToFile(TEXT("{\"tampered\":true}\n"), *InputsPath));
-
+			FString Original;
+			T.TestTrue(TEXT("Admitted inputs payload is readable"),
+				FFileHelper::LoadFileToString(Original, *InputsPath));
+			FString FirstLine;
+			T.TestTrue(TEXT("Admitted payload has a first event line"),
+				Original.Split(TEXT("\n"), &FirstLine, nullptr) && !FirstLine.IsEmpty());
+			T.TestTrue(TEXT("Active-run payload replaced with a different valid payload"),
+				FFileHelper::SaveStringToFile(FirstLine + TEXT("\n"), *InputsPath));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, RunId, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, RunId](FAutomationTestBase& T)
+		{
+			// The admitted two-event snapshot must still have driven the whole run.
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestTrue(TEXT("Completed run is queryable"), Run.bSuccess && Run.Data.IsValid());
+			T.TestEqual(TEXT("Playback completed from the admitted snapshot"),
+				RunState(Run), FString(TEXT("Completed")));
+			T.TestEqual(TEXT("Every admitted event was dispatched"), RunDispatchedEvents(Run), 2);
+			if (Run.Data.IsValid())
+			{
+				T.TestEqual(TEXT("Admitted event count retained, not the tampered payload"),
+					static_cast<int32>(Run.Data->GetNumberField(TEXT("total_events"))), 2);
+			}
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Fixture, RunId, AdmittedSnapshot, AdmittedInitial, AdmittedInputs](FAutomationTestBase& T)
+		{
 			FCortexReplayService Reloaded(Fixture->GetProjectRoot());
 			const FCortexCommandResult Retained = Reloaded.GetRun(RunId, true);
 			T.TestTrue(TEXT("Retained run reloads after restart"), Retained.bSuccess);
