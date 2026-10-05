@@ -16,10 +16,13 @@ public class CortexReplay : ModuleRules
 		{
 			"CoreUObject",
 			"Engine",
+			"EditorStyle",
 			"InputCore",
 			"Json",
 			"JsonUtilities",
 			"Slate",
+			"SlateCore",
+			"ToolMenus",
 			"UnrealEd",
 			"CortexEditor",
 		});
