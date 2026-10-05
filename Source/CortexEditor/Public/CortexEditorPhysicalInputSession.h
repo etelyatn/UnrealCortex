@@ -224,6 +224,11 @@ public:
 #if WITH_DEV_AUTOMATION_TESTS
 	static void SetPhysicalKeySnapshotResolver(TFunction<bool(const FKey&)>&& Resolver);
 	static void ClearPhysicalKeySnapshotResolver();
+	/**
+	 * Test-support read-only query: supported key identities the snapshot cannot resolve. Empty
+	 * means the domain is complete; a non-empty result makes admission fail explicitly naming them.
+	 */
+	static TArray<FString> GetUnresolvedSupportedKeyNames();
 #endif
 
 private:

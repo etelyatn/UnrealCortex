@@ -4531,7 +4531,7 @@ bool FCortexPhysicalInputCaptureAdmissionCoverageTest::RunTest(const FString& Pa
 			const FInputDeviceId Device = F.Session->GetTargetBinding().InputDevice;
 			// Held directly on the selected controller, so no Slate edge reaches the (installed)
 			// observation processor: exactly the pre-processor-install hold the old table missed.
-			for (const FKey Key : { EKeys::Tab, EKeys::Enter, EKeys::I, EKeys::F5, EKeys::Comma })
+			for (const FKey Key : { EKeys::Tab, EKeys::Enter, EKeys::I, EKeys::F5, EKeys::Comma, EKeys::Colon })
 			{
 				Controller->InputKey(FInputKeyEventArgs(nullptr, Device, Key, IE_Pressed, 0));
 			}
@@ -4544,7 +4544,7 @@ bool FCortexPhysicalInputCaptureAdmissionCoverageTest::RunTest(const FString& Pa
 			APlayerController* Controller = FixtureController(F);
 			if (!Controller) { Test.AddError(TEXT("Bound controller missing")); return; }
 			const FInputDeviceId Device = F.Session->GetTargetBinding().InputDevice;
-			for (const FKey Key : { EKeys::Tab, EKeys::Enter, EKeys::I, EKeys::F5, EKeys::Comma })
+			for (const FKey Key : { EKeys::Tab, EKeys::Enter, EKeys::I, EKeys::F5, EKeys::Comma, EKeys::Colon })
 			{
 				const FString Label = Key.ToString();
 				Test.TestTrue(FString::Printf(TEXT("Selected controller reports %s held"), *Label),
@@ -4788,6 +4788,13 @@ bool FCortexPhysicalInputPreInstallSnapshotAdmissionTest::RunTest(const FString&
 	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
 	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
 
+	// The supported domain must be complete: no supported key identity is left unresolved (a
+	// non-empty result would make admission fail explicitly naming the identity).
+#if WITH_DEV_AUTOMATION_TESTS
+	TestTrue(TEXT("Snapshot domain resolves every supported key identity"),
+		FCortexEditorPhysicalInputSession::GetUnresolvedSupportedKeyNames().Num() == 0);
+#endif
+
 	// A physical non-table key (Tab) held in the snapshot, before any target exists and before
 	// the processor could have observed a down edge, denies preparation admission.
 #if WITH_DEV_AUTOMATION_TESTS
@@ -4801,17 +4808,18 @@ bool FCortexPhysicalInputPreInstallSnapshotAdmissionTest::RunTest(const FString&
 	TestEqual(TEXT("Snapshot preparation denial is INVALID_OPERATION"),
 		Denied.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
 
-	// A held punctuation key is resolvable through the same snapshot channel (it is neither in
-	// the observation sets nor delivered to the controller before a target exists).
+	// A held shifted punctuation identity (Colon, which shares the Semicolon virtual key) must
+	// also be resolvable through the same snapshot channel — it is neither in the observation sets
+	// nor delivered to the controller before a target exists.
 #if WITH_DEV_AUTOMATION_TESTS
 	FCortexEditorPhysicalInputSession::SetPhysicalKeySnapshotResolver(
-		[](const FKey& Key) { return Key == EKeys::Comma; });
+		[](const FKey& Key) { return Key == EKeys::Colon; });
 #endif
 	const FCortexCommandResult PunctuationDenied = Fixture->Session->BeginOwnedPIE(
 		Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture));
-	TestFalse(TEXT("Pre-held punctuation key denies preparation admission through the snapshot"),
+	TestFalse(TEXT("Pre-held shifted punctuation key denies preparation admission through the snapshot"),
 		PunctuationDenied.bSuccess);
-	TestEqual(TEXT("Snapshot punctuation denial is INVALID_OPERATION"),
+	TestEqual(TEXT("Snapshot shifted punctuation denial is INVALID_OPERATION"),
 		PunctuationDenied.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
 
 	// Once the physical key is released, preparation is admitted.
@@ -4917,6 +4925,8 @@ bool FCortexPhysicalInputReplayOwnershipInactiveApplicationTest::RunTest(const F
 			Test.TestTrue(TEXT("Non-active route interrupted replay"), F.InterruptionCount >= 1);
 			Test.TestFalse(TEXT("Non-active route interruption is a non-success result"),
 				F.Interruption.bSuccess);
+			Test.TestTrue(TEXT("Non-active route interruption reaches the active-window branch"),
+				F.Interruption.ErrorMessage.Contains(TEXT("active top-level window")));
 
 			// A scheduled event while the route is not actually active must not be delivered.
 			FCortexEditorPhysicalInputEvent Second;

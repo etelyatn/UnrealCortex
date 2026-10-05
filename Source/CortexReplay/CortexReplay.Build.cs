@@ -21,6 +21,7 @@ public class CortexReplay : ModuleRules
 			"InputCore",
 			"Json",
 			"JsonUtilities",
+			"LevelEditor",
 			"Projects",
 			"Slate",
 			"SlateCore",

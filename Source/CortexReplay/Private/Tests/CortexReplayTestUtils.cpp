@@ -2,13 +2,44 @@
 
 #include "CortexEditorPhysicalInputSession.h"
 
+#include "Framework/Application/SlateApplication.h"
 #include "HAL/FileManager.h"
+#include "IAssetViewport.h"
+#include "LevelEditor.h"
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "Widgets/SWindow.h"
 
 namespace
 {
 constexpr int32 FixtureFormatSchemaVersion = 1;
+
+/**
+ * Brings the level editor's active viewport window to the front so the selected owned-PIE route
+ * window is the actually-active top-level window. Replay ownership requires the route to be the
+ * actually-active route (CR-03); automation may leave a different window active, which is a test
+ * environment condition, not a product relaxation.
+ */
+void EnsureEditorRouteWindowActive()
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		return;
+	}
+	FLevelEditorModule& LevelEditor = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
+	const TSharedPtr<IAssetViewport> Viewport = LevelEditor.GetFirstActiveViewport();
+	if (!Viewport.IsValid())
+	{
+		return;
+	}
+	FSlateApplication& Slate = FSlateApplication::Get();
+	const TSharedRef<SWidget> Widget = Viewport->AsWidget();
+	if (const TSharedPtr<SWindow> Window = Slate.FindWidgetWindow(Widget))
+	{
+		Window->BringToFront();
+	}
+}
 
 bool IsPressEvent(const FCortexReplayEvent& Event)
 {
@@ -42,6 +73,9 @@ FCortexReplayTestFixture::FCortexReplayTestFixture()
 	FCortexEditorPhysicalInputSession::SetPhysicalKeySnapshotResolver(
 		[](const FKey&) { return false; });
 #endif
+	// Replay ownership requires the actually-active route; make the level editor viewport window
+	// the active top-level window before any replay starts.
+	EnsureEditorRouteWindowActive();
 	IFileManager::Get().MakeDirectory(*FPaths::Combine(ProjectRoot, TEXT(".cortex/replay")), true);
 }
 

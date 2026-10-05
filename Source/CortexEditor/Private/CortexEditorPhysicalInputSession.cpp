@@ -1494,17 +1494,28 @@ namespace
 		int32 VirtualKey;
 	};
 
+	/** Supported key identities the snapshot cannot resolve; empty on a complete domain. */
+	TArray<FString>& GetUnresolvedSupportedKeys()
+	{
+		static TArray<FString> Keys;
+		return Keys;
+	}
+
 	/**
-	 * The complete supported keyboard/mouse domain, built once and cached as unique
-	 * (FKey, Windows virtual-key) pairs. The capture path can record any key the OS reports as a
-	 * key event, so admission must resolve every one of them from the OS high-bit snapshot.
+	 * The complete supported keyboard/mouse domain, built once and cached as (FKey, Windows
+	 * virtual-key) pairs deduplicated by FKey identity. The capture path can record any key the OS
+	 * reports as a key event, so admission must resolve every supported identity from the OS
+	 * high-bit snapshot.
 	 *
-	 * The engine splits this domain across two platform maps: `GetKeyMap` provides the
+	 * The engine splits the domain across two platform maps: `GetKeyMap` provides the
 	 * non-printable/navigation/mouse keys keyed by virtual key, while `GetCharKeyMap` provides the
-	 * printable letters/digits keyed by character code. Both are merged here, and the virtual key
-	 * is taken from the engine's own `FInputKeyManager` (virtual-key map first, character map
-	 * second), so the snapshot queries exactly the code the engine maps the key to — proving the
-	 * key->VK conversion against the engine rather than re-deriving it.
+	 * printable keys keyed by character code. Both are merged; the virtual key is the engine's own
+	 * (`FInputKeyManager`), and the printable character code's virtual key comes from the
+	 * platform's `VkKeyScanW`. Deduplication is by FKey, not by virtual key, so distinct shifted
+	 * identities that share one virtual key (Semicolon/Colon, Apostrophe/Quote) each remain
+	 * resolvable. A printable code that has no virtual key on the current layout is not part of
+	 * the supported set; a supported identity that cannot be resolved is recorded and makes
+	 * `CanResolvePhysicalKeyState` fail rather than silently reporting neutral.
 	 */
 	const TArray<FCortexPhysicalSupportedKey>& GetSupportedPhysicalKeys()
 	{
@@ -1514,44 +1525,46 @@ namespace
 			constexpr uint32 MaxMappings = 256;
 			uint32 KeyCodes[MaxMappings];
 			FString KeyNames[MaxMappings];
-			uint32 KeyCount = FPlatformInput::GetKeyMap(KeyCodes, KeyNames, MaxMappings);
+			const uint32 KeyCount = FPlatformInput::GetKeyMap(KeyCodes, KeyNames, MaxMappings);
 			uint32 CharCodes[MaxMappings];
 			FString CharKeyNames[MaxMappings];
-			uint32 CharCount = FPlatformInput::GetCharKeyMap(CharCodes, CharKeyNames, MaxMappings);
+			const uint32 CharCount = FPlatformInput::GetCharKeyMap(CharCodes, CharKeyNames, MaxMappings);
 
 			TArray<FCortexPhysicalSupportedKey> Mappings;
-			TSet<int32> SeenVirtualKeys;
-			auto AddVirtualKey = [&Mappings, &SeenVirtualKeys](uint32 VirtualKey)
+			TSet<FKey> SeenKeys;
+			TArray<FString>& Unresolved = GetUnresolvedSupportedKeys();
+			Unresolved.Reset();
+			auto AddEntry = [&Mappings, &SeenKeys](const FKey& Key, uint32 VirtualKey)
 			{
-				if (VirtualKey == 0 || VirtualKey > 0xFF || SeenVirtualKeys.Contains(static_cast<int32>(VirtualKey)))
+				if (!Key.IsValid() || VirtualKey == 0 || VirtualKey > 0xFF || SeenKeys.Contains(Key))
 				{
 					return;
 				}
-				// Name the VK through the engine's own key manager so the snapshot's reported key
-				// matches the engine's FKey for that code.
-				const FKey Key = FInputKeyManager::Get().GetKeyFromCodes(VirtualKey, VirtualKey);
-				if (!Key.IsValid())
-				{
-					UE_LOG(LogCortexEditor, Verbose,
-						TEXT("Physical key snapshot: no FKey for virtual key 0x%04X; skipped"), VirtualKey);
-					return;
-				}
-				SeenVirtualKeys.Add(static_cast<int32>(VirtualKey));
+				SeenKeys.Add(Key);
 				FCortexPhysicalSupportedKey Mapping;
 				Mapping.Key = Key;
 				Mapping.VirtualKey = static_cast<int32>(VirtualKey);
 				Mappings.Add(Mapping);
 			};
 
+			// The platform key map names every OS-reported non-printable/mouse key by virtual key.
 			for (uint32 Index = 0; Index < KeyCount; ++Index)
 			{
-				AddVirtualKey(KeyCodes[Index]);
+				const uint32 VirtualKey = KeyCodes[Index];
+				if (VirtualKey == 0 || VirtualKey > 0xFF)
+				{
+					continue;
+				}
+				const FKey Key = FInputKeyManager::Get().GetKeyFromCodes(VirtualKey, VirtualKey);
+				if (!Key.IsValid())
+				{
+					Unresolved.Add(FString::Printf(TEXT("virtual_key_0x%04X"), VirtualKey));
+					continue;
+				}
+				AddEntry(Key, VirtualKey);
 			}
-			// The printable map is keyed by character code. For letters/digits the character code
-			// equals the virtual key; for punctuation it does not, so resolve the virtual key
-			// through the platform's own character->virtual-key mapping. This covers the printable
-			// punctuation keys the platform key map removes because their scan code collides with a
-			// printable character code.
+			// The printable map is keyed by character code; its virtual key comes from the
+			// platform's own character->virtual-key mapping.
 			for (uint32 Index = 0; Index < CharCount; ++Index)
 			{
 				const uint32 CharCode = CharCodes[Index];
@@ -1562,39 +1575,35 @@ namespace
 				const SHORT Scanned = VkKeyScanW(static_cast<wchar_t>(CharCode));
 				if (Scanned == -1)
 				{
+					// No virtual key on this layout: not part of the supported domain.
 					UE_LOG(LogCortexEditor, Verbose,
-						TEXT("Physical key snapshot: printable code 0x%04X is not resolvable to a virtual key; skipped"),
+						TEXT("Physical key snapshot: printable code 0x%04X has no virtual key on this layout; not supported"),
 						CharCode);
 					continue;
 				}
 				const uint32 VirtualKey = static_cast<uint32>(static_cast<uint16>(Scanned)) & 0xFF;
-				if (VirtualKey == 0 || VirtualKey > 0xFF || SeenVirtualKeys.Contains(static_cast<int32>(VirtualKey)))
-				{
-					continue;
-				}
 				const FKey Key = FInputKeyManager::Get().GetKeyFromCodes(0, CharCode);
 				if (!Key.IsValid())
 				{
-					UE_LOG(LogCortexEditor, Verbose,
-						TEXT("Physical key snapshot: no FKey for printable code 0x%04X; skipped"), CharCode);
+					Unresolved.Add(FString::Printf(TEXT("printable_0x%04X"), CharCode));
 					continue;
 				}
-				SeenVirtualKeys.Add(static_cast<int32>(VirtualKey));
-				FCortexPhysicalSupportedKey Mapping;
-				Mapping.Key = Key;
-				Mapping.VirtualKey = static_cast<int32>(VirtualKey);
-				Mappings.Add(Mapping);
+				AddEntry(Key, VirtualKey);
 			}
-			// OEM punctuation virtual keys that neither map names (the platform key map removes
-			// them and the printable map does not carry every punctuation character) are added
-			// directly, named through the engine's own key manager, so no punctuation key is left
-			// unresolvable and silently assumed up.
+			// OEM punctuation virtual keys that neither map names are supported OS keys and are
+			// added directly so no punctuation key is left unresolvable.
 			static const uint32 OemVirtualKeys[] = {
 				VK_OEM_1, VK_OEM_PLUS, VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PERIOD,
 				VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_8, VK_OEM_102 };
 			for (const uint32 VirtualKey : OemVirtualKeys)
 			{
-				AddVirtualKey(VirtualKey);
+				const FKey Key = FInputKeyManager::Get().GetKeyFromCodes(VirtualKey, VirtualKey);
+				if (!Key.IsValid())
+				{
+					Unresolved.Add(FString::Printf(TEXT("virtual_key_0x%04X"), VirtualKey));
+					continue;
+				}
+				AddEntry(Key, VirtualKey);
 			}
 			return Mappings;
 		}();
@@ -1605,11 +1614,14 @@ namespace
 #endif
 	}
 
-	/** True only when the physical keyboard/mouse snapshot can actually be resolved here. */
+	/**
+	 * True only when the snapshot is genuinely resolvable: a non-empty domain with no supported
+	 * identity left unresolved. An incomplete domain must FAIL rather than report neutral.
+	 */
 	bool CanResolvePhysicalKeyState()
 	{
 #if PLATFORM_WINDOWS
-		return GetSupportedPhysicalKeys().Num() > 0;
+		return GetSupportedPhysicalKeys().Num() > 0 && GetUnresolvedSupportedKeys().Num() == 0;
 #else
 		return false;
 #endif
@@ -1732,6 +1744,13 @@ void FCortexEditorPhysicalInputSession::ClearPhysicalKeySnapshotResolver()
 #if PLATFORM_WINDOWS
 	GPhysicalKeySnapshotResolver = nullptr;
 #endif
+}
+
+TArray<FString> FCortexEditorPhysicalInputSession::GetUnresolvedSupportedKeyNames()
+{
+	// Force the domain build so the unresolved set reflects the current platform maps.
+	(void)GetSupportedPhysicalKeys();
+	return GetUnresolvedSupportedKeys();
 }
 #endif // WITH_DEV_AUTOMATION_TESTS
 
@@ -1898,12 +1917,17 @@ bool FCortexEditorPhysicalInputSession::IsPhysicalInputNeutral(FCortexCommandRes
 			return Deny(FString::Printf(TEXT("observed[%s]"), *FString::Join(Held, TEXT(","))));
 		}
 	}
-	// A neutral state can only be claimed when the physical snapshot is genuinely resolvable;
-	// assuming neutrality where it is not would admit capture from an unknown held state.
+	// A neutral state can only be claimed when the physical snapshot is genuinely resolvable over
+	// the complete supported domain; assuming neutrality where a supported identity is unresolved
+	// would admit capture from an unknown held state.
 	if (!CanResolvePhysicalKeyState())
 	{
+		const TArray<FString>& Unresolved = GetUnresolvedSupportedKeys();
 		OutError = MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("Physical keyboard/mouse state cannot be resolved on this platform"));
+			Unresolved.Num() > 0
+				? FString::Printf(TEXT("Physical keyboard/mouse state cannot be resolved for supported keys: %s"),
+					*FString::Join(Unresolved, TEXT(",")))
+				: FString(TEXT("Physical keyboard/mouse state cannot be resolved on this platform")));
 		return false;
 	}
 	if (const APlayerController* Controller = Binding.Controller.Get())
@@ -2532,6 +2556,37 @@ bool FCortexEditorPhysicalInputSession::IsSelectedRouteOwnershipIntact(FString& 
 		return false;
 	}
 
+	// Actual activation, not membership in a retained set: the selected route must be the
+	// actually-active top-level window of an active application. An unresolved route window or an
+	// unresolved active top-level window is route loss, never intact ownership, and is never a
+	// reason to force inactive input.
+	const TSharedPtr<SWidget> CoordinateRoot = GetCoordinateRootWidget();
+	const TSharedPtr<SWindow> RouteWindow = CoordinateRoot.IsValid()
+		? Slate.FindWidgetWindow(CoordinateRoot.ToSharedRef()) : nullptr;
+	if (!Slate.IsActive())
+	{
+		OutReason = TEXT("Replay target route is not the active application");
+		return false;
+	}
+	if (!RouteWindow.IsValid())
+	{
+		UE_LOG(LogCortexEditor, Display,
+			TEXT("Replay route loss: route window unresolvable (appActive=%d activeTopLevelValid=%d)"),
+			Slate.IsActive() ? 1 : 0, Slate.GetActiveTopLevelWindow().IsValid() ? 1 : 0);
+		OutReason = TEXT("Replay target route window is no longer resolvable");
+		return false;
+	}
+	const TSharedPtr<SWindow> ActiveTopLevel = Slate.GetActiveTopLevelWindow();
+	if (!ActiveTopLevel.IsValid() || ActiveTopLevel != RouteWindow)
+	{
+		UE_LOG(LogCortexEditor, Display,
+			TEXT("Replay route loss: route window is not the active top-level window (appActive=%d activeTopLevelValid=%d sameWindow=%d)"),
+			Slate.IsActive() ? 1 : 0, ActiveTopLevel.IsValid() ? 1 : 0,
+			(ActiveTopLevel.IsValid() && ActiveTopLevel == RouteWindow) ? 1 : 0);
+		OutReason = TEXT("Replay target route window is not the active top-level window");
+		return false;
+	}
+
 	// A foreign keyboard focus (an editor control outside the selected route) would receive every
 	// synthetic key. Focus that has never been established is not claimed as a foreign owner.
 	const TSharedPtr<SWidget> Focused = Slate.GetUserFocusedWidget(
@@ -2539,35 +2594,6 @@ bool FCortexEditorPhysicalInputSession::IsSelectedRouteOwnershipIntact(FString& 
 	if (Focused.IsValid() && !IsWidgetOnSelectedRoute(Focused))
 	{
 		OutReason = TEXT("Replay lost the selected route to a foreign keyboard focus");
-		return false;
-	}
-
-	// The focused widget must be in the selected viewport's own window, not a different window.
-	const TSharedPtr<SWidget> CoordinateRoot = GetCoordinateRootWidget();
-	const TSharedPtr<SWindow> RouteWindow = CoordinateRoot.IsValid()
-		? Slate.FindWidgetWindow(CoordinateRoot.ToSharedRef()) : nullptr;
-	if (Focused.IsValid() && CoordinateRoot.IsValid())
-	{
-		const TSharedPtr<SWindow> FocusWindow = Slate.FindWidgetWindow(Focused.ToSharedRef());
-		if (RouteWindow.IsValid() && FocusWindow.IsValid() && FocusWindow != RouteWindow)
-		{
-			OutReason = TEXT("Replay lost the selected route window to a foreign active window");
-			return false;
-		}
-	}
-
-	// Actual activation, not just membership in a retained set: replay must only deliver into a
-	// route that is genuinely the active application window. A deactivated application or a
-	// different active top-level window is route loss, never a reason to force inactive input.
-	if (!Slate.IsActive())
-	{
-		OutReason = TEXT("Replay target route is not the active application");
-		return false;
-	}
-	const TSharedPtr<SWindow> ActiveTopLevel = Slate.GetActiveTopLevelWindow();
-	if (RouteWindow.IsValid() && ActiveTopLevel.IsValid() && ActiveTopLevel != RouteWindow)
-	{
-		OutReason = TEXT("Replay target route window is not the active top-level window");
 		return false;
 	}
 
