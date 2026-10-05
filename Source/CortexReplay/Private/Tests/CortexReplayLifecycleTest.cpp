@@ -517,6 +517,72 @@ private:
 	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
 };
 
+/** Waits until the native service reports the expected capture state. */
+class FCortexReplayAwaitCapturePhase : public IAutomationLatentCommand
+{
+public:
+	FCortexReplayAwaitCapturePhase(FAutomationTestBase* InTest,
+		TSharedRef<FCortexReplayService> InService, FString InExpected,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Test(InTest), Service(MoveTemp(InService)), Expected(MoveTemp(InExpected))
+		, KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		const FCortexCommandResult Current = Service->GetCurrentOperation();
+		if (Current.bSuccess && Current.Data.IsValid()
+			&& Current.Data->GetStringField(TEXT("state")) == Expected)
+		{
+			return true;
+		}
+		if (FPlatformTime::Seconds() - StartTime > ReplayReadyWatchdogSeconds * 2)
+		{
+			Test->AddError(FString::Printf(TEXT("Capture never reached %s"), *Expected));
+			return true;
+		}
+		return false;
+	}
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	FString Expected;
+	double StartTime = 0.0;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+};
+
+/** Waits until the capture status reports a retained publication failure. */
+class FCortexReplayAwaitCapturePublicationFailure : public IAutomationLatentCommand
+{
+public:
+	FCortexReplayAwaitCapturePublicationFailure(FAutomationTestBase* InTest,
+		TSharedRef<FCortexReplayService> InService,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Test(InTest), Service(MoveTemp(InService)), KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		const FCortexCommandResult Current = Service->GetCurrentOperation();
+		if (Current.bSuccess && Current.Data.IsValid()
+			&& Current.Data->GetBoolField(TEXT("publication_failed")))
+		{
+			return true;
+		}
+		if (FPlatformTime::Seconds() - StartTime > ReplayReadyWatchdogSeconds * 2)
+		{
+			Test->AddError(TEXT("Capture publication failure was never reported"));
+			return true;
+		}
+		return false;
+	}
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	double StartTime = 0.0;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+};
+
 /**
  * While the matching owned PIE context exists after cancellation, get_run must stay Finalizing,
  * no further input may be dispatched and competing starts must be busy. The stable terminal
@@ -1771,6 +1837,109 @@ bool FCortexReplayLifecycleCapturePublishFailureTest::RunTest(const FString& Par
 		}, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// An owned capture whose asynchronous publication fails keeps the failure observable and retries.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleOwnedCapturePublishFailureTest,
+	"Cortex.Replay.Lifecycle.OwnedCapturePublicationFailureRetained",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleOwnedCapturePublishFailureTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	// Occupy the canonical publication path of the first reserved recording id with a file, so the
+	// owned capture's teardown-time publication must fail.
+	const FString RecordingsRoot = FPaths::Combine(Fixture->GetProjectRoot(),
+		TEXT(".cortex/replay/recordings"));
+	TestTrue(TEXT("Recordings root created"),
+		IFileManager::Get().MakeDirectory(*RecordingsRoot, true));
+	const FString BlockedPath = FPaths::Combine(RecordingsRoot, TEXT("1"));
+	TestTrue(TEXT("Publication path blocked"),
+		FFileHelper::SaveStringToFile(TEXT("blocked"), *BlockedPath));
+
+	const FCortexCommandResult Started = Service->StartCapture(MapPath);
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+
+	// The owned capture becomes Recording only after readiness, pose read and neutral-state arming.
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service,
+		TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			// The stop is accepted and the owned teardown/publication is still pending.
+			T.TestTrue(TEXT("Owned capture stop accepted"), Service->StopCapture(false).bSuccess);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePublicationFailure(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Fixture, BlockedPath](FAutomationTestBase& T)
+		{
+			// While retries are pending the retained failure is observable through the status.
+			const FCortexCommandResult Active = Service->GetCurrentOperation();
+			T.TestTrue(TEXT("Failed owned capture remains queryable"),
+				Active.bSuccess && Active.Data.IsValid());
+			if (Active.Data.IsValid())
+			{
+				T.TestEqual(TEXT("Owned capture keeps its reserved recording id"),
+					static_cast<int32>(Active.Data->GetNumberField(TEXT("recording_id"))), 1);
+				T.TestEqual(TEXT("Owned capture stays Finalizing"),
+					Active.Data->GetStringField(TEXT("state")), FString(TEXT("Finalizing")));
+				T.TestTrue(TEXT("Publication failure is reported"),
+					Active.Data->GetBoolField(TEXT("publication_failed")));
+				const TSharedPtr<FJsonObject>* PublicationError = nullptr;
+				T.TestTrue(TEXT("Retained publication error exposed"),
+					Active.Data->TryGetObjectField(TEXT("publication_error"), PublicationError)
+					&& PublicationError != nullptr && PublicationError->IsValid());
+				if (PublicationError != nullptr && PublicationError->IsValid())
+				{
+					T.TestFalse(TEXT("Publication error carries a code"),
+						(*PublicationError)->GetStringField(TEXT("code")).IsEmpty());
+				}
+			}
+			T.TestTrue(TEXT("Failed owned capture still owns the record"), Service->IsRecordInUse(1));
+
+			// Let the retained publication retry succeed.
+			T.TestTrue(TEXT("Publication path unblocked"),
+				IFileManager::Get().Delete(*BlockedPath, false, true, true));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Fixture](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Idle = Service->GetCurrentOperation();
+			T.TestTrue(TEXT("get_current_operation succeeds after the retry"), Idle.bSuccess);
+			T.TestFalse(TEXT("Owned capture released once its publication succeeded"), Idle.Data.IsValid());
+			T.TestFalse(TEXT("Retried capture no longer owns the record"), Service->IsRecordInUse(1));
+
+			// The retried recording is now a normal loadable, listed recording.
+			FCortexReplayLibrary Library(Fixture->GetProjectRoot());
+			TArray<FCortexReplayMetadata> All;
+			T.TestTrue(TEXT("Library lists the retried capture"), Library.List(false, All).bSuccess);
+			bool bListed = false;
+			for (const FCortexReplayMetadata& Metadata : All)
+			{
+				if (Metadata.RecordingId == 1) { bListed = true; break; }
+			}
+			T.TestTrue(TEXT("Retried capture is listed"), bListed);
+			const FCortexCommandResult Recording = Service->GetRecording(1, false);
+			T.TestTrue(TEXT("Retried capture loads"), Recording.bSuccess);
+			if (Recording.Data.IsValid())
+			{
+				T.TestEqual(TEXT("Retried capture is complete"),
+					Recording.Data->GetBoolField(TEXT("complete")), true);
+			}
+		}, Fixture));
 
 	return true;
 }

@@ -253,6 +253,12 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	double CaptureStopSeconds = 0.0;
 	/** Throttle for owned-capture publication retries after a storage/validation failure. */
 	double LastCapturePublishAttemptSeconds = 0.0;
+	/**
+	 * Retained capture publication failure, kept separate from the interruption faults
+	 * (`bCaptureFaulted`/`CaptureFaultResult`) so it never suppresses the publication retry.
+	 */
+	bool bCapturePublicationFailed = false;
+	FCortexCommandResult CapturePublicationError;
 
 	// ---- run ----
 	bool bRunActive = false;
@@ -291,7 +297,8 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	bool CheckLivePermission();
 	void MarkCaptureFaulted(const FCortexCommandResult& Result);
 	void BeginCaptureFinalization(bool bPublish);
-	void RetainCaptureForPublicationRetry();
+	void RetainCaptureForPublicationRetry(const FCortexCommandResult& PublishResult);
+	void ClearCapturePublicationFailure();
 	void CompleteCaptureFinalization();
 	FCortexCommandResult PublishCaptureSnapshot();
 	void OnCaptureInterruption(uint64 Generation, const FCortexCommandResult& Result);
@@ -607,14 +614,24 @@ void FCortexReplayService::FImpl::BeginCaptureFinalization(bool bPublish)
 	}
 }
 
-void FCortexReplayService::FImpl::RetainCaptureForPublicationRetry()
+void FCortexReplayService::FImpl::RetainCaptureForPublicationRetry(
+	const FCortexCommandResult& PublishResult)
 {
 	// Keep the captured events, recording id and Finalizing phase so the publication failure stays
-	// queryable and can be retried instead of silently completing.
+	// queryable and can be retried instead of silently completing. The failure is retained
+	// separately from the interruption faults so the retry path is never suppressed.
+	bCapturePublicationFailed = true;
+	CapturePublicationError = PublishResult;
 	CapturePhase = ECapturePhase::Finalizing;
 	bCapturePublishOnComplete = true;
 	bFrozen = true;
 	LastCapturePublishAttemptSeconds = FPlatformTime::Seconds();
+}
+
+void FCortexReplayService::FImpl::ClearCapturePublicationFailure()
+{
+	bCapturePublicationFailed = false;
+	CapturePublicationError = FCortexCommandResult();
 }
 
 void FCortexReplayService::FImpl::TickCapture()
@@ -681,11 +698,13 @@ void FCortexReplayService::FImpl::CompleteCaptureFinalization()
 		if (!PublishResult.bSuccess)
 		{
 			// Ownership, the recording id and the captured events are retained (the active capture
-			// status shows Finalizing) so the failure is queryable and the publication is retried.
+			// status shows Finalizing plus the retained failure) and the publication is retried.
+			RetainCaptureForPublicationRetry(PublishResult);
 			UE_LOG(LogCortexReplay, Log, TEXT("Capture %d publication failed: %s (%s); retained for retry"),
 				CaptureRecordingId, *PublishResult.ErrorCode, *PublishResult.ErrorMessage);
 			return;
 		}
+		ClearCapturePublicationFailure();
 	}
 	if (Session.IsValid())
 	{
@@ -707,6 +726,7 @@ void FCortexReplayService::FImpl::ResetCapture()
 	bCaptureFaulted = false;
 	bCapturePublishOnComplete = false;
 	CaptureFaultResult = FCortexCommandResult();
+	ClearCapturePublicationFailure();
 	CaptureRecordingId = 0;
 	CaptureMapAssetPath.Reset();
 	CaptureTargetInfo = FCortexEditorPhysicalInputTargetInfo();
@@ -1312,6 +1332,21 @@ FCortexCommandResult FCortexReplayService::GetCurrentOperation() const
 		Data->SetStringField(TEXT("origin"), State.bBorrowedCapture ? TEXT("human") : TEXT("ai"));
 		Data->SetNumberField(TEXT("recording_id"), State.CaptureRecordingId);
 		Data->SetStringField(TEXT("state"), CaptureState);
+		// A pending or failed publication is visible to the human window while retries are pending.
+		Data->SetBoolField(TEXT("publication_pending"),
+			State.bCapturePublishOnComplete && !State.bCaptureFaulted);
+		Data->SetBoolField(TEXT("publication_failed"), State.bCapturePublicationFailed);
+		if (State.bCapturePublicationFailed)
+		{
+			TSharedRef<FJsonObject> PublicationError = MakeShared<FJsonObject>();
+			PublicationError->SetStringField(TEXT("code"), State.CapturePublicationError.ErrorCode);
+			PublicationError->SetStringField(TEXT("message"), State.CapturePublicationError.ErrorMessage);
+			Data->SetObjectField(TEXT("publication_error"), PublicationError);
+		}
+		else
+		{
+			Data->SetField(TEXT("publication_error"), MakeShared<FJsonValueNull>());
+		}
 	}
 	return FCortexCommandRouter::Success(Data);
 }
@@ -1565,7 +1600,7 @@ FCortexCommandResult FCortexReplayService::StopCapture(bool bAbnormal)
 			{
 				// The captured data and recording id are retained so the failure is queryable and
 				// the publication is retried instead of silently completing.
-				State.RetainCaptureForPublicationRetry();
+				State.RetainCaptureForPublicationRetry(PublishResult);
 				State.EnsureTicker();
 				return PublishResult;
 			}
@@ -1581,6 +1616,13 @@ FCortexCommandResult FCortexReplayService::StopCapture(bool bAbnormal)
 	// Owned capture retains its session and ownership until the matching teardown is observed.
 	State.BeginCaptureFinalization(bPublish);
 	State.TickCapture();
+	// A publication attempt that already failed (and whose retries are outstanding) is reported
+	// instead of a plain success; otherwise success means the stop was accepted and publication is
+	// still pending, which the capture status exposes.
+	if (State.bCapturePublicationFailed)
+	{
+		return State.CapturePublicationError;
+	}
 	return ServiceSuccess();
 }
 
