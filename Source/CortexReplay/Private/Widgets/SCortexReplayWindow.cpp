@@ -534,7 +534,13 @@ void SCortexReplayWindow::StopActiveOperation()
 		const FString Kind = Operation.Data->GetStringField(TEXT("kind"));
 		if (Kind == TEXT("capture"))
 		{
-			Service->StopCapture(false);
+			// A stop that discards the capture (never reached Recording, or faulted) must tell the
+			// human why nothing was saved instead of silently returning to Ready.
+			const FCortexCommandResult Stopped = Service->StopCapture(false);
+			if (!Stopped.bSuccess)
+			{
+				SurfaceOperationError(Stopped);
+			}
 		}
 		else if (Kind == TEXT("replay"))
 		{
@@ -928,6 +934,22 @@ FText SCortexReplayWindow::BuildOperationLabel() const
 		{
 			Label += TEXT(" · save failed");
 		}
+		if (Operation.Data->GetBoolField(TEXT("faulted")))
+		{
+			const TSharedPtr<FJsonObject>* FaultError = nullptr;
+			if (Operation.Data->TryGetObjectField(TEXT("fault_error"), FaultError)
+				&& FaultError != nullptr && FaultError->IsValid())
+			{
+				const FString FaultMessage = (*FaultError)->GetStringField(TEXT("message"));
+				Label += FaultMessage.IsEmpty()
+					? TEXT(" · faulted")
+					: FString::Printf(TEXT(" · faulted: %s"), *FaultMessage);
+			}
+			else
+			{
+				Label += TEXT(" · faulted");
+			}
+		}
 	}
 
 	const TSharedPtr<FJsonObject>* Waiting = nullptr;
@@ -938,6 +960,12 @@ FText SCortexReplayWindow::BuildOperationLabel() const
 			*(*Waiting)->GetStringField(TEXT("reason")),
 			(*Waiting)->GetNumberField(TEXT("remaining_event_seconds")),
 			(*Waiting)->GetNumberField(TEXT("remaining_run_seconds")));
+	}
+	// A fresh rejection/outcome from the last human action (for example a stop that discarded the
+	// capture) stays visible next to the transiently still-active operation.
+	if (!LastStatusMessage.IsEmpty())
+	{
+		Label += FString::Printf(TEXT(" · %s"), *LastStatusMessage);
 	}
 	return FText::FromString(Label);
 }

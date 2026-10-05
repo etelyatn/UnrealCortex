@@ -2137,3 +2137,237 @@ bool FCortexReplayLifecycleCaptureProvenanceVersionTest::RunTest(const FString& 
 
 	return true;
 }
+
+namespace
+{
+/** Asserts no recording was published for a reserved id and that the record is no longer owned. */
+void AssertCaptureNotPublished(FAutomationTestBase& T, FCortexReplayService& Service,
+	FCortexReplayTestFixture& Fixture, int32 Id)
+{
+	T.TestFalse(TEXT("Discarded capture is not loadable"),
+		Service.GetRecording(Id, false).bSuccess);
+	T.TestFalse(TEXT("Discarded capture no longer owns the record"), Service.IsRecordInUse(Id));
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+	TArray<FCortexReplayMetadata> All;
+	T.TestTrue(TEXT("Library listing still succeeds"), Library.List(false, All).bSuccess);
+	for (const FCortexReplayMetadata& Metadata : All)
+	{
+		T.TestFalse(TEXT("Library has no recording for the discarded id"), Metadata.RecordingId == Id);
+	}
+}
+}
+
+// ---------------------------------------------------------------------------
+// A human Stop before an owned capture reaches Recording is a discard, and it must say so
+// explicitly (the previous behaviour silently returned success and saved nothing).
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureStopBeforeRecordingTest,
+	"Cortex.Replay.Lifecycle.CaptureStopBeforeRecordingReportsDiscard",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleCaptureStopBeforeRecordingTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const FCortexCommandResult Started = Service->StartCapture(MapPath);
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+
+	// Owned readiness is asynchronous, so the capture is still Preparing: the stop discards it.
+	const FCortexCommandResult Stopped = Service->StopCapture(false);
+	TestFalse(TEXT("Stopping a preparing capture reports a non-publishing outcome"), Stopped.bSuccess);
+	TestEqual(TEXT("Discard reuses the module's invalid-operation code"),
+		Stopped.ErrorCode, FString(CortexReplayErrorCodes::InvalidOperation));
+	TestTrue(TEXT("Discard names the reason it was discarded"),
+		Stopped.ErrorMessage.Contains(TEXT("never reached Recording")));
+	TestTrue(TEXT("Discard names the Preparing phase"),
+		Stopped.ErrorMessage.Contains(TEXT("Preparing")));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Fixture](FAutomationTestBase& T)
+		{
+			AssertCaptureNotPublished(T, *Service, *Fixture, 1);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A human Stop of a faulted capture reports the fault reason explicitly instead of a silent
+// success, and the capture status exposes the same reason while it finalizes.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureStopFaultedTest,
+	"Cortex.Replay.Lifecycle.CaptureStopFaultedReportsReason",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleCaptureStopFaultedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const FCortexCommandResult Started = Service->StartCapture(MapPath);
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned capture PIE world exists"), PlayWorld);
+			if (!PlayWorld || !FSlateApplication::IsInitialized()) { return; }
+			APlayerController* Controller = PlayWorld->GetFirstPlayerController();
+			T.TestNotNull(TEXT("Owned capture controller exists"), Controller);
+			if (!Controller) { return; }
+			APawn* OriginalPawn = Controller->GetPawn();
+			T.TestNotNull(TEXT("Owned capture pawn exists"), OriginalPawn);
+			if (!OriginalPawn) { return; }
+
+			ULocalPlayer* LocalPlayer = PlayWorld->GetGameInstance()
+				? PlayWorld->GetGameInstance()->GetLocalPlayerByIndex(0) : nullptr;
+			const TSharedPtr<FSlateUser> SlateUser = LocalPlayer ? LocalPlayer->GetSlateUser() : nullptr;
+			UGameViewportClient* ViewportClient = PlayWorld->GetGameViewport();
+			FSceneViewport* SceneViewport = ViewportClient ? ViewportClient->GetGameViewport() : nullptr;
+			const TSharedPtr<SViewport> ViewportWidget =
+				SceneViewport ? SceneViewport->GetViewportWidget().Pin() : nullptr;
+			T.TestTrue(TEXT("Owned capture viewport widget exists"), ViewportWidget.IsValid());
+			if (!SlateUser.IsValid() || !ViewportWidget.IsValid()) { return; }
+			const FGeometry Geometry = ViewportWidget->GetCachedGeometry();
+			const FVector2D ViewportSize = Geometry.GetLocalSize();
+			if (ViewportSize.X <= 0.0 || ViewportSize.Y <= 0.0) { return; }
+			const FVector2D Center =
+				Geometry.LocalToAbsolute(FVector2D(ViewportSize.X * 0.5, ViewportSize.Y * 0.5));
+			const FInputDeviceId Device = IPlatformInputDeviceMapper::Get()
+				.GetPrimaryInputDeviceForUser(SlateUser->GetPlatformUserId());
+			const int32 UserIndex = SlateUser->GetUserIndex();
+
+			// Fault the recording synchronously: the required pre-press pose is unreadable at the
+			// press (the pawn is transiently unbound and restored before the next service tick).
+			Controller->UnPossess();
+			const bool bSavedInactiveInputHandling =
+				FSlateApplication::Get().GetHandleDeviceInputWhenApplicationNotActive();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(true);
+
+			const FModifierKeysState Modifiers;
+			TSet<FKey> Pressed;
+			Pressed.Add(EKeys::LeftMouseButton);
+			FSlateApplication::Get().ProcessMouseButtonDownEvent(nullptr,
+				FPointerEvent(Device, FSlateApplicationBase::CursorPointerIndex, Center, Center,
+					Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, UserIndex));
+			Pressed.Reset();
+			FSlateApplication::Get().ProcessMouseButtonUpEvent(
+				FPointerEvent(Device, FSlateApplicationBase::CursorPointerIndex, Center, Center,
+					Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, UserIndex));
+
+			Controller->Possess(OriginalPawn);
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+
+			// The status exposes the fault reason while the capture is still active.
+			FString FaultCode;
+			FString FaultMessage;
+			const FCortexCommandResult Active = Service->GetCurrentOperation();
+			if (Active.bSuccess && Active.Data.IsValid())
+			{
+				const TSharedPtr<FJsonObject>* FaultError = nullptr;
+				if (Active.Data->TryGetObjectField(TEXT("fault_error"), FaultError)
+					&& FaultError != nullptr && FaultError->IsValid())
+				{
+					FaultCode = (*FaultError)->GetStringField(TEXT("code"));
+					FaultMessage = (*FaultError)->GetStringField(TEXT("message"));
+				}
+			}
+			T.TestFalse(TEXT("Fault reason is exposed in the capture status"), FaultMessage.IsEmpty());
+			T.TestTrue(TEXT("Fault status is flagged"), Active.bSuccess && Active.Data.IsValid()
+				&& Active.Data->GetBoolField(TEXT("faulted")));
+
+			// The human stop reports the same reason the status exposes, not a silent success.
+			const FCortexCommandResult Stopped = Service->StopCapture(false);
+			T.TestFalse(TEXT("Stopping a faulted capture reports a non-publishing outcome"),
+				Stopped.bSuccess);
+			T.TestEqual(TEXT("Faulted stop reports the exposed fault code"),
+				Stopped.ErrorCode, FaultCode);
+			T.TestEqual(TEXT("Faulted stop reports the exposed fault reason"),
+				Stopped.ErrorMessage, FaultMessage);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Fixture](FAutomationTestBase& T)
+		{
+			AssertCaptureNotPublished(T, *Service, *Fixture, 1);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Green control: a normal Stop while the owned capture is Recording still publishes and still
+// returns success.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureStopDuringRecordingTest,
+	"Cortex.Replay.Lifecycle.CaptureStopDuringRecordingPublishes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleCaptureStopDuringRecordingTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const FCortexCommandResult Started = Service->StartCapture(MapPath);
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase&)
+		{
+			if (FSlateApplication::IsInitialized())
+			{
+				const FModifierKeysState Modifiers;
+				const uint32 UserIndex = FSlateApplication::Get().GetUserIndexForKeyboard();
+				FSlateApplication::Get().ProcessKeyDownEvent(
+					FKeyEvent(EKeys::W, Modifiers, UserIndex, false, 0, 0));
+				FSlateApplication::Get().ProcessKeyUpEvent(
+					FKeyEvent(EKeys::W, Modifiers, UserIndex, false, 0, 0));
+			}
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("Recording stop is accepted and publishes"),
+				Service->StopCapture(false).bSuccess);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Recording = Service->GetRecording(1, false);
+			T.TestTrue(TEXT("Recording stop published the capture"), Recording.bSuccess);
+			if (Recording.Data.IsValid())
+			{
+				T.TestEqual(TEXT("Published capture is complete"),
+					Recording.Data->GetBoolField(TEXT("complete")), true);
+			}
+			T.TestFalse(TEXT("Published capture no longer owns the record"), Service->IsRecordInUse(1));
+		}, Fixture));
+
+	return true;
+}

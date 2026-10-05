@@ -322,7 +322,21 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	void OnCaptureEvent(const FCortexEditorPhysicalInputEvent& Event, double TimeSeconds,
 		const FCortexEditorPhysicalInputCaptureContext& Context);
 	void SetRunState(ECortexReplayState NewState);
+	/** Stable short name used by capture lifecycle logging and the discard outcome message. */
+	static const TCHAR* CapturePhaseToString(ECapturePhase Phase);
 };
+
+const TCHAR* FCortexReplayService::FImpl::CapturePhaseToString(ECapturePhase Phase)
+{
+	switch (Phase)
+	{
+	case ECapturePhase::None: return TEXT("None");
+	case ECapturePhase::Preparing: return TEXT("Preparing");
+	case ECapturePhase::Recording: return TEXT("Recording");
+	case ECapturePhase::Finalizing: return TEXT("Finalizing");
+	default: return TEXT("Unknown");
+	}
+}
 
 void FCortexReplayService::FImpl::EnsureTicker()
 {
@@ -614,6 +628,8 @@ void FCortexReplayService::FImpl::MarkCaptureFaulted(const FCortexCommandResult&
 	CaptureFaultResult = Result.bSuccess
 		? ServiceError(CortexReplayErrorCodes::TargetUnavailable, TEXT("Capture target was lost"))
 		: Result;
+	UE_LOG(LogCortexReplay, Display, TEXT("Capture %d faulted: %s (%s)"),
+		CaptureRecordingId, *CaptureFaultResult.ErrorCode, *CaptureFaultResult.ErrorMessage);
 	if (CapturePhase == ECapturePhase::Finalizing)
 	{
 		// A fault during teardown withholds the pending publication.
@@ -630,6 +646,8 @@ void FCortexReplayService::FImpl::BeginCaptureFinalization(bool bPublish)
 	CapturePhase = ECapturePhase::Finalizing;
 	bCapturePublishOnComplete = bPublish;
 	bFrozen = true;
+	UE_LOG(LogCortexReplay, Display, TEXT("Capture %d finalization entered (publish=%d)"),
+		CaptureRecordingId, bPublish ? 1 : 0);
 	if (Session.IsValid())
 	{
 		// Freeze dispatch and detach capture; only a matching owned session is ended.
@@ -727,18 +745,22 @@ void FCortexReplayService::FImpl::CompleteCaptureFinalization()
 			// Ownership, the recording id and the captured events are retained (the active capture
 			// status shows Finalizing plus the retained failure) and the publication is retried.
 			RetainCaptureForPublicationRetry(PublishResult);
-			UE_LOG(LogCortexReplay, Log, TEXT("Capture %d publication failed: %s (%s); retained for retry"),
+			UE_LOG(LogCortexReplay, Display, TEXT("Capture %d publication failed: %s (%s); retained for retry"),
 				CaptureRecordingId, *PublishResult.ErrorCode, *PublishResult.ErrorMessage);
 			return;
 		}
 		ClearCapturePublicationFailure();
+		UE_LOG(LogCortexReplay, Display, TEXT("Capture %d publication succeeded"), CaptureRecordingId);
 	}
 	if (Session.IsValid())
 	{
 		Session->Shutdown();
 		Session.Reset();
 	}
+	const int32 CompletedRecordingId = CaptureRecordingId;
 	ResetCapture();
+	UE_LOG(LogCortexReplay, Display, TEXT("Capture %d finalized (published=%d)"),
+		CompletedRecordingId, bShouldPublish ? 1 : 0);
 	if (bShutdown)
 	{
 		DetachTickerAndSession();
@@ -824,21 +846,42 @@ void FCortexReplayService::FImpl::OnCaptureInterruption(uint64 Generation,
 void FCortexReplayService::FImpl::OnOwnedCaptureReady(uint64 Generation,
 	const FCortexCommandResult& Ready)
 {
-	if (Generation != CaptureOperationGeneration || CapturePhase != ECapturePhase::Preparing
-		|| !Session.IsValid())
+	if (Generation != CaptureOperationGeneration)
 	{
+		UE_LOG(LogCortexReplay, Display,
+			TEXT("Capture readiness callback ignored: stale generation (current %llu, callback %llu)"),
+			CaptureOperationGeneration, Generation);
+		return;
+	}
+	if (CapturePhase != ECapturePhase::Preparing)
+	{
+		UE_LOG(LogCortexReplay, Display,
+			TEXT("Capture %d readiness callback ignored: phase is %s, not Preparing"),
+			CaptureRecordingId, *FString(CapturePhaseToString(CapturePhase)));
+		return;
+	}
+	if (!Session.IsValid())
+	{
+		UE_LOG(LogCortexReplay, Display,
+			TEXT("Capture %d readiness callback ignored: the capture session is missing"),
+			CaptureRecordingId);
 		return;
 	}
 	if (!Ready.bSuccess)
 	{
+		UE_LOG(LogCortexReplay, Display, TEXT("Capture %d preparation failed: %s (%s)"),
+			CaptureRecordingId, *Ready.ErrorCode, *Ready.ErrorMessage);
 		MarkCaptureFaulted(Ready);
 		return;
 	}
+	UE_LOG(LogCortexReplay, Display, TEXT("Capture %d preparation ready"), CaptureRecordingId);
 
 	FCortexEditorPhysicalInputPlayerPose Pose;
 	const FCortexCommandResult PoseResult = Session->ReadPlayerPose(Pose);
 	if (!PoseResult.bSuccess)
 	{
+		UE_LOG(LogCortexReplay, Display, TEXT("Capture %d preparation pose read failed: %s (%s)"),
+			CaptureRecordingId, *PoseResult.ErrorCode, *PoseResult.ErrorMessage);
 		MarkCaptureFaulted(PoseResult);
 		return;
 	}
@@ -853,6 +896,8 @@ void FCortexReplayService::FImpl::OnOwnedCaptureReady(uint64 Generation,
 	if (!Armed.bSuccess)
 	{
 		// A rejected neutral-state arming check is abnormal termination, never Recording.
+		UE_LOG(LogCortexReplay, Display, TEXT("Capture %d arming rejected: %s (%s)"),
+			CaptureRecordingId, *Armed.ErrorCode, *Armed.ErrorMessage);
 		MarkCaptureFaulted(Armed);
 		return;
 	}
@@ -862,6 +907,8 @@ void FCortexReplayService::FImpl::OnOwnedCaptureReady(uint64 Generation,
 	CaptureInitialPose = Pose;
 	CaptureEpochSeconds = FPlatformTime::Seconds();
 	CapturePhase = ECapturePhase::Recording;
+	UE_LOG(LogCortexReplay, Display, TEXT("Capture %d entered Recording (epoch established)"),
+		CaptureRecordingId);
 }
 
 void FCortexReplayService::FImpl::TickFinalization()
@@ -1371,6 +1418,20 @@ FCortexCommandResult FCortexReplayService::GetCurrentOperation() const
 		Data->SetBoolField(TEXT("publication_pending"),
 			State.bCapturePublishOnComplete && !State.bCaptureFaulted);
 		Data->SetBoolField(TEXT("publication_failed"), State.bCapturePublicationFailed);
+		// A capture fault (with the reason that caused it) stays visible to the human window while
+		// the capture finalizes without publishing.
+		Data->SetBoolField(TEXT("faulted"), State.bCaptureFaulted);
+		if (State.bCaptureFaulted)
+		{
+			TSharedRef<FJsonObject> FaultError = MakeShared<FJsonObject>();
+			FaultError->SetStringField(TEXT("code"), State.CaptureFaultResult.ErrorCode);
+			FaultError->SetStringField(TEXT("message"), State.CaptureFaultResult.ErrorMessage);
+			Data->SetObjectField(TEXT("fault_error"), FaultError);
+		}
+		else
+		{
+			Data->SetField(TEXT("fault_error"), MakeShared<FJsonValueNull>());
+		}
 		if (State.bCapturePublicationFailed)
 		{
 			TSharedRef<FJsonObject> PublicationError = MakeShared<FJsonObject>();
@@ -1545,6 +1606,11 @@ FCortexCommandResult FCortexReplayService::StartCaptureAtTarget(UWorld& World, i
 	State.CaptureInitialPose = Pose;
 	State.CaptureEpochSeconds = FPlatformTime::Seconds();
 	State.CapturePhase = FImpl::ECapturePhase::Recording;
+	UE_LOG(LogCortexReplay, Display,
+		TEXT("Capture %d start accepted (borrowed, map '%s', local player %d)"),
+		State.CaptureRecordingId, *State.CaptureMapAssetPath, LocalPlayerIndex);
+	UE_LOG(LogCortexReplay, Display, TEXT("Capture %d entered Recording (epoch established)"),
+		State.CaptureRecordingId);
 	State.EnsureTicker();
 	return ServiceSuccess();
 }
@@ -1576,6 +1642,8 @@ FCortexCommandResult FCortexReplayService::StartCapture(const FString& SavedEdit
 	State.CaptureRecordingId = ReservedId;
 	++State.CaptureOperationGeneration;
 	const uint64 Generation = State.CaptureOperationGeneration;
+	UE_LOG(LogCortexReplay, Display, TEXT("Capture %d start accepted (owned, map '%s')"),
+		State.CaptureRecordingId, *SavedEditorMapAssetPath);
 
 	State.Session = MakeShared<FCortexEditorPhysicalInputSession>();
 	FCortexReplayService::FImpl* RawState = &State;
@@ -1598,6 +1666,8 @@ FCortexCommandResult FCortexReplayService::StartCapture(const FString& SavedEdit
 		return Accepted;
 	}
 
+	UE_LOG(LogCortexReplay, Display, TEXT("Capture %d owned PIE request accepted for map '%s'"),
+		State.CaptureRecordingId, *SavedEditorMapAssetPath);
 	State.EnsureTicker();
 	return ServiceSuccess();
 }
@@ -1616,6 +1686,12 @@ FCortexCommandResult FCortexReplayService::StopCapture(bool bAbnormal)
 	{
 		return State.CapturePublicationError;
 	}
+	// A faulted capture being discarded reports the fault that withheld its publication instead of
+	// the generic inactive-operation rejection.
+	if (State.CapturePhase == FImpl::ECapturePhase::Finalizing && State.bCaptureFaulted)
+	{
+		return State.CaptureFaultResult;
+	}
 	if (State.CapturePhase == FImpl::ECapturePhase::Finalizing)
 	{
 		return ServiceError(CortexReplayErrorCodes::InvalidOperation,
@@ -1624,9 +1700,35 @@ FCortexCommandResult FCortexReplayService::StopCapture(bool bAbnormal)
 
 	// Duration is the full monotonic capture span, sampled before any cleanup; a capture aborted
 	// before it began recording is never published.
+	const bool bWasRecording = State.CapturePhase == FImpl::ECapturePhase::Recording;
 	State.CaptureStopSeconds = FPlatformTime::Seconds();
-	const bool bPublish = !bAbnormal && !State.bCaptureFaulted
-		&& State.CapturePhase == FImpl::ECapturePhase::Recording;
+	const bool bPublish = !bAbnormal && !State.bCaptureFaulted && bWasRecording;
+
+	// A non-publishing stop is reported distinctly: a fault carries its own reason, and a capture
+	// that never reached Recording names the phase it was discarded from. An intentional abnormal
+	// stop of a recording capture stays an accepted (successful) discard.
+	FCortexCommandResult DiscardResult;
+	if (State.bCaptureFaulted)
+	{
+		DiscardResult = State.CaptureFaultResult;
+	}
+	else if (!bWasRecording)
+	{
+		UE_LOG(LogCortexReplay, Display,
+			TEXT("Capture %d discarded: never reached Recording (phase %s, faulted=%d)"),
+			State.CaptureRecordingId, *FString(FImpl::CapturePhaseToString(State.CapturePhase)),
+			State.bCaptureFaulted ? 1 : 0);
+		DiscardResult = ServiceError(CortexReplayErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Capture %d was discarded: it never reached Recording (phase %s)"),
+				State.CaptureRecordingId,
+				*FString(FImpl::CapturePhaseToString(State.CapturePhase))));
+	}
+
+	UE_LOG(LogCortexReplay, Display,
+		TEXT("Capture %d stop requested: phase=%s faulted=%d abnormal=%d publish=%d outcome=%s"),
+		State.CaptureRecordingId, *FString(FImpl::CapturePhaseToString(State.CapturePhase)),
+		State.bCaptureFaulted ? 1 : 0, bAbnormal ? 1 : 0, bPublish ? 1 : 0,
+		bPublish ? TEXT("publish") : TEXT("discard"));
 
 	if (State.bBorrowedCapture)
 	{
@@ -1646,16 +1748,24 @@ FCortexCommandResult FCortexReplayService::StopCapture(bool bAbnormal)
 				// The captured data and recording id are retained so the failure is queryable and
 				// the publication is retried instead of silently completing.
 				State.RetainCaptureForPublicationRetry(PublishResult);
+				UE_LOG(LogCortexReplay, Display,
+					TEXT("Capture %d publication failed: %s (%s); retained for retry"),
+					State.CaptureRecordingId, *PublishResult.ErrorCode, *PublishResult.ErrorMessage);
 				State.EnsureTicker();
 				return PublishResult;
 			}
+			UE_LOG(LogCortexReplay, Display, TEXT("Capture %d publication succeeded"),
+				State.CaptureRecordingId);
 		}
+		const int32 CompletedRecordingId = State.CaptureRecordingId;
 		State.ResetCapture();
+		UE_LOG(LogCortexReplay, Display, TEXT("Capture %d finalized (published=%d)"),
+			CompletedRecordingId, bPublish ? 1 : 0);
 		if (State.bShutdown)
 		{
 			State.DetachTickerAndSession();
 		}
-		return ServiceSuccess();
+		return DiscardResult.ErrorCode.IsEmpty() ? ServiceSuccess() : DiscardResult;
 	}
 
 	// Owned capture retains its session and ownership until the matching teardown is observed.
@@ -1667,6 +1777,10 @@ FCortexCommandResult FCortexReplayService::StopCapture(bool bAbnormal)
 	if (State.bCapturePublicationFailed)
 	{
 		return State.CapturePublicationError;
+	}
+	if (!DiscardResult.ErrorCode.IsEmpty())
+	{
+		return DiscardResult;
 	}
 	return ServiceSuccess();
 }

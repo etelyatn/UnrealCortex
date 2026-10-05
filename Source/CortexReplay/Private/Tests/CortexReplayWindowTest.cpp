@@ -1450,3 +1450,45 @@ bool FCortexReplayWindowDeleteFocusTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// A window Stop of a capture that never reached Recording surfaces why nothing was saved instead
+// of silently returning to Ready (the reported human-visible gap).
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowCaptureStopDiscardTest,
+	"Cortex.Replay.Window.CaptureStopDiscardSurfacesReason",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowCaptureStopDiscardTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window, Service](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("Owned capture admitted"),
+				Service->StartCapture(WindowMapAssetPath()).bSuccess);
+
+			// Readiness is asynchronous, so the capture is still preparing: the window Stop discards
+			// it and must tell the human why nothing was saved.
+			Window->StopActiveOperation();
+			const FString Label = Window->GetOperationLabel().ToString();
+			T.TestTrue(TEXT("Window surfaces that the capture never reached Recording"),
+				Label.Contains(TEXT("never reached Recording")));
+			T.TestTrue(TEXT("Discard reason is shown instead of a bare Ready"),
+				Label != TEXT("Ready"));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			T.TestFalse(TEXT("Discarded capture was not saved"),
+				Service->GetRecording(1, false).bSuccess);
+		}, Fixture));
+
+	return true;
+}
