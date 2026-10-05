@@ -867,6 +867,39 @@ def test_oversized_start_presend_failure_keeps_not_dispatched_semantics():
     assert _utf8_size(result) <= MAX_RESPONSE_BYTES
 
 
+def test_malformed_replay_envelope_preserves_shape_error(boundary_connection):
+    from cortex_mcp.tools.routers import make_router, strict_router_tool
+
+    replay_cmd = strict_router_tool(
+        make_router("replay", boundary_connection, "replay docs"), "replay"
+    )
+    result = replay_cmd("list_recordings", {}, unexpected_arg=1)
+    payload = _payload(result)
+    assert _error(payload) == "INVALID_INVOCATION_SHAPE"
+    assert payload["canonical_shape"] == {"command": "string", "params": "object"}
+    assert "unexpected_arg" in payload["_message"]
+    assert boundary_connection.calls == []
+
+
+def test_malformed_replay_envelope_with_oversized_field_is_bounded(boundary_connection):
+    from cortex_mcp.tools.routers import make_router, strict_router_tool
+
+    replay_cmd = strict_router_tool(
+        make_router("replay", boundary_connection, "replay docs"), "replay"
+    )
+    oversized_field = "x" * 40000
+    # A non-identifier top-level field reaches the strict wrapper's **_extra rejection hook.
+    result = replay_cmd("list_recordings", {}, **{oversized_field: 1})
+    payload = _payload(result)
+    assert _error(payload) == "LIMIT_EXCEEDED"
+    assert payload["max_response_bytes"] == MAX_RESPONSE_BYTES
+    assert payload["response_bytes"] > MAX_RESPONSE_BYTES
+    assert _utf8_size(result) <= MAX_RESPONSE_BYTES
+    # Rejected before dispatch: no native call ever occurs.
+    assert boundary_connection.calls == []
+    assert boundary_connection.started_run_ids == []
+
+
 def test_client_never_invents_success_or_reissues_start(boundary_connection):
     boundary_connection.drop_next_start_ack = True
     payload = _payload(
