@@ -1,33 +1,33 @@
 using UnrealBuildTool;
 
-public class CortexEditor : ModuleRules
+public class CortexReplay : ModuleRules
 {
-	public CortexEditor(ReadOnlyTargetRules Target) : base(Target)
+	public CortexReplay(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",
-			"CoreUObject",
 			"CortexCore",
-			"InputCore",
-			"SlateCore",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"ApplicationCore",
+			"CoreUObject",
 			"Engine",
+			"EditorStyle",
+			"InputCore",
 			"Json",
 			"JsonUtilities",
-			"UnrealEd",
 			"LevelEditor",
+			"Projects",
 			"Slate",
-			"EnhancedInput",
-			"ImageWrapper",
-			"RenderCore",
-			"PythonScriptPlugin",
+			"SlateCore",
+			"ToolMenus",
+			"UnrealEd",
+			"CortexEditor",
 		});
 	}
 }
