@@ -239,6 +239,13 @@ public:
 	 * means the domain is complete; a non-empty result makes admission fail explicitly naming them.
 	 */
 	static TArray<FString> GetUnresolvedSupportedKeyNames();
+	/**
+	 * Test-support read-only snapshot of the replay pointer bookkeeping: the exact screen-space
+	 * accumulator the replayed motion advances and the viewport-local position derived from it.
+	 * Both are zero until a real observation or an absolute replay position seeds them.
+	 */
+	void GetReplayPointerPositionForTests(
+		FVector2D& OutScreenSpacePosition, FVector2D& OutViewportPosition) const;
 #endif
 
 private:
@@ -407,6 +414,13 @@ private:
 
 	/** The widget whose geometry maps screen space to the selected viewport-local space. */
 	TSharedPtr<SWidget> GetCoordinateRootWidget() const;
+
+	/**
+	 * Records the selected pointer's replay bookkeeping from one screen-space location: the exact
+	 * screen accumulator and the viewport-local position derived from it. Every real observation
+	 * and every absolute replay position goes through here, so the two never diverge.
+	 */
+	void SetReplayPointerPosition(const FVector2D& ScreenSpacePosition, const FVector2D& ViewportPosition);
 
 	/** True when the engine event belongs to the selected Slate user and input device. */
 	bool IsSelectedUserAndDevice(uint32 UserIndex, const FInputDeviceId& Device) const;

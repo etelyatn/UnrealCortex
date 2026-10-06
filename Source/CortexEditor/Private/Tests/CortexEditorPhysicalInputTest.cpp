@@ -121,6 +121,8 @@ struct FCortexEditorPhysicalInputTestFixture
 	int32 CapturingWidgetUps = 0;
 	TSharedPtr<SWidget> DeltaConsumer;
 	FVector2D ConsumerDelta = FVector2D::ZeroVector;
+	FVector2D ConsumerScreenPosition = FVector2D::ZeroVector;
+	TArray<FVector2D> ConsumerDeltas;
 	int32 ConsumerMoveCount = 0;
 	FCortexEditorPhysicalInputUIObservation LastObservation;
 	TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> CapturedIdentity;
@@ -1237,6 +1239,8 @@ public:
 		if (const auto F = Fixture.Pin())
 		{
 			F->ConsumerDelta = Event.GetCursorDelta();
+			F->ConsumerScreenPosition = Event.GetScreenSpacePosition();
+			F->ConsumerDeltas.Add(Event.GetCursorDelta());
 			F->ConsumerMoveCount++;
 		}
 		return FReply::Handled();
@@ -1681,6 +1685,17 @@ FVector2D ToViewportLocal(const FCortexEditorPhysicalInputTestFixture& Fixture, 
 		return ScreenSpace;
 	}
 	return Viewport->GetCachedGeometry().AbsoluteToLocal(ScreenSpace);
+}
+
+/** Converts a viewport-local point back into screen space (the inverse of ToViewportLocal). */
+FVector2D ToViewportScreen(const FCortexEditorPhysicalInputTestFixture& Fixture, const FVector2D& ViewportLocal)
+{
+	const TSharedPtr<SWidget> Viewport = Fixture.Session->GetTargetBinding().ViewportWidget.Pin();
+	if (!Viewport.IsValid())
+	{
+		return ViewportLocal;
+	}
+	return Viewport->GetCachedGeometry().LocalToAbsolute(ViewportLocal);
 }
 } // namespace
 
@@ -4115,6 +4130,213 @@ bool FCortexPhysicalInputDispatchDeltaTest::RunTest(const FString& Parameters)
 			Test.TestTrue(TEXT("Real replay consumer saw the move"), F.ConsumerMoveCount > 0);
 			Test.TestTrue(TEXT("Real replay consumer received the recorded explicit delta"),
 				F.ConsumerDelta.Equals(Move.Delta, 0.01));
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Replayed relative look is exact: the synthetic pointer accumulates in the consumed
+// screen space and presents integral positions, so the recorded deltas cannot drift.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputRelativeMotionExactnessTest,
+	"Cortex.Editor.PhysicalInputRelativeMotionExactness",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputRelativeMotionExactnessTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("RelativeMotionExactnessInstall"),
+		[Fixture](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			UWorld* World = F.Session->GetTargetBinding().World.Get();
+			if (!World || !World->GetGameViewport()) { return; }
+			const TSharedRef<SCortexPhysicalInputDeltaConsumer> Consumer =
+				SNew(SCortexPhysicalInputDeltaConsumer).Fixture(Fixture);
+			F.DeltaConsumer = Consumer;
+			World->GetGameViewport()->AddViewportWidgetContent(Consumer);
+		}, /*bInstallProbe=*/false, /*bArmCapture=*/true));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			const TSharedPtr<SWidget> Consumer = F.DeltaConsumer;
+			Test.TestTrue(TEXT("Delta consumer present"), Consumer.IsValid());
+			if (!Consumer.IsValid()) { return; }
+			const FGeometry Geometry = Consumer->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0)
+			{
+				Test.AddError(TEXT("Delta consumer has no geometry"));
+				return;
+			}
+			// A deliberately fractional recorded pointer location: the previous viewport-derived
+			// accumulator presented a fractional screen position here, which a rounding consumer
+			// could drift a fraction of a pixel per event.
+			const FVector2D Center = Geometry.LocalToAbsolute(Size * 0.5);
+			const FVector2D SeedScreen = Center + FVector2D(0.37, -0.61);
+			FCortexEditorPhysicalInputEvent SeedMove;
+			SeedMove.Kind = ECortexEditorPhysicalInputKind::PointerMove;
+			SeedMove.ViewportPosition = ToViewportLocal(F, SeedScreen);
+
+			const FVector2D Delta(3.5, -2.25);
+			const int32 Count = 6;
+
+			// Sequence 1: N relative moves of Delta.
+			Test.TestTrue(TEXT("Seed pointer move dispatched"), F.Session->Dispatch(SeedMove).bSuccess);
+			F.ConsumerDeltas.Reset();
+			F.ConsumerScreenPosition = FVector2D::ZeroVector;
+			for (int32 Index = 0; Index < Count; ++Index)
+			{
+				FCortexEditorPhysicalInputEvent Relative;
+				Relative.Kind = ECortexEditorPhysicalInputKind::RelativeMove;
+				Relative.Key = EKeys::Mouse2D;
+				Relative.Delta = Delta;
+				Test.TestTrue(TEXT("Relative motion dispatched"), F.Session->Dispatch(Relative).bSuccess);
+			}
+			const FVector2D PresentedAfterMany = F.ConsumerScreenPosition;
+			FVector2D AccumulatorAfterMany, ViewportAfterMany;
+			F.Session->GetReplayPointerPositionForTests(AccumulatorAfterMany, ViewportAfterMany);
+
+			Test.TestEqual(TEXT("Every relative event presented through the consumer"),
+				F.ConsumerDeltas.Num(), Count);
+			for (int32 Index = 0; Index < F.ConsumerDeltas.Num(); ++Index)
+			{
+				Test.TestTrue(TEXT("Presented delta is exactly the recorded delta"),
+					F.ConsumerDeltas[Index].Equals(Delta, 1e-6));
+			}
+			// Integral presentation: a consumer that rounds or truncates the cursor position on every
+			// event can never accumulate a fraction of a pixel.
+			Test.TestTrue(TEXT("Presented relative position is integral (X)"),
+				FMath::RoundToDouble(PresentedAfterMany.X) == PresentedAfterMany.X);
+			Test.TestTrue(TEXT("Presented relative position is integral (Y)"),
+				FMath::RoundToDouble(PresentedAfterMany.Y) == PresentedAfterMany.Y);
+
+			// Sequence 2: one relative move carrying the whole recorded delta, from the same seed.
+			Test.TestTrue(TEXT("Seed pointer move re-dispatched"), F.Session->Dispatch(SeedMove).bSuccess);
+			F.ConsumerDeltas.Reset();
+			F.ConsumerScreenPosition = FVector2D::ZeroVector;
+			FCortexEditorPhysicalInputEvent WholeRelative;
+			WholeRelative.Kind = ECortexEditorPhysicalInputKind::RelativeMove;
+			WholeRelative.Key = EKeys::Mouse2D;
+			WholeRelative.Delta = Delta * static_cast<double>(Count);
+			Test.TestTrue(TEXT("Whole relative motion dispatched"), F.Session->Dispatch(WholeRelative).bSuccess);
+			const FVector2D PresentedAfterOne = F.ConsumerScreenPosition;
+			FVector2D AccumulatorAfterOne, ViewportAfterOne;
+			F.Session->GetReplayPointerPositionForTests(AccumulatorAfterOne, ViewportAfterOne);
+
+			Test.TestTrue(TEXT("Synthetic screen accumulator is additive"),
+				AccumulatorAfterMany.Equals(AccumulatorAfterOne, 1e-6));
+			Test.TestTrue(TEXT("Presented positions are additive"),
+				PresentedAfterMany.Equals(PresentedAfterOne, 1e-6));
+			Test.TestTrue(TEXT("Derived viewport pointer is additive"),
+				ViewportAfterMany.Equals(ViewportAfterOne, 1e-6));
+			Test.TestTrue(TEXT("Single-event delta is exactly the recorded total delta"),
+				F.ConsumerDelta.Equals(Delta * static_cast<double>(Count), 1e-6));
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The replayed pointer derives its viewport-local position from the exact screen sum, so
+// no viewport<->screen scale rounding accumulates; absolute moves still pin their location.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputRelativeMotionNoDriftTest,
+	"Cortex.Editor.PhysicalInputRelativeMotionNoDrift",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputRelativeMotionNoDriftTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("RelativeMotionNoDriftInstall"),
+		[Fixture](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			UWorld* World = F.Session->GetTargetBinding().World.Get();
+			if (!World || !World->GetGameViewport()) { return; }
+			const TSharedRef<SCortexPhysicalInputDeltaConsumer> Consumer =
+				SNew(SCortexPhysicalInputDeltaConsumer).Fixture(Fixture);
+			F.DeltaConsumer = Consumer;
+			World->GetGameViewport()->AddViewportWidgetContent(Consumer);
+		}, /*bInstallProbe=*/false, /*bArmCapture=*/true));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			const TSharedPtr<SWidget> Consumer = F.DeltaConsumer;
+			Test.TestTrue(TEXT("Delta consumer present"), Consumer.IsValid());
+			if (!Consumer.IsValid()) { return; }
+			const FGeometry Geometry = Consumer->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 0.0)
+			{
+				Test.AddError(TEXT("Delta consumer has no geometry"));
+				return;
+			}
+			const FVector2D Center = Geometry.LocalToAbsolute(Size * 0.5);
+			const FVector2D StartScreen = Center + FVector2D(0.23, 0.41);
+			FCortexEditorPhysicalInputEvent StartMove;
+			StartMove.Kind = ECortexEditorPhysicalInputKind::PointerMove;
+			StartMove.ViewportPosition = ToViewportLocal(F, StartScreen);
+			Test.TestTrue(TEXT("Recorded starting pointer move dispatched"),
+				F.Session->Dispatch(StartMove).bSuccess);
+
+			FVector2D SeedScreen, SeedViewport;
+			F.Session->GetReplayPointerPositionForTests(SeedScreen, SeedViewport);
+
+			const FVector2D Delta(2.25, -1.75);
+			const int32 Count = 8;
+			for (int32 Index = 0; Index < Count; ++Index)
+			{
+				FCortexEditorPhysicalInputEvent Relative;
+				Relative.Kind = ECortexEditorPhysicalInputKind::RelativeMove;
+				Relative.Key = EKeys::Mouse2D;
+				Relative.Delta = Delta;
+				Test.TestTrue(TEXT("Relative motion dispatched"), F.Session->Dispatch(Relative).bSuccess);
+			}
+
+			FVector2D Screen, Viewport;
+			F.Session->GetReplayPointerPositionForTests(Screen, Viewport);
+			const FVector2D Presented = F.ConsumerScreenPosition;
+			const FVector2D ExpectedScreen = SeedScreen + Delta * static_cast<double>(Count);
+			Test.TestTrue(TEXT("Screen accumulator equals the recorded deltas applied to the seed"),
+				Screen.Equals(ExpectedScreen, 1e-6));
+			Test.TestTrue(TEXT("Derived viewport position equals the exact sum (no scale-rounding drift)"),
+				Viewport.Equals(ToViewportLocal(F, ExpectedScreen), 1e-6));
+			// The presented cursor position is the quantized exact accumulator, so a rounding
+			// consumer sums the recorded motion without accumulating a scale-rounding fraction.
+			Test.TestTrue(TEXT("Presented position is the quantized exact sum"),
+				Presented.Equals(FVector2D(FMath::RoundToDouble(ExpectedScreen.X),
+					FMath::RoundToDouble(ExpectedScreen.Y)), 1e-6));
+
+			// An absolute pointer move still pins its recorded viewport position and derives the
+			// matching screen position, preserving the absolute semantics.
+			FCortexEditorPhysicalInputEvent EndMove;
+			EndMove.Kind = ECortexEditorPhysicalInputKind::PointerMove;
+			EndMove.ViewportPosition = ToViewportLocal(F, Center + FVector2D(-5.0, 4.0));
+			Test.TestTrue(TEXT("Absolute pointer move dispatched"), F.Session->Dispatch(EndMove).bSuccess);
+			FVector2D EndScreen, EndViewport;
+			F.Session->GetReplayPointerPositionForTests(EndScreen, EndViewport);
+			Test.TestTrue(TEXT("Absolute move pins its recorded viewport position"),
+				EndViewport.Equals(EndMove.ViewportPosition, 1e-6));
+			Test.TestTrue(TEXT("Absolute move derives the matching screen position"),
+				EndScreen.Equals(ToViewportScreen(F, EndMove.ViewportPosition), 1e-6));
 		}));
 
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));

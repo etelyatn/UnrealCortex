@@ -1880,6 +1880,34 @@ TSharedPtr<SWidget> FCortexEditorPhysicalInputSession::GetCoordinateRootWidget()
 	return Binding.InputRoot.Pin();
 }
 
+void FCortexEditorPhysicalInputSession::SetReplayPointerPosition(
+	const FVector2D& ScreenSpacePosition, const FVector2D& ViewportPosition)
+{
+	if (GuardState.IsValid())
+	{
+		GuardState->LastScreenPointerPosition = ScreenSpacePosition;
+		GuardState->LastViewportPointerPosition = ViewportPosition;
+		GuardState->bHasScreenPointerPosition = true;
+	}
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void FCortexEditorPhysicalInputSession::GetReplayPointerPositionForTests(
+	FVector2D& OutScreenSpacePosition, FVector2D& OutViewportPosition) const
+{
+	if (GuardState.IsValid())
+	{
+		OutScreenSpacePosition = GuardState->LastScreenPointerPosition;
+		OutViewportPosition = GuardState->LastViewportPointerPosition;
+	}
+	else
+	{
+		OutScreenSpacePosition = FVector2D::ZeroVector;
+		OutViewportPosition = FVector2D::ZeroVector;
+	}
+}
+#endif
+
 bool FCortexEditorPhysicalInputSession::IsPhysicalInputNeutral(FCortexCommandResult& OutError) const
 {
 	static const TCHAR* const ReleaseInstruction =
@@ -2126,10 +2154,7 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseButton(
 		|| Kind == ECortexEditorPhysicalInputKind::DoubleClick);
 	const FVector2D ScreenSpacePosition = MouseEvent.GetScreenSpacePosition();
 	const FVector2D ViewportPosition = ToViewportPosition(ScreenSpacePosition);
-	if (GuardState.IsValid())
-	{
-		GuardState->LastViewportPointerPosition = ViewportPosition;
-	}
+	SetReplayPointerPosition(ScreenSpacePosition, ViewportPosition);
 
 	// Device-wide down state for admission, plus foreign ownership recorded BEFORE interruption:
 	// a physical edge on a button this operation owns (or during a replay epoch) is foreign, and
@@ -2203,10 +2228,7 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseMove(const FPointer
 
 	const FVector2D ScreenSpacePosition = MouseEvent.GetScreenSpacePosition();
 	const FVector2D ViewportPosition = ToViewportPosition(ScreenSpacePosition);
-	if (GuardState.IsValid())
-	{
-		GuardState->LastViewportPointerPosition = ViewportPosition;
-	}
+	SetReplayPointerPosition(ScreenSpacePosition, ViewportPosition);
 
 	// Real motion interrupts only an unattended replay; an attended (human-origin) replay lets the
 	// human's own motion through and logs the suppression once per epoch.
@@ -2882,23 +2904,41 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 	case ECortexEditorPhysicalInputKind::PointerMove:
 	case ECortexEditorPhysicalInputKind::RelativeMove:
 	{
-		const FVector2D LastViewportPosition = GuardState->LastViewportPointerPosition;
 		FVector2D ScreenSpacePosition;
+		FVector2D PresentedScreenSpacePosition;
 		if (Event.Kind == ECortexEditorPhysicalInputKind::RelativeMove)
 		{
-			// Relative gameplay motion advances by the recorded delta in screen space and never
-			// becomes an absolute UI coordinate.
+			// Relative gameplay motion advances the synthetic pointer in the consumed screen space
+			// by exactly the recorded delta. The accumulator stays fractional so the running sum is
+			// exact; no viewport<->screen scale round trip is used, so scale rounding cannot lose a
+			// fraction of a pixel per event. The first relative move of an unseeded session anchors
+			// to the observed viewport pointer exactly as the previous accumulation did.
+			if (!GuardState->bHasScreenPointerPosition)
+			{
+				GuardState->LastScreenPointerPosition =
+					ToScreenSpacePosition(GuardState->LastViewportPointerPosition);
+				GuardState->bHasScreenPointerPosition = true;
+			}
 			EngineEvent.Kind = ECortexEditorPhysicalInputKind::PointerMove;
-			ScreenSpacePosition = ToScreenSpacePosition(LastViewportPosition) + Event.Delta;
+			ScreenSpacePosition = GuardState->LastScreenPointerPosition + Event.Delta;
+			SetReplayPointerPosition(ScreenSpacePosition, ToViewportPosition(ScreenSpacePosition));
+			// Present an integral cursor position so a consumer that rounds or truncates the
+			// position on every event can never drift the accumulated motion. The delta the event
+			// applies stays the exact recorded delta: the builder derives the last position from it,
+			// never from the rounded positions.
+			PresentedScreenSpacePosition = FVector2D(
+				FMath::RoundToDouble(ScreenSpacePosition.X), FMath::RoundToDouble(ScreenSpacePosition.Y));
 		}
 		else
 		{
 			ScreenSpacePosition = ToScreenSpacePosition(Event.ViewportPosition);
+			SetReplayPointerPosition(ScreenSpacePosition, Event.ViewportPosition);
+			PresentedScreenSpacePosition = ScreenSpacePosition;
 		}
-		EngineEvent.ViewportPosition = ScreenSpacePosition;
+		EngineEvent.ViewportPosition = PresentedScreenSpacePosition;
 		FPointerEvent PointerEvent;
 		if (!FCortexEditorPhysicalInputEventBuilder::BuildPointerMoveEvent(EngineEvent, Device, UserIndex,
-			CaptureState->OwnedSyntheticButtons, ScreenSpacePosition, PointerEvent))
+			CaptureState->OwnedSyntheticButtons, PresentedScreenSpacePosition, PointerEvent))
 		{
 			return MakeErrorResult(CortexErrorCodes::InvalidOperation,
 				TEXT("The captured pointer motion is not dispatchable"));
@@ -2906,8 +2946,6 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 		// Normal routing with drag detection: false must not be changed to true, which would skip
 		// preprocessors and Slate drag detection.
 		Slate.ProcessMouseMoveEvent(PointerEvent, false);
-		GuardState->LastViewportPointerPosition = Event.Kind == ECortexEditorPhysicalInputKind::RelativeMove
-			? ToViewportPosition(ScreenSpacePosition) : Event.ViewportPosition;
 		++DispatchContext->ProcessedMotionGeneration;
 		GuardState->MotionGeneration = DispatchContext->ProcessedMotionGeneration;
 		RetainOwnedPointerState(Slate, PointerEvent, bHadUserCaptureBefore, bHadHighPrecisionBefore,
@@ -2950,7 +2988,7 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 			Slate.ProcessMouseButtonUpEvent(PointerEvent);
 			CaptureState->OwnedSyntheticButtons.Remove(Event.Key);
 		}
-		GuardState->LastViewportPointerPosition = Event.ViewportPosition;
+		SetReplayPointerPosition(ToScreenSpacePosition(Event.ViewportPosition), Event.ViewportPosition);
 
 		// Retain the exact captor/drag/high-precision/native-capture state this operation acquired
 		// through its own dispatch and reconcile anything the normal routing already released, so

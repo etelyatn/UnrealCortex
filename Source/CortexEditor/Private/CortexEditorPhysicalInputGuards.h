@@ -29,6 +29,18 @@ struct FCortexEditorPhysicalInputGuardState
 	int32 SlateUserIndex = INDEX_NONE;
 	/** Last viewport-local pointer position observed through normal routing. */
 	FVector2D LastViewportPointerPosition = FVector2D::ZeroVector;
+	/**
+	 * Exact screen-space pointer accumulator: the space the engine consumes. Relative motion adds
+	 * each recorded delta to this value directly, so a viewport<->screen scale round trip can never
+	 * lose a fraction of a pixel per event and drift the replayed look.
+	 */
+	FVector2D LastScreenPointerPosition = FVector2D::ZeroVector;
+	/**
+	 * True once LastScreenPointerPosition reflects a real location. Until then the first relative
+	 * move seeds the accumulator from LastViewportPointerPosition, exactly as the previous
+	 * viewport-derived accumulation did.
+	 */
+	bool bHasScreenPointerPosition = false;
 };
 
 /**
