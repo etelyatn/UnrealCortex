@@ -123,6 +123,46 @@ FCortexCommandResult ServiceError(const FString& Code, const FString& Message)
 	return FCortexCommandRouter::Error(Code, Message);
 }
 
+/**
+ * True when the capture's bound target is gone because the whole PIE session ended: the bound world
+ * is no longer a running PIE world (or the binding was released). This is the human ending the
+ * session rather than an exact target-identity loss (pawn replaced, class changed, local player
+ * re-bound), which must keep the ordinary fault-and-discard behaviour.
+ */
+bool IsCaptureTargetSessionEnded(const FCortexEditorPhysicalInputSession& Session)
+{
+	const UWorld* BoundWorld = Session.GetTargetBinding().World.Get();
+	return BoundWorld == nullptr || BoundWorld->WorldType != EWorldType::PIE;
+}
+
+/**
+ * True when every recorded key/button press in the captured stream has a matching release,
+ * mirroring the capture session's own recorded-held bookkeeping. A false result means the stream
+ * ends with a dangling held key or button and must never be published as a playable recording.
+ */
+bool IsCapturedStreamBalanced(const TArray<FCortexReplayEvent>& Events)
+{
+	TSet<FKey> Held;
+	for (const FCortexReplayEvent& Event : Events)
+	{
+		switch (Event.Input.Kind)
+		{
+		case ECortexEditorPhysicalInputKind::KeyDown:
+		case ECortexEditorPhysicalInputKind::PointerDown:
+		case ECortexEditorPhysicalInputKind::DoubleClick:
+			Held.Add(Event.Input.Key);
+			break;
+		case ECortexEditorPhysicalInputKind::KeyUp:
+		case ECortexEditorPhysicalInputKind::PointerUp:
+			Held.Remove(Event.Input.Key);
+			break;
+		default:
+			break;
+		}
+	}
+	return Held.Num() == 0;
+}
+
 TSharedRef<FJsonObject> ServiceGuardCoverageToJson(const FCortexReplayGuardCoverage& Coverage)
 {
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
@@ -275,6 +315,12 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	 */
 	bool bCapturePublicationFailed = false;
 	FCortexCommandResult CapturePublicationError;
+	/**
+	 * False only when an external session end sampled the captured stream as ending on a held key or
+	 * button. Such an incomplete stream is never published as a playable recording; the ordinary
+	 * (widget) Stop path never consults this flag.
+	 */
+	bool bCaptureStreamBalanced = true;
 
 	// ---- run ----
 	bool bRunActive = false;
@@ -312,6 +358,7 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	FCortexCommandResult DispatchBlockError() const;
 	bool CheckLivePermission();
 	void MarkCaptureFaulted(const FCortexCommandResult& Result);
+	void HandleCaptureTargetLoss(const FCortexCommandResult& TargetError);
 	void BeginCaptureFinalization(bool bPublish);
 	void RetainCaptureForPublicationRetry(const FCortexCommandResult& PublishResult);
 	void ClearCapturePublicationFailure();
@@ -640,6 +687,29 @@ void FCortexReplayService::FImpl::MarkCaptureFaulted(const FCortexCommandResult&
 	}
 }
 
+void FCortexReplayService::FImpl::HandleCaptureTargetLoss(const FCortexCommandResult& TargetError)
+{
+	// A whole session/world loss is the human ending the session rather than an exact target-identity
+	// loss: it is treated as a normal stop whose publication still requires a publishable stream.
+	if (Session.IsValid() && IsCaptureTargetSessionEnded(*Session))
+	{
+		// The stop time is sampled here, exactly as an explicit Stop would, so the recorded duration
+		// covers the final event and metadata validation still applies.
+		CaptureStopSeconds = FPlatformTime::Seconds();
+		bCaptureStreamBalanced = IsCapturedStreamBalanced(CaptureEvents);
+		UE_LOG(LogCortexReplay, Display,
+			TEXT("Capture %d target/session ended externally (balanced=%d); stopping to publish"),
+			CaptureRecordingId, bCaptureStreamBalanced ? 1 : 0);
+		BeginCaptureFinalization(true);
+	}
+	else
+	{
+		MarkCaptureFaulted(TargetError);
+		BeginCaptureFinalization(false);
+	}
+	TickCapture();
+}
+
 void FCortexReplayService::FImpl::BeginCaptureFinalization(bool bPublish)
 {
 	if (CapturePhase == ECapturePhase::None || CapturePhase == ECapturePhase::Finalizing)
@@ -707,15 +777,14 @@ void FCortexReplayService::FImpl::TickCapture()
 			TickCapture();
 			return;
 		}
-		// Target destruction is abnormal capture termination, never a complete recording.
+		// Target destruction is abnormal capture termination, never a complete recording. A whole
+		// session/world loss (the human ended PIE without pressing Stop) is classified separately.
 		if (Session.IsValid())
 		{
 			FCortexCommandResult TargetError;
 			if (!Session->ValidateTarget(TargetError))
 			{
-				MarkCaptureFaulted(TargetError);
-				BeginCaptureFinalization(false);
-				TickCapture();
+				HandleCaptureTargetLoss(TargetError);
 			}
 		}
 		return;
@@ -779,6 +848,7 @@ void FCortexReplayService::FImpl::ResetCapture()
 	bCapturePublishOnComplete = false;
 	CaptureFaultResult = FCortexCommandResult();
 	ClearCapturePublicationFailure();
+	bCaptureStreamBalanced = true;
 	CaptureRecordingId = 0;
 	CaptureMapAssetPath.Reset();
 	CaptureTargetInfo = FCortexEditorPhysicalInputTargetInfo();
@@ -792,6 +862,15 @@ void FCortexReplayService::FImpl::ResetCapture()
 
 FCortexCommandResult FCortexReplayService::FImpl::PublishCaptureSnapshot()
 {
+	// An incomplete stream (an external session end that left a held key/button unreleased) is never
+	// published as a playable recording. The returned error is retained and reported exactly like a
+	// publication validation failure.
+	if (!bCaptureStreamBalanced)
+	{
+		return ServiceError(CortexReplayErrorCodes::IncompleteRecording,
+			TEXT("The capture ended with an unreleased held key or button and is not publishable"));
+	}
+
 	FCortexReplaySnapshot CaptureSnapshot;
 	CaptureSnapshot.InitialState.SchemaVersion = 1;
 	CaptureSnapshot.InitialState.RecordingId = CaptureRecordingId;
@@ -841,6 +920,14 @@ void FCortexReplayService::FImpl::OnCaptureInterruption(uint64 Generation,
 {
 	if (Generation != CaptureOperationGeneration || CapturePhase == ECapturePhase::None)
 	{
+		return;
+	}
+	// An interruption raised while the whole session/world is gone is an external session end and
+	// publishes like a normal stop; any other interruption is an input-level fault.
+	if (CapturePhase == ECapturePhase::Recording && Session.IsValid()
+		&& IsCaptureTargetSessionEnded(*Session))
+	{
+		HandleCaptureTargetLoss(Result);
 		return;
 	}
 	MarkCaptureFaulted(Result);

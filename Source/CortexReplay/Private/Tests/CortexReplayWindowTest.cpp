@@ -15,10 +15,17 @@
 #include "Dom/JsonObject.h"
 #include "Editor.h"
 #include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
+#include "Engine/GameViewportClient.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/SlateUser.h"
+#include "GameFramework/PlayerController.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformTime.h"
+#include "Input/Events.h"
 #include "Rendering/SlateLayoutTransform.h"
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
@@ -28,6 +35,7 @@
 #include "Misc/SecureHash.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "Slate/SceneViewport.h"
 #include "Tests/AutomationEditorCommon.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Input/SButton.h"
@@ -38,6 +46,7 @@
 #include "Widgets/SCortexReplayMetadataDialog.h"
 #include "Widgets/SCortexReplayRecordingRow.h"
 #include "Widgets/SCortexReplayWindow.h"
+#include "Widgets/SViewport.h"
 #include "Widgets/SWindow.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -214,6 +223,98 @@ void TickWindow(SCortexReplayWindow& Window, double CurrentTime = 0.0, float Del
 	Window.Tick(FGeometry::MakeRoot(FVector2D(1000.0f, 800.0f), FSlateLayoutTransform()),
 		CurrentTime, DeltaSeconds);
 }
+
+/**
+ * Resolves the owned PIE world's selected viewport route and drives real pointer edges through
+ * normal Slate routing, so capture admission does not depend on editor keyboard focus.
+ */
+class FWindowOwnedPointerRoute
+{
+public:
+	bool Resolve(FAutomationTestBase& Test, UWorld& PlayWorld)
+	{
+		APlayerController* Controller = PlayWorld.GetFirstPlayerController();
+		Test.TestNotNull(TEXT("Owned capture controller exists"), Controller);
+		if (!Controller)
+		{
+			return false;
+		}
+		ULocalPlayer* LocalPlayer = PlayWorld.GetGameInstance()
+			? PlayWorld.GetGameInstance()->GetLocalPlayerByIndex(0) : nullptr;
+		const TSharedPtr<FSlateUser> SlateUser = LocalPlayer ? LocalPlayer->GetSlateUser() : nullptr;
+		UGameViewportClient* ViewportClient = PlayWorld.GetGameViewport();
+		FSceneViewport* SceneViewport = ViewportClient ? ViewportClient->GetGameViewport() : nullptr;
+		const TSharedPtr<SViewport> ViewportWidget =
+			SceneViewport ? SceneViewport->GetViewportWidget().Pin() : nullptr;
+		Test.TestTrue(TEXT("Owned capture viewport widget exists"), ViewportWidget.IsValid());
+		if (!SlateUser.IsValid() || !ViewportWidget.IsValid())
+		{
+			return false;
+		}
+		const FGeometry Geometry = ViewportWidget->GetCachedGeometry();
+		const FVector2D ViewportSize = Geometry.GetLocalSize();
+		if (ViewportSize.X <= 0.0 || ViewportSize.Y <= 0.0)
+		{
+			return false;
+		}
+		Center = Geometry.LocalToAbsolute(FVector2D(ViewportSize.X * 0.5, ViewportSize.Y * 0.5));
+		Device = IPlatformInputDeviceMapper::Get()
+			.GetPrimaryInputDeviceForUser(SlateUser->GetPlatformUserId());
+		UserIndex = SlateUser->GetUserIndex();
+		return true;
+	}
+
+	void PressDown()
+	{
+		const FModifierKeysState Modifiers;
+		TSet<FKey> Pressed;
+		Pressed.Add(EKeys::LeftMouseButton);
+		FSlateApplication::Get().ProcessMouseButtonDownEvent(nullptr,
+			FPointerEvent(Device, FSlateApplicationBase::CursorPointerIndex, Center, Center,
+				Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, UserIndex));
+	}
+
+private:
+	FVector2D Center = FVector2D::ZeroVector;
+	FInputDeviceId Device = INPUTDEVICEID_NONE;
+	int32 UserIndex = 0;
+};
+
+/**
+ * Waits until the current capture reports its retained publication failure (the window cannot
+ * refresh past it, and the capture stays active instead of going idle).
+ */
+class FWindowAwaitCapturePublicationFailure : public IAutomationLatentCommand
+{
+public:
+	FWindowAwaitCapturePublicationFailure(FAutomationTestBase* InTest,
+		TSharedRef<FCortexReplayService> InService,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Test(InTest), Service(MoveTemp(InService)), KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		const FCortexCommandResult Current = Service->GetCurrentOperation();
+		if (Current.bSuccess && Current.Data.IsValid()
+			&& Current.Data->GetBoolField(TEXT("publication_failed")))
+		{
+			return true;
+		}
+		if (FPlatformTime::Seconds() - StartTime > WindowReadyWatchdogSeconds * 2)
+		{
+			Test->AddError(TEXT("Capture publication failure was never reported"));
+			return true;
+		}
+		return false;
+	}
+
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+	double StartTime = 0.0;
+};
 
 /** Counts editable text/checkbox controls anywhere in a widget subtree. */
 int32 CountEditableControls(const TSharedRef<SWidget>& Widget)
@@ -1217,6 +1318,120 @@ bool FCortexReplayWindowOwnedRecordTest::RunTest(const FString& Parameters)
 					Window->GetRows()[0]->PlayButton.IsValid()
 					&& Window->GetRows()[0]->PlayButton->IsEnabled());
 			}
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// An external PIE/session end during an owned Recording capture publishes the recording and the
+// window surfaces the new row without a manual refresh (the human ended PIE, not pressed Stop).
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowExternalSessionEndRecordTest,
+	"Cortex.Replay.Window.ExternalSessionEndPublishesRow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowExternalSessionEndRecordTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor)
+	{
+		AddError(TEXT("GEditor missing"));
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window](FAutomationTestBase&)
+		{
+			Window->OnRecordClicked();
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitCapturePhase(this, Service, TEXT("Recording"), 60.0, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[](FAutomationTestBase&)
+		{
+			// The human ends the session with the editor's own stop instead of the widget's Stop.
+			if (GEditor) { GEditor->RequestEndPlayMap(); }
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitOperation(this, Service, TEXT(""), false, 30.0, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window](FAutomationTestBase& T)
+		{
+			// No manual RefreshLibrary: the publication transition must surface the new row.
+			TickWindow(*Window);
+			T.TestEqual(TEXT("External session end published a row"), Window->GetRows().Num(), 1);
+			if (Window->GetRows().Num() == 1)
+			{
+				T.TestTrue(TEXT("Published row is playable"),
+					Window->GetRows()[0]->PlayButton.IsValid()
+					&& Window->GetRows()[0]->PlayButton->IsEnabled());
+			}
+			T.TestFalse(TEXT("No save failure is reported for the published capture"),
+				Window->GetOperationLabel().ToString().Contains(TEXT("save failed")));
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// An external PIE/session end with an unpublishable stream saves nothing and the window names the
+// reason, so the human can see why the recording was not saved.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowExternalSessionEndIncompleteTest,
+	"Cortex.Replay.Window.ExternalSessionEndIncompleteSurfaces",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowExternalSessionEndIncompleteTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor)
+	{
+		AddError(TEXT("GEditor missing"));
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window](FAutomationTestBase&)
+		{
+			Window->OnRecordClicked();
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitCapturePhase(this, Service, TEXT("Recording"), 60.0, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned capture PIE world exists"), PlayWorld);
+			if (!PlayWorld || !FSlateApplication::IsInitialized()) { return; }
+			FWindowOwnedPointerRoute Route;
+			if (!Route.Resolve(T, *PlayWorld)) { return; }
+			const bool bSavedInactiveInputHandling =
+				FSlateApplication::Get().GetHandleDeviceInputWhenApplicationNotActive();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(true);
+			// A press whose release is never recorded leaves the captured stream unbalanced.
+			Route.PressDown();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+			GEditor->RequestEndPlayMap();
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitCapturePublicationFailure(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window](FAutomationTestBase& T)
+		{
+			TickWindow(*Window);
+			const FString Label = Window->GetOperationLabel().ToString();
+			T.TestTrue(TEXT("Window names the reason nothing was saved"),
+				Label.Contains(TEXT("save failed")));
+			T.TestTrue(TEXT("Window reports the incomplete stream reason"),
+				Label.Contains(TEXT("unreleased held key or button")));
+			T.TestEqual(TEXT("No recording row was published"), Window->GetRows().Num(), 0);
 		}, Fixture));
 
 	return true;

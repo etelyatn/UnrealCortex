@@ -932,7 +932,20 @@ FText SCortexReplayWindow::BuildOperationLabel() const
 		Label = FString::Printf(TEXT("Recording #%d · %s · %s"), RecordingId, Ownership, *State);
 		if (Operation.Data->GetBoolField(TEXT("publication_failed")))
 		{
-			Label += TEXT(" · save failed");
+			// The human must see why nothing was saved: name the retained publication reason.
+			const TSharedPtr<FJsonObject>* PublicationError = nullptr;
+			if (Operation.Data->TryGetObjectField(TEXT("publication_error"), PublicationError)
+				&& PublicationError != nullptr && PublicationError->IsValid())
+			{
+				const FString PublicationMessage = (*PublicationError)->GetStringField(TEXT("message"));
+				Label += PublicationMessage.IsEmpty()
+					? TEXT(" · save failed")
+					: FString::Printf(TEXT(" · save failed: %s"), *PublicationMessage);
+			}
+			else
+			{
+				Label += TEXT(" · save failed");
+			}
 		}
 		if (Operation.Data->GetBoolField(TEXT("faulted")))
 		{

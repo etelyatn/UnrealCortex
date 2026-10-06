@@ -80,6 +80,72 @@ FCortexReplayEvent MakeKeyPress(int32 Sequence, double TimeSeconds,
 	return Event;
 }
 
+/**
+ * Resolves the owned PIE world's selected viewport route and drives real pointer edges through
+ * normal Slate routing, so capture admission does not depend on editor keyboard focus. Mirrors the
+ * route resolution used by the shared physical-input tests.
+ */
+class FCortexReplayOwnedPointerRoute
+{
+public:
+	bool Resolve(FAutomationTestBase& Test, UWorld& PlayWorld)
+	{
+		APlayerController* Controller = PlayWorld.GetFirstPlayerController();
+		Test.TestNotNull(TEXT("Owned capture controller exists"), Controller);
+		if (!Controller)
+		{
+			return false;
+		}
+		ULocalPlayer* LocalPlayer = PlayWorld.GetGameInstance()
+			? PlayWorld.GetGameInstance()->GetLocalPlayerByIndex(0) : nullptr;
+		const TSharedPtr<FSlateUser> SlateUser = LocalPlayer ? LocalPlayer->GetSlateUser() : nullptr;
+		UGameViewportClient* ViewportClient = PlayWorld.GetGameViewport();
+		FSceneViewport* SceneViewport = ViewportClient ? ViewportClient->GetGameViewport() : nullptr;
+		const TSharedPtr<SViewport> ViewportWidget =
+			SceneViewport ? SceneViewport->GetViewportWidget().Pin() : nullptr;
+		Test.TestTrue(TEXT("Owned capture viewport widget exists"), ViewportWidget.IsValid());
+		if (!SlateUser.IsValid() || !ViewportWidget.IsValid())
+		{
+			return false;
+		}
+		const FGeometry Geometry = ViewportWidget->GetCachedGeometry();
+		const FVector2D ViewportSize = Geometry.GetLocalSize();
+		if (ViewportSize.X <= 0.0 || ViewportSize.Y <= 0.0)
+		{
+			return false;
+		}
+		Center = Geometry.LocalToAbsolute(FVector2D(ViewportSize.X * 0.5, ViewportSize.Y * 0.5));
+		Device = IPlatformInputDeviceMapper::Get()
+			.GetPrimaryInputDeviceForUser(SlateUser->GetPlatformUserId());
+		UserIndex = SlateUser->GetUserIndex();
+		return true;
+	}
+
+	void PressDown()
+	{
+		const FModifierKeysState Modifiers;
+		TSet<FKey> Pressed;
+		Pressed.Add(EKeys::LeftMouseButton);
+		FSlateApplication::Get().ProcessMouseButtonDownEvent(nullptr,
+			FPointerEvent(Device, FSlateApplicationBase::CursorPointerIndex, Center, Center,
+				Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, UserIndex));
+	}
+
+	void PressUp()
+	{
+		const FModifierKeysState Modifiers;
+		const TSet<FKey> Pressed;
+		FSlateApplication::Get().ProcessMouseButtonUpEvent(
+			FPointerEvent(Device, FSlateApplicationBase::CursorPointerIndex, Center, Center,
+				Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, UserIndex));
+	}
+
+private:
+	FVector2D Center = FVector2D::ZeroVector;
+	FInputDeviceId Device = INPUTDEVICEID_NONE;
+	int32 UserIndex = 0;
+};
+
 /** Publishes one valid AI-eligible recording whose map is a real loadable PIE map. */
 bool PublishReplayRecording(FAutomationTestBase& Test, FCortexReplayTestFixture& Fixture,
 	int32 Id, const FString& MapPath, const TArray<FCortexReplayEvent>& Events, bool bAIEnabled,
@@ -2511,3 +2577,197 @@ bool FCortexReplayLifecycleCaptureStopDuringRecordingTest::RunTest(const FString
 
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// An external PIE/session end during an active Recording capture (the human ended PIE with the
+// editor's own stop, not the widget's Stop) is treated as a normal stop and publishes the captured
+// stream, which becomes a normal loadable recording.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleExternalSessionEndPublishesTest,
+	"Cortex.Replay.Lifecycle.ExternalSessionEndPublishes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleExternalSessionEndPublishesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const FCortexCommandResult Started = Service->StartCapture(MapPath);
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned capture PIE world exists"), PlayWorld);
+			if (!PlayWorld || !FSlateApplication::IsInitialized()) { return; }
+			FCortexReplayOwnedPointerRoute Route;
+			if (!Route.Resolve(T, *PlayWorld)) { return; }
+			const bool bSavedInactiveInputHandling =
+				FSlateApplication::Get().GetHandleDeviceInputWhenApplicationNotActive();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(true);
+			// A balanced press/release is recorded before the session is ended.
+			Route.PressDown();
+			Route.PressUp();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+
+			// The human ends the session with the editor's own stop instead of the widget's Stop.
+			GEditor->RequestEndPlayMap();
+		}, Fixture));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Recording = Service->GetRecording(1, false);
+			T.TestTrue(TEXT("External session end published the capture"), Recording.bSuccess);
+			if (Recording.Data.IsValid())
+			{
+				T.TestEqual(TEXT("Published capture is complete"),
+					Recording.Data->GetBoolField(TEXT("complete")), true);
+			}
+			T.TestFalse(TEXT("Published capture no longer owns the record"), Service->IsRecordInUse(1));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// An external PIE/session end with an unpublishable stream (a button press whose release was never
+// recorded) publishes nothing and reports an explicit incomplete outcome to the human surface.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleExternalSessionEndIncompleteTest,
+	"Cortex.Replay.Lifecycle.ExternalSessionEndIncompleteWithheld",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleExternalSessionEndIncompleteTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const FCortexCommandResult Started = Service->StartCapture(MapPath);
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned capture PIE world exists"), PlayWorld);
+			if (!PlayWorld || !FSlateApplication::IsInitialized()) { return; }
+			FCortexReplayOwnedPointerRoute Route;
+			if (!Route.Resolve(T, *PlayWorld)) { return; }
+			const bool bSavedInactiveInputHandling =
+				FSlateApplication::Get().GetHandleDeviceInputWhenApplicationNotActive();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(true);
+			// A press whose release is never recorded leaves the captured stream unbalanced.
+			Route.PressDown();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+			GEditor->RequestEndPlayMap();
+		}, Fixture));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePublicationFailure(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Fixture](FAutomationTestBase& T)
+		{
+			// Nothing is published as a playable recording.
+			T.TestFalse(TEXT("Incomplete capture is not loadable"),
+				Service->GetRecording(1, false).bSuccess);
+			FCortexReplayLibrary Library(Fixture->GetProjectRoot());
+			TArray<FCortexReplayMetadata> All;
+			T.TestTrue(TEXT("Library listing succeeds"), Library.List(false, All).bSuccess);
+			for (const FCortexReplayMetadata& Metadata : All)
+			{
+				T.TestFalse(TEXT("Library has no recording for the incomplete id"), Metadata.RecordingId == 1);
+			}
+
+			// The retained failure is explicit: the capture status exposes the incomplete reason.
+			const FCortexCommandResult Active = Service->GetCurrentOperation();
+			T.TestTrue(TEXT("Incomplete capture stays queryable"),
+				Active.bSuccess && Active.Data.IsValid());
+			if (Active.Data.IsValid())
+			{
+				T.TestTrue(TEXT("Incomplete capture reports a publication failure"),
+					Active.Data->GetBoolField(TEXT("publication_failed")));
+				const TSharedPtr<FJsonObject>* PublicationError = nullptr;
+				if (T.TestTrue(TEXT("Retained publication error exposed"),
+					Active.Data->TryGetObjectField(TEXT("publication_error"), PublicationError)
+					&& PublicationError != nullptr && PublicationError->IsValid()))
+				{
+					T.TestEqual(TEXT("Incomplete stream reports INCOMPLETE_RECORDING"),
+						(*PublicationError)->GetStringField(TEXT("code")),
+						FString(CortexReplayErrorCodes::IncompleteRecording));
+				}
+			}
+
+			// A subsequent human Stop reports the same explicit incomplete outcome.
+			const FCortexCommandResult Stopped = Service->StopCapture(false);
+			T.TestFalse(TEXT("Stopping an incomplete capture reports the failure"), Stopped.bSuccess);
+			T.TestEqual(TEXT("Stop reports INCOMPLETE_RECORDING"),
+				Stopped.ErrorCode, FString(CortexReplayErrorCodes::IncompleteRecording));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Green control: a bound-target identity loss during Recording (the controller loses the bound pawn
+// while its world keeps running) still faults and discards instead of publishing.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleTargetIdentityLossFaultsTest,
+	"Cortex.Replay.Lifecycle.TargetIdentityLossStillFaults",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleTargetIdentityLossFaultsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const FCortexCommandResult Started = Service->StartCapture(MapPath);
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned capture PIE world exists"), PlayWorld);
+			if (!PlayWorld) { return; }
+			APlayerController* Controller = PlayWorld->GetFirstPlayerController();
+			T.TestNotNull(TEXT("Owned capture controller exists"), Controller);
+			if (!Controller) { return; }
+			// The world keeps running; only the exact bound pawn identity is lost.
+			Controller->UnPossess();
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Fixture](FAutomationTestBase& T)
+		{
+			AssertCaptureNotPublished(T, *Service, *Fixture, 1);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
