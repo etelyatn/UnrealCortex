@@ -893,6 +893,32 @@ bool SCortexReplayWindow::IsReplayActiveForRecording(int32 RecordingId) const
 	return static_cast<int32>(Operation.Data->GetNumberField(TEXT("recording_id"))) == RecordingId;
 }
 
+/**
+ * Human-visible reason for a retained terminal capture failure, or an empty string when the last
+ * capture published. An immutable publication failure releases the capture operation, so this is
+ * the only surface that keeps "why nothing was saved" visible while the backend is idle.
+ */
+FString BuildRetainedCaptureReason(const FJsonObject& Outcome)
+{
+	if (!Outcome.GetBoolField(TEXT("publication_failed")))
+	{
+		return FString();
+	}
+	const int32 RecordingId = static_cast<int32>(Outcome.GetNumberField(TEXT("recording_id")));
+	FString Label = FString::Printf(TEXT("Recording #%d · save failed"), RecordingId);
+	const TSharedPtr<FJsonObject>* PublicationError = nullptr;
+	if (Outcome.TryGetObjectField(TEXT("publication_error"), PublicationError)
+		&& PublicationError != nullptr && PublicationError->IsValid())
+	{
+		const FString Message = (*PublicationError)->GetStringField(TEXT("message"));
+		if (!Message.IsEmpty())
+		{
+			Label += FString::Printf(TEXT(": %s"), *Message);
+		}
+	}
+	return Label;
+}
+
 FText SCortexReplayWindow::BuildOperationLabel() const
 {
 	if (!Service.IsValid())
@@ -908,7 +934,18 @@ FText SCortexReplayWindow::BuildOperationLabel() const
 	}
 	if (!Operation.Data.IsValid())
 	{
-		// No active operation: any rejection message from the last human action stays visible.
+		// No active operation: a retained terminal capture failure (an immutable publication error
+		// released the operation) stays visible, then any rejection message from the last human
+		// action, then the ready label.
+		const FCortexCommandResult LastCapture = Service->GetLastCaptureResult();
+		if (LastCapture.bSuccess && LastCapture.Data.IsValid())
+		{
+			const FString RetainedReason = BuildRetainedCaptureReason(*LastCapture.Data);
+			if (!RetainedReason.IsEmpty())
+			{
+				return FText::FromString(RetainedReason);
+			}
+		}
 		return LastStatusMessage.IsEmpty() ? LOCTEXT("ReadyLabel", "Ready")
 			: FText::FromString(LastStatusMessage);
 	}

@@ -5953,3 +5953,320 @@ bool FCortexPhysicalInputDistinctRootsSharedTargetTagTest::RunTest(const FString
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// A foreign popup over the viewport must not contribute presses to its capture stream.
+// Matching releases of genuine route presses still balance after the pointer leaves the route.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputForeignPopupPressNotCapturedTest,
+	"Cortex.Editor.PhysicalInputForeignPopupPressNotCaptured",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputForeignPopupPressNotCapturedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	const auto PopupPresses = MakeShared<int32>(0);
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	// Arm capture with no probe and no menu: only the overlapping popup is under test.
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("OverlappingPopupSetup"),
+		[Fixture, PopupPresses](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const TSharedPtr<SWidget> Viewport = Binding.ViewportWidget.Pin();
+			if (!Viewport.IsValid()) { Test.AddError(TEXT("Viewport widget missing")); return; }
+			const FVector2D Center = PhysicalTestWidgetAbsoluteCenter(*Viewport);
+
+			// A distinct top-level popup is added last (topmost) directly over the viewport centre.
+			const TSharedRef<SButton> PopupButton = SNew(SButton)
+				.OnPressed_Lambda([PopupPresses] { ++*PopupPresses; });
+			const TSharedRef<SWindow> Popup = SNew(SWindow)
+				.AutoCenter(EAutoCenter::None)
+				.ClientSize(FVector2D(160.0f, 90.0f))
+				.ScreenPosition(Center - FVector2D(80.0f, 45.0f))
+				.SupportsMaximize(false)
+				.SupportsMinimize(false)
+				[
+					PopupButton
+				];
+			F.CapturingWidget = PopupButton;
+			F.ForeignKeyHostWindow = Popup;
+			Slate.AddWindow(Popup, /*bShowImmediately=*/true);
+			Test.TestTrue(TEXT("Popup was added as a top-level window"),
+				Slate.GetTopLevelWindows().Contains(Popup));
+		}, /*bInstallProbe=*/false, /*bArmCapture=*/true, /*bOpenMenu=*/false));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture, PopupPresses](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const int32 User = Binding.SlateUserIndex;
+			const FInputDeviceId Device = Binding.InputDevice;
+			const TSharedPtr<SWidget> Viewport = Binding.ViewportWidget.Pin();
+			if (!Viewport.IsValid() || !F.ForeignKeyHostWindow.IsValid())
+			{
+				Test.AddError(TEXT("Overlapping-popup fixture missing"));
+				if (F.ForeignKeyHostWindow.IsValid())
+				{
+					Slate.RequestDestroyWindow(F.ForeignKeyHostWindow.ToSharedRef());
+				}
+				F.ForeignKeyHostWindow.Reset();
+				F.CapturingWidget.Reset();
+				return;
+			}
+			const TSharedRef<SWindow> Popup = F.ForeignKeyHostWindow.ToSharedRef();
+			const FGeometry Geometry = Viewport->GetCachedGeometry();
+			const FVector2D ViewportSize = Geometry.GetLocalSize();
+			const FVector2D PopupPoint = Geometry.LocalToAbsolute(ViewportSize * 0.5);
+			// A point inside the viewport but clear of the small centred popup.
+			const FVector2D RoutePoint =
+				Geometry.LocalToAbsolute(FVector2D(ViewportSize.X * 0.15, ViewportSize.Y * 0.85));
+
+			const bool bSavedInactiveInputHandling =
+				Slate.GetHandleDeviceInputWhenApplicationNotActive();
+			Slate.SetHandleDeviceInputWhenApplicationNotActive(true);
+
+			const FSlateRect PopupRect = Popup->GetRectInScreen();
+			Test.TestTrue(TEXT("Foreign popup covers the viewport centre"),
+				PopupRect.ContainsPoint(PopupPoint));
+			Test.TestFalse(TEXT("Chosen route point is clear of the popup"),
+				PopupRect.ContainsPoint(RoutePoint));
+
+			const FModifierKeysState Modifiers;
+			const uint32 Pointer = FSlateApplicationBase::CursorPointerIndex;
+			TSet<FKey> Pressed;
+			Pressed.Add(EKeys::LeftMouseButton);
+			TSet<FKey> Released;
+			auto PressAt = [&](const FVector2D& Where)
+			{
+				Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Device, Pointer,
+					Where, Where, Pressed, EKeys::LeftMouseButton, 0.0f, Modifiers, User));
+			};
+			auto ReleaseAt = [&](const FVector2D& Where)
+			{
+				Slate.ProcessMouseButtonUpEvent(FPointerEvent(Device, Pointer,
+					Where, Where, Released, EKeys::LeftMouseButton, 0.0f, Modifiers, User));
+			};
+
+			// 1. The press belongs to the foreign popup, so it must not be captured even though the
+			//    popup overlaps the selected route window's viewport.
+			const int32 Begin = F.Captured.Num();
+			PressAt(PopupPoint);
+			Test.TestEqual(TEXT("Foreign popup consumes the overlapping press"), *PopupPresses, 1);
+			Test.TestEqual(TEXT("Press over the foreign popup is not captured"),
+				F.Captured.Num(), Begin);
+			const TSharedPtr<FSlateUser> PopupUser = Slate.GetUser(User);
+			Test.TestTrue(TEXT("Foreign popup owns cursor capture"),
+				PopupUser.IsValid() && PopupUser->GetPointerCaptor(Pointer) == F.CapturingWidget);
+			Slate.ProcessMouseMoveEvent(FPointerEvent(Device, Pointer,
+				RoutePoint, RoutePoint - FVector2D(1.0, 0.0), Pressed, FKey(), 0.0f, Modifiers, User), false);
+			Test.TestEqual(TEXT("Foreign-captured movement over the route is excluded"),
+				F.Captured.Num(), Begin);
+			TSet<FKey> ForeignButtons = Pressed;
+			ForeignButtons.Add(EKeys::RightMouseButton);
+			Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Device, Pointer,
+				RoutePoint, RoutePoint, ForeignButtons, EKeys::RightMouseButton, 0.0f, Modifiers, User));
+			Test.TestEqual(TEXT("Foreign-captured press over the route is excluded"),
+				F.Captured.Num(), Begin);
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Device, Pointer,
+				RoutePoint, RoutePoint, Pressed, EKeys::RightMouseButton, 0.0f, Modifiers, User));
+			Test.TestEqual(TEXT("Foreign-captured release over the route is excluded"),
+				F.Captured.Num(), Begin);
+			ReleaseAt(PopupPoint);
+
+			// 2. A genuine route press away from the popup is still captured.
+			const int32 AfterPopup = F.Captured.Num();
+			PressAt(RoutePoint);
+			Test.TestEqual(TEXT("Genuine route press is captured"), F.Captured.Num(), AfterPopup + 1);
+			if (F.Captured.Num() > AfterPopup)
+			{
+				Test.TestEqual(TEXT("Captured route press records a pointer down"),
+					F.Captured[AfterPopup].Kind, ECortexEditorPhysicalInputKind::PointerDown);
+			}
+			const TSharedPtr<FSlateUser> SlateUser = Slate.GetUser(User);
+			Test.TestTrue(TEXT("Genuine route press owns cursor capture"),
+				SlateUser.IsValid() && SlateUser->GetPointerCaptor(Pointer) == Viewport);
+			Slate.ProcessMouseMoveEvent(FPointerEvent(Device, Pointer,
+				PopupPoint, PopupPoint - FVector2D(1.0, 0.0), Pressed, FKey(), 0.0f, Modifiers, User), false);
+			Test.TestEqual(TEXT("Route-captured movement over the popup is recorded"),
+				F.Captured.Num(), AfterPopup + 2);
+			// An existing route captor receives additional buttons even over the foreign popup.
+			TSet<FKey> BothButtons = Pressed;
+			BothButtons.Add(EKeys::RightMouseButton);
+			Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Device, Pointer,
+				PopupPoint, PopupPoint, BothButtons, EKeys::RightMouseButton, 0.0f, Modifiers, User));
+			Test.TestEqual(TEXT("Additional route-captured button press is recorded"),
+				F.Captured.Num(), AfterPopup + 3);
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Device, Pointer,
+				PopupPoint, PopupPoint, Pressed, EKeys::RightMouseButton, 0.0f, Modifiers, User));
+			Test.TestEqual(TEXT("Additional route-captured button release is recorded"),
+				F.Captured.Num(), AfterPopup + 4);
+
+			// 3. The matching release after the pointer moves onto the popup is still recorded, so the
+			//    genuine route press stays balanced.
+			ReleaseAt(PopupPoint);
+			Test.TestEqual(TEXT("Matching release over the popup is recorded"),
+				F.Captured.Num(), AfterPopup + 5);
+			Test.TestTrue(TEXT("Balanced genuine route press leaves the capture neutral"),
+				F.Session->CanWaitForUI());
+
+			Slate.SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+			Slate.RequestDestroyWindow(Popup);
+			F.ForeignKeyHostWindow.Reset();
+			F.CapturingWidget.Reset();
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Focus regressions for the owned replay ARM. The owned replay acquires the initial route focus
+// at BeginReplayEpoch (never during the shared owned capture preparation).
+// ---------------------------------------------------------------------------
+
+/** The owned PIE route root: the exact widget the engine registers as the PIE game viewport. */
+TSharedPtr<SViewport> ResolveOwnedRouteRoot(const FCortexEditorPhysicalInputSession& Session)
+{
+	UWorld* PIE = Session.GetTargetBinding().World.Get();
+	UGameViewportClient* ViewportClient = PIE ? PIE->GetGameViewport() : nullptr;
+	return ViewportClient ? ViewportClient->GetGameViewportWidget() : nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// An owned replay ARM whose route is ALREADY keyboard-focused must arm successfully.
+// FSlateApplication::SetUserFocus returns false when the target is already focused
+// (SlateApplication.cpp:3029-3032), and an existing on-route focus must be preserved, so the arm
+// must not treat an already-focused route as an acquisition failure.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputOwnedReplayAlreadyFocusedTest,
+	"Cortex.Editor.PhysicalInputOwnedReplayAlreadyFocused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputOwnedReplayAlreadyFocusedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddInfo(TEXT("Slate not initialized - skipping owned replay already-focused test"));
+		return true;
+	}
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+
+	// The engine's conditional auto-focus is off so the already-focused state is established by the
+	// test (and restored) rather than by the play setting.
+	ULevelEditorPlaySettings* PlaySettings = GetMutableDefault<ULevelEditorPlaySettings>();
+	const bool bSavedGameGetsMouseControl = PlaySettings->GameGetsMouseControl;
+	PlaySettings->GameGetsMouseControl = false;
+
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunOnceCommand(this,
+		[Fixture, PlaySettings, bSavedGameGetsMouseControl](FAutomationTestBase& T)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const uint32 User = static_cast<uint32>(Fixture->Session->GetTargetBinding().SlateUserIndex);
+			const TSharedPtr<SViewport> Route = ResolveOwnedRouteRoot(*Fixture->Session);
+			T.TestTrue(TEXT("Owned route root resolvable before arm"), Route.IsValid());
+			if (Route.IsValid())
+			{
+				TSharedPtr<SWidget> RouteWidget = Route;
+				Slate.SetUserFocus(User, RouteWidget, EFocusCause::SetDirectly);
+				T.TestTrue(TEXT("Route is already keyboard-focused before arm"),
+					Slate.GetUserFocusedWidget(User).Get() == Route.Get());
+			}
+
+			const FCortexCommandResult Arm = Fixture->Session->BeginReplayEpoch(false);
+			T.TestTrue(TEXT("Already-focused owned replay arm succeeds"), Arm.bSuccess);
+			T.TestTrue(TEXT("Already-focused owned replay epoch is armed"),
+				Fixture->Session->IsReplayEpochArmed());
+
+			PlaySettings->GameGetsMouseControl = bSavedGameGetsMouseControl;
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A global focus-change to the owned route during the owned replay ARM
+// (FSlateApplication::OnFocusChanging fires synchronously from SetUserFocus) that invalidates the
+// operation (here Session->Shutdown) must fail the arm: no epoch may be armed on a stale target.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputOwnedReplayFocusCancellationTest,
+	"Cortex.Editor.PhysicalInputOwnedReplayFocusCancellation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputOwnedReplayFocusCancellationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddInfo(TEXT("Slate not initialized - skipping owned replay focus-cancellation test"));
+		return true;
+	}
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+
+	// The engine focuses the PIE route on its own with EFocusCause::WindowActivate (viewport
+	// activation) or Mouse (capture-on-focus); the plugin's arm acquisition uses SetDirectly. Gate
+	// on that cause so only the plugin's synchronous acquisition triggers the cancellation, and
+	// force the 'Game Gets Mouse Control' auto-focus path off (it would otherwise also use SetDirectly).
+	ULevelEditorPlaySettings* PlaySettings = GetMutableDefault<ULevelEditorPlaySettings>();
+	const bool bSavedGameGetsMouseControl = PlaySettings->GameGetsMouseControl;
+	PlaySettings->GameGetsMouseControl = false;
+
+	const TSharedPtr<bool> bFocusCallbackFired = MakeShared<bool>(false);
+	const FDelegateHandle FocusHandle = FSlateApplication::Get().OnFocusChanging().AddLambda(
+		[WeakFixture = TWeakPtr<FCortexEditorPhysicalInputTestFixture>(Fixture), bFocusCallbackFired](
+			const FFocusEvent& FocusEvent, const FWeakWidgetPath&, const TSharedPtr<SWidget>&,
+			const FWidgetPath&, const TSharedPtr<SWidget>& NewFocused)
+		{
+			if (*bFocusCallbackFired) { return; }
+			if (FocusEvent.GetCause() != EFocusCause::SetDirectly) { return; }
+			const TSharedPtr<FCortexEditorPhysicalInputTestFixture> Pinned = WeakFixture.Pin();
+			if (!Pinned.IsValid()) { return; }
+			const TSharedPtr<SViewport> Route = ResolveOwnedRouteRoot(*Pinned->Session);
+			if (!Route.IsValid() || NewFocused.Get() != Route.Get()) { return; }
+			*bFocusCallbackFired = true;
+			// The synchronous focus change invalidates the in-flight owned replay arm.
+			Pinned->Session->Shutdown();
+		});
+
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunOnceCommand(this,
+		[Fixture, bFocusCallbackFired, FocusHandle, PlaySettings, bSavedGameGetsMouseControl](FAutomationTestBase& T)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const uint32 User = static_cast<uint32>(Fixture->Session->GetTargetBinding().SlateUserIndex);
+			// Ensure the route is not already focused so the arm actually requests the focus and the
+			// synchronous focus callback is exercised.
+			Slate.ClearUserFocus(User);
+
+			const FCortexCommandResult Arm = Fixture->Session->BeginReplayEpoch(false);
+			T.TestTrue(TEXT("Focus-change callback fired during the owned replay arm"),
+				*bFocusCallbackFired);
+			T.TestFalse(TEXT("Owned replay arm fails after synchronous focus cancellation"), Arm.bSuccess);
+			T.TestFalse(TEXT("No replay epoch is armed after focus cancellation"),
+				Fixture->Session->IsReplayEpochArmed());
+			T.TestFalse(TEXT("Cancelled arm leaves no bound successor target"),
+				Fixture->Session->GetTargetBinding().World.IsValid());
+
+			Slate.OnFocusChanging().Remove(FocusHandle);
+			PlaySettings->GameGetsMouseControl = bSavedGameGetsMouseControl;
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}

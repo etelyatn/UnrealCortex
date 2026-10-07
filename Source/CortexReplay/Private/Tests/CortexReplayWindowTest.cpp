@@ -280,42 +280,6 @@ private:
 	int32 UserIndex = 0;
 };
 
-/**
- * Waits until the current capture reports its retained publication failure (the window cannot
- * refresh past it, and the capture stays active instead of going idle).
- */
-class FWindowAwaitCapturePublicationFailure : public IAutomationLatentCommand
-{
-public:
-	FWindowAwaitCapturePublicationFailure(FAutomationTestBase* InTest,
-		TSharedRef<FCortexReplayService> InService,
-		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
-		: Test(InTest), Service(MoveTemp(InService)), KeepAlive(MoveTemp(InKeepAlive)) {}
-
-	bool Update() override
-	{
-		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
-		const FCortexCommandResult Current = Service->GetCurrentOperation();
-		if (Current.bSuccess && Current.Data.IsValid()
-			&& Current.Data->GetBoolField(TEXT("publication_failed")))
-		{
-			return true;
-		}
-		if (FPlatformTime::Seconds() - StartTime > WindowReadyWatchdogSeconds * 2)
-		{
-			Test->AddError(TEXT("Capture publication failure was never reported"));
-			return true;
-		}
-		return false;
-	}
-
-private:
-	FAutomationTestBase* Test;
-	TSharedRef<FCortexReplayService> Service;
-	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
-	double StartTime = 0.0;
-};
-
 /** Counts editable text/checkbox controls anywhere in a widget subtree. */
 int32 CountEditableControls(const TSharedRef<SWidget>& Widget)
 {
@@ -1420,17 +1384,22 @@ bool FCortexReplayWindowExternalSessionEndIncompleteTest::RunTest(const FString&
 			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
 			GEditor->RequestEndPlayMap();
 		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitCapturePublicationFailure(this, Service, Fixture));
+	// The immutable failure releases the operation instead of retrying the frozen stream forever.
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitOperation(this, Service, TEXT(""), false, 30.0, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
 		[Window](FAutomationTestBase& T)
 		{
 			TickWindow(*Window);
 			const FString Label = Window->GetOperationLabel().ToString();
+			// No active operation, yet the retained outcome is still the human-visible reason.
 			T.TestTrue(TEXT("Window names the reason nothing was saved"),
 				Label.Contains(TEXT("save failed")));
 			T.TestTrue(TEXT("Window reports the incomplete stream reason"),
 				Label.Contains(TEXT("unreleased held key or button")));
+			T.TestTrue(TEXT("Retained reason names the held left mouse button"),
+				Label.Contains(FKey(EKeys::LeftMouseButton).GetFName().ToString()));
+			T.TestTrue(TEXT("Release does not fall back to the ready label"), Label != TEXT("Ready"));
 			T.TestEqual(TEXT("No recording row was published"), Window->GetRows().Num(), 0);
 		}, Fixture));
 
@@ -1707,3 +1676,8 @@ bool FCortexReplayWindowCaptureStopDiscardTest::RunTest(const FString& Parameter
 
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// (Folded into Cortex.Replay.Window.ExternalSessionEndIncompleteSurfaces: the retained terminal
+// capture reason now covers the idle display and the held identity in one place.)
+// ---------------------------------------------------------------------------

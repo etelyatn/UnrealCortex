@@ -135,12 +135,8 @@ bool IsCaptureTargetSessionEnded(const FCortexEditorPhysicalInputSession& Sessio
 	return BoundWorld == nullptr || BoundWorld->WorldType != EWorldType::PIE;
 }
 
-/**
- * True when every recorded key/button press in the captured stream has a matching release,
- * mirroring the capture session's own recorded-held bookkeeping. A false result means the stream
- * ends with a dangling held key or button and must never be published as a playable recording.
- */
-bool IsCapturedStreamBalanced(const TArray<FCortexReplayEvent>& Events)
+/** The key/button presses still held at the end of a captured stream (never matched by a release). */
+TSet<FKey> CollectHeldCaptureKeys(const TArray<FCortexReplayEvent>& Events)
 {
 	TSet<FKey> Held;
 	for (const FCortexReplayEvent& Event : Events)
@@ -160,7 +156,34 @@ bool IsCapturedStreamBalanced(const TArray<FCortexReplayEvent>& Events)
 			break;
 		}
 	}
-	return Held.Num() == 0;
+	return Held;
+}
+
+
+/** Stable, sorted names of the presses still held at the end of the captured stream. */
+TArray<FString> CollectedHeldInputNames(const TArray<FCortexReplayEvent>& Events)
+{
+	const TSet<FKey> Held = CollectHeldCaptureKeys(Events);
+	TArray<FString> Names;
+	Names.Reserve(Held.Num());
+	for (const FKey& Key : Held)
+	{
+		Names.Add(Key.GetFName().ToString());
+	}
+	Names.Sort();
+	return Names;
+}
+
+/**
+ * True when a capture publication error is immutable for the frozen snapshot: republishing the
+ * identical stream can never change the outcome, so the operation must release instead of retrying
+ * forever. Only the service's own incomplete-stream verdict qualifies: an occupied recording path
+ * or storage/authoring-lock failure (INVALID_RECORDING / STORAGE_FAILURE / EDITOR_BUSY) can be
+ * cleared by the environment and stays retryable.
+ */
+bool IsPermanentCapturePublicationError(const FString& Code)
+{
+	return Code == CortexReplayErrorCodes::IncompleteRecording;
 }
 
 TSharedRef<FJsonObject> ServiceGuardCoverageToJson(const FCortexReplayGuardCoverage& Coverage)
@@ -321,6 +344,17 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	 * (widget) Stop path never consults this flag.
 	 */
 	bool bCaptureStreamBalanced = true;
+	/**
+	 * Names of the presses still held when an external session end sampled the stream as unbalanced.
+	 * Diagnostic and human-visible reason only; never published.
+	 */
+	TArray<FString> CaptureStreamHeldInputs;
+	/**
+	 * Latest retained terminal capture outcome for the human window only: the JSON summary of the
+	 * last completed capture, or null until one completes. Cleared when the next capture is admitted
+	 * and never reported as the active operation.
+	 */
+	TSharedPtr<FJsonObject> LastCaptureOutcome;
 
 	// ---- run ----
 	bool bRunActive = false;
@@ -363,6 +397,12 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	void RetainCaptureForPublicationRetry(const FCortexCommandResult& PublishResult);
 	void ClearCapturePublicationFailure();
 	void CompleteCaptureFinalization();
+	/** Retains a completed capture's terminal summary for the human window and clears retry state. */
+	void StoreLastCaptureOutcome(bool bPublished, const FCortexCommandResult* PublicationError);
+	/** Builds the retained terminal-capture summary JSON (human-UI status only). */
+	TSharedRef<FJsonObject> BuildLastCaptureOutcomeJson(bool bPublished,
+		const FCortexCommandResult* PublicationError) const;
+	void ClearLastCaptureOutcome();
 	FCortexCommandResult PublishCaptureSnapshot();
 	void OnCaptureInterruption(uint64 Generation, const FCortexCommandResult& Result);
 	void OnOwnedCaptureReady(uint64 Generation, const FCortexCommandResult& Ready);
@@ -696,10 +736,14 @@ void FCortexReplayService::FImpl::HandleCaptureTargetLoss(const FCortexCommandRe
 		// The stop time is sampled here, exactly as an explicit Stop would, so the recorded duration
 		// covers the final event and metadata validation still applies.
 		CaptureStopSeconds = FPlatformTime::Seconds();
-		bCaptureStreamBalanced = IsCapturedStreamBalanced(CaptureEvents);
+		CaptureStreamHeldInputs = CollectedHeldInputNames(CaptureEvents);
+		bCaptureStreamBalanced = CaptureStreamHeldInputs.IsEmpty();
+		// Bounded diagnostic: the exact held identities are otherwise unrecoverable once the stream
+		// is withheld, and the range is the supported key domain.
 		UE_LOG(LogCortexReplay, Display,
-			TEXT("Capture %d target/session ended externally (balanced=%d); stopping to publish"),
-			CaptureRecordingId, bCaptureStreamBalanced ? 1 : 0);
+			TEXT("Capture %d target/session ended externally (balanced=%d, events=%d, held=[%s]); stopping to publish"),
+			CaptureRecordingId, bCaptureStreamBalanced ? 1 : 0, CaptureEvents.Num(),
+			*FString::Join(CaptureStreamHeldInputs, TEXT(",")));
 		BeginCaptureFinalization(true);
 	}
 	else
@@ -750,6 +794,56 @@ void FCortexReplayService::FImpl::ClearCapturePublicationFailure()
 {
 	bCapturePublicationFailed = false;
 	CapturePublicationError = FCortexCommandResult();
+}
+
+TSharedRef<FJsonObject> FCortexReplayService::FImpl::BuildLastCaptureOutcomeJson(bool bPublished,
+	const FCortexCommandResult* PublicationError) const
+{
+	const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetStringField(TEXT("kind"), TEXT("capture"));
+	// Captures are always human-initiated; there is no AI capture origin. Ownership (borrowed vs
+	// owned) is live-only operation state and is deliberately not duplicated into the summary.
+	Object->SetStringField(TEXT("origin"), TEXT("human"));
+	Object->SetNumberField(TEXT("recording_id"), CaptureRecordingId);
+	Object->SetBoolField(TEXT("published"), bPublished);
+	Object->SetBoolField(TEXT("faulted"), bCaptureFaulted);
+
+	if (PublicationError != nullptr && !PublicationError->bSuccess)
+	{
+		Object->SetBoolField(TEXT("publication_failed"), true);
+		const TSharedRef<FJsonObject> Error = MakeShared<FJsonObject>();
+		Error->SetStringField(TEXT("code"), PublicationError->ErrorCode);
+		Error->SetStringField(TEXT("message"), PublicationError->ErrorMessage);
+		if (CaptureStreamHeldInputs.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> HeldValues;
+			HeldValues.Reserve(CaptureStreamHeldInputs.Num());
+			for (const FString& Name : CaptureStreamHeldInputs)
+			{
+				HeldValues.Add(MakeShared<FJsonValueString>(Name));
+			}
+			Error->SetArrayField(TEXT("held_inputs"), MoveTemp(HeldValues));
+		}
+		Object->SetObjectField(TEXT("publication_error"), Error);
+	}
+	else
+	{
+		Object->SetBoolField(TEXT("publication_failed"), false);
+		Object->SetField(TEXT("publication_error"), MakeShared<FJsonValueNull>());
+	}
+	Object->SetField(TEXT("fault_error"), MakeShared<FJsonValueNull>());
+	return Object;
+}
+
+void FCortexReplayService::FImpl::StoreLastCaptureOutcome(bool bPublished,
+	const FCortexCommandResult* PublicationError)
+{
+	LastCaptureOutcome = BuildLastCaptureOutcomeJson(bPublished, PublicationError);
+}
+
+void FCortexReplayService::FImpl::ClearLastCaptureOutcome()
+{
+	LastCaptureOutcome.Reset();
 }
 
 void FCortexReplayService::FImpl::TickCapture()
@@ -808,21 +902,38 @@ void FCortexReplayService::FImpl::TickCapture()
 void FCortexReplayService::FImpl::CompleteCaptureFinalization()
 {
 	const bool bShouldPublish = bCapturePublishOnComplete && !bCaptureFaulted;
+	// The actual publication outcome: a permanent failure is not a publication.
+	bool bCapturePublished = false;
 	if (bShouldPublish)
 	{
 		LastCapturePublishAttemptSeconds = FPlatformTime::Seconds();
 		const FCortexCommandResult PublishResult = PublishCaptureSnapshot();
 		if (!PublishResult.bSuccess)
 		{
-			// Ownership, the recording id and the captured events are retained (the active capture
-			// status shows Finalizing plus the retained failure) and the publication is retried.
-			RetainCaptureForPublicationRetry(PublishResult);
-			UE_LOG(LogCortexReplay, Display, TEXT("Capture %d publication failed: %s (%s); retained for retry"),
+			if (!IsPermanentCapturePublicationError(PublishResult.ErrorCode))
+			{
+				// Transient (storage/authoring-lock) failure: the ownership, recording id and captured
+				// events are retained and the publication is retried at most once per second.
+				RetainCaptureForPublicationRetry(PublishResult);
+				UE_LOG(LogCortexReplay, Display, TEXT("Capture %d publication failed: %s (%s); retained for retry"),
+					CaptureRecordingId, *PublishResult.ErrorCode, *PublishResult.ErrorMessage);
+				return;
+			}
+			// Immutable for this frozen stream: republishing can never change the outcome. Retain the
+			// explicit terminal failure for the human window, then release the operation instead of
+			// looping forever and holding the capture lock.
+			UE_LOG(LogCortexReplay, Display,
+				TEXT("Capture %d publication permanently failed: %s (%s); releasing the operation"),
 				CaptureRecordingId, *PublishResult.ErrorCode, *PublishResult.ErrorMessage);
-			return;
+			StoreLastCaptureOutcome(/*bPublished=*/false, &PublishResult);
 		}
-		ClearCapturePublicationFailure();
-		UE_LOG(LogCortexReplay, Display, TEXT("Capture %d publication succeeded"), CaptureRecordingId);
+		else
+		{
+			ClearCapturePublicationFailure();
+			StoreLastCaptureOutcome(/*bPublished=*/true, nullptr);
+			bCapturePublished = true;
+			UE_LOG(LogCortexReplay, Display, TEXT("Capture %d publication succeeded"), CaptureRecordingId);
+		}
 	}
 	if (Session.IsValid())
 	{
@@ -832,7 +943,7 @@ void FCortexReplayService::FImpl::CompleteCaptureFinalization()
 	const int32 CompletedRecordingId = CaptureRecordingId;
 	ResetCapture();
 	UE_LOG(LogCortexReplay, Display, TEXT("Capture %d finalized (published=%d)"),
-		CompletedRecordingId, bShouldPublish ? 1 : 0);
+		CompletedRecordingId, bCapturePublished ? 1 : 0);
 	if (bShutdown)
 	{
 		DetachTickerAndSession();
@@ -849,6 +960,7 @@ void FCortexReplayService::FImpl::ResetCapture()
 	CaptureFaultResult = FCortexCommandResult();
 	ClearCapturePublicationFailure();
 	bCaptureStreamBalanced = true;
+	CaptureStreamHeldInputs.Reset();
 	CaptureRecordingId = 0;
 	CaptureMapAssetPath.Reset();
 	CaptureTargetInfo = FCortexEditorPhysicalInputTargetInfo();
@@ -864,11 +976,16 @@ FCortexCommandResult FCortexReplayService::FImpl::PublishCaptureSnapshot()
 {
 	// An incomplete stream (an external session end that left a held key/button unreleased) is never
 	// published as a playable recording. The returned error is retained and reported exactly like a
-	// publication validation failure.
+	// publication validation failure, and names the held identities so the reason is actionable.
 	if (!bCaptureStreamBalanced)
 	{
+		const FString HeldDetail = CaptureStreamHeldInputs.Num() > 0
+			? FString::Printf(TEXT(" (%s)"), *FString::Join(CaptureStreamHeldInputs, TEXT(", ")))
+			: FString();
 		return ServiceError(CortexReplayErrorCodes::IncompleteRecording,
-			TEXT("The capture ended with an unreleased held key or button and is not publishable"));
+			FString::Printf(
+				TEXT("The capture ended with an unreleased held key or button%s and is not publishable"),
+				*HeldDetail));
 	}
 
 	FCortexReplaySnapshot CaptureSnapshot;
@@ -1537,6 +1654,18 @@ FCortexCommandResult FCortexReplayService::GetCurrentOperation() const
 	return FCortexCommandRouter::Success(Data);
 }
 
+FCortexCommandResult FCortexReplayService::GetLastCaptureResult() const
+{
+	const FImpl& State = *Impl;
+	// Human-UI status only: a null success when no capture has completed, otherwise the retained
+	// terminal summary. The active operation is never reported here.
+	if (!State.LastCaptureOutcome.IsValid())
+	{
+		return FCortexCommandRouter::Success(nullptr);
+	}
+	return FCortexCommandRouter::Success(State.LastCaptureOutcome);
+}
+
 bool FCortexReplayService::IsRecordInUse(int32 Id) const
 {
 	const FImpl& State = *Impl;
@@ -1643,6 +1772,8 @@ FCortexCommandResult FCortexReplayService::StartCaptureAtTarget(UWorld& World, i
 	// Reserve capture ownership before any asynchronous work so status, IsRecordInUse and
 	// competing admission all see the operation from its first frame.
 	State.ResetCapture();
+	// An admitted capture supersedes any retained terminal summary from a previous capture.
+	State.ClearLastCaptureOutcome();
 	State.CapturePhase = FImpl::ECapturePhase::Preparing;
 	State.bBorrowedCapture = true;
 	State.bOwnedCapture = false;
@@ -1738,6 +1869,8 @@ FCortexCommandResult FCortexReplayService::StartCapture(const FString& SavedEdit
 
 	// Capture ownership is reserved for the whole owned preparation, not only after readiness.
 	State.ResetCapture();
+	// An admitted capture supersedes any retained terminal summary from a previous capture.
+	State.ClearLastCaptureOutcome();
 	State.CapturePhase = FImpl::ECapturePhase::Preparing;
 	State.bBorrowedCapture = false;
 	State.bOwnedCapture = true;
@@ -1842,30 +1975,51 @@ FCortexCommandResult FCortexReplayService::StopCapture(bool bAbnormal)
 			State.Session->Shutdown();
 			State.Session.Reset();
 		}
+		FCortexCommandResult PublishFailure;
+		bool bCapturePublished = false;
 		if (bPublish)
 		{
 			const FCortexCommandResult PublishResult = State.PublishCaptureSnapshot();
 			if (!PublishResult.bSuccess)
 			{
-				// The captured data and recording id are retained so the failure is queryable and
-				// the publication is retried instead of silently completing.
-				State.RetainCaptureForPublicationRetry(PublishResult);
+				if (!IsPermanentCapturePublicationError(PublishResult.ErrorCode))
+				{
+					// The captured data and recording id are retained so the failure is queryable and
+					// the publication is retried instead of silently completing.
+					State.RetainCaptureForPublicationRetry(PublishResult);
+					UE_LOG(LogCortexReplay, Display,
+						TEXT("Capture %d publication failed: %s (%s); retained for retry"),
+						State.CaptureRecordingId, *PublishResult.ErrorCode, *PublishResult.ErrorMessage);
+					State.EnsureTicker();
+					return PublishResult;
+				}
+				// Immutable for the frozen stream: retain the explicit terminal failure and release
+				// the operation now instead of retrying a publication that can never succeed.
 				UE_LOG(LogCortexReplay, Display,
-					TEXT("Capture %d publication failed: %s (%s); retained for retry"),
+					TEXT("Capture %d publication permanently failed: %s (%s); releasing the operation"),
 					State.CaptureRecordingId, *PublishResult.ErrorCode, *PublishResult.ErrorMessage);
-				State.EnsureTicker();
-				return PublishResult;
+				State.StoreLastCaptureOutcome(/*bPublished=*/false, &PublishResult);
+				PublishFailure = PublishResult;
 			}
-			UE_LOG(LogCortexReplay, Display, TEXT("Capture %d publication succeeded"),
-				State.CaptureRecordingId);
+			else
+			{
+				State.StoreLastCaptureOutcome(/*bPublished=*/true, nullptr);
+				bCapturePublished = true;
+				UE_LOG(LogCortexReplay, Display, TEXT("Capture %d publication succeeded"),
+					State.CaptureRecordingId);
+			}
 		}
 		const int32 CompletedRecordingId = State.CaptureRecordingId;
 		State.ResetCapture();
 		UE_LOG(LogCortexReplay, Display, TEXT("Capture %d finalized (published=%d)"),
-			CompletedRecordingId, bPublish ? 1 : 0);
+			CompletedRecordingId, bCapturePublished ? 1 : 0);
 		if (State.bShutdown)
 		{
 			State.DetachTickerAndSession();
+		}
+		if (!PublishFailure.ErrorCode.IsEmpty())
+		{
+			return PublishFailure;
 		}
 		return DiscardResult.ErrorCode.IsEmpty() ? ServiceSuccess() : DiscardResult;
 	}

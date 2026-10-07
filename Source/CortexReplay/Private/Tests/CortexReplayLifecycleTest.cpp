@@ -34,10 +34,14 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "Slate/SceneViewport.h"
+#include "Settings/LevelEditorPlaySettings.h"
 #include "Tests/AutomationCommon.h"
 #include "Tests/AutomationEditorCommon.h"
 #include "UObject/Package.h"
+#include "Widgets/SCompoundWidget.h"
 #include "Widgets/SViewport.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
 
 namespace
 {
@@ -315,6 +319,74 @@ bool HasAnyPIEWorldContext()
 	}
 	return false;
 }
+
+/** The owned PIE world's game viewport widget; this is the session's selected route root. */
+TSharedPtr<SWidget> ResolveOwnedRouteRootWidget()
+{
+	if (!GEngine)
+	{
+		return nullptr;
+	}
+	for (const FWorldContext& Context : GEngine->GetWorldContexts())
+	{
+		if (Context.WorldType != EWorldType::PIE || Context.GameViewport == nullptr)
+		{
+			continue;
+		}
+		if (const TSharedPtr<SViewport> Widget = Context.GameViewport->GetGameViewportWidget())
+		{
+			return Widget;
+		}
+	}
+	return nullptr;
+}
+
+/** True when Widget is the route root or one of its descendants. */
+bool IsWidgetOnRouteRoot(const TSharedPtr<SWidget>& Widget, const TSharedPtr<SWidget>& RouteRoot)
+{
+	if (!RouteRoot.IsValid())
+	{
+		return false;
+	}
+	for (TSharedPtr<SWidget> Current = Widget; Current.IsValid(); Current = Current->GetParentWidget())
+	{
+		if (Current.Get() == RouteRoot.Get())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Stand-in for the human's pre-existing focus owner (the replay recorder): a focusable widget in a
+ * separate Slate window. Keyboard events route only to a focused widget, so a nonzero key count
+ * proves replay keys reached this foreign consumer instead of the owned route.
+ */
+class SCortexReplayForeignKeyboardSink : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SCortexReplayForeignKeyboardSink) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&)
+	{
+		ChildSlot
+		[
+			SNew(STextBlock).Text(FText::FromString(TEXT("foreign keyboard sink")))
+		];
+	}
+
+	virtual bool SupportsKeyboardFocus() const override { return true; }
+
+	virtual FReply OnKeyDown(const FGeometry& /*MyGeometry*/, const FKeyEvent& /*InKeyEvent*/) override
+	{
+		++KeyDownCount;
+		return FReply::Handled();
+	}
+
+	int32 KeyDownCount = 0;
+};
 
 TSharedRef<FCortexReplayService> MakeService(const FCortexReplayTestFixture& Fixture)
 {
@@ -1334,6 +1406,149 @@ bool FCortexReplayLifecycleEpochArmingModeTest::RunTest(const FString& Parameter
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitStateThenCheck(this, Service, HumanRunId,
 		TEXT("Cancelled"), /*bAIOnly=*/false, TFunction<void(FAutomationTestBase&)>(), Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// An owned replay launch must acquire the initial keyboard focus on the newly created route,
+// mirroring UEditorEngine::GiveFocusToLastClientPIEViewport (which the owned launch skips while
+// the 'Game Gets Mouse Control' play setting is off). A valid foreign off-route keyboard focus
+// present at launch must not interrupt the run once the owned route has been focused; the
+// post-epoch control then proves a foreign focus acquired AFTER arming still interrupts.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleOwnedLaunchFocusTest,
+	"Cortex.Replay.Lifecycle.OwnedLaunchAcquiresRouteFocusBeforeEpoch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleOwnedLaunchFocusTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddInfo(TEXT("Slate not initialized - skipping owned launch focus test"));
+		return true;
+	}
+
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	// Recording 1 completes under the acquired route focus; recording 2 is long enough to observe
+	// the armed epoch and then lose it to a foreign focus. Both are Human origin (no AI grant).
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		 MakeKeyPress(1, 0.4, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)}, false))
+	{
+		return false;
+	}
+	if (!PublishReplayRecording(*this, *Fixture, 2, MapPath,
+		{MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		 MakeKeyPress(1, 0.5, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)}, false))
+	{
+		return false;
+	}
+
+	const uint32 User = static_cast<uint32>(FSlateApplication::Get().GetUserIndexForKeyboard());
+	const TSharedPtr<SCortexReplayForeignKeyboardSink> Foreign = SNew(SCortexReplayForeignKeyboardSink);
+	const TSharedRef<SWindow> HostWindow =
+		SNew(SWindow).ClientSize(FVector2D(240.0f, 120.0f))[Foreign.ToSharedRef()];
+
+	// Force the engine's own PIE auto-focus path off so only the product's owned-launch acquisition
+	// can put keyboard focus on the route; the saved value is restored at the end of the chain. The
+	// owned request leaves EditorPlaySettings unset, so the engine duplicates this CDO into the run.
+	ULevelEditorPlaySettings* PlaySettings = GetMutableDefault<ULevelEditorPlaySettings>();
+	const bool bSavedGameGetsMouseControl = PlaySettings->GameGetsMouseControl;
+	PlaySettings->GameGetsMouseControl = false;
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[User, Foreign, HostWindow](FAutomationTestBase& T)
+		{
+			auto& Slate = FSlateApplication::Get();
+			// The editor window that will host the owned PIE route is the active top-level window
+			// before the foreign sink is introduced.
+			const TSharedPtr<SWindow> EditorWindow = Slate.GetActiveTopLevelWindow();
+			Slate.AddWindow(HostWindow);
+			if (EditorWindow.IsValid() && EditorWindow.Get() != &HostWindow.Get())
+			{
+				// Keep the route's window the active top-level so any interruption is attributed to
+				// the foreign keyboard focus, not to a stray window activation by the sink's window.
+				EditorWindow->BringToFront();
+			}
+			Slate.SetUserFocus(User, Foreign, EFocusCause::SetDirectly);
+			T.TestTrue(TEXT("Foreign off-route sink owns keyboard focus before the owned launch"),
+				Slate.GetUserFocusedWidget(User).Get() == Foreign.Get());
+		}, Fixture));
+
+	// --- Owned launch: a valid foreign focus is present when the run starts. ---
+	const TSharedPtr<FGuid> RunId1 = MakeShared<FGuid>();
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, RunId1](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::Human);
+			T.TestTrue(TEXT("Human owned replay admitted with a foreign keyboard focus present"),
+				Started.bSuccess);
+			if (Started.bSuccess) { *RunId1 = ParseRunId(Started); }
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitStateThenCheck(this, Service, RunId1,
+		TEXT("Replaying"), /*bAIOnly=*/false,
+		[User](FAutomationTestBase& T)
+		{
+			auto& Slate = FSlateApplication::Get();
+			const TSharedPtr<SWidget> Route = ResolveOwnedRouteRootWidget();
+			T.TestTrue(TEXT("Owned PIE route widget exists once Replaying"), Route.IsValid());
+			T.TestTrue(TEXT("Owned launch acquired keyboard focus on the route"),
+				Route.IsValid() && IsWidgetOnRouteRoot(Slate.GetUserFocusedWidget(User), Route));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitStateThenCheck(this, Service, RunId1,
+		TEXT("Completed"), /*bAIOnly=*/false,
+		[Service, RunId1, Foreign](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(*RunId1, false);
+			T.TestEqual(TEXT("Every recorded event dispatched under the acquired focus"),
+				RunDispatchedEvents(Run), 2);
+			T.TestEqual(TEXT("The foreign keyboard sink received no replay key"),
+				Foreign->KeyDownCount, 0);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	// --- Post-epoch control: focus lost AFTER arming is still genuine interference. ---
+	const TSharedPtr<FGuid> RunId2 = MakeShared<FGuid>();
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, RunId2](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Started = Service->StartReplay(2, ECortexReplayOrigin::Human);
+			T.TestTrue(TEXT("Second Human owned replay admitted"), Started.bSuccess);
+			if (Started.bSuccess) { *RunId2 = ParseRunId(Started); }
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitStateThenCheck(this, Service, RunId2,
+		TEXT("Replaying"), /*bAIOnly=*/false, TFunction<void(FAutomationTestBase&)>(), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[User, Foreign](FAutomationTestBase& T)
+		{
+			auto& Slate = FSlateApplication::Get();
+			Slate.SetUserFocus(User, Foreign, EFocusCause::SetDirectly);
+			T.TestTrue(TEXT("Foreign focus established after the epoch"),
+				Slate.GetUserFocusedWidget(User).Get() == Foreign.Get());
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitStateThenCheck(this, Service, RunId2,
+		TEXT("Interrupted"), /*bAIOnly=*/false,
+		[Service, RunId2, Foreign](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(*RunId2, false);
+			T.TestTrue(TEXT("Post-epoch foreign focus interrupts before all events are dispatched"),
+				RunDispatchedEvents(Run) < 2);
+			T.TestEqual(TEXT("Post-epoch foreign focus received no synthetic replay key"),
+				Foreign->KeyDownCount, 0);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[HostWindow, PlaySettings, bSavedGameGetsMouseControl](FAutomationTestBase&)
+		{
+			FSlateApplication::Get().RequestDestroyWindow(HostWindow);
+			PlaySettings->GameGetsMouseControl = bSavedGameGetsMouseControl;
+		}));
 
 	return true;
 }
@@ -2680,47 +2895,55 @@ bool FCortexReplayLifecycleExternalSessionEndIncompleteTest::RunTest(const FStri
 			GEditor->RequestEndPlayMap();
 		}, Fixture));
 
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePublicationFailure(this, Service, Fixture));
+	// The immutable failure releases the operation instead of retrying the frozen stream forever.
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
 		[Service, Fixture](FAutomationTestBase& T)
 		{
-			// Nothing is published as a playable recording.
-			T.TestFalse(TEXT("Incomplete capture is not loadable"),
-				Service->GetRecording(1, false).bSuccess);
-			FCortexReplayLibrary Library(Fixture->GetProjectRoot());
-			TArray<FCortexReplayMetadata> All;
-			T.TestTrue(TEXT("Library listing succeeds"), Library.List(false, All).bSuccess);
-			for (const FCortexReplayMetadata& Metadata : All)
-			{
-				T.TestFalse(TEXT("Library has no recording for the incomplete id"), Metadata.RecordingId == 1);
-			}
+			// Nothing is published as a playable recording and the id is no longer owned.
+			AssertCaptureNotPublished(T, *Service, *Fixture, 1);
 
-			// The retained failure is explicit: the capture status exposes the incomplete reason.
+			// The released immutable failure is never reported as an active operation.
 			const FCortexCommandResult Active = Service->GetCurrentOperation();
-			T.TestTrue(TEXT("Incomplete capture stays queryable"),
-				Active.bSuccess && Active.Data.IsValid());
-			if (Active.Data.IsValid())
+			T.TestTrue(TEXT("Releasing the incomplete capture leaves a successful status"),
+				Active.bSuccess);
+			T.TestFalse(TEXT("The released incomplete capture is not reported as active"),
+				Active.Data.IsValid());
+
+			// The explicit terminal outcome is retained for the human window, with the held identity.
+			const FCortexCommandResult Summary = Service->GetLastCaptureResult();
+			T.TestTrue(TEXT("Terminal capture summary is queryable"),
+				Summary.bSuccess && Summary.Data.IsValid());
+			if (!Summary.bSuccess || !Summary.Data.IsValid())
 			{
-				T.TestTrue(TEXT("Incomplete capture reports a publication failure"),
-					Active.Data->GetBoolField(TEXT("publication_failed")));
-				const TSharedPtr<FJsonObject>* PublicationError = nullptr;
-				if (T.TestTrue(TEXT("Retained publication error exposed"),
-					Active.Data->TryGetObjectField(TEXT("publication_error"), PublicationError)
-					&& PublicationError != nullptr && PublicationError->IsValid()))
+				return;
+			}
+			T.TestFalse(TEXT("Terminal summary is not published"),
+				Summary.Data->GetBoolField(TEXT("published")));
+			const TSharedPtr<FJsonObject>* PublicationError = nullptr;
+			if (T.TestTrue(TEXT("Terminal summary carries the publication error"),
+				Summary.Data->TryGetObjectField(TEXT("publication_error"), PublicationError)
+				&& PublicationError != nullptr && PublicationError->IsValid()))
+			{
+				T.TestEqual(TEXT("Incomplete stream reports INCOMPLETE_RECORDING"),
+					(*PublicationError)->GetStringField(TEXT("code")),
+					FString(CortexReplayErrorCodes::IncompleteRecording));
+				const TArray<TSharedPtr<FJsonValue>>* HeldInputs = nullptr;
+				if (T.TestTrue(TEXT("Incomplete outcome names the held inputs"),
+					(*PublicationError)->TryGetArrayField(TEXT("held_inputs"), HeldInputs)
+					&& HeldInputs != nullptr))
 				{
-					T.TestEqual(TEXT("Incomplete stream reports INCOMPLETE_RECORDING"),
-						(*PublicationError)->GetStringField(TEXT("code")),
-						FString(CortexReplayErrorCodes::IncompleteRecording));
+					bool bNamed = false;
+					for (const TSharedPtr<FJsonValue>& Value : *HeldInputs)
+					{
+						bNamed |= Value.IsValid()
+							&& Value->AsString() == FKey(EKeys::LeftMouseButton).GetFName().ToString();
+					}
+					T.TestTrue(TEXT("held_inputs names the held left mouse button"), bNamed);
 				}
 			}
-
-			// A subsequent human Stop reports the same explicit incomplete outcome.
-			const FCortexCommandResult Stopped = Service->StopCapture(false);
-			T.TestFalse(TEXT("Stopping an incomplete capture reports the failure"), Stopped.bSuccess);
-			T.TestEqual(TEXT("Stop reports INCOMPLETE_RECORDING"),
-				Stopped.ErrorCode, FString(CortexReplayErrorCodes::IncompleteRecording));
 		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 
 	return true;
 }
@@ -2766,6 +2989,79 @@ bool FCortexReplayLifecycleTargetIdentityLossFaultsTest::RunTest(const FString& 
 		{
 			AssertCaptureNotPublished(T, *Service, *Fixture, 1);
 		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The external-session-end stream is unbalanced (a real press whose release is never observed), so
+// it is unpublishable. The failure is immutable for that frozen stream, so it must not be retried
+// forever: the capture has to release its operation lock and admit the next capture, with nothing
+// published. This is the live surface the retained-forever publication path missed.
+// (Sibling of ExternalSessionEndIncompleteWithheld; never a child of that leaf test.)
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleExternalSessionEndIncompleteReleasesTest,
+	"Cortex.Replay.Lifecycle.ExternalSessionEndIncompleteReleases",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleExternalSessionEndIncompleteReleasesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const FCortexCommandResult Started = Service->StartCapture(MapPath);
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned capture PIE world exists"), PlayWorld);
+			if (!PlayWorld || !FSlateApplication::IsInitialized()) { return; }
+			FCortexReplayOwnedPointerRoute Route;
+			if (!Route.Resolve(T, *PlayWorld)) { return; }
+			const bool bSavedInactiveInputHandling =
+				FSlateApplication::Get().GetHandleDeviceInputWhenApplicationNotActive();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(true);
+			// A real press on the route whose release is never recorded leaves the stream unbalanced.
+			Route.PressDown();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+			GEditor->RequestEndPlayMap();
+		}, Fixture));
+
+	// The immutable incomplete failure must release the operation instead of retaining Finalizing
+	// and republishing once per second forever.
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Fixture, MapPath](FAutomationTestBase& T)
+		{
+			// Nothing of the unpublishable stream reached the library, and the id is no longer owned.
+			AssertCaptureNotPublished(T, *Service, *Fixture, 1);
+
+			// The operation lock is released: a fresh capture is admitted instead of EDITOR_BUSY.
+			const FCortexCommandResult Restarted = Service->StartCapture(MapPath);
+			T.TestTrue(TEXT("A new capture is admitted after the incomplete capture released"),
+				Restarted.bSuccess);
+			if (!Restarted.bSuccess)
+			{
+				T.TestNotEqual(TEXT("Release was not blocked by EDITOR_BUSY"), Restarted.ErrorCode,
+					FString(CortexReplayErrorCodes::EditorBusy));
+				return;
+			}
+			// Discard the re-observation capture so no owned PIE session is leaked.
+			Service->StopCapture(/*bAbnormal=*/true);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 
 	return true;

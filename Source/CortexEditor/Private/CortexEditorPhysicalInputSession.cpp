@@ -119,6 +119,65 @@ uint64 ComputeRequestFingerprint(const FRequestPlaySessionParams& Request, bool 
 
 	return static_cast<uint64>(GetTypeHash(Canonical));
 }
+
+/**
+ * Owned-replay keyboard focus acquisition, performed exactly once at the owned replay arm.
+ *
+ * The engine only gives the PIE game viewport keyboard focus when the 'Game Gets Mouse Control'
+ * play setting (or VR) is enabled (UEditorEngine::GiveFocusToLastClientPIEViewport), and its
+ * earlier UGameViewportClient::NotifyPlayerAdded focus runs before the PIE viewport widget is
+ * registered. An owned replay requires the selected route to own keyboard input, so the arm
+ * establishes the initial focus on the route (an existing on-route focus, including a child under
+ * the input root, is preserved) immediately before the epoch is armed. This is scoped to the owned
+ * replay arm and never runs during the shared owned capture preparation.
+ *
+ * This is not focus stealing during an armed replay and is never re-asserted per tick: a foreign
+ * focus established afterwards is still genuine interference. Returns false when the route cannot
+ * accept focus, so the arm can fail explicitly instead of arming an epoch that would be
+ * interrupted on its first tick.
+ */
+bool AcquireOwnedRouteFocus(const FCortexEditorPhysicalInputTargetBinding& InBinding)
+{
+	if (!FSlateApplication::IsInitialized() || InBinding.SlateUserIndex == INDEX_NONE)
+	{
+		return false;
+	}
+	const TSharedPtr<SWidget> RouteRoot = InBinding.ViewportWidget.Pin();
+	if (!RouteRoot.IsValid() || !RouteRoot->SupportsKeyboardFocus())
+	{
+		return false;
+	}
+	const TSharedPtr<SWidget> InputRoot = InBinding.InputRoot.Pin();
+	const uint32 UserIndex = static_cast<uint32>(InBinding.SlateUserIndex);
+	FSlateApplication& Slate = FSlateApplication::Get();
+
+	// The route owns the focus when the focused widget is the coordinate root or any widget under
+	// the input root (a child consumer keeps its focus; the root is never forced).
+	auto OwnsRouteFocus = [&Slate, &RouteRoot, &InputRoot, UserIndex]() -> bool
+	{
+		const TSharedPtr<SWidget> Focused = Slate.GetUserFocusedWidget(UserIndex);
+		for (TSharedPtr<SWidget> Current = Focused; Current.IsValid(); Current = Current->GetParentWidget())
+		{
+			if (Current.Get() == RouteRoot.Get() || (InputRoot.IsValid() && Current.Get() == InputRoot.Get()))
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+
+	// Preserve an existing on-route focus rather than re-focusing the root.
+	if (OwnsRouteFocus())
+	{
+		return true;
+	}
+
+	// SetUserFocus returns false when the requested widget is already the focused widget
+	// (SlateApplication.cpp:3029-3032); membership is therefore decided below, never from the
+	// return value. A silent redirect to a foreign widget is not success.
+	Slate.SetUserFocus(UserIndex, RouteRoot, EFocusCause::SetDirectly);
+	return OwnsRouteFocus();
+}
 }
 
 FCortexEditorPhysicalInputSession::FCortexEditorPhysicalInputSession()
@@ -1673,8 +1732,8 @@ namespace
 	};
 
 	/**
-	 * Resolves the real hit path for one screen coordinate inside the selected viewport's own
-	 * window, using the same public hit-test route Slate itself uses for mouse routing.
+	 * Resolves the actual topmost hit path and admits it only in the selected viewport's window.
+	 * Restricting the hit-test search to that window would look through unrelated popups.
 	 */
 	bool ResolveSelectedRoutePath(FSlateApplication& Slate, int32 SlateUserIndex,
 		const TSharedPtr<SWidget>& Anchor, const FVector2D& ScreenSpacePosition, FWidgetPath& OutPath)
@@ -1689,11 +1748,9 @@ namespace
 		{
 			return false;
 		}
-		TArray<TSharedRef<SWindow>> SelectedWindows;
-		SelectedWindows.Add(Window.ToSharedRef());
-		OutPath = Slate.LocateWindowUnderMouse(
-			ScreenSpacePosition, SelectedWindows, /*bIgnoreEnabledStatus*/ false, SlateUserIndex);
-		return OutPath.IsValid();
+		OutPath = Slate.LocateWindowUnderMouse(ScreenSpacePosition,
+			Slate.GetInteractiveTopLevelWindows(), /*bIgnoreEnabledStatus*/ false, SlateUserIndex);
+		return OutPath.IsValid() && OutPath.GetWindow() == Window;
 	}
 
 	/**
@@ -2194,10 +2251,10 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseButton(
 		return;
 	}
 
-	// A matching captured release survives focus loss; every other new edge must be on the
-	// selected route.
+	// A matching captured release survives focus loss. Other edges follow the selected pointer's
+	// actual captor when present; only uncaptured edges use the topmost positional hit.
 	const bool bMatchingRelease = !bDownEdge && CaptureState->CapturedHeldButtons.Contains(Button);
-	if (!bMatchingRelease && !IsPointerPositionOnSelectedRoute(ScreenSpacePosition))
+	if (!bMatchingRelease && !IsPointerEventOnSelectedRoute(MouseEvent))
 	{
 		return;
 	}
@@ -2248,12 +2305,9 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseMove(const FPointer
 	{
 		return;
 	}
-	// Movement is attributed to the selected route either through the current hit path or through a
-	// live capture that belongs to the selected route: Slate keeps routing a captured drag to the
-	// selected consumer after the pointer leaves the viewport, and the replay stream must include
-	// that consumer-visible change. Unrelated editor motion has neither.
-	if (!IsPointerPositionOnSelectedRoute(ScreenSpacePosition)
-		&& !IsPointerCaptureOnSelectedRoute())
+	// Captured movement follows its actual selected-pointer captor, even outside the viewport.
+	// A foreign captor must not be admitted merely because its pointer is over the route.
+	if (!IsPointerEventOnSelectedRoute(MouseEvent))
 	{
 		return;
 	}
@@ -2552,6 +2606,25 @@ void FCortexEditorPhysicalInputSession::SignalCaptureFault(const FString& Messag
 	}
 }
 
+bool FCortexEditorPhysicalInputSession::IsPointerEventOnSelectedRoute(
+	const FPointerEvent& MouseEvent) const
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		return false;
+	}
+	const TSharedPtr<FSlateUser> User = FSlateApplication::Get().GetUser(Binding.SlateUserIndex);
+	if (!User.IsValid())
+	{
+		return false;
+	}
+	if (User->HasCapture(MouseEvent.GetPointerIndex()))
+	{
+		return IsWidgetOnSelectedRoute(User->GetPointerCaptor(MouseEvent.GetPointerIndex()));
+	}
+	return IsPointerPositionOnSelectedRoute(MouseEvent.GetScreenSpacePosition());
+}
+
 bool FCortexEditorPhysicalInputSession::IsPointerPositionOnSelectedRoute(
 	const FVector2D& ScreenSpacePosition) const
 {
@@ -2793,6 +2866,35 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginReplayEpoch(bool bU
 	if (!GuardState.IsValid())
 	{
 		GuardState = MakeShared<FCortexEditorPhysicalInputGuardState>();
+	}
+
+	// Owned replay launch: establish the initial keyboard focus on the owned route exactly once,
+	// here at epoch establishment and immediately before arming. The engine only focuses the PIE
+	// game viewport when 'Game Gets Mouse Control' (or VR) is enabled
+	// (UEditorEngine::GiveFocusToLastClientPIEViewport) and its earlier NotifyPlayerAdded focus runs
+	// before the PIE viewport widget is registered, so an owned replay must own the route focus
+	// itself. This is scoped to the owned replay arm, never the shared owned capture preparation,
+	// so capture never sees a synthetic route focus. It is not focus stealing during an armed
+	// replay and is never re-asserted per tick: a later foreign focus is still genuine interference.
+	if (bOwnsPIE)
+	{
+		const uint64 FocusGeneration = Generation;
+		if (!AcquireOwnedRouteFocus(Binding))
+		{
+			return MakeErrorResult(CortexErrorCodes::InvalidOperation,
+				TEXT("The owned PIE route did not accept keyboard focus"));
+		}
+		// SetUserFocus broadcasts focus callbacks synchronously; they may invalidate this operation
+		// or tear the target down. Never arm an epoch on a stale generation or target.
+		if (FocusGeneration != Generation)
+		{
+			return MakeErrorResult(CortexErrorCodes::InvalidOperation,
+				TEXT("The owned replay target changed while acquiring route keyboard focus"));
+		}
+		if (!ValidateTarget(Error))
+		{
+			return Error;
+		}
 	}
 
 	// Interference ownership is armed here, at epoch establishment, not at the first Dispatch, so

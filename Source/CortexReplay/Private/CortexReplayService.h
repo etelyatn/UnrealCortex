@@ -35,9 +35,9 @@ struct FCortexReplayCaptureTargetChoice
  * or dropping the transport connection never stops an admitted run; destroying the backend owner
  * does.
  *
- * GetCurrentOperation and GetLastRunForRecording are native human-UI status only and are not
- * registered through transport. IsRecordInUse covers preparation, capture, playback, wait and
- * finalization, not only Recording.
+ * GetCurrentOperation, GetLastCaptureResult and GetLastRunForRecording are native human-UI status
+ * only and are not registered through transport. IsRecordInUse covers preparation, capture,
+ * playback, wait and finalization, not only Recording.
  */
 class FCortexReplayService
 {
@@ -82,6 +82,14 @@ public:
 
 	/** Latest retained terminal playback summary for a recording, or a successful null summary. */
 	FCortexCommandResult GetLastRunForRecording(int32 Id) const;
+
+	/**
+	 * Latest retained terminal capture summary (published or failed), or a successful null summary
+	 * when no capture has completed. Human-UI status only, never registered through transport, and
+	 * never reports an active capture: an immutable publication failure releases the operation and
+	 * is retained here instead of looping. Cleared when the next capture is admitted.
+	 */
+	FCortexCommandResult GetLastCaptureResult() const;
 
 	FCortexCommandResult GetRecording(int32 Id, bool bAIOnly) const;
 	FCortexCommandResult SaveMetadata(int32 Id, const FString& Name,

@@ -437,6 +437,9 @@ private:
 	/** Signals an incomplete capture epoch (for example inconsistent modifier bits). */
 	void SignalCaptureFault(const FString& Message);
 
+	/** Uses this pointer's actual captor when present, otherwise the topmost positional hit. */
+	bool IsPointerEventOnSelectedRoute(const FPointerEvent& MouseEvent) const;
+
 	/** True when the pointer at this screen coordinate is over the selected viewport route. */
 	bool IsPointerPositionOnSelectedRoute(const FVector2D& ScreenSpacePosition) const;
 
