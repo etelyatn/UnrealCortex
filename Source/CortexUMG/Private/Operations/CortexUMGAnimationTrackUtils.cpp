@@ -1,5 +1,6 @@
 #include "Operations/CortexUMGAnimationTrackUtils.h"
 #include "CortexUMGUtils.h"
+#include "CortexEngineCompat.h"
 #include "WidgetBlueprint.h"
 #include "Blueprint/WidgetTree.h"
 #include "Animation/WidgetAnimation.h"
@@ -132,9 +133,9 @@ namespace
         {
             const TSharedPtr<FJsonObject>& Object = Value->AsObject();
             int64 Total = 2;
-            for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+            for (const auto& Pair : Object->Values)
             {
-                Total += 2 + Indent + EstimateStringChars(Pair.Key) + 2
+                Total += 2 + Indent + EstimateStringChars(CortexEngineCompat::JsonKeyToString(Pair.Key)) + 2
                     + EstimatePrettyChars(Pair.Value, Depth + 1) + 1;
             }
             if (Object->Values.Num() > 0)

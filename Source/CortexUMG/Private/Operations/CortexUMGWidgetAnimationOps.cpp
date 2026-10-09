@@ -2,6 +2,7 @@
 #include "Operations/CortexUMGAnimationBindingUtils.h"
 #include "Operations/CortexUMGAnimationTrackUtils.h"
 #include "CortexUMGUtils.h"
+#include "CortexEngineCompat.h"
 #include "WidgetBlueprint.h"
 #include "Blueprint/WidgetTree.h"
 #include "Animation/WidgetAnimation.h"
@@ -504,9 +505,9 @@ FCortexCommandResult FCortexUMGWidgetAnimationOps::ListAnimationBindings(
                             }
                             if (Detailed.IsValid())
                             {
-                                for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Detailed->Values)
+                                for (const auto& Pair : Detailed->Values)
                                 {
-                                    TrackObj->SetField(Pair.Key, Pair.Value);
+                                    TrackObj->SetField(CortexEngineCompat::JsonKeyToString(Pair.Key), Pair.Value);
                                 }
                             }
                             for (const FString& Diagnostic : TrackDiagnostics)
