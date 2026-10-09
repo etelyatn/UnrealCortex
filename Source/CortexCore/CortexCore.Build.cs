@@ -20,6 +20,8 @@ public class CortexCore : ModuleRules
             "Projects",
             "Sockets",
             "Networking",
+            // POC: in-editor HTTP/SSE MCP transport (FCortexHttpServer / IHttpRouter)
+            "HTTPServer",
             "JsonUtilities",
             "GameplayTags",
             "UnrealEd",
