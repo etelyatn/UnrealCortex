@@ -32,6 +32,7 @@ namespace CortexReplayErrorCodes
 	constexpr TCHAR TargetUnavailable[] = TEXT("TARGET_UNAVAILABLE");
 	constexpr TCHAR IncompatiblePrerequisites[] = TEXT("INCOMPATIBLE_PREREQUISITES");
 	constexpr TCHAR RunNotFound[] = TEXT("RUN_NOT_FOUND");
+	constexpr TCHAR UnsupportedRunFormat[] = TEXT("UNSUPPORTED_RUN_FORMAT");
 	constexpr TCHAR StorageFailure[] = TEXT("STORAGE_FAILURE");
 	constexpr TCHAR ReplayTimingError[] = TEXT("REPLAY_TIMING_ERROR");
 	constexpr TCHAR ReplayPoseGuardFailed[] = TEXT("REPLAY_POSE_GUARD_FAILED");

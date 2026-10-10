@@ -28,6 +28,16 @@ struct FCortexReplayRunRecord
 	int32 DispatchedEvents = 0;
 	int32 TotalEvents = 0;
 	double AuthorizedWaitSeconds = 0.0;
+	/**
+	 * Frame progress of the admitted snapshot. CompletedFrames advances with every committed frame
+	 * and must equal FrameCount for a Completed run; a failed run retains its partial verified
+	 * progress. FramesSha256 is the admitted frame-stream digest.
+	 */
+	int32 CompletedFrames = 0;
+	int32 FrameCount = 0;
+	FString FramesSha256;
+	/** True when the record was persisted before frame identity existed; full detail is unsupported. */
+	bool bLegacyFormat = false;
 	FCortexReplayGuardCoverage GuardCoverage;
 	/** Valid only when State == ECortexReplayState::Error. */
 	FCortexCommandResult ExecutionError;

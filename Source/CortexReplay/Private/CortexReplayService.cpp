@@ -676,6 +676,7 @@ void FCortexReplayService::FImpl::TickRun()
 		}
 
 		ActiveRun.DispatchedEvents = Scheduler->GetDispatchedCount();
+		ActiveRun.CompletedFrames = Scheduler->GetCompletedFrameCount();
 		ActiveRun.AuthorizedWaitSeconds = Scheduler->GetAuthorizedWaitSeconds();
 
 		if (!Advanced.bSuccess)
@@ -1464,6 +1465,8 @@ FCortexCommandResult FCortexReplayService::StartReplay(int32 Id, ECortexReplayOr
 	Record.InitialStateSha256 = SnapshotPtr->Metadata.InitialStateSha256;
 	Record.InputsSha256 = SnapshotPtr->Metadata.InputsSha256;
 	Record.TotalEvents = SnapshotPtr->Events.Num();
+	Record.FrameCount = SnapshotPtr->Frames.Num();
+	Record.FramesSha256 = SnapshotPtr->Metadata.FramesSha256;
 	Record.GuardCoverage = SnapshotPtr->Metadata.GuardCoverage;
 
 	State.ResetRun();
@@ -1521,15 +1524,27 @@ FCortexCommandResult FCortexReplayService::GetRun(const FGuid& Id, bool bAIOnly)
 			&& State.RunState == ECortexReplayState::Replaying, State.Scheduler.Get()));
 	}
 
+	// A pre-frame record has no frame identity to report, so its full detail is unsupported while it
+	// stays discoverable through the compact recovery summaries.
+	auto RetainedResult = [](const FCortexReplayRunRecord& Retained) -> FCortexCommandResult
+	{
+		if (Retained.bLegacyFormat)
+		{
+			return ServiceError(CortexReplayErrorCodes::UnsupportedRunFormat,
+				TEXT("Historical run records carry no frame identity"));
+		}
+		return FCortexCommandRouter::Success(BuildRunData(Retained, false, nullptr));
+	};
+
 	FCortexReplayRunRecord Record;
 	if (State.RunStore.Load(Id, ECortexReplayOrigin::AI, Record).bSuccess)
 	{
-		return FCortexCommandRouter::Success(BuildRunData(Record, false, nullptr));
+		return RetainedResult(Record);
 	}
 	// An unrestricted human query resolves retained runs of either origin.
 	if (!bAIOnly && State.RunStore.Load(Id, ECortexReplayOrigin::Human, Record).bSuccess)
 	{
-		return FCortexCommandRouter::Success(BuildRunData(Record, false, nullptr));
+		return RetainedResult(Record);
 	}
 	return ServiceError(CortexReplayErrorCodes::RunNotFound,
 		FString::Printf(TEXT("No replay run %s"), *ServiceGuidToString(Id)));
@@ -1549,6 +1564,18 @@ TSharedRef<FJsonObject> FCortexReplayService::BuildRunData(const FCortexReplayRu
 	Data->SetNumberField(TEXT("dispatched_events"), Record.DispatchedEvents);
 	Data->SetNumberField(TEXT("total_events"), Record.TotalEvents);
 	Data->SetNumberField(TEXT("authorized_wait_seconds"), Record.AuthorizedWaitSeconds);
+	Data->SetNumberField(TEXT("completed_frames"), Record.CompletedFrames);
+	Data->SetNumberField(TEXT("frame_count"), Record.FrameCount);
+	Data->SetStringField(TEXT("frames_sha256"), Record.FramesSha256);
+	// The frame in preparation exists only while a replay is running; a terminal record has none.
+	if (bLive && Scheduler != nullptr && Scheduler->GetCurrentFrame().IsSet())
+	{
+		Data->SetNumberField(TEXT("current_frame"), Scheduler->GetCurrentFrame().GetValue());
+	}
+	else
+	{
+		Data->SetField(TEXT("current_frame"), MakeShared<FJsonValueNull>());
+	}
 	Data->SetStringField(TEXT("recording_snapshot_sha256"), Record.RecordingSnapshotSha256);
 	Data->SetStringField(TEXT("initial_state_sha256"), Record.InitialStateSha256);
 	Data->SetStringField(TEXT("inputs_sha256"), Record.InputsSha256);

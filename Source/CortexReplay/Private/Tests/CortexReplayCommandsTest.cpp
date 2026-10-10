@@ -216,7 +216,7 @@ int32 ReplayCommandsRunFileCount(const FCortexReplayTestFixture& Fixture)
 	return Files.Num();
 }
 
-/** Builds one valid retained terminal run record with caller-supplied identity. */
+/** Builds one valid retained terminal run record with caller-supplied identity and frame progress. */
 TSharedRef<FJsonObject> ReplayCommandsRetainedRunJson(
 	const FGuid& Id,
 	int32 RecordingId,
@@ -227,11 +227,19 @@ TSharedRef<FJsonObject> ReplayCommandsRetainedRunJson(
 	const FDateTime& Finalized,
 	const FString& SnapshotHash,
 	const FString& InitialHash,
-	const FString& InputsHash)
+	const FString& InputsHash,
+	int32 CompletedFrames = 2,
+	int32 FrameCount = 2,
+	FString FramesSha256 = FString())
 {
+	if (FramesSha256.IsEmpty())
+	{
+		FramesSha256 = FString::ChrN(64, TEXT('7'));
+	}
+
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetStringField(TEXT("format"), TEXT("CortexReplayRun"));
-	Object->SetNumberField(TEXT("schema_version"), 1);
+	Object->SetNumberField(TEXT("schema_version"), 2);
 	Object->SetStringField(TEXT("run_id"), Id.ToString(EGuidFormats::DigitsWithHyphens).ToLower());
 	Object->SetNumberField(TEXT("recording_id"), RecordingId);
 	Object->SetStringField(TEXT("origin"), Origin);
@@ -242,6 +250,9 @@ TSharedRef<FJsonObject> ReplayCommandsRetainedRunJson(
 	Object->SetNumberField(TEXT("dispatched_events"), 1);
 	Object->SetNumberField(TEXT("total_events"), 2);
 	Object->SetNumberField(TEXT("authorized_wait_seconds"), 0.0);
+	Object->SetNumberField(TEXT("completed_frames"), CompletedFrames);
+	Object->SetNumberField(TEXT("frame_count"), FrameCount);
+	Object->SetStringField(TEXT("frames_sha256"), FramesSha256);
 	Object->SetStringField(TEXT("recording_snapshot_sha256"), SnapshotHash);
 	Object->SetStringField(TEXT("initial_state_sha256"), InitialHash);
 	Object->SetStringField(TEXT("inputs_sha256"), InputsHash);
@@ -265,6 +276,28 @@ TSharedRef<FJsonObject> ReplayCommandsRetainedRunJson(
 		Error->SetObjectField(TEXT("details"), Details);
 		Object->SetObjectField(TEXT("execution_error"), Error);
 	}
+	return Object;
+}
+
+/**
+ * Builds one pre-frame (schema 1) retained run record. Historical records must keep loading for
+ * compact discovery while their full terminal access stays unsupported.
+ */
+TSharedRef<FJsonObject> ReplayCommandsLegacyRunJson(
+	const FGuid& Id,
+	int32 RecordingId,
+	const FString& Origin,
+	const FString& State,
+	const FDateTime& Started,
+	const FDateTime& Finalized)
+{
+	TSharedRef<FJsonObject> Object = ReplayCommandsRetainedRunJson(Id, RecordingId, Origin, State,
+		TEXT("origin-editor"), Started, Finalized, FString::ChrN(64, TEXT('a')),
+		FString::ChrN(64, TEXT('b')), FString::ChrN(64, TEXT('c')));
+	Object->SetNumberField(TEXT("schema_version"), 1);
+	Object->RemoveField(TEXT("completed_frames"));
+	Object->RemoveField(TEXT("frame_count"));
+	Object->RemoveField(TEXT("frames_sha256"));
 	return Object;
 }
 
@@ -774,6 +807,46 @@ bool FCortexReplayCommandsReadContractsTest::RunTest(const FString& Parameters)
 			HumanRun, 1, TEXT("human"), TEXT("Cancelled"), TEXT("origin-editor"),
 			Started, Finalized, FString::ChrN(64, TEXT('d')), FString::ChrN(64, TEXT('e')),
 			FString::ChrN(64, TEXT('f')))));
+
+	// Older AI records, so the newest-run assertions above keep resolving to the Error run.
+	const FDateTime OlderStarted = Started - FTimespan::FromMinutes(30);
+	const FDateTime OlderFinalized = Finalized - FTimespan::FromMinutes(30);
+
+	// A pre-frame record must stay discoverable as a compact summary while its full detail is not.
+	const FGuid LegacyAiRun = FGuid::NewGuid();
+	TestTrue(TEXT("Historical pre-frame AI run written"),
+		ReplayCommandsWriteRun(*Harness.Fixture, LegacyAiRun,
+			ReplayCommandsLegacyRunJson(LegacyAiRun, 1, TEXT("ai"), TEXT("Cancelled"),
+				OlderStarted, OlderFinalized)));
+
+	const FGuid ConsistentCompleted = FGuid::NewGuid();
+	TestTrue(TEXT("Completed run with a finished frontier written"),
+		ReplayCommandsWriteRun(*Harness.Fixture, ConsistentCompleted, ReplayCommandsRetainedRunJson(
+			ConsistentCompleted, 1, TEXT("ai"), TEXT("Completed"), TEXT("origin-editor"),
+			OlderStarted, OlderFinalized, FString::ChrN(64, TEXT('1')), FString::ChrN(64, TEXT('2')),
+			FString::ChrN(64, TEXT('3')), 3, 3)));
+
+	// Malformed frame progress: an unfinished frontier claiming completion, an out-of-bounds count
+	// and a digest that is not a SHA-256 are all refused by the retained record's own contract.
+	const FGuid UnfinishedCompleted = FGuid::NewGuid();
+	TestTrue(TEXT("Completed run with an unfinished frontier written"),
+		ReplayCommandsWriteRun(*Harness.Fixture, UnfinishedCompleted, ReplayCommandsRetainedRunJson(
+			UnfinishedCompleted, 1, TEXT("ai"), TEXT("Completed"), TEXT("origin-editor"),
+			OlderStarted, OlderFinalized, FString::ChrN(64, TEXT('1')), FString::ChrN(64, TEXT('2')),
+			FString::ChrN(64, TEXT('3')), 2, 3)));
+	const FGuid OutOfBoundsProgress = FGuid::NewGuid();
+	TestTrue(TEXT("Out-of-bounds frame progress written"),
+		ReplayCommandsWriteRun(*Harness.Fixture, OutOfBoundsProgress, ReplayCommandsRetainedRunJson(
+			OutOfBoundsProgress, 1, TEXT("ai"), TEXT("Error"), TEXT("origin-editor"),
+			OlderStarted, OlderFinalized, FString::ChrN(64, TEXT('1')), FString::ChrN(64, TEXT('2')),
+			FString::ChrN(64, TEXT('3')), 4, 3)));
+	const FGuid MalformedFramesDigest = FGuid::NewGuid();
+	TestTrue(TEXT("Malformed frames digest written"),
+		ReplayCommandsWriteRun(*Harness.Fixture, MalformedFramesDigest, ReplayCommandsRetainedRunJson(
+			MalformedFramesDigest, 1, TEXT("ai"), TEXT("Cancelled"), TEXT("origin-editor"),
+			OlderStarted, OlderFinalized, FString::ChrN(64, TEXT('1')), FString::ChrN(64, TEXT('2')),
+			FString::ChrN(64, TEXT('3')), 2, 2, FString::ChrN(63, TEXT('7')))));
+
 	Harness.StartDomain();
 
 	// get_recording: canonical map/start pose/press-only coverage, no input rows.
@@ -863,6 +936,21 @@ bool FCortexReplayCommandsReadContractsTest::RunTest(const FString& Parameters)
 		FString Snapshot;
 		Data->TryGetStringField(TEXT("recording_snapshot_sha256"), Snapshot);
 		TestEqual(TEXT("Admitted snapshot identity retained"), Snapshot, AiSnapshot);
+
+		// Frame identity: a terminal record reports the verified frame frontier, never a live frame.
+		double CompletedFrames = -1.0;
+		TestTrue(TEXT("Verified frame progress exposed"),
+			Data->TryGetNumberField(TEXT("completed_frames"), CompletedFrames));
+		TestEqual(TEXT("Dispatched-frame progress retained"), static_cast<int32>(CompletedFrames), 2);
+		double FrameCount = -1.0;
+		TestTrue(TEXT("Frame count exposed"), Data->TryGetNumberField(TEXT("frame_count"), FrameCount));
+		TestEqual(TEXT("Admitted frame count retained"), static_cast<int32>(FrameCount), 2);
+		FString FramesDigest;
+		TestTrue(TEXT("Frames digest exposed"),
+			Data->TryGetStringField(TEXT("frames_sha256"), FramesDigest));
+		TestEqual(TEXT("Frames digest retained"), FramesDigest, FString::ChrN(64, TEXT('7')));
+		TestTrue(TEXT("Terminal current frame is null"),
+			Data->HasTypedField<EJson::Null>(TEXT("current_frame")));
 	}
 
 	// Human-originated runs are invisible to the AI surface and to recovery.
@@ -886,8 +974,9 @@ bool FCortexReplayCommandsReadContractsTest::RunTest(const FString& Parameters)
 		{
 			List.Data->TryGetArrayField(TEXT("recent_ai_runs"), Recent);
 		}
-		TestEqual(TEXT("Only the AI run is recovered"), Recent != nullptr ? Recent->Num() : 0, 1);
-		if (Recent != nullptr && Recent->Num() == 1)
+		TestEqual(TEXT("Only the loadable AI runs are recovered"),
+			Recent != nullptr ? Recent->Num() : 0, 3);
+		if (Recent != nullptr && Recent->Num() == 3)
 		{
 			const TSharedPtr<FJsonObject>* Summary = nullptr;
 			(*Recent)[0]->TryGetObject(Summary);
@@ -895,11 +984,48 @@ bool FCortexReplayCommandsReadContractsTest::RunTest(const FString& Parameters)
 			{
 				FString RecoveredId;
 				(*Summary)->TryGetStringField(TEXT("run_id"), RecoveredId);
-				TestEqual(TEXT("Recovered summary is the AI run"), RecoveredId,
+				TestEqual(TEXT("Recovered summary is the newest AI run"), RecoveredId,
 					AiRun.ToString(EGuidFormats::DigitsWithHyphens).ToLower());
 			}
 		}
 	}
+
+	// Frame identity is part of the retained record's contract, and a pre-frame record keeps its
+	// compact summary discovery while its full terminal detail stays unsupported.
+	const FCortexCommandResult Completed = Harness.Execute(TEXT("replay.get_run"),
+		ReplayCommandsRunParams(ConsistentCompleted.ToString(EGuidFormats::DigitsWithHyphens).ToLower()));
+	TestTrue(TEXT("Completed terminal run query succeeds"), Completed.bSuccess);
+	if (Completed.bSuccess && Completed.Data.IsValid())
+	{
+		FString State;
+		Completed.Data->TryGetStringField(TEXT("state"), State);
+		TestEqual(TEXT("Completed state preserved"), State, FString(TEXT("Completed")));
+		double CompletedFrames = -1.0;
+		Completed.Data->TryGetNumberField(TEXT("completed_frames"), CompletedFrames);
+		double FrameCount = -1.0;
+		Completed.Data->TryGetNumberField(TEXT("frame_count"), FrameCount);
+		TestEqual(TEXT("Completed run finished its frame frontier"),
+			static_cast<int32>(CompletedFrames), static_cast<int32>(FrameCount));
+		TestTrue(TEXT("Completed run reports no live frame"),
+			Completed.Data->HasTypedField<EJson::Null>(TEXT("current_frame")));
+	}
+
+	const FString LegacyId = LegacyAiRun.ToString(EGuidFormats::DigitsWithHyphens).ToLower();
+	ReplayCommandsExpectError(*this, TEXT("Historical full run access"),
+		Harness.Execute(TEXT("replay.get_run"), ReplayCommandsRunParams(LegacyId)),
+		CortexReplayErrorCodes::UnsupportedRunFormat);
+	ReplayCommandsExpectError(*this, TEXT("Completed run with an unfinished frontier is refused"),
+		Harness.Execute(TEXT("replay.get_run"), ReplayCommandsRunParams(
+			UnfinishedCompleted.ToString(EGuidFormats::DigitsWithHyphens).ToLower())),
+		CortexReplayErrorCodes::RunNotFound);
+	ReplayCommandsExpectError(*this, TEXT("Out-of-bounds frame progress is refused"),
+		Harness.Execute(TEXT("replay.get_run"), ReplayCommandsRunParams(
+			OutOfBoundsProgress.ToString(EGuidFormats::DigitsWithHyphens).ToLower())),
+		CortexReplayErrorCodes::RunNotFound);
+	ReplayCommandsExpectError(*this, TEXT("Malformed frames digest is refused"),
+		Harness.Execute(TEXT("replay.get_run"), ReplayCommandsRunParams(
+			MalformedFramesDigest.ToString(EGuidFormats::DigitsWithHyphens).ToLower())),
+		CortexReplayErrorCodes::RunNotFound);
 
 	return true;
 }

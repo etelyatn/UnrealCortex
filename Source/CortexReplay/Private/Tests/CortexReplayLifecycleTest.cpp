@@ -204,7 +204,7 @@ TSharedRef<FJsonObject> MakeRetainedRunRecordJson(const FGuid& Id, int32 Recordi
 	const FString Stamp = FDateTime::UtcNow().ToIso8601();
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetStringField(TEXT("format"), TEXT("CortexReplayRun"));
-	Object->SetNumberField(TEXT("schema_version"), 1);
+	Object->SetNumberField(TEXT("schema_version"), 2);
 	Object->SetStringField(TEXT("run_id"), Id.ToString(EGuidFormats::DigitsWithHyphens).ToLower());
 	Object->SetNumberField(TEXT("recording_id"), RecordingId);
 	Object->SetStringField(TEXT("origin"), TEXT("ai"));
@@ -215,6 +215,9 @@ TSharedRef<FJsonObject> MakeRetainedRunRecordJson(const FGuid& Id, int32 Recordi
 	Object->SetNumberField(TEXT("dispatched_events"), Dispatched);
 	Object->SetNumberField(TEXT("total_events"), Total);
 	Object->SetNumberField(TEXT("authorized_wait_seconds"), 0.0);
+	Object->SetNumberField(TEXT("completed_frames"), 2);
+	Object->SetNumberField(TEXT("frame_count"), 2);
+	Object->SetStringField(TEXT("frames_sha256"), FString::ChrN(64, TEXT('d')));
 	Object->SetStringField(TEXT("recording_snapshot_sha256"), FString::ChrN(64, TEXT('a')));
 	Object->SetStringField(TEXT("initial_state_sha256"), FString::ChrN(64, TEXT('b')));
 	Object->SetStringField(TEXT("inputs_sha256"), FString::ChrN(64, TEXT('c')));

@@ -19,6 +19,7 @@ namespace
 {
 constexpr TCHAR StoreFormat[] = TEXT("CortexReplayRun");
 constexpr int32 StoreSchemaVersion = 1;
+constexpr int32 StoreFramesSchemaVersion = 2;
 /** The scheduler's fixed cumulative authorized-wait budget; retained records are bounded by it. */
 constexpr double StoreMaxAuthorizedWaitSeconds = 5.0;
 
@@ -222,7 +223,7 @@ FCortexCommandResult FCortexReplayRunStore::Initialize()
 		ECortexReplayState State = ECortexReplayState::Preparing;
 		if (!Object->TryGetStringField(TEXT("format"), Format) || Format != StoreFormat
 			|| !Object->TryGetNumberField(TEXT("schema_version"), SchemaVersion)
-			|| SchemaVersion != StoreSchemaVersion
+			|| (SchemaVersion != StoreSchemaVersion && SchemaVersion != StoreFramesSchemaVersion)
 			|| !Object->TryGetStringField(TEXT("run_id"), GuidText)
 			|| !FGuid::Parse(GuidText, Id) || !Id.IsValid()
 			|| !Object->TryGetStringField(TEXT("origin"), OriginText)
@@ -274,6 +275,28 @@ FCortexCommandResult FCortexReplayRunStore::Initialize()
 			continue;
 		}
 		Record.EditorInstanceId = EditorInstanceId;
+
+		if (SchemaVersion == StoreFramesSchemaVersion)
+		{
+			// Frame identity is mandatory in the current record format: the frontier must lie inside
+			// the admitted frame set, the digest must be a SHA-256, and a Completed run must have
+			// finished every frame.
+			if (!StoreTryReadInt32(Object, TEXT("completed_frames"), Record.CompletedFrames, 0, MAX_int32)
+				|| !StoreTryReadInt32(Object, TEXT("frame_count"), Record.FrameCount, 1, MAX_int32)
+				|| Record.CompletedFrames > Record.FrameCount
+				|| !Object->TryGetStringField(TEXT("frames_sha256"), Record.FramesSha256)
+				|| !StoreIsLowerHexSha256(Record.FramesSha256)
+				|| (State == ECortexReplayState::Completed
+					&& Record.CompletedFrames != Record.FrameCount))
+			{
+				continue;
+			}
+		}
+		else
+		{
+			// A pre-frame record keeps loading for compact discovery; its full detail is unsupported.
+			Record.bLegacyFormat = true;
+		}
 
 		const TSharedPtr<FJsonObject>* Coverage = nullptr;
 		int64 PosePresses = 0;
@@ -334,10 +357,27 @@ FCortexCommandResult FCortexReplayRunStore::SaveTerminal(const FCortexReplayRunR
 		return StoreError(CortexReplayErrorCodes::StorageFailure,
 			TEXT("Only terminal run records may be persisted"));
 	}
+	if (Record.FrameCount <= 0 || Record.CompletedFrames < 0
+		|| Record.CompletedFrames > Record.FrameCount)
+	{
+		return StoreError(CortexReplayErrorCodes::StorageFailure,
+			TEXT("Run record frame progress is out of bounds"));
+	}
+	if (Record.State == ECortexReplayState::Completed
+		&& Record.CompletedFrames != Record.FrameCount)
+	{
+		return StoreError(CortexReplayErrorCodes::StorageFailure,
+			TEXT("A completed run must have finished its frame frontier"));
+	}
+	if (!StoreIsLowerHexSha256(Record.FramesSha256))
+	{
+		return StoreError(CortexReplayErrorCodes::StorageFailure,
+			TEXT("Run record frames digest is not a SHA-256"));
+	}
 
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetStringField(TEXT("format"), StoreFormat);
-	Object->SetNumberField(TEXT("schema_version"), StoreSchemaVersion);
+	Object->SetNumberField(TEXT("schema_version"), StoreFramesSchemaVersion);
 	Object->SetStringField(TEXT("run_id"), StoreGuidToString(Record.Id));
 	Object->SetNumberField(TEXT("recording_id"), Record.RecordingId);
 	Object->SetStringField(TEXT("origin"), StoreOriginToString(Record.Origin));
@@ -351,6 +391,9 @@ FCortexCommandResult FCortexReplayRunStore::SaveTerminal(const FCortexReplayRunR
 	Object->SetNumberField(TEXT("dispatched_events"), Record.DispatchedEvents);
 	Object->SetNumberField(TEXT("total_events"), Record.TotalEvents);
 	Object->SetNumberField(TEXT("authorized_wait_seconds"), Record.AuthorizedWaitSeconds);
+	Object->SetNumberField(TEXT("completed_frames"), Record.CompletedFrames);
+	Object->SetNumberField(TEXT("frame_count"), Record.FrameCount);
+	Object->SetStringField(TEXT("frames_sha256"), Record.FramesSha256);
 
 	TSharedRef<FJsonObject> Coverage = MakeShared<FJsonObject>();
 	Coverage->SetNumberField(TEXT("pose_presses"), Record.GuardCoverage.PosePresses);
