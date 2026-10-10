@@ -758,3 +758,67 @@ bool FCortexReplaySchedulerFrameReentrantCancelTest::RunTest(const FString& Para
 
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// A blocked Slate press spends real time against a fixed per-press budget; a pending poll commits
+// no budget, and reaching the budget times the run out instead of consuming the press.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplaySchedulerFrameWaitBudgetTest,
+	"Cortex.Replay.Scheduler.FrameWaitBudget",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplaySchedulerFrameWaitBudgetTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayEvent Press = MakeKeyEvent(0, 0.0,
+		ECortexEditorPhysicalInputKind::KeyDown, EKeys::W);
+	FSchedulerGuardProbe Probe;
+	Probe.Setup(Press);
+	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Press});
+	Recording.Metadata.DurationSeconds = 0.4;
+	Fixture.ApplyCadenceFrames(Recording);
+	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
+	FCortexReplayScheduler Scheduler(Snapshot);
+	FSchedulerDispatchLog Log;
+	double Elapsed = 0.0;
+	auto Clock = [&Elapsed]() { return Elapsed; };
+	auto Evaluate = [&Snapshot, &Probe](const FCortexReplayEvent& Event)
+	{
+		return FCortexReplayGuardEvaluator::Evaluate(Event, Snapshot->InitialState.Pose, Probe.UI, true);
+	};
+	auto Dispatch = [&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); };
+
+	ECortexReplayFramePreparation Preparation = ECortexReplayFramePreparation::Waiting;
+	TestTrue(TEXT("Warmup frame prepares"),
+		Scheduler.PrepareFrame(0, Clock, Evaluate, Dispatch, Preparation).bSuccess);
+	TestTrue(TEXT("Warmup frame commits"), Scheduler.CommitFrame(0).bSuccess);
+
+	// A disabled Slate target is never ready, so the press spends its budget waiting on it.
+	Elapsed = 0.0;
+	TestTrue(TEXT("Wait admitted"),
+		Scheduler.PrepareFrame(1, Clock, Evaluate, Dispatch, Preparation).bSuccess);
+	TestEqual(TEXT("A disabled target makes the press wait"), static_cast<int32>(Preparation),
+		static_cast<int32>(ECortexReplayFramePreparation::Waiting));
+	TestEqual(TEXT("The blocked press stays pending"), Scheduler.GetWaitingSequence(), 0);
+	TestEqual(TEXT("Nothing is dispatched while waiting"), Log.Sequences.Num(), 0);
+
+	Elapsed = 0.9;
+	TestTrue(TEXT("A wait inside its budget keeps waiting"),
+		Scheduler.PrepareFrame(1, Clock, Evaluate, Dispatch, Preparation).bSuccess);
+	TestEqual(TEXT("Still waiting below the per-press budget"), static_cast<int32>(Preparation),
+		static_cast<int32>(ECortexReplayFramePreparation::Waiting));
+	TestEqual(TEXT("A pending poll commits no wait budget"), Scheduler.GetAuthorizedWaitSeconds(), 0.0);
+
+	Elapsed = 1.0;
+	const FCortexCommandResult TimedOut =
+		Scheduler.PrepareFrame(1, Clock, Evaluate, Dispatch, Preparation);
+	TestFalse(TEXT("A wait that reaches the per-press budget fails"), TimedOut.bSuccess);
+	TestEqual(TEXT("The wait timeout reports REPLAY_UI_WAIT_TIMEOUT"), TimedOut.ErrorCode,
+		FString(TEXT("REPLAY_UI_WAIT_TIMEOUT")));
+	TestEqual(TEXT("The timed-out press was never dispatched"), Log.Sequences.Num(), 0);
+	TestEqual(TEXT("The timed-out frame did not advance the frontier"),
+		Scheduler.GetCompletedFrameCount(), 1);
+	TestFalse(TEXT("The timed-out frame is not complete"), Scheduler.IsComplete());
+
+	return true;
+}
