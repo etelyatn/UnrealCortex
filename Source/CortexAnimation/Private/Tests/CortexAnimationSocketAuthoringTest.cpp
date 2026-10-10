@@ -7,6 +7,7 @@
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
 #include "Editor.h"
+#include "Engine/SkeletalMeshSocket.h"
 #include "HAL/FileManager.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"

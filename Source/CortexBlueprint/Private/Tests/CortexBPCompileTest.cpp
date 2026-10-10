@@ -11,6 +11,7 @@
 #include "EdGraph/EdGraph.h"
 #include "K2Node_CallFunction.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "GameFramework/Actor.h"
 #include "Misc/Guid.h"
 #include "UObject/UObjectIterator.h"

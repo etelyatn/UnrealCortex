@@ -3,6 +3,7 @@
 #include "Animation/Skeleton.h"
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
+#include "Engine/SkeletalMeshSocket.h"
 #include "Operations/CortexAnimAssetUtils.h"
 #include "Operations/CortexAnimMutationUtils.h"
 #include "ScopedTransaction.h"
