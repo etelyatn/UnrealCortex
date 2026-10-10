@@ -2173,5 +2173,58 @@ bool FCortexReplayCommandsRetainedRecordContractTest::RunTest(const FString& Par
 	TestEqual(TEXT("Partial verified progress reloads"), LoadedPartial.CompletedFrames, 2);
 	TestEqual(TEXT("The admitted frame count reloads"), LoadedPartial.FrameCount, 7);
 
+	// Save must enforce every invariant the loader requires. A record the store writes but cannot read
+	// back is a terminal run silently lost, so each loader-only invariant is refused at save time.
+	struct FRefusalCase
+	{
+		const TCHAR* Label;
+		TFunction<void(FCortexReplayRunRecord&)> Alter;
+	};
+	const TArray<FRefusalCase> Refusals = {
+		{ TEXT("a recording id below one"),
+			[](FCortexReplayRunRecord& R) { R.RecordingId = 0; } },
+		{ TEXT("an empty editor instance id"),
+			[](FCortexReplayRunRecord& R) { R.EditorInstanceId.Reset(); } },
+		{ TEXT("a finalized time before its start"),
+			[](FCortexReplayRunRecord& R)
+			{ R.FinalizedAtUtc = R.StartedAtUtc - FTimespan::FromMinutes(1); } },
+		{ TEXT("more dispatched events than admitted ones"),
+			[](FCortexReplayRunRecord& R) { R.DispatchedEvents = R.TotalEvents + 1; } },
+		{ TEXT("a wait budget above the fixed maximum"),
+			[](FCortexReplayRunRecord& R) { R.AuthorizedWaitSeconds = 5.5; } },
+		{ TEXT("a negative wait budget"),
+			[](FCortexReplayRunRecord& R) { R.AuthorizedWaitSeconds = -0.5; } },
+		{ TEXT("a snapshot digest that is not a SHA-256"),
+			[](FCortexReplayRunRecord& R) { R.RecordingSnapshotSha256 = TEXT("not-a-digest"); } },
+		{ TEXT("an inputs digest that is not a SHA-256"),
+			[](FCortexReplayRunRecord& R) { R.InputsSha256 = FString::ChrN(63, TEXT('a')); } },
+		{ TEXT("an initial-state digest that is not a SHA-256"),
+			[](FCortexReplayRunRecord& R) { R.InitialStateSha256 = FString::ChrN(64, TEXT('Z')); } },
+		{ TEXT("a guard partition that does not sum"),
+			[](FCortexReplayRunRecord& R) { R.GuardCoverage.PosePresses = 3; } },
+		{ TEXT("more guarded presses than admitted events"),
+			[](FCortexReplayRunRecord& R)
+			{
+				R.GuardCoverage.PosePresses = R.TotalEvents + 1;
+				R.GuardCoverage.UISupportedPresses = 0;
+				R.GuardCoverage.UIUnavailablePresses = 0;
+				R.GuardCoverage.UINotApplicablePresses = R.GuardCoverage.PosePresses;
+			} },
+		{ TEXT("an Error terminal state without an execution code"),
+			[](FCortexReplayRunRecord& R)
+			{
+				R.State = ECortexReplayState::Error;
+				R.ExecutionError = FCortexCommandResult();
+			} },
+	};
+	for (const FRefusalCase& Case : Refusals)
+	{
+		FCortexReplayRunRecord Altered = MakeRecord(2, 2, ECortexReplayState::Cancelled);
+		Altered.Id = FGuid::NewGuid();
+		Case.Alter(Altered);
+		TestFalse(*FString::Printf(TEXT("Save refuses a record with %s"), Case.Label),
+			Store.SaveTerminal(Altered).bSuccess);
+	}
+
 	return true;
 }

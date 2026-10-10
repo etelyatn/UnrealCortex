@@ -2,6 +2,7 @@
 
 #include "CortexCommandRouter.h"
 #include "CortexReplayErrorCodes.h"
+#include "CortexReplayModule.h"
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -189,6 +190,9 @@ FString FCortexReplayRunStore::RecordPath(const FGuid& Id) const
 	return FPaths::Combine(RunsDirectory(), StoreGuidToString(Id) + TEXT(".json"));
 }
 
+/** The value-domain contract shared by the writer and the loader (defined below SaveTerminal). */
+bool StoreValidateTerminalRecord(const FCortexReplayRunRecord& Record, FString& OutReason);
+
 FCortexCommandResult FCortexReplayRunStore::Initialize()
 {
 	Records.Reset();
@@ -339,42 +343,125 @@ FCortexCommandResult FCortexReplayRunStore::Initialize()
 			}
 		}
 
+		// The same contract the writer enforces: a record that violates it is skipped rather than
+		// indexed as a partially valid result.
+		FString RecordReason;
+		if (!StoreValidateTerminalRecord(Record, RecordReason))
+		{
+			UE_LOG(LogCortexReplay, Log, TEXT("Run store skipped record %s: %s"),
+				*GuidText, *RecordReason);
+			continue;
+		}
+
 		Records.Add(RecordKey(Id, Origin), MoveTemp(Record));
 	}
 
 	return FCortexCommandRouter::Success(nullptr);
 }
 
-FCortexCommandResult FCortexReplayRunStore::SaveTerminal(const FCortexReplayRunRecord& Record)
+/**
+ * The value-domain contract of a terminal run record: every invariant the loader enforces on the
+ * values it reads back. Save and load both go through this, so the store can never write a record it
+ * would refuse to read - which would silently lose a terminal run - and the loader gains the same
+ * authority in one place. OutReason receives the first violated invariant.
+ */
+bool StoreValidateTerminalRecord(const FCortexReplayRunRecord& Record, FString& OutReason)
 {
 	if (!Record.Id.IsValid())
 	{
-		return StoreError(CortexReplayErrorCodes::StorageFailure,
-			TEXT("Run record has no valid run id"));
+		OutReason = TEXT("Run record has no valid run id");
+		return false;
 	}
 	if (!StoreIsTerminalState(Record.State))
 	{
-		return StoreError(CortexReplayErrorCodes::StorageFailure,
-			TEXT("Only terminal run records may be persisted"));
+		OutReason = TEXT("Only terminal run records may be persisted");
+		return false;
 	}
-	// An admitted recording may legitimately carry no frames at all, so the frontier only has to be
-	// inside the frame set; a Completed run must still have finished it exactly.
-	if (Record.FrameCount < 0 || Record.CompletedFrames < 0
-		|| Record.CompletedFrames > Record.FrameCount)
+	if (Record.RecordingId < 1)
 	{
-		return StoreError(CortexReplayErrorCodes::StorageFailure,
-			TEXT("Run record frame progress is out of bounds"));
+		OutReason = TEXT("Run record recording id must be positive");
+		return false;
 	}
-	if (Record.State == ECortexReplayState::Completed
-		&& Record.CompletedFrames != Record.FrameCount)
+	if (Record.EditorInstanceId.IsEmpty())
 	{
-		return StoreError(CortexReplayErrorCodes::StorageFailure,
-			TEXT("A completed run must have finished its frame frontier"));
+		OutReason = TEXT("Run record has no editor instance id");
+		return false;
 	}
-	if (!StoreIsLowerHexSha256(Record.FramesSha256))
+	if (Record.FinalizedAtUtc < Record.StartedAtUtc)
 	{
-		return StoreError(CortexReplayErrorCodes::StorageFailure,
-			TEXT("Run record frames digest is not a SHA-256"));
+		OutReason = TEXT("Run record finalized before it started");
+		return false;
+	}
+	if (Record.DispatchedEvents < 0 || Record.TotalEvents < 0
+		|| Record.DispatchedEvents > Record.TotalEvents)
+	{
+		OutReason = TEXT("Run record dispatched more events than it admitted");
+		return false;
+	}
+	if (!FMath::IsFinite(Record.AuthorizedWaitSeconds) || Record.AuthorizedWaitSeconds < 0.0
+		|| Record.AuthorizedWaitSeconds > StoreMaxAuthorizedWaitSeconds)
+	{
+		OutReason = TEXT("Run record authorized wait is outside the fixed budget");
+		return false;
+	}
+	if (!StoreIsLowerHexSha256(Record.RecordingSnapshotSha256)
+		|| !StoreIsLowerHexSha256(Record.InitialStateSha256)
+		|| !StoreIsLowerHexSha256(Record.InputsSha256))
+	{
+		OutReason = TEXT("Run record carries a digest that is not a SHA-256");
+		return false;
+	}
+	// A pre-frame record carries no frame identity at all, so the frame group is only required of a
+	// current-format record; every other invariant still holds for both.
+	if (!Record.bLegacyFormat)
+	{
+		if (!StoreIsLowerHexSha256(Record.FramesSha256))
+		{
+			OutReason = TEXT("Run record frames digest is not a SHA-256");
+			return false;
+		}
+		// An admitted recording may legitimately carry no frames at all, so the frontier only has to
+		// be inside the frame set; a Completed run must still have finished it exactly.
+		if (Record.CompletedFrames < 0 || Record.FrameCount < 0
+			|| Record.CompletedFrames > Record.FrameCount)
+		{
+			OutReason = TEXT("Run record frame progress is out of bounds");
+			return false;
+		}
+		if (Record.State == ECortexReplayState::Completed
+			&& Record.CompletedFrames != Record.FrameCount)
+		{
+			OutReason = TEXT("A completed run must have finished its frame frontier");
+			return false;
+		}
+	}
+	// Summed in int64 so large counts cannot wrap and alias a valid partition.
+	const int64 PosePresses = Record.GuardCoverage.PosePresses;
+	const int64 SupportedPresses = Record.GuardCoverage.UISupportedPresses;
+	const int64 UnavailablePresses = Record.GuardCoverage.UIUnavailablePresses;
+	const int64 NotApplicablePresses = Record.GuardCoverage.UINotApplicablePresses;
+	if (PosePresses < 0 || SupportedPresses < 0 || UnavailablePresses < 0
+		|| NotApplicablePresses < 0
+		|| SupportedPresses + UnavailablePresses + NotApplicablePresses != PosePresses
+		|| PosePresses > static_cast<int64>(Record.TotalEvents))
+	{
+		OutReason = TEXT("Run record guard coverage is not a valid partition of its presses");
+		return false;
+	}
+	if (Record.State == ECortexReplayState::Error && Record.ExecutionError.ErrorCode.IsEmpty())
+	{
+		OutReason = TEXT("A terminal Error must carry a bounded execution code");
+		return false;
+	}
+	return true;
+}
+
+FCortexCommandResult FCortexReplayRunStore::SaveTerminal(const FCortexReplayRunRecord& Record)
+{
+	FString Reason;
+	if (!StoreValidateTerminalRecord(Record, Reason))
+	{
+		return StoreError(CortexReplayErrorCodes::StorageFailure, Reason);
 	}
 
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
