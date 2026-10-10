@@ -20,9 +20,13 @@ class MockMCP:
     def __init__(self):
         self.tools = {}
 
-    def tool(self, name=None, description=None, **_kwargs):
+    def tool(self, name=None, description=None, **kwargs):
         def decorator(fn):
-            self.tools[name or fn.__name__] = {"fn": fn, "description": description}
+            self.tools[name or fn.__name__] = {
+                "fn": fn,
+                "description": description,
+                "options": kwargs,
+            }
             return fn
 
         return decorator
@@ -1112,3 +1116,18 @@ def test_batch_query_forwards_rollback_params():
             "verify_rollback": True,
         },
     )
+
+
+def test_register_router_tools_disables_structured_output_for_replay_only():
+    """A Replay reply is budgeted as one encoded envelope, so its tool opts out of the SDK's
+    duplicate text plus structuredContent wrapping while every other domain keeps auto-detection."""
+    mcp = MockMCP()
+    connection = MagicMock()
+    domains = tuple(CORE_DOMAINS) + ("replay",)
+    docstrings = {domain: f"{domain} docs" for domain in domains}
+
+    register_router_tools(mcp, connection, docstrings, domains)
+
+    assert mcp.tools["replay_cmd"]["options"]["structured_output"] is False
+    for domain in CORE_DOMAINS:
+        assert mcp.tools[f"{domain}_cmd"]["options"]["structured_output"] is None

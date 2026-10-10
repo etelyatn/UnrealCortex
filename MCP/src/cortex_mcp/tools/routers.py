@@ -367,7 +367,15 @@ def _register_strict_router(mcp, domain: str, strict_router) -> None:
 
     registered.__name__ = f"{domain}_cmd"
     registered.__doc__ = docstring
-    mcp.tool(name=f"{domain}_cmd", description=docstring)(registered)
+    # Replay replies are budgeted as one encoded envelope. The SDK's default auto-detection wraps a
+    # string-returning router into both text and structuredContent.result, which would count the
+    # same payload twice against that budget, so Replay opts out and every other domain keeps the
+    # existing behaviour.
+    mcp.tool(
+        name=f"{domain}_cmd",
+        description=docstring,
+        structured_output=False if domain == "replay" else None,
+    )(registered)
 
     tool_manager = getattr(mcp, "_tool_manager", None)
     tool = tool_manager.get_tool(f"{domain}_cmd") if tool_manager is not None else None

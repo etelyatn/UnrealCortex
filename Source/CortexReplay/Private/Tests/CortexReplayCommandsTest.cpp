@@ -1890,3 +1890,200 @@ bool FCortexReplayCommandsBoundaryTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// A single-row page still carries the untrimmed fixed envelope (100 recovery summaries plus the
+// active summary), so the worst-case row has to fit the encoded budget beside it.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayCommandsPageSizeOneBudgetTest,
+	"Cortex.Replay.Commands.PageSizeOneBudget",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayCommandsPageSizeOneBudgetTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	constexpr int32 PageSizeOneBudgetBytes = 39000;
+	constexpr int32 PageSizeOneRecordingCount = 100;
+	constexpr int32 PageSizeOneFirstRecordingId = 2000;
+
+	// Legal maximum-size metadata with mixed 1/2/3/4-byte UTF-8 scalars, so the encoded row is the
+	// worst case the envelope has to absorb.
+	const FString MaxName = ReplayCommandsMixedWidthText(128);
+	const FString MaxDescription = ReplayCommandsMixedWidthText(1024);
+	const FString LongMapPath = TEXT("/Game/Maps/PageSizeOne") + FString::ChrN(100, TEXT('S'));
+	const FString LiveMapPath = ReplayCommandsPickMapPath();
+
+	FCortexReplayCommandsHarness Harness;
+	ReplayCommandsWriteTerminalRuns(Harness, 100);
+	TMap<int32, FString> ExpectedMapPath;
+	bool bPublished = true;
+	for (int32 Index = 0; Index < PageSizeOneRecordingCount; ++Index)
+	{
+		const int32 Id = PageSizeOneFirstRecordingId + Index;
+		// The first recording must load for the live active summary; the rest use the long path.
+		const FString MapPath = (Index == 0) ? LiveMapPath : LongMapPath;
+		ExpectedMapPath.Add(Id, MapPath);
+		bPublished &= ReplayCommandsPublish(*this, *Harness.Fixture, *Harness.Library, Id, true,
+			{ ReplayCommandsKeyDown(0) }, MaxName, MaxDescription, MapPath,
+			(Index == 0) ? FString(TEXT("/Script/Engine.DefaultPawn")) : FString());
+	}
+	if (!bPublished)
+	{
+		AddError(TEXT("Page-size-one recordings could not be published"));
+		return true;
+	}
+	Harness.StartDomain();
+
+	// One live AI run so every single-row page also carries the active summary.
+	const FCortexCommandResult Started = Harness.Execute(
+		TEXT("replay.start_replay"), ReplayCommandsRecordingParams(PageSizeOneFirstRecordingId));
+	TestTrue(TEXT("Page-size-one active run admitted"), Started.bSuccess);
+	if (!Started.bSuccess || !Started.Data.IsValid())
+	{
+		AddError(TEXT("Page-size-one active run was not admitted"));
+		return true;
+	}
+	FString ActiveRunId;
+	Started.Data->TryGetStringField(TEXT("run_id"), ActiveRunId);
+
+	// The genuinely empty page is the non-row baseline every page carries.
+	int32 EmptyBaselineBytes = 0;
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetNumberField(TEXT("page_size"), 1);
+		Params->SetNumberField(TEXT("after_recording_id"), 1000000);
+		const FCortexCommandResult Page = Harness.Execute(TEXT("replay.list_recordings"), Params);
+		TestTrue(TEXT("Page-size-one empty baseline succeeds"), Page.bSuccess);
+		const TArray<TSharedPtr<FJsonValue>>* Rows = ReplayCommandsRows(Page);
+		TestEqual(TEXT("Page-size-one empty baseline has no rows"),
+			Rows != nullptr ? Rows->Num() : -1, 0);
+		EmptyBaselineBytes = Page.Data.IsValid() ? ReplayCommandsUtf8Size(Page.Data) : 0;
+	}
+	if (EmptyBaselineBytes <= 0)
+	{
+		AddError(TEXT("Page-size-one empty baseline could not be measured"));
+		return true;
+	}
+
+	TSet<int32> VisitedIds;
+	int32 LargestBytes = 0;
+	int32 After = 0;
+	bool bFirst = true;
+	bool bMore = true;
+	int32 Pages = 0;
+	while (bMore && Pages < PageSizeOneRecordingCount + 2)
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetNumberField(TEXT("page_size"), 1);
+		if (!bFirst)
+		{
+			Params->SetNumberField(TEXT("after_recording_id"), After);
+		}
+		const FCortexCommandResult Page = Harness.Execute(TEXT("replay.list_recordings"), Params);
+		TestTrue(FString::Printf(TEXT("Single-row page %d succeeds"), Pages), Page.bSuccess);
+		if (!Page.bSuccess || !Page.Data.IsValid())
+		{
+			AddError(FString::Printf(TEXT("Single-row page %d returned no data"), Pages));
+			return true;
+		}
+
+		const int32 Emitted = ReplayCommandsUtf8Size(Page.Data);
+		LargestBytes = FMath::Max(LargestBytes, Emitted);
+		TestTrue(FString::Printf(TEXT("Single-row page %d stays inside the encoded budget"), Pages),
+			Emitted <= PageSizeOneBudgetBytes);
+
+		// The fixed envelope is never trimmed to make room for the row.
+		const TArray<TSharedPtr<FJsonValue>>* Recent = nullptr;
+		Page.Data->TryGetArrayField(TEXT("recent_ai_runs"), Recent);
+		TestEqual(FString::Printf(TEXT("Single-row page %d keeps 100 recovery summaries"), Pages),
+			Recent != nullptr ? Recent->Num() : 0, 100);
+		const TSharedPtr<FJsonObject>* Active = nullptr;
+		TestTrue(FString::Printf(TEXT("Single-row page %d keeps the active summary"), Pages),
+			Page.Data->TryGetObjectField(TEXT("active_ai_run"), Active) && Active != nullptr);
+		if (Active != nullptr)
+		{
+			FString ActiveId;
+			(*Active)->TryGetStringField(TEXT("run_id"), ActiveId);
+			TestEqual(FString::Printf(TEXT("Single-row page %d active identity"), Pages),
+				ActiveId, ActiveRunId);
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Rows = ReplayCommandsRows(Page);
+		TestEqual(FString::Printf(TEXT("Single-row page %d carries exactly one row"), Pages),
+			Rows != nullptr ? Rows->Num() : -1, 1);
+		int32 LastId = After;
+		int32 RowBytes = 0;
+		if (Rows != nullptr && Rows->Num() == 1)
+		{
+			const TSharedPtr<FJsonObject>* Row = nullptr;
+			(*Rows)[0]->TryGetObject(Row);
+			if (Row == nullptr)
+			{
+				AddError(FString::Printf(TEXT("Single-row page %d has a non-object row"), Pages));
+				return true;
+			}
+			double IdValue = 0.0;
+			TestTrue(FString::Printf(TEXT("Single-row page %d exposes the recording id"), Pages),
+				(*Row)->TryGetNumberField(TEXT("recording_id"), IdValue));
+			LastId = static_cast<int32>(IdValue);
+			TestTrue(FString::Printf(TEXT("Single-row page %d advances"), Pages), LastId > After);
+			TestFalse(FString::Printf(TEXT("Single-row page %d is not duplicated"), Pages),
+				VisitedIds.Contains(LastId));
+			VisitedIds.Add(LastId);
+			RowBytes = ReplayCommandsUtf8Size(*Row);
+
+			// The worst-case row is emitted intact: nothing is trimmed to fit beside the envelope.
+			FString NameValue;
+			FString DescriptionValue;
+			FString MapValue;
+			(*Row)->TryGetStringField(TEXT("name"), NameValue);
+			(*Row)->TryGetStringField(TEXT("description"), DescriptionValue);
+			(*Row)->TryGetStringField(TEXT("map_asset_path"), MapValue);
+			TestEqual(FString::Printf(TEXT("Single-row page %d name intact"), Pages), NameValue, MaxName);
+			TestEqual(FString::Printf(TEXT("Single-row page %d description intact"), Pages),
+				DescriptionValue, MaxDescription);
+			const FString* ExpectedMap = ExpectedMapPath.Find(LastId);
+			TestTrue(FString::Printf(TEXT("Single-row page %d map intact"), Pages),
+				ExpectedMap != nullptr && MapValue == *ExpectedMap);
+			TestTrue(FString::Printf(TEXT("Single-row page %d hashes intact"), Pages),
+				(*Row)->HasField(TEXT("initial_state_sha256"))
+					&& (*Row)->HasField(TEXT("inputs_sha256")));
+
+			// The row is the envelope plus itself, plus only the bounded cursor rewrite.
+			TestTrue(FString::Printf(TEXT("Single-row page %d row fits beside the envelope"), Pages),
+				Emitted - RowBytes <= EmptyBaselineBytes + 64);
+		}
+
+		bool bPageMore = false;
+		Page.Data->TryGetBoolField(TEXT("has_more"), bPageMore);
+		if (bPageMore)
+		{
+			double Next = 0.0;
+			TestTrue(FString::Printf(TEXT("Single-row page %d has a next cursor"), Pages),
+				Page.Data->TryGetNumberField(TEXT("next_after_recording_id"), Next));
+			TestEqual(FString::Printf(TEXT("Single-row page %d cursor is the row id"), Pages),
+				static_cast<int32>(Next), LastId);
+		}
+		else
+		{
+			TestTrue(FString::Printf(TEXT("Final single-row page %d has a null cursor"), Pages),
+				Page.Data->HasTypedField<EJson::Null>(TEXT("next_after_recording_id")));
+		}
+
+		After = LastId;
+		bMore = bPageMore;
+		bFirst = false;
+		++Pages;
+	}
+
+	AddInfo(FString::Printf(TEXT("PageSizeOneBudget pages %d visited %d largest %d baseline %d"),
+		Pages, VisitedIds.Num(), LargestBytes, EmptyBaselineBytes));
+	TestEqual(TEXT("Every single-row page visited one recording"),
+		VisitedIds.Num(), PageSizeOneRecordingCount);
+	TestTrue(TEXT("Every single-row page stayed inside the budget"),
+		LargestBytes > 0 && LargestBytes <= PageSizeOneBudgetBytes);
+	TestFalse(TEXT("Single-row paging ended without a synthetic extra page"), bMore);
+
+	return true;
+}
