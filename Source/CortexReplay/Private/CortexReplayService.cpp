@@ -1,6 +1,7 @@
 #include "CortexReplayService.h"
 
 #include "CortexCommandRouter.h"
+#include "CortexEditorEngineFrameObserver.h"
 #include "CortexEditorPhysicalInputSession.h"
 #include "CortexReplayErrorCodes.h"
 #include "CortexReplayGuardEvaluator.h"
@@ -327,6 +328,13 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	FCortexEditorPhysicalInputTargetInfo CaptureTargetInfo;
 	FCortexEditorPhysicalInputPlayerPose CaptureInitialPose;
 	TArray<FCortexReplayEvent> CaptureEvents;
+	/**
+	 * Every engine frame the active capture observed, in order, with the engine's own application
+	 * and world timing. Recorded frames that carry no input are part of the recording, so a lease can
+	 * pace to the recording and native closure can be verified against it.
+	 */
+	TArray<FCortexEditorEngineFrameRecord> CaptureObservedFrames;
+	TUniquePtr<FCortexEditorEngineFrameObserver> CaptureFrameObserver;
 	double CaptureEpochSeconds = 0.0;
 	double CaptureStopSeconds = 0.0;
 	/** Throttle for owned-capture publication retries after a storage/validation failure. */
@@ -407,6 +415,8 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	void OnOwnedCaptureReady(uint64 Generation, const FCortexCommandResult& Ready);
 	void OnCaptureEvent(const FCortexEditorPhysicalInputEvent& Event, double TimeSeconds,
 		const FCortexEditorPhysicalInputCaptureContext& Context);
+	/** Retains one observed engine frame of the active capture, with its own timing evidence. */
+	void OnCaptureFrameClosed(uint64 Generation, const FCortexEditorEngineFrameRecord& Closed);
 	void SetRunState(ECortexReplayState NewState);
 	/** Stable short name used by capture lifecycle logging and the discard outcome message. */
 	static const TCHAR* CapturePhaseToString(ECapturePhase Phase);
@@ -992,6 +1002,8 @@ void FCortexReplayService::FImpl::ResetCapture()
 	CaptureTargetInfo = FCortexEditorPhysicalInputTargetInfo();
 	CaptureInitialPose = FCortexEditorPhysicalInputPlayerPose();
 	CaptureEvents.Reset();
+	CaptureObservedFrames.Reset();
+	CaptureFrameObserver.Reset();
 	CaptureEpochSeconds = 0.0;
 	CaptureStopSeconds = 0.0;
 	LastCapturePublishAttemptSeconds = 0.0;
@@ -1036,28 +1048,62 @@ FCortexCommandResult FCortexReplayService::FImpl::PublishCaptureSnapshot()
 		CaptureSnapshot.Frames.Add(Warmup);
 
 		int32 NextSequence = 0;
-		int32 EventIndex = 0;
-		while (EventIndex < CaptureSnapshot.Events.Num())
+		double FirstAppCurrentSeconds = 0.0;
+		bool bFirstObservedFrame = true;
+		for (const FCortexEditorEngineFrameRecord& Observed : CaptureObservedFrames)
 		{
-			const uint64 GroupFrame = CaptureSnapshot.Events[EventIndex].CaptureContext.FrameNumber;
-			int32 GroupCount = 0;
-			while (EventIndex + GroupCount < CaptureSnapshot.Events.Num()
-				&& CaptureSnapshot.Events[EventIndex + GroupCount].CaptureContext.FrameNumber == GroupFrame)
-			{
-				++GroupCount;
-			}
-
 			FCortexReplayFrame Frame;
 			Frame.FrameIndex = CaptureSnapshot.Frames.Num();
-			Frame.FrameBeginSeconds = CaptureSnapshot.Events[EventIndex].TimeSeconds;
-			Frame.InputDeadlineSeconds = Frame.FrameBeginSeconds;
-			Frame.FirstSequence = NextSequence;
-			Frame.EventCount = GroupCount;
-			Frame.CaptureFrame = GroupFrame;
-			CaptureSnapshot.Frames.Add(Frame);
+			Frame.CaptureFrame = Observed.CaptureFrameCounter;
+			Frame.FrameBeginSeconds = FMath::Max(0.0, Observed.FrameBeginSeconds - CaptureEpochSeconds);
+			Frame.InputDeadlineSeconds = FMath::Max(Frame.FrameBeginSeconds,
+				Observed.InputBoundarySeconds - CaptureEpochSeconds);
+			Frame.AppDeltaSeconds = Observed.AppDeltaSeconds;
+			if (bFirstObservedFrame)
+			{
+				// Application offsets are relative to the first owned frame's application clock.
+				FirstAppCurrentSeconds = Observed.AppCurrentSeconds;
+				bFirstObservedFrame = false;
+			}
+			Frame.AppCurrentOffsetSeconds = Observed.AppCurrentSeconds - FirstAppCurrentSeconds;
+			Frame.AppLastOffsetSeconds = Observed.AppLastSeconds - FirstAppCurrentSeconds;
+			Frame.WorldTick = Observed.WorldTick;
 
-			NextSequence += GroupCount;
-			EventIndex += GroupCount;
+			// This frame owns every event whose capture instant falls inside its window. The session's
+			// event clock and the observer's frame boundaries are both platform time, so the window is
+			// directly comparable; the observed capture-frame counters are not the same sequence.
+			int32 Count = 0;
+			while (NextSequence + Count < CaptureSnapshot.Events.Num()
+				&& CaptureSnapshot.Events[NextSequence + Count].TimeSeconds + CaptureEpochSeconds
+					<= Observed.InputBoundarySeconds)
+			{
+				++Count;
+			}
+			Frame.FirstSequence = NextSequence;
+			Frame.EventCount = Count;
+			NextSequence += Count;
+			CaptureSnapshot.Frames.Add(Frame);
+		}
+
+		// An event whose observed frame was not part of the recorded stream still belongs to the
+		// recording: it is attributed to one final frame so no captured input is lost or duplicated.
+		if (NextSequence < CaptureSnapshot.Events.Num())
+		{
+			FCortexReplayFrame Remainder;
+			Remainder.FrameIndex = CaptureSnapshot.Frames.Num();
+			Remainder.FirstSequence = NextSequence;
+			Remainder.EventCount = CaptureSnapshot.Events.Num() - NextSequence;
+			if (CaptureSnapshot.Frames.Num() > 0)
+			{
+				const FCortexReplayFrame& Previous = CaptureSnapshot.Frames.Last();
+				Remainder.FrameBeginSeconds = Previous.InputDeadlineSeconds;
+				Remainder.AppCurrentOffsetSeconds = Previous.AppCurrentOffsetSeconds;
+				Remainder.AppLastOffsetSeconds = Previous.AppLastOffsetSeconds;
+				Remainder.CaptureFrame = Previous.CaptureFrame;
+			}
+			Remainder.InputDeadlineSeconds = FMath::Max(Remainder.FrameBeginSeconds,
+				CaptureSnapshot.Events.Last().TimeSeconds);
+			CaptureSnapshot.Frames.Add(Remainder);
 		}
 	}
 	CaptureSnapshot.Metadata.Timing.InputEpochFrame = 1;
@@ -1100,12 +1146,23 @@ FCortexCommandResult FCortexReplayService::FImpl::PublishCaptureSnapshot()
 	{
 		FCortexReplayFrame Trailing;
 		Trailing.FrameIndex = CaptureSnapshot.Frames.Num();
-		Trailing.FrameBeginSeconds = CaptureSnapshot.Events.Num() > 0
-			? CaptureSnapshot.Events.Last().TimeSeconds
-			: 0.0;
-		Trailing.InputDeadlineSeconds = CaptureSnapshot.Metadata.DurationSeconds;
+		// The tail can only start after the last recorded frame, otherwise the frame stream would
+		// move time backwards; its deadline is the capture span, never earlier than that boundary.
+		const double PreviousDeadline = CaptureSnapshot.Frames.Num() > 0
+			? CaptureSnapshot.Frames.Last().InputDeadlineSeconds : 0.0;
+		const double LastEventSeconds = CaptureSnapshot.Events.Num() > 0
+			? CaptureSnapshot.Events.Last().TimeSeconds : 0.0;
+		Trailing.FrameBeginSeconds = FMath::Max(PreviousDeadline, LastEventSeconds);
+		Trailing.InputDeadlineSeconds = FMath::Max(Trailing.FrameBeginSeconds,
+			CaptureSnapshot.Metadata.DurationSeconds);
 		Trailing.FirstSequence = CaptureSnapshot.Events.Num();
 		Trailing.EventCount = 0;
+		if (CaptureSnapshot.Frames.Num() > 0)
+		{
+			const FCortexReplayFrame& Previous = CaptureSnapshot.Frames.Last();
+			Trailing.AppCurrentOffsetSeconds = Previous.AppCurrentOffsetSeconds;
+			Trailing.AppLastOffsetSeconds = Previous.AppLastOffsetSeconds;
+		}
 		CaptureSnapshot.Frames.Add(Trailing);
 	}
 	CaptureSnapshot.Metadata.Timing.FrameCount = CaptureSnapshot.Frames.Num();
@@ -1337,6 +1394,18 @@ FCortexCommandResult FCortexReplayService::FImpl::DispatchEvent(const FCortexRep
 		return ServiceError(CortexReplayErrorCodes::TargetUnavailable, TEXT("Replay target is gone"));
 	}
 	return Session->Dispatch(Event.Input);
+}
+
+void FCortexReplayService::FImpl::OnCaptureFrameClosed(uint64 Generation,
+	const FCortexEditorEngineFrameRecord& Closed)
+{
+	// A reentrant native callback only records evidence; it never publishes, faults or tears down.
+	if (Generation != CaptureOperationGeneration || CapturePhase != ECapturePhase::Recording
+		|| bFrozen || bCaptureFaulted)
+	{
+		return;
+	}
+	CaptureObservedFrames.Add(Closed);
 }
 
 void FCortexReplayService::FImpl::OnCaptureEvent(const FCortexEditorPhysicalInputEvent& Event,
@@ -1836,6 +1905,27 @@ FCortexCommandResult FCortexReplayService::StartCapture(const FString& SavedEdit
 		{
 			RawState->OnCaptureInterruption(Generation, Interruption);
 		});
+
+	// The observer is installed before the owned PIE request so the capture records every engine
+	// frame of the session - including the frames that carry no input - with the engine's own
+	// application and world timing. Without that evidence a lease has nothing to pace to and native
+	// closure cannot be verified.
+	State.CaptureObservedFrames.Reset();
+	State.CaptureFrameObserver = MakeUnique<FCortexEditorEngineFrameObserver>();
+	const FCortexCommandResult ObserverInstalled = State.CaptureFrameObserver->Install(
+		*State.Session,
+		[](const FCortexEditorEngineFrameRecord&) {},
+		[RawState, Generation](const FCortexEditorEngineFrameRecord& Closed)
+		{
+			RawState->OnCaptureFrameClosed(Generation, Closed);
+		});
+	if (!ObserverInstalled.bSuccess)
+	{
+		State.MarkCaptureFaulted(ObserverInstalled);
+		State.BeginCaptureFinalization(false);
+		State.TickCapture();
+		return ObserverInstalled;
+	}
 
 	const FCortexCommandResult Accepted = State.Session->BeginOwnedPIE(SavedEditorMapAssetPath, 0,
 		[RawState, Generation](const FCortexCommandResult& Ready)
