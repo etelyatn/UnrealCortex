@@ -1855,8 +1855,12 @@ bool FCortexReplayCommandsBoundaryTest::RunTest(const FString& Parameters)
 		{
 			const TArray<TSharedPtr<FJsonValue>>* TwoRows = ReplayCommandsRows(TwoPage);
 			const int32 TwoRowCount = TwoRows != nullptr ? TwoRows->Num() : 0;
-			TestTrue(TEXT("Two-row boundary page returns two rows"), TwoRowCount == 2);
-			if (TwoRowCount != 2)
+			// Whole rows only: at least one (a requested page is never empty) and never more than the
+			// request. One or two rows are both legal now that the SDK text envelope is reserved, and
+			// three would mean the requested page size was ignored.
+			TestTrue(TEXT("Two-row boundary page returns whole rows within the request"),
+				TwoRowCount >= 1 && TwoRowCount <= 2);
+			if (TwoRowCount < 1 || TwoRowCount > 2)
 			{
 				AddError(FString::Printf(
 					TEXT("Two-row boundary page returned %d rows for page_size 2"), TwoRowCount));
@@ -1864,19 +1868,24 @@ bool FCortexReplayCommandsBoundaryTest::RunTest(const FString& Parameters)
 			else
 			{
 				const int32 TwoEmitted = ReplayCommandsUtf8Size(TwoPage.Data);
-				const int32 Row1Bytes = ReplayCommandsUtf8Size((*TwoRows)[0]->AsObject());
-				const int32 Row2Bytes = ReplayCommandsUtf8Size((*TwoRows)[1]->AsObject());
+				int64 SumRows = 0;
+				for (const TSharedPtr<FJsonValue>& Value : *TwoRows)
+				{
+					SumRows += ReplayCommandsUtf8Size(Value->AsObject());
+				}
 				TestTrue(TEXT("Two-row boundary page is within the encoded budget"),
 					TwoEmitted <= BoundaryBudgetBytes);
-				// Emitted == empty baseline + both rows + exactly one comma, allowing only the
-				// bounded has_more/cursor rewrite (one byte here: false -> true).
-				const int64 TwoBaseline = static_cast<int64>(TwoEmitted) - Row1Bytes - Row2Bytes - 1;
-				TestTrue(TEXT("Two-row page counts exactly one separator"),
-					TwoBaseline == static_cast<int64>(EmptyBaselineBytes)
-						|| TwoBaseline == static_cast<int64>(EmptyBaselineBytes) - 1);
+				// Emitted == empty baseline + every returned row + exactly one comma per extra row,
+				// plus only the bounded has_more/cursor rewrite. A double-counted baseline would put
+				// the derived baseline a whole row below the measured empty page.
+				const int64 TwoBaseline =
+					static_cast<int64>(TwoEmitted) - SumRows - (TwoRowCount - 1);
+				TestTrue(TEXT("Two-row page counts exactly one separator per extra row"),
+					TwoBaseline >= static_cast<int64>(EmptyBaselineBytes) - 1
+						&& TwoBaseline <= static_cast<int64>(EmptyBaselineBytes) + 16);
 				AddInfo(FString::Printf(
-					TEXT("PageBudgetBoundary two-row emitted %d row1 %d row2 %d baseline %d"),
-					TwoEmitted, Row1Bytes, Row2Bytes, EmptyBaselineBytes));
+					TEXT("PageBudgetBoundary two-row emitted %d rows %d baseline %d"),
+					TwoEmitted, TwoRowCount, EmptyBaselineBytes));
 			}
 		}
 	}

@@ -75,6 +75,15 @@ def _utf8_size(text: str) -> int:
     return len(text.encode("utf-8"))
 
 
+def _escaped_text_size(text: str) -> int:
+    """Encoded size of this JSON once it is embedded as the text of an SDK result envelope.
+
+    Mirrors the native page budget: JSON text escaping adds one byte for every quote or backslash,
+    which is the growth the text-only ``CallToolResult`` adds around the payload.
+    """
+    return _utf8_size(text) + text.count('"') + text.count("\\")
+
+
 def _canonical_run_id() -> str:
     return str(uuid.uuid4())
 
@@ -424,19 +433,30 @@ class ReplayCommandPeer:
         return self._apply_page_budget(data)
 
     def _apply_page_budget(self, data: dict) -> dict:
+        """Mirror the native page budget: whole rows only, sized for the SDK text envelope.
+
+        The native handler reserves the bounded cursor rewrite and the fixed text-only result
+        envelope, and budgets the escaped form of the page (one extra byte per quote or backslash),
+        so the peer must measure the same shape or it would emit pages the boundary has to reject.
+        """
         rows = data["recordings"]
         if not rows:
             return data
         reserve = 16
+        envelope = 64
         fixed = {key: value for key, value in data.items() if key != "recordings"}
         fixed["recordings"] = []
-        fixed_bytes = _utf8_size(json.dumps(fixed, ensure_ascii=False, separators=(",", ":")))
+        fixed_bytes = _escaped_text_size(
+            json.dumps(fixed, ensure_ascii=False, separators=(",", ":"))
+        )
         included: list[dict] = []
         summed = 0
         for row in rows:
-            row_bytes = _utf8_size(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+            row_bytes = _escaped_text_size(
+                json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+            )
             candidate = fixed_bytes + summed + row_bytes + len(included)
-            if included and candidate > MAX_RESPONSE_BYTES - reserve:
+            if included and candidate > MAX_RESPONSE_BYTES - reserve - envelope:
                 break
             included.append(row)
             summed += row_bytes

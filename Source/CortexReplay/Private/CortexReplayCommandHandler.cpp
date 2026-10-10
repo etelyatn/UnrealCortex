@@ -28,6 +28,13 @@ constexpr int32 ReplayHandlerPageBudgetBytes = 39000;
  */
 constexpr int32 ReplayHandlerCursorReserveBytes = 16;
 
+/**
+ * Fixed bytes the SDK's text-only result envelope adds around the payload:
+ * `{"content":[{"type":"text","text":""}],"isError":false}`. The Replay router disables structured
+ * output, so this wrapper is the only envelope around the text.
+ */
+constexpr int32 ReplayHandlerSdkEnvelopeBytes = 64;
+
 /** Positive signed 32-bit recording id upper bound. */
 constexpr double ReplayHandlerMaxRecordingId = 2147483647.0;
 
@@ -155,21 +162,42 @@ bool ReplayHandlerTryReadRunId(
 	return true;
 }
 
-/** Compact UTF-8 size of one JSON object using the native envelope writer. */
-int32 ReplayHandlerJsonBytes(const TSharedPtr<FJsonObject>& Object)
+/**
+ * Encoded cost of one object in both serialized forms: the native JSON the router returns, and the
+ * text-only SDK result envelope that payload becomes. JSON text escaping adds one byte for every
+ * quote or backslash inside the payload, which is why the SDK form can exceed the native form.
+ */
+struct FReplayHandlerByteCost
 {
+	int32 JsonBytes = -1;
+	int32 EscapedBytes = -1;
+};
+
+FReplayHandlerByteCost ReplayHandlerByteCost(const TSharedPtr<FJsonObject>& Object)
+{
+	FReplayHandlerByteCost Cost;
 	if (!Object.IsValid())
 	{
-		return 0;
+		return Cost;
 	}
 	FString Text;
 	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
 		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Text);
 	if (!FJsonSerializer::Serialize(Object.ToSharedRef(), Writer))
 	{
-		return -1;
+		return Cost;
 	}
-	return FTCHARToUTF8(*Text).Length();
+	Cost.JsonBytes = FTCHARToUTF8(*Text).Length();
+	int32 EscapeGrowth = 0;
+	for (const TCHAR Character : Text)
+	{
+		if (Character == TEXT('"') || Character == TEXT('\\'))
+		{
+			++EscapeGrowth;
+		}
+	}
+	Cost.EscapedBytes = Cost.JsonBytes + EscapeGrowth;
+	return Cost;
 }
 
 /**
@@ -211,12 +239,14 @@ FCortexCommandResult ReplayHandlerApplyPageBudget(FCortexCommandResult Result)
 		}
 	}
 	Fixed->SetArrayField(TEXT("recordings"), TArray<TSharedPtr<FJsonValue>>());
-	const int32 FixedBytes = ReplayHandlerJsonBytes(Fixed);
+	const int32 FixedBytes = ReplayHandlerByteCost(Fixed).EscapedBytes;
 	// Candidate below already carries the whole baseline, so the reserved ceiling bounds the full
-	// emitted page: rows are admitted only while baseline plus rows plus separators stays within
-	// the budget minus the bounded post-selection cursor rewrite.
+	// emitted page in the SDK's text-only result form: rows are admitted only while the escaped
+	// baseline plus escaped rows plus separators stays within the budget minus the bounded
+	// post-selection cursor rewrite and the fixed result envelope.
 	const int64 RowBudget = static_cast<int64>(ReplayHandlerPageBudgetBytes)
-		- ReplayHandlerCursorReserveBytes;
+		- ReplayHandlerCursorReserveBytes
+		- ReplayHandlerSdkEnvelopeBytes;
 
 	TArray<TSharedPtr<FJsonValue>> Included;
 	Included.Reserve(Rows.Num());
@@ -224,7 +254,7 @@ FCortexCommandResult ReplayHandlerApplyPageBudget(FCortexCommandResult Result)
 	for (const TSharedPtr<FJsonValue>& Row : Rows)
 	{
 		const TSharedPtr<FJsonObject> RowObject = Row.IsValid() ? Row->AsObject() : nullptr;
-		const int32 RowBytes = ReplayHandlerJsonBytes(RowObject);
+		const int32 RowBytes = ReplayHandlerByteCost(RowObject).EscapedBytes;
 		// Baseline brackets are retained; each extra row adds its bytes plus one comma separator.
 		const int64 Candidate = static_cast<int64>(FixedBytes) + SumRowBytes + RowBytes
 			+ Included.Num();

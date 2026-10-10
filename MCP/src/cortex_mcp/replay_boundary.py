@@ -15,6 +15,8 @@ from typing import Any
 
 from .tcp_client import UECommandError, UECommandNotDispatchedError
 
+from mcp.types import CallToolResult, TextContent
+
 # Native compact response budget (UTF-8 bytes) for one Replay reply.
 MAX_REPLAY_RESPONSE_BYTES = 39000
 
@@ -123,14 +125,27 @@ def _format_error_response(overflow_fields: dict[str, Any] | None = None) -> str
     return _limit_exceeded_response(size, overflow_fields)
 
 
+def _sdk_result_bytes(text: str) -> int:
+    """Encoded size of the registered text-only ``CallToolResult`` built from this payload.
+
+    The Replay router disables structured output, so one reply travels as a single ``TextContent``
+    whose text is JSON-escaped inside the result envelope. That escaping grows the envelope well
+    past the payload, so the budget is checked against the actual serialized result shape rather
+    than only the raw data JSON.
+    """
+    result = CallToolResult(content=[TextContent(type="text", text=text)], isError=False)
+    return len(result.model_dump_json().encode("utf-8"))
+
+
 def _finalize(value: Any, overflow_fields: dict[str, Any] | None = None) -> str:
     """Enforce the encoded UTF-8 budget on EVERY result path (the single gate).
 
-    Total: this never raises for any input.  Unpaired surrogates are re-serialized
-    with ASCII escaping (``\\uXXXX``), which is always strict-UTF-8 encodable, so
-    malformed text cannot escape as a router-level exception.  A value that cannot
-    be serialized at all yields a fixed envelope that still carries the supplied
-    ``overflow_fields`` machine context.
+    Both bound edges are checked here: the payload itself and the text-only SDK result envelope the
+    registered Replay router produces from it.  Total: this never raises for any input.  Unpaired
+    surrogates are re-serialized with ASCII escaping (``\\uXXXX``), which is always strict-UTF-8
+    encodable, so malformed text cannot escape as a router-level exception.  A value that cannot be
+    serialized at all yields a fixed envelope that still carries the supplied ``overflow_fields``
+    machine context.
     """
     try:
         try:
@@ -141,7 +156,7 @@ def _finalize(value: Any, overflow_fields: dict[str, Any] | None = None) -> str:
             size = len(text.encode("utf-8"))
     except Exception:
         return _format_error_response(overflow_fields)
-    if size <= MAX_REPLAY_RESPONSE_BYTES:
+    if size <= MAX_REPLAY_RESPONSE_BYTES and _sdk_result_bytes(text) <= MAX_REPLAY_RESPONSE_BYTES:
         return text
     return _limit_exceeded_response(size, overflow_fields)
 
