@@ -2911,3 +2911,52 @@ bool FCortexReplayLifecycleExternalSessionEndIncompleteReleasesTest::RunTest(con
 	return true;
 }
 
+
+// ---------------------------------------------------------------------------
+// No replay or capture operation may leave the engine's exclusive recorded-frame clock installed:
+// a retained custom time step would silently own the editor's application timing.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleNoResidualEngineClockTest,
+	"Cortex.Replay.Lifecycle.NoResidualEngineClockAfterOperations",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleNoResidualEngineClockTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor || !GEngine)
+	{
+		AddError(TEXT("Editor engine missing"));
+		return false;
+	}
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	TestTrue(TEXT("No engine clock is installed before any operation"),
+		GEngine->GetCustomTimeStep() == nullptr);
+
+	// A replay that runs to completion.
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true))
+	{
+		return false;
+	}
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	TestTrue(TEXT("Replay admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Completed"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("A completed replay leaves no engine clock installed"),
+				GEngine == nullptr || GEngine->GetCustomTimeStep() == nullptr);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
