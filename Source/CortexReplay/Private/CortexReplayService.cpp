@@ -663,16 +663,34 @@ void FCortexReplayService::FImpl::TickRun()
 		// is fully prepared. Native closure verification for the committed frame arrives with the
 		// frame observer; until then a prepared frame commits on readiness, preserving the previous
 		// dispatch-ordered progress.
-		ECortexReplayFramePreparation Preparation = ECortexReplayFramePreparation::Waiting;
-		FCortexCommandResult Advanced = Scheduler->PrepareFrame(
-			Scheduler->GetCompletedFrameCount(),
-			[this]() { return FPlatformTime::Seconds() - ReplayEpoch; },
-			[this](const FCortexReplayEvent& Event) { return EvaluateGuard(Event); },
-			[this](const FCortexReplayEvent& Event) { return DispatchEvent(Event); },
-			Preparation);
-		if (Advanced.bSuccess && Preparation == ECortexReplayFramePreparation::Ready)
+		// Drain every frame that is already due, exactly as the pre-frame scalar scheduler drained
+		// every due event in one tick: a frame must never wait a whole extra ticker interval just
+		// because its predecessor committed on this same invocation.
+		FCortexCommandResult Advanced = ServiceSuccess();
+		for (;;)
 		{
+			if (bCancellationRequested || bInterruptionRequested || Scheduler->IsComplete())
+			{
+				break;
+			}
+
+			ECortexReplayFramePreparation Preparation = ECortexReplayFramePreparation::Waiting;
+			Advanced = Scheduler->PrepareFrame(
+				Scheduler->GetCompletedFrameCount(),
+				[this]() { return FPlatformTime::Seconds() - ReplayEpoch; },
+				[this](const FCortexReplayEvent& Event) { return EvaluateGuard(Event); },
+				[this](const FCortexReplayEvent& Event) { return DispatchEvent(Event); },
+				Preparation);
+			if (!Advanced.bSuccess || Preparation != ECortexReplayFramePreparation::Ready)
+			{
+				break;
+			}
+
 			Advanced = Scheduler->CommitFrame(Scheduler->GetCompletedFrameCount());
+			if (!Advanced.bSuccess)
+			{
+				break;
+			}
 		}
 
 		ActiveRun.DispatchedEvents = Scheduler->GetDispatchedCount();
@@ -1041,15 +1059,7 @@ FCortexCommandResult FCortexReplayService::FImpl::PublishCaptureSnapshot()
 			NextSequence += GroupCount;
 			EventIndex += GroupCount;
 		}
-
-		if (CaptureSnapshot.Events.Num() == 0)
-		{
-			FCortexReplayFrame EmptyOwned;
-			EmptyOwned.FrameIndex = 1;
-			CaptureSnapshot.Frames.Add(EmptyOwned);
-		}
 	}
-	CaptureSnapshot.Metadata.Timing.FrameCount = CaptureSnapshot.Frames.Num();
 	CaptureSnapshot.Metadata.Timing.InputEpochFrame = 1;
 
 	for (const FCortexReplayEvent& Event : CaptureSnapshot.Events)
@@ -1082,6 +1092,23 @@ FCortexCommandResult FCortexReplayService::FImpl::PublishCaptureSnapshot()
 	CaptureSnapshot.Metadata.CreatedAtUtc = FDateTime::UtcNow();
 	// The recorded duration is the full monotonic capture span, not the last input timestamp.
 	CaptureSnapshot.Metadata.DurationSeconds = FMath::Max(0.0, CaptureStopSeconds - CaptureEpochSeconds);
+
+	// The recorded idle tail is part of the recording. A trailing frame with no input holds the run
+	// open to the capture's full duration, exactly as every other frame holds its own deadline, so a
+	// replay of a ten-second capture is not reported Complete after its last input release. It also
+	// supplies the second frame an eventless capture needs for a valid input-epoch ordinal.
+	{
+		FCortexReplayFrame Trailing;
+		Trailing.FrameIndex = CaptureSnapshot.Frames.Num();
+		Trailing.FrameBeginSeconds = CaptureSnapshot.Events.Num() > 0
+			? CaptureSnapshot.Events.Last().TimeSeconds
+			: 0.0;
+		Trailing.InputDeadlineSeconds = CaptureSnapshot.Metadata.DurationSeconds;
+		Trailing.FirstSequence = CaptureSnapshot.Events.Num();
+		Trailing.EventCount = 0;
+		CaptureSnapshot.Frames.Add(Trailing);
+	}
+	CaptureSnapshot.Metadata.Timing.FrameCount = CaptureSnapshot.Frames.Num();
 	CaptureSnapshot.Metadata.bAIEnabled = false;
 	CaptureSnapshot.Metadata.bComplete = true;
 	CaptureSnapshot.Metadata.Prerequisites = CaptureTargetInfo;
@@ -1564,10 +1591,14 @@ TSharedRef<FJsonObject> FCortexReplayService::BuildRunData(const FCortexReplayRu
 	Data->SetNumberField(TEXT("dispatched_events"), Record.DispatchedEvents);
 	Data->SetNumberField(TEXT("total_events"), Record.TotalEvents);
 	Data->SetNumberField(TEXT("authorized_wait_seconds"), Record.AuthorizedWaitSeconds);
-	Data->SetNumberField(TEXT("completed_frames"), Record.CompletedFrames);
-	Data->SetNumberField(TEXT("frame_count"), Record.FrameCount);
-	Data->SetStringField(TEXT("frames_sha256"), Record.FramesSha256);
-	// The frame in preparation exists only while a replay is running; a terminal record has none.
+	if (!Record.bLegacyFormat)
+	{
+		Data->SetNumberField(TEXT("completed_frames"), Record.CompletedFrames);
+		Data->SetNumberField(TEXT("frame_count"), Record.FrameCount);
+		Data->SetStringField(TEXT("frames_sha256"), Record.FramesSha256);
+	}
+	// A pre-frame record has no frame identity to report, so the fields are absent rather than
+	// fabricated as zeros; the frame in preparation exists only while a replay is running.
 	if (bLive && Scheduler != nullptr && Scheduler->GetCurrentFrame().IsSet())
 	{
 		Data->SetNumberField(TEXT("current_frame"), Scheduler->GetCurrentFrame().GetValue());
@@ -1637,12 +1668,16 @@ FCortexCommandResult FCortexReplayService::CancelReplay(const FGuid& Id, bool bA
 	}
 
 	FCortexReplayRunRecord Record;
-	if (State.RunStore.Load(Id, ECortexReplayOrigin::AI, Record).bSuccess)
+	if (State.RunStore.Load(Id, ECortexReplayOrigin::AI, Record).bSuccess
+		|| (!bAIOnly && State.RunStore.Load(Id, ECortexReplayOrigin::Human, Record).bSuccess))
 	{
-		return FCortexCommandRouter::Success(BuildRunData(Record, false, nullptr));
-	}
-	if (!bAIOnly && State.RunStore.Load(Id, ECortexReplayOrigin::Human, Record).bSuccess)
-	{
+		// A pre-frame record has no frame identity, so cancel's full terminal access is unsupported
+		// exactly as get_run's is; its compact recovery summary stays discoverable.
+		if (Record.bLegacyFormat)
+		{
+			return ServiceError(CortexReplayErrorCodes::UnsupportedRunFormat,
+				TEXT("Historical run records carry no frame identity"));
+		}
 		return FCortexCommandRouter::Success(BuildRunData(Record, false, nullptr));
 	}
 	return ServiceError(CortexReplayErrorCodes::RunNotFound,

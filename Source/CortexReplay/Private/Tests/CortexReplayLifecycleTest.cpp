@@ -2555,7 +2555,7 @@ bool FCortexReplayLifecycleCaptureStopDuringRecordingTest::RunTest(const FString
 		}, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Service](FAutomationTestBase& T)
+		[Service, Fixture](FAutomationTestBase& T)
 		{
 			const FCortexCommandResult Recording = Service->GetRecording(1, false);
 			T.TestTrue(TEXT("Recording stop published the capture"), Recording.bSuccess);
@@ -2565,6 +2565,22 @@ bool FCortexReplayLifecycleCaptureStopDuringRecordingTest::RunTest(const FString
 					Recording.Data->GetBoolField(TEXT("complete")), true);
 			}
 			T.TestFalse(TEXT("Published capture no longer owns the record"), Service->IsRecordInUse(1));
+
+			// The recorded idle tail is part of the recording: completion follows the committed
+			// frame frontier, so the capture must publish an empty trailing frame holding the full
+			// capture span instead of ending at the last input.
+			FCortexReplayLibrary Library(Fixture->GetProjectRoot());
+			TSharedPtr<const FCortexReplaySnapshot> Snapshot;
+			T.TestTrue(TEXT("Published capture reloads"),
+				Library.Load(1, false, Snapshot).bSuccess && Snapshot.IsValid());
+			if (Snapshot.IsValid() && Snapshot->Frames.Num() > 0)
+			{
+				const FCortexReplayFrame& Trailing = Snapshot->Frames.Last();
+				T.TestEqual(TEXT("The published capture ends with an empty trailing frame"),
+					Trailing.EventCount, 0);
+				T.TestEqual(TEXT("The trailing frame holds the recorded idle tail"),
+					Trailing.InputDeadlineSeconds, Snapshot->Metadata.DurationSeconds);
+			}
 		}, Fixture));
 
 	return true;

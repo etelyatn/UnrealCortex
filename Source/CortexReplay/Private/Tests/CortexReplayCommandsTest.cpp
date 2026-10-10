@@ -5,6 +5,7 @@
 #include "CortexReplayCommandHandler.h"
 #include "CortexReplayErrorCodes.h"
 #include "CortexReplayLibrary.h"
+#include "CortexReplayRunStore.h"
 #include "CortexReplayService.h"
 #include "CortexReplayTestUtils.h"
 #include "CortexReplayTypes.h"
@@ -2093,6 +2094,84 @@ bool FCortexReplayCommandsPageSizeOneBudgetTest::RunTest(const FString& Paramete
 	TestTrue(TEXT("Every single-row page stayed inside the budget"),
 		LargestBytes > 0 && LargestBytes <= PageSizeOneBudgetBytes);
 	TestFalse(TEXT("Single-row paging ended without a synthetic extra page"), bMore);
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The retained run record's own contract: frame identity is required and bounded in the current
+// schema, an admitted recording may legitimately carry no frames at all, and a malformed frontier
+// is refused at save time as well as at load time.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayCommandsRetainedRecordContractTest,
+	"Cortex.Replay.Commands.RetainedRunRecordContract",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayCommandsRetainedRecordContractTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayRunStore Store(Fixture.GetProjectRoot());
+	TestTrue(TEXT("Run store initializes"), Store.Initialize().bSuccess);
+
+	const FDateTime Started = FDateTime::UtcNow() - FTimespan::FromMinutes(1);
+	const FDateTime Finalized = FDateTime::UtcNow();
+
+	auto MakeRecord = [&](int32 CompletedFrames, int32 FrameCount, ECortexReplayState State)
+	{
+		FCortexReplayRunRecord Record;
+		Record.Id = FGuid::NewGuid();
+		Record.RecordingId = 1;
+		Record.Origin = ECortexReplayOrigin::AI;
+		Record.State = State;
+		Record.EditorInstanceId = TEXT("origin-editor");
+		Record.StartedAtUtc = Started;
+		Record.FinalizedAtUtc = Finalized;
+		Record.RecordingSnapshotSha256 = FString::ChrN(64, TEXT('a'));
+		Record.InitialStateSha256 = FString::ChrN(64, TEXT('b'));
+		Record.InputsSha256 = FString::ChrN(64, TEXT('c'));
+		Record.FramesSha256 = FString::ChrN(64, TEXT('d'));
+		Record.CompletedFrames = CompletedFrames;
+		Record.FrameCount = FrameCount;
+		return Record;
+	};
+
+	// An admitted recording may have no frames at all. Refusing its terminal record would leave
+	// replay ownership latched, so every later start would stay busy forever.
+	const FCortexReplayRunRecord Empty = MakeRecord(0, 0, ECortexReplayState::Completed);
+	TestTrue(TEXT("An empty frame frontier is persistable"), Store.SaveTerminal(Empty).bSuccess);
+
+	// A failed run keeps its partial verified progress.
+	FCortexReplayRunRecord Partial = MakeRecord(2, 7, ECortexReplayState::Error);
+	Partial.ExecutionError = FCortexCommandRouter::Error(
+		FString(TEXT("REPLAY_POSE_GUARD_FAILED")), FString(TEXT("pose mismatch")));
+	TestTrue(TEXT("A failed run with partial frame progress is persistable"),
+		Store.SaveTerminal(Partial).bSuccess);
+
+	TestFalse(TEXT("An unfinished Completed frontier is refused"),
+		Store.SaveTerminal(MakeRecord(2, 7, ECortexReplayState::Completed)).bSuccess);
+	TestFalse(TEXT("An out-of-bounds frame frontier is refused"),
+		Store.SaveTerminal(MakeRecord(8, 7, ECortexReplayState::Error)).bSuccess);
+	FCortexReplayRunRecord BadDigest = MakeRecord(1, 1, ECortexReplayState::Cancelled);
+	BadDigest.FramesSha256 = FString::ChrN(63, TEXT('d'));
+	TestFalse(TEXT("A frames digest that is not a SHA-256 is refused"),
+		Store.SaveTerminal(BadDigest).bSuccess);
+
+	// Round trip through a fresh store: the frame identity survives exactly.
+	FCortexReplayRunStore Reloaded(Fixture.GetProjectRoot());
+	TestTrue(TEXT("Reloaded store initializes"), Reloaded.Initialize().bSuccess);
+	FCortexReplayRunRecord LoadedEmpty;
+	TestTrue(TEXT("The empty record reloads"),
+		Reloaded.Load(Empty.Id, ECortexReplayOrigin::AI, LoadedEmpty).bSuccess);
+	TestEqual(TEXT("The empty frontier reloads exactly"), LoadedEmpty.CompletedFrames, 0);
+	TestEqual(TEXT("The empty frame count reloads exactly"), LoadedEmpty.FrameCount, 0);
+	TestFalse(TEXT("A current-format record is not marked legacy"), LoadedEmpty.bLegacyFormat);
+	FCortexReplayRunRecord LoadedPartial;
+	TestTrue(TEXT("The partial record reloads"),
+		Reloaded.Load(Partial.Id, ECortexReplayOrigin::AI, LoadedPartial).bSuccess);
+	TestEqual(TEXT("Partial verified progress reloads"), LoadedPartial.CompletedFrames, 2);
+	TestEqual(TEXT("The admitted frame count reloads"), LoadedPartial.FrameCount, 7);
 
 	return true;
 }

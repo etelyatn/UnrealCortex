@@ -134,7 +134,9 @@ def _sdk_result_bytes(text: str) -> int:
     than only the raw data JSON.
     """
     result = CallToolResult(content=[TextContent(type="text", text=text)], isError=False)
-    return len(result.model_dump_json().encode("utf-8"))
+    # The SDK's wire serializer writes aliases and omits unset optional fields, so the measurement
+    # must use the same shape or a legal reply near the limit is rejected as oversized.
+    return len(result.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8"))
 
 
 def _finalize(value: Any, overflow_fields: dict[str, Any] | None = None) -> str:

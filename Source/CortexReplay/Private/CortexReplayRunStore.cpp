@@ -282,7 +282,7 @@ FCortexCommandResult FCortexReplayRunStore::Initialize()
 			// the admitted frame set, the digest must be a SHA-256, and a Completed run must have
 			// finished every frame.
 			if (!StoreTryReadInt32(Object, TEXT("completed_frames"), Record.CompletedFrames, 0, MAX_int32)
-				|| !StoreTryReadInt32(Object, TEXT("frame_count"), Record.FrameCount, 1, MAX_int32)
+				|| !StoreTryReadInt32(Object, TEXT("frame_count"), Record.FrameCount, 0, MAX_int32)
 				|| Record.CompletedFrames > Record.FrameCount
 				|| !Object->TryGetStringField(TEXT("frames_sha256"), Record.FramesSha256)
 				|| !StoreIsLowerHexSha256(Record.FramesSha256)
@@ -357,7 +357,9 @@ FCortexCommandResult FCortexReplayRunStore::SaveTerminal(const FCortexReplayRunR
 		return StoreError(CortexReplayErrorCodes::StorageFailure,
 			TEXT("Only terminal run records may be persisted"));
 	}
-	if (Record.FrameCount <= 0 || Record.CompletedFrames < 0
+	// An admitted recording may legitimately carry no frames at all, so the frontier only has to be
+	// inside the frame set; a Completed run must still have finished it exactly.
+	if (Record.FrameCount < 0 || Record.CompletedFrames < 0
 		|| Record.CompletedFrames > Record.FrameCount)
 	{
 		return StoreError(CortexReplayErrorCodes::StorageFailure,
